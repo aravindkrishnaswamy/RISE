@@ -173,13 +173,19 @@ namespace RISE
 					Point2& uv											///< [out] The generated co-ordinate
 					);
 
-		//! Computes texture co-ordinates for a torus
-		extern void TorusTextureCoord( 
-					const Vector3& vUp,									///< [in] The up vector, these vectors determine how the sphere is wrapped
-					const Vector3& vForward, 							///< [in] The forward vector
-					const Point3& ptPoint, 								///< [in] Point to generate co-ordinate for
-					const Vector3& vNormal,								///< [in] The normal at the point of intersection
-					Point2& uv											///< [out] The generated co-ordinate
+		//! Computes texture co-ordinates for a torus.
+		//! The (u, v) returned matches TorusGeometry::TessellateToMesh's
+		//! parameterisation: u = ring-angle/2π, v = tube-angle/2π.
+		//! vUp / vForward / vNormal are unused (kept for ABI compat) — the
+		//! parameterisation is derived from the position alone.
+		extern void TorusTextureCoord(
+					const Vector3& vUp,									///< [in] (unused — see body comment)
+					const Vector3& vForward, 							///< [in] (unused)
+					const Point3& ptPoint, 								///< [in] Point on the torus surface (object space)
+					const Vector3& vNormal,								///< [in] (unused)
+					Point2& uv,											///< [out] The generated co-ordinate
+					const Scalar dMajorRadius,							///< [in] Ring radius R
+					const Scalar dMinorRadius							///< [in] Tube radius r
 					);
 
 		//! Generates a point on a cylinder given two numbers in [0,1]

@@ -375,20 +375,49 @@ void GeometricUtilities::SphereTextureCoord(
 	}
 }
 
-void GeometricUtilities::TorusTextureCoord( 
-	const Vector3& vUp,
-	const Vector3& vForward, 
-	const Point3& ptPoint, 
-	const Vector3& vNormal, 
-	Point2& uv
+void GeometricUtilities::TorusTextureCoord(
+	const Vector3& /*vUp*/,
+	const Vector3& /*vForward*/,
+	const Point3& ptPoint,
+	const Vector3& /*vNormal*/,
+	Point2& uv,
+	const Scalar dMajorRadius,
+	const Scalar dMinorRadius
 )
 {
-    const Scalar fTheta = Scalar( acos( Vector3Ops::Dot( vUp, vNormal) ) );
-    uv.y = fTheta * 0.5 * INV_PI;
+	// Inverse of TorusGeometry::TessellateToMesh:
+	//   pos = ( (R + r·cos(V))·cos(U),
+	//            r·sin(V),
+	//           (R + r·cos(V))·sin(U) )
+	// with U = u·2π (ring angle around Y) and V = v·2π (tube angle).
+	//
+	// The pre-fix body used acos(N·vUp) and acos((point.x, point.y, 0)·vForward)
+	// — both wrong: acos returns [0, π] so the full circle wrapped onto a
+	// half-range, the projection used (x, y) instead of (x, z), and the
+	// formula derived UV from the gradient normal rather than the position.
+	// Use atan2 of the same components TessellateToMesh uses so the (u, v)
+	// emitted here roundtrips through TessellateToMesh's forward formula.
 
-    const Scalar fTemp = Vector3Ops::Dot( Vector3Ops::Normalize( Vector3(ptPoint.x,ptPoint.y,0.0) ), vForward );
-    const Scalar fPhi = Scalar( acos( fTemp ) * 0.5 * INV_PI );
-    uv.x = fPhi;
+	const Scalar dXZ = std::sqrt( ptPoint.x * ptPoint.x + ptPoint.z * ptPoint.z );
+
+	// Tube angle V = atan2(y, dXZ - R).  cos(V) = (dXZ - R)/r and
+	// sin(V) = y/r, so atan2 recovers V uniquely in (-π, π].
+	const Scalar tubeOffset = dXZ - dMajorRadius;
+	Scalar V = ( dMinorRadius > NEARZERO )
+		? std::atan2( ptPoint.y, tubeOffset )
+		: 0.0;
+	if( V < 0.0 ) {
+		V += TWO_PI;
+	}
+	uv.y = V / TWO_PI;
+
+	// Ring angle U = atan2(z, x).  Both x and z carry the (R + r·cos(V))
+	// scale factor identically, so the angle reduces to atan2(z, x).
+	Scalar U = std::atan2( ptPoint.z, ptPoint.x );
+	if( U < 0.0 ) {
+		U += TWO_PI;
+	}
+	uv.x = U / TWO_PI;
 }
 
 
@@ -419,30 +448,50 @@ void GeometricUtilities::PointOnCylinder( const Point2& can, const int chAxis, c
 
 void GeometricUtilities::CylinderTextureCoord( const Point3 point, const int chAxis, const Scalar dOVRadius, const Scalar dAxisMin, const Scalar dAxisMax, Point2& coord )
 {
+	(void)dOVRadius;  // No longer used — kept for ABI compatibility.
+
+	// Inverse of CylinderGeometry::TessellateToMesh:
+	//   axis 'x':  pos = (axial, r·cos(θ), r·sin(θ))
+	//   axis 'y':  pos = (r·cos(θ), axial, r·sin(θ))
+	//   axis 'z':  pos = (r·cos(θ), r·sin(θ), axial)
+	// with θ = u·2π in [0, 2π) and axial = axisMin + v·(axisMax - axisMin).
+	//
+	// The pre-fix body used acos(z/r) (or x/r, y/r) with a wrap-flip on the
+	// "other" radial component, which mapped the angular axis onto a
+	// different parametrisation of the circle than TessellateToMesh
+	// (off by a quarter turn AND inverted in direction).  Use atan2 of
+	// the same two radial components TessellateToMesh uses so the (u, v)
+	// emitted here roundtrips through TessellateToMesh's forward formula.
+	Scalar a = 0.0;  // the radial coordinate playing the cos role
+	Scalar b = 0.0;  // the radial coordinate playing the sin role
+	Scalar axial = 0.0;
 	switch( chAxis )
 	{
 	case 'x':
-		coord.x = acos( point.y * dOVRadius );
-		if( point.z < 0.0 )
-			coord.x = TWO_PI - coord.x;
-		coord.x = coord.x * 0.5/PI;
-		coord.y = (point.x-dAxisMin)/(dAxisMax-dAxisMin);
+		a = point.y;
+		b = point.z;
+		axial = point.x;
 		break;
 	case 'y':
-		coord.x = acos( point.z * dOVRadius );
-		if( point.x < 0.0 )
-			coord.x = TWO_PI - coord.x;
-		coord.x = coord.x * 0.5/PI;
-		coord.y = (point.y-dAxisMin)/(dAxisMax-dAxisMin);
+		a = point.x;
+		b = point.z;
+		axial = point.y;
 		break;
 	case 'z':
-		coord.x = acos( point.x * dOVRadius );
-		if( point.y < 0.0 )
-			coord.x = TWO_PI - coord.x;
-		coord.x = coord.x * 0.5/PI;
-		coord.y = (point.z-dAxisMin)/(dAxisMax-dAxisMin);
+		a = point.x;
+		b = point.y;
+		axial = point.z;
 		break;
-	};
+	}
+
+	Scalar theta = atan2( b, a );
+	if( theta < 0.0 ) {
+		theta += TWO_PI;
+	}
+	coord.x = theta / TWO_PI;
+
+	const Scalar height = dAxisMax - dAxisMin;
+	coord.y = (height > NEARZERO) ? (axial - dAxisMin) / height : 0.0;
 }
 
 void GeometricUtilities::CylinderNormal( const Point3 point, const int chAxis, Vector3& normal )

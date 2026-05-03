@@ -22,10 +22,31 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-EllipsoidGeometry::EllipsoidGeometry( const Vector3& vRadius ) : 
+EllipsoidGeometry::EllipsoidGeometry( const Vector3& vRadius ) :
   m_vRadius( vRadius )
 {
 	RegenerateData();
+}
+
+void EllipsoidGeometry::EllipsoidUVFromPosition( const Point3& pt, Point2& uv ) const
+{
+	const Scalar a = m_vRadius.x * 0.5;
+	const Scalar b = m_vRadius.y * 0.5;
+	const Scalar c = m_vRadius.z * 0.5;
+
+	const Scalar yn = (b > NEARZERO) ? pt.y / b : 0.0;
+	const Scalar clampedYn = yn > 1.0 ? 1.0 : (yn < -1.0 ? -1.0 : yn);
+	const Scalar phi = acos( clampedYn );
+
+	const Scalar xn = (a > NEARZERO) ? pt.x / a : 0.0;
+	const Scalar zn = (c > NEARZERO) ? pt.z / c : 0.0;
+	Scalar theta = atan2( zn, -xn );
+	if( theta < 0.0 ) {
+		theta += TWO_PI;
+	}
+
+	uv.x = theta / TWO_PI;
+	uv.y = phi / PI;
 }
 
 EllipsoidGeometry::~EllipsoidGeometry( )
@@ -127,18 +148,23 @@ void EllipsoidGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool b
 		if( bComputeExitInfo ) {
 			ri.ptExit = ri.ray.PointAtLength( ri.range2 );
 			ri.vNormal2 = Vector3Ops::Normalize(
-				Vector3( Q._00*ri.ptExit.x, 
+				Vector3( Q._00*ri.ptExit.x,
 						 Q._11*ri.ptExit.y,
 						 Q._22*ri.ptExit.z )
 				);
 		}
 
-		// Use spherical UV
-		GeometricUtilities::SphereTextureCoord( 
-			Vector3( 0.0, m_OVmaxRadius, 0.0 ), 
-			Vector3( -m_OVmaxRadius, 0.0, 0.0 ), 
-			ri.vNormal, ri.ptCoord 
-			);
+		// Position-based inverse parameterization that matches TessellateToMesh:
+		//   pos = (a*-sin(phi)*cos(theta), b*cos(phi), c*sin(phi)*sin(theta))
+		// so phi = acos(P_y/b) and theta = atan2(P_z/c, -P_x/a).
+		//
+		// Using SphereTextureCoord on the gradient-normal collapses to v ≈ 0.5
+		// for unequal semi-axes (the gradient-derived "y component" lives in a
+		// tiny band around zero) AND derives (u, v) from the gradient direction
+		// rather than the position, so the result does not match
+		// TessellateToMesh's parameterization even when the magnitudes are
+		// reasonable.  Compute (u, v) directly from the position instead.
+		EllipsoidUVFromPosition( ri.ptIntersection, ri.ptCoord );
 	}
 }
 
@@ -209,11 +235,12 @@ void EllipsoidGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Poin
 	}
 
 	if( coord ) {
-		if( normal ) {
-			GeometricUtilities::SphereTextureCoord( Vector3( 0.0, m_OVmaxRadius, 0.0 ), Vector3( -m_OVmaxRadius, 0.0, 0.0 ), *normal, *coord );
-		} else {
-			GeometricUtilities::SphereTextureCoord( Vector3( 0.0, m_OVmaxRadius, 0.0 ), Vector3( -m_OVmaxRadius, 0.0, 0.0 ), pt, *coord );
-		}
+		// Match the position-based parameterization used in IntersectRay and
+		// TessellateToMesh.  The previous SphereTextureCoord call passed
+		// m_OVmaxRadius-scaled "axis" vectors that were not unit vectors, so
+		// the dot products with the gradient-normal were tiny and v collapsed
+		// to ≈ 0.5 for every random sample.
+		EllipsoidUVFromPosition( pt, *coord );
 	}
 }
 

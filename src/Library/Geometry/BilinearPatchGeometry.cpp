@@ -184,15 +184,28 @@ bool BilinearPatchGeometry::TessellateToMesh(
 			for( unsigned int i = 0; i <= nU; i++ ) {
 				const Scalar u = Scalar(i) / Scalar(nU);
 
-				const Scalar w00 = (1.0 - u) * (1.0 - v);
-				const Scalar w10 = u         * (1.0 - v);
-				const Scalar w11 = u         * v;
-				const Scalar w01 = (1.0 - u) * v;
+				// Match the canonical RISE bilinear convention used by
+				// GeometricUtilities::EvaluateBilinearPatchAt and by
+				// RayBilinearPatchIntersection (and asserted by
+				// tests/GeometricUtilitiesTest.cpp):
+				//   pts[0] at (u=0, v=0)
+				//   pts[1] at (u=0, v=1)
+				//   pts[2] at (u=1, v=0)
+				//   pts[3] at (u=1, v=1)
+				//
+				// Pre-fix this body used the row-major convention (pts[1] at
+				// (1, 0), pts[2] at (1, 1)), which gave a different surface
+				// from what IntersectRay traces — so IntersectRay's (u, v)
+				// did not roundtrip through this forward formula.
+				const Scalar w00 = (1.0 - u) * (1.0 - v);  // pts[0] at (0, 0)
+				const Scalar w01 = (1.0 - u) *        v;   // pts[1] at (0, 1)
+				const Scalar w10 =        u  * (1.0 - v);  // pts[2] at (1, 0)
+				const Scalar w11 =        u  *        v;   // pts[3] at (1, 1)
 
 				const Point3 pos(
-					w00 * patch.pts[0].x + w10 * patch.pts[1].x + w11 * patch.pts[2].x + w01 * patch.pts[3].x,
-					w00 * patch.pts[0].y + w10 * patch.pts[1].y + w11 * patch.pts[2].y + w01 * patch.pts[3].y,
-					w00 * patch.pts[0].z + w10 * patch.pts[1].z + w11 * patch.pts[2].z + w01 * patch.pts[3].z );
+					w00 * patch.pts[0].x + w01 * patch.pts[1].x + w10 * patch.pts[2].x + w11 * patch.pts[3].x,
+					w00 * patch.pts[0].y + w01 * patch.pts[1].y + w10 * patch.pts[2].y + w11 * patch.pts[3].y,
+					w00 * patch.pts[0].z + w01 * patch.pts[1].z + w10 * patch.pts[2].z + w11 * patch.pts[3].z );
 
 				vertices.push_back( pos );
 				normals.push_back( Vector3(0.0, 0.0, 0.0) );  // re-averaged below

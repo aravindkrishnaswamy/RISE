@@ -138,6 +138,11 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 	// Now compute the normal and texture mapping co-ordinates
 	if( ri.bHit )
 	{
+		// Pre-fix this method never populated ri.ptIntersection — every
+		// other concrete IGeometry::IntersectRay does, and downstream
+		// callers (shading, SMS, surface-derivative consumers) read it.
+		ri.ptIntersection = ri.ray.PointAtLength( ri.range );
+
 		const Vector3& vHitNormal = bTriA ? vNormalA : vNormalB;
 		ri.vNormal = vHitNormal;
 
@@ -145,19 +150,35 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 			ri.vNormal2 = -vHitNormal;
 		}
 
+		// Match TessellateToMesh's row-major corner UV layout:
+		//   vP[0] at (u=0, v=0)
+		//   vP[1] at (u=1, v=0)
+		//   vP[2] at (u=1, v=1)
+		//   vP[3] at (u=0, v=1)
+		// IntersectRay decomposes the quad into TriA = (vP[0], vP[1], vP[2])
+		// and TriB = (vP[0], vP[2], vP[3]).  uv[0] is the UV at vP[0],
+		// uv[1] at vP[0]+edge[0], uv[2] at vP[0]+edge[1].  The barycentric
+		// blend below produces the linear-per-triangle UV — which agrees
+		// with TessellateToMesh's bilinear UV for planar quads (any convex
+		// combination of coplanar points lies on the same plane).  For
+		// genuinely non-planar quads the two surface representations
+		// (two flat triangles vs. bilinear surface) differ off the
+		// vP[0]-vP[2] diagonal; the corner UVs still agree.
 		Point2		uv[3];
 
 		if( bTriA )
 		{
-			uv[0] = Point2( 1.0, 0.0 );
-			uv[1] = Point2( 0.0, 0.0 );
-			uv[2] = Point2( 0.0, 1.0 );
+			// TriA = (vP[0], vP[1], vP[2])
+			uv[0] = Point2( 0.0, 0.0 );  // at vP[0]
+			uv[1] = Point2( 1.0, 0.0 );  // at vP[0] + edgeA[0] = vP[1]
+			uv[2] = Point2( 1.0, 1.0 );  // at vP[0] + edgeA[1] = vP[2]
 		}
 		else
 		{
-			uv[0] = Point2( 1.0, 0.0 );
-			uv[1] = Point2( 0.0, 1.0 );
-			uv[2] = Point2( 1.0, 1.0 );
+			// TriB = (vP[0], vP[2], vP[3])
+			uv[0] = Point2( 0.0, 0.0 );  // at vP[0]
+			uv[1] = Point2( 1.0, 1.0 );  // at vP[0] + edgeB[0] = vP[2]
+			uv[2] = Point2( 0.0, 1.0 );  // at vP[0] + edgeB[1] = vP[3]
 		}
 
 		// Texture co-ordinates
@@ -165,7 +186,7 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 			Vector2Ops::mkVector2(uv[1],uv[0])*h.alpha+
 			Vector2Ops::mkVector2(uv[2],uv[0])*h.beta );
 	}
-	
+
 }
 
 bool ClippedPlaneGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
