@@ -65,8 +65,32 @@ namespace RISE
 		bool						bHit;			// was there an intersection ? 
 		Scalar						range;			// distance to the intersection point
 		Scalar						range2;			// distance to the exit point
-		Vector3						vNormal;		// normal at the point of intersection
+		Vector3						vNormal;		// normal at the point of intersection (SHADING normal — Phong-interpolated on triangle meshes, perturbed by bump/normal-map modifiers)
 		Vector3						vNormal2;		// normal at the point of exit
+		//! GEOMETRIC normals at the entry / exit points — the actual
+		//! flat-triangle face normal on triangle meshes (independent of
+		//! Phong interpolation), or identical to `vNormal` / `vNormal2`
+		//! on analytical primitives (sphere, ellipsoid, plane, …) where
+		//! the surface IS smooth and shading == geometric by construction.
+		//! Modifiers (bump map, normal map) perturb `vNormal` only;
+		//! `vGeomNormal` / `vGeomNormal2` always reflect the underlying
+		//! geometry.
+		//!
+		//! Use these — not `vNormal` / `vNormal2` — for queries that ask
+		//! "which side of the actual surface is this direction on?".
+		//! Examples: Specular Manifold Sampling's `ValidateChainPhysics`
+		//! (Newton converged a chain whose ray-segment topology must
+		//! match the real geometry, not the shading approximation), and
+		//! any refraction / TIR check that depends on physical surface
+		//! orientation rather than visual shading.
+		//!
+		//! `vGeomNormal2` is symmetric with `vNormal2` — populated only
+		//! when the geometry computes exit info (`bComputeExitInfo`).
+		//! CSG composition requires both fields so that promoting a
+		//! child's exit boundary to a parent's entry uses the actual
+		//! geometric exit normal, not a fabricated `-entry` proxy.
+		Vector3						vGeomNormal;
+		Vector3						vGeomNormal2;
 		Point2						ptCoord;		// texture mapping co-ordinates
 
 		Point3						ptIntersection;	// the point in world co-ordinates of the intersection, only	
@@ -143,6 +167,8 @@ namespace RISE
 		  range2( r.range2 ),
 		  vNormal( r.vNormal ),
 		  vNormal2( r.vNormal2 ),
+		  vGeomNormal( r.vGeomNormal ),
+		  vGeomNormal2( r.vGeomNormal2 ),
 		  ptCoord( r.ptCoord ),
 		  ptIntersection( r.ptIntersection ),
 		  ptExit( r.ptExit ),
@@ -172,6 +198,8 @@ namespace RISE
 			range2 = r.range2;
 			vNormal = r.vNormal;
 			vNormal2 = r.vNormal2;
+			vGeomNormal = r.vGeomNormal;
+			vGeomNormal2 = r.vGeomNormal2;
 			ptCoord = r.ptCoord;
 			derivatives = r.derivatives;
 			ptIntersection = r.ptIntersection;

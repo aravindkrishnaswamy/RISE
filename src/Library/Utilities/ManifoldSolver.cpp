@@ -1708,8 +1708,25 @@ bool ManifoldSolver::ValidateChainPhysics(
 		Vector3 wo = Vector3Ops::mkVector3( nextPos, v.position );
 		wo = Vector3Ops::Normalize( wo );
 
-		const Scalar wiDotN = Vector3Ops::Dot( wi, v.normal );
-		const Scalar woDotN = Vector3Ops::Dot( wo, v.normal );
+		// Test against the GEOMETRIC normal (the actual surface plane),
+		// not the Phong-interpolated shading normal.  On smooth analytic
+		// primitives the two are identical, so this is a no-op there;
+		// on triangle meshes (especially heavily displaced ones) the
+		// Phong-tilted shading normal can disagree with the actual
+		// triangle face for chains where wi/wo are nearly parallel to
+		// the surface — leading to spurious physics-rejections of
+		// chains that are perfectly valid against the real geometry.
+		// Matches Zeltner 2020's reference SMS implementation, which
+		// uses `vtx.gn` (geometric normal) at the equivalent test site.
+		// Falls back to the shading normal if `geomNormal` was not
+		// populated (e.g. photon-derived chains, hand-constructed
+		// vertices) — degenerate-zero detection avoids a sign-product
+		// of 0 that would silently disable the test.
+		const Vector3& nForTest =
+			( Vector3Ops::SquaredModulus( v.geomNormal ) > NEARZERO )
+			? v.geomNormal : v.normal;
+		const Scalar wiDotN = Vector3Ops::Dot( wi, nForTest );
+		const Scalar woDotN = Vector3Ops::Dot( wo, nForTest );
 
 		if( v.isReflection )
 		{
@@ -1923,6 +1940,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			vertex.uv       = newUv;
 			vertex.position = aP;
 			vertex.normal   = aN;
+			vertex.geomNormal = aN;	// analytical primitive: shading == geometric
 			vertex.dpdu     = aDpdu;
 			vertex.dpdv     = aDpdv;
 			vertex.dndu     = aDndu;
@@ -1987,6 +2005,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			}
 			vertex.position = ri.geometric.ptIntersection;
 			vertex.normal = ri.geometric.vNormal;
+			vertex.geomNormal = ri.geometric.vGeomNormal;
 			vertex.uv = ri.geometric.ptCoord;
 			snapped = true;
 		}
@@ -2010,6 +2029,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 			}
 			vertex.position = ri2.geometric.ptIntersection;
 			vertex.normal = ri2.geometric.vNormal;
+			vertex.geomNormal = ri2.geometric.vGeomNormal;
 			vertex.uv = ri2.geometric.ptCoord;
 			snapped = true;
 		}
@@ -2020,6 +2040,7 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 		// Fall back to the linear approximation (no re-snap)
 		vertex.position = newPos;
 		vertex.normal = newNormal;
+		vertex.geomNormal = newNormal;	// no fresh ray-cast; best-available proxy
 	}
 
 	// Recompute surface derivatives at the new position
@@ -2152,6 +2173,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 		{
 			vertex.position = aP;
 			vertex.normal   = aN;
+			vertex.geomNormal = aN;	// analytical primitive: shading == geometric
 			vertex.dpdu     = aDpdu;
 			vertex.dpdv     = aDpdv;
 			vertex.dndu     = aDndu;
@@ -2202,6 +2224,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 			if( ri.geometric.derivatives.valid ) {
 				vertex.position = ri.geometric.ptIntersection;
 				vertex.normal = ri.geometric.vNormal;
+				vertex.geomNormal = ri.geometric.vGeomNormal;
 				vertex.dpdu = ri.geometric.derivatives.dpdu;
 				vertex.dpdv = ri.geometric.derivatives.dpdv;
 				vertex.dndu = ri.geometric.derivatives.dndu;
@@ -2246,6 +2269,7 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 				if( ri2.geometric.derivatives.valid ) {
 					vertex.position = ri2.geometric.ptIntersection;
 					vertex.normal = ri2.geometric.vNormal;
+					vertex.geomNormal = ri2.geometric.vGeomNormal;
 					vertex.dpdu = ri2.geometric.derivatives.dpdu;
 					vertex.dpdv = ri2.geometric.derivatives.dpdv;
 					vertex.dndu = ri2.geometric.derivatives.dndu;
@@ -3297,6 +3321,7 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		ManifoldVertex mv;
 		mv.position = ri.geometric.ptIntersection;
 		mv.normal = ri.geometric.vNormal;
+		mv.geomNormal = ri.geometric.vGeomNormal;
 		// Surface parameters at the hit.  Without this, vertex.uv stays at
 		// its default (0, 0) — which is a parametric pole on most closed
 		// surfaces.  Future SMS variants that key derivative computation
@@ -3632,6 +3657,7 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 		ManifoldVertex mv;
 		mv.position    = ri.geometric.ptIntersection;
 		mv.normal      = ri.geometric.vNormal;
+		mv.geomNormal  = ri.geometric.vGeomNormal;
 		mv.uv          = ri.geometric.ptCoord;
 		mv.pObject     = ri.pObject;
 		mv.pMaterial   = pMat;
@@ -4730,6 +4756,7 @@ ManifoldResult ManifoldSolver::Solve(
 					{
 						v.position = aP;
 						v.normal   = aN;
+						v.geomNormal = aN;	// analytical: shading == geometric
 					}
 					// Step (b): probe to actual mesh, pull mesh derivatives.
 					if( !ComputeVertexDerivatives( v, 0.0 ) ) {
@@ -5016,6 +5043,7 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 		ManifoldVertex& mv = chain[i];
 		mv.position    = pv.position;
 		mv.normal      = pv.normal;
+		mv.geomNormal  = pv.normal;	// photon doesn't store geomNormal; use shading as fallback
 		mv.pObject     = pv.pObject;
 		mv.pMaterial   = pv.pMaterial;
 		mv.eta         = pv.eta;
@@ -5844,6 +5872,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			ManifoldVertex mv = baseSeedChain[0];
 			mv.position = sp;
 			mv.normal   = sn;
+			mv.geomNormal = sn;	// uniform-area sample: best-available proxy
 			mv.uv       = sc;
 			mv.dpdu = Vector3(0,0,0);  // Solve will compute via ComputeVertexDerivatives
 			mv.dpdv = Vector3(0,0,0);

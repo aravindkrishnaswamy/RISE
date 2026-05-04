@@ -408,6 +408,18 @@ namespace RISE
 									const double vShift[2]			///< [in] How much to shift the function by
 									);
 
+		//! Adds a controlled-smoothness radial-bump painter (test/diagnostic).
+		bool AddControlledSmoothness2DPainter(
+									const char* name,
+									const char* pa,
+									const char* pb,
+									const double centerU,
+									const double centerV,
+									const double radius,
+									const double amplitude,
+									const unsigned int smoothnessMode
+									);
+
 		//! Adds a sum-of-sines water-wave painter (Gerstner height variant).
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddGerstnerWavePainter(

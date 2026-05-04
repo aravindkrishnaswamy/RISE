@@ -435,12 +435,197 @@ high-frequency content for finer detail to expose, so it's invariant.
 
 ## The actual root cause
 
-**The displacement function's spectral content drives SMS Newton failure
-on displaced meshes.**  Not the mesh tessellation density.  Not the
-derivative computation pipeline.  Not the absence of LM.  The mesh is
-the messenger; the cause is "high-frequency displacement content
-sampled at vertices produces large C¹ normal-field jumps at triangle
-edges, and Newton can't navigate sharp jumps."
+**The DENSITY of surface area at intermediate slope-angles drives SMS
+Newton failure on displaced meshes.**  Not the mesh tessellation density.
+Not the derivative computation pipeline.  Not the absence of LM.  Not
+the underlying displacement function's continuity order, either (see
+the smoothness-order experiment immediately below).  The cause is "many
+small high-curvature regions = many independent Newton failure modes
++ high physics-validity-rejection rate from intermediate-slope chains."
+
+### Smoothness-order experiment — refuted the naive continuity hypothesis
+
+To test whether the underlying displacement function's continuity order
+matters, a `controlled_smoothness2d_painter` was added (single radial
+bump at the centre of UV, parameterised by smoothness order — see
+`src/Library/Painters/ControlledSmoothness2DPainter.h`).  Six modes
+tested with matched `amplitude=1.0`, `radius=0.5`, `center=(0.5, 0.5)`,
+`disp_scale=10`:
+
+| Boundary continuity | ok% | newt% | phys% |
+|---------------------|----:|------:|------:|
+| C⁻¹ Heaviside (step in value) | **53.1** | 39.5 | **7.4** |
+| C⁰  Tent (kink at apex + boundary) | 47.8 | 32.2 | 20.0 |
+| C¹  Quadratic | 51.9 | 31.3 | 16.8 |
+| C¹  Hermite cubic | 45.2 | 36.5 | 18.3 |
+| C³  Hermite quintic | 45.6 | 35.0 | 19.4 |
+| C^∞ Gaussian | 50.6 | 35.3 | 14.1 |
+
+**No monotonic relationship to smoothness order.**  All six cluster
+within an 8 pp band of ok%.  The naive "smoother boundary → fewer
+Newton failures" prediction is refuted.
+
+Two surprises:
+1. **Heaviside (the WORST continuity) has the HIGHEST ok rate.**  Its
+   surface is two large flat regions joined by a thin sharp annulus —
+   Newton works perfectly in flat regions, fails only at the annulus.
+2. **Phys-fail rate, not Newton-fail rate, is the differentiating
+   factor across smoothness orders.**  Smoother modes converge more
+   often (lower newt%) but land on physically-invalid configurations
+   more often (higher phys%) because the continuum of intermediate
+   slopes lets Newton drift onto wrong-basin solutions.
+
+### Reconciling with the Perlin-vs-Gerstner result
+
+The 26 pp gap (Perlin disp=10 ok=23.1% vs smooth Gerstner ok=49.3%) was
+NOT about the painter's continuity order.  It was about the **density**
+of intermediate-slope regions:
+
+- **Perlin scale=8 octaves=4**: many bumps at multiple scales → many
+  independent annular transition zones → lots of intermediate-slope
+  surface area → high phys-fail
+- **Smooth Gerstner num_waves=2 λ=1.0**: single-mode wave with
+  smoothly-varying-but-mostly-coherent slopes → fewer intermediate-
+  slope failure regions
+- **Single-bump variants (smoothness experiment)**: ALL have one
+  moderate-amplitude bump covering ~78 % of UV space → similar
+  Newton-fail rate (45-53 %) regardless of boundary smoothness
+
+The practical guidance is therefore more like **"use one bump rather
+than four octaves of bumps"** than "use a smoother painter."  Smoother
+painters tend to score better in practice because they correlate with
+lower-density gradient variation, but the gradient density is the
+proximate cause.
+
+### Comprehensive amplitude × smoothness sweep (2026-05-04)
+
+Extended the smoothness experiment to a full grid: 6 modes × 11
+displacement values (0, 4, 8, ..., 40) × 2 integrators (PT+SMS at 4 spp,
+VCM at 32 spp as ground truth) = 132 renders.  Image energies computed
+from linear EXRs; PT/VCM ratios pulled from total-luminance integration.
+
+**Pearson correlations across all 66 (mode, disp) data points:**
+
+| Solver counter | Correlation with PT/VCM energy ratio |
+|----------------|-------------------------------------:|
+| **physics-fail %** | **−0.914** (very strong) |
+| ok % | +0.865 (strong) |
+| disp value | −0.735 (strong) |
+| **Newton-fail %** | **−0.258** (weak, barely signal) |
+
+**The Heaviside paradox.**  Heaviside has the highest Newton-fail rate
+(42 % at disp=40) AND the highest energy preservation (PT/VCM ≈ 0.85,
+unchanged from the disp=0 baseline).  Tent has SIMILAR Newton-fail
+(40 %) but only 36 % of expected energy.  The difference is physics-
+fail: 9 % for Heaviside vs 26 % for Tent.
+
+```
+              Newton%  Phys%   PT/VCM
+heaviside d=40   42      9    0.86  ← lots of Newton-fail, energy preserved
+tent      d=40   40     26    0.36  ← similar Newton-fail, 60% energy loss
+```
+
+Heaviside's surface is two flat regions joined by a thin sharp annulus.
+Newton fails at the annulus but the surface area there is small.  Most
+of the surface is flat → physics validates → energy preserved.  Smooth
+modes have a continuum of intermediate slopes everywhere → many
+algebraically-valid Newton convergences land on geometrically-
+nonsensical chain configurations → physics-rejected → no energy.
+
+### What `ValidateChainPhysics` actually checks
+
+`ManifoldSolver::ValidateChainPhysics` (line 1692) verifies, at each
+chain vertex, that `wi` (incoming segment) and `wo` (outgoing segment)
+are on the geometrically-correct sides of the local surface normal:
+
+- Reflection vertex: `wi · n` and `wo · n` must have the *same* sign.
+- Refraction vertex: `wi · n` and `wo · n` must have *opposite* signs.
+
+When this fails after Newton converges, the converged chain is
+**algebraically valid** (`||C|| < threshold`) but **physically
+nonsensical**: e.g. a "refraction" vertex where both ray segments are
+on the same side of the surface, or a "reflection" vertex where they
+straddle it.
+
+### The fundamental problem
+
+Smooth-displaced surfaces create a half-vector constraint landscape
+with many local minima, some of which correspond to unphysical chain
+configurations.  Newton minimises `||C||` blindly and lands on those
+minima with high probability when the seed is in their basin.  Heaviside
+avoids this because its surface is mostly flat — only one "real" local
+minimum near most seeds.
+
+**This isn't fixable by a better solver.**  Mitsuba and pbrt have the
+same constraint landscape; they need an equivalent physics check (or
+pre-rejection mechanism).  The fix is either:
+
+1. **Better seeding**: photon-aided seeding lands seeds in physical
+   basins by construction (the photon physically traversed the
+   surface).  Already implemented; gated behind `sms_photon_count > 0`.
+2. **Physics-aware constraint**: embed the side-test into `||C||` as a
+   barrier or penalty that diverges when `wi`/`wo` cross to the wrong
+   side.  Newton then can't converge to those points.  Engineering
+   work in `EvaluateConstraint`.
+3. **Specular polynomials** (Fan 2024): enumerate *all* algebraic roots
+   of the constraint analytically, then filter by physics.  Bypasses
+   the local-minimum trap entirely.  Larger implementation cost.
+
+### Geometric-normal validation experiment (refuted)
+
+Hypothesis: RISE's `ValidateChainPhysics` was using `v.normal`, which
+is the Phong-interpolated shading normal.  Zeltner's reference uses
+`vtx.gn` (geometric face normal).  On smooth-analytical primitives the
+two are identical, but on a Phong-interpolated displaced mesh they
+diverge significantly — possibly enough to flip the side-test sign and
+spuriously reject chains.
+
+Production-ready plumbing implemented:
+
+- `RayIntersectionGeometric::vGeomNormal` — new field, populated by
+  every geometry primitive at intersection time.  Analytical primitives
+  set `vGeomNormal == vNormal`; triangle meshes set it to the actual
+  triangle face normal (cross product of edges, oriented consistently
+  with `vNormal`).  Transformed alongside `vNormal` in `Object.cpp`.
+  Defaults to zero for code paths that don't populate it (CSG vNormal2
+  cases, photon-derived chains).
+- `ManifoldVertex::geomNormal` — mirrors the above on the SMS chain.
+- `ValidateChainPhysics` now tests against `geomNormal` (with a
+  zero-magnitude fallback to `normal` so legacy paths keep their
+  current behaviour).
+
+**Sweep result: phys-fail rate change is −0.2 to +0.5 pp across the
+entire 6×11 (mode × disp) grid.**  ok% identical, PT/VCM energy ratios
+within MC noise.  The geom-vs-shading normal swap is essentially a
+no-op for `ValidateChainPhysics`.
+
+Interpretation: the chains being rejected are genuinely physically
+invalid against the actual triangle face, not artifacts of Phong-
+tilted shading normals.  The side-product `(wi·n)(wo·n)` lands on the
+same sign whether `n` is the shading or geometric normal — for the
+chains that get rejected, both normals agree on which side `wi`/`wo`
+are on.  This eliminates `ValidateChainPhysics` correctness and the
+shading-normal frame as causes; the only remaining explanation is that
+Newton genuinely converges to mathematically-valid-but-physically-
+impossible roots of the half-vector constraint on bumpy surfaces.
+
+The plumbing is retained for unrelated future use (refraction sign
+tests, TIR detection, BSSRDF entry/exit logic — anything that needs
+"side of the actual surface" rather than "side of the Phong shading
+frame").
+
+### Practical guidance update
+
+The earlier rule "prefer fewer bumps over many small bumps" still
+holds, but the actual mechanism is: more bumps means more
+intermediate-slope surface area means more spurious Newton minima
+means more physics-rejected converged chains means more energy loss.
+
+Interestingly, **a step-function displacement (Heaviside) preserves
+energy at any amplitude** — useful as a stress-test reference and as a
+counter-example showing that "high amplitude" alone doesn't break SMS.
+What breaks SMS is "smoothly-varying intermediate slopes covering
+significant surface area."
 
 Practical recommendations for SMS-on-displaced-meshes scenes:
 

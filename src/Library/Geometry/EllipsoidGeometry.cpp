@@ -140,10 +140,11 @@ void EllipsoidGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool b
 	{
 		ri.ptIntersection = ri.ray.PointAtLength( ri.range );
 		ri.vNormal = Vector3Ops::Normalize(
-			Vector3( Q._00*ri.ptIntersection.x, 
+			Vector3( Q._00*ri.ptIntersection.x,
 					 Q._11*ri.ptIntersection.y,
 					 Q._22*ri.ptIntersection.z )
 			);
+		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
 
 		if( bComputeExitInfo ) {
 			ri.ptExit = ri.ray.PointAtLength( ri.range2 );
@@ -152,6 +153,7 @@ void EllipsoidGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool b
 						 Q._11*ri.ptExit.y,
 						 Q._22*ri.ptExit.z )
 				);
+			ri.vGeomNormal2 = ri.vNormal2;	// analytical: shading == geometric
 		}
 
 		// Position-based inverse parameterization that matches TessellateToMesh:

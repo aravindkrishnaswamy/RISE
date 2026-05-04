@@ -64,7 +64,8 @@ namespace RISE
 		struct ManifoldVertex
 		{
 			Point3				position;		///< World-space position on specular surface
-			Vector3				normal;			///< Surface normal (world space)
+			Vector3				normal;			///< Surface normal (world space) — Phong-interpolated SHADING normal on triangle meshes; on analytical primitives it's the same as `geomNormal`.  Used by Newton's Jacobian and the chain-throughput math (which want the smooth shading normal so derivatives are well-defined across triangle edges).
+			Vector3				geomNormal;		///< Geometric (face) normal in world space.  On analytical primitives identical to `normal`.  On triangle meshes this is the actual flat-triangle face normal — INDEPENDENT of Phong vertex-normal interpolation.  Used by `ValidateChainPhysics` to test wi/wo against the actual surface (not the shading approximation), so chains aren't spuriously rejected when the Phong-tilted shading normal disagrees with the real geometry — empirically this was the dominant source of `physicsFail` rejections on smooth-displaced caustics (see docs/SMS_LEVENBERG_MARQUARDT.md).
 			Vector3				dpdu;			///< Position derivative w.r.t. first surface param (world space)
 			Vector3				dpdv;			///< Position derivative w.r.t. second surface param (world space)
 			Vector3				dndu;			///< Normal derivative w.r.t. first surface param (world space)
@@ -88,6 +89,7 @@ namespace RISE
 			ManifoldVertex() :
 			position( Point3(0,0,0) ),
 			normal( Vector3(0,0,0) ),
+			geomNormal( Vector3(0,0,0) ),
 			dpdu( Vector3(0,0,0) ), dpdv( Vector3(0,0,0) ),
 			dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
 			uv( Point2(0,0) ),

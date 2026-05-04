@@ -95,6 +95,13 @@ void TriangleMeshGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 		if( Vector3Ops::Dot(ri.vNormal, ri.ray.Dir()) > 0 ) {
 			ri.vNormal = -ri.vNormal;
 		}
+		// Mirror the flip for the geometric (face) normal so the side-
+		// tests using `ri.vGeomNormal` agree with the post-flip shading
+		// orientation (downstream consumers expect the two to match
+		// hemisphere).
+		if( Vector3Ops::Dot(ri.vGeomNormal, ri.ray.Dir()) > 0 ) {
+			ri.vGeomNormal = -ri.vGeomNormal;
+		}
 	}
 }
 

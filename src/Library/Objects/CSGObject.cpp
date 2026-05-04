@@ -207,10 +207,13 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				if( riObjB.geometric.range < riObjA.geometric.range &&
 					riObjB.geometric.range2 > riObjA.geometric.range )
 				{
-					// B overlaps and extends past A — exit at B's far side
+					// B overlaps and extends past A — exit at B's far side.
+					// The reported "entry" of the composite hit is actually
+					// B's exit boundary (we've been inside the union all along).
 					ri = riObjB;
 					ri.geometric.range = riObjB.geometric.range2;
 					ri.geometric.vNormal = riObjB.geometric.vNormal2;
+					ri.geometric.vGeomNormal = riObjB.geometric.vGeomNormal2;
 				} else {
 					ri = riObjA;
 				}
@@ -225,6 +228,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri = riObjA;
 					ri.geometric.range = riObjA.geometric.range2;
 					ri.geometric.vNormal = riObjA.geometric.vNormal2;
+					ri.geometric.vGeomNormal = riObjA.geometric.vGeomNormal2;
 				} else {
 					ri = riObjB;
 				}
@@ -248,6 +252,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					if( riObjB.geometric.range2 > riObjA.geometric.range2 ) {
 						ri.geometric.range2 = riObjB.geometric.range2;
 						ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
+						ri.geometric.vGeomNormal2 = riObjB.geometric.vGeomNormal2;
 					}
 				}
 				// Overlapping: B enters first
@@ -256,6 +261,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					if( riObjA.geometric.range2 > riObjB.geometric.range2 ) {
 						ri.geometric.range2 = riObjA.geometric.range2;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 					}
 				}
 			}
@@ -293,13 +299,16 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri = riObjB;
 					ri.geometric.range = riObjB.geometric.range;
 					ri.geometric.vNormal = riObjB.geometric.vNormal;
+					ri.geometric.vGeomNormal = riObjB.geometric.vGeomNormal;
 					// Exit at whichever boundary is closer
 					if( riObjA.geometric.range <= riObjB.geometric.range2 ) {
 						ri.geometric.range2 = riObjA.geometric.range;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal;
+						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal;
 					} else {
 						ri.geometric.range2 = riObjB.geometric.range2;
 						ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
+						ri.geometric.vGeomNormal2 = riObjB.geometric.vGeomNormal2;
 					}
 				}
 			}
@@ -312,13 +321,16 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri = riObjA;
 					ri.geometric.range = riObjA.geometric.range;
 					ri.geometric.vNormal = riObjA.geometric.vNormal;
+					ri.geometric.vGeomNormal = riObjA.geometric.vGeomNormal;
 					// Exit at whichever boundary is closer
 					if( riObjB.geometric.range <= riObjA.geometric.range2 ) {
 						ri.geometric.range2 = riObjB.geometric.range;
 						ri.geometric.vNormal2 = riObjB.geometric.vNormal;
+						ri.geometric.vGeomNormal2 = riObjB.geometric.vGeomNormal;
 					} else {
 						ri.geometric.range2 = riObjA.geometric.range2;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 					}
 				}
 			}
@@ -335,12 +347,15 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri = riObjA;
 					ri.geometric.range = riObjB.geometric.range;
 					ri.geometric.vNormal = riObjB.geometric.vNormal;
+					ri.geometric.vGeomNormal = riObjB.geometric.vGeomNormal;
 					if( riObjA.geometric.range2 <= riObjB.geometric.range2 ) {
 						ri.geometric.range2 = riObjA.geometric.range2;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 					} else {
 						ri.geometric.range2 = riObjB.geometric.range2;
 						ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
+						ri.geometric.vGeomNormal2 = riObjB.geometric.vGeomNormal2;
 					}
 				}
 				else if(
@@ -351,12 +366,15 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri = riObjB;
 					ri.geometric.range = riObjA.geometric.range;
 					ri.geometric.vNormal = riObjA.geometric.vNormal;
+					ri.geometric.vGeomNormal = riObjA.geometric.vGeomNormal;
 					if( riObjB.geometric.range2 <= riObjA.geometric.range2 ) {
 						ri.geometric.range2 = riObjB.geometric.range2;
 						ri.geometric.vNormal2 = riObjB.geometric.vNormal2;
+						ri.geometric.vGeomNormal2 = riObjB.geometric.vGeomNormal2;
 					} else {
 						ri.geometric.range2 = riObjA.geometric.range2;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 					}
 				}
 			}
@@ -372,7 +390,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri = riObjB;
 					ri.geometric.range2 = riObjA.geometric.range;
 					ri.geometric.vNormal = -riObjB.geometric.vNormal;
+					ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal;
 					ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 				}
 			} else if( riObjA.geometric.range2 == 0 ) {
 				// If we are inside A but not inside B
@@ -381,6 +401,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				if( riObjB.geometric.bHit && riObjB.geometric.range < riObjA.geometric.range ) {
 					ri = riObjB;
 					ri.geometric.vNormal = -riObjB.geometric.vNormal;
+					ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal;
 				} else {
 					ri = riObjA;
 				}
@@ -391,7 +412,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					ri = riObjB;
 					ri.geometric.range2 = riObjA.geometric.range2;
 					ri.geometric.vNormal = -riObjB.geometric.vNormal;
+					ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal;
 					ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+					ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 				}
 			} else {
 				// If we never hit B, or if B begins after A ends, or if B ends before A can begin
@@ -405,6 +428,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						ri = riObjA;
 						ri.geometric.range2 = riObjB.geometric.range;
 						ri.geometric.vNormal2 = -riObjB.geometric.vNormal;
+						ri.geometric.vGeomNormal2 = -riObjB.geometric.vGeomNormal;
 					}
 					else if( riObjB.geometric.range2 < riObjA.geometric.range2 )
 					{
@@ -413,7 +437,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						ri.geometric.range2 = riObjA.geometric.range2;
 						// Reverse the normal
 						ri.geometric.vNormal = -riObjB.geometric.vNormal2;
+						ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal2;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
+						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
 					}
 					else if( (riObjB.geometric.range >= riObjA.geometric.range2) ||
 							 (riObjB.geometric.range2 <= riObjA.geometric.range) )
@@ -431,6 +457,8 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		// Transform the normal back
 		ri.geometric.vNormal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vNormal ));
 		ri.geometric.vNormal2 = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vNormal2 ));
+		ri.geometric.vGeomNormal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vGeomNormal ));
+		ri.geometric.vGeomNormal2 = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vGeomNormal2 ));
 
 		ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
 

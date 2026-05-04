@@ -1410,6 +1410,43 @@ namespace RISE
 				}
 			};
 
+			struct ControlledSmoothness2DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name        = bag.GetString( "name",        "noname" );
+					std::string colora      = bag.GetString( "colora",      "none" );
+					std::string colorb      = bag.GetString( "colorb",      "none" );
+					double radius           = bag.GetDouble( "radius",      0.5 );
+					double amplitude        = bag.GetDouble( "amplitude",   1.0 );
+					unsigned int mode       = bag.GetUInt(   "smoothness",  3 );	// default: cubic Hermite
+					double center[2] = { 0.5, 0.5 };
+					if( bag.Has( "center" ) ) sscanf( bag.GetString( "center" ).c_str(), "%lf %lf", &center[0], &center[1] );
+
+					return pJob.AddControlledSmoothness2DPainter(
+						name.c_str(), colora.c_str(), colorb.c_str(),
+						center[0], center[1], radius, amplitude, mode );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "controlled_smoothness2d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Test painter: a single radial bump with controllable boundary smoothness order.  Use as a `displaced_geometry` displacement to isolate per-edge C¹ jump effects on SMS Newton convergence.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Low/zero-end color"; }
+						{ auto& p = P(); p.name = "colorb";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "High/peak-end color"; }
+						{ auto& p = P(); p.name = "center";     p.kind = ValueKind::DoubleVec3;p.description = "Bump center in UV space (only first two components used)"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "radius";     p.kind = ValueKind::Double;    p.description = "Bump radius in UV space"; p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "amplitude";  p.kind = ValueKind::Double;    p.description = "Peak height"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "smoothness"; p.kind = ValueKind::UInt;      p.description = "Boundary smoothness order: 0=Heaviside, 1=Tent, 2=Quadratic, 3=Cubic, 5=Quintic, 99=Gaussian"; p.defaultValueHint = "3"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct GerstnerWavePainterAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -7755,6 +7792,7 @@ namespace RISE
 		add( "lines_painter",                         new LinesPainterAsciiChunkParser() );
 		add( "mandelbrot_painter",                    new MandelbrotPainterAsciiChunkParser() );
 		add( "perlin2d_painter",                      new Perlin2DPainterAsciiChunkParser() );
+		add( "controlled_smoothness2d_painter",       new ControlledSmoothness2DPainterAsciiChunkParser() );
 		add( "gerstnerwave_painter",                  new GerstnerWavePainterAsciiChunkParser() );
 		add( "perlin3d_painter",                      new Perlin3DPainterAsciiChunkParser() );
 		add( "turbulence3d_painter",                  new Turbulence3DPainterAsciiChunkParser() );

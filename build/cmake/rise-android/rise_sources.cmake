@@ -85,6 +85,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Painters/Painter.cpp"
     "${RISE_LIB}/Importers/GLTFSceneImporter.cpp"
     "${RISE_LIB}/Painters/Perlin2DPainter.cpp"
+    "${RISE_LIB}/Painters/ControlledSmoothness2DPainter.cpp"
     "${RISE_LIB}/Painters/GerstnerWavePainter.cpp"
     "${RISE_LIB}/Painters/Perlin3DPainter.cpp"
     "${RISE_LIB}/Painters/Turbulence3DPainter.cpp"

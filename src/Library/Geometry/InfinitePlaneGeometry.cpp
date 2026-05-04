@@ -54,15 +54,19 @@ void InfinitePlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const bo
 	{
 		if( bFrontSideWasHit ) {
 			ri.vNormal = Vector3( 0, 0, 1 );
+			ri.vGeomNormal = ri.vNormal;	// flat plane: shading == geometric
 
 			if( bComputeExitInfo ) {
 				ri.vNormal2 = Vector3( 0, 0, -1 );
+				ri.vGeomNormal2 = ri.vNormal2;
 			}
 		} else {
 			ri.vNormal = Vector3( 0, 0, -1 );
+			ri.vGeomNormal = ri.vNormal;	// flat plane: shading == geometric
 
 			if( bComputeExitInfo ) {
 				ri.vNormal2 = Vector3( 0, 0, 1 );
+				ri.vGeomNormal2 = ri.vNormal2;
 			}
 		}
 

@@ -183,6 +183,19 @@ namespace RISE
 				} else {
 					ri.vNormal = vFaceNormal;
 				}
+				// Geometric (face) normal — independent of Phong vertex-
+				// normal interpolation.  Used by consumers that need the
+				// actual triangle plane orientation (e.g. SMS chain
+				// physics validation), not the smoothed shading normal.
+				// Normalized; oriented consistently with the shading
+				// normal so the side-tests downstream don't flip sign.
+				{
+					Vector3 fn = Vector3Ops::Normalize( vFaceNormal );
+					if( Vector3Ops::Dot( fn, ri.vNormal ) < 0 ) {
+						fn = Vector3( -fn.x, -fn.y, -fn.z );
+					}
+					ri.vGeomNormal = fn;
+				}
 				ri.ptCoord = Point2Ops::mkPoint2(*thisTri.pCoords[0],
 					Vector2Ops::mkVector2(*thisTri.pCoords[1],*thisTri.pCoords[0])*a+
 					Vector2Ops::mkVector2(*thisTri.pCoords[2],*thisTri.pCoords[0])*b );

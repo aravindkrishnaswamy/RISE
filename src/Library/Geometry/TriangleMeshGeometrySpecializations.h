@@ -158,6 +158,14 @@ namespace RISE
 				ri.vNormal = thisTri.normals[0]+
 					(thisTri.normals[1]-thisTri.normals[0])*a+
 					(thisTri.normals[2]-thisTri.normals[0])*b;
+				// Geometric (face) normal — see indexed specialization.
+				{
+					Vector3 fn = Vector3Ops::Normalize( vFaceNormal );
+					if( Vector3Ops::Dot( fn, ri.vNormal ) < 0 ) {
+						fn = Vector3( -fn.x, -fn.y, -fn.z );
+					}
+					ri.vGeomNormal = fn;
+				}
 				ri.ptCoord = Point2Ops::mkPoint2( thisTri.coords[0],
 					Vector2Ops::mkVector2(thisTri.coords[1],thisTri.coords[0])*a+
 					Vector2Ops::mkVector2(thisTri.coords[2],thisTri.coords[0])*b );

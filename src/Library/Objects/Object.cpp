@@ -314,6 +314,11 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 
 		// Transform the normals back
 		ri.geometric.vNormal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vNormal ));
+		// Geometric normal transforms identically (it's also a normal vector,
+		// just describing the actual face orientation rather than the shading
+		// approximation).  Renormalize because non-uniform scales can otherwise
+		// leave it un-unit.
+		ri.geometric.vGeomNormal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vGeomNormal ));
 		ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
 
 		// Transform the per-vertex tangent (v3 storage path) from object
@@ -357,6 +362,7 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 
 		if( bComputeExitInfo ) {
 			ri.geometric.vNormal2 = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vNormal2 ) );
+			ri.geometric.vGeomNormal2 = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vGeomNormal2 ) );
 			ri.geometric.ptObjExit = ri.geometric.ray.PointAtLength( ri.geometric.range2 + SURFACE_INTERSEC_ERROR );
 			ri.geometric.ptExit = Point3Ops::Transform( m_mxFinalTrans, ri.geometric.ptObjExit );
 

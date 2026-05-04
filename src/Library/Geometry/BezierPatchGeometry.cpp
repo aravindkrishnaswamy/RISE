@@ -92,6 +92,7 @@ void BezierPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri, 
 	ri.ptIntersection = ri.ray.PointAtLength( bh.dRange );
 	ri.ptCoord        = Point2( bh.u, bh.v );
 	ri.vNormal        = N;
+	ri.vGeomNormal    = N;	// analytical surface: shading == geometric
 }
 
 void BezierPatchGeometry::RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const

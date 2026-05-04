@@ -293,6 +293,23 @@ namespace RISE
 									const double vShift[2]			///< [in] How much to shift the function by
 									) = 0;
 
+		//! Adds a controlled-smoothness radial-bump painter (test/diagnostic).
+		//! Implements both IPainter and IFunction2D so it can drive a
+		//! `displaced_geometry`'s `displacement` parameter.  Falloff modes
+		//! are integers: 0=Heaviside, 1=Tent, 2=Quadratic, 3=Cubic,
+		//! 5=Quintic, 99=Gaussian.  See `ControlledSmoothness2DPainter.h`.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddControlledSmoothness2DPainter(
+									const char* name,				///< [in] Name of the painter
+									const char* pa,					///< [in] Low/zero-end color painter
+									const char* pb,					///< [in] High/peak-end color painter
+									const double centerU,			///< [in] Bump center, U axis (UV space)
+									const double centerV,			///< [in] Bump center, V axis (UV space)
+									const double radius,			///< [in] Bump radius (UV space)
+									const double amplitude,			///< [in] Peak height
+									const unsigned int smoothnessMode	///< [in] One of 0/1/2/3/5/99 — see header
+									) = 0;
+
 		//! Adds a sum-of-sines water-wave painter (Gerstner height variant).
 		//! Intended to drive a DisplacedGeometry via the IFunction2D hook.
 		/// \return TRUE if successful, FALSE otherwise

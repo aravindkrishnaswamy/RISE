@@ -172,6 +172,11 @@ void TriangleMeshGeometryIndexed::IntersectRay( RayIntersectionGeometric& ri, co
 		if( Vector3Ops::Dot(ri.vNormal, ri.ray.Dir()) > 0 ) {
 			ri.vNormal = -ri.vNormal;
 		}
+		// Mirror the flip on the geometric (face) normal — see
+		// TriangleMeshGeometry::IntersectRay companion.
+		if( Vector3Ops::Dot(ri.vGeomNormal, ri.ray.Dir()) > 0 ) {
+			ri.vGeomNormal = -ri.vGeomNormal;
+		}
 	}
 }
 

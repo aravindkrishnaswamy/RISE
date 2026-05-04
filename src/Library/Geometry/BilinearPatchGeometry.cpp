@@ -62,6 +62,7 @@ void BilinearPatchGeometry::RayElementIntersection( RayIntersectionGeometric& ri
 		ri.ptIntersection = ri.ray.PointAtLength( h.dRange );
 		ri.ptCoord = Point2( h.u, h.v );
 		ri.vNormal = Vector3Ops::Normalize(GeometricUtilities::BilinearPatchNormalAt( patch, h.u, h.v ));
+		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
 	}
 }
 

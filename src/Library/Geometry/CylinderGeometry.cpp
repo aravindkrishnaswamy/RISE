@@ -145,10 +145,12 @@ void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool , 
 		if( bHitFarSide ) {
 			ri.vNormal = -ri.vNormal;
 		}
+		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
 
 		if( bComputeExitInfo ) {
 			ri.ptExit = ri.ray.PointAtLength( ri.range2 );
 			GeometricUtilities::CylinderNormal( ri.ptExit, m_chAxis, ri.vNormal2 );
+			ri.vGeomNormal2 = ri.vNormal2;	// analytical: shading == geometric
 		}
 
 		// Calculate UV co-ordinates

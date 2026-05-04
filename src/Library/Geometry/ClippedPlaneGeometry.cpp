@@ -182,6 +182,7 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 	ri.range2 = h.dRange2;
 	ri.ptIntersection = ri.ray.PointAtLength( ri.range );
 	ri.vNormal = nrm;
+	ri.vGeomNormal = nrm;	// flat plane: shading == geometric
 	ri.ptCoord = Point2( h.u, h.v );
 
 	if( bComputeExitInfo ) {
@@ -194,6 +195,7 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 		// at its initial value.
 		ri.ptExit = ri.ptIntersection;
 		ri.vNormal2 = -nrm;
+		ri.vGeomNormal2 = ri.vNormal2;	// flat plane: shading == geometric
 	}
 }
 

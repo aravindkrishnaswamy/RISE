@@ -229,15 +229,19 @@ void CircularDiskGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 
 			if( bFrontSideWasHit ) {
 				ri.vNormal = vNormal;
+				ri.vGeomNormal = vNormal;	// flat disk: shading == geometric
 
 				if( bComputeExitInfo ) {
 					ri.vNormal2 = -vNormal;
+					ri.vGeomNormal2 = ri.vNormal2;
 				}
 			} else {
 				ri.vNormal = -vNormal;
+				ri.vGeomNormal = -vNormal;	// flat disk: shading == geometric
 
 				if( bComputeExitInfo ) {
 					ri.vNormal2 = vNormal;
+					ri.vGeomNormal2 = ri.vNormal2;
 				}
 			}
 

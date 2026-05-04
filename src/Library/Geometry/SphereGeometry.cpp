@@ -123,10 +123,12 @@ void SphereGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHit
 	{
 		ri.ptIntersection = ri.ray.PointAtLength( ri.range );
 		ri.vNormal = Vector3Ops::Normalize(Vector3Ops::mkVector3( ri.ptIntersection, Point3(0,0,0) ));
+		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
 
 		if( bComputeExitInfo ) {
 			ri.ptExit = ri.ray.PointAtLength( ri.range2 );
 			ri.vNormal2 = Vector3Ops::Normalize(Vector3Ops::mkVector3( ri.ptExit, Point3(0,0,0) ));
+			ri.vGeomNormal2 = ri.vNormal2;	// analytical: shading == geometric
 		}
 
 		// Calculate UV co-ordinates using spherical mapping

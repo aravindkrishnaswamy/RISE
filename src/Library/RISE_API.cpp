@@ -1376,6 +1376,7 @@ namespace RISE
 #include "Painters/LinesPainter.h"
 #include "Painters/MandelbrotPainter.h"
 #include "Painters/Perlin2DPainter.h"
+#include "Painters/ControlledSmoothness2DPainter.h"
 #include "Painters/GerstnerWavePainter.h"
 #include "Painters/Perlin3DPainter.h"
 #include "Painters/Turbulence3DPainter.h"
@@ -1476,6 +1477,47 @@ namespace RISE
 
 		(*ppi) = new Perlin2DPainter( dPersistence, nOctaves, cA, cB, vScale, vShift  );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "perlin 2D painter" );
+		return true;
+	}
+
+	//! Creates a controlled-smoothness radial-bump painter (test/diagnostic).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateControlledSmoothness2DPainter(
+								IPainter** ppi,
+								const IPainter& cA,
+								const IPainter& cB,
+								const Scalar centerU,
+								const Scalar centerV,
+								const Scalar radius,
+								const Scalar amplitude,
+								const unsigned int smoothnessMode
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Map the integer to the painter's enum.  Unknown values fall
+		// through to Gaussian as a safe smooth default — silently
+		// truncating to the lowest-order mode would be more surprising.
+		ControlledSmoothness2DPainter::SmoothnessMode mode;
+		switch( smoothnessMode ) {
+		case 0:  mode = ControlledSmoothness2DPainter::eHeaviside; break;
+		case 1:  mode = ControlledSmoothness2DPainter::eTent;      break;
+		case 2:  mode = ControlledSmoothness2DPainter::eQuadratic; break;
+		case 3:  mode = ControlledSmoothness2DPainter::eCubic;     break;
+		case 5:  mode = ControlledSmoothness2DPainter::eQuintic;   break;
+		case 99: mode = ControlledSmoothness2DPainter::eGaussian;  break;
+		default:
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreateControlledSmoothness2DPainter: unknown smoothness mode %u; using Gaussian",
+				smoothnessMode );
+			mode = ControlledSmoothness2DPainter::eGaussian;
+			break;
+		}
+
+		(*ppi) = new ControlledSmoothness2DPainter( cA, cB, centerU, centerV, radius, amplitude, mode );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "controlled-smoothness 2D painter" );
 		return true;
 	}
 

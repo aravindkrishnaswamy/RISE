@@ -179,6 +179,7 @@ void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 			ri.ptCoord = Point2( (it.x+dWidthOV2)*dOVWidth, 1.0 - (it.y+dHeightOV2)*dOVHeight );
 			break;
 		};
+		ri.vGeomNormal = ri.vNormal;	// box face is flat: shading == geometric
 
 		if( bComputeExitInfo )
 		{
@@ -204,6 +205,7 @@ void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 				ri.vNormal2 = Vector3( 0.0, 0.0, 1.0 );
 				break;
 			};
+			ri.vGeomNormal2 = ri.vNormal2;	// box face is flat: shading == geometric
 		}
 	}
 }

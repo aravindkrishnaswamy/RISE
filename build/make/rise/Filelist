@@ -104,6 +104,7 @@ SRCLIBPAINTERS =\
 	$(PATHLIBRARY)Painters/Painter.cpp							\
 	$(PATHLIBRARY)Importers/GLTFSceneImporter.cpp				\
 	$(PATHLIBRARY)Painters/Perlin2DPainter.cpp					\
+	$(PATHLIBRARY)Painters/ControlledSmoothness2DPainter.cpp	\
 	$(PATHLIBRARY)Painters/GerstnerWavePainter.cpp				\
 	$(PATHLIBRARY)Painters/Perlin3DPainter.cpp					\
 	$(PATHLIBRARY)Painters/Turbulence3DPainter.cpp				\

@@ -31,17 +31,15 @@ void TestGrammarCoverage()
 	std::cout << "GrammarCoverage\n";
 	const SceneGrammar& g = SceneGrammar::Instance();
 	const auto& kws = g.AllChunkKeywords();
-	// 137 chunk types in the parser registry as of Phase 4 (glTF KHR
-	// materials) merged with camera Phase 1.2.  This includes the legacy
-	// alias `mis_pathtracing_shaderop` (shares a class with
-	// `pathtracing_shaderop`), the Phase 2 + Phase 3 glTF chunks
-	// (channel_painter, pbr_metallic_roughness_material, gltf_import,
-	// gltfmesh_geometry, normal_map_modifier, alpha_test_shaderop), the
-	// Phase 4 sheen_material chunk, and the camera Phase 1.1/1.2 chunks
-	// (camera_defaults, scene_options).  Bump this count when adding new
-	// chunks; the alphabetised registration in CreateAllChunkParsers() is
-	// the source of truth.
-	EXPECT( kws.size() == 137 );
+	// 138 chunk types in the parser registry: the prior 137 (Phase 4
+	// glTF KHR materials, the legacy alias `mis_pathtracing_shaderop`,
+	// the Phase 2 + Phase 3 glTF chunks, the Phase 4 sheen_material
+	// chunk, and the camera Phase 1.1/1.2 chunks) plus the SMS-research
+	// `controlled_smoothness2d_painter` chunk added for the displaced-
+	// caustic Newton-convergence study.  Bump this count when adding
+	// new chunks; the alphabetised registration in CreateAllChunkParsers()
+	// is the source of truth.
+	EXPECT( kws.size() == 138 );
 
 	// Every chunk must have a non-empty descriptor (Phase 1c invariant:
 	// Describe() is pure-virtual, so every registered parser has its own
@@ -163,7 +161,7 @@ void TestSuggestChunkKeywordsAtRoot()
 	SuggestionEngine engine;
 	const std::string buf = "RISE ASCII SCENE 5\n\n";
 	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
-	EXPECT( sugs.size() == 137 );
+	EXPECT( sugs.size() == 138 );
 	bool found_ambient = false;
 	for( const Suggestion& s : sugs ) {
 		if( s.insertText == "ambient_light" ) { found_ambient = true; break; }

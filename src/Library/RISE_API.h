@@ -802,6 +802,22 @@ namespace RISE
 								const Vector2& vShift			///< [in] How much to shift the function by
 								);
 
+	//! Creates a controlled-smoothness radial-bump painter (test/diagnostic).
+	//! Implements both IPainter and IFunction2D.  smoothnessMode: 0=Heaviside,
+	//! 1=Tent, 2=Quadratic, 3=Cubic, 5=Quintic, 99=Gaussian.  See
+	//! `Painters/ControlledSmoothness2DPainter.h` for details.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateControlledSmoothness2DPainter(
+								IPainter** ppi,					///< [out] Pointer to receive the painter
+								const IPainter& cA,				///< [in] Low/zero-end color painter
+								const IPainter& cB,				///< [in] High/peak-end color painter
+								const Scalar centerU,			///< [in] Bump center, U axis (UV space)
+								const Scalar centerV,			///< [in] Bump center, V axis (UV space)
+								const Scalar radius,			///< [in] Bump radius (UV space)
+								const Scalar amplitude,			///< [in] Peak height
+								const unsigned int smoothnessMode	///< [in] 0/1/2/3/5/99
+								);
+
 	//! Creates a sum-of-sines water-wave painter (Gerstner height variant).
 	/// Evaluate(u,v) returns the summed height of `numWaves` sine waves derived
 	/// from wind parameters + a deterministic seed.  Intended for

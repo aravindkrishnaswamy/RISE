@@ -469,6 +469,39 @@ bool Job::AddPerlin2DPainter(
 	return true;
 }
 
+//! Adds a controlled-smoothness radial-bump painter (test/diagnostic).
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddControlledSmoothness2DPainter(
+							const char* name,
+							const char* pa,
+							const char* pb,
+							const double centerU,
+							const double centerV,
+							const double radius,
+							const double amplitude,
+							const unsigned int smoothnessMode
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateControlledSmoothness2DPainter(
+		&pPainter, *pA, *pB,
+		centerU, centerV, radius, amplitude, smoothnessMode );
+	if( !pPainter ) {
+		return false;
+	}
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
 //! Adds a sum-of-sines water-wave painter
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddGerstnerWavePainter(

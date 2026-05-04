@@ -125,7 +125,8 @@ void TorusGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool /*bHi
 		ri.vNormal.z = ri.ptIntersection.z * f;
 
 		ri.vNormal = Vector3Ops::Normalize(ri.vNormal);
-		
+		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
+
 		if( bComputeExitInfo && ri.range2 != 0 )
 		{
 			ri.ptExit = ri.ray.PointAtLength( ri.range2 );
@@ -137,6 +138,7 @@ void TorusGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool /*bHi
 			ri.vNormal2.z = ri.ptExit.z * f2;
 
 			ri.vNormal2 = Vector3Ops::Normalize(ri.vNormal2);
+			ri.vGeomNormal2 = ri.vNormal2;	// analytical: shading == geometric
 		}
 
 		GeometricUtilities::TorusTextureCoord(
