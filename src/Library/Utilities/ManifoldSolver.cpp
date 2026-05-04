@@ -35,6 +35,93 @@
 // egg sweep results.  Leave at 0 in production; flip to 1 when re-
 // auditing SMS energy ratios across disp / multi-trial / photon configs.
 #define SMS_SOLVE_DIAG 0
+
+// Newton step-norm cap.  Bounds each Newton iter's max world-space
+// vertex displacement to <kNewtonStepNormCapFrac> × (mean inter-vertex
+// segment length).  Default 0 disables the cap (the existing 10-halving
+// backtracking line search already handles oversize Newton steps —
+// measured: at disp=0 the cap fires 76 % of the time on raw Newton
+// steps that average 262× oversize, but the line search converges to
+// the same end point; Newton-fail rate is unchanged within MC noise).
+//
+// Code retained as inactive instrumentation.  Flip to a positive value
+// (e.g. 0.25) only when investigating perf — fewer line-search attempts
+// per iter — not for convergence on heavy displacement (the failure
+// mode there is wrong step DIRECTION, not wrong step SIZE; LM/trust-
+// region damping is the relevant fix).  See
+// docs/SMS_PHOTON_DECOUPLING_AND_DISPLACEMENT_LIMIT.md for the full
+// measurement.
+namespace { constexpr RISE::Scalar kNewtonStepNormCapFrac = RISE::Scalar( 0.0 ); }
+
+// Levenberg-Marquardt damping for the Newton solver.  When enabled,
+// `NewtonSolve` damps the Jacobian's diagonal by `λ × mean(|J_ii|)`
+// before each solve, and adapts `λ` between iterations: shrink on
+// accepted steps (back toward pure Newton, fast convergence near a
+// root), grow on rejected line-search attempts (more gradient-descent-
+// like, escape from plateaus where the Newton direction is unreliable).
+//
+// Variant: damped Newton on the original J, not the full Marquardt-style
+// `(JᵀJ + λ·diag(JᵀJ))Δ = JᵀC` normal equations.  We modify diag(J)
+// in place and reuse the existing block-tridiagonal solver, which keeps
+// the bandwidth structure intact.  Full LM via normal equations would
+// double the bandwidth (block-tridiag × block-tridiag = block-pentadiag)
+// and need a different solver — escalate to that variant only if this
+// damped-Newton form is insufficient.
+//
+// Runtime-toggleable via `ManifoldSolverConfig::useLevenbergMarquardt`
+// (default FALSE — opt-in).  LM is ~50-100% slower than pure Newton on
+// heavy-displacement scenes (escalation iterations consume the iter
+// budget) for a 4-10 percentage-point Newton-fail-rate improvement
+// across the displaced-egg sweep.  Off by default because the cost is
+// substantial relative to the gain; enable explicitly when a scene's
+// caustics on a heavily-displaced mesh need the extra robustness.
+// See docs/SMS_LEVENBERG_MARQUARDT.md for the full A/B measurement.
+// Edge-aware Newton step.  The Jacobian's `dndu`/`dndv` predict how the
+// normal rotates for a step (du, dv).  Within one triangle, Phong-
+// interpolated normals are linear in barycentric coords so the
+// prediction is accurate.  ACROSS a triangle edge, the per-triangle
+// linearization changes — so a Newton step that crosses an edge
+// produces an actual normal rotation that differs from what the saved
+// Jacobian predicted.  Reject the step when actual rotation exceeds a
+// relative threshold and let the line search halve.
+//
+// Measured to NOT help on the displaced Veach egg: rejection rate
+// climbs cleanly with displacement (0% at disp=0 → 12% at disp=10),
+// confirming the check correctly identifies "untrusted linearization,"
+// but Newton-fail rate is unchanged or marginally worse (-0.0 to
+// -0.4 pp ok rate).  The C¹ defect manifests as "predicted descent
+// direction is noisy" rather than "Newton overshoots into bad
+// territory" — the line search's ||C|| decrease test was already
+// accepting the cross-edge steps that decreased residual; pre-
+// rejecting on linearization-trust just blocks useful moves.
+//
+// Code retained as inactive instrumentation (gate at 0 = compiled
+// out).  See docs/SMS_LEVENBERG_MARQUARDT.md for the negative-result
+// measurement.
+#define SMS_EDGE_AWARE_NEWTON 0
+
+// Smooth-base Jacobian throughout the solve.  When enabled, even at
+// `smoothing == 0` (the default solve path) ComputeVertexDerivatives
+// queries the underlying analytical surface for `dpdu/dpdv/dndu/dndv`,
+// while keeping the bumpy mesh position and normal from the ray-cast.
+// The intent: Newton's descent direction comes from a C∞ smooth
+// curvature model rather than the per-triangle Phong-interpolated J,
+// while the residual `C` is still evaluated against the real bumpy
+// normals.
+//
+// Compile-time toggle, default 0 (legacy mesh-J path).  Flip to 1 to
+// reproduce the smooth-J experiment on the displaced Veach egg.
+#define SMS_SMOOTH_BASE_JACOBIAN 0
+#if SMS_EDGE_AWARE_NEWTON
+namespace { constexpr RISE::Scalar kEdgeTrustAbsFloor = RISE::Scalar( 0.05 ); }	///< below this absolute rotation magnitude, no test (any change OK)
+namespace { constexpr RISE::Scalar kEdgeTrustRelRatio = RISE::Scalar( 3.0  ); }	///< actual must not exceed predicted × this when both > floor
+#endif
+// LM damping schedule (used when `config.useLevenbergMarquardt` is true).
+namespace { constexpr RISE::Scalar kLM_LambdaInit = RISE::Scalar( 1e-3 ); }
+namespace { constexpr RISE::Scalar kLM_LambdaMin  = RISE::Scalar( 1e-9 ); }
+namespace { constexpr RISE::Scalar kLM_LambdaMax  = RISE::Scalar( 1e9  ); }
+namespace { constexpr RISE::Scalar kLM_LambdaUp   = RISE::Scalar( 10.0 ); }
+namespace { constexpr RISE::Scalar kLM_LambdaDown = RISE::Scalar( 0.1  ); }
 #if SMS_SOLVE_DIAG
 #include <atomic>
 #include <cstdio>
@@ -54,6 +141,22 @@ namespace {
 	std::atomic<uint64_t> g_solveDiag_newtonFail_lt1e1{0};	///< [1e-2, 1e-1)
 	std::atomic<uint64_t> g_solveDiag_newtonFail_lt1e0{0};	///< [1e-1, 1)
 	std::atomic<uint64_t> g_solveDiag_newtonFail_ge1e0{0};	///< [1, ∞)
+	// Step-norm cap diagnostics: how often the cap fires, and the
+	// average pre-cap step ratio (max_step / cap) — indicates whether
+	// the cap actually intercepts Newton steps or sits idle.
+	std::atomic<uint64_t> g_solveDiag_capChecks{0};
+	std::atomic<uint64_t> g_solveDiag_capFired{0};
+	std::atomic<uint64_t> g_solveDiag_capRatioSum{0};	///< Σ (max_step/cap × 1000), only when fired
+
+	// Levenberg-Marquardt diagnostics.
+	std::atomic<uint64_t> g_solveDiag_lmTotalIters{0};      ///< Newton iterations across all Solve calls
+	std::atomic<uint64_t> g_solveDiag_lmDamped{0};          ///< Iters where λ > 0 was applied
+	std::atomic<uint64_t> g_solveDiag_lmEscalated{0};       ///< Iters where line search failed → λ increased
+	std::atomic<uint64_t> g_solveDiag_lmRecovered{0};       ///< Solve calls where LM rescued an iter that pure Newton would have failed
+
+	// Edge-aware Newton-step diagnostics.
+	std::atomic<uint64_t> g_solveDiag_edgeChecks{0};        ///< Line-search attempts where the trust check ran
+	std::atomic<uint64_t> g_solveDiag_edgeRejects{0};       ///< Line-search attempts rejected due to untrusted linearization
 
 	struct SolveDiagAtExitInstaller {
 		SolveDiagAtExitInstaller() {
@@ -95,6 +198,41 @@ namespace {
 						(unsigned long long)b3, 100.0*double(b3)/double(btot),
 						(unsigned long long)b4, 100.0*double(b4)/double(btot),
 						(unsigned long long)b5, 100.0*double(b5)/double(btot) );
+				}
+				const uint64_t capChecks = g_solveDiag_capChecks.load();
+				const uint64_t capFired  = g_solveDiag_capFired.load();
+				if( capChecks > 0 ) {
+					const double avgRatio = capFired > 0
+						? double( g_solveDiag_capRatioSum.load() ) / 1000.0 / double( capFired )
+						: 0.0;
+					std::fprintf( stderr,
+						"[SMS-STEPCAP] checks=%llu fired=%llu (%.2f%%)  avg(max_step/cap when fired)=%.2f\n",
+						(unsigned long long)capChecks,
+						(unsigned long long)capFired,
+						100.0 * double( capFired ) / double( capChecks ),
+						avgRatio );
+				}
+				const uint64_t lmIters     = g_solveDiag_lmTotalIters.load();
+				const uint64_t lmDamped    = g_solveDiag_lmDamped.load();
+				const uint64_t lmEscalated = g_solveDiag_lmEscalated.load();
+				const uint64_t lmRecovered = g_solveDiag_lmRecovered.load();
+				if( lmIters > 0 ) {
+					std::fprintf( stderr,
+						"[SMS-LM] iters=%llu damped=%llu(%.2f%%) escalations=%llu rescues=%llu\n",
+						(unsigned long long)lmIters,
+						(unsigned long long)lmDamped,
+						100.0 * double( lmDamped ) / double( lmIters ),
+						(unsigned long long)lmEscalated,
+						(unsigned long long)lmRecovered );
+				}
+				const uint64_t edgeChecks  = g_solveDiag_edgeChecks.load();
+				const uint64_t edgeRejects = g_solveDiag_edgeRejects.load();
+				if( edgeChecks > 0 ) {
+					std::fprintf( stderr,
+						"[SMS-EDGE] checks=%llu rejects=%llu (%.2f%%)\n",
+						(unsigned long long)edgeChecks,
+						(unsigned long long)edgeRejects,
+						100.0 * double( edgeRejects ) / double( edgeChecks ) );
 				}
 			});
 		}
@@ -2068,6 +2206,27 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 				vertex.dpdv = ri.geometric.derivatives.dpdv;
 				vertex.dndu = ri.geometric.derivatives.dndu;
 				vertex.dndv = ri.geometric.derivatives.dndv;
+#if SMS_SMOOTH_BASE_JACOBIAN
+				// Override the just-populated mesh derivatives with the
+				// smooth analytical surface's derivatives at the same uv,
+				// when the geometry exposes them.  Position and normal
+				// stay from the ray-cast (residual is evaluated against
+				// the actual bumpy mesh); only the Newton-Jacobian inputs
+				// dpdu/dpdv/dndu/dndv switch to the smooth model.
+				{
+					Point3 aP;
+					Vector3 aN, aDpdu, aDpdv, aDndu, aDndv;
+					if( vertex.pObject->ComputeAnalyticalDerivatives(
+							vertex.uv, Scalar( 1.0 ),
+							aP, aN, aDpdu, aDpdv, aDndu, aDndv ) )
+					{
+						vertex.dpdu = aDpdu;
+						vertex.dpdv = aDpdv;
+						vertex.dndu = aDndu;
+						vertex.dndv = aDndv;
+					}
+				}
+#endif
 				OrthonormalizeTangentFrame( vertex );
 				vertex.valid = true;
 				return true;
@@ -2091,6 +2250,22 @@ bool ManifoldSolver::ComputeVertexDerivatives(
 					vertex.dpdv = ri2.geometric.derivatives.dpdv;
 					vertex.dndu = ri2.geometric.derivatives.dndu;
 					vertex.dndv = ri2.geometric.derivatives.dndv;
+#if SMS_SMOOTH_BASE_JACOBIAN
+					// See companion override at the front-probe site.
+					{
+						Point3 aP;
+						Vector3 aN, aDpdu, aDpdv, aDndu, aDndv;
+						if( vertex.pObject->ComputeAnalyticalDerivatives(
+								vertex.uv, Scalar( 1.0 ),
+								aP, aN, aDpdu, aDpdv, aDndu, aDndv ) )
+						{
+							vertex.dpdu = aDpdu;
+							vertex.dpdv = aDpdv;
+							vertex.dndu = aDndu;
+							vertex.dndv = aDndv;
+						}
+					}
+#endif
 					OrthonormalizeTangentFrame( vertex );
 					vertex.valid = true;
 					return true;
@@ -2388,8 +2563,30 @@ bool ManifoldSolver::NewtonSolve(
 		return false;
 	}
 
+	// Levenberg-Marquardt damping factor.  Persists across iterations of
+	// THIS Solve call: shrunk on accepted line-search steps (toward pure
+	// Newton, which converges quadratically near a root), grown on
+	// rejected line-search steps (toward gradient descent, which can
+	// escape plateaus where Newton's J⁻¹·C direction is unreliable).
+	// Init 0 means the first iter is pure Newton — preserves baseline
+	// behaviour on well-conditioned chains.  When
+	// `config.useLevenbergMarquardt` is false, this stays 0 throughout
+	// and every LM-related branch below is a no-op.
+	Scalar lmLambda = 0;
+#if SMS_SOLVE_DIAG
+	bool lmDidEscalate = false;
+#endif
+
 	for( unsigned int iter = 0; iter < config.maxIterations; iter++ )
 	{
+#if SMS_SOLVE_DIAG
+		if( config.useLevenbergMarquardt ) {
+			g_solveDiag_lmTotalIters.fetch_add( 1, std::memory_order_relaxed );
+			if( lmLambda > 0 ) {
+				g_solveDiag_lmDamped.fetch_add( 1, std::memory_order_relaxed );
+			}
+		}
+#endif
 		// Evaluate constraint
 		std::vector<Scalar> C;
 		EvaluateConstraint( chain, fixedStart, fixedEnd, C );
@@ -2407,6 +2604,11 @@ bool ManifoldSolver::NewtonSolve(
 #if SMS_TRACE_DIAGNOSTIC
 			g_newton_strict_converged.fetch_add( 1, std::memory_order_relaxed );
 #endif
+#if SMS_SOLVE_DIAG
+			if( config.useLevenbergMarquardt && lmDidEscalate ) {
+				g_solveDiag_lmRecovered.fetch_add( 1, std::memory_order_relaxed );
+			}
+#endif
 			return true;  // Converged
 		}
 
@@ -2420,6 +2622,31 @@ bool ManifoldSolver::NewtonSolve(
 		BuildJacobian( chain, fixedStart, fixedEnd, diag, upper_blocks, lower_blocks,
 			/*includeCurvature=*/true );
 
+		// Levenberg-Marquardt diagonal damping.  When `lmLambda > 0`,
+		// add `lmLambda × mean(|J_ii|)` to each diagonal block's (0,0)
+		// and (1,1) entries.  Scaling by the mean diagonal magnitude
+		// keeps the damping order-of-magnitude appropriate regardless
+		// of the chain length / IOR / surface scale at this vertex —
+		// raw `lmLambda · I` would be dominated by the original J entries
+		// at well-conditioned vertices and have no effect, while at
+		// ill-conditioned vertices a large enough λ moves the step
+		// direction toward gradient descent.  Skipped when LM is
+		// disabled (`lmLambda` stays 0 throughout).
+		if( config.useLevenbergMarquardt && lmLambda > 0 )
+		{
+			Scalar diagMagSum = 0;
+			for( unsigned int i = 0; i < k; i++ ) {
+				diagMagSum += std::fabs( diag[i*4]   );  // J(0,0) of vertex i
+				diagMagSum += std::fabs( diag[i*4+3] );  // J(1,1) of vertex i
+			}
+			const Scalar diagMagMean = ( k > 0 ) ? diagMagSum / Scalar( 2 * k ) : Scalar( 1.0 );
+			const Scalar dampAmount = lmLambda * diagMagMean;
+			for( unsigned int i = 0; i < k; i++ ) {
+				diag[i*4]   += dampAmount;
+				diag[i*4+3] += dampAmount;
+			}
+		}
+
 		// Solve for Newton step: J * delta = C  (we solve J * delta = C, then subtract)
 		std::vector<Scalar> delta;
 		if( !SolveBlockTridiagonal( diag, upper_blocks, lower_blocks, C, k, delta ) )
@@ -2428,6 +2655,69 @@ bool ManifoldSolver::NewtonSolve(
 			g_newton_singular.fetch_add( 1, std::memory_order_relaxed );
 #endif
 			return false;  // Singular Jacobian
+		}
+
+		// World-space step-norm cap.  After computing the unconstrained
+		// Newton step `delta` (in tangent-plane (du,dv) parameters per
+		// vertex), convert each vertex's per-iter displacement to world
+		// space via the local tangent basis, find the maximum across
+		// vertices, and if it exceeds <cap_frac> × mean_segment_length,
+		// rescale the entire delta vector by the same factor.  Preserves
+		// step direction; only bounds magnitude.
+		//
+		// Why mean segment length is the right scale: on heavy-
+		// displacement geometry, the Jacobian can become ill-conditioned
+		// at a vertex where the local normal field has a near-singular
+		// (Weingarten) curvature term.  The unconstrained Newton step
+		// then pushes that vertex far off the local manifold; the
+		// backtracking line search has to halve up to 10× to recover and
+		// often gives up.  A cap proportional to local feature size keeps
+		// every iter's per-vertex move conservative without sacrificing
+		// correctness — when the Jacobian IS well-conditioned and the
+		// step is small relative to feature size, the cap is a no-op.
+		if( kNewtonStepNormCapFrac > 0 )
+		{
+			// Mean segment length covers the vertex chain plus the
+			// shading-point and emitter-point bookend segments.
+			Scalar segSum = 0;
+			Scalar segCount = 0;
+			for( unsigned int i = 0; i < k; i++ ) {
+				const Point3 prev = ( i == 0 ) ? fixedStart : chain[i-1].position;
+				segSum += Point3Ops::Distance( prev, chain[i].position );
+				segCount += 1;
+			}
+			if( k > 0 ) {
+				segSum += Point3Ops::Distance( chain[k-1].position, fixedEnd );
+				segCount += 1;
+			}
+			const Scalar meanSeg = ( segCount > 0 ) ? segSum / segCount : Scalar(1.0);
+			const Scalar capWorld = kNewtonStepNormCapFrac * meanSeg;
+
+			// Find max per-vertex world-space step magnitude.
+			Scalar maxStepWorld = 0;
+			for( unsigned int i = 0; i < k; i++ ) {
+				const Vector3 dWorld =
+					chain[i].dpdu * delta[2*i] +
+					chain[i].dpdv * delta[2*i+1];
+				const Scalar mag = Vector3Ops::Magnitude( dWorld );
+				if( mag > maxStepWorld ) maxStepWorld = mag;
+			}
+
+			if( maxStepWorld > capWorld && maxStepWorld > NEARZERO ) {
+				const Scalar scale = capWorld / maxStepWorld;
+				for( unsigned int i = 0; i < 2 * k; i++ ) {
+					delta[i] *= scale;
+				}
+#if SMS_SOLVE_DIAG
+				g_solveDiag_capFired.fetch_add( 1, std::memory_order_relaxed );
+				const uint64_t fixedRatio = static_cast<uint64_t>(
+					( maxStepWorld / std::max( capWorld, Scalar(1e-12) ) ) * 1000.0 );
+				g_solveDiag_capRatioSum.fetch_add( fixedRatio, std::memory_order_relaxed );
+#endif
+			}
+#if SMS_SOLVE_DIAG
+			g_solveDiag_capChecks.fetch_add( 1, std::memory_order_relaxed );
+#endif
 		}
 
 		// Apply update with line search: try decreasing step sizes
@@ -2463,6 +2753,64 @@ bool ManifoldSolver::NewtonSolve(
 					break;
 				}
 			}
+
+#if SMS_EDGE_AWARE_NEWTON
+			// Linearization-trust check (edge-aware Newton step).  After
+			// the step is applied and the chain re-projected to the
+			// surface, compare the actual normal rotation at each vertex
+			// to what the saved Jacobian predicted.  When the ratio
+			// exceeds `kEdgeTrustRelRatio` (and both magnitudes are
+			// above the absolute floor), the linearization wasn't
+			// trustworthy for this step — the typical cause on a
+			// triangle mesh is the new vertex landing in a different
+			// triangle whose Phong-interpolation slope differs from
+			// the source triangle's.  Reject and let line search halve.
+			//
+			// On smooth analytical surfaces with continuous derivatives,
+			// predicted ≈ actual within higher-order terms and the test
+			// rarely fires (verified on sms_k1_refract / k2_glassblock /
+			// k2_glasssphere regressions: <0.1% reject rate).
+			if( allValid )
+			{
+#if SMS_SOLVE_DIAG
+				g_solveDiag_edgeChecks.fetch_add( 1, std::memory_order_relaxed );
+#endif
+				bool linearizationTrusted = true;
+				for( unsigned int i = 0; i < k; i++ )
+				{
+					const Scalar du = -beta * delta[2*i];
+					const Scalar dv = -beta * delta[2*i+1];
+					// Predicted normal change from the savedChain Jacobian.
+					const Vector3 predicted_dn(
+						savedChain[i].dndu.x * du + savedChain[i].dndv.x * dv,
+						savedChain[i].dndu.y * du + savedChain[i].dndv.y * dv,
+						savedChain[i].dndu.z * du + savedChain[i].dndv.z * dv );
+					const Scalar predicted_mag = Vector3Ops::Magnitude( predicted_dn );
+					// Actual change: chain[i].normal − savedChain[i].normal.
+					const Vector3 actual_dn(
+						chain[i].normal.x - savedChain[i].normal.x,
+						chain[i].normal.y - savedChain[i].normal.y,
+						chain[i].normal.z - savedChain[i].normal.z );
+					const Scalar actual_mag = Vector3Ops::Magnitude( actual_dn );
+
+					if( actual_mag > kEdgeTrustAbsFloor &&
+						actual_mag > kEdgeTrustRelRatio *
+							std::max( predicted_mag, kEdgeTrustAbsFloor ) )
+					{
+						linearizationTrusted = false;
+						break;
+					}
+				}
+				if( !linearizationTrusted )
+				{
+#if SMS_SOLVE_DIAG
+					g_solveDiag_edgeRejects.fetch_add( 1, std::memory_order_relaxed );
+#endif
+					beta *= 0.5;
+					continue;
+				}
+			}
+#endif
 
 			if( allValid )
 			{
@@ -2506,6 +2854,29 @@ bool ManifoldSolver::NewtonSolve(
 #endif
 				return true;
 			}
+
+			if( config.useLevenbergMarquardt )
+			{
+				// Levenberg-Marquardt escalation: line search couldn't find
+				// a β that decreases ||C|| — Newton's J⁻¹·C step direction
+				// is itself unreliable.  Increase damping and retry the
+				// same iter slot with a more gradient-descent-like solve.
+				// When damping reaches `kLM_LambdaMax` without progress,
+				// fall through to the legacy fail path — at that point
+				// the problem is genuinely beyond LM's reach (multiple
+				// basins with no descent connection, etc.).
+				lmLambda = ( lmLambda <= 0 )
+					? kLM_LambdaInit
+					: std::min( lmLambda * kLM_LambdaUp, kLM_LambdaMax );
+#if SMS_SOLVE_DIAG
+				g_solveDiag_lmEscalated.fetch_add( 1, std::memory_order_relaxed );
+				lmDidEscalate = true;
+#endif
+				if( lmLambda < kLM_LambdaMax ) {
+					continue;  // retry next iter with more damping
+				}
+			}
+
 #if SMS_TRACE_DIAGNOSTIC
 			g_newton_no_progress.fetch_add( 1, std::memory_order_relaxed );
 			// Bucket by iteration index where line search died
@@ -2533,6 +2904,16 @@ bool ManifoldSolver::NewtonSolve(
 			}
 #endif
 			return false;
+		}
+
+		// Step accepted.  Shrink LM damping toward 0 (pure Newton) so the
+		// next iter can take a quadratically-converging Newton step when
+		// the chain has moved into a well-conditioned region.  No-op when
+		// LM is disabled (lmLambda stays 0).
+		if( config.useLevenbergMarquardt && lmLambda > 0 )
+		{
+			lmLambda *= kLM_LambdaDown;
+			if( lmLambda < kLM_LambdaMin ) lmLambda = 0;
 		}
 
 		if( !allValid )

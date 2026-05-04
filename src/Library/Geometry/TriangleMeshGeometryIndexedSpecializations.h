@@ -317,9 +317,20 @@ namespace RISE
 				}
 
 				// Project dpdu, dpdv onto the shading-normal tangent plane.
-				// dpdu/dpdv may have a component along the shading normal
-				// if the triangle is curved (for non-flat shading) and we
-				// want derivatives that live on the smooth tangent plane.
+				// (RISE-only addition; pbrt-v4 and Mitsuba 3 emit raw UV-
+				// inverted derivatives without projection.)  Removing this
+				// projection is being measured for SMS-Newton accuracy:
+				// SMS's UpdateVertexOnSurface predicts new position via
+				// `position + dpdu·du + dpdv·dv` and re-snaps to the
+				// surface; if dpdu has its shading-N component dropped,
+				// the prediction is off in that direction by exactly the
+				// shading-vs-geometric-normal angle, which on a coarsely
+				// tessellated curved mesh is non-trivial.  NormalMap does
+				// its own projection at NormalMap.cpp:129 — independent
+				// of this choice.  Set the gate to 0 to remove the
+				// projection (match pbrt / Mitsuba conventions).
+#define MESH_PROJECT_DERIVATIVES_TO_TANGENT_PLANE 1
+#if MESH_PROJECT_DERIVATIVES_TO_TANGENT_PLANE
 				const Scalar dpdu_dot_n = Vector3Ops::Dot( dpdu, shadingNormal );
 				const Scalar dpdv_dot_n = Vector3Ops::Dot( dpdv, shadingNormal );
 				dpdu = Vector3(
@@ -330,6 +341,7 @@ namespace RISE
 					dpdv.x - shadingNormal.x * dpdv_dot_n,
 					dpdv.y - shadingNormal.y * dpdv_dot_n,
 					dpdv.z - shadingNormal.z * dpdv_dot_n );
+#endif
 
 				// Compute ∂N/∂u, ∂N/∂v — same inversion applied to the
 				// vertex normal differences, then projected onto the

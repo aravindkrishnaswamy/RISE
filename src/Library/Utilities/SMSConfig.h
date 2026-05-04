@@ -86,6 +86,7 @@ namespace RISE
 		unsigned int	photonCount;		///< Photon-aided seed budget; default 0 = off.  >0 builds an SMSPhotonMap for seeds on caustics the deterministic seed misses.
 		unsigned int	maxPhotonSeedsPerShadingPoint;		///< Cap on photon seeds run through Newton at each shading point.  0 = unlimited.  Default 16 keeps per-pixel cost proportional to multiTrials rather than to kd-tree photon density (Weisstein 2024 PMS uses 8–32).
 		bool			twoStage;			///< Two-stage Newton solver (Zeltner 2020 §5).  When enabled, Newton first runs on a smoothed reference surface (smoothing=1: underlying analytical base, no displacement) to escape the C1-discontinuity plateau on Phong-shaded triangle meshes, then refines on the actual surface (smoothing=0).  Default false; opt-in via `sms_two_stage TRUE`.  No-op when the specular geometry doesn't expose a smoothing-aware analytical query.  See `docs/SMS_TWO_STAGE_SOLVER.md`.
+		bool			useLevenbergMarquardt;	///< Levenberg-Marquardt damping in `ManifoldSolver::NewtonSolve` (default FALSE — opt-in).  Damps J's diagonal by `λ × mean(|J_ii|)` between iterations; λ shrinks on accepted line-search steps and grows on rejected ones.  Recovers ~5pp Newton-fail rate on heavy-displacement meshes vs pure Newton, at the cost of ~50-100% more solver work per shading point on those scenes — turn on only when you've confirmed the scene benefits.  Negligible cost on smooth geometry / scenes without SMS.  See `docs/SMS_LEVENBERG_MARQUARDT.md`.
 		SMSSeedingMode	seedingMode;		///< Seeding strategy for `EvaluateAtShadingPoint`.  Default `Snell` (RISE legacy: trace from shading point toward light, refracting at every specular surface).  `Uniform` = Mitsuba-faithful uniform-area sample on each cached caster shape, then SnellContinue (required for principled geometric Bernoulli `1/p` per Zeltner 2020 §4.3 Algorithm 2).  Opt-in via `sms_seeding "uniform"`.  See `docs/SMS_UNIFORM_SEEDING_PLAN.md`.
 
 		SMSConfig() :
@@ -99,6 +100,7 @@ namespace RISE
 		  photonCount( 0 ),
 		  maxPhotonSeedsPerShadingPoint( 16 ),
 		  twoStage( false ),
+		  useLevenbergMarquardt( false ),
 		  seedingMode( SMSSeedingMode::Snell )
 		{
 		}

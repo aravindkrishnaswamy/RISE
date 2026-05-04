@@ -43,9 +43,10 @@ pathtracing_pel_rasterizer
 	sms_threshold                 1e-4
 	sms_max_chain_depth           10
 	sms_biased                    TRUE
-#	sms_multi_trials              16
+	sms_multi_trials              16
 #	sms_photon_count              100000
-	sms_seeding						uniform
+#	sms_seeding						uniform
+	sms_two_stage					TRUE
 }
 
 file_rasterizeroutput
@@ -62,8 +63,8 @@ file_rasterizeroutput
 
 pinhole_camera
 {
-	location			278 350 -650
-	lookat				278 200 278
+	location			278 450 -650
+	lookat				278 250 278
 	up					0 1 0
 	width				400
 	height				400
@@ -242,7 +243,7 @@ displaced_geometry
 	base_geometry		egg_outer_geom
 	detail				128
 	displacement		pnt_egg_bumps
-	disp_scale			10.0
+	disp_scale			4.0
 }
 
 ellipsoid_geometry

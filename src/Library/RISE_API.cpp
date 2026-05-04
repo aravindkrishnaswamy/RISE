@@ -4721,6 +4721,7 @@ namespace RISE
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
 								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
 								const SMSSeedingMode smsSeedingMode,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
@@ -4747,6 +4748,7 @@ namespace RISE
 			smsConfig.multiTrials = smsMultiTrials;
 			smsConfig.photonCount = smsPhotonCount;
 			smsConfig.twoStage = smsTwoStage;
+			smsConfig.useLevenbergMarquardt = smsUseLevenbergMarquardt;
 			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;
@@ -4804,6 +4806,7 @@ namespace RISE
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
 								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
 								const SMSSeedingMode smsSeedingMode,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
@@ -4830,6 +4833,7 @@ namespace RISE
 			smsConfig.multiTrials = smsMultiTrials;
 			smsConfig.photonCount = smsPhotonCount;
 			smsConfig.twoStage = smsTwoStage;
+			smsConfig.useLevenbergMarquardt = smsUseLevenbergMarquardt;
 			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;
@@ -5014,6 +5018,7 @@ namespace RISE
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
 								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
 								const SMSSeedingMode smsSeedingMode,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
@@ -5040,6 +5045,7 @@ namespace RISE
 			smsConfig.multiTrials = smsMultiTrials;
 			smsConfig.photonCount = smsPhotonCount;
 			smsConfig.twoStage = smsTwoStage;
+			smsConfig.useLevenbergMarquardt = smsUseLevenbergMarquardt;
 			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;
@@ -5095,6 +5101,7 @@ namespace RISE
 								const unsigned int smsMultiTrials,
 								const unsigned int smsPhotonCount,
 								const bool smsTwoStage,
+								const bool smsUseLevenbergMarquardt,
 								const SMSSeedingMode smsSeedingMode,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
@@ -5121,6 +5128,7 @@ namespace RISE
 			smsConfig.multiTrials = smsMultiTrials;
 			smsConfig.photonCount = smsPhotonCount;
 			smsConfig.twoStage = smsTwoStage;
+			smsConfig.useLevenbergMarquardt = smsUseLevenbergMarquardt;
 			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;

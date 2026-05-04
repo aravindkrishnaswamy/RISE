@@ -182,6 +182,24 @@ namespace RISE
 			/// parameter.  See `docs/SMS_TWO_STAGE_SOLVER.md`.
 			bool			twoStage;
 
+			/// Levenberg-Marquardt damping in `NewtonSolve`.  Damps the
+			/// Jacobian's diagonal by `λ × mean(|J_ii|)` between Newton
+			/// iterations: λ shrinks on accepted line-search steps (toward
+			/// pure Newton, quadratic convergence near a root), grows on
+			/// rejected ones (toward gradient descent, escapes plateaus
+			/// where Newton's J⁻¹·C direction is unreliable).  Variant:
+			/// damped Newton on the original `J`, not full Marquardt-style
+			/// `(JᵀJ + λ·diag(JᵀJ))Δ = JᵀC` normal equations — keeps the
+			/// existing block-tridiagonal solver path intact.
+			///
+			/// Default false (opt-in).  Recovers ~5pp Newton-fail rate
+			/// on the displaced Veach egg sweep at the cost of ~50-100%
+			/// more solver work per shading point on heavy-displacement
+			/// scenes — turn on only when you've confirmed the scene
+			/// benefits.  Negligible cost on smooth geometry.  See
+			/// `docs/SMS_LEVENBERG_MARQUARDT.md`.
+			bool			useLevenbergMarquardt;
+
 			/// Seeding strategy for `EvaluateAtShadingPoint`.
 			///
 			///   `Snell` (default): trace a ray from the shading point toward
@@ -243,6 +261,7 @@ namespace RISE
 			photonSearchRadius( 0 ),
 			maxPhotonSeedsPerShadingPoint( 16 ),
 			twoStage( false ),
+			useLevenbergMarquardt( false ),
 			seedingMode( eSeedingSnell ),
 			branchingThreshold( 1.0 )
 			{
