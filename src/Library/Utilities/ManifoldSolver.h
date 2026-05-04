@@ -151,6 +151,25 @@ namespace RISE
 			/// diagonal — mirrors VCM's auto merge radius heuristic).
 			Scalar			photonSearchRadius;
 
+			/// Per-shading-point cap on the number of photon seeds fed to
+			/// Newton.  After QuerySeeds returns the kd-tree neighbours,
+			/// the consumer randomly subsamples down to this count before
+			/// running Newton on each — so dense regions of the photon
+			/// map don't blow up per-pixel Newton-solve cost.  0 disables
+			/// the cap (consume every queried photon — useful for
+			/// convergence studies and unbiased-mode references).
+			///
+			/// Default 16 matches Weisstein 2024 PMS's typical
+			/// `M_photon ∈ [8, 32]` and keeps the per-pixel cost
+			/// proportional to the existing `multiTrials` budget rather
+			/// than to the kd-tree photon density.  Without the cap, a
+			/// shading point near a focused caustic can pull hundreds of
+			/// photons out of the kd-tree and pay 100×+ Newton-solve
+			/// overhead for no measurable variance reduction (the extra
+			/// photons mostly converge to roots already deduped against
+			/// earlier seeds).
+			unsigned int	maxPhotonSeedsPerShadingPoint;
+
 			/// Two-stage Newton solver (Zeltner 2020 §5).  When enabled,
 			/// `Solve` first runs Newton on a smoothed reference surface
 			/// (smoothing = 1: the underlying analytical base, no displacement
@@ -222,6 +241,7 @@ namespace RISE
 			multiTrials( 1 ),
 			photonCount( 0 ),
 			photonSearchRadius( 0 ),
+			maxPhotonSeedsPerShadingPoint( 16 ),
 			twoStage( false ),
 			seedingMode( eSeedingSnell ),
 			branchingThreshold( 1.0 )

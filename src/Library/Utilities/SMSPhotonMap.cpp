@@ -31,10 +31,10 @@
 #include "IndependentSampler.h"
 #include "RandomNumbers.h"
 #include "IORStack.h"
+#include "IORStackSeeding.h"
 #include "ThreadPool.h"
 
 #include <algorithm>
-#include <atomic>
 #include <condition_variable>
 #include <mutex>
 
@@ -260,7 +260,6 @@ namespace
 			IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
 
 			if( !pSPF ) {
-				// No scattering function — photon is absorbed / ignored.
 				return false;
 			}
 
@@ -453,7 +452,16 @@ unsigned int SMSPhotonMap::Build(
 
 			const RISEPel power = emitterTotal;
 
+			// Seed the IOR stack with the chain of dielectric objects
+			// that physically contain the emit point.  Without this, a
+			// luminaire sealed inside nested refractors (the canonical
+			// "lambertian sphere inside an air_cavity inside a glass
+			// egg" Veach setup) treats the first inner-boundary hit as
+			// "entering" — the IOR-matched cavity then fails the Fresnel
+			// sign check and every photon dies on bounce 1.  Mirrors
+			// BDPT's light-subpath seeding (BDPTIntegrator.cpp:1356).
 			IORStack iorStack( 1.0 );
+			IORStackSeeding::SeedFromPoint( iorStack, r.origin, scene );
 			SMSPhoton out;
 			if( TraceSMSPhoton( scene, r, power, rng, iorStack, out ) ) {
 				mPhotons.push_back( out );
@@ -488,7 +496,11 @@ unsigned int SMSPhotonMap::Build(
 				l->emittedRadiance( r.Dir() ) * ( 1.0 / pdf ) :
 				RISEPel( 0, 0, 0 );
 
+			// See the mesh-luminaire branch above for the rationale on
+			// pre-populating the IOR stack with the dielectric objects
+			// that contain the emit point.
 			IORStack iorStack( 1.0 );
+			IORStackSeeding::SeedFromPoint( iorStack, r.origin, scene );
 			SMSPhoton out;
 			if( TraceSMSPhoton( scene, r, power, rng, iorStack, out ) ) {
 				mPhotons.push_back( out );

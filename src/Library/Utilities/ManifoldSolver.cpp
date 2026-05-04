@@ -25,6 +25,83 @@
 // Leave at 0 for production — the instrumentation stays in-source as
 // a regression aid but is compiled out.
 #define SMS_TRACE_DIAGNOSTIC 0
+
+// Lightweight Solve()-failure-mode counters.  When enabled, dumps an
+// [SMS-SOLVE-DIAG] + [SMS-NEWTONFAIL-RES] pair at process exit so the
+// share of solves rejected by each early-out path is visible alongside
+// PathTracingIntegrator's per-evaluation SMS-DIAG line.  Used to attribute
+// the energy drop on heavy-displacement scenes to Newton plateau-stalling
+// rather than seed quality or iteration budget — see the displaced-Veach-
+// egg sweep results.  Leave at 0 in production; flip to 1 when re-
+// auditing SMS energy ratios across disp / multi-trial / photon configs.
+#define SMS_SOLVE_DIAG 0
+#if SMS_SOLVE_DIAG
+#include <atomic>
+#include <cstdio>
+namespace {
+	std::atomic<uint64_t> g_solveDiag_calls{0};
+	std::atomic<uint64_t> g_solveDiag_seedTooFar{0};
+	std::atomic<uint64_t> g_solveDiag_derivFail{0};
+	std::atomic<uint64_t> g_solveDiag_newtonFail{0};
+	std::atomic<uint64_t> g_solveDiag_physicsFail{0};
+	std::atomic<uint64_t> g_solveDiag_shortSeg{0};
+	std::atomic<uint64_t> g_solveDiag_ok{0};
+	// Newton-fail final ||C|| residual buckets — distinguishes "stuck very
+	// close" (basin-too-narrow / line-search starved) from "diverged far"
+	// (seed in wrong basin or line-search exits early).
+	std::atomic<uint64_t> g_solveDiag_newtonFail_lt1e3{0};	///< ||C|| ∈ [threshold, 1e-3)
+	std::atomic<uint64_t> g_solveDiag_newtonFail_lt1e2{0};	///< [1e-3, 1e-2)
+	std::atomic<uint64_t> g_solveDiag_newtonFail_lt1e1{0};	///< [1e-2, 1e-1)
+	std::atomic<uint64_t> g_solveDiag_newtonFail_lt1e0{0};	///< [1e-1, 1)
+	std::atomic<uint64_t> g_solveDiag_newtonFail_ge1e0{0};	///< [1, ∞)
+
+	struct SolveDiagAtExitInstaller {
+		SolveDiagAtExitInstaller() {
+			std::atexit([](){
+				const uint64_t calls   = g_solveDiag_calls.load();
+				const uint64_t farSeed = g_solveDiag_seedTooFar.load();
+				const uint64_t deriv   = g_solveDiag_derivFail.load();
+				const uint64_t newton  = g_solveDiag_newtonFail.load();
+				const uint64_t physics = g_solveDiag_physicsFail.load();
+				const uint64_t shrt    = g_solveDiag_shortSeg.load();
+				const uint64_t ok      = g_solveDiag_ok.load();
+				std::fprintf( stderr,
+					"[SMS-SOLVE-DIAG] calls=%llu  ok=%llu  seedTooFar=%llu  derivFail=%llu  newtonFail=%llu  physicsFail=%llu  shortSeg=%llu",
+					(unsigned long long)calls, (unsigned long long)ok,
+					(unsigned long long)farSeed, (unsigned long long)deriv,
+					(unsigned long long)newton, (unsigned long long)physics,
+					(unsigned long long)shrt );
+				if( calls > 0 ) {
+					std::fprintf( stderr,
+						"  pcts: ok=%.1f%% farSeed=%.1f%% newton=%.1f%% physics=%.1f%% short=%.1f%%",
+						100.0 * double(ok)      / double(calls),
+						100.0 * double(farSeed) / double(calls),
+						100.0 * double(newton)  / double(calls),
+						100.0 * double(physics) / double(calls),
+						100.0 * double(shrt)    / double(calls) );
+				}
+				std::fprintf( stderr, "\n" );
+				const uint64_t b1 = g_solveDiag_newtonFail_lt1e3.load();
+				const uint64_t b2 = g_solveDiag_newtonFail_lt1e2.load();
+				const uint64_t b3 = g_solveDiag_newtonFail_lt1e1.load();
+				const uint64_t b4 = g_solveDiag_newtonFail_lt1e0.load();
+				const uint64_t b5 = g_solveDiag_newtonFail_ge1e0.load();
+				const uint64_t btot = b1 + b2 + b3 + b4 + b5;
+				if( btot > 0 ) {
+					std::fprintf( stderr,
+						"[SMS-NEWTONFAIL-RES] ||C|| histogram: <1e-3=%llu(%.1f%%) 1e-3..1e-2=%llu(%.1f%%) 1e-2..1e-1=%llu(%.1f%%) 1e-1..1=%llu(%.1f%%) >=1=%llu(%.1f%%)\n",
+						(unsigned long long)b1, 100.0*double(b1)/double(btot),
+						(unsigned long long)b2, 100.0*double(b2)/double(btot),
+						(unsigned long long)b3, 100.0*double(b3)/double(btot),
+						(unsigned long long)b4, 100.0*double(b4)/double(btot),
+						(unsigned long long)b5, 100.0*double(b5)/double(btot) );
+				}
+			});
+		}
+	};
+	SolveDiagAtExitInstaller g_solveDiag_installer;
+}
+#endif
 #include "../Interfaces/ILog.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IRayCaster.h"
@@ -2537,6 +2614,31 @@ namespace {
 			return a ^ ( b * 2654435761u );
 		}
 	};
+
+	// Fisher-Yates partial shuffle that retains the first `cap` elements
+	// of `seeds` as a uniform random subset.  Used to bound the per-
+	// shading-point Newton-solve cost when QuerySeeds returns a dense
+	// neighbour set (a focused caustic can return hundreds of photons
+	// from a 1M-photon kd-tree).  `cap == 0` disables the cap.
+	//
+	// O(cap) work; the rest of the vector is left untouched at the tail
+	// and resize() trims it.  Caller-provided sampler keeps the LDS
+	// dimensions consistent with the rest of the SMS trial loop.
+	inline void RandomSubsamplePhotonSeeds(
+		std::vector<SMSPhoton>& seeds,
+		unsigned int cap,
+		ISampler& sampler )
+	{
+		if( cap == 0 || seeds.size() <= cap ) return;
+		for( unsigned int i = 0; i < cap; i++ ) {
+			const unsigned int range = static_cast<unsigned int>( seeds.size() - i );
+			const unsigned int j = i + static_cast<unsigned int>(
+				sampler.Get1D() * range );
+			const unsigned int jj = ( j >= seeds.size() ) ? seeds.size() - 1 : j;
+			if( jj != i ) std::swap( seeds[i], seeds[jj] );
+		}
+		seeds.resize( cap );
+	}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -4038,6 +4140,10 @@ ManifoldResult ManifoldSolver::Solve(
 	}
 #endif
 
+#if SMS_SOLVE_DIAG
+	g_solveDiag_calls.fetch_add( 1, std::memory_order_relaxed );
+#endif
+
 	if( specularChain.empty() )
 	{
 #if SMS_TRACE_DIAGNOSTIC
@@ -4088,6 +4194,9 @@ ManifoldResult ManifoldSolver::Solve(
 					"SMS_SOLVE:  EARLY-RETURN: seed too far from any valid path" );
 			}
 #endif
+#if SMS_SOLVE_DIAG
+			g_solveDiag_seedTooFar.fetch_add( 1, std::memory_order_relaxed );
+#endif
 			return result;  // Seed too far from valid path
 		}
 	}
@@ -4107,6 +4216,9 @@ ManifoldResult ManifoldSolver::Solve(
 						"SMS_SOLVE:  REJECTED: ComputeVertexDerivatives failed at vertex %u (pos=(%.4f,%.4f,%.4f))",
 						i, v.position.x, v.position.y, v.position.z );
 				}
+#endif
+#if SMS_SOLVE_DIAG
+				g_solveDiag_derivFail.fetch_add( 1, std::memory_order_relaxed );
 #endif
 				return result;
 			}
@@ -4298,6 +4410,23 @@ ManifoldResult ManifoldSolver::Solve(
 #if SMS_TRACE_DIAGNOSTIC
 		g_solveNewtonFail.fetch_add( 1, std::memory_order_relaxed );
 #endif
+#if SMS_SOLVE_DIAG
+		g_solveDiag_newtonFail.fetch_add( 1, std::memory_order_relaxed );
+		// Bucket the post-Newton ||C|| so we know whether Newton was stuck
+		// near the answer or diverged far.
+		{
+			std::vector<Scalar> Cend;
+			EvaluateConstraint( specularChain, shadingPoint, emitterPoint, Cend );
+			Scalar n2 = 0;
+			for( std::size_t ii = 0; ii < Cend.size(); ii++ ) n2 += Cend[ii] * Cend[ii];
+			const Scalar nrm = std::sqrt( n2 );
+			if(      nrm < 1e-3 ) g_solveDiag_newtonFail_lt1e3.fetch_add( 1, std::memory_order_relaxed );
+			else if( nrm < 1e-2 ) g_solveDiag_newtonFail_lt1e2.fetch_add( 1, std::memory_order_relaxed );
+			else if( nrm < 1e-1 ) g_solveDiag_newtonFail_lt1e1.fetch_add( 1, std::memory_order_relaxed );
+			else if( nrm < 1.0  ) g_solveDiag_newtonFail_lt1e0.fetch_add( 1, std::memory_order_relaxed );
+			else                  g_solveDiag_newtonFail_ge1e0.fetch_add( 1, std::memory_order_relaxed );
+		}
+#endif
 	}
 
 	if( converged )
@@ -4311,6 +4440,9 @@ ManifoldResult ManifoldSolver::Solve(
 				GlobalLog()->PrintEx( eLog_Event,
 					"SMS_SOLVE:  REJECTED by ValidateChainPhysics (wi/wo sidedness mismatch)" );
 			}
+#endif
+#if SMS_SOLVE_DIAG
+			g_solveDiag_physicsFail.fetch_add( 1, std::memory_order_relaxed );
 #endif
 			return result;
 		}
@@ -4396,12 +4528,18 @@ ManifoldResult ManifoldSolver::Solve(
 						tooShortIdx, tooShortDist, minReliableSegment );
 				}
 #endif
+#if SMS_SOLVE_DIAG
+				g_solveDiag_shortSeg.fetch_add( 1, std::memory_order_relaxed );
+#endif
 				return result;
 			}
 		}
 
 #if SMS_TRACE_DIAGNOSTIC
 		g_solveOk.fetch_add( 1, std::memory_order_relaxed );
+#endif
+#if SMS_SOLVE_DIAG
+		g_solveDiag_ok.fetch_add( 1, std::memory_order_relaxed );
 #endif
 		result.valid = true;
 		result.specularChain = specularChain;
@@ -5077,8 +5215,15 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// was built.  Query radius: the config-supplied value if positive,
 	// otherwise the map's auto-computed value (bbox-diagonal * 0.01 —
 	// analogous to VCM's merge-radius auto-fallback).
+	//
+	// Photon retrieval is independent of `multi_trials` (N): a user who
+	// configures `sms_photon_count > 0` expects photons to be USED, even
+	// at the default M=1.  The previous `N > 1` gate coupled the two
+	// budgets so that scenes setting only `sms_photon_count` got an
+	// empty photon-seed list at the consumption site below — photons
+	// stored in the kd-tree but never reaching Newton.
 	std::vector<SMSPhoton> photonSeeds;
-	if( pPhotonMap && pPhotonMap->IsBuilt() && N > 1 )
+	if( pPhotonMap && pPhotonMap->IsBuilt() )
 	{
 		Scalar r = config.photonSearchRadius;
 		if( r <= 0 ) {
@@ -5086,6 +5231,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		}
 		if( r > 0 ) {
 			pPhotonMap->QuerySeeds( pos, r * r, photonSeeds );
+			RandomSubsamplePhotonSeeds( photonSeeds,
+				config.maxPhotonSeedsPerShadingPoint, loopSampler );
 		}
 	}
 
@@ -5131,10 +5278,19 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// we go) so trial indices don't directly map to photon indices.
 	std::size_t photonCursor = 0;
 
-	// Total trials: all branched base seeds + the photon budget.  When
-	// branching is off (`branchingThreshold == 1.0`), `numBaseSeeds == 1`
-	// and totalTrials degenerates to N — legacy behaviour preserved.
+	// Total trials: all branched base seeds + the photon budget + the
+	// extra multi-trial budget.  When photons are present we want EVERY
+	// queried photon to drive a Newton trial; when they aren't, we fall
+	// back to N-1 extra-trial slots that the surface-sample fallback can
+	// fill (k=1 mirror-chain case).  Without `+ photonSeeds.size()` here,
+	// the trial loop's `trial >= numBaseSeeds` branch never sees most of
+	// the queried photons even when QuerySeeds returned hundreds.
+	//
+	// Legacy parity: with `branchingThreshold == 1.0` and no photon map,
+	// `numBaseSeeds == 1` and `photonSeeds.size() == 0`, so totalTrials
+	// degenerates to N — the original behaviour.
 	const unsigned int totalTrials = static_cast<unsigned int>( numBaseSeeds )
+		+ static_cast<unsigned int>( photonSeeds.size() )
 		+ ( N > 0 ? N - 1 : 0 );
 
 	// Surface-sampling fallback for purely-reflective single-vertex chains.
@@ -5979,6 +6135,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 		{
 			std::vector<SMSPhoton> photonSeeds;
 			pPhotonMap->QuerySeeds( pos, r * r, photonSeeds );
+			RandomSubsamplePhotonSeeds( photonSeeds,
+				config.maxPhotonSeedsPerShadingPoint, loopSampler );
 
 			for( const SMSPhoton& ph : photonSeeds )
 			{
@@ -6286,6 +6444,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 		{
 			std::vector<SMSPhoton> photonSeeds;
 			pPhotonMap->QuerySeeds( pos, r * r, photonSeeds );
+			RandomSubsamplePhotonSeeds( photonSeeds,
+				config.maxPhotonSeedsPerShadingPoint, loopSampler );
 
 			for( const SMSPhoton& ph : photonSeeds )
 			{
@@ -6466,8 +6626,11 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		? config.uniquenessThreshold : 1e-4;
 	const std::vector<ManifoldVertex> baseSeedChain = seedChain;
 
+	// See the RGB EvaluateAtShadingPoint companion: photon retrieval is
+	// independent of `multi_trials` (N) so a scene that only sets
+	// `sms_photon_count > 0` still gets photons fed into Newton.
 	std::vector<SMSPhoton> photonSeeds;
-	if( pPhotonMap && pPhotonMap->IsBuilt() && N > 1 )
+	if( pPhotonMap && pPhotonMap->IsBuilt() )
 	{
 		Scalar r = config.photonSearchRadius;
 		if( r <= 0 ) {
@@ -6475,6 +6638,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		}
 		if( r > 0 ) {
 			pPhotonMap->QuerySeeds( pos, r * r, photonSeeds );
+			RandomSubsamplePhotonSeeds( photonSeeds,
+				config.maxPhotonSeedsPerShadingPoint, loopSampler );
 		}
 	}
 
@@ -6484,7 +6649,16 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 
 	std::size_t photonCursor = 0;
 
-	for( unsigned int trial = 0; trial < N; trial++ )
+	// Total trial budget: 1 base seed + photon trials + (N - 1) extras.
+	// Mirrors the RGB site's totalTrials.  The `trial > 0` branch below
+	// consumes photons; without `+ photonSeeds.size()` here, only the
+	// (N-1) extra slots could draw from the photon list — the rest of
+	// the queried photons would be silently discarded.
+	const unsigned int totalTrials = 1u
+		+ static_cast<unsigned int>( photonSeeds.size() )
+		+ ( N > 0 ? N - 1 : 0 );
+
+	for( unsigned int trial = 0; trial < totalTrials; trial++ )
 	{
 		std::vector<ManifoldVertex> trialSeed = baseSeedChain;
 

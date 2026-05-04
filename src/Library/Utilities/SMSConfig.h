@@ -84,6 +84,7 @@ namespace RISE
 		unsigned int	bernoulliTrials;	///< Max trials for unbiased PDF estimation (default 100, ignored when biased == true)
 		unsigned int	multiTrials;		///< Independent Newton solves per evaluation (Zeltner 2020); default 1 = single-solve Snell seed.  >1 uncovers separate basins on bumpy surfaces at proportional cost.
 		unsigned int	photonCount;		///< Photon-aided seed budget; default 0 = off.  >0 builds an SMSPhotonMap for seeds on caustics the deterministic seed misses.
+		unsigned int	maxPhotonSeedsPerShadingPoint;		///< Cap on photon seeds run through Newton at each shading point.  0 = unlimited.  Default 16 keeps per-pixel cost proportional to multiTrials rather than to kd-tree photon density (Weisstein 2024 PMS uses 8–32).
 		bool			twoStage;			///< Two-stage Newton solver (Zeltner 2020 §5).  When enabled, Newton first runs on a smoothed reference surface (smoothing=1: underlying analytical base, no displacement) to escape the C1-discontinuity plateau on Phong-shaded triangle meshes, then refines on the actual surface (smoothing=0).  Default false; opt-in via `sms_two_stage TRUE`.  No-op when the specular geometry doesn't expose a smoothing-aware analytical query.  See `docs/SMS_TWO_STAGE_SOLVER.md`.
 		SMSSeedingMode	seedingMode;		///< Seeding strategy for `EvaluateAtShadingPoint`.  Default `Snell` (RISE legacy: trace from shading point toward light, refracting at every specular surface).  `Uniform` = Mitsuba-faithful uniform-area sample on each cached caster shape, then SnellContinue (required for principled geometric Bernoulli `1/p` per Zeltner 2020 §4.3 Algorithm 2).  Opt-in via `sms_seeding "uniform"`.  See `docs/SMS_UNIFORM_SEEDING_PLAN.md`.
 
@@ -96,6 +97,7 @@ namespace RISE
 		  bernoulliTrials( 100 ),
 		  multiTrials( 1 ),
 		  photonCount( 0 ),
+		  maxPhotonSeedsPerShadingPoint( 16 ),
 		  twoStage( false ),
 		  seedingMode( SMSSeedingMode::Snell )
 		{
