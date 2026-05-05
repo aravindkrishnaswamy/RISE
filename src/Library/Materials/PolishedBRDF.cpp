@@ -47,7 +47,16 @@ Scalar ComputeRs( const Vector3& v, const Vector3& n, const Scalar ior )
 
 RISEPel PolishedBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
-	const Vector3& n = Vector3Ops::Dot(ri.vNormal,-vLightIn)<NEARZERO? -ri.vNormal : ri.vNormal;
+	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
+	// face-orientation, PBRT 4e §10.1.1).  The flipped normal carries
+	// the SHADING normal so the Fresnel angular dependence stays in the
+	// BSDF frame, matching Mitsuba 3 `dielectric.cpp`.  ComputeRs goes
+	// through Optics::CalculateRefractedRay/DielectricReflectance which
+	// are sign-invariant under n→-n, so the visible Rs change is small;
+	// the geometric form is the documented convention and is robust
+	// against future code that consumes `n` directly.
+	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, -vLightIn ) < NEARZERO;
+	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
 	const RISEPel ior = Nt.GetColor(ri);
 	if( ior[0] == ior[1] && ior[1] == ior[2] ) {
 		Scalar		Rs = ComputeRs( -vLightIn, n, ior[0] );
@@ -65,7 +74,16 @@ RISEPel PolishedBRDF::value( const Vector3& vLightIn, const RayIntersectionGeome
 
 Scalar PolishedBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	const Vector3& n = Vector3Ops::Dot(ri.vNormal,-vLightIn)<NEARZERO? -ri.vNormal : ri.vNormal;
+	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
+	// face-orientation, PBRT 4e §10.1.1).  The flipped normal carries
+	// the SHADING normal so the Fresnel angular dependence stays in the
+	// BSDF frame, matching Mitsuba 3 `dielectric.cpp`.  ComputeRs goes
+	// through Optics::CalculateRefractedRay/DielectricReflectance which
+	// are sign-invariant under n→-n, so the visible Rs change is small;
+	// the geometric form is the documented convention and is robust
+	// against future code that consumes `n` directly.
+	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, -vLightIn ) < NEARZERO;
+	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
 	Scalar		Rs = ComputeRs( -vLightIn, n, Nt.GetColorNM(ri,nm) );
 	return pReflectance.GetColorNM(ri,nm) * INV_PI * (1.0 - Rs);
 }

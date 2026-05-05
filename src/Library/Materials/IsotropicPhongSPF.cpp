@@ -82,7 +82,11 @@ void IsotropicPhongSPF::Scatter(
 	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
-	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vNormal);
+	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
+	// face-orientation, PBRT 4e §10.1.1).  The flipped lobe normal `n`
+	// (built from `ri.onb.w()` below) stays in the shading frame so the
+	// Phong lobe and cosine PDF remain BSDF-coupled.
+	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vGeomNormal);
 	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
 	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
@@ -154,7 +158,11 @@ void IsotropicPhongSPF::ScatterNM(
 	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
-	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vNormal);
+	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
+	// face-orientation, PBRT 4e §10.1.1).  The flipped lobe normal `n`
+	// (built from `ri.onb.w()` below) stays in the shading frame so the
+	// Phong lobe and cosine PDF remain BSDF-coupled.
+	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vGeomNormal);
 	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
 	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
@@ -197,7 +205,11 @@ Scalar IsotropicPhongSPF::Pdf(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vNormal);
+	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
+	// face-orientation, PBRT 4e §10.1.1).  The flipped lobe normal `n`
+	// (built from `ri.onb.w()` below) stays in the shading frame so the
+	// Phong lobe and cosine PDF remain BSDF-coupled.
+	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vGeomNormal);
 	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
 	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
@@ -234,7 +246,11 @@ Scalar IsotropicPhongSPF::PdfNM(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vNormal);
+	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
+	// face-orientation, PBRT 4e §10.1.1).  The flipped lobe normal `n`
+	// (built from `ri.onb.w()` below) stays in the shading frame so the
+	// Phong lobe and cosine PDF remain BSDF-coupled.
+	const Scalar rdotn = Vector3Ops::Dot(ri.ray.Dir(), ri.vGeomNormal);
 	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
 	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );

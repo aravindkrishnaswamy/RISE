@@ -2040,7 +2040,13 @@ bool ManifoldSolver::UpdateVertexOnSurface(
 		// Fall back to the linear approximation (no re-snap)
 		vertex.position = newPos;
 		vertex.normal = newNormal;
-		vertex.geomNormal = newNormal;	// no fresh ray-cast; best-available proxy
+		// Zero the geometric slot — `newNormal` is the linearised
+		// SHADING-frame normal, not a geometric-face value.  Writing it
+		// here would silently lie to ValidateChainPhysics and any other
+		// downstream consumer.  The validator's `SquaredModulus > NEARZERO`
+		// fallback then degrades to `vertex.normal`, exactly what an
+		// honest shading proxy is.
+		vertex.geomNormal = Vector3( 0, 0, 0 );
 	}
 
 	// Recompute surface derivatives at the new position
@@ -3350,7 +3356,16 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		//     IObject* with a distinct outward normal direction).
 		seedIor.SetCurrentObject( ri.pObject );
 		const bool sameObjectAgain = seedIor.containsCurrent();
-		const Scalar cosI = Vector3Ops::Dot( dir, mv.normal );
+		// Side-of-surface decision: use the GEOMETRIC normal so the
+		// entering/exiting flag matches the real face orientation
+		// regardless of bump / normal-map perturbation.  Mismatch here
+		// drives etaI/etaT inversion downstream (the upstream half of
+		// the bug ValidateChainPhysics catches).  Fall back to the
+		// shading normal if the producer didn't populate vGeomNormal
+		// (e.g. a hand-built ManifoldVertex from a probe site below).
+		const Vector3& sideN = ( Vector3Ops::SquaredModulus( mv.geomNormal )
+			> NEARZERO ) ? mv.geomNormal : mv.normal;
+		const Scalar cosI = Vector3Ops::Dot( dir, sideN );
 		const bool bEntering = sameObjectAgain ? false : (cosI < 0);
 		mv.isExiting = !bEntering;
 
@@ -3669,7 +3684,13 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 
 		f.seedIor.SetCurrentObject( ri.pObject );
 		const bool sameObjectAgain = f.seedIor.containsCurrent();
-		const Scalar cosI = Vector3Ops::Dot( f.dir, mv.normal );
+		// Side-of-surface decision uses the geometric normal — see the
+		// equivalent comment in BuildSeedChain above.  Geometric on
+		// bump-mapped dielectrics avoids etaI/etaT inversion that
+		// ValidateChainPhysics catches downstream.
+		const Vector3& sideN = ( Vector3Ops::SquaredModulus( mv.geomNormal )
+			> NEARZERO ) ? mv.geomNormal : mv.normal;
+		const Scalar cosI = Vector3Ops::Dot( f.dir, sideN );
 		const bool bEntering = sameObjectAgain ? false : (cosI < 0);
 		mv.isExiting = !bEntering;
 		if( bEntering ) {
@@ -3841,13 +3862,24 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 					{
 						vi.position    = visRi.geometric.ptIntersection;
 						vi.normal      = visRi.geometric.vNormal;
+						// Populate vi.geomNormal — without this, the
+						// reflection-branch resampled vertex carries the
+						// stale geomNormal from before the resample, and
+						// ValidateChainPhysics's NEARZERO fallback silently
+						// degrades to shading on exactly the chains this
+						// branching path was added to capture.
+						vi.geomNormal  = visRi.geometric.vGeomNormal;
 						vi.uv          = visRi.geometric.ptCoord;
 						vi.isReflection = true;
 						vi.valid       = false;
 
 						// Determine entering vs exiting from the new
-						// trace direction at the sampled point.
-						const Scalar cosI_new = Vector3Ops::Dot( dirToSample, vi.normal );
+						// trace direction at the sampled point.  Geometric
+						// normal here for the same reason as the seed-chain
+						// builder above.
+						const Vector3& vsN = ( Vector3Ops::SquaredModulus( vi.geomNormal )
+							> NEARZERO ) ? vi.geomNormal : vi.normal;
+						const Scalar cosI_new = Vector3Ops::Dot( dirToSample, vsN );
 						const bool bEnt = ( cosI_new < 0 );
 						vi.isExiting = !bEnt;
 						if( bEnt ) {
@@ -3940,8 +3972,15 @@ Scalar ManifoldSolver::EvaluateChainGeometry(
 		if( dist < 1e-8 ) return 0.0;
 		dir = dir * (1.0 / dist);
 
-		// Incoming cosine at this specular vertex
-		const Scalar cosIn = fabs( Vector3Ops::Dot( chain[i].normal, dir ) );
+		// Incoming cosine at this specular vertex.  Path-space geometry
+		// term uses the GEOMETRIC normal — Veach §8.2 / PBRT 4e §13.6.4
+		// (the dω→dA Jacobian depends on the actual surface element,
+		// not Phong-perturbed shading).  Fall back to the chain vertex's
+		// shading normal if geomNormal is the zero sentinel (legacy or
+		// hand-built ManifoldVertex).
+		const Vector3& sideN = ( Vector3Ops::SquaredModulus( chain[i].geomNormal ) > NEARZERO )
+			? chain[i].geomNormal : chain[i].normal;
+		const Scalar cosIn = fabs( Vector3Ops::Dot( sideN, dir ) );
 
 		geom *= cosIn / (dist * dist);
 	}
@@ -3987,7 +4026,11 @@ Scalar ManifoldSolver::EvaluateChainCosineProduct(
 		if( dist < 1e-8 ) return 0.0;
 		dir = dir * (1.0 / dist);
 
-		cosProduct *= fabs( Vector3Ops::Dot( chain[i].normal, dir ) );
+		// Path-space cosine product: GEOMETRIC normal, matching
+		// EvaluateChainGeometry above.
+		const Vector3& sideN = ( Vector3Ops::SquaredModulus( chain[i].geomNormal ) > NEARZERO )
+			? chain[i].geomNormal : chain[i].normal;
+		cosProduct *= fabs( Vector3Ops::Dot( sideN, dir ) );
 	}
 
 	return cosProduct;
@@ -5043,7 +5086,11 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 		ManifoldVertex& mv = chain[i];
 		mv.position    = pv.position;
 		mv.normal      = pv.normal;
-		mv.geomNormal  = pv.normal;	// photon doesn't store geomNormal; use shading as fallback
+		// Photon record now stores geomNormal alongside shading (see
+		// SMSPhoton.h::SMSPhotonChainVertex).  Fall back to shading only
+		// for legacy photons whose geomNormal field is zero (sentinel).
+		mv.geomNormal  = ( Vector3Ops::SquaredModulus( pv.geomNormal ) > NEARZERO )
+			? pv.geomNormal : pv.normal;
 		mv.pObject     = pv.pObject;
 		mv.pMaterial   = pv.pMaterial;
 		mv.eta         = pv.eta;
@@ -5054,6 +5101,12 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 			rigLocal.bHit          = true;
 			rigLocal.ptIntersection = pv.position;
 			rigLocal.vNormal       = pv.normal;
+			// Mirror the geometric normal so any future GetSpecularInfo
+			// implementation that consults vGeomNormal (dielectric side
+			// selection per the Polished/Phong audit) sees a populated
+			// value instead of the (0,0,0) sentinel — falling back to
+			// shading on legacy photons whose geomNormal slot is zero.
+			rigLocal.vGeomNormal   = mv.geomNormal;
 			SpecularInfo spec = pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
 			mv.attenuation = spec.attenuation;
 			mv.canRefract  = spec.canRefract;
@@ -5081,7 +5134,8 @@ unsigned int ManifoldSolver::ReversePhotonChainForSeed(
 
 bool ManifoldSolver::ComputeTrialContribution(
 	const Point3& pos,
-	const Vector3& normal,
+	const Vector3& geomNormal,
+	const Vector3& shadingNormal,
 	const OrthonormalBasis3D& onb,
 	const Vector3& woOutgoing,
 	const IBSDF* pBSDF,
@@ -5094,6 +5148,10 @@ bool ManifoldSolver::ComputeTrialContribution(
 {
 	outContribution = RISEPel( 0, 0, 0 );
 	outDir = Vector3( 0, 0, 0 );
+	(void)geomNormal;  // Reserved for receiver-side path-space cosines —
+	                    // `cosV1atX` already pulls geomNormal off the chain
+	                    // vertex below.  Keeping the parameter explicit so
+	                    // callers must commit to providing both normals.
 
 	if( !mResult.valid || mResult.specularChain.empty() || !pBSDF ) {
 		return false;
@@ -5117,18 +5175,22 @@ bool ManifoldSolver::ComputeTrialContribution(
 
 	const Vector3 wiAtShading = dirToFirstSpec;
 
-	// BSDF at shading point.
+	// BSDF at shading point — SHADING frame (PBRT 4e §9.1, Veach §5.3.6).
 	Ray evalRay( pos, Vector3( -woOutgoing.x, -woOutgoing.y, -woOutgoing.z ) );
 	RayIntersectionGeometric rig( evalRay, nullRasterizerState );
 	rig.bHit = true;
 	rig.ptIntersection = pos;
-	rig.vNormal = normal;
+	rig.vNormal     = shadingNormal;
+	rig.vGeomNormal = geomNormal;
 	rig.onb = onb;
 
 	RISEPel fBSDF = pBSDF->value( wiAtShading, rig );
 	if( ColorMath::MaxValue( fBSDF ) <= 0 ) return false;
 
-	const Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
+	// Receiver-side BSDF cosine — SHADING (the `cos θ` paired with
+	// `f * cos / pdf` in Veach's energy-preserving shading-normals
+	// trick, §5.3.6).
+	const Scalar cosAtShading = fabs( Vector3Ops::Dot( shadingNormal, wiAtShading ) );
 	if( cosAtShading <= 0 ) return false;
 
 	// Light-side cos + Le for delta vs area lights.
@@ -5153,10 +5215,16 @@ bool ManifoldSolver::ComputeTrialContribution(
 	(void)cosAtLight;   // Implicit in detDvDy via (I - wo⊗wo) projection.
 
 	// SMS measure-conversion factor (G_x_v1 * |det dv1/dy|).
+	// G_x_v1 is a path-space geometry term (Veach §8.2 / PBRT 4e §13.6.4)
+	// — uses the GEOMETRIC normal at the first specular vertex.  Falls
+	// back to the chain-vertex shading normal on legacy / hand-built
+	// chains where geomNormal is the zero sentinel.
 	Vector3 dirXtoV1 = Vector3Ops::mkVector3( firstSpec.position, pos );
 	const Scalar distXtoV1 = Vector3Ops::NormalizeMag( dirXtoV1 );
 	if( distXtoV1 < 1e-8 ) return false;
-	const Scalar cosV1atX = fabs( Vector3Ops::Dot( firstSpec.normal, dirXtoV1 ) );
+	const Vector3& v1SideN = ( Vector3Ops::SquaredModulus( firstSpec.geomNormal ) > NEARZERO )
+		? firstSpec.geomNormal : firstSpec.normal;
+	const Scalar cosV1atX = fabs( Vector3Ops::Dot( v1SideN, dirXtoV1 ) );
 	const Scalar G_x_v1 = cosV1atX / ( distXtoV1 * distXtoV1 );
 	const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
 		mResult.specularChain, pos, lightSample.position, lightSample.normal );
@@ -5183,7 +5251,8 @@ bool ManifoldSolver::ComputeTrialContribution(
 
 bool ManifoldSolver::ComputeTrialContributionNM(
 	const Point3& pos,
-	const Vector3& normal,
+	const Vector3& geomNormal,
+	const Vector3& shadingNormal,
 	const OrthonormalBasis3D& onb,
 	const Vector3& woOutgoing,
 	const IBSDF* pBSDF,
@@ -5197,6 +5266,7 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 {
 	outContribution = 0;
 	outDir = Vector3( 0, 0, 0 );
+	(void)geomNormal;  // See ComputeTrialContribution above.
 
 	if( !mResult.valid || mResult.specularChain.empty() || !pBSDF ) {
 		return false;
@@ -5217,17 +5287,20 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 
 	const Vector3 wiAtShading = dirToFirstSpec;
 
+	// SHADING-frame BSDF eval — see RGB twin for rationale.
 	Ray evalRay( pos, Vector3( -woOutgoing.x, -woOutgoing.y, -woOutgoing.z ) );
 	RayIntersectionGeometric rig( evalRay, nullRasterizerState );
 	rig.bHit = true;
 	rig.ptIntersection = pos;
-	rig.vNormal = normal;
+	rig.vNormal     = shadingNormal;
+	rig.vGeomNormal = geomNormal;
 	rig.onb = onb;
 
 	Scalar fBSDF = pBSDF->valueNM( wiAtShading, rig, nm );
 	if( fBSDF <= 0 ) return false;
 
-	Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
+	// Receiver-side BSDF cosine: shading.
+	Scalar cosAtShading = fabs( Vector3Ops::Dot( shadingNormal, wiAtShading ) );
 	if( cosAtShading <= 0 ) return false;
 
 	Scalar chainThroughput = EvaluateChainThroughputNM(
@@ -5253,10 +5326,13 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	}
 	(void)cosAtLight;
 
+	// G_x_v1 path-space geometry term — geometric (Veach §8.2).
 	Vector3 dirXtoV1 = Vector3Ops::mkVector3( firstSpec.position, pos );
 	const Scalar distXtoV1 = Vector3Ops::NormalizeMag( dirXtoV1 );
 	if( distXtoV1 < 1e-8 ) return false;
-	const Scalar cosV1atX = fabs( Vector3Ops::Dot( firstSpec.normal, dirXtoV1 ) );
+	const Vector3& v1SideN = ( Vector3Ops::SquaredModulus( firstSpec.geomNormal ) > NEARZERO )
+		? firstSpec.geomNormal : firstSpec.normal;
+	const Scalar cosV1atX = fabs( Vector3Ops::Dot( v1SideN, dirXtoV1 ) );
 	const Scalar G_x_v1 = cosV1atX / ( distXtoV1 * distXtoV1 );
 	const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
 		mResult.specularChain, pos, lightSample.position, lightSample.normal );
@@ -5273,7 +5349,8 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 
 ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	const Point3& pos,
-	const Vector3& normal,
+	const Vector3& geomNormal,
+	const Vector3& shadingNormal,
 	const OrthonormalBasis3D& onb,
 	const IMaterial* pMaterial,
 	const Vector3& woOutgoing,
@@ -5290,7 +5367,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	if( config.seedingMode == ManifoldSolverConfig::eSeedingUniform )
 	{
 		return EvaluateAtShadingPointUniform(
-			pos, normal, onb, pMaterial, woOutgoing,
+			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing,
 			scene, caster, sampler );
 	}
 
@@ -5358,9 +5435,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 
 	if( chainLen == 0 || seedChain.empty() )
 	{
-		// Fallback: trace along the surface normal.
+		// Fallback: trace along the surface normal — geometric so the
+		// probe direction is the actual outward face direction.
 		const Point3 normalTarget = Point3Ops::mkPoint3(
-			pos, normal * 100.0 );
+			pos, geomNormal * 100.0 );
 		chainLen = BuildSeedChain(
 			pos, normalTarget,
 			scene, caster, seedChain );
@@ -5803,6 +5881,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 				ManifoldVertex& mv = newChain[i];
 				mv.position    = pv.position;
 				mv.normal      = pv.normal;
+				mv.geomNormal  = ( Vector3Ops::SquaredModulus( pv.geomNormal ) > NEARZERO )
+					? pv.geomNormal : pv.normal;
 				mv.pObject     = pv.pObject;
 				mv.pMaterial   = pv.pMaterial;
 				mv.eta         = pv.eta;
@@ -5821,6 +5901,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 					rigLocal.bHit = true;
 					rigLocal.ptIntersection = pv.position;
 					rigLocal.vNormal = pv.normal;
+					rigLocal.vGeomNormal = mv.geomNormal;
 					SpecularInfo spec = pv.pMaterial->GetSpecularInfo( rigLocal, queryIor );
 					mv.attenuation = spec.attenuation;
 					mv.canRefract  = spec.canRefract;
@@ -5884,7 +5965,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		}
 
 		ManifoldResult mResult = Solve(
-			pos, normal,
+			pos, shadingNormal,
 			lightSample.position, lightSample.normal,
 			trialSeed, loopSampler );
 
@@ -5971,21 +6052,21 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 
 		const Vector3 wiAtShading = dirToFirstSpec;
 
-		// Evaluate BSDF at shading point
+		// Evaluate BSDF at shading point — SHADING frame.
 		// RISE convention: ri.ray.Dir() is toward the surface (negate woOutgoing)
 		Ray evalRay( pos, Vector3( -woOutgoing.x, -woOutgoing.y, -woOutgoing.z ) );
 		RayIntersectionGeometric rig( evalRay, nullRasterizerState );
 		rig.bHit = true;
 		rig.ptIntersection = pos;
-		rig.vNormal = normal;
+		rig.vNormal     = shadingNormal;
+		rig.vGeomNormal = geomNormal;
 		rig.onb = onb;
 
 		RISEPel fBSDF = pBSDF->value( wiAtShading, rig );
 		if( ColorMath::MaxValue( fBSDF ) <= 0 ) continue;
 
-		// Cosine at shading point: uses the actual direction toward the
-		// first specular vertex (where light arrives from after refraction).
-		const Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
+		// Cosine at shading point: SHADING frame paired with `f * cos / pdf`.
+		const Scalar cosAtShading = fabs( Vector3Ops::Dot( shadingNormal, wiAtShading ) );
 		if( cosAtShading <= 0 ) continue;
 
 		// Direction and distance from last specular vertex to light
@@ -6048,7 +6129,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		Vector3 dirXtoV1 = Vector3Ops::mkVector3( firstSpecForG.position, pos );
 		const Scalar distXtoV1 = Vector3Ops::NormalizeMag( dirXtoV1 );
 		if( distXtoV1 < 1e-8 ) continue;
-		const Scalar cosV1atX = fabs( Vector3Ops::Dot( firstSpecForG.normal, dirXtoV1 ) );
+		// G_x_v1 is path-space (Veach §8.2) — geometric with shading fallback.
+		const Vector3& v1SideN = ( Vector3Ops::SquaredModulus( firstSpecForG.geomNormal ) > NEARZERO )
+			? firstSpecForG.geomNormal : firstSpecForG.normal;
+		const Scalar cosV1atX = fabs( Vector3Ops::Dot( v1SideN, dirXtoV1 ) );
 		const Scalar G_x_v1 = cosV1atX / (distXtoV1 * distXtoV1);
 
 		const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
@@ -6261,7 +6345,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 
 ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 	const Point3& pos,
-	const Vector3& normal,
+	const Vector3& geomNormal,
+	const Vector3& shadingNormal,
 	const OrthonormalBasis3D& onb,
 	const IMaterial* pMaterial,
 	const Vector3& woOutgoing,
@@ -6271,6 +6356,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 	) const
 {
 	SMSContribution result;
+	(void)geomNormal;  // currently unused on the uniform path; kept for
+	                    // API symmetry with the snell entry point.
 
 	if( !pMaterial ) return result;
 
@@ -6420,7 +6507,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 				for( SeedChainResult& seedResult : seeds )
 				{
 					ManifoldResult mResult = Solve(
-						pos, normal,
+						pos, shadingNormal,
 						lightSample.position, lightSample.normal,
 						seedResult.chain, loopSampler );
 					if( !mResult.valid ) continue;
@@ -6431,7 +6518,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 					Vector3 trialDir;
 					RISEPel trialContrib;
-					if( !ComputeTrialContribution( pos, normal, onb, woOutgoing,
+					if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
 						pBSDF, lightSample, mResult, caster, trialDir, trialContrib ) )
 						continue;
 
@@ -6457,7 +6544,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 			if( !buildSeedFromUniformOnCaster( pCasterObj, trialSeed ) ) continue;
 
 			ManifoldResult mResult = Solve(
-				pos, normal,
+				pos, shadingNormal,
 				lightSample.position, lightSample.normal,
 				trialSeed, loopSampler );
 			if( !mResult.valid ) continue;
@@ -6468,7 +6555,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 			Vector3 dirMain;
 			RISEPel mainContrib;
-			if( !ComputeTrialContribution( pos, normal, onb, woOutgoing,
+			if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
 				pBSDF, lightSample, mResult, caster, dirMain, mainContrib ) )
 				continue;
 
@@ -6495,7 +6582,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 					!trialChain.empty() && trialChain[0].pObject == pCasterObj )
 				{
 					ManifoldResult tResult = Solve(
-						pos, normal,
+						pos, shadingNormal,
 						lightSample.position, lightSample.normal,
 						trialChain, loopSampler );
 					if( tResult.valid ) {
@@ -6554,7 +6641,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 				if( ReversePhotonChainForSeed( ph, photonChain ) == 0 ) continue;
 
 				ManifoldResult mResult = Solve(
-					pos, normal,
+					pos, shadingNormal,
 					lightSample.position, lightSample.normal,
 					photonChain, loopSampler );
 				if( !mResult.valid ) continue;
@@ -6565,7 +6652,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 				Vector3 trialDir;
 				RISEPel trialContrib;
-				if( !ComputeTrialContribution( pos, normal, onb, woOutgoing,
+				if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
 					pBSDF, lightSample, mResult, caster, trialDir, trialContrib ) )
 					continue;
 
@@ -6599,7 +6686,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUniform(
 	const Point3& pos,
-	const Vector3& normal,
+	const Vector3& geomNormal,
+	const Vector3& shadingNormal,
 	const OrthonormalBasis3D& onb,
 	const IMaterial* pMaterial,
 	const Vector3& woOutgoing,
@@ -6610,6 +6698,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 	) const
 {
 	SMSContributionNM result;
+	(void)geomNormal;  // see EvaluateAtShadingPointUniform.
 
 	if( !pMaterial ) return result;
 
@@ -6666,6 +6755,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				rigLocal.bHit          = true;
 				rigLocal.ptIntersection = v.position;
 				rigLocal.vNormal       = v.normal;
+				rigLocal.vGeomNormal   = v.geomNormal;
 				SpecularInfo specNM = v.pMaterial->GetSpecularInfoNM( rigLocal, queryIor, nm );
 				v.eta         = specNM.ior;
 				v.attenuation = specNM.attenuation;
@@ -6741,7 +6831,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				for( SeedChainResult& seedResult : seeds )
 				{
 					ManifoldResult mResult = Solve(
-						pos, normal,
+						pos, shadingNormal,
 						lightSample.position, lightSample.normal,
 						seedResult.chain, loopSampler );
 					if( !mResult.valid ) continue;
@@ -6752,7 +6842,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 
 					Vector3 trialDir;
 					Scalar trialContrib;
-					if( !ComputeTrialContributionNM( pos, normal, onb, woOutgoing,
+					if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
 						pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib ) )
 						continue;
 
@@ -6772,7 +6862,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 			if( !buildSeedFromUniformOnCaster( pCasterObj, trialSeed ) ) continue;
 
 			ManifoldResult mResult = Solve(
-				pos, normal,
+				pos, shadingNormal,
 				lightSample.position, lightSample.normal,
 				trialSeed, loopSampler );
 			if( !mResult.valid ) continue;
@@ -6783,7 +6873,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 
 			Vector3 dirMain;
 			Scalar mainContrib;
-			if( !ComputeTrialContributionNM( pos, normal, onb, woOutgoing,
+			if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
 				pBSDF, lightSample, mResult, caster, nm, dirMain, mainContrib ) )
 				continue;
 
@@ -6808,7 +6898,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				{
 					applyNMEtaToChain( trialChain );
 					ManifoldResult tResult = Solve(
-						pos, normal,
+						pos, shadingNormal,
 						lightSample.position, lightSample.normal,
 						trialChain, loopSampler );
 					if( tResult.valid ) {
@@ -6865,7 +6955,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				applyNMEtaToChain( photonChain );
 
 				ManifoldResult mResult = Solve(
-					pos, normal,
+					pos, shadingNormal,
 					lightSample.position, lightSample.normal,
 					photonChain, loopSampler );
 				if( !mResult.valid ) continue;
@@ -6876,7 +6966,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 
 				Vector3 trialDir;
 				Scalar trialContrib;
-				if( !ComputeTrialContributionNM( pos, normal, onb, woOutgoing,
+				if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
 					pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib ) )
 					continue;
 
@@ -6905,7 +6995,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 
 ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	const Point3& pos,
-	const Vector3& normal,
+	const Vector3& geomNormal,
+	const Vector3& shadingNormal,
 	const OrthonormalBasis3D& onb,
 	const IMaterial* pMaterial,
 	const Vector3& woOutgoing,
@@ -6921,7 +7012,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	if( config.seedingMode == ManifoldSolverConfig::eSeedingUniform )
 	{
 		return EvaluateAtShadingPointNMUniform(
-			pos, normal, onb, pMaterial, woOutgoing,
+			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing,
 			scene, caster, sampler, nm );
 	}
 
@@ -6958,8 +7049,9 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 
 	if( chainLen == 0 || seedChain.empty() )
 	{
+		// Probe direction: geometric (actual outward face).
 		const Point3 normalTarget = Point3Ops::mkPoint3(
-			pos, normal * 100.0 );
+			pos, geomNormal * 100.0 );
 		chainLen = BuildSeedChain(
 			pos, normalTarget,
 			scene, caster, seedChain );
@@ -7096,6 +7188,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 				ManifoldVertex& mv = newChain[i];
 				mv.position    = pv.position;
 				mv.normal      = pv.normal;
+				mv.geomNormal  = ( Vector3Ops::SquaredModulus( pv.geomNormal ) > NEARZERO )
+					? pv.geomNormal : pv.normal;
 				mv.pObject     = pv.pObject;
 				mv.pMaterial   = pv.pMaterial;
 				// mv.attenuation is set alongside mv.eta below from the
@@ -7121,6 +7215,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 					rigLocal.bHit = true;
 					rigLocal.ptIntersection = pv.position;
 					rigLocal.vNormal = pv.normal;
+					rigLocal.vGeomNormal = mv.geomNormal;
 					SpecularInfo specNM = pv.pMaterial->GetSpecularInfoNM(
 						rigLocal, queryIor, nm );
 					mv.eta = specNM.ior;
@@ -7151,7 +7246,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		}
 
 		ManifoldResult mResult = Solve(
-			pos, normal,
+			pos, shadingNormal,
 			lightSample.position, lightSample.normal,
 			trialSeed, loopSampler );
 
@@ -7189,14 +7284,16 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		RayIntersectionGeometric rig( evalRay, nullRasterizerState );
 		rig.bHit = true;
 		rig.ptIntersection = pos;
-		rig.vNormal = normal;
+		// SHADING-frame BSDF eval (Veach §5.3.6 / PBRT 4e §9.1).
+		rig.vNormal     = shadingNormal;
+		rig.vGeomNormal = geomNormal;
 		rig.onb = onb;
 
 		Scalar fBSDF = pBSDF->valueNM( wiAtShading, rig, nm );
 		if( fBSDF <= 0 ) continue;
 
-		// Cosine at shading point
-		Scalar cosAtShading = fabs( Vector3Ops::Dot( normal, wiAtShading ) );
+		// Cosine at shading point — SHADING frame matches `f * cos / pdf`.
+		Scalar cosAtShading = fabs( Vector3Ops::Dot( shadingNormal, wiAtShading ) );
 		if( cosAtShading <= 0 ) continue;
 
 		// Chain throughput (spectral — per-wavelength Fresnel)
@@ -7240,7 +7337,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		Vector3 dirXtoV1 = Vector3Ops::mkVector3( firstSpecForG.position, pos );
 		const Scalar distXtoV1 = Vector3Ops::NormalizeMag( dirXtoV1 );
 		if( distXtoV1 < 1e-8 ) continue;
-		const Scalar cosV1atX = fabs( Vector3Ops::Dot( firstSpecForG.normal, dirXtoV1 ) );
+		// G_x_v1 is path-space (Veach §8.2) — geometric with shading fallback.
+		const Vector3& v1SideN = ( Vector3Ops::SquaredModulus( firstSpecForG.geomNormal ) > NEARZERO )
+			? firstSpecForG.geomNormal : firstSpecForG.normal;
+		const Scalar cosV1atX = fabs( Vector3Ops::Dot( v1SideN, dirXtoV1 ) );
 		const Scalar G_x_v1 = cosV1atX / (distXtoV1 * distXtoV1);
 		const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
 			mResult.specularChain, pos, lightSample.position, lightSample.normal );

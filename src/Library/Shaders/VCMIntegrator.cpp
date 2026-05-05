@@ -337,8 +337,15 @@ static inline Scalar AreaToSolidAngleFactor(
 	if( v.type == BDPTVertex::CAMERA ) {
 		return Scalar( 1 );
 	}
-	// SURFACE, LIGHT, or anything else with a normal
-	return fabs( Vector3Ops::Dot( v.normal, dirFromAdjacent ) );
+	// SURFACE, LIGHT, or anything else with a normal.
+	// Inverts the area-pdf back to solid-angle using the GEOMETRIC
+	// cosine — must match the forward Jacobian stored as `v.cosAtGen`
+	// during BDPT subpath construction (also geometric).  Falls back
+	// to shading on legacy / non-mirrored vertices where geomNormal
+	// is the (0,0,0) sentinel.
+	const Vector3& sideN = ( Vector3Ops::SquaredModulus( v.geomNormal ) > NEARZERO )
+		? v.geomNormal : v.normal;
+	return fabs( Vector3Ops::Dot( sideN, dirFromAdjacent ) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -578,6 +585,7 @@ void VCMIntegrator::ConvertLightSubpath(
 			if( v.bHasVertexColor  ) lv.flags |= kLVF_HasVertexColor;
 			lv.pathLength = static_cast<unsigned short>( i );
 			lv.normal     = v.normal;
+			lv.geomNormal = v.geomNormal;
 			// Direction FROM the previous vertex TO this one.
 			// At merge time the BSDF at the eye-side vertex is
 			// evaluated with wi = -lv.wi so we store the
@@ -760,9 +768,13 @@ namespace
 			rig.bHit = true;
 			rig.ptIntersection = v.position;
 			rig.vNormal = v.normal;
+			rig.vGeomNormal = v.geomNormal;
 			rig.onb = v.onb;
+			// Emitter takes the GEOMETRIC normal — see PT/EmissionShaderOp
+			// for rationale (LambertianEmitter `Dot(out, N) > 0` is a
+			// face-orientation test).
 			const typename Traits::value_type Le =
-				EvalEmitterRadiance<Tag>( *pEmitter, rig, woFromEmitter, v.normal, tag );
+				EvalEmitterRadiance<Tag>( *pEmitter, rig, woFromEmitter, v.geomNormal, tag );
 			if( PositiveMagnitude( Le ) <= 0 ) {
 				continue;
 			}
@@ -776,7 +788,10 @@ namespace
 			const Scalar pdfPosition = Scalar( 1 ) / area;
 			const Scalar directPdfA = pdfSelect * pdfPosition;
 
-			const Scalar cosAtEmitter = Vector3Ops::Dot( v.normal, woFromEmitter );
+			// Emission pdf area-Jacobian uses GEOMETRIC normal — the
+			// Lambertian emitter's directional pdf is `cosThetaG / PI`
+			// where cosThetaG is measured against the actual face.
+			const Scalar cosAtEmitter = Vector3Ops::Dot( v.geomNormal, woFromEmitter );
 			const Scalar emissionDirPdfSA = ( cosAtEmitter > 0 )
 				? ( cosAtEmitter * INV_PI )
 				: Scalar( 0 );
@@ -937,6 +952,9 @@ namespace
 					rig.bHit = true;
 					rig.ptIntersection = ls.position;
 					rig.vNormal = ls.normal;
+					// ls.normal is geometric on luminary meshes (no Phong/
+					// bump on emitters); mirror for downstream consumers.
+					rig.vGeomNormal = ls.normal;
 					Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, -dirToLight, ls.normal, tag );
 				}
 			}
@@ -955,7 +973,13 @@ namespace
 			const Scalar bsdfRevPdfW =
 				RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, dirToLight, woAtEye, tag );
 
-			const Scalar cosAtEye = fabs( Vector3Ops::Dot( v.normal, dirToLight ) );
+			// Geometry-term cosines use the GEOMETRIC normal — the
+			// solid-angle <-> area Jacobian depends on actual face
+			// orientation (Veach §8.2.2 / PBRT 4e §13.6.4).  ls.normal
+			// is supplied by LightSampler::UniformRandomPoint, which
+			// already returns the geometric face normal, so it is used
+			// as-is on the light side.
+			const Scalar cosAtEye = fabs( Vector3Ops::Dot( v.geomNormal, dirToLight ) );
 			Scalar cosAtLight = 0;
 			Scalar G = 0;
 			if( ls.isDelta ) {
@@ -1147,7 +1171,10 @@ namespace
 				continue;
 			}
 
-			const Scalar cosAtLight = fabs( Vector3Ops::Dot( v.normal, dirToCam ) );
+			// Light-tracing connection cosine: GEOMETRIC normal at the
+			// light-vertex hit; this is the area-element Jacobian for
+			// the camera connection (Veach §8.2.2).
+			const Scalar cosAtLight = fabs( Vector3Ops::Dot( v.geomNormal, dirToCam ) );
 			if( cosAtLight <= 0 ) {
 				continue;
 			}
@@ -1175,8 +1202,9 @@ namespace
 						rig.bHit = true;
 						rig.ptIntersection = v.position;
 						rig.vNormal = v.normal;
+						rig.vGeomNormal = v.geomNormal;
 						rig.onb = v.onb;
-						Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, dirToCam, v.normal, tag );
+						Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, dirToCam, v.geomNormal, tag );
 					}
 				}
 				if( PositiveMagnitude( Le ) <= 0 ) {
@@ -1393,8 +1421,11 @@ namespace
 					continue;
 				}
 
-				const Scalar cosAtLight = fabs( Vector3Ops::Dot( lv.normal, lightToEye ) );
-				const Scalar cosAtEye   = fabs( Vector3Ops::Dot( ev.normal, -lightToEye ) );
+				// Merge geometry term: GEOMETRIC normals on both sides
+				// (the area-pdf <-> solid-angle Jacobian uses the actual
+				// surface element, not the BSDF-frame shading normal).
+				const Scalar cosAtLight = fabs( Vector3Ops::Dot( lv.geomNormal, lightToEye ) );
+				const Scalar cosAtEye   = fabs( Vector3Ops::Dot( ev.geomNormal, -lightToEye ) );
 				if( cosAtLight <= 0 || cosAtEye <= 0 ) {
 					continue;
 				}

@@ -85,7 +85,9 @@ void DistributionTracingShaderOp::PerformOperation(
 		if( bUseIrradianceCache && pCache && pCache->GetTolerance() > 0 && rc.IsNormalShadingPass() ) {
 			// Look it up
 			std::vector<IIrradianceCache::CacheElement> results;
-            const Scalar weights = pCache->Query(ri.geometric.ptIntersection, ri.geometric.vNormal, results);
+            // Cache key uses GEOMETRIC normal — see FinalGatherShaderOp
+            // for rationale.
+            const Scalar weights = pCache->Query(ri.geometric.ptIntersection, ri.geometric.vGeomNormal, results);
 
 			if( results.size() > 0 ) {
 				// There were some results, so accrue
@@ -105,7 +107,7 @@ void DistributionTracingShaderOp::PerformOperation(
 			// And we are using irradiance caching
 			if( (bUseIrradianceCache && pCache) || (rs.type == IRayCaster::RAY_STATE::eRayFinalGather) ) {
 				// Check the cache to see if we should generate a sample here
-				bComputeIrradiance = pCache->IsSampleNeeded( ri.geometric.ptIntersection, ri.geometric.vNormal );
+				bComputeIrradiance = pCache->IsSampleNeeded( ri.geometric.ptIntersection, ri.geometric.vGeomNormal );
 			} else {
 				bComputeIrradiance = false;
 			}
@@ -179,7 +181,9 @@ void DistributionTracingShaderOp::PerformOperation(
 				}
 
 				// Add the indirect value to the cache
-				pCache->InsertElement( ri.geometric.ptIntersection, ri.geometric.vNormal, c, rsum, 0, 0 );
+				// Cache record uses GEOMETRIC normal — paired with Query
+				// and IsSampleNeeded above.
+				pCache->InsertElement( ri.geometric.ptIntersection, ri.geometric.vGeomNormal, c, rsum, 0, 0 );
 
 				c = RISEPel(0.7,0.7,0); // shows yellow when a new cache value is computed
 			}

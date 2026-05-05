@@ -244,7 +244,13 @@ static RISEPel EvalShadowTransmittance(
 			// objects are ignored (the walk advances past them).
 			const IMedium* pObjMedium = pHitObj->GetInteriorMedium();
 			if( pObjMedium ) {
-				const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vNormal, ray.Dir() );
+				// Medium-stack push/pop on the shadow walk uses the
+				// GEOMETRIC normal — the boundary crossing is a
+				// topology event (PBRT 4e §11.3.4).  Bumpy dielectric
+				// boundaries can flip the shading-normal sign while the
+				// ray hasn't actually crossed the face, mis-ordering
+				// the medium stack on every NEE ray.
+				const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vGeomNormal, ray.Dir() );
 				if( ndotd < 0 ) {
 					// Front-face: entering this object
 					stack.push( pHitObj, pObjMedium );
@@ -391,7 +397,13 @@ static Scalar EvalShadowTransmittanceNM(
 
 			const IMedium* pObjMedium = pHitObj->GetInteriorMedium();
 			if( pObjMedium ) {
-				const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vNormal, ray.Dir() );
+				// Medium-stack push/pop on the shadow walk uses the
+				// GEOMETRIC normal — the boundary crossing is a
+				// topology event (PBRT 4e §11.3.4).  Bumpy dielectric
+				// boundaries can flip the shading-normal sign while the
+				// ray hasn't actually crossed the face, mis-ordering
+				// the medium stack on every NEE ray.
+				const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vGeomNormal, ray.Dir() );
 				if( ndotd < 0 ) {
 					stack.push( pHitObj, pObjMedium );
 				} else {
@@ -854,6 +866,9 @@ bool LightSampler::SampleLight(
 		// Compute emitted radiance at this point in this direction
 		RayIntersectionGeometric rig( Ray( sample.position, sample.direction ), nullRasterizerState );
 		rig.vNormal = sample.normal;
+		// sample.normal is geometric (UniformRandomPoint on luminary
+		// mesh; no Phong/bump on emitter surfaces); mirror.
+		rig.vGeomNormal = sample.normal;
 		rig.ptCoord = coord;
 		rig.onb = onb;
 
@@ -1244,6 +1259,8 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					// Emitted radiance at sampled point
 					RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
 					lumri.vNormal = lumNormal;
+					// Luminary normal is the geometric face normal; mirror.
+					lumri.vGeomNormal = lumNormal;
 					lumri.ptCoord = lumCoord;
 					lumri.onb.CreateFromW( lumNormal );
 
@@ -1622,6 +1639,8 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 		RayIntersectionGeometric lumri( Ray( ptOnLum, -vToLight ), nullRasterizerState );
 		lumri.vNormal = lumNormal;
+		// Luminary normal is geometric; mirror.
+		lumri.vGeomNormal = lumNormal;
 		lumri.ptCoord = lumCoord;
 		lumri.onb.CreateFromW( lumNormal );
 

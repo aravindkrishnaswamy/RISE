@@ -236,8 +236,11 @@ void DirectVolumeRenderingShader::Shade(
 	// If we are entering the volume, defer the shader to the leaving portion
 	// If we are leaving, then actually do the shading
 
-	// We tell if we are entering or leaving by the ray's orientation to the surface normal
-	const Scalar cosine = -Vector3Ops::Dot(ri.geometric.vNormal, ri.geometric.ray.Dir());
+	// We tell if we are entering or leaving by the ray's orientation to the surface normal.
+	// Entering vs leaving is a face-orientation query — use the
+	// GEOMETRIC normal (PBRT 4e §10.1.1) so the test is unaffected by
+	// any future bump/normal-mapped volume box.
+	const Scalar cosine = -Vector3Ops::Dot(ri.geometric.vGeomNormal, ri.geometric.ray.Dir());
 	if( cosine < NEARZERO ) {
 		// We are coming from the inside of the object, hence we are leaving
 		// We need to do the volume shading now
@@ -388,8 +391,11 @@ Scalar DirectVolumeRenderingShader::ShadeNM(
 	// If we are entering the volume, defer the shader to the leaving portion
 	// If we are leaving, then actually do the shading
 
-	// We tell if we are entering or leaving by the ray's orientation to the surface normal
-	const Scalar cosine = -Vector3Ops::Dot(ri.geometric.vNormal, ri.geometric.ray.Dir());
+	// We tell if we are entering or leaving by the ray's orientation to the surface normal.
+	// Entering vs leaving is a face-orientation query — use the
+	// GEOMETRIC normal (PBRT 4e §10.1.1) so the test is unaffected by
+	// any future bump/normal-mapped volume box.
+	const Scalar cosine = -Vector3Ops::Dot(ri.geometric.vGeomNormal, ri.geometric.ray.Dir());
 	if( cosine < NEARZERO ) {
 		// We are coming from the inside of the object, hence we are leaving
 		// We need to do the volume shading now

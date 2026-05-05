@@ -62,15 +62,22 @@ namespace RISE
 		struct SMSPhotonChainVertex
 		{
 			Point3				position;
-			Vector3				normal;			///< Outward surface normal at hit (geometric, direction-independent).
+			Vector3				normal;			///< Shading normal at hit (post-modifier; BSDF-frame).
+												///< Drives Newton's half-vector constraint and chain-throughput
+												///< Fresnel cosine at the receiver-side reconstruction.
+			Vector3				geomNormal;		///< Geometric flat-face normal at hit (independent of bump
+												///< / normal-map perturbation).  Drives ValidateChainPhysics
+												///< and any "which side of the actual surface is this ray
+												///< on" decision at receiver-side photon reconstruction.
+												///< On analytical primitives equals `normal` by construction.
 			Scalar				eta;			///< Material IOR at this vertex.
 			const IObject*		pObject;
 			const IMaterial*	pMaterial;
 			unsigned char		flags;			///< bit 0: isExiting (photon-direction, refractions only); bit 1: isReflection (scatter chose reflection, not refraction).
 
 			SMSPhotonChainVertex() :
-				position( 0, 0, 0 ), normal( 0, 0, 0 ), eta( 1.0 ),
-				pObject( 0 ), pMaterial( 0 ), flags( 0 ) {}
+				position( 0, 0, 0 ), normal( 0, 0, 0 ), geomNormal( 0, 0, 0 ),
+				eta( 1.0 ), pObject( 0 ), pMaterial( 0 ), flags( 0 ) {}
 		};
 
 		/// Fixed upper bound on the number of specular vertices we store

@@ -134,6 +134,10 @@ namespace RISE
 						RayIntersectionGeometric rig( r, nullRasterizerState );
 						rig.ray = r;
 						rig.vNormal = normal;
+						// `UniformRandomPoint` returns the geometric face
+						// normal on luminary meshes; mirror so vGeomNormal
+						// is not default-zero for any downstream reader.
+						rig.vGeomNormal = normal;
 						rig.ptCoord = coord;
 						rig.onb.CreateFromW( rig.vNormal );
 

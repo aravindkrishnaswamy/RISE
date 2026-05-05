@@ -66,7 +66,14 @@ namespace RISE
 		struct SampleResult
 		{
 			Point3				entryPoint;		///< Entry point on the surface
-			Vector3				entryNormal;	///< Surface normal at entry point
+			Vector3				entryNormal;	///< Shading normal at entry point — drives the cosine-sampled
+												///< continuation frame and Sw Fresnel angular dependence.
+			Vector3				entryGeomNormal;///< Geometric (flat-face) normal at entry point — drives the
+												///< front/back-face gate when the integrator rebuilds an entry
+												///< RayIntersectionGeometric (PT 1508/etc., BDPT 1923/etc.).
+												///< On analytical primitives equals entryNormal; on triangle
+												///< meshes carries the actual face orientation independent of
+												///< Phong / bump perturbation.
 			OrthonormalBasis3D	entryONB;		///< ONB at entry point
 			Ray					scatteredRay;	///< Cosine-weighted ray from entry point
 			RISEPel				weight;			///< Full BSSRDF weight: Rd * Ft(exit) * Ft(entry) / (c * pdfSurface)
