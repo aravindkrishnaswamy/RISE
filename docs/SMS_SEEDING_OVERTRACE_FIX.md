@@ -172,3 +172,89 @@ to 1 to re-engage them when investigating a future SMS regression.
   flag (compile-time gated)
 - `CLAUDE.md` — high-value-fact correction
 - this doc
+
+## Uniform-mode follow-up (2026-05, second pass)
+
+The emitter-projection cap above is **correct for snell mode but wrong
+for uniform mode** (`sms_seeding "uniform"`).  Snell mode passes the
+LIGHT position as `end` to `BuildSeedChain`, so the cap fires at the
+emitter's distance — exactly what we want.  Uniform mode passes the
+**uniform-area-sampled point on the caster** as `end`, which sits ON
+the specular surface — typically far closer to the shading point than
+the actual light.  The cap then clips the seed chain to a single
+specular vertex when the natural caustic is `k=2`.
+
+### Diagnosis (cubic_d40, gaussian_d40 displaced Veach egg)
+
+Phys-fail chain-length distribution in uniform mode (pre-fix):
+
+| k | gaussian_d40 |
+|---|---|
+| 1 | 35 % |
+| 2 | 5.5 % ← natural caustic length |
+| 3 | 35 % |
+| 4 | 25 % |
+
+5.5 % matches expected vs. snell mode's 100 % k=2 chains.  The
+emitter-projection cap is firing on `sp` (caster sample) instead of
+the actual emitter, clipping most chains short.
+
+### Mitsuba reference comparison
+
+Re-fetched `manifold_ms.cpp` `sample_seed_path()`:
+
+> `m_config.bounces` is a **fixed target**, not a maximum. The code
+> explicitly breaks once `bounce >= m_config.bounces` is satisfied.
+> If can't reach K hits, return false (reject seed).
+
+Mitsuba's chain length is exactly K (user-specified per scene).  RISE
+has `sms_max_chain_depth` as a **maximum** (default 10), not a target.
+Uniform mode therefore produced variable-k chains; k=2 happened only
+by accident.
+
+### Fix
+
+Two-part:
+
+**Part 1 — code (this commit):** Added an `applyEmitterStop` parameter
+to `BuildSeedChain`, `BuildSeedChainBranching`, and
+`SnellContinueChain`.  Default `true` preserves snell-mode behaviour.
+All six uniform-mode call sites (RGB + spectral × main / branched /
+Bernoulli-trial) pass `false`.
+
+**Part 2 — scene authoring:** For `sms_seeding "uniform"`, set
+`sms_max_chain_depth` to the natural caustic K for the scene (typically
+2 for a glass shell or interior-light scene).  Default 10 is
+appropriate for snell mode — the emitter-projection cap discovers the
+right depth automatically — but in uniform mode it allows over-traces
+that produce wrong-length seed chains.
+
+### Result
+
+| metric | uniform-broken | uniform-fixed | snell mode (default) |
+|---|---|---|---|
+| **gaussian_d40** ok % | 24.0 | **42.9** | 68.5 |
+| **gaussian_d40** phys % | 48.8 | **11.1** | 3.9 |
+| **gaussian_d40** ratio | 0.013 | **0.249** | 0.594 |
+| **glasssphere** ok % | 58.5 | **92.8** | 57.8 |
+| **glasssphere** phys % | 36.5 | **3.4** | 17.6 |
+| **glasssphere** ratio | (high noise) | **5.81** | 6.60 |
+
+On smooth canonical scenes (`sms_k2_glasssphere`), uniform mode is
+now competitive with — actually slightly better-recovering than —
+snell mode (93 % ok vs 58 %).  On heavily-displaced refraction
+caustics, snell remains the better choice (43 % vs 68 %), consistent
+with the existing `sms_seeding` regime guidance in CLAUDE.md.
+
+### Implication for prior Mitsuba-parity finding
+
+The earlier "RISE outperforms Mitsuba's reference algorithm 12-80×"
+([SMS_WRONG_TOPOLOGY_LITERATURE.md](SMS_WRONG_TOPOLOGY_LITERATURE.md)
+recommendation 2 follow-up) was based on a **broken** uniform mode.
+With this fix the comparison is apples-to-apples: RISE-uniform ≈
+Mitsuba-reference on smooth scenes, and RISE-snell beats both on
+displaced.  The 5 % residual phys-fail rate that the prior literature
+survey called "the consensus floor" is in fact the floor for uniform
+mode; snell mode achieves a lower rate on the same scene class
+because the deterministic Snell-trace places seeds in
+correct-topology basins by construction.

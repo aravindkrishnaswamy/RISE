@@ -47,6 +47,20 @@
 namespace { constexpr unsigned int kPhysFailRetries  = 0; }	// E disabled for G's clean apples-to-apples; revert to 4 to re-enable.
 namespace { constexpr RISE::Scalar kPhysFailPerturb  = RISE::Scalar( 0.10 ); } ///< Half-range of uniform tangent-plane perturbation (mirrors the Bernoulli loop's 0.1 range).
 
+// EXPERIMENT T2: pre-Newton topology check.  Validate the seed chain's
+// physics BEFORE running Newton.  If the seed is already wrong-topology,
+// skip the Solve entirely (don't waste the Newton iters; we know they
+// can't help).  Default 0 (off); flip to 1 to evaluate.
+#define SMS_T2_PRE_NEWTON_TOPOLOGY_CHECK 0
+
+// EXPERIMENT T3: post-Newton failing-vertex retry.  When Newton
+// converges but ValidateChainPhysics rejects, perturb ONLY the failing
+// vertex (not all vertices like E did) by a random tangent offset, and
+// retry Newton up to N times.  More targeted than E.  Default 0 (off).
+#define SMS_T3_POST_NEWTON_FAILING_VERTEX_RETRY 0
+namespace { constexpr unsigned int kT3FailingVertexRetries = 4; }
+namespace { constexpr RISE::Scalar kT3PerturbMag           = RISE::Scalar( 0.10 ); }
+
 // Newton step-norm cap.  Bounds each Newton iter's max world-space
 // vertex displacement to <kNewtonStepNormCapFrac> × (mean inter-vertex
 // segment length).  Default 0 disables the cap (the existing 10-halving
@@ -195,6 +209,15 @@ namespace {
 	std::atomic<uint64_t> g_physFailRestart_attempted{0};   ///< Solve calls that reached the phys-fail-retry loop
 	std::atomic<uint64_t> g_physFailRestart_rescued{0};     ///< Calls where SOME perturbed seed produced a phys-valid converged chain
 	std::atomic<uint64_t> g_physFailRestart_iters{0};       ///< Total perturbed Newton attempts (across all calls)
+
+	// EXPERIMENT T2: pre-Newton topology check counters.
+	std::atomic<uint64_t> g_t2_seedValidated{0};            ///< Solves where pre-Newton topology check ran
+	std::atomic<uint64_t> g_t2_seedSkipped{0};              ///< Solves skipped because seed was invalid
+
+	// EXPERIMENT T3: post-Newton failing-vertex-only retry counters.
+	std::atomic<uint64_t> g_t3_attempted{0};                ///< Phys-failed Solves that entered retry loop
+	std::atomic<uint64_t> g_t3_rescued{0};                  ///< Retries that produced a phys-valid chain
+	std::atomic<uint64_t> g_t3_iters{0};                    ///< Total Newton solves spent in retries
 
 	// PUSHBACK ANATOMY: deeper instrumentation to attribute phys-fails to
 	// either "Newton dragged a valid seed into a bad basin" (solver bug)
@@ -552,6 +575,30 @@ namespace {
 							}
 						}
 					}
+					// EXPERIMENT T2: pre-Newton topology check effectiveness.
+					const uint64_t t2_v = g_t2_seedValidated.load();
+					const uint64_t t2_s = g_t2_seedSkipped.load();
+					if( t2_v > 0 ) {
+						std::fprintf( stderr,
+							"[SMS-T2-PRE-NEWTON-CHECK] validated=%llu  skipped-as-invalid=%llu (%.2f%% of validated)\n",
+							(unsigned long long)t2_v,
+							(unsigned long long)t2_s,
+							100.0 * double(t2_s) / double(t2_v) );
+					}
+					// EXPERIMENT T3: post-Newton failing-vertex retry effectiveness.
+					const uint64_t t3_a = g_t3_attempted.load();
+					const uint64_t t3_r = g_t3_rescued.load();
+					const uint64_t t3_i = g_t3_iters.load();
+					if( t3_a > 0 ) {
+						std::fprintf( stderr,
+							"[SMS-T3-FAILING-VERTEX-RETRY] attempted=%llu rescued=%llu (%.2f%%)  total-newton-iters=%llu  avg-iters/attempt=%.2f\n",
+							(unsigned long long)t3_a,
+							(unsigned long long)t3_r,
+							100.0 * double(t3_r) / double(t3_a),
+							(unsigned long long)t3_i,
+							double(t3_i) / double(t3_a) );
+					}
+
 					// EXPERIMENT E: perturbed-seed restart effectiveness.
 					const uint64_t pr_att = g_physFailRestart_attempted.load();
 					const uint64_t pr_res = g_physFailRestart_rescued.load();
@@ -3580,7 +3627,8 @@ unsigned int ManifoldSolver::BuildSeedChain(
 	const Point3& end,
 	const IScene& scene,
 	const IRayCaster& caster,
-	std::vector<ManifoldVertex>& chain
+	std::vector<ManifoldVertex>& chain,
+	bool applyEmitterStop
 	) const
 {
 	chain.clear();
@@ -3618,7 +3666,7 @@ unsigned int ManifoldSolver::BuildSeedChain(
 	return SnellContinueChain(
 		currentOrigin, dir, totalDist,
 		currentIOR, seedIor,
-		scene, caster, chain );
+		scene, caster, chain, applyEmitterStop );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -3646,7 +3694,8 @@ unsigned int ManifoldSolver::SnellContinueChain(
 	IORStack& seedIor,
 	const IScene& scene,
 	const IRayCaster& caster,
-	std::vector<ManifoldVertex>& chain
+	std::vector<ManifoldVertex>& chain,
+	bool applyEmitterStop
 	) const
 {
 	(void)caster;   // reserved for future visibility queries
@@ -3754,9 +3803,15 @@ unsigned int ManifoldSolver::SnellContinueChain(
 			break;
 		}
 
-		// EMITTER STOP: if this candidate hit is past the emitter
-		// along the original direction, we've over-traced.  Don't
-		// add this vertex; the chain ends at the previous one.
+		// EMITTER STOP (snell-mode): if this candidate hit is past
+		// the emitter along the original direction, we've over-traced.
+		// In uniform mode, `end` is the sampled-on-caster point, NOT
+		// the emitter — applying the cap would clip the chain to a
+		// single vertex instead of letting it span the natural caustic
+		// length.  Caller passes `applyEmitterStop = false` in that
+		// case; behaviour falls through to the maxChainDepth + non-
+		// specular-hit termination conditions below.
+		if( applyEmitterStop )
 		{
 			const Vector3 hitOffset = Vector3Ops::mkVector3(
 				ri.geometric.ptIntersection, origStart );
@@ -4004,7 +4059,8 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 	const IScene& scene,
 	const IRayCaster& caster,
 	ISampler& sampler,
-	std::vector<SeedChainResult>& out
+	std::vector<SeedChainResult>& out,
+	bool applyEmitterStop
 	) const
 {
 	(void)caster;
@@ -4135,8 +4191,10 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 			continue;
 		}
 
-		// EMITTER STOP: this hit is past the emitter — emit chain-
-		// so-far and don't append the over-shot vertex.
+		// EMITTER STOP (snell-mode only — see SnellContinueChain).
+		// Uniform-mode passes `applyEmitterStop = false` so the cap
+		// doesn't clip on the caster sample point.
+		if( applyEmitterStop )
 		{
 			const Vector3 hitOffset = Vector3Ops::mkVector3(
 				ri.geometric.ptIntersection, origStart );
@@ -5180,6 +5238,28 @@ ManifoldResult ManifoldSolver::Solve(
 	// Save seed template for Bernoulli trials
 	const std::vector<ManifoldVertex> seedTemplate( specularChain );
 
+#if SMS_T2_PRE_NEWTON_TOPOLOGY_CHECK
+	// EXPERIMENT T2: validate seed-chain physics BEFORE Newton.  If
+	// the seed is already wrong-topology, skip Solve — Newton can't
+	// rescue an invalid seed via topology (per pushback diagnostics).
+	{
+#if SMS_SOLVE_DIAG
+		g_t2_seedValidated.fetch_add( 1, std::memory_order_relaxed );
+#endif
+		if( !ValidateChainPhysics( specularChain, shadingPoint, emitterPoint ) )
+		{
+#if SMS_SOLVE_DIAG
+			g_t2_seedSkipped.fetch_add( 1, std::memory_order_relaxed );
+			// Count this as a phys-fail (the chain is wrong-topology;
+			// Newton would have either rescued it OR preserved it as
+			// phys-fail — we're betting most preserve).
+			g_solveDiag_physicsFail.fetch_add( 1, std::memory_order_relaxed );
+#endif
+			return result;
+		}
+	}
+#endif
+
 	// SMS two-stage solver (Zeltner 2020 §5).  Run Newton first on the
 	// SMOOTHED reference surface (smoothing = 1: underlying analytical base,
 	// no displacement / no high-frequency detail), then refine on the
@@ -5422,22 +5502,75 @@ ManifoldResult ManifoldSolver::Solve(
 				StallTopology_BinPhysFail( specularChain[0].uv );
 			}
 #endif
+			bool rescued = false;
+
+#if SMS_T3_POST_NEWTON_FAILING_VERTEX_RETRY
+			// EXPERIMENT T3: targeted retry at the failing vertex only.
+			// More surgical than E (which perturbs every vertex).  Find
+			// which vertex's wi/wo sign-product was wrong, then sample a
+			// small tangent-plane offset on JUST that vertex and rerun
+			// Newton.  Tests whether the rejected basin has a phys-valid
+			// neighbour reachable by a single-vertex perturbation.
+			if( kT3FailingVertexRetries > 0 )
+			{
+				unsigned int failIdx = static_cast<unsigned int>( specularChain.size() );
+				for( unsigned int i = 0; i < specularChain.size(); i++ )
+				{
+					const ManifoldVertex& vv = specularChain[i];
+					const Point3 prevP = (i == 0) ? shadingPoint : specularChain[i-1].position;
+					const Point3 nextP = (i == specularChain.size()-1) ? emitterPoint : specularChain[i+1].position;
+					const Vector3 wiV = Vector3Ops::Normalize( Vector3Ops::mkVector3( prevP, vv.position ) );
+					const Vector3 woV = Vector3Ops::Normalize( Vector3Ops::mkVector3( nextP, vv.position ) );
+					const bool hasGeom = ( Vector3Ops::SquaredModulus( vv.geomNormal ) > NEARZERO );
+					const Vector3& nT = hasGeom ? vv.geomNormal : vv.normal;
+					const Scalar a = Vector3Ops::Dot( wiV, nT );
+					const Scalar b = Vector3Ops::Dot( woV, nT );
+					const bool fail = vv.isReflection ? ( a*b < 0.0 ) : ( a*b > 0.0 );
+					if( fail ) { failIdx = i; break; }
+				}
+				if( failIdx < specularChain.size() )
+				{
+#if SMS_SOLVE_DIAG
+					g_t3_attempted.fetch_add( 1, std::memory_order_relaxed );
+#endif
+					for( unsigned int retry = 0; retry < kT3FailingVertexRetries && !rescued; retry++ )
+					{
+#if SMS_SOLVE_DIAG
+						g_t3_iters.fetch_add( 1, std::memory_order_relaxed );
+#endif
+						std::vector<ManifoldVertex> testChain( seedTemplate );
+						const Scalar ru = sampler.Get1D() * (2.0 * kT3PerturbMag) - kT3PerturbMag;
+						const Scalar rv = sampler.Get1D() * (2.0 * kT3PerturbMag) - kT3PerturbMag;
+						testChain[failIdx].position = Point3Ops::mkPoint3(
+							testChain[failIdx].position,
+							testChain[failIdx].dpdu * ru + testChain[failIdx].dpdv * rv );
+						if( !UpdateVertexOnSurface( testChain[failIdx], 0.0, 0.0 ) ) continue;
+						if( !NewtonSolve( testChain, shadingPoint, emitterPoint ) ) continue;
+						if( !ValidateChainPhysics( testChain, shadingPoint, emitterPoint ) ) continue;
+						specularChain = testChain;
+						rescued = true;
+#if SMS_SOLVE_DIAG
+						g_t3_rescued.fetch_add( 1, std::memory_order_relaxed );
+#endif
+					}
+				}
+			}
+#endif
+
 #if SMS_PHYSFAIL_RESTART_ENABLED
-			// EXPERIMENT E: try Gaussian-perturbed restart.  If a small
-			// tangent-plane wiggle on the seed lands in a different (and
-			// physically-valid) basin, accept that chain.
-			if( kPhysFailRetries > 0 )
+			// EXPERIMENT E: Gaussian-perturbed restart on EVERY vertex.
+			// Coarser than T3.  Falls through to here if T3 didn't rescue
+			// (or wasn't enabled).
+			if( !rescued && kPhysFailRetries > 0 )
 			{
 #if SMS_SOLVE_DIAG
 				g_physFailRestart_attempted.fetch_add( 1, std::memory_order_relaxed );
 #endif
-				bool rescued = false;
 				for( unsigned int retry = 0; retry < kPhysFailRetries && !rescued; retry++ )
 				{
 #if SMS_SOLVE_DIAG
 					g_physFailRestart_iters.fetch_add( 1, std::memory_order_relaxed );
 #endif
-
 					std::vector<ManifoldVertex> testChain( seedTemplate );
 					bool perturbOk = true;
 					for( unsigned int i = 0; i < testChain.size(); i++ )
@@ -5453,30 +5586,18 @@ ManifoldResult ManifoldSolver::Solve(
 						}
 					}
 					if( !perturbOk ) continue;
-
 					if( !NewtonSolve( testChain, shadingPoint, emitterPoint ) ) continue;
 					if( !ValidateChainPhysics( testChain, shadingPoint, emitterPoint ) ) continue;
-
 					specularChain = testChain;
 					rescued = true;
 #if SMS_SOLVE_DIAG
 					g_physFailRestart_rescued.fetch_add( 1, std::memory_order_relaxed );
 #endif
 				}
-				if( !rescued )
-				{
-#if SMS_TRACE_DIAGNOSTIC
-					g_solvePhysicsFail.fetch_add( 1, std::memory_order_relaxed );
-#endif
-#if SMS_SOLVE_DIAG
-					g_solveDiag_physicsFail.fetch_add( 1, std::memory_order_relaxed );
-#endif
-					return result;
-				}
-				// Fall through with the rescued chain.  Skip the
-				// original return-result path.
 			}
-			else
+#endif
+
+			if( !rescued )
 			{
 #if SMS_TRACE_DIAGNOSTIC
 				g_solvePhysicsFail.fetch_add( 1, std::memory_order_relaxed );
@@ -5490,19 +5611,7 @@ ManifoldResult ManifoldSolver::Solve(
 #endif
 				return result;
 			}
-#else
-#if SMS_TRACE_DIAGNOSTIC
-			g_solvePhysicsFail.fetch_add( 1, std::memory_order_relaxed );
-			if( traceSolve ) {
-				GlobalLog()->PrintEx( eLog_Event,
-					"SMS_SOLVE:  REJECTED by ValidateChainPhysics (wi/wo sidedness mismatch)" );
-			}
-#endif
-#if SMS_SOLVE_DIAG
-			g_solveDiag_physicsFail.fetch_add( 1, std::memory_order_relaxed );
-#endif
-			return result;
-#endif // SMS_PHYSFAIL_RESTART_ENABLED
+			// Fall through with the rescued chain.
 		}
 
 		// Reject chains with very short inter-vertex segments.
@@ -7047,8 +7156,15 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 			&sp, &sn, &sc,
 			Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
 		trialSeed.clear();
+		// Uniform mode: sp is the direction probe, NOT the emitter.
+		// Disable BuildSeedChain's emitter-projection stop so the
+		// trace can capture the full natural caustic chain instead
+		// of clipping at the caster's projection.  Mitsuba's
+		// `m_config.bounces` cap is approximated by maxChainDepth +
+		// the non-specular-hit terminator.
 		const unsigned int chainLen = BuildSeedChain(
-			pos, sp, scene, caster, trialSeed );
+			pos, sp, scene, caster, trialSeed,
+			/*applyEmitterStop=*/ false );
 		if( chainLen == 0 || trialSeed.empty() ) return false;
 		if( trialSeed[0].pObject != pCasterObj ) return false;
 		return true;
@@ -7070,7 +7186,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 			&sp, &sn, &sc,
 			Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
 		outSeeds.clear();
-		BuildSeedChainBranching( pos, sp, scene, caster, loopSampler, outSeeds );
+		BuildSeedChainBranching( pos, sp, scene, caster, loopSampler, outSeeds,
+			/*applyEmitterStop=*/ false );
 		// Filter to chains whose first specular hit is the sampled caster
 		// (matches Mitsuba's `si_init.shape != shape` rejection).
 		outSeeds.erase(
@@ -7190,7 +7307,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 				std::vector<ManifoldVertex> trialChain;
 				bool match = false;
-				if( BuildSeedChain( pos, sp_t, scene, caster, trialChain ) > 0 &&
+				if( BuildSeedChain( pos, sp_t, scene, caster, trialChain,
+						/*applyEmitterStop=*/ false ) > 0 &&
 					!trialChain.empty() && trialChain[0].pObject == pCasterObj )
 				{
 					ManifoldResult tResult = Solve(
@@ -7388,8 +7506,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 			&sp, &sn, &sc,
 			Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
 		trialSeed.clear();
+		// Uniform mode — see RGB variant comment.  applyEmitterStop=false.
 		const unsigned int chainLen = BuildSeedChain(
-			pos, sp, scene, caster, trialSeed );
+			pos, sp, scene, caster, trialSeed,
+			/*applyEmitterStop=*/ false );
 		if( chainLen == 0 || trialSeed.empty() ) return false;
 		if( trialSeed[0].pObject != pCasterObj ) return false;
 		applyNMEtaToChain( trialSeed );
@@ -7409,7 +7529,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 			&sp, &sn, &sc,
 			Point3( loopSampler.Get1D(), loopSampler.Get1D(), loopSampler.Get1D() ) );
 		outSeeds.clear();
-		BuildSeedChainBranching( pos, sp, scene, caster, loopSampler, outSeeds );
+		BuildSeedChainBranching( pos, sp, scene, caster, loopSampler, outSeeds,
+			/*applyEmitterStop=*/ false );
 		outSeeds.erase(
 			std::remove_if( outSeeds.begin(), outSeeds.end(),
 				[&]( const SeedChainResult& r ) {
@@ -7505,7 +7626,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 
 				std::vector<ManifoldVertex> trialChain;
 				bool match = false;
-				if( BuildSeedChain( pos, sp_t, scene, caster, trialChain ) > 0 &&
+				if( BuildSeedChain( pos, sp_t, scene, caster, trialChain,
+						/*applyEmitterStop=*/ false ) > 0 &&
 					!trialChain.empty() && trialChain[0].pObject == pCasterObj )
 				{
 					applyNMEtaToChain( trialChain );

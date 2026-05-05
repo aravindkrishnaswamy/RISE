@@ -392,7 +392,8 @@ namespace RISE
 				const Point3& end,
 				const IScene& scene,
 				const IRayCaster& caster,
-				std::vector<ManifoldVertex>& chain
+				std::vector<ManifoldVertex>& chain,
+				bool applyEmitterStop = true       ///< Snell mode: true (stop at emitter projection).  Uniform mode: false (sp is a direction probe, not the emitter).
 				) const;
 
 			/// One result of `BuildSeedChainBranching`: a complete seed
@@ -442,7 +443,8 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
-				std::vector<SeedChainResult>& out
+				std::vector<SeedChainResult>& out,
+				bool applyEmitterStop = true       ///< Snell mode: true.  Uniform mode: false (see BuildSeedChain).
 				) const;
 
 			/// Continues a manifold-seed chain by Snell-tracing a ray from
@@ -486,7 +488,8 @@ namespace RISE
 				IORStack& seedIor,
 				const IScene& scene,
 				const IRayCaster& caster,
-				std::vector<ManifoldVertex>& chain
+				std::vector<ManifoldVertex>& chain,
+				bool applyEmitterStop = true       ///< false ⇒ ignore the projection cap; trace continues through every specular hit until maxChainDepth or non-specular hit.
 				) const;
 
 			/// Computes the geometric coupling factor through a specular
