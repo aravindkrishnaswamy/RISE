@@ -213,6 +213,39 @@ namespace {
 	std::atomic<uint64_t> g_physFail_anyReflectionInChain{0}; ///< Chain has at least one isReflection=true vertex (TIR or mirror)
 	std::atomic<uint64_t> g_physFail_allRefractionInChain{0}; ///< Every vertex in chain is refraction
 
+	// EXPERIMENT (c) NEWTON-STALL TOPOLOGY: 16×16 histogram of (u, v) on
+	// vertex 0 of every Newton-failed chain.  Vertex 0 is the entry hit
+	// on the displaced outer surface, so its (u, v) tells us WHERE on
+	// the underlying ellipsoid Newton stalled.  Compare across painter
+	// modes (gaussian / quadratic / heaviside) at the same disp value
+	// to localise which surface regions drive plateau-stalling.
+	constexpr unsigned int kStallBins = 16;
+	std::atomic<uint64_t> g_newtonFail_uv[kStallBins][kStallBins]{};
+	std::atomic<uint64_t> g_newtonOk_uv[kStallBins][kStallBins]{};
+	std::atomic<uint64_t> g_physFail_uv[kStallBins][kStallBins]{};   ///< Phys-fail (wrong-topology) localisation on the underlying surface
+
+	inline void StallTopology_BinFail( const RISE::Point2& uv ) {
+		const RISE::Scalar u = uv.x < 0.0 ? 0.0 : (uv.x > 1.0 ? 0.99999 : uv.x);
+		const RISE::Scalar v = uv.y < 0.0 ? 0.0 : (uv.y > 1.0 ? 0.99999 : uv.y);
+		const unsigned int iu = (unsigned int)(u * kStallBins);
+		const unsigned int iv = (unsigned int)(v * kStallBins);
+		g_newtonFail_uv[iu][iv].fetch_add( 1, std::memory_order_relaxed );
+	}
+	inline void StallTopology_BinOk( const RISE::Point2& uv ) {
+		const RISE::Scalar u = uv.x < 0.0 ? 0.0 : (uv.x > 1.0 ? 0.99999 : uv.x);
+		const RISE::Scalar v = uv.y < 0.0 ? 0.0 : (uv.y > 1.0 ? 0.99999 : uv.y);
+		const unsigned int iu = (unsigned int)(u * kStallBins);
+		const unsigned int iv = (unsigned int)(v * kStallBins);
+		g_newtonOk_uv[iu][iv].fetch_add( 1, std::memory_order_relaxed );
+	}
+	inline void StallTopology_BinPhysFail( const RISE::Point2& uv ) {
+		const RISE::Scalar u = uv.x < 0.0 ? 0.0 : (uv.x > 1.0 ? 0.99999 : uv.x);
+		const RISE::Scalar v = uv.y < 0.0 ? 0.0 : (uv.y > 1.0 ? 0.99999 : uv.y);
+		const unsigned int iu = (unsigned int)(u * kStallBins);
+		const unsigned int iv = (unsigned int)(v * kStallBins);
+		g_physFail_uv[iu][iv].fetch_add( 1, std::memory_order_relaxed );
+	}
+
 	inline void PhysFail_BinFirstFailIdx( unsigned int i ) {
 		const unsigned int slot = i >= 5 ? 5 : i;
 		g_physFail_firstFailIdx[slot].fetch_add( 1, std::memory_order_relaxed );
@@ -455,6 +488,70 @@ namespace {
 						}
 					}
 
+					// EXPERIMENT (c): NEWTON-STALL TOPOLOGY heatmap.
+					{
+						uint64_t failTotal = 0, okTotal = 0;
+						for( unsigned int iu = 0; iu < kStallBins; iu++ ) {
+							for( unsigned int iv = 0; iv < kStallBins; iv++ ) {
+								failTotal += g_newtonFail_uv[iu][iv].load();
+								okTotal   += g_newtonOk_uv[iu][iv].load();
+							}
+						}
+						if( failTotal + okTotal > 0 ) {
+							std::fprintf( stderr,
+								"[SMS-NEWTON-STALL-TOPOLOGY] %ux%u (u, v) heatmap, vertex 0 of every Newton-failed and OK chain.\n"
+								"[SMS-NEWTON-STALL-TOPOLOGY] u increases L→R, v increases T→B; cells: fail-rate %% = 100*fails/(fails+ok)\n",
+								kStallBins, kStallBins );
+							for( unsigned int iv = 0; iv < kStallBins; iv++ ) {
+								std::fprintf( stderr, "[SMS-NEWTON-STALL-TOPOLOGY] row v=%2u  ", iv );
+								for( unsigned int iu = 0; iu < kStallBins; iu++ ) {
+									const uint64_t f = g_newtonFail_uv[iu][iv].load();
+									const uint64_t o = g_newtonOk_uv[iu][iv].load();
+									const uint64_t t = f + o;
+									if( t == 0 ) std::fprintf( stderr, "  --   " );
+									else         std::fprintf( stderr, " %5.1f ", 100.0 * double(f) / double(t) );
+								}
+								std::fprintf( stderr, "\n" );
+							}
+							std::fprintf( stderr,
+								"[SMS-NEWTON-STALL-TOPOLOGY] totals: fails=%llu  ok=%llu  overall-fail-rate=%.2f%%\n",
+								(unsigned long long)failTotal, (unsigned long long)okTotal,
+								100.0 * double(failTotal) / double(failTotal + okTotal) );
+
+							// PHYS-FAIL topology — same grid, fraction of chains
+							// at each cell that converge to a wrong-topology
+							// root (denominator: ok + phys-fail at that cell,
+							// since a chain that's Newton-fail never reaches
+							// the validator).
+							uint64_t physFailTotal = 0;
+							for( unsigned int iu = 0; iu < kStallBins; iu++ ) {
+								for( unsigned int iv = 0; iv < kStallBins; iv++ ) {
+									physFailTotal += g_physFail_uv[iu][iv].load();
+								}
+							}
+							if( physFailTotal > 0 ) {
+								std::fprintf( stderr,
+									"[SMS-PHYSFAIL-TOPOLOGY] %ux%u (u, v) heatmap, vertex 0 of every phys-failed chain.\n"
+									"[SMS-PHYSFAIL-TOPOLOGY] cells: phys-fail-rate %% = 100*phys-fails/(phys-fails+ok)  (Newton-fails excluded since they never reach the validator)\n",
+									kStallBins, kStallBins );
+								for( unsigned int iv = 0; iv < kStallBins; iv++ ) {
+									std::fprintf( stderr, "[SMS-PHYSFAIL-TOPOLOGY] row v=%2u  ", iv );
+									for( unsigned int iu = 0; iu < kStallBins; iu++ ) {
+										const uint64_t pf = g_physFail_uv[iu][iv].load();
+										const uint64_t o  = g_newtonOk_uv[iu][iv].load();
+										const uint64_t t  = pf + o;
+										if( t == 0 ) std::fprintf( stderr, "  --   " );
+										else         std::fprintf( stderr, " %5.1f ", 100.0 * double(pf) / double(t) );
+									}
+									std::fprintf( stderr, "\n" );
+								}
+								std::fprintf( stderr,
+									"[SMS-PHYSFAIL-TOPOLOGY] totals: phys-fails=%llu  (overall phys-fail-rate vs ok = %.2f%%)\n",
+									(unsigned long long)physFailTotal,
+									100.0 * double(physFailTotal) / double(physFailTotal + okTotal) );
+							}
+						}
+					}
 					// EXPERIMENT E: perturbed-seed restart effectiveness.
 					const uint64_t pr_att = g_physFailRestart_attempted.load();
 					const uint64_t pr_res = g_physFailRestart_rescued.load();
@@ -5272,6 +5369,10 @@ ManifoldResult ManifoldSolver::Solve(
 			else if( nrm < 1.0  ) g_solveDiag_newtonFail_lt1e0.fetch_add( 1, std::memory_order_relaxed );
 			else                  g_solveDiag_newtonFail_ge1e0.fetch_add( 1, std::memory_order_relaxed );
 		}
+		// EXPERIMENT (c): record vertex-0 (u, v) of the failing chain.
+		if( !specularChain.empty() ) {
+			StallTopology_BinFail( specularChain[0].uv );
+		}
 #endif
 	}
 
@@ -5314,6 +5415,11 @@ ManifoldResult ManifoldSolver::Solve(
 				}
 				if( anyRefl ) g_physFail_anyReflectionInChain.fetch_add( 1, std::memory_order_relaxed );
 				else          g_physFail_allRefractionInChain.fetch_add( 1, std::memory_order_relaxed );
+			}
+
+			// EXPERIMENT (c): record vertex-0 (u, v) of the phys-failed chain.
+			if( !specularChain.empty() ) {
+				StallTopology_BinPhysFail( specularChain[0].uv );
 			}
 #endif
 #if SMS_PHYSFAIL_RESTART_ENABLED
@@ -5492,6 +5598,11 @@ ManifoldResult ManifoldSolver::Solve(
 #endif
 #if SMS_SOLVE_DIAG
 		g_solveDiag_ok.fetch_add( 1, std::memory_order_relaxed );
+		// EXPERIMENT (c): record vertex-0 (u, v) of OK chains too, so we
+		// can compare fail vs ok density on the surface.
+		if( !specularChain.empty() ) {
+			StallTopology_BinOk( specularChain[0].uv );
+		}
 #endif
 		result.valid = true;
 		result.specularChain = specularChain;
