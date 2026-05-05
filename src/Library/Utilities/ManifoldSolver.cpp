@@ -36,6 +36,17 @@
 // auditing SMS energy ratios across disp / multi-trial / photon configs.
 #define SMS_SOLVE_DIAG 0
 
+// EXPERIMENT E: perturbed-seed restart on phys-fail.  When a Newton-
+// converged chain is rejected by ValidateChainPhysics, retry up to N
+// times with a small Gaussian-style perturbation on every vertex's
+// tangent-plane position.  Tests whether the spurious-minimum basin
+// is "near" a physically-valid basin (perturbation rescues) or is
+// topologically separated (perturbation always lands in the same bad
+// basin).  Set kPhysFailRetries=0 to disable.
+#define SMS_PHYSFAIL_RESTART_ENABLED 1
+namespace { constexpr unsigned int kPhysFailRetries  = 0; }	// E disabled for G's clean apples-to-apples; revert to 4 to re-enable.
+namespace { constexpr RISE::Scalar kPhysFailPerturb  = RISE::Scalar( 0.10 ); } ///< Half-range of uniform tangent-plane perturbation (mirrors the Bernoulli loop's 0.1 range).
+
 // Newton step-norm cap.  Bounds each Newton iter's max world-space
 // vertex displacement to <kNewtonStepNormCapFrac> × (mean inter-vertex
 // segment length).  Default 0 disables the cap (the existing 10-halving
@@ -158,6 +169,98 @@ namespace {
 	std::atomic<uint64_t> g_solveDiag_edgeChecks{0};        ///< Line-search attempts where the trust check ran
 	std::atomic<uint64_t> g_solveDiag_edgeRejects{0};       ///< Line-search attempts rejected due to untrusted linearization
 
+	// PHYS-FAIL ANATOMY (Direction A in the displaced-caustic
+	// investigation): characterise each vertex that fails
+	// ValidateChainPhysics by chain-position, operation, grazing
+	// magnitude, shading-vs-geom disagreement, and Phong-tilt
+	// magnitude — so we can attribute spurious rejections to specific
+	// geometric regimes rather than a single black-box "physicsFail"
+	// counter.
+	std::atomic<uint64_t> g_physFail_byVtxPos[4]{};         ///< 0=sole(k=1), 1=first, 2=middle, 3=last
+	std::atomic<uint64_t> g_physFail_byOp[2]{};             ///< 0=refraction, 1=reflection
+	std::atomic<uint64_t> g_physFail_minCos[6]{};           ///< min(|wi·n|,|wo·n|): <1e-4, 1e-4..1e-3, 1e-3..1e-2, 1e-2..1e-1, 1e-1..0.5, >=0.5
+	std::atomic<uint64_t> g_physFail_shadingAgrees{0};      ///< Shading-normal test ALSO rejects (chain genuinely wrong)
+	std::atomic<uint64_t> g_physFail_shadingMasked{0};      ///< Shading would have ACCEPTED — geom test caught it (audit win)
+	std::atomic<uint64_t> g_physFail_phongTilt[5]{};        ///< dot(geomN, shadingN): >.999, .99..999, .95..99, .8..95, <.8
+	std::atomic<uint64_t> g_physFail_geomFallback{0};       ///< Failures where vertex had no geomNormal (used shading proxy)
+
+	// CASCADE anatomy: when a chain's first vertex passes physics but a
+	// later vertex fails, how many vertices got through before the
+	// rejection?  And how far on the surface did the chain travel from
+	// the (good) entry vertex to the (bad) failing vertex?
+	std::atomic<uint64_t> g_physFail_firstFailIdx[6]{};     ///< 0=fails-at-vertex-0, 1, 2, 3, 4, 5+
+	std::atomic<uint64_t> g_physFail_v0_to_fail_angle[6]{}; ///< angle(geomN[0], geomN[fail]): <5°, 5..15°, 15..45°, 45..90°, 90..135°, >=135°
+
+	// EXPERIMENT E: perturbed-restart counters.
+	std::atomic<uint64_t> g_physFailRestart_attempted{0};   ///< Solve calls that reached the phys-fail-retry loop
+	std::atomic<uint64_t> g_physFailRestart_rescued{0};     ///< Calls where SOME perturbed seed produced a phys-valid converged chain
+	std::atomic<uint64_t> g_physFailRestart_iters{0};       ///< Total perturbed Newton attempts (across all calls)
+
+	// PUSHBACK ANATOMY: deeper instrumentation to attribute phys-fails to
+	// either "Newton dragged a valid seed into a bad basin" (solver bug)
+	// vs "seed was already invalid" (seeding bug) vs "the constraint
+	// landscape genuinely has multi-modal roots reachable from the seed".
+	std::atomic<uint64_t> g_physFail_signProd_bothPos{0};   ///< wi·n > 0 AND wo·n > 0 at failing vertex (refraction-labeled, geometry is reflection-from-above)
+	std::atomic<uint64_t> g_physFail_signProd_bothNeg{0};   ///< wi·n < 0 AND wo·n < 0 at failing vertex (geometry is reflection-from-below)
+	std::atomic<uint64_t> g_physFail_seedWasValid{0};       ///< The pre-Newton seed chain ALSO satisfied physics
+	std::atomic<uint64_t> g_physFail_seedWasInvalid{0};     ///< The pre-Newton seed chain ALREADY failed physics (Newton can't fix bad seed)
+	std::atomic<uint64_t> g_physFail_finalNorm_lt1e6{0};    ///< Post-Newton ‖C‖ buckets for rejected chains (true convergence quality)
+	std::atomic<uint64_t> g_physFail_finalNorm_lt1e4{0};
+	std::atomic<uint64_t> g_physFail_finalNorm_lt1e2{0};
+	std::atomic<uint64_t> g_physFail_finalNorm_ge1e2{0};
+
+	std::atomic<uint64_t> g_physFail_chainLen[6]{};         ///< 0=k=1, 1=k=2, 2=k=3, 3=k=4, 4=k=5, 5=k=6+
+	std::atomic<uint64_t> g_physFail_anyReflectionInChain{0}; ///< Chain has at least one isReflection=true vertex (TIR or mirror)
+	std::atomic<uint64_t> g_physFail_allRefractionInChain{0}; ///< Every vertex in chain is refraction
+
+	inline void PhysFail_BinFirstFailIdx( unsigned int i ) {
+		const unsigned int slot = i >= 5 ? 5 : i;
+		g_physFail_firstFailIdx[slot].fetch_add( 1, std::memory_order_relaxed );
+	}
+	inline void PhysFail_BinV0FailAngle( double dotN0Nf ) {
+		// dotN0Nf in [-1, 1].  cos(5°)≈0.996, cos(15°)≈0.966, cos(45°)≈0.707,
+		// cos(90°)=0, cos(135°)≈-0.707.  Sign matters: a negative dot means
+		// the chain crosses to the OPPOSITE-facing side of the surface
+		// between v0 and v_fail (e.g. front→back of a thin shell).
+		unsigned int slot;
+		if      ( dotN0Nf >  0.996 ) slot = 0;       // <5°
+		else if ( dotN0Nf >  0.966 ) slot = 1;       // 5..15°
+		else if ( dotN0Nf >  0.707 ) slot = 2;       // 15..45°
+		else if ( dotN0Nf >  0.0   ) slot = 3;       // 45..90°
+		else if ( dotN0Nf > -0.707 ) slot = 4;       // 90..135°
+		else                         slot = 5;       // >=135°
+		g_physFail_v0_to_fail_angle[slot].fetch_add( 1, std::memory_order_relaxed );
+	}
+
+	inline void PhysFail_BinPos( unsigned int i, unsigned int k ) {
+		unsigned int slot;
+		if( k == 1 )            slot = 0;
+		else if( i == 0 )       slot = 1;
+		else if( i == k - 1 )   slot = 3;
+		else                    slot = 2;
+		g_physFail_byVtxPos[slot].fetch_add( 1, std::memory_order_relaxed );
+	}
+	inline void PhysFail_BinMinCos( double minAbsCos ) {
+		unsigned int slot;
+		if      ( minAbsCos < 1e-4 ) slot = 0;
+		else if ( minAbsCos < 1e-3 ) slot = 1;
+		else if ( minAbsCos < 1e-2 ) slot = 2;
+		else if ( minAbsCos < 1e-1 ) slot = 3;
+		else if ( minAbsCos < 0.5  ) slot = 4;
+		else                         slot = 5;
+		g_physFail_minCos[slot].fetch_add( 1, std::memory_order_relaxed );
+	}
+	inline void PhysFail_BinPhongTilt( double dotGS ) {
+		const double a = dotGS < 0 ? -dotGS : dotGS;
+		unsigned int slot;
+		if      ( a > 0.999 ) slot = 0;
+		else if ( a > 0.99  ) slot = 1;
+		else if ( a > 0.95  ) slot = 2;
+		else if ( a > 0.8   ) slot = 3;
+		else                  slot = 4;
+		g_physFail_phongTilt[slot].fetch_add( 1, std::memory_order_relaxed );
+	}
+
 	struct SolveDiagAtExitInstaller {
 		SolveDiagAtExitInstaller() {
 			std::atexit([](){
@@ -233,6 +336,178 @@ namespace {
 						(unsigned long long)edgeChecks,
 						(unsigned long long)edgeRejects,
 						100.0 * double( edgeRejects ) / double( edgeChecks ) );
+				}
+				// PHYS-FAIL ANATOMY dump
+				const uint64_t pf_pos[4] = {
+					g_physFail_byVtxPos[0].load(), g_physFail_byVtxPos[1].load(),
+					g_physFail_byVtxPos[2].load(), g_physFail_byVtxPos[3].load(),
+				};
+				const uint64_t pf_op[2] = {
+					g_physFail_byOp[0].load(), g_physFail_byOp[1].load(),
+				};
+				const uint64_t pf_cos[6] = {
+					g_physFail_minCos[0].load(), g_physFail_minCos[1].load(),
+					g_physFail_minCos[2].load(), g_physFail_minCos[3].load(),
+					g_physFail_minCos[4].load(), g_physFail_minCos[5].load(),
+				};
+				const uint64_t pf_tilt[5] = {
+					g_physFail_phongTilt[0].load(), g_physFail_phongTilt[1].load(),
+					g_physFail_phongTilt[2].load(), g_physFail_phongTilt[3].load(),
+					g_physFail_phongTilt[4].load(),
+				};
+				const uint64_t pf_shAgree  = g_physFail_shadingAgrees.load();
+				const uint64_t pf_shMasked = g_physFail_shadingMasked.load();
+				const uint64_t pf_fallback = g_physFail_geomFallback.load();
+				const uint64_t pf_total = pf_pos[0]+pf_pos[1]+pf_pos[2]+pf_pos[3];
+				if( pf_total > 0 ) {
+					auto pct = [pf_total]( uint64_t x ){ return 100.0 * double(x) / double(pf_total); };
+					std::fprintf( stderr,
+						"[SMS-PHYSFAIL-ANATOMY] total=%llu  pos: sole=%llu(%.1f%%) first=%llu(%.1f%%) middle=%llu(%.1f%%) last=%llu(%.1f%%)\n",
+						(unsigned long long)pf_total,
+						(unsigned long long)pf_pos[0], pct(pf_pos[0]),
+						(unsigned long long)pf_pos[1], pct(pf_pos[1]),
+						(unsigned long long)pf_pos[2], pct(pf_pos[2]),
+						(unsigned long long)pf_pos[3], pct(pf_pos[3]) );
+					std::fprintf( stderr,
+						"[SMS-PHYSFAIL-ANATOMY] op: refract=%llu(%.1f%%) reflect=%llu(%.1f%%)\n",
+						(unsigned long long)pf_op[0], pct(pf_op[0]),
+						(unsigned long long)pf_op[1], pct(pf_op[1]) );
+					std::fprintf( stderr,
+						"[SMS-PHYSFAIL-ANATOMY] min|cos| histogram: <1e-4=%llu(%.1f%%) 1e-4..1e-3=%llu(%.1f%%) 1e-3..1e-2=%llu(%.1f%%) 1e-2..1e-1=%llu(%.1f%%) 1e-1..0.5=%llu(%.1f%%) >=0.5=%llu(%.1f%%)\n",
+						(unsigned long long)pf_cos[0], pct(pf_cos[0]),
+						(unsigned long long)pf_cos[1], pct(pf_cos[1]),
+						(unsigned long long)pf_cos[2], pct(pf_cos[2]),
+						(unsigned long long)pf_cos[3], pct(pf_cos[3]),
+						(unsigned long long)pf_cos[4], pct(pf_cos[4]),
+						(unsigned long long)pf_cos[5], pct(pf_cos[5]) );
+					std::fprintf( stderr,
+						"[SMS-PHYSFAIL-ANATOMY] phong-tilt |dot(geomN,shadeN)|: >.999=%llu(%.1f%%) .99..999=%llu(%.1f%%) .95..99=%llu(%.1f%%) .8..95=%llu(%.1f%%) <.8=%llu(%.1f%%)\n",
+						(unsigned long long)pf_tilt[0], pct(pf_tilt[0]),
+						(unsigned long long)pf_tilt[1], pct(pf_tilt[1]),
+						(unsigned long long)pf_tilt[2], pct(pf_tilt[2]),
+						(unsigned long long)pf_tilt[3], pct(pf_tilt[3]),
+						(unsigned long long)pf_tilt[4], pct(pf_tilt[4]) );
+					std::fprintf( stderr,
+						"[SMS-PHYSFAIL-ANATOMY] shading-vs-geom: shading-also-rejects=%llu(%.1f%%) shading-would-have-passed=%llu(%.1f%%) geom-fallback(no-geomN)=%llu(%.1f%%)\n",
+						(unsigned long long)pf_shAgree,  pct(pf_shAgree),
+						(unsigned long long)pf_shMasked, pct(pf_shMasked),
+						(unsigned long long)pf_fallback, pct(pf_fallback) );
+
+					// PUSHBACK ANATOMY dump.
+					{
+						const uint64_t spP = g_physFail_signProd_bothPos.load();
+						const uint64_t spN = g_physFail_signProd_bothNeg.load();
+						const uint64_t spT = spP + spN;
+						if( spT > 0 ) {
+							std::fprintf( stderr,
+								"[SMS-PHYSFAIL-PUSHBACK] sign-product at fail: both-positive=%llu(%.1f%%) both-negative=%llu(%.1f%%)\n",
+								(unsigned long long)spP, 100.0*double(spP)/double(spT),
+								(unsigned long long)spN, 100.0*double(spN)/double(spT) );
+						}
+						const uint64_t svV = g_physFail_seedWasValid.load();
+						const uint64_t svI = g_physFail_seedWasInvalid.load();
+						const uint64_t svT = svV + svI;
+						if( svT > 0 ) {
+							std::fprintf( stderr,
+								"[SMS-PHYSFAIL-PUSHBACK] seed-was-valid=%llu(%.1f%%)  seed-was-already-invalid=%llu(%.1f%%)  (\"valid\" = Newton dragged a good seed into a bad basin)\n",
+								(unsigned long long)svV, 100.0*double(svV)/double(svT),
+								(unsigned long long)svI, 100.0*double(svI)/double(svT) );
+						}
+						const uint64_t f6 = g_physFail_finalNorm_lt1e6.load();
+						const uint64_t f4 = g_physFail_finalNorm_lt1e4.load();
+						const uint64_t f2 = g_physFail_finalNorm_lt1e2.load();
+						const uint64_t fL = g_physFail_finalNorm_ge1e2.load();
+						const uint64_t fT = f6 + f4 + f2 + fL;
+						if( fT > 0 ) {
+							std::fprintf( stderr,
+								"[SMS-PHYSFAIL-PUSHBACK] post-Newton ‖C‖ at rejected chain: <1e-6=%llu(%.1f%%) <1e-4=%llu(%.1f%%) <1e-2=%llu(%.1f%%) >=1e-2=%llu(%.1f%%)\n",
+								(unsigned long long)f6, 100.0*double(f6)/double(fT),
+								(unsigned long long)f4, 100.0*double(f4)/double(fT),
+								(unsigned long long)f2, 100.0*double(f2)/double(fT),
+								(unsigned long long)fL, 100.0*double(fL)/double(fT) );
+						}
+
+						const uint64_t cl[6] = {
+							g_physFail_chainLen[0].load(), g_physFail_chainLen[1].load(),
+							g_physFail_chainLen[2].load(), g_physFail_chainLen[3].load(),
+							g_physFail_chainLen[4].load(), g_physFail_chainLen[5].load(),
+						};
+						const uint64_t clT = cl[0]+cl[1]+cl[2]+cl[3]+cl[4]+cl[5];
+						if( clT > 0 ) {
+							auto pctC = [clT]( uint64_t x ){ return 100.0*double(x)/double(clT); };
+							std::fprintf( stderr,
+								"[SMS-PHYSFAIL-PUSHBACK] chain-length: k=1=%llu(%.1f%%) k=2=%llu(%.1f%%) k=3=%llu(%.1f%%) k=4=%llu(%.1f%%) k=5=%llu(%.1f%%) k=6+=%llu(%.1f%%)\n",
+								(unsigned long long)cl[0], pctC(cl[0]),
+								(unsigned long long)cl[1], pctC(cl[1]),
+								(unsigned long long)cl[2], pctC(cl[2]),
+								(unsigned long long)cl[3], pctC(cl[3]),
+								(unsigned long long)cl[4], pctC(cl[4]),
+								(unsigned long long)cl[5], pctC(cl[5]) );
+						}
+						const uint64_t aR = g_physFail_anyReflectionInChain.load();
+						const uint64_t aF = g_physFail_allRefractionInChain.load();
+						const uint64_t arT = aR + aF;
+						if( arT > 0 ) {
+							std::fprintf( stderr,
+								"[SMS-PHYSFAIL-PUSHBACK] chain has TIR/mirror=%llu(%.1f%%)  all-refraction=%llu(%.1f%%)\n",
+								(unsigned long long)aR, 100.0*double(aR)/double(arT),
+								(unsigned long long)aF, 100.0*double(aF)/double(arT) );
+						}
+					}
+
+					// EXPERIMENT E: perturbed-seed restart effectiveness.
+					const uint64_t pr_att = g_physFailRestart_attempted.load();
+					const uint64_t pr_res = g_physFailRestart_rescued.load();
+					const uint64_t pr_it  = g_physFailRestart_iters.load();
+					if( pr_att > 0 ) {
+						std::fprintf( stderr,
+							"[SMS-PHYSFAIL-RESTART] attempted=%llu rescued=%llu (%.2f%%)  total-perturbed-newton-iters=%llu  avg-iters/attempt=%.2f\n",
+							(unsigned long long)pr_att,
+							(unsigned long long)pr_res,
+							100.0 * double(pr_res) / double(pr_att),
+							(unsigned long long)pr_it,
+							double(pr_it) / double(pr_att) );
+					}
+
+					// Cascade-anatomy: first-failing-vertex index distribution.
+					const uint64_t pf_idx[6] = {
+						g_physFail_firstFailIdx[0].load(), g_physFail_firstFailIdx[1].load(),
+						g_physFail_firstFailIdx[2].load(), g_physFail_firstFailIdx[3].load(),
+						g_physFail_firstFailIdx[4].load(), g_physFail_firstFailIdx[5].load(),
+					};
+					const uint64_t pf_idxTot = pf_idx[0]+pf_idx[1]+pf_idx[2]+pf_idx[3]+pf_idx[4]+pf_idx[5];
+					if( pf_idxTot > 0 ) {
+						auto pctI = [pf_idxTot]( uint64_t x ){ return 100.0 * double(x) / double(pf_idxTot); };
+						std::fprintf( stderr,
+							"[SMS-PHYSFAIL-CASCADE] first-fail-idx: i0=%llu(%.1f%%) i1=%llu(%.1f%%) i2=%llu(%.1f%%) i3=%llu(%.1f%%) i4=%llu(%.1f%%) i5+=%llu(%.1f%%)\n",
+							(unsigned long long)pf_idx[0], pctI(pf_idx[0]),
+							(unsigned long long)pf_idx[1], pctI(pf_idx[1]),
+							(unsigned long long)pf_idx[2], pctI(pf_idx[2]),
+							(unsigned long long)pf_idx[3], pctI(pf_idx[3]),
+							(unsigned long long)pf_idx[4], pctI(pf_idx[4]),
+							(unsigned long long)pf_idx[5], pctI(pf_idx[5]) );
+					}
+
+					// Cascade-anatomy: angle between vertex 0 geomN and
+					// failing-vertex geomN.  Only populated for cascade
+					// failures (i > 0); seeding failures (i = 0) skip this.
+					const uint64_t pf_ang[6] = {
+						g_physFail_v0_to_fail_angle[0].load(), g_physFail_v0_to_fail_angle[1].load(),
+						g_physFail_v0_to_fail_angle[2].load(), g_physFail_v0_to_fail_angle[3].load(),
+						g_physFail_v0_to_fail_angle[4].load(), g_physFail_v0_to_fail_angle[5].load(),
+					};
+					const uint64_t pf_angTot = pf_ang[0]+pf_ang[1]+pf_ang[2]+pf_ang[3]+pf_ang[4]+pf_ang[5];
+					if( pf_angTot > 0 ) {
+						auto pctA = [pf_angTot]( uint64_t x ){ return 100.0 * double(x) / double(pf_angTot); };
+						std::fprintf( stderr,
+							"[SMS-PHYSFAIL-CASCADE] v0-to-fail-angle: <5°=%llu(%.1f%%) 5..15°=%llu(%.1f%%) 15..45°=%llu(%.1f%%) 45..90°=%llu(%.1f%%) 90..135°=%llu(%.1f%%) >=135°=%llu(%.1f%%)\n",
+							(unsigned long long)pf_ang[0], pctA(pf_ang[0]),
+							(unsigned long long)pf_ang[1], pctA(pf_ang[1]),
+							(unsigned long long)pf_ang[2], pctA(pf_ang[2]),
+							(unsigned long long)pf_ang[3], pctA(pf_ang[3]),
+							(unsigned long long)pf_ang[4], pctA(pf_ang[4]),
+							(unsigned long long)pf_ang[5], pctA(pf_ang[5]) );
+					}
 				}
 			});
 		}
@@ -1722,27 +1997,89 @@ bool ManifoldSolver::ValidateChainPhysics(
 		// populated (e.g. photon-derived chains, hand-constructed
 		// vertices) — degenerate-zero detection avoids a sign-product
 		// of 0 that would silently disable the test.
-		const Vector3& nForTest =
-			( Vector3Ops::SquaredModulus( v.geomNormal ) > NEARZERO )
-			? v.geomNormal : v.normal;
+		const bool hasGeom = ( Vector3Ops::SquaredModulus( v.geomNormal ) > NEARZERO );
+		const Vector3& nForTest = hasGeom ? v.geomNormal : v.normal;
 		const Scalar wiDotN = Vector3Ops::Dot( wi, nForTest );
 		const Scalar woDotN = Vector3Ops::Dot( wo, nForTest );
 
+		bool rejected = false;
 		if( v.isReflection )
 		{
 			// Reflection: both directions on the same side of surface
-			if( wiDotN * woDotN < 0.0 )
-			{
-				return false;
-			}
+			if( wiDotN * woDotN < 0.0 ) rejected = true;
 		}
 		else
 		{
 			// Refraction: directions on opposite sides of surface
-			if( wiDotN * woDotN > 0.0 )
-			{
-				return false;
+			if( wiDotN * woDotN > 0.0 ) rejected = true;
+		}
+
+		if( rejected )
+		{
+#if SMS_SOLVE_DIAG
+			// Anatomy: characterise this rejection.
+			PhysFail_BinPos( i, k );
+			g_physFail_byOp[ v.isReflection ? 1 : 0 ].fetch_add( 1, std::memory_order_relaxed );
+
+			// PUSHBACK: sign-product breakdown.  For a refraction we
+			// reject when (wi·n)(wo·n) > 0; that's either both > 0
+			// (reflection-from-above) or both < 0 (reflection-from-
+			// below).  For a reflection we reject when < 0 (one above,
+			// one below — geometry is refraction).  Bin by sign pair
+			// for refraction failures so we can tell which kind of
+			// wrong-topology Newton is finding.
+			if( !v.isReflection ) {
+				if( wiDotN > 0.0 && woDotN > 0.0 )
+					g_physFail_signProd_bothPos.fetch_add( 1, std::memory_order_relaxed );
+				else if( wiDotN < 0.0 && woDotN < 0.0 )
+					g_physFail_signProd_bothNeg.fetch_add( 1, std::memory_order_relaxed );
 			}
+
+			const double absWi = wiDotN < 0 ? -wiDotN : wiDotN;
+			const double absWo = woDotN < 0 ? -woDotN : woDotN;
+			PhysFail_BinMinCos( absWi < absWo ? absWi : absWo );
+
+			if( hasGeom && Vector3Ops::SquaredModulus( v.normal ) > NEARZERO )
+			{
+				const Scalar dotGS = Vector3Ops::Dot(
+					Vector3Ops::Normalize( v.geomNormal ),
+					Vector3Ops::Normalize( v.normal ) );
+				PhysFail_BinPhongTilt( dotGS );
+
+				// Compare what the SHADING-normal test would have done.
+				const Scalar wiDotS = Vector3Ops::Dot( wi, v.normal );
+				const Scalar woDotS = Vector3Ops::Dot( wo, v.normal );
+				const bool shadingRejects = v.isReflection
+					? ( wiDotS * woDotS < 0.0 )
+					: ( wiDotS * woDotS > 0.0 );
+				if( shadingRejects ) g_physFail_shadingAgrees.fetch_add( 1, std::memory_order_relaxed );
+				else                 g_physFail_shadingMasked.fetch_add( 1, std::memory_order_relaxed );
+			}
+			else
+			{
+				g_physFail_geomFallback.fetch_add( 1, std::memory_order_relaxed );
+			}
+
+			// Cascade anatomy.
+			PhysFail_BinFirstFailIdx( i );
+			if( i > 0 )
+			{
+				// Compare vertex 0's geom normal to the failing vertex's
+				// geom normal.  Skip if either is unset (photon-derived
+				// chains).  The dot product captures both how much the
+				// chain has rotated around the surface and whether it has
+				// crossed to a back-facing patch.
+				const ManifoldVertex& v0 = chain[0];
+				if( hasGeom && Vector3Ops::SquaredModulus( v0.geomNormal ) > NEARZERO )
+				{
+					const Scalar dot0F = Vector3Ops::Dot(
+						Vector3Ops::Normalize( v0.geomNormal ),
+						Vector3Ops::Normalize( v.geomNormal ) );
+					PhysFail_BinV0FailAngle( dot0F );
+				}
+			}
+#endif
+			return false;
 		}
 	}
 
@@ -3225,6 +3562,25 @@ unsigned int ManifoldSolver::SnellContinueChain(
 	const Scalar offsetEps = 1e-2;
 	const std::size_t startSize = chain.size();
 
+	// EMITTER STOP: capture the original start position and original
+	// trace direction so we can detect when a candidate specular hit
+	// has put us PAST the emitter along the wall-to-light line.
+	// Without this, the trace happily refracts through specular
+	// surfaces past the emitter (e.g. through the FRONT of an egg
+	// shell when the light is INSIDE the cavity), producing an
+	// over-long seed chain whose downstream vertices have wi/wo on
+	// the same side of the surface — algebraically a constraint root
+	// but geometrically nonsense, and rejected by ValidateChainPhysics
+	// at ~22 % of all Solve calls on the displaced Veach egg.
+	// `maxDist` is the straight-line start→end distance; we project
+	// each candidate hit onto the original direction and stop if the
+	// projection exceeds `maxDist`.  Refractive bending makes the
+	// actual path slightly longer than the straight line, so allow a
+	// small margin (1.05×) before triggering the cutoff.
+	const Point3  origStart = currentOrigin;
+	const Vector3 origDir   = dir;
+	const Scalar  emitterCutoff = maxDist * 1.05;
+
 #if defined(SMS_TRACE_DIAGNOSTIC) && SMS_TRACE_DIAGNOSTIC
 	// Trace gate: snapshot the entry origin once, mirror BuildSeedChain's
 	// "shading-point near (0,0,0)" heuristic from before the refactor.
@@ -3299,6 +3655,19 @@ unsigned int ManifoldSolver::SnellContinueChain(
 		if( ri.geometric.range > maxDist * 3.0 )
 		{
 			break;
+		}
+
+		// EMITTER STOP: if this candidate hit is past the emitter
+		// along the original direction, we've over-traced.  Don't
+		// add this vertex; the chain ends at the previous one.
+		{
+			const Vector3 hitOffset = Vector3Ops::mkVector3(
+				ri.geometric.ptIntersection, origStart );
+			const Scalar projAlongOrig = Vector3Ops::Dot( hitOffset, origDir );
+			if( projAlongOrig > emitterCutoff )
+			{
+				break;
+			}
 		}
 
 		// Check if the hit material is specular
@@ -3596,6 +3965,20 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 	const unsigned int maxFrames = 1u << 8;   // safety cap (2^k can blow up; bound it)
 	unsigned int framesPopped = 0;
 
+	// EMITTER STOP — same fix as in SnellContinueChain.  Stop adding
+	// vertices once a candidate hit's projection along the original
+	// (start→end) direction exceeds totalDist (with a small refraction-
+	// bending margin).  Without this gate, the seed-builder over-traces
+	// past the emitter when the emitter is INSIDE a closed dielectric
+	// shell (e.g. interior light in a Veach-egg cavity), capturing
+	// downstream specular surfaces whose half-vector roots are
+	// algebraically valid but geometrically wrong-topology — Newton
+	// converges, then ValidateChainPhysics rejects.  Empirically this
+	// was 99.98 % of all phys-fails on the displaced Veach egg.
+	const Point3  origStart      = start;
+	const Vector3 origDir        = initialDir;
+	const Scalar  emitterCutoff  = totalDist * 1.05;
+
 	std::vector<Frame> active;
 	active.reserve( 8 );
 	{
@@ -3653,6 +4036,18 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 		if( ri.geometric.range > totalDist * 3.0 ) {
 			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
 			continue;
+		}
+
+		// EMITTER STOP: this hit is past the emitter — emit chain-
+		// so-far and don't append the over-shot vertex.
+		{
+			const Vector3 hitOffset = Vector3Ops::mkVector3(
+				ri.geometric.ptIntersection, origStart );
+			if( Vector3Ops::Dot( hitOffset, origDir ) > emitterCutoff )
+			{
+				out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
+				continue;
+			}
 		}
 
 		const IMaterial* pMat = ri.pMaterial;
@@ -4885,6 +5280,111 @@ ManifoldResult ManifoldSolver::Solve(
 		// Reject physically invalid converged solutions.
 		if( !ValidateChainPhysics( specularChain, shadingPoint, emitterPoint ) )
 		{
+#if SMS_SOLVE_DIAG
+			// PUSHBACK: was the SEED chain physics-valid?  If yes,
+			// Newton dragged a valid seed into a wrong-topology basin
+			// (solver-design issue).  If no, the seed was already bad
+			// (Snell-trace bug or seed-builder logic error).
+			if( ValidateChainPhysics( seedTemplate, shadingPoint, emitterPoint ) )
+				g_physFail_seedWasValid.fetch_add( 1, std::memory_order_relaxed );
+			else
+				g_physFail_seedWasInvalid.fetch_add( 1, std::memory_order_relaxed );
+
+			// PUSHBACK: post-Newton ‖C‖ at the rejected chain.
+			{
+				std::vector<Scalar> Crej;
+				EvaluateConstraint( specularChain, shadingPoint, emitterPoint, Crej );
+				Scalar n2 = 0;
+				for( std::size_t ii = 0; ii < Crej.size(); ii++ ) n2 += Crej[ii] * Crej[ii];
+				const Scalar nrm = std::sqrt( n2 );
+				if(      nrm < 1e-6 ) g_physFail_finalNorm_lt1e6.fetch_add( 1, std::memory_order_relaxed );
+				else if( nrm < 1e-4 ) g_physFail_finalNorm_lt1e4.fetch_add( 1, std::memory_order_relaxed );
+				else if( nrm < 1e-2 ) g_physFail_finalNorm_lt1e2.fetch_add( 1, std::memory_order_relaxed );
+				else                  g_physFail_finalNorm_ge1e2.fetch_add( 1, std::memory_order_relaxed );
+			}
+
+			// PUSHBACK: chain length + reflection-mix.
+			{
+				const unsigned int kk = static_cast<unsigned int>( specularChain.size() );
+				const unsigned int slot = (kk == 0) ? 0 : (kk >= 6 ? 5 : kk - 1);
+				g_physFail_chainLen[slot].fetch_add( 1, std::memory_order_relaxed );
+				bool anyRefl = false;
+				for( const auto& vv : specularChain ) {
+					if( vv.isReflection ) { anyRefl = true; break; }
+				}
+				if( anyRefl ) g_physFail_anyReflectionInChain.fetch_add( 1, std::memory_order_relaxed );
+				else          g_physFail_allRefractionInChain.fetch_add( 1, std::memory_order_relaxed );
+			}
+#endif
+#if SMS_PHYSFAIL_RESTART_ENABLED
+			// EXPERIMENT E: try Gaussian-perturbed restart.  If a small
+			// tangent-plane wiggle on the seed lands in a different (and
+			// physically-valid) basin, accept that chain.
+			if( kPhysFailRetries > 0 )
+			{
+#if SMS_SOLVE_DIAG
+				g_physFailRestart_attempted.fetch_add( 1, std::memory_order_relaxed );
+#endif
+				bool rescued = false;
+				for( unsigned int retry = 0; retry < kPhysFailRetries && !rescued; retry++ )
+				{
+#if SMS_SOLVE_DIAG
+					g_physFailRestart_iters.fetch_add( 1, std::memory_order_relaxed );
+#endif
+
+					std::vector<ManifoldVertex> testChain( seedTemplate );
+					bool perturbOk = true;
+					for( unsigned int i = 0; i < testChain.size(); i++ )
+					{
+						const Scalar ru = sampler.Get1D() * (2.0 * kPhysFailPerturb) - kPhysFailPerturb;
+						const Scalar rv = sampler.Get1D() * (2.0 * kPhysFailPerturb) - kPhysFailPerturb;
+						testChain[i].position = Point3Ops::mkPoint3(
+							testChain[i].position,
+							testChain[i].dpdu * ru + testChain[i].dpdv * rv );
+						if( !UpdateVertexOnSurface( testChain[i], 0.0, 0.0 ) ) {
+							perturbOk = false;
+							break;
+						}
+					}
+					if( !perturbOk ) continue;
+
+					if( !NewtonSolve( testChain, shadingPoint, emitterPoint ) ) continue;
+					if( !ValidateChainPhysics( testChain, shadingPoint, emitterPoint ) ) continue;
+
+					specularChain = testChain;
+					rescued = true;
+#if SMS_SOLVE_DIAG
+					g_physFailRestart_rescued.fetch_add( 1, std::memory_order_relaxed );
+#endif
+				}
+				if( !rescued )
+				{
+#if SMS_TRACE_DIAGNOSTIC
+					g_solvePhysicsFail.fetch_add( 1, std::memory_order_relaxed );
+#endif
+#if SMS_SOLVE_DIAG
+					g_solveDiag_physicsFail.fetch_add( 1, std::memory_order_relaxed );
+#endif
+					return result;
+				}
+				// Fall through with the rescued chain.  Skip the
+				// original return-result path.
+			}
+			else
+			{
+#if SMS_TRACE_DIAGNOSTIC
+				g_solvePhysicsFail.fetch_add( 1, std::memory_order_relaxed );
+				if( traceSolve ) {
+					GlobalLog()->PrintEx( eLog_Event,
+						"SMS_SOLVE:  REJECTED by ValidateChainPhysics (wi/wo sidedness mismatch)" );
+				}
+#endif
+#if SMS_SOLVE_DIAG
+				g_solveDiag_physicsFail.fetch_add( 1, std::memory_order_relaxed );
+#endif
+				return result;
+			}
+#else
 #if SMS_TRACE_DIAGNOSTIC
 			g_solvePhysicsFail.fetch_add( 1, std::memory_order_relaxed );
 			if( traceSolve ) {
@@ -4896,6 +5396,7 @@ ManifoldResult ManifoldSolver::Solve(
 			g_solveDiag_physicsFail.fetch_add( 1, std::memory_order_relaxed );
 #endif
 			return result;
+#endif // SMS_PHYSFAIL_RESTART_ENABLED
 		}
 
 		// Reject chains with very short inter-vertex segments.
