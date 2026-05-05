@@ -6202,12 +6202,21 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	if( chainLen == 0 || seedChain.empty() )
 	{
 		// Fallback: trace along the surface normal — geometric so the
-		// probe direction is the actual outward face direction.
+		// probe direction is the actual outward face direction.  Pass
+		// `applyEmitterStop = false`: the 100-unit `normalTarget` is a
+		// synthesized direction-probe, NOT the emitter — applying the
+		// projection cap (which fires at `100 × 1.05 = 105`) would
+		// silently reject every specular surface farther than 105 units
+		// from the shading point.  Without the flag this fallback is
+		// non-functional on any scene whose first specular surface is
+		// > 105 units from the shading point (e.g. wall→egg ~141 units
+		// in the cornell-box / Veach-egg layout).
 		const Point3 normalTarget = Point3Ops::mkPoint3(
 			pos, geomNormal * 100.0 );
 		chainLen = BuildSeedChain(
 			pos, normalTarget,
-			scene, caster, seedChain );
+			scene, caster, seedChain,
+			/*applyEmitterStop=*/ false );
 		if( chainLen > 0 && !seedChain.empty() ) {
 			baseSeeds.clear();
 			SeedChainResult lone;
@@ -6223,6 +6232,9 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		// the light.  For tilted geometry, the specular object may lie
 		// between the two endpoints at a position that neither the
 		// light-direction nor the normal-direction ray can reach.
+		// `applyEmitterStop = false` for the same reason as the normal-
+		// target fallback above (synthesized 100-unit probe direction,
+		// not an actual emitter).
 		const Point3 midpoint(
 			(pos.x + lightSample.position.x) * 0.5,
 			(pos.y + lightSample.position.y) * 0.5,
@@ -6231,7 +6243,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			pos, Vector3Ops::Normalize( Vector3Ops::mkVector3( midpoint, pos ) ) * 100.0 );
 		chainLen = BuildSeedChain(
 			pos, midTarget,
-			scene, caster, seedChain );
+			scene, caster, seedChain,
+			/*applyEmitterStop=*/ false );
 		if( chainLen > 0 && !seedChain.empty() ) {
 			baseSeeds.clear();
 			SeedChainResult lone;
@@ -7828,12 +7841,15 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 
 	if( chainLen == 0 || seedChain.empty() )
 	{
-		// Probe direction: geometric (actual outward face).
+		// Probe direction: geometric (actual outward face).  See RGB
+		// variant for the `applyEmitterStop = false` rationale (synth
+		// 100-unit target, not an emitter).
 		const Point3 normalTarget = Point3Ops::mkPoint3(
 			pos, geomNormal * 100.0 );
 		chainLen = BuildSeedChain(
 			pos, normalTarget,
-			scene, caster, seedChain );
+			scene, caster, seedChain,
+			/*applyEmitterStop=*/ false );
 	}
 
 	if( chainLen == 0 || seedChain.empty() )
@@ -7846,7 +7862,8 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 			pos, Vector3Ops::Normalize( Vector3Ops::mkVector3( midpoint, pos ) ) * 100.0 );
 		chainLen = BuildSeedChain(
 			pos, midTarget,
-			scene, caster, seedChain );
+			scene, caster, seedChain,
+			/*applyEmitterStop=*/ false );
 	}
 
 	if( chainLen == 0 || seedChain.empty() )
