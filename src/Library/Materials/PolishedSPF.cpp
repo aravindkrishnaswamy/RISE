@@ -134,7 +134,18 @@ void PolishedSPF::Scatter(
 	RISEPel scattering = scat.GetColor(ri);
 	RISEPel ior = Nt.GetColor(ri);
 
-	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
+	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
+	// face-orientation, PBRT 4e §10.1.1 / §9.5).  The flipped normal `n`
+	// carries the SHADING normal so the lobe / Fresnel / refracted
+	// direction stays in the BSDF frame, matching Mitsuba 3
+	// `dielectric.cpp`.  `Optics::CalculateRefractedRay` and
+	// `CalculateDielectricReflectance` are sign-invariant under n→-n
+	// so the visible difference vs the prior shading-only test is
+	// small in this file, but the geometric form is the documented
+	// convention and is robust against future code that consumes `n`
+	// directly.
+	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
+	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
 	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
 	if( scattering[0] == scattering[1] && scattering[1] == scattering[2] &&
@@ -194,7 +205,18 @@ void PolishedSPF::ScatterNM(
 	ScatteredRay	dielectric;
 	dielectric.type = ScatteredRay::eRayReflection;
 
-	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
+	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
+	// face-orientation, PBRT 4e §10.1.1 / §9.5).  The flipped normal `n`
+	// carries the SHADING normal so the lobe / Fresnel / refracted
+	// direction stays in the BSDF frame, matching Mitsuba 3
+	// `dielectric.cpp`.  `Optics::CalculateRefractedRay` and
+	// `CalculateDielectricReflectance` are sign-invariant under n→-n
+	// so the visible difference vs the prior shading-only test is
+	// small in this file, but the geometric form is the documented
+	// convention and is robust against future code that consumes `n`
+	// directly.
+	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
+	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
 	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
 	Scalar Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(sampler.Get1D(),sampler.Get1D()), scat.GetColorNM(ri,nm), Nt.GetColorNM(ri,nm), ior_stack );
@@ -245,8 +267,10 @@ Scalar PolishedSPF::EvaluateKrayNM(
 {
 	// Compute Fresnel reflectance at the incident angle (same logic
 	// as GenerateScatteredRayFromPolish lines 62-68).
-	const Vector3 n = Vector3Ops::Dot( ri.vNormal, ri.ray.Dir() ) > 0
-		? -ri.vNormal : ri.vNormal;
+	// Side-of-surface uses geometric; lobe direction uses shading
+	// (see PolishedSPF::Scatter for rationale).
+	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
+	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
 	Vector3 vRefracted = ri.ray.Dir();
 	Scalar Rs = 0.0;
 	const Scalar iorTop = ior_stack.top();
@@ -305,7 +329,10 @@ static Scalar PolishedPdf(
 
 	// For non-delta specular, compute the lobe PDF
 	// The specular ray is perturbed from the perfect reflection direction
-	const Vector3 vn = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
+	// Side-of-surface uses geometric; lobe direction uses shading
+	// (see PolishedSPF::Scatter for rationale).
+	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
+	const Vector3 vn = bBackface ? -ri.vNormal : ri.vNormal;
 	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), vn );
 
 	// Angle between wo and the reflected direction
@@ -346,7 +373,18 @@ Scalar PolishedSPF::Pdf(
 	const Scalar ior_avg = (ior_val[0] + ior_val[1] + ior_val[2]) / 3.0;
 
 	// Compute Fresnel reflectance for lobe weighting
-	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
+	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
+	// face-orientation, PBRT 4e §10.1.1 / §9.5).  The flipped normal `n`
+	// carries the SHADING normal so the lobe / Fresnel / refracted
+	// direction stays in the BSDF frame, matching Mitsuba 3
+	// `dielectric.cpp`.  `Optics::CalculateRefractedRay` and
+	// `CalculateDielectricReflectance` are sign-invariant under n→-n
+	// so the visible difference vs the prior shading-only test is
+	// small in this file, but the geometric form is the documented
+	// convention and is robust against future code that consumes `n`
+	// directly.
+	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
+	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
 	Vector3 vRefracted = ri.ray.Dir();
 	Scalar Rs = 0.0;
 	if( Optics::CalculateRefractedRay( n, ior_stack.top(), ior_avg, vRefracted ) ) {
@@ -372,7 +410,18 @@ Scalar PolishedSPF::PdfNM(
 	const Scalar ior_val = Nt.GetColorNM(ri,nm);
 
 	// Compute Fresnel reflectance for lobe weighting
-	const Vector3 n = Vector3Ops::Dot(ri.vNormal, ri.ray.Dir())>0 ? -ri.vNormal : ri.vNormal;
+	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
+	// face-orientation, PBRT 4e §10.1.1 / §9.5).  The flipped normal `n`
+	// carries the SHADING normal so the lobe / Fresnel / refracted
+	// direction stays in the BSDF frame, matching Mitsuba 3
+	// `dielectric.cpp`.  `Optics::CalculateRefractedRay` and
+	// `CalculateDielectricReflectance` are sign-invariant under n→-n
+	// so the visible difference vs the prior shading-only test is
+	// small in this file, but the geometric form is the documented
+	// convention and is robust against future code that consumes `n`
+	// directly.
+	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
+	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
 	Vector3 vRefracted = ri.ray.Dir();
 	Scalar Rs = 0.0;
 	if( Optics::CalculateRefractedRay( n, ior_stack.top(), ior_val, vRefracted ) ) {

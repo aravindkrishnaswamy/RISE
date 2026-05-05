@@ -113,6 +113,7 @@ namespace RISE
 			ri.bHit            = true;
 			ri.ptIntersection  = vertex.position;
 			ri.vNormal         = vertex.normal;
+			ri.vGeomNormal     = vertex.geomNormal;
 			ri.onb             = vertex.onb;
 			ri.ptCoord         = vertex.ptCoord;
 			ri.ptObjIntersec   = vertex.ptObjIntersec;

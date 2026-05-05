@@ -48,7 +48,11 @@ void EmissionShaderOp::PerformOperation(
 	IEmitter* pEmitter = ri.pMaterial ? ri.pMaterial->GetEmitter() : 0;
 
 	if( pEmitter && rs.considerEmission ) {
-		c = pEmitter->emittedRadiance( ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal );
+		// Emitter takes the GEOMETRIC normal — emitters define their
+		// emissive hemisphere relative to the actual surface face
+		// (LambertianEmitter: `Dot(out, N) > 0` is a side-of-surface
+		// test that must be unaffected by bump perturbation).
+		c = pEmitter->emittedRadiance( ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal );
 
 		// MIS weight for BSDF-sampled emission.
 		// When bsdfPdf > 0, this ray was traced via BSDF importance sampling.
@@ -59,8 +63,9 @@ void EmissionShaderOp::PerformOperation(
 			const Scalar area = ri.pObject->GetArea();
 			if( area > 0 )
 			{
-				// cos at light surface
-				const Scalar cosLight = fabs( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vNormal ) );
+				// cos at light surface — solid-angle <-> area Jacobian
+				// uses the GEOMETRIC normal (Veach §8.2 / PBRT 4e §13.6.4).
+				const Scalar cosLight = fabs( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vGeomNormal ) );
 				if( cosLight > 0 )
 				{
 					const Scalar dist = Vector3Ops::Magnitude(
@@ -99,7 +104,8 @@ Scalar EmissionShaderOp::PerformOperationNM(
 	IEmitter* pEmitter = ri.pMaterial ? ri.pMaterial->GetEmitter() : 0;
 
 	if( pEmitter && rs.considerEmission ) {
-		c = pEmitter->emittedRadianceNM( ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal, nm );
+		// Geometric normal: see RGB path above for rationale.
+		c = pEmitter->emittedRadianceNM( ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal, nm );
 
 		// MIS weight for BSDF-sampled emission (spectral)
 		if( rs.bsdfPdf > 0 && ri.pObject )
@@ -107,7 +113,7 @@ Scalar EmissionShaderOp::PerformOperationNM(
 			const Scalar area = ri.pObject->GetArea();
 			if( area > 0 )
 			{
-				const Scalar cosLight = fabs( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vNormal ) );
+				const Scalar cosLight = fabs( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vGeomNormal ) );
 				if( cosLight > 0 )
 				{
 					const Scalar dist = Vector3Ops::Magnitude(

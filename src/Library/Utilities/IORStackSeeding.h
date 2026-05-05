@@ -139,8 +139,16 @@ namespace RISE
 					break;
 				}
 
+				// Side-of-surface decision: use the GEOMETRIC normal,
+				// not the shading normal — the question is "is the seed
+				// point physically inside this object", which is a
+				// topology query about the actual surface.  A bump-mapped
+				// or normal-mapped enclosure boundary at a grazing probe
+				// angle can flip the shading-normal cosN sign while the
+				// geometric crossing is unambiguous; using shading there
+				// silently leaves the seed stack empty (PBRT 4e §10.1.1).
 				const Scalar cosN = Vector3Ops::Dot(
-					ri.geometric.vNormal, probe.Dir() );
+					ri.geometric.vGeomNormal, probe.Dir() );
 				if( cosN > 0 && ri.pObject && ri.pMaterial )
 				{
 					// We're exiting this object, so the seed point was

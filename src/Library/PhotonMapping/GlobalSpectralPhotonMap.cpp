@@ -66,9 +66,11 @@ void GlobalSpectralPhotonMap::RadianceEstimate(
 			const SpectralPhoton& p = (*i).element;
 
 			// The photon dir call and following if can be omitted (for speed)
-			// if the scene does not have any thin surfaces
+			// if the scene does not have any thin surfaces.
+			// Thin-surface clamp uses the GEOMETRIC normal — this is
+			// a same-physical-surface test (Jensen 2001 §6.1).
 			const Vector3 vec = Vector3Ops::mkVector3( p.ptPosition, ri.ptIntersection );
-			const Scalar pcos = Vector3Ops::Dot( vec, ri.vNormal );
+			const Scalar pcos = Vector3Ops::Dot( vec, ri.vGeomNormal );
 
 			if( (pcos < maxNDist) && (pcos > -maxNDist) ) {
 				const Vector3 vPhotonDir = PhotonDir(p.theta,p.phi);
@@ -118,9 +120,11 @@ void GlobalSpectralPhotonMap::RadianceEstimateNM(
 			const SpectralPhoton& p = (*i).element;
 
 			// The photon dir call and following if can be omitted (for speed)
-			// if the scene does not have any thin surfaces
+			// if the scene does not have any thin surfaces.
+			// Thin-surface clamp uses the GEOMETRIC normal — this is
+			// a same-physical-surface test (Jensen 2001 §6.1).
 			const Vector3 vec = Vector3Ops::mkVector3( p.ptPosition, ri.ptIntersection );
-			const Scalar pcos = Vector3Ops::Dot( vec, ri.vNormal );
+			const Scalar pcos = Vector3Ops::Dot( vec, ri.vGeomNormal );
 
 			if( (pcos < maxNDist) && (pcos > -maxNDist) ) {
 				const Vector3 vPhotonDir = PhotonDir(p.theta,p.phi);

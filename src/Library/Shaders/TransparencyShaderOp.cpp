@@ -53,7 +53,12 @@ void TransparencyShaderOp::PerformOperation(
 		// Blend by painter color
 		// But if we one sided only and the ray is coming from behind, then don't
 		if( bOneSided ) {
-			if( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vNormal ) > 0 ) {
+			// One-sided culling is a front/back-face decision — use the
+			// GEOMETRIC normal so bumpy alpha cards (foliage, hair)
+			// don't toggle the discard test along the silhouette as
+			// the shading normal swings past the view ray.  PBRT 4e
+			// §10.1.1 (geometric normal for face-orientation queries).
+			if( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vGeomNormal ) > 0 ) {
 				c = cthis;
 			}
 		}
@@ -87,7 +92,12 @@ Scalar TransparencyShaderOp::PerformOperationNM(
 		// Blend by painter color
 		// But if we one sided only and the ray is coming from behind, then don't
 		if( bOneSided ) {
-			if( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vNormal ) > 0 ) {
+			// One-sided culling is a front/back-face decision — use the
+			// GEOMETRIC normal so bumpy alpha cards (foliage, hair)
+			// don't toggle the discard test along the silhouette as
+			// the shading normal swings past the view ray.  PBRT 4e
+			// §10.1.1 (geometric normal for face-orientation queries).
+			if( Vector3Ops::Dot( ri.geometric.ray.Dir(), ri.geometric.vGeomNormal ) > 0 ) {
 				return c;
 			}
 		}

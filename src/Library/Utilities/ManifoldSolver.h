@@ -554,17 +554,25 @@ namespace RISE
 			/// This is the reusable core that both BDPTIntegrator and
 			/// SMSShaderOp call.
 			///
-			/// \param pos          Shading point position (non-specular surface)
-			/// \param normal       Surface normal at shading point
-			/// \param onb          Orthonormal basis at shading point
-			/// \param pMaterial    Material at shading point (must have a BSDF)
-			/// \param woOutgoing   Direction toward the viewer/previous vertex
-			/// \param scene        Scene for ray casting and light access
-			/// \param caster       Ray caster
+			/// The receiver-frame normal is supplied as a SHADING/GEOMETRIC
+			/// pair so the BSDF eval and BSDF-cosine factor stay in the
+			/// shading frame (Veach §5.3.6) while probe-direction fallback
+			/// and chain-topology decisions use the actual face orientation
+			/// (PBRT 4e §10.1.1).
+			///
+			/// \param pos              Shading point position (non-specular surface)
+			/// \param geomNormal       Geometric (flat-face) normal at shading point
+			/// \param shadingNormal    Shading normal at shading point (BSDF frame)
+			/// \param onb              Orthonormal basis at shading point (built from shading)
+			/// \param pMaterial        Material at shading point (must have a BSDF)
+			/// \param woOutgoing       Direction toward the viewer/previous vertex
+			/// \param scene            Scene for ray casting and light access
+			/// \param caster           Ray caster
 			/// \param sampler          Sampler with proper dimensional seperation
 			SMSContribution EvaluateAtShadingPoint(
 				const Point3& pos,
-				const Vector3& normal,
+				const Vector3& geomNormal,
+				const Vector3& shadingNormal,
 				const OrthonormalBasis3D& onb,
 				const IMaterial* pMaterial,
 				const Vector3& woOutgoing,
@@ -597,7 +605,8 @@ namespace RISE
 			/// integration (Phase 7) layer on top of this scaffold.
 			SMSContribution EvaluateAtShadingPointUniform(
 				const Point3& pos,
-				const Vector3& normal,
+				const Vector3& geomNormal,
+				const Vector3& shadingNormal,
 				const OrthonormalBasis3D& onb,
 				const IMaterial* pMaterial,
 				const Vector3& woOutgoing,
@@ -624,7 +633,8 @@ namespace RISE
 			/// at runtime by `config.seedingMode == eSeedingUniform`.
 			SMSContributionNM EvaluateAtShadingPointNMUniform(
 				const Point3& pos,
-				const Vector3& normal,
+				const Vector3& geomNormal,
+				const Vector3& shadingNormal,
 				const OrthonormalBasis3D& onb,
 				const IMaterial* pMaterial,
 				const Vector3& woOutgoing,
@@ -636,7 +646,8 @@ namespace RISE
 
 			SMSContributionNM EvaluateAtShadingPointNM(
 				const Point3& pos,
-				const Vector3& normal,
+				const Vector3& geomNormal,
+				const Vector3& shadingNormal,
 				const OrthonormalBasis3D& onb,
 				const IMaterial* pMaterial,
 				const Vector3& woOutgoing,
@@ -720,7 +731,8 @@ namespace RISE
 			/// performs the same logic on `Scalar` per-wavelength.
 			bool ComputeTrialContribution(
 				const Point3& pos,
-				const Vector3& normal,
+				const Vector3& geomNormal,
+				const Vector3& shadingNormal,
 				const OrthonormalBasis3D& onb,
 				const Vector3& woOutgoing,
 				const IBSDF* pBSDF,
@@ -734,7 +746,8 @@ namespace RISE
 			/// Spectral counterpart of `ComputeTrialContribution`.
 			bool ComputeTrialContributionNM(
 				const Point3& pos,
-				const Vector3& normal,
+				const Vector3& geomNormal,
+				const Vector3& shadingNormal,
 				const OrthonormalBasis3D& onb,
 				const Vector3& woOutgoing,
 				const IBSDF* pBSDF,

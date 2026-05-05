@@ -64,11 +64,16 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 	const Vector3& surfNormal = ri.vNormal;
 	Vector3 dir = Vector3Ops::Normalize( ri.ray.Dir() );
 
-	// Ensure normal points outward (toward the incoming ray)
-	const Scalar cosIncoming = Vector3Ops::Dot( surfNormal, -dir );
-	Vector3 outwardNormal = (cosIncoming > 0) ? surfNormal : -surfNormal;
+	// Ensure normal points outward (toward the incoming ray).  Side-of-
+	// surface decision uses the GEOMETRIC normal — entering vs exiting
+	// a real medium boundary is a topology question (PBRT 4e §9.5).
+	// Bump-perturbed shading normals can flip the cosIncoming sign and
+	// drive the wrong refract/TIR branch on bumpy SSS skin.
+	const Scalar cosIncomingGeom = Vector3Ops::Dot( ri.vGeomNormal, -dir );
+	Vector3 outwardNormal = ( cosIncomingGeom > 0 ) ? surfNormal : -surfNormal;
 
-	// Snell's law refraction: air (1.0) -> medium (ior)
+	// Snell's law refraction: air (1.0) -> medium (ior).  Direction
+	// generation uses the SHADING-frame outward normal (BSDF-coupled).
 	Vector3 refractedDir = dir;
 	if( !Optics::CalculateRefractedRay( outwardNormal, 1.0, ior, refractedDir ) )
 	{
@@ -281,15 +286,17 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			// Move to the exit point
 			const Point3 exitPoint = exitRI.geometric.ptIntersection;
 			Vector3 exitNormal = exitRI.geometric.vNormal;
+			Vector3 exitGeomNormal = exitRI.geometric.vGeomNormal;
 
 			// Ensure exit normal points outward (away from interior).
-			// For a sphere or closed mesh, the geometric normal at an
-			// intersection always points outward from the surface.  When
-			// the walk ray hits from inside, dir and the normal both
-			// point outward, so dot > 0 — the normal is already correct.
-			// Flip only if the normal happens to point inward (dot < 0).
-			if( Vector3Ops::Dot( exitNormal, dir ) < 0 ) {
+			// Side-of-surface decision uses the GEOMETRIC normal — the
+			// "is this hit's normal pointing inward or outward" test is
+			// a topology question (PBRT 4e §9.5 / §10.1.1).  Flip both
+			// shading and geometric in lock-step so downstream consumers
+			// see a consistent outward-facing pair.
+			if( Vector3Ops::Dot( exitGeomNormal, dir ) < 0 ) {
 				exitNormal = -exitNormal;
+				exitGeomNormal = -exitGeomNormal;
 			}
 
 			//
@@ -402,6 +409,7 @@ BSSRDFSampling::SampleResult RandomWalkSSS::SampleExit(
 			result.entryPoint = Point3Ops::mkPoint3( exitPoint,
 				exitNormal * BSSRDFSampling::BSSRDF_RAY_EPSILON );
 			result.entryNormal = exitNormal;
+			result.entryGeomNormal = exitGeomNormal;
 			result.entryONB = exitONB;
 			result.scatteredRay = Ray( result.entryPoint, cosineDir );
 			result.cosinePdf = cosTheta * INV_PI;

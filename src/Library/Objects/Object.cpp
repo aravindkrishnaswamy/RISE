@@ -307,9 +307,14 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 	if( ri.geometric.bHit )
 	{
 		// This an overriding UV generator only, it is for geometries that don't know how to compute
-		// their UV co-ordinates so the user has specified a geometry object to help them out
+		// their UV co-ordinates so the user has specified a geometry object to help them out.
+		// Box/Cylinder/Sphere UV projections pick the projection axis
+		// from the surface face — use the GEOMETRIC normal so the
+		// chosen axis is the actual face orientation, not Phong-
+		// interpolated or bump-perturbed.  On analytical primitives
+		// shading == geometric so this is a no-op there.
 		if( pUVGenerator ) {
-			pUVGenerator->GenerateUV( ri.geometric.ptIntersection, ri.geometric.vNormal, ri.geometric.ptCoord );
+			pUVGenerator->GenerateUV( ri.geometric.ptIntersection, ri.geometric.vGeomNormal, ri.geometric.ptCoord );
 		}
 
 		// Transform the normals back

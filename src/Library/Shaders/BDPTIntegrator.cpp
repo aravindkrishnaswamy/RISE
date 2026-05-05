@@ -1111,7 +1111,11 @@ RISEPel BDPTIntegrator::EvalConnectionTransmittance(
 		// Update stack based on boundary crossing
 		const IMedium* pObjMedium = pHitObj->GetInteriorMedium();
 		if( pObjMedium ) {
-			const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vNormal, d );
+			// Medium boundary push/pop: GEOMETRIC normal — entering vs
+			// exiting a closed solid is a topology question (PBRT 4e
+			// §11.3.4).  Using shading on bumpy dielectrics mis-orders
+			// the medium stack on connection rays.
+			const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vGeomNormal, d );
 			if( ndotd < 0 ) {
 				stack.push( pHitObj, pObjMedium );
 			} else {
@@ -1248,7 +1252,11 @@ Scalar BDPTIntegrator::EvalConnectionTransmittanceNM(
 
 		const IMedium* pObjMedium = pHitObj->GetInteriorMedium();
 		if( pObjMedium ) {
-			const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vNormal, d );
+			// Medium boundary push/pop: GEOMETRIC normal — entering vs
+			// exiting a closed solid is a topology question (PBRT 4e
+			// §11.3.4).  Using shading on bumpy dielectrics mis-orders
+			// the medium stack on connection rays.
+			const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vGeomNormal, d );
 			if( ndotd < 0 ) {
 				stack.push( pHitObj, pObjMedium );
 			} else {
@@ -1365,6 +1373,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		v.type = BDPTVertex::LIGHT;
 		v.position = ls.position;
 		v.normal = ls.normal;
+		// Light samples come from `LightSampler::UniformRandomPoint` on the
+		// luminary mesh — that normal is the geometric face normal (no
+		// Phong / bump perturbation applies to luminaire surfaces here),
+		// so shading == geometric on light vertex 0.
+		v.geomNormal = ls.normal;
 		v.onb.CreateFromW( ls.normal );
 		v.pMaterial = 0;
 		v.pObject = 0;
@@ -1677,12 +1690,12 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 								revPdfSA, prev.sigma_t_scalar, distSqMed );
 						} else if( prev.type == BDPTVertex::LIGHT ) {
 							const Scalar absCosAtPrev = fabs( Vector3Ops::Dot(
-								prev.normal, currentRay.Dir() ) );
+								prev.geomNormal, currentRay.Dir() ) );
 							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
 								revPdfSA, absCosAtPrev, distSqMed );
 						} else {
 							const Scalar absCosAtPrev = fabs( Vector3Ops::Dot(
-								prev.normal, currentRay.Dir() ) );
+								prev.geomNormal, currentRay.Dir() ) );
 							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
 								revPdfSA, absCosAtPrev, distSqMed );
 						}
@@ -1725,6 +1738,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		v.type = BDPTVertex::SURFACE;
 		v.position = ri.geometric.ptIntersection;
 		v.normal = ri.geometric.vNormal;
+		v.geomNormal = ri.geometric.vGeomNormal;
 		v.onb = ri.geometric.onb;
 		v.ptCoord = ri.geometric.ptCoord;
 		v.ptObjIntersec = ri.geometric.ptObjIntersec;
@@ -1746,8 +1760,14 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 
 		// Convert pdfFwdPrev from solid angle to area measure
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
+		// Solid-angle <-> area Jacobian uses the GEOMETRIC normal —
+		// the area-element parameterisation depends on the actual face
+		// orientation, not the Phong-perturbed shading normal
+		// (Veach 1997 §8.2.2 / PBRT 4e §13.6.4).  Using shading here
+		// biases every interior path-pdf factor and therefore the MIS
+		// balance heuristic.
 		const Scalar absCosIn = fabs( Vector3Ops::Dot(
-			ri.geometric.vNormal,
+			ri.geometric.vGeomNormal,
 			-currentRay.Dir() ) );
 
 		v.pdfFwd = BDPTUtilities::SolidAngleToArea( pdfFwdPrev, absCosIn, distSq );
@@ -1919,9 +1939,16 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		{
 			// No fabs: back-face hits (cosIn < 0) skip BSSRDF,
 			// preventing artifacts on thin geometry (lips, eyelids).
-			const Scalar cosIn = Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() );
-			if( cosIn > NEARZERO )
+			// Front-face gate uses GEOMETRIC; Fresnel cosine uses SHADING.
+			// PBRT 4e §10.1.1 (front/back is geometric); §11.4.2 (BSSRDF
+			// Fresnel angular dependence is shading-frame).
+			const Vector3 wo_bss = -currentRay.Dir();
+			const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
+			// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
+			// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
+			const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
+			const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
+			if( cosInGeom > NEARZERO )
 			{
 				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
 				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
@@ -1950,6 +1977,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 						entryV.type = BDPTVertex::SURFACE;
 						entryV.position = bssrdf.entryPoint;
 						entryV.normal = bssrdf.entryNormal;
+						entryV.geomNormal = bssrdf.entryGeomNormal;
 						entryV.onb = bssrdf.entryONB;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
@@ -1982,9 +2010,16 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// --- Random-walk SSS (RGB light subpath) ---
 		else if( ri.pMaterial && ri.pMaterial->GetRandomWalkSSSParams() )
 		{
-			const Scalar cosIn = Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() );
-			if( cosIn > NEARZERO )
+			// Front-face gate uses GEOMETRIC; Fresnel cosine uses SHADING.
+			// PBRT 4e §10.1.1 (front/back is geometric); §11.4.2 (BSSRDF
+			// Fresnel angular dependence is shading-frame).
+			const Vector3 wo_bss = -currentRay.Dir();
+			const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
+			// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
+			// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
+			const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
+			const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
+			if( cosInGeom > NEARZERO )
 			{
 				const RandomWalkSSSParams* pRW = ri.pMaterial->GetRandomWalkSSSParams();
 				const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
@@ -2028,6 +2063,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 						entryV.type = BDPTVertex::SURFACE;
 						entryV.position = bssrdf.entryPoint;
 						entryV.normal = bssrdf.entryNormal;
+						entryV.geomNormal = bssrdf.entryGeomNormal;
 						entryV.onb = bssrdf.entryONB;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
@@ -2355,15 +2391,17 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 				-currentRay.Dir()
 				);
 
-			// Convert to area measure at prev
+			// Convert to area measure at prev.  Compute the geometric
+			// cosine ONLY in the surface/light branch — medium vertices
+			// don't populate geomNormal (default Vector3 is (0,0,0)) so
+			// reading it before the type guard would consume meaningless
+			// data even though the result is later ignored.
 			const Scalar d2 = distSq;
-			const Scalar absCosAtPrev = (prev.type == BDPTVertex::LIGHT) ?
-				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) ) :
-				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
-
 			if( prev.type == BDPTVertex::MEDIUM ) {
 				prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium( revPdfSA, prev.sigma_t_scalar, d2 );
 			} else {
+				const Scalar absCosAtPrev = fabs(
+					Vector3Ops::Dot( prev.geomNormal, currentRay.Dir() ) );
 				prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, d2 );
 			}
 			if( pScat->isDelta ) { prev.pdfRev = 0; }
@@ -2817,7 +2855,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 								revPdfSA, Scalar(1.0), distSqMed );
 						} else {
 							const Scalar absCosAtPrev = fabs( Vector3Ops::Dot(
-								prev.normal, currentRay.Dir() ) );
+								prev.geomNormal, currentRay.Dir() ) );
 							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
 								revPdfSA, absCosAtPrev, distSqMed );
 						}
@@ -2858,6 +2896,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		v.type = BDPTVertex::SURFACE;
 		v.position = ri.geometric.ptIntersection;
 		v.normal = ri.geometric.vNormal;
+		v.geomNormal = ri.geometric.vGeomNormal;
 		v.onb = ri.geometric.onb;
 		v.ptCoord = ri.geometric.ptCoord;
 		v.ptObjIntersec = ri.geometric.ptObjIntersec;
@@ -2879,8 +2918,14 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 
 		// Convert pdfFwdPrev from solid angle to area measure
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
+		// Solid-angle <-> area Jacobian uses the GEOMETRIC normal —
+		// the area-element parameterisation depends on the actual face
+		// orientation, not the Phong-perturbed shading normal
+		// (Veach 1997 §8.2.2 / PBRT 4e §13.6.4).  Using shading here
+		// biases every interior path-pdf factor and therefore the MIS
+		// balance heuristic.
 		const Scalar absCosIn = fabs( Vector3Ops::Dot(
-			ri.geometric.vNormal,
+			ri.geometric.vGeomNormal,
 			-currentRay.Dir() ) );
 
 		v.pdfFwd = BDPTUtilities::SolidAngleToArea( pdfFwdPrev, absCosIn, distSq );
@@ -3046,9 +3091,16 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
-			const Scalar cosIn = Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() );
-			if( cosIn > NEARZERO )
+			// Front-face gate uses GEOMETRIC; Fresnel cosine uses SHADING.
+			// PBRT 4e §10.1.1 (front/back is geometric); §11.4.2 (BSSRDF
+			// Fresnel angular dependence is shading-frame).
+			const Vector3 wo_bss = -currentRay.Dir();
+			const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
+			// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
+			// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
+			const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
+			const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
+			if( cosInGeom > NEARZERO )
 			{
 				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
 				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
@@ -3069,6 +3121,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 						entryV.type = BDPTVertex::SURFACE;
 						entryV.position = bssrdf.entryPoint;
 						entryV.normal = bssrdf.entryNormal;
+						entryV.geomNormal = bssrdf.entryGeomNormal;
 						entryV.onb = bssrdf.entryONB;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
@@ -3102,9 +3155,16 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		// --- Random-walk SSS (RGB eye subpath) ---
 		else if( ri.pMaterial && ri.pMaterial->GetRandomWalkSSSParams() )
 		{
-			const Scalar cosIn = Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() );
-			if( cosIn > NEARZERO )
+			// Front-face gate uses GEOMETRIC; Fresnel cosine uses SHADING.
+			// PBRT 4e §10.1.1 (front/back is geometric); §11.4.2 (BSSRDF
+			// Fresnel angular dependence is shading-frame).
+			const Vector3 wo_bss = -currentRay.Dir();
+			const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
+			// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
+			// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
+			const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
+			const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
+			if( cosInGeom > NEARZERO )
 			{
 				const RandomWalkSSSParams* pRW = ri.pMaterial->GetRandomWalkSSSParams();
 				const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
@@ -3140,6 +3200,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 						entryV.type = BDPTVertex::SURFACE;
 						entryV.position = bssrdf.entryPoint;
 						entryV.normal = bssrdf.entryNormal;
+						entryV.geomNormal = bssrdf.entryGeomNormal;
 						entryV.onb = bssrdf.entryONB;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
@@ -3421,14 +3482,18 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 				-currentRay.Dir()
 				);
 
-			// Convert to area measure at prev
-			const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA) ?
-				Scalar(1.0) :
-				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
-
+			// Convert to area measure at prev.  The geometric cosine is
+			// only meaningful for SURFACE/LIGHT predecessors — CAMERA
+			// gets the sentinel 1.0 and MEDIUM bypasses cos entirely
+			// (Veach §11 medium area-pdf uses sigma_t).  Reading
+			// prev.geomNormal on a medium vertex would consume zero-
+			// init data; gate the dot product behind the type check.
 			if( prev.type == BDPTVertex::MEDIUM ) {
 				prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium( revPdfSA, prev.sigma_t_scalar, distSq );
 			} else {
+				const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA)
+					? Scalar(1.0)
+					: fabs( Vector3Ops::Dot( prev.geomNormal, currentRay.Dir() ) );
 				prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
 			}
 			if( pScat->isDelta ) { prev.pdfRev = 0; }
@@ -3561,9 +3626,10 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		rig.bHit = true;
 		rig.ptIntersection = eyeEnd.position;
 		rig.vNormal = eyeEnd.normal;
+		rig.vGeomNormal = eyeEnd.geomNormal;
 		rig.onb = eyeEnd.onb;
 
-		const RISEPel Le = pEmitter->emittedRadiance( rig, woFromEmitter, eyeEnd.normal );
+		const RISEPel Le = pEmitter->emittedRadiance( rig, woFromEmitter, eyeEnd.geomNormal );
 
 		if( ColorMath::MaxValue( Le ) <= 0 ) {
 			return result;
@@ -3617,7 +3683,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				const IEmitter* pEm = eyeEnd.pMaterial->GetEmitter();
 				if( pEm ) {
 					// Cosine-weighted hemisphere emission (one-sided)
-					const Scalar cosAtEmitter = Vector3Ops::Dot( eyeEnd.normal, woFromEmitter );
+					const Scalar cosAtEmitter = Vector3Ops::Dot( eyeEnd.geomNormal, woFromEmitter );
 					emPdfDir = (cosAtEmitter > 0) ? (cosAtEmitter * INV_PI) : 0;
 				}
 			}
@@ -3633,7 +3699,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 					BDPTUtilities::SolidAngleToAreaMedium( emPdfDir, eyePred.sigma_t_scalar, distPredSq );
 			} else {
 				const Scalar absCosAtPred =
-					fabs( Vector3Ops::Dot( eyePred.normal,
+					fabs( Vector3Ops::Dot( eyePred.geomNormal,
 						Vector3Ops::Normalize( dToPred ) ) );
 				const_cast<BDPTVertex&>( eyePred ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( emPdfDir, absCosAtPred, distPredSq );
@@ -3717,7 +3783,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		const Scalar absCosLight = lightEnd.isDelta ?
 			Scalar(1.0) :
 			(lightIsMedium_t0 ? Scalar(1.0) :
-				fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) ));
+				fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) ));
 		const Scalar G = absCosLight / distSq;
 
 		result.contribution = lightEnd.throughput * fLight * (G * We);
@@ -3763,7 +3829,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				const_cast<BDPTVertex&>( lightPred ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
 			} else {
-				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.geomNormal,
 					Vector3Ops::Normalize( dToPred ) ) );
 				const_cast<BDPTVertex&>( lightPred ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
@@ -3829,12 +3895,13 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				rig.bHit = true;
 				rig.ptIntersection = lightStart.position;
 				rig.vNormal = lightStart.normal;
+				rig.vGeomNormal = lightStart.geomNormal;
 				rig.onb = lightStart.onb;
 
 				Le = pEmitter->emittedRadiance(
 					rig,
 					-dirToLight,
-					lightStart.normal );
+					lightStart.geomNormal );
 			}
 		}
 
@@ -3869,18 +3936,15 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				// delta light <-> medium: 1/dist^2 (no cosine on either side)
 				G = 1.0 / dist2;
 			} else {
-				const Scalar absCosEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
+				const Scalar absCosEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dirToLight ) );
 				G = absCosEye / dist2;
 			}
 		} else {
 			if( eyeIsMedium_s1 ) {
 				// area light <-> medium: |cos_light| / dist^2
-				G = BDPTUtilities::GeometricTermSurfaceMedium(
-					lightStart.position, lightStart.normal, eyeEnd.position );
+				G = BDPTUtilities::GeometricTermSurfaceMedium( lightStart.position, lightStart.geomNormal, eyeEnd.position );
 			} else {
-				G = BDPTUtilities::GeometricTerm(
-					lightStart.position, lightStart.normal,
-					eyeEnd.position, eyeEnd.normal );
+				G = BDPTUtilities::GeometricTerm( lightStart.position, lightStart.geomNormal, eyeEnd.position, eyeEnd.geomNormal );
 			}
 		}
 
@@ -3920,7 +3984,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// For delta-position lights (point/spot), leave at 0 (eye can't hit a point)
 		if( !lightStart.isDelta ) {
 			const Scalar pdfRevSA = EvalPdfAtVertex( eyeEnd, woAtEye, dirToLight );
-			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.normal, dirToLight ) );
+			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.geomNormal, dirToLight ) );
 			const_cast<BDPTVertex&>( lightStart ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
 		}
@@ -3931,7 +3995,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			Scalar emissionPdfDir = 0;
 			if( lightStart.pLuminary ) {
 				// Mesh luminary: cosine-weighted hemisphere emission (one-sided)
-				const Scalar cosAtLight = Vector3Ops::Dot( lightStart.normal, -dirToLight );
+				const Scalar cosAtLight = Vector3Ops::Dot( lightStart.geomNormal, -dirToLight );
 				emissionPdfDir = (cosAtLight > 0) ? (cosAtLight * INV_PI) : 0;
 			} else if( lightStart.pLight ) {
 				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
@@ -3941,7 +4005,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( emissionPdfDir, eyeEnd.sigma_t_scalar, distSq_conn );
 			} else {
-				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
+				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dirToLight ) );
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
 			}
@@ -3969,7 +4033,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, eyePred.sigma_t_scalar, distPredSq );
 			} else {
 				const Scalar absCosAtPred =
-					fabs( Vector3Ops::Dot( eyePred.normal, dirToPred ) );
+					fabs( Vector3Ops::Dot( eyePred.geomNormal, dirToPred ) );
 				const_cast<BDPTVertex&>( eyePred ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
 			}
@@ -4062,8 +4126,9 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 					rig.bHit = true;
 					rig.ptIntersection = lightEnd.position;
 					rig.vNormal = lightEnd.normal;
+					rig.vGeomNormal = lightEnd.geomNormal;
 					rig.onb = lightEnd.onb;
-					fLight = pEmitter->emittedRadiance( rig, dirToCam, lightEnd.normal );
+					fLight = pEmitter->emittedRadiance( rig, dirToCam, lightEnd.geomNormal );
 				}
 			}
 
@@ -4075,7 +4140,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 
 			const Scalar distSq = dist * dist;
 			const Scalar absCosLight = lightEnd.isDelta ?
-				Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+				Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
 			const Scalar G = absCosLight / distSq;
 
 			result.contribution = fLight * (G * We / pdfLight);
@@ -4100,7 +4165,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				Scalar emPdfDir = 0;
 				if( lightEnd.pLuminary ) {
 					// One-sided emission PDF
-					const Scalar cosEmit = Vector3Ops::Dot( lightEnd.normal, dirToCam );
+					const Scalar cosEmit = Vector3Ops::Dot( lightEnd.geomNormal, dirToCam );
 					emPdfDir = (cosEmit > 0) ? (cosEmit * INV_PI) : 0;
 				} else if( lightEnd.pLight ) {
 					emPdfDir = lightEnd.pLight->pdfDirection( dirToCam );
@@ -4124,7 +4189,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// medium <-> camera: 1/dist^2
 		const Scalar distSq = dist * dist;
 		const Scalar absCosLight = lightIsMedium_t1 ?
-			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
 		const Scalar G = absCosLight / distSq;
 
 		// Connection transmittance through participating media
@@ -4186,7 +4251,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				const_cast<BDPTVertex&>( lightPred ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
 			} else {
-				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.geomNormal,
 					Vector3Ops::Normalize( dToPred ) ) );
 				const_cast<BDPTVertex&>( lightPred ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
@@ -4289,15 +4354,11 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			G = BDPTUtilities::GeometricTermMediumMedium(
 				lightEnd.position, eyeEnd.position );
 		} else if( lightIsMedium ) {
-			G = BDPTUtilities::GeometricTermSurfaceMedium(
-				eyeEnd.position, eyeEnd.normal, lightEnd.position );
+			G = BDPTUtilities::GeometricTermSurfaceMedium( eyeEnd.position, eyeEnd.geomNormal, lightEnd.position );
 		} else if( eyeIsMedium ) {
-			G = BDPTUtilities::GeometricTermSurfaceMedium(
-				lightEnd.position, lightEnd.normal, eyeEnd.position );
+			G = BDPTUtilities::GeometricTermSurfaceMedium( lightEnd.position, lightEnd.geomNormal, eyeEnd.position );
 		} else {
-			G = BDPTUtilities::GeometricTerm(
-				lightEnd.position, lightEnd.normal,
-				eyeEnd.position, eyeEnd.normal );
+			G = BDPTUtilities::GeometricTerm( lightEnd.position, lightEnd.geomNormal, eyeEnd.position, eyeEnd.geomNormal );
 		}
 
 		if( G <= 0 ) {
@@ -4354,7 +4415,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfRevSA, lightEnd.sigma_t_scalar, distSq_conn );
 			} else {
-				const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightEnd.normal, dConnect ) );
+				const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightEnd.geomNormal, dConnect ) );
 				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
 			}
@@ -4368,7 +4429,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfRevSA, eyeEnd.sigma_t_scalar, distSq_conn );
 			} else {
-				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dConnect ) );
+				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dConnect ) );
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtEye, distSq_conn );
 			}
@@ -4393,7 +4454,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				const_cast<BDPTVertex&>( lightPred ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
 			} else {
-				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.geomNormal,
 					Vector3Ops::Normalize( dToPred ) ) );
 				const_cast<BDPTVertex&>( lightPred ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
@@ -4425,7 +4486,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, eyePred.sigma_t_scalar, distPredSq );
 			} else {
 				const Scalar absCosAtPred =
-					fabs( Vector3Ops::Dot( eyePred.normal, Vector3Ops::Normalize( dToPred ) ) );
+					fabs( Vector3Ops::Dot( eyePred.geomNormal, Vector3Ops::Normalize( dToPred ) ) );
 				const_cast<BDPTVertex&>( eyePred ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
 			}
@@ -4956,9 +5017,10 @@ Scalar BDPTIntegrator::EvalEmitterRadianceNM(
 	rig.bHit = true;
 	rig.ptIntersection = vertex.position;
 	rig.vNormal = vertex.normal;
+	rig.vGeomNormal = vertex.geomNormal;
 	rig.onb = vertex.onb;
 
-	return pEmitter->emittedRadianceNM( rig, outDir, vertex.normal, nm );
+	return pEmitter->emittedRadianceNM( rig, outDir, vertex.geomNormal, nm );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -5018,6 +5080,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			rig.bHit = true;
 			rig.ptIntersection = ls.position;
 			rig.vNormal = ls.normal;
+			// LightSampler returns the geometric face normal in ls.normal
+			// (UniformRandomPoint on the luminary mesh; no Phong/bump on
+			// emitter surfaces in RISE), so vGeomNormal mirrors it.
+			rig.vGeomNormal = ls.normal;
 			OrthonormalBasis3D onb;
 			onb.CreateFromW( ls.normal );
 			rig.onb = onb;
@@ -5037,6 +5103,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		v.type = BDPTVertex::LIGHT;
 		v.position = ls.position;
 		v.normal = ls.normal;
+		// Light samples come from `LightSampler::UniformRandomPoint` on the
+		// luminary mesh — that normal is the geometric face normal (no
+		// Phong / bump perturbation applies to luminaire surfaces here),
+		// so shading == geometric on light vertex 0.
+		v.geomNormal = ls.normal;
 		v.onb.CreateFromW( ls.normal );
 		v.pMaterial = 0;
 		v.pObject = 0;
@@ -5358,12 +5429,12 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 								revPdfSA, prev.sigma_t_scalar, distSqMed );
 						} else if( prev.type == BDPTVertex::LIGHT ) {
 							const Scalar absCosAtPrev = fabs( Vector3Ops::Dot(
-								prev.normal, currentRay.Dir() ) );
+								prev.geomNormal, currentRay.Dir() ) );
 							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
 								revPdfSA, absCosAtPrev, distSqMed );
 						} else {
 							const Scalar absCosAtPrev = fabs( Vector3Ops::Dot(
-								prev.normal, currentRay.Dir() ) );
+								prev.geomNormal, currentRay.Dir() ) );
 							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
 								revPdfSA, absCosAtPrev, distSqMed );
 						}
@@ -5404,6 +5475,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		v.type = BDPTVertex::SURFACE;
 		v.position = ri.geometric.ptIntersection;
 		v.normal = ri.geometric.vNormal;
+		v.geomNormal = ri.geometric.vGeomNormal;
 		v.onb = ri.geometric.onb;
 		v.ptCoord = ri.geometric.ptCoord;
 		v.ptObjIntersec = ri.geometric.ptObjIntersec;
@@ -5420,8 +5492,11 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		}
 
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
+		// Solid-angle <-> area Jacobian uses the GEOMETRIC normal —
+		// area-element parameterisation depends on the actual face
+		// orientation (Veach 1997 §8.2.2 / PBRT 4e §13.6.4).
 		const Scalar absCosIn = fabs( Vector3Ops::Dot(
-			ri.geometric.vNormal, -currentRay.Dir() ) );
+			ri.geometric.vGeomNormal, -currentRay.Dir() ) );
 
 		v.pdfFwd = BDPTUtilities::SolidAngleToArea( pdfFwdPrev, absCosIn, distSq );
 		v.throughputNM = betaNM;
@@ -5584,9 +5659,16 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
-			const Scalar cosIn = Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() );
-			if( cosIn > NEARZERO )
+			// Front-face gate uses GEOMETRIC; Fresnel cosine uses SHADING.
+			// PBRT 4e §10.1.1 (front/back is geometric); §11.4.2 (BSSRDF
+			// Fresnel angular dependence is shading-frame).
+			const Vector3 wo_bss = -currentRay.Dir();
+			const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
+			// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
+			// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
+			const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
+			const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
+			if( cosInGeom > NEARZERO )
 			{
 				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
 			const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
@@ -5607,6 +5689,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 					entryV.type = BDPTVertex::SURFACE;
 					entryV.position = bssrdf.entryPoint;
 					entryV.normal = bssrdf.entryNormal;
+					entryV.geomNormal = bssrdf.entryGeomNormal;
 					entryV.onb = bssrdf.entryONB;
 					entryV.pMaterial = ri.pMaterial;
 					entryV.pObject = ri.pObject;
@@ -5676,6 +5759,7 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 						entryV.type = BDPTVertex::SURFACE;
 						entryV.position = bssrdf.entryPoint;
 						entryV.normal = bssrdf.entryNormal;
+						entryV.geomNormal = bssrdf.entryGeomNormal;
 						entryV.onb = bssrdf.entryONB;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
@@ -6012,10 +6096,14 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 			const Scalar revPdfSA = EvalPdfAtVertexNM(
 				curr, scatDir, -currentRay.Dir(), nm );
 
-			const Scalar absCosAtPrev = fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
+			// Geometric cosine read only inside the surface/light branch
+			// — medium vertices don't populate geomNormal.  See RGB
+			// twin around line 2394 for the same pattern + rationale.
 			if( prev.type == BDPTVertex::MEDIUM ) {
 				prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium( revPdfSA, prev.sigma_t_scalar, distSq );
 			} else {
+				const Scalar absCosAtPrev = fabs(
+					Vector3Ops::Dot( prev.geomNormal, currentRay.Dir() ) );
 				prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
 			}
 			if( pScat->isDelta ) { prev.pdfRev = 0; }
@@ -6378,7 +6466,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 						} else {
 							const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA) ?
 								Scalar(1.0) :
-								fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
+								fabs( Vector3Ops::Dot( prev.geomNormal, currentRay.Dir() ) );
 							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
 								revPdfSA, absCosAtPrev, distSqMed );
 						}
@@ -6418,6 +6506,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		v.type = BDPTVertex::SURFACE;
 		v.position = ri.geometric.ptIntersection;
 		v.normal = ri.geometric.vNormal;
+		v.geomNormal = ri.geometric.vGeomNormal;
 		v.onb = ri.geometric.onb;
 		v.ptCoord = ri.geometric.ptCoord;
 		v.ptObjIntersec = ri.geometric.ptObjIntersec;
@@ -6434,8 +6523,11 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		}
 
 		const Scalar distSq = ri.geometric.range * ri.geometric.range;
+		// Solid-angle <-> area Jacobian uses the GEOMETRIC normal —
+		// area-element parameterisation depends on the actual face
+		// orientation (Veach 1997 §8.2.2 / PBRT 4e §13.6.4).
 		const Scalar absCosIn = fabs( Vector3Ops::Dot(
-			ri.geometric.vNormal, -currentRay.Dir() ) );
+			ri.geometric.vGeomNormal, -currentRay.Dir() ) );
 
 		v.pdfFwd = BDPTUtilities::SolidAngleToArea( pdfFwdPrev, absCosIn, distSq );
 		v.throughputNM = betaNM;
@@ -6588,9 +6680,16 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		Scalar bssrdfReflectCompensation = 1.0;
 		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
 		{
-			const Scalar cosIn = Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() );
-			if( cosIn > NEARZERO )
+			// Front-face gate uses GEOMETRIC; Fresnel cosine uses SHADING.
+			// PBRT 4e §10.1.1 (front/back is geometric); §11.4.2 (BSSRDF
+			// Fresnel angular dependence is shading-frame).
+			const Vector3 wo_bss = -currentRay.Dir();
+			const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
+			// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
+			// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
+			const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
+			const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
+			if( cosInGeom > NEARZERO )
 			{
 				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
 			const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
@@ -6611,6 +6710,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 					entryV.type = BDPTVertex::SURFACE;
 					entryV.position = bssrdf.entryPoint;
 					entryV.normal = bssrdf.entryNormal;
+					entryV.geomNormal = bssrdf.entryGeomNormal;
 					entryV.onb = bssrdf.entryONB;
 					entryV.pMaterial = ri.pMaterial;
 					entryV.pObject = ri.pObject;
@@ -6680,6 +6780,7 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 						entryV.type = BDPTVertex::SURFACE;
 						entryV.position = bssrdf.entryPoint;
 						entryV.normal = bssrdf.entryNormal;
+						entryV.geomNormal = bssrdf.entryGeomNormal;
 						entryV.onb = bssrdf.entryONB;
 						entryV.pMaterial = ri.pMaterial;
 						entryV.pObject = ri.pObject;
@@ -7003,13 +7104,17 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 			const Scalar revPdfSA = EvalPdfAtVertexNM(
 				curr, scatDir, -currentRay.Dir(), nm );
 
-			const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA) ?
-				Scalar(1.0) :
-				fabs( Vector3Ops::Dot( prev.normal, currentRay.Dir() ) );
-
+			// Gate the geometric-cosine read behind the type checks —
+			// CAMERA gets the sentinel 1.0, MEDIUM bypasses cos via
+			// sigma_t.  Reading prev.geomNormal on a medium vertex
+			// would consume zero-init data.  Mirrors the RGB fix at
+			// line ~3486.
 			if( prev.type == BDPTVertex::MEDIUM ) {
 				prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium( revPdfSA, prev.sigma_t_scalar, distSq );
 			} else {
+				const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA)
+					? Scalar(1.0)
+					: fabs( Vector3Ops::Dot( prev.geomNormal, currentRay.Dir() ) );
 				prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
 			}
 			if( pScat->isDelta ) { prev.pdfRev = 0; }
@@ -7145,7 +7250,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				const IEmitter* pEm = eyeEnd.pMaterial->GetEmitter();
 				if( pEm ) {
 					// One-sided emission PDF
-					const Scalar cosAtEmitter = Vector3Ops::Dot( eyeEnd.normal, woFromEmitter );
+					const Scalar cosAtEmitter = Vector3Ops::Dot( eyeEnd.geomNormal, woFromEmitter );
 					emPdfDir = (cosAtEmitter > 0) ? (cosAtEmitter * INV_PI) : 0;
 				}
 			}
@@ -7161,7 +7266,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 					BDPTUtilities::SolidAngleToAreaMedium( emPdfDir, eyePred.sigma_t_scalar, distPredSq );
 			} else {
 				const Scalar absCosAtPred =
-					fabs( Vector3Ops::Dot( eyePred.normal,
+					fabs( Vector3Ops::Dot( eyePred.geomNormal,
 						Vector3Ops::Normalize( dToPred ) ) );
 				const_cast<BDPTVertex&>( eyePred ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( emPdfDir, absCosAtPred, distPredSq );
@@ -7219,7 +7324,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 
 		const Scalar distSq = dist * dist;
 		const Scalar absCosLight = lightEnd.isDelta ?
-			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
 		const Scalar G = absCosLight / distSq;
 
 		result.contribution = lightEnd.throughputNM * fLightNM * G * We;
@@ -7251,7 +7356,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, dirToCam, wiAtLightEnd, nm );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.geomNormal,
 				Vector3Ops::Normalize( dToPred ) ) );
 			const_cast<BDPTVertex&>( lightPred ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
@@ -7307,8 +7412,9 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				rig.bHit = true;
 				rig.ptIntersection = lightStart.position;
 				rig.vNormal = lightStart.normal;
+				rig.vGeomNormal = lightStart.geomNormal;
 				rig.onb = lightStart.onb;
-				LeNM = pEmitter->emittedRadianceNM( rig, -dirToLight, lightStart.normal, nm );
+				LeNM = pEmitter->emittedRadianceNM( rig, -dirToLight, lightStart.geomNormal, nm );
 			}
 		} else if( lightStart.pLight ) {
 			const RISEPel Le = lightStart.pLight->emittedRadiance( -dirToLight );
@@ -7339,17 +7445,14 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			if( eyeIsMediumNM_s1 ) {
 				G = 1.0 / dist2;
 			} else {
-				const Scalar absCosEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
+				const Scalar absCosEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dirToLight ) );
 				G = absCosEye / dist2;
 			}
 		} else {
 			if( eyeIsMediumNM_s1 ) {
-				G = BDPTUtilities::GeometricTermSurfaceMedium(
-					lightStart.position, lightStart.normal, eyeEnd.position );
+				G = BDPTUtilities::GeometricTermSurfaceMedium( lightStart.position, lightStart.geomNormal, eyeEnd.position );
 			} else {
-				G = BDPTUtilities::GeometricTerm(
-					lightStart.position, lightStart.normal,
-					eyeEnd.position, eyeEnd.normal );
+				G = BDPTUtilities::GeometricTerm( lightStart.position, lightStart.geomNormal, eyeEnd.position, eyeEnd.geomNormal );
 			}
 		}
 
@@ -7374,7 +7477,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 
 		if( !lightStart.isDelta ) {
 			const Scalar pdfRevSA = EvalPdfAtVertexNM( eyeEnd, woAtEye, dirToLight, nm );
-			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.normal, dirToLight ) );
+			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.geomNormal, dirToLight ) );
 			const_cast<BDPTVertex&>( lightStart ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
 		}
@@ -7382,7 +7485,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		{
 			Scalar emissionPdfDir = 0;
 			if( lightStart.pLuminary ) {
-				const Scalar cosAtLight = Vector3Ops::Dot( lightStart.normal, -dirToLight );
+				const Scalar cosAtLight = Vector3Ops::Dot( lightStart.geomNormal, -dirToLight );
 				emissionPdfDir = (cosAtLight > 0) ? (cosAtLight * INV_PI) : 0;
 			} else if( lightStart.pLight ) {
 				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
@@ -7391,7 +7494,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( emissionPdfDir, eyeEnd.sigma_t_scalar, distSq_conn );
 			} else {
-				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dirToLight ) );
+				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dirToLight ) );
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
 			}
@@ -7417,7 +7520,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, eyePred.sigma_t_scalar, distPredSq );
 			} else {
 				const Scalar absCosAtPred =
-					fabs( Vector3Ops::Dot( eyePred.normal, dirToPred ) );
+					fabs( Vector3Ops::Dot( eyePred.geomNormal, dirToPred ) );
 				const_cast<BDPTVertex&>( eyePred ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
 			}
@@ -7492,8 +7595,9 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 					rig.bHit = true;
 					rig.ptIntersection = lightEnd.position;
 					rig.vNormal = lightEnd.normal;
+					rig.vGeomNormal = lightEnd.geomNormal;
 					rig.onb = lightEnd.onb;
-					LeNM = pEmitter->emittedRadianceNM( rig, dirToCam, lightEnd.normal, nm );
+					LeNM = pEmitter->emittedRadianceNM( rig, dirToCam, lightEnd.geomNormal, nm );
 				}
 			} else if( lightEnd.pLight ) {
 				const RISEPel Le = lightEnd.pLight->emittedRadiance( dirToCam );
@@ -7507,7 +7611,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 
 			const Scalar distSq = dist * dist;
 			const Scalar absCosLight = lightEnd.isDelta ?
-				Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+				Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
 			const Scalar G = absCosLight / distSq;
 
 			result.contribution = LeNM * G * We / pdfLight;
@@ -7529,7 +7633,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				Scalar emPdfDir = 0;
 				if( lightEnd.pLuminary ) {
 					// One-sided emission PDF
-					const Scalar cosEmit = Vector3Ops::Dot( lightEnd.normal, dirToCam );
+					const Scalar cosEmit = Vector3Ops::Dot( lightEnd.geomNormal, dirToCam );
 					emPdfDir = (cosEmit > 0) ? (cosEmit * INV_PI) : 0;
 				} else if( lightEnd.pLight ) {
 					emPdfDir = lightEnd.pLight->pdfDirection( dirToCam );
@@ -7551,7 +7655,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		// Medium-aware geometric term (camera has no surface normal)
 		const Scalar distSq = dist * dist;
 		const Scalar absCosLight = lightIsMediumNM_t1 ?
-			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.normal, dirToCam ) );
+			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
 		const Scalar G = absCosLight / distSq;
 
 		// Connection transmittance (NM)
@@ -7608,7 +7712,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				const_cast<BDPTVertex&>( lightPred ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
 			} else {
-				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.geomNormal,
 					Vector3Ops::Normalize( dToPred ) ) );
 				const_cast<BDPTVertex&>( lightPred ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
@@ -7689,15 +7793,11 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			G = BDPTUtilities::GeometricTermMediumMedium(
 				lightEnd.position, eyeEnd.position );
 		} else if( lightIsMediumNM ) {
-			G = BDPTUtilities::GeometricTermSurfaceMedium(
-				eyeEnd.position, eyeEnd.normal, lightEnd.position );
+			G = BDPTUtilities::GeometricTermSurfaceMedium( eyeEnd.position, eyeEnd.geomNormal, lightEnd.position );
 		} else if( eyeIsMediumNM ) {
-			G = BDPTUtilities::GeometricTermSurfaceMedium(
-				lightEnd.position, lightEnd.normal, eyeEnd.position );
+			G = BDPTUtilities::GeometricTermSurfaceMedium( lightEnd.position, lightEnd.geomNormal, eyeEnd.position );
 		} else {
-			G = BDPTUtilities::GeometricTerm(
-				lightEnd.position, lightEnd.normal,
-				eyeEnd.position, eyeEnd.normal );
+			G = BDPTUtilities::GeometricTerm( lightEnd.position, lightEnd.geomNormal, eyeEnd.position, eyeEnd.geomNormal );
 		}
 
 		if( G <= 0 ) {
@@ -7725,7 +7825,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfRevSA, lightEnd.sigma_t_scalar, distSq_conn );
 			} else {
-				const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightEnd.normal, dConnect ) );
+				const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightEnd.geomNormal, dConnect ) );
 				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
 			}
@@ -7737,7 +7837,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfRevSA, eyeEnd.sigma_t_scalar, distSq_conn );
 			} else {
-				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.normal, dConnect ) );
+				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dConnect ) );
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtEye, distSq_conn );
 			}
@@ -7758,7 +7858,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				const_cast<BDPTVertex&>( lightPred ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
 			} else {
-				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.normal,
+				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.geomNormal,
 					Vector3Ops::Normalize( dToPred ) ) );
 				const_cast<BDPTVertex&>( lightPred ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
@@ -7784,7 +7884,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, eyePred.sigma_t_scalar, distPredSq );
 			} else {
 				const Scalar absCosAtPred =
-					fabs( Vector3Ops::Dot( eyePred.normal, Vector3Ops::Normalize( dToPred ) ) );
+					fabs( Vector3Ops::Dot( eyePred.geomNormal, Vector3Ops::Normalize( dToPred ) ) );
 				const_cast<BDPTVertex&>( eyePred ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
 			}
@@ -7950,9 +8050,10 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateSMSStrateg
 			woAtEye = Vector3Ops::Normalize( woAtEye );
 		}
 
-		// Delegate to the standalone EvaluateAtShadingPoint
+		// Delegate to the standalone EvaluateAtShadingPoint.
+		// Pass both geometric and shading receiver normals.
 		ManifoldSolver::SMSContribution sms = pManifoldSolver->EvaluateAtShadingPoint(
-			eyeVertex.position, eyeVertex.normal, eyeVertex.onb,
+			eyeVertex.position, eyeVertex.geomNormal, eyeVertex.normal, eyeVertex.onb,
 			eyeVertex.pMaterial, woAtEye,
 			scene, caster, sampler );
 
@@ -8079,7 +8180,7 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateSMSStrat
 		// by hand, with the correct spectral geometry formula.
 		ManifoldSolver::SMSContributionNM smsNM =
 			pManifoldSolver->EvaluateAtShadingPointNM(
-				eyeVertex.position, eyeVertex.normal, eyeVertex.onb,
+				eyeVertex.position, eyeVertex.geomNormal, eyeVertex.normal, eyeVertex.onb,
 				eyeVertex.pMaterial, woAtEye,
 				scene, caster, sampler, nm );
 
@@ -8247,6 +8348,7 @@ bool BDPTIntegrator::HasDispersiveDeltaVertex(
 		RayIntersectionGeometric rig( dummyRay, nullRasterizerState );
 		rig.ptIntersection = v.position;
 		rig.vNormal = v.normal;
+		rig.vGeomNormal = v.geomNormal;
 		rig.onb = v.onb;
 
 		IORStack vertexIor( 1.0 );

@@ -113,7 +113,8 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	//
 	struct ProbeHit {
 		Point3 point;
-		Vector3 normal;
+		Vector3 normal;		///< Shading normal at probe-ray hit (post-modifier)
+		Vector3 geomNormal;	///< Geometric face normal — needed by the integrator's entry front-face gate
 		OrthonormalBasis3D onb;
 	};
 	std::vector<ProbeHit> hits;
@@ -148,6 +149,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 			ProbeHit h;
 			h.point = probeRI.geometric.ptIntersection;
 			h.normal = probeRI.geometric.vNormal;
+			h.geomNormal = probeRI.geometric.vGeomNormal;
 			h.onb = probeRI.geometric.onb;
 			hits.push_back( h );
 
@@ -171,6 +173,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 
 	Point3 entryPoint = hits[sel].point;
 	Vector3 entryNormal = hits[sel].normal;
+	Vector3 entryGeomNormal = hits[sel].geomNormal;
 	OrthonormalBasis3D entryONB = hits[sel].onb;
 
 	// Skip if entry point is too close to exit point (self-intersection)
@@ -311,6 +314,7 @@ BSSRDFSampling::SampleResult BSSRDFSampling::SampleEntryPoint(
 	result.entryPoint = Point3Ops::mkPoint3( entryPoint,
 		entryNormal * BSSRDF_RAY_EPSILON );
 	result.entryNormal = entryNormal;
+	result.entryGeomNormal = entryGeomNormal;
 	result.entryONB = entryONB;
 	result.scatteredRay = Ray( result.entryPoint, cosineDir );
 	result.cosinePdf = cosTheta * INV_PI;

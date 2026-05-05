@@ -324,7 +324,14 @@ namespace
 			// so we preserve the raw cosI-based side indicator (consumer
 			// uses it only for Fresnel eta_i/eta_t bookkeeping on the
 			// reflection, which is direction-dependent).
-			const Scalar cosI = Vector3Ops::Dot( ray.Dir(), ri.geometric.vNormal );
+			// Side-of-surface decision: use the GEOMETRIC normal so the
+			// `bEntering` flag stamped on the photon chain matches the
+			// actual face orientation (not Phong-perturbed shading).
+			// A bump-mapped reflector can otherwise mislabel entering vs
+			// exiting on a reflection vertex, propagating a wrong
+			// `isExiting` bit into the photon record and downstream
+			// Fresnel etaI/etaT pair.  PBRT 4e §10.1.1.
+			const Scalar cosI = Vector3Ops::Dot( ray.Dir(), ri.geometric.vGeomNormal );
 			const bool bReflection = ( pScat->type == ScatteredRay::eRayReflection );
 			const bool bEntering = bReflection
 			    ? ( cosI < 0 )          // reflection: medium unchanged; keep
@@ -335,6 +342,13 @@ namespace
 			SMSPhotonChainVertex& v = out.chain[specularHits];
 			v.position  = ri.geometric.ptIntersection;
 			v.normal    = ri.geometric.vNormal;
+			// Store geometric face normal alongside the shading normal so
+			// the receiver-side ManifoldSolver reconstruction can populate
+			// `mv.geomNormal` and the validator's geometric side-test fix
+			// (ManifoldSolver::ValidateChainPhysics) actually fires on
+			// photon-aided chains.  Without this slot, the validator would
+			// silently fall back to shading via its NEARZERO check.
+			v.geomNormal = ri.geometric.vGeomNormal;
 			v.pObject   = ri.pObject;
 			v.pMaterial = ri.pMaterial;
 			// eta comes from the material's specular info at this vertex.
@@ -444,6 +458,8 @@ unsigned int SMSPhotonMap::Build(
 
 			RayIntersectionGeometric rig( r, nullRasterizerState );
 			rig.vNormal = normal;
+			// Luminary normal from UniformRandomPoint is geometric; mirror.
+			rig.vGeomNormal = normal;
 			rig.ptCoord = coord;
 			rig.onb.CreateFromW( rig.vNormal );
 

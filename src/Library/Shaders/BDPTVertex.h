@@ -83,7 +83,14 @@ namespace RISE
 		// failure mode this protocol prevents.
 		// ---------------------------------------------------------------
 		Point3					position;
-		Vector3					normal;
+		Vector3					normal;			///< Shading normal (Phong-interpolated, possibly bump/normal-mapped).
+												///< Use for BSDF eval / sample / pdf and the BSDF cosine factor.
+		Vector3					geomNormal;		///< Geometric flat-face normal, independent of Phong / bump.
+												///< Use for side-of-surface tests (entering/exiting, front/back),
+												///< medium-stack push/pop, solid-angle->area Jacobian cosines, and
+												///< any rebuilt RayIntersectionGeometric that downstream code asks
+												///< "which side of the actual surface is this?".
+												///< On analytical primitives equals `normal` by construction.
 		OrthonormalBasis3D		onb;
 		Point2					ptCoord;		///< Texture coordinate at intersection (for painter evaluation)
 		Point3					ptObjIntersec;	///< Object-space intersection point (for 3D procedural painters)

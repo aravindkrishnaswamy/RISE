@@ -67,7 +67,12 @@ namespace RISE
 			unsigned char		flags;			///< LightVertexFlags bitmask
 			unsigned short		pathLength;		///< Light-subpath bounces to reach this vertex
 
-			Vector3				normal;			///< Surface normal at the vertex
+			Vector3				normal;			///< Shading normal at the vertex (BSDF-frame; merge-time BSDF eval)
+			Vector3				geomNormal;		///< Geometric flat-face normal at the vertex.
+												///< Used for the merge-time geometry-term cosines (the
+												///< solid-angle <-> area Jacobian at the connection
+												///< segment between eye and light vertices).  On
+												///< analytical primitives equals `normal` by construction.
 			Vector3				wi;				///< Direction from previous vertex to this one
 			const IMaterial*	pMaterial;		///< For merge-time BSDF evaluation
 			const IObject*		pObject;		///< For merge-time BSDF evaluation
@@ -90,6 +95,7 @@ namespace RISE
 				flags( 0 ),
 				pathLength( 0 ),
 				normal( 0, 0, 1 ),
+				geomNormal( 0, 0, 1 ),
 				wi( 0, 0, 0 ),
 				pMaterial( 0 ),
 				pObject( 0 ),

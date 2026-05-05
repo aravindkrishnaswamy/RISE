@@ -62,6 +62,10 @@ static BDPTVertex MakeSentinelSurfaceVertex()
 	v.type = BDPTVertex::SURFACE;
 	v.position      = Point3( 7.0,  -3.0,  11.0 );
 	v.normal        = Vector3( 0.0,  1.0,   0.0 );
+	// geomNormal sentinel intentionally distinct from normal — on a real
+	// triangle mesh under heavy bump-mapping these can diverge by tens of
+	// degrees; the rebuild must propagate them independently.
+	v.geomNormal    = Vector3( 0.0,  0.0,   1.0 );
 	v.onb.CreateFromW( v.normal );
 	v.ptCoord       = Point2( 0.375, 0.625 );
 	v.ptObjIntersec = Point3( 0.125, -0.875, 0.5 );
@@ -104,6 +108,15 @@ void TestPopulateRIG_AllFields()
 		   IsClose( ri.vNormal.y, 1.0 ) &&
 		   IsClose( ri.vNormal.z, 0.0 ),
 		"vNormal should mirror vertex.normal" );
+
+	// geomNormal -> vGeomNormal — must propagate independently of vNormal
+	// so downstream side-of-surface tests can read the geometric face
+	// normal even when the shading normal has been Phong-interpolated or
+	// perturbed by bump/normal-map modifiers.
+	Check( IsClose( ri.vGeomNormal.x, 0.0 ) &&
+		   IsClose( ri.vGeomNormal.y, 0.0 ) &&
+		   IsClose( ri.vGeomNormal.z, 1.0 ),
+		"vGeomNormal should mirror vertex.geomNormal" );
 
 	// onb (compare W axis — the onb was built from the normal)
 	Check( IsClose( ri.onb.w().x, 0.0 ) &&

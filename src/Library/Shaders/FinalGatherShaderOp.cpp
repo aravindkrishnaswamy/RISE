@@ -220,7 +220,12 @@ namespace
 					if( gradRI.geometric.bHit && gradRI.pObject ) {
 						sample.bUsableForTranslation = true;
 						sample.pObject = gradRI.pObject;
-						sample.vNormal = gradRI.geometric.vNormal;
+						// Translational-gradient normal-similarity test
+						// (ClassifyGradientPair below) is a same-physical-
+						// surface continuity check — use the GEOMETRIC
+						// normal so bumpy regions don't reject neighbouring
+						// samples that are actually on the same face.
+						sample.vNormal = gradRI.geometric.vGeomNormal;
 					}
 				}
 			}
@@ -371,15 +376,21 @@ void FinalGatherShaderOp::PerformOperation(
 				// If we are in normal rendering pass, look it up in the cache
 				const IIrradianceCache* pCache = pScene->GetIrradianceCache();
 				if( pCache && pCache->GetTolerance() > 0 && rc.IsNormalShadingPass() ) {
-					// Look it up
+					// Look it up.  The cache key uses the GEOMETRIC normal
+					// so heavily bump-mapped surfaces don't fragment a
+					// single physical surface into many records that
+					// disagree only on bump perturbation.  The rotational-
+					// gradient cross product `Cross(N₁, N₂)` then stays
+					// near-zero on the same physical face, which keeps the
+					// extrapolation accurate.  Insert sites below match.
 					std::vector<IIrradianceCache::CacheElement> results;
-					const Scalar weights = pCache->Query(ri.geometric.ptIntersection, ri.geometric.vNormal, results);
+					const Scalar weights = pCache->Query(ri.geometric.ptIntersection, ri.geometric.vGeomNormal, results);
 
 					// Avoid trusting isolated cache records. Requiring a few
 					// effective contributors reduces visible record footprints.
 					const bool bInterpolated = FinalGatherInterpolation::TryInterpolate(
 						ri.geometric.ptIntersection,
-						ri.geometric.vNormal,
+						ri.geometric.vGeomNormal,
 						results,
 						weights,
 						bComputeCacheGradients,
@@ -399,7 +410,7 @@ void FinalGatherShaderOp::PerformOperation(
 					// succeed here. If not, populate a denser cache record now.
 					bComputeIrradiance = !pCache->WouldInterpolate(
 						ri.geometric.ptIntersection,
-						ri.geometric.vNormal,
+						ri.geometric.vGeomNormal,
 						min_effective_contributors
 						);
 				}
@@ -688,7 +699,11 @@ void FinalGatherShaderOp::PerformOperation(
 								irradianceVariationStats.ComputeReuseDecision( c, high_variation_reuse_scale );
 							if( !reuseDecision.bRejectCacheInsert ) {
 								rsum *= reuseDecision.reuseScale;
-								pCache->InsertElement( ri.geometric.ptIntersection, ri.geometric.vNormal, c, rsum, rotGradient, transGradient1 );
+								// Cache key uses GEOMETRIC normal — see Query
+								// site above for rationale.  Bumpy faces
+								// would otherwise fragment one physical
+								// surface into many records.
+								pCache->InsertElement( ri.geometric.ptIntersection, ri.geometric.vGeomNormal, c, rsum, rotGradient, transGradient1 );
 							}
 						}
 					}

@@ -112,6 +112,18 @@ void GlobalPelPhotonTracer::TracePhoton(
 			}
 
 			if( bDiffuseComponentAvailable && bStorePhoton ) {
+				// Photon storage normal: SHADING.  The deposited normal
+				// is consumed at gather time as the BSDF-frame axis for
+				// `brdf.value(vPhotonDir, ri)` (see PhotonMap.h:684 /
+				// GlobalPelPhotonMap.cpp:96), which IS shading-frame.
+				// The thin-surface "ellipsoid" clamp at gather (which
+				// asks "is this photon on the same physical surface")
+				// already uses `ri.vGeomNormal` per the audit fix in
+				// PhotonMap.h:678.  Storing both normals on the photon
+				// record (Jensen 2001 §6.1) would be the strictly-correct
+				// extension, but `IrradPhoton` currently encodes one
+				// normal as compressed Ntheta/Nphi for a 16-byte stride
+				// — a wider record is out of scope for this audit pass.
 				pPhotonMap.Store( power, ri.geometric.ptIntersection, ri.geometric.vNormal, -ray.Dir() );
 			}
 

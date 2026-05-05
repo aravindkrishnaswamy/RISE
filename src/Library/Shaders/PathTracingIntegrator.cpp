@@ -1384,13 +1384,13 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 #if SMS_DIAG_ENABLED
 					g_smsDiag_emissionSuppressed.fetch_add( 1, std::memory_order_relaxed );
 					const RISEPel rawE_diag = pEmitter->emittedRadiance(
-						ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal );
+						ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal );
 					SMSDiag_AddLum( g_smsDiag_sumSuppLumX,
 						ColorMath::MaxValue( throughput * rawE_diag ) );
 #endif
 					if( ff ) {
 						RISEPel rawE = pEmitter->emittedRadiance(
-							ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal );
+							ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal );
 						FF_TRACE( "  depth=%u EMISSION-SUPPRESSED-BY-SMS rawE=(%.3e,%.3e,%.3e) thr=(%.3e,%.3e,%.3e)",
 							depth, rawE[0], rawE[1], rawE[2],
 							throughput[0], throughput[1], throughput[2] );
@@ -1400,7 +1400,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				else
 				{
 				RISEPel emission = pEmitter->emittedRadiance(
-					ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal );
+					ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal );
 				const RISEPel rawEmission = emission;
 				Scalar emissionMiWeight = 1.0;
 
@@ -1410,7 +1410,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					if( area > 0 )
 					{
 						const Scalar cosLight = fabs( Vector3Ops::Dot(
-							ri.geometric.ray.Dir(), ri.geometric.vNormal ) );
+							ri.geometric.ray.Dir(), ri.geometric.vGeomNormal ) );
 						if( cosLight > 0 )
 						{
 							const Scalar dist = Vector3Ops::Magnitude(
@@ -1505,11 +1505,29 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 			if( pProfile && pBRDF )
 			{
-				const Scalar cosIn = Vector3Ops::Dot( ri.geometric.vNormal,
-					Vector3Ops::Normalize( -ri.geometric.ray.Dir() ) );
-
-				if( cosIn > NEARZERO )
+				// Front-face gate uses the GEOMETRIC normal — "is the ray
+				// hitting the outside of this surface" is a side-of-surface
+				// question that PBRT 4e §10.1.1 explicitly assigns to the
+				// geometric normal.  The original comment ("back-face hits
+				// skip BSSRDF") would otherwise leak/kill subsurface energy
+				// through bumpy regions where the shading normal flips
+				// independently of the actual face orientation.
+				const Vector3 wo = Vector3Ops::Normalize( -ri.geometric.ray.Dir() );
+				const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo );
+				if( cosInGeom > NEARZERO )
 				{
+					// Fresnel cosine uses the SHADING normal — the
+					// transmission is a BSDF-coupled angular dependence
+					// (PBRT 4e §11.4.2 sampling the BSSRDF).  Clamp away
+					// from zero in case shading and geometric disagree
+					// near grazing.
+					// Fresnel cosine clamped via fabs+NEARZERO to a safe
+					// positive value: Sw is symmetric in cos sign and
+					// parameterised against the shading frame.  This
+					// replaces a fallback-to-cosInGeom branch that produced
+					// a discontinuous Ft when shading swung past horizon.
+					const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo );
+					const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
 					const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
 
 					if( Ft > NEARZERO )
@@ -1531,6 +1549,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 							entryRI.bHit = true;
 							entryRI.ptIntersection = bssrdf.entryPoint;
 							entryRI.vNormal = bssrdf.entryNormal;
+							entryRI.vGeomNormal = bssrdf.entryGeomNormal;
 							entryRI.onb = bssrdf.entryONB;
 
 							const Scalar eta = pProfile->GetIOR( ri.geometric );
@@ -1620,11 +1639,20 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 			if( pRWParams && pBRDF )
 			{
-				const Scalar cosIn = Vector3Ops::Dot( ri.geometric.vNormal,
-					Vector3Ops::Normalize( -ri.geometric.ray.Dir() ) );
-
-				if( cosIn > NEARZERO )
+				// Front-face gate uses GEOMETRIC normal; Schlick Fresnel
+				// cosine uses SHADING.  See the BSSRDF site above for
+				// the rationale.
+				const Vector3 wo = Vector3Ops::Normalize( -ri.geometric.ray.Dir() );
+				const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo );
+				if( cosInGeom > NEARZERO )
 				{
+					// Fresnel cosine clamped via fabs+NEARZERO to a safe
+					// positive value: Sw is symmetric in cos sign and
+					// parameterised against the shading frame.  This
+					// replaces a fallback-to-cosInGeom branch that produced
+					// a discontinuous Ft when shading swung past horizon.
+					const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo );
+					const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
 					const Scalar F0 = ((pRWParams->ior - 1.0) / (pRWParams->ior + 1.0)) *
 						((pRWParams->ior - 1.0) / (pRWParams->ior + 1.0));
 					const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
@@ -1656,6 +1684,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 							entryRI.bHit = true;
 							entryRI.ptIntersection = bssrdf.entryPoint;
 							entryRI.vNormal = bssrdf.entryNormal;
+							entryRI.vGeomNormal = bssrdf.entryGeomNormal;
 							entryRI.onb = bssrdf.entryONB;
 
 							RandomWalkEntryBSDF entryBSDF( pRWParams->ior );
@@ -2095,8 +2124,12 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 #if SMS_DIAG_ENABLED
 			g_smsDiag_evals.fetch_add( 1, std::memory_order_relaxed );
 #endif
+			// SMS receiver: pass BOTH geometric and shading normals.
+			// Shading drives BSDF eval and cosine factor (Veach §5.3.6),
+			// geometric drives probe-direction fallback / chain topology.
 			ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
 				ri.geometric.ptIntersection,
+				ri.geometric.vGeomNormal,
 				ri.geometric.vNormal,
 				ri.geometric.onb,
 				ri.pMaterial,
@@ -3218,7 +3251,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			if( pEmitter && considerEmission && !smsSuppressEmission )
 			{
 				Scalar emission = pEmitter->emittedRadianceNM(
-					ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal, nm );
+					ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal, nm );
 				const Scalar rawEmission = emission;
 				Scalar emissionMiWeight = 1.0;
 
@@ -3228,7 +3261,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 					if( area > 0 )
 					{
 						const Scalar cosLight = fabs( Vector3Ops::Dot(
-							ri.geometric.ray.Dir(), ri.geometric.vNormal ) );
+							ri.geometric.ray.Dir(), ri.geometric.vGeomNormal ) );
 						if( cosLight > 0 )
 						{
 							const Scalar dist = Vector3Ops::Magnitude(
@@ -3311,11 +3344,19 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 
 			if( pProfile && pBRDF )
 			{
-				const Scalar cosIn = Vector3Ops::Dot( ri.geometric.vNormal,
-					Vector3Ops::Normalize( -ri.geometric.ray.Dir() ) );
-
-				if( cosIn > NEARZERO )
+				// Front-face gate uses GEOMETRIC; Fresnel cosine uses
+				// SHADING.  See the RGB BSSRDF site above.
+				const Vector3 wo = Vector3Ops::Normalize( -ri.geometric.ray.Dir() );
+				const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo );
+				if( cosInGeom > NEARZERO )
 				{
+					// Fresnel cosine clamped via fabs+NEARZERO to a safe
+					// positive value: Sw is symmetric in cos sign and
+					// parameterised against the shading frame.  This
+					// replaces a fallback-to-cosInGeom branch that produced
+					// a discontinuous Ft when shading swung past horizon.
+					const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo );
+					const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
 					const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
 
 					if( Ft > NEARZERO )
@@ -3337,6 +3378,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 							entryRI.bHit = true;
 							entryRI.ptIntersection = bssrdf.entryPoint;
 							entryRI.vNormal = bssrdf.entryNormal;
+							entryRI.vGeomNormal = bssrdf.entryGeomNormal;
 							entryRI.onb = bssrdf.entryONB;
 
 							const Scalar eta = pProfile->GetIOR( ri.geometric );
@@ -3432,11 +3474,19 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 
 			if( pRWParams && pBRDF )
 			{
-				const Scalar cosIn = Vector3Ops::Dot( ri.geometric.vNormal,
-					Vector3Ops::Normalize( -ri.geometric.ray.Dir() ) );
-
-				if( cosIn > NEARZERO )
+				// Front-face gate uses GEOMETRIC; Schlick Fresnel cos
+				// uses SHADING.  See BSSRDF site above.
+				const Vector3 wo = Vector3Ops::Normalize( -ri.geometric.ray.Dir() );
+				const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo );
+				if( cosInGeom > NEARZERO )
 				{
+					// Fresnel cosine clamped via fabs+NEARZERO to a safe
+					// positive value: Sw is symmetric in cos sign and
+					// parameterised against the shading frame.  This
+					// replaces a fallback-to-cosInGeom branch that produced
+					// a discontinuous Ft when shading swung past horizon.
+					const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo );
+					const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
 					const Scalar F0 = ((pRWParams->ior - 1.0) / (pRWParams->ior + 1.0)) *
 						((pRWParams->ior - 1.0) / (pRWParams->ior + 1.0));
 					const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
@@ -3468,6 +3518,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 							entryRI.bHit = true;
 							entryRI.ptIntersection = bssrdf.entryPoint;
 							entryRI.vNormal = bssrdf.entryNormal;
+							entryRI.vGeomNormal = bssrdf.entryGeomNormal;
 							entryRI.onb = bssrdf.entryONB;
 
 							RandomWalkEntryBSDF entryBSDF( pRWParams->ior );
@@ -3698,8 +3749,10 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			IndependentSampler fallbackSampler( rc.random );
 			ISampler& smsSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
 
+			// Pass both geometric and shading — see RGB SMS site.
 			ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
 				ri.geometric.ptIntersection,
+				ri.geometric.vGeomNormal,
 				ri.geometric.vNormal,
 				ri.geometric.onb,
 				ri.pMaterial,
@@ -4487,7 +4540,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					if( swl.terminated[w] ) continue;
 
 					Scalar emission = pEmitter->emittedRadianceNM(
-						ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vNormal,
+						ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal,
 						swl.lambda[w] );
 
 					if( bsdfPdf > 0 && ri.pObject )
@@ -4496,7 +4549,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						if( area > 0 )
 						{
 							const Scalar cosLight = fabs( Vector3Ops::Dot(
-								ri.geometric.ray.Dir(), ri.geometric.vNormal ) );
+								ri.geometric.ray.Dir(), ri.geometric.vGeomNormal ) );
 							if( cosLight > 0 )
 							{
 								const Scalar dist = Vector3Ops::Magnitude(
@@ -4580,8 +4633,10 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			{
 				if( swl.terminated[w] ) continue;
 
+				// Pass both geometric and shading — see other SMS sites.
 				ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
 					ri.geometric.ptIntersection,
+					ri.geometric.vGeomNormal,
 					ri.geometric.vNormal,
 					ri.geometric.onb,
 					ri.pMaterial,

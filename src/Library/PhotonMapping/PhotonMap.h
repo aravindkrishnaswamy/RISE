@@ -675,7 +675,15 @@ namespace RISE
 
 						if( cos > 0.001 ) {
 							const Vector3 vec = Vector3Ops::mkVector3( p.ptPosition, ri.ptIntersection );
-							const Scalar pcos = Vector3Ops::Dot( vec, ri.vNormal );
+							// Thin-surface "ellipsoid" clamp: rejects
+							// photons stored on the OTHER side of a thin
+							// wall.  This is a same-physical-surface test
+							// (Jensen 2001 §6.1) and must use the
+							// GEOMETRIC normal — bumpy walls otherwise
+							// either falsely reject same-face photons
+							// (dark splotches) or admit photons through
+							// the back side (light leak).
+							const Scalar pcos = Vector3Ops::Dot( vec, ri.vGeomNormal );
 
 							// Change the projection to an ellipse
 							if( (pcos < maxNDist) && (pcos > -maxNDist) ) {
