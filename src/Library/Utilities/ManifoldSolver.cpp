@@ -3663,10 +3663,22 @@ unsigned int ManifoldSolver::BuildSeedChain(
 	Scalar currentIOR = 1.0;
 	IORStack seedIor( 1.0 );
 
-	return SnellContinueChain(
+	const unsigned int produced = SnellContinueChain(
 		currentOrigin, dir, totalDist,
 		currentIOR, seedIor,
 		scene, caster, chain, applyEmitterStop );
+
+	// TARGET BOUNCES: Mitsuba-faithful exact-length requirement.  When
+	// `config.targetBounces > 0`, reject seeds whose final chain length
+	// doesn't match the target.  Both snell and uniform modes go through
+	// this check.
+	if( config.targetBounces > 0 && chain.size() != config.targetBounces )
+	{
+		chain.clear();
+		return 0;
+	}
+
+	return produced;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -3744,6 +3756,16 @@ unsigned int ManifoldSolver::SnellContinueChain(
 
 	for( unsigned int depth = 0; depth < config.maxChainDepth; depth++ )
 	{
+		// TARGET BOUNCES: Mitsuba `m_config.bounces` analogue.  Stop the
+		// trace once the chain has reached the configured target length.
+		// Applies in both snell and uniform modes — the post-trace check
+		// in BuildSeedChain rejects any chain whose length doesn't match
+		// the target, so this just bounds the work we do per Solve.
+		if( config.targetBounces > 0 && chain.size() >= config.targetBounces )
+		{
+			break;
+		}
+
 		// Offset origin along ray direction to avoid
 		// re-intersecting the surface we just left
 		Point3 offsetOrigin = Point3Ops::mkPoint3(
@@ -4159,6 +4181,14 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
 			continue;
 		}
+		// TARGET BOUNCES cap (Mitsuba `m_config.bounces` analogue) —
+		// emit chain as terminal once it reaches the configured target
+		// length.  Snell-mode call sites still use the emitter-stop in
+		// addition; uniform-mode call sites rely on this cap.
+		if( config.targetBounces > 0 && f.chain.size() >= config.targetBounces ) {
+			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
+			continue;
+		}
 
 		// Single ray-cast step.
 		Point3 offsetOrigin = Point3Ops::mkPoint3(
@@ -4470,6 +4500,21 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 			}
 			active.push_back( std::move( f ) );
 		}
+	}
+
+	// TARGET BOUNCES: Mitsuba-faithful exact-length requirement.  Filter
+	// the emitted chains to only those matching `config.targetBounces`.
+	// Default 0 = no filter (back-compat).  Active in both snell and
+	// uniform mode call sites.
+	if( config.targetBounces > 0 )
+	{
+		const unsigned int target = config.targetBounces;
+		out.erase(
+			std::remove_if( out.begin(), out.end(),
+				[target]( const SeedChainResult& r ) {
+					return r.chain.size() != target;
+				} ),
+			out.end() );
 	}
 
 	return static_cast<unsigned int>( out.size() );

@@ -249,6 +249,19 @@ namespace RISE
 			///           scenes get branching automatically.
 			Scalar			branchingThreshold;
 
+			/// Mitsuba `m_config.bounces` analogue: REQUIRED chain length.
+			/// When > 0, the seed-builder traces EXACTLY this many specular
+			/// hits and rejects seeds that don't reach the target.  Active
+			/// in BOTH snell and uniform modes — they share the same
+			/// length-cap rule.  Default 0 = "no target": snell mode
+			/// discovers chain length via the emitter-projection cap,
+			/// uniform mode caps at `maxChainDepth`.  Recommended for
+			/// `sms_seeding Uniform`, where without it the seed-chain
+			/// length is variable and produces wildly different topology
+			/// than the natural caustic (k=1, 3, 4 instead of k=2 for
+			/// a glass shell).  See `SMSConfig::targetBounces`.
+			unsigned int	targetBounces;
+
 			ManifoldSolverConfig() :
 			enabled( false ),
 			maxIterations( 15 ),
@@ -265,7 +278,8 @@ namespace RISE
 			twoStage( false ),
 			useLevenbergMarquardt( false ),
 			seedingMode( eSeedingSnell ),
-			branchingThreshold( 1.0 )
+			branchingThreshold( 1.0 ),
+			targetBounces( 0 )
 			{
 			}
 		};

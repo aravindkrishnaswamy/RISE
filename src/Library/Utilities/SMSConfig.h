@@ -88,6 +88,7 @@ namespace RISE
 		bool			twoStage;			///< Two-stage Newton solver (Zeltner 2020 §5).  When enabled, Newton first runs on a smoothed reference surface (smoothing=1: underlying analytical base, no displacement) to escape the C1-discontinuity plateau on Phong-shaded triangle meshes, then refines on the actual surface (smoothing=0).  Default false; opt-in via `sms_two_stage TRUE`.  No-op when the specular geometry doesn't expose a smoothing-aware analytical query.  See `docs/SMS_TWO_STAGE_SOLVER.md`.
 		bool			useLevenbergMarquardt;	///< Levenberg-Marquardt damping in `ManifoldSolver::NewtonSolve` (default FALSE — opt-in).  Damps J's diagonal by `λ × mean(|J_ii|)` between iterations; λ shrinks on accepted line-search steps and grows on rejected ones.  Recovers ~5pp Newton-fail rate on heavy-displacement meshes vs pure Newton, at the cost of ~50-100% more solver work per shading point on those scenes — turn on only when you've confirmed the scene benefits.  Negligible cost on smooth geometry / scenes without SMS.  See `docs/SMS_LEVENBERG_MARQUARDT.md`.
 		SMSSeedingMode	seedingMode;		///< Seeding strategy for `EvaluateAtShadingPoint`.  Default `Snell` (RISE legacy: trace from shading point toward light, refracting at every specular surface).  `Uniform` = Mitsuba-faithful uniform-area sample on each cached caster shape, then SnellContinue (required for principled geometric Bernoulli `1/p` per Zeltner 2020 §4.3 Algorithm 2).  Opt-in via `sms_seeding "uniform"`.  See `docs/SMS_UNIFORM_SEEDING_PLAN.md`.
+		unsigned int	targetBounces;		///< Mitsuba `m_config.bounces` analogue: REQUIRED chain length.  When > 0, the seed-builder traces EXACTLY this many specular hits and rejects seeds that don't reach (or that overshoot) the target.  Default 0 = "no target": snell mode discovers chain length via the emitter-projection cap, uniform mode caps at `maxChainDepth` only.  Set to the natural caustic K for the scene (typically 2 for a glass shell or interior-light scene).  Active in BOTH snell and uniform modes.  Recommended for `sms_seeding "uniform"`, where without it seed-chain length is variable and produces wildly different topology than the natural caustic.
 
 		SMSConfig() :
 		  enabled( false ),
@@ -101,7 +102,8 @@ namespace RISE
 		  maxPhotonSeedsPerShadingPoint( 16 ),
 		  twoStage( false ),
 		  useLevenbergMarquardt( false ),
-		  seedingMode( SMSSeedingMode::Snell )
+		  seedingMode( SMSSeedingMode::Snell ),
+		  targetBounces( 0 )
 		{
 		}
 	};

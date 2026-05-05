@@ -4765,6 +4765,7 @@ namespace RISE
 								const bool smsTwoStage,
 								const bool smsUseLevenbergMarquardt,
 								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -4794,6 +4795,7 @@ namespace RISE
 			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;
+			smsConfig.targetBounces = smsTargetBounces;
 			// Reuse the path-tracer's branching threshold for SMS seed
 			// construction (Fresnel-branch decision at sub-critical
 			// dielectric vertices).  Same semantics as PT's threshold;
@@ -4850,6 +4852,7 @@ namespace RISE
 								const bool smsTwoStage,
 								const bool smsUseLevenbergMarquardt,
 								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -4879,6 +4882,7 @@ namespace RISE
 			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;
+			smsConfig.targetBounces = smsTargetBounces;
 			// Reuse the path-tracer's branching threshold for SMS seed
 			// construction (Fresnel-branch decision at sub-critical
 			// dielectric vertices).  Same semantics as PT's threshold;
@@ -5062,6 +5066,7 @@ namespace RISE
 								const bool smsTwoStage,
 								const bool smsUseLevenbergMarquardt,
 								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -5091,6 +5096,7 @@ namespace RISE
 			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;
+			smsConfig.targetBounces = smsTargetBounces;
 			// Reuse the path-tracer's branching threshold for SMS seed
 			// construction (Fresnel-branch decision at sub-critical
 			// dielectric vertices).  Same semantics as PT's threshold;
@@ -5145,6 +5151,7 @@ namespace RISE
 								const bool smsTwoStage,
 								const bool smsUseLevenbergMarquardt,
 								const SMSSeedingMode smsSeedingMode,
+							const unsigned int smsTargetBounces,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -5174,6 +5181,7 @@ namespace RISE
 			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;
+			smsConfig.targetBounces = smsTargetBounces;
 			// Reuse the path-tracer's branching threshold for SMS seed
 			// construction (Fresnel-branch decision at sub-critical
 			// dielectric vertices).  Same semantics as PT's threshold;

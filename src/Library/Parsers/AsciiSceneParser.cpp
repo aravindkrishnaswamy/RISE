@@ -652,6 +652,7 @@ namespace RISE
 				{ auto& p = P(); p.name = "sms_photon_count";                       p.kind = ValueKind::UInt;   p.description = "SMS photon budget";                     p.defaultValueHint = "10000"; }
 				{ auto& p = P(); p.name = "sms_two_stage";                          p.kind = ValueKind::Bool;   p.description = "Two-stage solver: smooth seed then refine on actual surface (Zeltner 2020 §5)"; p.defaultValueHint = "FALSE"; }
 				{ auto& p = P(); p.name = "sms_seeding";                            p.kind = ValueKind::String; p.description = "SMS seeding strategy: \"snell\" (legacy Snell-trace) or \"uniform\" (Mitsuba-faithful uniform-on-shape)"; p.defaultValueHint = "snell"; }
+				{ auto& p = P(); p.name = "sms_target_bounces";                     p.kind = ValueKind::UInt;   p.description = "REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode."; p.defaultValueHint = "0"; }
 			}
 			template<typename PushFn>
 			static void AddPhotonMapGenerateCommonParams( PushFn P ) {
@@ -6214,6 +6215,7 @@ namespace RISE
 					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
+				if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
 				if( bag.Has("sms_seeding") ) {
 					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
 					std::transform( sv.begin(), sv.end(), sv.begin(),
@@ -6357,6 +6359,7 @@ namespace RISE
 					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
+				if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
 				if( bag.Has("sms_seeding") ) {
 					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
 					std::transform( sv.begin(), sv.end(), sv.begin(),
@@ -6710,6 +6713,7 @@ namespace RISE
 					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
+				if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
 				if( bag.Has("sms_seeding") ) {
 					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
 					std::transform( sv.begin(), sv.end(), sv.begin(),
@@ -6852,6 +6856,7 @@ namespace RISE
 					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
 				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
+				if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
 				if( bag.Has("sms_seeding") ) {
 					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
 					std::transform( sv.begin(), sv.end(), sv.begin(),
