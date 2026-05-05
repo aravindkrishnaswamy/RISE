@@ -6326,10 +6326,17 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 				// Build chain: start → sampled mirror point.  Branching
 				// continues the Snell-trace from the mirror, so
 				// reflection-into-second-mirror chains (diacaustic) are
-				// captured automatically as k=2+ chains.
+				// captured automatically as k=2+ chains.  Pass
+				// `applyEmitterStop = false`: `sp` is a uniform-area
+				// sample on the mirror caster (a direction probe), NOT
+				// the emitter — same rationale as uniform-mode call
+				// sites (see commit 7bc6e3f).  Without this flag the
+				// projection cap fires at `|sp − pos| × 1.05`,
+				// silently truncating diacaustic chains to k=1.
 				std::vector<SeedChainResult> mirrorChains;
 				BuildSeedChainBranching(
-					pos, sp, scene, caster, loopSampler, mirrorChains );
+					pos, sp, scene, caster, loopSampler, mirrorChains,
+					/*applyEmitterStop=*/ false );
 
 				for( SeedChainResult& mc : mirrorChains ) {
 					if( !mc.chain.empty() && mc.chain[0].pObject == pMirrorCaster ) {
@@ -6649,6 +6656,15 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			// topology the photon itself followed.
 			const unsigned int k = ph.chainLen;
 			if( k == 0 || k > kSMSMaxPhotonChain ) {
+				continue;
+			}
+			// TARGET BOUNCES (Mitsuba-parity) — inline photon-chain
+			// reconstruction must apply the same length filter as
+			// snell/uniform seeds.  Without this, photon-aided seeds
+			// can supply chains of any length while the main snell
+			// trace is constrained to K, producing inconsistent chain
+			// lengths in the same Solve loop.
+			if( config.targetBounces > 0 && k != config.targetBounces ) {
 				continue;
 			}
 
@@ -7428,6 +7444,18 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 				std::vector<ManifoldVertex> photonChain;
 				if( ReversePhotonChainForSeed( ph, photonChain ) == 0 ) continue;
 
+				// TARGET BOUNCES: Mitsuba-parity exact-length requirement.
+				// Photon chains have lengths determined at photon-trace time
+				// from random scattering — many won't match the user-
+				// specified target K.  Reject mismatches here so the photon
+				// path is consistent with snell + uniform seeds (which both
+				// enforce length == K via the BuildSeedChain post-check).
+				if( config.targetBounces > 0 &&
+					photonChain.size() != config.targetBounces )
+				{
+					continue;
+				}
+
 				ManifoldResult mResult = Solve(
 					pos, shadingNormal,
 					lightSample.position, lightSample.normal,
@@ -7744,6 +7772,14 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 				std::vector<ManifoldVertex> photonChain;
 				if( ReversePhotonChainForSeed( ph, photonChain ) == 0 ) continue;
 
+				// TARGET BOUNCES: see RGB EvaluateAtShadingPointUniform
+				// for the rationale.  Mirror filter for the spectral path.
+				if( config.targetBounces > 0 &&
+					photonChain.size() != config.targetBounces )
+				{
+					continue;
+				}
+
 				applyNMEtaToChain( photonChain );
 
 				ManifoldResult mResult = Solve(
@@ -7973,6 +8009,15 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 
 			const unsigned int k = ph.chainLen;
 			if( k == 0 || k > kSMSMaxPhotonChain ) {
+				continue;
+			}
+			// TARGET BOUNCES (Mitsuba-parity) — inline photon-chain
+			// reconstruction must apply the same length filter as
+			// snell/uniform seeds.  Without this, photon-aided seeds
+			// can supply chains of any length while the main snell
+			// trace is constrained to K, producing inconsistent chain
+			// lengths in the same Solve loop.
+			if( config.targetBounces > 0 && k != config.targetBounces ) {
 				continue;
 			}
 
