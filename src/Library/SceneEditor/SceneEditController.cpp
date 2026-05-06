@@ -819,6 +819,25 @@ String SceneEditController::CategoryEntityName( Category cat, unsigned int idx )
 	}
 }
 
+String SceneEditController::CategoryActiveName( Category cat ) const
+{
+	switch( cat ) {
+	case Category::Camera: {
+		const IScene* scene = mJob.GetScene();
+		return scene ? scene->GetActiveCameraName() : String();
+	}
+	case Category::Rasterizer: {
+		const std::string s = mJob.GetActiveRasterizerName();
+		return String( s.c_str() );
+	}
+	case Category::Object:
+	case Category::Light:
+	case Category::None:
+	default:
+		return String();
+	}
+}
+
 bool SceneEditController::SetSelection( Category cat, const String& entityName )
 {
 	// Category::None: clear the selection entirely.  No side effect.

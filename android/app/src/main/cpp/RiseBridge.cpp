@@ -690,6 +690,16 @@ std::string RiseBridge::viewportCategoryEntityName(int category, unsigned int id
     return std::string(buf);
 }
 
+std::string RiseBridge::viewportCategoryActiveName(int category) const {
+    if (!m_viewportController) return {};
+    char buf[128] = {0};
+    if (!RISE::RISE_API_SceneEditController_CategoryActiveName(m_viewportController,
+            category, buf, sizeof(buf))) {
+        return {};
+    }
+    return std::string(buf);
+}
+
 int RiseBridge::viewportSelectionCategory() const {
     if (!m_viewportController) return 0;
     const int c = RISE::RISE_API_SceneEditController_GetSelectionCategory(m_viewportController);

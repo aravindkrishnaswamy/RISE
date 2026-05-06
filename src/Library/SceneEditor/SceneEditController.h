@@ -210,6 +210,14 @@ namespace RISE
 		unsigned int CategoryEntityCount( Category cat ) const;
 		String       CategoryEntityName( Category cat, unsigned int idx ) const;
 
+		//! Scene-level active entity for a category, independent of the
+		//! UI selection.  Camera → IScene::GetActiveCameraName; Rasterizer
+		//! → IJob::GetActiveRasterizerName; Object/Light/None → empty
+		//! (no scene-level "active" concept for those).  The accordion
+		//! dropdowns display this on first scene load so the user sees
+		//! the active camera / rasterizer rather than "(pick one)".
+		String       CategoryActiveName( Category cat ) const;
+
 		//! Monotonic counter — set ONCE at controller construction from
 		//! a process-global atomic that increments per `SceneEditController`
 		//! instance.  Each fresh controller therefore has a unique

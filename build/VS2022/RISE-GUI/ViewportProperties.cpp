@@ -372,11 +372,18 @@ void ViewportProperties::syncAccordionFromSelection()
         w.toggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
         w.body->setVisible(open);
 
-        // Highlight the matching entry in the expanded section.
+        // Highlight the matching entry.  When this section is the
+        // expanded one, prefer the user's explicit selection name;
+        // otherwise fall back to the scene's active entity for this
+        // category so the dropdown shows e.g. the active camera /
+        // rasterizer on first load instead of being empty.
         if (w.combo) {
             const QSignalBlocker comboBlock(w.combo);
-            if (open && !name.isEmpty()) {
-                const int idx = w.combo->findText(name, Qt::MatchExactly);
+            QString display = (open && !name.isEmpty())
+                                  ? name
+                                  : m_bridge->activeNameForCategory(sectionCat);
+            if (!display.isEmpty()) {
+                const int idx = w.combo->findText(display, Qt::MatchExactly);
                 w.combo->setCurrentIndex(idx);     // setCurrentIndex(-1) is fine when not found
             } else {
                 w.combo->setCurrentIndex(-1);

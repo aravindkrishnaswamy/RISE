@@ -242,6 +242,15 @@ object RiseNative {
     external fun nativeViewportCategoryEntityCount(category: Int): Int
     external fun nativeViewportCategoryEntityName(category: Int, idx: Int): String
 
+    /**
+     * Scene-level active entity name for [category], independent of
+     * the UI selection.  Camera → active camera; Rasterizer → active
+     * rasterizer chunk name; Object/Light/None → empty.  Used to
+     * populate the dropdown on first scene load with the scene's
+     * current active entity rather than blank.
+     */
+    external fun nativeViewportCategoryActiveName(category: Int): String
+
     /** Currently-selected accordion entry (drives the property panel). */
     external fun nativeViewportSelectionCategory(): Int
     external fun nativeViewportSelectionName(): String

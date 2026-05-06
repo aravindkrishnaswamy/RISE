@@ -170,6 +170,13 @@ public:
     /// scene has nothing in that category.
     QStringList categoryEntities(Category cat) const;
 
+    /// Scene-level active entity name for `category`, independent of
+    /// the UI selection.  Camera → active camera; Rasterizer →
+    /// active rasterizer chunk name; Object/Light/None → empty.
+    /// Used to populate the dropdown on first scene load with the
+    /// scene's current active entity rather than blank.
+    QString activeNameForCategory(Category cat) const;
+
     /// Current selection (the accordion's expanded section + picked
     /// row).  Empty name means "section open, no row picked".
     Category selectionCategory() const;

@@ -297,7 +297,7 @@ namespace RISE
 			//
 			// For satisfying the interface requirements
 			//
-			void		GetPEL( const Scalar x, const Scalar y, RISEColor& p ) const
+			void		GetPEL( const Scalar x, const Scalar y, RISEColor& p ) const override
 			{
 				C	ret;
 				GetPel( x, y, ret );
@@ -405,7 +405,7 @@ namespace RISE
 			}
 
 
-			void		SetPEL( const Scalar x, const Scalar y, RISEColor& p ) const
+			void		SetPEL( const Scalar x, const Scalar y, RISEColor& p ) const override
 			{
 				C	set = C( p.base, p.a );
 				SetPel( x, y, set );
@@ -540,7 +540,7 @@ namespace RISE
 			}
 
 			// Function2D requirements
-			Scalar	Evaluate( const Scalar x, const Scalar y ) const
+			Scalar	Evaluate( const Scalar x, const Scalar y ) const override
 			{
 				const C val = GetPel( x, y );
 				return ColorMath::MaxValue(val.base);

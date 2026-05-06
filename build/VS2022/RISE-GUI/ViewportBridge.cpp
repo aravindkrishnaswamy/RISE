@@ -288,6 +288,17 @@ QStringList ViewportBridge::categoryEntities(Category cat) const
     return out;
 }
 
+QString ViewportBridge::activeNameForCategory(Category cat) const
+{
+    if (!m_controller) return QString();
+    const int catInt = static_cast<int>(cat);
+    char buf[128] = {0};
+    if (!RISE_API_SceneEditController_CategoryActiveName(m_controller, catInt, buf, sizeof(buf))) {
+        return QString();
+    }
+    return QString::fromUtf8(buf);
+}
+
 ViewportBridge::Category ViewportBridge::selectionCategory() const
 {
     if (!m_controller) return Category::None;

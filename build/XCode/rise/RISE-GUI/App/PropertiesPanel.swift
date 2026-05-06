@@ -92,6 +92,7 @@ struct PropertiesPanel: View {
     @State private var selectionCategory: RISEViewportCategory = .none
     @State private var selectionName: String = ""
     @State private var entitiesByCategory: [Int: [String]] = [:]
+    @State private var activeNameByCategory: [Int: String] = [:]
     @State private var lastEpoch: UInt = 0
 
     var body: some View {
@@ -119,11 +120,21 @@ struct PropertiesPanel: View {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(kAccordionSections) { section in
+                        // Prefer the user's explicit pick when present;
+                        // otherwise fall back to the scene's active
+                        // entity (Camera = active camera, Rasterizer =
+                        // active rasterizer, Object/Light = empty).
+                        // This way the dropdown shows the active
+                        // entity on first load instead of "(pick one)".
+                        let resolvedName: String =
+                            (section.category == selectionCategory && !selectionName.isEmpty)
+                                ? selectionName
+                                : (activeNameByCategory[section.category.rawValue] ?? "")
                         AccordionSectionView(
                             section: section,
                             entities: entitiesByCategory[section.category.rawValue] ?? [],
                             isExpanded: section.category == selectionCategory,
-                            selectedName: section.category == selectionCategory ? selectionName : "",
+                            selectedName: resolvedName,
                             onSelectRow: { name in
                                 bridge.setSelection(section.category, name: name)
                                 reload()
@@ -178,6 +189,15 @@ struct PropertiesPanel: View {
             }
             entitiesByCategory = fresh
         }
+
+        // Active-name lookup is cheap (one C-API hop per category) and
+        // can change between epochs (a SetActiveCamera can happen
+        // without adding/removing cameras).  Re-pull on every reload.
+        var freshActive: [Int: String] = [:]
+        for section in kAccordionSections {
+            freshActive[section.category.rawValue] = bridge.activeName(for: section.category)
+        }
+        activeNameByCategory = freshActive
     }
 }
 
@@ -225,6 +245,9 @@ private struct AccordionSectionView: View {
                 Text(section.title)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture { onToggle(!isExpanded) }
             }
         )
         .padding(.vertical, 2)

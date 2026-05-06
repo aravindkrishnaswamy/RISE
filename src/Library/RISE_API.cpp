@@ -6090,6 +6090,16 @@ namespace RISE
 			entityName );
 	}
 
+	bool RISE_API_SceneEditController_CategoryActiveName(
+		SceneEditController* p, int category, char* buf, unsigned int bufLen )
+	{
+		if( !p ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		CopyToBuf( p->CategoryActiveName( cat ), buf, bufLen );
+		return true;
+	}
+
 	unsigned int RISE_API_SceneEditController_SceneEpoch( SceneEditController* p )
 	{
 		if( !p ) return 0;
