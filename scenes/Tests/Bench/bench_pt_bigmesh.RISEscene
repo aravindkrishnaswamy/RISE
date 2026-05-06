@@ -1,0 +1,174 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           bench_pt_bigmesh.RISEscene                                                              #
+#   Description:    Single ~1M-triangle displaced ellipsoid, lit by a sky env-map.                          #
+#                   Path traced.  Cheap (Lambertian) shading on purpose so wall-clock                       #
+#                   is dominated by GEOMETRY work — this is the bench scene that                            #
+#                   exercises DEEP per-mesh BVH traversal at scales relevant to the                         #
+#                   wide-tree / SoA-leaf optimisation experiments documented in                             #
+#                   docs/BVH_RETROSPECTIVE.md (Tier B / C4 / D2-rev / D3 — all                              #
+#                   excised because the routine bench set tops out at 47K tris).                            #
+#                                                                                                           #
+#                   The 1M-tri threshold isn't arbitrary: per the Tier D2-rev perf                          #
+#                   review, BVH8's depth-halving benefit only dominates BVH4's per-                         #
+#                   node cost increase when BVH2 depth ≥ 12, which corresponds                              #
+#                   roughly to 1M+ leaf primitives at maxLeafSize=4.  Anything                              #
+#                   smaller is in the regime where BVH4 + scalar AoS is already                             #
+#                   the local optimum.                                                                      #
+#                                                                                                           #
+#                   The mesh is procedural — `displaced_geometry` tessellates an                            #
+#                   analytic ellipsoid to (detail+1)² vertices and 2·detail²                                #
+#                   triangles, then displaces along the surface normal by a Perlin                          #
+#                   field.  detail=720 → ~1.04 M tris.  No external asset                                   #
+#                   dependency; the scene loads and builds the BVH in ~1-2 s on                             #
+#                   modern hardware.                                                                        #
+#                                                                                                           #
+#                   Pair with bench_pt (Cornell, ~9K tris) and sponza_new (155                              #
+#                   small meshes, max ~5K tris/mesh) to cover three regimes:                                #
+#                     - Cornell-class:        small per-mesh BVH, top-level matters                         #
+#                     - Sponza-class:         many small meshes, both layers matter                         #
+#                     - This scene:           one BIG mesh, per-mesh BVH dominates                          #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-05-06                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Painters declared FIRST — the rasterizer chunk
+# below references `sky` by name, and chunk parsing
+# resolves named-painter references at parse time
+# (sponza_new puts its sky_dome painter ahead of
+# the rasterizer for the same reason).
+##################################################
+
+uniformcolor_painter
+{
+	name				sky
+	color				0.85 0.92 1.00
+}
+
+uniformcolor_painter
+{
+	name				white
+	color				0.78 0.78 0.78
+}
+
+uniformcolor_painter
+{
+	name				disp_lo
+	color				-0.05 -0.05 -0.05
+}
+
+uniformcolor_painter
+{
+	name				disp_hi
+	color				 0.05  0.05  0.05
+}
+
+perlin2d_painter
+{
+	name				bumps
+	colora				disp_lo
+	colorb				disp_hi
+	persistence			0.55
+	octaves				4
+	scale				6.0 6.0
+	shift				0 0
+}
+
+##################################################
+# Materials.
+##################################################
+
+lambertian_material
+{
+	name				diffuse_white
+	reflectance			white
+}
+
+##################################################
+# Renderer.  Path tracing, modest spp + res so the
+# scene renders in ~10-30 s on a typical Windows
+# dev box.  Wall-clock target is ITERATION speed
+# for BVH stack experiments, not visual quality.
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				64
+	radiance_map			sky
+	radiance_background		TRUE
+	radiance_scale			3.0
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/bench_pt_bigmesh
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera.  Frames the displaced ellipsoid so most
+# primary rays hit it (rather than missing to env)
+# — keeps the per-ray cost geometry-bound.
+##################################################
+
+pinhole_camera
+{
+	location			0 0 4
+	lookat				0 0 0
+	up					0 1 0
+	width				480
+	height				360
+	fov					20.0
+}
+
+##################################################
+# Geometry.
+#
+#   detail=720 → (721)² = 519,841 vertices,
+#                2 × 720² = 1,036,800 triangles.
+#
+# At maxLeafSize=4 the SAH-binned BVH builds out
+# to depth ~log2(1.04M / 4) ≈ 18 BVH2 levels —
+# well past the BVH8 break-even depth of ~12 the
+# Tier D2-rev perf review identified.  This is
+# where wide-tree + SoA-leaf optimisations get
+# their fair test.
+##################################################
+
+ellipsoid_geometry
+{
+	name				ellipsoid_geom
+	radii				1.0 1.2 1.0
+}
+
+displaced_geometry
+{
+	name				bigmesh
+	base_geometry		ellipsoid_geom
+	detail				720
+	displacement		bumps
+	disp_scale			1.0
+}
+
+##################################################
+# Objects.
+##################################################
+
+standard_object
+{
+	name				the_blob
+	geometry			bigmesh
+	material			diffuse_white
+}
