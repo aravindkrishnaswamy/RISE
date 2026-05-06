@@ -1510,6 +1510,7 @@
 		F2D9B0C32F89F5070077A171 /* ProgressiveConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C22F89F5070077A171 /* ProgressiveConfig.h */; };
 		F2D9B0C72F89F7B40077A171 /* AdaptiveSamplingConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */; };
 		F2A5C0D12FB30E000077A171 /* OidnConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A5C0D02FB30E000077A171 /* OidnConfig.h */; };
+		F2A5C0E12FC50E000077A171 /* RasterizerDefaults.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A5C0E02FC50E000077A171 /* RasterizerDefaults.h */; };
 		F2D9B0C82F89F7B40077A171 /* AliasTable.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C52F89F7B40077A171 /* AliasTable.h */; };
 		F2D9B0C92F89F7B40077A171 /* BDPTUtilities.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */; };
 		F2D9B0CC2F8A8DEC0077A171 /* PathVertexEval.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0CB2F8A8DEC0077A171 /* PathVertexEval.h */; };
@@ -2466,6 +2467,7 @@
 		F2D9B0C22F89F5070077A171 /* ProgressiveConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ProgressiveConfig.h; sourceTree = "<group>"; };
 		F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AdaptiveSamplingConfig.h; sourceTree = "<group>"; };
 		F2A5C0D02FB30E000077A171 /* OidnConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OidnConfig.h; sourceTree = "<group>"; };
+		F2A5C0E02FC50E000077A171 /* RasterizerDefaults.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RasterizerDefaults.h; sourceTree = "<group>"; };
 		F2D9B0C52F89F7B40077A171 /* AliasTable.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AliasTable.h; sourceTree = "<group>"; };
 		F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BDPTUtilities.h; sourceTree = "<group>"; };
 		F2D9B0CA2F8A8DEC0077A171 /* PathTransportUtilities.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTransportUtilities.h; sourceTree = "<group>"; };
@@ -3560,6 +3562,7 @@
 				F2D9B0CB2F8A8DEC0077A171 /* PathVertexEval.h */,
 				F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */,
 				F2A5C0D02FB30E000077A171 /* OidnConfig.h */,
+				F2A5C0E02FC50E000077A171 /* RasterizerDefaults.h */,
 				F2D9B0C52F89F7B40077A171 /* AliasTable.h */,
 				F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */,
 				F2D9B0C22F89F5070077A171 /* ProgressiveConfig.h */,
@@ -3961,6 +3964,7 @@
 				F27F0AF5069C42910069C9E5 /* IRasterImageReader.h in Headers */,
 				F2D9B0C72F89F7B40077A171 /* AdaptiveSamplingConfig.h in Headers */,
 				F2A5C0D12FB30E000077A171 /* OidnConfig.h in Headers */,
+				F2A5C0E12FC50E000077A171 /* RasterizerDefaults.h in Headers */,
 				F2D9B0C82F89F7B40077A171 /* AliasTable.h in Headers */,
 				F2D9B0C92F89F7B40077A171 /* BDPTUtilities.h in Headers */,
 				F27F0AF6069C42910069C9E5 /* IRasterImageWriter.h in Headers */,

@@ -26,14 +26,87 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <climits>
+#include <cmath>
 #include <map>
 #include <string>
 #include <vector>
 
+#include "../Utilities/OidnConfig.h"
 #include "../Utilities/RString.h"
 
 namespace RISE
 {
+	//
+	// to_hint() — formats a typed default value into the string form
+	// used by ParameterDescriptor::defaultValueHint.  Centralised so
+	// the descriptor's hint and the Finalize fallback always agree:
+	// both read the same `*Defaults`-struct field, the parser passes
+	// it directly to `bag.GetUInt(name, d.field)` and the descriptor
+	// passes it through `to_hint(d.field)` to produce the GUI hint.
+	//
+	// Format rules match the historical defaultValueHint conventions:
+	//   - bool   → "TRUE" / "FALSE" (caps, matching the ASCII-scene
+	//              Boolean tokens RISE::String::toBoolean accepts).
+	//   - UInt   → decimal, with UINT_MAX rendered as "unlimited"
+	//              (the bounce-cap sentinel; RISE never advertises
+	//              "-1" for a UInt-typed param).
+	//   - double → %g-formatted, with 0.0 rendered as "0", integers
+	//              as "1.0", and small/large magnitudes as "1e-5".
+	//   - enums  → the lowercase token the parser accepts.
+	//
+	inline std::string to_hint( bool v )         { return v ? "TRUE" : "FALSE"; }
+	inline std::string to_hint( int v )          { return std::to_string( v ); }
+	inline std::string to_hint( unsigned int v )
+	{
+		if( v == UINT_MAX ) return "unlimited";
+		return std::to_string( v );
+	}
+	inline std::string to_hint( double v )
+	{
+		if( v == 0.0 ) return "0";
+		char buf[32];
+		const double a = std::fabs( v );
+		if( a < 1e-3 || a >= 1e6 ) {
+			std::snprintf( buf, sizeof(buf), "%g", v );
+		} else if( v == std::floor( v ) ) {
+			std::snprintf( buf, sizeof(buf), "%.1f", v );
+		} else {
+			std::snprintf( buf, sizeof(buf), "%g", v );
+		}
+		return buf;
+	}
+	inline std::string to_hint( const std::string& v ) { return v; }
+	inline std::string to_hint( const char* v )        { return v ? std::string( v ) : std::string(); }
+
+	inline std::string to_hint( OidnQuality v )
+	{
+		switch( v ) {
+			case OidnQuality::High:     return "high";
+			case OidnQuality::Balanced: return "balanced";
+			case OidnQuality::Fast:     return "fast";
+			case OidnQuality::Auto:
+			default:                    return "auto";
+		}
+	}
+	inline std::string to_hint( OidnDevice v )
+	{
+		switch( v ) {
+			case OidnDevice::CPU:  return "cpu";
+			case OidnDevice::GPU:  return "gpu";
+			case OidnDevice::Auto:
+			default:               return "auto";
+		}
+	}
+	inline std::string to_hint( OidnPrefilter v )
+	{
+		switch( v ) {
+			case OidnPrefilter::Accurate: return "accurate";
+			case OidnPrefilter::Fast:
+			default:                       return "fast";
+		}
+	}
+
 	enum class ValueKind
 	{
 		Bool,         // TRUE / FALSE

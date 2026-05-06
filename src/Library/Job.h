@@ -93,41 +93,48 @@ namespace RISE
 		//! Recorded into `rasterizerRegistry` alongside the instance
 		//! so editing a single param can re-instantiate with all the
 		//! other params preserved (vs. re-running the parser on the
-		//! full chunk text).  Default values match the chunk-descriptor
-		//! defaults the parser uses; per-type Set*Rasterizer methods
-		//! capture the relevant subset.
+		//! full chunk text).
+		//!
+		//! In-class initializers below mirror the canonical universal
+		//! defaults from `Utilities/RasterizerDefaults.h`.  Per-type
+		//! `Set*Rasterizer` methods overwrite the relevant subset
+		//! before the snapshot is stored, so these initializers only
+		//! matter for fields the active rasterizer doesn't touch
+		//! (e.g. MLT-specific fields on a snapshot captured for BDPT).
+		//! The `*Defaults` structs in RasterizerDefaults.h are the
+		//! single source of truth — keep these in sync.
 		struct RasterizerParams
 		{
 			// Common subset (most types take these)
-			unsigned int        numPixelSamples = 1;
-			unsigned int        maxEyeDepth     = 8;
-			unsigned int        maxLightDepth   = 8;
+			unsigned int        numPixelSamples = 32;       // BaseRasterizerDefaults::numPixelSamples
+			unsigned int        maxEyeDepth     = 8;        // BDPT/VCM canonical (MLT overrides to 10)
+			unsigned int        maxLightDepth   = 8;        // BDPT/VCM canonical (MLT overrides to 10)
 			std::string         shader;
-			bool                showLuminaires  = true;
-			bool                oidnDenoise     = false;
+			bool                showLuminaires  = true;     // BaseRasterizerDefaults::showLuminaires
+			bool                oidnDenoise     = true;     // BaseRasterizerDefaults::oidnDenoise (MLT overrides to false)
 			OidnQuality         oidnQuality     = OidnQuality::Auto;
 			OidnDevice          oidnDevice      = OidnDevice::Auto;
 			OidnPrefilter       oidnPrefilter   = OidnPrefilter::Fast;
 
 			// PixelBased (legacy) extras
-			unsigned int        maxRecursion    = 10;
-			unsigned int        numLumSamples   = 1;
-			std::string         luminarySampler = "none";
-			double              luminarySamplerParam = 1.0;
-			bool                integrateRGB    = false;
+			unsigned int        maxRecursion    = 10;       // PixelPelDefaults::maxRecursion
+			unsigned int        numLumSamples   = 1;        // PixelPelDefaults::numLumSamples
+			std::string         luminarySampler = "none";   // PixelPelDefaults::luminarySampler
+			double              luminarySamplerParam = 1.0; // PixelPelDefaults::luminarySamplerParam
+			bool                integrateRGB    = false;    // PixelIntegratingSpectralDefaults::integrateRGB
 
 			// VCM-specific
-			double              mergeRadius     = 0.0;
-			bool                enableVC        = true;
-			bool                enableVM        = true;
+			double              mergeRadius     = 0.0;      // VCMPelDefaults::mergeRadius
+			bool                enableVC        = true;     // VCMPelDefaults::enableVC
+			bool                enableVM        = true;     // VCMPelDefaults::enableVM
 
-			// MLT-specific
-			unsigned int        nBootstrap         = 1024;
-			unsigned int        nChains            = 64;
-			unsigned int        nMutationsPerPixel = 64;
+			// MLT-specific (production values matching MLTDefaults)
+			unsigned int        nBootstrap         = 100000;
+			unsigned int        nChains            = 512;
+			unsigned int        nMutationsPerPixel = 32;
 			double              largeStepProb      = 0.3;
 
-			// Configs (default-constructed)
+			// Configs (default-constructed = struct in-class initializers)
 			RadianceMapConfig      radianceMap;
 			PixelFilterConfig      pixelFilter;
 			SMSConfig              sms;

@@ -21,6 +21,7 @@
 #include "Shaders/DistributionTracingShaderOp.h"
 #include "Shaders/FinalGatherShaderOp.h"
 #include "Utilities/RString.h"
+#include "Utilities/RasterizerDefaults.h"
 #include <stdio.h>
 #include <set>
 #include "Utilities/MediaPathLocator.h"
@@ -8279,7 +8280,11 @@ bool Job::InstantiateRasterizerWithDefaults( const std::string& name )
 		return false;
 	}
 
-	// Common defaults shared across all 8 standard types.
+	// Default-constructed configs = struct in-class initializers.
+	// These are the "no-customisation" values every rasterizer gets
+	// when there's no chunk in the scene file.  Per-type scalars
+	// (samples, max_eye_depth, etc.) come from the matching
+	// *Defaults struct in RasterizerDefaults.h.
 	RadianceMapConfig     radianceMapConfig;
 	PixelFilterConfig     pixelFilterConfig;
 	SMSConfig             smsConfig;
@@ -8288,96 +8293,101 @@ bool Job::InstantiateRasterizerWithDefaults( const std::string& name )
 	AdaptiveSamplingConfig adaptiveConfig;
 	StabilityConfig       stabilityConfig;
 	ProgressiveConfig     progressiveConfig;
-	const bool            kShowLuminaires = true;
-	const bool            kOidnDenoise    = false;   // off by default — interactive cost
-	const OidnQuality     kOidnQuality    = OidnQuality::Auto;
-	const OidnDevice      kOidnDevice     = OidnDevice::Auto;
-	const OidnPrefilter   kOidnPrefilter  = OidnPrefilter::Fast;
 
-	// Dispatch by chunk-name.  Each branch calls the corresponding
-	// Set*Rasterizer with a small, sensible default parameter set.
-	// The Set*Rasterizer path registers and activates internally.
+	if( name == "pixelpel_rasterizer" ) {
+		PixelPelDefaults d;
+		const char* lumSampler = ( d.luminarySampler == "none" ) ? 0 : d.luminarySampler.c_str();
+		return SetPixelBasedPelRasterizer(
+			d.numPixelSamples, d.numLumSamples, d.maxRecursion,
+			shader.c_str(), radianceMapConfig,
+			lumSampler, d.luminarySamplerParam,
+			pixelFilterConfig, d.showLuminaires,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+	}
+	if( name == "pixelintegratingspectral_rasterizer" ) {
+		PixelIntegratingSpectralDefaults d;
+		const char* lumSampler = ( d.luminarySampler == "none" ) ? 0 : d.luminarySampler.c_str();
+		// Lazy build skips RGB-SPD curves — the user can opt in via a
+		// scene chunk if they need a custom RGB-to-SPD conversion.
+		return SetPixelBasedSpectralIntegratingRasterizer(
+			d.numPixelSamples, d.numLumSamples, spectralConfig, d.maxRecursion,
+			shader.c_str(), radianceMapConfig,
+			lumSampler, d.luminarySamplerParam,
+			pixelFilterConfig, d.showLuminaires,
+			d.integrateRGB, /*numSPDvalues*/ 0u, /*freq*/ 0, /*r*/ 0, /*g*/ 0, /*b*/ 0,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			stabilityConfig );
+	}
 	if( name == "pathtracing_pel_rasterizer" ) {
+		PathTracingPelDefaults d;
 		return SetPathTracingPelRasterizer(
-			/*numPixelSamples*/ 1,
-			shader.c_str(), radianceMapConfig, pixelFilterConfig, kShowLuminaires,
-			smsConfig, kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			d.numPixelSamples,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
+			smsConfig, d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
 			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 	}
 	if( name == "pathtracing_spectral_rasterizer" ) {
+		PathTracingSpectralDefaults d;
 		return SetPathTracingSpectralRasterizer(
-			/*numPixelSamples*/ 1,
-			shader.c_str(), radianceMapConfig, pixelFilterConfig, kShowLuminaires,
+			d.numPixelSamples,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
 			spectralConfig, smsConfig,
-			kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
 			adaptiveConfig, stabilityConfig, progressiveConfig );
 	}
 	if( name == "bdpt_pel_rasterizer" ) {
+		BDPTPelDefaults d;
 		return SetBDPTPelRasterizer(
-			/*numPixelSamples*/ 1,
-			/*maxEyeDepth*/     8,
-			/*maxLightDepth*/   8,
-			shader.c_str(), radianceMapConfig, pixelFilterConfig, kShowLuminaires,
-			smsConfig, kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			d.numPixelSamples, d.maxEyeDepth, d.maxLightDepth,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
+			smsConfig, d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
 			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 	}
 	if( name == "bdpt_spectral_rasterizer" ) {
+		BDPTSpectralDefaults d;
 		return SetBDPTSpectralRasterizer(
-			/*numPixelSamples*/ 1,
-			/*maxEyeDepth*/     8,
-			/*maxLightDepth*/   8,
-			shader.c_str(), radianceMapConfig, pixelFilterConfig, kShowLuminaires,
+			d.numPixelSamples, d.maxEyeDepth, d.maxLightDepth,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
 			spectralConfig, smsConfig,
-			kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
 			guidingConfig, stabilityConfig, progressiveConfig );
 	}
 	if( name == "vcm_pel_rasterizer" ) {
+		VCMPelDefaults d;
 		return SetVCMPelRasterizer(
-			/*numPixelSamples*/ 1,
-			/*maxEyeDepth*/     8,
-			/*maxLightDepth*/   8,
-			shader.c_str(), radianceMapConfig, pixelFilterConfig, kShowLuminaires,
-			/*mergeRadius*/ 0.0,   // 0 ⇒ scene-auto
-			/*enableVC*/    true,
-			/*enableVM*/    true,
-			kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			d.numPixelSamples, d.maxEyeDepth, d.maxLightDepth,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
+			d.mergeRadius, d.enableVC, d.enableVM,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
 			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 	}
 	if( name == "vcm_spectral_rasterizer" ) {
+		VCMSpectralDefaults d;
 		return SetVCMSpectralRasterizer(
-			/*numPixelSamples*/ 1,
-			/*maxEyeDepth*/     8,
-			/*maxLightDepth*/   8,
-			shader.c_str(), radianceMapConfig, pixelFilterConfig, kShowLuminaires,
+			d.numPixelSamples, d.maxEyeDepth, d.maxLightDepth,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
 			spectralConfig,
-			/*mergeRadius*/ 0.0,
-			/*enableVC*/    true,
-			/*enableVM*/    true,
-			kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			d.mergeRadius, d.enableVC, d.enableVM,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
 			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 	}
 	if( name == "mlt_rasterizer" ) {
+		MLTDefaults d;
 		return SetMLTRasterizer(
-			/*maxEyeDepth*/        8,
-			/*maxLightDepth*/      8,
-			/*nBootstrap*/         1024,
-			/*nChains*/            64,
-			/*nMutationsPerPixel*/ 64,    // interactive default — at 1080p, 1000 would be ~2B mutations on first click; raise via the scene file for batch
-			/*largeStepProb*/      0.3,
-			shader.c_str(), kShowLuminaires,
-			kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			d.maxEyeDepth, d.maxLightDepth,
+			d.nBootstrap, d.nChains, d.nMutationsPerPixel, d.largeStepProb,
+			shader.c_str(), d.showLuminaires,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
 			pixelFilterConfig, stabilityConfig );
 	}
 	if( name == "mlt_spectral_rasterizer" ) {
+		MLTSpectralDefaults d;
 		return SetMLTSpectralRasterizer(
-			/*maxEyeDepth*/        8,
-			/*maxLightDepth*/      8,
-			/*nBootstrap*/         1024,
-			/*nChains*/            64,
-			/*nMutationsPerPixel*/ 64,    // interactive default — at 1080p, 1000 would be ~2B mutations on first click; raise via the scene file for batch
-			/*largeStepProb*/      0.3,
-			shader.c_str(), kShowLuminaires, spectralConfig,
-			kOidnDenoise, kOidnQuality, kOidnDevice, kOidnPrefilter,
+			d.maxEyeDepth, d.maxLightDepth,
+			d.nBootstrap, d.nChains, d.nMutationsPerPixel, d.largeStepProb,
+			shader.c_str(), d.showLuminaires, spectralConfig,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
 			pixelFilterConfig, stabilityConfig );
 	}
 

@@ -1057,6 +1057,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Profiling.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\ProgressiveConfig.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RandomWalkSSS.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\RasterizerDefaults.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\SSSCoefficients.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\SobolSampler.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RasterSanityScan.h" />

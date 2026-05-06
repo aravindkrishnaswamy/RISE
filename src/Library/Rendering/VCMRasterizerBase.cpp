@@ -830,14 +830,8 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 			}
 		}
 	}
-
-	// Periodic logging of shrinkage schedule.
-	const bool verbose =
-		( passIdx == 1 ) ||
-		( passIdx <= 4 ) ||
-		( ( passIdx % 16 ) == 0 );
-	const LOG_ENUM logLevel = verbose ? eLog_Event : eLog_Info;
-	GlobalLog()->PrintEx( logLevel,
+    
+	GlobalLog()->PrintEx( eLog_Event,
 		"VCMRasterizerBase::OnProgressivePassBegin:: iteration %u — "
 		"rebuilt store with %llu light vertices (K=%u, r=%g, floor=%g, r/r_0=%.3f)",
 		passIdx, totalStored, samplesPerSuperIter,

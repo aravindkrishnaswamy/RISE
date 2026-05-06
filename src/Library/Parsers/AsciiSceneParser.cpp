@@ -112,6 +112,7 @@
 #include "../Utilities/MediaPathLocator.h"
 #include "../Sampling/HaltonPoints.h"
 #include "MathExpressionEvaluator.h"
+#include "../Utilities/RasterizerDefaults.h"
 
 #ifdef WIN32
 #include <malloc.h>
@@ -509,86 +510,116 @@ namespace RISE
 			// declaration before the call site.
 			//////////////////////////////////////////
 
-			// Optional rasterizer params accepted only by a subset.
+			// Per-enum to_hint specialisations for the parser-internal
+			// enums whose definitions live in headers ChunkDescriptor.h
+			// shouldn't pull in.  Match the lowercase string the parser
+			// actually accepts on the input side.  The using-declaration
+			// re-introduces the namespace-RISE to_hint overloads (bool,
+			// double, unsigned int, OidnQuality, ...) so they participate
+			// in overload resolution alongside these local additions —
+			// without the using, name lookup would stop at the first
+			// match in this nested namespace and the namespace-level
+			// overloads would be hidden.
+			using RISE::to_hint;
+			static inline std::string to_hint( GuidingSamplingType v ) {
+				return v == eGuidingRIS ? "RIS" : "OneSampleMIS";
+			}
+			static inline std::string to_hint( SMSSeedingMode v ) {
+				return v == SMSSeedingMode::Uniform ? "uniform" : "snell";
+			}
+
+			// Optional rasterizer params accepted only by a subset.  Hints
+			// derive from StabilityConfig defaults so this helper has one
+			// source of truth shared with the parser-side `bag.GetX()`
+			// fallbacks (which all use `if(bag.Has)` against a default-
+			// constructed StabilityConfig).
 			template<typename PushFn>
 			static void AddOptimalMISParams( PushFn P ) {
-				{ auto& p = P(); p.name = "optimal_mis";                     p.kind = ValueKind::Bool; p.description = "Enable optimal MIS";                  p.defaultValueHint = "FALSE"; }
-				{ auto& p = P(); p.name = "optimal_mis_training_iterations"; p.kind = ValueKind::UInt; p.description = "Optimal-MIS training iterations";    p.defaultValueHint = "4"; }
-				{ auto& p = P(); p.name = "optimal_mis_tile_size";           p.kind = ValueKind::UInt; p.description = "Optimal-MIS tile size";              p.defaultValueHint = "32"; }
+				StabilityConfig d;
+				{ auto& p = P(); p.name = "optimal_mis";                     p.kind = ValueKind::Bool; p.description = "Enable optimal MIS";                  p.defaultValueHint = to_hint(d.optimalMIS); }
+				{ auto& p = P(); p.name = "optimal_mis_training_iterations"; p.kind = ValueKind::UInt; p.description = "Optimal-MIS training iterations";    p.defaultValueHint = to_hint(d.optimalMISTrainingIterations); }
+				{ auto& p = P(); p.name = "optimal_mis_tile_size";           p.kind = ValueKind::UInt; p.description = "Optimal-MIS tile size";              p.defaultValueHint = to_hint(d.optimalMISTileSize); }
 			}
 
 			// StabilityConfig params accepted by all non-MLT rasterizers.
 			template<typename PushFn>
 			static void AddStabilityConfigParams( PushFn P ) {
-				{ auto& p = P(); p.name = "direct_clamp";                           p.kind = ValueKind::Double; p.description = "Clamp on direct-lighting contribution"; p.defaultValueHint = "0 (disabled)"; }
-				{ auto& p = P(); p.name = "indirect_clamp";                         p.kind = ValueKind::Double; p.description = "Clamp on indirect contribution";         p.defaultValueHint = "0 (disabled)"; }
-				{ auto& p = P(); p.name = "rr_min_depth";                           p.kind = ValueKind::UInt;   p.description = "Min depth before Russian roulette";     p.defaultValueHint = "5"; }
-				{ auto& p = P(); p.name = "rr_threshold";                           p.kind = ValueKind::Double; p.description = "Throughput threshold for RR";           p.defaultValueHint = "0.01"; }
-				{ auto& p = P(); p.name = "max_diffuse_bounce";                     p.kind = ValueKind::UInt;   p.description = "Max diffuse bounce depth";              p.defaultValueHint = "-1"; }
-				{ auto& p = P(); p.name = "max_glossy_bounce";                      p.kind = ValueKind::UInt;   p.description = "Max glossy bounce depth";               p.defaultValueHint = "-1"; }
-				{ auto& p = P(); p.name = "max_transmission_bounce";                p.kind = ValueKind::UInt;   p.description = "Max transmission bounce depth";         p.defaultValueHint = "-1"; }
-				{ auto& p = P(); p.name = "max_translucent_bounce";                 p.kind = ValueKind::UInt;   p.description = "Max translucent bounce depth";          p.defaultValueHint = "-1"; }
-				{ auto& p = P(); p.name = "max_volume_bounce";                      p.kind = ValueKind::UInt;   p.description = "Max volume bounce depth";               p.defaultValueHint = "-1"; }
-				{ auto& p = P(); p.name = "light_bvh";                              p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = "TRUE"; }
-				{ auto& p = P(); p.name = "branching_threshold";                    p.kind = ValueKind::Double; p.description = "Normalized throughput gate for subpath splitting at multi-lobe delta vertices (0 = always branch, 1 = never)"; p.defaultValueHint = "0.5"; }
+				StabilityConfig d;
+				{ auto& p = P(); p.name = "direct_clamp";                           p.kind = ValueKind::Double; p.description = "Clamp on direct-lighting contribution (0 disables)"; p.defaultValueHint = to_hint(d.directClamp); }
+				{ auto& p = P(); p.name = "indirect_clamp";                         p.kind = ValueKind::Double; p.description = "Clamp on indirect contribution (0 disables)";         p.defaultValueHint = to_hint(d.indirectClamp); }
+				{ auto& p = P(); p.name = "rr_min_depth";                           p.kind = ValueKind::UInt;   p.description = "Min depth before Russian roulette";     p.defaultValueHint = to_hint(d.rrMinDepth); }
+				{ auto& p = P(); p.name = "rr_threshold";                           p.kind = ValueKind::Double; p.description = "Throughput threshold for RR";           p.defaultValueHint = to_hint(d.rrThreshold); }
+				{ auto& p = P(); p.name = "max_diffuse_bounce";                     p.kind = ValueKind::UInt;   p.description = "Max diffuse bounce depth (UINT_MAX = unlimited)";              p.defaultValueHint = to_hint(d.maxDiffuseBounce); }
+				{ auto& p = P(); p.name = "max_glossy_bounce";                      p.kind = ValueKind::UInt;   p.description = "Max glossy bounce depth (UINT_MAX = unlimited)";               p.defaultValueHint = to_hint(d.maxGlossyBounce); }
+				{ auto& p = P(); p.name = "max_transmission_bounce";                p.kind = ValueKind::UInt;   p.description = "Max transmission bounce depth (UINT_MAX = unlimited)";         p.defaultValueHint = to_hint(d.maxTransmissionBounce); }
+				{ auto& p = P(); p.name = "max_translucent_bounce";                 p.kind = ValueKind::UInt;   p.description = "Max translucent bounce depth (UINT_MAX = unlimited)";          p.defaultValueHint = to_hint(d.maxTranslucentBounce); }
+				{ auto& p = P(); p.name = "max_volume_bounce";                      p.kind = ValueKind::UInt;   p.description = "Max volume bounce depth";               p.defaultValueHint = to_hint(d.maxVolumeBounce); }
+				{ auto& p = P(); p.name = "light_bvh";                              p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = to_hint(d.useLightBVH); }
+				{ auto& p = P(); p.name = "branching_threshold";                    p.kind = ValueKind::Double; p.description = "Normalized throughput gate for subpath splitting at multi-lobe delta vertices (0 = always branch, 1 = never)"; p.defaultValueHint = to_hint(d.branchingThreshold); }
 			}
 			template<typename PushFn>
 			static void AddPathGuidingParams( PushFn P ) {
-				{ auto& p = P(); p.name = "pathguiding";                            p.kind = ValueKind::Bool;   p.description = "Enable path guiding";                   p.defaultValueHint = "FALSE"; }
-				{ auto& p = P(); p.name = "pathguiding_iterations";                 p.kind = ValueKind::UInt;   p.description = "Training iterations";                   p.defaultValueHint = "4"; }
-				{ auto& p = P(); p.name = "pathguiding_spp";                        p.kind = ValueKind::UInt;   p.description = "Samples per pixel during training";     p.defaultValueHint = "4"; }
-				{ auto& p = P(); p.name = "pathguiding_combine_training";           p.kind = ValueKind::Bool;   p.description = "Accumulate training-iteration pixels into the final image weighted by SPP (Müller 2017 §5).  Off = legacy discard behaviour."; p.defaultValueHint = "TRUE"; }
-				{ auto& p = P(); p.name = "pathguiding_online";                     p.kind = ValueKind::Bool;   p.description = "Training-iteration loop is the entire render; no separate final pass.  Best for low-SPP regimes (Vorba/NASG style)."; p.defaultValueHint = "FALSE"; }
-				{ auto& p = P(); p.name = "pathguiding_warmup_iterations";          p.kind = ValueKind::UInt;   p.description = "First N training iterations render with alpha=0 (unguided) so their pixels are unbiased even when combine/online is on.  Samples still feed the field.  Default 1 keeps the empty-field iteration's pixels clean; raise to 2 in online mode."; p.defaultValueHint = "1"; }
-				{ auto& p = P(); p.name = "pathguiding_alpha";                      p.kind = ValueKind::Double; p.description = "Mixing factor with BSDF sampling";      p.defaultValueHint = "0.5"; }
-				{ auto& p = P(); p.name = "pathguiding_learned_alpha";              p.kind = ValueKind::Bool;   p.description = "Per-cell Adam-learned mixing alpha (Müller 2017 v2); modest win at SPP >= 256, neutral at low SPP";  p.defaultValueHint = "TRUE"; }
-				{ auto& p = P(); p.name = "pathguiding_max_depth";                  p.kind = ValueKind::UInt;   p.description = "Max eye-subpath depth to apply guiding (matches typical scene max_eye_depth)"; p.defaultValueHint = "8"; }
-				{ auto& p = P(); p.name = "pathguiding_light_max_depth";            p.kind = ValueKind::UInt;   p.description = "Max light-subpath depth for guiding (BDPT only); 0 disables (separate field, additional training cost)"; p.defaultValueHint = "0 (disabled)"; }
-				{ auto& p = P(); p.name = "pathguiding_sampling_type";              p.kind = ValueKind::Enum;   p.enumValues = {"ris","RIS","OneSampleMIS"}; p.description = "Sampling strategy (any string other than ris/RIS selects OneSampleMIS)";  p.defaultValueHint = "OneSampleMIS"; }
-				{ auto& p = P(); p.name = "pathguiding_ris_candidates";             p.kind = ValueKind::UInt;   p.description = "RIS candidate count (only N=2 currently implemented; values >2 reserved for future)"; p.defaultValueHint = "2"; }
-				{ auto& p = P(); p.name = "pathguiding_complete_paths";             p.kind = ValueKind::Bool;   p.description = "Enable complete-path guiding (experimental, BDPT)"; p.defaultValueHint = "FALSE"; }
-				{ auto& p = P(); p.name = "pathguiding_complete_path_strategy_selection"; p.kind = ValueKind::Bool; p.description = "Enable complete-path strategy selection (experimental)"; p.defaultValueHint = "FALSE"; }
-				{ auto& p = P(); p.name = "pathguiding_complete_path_strategy_samples";   p.kind = ValueKind::UInt; p.description = "Techniques to evaluate per path when strategy selection is on"; p.defaultValueHint = "2"; }
+				PathGuidingConfig d;
+				{ auto& p = P(); p.name = "pathguiding";                            p.kind = ValueKind::Bool;   p.description = "Enable path guiding";                   p.defaultValueHint = to_hint(d.enabled); }
+				{ auto& p = P(); p.name = "pathguiding_iterations";                 p.kind = ValueKind::UInt;   p.description = "Training iterations";                   p.defaultValueHint = to_hint(d.trainingIterations); }
+				{ auto& p = P(); p.name = "pathguiding_spp";                        p.kind = ValueKind::UInt;   p.description = "Samples per pixel during training";     p.defaultValueHint = to_hint(d.trainingSPP); }
+				{ auto& p = P(); p.name = "pathguiding_combine_training";           p.kind = ValueKind::Bool;   p.description = "Accumulate training-iteration pixels into the final image weighted by SPP (Müller 2017 §5).  Off = legacy discard behaviour."; p.defaultValueHint = to_hint(d.combineTrainingIterations); }
+				{ auto& p = P(); p.name = "pathguiding_online";                     p.kind = ValueKind::Bool;   p.description = "Training-iteration loop is the entire render; no separate final pass.  Best for low-SPP regimes (Vorba/NASG style)."; p.defaultValueHint = to_hint(d.online); }
+				{ auto& p = P(); p.name = "pathguiding_warmup_iterations";          p.kind = ValueKind::UInt;   p.description = "First N training iterations render with alpha=0 (unguided) so their pixels are unbiased even when combine/online is on.  Samples still feed the field.  Default 1 keeps the empty-field iteration's pixels clean; raise to 2 in online mode."; p.defaultValueHint = to_hint(d.warmupIterations); }
+				{ auto& p = P(); p.name = "pathguiding_alpha";                      p.kind = ValueKind::Double; p.description = "Mixing factor with BSDF sampling";      p.defaultValueHint = to_hint(d.alpha); }
+				{ auto& p = P(); p.name = "pathguiding_learned_alpha";              p.kind = ValueKind::Bool;   p.description = "Per-cell Adam-learned mixing alpha (Müller 2017 v2); modest win at SPP >= 256, neutral at low SPP";  p.defaultValueHint = to_hint(d.learnedAlpha); }
+				{ auto& p = P(); p.name = "pathguiding_max_depth";                  p.kind = ValueKind::UInt;   p.description = "Max eye-subpath depth to apply guiding (matches typical scene max_eye_depth)"; p.defaultValueHint = to_hint(d.maxGuidingDepth); }
+				{ auto& p = P(); p.name = "pathguiding_light_max_depth";            p.kind = ValueKind::UInt;   p.description = "Max light-subpath depth for guiding (BDPT only); 0 disables (separate field, additional training cost)"; p.defaultValueHint = to_hint(d.maxLightGuidingDepth); }
+				{ auto& p = P(); p.name = "pathguiding_sampling_type";              p.kind = ValueKind::Enum;   p.enumValues = {"ris","RIS","OneSampleMIS"}; p.description = "Sampling strategy (any string other than ris/RIS selects OneSampleMIS)";  p.defaultValueHint = to_hint(d.samplingType); }
+				{ auto& p = P(); p.name = "pathguiding_ris_candidates";             p.kind = ValueKind::UInt;   p.description = "RIS candidate count (only N=2 currently implemented; values >2 reserved for future)"; p.defaultValueHint = to_hint(d.risCandidates); }
+				{ auto& p = P(); p.name = "pathguiding_complete_paths";             p.kind = ValueKind::Bool;   p.description = "Enable complete-path guiding (experimental, BDPT)"; p.defaultValueHint = to_hint(d.completePathGuiding); }
+				{ auto& p = P(); p.name = "pathguiding_complete_path_strategy_selection"; p.kind = ValueKind::Bool; p.description = "Enable complete-path strategy selection (experimental)"; p.defaultValueHint = to_hint(d.completePathStrategySelection); }
+				{ auto& p = P(); p.name = "pathguiding_complete_path_strategy_samples";   p.kind = ValueKind::UInt; p.description = "Techniques to evaluate per path when strategy selection is on"; p.defaultValueHint = to_hint(d.completePathStrategySamples); }
 			}
 			template<typename PushFn>
 			static void AddAdaptiveSamplingParams( PushFn P ) {
-				{ auto& p = P(); p.name = "adaptive_max_samples";                   p.kind = ValueKind::UInt;   p.description = "Max adaptive samples per pixel";        p.defaultValueHint = "0 (disabled)"; }
-				{ auto& p = P(); p.name = "adaptive_threshold";                     p.kind = ValueKind::Double; p.description = "Relative-error threshold";              p.defaultValueHint = "0.05"; }
-				{ auto& p = P(); p.name = "show_adaptive_map";                      p.kind = ValueKind::Bool;   p.description = "Visualize the adaptive sample map";     p.defaultValueHint = "FALSE"; }
+				AdaptiveSamplingConfig d;
+				{ auto& p = P(); p.name = "adaptive_max_samples";                   p.kind = ValueKind::UInt;   p.description = "Max adaptive samples per pixel (0 disables)";        p.defaultValueHint = to_hint(d.maxSamples); }
+				{ auto& p = P(); p.name = "adaptive_threshold";                     p.kind = ValueKind::Double; p.description = "Relative-error threshold";              p.defaultValueHint = to_hint(d.threshold); }
+				{ auto& p = P(); p.name = "show_adaptive_map";                      p.kind = ValueKind::Bool;   p.description = "Visualize the adaptive sample map";     p.defaultValueHint = to_hint(d.showMap); }
 			}
 			template<typename PushFn>
 			static void AddPixelFilterParams( PushFn P ) {
-				{ auto& p = P(); p.name = "pixel_sampler";                          p.kind = ValueKind::String; p.description = "Pixel sampler strategy";                p.defaultValueHint = "stratified"; }
-				{ auto& p = P(); p.name = "pixel_sampler_param";                    p.kind = ValueKind::Double; p.description = "Sampler-specific parameter";            p.defaultValueHint = "1.0"; }
-				{ auto& p = P(); p.name = "pixel_filter";                           p.kind = ValueKind::String; p.description = "Reconstruction filter";                 p.defaultValueHint = "box"; }
-				{ auto& p = P(); p.name = "pixel_filter_width";                     p.kind = ValueKind::Double; p.description = "Filter width";                          p.defaultValueHint = "1.0"; }
-				{ auto& p = P(); p.name = "pixel_filter_height";                    p.kind = ValueKind::Double; p.description = "Filter height";                         p.defaultValueHint = "1.0"; }
-				{ auto& p = P(); p.name = "pixel_filter_paramA";                    p.kind = ValueKind::Double; p.description = "Filter paramA";                         p.defaultValueHint = "0"; }
-				{ auto& p = P(); p.name = "pixel_filter_paramB";                    p.kind = ValueKind::Double; p.description = "Filter paramB";                         p.defaultValueHint = "0"; }
-				{ auto& p = P(); p.name = "blue_noise_sampler";                     p.kind = ValueKind::Bool;   p.description = "Use blue-noise sampler";                p.defaultValueHint = "FALSE"; }
+				PixelFilterConfig d;
+				{ auto& p = P(); p.name = "pixel_sampler";                          p.kind = ValueKind::String; p.description = "Pixel sampler strategy";                p.defaultValueHint = to_hint(std::string(d.pixelSampler.c_str())); }
+				{ auto& p = P(); p.name = "pixel_sampler_param";                    p.kind = ValueKind::Double; p.description = "Sampler-specific parameter";            p.defaultValueHint = to_hint(d.pixelSamplerParam); }
+				{ auto& p = P(); p.name = "pixel_filter";                           p.kind = ValueKind::String; p.description = "Reconstruction filter";                 p.defaultValueHint = to_hint(std::string(d.filter.c_str())); }
+				{ auto& p = P(); p.name = "pixel_filter_width";                     p.kind = ValueKind::Double; p.description = "Filter width";                          p.defaultValueHint = to_hint(d.width); }
+				{ auto& p = P(); p.name = "pixel_filter_height";                    p.kind = ValueKind::Double; p.description = "Filter height";                         p.defaultValueHint = to_hint(d.height); }
+				{ auto& p = P(); p.name = "pixel_filter_paramA";                    p.kind = ValueKind::Double; p.description = "Filter paramA";                         p.defaultValueHint = to_hint(d.paramA); }
+				{ auto& p = P(); p.name = "pixel_filter_paramB";                    p.kind = ValueKind::Double; p.description = "Filter paramB";                         p.defaultValueHint = to_hint(d.paramB); }
+				{ auto& p = P(); p.name = "blue_noise_sampler";                     p.kind = ValueKind::Bool;   p.description = "Use blue-noise sampler";                p.defaultValueHint = to_hint(d.blueNoiseSampler); }
 			}
 			template<typename PushFn>
 			static void AddRadianceMapParams( PushFn P ) {
+				RadianceMapConfig d;
 				{ auto& p = P(); p.name = "radiance_map";                           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Environment radiance painter"; }
-				{ auto& p = P(); p.name = "radiance_scale";                         p.kind = ValueKind::Double; p.description = "Scale applied to radiance map";         p.defaultValueHint = "1.0"; }
-				{ auto& p = P(); p.name = "radiance_background";                    p.kind = ValueKind::Bool;   p.description = "Also use as camera background";         p.defaultValueHint = "TRUE"; }
+				{ auto& p = P(); p.name = "radiance_scale";                         p.kind = ValueKind::Double; p.description = "Scale applied to radiance map";         p.defaultValueHint = to_hint(d.scale); }
+				{ auto& p = P(); p.name = "radiance_background";                    p.kind = ValueKind::Bool;   p.description = "Also use as camera background";         p.defaultValueHint = to_hint(d.isBackground); }
 				{ auto& p = P(); p.name = "radiance_orient";                        p.kind = ValueKind::DoubleVec3; p.description = "Rotation (degrees) X Y Z";           p.defaultValueHint = "0 0 0"; }
 			}
 			template<typename PushFn>
 			static void AddProgressiveParams( PushFn P ) {
-				{ auto& p = P(); p.name = "progressive_rendering";                  p.kind = ValueKind::Bool;   p.description = "Enable progressive rendering";          p.defaultValueHint = "FALSE"; }
-				{ auto& p = P(); p.name = "progressive_samples_per_pass";           p.kind = ValueKind::UInt;   p.description = "Samples per progressive pass";          p.defaultValueHint = "1"; }
+				ProgressiveConfig d;
+				{ auto& p = P(); p.name = "progressive_rendering";                  p.kind = ValueKind::Bool;   p.description = "Enable progressive rendering";          p.defaultValueHint = to_hint(d.enabled); }
+				{ auto& p = P(); p.name = "progressive_samples_per_pass";           p.kind = ValueKind::UInt;   p.description = "Samples per progressive pass";          p.defaultValueHint = to_hint(d.samplesPerPass); }
 			}
 			// Core spectral params — exactly the fields of SpectralConfig.
 			// Used by every spectral rasterizer (pixelintegratingspectral,
 			// PT/BDPT/VCM spectral, MLT spectral).
 			template<typename PushFn>
 			static void AddSpectralCoreParams( PushFn P ) {
-				{ auto& p = P(); p.name = "spectral_samples";  p.kind = ValueKind::UInt;   p.description = "Number of spectral samples per pixel";       p.defaultValueHint = "1"; }
-				{ auto& p = P(); p.name = "nmbegin";           p.kind = ValueKind::Double; p.description = "Start wavelength (nm)";                      p.defaultValueHint = "380"; }
-				{ auto& p = P(); p.name = "nmend";             p.kind = ValueKind::Double; p.description = "End wavelength (nm)";                        p.defaultValueHint = "780"; }
-				{ auto& p = P(); p.name = "num_wavelengths";   p.kind = ValueKind::UInt;   p.description = "Discrete wavelengths sampled";               p.defaultValueHint = "10"; }
-				{ auto& p = P(); p.name = "hwss";              p.kind = ValueKind::Bool;   p.description = "Enable hero-wavelength stratified sampling"; p.defaultValueHint = "FALSE"; }
+				SpectralConfig d;
+				{ auto& p = P(); p.name = "spectral_samples";  p.kind = ValueKind::UInt;   p.description = "Number of spectral samples per pixel";       p.defaultValueHint = to_hint(d.spectralSamples); }
+				{ auto& p = P(); p.name = "nmbegin";           p.kind = ValueKind::Double; p.description = "Start wavelength (nm)";                      p.defaultValueHint = to_hint(d.nmBegin); }
+				{ auto& p = P(); p.name = "nmend";             p.kind = ValueKind::Double; p.description = "End wavelength (nm)";                        p.defaultValueHint = to_hint(d.nmEnd); }
+				{ auto& p = P(); p.name = "num_wavelengths";   p.kind = ValueKind::UInt;   p.description = "Discrete wavelengths sampled";               p.defaultValueHint = to_hint(d.numWavelengths); }
+				{ auto& p = P(); p.name = "hwss";              p.kind = ValueKind::Bool;   p.description = "Enable hero-wavelength stratified sampling"; p.defaultValueHint = to_hint(d.useHWSS); }
 			}
 
 			// RGB-to-SPD conversion params — only the legacy
@@ -642,17 +673,18 @@ namespace RISE
 
 			template<typename PushFn>
 			static void AddSMSConfigParams( PushFn P ) {
-				{ auto& p = P(); p.name = "sms_enabled";                            p.kind = ValueKind::Bool;   p.description = "Enable Specular Manifold Sampling";     p.defaultValueHint = "FALSE"; }
-				{ auto& p = P(); p.name = "sms_max_iterations";                     p.kind = ValueKind::UInt;   p.description = "Max SMS Newton iterations";             p.defaultValueHint = "20"; }
-				{ auto& p = P(); p.name = "sms_threshold";                          p.kind = ValueKind::Double; p.description = "SMS convergence threshold";             p.defaultValueHint = "1e-5"; }
-				{ auto& p = P(); p.name = "sms_max_chain_depth";                    p.kind = ValueKind::UInt;   p.description = "Max SMS manifold-chain depth";          p.defaultValueHint = "2"; }
-				{ auto& p = P(); p.name = "sms_biased";                             p.kind = ValueKind::Bool;   p.description = "Use biased SMS estimator";              p.defaultValueHint = "FALSE"; }
-				{ auto& p = P(); p.name = "sms_bernoulli_trials";                   p.kind = ValueKind::UInt;   p.description = "Bernoulli trials per vertex";           p.defaultValueHint = "1"; }
-				{ auto& p = P(); p.name = "sms_multi_trials";                       p.kind = ValueKind::UInt;   p.description = "Multi-trials per vertex";               p.defaultValueHint = "1"; }
-				{ auto& p = P(); p.name = "sms_photon_count";                       p.kind = ValueKind::UInt;   p.description = "SMS photon budget";                     p.defaultValueHint = "10000"; }
-				{ auto& p = P(); p.name = "sms_two_stage";                          p.kind = ValueKind::Bool;   p.description = "Two-stage solver: smooth seed then refine on actual surface (Zeltner 2020 §5)"; p.defaultValueHint = "FALSE"; }
-				{ auto& p = P(); p.name = "sms_seeding";                            p.kind = ValueKind::String; p.description = "SMS seeding strategy: \"snell\" (legacy Snell-trace) or \"uniform\" (Mitsuba-faithful uniform-on-shape)"; p.defaultValueHint = "snell"; }
-				{ auto& p = P(); p.name = "sms_target_bounces";                     p.kind = ValueKind::UInt;   p.description = "REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode."; p.defaultValueHint = "0"; }
+				SMSConfig d;
+				{ auto& p = P(); p.name = "sms_enabled";                            p.kind = ValueKind::Bool;   p.description = "Enable Specular Manifold Sampling";     p.defaultValueHint = to_hint(d.enabled); }
+				{ auto& p = P(); p.name = "sms_max_iterations";                     p.kind = ValueKind::UInt;   p.description = "Max SMS Newton iterations";             p.defaultValueHint = to_hint(d.maxIterations); }
+				{ auto& p = P(); p.name = "sms_threshold";                          p.kind = ValueKind::Double; p.description = "SMS convergence threshold";             p.defaultValueHint = to_hint(d.threshold); }
+				{ auto& p = P(); p.name = "sms_max_chain_depth";                    p.kind = ValueKind::UInt;   p.description = "Max SMS manifold-chain depth (recommend setting to natural caustic K, typically 2)"; p.defaultValueHint = to_hint(d.maxChainDepth); }
+				{ auto& p = P(); p.name = "sms_biased";                             p.kind = ValueKind::Bool;   p.description = "Use biased SMS estimator";              p.defaultValueHint = to_hint(d.biased); }
+				{ auto& p = P(); p.name = "sms_bernoulli_trials";                   p.kind = ValueKind::UInt;   p.description = "Bernoulli trials per vertex (only used when sms_biased=FALSE)"; p.defaultValueHint = to_hint(d.bernoulliTrials); }
+				{ auto& p = P(); p.name = "sms_multi_trials";                       p.kind = ValueKind::UInt;   p.description = "Multi-trials per vertex";               p.defaultValueHint = to_hint(d.multiTrials); }
+				{ auto& p = P(); p.name = "sms_photon_count";                       p.kind = ValueKind::UInt;   p.description = "SMS photon budget (0 disables; recommend 10000 for diacaustic / mirror-chain scenes)"; p.defaultValueHint = to_hint(d.photonCount); }
+				{ auto& p = P(); p.name = "sms_two_stage";                          p.kind = ValueKind::Bool;   p.description = "Two-stage solver: smooth seed then refine on actual surface (Zeltner 2020 §5)"; p.defaultValueHint = to_hint(d.twoStage); }
+				{ auto& p = P(); p.name = "sms_seeding";                            p.kind = ValueKind::String; p.description = "SMS seeding strategy: \"snell\" (legacy Snell-trace) or \"uniform\" (Mitsuba-faithful uniform-on-shape)"; p.defaultValueHint = to_hint(d.seedingMode); }
+				{ auto& p = P(); p.name = "sms_target_bounces";                     p.kind = ValueKind::UInt;   p.description = "REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode."; p.defaultValueHint = to_hint(d.targetBounces); }
 			}
 			template<typename PushFn>
 			static void AddPhotonMapGenerateCommonParams( PushFn P ) {
@@ -705,15 +737,23 @@ namespace RISE
 				{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis scale";             p.defaultValueHint = "1 1 1"; }
 				{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "Per-axis shift";             p.defaultValueHint = "0 0 0"; }
 			}
+			//
+			// AddBaseRasterizerParams — the 7 fields every production
+			// rasterizer accepts.  Takes a `BaseRasterizerDefaults` so
+			// the per-rasterizer parser can pass its own *Defaults
+			// struct (PixelPel overrides numPixelSamples=1, MLT
+			// overrides oidnDenoise=false, etc.) and the GUI hint
+			// matches the actual `Finalize` fallback.
+			//
 			template<typename PushFn>
-			static void AddBaseRasterizerParams( PushFn P ) {
-				{ auto& p = P(); p.name = "defaultshader";                          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain for hit points"; p.defaultValueHint = "global"; }
-				{ auto& p = P(); p.name = "samples";                                p.kind = ValueKind::UInt;   p.description = "Samples per pixel";                     p.defaultValueHint = "1"; }
-				{ auto& p = P(); p.name = "show_luminaires";                        p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";        p.defaultValueHint = "TRUE"; }
-				{ auto& p = P(); p.name = "oidn_denoise";                           p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                  p.defaultValueHint = "TRUE"; }
-				{ auto& p = P(); p.name = "oidn_quality";                           p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = "auto"; }
-				{ auto& p = P(); p.name = "oidn_device";                            p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = "auto"; }
-				{ auto& p = P(); p.name = "oidn_prefilter";                         p.kind = ValueKind::Enum;   p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = "fast"; }
+			static void AddBaseRasterizerParams( PushFn P, const BaseRasterizerDefaults& d ) {
+				{ auto& p = P(); p.name = "defaultshader";                          p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain for hit points"; p.defaultValueHint = to_hint(d.defaultShader); }
+				{ auto& p = P(); p.name = "samples";                                p.kind = ValueKind::UInt;   p.description = "Samples per pixel";                     p.defaultValueHint = to_hint(d.numPixelSamples); }
+				{ auto& p = P(); p.name = "show_luminaires";                        p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";        p.defaultValueHint = to_hint(d.showLuminaires); }
+				{ auto& p = P(); p.name = "oidn_denoise";                           p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                  p.defaultValueHint = to_hint(d.oidnDenoise); }
+				{ auto& p = P(); p.name = "oidn_quality";                           p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = to_hint(d.oidnQuality); }
+				{ auto& p = P(); p.name = "oidn_device";                            p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = to_hint(d.oidnDevice); }
+				{ auto& p = P(); p.name = "oidn_prefilter";                         p.kind = ValueKind::Enum;   p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = to_hint(d.oidnPrefilter); }
 			}
 
 			// Parse the `oidn_quality` enum string from a parser bag.  Unknown
@@ -5905,17 +5945,18 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int maxRecur       = bag.GetUInt(   "max_recursion",  10 );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
-					unsigned int numLumSamples  = bag.GetUInt(   "lum_samples",    1 );
-					std::string luminarySampler = bag.GetString( "luminary_sampler", "none" );
-					double luminarySamplerParam = bag.GetDouble( "luminary_sampler_param", 1.0 );
-					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
-					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
-					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
-					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
-					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", "fast" ) );
+					PixelPelDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int maxRecur       = bag.GetUInt(   "max_recursion",  dflt.maxRecursion );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					unsigned int numLumSamples  = bag.GetUInt(   "lum_samples",    dflt.numLumSamples );
+					std::string luminarySampler = bag.GetString( "luminary_sampler", dflt.luminarySampler );
+					double luminarySamplerParam = bag.GetDouble( "luminary_sampler_param", dflt.luminarySamplerParam );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -5996,28 +6037,30 @@ namespace RISE
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
+						PixelPelDefaults dflt;
+						StabilityConfig stabilityDflt;
 						ChunkDescriptor cd;
 						cd.keyword = "pixelpel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
 						cd.description = "RGB pel-based unidirectional path-tracing integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "defaultshader";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain for hit points"; p.defaultValueHint = "global"; }
-						{ auto& p = P(); p.name = "max_recursion";         p.kind = ValueKind::UInt;      p.description = "Maximum ray recursion depth";   p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "samples";               p.kind = ValueKind::UInt;      p.description = "Samples per pixel";              p.defaultValueHint = "1"; }
-						{ auto& p = P(); p.name = "lum_samples";           p.kind = ValueKind::UInt;      p.description = "Luminaire samples per hit";      p.defaultValueHint = "1"; }
-						{ auto& p = P(); p.name = "luminary_sampler";      p.kind = ValueKind::String;    p.description = "Luminary sampling strategy";     p.defaultValueHint = "none"; }
-						{ auto& p = P(); p.name = "luminary_sampler_param";p.kind = ValueKind::Double;    p.description = "Luminary sampler parameter";     p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "show_luminaires";       p.kind = ValueKind::Bool;      p.description = "Show direct-visible luminaires"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "oidn_denoise";          p.kind = ValueKind::Bool;      p.description = "Enable OIDN denoiser";           p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "oidn_quality";          p.kind = ValueKind::Enum;      p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = "auto"; }
-						{ auto& p = P(); p.name = "oidn_device";           p.kind = ValueKind::Enum;      p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = "auto"; }
-					{ auto& p = P(); p.name = "oidn_prefilter";        p.kind = ValueKind::Enum;      p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = "fast"; }
+						{ auto& p = P(); p.name = "defaultshader";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain for hit points"; p.defaultValueHint = to_hint(dflt.defaultShader); }
+						{ auto& p = P(); p.name = "max_recursion";         p.kind = ValueKind::UInt;      p.description = "Maximum ray recursion depth";   p.defaultValueHint = to_hint(dflt.maxRecursion); }
+						{ auto& p = P(); p.name = "samples";               p.kind = ValueKind::UInt;      p.description = "Samples per pixel";              p.defaultValueHint = to_hint(dflt.numPixelSamples); }
+						{ auto& p = P(); p.name = "lum_samples";           p.kind = ValueKind::UInt;      p.description = "Luminaire samples per hit";      p.defaultValueHint = to_hint(dflt.numLumSamples); }
+						{ auto& p = P(); p.name = "luminary_sampler";      p.kind = ValueKind::String;    p.description = "Luminary sampling strategy";     p.defaultValueHint = to_hint(dflt.luminarySampler); }
+						{ auto& p = P(); p.name = "luminary_sampler_param";p.kind = ValueKind::Double;    p.description = "Luminary sampler parameter";     p.defaultValueHint = to_hint(dflt.luminarySamplerParam); }
+						{ auto& p = P(); p.name = "show_luminaires";       p.kind = ValueKind::Bool;      p.description = "Show direct-visible luminaires"; p.defaultValueHint = to_hint(dflt.showLuminaires); }
+						{ auto& p = P(); p.name = "oidn_denoise";          p.kind = ValueKind::Bool;      p.description = "Enable OIDN denoiser";           p.defaultValueHint = to_hint(dflt.oidnDenoise); }
+						{ auto& p = P(); p.name = "oidn_quality";          p.kind = ValueKind::Enum;      p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = to_hint(dflt.oidnQuality); }
+						{ auto& p = P(); p.name = "oidn_device";           p.kind = ValueKind::Enum;      p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = to_hint(dflt.oidnDevice); }
+					{ auto& p = P(); p.name = "oidn_prefilter";        p.kind = ValueKind::Enum;      p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = to_hint(dflt.oidnPrefilter); }
 						{ auto& p = P(); p.name = "choose_one_light";      p.kind = ValueKind::Bool;      p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
 						AddPathGuidingParams( P );
 						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
-						{ auto& p = P(); p.name = "filter_glossy";                    p.kind = ValueKind::Double; p.description = "Glossy roughness floor";                     p.defaultValueHint = "0 (disabled)"; }
+						{ auto& p = P(); p.name = "filter_glossy";                    p.kind = ValueKind::Double; p.description = "Glossy roughness floor (0 disables)";                     p.defaultValueHint = to_hint(stabilityDflt.filterGlossy); }
 						AddOptimalMISParams( P );
 						AddProgressiveParams( P );
 						return cd;
@@ -6046,18 +6089,19 @@ namespace RISE
 
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int maxRecur       = bag.GetUInt(   "max_recursion",  10 );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        1 );
-					unsigned int numLumSamples  = bag.GetUInt(   "lum_samples",    1 );
-					std::string luminarySampler = bag.GetString( "luminary_sampler", "none" );
-					double luminarySamplerParam = bag.GetDouble( "luminary_sampler_param", 1.0 );
-					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
-					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
-					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
-					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
-					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", "fast" ) );
-					bool integrateRGB           = bag.GetBool(   "integrate_rgb",   false );
+					PixelIntegratingSpectralDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int maxRecur       = bag.GetUInt(   "max_recursion",  dflt.maxRecursion );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					unsigned int numLumSamples  = bag.GetUInt(   "lum_samples",    dflt.numLumSamples );
+					std::string luminarySampler = bag.GetString( "luminary_sampler", dflt.luminarySampler );
+					double luminarySamplerParam = bag.GetDouble( "luminary_sampler_param", dflt.luminarySamplerParam );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+					bool integrateRGB           = bag.GetBool(   "integrate_rgb",   dflt.integrateRGB );
 
 					SpectralConfig spectralConfig;
 					if( bag.Has("spectral_samples") ) spectralConfig.spectralSamples = bag.GetUInt("spectral_samples");
@@ -6149,21 +6193,23 @@ namespace RISE
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
+						PixelIntegratingSpectralDefaults dflt;
+						StabilityConfig stabilityDflt;
 						ChunkDescriptor cd;
 						cd.keyword = "pixelintegratingspectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
 						cd.description = "Spectral pel-based path-tracing integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddBaseRasterizerParams( P );
-						{ auto& p = P(); p.name = "max_recursion";   p.kind = ValueKind::UInt; p.description = "Maximum ray recursion depth"; p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "lum_samples";     p.kind = ValueKind::UInt; p.description = "Luminaire samples per hit";   p.defaultValueHint = "1"; }
-						{ auto& p = P(); p.name = "luminary_sampler";p.kind = ValueKind::String; p.description = "Luminary sampling strategy"; p.defaultValueHint = "none"; }
-						{ auto& p = P(); p.name = "luminary_sampler_param"; p.kind = ValueKind::Double; p.description = "Luminary sampler parameter"; p.defaultValueHint = "1.0"; }
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "max_recursion";   p.kind = ValueKind::UInt; p.description = "Maximum ray recursion depth"; p.defaultValueHint = to_hint(dflt.maxRecursion); }
+						{ auto& p = P(); p.name = "lum_samples";     p.kind = ValueKind::UInt; p.description = "Luminaire samples per hit";   p.defaultValueHint = to_hint(dflt.numLumSamples); }
+						{ auto& p = P(); p.name = "luminary_sampler";p.kind = ValueKind::String; p.description = "Luminary sampling strategy"; p.defaultValueHint = to_hint(dflt.luminarySampler); }
+						{ auto& p = P(); p.name = "luminary_sampler_param"; p.kind = ValueKind::Double; p.description = "Luminary sampler parameter"; p.defaultValueHint = to_hint(dflt.luminarySamplerParam); }
 						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
 						AddSpectralConfigParams( P );
 						AddStabilityConfigParams( P );
-						{ auto& p = P(); p.name = "filter_glossy"; p.kind = ValueKind::Double; p.description = "Glossy roughness floor"; p.defaultValueHint = "0 (disabled)"; }
+						{ auto& p = P(); p.name = "filter_glossy"; p.kind = ValueKind::Double; p.description = "Glossy roughness floor (0 disables)"; p.defaultValueHint = to_hint(stabilityDflt.filterGlossy); }
 						return cd;
 					}();
 					return d;
@@ -6174,15 +6220,16 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        32 );
-					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  8 );
-					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
-					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
-					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
-					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
-					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
-					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", "fast" ) );
+					BDPTPelDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  dflt.maxEyeDepth );
+					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",dflt.maxLightDepth );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -6285,13 +6332,14 @@ namespace RISE
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
+						BDPTPelDefaults dflt;
 						ChunkDescriptor cd;
 						cd.keyword = "bdpt_pel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
 						cd.description = "RGB bidirectional path-tracing integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddBaseRasterizerParams( P );
-						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max eye subpath depth";   p.defaultValueHint = "8"; }
-						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max light subpath depth"; p.defaultValueHint = "8"; }
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max eye subpath depth";   p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max light subpath depth"; p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool; p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
@@ -6311,15 +6359,16 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        32 );
-					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  8 );
-					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
-					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
-					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
-					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
-					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
-					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", "fast" ) );
+					BDPTSpectralDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  dflt.maxEyeDepth );
+					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",dflt.maxLightDepth );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -6422,13 +6471,15 @@ namespace RISE
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
+						BDPTSpectralDefaults dflt;
+						PathGuidingConfig pgDflt;
 						ChunkDescriptor cd;
 						cd.keyword = "bdpt_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
 						cd.description = "Spectral bidirectional path-tracing integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddBaseRasterizerParams( P );
-						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max eye subpath depth";   p.defaultValueHint = "8"; }
-						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max light subpath depth"; p.defaultValueHint = "8"; }
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt; p.description = "Max eye subpath depth";   p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt; p.description = "Max light subpath depth"; p.defaultValueHint = to_hint(dflt.maxLightDepth); }
 						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool; p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
@@ -6438,21 +6489,20 @@ namespace RISE
 						AddSpectralCoreParams( P );
 						AddSMSConfigParams( P );
 						// BDPTSpectral supports a subset of pathguiding params (no
-						// light-max-depth, no complete-path-strategy).  Defaults
-						// kept in lockstep with the AddPathGuidingParams helper
-						// above; raise an inline duplicate when adding new
-						// pathguiding flags so this hint table stays accurate.
-						{ auto& p = P(); p.name = "pathguiding";                 p.kind = ValueKind::Bool;   p.description = "Enable path guiding";              p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "pathguiding_iterations";      p.kind = ValueKind::UInt;   p.description = "Training iterations";             p.defaultValueHint = "4"; }
-						{ auto& p = P(); p.name = "pathguiding_spp";             p.kind = ValueKind::UInt;   p.description = "Samples per pixel during training"; p.defaultValueHint = "4"; }
-						{ auto& p = P(); p.name = "pathguiding_combine_training";p.kind = ValueKind::Bool;   p.description = "Combine training pixels into final image (Müller 2017 §5)"; p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "pathguiding_online";          p.kind = ValueKind::Bool;   p.description = "Training-iteration loop is entire render"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "pathguiding_warmup_iterations"; p.kind = ValueKind::UInt; p.description = "Iters to render with alpha=0 before configured alpha"; p.defaultValueHint = "1"; }
-						{ auto& p = P(); p.name = "pathguiding_alpha";           p.kind = ValueKind::Double; p.description = "Mixing factor";                   p.defaultValueHint = "0.5"; }
-						{ auto& p = P(); p.name = "pathguiding_max_depth";       p.kind = ValueKind::UInt;   p.description = "Max eye-subpath depth to apply guiding"; p.defaultValueHint = "8"; }
-						{ auto& p = P(); p.name = "pathguiding_sampling_type";   p.kind = ValueKind::Enum;   p.enumValues = {"ris","RIS","OneSampleMIS"}; p.description = "Sampling strategy"; p.defaultValueHint = "OneSampleMIS"; }
-						{ auto& p = P(); p.name = "pathguiding_ris_candidates";  p.kind = ValueKind::UInt;   p.description = "RIS candidate count (only N=2 implemented)"; p.defaultValueHint = "2"; }
-						{ auto& p = P(); p.name = "pathguiding_complete_paths";  p.kind = ValueKind::Bool;   p.description = "Enable complete-path guiding";    p.defaultValueHint = "FALSE"; }
+						// light-max-depth, no complete-path-strategy).  Hints
+						// derive from PathGuidingConfig defaults so they stay in
+						// lockstep with the AddPathGuidingParams helper above.
+						{ auto& p = P(); p.name = "pathguiding";                 p.kind = ValueKind::Bool;   p.description = "Enable path guiding";              p.defaultValueHint = to_hint(pgDflt.enabled); }
+						{ auto& p = P(); p.name = "pathguiding_iterations";      p.kind = ValueKind::UInt;   p.description = "Training iterations";             p.defaultValueHint = to_hint(pgDflt.trainingIterations); }
+						{ auto& p = P(); p.name = "pathguiding_spp";             p.kind = ValueKind::UInt;   p.description = "Samples per pixel during training"; p.defaultValueHint = to_hint(pgDflt.trainingSPP); }
+						{ auto& p = P(); p.name = "pathguiding_combine_training";p.kind = ValueKind::Bool;   p.description = "Combine training pixels into final image (Müller 2017 §5)"; p.defaultValueHint = to_hint(pgDflt.combineTrainingIterations); }
+						{ auto& p = P(); p.name = "pathguiding_online";          p.kind = ValueKind::Bool;   p.description = "Training-iteration loop is entire render"; p.defaultValueHint = to_hint(pgDflt.online); }
+						{ auto& p = P(); p.name = "pathguiding_warmup_iterations"; p.kind = ValueKind::UInt; p.description = "Iters to render with alpha=0 before configured alpha"; p.defaultValueHint = to_hint(pgDflt.warmupIterations); }
+						{ auto& p = P(); p.name = "pathguiding_alpha";           p.kind = ValueKind::Double; p.description = "Mixing factor";                   p.defaultValueHint = to_hint(pgDflt.alpha); }
+						{ auto& p = P(); p.name = "pathguiding_max_depth";       p.kind = ValueKind::UInt;   p.description = "Max eye-subpath depth to apply guiding"; p.defaultValueHint = to_hint(pgDflt.maxGuidingDepth); }
+						{ auto& p = P(); p.name = "pathguiding_sampling_type";   p.kind = ValueKind::Enum;   p.enumValues = {"ris","RIS","OneSampleMIS"}; p.description = "Sampling strategy"; p.defaultValueHint = to_hint(pgDflt.samplingType); }
+						{ auto& p = P(); p.name = "pathguiding_ris_candidates";  p.kind = ValueKind::UInt;   p.description = "RIS candidate count (only N=2 implemented)"; p.defaultValueHint = to_hint(pgDflt.risCandidates); }
+						{ auto& p = P(); p.name = "pathguiding_complete_paths";  p.kind = ValueKind::Bool;   p.description = "Enable complete-path guiding";    p.defaultValueHint = to_hint(pgDflt.completePathGuiding); }
 						AddStabilityConfigParams( P );
 						AddOptimalMISParams( P );
 						AddProgressiveParams( P );
@@ -6466,18 +6516,19 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        32 );
-					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  8 );
-					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
-					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
-					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
-					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
-					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
-					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", "fast" ) );
-					double mergeRadius          = bag.GetDouble( "merge_radius",    0.0 );
-					bool enableVC               = bag.GetBool(   "vc_enabled",      true );
-					bool enableVM               = bag.GetBool(   "vm_enabled",      true );
+					VCMPelDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  dflt.maxEyeDepth );
+					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",dflt.maxLightDepth );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+					double mergeRadius          = bag.GetDouble( "merge_radius",    dflt.mergeRadius );
+					bool enableVC               = bag.GetBool(   "vc_enabled",      dflt.enableVC );
+					bool enableVM               = bag.GetBool(   "vm_enabled",      dflt.enableVM );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -6538,16 +6589,17 @@ namespace RISE
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
+						VCMPelDefaults dflt;
 						ChunkDescriptor cd;
 						cd.keyword = "vcm_pel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
 						cd.description = "RGB vertex-connection-and-merging integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddBaseRasterizerParams( P );
-						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";         p.defaultValueHint = "8"; }
-						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";       p.defaultValueHint = "8"; }
-						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = "0"; }
-						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = "TRUE"; }
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";         p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";       p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = to_hint(dflt.mergeRadius); }
+						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = to_hint(dflt.enableVC); }
+						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = to_hint(dflt.enableVM); }
 						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
@@ -6564,18 +6616,19 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        32 );
-					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  8 );
-					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",8 );
-					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
-					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
-					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
-					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
-					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", "fast" ) );
-					double mergeRadius          = bag.GetDouble( "merge_radius",    0.0 );
-					bool enableVC               = bag.GetBool(   "vc_enabled",      true );
-					bool enableVM               = bag.GetBool(   "vm_enabled",      true );
+					VCMSpectralDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					unsigned int maxEyeDepth    = bag.GetUInt(   "max_eye_depth",  dflt.maxEyeDepth );
+					unsigned int maxLightDepth  = bag.GetUInt(   "max_light_depth",dflt.maxLightDepth );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+					double mergeRadius          = bag.GetDouble( "merge_radius",    dflt.mergeRadius );
+					bool enableVC               = bag.GetBool(   "vc_enabled",      dflt.enableVC );
+					bool enableVM               = bag.GetBool(   "vm_enabled",      dflt.enableVM );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -6644,16 +6697,17 @@ namespace RISE
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
+						VCMSpectralDefaults dflt;
 						ChunkDescriptor cd;
 						cd.keyword = "vcm_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
 						cd.description = "Spectral vertex-connection-and-merging integrator.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddBaseRasterizerParams( P );
-						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";         p.defaultValueHint = "8"; }
-						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";       p.defaultValueHint = "8"; }
-						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = "0"; }
-						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = "TRUE"; }
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "max_eye_depth";   p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";         p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth"; p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";       p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "merge_radius";    p.kind = ValueKind::Double; p.description = "Photon merge radius (0=auto)"; p.defaultValueHint = to_hint(dflt.mergeRadius); }
+						{ auto& p = P(); p.name = "vc_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex connection";      p.defaultValueHint = to_hint(dflt.enableVC); }
+						{ auto& p = P(); p.name = "vm_enabled";      p.kind = ValueKind::Bool;   p.description = "Enable vertex merging";         p.defaultValueHint = to_hint(dflt.enableVM); }
 						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
@@ -6674,13 +6728,14 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        32 );
-					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
-					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
-					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
-					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
-					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", "fast" ) );
+					PathTracingPelDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -6782,11 +6837,12 @@ namespace RISE
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
+						PathTracingPelDefaults dflt;
 						ChunkDescriptor cd;
 						cd.keyword = "pathtracing_pel_rasterizer"; cd.category = ChunkCategory::Rasterizer;
 						cd.description = "Pure unidirectional RGB path tracer (bypasses shader-op chain).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddBaseRasterizerParams( P );
+						AddBaseRasterizerParams( P, dflt );
 						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
@@ -6806,13 +6862,14 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string defaultshader   = bag.GetString( "defaultshader",  "global" );
-					unsigned int numSamples     = bag.GetUInt(   "samples",        32 );
-					bool showLuminaires         = bag.GetBool(   "show_luminaires", true );
-					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    true );
-					OidnQuality oidnQuality     = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
-					OidnDevice  oidnDevice      = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
-					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", "fast" ) );
+					PathTracingSpectralDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
 
 					RadianceMapConfig radianceMapConfig;
 					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
@@ -6906,11 +6963,13 @@ namespace RISE
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
+						PathTracingSpectralDefaults dflt;
+						SpectralConfig spectralDflt;
 						ChunkDescriptor cd;
 						cd.keyword = "pathtracing_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
 						cd.description = "Pure unidirectional spectral path tracer (bypasses shader-op chain).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						AddBaseRasterizerParams( P );
+						AddBaseRasterizerParams( P, dflt );
 						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
@@ -6920,7 +6979,7 @@ namespace RISE
 						AddSpectralCoreParams( P );
 						// Legacy alias for `hwss` accepted only by this
 						// parser (other spectral integrators use `hwss`).
-						{ auto& p = P(); p.name = "use_hwss";        p.kind = ValueKind::Bool; p.description = "Legacy alias for `hwss`"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "use_hwss";        p.kind = ValueKind::Bool; p.description = "Legacy alias for `hwss`"; p.defaultValueHint = to_hint(spectralDflt.useHWSS); }
 						AddSMSConfigParams( P );
 						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
@@ -6936,14 +6995,15 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string defaultshader     = bag.GetString( "defaultshader",       "global" );
-					unsigned int maxEyeDepth      = bag.GetUInt(   "max_eye_depth",       10 );
-					unsigned int maxLightDepth    = bag.GetUInt(   "max_light_depth",     10 );
-					unsigned int bootstrapSamples = bag.GetUInt(   "bootstrap_samples",   100000 );
-					unsigned int chains           = bag.GetUInt(   "chains",              512 );
-					unsigned int mutationsPerPixel= bag.GetUInt(   "mutations_per_pixel", 32 );
-					double largeStepProb          = bag.GetDouble( "large_step_prob",     0.3 );
-					bool showLuminaires           = bag.GetBool(   "show_luminaires",     true );
+					MLTDefaults dflt;
+					std::string defaultshader     = bag.GetString( "defaultshader",       dflt.defaultShader );
+					unsigned int maxEyeDepth      = bag.GetUInt(   "max_eye_depth",       dflt.maxEyeDepth );
+					unsigned int maxLightDepth    = bag.GetUInt(   "max_light_depth",     dflt.maxLightDepth );
+					unsigned int bootstrapSamples = bag.GetUInt(   "bootstrap_samples",   dflt.nBootstrap );
+					unsigned int chains           = bag.GetUInt(   "chains",              dflt.nChains );
+					unsigned int mutationsPerPixel= bag.GetUInt(   "mutations_per_pixel", dflt.nMutationsPerPixel );
+					double largeStepProb          = bag.GetDouble( "large_step_prob",     dflt.largeStepProb );
+					bool showLuminaires           = bag.GetBool(   "show_luminaires",     dflt.showLuminaires );
 					// MLT defaults oidn_denoise to FALSE because the
 					// entire MLT image lives in the splat film, so OIDN
 					// would denoise an already-accumulated / filter-
@@ -6961,10 +7021,10 @@ namespace RISE
 					// OIDN applied to their MLT result (e.g. to denoise
 					// the residual Markov-chain noise in a long render)
 					// can still enable it with `oidn_denoise true`.
-					bool oidnDenoise              = bag.GetBool(   "oidn_denoise",        false );
-					OidnQuality oidnQuality       = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
-					OidnDevice  oidnDevice        = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
-					OidnPrefilter oidnPrefilter   = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", "fast" ) );
+					bool oidnDenoise              = bag.GetBool(   "oidn_denoise",        dflt.oidnDenoise );
+					OidnQuality oidnQuality       = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice        = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter   = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
 
 					// Pixel filter for sub-pixel reconstruction.  Default
 					// is Mitchell-Netravali (B=C=1/3, width/height=1.0)
@@ -6994,28 +7054,30 @@ namespace RISE
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
+						MLTDefaults dflt;
+						StabilityConfig stabilityDflt;
 						ChunkDescriptor cd;
 						cd.keyword = "mlt_rasterizer"; cd.category = ChunkCategory::Rasterizer;
 						cd.description = "Metropolis Light Transport (RGB).  branching_threshold is forced to 1.0.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = "global"; }
-						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";                  p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";                p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "bootstrap_samples";p.kind = ValueKind::UInt;   p.description = "Bootstrap samples";                      p.defaultValueHint = "100000"; }
-						{ auto& p = P(); p.name = "chains";           p.kind = ValueKind::UInt;   p.description = "Number of Markov chains";                p.defaultValueHint = "512"; }
-						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = "100"; }
-						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = "0.3"; }
-						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = "auto"; }
-						{ auto& p = P(); p.name = "oidn_device";      p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = "auto"; }
-					{ auto& p = P(); p.name = "oidn_prefilter";   p.kind = ValueKind::Enum;   p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = "fast"; }
+						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = to_hint(dflt.defaultShader); }
+						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";                p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "bootstrap_samples";p.kind = ValueKind::UInt;   p.description = "Bootstrap samples";                      p.defaultValueHint = to_hint(dflt.nBootstrap); }
+						{ auto& p = P(); p.name = "chains";           p.kind = ValueKind::UInt;   p.description = "Number of Markov chains";                p.defaultValueHint = to_hint(dflt.nChains); }
+						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = to_hint(dflt.nMutationsPerPixel); }
+						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = to_hint(dflt.largeStepProb); }
+						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = to_hint(dflt.showLuminaires); }
+						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = to_hint(dflt.oidnDenoise); }
+						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = to_hint(dflt.oidnQuality); }
+						{ auto& p = P(); p.name = "oidn_device";      p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = to_hint(dflt.oidnDevice); }
+					{ auto& p = P(); p.name = "oidn_prefilter";   p.kind = ValueKind::Enum;   p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = to_hint(dflt.oidnPrefilter); }
 						{ auto& p = P(); p.name = "choose_one_light"; p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						// MLT accepts only light_bvh and branching_threshold from
 						// StabilityConfig (branching_threshold is forced to 1.0
 						// internally per CLAUDE.md).
-						{ auto& p = P(); p.name = "light_bvh";            p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "light_bvh";            p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = to_hint(stabilityDflt.useLightBVH); }
 						{ auto& p = P(); p.name = "branching_threshold";  p.kind = ValueKind::Double; p.description = "Accepted for parity with other rasterizers but forced to 1.0 (MLT requires a single-subpath proposal)"; p.defaultValueHint = "1.0"; }
 						return cd;
 					}();
@@ -7027,20 +7089,21 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string defaultshader     = bag.GetString( "defaultshader",       "global" );
-					unsigned int maxEyeDepth      = bag.GetUInt(   "max_eye_depth",       10 );
-					unsigned int maxLightDepth    = bag.GetUInt(   "max_light_depth",     10 );
-					unsigned int bootstrapSamples = bag.GetUInt(   "bootstrap_samples",   100000 );
-					unsigned int chains           = bag.GetUInt(   "chains",              512 );
-					unsigned int mutationsPerPixel= bag.GetUInt(   "mutations_per_pixel", 32 );
-					double largeStepProb          = bag.GetDouble( "large_step_prob",     0.3 );
-					bool showLuminaires           = bag.GetBool(   "show_luminaires",     true );
+					MLTSpectralDefaults dflt;
+					std::string defaultshader     = bag.GetString( "defaultshader",       dflt.defaultShader );
+					unsigned int maxEyeDepth      = bag.GetUInt(   "max_eye_depth",       dflt.maxEyeDepth );
+					unsigned int maxLightDepth    = bag.GetUInt(   "max_light_depth",     dflt.maxLightDepth );
+					unsigned int bootstrapSamples = bag.GetUInt(   "bootstrap_samples",   dflt.nBootstrap );
+					unsigned int chains           = bag.GetUInt(   "chains",              dflt.nChains );
+					unsigned int mutationsPerPixel= bag.GetUInt(   "mutations_per_pixel", dflt.nMutationsPerPixel );
+					double largeStepProb          = bag.GetDouble( "large_step_prob",     dflt.largeStepProb );
+					bool showLuminaires           = bag.GetBool(   "show_luminaires",     dflt.showLuminaires );
 					// MLT spectral also defaults OIDN off — see the Pel
 					// MLT parser for the detailed rationale.
-					bool oidnDenoise              = bag.GetBool(   "oidn_denoise",        false );
-					OidnQuality oidnQuality       = ParseOidnQuality( bag.GetString( "oidn_quality", "auto" ) );
-					OidnDevice  oidnDevice        = ParseOidnDevice(  bag.GetString( "oidn_device",  "auto" ) );
-					OidnPrefilter oidnPrefilter   = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", "fast" ) );
+					bool oidnDenoise              = bag.GetBool(   "oidn_denoise",        dflt.oidnDenoise );
+					OidnQuality oidnQuality       = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice        = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter   = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
 
 					SpectralConfig spectralConfig;
 					if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
@@ -7071,29 +7134,31 @@ namespace RISE
 				const ChunkDescriptor& Describe() const override
 				{
 					static const ChunkDescriptor d = []{
+						MLTSpectralDefaults dflt;
+						StabilityConfig stabilityDflt;
 						ChunkDescriptor cd;
 						cd.keyword = "mlt_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
 						cd.description = "Metropolis Light Transport (spectral).  branching_threshold is forced to 1.0.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = "global"; }
-						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";                  p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";                p.defaultValueHint = "10"; }
-						{ auto& p = P(); p.name = "bootstrap_samples";p.kind = ValueKind::UInt;   p.description = "Bootstrap samples";                      p.defaultValueHint = "100000"; }
-						{ auto& p = P(); p.name = "chains";           p.kind = ValueKind::UInt;   p.description = "Number of Markov chains";                p.defaultValueHint = "512"; }
-						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = "100"; }
-						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = "0.3"; }
-						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = "TRUE"; }
-						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = "auto"; }
-						{ auto& p = P(); p.name = "oidn_device";      p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = "auto"; }
-					{ auto& p = P(); p.name = "oidn_prefilter";   p.kind = ValueKind::Enum;   p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = "fast"; }
+						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = to_hint(dflt.defaultShader); }
+						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
+						{ auto& p = P(); p.name = "max_light_depth";  p.kind = ValueKind::UInt;   p.description = "Max light subpath depth";                p.defaultValueHint = to_hint(dflt.maxLightDepth); }
+						{ auto& p = P(); p.name = "bootstrap_samples";p.kind = ValueKind::UInt;   p.description = "Bootstrap samples";                      p.defaultValueHint = to_hint(dflt.nBootstrap); }
+						{ auto& p = P(); p.name = "chains";           p.kind = ValueKind::UInt;   p.description = "Number of Markov chains";                p.defaultValueHint = to_hint(dflt.nChains); }
+						{ auto& p = P(); p.name = "mutations_per_pixel"; p.kind = ValueKind::UInt;p.description = "Mutations per pixel";                     p.defaultValueHint = to_hint(dflt.nMutationsPerPixel); }
+						{ auto& p = P(); p.name = "large_step_prob";  p.kind = ValueKind::Double; p.description = "Probability of large-step mutation";      p.defaultValueHint = to_hint(dflt.largeStepProb); }
+						{ auto& p = P(); p.name = "show_luminaires";  p.kind = ValueKind::Bool;   p.description = "Show direct-visible luminaires";         p.defaultValueHint = to_hint(dflt.showLuminaires); }
+						{ auto& p = P(); p.name = "oidn_denoise";     p.kind = ValueKind::Bool;   p.description = "Enable OIDN denoiser";                   p.defaultValueHint = to_hint(dflt.oidnDenoise); }
+						{ auto& p = P(); p.name = "oidn_quality";     p.kind = ValueKind::Enum;   p.enumValues = {"auto","high","balanced","fast"}; p.description = "OIDN quality preset (auto picks from render-time / megapixels)"; p.defaultValueHint = to_hint(dflt.oidnQuality); }
+						{ auto& p = P(); p.name = "oidn_device";      p.kind = ValueKind::Enum;   p.enumValues = {"auto","cpu","gpu"};              p.description = "OIDN device backend (auto = prefer GPU, fall back to CPU)";       p.defaultValueHint = to_hint(dflt.oidnDevice); }
+					{ auto& p = P(); p.name = "oidn_prefilter";   p.kind = ValueKind::Enum;   p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = to_hint(dflt.oidnPrefilter); }
 						AddPixelFilterParams( P );
 						// MLT spectral consumes only the core spectral
 						// fields; RGB-to-SPD conversion is done in the
 						// painters pipeline.
 						AddSpectralCoreParams( P );
 						// MLT accepts only light_bvh and branching_threshold.
-						{ auto& p = P(); p.name = "light_bvh";            p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "light_bvh";            p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = to_hint(stabilityDflt.useLightBVH); }
 						{ auto& p = P(); p.name = "branching_threshold";  p.kind = ValueKind::Double; p.description = "Accepted for parity but forced to 1.0"; p.defaultValueHint = "1.0"; }
 						return cd;
 					}();

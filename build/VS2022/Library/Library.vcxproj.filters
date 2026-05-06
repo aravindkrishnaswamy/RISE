@@ -2830,6 +2830,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\RandomWalkSSS.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RasterizerDefaults.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\SSSCoefficients.h">
       <Filter>Utilities</Filter>
     </ClInclude>

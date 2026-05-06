@@ -97,11 +97,16 @@ static void TestRasterizerParamEdit()
 	IRasterizer* before = pJob->GetRasterizer();
 	Check( before != nullptr, "Active rasterizer is non-null" );
 
-	// Verify the snapshot was recorded.
+	// Verify the snapshot was recorded.  Defaults come from
+	// `BDPTPelDefaults` in `Utilities/RasterizerDefaults.h` (single
+	// source of truth).  Update these literals if the canonical
+	// defaults change there — the consistency check in
+	// `RasterizerDefaultsConsistencyTest.cpp` enforces that the
+	// parser, descriptor hints, and Job lazy-build path all agree.
 	const Job::RasterizerParams* params = pJob->GetRasterizerParams( "bdpt_pel_rasterizer" );
 	Check( params != nullptr, "Snapshot exists" );
-	Check( params && params->numPixelSamples == 1, "Default numPixelSamples = 1" );
-	Check( params && params->maxEyeDepth     == 8, "Default maxEyeDepth = 8" );
+	Check( params && params->numPixelSamples == 32, "Default numPixelSamples = 32 (BDPTPelDefaults)" );
+	Check( params && params->maxEyeDepth     == 8,  "Default maxEyeDepth = 8" );
 
 	// Edit numPixelSamples → 4.  This re-instantiates the rasterizer.
 	const bool okEdit = pJob->SetRasterizerParameter( "bdpt_pel_rasterizer", "samples", "4" );
