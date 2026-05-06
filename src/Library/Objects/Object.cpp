@@ -262,6 +262,48 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 	ri.geometric.ray.origin = Point3Ops::Transform( m_mxInvFinalTrans, orig.origin );
 	ri.geometric.ray.SetDir(Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, orig.Dir() ) ));
 
+	// Landing 2: transform ray differentials into object space alongside
+	// origin/dir, otherwise ComputeTextureFootprint would project
+	// world-space auxiliaries onto object-space dpdu/dpdv and produce
+	// the wrong UV footprint (and therefore the wrong mip LOD).
+	//
+	// Origins are simple: differentials are OFFSETS between two world
+	// points, so they transform as vectors (linear part only — the
+	// translation cancels in the diff of two transformed points).
+	//
+	// Directions are NOT simple.  rxDir / ryDir were established by the
+	// camera as the offset between two UNIT-normalized world directions,
+	//   rxDir_world = aux_x_world_norm − d_world_norm
+	// and the same convention must hold in object space:
+	//   rxDir_obj   = aux_x_obj_norm   − d_obj_norm
+	// Under any non-identity scale (uniform or not) the obvious
+	// `M_inv * rxDir_world` gives an unnormalised vector that does not
+	// equal `aux_x_obj_norm − d_obj_norm`.  Reconstruct the auxiliary
+	// fully: rebuild `aux = d + diff` in world space, transform, re-
+	// normalise, then re-difference against the (already normalised)
+	// object-space central direction.
+	//
+	// SetDir() on the central ray cleared hasDifferentials, so re-set
+	// it after we've finished writing.
+	if( orig.hasDifferentials ) {
+		ri.geometric.ray.diffs.rxOrigin = Vector3Ops::Transform( m_mxInvFinalTrans, orig.diffs.rxOrigin );
+		ri.geometric.ray.diffs.ryOrigin = Vector3Ops::Transform( m_mxInvFinalTrans, orig.diffs.ryOrigin );
+
+		const Vector3 d_world = orig.Dir();
+		const Vector3 aux_x_world( d_world.x + orig.diffs.rxDir.x,
+		                           d_world.y + orig.diffs.rxDir.y,
+		                           d_world.z + orig.diffs.rxDir.z );
+		const Vector3 aux_y_world( d_world.x + orig.diffs.ryDir.x,
+		                           d_world.y + orig.diffs.ryDir.y,
+		                           d_world.z + orig.diffs.ryDir.z );
+		const Vector3 aux_x_obj = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, aux_x_world ) );
+		const Vector3 aux_y_obj = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, aux_y_world ) );
+		const Vector3 d_obj     = ri.geometric.ray.Dir();
+		ri.geometric.ray.diffs.rxDir = Vector3( aux_x_obj.x - d_obj.x, aux_x_obj.y - d_obj.y, aux_x_obj.z - d_obj.z );
+		ri.geometric.ray.diffs.ryDir = Vector3( aux_y_obj.x - d_obj.x, aux_y_obj.y - d_obj.y, aux_y_obj.z - d_obj.z );
+		ri.geometric.ray.hasDifferentials = true;
+	}
+
 	const Scalar factor = Vector3Ops::Magnitude( Vector3Ops::Transform( m_mxInvFinalTrans, Vector3(1,0,0) ) );
 	Scalar dHowFar2 = dHowFar; 
 

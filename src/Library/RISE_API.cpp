@@ -3671,14 +3671,16 @@ namespace RISE
 								IRasterImageAccessor** ppi,				///< [out] Pointer to recieve the accessor
 								IRasterImage& image,					///< [in] Raster Image to access
 								const char wrap_s,						///< [in] Wrap mode for U axis (0 = clamp, 1 = repeat, 2 = mirrored repeat)
-								const char wrap_t						///< [in] Wrap mode for V axis (same encoding)
+								const char wrap_t,						///< [in] Wrap mode for V axis (same encoding)
+								const bool mipmap,						///< [in] Build a mip pyramid + use LOD-aware sampling (Landing 2)
+								const bool supersample					///< [in] Footprint stochastic supersampling (no pyramid; lowmem mode)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new BilinRasterImageAccessor<RISEColor>( image, wrap_s, wrap_t );
+		(*ppi) = new BilinRasterImageAccessor<RISEColor>( image, wrap_s, wrap_t, mipmap, supersample );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Bilin RIA" );
 		return true;
 	}

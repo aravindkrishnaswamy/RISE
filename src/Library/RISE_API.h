@@ -1832,7 +1832,9 @@ bool RISE_API_CreateIrradianceCache(
 								IRasterImageAccessor** ppi,			///< [out] Pointer to recieve the accessor
 								IRasterImage& image,				///< [in] Raster image to access
 								const char wrap_s = 0,				///< [in] Wrap mode for U axis
-								const char wrap_t = 0				///< [in] Wrap mode for V axis
+								const char wrap_t = 0,				///< [in] Wrap mode for V axis
+								const bool mipmap = true,			///< [in] Build a mip pyramid + LOD-aware sampling (Landing 2; default ON for new code, OFF for vector-quantity normal maps — set explicitly false in those cases)
+								const bool supersample = false		///< [in] Footprint stochastic supersampling fallback for lowmem mode (no pyramid; jitter at base).  When mipmap is also true, mipmap wins.
 								);
 
 	//! Creates a catmull rom bicubic raster image accessor

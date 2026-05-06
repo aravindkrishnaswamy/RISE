@@ -1663,6 +1663,10 @@
 		F2EE003200000000000000C1 /* DisplayTransformWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE003200000000000000A1 /* DisplayTransformWriter.cpp */; };
 		F2EE003300000000000000B1 /* EXRCompression.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE003300000000000000A1 /* EXRCompression.h */; };
 		F2EE003300000000000000C1 /* EXRCompression.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE003300000000000000A1 /* EXRCompression.h */; };
+		F2EE004000000000000000B1 /* RayDifferentials.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE004000000000000000A1 /* RayDifferentials.h */; };
+		F2EE004000000000000000C1 /* RayDifferentials.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE004000000000000000A1 /* RayDifferentials.h */; };
+		F2EE004100000000000000B1 /* TextureFootprintCompute.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE004100000000000000A1 /* TextureFootprintCompute.h */; };
+		F2EE004100000000000000C1 /* TextureFootprintCompute.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE004100000000000000A1 /* TextureFootprintCompute.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -2560,6 +2564,8 @@
 		F2EE003100000000000000A1 /* DisplayTransformWriter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DisplayTransformWriter.h; sourceTree = "<group>"; };
 		F2EE003200000000000000A1 /* DisplayTransformWriter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DisplayTransformWriter.cpp; sourceTree = "<group>"; };
 		F2EE003300000000000000A1 /* EXRCompression.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EXRCompression.h; sourceTree = "<group>"; };
+		F2EE004000000000000000A1 /* RayDifferentials.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RayDifferentials.h; sourceTree = "<group>"; };
+		F2EE004100000000000000A1 /* TextureFootprintCompute.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TextureFootprintCompute.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2985,6 +2991,7 @@
 				F27F08A9069C428F0069C9E5 /* RayCylinderIntersection.cpp */,
 				F27F08AA069C428F0069C9E5 /* RayIntersection.h */,
 				F27F08AB069C428F0069C9E5 /* RayIntersectionGeometric.h */,
+				F2EE004100000000000000A1 /* TextureFootprintCompute.h */,
 				F27F08AC069C428F0069C9E5 /* RayPlaneIntersection.cpp */,
 				F27F08AD069C428F0069C9E5 /* RayPrimitiveIntersections.h */,
 				F27F08AE069C428F0069C9E5 /* RayQuadricIntersection.cpp */,
@@ -3638,6 +3645,7 @@
 				F27F0A36069C42900069C9E5 /* ProbabilityDensityFunction.h */,
 				F27F0A37069C42900069C9E5 /* RandomNumbers.h */,
 				F27F0A38069C42900069C9E5 /* Ray.h */,
+				F2EE004000000000000000A1 /* RayDifferentials.h */,
 				F27F0A39069C42900069C9E5 /* Reference.cpp */,
 				F27F0A3A069C42900069C9E5 /* Reference.h */,
 				DDDD0000000000000000000D /* Observable.h */,
@@ -4131,6 +4139,8 @@
 				F2EE003000000000000000C1 /* DisplayTransform.h in Headers */,
 				F2EE003100000000000000C1 /* DisplayTransformWriter.h in Headers */,
 				F2EE003300000000000000C1 /* EXRCompression.h in Headers */,
+				F2EE004000000000000000C1 /* RayDifferentials.h in Headers */,
+				F2EE004100000000000000C1 /* TextureFootprintCompute.h in Headers */,
 				F2EE001000000000000000C1 /* InteractivePelRasterizer.h in Headers */,
 				F27F0BBD069C42910069C9E5 /* pch.h in Headers */,
 				F27F0BBF069C42910069C9E5 /* CausticPelPhotonMap.h in Headers */,
@@ -5227,6 +5237,8 @@
 				F2EE003100000000000000B1 /* DisplayTransformWriter.h in Sources */,
 				F2EE003200000000000000B1 /* DisplayTransformWriter.cpp in Sources */,
 				F2EE003300000000000000B1 /* EXRCompression.h in Sources */,
+				F2EE004000000000000000B1 /* RayDifferentials.h in Sources */,
+				F2EE004100000000000000B1 /* TextureFootprintCompute.h in Sources */,
 				F2EE001000000000000000B1 /* InteractivePelRasterizer.h in Sources */,
 				F2EE001100000000000000B1 /* InteractivePelRasterizer.cpp in Sources */,
 				F24B73452F52A632008304C4 /* pch.cpp in Sources */,

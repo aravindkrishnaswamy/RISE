@@ -59,6 +59,7 @@ namespace RISE
 		bool                  lowmemory;     ///< Defer color-space convert to first sample (reduces RAM at the cost of slightly slower sampling)
 		double                scale[3];      ///< Per-channel scale (multiply at decode time)
 		double                shift[3];      ///< Per-channel shift (add at decode time)
+		bool                  mipmap;        ///< Landing 2: build mip pyramid + LOD-aware sampling.  Set false for vector-quantity textures (normal maps).  Defaults to true via zero-init in importer code that opts in explicitly.
 	};
 
 	//! Job - This is used to simplify the creation of a job, all things can be
@@ -496,7 +497,8 @@ namespace RISE
 									const double scale[3],			///< [in] Scale factor for color values
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode (0 = clamp [legacy default], 1 = repeat, 2 = mirrored repeat).  See eRasterWrapMode.
-									const char wrap_t = 0			///< [in] V-axis wrap mode (same encoding as wrap_s)
+									const char wrap_t = 0,			///< [in] V-axis wrap mode (same encoding as wrap_s)
+									const bool mipmap = true		///< [in] Build mip pyramid + use LOD-aware sampling (Landing 2).  Set false for vector-quantity textures (normal maps).
 									) = 0;
 
 		//! Adds a painter that paints a uniform color
@@ -536,7 +538,8 @@ namespace RISE
 									const double scale[3],			///< [in] Scale factor for color values
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
-									const char wrap_t = 0			///< [in] V-axis wrap mode
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
 									) = 0;
 
 		//! Adds a PNG texture painter from an in-memory byte buffer.  Used
@@ -556,7 +559,8 @@ namespace RISE
 									const double scale[3],			///< [in] Scale factor for color values
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
-									const char wrap_t = 0			///< [in] V-axis wrap mode
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
 									) = 0;
 
 		//! Adds a JPEG texture painter from an in-memory byte buffer.
@@ -572,7 +576,8 @@ namespace RISE
 									const double scale[3],
 									const double shift[3],
 									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
-									const char wrap_t = 0			///< [in] V-axis wrap mode
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
 									) = 0;
 
 		//! Adds a HDR texture painter

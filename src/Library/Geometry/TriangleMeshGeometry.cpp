@@ -15,6 +15,7 @@
 #include "pch.h"
 #include "TriangleMeshGeometry.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
+#include "../Intersection/TextureFootprintCompute.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "GeometryUtilities.h"

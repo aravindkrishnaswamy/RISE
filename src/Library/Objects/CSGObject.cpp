@@ -159,6 +159,35 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 	ri.geometric.ray.origin = Point3Ops::Transform( m_mxInvFinalTrans, orig.origin );
 	ri.geometric.ray.SetDir(Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, orig.Dir() )));
 
+	// Landing 2: transform ray differentials into object space alongside
+	// origin/dir.  See Object::IntersectRay for the full rationale —
+	// origins transform as offsets between world points (linear part of
+	// the matrix), but rxDir / ryDir are offsets between UNIT-normalized
+	// directions and require full reconstruct-transform-renormalise-
+	// re-difference under any non-identity scale.  Without this fix,
+	// ComputeTextureFootprint inside the CSG child mesh projects bad
+	// auxiliaries onto object-space dpdu/dpdv and produces wrong UV
+	// footprints (and wrong mip LOD) for any transformed CSG-textured
+	// object.
+	if( orig.hasDifferentials ) {
+		ri.geometric.ray.diffs.rxOrigin = Vector3Ops::Transform( m_mxInvFinalTrans, orig.diffs.rxOrigin );
+		ri.geometric.ray.diffs.ryOrigin = Vector3Ops::Transform( m_mxInvFinalTrans, orig.diffs.ryOrigin );
+
+		const Vector3 d_world = orig.Dir();
+		const Vector3 aux_x_world( d_world.x + orig.diffs.rxDir.x,
+		                           d_world.y + orig.diffs.rxDir.y,
+		                           d_world.z + orig.diffs.rxDir.z );
+		const Vector3 aux_y_world( d_world.x + orig.diffs.ryDir.x,
+		                           d_world.y + orig.diffs.ryDir.y,
+		                           d_world.z + orig.diffs.ryDir.z );
+		const Vector3 aux_x_obj = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, aux_x_world ) );
+		const Vector3 aux_y_obj = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvFinalTrans, aux_y_world ) );
+		const Vector3 d_obj     = ri.geometric.ray.Dir();
+		ri.geometric.ray.diffs.rxDir = Vector3( aux_x_obj.x - d_obj.x, aux_x_obj.y - d_obj.y, aux_x_obj.z - d_obj.z );
+		ri.geometric.ray.diffs.ryDir = Vector3( aux_y_obj.x - d_obj.x, aux_y_obj.y - d_obj.y, aux_y_obj.z - d_obj.z );
+		ri.geometric.ray.hasDifferentials = true;
+	}
+
 	RayIntersection		riObjA( ri.geometric.ray, ri.geometric.rast );
 	RayIntersection		riObjB( ri.geometric.ray, ri.geometric.rast );
 

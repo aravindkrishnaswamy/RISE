@@ -110,10 +110,30 @@ PinholeCamera::~PinholeCamera( )
 
 bool PinholeCamera::GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const
 {
-	const Point3	p( ptOnScreen.x, ptOnScreen.y, 0.0 );
-	const Point3 transP = Point3Ops::Transform( mxTrans, p );
-	const Vector3 v = Vector3Ops::mkVector3( frame.GetOrigin(), transP );
-	r.Set( frame.GetOrigin(), Vector3Ops::Normalize(v) );
+	// Helper: compute the world-space (un-normalised at the boundary,
+	// then normalised below) direction from a screen-space point.
+	auto computeDir = [&]( const Scalar sx, const Scalar sy ) -> Vector3 {
+		const Point3 p( sx, sy, 0.0 );
+		const Point3 transP = Point3Ops::Transform( mxTrans, p );
+		const Vector3 v = Vector3Ops::mkVector3( frame.GetOrigin(), transP );
+		return Vector3Ops::Normalize( v );
+	};
+
+	const Vector3 d  = computeDir( ptOnScreen.x,             ptOnScreen.y             );
+	r.Set( frame.GetOrigin(), d );
+
+	// Landing 2: populate ray differentials by computing the
+	// neighbour-pixel directions and storing the offset.  Per Igehy,
+	// the differentials represent a FULL pixel shift, not a 1/spp
+	// shift — the per-sample jitter contributes to spatial integration
+	// rather than to footprint shrinkage.
+	const Vector3 dx = computeDir( ptOnScreen.x + Scalar( 1 ), ptOnScreen.y             );
+	const Vector3 dy = computeDir( ptOnScreen.x,               ptOnScreen.y + Scalar( 1 ) );
+	r.diffs.rxOrigin = Vector3( 0, 0, 0 );	// pinhole: shared origin
+	r.diffs.ryOrigin = Vector3( 0, 0, 0 );
+	r.diffs.rxDir = dx - d;
+	r.diffs.ryDir = dy - d;
+	r.hasDifferentials = true;
 
 	return true;
 }

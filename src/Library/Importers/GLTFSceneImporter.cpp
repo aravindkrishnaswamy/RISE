@@ -467,18 +467,24 @@ namespace
 		ResolveTextureWrap( tex, wrapS, wrapT );
 
 		bool ok = false;
+		// Landing 2: opt OUT of mipmap for normal-role textures
+		// (vector quantities — box-filter prefiltering corrupts them).
+		// The Job layer composes mipmap with kLowMem to route lowmem
+		// non-normal textures through footprint supersampling instead
+		// of building a memory-blowing pyramid.
+		const bool mipmap = ( std::strcmp( role, "normal" ) != 0 );
 		if( !filePath.empty() ) {
 			// On-disk sidecar (the .gltf JSON form with external image files).
 			if( ext == ".png" ) {
 				ok = job.AddPNGTexturePainter(
 					painterName.c_str(), filePath.c_str(),
 					cs, /*filter*/ 1, kLowMem, scale, shift,
-					wrapS, wrapT );
+					wrapS, wrapT, mipmap );
 			} else if( ext == ".jpg" || ext == ".jpeg" ) {
 				ok = job.AddJPEGTexturePainter(
 					painterName.c_str(), filePath.c_str(),
 					cs, /*filter*/ 1, kLowMem, scale, shift,
-					wrapS, wrapT );
+					wrapS, wrapT, mipmap );
 			}
 		} else {
 			// Embedded bytes (any .glb image; .gltf `data:` URIs cgltf already
@@ -487,12 +493,12 @@ namespace
 				ok = job.AddInMemoryPNGTexturePainter(
 					painterName.c_str(), bytes, len,
 					cs, /*filter*/ 1, kLowMem, scale, shift,
-					wrapS, wrapT );
+					wrapS, wrapT, mipmap );
 			} else if( ext == ".jpg" || ext == ".jpeg" ) {
 				ok = job.AddInMemoryJPEGTexturePainter(
 					painterName.c_str(), bytes, len,
 					cs, /*filter*/ 1, kLowMem, scale, shift,
-					wrapS, wrapT );
+					wrapS, wrapT, mipmap );
 			}
 		}
 
@@ -2206,6 +2212,7 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		char colorSpace;
 		char wrap_s;				// per-texture U-axis wrap (eRasterWrapMode); read from cgltf_texture::sampler
 		char wrap_t;				// per-texture V-axis wrap
+		bool mipmap;				// Landing 2: build a mip pyramid for this texture.  False for normal maps (vector quantities — box-filter prefiltering corrupts them; LEAN/LEADR is a separate audit).
 	};
 	std::vector<PendingDecode> pending;
 	std::set<std::string> seen;
@@ -2260,6 +2267,20 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		pd.colorSpace  = cs;
 		pd.wrap_s      = wrapS;
 		pd.wrap_t      = wrapT;
+		// Landing 2: request mipmap (= LOD-aware sampling) for any
+		// non-normal-role texture.  Vector-quantity normal maps stay
+		// on bilinear-only because box-filter prefiltering corrupts
+		// the encoded vectors (proper slope-space prefiltering is
+		// future work).
+		//
+		// The Job layer composes mipmap with `lowmemory`: when
+		// lowmem is also set, the painter routes to footprint
+		// stochastic supersampling instead of building a pyramid
+		// (avoids ~33% extra memory per texture, which on
+		// NewSponza-class assets is multiple GB).  At infinite spp
+		// the supersampling path converges to the same integral
+		// as the pyramid lookup — different memory/quality trade.
+		pd.mipmap      = ( std::strcmp( role, "normal" ) != 0 );
 		pending.push_back( std::move( pd ) );
 	};
 
@@ -2306,6 +2327,7 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 								// load on heavy-PBR scenes; pays ~25%
 								// per-sample render cost.  Match the
 								// CreateTexturePainter slow path if changing.
+		r.mipmap     = pd.mipmap;	// Landing 2: per-role; false for normal maps
 		std::memcpy( r.scale, identityScale, sizeof(identityScale) );
 		std::memcpy( r.shift, zeroShift,     sizeof(zeroShift) );
 		requests.push_back( r );

@@ -27,6 +27,28 @@ namespace RISE
 		protected:
 			IRasterImageAccessor*		pRIA;
 
+			// Landing 2: cached dispatch decision.  Eliminates 2-3
+			// virtual calls per per-sample GetColor invocation by
+			// resolving the LOD strategy at construction.
+			//   Mode_Base       — no LOD support; use GetPEL
+			//   Mode_Pyramid    — accessor has mip pyramid
+			//   Mode_Supersample— accessor uses footprint stochastic
+			//                     supersampling at base (lowmem path)
+			enum eFilterMode
+			{
+				Mode_Base       = 0,
+				Mode_Pyramid    = 1,
+				Mode_Supersample = 2
+			};
+			eFilterMode					filter_mode;
+
+			//! Shared LOD-aware sample: dispatches on the cached
+			//! filter_mode.  Used by both GetColor (returns .base)
+			//! and GetAlpha (returns .a) so the alpha path picks
+			//! the same LOD as the colour path — important for
+			//! alphaMode = BLEND consistency under minification.
+			RISEColor		SampleTextured( const RayIntersectionGeometric& ri ) const;
+
 			virtual ~TexturePainter();
 
 		public:

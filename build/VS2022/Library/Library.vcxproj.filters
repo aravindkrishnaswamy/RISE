@@ -1125,6 +1125,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Ray.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RayDifferentials.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Observable.h">
       <Filter>Utilities</Filter>
     </ClInclude>
@@ -1602,6 +1605,9 @@
       <Filter>Intersection</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Intersection\RayIntersectionGeometric.h">
+      <Filter>Intersection</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Intersection\TextureFootprintCompute.h">
       <Filter>Intersection</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Intersection\RayPrimitiveIntersections.h">

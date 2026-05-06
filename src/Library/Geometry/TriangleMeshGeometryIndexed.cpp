@@ -64,6 +64,7 @@ namespace {
 }
 #endif
 
+#include "../Intersection/TextureFootprintCompute.h"
 #include "TriangleMeshGeometryIndexedSpecializations.h"
 
 TriangleMeshGeometryIndexed::TriangleMeshGeometryIndexed(

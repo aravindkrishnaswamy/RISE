@@ -414,6 +414,12 @@ namespace RISE
 				ri.derivatives.dndu = dndu;
 				ri.derivatives.dndv = dndv;
 				ri.derivatives.valid = true;
+
+				// Landing 2: project ray differentials onto the surface
+				// UV plane and store the texture-space footprint.  Costs
+				// nothing when ray.hasDifferentials = false (early-out
+				// inside the helper).
+				ComputeTextureFootprint( ri, ri.ray );
 			}
 		}
 	}

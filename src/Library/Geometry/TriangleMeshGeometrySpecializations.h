@@ -169,6 +169,130 @@ namespace RISE
 				ri.ptCoord = Point2Ops::mkPoint2( thisTri.coords[0],
 					Vector2Ops::mkVector2(thisTri.coords[1],thisTri.coords[0])*a+
 					Vector2Ops::mkVector2(thisTri.coords[2],thisTri.coords[0])*b );
+
+				// Landing 2: populate surface derivatives + texture
+				// footprint so this path participates in mip-LOD
+				// sampling on parity with the indexed mesh path.
+				// Ported from TriangleMeshGeometryIndexedSpecializations.h;
+				// the math is identical, only the data access differs
+				// (non-indexed Triangle stores .vertices / .normals /
+				// .coords by value; indexed PointerTriangle stores
+				// .pVertices / .pNormals / .pCoords by pointer).
+				// See the indexed-mesh implementation for the full
+				// derivation and design notes; the duplicated comments
+				// kept short here to stay readable.
+				//
+				// Per-vertex color and tangent interpolation are NOT
+				// ported — those rely on a per-vertex side-table
+				// addressed by pointer arithmetic into a shared
+				// vertex pool, which non-indexed meshes don't have.
+				// Hand-built / RAW meshes that need vertex colors or
+				// glTF-style tangents should be loaded as indexed.
+				const Vector3 shadingNormal = Vector3Ops::Normalize( ri.vNormal );
+				const Vector3 e1 = Vector3Ops::mkVector3( thisTri.vertices[1], thisTri.vertices[0] );
+				const Vector3 e2 = Vector3Ops::mkVector3( thisTri.vertices[2], thisTri.vertices[0] );
+
+				// UV deltas.  Non-indexed Triangle always carries
+				// coords by value, so the "no UV data" fall-back from
+				// the indexed path (null pCoords pointer) doesn't
+				// apply — only the singular-Jacobian fall-back does.
+				const Scalar duA = thisTri.coords[1].x - thisTri.coords[0].x;
+				const Scalar duB = thisTri.coords[2].x - thisTri.coords[0].x;
+				const Scalar dvA = thisTri.coords[1].y - thisTri.coords[0].y;
+				const Scalar dvB = thisTri.coords[2].y - thisTri.coords[0].y;
+				const Scalar uvDet = duA * dvB - duB * dvA;
+				const bool useUVJacobian = ( fabs( uvDet ) > NEARZERO );
+
+				// Compute ∂P/∂u, ∂P/∂v.
+				Vector3 dpdu, dpdv;
+				if( useUVJacobian ) {
+					const Scalar invDet = 1.0 / uvDet;
+					dpdu = Vector3(
+						( e1.x * dvB - e2.x * dvA ) * invDet,
+						( e1.y * dvB - e2.y * dvA ) * invDet,
+						( e1.z * dvB - e2.z * dvA ) * invDet );
+					dpdv = Vector3(
+						( e2.x * duA - e1.x * duB ) * invDet,
+						( e2.y * duA - e1.y * duB ) * invDet,
+						( e2.z * duA - e1.z * duB ) * invDet );
+				} else {
+					// Degenerate UV mapping (collinear or zero-area UV
+					// triangle); fall back to barycentric edge frame.
+					dpdu = e1;
+					dpdv = e2;
+				}
+
+				// Project onto shading-normal tangent plane (gate kept
+				// in lock-step with the indexed-mesh implementation).
+#define MESH_PROJECT_DERIVATIVES_TO_TANGENT_PLANE 1
+#if MESH_PROJECT_DERIVATIVES_TO_TANGENT_PLANE
+				const Scalar dpdu_dot_n = Vector3Ops::Dot( dpdu, shadingNormal );
+				const Scalar dpdv_dot_n = Vector3Ops::Dot( dpdv, shadingNormal );
+				dpdu = Vector3(
+					dpdu.x - shadingNormal.x * dpdu_dot_n,
+					dpdu.y - shadingNormal.y * dpdu_dot_n,
+					dpdu.z - shadingNormal.z * dpdu_dot_n );
+				dpdv = Vector3(
+					dpdv.x - shadingNormal.x * dpdv_dot_n,
+					dpdv.y - shadingNormal.y * dpdv_dot_n,
+					dpdv.z - shadingNormal.z * dpdv_dot_n );
+#endif
+
+				// Compute ∂N/∂u, ∂N/∂v from per-vertex normals.
+				const Vector3 dNraw_dA(
+					thisTri.normals[1].x - thisTri.normals[0].x,
+					thisTri.normals[1].y - thisTri.normals[0].y,
+					thisTri.normals[1].z - thisTri.normals[0].z );
+				const Vector3 dNraw_dB(
+					thisTri.normals[2].x - thisTri.normals[0].x,
+					thisTri.normals[2].y - thisTri.normals[0].y,
+					thisTri.normals[2].z - thisTri.normals[0].z );
+
+				Vector3 dNraw_du, dNraw_dv;
+				if( useUVJacobian ) {
+					const Scalar invDet = 1.0 / uvDet;
+					dNraw_du = Vector3(
+						( dNraw_dA.x * dvB - dNraw_dB.x * dvA ) * invDet,
+						( dNraw_dA.y * dvB - dNraw_dB.y * dvA ) * invDet,
+						( dNraw_dA.z * dvB - dNraw_dB.z * dvA ) * invDet );
+					dNraw_dv = Vector3(
+						( dNraw_dB.x * duA - dNraw_dA.x * duB ) * invDet,
+						( dNraw_dB.y * duA - dNraw_dA.y * duB ) * invDet,
+						( dNraw_dB.z * duA - dNraw_dA.z * duB ) * invDet );
+				} else {
+					dNraw_du = dNraw_dA;
+					dNraw_dv = dNraw_dB;
+				}
+
+				const Scalar nrawLen = Vector3Ops::Magnitude( ri.vNormal );
+				const Scalar invLen = (nrawLen > NEARZERO) ? 1.0 / nrawLen : 0.0;
+				const Scalar du_dot_n = Vector3Ops::Dot( shadingNormal, dNraw_du );
+				const Scalar dv_dot_n = Vector3Ops::Dot( shadingNormal, dNraw_dv );
+				Vector3 dndu(
+					(dNraw_du.x - shadingNormal.x * du_dot_n) * invLen,
+					(dNraw_du.y - shadingNormal.y * du_dot_n) * invLen,
+					(dNraw_du.z - shadingNormal.z * du_dot_n) * invLen );
+				Vector3 dndv(
+					(dNraw_dv.x - shadingNormal.x * dv_dot_n) * invLen,
+					(dNraw_dv.y - shadingNormal.y * dv_dot_n) * invLen,
+					(dNraw_dv.z - shadingNormal.z * dv_dot_n) * invLen );
+
+				// Enforce right-handedness against shading normal.
+				const Vector3 cross = Vector3Ops::Cross( dpdu, dpdv );
+				if( Vector3Ops::Dot( cross, shadingNormal ) < 0.0 ) {
+					dpdv = Vector3( -dpdv.x, -dpdv.y, -dpdv.z );
+					dndv = Vector3( -dndv.x, -dndv.y, -dndv.z );
+				}
+				ri.derivatives.dpdu = dpdu;
+				ri.derivatives.dpdv = dpdv;
+				ri.derivatives.dndu = dndu;
+				ri.derivatives.dndv = dndv;
+				ri.derivatives.valid = true;
+
+				// Project ray differentials onto the surface UV plane
+				// and store the texture-space footprint.  No-op when
+				// ray.hasDifferentials = false.
+				ComputeTextureFootprint( ri, ri.ray );
 			}
 		}
 	}

@@ -870,7 +870,9 @@ bool Job::AddSpectralColorPainter(
 }
 
 static IRasterImageAccessor* RasterImageAccessorFromChar( const char filter_type, IRasterImage& image,
-	const char wrap_s = eRasterWrap_ClampToEdge, const char wrap_t = eRasterWrap_ClampToEdge )
+	const char wrap_s = eRasterWrap_ClampToEdge, const char wrap_t = eRasterWrap_ClampToEdge,
+	const bool mipmap = true,	// Landing 2: opt out by passing false for vector-quantity textures (normal maps)
+	const bool supersample = false )	// Landing 2: footprint stochastic supersampling (lowmem-friendly LOD)
 {
 	IRasterImageAccessor* pRIA = 0;
 
@@ -882,7 +884,7 @@ static IRasterImageAccessor* RasterImageAccessorFromChar( const char filter_type
 	default:
 		GlobalLog()->PrintEasyWarning( "Unknown texture filter type, using bilinear" );
 	case 1:
-		RISE_API_CreateBiLinRasterImageAccessor( &pRIA, image, wrap_s, wrap_t );
+		RISE_API_CreateBiLinRasterImageAccessor( &pRIA, image, wrap_s, wrap_t, mipmap, supersample );
 		break;
 	case 2:
 		RISE_API_CreateCatmullRomBicubicRasterImageAccessor( &pRIA, image, wrap_s, wrap_t );
@@ -899,23 +901,16 @@ static IRasterImageAccessor* RasterImageAccessorFromChar( const char filter_type
 //! Adds a texture painter
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddPNGTexturePainter(
-							const char* name,				///< [in] Name of the painter
-							const char* filename,			///< [in] Name of the file that contains the texture
-							const char color_space,			///< [in] Color space in the file
-															///		0 - Rec709 RGB linear
-															///		1 - sRGB profile
-															///		2 - ROMM RGB (ProPhotoRGB) linear
-															///		3 - ROMM RGB (ProPhotoRGB) non-linear
-							const char filter_type,			///< [in] Type of texture filtering
-																///     0 - Nearest neighbour
-																///     1 - Bilinear
-																///     2 - Catmull Rom Bicubic
-																///     3 - Uniform BSpline Bicubic
-							const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
-							const double scale[3],			///< [in] Scale factor for color values
-							const double shift[3],			///< [in] Shift factor for color values
-							const char wrap_s,				///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
-							const char wrap_t				///< [in] V-axis wrap mode
+							const char* name,
+							const char* filename,
+							const char color_space,
+							const char filter_type,
+							const bool lowmemory,
+							const double scale[3],
+							const double shift[3],
+							const char wrap_s,
+							const char wrap_t,
+							const bool mipmap	// Landing 2: build mip pyramid + LOD-aware sampling
 							)
 {
 	IRasterImage* pImage = 0;
@@ -967,7 +962,14 @@ bool Job::AddPNGTexturePainter(
 		}
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
+	// Landing 2: when both mipmap is requested AND lowmem is set,
+	// route to footprint stochastic supersampling instead of building
+	// a pyramid (which would defeat lowmem's memory budget).  See
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// trade-off analysis.
+	const bool effective_mipmap     = mipmap && !lowmemory;
+	const bool effective_supersample = mipmap && lowmemory;
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t, effective_mipmap, effective_supersample );
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA );
@@ -1000,7 +1002,8 @@ bool Job::AddInMemoryPNGTexturePainter(
 							const double scale[3],
 							const double shift[3],
 							const char wrap_s,
-							const char wrap_t
+							const char wrap_t,
+							const bool mipmap
 							)
 {
 	if( !name || !bytes || numBytes == 0 ) {
@@ -1066,7 +1069,14 @@ bool Job::AddInMemoryPNGTexturePainter(
 		safe_release( pOp );
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
+	// Landing 2: when both mipmap is requested AND lowmem is set,
+	// route to footprint stochastic supersampling instead of building
+	// a pyramid (which would defeat lowmem's memory budget).  See
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// trade-off analysis.
+	const bool effective_mipmap     = mipmap && !lowmemory;
+	const bool effective_supersample = mipmap && lowmemory;
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t, effective_mipmap, effective_supersample );
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA );
@@ -1095,7 +1105,8 @@ bool Job::AddInMemoryJPEGTexturePainter(
 							const double scale[3],
 							const double shift[3],
 							const char wrap_s,
-							const char wrap_t
+							const char wrap_t,
+							const bool mipmap
 							)
 {
 	if( !name || !bytes || numBytes == 0 ) {
@@ -1154,7 +1165,14 @@ bool Job::AddInMemoryJPEGTexturePainter(
 		safe_release( pOp );
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
+	// Landing 2: when both mipmap is requested AND lowmem is set,
+	// route to footprint stochastic supersampling instead of building
+	// a pyramid (which would defeat lowmem's memory budget).  See
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// trade-off analysis.
+	const bool effective_mipmap     = mipmap && !lowmemory;
+	const bool effective_supersample = mipmap && lowmemory;
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t, effective_mipmap, effective_supersample );
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA );
@@ -1173,23 +1191,16 @@ bool Job::AddInMemoryJPEGTexturePainter(
 //! Adds a JPEG texture painter
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddJPEGTexturePainter(
-							const char* name,				///< [in] Name of the painter
-							const char* filename,			///< [in] Name of the file that contains the texture
-							const char color_space,			///< [in] Color space in the file
-															///		0 - Rec709 RGB linear
-															///		1 - sRGB profile
-															///		2 - ROMM RGB (ProPhotoRGB) linear
-															///		3 - ROMM RGB (ProPhotoRGB) non-linear
-							const char filter_type,			///< [in] Type of texture filtering
-																///     0 - Nearest neighbour
-																///     1 - Bilinear
-																///     2 - Catmull Rom Bicubic
-																///     3 - Uniform BSpline Bicubic
-							const bool lowmemory,			///< [in] low memory mode doesn't do an image convert
-							const double scale[3],			///< [in] Scale factor for color values
-							const double shift[3],			///< [in] Shift factor for color values
-							const char wrap_s,				///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
-							const char wrap_t				///< [in] V-axis wrap mode
+							const char* name,
+							const char* filename,
+							const char color_space,
+							const char filter_type,
+							const bool lowmemory,
+							const double scale[3],
+							const double shift[3],
+							const char wrap_s,
+							const char wrap_t,
+							const bool mipmap	// Landing 2: build mip pyramid + LOD-aware sampling
 							)
 {
 	IRasterImage* pImage = 0;
@@ -1241,7 +1252,14 @@ bool Job::AddJPEGTexturePainter(
 		}
 	}
 
-	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
+	// Landing 2: when both mipmap is requested AND lowmem is set,
+	// route to footprint stochastic supersampling instead of building
+	// a pyramid (which would defeat lowmem's memory budget).  See
+	// docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md for the full
+	// trade-off analysis.
+	const bool effective_mipmap     = mipmap && !lowmemory;
+	const bool effective_supersample = mipmap && lowmemory;
+	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t, effective_mipmap, effective_supersample );
 
 	IPainter* pPainter = 0;
 	RISE_API_CreateTexturePainter( &pPainter, pRIA );
@@ -1401,7 +1419,10 @@ bool Job::AddTexturePaintersBatch(
 				safe_release( pOp );
 			}
 
-			IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( req.filterType, *pImage, req.wrap_s, req.wrap_t );
+			// Landing 2: same lowmem composition as the per-painter path.
+			const bool effective_mipmap     = req.mipmap && !req.lowmemory;
+			const bool effective_supersample = req.mipmap && req.lowmemory;
+			IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( req.filterType, *pImage, req.wrap_s, req.wrap_t, effective_mipmap, effective_supersample );
 
 			IPainter* pPainter = 0;
 			RISE_API_CreateTexturePainter( &pPainter, pRIA );

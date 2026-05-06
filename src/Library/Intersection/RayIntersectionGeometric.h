@@ -43,6 +43,30 @@ namespace RISE
 		}
 	};
 
+	//! Texture-space footprint at the hit point — the projection of
+	//! the incoming ray's screen-space differentials onto the surface
+	//! UV plane.  Populated at intersection time by geometries that
+	//! support it (currently: triangle meshes) when the incoming
+	//! ray has hasDifferentials = true.  Consumed by TexturePainter
+	//! to compute mip LOD per Landing 2 of the PB pipeline plan.
+	//!
+	//! Units: dudx / dudy / dvdx / dvdy are the partial derivatives
+	//! of the surface UV coordinates with respect to screen-space
+	//! pixel x and y.  In other words, advancing one pixel in x
+	//! moves the UV by (dudx, dvdx).  The texture-space Jacobian
+	//! follows by multiplying by texture width / height.
+	struct TextureFootprint
+	{
+		Scalar  dudx, dudy;
+		Scalar  dvdx, dvdy;
+		bool    valid;
+
+		TextureFootprint() :
+		dudx( 0 ), dudy( 0 ), dvdx( 0 ), dvdy( 0 ), valid( false )
+		{
+		}
+	};
+
 	//! Describes the current state of the rasterizer
 	struct RasterizerState
 	{
@@ -120,6 +144,15 @@ namespace RISE
 		//! fall back to IGeometry::ComputeSurfaceDerivatives.
 		SurfaceDerivativesInfo		derivatives;
 
+		//! Texture-space footprint at the hit point — Landing 2.  Computed
+		//! at intersection time by projecting the incoming ray's screen-
+		//! space differentials onto the surface UV plane via dpdu / dpdv.
+		//! valid=true iff (a) the hit geometry populates derivatives AND
+		//! (b) the incoming ray has hasDifferentials = true.  Consumed by
+		//! TexturePainter to compute mip LOD; absence falls back to
+		//! base-level sampling (today's behaviour).
+		TextureFootprint			txFootprint;
+
 		//! Per-vertex color interpolated at the hit point.  Populated only
 		//! by triangle meshes that carry a vertex-color array (loaded from
 		//! PLY, RAW2, etc.).  Consumers (the VertexColorPainter, primarily)
@@ -178,6 +211,7 @@ namespace RISE
 		  pCustom( r.pCustom ),
 		  glossyFilterWidth( r.glossyFilterWidth ),
 		  derivatives( r.derivatives ),
+		  txFootprint( r.txFootprint ),
 		  vColor( r.vColor ),
 		  bHasVertexColor( r.bHasVertexColor ),
 		  vTangent( r.vTangent ),
@@ -202,6 +236,7 @@ namespace RISE
 			vGeomNormal2 = r.vGeomNormal2;
 			ptCoord = r.ptCoord;
 			derivatives = r.derivatives;
+			txFootprint = r.txFootprint;
 			ptIntersection = r.ptIntersection;
 			ptExit = r.ptExit;
 			ptObjIntersec = r.ptObjIntersec;

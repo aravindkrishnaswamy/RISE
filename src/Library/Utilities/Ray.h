@@ -15,6 +15,7 @@
 #define RAY_
 
 #include "../Utilities/Math3D/Math3D.h"
+#include "RayDifferentials.h"
 
 namespace RISE
 {
@@ -43,16 +44,29 @@ namespace RISE
 		Vector3		invDir;		// precomputed 1.0/dir per component
 		int			sign[3];	// 0 if dir >= 0, 1 if dir < 0
 
-		Ray( ) {}
+		// Landing 2: per-ray differentials for texture LOD selection
+		// (Igehy 1999).  Embedded in Ray (PBRT / Mitsuba / Arnold
+		// convention) — the +96 bytes per Ray is real cache pressure
+		// on BVH traversal, but the parallel-struct alternative was
+		// rejected as permanent tech debt.  hasDifferentials gates
+		// the consumers; left false on shadow / NEE / BSDF / photon
+		// rays so those don't pay the (small) read overhead.
+		// Origin / direction offsets are ABSOLUTE offsets from the
+		// central ray's origin / m_dir, not absolute world positions.
+		RayDifferentials	diffs;
+		bool				hasDifferentials;
+
+		Ray( ) : hasDifferentials( false ) {}
 
 		Ray( const Point3& p, const Vector3& d ) :
-		m_dir( d ), origin( p )
+		m_dir( d ), origin( p ), hasDifferentials( false )
 		{
 			RecomputeInvDir();
 		}
 
 		Ray( const Ray& r ) :
-		m_dir( r.m_dir ), origin( r.origin ), invDir( r.invDir )
+		m_dir( r.m_dir ), origin( r.origin ), invDir( r.invDir ),
+		diffs( r.diffs ), hasDifferentials( r.hasDifferentials )
 		{
 			sign[0] = r.sign[0];
 			sign[1] = r.sign[1];
@@ -84,6 +98,11 @@ namespace RISE
 			origin = p;
 			m_dir = d;
 			RecomputeInvDir();
+			// Conservative: any explicit Set wipes stale differentials
+			// from a prior use of this Ray slot.  Callers who want
+			// differentials must populate diffs and set hasDifferentials
+			// = true AFTER the Set call.
+			hasDifferentials = false;
 		}
 
 		void		Set( const Vector3& d, const Point3& p )
@@ -91,6 +110,7 @@ namespace RISE
 			origin = p;
 			m_dir = d;
 			RecomputeInvDir();
+			hasDifferentials = false;
 		}
 
 		Ray& operator=( const Ray& r )
@@ -101,6 +121,8 @@ namespace RISE
 			sign[0] = r.sign[0];
 			sign[1] = r.sign[1];
 			sign[2] = r.sign[2];
+			diffs = r.diffs;
+			hasDifferentials = r.hasDifferentials;
 
 			return *this;
 		}

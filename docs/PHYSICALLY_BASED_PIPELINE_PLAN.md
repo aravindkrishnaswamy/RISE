@@ -286,6 +286,8 @@ Out:
 
 ## Landing 2 — Ray differentials and mip LOD
 
+**Detailed design: [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md)**
+
 ### Goal
 
 Compute per-ray surface footprints from ray differentials (Igehy

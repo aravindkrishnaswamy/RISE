@@ -608,6 +608,7 @@
     <ClInclude Include="..\..\..\src\Library\Intersection\BezierClipping.h" />
     <ClInclude Include="..\..\..\src\Library\Intersection\RayIntersection.h" />
     <ClInclude Include="..\..\..\src\Library\Intersection\RayIntersectionGeometric.h" />
+    <ClInclude Include="..\..\..\src\Library\Intersection\TextureFootprintCompute.h" />
     <ClInclude Include="..\..\..\src\Library\Intersection\RayPrimitiveIntersections.h" />
     <ClInclude Include="..\..\..\src\Library\Job.h" />
     <ClInclude Include="..\..\..\src\Library\Lights\AmbientLight.h" />
@@ -911,6 +912,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\ProbabilityDensityFunction.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RandomNumbers.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Ray.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\RayDifferentials.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Observable.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Reference.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\RString.h" />

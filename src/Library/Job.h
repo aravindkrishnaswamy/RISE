@@ -610,7 +610,8 @@ namespace RISE
 									const double scale[3],			///< [in] Scale factor for color values
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
-									const char wrap_t = 0			///< [in] V-axis wrap mode
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
 									);
 
 		//! Adds a JPEG texture painter
@@ -632,7 +633,8 @@ namespace RISE
 									const double scale[3],			///< [in] Scale factor for color values
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode
-									const char wrap_t = 0			///< [in] V-axis wrap mode
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
 									);
 
 		bool AddInMemoryPNGTexturePainter(
@@ -645,7 +647,8 @@ namespace RISE
 									const double scale[3],
 									const double shift[3],
 									const char wrap_s = 0,
-									const char wrap_t = 0
+									const char wrap_t = 0,
+									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
 									);
 
 		bool AddInMemoryJPEGTexturePainter(
@@ -658,7 +661,8 @@ namespace RISE
 									const double scale[3],
 									const double shift[3],
 									const char wrap_s = 0,
-									const char wrap_t = 0
+									const char wrap_t = 0,
+									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
 									);
 
 		//! Adds a texture painter
