@@ -401,6 +401,38 @@ Sponza regression came from the global `/arch:AVX2` compile flag MSVC autovector
 
 **Inherited concern documented for future work**: the `static thread_local std::vector<uint32_t> stack` pattern in BVH4/BVH8 traversal is shared across all `BVH<Element>` instances of the same template instantiation on a given thread.  In-practice safe today because object-BVH and triangle-mesh-BVH are different `Element` types (separate instantiations, separate stacks), but a future re-entrant call within one instantiation type would clobber the stack mid-traversal.  Not a blocker; flag-and-watch.
 
+## Tier D4 — BVH-aware shadow cache (excised, 2026-05)
+
+**Motivation**: post-Tier D1, `ObjectManager`'s shadow cache (per-thread last-occluder hint stored in 64 stack-hash slots) became dead code — the cache lookup is gated on the linear-loop fallback path, and after the TLAS migration every real scene goes through the BVH path instead.  Profiling showed shadow-cache hit rate dropped 7.4 % → 0 %.  Hypothesis: integrate the cache into the BVH `IntersectShadowRay` path (try cached IObject first, fall through to BVH on miss + capture the new occluder for next time).  Recover the ~7 % shadow-ray cost from the TLAS-skip savings.
+
+**Implementation**: added optional `Element* outHit = nullptr` parameter to `BVH<>::IntersectRay_IntersectionOnly` + `IntersectRay4_IntersectionOnly` + `Bvh4Leaf_IntersectionOnly`.  Default-nullptr keeps existing per-mesh callers unchanged.  When non-null, the leaf path writes `*outHit = prims[i]` on first hit, propagating the captured occluder back through the traversal.  ObjectManager's `IntersectShadowRay` BVH branch then: try cached occluder first → if hit, return; else descend BVH with `&occluder` capture → update slot if a new occluder was found.
+
+**Result on the 4-scene sweep**:
+
+|                          | Post-D1 | B3 (cache-in-BVH) | Δ |  Cache hit rate |
+|--------------------------|--------:|------------------:|----:|--------:|
+| `bench_pt`              | 13.9 s | 14.8 s | **+6.5 %** | 10.4 % |
+| `sponza_new`            | 29.0 s | 30.5 s | **+5.2 %** | 9.4 % |
+| `sss_comparison_dragon` |  9.6 s | 10.5 s | **+9.4 %** | 27.2 % |
+| `bench_pt_bigmesh`      |  3.3 s |  3.6 s | **+9.1 %** | 43.2 % |
+
+**Why it regressed** — root-cause analysis:
+The cache HIT savings are SMALLER than the cache MISS overhead, even at 43 % hit rate (bigmesh).  Concretely:
+- **Cache HIT** saves only the TLAS BVH descent (~5–7 box tests for sponza's 155-object TLAS, ~1–2 for the dragon's 4-object TLAS, ~1 for bigmesh's 1-object TLAS).  The per-mesh BVH descent of the cached IObject still happens — that's not a saving.
+- **Cache MISS** pays a full `Object::IntersectRay_IntersectionOnly` against the wrong cached object: matrix-transform setup + per-mesh BVH root box test + (for big meshes whose bbox encloses the ray) partial BVH descent before rejecting.  Often comparable cost to a successful descent of a small mesh.
+
+For sponza: hit rate 9 % × ~7 box tests saved = ~0.6 box tests/ray won; miss rate 91 % × ~5 box tests cost = ~4.6 box tests/ray lost.  Net **−4 box tests/ray** — exactly the regression direction.
+
+For bigmesh: hit rate 43 % saves ~1 TLAS box test (single-object TLAS); 57 % miss rate × ~5 box tests partial-descent of the giant mesh = ~2.9 box tests lost.  Net **−2.5 box tests/ray** — also regression.
+
+Even the unrealistic 100 % hit-rate ceiling would only save the TLAS depth, which is small; the cost ALWAYS pays the full per-mesh BVH descent of the cached object.
+
+**Decision**: excise.  The cached test isn't *cheaper* than the alternative — it's a per-mesh BVH descent comparable to what TLAS would skip, just without the TLAS bookkeeping.  For the cache to win, it would need to store something **structurally cheaper** to test (a TLAS leaf index to start traversal from, not the IObject pointer to re-test entirely).  That's a different design — much bigger surgery, and the savings would still be capped at the TLAS-depth savings (~5–7 box tests for sponza-class scenes).
+
+**Re-entry conditions**: only worth reconsidering if (a) the TLAS becomes deep enough that its descent dominates per-mesh descent (multi-million-object scenes), AND (b) someone implements the "TLAS-leaf-index hint" version that avoids the redundant per-mesh descent on miss.  Until then, the dead `shadowCache[]` array in ObjectManager stays where it is — used only by the linear-loop fallback path (which fires only when the scene has ≤4 objects and the BVH gate doesn't engage).  ~80 lines reverted; only `docs/BVH_RETROSPECTIVE.md` updated.
+
+**Pattern note**: this is the 7th consecutive negative finding in the BVH/geometry stack post-D1 (Tier B SBVH, C4 uint8 nodes, D2-rev BVH8 v1, D2-rev BVH8 v2, D3 SoA SIMD MT, A2-probe larger leaves, D4 shadow cache).  The geometry stack post-Tier D1 is now at a stable local optimum for this codebase's measured workload class.  Future BVH/geometry-stack work should cross the high bar of "I have specific evidence this works at our scales" before committing engineering time — the structural-fit pattern is overwhelming.
+
 ## Tier D3 — SoA-packed 4-wide SIMD MT at leaves (excised, 2026-05)
 
 Prototyped immediately after the TLAS migration as a follow-on win.  The thinking: the per-mesh BVH4 already did SIMD ray-vs-AABB at internal nodes; the leaf path was still scalar AoS, calling `MollerTrumboreFloat` once per triangle in the leaf primitive list.  A 4-wide SoA SIMD MT kernel (SSE/NEON) at the leaf, with on-the-fly AoS→SoA transpose of `fastFilter[]` data, looked like an obvious follow-on to the existing wide-tree pattern.
