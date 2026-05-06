@@ -88,8 +88,14 @@ void PointSetOctree::PointSetOctreeNode::MyBBFromParent(
 	switch( which_child )
 	{
 	case 99:
-		// Entire
-		my_bb = bbox;
+		// Entire bbox.  Pad by box_error so that points sitting exactly
+		// on the bbox boundary survive IsPointInsideBox's strict-`<`
+		// test, matching the per-octant cases below.  Without the pad,
+		// any sample plane that all kept points share (e.g. a caustic
+		// patch on a single box face, where every point's y == ur.y)
+		// gets fully rejected at the root and AddElements returns false.
+		my_bb.ll = Point3( bbox.ll.x-box_error, bbox.ll.y-box_error, bbox.ll.z-box_error );
+		my_bb.ur = Point3( bbox.ur.x+box_error, bbox.ur.y+box_error, bbox.ur.z+box_error );
 		break;
 	case 0:
 		// Sub node 1, same LL as us, UR as our center
