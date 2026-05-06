@@ -222,12 +222,39 @@ cap and sums them — `N × cap` per pixel.  The sum-level clamp (cap
 the sum of per-trial smsGeometric values, scale back proportionally)
 is what's already in the code; don't revert to per-trial clamping.
 
+This pattern relapses easily: as of 2026-05, only RGB snell mode had
+sum-level clamping; uniform mode (RGB and NM) and NM snell mode all
+applied per-path clamping inside `ComputeTrialContribution{,NM}`.  Fix
+landed in commits `bb166f5` (uniform) and `3e1fe32` (NM snell): added
+`bool clampGeometric = true` + `Scalar* outSmsGeometric = nullptr`
+to the helpers; uniform/NM-snell call sites pass `false` and apply
+sum-clamp post-loop.  Audit all four paths together when revisiting.
+
 ### Uniqueness threshold of `1e-4`
 
 That's 0.1 mm — tighter than Newton jitter on displaced surfaces.
 Near-fold-caustic preimage clusters stay distinct and their
 contributions get summed.  `1e-2` (1 cm) merges Newton-jitter
 duplicates without losing genuinely distinct preimages.
+
+### Position-only dedupe key (drops Fresnel-branch siblings)
+
+The dedupe key MUST include both `chainLen` AND a per-vertex
+`isReflection` bitmask (`reflectMask`), not just first-vertex
+position.  Without `reflectMask`, two chains that share a first
+vertex but flip reflect/refract at a later vertex (Option-C
+Fresnel-branched siblings) get silently collapsed; a refraction-
+refraction chain and a refraction-reflection chain at the same
+caster point lose one of the two contributions.
+
+As of 2026-05 only RGB snell mode tracked the mask correctly;
+uniform mode (RGB and NM) used `(pos, chainLen)` only and NM snell
+used position-only.  Fix landed in commits `e853ab8` (uniform)
+and `3e1fe32` (NM snell): three-field key + local
+`buildReflectMask` lambda matching the RGB-snell version.  Audit
+all four paths together — pure-mirror caster supplemental seeds
+and photon-aided chain reconstructions feed the same dedupe and
+share the same fix.
 
 ### Fixing only the RGB path
 

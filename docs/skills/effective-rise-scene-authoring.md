@@ -159,7 +159,49 @@ For glTF assets imported via `gltf_import`, comment out the entire
 `sphere_geometry` + `lambertian_material` + `standard_object` to
 confirm the lighting works in isolation before trusting the importer.
 
-### 7. Save the working scene to `scenes/Tests/` or `scenes/FeatureBased/`
+### 7. SMS-specific: pick `sms_seeding` + `sms_target_bounces` from regime
+
+If the scene has SMS enabled (`sms_enabled TRUE`), three SMS knobs
+need scene-class-aware values, not defaults.  See
+[CLAUDE.md] §"SMS seeding mode" + [docs/SMS_PHOTON_REGIME.md] for the
+full empirical writeup; quick decision tree:
+
+1. **`sms_seeding`**:
+   - `"snell"` (default) for displaced refractive caustics —
+     deterministic Snell-trace from shading toward light.  Best on
+     interior lights through dielectric shells (Veach egg style).
+   - `"uniform"` for smooth analytic primitives with reflection /
+     glint caustics (smooth glass spheres, smooth mirrors).  Mitsuba-
+     faithful uniform-area sampling on the caster.
+   - The two are regime-complementary, not one-better — picking the
+     wrong one can be a 2-3× quality gap.
+
+2. **`sms_target_bounces`**: the natural specular-vertex count for
+   the scene's caustic.  Default 0 = no target.  Recommended values:
+   - `2` for glass shells, interior-light scenes, k=2 dielectric
+     caustics (Veach egg, sms_k2_glassblock, sms_k2_glasssphere).
+   - `1` for k=1 single-mirror caustics (diacaustic-class scenes,
+     sms_k1_botonly).
+   - Required (not optional) when `sms_seeding "uniform"` — without
+     it, uniform mode produces variable-length chains and a 36-53 %
+     phys-fail rate vs. snell's 3-17 %.  See commit `a3790c4` and
+     [docs/SMS_SEEDING_OVERTRACE_FIX.md] §"Uniform-mode follow-up".
+
+3. **`sms_photon_count`**: default `0` = off.  Enable (`100000` is a
+   reasonable starting value) ONLY when the no-photon ok rate is
+   below ~10 % — i.e. snell-trace is systematically missing
+   caustic basins.  Diagnostic decision tree in
+   [docs/SMS_PHOTON_REGIME.md]:
+   - **Diacaustic-class** (multi-basin curved mirror): photons help
+     both modes, uniform sees the bigger gain.  `sms_photon_count
+     100000` + `sms_seeding "uniform"` is the canonical combo.
+   - **`sms_slab_close_sms`-class** (snell-trace blocked or
+     occluded): photons are essential — without them ratio is 0.02;
+     with them ratio is 3.6+.
+   - **Displaced-egg-class** (single-basin interior-light): photons
+     don't help, just cost ~6× more wall-time.  Don't enable.
+
+### 8. Save the working scene to `scenes/Tests/` or `scenes/FeatureBased/`
 
 Once the scene renders correctly, add a header comment that documents:
 
