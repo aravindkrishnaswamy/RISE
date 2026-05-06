@@ -384,7 +384,20 @@ The original Tier D2 (BVH8 + AVX-512) was deferred citing AVX-512 hardware avail
 - **Separate compile unit for AVX2** (`BVH_AVX2.cpp` with `/arch:AVX2`, rest of Library back to `/arch:SSE2`): would address the global-flag side-effects but doesn't fix the underlying "wide-tree gives no depth gain at these sizes" core problem.
 - **Smarter collapse** (only emit 8-wide when ≥ 5 candidates available, fall back to 4-wide otherwise): hybrid layout, but the bench set's shallow trees never exceed 4 candidates per node.
 
-**Re-entry conditions**: revisit when the production bench set includes a workload with **routine** mesh sizes ≥ 1 M tris where BVH2 depth ≥ 12.  At that depth the 6+ visit savings/ray clear the per-visit cost increase.  The implementation is preserved in commit history (this session's work) for reference.
+**Re-entry conditions**: revisit when the production bench set includes a workload with **routine** mesh sizes ≫ 1 M tris where BVH2 depth ≥ 16.  Initially flagged as 1 M tris / depth ≥ 12, but a v2 attempt (see follow-up below) re-tested with `bench_pt_bigmesh` (1.04 M tris, BVH2 depth 19) plus a `kBVH8MinNodes = 5000` size gate to skip BVH8 on shallow trees.  Even on the targeted 1 M-tri scene, BVH8 produced 0 % wall-clock improvement (work counts were unchanged — the savings were on internal node traversal which the codebase isn't dominated by at this scale).  Re-entry threshold is therefore stricter than originally believed.
+
+**v2 attempt (2026-05, after `bench_pt_bigmesh` was added)**: re-implemented BVH8 with a size gate (`kBVH8MinNodes = 5000` = ~depth 9 BVH2 minimum) so only `bench_pt_bigmesh`'s 638K-node BVH built BVH8 (collapsed to 107K nodes, 6.0× fewer); Sponza's ~50-500 node per-mesh BVHs and dragon's ~25K node BVH all stayed on BVH4.  Build log confirmed correct gating.  Result on the 4-scene sweep:
+
+|                          | Post-D1 | A1-v2 (size-gated BVH8) | Δ |
+|--------------------------|--------:|------------------------:|----:|
+| `bench_pt`              | 13.9 s | 13.9 s | flat |
+| `sponza_new`            | 29.0 s | 30.5 s | **+5.2 %** (AVX2 flag side-effect, no BVH8 even built for sponza) |
+| `sss_comparison_dragon` |  9.6 s |  9.8 s | +1.6 % (within noise) |
+| `bench_pt_bigmesh`      |  3.3 s |  3.3 s | flat (the targeted workload showed no improvement) |
+
+Sponza regression came from the global `/arch:AVX2` compile flag MSVC autovectorising non-BVH Library code into AVX2 (AVX↔SSE transition penalties + sustained-AVX2 frequency throttle).  Bigmesh — the workload BVH8 was DESIGNED for — showed exactly 0 % wall-clock improvement: tree depth dropped (BVH4 ~9 levels → BVH8 ~6 levels) but the per-node cost increase exactly offset the visit savings.  Tier B / C4 / D3 / D2-rev pattern reaffirmed; excised again.
+
+**Implication for future re-entry**: size-gating alone isn't enough.  A real win requires (a) a separate compile unit for AVX2 to avoid the global-flag side-effect, AND (b) a workload class deeper than `bench_pt_bigmesh` (probably 5M+ tris where BVH2 depth ≥ 16 produces enough visit savings to clear the 32-byte node cache pressure).  The implementation pattern is preserved in commit history (this session's work) for reference.
 
 **Inherited concern documented for future work**: the `static thread_local std::vector<uint32_t> stack` pattern in BVH4/BVH8 traversal is shared across all `BVH<Element>` instances of the same template instantiation on a given thread.  In-practice safe today because object-BVH and triangle-mesh-BVH are different `Element` types (separate instantiations, separate stacks), but a future re-entrant call within one instantiation type would clobber the stack mid-traversal.  Not a blocker; flag-and-watch.
 
