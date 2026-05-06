@@ -831,7 +831,7 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 		}
 	}
     
-	GlobalLog()->PrintEx( eLog_Event,
+	GlobalLog()->PrintEx( eLog_Info,
 		"VCMRasterizerBase::OnProgressivePassBegin:: iteration %u — "
 		"rebuilt store with %llu light vertices (K=%u, r=%g, floor=%g, r/r_0=%.3f)",
 		passIdx, totalStored, samplesPerSuperIter,

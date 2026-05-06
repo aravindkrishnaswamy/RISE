@@ -243,7 +243,7 @@ displaced_geometry
 	base_geometry		egg_outer_geom
 	detail				128
 	displacement		pnt_egg_bumps
-	disp_scale			4.0
+	disp_scale			25.0
 }
 
 ellipsoid_geometry
