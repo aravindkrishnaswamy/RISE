@@ -233,6 +233,7 @@ public:
     // the int → category mapping.
     unsigned int viewportCategoryEntityCount(int category) const;
     std::string  viewportCategoryEntityName(int category, unsigned int idx) const;
+    std::string  viewportCategoryActiveName(int category) const;
     int          viewportSelectionCategory() const;
     std::string  viewportSelectionName() const;
     bool         viewportSetSelection(int category, const std::string& name);

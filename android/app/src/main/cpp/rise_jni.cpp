@@ -277,6 +277,10 @@ JNIF(jstring, nativeViewportCategoryEntityName)(JNIEnv* env, jobject /*thiz*/, j
     return env->NewStringUTF(getBridge().viewportCategoryEntityName(
         static_cast<int>(category), static_cast<unsigned int>(idx)).c_str());
 }
+JNIF(jstring, nativeViewportCategoryActiveName)(JNIEnv* env, jobject /*thiz*/, jint category) {
+    return env->NewStringUTF(getBridge().viewportCategoryActiveName(
+        static_cast<int>(category)).c_str());
+}
 JNIF(jint, nativeViewportSelectionCategory)(JNIEnv* /*env*/, jobject /*thiz*/) {
     return static_cast<jint>(getBridge().viewportSelectionCategory());
 }

@@ -131,6 +131,9 @@ fun ViewportPane(
     var entitiesByCategory by remember {
         mutableStateOf<Map<Int, List<String>>>(emptyMap())
     }
+    var activeNameByCategory by remember {
+        mutableStateOf<Map<Int, String>>(emptyMap())
+    }
     var lastEpoch by remember { mutableStateOf(0) }
 
     // Re-sync the toolbar's selection to the underlying controller
@@ -187,6 +190,16 @@ fun ViewportPane(
                 }
                 entitiesByCategory = fresh
             }
+
+            // Active-name lookup is cheap (one JNI hop per category)
+            // and can change between epochs (a SetActiveCamera can
+            // happen without adding/removing cameras).  Re-pull every
+            // refresh.
+            val freshActive = mutableMapOf<Int, String>()
+            for (cat in intArrayOf(1, 2, 3, 4)) {
+                freshActive[cat] = RiseNative.nativeViewportCategoryActiveName(cat)
+            }
+            activeNameByCategory = freshActive
         }
     }
 
@@ -232,6 +245,7 @@ fun ViewportPane(
                         selectionCategory = selectionCategory,
                         selectionName = selectionName,
                         entitiesByCategory = entitiesByCategory,
+                        activeNameByCategory = activeNameByCategory,
                         enabled = interactionEnabled,
                         onSelectionChanged = { cat, name ->
                             // Empty name = open the section without picking.
@@ -574,6 +588,7 @@ private fun ViewportAccordionPanel(
     selectionCategory: Int,
     selectionName: String,
     entitiesByCategory: Map<Int, List<String>>,
+    activeNameByCategory: Map<Int, String>,
     enabled: Boolean,
     onSelectionChanged: (Int, String) -> Unit,
     onPropertyEdited: (String, String) -> Unit,
@@ -586,11 +601,22 @@ private fun ViewportAccordionPanel(
 
         LazyColumn(modifier = Modifier.weight(1f).padding(top = 4.dp)) {
             items(kAccordionSections, key = { it.category }) { section ->
+                // Prefer the user's explicit pick when present;
+                // otherwise fall back to the scene's active entity
+                // (Camera = active camera, Rasterizer = active
+                // rasterizer, Object/Light = empty).  This way the
+                // dropdown shows the active entity on first load
+                // instead of "(pick one)".
+                val resolvedName: String =
+                    if (selectionCategory == section.category && selectionName.isNotEmpty())
+                        selectionName
+                    else
+                        (activeNameByCategory[section.category] ?: "")
                 AccordionSection(
                     section = section,
                     entities = entitiesByCategory[section.category] ?: emptyList(),
                     isExpanded = (selectionCategory == section.category),
-                    selectedName = if (selectionCategory == section.category) selectionName else "",
+                    selectedName = resolvedName,
                     enabled = enabled,
                     onToggle = { open ->
                         if (open) {

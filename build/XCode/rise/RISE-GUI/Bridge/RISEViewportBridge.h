@@ -202,6 +202,14 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// accordion's list view; the platform UI caches by sceneEpoch.
 - (NSArray<NSString *> *)categoryEntities:(RISEViewportCategory)category;
 
+/// Scene-level active entity name for `category`, independent of
+/// the UI selection.  Camera → active camera; Rasterizer → active
+/// rasterizer chunk name; Object/Light/None → empty.  Used to
+/// populate the dropdown on first scene load with the scene's
+/// current active entity rather than "(pick one)".
+- (NSString *)activeNameForCategory:(RISEViewportCategory)category
+    NS_SWIFT_NAME(activeName(for:));
+
 /// Current selection's category.  Drives which accordion section is
 /// expanded.  Returns RISEViewportCategoryNone when nothing is
 /// selected.

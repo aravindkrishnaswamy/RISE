@@ -2982,6 +2982,14 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_SetSelection(
 		SceneEditController* p, int category, const char* name );
 
+	//! Scene-level active entity for a category, independent of the UI
+	//! selection.  Camera → active camera name; Rasterizer → active
+	//! rasterizer type name; Object/Light/None → empty.  Used by the
+	//! accordion to populate the dropdown with the scene's current
+	//! active entity on first load.  Returns false on null controller.
+	bool RISE_API_SceneEditController_CategoryActiveName(
+		SceneEditController* p, int category, char* buf, unsigned int bufLen );
+
 	//! Monotonic counter — bumped on any structural mutation that
 	//! could change a category's entity list.  Platform UIs cache
 	//! (epoch, category) → entity-name list and re-pull when this

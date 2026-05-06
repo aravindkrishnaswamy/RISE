@@ -508,6 +508,17 @@ private:
     return out;
 }
 
+- (NSString *)activeNameForCategory:(RISEViewportCategory)category {
+    if (!_controller) return @"";
+    const int catInt = static_cast<int>(category);
+    char buf[128] = {0};
+    if (!RISE_API_SceneEditController_CategoryActiveName(_controller, catInt, buf, sizeof(buf))) {
+        return @"";
+    }
+    NSString *s = [NSString stringWithUTF8String:buf];
+    return s ?: @"";
+}
+
 - (RISEViewportCategory)selectionCategory {
     if (!_controller) return RISEViewportCategoryNone;
     const int c = RISE_API_SceneEditController_GetSelectionCategory(_controller);
