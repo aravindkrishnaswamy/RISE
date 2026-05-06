@@ -7191,20 +7191,32 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 	ISampler& loopSampler = loopScope.sampler;
 
 	// Cross-trial dedupe key: (first-vertex world-space position,
-	// chain length).  The previous direction-only key was prone to
-	// false-positive merges of distinct k-vs-k+2 chain topologies
-	// that happened to share the same shading-point→first-vertex
-	// direction.  See the planning doc for the analysis.
-	struct RootKey { Point3 pos; unsigned int chainLen; };
+	// chain length, reflectMask).  Position+length alone is not
+	// sufficient when `BuildSeedChainBranching` produces Fresnel-
+	// branched siblings with the SAME first-vertex but DIFFERENT
+	// chain topology (e.g. one chain refracts at v1, sibling reflects
+	// at v1) — without the mask, the sibling is silently dropped as
+	// a duplicate.  Mirrors the snell-mode dedupe at line ~6517-6532.
+	struct RootKey { Point3 pos; unsigned int chainLen; unsigned long long reflectMask; };
 	std::vector<RootKey> acceptedRoots;
 	acceptedRoots.reserve( mSpecularCasters.size() * 2 + 16 );
 
 	const Scalar dedupeThr = ( config.uniquenessThreshold > 0.0 )
 		? config.uniquenessThreshold : 1e-4;
 
-	auto isDuplicate = [&]( const Point3& fp, unsigned int cl ) -> bool {
+	auto buildReflectMask = []( const std::vector<ManifoldVertex>& ch ) -> unsigned long long {
+		unsigned long long mask = 0;
+		const std::size_t k = std::min<std::size_t>( ch.size(), 64 );
+		for( std::size_t i = 0; i < k; i++ ) {
+			if( ch[i].isReflection ) mask |= ( 1ull << i );
+		}
+		return mask;
+	};
+
+	auto isDuplicate = [&]( const Point3& fp, unsigned int cl, unsigned long long mask ) -> bool {
 		for( const RootKey& rk : acceptedRoots ) {
 			if( rk.chainLen == cl &&
+				rk.reflectMask == mask &&
 				Point3Ops::Distance( rk.pos, fp ) < dedupeThr ) {
 				return true;
 			}
@@ -7317,7 +7329,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 					const Point3 firstPos = mResult.specularChain[0].position;
 					const unsigned int chainLen = static_cast<unsigned int>( mResult.specularChain.size() );
-					if( isDuplicate( firstPos, chainLen ) ) continue;
+					if( isDuplicate( firstPos, chainLen, buildReflectMask( mResult.specularChain ) ) ) continue;
 
 					Vector3 trialDir;
 					RISEPel trialContrib;
@@ -7330,7 +7342,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 					}
 
 					totalContribution = totalContribution + trialContrib;
-					acceptedRoots.push_back( RootKey{ firstPos, chainLen } );
+					acceptedRoots.push_back( RootKey{ firstPos, chainLen, buildReflectMask( mResult.specularChain ) } );
 					validContributions++;
 				}
 			}
@@ -7372,7 +7384,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 			const Point3 firstPos = mResult.specularChain[0].position;
 			const unsigned int chainLen = static_cast<unsigned int>( mResult.specularChain.size() );
-			if( isDuplicate( firstPos, chainLen ) ) continue;
+			if( isDuplicate( firstPos, chainLen, buildReflectMask( mResult.specularChain ) ) ) continue;
 
 			Vector3 dirMain;
 			RISEPel mainContrib;
@@ -7431,7 +7443,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 			mainContrib = mainContrib * static_cast<Scalar>( K );
 			totalContribution = totalContribution + mainContrib;
-			acceptedRoots.push_back( RootKey{ firstPos, chainLen } );
+			acceptedRoots.push_back( RootKey{ firstPos, chainLen, buildReflectMask( mResult.specularChain ) } );
 			validContributions++;
 		}
 	}
@@ -7482,7 +7494,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 				const Point3 firstPos = mResult.specularChain[0].position;
 				const unsigned int chainLen = static_cast<unsigned int>( mResult.specularChain.size() );
-				if( isDuplicate( firstPos, chainLen ) ) continue;
+				if( isDuplicate( firstPos, chainLen, buildReflectMask( mResult.specularChain ) ) ) continue;
 
 				Vector3 trialDir;
 				RISEPel trialContrib;
@@ -7491,7 +7503,7 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 					continue;
 
 				totalContribution = totalContribution + trialContrib;
-				acceptedRoots.push_back( RootKey{ firstPos, chainLen } );
+				acceptedRoots.push_back( RootKey{ firstPos, chainLen, buildReflectMask( mResult.specularChain ) } );
 				validContributions++;
 			}
 		}
@@ -7560,16 +7572,28 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 	SMSLoopSampler loopScope( sampler );
 	ISampler& loopSampler = loopScope.sampler;
 
-	struct RootKey { Point3 pos; unsigned int chainLen; };
+	// Cross-trial dedupe key: (first-vertex pos, chainLen, reflectMask).
+	// See RGB variant for the full rationale.
+	struct RootKey { Point3 pos; unsigned int chainLen; unsigned long long reflectMask; };
 	std::vector<RootKey> acceptedRoots;
 	acceptedRoots.reserve( mSpecularCasters.size() * 2 + 16 );
 
 	const Scalar dedupeThr = ( config.uniquenessThreshold > 0.0 )
 		? config.uniquenessThreshold : 1e-4;
 
-	auto isDuplicate = [&]( const Point3& fp, unsigned int cl ) -> bool {
+	auto buildReflectMask = []( const std::vector<ManifoldVertex>& ch ) -> unsigned long long {
+		unsigned long long mask = 0;
+		const std::size_t k = std::min<std::size_t>( ch.size(), 64 );
+		for( std::size_t i = 0; i < k; i++ ) {
+			if( ch[i].isReflection ) mask |= ( 1ull << i );
+		}
+		return mask;
+	};
+
+	auto isDuplicate = [&]( const Point3& fp, unsigned int cl, unsigned long long mask ) -> bool {
 		for( const RootKey& rk : acceptedRoots ) {
 			if( rk.chainLen == cl &&
+				rk.reflectMask == mask &&
 				Point3Ops::Distance( rk.pos, fp ) < dedupeThr ) {
 				return true;
 			}
@@ -7675,7 +7699,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 
 					const Point3 firstPos = mResult.specularChain[0].position;
 					const unsigned int chainLen = static_cast<unsigned int>( mResult.specularChain.size() );
-					if( isDuplicate( firstPos, chainLen ) ) continue;
+					if( isDuplicate( firstPos, chainLen, buildReflectMask( mResult.specularChain ) ) ) continue;
 
 					Vector3 trialDir;
 					Scalar trialContrib;
@@ -7688,7 +7712,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 					}
 
 					totalContribution += trialContrib;
-					acceptedRoots.push_back( RootKey{ firstPos, chainLen } );
+					acceptedRoots.push_back( RootKey{ firstPos, chainLen, buildReflectMask( mResult.specularChain ) } );
 					validContributions++;
 				}
 			}
@@ -7712,7 +7736,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 
 			const Point3 firstPos = mResult.specularChain[0].position;
 			const unsigned int chainLen = static_cast<unsigned int>( mResult.specularChain.size() );
-			if( isDuplicate( firstPos, chainLen ) ) continue;
+			if( isDuplicate( firstPos, chainLen, buildReflectMask( mResult.specularChain ) ) ) continue;
 
 			Vector3 dirMain;
 			Scalar mainContrib;
@@ -7769,7 +7793,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 
 			mainContrib *= static_cast<Scalar>( K );
 			totalContribution += mainContrib;
-			acceptedRoots.push_back( RootKey{ firstPos, chainLen } );
+			acceptedRoots.push_back( RootKey{ firstPos, chainLen, buildReflectMask( mResult.specularChain ) } );
 			validContributions++;
 		}
 	}
@@ -7814,7 +7838,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 
 				const Point3 firstPos = mResult.specularChain[0].position;
 				const unsigned int chainLen = static_cast<unsigned int>( mResult.specularChain.size() );
-				if( isDuplicate( firstPos, chainLen ) ) continue;
+				if( isDuplicate( firstPos, chainLen, buildReflectMask( mResult.specularChain ) ) ) continue;
 
 				Vector3 trialDir;
 				Scalar trialContrib;
@@ -7823,7 +7847,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 					continue;
 
 				totalContribution += trialContrib;
-				acceptedRoots.push_back( RootKey{ firstPos, chainLen } );
+				acceptedRoots.push_back( RootKey{ firstPos, chainLen, buildReflectMask( mResult.specularChain ) } );
 				validContributions++;
 			}
 		}
