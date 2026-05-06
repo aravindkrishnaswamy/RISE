@@ -91,7 +91,21 @@ void Job::InitializeContainers()
 	RISE_API_CreatePainterManager( &pPntManager );
 	RISE_API_CreateFunction1DManager( &pFunc1DManager );
 	RISE_API_CreateFunction2DManager( &pFunc2DManager );
-	RISE_API_CreateObjectManager( &pObjectManager, false, false, 0, 0 );
+	// Top-level acceleration default: SAH-cost BSP tree over scene objects.
+	// Pre-2026-05 the default was (false, false, 0, 0) — i.e., no top-level
+	// structure, so every ray fell through to ObjectManager's linear loop
+	// over every IObject in the scene.  Profiling on sponza_new (155 mesh
+	// objects) showed ~64 % of CPU in IntersectRay and ~34 % in shadow rays
+	// because each ray was paying ~633 AABB tests / 6 mesh-BVH descents per
+	// ray to reach the actual intersection.  BSPTreeSAH with leaf-target=4
+	// + depth-cap=32 + the existing intersection_cost=80 SAH constant builds
+	// the cost-optimal top-level BVH automatically, then ObjectManager's
+	// own gate `items.size() > nMaxObjectsPerNode` keeps tiny scenes (≤4
+	// objects) on the linear path where BVH overhead would dominate.
+	// SAH-BSP > Octree on architectural / anisotropic geometry distributions
+	// (Sponza columns, big floor plates) since midpoint-split octrees waste
+	// large subtrees on empty space.
+	RISE_API_CreateObjectManager( &pObjectManager, true, false, 4, 32 );
 	RISE_API_CreateLightManager( &pLightManager );
 	RISE_API_CreateModifierManager( &pModManager );
 
