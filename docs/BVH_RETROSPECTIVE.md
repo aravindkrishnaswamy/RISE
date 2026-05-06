@@ -357,6 +357,37 @@ The "modest win for 10s of objects" dismissal in the original deferred list was 
 
 ---
 
+## Tier D2-rev — BVH8 + AVX2 (excised, 2026-05)
+
+The original Tier D2 (BVH8 + AVX-512) was deferred citing AVX-512 hardware availability.  Re-attempted with AVX2 (mainstream since Haswell 2013, present on this dev box) on the assumption that 8-wide tree + SIMD AABB pruning would amortise leaf overhead at half the depth of BVH4.
+
+**Implementation**: `BVH8Node` (256 B / 4 cache lines / `alignas(32)` for AVX2 native loads); `BuildBVH8` collapse pass that absorbs 2 levels of BVH2 per node; `RayBox8` AVX2 kernel + scalar fallback; three `IntersectRay8` overloads paralleling the BVH4 traversal; public `IntersectRay` routes to BVH8 first, then BVH4, then BVH2.  Library project's MSVC `EnableEnhancedInstructionSet` bumped from `StreamingSIMDExtensions2` to `AdvancedVectorExtensions2`.  ARM-NEON path detects no-AVX2 and short-circuits `BuildBVH8` so traversal stays on BVH4.  All BVH unit tests passed; sponza visual smoke test correct.
+
+**Result on the same 3-scene sweep**:
+
+|                          | TLAS BVH4 (D1) | TLAS BVH8 (A1) | Δ |
+|--------------------------|--------------:|---------------:|----:|
+| `bench_pt`              | 13.6 s | 14.5 s | **+6.6 %** |
+| `sponza_new`            | 28.2 s | 30.6 s | **+8.5 %** |
+| `sss_comparison_dragon` |  9.0 s |  9.5 s | **+5.6 %** |
+
+**Why it regressed** (2 parallel adversarial reviewers, correctness + perf):
+- **Per-node visit cost up ~+15–30 %** even when box-test counts dropped slightly: BVH8Node is 2× the cache footprint (256 B vs 128 B), the selection-sort over up to 8 hits is ~3.5× more comparisons (28 vs 8 worst case), the deferred-sibling stack pushes 7 vs 3 children/visit, and `_mm256_load_ps` over 6 SoA bbox arrays = 192 B per node-visit DRAM traffic on cold paths.
+- **Tree-depth math**: Sponza per-mesh BVHs (1–100 tris, depth ~4–5 BVH2 levels) and TLAS (155 objects, depth ~7) collapse from BVH4 depth ~3 to BVH8 depth ~2.  Each ray visits 2–3 nodes either way — the 8-wide SIMD has no depth slack to amortise its node-cost increase.  Even the dragon (47K tris, deepest in the bench set) saves ~3 visits/ray, which at ~+0.8 ns cache-miss/visit ≈ 88 ms across the entire render — vs the ~500 ms regression actually measured.
+- **Break-even mesh size is >1 M tris** where depth halving compounds (xyzdragon 7.2 M tris would benefit, but isn't in the routine bench set).
+- **Global `/arch:AVX2` flag side-effects**: estimated 1–3 % of the regression independent of BVH8.  MSVC autovectorises AVX2 throughout the Library, which incurs AVX↔SSE transition penalties on Skylake-class hardware (~70 cycles/transition) and modest sustained-AVX2 frequency throttling.
+
+**Decision**: excise.  Same Tier B / C4 / D3 pattern — SoTA-on-paper, doesn't translate at this codebase's measured workload scales.  ~400 lines of BVH8 code + the AVX2 compile flag bump reverted; production stays on BVH4 + SSE2.
+
+**Repair paths considered + not pursued** (all dead-on-arrival on the bench set):
+- **Size-gate BVH8** (build only when `nodes.size() > ~5K`): correct in principle but none of the bench scenes hit the threshold, so the gated BVH8 is dead code on routine workloads until xyzdragon-class meshes become production-routine.
+- **Separate compile unit for AVX2** (`BVH_AVX2.cpp` with `/arch:AVX2`, rest of Library back to `/arch:SSE2`): would address the global-flag side-effects but doesn't fix the underlying "wide-tree gives no depth gain at these sizes" core problem.
+- **Smarter collapse** (only emit 8-wide when ≥ 5 candidates available, fall back to 4-wide otherwise): hybrid layout, but the bench set's shallow trees never exceed 4 candidates per node.
+
+**Re-entry conditions**: revisit when the production bench set includes a workload with **routine** mesh sizes ≥ 1 M tris where BVH2 depth ≥ 12.  At that depth the 6+ visit savings/ray clear the per-visit cost increase.  The implementation is preserved in commit history (this session's work) for reference.
+
+**Inherited concern documented for future work**: the `static thread_local std::vector<uint32_t> stack` pattern in BVH4/BVH8 traversal is shared across all `BVH<Element>` instances of the same template instantiation on a given thread.  In-practice safe today because object-BVH and triangle-mesh-BVH are different `Element` types (separate instantiations, separate stacks), but a future re-entrant call within one instantiation type would clobber the stack mid-traversal.  Not a blocker; flag-and-watch.
+
 ## Tier D3 — SoA-packed 4-wide SIMD MT at leaves (excised, 2026-05)
 
 Prototyped immediately after the TLAS migration as a follow-on win.  The thinking: the per-mesh BVH4 already did SIMD ray-vs-AABB at internal nodes; the leaf path was still scalar AoS, calling `MollerTrumboreFloat` once per triangle in the leaf primitive list.  A 4-wide SoA SIMD MT kernel (SSE/NEON) at the leaf, with on-the-fly AoS→SoA transpose of `fastFilter[]` data, looked like an obvious follow-on to the existing wide-tree pattern.
@@ -383,7 +414,7 @@ If a future revisit happens, do build-time SoA packing first — the on-the-fly 
 
 ## Deferred / not in scope
 
-- **Tier D2 — BVH8 + AVX-512.**  None of the current dev machines (M-series Apple Silicon, Core Ultra 9 Meteor Lake, Snapdragon Oryon) have AVX-512.  Opt-in for workstation/server hardware if RISE ever ships there.  **AVX2 8-wide on the Windows dev box** is a related but distinct path; would benefit from the same wide-tree benefits without the AVX-512 hardware constraint.
+- **Tier D2 — BVH8 + AVX-512.**  Opt-in for workstation/server hardware if RISE ever ships there.  AVX2 BVH8 was attempted (Tier D2-rev above) on this codebase's bench set and regressed at all measured workload scales — re-enter only when production routinely renders meshes ≥ 1 M tris where BVH2 depth ≥ 12 makes the wider tree's depth halving worth its per-node cost increase.
 - **Tier E1 — Windows i9 build + bench validation.**  The SSE2 `RayBox4` path is now exercised on Windows (Tier D1 sweep) — done.
 - **Tier E2 — Galaxy Fold 7 / Android arm64 NDK build.**  Same NEON path as Apple Silicon; should "just work" — 1–2 hours of setup + bench.
 - **Sutherland-Hodgman polygon clipping for SBVH straddlers** (was Tier B2): only relevant if SBVH gets revisited, which it likely won't unless a future workload shifts the balance.
