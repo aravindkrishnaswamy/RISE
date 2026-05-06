@@ -58,8 +58,10 @@ namespace { constexpr RISE::Scalar kPhysFailPerturb  = RISE::Scalar( 0.10 ); } /
 // vertex (not all vertices like E did) by a random tangent offset, and
 // retry Newton up to N times.  More targeted than E.  Default 0 (off).
 #define SMS_T3_POST_NEWTON_FAILING_VERTEX_RETRY 0
+#if SMS_T3_POST_NEWTON_FAILING_VERTEX_RETRY
 namespace { constexpr unsigned int kT3FailingVertexRetries = 4; }
 namespace { constexpr RISE::Scalar kT3PerturbMag           = RISE::Scalar( 0.10 ); }
+#endif
 
 // Newton step-norm cap.  Bounds each Newton iter's max world-space
 // vertex displacement to <kNewtonStepNormCapFrac> × (mean inter-vertex
@@ -8115,7 +8117,32 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		}
 	}
 
-	std::vector<Point3> acceptedRootPositions;
+	// Dedupe key: (firstPos, chainLen, reflectMask) — same three-field
+	// scheme as RGB snell mode (`EvaluateAtShadingPoint` line ~6517).
+	// Position-only dedupe (the prior NM-snell behaviour) silently
+	// collapsed Fresnel-branched siblings AND distinct k-vs-k+2 chain
+	// topologies that shared a first-vertex; mirroring the RGB snell
+	// scheme keeps spectral and RGB results consistent on Fresnel-
+	// branched scenes (`branchingThreshold < 1.0`).
+	std::vector<Point3>             acceptedRootPositions;
+	std::vector<unsigned int>       acceptedRootChainLens;
+	std::vector<unsigned long long> acceptedRootReflectMasks;
+	auto buildReflectMask = []( const std::vector<ManifoldVertex>& ch ) -> unsigned long long {
+		unsigned long long mask = 0;
+		const std::size_t k = std::min<std::size_t>( ch.size(), 64 );
+		for( std::size_t i = 0; i < k; i++ ) {
+			if( ch[i].isReflection ) mask |= ( 1ull << i );
+		}
+		return mask;
+	};
+	// Per-trial unclamped geometric term + pre-geometric contribution
+	// for the post-loop sum-clamp (matches the RGB snell-mode pattern at
+	// `EvaluateAtShadingPoint` line ~6536).  Sum-level clamping bounds
+	// the per-pixel total at `maxGeometricTerm` instead of
+	// `N × maxGeometricTerm` (per-path clamping, the prior NM-snell
+	// behaviour).
+	std::vector<Scalar> acceptedGeoTerm;
+	std::vector<Scalar> acceptedPreGeo;
 	Scalar totalContribution = 0.0;
 	unsigned int validTrials = 0;
 
@@ -8231,12 +8258,18 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 
 		if( !mResult.valid ) continue;
 
-		// Dedupe: skip if we've already accepted a root at this first-vertex.
+		// Dedupe: skip if we've already accepted a root with the same
+		// (firstPos, chainLen, reflectMask).  Three-field key mirrors
+		// RGB snell mode — see commit log on this fix block.
 		const Point3& firstPos = mResult.specularChain[0].position;
+		const unsigned int chainLen = static_cast<unsigned int>( mResult.specularChain.size() );
+		const unsigned long long reflectMask = buildReflectMask( mResult.specularChain );
 		bool duplicate = false;
 		for( unsigned int r = 0; r < acceptedRootPositions.size(); r++ )
 		{
-			if( Point3Ops::Distance( firstPos, acceptedRootPositions[r] ) < dedupeThr )
+			if( acceptedRootChainLens[r] == chainLen &&
+				acceptedRootReflectMasks[r] == reflectMask &&
+				Point3Ops::Distance( firstPos, acceptedRootPositions[r] ) < dedupeThr )
 			{
 				duplicate = true;
 				break;
@@ -8324,7 +8357,11 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
 			mResult.specularChain, pos, lightSample.position, lightSample.normal );
 		const Scalar smsGeometric = G_x_v1 * detDvDy;
-		const Scalar clampedGeometric = fmin( smsGeometric, config.maxGeometricTerm );
+		// Sum-level clamp (matches RGB snell): leave the geometric term
+		// UNCLAMPED here and apply the cap to the SUM across all unique
+		// preimages after the trial loop.  Per-path clamping (the prior
+		// behaviour) would let a fold caustic with N preimages emit up
+		// to `N × maxGeometricTerm`.
 
 		// cosAtLight is no longer multiplied here — it is implicit in the
 		// Jacobian.  Keep its evaluation above for the backface-cull guard
@@ -8333,7 +8370,7 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 
 		Scalar trialContribution = fBSDF
 			* chainThroughput
-			* Le * cosAtShading * clampedGeometric
+			* Le * cosAtShading * smsGeometric
 			/ (lightSample.pdfPosition * lightSample.pdfSelect);
 
 		if( mResult.pdf > 1e-20 )
@@ -8342,11 +8379,34 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		}
 
 		totalContribution += trialContribution;
+		acceptedGeoTerm.push_back( smsGeometric );
+		acceptedPreGeo.push_back(
+			smsGeometric > 1e-20 ? ( trialContribution / smsGeometric ) : 0.0 );
 		acceptedRootPositions.push_back( firstPos );
+		acceptedRootChainLens.push_back( chainLen );
+		acceptedRootReflectMasks.push_back( reflectMask );
 		validTrials++;
 	}
 
 	if( validTrials == 0 ) return result;
+
+	// Sum-level geometric clamp (NM snell mode; mirrors RGB snell at
+	// `EvaluateAtShadingPoint` line ~7050).
+	if( config.maxGeometricTerm > 0 )
+	{
+		Scalar sumGeoTerm = 0;
+		for( Scalar g : acceptedGeoTerm ) sumGeoTerm += g;
+
+		if( sumGeoTerm > config.maxGeometricTerm )
+		{
+			const Scalar scale = config.maxGeometricTerm / sumGeoTerm;
+			totalContribution = 0.0;
+			for( std::size_t i = 0; i < acceptedPreGeo.size(); i++ )
+			{
+				totalContribution += acceptedPreGeo[i] * ( acceptedGeoTerm[i] * scale );
+			}
+		}
+	}
 
 	result.contribution = totalContribution;  // Σ_r f_r over unique roots
 	result.misWeight = 1.0;  // PDF weighting already folded into contribution
