@@ -757,7 +757,9 @@ namespace RISE
 				const ManifoldResult& mResult,
 				const IRayCaster& caster,
 				Vector3& outDir,
-				RISEPel& outContribution
+				RISEPel& outContribution,
+				bool clampGeometric = true,           ///< When false, skip the per-path `min(smsGeometric, maxGeometricTerm)` clamp.  Caller must apply the cap (typically a sum-level clamp across all unique preimages — see `EvaluateAtShadingPoint` for the pattern).
+				Scalar* outSmsGeometric = nullptr     ///< When `clampGeometric == false`, receives the unclamped `G_x_v1 × |det dv/dy|` so the caller can sum-clamp.
 				) const;
 
 			/// Spectral counterpart of `ComputeTrialContribution`.
@@ -773,7 +775,9 @@ namespace RISE
 				const IRayCaster& caster,
 				const Scalar nm,
 				Vector3& outDir,
-				Scalar& outContribution
+				Scalar& outContribution,
+				bool clampGeometric = true,           ///< See `ComputeTrialContribution`.
+				Scalar* outSmsGeometric = nullptr     ///< See `ComputeTrialContribution`.
 				) const;
 
 			// ============================================================

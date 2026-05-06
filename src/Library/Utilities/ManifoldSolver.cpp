@@ -5909,7 +5909,9 @@ bool ManifoldSolver::ComputeTrialContribution(
 	const ManifoldResult& mResult,
 	const IRayCaster& caster,
 	Vector3& outDir,
-	RISEPel& outContribution
+	RISEPel& outContribution,
+	bool clampGeometric,
+	Scalar* outSmsGeometric
 	) const
 {
 	outContribution = RISEPel( 0, 0, 0 );
@@ -6027,7 +6029,9 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	const IRayCaster& caster,
 	const Scalar nm,
 	Vector3& outDir,
-	Scalar& outContribution
+	Scalar& outContribution,
+	bool clampGeometric,
+	Scalar* outSmsGeometric
 	) const
 {
 	outContribution = 0;
@@ -6103,11 +6107,16 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	const Scalar detDvDy = ComputeLightToFirstVertexJacobianDet(
 		mResult.specularChain, pos, lightSample.position, lightSample.normal );
 	const Scalar smsGeometric = G_x_v1 * detDvDy;
-	const Scalar clampedGeometric = std::fmin( smsGeometric, config.maxGeometricTerm );
+	if( outSmsGeometric ) {
+		*outSmsGeometric = smsGeometric;
+	}
+	const Scalar effectiveGeometric = clampGeometric
+		? std::fmin( smsGeometric, config.maxGeometricTerm )
+		: smsGeometric;
 
 	outContribution = fBSDF
 		* chainThroughput
-		* Le * cosAtShading * clampedGeometric
+		* Le * cosAtShading * effectiveGeometric
 		/ ( lightSample.pdfPosition * lightSample.pdfSelect );
 
 	return true;
@@ -7288,6 +7297,16 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 	RISEPel totalContribution( 0, 0, 0 );
 	unsigned int validContributions = 0;
 
+	// Per-trial unclamped geometric term + pre-geometric contribution,
+	// matching the snell-mode pattern at `EvaluateAtShadingPoint`
+	// line ~6536-6548.  Allows applying the `config.maxGeometricTerm`
+	// cap to the SUM across all unique preimages instead of to each
+	// trial individually.  Per-trial clamping (the prior behaviour)
+	// would let a fold caustic with N preimages emit up to
+	// N × maxGeometricTerm; sum-level clamp bounds total at one cap.
+	std::vector<Scalar>  acceptedGeoTerm;   ///< unclamped G_x_v1 × |det dv/dy|
+	std::vector<RISEPel> acceptedPreGeo;    ///< trialContribution / smsGeoUsed (post proposalPdf division)
+
 	// Per-caster Mitsuba-style sum (manifold_ss / manifold_ms iterate
 	// every caster and accrue one independent estimate per shape).
 	for( const IObject* pCasterObj : mSpecularCasters )
@@ -7300,8 +7319,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 			// Mitsuba `manifold_ss.cpp:142-197`).  Per caster, run M
 			// independent uniform-area samples; accept each unique
 			// converged solution; sum unweighted.  Cross-caster dedupe
-			// key is (first-vertex-pos, chainLen) so a chain rediscovered
-			// by a sibling caster contributes exactly once.
+			// key is (first-vertex-pos, chainLen, reflectMask) so a chain
+			// rediscovered by a sibling caster contributes exactly once
+			// AND a Fresnel-branched sibling at the same first-vertex
+			// counts as distinct (see commit e853ab8).
 			//
 			// `BuildSeedChainBranching` may return multiple seed chains
 			// per uniform-area sample when a Fresnel-decision-point's
@@ -7333,8 +7354,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 					Vector3 trialDir;
 					RISEPel trialContrib;
+					Scalar smsGeometric = 0;
 					if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
-						pBSDF, lightSample, mResult, caster, trialDir, trialContrib ) )
+						pBSDF, lightSample, mResult, caster, trialDir, trialContrib,
+						/*clampGeometric=*/ false, &smsGeometric ) )
 						continue;
 
 					if( seedResult.proposalPdf > 1e-20 ) {
@@ -7342,6 +7365,9 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 					}
 
 					totalContribution = totalContribution + trialContrib;
+					acceptedGeoTerm.push_back( smsGeometric );
+					acceptedPreGeo.push_back( trialContrib *
+						( smsGeometric > 1e-20 ? (1.0 / smsGeometric) : 0.0 ) );
 					acceptedRoots.push_back( RootKey{ firstPos, chainLen, buildReflectMask( mResult.specularChain ) } );
 					validContributions++;
 				}
@@ -7498,11 +7524,16 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 				Vector3 trialDir;
 				RISEPel trialContrib;
+				Scalar smsGeometric = 0;
 				if( !ComputeTrialContribution( pos, geomNormal, shadingNormal, onb, woOutgoing,
-					pBSDF, lightSample, mResult, caster, trialDir, trialContrib ) )
+					pBSDF, lightSample, mResult, caster, trialDir, trialContrib,
+					/*clampGeometric=*/ false, &smsGeometric ) )
 					continue;
 
 				totalContribution = totalContribution + trialContrib;
+				acceptedGeoTerm.push_back( smsGeometric );
+				acceptedPreGeo.push_back( trialContrib *
+					( smsGeometric > 1e-20 ? (1.0 / smsGeometric) : 0.0 ) );
 				acceptedRoots.push_back( RootKey{ firstPos, chainLen, buildReflectMask( mResult.specularChain ) } );
 				validContributions++;
 			}
@@ -7510,6 +7541,31 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 	}
 
 	if( validContributions == 0 ) return result;
+
+	// Sum-level geometric clamp.  Mirror snell-mode's pattern at line
+	// ~7050: if total geometric term across all unique preimages
+	// exceeds `config.maxGeometricTerm`, scale every per-trial
+	// contribution down so the sum equals the cap.  Preserves the
+	// relative weighting between preimages (caustic shape is still
+	// resolved) while bounding the pixel from fold-caustic firefly
+	// accumulation.  Without this, a fold caustic with N preimages
+	// could emit up to `N × maxGeometricTerm`.
+	if( config.maxGeometricTerm > 0 )
+	{
+		Scalar sumGeoTerm = 0;
+		for( Scalar g : acceptedGeoTerm ) sumGeoTerm += g;
+
+		if( sumGeoTerm > config.maxGeometricTerm )
+		{
+			const Scalar scale = config.maxGeometricTerm / sumGeoTerm;
+			totalContribution = RISEPel( 0, 0, 0 );
+			for( std::size_t i = 0; i < acceptedPreGeo.size(); i++ )
+			{
+				totalContribution = totalContribution +
+					acceptedPreGeo[i] * ( acceptedGeoTerm[i] * scale );
+			}
+		}
+	}
 
 	result.contribution = totalContribution;
 	result.misWeight = 1.0;
@@ -7676,6 +7732,12 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 	Scalar totalContribution = 0.0;
 	unsigned int validContributions = 0;
 
+	// Per-trial unclamped geometric term + pre-geometric contribution
+	// for sum-level clamp (see RGB EvaluateAtShadingPointUniform for
+	// the rationale).
+	std::vector<Scalar> acceptedGeoTerm;
+	std::vector<Scalar> acceptedPreGeo;
+
 	for( const IObject* pCasterObj : mSpecularCasters )
 	{
 		if( !pCasterObj ) continue;
@@ -7703,8 +7765,10 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 
 					Vector3 trialDir;
 					Scalar trialContrib;
+					Scalar smsGeometric = 0;
 					if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
-						pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib ) )
+						pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib,
+						/*clampGeometric=*/ false, &smsGeometric ) )
 						continue;
 
 					if( seedResult.proposalPdf > 1e-20 ) {
@@ -7712,6 +7776,9 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 					}
 
 					totalContribution += trialContrib;
+					acceptedGeoTerm.push_back( smsGeometric );
+					acceptedPreGeo.push_back(
+						smsGeometric > 1e-20 ? ( trialContrib / smsGeometric ) : 0.0 );
 					acceptedRoots.push_back( RootKey{ firstPos, chainLen, buildReflectMask( mResult.specularChain ) } );
 					validContributions++;
 				}
@@ -7842,11 +7909,16 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 
 				Vector3 trialDir;
 				Scalar trialContrib;
+				Scalar smsGeometric = 0;
 				if( !ComputeTrialContributionNM( pos, geomNormal, shadingNormal, onb, woOutgoing,
-					pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib ) )
+					pBSDF, lightSample, mResult, caster, nm, trialDir, trialContrib,
+					/*clampGeometric=*/ false, &smsGeometric ) )
 					continue;
 
 				totalContribution += trialContrib;
+				acceptedGeoTerm.push_back( smsGeometric );
+				acceptedPreGeo.push_back(
+					smsGeometric > 1e-20 ? ( trialContrib / smsGeometric ) : 0.0 );
 				acceptedRoots.push_back( RootKey{ firstPos, chainLen, buildReflectMask( mResult.specularChain ) } );
 				validContributions++;
 			}
@@ -7854,6 +7926,24 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 	}
 
 	if( validContributions == 0 ) return result;
+
+	// Sum-level geometric clamp (NM/spectral; mirrors RGB
+	// EvaluateAtShadingPointUniform).
+	if( config.maxGeometricTerm > 0 )
+	{
+		Scalar sumGeoTerm = 0;
+		for( Scalar g : acceptedGeoTerm ) sumGeoTerm += g;
+
+		if( sumGeoTerm > config.maxGeometricTerm )
+		{
+			const Scalar scale = config.maxGeometricTerm / sumGeoTerm;
+			totalContribution = 0.0;
+			for( std::size_t i = 0; i < acceptedPreGeo.size(); i++ )
+			{
+				totalContribution += acceptedPreGeo[i] * ( acceptedGeoTerm[i] * scale );
+			}
+		}
+	}
 
 	result.contribution = totalContribution;
 	result.misWeight = 1.0;
