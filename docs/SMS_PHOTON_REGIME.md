@@ -145,6 +145,74 @@ ROI.  For slab-close-class scenes (snell-blocked), photons go from
 — enabling photons is the difference between SMS being usable and
 being silently zero.
 
+## Mode/photon asymmetry in unbiased mode
+
+There is an intentional, mathematically-motivated asymmetry between
+how snell mode and uniform mode handle photons in unbiased mode
+(`sms_biased FALSE`):
+
+| | Snell mode | Uniform mode |
+|---|---|---|
+| **Biased + photons** | ✓ used | ✓ used (separate post-loop pass) |
+| **Unbiased + photons** | ✓ used (heuristic 1/p) | ✗ **skipped** |
+
+The skip in uniform unbiased is not a bug.  It reflects the different
+estimators each mode uses:
+
+### Uniform unbiased = strict Mitsuba Bernoulli (proposal-matched)
+
+Uniform mode's unbiased estimator (Zeltner 2020 §4.3 Algorithm 2,
+Mitsuba `manifold_ss.cpp`) is a textbook Bernoulli:
+
+1. Main trial: uniform-area sample on caster shape → Snell-trace →
+   seed → Newton.
+2. K-loop: keep doing **the same uniform-area-sample proposal** until
+   one fresh sample lands in the same basin.
+3. K = first-success-index → E[K] = 1/p_uniform → contribution × K
+   is unbiased.
+
+For the K count to correspond to 1/p_uniform, **every retry must use
+the same proposal as the main trial**.  Photon seeds come from a
+*different* proposal (light-emit-trace + kd-tree query), and mixing
+them into the K-loop would bias the estimator.  Skipping photons in
+uniform unbiased is mathematically required.
+
+### Snell unbiased = RISE basin-width heuristic (proposal-agnostic)
+
+Snell mode does not have a Bernoulli K-loop.  Instead, every Solve
+call internally invokes `EstimatePDF` (`ManifoldSolver.cpp` ~5061),
+which:
+
+1. Perturbs the seed by ±0.1 in tangent plane.
+2. Counts how many perturbations re-converge to the same root.
+3. Returns the count as a basin-width estimate.
+
+This heuristic is **proposal-agnostic** — it perturbs around whatever
+seed it receives, regardless of how that seed was generated.  Snell-
+traced seeds, photon-derived seeds, and surface-sample seeds all get
+the same basin-width treatment.  Strictly speaking this is not the
+classical Bernoulli unbiased estimator (`EstimatePDF` doesn't
+reproduce the snell-trace's deterministic proposal), but it's a
+widely-used SMS-literature heuristic for non-uniform proposals.
+
+Because the heuristic doesn't depend on the source proposal, photon
+seeds slot in cleanly: each photon's basin width is estimated
+independently.  The estimator is no more biased with photons than
+without them.
+
+### Practical guidance
+
+- **Want photons + unbiased + Mitsuba-strict?**  Not directly
+  supported.  Switch to biased (the photon-aided extension at
+  `EvaluateAtShadingPointUniform` line ~7421 is biased-only).
+- **Want photons + unbiased + RISE flavoured?**  Use snell mode.
+- **Want photons + biased?**  Both modes work (see
+  decision tree above).
+
+The asymmetry is documented at the seedingMode dispatch in
+`ManifoldSolver.cpp` (the inline comment on the `else` branch of
+`if( config.biased )`).
+
 ## Open question: when does uniform+ph beat snell+ph?
 
 On diacaustic, `uniform+ph` was best (ratio 0.948 vs `snell+ph` 0.738).

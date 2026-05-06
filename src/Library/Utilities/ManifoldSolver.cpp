@@ -7339,10 +7339,28 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 		{
 			// Unbiased mode: 1 main trial + geometric-distribution
 			// Bernoulli loop (`K = first-success-index`, `E[K] = 1/p`,
-			// contribution scaled by K).  Skip photon-aided seeds in
-			// this branch — Bernoulli requires the trial proposal
-			// distribution to match the main solve's, and the photon
-			// proposal is a different distribution.
+			// contribution scaled by K).  This is the strict Mitsuba-
+			// faithful Bernoulli estimator (Zeltner 2020 §4.3 Algorithm
+			// 2): for the K count to correspond to 1/p_uniform,
+			// EVERY trial in the K-loop must use the SAME proposal
+			// distribution as the main solve — uniform-area sampling
+			// on the caster shape.  Mixing in photon-aided seeds
+			// would bias the estimator because their proposal is
+			// different (light-emit-trace + kd-tree query, not
+			// uniform-on-shape).
+			//
+			// Snell mode (`EvaluateAtShadingPoint`) IS a different
+			// estimator: its unbiased path uses `EstimatePDF`'s
+			// tangent-perturbation basin-width heuristic, which is
+			// proposal-agnostic and therefore can integrate any seed
+			// source including photons.  See `docs/SMS_PHOTON_REGIME.md`
+			// "Mode/photon asymmetry" for the analysis.
+			//
+			// Practical: if you need photons + unbiased, use
+			// `sms_seeding "snell"`.  If you need strict Mitsuba
+			// uniform-mode unbiased + photons, switch to biased
+			// (the photon-aided extension below at line ~7421
+			// runs in biased uniform mode).
 			std::vector<ManifoldVertex> trialSeed;
 			if( !buildSeedFromUniformOnCaster( pCasterObj, trialSeed ) ) continue;
 
@@ -7677,6 +7695,12 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 		}
 		else
 		{
+			// Unbiased mode (NM): same strict-Mitsuba Bernoulli K-loop
+			// as the RGB variant.  Photon-aided seeds are deliberately
+			// skipped because their proposal distribution doesn't match
+			// uniform-on-shape — see the RGB variant's full comment for
+			// the math + asymmetry vs. snell mode's basin-width
+			// heuristic estimator.
 			std::vector<ManifoldVertex> trialSeed;
 			if( !buildSeedFromUniformOnCaster( pCasterObj, trialSeed ) ) continue;
 
