@@ -3528,7 +3528,10 @@ namespace {
 			const unsigned int range = static_cast<unsigned int>( seeds.size() - i );
 			const unsigned int j = i + static_cast<unsigned int>(
 				sampler.Get1D() * range );
-			const unsigned int jj = ( j >= seeds.size() ) ? seeds.size() - 1 : j;
+			const std::vector<SMSPhoton>::size_type jj =
+				( static_cast<std::vector<SMSPhoton>::size_type>( j ) >= seeds.size() ) ?
+					( seeds.size() - 1 ) :
+					static_cast<std::vector<SMSPhoton>::size_type>( j );
 			if( jj != i ) std::swap( seeds[i], seeds[jj] );
 		}
 		seeds.resize( cap );

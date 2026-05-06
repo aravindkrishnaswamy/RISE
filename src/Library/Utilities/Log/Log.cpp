@@ -79,10 +79,18 @@ void Log::Print( LOG_ENUM eType, const char * szMessage ) const
 	strncpy( le.szMessage, szMessage, MAX_STR_SIZE );
 	le.eType = eType;
 
+	// Hold mutexPrinters across the iteration: AddPrinter /
+	// RemoveAllPrinters both lock it, so concurrent mutation
+	// would otherwise tear iterators (a freed std::list node
+	// dereferenced as ILogPrinter* dispatches through a garbage
+	// vtable, which can scribble random memory and trip stack
+	// canaries downstream).
+	mutexPrinters.lock();
 	PrintersList::const_iterator		i, e;
 	for( i=printersList.begin(), e=printersList.end(); i!=e; i++ ) {
 		(*i)->Print( le );
 	}
+	mutexPrinters.unlock();
 }
 
 void Log::PrintEx( LOG_ENUM eType, const char * szFormat, ... ) const
@@ -100,18 +108,23 @@ void Log::PrintEx( LOG_ENUM eType, const char * szFormat, ... ) const
 	va_end(list);
 	le.eType = eType;
 
+	// See Print() above for why the iteration is locked.
+	mutexPrinters.lock();
 	PrintersList::const_iterator		i, e;
 	for( i=printersList.begin(), e=printersList.end(); i!=e; i++ ) {
 		(*i)->Print( le );
 	}
+	mutexPrinters.unlock();
 }
 
 void Log::FlushPrinters()
 {
+	mutexPrinters.lock();
 	PrintersList::const_iterator		i, e;
 	for( i=printersList.begin(), e=printersList.end(); i!=e; i++ ) {
 		(*i)->Flush( );
 	}
+	mutexPrinters.unlock();
 }
 
 //
