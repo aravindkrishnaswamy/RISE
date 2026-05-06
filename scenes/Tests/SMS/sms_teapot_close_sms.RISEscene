@@ -26,7 +26,7 @@ pathtracing_pel_rasterizer
 	sms_threshold                 1e-4
 	sms_max_chain_depth           10
 	sms_biased                    TRUE
-	sms_multi_trials              16
+#	sms_multi_trials              16
 	sms_photon_count              100000
 	pixel_filter                  box
 }
