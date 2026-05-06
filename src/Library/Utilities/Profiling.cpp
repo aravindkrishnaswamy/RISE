@@ -1,7 +1,7 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  Profiling.cpp - Definition of the global profiling counters
-//  and the report printing function.
+//  Profiling.cpp - Definition of the global profiling counters,
+//  phase timing buckets, and the report printing function.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -22,6 +22,20 @@
 namespace RISE
 {
 	ProfilingCounters g_profilingCounters;
+	std::atomic<unsigned long long> g_phaseNanos[kPhase_Count];
+
+	namespace
+	{
+		const char* kPhaseNames[kPhase_Count] = {
+			"Render (total wall)",
+			"AccelBuild",
+			"GeomPrimary  (IntersectRay)",
+			"GeomShadow   (IntersectShadowRay)",
+			"BSDFScatter  (ISPF::Scatter*)",
+			"RadianceMap  (env lookup)",
+			"TexturePainter (GetColor/GetAlpha)"
+		};
+	}
 
 	void PrintProfilingReport()
 	{
@@ -48,9 +62,55 @@ namespace RISE
 		line( "============================================" );
 		line( "  RISE Profiling Report" );
 		line( "============================================" );
-		linef( "  Primary rays:                %llu", c.nPrimaryRays.load() );
-		linef( "  Shadow rays:                 %llu", c.nShadowRays.load() );
+
+		// --- Phase wall-clock breakdown ---------------------------------
+		const unsigned long long renderNs = g_phaseNanos[kPhase_Render].load();
+		line( "  Phase wall-clock (sum across all worker threads):" );
+		linef( "    %-36s  %12s  %8s  %8s",
+			"phase", "ms", "%render", "%CPUbusy" );
+
+		// CPU-busy denominator = sum of all per-leaf phases (not Render
+		// itself, which is the wall-clock outer wrapper).  This gives
+		// the share of *measured worker CPU time* spent in each phase,
+		// useful when threads are well-saturated.
+		unsigned long long busyNs = 0;
+		for( int i = 1; i < kPhase_Count; ++i ) {
+			busyNs += g_phaseNanos[i].load();
+		}
+
+		for( int i = 0; i < kPhase_Count; ++i ) {
+			const unsigned long long ns = g_phaseNanos[i].load();
+			const double ms = ns / 1.0e6;
+			const double pctRender = renderNs > 0 ? (100.0 * ns / renderNs) : 0.0;
+			const double pctBusy   = (i > 0 && busyNs > 0) ? (100.0 * ns / busyNs) : 0.0;
+			if( i == 0 ) {
+				linef( "    %-36s  %12.1f  %8s  %8s",
+					kPhaseNames[i], ms, "100.0%", "-" );
+			} else {
+				linef( "    %-36s  %12.1f  %7.2f%%  %7.2f%%",
+					kPhaseNames[i], ms, pctRender, pctBusy );
+			}
+		}
+
 		line(  "  ---" );
+
+		// --- Ray counts -------------------------------------------------
+		linef( "  Pixels resolved:             %llu", c.nPixelsResolved.load() );
+		linef( "  Samples accumulated:         %llu", c.nSamplesAccumulated.load() );
+		linef( "  Primary/scatter rays:        %llu", c.nPrimaryRays.load() );
+		linef( "  Shadow rays:                 %llu", c.nShadowRays.load() );
+		linef( "  Misses (env hits):           %llu", c.nMisses.load() );
+		if( c.nPixelsResolved.load() > 0 ) {
+			const double r = (double)c.nPrimaryRays.load() / (double)c.nPixelsResolved.load();
+			linef( "  Primary rays / pixel:        %.2f", r );
+		}
+		if( c.nPrimaryRays.load() > 0 ) {
+			const double s = (double)c.nShadowRays.load() / (double)c.nPrimaryRays.load();
+			linef( "  Shadow rays / primary ray:   %.2f", s );
+		}
+		line(  "  ---" );
+
+		// --- Object/triangle/BVH ---------------------------------------
 		linef( "  Object intersection tests:   %llu", c.nObjectIntersectionTests.load() );
 		linef( "  Object intersection hits:    %llu", c.nObjectIntersectionHits.load() );
 		if( c.nObjectIntersectionTests.load() > 0 ) {
@@ -79,6 +139,12 @@ namespace RISE
 				(double)c.nTriangleIntersectionTests.load() /
 				(c.nBSPNodeTraversals.load() + c.nOctreeNodeTraversals.load()) );
 		}
+		line(  "  ---" );
+
+		// --- Shading / texture / shadow cache --------------------------
+		linef( "  BSDF scatter calls:          %llu", c.nBSDFScatterCalls.load() );
+		linef( "  Texture-painter samples:     %llu", c.nTexturePainterSamples.load() );
+		linef( "  Radiance-map lookups:        %llu", c.nRadianceMapLookups.load() );
 		line(  "  ---" );
 		linef( "  Shadow cache hits:           %llu", c.nShadowCacheHits.load() );
 		linef( "  Shadow cache misses:         %llu", c.nShadowCacheMisses.load() );

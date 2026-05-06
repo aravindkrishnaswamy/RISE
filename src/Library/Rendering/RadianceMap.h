@@ -17,6 +17,7 @@
 #include "../Interfaces/IRadianceMap.h"
 #include "../Interfaces/IPainter.h"
 #include "../Utilities/Reference.h"
+#include "../Utilities/Profiling.h"
 
 namespace RISE
 {
@@ -48,11 +49,14 @@ namespace RISE
 
 			//! Returns the radiance from that direction in the scene
 			/// \return The radiance
-			RISEPel GetRadiance( 
+			RISEPel GetRadiance(
 				const Ray& ray,
 				const RasterizerState& rast
 				) const
 			{
+				RISE_PROFILE_PHASE(RadianceMap);
+				RISE_PROFILE_INC(nRadianceMapLookups);
+
 				// Transform the world co-ordinates to the texture lookup
 				Vector3 v = Vector3Ops::Transform( mxtransform, ray.Dir() );
 				const Scalar r = 0.159154943*acos(-v.z)/sqrt(v.x*v.x + v.y*v.y);
@@ -60,7 +64,7 @@ namespace RISE
 				RayIntersectionGeometric rig( ray, rast );
 				rig.ptCoord.x = 0.5 + v.x * r;
 				rig.ptCoord.y = 0.5 - v.y * r;
-				
+
 				return pRadianceMap.GetColor( rig ) * dScale;
 			}
 
@@ -71,6 +75,9 @@ namespace RISE
 				const Scalar nm
 				) const
 			{
+				RISE_PROFILE_PHASE(RadianceMap);
+				RISE_PROFILE_INC(nRadianceMapLookups);
+
 				Vector3 v = Vector3Ops::Transform( mxtransform, ray.Dir() );
 				const Scalar r = 0.159154943*acos(-v.z)/sqrt(v.x*v.x + v.y*v.y);
 

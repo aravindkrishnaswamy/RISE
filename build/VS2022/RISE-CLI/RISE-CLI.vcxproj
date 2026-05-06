@@ -71,7 +71,7 @@
       <WarningLevel>Level3</WarningLevel>
       <TreatWarningAsError>false</TreatWarningAsError>
       <Optimization>Full</Optimization>
-      <PreprocessorDefinitions>COLORS_RGB;MERSENNE53;NO_TIFF_SUPPORT;WIN32;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>COLORS_RGB;MERSENNE53;NO_TIFF_SUPPORT;WIN32;_CRT_SECURE_NO_WARNINGS;RISE_ENABLE_PROFILING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)..\..\src\Library;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <DisableSpecificWarnings>4250;%(DisableSpecificWarnings)</DisableSpecificWarnings>

@@ -21,7 +21,7 @@
 #include "../Interfaces/IObjectManager.h"
 #include "../Utilities/Threads/Threads.h"
 #include "GenericManager.h"
-#include "../BSPTreeSAH.h"
+#include "../Acceleration/BVH.h"
 #include "../Octree.h"
 
 namespace RISE
@@ -36,7 +36,11 @@ namespace RISE
 		protected:
 			virtual ~ObjectManager();
 
-			mutable BSPTreeSAH<const IObjectPriv*>* pBSPtree;
+			// Top-level acceleration: SAH BVH (BVH4-collapsed, SIMD AABB
+			// test) over scene objects.  bUseBSPtree is the constructor
+			// gate name kept for back-compat; semantically it now means
+			// "build a top-level BVH".
+			mutable BVH<const IObjectPriv*>*    pBVH;
 			mutable Octree<const IObjectPriv*>* pOctree;
 
 			bool bUseBSPtree;
@@ -55,7 +59,7 @@ namespace RISE
 			};
 			mutable ShadowCacheSlot* shadowCache;
 
-			void CreateBSPTree() const;
+			void CreateBVH() const;
 			void CreateOctree() const;
 
 		public:

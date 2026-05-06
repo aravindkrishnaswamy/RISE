@@ -21,7 +21,7 @@ Scene construction via `IJob`/`IScenePriv`: objects, lights, materials, cameras,
 
 ### 2. Prepare Phase (build acceleration structures)
 
-`ObjectManager::PrepareForRendering()` is called by each rasterizer after scene attach (and, for animation, after each frame's time evaluation). This eagerly builds BSP trees, octrees, and shadow caches from current world-space bounding boxes. After this call, the spatial structures are immutable for the duration of that render pass.
+`ObjectManager::PrepareForRendering()` is called by each rasterizer after scene attach (and, for animation, after each frame's time evaluation). This eagerly builds the top-level BVH (or octree, for legacy callers) and shadow caches from current world-space bounding boxes. After this call, the spatial structures are immutable for the duration of that render pass.
 
 ### 3. Render Phase (immutable)
 
@@ -75,11 +75,19 @@ These use `mutable PointSetMap pointsets` guarded by a mutex with double-checked
 
 ### Spatial Acceleration and Animation
 
-The BSP tree / octree in `ObjectManager` is built from world-space bounding boxes (`Object::getBoundingBox()` applies `m_mxFinalTrans` to geometry bounds). When objects have keyframed transforms, animation evaluation recomputes these transforms via `RegenerateData()` → `FinalizeTransformations()`, which can move objects outside their BSP node placement.
+The top-level BVH / octree in `ObjectManager` is built from world-space bounding boxes (`Object::getBoundingBox()` applies `m_mxFinalTrans` to geometry bounds). When objects have keyframed transforms, animation evaluation recomputes these transforms via `RegenerateData()` → `FinalizeTransformations()`, which can move objects outside their tree node placement.
 
-**Per-frame animation** (`RasterizeAnimation`): The spatial structure is invalidated via `InvalidateSpatialStructure()` and rebuilt via `PrepareForRendering()` after each frame's `EvaluateAtTime()` + `SetSceneTime()`, before multi-threaded rendering begins. This ensures the BSP/octree reflects current transforms for each frame.
+**Per-frame animation** (`RasterizeAnimation`): The spatial structure is invalidated via `InvalidateSpatialStructure()` and rebuilt via `PrepareForRendering()` after each frame's `EvaluateAtTime()` + `SetSceneTime()`, before multi-threaded rendering begins. This ensures the top-level BVH/octree reflects current transforms for each frame.
 
-**Per-sample temporal sampling** (motion blur within a single frame): `EvaluateAtTime()` is called per-sample from within threaded pixel rasterizers. Rebuilding the spatial structure per-sample is prohibitively expensive, so the BSP is built once for the frame's base time. This means per-sample object transform variations are not reflected in the spatial structure — a pre-existing limitation. In practice, the motion blur exposure window is typically small enough that objects don't move far outside their base-time bounds.
+**Per-sample temporal sampling** (motion blur within a single frame): `EvaluateAtTime()` is called per-sample from within threaded pixel rasterizers. Rebuilding the spatial structure per-sample is prohibitively expensive, so the BVH is built once for the frame's base time. This means per-sample object transform variations are not reflected in the spatial structure — a pre-existing limitation. In practice, the motion blur exposure window is typically small enough that objects don't move far outside their base-time bounds.
+
+### Top-Level Acceleration (TLAS) — BVH default since 2026-05
+
+`ObjectManager`'s default top-level structure is the same `BVH<>` template (`src/Library/Acceleration/BVH.h`) that `TriangleMeshGeometry{,Indexed}` uses per-mesh — with `Element = const IObjectPriv*`. Same SAH-binned BVH2 builder, BVH4 SoA collapse, and SIMD ray-vs-AABB kernel. Pre-2026-05 the default was no top-level structure at all (linear loop over every IObject); a `BSPTreeSAH<>` path existed but was never wired in by default. Migrating Sponza-class scenes (155 mesh objects) from no-TLAS through BSP to BVH4 produced a measured 7×+ wall-clock speedup.
+
+`Job::InitializeContainers` constructs `ObjectManager(true, false, 4, 32)` — flag name `bUseBSPtree` is historical; semantically it now means "build a top-level BVH". The leaf cap of 4 (vs the per-mesh 4 used for triangles) is small because each top-level "leaf primitive" is a whole IObject — a leaf hit means descending into a per-mesh sub-BVH, much more expensive than a single triangle test, so the SAH builder is biased toward smaller leaves via `sahIntersectionCost = 8.0`. Tiny scenes (≤4 objects) skip the build via the `items.size() > nMaxObjectsPerNode` gate and use the linear-loop fallback path — overhead amortisation flips at very small N.
+
+`ObjectManager::RayElementIntersection` requires native closest-hit semantics (only commit when the new hit is strictly closer than `ri.range`) because the BVH<> contract calls leaf processors with a shared `ri` and expects each call to be defensive about overwriting it. `BSPTreeSAHNode` had this guard externally (per-element local `myRI` + compare), so the per-prim `RayElementIntersection` could be sloppy; the BVH's per-node SoA SIMD design relies on the processor itself doing the closest-hit check inline. This is the same fix pattern as Tier-A cleanup §2 in the BVH retrospective for `TriangleMeshGeometryIndexed::RayElementIntersection`.
 
 ## Filtered Film And OIDN Denoiser Interaction
 

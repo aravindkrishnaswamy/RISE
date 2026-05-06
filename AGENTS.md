@@ -35,7 +35,7 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
 
 - The primary external construction boundary is the C-style API in `RISE_API.h`, even when higher-level wrappers exist.
 - `IJob` is the easiest high-level way to understand how external code is expected to build scenes.
-- `Job::SetPrimaryAcceleration()` replaces the object manager. Calling it after adding objects discards them.
+- `Job::SetPrimaryAcceleration()` replaces the object manager. Calling it after adding objects discards them. Default since 2026-05 is **top-level BVH4** (SAH-binned, BVH4 SIMD collapse — same `BVH<>` template as the per-mesh accelerator) with leaf cap 4 and depth cap 32. Pre-2026-05 was no top-level structure (linear loop). Constructor flag `bUseBSPtree` is the historical name; semantically it now means "build a top-level BVH" (the BSPTreeSAH path was removed when ObjectManager moved to `BVH<>`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Top-Level Acceleration (TLAS)" and the BVH retrospective Tier D1 entry.
 - Most scene elements are named and stored in managers. Parser chunks usually resolve dependencies by name through those managers.
 - `Job::InitializeContainers()` installs `"none"` defaults for a null material and null painter, and also creates several default shader ops.
 - The scene parser currently expects the header `RISE ASCII SCENE 5`.

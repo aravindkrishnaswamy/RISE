@@ -509,6 +509,15 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		return;
 	}
 
+	// Profiling: reset all counters/phases at render entry so successive
+	// renders within one CLI session don't accumulate.  Manual start/end
+	// for the Render phase (rather than RAII) so we can call
+	// PrintProfilingReport() while the Render bucket is already populated.
+	RISE_PROFILE_RESET();
+#ifdef RISE_ENABLE_PROFILING
+	const auto renderProfilingStart = std::chrono::steady_clock::now();
+#endif
+
 #ifdef RISE_ENABLE_OIDN
 	// Stamp render-start wall clock so the OIDN auto-quality heuristic
 	// can compute render_seconds / megapixels at denoise time.
@@ -740,6 +749,15 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 #endif
 	}
 
+#ifdef RISE_ENABLE_PROFILING
+	{
+		const auto renderProfilingEnd = std::chrono::steady_clock::now();
+		const auto ns = (unsigned long long)
+			std::chrono::duration_cast<std::chrono::nanoseconds>(
+				renderProfilingEnd - renderProfilingStart ).count();
+		RISE::AddPhaseNanos( RISE::kPhase_Render, ns );
+	}
+#endif
 	RISE_PROFILE_REPORT(GlobalLog());
 
 	if( blocks ) {

@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "TexturePainter.h"
 #include "../Interfaces/ILog.h"
+#include "../Utilities/Profiling.h"
 
 #include <cmath>
 #include <cstdint>
@@ -146,6 +147,8 @@ RISEColor TexturePainter::SampleTextured( const RayIntersectionGeometric& ri ) c
 
 RISEPel TexturePainter::GetColor( const RayIntersectionGeometric& ri ) const
 {
+	RISE_PROFILE_PHASE(TexturePainter);
+	RISE_PROFILE_INC(nTexturePainterSamples);
 	// Returns straight (un-premultiplied) RGB.  Earlier revisions
 	// returned `c.base * c.a` — that's premultiplied alpha, which
 	// disagrees with the glTF straight-alpha convention and double-
@@ -162,6 +165,8 @@ RISEPel TexturePainter::GetColor( const RayIntersectionGeometric& ri ) const
 
 Scalar TexturePainter::GetAlpha( const RayIntersectionGeometric& ri ) const
 {
+	RISE_PROFILE_PHASE(TexturePainter);
+	RISE_PROFILE_INC(nTexturePainterSamples);
 	// Returns the straight A channel of an RGBA texture (1.0 for RGB).
 	// Used by the alpha-aware painter chain in the glTF importer for
 	// alphaMode = MASK / BLEND.

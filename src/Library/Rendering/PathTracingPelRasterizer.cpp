@@ -23,6 +23,7 @@
 #include "../Utilities/MortonCode.h"
 #include "../Sampling/SobolSequence.h"
 #include "../Interfaces/IScene.h"
+#include "../Utilities/Profiling.h"
 #include "ProgressiveFilm.h"
 
 using namespace RISE;
@@ -314,6 +315,8 @@ void PathTracingPelRasterizer::IntegratePixel(
 				rc, rast, ptOnScreen, pScene, sampler, pRadianceMap, 0 );
 #endif
 
+			RISE_PROFILE_INC(nSamplesAccumulated);
+
 			if( pFilteredFilm ) {
 				pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, sampleColor, *pPixelFilter );
 				colAccrued = colAccrued + sampleColor;
@@ -389,4 +392,6 @@ void PathTracingPelRasterizer::IntegratePixel(
 		colAccrued = colAccrued * (1.0 / alphas);
 		cret = RISEColor( colAccrued, alphas / weights );
 	}
+
+	RISE_PROFILE_INC(nPixelsResolved);
 }

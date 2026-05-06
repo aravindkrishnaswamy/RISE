@@ -28,6 +28,7 @@
 #include "../Utilities/PathVertexEval.h"
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
+#include "../Utilities/Profiling.h"
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #include "../Utilities/MediumTransport.h"
 #include "../Intersection/RayIntersectionGeometric.h"
@@ -1774,7 +1775,11 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			}
 
 			ScatteredRayContainer scattered;
-			pSPF->Scatter( ri.geometric, sampler, scattered, iorStack );
+			{
+				RISE_PROFILE_PHASE(BSDFScatter);
+				RISE_PROFILE_INC(nBSDFScatterCalls);
+				pSPF->Scatter( ri.geometric, sampler, scattered, iorStack );
+			}
 
 			if( scattered.Count() == 0 ) {
 				break;
@@ -2181,7 +2186,11 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		}
 
 		ScatteredRayContainer scattered;
-		pSPF->Scatter( ri.geometric, sampler, scattered, iorStack );
+		{
+			RISE_PROFILE_PHASE(BSDFScatter);
+			RISE_PROFILE_INC(nBSDFScatterCalls);
+			pSPF->Scatter( ri.geometric, sampler, scattered, iorStack );
+		}
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -3608,7 +3617,11 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			}
 
 			ScatteredRayContainer scattered;
-			pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, iorStack );
+			{
+				RISE_PROFILE_PHASE(BSDFScatter);
+				RISE_PROFILE_INC(nBSDFScatterCalls);
+				pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, iorStack );
+			}
 
 			if( scattered.Count() == 0 ) {
 				break;
@@ -3783,7 +3796,11 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 		}
 
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, iorStack );
+		{
+			RISE_PROFILE_PHASE(BSDFScatter);
+			RISE_PROFILE_INC(nBSDFScatterCalls);
+			pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, iorStack );
+		}
 
 		if( scattered.Count() == 0 ) {
 			break;
@@ -4664,7 +4681,11 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		}
 
 		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, sampler, heroNM, scattered, iorStack );
+		{
+			RISE_PROFILE_PHASE(BSDFScatter);
+			RISE_PROFILE_INC(nBSDFScatterCalls);
+			pSPF->ScatterNM( ri.geometric, sampler, heroNM, scattered, iorStack );
+		}
 
 		if( scattered.Count() == 0 ) {
 			break;

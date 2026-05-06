@@ -311,6 +311,80 @@ baselines were 0.2–0.4; targets for 20 cores are ≥ 0.7.
 
 Canonical benchmark scenes live in `scenes/Tests/Bench/`.
 
+## Profiling counters + phase timers (RISE_ENABLE_PROFILING)
+
+The renderer ships a lightweight, compile-gated instrumentation layer
+in `src/Library/Utilities/Profiling.{h,cpp}`.  When the build is
+compiled with `-DRISE_ENABLE_PROFILING`, the library accumulates:
+
+- **Atomic counters** — primary/scatter rays, shadow rays, env
+  misses, BSDF scatter calls, texture-painter samples, radiance-map
+  lookups, object/triangle/sphere/box intersection tests + hits, BVH
+  node traversals, BBox tests, shadow-cache hits/misses, pixels
+  resolved, samples accumulated.  Each is a `std::atomic<unsigned
+  long long>` with a `RISE_PROFILE_INC(name)` macro for the
+  fetch-add-relaxed increment.
+- **Wall-clock phase timers** — RAII `RISE_PROFILE_PHASE(name)` macro
+  wraps a scope with `std::chrono::steady_clock` start/stop and adds
+  the elapsed nanoseconds into a per-phase atomic bucket.  Production
+  phases: `Render`, `AccelBuild`, `GeomPrimary`, `GeomShadow`,
+  `BSDFScatter`, `RadianceMap`, `TexturePainter`.  Phase nanoseconds
+  sum across all worker threads — divide by total wall to get
+  parallelism, divide by total CPU-busy to get phase share.
+
+Both expand to `((void)0)` when the define is absent (zero-overhead
+in production builds).
+
+The Windows VS2022 Library + RISE-CLI projects have
+`RISE_ENABLE_PROFILING` enabled in Release config (so a stock
+`bin/RISE-CLI.exe` already produces the report).  The OSX makefile
+has the toggle commented; uncomment `DEF_PROFILING` in
+`build/make/rise/Config.OSX` to enable.
+
+`PixelBasedRasterizerHelper::RasterizeScene` wraps the whole render
+in the `Render` phase timer and calls `RISE_PROFILE_REPORT` after
+the main pass.  The report is logged via `GlobalLog()->PrintEasyInfo`
+AND emitted to stderr — both go to `RISE_Log.txt` in the working
+directory and the CLI's stderr stream respectively.
+
+Sample report (sponza_new, 16 spp, 640×360, post-TLAS):
+
+```
+============================================
+  RISE Profiling Report
+============================================
+  Phase wall-clock (sum across all worker threads):
+    phase                                           ms   %render  %CPUbusy
+    Render (total wall)                        28152.0    100.0%         -
+    AccelBuild                                     0.8     0.00%     0.00%
+    GeomPrimary  (IntersectRay)               263826.8   937.15%    41.39%
+    GeomShadow   (IntersectShadowRay)         135865.2   482.61%    21.31%
+    BSDFScatter  (ISPF::Scatter*)             118235.4   419.99%    18.55%
+    RadianceMap  (env lookup)                     70.0     0.25%     0.01%
+    TexturePainter (GetColor/GetAlpha)        119447.3   424.29%    18.74%
+  ---
+  Pixels resolved:             230400
+  Samples accumulated:         3686400
+  Primary/scatter rays:        12801120
+  ...
+```
+
+`%render` is each phase's CPU time as a fraction of wall (so > 100%
+indicates parallel work); `%CPUbusy` is each phase's share of the
+total measured CPU-busy time across all leaf phases (the right
+column for "where is time going").  Sum of CPU·s / wall ≈ effective
+parallelism.
+
+To add a new phase: add an `enum ProfilingPhase` entry and a string
+in `kPhaseNames`, then drop `RISE_PROFILE_PHASE(name)` at the site.
+To add a new counter: add a `std::atomic<...>` to `ProfilingCounters`
+and a `linef("...", c.name.load())` line in `PrintProfilingReport`.
+
+Cost: each `RISE_PROFILE_PHASE` adds ~50 ns + one atomic fetch-add.
+Don't use it inside ultra-tight inner loops (per-AABB-test); it's
+tuned for outer leaf calls (one-per-ray, one-per-texture-sample).
+Counters are essentially free (~5 ns each).
+
 ## Tuning guide
 
 - **Preview too slow / too frequent?** `PreviewScheduler` target is

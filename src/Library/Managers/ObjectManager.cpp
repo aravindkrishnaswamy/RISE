@@ -45,17 +45,47 @@ char ObjectManager::WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& pl
 void ObjectManager::RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
 	RISE_PROFILE_INC(nObjectIntersectionTests);
-	if( elem->IsWorldVisible() ) {
-		elem->IntersectRay( ri, RISE_INFINITY, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
-		if( ri.geometric.bHit ) { RISE_PROFILE_INC(nObjectIntersectionHits); }
+	if( !elem->IsWorldVisible() ) {
+		return;
+	}
+
+	// Native closest-hit semantics — required by the BVH<> leaf
+	// intersection contract.  The BVH calls this with a SHARED `ri`
+	// across all leaf primitives, expecting the processor to only
+	// overwrite when its hit is strictly closer than the running
+	// ri.range.  Without this guard, the LAST-tested object in a
+	// leaf wins regardless of distance, which manifests as missing
+	// hits / wrong colours after the TLAS migration.  (BSPTreeSAH
+	// did the local-myRI dance externally in its node code, so the
+	// processor itself didn't have to be defensive — see the BVH
+	// retrospective Tier A cleanup §2 for the analogous fix on
+	// TriangleMeshGeometryIndexed::RayElementIntersection.)
+	//
+	// Uses a local RayIntersection so the IObject's own ray-into-
+	// object-space transform doesn't pollute the shared ri.geometric
+	// (Object::IntersectRay mutates ri.geometric.ray for the duration
+	// of the call and restores at exit, but the call may early-return
+	// without restore on the box-prehit miss path).
+	RayIntersection myRI( ri.geometric.ray, ri.geometric.rast );
+	elem->IntersectRay( myRI, ri.geometric.range, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+	if( myRI.geometric.bHit && myRI.geometric.range < ri.geometric.range ) {
+		ri = myRI;
+		RISE_PROFILE_INC(nObjectIntersectionHits);
 	}
 }
 
 void ObjectManager::RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
-	if( elem->IsWorldVisible() ) {
-		RayIntersection r( ri );
-		RayElementIntersection( r, elem, bHitFrontFaces, bHitBackFaces, false );
+	if( !elem->IsWorldVisible() ) {
+		return;
+	}
+
+	// Same closest-hit semantics as the full overload above.
+	RayIntersection myRI( ri.ray, ri.rast );
+	myRI.geometric.range = ri.range;
+	elem->IntersectRay( myRI, ri.range, bHitFrontFaces, bHitBackFaces, false );
+	if( myRI.geometric.bHit && myRI.geometric.range < ri.range ) {
+		ri = myRI.geometric;
 	}
 }
 
@@ -82,8 +112,8 @@ ObjectManager::ObjectManager(
 			const bool bUseOctree_,
 			const unsigned int nMaxObjectsPerNode_,
 			const unsigned int nMaxTreeDepth_
-			) : 
-  pBSPtree( 0 ), 
+			) :
+  pBVH( 0 ),
   pOctree( 0 ),
   bUseBSPtree( bUseBSPtree_ ),
   bUseOctree( bUseOctree_ ),
@@ -92,12 +122,12 @@ ObjectManager::ObjectManager(
   shadowCache( new ShadowCacheSlot[kShadowCacheSlots]() )
 {
 	if( bUseBSPtree && bUseOctree ) {
-		GlobalLog()->PrintEasyWarning( "ObjectManager::ObjectManager:: Can't use both Octrees and BSPtrees at the same time!" );
+		GlobalLog()->PrintEasyWarning( "ObjectManager::ObjectManager:: Can't use both Octrees and BVH at the same time!" );
 		bUseOctree = false;
 	}
 
 	if( bUseBSPtree ) {
-		GlobalLog()->PrintEasyInfo( "ObjectManager is configured to use BSP trees for spatial partioning" );
+		GlobalLog()->PrintEasyInfo( "ObjectManager is configured to use top-level BVH (SAH BVH4) for spatial partitioning" );
 	} else if( bUseOctree ) {
 		GlobalLog()->PrintEasyInfo( "ObjectManager is configured to use Octrees for spatial partioning" );
 	} else {
@@ -107,17 +137,17 @@ ObjectManager::ObjectManager(
 
 ObjectManager::~ObjectManager( )
 {
-	safe_release( pBSPtree );
+	safe_release( pBVH );
 	safe_release( pOctree );
 	delete [] shadowCache;
 }
 
-void ObjectManager::CreateBSPTree() const
+void ObjectManager::CreateBVH() const
 {
 	treeCreationMutex.lock();
 
 	// Check again if we need to create it
-	if( pBSPtree ) {
+	if( pBVH ) {
 		treeCreationMutex.unlock();
 		return;
 	}
@@ -135,10 +165,24 @@ void ObjectManager::CreateBSPTree() const
 		}
 	}
 
-	BSPTreeSAH<const IObjectPriv*>* newpBSPtree = new BSPTreeSAH<MYOBJ>( *this, bbox, nMaxObjectsPerNode );
-	GlobalLog()->PrintNew( newpBSPtree, __FILE__, __LINE__, "bsptree" );
-	newpBSPtree->AddElements( elements, nMaxTreeDepth );
-	pBSPtree = newpBSPtree;
+	// Top-level AccelerationConfig.  Each leaf "primitive" here is a
+	// whole IObject, and a leaf intersection means descending into the
+	// per-mesh BVH (or evaluating an analytic primitive).  That's much
+	// more expensive than a single triangle test, so we bias the SAH
+	// toward more aggressive splitting via a higher intersection cost.
+	// 8.0 is conservative — it produces small leaves (~1–4 objects)
+	// without tipping the build into pathological deep splits on
+	// scenes whose object AABBs overlap heavily (Sponza-class).
+	AccelerationConfig cfg{};
+	cfg.maxLeafSize          = nMaxObjectsPerNode;
+	cfg.binCount             = 32;
+	cfg.sahTraversalCost     = 1.0;
+	cfg.sahIntersectionCost  = 8.0;
+	cfg.doubleSided          = true;
+
+	BVH<MYOBJ>* newpBVH = new BVH<MYOBJ>( *this, elements, bbox, cfg );
+	GlobalLog()->PrintNew( newpBVH, __FILE__, __LINE__, "top-level bvh" );
+	pBVH = newpBVH;
 
 	treeCreationMutex.unlock();
 }
@@ -176,18 +220,22 @@ void ObjectManager::CreateOctree() const
 
 void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
+	RISE_PROFILE_PHASE(GeomPrimary);
 	RISE_PROFILE_INC(nPrimaryRays);
 
 	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
-		if( !pBSPtree ) {
-			GlobalLog()->PrintEasyWarning( "ObjectManager: BSP tree built lazily during IntersectRay; call PrepareForRendering() before rendering" );
-			CreateBSPTree();
+		if( !pBVH ) {
+			GlobalLog()->PrintEasyWarning( "ObjectManager: BVH built lazily during IntersectRay; call PrepareForRendering() before rendering" );
+			CreateBVH();
 		}
 
 		ri.geometric.bHit = false;
 		ri.geometric.range = RISE_INFINITY;
 
-		pBSPtree->IntersectRay( ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+		// BVH<>::IntersectRay auto-routes to BVH4 SIMD traversal when
+		// the post-build collapse populated the wide nodes (the common
+		// case for any non-degenerate scene).
+		pBVH->IntersectRay( ri, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) ) {
 		if( !pOctree ) {
 			GlobalLog()->PrintEasyWarning( "ObjectManager: Octree built lazily during IntersectRay; call PrepareForRendering() before rendering" );
@@ -213,18 +261,22 @@ void ObjectManager::IntersectRay( RayIntersection& ri, const bool bHitFrontFaces
 			}
 		}
 	}
+
+	if( !ri.geometric.bHit ) {
+		RISE_PROFILE_INC(nMisses);
+	}
 }
 
 bool ObjectManager::IntersectShadowRay( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
 {
+	RISE_PROFILE_PHASE(GeomShadow);
 	RISE_PROFILE_INC(nShadowRays);
 
 	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
-		if( !pBSPtree ) {
-			CreateBSPTree();
+		if( !pBVH ) {
+			CreateBVH();
 		}
-
-		return pBSPtree->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
+		return pBVH->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) ) {
 		if( !pOctree ) {
 			CreateOctree();
@@ -295,8 +347,9 @@ void ObjectManager::ResetRuntimeData() const
 
 void ObjectManager::PrepareForRendering() const
 {
-	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) && !pBSPtree ) {
-		CreateBSPTree();
+	RISE_PROFILE_PHASE(AccelBuild);
+	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) && !pBVH ) {
+		CreateBVH();
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) && !pOctree ) {
 		CreateOctree();
 	}
@@ -308,9 +361,9 @@ void ObjectManager::PrepareForRendering() const
 
 void ObjectManager::InvalidateSpatialStructure() const
 {
-	if( pBSPtree ) {
-		GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying BSP tree for rebuild" );
-		safe_release( pBSPtree );
+	if( pBVH ) {
+		GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying top-level BVH for rebuild" );
+		safe_release( pBVH );
 	}
 	if( pOctree ) {
 		GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying octree for rebuild" );

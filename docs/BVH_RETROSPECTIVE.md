@@ -318,14 +318,77 @@ Cold-load reduction from `.risemesh` v3 cache: **−13% on xyzdragon-class meshe
 
 ---
 
+## Tier D1 — TLAS migration shipped (2026-05)
+
+Tier D1 was originally deferred as "modest win for current RISE scenes (10s of objects per scene)".  When the Sponza glTF scene (`scenes/FeatureBased/Geometry/sponza_new.RISEscene`, 155 mesh objects) became a working benchmark it falsified that assumption — the no-top-level-structure default was paying ~64 % of CPU in `IntersectRay` because every ray was iterating the linear list of all 155 objects.  Even after enabling `BSPTreeSAH` at the top level (already wired through but never the default), the binary, scalar BSP traversal was visibly slower than the same `BVH<>` stack the per-mesh accelerator already used.  Migrating to BVH on the same 155 objects cleared the path further.
+
+**Three sequenced changes in one session:**
+
+1. **Enable the dormant `BSPTreeSAH` top-level path by default** — `Job::InitializeContainers` flipped from `(false, false, 0, 0)` to `(true, false, 4, 32)`.  Sponza wall-clock 222 s → 63 s (3.5× speedup) by itself.  No code changes elsewhere — the BSP path had been wired through for years but no one had ever turned it on by default.
+
+2. **Replace `BSPTreeSAH` with `BVH<>` at the top level** — `ObjectManager` now holds a `BVH<const IObjectPriv*>` instead of a `BSPTreeSAH<const IObjectPriv*>`.  Same `TreeElementProcessor<const IObjectPriv*>` interface (which `ObjectManager` already implemented for the BSP path).  `BVH<>::IntersectRay` auto-routes to BVH4 SIMD traversal post-collapse.  Sponza further dropped 63 s → 28 s — total **2.3× wall-clock vs BSP** on top of the 3.5× from step 1.  Combined: Sponza is now **8× faster** than the no-acceleration default (222 s → 28 s).
+
+3. **Native closest-hit guard in `ObjectManager::RayElementIntersection`** — the BVH<> leaf-intersection contract calls processors with a SHARED `ri` and expects them to be defensive about overwriting it.  `BSPTreeSAHNode` had this guard externally (per-element local `myRI` + compare in node code), so the per-prim `RayElementIntersection` could be sloppy.  The first BVH-migration build looked like a 7× speedup on Sponza, but the rendered image was MOSTLY SKY — half of all rays were hitting the wrong objects (last-tested-wins instead of closest-tested-wins) and short-circuiting paths.  Same fix pattern as Tier-A cleanup §2 for `TriangleMeshGeometryIndexed::RayElementIntersection`: a local-myRI inside the processor with a `&& myRI.range < ri.range` guard.  Cost: one stack-allocated `RayIntersection` per leaf-prim test (~120 B copy on 64-bit doubles).
+
+### Measured wins on the 3-scene sweep (Windows, AVX2, ~Core Ultra-class)
+
+|                          | Wall (no TLAS) | Wall (TLAS BVH4) | Δ |
+|--------------------------|---------------:|-----------------:|----:|
+| `bench_pt` (Cornell + 2 raw meshes, 12 objects, 32 spp) | 22.7 s | 13.6 s | **−40 %** |
+| `sponza_new` (155 mesh objects, glTF, 16 spp) | 64.8 s | 28.2 s | **−57 %** |
+| `sss_comparison_dragon` (1 mesh, 47K tris, 16 spp override) | 10.5 s | 9.0 s | **−14 %** |
+
+The Cornell win is real: shadow-ray cost on a 12-object scene benefited materially from SIMD AABB pruning even though the linear-loop fallback was already efficient.  The dragon win is small as expected (top-level TLAS is irrelevant to a 1-mesh scene; the few percent of speedup comes from the BSP→BVH switch being measurably faster on the 1-leaf tree).  AccelBuild cost ≤1 ms in all three cases — negligible vs the render.
+
+### Default tuning
+
+`(bUseBSPtree=true, bUseOctree=false, nMaxObjectsPerNode=4, nMaxTreeDepth=32)`.  Constructor flag name `bUseBSPtree` is historical; semantically it now means "build a top-level BVH".  `nMaxObjectsPerNode=4` is small because each top-level "leaf primitive" is a whole IObject — a leaf hit means descending into a per-mesh sub-BVH (much more expensive than a single triangle test), so the SAH builder gets `sahIntersectionCost = 8.0` (vs the per-mesh value of 1.0) to bias toward smaller leaves.  Tiny scenes (≤4 objects) skip the build via the `items.size() > nMaxObjectsPerNode` gate and use the linear-loop fallback — overhead amortisation flips at very small N.
+
+### What's now legacy
+
+- `BSPTreeSAH<>` template (`src/Library/BSPTreeSAH.h`, `src/Library/BSPTreeSAHNode.h`) — no production caller.  Tests still cover it (`tests/BSPTreeSAHTest.cpp`, `tests/BSPMailboxingTest.cpp`).  Excise candidate for a future cleanup pass when the test surface is ready to migrate (or the BSP-named tests can be reworded as BVH-via-ObjectManager tests since that's what they actually exercise post-Tier A).
+- `Octree<>` with `IObjectPriv*` instances (`src/Library/Octree.h`) — still wired through `ObjectManager` for back-compat (anyone constructing with `bUseOctree=true`) but no production scene uses it.  Mid-priority excise candidate.
+
+### Tier D1 retrospective lesson
+
+The "modest win for 10s of objects" dismissal in the original deferred list was wrong because it conflated "few objects in scene" with "few intersection tests per ray".  In a single-mesh scene the per-mesh BVH does all the work and a top-level structure is irrelevant.  In a 155-mesh scene like Sponza, the per-ray cost of LINEAR-iterating 155 mesh AABBs (each spawning a sub-BVH descent) dominated everything else.  The per-mesh BVH had been the right unit of measurement during the 2026-04 BVH retrospective; the top-level loop was invisible until a multi-mesh scene became a benchmark.
+
+**Generalisable lesson: when you defer a "modest" change, the next benchmark may falsify "modest".**  Worth re-checking deferred items whenever a new workload class lands.
+
+---
+
+## Tier D3 — SoA-packed 4-wide SIMD MT at leaves (excised, 2026-05)
+
+Prototyped immediately after the TLAS migration as a follow-on win.  The thinking: the per-mesh BVH4 already did SIMD ray-vs-AABB at internal nodes; the leaf path was still scalar AoS, calling `MollerTrumboreFloat` once per triangle in the leaf primitive list.  A 4-wide SoA SIMD MT kernel (SSE/NEON) at the leaf, with on-the-fly AoS→SoA transpose of `fastFilter[]` data, looked like an obvious follow-on to the existing wide-tree pattern.
+
+**Result on the same 3-scene sweep**:
+
+|                          | TLAS only | TLAS + SoA SIMD | Δ |
+|--------------------------|---------:|----------------:|----:|
+| `bench_pt`              | 15.1 s | 15.2 s | **+0.7 %** (flat) |
+| `sponza_new`            | 29.8 s | 30.6 s | **+2.6 %** (slight regression) |
+| `sss_comparison_dragon` |  9.2 s | 10.7 s | **+16.3 %** (clear regression) |
+
+**Why it regressed**: per-mesh BVH ships with `maxLeafSize = 4`, so most leaves have 1–4 prims and end up in the kernel's "tail" code path that pads to 4 lanes — wasting ~half the SIMD work on degenerate slots.  On dense meshes (the dragon) the scalar MT short-circuits early on `u out of range` / `det too small`; SoA SIMD does ALL 4 lanes' arithmetic regardless and only masks at the end.  Combined with the AoS→SoA on-the-fly transpose load (~36 floats × 4 lanes = ~36 loads + transpose per batch), the SIMD math wins are more than swamped.
+
+**Same negative-finding pattern as SBVH (Tier B) and uint8 BVH4 quantisation (Tier C4)**: a SoTA-on-paper improvement that doesn't translate when leaves are small and rejection-heavy.  Excised; ~195 lines of dead SIMD kernel removed.
+
+**Recovery paths** (not pursued — would require significant additional engineering):
+- **Build-time SoA packing per leaf** (eliminates the AoS→SoA transpose) AND **larger leaves** (e.g., `maxLeafSize=8`) for higher SIMD utilisation.  Both are non-trivial: leaf-aligned packing changes BVH4Node layout; larger leaves shift the SAH cost balance.
+- **Wider tree (BVH8 + AVX2)** would also amortise leaf-side overhead — same axis as Tier D2 but on x86_64 dev hardware (Tier D2 was deferred citing AVX-512 specifically; AVX2 8-wide was overlooked).
+
+If a future revisit happens, do build-time SoA packing first — the on-the-fly transpose was the dominant overhead, and removing it would change the math even before increasing leaf size.
+
+---
+
 ## Deferred / not in scope
 
-- **Tier D1 — TLAS replacing `BSPTreeSAH` on the scene side.**  Foundational for instancing but modest win for current RISE scenes (10s of objects per scene).  Not urgent.
-- **Tier D2 — BVH8 + AVX-512.**  None of the current dev machines (M-series Apple Silicon, Core Ultra 9 Meteor Lake, Snapdragon Oryon) have AVX-512.  Opt-in for workstation/server hardware if RISE ever ships there.
-- **Tier E1 — Windows i9 build + bench validation.**  The SSE2 `RayBox4` path is written but never compiled outside macOS.  Half-day of work to verify on a Windows machine.
+- **Tier D2 — BVH8 + AVX-512.**  None of the current dev machines (M-series Apple Silicon, Core Ultra 9 Meteor Lake, Snapdragon Oryon) have AVX-512.  Opt-in for workstation/server hardware if RISE ever ships there.  **AVX2 8-wide on the Windows dev box** is a related but distinct path; would benefit from the same wide-tree benefits without the AVX-512 hardware constraint.
+- **Tier E1 — Windows i9 build + bench validation.**  The SSE2 `RayBox4` path is now exercised on Windows (Tier D1 sweep) — done.
 - **Tier E2 — Galaxy Fold 7 / Android arm64 NDK build.**  Same NEON path as Apple Silicon; should "just work" — 1–2 hours of setup + bench.
 - **Sutherland-Hodgman polygon clipping for SBVH straddlers** (was Tier B2): only relevant if SBVH gets revisited, which it likely won't unless a future workload shifts the balance.
 - **uint16-quantised BVH4 nodes** (was Tier C4 alternative): plausible 1.4× memory reduction with usable precision.  Revisit only if BVH4 footprint becomes a real bottleneck.
+- **Excise `BSPTreeSAH<>` and the `Octree<IObjectPriv*>` path from production**: no production callers post Tier D1.  Tests would need to be reworded (or migrated to BVH-via-ObjectManager).
 
 ---
 
@@ -334,3 +397,5 @@ Cold-load reduction from `.risemesh` v3 cache: **−13% on xyzdragon-class meshe
 Roughly two days of focused work spread across a session arc.  Production code: net **smaller** by several hundred lines (BSP/octree members, SBVH builder, several env-var escape hatches all gone).  Test surface: net **larger** with the new BVH builder/serialization regression suites.  Public API: **simpler** (legacy mesh-construction params dropped).  Performance: **>10×** on the canonical big-mesh test, **−27 to −39%** on small dragons, **flat** on Cornell-class controls.
 
 Two negative findings (SBVH excised, C4 reverted) were the principled outcome of measurement.  Three deferred items (C2, D1, D2) wait on either a workload that justifies them or hardware that supports them.  The remaining production code is the simplest BVH stack that was actually measured to win.
+
+**Tier D1 (2026-05) added another half-day** for the TLAS migration (3 scenes profiled × 3 configs each, plus the closest-hit-guard fix the BVH leaf contract required) and a third negative finding (Tier D3, SoA SIMD MT at leaves).  Sponza dropped from 222 s no-acceleration → 63 s BSP → 28 s BVH4: an 8× total speedup on the target scene.
