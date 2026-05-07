@@ -1,9 +1,8 @@
 RISE ASCII SCENE 5
 #############################################################################################################
-#   Double-Refractive Slab (Close, BDPT + SMS): validates BDPT's SMS integration.  Compare mean luminance   #
-#   on the caustic region against sms_slab_close_vcm.RISEscene (VCM reference).  Before the (s==0)          #
-#   emission-suppression fix in BDPTIntegrator::ConnectAndEvaluate this scene would render ~1.5-2x brighter #
-#   than the VCM reference on the caustic due to double-counting.                                           #
+#   Double-Refractive Slab (Close, PT + SMS, hi-spp): high-sample-count caustic validation against the      #
+#   VCM reference (sms_slab_close_vcm.RISEscene).  Companion to sms_slab_close_sms.RISEscene which uses     #
+#   the same rasterizer config at lower spp for fast iteration.                                             #
 #############################################################################################################
 
 > set accelerator B 10 8
@@ -14,10 +13,8 @@ standard_shader
 	shaderop	DefaultPathTracing
 }
 
-bdpt_pel_rasterizer
+pathtracing_pel_rasterizer
 {
-	max_eye_depth		10
-	max_light_depth		10
 	samples				64
 	sms_enabled			TRUE
 	sms_max_iterations	30
@@ -31,7 +28,7 @@ bdpt_pel_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/sms_slab_close_bdpt_sms
+	pattern				rendered/sms_slab_close_pt_sms_hispp
 	type				PNG
 	bpp					8
 	color_space			sRGB
@@ -39,7 +36,7 @@ file_rasterizeroutput
 
 file_rasterizeroutput
 {
-	pattern				rendered/sms_slab_close_bdpt_sms
+	pattern				rendered/sms_slab_close_pt_sms_hispp
 	type				EXR
 	bpp					32
 	color_space			Rec709RGB_Linear

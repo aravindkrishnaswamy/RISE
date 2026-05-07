@@ -171,12 +171,14 @@ A few cross-cutting facts to keep this matrix honest:
 - **Path guiding** requires per-pixel directional density estimation
   via OpenPGL. The VCM merging pass and MLT mutation pass do not
   cooperate with that; they are not wired.
-- **SMS** is most useful in PT-style integrators that benefit from
-  the manifold-sampled caustic. VCM already handles caustics via
-  merging; SMS is therefore not wired into VCM. BDPT supports SMS
-  with a cross-strategy emission-suppression rule
-  ([`BDPTIntegrator::ShouldSuppressSMSOverlap`](../src/Library/Shaders/BDPTIntegrator.cpp))
-  to prevent double-counting.
+- **SMS** is wired into PT and MLT (which benefit from the
+  manifold-sampled caustic) but not into BDPT or VCM. VCM already
+  handles caustics via merging.  BDPT was wired through SMS
+  historically; the integration was excised in 2026-05 because
+  state-of-the-art renderers don't combine BDPT with SMS and the
+  cross-strategy MIS overlap was structural complexity for no
+  measurable variance gain — see [CLAUDE.md](../CLAUDE.md)
+  "High-Value Facts" for the removal entry.
 - **Path-tree branching at multi-lobe delta vertices** was removed in
   2026-05.  All integrators use stochastic single-lobe selection at
   Fresnel splits (matches PBRT/Mitsuba/Arnold/Cycles X) — see

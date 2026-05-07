@@ -77,7 +77,6 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/ISampler.h"
 #include "../Lights/LightSampler.h"
-#include "../Utilities/ManifoldSolver.h"
 #include "../Utilities/CompletePathGuide.h"
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/StabilityConfig.h"
@@ -103,7 +102,6 @@ namespace RISE
 			unsigned int		maxEyeDepth;
 			unsigned int		maxLightDepth;
 			const LightSampler*	pLightSampler;
-			ManifoldSolver*		pManifoldSolver;
 			StabilityConfig		stabilityConfig;
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -167,7 +165,6 @@ namespace RISE
 				);
 
 			void SetLightSampler( const LightSampler* pSampler );
-			void SetManifoldSolver( ManifoldSolver* pSolver );
 
 #ifdef RISE_ENABLE_OPENPGL
 			void SetGuidingField( PathGuidingField* pField, PathGuidingField* pLightField, Scalar alpha, unsigned int maxDepth, unsigned int maxLightDepth, GuidingSamplingType samplingType, unsigned int risCandidates );
@@ -378,50 +375,6 @@ namespace RISE
 				const ICamera& camera,
 				const Scalar nm
 				) const;
-
-			/// Evaluates SMS strategies for specular caustic paths (RGB).
-			/// For each non-delta eye vertex, traces toward emitters to find
-			/// specular object chains, then uses ManifoldSolver to find valid
-			/// specular paths.
-			std::vector<ConnectionResult> EvaluateSMSStrategies(
-				const std::vector<BDPTVertex>& eyeVerts,
-				const IScene& scene,
-				const IRayCaster& caster,
-				const ICamera& camera,
-				ISampler& sampler
-				) const;
-
-			/// Spectral variant of EvaluateSMSStrategies.
-			std::vector<ConnectionResultNM> EvaluateSMSStrategiesNM(
-				const std::vector<BDPTVertex>& eyeVerts,
-				const IScene& scene,
-				const IRayCaster& caster,
-				const ICamera& camera,
-				ISampler& sampler,
-				const Scalar nm
-				) const;
-
-			/// SMS cross-strategy emission-suppression predicate.
-			/// Walks the first t-1 vertices of an eye subpath and
-			/// returns true when the subpath has an SMS-reachable
-			/// topology (non-delta shading point followed by a delta
-			/// chain to the emitter).  Used by ConnectAndEvaluate and
-			/// ConnectAndEvaluateNM in the (s==0) branch to avoid
-			/// double-counting SMS caustic paths.  Mirrors PT's
-			/// `bPassedThroughSpecular && bHadNonSpecularShading` rule
-			/// — see PathTracingIntegrator.cpp:1703-1708 for the
-			/// original update rule, and the long comment in
-			/// ConnectAndEvaluate for the MIS analysis proving why
-			/// suppression is required.
-			///
-			/// \param eyeVerts Eye subpath vertices [0]=camera .. [t-1]=emitter
-			/// \param t        Number of eye vertices; must be <= eyeVerts.size()
-			/// \return true if the (s==0) emission contribution should be
-			///         suppressed in favor of the SMS estimator.
-			static bool ShouldSuppressSMSOverlap(
-				const std::vector<BDPTVertex>& eyeVerts,
-				unsigned int t
-				);
 
 		protected:
 			/// Helper: evaluates the BSDF at a surface vertex for given

@@ -43,13 +43,6 @@ bdpt_pel_rasterizer
 	pathguiding_max_depth	3
     pathguiding_light_max_depth 0
 	pathguiding_sampling_type	ris
-	sms_enabled                   FALSE
-	sms_max_iterations            30
-	sms_threshold                 1e-4
-	sms_max_chain_depth           10
-	sms_biased                    TRUE
-	sms_multi_trials              16
-	sms_photon_count              1000000
 }
 
 

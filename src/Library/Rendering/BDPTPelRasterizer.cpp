@@ -37,14 +37,13 @@ BDPTPelRasterizer::BDPTPelRasterizer(
 	IRayCaster* pCaster_,
 	unsigned int maxEyeDepth,
 	unsigned int maxLightDepth,
-	const ManifoldSolverConfig& smsConfig,
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveCfg,
 	const StabilityConfig& stabilityCfg,
 	bool useZSobol_
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
-  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, stabilityCfg ),
+  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, guidingConfig, stabilityCfg ),
   PixelBasedPelRasterizer( pCaster_, PathGuidingConfig(), AdaptiveSamplingConfig(), StabilityConfig(), false ),
   adaptiveConfig( adaptiveCfg )
 {
@@ -212,47 +211,6 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 			{
 				sampleColor = sampleColor + weighted;
 			}
-		}
-	}
-
-	// SMS contributions for specular caustic chains.
-	//
-	// SMS results are added with SMS's internal misWeight only (no
-	// cross-strategy BDPT MIS).  The two estimators DO sample
-	// overlapping path spaces — BDPT's (s==0) strategy generates
-	// delta-through caustic paths whenever an eye subpath naturally
-	// BSDF-samples a delta lobe and terminates at an emitter.
-	// Double-counting is prevented upstream in
-	// BDPTIntegrator::ConnectAndEvaluate's (s==0) branch, which
-	// suppresses emission when the eye subpath has the SMS-reachable
-	// topology (non-delta shading point followed by a delta chain
-	// to the emitter).  That mirrors PT's
-	// `bPassedThroughSpecular && bHadNonSpecularShading` rule.
-	//
-	// Single eye subpath (no branching) — one SMS evaluation per pixel
-	// sample, anchored at the first non-specular eye vertex.
-	if( pIntegrator && !eyeVerts.empty() ) {
-		sampler.StartStream( 31 );
-		std::vector<BDPTIntegrator::ConnectionResult> smsResults =
-			pIntegrator->EvaluateSMSStrategies(
-				eyeVerts, pScene, *pCaster, camera, sampler );
-
-		for( unsigned int r=0; r<smsResults.size(); r++ ) {
-			const BDPTIntegrator::ConnectionResult& cr = smsResults[r];
-			if( !cr.valid ) continue;
-
-			RISEPel weighted = cr.contribution * cr.misWeight;
-			{
-				const StabilityConfig& sc = BDPTRasterizerBase::stabilityConfig;
-				const Scalar clampVal = sc.directClamp;
-				if( clampVal > 0 ) {
-					const Scalar maxVal = ColorMath::MaxValue( weighted );
-					if( maxVal > clampVal ) {
-						weighted = weighted * (clampVal / maxVal);
-					}
-				}
-			}
-			sampleColor = sampleColor + weighted;
 		}
 	}
 

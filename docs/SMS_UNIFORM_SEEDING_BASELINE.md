@@ -24,7 +24,7 @@ Captured: 2026-05-02 with `SMS_DIAG_ENABLED = 1` in `src/Library/Shaders/PathTra
 | `scenes/Tests/SMS/sms_k2_glasssphere.RISEscene` | 4 | PT+SMS, biased=TRUE | k=2 nested-glass scene. |
 | `scenes/Tests/SMS/sms_k2_glassblock.RISEscene` | 4 | PT+SMS, biased=TRUE | k=2 glass-block scene. |
 | `scenes/Tests/SMS/sms_slab_close_sms.RISEscene` | 4 | PT+SMS, biased=TRUE | Slab caustic, close camera. |
-| `scenes/Tests/SMS/sms_slab_close_bdpt_sms.RISEscene` | 4 | BDPT+SMS, biased=TRUE | Spectral path validation (PT diagnostic does not fire — BDPT has its own integrator). |
+| `scenes/Tests/SMS/sms_slab_close_pt_sms_hispp.RISEscene` | 64 | PT+SMS, biased=TRUE | Higher-spp variant of the slab caustic for tighter VCM-reference comparisons (was BDPT+SMS until 2026-05-07; converted when BDPT lost its SMS path). |
 
 ## Baseline metrics
 

@@ -1840,7 +1840,6 @@ namespace RISE
 			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
 			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
-			const SMSConfig& smsConfig,								///< [in] Specular Manifold Sampling configuration
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
@@ -1861,7 +1860,6 @@ namespace RISE
 			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
 			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
 			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
-			const SMSConfig& smsConfig,								///< [in] Specular Manifold Sampling configuration
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)

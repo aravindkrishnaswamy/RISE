@@ -14,7 +14,7 @@ This directory holds focused design notes and planning docs. Start at [../README
 - [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md): selection guide for the ten rasterizer chunks. Decision tree (PT / BDPT / VCM / MLT / shader-dispatch / spectral variants), the shader-dispatch vs. pure-integrator pipeline split, and the optional-feature support matrix (path guiding, adaptive sampling, SMS, optimal MIS, OIDN).
 - [MATERIALS.md](MATERIALS.md): taxonomy of RISE materials (BRDFs, SPFs, BSSRDFs, phase functions, luminaires), sampling protocol (delta vs. continuum, area-measure PDFs), composition rules, and the checklist for adding a new BSDF.
 - [LIGHTS.md](LIGHTS.md): emitter taxonomy (`ILight` vs. luminaire materials), the unified `LightSampler` pipeline (alias table, RIS, light BVH, environment importance sampling), MIS subtleties per selection mode, and the checklist for adding a new emitter.
-- [SMS.md](SMS.md): Specular Manifold Sampling solver design, constraint formulations, MIS analysis (SMS vs BDPT path-space disjointness), and tuning guidance.
+- [SMS.md](SMS.md): Specular Manifold Sampling solver design, constraint formulations, and tuning guidance.  Historical note: SMS was wired into BDPT until 2026-05-07; that integration was excised — see [CLAUDE.md](../CLAUDE.md) "BDPT no longer participates in SMS" entry.
 - [VCM.md](VCM.md): Vertex Connection and Merging integrator (BDPT + photon mapping under one MIS umbrella), recurrence design, post-pass conversion, and Veach-transparency handling for specular chains.
 - [OIDN.md](OIDN.md): Intel Open Image Denoise integration — audit of current usage vs. upstream feature set, ranked improvement backlog with stable IDs, and decision log. Update entries in place as work lands.
 

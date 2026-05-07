@@ -5705,7 +5705,6 @@ bool Job::SetBDPTPelRasterizer(
 	const RadianceMapConfig& radianceMapConfig,
 	const PixelFilterConfig& pixelFilterConfig,
 	const bool bShowLuminaires,
-	const SMSConfig& smsConfig,
 	const bool oidnDenoise,
 	const OidnQuality oidnQuality,
 	const OidnDevice oidnDevice,
@@ -5760,7 +5759,7 @@ bool Job::SetBDPTPelRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
-		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, smsConfig.twoStage, smsConfig.useLevenbergMarquardt, smsConfig.seedingMode, smsConfig.targetBounces, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
+		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
 
 	// Always propagate the parsed progressiveConfig — including
 	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
@@ -5787,7 +5786,6 @@ bool Job::SetBDPTPelRasterizer(
 	snap.oidnPrefilter   = oidnPrefilter;
 	snap.radianceMap     = radianceMapConfig;
 	snap.pixelFilter     = pixelFilterConfig;
-	snap.sms             = smsConfig;
 	snap.pathGuiding     = guidingConfig;
 	snap.adaptive        = adaptiveConfig;
 	snap.stability       = stabilityConfig;
@@ -5806,7 +5804,6 @@ bool Job::SetBDPTSpectralRasterizer(
 	const PixelFilterConfig& pixelFilterConfig,
 	const bool bShowLuminaires,
 	const SpectralConfig& spectralConfig,
-	const SMSConfig& smsConfig,
 	const bool oidnDenoise,
 	const OidnQuality oidnQuality,
 	const OidnDevice oidnDevice,
@@ -5861,7 +5858,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	IRasterizer* pRaster = 0;
 	RISE_API_CreateBDPTSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
 		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples,
-		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, smsConfig.twoStage, smsConfig.useLevenbergMarquardt, smsConfig.seedingMode, smsConfig.targetBounces, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
+		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
 
 	// Always propagate the parsed progressiveConfig — including
 	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
@@ -5888,7 +5885,6 @@ bool Job::SetBDPTSpectralRasterizer(
 	snap.oidnPrefilter   = oidnPrefilter;
 	snap.radianceMap     = radianceMapConfig;
 	snap.pixelFilter     = pixelFilterConfig;
-	snap.sms             = smsConfig;
 	snap.spectral        = spectralConfig;
 	snap.pathGuiding     = guidingConfig;
 	snap.stability       = stabilityConfig;
@@ -8131,7 +8127,6 @@ bool RebuildRasterizer( Job& job, const std::string& name, const Job::Rasterizer
 		return job.SetBDPTPelRasterizer(
 			p.numPixelSamples, p.maxEyeDepth, p.maxLightDepth,
 			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
-			p.sms,
 			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
 			p.pathGuiding, p.adaptive, p.stability, p.progressive );
 	}
@@ -8139,7 +8134,7 @@ bool RebuildRasterizer( Job& job, const std::string& name, const Job::Rasterizer
 		return job.SetBDPTSpectralRasterizer(
 			p.numPixelSamples, p.maxEyeDepth, p.maxLightDepth,
 			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
-			p.spectral, p.sms,
+			p.spectral,
 			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
 			p.pathGuiding, p.stability, p.progressive );
 	}
@@ -8389,7 +8384,7 @@ bool Job::InstantiateRasterizerWithDefaults( const std::string& name )
 		return SetBDPTPelRasterizer(
 			d.numPixelSamples, d.maxEyeDepth, d.maxLightDepth,
 			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
-			smsConfig, d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
 			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 	}
 	if( name == "bdpt_spectral_rasterizer" ) {
@@ -8397,7 +8392,7 @@ bool Job::InstantiateRasterizerWithDefaults( const std::string& name )
 		return SetBDPTSpectralRasterizer(
 			d.numPixelSamples, d.maxEyeDepth, d.maxLightDepth,
 			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
-			spectralConfig, smsConfig,
+			spectralConfig,
 			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
 			guidingConfig, stabilityConfig, progressiveConfig );
 	}

@@ -38,14 +38,13 @@ namespace RISE
 			const char* GetProgressTitle() const { return "BDPT Rasterizing: "; }
 
 			// Diamond-inheritance disambiguation for PreRenderSetup.
-			// The SMS photon-map build lives on BDPTRasterizerBase; the
-			// PixelBasedPelRasterizer side inherits the default no-op
-			// from the common virtual base (PixelBasedRasterizerHelper).
-			// Without an explicit override here MSVC reports C2250
-			// (ambiguous inheritance).
+			// Both BDPTRasterizerBase and PixelBasedPelRasterizer inherit
+			// the no-op default from the common virtual base
+			// (PixelBasedRasterizerHelper).  Without an explicit override
+			// here MSVC reports C2250 (ambiguous inheritance).
 			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
 			{
-				BDPTRasterizerBase::PreRenderSetup( pScene, pRect );
+				PixelBasedRasterizerHelper::PreRenderSetup( pScene, pRect );
 			}
 
 			/// Override to use BDPTRasterizerBase::stabilityConfig instead of
@@ -88,7 +87,6 @@ namespace RISE
 				IRayCaster* pCaster_,
 				unsigned int maxEyeDepth,
 				unsigned int maxLightDepth,
-				const ManifoldSolverConfig& smsConfig,
 				const PathGuidingConfig& guidingConfig,
 				const AdaptiveSamplingConfig& adaptiveConfig,
 				const StabilityConfig& stabilityConfig,

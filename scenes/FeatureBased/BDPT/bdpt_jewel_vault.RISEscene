@@ -40,7 +40,6 @@ bdpt_pel_rasterizer
 	max_eye_depth		8
 	max_light_depth		6
 	samples				128
-	sms_enabled			FALSE
 	oidn_denoise		TRUE
 }
 

@@ -4761,18 +4761,6 @@ namespace RISE
 								IPixelFilter* pFilter,
 								const unsigned int maxEyeDepth,
 								const unsigned int maxLightDepth,
-								const bool smsEnabled,
-								const unsigned int smsMaxIterations,
-								const double smsThreshold,
-								const unsigned int smsMaxChainDepth,
-								const bool smsBiased,
-								const unsigned int smsBernoulliTrials,
-								const unsigned int smsMultiTrials,
-								const unsigned int smsPhotonCount,
-								const bool smsTwoStage,
-								const bool smsUseLevenbergMarquardt,
-								const SMSSeedingMode smsSeedingMode,
-							const unsigned int smsTargetBounces,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -4787,25 +4775,7 @@ namespace RISE
 			return false;
 		}
 
-		ManifoldSolverConfig smsConfig;
-		smsConfig.enabled = smsEnabled;
-		if( smsEnabled ) {
-			smsConfig.maxIterations = smsMaxIterations;
-			smsConfig.solverThreshold = smsThreshold;
-			smsConfig.maxChainDepth = smsMaxChainDepth;
-			smsConfig.biased = smsBiased;
-			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
-			smsConfig.multiTrials = smsMultiTrials;
-			smsConfig.photonCount = smsPhotonCount;
-			smsConfig.twoStage = smsTwoStage;
-			smsConfig.useLevenbergMarquardt = smsUseLevenbergMarquardt;
-			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
-				? ManifoldSolverConfig::eSeedingUniform
-				: ManifoldSolverConfig::eSeedingSnell;
-			smsConfig.targetBounces = smsTargetBounces;
-		}
-
-		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4843,18 +4813,6 @@ namespace RISE
 								const Scalar lambda_end,
 								const unsigned int num_wavelengths,
 								const unsigned int spectral_samples,
-								const bool smsEnabled,
-								const unsigned int smsMaxIterations,
-								const double smsThreshold,
-								const unsigned int smsMaxChainDepth,
-								const bool smsBiased,
-								const unsigned int smsBernoulliTrials,
-								const unsigned int smsMultiTrials,
-								const unsigned int smsPhotonCount,
-								const bool smsTwoStage,
-								const bool smsUseLevenbergMarquardt,
-								const SMSSeedingMode smsSeedingMode,
-							const unsigned int smsTargetBounces,
 								const bool oidnDenoise,
 								const OidnQuality oidnQuality,
 							const OidnDevice oidnDevice,
@@ -4869,27 +4827,9 @@ namespace RISE
 			return false;
 		}
 
-		ManifoldSolverConfig smsConfig;
-		smsConfig.enabled = smsEnabled;
-		if( smsEnabled ) {
-			smsConfig.maxIterations = smsMaxIterations;
-			smsConfig.solverThreshold = smsThreshold;
-			smsConfig.maxChainDepth = smsMaxChainDepth;
-			smsConfig.biased = smsBiased;
-			smsConfig.maxBernoulliTrials = smsBernoulliTrials;
-			smsConfig.multiTrials = smsMultiTrials;
-			smsConfig.photonCount = smsPhotonCount;
-			smsConfig.twoStage = smsTwoStage;
-			smsConfig.useLevenbergMarquardt = smsUseLevenbergMarquardt;
-			smsConfig.seedingMode = ( smsSeedingMode == SMSSeedingMode::Uniform )
-				? ManifoldSolverConfig::eSeedingUniform
-				: ManifoldSolverConfig::eSeedingSnell;
-			smsConfig.targetBounces = smsTargetBounces;
-		}
-
 		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
 			caster, maxEyeDepth, maxLightDepth,
-			lambda_begin, lambda_end, num_wavelengths, spectral_samples, smsConfig, guidingConfig, stabilityConfig, useZSobol, useHWSS );
+			lambda_begin, lambda_end, num_wavelengths, spectral_samples, guidingConfig, stabilityConfig, useZSobol, useHWSS );
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );

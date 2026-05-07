@@ -6312,28 +6312,6 @@ namespace RISE
 					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
 					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
 
-					SMSConfig smsConfig;
-					if( bag.Has("sms_enabled") )          smsConfig.enabled         = bag.GetBool("sms_enabled");
-					if( bag.Has("sms_max_iterations") )   smsConfig.maxIterations   = bag.GetUInt("sms_max_iterations");
-					if( bag.Has("sms_threshold") )        smsConfig.threshold       = bag.GetDouble("sms_threshold");
-					if( bag.Has("sms_max_chain_depth") )  smsConfig.maxChainDepth   = bag.GetUInt("sms_max_chain_depth");
-					if( bag.Has("sms_biased") )           smsConfig.biased          = bag.GetBool("sms_biased");
-					if( bag.Has("sms_bernoulli_trials") ) smsConfig.bernoulliTrials = bag.GetUInt("sms_bernoulli_trials");
-					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
-					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
-				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
-				if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
-				if( bag.Has("sms_seeding") ) {
-					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
-					std::transform( sv.begin(), sv.end(), sv.begin(),
-						[]( unsigned char c ){ return std::tolower( c ); } );
-					if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
-					else if( sv == "snell" )   smsConfig.seedingMode = SMSSeedingMode::Snell;
-					else                       smsConfig.seedingMode = SMSSeedingMode::Snell;   // unknown → snell fallback
-					// Adding a third mode (Specular Polynomials, MPG, ...) extends
-					// the enum in `SMSConfig.h` and adds one branch here.
-				}
-
 					PathGuidingConfig guidingConfig;
 					if( bag.Has("pathguiding") )                                    guidingConfig.enabled              = bag.GetBool("pathguiding");
 					if( bag.Has("pathguiding_iterations") )                         guidingConfig.trainingIterations   = bag.GetUInt("pathguiding_iterations");
@@ -6386,7 +6364,7 @@ namespace RISE
 						defaultshader.c_str(), radianceMapConfig,
 						pixelFilterConfig,
 						showLuminaires,
-						smsConfig, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+						oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -6402,7 +6380,6 @@ namespace RISE
 						{ auto& p = P(); p.name = "choose_one_light";p.kind = ValueKind::Bool; p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
-						AddSMSConfigParams( P );
 						AddPathGuidingParams( P );
 						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
@@ -6457,28 +6434,6 @@ namespace RISE
 					if( bag.Has("nmend") )            spectralConfig.nmEnd           = bag.GetDouble("nmend");
 					if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
 
-					SMSConfig smsConfig;
-					if( bag.Has("sms_enabled") )          smsConfig.enabled         = bag.GetBool("sms_enabled");
-					if( bag.Has("sms_max_iterations") )   smsConfig.maxIterations   = bag.GetUInt("sms_max_iterations");
-					if( bag.Has("sms_threshold") )        smsConfig.threshold       = bag.GetDouble("sms_threshold");
-					if( bag.Has("sms_max_chain_depth") )  smsConfig.maxChainDepth   = bag.GetUInt("sms_max_chain_depth");
-					if( bag.Has("sms_biased") )           smsConfig.biased          = bag.GetBool("sms_biased");
-					if( bag.Has("sms_bernoulli_trials") ) smsConfig.bernoulliTrials = bag.GetUInt("sms_bernoulli_trials");
-					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
-					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
-				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
-				if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
-				if( bag.Has("sms_seeding") ) {
-					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
-					std::transform( sv.begin(), sv.end(), sv.begin(),
-						[]( unsigned char c ){ return std::tolower( c ); } );
-					if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
-					else if( sv == "snell" )   smsConfig.seedingMode = SMSSeedingMode::Snell;
-					else                       smsConfig.seedingMode = SMSSeedingMode::Snell;   // unknown → snell fallback
-					// Adding a third mode (Specular Polynomials, MPG, ...) extends
-					// the enum in `SMSConfig.h` and adds one branch here.
-				}
-
 					PathGuidingConfig guidingConfig;
 					if( bag.Has("pathguiding") )            guidingConfig.enabled            = bag.GetBool("pathguiding");
 					if( bag.Has("pathguiding_iterations") ) guidingConfig.trainingIterations = bag.GetUInt("pathguiding_iterations");
@@ -6524,7 +6479,7 @@ namespace RISE
 						pixelFilterConfig,
 						showLuminaires,
 						spectralConfig,
-						smsConfig, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, stabilityConfig, progressiveConfig );
+						oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -6545,7 +6500,6 @@ namespace RISE
 						// fields; RGB-to-SPD conversion is done in the
 						// painters pipeline.
 						AddSpectralCoreParams( P );
-						AddSMSConfigParams( P );
 						// BDPTSpectral supports a subset of pathguiding params (no
 						// light-max-depth, no complete-path-strategy).  Hints
 						// derive from PathGuidingConfig defaults so they stay in
@@ -6823,18 +6777,16 @@ namespace RISE
 					if( bag.Has("sms_bernoulli_trials") ) smsConfig.bernoulliTrials = bag.GetUInt("sms_bernoulli_trials");
 					if( bag.Has("sms_multi_trials") )     smsConfig.multiTrials     = bag.GetUInt("sms_multi_trials");
 					if( bag.Has("sms_photon_count") )     smsConfig.photonCount     = bag.GetUInt("sms_photon_count");
-				if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
-				if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
-				if( bag.Has("sms_seeding") ) {
-					std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
-					std::transform( sv.begin(), sv.end(), sv.begin(),
-						[]( unsigned char c ){ return std::tolower( c ); } );
-					if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
-					else if( sv == "snell" )   smsConfig.seedingMode = SMSSeedingMode::Snell;
-					else                       smsConfig.seedingMode = SMSSeedingMode::Snell;   // unknown → snell fallback
-					// Adding a third mode (Specular Polynomials, MPG, ...) extends
-					// the enum in `SMSConfig.h` and adds one branch here.
-				}
+					if( bag.Has("sms_two_stage") )        smsConfig.twoStage        = bag.GetBool("sms_two_stage");
+					if( bag.Has("sms_target_bounces") )   smsConfig.targetBounces   = bag.GetUInt("sms_target_bounces");
+					if( bag.Has("sms_seeding") ) {
+						std::string sv = StripSurroundingQuotes( bag.GetString("sms_seeding") );
+						std::transform( sv.begin(), sv.end(), sv.begin(),
+							[]( unsigned char c ){ return std::tolower( c ); } );
+						if( sv == "uniform" )      smsConfig.seedingMode = SMSSeedingMode::Uniform;
+						else if( sv == "snell" )   smsConfig.seedingMode = SMSSeedingMode::Snell;
+						else                       smsConfig.seedingMode = SMSSeedingMode::Snell;   // unknown → snell fallback
+					}
 
 					PathGuidingConfig guidingConfig;
 					if( bag.Has("pathguiding") )                                    guidingConfig.enabled              = bag.GetBool("pathguiding");

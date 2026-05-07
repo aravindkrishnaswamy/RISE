@@ -19,9 +19,14 @@ hitting a diffuse receiver.
 | `src/Library/Utilities/ManifoldSolver.cpp` | Full Newton solver, constraint, Jacobian, contribution eval |
 | `src/Library/Utilities/SMSPhotonMap.h/cpp` | Photon-aided seeding; kd-tree of proven-good SMS seeds queried by `ManifoldSolver::EvaluateAtShadingPoint` |
 | `src/Library/Shaders/SMSShaderOp.h/cpp` | Unidirectional PT integration |
-| `src/Library/Shaders/BDPTIntegrator.cpp` | BDPT integration (`EvaluateSMSStrategies`) |
-| `src/Library/Rendering/BDPTPelRasterizer.cpp` | Rendering loop: SMS added to BDPT result |
 | `src/Library/Interfaces/SpecularInfo.h` | Material query for specular properties |
+
+SMS is wired into PT (`pathtracing_*_rasterizer`) and MLT.  It was
+historically wired into BDPT as well; the BDPT integration was
+excised in 2026-05 because state-of-the-art renderers don't combine
+BDPT with SMS and the cross-strategy MIS overlap was structural
+complexity for no measurable variance gain.  VCM handles caustics
+via merging and was never wired through SMS.
 
 ## Algorithm Pipeline
 
@@ -83,53 +88,24 @@ formulation with its analytical Jacobian.  The angle-difference
 infrastructure is retained for potential future use with random
 seed sampling, where the distant-seed advantage would apply.
 
-## SMS and BDPT: MIS Analysis
+## SMS and BDPT (historical, retired 2026-05)
 
-**Standard BDPT and SMS occupy disjoint path spaces.  No cross-MIS is
-needed between them for perfect-specular (delta) materials.**
+BDPT was wired through SMS via `EvaluateSMSStrategies{,NM}` plus a
+cross-strategy emission-suppression predicate
+(`ShouldSuppressSMSOverlap`) that prevented BDPT's (s==0) emission
+strategy from double-counting SMS-reachable caustic paths.  Both
+were removed.  Reasons:
 
-### Why no overlap exists
-
-SMS paths traverse a chain of delta (specular) vertices between a
-diffuse surface and a light:
-
-```
-Camera -> ... -> Diffuse -> [Specular_1 -> ... -> Specular_k] -> Light
-```
-
-BDPT connection strategies explicitly skip delta vertices — the
-MIS weight walk skips any vertex where `isDelta == true`, and
-connections are only formed between non-delta endpoints.  A light
-subpath that randomly scatters through specular surfaces has zero
-probability of hitting the exact delta direction, so BDPT cannot
-generate the same path.
-
-Therefore:
-- **No double-counting** — simple addition of SMS and BDPT
-  contributions is correct.
-- **No cross-MIS denominator terms** — neither strategy can
-  produce the other's paths.
-- The current implementation (separate `EvaluateSMSStrategies`
-  added to `EvaluateAllStrategies` results) is mathematically
-  sound.
-
-### When cross-MIS would be needed
-
-If SMS is extended to **glossy (non-delta) specular** materials,
-the path spaces would overlap.  BDPT could connect through a
-glossy vertex with nonzero probability, and SMS would also find
-paths through the same vertex.  In that case:
-
-1. SMS paths would need forward and reverse PDFs expressible in
-   the BDPT vertex framework.
-2. The MIS weight walk would need an additional term for the
-   SMS strategy at each non-delta eye vertex.
-3. The SMS internal PDF estimation would need to include the
-   probability of the standard BDPT strategy finding the same
-   path.
-
-This is left as a future exercise; the current delta-only SMS
-does not require it.
+- State-of-the-art renderers (Mitsuba 3, PBRT) wire SMS only into
+  unidirectional PT; the BDPT-with-SMS combination is not in the
+  published reference implementations.
+- The `ShouldSuppressSMSOverlap` predicate added structural
+  complexity (mirroring PT's `bPassedThroughSpecular &&
+  bHadNonSpecularShading` rule across BDPT's eye-subpath walk) for
+  no measurable variance reduction over PT+SMS on the same scenes.
+- BDPT-only scenes do not benefit from SMS; PT+SMS already covers
+  the caustic regime well.  SMS test scenes that previously used
+  BDPT have been switched to PT.
 
 ### Internal SMS MIS (biased vs. unbiased)
 

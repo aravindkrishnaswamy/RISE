@@ -325,20 +325,22 @@ static void TestPixelFilterHints()
 
 static void TestSMSConfigHints()
 {
-	std::cout << "SMSConfig hints (via bdpt_pel_rasterizer)" << std::endl;
-	const ChunkDescriptor* desc = DescriptorForKeyword( String( "bdpt_pel_rasterizer" ) );
+	// BDPT no longer participates in SMS (excised 2026-05-07).  Validate
+	// SMS hints via the PT-pel rasterizer instead, which still wires SMS.
+	std::cout << "SMSConfig hints (via pathtracing_pel_rasterizer)" << std::endl;
+	const ChunkDescriptor* desc = DescriptorForKeyword( String( "pathtracing_pel_rasterizer" ) );
 	if( !desc ) { ++failCount; return; }
 	SMSConfig d;
-	CheckHint( desc, "bdpt_pel_rasterizer", "sms_enabled",          to_hint( d.enabled ) );
-	CheckHint( desc, "bdpt_pel_rasterizer", "sms_max_iterations",   to_hint( d.maxIterations ) );
-	CheckHint( desc, "bdpt_pel_rasterizer", "sms_threshold",        to_hint( d.threshold ) );
-	CheckHint( desc, "bdpt_pel_rasterizer", "sms_max_chain_depth",  to_hint( d.maxChainDepth ) );
-	CheckHint( desc, "bdpt_pel_rasterizer", "sms_biased",           to_hint( d.biased ) );
-	CheckHint( desc, "bdpt_pel_rasterizer", "sms_bernoulli_trials", to_hint( d.bernoulliTrials ) );
-	CheckHint( desc, "bdpt_pel_rasterizer", "sms_multi_trials",     to_hint( d.multiTrials ) );
-	CheckHint( desc, "bdpt_pel_rasterizer", "sms_photon_count",     to_hint( d.photonCount ) );
-	CheckHint( desc, "bdpt_pel_rasterizer", "sms_two_stage",        to_hint( d.twoStage ) );
-	CheckHint( desc, "bdpt_pel_rasterizer", "sms_target_bounces",   to_hint( d.targetBounces ) );
+	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_enabled",          to_hint( d.enabled ) );
+	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_max_iterations",   to_hint( d.maxIterations ) );
+	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_threshold",        to_hint( d.threshold ) );
+	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_max_chain_depth",  to_hint( d.maxChainDepth ) );
+	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_biased",           to_hint( d.biased ) );
+	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_bernoulli_trials", to_hint( d.bernoulliTrials ) );
+	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_multi_trials",     to_hint( d.multiTrials ) );
+	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_photon_count",     to_hint( d.photonCount ) );
+	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_two_stage",        to_hint( d.twoStage ) );
+	CheckHint( desc, "pathtracing_pel_rasterizer", "sms_target_bounces",   to_hint( d.targetBounces ) );
 }
 
 static void TestProgressiveHints()

@@ -63,7 +63,7 @@ Round 2 (ABI preservation) returned no findings.
 
 **Deferred to Phase 2** (judgment call after reading the code):
 - `BSSRDFSampling::SampleResult` — intentionally dual-fielded so one `SampleEntryPoint` call computes both Pel and NM weights from shared geometric probing.  Templating would regress; kept as-is.
-- `ManifoldSolver::EvaluateChainThroughput{,NM}` + `SMSContribution{,NM}` — non-trivial (~50 lines each) and consumed by BDPT's SMS evaluator.  Folding is better done as part of the BDPT templatization (Phase 2c) where the caller templatization happens.
+- `ManifoldSolver::EvaluateChainThroughput{,NM}` + `SMSContribution{,NM}` — non-trivial (~50 lines each); kept as Pel/NM pair, consumed by PT's SMS evaluator.  (Was historically also called from BDPT's SMS evaluator; that integration was excised on 2026-05-07.)
 - `PathVertexEval::EvalBSDFAtVertex{,NM}` — already dispatched through the Phase-0 `PathValueOps` layer at call sites; the underlying functions stay as overloads.
 - `BDPTIntegrator::EvalConnectionTransmittance{,NM}` — ~100 lines each; better extracted during the Phase 2c BDPT pass.
 

@@ -69,10 +69,9 @@ PathTracingPelRasterizer::~PathTracingPelRasterizer()
 // pGuidingField stayed null and IntegratePixelRGB fell back to BRDF
 // sampling.
 //
-// See BDPTRasterizerBase::PreRenderSetup for the SMS rationale; the
-// body here is structurally identical but reaches the solver through
-// pIntegrator->GetSolver() since PathTracing rasterizers don't hold a
-// separate ManifoldSolver* member.
+// PathTracing rasterizers reach the manifold solver through
+// pIntegrator->GetSolver() rather than holding their own
+// ManifoldSolver* member.
 //////////////////////////////////////////////////////////////////////
 void PathTracingPelRasterizer::PreRenderSetup(
 	const IScene& pScene,

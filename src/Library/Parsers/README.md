@@ -301,7 +301,7 @@ Parameter sets shared across many chunks live in [AsciiSceneParser.cpp](AsciiSce
 | `AddAdaptiveSamplingParams` | PT/BDPT pel + PT spectral | `adaptive_sampling`, `adaptive_threshold`, `adaptive_min_samples`, `adaptive_max_samples` |
 | `AddRadianceMapParams` | `pixelpel_rasterizer` | `radiance_map`, `radiance_scale`, `radiance_orient` |
 | `AddProgressiveParams` | All progressive rasterizers | `progressive_samples_per_pass` |
-| `AddSMSConfigParams` | PT pel + PT spectral + BDPT spectral | `sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`, `sms_multi_trials`, `sms_photon_count` |
+| `AddSMSConfigParams` | PT pel + PT spectral only | `sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`, `sms_multi_trials`, `sms_photon_count` (BDPT lost SMS support 2026-05-07; see [CLAUDE.md](../../../CLAUDE.md) High-Value Facts) |
 | `AddOptimalMISParams` | PT pel + BDPT pel | `optimal_mis`, `optimal_mis_training_iterations`, `optimal_mis_tile_size` |
 | `AddBaseRasterizerParams` | All rasterizers | `defaultshader`, `oidn_denoise`, `show_luminaires`, … |
 | `AddNoisePainterCommonParams` | All Perlin/Worley/Simplex/Gabor 3D painters | `frequency`, `octaves`, `persistence`, `lacunarity`, `seed`, … |

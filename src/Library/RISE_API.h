@@ -2304,18 +2304,6 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
 								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
 								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
-								const bool smsEnabled,				///< [in] Enable Specular Manifold Sampling
-								const unsigned int smsMaxIterations,///< [in] SMS Newton iteration limit
-								const double smsThreshold,			///< [in] SMS convergence threshold
-								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
-								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
-								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
-								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
-								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
-								const bool smsTwoStage,				///< [in] SMS two-stage solver (Zeltner 2020 §5); first pass on smoothed surface, second on actual.  Helps Newton through C1-discontinuity plateau on Phong-shaded triangle meshes.
-								const bool smsUseLevenbergMarquardt,	///< [in] LM damping in NewtonSolve; default true.  Recovers ~5pp Newton-fail rate on heavy-displacement scenes at the cost of ~50-100% more solver work per shading point.
-								const SMSSeedingMode smsSeedingMode,	///< [in] SMS seeding strategy: `SMSSeedingMode::Snell` (legacy Snell-trace, default) or `SMSSeedingMode::Uniform` (Mitsuba-faithful uniform-area on caustic-caster shapes; required for principled geometric Bernoulli).
-								const unsigned int smsTargetBounces,	///< [in] REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode.
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
@@ -2339,18 +2327,6 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const Scalar lambda_end,			///< [in] End wavelength (nm)
 								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
 								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
-								const bool smsEnabled,				///< [in] Enable Specular Manifold Sampling
-								const unsigned int smsMaxIterations,///< [in] SMS Newton iteration limit
-								const double smsThreshold,			///< [in] SMS convergence threshold
-								const unsigned int smsMaxChainDepth,///< [in] SMS maximum specular chain depth
-								const bool smsBiased,				///< [in] SMS biased mode (skip Bernoulli PDF)
-								const unsigned int smsBernoulliTrials,///< [in] SMS Bernoulli trials for unbiased PDF
-								const unsigned int smsMultiTrials,	///< [in] SMS independent Newton solves per eval (Zeltner 2020); 1 = single-solve
-								const unsigned int smsPhotonCount,	///< [in] SMS photon-aided seeding budget; 0 = disabled (single-seed fallback)
-								const bool smsTwoStage,				///< [in] SMS two-stage solver (Zeltner 2020 §5); first pass on smoothed surface, second on actual.  Helps Newton through C1-discontinuity plateau on Phong-shaded triangle meshes.
-								const bool smsUseLevenbergMarquardt,	///< [in] LM damping in NewtonSolve; default true.  Recovers ~5pp Newton-fail rate on heavy-displacement scenes at the cost of ~50-100% more solver work per shading point.
-								const SMSSeedingMode smsSeedingMode,	///< [in] SMS seeding strategy: `SMSSeedingMode::Snell` (legacy Snell-trace, default) or `SMSSeedingMode::Uniform` (Mitsuba-faithful uniform-area on caustic-caster shapes; required for principled geometric Bernoulli).
-								const unsigned int smsTargetBounces,	///< [in] REQUIRED specular-vertex count per seed chain (Mitsuba `m_config.bounces` analogue).  0 = no target.  Set to natural caustic K (typically 2 for glass shells / interior lights).  Active in BOTH snell and uniform modes; recommended for uniform mode.
 								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
 								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)

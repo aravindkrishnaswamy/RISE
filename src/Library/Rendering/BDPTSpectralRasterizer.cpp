@@ -52,14 +52,13 @@ BDPTSpectralRasterizer::BDPTSpectralRasterizer(
 	const Scalar lambda_end_,
 	const unsigned int num_wavelengths_,
 	const unsigned int spectralSamples,
-	const ManifoldSolverConfig& smsConfig,
 	const PathGuidingConfig& guidingConfig,
 	const StabilityConfig& stabilityConfig,
 	bool useZSobol_,
 	bool useHWSS_
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
-  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, stabilityConfig ),
+  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, guidingConfig, stabilityConfig ),
   PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, StabilityConfig(), false, useHWSS_ )
 {
 	useZSobol = useZSobol_;
@@ -185,31 +184,6 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 			{
 				sampleValue += weighted;
 			}
-		}
-	}
-
-	// SMS contributions for the single eye subpath.  Double-counting
-	// with BDPT's (s==0) strategy is prevented by the matching
-	// suppression in BDPTIntegrator::ConnectAndEvaluateNM — see the
-	// long comment in the RGB Pel rasterizer for the MIS analysis.
-	if( pIntegrator && !eyeVerts.empty() ) {
-		sampler.StartStream( 31 );
-		std::vector<BDPTIntegrator::ConnectionResultNM> smsResults =
-			pIntegrator->EvaluateSMSStrategiesNM(
-				eyeVerts, pScene, *pCaster, camera, sampler, nm );
-
-		for( unsigned int r=0; r<smsResults.size(); r++ ) {
-			const BDPTIntegrator::ConnectionResultNM& cr = smsResults[r];
-			if( !cr.valid ) continue;
-
-			Scalar weighted = cr.contribution * cr.misWeight;
-			{
-				const Scalar clampVal = BDPTRasterizerBase::stabilityConfig.directClamp;
-				if( clampVal > 0 && fabs(weighted) > clampVal ) {
-					weighted = (weighted > 0) ? clampVal : -clampVal;
-				}
-			}
-			sampleValue += weighted;
 		}
 	}
 
@@ -437,34 +411,6 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 				}
 			}
 
-			// SMS contributions at hero wavelength only (SMS geometry
-			// is specular-chain dependent and cannot be shared across
-			// wavelengths the way EvaluateAllStrategiesNM can via
-			// RecomputeSubpathThroughputNM).  Double-counting with
-			// BDPT's (s==0) strategy is prevented by the matching
-			// suppression in BDPTIntegrator::ConnectAndEvaluateNM.
-			if( pIntegrator && !eyeVerts.empty() ) {
-				sampler.StartStream( 31 );
-				Scalar smsValue = 0;
-				std::vector<BDPTIntegrator::ConnectionResultNM> smsResults =
-					pIntegrator->EvaluateSMSStrategiesNM(
-						eyeVerts, pScene, *pCaster, camera, sampler, heroNM );
-				for( unsigned int r = 0; r < smsResults.size(); r++ ) {
-					const BDPTIntegrator::ConnectionResultNM& cr = smsResults[r];
-					if( !cr.valid ) continue;
-					Scalar weighted = cr.contribution * cr.misWeight;
-					{
-						const Scalar clampVal = BDPTRasterizerBase::stabilityConfig.directClamp;
-						if( clampVal > 0 && fabs(weighted) > clampVal )
-							weighted = (weighted > 0) ? clampVal : -clampVal;
-					}
-					smsValue += weighted;
-				}
-				XYZPel smsXYZ( 0, 0, 0 );
-				if( smsValue > 0 && ColorUtils::XYZFromNM( smsXYZ, heroNM ) ) {
-					spectralSum = spectralSum + smsXYZ * smsValue;
-				}
-			}
 		}
 
 		if( totalActive > 0 ) {

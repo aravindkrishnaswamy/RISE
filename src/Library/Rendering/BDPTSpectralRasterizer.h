@@ -46,7 +46,7 @@ namespace RISE
 			// See BDPTPelRasterizer for the diamond-disambiguation rationale.
 			virtual void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const
 			{
-				BDPTRasterizerBase::PreRenderSetup( pScene, pRect );
+				PixelBasedRasterizerHelper::PreRenderSetup( pScene, pRect );
 			}
 
 			/// Override to use BDPTRasterizerBase::stabilityConfig instead of
@@ -110,7 +110,6 @@ namespace RISE
 				const Scalar lambda_end,
 				const unsigned int num_wavelengths,
 				const unsigned int spectralSamples,
-				const ManifoldSolverConfig& smsConfig,
 				const PathGuidingConfig& guidingConfig,
 				const StabilityConfig& stabilityConfig,
 				bool useZSobol_,

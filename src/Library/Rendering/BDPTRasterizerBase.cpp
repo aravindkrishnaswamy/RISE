@@ -251,16 +251,12 @@ BDPTRasterizerBase::BDPTRasterizerBase(
 	IRayCaster* pCaster_,
 	unsigned int maxEyeDepth,
 	unsigned int maxLightDepth,
-	const ManifoldSolverConfig& smsConfig,
 	const PathGuidingConfig& guidingCfg,
 	const StabilityConfig& stabilityCfg
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
   BidirectionalRasterizerBase( pCaster_, stabilityCfg ),
-  pIntegrator( 0 ),
-  pManifoldSolver( 0 ),
-  pSMSPhotonMap( 0 ),
-  mSMSPhotonCount( 0 )
+  pIntegrator( 0 )
 #ifdef RISE_ENABLE_OPENPGL
   ,pGuidingField( 0 )
   ,pLightGuidingField( 0 )
@@ -270,25 +266,11 @@ BDPTRasterizerBase::BDPTRasterizerBase(
   ,guidingConfig( guidingCfg )
 {
 	pIntegrator = new BDPTIntegrator( maxEyeDepth, maxLightDepth, stabilityCfg );
-
-	if( smsConfig.enabled )
-	{
-		pManifoldSolver = new ManifoldSolver( smsConfig );
-		pIntegrator->SetManifoldSolver( pManifoldSolver );
-
-		// Retain the photon count so PreRenderSetup knows how many to shoot.
-		mSMSPhotonCount = smsConfig.photonCount;
-	}
 }
 
 BDPTRasterizerBase::~BDPTRasterizerBase()
 {
 	safe_release( pIntegrator );
-	safe_release( pManifoldSolver );
-	if( pSMSPhotonMap ) {
-		delete pSMSPhotonMap;
-		pSMSPhotonMap = 0;
-	}
 #ifdef RISE_ENABLE_OPENPGL
 	safe_release( pGuidingField );
 	safe_release( pLightGuidingField );
@@ -296,53 +278,6 @@ BDPTRasterizerBase::~BDPTRasterizerBase()
 #endif
 	// pSplatFilm and pScratchImage are released by the
 	// BidirectionalRasterizerBase destructor.
-}
-
-//////////////////////////////////////////////////////////////////////
-// PreRenderSetup — SMS photon-aided seeding pass.
-//
-// Runs ONCE per RasterizeScene invocation, AFTER the scene's
-// acceleration structure is built (see PixelBasedRasterizerHelper's
-// call order) and BEFORE the eye-pass block dispatch.  The pass
-// emits smsConfig.photonCount photons from every light, walks each
-// through the specular chain, and stores the first-diffuse-after-
-// specular landing along with the entry point on the first specular
-// caster (the SMS seed).  After the map is balanced it is handed to
-// the ManifoldSolver so render workers can query it from
-// EvaluateAtShadingPoint's multi-trial loop.
-//
-// Safe to call multiple times — subsequent invocations rebuild the
-// map (e.g. if the scene's animator changed geometry between frames).
-//////////////////////////////////////////////////////////////////////
-void BDPTRasterizerBase::PreRenderSetup(
-	const IScene& pScene,
-	const Rect* /*pRect*/
-	) const
-{
-	if( !pManifoldSolver ) {
-		return;
-	}
-
-	// Cache the scene's specular casters once for the SMS uniform-seeding
-	// path (Mitsuba-faithful single-/multi-scatter; consumed in a later
-	// implementation phase).  See PathTracingPelRasterizer::PreRenderSetup
-	// for full rationale.
-	std::vector<const IObject*> casters;
-	ManifoldSolver::EnumerateSpecularCasters( pScene, casters );
-	pManifoldSolver->SetSpecularCasters( std::move( casters ) );
-
-	if( mSMSPhotonCount == 0 ) {
-		return;
-	}
-
-	// Lazily allocate the map on first call; reuse on subsequent calls
-	// (rebuild Clear() + Build()).
-	if( !pSMSPhotonMap ) {
-		pSMSPhotonMap = new SMSPhotonMap();
-	}
-
-	const unsigned int stored = pSMSPhotonMap->Build( pScene, mSMSPhotonCount );
-	pManifoldSolver->SetPhotonMap( stored > 0 ? pSMSPhotonMap : 0 );
 }
 
 void BDPTRasterizerBase::RasterizeScene(
@@ -376,10 +311,9 @@ void BDPTRasterizerBase::RasterizeScene(
 	pCaster->AttachScene( &pScene );
 	pScene.GetObjects()->PrepareForRendering();
 
-	// SMS photon-aided seeding pass (only fires when
-	// smsConfig.photonCount > 0; otherwise no-op).  Runs BEFORE anything
-	// else that might spawn worker threads so the map is fully built and
-	// read-only by the time workers query it.
+	// Per-rasterizer pre-render hook.  BDPT inherits the empty no-op
+	// default from PixelBasedRasterizerHelper; PT/VCM use their own
+	// overrides (e.g. SMS photon-map build, path-guide warmup).
 	PreRenderSetup( pScene, pRect );
 
 	// Share the RayCaster's prepared LightSampler with the integrator
