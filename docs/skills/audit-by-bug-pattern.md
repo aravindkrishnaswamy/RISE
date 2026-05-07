@@ -222,7 +222,10 @@ sometimes a synthesized/derived point (caster sample, normal-target,
 midpoint), not the actual emitter."
 
 **Audit grep**: every callsite of `BuildSeedChain` and
-`BuildSeedChainBranching`.  10 callsites total.  Categorised:
+`BuildSeedChainBranching` (post-2026-05: the latter is a thin
+wrapper around the former, so the audit collapses to a single
+function — historical counts below predate that consolidation).
+10 callsites total at the time.  Categorised:
 
 - Snell-mode toward-light traces (3 sites): correct as-is.
 - Synthesized-100-unit fallback paths (4 sites: normalTarget × 2,

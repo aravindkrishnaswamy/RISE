@@ -41,7 +41,7 @@ namespace RISE
 				if( candidate.compare( 0, partial.size(), partial ) == 0 ) return MatchTier::ExactPrefix;
 
 				// Subword: partial matches a snake-case word start somewhere inside
-				// (e.g. "bt" matches "branching_threshold")
+				// (e.g. "dc" matches "direct_clamp")
 				if( partial.size() >= 2 ) {
 					std::size_t idx = 0;
 					for( std::size_t i = 0; i < candidate.size() && idx < partial.size(); ++i ) {
@@ -219,8 +219,8 @@ namespace RISE
 				Ranked r;
 				// In ContextMenu mode (right-click → insert whole line)
 				// embed a placeholder value so the user sees `samples 1`
-				// or `branching_threshold 0.5` rather than a bare
-				// parameter name.  In InlineCompletion mode the user
+				// or `direct_clamp 0.5` rather than a bare parameter
+				// name.  In InlineCompletion mode the user
 				// is typing the parameter's name and expects to
 				// complete only that token; the placeholder would
 				// land mid-stream and require backspacing.

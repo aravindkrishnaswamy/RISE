@@ -333,9 +333,9 @@ ranked by leverage and cost:
 2. **Confirm the Mitsuba-parity baseline on a shared scene before any new
    solver work.** RISE now has the same `ValidateChainPhysics` logic as
    Mitsuba (geometric normal, sign product, no retry, identical predicate)
-   *plus* a small set of extensions Mitsuba lacks (Snell-trace seeding,
-   Fresnel-branching). Run RISE in a Mitsuba-equivalent configuration
-   (`sms_seeding "uniform"`, `mnee_init=false`, `branching_threshold=1.0`,
+   *plus* a small set of extensions Mitsuba lacks (Snell-trace seeding;
+   Fresnel-branching was excised in 2026-05). Run RISE in a Mitsuba-
+   equivalent configuration (`sms_seeding "uniform"`, `mnee_init=false`,
    `sms_two_stage=false`) on a Veach-egg-class scene and verify the residual
    phys-fail rate matches Mitsuba's measured rate. If RISE is meaningfully
    *worse* than Mitsuba in this configuration, the gap is in our solver, not

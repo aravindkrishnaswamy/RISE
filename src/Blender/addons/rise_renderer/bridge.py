@@ -159,7 +159,6 @@ class _RenderSettings(ctypes.Structure):
         ("use_path_tracing", ctypes.c_int),
         ("choose_one_light", ctypes.c_int),
         ("show_lights", ctypes.c_int),
-        ("path_branch", ctypes.c_int),
         ("sms_enabled", ctypes.c_int),
         ("sms_max_iterations", ctypes.c_uint32),
         ("sms_threshold", ctypes.c_float),
@@ -553,7 +552,6 @@ class _SceneHandle:
         payload.use_path_tracing = int(settings.use_path_tracing)
         payload.choose_one_light = int(settings.choose_one_light)
         payload.show_lights = int(settings.show_lights)
-        payload.path_branch = int(settings.path_branch)
         payload.sms_enabled = int(settings.sms_enabled)
         payload.sms_max_iterations = int(settings.sms_max_iterations)
         payload.sms_threshold = float(settings.sms_threshold)

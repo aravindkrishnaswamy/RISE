@@ -330,18 +330,18 @@ void TestUnambiguousCompletionMarked()
 {
 	std::cout << "UnambiguousCompletionMarked\n";
 	SuggestionEngine engine;
-	// Typing `branc` inside a pixelpel_rasterizer should match exactly one
-	// parameter (branching_threshold) by prefix, so that candidate should
+	// Typing `lum_sa` inside a pixelpel_rasterizer should match exactly one
+	// parameter (lum_samples) by prefix, so that candidate should
 	// be marked as the unambiguous ghost-text completion.
 	const std::string buf =
 		"RISE ASCII SCENE 5\n"
 		"pixelpel_rasterizer\n"
 		"{\n"
-		"\tbranc";
+		"\tlum_sa";
 	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::InlineCompletion );
 	EXPECT( !sugs.empty() );
 	if( !sugs.empty() ) {
-		EXPECT( sugs[0].insertText == "branching_threshold" );
+		EXPECT( sugs[0].insertText == "lum_samples" );
 		EXPECT( sugs[0].isUnambiguousCompletion );
 	}
 }

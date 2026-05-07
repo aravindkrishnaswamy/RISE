@@ -1,5 +1,7 @@
 # Path 3: Mitsuba-faithful SMS port — execution plan
 
+> **2026-05 update**: Path-tree branching (`branchingThreshold` + `BuildSeedChainBranching`) was excised from RISE.  Sections referencing Option C / Fresnel-branching / `branching_threshold` describe historical context and are no longer accurate for the live codebase.  SMS uniform mode now uses single-chain stochastic seeds with `multi_trials` for variance reduction — matches Mitsuba SOTA convention.
+
 ## Background — what the literature says
 
 After deep reads of the Mitsuba reference (`manifold_ss.cpp`, `manifold_ms.cpp`, `path_sms_ss.cpp`, `path_sms_ms.cpp`) and a survey of post-2020 SMS work, the picture is:
@@ -406,7 +408,7 @@ These items were called out in the post-Phase-9 adversarial review and deferred 
 - **Per-caster cross-trial dedupe**: now landed.  See `EvaluateAtShadingPointUniform`'s `acceptedRoots` set — keyed on `(first-vertex-pos, chainLen)`, consulted inside the per-caster loop AND the photon-aided block.
 - **`EnumerateSpecularCasters` single-prand probe**: now landed.  Probes 3 deterministic prands (`(0.5,0.5,0.5)`, `(0.25,0.5,0.75)`, `(0.75,0.25,0.25)`); accepts on any positive.
 - **Photon-block dedupe key**: now landed.  All dedupe sites (per-caster loop, photon block) use `(first-vertex-pos, chainLen)`.
-- **Fresnel branching at sub-critical dielectric vertices**: now landed via `BuildSeedChainBranching` and the reused `branchingThreshold` (Option C — see `SMS_UNIFORM_SEEDING_RESULTS.md`).  PT-faithful single-split semantic (matches `PathTracingIntegrator.cpp:1791`'s `!splitFired && throughput > branchingThreshold` guard).  Currently applied to RGB and spectral uniform-mode biased branches; snell-mode trial 0 branching is a follow-up (multi-trial loop restructure).
+- **Fresnel branching at sub-critical dielectric vertices**: was landed (Option C) but **subsequently excised in 2026-05** when path-tree branching was removed from RISE.  Per Mitsuba SOTA convention, SMS now uses single-chain stochastic seeds + multi-trial averaging.  See [CLAUDE.md](../CLAUDE.md) High-Value Facts for the rationale.
 - **Sampler dimension drift**: now landed via `SMSLoopSampler` firewall.  Each `EvaluateAtShadingPoint*` entry consumes exactly two dimensions from the parent sampler to seed an `IndependentSampler`-backed loop sampler; all variable-count internal work (M-trial loop, geometric Bernoulli K-loop, `Solve→EstimatePDF`) uses the loop sampler.  Parent LDS dimension stream stays predictable for downstream call sites (PT BSDF sampling, NEE light sampling).
 
 ### Architectural deferrals

@@ -966,7 +966,6 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	Scalar glossyFilterWidth,
 	bool smsPassedThroughSpecular_initial,
 	bool smsHadNonSpecularShading_initial,
-	bool splitFired_initial,
 	PixelAOV* pAOV
 	) const
 {
@@ -995,16 +994,6 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
 	const Scalar rrThreshold = stabilityConfig.rrThreshold;
 
-	// Branching threshold: split at most once per subpath, at the first
-	// multi-lobe delta vertex whose normalized surviving throughput
-	// exceeds stabilityConfig.branchingThreshold.  See StabilityConfig.h.
-	// beta_initial = MaxValue(throughput) at entry = 1.0 for top-level
-	// camera paths; for recursive CastRay entries we treat the re-entered
-	// subpath as its own origin (so the threshold is always anchored to
-	// "fraction of this subpath's starting energy surviving").
-	const Scalar betaInitial = ColorMath::MaxValue( throughput );
-	bool splitFired = splitFired_initial;
-
 	// When SMS is active, track whether the BSDF-sampled path went
 	// through a specular surface.  If it did AND there was a prior
 	// non-specular shading point where SMS was evaluated, the emission
@@ -1012,9 +1001,9 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	// already accounts for those paths.  Without the non-specular
 	// check, paths like camera->glass->light would be incorrectly
 	// suppressed even though no SMS evaluation covered them.
-	// Initialize from caller so recursive CastRay calls (from the
-	// branching code path when dielectric SPFs produce multiple scattered
-	// rays) carry the suppression state from the parent call.
+	// Initialize from caller so recursive CastRay calls (e.g. via
+	// SSS / BSSRDF entry, branching shader-op chains) carry the
+	// suppression state from the parent call.
 	bool bPassedThroughSpecular = smsPassedThroughSpecular_initial;
 	bool bHadNonSpecularShading = smsHadNonSpecularShading_initial;
 
@@ -1787,140 +1776,12 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 			if( scattered.Count() > 1 )
 			{
-				// Consume one sampler dimension unconditionally for
-				// Sobol alignment — whether we split or RandomlySelect.
+				// Stochastic single-lobe selection at multi-lobe delta
+				// vertices.  Path-tree branching at Fresnel splits was
+				// excised in 2026-05 (matches PBRT/Mitsuba/Arnold/Cycles X).
+				// Staying inside IntegrateFromHit preserves SMS
+				// emission-suppression flags.
 				const Scalar xi = sampler.Get1D();
-
-				// Threshold-gated split: at the first multi-lobe delta
-				// vertex whose normalized throughput still exceeds the
-				// threshold, spawn one continuation per scattered ray
-				// (weighted by kray — deterministic, not /selectProb).
-				// SMS-safe: skipped when a prior non-specular shading
-				// point has been recorded, since recursive CastRay
-				// cannot propagate the suppression state out-of-band.
-				const Scalar normalizedThroughput =
-					( betaInitial > 0 ) ?
-					ColorMath::MaxValue( throughput ) / betaInitial :
-					Scalar( 0 );
-
-				// All scattered lobes must be delta.  Mixed (e.g. polished
-				// with mirror coat + diffuse underlayer) would feed a
-				// non-delta ray into a CastRay expecting delta-transparency
-				// semantics (smsPassedThroughSpecular gets a stale value
-				// from the parent scope rather than being cleared to false).
-				bool allLobesDelta = true;
-				for( unsigned int li = 0; li < scattered.Count(); li++ ) {
-					if( !scattered[li].isDelta ) { allLobesDelta = false; break; }
-				}
-				// Split at the first multi-lobe delta vertex whenever the
-				// normalized throughput survives the threshold.  When SMS
-				// is live on THIS integrator (pSolver != 0) the split
-				// block recurses via this->IntegrateFromHit with
-				// splitFired_=true, which keeps pSolver accessible for
-				// every downstream diffuse vertex and caps the recursion
-				// fan-out at N (each recursive frame can't split again).
-				// When SMS is off, the split block still uses
-				// caster.CastRay (legacy path) since the dispatch-to-
-				// shader-op behavior is otherwise identical.
-				const bool shouldSplit =
-					!splitFired &&
-					allLobesDelta &&
-					scattered.Count() <= 4 &&
-					!bHadNonSpecularShading &&
-					normalizedThroughput > stabilityConfig.branchingThreshold;
-
-				if( shouldSplit )
-				{
-					splitFired = true;
-					for( unsigned int i = 0; i < scattered.Count(); i++ )
-					{
-						ScatteredRay& scat = scattered[i];
-						const Scalar scatmaxv = ColorMath::MaxValue( scat.kray );
-						if( scatmaxv <= 0 ) {
-							continue;
-						}
-
-						IRayCaster::RAY_STATE rs2;
-						rs2.depth = depth + 1;
-						rs2.importance = importance * scatmaxv;
-						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
-						rs2.type = PathTracingRayType( scat );
-						rs2.considerEmission = true;
-						rs2.diffuseBounces = diffuseBounces;
-						rs2.glossyBounces = glossyBounces;
-						rs2.transmissionBounces = transmissionBounces;
-						rs2.translucentBounces = translucentBounces;
-						rs2.glossyFilterWidth = glossyFilterWidth;
-						rs2.smsPassedThroughSpecular = scat.isDelta ? true : bPassedThroughSpecular;
-						rs2.smsHadNonSpecularShading = bHadNonSpecularShading;
-						if( PropagateBounceLimits( rs, rs2, scat, &stabilityConfig ) ) {
-							continue;
-						}
-
-						Ray branchRay = scat.ray;
-						branchRay.Advance( 1e-8 );
-						const IORStack& branchStack =
-							scat.ior_stack ? *scat.ior_stack : iorStack;
-
-						RISEPel cthis( 0, 0, 0 );
-
-						if( pSolver )
-						{
-							// SMS-preserving branch: stay inside this
-							// integrator so downstream diffuse vertices
-							// still see pSolver.  splitFired_=true caps
-							// fan-out at N per depth.
-							RayIntersection branchRI( branchRay, rast );
-							branchRI.geometric.glossyFilterWidth = glossyFilterWidth;
-							scene.GetObjects()->IntersectRay(
-								branchRI, true, true, false );
-
-							if( !branchRI.geometric.bHit )
-							{
-								if( pRadianceMap ) {
-									cthis = pRadianceMap->GetRadiance( branchRay, rast );
-								} else if( scene.GetGlobalRadianceMap() ) {
-									cthis = scene.GetGlobalRadianceMap()->GetRadiance(
-										branchRay, rast );
-								}
-							}
-							else
-							{
-								cthis = IntegrateFromHit(
-									rc, rast, branchRI, scene, caster,
-									sampler, pRadianceMap,
-									depth + 1, branchStack,
-									rs2.bsdfPdf, RISEPel( 0, 0, 0 ), true,
-									rs2.importance, rs2.type,
-									rs2.diffuseBounces, rs2.glossyBounces,
-									rs2.transmissionBounces, rs2.translucentBounces,
-									volumeBounces, rs2.glossyFilterWidth,
-									rs2.smsPassedThroughSpecular,
-									rs2.smsHadNonSpecularShading,
-									true,
-									pAOV );
-							}
-						}
-						else
-						{
-							// Legacy path: no SMS active, so dispatcher
-							// indirection through caster.CastRay is fine.
-							caster.CastRay( rc, rast, branchRay, cthis, rs2, 0,
-								pRadianceMap, branchStack );
-						}
-
-						RISEPel indirect = scat.kray * cthis;
-						if( depth > 0 ) {
-							indirect = ClampContribution( indirect, stabilityConfig.indirectClamp );
-						}
-						result = result + throughput * indirect;
-					}
-					break;
-				}
-
-				// Not splitting: randomly select one scattered ray and
-				// continue iteratively.  Staying inside IntegrateFromHit
-				// preserves SMS emission-suppression flags.
 				const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
 				if( !pS ) {
 					break;
@@ -2196,80 +2057,38 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			break;
 		}
 
-		if( scattered.Count() > 1 )
+		// Stochastic single-lobe selection (no path-tree branching at
+		// multi-lobe BSDF vertices).  Branching was excised in 2026-05;
+		// matches PBRT/Mitsuba/Arnold/Cycles X conventions.
+		//
+		// Multi-lobe correction: RandomlySelect picks lobe i with prob
+		// max(kray_i)/sum_j max(kray_j).  The unbiased throughput
+		// update is `kray_I / selectProb` — without the division, the
+		// estimator is biased low at every multi-lobe vertex.
 		{
-			for( unsigned int i = 0; i < scattered.Count(); i++ )
-			{
-				ScatteredRay& scat = scattered[i];
-				const Scalar scatmaxv = ColorMath::MaxValue( scat.kray );
-				if( scatmaxv > 0 )
-				{
-					IRayCaster::RAY_STATE rs2;
-					rs2.depth = depth + 2;
-					rs2.importance = importance * scatmaxv;
-					rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
-					rs2.bsdfTimesCos = scat.isDelta ? RISEPel( 0, 0, 0 ) :
-						scat.kray * scat.pdf;
-					rs2.type = PathTracingRayType( scat );
-					rs2.diffuseBounces = diffuseBounces;
-					rs2.glossyBounces = glossyBounces;
-					rs2.transmissionBounces = transmissionBounces;
-					rs2.translucentBounces = translucentBounces;
-					rs2.glossyFilterWidth = glossyFilterWidth;
-					// Propagate SMS emission-suppression state across the
-					// recursive CastRay.  Without this the child path starts
-					// with default false/false, so a child that goes
-					// non-specular shading → glass → light would re-enable
-					// emission at the light and double-count what SMS at
-					// the parent shading point already sampled.  Mirrors
-					// the update logic used by the iterative single-scatter
-					// path below.
-					rs2.smsPassedThroughSpecular = scat.isDelta;
-					rs2.smsHadNonSpecularShading = bHadNonSpecularShading || !scat.isDelta;
-
-					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && !scat.isDelta )
-					{
-						const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
-							rast.x, rast.y, kTechniqueBSDF );
-					}
-
-					if( PropagateBounceLimits( rs, rs2, scat, &stabilityConfig ) ) {
-						continue;
-					}
-
-					if( scat.isDelta && bSMSEnabled ) {
-						rs2.considerEmission = false;
-					} else {
-						rs2.considerEmission = true;
-					}
-
-					RISEPel cthis( 0, 0, 0 );
-					Ray ray = scat.ray;
-					ray.Advance( 1e-8 );
-					caster.CastRay( rc, rast, ray, cthis, rs2, 0,
-						pRadianceMap,
-						scat.ior_stack ? *scat.ior_stack : iorStack );
-
-					RISEPel indirect = scat.kray * cthis;
-					if( depth > 0 ) {
-						indirect = ClampContribution( indirect, stabilityConfig.indirectClamp );
-					}
-					result = result + throughput * indirect;
-				}
-			}
-			break;
-		}
-		else
-		{
-			// Single scattered ray: continue iteratively
 			const Scalar xi = sampler.Get1D();
 			const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
 			if( !pS ) {
 				break;
 			}
 
+			Scalar selectProb = 1.0;
+			if( scattered.Count() > 1 ) {
+				Scalar totalKrayMax = 0;
+				for( unsigned int li = 0; li < scattered.Count(); li++ ) {
+					totalKrayMax += ColorMath::MaxValue( scattered[li].kray );
+				}
+				const Scalar pSMax = ColorMath::MaxValue( pS->kray );
+				if( totalKrayMax > NEARZERO && pSMax > NEARZERO ) {
+					selectProb = pSMax / totalKrayMax;
+				}
+			}
+			if( selectProb < NEARZERO ) {
+				break;
+			}
+
 			Ray traceRay = pS->ray;
-			RISEPel scatterThroughput = pS->kray;
+			RISEPel scatterThroughput = pS->kray * (1.0 / selectProb);
 			Scalar effectiveBsdfPdf = pS->isDelta ? 0 : pS->pdf;
 			const IORStack* traceIorStack = pS->ior_stack ? pS->ior_stack : &iorStack;
 
@@ -2585,16 +2404,16 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			glossyFilterWidth = rs2.glossyFilterWidth;
 
 			// Track specular transitions for SMS double-counting prevention.
-			// The branching (multi-scatter) path does this at line 1612; the
-			// single-scatter iterative path previously did NOT, which caused
-			// diffuse-floor → BSDF-sample → glass-chain → light paths to slip
-			// through the emission suppression at the light: the suppression
-			// check requires `bPassedThroughSpecular && bHadNonSpecularShading`
-			// and the latter was never set, so `considerEmission=true` at the
-			// light + `bsdfPdf=0` from the last delta gave MIS weight 1.0 and
-			// full emission was accumulated — a deterministic firefly
-			// contribution of hundreds of luminance units per sample at any
-			// pixel whose random BSDF sequence found this path.
+			// Without this, diffuse-floor → BSDF-sample → glass-chain →
+			// light paths slip through the emission suppression at the
+			// light: the suppression check requires
+			// `bPassedThroughSpecular && bHadNonSpecularShading` and the
+			// latter was never set, so `considerEmission=true` at the
+			// light + `bsdfPdf=0` from the last delta gave MIS weight
+			// 1.0 and full emission was accumulated — a deterministic
+			// firefly contribution of hundreds of luminance units per
+			// sample at any pixel whose random BSDF sequence found this
+			// path.
 			if( pS->isDelta ) {
 				bPassedThroughSpecular = true;
 			} else {
@@ -2806,7 +2625,7 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 				RISEPel( 0, 0, 0 ), true, 1.0,
 				IRayCaster::RAY_STATE::eRayDiffuse,
 				0, 0, 0, 0, 1, 0,
-				false, false, false, pAOV );
+				false, false, pAOV );
 
 			return result + volThroughput * hitResult;
 		}
@@ -2828,7 +2647,7 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 				0, RISEPel( 0, 0, 0 ), true, 1.0,
 				IRayCaster::RAY_STATE::eRayView,
 				0, 0, 0, 0, 0, 0,
-				false, false, false, pAOV );
+				false, false, pAOV );
 
 			return Tr * hitResult;
 		}
@@ -2855,7 +2674,7 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 		0, RISEPel( 0, 0, 0 ), true, 1.0,
 		IRayCaster::RAY_STATE::eRayView,
 		0, 0, 0, 0, 0, 0,
-		false, false, false, pAOV );
+		false, false, pAOV );
 }
 
 
@@ -3627,62 +3446,44 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 				break;
 			}
 
-			if( scattered.Count() > 1 )
+			// Stochastic single-lobe selection (no path-tree branching).
+			// Branching was excised in 2026-05; matches PBRT/Mitsuba/
+			// Arnold/Cycles X.
 			{
-				for( unsigned int i = 0; i < scattered.Count(); i++ )
-				{
-					ScatteredRay& scat = scattered[i];
-					if( scat.krayNM > 0 )
-					{
-						IRayCaster::RAY_STATE rs2;
-						rs2.depth = depth + 1;
-						rs2.importance = importance * scat.krayNM;
-						rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
-						rs2.type = PathTracingRayType( scat );
-						// SMS emission suppression: delta scatters beyond a
-						// non-specular shading point must not re-enable
-						// emission at the light.  Matches the RGB branching
-						// path.  Pass SMS flags to the recursive child too.
-						rs2.considerEmission = ( scat.isDelta && bSMSEnabled ) ? false : true;
-						rs2.smsPassedThroughSpecular = scat.isDelta;
-						rs2.smsHadNonSpecularShading = bHadNonSpecularShading || !scat.isDelta;
-						rs2.diffuseBounces = diffuseBounces;
-						rs2.glossyBounces = glossyBounces;
-						rs2.transmissionBounces = transmissionBounces;
-						rs2.translucentBounces = translucentBounces;
-						rs2.glossyFilterWidth = glossyFilterWidth;
-						if( PropagateBounceLimits( rs, rs2, scat, &stabilityConfig ) ) {
-							continue;
-						}
+				const Scalar xi = sampler.Get1D();
+				// bNM=true: select with spectral krayNM weights so the
+				// selection distribution matches the selectProb
+				// computation below (both in spectral domain).  Using
+				// bNM=false (RGB max) would select from one distribution
+				// and divide by another, biasing the estimator at every
+				// multi-lobe spectral vertex.
+				const ScatteredRay* pS = scattered.RandomlySelect( xi, true );
+				if( !pS ) {
+					break;
+				}
 
-						Scalar cthis = 0;
-						Ray ray = scat.ray;
-						ray.Advance( 1e-8 );
-						caster.CastRayNM( rc, rast, ray, cthis,
-							rs2, nm, 0, pRadianceMap,
-							scat.ior_stack ? *scat.ior_stack : iorStack );
-
-						Scalar indirectNM = cthis * scat.krayNM;
-						if( depth > 0 ) {
-							indirectNM = ClampContribution( indirectNM, stabilityConfig.indirectClamp );
-						}
-						result += throughput * indirectNM;
+				// Multi-lobe selectProb correction: RandomlySelect with
+				// bNM=true picks lobe i with prob krayNM_i / sum_j
+				// krayNM_j (raw, not fabs — matches the CDF inside
+				// ScatteredRayContainer::RandomlySelect).  Throughput
+				// must divide by selectProb to be unbiased.
+				Scalar selectProb = 1.0;
+				if( scattered.Count() > 1 ) {
+					Scalar totalKrayNM = 0;
+					for( unsigned int li = 0; li < scattered.Count(); li++ ) {
+						totalKrayNM += scattered[li].krayNM;
+					}
+					if( totalKrayNM > NEARZERO && pS->krayNM > NEARZERO ) {
+						selectProb = pS->krayNM / totalKrayNM;
 					}
 				}
-				break;
-			}
-			else
-			{
-				// Single scattered ray: continue iteratively
-				const Scalar xi = sampler.Get1D();
-				const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
-				if( !pS ) {
+				if( selectProb < NEARZERO ) {
 					break;
 				}
 
 				IRayCaster::RAY_STATE rs2 = rs;
 				rs2.depth = depth + 1;
-				rs2.importance = importance * pS->krayNM;
+				rs2.importance = importance * fabs( pS->krayNM ) / selectProb;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
 				rs2.type = PathTracingRayType( *pS );
 				// SMS emission-suppression: a delta continuation beyond a
@@ -3696,7 +3497,7 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 					break;
 				}
 
-				throughput *= pS->krayNM;
+				throughput *= pS->krayNM * (1.0 / selectProb);
 				importance = rs2.importance;
 				bsdfPdf = rs2.bsdfPdf;
 				bsdfTimesCosNM = 0;
@@ -3806,69 +3607,37 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 			break;
 		}
 
-		if( scattered.Count() > 1 )
+		// Stochastic single-lobe selection (no path-tree branching).
+		// Branching was excised in 2026-05; matches PBRT/Mitsuba/
+		// Arnold/Cycles X.
+		//
+		// Multi-lobe correction: select lobe with bNM=true (spectral
+		// weights) so selection and compensation are in the same
+		// domain.  RandomlySelect picks lobe i with prob krayNM_i /
+		// sum_j krayNM_j; throughput divides by selectProb.
 		{
-			for( unsigned int i = 0; i < scattered.Count(); i++ )
-			{
-				ScatteredRay& scat = scattered[i];
-				if( scat.krayNM > 0 )
-				{
-					IRayCaster::RAY_STATE rs2;
-					rs2.depth = depth + 2;
-					rs2.importance = importance * scat.krayNM;
-					rs2.bsdfPdf = scat.isDelta ? 0 : scat.pdf;
-					rs2.bsdfTimesCos = scat.isDelta ? RISEPel( 0, 0, 0 ) :
-						RISEPel( fabs( scat.krayNM ) * scat.pdf );
-					rs2.type = PathTracingRayType( scat );
-					rs2.diffuseBounces = diffuseBounces;
-					rs2.glossyBounces = glossyBounces;
-					rs2.transmissionBounces = transmissionBounces;
-					rs2.translucentBounces = translucentBounces;
-					rs2.glossyFilterWidth = glossyFilterWidth;
-
-					if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && !scat.isDelta )
-					{
-						const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
-							rast.x, rast.y, kTechniqueBSDF );
-					}
-
-					if( PropagateBounceLimits( rs, rs2, scat, &stabilityConfig ) ) {
-						continue;
-					}
-
-					if( scat.isDelta && bSMSEnabled ) {
-						rs2.considerEmission = false;
-					} else {
-						rs2.considerEmission = true;
-					}
-
-					Scalar cthis = 0;
-					Ray ray = scat.ray;
-					ray.Advance( 1e-8 );
-					caster.CastRayNM( rc, rast, ray, cthis,
-						rs2, nm, 0, pRadianceMap,
-						scat.ior_stack ? *scat.ior_stack : iorStack );
-
-					Scalar indirectNM = cthis * scat.krayNM;
-					if( depth > 0 ) {
-						indirectNM = ClampContribution( indirectNM, stabilityConfig.indirectClamp );
-					}
-					result += throughput * indirectNM;
-				}
-			}
-			break;
-		}
-		else
-		{
-			// Single scattered ray: continue iteratively
 			const Scalar xi = sampler.Get1D();
-			const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
+			const ScatteredRay* pS = scattered.RandomlySelect( xi, true );
 			if( !pS ) {
 				break;
 			}
 
+			Scalar selectProb = 1.0;
+			if( scattered.Count() > 1 ) {
+				Scalar totalKrayNM = 0;
+				for( unsigned int li = 0; li < scattered.Count(); li++ ) {
+					totalKrayNM += scattered[li].krayNM;
+				}
+				if( totalKrayNM > NEARZERO && pS->krayNM > NEARZERO ) {
+					selectProb = pS->krayNM / totalKrayNM;
+				}
+			}
+			if( selectProb < NEARZERO ) {
+				break;
+			}
+
 			Ray traceRay = pS->ray;
-			Scalar scatterThroughputNM = pS->krayNM;
+			Scalar scatterThroughputNM = pS->krayNM * (1.0 / selectProb);
 			Scalar effectiveBsdfPdf = pS->isDelta ? 0 : pS->pdf;
 			const IORStack* traceIorStack = pS->ior_stack ? pS->ior_stack : &iorStack;
 
@@ -4691,29 +4460,29 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 			break;
 		}
 
-		// For HWSS we always use single-sample continuation (no branching)
+		// HWSS single-sample continuation (no branching).  Select with
+		// bNM=true so selection uses hero-wavelength krayNM weights —
+		// matches the selectProb computation below.  Companion
+		// wavelengths inherit the hero's selection and divide by the
+		// same hero-based selectProb.
 		const Scalar xi = sampler.Get1D();
-		const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
+		const ScatteredRay* pS = scattered.RandomlySelect( xi, true );
 		if( !pS ) {
 			break;
 		}
 
-		// RandomlySelect uses hero-wavelength krayNM for selection: picks
-		// lobe i with prob krayNM_i / sum_j krayNM_j.  The unbiased throughput
-		// update divides by that selectProb — same pattern as RGB PT at
-		// line 1543 and BDPT at BDPTIntegrator.cpp:1782-1794.  Companion
-		// wavelengths inherit the hero's selection, so they divide by the
-		// same hero-based selectProb.
+		// RandomlySelect with bNM=true picks lobe i with prob
+		// krayNM_i / sum_j krayNM_j (raw, not fabs — matches the CDF
+		// inside ScatteredRayContainer::RandomlySelect).
 		Scalar selectProb = 1.0;
 		if( scattered.Count() > 1 )
 		{
 			Scalar totalKrayNM = 0;
 			for( unsigned int li = 0; li < scattered.Count(); li++ ) {
-				totalKrayNM += fabs( scattered[li].krayNM );
+				totalKrayNM += scattered[li].krayNM;
 			}
-			const Scalar pSKrayNM = fabs( pS->krayNM );
-			if( totalKrayNM > NEARZERO && pSKrayNM > NEARZERO ) {
-				selectProb = pSKrayNM / totalKrayNM;
+			if( totalKrayNM > NEARZERO && pS->krayNM > NEARZERO ) {
+				selectProb = pS->krayNM / totalKrayNM;
 			}
 		}
 		if( selectProb < NEARZERO ) {

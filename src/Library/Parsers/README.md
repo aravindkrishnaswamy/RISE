@@ -296,7 +296,7 @@ Parameter sets shared across many chunks live in [AsciiSceneParser.cpp](AsciiSce
 | `AddPixelFilterParams` | All 10 rasterizers | `pixel_filter`, `pixel_filter_width`, `pixel_filter_height`, `pixel_filter_paramA/B` |
 | `AddSpectralCoreParams` | All 5 spectral rasterizers | `spectral_samples`, `nmbegin`, `nmend`, `num_wavelengths`, `hwss` |
 | `AddSpectralRGBSpdParams` | `pixelintegratingspectral_rasterizer` only | `integrate_rgb`, `rgb_spd`, `rgb_spd_wavelengths`, `rgb_spd_r/g/b` |
-| `AddStabilityConfigParams` | All non-MLT rasterizers | `direct_clamp`, `indirect_clamp`, `rr_min_depth`, `rr_threshold`, `max_*_bounce`, `light_bvh`, `branching_threshold` |
+| `AddStabilityConfigParams` | All non-MLT rasterizers | `direct_clamp`, `indirect_clamp`, `rr_min_depth`, `rr_threshold`, `max_*_bounce`, `light_bvh` |
 | `AddPathGuidingParams` | PT/BDPT pel + PT spectral | `pathguiding`, `pathguiding_iterations`, `pathguiding_spp`, `pathguiding_alpha`, `pathguiding_max_depth`, … |
 | `AddAdaptiveSamplingParams` | PT/BDPT pel + PT spectral | `adaptive_sampling`, `adaptive_threshold`, `adaptive_min_samples`, `adaptive_max_samples` |
 | `AddRadianceMapParams` | `pixelpel_rasterizer` | `radiance_map`, `radiance_scale`, `radiance_orient` |

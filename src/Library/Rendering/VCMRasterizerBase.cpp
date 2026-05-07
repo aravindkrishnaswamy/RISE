@@ -248,60 +248,28 @@ namespace
 
 							tl.tmpLightVerts.clear();
 							static thread_local std::vector<uint32_t> tmpLightSubpathStarts;
-							// Allow branching on the light store build
-							// (pass -1 to use the configured threshold).
-							// Per-branch Convert below walks each branch
-							// slice independently so dVCM/dVC/dVM
-							// recurrences are correct (a single-chain
-							// Convert on the concatenated multi-branch
-							// array would corrupt seams).  See the
-							// "NORMALIZATION INVARIANT" block below for
-							// why pathsShot counts emissions, not
-							// branches — the per-emission density
-							// estimate is already correctly normalized
-							// without treating each branch as an
-							// independent subpath.
-							pGen->GenerateLightSubpath( scene, caster, sampler, tl.tmpLightVerts, tmpLightSubpathStarts, rc.random, Scalar( -1 ) );
+							// Single light subpath (no branching).
+							// Branching at multi-lobe delta vertices
+							// was excised in 2026-05; the
+							// `subpathStarts` outparam is retained
+							// for Phase-2 integrator cleanup but
+							// always contains exactly one [0, size)
+							// range.
+							pGen->GenerateLightSubpath( scene, caster, sampler, tl.tmpLightVerts, tmpLightSubpathStarts, rc.random );
 							if( tl.tmpLightVerts.empty() ) {
 								continue;
 							}
 
-							// NORMALIZATION INVARIANT: pathsShot counts
-							// INDEPENDENT EMISSIONS (one per
-							// GenerateLightSubpath call), NOT branch
-							// copies.  Splitting at a delta vertex is a
-							// variance-reduction technique with zero
-							// effect on expectation: every branch i
-							// carries throughput beta * kray_i with
-							// sum(kray_i) == original kray, so total
-							// deposited energy across all branches
-							// equals the single-branch total.
-							// Counting each branch as its own subpath
-							// would inflate mLightSubPathCount and
-							// shrink the VM density by 1/N — producing
-							// a 1/N-times-too-dim render (this was the
-							// bug before the fix; set branching_
-							// threshold=1.0 to force single-branch
-							// behavior pre-fix).
+							// pathsShot counts independent emissions
+							// (one per GenerateLightSubpath call).
 							tl.pathsShot++;
 
-							const std::size_t numLbPhotonStore = tmpLightSubpathStarts.size() >= 2 ?
-								( tmpLightSubpathStarts.size() - 1 ) : 0;
-							static thread_local std::vector<BDPTVertex> branchVertsPhotonStore;
-							for( std::size_t lb = 0; lb < numLbPhotonStore; lb++ ) {
-								const uint32_t lbeg = tmpLightSubpathStarts[lb];
-								const uint32_t lend = tmpLightSubpathStarts[lb + 1];
-								if( lbeg >= lend ) continue;
-								branchVertsPhotonStore.assign(
-									tl.tmpLightVerts.begin() + lbeg,
-									tl.tmpLightVerts.begin() + lend );
-								tl.tmpConverted.clear();
-								VCMIntegrator::ConvertLightSubpath(
-									branchVertsPhotonStore, norm, tl.tmpConverted, &tl.tmpLightMis );
-								for( std::size_t m = 0; m < tl.tmpConverted.size(); m++ ) {
-									out.push_back( tl.tmpConverted[m] );
-									tl.storedCount++;
-								}
+							tl.tmpConverted.clear();
+							VCMIntegrator::ConvertLightSubpath(
+								tl.tmpLightVerts, norm, tl.tmpConverted, &tl.tmpLightMis );
+							for( std::size_t m = 0; m < tl.tmpConverted.size(); m++ ) {
+								out.push_back( tl.tmpConverted[m] );
+								tl.storedCount++;
 							}
 						}
 					}
@@ -469,7 +437,7 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 					// Auto-radius pre-pass: use single-branch subpaths so
 					// segment-length median isn't skewed by branch-crossing
 					// prefix-copy boundaries (which are not real segments).
-					pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, tmpLightSubpathStarts2, rc.random, Scalar( 1.0 ) );
+					pGen->GenerateLightSubpath( pScene, *pCaster, sampler, tmpLightVerts, tmpLightSubpathStarts2, rc.random );
 					for( std::size_t k = 1; k < tmpLightVerts.size(); k++ ) {
 						const BDPTVertex& curr = tmpLightVerts[k];
 						const BDPTVertex& prevV = tmpLightVerts[k - 1];
@@ -600,15 +568,11 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 	}
 
 	// Renormalize mVCMNormalization with the actual count of subpaths
-	// deposited.  Light-subpath branching can produce more than W×H
-	// subpaths (each non-empty branch counts once); using the real
-	// count keeps the VM density estimator and per-pixel VC MIS
-	// weights consistent with the store.  When no branching fires,
-	// pathsShot equals the pre-branching W×H total and this re-
-	// normalization is a no-op.  The photons' own dVCM/dVC values
-	// were Convert'd with the pre-pass normalization; the stored
-	// values retain that calibration — same approximation used by
-	// the specular-only store filter path.
+	// deposited.  Path-tree branching was excised in 2026-05, so
+	// `pathsShot == W×H` exactly and this renormalization is a
+	// provable no-op — kept for robustness against future code paths
+	// (e.g. RR-aborted light walks not contributing to pathsShot)
+	// that would re-introduce a discrepancy.
 	if( pathsShot > 0 ) {
 		mVCMNormalization = ComputeNormalization(
 			width, height, effectiveMergeRadius,

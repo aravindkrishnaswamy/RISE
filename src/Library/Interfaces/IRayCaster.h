@@ -70,9 +70,9 @@ namespace RISE
 			unsigned int volumeBounces;			///< Accumulated volume scattering bounces
 
 			// SMS emission suppression state, propagated into recursive
-			// CastRay calls so the branching code path (dielectric producing
-			// both refracted and reflected rays) correctly suppresses
-			// emission through specular chains.  See docs/SMS.md.
+			// CastRay calls (e.g. via SSS / BSSRDF entry, shader-op
+			// chains) so emission through specular chains is correctly
+			// suppressed across the recursion boundary.  See docs/SMS.md.
 			bool smsPassedThroughSpecular;	///< True if path traversed a delta surface since last non-specular bounce
 			bool smsHadNonSpecularShading;	///< True if path had at least one non-specular shading point (where SMS evaluated)
 

@@ -1,6 +1,8 @@
 # Phase 8 measurements — Mitsuba-faithful SMS port
 
-This file captures the per-mode comparison data that informs the Phase 9 default decision (per `docs/SMS_UNIFORM_SEEDING_PLAN.md`).
+> **2026-05 update**: Path-tree branching (`branching_threshold` + `BuildSeedChainBranching`) was excised from RISE.  The "Option C" Fresnel-branching seed extension described later in this document is no longer in the codebase.  Uniform-mode SMS now uses single-chain stochastic seeds with `multi_trials` for variance reduction on multi-modal scenes — matches Mitsuba SOTA convention.  Sections referencing `branchingThreshold` describe historical context.
+
+This file captures the per-mode comparison data that informed the Phase 9 default decision (per `docs/SMS_UNIFORM_SEEDING_PLAN.md`).
 
 ## Methodology
 
@@ -112,7 +114,7 @@ Counter-intuitively, the *less stratified* seed (snell-trace's deterministic sin
 
 **Uniform mode — recommended for:**
 - Smooth analytic specular primitives (spheres, ellipsoids, planes).
-- Pure-mirror caustic chains (diacaustic, glints) where the Snell-trace toward the light fundamentally can't seed the chain (this is exactly what `BuildSeedChainBranching`'s pure-mirror supplement now also handles in snell mode).
+- Pure-mirror caustic chains (diacaustic, glints) where the Snell-trace toward the light fundamentally can't seed the chain.  Snell mode now handles these via the pure-mirror supplemental loop in `EvaluateAtShadingPoint` (uses `BuildSeedChain` directly).
 - Reflection caustics on smooth dielectrics (front-face glass, lensed reflections).
 
 ### What this means for the "general brightness drop"
@@ -135,7 +137,7 @@ Snell-trace from shading-point toward light fundamentally cannot seed chains whe
 
 A bug-fix companion: the pre-fix `if (chainLen == 0 || seedChain.empty()) return` early-return guarded on the legacy single-chain variable, which short-circuited the whole evaluation when the Snell-trace produced no chain — even when the mirror-supplement *had* populated `baseSeeds`.  Now gates on `baseSeeds.empty()` and synchronizes the legacy variables from `baseSeeds[0]` when the supplement was the only seed source.
 
-## Multi-level Fresnel branching — the displacement dimming was missing reflection paths
+## [HISTORICAL — REMOVED 2026-05] Multi-level Fresnel branching — the displacement dimming was missing reflection paths
 
 **Hypothesis (user-validated):** RISE's pre-fix snell-mode SMS recorded ~0.93 energy ratio on the smooth Veach-egg and ~0.13 on the displaced one.  The smooth-egg deficit is the *missing Fresnel reflection branch* off the outer ellipsoid; the displaced-egg cliff is from also missing the *refract-reflect-refract* and longer chain classes through the nested dielectrics.  Branching at every sub-critical dielectric Fresnel-decision point — not just the first — recovers these.
 
@@ -154,7 +156,7 @@ The energy ratio holds with displacement instead of collapsing — confirming th
 
 **Why not PT-faithful single-split?**  PT splits once per camera ray because subsequent recursive frames inherit `splitFired = true`; the recursion implicitly enumerates sibling subpaths.  SMS doesn't recurse — each chain we don't generate is energy lost.  Single-split would catch v0's reflection caustic but miss the refract-reflect-refract class entirely (the "inside reflection" caustic through the egg's air cavity).  Confirmed measured: with `splitFired` enabled, displaced ratio plateaued around 0.13–0.30; without it, ratio recovers to 0.87+ for the same scene.
 
-## Fresnel-branching at sub-critical dielectric vertices (Option C)
+## [HISTORICAL — REMOVED 2026-05] Fresnel-branching at sub-critical dielectric vertices (Option C)
 
 The original `BuildSeedChain` deterministically follows the refraction branch at every sub-critical dielectric vertex (mirror materials and TIR are the only `isReflection = true` producers).  Caustics that require Fresnel-reflection branches at sub-critical incidence — e.g. a glass sphere's reflection caustic from the front face, the interior reflection caustic from the inside of a glass shell — are missed by both snell- and uniform-mode seeding unless photon-aided seeds happen to capture the branch.
 

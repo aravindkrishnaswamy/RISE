@@ -318,15 +318,13 @@ void VCMSpectralRasterizer::IntegratePixel(
 				// leading sampler dimensions — matches BDPT).
 				// Skip when VC is disabled: VM reads from the
 				// prebuilt store, not these per-sample subpaths.
-				// Allow branching (pass -1 to use the configured
-				// threshold).  Per-(eye-branch × light-branch) loops
-				// below run ConvertLightSubpath / Evaluate* per
-				// branch slice.  HWSS companions reuse the hero's
-				// geometric branching decisions; per-branch
-				// RecomputeSubpathThroughputNM re-weights throughput
-				// at each companion wavelength (safe for non-
-				// dispersive materials; dispersive paths already
-				// terminate secondaries via HasDispersiveDeltaVertex).
+				// Single subpath each (path-tree branching was
+				// excised in 2026-05); HWSS companions reuse the
+				// hero's geometry and RecomputeSubpathThroughputNM
+				// re-weights throughput at each companion wavelength
+				// (safe for non-dispersive materials; dispersive
+				// paths already terminate secondaries via
+				// HasDispersiveDeltaVertex).
 				localLightVerts.clear();
 				localLightMis.clear();
 				localLightVertsStore.clear();
@@ -340,26 +338,18 @@ void VCMSpectralRasterizer::IntegratePixel(
 				const SampledWavelengths* pSwlHWSSPass = bUseHWSS ? &swl : nullptr;
 				if( mVCMNormalization.mEnableVC ) {
 					pGen->GenerateLightSubpathNM(
-						pScene, *pCaster, sampler, localLightVerts, localLightSubpathStartsNM, heroNM, rc.random, Scalar( -1 ), pSwlHWSSPass );
+						pScene, *pCaster, sampler, localLightVerts, localLightSubpathStartsNM, heroNM, rc.random, pSwlHWSSPass );
 				}
 
 				eyeVerts.clear();
 				static thread_local std::vector<uint32_t> eyeSubpathStartsNM;
 				pGen->GenerateEyeSubpathNM(
-					rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStartsNM, heroNM, Scalar( -1 ), pSwlHWSSPass );
+					rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStartsNM, heroNM, pSwlHWSSPass );
 				if( eyeVerts.empty() ) {
 					continue;
 				}
-
-				const size_t numEyeBranchesSp = eyeSubpathStartsNM.size() >= 2 ?
-					( eyeSubpathStartsNM.size() - 1 ) : 0;
-				const size_t numLightBranchesSp = (
-					mVCMNormalization.mEnableVC &&
-					localLightSubpathStartsNM.size() >= 2 ) ?
-					( localLightSubpathStartsNM.size() - 1 ) : 0;
-				if( numEyeBranchesSp == 0 ) {
-					continue;
-				}
+				// Single subpath each (no branching) — branching at multi-
+				// lobe delta vertices was excised in 2026-05.
 
 #ifdef RISE_ENABLE_OIDN
 				// AOV capture (hero wavelength, first bundle).  Walks the
@@ -398,93 +388,55 @@ void VCMSpectralRasterizer::IntegratePixel(
 
 				Scalar heroValue = 0;
 
-				// Scratch for per-branch evaluation — persist across
-				// spectral samples and pixel samples.  The Pel VCM
-				// rasterizer uses identical names; keep parity.
-				static thread_local std::vector<BDPTVertex> branchEyeVertsSp;
-				static thread_local std::vector<BDPTVertex> branchLightVertsSp;
-				static thread_local std::vector<VCMMisQuantities> branchLightMisSp;
-				static thread_local std::vector<LightVertex> branchLightStoreScratchSp;
+				// Single light + eye subpath (no branching).  Convert
+				// MIS state once per pixel sample.
+				static thread_local std::vector<VCMMisQuantities> lightMisSp;
+				static thread_local std::vector<LightVertex> lightStoreScratchSp;
+				lightMisSp.clear();
+				lightStoreScratchSp.clear();
 
-				// Splat per light-branch at hero.  Splat-to-camera (t=1)
-				// is eye-subpath-independent so it lives outside the eye-
-				// branch loop — matches VCM-Pel.  Convert is called per
-				// branch because the MIS recurrence assumes a single
-				// chain.
-				if( mVCMNormalization.mEnableVC && pSplatFilm ) {
-					for( size_t lb = 0; lb < numLightBranchesSp; lb++ ) {
-						const uint32_t lbeg = localLightSubpathStartsNM[lb];
-						const uint32_t lend = localLightSubpathStartsNM[lb + 1];
-						if( lbeg >= lend ) continue;
-						branchLightVertsSp.assign(
-							localLightVerts.begin() + lbeg, localLightVerts.begin() + lend );
-						branchLightMisSp.clear();
-						branchLightStoreScratchSp.clear();
-						VCMIntegrator::ConvertLightSubpath(
-							branchLightVertsSp, mVCMNormalization,
-							branchLightStoreScratchSp, &branchLightMisSp );
-						if( !branchLightVertsSp.empty() && !branchLightMisSp.empty() ) {
-							pIntegrator->SplatLightSubpathToCameraNM(
-								branchLightVertsSp, branchLightMisSp,
-								pScene, *pCaster, *pCamera, *pSplatFilm,
-								mVCMNormalization, heroNM, pPixelFilter );
-						}
+				// Splat-to-camera (t=1).
+				if( mVCMNormalization.mEnableVC ) {
+					VCMIntegrator::ConvertLightSubpath(
+						localLightVerts, mVCMNormalization,
+						lightStoreScratchSp, &lightMisSp );
+					if( pSplatFilm && !localLightVerts.empty() && !lightMisSp.empty() ) {
+						pIntegrator->SplatLightSubpathToCameraNM(
+							localLightVerts, lightMisSp,
+							pScene, *pCaster, *pCamera, *pSplatFilm,
+							mVCMNormalization, heroNM, pPixelFilter );
 					}
 				}
 
-				// Per eye-branch: convert eye sub-range MIS, evaluate
-				// the eye-side and connection strategies.  S0/NEE/Merges
-				// are light-branch-independent (eye-only or use the
-				// prebuilt store) so they run once per eye-branch.
-				// InteriorConnections fires per (eye × light) pair.
-				for( size_t eb = 0; eb < numEyeBranchesSp; eb++ ) {
-					const uint32_t ebeg = eyeSubpathStartsNM[eb];
-					const uint32_t eend = eyeSubpathStartsNM[eb + 1];
-					if( ebeg >= eend ) continue;
-					branchEyeVertsSp.assign(
-						eyeVerts.begin() + ebeg, eyeVerts.begin() + eend );
-					VCMIntegrator::ConvertEyeSubpath(
-						branchEyeVertsSp, mVCMNormalization, eyeMis );
+				VCMIntegrator::ConvertEyeSubpath(
+					eyeVerts, mVCMNormalization, eyeMis );
 
-					// EvaluateS0NM (eye ray hits emitter) is the s=0
-					// strategy and must run whenever VCM is operating
-					// — its internal MIS already accounts for VC/VM
-					// competition.  See matching comment in
-					// VCMPelRasterizer::IntegratePixel.
-					if( mVCMNormalization.mEnableVC || mVCMNormalization.mEnableVM ) {
-						heroValue += pIntegrator->EvaluateS0NM(
-							pScene, *pCaster, branchEyeVertsSp, eyeMis, mVCMNormalization, heroNM );
+				// EvaluateS0NM (eye ray hits emitter) is the s=0
+				// strategy and must run whenever VCM is operating
+				// — its internal MIS already accounts for VC/VM
+				// competition.  See matching comment in
+				// VCMPelRasterizer::IntegratePixel.
+				if( mVCMNormalization.mEnableVC || mVCMNormalization.mEnableVM ) {
+					heroValue += pIntegrator->EvaluateS0NM(
+						pScene, *pCaster, eyeVerts, eyeMis, mVCMNormalization, heroNM );
+				}
+
+				if( mVCMNormalization.mEnableVC ) {
+					heroValue += pIntegrator->EvaluateNEENM(
+						pScene, *pCaster, sampler, eyeVerts, eyeMis, mVCMNormalization, heroNM );
+
+					if( !localLightVerts.empty() && !lightMisSp.empty() ) {
+						heroValue += pIntegrator->EvaluateInteriorConnectionsNM(
+							pScene, *pCaster,
+							localLightVerts, lightMisSp,
+							eyeVerts, eyeMis,
+							mVCMNormalization, heroNM );
 					}
+				}
 
-					if( mVCMNormalization.mEnableVC ) {
-						heroValue += pIntegrator->EvaluateNEENM(
-							pScene, *pCaster, sampler, branchEyeVertsSp, eyeMis, mVCMNormalization, heroNM );
-
-						for( size_t lb = 0; lb < numLightBranchesSp; lb++ ) {
-							const uint32_t lbeg = localLightSubpathStartsNM[lb];
-							const uint32_t lend = localLightSubpathStartsNM[lb + 1];
-							if( lbeg >= lend ) continue;
-							branchLightVertsSp.assign(
-								localLightVerts.begin() + lbeg, localLightVerts.begin() + lend );
-							branchLightMisSp.clear();
-							branchLightStoreScratchSp.clear();
-							VCMIntegrator::ConvertLightSubpath(
-								branchLightVertsSp, mVCMNormalization,
-								branchLightStoreScratchSp, &branchLightMisSp );
-							if( !branchLightVertsSp.empty() && !branchLightMisSp.empty() ) {
-								heroValue += pIntegrator->EvaluateInteriorConnectionsNM(
-									pScene, *pCaster,
-									branchLightVertsSp, branchLightMisSp,
-									branchEyeVertsSp, eyeMis,
-									mVCMNormalization, heroNM );
-							}
-						}
-					}
-
-					if( pLightVertexStore && mVCMNormalization.mEnableVM ) {
-						heroValue += pIntegrator->EvaluateMergesNM(
-							branchEyeVertsSp, eyeMis, *pLightVertexStore, mVCMNormalization, heroNM );
-					}
+				if( pLightVertexStore && mVCMNormalization.mEnableVM ) {
+					heroValue += pIntegrator->EvaluateMergesNM(
+						eyeVerts, eyeMis, *pLightVertexStore, mVCMNormalization, heroNM );
 				}
 
 				{
@@ -534,86 +486,58 @@ void VCMSpectralRasterizer::IntegratePixel(
 
 					Scalar compValue = 0;
 
-					// Per-light-branch splat at companion wavelength.
-					// Recompute throughputNM on each branch sub-range
-					// (RecomputeSubpathThroughputNM assumes a single
-					// chain — feeding it the concatenated multi-branch
-					// array would mix branches).  Convert re-runs per
-					// branch since MIS quantities are wavelength-
-					// independent but branch-specific.
-					if( mVCMNormalization.mEnableVC && pSplatFilm ) {
-						for( size_t lb = 0; lb < numLightBranchesSp; lb++ ) {
-							const uint32_t lbeg = localLightSubpathStartsNM[lb];
-							const uint32_t lend = localLightSubpathStartsNM[lb + 1];
-							if( lbeg >= lend ) continue;
-							compLight.assign(
-								localLightVerts.begin() + lbeg, localLightVerts.begin() + lend );
-							pGen->RecomputeSubpathThroughputNM(
-								compLight, true, heroNM, companionNM, pScene, *pCaster );
-							branchLightMisSp.clear();
-							branchLightStoreScratchSp.clear();
-							VCMIntegrator::ConvertLightSubpath(
-								compLight, mVCMNormalization,
-								branchLightStoreScratchSp, &branchLightMisSp );
-							if( !compLight.empty() && !branchLightMisSp.empty() ) {
-								pIntegrator->SplatLightSubpathToCameraNM(
-									compLight, branchLightMisSp,
-									pScene, *pCaster, *pCamera, *pSplatFilm,
-									mVCMNormalization, companionNM, pPixelFilter );
-							}
+					// Single subpath each (no branching).  Recompute
+					// throughputNM and re-Convert MIS state at companion
+					// wavelength.
+					compLight.assign( localLightVerts.begin(), localLightVerts.end() );
+					compEye.assign( eyeVerts.begin(), eyeVerts.end() );
+					pGen->RecomputeSubpathThroughputNM(
+						compLight, true, heroNM, companionNM, pScene, *pCaster );
+					pGen->RecomputeSubpathThroughputNM(
+						compEye, false, heroNM, companionNM, pScene, *pCaster );
+
+					static thread_local std::vector<VCMMisQuantities> compLightMis;
+					static thread_local std::vector<LightVertex> compLightStoreScratch;
+					compLightMis.clear();
+					compLightStoreScratch.clear();
+					if( mVCMNormalization.mEnableVC ) {
+						VCMIntegrator::ConvertLightSubpath(
+							compLight, mVCMNormalization,
+							compLightStoreScratch, &compLightMis );
+						if( pSplatFilm && !compLight.empty() && !compLightMis.empty() ) {
+							pIntegrator->SplatLightSubpathToCameraNM(
+								compLight, compLightMis,
+								pScene, *pCaster, *pCamera, *pSplatFilm,
+								mVCMNormalization, companionNM, pPixelFilter );
 						}
 					}
 
-					// Per eye-branch companion evaluation.
-					for( size_t eb = 0; eb < numEyeBranchesSp; eb++ ) {
-						const uint32_t ebeg = eyeSubpathStartsNM[eb];
-						const uint32_t eend = eyeSubpathStartsNM[eb + 1];
-						if( ebeg >= eend ) continue;
-						compEye.assign(
-							eyeVerts.begin() + ebeg, eyeVerts.begin() + eend );
-						pGen->RecomputeSubpathThroughputNM(
-							compEye, false, heroNM, companionNM, pScene, *pCaster );
-						VCMIntegrator::ConvertEyeSubpath(
-							compEye, mVCMNormalization, eyeMis );
+					VCMIntegrator::ConvertEyeSubpath(
+						compEye, mVCMNormalization, eyeMis );
 
-						// S0 (eye→emitter) is independent of VC; see
-						// matching comment in the hero block above.
-						if( mVCMNormalization.mEnableVC || mVCMNormalization.mEnableVM ) {
-							compValue += pIntegrator->EvaluateS0NM(
-								pScene, *pCaster, compEye, eyeMis, mVCMNormalization, companionNM );
+					// S0 (eye→emitter) is independent of VC; see
+					// matching comment in the hero block above.
+					if( mVCMNormalization.mEnableVC || mVCMNormalization.mEnableVM ) {
+						compValue += pIntegrator->EvaluateS0NM(
+							pScene, *pCaster, compEye, eyeMis, mVCMNormalization, companionNM );
+					}
+
+					if( mVCMNormalization.mEnableVC ) {
+						compValue += pIntegrator->EvaluateNEENM(
+							pScene, *pCaster, sampler, compEye, eyeMis, mVCMNormalization, companionNM );
+
+						if( !compLight.empty() && !compLightMis.empty() ) {
+							compValue += pIntegrator->EvaluateInteriorConnectionsNM(
+								pScene, *pCaster,
+								compLight, compLightMis,
+								compEye, eyeMis,
+								mVCMNormalization, companionNM );
 						}
+					}
 
-						if( mVCMNormalization.mEnableVC ) {
-							compValue += pIntegrator->EvaluateNEENM(
-								pScene, *pCaster, sampler, compEye, eyeMis, mVCMNormalization, companionNM );
-
-							for( size_t lb = 0; lb < numLightBranchesSp; lb++ ) {
-								const uint32_t lbeg = localLightSubpathStartsNM[lb];
-								const uint32_t lend = localLightSubpathStartsNM[lb + 1];
-								if( lbeg >= lend ) continue;
-								compLight.assign(
-									localLightVerts.begin() + lbeg, localLightVerts.begin() + lend );
-								pGen->RecomputeSubpathThroughputNM(
-									compLight, true, heroNM, companionNM, pScene, *pCaster );
-								branchLightMisSp.clear();
-								branchLightStoreScratchSp.clear();
-								VCMIntegrator::ConvertLightSubpath(
-									compLight, mVCMNormalization,
-									branchLightStoreScratchSp, &branchLightMisSp );
-								if( !compLight.empty() && !branchLightMisSp.empty() ) {
-									compValue += pIntegrator->EvaluateInteriorConnectionsNM(
-										pScene, *pCaster,
-										compLight, branchLightMisSp,
-										compEye, eyeMis,
-										mVCMNormalization, companionNM );
-								}
-							}
-						}
-
-						if( pLightVertexStore && mVCMNormalization.mEnableVM ) {
-							compValue += pIntegrator->EvaluateMergesNM(
-								compEye, eyeMis, *pLightVertexStore, mVCMNormalization, companionNM );
-						}
+					if( pLightVertexStore && mVCMNormalization.mEnableVM ) {
+						compValue += pIntegrator->EvaluateMergesNM(
+							compEye, eyeMis, *pLightVertexStore, mVCMNormalization, companionNM );
 					}
 
 					{

@@ -4798,11 +4798,6 @@ namespace RISE
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;
 			smsConfig.targetBounces = smsTargetBounces;
-			// Reuse the path-tracer's branching threshold for SMS seed
-			// construction (Fresnel-branch decision at sub-critical
-			// dielectric vertices).  Same semantics as PT's threshold;
-			// default 0.5 makes SMS find reflection caustics by default.
-			smsConfig.branchingThreshold = stabilityConfig.branchingThreshold;
 		}
 
 		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
@@ -4885,11 +4880,6 @@ namespace RISE
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;
 			smsConfig.targetBounces = smsTargetBounces;
-			// Reuse the path-tracer's branching threshold for SMS seed
-			// construction (Fresnel-branch decision at sub-critical
-			// dielectric vertices).  Same semantics as PT's threshold;
-			// default 0.5 makes SMS find reflection caustics by default.
-			smsConfig.branchingThreshold = stabilityConfig.branchingThreshold;
 		}
 
 		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
@@ -5099,11 +5089,6 @@ namespace RISE
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;
 			smsConfig.targetBounces = smsTargetBounces;
-			// Reuse the path-tracer's branching threshold for SMS seed
-			// construction (Fresnel-branch decision at sub-critical
-			// dielectric vertices).  Same semantics as PT's threshold;
-			// default 0.5 makes SMS find reflection caustics by default.
-			smsConfig.branchingThreshold = stabilityConfig.branchingThreshold;
 		}
 
 		PathTracingPelRasterizer* pRasterizer = new PathTracingPelRasterizer(
@@ -5184,11 +5169,6 @@ namespace RISE
 				? ManifoldSolverConfig::eSeedingUniform
 				: ManifoldSolverConfig::eSeedingSnell;
 			smsConfig.targetBounces = smsTargetBounces;
-			// Reuse the path-tracer's branching threshold for SMS seed
-			// construction (Fresnel-branch decision at sub-critical
-			// dielectric vertices).  Same semantics as PT's threshold;
-			// default 0.5 makes SMS find reflection caustics by default.
-			smsConfig.branchingThreshold = stabilityConfig.branchingThreshold;
 		}
 
 		PathTracingSpectralRasterizer* pRasterizer = new PathTracingSpectralRasterizer(

@@ -555,7 +555,6 @@ namespace RISE
 				{ auto& p = P(); p.name = "max_translucent_bounce";                 p.kind = ValueKind::UInt;   p.description = "Max translucent bounce depth (UINT_MAX = unlimited)";          p.defaultValueHint = to_hint(d.maxTranslucentBounce); }
 				{ auto& p = P(); p.name = "max_volume_bounce";                      p.kind = ValueKind::UInt;   p.description = "Max volume bounce depth";               p.defaultValueHint = to_hint(d.maxVolumeBounce); }
 				{ auto& p = P(); p.name = "light_bvh";                              p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = to_hint(d.useLightBVH); }
-				{ auto& p = P(); p.name = "branching_threshold";                    p.kind = ValueKind::Double; p.description = "Normalized throughput gate for subpath splitting at multi-lobe delta vertices (0 = always branch, 1 = never)"; p.defaultValueHint = to_hint(d.branchingThreshold); }
 			}
 			template<typename PushFn>
 			static void AddPathGuidingParams( PushFn P ) {
@@ -5224,7 +5223,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "sms_max_chain_depth"; p.kind = ValueKind::UInt;   p.description = "SMS chain depth"; p.defaultValueHint = "10"; }
 						{ auto& p = P(); p.name = "sms_biased";          p.kind = ValueKind::Bool;   p.description = "Use biased SMS estimator"; p.defaultValueHint = "TRUE"; }
 						// Legacy parameters — accepted for backwards compat, silently ignored.
-						// `branch` was retired in favor of `branching_threshold` on the rasterizer chunk.
+						// `branch` was retired (legacy distribution-tracing knob).
 						{ auto& p = P(); p.name = "branch";               p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
 						{ auto& p = P(); p.name = "force_check_emitters"; p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
 						{ auto& p = P(); p.name = "finalgather";          p.kind = ValueKind::Bool; p.description = "Legacy — ignored"; }
@@ -5299,7 +5298,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "diffuse";              p.kind = ValueKind::Bool;   p.description = "Trace diffuse-reflection rays"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "translucents";         p.kind = ValueKind::Bool;   p.description = "Trace translucent rays"; p.defaultValueHint = "TRUE"; }
 						// Legacy parameter — accepted for backwards compat, silently ignored.
-						// `branch` was retired in favor of `branching_threshold` on the rasterizer chunk.
+						// `branch` was retired (legacy distribution-tracing knob).
 						{ auto& p = P(); p.name = "branch";               p.kind = ValueKind::Bool;   p.description = "Legacy — ignored"; }
 						return cd;
 					}();
@@ -6016,7 +6015,6 @@ namespace RISE
 					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
 					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
 					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
-					if( bag.Has("branching_threshold") )             stabilityConfig.branchingThreshold           = bag.GetDouble("branching_threshold");
 					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
 					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
 					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
@@ -6180,7 +6178,6 @@ namespace RISE
 					if( bag.Has("max_translucent_bounce") )  stabilityConfig.maxTranslucentBounce  = bag.GetUInt("max_translucent_bounce");
 					if( bag.Has("max_volume_bounce") )       stabilityConfig.maxVolumeBounce       = bag.GetUInt("max_volume_bounce");
 					if( bag.Has("light_bvh") )               stabilityConfig.useLightBVH           = bag.GetBool("light_bvh");
-					if( bag.Has("branching_threshold") )     stabilityConfig.branchingThreshold    = bag.GetDouble("branching_threshold");
 
 					return pJob.SetPixelBasedSpectralIntegratingRasterizer( numSamples, numLumSamples, spectralConfig, maxRecur, defaultshader.c_str(), radianceMapConfig,
 						luminarySampler=="none"?0:luminarySampler.c_str(), luminarySamplerParam,
@@ -6310,7 +6307,6 @@ namespace RISE
 					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
 					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
 					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
-					if( bag.Has("branching_threshold") )             stabilityConfig.branchingThreshold           = bag.GetDouble("branching_threshold");
 					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
 					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
 					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
@@ -6448,7 +6444,6 @@ namespace RISE
 					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
 					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
 					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
-					if( bag.Has("branching_threshold") )             stabilityConfig.branchingThreshold           = bag.GetDouble("branching_threshold");
 					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
 					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
 					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
@@ -6569,7 +6564,6 @@ namespace RISE
 					if( bag.Has("max_translucent_bounce") )  stabilityConfig.maxTranslucentBounce  = bag.GetUInt("max_translucent_bounce");
 					if( bag.Has("max_volume_bounce") )       stabilityConfig.maxVolumeBounce       = bag.GetUInt("max_volume_bounce");
 					if( bag.Has("light_bvh") )               stabilityConfig.useLightBVH           = bag.GetBool("light_bvh");
-					if( bag.Has("branching_threshold") )     stabilityConfig.branchingThreshold    = bag.GetDouble("branching_threshold");
 
 					ProgressiveConfig progressiveConfig;
 					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
@@ -6676,7 +6670,6 @@ namespace RISE
 					if( bag.Has("max_translucent_bounce") )  stabilityConfig.maxTranslucentBounce  = bag.GetUInt("max_translucent_bounce");
 					if( bag.Has("max_volume_bounce") )       stabilityConfig.maxVolumeBounce       = bag.GetUInt("max_volume_bounce");
 					if( bag.Has("light_bvh") )               stabilityConfig.useLightBVH           = bag.GetBool("light_bvh");
-					if( bag.Has("branching_threshold") )     stabilityConfig.branchingThreshold    = bag.GetDouble("branching_threshold");
 
 					ProgressiveConfig progressiveConfig;
 					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
@@ -6816,7 +6809,6 @@ namespace RISE
 					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
 					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
 					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
-					if( bag.Has("branching_threshold") )             stabilityConfig.branchingThreshold           = bag.GetDouble("branching_threshold");
 					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
 					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
 					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
@@ -6941,7 +6933,6 @@ namespace RISE
 					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
 					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
 					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
-					if( bag.Has("branching_threshold") )             stabilityConfig.branchingThreshold           = bag.GetDouble("branching_threshold");
 					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
 					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
 					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
@@ -7043,7 +7034,6 @@ namespace RISE
 
 					StabilityConfig stabilityConfig;
 					if( bag.Has("light_bvh") )           stabilityConfig.useLightBVH        = bag.GetBool("light_bvh");
-					if( bag.Has("branching_threshold") ) stabilityConfig.branchingThreshold = bag.GetDouble("branching_threshold");
 
 					return pJob.SetMLTRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
@@ -7058,7 +7048,7 @@ namespace RISE
 						StabilityConfig stabilityDflt;
 						ChunkDescriptor cd;
 						cd.keyword = "mlt_rasterizer"; cd.category = ChunkCategory::Rasterizer;
-						cd.description = "Metropolis Light Transport (RGB).  branching_threshold is forced to 1.0.";
+						cd.description = "Metropolis Light Transport (RGB).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = to_hint(dflt.defaultShader); }
 						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
@@ -7074,11 +7064,8 @@ namespace RISE
 					{ auto& p = P(); p.name = "oidn_prefilter";   p.kind = ValueKind::Enum;   p.enumValues = {"fast","accurate"};               p.description = "OIDN aux source mode (fast = retrace/first-hit, accurate = inline first-non-delta + prefilter)"; p.defaultValueHint = to_hint(dflt.oidnPrefilter); }
 						{ auto& p = P(); p.name = "choose_one_light"; p.kind = ValueKind::Bool;   p.description = "Legacy — ignored (unified LightSampler always selects one light per NEE)"; p.defaultValueHint = ""; }
 						AddPixelFilterParams( P );
-						// MLT accepts only light_bvh and branching_threshold from
-						// StabilityConfig (branching_threshold is forced to 1.0
-						// internally per CLAUDE.md).
+						// MLT accepts only light_bvh from StabilityConfig.
 						{ auto& p = P(); p.name = "light_bvh";            p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = to_hint(stabilityDflt.useLightBVH); }
-						{ auto& p = P(); p.name = "branching_threshold";  p.kind = ValueKind::Double; p.description = "Accepted for parity with other rasterizers but forced to 1.0 (MLT requires a single-subpath proposal)"; p.defaultValueHint = "1.0"; }
 						return cd;
 					}();
 					return d;
@@ -7121,7 +7108,6 @@ namespace RISE
 
 					StabilityConfig stabilityConfig;
 					if( bag.Has("light_bvh") )           stabilityConfig.useLightBVH        = bag.GetBool("light_bvh");
-					if( bag.Has("branching_threshold") ) stabilityConfig.branchingThreshold = bag.GetDouble("branching_threshold");
 
 					return pJob.SetMLTSpectralRasterizer( maxEyeDepth, maxLightDepth,
 						bootstrapSamples, chains, mutationsPerPixel, largeStepProb,
@@ -7138,7 +7124,7 @@ namespace RISE
 						StabilityConfig stabilityDflt;
 						ChunkDescriptor cd;
 						cd.keyword = "mlt_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
-						cd.description = "Metropolis Light Transport (spectral).  branching_threshold is forced to 1.0.";
+						cd.description = "Metropolis Light Transport (spectral).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "defaultshader";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Shader}; p.description = "Default shader chain"; p.defaultValueHint = to_hint(dflt.defaultShader); }
 						{ auto& p = P(); p.name = "max_eye_depth";    p.kind = ValueKind::UInt;   p.description = "Max eye subpath depth";                  p.defaultValueHint = to_hint(dflt.maxEyeDepth); }
@@ -7157,9 +7143,8 @@ namespace RISE
 						// fields; RGB-to-SPD conversion is done in the
 						// painters pipeline.
 						AddSpectralCoreParams( P );
-						// MLT accepts only light_bvh and branching_threshold.
+						// MLT accepts only light_bvh from StabilityConfig.
 						{ auto& p = P(); p.name = "light_bvh";            p.kind = ValueKind::Bool;   p.description = "Use a BVH over lights for NEE";         p.defaultValueHint = to_hint(stabilityDflt.useLightBVH); }
-						{ auto& p = P(); p.name = "branching_threshold";  p.kind = ValueKind::Double; p.description = "Accepted for parity but forced to 1.0"; p.defaultValueHint = "1.0"; }
 						return cd;
 					}();
 					return d;
