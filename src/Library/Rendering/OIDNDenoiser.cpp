@@ -781,7 +781,7 @@ void OIDNDenoiser::ApplyDenoise(
 	double renderSecondsBeforeDenoise
 	)
 {
-	GlobalLog()->PrintEx( eLog_Event, "Running OIDN denoiser (%ux%u)...", w, h );
+	GlobalLog()->PrintEx( eLog_Info, "Running OIDN denoiser (%ux%u)...", w, h );
 
 	const auto t_begin = std::chrono::steady_clock::now();
 
@@ -808,7 +808,7 @@ void OIDNDenoiser::ApplyDenoise(
 	const auto t_end = std::chrono::steady_clock::now();
 	const double elapsedMs = std::chrono::duration<double, std::milli>(
 		t_end - t_begin ).count();
-	GlobalLog()->PrintEx( eLog_Event, "OIDN denoising complete. (%.1f ms)", elapsedMs );
+	GlobalLog()->PrintEx( eLog_Info, "OIDN denoising complete. (%.1f ms)", elapsedMs );
 }
 
 #endif // RISE_ENABLE_OIDN
