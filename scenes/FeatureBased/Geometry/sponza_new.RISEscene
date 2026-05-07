@@ -72,6 +72,14 @@ scene_options
 # `radiance_map`, which makes it a real area light
 # the PT integrator samples via NEE (not the older
 # direct-lighting `ambient_light` hack).
+#
+# Colour is broadly the "clear blue sky" tint
+# (slightly cool); the actual radiance comes from
+# `radiance_scale` on the rasterizer below in
+# cd/m² (Landings 4 + 5 brought the rest of the
+# scene into physical units, so the env should
+# match — clear blue sky is ~10,000 cd/m² zenith,
+# the radiance_scale value below).
 ##################################################
 
 uniformcolor_painter
@@ -116,10 +124,22 @@ standard_shader
 
 pathtracing_pel_rasterizer
 {
+	# 16 spp / iteration default.  Bump to 256+ for a
+	# final-quality render.  Combined with the 640x360
+	# resolution below this puts a render at ~70s on
+	# this machine — workable for iteration on lighting
+	# / camera / material tweaks.  Bump samples and
+	# resolution together when iterating is finished.
 	samples				16
 	radiance_map			sky_dome
 	radiance_background		TRUE
-	radiance_scale			40.0
+	# clear-blue-sky zenith luminance ~10000 cd/m²
+	# (Hosek-Wilkie reference for solar-elevation 60°,
+	# turbidity 2.0).  Pre-Landings-4/5 this was an
+	# arbitrary ~40 chosen to balance against unit-
+	# blind 100 light overrides; now both ends are in
+	# physical units.
+	radiance_scale			10000.0
 }
 
 ##################################################
@@ -157,7 +177,16 @@ file_rasterizeroutput
 	type				PNG
 	bpp					8
 	color_space			sRGB
-	exposure			0.0
+	# Landings 1 + 5 stacking: total LDR EV = camera evCompensation
+	# (-14.23 from sunny-16) + this output's exposure_compensation.
+	# Sunny-16 is calibrated for outdoor noon; the atrium interior
+	# sits in shadow and looks pure-physical-correct dark at +0 EV.
+	# Bracket up +1 EV here so the colonnade depths read as
+	# atmospheric mid-tones rather than crushed-black.  Adjust by
+	# taste — +0 is the "real photo" exposure, +1 is "lifted
+	# shadows" preview, +2 is "everything legible" but starts to
+	# blow highlights.  EXR is unaffected (HDR archival).
+	exposure			1.0
 	display_transform	aces
 }
 
@@ -219,7 +248,21 @@ gltf_import
 	import_normal_maps	TRUE
 	import_cameras		TRUE
 	import_lights		TRUE
-	lights_intensity_override	100.0
+	# Landing 4: per-type physical-unit overrides (deprecated
+	# `lights_intensity_override` was unit-blind; the asset has
+	# 1 directional + 23 points all authored at intensity = 0).
+	#   directional → LUX (lm/m²); 50000 ≈ clear noon-sun-through-
+	#   ceiling on this atrium scale (full noon-sun on a horizontal
+	#   surface is ~120000 lux; we use 50000 as a cinematic/legible
+	#   compromise that keeps the sky from saturating the floor).
+	#   point → CANDELA (lm/sr); 300 cd ≈ a period oil lamp /
+	#   sconce, atrium scale.  At the camera's sunny-16 settings
+	#   below the lamp pools are dim — that's correct: oil lamps
+	#   are not legible against direct daylight.  For a dusk look
+	#   that highlights the lamps, drop the directional override
+	#   to ~500 lux and re-expose at e.g. ISO 1600 / f/2 / 1/30s.
+	directional_intensity_override	50000.0
+	point_intensity_override		300.0
 	lowmem_textures		TRUE
 }
 
@@ -241,9 +284,27 @@ pinhole_camera
 	location			-8.807 1.592 -0.858
 	lookat				-3.004 2.762  0.237
 	up					 0.0   1.0    0.0
+	# Iteration resolution.  Bump to 1280x720 for final-
+	# quality renders.
 	width				640
 	height				360
 	fov					58.5
+	# Landing 5: photographic exposure.  ISO 100 / f/8 /
+	# 1/250 s = sunny-16 (the standard noon-clear-sky
+	# exposure) — matches the 50000-lux directional sun
+	# and 10000 cd/m² sky above so a 50%-albedo surface
+	# under direct sun lands near display mid-grey.
+	#
+	# The camera evCompensation = -log2(1.2) - log2(N²·100/(ISO·T))
+	# = -0.263 - log2(64·100/(100·0.004)) = -0.263 - 13.97
+	# ≈ -14.23 EV.  This stacks ADDITIVELY into the PNG
+	# output's exposure_compensation = 0 below, so the
+	# total LDR EV is -14.23.  The EXR output is HDR and
+	# ignores both per Landing 1's "EXR = ground-truth
+	# linear radiance" invariant.
+	exposure			0.004
+	iso					100
+	fstop				8
 }
 
 ##################################################

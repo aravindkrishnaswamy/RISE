@@ -829,6 +829,66 @@ namespace
 				// scene-wide but interior media attach to objects.
 			}
 		} else {
+			// Landing 7 — KHR_materials_specular.  Read the factor + RGB
+			// tint when the extension is present; default to 1.0 / "none"
+			// (white, untinted) so non-extension materials render bit-
+			// identical to pre-L7.  We support the SCALAR factor + factor
+			// fields only (no specular_texture or specular_color_texture
+			// yet — those land with the L12 importer-fidelity batch).
+			std::string specularFactorStr = "1.0";
+			std::string specularColorPainter = "none";
+			if( mat.has_specular ) {
+				if( mat.specular.specular_texture.texture ||
+				    mat.specular.specular_color_texture.texture ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"GLTFSceneImporter:: material `%s` declares KHR_materials_specular "
+						"with a texture; Phase 1 honours only the scalar factor (%.3f) and "
+						"factor-only RGB (%.3f, %.3f, %.3f).  The textures are ignored "
+						"(L12 importer-fidelity batch will wire them).",
+						matName.c_str(),
+						(double)mat.specular.specular_factor,
+						(double)mat.specular.specular_color_factor[0],
+						(double)mat.specular.specular_color_factor[1],
+						(double)mat.specular.specular_color_factor[2] );
+				}
+				char buf[64];
+				std::snprintf( buf, sizeof(buf), "%.6f", (double)mat.specular.specular_factor );
+				specularFactorStr = buf;
+
+				const cgltf_float* sc = mat.specular.specular_color_factor;
+				if( !( sc[0] == 1.0f && sc[1] == 1.0f && sc[2] == 1.0f ) ) {
+					const std::string nSpecCol = PainterName( prefix, "specular_color", matIdx );
+					const double pel[3] = { (double)sc[0], (double)sc[1], (double)sc[2] };
+					job.AddUniformColorPainter( nSpecCol.c_str(), pel, "Rec709RGB_Linear" );
+					specularColorPainter = nSpecCol;
+				}
+			}
+
+			// Landing 8 — KHR_materials_anisotropy.  Strength + rotation
+			// (both scalars) are honoured; the anisotropy_texture is
+			// L12.  Strength default 0 = isotropic, matching pre-L8
+			// PBR-MR exactly.  Rotation applies the (u, v) tangent
+			// rotation around w inside GGX{BRDF,SPF} per the spec.
+			std::string anisoFactorStr = "0.0";
+			std::string anisoRotationStr = "0.0";
+			if( mat.has_anisotropy ) {
+				if( mat.anisotropy.anisotropy_texture.texture ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"GLTFSceneImporter:: material `%s` declares KHR_materials_anisotropy "
+						"with a texture; the scalar strength (%.3f) and rotation (%.3f rad) "
+						"are honoured, but per-pixel variation from the texture is ignored "
+						"(L12 importer-fidelity batch will wire it).",
+						matName.c_str(),
+						(double)mat.anisotropy.anisotropy_strength,
+						(double)mat.anisotropy.anisotropy_rotation );
+				}
+				char buf[64];
+				std::snprintf( buf, sizeof(buf), "%.6f", (double)mat.anisotropy.anisotropy_strength );
+				anisoFactorStr = buf;
+				std::snprintf( buf, sizeof(buf), "%.6f", (double)mat.anisotropy.anisotropy_rotation );
+				anisoRotationStr = buf;
+			}
+
 			ok = job.AddPBRMetallicRoughnessMaterial(
 				baseMatName.c_str(),
 				baseColorPainter.c_str(),
@@ -836,7 +896,11 @@ namespace
 				roughnessPainter.c_str(),
 				/*ior*/ 1.5,
 				emissivePainter.c_str(),
-				emissiveScale );
+				emissiveScale,
+				specularFactorStr.c_str(),
+				specularColorPainter.c_str(),
+				anisoFactorStr.c_str(),
+				anisoRotationStr.c_str() );
 		}
 		if( !ok ) {
 			GlobalLog()->PrintEx( eLog_Error,

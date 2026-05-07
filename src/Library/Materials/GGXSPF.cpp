@@ -41,7 +41,8 @@ GGXSPF::GGXSPF(
 	const IPainter& alphaY,
 	const IPainter& ior,
 	const IPainter& ext,
-	const FresnelMode fresnel_mode
+	const FresnelMode fresnel_mode,
+	const IPainter* tangent_rotation
 	) :
   pDiffuse( diffuse ),
   pSpecular( specular ),
@@ -49,7 +50,8 @@ GGXSPF::GGXSPF(
   pAlphaY( alphaY ),
   pIOR( ior ),
   pExtinction( ext ),
-  fresnelMode( fresnel_mode )
+  fresnelMode( fresnel_mode ),
+  pTangentRotation( tangent_rotation )
 {
 	pDiffuse.addref();
 	pSpecular.addref();
@@ -57,6 +59,7 @@ GGXSPF::GGXSPF(
 	pAlphaY.addref();
 	pIOR.addref();
 	pExtinction.addref();
+	if( pTangentRotation ) pTangentRotation->addref();
 }
 
 namespace
@@ -66,6 +69,20 @@ namespace
 	inline T SchlickFresnelAvg( const T& F0 )
 	{
 		return F0 + (T(1.0) - F0) * (1.0 / 21.0);
+	}
+
+	// Landing 8: rotate the tangent ONB per anisotropy_rotation
+	// (mirrors GGXBRDF.cpp's helper).  Returns source unchanged when
+	// the rotation painter is null — every pre-L8 GGXSPF site falls
+	// back here.
+	inline RISE::OrthonormalBasis3D ApplyTangentRotation(
+		const RISE::OrthonormalBasis3D& source,
+		const RISE::IPainter* pRotation,
+		const RISE::RayIntersectionGeometric& ri )
+	{
+		if( !pRotation ) return source;
+		const RISE::Scalar angle = RISE::ColorMath::MaxValue( pRotation->GetColor( ri ) );
+		return RISE::MicrofacetUtils::RotateTangent( source, angle );
 	}
 }
 
@@ -77,6 +94,7 @@ GGXSPF::~GGXSPF()
 	pAlphaY.release();
 	pIOR.release();
 	pExtinction.release();
+	if( pTangentRotation ) pTangentRotation->release();
 }
 
 void GGXSPF::Scatter(
@@ -92,6 +110,10 @@ void GGXSPF::Scatter(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
+
+	// Landing 8: apply the anisotropy_rotation AFTER the FlipW so the
+	// rotation is in the (possibly flipped) surface tangent plane.
+	myonb = ApplyTangentRotation( myonb, pTangentRotation, ri );
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
@@ -296,6 +318,7 @@ void GGXSPF::ScatterNM(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
+	myonb = ApplyTangentRotation( myonb, pTangentRotation, ri );	// Landing 8
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
@@ -491,6 +514,7 @@ Scalar GGXSPF::Pdf(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
+	myonb = ApplyTangentRotation( myonb, pTangentRotation, ri );	// Landing 8
 
 	const Vector3 n = myonb.w();
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );
@@ -533,6 +557,7 @@ Scalar GGXSPF::PdfNM(
 	if( Vector3Ops::Dot(ri.ray.Dir(), ri.onb.w()) > NEARZERO ) {
 		myonb.FlipW();
 	}
+	myonb = ApplyTangentRotation( myonb, pTangentRotation, ri );	// Landing 8
 
 	const Vector3 n = myonb.w();
 	const Vector3 woNorm = Vector3Ops::Normalize( wo );

@@ -37,7 +37,8 @@ GGXBRDF::GGXBRDF(
 	const IPainter& alphaY,
 	const IPainter& ior,
 	const IPainter& ext,
-	const FresnelMode fresnel_mode
+	const FresnelMode fresnel_mode,
+	const IPainter* tangent_rotation
 	) :
   pDiffuse( diffuse ),
   pSpecular( specular ),
@@ -45,7 +46,8 @@ GGXBRDF::GGXBRDF(
   pAlphaY( alphaY ),
   pIOR( ior ),
   pExtinction( ext ),
-  fresnelMode( fresnel_mode )
+  fresnelMode( fresnel_mode ),
+  pTangentRotation( tangent_rotation )
 {
 	pDiffuse.addref();
 	pSpecular.addref();
@@ -53,6 +55,7 @@ GGXBRDF::GGXBRDF(
 	pAlphaY.addref();
 	pIOR.addref();
 	pExtinction.addref();
+	if( pTangentRotation ) pTangentRotation->addref();
 }
 
 namespace
@@ -75,11 +78,33 @@ GGXBRDF::~GGXBRDF()
 	pAlphaY.release();
 	pIOR.release();
 	pExtinction.release();
+	if( pTangentRotation ) pTangentRotation->release();
+}
+
+namespace
+{
+	// Landing 8: resolve the per-shading-point tangent ONB.  When the
+	// material has a non-null rotation painter, sample it at this hit
+	// and rotate the tangent frame around w by that angle.  When null
+	// (every pre-L8 GGX site), returns ri.onb verbatim — bit-identical
+	// to the pre-L8 path.
+	inline RISE::OrthonormalBasis3D ResolveTangentONB(
+		const RISE::OrthonormalBasis3D& source,
+		const RISE::IPainter* pRotation,
+		const RISE::RayIntersectionGeometric& ri )
+	{
+		if( !pRotation ) return source;
+		const RISE::Scalar angle = RISE::ColorMath::MaxValue( pRotation->GetColor( ri ) );
+		return RISE::MicrofacetUtils::RotateTangent( source, angle );
+	}
 }
 
 RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
-	const Vector3 n = ri.onb.w();
+	// Landing 8: rotate the tangent frame per anisotropy_rotation.
+	// effOnb == ri.onb when no rotation painter is set.
+	const OrthonormalBasis3D effOnb = ResolveTangentONB( ri.onb, pTangentRotation, ri );
+	const Vector3 n = effOnb.w();
 	const Vector3 v = Vector3Ops::Normalize( vLightIn );         // light direction (toward light)
 	const Vector3 r = Vector3Ops::Normalize( -ri.ray.Dir() );    // view direction (toward viewer)
 
@@ -97,19 +122,19 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	// Half-vector and tangent-space projections
 	const Vector3 h = Vector3Ops::Normalize( v + r );
 	const Vector3 h_local(
-		Vector3Ops::Dot( h, ri.onb.u() ),
-		Vector3Ops::Dot( h, ri.onb.v() ),
-		Vector3Ops::Dot( h, ri.onb.w() )
+		Vector3Ops::Dot( h, effOnb.u() ),
+		Vector3Ops::Dot( h, effOnb.v() ),
+		Vector3Ops::Dot( h, effOnb.w() )
 	);
 	const Vector3 wi_local(
-		Vector3Ops::Dot( v, ri.onb.u() ),
-		Vector3Ops::Dot( v, ri.onb.v() ),
-		Vector3Ops::Dot( v, ri.onb.w() )
+		Vector3Ops::Dot( v, effOnb.u() ),
+		Vector3Ops::Dot( v, effOnb.v() ),
+		Vector3Ops::Dot( v, effOnb.w() )
 	);
 	const Vector3 wo_local(
-		Vector3Ops::Dot( r, ri.onb.u() ),
-		Vector3Ops::Dot( r, ri.onb.v() ),
-		Vector3Ops::Dot( r, ri.onb.w() )
+		Vector3Ops::Dot( r, effOnb.u() ),
+		Vector3Ops::Dot( r, effOnb.v() ),
+		Vector3Ops::Dot( r, effOnb.w() )
 	);
 
 	// Anisotropic GGX NDF
@@ -188,7 +213,9 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 
 Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	const Vector3 n = ri.onb.w();
+	// Landing 8: rotate the tangent frame per anisotropy_rotation.
+	const OrthonormalBasis3D effOnb = ResolveTangentONB( ri.onb, pTangentRotation, ri );
+	const Vector3 n = effOnb.w();
 	const Vector3 v = Vector3Ops::Normalize( vLightIn );
 	const Vector3 r = Vector3Ops::Normalize( -ri.ray.Dir() );
 
@@ -204,19 +231,19 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 
 	const Vector3 h = Vector3Ops::Normalize( v + r );
 	const Vector3 h_local(
-		Vector3Ops::Dot( h, ri.onb.u() ),
-		Vector3Ops::Dot( h, ri.onb.v() ),
-		Vector3Ops::Dot( h, ri.onb.w() )
+		Vector3Ops::Dot( h, effOnb.u() ),
+		Vector3Ops::Dot( h, effOnb.v() ),
+		Vector3Ops::Dot( h, effOnb.w() )
 	);
 	const Vector3 wi_local(
-		Vector3Ops::Dot( v, ri.onb.u() ),
-		Vector3Ops::Dot( v, ri.onb.v() ),
-		Vector3Ops::Dot( v, ri.onb.w() )
+		Vector3Ops::Dot( v, effOnb.u() ),
+		Vector3Ops::Dot( v, effOnb.v() ),
+		Vector3Ops::Dot( v, effOnb.w() )
 	);
 	const Vector3 wo_local(
-		Vector3Ops::Dot( r, ri.onb.u() ),
-		Vector3Ops::Dot( r, ri.onb.v() ),
-		Vector3Ops::Dot( r, ri.onb.w() )
+		Vector3Ops::Dot( r, effOnb.u() ),
+		Vector3Ops::Dot( r, effOnb.v() ),
+		Vector3Ops::Dot( r, effOnb.w() )
 	);
 
 	const Scalar D = MicrofacetUtils::GGX_D_Aniso<Scalar>( alphaX, alphaY, h_local );

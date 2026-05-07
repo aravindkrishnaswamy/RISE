@@ -2817,8 +2817,8 @@ bool Job::AddWardAnisotropicEllipticalGaussianMaterial(
 static FresnelMode ResolveFresnelMode( const char* mode )
 {
 	if( !mode || !mode[0] ) return eFresnelConductor;
-	if( std::strcmp( mode, "conductor"  ) == 0 ) return eFresnelConductor;
-	if( std::strcmp( mode, "schlick_f0" ) == 0 ) return eFresnelSchlickF0;
+	if( strcmp( mode, "conductor"  ) == 0 ) return eFresnelConductor;
+	if( strcmp( mode, "schlick_f0" ) == 0 ) return eFresnelSchlickF0;
 
 	static std::set<std::string> seen;
 	if( seen.insert( std::string(mode) ).second ) {
@@ -2836,7 +2836,8 @@ bool Job::AddGGXMaterial(
 	const char* alphaY,
 	const char* ior,
 	const char* ext,
-	const char* fresnel_mode
+	const char* fresnel_mode,
+	const char* tangent_rotation
 	)
 {
 	IPainter* pRd = pPntManager->GetItem(diffuse);
@@ -2883,9 +2884,24 @@ bool Job::AddGGXMaterial(
 		pExt->addref();
 	}
 
+	// Landing 8: tangent_rotation is "none" (no rotation, default) OR
+	// a painter / scalar string (rotation in radians).  Resolved here
+	// to a temporarily-addref'd IPainter*; the GGX{BRDF,SPF} hold their
+	// own ref so we drop ours before returning.
+	IPainter* pTangentRotation = 0;
+	if( tangent_rotation && std::string( tangent_rotation ) != "none" ) {
+		pTangentRotation = pPntManager->GetItem( tangent_rotation );
+		if( !pTangentRotation ) {
+			const double fa = atof( tangent_rotation );
+			RISE_API_CreateUniformColorPainter( &pTangentRotation, RISEPel( fa, fa, fa ) );
+		} else {
+			pTangentRotation->addref();
+		}
+	}
+
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateGGXMaterial( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt,
-		ResolveFresnelMode( fresnel_mode ) );
+		ResolveFresnelMode( fresnel_mode ), pTangentRotation );
 
 	pMatManager->AddItem( pMaterial, name );
 
@@ -2894,6 +2910,7 @@ bool Job::AddGGXMaterial(
 	safe_release( pAlphaY );
 	safe_release( pIOR );
 	safe_release( pExt );
+	safe_release( pTangentRotation );
 
 	return true;
 }
@@ -2915,7 +2932,8 @@ bool Job::AddGGXEmissiveMaterial(
 	const char* ext,
 	const char* emissive,
 	const double emissive_scale,
-	const char* fresnel_mode
+	const char* fresnel_mode,
+	const char* tangent_rotation
 	)
 {
 	IPainter* pRd = pPntManager->GetItem(diffuse);
@@ -2951,10 +2969,23 @@ bool Job::AddGGXEmissiveMaterial(
 		}
 	}
 
+	// Landing 8: optional tangent_rotation painter (radians).  Same
+	// resolve logic as AddGGXMaterial above.
+	IPainter* pTangentRotation = 0;
+	if( tangent_rotation && std::string( tangent_rotation ) != "none" ) {
+		pTangentRotation = pPntManager->GetItem( tangent_rotation );
+		if( !pTangentRotation ) {
+			const double fa = atof( tangent_rotation );
+			RISE_API_CreateUniformColorPainter( &pTangentRotation, RISEPel( fa, fa, fa ) );
+		} else {
+			pTangentRotation->addref();
+		}
+	}
+
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateGGXEmissiveMaterial(
 		&pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt, pEmissive, emissive_scale,
-		ResolveFresnelMode( fresnel_mode ) );
+		ResolveFresnelMode( fresnel_mode ), pTangentRotation );
 
 	pMatManager->AddItem( pMaterial, name );
 
@@ -2963,6 +2994,7 @@ bool Job::AddGGXEmissiveMaterial(
 	safe_release( pAlphaY );
 	safe_release( pIOR );
 	safe_release( pExt );
+	safe_release( pTangentRotation );
 
 	return true;
 }
@@ -2984,7 +3016,11 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 	const char* roughness,
 	const double ior,
 	const char* emissive,
-	const double emissive_scale
+	const double emissive_scale,
+	const char* specular_factor,
+	const char* specular_color,
+	const char* anisotropy_factor,
+	const char* anisotropy_rotation
 	)
 {
 	// Resolve the base_color painter.  Must already exist.
@@ -2994,10 +3030,11 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 		return false;
 	}
 
-	// metallic / roughness can be either a painter name or a scalar string
-	// like "0.5".  When the painter manager doesn't have an entry under the
-	// given name, fall back to atof() and synthesise a uniform-color painter
-	// (named after the role + scalar value) to drive downstream blends.
+	// metallic / roughness / specular_* / anisotropy_* can be either a
+	// painter name or a scalar string like "0.5".  When the painter
+	// manager doesn't have an entry under the given name, fall back to
+	// atof() and synthesise a uniform-color painter (named after the
+	// role + scalar value) to drive downstream blends.
 	std::string nameStr( name );
 	const std::string prefix = "__pbrmr_" + nameStr + "__";
 
@@ -3029,20 +3066,23 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 	// would double-apply.
 	const double zero[3]    = { 0.0, 0.0, 0.0 };
 	const double white[3]   = { 1.0, 1.0, 1.0 };
-	const double f0diel[3]  = { 0.04, 0.04, 0.04 };	// dielectric F0 per glTF spec
+	const double point04[3] = { 0.04, 0.04, 0.04 };
 	const double iorVec[3]  = { ior, ior, ior };
 
-	const std::string nZero    = prefix + "zero";
-	const std::string nWhite   = prefix + "white";
-	const std::string nF0Diel  = prefix + "f0diel";
-	const std::string nIORPnt  = prefix + "ior";
+	const std::string nZero     = prefix + "zero";
+	const std::string nWhite    = prefix + "white";
+	const std::string nPoint04  = prefix + "point04";
+	const std::string nF0Diel   = prefix + "f0diel";
+	const std::string nIORPnt   = prefix + "ior";
 
-	AddUniformColorPainter( nZero.c_str(),   zero,   "Rec709RGB_Linear" );
-	AddUniformColorPainter( nWhite.c_str(),  white,  "Rec709RGB_Linear" );
-	AddUniformColorPainter( nF0Diel.c_str(), f0diel, "Rec709RGB_Linear" );
-	AddUniformColorPainter( nIORPnt.c_str(), iorVec, "Rec709RGB_Linear" );
+	AddUniformColorPainter( nZero.c_str(),    zero,    "Rec709RGB_Linear" );
+	AddUniformColorPainter( nWhite.c_str(),   white,   "Rec709RGB_Linear" );
+	AddUniformColorPainter( nPoint04.c_str(), point04, "Rec709RGB_Linear" );
+	AddUniformColorPainter( nIORPnt.c_str(),  iorVec,  "Rec709RGB_Linear" );
 
 	// one_minus_met = (1 - metallic) = blend(zero, white, metallic)
+	// (BlendPainter convention: blend(a, b, mask) = a*mask + b*(1-mask),
+	// so a=zero, b=white, mask=metallic gives white * (1-metallic).)
 	const std::string nOneMinusMet = prefix + "one_minus_met";
 	AddBlendPainter( nOneMinusMet.c_str(), nZero.c_str(), nWhite.c_str(), metallicName.c_str() );
 
@@ -3051,7 +3091,50 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 	const std::string nRd = prefix + "rd";
 	AddBlendPainter( nRd.c_str(), base_color, nZero.c_str(), nOneMinusMet.c_str() );
 
-	// rs = lerp(0.04, base_color, metallic) = blend(base_color, f0diel, metallic).
+	// Landing 7 — KHR_materials_specular.  glTF formula:
+	//   F0_dielectric = min(0.04 × specular_color × specular_factor, 1.0)
+	//   F0            = lerp(F0_dielectric, baseColor, metallic)
+	// With defaults specular_factor="1.0" and specular_color="none"
+	// (treated as white), F0_dielectric collapses to 0.04 — bit-identical
+	// to the pre-L7 path.  When EITHER is non-default, we build the
+	// painter chain to compute F0_dielectric per-pixel.
+	//
+	// We omit the min(..., 1.0) clamp here because (a) defaults stay well
+	// below 1, (b) painter-graph clamps don't compose cleanly with the
+	// BlendPainter primitive without a new MinPainter, and (c) the BSDF
+	// already clamps F at evaluation.  Author scenes that push specular
+	// inputs > 1 will get a soft saturation rather than exact spec
+	// compliance — acceptable until a use case shows otherwise.
+	const bool hasSpecFactor = ( specular_factor && *specular_factor &&
+	                              strcmp( specular_factor, "1.0" ) != 0 &&
+	                              strcmp( specular_factor, "1" )   != 0 );
+	const bool hasSpecColor  = ( specular_color  && *specular_color &&
+	                              strcmp( specular_color, "none" )  != 0 );
+
+	if( !hasSpecFactor && !hasSpecColor ) {
+		// Default path: F0_dielectric = 0.04 constant (unchanged from
+		// pre-L7).  Cheaper than the painter chain since it's one
+		// uniform painter lookup vs. three blend evaluations per ray.
+		AddUniformColorPainter( nF0Diel.c_str(), point04, "Rec709RGB_Linear" );
+	} else {
+		// KHR_materials_specular path: build the chain.
+		const std::string specFactorName = resolveOrSynth(
+			(hasSpecFactor ? specular_factor : "1.0"), "specfactor" );
+		const std::string specColorName = hasSpecColor
+			? std::string( specular_color )
+			: nWhite;	// default tint = no tint
+
+		// f0_aux = 0.04 × specular_color
+		// = blend(specular_color, zero, point04) = specular_color * 0.04 + zero * 0.96
+		const std::string nF0Aux = prefix + "f0_aux";
+		AddBlendPainter( nF0Aux.c_str(), specColorName.c_str(), nZero.c_str(), nPoint04.c_str() );
+
+		// f0_diel = f0_aux × specular_factor
+		// = blend(f0_aux, zero, specular_factor) = f0_aux * factor + zero * (1-factor)
+		AddBlendPainter( nF0Diel.c_str(), nF0Aux.c_str(), nZero.c_str(), specFactorName.c_str() );
+	}
+
+	// rs = lerp(F0_dielectric, base_color, metallic) = blend(base_color, f0diel, metallic).
 	// In schlick_f0 mode the BSDF treats this as F0 directly.
 	const std::string nRs = prefix + "rs";
 	AddBlendPainter( nRs.c_str(), base_color, nF0Diel.c_str(), metallicName.c_str() );
@@ -3060,20 +3143,57 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 	const std::string nRoughSq = prefix + "rough_sq";
 	AddBlendPainter( nRoughSq.c_str(), roughnessName.c_str(), nZero.c_str(), roughnessName.c_str() );
 
+	// Landing 8 — KHR_materials_anisotropy.  glTF formula:
+	//   α_t = mix(α, 1.0, anisotropy²)
+	//   α_b = α
+	// With default anisotropy_factor="0.0", α_t = α (isotropic) — bit-
+	// identical to the pre-L8 path.  Non-zero factor stretches the
+	// specular lobe along the tangent (X) axis.
+	//
+	// anisotropy_rotation is now (round-2 fix) plumbed through to
+	// GGX{BRDF,SPF} via AddGGXEmissiveMaterial's `tangent_rotation`
+	// parameter; the BSDF rotates the (u, v) basis around w by the
+	// painter-evaluated angle before sampling.  The rotation is a
+	// no-op when the parameter resolves to 0, so default-disabled
+	// anisotropy materials stay bit-identical.
+	const bool hasAnisotropy = ( anisotropy_factor && *anisotropy_factor &&
+	                              strcmp( anisotropy_factor, "0.0" ) != 0 &&
+	                              strcmp( anisotropy_factor, "0" )   != 0 );
+
+	std::string nAlphaX = nRoughSq;
+	std::string nAlphaY = nRoughSq;
+	if( hasAnisotropy ) {
+		const std::string anisoName = resolveOrSynth( anisotropy_factor, "aniso" );
+
+		// aniso_sq = anisotropy²
+		const std::string nAnisoSq = prefix + "aniso_sq";
+		AddBlendPainter( nAnisoSq.c_str(), anisoName.c_str(), nZero.c_str(), anisoName.c_str() );
+
+		// alpha_t = mix(α, 1, aniso²) = lerp from rough_sq to white as
+		// aniso² grows.  blend(white, rough_sq, aniso_sq) = white*aniso² + rough_sq*(1-aniso²).
+		const std::string nAlphaT = prefix + "alpha_t";
+		AddBlendPainter( nAlphaT.c_str(), nWhite.c_str(), nRoughSq.c_str(), nAnisoSq.c_str() );
+
+		nAlphaX = nAlphaT;	// tangent direction (stretched)
+		// nAlphaY stays at nRoughSq (bitangent direction)
+	}
+
 	// Build the final GGX material with these inputs.  Extinction is zero
 	// (opaque); ior is preserved but unused in schlick_f0 mode.  Emissive
-	// flows through unchanged.
+	// flows through unchanged.  Anisotropy rotation flows through as the
+	// `tangent_rotation` painter; "0.0" / unset → no rotation.
 	return AddGGXEmissiveMaterial(
 		name,
 		nRd.c_str(),
 		nRs.c_str(),
-		nRoughSq.c_str(),
-		nRoughSq.c_str(),			// alphax = alphay = roughness^2 (isotropic)
+		nAlphaX.c_str(),
+		nAlphaY.c_str(),
 		nIORPnt.c_str(),
 		nZero.c_str(),				// extinction (unused in schlick_f0)
 		emissive,
 		emissive_scale,
-		"schlick_f0" );				// glTF metallicRoughness uses Schlick from F0
+		"schlick_f0",				// glTF metallicRoughness uses Schlick from F0
+		anisotropy_rotation );		// Landing 8: tangent rotation painter / scalar
 }
 
 bool Job::AddSheenMaterial(

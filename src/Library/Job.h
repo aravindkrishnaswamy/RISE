@@ -1016,7 +1016,8 @@ namespace RISE
 			const char* ext,
 			const char* emissive,
 			const double emissive_scale,
-			const char* fresnel_mode = "conductor"
+			const char* fresnel_mode = "conductor",
+			const char* tangent_rotation = "none"			///< Landing 8 / KHR_materials_anisotropy
 			);
 
 		bool AddPBRMetallicRoughnessMaterial(
@@ -1026,7 +1027,11 @@ namespace RISE
 			const char* roughness,
 			const double ior,
 			const char* emissive,
-			const double emissive_scale
+			const double emissive_scale,
+			const char* specular_factor = "1.0",			///< Landing 7 / KHR_materials_specular
+			const char* specular_color = "none",			///< Landing 7 / KHR_materials_specular
+			const char* anisotropy_factor = "0.0",			///< Landing 8 / KHR_materials_anisotropy
+			const char* anisotropy_rotation = "0.0"			///< Landing 8 / KHR_materials_anisotropy (rotation now applied via GGX{BRDF,SPF})
 			);
 
 		bool AddGGXMaterial(
@@ -1037,7 +1042,8 @@ namespace RISE
 			const char* alphaY,											///< [in] Roughness in tangent v direction
 			const char* ior,											///< [in] Index of refraction
 			const char* ext,											///< [in] Extinction coefficient
-			const char* fresnel_mode = "conductor"
+			const char* fresnel_mode = "conductor",
+			const char* tangent_rotation = "none"						///< Landing 8 / KHR_materials_anisotropy
 			);
 
 		bool AddSheenMaterial(

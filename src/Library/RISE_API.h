@@ -672,7 +672,8 @@ namespace RISE
 								const IPainter& alphaY,			///< [in] Roughness in tangent v direction
 								const IPainter& ior,			///< [in] Index of refraction (ignored in Schlick mode)
 								const IPainter& ext,			///< [in] Extinction coefficient (ignored in Schlick mode)
-								const FresnelMode fresnel_mode = eFresnelConductor	///< [in] Fresnel evaluation model
+								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation = nullptr			///< [in] Landing 8 / KHR_materials_anisotropy: optional painter giving tangent-frame rotation in radians.  NULL = no rotation (default; bit-identical to pre-L8).
 								);
 
 	//! Creates a GGX material with an optional emissive painter.  Pass
@@ -688,7 +689,43 @@ namespace RISE
 								const IPainter& ext,
 								const IPainter* emissive,		///< [in] Optional; NULL = no emitter
 								const Scalar    emissive_scale,
-								const FresnelMode fresnel_mode = eFresnelConductor	///< [in] Fresnel evaluation model
+								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation = nullptr			///< [in] Landing 8 / KHR_materials_anisotropy.  See RISE_API_CreateGGXMaterial.
+								);
+
+	//! Creates a glTF-spec pbrMetallicRoughness material.  Composes the
+	//! same painter graph as IJob::AddPBRMetallicRoughnessMaterial but
+	//! WITHOUT the Job-level painter manager — all internal helper
+	//! painters live as members of the returned material's BSDF/SPF
+	//! refcount chain (BlendPainter / UniformColorPainter constructors
+	//! addref their inputs; GGXMaterial addrefs the chain head).  The
+	//! caller is therefore responsible only for the lifetime of THEIR
+	//! input painters and the returned IMaterial — internal helpers
+	//! are reclaimed automatically when the material is released.
+	//!
+	//! Defaults preserve every pre-L7 / pre-L8 PBR-MR semantic:
+	//!   - specular_factor = NULL → 1.0 (standard 0.04 dielectric F0)
+	//!   - specular_color  = NULL → white (untinted)
+	//!   - anisotropy_factor = NULL → 0 (isotropic; αx = αy = roughness²)
+	//!   - anisotropy_rotation = NULL → 0 (aligned with surface tangent)
+	//!
+	//! Embedders that want the new L7 / L8 controls supply non-NULL
+	//! painters for the corresponding parameter; the resulting material
+	//! exhibits KHR_materials_specular and / or KHR_materials_anisotropy
+	//! behaviour.  See docs/PHYSICALLY_BASED_PIPELINE_PLAN.md Landings
+	//! 7 + 8 for the formulas.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePBRMetallicRoughnessMaterial(
+								IMaterial** ppi,					///< [out] Pointer to receive the material
+								const IPainter& base_color,			///< [in] baseColor painter (sRGB-decoded RGB)
+								const IPainter& metallic,			///< [in] Metallic painter (scalar in [0, 1])
+								const IPainter& roughness,			///< [in] Roughness painter (scalar in [0, 1])
+								const IPainter* emissive,			///< [in] Optional emissive painter; NULL = no emitter
+								const Scalar    emissive_scale,		///< [in] Multiplier on emissive radiance
+								const IPainter* specular_factor = nullptr,		///< [in] Landing 7 / KHR_materials_specular.  NULL = 1.0 (default 0.04 dielectric F0).
+								const IPainter* specular_color = nullptr,		///< [in] Landing 7 / KHR_materials_specular.  NULL = white (untinted).  Final dielectric F0 = 0.04 × specular_color × specular_factor.
+								const IPainter* anisotropy_factor = nullptr,	///< [in] Landing 8 / KHR_materials_anisotropy.  NULL = 0 (isotropic).
+								const IPainter* anisotropy_rotation = nullptr	///< [in] Landing 8 / KHR_materials_anisotropy.  NULL = no rotation.
 								);
 
 	//! Creates a Charlie / Neubelt sheen material for fabric / cloth.

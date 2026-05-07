@@ -47,13 +47,14 @@ namespace RISE
 				const IPainter& alphaY,
 				const IPainter& ior,
 				const IPainter& ext,
-				const FresnelMode fresnel_mode = eFresnelConductor
+				const FresnelMode fresnel_mode = eFresnelConductor,
+				const IPainter* tangent_rotation = nullptr	///< Landing 8 / KHR_materials_anisotropy.  See GGXBRDF.h for semantics.
 				) : pEmitter( 0 )
 			{
-				pBRDF = new GGXBRDF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode );
+				pBRDF = new GGXBRDF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
-				pSPF = new GGXSPF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode );
+				pSPF = new GGXSPF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 			}
 
@@ -73,13 +74,14 @@ namespace RISE
 				const IPainter& ext,
 				const IPainter* emissive,
 				const Scalar    emissiveScale,
-				const FresnelMode fresnel_mode = eFresnelConductor
+				const FresnelMode fresnel_mode = eFresnelConductor,
+				const IPainter* tangent_rotation = nullptr	///< Landing 8 / KHR_materials_anisotropy.
 				) : pEmitter( 0 )
 			{
-				pBRDF = new GGXBRDF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode );
+				pBRDF = new GGXBRDF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
-				pSPF = new GGXSPF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode );
+				pSPF = new GGXSPF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 
 				if( emissive ) {

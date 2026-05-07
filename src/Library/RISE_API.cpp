@@ -807,6 +807,8 @@ namespace RISE
 #include "Materials/WardAnisotropicEllipticalGaussianMaterial.h"
 #include "Materials/CookTorranceMaterial.h"
 #include "Materials/GGXMaterial.h"
+#include "Painters/UniformColorPainter.h"		// Landing 7 / 8: PBR-MR painter graph helpers
+#include "Painters/BlendPainter.h"				// Landing 7 / 8: PBR-MR painter graph helpers
 #include "Materials/SheenMaterial.h"
 #include "Materials/OrenNayarMaterial.h"
 #include "Materials/SchlickMaterial.h"
@@ -1206,14 +1208,15 @@ namespace RISE
 								const IPainter& alphaY,			///< [in] Roughness in tangent v direction
 								const IPainter& ior,			///< [in] Index of refraction
 								const IPainter& ext,			///< [in] Extinction coefficient
-								const FresnelMode fresnel_mode	///< [in] Fresnel evaluation model
+								const FresnelMode fresnel_mode,	///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation	///< [in] Landing 8 / KHR_materials_anisotropy
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode );
+		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx material" );
 		return true;
 	}
@@ -1230,15 +1233,118 @@ namespace RISE
 								const IPainter& ext,
 								const IPainter* emissive,
 								const Scalar    emissive_scale,
-								const FresnelMode fresnel_mode
+								const FresnelMode fresnel_mode,
+								const IPainter* tangent_rotation	///< [in] Landing 8 / KHR_materials_anisotropy
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, emissive, emissive_scale, fresnel_mode );
+		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, emissive, emissive_scale, fresnel_mode, tangent_rotation );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx emissive material" );
+		return true;
+	}
+
+	//! Creates a glTF-spec pbrMetallicRoughness material as a
+	//! self-contained painter graph + final GGX.  Mirrors
+	//! Job::AddPBRMetallicRoughnessMaterial's chain composition but
+	//! without the Job-level painter manager — every internal helper
+	//! is held alive via refcounts on the chain (each BlendPainter
+	//! addrefs its inputs; GGXMaterial addrefs the chain head).  The
+	//! caller's input painters keep their original refcounts; we
+	//! release every locally-allocated helper before returning.
+	bool RISE_API_CreatePBRMetallicRoughnessMaterial(
+		IMaterial** ppi,
+		const IPainter& base_color,
+		const IPainter& metallic,
+		const IPainter& roughness,
+		const IPainter* emissive,
+		const Scalar    emissive_scale,
+		const IPainter* specular_factor,
+		const IPainter* specular_color,
+		const IPainter* anisotropy_factor,
+		const IPainter* anisotropy_rotation
+		)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Constants: zero, white, 0.04 (dielectric F0 baseline).
+		IPainter* nZero    = new UniformColorPainter( RISEPel( 0, 0, 0 ) );  nZero->addref();
+		IPainter* nWhite   = new UniformColorPainter( RISEPel( 1, 1, 1 ) );  nWhite->addref();
+		IPainter* nPoint04 = new UniformColorPainter( RISEPel( 0.04, 0.04, 0.04 ) );  nPoint04->addref();
+
+		// one_minus_met = blend(zero, white, metallic) = white * (1 - metallic).
+		IPainter* nOneMinusMet = new BlendPainter( *nZero, *nWhite, metallic );  nOneMinusMet->addref();
+
+		// rd = blend(base_color, zero, one_minus_met) = base_color * (1 - metallic).
+		IPainter* nRd = new BlendPainter( base_color, *nZero, *nOneMinusMet );  nRd->addref();
+
+		// Landing 7 — KHR_materials_specular F0 chain.  Defaults preserve
+		// the standard 0.04 dielectric F0 bit-identically.
+		IPainter* nF0Diel = 0;
+		IPainter* nF0Aux  = 0;	// kept for refcount scope; released after consumption
+		const bool hasSpec = ( specular_factor != nullptr || specular_color != nullptr );
+		if( !hasSpec ) {
+			nF0Diel = new UniformColorPainter( RISEPel( 0.04, 0.04, 0.04 ) );
+			nF0Diel->addref();
+		} else {
+			const IPainter& specCol = specular_color ? *specular_color : *nWhite;
+			const IPainter& specFct = specular_factor ? *specular_factor : *nWhite;
+			// f0_aux = blend(specular_color, zero, point04) = specular_color * 0.04.
+			nF0Aux = new BlendPainter( specCol, *nZero, *nPoint04 );  nF0Aux->addref();
+			// f0_diel = blend(f0_aux, zero, specular_factor) = 0.04 * specCol * specFct.
+			nF0Diel = new BlendPainter( *nF0Aux, *nZero, specFct );  nF0Diel->addref();
+		}
+
+		// rs = blend(base_color, f0_diel, metallic) = lerp(F0_dielectric, baseColor, metallic).
+		IPainter* nRs = new BlendPainter( base_color, *nF0Diel, metallic );  nRs->addref();
+
+		// rough_sq = roughness²
+		IPainter* nRoughSq = new BlendPainter( roughness, *nZero, roughness );  nRoughSq->addref();
+
+		// Landing 8 — KHR_materials_anisotropy α-split.  Defaults preserve
+		// αx = αy = roughness² bit-identically.
+		IPainter* nAlphaX_owned = 0;	// allocated only when anisotropy is set
+		IPainter* nAnisoSq      = 0;
+		const IPainter* alphaX = nRoughSq;
+		const IPainter* alphaY = nRoughSq;
+		if( anisotropy_factor ) {
+			// aniso_sq = blend(aniso, zero, aniso) = aniso²
+			nAnisoSq = new BlendPainter( *anisotropy_factor, *nZero, *anisotropy_factor );  nAnisoSq->addref();
+			// alpha_t = blend(white, rough_sq, aniso_sq) = mix(roughness², 1, aniso²)
+			nAlphaX_owned = new BlendPainter( *nWhite, *nRoughSq, *nAnisoSq );  nAlphaX_owned->addref();
+			alphaX = nAlphaX_owned;
+		}
+
+		// IOR painter — preserved for the GGX API; ignored under schlick_f0.
+		IPainter* nIOR = new UniformColorPainter( RISEPel( 1.5, 1.5, 1.5 ) );  nIOR->addref();
+
+		// Final GGX with the chain.  GGXMaterial addrefs each input; we
+		// release locals after construction so the chain is self-supporting.
+		(*ppi) = new GGXMaterial(
+			*nRd, *nRs, *alphaX, *alphaY, *nIOR, *nZero,
+			emissive, emissive_scale, eFresnelSchlickF0, anisotropy_rotation );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "pbr-mr material" );
+
+		// Release locals.  GGXMaterial's BSDF/SPF retain refs on nRd, nRs,
+		// alphaX, alphaY, nIOR, nZero (and through them everything else),
+		// so the chain remains alive for the lifetime of the material.
+		safe_release( nIOR );
+		if( nAlphaX_owned ) safe_release( nAlphaX_owned );
+		if( nAnisoSq )      safe_release( nAnisoSq );
+		safe_release( nRoughSq );
+		safe_release( nRs );
+		safe_release( nF0Diel );
+		if( nF0Aux ) safe_release( nF0Aux );
+		safe_release( nRd );
+		safe_release( nOneMinusMet );
+		safe_release( nPoint04 );
+		safe_release( nWhite );
+		safe_release( nZero );
+
 		return true;
 	}
 
