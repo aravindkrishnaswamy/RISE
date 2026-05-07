@@ -509,6 +509,21 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 		return;
 	}
 
+	// Landing 5: propagate the camera's photographic exposure
+	// compensation to every output once at render entry.  Default
+	// 0 (= no compensation) preserves pre-L5 behaviour for all
+	// non-physical cameras.  Both the still-render path
+	// (RasterizeScene) and the animation path (RenderFrameOfAnimation)
+	// must run this — pixelpel_rasterizer for a still goes through
+	// RasterizeScene, so the animation-path-only propagation we
+	// originally wired was a missed call site.
+	{
+		const Scalar camEV = pCam->GetExposureCompensationEV();
+		for( RasterizerOutputListType::const_iterator r = outs.begin(), s = outs.end(); r != s; ++r ) {
+			(*r)->SetCameraExposureCompensationEV( camEV );
+		}
+	}
+
 	// Profiling: reset all counters/phases at render entry so successive
 	// renders within one CLI session don't accumulate.  Manual start/end
 	// for the Render phase (rather than RAII) so we can call
@@ -930,6 +945,18 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	const Scalar exposure = pCam->GetExposureTime();
 	const Scalar scanningRate = pCam->GetScanningRate();
 	const Scalar pixelRate = pCam->GetPixelRate();
+
+	// Landing 5: propagate the camera's photographic exposure
+	// compensation to every output once per frame.  ICamera default
+	// is 0 (= no compensation), so cameras that don't opt in to
+	// physical units leave the outputs unchanged and existing
+	// scenes render bit-identically.
+	{
+		const Scalar camEV = pCam->GetExposureCompensationEV();
+		for( RasterizerOutputListType::const_iterator r = outs.begin(), s = outs.end(); r != s; ++r ) {
+			(*r)->SetCameraExposureCompensationEV( camEV );
+		}
+	}
 
 	// To start the progress counting at 0
 	DoAnimationFrameProgress( 0, 1 );

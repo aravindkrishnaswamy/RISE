@@ -3411,6 +3411,11 @@ namespace RISE
 					double exposure     = bag.GetDouble( "exposure",      0 );
 					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
 					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
+					// Landing 5: photographic exposure metadata.  Both
+					// default 0 (= disabled), so any pre-L5 scene that
+					// omits these keeps its exact pre-L5 behaviour.
+					double iso          = bag.GetDouble( "iso",           0.0 );
+					double fstop        = bag.GetDouble( "fstop",         0.0 );
 
 					double loc[3]    = {0,0,0};
 					double lookat[3] = {0,0,-1};
@@ -3441,7 +3446,29 @@ namespace RISE
 					target_orientation[0] *= DEG_TO_RAD;
 					target_orientation[1] *= DEG_TO_RAD;
 
-					return pJob.AddPinholeCamera( name.c_str(), loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation );
+					// Landing 5: validate physical exposure parameters at
+					// the parser layer so authors get clear feedback
+					// before construction.  The camera constructor's own
+					// guard returns 0 evCompensation as a fallback.
+					if( iso > 0.0 ) {
+						if( fstop <= 0.0 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"pinhole_camera:: `iso` is set (%g) but `fstop` is missing or non-positive (%g).  "
+								"Pinhole cameras have no geometric DOF, so `fstop` is used only for EV computation; "
+								"set it to a typical photographic value (e.g. f/2.8 - f/16).",
+								iso, fstop );
+							return false;
+						}
+						if( exposure <= 0.0 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"pinhole_camera:: `iso` is set (%g) but `exposure` (shutter time, seconds) is %g.  "
+								"Physical exposure requires a real shutter time; set `exposure` to e.g. 0.004 for 1/250 s.",
+								iso, exposure );
+							return false;
+						}
+					}
+
+					return pJob.AddPinholeCamera( name.c_str(), loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, iso, fstop );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3452,6 +3479,8 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "fov"; p.kind = ValueKind::Double; p.description = "Field of view (degrees)"; p.defaultValueHint = "45"; }
 						AddCameraCommonParams( P );
+						{ auto& p = P(); p.name = "iso";   p.kind = ValueKind::Double; p.description = "Landing 5: ISO sensitivity (sensor speed).  Default 0 = physical exposure DISABLED — the camera contributes no exposure compensation and existing scenes render bit-identically.  When > 0, the camera computes an EV-stops compensation from (iso, fstop, exposure) and stacks it ADDITIVELY into LDR outputs (PNG / JPEG); HDR archival outputs (EXR / RGBE) ignore it to preserve linear-radiance ground truth.  Requires `fstop` > 0 and `exposure` (shutter time, seconds) > 0.  Typical values: 100 (lowest noise), 400 (interior), 1600 (low light).  Pinhole has no geometric DOF, so `fstop` only drives the EV stack."; p.defaultValueHint = "0 (disabled)"; }
+						{ auto& p = P(); p.name = "fstop"; p.kind = ValueKind::Double; p.description = "Landing 5: f-number for EV computation.  Required when `iso > 0`; ignored otherwise.  Typical values: f/1.4 (very fast lens), f/2.8 (fast prime), f/8 (balanced), f/16 (sunny outdoor)."; p.defaultValueHint = "0 (disabled)"; }
 						return cd;
 					}();
 					return d;
@@ -3604,6 +3633,10 @@ namespace RISE
 					double exposure     = bag.GetDouble( "exposure",       0 );
 					double scanningRate = bag.GetDouble( "scanning_rate",  0 );
 					double pixelRate    = bag.GetDouble( "pixel_rate",     0 );
+					// Landing 5: photographic exposure metadata.  Default
+					// 0 (= disabled) preserves pre-L5 behaviour.  When > 0,
+					// fstop and exposure (already read above) must be > 0.
+					double iso          = bag.GetDouble( "iso",            0.0 );
 
 					double loc[3]    = {0,0,0};
 					double lookat[3] = {0,0,-1};
@@ -3690,7 +3723,19 @@ namespace RISE
 					// it's too late to affect this camera.
 					s_sceneOptions.camera_committed = true;
 
-					return pJob.AddThinlensCamera( name.c_str(), loc, lookat, up, sensor, focal, fstop, focus, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, blades, rotation, squeeze, tilt_x, tilt_y, shift_x, shift_y );
+					// Landing 5: validate physical exposure parameters
+					// at the parser layer.  thinlens already requires
+					// fstop > 0 (validated above), so we only need to
+					// check exposure here.
+					if( iso > 0.0 && exposure <= 0.0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"thinlens_camera:: `iso` is set (%g) but `exposure` (shutter time, seconds) is %g.  "
+							"Physical exposure requires a real shutter time; set `exposure` to e.g. 0.004 for 1/250 s.",
+							iso, exposure );
+						return false;
+					}
+
+					return pJob.AddThinlensCamera( name.c_str(), loc, lookat, up, sensor, focal, fstop, focus, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, blades, rotation, squeeze, tilt_x, tilt_y, shift_x, shift_y, iso );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3738,6 +3783,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "shift_x";            p.kind = ValueKind::Double; p.description = "Lens shift along camera x-axis in MILLIMETRES. Positive = lens shifts right (camera 'looks right', image content moves left in frame). Matches Blender Cycles convention."; p.defaultValueHint = "0"; p.unitLabel = "mm"; }
 						{ auto& p = P(); p.name = "shift_y";            p.kind = ValueKind::Double; p.description = "Lens shift along camera y-axis in MILLIMETRES. Positive = lens shifts up (camera 'looks up', image content moves down in frame). Architectural correction. Matches Blender Cycles convention."; p.defaultValueHint = "0"; p.unitLabel = "mm"; }
 						AddCameraCommonParams( P );
+						{ auto& p = P(); p.name = "iso"; p.kind = ValueKind::Double; p.description = "Landing 5: ISO sensitivity (sensor speed).  Default 0 = physical exposure DISABLED — the camera contributes no exposure compensation and existing scenes render bit-identically.  When > 0, the camera computes an EV-stops compensation from (iso, fstop, exposure) and stacks it ADDITIVELY into LDR outputs (PNG / JPEG); HDR archival outputs (EXR / RGBE) ignore it.  Reuses `fstop` (the same number that controls DOF) and `exposure` (the same number that controls motion blur) — physically consistent because the same aperture and shutter govern both effects.  Requires `exposure` > 0 when set.  Typical values: 100 (lowest noise), 400 (interior), 1600 (low light)."; p.defaultValueHint = "0 (disabled)"; }
 						return cd;
 					}();
 					return d;
@@ -4239,7 +4285,18 @@ namespace RISE
 					bool import_cameras           = bag.GetBool(   "import_cameras",      true );
 					bool import_normal_maps       = bag.GetBool(   "import_normal_maps",  true );
 					bool lowmem_textures          = bag.GetBool(   "lowmem_textures",     false );
-					double lights_intensity_override = bag.GetDouble( "lights_intensity_override", 0.0 );
+					double lights_intensity_override       = bag.GetDouble( "lights_intensity_override",        0.0 );
+					double directional_intensity_override  = bag.GetDouble( "directional_intensity_override",   0.0 );
+					double point_intensity_override        = bag.GetDouble( "point_intensity_override",         0.0 );
+					double spot_intensity_override         = bag.GetDouble( "spot_intensity_override",          0.0 );
+					if( lights_intensity_override > 0.0 ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"gltf_import:: `lights_intensity_override` is unit-blind (it conflates lux for "
+							"directional lights with candela for point/spot, which are different physical "
+							"quantities).  Prefer `directional_intensity_override` (lux), "
+							"`point_intensity_override` (candela), and `spot_intensity_override` (candela) -- "
+							"they respect glTF's per-type units.  Per-type values override this when set." );
+					}
 					return pJob.ImportGLTFScene(
 						file.c_str(), name_prefix.c_str(),
 						scene_index,
@@ -4247,7 +4304,10 @@ namespace RISE
 						import_lights, import_cameras,
 						import_normal_maps,
 						lowmem_textures,
-						lights_intensity_override );
+						lights_intensity_override,
+						directional_intensity_override,
+						point_intensity_override,
+						spot_intensity_override );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -4287,7 +4347,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "import_cameras";     p.kind = ValueKind::Bool;     p.description = "Create the first camera (subsequent ones warn)"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "import_normal_maps"; p.kind = ValueKind::Bool;     p.description = "Attach normal_map_modifier when material has normalTexture"; p.defaultValueHint = "TRUE"; }
 						{ auto& p = P(); p.name = "lowmem_textures";   p.kind = ValueKind::Bool;     p.description = "Defer texture color-space conversion to per-sample access.  Saves ~4x peak texture memory and 5-10x faster scene load on heavy-PBR assets (NewSponza-class), at the cost of ~25% per-sample render time (the sRGB->linear convert moves from load-time to ray-hit time).  Default FALSE (final-render workflow); flip TRUE for iteration on big scenes."; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "lights_intensity_override"; p.kind = ValueKind::Double; p.description = "When > 0, replaces zero authored intensities on imported KHR_lights_punctual entries.  Many assets (NewSponza is the canonical case) carry their light fixtures as positional metadata with intensity=0 by author convention -- 'lighting is up to the renderer' -- so import_lights TRUE alone gives nothing to render.  Setting a positive value here wakes those dormant fixtures up uniformly; lights the author did set non-zero stay untouched.  Tune up/down per-scene to taste (ranges of ~10-200 are typical for atrium-scale lamp fixtures)."; p.defaultValueHint = "0 (no override)"; }
+						{ auto& p = P(); p.name = "lights_intensity_override"; p.kind = ValueKind::Double; p.description = "DEPRECATED (Landing 4): unit-blind override that replaces zero authored intensities for ALL light types uniformly when > 0.  glTF assigns DIFFERENT physical units per type (lux for directional, candela for point/spot per KHR_lights_punctual) so a single number is physically meaningless across types.  Kept one release for back-compat (NewSponza-style scenes).  Prefer `directional_intensity_override`, `point_intensity_override`, `spot_intensity_override` below.  Per-type values override this when set."; p.defaultValueHint = "0 (no override)"; }
+						{ auto& p = P(); p.name = "directional_intensity_override"; p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual directional lights.  Units: LUX (lm/m²) -- glTF's authored unit for directional intensity.  Replaces zero authored intensities for directional lights only (lights set non-zero stay untouched).  Typical values: ~120000 for noon clear-sky sun, ~10000 for overcast day, ~100 for moonlight."; p.defaultValueHint = "0 (no override)"; }
+						{ auto& p = P(); p.name = "point_intensity_override";       p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual point lights.  Units: CANDELA (lm/sr) -- glTF's authored unit for point intensity.  Replaces zero authored intensities for point lights only.  Typical values: ~100 for a 60-W incandescent (~800 lm omnidirectional / 4 pi sr), ~1500 for a 100-W LED bulb."; p.defaultValueHint = "0 (no override)"; }
+						{ auto& p = P(); p.name = "spot_intensity_override";        p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual spot lights.  Units: CANDELA (lm/sr) along the spot's central axis -- glTF's authored unit for spot intensity.  Replaces zero authored intensities for spot lights only."; p.defaultValueHint = "0 (no override)"; }
 						return cd;
 					}();
 					return d;

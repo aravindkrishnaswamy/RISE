@@ -45,6 +45,7 @@ FileRasterizerOutput::FileRasterizerOutput(
   color_space( color_space_ ),
   exposureEV( exposureEV_ ),
   display_transform( display_transform_ ),
+  cameraExposureEV( Scalar( 0 ) ),	// Landing 5: defaults to 0 = no camera-side EV; rasterizer overrides per-frame.
   exr_compression( exr_compression_ ),
   exr_with_alpha( exr_with_alpha_ )
 {
@@ -129,6 +130,17 @@ void FileRasterizerOutput::OutputIntermediateImage( const IRasterImage&, const R
 	// File outputs don't support intermediate rasterizations dammit!
 }
 
+void FileRasterizerOutput::SetCameraExposureCompensationEV( Scalar ev )
+{
+	// Landing 5: HDR archival outputs ignore both the static
+	// `exposureEV` (constructor enforces this) AND the rasterizer-
+	// supplied camera EV.  Same rationale: we want EXR / RGBE /
+	// HDR to remain "linear radiance ground truth" so that the
+	// integrator's output is recoverable bit-for-bit.  Force-zero
+	// here to keep the WriteImageToFile sum trivially correct.
+	cameraExposureEV = IsHDRFormat( type ) ? Scalar( 0 ) : ev;
+}
+
 inline unsigned int VoidPtrToUInt( const void* v )
 {
 	return (unsigned int)*((unsigned int*)(&v));
@@ -208,13 +220,20 @@ void FileRasterizerOutput::WriteImageToFile( const IRasterImage& pImage, const u
 	// HDR types — this is belt-and-suspenders).  The wrapper holds
 	// an addref'd reference to pWriter; we keep our own ref too and
 	// release both at end-of-write.
+	//
+	// Landing 5: stack camera-supplied EV with the static
+	// `exposure_compensation`.  Both default to 0, and the
+	// SetCameraExposureCompensationEV setter zeros itself out for
+	// HDR formats, so summing here is safe even when the writer's
+	// HDR-format guard already cleared `exposureEV`.
 	IRasterImageWriter* pEffectiveWriter = pWriter;
 	DisplayTransformWriter* pDtWriter = 0;
+	const Scalar totalExposureEV = exposureEV + cameraExposureEV;
 	const bool useDisplayTransform =
 		!IsHDRFormat( type ) &&
-		( display_transform != eDisplayTransform_None || exposureEV != Scalar( 0 ) );
+		( display_transform != eDisplayTransform_None || totalExposureEV != Scalar( 0 ) );
 	if( useDisplayTransform ) {
-		pDtWriter = new DisplayTransformWriter( *pWriter, exposureEV, display_transform );
+		pDtWriter = new DisplayTransformWriter( *pWriter, totalExposureEV, display_transform );
 		GlobalLog()->PrintNew( pDtWriter, __FILE__, __LINE__, "DisplayTransformWriter" );
 		pEffectiveWriter = pDtWriter;
 	}

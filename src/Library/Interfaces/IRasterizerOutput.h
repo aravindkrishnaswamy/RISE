@@ -67,6 +67,18 @@ namespace RISE
 		{
 			OutputImage( pImage, pRegion, frame );
 		}
+
+		//! Landing 5: rasterizer-supplied photographic exposure
+		//! compensation in EV stops (queried from the scene's camera
+		//! at frame start; see ICamera::GetExposureCompensationEV).
+		//! LDR file outputs sum this with their own static
+		//! `exposure_compensation` parameter to produce the total EV
+		//! applied at write time.  HDR archival outputs (EXR / RGBE)
+		//! ignore it to preserve "linear radiance ground truth"
+		//! semantics from Landing 1.  Default no-op for outputs that
+		//! don't need the camera-side EV (window display, in-memory
+		//! store, etc. — they show / hold linear radiance).
+		virtual void SetCameraExposureCompensationEV( Scalar /*ev*/ ) {}
 	};
 }
 

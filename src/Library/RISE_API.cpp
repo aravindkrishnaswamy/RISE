@@ -145,14 +145,16 @@ namespace RISE
 		const Scalar scanningRate,								///< [in] Rate at which each scanline is recorded
 		const Scalar pixelRate,									///< [in] Rate at which each pixel is recorded
 		const Vector3& orientation,								///< [in] Orientation (Pitch,Roll,Yaw)
-		const Vector2& target_orientation						///< [in] Orientation relative to a target
+		const Vector2& target_orientation,						///< [in] Orientation relative to a target
+		const Scalar iso,										///< [in] Landing 5: ISO (0 = disabled)
+		const Scalar fstop										///< [in] Landing 5: f-number for EV
 		)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new PinholeCamera( ptLocation, ptLookAt, vUp, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation );
+		(*ppi) = new PinholeCamera( ptLocation, ptLookAt, vUp, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, iso, fstop );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "pinhole camera" );
 		return true;
 	}
@@ -169,14 +171,16 @@ namespace RISE
 		const Scalar pixelAR,									///< [in] Pixel aspect ratio
 		const Scalar exposure,									///< [in] Exposure time of the camera
 		const Scalar scanningRate,								///< [in] Rate at which each scanline is recorded
-		const Scalar pixelRate									///< [in] Rate at which each pixel is recorded
+		const Scalar pixelRate,									///< [in] Rate at which each pixel is recorded
+		const Scalar iso,										///< [in] Landing 5: ISO (0 = disabled)
+		const Scalar fstop										///< [in] Landing 5: f-number for EV
 		)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new PinholeCamera( onb, ptLocation, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate );
+		(*ppi) = new PinholeCamera( onb, ptLocation, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, iso, fstop );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "pinhole camera" );
 		return true;
 	}
@@ -207,14 +211,15 @@ namespace RISE
 		const Scalar tiltX,										///< [in] Focal-plane tilt around x-axis (radians)
 		const Scalar tiltY,										///< [in] Focal-plane tilt around y-axis (radians)
 		const Scalar shiftX,									///< [in] Lens shift along x (mm)
-		const Scalar shiftY										///< [in] Lens shift along y (mm)
+		const Scalar shiftY,									///< [in] Lens shift along y (mm)
+		const Scalar iso										///< [in] Landing 5: ISO (0 = disabled)
 		)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new ThinLensCamera( ptLocation, ptLookAt, vUp, sensorSize, focalLength, fstop, focusDistance, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, apertureBlades, apertureRotation, anamorphicSqueeze, tiltX, tiltY, shiftX, shiftY );
+		(*ppi) = new ThinLensCamera( ptLocation, ptLookAt, vUp, sensorSize, focalLength, fstop, focusDistance, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, apertureBlades, apertureRotation, anamorphicSqueeze, tiltX, tiltY, shiftX, shiftY, iso );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "thinlens camera" );
 		return true;
 	}

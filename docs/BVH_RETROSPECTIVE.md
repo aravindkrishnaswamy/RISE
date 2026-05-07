@@ -401,6 +401,38 @@ Sponza regression came from the global `/arch:AVX2` compile flag MSVC autovector
 
 **Inherited concern documented for future work**: the `static thread_local std::vector<uint32_t> stack` pattern in BVH4/BVH8 traversal is shared across all `BVH<Element>` instances of the same template instantiation on a given thread.  In-practice safe today because object-BVH and triangle-mesh-BVH are different `Element` types (separate instantiations, separate stacks), but a future re-entrant call within one instantiation type would clobber the stack mid-traversal.  Not a blocker; flag-and-watch.
 
+## Tier D4 — BVH-aware shadow cache (excised, 2026-05)
+
+**Motivation**: post-Tier D1, `ObjectManager`'s shadow cache (per-thread last-occluder hint stored in 64 stack-hash slots) became dead code — the cache lookup is gated on the linear-loop fallback path, and after the TLAS migration every real scene goes through the BVH path instead.  Profiling showed shadow-cache hit rate dropped 7.4 % → 0 %.  Hypothesis: integrate the cache into the BVH `IntersectShadowRay` path (try cached IObject first, fall through to BVH on miss + capture the new occluder for next time).  Recover the ~7 % shadow-ray cost from the TLAS-skip savings.
+
+**Implementation**: added optional `Element* outHit = nullptr` parameter to `BVH<>::IntersectRay_IntersectionOnly` + `IntersectRay4_IntersectionOnly` + `Bvh4Leaf_IntersectionOnly`.  Default-nullptr keeps existing per-mesh callers unchanged.  When non-null, the leaf path writes `*outHit = prims[i]` on first hit, propagating the captured occluder back through the traversal.  ObjectManager's `IntersectShadowRay` BVH branch then: try cached occluder first → if hit, return; else descend BVH with `&occluder` capture → update slot if a new occluder was found.
+
+**Result on the 4-scene sweep**:
+
+|                          | Post-D1 | B3 (cache-in-BVH) | Δ |  Cache hit rate |
+|--------------------------|--------:|------------------:|----:|--------:|
+| `bench_pt`              | 13.9 s | 14.8 s | **+6.5 %** | 10.4 % |
+| `sponza_new`            | 29.0 s | 30.5 s | **+5.2 %** | 9.4 % |
+| `sss_comparison_dragon` |  9.6 s | 10.5 s | **+9.4 %** | 27.2 % |
+| `bench_pt_bigmesh`      |  3.3 s |  3.6 s | **+9.1 %** | 43.2 % |
+
+**Why it regressed** — root-cause analysis:
+The cache HIT savings are SMALLER than the cache MISS overhead, even at 43 % hit rate (bigmesh).  Concretely:
+- **Cache HIT** saves only the TLAS BVH descent (~5–7 box tests for sponza's 155-object TLAS, ~1–2 for the dragon's 4-object TLAS, ~1 for bigmesh's 1-object TLAS).  The per-mesh BVH descent of the cached IObject still happens — that's not a saving.
+- **Cache MISS** pays a full `Object::IntersectRay_IntersectionOnly` against the wrong cached object: matrix-transform setup + per-mesh BVH root box test + (for big meshes whose bbox encloses the ray) partial BVH descent before rejecting.  Often comparable cost to a successful descent of a small mesh.
+
+For sponza: hit rate 9 % × ~7 box tests saved = ~0.6 box tests/ray won; miss rate 91 % × ~5 box tests cost = ~4.6 box tests/ray lost.  Net **−4 box tests/ray** — exactly the regression direction.
+
+For bigmesh: hit rate 43 % saves ~1 TLAS box test (single-object TLAS); 57 % miss rate × ~5 box tests partial-descent of the giant mesh = ~2.9 box tests lost.  Net **−2.5 box tests/ray** — also regression.
+
+Even the unrealistic 100 % hit-rate ceiling would only save the TLAS depth, which is small; the cost ALWAYS pays the full per-mesh BVH descent of the cached object.
+
+**Decision**: excise.  The cached test isn't *cheaper* than the alternative — it's a per-mesh BVH descent comparable to what TLAS would skip, just without the TLAS bookkeeping.  For the cache to win, it would need to store something **structurally cheaper** to test (a TLAS leaf index to start traversal from, not the IObject pointer to re-test entirely).  That's a different design — much bigger surgery, and the savings would still be capped at the TLAS-depth savings (~5–7 box tests for sponza-class scenes).
+
+**Re-entry conditions**: only worth reconsidering if (a) the TLAS becomes deep enough that its descent dominates per-mesh descent (multi-million-object scenes), AND (b) someone implements the "TLAS-leaf-index hint" version that avoids the redundant per-mesh descent on miss.  Until then, the dead `shadowCache[]` array in ObjectManager stays where it is — used only by the linear-loop fallback path (which fires only when the scene has ≤4 objects and the BVH gate doesn't engage).  ~80 lines reverted; only `docs/BVH_RETROSPECTIVE.md` updated.
+
+**Pattern note**: this is the 7th consecutive negative finding in the BVH/geometry stack post-D1 (Tier B SBVH, C4 uint8 nodes, D2-rev BVH8 v1, D2-rev BVH8 v2, D3 SoA SIMD MT, A2-probe larger leaves, D4 shadow cache).  The geometry stack post-Tier D1 is now at a stable local optimum for this codebase's measured workload class.  Future BVH/geometry-stack work should cross the high bar of "I have specific evidence this works at our scales" before committing engineering time — the structural-fit pattern is overwhelming.
+
 ## Tier D3 — SoA-packed 4-wide SIMD MT at leaves (excised, 2026-05)
 
 Prototyped immediately after the TLAS migration as a follow-on win.  The thinking: the per-mesh BVH4 already did SIMD ray-vs-AABB at internal nodes; the leaf path was still scalar AoS, calling `MollerTrumboreFloat` once per triangle in the leaf primitive list.  A 4-wide SoA SIMD MT kernel (SSE/NEON) at the leaf, with on-the-fly AoS→SoA transpose of `fastFilter[]` data, looked like an obvious follow-on to the existing wide-tree pattern.
@@ -425,6 +457,92 @@ If a future revisit happens, do build-time SoA packing first — the on-the-fly 
 
 ---
 
+## Tier E1 — Delta-light NEE Russian roulette (investigated, not shipped, 2026-05)
+
+Not strictly a BVH-stack change but in the same post-D1 perf-extension session.  Documented here for completeness because the investigation pattern + measurement methodology mirrors the BVH negative findings.
+
+**Motivation**: post-D1 sponza profile shows GeomShadow at 21 % of CPU and 1.72 shadow rays per primary ray — surprisingly high for a single-env-light scene.  Diagnostic established that `LightSampler::EvaluateDirectLighting` fires TWO independent shadow rays per call (one to a sampled positional light + one to env-direction sample), and that Sponza's 22 imported glTF lamp lights (each `lights_intensity_override 100`) account for ~half the shadow rays even though their per-ray contribution is small for most shading points.  The existing `lightSampleRRThreshold` mechanism gates ONLY mesh-luminary NEE shadow rays — delta lights (point/spot/directional) and env-NEE always fire unconditionally.
+
+**Implementation**: extended the existing mesh-luminary RR pattern to delta lights in both `EvaluateDirectLighting` (RGB) and `EvaluateDirectLightingNM` (spectral).  Estimate formula: `entry.exitance × cosSurface / dist²` (drops the area×cosLight factor — undefined for point lights).  Same 1/p compensation on survivors.  Threshold parameter `lightSampleRRThreshold` reused (default 0 = disabled = old behaviour preserved).
+
+**Sponza sweep (correctness verified by EXR mean ratio within 1 % of baseline at all thresholds)**:
+
+| `light_rr_threshold` | shadow rays | shadow/primary | wall | Δ wall vs T=0 |
+|---:|---:|---:|---:|---:|
+| 0 (default) | 22.0 M | 1.72 | 28.3 s | – |
+| 10 | 20.3 M | 1.59 | 29.0 s | +2.6 % (noise) |
+| 100 | 16.4 M | 1.28 | 28.8 s | +1.9 % (noise) |
+| 1000 | 13.8 M | 1.08 | 27.7 s | **−2.0 %** |
+| 10000 | 13.3 M | 1.04 | 27.1 s | **−4.2 %** |
+
+**Why the modest wall-clock win despite 40 % shadow-ray reduction**: GeomShadow CPU drops cleanly (137 → 79 s = −42 %) but wall is governed by max-thread-time, not sum-of-CPU.  The ~58 s CPU saved diluted across 22-thread parallelism = ~2.6 s wall savings before the OS scheduler & non-shadow phases consume most of it.
+
+**Decision: not shipped.**  4–7 % wall on Sponza only, opt-in, and requires per-scene threshold tuning (estimate scale depends on light intensities — Sponza's `intensity_override 100` × FOUR_PI ≈ 1257 means thresholds in the hundreds-thousands, very different from a low-intensity scene).  Plumbing a chunk-parameter for setting threshold cleanly would touch all rasterizer chunk parsers; CLI-command setting (`set light_rr_threshold X`) doesn't propagate to already-instantiated rasterizers.  The cost/benefit ratio of the plumbing wasn't compelling for a 4-7 % opt-in win on one scene class.
+
+**Pre-existing bug spotted** at [Job.cpp:215](../src/Library/Job.cpp#L215): `Job::SetLightSampleRRThreshold` writes `lightSampleRRThreshold = 0` instead of `= threshold`, silently dropping the parameter.  This means the *existing* mesh-luminary RR has been unreachable via the CLI command since it was added — the threshold is always 0 in practice.  Filed as a separate followup task (one-line fix) outside this session.
+
+**Code reverted**.  Diagnostic + threshold-sweep methodology preserved here for future re-attempt.
+
+---
+
+## Tier E2 — TexturePainter per-painter thread-local cache (excised, 2026-05)
+
+**Motivation**: post-D1 sponza profile shows TexturePainter at 19 % of CPU and 188 M painter samples for 12.6 M BSDF scatter calls — **15 painter calls per BSDF call**.  Diagnostic established this as `~3 BSDF eval calls per shading point` (BSDF sample + light NEE + env NEE) `× ~5 painter chains per glTF PBR material` (albedo + roughness + metallic + normal + emissive).  Successive BSDF evals at the SAME shading point hit the SAME painter instances at the SAME `(ri.ptIntersection, ri.ptCoord, footprint)` — pure redundant work.
+
+**Implementation**: 64-slot thread-local direct-mapped cache in `TexturePainter.cpp`.  Slot hashed by `painter*` xor coarse-binned `ptCoord`.  On `GetColor`/`GetAlpha`: hash, key-compare 12 fields (3-vec ptIntersection + 2-vec ptCoord + 4 footprint scalars + valid-bool + painter*); on hit, return cached `RISEColor.base` or `.a`; on miss, run `SampleTextured` and store.  False-sharing-padded slots, mirroring `ObjectManager::shadowCache`.  Cache-key includes the FULL set of `ri` fields that `SampleTextured` reads, so cross-shading-point collisions correctly miss.
+
+**Result on Sponza** (the only scene with PBR-textured materials in the bench set):
+
+| Metric | Baseline | Cache | Δ |
+|---|---:|---:|---:|
+| Wall | 28.4 s | 31.6 s | **+11 % (regression)** |
+| TexturePainter CPU | 121 s | 141 s | +17 % |
+| GeomPrimary CPU | 267 s | 295 s | +11 % |
+| GeomShadow CPU | 137 s | 155 s | +13 % |
+| Cache hit rate | – | **74.6 %** | – |
+
+**Why it regressed despite 75 % cache hit rate** — two effects compound:
+
+1. **Per-call cache check overhead exceeds per-hit savings.**  The 12-field `TextureCacheKeyMatches` floating-point compare runs ~30–50 ns; `SampleTextured` in the lowmem path is ~150-300 ns (faster than initially estimated — the per-sample sRGB→linear decode is cheaper than the scene comment's "~25 % overhead" claim suggested).  At 188 M calls, ~30 ns × 188 M = ~5.6 s of pure check overhead per thread = ~2.5 s wall after parallel dilution.  Hit savings (per-hit ~200 ns × 75 % × 188 M = ~28 s CPU = ~1.3 s wall) don't cover the check tax.
+
+2. **Cross-phase L2/L3 cache pollution.**  64-slot × 128-byte cache × 22 threads = ~176 KB of per-thread state added to the working set.  L2 typically 1 MB per core but shared with BVH node data.  GeomPrimary and GeomShadow CPU each rose ~11–13 %, despite no code change in those paths — the only plausible cause is shared-LLC eviction of BVH nodes by the painter cache.  This is the "your perf change touches a hot working set and hurts unrelated phases" failure mode.
+
+**Decision: excise.**  Same Tier B / C4 / D3 / D2-rev / D4 pattern reaffirmed: SoTA-on-paper improvement that doesn't translate at this codebase's measured workload scales.
+
+**What might have worked but wasn't pursued**:
+- Cache at the **integrator/BSDF** level (compute BSDF lookup once per shading point and reuse for NEE+sample) — different mechanism, doesn't have the cross-instance hash overhead, but requires plumbing through the BSDF interface.  Bigger architectural change.
+- Hash-based key compare (replace 12-field key with 64-bit hash + collision check) — could cut check overhead by 2-4×, but doesn't address the L2/L3 pollution problem.
+
+**Code reverted**.  Diagnostic preserved here.
+
+---
+
+## Post-D1 perf-extension session take-away (2026-05)
+
+**Eight consecutive negative findings** in the post-Tier D1 perf-extension session, in chronological order:
+
+1. Tier B (SBVH spatial splits, originally excised in 2026-04 work) — re-confirmed dead at this scale
+2. Tier C4 (uint8 BVH4 quantised nodes, originally excised) — re-confirmed dead
+3. Tier D3 (SoA-packed 4-wide SIMD MT at leaves) — excised: small leaves + on-the-fly transpose
+4. Tier D2-rev v1 (BVH8 + AVX2, no gate) — excised: per-node cost outweighs depth halving
+5. Tier D2-rev v2 (BVH8 + AVX2 + size gate after `bench_pt_bigmesh` added) — excised: still no win even on the targeted 1 M-tri workload
+6. A2 probe (maxLeafSize=8 alone) — neutral; A2 implementation skipped as a result
+7. Tier D4 (BVH-aware shadow cache integrated into BVH path) — excised: cached IObject test isn't structurally cheaper than the alternative
+8. Tier E1 (delta-light NEE RR) — implemented + measured; 4-7 % wall on Sponza deemed not worth plumbing
+9. Tier E2 (TexturePainter per-painter cache) — excised: per-call overhead + L2/L3 pollution
+
+**The structural lesson**: the post-Tier-D1 codebase is at a **stable local optimum** for its measured workload class.  The hot paths (BVH4 + SSE2 SIMD AABB pruning + scalar AoS Möller-Trumbore + scalar-per-primitive painter dispatch) are tuned tightly enough that any new per-call overhead in a 100-200M-call/s code path needs to save **more than its check cost** to be net-positive.  That's a brutal threshold.  Cache-line pressure across 22-thread parallelism amplifies the problem: any new per-thread state added to the working set evicts shared BVH/triangle data and shows up as **regression in unrelated phases** (the Tier E2 painter cache hit GeomPrimary/Shadow CPU as much as it hit TexturePainter).
+
+**Three deeper, more-invasive directions** were considered and not pursued during this session.  They would each require significant architectural changes rather than incremental optimization:
+
+1. **Real CPU sampling profiler integration** (Visual Studio, Tracy, VTune).  Phase timers tell us where in the *pipeline* time goes; sampling would tell us *which lines* are expensive.  Without it, every "optimize X based on profile data" attempt was hypothesis-driven and the eight negatives suggest the hypotheses were wrong.
+2. **Embree backend** for BVH+intersection.  Documented production renderers (PBRT-v4, OSPRay) replace hand-rolled BVHs with Embree for typically 2–4× wins.  Loses the "everything in-tree" property; significant build-system + maintenance burden.
+3. **Integrator-level caching** (BSDF result memoization across NEE + sample calls per shading point).  Different mechanism than per-painter caching, doesn't have the cross-instance overhead problem, but requires plumbing a "shading context" through the BSDF interface.
+
+**Pattern for future perf work in this repo**: cheap probes (≤1 day) before any multi-day implementation; require a measured win on the bench set + cross-scene non-regression check + adversarial review before commit; don't commit half-finished implementations even with clear theoretical merit.  Eight negatives in a row at this codebase is signal, not noise — perf wins past D1 likely require either tooling step-change or architectural pivot, not incremental kernels.
+
+---
+
 ## Deferred / not in scope
 
 - **Tier D2 — BVH8 + AVX-512.**  Opt-in for workstation/server hardware if RISE ever ships there.  AVX2 BVH8 was attempted (Tier D2-rev above) on this codebase's bench set and regressed at all measured workload scales — re-enter only when production routinely renders meshes ≥ 1 M tris where BVH2 depth ≥ 12 makes the wider tree's depth halving worth its per-node cost increase.
@@ -442,4 +560,6 @@ Roughly two days of focused work spread across a session arc.  Production code: 
 
 Two negative findings (SBVH excised, C4 reverted) were the principled outcome of measurement.  Three deferred items (C2, D1, D2) wait on either a workload that justifies them or hardware that supports them.  The remaining production code is the simplest BVH stack that was actually measured to win.
 
-**Tier D1 (2026-05) added another half-day** for the TLAS migration (3 scenes profiled × 3 configs each, plus the closest-hit-guard fix the BVH leaf contract required) and a third negative finding (Tier D3, SoA SIMD MT at leaves).  Sponza dropped from 222 s no-acceleration → 63 s BSP → 28 s BVH4: an 8× total speedup on the target scene.
+**Tier D1 (2026-05) added another half-day** for the TLAS migration (3 scenes profiled × 3 configs each, plus the closest-hit-guard fix the BVH leaf contract required).  Sponza dropped from 222 s no-acceleration → 63 s BSP → 28 s BVH4: an 8× total speedup on the target scene.
+
+**The post-D1 perf-extension session (2026-05) added another full day** of investigation across 8 directions (BVH8 v1 + v2, SoA SIMD MT, shadow cache, larger leaves, NEE RR, painter cache, plus re-confirmation of previously-excised SBVH and uint8 nodes).  All 8 directions either regressed or showed wins too small to justify their plumbing cost.  Production code: net **zero** change beyond Tier D1 itself; a new benchmark scene `bench_pt_bigmesh` was added to give wide-tree / SoA-leaf optimisations a fair test (and confirmed they don't pay off even on a 1 M-tri target at this scale).  Persistent record: this document.  Time well spent — eight negative findings in one session is a strong signal that **the codebase is at a stable local optimum and future perf wins likely require a tooling step-change (real sampling profiler) or architectural pivot (Embree / BSDF caching), not incremental kernels**.

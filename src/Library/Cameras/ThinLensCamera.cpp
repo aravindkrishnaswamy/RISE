@@ -18,8 +18,39 @@
 #include "../Animation/KeyframableHelper.h"
 #include "../Interfaces/ILog.h"
 
+#include <cmath>
+
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace
+{
+	// Landing 5: photographic exposure compensation.  Mirrors the
+	// formula in PinholeCamera.cpp's local ComputeExposureCompensationEV;
+	// kept duplicated here (rather than promoted to a shared header)
+	// because the two cameras are otherwise independent and the helper
+	// is ~15 lines.  See ICamera.h::GetExposureCompensationEV for the
+	// derivation and stacking semantics.
+	inline RISE::Scalar ComputeExposureCompensationEV(
+		const RISE::Scalar iso,
+		const RISE::Scalar fstop,
+		const RISE::Scalar shutterSeconds,
+		const char*        cameraTag )
+	{
+		if( iso <= RISE::Scalar( 0 ) ) {
+			return RISE::Scalar( 0 );
+		}
+		if( fstop <= RISE::Scalar( 0 ) || shutterSeconds <= RISE::Scalar( 0 ) ) {
+			RISE::GlobalLog()->PrintEx( RISE::eLog_Error,
+				"%s:: iso > 0 requires fstop > 0 (given %g) and shutter (`exposure`) > 0 (given %g) "
+				"for physical exposure computation.  Falling back to no exposure compensation.",
+				cameraTag, fstop, shutterSeconds );
+			return RISE::Scalar( 0 );
+		}
+		const RISE::Scalar EV100 = std::log2( fstop * fstop * RISE::Scalar( 100 ) / ( iso * shutterSeconds ) );
+		return -std::log2( RISE::Scalar( 1.2 ) ) - EV100;
+	}
+}
 
 namespace
 {
@@ -217,7 +248,8 @@ ThinLensCamera::ThinLensCamera(
 	const Scalar tiltX_,
 	const Scalar tiltY_,
 	const Scalar shiftX_,
-	const Scalar shiftY_
+	const Scalar shiftY_,
+	const Scalar iso
 	) :
   CameraCommon(
 	  vPosition_,
@@ -241,6 +273,8 @@ ThinLensCamera::ThinLensCamera(
   tiltY( tiltY_ ),
   shiftX( shiftX_ ),
   shiftY( shiftY_ ),
+  iso_( iso ),
+  evCompensation_( ComputeExposureCompensationEV( iso, fstop_, exposure_, "ThinLensCamera" ) ),
   fov( 0 ),
   aperture( 0 ),
   halfAperture( 0 ),
@@ -259,6 +293,19 @@ ThinLensCamera::ThinLensCamera(
 
 ThinLensCamera::~ThinLensCamera( )
 {
+}
+
+void ThinLensCamera::RegenerateData()
+{
+	// Geometric state first.
+	CameraCommon::RegenerateData();
+
+	// Landing 5: refresh the photographic exposure cache.  fstop and
+	// exposureTime are SHARED between the geometric and photographic
+	// sides of this camera (one f-number drives both DOF and EV; one
+	// shutter time drives both motion blur and EV), so any edit to
+	// either invalidates evCompensation_.  iso_ also feeds in.
+	evCompensation_ = ComputeExposureCompensationEV( iso_, fstop, exposureTime, "ThinLensCamera" );
 }
 
 bool ThinLensCamera::GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const

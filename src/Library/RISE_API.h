@@ -133,7 +133,9 @@ namespace RISE
 		const Scalar scanningRate,								///< [in] Rate at which each scanline is recorded
 		const Scalar pixelRate,									///< [in] Rate at which each pixel is recorded
 		const Vector3& orientation,								///< [in] Orientation (Pitch,Roll,Yaw)
-		const Vector2& target_orientation						///< [in] Orientation relative to a target
+		const Vector2& target_orientation,						///< [in] Orientation relative to a target
+		const Scalar iso = Scalar( 0 ),							///< [in] Landing 5: ISO sensitivity.  Default 0 = physical exposure disabled.
+		const Scalar fstop = Scalar( 0 )						///< [in] Landing 5: f-number for EV computation.  Required when iso > 0.
 		);
 
 	//! Creates a traditional pinhole camera
@@ -148,7 +150,9 @@ namespace RISE
 		const Scalar pixelAR,									///< [in] Pixel aspect ratio
 		const Scalar exposure,									///< [in] Exposure time of the camera
 		const Scalar scanningRate,								///< [in] Rate at which each scanline is recorded
-		const Scalar pixelRate									///< [in] Rate at which each pixel is recorded
+		const Scalar pixelRate,									///< [in] Rate at which each pixel is recorded
+		const Scalar iso = Scalar( 0 ),							///< [in] Landing 5: ISO sensitivity.  Default 0 = physical exposure disabled.
+		const Scalar fstop = Scalar( 0 )						///< [in] Landing 5: f-number for EV computation.  Required when iso > 0.
 		);
 
 	//! Creates a camera based on thin lens model
@@ -183,7 +187,8 @@ namespace RISE
 		const Scalar tiltX,										///< [in] Focal-plane tilt around x-axis (radians); 0 = perpendicular focus
 		const Scalar tiltY,										///< [in] Focal-plane tilt around y-axis (radians); 0 = perpendicular focus
 		const Scalar shiftX,									///< [in] Lens shift along x (mm); 0 = centered
-		const Scalar shiftY										///< [in] Lens shift along y (mm); 0 = centered
+		const Scalar shiftY,									///< [in] Lens shift along y (mm); 0 = centered
+		const Scalar iso = Scalar( 0 )							///< [in] Landing 5: ISO sensitivity.  Default 0 = physical exposure disabled.  When > 0, fstop and exposure must also be > 0.
 		);
 
 	//! Creates a fisheye cemera

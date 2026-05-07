@@ -180,13 +180,13 @@ later ones.  Each landing should be independently shippable and
 verifiable.  Landings 1–6 are foundational; 7–14 are feature work
 that builds on the foundation.
 
-| # | Landing | Category | ABI break? | Depends on |
-|---|---|---|---|---|
-| 1 | HDR primary output (EXR + separated exposure / display transform) | Output | No | None |
-| 2 | Ray differentials → mip LOD → stochastic mip selection | Texture | No | None |
-| 3 | Spectral upsampling (Jakob-Hanika) + spectral Hosek-Wilkie sun-and-sky | Spectral | No | IMPROVEMENTS.md #11 |
-| 4 | Per-light-type intensity override (drop unit-blind override) | Lights | Minor | None |
-| 5 | Physical camera model (ISO / aperture / shutter / EV) | Camera | No (additive) | 1 |
+| # | Landing | Category | ABI break? | Depends on | Status |
+|---|---|---|---|---|---|
+| 1 | HDR primary output (EXR + separated exposure / display transform) | Output | No | None | **DONE** |
+| 2 | Ray differentials → mip LOD → stochastic mip selection | Texture | No | None | **DONE** (a78593b) |
+| 3 | Spectral upsampling (Jakob-Hanika) + spectral Hosek-Wilkie sun-and-sky | Spectral | No | IMPROVEMENTS.md #11 | TODO |
+| 4 | Per-light-type intensity override (drop unit-blind override) | Lights | Minor | None | **DONE** (Group A bundle) |
+| 5 | Physical camera model (ISO + fstop + shutter → EV stack into LDR outputs) | Camera | No (additive) | 1 | **DONE — minimal variant** (Group A bundle).  No new chunk; ISO is opt-in on existing `pinhole_camera` / `thinlens_camera`.  Realistic-camera (lens-element ray tracing) is a separate future landing. |
 | 6 | Energy-conservation audit on layered material composition | Materials | Maybe | None |
 | 7 | `KHR_materials_specular` (real F0 + tint) | Materials | Yes (PBR mat params) | 6 |
 | 8 | Anisotropy material parameter (BRDF already supports it) | Materials | Yes (PBR mat params) | 6 |
@@ -429,7 +429,21 @@ Out:
 
 ---
 
-## Landing 4 — Per-light-type intensity override
+## Landing 4 — Per-light-type intensity override [DONE — Group A bundle]
+
+**Shipped.**  Three new `gltf_import` parameters — `directional_intensity_override`
+(lux), `point_intensity_override` (candela), `spot_intensity_override`
+(candela) — each replace zero authored intensities for their respective
+light types only.  Per-type values win when both they and the legacy
+`lights_intensity_override` are set on a given light type.  The
+deprecated legacy field stays one release for back-compat with a parser
+warning pointing at the typed forms.  No code change needed in scenes
+that don't set any override; Sponza renders identically pre/post.
+
+Migration of `scenes/FeatureBased/Geometry/sponza_new.RISEscene` to the
+typed fields is a follow-up — kept on the legacy `lights_intensity_override 100`
+for now to avoid a visible Sponza render change in the same commit that
+introduces the API.
 
 ### Goal
 
@@ -487,7 +501,42 @@ Out:
 
 ---
 
-## Landing 5 — Physical camera
+## Landing 5 — Physical camera [DONE — minimal variant, Group A bundle]
+
+**Shipped — minimal variant, no new chunk.**  After comparing notes
+with PBRT v4's own architecture (which treats ISO / shutter / EV as
+display-side constants and reserves `RealisticCamera` for actual
+lens-element ray tracing), L5 was scoped down to:
+
+- `iso` parameter on existing `pinhole_camera` and `thinlens_camera`
+  chunks.  Default 0 = physical exposure DISABLED — every pre-L5
+  scene renders bit-identically.
+- `fstop` parameter added to `pinhole_camera` (thinlens already had it
+  for DOF; reused for EV when iso > 0).  `exposure` (shutter time,
+  already present for motion blur) is the third leg.
+- Camera computes `evCompensation = -log2(1.2) - log2(N² × 100 / (ISO × T))`
+  per the UE5 / Filament saturation-based formula (ISO 12232).
+- New virtual `ICamera::GetExposureCompensationEV()` (default returns 0).
+- New virtual `IRasterizerOutput::SetCameraExposureCompensationEV(ev)`
+  (default no-op).  Pixel-based rasterizer propagates the camera EV
+  to every output once at frame start (in BOTH `RasterizeScene` and
+  `RenderFrameOfAnimation` entry points).
+- `FileRasterizerOutput` sums camera EV with its static
+  `exposure_compensation` parameter to produce the total EV applied to
+  LDR outputs (PNG / JPEG / PPM).  HDR archival outputs (EXR / RGBE)
+  zero the camera EV in the setter to preserve "linear radiance ground
+  truth" from L1.
+
+Verified end-to-end via `scenes/Tests/Camera/physical_exposure.RISEscene`:
+toggling iso/fstop/exposure dims the rendered sphere by exactly the
+predicted factor on the PNG; EXR is bit-identical across settings.
+Sponza + Cornell + shapes all render pixel-identical to pre-L5 (the
+non-physical default path).
+
+The realistic-camera (lens-element ray tracing à la pbrt-v4
+`RealisticCamera`) is reserved as a separate future landing; the
+keyword `realistic_camera` is already kept reserved by the parser
+for it.
 
 ### Goal
 

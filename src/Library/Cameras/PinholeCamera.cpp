@@ -17,8 +17,51 @@
 #include "../Animation/KeyframableHelper.h"
 #include "../Interfaces/ILog.h"
 
+#include <cmath>
+
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace
+{
+	// Landing 5: photographic exposure compensation.
+	//
+	// EV100 = log2(N² × 100 / (ISO × T))
+	// evCompensation = -log2(1.2) - EV100      ≈ -0.263 - EV100
+	//
+	// Formula matches UE5 / Filament / ISO 12232 saturation-based
+	// convention: a 100% reflector saturates at scene luminance
+	// L = 1.2 × 2^EV100 cd/m².  The returned compensation stacks
+	// ADDITIVELY with the LDR output's own exposure_compensation;
+	// HDR archival outputs ignore both per Landing 1's "EXR =
+	// linear radiance ground truth" invariant.
+	//
+	// Returns 0 when iso == 0 (physical exposure disabled).  When
+	// iso > 0 but fstop or shutter are non-positive, logs an error
+	// and returns 0 — the parser is expected to validate these
+	// before reaching the camera constructor, but we keep the
+	// camera-level guard so direct API users get a clean failure
+	// mode instead of a NaN.
+	inline RISE::Scalar ComputeExposureCompensationEV(
+		const RISE::Scalar iso,
+		const RISE::Scalar fstop,
+		const RISE::Scalar shutterSeconds,
+		const char*        cameraTag )
+	{
+		if( iso <= RISE::Scalar( 0 ) ) {
+			return RISE::Scalar( 0 );
+		}
+		if( fstop <= RISE::Scalar( 0 ) || shutterSeconds <= RISE::Scalar( 0 ) ) {
+			RISE::GlobalLog()->PrintEx( RISE::eLog_Error,
+				"%s:: iso > 0 requires fstop > 0 (given %g) and shutter (`exposure`) > 0 (given %g) "
+				"for physical exposure computation.  Falling back to no exposure compensation.",
+				cameraTag, fstop, shutterSeconds );
+			return RISE::Scalar( 0 );
+		}
+		const RISE::Scalar EV100 = std::log2( fstop * fstop * RISE::Scalar( 100 ) / ( iso * shutterSeconds ) );
+		return -std::log2( RISE::Scalar( 1.2 ) ) - EV100;
+	}
+}
 
 void PinholeCamera::Recompute( const unsigned int width, const unsigned int height )
 {
@@ -46,7 +89,7 @@ void PinholeCamera::Recompute( const unsigned int width, const unsigned int heig
 	mxTrans = m3 * m2 * m1;
 }
 
-PinholeCamera::PinholeCamera( 
+PinholeCamera::PinholeCamera(
 	const Point3& vPosition_,			///< [in] Location of the camera in the world
 	const Point3& vLookAt_,				///< [in] A point in the world camera is looking at
 	const Vector3& vUp_,				///< [in] What is considered up in the world
@@ -58,24 +101,29 @@ PinholeCamera::PinholeCamera(
 	const Scalar scanningRate,			///< [in] Scanning rate of the camera
 	const Scalar pixelRate,				///< [in] Pixel rate of the camera
 	const Vector3& orientation_,		///< [in] Orientation (Pitch,Roll,Yaw)
-	const Vector2& target_orientation_	///< [in] Orientation relative to a target
-	) : 
+	const Vector2& target_orientation_,	///< [in] Orientation relative to a target
+	const Scalar iso,					///< [in] Landing 5: ISO sensitivity (0 = disabled)
+	const Scalar fstop					///< [in] Landing 5: f-number (used only for EV; pinhole has no DOF)
+	) :
   CameraCommon(
 	  vPosition_,
-	  vLookAt_, 
+	  vLookAt_,
 	  vUp_,
 	  pixelAR_,
-	  exposure_, 
+	  exposure_,
 	  scanningRate,
 	  pixelRate,
 	  orientation_,
 	  target_orientation_ ),
-  fov( fov_ )
+  fov( fov_ ),
+  iso_( iso ),
+  fstop_( fstop ),
+  evCompensation_( ComputeExposureCompensationEV( iso, fstop, exposure_, "PinholeCamera" ) )
 {
 	Recompute( width, height );
 }
 
-PinholeCamera::PinholeCamera( 
+PinholeCamera::PinholeCamera(
 	const OrthonormalBasis3D& basis,	///< [in] Basis from which to derive basis vectors
 	const Point3& vPosition_,			///< [in] Location of the camera in the world
 	const Scalar fov_,					///< [in] Entire field of view
@@ -84,16 +132,21 @@ PinholeCamera::PinholeCamera(
 	const Scalar pixelAR_,				///< [in] Pixel aspect ratio
 	const Scalar exposure_,				///< [in] Exposure time of the camera
 	const Scalar scanningRate,			///< [in] Scanning rate of the camera
-	const Scalar pixelRate				///< [in] Pixel rate of the camera
-	) : 
+	const Scalar pixelRate,				///< [in] Pixel rate of the camera
+	const Scalar iso,					///< [in] Landing 5: ISO sensitivity (0 = disabled)
+	const Scalar fstop					///< [in] Landing 5: f-number (used only for EV; pinhole has no DOF)
+	) :
   CameraCommon(
 	  vPosition_,
-	  pixelAR_, 
+	  pixelAR_,
 	  exposure_,
 	  scanningRate,
 	  pixelRate
 	  ),
-  fov( fov_ )
+  fov( fov_ ),
+  iso_( iso ),
+  fstop_( fstop ),
+  evCompensation_( ComputeExposureCompensationEV( iso, fstop, exposure_, "PinholeCamera" ) )
 {
 	frame = Frame( basis, vPosition, width, height );
 
@@ -106,6 +159,24 @@ PinholeCamera::PinholeCamera(
 
 PinholeCamera::~PinholeCamera( )
 {
+}
+
+void PinholeCamera::RegenerateData()
+{
+	// Geometric state first (the existing CameraCommon contract:
+	// Recompute() rebuilds the basis matrix from location / lookAt /
+	// up / orientation).
+	CameraCommon::RegenerateData();
+
+	// Landing 5: refresh the photographic exposure cache.  exposureTime
+	// (= shutter T) lives on CameraCommon and is mutable via the
+	// inherited setters and via keyframed EXPOSURE_ID; iso_ and fstop_
+	// live on this class and are mutable via SetIsoStored / SetFstop.
+	// Any of those edits invalidates evCompensation_ — recompute from
+	// current state to keep brightness in sync with motion blur and
+	// DOF.  ComputeExposureCompensationEV is a no-op fallback when
+	// iso_ == 0 (physical exposure disabled).
+	evCompensation_ = ComputeExposureCompensationEV( iso_, fstop_, exposureTime, "PinholeCamera" );
 }
 
 bool PinholeCamera::GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const

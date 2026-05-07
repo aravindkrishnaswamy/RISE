@@ -238,11 +238,13 @@ bool Job::AddPinholeCamera(
 	const double scanningRate,
 	const double pixelRate,
 	const double orientation[3],
-	const double target_orientation[2]
+	const double target_orientation[2],
+	const double iso,
+	const double fstop
 	)
 {
 	ICamera* pCamera = 0;
-	RISE_API_CreatePinholeCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation) );
+	RISE_API_CreatePinholeCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), iso, fstop );
 	const bool ok = pScene->AddCamera( name, pCamera );
 	safe_release( pCamera );
 	return ok;
@@ -260,12 +262,14 @@ bool Job::AddPinholeCameraONB(
 	const double pixelAR,
 	const double exposure,
 	const double scanningRate,
-	const double pixelRate
+	const double pixelRate,
+	const double iso,
+	const double fstop
 	)
 {
 	OrthonormalBasis3D onb = OrthonormalBasis3D( Vector3(ONB_U), Vector3(ONB_V), Vector3(ONB_W) );
 	ICamera* pCamera = 0;
-	RISE_API_CreatePinholeCameraONB( &pCamera, onb, Point3(ptLocation), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate );
+	RISE_API_CreatePinholeCameraONB( &pCamera, onb, Point3(ptLocation), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, iso, fstop );
 	const bool ok = pScene->AddCamera( name, pCamera );
 	safe_release( pCamera );
 	return ok;
@@ -295,11 +299,12 @@ bool Job::AddThinlensCamera(
 	const double tiltX,
 	const double tiltY,
 	const double shiftX,
-	const double shiftY
+	const double shiftY,
+	const double iso
 	)
 {
 	ICamera* pCamera = 0;
-	RISE_API_CreateThinlensCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), sensorSize, focalLength, fstop, focusDistance, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), apertureBlades, apertureRotation, anamorphicSqueeze, tiltX, tiltY, shiftX, shiftY );
+	RISE_API_CreateThinlensCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), sensorSize, focalLength, fstop, focusDistance, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), apertureBlades, apertureRotation, anamorphicSqueeze, tiltX, tiltY, shiftX, shiftY, iso );
 	const bool ok = pScene->AddCamera( name, pCamera );
 	safe_release( pCamera );
 	return ok;
@@ -3668,7 +3673,10 @@ bool Job::ImportGLTFScene(
 					const bool import_cameras,
 					const bool import_normal_maps,
 					const bool lowmem_textures,
-					const double lights_intensity_override
+					const double lights_intensity_override,
+					const double directional_intensity_override,
+					const double point_intensity_override,
+					const double spot_intensity_override
 					)
 {
 	GLTFSceneImporter importer( filename );
@@ -3684,7 +3692,10 @@ bool Job::ImportGLTFScene(
 	opts.importCameras          = import_cameras;
 	opts.importNormalMaps       = import_normal_maps;
 	opts.lowmemTextures         = lowmem_textures;
-	opts.lightsIntensityOverride = lights_intensity_override;
+	opts.lightsIntensityOverride       = lights_intensity_override;
+	opts.directionalIntensityOverride  = directional_intensity_override;
+	opts.pointIntensityOverride        = point_intensity_override;
+	opts.spotIntensityOverride         = spot_intensity_override;
 	return importer.ImportScene( *this, opts );
 }
 

@@ -65,6 +65,28 @@ namespace RISE
 		///         If the pixel rate is infintely fast, returns 0
 		virtual Scalar GetPixelRate( ) const = 0;
 
+		//! Landing 5: photographic exposure compensation in EV stops.
+		//! When the camera is configured with physical photographic
+		//! parameters (ISO, f-number, shutter time), this returns
+		//!   evComp = -log2(1.2) - log2(N² × 100 / (ISO × T))
+		//! per the UE5 / Filament convention where a 100% white
+		//! reflector saturates at scene luminance L = 1.2 × 2^EV100
+		//! cd/m² (matches ISO 12232 saturation-based standard).  The
+		//! value stacks ADDITIVELY into FileRasterizerOutput's
+		//! exposure_compensation parameter on LDR outputs (PNG / JPEG)
+		//! — HDR archival outputs (EXR / RGBE) ignore it to preserve
+		//! "linear radiance ground truth" semantics from Landing 1.
+		//!
+		//! Default 0 = no compensation, which is what cameras
+		//! authored without photographic units return.  Existing
+		//! scenes (every pinhole_camera / thinlens_camera that
+		//! doesn't set `iso > 0`) keep this default and render
+		//! pixel-identically to pre-L5 builds.
+		//!
+		//! Default implementation returns 0; cameras that opt in to
+		//! photographic units override.
+		virtual Scalar GetExposureCompensationEV() const { return Scalar( 0 ); }
+
 		// NOTE on lens sampling: the ICamera vtable intentionally has
 		// NO entry for "generate ray with an externally supplied lens
 		// sample".  Adding one — even appended at the end — would
