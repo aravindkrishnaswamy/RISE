@@ -12,7 +12,8 @@ OIDN denoising).
 It is a selection guide, not a tutorial. Per-parameter behaviour lives
 in [src/Library/Parsers/README.md](../src/Library/Parsers/README.md);
 algorithmic detail lives in [VCM.md](VCM.md), [SMS.md](SMS.md),
-[MLT_POSTMORTEM.md](MLT_POSTMORTEM.md), and the integrator headers
+[MLT_POSTMORTEM.md](MLT_POSTMORTEM.md),
+[MIS_HEURISTICS.md](MIS_HEURISTICS.md), and the integrator headers
 themselves.
 
 ## 1. Two render pipelines
@@ -108,14 +109,14 @@ The ten rasterizer chunks, grouped by algorithm.
 
 | Chunk | Pipeline | Notes |
 |---|---|---|
-| `bdpt_pel_rasterizer` | pure integrator | RGB. Generates eye + light subpaths, connects all (s,t) strategy pairs, MIS-weights via the power heuristic (or optimal MIS). Strong on glossy interreflection and indirect specular. |
+| `bdpt_pel_rasterizer` | pure integrator | RGB. Generates eye + light subpaths, connects all (s,t) strategy pairs, MIS-weights via the **power heuristic (β=2)** — see [MIS_HEURISTICS.md](MIS_HEURISTICS.md). Strong on glossy interreflection and indirect specular. |
 | `bdpt_spectral_rasterizer` | pure integrator | Spectral analogue. **Note: subset of pathguiding params** — does not support `pathguiding_max_light_depth` or `pathguiding_complete_paths`. |
 
 ### VCM (vertex connection and merging)
 
 | Chunk | Pipeline | Notes |
 |---|---|---|
-| `vcm_pel_rasterizer` | pure integrator | RGB. BDPT connection strategies + photon merging in one MIS umbrella. Adds `vc_enabled` / `vm_enabled` switches and `merge_radius` (0 = SPPM-style auto-radius reduction). The right pick whenever caustics carry meaningful energy. See [VCM.md](VCM.md). |
+| `vcm_pel_rasterizer` | pure integrator | RGB. BDPT connection strategies + photon merging in one MIS umbrella, MIS-weighted via the **balance heuristic (β=1)** — architecturally required by the Georgiev 2012 dVCM/dVC/dVM running-quantities recurrence; see [MIS_HEURISTICS.md](MIS_HEURISTICS.md). Adds `vc_enabled` / `vm_enabled` switches and `merge_radius` (0 = SPPM-style auto-radius reduction). The right pick whenever caustics carry meaningful energy. See [VCM.md](VCM.md). |
 | `vcm_spectral_rasterizer` | pure integrator | Spectral analogue. |
 
 ### MLT (Metropolis light transport)
@@ -296,3 +297,6 @@ Two practical considerations:
 - Materials and BSDFs: [MATERIALS.md](MATERIALS.md)
 - BDPT/VCM MIS-balance failure modes:
   [skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)
+- MIS heuristic choice per integrator (power vs balance, why
+  RISE's BDPT/VCM asymmetry matches PBRT/Mitsuba/SmallVCM):
+  [MIS_HEURISTICS.md](MIS_HEURISTICS.md)
