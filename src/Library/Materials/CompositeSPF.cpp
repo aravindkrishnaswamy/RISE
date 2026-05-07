@@ -113,7 +113,19 @@ void CompositeSPF::ProcessTopLayer(
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
 				const RISEPel attenuation = ColorMath::exponential( extinction.GetColor(ri) * (-pathLength) );
 
-				ProcessBottomLayer( my_ri, scat_top[i].kray*importance*attenuation, sampler, scattered, steps+1, ior_stack );
+				// Propagate the IOR stack from the scattered ray into the
+				// recursive walk.  Without this, a refraction that crossed
+				// into the dielectric body (DielectricSPF pushes its IOR
+				// onto a fresh stack on `scat_top[i].ior_stack`) hands the
+				// bottom layer an empty stack, and the next top-side
+				// crossing is then evaluated as if from outside —
+				// computing Fresnel / refraction direction with the wrong
+				// inside/outside flag.  Same convention as the integrators
+				// (see PathTracingIntegrator.cpp's `scat.ior_stack ?
+				// *scat.ior_stack : iorStack`).
+				const IORStack& nextStack = scat_top[i].ior_stack
+					? *scat_top[i].ior_stack : ior_stack;
+				ProcessBottomLayer( my_ri, scat_top[i].kray*importance*attenuation, sampler, scattered, steps+1, nextStack );
 			}
 		}
 	}
@@ -155,7 +167,15 @@ void CompositeSPF::ProcessBottomLayer(
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
 				const RISEPel attenuation = ColorMath::exponential( extinction.GetColor(ri) * (-pathLength) );
 
-				ProcessTopLayer( my_ri, scat_bottom[i].kray*importance*attenuation, sampler, scattered, steps+1, ior_stack );
+				// IOR stack propagation — see ProcessTopLayer's matching
+				// site for the rationale.  A bottom layer that doesn't
+				// touch the stack (Lambertian) leaves scat_bottom[i].ior_stack
+				// null, so we fall back to whatever stack we received,
+				// which still reflects "we're inside the dielectric body"
+				// from the prior top-layer push.
+				const IORStack& nextStack = scat_bottom[i].ior_stack
+					? *scat_bottom[i].ior_stack : ior_stack;
+				ProcessTopLayer( my_ri, scat_bottom[i].kray*importance*attenuation, sampler, scattered, steps+1, nextStack );
 			}
 		}
 	}
@@ -199,7 +219,10 @@ void CompositeSPF::ProcessTopLayerNM(
 				const Scalar extinctionNM = extinction.GetColorNM(ri, nm);
 				const Scalar attenuation = exp( -extinctionNM * pathLength );
 
-				ProcessBottomLayerNM( my_ri, scat_top[i].krayNM*importance*attenuation, sampler, nm, scattered, steps+1, ior_stack );
+				// IOR stack propagation — see ProcessTopLayer (RGB) for rationale.
+				const IORStack& nextStack = scat_top[i].ior_stack
+					? *scat_top[i].ior_stack : ior_stack;
+				ProcessBottomLayerNM( my_ri, scat_top[i].krayNM*importance*attenuation, sampler, nm, scattered, steps+1, nextStack );
 			}
 		}
 	}
@@ -243,7 +266,10 @@ void CompositeSPF::ProcessBottomLayerNM(
 				const Scalar extinctionNM = extinction.GetColorNM(ri, nm);
 				const Scalar attenuation = exp( -extinctionNM * pathLength );
 
-				ProcessTopLayerNM( my_ri, scat_bottom[i].krayNM*importance*attenuation, sampler, nm, scattered, steps+1, ior_stack );
+				// IOR stack propagation — see ProcessBottomLayer (RGB) for rationale.
+				const IORStack& nextStack = scat_bottom[i].ior_stack
+					? *scat_bottom[i].ior_stack : ior_stack;
+				ProcessTopLayerNM( my_ri, scat_bottom[i].krayNM*importance*attenuation, sampler, nm, scattered, steps+1, nextStack );
 			}
 		}
 	}
@@ -256,7 +282,63 @@ void CompositeSPF::Scatter(
 			const IORStack& ior_stack								///< [in/out] Index of refraction stack
 			) const
 {
-	// We do a random walk process between the materials until the rays
+	// Khronos additive composition for upward-emitting top layers.
+	// When the top SPF opts in via UsesAdditiveLayering(), the random
+	// walk is bypassed in favour of:
+	//
+	//   f_combined(wi, wo) = f_top(wi, wo) + f_base(wi, wo) · (1 − topAlbedo)
+	//
+	// where topAlbedo = top.GetLayerAlbedo(ri) is the per-direction
+	// directional albedo of the top lobe.  This is the only correct
+	// composition for sheen-like top layers whose cosine-hemisphere
+	// outgoing rays never reach ProcessBottomLayer in the random
+	// walk: without this branch the base layer is silently dropped
+	// (Landing 6 §"Finding B").  The opt-in is a static property of
+	// the SPF type, NOT a runtime check on `topAlbedo > 0` — a black
+	// sheen texel still needs the additive path with topAlbedo = 0
+	// so the base BRDF/SPF shines through; gating on `topAlbedo > 0`
+	// would silently re-engage the broken random walk for those
+	// texels.  The default ISPF::UsesAdditiveLayering() returns
+	// false, so non-sheen top layers (dielectric, GGX, translucent)
+	// fall through to the historical random walk and behave exactly
+	// as before.
+	if( top.UsesAdditiveLayering() )
+	{
+		const RISEPel topAlbedo = top.GetLayerAlbedo( ri, ior_stack );
+		// Sample the top layer.  Keep only its upward-going rays —
+		// the additive form treats the top lobe as a pure reflective
+		// addition; any below-surface samples it produces are
+		// outside the model and the random walk's "route to base"
+		// path doesn't apply.
+		ScatteredRayContainer scat_top;
+		top.Scatter( ri, sampler, scat_top, ior_stack );
+		for( unsigned int i = 0; i < scat_top.Count(); ++i ) {
+			if( Vector3Ops::Dot( scat_top[i].ray.Dir(), ri.onb.w() ) >= 0 ) {
+				scattered.AddScatteredRay( scat_top[i] );
+			}
+		}
+
+		// Sample the base layer with attenuation `(1 − topAlbedo)`
+		// so the total integrates to topAlbedo + (1 − topAlbedo) ·
+		// E_base ≤ 1 (energy-conserving by construction when both
+		// layers are individually energy-conserving).
+		ScatteredRayContainer scat_base;
+		bottom.Scatter( ri, sampler, scat_base, ior_stack );
+		const RISEPel baseAttenuation = RISEPel( 1, 1, 1 ) - topAlbedo;
+		for( unsigned int i = 0; i < scat_base.Count(); ++i ) {
+			if( Vector3Ops::Dot( scat_base[i].ray.Dir(), ri.onb.w() ) >= 0 ) {
+				scat_base[i].kray = scat_base[i].kray * baseAttenuation;
+				scattered.AddScatteredRay( scat_base[i] );
+			}
+		}
+
+		for( unsigned int i = 0; i < scattered.Count(); ++i ) {
+			scattered[i].ray.origin = ri.ptIntersection;
+		}
+		return;
+	}
+
+	// Default path: random walk between the materials until the rays
 	// either exit the bottom material from the bottom, or exit the
 	// top material from the top
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) <= 0 ) {
@@ -279,7 +361,36 @@ void CompositeSPF::ScatterNM(
 	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
-	// We do a random walk process between the materials until the rays
+	// Spectral mirror of Scatter() — see that function for the rationale
+	// of the additive Khronos composition vs. the random walk fallback.
+	if( top.UsesAdditiveLayering() )
+	{
+		const Scalar topAlbedo = top.GetLayerAlbedoNM( ri, ior_stack, nm );
+		ScatteredRayContainer scat_top;
+		top.ScatterNM( ri, sampler, nm, scat_top, ior_stack );
+		for( unsigned int i = 0; i < scat_top.Count(); ++i ) {
+			if( Vector3Ops::Dot( scat_top[i].ray.Dir(), ri.onb.w() ) >= 0 ) {
+				scattered.AddScatteredRay( scat_top[i] );
+			}
+		}
+
+		ScatteredRayContainer scat_base;
+		bottom.ScatterNM( ri, sampler, nm, scat_base, ior_stack );
+		const Scalar baseAttenuation = Scalar(1) - topAlbedo;
+		for( unsigned int i = 0; i < scat_base.Count(); ++i ) {
+			if( Vector3Ops::Dot( scat_base[i].ray.Dir(), ri.onb.w() ) >= 0 ) {
+				scat_base[i].krayNM *= baseAttenuation;
+				scattered.AddScatteredRay( scat_base[i] );
+			}
+		}
+
+		for( unsigned int i = 0; i < scattered.Count(); ++i ) {
+			scattered[i].ray.origin = ri.ptIntersection;
+		}
+		return;
+	}
+
+	// Default path: random walk between the materials until the rays
 	// either exit the bottom material from the bottom, or exit the
 	// top material from the top
 	if( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) <= 0 ) {
@@ -300,11 +411,25 @@ Scalar CompositeSPF::Pdf(
 	const IORStack& ior_stack
 	) const
 {
-	// The composite SPF uses a random walk between top and bottom layers,
-	// making exact lobe weights impractical to compute analytically.
-	// Equal weighting is the best approximation for this material.
 	const Scalar pdf_top = top.Pdf( ri, wo, ior_stack );
 	const Scalar pdf_bottom = bottom.Pdf( ri, wo, ior_stack );
+
+	if( top.UsesAdditiveLayering() ) {
+		// Additive composition emits BOTH a top-sampled ray and a
+		// base-sampled ray per Scatter call.  The probability that
+		// the composite produces direction `wo` is therefore the SUM
+		// of the per-layer densities — each layer is an independent
+		// sampling strategy and both fire on every call.  Returning
+		// the average (`0.5 · (top + bottom)`) here would
+		// underestimate the composite density by 2× and bias MIS
+		// weights against this strategy in BDPT / guided sampling.
+		return pdf_top + pdf_bottom;
+	}
+
+	// Random walk — multi-bounce path between top and bottom whose
+	// exact density depends on the chain.  Equal weighting is the
+	// pragmatic approximation that matches the prior behaviour for
+	// non-additive composites.
 	return 0.5 * (pdf_top + pdf_bottom);
 }
 
@@ -315,9 +440,12 @@ Scalar CompositeSPF::PdfNM(
 	const IORStack& ior_stack
 	) const
 {
-	// See Pdf() comment — random walk makes exact weights impractical.
 	const Scalar pdf_top = top.PdfNM( ri, wo, nm, ior_stack );
 	const Scalar pdf_bottom = bottom.PdfNM( ri, wo, nm, ior_stack );
+
+	if( top.UsesAdditiveLayering() ) {
+		return pdf_top + pdf_bottom;
+	}
 	return 0.5 * (pdf_top + pdf_bottom);
 }
 

@@ -71,6 +71,38 @@ namespace RISE
 				const Scalar nm,
 				const IORStack& ior_stack
 				) const;
+
+			//! Sheen always wants the Khronos additive composition when
+			//! it is the top layer of a CompositeSPF — the random walk
+			//! never reaches the base for upward-emitting cosine-
+			//! hemisphere sampling.  Returning true unconditionally
+			//! (rather than gating on sheenColor != 0) keeps "black
+			//! sheen" texels behaving as `pure base BRDF` rather than
+			//! silently re-engaging the broken random-walk fallback.
+			bool UsesAdditiveLayering() const override { return true; }
+
+			//! Layer albedo for the Khronos additive sheen-over-base
+			//! composition.  Returns sheenColor · E_sheen(NdotV, α) where
+			//! E_sheen is the directional albedo of the V-cavities Charlie
+			//! BRDF baked into a 2D LUT at first use.
+			RISEPel GetLayerAlbedo(
+				const RayIntersectionGeometric& ri,
+				const IORStack& ior_stack
+				) const override;
+
+			Scalar GetLayerAlbedoNM(
+				const RayIntersectionGeometric& ri,
+				const IORStack& ior_stack,
+				const Scalar nm
+				) const override;
+
+			//! Static LUT lookup exposed for SheenBRDF and CompositeBRDF.
+			//! Returns E_sheen(NdotV, α) ∈ [0, 1] — the directional albedo
+			//! of the V-cavities Charlie BRDF (without sheenColor).  The
+			//! LUT is built lazily on first call (thread-safe via
+			//! function-local-static "magic statics") and is stable across
+			//! runs (deterministic seed).
+			static Scalar AlbedoLookup( Scalar nDotV, Scalar alpha );
 		};
 	}
 }

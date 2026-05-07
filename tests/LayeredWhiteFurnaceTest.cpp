@@ -90,8 +90,32 @@ static const int    NUM_THETA   = sizeof(THETA_DEG) / sizeof(THETA_DEG[0]);
 // something unexpectedly drifts.
 enum AuditPosture
 {
-	kPosturePass,			// Must pass within tolerance.  Failure is a regression.
-	kPostureKnownFailure	// Documented non-conservation; record numbers but don't fail.
+	kPosturePass,				// ρ ≈ 1 within tolerance.  Failure is a regression (gain OR loss).
+	kPostureEnergyConserving,	// ρ ≤ 1 + tolerance.  Lower bound NOT enforced.  Use ONLY
+								// when sub-unity is the legitimate physical signature and
+								// any value below unity is acceptable: V-cavities masking-
+								// shadowing on Charlie sheen dissipates inter-fiber
+								// energy by physical design; the integrated albedo is
+								// determined by the BRDF, not by an external constraint.
+								// **Do NOT use** for configurations where sub-unity is a
+								// known-but-not-PB-correct under-conservation (recursion
+								// budget loss, missing-base-layer composites, etc.) —
+								// those need kPostureRangeCheck or kPostureKnownFailure
+								// so a future regression toward "even darker" is caught.
+	kPostureRangeCheck,			// ρ ∈ [expected - tolerance, expected + tolerance] per angle.
+								// Locks in the current measured behaviour so a regression
+								// in either direction surfaces as a test failure.  Use
+								// for configurations whose ρ is intentionally NOT 1.0
+								// (architectural / under-conservation that the audit
+								// isn't claiming to fully fix) but whose CURRENT numbers
+								// represent a real improvement worth gating.  The
+								// `expectedAlbedo[]` array carries the locked-in baseline.
+	kPostureKnownFailure		// Documented non-conservation; record numbers but don't fail.
+								// Use when even a per-angle baseline would be misleading —
+								// e.g. the configuration is structurally broken (#6 sheen-
+								// over-base composite never invokes the base) and the
+								// numbers will jump to a different regime once the
+								// structural fix lands.
 };
 
 static StubObject* g_stubObject = 0;
@@ -147,17 +171,27 @@ static double DirectionalAlbedo(
 
 	const Vector3 normal = ri.onb.w();
 	double sum = 0;
-	int    validSamples = 0;
 
 	for( int i = 0; i < FURNACE_SAMPLES; ++i )
 	{
 		ScatteredRayContainer scattered;
 		spf.Scatter( ri, sampler, scattered, iorStack );
 
-		if( scattered.Count() == 0 ) continue;
-
+		// Per-sample throughput is the sum of kray over every ray
+		// that actually escapes the upper hemisphere.  A trial that
+		// scatters nothing (Count()==0) or only emits below-surface
+		// rays contributes ZERO — energy that gets absorbed inside
+		// the material or trapped behind a recursion budget is a
+		// real loss and must be visible in the directional-albedo
+		// estimate.  An earlier revision divided by `validSamples`
+		// (trials with at least one upward escape), which made the
+		// test compute  E[throughput | escape]  instead of
+		// E[throughput]  — that conditional mean would let a
+		// regression that drove a layered material toward "very
+		// dark but the few escape paths still under unity" sail past
+		// the energy-conservation gate.  Both numerator and
+		// denominator must see every trial.
 		double sampleContrib = 0;
-		bool   any = false;
 
 		for( unsigned int j = 0; j < scattered.Count(); ++j )
 		{
@@ -169,18 +203,13 @@ static double DirectionalAlbedo(
 			// of measure: delta rays carry an integer fraction
 			// (e.g. F for a perfect mirror); non-delta rays carry
 			// BSDF·cos/pdf which integrates to directional albedo
-			// across many samples.  Summing kray over ALL outgoing
-			// rays from a single Scatter call gives the per-sample
-			// energy throughput; mean across samples is the
-			// directional albedo.  Earlier revision of this test
-			// skipped delta rays and reported ρ=0 for layered
-			// materials whose top layer is a perfect dielectric —
-			// every Scatter walk emerged as a delta ray, so
-			// "skipping delta" zeroed the signal.
+			// across many samples.
 			//
 			// Skip only the reflected-into-substrate hemisphere
 			// (cosWo ≤ 0): those are below-surface paths the
-			// integrator wouldn't propagate.
+			// integrator wouldn't propagate, and they are the
+			// source of the "trapped energy" that the per-sample
+			// zero contribution above is meant to capture.
 			const Vector3 wo = Vector3Ops::Normalize( scat.ray.Dir() );
 			const double cosO = Vector3Ops::Dot( wo, normal );
 			if( cosO <= 0 ) continue;
@@ -193,18 +222,13 @@ static double DirectionalAlbedo(
 			if( kMax >= 0 && kMax < 1e6 )	// guard against NaN / inf
 			{
 				sampleContrib += kMax;
-				any = true;
 			}
 		}
 
-		if( any )
-		{
-			sum += sampleContrib;
-			validSamples++;
-		}
+		sum += sampleContrib;
 	}
 
-	return ( validSamples > 0 ) ? ( sum / validSamples ) : 0.0;
+	return sum / static_cast<double>( FURNACE_SAMPLES );
 }
 
 // ============================================================
@@ -215,9 +239,10 @@ struct ConfigReport
 {
 	std::string  name;
 	AuditPosture posture;
-	double       tolerance;			// 1.0 ± tolerance is the pass band (kPosturePass only)
-	double       albedo[NUM_THETA];	// per-incident-angle directional albedo
-	bool         passed;			// only meaningful when posture == kPosturePass
+	double       tolerance;					// see posture comment for what this gates
+	double       albedo[NUM_THETA];			// per-incident-angle directional albedo
+	double       expectedAlbedo[NUM_THETA];	// per-angle baseline for kPostureRangeCheck
+	bool         passed;					// only meaningful when posture != kPostureKnownFailure
 	std::string  note;
 };
 
@@ -238,6 +263,29 @@ static void Run( ConfigReport& r, ISPF& spf )
 			else if( r.albedo[i] < 1.0 - r.tolerance ) {
 				r.passed = false;
 				if( r.note.empty() ) r.note = "energy loss (regression)";
+			}
+		}
+		else if( r.posture == kPostureEnergyConserving )
+		{
+			// One-sided check: BRDF must not gain energy.  Loss is
+			// allowed (and expected) for the materials in this bucket.
+			if( r.albedo[i] > 1.0 + r.tolerance ) {
+				r.passed = false;
+				if( r.note.empty() ) r.note = "GAIN (regression)";
+			}
+		}
+		else if( r.posture == kPostureRangeCheck )
+		{
+			// Two-sided lock-in around the measured baseline.  Catches
+			// regressions in BOTH directions (gain OR loss) for a
+			// configuration whose physical answer isn't 1.0.
+			if( r.albedo[i] > r.expectedAlbedo[i] + r.tolerance ) {
+				r.passed = false;
+				if( r.note.empty() ) r.note = "above expected band (regression)";
+			}
+			else if( r.albedo[i] < r.expectedAlbedo[i] - r.tolerance ) {
+				r.passed = false;
+				if( r.note.empty() ) r.note = "below expected band (regression)";
 			}
 		}
 		else	// kPostureKnownFailure: record numbers, don't fail
@@ -271,6 +319,12 @@ static void PrintReport( const std::vector<ConfigReport>& rs )
 		}
 		if( r.posture == kPosturePass ) {
 			std::cout << "  " << ( r.passed ? "PASS" : "FAIL" );
+			if( !r.note.empty() ) std::cout << " (" << r.note << ")";
+		} else if( r.posture == kPostureEnergyConserving ) {
+			std::cout << "  " << ( r.passed ? "PASS-EC" : "FAIL" );
+			if( !r.note.empty() ) std::cout << " (" << r.note << ")";
+		} else if( r.posture == kPostureRangeCheck ) {
+			std::cout << "  " << ( r.passed ? "PASS-RC" : "FAIL" );
 			if( !r.note.empty() ) std::cout << " (" << r.note << ")";
 		} else {
 			std::cout << "  KNOWN-FAIL";
@@ -311,6 +365,21 @@ int main()
 	// roughness; 0.5 is broadly representative of fabric assets.
 	UniformColorPainter* sheenR   = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );  sheenR->addref();
 
+	// "Perfect dielectric" scattering value for DielectricSPF.  The
+	// SPF's internal Phong-perturbation gate is `if (scatfunc < 1e6)
+	// perturb` — so any value at or above 1e6 yields true delta
+	// refraction.  Using *zero* here (as an earlier revision of this
+	// test did) silently routes through the perturbation branch with
+	// `alpha = acos(rand)` (uniform-cosine), turning the dielectric
+	// into a wide-cone scatterer and dropping any perturbed-into-front
+	// hemisphere refractions wholesale via DielectricSPF's
+	// `bDielectric = false` guard.  That was the dominant component
+	// of Landing 6's reported 96 % loss for the dielectric/Lambertian
+	// audit configuration before this fix.  Scene-language default for
+	// `dielectric_material.scattering` is "10000" — we use 1e7 to be
+	// unambiguously above the 1e6 perturbation cutoff.
+	UniformColorPainter* perfectScat = new UniformColorPainter( RISEPel( 1e7, 1e7, 1e7 ) );  perfectScat->addref();
+
 	// ---------- Build SPFs ----------
 
 	LambertianSPF* lambertian = new LambertianSPF( *one );  lambertian->addref();
@@ -326,9 +395,12 @@ int main()
 	// Sheen alone.
 	SheenSPF* sheen = new SheenSPF( *one, *sheenR );  sheen->addref();
 
-	// Dielectric "clear coat" with full transmission (tau = 1)
-	// and zero in-volume scattering, IOR 1.5.
-	DielectricSPF* dielectric = new DielectricSPF( *one, *iorPnt, *zero, /*hg*/ false );
+	// Dielectric "clear coat" with full transmission (tau = 1) and a
+	// delta-like scattering exponent (perfectScat = 1e7) so the
+	// refraction is a true perfect-dielectric event, not a Phong-
+	// perturbed cone.  See the perfectScat comment above for why
+	// passing zero would silently break this configuration.
+	DielectricSPF* dielectric = new DielectricSPF( *one, *iorPnt, *perfectScat, /*hg*/ false );
 	dielectric->addref();
 
 	// GGX-only top layer for clearcoat-style composite.
@@ -401,22 +473,49 @@ int main()
 	{ ConfigReport& r = add( "1. GGX-PBR (baseline, Kulla-Conty)", kPosturePass, 0.05, 0 );
 	  Run( r, *ggxPBR ); }
 
-	// 2. Sheen alone (Charlie distribution, no LUT compensation).  KNOWN
-	//    NON-CONSERVING: Charlie's denominator (n.l + n.v - n.l*n.v)
-	//    blows up at grazing without the Heitz-simplified or Zeltner-LTC
-	//    sheen-albedo LUT.  Documented in literature; expected here.
-	{ ConfigReport& r = add( "2. Sheen alone (Charlie, no LUT)", kPostureKnownFailure, 0.0,
-	    "Charlie diverges at grazing; needs LUT compensation" );
+	// 2. Sheen alone (Charlie distribution, V-cavities Λ-based visibility).
+	//    Energy-conserving by construction (Imageworks 2017 / glTF spec):
+	//    G2 ∈ [0, 1] caps the visibility, V is clamped to ≤ 1, and the
+	//    inter-fiber masking dissipates energy below unity.  Sub-unity
+	//    directional albedo IS the physical signature of V-cavities sheen
+	//    on a fuzzy fiber distribution; we assert energy-conservation
+	//    (ρ ≤ 1) and let the lower bound float.  Pre-fix this configuration
+	//    diverged at grazing (ρ(80°) = 8.7 with the Estevez-Kulla form).
+	{ ConfigReport& r = add( "2. Sheen alone (Charlie + V-cavities)", kPostureEnergyConserving, 0.05, 0 );
 	  Run( r, *sheen ); }
 
-	// 3. Composite: dielectric over Lambertian.  KNOWN FAILURE on the
-	//    current CompositeSPF random walk — recursion budget kills most
-	//    diffuse-then-refracted paths before they exit, so the only
-	//    energy that reports out is the dielectric's surface Fresnel.
-	//    First L6 finding the audit produced; the importer's Phase-5
-	//    "skip layering" warning matches this.
-	{ ConfigReport& r = add( "3. Dielectric / Lambertian", kPostureKnownFailure, 0.0,
-	    "CompositeSPF random walk: recursion budget kills below-layer diffuse" );
+	// 3. Composite: dielectric over Lambertian.  Pre-fix this lost ~96 %
+	//    of energy because (a) the test fixture passed scattering=0 to
+	//    DielectricSPF (uniform-Phong perturbation, not delta refraction),
+	//    and (b) CompositeSPF's random walk dropped the IOR stack across
+	//    inter-layer transitions, evaluating the second-pass dielectric
+	//    crossing as if it were entering glass from outside instead of
+	//    exiting from inside.  Both fixed; ρ now bounded by 1 at every
+	//    angle.  A residual ~30-50 % loss remains (ρ(0°) ≈ 0.43): the
+	//    cosine-weighted Lambertian above the substrate sends ~44 % of
+	//    its samples into the TIR cone of the dielectric/air interface,
+	//    and the random walk's `max_recur = 4` budget cuts the resulting
+	//    multi-bounce inter-reflection chain too short to fully release
+	//    that energy.  This is an architectural property of the random-
+	//    walk model, not a bug in the dielectric or the Lambertian; it
+	//    would take A2 (analytic Belcour-style layered BSDF) to close.
+	//
+	//    Posture is kPostureRangeCheck — the current numbers represent
+	//    the post-A.1+A.2 fix and are NOT energy-conserving in the
+	//    "ρ ≈ 1" sense, but they ARE the locked-in regression baseline.
+	//    A future change that pushes ρ further toward zero (regressing
+	//    the IOR-stack-propagation fix, for example) would slip past a
+	//    one-sided ρ ≤ 1 + tol gate; the two-sided range check catches
+	//    it.  Expected values below are the measured baseline at FURNACE_
+	//    SAMPLES = 100000 (RNG seed-independent within MC noise of ~3e-3).
+	//    Tolerance 0.05 absolute leaves ~16σ of headroom for noise while
+	//    catching >5 pp regressions in either direction.
+	{ ConfigReport& r = add( "3. Dielectric / Lambertian", kPostureRangeCheck, 0.05,
+	    "TIR-cone+recursion-budget under-conservation, see comment" );
+	  r.expectedAlbedo[0] = 0.428;	// θ = 0°
+	  r.expectedAlbedo[1] = 0.429;	// θ = 30°
+	  r.expectedAlbedo[2] = 0.458;	// θ = 60°
+	  r.expectedAlbedo[3] = 0.635;	// θ = 80°
 	  Run( r, *compDielLamb ); }
 
 	// 4. Composite: GGX top over Lambertian (clearcoat-style).  Top
@@ -440,11 +539,27 @@ int main()
 	{ ConfigReport& r = add( "5. GGX / GGX-PBR (clearcoat over PBR)", kPosturePass, 0.06, 0 );
 	  Run( r, *compGgxPbr ); }
 
-	// 6. Composite: Sheen top over GGX-PBR base.  Tracks the standalone-
-	//    sheen failure mode at grazing; KNOWN FAILURE for the same
-	//    reason (Charlie's grazing divergence).
-	{ ConfigReport& r = add( "6. Sheen / GGX-PBR (sheen over PBR)", kPostureKnownFailure, 0.0,
-	    "sheen-over-PBR inherits sheen's Charlie grazing divergence" );
+	// 6. Composite: Sheen top over GGX-PBR base.  Pre-fix this was
+	//    KNOWN-FAILURE — CompositeSPF's random walk only delegated to
+	//    the base when the top emitted a downward ray, but SheenSPF's
+	//    cosine-hemisphere sampling always emits UP, so ggxPBR was
+	//    never evaluated and the composite collapsed to standalone
+	//    sheen (numbers tracked config #2 within MC noise).
+	//
+	//    Closed via the Khronos additive composition in
+	//    CompositeSPF::Scatter (and CompositeBRDF for direct lighting):
+	//
+	//      f_combined = f_sheen + f_base · (1 − sheenColor · E_sheen)
+	//
+	//    where E_sheen is the sheen-BRDF directional albedo from the
+	//    LUT exposed via SheenSPF::AlbedoLookup.  The composite now
+	//    invokes BOTH layers per Scatter call: the top's natural
+	//    sheen response plus the attenuated base's response.  With
+	//    white inputs throughout, ρ ≈ 1 at every angle (the base's
+	//    GGX-PBR Kulla-Conty over-correction shows through unchanged
+	//    because the sheen lobe's sub-unity albedo leaves room for
+	//    it).  Tolerance 5 % matches config #1.
+	{ ConfigReport& r = add( "6. Sheen / GGX-PBR (sheen over PBR)", kPosturePass, 0.05, 0 );
 	  Run( r, *compSheenPbr ); }
 
 	PrintReport( reports );
@@ -471,6 +586,7 @@ int main()
 	safe_release( sheen );
 	safe_release( ggxPBR );
 	safe_release( lambertian );
+	safe_release( perfectScat );
 	safe_release( sheenR );
 	safe_release( alpha );
 	safe_release( iorPnt );

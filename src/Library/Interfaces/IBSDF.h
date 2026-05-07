@@ -79,6 +79,49 @@ namespace RISE
 		{
 			return RISEPel( 1.0, 1.0, 1.0 );
 		}
+
+		/// Opt-in for the Khronos additive layered BRDF composition.
+		/// Returns true on BRDFs that need `CompositeBRDF::value` to
+		/// evaluate `f_combined = f_top + f_base · (1 − topAlbedo)`
+		/// instead of just `f_top`.  Static property of the BRDF type;
+		/// must agree with the matching SPF's `UsesAdditiveLayering()`
+		/// so direct lighting (NEE) and forward sampling (Scatter)
+		/// take the same code path per-vertex.
+		///
+		/// Default: false.  See ISPF::UsesAdditiveLayering for the
+		/// full rationale (including why the gate is a separate flag,
+		/// not "GetLayerAlbedo > 0": a black-sheen texel still needs
+		/// additive composition with topAlbedo=0 so the base shines
+		/// through, not the random-walk fallback that would drop it).
+		virtual bool UsesAdditiveLayering() const { return false; }
+
+		/// Per-direction directional albedo for additive layered BRDF
+		/// composition.  Used by `CompositeBRDF::value` when
+		/// `UsesAdditiveLayering()` is true.  Mirror of
+		/// `ISPF::GetLayerAlbedo` on the BRDF side; both interfaces
+		/// must agree on the same E_sheen(NdotV, α) per material so
+		/// SPF (forward sampling) and BRDF (light sampling) MIS
+		/// remain consistent.
+		///
+		/// Default: `RISEPel(0,0,0)`.  Override only when
+		/// UsesAdditiveLayering() is also overridden to true.
+		///
+		/// Constraint: values MUST be in [0, 1] per channel.
+		virtual RISEPel GetLayerAlbedo(
+			const RayIntersectionGeometric& /*ri*/
+			) const
+		{
+			return RISEPel( 0, 0, 0 );
+		}
+
+		/// Spectral variant of GetLayerAlbedo.
+		virtual Scalar GetLayerAlbedoNM(
+			const RayIntersectionGeometric& /*ri*/,
+			const Scalar /*nm*/
+			) const
+		{
+			return 0;
+		}
 	};
 }
 

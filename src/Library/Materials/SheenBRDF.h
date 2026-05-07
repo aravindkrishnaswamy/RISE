@@ -64,6 +64,20 @@ namespace RISE
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
+
+			//! Mirror of SheenSPF::UsesAdditiveLayering — must be true
+			//! for any sheen surface so direct lighting (NEE) and
+			//! forward sampling agree per-vertex.
+			bool UsesAdditiveLayering() const override { return true; }
+
+			//! Layer albedo for the Khronos additive sheen-over-base
+			//! composition.  Mirrors SheenSPF::GetLayerAlbedo so direct
+			//! lighting via CompositeBRDF and forward sampling via
+			//! CompositeSPF agree on the same per-direction attenuation
+			//! factor.  Both use the LUT exposed via
+			//! `SheenSPF::AlbedoLookup`.
+			virtual RISEPel GetLayerAlbedo( const RayIntersectionGeometric& ri ) const override;
+			virtual Scalar GetLayerAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm ) const override;
 		};
 	}
 }

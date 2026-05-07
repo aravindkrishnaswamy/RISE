@@ -187,7 +187,7 @@ that builds on the foundation.
 | 3 | Spectral upsampling (Jakob-Hanika) + spectral Hosek-Wilkie sun-and-sky | Spectral | No | IMPROVEMENTS.md #11 | TODO |
 | 4 | Per-light-type intensity override (drop unit-blind override) | Lights | Minor | None | **DONE** (Group A bundle) |
 | 5 | Physical camera model (ISO + fstop + shutter → EV stack into LDR outputs) | Camera | No (additive) | 1 | **DONE — minimal variant** (Group A bundle).  No new chunk; ISO is opt-in on existing `pinhole_camera` / `thinlens_camera`.  Realistic-camera (lens-element ray tracing) is a separate future landing. |
-| 6 | Layered material energy-conservation audit | Materials | No | None | **PARTIAL — audit shipped**.  [tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp) covers 7 configs.  Two critical findings (dielectric/Lambertian recursion loss, sheen Charlie grazing divergence) flagged as KNOWN-FAIL; the compensation work for each is its own future landing.  Detailed disposition in §"Landing 6" below. |
+| 6 | Layered material energy-conservation audit | Materials | No | None | **PARTIAL**.  [tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp) covers 7 configs.  Audit + five targeted fixes shipped (test-fixture scattering, CompositeSPF IOR-stack propagation, Charlie V-cavities Λ visibility, unbiased directional-albedo estimator, Khronos additive sheen-over-base composition with directional-albedo LUT).  Test exits zero with 5 PASS / 1 PASS-EC / 1 PASS-RC / 0 KNOWN-FAIL.  One structural limitation remains open: dielectric/Lambertian under-conserves at non-grazing angles (~30-50 % loss is the random-walk × finite-recursion product); a two-sided range-check posture locks in the current improvement.  A2 (analytic Belcour-style layered BSDF) is the principled closure for that gap and the long-term direction.  Detailed disposition in §"Landing 6" below. |
 | 6 | Energy-conservation audit on layered material composition | Materials | Maybe | None |
 | 7 | `KHR_materials_specular` (real F0 + tint) | Materials | Yes (PBR mat params) | 6 |
 | 8 | Anisotropy material parameter (BRDF already supports it) | Materials | Yes (PBR mat params) | 6 |
@@ -597,64 +597,234 @@ Out:
 
 ---
 
-## Landing 6 — Layered material energy-conservation audit [PARTIAL — audit shipped]
+## Landing 6 — Layered material energy-conservation audit [PARTIAL]
 
-**Audit scaffolding shipped.**  [tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp)
-drives every L7-L11-relevant layered configuration through a Monte-
-Carlo furnace test and reports the directional albedo `ρ(θ_i) =
-E[Σ_j kray_j]` at θ ∈ {0°, 30°, 60°, 80°}.  Per-config posture
-(`kPosturePass` vs `kPostureKnownFailure`) keeps the test useful for
-regression catching while documenting limitations whose fix is its
-own future landing.  Test exits 0 today; any drift will surface as
-a regression.
+**Audit shipped + five targeted fixes landed.**  One architectural
+limitation of the random-walk `CompositeSPF` model remains: the
+dielectric/Lambertian path under-conserves at non-grazing angles
+(~30-50 % loss is the geometric reality of Lambertian samples
+landing in the dielectric/air TIR cone × the random walk's finite
+recursion budget).  A two-sided range-check posture (#3) locks in
+the post-fix improvement so a future regression toward darkness
+fails the audit.  A2 (Belcour-style analytic layered BSDF) is the
+principled long-term closure; it isn't a hard prerequisite for
+L7-L11.
 
-**Compensation work NOT yet shipped — split into focused follow-up
-landings based on what the audit found.**  Three findings rank-ordered
-by impact on the L7-L11 landings:
+Four audit posture buckets:
+
+- `kPosturePass` — ρ ≈ 1 ± tolerance (two-sided).  The default
+  for energy-conserving materials.
+- `kPostureEnergyConserving` — ρ ≤ 1 + tolerance (one-sided, no
+  lower bound).  Used **only** when sub-unity is the legitimate
+  physical signature: V-cavities masking-shadowing on Charlie
+  sheen dissipates inter-fiber energy by design, and the BRDF
+  itself determines the integrated albedo.  **Not a fallback** for
+  configurations that under-conserve due to architectural
+  limitations — those need a two-sided gate so the audit catches
+  further regression.
+- `kPostureRangeCheck` — ρ ∈ [expected − tolerance, expected +
+  tolerance] per angle.  Locks in the current measured behaviour
+  with a per-angle baseline so a regression in either direction
+  surfaces as a test failure.  Used for configurations whose
+  physical answer isn't 1.0 but whose CURRENT numbers represent a
+  real improvement worth gating (#3 dielectric / Lambertian).
+- `kPostureKnownFailure` — documented non-conservation; record
+  numbers, don't fail.  Reserved for future structurally broken
+  cases whose numbers would jump to a different regime once a
+  structural fix lands; nothing in this bucket today.
+
+Estimator note: `DirectionalAlbedo()` divides by the total trial
+count (`FURNACE_SAMPLES`), not by "trials with at least one
+upward escape".  A trial that scatters nothing or only emits
+below-surface rays contributes zero to the numerator — energy
+absorbed inside the material or trapped behind a recursion budget
+is a real loss and must show up in the directional-albedo number.
+The earlier conditional-mean form would have let a regression that
+drove a layered material toward "very dark, but the few escape
+paths still under unity" pass the energy-conservation gate.
+
+Test reproducibility: the per-trial RNG is deterministic, so all
+audit numbers are bit-identical across runs.  This lets
+`kPostureRangeCheck` use a tight ±0.05 absolute tolerance without
+false-positive risk; the band is sized for ~16σ of MC noise
+headroom while still catching >5 pp regressions.
 
 ### Audit results (FURNACE_SAMPLES = 100,000 per (config, angle))
 
 | # | Configuration | ρ(0°) | ρ(30°) | ρ(60°) | ρ(80°) | Disposition |
 |---|---|---|---|---|---|---|
-| 0 | Lambertian alone (sanity) | 1.0000 | 1.0000 | 1.0000 | 1.0000 | PASS @ 1% — methodology confirmed |
-| 1 | GGX-PBR (schlick_f0, α=0.16) | 1.016 | 1.015 | 1.020 | 1.032 | PASS @ 5% — Kulla-Conty over-corrects ~1-3 % at moderate roughness; matches pbrt-v4 furnace tolerance |
-| 2 | Sheen alone (Charlie, no LUT) | 0.252 | 0.394 | **1.456** | **8.725** | KNOWN-FAIL — Charlie's `n·l + n·v − n·l·n·v` denominator diverges at grazing.  Needs sheen-albedo LUT (Heitz simplified or Zeltner-LTC). |
-| 3 | Composite: dielectric / Lambertian | **0.040** | **0.042** | **0.089** | 0.388 | KNOWN-FAIL — `CompositeSPF` random walk exits with the dielectric's surface-Fresnel only.  Below-layer diffuse paths get clipped by the recursion budget (`kMaxRecur = 4`, `kMaxDiffuseRecur = 2`).  This is the catastrophic loss the importer's Phase-5 warning flagged.  Needs the random-walk's recursion accounting redesigned, OR replacement with a proper analytic layered-BSDF (Belcour 2018 / Heitz 2017 LTC-Layered). |
-| 4 | Composite: GGX / Lambertian | 1.025 | 1.027 | 1.036 | 1.051 | PASS @ 6% — non-delta GGX top doesn't trigger the recursion-loss path; gain matches GGX baseline + a tiny systematic walk bias |
-| 5 | Composite: GGX / GGX-PBR (clearcoat over PBR) | 1.025 | 1.026 | 1.036 | 1.052 | PASS @ 6% — **the importer's "near-black" warning does NOT reproduce here** with white inputs.  May be a coloured-F0 / low-metallic regime; worth re-investigating in the Phase-5 layered-material work. |
-| 6 | Composite: Sheen / GGX-PBR | 0.249 | 0.402 | **1.448** | **8.867** | KNOWN-FAIL — inherits #2's grazing divergence.  Once #2 is fixed (sheen-albedo LUT), #6 should follow without additional work. |
+| 0 | Lambertian alone (sanity) | 1.0000 | 1.0000 | 1.0000 | 1.0000 | **PASS** @ 1 % — methodology confirmed |
+| 1 | GGX-PBR (schlick_f0, α=0.16) | 1.004 | 1.001 | 1.002 | 1.008 | **PASS** @ 5 % — Kulla-Conty over-corrects under 1 % at moderate roughness; matches pbrt-v4 furnace tolerance.  (Earlier conditional-mean estimator over-stated this gain at 1-3 %.) |
+| 2 | Sheen alone (Charlie + V-cavities) | 0.087 | 0.120 | 0.221 | 0.342 | **PASS-EC** @ 5 % — V-cavities masking-shadowing dissipates inter-fiber energy by physical design; sub-unity directional albedo IS the Imageworks 2017 / glTF-Sample-Renderer signature.  Pre-fix this configuration diverged at grazing (ρ(80°) = 8.7 with Ashikhmin-Neubelt). |
+| 3 | Composite: dielectric / Lambertian | 0.428 | 0.429 | 0.458 | 0.635 | **PASS-RC** ±0.05 — ρ now bounded everywhere (was 0.04 / 0.04 / 0.09 / 0.39 pre-fix), and the per-angle baseline is locked in so any future regression toward darkness fails the audit.  Residual ~30-50 % loss at non-grazing angles is the random-walk model's geometric reality: Lambertian samples land in the dielectric/air interface's TIR cone ~44 % of the time at normal incidence, and the `max_recur = 4` budget cuts the resulting multi-bounce inter-reflection chain too short to fully release that energy.  Architectural property of the random-walk composite; the loss is real and the estimator captures it (trapped samples contribute zero).  A2 would close the gap. |
+| 4 | Composite: GGX / Lambertian | 1.001 | 1.001 | 1.001 | 1.006 | **PASS** @ 6 % — non-delta GGX top doesn't trigger any recursion-loss path; ρ now sits within MC noise of unity. |
+| 5 | Composite: GGX / GGX-PBR (clearcoat over PBR) | 1.001 | 1.000 | 1.000 | 1.008 | **PASS** @ 6 % — clearcoat-over-PBR is energy-conserving with white inputs.  The importer's Phase-5 "near-black" warning still does NOT reproduce here; that warning may describe a different parameter regime (coloured F0?  low metallic?) and is tracked as Finding D below. |
+| 6 | Composite: Sheen / GGX-PBR | 1.005 | 0.998 | 0.996 | 1.004 | **PASS** @ 5 % — closed via Khronos additive composition.  CompositeSPF (and CompositeBRDF) detect a sheen-style top via `top.UsesAdditiveLayering()` (a static type-level opt-in, true on Sheen and false elsewhere) and switch to `f_combined = f_sheen + f_base · (1 − sheenColor · E_sheen(NdotV, α))`, where E_sheen is the directional albedo of the V-cavities Charlie BRDF baked into a 32×32 LUT at process startup.  Pre-fix this was KNOWN-FAIL (composite collapsed to standalone sheen because the random walk never invoked the base for upward-emitting top lobes). |
 
-### Findings, in priority order
+### Findings — partially closed
 
-**Finding A — Catastrophic dielectric/Lambertian loss (#3).**  Most
-critical: this is the canonical "thin coat over diffuse paint"
-pattern the importer was supposed to use.  The current
-`CompositeSPF` random walk loses ~96% of energy at normal incidence
-because dielectric refractions emerge as delta rays whose recursion
-budget collapses before the diffuse below-layer scattering bubbles
-out.  Two paths forward, both significant landings:
-  - **A1 — Patch the random walk's recursion accounting** so
-    delta-mediated paths to the bottom layer don't fall under the
-    same budget as diffuse-recursion.  Smaller intervention; keeps
-    the existing model.  Risk: doesn't close all loss, may surface
-    different artefacts.
-  - **A2 — Replace with an analytic layered BSDF** (Belcour 2018
-    "Efficient Rendering of Layered Materials" or Heitz et al. 2017
-    LTC-Layered).  Larger refactor; produces cleaner BRDF
-    semantics; integrates with the L7-L11 layer extensions (sheen,
-    clearcoat, iridescence) more naturally.
+**Finding A — Composite dielectric/Lambertian (#3).  PARTIAL —
+test-fixture + IOR-stack-propagation fixes landed; ~30-50 %
+residual under-conservation requires A2 to close.**
 
-**Finding B — Sheen at grazing diverges (#2, #6).**  Documented in
-the literature; expected.  Fix is mechanical: precompute and
-sample the sheen-albedo LUT at material construction time (~1 day
-of work, well-defined reference impl available).
+Two contributing root causes:
 
-**Finding C — GGX baseline gains 1-3% via Kulla-Conty over-
+1. *Test fixture mis-configured.*  `LayeredWhiteFurnaceTest.cpp`
+   constructed the dielectric with `scattering = *zero` painter, but
+   RISE's [DielectricSPF.cpp:128](../src/Library/Materials/DielectricSPF.cpp:128)
+   gates Phong-perturbation as `if (scatfunc < 1e6) perturb`, with
+   higher values producing a sharper (delta-like) refraction.  The
+   parser default for `dielectric_material.scattering` is `"10000"`
+   ([AsciiSceneParser.cpp:2480](../src/Library/Parsers/AsciiSceneParser.cpp:2480));
+   reference scene `dielectrics_changing_scat.RISEscene` confirms
+   the convention.  `scattering = 0` means UNIFORM-COSINE
+   perturbation — the dielectric's "refracted" ray was being
+   randomly perturbed wholesale, with `bDielectric = false` dropping
+   any perturbed-into-front-hemisphere outcome
+   ([DielectricSPF.cpp:141](../src/Library/Materials/DielectricSPF.cpp:141)).
+   This was the dominant component of the catastrophic 96 % loss.
+   Fixed by passing `scattering = 1e7` (unambiguously above the
+   1e6 cutoff) — see the inline `perfectScat` painter.
+
+2. *CompositeSPF dropped the IOR stack across inter-layer
+   transitions.*  `ProcessTopLayer` and its three sibling sites
+   recursed into `ProcessBottomLayer` (and back) passing the
+   ORIGINAL `ior_stack` parameter rather than the scattered ray's
+   own `ior_stack` member.  When DielectricSPF refracted INTO the
+   substrate it allocated `dielectric.ior_stack = new IORStack(...)`
+   with the dielectric's IOR pushed; the random walk dropped that
+   modification.  The next top-side crossing then saw an empty
+   stack, set `bFromInside = false`, and computed Fresnel /
+   refraction direction as if entering glass from outside instead
+   of exiting from inside.  Fixed in [CompositeSPF.cpp](../src/Library/Materials/CompositeSPF.cpp)
+   at all four sites with the standard `scat.ior_stack ?
+   *scat.ior_stack : ior_stack` pattern (matches the integrators —
+   see [PathTracingIntegrator.cpp:1863](../src/Library/Shaders/PathTracingIntegrator.cpp:1863)).
+
+Combined effect: ρ(0°) went from 0.040 to 0.428 (10× improvement).
+The residual ~30-50 % under-conservation is an architectural
+property of the random-walk model + finite recursion budget — the
+TIR cone at the dielectric/air interface bounces ~44 % of
+Lambertian-sampled rays back down, and `max_recur = 4` doesn't run
+that chain to convergence.  Closing this last gap requires A2
+(Belcour-style analytic layered BSDF), which would be its own
+multi-week landing.  We accept the residual under-conservation as
+the documented physical signature of the current composite model.
+
+**Finding B — Sheen at grazing (#2) and sheen-over-base composite
+(#6).  CLOSED via V-cavities Λ visibility on the BRDF and Khronos
+additive composition on the layered material.**
+
+The Ashikhmin-Neubelt analytic V form
+`V = 1 / (4·(NdotL+NdotV-NdotL·NdotV)·NdotL·NdotV)` was producing
+unbounded directional albedo at grazing (ρ(80°) = 8.7) because the
+extra `· NdotL · NdotV` denominator factor — claimed in the prior
+comment as the Khronos form, but actually NOT in the glTF spec —
+diverges as either cosine approaches zero.
+
+Replaced with the V-cavities masking-shadowing for the Charlie
+distribution per Estevez-Kulla 2017 ("Production Friendly
+Microfacet Sheen BRDF", §4):
+
+  V(ω_o, ω_i) = clamp(G2 / (4·NdotL·NdotV), 0, 1)
+  G2 = 1 / ((1 + Λ(NdotV)) · (1 + Λ(NdotL)))
+
+with the analytic 5-term polynomial fit for Λ(x, α) interpolated by
+(1-α)² between the smooth (α=0) and rough (α=1) operating points.
+Same form shipped in glTF-Sample-Renderer and pbrt-v4.
+
+Edits in [SheenBRDF.cpp](../src/Library/Materials/SheenBRDF.cpp) and
+[SheenSPF.cpp](../src/Library/Materials/SheenSPF.cpp) (the two files
+keep their D / V helpers in lock-step by design — replicated math, not
+a shared header, to avoid a circular include).
+
+Energy-conservation now structural for *standalone* sheen: G2 ∈
+[0, 1] caps the visibility, and the per-sample V is clamped at 1.
+Audit confirms ρ ≤ 1 at every angle for config #2.
+
+**Sheen-over-base composite — Khronos additive composition.**
+The V-cavities switch alone wasn't enough for #6 (sheen over GGX-
+PBR): CompositeSPF's random walk only routes top-layer scattered
+rays to the base when they go DOWN, but SheenSPF always emits
+cosine-hemisphere samples going UP, so the base was never
+invoked.  Closed by adding the Khronos KHR_materials_sheen
+additive composition:
+
+  f_combined(wi, wo) = f_top(wi, wo) + f_base(wi, wo) · (1 − sheenColor · E_sheen(NdotV, α))
+
+where E_sheen is the V-cavities Charlie directional albedo,
+baked once at process startup into a 32×32 LUT (μ_v × α) via
+deterministic Monte-Carlo integration.  Lookup is bilinear; build
+cost is ~0.1 s and bit-stable across runs.
+
+The composition opt-in is via TWO new virtual methods on each of
+[ISPF](../src/Library/Interfaces/ISPF.h) and
+[IBSDF](../src/Library/Interfaces/IBSDF.h):
+
+- `bool UsesAdditiveLayering() const` — the GATE.  Static
+  type-level property, default `false`.  Sheen overrides to
+  `return true` unconditionally.  CompositeSPF / CompositeBRDF
+  use this — and ONLY this — to decide between additive
+  composition and the random-walk fallback.
+- `RISEPel GetLayerAlbedo(...)` — the VALUE.  Per-direction
+  directional albedo `sheenColor · E_sheen(NdotV, α)` from the
+  LUT.  Used inside the additive branch to compute the base-
+  attenuation factor `(1 − topAlbedo)`.
+
+Splitting the gate from the value matters: a sheen texel with
+`sheenColor = 0` returns `topAlbedo = (0,0,0)` from the value
+method, but the gate is still `true`, so the additive path runs
+with `f_combined = 0 + base · 1 = base` — pure base BRDF/SPF.
+An earlier revision gated on `topAlbedo > 0` and silently fell
+through to the broken random-walk fallback for those texels,
+dropping the base.
+
+CompositeBRDF is a new wrapper class defined inline in
+[CompositeMaterial.h](../src/Library/Materials/CompositeMaterial.h)
+so direct lighting (NEE) and forward sampling (Scatter) agree on
+the same per-vertex composition.  Without it, NEE would still see
+only the top BRDF — the SPF fix would be half-complete.
+
+CompositeSPF::Pdf / PdfNM also branch on UsesAdditiveLayering: the
+additive path emits BOTH a top-sampled and a base-sampled ray per
+Scatter call, so the joint sampling density is `pdf_top + pdf_bottom`
+(sum, not average — averaging would understate the strategy's
+density by 2× and bias MIS weights against it).  The random-walk
+fallback keeps the legacy `0.5 · (top + bottom)` approximation.
+
+SheenBRDF::albedo returns the LUT-scaled directional reflectance
+(same value as `GetLayerAlbedo`) rather than raw sheenColor, so
+the OIDN albedo AOV is in [0, 1] per channel and CompositeBRDF's
+additive `topA + (1 − topL)·baseA` formula stays energy-bounded.
+
+LUT machinery lives in [SheenSPF.cpp](../src/Library/Materials/SheenSPF.cpp)
+behind a `static SheenSPF::AlbedoLookup(μ, α)` entrypoint that both
+SheenSPF and SheenBRDF call.  No new files.
+
+**Visual implication for existing scenes.**  V-cavities is more
+conservative than Ashikhmin-Neubelt by physical design — at
+sheen_roughness = 0.5 and θ_v = 80°, the new directional albedo
+is ~25× lower than the prior (non-PB) form.  Standalone sheen
+scenes (e.g. [scenes/Tests/Materials/sheen.RISEscene](../scenes/Tests/Materials/sheen.RISEscene))
+render visibly dimmer.  This is the canonical PB signature
+(matches glTF-Sample-Renderer / pbrt-v4 reference output) and is
+load-bearing for energy conservation: a sheen lobe that captures
+~30 % of incident light at grazing leaves ~70 % to pass through
+to the base, which is the Khronos additive composition's whole
+point.
+
+### Findings — open
+
+**Finding C — GGX baseline gains under 1 % via Kulla-Conty over-
 correction (#1, #4, #5).**  Within tolerance and matches pbrt-v4 /
 Mitsuba behaviour at the same parameter regime; not blocking.
 Could be tightened by switching to the Turquin 2019 or Hoffman
 2023 multi-scatter compensation, but the gain is small and the
-existing pbrt-v4-faithful behaviour is acceptable.
+existing pbrt-v4-faithful behaviour is acceptable.  Note: under
+the prior conditional-mean estimator this gain looked like 1-3 %;
+the unbiased estimator landed in this commit reveals it's actually
+under 1 %, so this finding is even less urgent than previously
+recorded.
 
 **Finding D — Importer's Phase-5 warning does NOT reproduce on
 GGX/GGX-PBR with white inputs (#5).**  The catastrophic "near-
@@ -664,6 +834,13 @@ metallic with specific roughness?) or has been silently fixed by
 unrelated changes since the warning was authored.  Worth re-
 investigating before unblocking the layered-clearcoat-over-PBR
 plumbing (still gated under `#if 0` at the same call site).
+
+**Finding E — (formerly: sheen-over-base composite collapses).
+CLOSED via Khronos additive composition** — see Finding B above
+for the implementation summary.  Sheen-layered importer plumbing
+([GLTFSceneImporter.cpp:865 `#if 0`](../src/Library/Importers/GLTFSceneImporter.cpp:865))
+can be unblocked once L7-L9 (single-layer extensions) ship; the
+base layer is now correctly engaged via the additive form.
 
 ### Disposition for L7-L11
 
@@ -675,13 +852,11 @@ The audit's findings unblock most of L7-L11 with caveats:
 - **L9 (KHR_materials_iridescence):** unblocked.  Iridescence is
   a Fresnel modifier, not a layer; energy comes from the Belcour-
   Barla formula directly.
-- **L10 (clearcoat / sheen / transmission textures):** PARTIALLY
-  blocked.  Clearcoat textures need the layered-PBR composite to
-  be wired (importer's `#if 0`), which depends on Finding A's
-  resolution.  Sheen textures additionally need Finding B's LUT
-  compensation to render correctly at grazing — without it, every
-  sheen asset shows the 8× grazing blow-up.  Transmission
-  textures are independent (single-layer dielectric).
+- **L10 (clearcoat / sheen / transmission textures):** unblocked.
+  Clearcoat-over-PBR (#5) and sheen-over-PBR (#6) both ship as
+  PASS in the audit, the latter via the Khronos additive
+  composition closed under Finding B.  Transmission is
+  single-layer dielectric and independent.
 - **L11 (KHR_materials_volume):** unblocked.  Beer-Lambert through
   a single-layer dielectric; doesn't traverse the random walk.
 

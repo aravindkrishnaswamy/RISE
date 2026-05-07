@@ -213,6 +213,55 @@ namespace RISE
 		{
 			return -1;
 		}
+
+		/// Opt-in for the Khronos additive layered composition.  Returns
+		/// true on SPFs that need the composite to do
+		///     f_combined = f_top + f_base · (1 − topAlbedo)
+		/// instead of the random walk — namely upward-emitting non-delta
+		/// lobes (sheen) where the random walk can't route the top's
+		/// cosine-hemisphere samples to the base.
+		///
+		/// Default: false (use the random walk).  This is a STATIC
+		/// property of the SPF type — not a per-pixel runtime decision —
+		/// so a sheen with sheenColor = 0 still goes through the additive
+		/// path with topAlbedo = 0, which correctly reduces the composite
+		/// to the pure base BRDF/SPF.  Tying the gate to GetLayerAlbedo's
+		/// runtime value would silently drop the base whenever a texel
+		/// happened to evaluate to zero, since the random-walk fallback
+		/// can't reach the base for upward-emitting tops at all.
+		virtual bool UsesAdditiveLayering() const { return false; }
+
+		/// Per-direction directional albedo for additive layered
+		/// composition.  When this SPF is the TOP layer of a
+		/// `CompositeSPF` AND `UsesAdditiveLayering()` is true, the
+		/// composite uses the returned value to attenuate the BASE
+		/// layer's contribution: `f_combined = f_top + f_base · (1 −
+		/// topAlbedo)`.
+		///
+		/// Default: `RISEPel(0,0,0)` — meaningless when
+		/// UsesAdditiveLayering() returns false.  Override only when
+		/// UsesAdditiveLayering() is also overridden to true.
+		///
+		/// Constraint: the returned albedo MUST be in [0, 1] per channel
+		/// — values above unity would produce negative base attenuation
+		/// in the composite, breaking energy conservation.
+		virtual RISEPel GetLayerAlbedo(
+			const RayIntersectionGeometric& /*ri*/,
+			const IORStack& /*ior_stack*/
+			) const
+		{
+			return RISEPel( 0, 0, 0 );
+		}
+
+		/// Spectral variant of GetLayerAlbedo.
+		virtual Scalar GetLayerAlbedoNM(
+			const RayIntersectionGeometric& /*ri*/,
+			const IORStack& /*ior_stack*/,
+			const Scalar /*nm*/
+			) const
+		{
+			return 0;
+		}
 	};
 }
 
