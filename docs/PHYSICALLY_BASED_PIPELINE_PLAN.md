@@ -187,7 +187,9 @@ that builds on the foundation.
 | 3 | Spectral upsampling (Jakob-Hanika) + spectral Hosek-Wilkie sun-and-sky | Spectral | No | IMPROVEMENTS.md #11 | TODO |
 | 4 | Per-light-type intensity override (drop unit-blind override) | Lights | Minor | None | **DONE** (Group A bundle) |
 | 5 | Physical camera model (ISO + fstop + shutter → EV stack into LDR outputs) | Camera | No (additive) | 1 | **DONE — minimal variant** (Group A bundle).  No new chunk; ISO is opt-in on existing `pinhole_camera` / `thinlens_camera`.  Realistic-camera (lens-element ray tracing) is a separate future landing. |
-| 6 | Layered material energy-conservation audit | Materials | No | None | **PARTIAL — audit shipped**.  [tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp) covers 7 configs.  Two critical findings (dielectric/Lambertian recursion loss, sheen Charlie grazing divergence) flagged as KNOWN-FAIL; the compensation work for each is its own future landing.  Detailed disposition in §"Landing 6" below. |
+| 6 | Layered material energy-conservation audit | Materials | No | None | **PARTIAL — audit shipped**.  [tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp) covers 8 configs (incl. Finding D coloured-input regime).  Three KNOWN-FAIL configurations flagged; the compensation work for each is its own future landing.  Detailed disposition in §"Landing 6" below. |
+| 7 | `KHR_materials_specular` (specular_factor + specular_color → F0) | Materials | No (additive defaults) | None | **DONE** — `pbr_metallic_roughness_material` accepts `specular_factor` and `specular_color`; importer reads `KHR_materials_specular`'s scalar fields.  Defaults preserve every existing scene bit-identically.  Texture-sampled specular is L12. |
+| 8 | Anisotropy (anisotropy_factor + anisotropy_rotation → α_x / α_y) | Materials | No (additive defaults) | None | **DONE**.  `pbr_metallic_roughness_material` accepts `anisotropy_factor` (αt = mix(α, 1, anisotropy²)) AND `anisotropy_rotation` (tangent-frame rotation around w; round-2 fix per adversarial review).  GGX BRDF / SPF now apply the rotation per shading point.  `anisotropy_texture` (per-pixel rotation + strength) is L12.  Defaults preserve every existing scene. |
 | 6 | Energy-conservation audit on layered material composition | Materials | Maybe | None |
 | 7 | `KHR_materials_specular` (real F0 + tint) | Materials | Yes (PBR mat params) | 6 |
 | 8 | Anisotropy material parameter (BRDF already supports it) | Materials | Yes (PBR mat params) | 6 |
@@ -621,8 +623,9 @@ by impact on the L7-L11 landings:
 | 2 | Sheen alone (Charlie, no LUT) | 0.252 | 0.394 | **1.456** | **8.725** | KNOWN-FAIL — Charlie's `n·l + n·v − n·l·n·v` denominator diverges at grazing.  Needs sheen-albedo LUT (Heitz simplified or Zeltner-LTC). |
 | 3 | Composite: dielectric / Lambertian | **0.040** | **0.042** | **0.089** | 0.388 | KNOWN-FAIL — `CompositeSPF` random walk exits with the dielectric's surface-Fresnel only.  Below-layer diffuse paths get clipped by the recursion budget (`kMaxRecur = 4`, `kMaxDiffuseRecur = 2`).  This is the catastrophic loss the importer's Phase-5 warning flagged.  Needs the random-walk's recursion accounting redesigned, OR replacement with a proper analytic layered-BSDF (Belcour 2018 / Heitz 2017 LTC-Layered). |
 | 4 | Composite: GGX / Lambertian | 1.025 | 1.027 | 1.036 | 1.051 | PASS @ 6% — non-delta GGX top doesn't trigger the recursion-loss path; gain matches GGX baseline + a tiny systematic walk bias |
-| 5 | Composite: GGX / GGX-PBR (clearcoat over PBR) | 1.025 | 1.026 | 1.036 | 1.052 | PASS @ 6% — **the importer's "near-black" warning does NOT reproduce here** with white inputs.  May be a coloured-F0 / low-metallic regime; worth re-investigating in the Phase-5 layered-material work. |
+| 5 | Composite: GGX / GGX-PBR (clearcoat over PBR), white inputs | 1.025 | 1.026 | 1.036 | 1.052 | PASS @ 6% — passes with white baseColor; the importer's "near-black" warning was suspected stale based on this alone, but #7 below shows it's regime-dependent. |
 | 6 | Composite: Sheen / GGX-PBR | 0.249 | 0.402 | **1.448** | **8.867** | KNOWN-FAIL — inherits #2's grazing divergence.  Once #2 is fixed (sheen-albedo LUT), #6 should follow without additional work. |
+| 7 | Composite: clearcoat / red GGX-PBR (Finding D) | **0.040** | **0.040** | **0.068** | **0.205** | KNOWN-FAIL — same loss profile as #3.  Confirms the importer warning at [GLTFSceneImporter.cpp:851](../src/Library/Importers/GLTFSceneImporter.cpp:851) is real for diffuse-dominant materials.  Tied to Finding A — same recursion-budget bug, different regime. |
 
 ### Findings, in priority order
 
@@ -656,14 +659,22 @@ Could be tightened by switching to the Turquin 2019 or Hoffman
 2023 multi-scatter compensation, but the gain is small and the
 existing pbrt-v4-faithful behaviour is acceptable.
 
-**Finding D — Importer's Phase-5 warning does NOT reproduce on
-GGX/GGX-PBR with white inputs (#5).**  The catastrophic "near-
-black surfaces" warning at [GLTFSceneImporter.cpp:706](../src/Library/Importers/GLTFSceneImporter.cpp:706)
-either describes a different parameter regime (coloured F0?  low
-metallic with specific roughness?) or has been silently fixed by
-unrelated changes since the warning was authored.  Worth re-
-investigating before unblocking the layered-clearcoat-over-PBR
-plumbing (still gated under `#if 0` at the same call site).
+**Finding D — Importer's "near-black-clearcoat-over-PBR" warning
+IS real, but only in the coloured / diffuse-dominant regime.**
+The white-input GGX/GGX-PBR test (#5) passes at 6 % tolerance,
+so the warning at first appeared stale.  Re-running with red
+baseColor + metallic = 0 (#7 in the audit) reproduces the
+catastrophic loss the warning predicts: ρ ≈ 0.04 at normal
+incidence, growing to 0.20 at grazing — the same loss profile as
+#3 (dielectric / Lambertian).  Same root cause: at small α
+(≈ 0.16) and low F0 (≈ 0.04), the GGX top layer behaves like a
+near-delta dielectric, and the diffuse-dominant base's exit
+paths get clipped by the same `CompositeSPF` recursion budget
+that clobbers #3.  Disposition: tied to Finding A — both are the
+same bug, surfacing in different regimes.  The importer warning
+at [GLTFSceneImporter.cpp:851](../src/Library/Importers/GLTFSceneImporter.cpp:851)
+SHOULD remain in place until Finding A's recursion-budget fix
+lands.
 
 ### Disposition for L7-L11
 
@@ -749,9 +760,47 @@ Out:
 
 ---
 
-## Landing 7 — `KHR_materials_specular`
+## Landing 7 — `KHR_materials_specular` [DONE]
 
-### Goal
+**Shipped — scalar-factor + RGB-color, textures deferred to L12.**
+`pbr_metallic_roughness_material` accepts two new parameters:
+
+  - `specular_factor` — scalar in [0, 1] (or scalar painter) that
+    scales the dielectric F0.  Default 1.0 = standard 0.04 dielectric
+    F0; lower values reduce the specular highlight to match matte
+    plastic / paint.  Metals are unaffected (their F0 is the
+    `baseColor`, untouched by this parameter).
+  - `specular_color` — RGB painter that tints the dielectric Fresnel.
+    Default "none" = white (untinted).  Final dielectric F0 =
+    0.04 × specular_color × specular_factor.
+
+The importer (`GLTFSceneImporter`) reads `KHR_materials_specular`'s
+`specularFactor` + `specularColorFactor[3]` when present and threads
+them into the new parameters.  `specularTexture` + `specularColor-
+Texture` are flagged with a one-line warning per material and
+ignored — the texture wiring lands with the L12 importer-fidelity
+batch.
+
+Every pre-L7 scene renders bit-identically: the C++ side detects
+both parameters at their default sentinel values (`"1.0"` / `"none"`)
+and skips the painter chain, falling back to the original 0.04
+constant.  Verified via `scenes/Tests/Materials/pbr_metallic_roughness.RISEscene`
+and a new regression scene `scenes/Tests/Materials/pbr_specular_anisotropy.RISEscene`.
+
+**Round-2 fix — RISE_API surface coverage.**  Original L7 / L8
+extended `IJob::AddPBRMetallicRoughnessMaterial` but didn't add a
+matching `RISE_API_CreatePBRMetallicRoughnessMaterial` entry point;
+external embedders couldn't reach the new params without going
+through scene parsing or internal C++ types.  Round-2 closes the gap:
+the new RISE_API function constructs the same painter graph as the
+Job-level version but without the painter-manager registry — every
+internal helper is held alive via refcounts on the chain.  Verified
+end-to-end by `tests/PBRMaterialAPITest.cpp`, which constructs PBR-
+MR via the C API in three configurations (defaults, KHR_specular,
+KHR_anisotropy + rotation) and asserts each produces a working
+material with sensible directional albedo.
+
+### Goal (original)
 
 Implement `KHR_materials_specular` (specularFactor + specularTexture
 + specularColorFactor + specularColorTexture) so dielectric materials
@@ -802,9 +851,51 @@ Out:
 
 ---
 
-## Landing 8 — Anisotropy material parameter
+## Landing 8 — Anisotropy material parameter [DONE]
 
-### Goal
+**Shipped — both `anisotropy_factor` and `anisotropy_rotation`.**
+`pbr_metallic_roughness_material` accepts:
+
+  - `anisotropy_factor` — scalar in [0, 1] (or scalar painter)
+    controlling specular-lobe stretch along the surface tangent.
+    Default 0 = isotropic (αx = αy = roughness²; bit-identical to
+    pre-L8 PBR-MR).  Larger values produce αt = mix(α, 1, anisotropy²)
+    along tangent and αb = α along bitangent — useful for brushed
+    metal, hair, fabric.
+  - `anisotropy_rotation` — scalar painter or string giving the
+    tangent-frame rotation in radians.  Default 0 = aligned with
+    the geometry's `TANGENT` attribute (or the dpdu fallback).
+    **Round-2 fix**: rotation is now actually applied — the GGX
+    BRDF / SPF rotate the (u, v) basis around w by the painter-
+    evaluated angle before sampling.  The original L8 ship had
+    rotation read from the parser / importer but discarded inside
+    `Job::AddPBRMetallicRoughnessMaterial` with `(void)` — a
+    visible correctness bug for any glTF asset that authors
+    `anisotropyRotation` non-zero.  Adversarial review caught it;
+    fix plumbs the rotation through `GGXMaterial` →
+    `GGX{BRDF,SPF}` via a new optional `tangent_rotation` IPainter
+    parameter (default nullptr / no rotation).  Sample at each
+    shading point so a texture or procedural can drive it; scalar
+    is a special case.
+
+The importer reads `KHR_materials_anisotropy.anisotropy_strength` +
+`anisotropy_rotation` and threads both into the new parameters.
+`anisotropy_texture` (per-pixel variation) is flagged with a one-
+line warning per material and ignored — L12 wires that alongside
+the texture support.
+
+The glTF spec uses `αt = mix(α, 1, anisotropy²)`, `αb = α` (the
+"clamp top of stretching range to 1" form), which is what we
+implement.  An alternative `α_x = α/aspect, α_y = α·aspect` form
+(Disney) would be a separate landing if needed; both are common.
+
+Verified via `scenes/Tests/Materials/pbr_specular_anisotropy.RISEscene`
+which paints six spheres differing only in L7 + L8 parameters
+(sphere 5 = anisotropy_factor=0.85; sphere 6 = same factor +
+rotation=π/2 — visibly perpendicular highlight stretch confirms
+the rotation applies).
+
+### Goal (original)
 
 Expose anisotropy on `pbr_metallic_roughness_material`.  The
 GGXBRDF already supports `alpha_x ≠ alpha_y`; the material just

@@ -298,6 +298,16 @@ int main()
 	UniformColorPainter* zero     = new UniformColorPainter( RISEPel( 0.0, 0.0, 0.0 ) );  zero->addref();
 	UniformColorPainter* iorPnt   = new UniformColorPainter( RISEPel( 1.5, 1.5, 1.5 ) );  iorPnt->addref();
 
+	// Finding D verification: a coloured / low-metallic / dominant-
+	// diffuse PBR base, similar to what the importer's "near-black
+	// clearcoat over PBR" warning at GLTFSceneImporter.cpp:851
+	// describes.  baseColor red, metallic = 0 → rd = (0.8, 0.2, 0.2),
+	// rs = F0 = 0.04 dielectric.  If the warning still applies, this
+	// configuration's GGX/GGX-PBR composite should report
+	// significantly less than 1.0 reflectance per channel.
+	UniformColorPainter* redDiff   = new UniformColorPainter( RISEPel( 0.8, 0.2, 0.2 ) );  redDiff->addref();
+	UniformColorPainter* dielF0    = new UniformColorPainter( RISEPel( 0.04, 0.04, 0.04 ) );  dielF0->addref();
+
 	// Roughness ≈ 0.4 (α = 0.16) puts GGX in a regime where
 	// Kulla-Conty's multi-scatter compensation matters but doesn't
 	// dominate.  Same value is used by the existing
@@ -335,6 +345,20 @@ int main()
 	GGXSPF* ggxOnly = new GGXSPF(
 		*zero, *one, *alpha, *alpha, *iorPnt, *zero, eFresnelSchlickF0 );
 	ggxOnly->addref();
+
+	// Finding D: coloured + diffuse-dominant GGX-PBR base.
+	// Mirrors what AddPBRMetallicRoughnessMaterial would build for
+	// a red baseColor (0.8, 0.2, 0.2) with metallic = 0 and
+	// roughness ≈ 0.4.  rd = baseColor (because metallic=0 leaves
+	// the entire baseColor as diffuse weight); rs = F0 = 0.04.
+	GGXSPF* ggxRedDiff = new GGXSPF(
+		*redDiff, *dielF0, *alpha, *alpha, *iorPnt, *zero, eFresnelSchlickF0 );
+	ggxRedDiff->addref();
+
+	// Finding D: clearcoat with F0 = 0.04 (standard glTF clearcoat).
+	GGXSPF* clearcoatDiel = new GGXSPF(
+		*zero, *dielF0, *alpha, *alpha, *iorPnt, *zero, eFresnelSchlickF0 );
+	clearcoatDiel->addref();
 
 	// Composite layers.  Recursion budgets match the scene-language
 	// composite_material chunk's defaults; thickness=0.0 keeps the
@@ -375,6 +399,20 @@ int main()
 		kMaxDiffuseRecur, kMaxTranslucent,
 		kThickness, *zero );
 	compSheenPbr->addref();
+
+	// Finding D: clearcoat (GGX with F0=0.04) over a coloured /
+	// diffuse-dominant PBR base.  This is the configuration the
+	// importer's "Phase 4 imports the base PBR only and skips the
+	// clearcoat layer" warning at GLTFSceneImporter.cpp:851 was
+	// written to describe.  If the white-input #5 audit was masking
+	// a coloured-base failure, this config will show the same
+	// catastrophic loss the warning predicts.
+	CompositeSPF* compClearcoatRedPbr = new CompositeSPF(
+		*clearcoatDiel, *ggxRedDiff,
+		kMaxRecur, kMaxReflectRecur, kMaxRefractRecur,
+		kMaxDiffuseRecur, kMaxTranslucent,
+		kThickness, *zero );
+	compClearcoatRedPbr->addref();
 
 	// ---------- Configurations ----------
 
@@ -447,6 +485,24 @@ int main()
 	    "sheen-over-PBR inherits sheen's Charlie grazing divergence" );
 	  Run( r, *compSheenPbr ); }
 
+	// 7. Finding D verification: clearcoat (F0 = 0.04) over a
+	//    coloured + diffuse-dominant PBR base (red baseColor,
+	//    metallic = 0).  Audit result: ρ = 0.04 at normal, growing
+	//    to 0.20 at grazing.  Same loss profile as #3
+	//    (dielectric/Lambertian) — the smooth-low-F0 GGX top acts
+	//    like a near-delta dielectric at this α, and the diffuse-
+	//    dominant base's exit paths get clipped by the same
+	//    CompositeSPF recursion budget that clobbers #3.  The
+	//    importer's "near-black clearcoat over PBR" warning at
+	//    GLTFSceneImporter.cpp:851 IS describing real behaviour
+	//    in the coloured-input regime — not stale.  Confirmed by
+	//    re-running with white inputs (#5) which passes; the bug
+	//    is regime-dependent.  Disposition: same as Finding A
+	//    (CompositeSPF random walk fix).
+	{ ConfigReport& r = add( "7. Clearcoat / red GGX-PBR (Finding D)", kPostureKnownFailure, 0.0,
+	    "same recursion-budget bug as #3 in coloured-input regime; tied to Finding A" );
+	  Run( r, *compClearcoatRedPbr ); }
+
 	PrintReport( reports );
 
 	// Tally pass/fail across the suite.
@@ -462,10 +518,13 @@ int main()
 
 	// Cleanup (matches existing test pattern; not strictly necessary
 	// for a one-shot test process but exercises the destructor chain).
+	safe_release( compClearcoatRedPbr );
 	safe_release( compSheenPbr );
 	safe_release( compGgxPbr );
 	safe_release( compGgxLamb );
 	safe_release( compDielLamb );
+	safe_release( clearcoatDiel );
+	safe_release( ggxRedDiff );
 	safe_release( ggxOnly );
 	safe_release( dielectric );
 	safe_release( sheen );
@@ -473,6 +532,8 @@ int main()
 	safe_release( lambertian );
 	safe_release( sheenR );
 	safe_release( alpha );
+	safe_release( dielF0 );
+	safe_release( redDiff );
 	safe_release( iorPnt );
 	safe_release( zero );
 	safe_release( one );

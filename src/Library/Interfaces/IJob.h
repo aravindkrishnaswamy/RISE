@@ -927,7 +927,8 @@ namespace RISE
 			const char* alphaY,											///< [in] Roughness in tangent v direction
 			const char* ior,											///< [in] Index of refraction (ignored in schlick_f0 mode)
 			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 mode)
-			const char* fresnel_mode = "conductor"						///< [in] "conductor" or "schlick_f0"
+			const char* fresnel_mode = "conductor",						///< [in] "conductor" or "schlick_f0"
+			const char* tangent_rotation = "none"						///< [in] Landing 8 / KHR_materials_anisotropy: tangent-frame rotation painter (radians) or scalar string.  "none" = no rotation (default; bit-identical to pre-L8).  When set, the GGX BSDF samples the painter at each shading point and rotates the (u, v) basis around w by the painter-evaluated angle before applying αx / αy.
 			) = 0;
 
 		//! Adds GGX material with optional emissive (LambertianEmitter)
@@ -946,7 +947,8 @@ namespace RISE
 			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 mode)
 			const char* emissive,										///< [in] Optional emissive painter; "none" / NULL = no emitter
 			const double emissive_scale,								///< [in] Multiplier on emissive radiance
-			const char* fresnel_mode = "conductor"						///< [in] "conductor" or "schlick_f0"
+			const char* fresnel_mode = "conductor",						///< [in] "conductor" or "schlick_f0"
+			const char* tangent_rotation = "none"						///< [in] Landing 8 / KHR_materials_anisotropy.  See AddGGXMaterial.
 			) = 0;
 
 		//! Adds a glTF-spec pbrMetallicRoughness material.  Composes a
@@ -980,7 +982,11 @@ namespace RISE
 			const char* roughness,										///< [in] Roughness painter or scalar string
 			const double ior,											///< [in] Preserved for API stability; ignored
 			const char* emissive,										///< [in] Optional emissive painter; "none" = no emitter
-			const double emissive_scale									///< [in] Multiplier on emissive radiance
+			const double emissive_scale,								///< [in] Multiplier on emissive radiance
+			const char* specular_factor = "1.0",						///< [in] Landing 7 / KHR_materials_specular: scalar in [0, 1] (or painter) scaling F0; default "1.0" preserves the standard 0.04 dielectric F0.  When < 1, dielectric F0 = 0.04 × specular_factor (matches matte plastic / paint with reduced specular highlight).
+			const char* specular_color = "none",						///< [in] Landing 7 / KHR_materials_specular: RGB tint on dielectric F0; default "none" means white (untinted).  When set, dielectric F0 = 0.04 × specular_color × specular_factor (matches metals shipped as conductor + tint, or measurements where the dielectric Fresnel is wavelength-dependent).  Painter or "none".
+			const char* anisotropy_factor = "0.0",						///< [in] Landing 8 / KHR_materials_anisotropy: scalar in [0, 1] (or painter) controlling specular-lobe stretch.  0 = isotropic (default; matches existing PBR-MR exactly: αx = αy = roughness²).  1 = maximum anisotropy (αt = 1, αb = roughness²; lobe stretches infinitely along the tangent direction).  Useful for brushed metal, hair, fabric.
+			const char* anisotropy_rotation = "0.0"						///< [in] Landing 8 / KHR_materials_anisotropy: scalar painter or scalar string with the tangent-frame rotation in RADIANS.  Default 0 = aligned with the geometry's TANGENT attribute (or the dpdu fallback).  NOTE: Phase 1 implementation reads but does not yet APPLY the rotation — it requires a tangent-frame rotation layer that's pending.  Anisotropy_factor is fully wired; the rotation is a no-op for now.  Document for forward compatibility.
 			) = 0;
 
 		//! Adds a Charlie / Neubelt sheen material for fabric / cloth.

@@ -43,6 +43,14 @@ namespace RISE
 			const IPainter& pIOR;
 			const IPainter& pExtinction;
 			const FresnelMode fresnelMode;
+			//! Landing 8: optional tangent-frame rotation (radians,
+			//! applied around w to the (u, v) basis) per
+			//! KHR_materials_anisotropy.  nullptr = no rotation
+			//! (every existing GGX site falls back here, matching
+			//! pre-L8 behaviour bit-identically).  When non-null,
+			//! the painter is sampled per-shading-point so a
+			//! texture or procedural can drive the rotation.
+			const IPainter* pTangentRotation;
 
 		public:
 			GGXBRDF(
@@ -52,7 +60,8 @@ namespace RISE
 				const IPainter& alphaY,
 				const IPainter& ior,
 				const IPainter& ext,
-				const FresnelMode fresnel_mode = eFresnelConductor
+				const FresnelMode fresnel_mode = eFresnelConductor,
+				const IPainter* tangent_rotation = nullptr
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;

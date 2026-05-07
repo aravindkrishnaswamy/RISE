@@ -43,6 +43,10 @@ namespace RISE
 			const IPainter& pIOR;
 			const IPainter& pExtinction;
 			const FresnelMode fresnelMode;
+			//! Landing 8: optional tangent-frame rotation per
+			//! KHR_materials_anisotropy.  See GGXBRDF.h for details;
+			//! same semantics, mirrored here for the SPF path.
+			const IPainter* pTangentRotation;
 
 		public:
 			GGXSPF(
@@ -52,7 +56,8 @@ namespace RISE
 				const IPainter& alphaY,
 				const IPainter& ior,
 				const IPainter& ext,
-				const FresnelMode fresnel_mode = eFresnelConductor
+				const FresnelMode fresnel_mode = eFresnelConductor,
+				const IPainter* tangent_rotation = nullptr
 				);
 
 			void	Scatter(

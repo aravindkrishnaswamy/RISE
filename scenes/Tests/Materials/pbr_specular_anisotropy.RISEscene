@@ -1,0 +1,232 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           pbr_specular_anisotropy.RISEscene                                                      #
+#   Description:    Landings 7 + 8 verification scene.  Six spheres side-by-side, each authored via         #
+#                   pbr_metallic_roughness_material; the only differences are the L7 (specular) and          #
+#                   L8 (anisotropy) parameters:                                                             #
+#                                                                                                           #
+#                     1. Baseline      — defaults (specular_factor=1, color=none, aniso=0)                  #
+#                     2. SpecFactor    — specular_factor=0.3 (reduced dielectric F0 → matte / chalk)        #
+#                     3. SpecColor     — specular_color=red painter (tinted dielectric Fresnel)             #
+#                     4. SpecCombined  — both spec params set (low factor + cool tint)                      #
+#                     5. Anisotropic   — anisotropy_factor=0.85 (lobe stretched along surface tangent)      #
+#                     6. AnisoRotated  — anisotropy_factor=0.85 + anisotropy_rotation = π/2 (1.5708)        #
+#                                        rad — same lobe as #5 but rotated 90°.  L8 round-2 rotation        #
+#                                        fix verification.                                                  #
+#                                                                                                           #
+#                   All six share the same baseColor (medium gray) and roughness (0.3) so the only          #
+#                   visual differences come from the L7/L8 parameter changes.                                #
+#                                                                                                           #
+#                   Expected appearance (after Landings 7 + 8):                                             #
+#                     - #1 has a clean dielectric highlight at the standard 0.04 F0.                        #
+#                     - #2 has a noticeably DIMMER specular highlight at the same view angle.               #
+#                     - #3 has a coloured (red-tinted) Fresnel rim at grazing.                              #
+#                     - #4 combines both effects.                                                           #
+#                     - #5 has a lobe STRETCHED along one tangent axis relative to #1.                      #
+#                     - #6 has the same stretch as #5 but ROTATED 90° (perpendicular to #5).                #
+#                                                                                                           #
+#                   Default behaviour preservation: removing the new params from any chunk should            #
+#                   render bit-identical to the existing pbr_metallic_roughness.RISEscene baseline.          #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-05-07                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/pbr_specular_anisotropy
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 8
+	lookat				0 0 0
+	up					0 1 0
+	width				1536
+	height				256
+	fov					40.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				gray_basecolor
+	color				0.8 0.8 0.8
+	colorspace			sRGB
+}
+
+# Red specular tint for #3 / #4.  Linear values so the F0 tint is
+# wavelength-meaningful (this is a Fresnel input, not a display
+# colour).
+uniformcolor_painter
+{
+	name				spec_red_tint
+	color				1.0 0.4 0.3
+	colorspace			Rec709RGB_Linear
+}
+
+##################################################
+# Five PBR-MR materials.  All share base_color=gray
+# and roughness=0.3.  L7/L8 params are the only
+# differentiator.
+##################################################
+
+# 1. Baseline.
+pbr_metallic_roughness_material
+{
+	name				mat_baseline
+	base_color			gray_basecolor
+	metallic			0.0
+	roughness			0.3
+}
+
+# 2. Reduced specular factor (matte).
+pbr_metallic_roughness_material
+{
+	name				mat_specfactor
+	base_color			gray_basecolor
+	metallic			0.0
+	roughness			0.3
+	specular_factor		0.3
+}
+
+# 3. Red-tinted specular.
+pbr_metallic_roughness_material
+{
+	name				mat_speccolor
+	base_color			gray_basecolor
+	metallic			0.0
+	roughness			0.3
+	specular_color		spec_red_tint
+}
+
+# 4. Combined (low factor + tint).
+pbr_metallic_roughness_material
+{
+	name				mat_speccombined
+	base_color			gray_basecolor
+	metallic			0.0
+	roughness			0.3
+	specular_factor		0.5
+	specular_color		spec_red_tint
+}
+
+# 5. Anisotropic (stretched along the tangent direction).
+pbr_metallic_roughness_material
+{
+	name				mat_anisotropic
+	base_color			gray_basecolor
+	metallic			0.0
+	roughness			0.3
+	anisotropy_factor	0.85
+}
+
+# 6. Same anisotropy, rotated 90° — verifies L8 round-2 rotation fix.
+# Highlight should be perpendicular to #5's.
+pbr_metallic_roughness_material
+{
+	name				mat_aniso_rotated
+	base_color			gray_basecolor
+	metallic			0.0
+	roughness			0.3
+	anisotropy_factor	0.85
+	anisotropy_rotation	1.5708
+}
+
+##################################################
+# Geometry + objects
+##################################################
+
+sphere_geometry
+{
+	name				sph
+	radius				0.7
+}
+
+standard_object
+{
+	name				s_baseline
+	geometry			sph
+	material			mat_baseline
+	position			-3.75 0 0
+}
+
+standard_object
+{
+	name				s_specfactor
+	geometry			sph
+	material			mat_specfactor
+	position			-2.25 0 0
+}
+
+standard_object
+{
+	name				s_speccolor
+	geometry			sph
+	material			mat_speccolor
+	position			-0.75 0 0
+}
+
+standard_object
+{
+	name				s_speccombined
+	geometry			sph
+	material			mat_speccombined
+	position			0.75 0 0
+}
+
+standard_object
+{
+	name				s_anisotropic
+	geometry			sph
+	material			mat_anisotropic
+	position			2.25 0 0
+}
+
+standard_object
+{
+	name				s_aniso_rotated
+	geometry			sph
+	material			mat_aniso_rotated
+	position			3.75 0 0
+}
+
+##################################################
+# Lights
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.5 0.5 0.7
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.15
+	color		1.0 1.0 1.0
+}

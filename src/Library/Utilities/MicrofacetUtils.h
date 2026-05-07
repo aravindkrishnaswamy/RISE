@@ -36,6 +36,30 @@ namespace RISE
 {
 	namespace MicrofacetUtils
 	{
+		/// Landing 8: rotate a tangent ONB's (u, v) basis around w by
+		/// `angle` radians.  Used by GGX{BRDF,SPF} to apply the
+		/// KHR_materials_anisotropy `anisotropyRotation` parameter to
+		/// the surface tangent frame before sampling.  Pure rotation
+		/// in the surface plane — w (the normal) is unchanged, so
+		/// shading-normal-dependent quantities (cos θ_v, cos θ_l)
+		/// are invariant.  Only αx vs αy "directions" rotate.
+		///
+		/// `angle == 0` (or near-zero) is a fast-path no-op so the
+		/// pre-L8 path stays bit-identical when the rotation painter
+		/// resolves to zero.
+		inline OrthonormalBasis3D RotateTangent( const OrthonormalBasis3D& src, Scalar angle )
+		{
+			if( fabs( angle ) < Scalar( 1e-9 ) ) return src;
+			const Scalar c = std::cos( angle );
+			const Scalar s = std::sin( angle );
+			const Vector3 u = src.u();
+			const Vector3 v = src.v();
+			return OrthonormalBasis3D(
+				u * c + v * s,
+				v * c - u * s,
+				src.w() );
+		}
+
 		/// GGX (Trowbridge-Reitz) normal distribution function.
 		/// Templated on T to support per-channel roughness (RISEPel).
 		///   D(h) = alpha^2 / (PI * (cos^2(theta_h) * (alpha^2 - 1) + 1)^2)

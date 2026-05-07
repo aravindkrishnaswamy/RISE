@@ -3067,17 +3067,27 @@ namespace RISE
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
-					std::string name           = bag.GetString( "name",            "noname" );
-					std::string base_color     = bag.GetString( "base_color",      "none" );
-					std::string metallic       = bag.GetString( "metallic",        "0.0" );
-					std::string roughness      = bag.GetString( "roughness",       "0.5" );
-					double      ior            = bag.GetDouble( "ior",             1.5 );
-					std::string emissive       = bag.GetString( "emissive",        "none" );
-					double      emissive_scale = bag.GetDouble( "emissive_scale",  1.0 );
+					std::string name                = bag.GetString( "name",                 "noname" );
+					std::string base_color          = bag.GetString( "base_color",           "none" );
+					std::string metallic            = bag.GetString( "metallic",             "0.0" );
+					std::string roughness           = bag.GetString( "roughness",            "0.5" );
+					double      ior                 = bag.GetDouble( "ior",                  1.5 );
+					std::string emissive            = bag.GetString( "emissive",             "none" );
+					double      emissive_scale      = bag.GetDouble( "emissive_scale",       1.0 );
+					// Landing 7 (KHR_materials_specular)
+					std::string specular_factor     = bag.GetString( "specular_factor",      "1.0" );
+					std::string specular_color      = bag.GetString( "specular_color",       "none" );
+					// Landing 8 (KHR_materials_anisotropy)
+					std::string anisotropy_factor   = bag.GetString( "anisotropy_factor",    "0.0" );
+					std::string anisotropy_rotation = bag.GetString( "anisotropy_rotation",  "0.0" );
 					return pJob.AddPBRMetallicRoughnessMaterial(
 						name.c_str(), base_color.c_str(),
 						metallic.c_str(), roughness.c_str(),
-						ior, emissive.c_str(), emissive_scale );
+						ior, emissive.c_str(), emissive_scale,
+						specular_factor.c_str(),
+						specular_color.c_str(),
+						anisotropy_factor.c_str(),
+						anisotropy_rotation.c_str() );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3107,6 +3117,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "ior";            p.kind = ValueKind::Double;    p.description = "Preserved for API stability; ignored under the schlick_f0 Fresnel path that this chunk forces"; p.defaultValueHint = "1.5"; }
 						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter; pass \"none\" / omit for non-emissive"; }
 						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "specular_factor";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 7 / KHR_materials_specular: scalar in [0, 1] (or scalar painter) scaling the dielectric F0.  Default 1.0 = standard 0.04 dielectric F0; lower values reduce the dielectric specular highlight (matte plastic / paint).  Metals are unaffected (their F0 = baseColor).  Accepts a painter reference OR a literal scalar string like \"0.5\"."; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "specular_color";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 7 / KHR_materials_specular: RGB tint on dielectric F0.  Default \"none\" = white (untinted, F0 stays at 0.04 across all wavelengths).  Set to a non-white painter for measured dielectrics where the Fresnel response varies with wavelength.  Final F0 = 0.04 × specular_color × specular_factor."; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "anisotropy_factor"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 8 / KHR_materials_anisotropy: scalar in [0, 1] (or scalar painter) controlling specular-lobe stretch along the tangent direction.  Default 0 = isotropic (αx = αy = roughness²; bit-identical to pre-L8 PBR-MR).  Larger values stretch the lobe: αt = mix(α, 1, anisotropy²), αb = α.  Useful for brushed metal, hair, fabric.  Accepts a painter reference OR a literal scalar string."; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "anisotropy_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Landing 8 / KHR_materials_anisotropy: tangent-frame rotation in RADIANS (or scalar painter).  Default 0 = aligned with the geometry's TANGENT attribute.  Phase 1 reads but does not yet APPLY the rotation; rotation is wired alongside the anisotropy_texture in L12.  Document for forward compatibility."; p.defaultValueHint = "0.0"; }
 						return cd;
 					}();
 					return d;
