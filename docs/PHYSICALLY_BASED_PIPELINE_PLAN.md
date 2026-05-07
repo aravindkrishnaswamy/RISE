@@ -187,6 +187,7 @@ that builds on the foundation.
 | 3 | Spectral upsampling (Jakob-Hanika) + spectral Hosek-Wilkie sun-and-sky | Spectral | No | IMPROVEMENTS.md #11 | TODO |
 | 4 | Per-light-type intensity override (drop unit-blind override) | Lights | Minor | None | **DONE** (Group A bundle) |
 | 5 | Physical camera model (ISO + fstop + shutter → EV stack into LDR outputs) | Camera | No (additive) | 1 | **DONE — minimal variant** (Group A bundle).  No new chunk; ISO is opt-in on existing `pinhole_camera` / `thinlens_camera`.  Realistic-camera (lens-element ray tracing) is a separate future landing. |
+| 6 | Layered material energy-conservation audit | Materials | No | None | **PARTIAL — audit shipped**.  [tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp) covers 7 configs.  Two critical findings (dielectric/Lambertian recursion loss, sheen Charlie grazing divergence) flagged as KNOWN-FAIL; the compensation work for each is its own future landing.  Detailed disposition in §"Landing 6" below. |
 | 6 | Energy-conservation audit on layered material composition | Materials | Maybe | None |
 | 7 | `KHR_materials_specular` (real F0 + tint) | Materials | Yes (PBR mat params) | 6 |
 | 8 | Anisotropy material parameter (BRDF already supports it) | Materials | Yes (PBR mat params) | 6 |
@@ -596,9 +597,102 @@ Out:
 
 ---
 
-## Landing 6 — Layered material energy-conservation audit
+## Landing 6 — Layered material energy-conservation audit [PARTIAL — audit shipped]
 
-### Goal
+**Audit scaffolding shipped.**  [tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp)
+drives every L7-L11-relevant layered configuration through a Monte-
+Carlo furnace test and reports the directional albedo `ρ(θ_i) =
+E[Σ_j kray_j]` at θ ∈ {0°, 30°, 60°, 80°}.  Per-config posture
+(`kPosturePass` vs `kPostureKnownFailure`) keeps the test useful for
+regression catching while documenting limitations whose fix is its
+own future landing.  Test exits 0 today; any drift will surface as
+a regression.
+
+**Compensation work NOT yet shipped — split into focused follow-up
+landings based on what the audit found.**  Three findings rank-ordered
+by impact on the L7-L11 landings:
+
+### Audit results (FURNACE_SAMPLES = 100,000 per (config, angle))
+
+| # | Configuration | ρ(0°) | ρ(30°) | ρ(60°) | ρ(80°) | Disposition |
+|---|---|---|---|---|---|---|
+| 0 | Lambertian alone (sanity) | 1.0000 | 1.0000 | 1.0000 | 1.0000 | PASS @ 1% — methodology confirmed |
+| 1 | GGX-PBR (schlick_f0, α=0.16) | 1.016 | 1.015 | 1.020 | 1.032 | PASS @ 5% — Kulla-Conty over-corrects ~1-3 % at moderate roughness; matches pbrt-v4 furnace tolerance |
+| 2 | Sheen alone (Charlie, no LUT) | 0.252 | 0.394 | **1.456** | **8.725** | KNOWN-FAIL — Charlie's `n·l + n·v − n·l·n·v` denominator diverges at grazing.  Needs sheen-albedo LUT (Heitz simplified or Zeltner-LTC). |
+| 3 | Composite: dielectric / Lambertian | **0.040** | **0.042** | **0.089** | 0.388 | KNOWN-FAIL — `CompositeSPF` random walk exits with the dielectric's surface-Fresnel only.  Below-layer diffuse paths get clipped by the recursion budget (`kMaxRecur = 4`, `kMaxDiffuseRecur = 2`).  This is the catastrophic loss the importer's Phase-5 warning flagged.  Needs the random-walk's recursion accounting redesigned, OR replacement with a proper analytic layered-BSDF (Belcour 2018 / Heitz 2017 LTC-Layered). |
+| 4 | Composite: GGX / Lambertian | 1.025 | 1.027 | 1.036 | 1.051 | PASS @ 6% — non-delta GGX top doesn't trigger the recursion-loss path; gain matches GGX baseline + a tiny systematic walk bias |
+| 5 | Composite: GGX / GGX-PBR (clearcoat over PBR) | 1.025 | 1.026 | 1.036 | 1.052 | PASS @ 6% — **the importer's "near-black" warning does NOT reproduce here** with white inputs.  May be a coloured-F0 / low-metallic regime; worth re-investigating in the Phase-5 layered-material work. |
+| 6 | Composite: Sheen / GGX-PBR | 0.249 | 0.402 | **1.448** | **8.867** | KNOWN-FAIL — inherits #2's grazing divergence.  Once #2 is fixed (sheen-albedo LUT), #6 should follow without additional work. |
+
+### Findings, in priority order
+
+**Finding A — Catastrophic dielectric/Lambertian loss (#3).**  Most
+critical: this is the canonical "thin coat over diffuse paint"
+pattern the importer was supposed to use.  The current
+`CompositeSPF` random walk loses ~96% of energy at normal incidence
+because dielectric refractions emerge as delta rays whose recursion
+budget collapses before the diffuse below-layer scattering bubbles
+out.  Two paths forward, both significant landings:
+  - **A1 — Patch the random walk's recursion accounting** so
+    delta-mediated paths to the bottom layer don't fall under the
+    same budget as diffuse-recursion.  Smaller intervention; keeps
+    the existing model.  Risk: doesn't close all loss, may surface
+    different artefacts.
+  - **A2 — Replace with an analytic layered BSDF** (Belcour 2018
+    "Efficient Rendering of Layered Materials" or Heitz et al. 2017
+    LTC-Layered).  Larger refactor; produces cleaner BRDF
+    semantics; integrates with the L7-L11 layer extensions (sheen,
+    clearcoat, iridescence) more naturally.
+
+**Finding B — Sheen at grazing diverges (#2, #6).**  Documented in
+the literature; expected.  Fix is mechanical: precompute and
+sample the sheen-albedo LUT at material construction time (~1 day
+of work, well-defined reference impl available).
+
+**Finding C — GGX baseline gains 1-3% via Kulla-Conty over-
+correction (#1, #4, #5).**  Within tolerance and matches pbrt-v4 /
+Mitsuba behaviour at the same parameter regime; not blocking.
+Could be tightened by switching to the Turquin 2019 or Hoffman
+2023 multi-scatter compensation, but the gain is small and the
+existing pbrt-v4-faithful behaviour is acceptable.
+
+**Finding D — Importer's Phase-5 warning does NOT reproduce on
+GGX/GGX-PBR with white inputs (#5).**  The catastrophic "near-
+black surfaces" warning at [GLTFSceneImporter.cpp:706](../src/Library/Importers/GLTFSceneImporter.cpp:706)
+either describes a different parameter regime (coloured F0?  low
+metallic with specific roughness?) or has been silently fixed by
+unrelated changes since the warning was authored.  Worth re-
+investigating before unblocking the layered-clearcoat-over-PBR
+plumbing (still gated under `#if 0` at the same call site).
+
+### Disposition for L7-L11
+
+The audit's findings unblock most of L7-L11 with caveats:
+
+- **L7 (KHR_materials_specular):** unblocked.  Adds F0 to the
+  single-layer GGX-PBR which is in the PASS bucket.
+- **L8 (anisotropy):** unblocked.  Same reasoning.
+- **L9 (KHR_materials_iridescence):** unblocked.  Iridescence is
+  a Fresnel modifier, not a layer; energy comes from the Belcour-
+  Barla formula directly.
+- **L10 (clearcoat / sheen / transmission textures):** PARTIALLY
+  blocked.  Clearcoat textures need the layered-PBR composite to
+  be wired (importer's `#if 0`), which depends on Finding A's
+  resolution.  Sheen textures additionally need Finding B's LUT
+  compensation to render correctly at grazing — without it, every
+  sheen asset shows the 8× grazing blow-up.  Transmission
+  textures are independent (single-layer dielectric).
+- **L11 (KHR_materials_volume):** unblocked.  Beer-Lambert through
+  a single-layer dielectric; doesn't traverse the random walk.
+
+The audit is **not** a hard gate on L7-L9 — those can ship
+independently, with the audit catching any new layer-related
+regression they might introduce.  L10's clearcoat and sheen
+sub-features should follow Finding A (Belcour or recursion-fix)
+and Finding B (sheen LUT) respectively; transmission can ship
+without either.
+
+### Goal (original — superseded by audit findings above)
 
 Audit the existing layered-material composition path (clearcoat,
 sheen, transmission scalar factors are already wired) for energy
