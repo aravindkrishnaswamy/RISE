@@ -525,7 +525,8 @@ namespace
 		const std::string&  glbPath,
 		size_t              matIdx,
 		const std::set<std::string>* preRegisteredTextures,	// pre-decoded painters; see PreDecodeTextures
-		bool                lowmemTextures )	// passed to CreateTexturePainter slow path; matches PreDecodeTextures' setting
+		bool                lowmemTextures,		// passed to CreateTexturePainter slow path; matches PreDecodeTextures' setting
+		bool                respectBakedOcclusion )	// Landing 13: honour `occlusionTexture` if present
 	{
 		const cgltf_material& mat = data->materials[ matIdx ];
 
@@ -592,6 +593,72 @@ namespace
 			const double pel[3] = { 0.5, 0.5, 0.5 };
 			job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
 			baseColorPainter = n;
+		}
+
+		// Landing 13 — KHR_materials baked occlusion.  Multiply the
+		// baseColor (diffuse path) by lerp(1, ao_R, occlusionStrength)
+		// when the material declares an occlusionTexture and the
+		// importer was asked to respect it.  Phase-1 implementation
+		// applies AO uniformly across all bounces (direct + indirect),
+		// which double-counts the path tracer's own occlusion to a
+		// small degree but recovers the high-frequency AO an artist
+		// baked at frequencies the geometry can't reach (column
+		// flutes, brick mortar, fabric folds).  Skipping AO entirely
+		// (respectBakedOcclusion = FALSE) is the strict-PB path.
+		//
+		// Painter graph (built only when AO is present and respected):
+		//   ao_full     = sample(occlusion_texture)              // RGB
+		//   ao_r        = ChannelPainter(ao_full, R, scale=1, bias=0)  // gray RGB(R, R, R)
+		//   strength    = uniformcolor(occlusionStrength)        // gray
+		//   ao_modulator = blend(ao_r, white, strength)          // = lerp(white, ao_r, strength)
+		//   final_base  = blend(baseColorPainter, zero, ao_modulator)  // = base × modulator
+		//
+		// final_base replaces baseColorPainter for downstream PBR-MR.
+		if( respectBakedOcclusion && mat.occlusion_texture.texture ) {
+			const std::string aoTexName = CreateTexturePainter(
+				job, prefix, data, glbPath, mat.occlusion_texture.texture, "occlusion",
+				preRegisteredTextures, lowmemTextures );
+			if( !aoTexName.empty() ) {
+				// AO R-channel painter.
+				const std::string nAoR = PainterName( prefix, "ao_r", matIdx );
+				job.AddChannelPainter( nAoR.c_str(), aoTexName.c_str(),
+					/*channel*/ 0,	// CHAN_R
+					/*scale*/ 1.0,
+					/*bias*/  0.0 );
+
+				// Strength painter (occlusion_texture.scale per glTF spec;
+				// default 1.0).
+				const std::string nStrength = PainterName( prefix, "ao_strength", matIdx );
+				const double s = (double)mat.occlusion_texture.scale;
+				const double sPel[3] = { s, s, s };
+				job.AddUniformColorPainter( nStrength.c_str(), sPel, "Rec709RGB_Linear" );
+
+				// Constants.
+				const std::string nWhiteAO = PainterName( prefix, "ao_white", matIdx );
+				const std::string nZeroAO  = PainterName( prefix, "ao_zero", matIdx );
+				const double white[3] = { 1.0, 1.0, 1.0 };
+				const double zeroP[3] = { 0.0, 0.0, 0.0 };
+				job.AddUniformColorPainter( nWhiteAO.c_str(), white,  "Rec709RGB_Linear" );
+				job.AddUniformColorPainter( nZeroAO.c_str(),  zeroP,  "Rec709RGB_Linear" );
+
+				// modulator = blend(ao_r, white, strength) = ao_r * strength + white * (1 - strength).
+				// At strength=0: modulator = white (no AO effect).
+				// At strength=1: modulator = ao_r (full AO).
+				const std::string nModulator = PainterName( prefix, "ao_modulator", matIdx );
+				job.AddBlendPainter( nModulator.c_str(),
+					nAoR.c_str(),
+					nWhiteAO.c_str(),
+					nStrength.c_str() );
+
+				// final_base = blend(base, zero, modulator) = base * modulator.
+				const std::string nFinalBase = PainterName( prefix, "basecolor_ao", matIdx );
+				job.AddBlendPainter( nFinalBase.c_str(),
+					baseColorPainter.c_str(),
+					nZeroAO.c_str(),
+					nModulator.c_str() );
+
+				baseColorPainter = nFinalBase;
+			}
 		}
 
 		// Metallic / roughness -- channel-extract from the MR texture if
@@ -1522,7 +1589,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 	// Materials -- create up front (de-duplicates across primitives).
 	if( opts.importMaterials ) {
 		for( size_t mi = 0; mi < data->materials_count; ++mi ) {
-			CreateMaterial( job, prefix, data, szFilename, mi, &mRegisteredTextures, opts.lowmemTextures );
+			CreateMaterial( job, prefix, data, szFilename, mi, &mRegisteredTextures, opts.lowmemTextures, opts.respectBakedOcclusion );
 		}
 	}
 
@@ -2379,6 +2446,10 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		}
 		enqueue( mat.emissive_texture.texture, "emissive" );
 		enqueue( mat.normal_texture.texture,   "normal" );
+		// Landing 13: occlusionTexture — pre-decode for the AO modulator
+		// chain in CreateMaterial.  Honoured when the gltf_import chunk's
+		// `respect_baked_occlusion` is TRUE (the default).
+		enqueue( mat.occlusion_texture.texture, "occlusion" );
 		// Phase-5 sheen / clearcoat texture slots intentionally left out
 		// — those code paths are #if 0 in CreateMaterial today.
 	}

@@ -4303,6 +4303,7 @@ namespace RISE
 					double directional_intensity_override  = bag.GetDouble( "directional_intensity_override",   0.0 );
 					double point_intensity_override        = bag.GetDouble( "point_intensity_override",         0.0 );
 					double spot_intensity_override         = bag.GetDouble( "spot_intensity_override",          0.0 );
+					bool   respect_baked_occlusion         = bag.GetBool(   "respect_baked_occlusion",          true );
 					if( lights_intensity_override > 0.0 ) {
 						GlobalLog()->PrintEx( eLog_Warning,
 							"gltf_import:: `lights_intensity_override` is unit-blind (it conflates lux for "
@@ -4321,7 +4322,8 @@ namespace RISE
 						lights_intensity_override,
 						directional_intensity_override,
 						point_intensity_override,
-						spot_intensity_override );
+						spot_intensity_override,
+						respect_baked_occlusion );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -4365,6 +4367,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "directional_intensity_override"; p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual directional lights.  Units: LUX (lm/m²) -- glTF's authored unit for directional intensity.  Replaces zero authored intensities for directional lights only (lights set non-zero stay untouched).  Typical values: ~120000 for noon clear-sky sun, ~10000 for overcast day, ~100 for moonlight."; p.defaultValueHint = "0 (no override)"; }
 						{ auto& p = P(); p.name = "point_intensity_override";       p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual point lights.  Units: CANDELA (lm/sr) -- glTF's authored unit for point intensity.  Replaces zero authored intensities for point lights only.  Typical values: ~100 for a 60-W incandescent (~800 lm omnidirectional / 4 pi sr), ~1500 for a 100-W LED bulb."; p.defaultValueHint = "0 (no override)"; }
 						{ auto& p = P(); p.name = "spot_intensity_override";        p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual spot lights.  Units: CANDELA (lm/sr) along the spot's central axis -- glTF's authored unit for spot intensity.  Replaces zero authored intensities for spot lights only."; p.defaultValueHint = "0 (no override)"; }
+						{ auto& p = P(); p.name = "respect_baked_occlusion";       p.kind = ValueKind::Bool;   p.description = "Landing 13: when TRUE (default), import glTF `occlusionTexture` as a multiplier on the material's diffuse baseColor (× R-channel × occlusionStrength).  Recovers high-frequency baked AO that geometry can't reach (column flutes, brick mortar, fabric folds) but slightly double-counts the path tracer's own occlusion on direct light.  Set FALSE for strict-PB workflows where you want only the integrator's computed occlusion."; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
 					return d;

@@ -3796,7 +3796,8 @@ bool Job::ImportGLTFScene(
 					const double lights_intensity_override,
 					const double directional_intensity_override,
 					const double point_intensity_override,
-					const double spot_intensity_override
+					const double spot_intensity_override,
+					const bool respect_baked_occlusion
 					)
 {
 	GLTFSceneImporter importer( filename );
@@ -3816,6 +3817,7 @@ bool Job::ImportGLTFScene(
 	opts.directionalIntensityOverride  = directional_intensity_override;
 	opts.pointIntensityOverride        = point_intensity_override;
 	opts.spotIntensityOverride         = spot_intensity_override;
+	opts.respectBakedOcclusion         = respect_baked_occlusion;
 	return importer.ImportScene( *this, opts );
 }
 

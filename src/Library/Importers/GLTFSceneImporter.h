@@ -75,6 +75,7 @@ namespace RISE
 			double directionalIntensityOverride;	///< Landing 4: per-type intensity override for KHR_lights_punctual directional lights.  Units: LUX (lm/m²).  Replaces zero authored intensities for directional lights only; lights the author set non-zero stay untouched.  Default 0 (no override).  Typical values: ~120000 for noon clear-sky sun, ~10000 for overcast day, ~100 for moonlight.  Stacks with `lightsIntensityOverride` (per-type wins when both set on a directional light).
 			double pointIntensityOverride;			///< Landing 4: per-type intensity override for KHR_lights_punctual point lights.  Units: CANDELA (lm/sr).  Replaces zero authored intensities for point lights only.  Default 0 (no override).  Typical values: ~100 for a bare 60-W incandescent (~800 lm omnidirectional ÷ 4π sr), ~1500 for a 100-W LED bulb.  Stacks with `lightsIntensityOverride` (per-type wins).
 			double spotIntensityOverride;			///< Landing 4: per-type intensity override for KHR_lights_punctual spot lights.  Units: CANDELA (lm/sr) — peak intensity along the spot axis.  Replaces zero authored intensities for spot lights only.  Default 0 (no override).  Stacks with `lightsIntensityOverride` (per-type wins).
+			bool respectBakedOcclusion;				///< Landing 13: when TRUE (default), honour glTF `occlusionTexture` by multiplying the baseColor (diffuse path) by the texture's R channel times the material's `occlusionStrength`.  This is the pragmatic glTF-faithful import — a path tracer computes real occlusion via shadow rays so applying baked AO double-counts direct lighting somewhat, but assets bake AO at frequencies geometry can't recover (column flutes, brick mortar, fabric folds), so dropping it loses information the artist deliberately encoded.  Set FALSE for strict-PB workflows where you want the integrator's own occlusion.  Note: Phase-1 implementation modulates ALL bounces uniformly (direct + indirect); a future refinement could gate on bounce count to apply only to indirect-diffuse.
 
 			//! Sentinel for "use the file's default scene" (i.e., the scene
 			//! the glTF JSON's top-level `"scene"` field points at, falling
@@ -96,7 +97,8 @@ namespace RISE
 			  lightsIntensityOverride( 0.0 ),
 			  directionalIntensityOverride( 0.0 ),
 			  pointIntensityOverride( 0.0 ),
-			  spotIntensityOverride( 0.0 )
+			  spotIntensityOverride( 0.0 ),
+			  respectBakedOcclusion( true )
 			{}
 		};
 
