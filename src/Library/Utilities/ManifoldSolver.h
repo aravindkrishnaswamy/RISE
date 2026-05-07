@@ -225,30 +225,6 @@ namespace RISE
 			};
 			SeedingMode		seedingMode;
 
-			/// Normalized-throughput gate for Fresnel branching at sub-
-			/// critical dielectric vertices during seed-chain construction.
-			/// Reuses the path-tracer's `StabilityConfig::branchingThreshold`
-			/// semantics (CLAUDE.md High-Value Fact): at each dielectric
-			/// hit, if the running chain throughput exceeds the threshold,
-			/// SPLIT the chain into both Fresnel-reflection and refraction
-			/// continuations (each becomes its own seed chain that runs
-			/// Newton independently and contributes its own throughput).
-			/// Below the threshold, Russian-roulette pick one branch
-			/// weighted by Fr; the trial contribution is divided by the
-			/// pick probability to remain unbiased.
-			///
-			///   `0.0` — always branch at every dielectric Fresnel decision
-			///           point (exhaustive 2^k chain enumeration).
-			///   `1.0` — never branch (legacy refraction-only seed; reflection
-			///           caustics on dielectric only found via TIR, photon-aided
-			///           seeds, or mirror materials).  **Default in this
-			///           struct's literal init below**, so direct constructor
-			///           callers preserve legacy behaviour; the rasterizer
-			///           layer overrides this with `stabilityConfig.branching-
-			///           Threshold` (default 0.5) at scene-prep so production
-			///           scenes get branching automatically.
-			Scalar			branchingThreshold;
-
 			/// Mitsuba `m_config.bounces` analogue: REQUIRED chain length.
 			/// When > 0, the seed-builder traces EXACTLY this many specular
 			/// hits and rejects seeds that don't reach the target.  Active
@@ -278,7 +254,6 @@ namespace RISE
 			twoStage( false ),
 			useLevenbergMarquardt( false ),
 			seedingMode( eSeedingSnell ),
-			branchingThreshold( 1.0 ),
 			targetBounces( 0 )
 			{
 			}
@@ -410,47 +385,25 @@ namespace RISE
 				bool applyEmitterStop = true       ///< Snell mode: true (stop at emitter projection).  Uniform mode: false (sp is a direction probe, not the emitter).
 				) const;
 
-			/// One result of `BuildSeedChainBranching`: a complete seed
-			/// chain plus the accumulated proposal pdf (product of per-
-			/// vertex Russian-roulette pick probabilities).  The caller
-			/// runs Newton on `chain` and divides the converged trial's
-			/// contribution by `proposalPdf` to keep the estimator
-			/// unbiased (the BSDF Fresnel factor already in
-			/// `EvaluateChainThroughput` cancels the proposal pdf for
-			/// RR-picked vertices, so the division is essential).
+			/// Single seed chain plus a proposal pdf (always 1.0 since
+			/// SMS path-tree branching was excised in 2026-05).  Field
+			/// retained for legacy compatibility with consumer code that
+			/// divides by `proposalPdf` — divisor is now always 1.0,
+			/// preserving the unbiased estimator without changing the
+			/// downstream formula.
 			struct SeedChainResult {
 				std::vector<ManifoldVertex> chain;
 				Scalar proposalPdf = 1.0;
 			};
 
-			/// Branching seed-chain builder (Option C — reuses the path-
-			/// tracer's `branchingThreshold` semantics for SMS seed
-			/// construction).  At each sub-critical dielectric vertex:
-			///   - If running chain throughput > `config.branchingThreshold`,
-			///     SPLIT the chain into both Fresnel-reflection and
-			///     refraction continuations.  Each becomes a separate
-			///     output chain (full Newton-eligible seed) with the
-			///     same `proposalPdf` (no RR factor).
-			///   - Else, Russian-roulette pick one branch weighted by Fr;
-			///     multiply `proposalPdf` by the pick probability.
-			/// TIR is forced reflection (deterministic, no branch / RR).
-			/// Mirror materials are deterministic (single reflection
-			/// continuation).
-			///
-			/// Caller MUST divide each trial's contribution by
-			/// `proposalPdf` after running Newton — the contribution
-			/// formula in `EvaluateChainThroughput` includes the per-
-			/// vertex Fresnel factor, which cancels the proposal pdf for
-			/// RR'd vertices.
-			///
-			/// When `config.branchingThreshold == 1.0` (legacy default),
-			/// no branching ever fires; behaves like a stochastic-
-			/// Fresnel BuildSeedChain (Russian-roulette pick at every
-			/// dielectric vertex weighted by Fr).
-			///
-			/// When `config.branchingThreshold == 0.0`, every dielectric
-			/// vertex branches; total chain count is bounded by 2^k where
-			/// k is the chain length.
+			/// Wrapper around `BuildSeedChain` that packages the single
+			/// chain in the legacy `SeedChainResult` vector format with
+			/// `proposalPdf = 1.0`.  Retained because uniform-mode SMS
+			/// call sites consume `std::vector<SeedChainResult>` (the
+			/// pre-2026-05 shape that supported Fresnel-branched
+			/// siblings).  Per Mitsuba SOTA convention, single-chain
+			/// stochastic seeds + `multi_trials` provide variance
+			/// reduction on multi-modal scenes.
 			unsigned int BuildSeedChainBranching(
 				const Point3& start,
 				const Point3& end,

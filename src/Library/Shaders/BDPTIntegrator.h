@@ -226,50 +226,24 @@ namespace RISE
 			/// Generates a light subpath starting from a sampled light source.
 			/// \return Number of vertices stored
 			///
-			/// Subpaths produced by these generators can fan out into
-			/// multiple branches when a multi-lobe delta vertex is
-			/// encountered with surviving throughput above the scene's
-			/// `branching_threshold` (see StabilityConfig.h).  All branch
-			/// vertex arrays are appended sequentially into the flat
-			/// `vertices` vector; `subpathStarts` delimits them:
-			/// branch i occupies `vertices[subpathStarts[i] ..
-			/// subpathStarts[i+1])`.  For a subpath with no split the
-			/// output is `subpathStarts = {0, N}` — a single branch.
-			/// Return value is the number of branches.
-			///
-			/// `branchingThresholdOverride` semantics match GenerateEyeSubpath:
-			/// pass a value in [0, 1] to override StabilityConfig.branching-
-			/// Threshold on this call, or a negative value to use the config
-			/// default.  Callers that do NOT loop over `subpathStarts` on
-			/// the light side (currently BDPT-Pel, MLT, spectral
-			/// rasterizers; VCM-Pel is the only consumer that handles
-			/// multi-branch light subpaths) should pass 1.0 to keep the
-			/// light subpath single-branch.
+			/// `subpathStarts` is retained for legacy compatibility with
+			/// the pre-2026-05 branching infrastructure; it always
+			/// contains exactly one [0, N) range now (single subpath).
 			unsigned int GenerateLightSubpath(
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
 				std::vector<BDPTVertex>& vertices,
 				std::vector<uint32_t>& subpathStarts,
-				const RandomNumberGenerator& random,
-				Scalar branchingThresholdOverride
+				const RandomNumberGenerator& random
 				) const;
 
 			/// Generates an eye subpath from a camera ray.
 			/// \return Number of vertices stored
 			///
-			/// `branchingThresholdOverride` controls whether threshold-
-			/// gated splitting fires on this call.  Pass a value in
-			/// [0, 1] to override StabilityConfig.branchingThreshold
-			/// (e.g. 1.0 to disable branching for this caller).  Pass
-			/// any negative value to use the config default.  Callers
-			/// that do NOT loop over `subpathStarts` must pass 1.0 to
-			/// avoid silently-wrong MIS evaluation across branch
-			/// boundaries; MLT / MLT-spectral always pass 1.0
-			/// because PSSMLT's primary-sample vector can't mutate
-			/// split choices.  BDPT-Pel, BDPT-Spectral, VCM-Pel,
-			/// VCM-Spectral, and the VCM photon-store build all loop
-			/// over branches.
+			/// `subpathStarts` is retained for compatibility with the
+			/// pre-2026-05 branching infrastructure; it always contains
+			/// exactly one [0, N) range now (single branch).
 			unsigned int GenerateEyeSubpath(
 				const RuntimeContext& rc,
 				const Ray& cameraRay,
@@ -278,8 +252,7 @@ namespace RISE
 				const IRayCaster& caster,
 				ISampler& sampler,
 				std::vector<BDPTVertex>& vertices,
-				std::vector<uint32_t>& subpathStarts,
-				Scalar branchingThresholdOverride
+				std::vector<uint32_t>& subpathStarts
 				) const;
 
 			/// Connects and evaluates a single (s,t) strategy.
@@ -350,17 +323,16 @@ namespace RISE
 				}
 			};
 
-			/// NM light subpath.  `branchingThresholdOverride`: negative
-			/// (e.g. -1) means "use stabilityConfig.branchingThreshold";
-			/// any value in [0,1] overrides the config.  Callers that
-			/// cannot handle multi-branch output (BDPT-spectral, MLT-
-			/// spectral) must pass 1.0 to force a single chain.
-			/// `pSwlHWSS`: when non-null, Russian Roulette survival
-			/// probability is computed from the MAX throughput across
-			/// all non-terminated wavelengths in the bundle — prevents
-			/// hero-driven RR from amplifying companion wavelengths on
-			/// rare survivors (the firefly failure mode).  Pass nullptr
-			/// for non-HWSS callers (single-wavelength NM).
+			/// NM light subpath.  `subpathStarts` is retained for
+			/// compatibility with the pre-2026-05 branching
+			/// infrastructure; it always contains exactly one [0, N)
+			/// range now (single branch).  `pSwlHWSS`: when non-null,
+			/// Russian Roulette survival probability is computed from
+			/// the MAX throughput across all non-terminated wavelengths
+			/// in the bundle — prevents hero-driven RR from amplifying
+			/// companion wavelengths on rare survivors (the firefly
+			/// failure mode).  Pass nullptr for non-HWSS callers
+			/// (single-wavelength NM).
 			unsigned int GenerateLightSubpathNM(
 				const IScene& scene,
 				const IRayCaster& caster,
@@ -369,12 +341,11 @@ namespace RISE
 				std::vector<uint32_t>& subpathStarts,
 				const Scalar nm,
 				const RandomNumberGenerator& random,
-				const Scalar branchingThresholdOverride,
 				const SampledWavelengths* pSwlHWSS
 				) const;
 
 			/// NM eye subpath.  See GenerateLightSubpathNM for the
-			/// branchingThresholdOverride and pSwlHWSS semantics.
+			/// pSwlHWSS semantics.
 			unsigned int GenerateEyeSubpathNM(
 				const RuntimeContext& rc,
 				const Ray& cameraRay,
@@ -385,7 +356,6 @@ namespace RISE
 				std::vector<BDPTVertex>& vertices,
 				std::vector<uint32_t>& subpathStarts,
 				const Scalar nm,
-				const Scalar branchingThresholdOverride,
 				const SampledWavelengths* pSwlHWSS
 				) const;
 

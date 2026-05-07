@@ -122,7 +122,7 @@ The ten rasterizer chunks, grouped by algorithm.
 
 | Chunk | Pipeline | Notes |
 |---|---|---|
-| `mlt_rasterizer` | pure integrator | PSSMLT (Kelemen 2002) atop BDPT. Bootstrap finds high-contribution paths, Markov chains explore neighbourhoods. Use only when BDPT and VCM both fail to find the important paths — see the postmortem in [MLT_POSTMORTEM.md](MLT_POSTMORTEM.md) for when it actually wins (and when it doesn't). Forces `branching_threshold = 1.0` because the Markov-chain proposal measure assumes single-subpath. |
+| `mlt_rasterizer` | pure integrator | PSSMLT (Kelemen 2002) atop BDPT. Bootstrap finds high-contribution paths, Markov chains explore neighbourhoods. Use only when BDPT and VCM both fail to find the important paths — see the postmortem in [MLT_POSTMORTEM.md](MLT_POSTMORTEM.md) for when it actually wins (and when it doesn't). |
 | `mlt_spectral_rasterizer` | pure integrator | Spectral analogue. |
 
 Two MLT variants (MMLT, PathMLT) shipped briefly and were retired —
@@ -177,9 +177,11 @@ A few cross-cutting facts to keep this matrix honest:
   with a cross-strategy emission-suppression rule
   ([`BDPTIntegrator::ShouldSuppressSMSOverlap`](../src/Library/Shaders/BDPTIntegrator.cpp))
   to prevent double-counting.
-- **`branching_threshold`** (default 0.5) is on every non-MLT
-  rasterizer; MLT forces 1.0 — see [CLAUDE.md](../CLAUDE.md)
-  "High-Value Facts" for the rationale.
+- **Path-tree branching at multi-lobe delta vertices** was removed in
+  2026-05.  All integrators use stochastic single-lobe selection at
+  Fresnel splits (matches PBRT/Mitsuba/Arnold/Cycles X) — see
+  [CLAUDE.md](../CLAUDE.md) "High-Value Facts" for the rationale and
+  the BDPT MIS-vs-tree mismatch that motivated removal.
 
 ## 5. Selection criteria — the long version
 
@@ -274,8 +276,7 @@ Two practical considerations:
 ## 7. Cross-references
 
 - Per-parameter reference for each rasterizer chunk (and the
-  `branching_threshold`, `direct_clamp`, RR, max-bounce parameters
-  shared across them):
+  `direct_clamp`, RR, max-bounce parameters shared across them):
   [src/Library/Parsers/README.md](../src/Library/Parsers/README.md)
 - VCM design and Veach-transparency handling: [VCM.md](VCM.md)
 - SMS solver and constraint formulations: [SMS.md](SMS.md)

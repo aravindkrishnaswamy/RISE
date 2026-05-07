@@ -267,8 +267,8 @@ void MLTSpectralRasterizer::EvaluateSingleWavelength(
 	// force threshold=1.0 on both sides to keep the NM generators
 	// emitting single-branch output (matches RGB MLTRasterizer).
 	// Single-wavelength MLT path: pSwlHWSS = nullptr.
-	pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, Scalar( 1.0 ), nullptr );
-	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, Scalar( 1.0 ), nullptr );
+	pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, nullptr );
+	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, nullptr );
 
 	results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, nm );
 }
@@ -399,9 +399,9 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 			// max-over-wavelengths RR (PT HWSS firefly fix applies here
 			// too — hero-driven RR still amplifies companions on rare
 			// survivors regardless of MLT's chain acceptance).
-			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, Scalar( 1.0 ), &swl );
+			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, &swl );
 
-			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, heroNM, Scalar( 1.0 ), &swl );
+			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, heroNM, &swl );
 
 			// Helper: accumulate strategy results into allStrategyXYZ
 			auto accumulateResults = [&]( const std::vector<BDPTIntegrator::ConnectionResultNM>& results,
@@ -496,9 +496,9 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 
 			// MLT forces threshold=1.0 (single-branch) — see top-level note.
 			// Non-HWSS single-wavelength path: pSwlHWSS = nullptr.
-			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, Scalar( 1.0 ), nullptr );
+			pIntegrator->GenerateLightSubpathNM( scene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, nullptr );
 
-			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, Scalar( 1.0 ), nullptr );
+			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, screenPos, scene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, nullptr );
 
 			results = pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, scene, *pCaster, camera, nm );
 

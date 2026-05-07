@@ -69,7 +69,7 @@ Add this as a NEW seeding/solving path (`sms_solver "newton" | "polynomial"`), k
 - New parser parameter `sms_solver "newton"|"polynomial"` (default `"newton"` for compatibility).
 - New `ManifoldSolver::SolvePolynomial(...)` returning `std::vector<ManifoldResult>` (multiple roots per call).
 - New chain construction: instead of seeding + Newton walk, the polynomial system is built directly from `(shading-point, light-point, caster surface representation)`.  Caster geometry needs to expose a polynomial form (analytic ellipsoid: directly; mesh: per-triangle local polynomial fit).
-- Integration: `EvaluateAtShadingPoint` branches on `config.solverMode`; polynomial path bypasses `BuildSeedChainBranching` / `BuildSeedChain` entirely — its outputs feed directly into the contribution formula via `ComputeTrialContribution`.
+- Integration: `EvaluateAtShadingPoint` branches on `config.solverMode`; polynomial path bypasses `BuildSeedChain` (and the legacy `BuildSeedChainBranching` wrapper) entirely — its outputs feed directly into the contribution formula via `ComputeTrialContribution`.
 - Reuses everything downstream: `ComputeTrialContribution`, `EvaluateChainThroughput`, `CheckChainVisibility`, the dedupe set, the photon extension.
 
 #### Batch Specular Manifold Sampling — Lou, Wang, Wei, Liu, The Visual Computer 2025

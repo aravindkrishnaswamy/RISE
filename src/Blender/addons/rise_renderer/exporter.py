@@ -58,7 +58,6 @@ class RenderSettingsData:
     choose_one_light: bool
     show_lights: bool
     use_world_ambient: bool
-    path_branch: bool
     sms_enabled: bool
     sms_max_iterations: int
     sms_threshold: float
@@ -1321,7 +1320,6 @@ def build_render_settings(scene) -> RenderSettingsData:
         choose_one_light=bool(rise.choose_one_light),
         show_lights=bool(rise.show_lights),
         use_world_ambient=bool(rise.use_world_ambient),
-        path_branch=bool(rise.path_branch),
         sms_enabled=bool(rise.sms_enabled),
         sms_max_iterations=int(rise.sms_max_iterations),
         sms_threshold=float(rise.sms_threshold),

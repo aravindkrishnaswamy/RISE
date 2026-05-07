@@ -61,11 +61,6 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         default=True,
     )
 
-    path_branch: bpy.props.BoolProperty(
-        name="Branch Paths",
-        description="Enable path tracer branching when scattering",
-        default=True,
-    )
     sms_enabled: bpy.props.BoolProperty(
         name="Specular Manifold Sampling",
         description="Enable RISE specular manifold sampling in the path tracing shader op",

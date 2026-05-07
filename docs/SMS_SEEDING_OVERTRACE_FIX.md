@@ -76,11 +76,13 @@ vertices once a candidate hit's projection along that direction
 exceeds `totalDist × 1.05` (5% margin allows for refractive bending of
 the path).
 
-Two sites:
+Two sites (2026-05 update: branching was excised; both still exist
+but `BuildSeedChainBranching` is now a thin wrapper around
+`BuildSeedChain`):
 
-- `SnellContinueChain` (legacy single-chain Snell trace, used as
-  fallback when branching produces nothing or `branchingThreshold ≥ 1`)
-- `BuildSeedChainBranching` (the default Fresnel-branching builder)
+- `SnellContinueChain` (single-chain Snell trace)
+- `BuildSeedChainBranching` (legacy wrapper retained for call-site
+  ABI compatibility)
 
 Both check projection of `ri.geometric.ptIntersection` against
 `origStart + t · origDir` with `t > totalDist × 1.05` ⇒ break.
@@ -219,8 +221,10 @@ Two-part:
 **Part 1 — code (this commit):** Added an `applyEmitterStop` parameter
 to `BuildSeedChain`, `BuildSeedChainBranching`, and
 `SnellContinueChain`.  Default `true` preserves snell-mode behaviour.
-All six uniform-mode call sites (RGB + spectral × main / branched /
-Bernoulli-trial) pass `false`.
+Uniform-mode call sites and the synthesized-direction-probe fallbacks
+pass `false`.  (2026-05 update: `BuildSeedChainBranching` is now a
+thin wrapper around `BuildSeedChain` since path-tree branching was
+excised; `applyEmitterStop` is forwarded directly.)
 
 **Part 2 — scene authoring:** For `sms_seeding "uniform"`, set
 `sms_max_chain_depth` to the natural caustic K for the scene (typically

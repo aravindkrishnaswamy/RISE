@@ -3,8 +3,8 @@
 //  PathTracingIntegrator.h - Standalone iterative unidirectional
 //    path tracer.  Modeled on BDPTIntegrator: uses direct
 //    intersection (no shader dispatch), inline material evaluation,
-//    and iterative main loop with explicit stack for specular
-//    branching.
+//    and iterative main loop with stochastic single-lobe scatter
+//    selection (path-tree branching was excised in 2026-05).
 //
 //    Features:
 //    - Next event estimation (NEE) via LightSampler with MIS
@@ -115,7 +115,6 @@ namespace RISE
 				Scalar glossyFilterWidth_,
 				bool smsPassedThroughSpecular_,
 				bool smsHadNonSpecularShading_,
-				bool splitFired_,
 				PixelAOV* pAOV = 0
 				) const;
 

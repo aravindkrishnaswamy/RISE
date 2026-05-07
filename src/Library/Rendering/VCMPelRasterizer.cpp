@@ -308,36 +308,23 @@ void VCMPelRasterizer::IntegratePixel(
 			// dimensions.  When VC is disabled the local light
 			// subpath is unused (VM reads from the prebuilt store),
 			// so skip the generation cost.
+			//
+			// Single subpath each (no branching) — branching at multi-
+			// lobe delta vertices was excised in 2026-05.  The
+			// `subpathStarts` outparams are retained for Phase-2
+			// integrator cleanup but always contain exactly one
+			// [0, size) range.
 			localLightVerts.clear();
 			localLightMis.clear();
 			static thread_local std::vector<uint32_t> localLightSubpathStarts;
 			if( mVCMNormalization.mEnableVC ) {
-				// Allow light-subpath branching (pass -1 to use config
-				// threshold).  VCM-Pel is the only consumer that loops
-				// over light branches — BDPT and MLT pass 1.0.
-				pGen->GenerateLightSubpath( pScene, *pCaster, sampler, localLightVerts, localLightSubpathStarts, rc.random, Scalar( -1 ) );
+				pGen->GenerateLightSubpath( pScene, *pCaster, sampler, localLightVerts, localLightSubpathStarts, rc.random );
 			}
-			// When threshold-gated split fired on the light subpath,
-			// multiple light branches are concatenated delimited by
-			// localLightSubpathStarts.  Common case is a single branch.
-			const size_t numLightBranches = ( mVCMNormalization.mEnableVC &&
-				localLightSubpathStarts.size() >= 2 ) ?
-				( localLightSubpathStarts.size() - 1 ) : 0;
 
 			eyeVerts.clear();
 			static thread_local std::vector<uint32_t> eyeSubpathStarts_vcm;
-			// VCM-Pel loops over eye subpath branches correctly, so
-			// pass -1 to use StabilityConfig.branchingThreshold as-is.
-			pGen->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts_vcm, Scalar( -1 ) );
+			pGen->GenerateEyeSubpath( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts_vcm );
 			if( eyeVerts.empty() ) {
-				continue;
-			}
-			// When threshold-gated split fired, multiple eye branches
-			// are concatenated in eyeVerts delimited by eyeSubpathStarts.
-			// Common case is a single branch (starts = {0, N}).
-			const size_t numEyeBranches = eyeSubpathStarts_vcm.size() >= 2 ?
-				eyeSubpathStarts_vcm.size() - 1 : 0;
-			if( numEyeBranches == 0 ) {
 				continue;
 			}
 
@@ -380,92 +367,56 @@ void VCMPelRasterizer::IntegratePixel(
 			RISEPel sampleColor( 0, 0, 0 );
 
 			// Strategy (t=1): splat every connectible light-subpath
-			// vertex to the camera.  Each light branch is its own light
-			// subpath — splat per branch.  Done outside the eye-branch
-			// loop because splat contributions go to the splat film
-			// directly and don't depend on eye-subpath state.
-			static thread_local std::vector<BDPTVertex> branchLightVerts;
-			static thread_local std::vector<VCMMisQuantities> branchLightMis;
-			static thread_local std::vector<LightVertex> branchLightStoreScratch;
-			if( mVCMNormalization.mEnableVC && pSplatFilm ) {
-				for( size_t lb = 0; lb < numLightBranches; lb++ ) {
-					const uint32_t lbeg = localLightSubpathStarts[lb];
-					const uint32_t lend = localLightSubpathStarts[lb + 1];
-					if( lbeg >= lend ) continue;
-					branchLightVerts.assign(
-						localLightVerts.begin() + lbeg, localLightVerts.begin() + lend );
-					branchLightMis.clear();
-					branchLightStoreScratch.clear();
-					VCMIntegrator::ConvertLightSubpath(
-						branchLightVerts, mVCMNormalization, branchLightStoreScratch, &branchLightMis );
-					if( !branchLightVerts.empty() && !branchLightMis.empty() ) {
-						pIntegrator->SplatLightSubpathToCamera(
-							branchLightVerts, branchLightMis,
-							pScene, *pCaster, *pCamera, *pSplatFilm,
-							mVCMNormalization, pPixelFilter );
-					}
+			// vertex to the camera.  Single light subpath (no branching).
+			static thread_local std::vector<VCMMisQuantities> lightMis;
+			static thread_local std::vector<LightVertex> lightStoreScratch;
+			if( mVCMNormalization.mEnableVC ) {
+				lightMis.clear();
+				lightStoreScratch.clear();
+				VCMIntegrator::ConvertLightSubpath(
+					localLightVerts, mVCMNormalization, lightStoreScratch, &lightMis );
+				if( pSplatFilm && !localLightVerts.empty() && !lightMis.empty() ) {
+					pIntegrator->SplatLightSubpathToCamera(
+						localLightVerts, lightMis,
+						pScene, *pCaster, *pCamera, *pSplatFilm,
+						mVCMNormalization, pPixelFilter );
 				}
 			}
 
-			// Per-eye-branch: convert MIS state for that branch's
-			// contiguous vertex range and evaluate VC/VM strategies.
-			// Inside the eye-branch loop we iterate over light-branches
-			// for interior connections (each light/eye pair is its own
-			// independent sample).  EvaluateS0 / NEE / Merges use only
-			// the eye subpath and the prebuilt photon store — one call
-			// per eye branch.
-			static thread_local std::vector<BDPTVertex> branchEyeVerts;
-			for( size_t b = 0; b < numEyeBranches; b++ ) {
-				const uint32_t beg = eyeSubpathStarts_vcm[b];
-				const uint32_t end = eyeSubpathStarts_vcm[b + 1];
-				if( beg >= end ) continue;
+			// Single eye subpath: convert MIS state and evaluate VC/VM
+			// strategies.  EvaluateS0 / NEE / Merges use only the eye
+			// subpath and the prebuilt photon store; interior
+			// connections use the (single) light subpath.
+			VCMIntegrator::ConvertEyeSubpath(
+				eyeVerts, mVCMNormalization, eyeMis );
 
-				branchEyeVerts.assign(
-					eyeVerts.begin() + beg, eyeVerts.begin() + end );
-				VCMIntegrator::ConvertEyeSubpath(
-					branchEyeVerts, mVCMNormalization, eyeMis );
+			// EvaluateS0 (eye ray hits the emitter directly) is the
+			// s=0 strategy — independent of VC connections.  Its
+			// internal MIS weight already accounts for whether VC
+			// or VM are competing strategies, so it must run
+			// whenever VCM is operating.  Gating on VC alone made
+			// VM-only mode render emitters as black.
+			if( mVCMNormalization.mEnableVC || mVCMNormalization.mEnableVM ) {
+				sampleColor = sampleColor + pIntegrator->EvaluateS0(
+					pScene, *pCaster, eyeVerts, eyeMis, mVCMNormalization );
+			}
 
-				// EvaluateS0 (eye ray hits the emitter directly) is the
-				// s=0 strategy — independent of VC connections.  Its
-				// internal MIS weight already accounts for whether VC
-				// or VM are competing strategies, so it must run
-				// whenever VCM is operating.  Gating on VC alone made
-				// VM-only mode render emitters as black.
-				if( mVCMNormalization.mEnableVC || mVCMNormalization.mEnableVM ) {
-					sampleColor = sampleColor + pIntegrator->EvaluateS0(
-						pScene, *pCaster, branchEyeVerts, eyeMis, mVCMNormalization );
+			if( mVCMNormalization.mEnableVC ) {
+				sampleColor = sampleColor + pIntegrator->EvaluateNEE(
+					pScene, *pCaster, sampler, eyeVerts, eyeMis, mVCMNormalization );
+
+				if( !localLightVerts.empty() && !lightMis.empty() ) {
+					sampleColor = sampleColor + pIntegrator->EvaluateInteriorConnections(
+						pScene, *pCaster,
+						localLightVerts, lightMis,
+						eyeVerts, eyeMis,
+						mVCMNormalization );
 				}
+			}
 
-				if( mVCMNormalization.mEnableVC ) {
-					sampleColor = sampleColor + pIntegrator->EvaluateNEE(
-						pScene, *pCaster, sampler, branchEyeVerts, eyeMis, mVCMNormalization );
-
-					// Interior connections: one contribution per
-					// (light-branch, eye-branch) pair.
-					for( size_t lb = 0; lb < numLightBranches; lb++ ) {
-						const uint32_t lbeg = localLightSubpathStarts[lb];
-						const uint32_t lend = localLightSubpathStarts[lb + 1];
-						if( lbeg >= lend ) continue;
-						branchLightVerts.assign(
-							localLightVerts.begin() + lbeg, localLightVerts.begin() + lend );
-						branchLightMis.clear();
-						branchLightStoreScratch.clear();
-						VCMIntegrator::ConvertLightSubpath(
-							branchLightVerts, mVCMNormalization, branchLightStoreScratch, &branchLightMis );
-						if( !branchLightVerts.empty() && !branchLightMis.empty() ) {
-							sampleColor = sampleColor + pIntegrator->EvaluateInteriorConnections(
-								pScene, *pCaster,
-								branchLightVerts, branchLightMis,
-								branchEyeVerts, eyeMis,
-								mVCMNormalization );
-						}
-					}
-				}
-
-				if( pLightVertexStore && mVCMNormalization.mEnableVM ) {
-					sampleColor = sampleColor + pIntegrator->EvaluateMerges(
-						branchEyeVerts, eyeMis, *pLightVertexStore, mVCMNormalization );
-				}
+			if( pLightVertexStore && mVCMNormalization.mEnableVM ) {
+				sampleColor = sampleColor + pIntegrator->EvaluateMerges(
+					eyeVerts, eyeMis, *pLightVertexStore, mVCMNormalization );
 			}
 
 			// Clamp per-SmallVCM convention.

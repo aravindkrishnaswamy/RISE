@@ -4065,19 +4065,36 @@ unsigned int ManifoldSolver::SnellContinueChain(
 //////////////////////////////////////////////////////////////////////
 // BuildSeedChainBranching
 //
-//   Branching seed-chain builder.  At each sub-critical dielectric
-//   vertex, decides between SPLITTING the chain into both Fresnel-
-//   reflection and refraction continuations (when running throughput
-//   exceeds `config.branchingThreshold`) or Russian-roulette picking
-//   one branch weighted by Fr (otherwise).  See header doc-comment
-//   for the math and the caller's `contribution / proposalPdf` step.
+//   Historical name retained as a thin wrapper around BuildSeedChain
+//   after path-tree branching was excised in 2026-05.  This wrapper
+//   packages the single chain into the legacy `SeedChainResult`
+//   vector format with `proposalPdf = 1.0` so call sites don't
+//   require restructuring.
 //
-//   Implemented iteratively with a stack of partial-chain "frames"
-//   to bound the worst-case fan-out at 2^k (k = chain length) and
-//   avoid recursive call cost.  Frames are moved through the stack;
-//   the reflection branch copies its frame's chain because both
-//   branches need an unmodified prefix, the refraction branch is the
-//   moved tail.
+//   ⚠ DELIBERATE SCOPE REDUCTION: The seed builder is DETERMINISTIC,
+//   not stochastic.  At each dielectric vertex it follows refraction
+//   when Snell succeeds; reflection is taken only on TIR.  This means
+//   non-TIR Fresnel-reflection seed chains through dielectrics are
+//   NO LONGER SEEDED by SMS.  Caustics that previously relied on the
+//   Fresnel-branching seed builder (e.g. caustics inside a closed
+//   dielectric shell where the entry vertex's reflection branch
+//   contributes meaningful energy) are now MISSED by SMS.
+//
+//   What still works:
+//     • Pure-refraction caustics through dielectric chains (snell
+//       and uniform mode both find these).
+//     • TIR caustics (BuildSeedChain follows TIR deterministically).
+//     • Pure-mirror multi-bounce chains (diacaustic) — covered by
+//       the pure-mirror supplemental loop in EvaluateAtShadingPoint.
+//
+//   Recommended for missed caustics: VCM (`vcm_pel_rasterizer` with
+//   `vm_enabled true`) or photon mapping, both of which find Fresnel-
+//   reflection caustics through dielectric chains via density
+//   estimation rather than manifold seed construction.
+//
+//   This matches Mitsuba's SOTA SMS scope (Mitsuba's reference seed
+//   builder is also pure-refraction; reflection caustics through
+//   dielectrics are out of scope there too).
 //////////////////////////////////////////////////////////////////////
 
 unsigned int ManifoldSolver::BuildSeedChainBranching(
@@ -4090,440 +4107,22 @@ unsigned int ManifoldSolver::BuildSeedChainBranching(
 	bool applyEmitterStop
 	) const
 {
-	(void)caster;
+	(void)sampler;	// no longer needed since we don't RR-pick branches
 	out.clear();
 
-	Vector3 initialDir = Vector3Ops::mkVector3( end, start );
-	const Scalar totalDist = Vector3Ops::NormalizeMag( initialDir );
-	if( totalDist < NEARZERO ) return 0;
-
-	const IObjectManager* pObjMgr = scene.GetObjects();
-	if( !pObjMgr ) return 0;
-
-	// Per-frame state: a partial chain mid-construction.  Stack-
-	// based traversal so we can branch by pushing one extra frame.
-	//
-	// Throughput-gated branching — every dielectric vertex with
-	// running throughput > `config.branchingThreshold` produces TWO
-	// continuation chains (reflect + refract).  Once throughput
-	// decimates below the gate, subsequent Fresnel-decision vertices
-	// fall back to Russian-roulette pick weighted by Fr (recorded in
-	// `proposalPdf`).  Total chain count is bounded at 2^k (k = chain
-	// length) but in practice self-limits because each reflection
-	// branch's throughput drops by factor Fr ≈ 0.04 — those branches
-	// are immediately below threshold and don't re-split.
-	//
-	// Note: this is more aggressive than PT's `!splitFired` semantic
-	// (which splits once per camera ray).  SMS needs the fuller
-	// branching because each chain represents a distinct caustic
-	// path that contributes its own energy — refract-refract,
-	// refract-reflect, and reflect-only at v0 are all physically
-	// separate paths through nested dielectrics, each with its own
-	// caustic.  Single-split would miss the refract-reflect class.
-	struct Frame {
-		std::vector<ManifoldVertex> chain;
-		Point3                     currentOrigin;
-		Vector3                    dir;
-		Scalar                     currentIOR;
-		IORStack                   seedIor;
-		Scalar                     throughput;   // running max(Fresnel-factor) product
-		Scalar                     proposalPdf;  // running RR-pick pdf product
-
-		Frame()
-			: currentOrigin( 0, 0, 0 )
-			, dir( 0, 0, 0 )
-			, currentIOR( 1.0 )
-			, seedIor( 1.0 )
-			, throughput( 1.0 )
-			, proposalPdf( 1.0 )
-		{}
-	};
-
-	const Scalar offsetEps   = 1e-2;
-	const Scalar bThreshold  = config.branchingThreshold;
-	const unsigned int maxDepth = config.maxChainDepth;
-	const unsigned int maxFrames = 1u << 8;   // safety cap (2^k can blow up; bound it)
-	unsigned int framesPopped = 0;
-
-	// EMITTER STOP — same fix as in SnellContinueChain.  Stop adding
-	// vertices once a candidate hit's projection along the original
-	// (start→end) direction exceeds totalDist (with a small refraction-
-	// bending margin).  Without this gate, the seed-builder over-traces
-	// past the emitter when the emitter is INSIDE a closed dielectric
-	// shell (e.g. interior light in a Veach-egg cavity), capturing
-	// downstream specular surfaces whose half-vector roots are
-	// algebraically valid but geometrically wrong-topology — Newton
-	// converges, then ValidateChainPhysics rejects.  Empirically this
-	// was 99.98 % of all phys-fails on the displaced Veach egg.
-	const Point3  origStart      = start;
-	const Vector3 origDir        = initialDir;
-	const Scalar  emitterCutoff  = totalDist * 1.05;
-
-	std::vector<Frame> active;
-	active.reserve( 8 );
-	{
-		Frame f0;
-		f0.currentOrigin = start;
-		f0.dir           = initialDir;
-		active.push_back( std::move( f0 ) );
-	}
-
-	while( !active.empty() )
-	{
-		Frame f = std::move( active.back() );
-		active.pop_back();
-
-		// Outer safety: cap total work per call.  Cheaper than letting
-		// pathological scenes (e.g. many overlapping dielectric layers)
-		// produce 2^k frames.
-		if( ++framesPopped > maxFrames ) {
-			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
-			continue;
-		}
-
-		// Depth cap — emit chain as terminal.
-		if( f.chain.size() >= maxDepth ) {
-			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
-			continue;
-		}
-		// TARGET BOUNCES cap (Mitsuba `m_config.bounces` analogue) —
-		// emit chain as terminal once it reaches the configured target
-		// length.  Snell-mode call sites still use the emitter-stop in
-		// addition; uniform-mode call sites rely on this cap.
-		if( config.targetBounces > 0 && f.chain.size() >= config.targetBounces ) {
-			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
-			continue;
-		}
-
-		// Single ray-cast step.
-		Point3 offsetOrigin = Point3Ops::mkPoint3(
-			f.currentOrigin, f.dir * offsetEps );
-		Ray ray( offsetOrigin, f.dir );
-		RayIntersection ri( ray, nullRasterizerState );
-		pObjMgr->IntersectRay( ri, true, true, false );
-		if( ri.geometric.bHit && ri.pModifier ) {
-			ri.pModifier->Modify( ri.geometric );
-		}
-
-		if( !ri.geometric.bHit ) {
-			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
-			continue;
-		}
-
-		// Self-intersection guard — re-step from the just-hit surface.
-		if( ri.geometric.range < offsetEps * 2.0 && !f.chain.empty() &&
-			ri.pObject == f.chain.back().pObject )
-		{
-			f.currentOrigin = Point3Ops::mkPoint3(
-				ri.geometric.ptIntersection, f.dir * offsetEps );
-			active.push_back( std::move( f ) );
-			continue;
-		}
-
-		// Safety: don't trace forever.
-		if( ri.geometric.range > totalDist * 3.0 ) {
-			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
-			continue;
-		}
-
-		// EMITTER STOP (snell-mode only — see SnellContinueChain).
-		// Uniform-mode passes `applyEmitterStop = false` so the cap
-		// doesn't clip on the caster sample point.
-		if( applyEmitterStop )
-		{
-			const Vector3 hitOffset = Vector3Ops::mkVector3(
-				ri.geometric.ptIntersection, origStart );
-			if( Vector3Ops::Dot( hitOffset, origDir ) > emitterCutoff )
-			{
-				out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
-				continue;
-			}
-		}
-
-		const IMaterial* pMat = ri.pMaterial;
-		if( !pMat ) {
-			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
-			continue;
-		}
-
-		SpecularInfo specInfo = pMat->GetSpecularInfo( ri.geometric, f.seedIor );
-		if( !specInfo.isSpecular ) {
-			out.push_back( SeedChainResult{ std::move( f.chain ), f.proposalPdf } );
-			continue;
-		}
-
-		// Build the vertex once — branch logic mutates `isReflection`
-		// after pushing.
-		ManifoldVertex mv;
-		mv.position    = ri.geometric.ptIntersection;
-		mv.normal      = ri.geometric.vNormal;
-		mv.geomNormal  = ri.geometric.vGeomNormal;
-		mv.uv          = ri.geometric.ptCoord;
-		mv.pObject     = ri.pObject;
-		mv.pMaterial   = pMat;
-		mv.eta         = specInfo.ior;
-		mv.attenuation = specInfo.attenuation;
-		mv.canRefract  = specInfo.canRefract;
-		mv.isReflection = !specInfo.canRefract;
-		mv.valid       = false;
-
-		f.seedIor.SetCurrentObject( ri.pObject );
-		const bool sameObjectAgain = f.seedIor.containsCurrent();
-		// Side-of-surface decision uses the geometric normal — see the
-		// equivalent comment in BuildSeedChain above.  Geometric on
-		// bump-mapped dielectrics avoids etaI/etaT inversion that
-		// ValidateChainPhysics catches downstream.
-		const Vector3& sideN = ( Vector3Ops::SquaredModulus( mv.geomNormal )
-			> NEARZERO ) ? mv.geomNormal : mv.normal;
-		const Scalar cosI = Vector3Ops::Dot( f.dir, sideN );
-		const bool bEntering = sameObjectAgain ? false : (cosI < 0);
-		mv.isExiting = !bEntering;
-		if( bEntering ) {
-			mv.etaI = f.currentIOR;
-			mv.etaT = specInfo.ior;
-		} else {
-			mv.etaI = specInfo.ior;
-			mv.etaT = f.currentIOR;
-		}
-
-		f.chain.push_back( mv );
-		const std::size_t idxJustPushed = f.chain.size() - 1;
-		const Point3 hitPos = ri.geometric.ptIntersection;
-
-		// Pure mirror — single continuation, no branch / RR.
-		if( !specInfo.canRefract ) {
-			const Scalar cosI_refl = -Vector3Ops::Dot( f.dir, mv.normal );
-			f.dir = f.dir + mv.normal * (2.0 * cosI_refl);
-			f.dir = Vector3Ops::Normalize( f.dir );
-			f.currentOrigin = hitPos;
-			f.throughput *= ColorMath::MaxValue( specInfo.attenuation );
-			active.push_back( std::move( f ) );
-			continue;
-		}
-
-		// Dielectric: compute the refraction-side geometry first so the
-		// reflection branch can borrow `cosI2` (Fresnel argument) and
-		// the refraction branch can use `etaRatio` / `sin2T`.
-		Vector3 nFace = mv.normal;
-		Scalar etaRatio;
-		if( bEntering ) {
-			etaRatio = f.currentIOR / specInfo.ior;
-		} else {
-			etaRatio = specInfo.ior / f.currentIOR;
-			if( Vector3Ops::Dot( f.dir, nFace ) > 0 ) nFace = nFace * (-1.0);
-		}
-		if( Vector3Ops::Dot( f.dir, nFace ) > 0 ) nFace = nFace * (-1.0);
-
-		const Scalar cosI2 = -Vector3Ops::Dot( f.dir, nFace );
-		const Scalar sin2T = etaRatio * etaRatio * (1.0 - cosI2 * cosI2);
-
-		// TIR — forced reflection.  No Fresnel branch / RR.
-		if( sin2T > 1.0 ) {
-			f.chain[ idxJustPushed ].isReflection = true;
-			f.dir = f.dir + nFace * (2.0 * cosI2);
-			f.dir = Vector3Ops::Normalize( f.dir );
-			f.currentOrigin = hitPos;
-			active.push_back( std::move( f ) );
-			continue;
-		}
-
-		// Sub-critical dielectric: Fresnel decision point.
-		const Scalar Fr = ComputeDielectricFresnel( cosI2, mv.etaI, mv.etaT );
-		// Branch at every dielectric vertex whose running throughput
-		// is high enough — this is "Option B for the first N levels,
-		// then Option A in the tail" as the throughput naturally
-		// decimates with each Fresnel multiplication.  Unlike PT (which
-		// splits once per camera ray because later recursive frames
-		// inherit splitFired), SMS enumerates distinct caustic chains
-		// — refract-refract, refract-reflect, reflect-only at v0 are
-		// each separate physical paths that contribute their own
-		// caustic.  Single-split would miss the refract-reflect-refract
-		// class on nested dielectrics (e.g. Veach-egg's outer-then-
-		// inner-cavity reflection caustic), which is exactly the
-		// energy we're trying to recover.
-		const bool shouldBranch = ( f.throughput > bThreshold );
-
-		// Refraction continuation — built from f (or its post-RR-pick
-		// state) into either the same f or a fresh frame depending on
-		// branching.
-		auto applyRefraction = [&]( Frame& target, Scalar weight, Scalar pdfFactor ) {
-			const Scalar cosT = std::sqrt( 1.0 - sin2T );
-			target.dir = target.dir * etaRatio + nFace * (etaRatio * cosI2 - cosT);
-			target.dir = Vector3Ops::Normalize( target.dir );
-			if( bEntering ) {
-				target.currentIOR = specInfo.ior;
-				target.seedIor.SetCurrentObject( ri.pObject );
-				target.seedIor.push( specInfo.ior );
-			} else {
-				if( sameObjectAgain ) {
-					target.seedIor.SetCurrentObject( ri.pObject );
-					target.seedIor.pop();
-					target.currentIOR = target.seedIor.top();
-				} else {
-					target.currentIOR = 1.0;
-				}
-				target.chain[ idxJustPushed ].etaT = target.currentIOR;
-			}
-			target.currentOrigin = hitPos;
-			target.throughput   *= weight;
-			target.proposalPdf  *= pdfFactor;
-		};
-
-		auto applyReflection = [&]( Frame& target, Scalar weight, Scalar pdfFactor ) {
-			target.chain[ idxJustPushed ].isReflection = true;
-			target.dir = target.dir + nFace * (2.0 * cosI2);
-			target.dir = Vector3Ops::Normalize( target.dir );
-			target.currentOrigin = hitPos;
-			target.throughput   *= weight;
-			target.proposalPdf  *= pdfFactor;
-		};
-
-		if( shouldBranch )
-		{
-			// Branch: spawn the reflection continuation and move the
-			// original f onto the refraction branch.
-			//
-			// Reflection branch — uniform-area-resampled v_i.
-			//
-			//   The Snell-trace places this just-pushed vertex in the
-			//   REFRACTION-root basin (that's where it hit on the way
-			//   through).  Newton walking the chain from there to the
-			//   REFLECTION-root basin diverges most of the time —
-			//   verified via per-seed convergence stats: 87% solveOK
-			//   on refract-refract vs 0% on the reflect-only chain at
-			//   the same v0 position.
-			//
-			//   Fix: for the reflection branch, REPLACE the just-pushed
-			//   vertex's position with a uniform-area sample on the
-			//   same caster (Mitsuba `manifold_ss::sample_path`-style).
-			//   Across many spp, uniform-area sampling reaches every
-			//   reflection-root basin statistically — Newton then
-			//   converges from a seed that's actually near the root.
-			//
-			//   Visibility check: the ray from `start` to the new
-			//   position must hit this caster as the FIRST specular
-			//   interaction (matches Mitsuba's `si_init.shape != shape`
-			//   rejection).  If blocked, the reflection branch is
-			//   dropped (correctly biased toward zero — the path
-			//   doesn't physically exist for this shading point).
-			//
-			//   The resulting chain is TRUNCATED at this vertex (k = i+1)
-			//   — we don't continue Snell-tracing from the reflected
-			//   ray because the new uniform-sampled position has no
-			//   meaningful "continuing" trace direction.  Multi-bounce
-			//   reflection chains beyond the split point are not
-			//   captured here; that's a deeper extension (deferred).
-			//
-			//   The refraction branch is UNCHANGED — keeps the Snell-
-			//   trace seed where Newton converges reliably.
-			{
-				Frame reflectFrame = f;   // deep-copy chain + IORStack
-				ManifoldVertex& vi = reflectFrame.chain[ idxJustPushed ];
-
-				Point3 sampledPos;
-				Vector3 sampledNormal;
-				Point2 sampledUv;
-				mv.pObject->UniformRandomPoint(
-					&sampledPos, &sampledNormal, &sampledUv,
-					Point3( sampler.Get1D(), sampler.Get1D(), sampler.Get1D() ) );
-
-				// Visibility from start to the new sampled position.
-				// We re-use the ray-cast result for accurate hit data
-				// (modifier-aware, matching the rest of BuildSeedChain).
-				Vector3 dirToSample = Vector3Ops::mkVector3( sampledPos, start );
-				const Scalar distToSample = Vector3Ops::NormalizeMag( dirToSample );
-
-				bool reflectAccepted = false;
-				if( distToSample > NEARZERO )
-				{
-					Ray visRay( start, dirToSample );
-					RayIntersection visRi( visRay, nullRasterizerState );
-					pObjMgr->IntersectRay( visRi, true, true, false );
-					if( visRi.geometric.bHit && visRi.pModifier ) {
-						visRi.pModifier->Modify( visRi.geometric );
-					}
-
-					if( visRi.geometric.bHit && visRi.pObject == mv.pObject )
-					{
-						vi.position    = visRi.geometric.ptIntersection;
-						vi.normal      = visRi.geometric.vNormal;
-						// Populate vi.geomNormal — without this, the
-						// reflection-branch resampled vertex carries the
-						// stale geomNormal from before the resample, and
-						// ValidateChainPhysics's NEARZERO fallback silently
-						// degrades to shading on exactly the chains this
-						// branching path was added to capture.
-						vi.geomNormal  = visRi.geometric.vGeomNormal;
-						vi.uv          = visRi.geometric.ptCoord;
-						vi.isReflection = true;
-						vi.valid       = false;
-
-						// Determine entering vs exiting from the new
-						// trace direction at the sampled point.  Geometric
-						// normal here for the same reason as the seed-chain
-						// builder above.
-						const Vector3& vsN = ( Vector3Ops::SquaredModulus( vi.geomNormal )
-							> NEARZERO ) ? vi.geomNormal : vi.normal;
-						const Scalar cosI_new = Vector3Ops::Dot( dirToSample, vsN );
-						const bool bEnt = ( cosI_new < 0 );
-						vi.isExiting = !bEnt;
-						if( bEnt ) {
-							vi.etaI = 1.0;   // assume air on the start side at v0
-							vi.etaT = mv.eta;
-						} else {
-							vi.etaI = mv.eta;
-							vi.etaT = 1.0;
-						}
-
-						// Truncate the chain at this vertex (k = idxJustPushed + 1)
-						reflectFrame.chain.resize( idxJustPushed + 1 );
-						reflectFrame.throughput *= Fr;
-						out.push_back( SeedChainResult{
-							std::move( reflectFrame.chain ),
-							reflectFrame.proposalPdf } );
-						reflectAccepted = true;
-					}
-				}
-				(void)reflectAccepted;   // dropped silently if false
-			}
-
-			// Refraction branch — Snell-trace continues unchanged.
-			applyRefraction( f, 1.0 - Fr, 1.0 );
-			active.push_back( std::move( f ) );
-		}
-		else
-		{
-			// RR pick weighted by Fr.  Multiplying `proposalPdf` by Fr
-			// (or 1-Fr) ensures the caller's `contribution / proposalPdf`
-			// cancels the BSDF's Fresnel factor (`EvaluateChainThroughput`
-			// returns `Fr` for reflection / `1-Fr` for refraction).
-			const Scalar u = sampler.Get1D();
-			if( u < Fr ) {
-				applyReflection( f, Fr, Fr );
-			} else {
-				applyRefraction( f, 1.0 - Fr, 1.0 - Fr );
-			}
-			active.push_back( std::move( f ) );
-		}
-	}
-
-	// TARGET BOUNCES: Mitsuba-faithful exact-length requirement.  Filter
-	// the emitted chains to only those matching `config.targetBounces`.
-	// Default 0 = no filter (back-compat).  Active in both snell and
-	// uniform mode call sites.
-	if( config.targetBounces > 0 )
-	{
-		const unsigned int target = config.targetBounces;
-		out.erase(
-			std::remove_if( out.begin(), out.end(),
-				[target]( const SeedChainResult& r ) {
-					return r.chain.size() != target;
-				} ),
-			out.end() );
+	std::vector<ManifoldVertex> chain;
+	const unsigned int chainLen = BuildSeedChain(
+		start, end, scene, caster, chain, applyEmitterStop );
+	if( chainLen > 0 && !chain.empty() ) {
+		SeedChainResult sole;
+		sole.chain      = std::move( chain );
+		sole.proposalPdf = Scalar( 1 );
+		out.push_back( std::move( sole ) );
 	}
 
 	return static_cast<unsigned int>( out.size() );
 }
+
 
 //////////////////////////////////////////////////////////////////////
 // EvaluateChainThroughput
@@ -6180,37 +5779,20 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	SMSLoopSampler loopScope( sampler );
 	ISampler& loopSampler = loopScope.sampler;
 
-	// Build seed chain toward the light sample.  When `branchingThreshold
-	// < 1.0` use the Fresnel-branching builder so a Snell-traced shading-
-	// point→light seed at a high-throughput sub-critical dielectric vertex
-	// produces BOTH refraction and reflection continuation chains.  PT-
-	// faithful single-split (matches `PathTracingIntegrator.cpp:1791`).
-	// Each branched chain is consumed as a separate "base trial" in the
-	// multi-trial loop below.
+	// Single-chain Snell-trace seed.  Path-tree branching was excised
+	// in 2026-05 (matches Mitsuba SOTA: single stochastic seed per
+	// trial; multi-trial averaging via `multiTrials` for variance
+	// reduction on multi-modal scenes).
 	std::vector<SeedChainResult> baseSeeds;
-	if( config.branchingThreshold < 1.0 ) {
-		BuildSeedChainBranching(
-			pos, lightSample.position,
-			scene, caster, loopSampler, baseSeeds );
-	}
 	std::vector<ManifoldVertex> seedChain;
-	unsigned int chainLen = 0;
-	if( !baseSeeds.empty() && !baseSeeds[0].chain.empty() ) {
-		seedChain = baseSeeds[0].chain;
-		chainLen = static_cast<unsigned int>( seedChain.size() );
-	} else {
-		// Branching off, or branching produced nothing usable — legacy
-		// single-chain Snell-trace.
-		baseSeeds.clear();
-		chainLen = BuildSeedChain(
-			pos, lightSample.position,
-			scene, caster, seedChain );
-		if( chainLen > 0 && !seedChain.empty() ) {
-			SeedChainResult lone;
-			lone.chain = seedChain;
-			lone.proposalPdf = 1.0;
-			baseSeeds.push_back( std::move( lone ) );
-		}
+	unsigned int chainLen = BuildSeedChain(
+		pos, lightSample.position,
+		scene, caster, seedChain );
+	if( chainLen > 0 && !seedChain.empty() ) {
+		SeedChainResult lone;
+		lone.chain = seedChain;
+		lone.proposalPdf = 1.0;
+		baseSeeds.push_back( std::move( lone ) );
 	}
 
 	if( chainLen == 0 || seedChain.empty() )
@@ -6272,91 +5854,71 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	//
 	// The Snell-trace from shading-point toward light cannot find
 	// pure-mirror multi-bounce chains (e.g. diacaustic) — the
-	// reflection law that determines the true seed positions
-	// doesn't lie on the shading→light line.  Snell-mode therefore
-	// historically misses cardioid / diacaustic patterns that
-	// uniform-mode finds easily by sampling directly on the mirror.
+	// reflection law that determines the true seed positions doesn't
+	// lie on the shading→light line.  Snell-mode therefore historically
+	// misses cardioid / diacaustic patterns unless we supplement.
 	//
-	// Supplement: for each pure-mirror caster (canRefract=false),
-	// draw one uniform-area sample on the caster and call
-	// BuildSeedChainBranching with end = sampled point.  The
-	// resulting chain naturally Snell-continues from the mirror hit
-	// (so a 2-bounce diacaustic gets v0 from uniform sampling and
-	// v1 from the reflected ray's next specular hit).  Append the
-	// resulting chains to `baseSeeds` so the trial loop runs Newton
-	// on them.
+	// Supplement: for each pure-mirror caster (canRefract=false), draw
+	// `multi_trials` uniform-area samples on the caster and call
+	// BuildSeedChain with end = sampled point.  The resulting chain
+	// Snell-continues from the mirror hit (so a 2-bounce diacaustic
+	// gets v0 from uniform sampling and v1 from the reflected ray's
+	// next specular hit).  Append the resulting chains to `baseSeeds`
+	// so the trial loop runs Newton on them.  No-op when
+	// `mSpecularCasters` is empty (rasterizer didn't populate it).
 	//
-	// Only applies to PURE MIRROR casters — dielectric reflection
-	// branches are handled by the in-`BuildSeedChainBranching`
-	// uniform-area resample above.  No-op when `mSpecularCasters`
-	// is empty (rasterizer didn't populate it).
-	if( config.branchingThreshold < 1.0 )
+	// `applyEmitterStop = false`: the uniform-area sample point is a
+	// direction probe, NOT the emitter — applying the projection cap
+	// would silently truncate diacaustic chains to k=1.
+	for( const IObject* pMirrorCaster : mSpecularCasters )
 	{
-		for( const IObject* pMirrorCaster : mSpecularCasters )
+		if( !pMirrorCaster ) continue;
+		const IMaterial* pMat = pMirrorCaster->GetMaterial();
+		if( !pMat ) continue;
+
+		// Probe whether this caster is a pure mirror (canRefract=false).
+		// A deterministic prand here is fine — the result is a binary
+		// caster classification, not a sampling step.
+		Point3 probePos;
+		Vector3 probeNormal;
+		Point2 probeUv;
+		pMirrorCaster->UniformRandomPoint(
+			&probePos, &probeNormal, &probeUv,
+			Point3( 0.5, 0.5, 0.5 ) );
+		Ray probeRay( probePos, probeNormal );
+		RayIntersectionGeometric probeRig( probeRay, nullRasterizerState );
+		probeRig.bHit          = true;
+		probeRig.ptIntersection = probePos;
+		probeRig.vNormal       = probeNormal;
+		probeRig.ptCoord       = probeUv;
+		IORStack probeIor( 1.0 );
+		SpecularInfo probeSpec = pMat->GetSpecularInfo( probeRig, probeIor );
+		if( probeSpec.canRefract ) {
+			continue;   // dielectric — skip in snell-mode supplement
+		}
+
+		const unsigned int M = std::max( config.multiTrials, 1u );
+		for( unsigned int m = 0; m < M; m++ )
 		{
-			if( !pMirrorCaster ) continue;
-			const IMaterial* pMat = pMirrorCaster->GetMaterial();
-			if( !pMat ) continue;
-
-			// Probe whether this caster is a pure mirror (canRefract=false).
-			// A deterministic prand here is fine — the result is a binary
-			// caster classification, not a sampling step.
-			Point3 probePos;
-			Vector3 probeNormal;
-			Point2 probeUv;
+			Point3 sp;
+			Vector3 sn;
+			Point2 sc;
 			pMirrorCaster->UniformRandomPoint(
-				&probePos, &probeNormal, &probeUv,
-				Point3( 0.5, 0.5, 0.5 ) );
-			Ray probeRay( probePos, probeNormal );
-			RayIntersectionGeometric probeRig( probeRay, nullRasterizerState );
-			probeRig.bHit          = true;
-			probeRig.ptIntersection = probePos;
-			probeRig.vNormal       = probeNormal;
-			probeRig.ptCoord       = probeUv;
-			IORStack probeIor( 1.0 );
-			SpecularInfo probeSpec = pMat->GetSpecularInfo( probeRig, probeIor );
-			if( probeSpec.canRefract ) {
-				continue;   // dielectric — handled by BuildSeedChainBranching
-			}
+				&sp, &sn, &sc,
+				Point3( loopSampler.Get1D(),
+				        loopSampler.Get1D(),
+				        loopSampler.Get1D() ) );
 
-			// M independent uniform-area samples per pure-mirror caster
-			// (matches uniform-mode's `multi_trials` budget on the
-			// caster).  Mitsuba's biased SMS does this same M-trial
-			// dedupe-and-sum on every caster shape; we only do it for
-			// pure-mirror casters here because dielectrics are already
-			// handled by BuildSeedChainBranching's per-vertex split.
-			const unsigned int M = std::max( config.multiTrials, 1u );
-			for( unsigned int m = 0; m < M; m++ )
-			{
-				Point3 sp;
-				Vector3 sn;
-				Point2 sc;
-				pMirrorCaster->UniformRandomPoint(
-					&sp, &sn, &sc,
-					Point3( loopSampler.Get1D(),
-					        loopSampler.Get1D(),
-					        loopSampler.Get1D() ) );
-
-				// Build chain: start → sampled mirror point.  Branching
-				// continues the Snell-trace from the mirror, so
-				// reflection-into-second-mirror chains (diacaustic) are
-				// captured automatically as k=2+ chains.  Pass
-				// `applyEmitterStop = false`: `sp` is a uniform-area
-				// sample on the mirror caster (a direction probe), NOT
-				// the emitter — same rationale as uniform-mode call
-				// sites (see commit 7bc6e3f).  Without this flag the
-				// projection cap fires at `|sp − pos| × 1.05`,
-				// silently truncating diacaustic chains to k=1.
-				std::vector<SeedChainResult> mirrorChains;
-				BuildSeedChainBranching(
-					pos, sp, scene, caster, loopSampler, mirrorChains,
-					/*applyEmitterStop=*/ false );
-
-				for( SeedChainResult& mc : mirrorChains ) {
-					if( !mc.chain.empty() && mc.chain[0].pObject == pMirrorCaster ) {
-						baseSeeds.push_back( std::move( mc ) );
-					}
-				}
+			std::vector<ManifoldVertex> mirrorChain;
+			const unsigned int mirrorLen = BuildSeedChain(
+				pos, sp, scene, caster, mirrorChain,
+				/*applyEmitterStop=*/ false );
+			if( mirrorLen > 0 && !mirrorChain.empty() &&
+			    mirrorChain[0].pObject == pMirrorCaster ) {
+				SeedChainResult mc;
+				mc.chain      = std::move( mirrorChain );
+				mc.proposalPdf = Scalar( 1 );
+				baseSeeds.push_back( std::move( mc ) );
 			}
 		}
 	}
@@ -6533,8 +6095,8 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// vertex, lsb = vertex 0).  Two trials with the SAME first-vertex
 	// position but DIFFERENT Fresnel-branch patterns (e.g. one chain
 	// is refract-refract, sibling is refract-reflect) are distinct
-	// roots — without this, the Option-C branching's pair of
-	// chain-variants gets collapsed by first-vertex dedupe alone.
+	// roots — without this, multi-trial sibling chains at the same
+	// first-vertex collapse under position-only dedupe.
 	std::vector<unsigned long long> acceptedRootReflectMasks;
 	auto buildReflectMask = []( const std::vector<ManifoldVertex>& ch ) -> unsigned long long {
 		unsigned long long mask = 0;
@@ -6573,9 +6135,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	// the trial loop's `trial >= numBaseSeeds` branch never sees most of
 	// the queried photons even when QuerySeeds returned hundreds.
 	//
-	// Legacy parity: with `branchingThreshold == 1.0` and no photon map,
-	// `numBaseSeeds == 1` and `photonSeeds.size() == 0`, so totalTrials
-	// degenerates to N — the original behaviour.
+	// Single-seed parity: with no photon map, `numBaseSeeds == 1` and
+	// `photonSeeds.size() == 0`, so totalTrials degenerates to N
+	// (the snell-mode default; mirror-supplemental and photon-aided
+	// regimes can produce numBaseSeeds > 1 / photonSeeds non-empty).
 	const unsigned int totalTrials = static_cast<unsigned int>( numBaseSeeds )
 		+ static_cast<unsigned int>( photonSeeds.size() )
 		+ ( N > 0 ? N - 1 : 0 );
@@ -6800,11 +6363,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		if( !mResult.valid ) continue;
 
 		// Dedupe by (first-vertex world position, isReflection bitmask
-		// over all chain vertices).  First-vertex position alone was
-		// sufficient before Option-C Fresnel branching landed; with
-		// branching, two trials can share a first-vertex but flip
-		// reflect/refract on a later vertex — those are physically
-		// distinct caustic paths and must contribute separately.
+		// over all chain vertices).  Two multi-trial chains can share
+		// a first-vertex but differ on a later vertex's reflect/refract
+		// label — those are physically distinct caustic paths and must
+		// contribute separately.
 		const Point3& firstPos = mResult.specularChain[0].position;
 		const unsigned long long reflectMask =
 			buildReflectMask( mResult.specularChain );
@@ -6975,19 +6537,9 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 			trialContribution = trialContribution / mResult.pdf;
 		}
 
-		// Fresnel-branching proposal-pdf division (Option C — snell-mode
-		// trial 0 uses BuildSeedChainBranching which RR-picks one branch
-		// at sub-critical dielectric vertices when below threshold; the
-		// chain's `proposalPdf` is the product of those RR-pick weights).
-		// Dividing here cancels the Fr / (1-Fr) factor that
-		// `EvaluateChainThroughput` applies on the picked branch, leaving
-		// an unbiased estimator.  For non-branched trials (photons,
-		// surface-sample fallback) `trialProposalPdf` stays 1.0 and the
-		// division is a no-op.
-		if( trialProposalPdf > 1e-20 && trialProposalPdf != 1.0 )
-		{
-			trialContribution = trialContribution * ( 1.0 / trialProposalPdf );
-		}
+		// Proposal-pdf division.  Always 1.0 since SMS path-tree
+		// branching was excised in 2026-05; division retained as a
+		// no-op for downstream-call-shape compatibility.
 
 #if SMS_TRACE_DIAGNOSTIC
 		if( traceHere ) {
@@ -7206,11 +6758,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 
 	// Cross-trial dedupe key: (first-vertex world-space position,
 	// chain length, reflectMask).  Position+length alone is not
-	// sufficient when `BuildSeedChainBranching` produces Fresnel-
-	// branched siblings with the SAME first-vertex but DIFFERENT
-	// chain topology (e.g. one chain refracts at v1, sibling reflects
-	// at v1) — without the mask, the sibling is silently dropped as
-	// a duplicate.  Mirrors the snell-mode dedupe at line ~6517-6532.
+	// sufficient when multi-trial sibling chains have the SAME
+	// first-vertex but DIFFERENT chain topology (e.g. one refracts
+	// at v1, sibling reflects at v1) — without the mask, the sibling
+	// is silently dropped as a duplicate.
 	struct RootKey { Point3 pos; unsigned int chainLen; unsigned long long reflectMask; };
 	std::vector<RootKey> acceptedRoots;
 	acceptedRoots.reserve( mSpecularCasters.size() * 2 + 16 );
@@ -7270,11 +6821,12 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 		return true;
 	};
 
-	// Branched seed: uniform-area sample, then `BuildSeedChainBranching`
-	// produces one chain per Fresnel-decision combination (gated by
-	// `config.branchingThreshold`).  Caller divides each chain's
-	// contribution by `proposalPdf` to undo the RR weighting that
-	// `EvaluateChainThroughput`'s Fresnel factor cancels.
+	// Single-chain seed: uniform-area sample on caster, then
+	// `BuildSeedChainBranching` (now a thin wrapper around
+	// `BuildSeedChain`) produces one Snell-traced seed chain.  Per
+	// Mitsuba SOTA convention; multi-modal scenes get coverage via
+	// the `multi_trials` outer loop (M independent uniform-area
+	// samples per caster).
 	auto buildBranchedSeedsOnCaster = [&](
 		const IObject* pCasterObj,
 		std::vector<SeedChainResult>& outSeeds) -> bool
@@ -7326,18 +6878,14 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 			// converged solution; sum unweighted.  Cross-caster dedupe
 			// key is (first-vertex-pos, chainLen, reflectMask) so a chain
 			// rediscovered by a sibling caster contributes exactly once
-			// AND a Fresnel-branched sibling at the same first-vertex
-			// counts as distinct (see commit e853ab8).
+			// AND a multi-trial sibling that flipped reflect/refract on
+			// a later vertex counts as distinct (see commit e853ab8).
 			//
-			// `BuildSeedChainBranching` may return multiple seed chains
-			// per uniform-area sample when a Fresnel-decision-point's
-			// running throughput exceeds `config.branchingThreshold`
-			// (Option C handling — the same threshold that PT/BDPT use
-			// for delta-vertex split).  Each branch is its own
-			// Newton-eligible seed; the contribution is divided by the
-			// chain's `proposalPdf` to absorb the RR weighting that
-			// `EvaluateChainThroughput`'s Fresnel factor would otherwise
-			// double-count.
+			// Each `buildBranchedSeedsOnCaster` call produces 0 or 1
+			// seed chains (path-tree branching was excised in 2026-05;
+			// the legacy multi-output shape is preserved for ABI
+			// compatibility).  The `proposalPdf` is always 1.0 so the
+			// `1/proposalPdf` divide is a no-op.
 			const unsigned int M = std::max( config.multiTrials, 1u );
 
 			for( unsigned int m = 0; m < M; m++ )
@@ -8121,12 +7669,11 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	}
 
 	// Dedupe key: (firstPos, chainLen, reflectMask) — same three-field
-	// scheme as RGB snell mode (`EvaluateAtShadingPoint` line ~6517).
-	// Position-only dedupe (the prior NM-snell behaviour) silently
-	// collapsed Fresnel-branched siblings AND distinct k-vs-k+2 chain
-	// topologies that shared a first-vertex; mirroring the RGB snell
-	// scheme keeps spectral and RGB results consistent on Fresnel-
-	// branched scenes (`branchingThreshold < 1.0`).
+	// scheme as RGB snell mode (`EvaluateAtShadingPoint`).  Position-
+	// only dedupe (the prior NM-snell behaviour) silently collapsed
+	// multi-trial sibling chains that share a first-vertex but flip
+	// reflect/refract on a later vertex, AND distinct k-vs-k+2 chain
+	// topologies that shared a first-vertex.
 	std::vector<Point3>             acceptedRootPositions;
 	std::vector<unsigned int>       acceptedRootChainLens;
 	std::vector<unsigned long long> acceptedRootReflectMasks;

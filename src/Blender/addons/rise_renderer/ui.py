@@ -57,7 +57,6 @@ class RISE_RENDER_PT_path_tracing(_RISEPanel):
 
         settings = context.scene.rise
         layout.enabled = settings.use_path_tracing
-        layout.prop(settings, "path_branch")
         layout.prop(settings, "sms_enabled")
 
         sms_col = layout.column()

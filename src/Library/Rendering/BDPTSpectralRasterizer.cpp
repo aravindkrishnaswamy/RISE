@@ -111,20 +111,14 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	lightVerts.clear();
 	eyeVerts.clear();
 
-	// Allow branching on both sides (pass -1 to use the configured
-	// threshold).  Per-(eye-branch × light-branch) loop below runs
-	// EvaluateAllStrategiesNM independently per pair; single-branch
-	// common case iterates exactly once and matches the pre-branching
-	// BDPT-Spectral behaviour bit-exactly.
+	// Single-subpath generation (no per-vertex branching at multi-lobe
+	// delta vertices).  Branching was excised in 2026-05; the
+	// `subpathStarts` outparam is retained for Phase-2 integrator
+	// cleanup but always contains exactly one [0, size) range.
 	// Non-HWSS single-wavelength NM — pSwlHWSS=nullptr disables the
 	// max-over-wavelengths RR gate (only hero wavelength exists here).
-	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, Scalar( -1 ), nullptr );
-	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, Scalar( -1 ), nullptr );
-
-	const size_t numEyeBranches = eyeSubpathStarts.size() >= 2 ?
-		( eyeSubpathStarts.size() - 1 ) : 0;
-	const size_t numLightBranches = lightSubpathStarts.size() >= 2 ?
-		( lightSubpathStarts.size() - 1 ) : 0;
+	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, nullptr );
+	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, nullptr );
 
 	// Extract first-hit AOV data for the denoiser (only on first wavelength)
 	if( pAOV ) {
@@ -149,115 +143,73 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 
 	Scalar sampleValue = 0;
 
-	static thread_local std::vector<BDPTVertex> branchEyeVerts;
-	static thread_local std::vector<BDPTVertex> branchLightVerts;
+	// Single-subpath EvaluateAllStrategiesNM call (no branching).
+	if( !eyeVerts.empty() )
+	{
+		std::vector<BDPTIntegrator::ConnectionResultNM> results =
+			pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, nm );
 
-	for( size_t eb = 0; eb < numEyeBranches; eb++ ) {
-		const uint32_t ebeg = eyeSubpathStarts[eb];
-		const uint32_t eend = eyeSubpathStarts[eb + 1];
-		if( ebeg >= eend ) continue;
-		branchEyeVerts.assign(
-			eyeVerts.begin() + ebeg, eyeVerts.begin() + eend );
-
-		const size_t lbIters = numLightBranches > 0 ? numLightBranches : 1;
-		for( size_t lb = 0; lb < lbIters; lb++ ) {
-			if( numLightBranches > 0 ) {
-				const uint32_t lbeg = lightSubpathStarts[lb];
-				const uint32_t lend = lightSubpathStarts[lb + 1];
-				if( lbeg >= lend ) continue;
-				branchLightVerts.assign(
-					lightVerts.begin() + lbeg, lightVerts.begin() + lend );
-			} else {
-				branchLightVerts.clear();
+		for( unsigned int r = 0; r < results.size(); r++ )
+		{
+			const BDPTIntegrator::ConnectionResultNM& cr = results[r];
+			if( !cr.valid ) {
+				continue;
 			}
 
-			std::vector<BDPTIntegrator::ConnectionResultNM> results =
-				pIntegrator->EvaluateAllStrategiesNM( branchLightVerts, branchEyeVerts, pScene, *pCaster, camera, nm );
+			Scalar weighted = cr.contribution * cr.misWeight;
 
-			for( unsigned int r = 0; r < results.size(); r++ )
+			// Clamp per-strategy contribution.  directClamp for s==1,
+			// indirectClamp for the rest. 0 = disabled.
 			{
-				const BDPTIntegrator::ConnectionResultNM& cr = results[r];
-				if( !cr.valid ) {
-					continue;
+				const Scalar clampVal = (cr.s == 1)
+					? BDPTRasterizerBase::stabilityConfig.directClamp
+					: BDPTRasterizerBase::stabilityConfig.indirectClamp;
+				if( clampVal > 0 && fabs(weighted) > clampVal ) {
+					weighted = (weighted > 0) ? clampVal : -clampVal;
 				}
+			}
 
-				// Dedupe light-branch-independent strategies (s==0: eye
-				// hits emitter; s==1: NEE reads only lightVerts[0]).
-				// See BDPTPelRasterizer for the full rationale.
-				if( (cr.s == 0 || cr.s == 1) && lb != 0 ) continue;
-
-				Scalar weighted = cr.contribution * cr.misWeight;
-
-				// Clamp per-strategy contribution.  directClamp for s==1,
-				// indirectClamp for the rest. 0 = disabled.
-				{
-					const Scalar clampVal = (cr.s == 1)
-						? BDPTRasterizerBase::stabilityConfig.directClamp
-						: BDPTRasterizerBase::stabilityConfig.indirectClamp;
-					if( clampVal > 0 && fabs(weighted) > clampVal ) {
-						weighted = (weighted > 0) ? clampVal : -clampVal;
-					}
+			if( cr.needsSplat && pSplatFilm )
+			{
+				XYZPel thisXYZ( 0, 0, 0 );
+				if( weighted > 0 && ColorUtils::XYZFromNM( thisXYZ, nm ) ) {
+					thisXYZ = thisXYZ * weighted;
+					const Scalar fx = cr.rasterPos.x;
+					const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+					SplatContributionToFilm( fx, fy,
+						RISEPel( thisXYZ.X, thisXYZ.Y, thisXYZ.Z ),
+						camera.GetWidth(), camera.GetHeight() );
 				}
-
-				if( cr.needsSplat && pSplatFilm )
-				{
-					// Deduplicate t=1 splats across eye branches — see
-					// BDPTPelRasterizer for the full rationale.  The
-					// light→camera contribution is eye-subpath-independent
-					// so firing it once (on eb==0) avoids N_E× over-
-					// counting when eye branching fires.
-					if( eb == 0 ) {
-						XYZPel thisXYZ( 0, 0, 0 );
-						if( weighted > 0 && ColorUtils::XYZFromNM( thisXYZ, nm ) ) {
-							thisXYZ = thisXYZ * weighted;
-							const Scalar fx = cr.rasterPos.x;
-							const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
-							SplatContributionToFilm( fx, fy,
-								RISEPel( thisXYZ.X, thisXYZ.Y, thisXYZ.Z ),
-								camera.GetWidth(), camera.GetHeight() );
-						}
-					}
-				}
-				else
-				{
-					sampleValue += weighted;
-				}
+			}
+			else
+			{
+				sampleValue += weighted;
 			}
 		}
 	}
 
-	// SMS contributions per eye-branch.  Each branch has its own
-	// first non-specular eye vertex, which is where SMS anchors
-	// its manifold chain.  Double-counting with BDPT's (s==0) is
-	// prevented by the matching suppression in
-	// BDPTIntegrator::ConnectAndEvaluateNM — see the long comment
-	// in the RGB Pel rasterizer for the MIS analysis.
-	if( pIntegrator ) {
+	// SMS contributions for the single eye subpath.  Double-counting
+	// with BDPT's (s==0) strategy is prevented by the matching
+	// suppression in BDPTIntegrator::ConnectAndEvaluateNM — see the
+	// long comment in the RGB Pel rasterizer for the MIS analysis.
+	if( pIntegrator && !eyeVerts.empty() ) {
 		sampler.StartStream( 31 );
-		for( size_t eb = 0; eb < numEyeBranches; eb++ ) {
-			const uint32_t ebeg = eyeSubpathStarts[eb];
-			const uint32_t eend = eyeSubpathStarts[eb + 1];
-			if( ebeg >= eend ) continue;
-			branchEyeVerts.assign(
-				eyeVerts.begin() + ebeg, eyeVerts.begin() + eend );
+		std::vector<BDPTIntegrator::ConnectionResultNM> smsResults =
+			pIntegrator->EvaluateSMSStrategiesNM(
+				eyeVerts, pScene, *pCaster, camera, sampler, nm );
 
-			std::vector<BDPTIntegrator::ConnectionResultNM> smsResults =
-				pIntegrator->EvaluateSMSStrategiesNM(
-					branchEyeVerts, pScene, *pCaster, camera, sampler, nm );
+		for( unsigned int r=0; r<smsResults.size(); r++ ) {
+			const BDPTIntegrator::ConnectionResultNM& cr = smsResults[r];
+			if( !cr.valid ) continue;
 
-			for( unsigned int r=0; r<smsResults.size(); r++ ) {
-				const BDPTIntegrator::ConnectionResultNM& cr = smsResults[r];
-				if( !cr.valid ) continue;
-
-				Scalar weighted = cr.contribution * cr.misWeight;
-				{
-					const Scalar clampVal = BDPTRasterizerBase::stabilityConfig.directClamp;
-					if( clampVal > 0 && fabs(weighted) > clampVal ) {
-						weighted = (weighted > 0) ? clampVal : -clampVal;
-					}
+			Scalar weighted = cr.contribution * cr.misWeight;
+			{
+				const Scalar clampVal = BDPTRasterizerBase::stabilityConfig.directClamp;
+				if( clampVal > 0 && fabs(weighted) > clampVal ) {
+					weighted = (weighted > 0) ? clampVal : -clampVal;
 				}
-				sampleValue += weighted;
 			}
+			sampleValue += weighted;
 		}
 	}
 
@@ -320,15 +272,14 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 
 			SobolSampler sampler( sampleIndex0, pixelSeed );
 
-			// Generate subpaths ONCE at hero wavelength.  Allow branching
-			// (pass -1 to use the configured threshold) — the per-branch
-			// loops below handle multi-branch output.  Companions
-			// recompute throughputNM per branch sub-range so the hero's
-			// geometric branching decisions are shared across wavelengths
-			// (safe for non-dispersive materials; dispersive paths already
-			// terminate secondaries via HasDispersiveDeltaVertex).
-			// Thread-local scratch — persists capacity across spectral
-			// samples and pixel samples to avoid per-call heap traffic.
+			// Generate subpaths ONCE at hero wavelength.  Single
+			// subpath each (path-tree branching was excised in
+			// 2026-05); companions recompute throughputNM on the
+			// shared geometry (safe for non-dispersive materials;
+			// dispersive paths already terminate secondaries via
+			// HasDispersiveDeltaVertex).  Thread-local scratch —
+			// persists capacity across spectral samples and pixel
+			// samples to avoid per-call heap traffic.
 			static thread_local std::vector<BDPTVertex> lightVerts;
 			static thread_local std::vector<BDPTVertex> eyeVerts;
 			static thread_local std::vector<uint32_t> lightSubpathStarts;
@@ -337,13 +288,8 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			eyeVerts.clear();
 			// HWSS: pass &swl so the NM generator uses max-over-
 			// wavelengths RR to avoid hero-driven firefly amplification.
-			pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, Scalar( -1 ), &swl );
-			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, heroNM, Scalar( -1 ), &swl );
-
-			const size_t numEyeBranchesHWSS = eyeSubpathStarts.size() >= 2 ?
-				( eyeSubpathStarts.size() - 1 ) : 0;
-			const size_t numLightBranchesHWSS = lightSubpathStarts.size() >= 2 ?
-				( lightSubpathStarts.size() - 1 ) : 0;
+			pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, &swl );
+			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, heroNM, &swl );
 
 			// Extract AOV from hero evaluation of first bundle
 			if( ss == 0 && pAOV ) {
@@ -366,67 +312,39 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 				}
 			}
 
-			// Evaluate all strategies at hero wavelength — iterate
-			// per (eye-branch × light-branch) pair.  For the common
-			// non-branched case this loop runs exactly once.  Reuse
-			// thread-local scratch across spectral samples.
-			static thread_local std::vector<BDPTVertex> branchEyeHWSS;
-			static thread_local std::vector<BDPTVertex> branchLightHWSS;
+			// Evaluate all strategies at hero wavelength.  Single
+			// subpath each (no branching) — one EvaluateAllStrategiesNM
+			// call.
 			{
 				Scalar heroValue = 0;
-				for( size_t eb = 0; eb < numEyeBranchesHWSS; eb++ ) {
-					const uint32_t ebeg = eyeSubpathStarts[eb];
-					const uint32_t eend = eyeSubpathStarts[eb + 1];
-					if( ebeg >= eend ) continue;
-					branchEyeHWSS.assign(
-						eyeVerts.begin() + ebeg, eyeVerts.begin() + eend );
+				if( !eyeVerts.empty() )
+				{
+					std::vector<BDPTIntegrator::ConnectionResultNM> heroResults =
+						pIntegrator->EvaluateAllStrategiesNM( lightVerts, eyeVerts, pScene, *pCaster, camera, heroNM );
 
-					const size_t lbIters = numLightBranchesHWSS > 0 ? numLightBranchesHWSS : 1;
-					for( size_t lb = 0; lb < lbIters; lb++ ) {
-						if( numLightBranchesHWSS > 0 ) {
-							const uint32_t lbeg = lightSubpathStarts[lb];
-							const uint32_t lend = lightSubpathStarts[lb + 1];
-							if( lbeg >= lend ) continue;
-							branchLightHWSS.assign(
-								lightVerts.begin() + lbeg, lightVerts.begin() + lend );
-						} else {
-							branchLightHWSS.clear();
+					for( unsigned int r = 0; r < heroResults.size(); r++ ) {
+						const BDPTIntegrator::ConnectionResultNM& cr = heroResults[r];
+						if( !cr.valid ) continue;
+						Scalar weighted = cr.contribution * cr.misWeight;
+						{
+							const Scalar clampVal = (cr.s == 1)
+								? BDPTRasterizerBase::stabilityConfig.directClamp
+								: BDPTRasterizerBase::stabilityConfig.indirectClamp;
+							if( clampVal > 0 && fabs(weighted) > clampVal )
+								weighted = (weighted > 0) ? clampVal : -clampVal;
 						}
-
-						std::vector<BDPTIntegrator::ConnectionResultNM> heroResults =
-							pIntegrator->EvaluateAllStrategiesNM( branchLightHWSS, branchEyeHWSS, pScene, *pCaster, camera, heroNM );
-
-						for( unsigned int r = 0; r < heroResults.size(); r++ ) {
-							const BDPTIntegrator::ConnectionResultNM& cr = heroResults[r];
-							if( !cr.valid ) continue;
-							// Dedupe light-branch-independent strategies
-							// (s==0, s==1) — see BDPTPelRasterizer.
-							if( (cr.s == 0 || cr.s == 1) && lb != 0 ) continue;
-							Scalar weighted = cr.contribution * cr.misWeight;
-							{
-								const Scalar clampVal = (cr.s == 1)
-									? BDPTRasterizerBase::stabilityConfig.directClamp
-									: BDPTRasterizerBase::stabilityConfig.indirectClamp;
-								if( clampVal > 0 && fabs(weighted) > clampVal )
-									weighted = (weighted > 0) ? clampVal : -clampVal;
+						if( cr.needsSplat && pSplatFilm ) {
+							XYZPel splatXYZ( 0, 0, 0 );
+							if( weighted > 0 && ColorUtils::XYZFromNM( splatXYZ, heroNM ) ) {
+								splatXYZ = splatXYZ * weighted;
+								const Scalar fx = cr.rasterPos.x;
+								const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+								SplatContributionToFilm( fx, fy,
+									RISEPel( splatXYZ.X, splatXYZ.Y, splatXYZ.Z ),
+									camera.GetWidth(), camera.GetHeight() );
 							}
-							if( cr.needsSplat && pSplatFilm ) {
-								// Gate splat to eb==0 to avoid N_E×
-								// over-counting; see BDPTPelRasterizer.
-								if( eb == 0 ) {
-									XYZPel splatXYZ( 0, 0, 0 );
-									if( weighted > 0 && ColorUtils::XYZFromNM( splatXYZ, heroNM ) ) {
-										splatXYZ = splatXYZ * weighted;
-										const Scalar fx = cr.rasterPos.x;
-										const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
-										SplatContributionToFilm( fx, fy,
-											RISEPel( splatXYZ.X, splatXYZ.Y, splatXYZ.Z ),
-											camera.GetWidth(), camera.GetHeight() );
-									}
-								}
-							} else {
-								heroValue += weighted;
-							}
+						} else {
+							heroValue += weighted;
 						}
 					}
 				}
@@ -464,72 +382,50 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 
 				const Scalar companionNM = swl.lambda[w];
 
-				// Per (eye-branch × light-branch) pair: copy the branch
-				// sub-range into thread-local scratch, recompute
-				// throughputNM at the companion wavelength, evaluate
-				// strategies.  Capacity persists across spectral
-				// samples and branch iterations for zero-alloc hot path.
+				// Single eye + light subpath (no branching).  Copy into
+				// thread-local scratch, recompute throughputNM at the
+				// companion wavelength, evaluate strategies.  Capacity
+				// persists across spectral samples for zero-alloc hot path.
 				static thread_local std::vector<BDPTVertex> compEye;
 				static thread_local std::vector<BDPTVertex> compLight;
 				Scalar compValue = 0;
-				for( size_t eb = 0; eb < numEyeBranchesHWSS; eb++ ) {
-					const uint32_t ebeg = eyeSubpathStarts[eb];
-					const uint32_t eend = eyeSubpathStarts[eb + 1];
-					if( ebeg >= eend ) continue;
+				if( !eyeVerts.empty() )
+				{
+					compEye.assign( eyeVerts.begin(), eyeVerts.end() );
+					compLight.assign( lightVerts.begin(), lightVerts.end() );
 
-					const size_t lbIters = numLightBranchesHWSS > 0 ? numLightBranchesHWSS : 1;
-					for( size_t lb = 0; lb < lbIters; lb++ ) {
-						compEye.assign(
-							eyeVerts.begin() + ebeg, eyeVerts.begin() + eend );
-						compLight.clear();
-						if( numLightBranchesHWSS > 0 ) {
-							const uint32_t lbeg = lightSubpathStarts[lb];
-							const uint32_t lend = lightSubpathStarts[lb + 1];
-							if( lbeg >= lend ) continue;
-							compLight.assign(
-								lightVerts.begin() + lbeg, lightVerts.begin() + lend );
+					pIntegrator->RecomputeSubpathThroughputNM(
+						compLight, true, heroNM, companionNM, pScene, *pCaster );
+					pIntegrator->RecomputeSubpathThroughputNM(
+						compEye, false, heroNM, companionNM, pScene, *pCaster );
+
+					std::vector<BDPTIntegrator::ConnectionResultNM> compResults =
+						pIntegrator->EvaluateAllStrategiesNM(
+							compLight, compEye, pScene, *pCaster, camera, companionNM );
+
+					for( unsigned int r = 0; r < compResults.size(); r++ ) {
+						const BDPTIntegrator::ConnectionResultNM& cr = compResults[r];
+						if( !cr.valid ) continue;
+						Scalar weighted = cr.contribution * cr.misWeight;
+						{
+							const Scalar clampVal = (cr.s == 1)
+								? BDPTRasterizerBase::stabilityConfig.directClamp
+								: BDPTRasterizerBase::stabilityConfig.indirectClamp;
+							if( clampVal > 0 && fabs(weighted) > clampVal )
+								weighted = (weighted > 0) ? clampVal : -clampVal;
 						}
-
-						pIntegrator->RecomputeSubpathThroughputNM(
-							compLight, true, heroNM, companionNM, pScene, *pCaster );
-						pIntegrator->RecomputeSubpathThroughputNM(
-							compEye, false, heroNM, companionNM, pScene, *pCaster );
-
-						std::vector<BDPTIntegrator::ConnectionResultNM> compResults =
-							pIntegrator->EvaluateAllStrategiesNM(
-								compLight, compEye, pScene, *pCaster, camera, companionNM );
-
-						for( unsigned int r = 0; r < compResults.size(); r++ ) {
-							const BDPTIntegrator::ConnectionResultNM& cr = compResults[r];
-							if( !cr.valid ) continue;
-							// Dedupe light-branch-independent strategies
-							// (s==0, s==1) — see BDPTPelRasterizer.
-							if( (cr.s == 0 || cr.s == 1) && lb != 0 ) continue;
-							Scalar weighted = cr.contribution * cr.misWeight;
-							{
-								const Scalar clampVal = (cr.s == 1)
-									? BDPTRasterizerBase::stabilityConfig.directClamp
-									: BDPTRasterizerBase::stabilityConfig.indirectClamp;
-								if( clampVal > 0 && fabs(weighted) > clampVal )
-									weighted = (weighted > 0) ? clampVal : -clampVal;
+						if( cr.needsSplat && pSplatFilm ) {
+							XYZPel splatXYZ( 0, 0, 0 );
+							if( weighted > 0 && ColorUtils::XYZFromNM( splatXYZ, companionNM ) ) {
+								splatXYZ = splatXYZ * weighted;
+								const Scalar fx = cr.rasterPos.x;
+								const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+								SplatContributionToFilm( fx, fy,
+									RISEPel( splatXYZ.X, splatXYZ.Y, splatXYZ.Z ),
+									camera.GetWidth(), camera.GetHeight() );
 							}
-							if( cr.needsSplat && pSplatFilm ) {
-								// Gate splat to eb==0 per companion
-								// wavelength — see BDPTPelRasterizer.
-								if( eb == 0 ) {
-									XYZPel splatXYZ( 0, 0, 0 );
-									if( weighted > 0 && ColorUtils::XYZFromNM( splatXYZ, companionNM ) ) {
-										splatXYZ = splatXYZ * weighted;
-										const Scalar fx = cr.rasterPos.x;
-										const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
-										SplatContributionToFilm( fx, fy,
-											RISEPel( splatXYZ.X, splatXYZ.Y, splatXYZ.Z ),
-											camera.GetWidth(), camera.GetHeight() );
-									}
-								}
-							} else {
-								compValue += weighted;
-							}
+						} else {
+							compValue += weighted;
 						}
 					}
 				}
@@ -541,36 +437,28 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 				}
 			}
 
-			// SMS contributions per eye-branch at hero wavelength only
-			// (SMS geometry is specular-chain dependent and cannot be
-			// shared across wavelengths the way EvaluateAllStrategiesNM
-			// can via RecomputeSubpathThroughputNM).  Double-counting
-			// with BDPT's (s==0) strategy is prevented by the matching
+			// SMS contributions at hero wavelength only (SMS geometry
+			// is specular-chain dependent and cannot be shared across
+			// wavelengths the way EvaluateAllStrategiesNM can via
+			// RecomputeSubpathThroughputNM).  Double-counting with
+			// BDPT's (s==0) strategy is prevented by the matching
 			// suppression in BDPTIntegrator::ConnectAndEvaluateNM.
-			if( pIntegrator ) {
+			if( pIntegrator && !eyeVerts.empty() ) {
 				sampler.StartStream( 31 );
 				Scalar smsValue = 0;
-				for( size_t eb = 0; eb < numEyeBranchesHWSS; eb++ ) {
-					const uint32_t ebeg = eyeSubpathStarts[eb];
-					const uint32_t eend = eyeSubpathStarts[eb + 1];
-					if( ebeg >= eend ) continue;
-					branchEyeHWSS.assign(
-						eyeVerts.begin() + ebeg, eyeVerts.begin() + eend );
-
-					std::vector<BDPTIntegrator::ConnectionResultNM> smsResults =
-						pIntegrator->EvaluateSMSStrategiesNM(
-							branchEyeHWSS, pScene, *pCaster, camera, sampler, heroNM );
-					for( unsigned int r = 0; r < smsResults.size(); r++ ) {
-						const BDPTIntegrator::ConnectionResultNM& cr = smsResults[r];
-						if( !cr.valid ) continue;
-						Scalar weighted = cr.contribution * cr.misWeight;
-						{
-							const Scalar clampVal = BDPTRasterizerBase::stabilityConfig.directClamp;
-							if( clampVal > 0 && fabs(weighted) > clampVal )
-								weighted = (weighted > 0) ? clampVal : -clampVal;
-						}
-						smsValue += weighted;
+				std::vector<BDPTIntegrator::ConnectionResultNM> smsResults =
+					pIntegrator->EvaluateSMSStrategiesNM(
+						eyeVerts, pScene, *pCaster, camera, sampler, heroNM );
+				for( unsigned int r = 0; r < smsResults.size(); r++ ) {
+					const BDPTIntegrator::ConnectionResultNM& cr = smsResults[r];
+					if( !cr.valid ) continue;
+					Scalar weighted = cr.contribution * cr.misWeight;
+					{
+						const Scalar clampVal = BDPTRasterizerBase::stabilityConfig.directClamp;
+						if( clampVal > 0 && fabs(weighted) > clampVal )
+							weighted = (weighted > 0) ? clampVal : -clampVal;
 					}
+					smsValue += weighted;
 				}
 				XYZPel smsXYZ( 0, 0, 0 );
 				if( smsValue > 0 && ColorUtils::XYZFromNM( smsXYZ, heroNM ) ) {

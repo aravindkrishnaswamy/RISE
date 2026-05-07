@@ -177,7 +177,6 @@ typedef struct rise_blender_render_settings {
 	int use_path_tracing;
 	int choose_one_light;
 	int show_lights;
-	int path_branch;
 	int sms_enabled;
 	uint32_t sms_max_iterations;
 	float sms_threshold;

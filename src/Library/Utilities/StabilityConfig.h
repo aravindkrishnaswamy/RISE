@@ -10,11 +10,7 @@
 //
 //    Most controls are disabled by default so that existing scenes
 //    produce identical output unless a control is explicitly set.
-//    Exception: `branchingThreshold` defaults to 0.5, which enables
-//    variance-reducing path splitting at the first multi-lobe delta
-//    vertex in PT/BDPT/VCM walks.  Set to 1.0 to disable branching
-//    entirely; see the field's docstring for semantics.  Also
-//    `maxVolumeBounce` defaults to 64 (not unlimited) and
+//    Exceptions: `maxVolumeBounce` defaults to 64 (not unlimited) and
 //    `useLightBVH` defaults to true.
 //
 //  Author: Aravind Krishnaswamy
@@ -84,18 +80,6 @@ namespace RISE
 		unsigned int	optimalMISTrainingIterations;	///< Number of training passes (default 4)
 		unsigned int	optimalMISTileSize;		///< Tile size for spatial binning (default 16)
 
-		//
-		// Subpath branching at first multi-lobe delta vertex
-		//
-		// Normalized against the subpath's initial throughput:
-		// if MaxValue(beta_current) / MaxValue(beta_initial) > branchingThreshold,
-		// the first multi-lobe delta vertex encountered spawns one continuation
-		// per scattered ray (weighted by kray). 0 = branch at first encounter
-		// always; 1 = never branch. Shared across PT, BDPT, VCM subpath walks.
-		//
-
-		Scalar			branchingThreshold;		///< Normalized throughput threshold [0,1]. 0 = branch at every first-encounter multi-lobe delta; 1 = never branch. Default 0.5 = branch while at least half initial energy survives (primary/near-primary bounces only).
-
 		StabilityConfig() :
 		  directClamp( 0 ),
 		  indirectClamp( 0 ),
@@ -110,8 +94,7 @@ namespace RISE
 		  useLightBVH( true ),
 		  optimalMIS( false ),
 		  optimalMISTrainingIterations( 4 ),
-		  optimalMISTileSize( 16 ),
-		  branchingThreshold( 0.5 )
+		  optimalMISTileSize( 16 )
 		{
 		}
 	};
