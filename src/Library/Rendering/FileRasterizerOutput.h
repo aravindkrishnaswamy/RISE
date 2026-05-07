@@ -60,6 +60,15 @@ namespace RISE
 			Scalar				exposureEV;			///< Exposure offset in EV stops (0 = no scaling)
 			DISPLAY_TRANSFORM	display_transform;	///< Tone curve (None for HDR types)
 
+			// Landing 5 — photographic exposure compensation supplied
+			// by the scene's camera (via SetCameraExposureCompensationEV
+			// at frame start).  Stacks ADDITIVELY with `exposureEV` on
+			// LDR outputs; ignored on HDR archival outputs.  Defaults
+			// to 0 so non-physical cameras (and any output that the
+			// rasterizer never calls SetCameraExposureCompensationEV
+			// on) keep pre-L5 behaviour bit-identically.
+			Scalar				cameraExposureEV;
+
 			// New (Landing 1) — EXR-specific knobs (ignored for non-EXR types)
 			EXR_COMPRESSION		exr_compression;
 			bool				exr_with_alpha;
@@ -93,6 +102,13 @@ namespace RISE
 			virtual void	OutputImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame );
 			virtual void	OutputPreDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame );
 			virtual void	OutputDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame );
+
+			//! Landing 5: receive the scene camera's photographic exposure
+			//! compensation in EV stops.  Called by the rasterizer at frame
+			//! start; stacked with the static `exposureEV` parameter at
+			//! WriteImageToFile time.  HDR formats clear it to 0 (consistent
+			//! with their treatment of `exposureEV` from Landing 1).
+			void			SetCameraExposureCompensationEV( Scalar ev ) override;
 		};
 	}
 }

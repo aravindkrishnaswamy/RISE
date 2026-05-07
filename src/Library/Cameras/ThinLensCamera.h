@@ -74,6 +74,20 @@ namespace RISE
 			Scalar			aperture;			// Derived aperture diameter
 			Scalar			halfAperture;		// Derived aperture radius
 
+			// Landing 5: photographic exposure metadata (independent of
+			// the DOF / focus geometry above).  iso == 0 means "physical
+			// exposure disabled, behave exactly like pre-L5".  When
+			// iso > 0, evCompensation_ is precomputed in the constructor
+			// from (iso, fstop, exposureTime) per the UE5 / Filament
+			// formula and returned by GetExposureCompensationEV() for
+			// stacking into FileRasterizerOutput on LDR outputs.  fstop
+			// and exposureTime are reused from the existing geometric
+			// camera state (DOF + motion blur respectively); this is
+			// physically consistent because the same aperture and
+			// shutter that govern the geometry also govern the EV.
+			Scalar		iso_;				// ISO sensitivity (0 = disabled)
+			Scalar		evCompensation_;	// Pre-computed exposure compensation in EV stops
+
 			Scalar		dx, dy;
 			Scalar		filmDistance;	// Image-plane distance from lens (lens equation v = fu/(u-f))
 			Scalar		sx, sy;			// Per-pixel image-plane scale (scene units / pixel)
@@ -120,7 +134,8 @@ namespace RISE
 				const Scalar tiltX_,				///< [in] Focal-plane tilt around x-axis (radians)
 				const Scalar tiltY_,				///< [in] Focal-plane tilt around y-axis (radians)
 				const Scalar shiftX_,				///< [in] Lens shift along x (mm)
-				const Scalar shiftY_				///< [in] Lens shift along y (mm)
+				const Scalar shiftY_,				///< [in] Lens shift along y (mm)
+				const Scalar iso = Scalar( 0 )		///< [in] Landing 5: ISO sensitivity.  Default 0 = physical exposure disabled (pre-L5 behaviour preserved).  When > 0, fstop_ and exposure must also be > 0 — both are reused from the existing geometric params.
 				);
 
 			// Getters/setters for the descriptor-driven properties
@@ -176,6 +191,22 @@ namespace RISE
 			inline void SetAnamorphicSqueeze( Scalar v )       { anamorphicSqueeze = v; }
 
 			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const;
+
+			//! Landing 5: photographic exposure compensation in EV stops.
+			//! Returns 0 when iso == 0 (physical exposure disabled);
+			//! see ICamera.h for the formula and stacking semantics.
+			Scalar GetExposureCompensationEV() const override { return evCompensation_; }
+			inline Scalar GetIsoStored() const { return iso_; }
+			inline void   SetIsoStored( Scalar v ) { iso_ = v; }
+
+			//! Landing 5: also rebuild the photographic exposure cache
+			//! after geometric state.  fstop and exposureTime feed
+			//! BOTH the geometric (DOF / motion blur) and photographic
+			//! (EV) sides of this camera; without this override, edits
+			//! to those fields via SetFstop / SetExposureTimeStored or
+			//! via the keyframed FSTOP_ID / EXPOSURE_ID handlers would
+			//! update the geometry but leave evCompensation_ stale.
+			void RegenerateData() override;
 
 			// Non-virtual, class-specific.  Not part of ICamera and
 			// deliberately NOT on the vtable — adding a virtual would

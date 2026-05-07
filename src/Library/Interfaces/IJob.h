@@ -129,7 +129,9 @@ namespace RISE
 			const double scanningRate,								///< [in] Rate at which each scanline is recorded
 			const double pixelRate,									///< [in] Rate at which each pixel is recorded
 			const double orientation[3],							///< [in] Orientation (Pitch,Roll,Yaw)
-			const double target_orientation[2]						///< [in] Orientation relative to a target
+			const double target_orientation[2],						///< [in] Orientation relative to a target
+			const double iso = 0.0,									///< [in] Landing 5: ISO sensitivity.  Default 0 = physical exposure disabled (existing behaviour preserved bit-identically).  When > 0, fstop and exposure must also be > 0; the camera computes evCompensation = -log2(1.2) - log2(N²×100/(ISO×T)) and stacks it additively into LDR outputs' exposure_compensation.  HDR archival outputs (EXR / RGBE) ignore it.
+			const double fstop = 0.0								///< [in] Landing 5: f-number for EV computation.  Required when iso > 0; ignored otherwise.  Pinhole has no geometric DOF, so fstop only drives the exposure stack.
 			) = 0;
 
 		//! Adds a pinhole camera oriented via an orthonormal basis
@@ -145,7 +147,9 @@ namespace RISE
 			const double pixelAR,									///< [in] Pixel aspect ratio
 			const double exposure,									///< [in] Exposure time of the camera
 			const double scanningRate,								///< [in] Rate at which each scanline is recorded
-			const double pixelRate									///< [in] Rate at which each pixel is recorded
+			const double pixelRate,									///< [in] Rate at which each pixel is recorded
+			const double iso = 0.0,									///< [in] Landing 5: ISO sensitivity.  See AddPinholeCamera.
+			const double fstop = 0.0								///< [in] Landing 5: f-number for EV computation.  See AddPinholeCamera.
 			) = 0;
 
 		//! Adds a thin-lens camera.  Photographic parameters: sensor
@@ -182,7 +186,8 @@ namespace RISE
 			const double tiltX,										///< [in] Focal-plane tilt around x-axis (radians); 0 = perpendicular focus
 			const double tiltY,										///< [in] Focal-plane tilt around y-axis (radians); 0 = perpendicular focus
 			const double shiftX,									///< [in] Lens shift along x (mm); 0 = centered
-			const double shiftY										///< [in] Lens shift along y (mm); 0 = centered
+			const double shiftY,									///< [in] Lens shift along y (mm); 0 = centered
+			const double iso = 0.0									///< [in] Landing 5: ISO sensitivity.  Default 0 = physical exposure disabled (existing behaviour preserved bit-identically).  When > 0, fstop and exposure must also be > 0; evCompensation is computed and stacks into LDR outputs' exposure_compensation.  See AddPinholeCamera for the formula.
 			) = 0;
 
 		//! Adds a fisheye camera
@@ -1227,7 +1232,10 @@ namespace RISE
 							const bool import_cameras,				///< [in] Create the first camera (subsequent ones warn)
 							const bool import_normal_maps,			///< [in] Attach normal_map_modifier when material has normalTexture
 							const bool lowmem_textures,				///< [in] Defer texture color-space conversion to per-sample (saves ~4x texture RAM + 5-10x faster load on heavy-PBR scenes; pays ~25% per-sample render cost).  Default FALSE for final-render workflow; flip to TRUE for iteration on NewSponza-class scenes.
-							const double lights_intensity_override	///< [in] When > 0, replaces zero authored intensities on imported KHR_lights_punctual entries.  Default 0 (no override).  Many assets carry light fixtures as positional metadata with intensity=0 by convention; a positive override wakes them up uniformly without touching lights the author did set non-zero.
+							const double lights_intensity_override,	///< [in] Landing 4 deprecated.  Unit-blind override that replaces zero authored intensities for ALL light types uniformly when > 0.  Kept one release for back-compat; prefer the per-type fields below (which respect glTF's per-type unit semantics — lux for directional, candela for point/spot).  Default 0 (no override).
+							const double directional_intensity_override,	///< [in] Landing 4: per-type override for directional lights.  Units: LUX (lm/m²).  Replaces zero authored intensities for directional lights only; lights set non-zero stay untouched.  Default 0 (no override).  Typical: ~120000 noon clear-sky sun, ~10000 overcast day, ~100 moonlight.
+							const double point_intensity_override,			///< [in] Landing 4: per-type override for point lights.  Units: CANDELA (lm/sr).  Replaces zero authored intensities for point lights only.  Default 0 (no override).  Typical: ~100 for a 60-W incandescent (~800 lm omnidirectional ÷ 4π sr), ~1500 for a 100-W LED bulb.
+							const double spot_intensity_override			///< [in] Landing 4: per-type override for spot lights.  Units: CANDELA (lm/sr) — peak intensity along the spot axis.  Replaces zero authored intensities for spot lights only.  Default 0 (no override).
 							) = 0;
 
 		//! Creates a triangle mesh geometry from a glTF 2.0 file (.gltf or .glb).

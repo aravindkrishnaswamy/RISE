@@ -1,0 +1,162 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           physical_exposure.RISEscene                                                             #
+#   Description:    Verifies Landing 5 (physical photographic exposure on pinhole_camera).                  #
+#                                                                                                           #
+#                   Setup: a single Lambertian sphere (color_lightsteelblue) lit by a directional           #
+#                   light, viewed by a pinhole_camera.  Mirrors the known-good lighting pattern from        #
+#                   `scenes/Tests/Geometry/shapes.RISEscene` so the integrator's output is well-            #
+#                   understood — what L5 verifies is the ADDITIONAL camera-side exposure compensation       #
+#                   stacking correctly into the LDR output.                                                 #
+#                                                                                                           #
+#                   How to verify L5 by toggling the pinhole_camera's iso/fstop/exposure:                   #
+#                     1. iso 0 / fstop 0 (the file's default starting state)                                #
+#                          → camera supplies no EV; PNG = the un-EVed bright blue-gray baseline.            #
+#                     2. iso 6400 / fstop 2 / exposure 0.01667                                              #
+#                          → EV100 ≈ 1.9, multiplier ≈ 0.22; PNG sphere visibly dimmer (~22% of baseline).  #
+#                     3. iso 100 / fstop 8 / exposure 0.004 (sunny-16-ish)                                  #
+#                          → EV100 ≈ 13.97, multiplier ≈ 5.4e-5; PNG sphere essentially black               #
+#                          (sunny-16 is calibrated for noon-sun white-point; this dim test scene is         #
+#                          many stops below that, which is the correct outcome).                            #
+#                     EXR output is BIT-IDENTICAL across all three settings (Landing 1 invariant: HDR       #
+#                     archival outputs preserve linear-radiance ground truth and ignore camera EV).         #
+#                                                                                                           #
+#                   Independent-axis checks (compared against any baseline non-zero photographic config):   #
+#                     - Halve iso → PNG halves; EXR unchanged.                                              #
+#                     - Halve exposure → PNG halves; EXR unchanged.                                         #
+#                     - Double fstop → PNG quarters; EXR unchanged.                                         #
+#                                                                                                           #
+#                   The default starting state is `iso 0` so this scene renders a clear baseline            #
+#                   without prior context.  Edit the camera chunk to engage the photographic stack.         #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-05-06                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+# Default acceleration is octree; force BSP to match shapes.RISEscene.
+> set accelerator B 10 8
+
+##################################################
+# Painters / materials
+##################################################
+
+> run scenes/colors.RISEscript
+
+lambertian_material
+{
+	name		diffuse_gray
+	reflectance	color_lightsteelblue
+}
+
+##################################################
+# Geometry: a single sphere at the origin.  Sphere
+# is rotationally symmetric so there's no normal-
+# convention ambiguity to debug — the lit half
+# always faces the light.  Camera looks down the
+# -Z axis at the sphere; light comes from +Z so
+# the camera-facing hemisphere is fully lit.
+##################################################
+
+sphere_geometry
+{
+	name		ground_geom
+	radius		1.0
+}
+
+standard_object
+{
+	name		ground
+	geometry	ground_geom
+	material	diffuse_gray
+}
+
+##################################################
+# Single directional light shining from the +Z
+# axis (toward the camera).  Same orientation as
+# shapes.RISEscene's "light" so the integrator
+# behaviour is well-understood.
+##################################################
+
+directional_light
+{
+	name		sun
+	color		1.0 1.0 1.0
+	direction	0 0 1
+	power		3.14
+}
+
+##################################################
+# Direct-lighting shader — the scene has only one
+# light source and a flat plane; full PT would be
+# overkill.
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion	1
+	samples			16
+	lum_samples		1
+}
+
+##################################################
+# Outputs.
+#
+# EXR (HDR archival) — Landing 5 contract: camera
+# exposureEV is IGNORED.  Pixel value is the raw
+# linear radiance from the integrator.
+##################################################
+
+file_rasterizeroutput
+{
+	pattern			rendered/physical_exposure
+	type			EXR
+	color_space		ROMMRGB_Linear
+	exr_compression	piz
+}
+
+##################################################
+# PNG (LDR display) — Landing 5 contract: camera
+# exposureEV STACKS ADDITIVELY with this output's
+# `exposure_compensation` (default 0).
+# `display_transform none` keeps the value linear
+# (no tone curve) so the only LDR transform is the
+# combined-EV scale + sRGB encode.
+##################################################
+
+file_rasterizeroutput
+{
+	pattern				rendered/physical_exposure
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	display_transform	none
+}
+
+##################################################
+# Pinhole camera matching shapes.RISEscene.
+#
+# Default `iso 0` = physical exposure DISABLED.
+# Set iso > 0 (with positive fstop and exposure)
+# to engage the L5 EV stack.
+##################################################
+
+pinhole_camera
+{
+	location	0  0  20
+	lookat		0  0  0
+	up			0  1  0
+	width		320
+	height		240
+	fov			30.0
+	exposure	0.004
+	iso			0
+	fstop		0
+}

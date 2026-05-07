@@ -71,7 +71,10 @@ namespace RISE
 			bool importCameras;						///< Create cameras (first only; subsequent ones warn)
 			bool importNormalMaps;					///< Attach normal_map_modifier when a material has normalTexture
 			bool lowmemTextures;					///< Defer texture color-space conversion to per-sample access.  Trades ~25% per-sample render cost for a ~4x peak texture-memory reduction and a 5-10x faster scene load.  Default false (final-render workflow); flip to true for iteration on heavy-PBR scenes (NewSponza class).  See SCENE_CONVENTIONS.md / the sponza_new.RISEscene file header for the trade-off.
-			double lightsIntensityOverride;			///< When > 0, replaces the intensity of any imported KHR_lights_punctual entry whose authored intensity is exactly 0.  Default 0 (no override).  Many assets (NewSponza is the canonical case) carry their light fixtures as positional metadata with intensity=0 by author convention — "lighting is up to the renderer".  Setting this override > 0 wakes up those dormant fixtures uniformly, without touching lights the author did set non-zero intensities for.
+			double lightsIntensityOverride;			///< Landing 4 deprecated: unit-blind override that replaces zero authored intensities for ALL light types uniformly.  glTF assigns DIFFERENT physical units per light type (lux for directional, candela for point/spot — see KHR_lights_punctual), so a single number is physically meaningless across types.  Kept for one release for back-compat: when > 0, applies to every light type.  Prefer the per-type overrides below.  Default 0 (no override).
+			double directionalIntensityOverride;	///< Landing 4: per-type intensity override for KHR_lights_punctual directional lights.  Units: LUX (lm/m²).  Replaces zero authored intensities for directional lights only; lights the author set non-zero stay untouched.  Default 0 (no override).  Typical values: ~120000 for noon clear-sky sun, ~10000 for overcast day, ~100 for moonlight.  Stacks with `lightsIntensityOverride` (per-type wins when both set on a directional light).
+			double pointIntensityOverride;			///< Landing 4: per-type intensity override for KHR_lights_punctual point lights.  Units: CANDELA (lm/sr).  Replaces zero authored intensities for point lights only.  Default 0 (no override).  Typical values: ~100 for a bare 60-W incandescent (~800 lm omnidirectional ÷ 4π sr), ~1500 for a 100-W LED bulb.  Stacks with `lightsIntensityOverride` (per-type wins).
+			double spotIntensityOverride;			///< Landing 4: per-type intensity override for KHR_lights_punctual spot lights.  Units: CANDELA (lm/sr) — peak intensity along the spot axis.  Replaces zero authored intensities for spot lights only.  Default 0 (no override).  Stacks with `lightsIntensityOverride` (per-type wins).
 
 			//! Sentinel for "use the file's default scene" (i.e., the scene
 			//! the glTF JSON's top-level `"scene"` field points at, falling
@@ -90,7 +93,10 @@ namespace RISE
 			  importCameras( true ),
 			  importNormalMaps( true ),
 			  lowmemTextures( false ),
-			  lightsIntensityOverride( 0.0 )
+			  lightsIntensityOverride( 0.0 ),
+			  directionalIntensityOverride( 0.0 ),
+			  pointIntensityOverride( 0.0 ),
+			  spotIntensityOverride( 0.0 )
 			{}
 		};
 

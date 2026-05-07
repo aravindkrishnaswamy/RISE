@@ -254,8 +254,37 @@ namespace
 		{
 			out.kind = ValueKind::Double;
 			out.editable = true;
+			// Landing 5: fstop on PinholeCamera is the photographic
+			// f-number used solely for EV computation (pinhole has no
+			// geometric DOF).  On ThinLensCamera the same field drives
+			// DOF too — same number, two effects.
 			if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( &cam ) ) {
 				out.value = FormatDouble( t->GetFstop() );
+				return true;
+			}
+			if( const PinholeCamera* p = dynamic_cast<const PinholeCamera*>( &cam ) ) {
+				out.value = FormatDouble( p->GetFstop() );
+				return true;
+			}
+			out.value = String( "(unavailable)" );
+			out.editable = false;
+			return true;
+		}
+		if( n == "iso" )
+		{
+			// Landing 5: ISO sensitivity, the third leg of the
+			// photographic-exposure triplet (with fstop and exposure).
+			// Wired on both pinhole and thinlens; default 0 means
+			// "physical exposure disabled" so the camera contributes
+			// no EV.
+			out.kind = ValueKind::Double;
+			out.editable = true;
+			if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( &cam ) ) {
+				out.value = FormatDouble( t->GetIsoStored() );
+				return true;
+			}
+			if( const PinholeCamera* p = dynamic_cast<const PinholeCamera*>( &cam ) ) {
+				out.value = FormatDouble( p->GetIsoStored() );
 				return true;
 			}
 			out.value = String( "(unavailable)" );
@@ -476,7 +505,11 @@ namespace
 		if( name == "fov" )
 			return String( "Field of view in degrees (full-angle, not half-angle)." );
 		if( name == "exposure" )
-			return String( "Shutter open time.  0 = instantaneous (no motion blur)." );
+			return String( "Shutter open time in seconds.  0 = instantaneous (no motion blur).  When `iso` > 0, this number ALSO drives photographic exposure: half it to lose 1 EV stop on the LDR PNG output (the EXR is unchanged)." );
+		if( name == "iso" )
+			return String( "ISO sensitivity for photographic exposure.  Default 0 = physical exposure DISABLED — no EV applied to LDR outputs.  When > 0, evCompensation = -log2(1.2) - log2(N²·100/(ISO·T)) is stacked into LDR outputs' exposure_compensation; HDR archival outputs (EXR) ignore it." );
+		if( name == "fstop" )
+			return String( "f-number.  On thinlens this controls BOTH DOF (aperture diameter = focal_length / fstop) and EV when iso > 0.  On pinhole there is no geometric DOF, so this is purely an EV input — set to a typical photographic value (f/2.8 - f/16)." );
 		if( name == "scanning_rate" )
 			return String( "Per-scanline time offset for rolling-shutter simulation.  0 disables." );
 		if( name == "pixel_rate" )
@@ -708,6 +741,23 @@ bool CameraIntrospection::SetProperty( ICamera& camera,
 		if( !ParseDouble( value, v ) ) return false;
 		if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
 			t->SetFstop( v );
+		} else if( PinholeCamera* p = dynamic_cast<PinholeCamera*>( cam ) ) {
+			// Landing 5: pinhole's fstop is photographic-only (no
+			// geometric DOF effect).  RegenerateData() — invoked at
+			// the end of the panel's batch — picks up the new value
+			// and recomputes evCompensation_.
+			p->SetFstop( v );
+		} else {
+			return false;
+		}
+	}
+	else if( n == "iso" ) {
+		Scalar v;
+		if( !ParseDouble( value, v ) ) return false;
+		if( ThinLensCamera* t = dynamic_cast<ThinLensCamera*>( cam ) ) {
+			t->SetIsoStored( v );
+		} else if( PinholeCamera* p = dynamic_cast<PinholeCamera*>( cam ) ) {
+			p->SetIsoStored( v );
 		} else {
 			return false;
 		}

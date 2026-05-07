@@ -274,7 +274,9 @@ namespace RISE
 			const double scanningRate,
 			const double pixelRate,
 			const double orientation[3],
-			const double target_orientation[2]
+			const double target_orientation[2],
+			const double iso = 0.0,
+			const double fstop = 0.0
 			);
 
 		//! Adds an ONB pinhole camera
@@ -290,7 +292,9 @@ namespace RISE
 			const double pixelAR,
 			const double exposure,
 			const double scanningRate,
-			const double pixelRate
+			const double pixelRate,
+			const double iso = 0.0,
+			const double fstop = 0.0
 			);
 
 		//! Adds a thin-lens camera.  See IJob::AddThinlensCamera for
@@ -320,7 +324,8 @@ namespace RISE
 			const double tiltX,
 			const double tiltY,
 			const double shiftX,
-			const double shiftY
+			const double shiftY,
+			const double iso = 0.0
 			);
 
 		//! Adds a fisheye camera
@@ -1237,7 +1242,10 @@ namespace RISE
 							const bool import_cameras,
 							const bool import_normal_maps,
 							const bool lowmem_textures,
-							const double lights_intensity_override
+							const double lights_intensity_override,
+							const double directional_intensity_override,
+							const double point_intensity_override,
+							const double spot_intensity_override
 							);
 
 		//! Creates a triangle mesh geometry from a glTF 2.0 file.  See IJob.h

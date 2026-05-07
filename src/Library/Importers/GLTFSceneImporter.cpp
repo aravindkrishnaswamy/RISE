@@ -1124,7 +1124,10 @@ namespace
 		size_t              lightIdx,
 		const cgltf_light*  light,
 		const cgltf_float   worldMatrix[16],
-		double              intensityOverride )		// see GLTFImportOptions::lightsIntensityOverride; replaces zero authored intensities when > 0
+		double              uniformOverride,			// legacy: applies to all types when > 0; see GLTFImportOptions::lightsIntensityOverride
+		double              directionalOverride,		// per-type lux override for directional lights
+		double              pointOverride,				// per-type candela override for point lights
+		double              spotOverride )				// per-type candela override for spot lights
 	{
 		// World-space position is column 3 of the world matrix.
 		const double px = worldMatrix[12];
@@ -1163,19 +1166,34 @@ namespace
 			toSRGB( (double)light->color[0] ),
 			toSRGB( (double)light->color[1] ),
 			toSRGB( (double)light->color[2] ) };
-		// glTF intensity units: cd for point/spot, lm/m² for directional.
+		// glTF intensity units: cd for point/spot, lm/m² (lux) for directional.
 		// RISE's "power" is a multiplier on color; pass intensity directly.
-		// Optional override: many assets (NewSponza is the canonical case)
-		// carry their light fixtures as positional metadata with
-		// intensity=0 by author convention -- "lighting is up to the
-		// renderer".  When `intensityOverride > 0`, replace ANY zero
-		// authored intensity with the override so those dormant fixtures
-		// wake up uniformly.  Lights the author did set non-zero stay
-		// untouched (so a mixed asset where some lights are real and
-		// some are placeholders behaves sensibly).
+		//
+		// Override stack (Landing 4 — per-type, unit-respecting):
+		//
+		//   - Per-type override (directionalOverride / pointOverride /
+		//     spotOverride) wins when set > 0.  Each is in the unit
+		//     glTF declares for that type (lux for directional, candela
+		//     for point/spot), so the value is physically meaningful.
+		//   - Legacy uniformOverride (lightsIntensityOverride) is the
+		//     fallback when no per-type override is specified.  It
+		//     replaces zero authored intensities for ALL types
+		//     uniformly — physically incoherent across types because
+		//     it conflates lux and candela, but kept one release for
+		//     back-compat (NewSponza-style scenes).
+		//   - Lights the author set non-zero are NEVER overridden;
+		//     overrides only wake up dormant intensity=0 fixtures.
 		const double authoredIntensity = (double)light->intensity;
-		const double power = ( intensityOverride > 0 && authoredIntensity == 0.0 )
-		                        ? intensityOverride
+		double typedOverride = 0.0;
+		switch( light->type ) {
+			case cgltf_light_type_directional: typedOverride = directionalOverride; break;
+			case cgltf_light_type_point:       typedOverride = pointOverride;       break;
+			case cgltf_light_type_spot:        typedOverride = spotOverride;        break;
+			default: break;
+		}
+		const double effectiveOverride = ( typedOverride > 0.0 ) ? typedOverride : uniformOverride;
+		const double power = ( effectiveOverride > 0.0 && authoredIntensity == 0.0 )
+		                        ? effectiveOverride
 		                        : authoredIntensity;
 
 		switch( light->type ) {
@@ -1621,7 +1639,10 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 			if( opts.importLights && node->light ) {
 				const size_t lightIdx = (size_t)( node->light - data->lights );
 				CreateLightForNode( job, prefix, lightIdx, node->light, world,
-					opts.lightsIntensityOverride );
+					opts.lightsIntensityOverride,
+					opts.directionalIntensityOverride,
+					opts.pointIntensityOverride,
+					opts.spotIntensityOverride );
 			}
 
 			// Camera.  Multi-camera support (2026-05-01): every camera-
