@@ -1,0 +1,44 @@
+RISE ASCII SCENE 5
+# Sanity check: empty scene, camera looking at uniform white sky_dome.
+# radiance_scale = 100, painter = white linear → expected EXR pixel = 100.
+# If pixel ≠ 100, there is an unexpected scaling somewhere in the
+# radiance-map path.
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+uniformcolor_painter
+{
+	name			sky_uniform
+	color			1.0 1.0 1.0
+	colorspace		Rec709RGB_Linear
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				1
+	radiance_map		sky_uniform
+	radiance_background	TRUE
+	radiance_scale		100.0
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/pb_units_validation_envmap
+	type			EXR
+	color_space		ROMMRGB_Linear
+	exr_compression	piz
+}
+
+pinhole_camera
+{
+	location		0 0 0
+	lookat			0 0 -1
+	up				0 1 0
+	width			32
+	height			32
+	fov				30
+}

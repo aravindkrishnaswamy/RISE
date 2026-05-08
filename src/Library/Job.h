@@ -814,6 +814,18 @@ namespace RISE
 									const double bias				///< [in] Additive offset after scale
 									);
 
+		//! Adds a UV-transform wrapper painter.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddUVTransformPainter(
+									const char* name,				///< [in] Name of the painter
+									const char* source,				///< [in] Source painter
+									const double offset_u,			///< [in] U translation
+									const double offset_v,			///< [in] V translation
+									const double rotation,			///< [in] Rotation in radians (KHR sign)
+									const double scale_u,			///< [in] U scale
+									const double scale_v			///< [in] V scale
+									);
+
 
 		//
 		// Adding materials
@@ -1251,7 +1263,8 @@ namespace RISE
 							const double lights_intensity_override,
 							const double directional_intensity_override,
 							const double point_intensity_override,
-							const double spot_intensity_override
+							const double spot_intensity_override,
+							const bool   respect_baked_occlusion = true
 							);
 
 		//! Creates a triangle mesh geometry from a glTF 2.0 file.  See IJob.h

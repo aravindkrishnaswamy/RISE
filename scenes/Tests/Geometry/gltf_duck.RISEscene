@@ -108,7 +108,13 @@ directional_light
 	name		key
 	power		3.14
 	color		1.0 1.0 1.0
-	direction	-0.5 -0.7 -0.5
+	# RISE convention (DirectionalLight.cpp:48): `direction` is the
+	# vector FROM the surface TO the light source — a surface is lit
+	# when N · direction > 0.  The light is conceptually at +X +Y +Z
+	# of the duck (upper-right-front), so positive components.
+	# Earlier authoring used the "shine direction" convention from
+	# Unity / Unreal / glTF, which is the NEGATIVE of this.
+	direction	0.5 0.7 0.5
 }
 
 ambient_light

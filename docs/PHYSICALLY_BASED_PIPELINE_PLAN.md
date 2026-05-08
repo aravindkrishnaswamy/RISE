@@ -197,8 +197,8 @@ that builds on the foundation.
 | 10 | Wake clearcoat / sheen / transmission textures (`#if 0` slots) | Materials | Yes | 6 |
 | 11 | `KHR_materials_volume` end-to-end (volumetric attenuation behind refractive surfaces) | Materials | Yes | 7, existing null-scattering volumes |
 | 12 | Importer fidelity batch: KHR_texture_transform, KTX2 / Basisu, ORM packed, TEXCOORD_1 routing | Importer | Minor | None |
-| 13 | `occlusionTexture` (pragmatic; indirect-only fill, opt-in) | Materials | Yes | 12 |
-| 14 | Verify alphaMode = BLEND on Sponza curtain; fix if broken | Materials | No | None |
+| 13 | `occlusionTexture` (pragmatic) | Materials | No (additive defaults) | None | **DONE — Phase-1 minimal**.  Importer wires `occlusionTexture` into a baseColor modulator chain (R-channel × occlusionStrength × strength painter).  Applied uniformly to all bounces (small over-darkening of direct lighting; recovers high-frequency baked AO geometry can't reach).  Opt-out via `respect_baked_occlusion FALSE` on `gltf_import`.  Bounce-gated "indirect-only" version is future work. |
+| 14 | Verify alphaMode = BLEND | Materials | No | None | **DONE**.  Khronos's `AlphaBlendModeTest.glb` renders with three distinct behaviours per row (OPAQUE / MASK / BLEND), confirming the existing transparency_shaderop wiring works.  Sponza's `dirt_decal` BLEND material is too subtle to inspect in the canonical hero shot, so the test asset is the load-bearing verification. |
 
 ### Verification scaffolding (cross-cutting)
 
@@ -1015,6 +1015,16 @@ Close the importer feature gap for next-generation PBR assets that
 NewSponza doesn't exercise but that almost every other modern
 PBR asset does.
 
+### Sub-landing status
+
+| # | Item | Status |
+| - | ---- | ------ |
+| 12.A | `KHR_texture_transform` | **DONE** — `UVTransformPainter` wraps each binding when `view.has_transform == true`; identity transforms collapse to passthrough.  Math verified by `tests/UVTransformPainterTest.cpp` (7 / 7 pass: identity, T, S, R 90°, combined TRS, GetAlpha forwarding). |
+| 12.B | ORM-packed detection | **DONE** — `IsORMPacked` detects when occlusion and metallicRoughness slots reference the same `cgltf_texture *`; `EffectiveRole` routes the AO painter lookup through the MR painter name when packed.  PreDecodeTextures' `seen` set then dedupes, eliminating one PNG decode + one painter manager entry per ORM-packed material.  Color-space and wrap mode are identical for both bindings (both linear, shared sampler), so the share is safe.  Untouched on non-ORM assets (DamagedHelmet, OrientationTest etc.). |
+| 12.C | `anisotropy_texture` + `specular_texture` | **DONE — partial** — `specular_factor` × `specularTexture.A`, `specular_color` × `specularColorTexture.RGB`, and `anisotropy_factor` × `anisotropyTexture.B` are now per-pixel via the existing painter graph (ChannelPainter → BlendPainter chain into `AddPBRMetallicRoughnessMaterial`'s painter-string args).  No GGX BRDF/SPF change needed — the pre-existing `resolveOrSynth` in `Job::AddPBRMetallicRoughnessMaterial` already accepts a painter name in place of a scalar.  Per-pixel anisotropy DIRECTION (encoded in `anisotropyTexture.RG`) requires `atan2(2G−1, 2R−1)` per sample, which doesn't compose from BlendPainter / ChannelPainter primitives — deferred to a follow-up landing that adds an `ATan2Painter` (or changes `pTangentRotation`'s contract to a (cos, sin) pair).  Importer logs once when an asset uses per-pixel rotation so the visual mismatch is visible. |
+| 12.D | `TEXCOORD_1` routing | DEFERRED — needs `ri.ptCoord1` plumbing through triangle interpolation; bigger landing.  Importer logs once per (material, role) when a binding uses TEXCOORD_1, so the visual mismatch is at least documented. |
+| 12.E | `KHR_texture_basisu` (KTX2) | DEFERRED — separate landing, needs Basis Universal submodule integration. |
+
 ### Scope
 
 In:
@@ -1042,8 +1052,14 @@ Out:
 ### Code touch points
 
 - `src/Library/Importers/GLTFSceneImporter.cpp` — texture
-  enqueue + binding logic.
-- `src/Library/Painters/UVTransformPainter.{h,cpp}` — new.
+  enqueue + binding logic; per-call-site `WrapWithUVTransform`
+  helper applied at all 6 `CreateTexturePainter` sites
+  (basecolor, MR, occlusion, emissive, normal, sheen color).
+- `src/Library/Painters/UVTransformPainter.h` — header-only
+  passthrough wrapper; `GetColor` / `GetColorNM` / `GetAlpha`
+  apply T·R·S to ri.ptCoord and forward to source.
+- `src/Library/RISE_API.{h,cpp}`, `src/Library/Job.{h,cpp}` —
+  `Add/CreateUVTransformPainter` plumbing.
 - `src/Library/Painters/KTX2Loader.{h,cpp}` — new (likely pulls in
   external Basis Universal source as a submodule).
 - `src/Library/Geometry/TriangleMesh*.{h,cpp}` — verify TEXCOORD_1
@@ -1051,9 +1067,45 @@ Out:
 
 ---
 
-## Landing 13 — `occlusionTexture` (pragmatic)
+## Landing 13 — `occlusionTexture` (pragmatic) [DONE — Phase-1 minimal]
 
-### Goal
+**Shipped — applies AO as a baseColor multiplier across all
+bounces.**  glTF's `occlusionTexture` is now imported and threaded
+into the per-material baseColor painter graph as:
+
+  `final_baseColor = baseColor × lerp(white, ao_R, occlusionStrength)`
+
+The R channel is extracted via `ChannelPainter`; `occlusionStrength`
+defaults to `1.0` per the glTF spec (the texture-sampler's `.scale`
+field).  When the strength is 0, the modulator collapses to white
+(no AO effect).  When the texture is absent, the chain is skipped
+entirely — every pre-L13 scene renders bit-identically.
+
+**`respect_baked_occlusion` knob** on `gltf_import` (default `TRUE`)
+opts out for strict-PB workflows where you want only the path
+tracer's computed occlusion.
+
+**Phase-1 caveat — bounce-uniform application.**  The plan's
+original design proposed applying AO only on bounces ≥ 2 (so direct
+lighting and the first indirect bounce are unaffected, matching the
+"path tracer handles those best" intuition).  Implementing that
+requires plumbing bounce count from the integrator into the painter
+evaluation, which `RayIntersectionGeometric` doesn't currently
+carry.  Phase-1 ships the simpler "AO multiplies all bounces"
+variant; the small over-darkening of direct lighting is documented
+and accepted in exchange for not touching the integrator/painter
+boundary.  A bounce-gated v2 is a future refinement (likely
+alongside the broader integrator-context cleanup planned for
+shader-op evaluation).
+
+Verified end-to-end via [scenes/Tests/Importers/gltf_import_damaged_helmet.RISEscene](../scenes/Tests/Importers/gltf_import_damaged_helmet.RISEscene)
+— Khronos's DamagedHelmet is the canonical occlusion-bearing test
+asset.  Comparison render with `respect_baked_occlusion FALSE`
+shows uniform brightness; the default `TRUE` render shows visibly
+darker recesses (visor area, panel seams, riveted edges) consistent
+with the artist-baked AO.
+
+### Goal (original)
 
 Import glTF occlusion textures and apply them as a low-frequency
 modulator on **indirect diffuse only**, with a bounce threshold
@@ -1096,7 +1148,23 @@ In:
 
 ---
 
-## Landing 14 — Verify alphaMode = BLEND on Sponza
+## Landing 14 — Verify alphaMode = BLEND on Sponza [DONE]
+
+**Verified — BLEND machinery works.**  Khronos's `AlphaBlendModeTest.glb`
+([scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene](../scenes/Tests/Importers/gltf_import_alpha_blend.RISEscene))
+renders three distinct row behaviours: top row (OPAQUE) shows fully-
+visible squares; middle row (MASK at cutoff 0.5) shows hard-edge
+cutouts; bottom row (BLEND) shows smooth transparency.  The existing
+`transparency_shaderop` wiring (post-Phase-4) was already correct;
+no fix needed.
+
+Sponza-specific note: the asset's one BLEND material is `dirt_decal`
+(applied as a semi-transparent darkening overlay on floor / walls),
+not a curtain.  The decal is too subtle to inspect from the canonical
+hero shot at the current lighting / spp settings — the
+AlphaBlendModeTest asset is the load-bearing verification.
+
+### Goal (original)
 
 ### Goal
 

@@ -359,7 +359,12 @@ namespace
 	{
 		if( std::strcmp( role, "basecolor" ) == 0 ) return "sRGB";
 		if( std::strcmp( role, "emissive"  ) == 0 ) return "sRGB";
-		// normal / mr / occlusion -- verbatim store, no matrix conversion.
+		// KHR_materials_specular spec: specularColorTexture is sRGB encoded
+		// (it's a tint applied to F0, not numeric data).  specularTexture is
+		// a coverage / strength value in [0, 1] — linear.
+		if( std::strcmp( role, "specular_color" ) == 0 ) return "sRGB";
+		// normal / mr / occlusion / specular / sheen_color / anisotropy --
+		// verbatim store, no matrix conversion.
 		return "ROMMRGB_Linear";
 	}
 
@@ -394,6 +399,123 @@ namespace
 			outWrapS = 1;
 			outWrapT = 1;
 		}
+	}
+
+	// glTF ORM-packed convention: when the material's `occlusionTexture`
+	// and `metallicRoughnessTexture` slots reference the SAME image
+	// (cgltf_texture *), the asset is using the modern packing:
+	//   R = occlusion
+	//   G = roughness
+	//   B = metallic
+	// Decoding the image twice (once under role "occlusion", once under
+	// role "metallic_roughness") is wasteful — both bindings produce
+	// the same byte buffer, the same color-space ("ROMMRGB_Linear" for
+	// both linear roles), and the same wrap from the shared sampler.
+	// This helper detects the case so PreDecodeTextures and
+	// CreateMaterial can route the AO channel-extraction at the MR
+	// painter, eliding the duplicate decode.
+	//
+	// glTF spec authority: KHR_materials_specular doesn't define ORM,
+	// but the convention is universal (Blender, Substance Painter,
+	// Khronos Sample-Assets all emit it).  Detection is by texture
+	// pointer equality; a material that points at two SEPARATE images
+	// with identical bytes is NOT detected (correct — two pointers
+	// imply two encoded files, possibly different mips / encoding).
+	bool IsORMPacked( const cgltf_material& mat )
+	{
+		if( !mat.has_pbr_metallic_roughness ) return false;
+		const cgltf_texture* aoTex = mat.occlusion_texture.texture;
+		const cgltf_texture* mrTex = mat.pbr_metallic_roughness.metallic_roughness_texture.texture;
+		return aoTex != NULL && aoTex == mrTex;
+	}
+
+	// Resolve the effective role name an occlusion-binding texture
+	// painter should be registered / looked up under.  When ORM-packed
+	// (see IsORMPacked), occlusion piggybacks on the MR painter so the
+	// underlying decode happens once.  All other paths return the
+	// requested role unchanged.
+	const char* EffectiveRole( const cgltf_material& mat, const char* requestedRole )
+	{
+		if( std::strcmp( requestedRole, "occlusion" ) == 0 && IsORMPacked( mat ) ) {
+			return "metallic_roughness";
+		}
+		return requestedRole;
+	}
+
+	// glTF KHR_texture_transform: wrap a registered texture painter with
+	// a per-binding UV affine transform when the texture_view declares one.
+	// Returns `baseName` unchanged when there is no transform or it is the
+	// identity (skipping the wrapper saves the per-sample branch).
+	//
+	// Wrapper name is keyed by (matIdx, role) so two materials sharing the
+	// same image but using different transforms get distinct wrappers, and
+	// because glTF allows at most one binding per role per material, the
+	// name is unique within the painter manager.
+	//
+	// `texcoord != 0` (KHR_texture_transform `texCoord` override or
+	// `textureInfo.texcoord`) is logged once at warning level — Phase-1
+	// only honours TEXCOORD_0; routing TEXCOORD_1 through the painter
+	// graph lands separately.
+	std::string WrapWithUVTransform(
+		IJob&                       job,
+		const std::string&          prefix,
+		size_t                      matIdx,
+		const char*                 role,
+		const std::string&          baseName,
+		const cgltf_texture_view&   view )
+	{
+		if( baseName.empty() ) {
+			return baseName;
+		}
+
+		// Phase-1 limitation reminder: only TEXCOORD_0 is interpolated
+		// onto ri.ptCoord today.  A binding that points to TEXCOORD_1
+		// (via textureInfo.texCoord OR the transform's texCoord override)
+		// silently falls back to TEXCOORD_0 — the value still renders,
+		// it just samples through the wrong UV channel.  Logging once
+		// per (material, role) so the asset author can decide whether
+		// the visual mismatch matters.
+		const int boundTexcoord = view.has_transform && view.transform.has_texcoord
+			? (int)view.transform.texcoord
+			: (int)view.texcoord;
+		if( boundTexcoord != 0 ) {
+			GlobalLog()->PrintEx( eLog_Info,
+				"GLTFSceneImporter:: material[%zu] role `%s` uses TEXCOORD_%d; "
+				"only TEXCOORD_0 is supported in this build, sampling will use "
+				"TEXCOORD_0 instead", matIdx, role, boundTexcoord );
+		}
+
+		if( !view.has_transform ) {
+			return baseName;
+		}
+
+		const cgltf_texture_transform& t = view.transform;
+		const bool identity =
+			std::fabs( (double)t.offset[0] )         < 1e-9 &&
+			std::fabs( (double)t.offset[1] )         < 1e-9 &&
+			std::fabs( (double)t.rotation )          < 1e-9 &&
+			std::fabs( (double)t.scale[0] - 1.0 )    < 1e-9 &&
+			std::fabs( (double)t.scale[1] - 1.0 )    < 1e-9;
+		if( identity ) {
+			return baseName;
+		}
+
+		std::ostringstream oss;
+		oss << prefix << ".uvxform." << role << "." << matIdx;
+		const std::string wrapName = oss.str();
+
+		const bool ok = job.AddUVTransformPainter(
+			wrapName.c_str(), baseName.c_str(),
+			(double)t.offset[0], (double)t.offset[1],
+			(double)t.rotation,
+			(double)t.scale[0], (double)t.scale[1] );
+		if( !ok ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"GLTFSceneImporter:: failed to wrap painter `%s` with UV transform; "
+				"sampling will use the un-transformed UVs", baseName.c_str() );
+			return baseName;
+		}
+		return wrapName;
 	}
 
 	// Create the texture painter (png_painter or jpg_painter) for the
@@ -525,7 +647,8 @@ namespace
 		const std::string&  glbPath,
 		size_t              matIdx,
 		const std::set<std::string>* preRegisteredTextures,	// pre-decoded painters; see PreDecodeTextures
-		bool                lowmemTextures )	// passed to CreateTexturePainter slow path; matches PreDecodeTextures' setting
+		bool                lowmemTextures,		// passed to CreateTexturePainter slow path; matches PreDecodeTextures' setting
+		bool                respectBakedOcclusion )	// Landing 13: honour `occlusionTexture` if present
 	{
 		const cgltf_material& mat = data->materials[ matIdx ];
 
@@ -543,11 +666,17 @@ namespace
 		// (the painter system doesn't expose a painter's A channel, so per-
 		// pixel `texture.a * factor.a` can't be assembled here directly).
 		std::string baseColorPainter;
-		std::string baseColorTexturePainter;	// raw baseColorTexture, before factor multiply.
-		                                        // BuildAlphaPainter reads CHAN_A from THIS, not
-		                                        // the composed product (CHAN_A on a BlendPainter
-		                                        // returns the default 1.0 — the composition chain
-		                                        // doesn't propagate texture alpha).
+		std::string baseColorTexturePainter;	// raw baseColorTexture (or its UV-transform wrapper),
+		                                        // before factor multiply.  BuildAlphaPainter reads
+		                                        // CHAN_A from THIS, not from the composed product
+		                                        // (CHAN_A on a BlendPainter returns the default 1.0
+		                                        // — the composition chain doesn't propagate texture
+		                                        // alpha).  The UV-transform wrapper forwards
+		                                        // GetAlpha() through to the inner texture painter,
+		                                        // so capturing the wrapper is safe and gives the
+		                                        // alpha test the same UV transform as the colour
+		                                        // sample (KHR_texture_transform on baseColorTexture
+		                                        // applies to alpha cutout too).
 		bool baseColorIsTexture = false;	// false => uniform painter (alpha mask becomes pass/fail)
 		double factorAlpha = 1.0;
 		if( mat.has_pbr_metallic_roughness ) {
@@ -559,6 +688,8 @@ namespace
 				textureName = CreateTexturePainter(
 					job, prefix, data, glbPath, pmr.base_color_texture.texture, "basecolor",
 					preRegisteredTextures, lowmemTextures );
+				textureName = WrapWithUVTransform( job, prefix, matIdx, "basecolor",
+					textureName, pmr.base_color_texture );
 			}
 			baseColorTexturePainter = textureName;	// captured for BuildAlphaPainter
 
@@ -594,6 +725,82 @@ namespace
 			baseColorPainter = n;
 		}
 
+		// Landing 13 — KHR_materials baked occlusion.  Multiply the
+		// baseColor (diffuse path) by lerp(1, ao_R, occlusionStrength)
+		// when the material declares an occlusionTexture and the
+		// importer was asked to respect it.  Phase-1 implementation
+		// applies AO uniformly across all bounces (direct + indirect),
+		// which double-counts the path tracer's own occlusion to a
+		// small degree but recovers the high-frequency AO an artist
+		// baked at frequencies the geometry can't reach (column
+		// flutes, brick mortar, fabric folds).  Skipping AO entirely
+		// (respectBakedOcclusion = FALSE) is the strict-PB path.
+		//
+		// Painter graph (built only when AO is present and respected):
+		//   ao_full     = sample(occlusion_texture)              // RGB
+		//   ao_r        = ChannelPainter(ao_full, R, scale=1, bias=0)  // gray RGB(R, R, R)
+		//   strength    = uniformcolor(occlusionStrength)        // gray
+		//   ao_modulator = blend(ao_r, white, strength)          // = lerp(white, ao_r, strength)
+		//   final_base  = blend(baseColorPainter, zero, ao_modulator)  // = base × modulator
+		//
+		// final_base replaces baseColorPainter for downstream PBR-MR.
+		if( respectBakedOcclusion && mat.occlusion_texture.texture ) {
+			// Landing 12.B: ORM-packed asset reuse — when the material's
+			// occlusion and MR slots reference the same image, sample
+			// the shared MR-role painter instead of decoding a second
+			// time.  WrapWithUVTransform still uses role "occlusion"
+			// for the wrapper name so a binding-specific transform on
+			// occlusion (rare but spec-permitted) doesn't collide with
+			// MR's wrapper.
+			const char* aoSourceRole = EffectiveRole( mat, "occlusion" );
+			std::string aoTexName = CreateTexturePainter(
+				job, prefix, data, glbPath, mat.occlusion_texture.texture, aoSourceRole,
+				preRegisteredTextures, lowmemTextures );
+			aoTexName = WrapWithUVTransform( job, prefix, matIdx, "occlusion",
+				aoTexName, mat.occlusion_texture );
+			if( !aoTexName.empty() ) {
+				// AO R-channel painter.
+				const std::string nAoR = PainterName( prefix, "ao_r", matIdx );
+				job.AddChannelPainter( nAoR.c_str(), aoTexName.c_str(),
+					/*channel*/ 0,	// CHAN_R
+					/*scale*/ 1.0,
+					/*bias*/  0.0 );
+
+				// Strength painter (occlusion_texture.scale per glTF spec;
+				// default 1.0).
+				const std::string nStrength = PainterName( prefix, "ao_strength", matIdx );
+				const double s = (double)mat.occlusion_texture.scale;
+				const double sPel[3] = { s, s, s };
+				job.AddUniformColorPainter( nStrength.c_str(), sPel, "Rec709RGB_Linear" );
+
+				// Constants.
+				const std::string nWhiteAO = PainterName( prefix, "ao_white", matIdx );
+				const std::string nZeroAO  = PainterName( prefix, "ao_zero", matIdx );
+				const double white[3] = { 1.0, 1.0, 1.0 };
+				const double zeroP[3] = { 0.0, 0.0, 0.0 };
+				job.AddUniformColorPainter( nWhiteAO.c_str(), white,  "Rec709RGB_Linear" );
+				job.AddUniformColorPainter( nZeroAO.c_str(),  zeroP,  "Rec709RGB_Linear" );
+
+				// modulator = blend(ao_r, white, strength) = ao_r * strength + white * (1 - strength).
+				// At strength=0: modulator = white (no AO effect).
+				// At strength=1: modulator = ao_r (full AO).
+				const std::string nModulator = PainterName( prefix, "ao_modulator", matIdx );
+				job.AddBlendPainter( nModulator.c_str(),
+					nAoR.c_str(),
+					nWhiteAO.c_str(),
+					nStrength.c_str() );
+
+				// final_base = blend(base, zero, modulator) = base * modulator.
+				const std::string nFinalBase = PainterName( prefix, "basecolor_ao", matIdx );
+				job.AddBlendPainter( nFinalBase.c_str(),
+					baseColorPainter.c_str(),
+					nZeroAO.c_str(),
+					nModulator.c_str() );
+
+				baseColorPainter = nFinalBase;
+			}
+		}
+
 		// Metallic / roughness -- channel-extract from the MR texture if
 		// present, else use the glTF factor as a uniformcolor.
 		std::string metallicPainter;
@@ -601,10 +808,12 @@ namespace
 		if( mat.has_pbr_metallic_roughness ) {
 			const cgltf_pbr_metallic_roughness& pmr = mat.pbr_metallic_roughness;
 			if( pmr.metallic_roughness_texture.texture ) {
-				const std::string mrTex = CreateTexturePainter(
+				std::string mrTex = CreateTexturePainter(
 					job, prefix, data, glbPath, pmr.metallic_roughness_texture.texture,
 					"metallic_roughness",
 					preRegisteredTextures, lowmemTextures );
+				mrTex = WrapWithUVTransform( job, prefix, matIdx, "metallic_roughness",
+					mrTex, pmr.metallic_roughness_texture );
 				if( !mrTex.empty() ) {
 					// glTF MR convention: G = roughness, B = metallic.
 					const std::string mName = PainterName( prefix, "metallic", matIdx );
@@ -653,6 +862,8 @@ namespace
 			emissiveTextureName = CreateTexturePainter(
 				job, prefix, data, glbPath, mat.emissive_texture.texture, "emissive",
 				preRegisteredTextures, lowmemTextures );
+			emissiveTextureName = WrapWithUVTransform( job, prefix, matIdx, "emissive",
+				emissiveTextureName, mat.emissive_texture );
 		}
 		const cgltf_float ef[3] = {
 			mat.emissive_factor[0],
@@ -829,34 +1040,72 @@ namespace
 				// scene-wide but interior media attach to objects.
 			}
 		} else {
-			// Landing 7 — KHR_materials_specular.  Read the factor + RGB
-			// tint when the extension is present; default to 1.0 / "none"
-			// (white, untinted) so non-extension materials render bit-
-			// identical to pre-L7.  We support the SCALAR factor + factor
-			// fields only (no specular_texture or specular_color_texture
-			// yet — those land with the L12 importer-fidelity batch).
+			// Landing 7 — KHR_materials_specular.
+			//   F0_dielectric = 0.04 × specular_color × specular_factor
+			// Phase 1 (L7) shipped scalar factor + scalar color only.
+			// Phase 2 (L12.C) adds per-pixel via the textures:
+			//   specular_factor      ← specular_factor × specular_texture.A
+			//   specular_color       ← specular_color_factor × specular_color_texture.RGB
+			// Both wire as painter graphs (a ChannelPainter on .A for the
+			// scalar; a BlendPainter on (.RGB, ZERO, factorRGB) for the
+			// color), and AddPBRMetallicRoughnessMaterial threads the
+			// painter name straight through resolveOrSynth — no API change.
 			std::string specularFactorStr = "1.0";
 			std::string specularColorPainter = "none";
 			if( mat.has_specular ) {
-				if( mat.specular.specular_texture.texture ||
-				    mat.specular.specular_color_texture.texture ) {
-					GlobalLog()->PrintEx( eLog_Warning,
-						"GLTFSceneImporter:: material `%s` declares KHR_materials_specular "
-						"with a texture; Phase 1 honours only the scalar factor (%.3f) and "
-						"factor-only RGB (%.3f, %.3f, %.3f).  The textures are ignored "
-						"(L12 importer-fidelity batch will wire them).",
-						matName.c_str(),
-						(double)mat.specular.specular_factor,
-						(double)mat.specular.specular_color_factor[0],
-						(double)mat.specular.specular_color_factor[1],
-						(double)mat.specular.specular_color_factor[2] );
-				}
-				char buf[64];
-				std::snprintf( buf, sizeof(buf), "%.6f", (double)mat.specular.specular_factor );
-				specularFactorStr = buf;
-
+				const double sf = (double)mat.specular.specular_factor;
 				const cgltf_float* sc = mat.specular.specular_color_factor;
-				if( !( sc[0] == 1.0f && sc[1] == 1.0f && sc[2] == 1.0f ) ) {
+				char buf[64];
+
+				// Per-pixel specular factor: blend the texture's A channel
+				// with the scalar factor.  ChannelPainter(scale=sf, bias=0)
+				// returns (sf × A, sf × A, sf × A) which the downstream
+				// BlendPainter consumes as a scalar mask.
+				if( mat.specular.specular_texture.texture ) {
+					std::string sfTexName = CreateTexturePainter(
+						job, prefix, data, glbPath, mat.specular.specular_texture.texture,
+						"specular", preRegisteredTextures, lowmemTextures );
+					sfTexName = WrapWithUVTransform( job, prefix, matIdx, "specular",
+						sfTexName, mat.specular.specular_texture );
+					if( !sfTexName.empty() ) {
+						const std::string nSpecF = PainterName( prefix, "spec_factor", matIdx );
+						job.AddChannelPainter( nSpecF.c_str(), sfTexName.c_str(),
+							/*chan A*/ 3, /*scale*/ sf, /*bias*/ 0.0 );
+						specularFactorStr = nSpecF;
+					} else {
+						std::snprintf( buf, sizeof(buf), "%.6f", sf );
+						specularFactorStr = buf;
+					}
+				} else {
+					std::snprintf( buf, sizeof(buf), "%.6f", sf );
+					specularFactorStr = buf;
+				}
+
+				// Per-pixel specular color: multiply texture × factor RGB.
+				// glTF spec: specular_color_texture is sRGB encoded (per
+				// TextureColorSpace), so the texture decodes to linear and
+				// the factor is already linear — straight RGB multiply.
+				if( mat.specular.specular_color_texture.texture ) {
+					std::string scTexName = CreateTexturePainter(
+						job, prefix, data, glbPath, mat.specular.specular_color_texture.texture,
+						"specular_color", preRegisteredTextures, lowmemTextures );
+					scTexName = WrapWithUVTransform( job, prefix, matIdx, "specular_color",
+						scTexName, mat.specular.specular_color_texture );
+					if( !scTexName.empty() ) {
+						const std::string nFactor = PainterName( prefix, "spec_color_factor", matIdx );
+						const double fpel[3] = { (double)sc[0], (double)sc[1], (double)sc[2] };
+						job.AddUniformColorPainter( nFactor.c_str(), fpel, "Rec709RGB_Linear" );
+
+						const std::string nZeroSC = PainterName( prefix, "spec_color_zero", matIdx );
+						const double zPel[3] = { 0.0, 0.0, 0.0 };
+						job.AddUniformColorPainter( nZeroSC.c_str(), zPel, "Rec709RGB_Linear" );
+
+						const std::string nProduct = PainterName( prefix, "spec_color", matIdx );
+						job.AddBlendPainter( nProduct.c_str(),
+							scTexName.c_str(), nZeroSC.c_str(), nFactor.c_str() );
+						specularColorPainter = nProduct;
+					}
+				} else if( !( sc[0] == 1.0f && sc[1] == 1.0f && sc[2] == 1.0f ) ) {
 					const std::string nSpecCol = PainterName( prefix, "specular_color", matIdx );
 					const double pel[3] = { (double)sc[0], (double)sc[1], (double)sc[2] };
 					job.AddUniformColorPainter( nSpecCol.c_str(), pel, "Rec709RGB_Linear" );
@@ -864,27 +1113,55 @@ namespace
 				}
 			}
 
-			// Landing 8 — KHR_materials_anisotropy.  Strength + rotation
-			// (both scalars) are honoured; the anisotropy_texture is
-			// L12.  Strength default 0 = isotropic, matching pre-L8
-			// PBR-MR exactly.  Rotation applies the (u, v) tangent
-			// rotation around w inside GGX{BRDF,SPF} per the spec.
+			// Landing 8 — KHR_materials_anisotropy.
+			//   α_t = mix(α, 1.0, anisotropy²)    (lobe stretch along tangent)
+			//   tangent-frame rotation = anisotropy_rotation
+			// Phase 1 (L8) shipped scalar strength + scalar rotation.
+			// Phase 2 (L12.C) adds per-pixel STRENGTH only via the
+			// anisotropy_texture's B channel:
+			//   anisotropy_factor ← anisotropy_strength × anisotropy_texture.B
+			// Per-pixel ROTATION (encoded in R, G as cos(angle)*0.5+0.5,
+			// sin(angle)*0.5+0.5) requires an `atan2` painter primitive
+			// or a contract change to pTangentRotation (vector instead of
+			// scalar).  Either is a separate landing — for now we honour
+			// the scalar `anisotropy_rotation` factor and log once that
+			// the per-pixel direction is dropped.
 			std::string anisoFactorStr = "0.0";
 			std::string anisoRotationStr = "0.0";
 			if( mat.has_anisotropy ) {
-				if( mat.anisotropy.anisotropy_texture.texture ) {
-					GlobalLog()->PrintEx( eLog_Warning,
-						"GLTFSceneImporter:: material `%s` declares KHR_materials_anisotropy "
-						"with a texture; the scalar strength (%.3f) and rotation (%.3f rad) "
-						"are honoured, but per-pixel variation from the texture is ignored "
-						"(L12 importer-fidelity batch will wire it).",
-						matName.c_str(),
-						(double)mat.anisotropy.anisotropy_strength,
-						(double)mat.anisotropy.anisotropy_rotation );
-				}
+				const double as = (double)mat.anisotropy.anisotropy_strength;
 				char buf[64];
-				std::snprintf( buf, sizeof(buf), "%.6f", (double)mat.anisotropy.anisotropy_strength );
-				anisoFactorStr = buf;
+
+				if( mat.anisotropy.anisotropy_texture.texture ) {
+					std::string aTexName = CreateTexturePainter(
+						job, prefix, data, glbPath, mat.anisotropy.anisotropy_texture.texture,
+						"anisotropy", preRegisteredTextures, lowmemTextures );
+					aTexName = WrapWithUVTransform( job, prefix, matIdx, "anisotropy",
+						aTexName, mat.anisotropy.anisotropy_texture );
+					if( !aTexName.empty() ) {
+						// Per-pixel strength: B channel × scalar strength.
+						const std::string nAnisoF = PainterName( prefix, "aniso_factor", matIdx );
+						job.AddChannelPainter( nAnisoF.c_str(), aTexName.c_str(),
+							/*chan B*/ 2, /*scale*/ as, /*bias*/ 0.0 );
+						anisoFactorStr = nAnisoF;
+
+						// Per-pixel rotation needs atan2(2G-1, 2R-1) — log
+						// once and fall back to the scalar.
+						GlobalLog()->PrintEx( eLog_Info,
+							"GLTFSceneImporter:: material `%s` declares anisotropy_texture "
+							"with per-pixel direction (R, G); current build honours per-pixel "
+							"STRENGTH (B channel × %.3f) but applies the SCALAR rotation "
+							"(%.3f rad) uniformly.  Per-pixel rotation is a follow-up landing.",
+							matName.c_str(), as, (double)mat.anisotropy.anisotropy_rotation );
+					} else {
+						std::snprintf( buf, sizeof(buf), "%.6f", as );
+						anisoFactorStr = buf;
+					}
+				} else {
+					std::snprintf( buf, sizeof(buf), "%.6f", as );
+					anisoFactorStr = buf;
+				}
+
 				std::snprintf( buf, sizeof(buf), "%.6f", (double)mat.anisotropy.anisotropy_rotation );
 				anisoRotationStr = buf;
 			}
@@ -951,6 +1228,8 @@ namespace
 			if( sh.sheen_color_texture.texture ) {
 				sheenColorPainter = CreateTexturePainter(
 					job, prefix, data, glbPath, sh.sheen_color_texture.texture, "sheen_color" );
+				sheenColorPainter = WrapWithUVTransform( job, prefix, matIdx, "sheen_color",
+					sheenColorPainter, sh.sheen_color_texture );
 			}
 			if( sheenColorPainter.empty() ) {
 				const std::string n = PainterName( prefix, "sheen_color", matIdx );
@@ -1059,9 +1338,11 @@ namespace
 
 		// Optional normal-map modifier.
 		if( mat.normal_texture.texture ) {
-			const std::string nmTex = CreateTexturePainter(
+			std::string nmTex = CreateTexturePainter(
 				job, prefix, data, glbPath, mat.normal_texture.texture, "normal",
 				preRegisteredTextures, lowmemTextures );
+			nmTex = WrapWithUVTransform( job, prefix, matIdx, "normal",
+				nmTex, mat.normal_texture );
 			if( !nmTex.empty() ) {
 				const std::string modName = ModifierName( prefix, matIdx );
 				job.AddNormalMapModifier( modName.c_str(), nmTex.c_str(), mat.normal_texture.scale );
@@ -1522,7 +1803,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 	// Materials -- create up front (de-duplicates across primitives).
 	if( opts.importMaterials ) {
 		for( size_t mi = 0; mi < data->materials_count; ++mi ) {
-			CreateMaterial( job, prefix, data, szFilename, mi, &mRegisteredTextures, opts.lowmemTextures );
+			CreateMaterial( job, prefix, data, szFilename, mi, &mRegisteredTextures, opts.lowmemTextures, opts.respectBakedOcclusion );
 		}
 	}
 
@@ -1598,18 +1879,17 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 					// (opaque single-sided) when no material is bound.
 					const bool doubleSided = ( prim.material && prim.material->double_sided );
 
-					// flip_v=FALSE: glTF 2.0 spec says UV origin is the upper-
-					// left corner (V increases downward in image space) — same
-					// as RISE's BilinRasterImageAccessor (`row = V * height`
-					// indexed from top of file).  No flip is needed at the
-					// loader.  An earlier "Phase 1 finding" claimed glTF was
-					// V-up and forced flip_v=TRUE; the empirical test was
-					// Avocado.glb (pit-on-flesh swap), MetalRoughSpheres
-					// (label text upside-down), and AlphaBlendModeTest
-					// ("Cutoff 0.25" mirrored), all of which now render
-					// correctly with flip_v=FALSE.  The earlier finding was
-					// a misread of the spec; it is corrected in
-					// docs/GLTF_IMPORT.md §4 V-convention reconciliation.
+					// flip_v=TRUE: glTF 2.0 puts the UV origin at upper-left
+					// (V increases DOWNWARD in image space), but RISE's
+					// BilinRasterImageAccessor samples with the V-from-
+					// BOTTOM convention (OpenGL-style: `row = V * height`
+					// where V=0 returns the bottom row of the loaded
+					// image).  So glTF V=0 (top of image) must become
+					// RISE V=1 — flip at the loader.  Empirical: Avocado.glb's
+					// pit renders with the brown texture only with the
+					// flip.  A 2026-05-01 commit briefly switched this to
+					// FALSE based on a misreading of the accessor; restored
+					// here after re-checking the rendered output.
 					// Build + register the primitive's geometry through the
 					// already-parsed cgltf_data we own — NOT through
 					// `job.AddGLTFTriangleMeshGeometry`, which would
@@ -1647,7 +1927,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 							(unsigned int)meshIdx, (unsigned int)pi,
 							doubleSided,
 							/*face_normals*/ false,
-							/*flip_v*/ false );
+							/*flip_v*/ true );
 						if( gOK ) {
 							registeredGeoms.insert( geom );
 						}
@@ -2379,6 +2659,25 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		}
 		enqueue( mat.emissive_texture.texture, "emissive" );
 		enqueue( mat.normal_texture.texture,   "normal" );
+		// Landing 13: occlusionTexture — pre-decode for the AO modulator
+		// chain in CreateMaterial.  Honoured when the gltf_import chunk's
+		// `respect_baked_occlusion` is TRUE (the default).
+		// Landing 12.B: when the material is ORM-packed (occlusion and MR
+		// reference the same image), enqueue under role "metallic_roughness"
+		// so PreDecodeTextures' `seen` set dedupes against the MR enqueue
+		// above — saves one PNG decode + one painter manager entry per
+		// ORM-packed material.  CreateMaterial's AO modulator chain reads
+		// the same shared painter via EffectiveRole.
+		enqueue( mat.occlusion_texture.texture, EffectiveRole( mat, "occlusion" ) );
+		// Landing 12.C: KHR_materials_specular textures (per-pixel L7).
+		if( mat.has_specular ) {
+			enqueue( mat.specular.specular_texture.texture,       "specular" );
+			enqueue( mat.specular.specular_color_texture.texture, "specular_color" );
+		}
+		// Landing 12.C: KHR_materials_anisotropy texture (per-pixel L8).
+		if( mat.has_anisotropy ) {
+			enqueue( mat.anisotropy.anisotropy_texture.texture, "anisotropy" );
+		}
 		// Phase-5 sheen / clearcoat texture slots intentionally left out
 		// — those code paths are #if 0 in CreateMaterial today.
 	}

@@ -810,7 +810,19 @@ namespace RISE
 					std::string name        = bag.GetString( "name",       "noname" );
 					double color[3] = {0,0,0};
 					bag.GetVec3( "color", color );
-					std::string color_space = bag.GetString( "colorspace", "sRGB" );
+					// Default colorspace is `Rec709RGB_Linear` since 2026-05.
+					// Hand-typed scalar / RGB values in scene files are
+					// physical numbers (reflectance, light tint, intensity
+					// multiplier), NOT display-referred.  Earlier default
+					// `sRGB` silently decoded `color 0.5 0.5 0.5` to linear
+					// 0.214 — a 2.4x dimming of every uniform-painter-driven
+					// albedo.  Pre-2026-05 scenes that intended sRGB-encoded
+					// display values must now declare `colorspace sRGB`
+					// explicitly; image-texture painters
+					// (png/jpeg/in-memory) keep their per-role auto colour-
+					// space (sRGB for basecolor / emissive, linear for normal
+					// / metallic-roughness / occlusion).
+					std::string color_space = bag.GetString( "colorspace", "Rec709RGB_Linear" );
 
 					PainterColor pc = { {color[0], color[1], color[2]} };
 					s_painterColors[name] = pc;
@@ -826,7 +838,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;     p.description = "Unique name";                          p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = "R G B values";                         p.defaultValueHint = "0 0 0"; }
-						{ auto& p = P(); p.name = "colorspace";p.kind = ValueKind::String;    p.description = "Interpretation of R G B";             p.defaultValueHint = "sRGB"; }
+						{ auto& p = P(); p.name = "colorspace";p.kind = ValueKind::String;    p.description = "Interpretation of R G B (linear default)"; p.defaultValueHint = "Rec709RGB_Linear"; }
 						return cd;
 					}();
 					return d;
@@ -840,7 +852,8 @@ namespace RISE
 					std::string name        = bag.GetString( "name",       "noname" );
 					double fallback[3]      = { 1.0, 1.0, 1.0 };
 					bag.GetVec3( "fallback", fallback );
-					std::string color_space = bag.GetString( "colorspace", "sRGB" );
+					// Default linear, matching uniformcolor_painter (2026-05).
+					std::string color_space = bag.GetString( "colorspace", "Rec709RGB_Linear" );
 
 					return pJob.AddVertexColorPainter( name.c_str(), fallback, color_space.c_str() );
 				}
@@ -856,7 +869,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name";                                p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "fallback";   p.kind = ValueKind::DoubleVec3; p.description = "RGB used when no vertex color is present";   p.defaultValueHint = "1 1 1"; }
-						{ auto& p = P(); p.name = "colorspace"; p.kind = ValueKind::String;     p.description = "Interpretation of the fallback RGB";          p.defaultValueHint = "sRGB"; }
+						{ auto& p = P(); p.name = "colorspace"; p.kind = ValueKind::String;     p.description = "Interpretation of the fallback RGB (linear default)"; p.defaultValueHint = "Rec709RGB_Linear"; }
 						return cd;
 					}();
 					return d;
@@ -4303,6 +4316,7 @@ namespace RISE
 					double directional_intensity_override  = bag.GetDouble( "directional_intensity_override",   0.0 );
 					double point_intensity_override        = bag.GetDouble( "point_intensity_override",         0.0 );
 					double spot_intensity_override         = bag.GetDouble( "spot_intensity_override",          0.0 );
+					bool   respect_baked_occlusion         = bag.GetBool(   "respect_baked_occlusion",          true );
 					if( lights_intensity_override > 0.0 ) {
 						GlobalLog()->PrintEx( eLog_Warning,
 							"gltf_import:: `lights_intensity_override` is unit-blind (it conflates lux for "
@@ -4321,7 +4335,8 @@ namespace RISE
 						lights_intensity_override,
 						directional_intensity_override,
 						point_intensity_override,
-						spot_intensity_override );
+						spot_intensity_override,
+						respect_baked_occlusion );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -4365,6 +4380,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "directional_intensity_override"; p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual directional lights.  Units: LUX (lm/m²) -- glTF's authored unit for directional intensity.  Replaces zero authored intensities for directional lights only (lights set non-zero stay untouched).  Typical values: ~120000 for noon clear-sky sun, ~10000 for overcast day, ~100 for moonlight."; p.defaultValueHint = "0 (no override)"; }
 						{ auto& p = P(); p.name = "point_intensity_override";       p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual point lights.  Units: CANDELA (lm/sr) -- glTF's authored unit for point intensity.  Replaces zero authored intensities for point lights only.  Typical values: ~100 for a 60-W incandescent (~800 lm omnidirectional / 4 pi sr), ~1500 for a 100-W LED bulb."; p.defaultValueHint = "0 (no override)"; }
 						{ auto& p = P(); p.name = "spot_intensity_override";        p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual spot lights.  Units: CANDELA (lm/sr) along the spot's central axis -- glTF's authored unit for spot intensity.  Replaces zero authored intensities for spot lights only."; p.defaultValueHint = "0 (no override)"; }
+						{ auto& p = P(); p.name = "respect_baked_occlusion";       p.kind = ValueKind::Bool;   p.description = "Landing 13: when TRUE (default), import glTF `occlusionTexture` as a multiplier on the material's diffuse baseColor (× R-channel × occlusionStrength).  Recovers high-frequency baked AO that geometry can't reach (column flutes, brick mortar, fabric folds) but slightly double-counts the path tracer's own occlusion on direct light.  Set FALSE for strict-PB workflows where you want only the integrator's computed occlusion."; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
 					return d;
@@ -4381,19 +4397,22 @@ namespace RISE
 					unsigned int primitive_idx = bag.GetUInt(   "primitive",     0 );
 					bool double_sided          = bag.GetBool(   "double_sided",  false );
 					bool face_normals          = bag.GetBool(   "face_normals",  false );
-					// Default flip_v to FALSE: the glTF 2.0 spec puts the UV
-					// origin at the upper-left of the texture (V increases
-					// downward), which is the same convention RISE's
-					// BilinRasterImageAccessor uses (`row = V * height`, indexed
-					// from row 0 = top of the loaded image file).  No flip is
-					// needed at the loader.  An earlier "Phase 1 finding"
-					// mistakenly claimed glTF was V-up and forced flip_v=TRUE,
-					// which broke Avocado (pit/flesh swap), MetalRoughSpheres
-					// (label text upside-down), and AlphaBlendModeTest
-					// ("Cutoff 0.25" mirrored).  All three render correctly with
-					// flip_v=FALSE.  Override only for non-conformant assets
-					// that ship with V already baked in upside-down.
-					bool flip_v                = bag.GetBool(   "flip_v",        false );
+					// Default flip_v to TRUE.  glTF 2.0's UV origin is upper-
+					// left (V increases DOWNWARD in image space), but RISE's
+					// `BilinRasterImageAccessor` uses the OpenGL-style "V from
+					// bottom" convention internally — sampling `row = V *
+					// height` where V=0 returns the BOTTOM row.  glTF V=0
+					// (top of image) therefore needs to land at RISE V=1.
+					// An earlier revision (commit 49472aa, 2026-05-01)
+					// claimed RISE used V-from-top and switched the default
+					// to FALSE, but empirical testing on Avocado.glb (the
+					// canonical pit-on-flesh diagnostic) shows the swap
+					// renders WITH the swap visible — pit's UVs sample the
+					// green flesh region instead of the brown pit region.
+					// Restoring flip_v=TRUE puts the brown pit back on the
+					// pit and matches every Khronos sample asset's reference
+					// render.
+					bool flip_v                = bag.GetBool(   "flip_v",        true );
 					return pJob.AddGLTFTriangleMeshGeometry(
 						name.c_str(), file.c_str(),
 						mesh_idx, primitive_idx,

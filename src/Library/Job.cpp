@@ -1960,6 +1960,33 @@ bool Job::AddChannelPainter(
 	return true;
 }
 
+//! Adds a UV-transform wrapper painter.  See IJob.h for the doc.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddUVTransformPainter(
+							const char* name,
+							const char* source,
+							const double offset_u,
+							const double offset_v,
+							const double rotation,
+							const double scale_u,
+							const double scale_v
+							)
+{
+	IPainter* pSrc = pPntManager->GetItem( source );
+	if( !pSrc ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddUVTransformPainter:: source painter `%s` not found", source );
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateUVTransformPainter( &pPainter, *pSrc, offset_u, offset_v, rotation, scale_u, scale_v );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
 //! Adds a blend painter
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddBlendPainter(
@@ -3796,7 +3823,8 @@ bool Job::ImportGLTFScene(
 					const double lights_intensity_override,
 					const double directional_intensity_override,
 					const double point_intensity_override,
-					const double spot_intensity_override
+					const double spot_intensity_override,
+					const bool respect_baked_occlusion
 					)
 {
 	GLTFSceneImporter importer( filename );
@@ -3816,6 +3844,7 @@ bool Job::ImportGLTFScene(
 	opts.directionalIntensityOverride  = directional_intensity_override;
 	opts.pointIntensityOverride        = point_intensity_override;
 	opts.spotIntensityOverride         = spot_intensity_override;
+	opts.respectBakedOcclusion         = respect_baked_occlusion;
 	return importer.ImportScene( *this, opts );
 }
 

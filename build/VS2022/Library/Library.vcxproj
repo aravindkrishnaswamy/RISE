@@ -514,6 +514,7 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoader3DS.h" />
     <ClInclude Include="..\..\..\src\Library\Importers\GLTFSceneImporter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ChannelPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\UVTransformPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPSurf.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW.h" />

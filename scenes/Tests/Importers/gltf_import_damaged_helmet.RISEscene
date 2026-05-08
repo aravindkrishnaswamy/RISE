@@ -56,6 +56,11 @@ gltf_import
 {
 	file				scenes/Tests/Geometry/assets/DamagedHelmet.glb
 	name_prefix			helmet
+	# Landing 13: respect_baked_occlusion defaults to TRUE.  The
+	# helmet's surface details (rivets, dents, panel seams) pick
+	# up the artist-baked AO darkening from occlusionTexture.
+	# Flip to FALSE for the strict-PB comparison (only the path
+	# tracer's own occlusion).
 }
 
 ##################################################

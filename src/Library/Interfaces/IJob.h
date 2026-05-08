@@ -713,6 +713,20 @@ namespace RISE
 									const double bias				///< [in] Additive offset after scale
 									) = 0;
 
+		//! Adds a UV-transform wrapper painter (glTF KHR_texture_transform).
+		//! Each glTF texture binding may carry its own offset/rotation/scale,
+		//! so the same image painter is wrapped per-binding via this helper.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddUVTransformPainter(
+									const char* name,				///< [in] Name of the painter
+									const char* source,				///< [in] Source painter
+									const double offset_u,			///< [in] U translation
+									const double offset_v,			///< [in] V translation
+									const double rotation,			///< [in] Rotation in radians (KHR sign)
+									const double scale_u,			///< [in] U scale
+									const double scale_v			///< [in] V scale
+									) = 0;
+
 
 		//
 		// Adding materials
@@ -1241,7 +1255,8 @@ namespace RISE
 							const double lights_intensity_override,	///< [in] Landing 4 deprecated.  Unit-blind override that replaces zero authored intensities for ALL light types uniformly when > 0.  Kept one release for back-compat; prefer the per-type fields below (which respect glTF's per-type unit semantics — lux for directional, candela for point/spot).  Default 0 (no override).
 							const double directional_intensity_override,	///< [in] Landing 4: per-type override for directional lights.  Units: LUX (lm/m²).  Replaces zero authored intensities for directional lights only; lights set non-zero stay untouched.  Default 0 (no override).  Typical: ~120000 noon clear-sky sun, ~10000 overcast day, ~100 moonlight.
 							const double point_intensity_override,			///< [in] Landing 4: per-type override for point lights.  Units: CANDELA (lm/sr).  Replaces zero authored intensities for point lights only.  Default 0 (no override).  Typical: ~100 for a 60-W incandescent (~800 lm omnidirectional ÷ 4π sr), ~1500 for a 100-W LED bulb.
-							const double spot_intensity_override			///< [in] Landing 4: per-type override for spot lights.  Units: CANDELA (lm/sr) — peak intensity along the spot axis.  Replaces zero authored intensities for spot lights only.  Default 0 (no override).
+							const double spot_intensity_override,			///< [in] Landing 4: per-type override for spot lights.  Units: CANDELA (lm/sr) — peak intensity along the spot axis.  Replaces zero authored intensities for spot lights only.  Default 0 (no override).
+							const bool respect_baked_occlusion = true		///< [in] Landing 13: when TRUE (default), honour `occlusionTexture` by multiplying the diffuse path by the texture's R channel × `occlusionStrength`.  Phase-1 implementation modulates ALL bounces (small over-darkening of direct lighting; recovers high-frequency baked AO geometry can't reach).  Set FALSE for strict-PB workflows.
 							) = 0;
 
 		//! Creates a triangle mesh geometry from a glTF 2.0 file (.gltf or .glb).

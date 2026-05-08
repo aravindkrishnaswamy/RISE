@@ -1,0 +1,100 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#
+#   File:           pb_units_validation.RISEscene
+#   Description:    Sanity check the directional-light unit interpretation.
+#
+#                   Setup: a 50%-albedo Lambertian sphere at origin, radius 1.
+#                   One directional light shining at the camera-facing front
+#                   of the sphere.  Camera at +Z looking back; light direction
+#                   = +Z (RISE convention: vector FROM surface TO light source).
+#                   Radiant energy = 1000.
+#
+#                   At the center pixel of the sphere image (front of sphere,
+#                   normal = +Z), expected EXR value:
+#                     L_outgoing = ρ/π × E × cos(θ_light)
+#                                = 0.5/π × 1000 × 1.0
+#                                = 159.155
+#
+#                   - If RISE outputs ~159 → directional `power` is illuminance.
+#                   - If RISE outputs ~1000 → power is treated as radiance directly.
+#                   - If RISE outputs orders of magnitude more → unit-conversion bug.
+#
+#############################################################################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion	2
+	samples			16
+	lum_samples		1
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/pb_units_validation
+	type			EXR
+	color_space		ROMMRGB_Linear
+	exr_compression	piz
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/pb_units_validation
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+pinhole_camera
+{
+	location		0 0 5
+	lookat			0 0 0
+	up				0 1 0
+	width			128
+	height			128
+	fov				20
+}
+
+uniformcolor_painter
+{
+	name			gray50
+	color			0.5 0.5 0.5
+}
+
+lambertian_material
+{
+	name			gray_diffuse
+	reflectance		gray50
+}
+
+sphere_geometry
+{
+	name			sphere_geom
+	radius			1.0
+}
+
+standard_object
+{
+	name			the_sphere
+	geometry		sphere_geom
+	material		gray_diffuse
+}
+
+# Directional light shining at camera-facing front of the sphere.
+# `direction` per RISE convention: FROM surface TO light source.
+# Camera is at +Z; light shining from +Z (so it lights the camera-facing
+# front of the sphere) means direction = +Z.
+# 50000 = clear-noon sun illuminance in lux.
+directional_light
+{
+	name			sun
+	power			50000
+	color			1.0 1.0 1.0
+	direction		0 0 1
+}

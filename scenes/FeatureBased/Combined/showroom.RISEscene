@@ -397,7 +397,8 @@ directional_light
 	name				key
 	power				2.0
 	color				1.0 0.98 0.93
-	direction			-0.5 -1.0 0.3
+	# RISE convention: `direction` FROM surface TO light, lit when N·dir > 0.
+	direction			0.5 1.0 -0.3
 }
 
 omni_light

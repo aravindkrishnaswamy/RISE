@@ -1565,6 +1565,9 @@
     <ClInclude Include="..\..\..\src\Library\Painters\ChannelPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\UVTransformPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.h">
       <Filter>Geometry\Mesh Loaders</Filter>
     </ClInclude>
