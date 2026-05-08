@@ -302,9 +302,16 @@ static void TestStabilityConfigHints()
 	CheckHint( desc, "bdpt_pel_rasterizer", "max_translucent_bounce",  to_hint( d.maxTranslucentBounce ) );
 	CheckHint( desc, "bdpt_pel_rasterizer", "max_volume_bounce",       to_hint( d.maxVolumeBounce ) );
 	CheckHint( desc, "bdpt_pel_rasterizer", "light_bvh",               to_hint( d.useLightBVH ) );
-	CheckHint( desc, "bdpt_pel_rasterizer", "optimal_mis",             to_hint( d.optimalMIS ) );
-	CheckHint( desc, "bdpt_pel_rasterizer", "optimal_mis_training_iterations", to_hint( d.optimalMISTrainingIterations ) );
-	CheckHint( desc, "bdpt_pel_rasterizer", "optimal_mis_tile_size",   to_hint( d.optimalMISTileSize ) );
+
+	// Optimal MIS sub-fields validated against pathtracing_pel_rasterizer
+	// (BDPT pel stopped wiring AddOptimalMISParams 2026-05-07 because
+	// BDPTIntegrator does not consume rc.pOptimalMIS — see
+	// docs/SPECTRAL_PARITY_AUDIT.md §2.10).
+	const ChunkDescriptor* ptDesc = DescriptorForKeyword( String( "pathtracing_pel_rasterizer" ) );
+	if( !ptDesc ) { ++failCount; return; }
+	CheckHint( ptDesc, "pathtracing_pel_rasterizer", "optimal_mis",             to_hint( d.optimalMIS ) );
+	CheckHint( ptDesc, "pathtracing_pel_rasterizer", "optimal_mis_training_iterations", to_hint( d.optimalMISTrainingIterations ) );
+	CheckHint( ptDesc, "pathtracing_pel_rasterizer", "optimal_mis_tile_size",   to_hint( d.optimalMISTileSize ) );
 }
 
 static void TestPixelFilterHints()

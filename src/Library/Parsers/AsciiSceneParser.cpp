@@ -6362,9 +6362,14 @@ namespace RISE
 					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
 					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
 					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
-					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
-					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
-					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+					// Optimal MIS is intentionally NOT parsed here:
+					// `BDPTIntegrator` does not consume `rc.pOptimalMIS`
+					// (the Kondapaneni 2019 single-step formulation has
+					// not been extended to BDPT's per-strategy-pair MIS).
+					// The descriptor below also omits `AddOptimalMISParams`,
+					// so the parser hard-fails on `optimal_mis*` lines
+					// rather than silently dropping them.  See
+					// docs/SPECTRAL_PARITY_AUDIT.md §2.10.
 
 					ProgressiveConfig progressiveConfig;
 					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
@@ -6397,7 +6402,9 @@ namespace RISE
 						AddPathGuidingParams( P );
 						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
-						AddOptimalMISParams( P );
+						// Intentionally NO AddOptimalMISParams: BDPTIntegrator
+						// does not consume rc.pOptimalMIS — see Finalize note
+						// and SPECTRAL_PARITY_AUDIT.md §2.10.
 						AddProgressiveParams( P );
 						return cd;
 					}();
@@ -6449,21 +6456,24 @@ namespace RISE
 					if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
 
 					PathGuidingConfig guidingConfig;
-					if( bag.Has("pathguiding") )            guidingConfig.enabled            = bag.GetBool("pathguiding");
-					if( bag.Has("pathguiding_iterations") ) guidingConfig.trainingIterations = bag.GetUInt("pathguiding_iterations");
-					if( bag.Has("pathguiding_spp") )        guidingConfig.trainingSPP        = bag.GetUInt("pathguiding_spp");
-					if( bag.Has("pathguiding_combine_training") ) guidingConfig.combineTrainingIterations = bag.GetBool("pathguiding_combine_training");
-					if( bag.Has("pathguiding_online") )     guidingConfig.online             = bag.GetBool("pathguiding_online");
-					if( bag.Has("pathguiding_warmup_iterations") ) guidingConfig.warmupIterations = bag.GetUInt("pathguiding_warmup_iterations");
-					if( bag.Has("pathguiding_alpha") )      guidingConfig.alpha              = bag.GetDouble("pathguiding_alpha");
-					if( bag.Has("pathguiding_learned_alpha") ) guidingConfig.learnedAlpha    = bag.GetBool("pathguiding_learned_alpha");
-					if( bag.Has("pathguiding_max_depth") )  guidingConfig.maxGuidingDepth    = bag.GetUInt("pathguiding_max_depth");
+					if( bag.Has("pathguiding") )                                    guidingConfig.enabled                       = bag.GetBool("pathguiding");
+					if( bag.Has("pathguiding_iterations") )                         guidingConfig.trainingIterations            = bag.GetUInt("pathguiding_iterations");
+					if( bag.Has("pathguiding_spp") )                                guidingConfig.trainingSPP                   = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_combine_training") )                   guidingConfig.combineTrainingIterations     = bag.GetBool("pathguiding_combine_training");
+					if( bag.Has("pathguiding_online") )                             guidingConfig.online                        = bag.GetBool("pathguiding_online");
+					if( bag.Has("pathguiding_warmup_iterations") )                  guidingConfig.warmupIterations              = bag.GetUInt("pathguiding_warmup_iterations");
+					if( bag.Has("pathguiding_alpha") )                              guidingConfig.alpha                         = bag.GetDouble("pathguiding_alpha");
+					if( bag.Has("pathguiding_learned_alpha") )                      guidingConfig.learnedAlpha                  = bag.GetBool("pathguiding_learned_alpha");
+					if( bag.Has("pathguiding_max_depth") )                          guidingConfig.maxGuidingDepth               = bag.GetUInt("pathguiding_max_depth");
+					if( bag.Has("pathguiding_light_max_depth") )                    guidingConfig.maxLightGuidingDepth          = bag.GetUInt("pathguiding_light_max_depth");
 					if( bag.Has("pathguiding_sampling_type") ) {
 						const std::string st = bag.GetString("pathguiding_sampling_type");
 						guidingConfig.samplingType = ( st == "ris" || st == "RIS" ) ? eGuidingRIS : eGuidingOneSampleMIS;
 					}
-					if( bag.Has("pathguiding_ris_candidates") ) guidingConfig.risCandidates       = std::max( 2u, bag.GetUInt("pathguiding_ris_candidates") );
-					if( bag.Has("pathguiding_complete_paths") ) guidingConfig.completePathGuiding = bag.GetBool("pathguiding_complete_paths");
+					if( bag.Has("pathguiding_ris_candidates") )                     guidingConfig.risCandidates                 = std::max( 2u, bag.GetUInt("pathguiding_ris_candidates") );
+					if( bag.Has("pathguiding_complete_paths") )                     guidingConfig.completePathGuiding           = bag.GetBool("pathguiding_complete_paths");
+					if( bag.Has("pathguiding_complete_path_strategy_selection") )   guidingConfig.completePathStrategySelection = bag.GetBool("pathguiding_complete_path_strategy_selection");
+					if( bag.Has("pathguiding_complete_path_strategy_samples") )     guidingConfig.completePathStrategySamples   = bag.GetUInt("pathguiding_complete_path_strategy_samples");
 
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
@@ -6476,9 +6486,11 @@ namespace RISE
 					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
 					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
 					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
-					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
-					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
-					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+					// Optimal MIS not parsed: BDPTIntegrator does not
+					// consume rc.pOptimalMIS, and the spectral parent
+					// rasterizer does not allocate the accumulator.
+					// Descriptor below also omits AddOptimalMISParams.
+					// See docs/SPECTRAL_PARITY_AUDIT.md §2.10.
 
 					ProgressiveConfig progressiveConfig;
 					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
@@ -6499,7 +6511,6 @@ namespace RISE
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						BDPTSpectralDefaults dflt;
-						PathGuidingConfig pgDflt;
 						ChunkDescriptor cd;
 						cd.keyword = "bdpt_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
 						cd.description = "Spectral bidirectional path-tracing integrator.";
@@ -6514,23 +6525,16 @@ namespace RISE
 						// fields; RGB-to-SPD conversion is done in the
 						// painters pipeline.
 						AddSpectralCoreParams( P );
-						// BDPTSpectral supports a subset of pathguiding params (no
-						// light-max-depth, no complete-path-strategy).  Hints
-						// derive from PathGuidingConfig defaults so they stay in
-						// lockstep with the AddPathGuidingParams helper above.
-						{ auto& p = P(); p.name = "pathguiding";                 p.kind = ValueKind::Bool;   p.description = "Enable path guiding";              p.defaultValueHint = to_hint(pgDflt.enabled); }
-						{ auto& p = P(); p.name = "pathguiding_iterations";      p.kind = ValueKind::UInt;   p.description = "Training iterations";             p.defaultValueHint = to_hint(pgDflt.trainingIterations); }
-						{ auto& p = P(); p.name = "pathguiding_spp";             p.kind = ValueKind::UInt;   p.description = "Samples per pixel during training"; p.defaultValueHint = to_hint(pgDflt.trainingSPP); }
-						{ auto& p = P(); p.name = "pathguiding_combine_training";p.kind = ValueKind::Bool;   p.description = "Combine training pixels into final image (Müller 2017 §5)"; p.defaultValueHint = to_hint(pgDflt.combineTrainingIterations); }
-						{ auto& p = P(); p.name = "pathguiding_online";          p.kind = ValueKind::Bool;   p.description = "Training-iteration loop is entire render"; p.defaultValueHint = to_hint(pgDflt.online); }
-						{ auto& p = P(); p.name = "pathguiding_warmup_iterations"; p.kind = ValueKind::UInt; p.description = "Iters to render with alpha=0 before configured alpha"; p.defaultValueHint = to_hint(pgDflt.warmupIterations); }
-						{ auto& p = P(); p.name = "pathguiding_alpha";           p.kind = ValueKind::Double; p.description = "Mixing factor";                   p.defaultValueHint = to_hint(pgDflt.alpha); }
-						{ auto& p = P(); p.name = "pathguiding_max_depth";       p.kind = ValueKind::UInt;   p.description = "Max eye-subpath depth to apply guiding"; p.defaultValueHint = to_hint(pgDflt.maxGuidingDepth); }
-						{ auto& p = P(); p.name = "pathguiding_sampling_type";   p.kind = ValueKind::Enum;   p.enumValues = {"ris","RIS","OneSampleMIS"}; p.description = "Sampling strategy"; p.defaultValueHint = to_hint(pgDflt.samplingType); }
-						{ auto& p = P(); p.name = "pathguiding_ris_candidates";  p.kind = ValueKind::UInt;   p.description = "RIS candidate count (only N=2 implemented)"; p.defaultValueHint = to_hint(pgDflt.risCandidates); }
-						{ auto& p = P(); p.name = "pathguiding_complete_paths";  p.kind = ValueKind::Bool;   p.description = "Enable complete-path guiding";    p.defaultValueHint = to_hint(pgDflt.completePathGuiding); }
+						// Full path-guiding param set.  The shared
+						// BDPTRasterizerBase honors every field including
+						// light-subpath guiding and complete-path strategy.
+						// Wired here 2026-05-07 (audit §2.7) — previously
+						// the descriptor / Finalize hand-rolled a subset
+						// that silently dropped 3 fields.
+						AddPathGuidingParams( P );
 						AddStabilityConfigParams( P );
-						AddOptimalMISParams( P );
+						// Intentionally NO AddOptimalMISParams: see Finalize
+						// note and SPECTRAL_PARITY_AUDIT.md §2.10.
 						AddProgressiveParams( P );
 						return cd;
 					}();
@@ -6962,9 +6966,13 @@ namespace RISE
 					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
 					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
 					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
-					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
-					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
-					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+					// Optimal MIS not parsed: PathTracingIntegrator's
+					// NM/HWSS branches reference rc.pOptimalMIS, but
+					// PixelBasedSpectralIntegratingRasterizer (the parent)
+					// does not allocate the accumulator — the branch is
+					// always-false on spectral.  Descriptor below also
+					// omits AddOptimalMISParams.  See
+					// docs/SPECTRAL_PARITY_AUDIT.md §1, §2.4.
 
 					ProgressiveConfig progressiveConfig;
 					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
@@ -7003,7 +7011,9 @@ namespace RISE
 						AddSMSConfigParams( P );
 						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
-						AddOptimalMISParams( P );
+						// Intentionally NO AddOptimalMISParams: spectral
+						// parent doesn't allocate the accumulator.  See
+						// Finalize note and SPECTRAL_PARITY_AUDIT.md §2.4.
 						AddProgressiveParams( P );
 						return cd;
 					}();
