@@ -1,0 +1,99 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           gltf_import_avocado_spectral.RISEscene                                                  #
+#   Description:    Landing 3 acceptance scene.  Renders Khronos's Avocado.glb through the                  #
+#                   `pathtracing_spectral_rasterizer` (HWSS) instead of the RGB integrator.                 #
+#                                                                                                           #
+#                   The load-bearing claim:                                                                 #
+#                                                                                                           #
+#                     PRE-L3:   TexturePainter::GetColorNM returned 0 (base Painter dummy).                 #
+#                               Spectral integrators sampled the avocado's textured baseColor as            #
+#                               zero at every wavelength.  This scene rendered black.                       #
+#                                                                                                           #
+#                     POST-L3:  TexturePainter samples the texel's RGB, uplifts via the                     #
+#                               Jakob-Hanika sigmoid LUT, evaluates at the HWSS hero +                      #
+#                               companion wavelengths.  Avocado renders in its actual                       #
+#                               yellow-green colour with a brown pit.                                       #
+#                                                                                                           #
+#                   Companion scene to gltf_import_avocado.RISEscene, which renders the same                #
+#                   asset through the RGB integrator — eyeball comparison should show the                   #
+#                   spectral pass producing a slightly warmer / more chromatically saturated                #
+#                   result (D50 illuminant integrated against measured-style spectra), not                  #
+#                   matched bit-identically.                                                                #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-05-08                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+pathtracing_shaderop
+{
+	name		pathtracer
+}
+
+standard_shader
+{
+	name			global
+	shaderop		pathtracer
+}
+
+pixelintegratingspectral_rasterizer
+{
+	samples				32
+	lum_samples			1
+	nmbegin				380
+	nmend				780
+	num_wavelengths		32
+	max_recursion		5
+	hwss				false
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/gltf_import_avocado_spectral
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+# Match the RGB-integrator scene's framing 1:1 so visual side-by-side
+# comparison reads cleanly.
+pinhole_camera
+{
+	location			0.06 0.04 0.10
+	lookat				0 0.025 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					40.0
+}
+
+##################################################
+# The whole asset, in one chunk
+##################################################
+
+gltf_import
+{
+	file				scenes/Tests/Geometry/assets/Avocado.glb
+	name_prefix			avocado_spectral
+}
+
+##################################################
+# Same key + ambient as the RGB scene.
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.5 0.7 0.5
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.20
+	color		1.0 1.0 1.0
+}

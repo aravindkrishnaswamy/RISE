@@ -21,6 +21,7 @@
 #define IJOB_
 
 #include "IReference.h"
+#include "IPainter.h"           // for SpectrumKind enum (Landing 3)
 #include "IProgressCallback.h"
 #include "IJobRasterizerOutput.h"
 #include <string>
@@ -60,6 +61,7 @@ namespace RISE
 		double                scale[3];      ///< Per-channel scale (multiply at decode time)
 		double                shift[3];      ///< Per-channel shift (add at decode time)
 		bool                  mipmap;        ///< Landing 2: build mip pyramid + LOD-aware sampling.  Set false for vector-quantity textures (normal maps).  Defaults to true via zero-init in importer code that opts in explicitly.
+		SpectrumKind          spectrumKind;  ///< Landing 3: spectral-uplift role (Albedo / Unbounded / Illuminant).  Defaults to Albedo via zero-init; importers SHOULD set Unbounded for emissive / HDR sources.
 	};
 
 	//! Job - This is used to simplify the creation of a job, all things can be
@@ -503,7 +505,8 @@ namespace RISE
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode (0 = clamp [legacy default], 1 = repeat, 2 = mirrored repeat).  See eRasterWrapMode.
 									const char wrap_t = 0,			///< [in] V-axis wrap mode (same encoding as wrap_s)
-									const bool mipmap = true		///< [in] Build mip pyramid + use LOD-aware sampling (Landing 2).  Set false for vector-quantity textures (normal maps).
+									const bool mipmap = true,		///< [in] Build mip pyramid + use LOD-aware sampling (Landing 2).  Set false for vector-quantity textures (normal maps).
+									const SpectrumKind spectrumKind = eSpectrumKind_Albedo	///< [in] L3 spectral-uplift role.  Default Albedo (correct for baseColor / metallic_roughness / normal / occlusion); pass Unbounded for emissive-role bindings.
 									) = 0;
 
 		//! Adds a painter that paints a uniform color
@@ -544,7 +547,8 @@ namespace RISE
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
 									const char wrap_t = 0,			///< [in] V-axis wrap mode
-									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const bool mipmap = true,		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const SpectrumKind spectrumKind = eSpectrumKind_Albedo	///< [in] L3 spectral-uplift role
 									) = 0;
 
 		//! Adds a PNG texture painter from an in-memory byte buffer.  Used
@@ -565,7 +569,8 @@ namespace RISE
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
 									const char wrap_t = 0,			///< [in] V-axis wrap mode
-									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const bool mipmap = true,		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const SpectrumKind spectrumKind = eSpectrumKind_Albedo	///< [in] L3 spectral-uplift role
 									) = 0;
 
 		//! Adds a JPEG texture painter from an in-memory byte buffer.
@@ -582,10 +587,14 @@ namespace RISE
 									const double shift[3],
 									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
 									const char wrap_t = 0,			///< [in] V-axis wrap mode
-									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const bool mipmap = true,		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const SpectrumKind spectrumKind = eSpectrumKind_Albedo	///< [in] L3 spectral-uplift role
 									) = 0;
 
-		//! Adds a HDR texture painter
+		//! Adds a HDR texture painter.  Defaults `spectrumKind` to
+		//! Unbounded since .hdr files (Radiance RGBE format) carry
+		//! per-pixel exponents specifically to express values > 1.0;
+		//! the bounded-reflectance LUT path would silently clamp them.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddHDRTexturePainter(
 									const char* name,				///< [in] Name of the painter
@@ -599,7 +608,8 @@ namespace RISE
 									const double scale[3],			///< [in] Scale factor for color values
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
-									const char wrap_t = 0			///< [in] V-axis wrap mode
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const SpectrumKind spectrumKind = eSpectrumKind_Unbounded	///< [in] Spectral-uplift role; defaults to Unbounded for HDR
 									) = 0;
 
 		//! Adds an EXR texture painter
@@ -621,7 +631,8 @@ namespace RISE
 									const double scale[3],			///< [in] Scale factor for color values
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode (see AddPNGTexturePainter)
-									const char wrap_t = 0			///< [in] V-axis wrap mode
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const SpectrumKind spectrumKind = eSpectrumKind_Unbounded	///< [in] Spectral-uplift role; defaults to Unbounded for EXR
 									) = 0;
 
 		//! Adds a texture painter
@@ -2699,6 +2710,35 @@ namespace RISE
 		virtual bool AddTexCoord1Painter(
 									const char* /*name*/,			///< [in] Name of the painter
 									const char* /*source*/			///< [in] Source painter
+									) { return false; }
+
+		//! Sets the scene's global radiance map directly from an
+		//! IRadianceMap (Landing 3.D — used by the analytic
+		//! `hosek_wilkie_skylight` chunk to install a non-painter-
+		//! based radiance map without going through the rasterizer's
+		//! painter-name lookup path).  The Job takes a reference;
+		//! caller may release after returning.  Appended at the end
+		//! to preserve vtable layout.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool SetGlobalRadianceMap(
+									class IRadianceMap* /*pRm*/		///< [in] IRadianceMap impl to install (e.g. HosekWilkieSpectralRadianceMap)
+									) { return false; }
+
+		//! Atomically create a Hosek-Wilkie analytic spectral sun-and-
+		//! sky pair: registers the IRadianceMap as the scene's global
+		//! radiance map AND optionally creates a matched directional
+		//! light at the solar position.  Single-call wrapper used by
+		//! the `hosek_wilkie_skylight` scene-language chunk so the two
+		//! halves of the model can't drift apart.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddHosekWilkieSkylight(
+									const double /*solarElevationDegrees*/,
+									const double /*solarAzimuthDegrees*/,
+									const double /*turbidity*/,
+									const double /*groundAlbedo*/[3],
+									const double /*skyIntensityScale*/,
+									const double /*sunIntensityScale*/,
+									const bool   /*createSun*/
 									) { return false; }
 	};
 

@@ -21,6 +21,10 @@ set(RISE_LIB_SOURCES
     # SRCLIBUTILITIES
     "${RISE_LIB}/Utilities/Color/Color.cpp"
     "${RISE_LIB}/Utilities/Color/ColorUtils.cpp"
+    "${RISE_LIB}/Utilities/Color/RGBToSpectrumTable.cpp"
+    "${RISE_LIB}/Utilities/Color/RGBSpectra.cpp"
+    "${RISE_LIB}/Utilities/HosekWilkieSkyModel.cpp"
+    "${RISE_LIB}/Rendering/HosekWilkieSpectralRadianceMap.cpp"
     "${RISE_LIB}/Utilities/Log/Log.cpp"
     "${RISE_LIB}/Utilities/Log/MemoryTracker.cpp"
     "${RISE_LIB}/Utilities/Log/StreamPrinter.cpp"

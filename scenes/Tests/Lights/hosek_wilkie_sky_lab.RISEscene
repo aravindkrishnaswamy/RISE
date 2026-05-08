@@ -1,0 +1,185 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           hosek_wilkie_sky_lab.RISEscene                                                          #
+#   Description:    Landing 3.D acceptance scene.  A reference geometry set under the                       #
+#                   `hosek_wilkie_skylight` analytic sun-and-sky:                                           #
+#                     - Mirror sphere (chrome): reflects the sky dome → primary visual                     #
+#                       readout for the gradient + horizon glow.                                            #
+#                     - Diffuse white sphere: integrates the sky illuminant; reads as the                   #
+#                       chromaticity-of-overall-illumination.                                               #
+#                     - Lambertian ground plane: catches sun shadows + horizon contact.                     #
+#                                                                                                           #
+#                   Default parameter set: noon-ish clear sky (solar_elevation 45°, turbidity 3,            #
+#                   default ground albedo).  Variants in companion scenes change one parameter              #
+#                   axis at a time:                                                                         #
+#                     - hosek_wilkie_sky_lab_dawn.RISEscene    : low solar elevation, sunset reds         #
+#                     - hosek_wilkie_sky_lab_hazy.RISEscene    : high turbidity, desaturated sky          #
+#                     - hosek_wilkie_sky_lab_sunset.RISEscene  : very low elevation, deep horizon         #
+#                                                                                                           #
+#                   Rendered through pixelpel_rasterizer (RGB integrator) — the L3 spectral                 #
+#                   integrator with HW radiance map is a follow-up landing once the spectral                #
+#                   pipeline's XYZ→RGB normalization is fixed.                                              #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-05-08                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+pathtracing_shaderop
+{
+	name		pathtracer
+}
+
+standard_shader
+{
+	name			global
+	shaderop		pathtracer
+}
+
+##################################################
+# HW skylight FIRST — needs to register the radiance map AND the
+# matched __hw_sun__ directional BEFORE the rasterizer chunk runs.
+# The rasterizer captures the scene's light list at instantiation
+# time; lights added later are invisible to its NEE caster setup.
+##################################################
+
+hosek_wilkie_skylight
+{
+	solar_elevation			45.0
+	solar_azimuth			135.0
+	turbidity				3.0
+	ground_albedo			0.3 0.3 0.3
+	sky_intensity_scale		1.0
+	sun_intensity_scale		3.14
+	create_sun				true
+}
+
+# Fill light so the probes still show on the camera-facing side even
+# when the matched HW sun is positioned to leave them backlit.
+ambient_light
+{
+	name		fill
+	power		0.30
+	color		1.0 1.0 1.0
+}
+
+pixelpel_rasterizer
+{
+	samples				64
+	lum_samples			1
+	max_recursion		5
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/hosek_wilkie_sky_lab
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 1.5 6
+	lookat				0 0.5 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					45.0
+}
+
+##################################################
+# Geometry probes
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_chrome
+	color				0.92 0.92 0.92
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.95 0.95 0.95
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				pnt_ground
+	color				0.30 0.30 0.30
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0.0 0.0 0.0
+	colorspace			Rec709RGB_Linear
+}
+
+# Mirror sphere — the primary sky-readout probe.  Low alpha + high IOR
+# proxy (silver-like conductor scalars) gives near-mirror reflections;
+# variations in HW parameters show up as immediate sky-dome changes.
+ggx_material
+{
+	name				mat_chrome
+	rd					pnt_black
+	rs					pnt_chrome
+	alphax				0.02
+	alphay				0.02
+	ior					0.05
+	extinction			3.0
+}
+
+# Diffuse white sphere — integrated-illumination probe.
+lambertian_material
+{
+	name		mat_white
+	reflectance	pnt_white
+}
+
+# Ground plane — Lambertian.
+lambertian_material
+{
+	name		mat_ground
+	reflectance	pnt_ground
+}
+
+sphere_geometry
+{
+	name		sph_geom
+	radius		0.6
+}
+
+infiniteplane_geometry
+{
+	name		ground_geom
+	size_u		200
+	size_v		200
+}
+
+standard_object
+{
+	name		mirror
+	geometry	sph_geom
+	material	mat_chrome
+	position	0 0.6 0
+}
+
+standard_object
+{
+	name		diffuse
+	geometry	sph_geom
+	material	mat_white
+	position	1.5 0.6 0
+}
+
+standard_object
+{
+	name		ground
+	geometry	ground_geom
+	material	mat_ground
+	orientation	-1.5708 0 0
+	position	0 0 0
+}

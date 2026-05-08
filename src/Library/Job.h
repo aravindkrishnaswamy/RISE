@@ -616,7 +616,8 @@ namespace RISE
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
 									const char wrap_t = 0,			///< [in] V-axis wrap mode
-									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const bool mipmap = true,		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const SpectrumKind spectrumKind = eSpectrumKind_Albedo	///< [in] L3 spectral-uplift role
 									);
 
 		//! Adds a JPEG texture painter
@@ -639,7 +640,8 @@ namespace RISE
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode
 									const char wrap_t = 0,			///< [in] V-axis wrap mode
-									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const bool mipmap = true,		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const SpectrumKind spectrumKind = eSpectrumKind_Albedo	///< [in] L3 spectral-uplift role
 									);
 
 		bool AddInMemoryPNGTexturePainter(
@@ -653,7 +655,8 @@ namespace RISE
 									const double shift[3],
 									const char wrap_s = 0,
 									const char wrap_t = 0,
-									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const bool mipmap = true,		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const SpectrumKind spectrumKind = eSpectrumKind_Albedo	///< [in] L3 spectral-uplift role
 									);
 
 		bool AddInMemoryJPEGTexturePainter(
@@ -667,7 +670,8 @@ namespace RISE
 									const double shift[3],
 									const char wrap_s = 0,
 									const char wrap_t = 0,
-									const bool mipmap = true		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const bool mipmap = true,		///< [in] Build mip pyramid + LOD-aware sampling (Landing 2)
+									const SpectrumKind spectrumKind = eSpectrumKind_Albedo	///< [in] L3 spectral-uplift role
 									);
 
 		//! Adds a texture painter
@@ -684,7 +688,8 @@ namespace RISE
 									const double scale[3],			///< [in] Scale factor for color values
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode
-									const char wrap_t = 0			///< [in] V-axis wrap mode
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const SpectrumKind spectrumKind = eSpectrumKind_Unbounded	///< [in] L3: spectral-uplift role
 									);
 
 		//! Adds an EXR texture painter
@@ -706,7 +711,8 @@ namespace RISE
 									const double scale[3],			///< [in] Scale factor for color values
 									const double shift[3],			///< [in] Shift factor for color values
 									const char wrap_s = 0,			///< [in] U-axis wrap mode
-									const char wrap_t = 0			///< [in] V-axis wrap mode
+									const char wrap_t = 0,			///< [in] V-axis wrap mode
+									const SpectrumKind spectrumKind = eSpectrumKind_Unbounded	///< [in] L3: spectral-uplift role
 									);
 
 		//! Adds a texture painter
@@ -2490,6 +2496,23 @@ namespace RISE
 		bool AddTexCoord1Painter(
 									const char* name,				///< [in] Name of the painter
 									const char* source				///< [in] Source painter
+									);
+
+		//! L3.D: install a non-painter-based IRadianceMap (e.g.
+		//! HosekWilkieSpectralRadianceMap) on the scene.  See IJob.h.
+		bool SetGlobalRadianceMap(
+									IRadianceMap* pRm				///< [in] Radiance map; Job adds a ref
+									);
+
+		//! L3.D: atomic HW skylight construction.  See IJob.h.
+		bool AddHosekWilkieSkylight(
+									const double solarElevationDegrees,
+									const double solarAzimuthDegrees,
+									const double turbidity,
+									const double groundAlbedo[3],
+									const double skyIntensityScale,
+									const double sunIntensityScale,
+									const bool   createSun
 									);
 
 	private:

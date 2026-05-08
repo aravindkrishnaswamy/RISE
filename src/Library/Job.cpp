@@ -12,8 +12,13 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#define _USE_MATH_DEFINES
 #include "Job.h"
 #include "RISE_API.h"
+#include <cmath>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 #include "Importers/GLTFSceneImporter.h"
 #include "Shaders/SSS/DonnerJensenSkinSSSShaderOp.h"
 #include "Shaders/PathTracingShaderOp.h"
@@ -931,7 +936,8 @@ bool Job::AddPNGTexturePainter(
 							const double shift[3],
 							const char wrap_s,
 							const char wrap_t,
-							const bool mipmap	// Landing 2: build mip pyramid + LOD-aware sampling
+							const bool mipmap,	// Landing 2: build mip pyramid + LOD-aware sampling
+							const SpectrumKind spectrumKind	// Landing 3: spectral-uplift role
 							)
 {
 	IRasterImage* pImage = 0;
@@ -993,7 +999,7 @@ bool Job::AddPNGTexturePainter(
 	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t, effective_mipmap, effective_supersample );
 
 	IPainter* pPainter = 0;
-	RISE_API_CreateTexturePainter( &pPainter, pRIA );
+	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
 	pPntManager->AddItem( pPainter, name );
 	pFunc2DManager->AddItem( pPainter, name );
 	safe_release( pPainter );
@@ -1024,7 +1030,8 @@ bool Job::AddInMemoryPNGTexturePainter(
 							const double shift[3],
 							const char wrap_s,
 							const char wrap_t,
-							const bool mipmap
+							const bool mipmap,
+							const SpectrumKind spectrumKind
 							)
 {
 	if( !name || !bytes || numBytes == 0 ) {
@@ -1100,7 +1107,7 @@ bool Job::AddInMemoryPNGTexturePainter(
 	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t, effective_mipmap, effective_supersample );
 
 	IPainter* pPainter = 0;
-	RISE_API_CreateTexturePainter( &pPainter, pRIA );
+	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
 	pPntManager->AddItem( pPainter, name );
 	pFunc2DManager->AddItem( pPainter, name );
 	safe_release( pPainter );
@@ -1127,7 +1134,8 @@ bool Job::AddInMemoryJPEGTexturePainter(
 							const double shift[3],
 							const char wrap_s,
 							const char wrap_t,
-							const bool mipmap
+							const bool mipmap,
+							const SpectrumKind spectrumKind
 							)
 {
 	if( !name || !bytes || numBytes == 0 ) {
@@ -1196,7 +1204,7 @@ bool Job::AddInMemoryJPEGTexturePainter(
 	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t, effective_mipmap, effective_supersample );
 
 	IPainter* pPainter = 0;
-	RISE_API_CreateTexturePainter( &pPainter, pRIA );
+	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
 	pPntManager->AddItem( pPainter, name );
 	pFunc2DManager->AddItem( pPainter, name );
 	safe_release( pPainter );
@@ -1221,7 +1229,8 @@ bool Job::AddJPEGTexturePainter(
 							const double shift[3],
 							const char wrap_s,
 							const char wrap_t,
-							const bool mipmap	// Landing 2: build mip pyramid + LOD-aware sampling
+							const bool mipmap,	// Landing 2: build mip pyramid + LOD-aware sampling
+							const SpectrumKind spectrumKind	// Landing 3: spectral-uplift role
 							)
 {
 	IRasterImage* pImage = 0;
@@ -1283,7 +1292,7 @@ bool Job::AddJPEGTexturePainter(
 	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t, effective_mipmap, effective_supersample );
 
 	IPainter* pPainter = 0;
-	RISE_API_CreateTexturePainter( &pPainter, pRIA );
+	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
 	pPntManager->AddItem( pPainter, name );
 	pFunc2DManager->AddItem( pPainter, name );
 	safe_release( pPainter );
@@ -1446,7 +1455,7 @@ bool Job::AddTexturePaintersBatch(
 			IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( req.filterType, *pImage, req.wrap_s, req.wrap_t, effective_mipmap, effective_supersample );
 
 			IPainter* pPainter = 0;
-			RISE_API_CreateTexturePainter( &pPainter, pRIA );
+			RISE_API_CreateTexturePainter( &pPainter, pRIA, req.spectrumKind );
 
 			// Worker done.  pPainter, pRIA, pImage all outlive the manager
 			// AddItem step (which holds its own ref); the reader and read-
@@ -1511,7 +1520,8 @@ bool Job::AddHDRTexturePainter(
 							const double scale[3],			///< [in] Scale factor for color values
 							const double shift[3],			///< [in] Shift factor for color values
 							const char wrap_s,				///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
-							const char wrap_t				///< [in] V-axis wrap mode
+							const char wrap_t,				///< [in] V-axis wrap mode
+							const SpectrumKind spectrumKind	///< [in] Spectral-uplift role (default Unbounded for HDR)
 							)
 {
 	IRasterImage* pImage = 0;
@@ -1549,7 +1559,7 @@ bool Job::AddHDRTexturePainter(
 	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
 
 	IPainter* pPainter = 0;
-	RISE_API_CreateTexturePainter( &pPainter, pRIA );
+	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
 	pPntManager->AddItem( pPainter, name );
 	pFunc2DManager->AddItem( pPainter, name );
 	safe_release( pPainter );
@@ -1581,7 +1591,8 @@ bool Job::AddEXRTexturePainter(
 							const double scale[3],			///< [in] Scale factor for color values
 							const double shift[3],			///< [in] Shift factor for color values
 							const char wrap_s,				///< [in] U-axis wrap mode (see IJob.h / eRasterWrapMode)
-							const char wrap_t				///< [in] V-axis wrap mode
+							const char wrap_t,				///< [in] V-axis wrap mode
+							const SpectrumKind spectrumKind	///< [in] Spectral-uplift role (default Unbounded for EXR)
 							)
 {
 	IRasterImage* pImage = 0;
@@ -1636,7 +1647,7 @@ bool Job::AddEXRTexturePainter(
 	IRasterImageAccessor* pRIA = RasterImageAccessorFromChar( filter_type, *pImage, wrap_s, wrap_t );
 
 	IPainter* pPainter = 0;
-	RISE_API_CreateTexturePainter( &pPainter, pRIA );
+	RISE_API_CreateTexturePainter( &pPainter, pRIA, spectrumKind );
 	pPntManager->AddItem( pPainter, name );
 	pFunc2DManager->AddItem( pPainter, name );
 	safe_release( pPainter );
@@ -1979,6 +1990,56 @@ bool Job::AddTexCoord1Painter(
 	pPntManager->AddItem( pPainter, name );
 	pFunc2DManager->AddItem( pPainter, name );
 	safe_release( pPainter );
+	return true;
+}
+
+bool Job::SetGlobalRadianceMap( IRadianceMap* pRm )
+{
+	if( !pRm ) {
+		return false;
+	}
+	if( !pScene ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetGlobalRadianceMap:: no scene yet" );
+		return false;
+	}
+	pScene->SetGlobalRadianceMap( pRm );
+	return true;
+}
+
+bool Job::AddHosekWilkieSkylight(
+	const double solarElevationDegrees,
+	const double solarAzimuthDegrees,
+	const double turbidity,
+	const double groundAlbedo[3],
+	const double skyIntensityScale,
+	const double sunIntensityScale,
+	const bool   createSun )
+{
+	IRadianceMap* pRm = 0;
+	RISE_API_CreateHosekWilkieRadianceMap(
+		&pRm,
+		solarElevationDegrees, solarAzimuthDegrees, turbidity,
+		RISEPel( groundAlbedo ), skyIntensityScale );
+	if( !pRm ) {
+		return false;
+	}
+	SetGlobalRadianceMap( pRm );
+
+	if( createSun ) {
+		// RISE convention: direction is FROM surface TO light.
+		const double el = solarElevationDegrees * (M_PI / 180.0);
+		const double az = solarAzimuthDegrees   * (M_PI / 180.0);
+		double dir[3] = {
+			std::cos(el) * std::sin(az),
+			std::sin(el),
+			std::cos(el) * std::cos(az)
+		};
+		double color[3] = { 1.0, 1.0, 1.0 };
+		AddDirectionalLight( "__hw_sun__", sunIntensityScale, color, dir );
+	}
+
+	pRm->release();
 	return true;
 }
 

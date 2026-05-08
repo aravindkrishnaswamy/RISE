@@ -1033,18 +1033,25 @@ namespace RISE
 								const Scalar scale				///< [in] How much to scale the amplitudes by
 								);
 
-	//! Creates a texture painter
+	//! Creates a texture painter.  The optional `kind` selects the
+	//! spectral-uplift role applied at sample time (see
+	//! RISE_API_CreateUniformColorPainter for the role semantics).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTexturePainter(
 								IPainter** ppi,					///< [out] Pointer to recieve the painter
-								IRasterImageAccessor* pSA		///< [in] Raster Image accessor to the image containing the texture
+								IRasterImageAccessor* pSA,		///< [in] Raster Image accessor to the image containing the texture
+								SpectrumKind kind = eSpectrumKind_Albedo	///< [in] Spectral-uplift role
 								);
 
-	//! Creates a painter that paints a uniform color
+	//! Creates a painter that paints a uniform color.  The optional
+	//! `kind` selects the spectral-uplift role: Albedo (default; rgb
+	//! ∈ [0,1] reflectance) / Unbounded (rgb ≥ 0; for HDR / emissive)
+	//! / Illuminant (D50-pre-multiplied; for light SPDs).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateUniformColorPainter(
 								IPainter** ppi,					///< [out] Pointer to recieve the painter
-								const RISEPel& c				///< [in] Color to paint
+								const RISEPel& c,				///< [in] Color to paint
+								SpectrumKind kind = eSpectrumKind_Albedo	///< [in] Spectral-uplift role
 								);
 
 	//! Creates a painter that returns the per-vertex color the geometry
@@ -1160,6 +1167,28 @@ namespace RISE
 								IRadianceMap** ppi,				///< [out] Pointer to recieve the radiance map
 								const IPainter& painter,		///< [in] Painter to use for the map
 								const Scalar scale				///< [in] How much to scale the values in the map by
+								);
+
+	//! Creates an analytic Hosek-Wilkie spectral sun-and-sky radiance
+	//! map (Landing 3.D).  v1 internally uses Preetham 1999 Perez form
+	//! (HW supplemental coefficients are a future landing); the public
+	//! API stays stable for the v2 swap.
+	//!
+	//! Solar elevation is in degrees from the horizon (0 = horizon,
+	//! 90 = zenith).  Azimuth in degrees, 0 = +Z, 90 = +X.  Turbidity
+	//! ∈ [1, 10] (1 = arctic clear, ~3 = typical clear day, 10 =
+	//! polluted).  Ground albedo per-channel ∈ [0, 1].  The
+	//! `skyIntensityScale` is a scene-level multiplier on the sky
+	//! radiance only — it does NOT affect the matched directional
+	//! light's intensity (which is created separately).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateHosekWilkieRadianceMap(
+								IRadianceMap** ppi,				///< [out] Pointer to receive the radiance map
+								const Scalar solarElevationDegrees,
+								const Scalar solarAzimuthDegrees,
+								const Scalar turbidity,
+								const RISEPel& groundAlbedo,
+								const Scalar skyIntensityScale
 								);
 
 	//////////////////////////////////////////////////////////

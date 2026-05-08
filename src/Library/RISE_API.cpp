@@ -18,6 +18,12 @@
 #pragma warning( disable : 4290 )		// disables warning about C++ exception definition being ignored
 #endif
 
+#define _USE_MATH_DEFINES
+#include <cmath>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #include "Utilities/stl_utils.h"
 #include "Interfaces/ILog.h"
 
@@ -1931,14 +1937,15 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTexturePainter(
 								IPainter** ppi,					///< [out] Pointer to recieve the painter
-								IRasterImageAccessor* pSA		///< [in] Raster Image accessor to the image containing the texture
+								IRasterImageAccessor* pSA,		///< [in] Raster Image accessor to the image containing the texture
+								SpectrumKind kind				///< [in] Spectral-uplift role
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new TexturePainter( pSA );
+		(*ppi) = new TexturePainter( pSA, kind );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "texture painter" );
 		return true;
 	}
@@ -1947,14 +1954,15 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateUniformColorPainter(
 								IPainter** ppi,					///< [out] Pointer to recieve the painter
-								const RISEPel& c					///< [in] Color to paint
+								const RISEPel& c,				///< [in] Color to paint
+								SpectrumKind kind				///< [in] Spectral-uplift role
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new UniformColorPainter( c );
+		(*ppi) = new UniformColorPainter( c, kind );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "uniform color painter" );
 		return true;
 	}
@@ -2162,6 +2170,7 @@ namespace RISE
 //////////////////////////////////////////////////////////
 
 #include "Rendering/RadianceMap.h"
+#include "Rendering/HosekWilkieSpectralRadianceMap.h"
 
 namespace RISE
 {
@@ -2179,6 +2188,31 @@ namespace RISE
 
 		(*ppi) = new RadianceMap( painter, scale );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "radiance map" );
+		return true;
+	}
+
+	//! Hosek-Wilkie analytic spectral sun-and-sky radiance map.
+	//! See header for parameter semantics.
+	bool RISE_API_CreateHosekWilkieRadianceMap(
+								IRadianceMap** ppi,
+								const Scalar solarElevationDegrees,
+								const Scalar solarAzimuthDegrees,
+								const Scalar turbidity,
+								const RISEPel& groundAlbedo,
+								const Scalar skyIntensityScale )
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		const Scalar deg2rad = Scalar( M_PI / 180.0 );
+		(*ppi) = new HosekWilkieSpectralRadianceMap(
+			solarElevationDegrees * deg2rad,
+			solarAzimuthDegrees   * deg2rad,
+			turbidity,
+			groundAlbedo,
+			skyIntensityScale );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "hosek-wilkie radiance map" );
 		return true;
 	}
 }

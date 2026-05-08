@@ -644,18 +644,31 @@ namespace
 		// non-normal textures through footprint supersampling instead
 		// of building a memory-blowing pyramid.
 		const bool mipmap = ( std::strcmp( role, "normal" ) != 0 );
+
+		// Landing 3: spectral-uplift role.  glTF emissive textures
+		// often pair with KHR_materials_emissive_strength scalar > 1,
+		// pushing per-texel radiance above the [0, 1] reflectance
+		// gamut.  Using Albedo uplift on those clamps to 1.0 inside
+		// the LUT path (RGBToSpectrumTable.cpp:218); use Unbounded so
+		// the sigmoid is normalized by max(R,G,B) and the scale is
+		// preserved.  All other roles (baseColor, MR, normal, AO,
+		// sheen_color, transmission_color, etc.) are bounded
+		// reflectances and stay on the Albedo path.
+		const SpectrumKind sk = ( std::strcmp( role, "emissive" ) == 0 )
+			? eSpectrumKind_Unbounded
+			: eSpectrumKind_Albedo;
 		if( !filePath.empty() ) {
 			// On-disk sidecar (the .gltf JSON form with external image files).
 			if( ext == ".png" ) {
 				ok = job.AddPNGTexturePainter(
 					painterName.c_str(), filePath.c_str(),
 					cs, /*filter*/ 1, kLowMem, scale, shift,
-					wrapS, wrapT, mipmap );
+					wrapS, wrapT, mipmap, sk );
 			} else if( ext == ".jpg" || ext == ".jpeg" ) {
 				ok = job.AddJPEGTexturePainter(
 					painterName.c_str(), filePath.c_str(),
 					cs, /*filter*/ 1, kLowMem, scale, shift,
-					wrapS, wrapT, mipmap );
+					wrapS, wrapT, mipmap, sk );
 			}
 		} else {
 			// Embedded bytes (any .glb image; .gltf `data:` URIs cgltf already
@@ -664,12 +677,12 @@ namespace
 				ok = job.AddInMemoryPNGTexturePainter(
 					painterName.c_str(), bytes, len,
 					cs, /*filter*/ 1, kLowMem, scale, shift,
-					wrapS, wrapT, mipmap );
+					wrapS, wrapT, mipmap, sk );
 			} else if( ext == ".jpg" || ext == ".jpeg" ) {
 				ok = job.AddInMemoryJPEGTexturePainter(
 					painterName.c_str(), bytes, len,
 					cs, /*filter*/ 1, kLowMem, scale, shift,
-					wrapS, wrapT, mipmap );
+					wrapS, wrapT, mipmap, sk );
 			}
 		}
 
@@ -2671,6 +2684,7 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		char wrap_s;				// per-texture U-axis wrap (eRasterWrapMode); read from cgltf_texture::sampler
 		char wrap_t;				// per-texture V-axis wrap
 		bool mipmap;				// Landing 2: build a mip pyramid for this texture.  False for normal maps (vector quantities — box-filter prefiltering corrupts them; LEAN/LEADR is a separate audit).
+		SpectrumKind spectrumKind;	// Landing 3: spectral-uplift role (Albedo for reflectance; Unbounded for emissive).
 	};
 	std::vector<PendingDecode> pending;
 	std::set<std::string> seen;
@@ -2750,6 +2764,14 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		// the supersampling path converges to the same integral
 		// as the pyramid lookup — different memory/quality trade.
 		pd.mipmap      = ( std::strcmp( role, "normal" ) != 0 );
+		// Landing 3: emissive textures need Unbounded uplift so HDR
+		// values (KHR_materials_emissive_strength > 1) survive without
+		// being clamped through the bounded-reflectance LUT path.  All
+		// other glTF texture roles are physically bounded reflectances
+		// and stay on Albedo.
+		pd.spectrumKind = ( std::strcmp( role, "emissive" ) == 0 )
+			? eSpectrumKind_Unbounded
+			: eSpectrumKind_Albedo;
 		pending.push_back( std::move( pd ) );
 	};
 
@@ -2816,6 +2838,7 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 								// per-sample render cost.  Match the
 								// CreateTexturePainter slow path if changing.
 		r.mipmap     = pd.mipmap;	// Landing 2: per-role; false for normal maps
+		r.spectrumKind = pd.spectrumKind;	// Landing 3: per-role; Unbounded for emissive
 		std::memcpy( r.scale, identityScale, sizeof(identityScale) );
 		std::memcpy( r.shift, zeroShift,     sizeof(zeroShift) );
 		requests.push_back( r );

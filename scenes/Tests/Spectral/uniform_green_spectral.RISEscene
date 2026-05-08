@@ -1,0 +1,93 @@
+RISE ASCII SCENE 5
+# Diagnostic: uniform-green sphere through the spectral integrator.
+# If this renders green, the spectral pipeline is sound and the
+# avocado_spectral monochrome issue is texture-specific.
+# If this renders monochrome, the issue is broader.
+
+pathtracing_shaderop
+{
+	name		pathtracer
+}
+
+standard_shader
+{
+	name			global
+	shaderop		pathtracer
+}
+
+pixelintegratingspectral_rasterizer
+{
+	samples				16
+	lum_samples			1
+	nmbegin				380
+	nmend				780
+	num_wavelengths		32
+	max_recursion		3
+	hwss				false
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/uniform_green_spectral
+	type				PNG
+	bpp				8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 3
+	lookat				0 0 0
+	up					0 1 0
+	width				256
+	height				256
+	fov					40.0
+}
+
+uniformcolor_painter
+{
+	name				green
+	color				0.4 0.7 0.2
+	colorspace			Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				white
+	color				1 1 1
+	colorspace			Rec709RGB_Linear
+}
+
+lambertian_material
+{
+	name		green_mat
+	reflectance	green
+}
+
+sphere_geometry
+{
+	name		sph_geom
+	radius		1
+}
+
+standard_object
+{
+	name		sph
+	geometry	sph_geom
+	material	green_mat
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.0 0.5 1.0
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.20
+	color		1.0 1.0 1.0
+}

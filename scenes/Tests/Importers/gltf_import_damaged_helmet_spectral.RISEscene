@@ -1,0 +1,93 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           gltf_import_damaged_helmet_spectral.RISEscene                                           #
+#   Description:    Landing 3 acceptance scene for emissive-routing.  Renders Khronos's                    #
+#                   DamagedHelmet.glb (PBR baseColor + MR + normal + emissive) through the                  #
+#                   spectral integrator.                                                                    #
+#                                                                                                           #
+#                   Round-2 + Round-3 fixes exercised:                                                      #
+#                                                                                                           #
+#                     - Round-2 GetSpectrum populated: LambertianEmitter caches                            #
+#                       averageSpectrum from radExPainter.GetSpectrum(rig).  Pre-fix, the                  #
+#                       cache was a 1-bin dummy packet → SpectralPhotonTracer's                            #
+#                       averageRadiantExitanceNM returned 0 → photon power 0.                              #
+#                                                                                                           #
+#                     - Round-3 emissive Unbounded: glTF importer now passes                               #
+#                       eSpectrumKind_Unbounded for emissive textures.  Pre-fix,                           #
+#                       KHR_materials_emissive_strength-scaled emissives clamped to                        #
+#                       [0, 1] inside the bounded-reflectance LUT path.                                    #
+#                                                                                                           #
+#                   Visual reference: companion scene gltf_import_damaged_helmet.RISEscene                  #
+#                   (RGB integrator).  The emissive eye / panel highlights should light up                  #
+#                   on both renders.                                                                        #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-05-08                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+pathtracing_shaderop
+{
+	name		pathtracer
+}
+
+standard_shader
+{
+	name			global
+	shaderop		pathtracer
+}
+
+# 32 wavelengths over the full visible band, non-HWSS, gives reliable
+# chromatic output without the HWSS undersampling that washes colour
+# out at low N.  See uniform_green_spectral.RISEscene for the
+# diagnostic that established this regime.
+pixelintegratingspectral_rasterizer
+{
+	samples				16
+	lum_samples			1
+	nmbegin				380
+	nmend				780
+	num_wavelengths		32
+	max_recursion		3
+	hwss				false
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/gltf_import_damaged_helmet_spectral
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 3
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					35.0
+}
+
+gltf_import
+{
+	file				scenes/Tests/Geometry/assets/DamagedHelmet.glb
+	name_prefix			helmet_spectral
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.4 0.4 0.7
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.25
+	color		1.0 1.0 1.0
+}

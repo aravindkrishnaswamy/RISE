@@ -303,6 +303,18 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\ColorUtils.cpp">
       <Filter>Utilities\Color</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable.cpp">
+      <Filter>Utilities\Color</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBSpectra.cpp">
+      <Filter>Utilities\Color</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\HosekWilkieSkyModel.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\HosekWilkieSpectralRadianceMap.cpp">
+      <Filter>Rendering</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\Threads\ThreadsPTHREADs.cpp">
       <Filter>Utilities\Threads</Filter>
     </ClCompile>
@@ -1253,6 +1265,21 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ColorUtils.h">
       <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBSigmoidPolynomial.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBSpectra.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\HosekWilkieSkyModel.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\HosekWilkieSpectralRadianceMap.h">
+      <Filter>Rendering</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\CompositeOperator.h">
       <Filter>Utilities\Color</Filter>

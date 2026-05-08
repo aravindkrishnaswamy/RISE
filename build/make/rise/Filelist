@@ -37,6 +37,10 @@ SRCDRISE =\
 SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/Color/Color.cpp						\
 	$(PATHLIBRARY)Utilities/Color/ColorUtils.cpp				\
+	$(PATHLIBRARY)Utilities/Color/RGBToSpectrumTable.cpp		\
+	$(PATHLIBRARY)Utilities/Color/RGBSpectra.cpp				\
+	$(PATHLIBRARY)Utilities/HosekWilkieSkyModel.cpp				\
+	$(PATHLIBRARY)Rendering/HosekWilkieSpectralRadianceMap.cpp	\
 	$(PATHLIBRARY)Utilities/Log/Log.cpp							\
 	$(PATHLIBRARY)Utilities/Log/MemoryTracker.cpp				\
 	$(PATHLIBRARY)Utilities/Log/StreamPrinter.cpp				\

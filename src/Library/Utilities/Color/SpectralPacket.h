@@ -139,6 +139,21 @@ namespace RISE
 				amplitudes[i] = d;
 		}
 
+		//! Returns the number of frequency bins the packet was
+		//! allocated with.  Required so callers iterating
+		//! `SetAtIndex` know the loop bound.
+		inline unsigned int NumBins() const { return num_freq; }
+
+		//! Writes one amplitude bin in place.  Used by RGB-source
+		//! painters (Landing 3) so their GetSpectrum can populate a
+		//! sigmoid-uplifted packet without needing an IFunction1D
+		//! refcounted wrapper.  Caller is responsible for keeping
+		//! `idx` in [0, NumBins()).
+		inline void SetAtIndex( unsigned int idx, Scalar v )
+		{
+			if( idx < num_freq ) amplitudes[idx] = v;
+		}
+
 		virtual ~SpectralPacket( )
 		{
 			GlobalLog()->PrintDelete( amplitudes, __FILE__, __LINE__ );

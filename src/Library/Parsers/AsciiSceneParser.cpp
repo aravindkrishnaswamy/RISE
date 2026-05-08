@@ -5259,6 +5259,53 @@ namespace RISE
 				}
 			};
 
+			// HosekWilkieSkylight — Landing 3.D analytic sun-and-sky.
+			// Creates an IRadianceMap (HW model wrapper) and registers
+			// it as the scene's global radiance map.  Optionally also
+			// creates a matched directional_light named `__hw_sun__`
+			// with the same solar elevation/azimuth — toggleable so a
+			// scene can use HW for the env hemisphere only.
+			struct HosekWilkieSkylightAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const double  solarElevation = bag.GetDouble( "solar_elevation",     45.0 );
+					const double  solarAzimuth   = bag.GetDouble( "solar_azimuth",        0.0 );
+					const double  turbidity      = bag.GetDouble( "turbidity",            3.0 );
+					double        groundAlbedo[3] = { 0.3, 0.3, 0.3 };
+					if( bag.Has( "ground_albedo" ) ) {
+						bag.GetVec3( "ground_albedo", groundAlbedo );
+					}
+					const double  skyScale       = bag.GetDouble( "sky_intensity_scale", 1.0 );
+					const double  sunPower       = bag.GetDouble( "sun_intensity_scale", 3.14 );
+					const bool    createSun      = bag.GetBool(   "create_sun",          true );
+
+					return pJob.AddHosekWilkieSkylight(
+						solarElevation, solarAzimuth, turbidity,
+						groundAlbedo, skyScale, sunPower, createSun );
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "hosek_wilkie_skylight";
+						cd.category = ChunkCategory::Light;
+						cd.description = "Analytic spectral sun-and-sky (Hosek-Wilkie 2012; v1 uses Preetham 1999 internally).  Creates a global radiance map and an optional matched directional_light atomically — they share the same solar position so they can't drift apart.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "solar_elevation";    p.kind = ValueKind::Double;     p.description = "Sun angle above horizon, degrees (0 = horizon, 90 = zenith)";          p.defaultValueHint = "45.0"; }
+						{ auto& p = P(); p.name = "solar_azimuth";      p.kind = ValueKind::Double;     p.description = "Sun compass bearing, degrees (0 = +Z, 90 = +X)";                       p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "turbidity";          p.kind = ValueKind::Double;     p.description = "Atmospheric turbidity ∈ [1, 10] (1 = arctic clear, 3 = typical, 10 = polluted)"; p.defaultValueHint = "3.0"; }
+						{ auto& p = P(); p.name = "ground_albedo";      p.kind = ValueKind::DoubleVec3; p.description = "Per-channel ground albedo (v1: stored but not coupled — Preetham fallback; emits one-time warning if non-default)"; p.defaultValueHint = "0.3 0.3 0.3"; }
+						{ auto& p = P(); p.name = "sky_intensity_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on radiance-map output (does not affect the matched sun light)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "sun_intensity_scale"; p.kind = ValueKind::Double;    p.description = "Power for the matched directional_light (RISE convention: π for unit-flux key)"; p.defaultValueHint = "3.14"; }
+						{ auto& p = P(); p.name = "create_sun";         p.kind = ValueKind::Bool;       p.description = "If true (default), also creates a directional_light `__hw_sun__` matched to the solar position";  p.defaultValueHint = "true"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			// DirectionalLight — descriptor-driven, Finalize-only
 			struct DirectionalLightAsciiChunkParser : public IAsciiChunkParser
 			{
@@ -8040,6 +8087,7 @@ namespace RISE
 		add( "omni_light",                            new OmniLightAsciiChunkParser() );
 		add( "spot_light",                            new SpotLightAsciiChunkParser() );
 		add( "directional_light",                     new DirectionalLightAsciiChunkParser() );
+		add( "hosek_wilkie_skylight",                 new HosekWilkieSkylightAsciiChunkParser() );
 
 		// Photon maps & gather
 		add( "caustic_pel_photonmap",                 new CausticPelPhotonMapGenerateAsciiChunkParser() );

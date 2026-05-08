@@ -623,6 +623,15 @@
 		F24B73FE2F52A632008304C4 /* ColorDefs.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09ED069C42900069C9E5 /* ColorDefs.h */; };
 		F24B73FF2F52A632008304C4 /* ColorUtils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09EE069C42900069C9E5 /* ColorUtils.cpp */; };
 		F24B74002F52A632008304C4 /* ColorUtils.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09EF069C42900069C9E5 /* ColorUtils.h */; };
+		F2D1A031069C42900069C9E5 /* RGBSigmoidPolynomial.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A030069C42900069C9E5 /* RGBSigmoidPolynomial.h */; };
+		F2D1A034069C42900069C9E5 /* RGBToSpectrumTable.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A033069C42900069C9E5 /* RGBToSpectrumTable.h */; };
+		F2D1A037069C42900069C9E5 /* RGBToSpectrumTable.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A036069C42900069C9E5 /* RGBToSpectrumTable.cpp */; };
+		F2D1A039069C42900069C9E5 /* RGBSpectra.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A038069C42900069C9E5 /* RGBSpectra.h */; };
+		F2D1A03C069C42900069C9E5 /* RGBSpectra.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A03B069C42900069C9E5 /* RGBSpectra.cpp */; };
+		F2D1A040069C42900069C9E5 /* HosekWilkieSkyModel.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A03F069C42900069C9E5 /* HosekWilkieSkyModel.h */; };
+		F2D1A042069C42900069C9E5 /* HosekWilkieSkyModel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A041069C42900069C9E5 /* HosekWilkieSkyModel.cpp */; };
+		F2D1A044069C42900069C9E5 /* HosekWilkieSpectralRadianceMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A043069C42900069C9E5 /* HosekWilkieSpectralRadianceMap.h */; };
+		F2D1A046069C42900069C9E5 /* HosekWilkieSpectralRadianceMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A045069C42900069C9E5 /* HosekWilkieSpectralRadianceMap.cpp */; };
 		F24B74012F52A632008304C4 /* CompositeOperator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09F0069C42900069C9E5 /* CompositeOperator.h */; };
 		F24B74022F52A632008304C4 /* RGB.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09F1069C42900069C9E5 /* RGB.h */; };
 		F24B74032F52A632008304C4 /* SmartColor.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09F2069C42900069C9E5 /* SmartColor.h */; };
@@ -1266,6 +1275,15 @@
 		F27F0C49069C42910069C9E5 /* ColorDefs.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F09ED069C42900069C9E5 /* ColorDefs.h */; };
 		F27F0C4A069C42910069C9E5 /* ColorUtils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09EE069C42900069C9E5 /* ColorUtils.cpp */; };
 		F27F0C4B069C42910069C9E5 /* ColorUtils.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F09EF069C42900069C9E5 /* ColorUtils.h */; };
+		F2D1A032069C42910069C9E5 /* RGBSigmoidPolynomial.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A030069C42900069C9E5 /* RGBSigmoidPolynomial.h */; };
+		F2D1A035069C42910069C9E5 /* RGBToSpectrumTable.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A033069C42900069C9E5 /* RGBToSpectrumTable.h */; };
+		F2D1A03D069C42910069C9E5 /* RGBToSpectrumTable.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A036069C42900069C9E5 /* RGBToSpectrumTable.cpp */; };
+		F2D1A03A069C42910069C9E5 /* RGBSpectra.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A038069C42900069C9E5 /* RGBSpectra.h */; };
+		F2D1A03E069C42910069C9E5 /* RGBSpectra.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A03B069C42900069C9E5 /* RGBSpectra.cpp */; };
+		F2D1A047069C42910069C9E5 /* HosekWilkieSkyModel.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A03F069C42900069C9E5 /* HosekWilkieSkyModel.h */; };
+		F2D1A048069C42910069C9E5 /* HosekWilkieSkyModel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A041069C42900069C9E5 /* HosekWilkieSkyModel.cpp */; };
+		F2D1A049069C42910069C9E5 /* HosekWilkieSpectralRadianceMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A043069C42900069C9E5 /* HosekWilkieSpectralRadianceMap.h */; };
+		F2D1A04A069C42910069C9E5 /* HosekWilkieSpectralRadianceMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A045069C42900069C9E5 /* HosekWilkieSpectralRadianceMap.cpp */; };
 		F27F0C4C069C42910069C9E5 /* CompositeOperator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F09F0069C42900069C9E5 /* CompositeOperator.h */; };
 		F27F0C4D069C42910069C9E5 /* RGB.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F09F1069C42900069C9E5 /* RGB.h */; };
 		F27F0C4E069C42910069C9E5 /* SmartColor.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F09F2069C42900069C9E5 /* SmartColor.h */; };
@@ -2310,6 +2328,15 @@
 		F27F09ED069C42900069C9E5 /* ColorDefs.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ColorDefs.h; sourceTree = "<group>"; };
 		F27F09EE069C42900069C9E5 /* ColorUtils.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ColorUtils.cpp; sourceTree = "<group>"; };
 		F27F09EF069C42900069C9E5 /* ColorUtils.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ColorUtils.h; sourceTree = "<group>"; };
+		F2D1A030069C42900069C9E5 /* RGBSigmoidPolynomial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RGBSigmoidPolynomial.h; sourceTree = "<group>"; };
+		F2D1A033069C42900069C9E5 /* RGBToSpectrumTable.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RGBToSpectrumTable.h; sourceTree = "<group>"; };
+		F2D1A036069C42900069C9E5 /* RGBToSpectrumTable.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RGBToSpectrumTable.cpp; sourceTree = "<group>"; };
+		F2D1A038069C42900069C9E5 /* RGBSpectra.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RGBSpectra.h; sourceTree = "<group>"; };
+		F2D1A03B069C42900069C9E5 /* RGBSpectra.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RGBSpectra.cpp; sourceTree = "<group>"; };
+		F2D1A03F069C42900069C9E5 /* HosekWilkieSkyModel.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HosekWilkieSkyModel.h; sourceTree = "<group>"; };
+		F2D1A041069C42900069C9E5 /* HosekWilkieSkyModel.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HosekWilkieSkyModel.cpp; sourceTree = "<group>"; };
+		F2D1A043069C42900069C9E5 /* HosekWilkieSpectralRadianceMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HosekWilkieSpectralRadianceMap.h; sourceTree = "<group>"; };
+		F2D1A045069C42900069C9E5 /* HosekWilkieSpectralRadianceMap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = HosekWilkieSpectralRadianceMap.cpp; sourceTree = "<group>"; };
 		F27F09F0069C42900069C9E5 /* CompositeOperator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CompositeOperator.h; sourceTree = "<group>"; };
 		F27F09F1069C42900069C9E5 /* RGB.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RGB.h; sourceTree = "<group>"; };
 		F27F09F2069C42900069C9E5 /* SmartColor.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SmartColor.h; sourceTree = "<group>"; };
@@ -3404,6 +3431,8 @@
 		F27F0997069C42900069C9E5 /* Rendering */ = {
 			isa = PBXGroup;
 			children = (
+				F2D1A043069C42900069C9E5 /* HosekWilkieSpectralRadianceMap.h */,
+				F2D1A045069C42900069C9E5 /* HosekWilkieSpectralRadianceMap.cpp */,
 				F28639612F9245040009D9AE /* PreviewScheduler.h */,
 				F28639622F9245040009D9AE /* PreviewScheduler.cpp */,
 				F28639572F9244AC0009D9AE /* AdaptiveTileSizer.h */,
@@ -3599,6 +3628,8 @@
 		F27F09E3069C42900069C9E5 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				F2D1A03F069C42900069C9E5 /* HosekWilkieSkyModel.h */,
+				F2D1A041069C42900069C9E5 /* HosekWilkieSkyModel.cpp */,
 				F28639522F9244920009D9AE /* ThreadPool.h */,
 				F28639532F9244920009D9AE /* ThreadPool.cpp */,
 				F2863A002F9244920009D9AE /* CPUTopology.h */,
@@ -3713,6 +3744,11 @@
 				F27F09ED069C42900069C9E5 /* ColorDefs.h */,
 				F27F09EE069C42900069C9E5 /* ColorUtils.cpp */,
 				F27F09EF069C42900069C9E5 /* ColorUtils.h */,
+				F2D1A030069C42900069C9E5 /* RGBSigmoidPolynomial.h */,
+				F2D1A033069C42900069C9E5 /* RGBToSpectrumTable.h */,
+				F2D1A036069C42900069C9E5 /* RGBToSpectrumTable.cpp */,
+				F2D1A038069C42900069C9E5 /* RGBSpectra.h */,
+				F2D1A03B069C42900069C9E5 /* RGBSpectra.cpp */,
 				F27F09F0069C42900069C9E5 /* CompositeOperator.h */,
 				F27F09F1069C42900069C9E5 /* RGB.h */,
 				F27F09F2069C42900069C9E5 /* SmartColor.h */,
@@ -4333,6 +4369,11 @@
 				F27F0C49069C42910069C9E5 /* ColorDefs.h in Headers */,
 				F2C5D5C82F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.h in Headers */,
 				F27F0C4B069C42910069C9E5 /* ColorUtils.h in Headers */,
+				F2D1A032069C42910069C9E5 /* RGBSigmoidPolynomial.h in Headers */,
+				F2D1A035069C42910069C9E5 /* RGBToSpectrumTable.h in Headers */,
+				F2D1A03A069C42910069C9E5 /* RGBSpectra.h in Headers */,
+				F2D1A047069C42910069C9E5 /* HosekWilkieSkyModel.h in Headers */,
+				F2D1A049069C42910069C9E5 /* HosekWilkieSpectralRadianceMap.h in Headers */,
 				F27F0C4C069C42910069C9E5 /* CompositeOperator.h in Headers */,
 				F27F0C4D069C42910069C9E5 /* RGB.h in Headers */,
 				F27F0C4E069C42910069C9E5 /* SmartColor.h in Headers */,
@@ -4801,6 +4842,10 @@
 				F27F0C41069C42910069C9E5 /* BitField.cpp in Sources */,
 				F27F0C46069C42910069C9E5 /* Color.cpp in Sources */,
 				F27F0C4A069C42910069C9E5 /* ColorUtils.cpp in Sources */,
+				F2D1A03D069C42910069C9E5 /* RGBToSpectrumTable.cpp in Sources */,
+				F2D1A03E069C42910069C9E5 /* RGBSpectra.cpp in Sources */,
+				F2D1A048069C42910069C9E5 /* HosekWilkieSkyModel.cpp in Sources */,
+				F2D1A04A069C42910069C9E5 /* HosekWilkieSpectralRadianceMap.cpp in Sources */,
 				F27F0C53069C42910069C9E5 /* ClientSocketCommunicator.cpp in Sources */,
 				F27F0C56069C42910069C9E5 /* ServerSocketCommunicator.cpp in Sources */,
 				F27F0C58069C42910069C9E5 /* SocketCommunications.cpp in Sources */,

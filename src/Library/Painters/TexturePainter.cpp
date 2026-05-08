@@ -15,6 +15,7 @@
 #include "TexturePainter.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Profiling.h"
+#include "../Utilities/Color/RGBSpectra.h"
 
 #include <cmath>
 #include <cstdint>
@@ -23,9 +24,10 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-TexturePainter::TexturePainter( IRasterImageAccessor* pRIA_ ) :
+TexturePainter::TexturePainter( IRasterImageAccessor* pRIA_, SpectrumKind kind_ ) :
   pRIA( pRIA_ ),
-  filter_mode( Mode_Base )
+  filter_mode( Mode_Base ),
+  spectrumKind( kind_ )
 {
 	if( pRIA ) {
 		pRIA->addref();
@@ -193,4 +195,80 @@ Scalar TexturePainter::GetAlpha( const RayIntersectionGeometric& ri ) const
 		return SampleTextured( ri ).a;
 	}
 	return Scalar(1);
+}
+
+Scalar TexturePainter::GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	// Landing 3: sample mip in RGB, uplift the per-sample RGB to a
+	// Jakob-Hanika sigmoid spectrum, evaluate at the requested
+	// wavelength.
+	//
+	// Why uplift sample-side rather than at texture-load time:
+	// filtering sigmoid coefficients across mip pyramids is non-
+	// linear and produces wrong intermediate spectra (a 50/50 mix of
+	// two reflectances should be the linear average of the
+	// reflectances, not the sigmoid of the linear average of the
+	// coefficients).  Linear filtering in RGB followed by uplift
+	// gives the correct average reflectance at the LOD level
+	// selected by ray differentials.
+	if( !pRIA ) {
+		return Scalar(0);
+	}
+
+	RISE_PROFILE_PHASE(TexturePainter);
+	RISE_PROFILE_INC(nTexturePainterSamples);
+
+	const RISEPel rgb = SampleTextured( ri ).base;
+
+	// Cached LUT singleton (loaded once per process).  The lookup is
+	// thread-safe because it never mutates the LUT data after first
+	// load.
+	const RGBToSpectrumTable& table = RGBToSpectrumTable::ROMM();
+
+	if( spectrumKind == eSpectrumKind_Unbounded ) {
+		const RGBUnboundedSpectrum s = RGBUnboundedSpectrum::FromRGB( rgb, table );
+		return s.Eval( nm );
+	}
+	if( spectrumKind == eSpectrumKind_Illuminant ) {
+		const RGBIlluminantSpectrum s = RGBIlluminantSpectrum::FromRGB( rgb, table );
+		return s.Eval( nm );
+	}
+	const RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB( rgb, table );
+	return s.Eval( nm );
+}
+
+SpectralPacket TexturePainter::GetSpectrum( const RayIntersectionGeometric& ri ) const
+{
+	// Same per-sample uplift as GetColorNM, but populates an entire
+	// SpectralPacket at 5nm spacing.  Construction-time cache for
+	// LambertianEmitter / PhongEmitter on textured emissives — see
+	// header comment.
+	const Scalar lambda_begin = Scalar(380);
+	const Scalar lambda_end   = Scalar(780);
+	const unsigned int nbins  = 81;
+	SpectralPacket sp( lambda_begin, lambda_end, nbins );
+
+	if( !pRIA ) return sp;
+
+	const RISEPel rgb = SampleTextured( ri ).base;
+	const RGBToSpectrumTable& table = RGBToSpectrumTable::ROMM();
+	const Scalar delta = (lambda_end - lambda_begin) / Scalar(nbins);
+
+	if( spectrumKind == eSpectrumKind_Unbounded ) {
+		const RGBUnboundedSpectrum s = RGBUnboundedSpectrum::FromRGB( rgb, table );
+		for( unsigned int i = 0; i < nbins; ++i ) {
+			sp.SetAtIndex( i, s.Eval( lambda_begin + Scalar(i) * delta ) );
+		}
+	} else if( spectrumKind == eSpectrumKind_Illuminant ) {
+		const RGBIlluminantSpectrum s = RGBIlluminantSpectrum::FromRGB( rgb, table );
+		for( unsigned int i = 0; i < nbins; ++i ) {
+			sp.SetAtIndex( i, s.Eval( lambda_begin + Scalar(i) * delta ) );
+		}
+	} else {
+		const RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB( rgb, table );
+		for( unsigned int i = 0; i < nbins; ++i ) {
+			sp.SetAtIndex( i, s.Eval( lambda_begin + Scalar(i) * delta ) );
+		}
+	}
+	return sp;
 }

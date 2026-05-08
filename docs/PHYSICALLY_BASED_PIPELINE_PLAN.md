@@ -357,6 +357,8 @@ Out:
 
 ## Landing 3 — Spectral upsampling + spectral sun-and-sky
 
+**Detailed design: [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md)**
+
 ### Goal
 
 Upsample RGB textures to spectra via Jakob-Hanika sigmoid model

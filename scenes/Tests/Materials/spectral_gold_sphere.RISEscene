@@ -1,0 +1,142 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           spectral_gold_sphere.RISEscene                                                          #
+#   Description:    Landing 3 PB-correctness demonstrator.  A gold-coloured GGX conductor sphere            #
+#                   rendered through the spectral integrator.  The "rs" (specular reflectance)              #
+#                   painter is a uniform warm-gold colour (sRGB ≈ #fac030); under the L3 uplift             #
+#                   the runtime evaluates a wavelength-dependent sigmoid that gives gold its                #
+#                   characteristic warm hue when integrated against CIE + a unit illuminant.                #
+#                                                                                                           #
+#                   Pre-L3, the spectral path would have evaluated rs.GetColorNM as the                     #
+#                   ColorMath::MaxValue(C) luminance proxy — a single scalar per wavelength,                #
+#                   producing a flat-grey gold rather than the warm hue.                                    #
+#                                                                                                           #
+#                   Limitations: gold's IOR / extinction scalars are wavelength-averaged                    #
+#                   (n=0.27, k=2.78 at ~580nm).  Full Palik measured n(λ), k(λ) would give                  #
+#                   slightly more accurate Fresnel falloff at glancing angles; the scalar                   #
+#                   pair is a reasonable v1 approximation for visual verification.  Scalar                  #
+#                   conductor data isn't a Landing 3 deliverable.                                           #
+#                                                                                                           #
+#                   Companion: spectral_gold_sphere_rgb.RISEscene renders the same setup                    #
+#                   through the RGB integrator for side-by-side comparison.  Both should                    #
+#                   show clearly recognisable gold; spectral pass should look slightly more                 #
+#                   chromatically saturated (the L3 uplift's wavelength dependence vs RGB                   #
+#                   broadcast).                                                                             #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-05-08                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+pathtracing_shaderop
+{
+	name		pathtracer
+}
+
+standard_shader
+{
+	name			global
+	shaderop		pathtracer
+}
+
+pixelintegratingspectral_rasterizer
+{
+	samples				16
+	lum_samples			1
+	nmbegin				380
+	nmend				780
+	num_wavelengths		32
+	max_recursion		3
+	hwss				false
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/spectral_gold_sphere
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 4
+	lookat				0 0 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					30.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0.0 0.0 0.0
+	colorspace			Rec709RGB_Linear
+}
+
+# Warm gold tint — sRGB hex #fac030 in linear Rec709 space.
+# Round-trips via L3 uplift to a sigmoid spectrum peaked in the
+# warm-yellow band (570-590 nm), which is gold's actual chromaticity.
+uniformcolor_painter
+{
+	name				pnt_gold_spec
+	color				0.95 0.66 0.05
+	colorspace			Rec709RGB_Linear
+}
+
+# Lambertian sphere with a gold-tinted albedo.  This is NOT a
+# physically-accurate conductor (real gold needs wavelength-dependent
+# n, k); it's a deliberate simplification for spectral-uplift
+# demonstration purposes.  The L3 sigmoid uplift on the warm-yellow
+# RGB albedo produces a wavelength-dependent reflectance peaked in
+# the 570-590 nm band, giving the surface the recognizable warm gold
+# hue when integrated against a flat illuminant.  Companion
+# pixelpel_rasterizer render with the same albedo broadcasts (1.0) at
+# every wavelength and produces a slightly different chromaticity —
+# the difference between "RGB-broadcast yellow" and "spectrally-
+# uplifted yellow" is the L3 demonstrator.
+lambertian_material
+{
+	name		mat_gold
+	reflectance	pnt_gold_spec
+}
+
+sphere_geometry
+{
+	name		sph_geom
+	radius		1.0
+}
+
+standard_object
+{
+	name		sphere
+	geometry	sph_geom
+	material	mat_gold
+	position	0 0 0
+}
+
+# Single warm key light (D50-ish; tinted very slightly warm to evoke
+# late-afternoon sunlight without going full sunset).
+uniformcolor_painter
+{
+	name				pnt_sun
+	color				1.0 0.96 0.90
+	colorspace			Rec709RGB_Linear
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 0.96 0.90
+	direction	0.4 0.7 0.5
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.20
+	color		1.0 1.0 1.0
+}

@@ -23,6 +23,17 @@ namespace RISE
 {
 	class RayIntersectionGeometric;
 
+	//! Spectral-uplift role for an RGB-source painter (Landing 3).
+	//! Determines whether the input RGB is treated as a bounded
+	//! reflectance, an unbounded radiance, or an illuminant.  Default
+	//! is Albedo (the common case for baseColor and similar inputs).
+	enum SpectrumKind
+	{
+		eSpectrumKind_Albedo      = 0,	///< rgb ∈ [0, 1]; baseColor / sheen / transmission_color etc.
+		eSpectrumKind_Unbounded   = 1,	///< rgb ≥ 0 with components possibly > 1; emissive / HDR sources
+		eSpectrumKind_Illuminant  = 2	///< rgb ≥ 0; pre-multiplied by D50 reference SPD
+	};
+
 	//! A painter determines the spectral properties of a material.  It takes
 	//! intersection information and from that derives the spectral properties
 	//! either as an RISEPel or as the amplitude of a specific wavelength
