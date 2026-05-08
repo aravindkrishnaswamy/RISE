@@ -7,7 +7,7 @@ This document describes the VCM integrator, a unified bidirectional light transp
 - **VCMIntegrator** with **VCMPelRasterizer** (RGB) and **VCMSpectralRasterizer** (HWSS).
 - Surface-only merging.  Medium scatter vertices traverse the recurrence (geometric + phase-function sampling updates using `sigma_t_scalar`) but are not stored or merged.  Connection transmittance through media is Tr=1 in v1.
 - SPPM-style progressive radius shrinkage (global per-iteration, clamped by an adaptive density floor), with automatic median-segment-based fallback for the initial radius.  Set `vcm_disable_progressive_radius=true` in global options to revert to fixed-radius SmallVCM.
-- Balance-heuristic MIS (matches SmallVCM); RISE BDPT's power-heuristic path is untouched.
+- Balance-heuristic MIS (matches SmallVCM, Mitsuba VCM, and the Georgiev 2012 reference); RISE BDPT's power-heuristic path is untouched.  See [MIS_HEURISTICS.md](MIS_HEURISTICS.md) for the full power-vs-balance reasoning.
 - No SMS interop; no OpenPGL guiding.
 
 ## Reuse Strategy
@@ -240,8 +240,9 @@ VCM overrides `SkipPerBlockIntermediateOutput()` to return `true`.  With 1 spp p
 - **Store lives for one iteration.**  Kept for v2: each iteration has a fresh store.  Density-noise variance averages across iterations as 1/√N.
 - **Surface-only merging.**  Medium scatter vertices propagate the geometric update (using `sigma_t_scalar` in place of `|cos|`) so dVCM/dVC/dVM are approximately correct at post-media surface vertices, but medium vertices themselves are not stored.  Connections skip MEDIUM-type endpoints.  Connection transmittance through participating media is not evaluated in v1 (Tr=1); VCM connections in scenes with global or per-object media may be slightly overbright.  BDPT's full boundary-walking `EvalConnectionTransmittance` is a follow-up.
 - **Spectral merges use hero throughput luminance for companion wavelengths.**  `EvaluateMergesNM` uses the stored Pel throughput's luminance as a companion-wavelength proxy for the light vertex store's accumulated throughput — the store is populated at a single wavelength during PreRenderSetup and cannot be re-walked per companion.  Scenes with strong wavelength-dependent emission near dielectric caustics will see reduced HWSS accuracy on the merge strategy only; VC strategies (s=0, NEE, interior, t=1) are fully wavelength-accurate.
-- **No SMS, path guiding, or optimal MIS.**  User-confirmed out of scope for v1.
-- **BDPT vs VCM heuristic mismatch.**  RISE BDPT uses power heuristic; VCM uses balance.  On diffuse scenes the two agree to within ~1% at 256 spp.
+- **No SMS, path guiding, or optimal MIS.**  User-confirmed out of scope for v1.  (The optimal-MIS direction is the principled answer to the BDPT-power vs VCM-balance question — extending [Kondapaneni 2019](https://cgg.mff.cuni.cz/~jaroslav/papers/2019-optimal-mis/) to bidirectional / VCM is open research.)
+
+The **BDPT-power / VCM-balance asymmetry** is *not* a mismatch — it matches PBRT-v4, Mitsuba 0.6/3, SmallVCM, and SmallUPBP, and is mandated by the Georgiev 2012 dVCM/dVC/dVM running-quantities recurrence which only closes algebraically at β=1.  See [MIS_HEURISTICS.md](MIS_HEURISTICS.md) for the full treatment.  On diffuse scenes BDPT and VCM agree to within ~1% at 256 spp; on caustic-heavy scenes they can differ because BDPT cannot reach S-D-S-E paths VCM's merging strategy catches — a transport-coverage difference, not an MIS-weighting one.
 
 ## Unit Tests
 

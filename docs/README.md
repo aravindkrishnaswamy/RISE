@@ -16,6 +16,7 @@ This directory holds focused design notes and planning docs. Start at [../README
 - [LIGHTS.md](LIGHTS.md): emitter taxonomy (`ILight` vs. luminaire materials), the unified `LightSampler` pipeline (alias table, RIS, light BVH, environment importance sampling), MIS subtleties per selection mode, and the checklist for adding a new emitter.
 - [SMS.md](SMS.md): Specular Manifold Sampling solver design, constraint formulations, and tuning guidance.  Historical note: SMS was wired into BDPT until 2026-05-07; that integration was excised — see [CLAUDE.md](../CLAUDE.md) "BDPT no longer participates in SMS" entry.
 - [VCM.md](VCM.md): Vertex Connection and Merging integrator (BDPT + photon mapping under one MIS umbrella), recurrence design, post-pass conversion, and Veach-transparency handling for specular chains.
+- [MIS_HEURISTICS.md](MIS_HEURISTICS.md): which MIS heuristic each integrator uses (PT power-2, BDPT power-2, VCM balance, MLT inherits BDPT) and why the BDPT-power / VCM-balance asymmetry is the SOTA convention rather than a mismatch.  Read before proposing to "unify" the heuristics.
 - [OIDN.md](OIDN.md): Intel Open Image Denoise integration — audit of current usage vs. upstream feature set, ranked improvement backlog with stable IDs, and decision log. Update entries in place as work lands.
 
 ## Active / Recent Plans
