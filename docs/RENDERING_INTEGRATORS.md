@@ -101,7 +101,7 @@ The ten rasterizer chunks, grouped by algorithm.
 | Chunk | Pipeline | Notes |
 |---|---|---|
 | `pixelpel_rasterizer` | shader-dispatch | RGB. Runs the `defaultshader` chain (PT shader-op + others) at every hit. The classic configuration. Use when composability matters more than raw PT throughput. |
-| `pixelintegratingspectral_rasterizer` | shader-dispatch | Spectral analogue of `pixelpel_rasterizer`. RGB→SPD conversion happens in the painter pipeline. |
+| `pixelintegratingspectral_rasterizer` | shader-dispatch | Spectral analogue of `pixelpel_rasterizer`. RGB→SPD conversion happens in the painter pipeline.  **Soft-deprecated** — modern features (path guiding, adaptive sampling, optimal MIS, full inline OIDN AOV) are not wired here; new scenes should prefer `pathtracing_spectral_rasterizer`.  Retained for custom spectral shader-op chains; no removal date.  See [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §2.1–§2.5. |
 | `pathtracing_pel_rasterizer` | pure integrator | RGB. Calls `PathTracingIntegrator` directly. Bypasses shader-op chain. **Default modern PT.** Wires OIDN with the filtered-film resolve correctly skipped (raw MC noise feeds OIDN). |
 | `pathtracing_spectral_rasterizer` | pure integrator | Spectral. NM and HWSS modes both available. |
 
@@ -110,7 +110,7 @@ The ten rasterizer chunks, grouped by algorithm.
 | Chunk | Pipeline | Notes |
 |---|---|---|
 | `bdpt_pel_rasterizer` | pure integrator | RGB. Generates eye + light subpaths, connects all (s,t) strategy pairs, MIS-weights via the **power heuristic (β=2)** — see [MIS_HEURISTICS.md](MIS_HEURISTICS.md). Strong on glossy interreflection and indirect specular. |
-| `bdpt_spectral_rasterizer` | pure integrator | Spectral analogue. **Note: subset of pathguiding params** — does not support `pathguiding_max_light_depth` or `pathguiding_complete_paths`. |
+| `bdpt_spectral_rasterizer` | pure integrator | Spectral analogue.  Wires the full path-guiding parameter set (parser switched from a hand-rolled subset to `AddPathGuidingParams` on 2026-05-07; see [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §2.7). |
 
 ### VCM (vertex connection and merging)
 
@@ -151,15 +151,27 @@ wired, partial = subset.
 | Chunk | Path guiding | Adaptive sampling | SMS | Optimal MIS | OIDN denoise |
 |---|---|---|---|---|---|
 | `pixelpel_rasterizer` | ✓ | ✓ | (via shader-op) | ✓ | ✓ |
-| `pixelintegratingspectral_rasterizer` | ✗ | ✓ | ✓ | ✓ | (limited) |
+| `pixelintegratingspectral_rasterizer` ¹ | ✗ | ✗ | (via shader-op) | ✗ | (limited) |
 | `pathtracing_pel_rasterizer` | ✓ | ✓ | ✓ | ✓ | ✓ (full filtered-film bypass) |
-| `pathtracing_spectral_rasterizer` | ✓ | ✓ | ✓ | ✓ | (limited) |
-| `bdpt_pel_rasterizer` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `bdpt_spectral_rasterizer` | partial | ✗ | ✓ | ✓ | (limited) |
+| `pathtracing_spectral_rasterizer` | ✗ | ✓ | ✓ | ✗ | (limited) |
+| `bdpt_pel_rasterizer` | ✓ | ✓ | ✗ | ✗ | ✓ |
+| `bdpt_spectral_rasterizer` | ✓ | ✗ | ✗ | ✗ | (limited) |
 | `vcm_pel_rasterizer` | ✗ | ✓ | ✗ | ✗ | ✓ |
-| `vcm_spectral_rasterizer` | ✗ | ✓ | ✗ | ✗ | (limited) |
-| `mlt_rasterizer` | ✗ | ✗ | ✗ | ✗ | ✗ |
-| `mlt_spectral_rasterizer` | ✗ | ✗ | ✗ | ✗ | ✗ |
+| `vcm_spectral_rasterizer` ² | ✗ | ✓ | ✗ | ✗ | (limited) |
+| `mlt_rasterizer` | ✗ | ✗ | ✗ | ✗ | ✗ (default off — splat film) |
+| `mlt_spectral_rasterizer` | ✗ | ✗ | ✗ | ✗ | ✗ (default off — splat film) |
+
+¹ **`pixelintegratingspectral_rasterizer` is soft-deprecated.** It is
+the legacy shader-dispatch spectral chunk; modern features (path
+guiding, adaptive sampling, optimal MIS, full inline OIDN AOV)
+require the per-integrator pipeline and are not wired here. New
+scenes should prefer `pathtracing_spectral_rasterizer`. The chunk is
+retained for custom spectral shader-op chains; no removal date.
+
+² **VCM-spectral merging uses a luminance proxy** on a Pel-only
+photon store — see [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
+§3 for the correctness implications on dispersive caustics and the
+per-wavelength-photon-store remediation plan.
 
 A few cross-cutting facts to keep this matrix honest:
 
@@ -167,19 +179,51 @@ A few cross-cutting facts to keep this matrix honest:
   `PixelBasedRasterizerHelper`; rasterizers that go through it inherit
   the bypass. MLT does its own splat/resolve loop and does not
   integrate with OIDN.
-- **Adaptive sampling** integrates well with PT and VCM but not BDPT
-  spectral or MLT — both have non-pixel-local sample placement.
+- **OIDN AOV "(limited)" on spectral rows** means: PT-spectral and
+  pixelintegratingspectral have *no* inline AOV at all (rely on the
+  `CollectFirstHitAOVs` retrace fallback, which records at first hit
+  through glass / mirror).  BDPT-spectral and VCM-spectral *do* walk
+  the eye subpath inline and call `BSDF->albedo(rig)` against a
+  helper-populated `RayIntersectionGeometric` (matching the Pel-side
+  pattern as of the 2026-05-07 spectral parity fix; the prior
+  `BSDF->value(N,rig) * π` Lambertian-normal-incidence proxy was
+  retired).  See [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
+  §4 for the per-row decode and §2.11 / §2.17 for the proxy fix.
+- **Adaptive sampling** integrates with PT (pel + spectral) and VCM
+  (pel + spectral) but not BDPT spectral or MLT — BDPT spectral has
+  not had the per-pixel Welford loop ported (deferred plumbing, see
+  audit §2.8); MLT has non-pixel-local sample placement.
 - **Path guiding** requires per-pixel directional density estimation
   via OpenPGL. The VCM merging pass and MLT mutation pass do not
-  cooperate with that; they are not wired.
-- **SMS** is wired into PT and MLT (which benefit from the
-  manifold-sampled caustic) but not into BDPT or VCM. VCM already
-  handles caustics via merging.  BDPT was wired through SMS
-  historically; the integration was excised in 2026-05 because
-  state-of-the-art renderers don't combine BDPT with SMS and the
-  cross-strategy MIS overlap was structural complexity for no
-  measurable variance gain — see [CLAUDE.md](../CLAUDE.md)
-  "High-Value Facts" for the removal entry.
+  cooperate with that; they are not wired.  BDPT-spectral wires the
+  full path-guiding param set (fixed 2026-05-07 — `pathguiding_learned_alpha`,
+  `pathguiding_light_max_depth`, `pathguiding_complete_path_strategy_selection`,
+  and `pathguiding_complete_path_strategy_samples` had previously been
+  silently dropped by a hand-rolled descriptor; see audit §2.7).
+- **SMS** is wired into PT (pel + spectral) only.  Not in MLT (no
+  plumbing), not in VCM (merging handles caustics natively), not in
+  BDPT — BDPT was wired through SMS historically; the integration
+  was excised in 2026-05 because state-of-the-art renderers don't
+  combine BDPT with SMS and the cross-strategy MIS overlap was
+  structural complexity for no measurable variance gain.  See
+  [CLAUDE.md](../CLAUDE.md) "High-Value Facts" for the removal entry.
+- **Optimal MIS** (Kondapaneni 2019) is wired only in
+  `pixelpel_rasterizer` (via the shader-op PT chain) and
+  `pathtracing_pel_rasterizer`.  Both inherit the
+  `OptimalMISAccumulator` allocation from `PixelBasedPelRasterizer`,
+  and `PathTracingIntegrator` reads `rc.pOptimalMIS` from the
+  per-pixel runtime context.  Spectral-integrating rasterizers
+  (`pixelintegratingspectral_rasterizer`, `pathtracing_spectral_rasterizer`,
+  BDPT-spectral, VCM-spectral) do not allocate the accumulator —
+  `rc.pOptimalMIS` is null on the spectral integrator path.  BDPT
+  and VCM (pel and spectral) parsers hard-fail on `optimal_mis*`
+  lines as of Step 3 of the spectral parity audit (2026-05-07): the
+  Kondapaneni single-step BSDF-vs-NEE formulation has not been
+  extended to per-strategy-pair (BDPT) or to the dVCM/dVC/dVM
+  recurrence (VCM), so accepting the params would silently drop
+  them.  See [MIS_HEURISTICS.md](MIS_HEURISTICS.md) for why this is
+  open research, and [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
+  §2.4, §2.10 for the rejection rationale.
 - **Path-tree branching at multi-lobe delta vertices** was removed in
   2026-05.  All integrators use stochastic single-lobe selection at
   Fresnel splits (matches PBRT/Mitsuba/Arnold/Cycles X) — see
@@ -273,8 +317,11 @@ Two practical considerations:
   weighting the others through a velvet noise process. Defaults to off;
   set `hwss TRUE` on any spectral rasterizer for dispersive scenes.
 - **`pixelintegratingspectral_rasterizer` is the shader-dispatch
-  variant.** If you don't need a custom shader chain, prefer the pure
-  variant of whichever algorithm you've chosen.
+  variant and is soft-deprecated.** Modern optional features (path
+  guiding, adaptive sampling, optimal MIS, full inline OIDN AOV)
+  are not wired into the shader-dispatch pipeline.  Prefer
+  `pathtracing_spectral_rasterizer` for new scenes; the legacy
+  chunk stays around for custom spectral shader-op chains.
 
 ## 7. Cross-references
 

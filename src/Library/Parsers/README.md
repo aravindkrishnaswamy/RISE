@@ -295,14 +295,14 @@ Parameter sets shared across many chunks live in [AsciiSceneParser.cpp](AsciiSce
 | `AddCameraCommonParams` | All 5 cameras | `location`, `lookat`, `up`, `width`, `height`, `pixelAR`, `exposure`, `pitch`, `yaw`, `roll`, `target_orientation`, … |
 | `AddPixelFilterParams` | All 10 rasterizers | `pixel_filter`, `pixel_filter_width`, `pixel_filter_height`, `pixel_filter_paramA/B` |
 | `AddSpectralCoreParams` | All 5 spectral rasterizers | `spectral_samples`, `nmbegin`, `nmend`, `num_wavelengths`, `hwss` |
-| `AddSpectralRGBSpdParams` | `pixelintegratingspectral_rasterizer` only | `integrate_rgb`, `rgb_spd`, `rgb_spd_wavelengths`, `rgb_spd_r/g/b` |
+| `AddSpectralRGBSpdParams` | `pixelintegratingspectral_rasterizer` only (soft-deprecated, see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.1–§2.5) | `integrate_rgb`, `rgb_spd`, `rgb_spd_wavelengths`, `rgb_spd_r/g/b` |
 | `AddStabilityConfigParams` | All non-MLT rasterizers | `direct_clamp`, `indirect_clamp`, `rr_min_depth`, `rr_threshold`, `max_*_bounce`, `light_bvh` |
-| `AddPathGuidingParams` | PT/BDPT pel + PT spectral | `pathguiding`, `pathguiding_iterations`, `pathguiding_spp`, `pathguiding_alpha`, `pathguiding_max_depth`, … |
-| `AddAdaptiveSamplingParams` | PT/BDPT pel + PT spectral | `adaptive_sampling`, `adaptive_threshold`, `adaptive_min_samples`, `adaptive_max_samples` |
-| `AddRadianceMapParams` | `pixelpel_rasterizer` | `radiance_map`, `radiance_scale`, `radiance_orient` |
-| `AddProgressiveParams` | All progressive rasterizers | `progressive_samples_per_pass` |
-| `AddSMSConfigParams` | PT pel + PT spectral only | `sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`, `sms_multi_trials`, `sms_photon_count` (BDPT lost SMS support 2026-05-07; see [CLAUDE.md](../../../CLAUDE.md) High-Value Facts) |
-| `AddOptimalMISParams` | PT pel + BDPT pel | `optimal_mis`, `optimal_mis_training_iterations`, `optimal_mis_tile_size` |
+| `AddPathGuidingParams` | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer` (full set; BDPT-spectral switched from a hand-rolled subset to the helper 2026-05-07, see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.7).  Path guiding is **not** wired on `pathtracing_spectral_rasterizer`, VCM (pel + spectral), MLT, or `pixelintegratingspectral_rasterizer` — `pathguiding_*` lines authored against those chunks hard-fail at parse time. | `pathguiding`, `pathguiding_iterations`, `pathguiding_spp`, `pathguiding_alpha`, `pathguiding_max_depth`, … |
+| `AddAdaptiveSamplingParams` | `pixelpel_rasterizer`, `pathtracing_{pel,spectral}_rasterizer`, `bdpt_pel_rasterizer`, `vcm_{pel,spectral}_rasterizer` (BDPT-spectral not yet wired — see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.8) | `adaptive_max_samples`, `adaptive_threshold`, `show_adaptive_map` |
+| `AddRadianceMapParams` | All non-MLT rasterizers | `radiance_map`, `radiance_scale`, `radiance_orient` |
+| `AddProgressiveParams` | All progressive rasterizers | `progressive_rendering`, `progressive_samples_per_pass` |
+| `AddSMSConfigParams` | PT pel + PT spectral only | `sms_enabled`, `sms_max_iterations`, `sms_threshold`, `sms_max_chain_depth`, `sms_biased`, `sms_bernoulli_trials`, `sms_multi_trials`, `sms_photon_count`, `sms_two_stage`, `sms_seeding`, `sms_target_bounces` (BDPT lost SMS support 2026-05-07; see [CLAUDE.md](../../../CLAUDE.md) High-Value Facts) |
+| `AddOptimalMISParams` | `pixelpel_rasterizer` + `pathtracing_pel_rasterizer` only.  BDPT pel/spectral and PT spectral previously called this helper but the underlying integrators do not consume `rc.pOptimalMIS` (research not extended to BDPT's per-strategy-pair MIS; spectral parent never allocates the accumulator).  Wiring removed 2026-05-07 so the parser hard-fails on `optimal_mis*` lines authored against those chunks rather than silently dropping them; see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.4, §2.10. | `optimal_mis`, `optimal_mis_training_iterations`, `optimal_mis_tile_size` |
 | `AddBaseRasterizerParams` | All rasterizers | `defaultshader`, `oidn_denoise`, `show_luminaires`, … |
 | `AddNoisePainterCommonParams` | All Perlin/Worley/Simplex/Gabor 3D painters | `frequency`, `octaves`, `persistence`, `lacunarity`, `seed`, … |
 | `AddPhotonMapGenerateCommonParams` | All 6 photon-map generate parsers | `num`, `power_scale`, `max_recursion`, `min_importance`, `branch`, `reflect`, `refract`, … |
@@ -316,13 +316,13 @@ Parameter sets shared across many chunks live in [AsciiSceneParser.cpp](AsciiSce
 
 ## MIS Weight Parameters (Rasterizer Blocks)
 
-The following parameters control advanced MIS weight computation in the `pixelpel_rasterizer`, `pathtracing_pel_rasterizer`, `bdpt_pel_rasterizer`, `bdpt_spectral_rasterizer`, and `mlt_rasterizer` blocks. All are disabled by default and fall back to the standard power heuristic.
+The following parameters control advanced MIS weight computation. They are **only accepted on `pixelpel_rasterizer` and `pathtracing_pel_rasterizer`** — the parser hard-fails on `optimal_mis*` lines authored against any other chunk. Both default-off and fall back to the standard power heuristic. See [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.4 / §2.10 for why BDPT, VCM, MLT, and the spectral PT/BDPT chunks reject these params (Kondapaneni 2019's single-step BSDF-vs-NEE formulation has not been extended to per-strategy-pair MIS or to the dVCM/dVC/dVM recurrence; spectral parents do not allocate the accumulator).
 
 | Parameter | Rasterizers | Type | Default | Description |
 |-----------|-------------|------|---------|-------------|
-| `optimal_mis` | PT, BDPT | bool | FALSE | Run training passes to compute variance-minimizing MIS weights for direct illumination (Kondapaneni et al. 2019) |
-| `optimal_mis_training_iterations` | PT, BDPT | uint | 4 | Number of 1-SPP training passes |
-| `optimal_mis_tile_size` | PT, BDPT | uint | 16 | Spatial tile size for second-moment binning |
+| `optimal_mis` | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer` | bool | FALSE | Run training passes to compute variance-minimizing MIS weights for direct illumination (Kondapaneni et al. 2019) |
+| `optimal_mis_training_iterations` | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer` | uint | 4 | Number of 1-SPP training passes |
+| `optimal_mis_tile_size` | `pixelpel_rasterizer`, `pathtracing_pel_rasterizer` | uint | 16 | Spatial tile size for second-moment binning |
 
 ## Pure PT Rasterizer Chunks
 

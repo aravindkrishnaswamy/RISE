@@ -164,7 +164,12 @@ SMS / VCM test directories:
   `LightSampler::SetOptimalMIS`. When set and solved, NEE uses the
   variance-minimising weights from the optimal-MIS accumulator
   instead of the power heuristic. Configuration via
-  `optimal_mis TRUE` on PT/BDPT pel rasterizers; details in
+  `optimal_mis TRUE` on `pixelpel_rasterizer` or
+  `pathtracing_pel_rasterizer` only — BDPT (pel + spectral), VCM
+  (pel + spectral), PT-spectral, and MLT chunks hard-fail at parse
+  time on `optimal_mis*` lines (the integrators don't consume
+  `rc.pOptimalMIS`; see [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
+  §2.4, §2.10 for the rationale).  Details in
   [src/Library/Parsers/README.md](../src/Library/Parsers/README.md)
   "MIS Weight Parameters".
 

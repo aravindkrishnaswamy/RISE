@@ -3,10 +3,21 @@
 //  PixelBasedSpectralIntegratingRasterizer.h - A rasterizer that
 //  performs monte carlo sampling over the spectrum
 //
+//  Soft-deprecated as of 2026-05-07: this is the legacy
+//  shader-dispatch spectral integrator (chunk
+//  `pixelintegratingspectral_rasterizer`).  Modern features (path
+//  guiding, adaptive sampling, optimal MIS, full inline OIDN AOV)
+//  are not wired into the shader-dispatch pipeline and will not be.
+//  Prefer `PathTracingSpectralRasterizer` (chunk
+//  `pathtracing_spectral_rasterizer`) for new work.  Retained for
+//  custom spectral shader-op chains; no removal date.  See
+//  docs/SPECTRAL_PARITY_AUDIT.md §2.1–§2.5 and
+//  docs/RENDERING_INTEGRATORS.md §3 catalogue note for context.
+//
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: June 19, 2002
 //  Tabs: 4
-//  Comments:  
+//  Comments:
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //

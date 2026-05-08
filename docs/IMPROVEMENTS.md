@@ -640,11 +640,11 @@ Similarly, scaling each strategy's denominator contribution by an absolute cost 
 
 ### Configuration (Scene File Parameters)
 
-All controls are in the rasterizer block and disabled by default:
+All controls live in the rasterizer block and are disabled by default.  They are accepted only on `pixelpel_rasterizer` and `pathtracing_pel_rasterizer`; BDPT (pel + spectral), VCM, MLT, PT-spectral, and pixelintegratingspectral hard-fail at parse time on these lines (see [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §2.4 / §2.10):
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `optimal_mis` | bool | FALSE | Enable optimal MIS weight training for PT |
+| `optimal_mis` | bool | FALSE | Enable optimal MIS weight training for PT (pixelpel + pathtracing_pel only) |
 | `optimal_mis_training_iterations` | uint | 4 | Number of 1-SPP training passes |
 | `optimal_mis_tile_size` | uint | 16 | Tile size for spatial binning |
 
@@ -747,7 +747,7 @@ pathtracing_spectral_rasterizer
 `AOVBuffers` (`Rendering/AOVBuffers.h/.cpp`) stores first-hit albedo and normal data for the OIDN denoiser. Previously only BDPT populated AOVs per-sample during rendering. Now:
 
 - `PixelAOV` struct (defined in `AOVBuffers.h`) is shared between PT and BDPT
-- `PathTracingIntegrator::IntegrateRay()` accepts an optional `PixelAOV*` parameter and populates first-hit albedo (via `BSDF::value() * PI`) and normal after the camera ray intersection
+- `PathTracingIntegrator::IntegrateRay()` accepts an optional `PixelAOV*` parameter and populates first-hit albedo (via `BSDF::albedo(rig)`) and normal after the camera ray intersection
 - `PathTracingPelRasterizer::IntegratePixel()` accumulates per-sample AOVs into `pAOVBuffers` with proper weight normalization
 - `pAOVBuffers` member is owned by `PixelBasedRasterizerHelper` (was previously only in BDPT base)
 - `AOVBuffers::HasData()` tracks whether any per-sample data was accumulated; if false after the render pass, `OIDNDenoiser::CollectFirstHitAOVs()` fires a separate retrace pass as fallback
