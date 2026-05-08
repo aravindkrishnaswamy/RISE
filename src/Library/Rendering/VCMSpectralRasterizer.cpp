@@ -32,6 +32,7 @@
 #include "VCMSpectralRasterizer.h"
 #include "ProgressiveFilm.h"
 #include "AOVBuffers.h"
+#include "../Utilities/PathVertexEval.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/ICamera.h"
 #include "../Utilities/SobolSampler.h"
@@ -354,13 +355,15 @@ void VCMSpectralRasterizer::IntegratePixel(
 #ifdef RISE_ENABLE_OIDN
 				// AOV capture (hero wavelength, first bundle).  Walks the
 				// eye subpath until the first non-delta SURFACE vertex,
-				// matching BDPTSpectralRasterizer's pattern — see
+				// matching BDPT{Pel,Spectral}Rasterizer's pattern — see
 				// docs/OIDN.md (OIDN-P1-1) for the first-non-delta
-				// rationale.  Glass / mirror are skipped so the AOV
-				// represents the visible surface beyond them; rough
-				// dielectrics are handled per-sample because each vertex's
-				// `isDelta` was set from the chosen scatter in
-				// GenerateEyeSubpathNM.
+				// rationale and docs/SPECTRAL_PARITY_AUDIT.md §2.17 for
+				// the 2026-05-07 fix that replaced the
+				// `value(N,rig) * PI` Lambertian-normal-incidence proxy
+				// with a direct `albedo(rig)` call against a
+				// camera-ray-synthesized RayIntersectionGeometric.  rig
+				// is populated through the canonical PathVertexEval
+				// helper so we don't silently drop ptCoord / vColor.
 				if( ss == 0 && pAOVBuffers ) {
 					for( size_t iv = 1; iv < eyeVerts.size(); iv++ ) {
 						const BDPTVertex& v = eyeVerts[iv];
@@ -368,12 +371,11 @@ void VCMSpectralRasterizer::IntegratePixel(
 							PixelAOV aov;
 							aov.normal = v.normal;
 							if( v.pMaterial->GetBSDF() ) {
-								Ray aovRay( Point3Ops::mkPoint3( v.position, v.normal ), -v.normal );
-								RayIntersectionGeometric rig( aovRay, nullRasterizerState );
-								rig.ptIntersection = v.position;
-								rig.vNormal = v.normal;
-								rig.onb = v.onb;
-								aov.albedo = v.pMaterial->GetBSDF()->value( v.normal, rig ) * PI;
+								const Vector3 rayDir = Vector3Ops::Normalize(
+									Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
+								RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
+								PathVertexEval::PopulateRIGFromVertex( v, rig );
+								aov.albedo = v.pMaterial->GetBSDF()->albedo( rig );
 							} else {
 								aov.albedo = RISEPel( 1, 1, 1 );
 							}

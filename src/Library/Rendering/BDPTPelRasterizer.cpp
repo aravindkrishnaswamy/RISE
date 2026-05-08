@@ -15,6 +15,7 @@
 #include "pch.h"
 #include "BDPTPelRasterizer.h"
 #include "AOVBuffers.h"
+#include "../Utilities/PathVertexEval.h"
 #include "../Utilities/SobolSampler.h"
 #include "../Utilities/ZSobolSampler.h"
 #include "../Utilities/MortonCode.h"
@@ -137,16 +138,17 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
 				pAOV->normal = v.normal;
 				if( v.pMaterial->GetBSDF() ) {
-					// Synthesize the camera-ray RayIntersectionGeometric so
-					// the BSDF's albedo() can read the real view direction
-					// via rig.ray.Dir() (BDPTVertex doesn't carry a ray).
-					const Vector3 viewDir = Vector3Ops::Normalize(
+					// Rebuild the RayIntersectionGeometric from the vertex
+					// via the canonical PathVertexEval helper so we don't
+					// silently miss texture coords / vertex color / future
+					// fields — see PathVertexEval.h CONTRACT block.  Then
+					// install a real camera-ray view direction so the
+					// BSDF's albedo() reads the right outgoing dir via
+					// rig.ray.Dir() (BDPTVertex doesn't carry a ray).
+					const Vector3 rayDir = Vector3Ops::Normalize(
 						Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-					const Ray cameraRay( eyeVerts[0].position, viewDir );
-					RayIntersectionGeometric rig( cameraRay, nullRasterizerState );
-					rig.ptIntersection = v.position;
-					rig.vNormal = v.normal;
-					rig.onb = v.onb;
+					RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
+					PathVertexEval::PopulateRIGFromVertex( v, rig );
 					pAOV->albedo = v.pMaterial->GetBSDF()->albedo( rig );
 				} else {
 					pAOV->albedo = RISEPel( 1, 1, 1 );

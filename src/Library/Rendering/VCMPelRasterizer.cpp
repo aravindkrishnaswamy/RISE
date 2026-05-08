@@ -23,6 +23,7 @@
 #include "VCMPelRasterizer.h"
 #include "ProgressiveFilm.h"
 #include "AOVBuffers.h"
+#include "../Utilities/PathVertexEval.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/ICamera.h"
 #include "../Utilities/SobolSampler.h"
@@ -344,13 +345,13 @@ void VCMPelRasterizer::IntegratePixel(
 						PixelAOV aov;
 						aov.normal = v.normal;
 						if( v.pMaterial->GetBSDF() ) {
-							const Vector3 viewDir = Vector3Ops::Normalize(
+							// Real camera-ray dir + canonical PathVertexEval
+							// helper so the BSDF sees ptCoord / vColor /
+							// future fields — see PathVertexEval.h CONTRACT.
+							const Vector3 rayDir = Vector3Ops::Normalize(
 								Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
-							const Ray cameraRay( eyeVerts[0].position, viewDir );
-							RayIntersectionGeometric rig( cameraRay, nullRasterizerState );
-							rig.ptIntersection = v.position;
-							rig.vNormal = v.normal;
-							rig.onb = v.onb;
+							RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
+							PathVertexEval::PopulateRIGFromVertex( v, rig );
 							aov.albedo = v.pMaterial->GetBSDF()->albedo( rig );
 						} else {
 							aov.albedo = RISEPel( 1, 1, 1 );

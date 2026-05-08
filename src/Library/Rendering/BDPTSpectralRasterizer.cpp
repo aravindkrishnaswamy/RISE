@@ -24,6 +24,7 @@
 #include "pch.h"
 #include "BDPTSpectralRasterizer.h"
 #include "AOVBuffers.h"
+#include "../Utilities/PathVertexEval.h"
 #include "../Utilities/Color/SampledWavelengths.h"
 #include "../Utilities/SobolSampler.h"
 #include "../Utilities/ZSobolSampler.h"
@@ -119,20 +120,26 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 	pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, nm, rc.random, nullptr );
 	pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, nm, nullptr );
 
-	// Extract first-hit AOV data for the denoiser (only on first wavelength)
+	// Extract first-hit AOV data for the denoiser (only on first wavelength).
+	// Mirrors the Pel-side walk in BDPTPelRasterizer.cpp: synthesize a real
+	// camera-ray view direction (BDPTVertex doesn't carry a ray) and use
+	// the canonical PathVertexEval helper to rebuild rig — hand-rolling
+	// silently dropped texture coords / vertex color and gave OIDN a
+	// uniform UV(0,0) albedo on textured surfaces.  See PathVertexEval.h
+	// CONTRACT block and docs/SPECTRAL_PARITY_AUDIT.md §2.11.
 	if( pAOV ) {
 		for( unsigned int i = 1; i < eyeVerts.size(); i++ ) {
 			const BDPTVertex& v = eyeVerts[i];
 			if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
 				pAOV->normal = v.normal;
-				pAOV->albedo = RISEPel( 0, 0, 0 );
 				if( v.pMaterial->GetBSDF() ) {
-					Ray aovRay( Point3Ops::mkPoint3( v.position, v.normal ), -v.normal );
-					RayIntersectionGeometric rig( aovRay, nullRasterizerState );
-					rig.ptIntersection = v.position;
-					rig.vNormal = v.normal;
-					rig.onb = v.onb;
-					pAOV->albedo = v.pMaterial->GetBSDF()->value( v.normal, rig ) * PI;
+					const Vector3 rayDir = Vector3Ops::Normalize(
+						Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
+					RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
+					PathVertexEval::PopulateRIGFromVertex( v, rig );
+					pAOV->albedo = v.pMaterial->GetBSDF()->albedo( rig );
+				} else {
+					pAOV->albedo = RISEPel( 1, 1, 1 );
 				}
 				pAOV->valid = true;
 				break;
@@ -265,20 +272,22 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			pIntegrator->GenerateLightSubpathNM( pScene, *pCaster, sampler, lightVerts, lightSubpathStarts, heroNM, rc.random, &swl );
 			pIntegrator->GenerateEyeSubpathNM( rc, cameraRay, ptOnScreen, pScene, *pCaster, sampler, eyeVerts, eyeSubpathStarts, heroNM, &swl );
 
-			// Extract AOV from hero evaluation of first bundle
+			// Extract AOV from hero evaluation of first bundle.  Same
+			// pattern as the non-HWSS path above (and BDPTPelRasterizer):
+			// real camera-ray view direction + PathVertexEval helper.
 			if( ss == 0 && pAOV ) {
 				for( unsigned int iv = 1; iv < eyeVerts.size(); iv++ ) {
 					const BDPTVertex& v = eyeVerts[iv];
 					if( v.type == BDPTVertex::SURFACE && !v.isDelta && v.pMaterial ) {
 						pAOV->normal = v.normal;
-						pAOV->albedo = RISEPel( 0, 0, 0 );
 						if( v.pMaterial->GetBSDF() ) {
-							Ray aovRay( Point3Ops::mkPoint3( v.position, v.normal ), -v.normal );
-							RayIntersectionGeometric rig( aovRay, nullRasterizerState );
-							rig.ptIntersection = v.position;
-							rig.vNormal = v.normal;
-							rig.onb = v.onb;
-							pAOV->albedo = v.pMaterial->GetBSDF()->value( v.normal, rig ) * PI;
+							const Vector3 rayDir = Vector3Ops::Normalize(
+								Vector3Ops::mkVector3( v.position, eyeVerts[0].position ) );
+							RayIntersectionGeometric rig( Ray( eyeVerts[0].position, rayDir ), nullRasterizerState );
+							PathVertexEval::PopulateRIGFromVertex( v, rig );
+							pAOV->albedo = v.pMaterial->GetBSDF()->albedo( rig );
+						} else {
+							pAOV->albedo = RISEPel( 1, 1, 1 );
 						}
 						pAOV->valid = true;
 						break;
