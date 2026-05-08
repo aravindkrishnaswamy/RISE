@@ -177,11 +177,12 @@ standard_object
 # Lights
 ##################################################
 
-# Light coming from the upper left so the raised bumps cast visible
-# shading gradients (lit on upper-left of each bump, dim on lower-right).
 # Strong oblique key light from the right -- hits each bump's right
-# face brightly, leaves the left face in shadow.  Direction values
-# are the propagation direction (light source is at -direction).
+# face brightly, leaves the left face in shadow.  Per RISE's
+# `direction` convention (DirectionalLight.cpp:48), the vector
+# points FROM the surface TO the light source, so a light shining
+# leftward across the scene from a source at +X has direction +X
+# (the SOURCE position direction, not the shine direction).
 # A near-horizontal angle along +X makes any X-facing normal tilts
 # extremely visible while the bump's vertical (Y) component shows
 # only modestly.  Choose the angle so a correctly-rendered bump has
@@ -193,7 +194,7 @@ directional_light
 	name		key
 	power		3.14
 	color		1.0 1.0 1.0
-	direction	-1.0 0.0 -0.3
+	direction	1.0 0.0 0.3
 }
 
 ambient_light

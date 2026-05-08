@@ -112,5 +112,6 @@ directional_light
 	name				sun
 	power				4.0
 	color				1.0 1.0 1.0
-	direction			-0.3 -1.0 -0.5
+	# RISE convention: `direction` FROM surface TO light, lit when N·dir > 0.
+	direction			0.3 1.0 0.5
 }

@@ -713,6 +713,20 @@ namespace RISE
 									const double bias				///< [in] Additive offset after scale
 									) = 0;
 
+		//! Adds a UV-transform wrapper painter (glTF KHR_texture_transform).
+		//! Each glTF texture binding may carry its own offset/rotation/scale,
+		//! so the same image painter is wrapped per-binding via this helper.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddUVTransformPainter(
+									const char* name,				///< [in] Name of the painter
+									const char* source,				///< [in] Source painter
+									const double offset_u,			///< [in] U translation
+									const double offset_v,			///< [in] V translation
+									const double rotation,			///< [in] Rotation in radians (KHR sign)
+									const double scale_u,			///< [in] U scale
+									const double scale_v			///< [in] V scale
+									) = 0;
+
 
 		//
 		// Adding materials

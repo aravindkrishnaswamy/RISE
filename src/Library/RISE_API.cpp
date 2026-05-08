@@ -1507,6 +1507,7 @@ namespace RISE
 #include "Painters/BlackBodyPainter.h"
 #include "Painters/BlendPainter.h"
 #include "Painters/ChannelPainter.h"
+#include "Painters/UVTransformPainter.h"
 
 namespace RISE
 {
@@ -2113,6 +2114,27 @@ namespace RISE
 
 		(*ppi) = new BlendPainter( a, b, mask );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "blend painter" );
+		return true;
+	}
+
+	//! Creates a UV-transform wrapper painter (glTF KHR_texture_transform)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateUVTransformPainter(
+								IPainter** ppi,
+								const IPainter& source,
+								const Scalar offset_u,
+								const Scalar offset_v,
+								const Scalar rotation,
+								const Scalar scale_u,
+								const Scalar scale_v
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new UVTransformPainter( source, offset_u, offset_v, rotation, scale_u, scale_v );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "uv transform painter" );
 		return true;
 	}
 }

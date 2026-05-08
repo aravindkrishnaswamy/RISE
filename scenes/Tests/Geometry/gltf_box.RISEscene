@@ -104,7 +104,8 @@ directional_light
 	name		light
 	power		3.14
 	color		1.0 1.0 1.0
-	direction	-0.5 -0.7 -0.5
+	# RISE convention: `direction` FROM surface TO light, lit when N·dir > 0.
+	direction	0.5 0.7 0.5
 }
 
 ambient_light

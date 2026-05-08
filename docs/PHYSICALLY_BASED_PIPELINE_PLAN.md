@@ -1015,6 +1015,16 @@ Close the importer feature gap for next-generation PBR assets that
 NewSponza doesn't exercise but that almost every other modern
 PBR asset does.
 
+### Sub-landing status
+
+| # | Item | Status |
+| - | ---- | ------ |
+| 12.A | `KHR_texture_transform` | **DONE** — `UVTransformPainter` wraps each binding when `view.has_transform == true`; identity transforms collapse to passthrough.  Math verified by `tests/UVTransformPainterTest.cpp` (7 / 7 pass: identity, T, S, R 90°, combined TRS, GetAlpha forwarding). |
+| 12.B | ORM-packed detection | **DONE** — `IsORMPacked` detects when occlusion and metallicRoughness slots reference the same `cgltf_texture *`; `EffectiveRole` routes the AO painter lookup through the MR painter name when packed.  PreDecodeTextures' `seen` set then dedupes, eliminating one PNG decode + one painter manager entry per ORM-packed material.  Color-space and wrap mode are identical for both bindings (both linear, shared sampler), so the share is safe.  Untouched on non-ORM assets (DamagedHelmet, OrientationTest etc.). |
+| 12.C | `anisotropy_texture` + `specular_texture` | **DONE — partial** — `specular_factor` × `specularTexture.A`, `specular_color` × `specularColorTexture.RGB`, and `anisotropy_factor` × `anisotropyTexture.B` are now per-pixel via the existing painter graph (ChannelPainter → BlendPainter chain into `AddPBRMetallicRoughnessMaterial`'s painter-string args).  No GGX BRDF/SPF change needed — the pre-existing `resolveOrSynth` in `Job::AddPBRMetallicRoughnessMaterial` already accepts a painter name in place of a scalar.  Per-pixel anisotropy DIRECTION (encoded in `anisotropyTexture.RG`) requires `atan2(2G−1, 2R−1)` per sample, which doesn't compose from BlendPainter / ChannelPainter primitives — deferred to a follow-up landing that adds an `ATan2Painter` (or changes `pTangentRotation`'s contract to a (cos, sin) pair).  Importer logs once when an asset uses per-pixel rotation so the visual mismatch is visible. |
+| 12.D | `TEXCOORD_1` routing | DEFERRED — needs `ri.ptCoord1` plumbing through triangle interpolation; bigger landing.  Importer logs once per (material, role) when a binding uses TEXCOORD_1, so the visual mismatch is at least documented. |
+| 12.E | `KHR_texture_basisu` (KTX2) | DEFERRED — separate landing, needs Basis Universal submodule integration. |
+
 ### Scope
 
 In:
@@ -1042,8 +1052,14 @@ Out:
 ### Code touch points
 
 - `src/Library/Importers/GLTFSceneImporter.cpp` — texture
-  enqueue + binding logic.
-- `src/Library/Painters/UVTransformPainter.{h,cpp}` — new.
+  enqueue + binding logic; per-call-site `WrapWithUVTransform`
+  helper applied at all 6 `CreateTexturePainter` sites
+  (basecolor, MR, occlusion, emissive, normal, sheen color).
+- `src/Library/Painters/UVTransformPainter.h` — header-only
+  passthrough wrapper; `GetColor` / `GetColorNM` / `GetAlpha`
+  apply T·R·S to ri.ptCoord and forward to source.
+- `src/Library/RISE_API.{h,cpp}`, `src/Library/Job.{h,cpp}` —
+  `Add/CreateUVTransformPainter` plumbing.
 - `src/Library/Painters/KTX2Loader.{h,cpp}` — new (likely pulls in
   external Basis Universal source as a submodule).
 - `src/Library/Geometry/TriangleMesh*.{h,cpp}` — verify TEXCOORD_1

@@ -1123,6 +1123,21 @@ namespace RISE
 								const Scalar bias				///< [in] Bias added after scale
 								);
 
+	//! Creates a UV-transform wrapper painter (glTF KHR_texture_transform).
+	//! Applies T * R * S to the source's (u, v) before sampling, with the
+	//! KHR sign convention (positive `rotation` rotates the IMAGE clockwise).
+	//! Defaults (0/0/0/1/1) collapse to a passthrough.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateUVTransformPainter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source,			///< [in] Source painter
+								const Scalar offset_u,			///< [in] U translation
+								const Scalar offset_v,			///< [in] V translation
+								const Scalar rotation,			///< [in] Rotation in radians (KHR sign)
+								const Scalar scale_u,			///< [in] U scale
+								const Scalar scale_v			///< [in] V scale
+								);
+
 
 	//////////////////////////////////////////////////////////
 	// Radiance maps
