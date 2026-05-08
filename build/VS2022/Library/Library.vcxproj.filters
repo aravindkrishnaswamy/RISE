@@ -1568,6 +1568,9 @@
     <ClInclude Include="..\..\..\src\Library\Painters\UVTransformPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\TexCoord1Painter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPLY.h">
       <Filter>Geometry\Mesh Loaders</Filter>
     </ClInclude>
@@ -2543,6 +2546,9 @@
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\GGXSPF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CharlieSheen.h">
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\SheenBRDF.h">

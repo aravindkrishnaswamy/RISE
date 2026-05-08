@@ -170,6 +170,14 @@ namespace RISE
 					Vector2Ops::mkVector2(thisTri.coords[1],thisTri.coords[0])*a+
 					Vector2Ops::mkVector2(thisTri.coords[2],thisTri.coords[0])*b );
 
+				// L12.D: non-indexed meshes don't carry TEXCOORD_1 (no
+				// per-vertex side-table to interpolate from).  Mirror
+				// pCoord into pCoord1 so painters wrapped to sample
+				// UV1 degrade gracefully to UV0 instead of reading
+				// uninitialised memory.  bHasTexCoord1 stays FALSE
+				// from the ri constructor's default.
+				ri.ptCoord1 = ri.ptCoord;
+
 				// Landing 2: populate surface derivatives + texture
 				// footprint so this path participates in mip-LOD
 				// sampling on parity with the indexed mesh path.

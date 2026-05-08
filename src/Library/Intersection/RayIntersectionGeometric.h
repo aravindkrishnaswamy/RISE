@@ -115,7 +115,17 @@ namespace RISE
 		//! geometric exit normal, not a fabricated `-entry` proxy.
 		Vector3						vGeomNormal;
 		Vector3						vGeomNormal2;
-		Point2						ptCoord;		// texture mapping co-ordinates
+		Point2						ptCoord;		// primary texture mapping co-ordinates (TEXCOORD_0 from glTF)
+
+		//! Secondary texture coordinates (TEXCOORD_1 from glTF; NOT the
+		//! transform-overridden coord for KHR_texture_transform — that
+		//! lives in the painter wrapper).  Populated only by triangle
+		//! meshes that carry a TEXCOORD_1 array (loaded via glTF import).
+		//! Consumers (the TexCoord1Painter wrapper, primarily) must check
+		//! `bHasTexCoord1` before reading; when false, fall back to
+		//! `ptCoord` (TEXCOORD_0).
+		Point2						ptCoord1;
+		bool						bHasTexCoord1;
 
 		Point3						ptIntersection;	// the point in world co-ordinates of the intersection, only	
 													// set if there was an intersection
@@ -180,6 +190,7 @@ namespace RISE
 		  bHit( false ),
 		  range( RISE_INFINITY ),
 		  range2( RISE_INFINITY ),
+		  bHasTexCoord1( false ),
 		  pCustom( 0 ),
 		  glossyFilterWidth( 0 ),
 		  bHasVertexColor( false ),
@@ -203,6 +214,8 @@ namespace RISE
 		  vGeomNormal( r.vGeomNormal ),
 		  vGeomNormal2( r.vGeomNormal2 ),
 		  ptCoord( r.ptCoord ),
+		  ptCoord1( r.ptCoord1 ),
+		  bHasTexCoord1( r.bHasTexCoord1 ),
 		  ptIntersection( r.ptIntersection ),
 		  ptExit( r.ptExit ),
 		  ptObjIntersec( r.ptObjIntersec ),
@@ -235,6 +248,8 @@ namespace RISE
 			vGeomNormal = r.vGeomNormal;
 			vGeomNormal2 = r.vGeomNormal2;
 			ptCoord = r.ptCoord;
+			ptCoord1 = r.ptCoord1;
+			bHasTexCoord1 = r.bHasTexCoord1;
 			derivatives = r.derivatives;
 			txFootprint = r.txFootprint;
 			ptIntersection = r.ptIntersection;

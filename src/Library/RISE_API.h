@@ -1123,6 +1123,17 @@ namespace RISE
 								const Scalar bias				///< [in] Bias added after scale
 								);
 
+	//! Creates a TEXCOORD_1 selector painter (glTF L12.D).  Wraps the
+	//! source painter and routes its UV reads through ri.ptCoord1
+	//! instead of ri.ptCoord.  When the geometry has no TEXCOORD_1,
+	//! the intersection code mirrors ptCoord into ptCoord1, so the
+	//! wrapper degrades to a passthrough.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateTexCoord1Painter(
+								IPainter** ppi,					///< [out] Pointer to recieve the painter
+								const IPainter& source			///< [in] Source painter
+								);
+
 	//! Creates a UV-transform wrapper painter (glTF KHR_texture_transform).
 	//! Applies T * R * S to the source's (u, v) before sampling, with the
 	//! KHR sign convention (positive `rotation` rotates the IMAGE clockwise).

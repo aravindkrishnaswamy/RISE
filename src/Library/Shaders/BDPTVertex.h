@@ -93,6 +93,8 @@ namespace RISE
 												///< On analytical primitives equals `normal` by construction.
 		OrthonormalBasis3D		onb;
 		Point2					ptCoord;		///< Texture coordinate at intersection (for painter evaluation)
+		Point2					ptCoord1;		///< Secondary texture coordinate (TEXCOORD_1 from glTF; mirrors RayIntersectionGeometric::ptCoord1)
+		bool					bHasTexCoord1;	///< True iff this vertex came from a mesh that carried a TEXCOORD_1 array (gates TexCoord1Painter)
 		Point3					ptObjIntersec;	///< Object-space intersection point (for 3D procedural painters)
 		const IMaterial*		pMaterial;		///< NULL for camera/light endpoints
 		const IObject*			pObject;		///< NULL for camera/light endpoints

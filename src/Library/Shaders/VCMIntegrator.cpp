@@ -764,12 +764,13 @@ namespace
 			}
 			woFromEmitter = woFromEmitter * ( Scalar( 1 ) / d );
 
+			// Use PathVertexEval::PopulateRIGFromVertex to mirror every
+			// surface-state field — without this, emissive painters bound
+			// to TEXCOORD_1 (or any non-default UV) silently sample at
+			// (0,0) on VCM's (s=0) emitter strategy.  See the contract
+			// block at PathVertexEval.h.
 			RayIntersectionGeometric rig( Ray( v.position, woFromEmitter ), nullRasterizerState );
-			rig.bHit = true;
-			rig.ptIntersection = v.position;
-			rig.vNormal = v.normal;
-			rig.vGeomNormal = v.geomNormal;
-			rig.onb = v.onb;
+			PathVertexEval::PopulateRIGFromVertex( v, rig );
 			// Emitter takes the GEOMETRIC normal — see PT/EmissionShaderOp
 			// for rationale (LambertianEmitter `Dot(out, N) > 0` is a
 			// face-orientation test).
@@ -1199,11 +1200,7 @@ namespace
 					if( pEmitter ) {
 						RayIntersectionGeometric rig(
 							Ray( v.position, dirToCam ), nullRasterizerState );
-						rig.bHit = true;
-						rig.ptIntersection = v.position;
-						rig.vNormal = v.normal;
-						rig.vGeomNormal = v.geomNormal;
-						rig.onb = v.onb;
+						PathVertexEval::PopulateRIGFromVertex( v, rig );
 						Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, dirToCam, v.geomNormal, tag );
 					}
 				}

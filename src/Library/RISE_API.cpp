@@ -1508,6 +1508,7 @@ namespace RISE
 #include "Painters/BlendPainter.h"
 #include "Painters/ChannelPainter.h"
 #include "Painters/UVTransformPainter.h"
+#include "Painters/TexCoord1Painter.h"
 
 namespace RISE
 {
@@ -2114,6 +2115,22 @@ namespace RISE
 
 		(*ppi) = new BlendPainter( a, b, mask );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "blend painter" );
+		return true;
+	}
+
+	//! Creates a TEXCOORD_1 selector painter (glTF L12.D)
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateTexCoord1Painter(
+								IPainter** ppi,
+								const IPainter& source
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new TexCoord1Painter( source );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "texcoord1 painter" );
 		return true;
 	}
 

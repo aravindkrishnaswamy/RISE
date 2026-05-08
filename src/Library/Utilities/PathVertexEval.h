@@ -116,6 +116,8 @@ namespace RISE
 			ri.vGeomNormal     = vertex.geomNormal;
 			ri.onb             = vertex.onb;
 			ri.ptCoord         = vertex.ptCoord;
+			ri.ptCoord1        = vertex.ptCoord1;
+			ri.bHasTexCoord1   = vertex.bHasTexCoord1;
 			ri.ptObjIntersec   = vertex.ptObjIntersec;
 			ri.vColor          = vertex.vColor;
 			ri.bHasVertexColor = vertex.bHasVertexColor;
@@ -170,12 +172,13 @@ namespace RISE
 						return RISEPel( 0, 0, 0 );
 					}
 
+					// Use the canonical helper so a future field added to
+					// RayIntersectionGeometric reaches the BSSRDF profile's
+					// FresnelTransmission / GetIOR without silently
+					// defaulting (mirrors the contract block above).
 					RayIntersectionGeometric rig(
 						Ray( vertex.position, -wi ), nullRasterizerState );
-					rig.bHit = true;
-					rig.ptIntersection = vertex.position;
-					rig.vNormal = vertex.normal;
-					rig.onb = vertex.onb;
+					PopulateRIGFromVertex( vertex, rig );
 
 					const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, rig );
 					const Scalar eta = pProfile->GetIOR( rig );
@@ -300,12 +303,12 @@ namespace RISE
 						return 0;
 					}
 
+					// Spectral counterpart of the BSSRDF entry path above —
+					// same helper-based rebuild for the same drift-prevention
+					// rationale.
 					RayIntersectionGeometric rig(
 						Ray( vertex.position, -wi ), nullRasterizerState );
-					rig.bHit = true;
-					rig.ptIntersection = vertex.position;
-					rig.vNormal = vertex.normal;
-					rig.onb = vertex.onb;
+					PopulateRIGFromVertex( vertex, rig );
 
 					const Scalar FtEntry = pProfile->FresnelTransmission( cosTheta, rig );
 					const Scalar eta = pProfile->GetIOR( rig );

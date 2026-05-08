@@ -1,0 +1,75 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#
+#   File:           gltf_import_multi_uv.RISEscene
+#   Description:    L12.D verification: Khronos's MultiUVTest.glb has a flat plane with two
+#                   texture bindings — `baseColorTexture` on TEXCOORD_0 (a "plus" pattern of
+#                   alternating colour squares) and `emissiveTexture` on TEXCOORD_1 (the text
+#                   "Multi Texture Coordinate Test" rendered onto a different UV layout).  A
+#                   correct TEXCOORD_1 implementation samples the emissive text via UV1 so
+#                   the words appear on the surface; a TEXCOORD_0 fallback samples the wrong
+#                   region (likely uniform colour) and the text disappears.
+#
+#                   With L12.D wired (importer wraps emissive painter in a TexCoord1Painter
+#                   when the binding's texCoord field is 1, geometry interpolates pTexCoords1
+#                   into ri.ptCoord1), the emissive text should render legibly on top of the
+#                   coloured baseColor squares.
+#
+#   Author:         Aravind Krishnaswamy
+#   Birthdate:      2026-05-07
+#
+#############################################################################################################
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/gltf_import_multi_uv
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+# MultiUVTest.glb is an axis-aligned plane in [-1, 1] x [-1, 1] x 0.
+# Camera framed head-on at +Z.
+pinhole_camera
+{
+	location		2.5 2.5 4
+	lookat			0 0 0
+	up				0 1 0
+	width			512
+	height			512
+	fov				45.0
+}
+
+gltf_import
+{
+	file			scenes/Tests/Geometry/assets/MultiUVTest.glb
+	name_prefix		multiuv
+}
+
+# Asset has no lights.  Add a key + ambient so baseColor reads true.
+directional_light
+{
+	name			key
+	power			1.5
+	color			1.0 1.0 1.0
+	# RISE convention: direction FROM surface TO light — N · dir > 0 means lit.
+	# Light from upper-right-front of the camera-facing plane.
+	direction		0.5 0.5 1.0
+}
+
+ambient_light
+{
+	name			ambient
+	power			0.4
+	color			1.0 1.0 1.0
+}
