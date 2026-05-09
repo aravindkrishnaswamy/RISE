@@ -7,6 +7,22 @@ runtime no longer needs to find romm.coeff on disk (which fails when
 the GUI is launched from a shortcut without RISE_MEDIA_PATH set, see
 GUI Render Engine for the regression that motivated this).
 
+End-to-end regeneration recipe (run from project root):
+  1. Build LUT generator:
+       Mac/Linux:  c++ -O3 -std=c++17 -o bin/tools/JakobHanikaLUTGen \\
+                       tools/JakobHanikaLUTGen.cpp -lm
+       Windows:    msbuild build/VS2022/Tools/JakobHanikaLUTGen.vcxproj \\
+                       /p:Configuration=Release /p:Platform=x64
+  2. Regenerate the binary LUT (~30-60 sec):
+       ./bin/tools/JakobHanikaLUTGen \\
+           --output extlib/jakob-hanika-luts/romm.coeff
+  3. Run this script (writes the .cpp inline as a static array):
+       python tools/GenerateROMMSpectrumLUTHeader.py
+  4. Rebuild Library — `Filelist`, `rise_sources.cmake`,
+     `Library.vcxproj`, `Library.vcxproj.filters`, and
+     `rise.xcodeproj` already register the .cpp + .h pair.  No
+     build-file edits needed.
+
 The file format produced by tools/JakobHanikaLUTGen.cpp:
   Header  : 20 bytes  ('RJHL', uint32 version, res, nChannels, nCoeffs)
   Body    : 3 * res^3 * nCoeffs floats (little-endian fp32)
@@ -14,10 +30,13 @@ The file format produced by tools/JakobHanikaLUTGen.cpp:
 We bake just the body — resolution and version are baked as
 compile-time constants alongside.
 
-Output cpp file is large (~25 MB at 64-resolution LUT) but compiles
+Output cpp file is large (~32 MB at 64-resolution LUT) but compiles
 under a minute on MSVC / clang.  Lives in the same directory as
 RGBToSpectrumTable.cpp so MSVC's /MP-parallel build pipelines it
 cleanly.
+
+Paths INPUT and OUTPUT below are relative to the current working
+directory — this script must be run from the project root.
 """
 import struct
 import sys

@@ -95,3 +95,39 @@ Mean residual 1.6 × 10⁻² in ROMM RGB units = ~1.6 % chromatic error per chan
 ## Forward path
 
 See [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) for the principled fix: migrate RISE's internal `RISEPel` from ROMM RGB to a colour space whose primaries lie inside the spectral locus (sRGB Linear or ACES AP1). All LUT cells become reachable by construction; the BioSpec / JH conflict at film resolve also disappears more elegantly.
+
+---
+
+## Regenerating the LUT (cross-platform recipe)
+
+When the colour-space migration lands (or any other reason to regen the LUT), run these from the project root:
+
+```sh
+# 1. Build the generator — pick ONE of these:
+#    Mac / Linux (fastest, single-file standalone):
+c++ -O3 -std=c++17 -o bin/tools/JakobHanikaLUTGen tools/JakobHanikaLUTGen.cpp -lm
+
+#    Mac / Linux (via main Makefile, builds every tool):
+make -C build/make/rise tools
+
+#    Windows (VS2022):
+"$msbuild" build\VS2022\Tools\JakobHanikaLUTGen.vcxproj /p:Configuration=Release /p:Platform=x64
+
+# 2. Regenerate the binary LUT (~30-60 sec on modern hardware for the
+#    default 64-resolution grid).  Output: extlib/jakob-hanika-luts/romm.coeff
+./bin/tools/JakobHanikaLUTGen --output extlib/jakob-hanika-luts/romm.coeff
+#    On Windows: ./build/bin/tools/JakobHanikaLUTGen.exe --output extlib/jakob-hanika-luts/romm.coeff
+
+# 3. Bake the binary into the source tree.  Output:
+#    src/Library/Utilities/Color/RGBToSpectrumTable_ROMMData.cpp (~32 MB)
+python tools/GenerateROMMSpectrumLUTHeader.py
+
+# 4. Rebuild Library — every platform's build system already knows about
+#    RGBToSpectrumTable_ROMMData.{h,cpp} via the standard 5-build-system
+#    update done in commit a763141.  No build-file changes needed.
+make -C build/make/rise -j8 all                 # Mac / Linux
+# OR Xcode: build the Library scheme in build/XCode/rise/rise.xcodeproj
+# OR VS2022: rebuild Library.vcxproj
+```
+
+The bake step's `--residuals` flag (added during diagnostics, reverted before the production commit — re-add if needed) writes a CSV of every cell's residual + converged flag for offline failure-pattern analysis.  See git log of `tools/JakobHanikaLUTGen.cpp` for the previous diagnostic-mode patch.
