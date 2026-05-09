@@ -288,34 +288,11 @@ struct ContentView: View {
                     }
                 }
 
-                // L5a — EDR (extended dynamic range) preview toggle.
-                // Greyed out when the active screen lacks EDR
-                // headroom (`maximumExtendedDynamicRangeColorComponentValue`
-                // == 1.0, e.g. external SDR monitor).  When enabled,
-                // the canvas swaps to a CAMetalLayer with binary16
-                // half-float pixels in extended-linear-sRGB; HDR
-                // highlights past 1.0 propagate to the display
-                // unmolested.  Interactive editor pointer events
-                // are suspended while EDR preview is on.
-                Divider()
-                Toggle(isOn: $viewModel.edrEnabled) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "sun.max")
-                            .imageScale(.small)
-                        Text("EDR Preview")
-                            .font(.caption)
-                    }
-                }
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .disabled(!viewModel.edrAvailable)
-                .help(viewModel.edrAvailable
-                    ? "Display rendered output with extended-dynamic-range "
-                    + "highlights past SDR clip on the current screen "
-                    + "(half-float / extended-linear-sRGB).  Interactive "
-                    + "editing is suspended while preview is on."
-                    : "EDR not available on the active display "
-                    + "(no headroom past SDR white).")
+                // L5a — EDR Preview toggle moved to the View menu in
+                // RISEApp.swift (matches the Windows port's "View > HDR
+                // Preview" menu item).  Driven by the same
+                // `viewModel.edrEnabled` published property; the menu
+                // item disables itself when `edrAvailable` is false.
 
                 // Progress
                 if viewModel.renderState == .rendering || viewModel.renderState == .cancelling {

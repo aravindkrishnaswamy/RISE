@@ -306,6 +306,50 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         _sceneTime.value = t
     }
 
+    /**
+     * L5d — Save the current rendered image to the app's external
+     * files directory.  Returns the absolute path on success, or
+     * null on failure.  `formatName` is one of the bridge-supported
+     * uppercase names ("EXR", "PNG", "TIFF", "HDR", "RGBEA",
+     * "TGA", "PPM"); the matching extension is appended to the
+     * scene basename.  Android scoped storage means we save under
+     * `getExternalFilesDir(null)` (no permissions required), which
+     * users browse via the Files app at
+     * `Android/data/com.risegfx.android/files/`.  A future round
+     * could plug in `ACTION_CREATE_DOCUMENT` for arbitrary paths
+     * via Storage Access Framework — that requires URI→fd plumbing
+     * through JNI which is out-of-scope for this round.
+     *
+     * No-op until at least one render has produced output (the
+     * production VFS's FrameStore exists; bridge.saveAs returns
+     * false otherwise).
+     */
+    fun saveRendered(formatName: String): String? {
+        val app = getApplication<RiseApplication>()
+        val dir = app.getExternalFilesDir(null) ?: return null
+        if (!dir.exists()) dir.mkdirs()
+
+        val ext = when (formatName.uppercase()) {
+            "EXR"   -> "exr"
+            "PNG"   -> "png"
+            "TIFF"  -> "tiff"
+            "HDR"   -> "hdr"
+            "RGBEA" -> "rgbea"
+            "TGA"   -> "tga"
+            "PPM"   -> "ppm"
+            else    -> "exr"
+        }
+
+        val sceneBase = currentScenePath?.substringAfterLast('/')
+            ?.substringBeforeLast('.', "rendered")
+            ?: "rendered"
+        val timestamp = System.currentTimeMillis()
+        val outFile = java.io.File(dir, "${sceneBase}_${timestamp}.$ext")
+
+        val ok = RiseNative.nativeSaveAs(outFile.absolutePath, formatName.uppercase(), 0.0)
+        return if (ok) outFile.absolutePath else null
+    }
+
     /** Cooperatively cancel any active render. */
     fun cancel() {
         _state.value = RenderState.Cancelling

@@ -118,6 +118,15 @@ RenderEngine::RenderEngine(QObject* parent)
     // Create the RISE job
     RISE_CreateJobPriv(&m_job);
 
+    // L5d — interactive GUI: drop file_rasterizeroutput chunks at
+    // parse time so loading a scene doesn't auto-write PNG/EXR/etc.
+    // on every Render click.  Users save via File > Save Rendered
+    // Image (writes to a user-picked path through the L2
+    // IFrameEncoder pipeline).
+    if (m_job) {
+        m_job->SetSuppressFileRasterizerOutputs(true);
+    }
+
     // Install log printer
     auto* logPrinter = new LogPrinterAdapter(this);
     logPrinter->addref();
@@ -865,11 +874,24 @@ bool RenderEngine::saveAs(const QString& path,
         Implementation::FrameEncoderRegistry::Get().ByFormatName(
             formatName.toUtf8().constData());
     if (!enc) return false;
+    // L5d — format-aware EncodeOpts.  HDR archival formats (EXR /
+    // .hdr / RGBEA) preserve scene-referred linear values > 1.0;
+    // their encoders explicitly ignore `viewTransform` and `bpp`,
+    // but pass an identity transform anyway so a future encoder
+    // change can't accidentally clip a save.  LDR formats (PNG /
+    // TIFF-8 / TGA / PPM) get the user's current display EV baked
+    // in via `ForLDRDisplay(ev)`, matching the on-screen viewport
+    // result the user is likely trying to preserve.
     EncodeOpts opts;
-    opts.colorSpace    = eColorSpace_sRGB;
-    opts.bpp           = 8;
-    opts.viewTransform = ViewTransform::ForLDRDisplay(
-        static_cast<float>(ev), eDisplayTransform_None);
+    opts.colorSpace = eColorSpace_sRGB;
+    if (enc->SupportsHDR()) {
+        opts.bpp           = 0;
+        opts.viewTransform = ViewTransform::Identity();
+    } else {
+        opts.bpp           = 8;
+        opts.viewTransform = ViewTransform::ForLDRDisplay(
+            static_cast<float>(ev), eDisplayTransform_None);
+    }
     return m_productionVFS->SaveAs(
         std::string(path.toUtf8().constData()), enc, opts);
 }

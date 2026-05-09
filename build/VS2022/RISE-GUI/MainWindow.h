@@ -60,6 +60,13 @@ private slots:
     void onHDRToggled(bool checked);
     void onHDRAvailabilityChanged(bool available);
 
+    // L5d — File > Save Rendered Image…  Opens a QFileDialog with
+    // EXR-default / PNG / TIFF filters, infers the format from the
+    // chosen extension, dispatches via RenderEngine::saveAs.  No-op
+    // if the engine hasn't started a render yet (action is disabled
+    // until then).
+    void onSaveRenderedImage();
+
 protected:
     // L5b — re-probe HDR availability on window screen change.
     // The HDRRenderWidget's own event() handler covers the case
@@ -87,6 +94,7 @@ private:
     HDRRenderWidget* m_hdrRenderWidget = nullptr;  // L5b — Windows HDR display
     QStackedWidget* m_productionPaneStack = nullptr;  // SDR / HDR within production
     QAction*        m_hdrToggleAction = nullptr;       // View > HDR Preview
+    QAction*        m_saveImageAction = nullptr;       // L5d — File > Save Rendered Image…
     ControlsWidget* m_controlsWidget = nullptr;
     LogWidget* m_logWidget = nullptr;
     SceneEditor* m_sceneEditor = nullptr;

@@ -435,6 +435,15 @@ public:
         _job = nullptr;
         RISE_CreateJobPriv(&_job);
 
+        // L5d — interactive GUI: drop file_rasterizeroutput chunks
+        // at parse time so loading a scene doesn't auto-write
+        // PNG/EXR/etc. on every Render click.  Users save via
+        // File > Save Rendered Image (writes to a user-picked path
+        // through the L2 IFrameEncoder pipeline).
+        if (_job) {
+            _job->SetSuppressFileRasterizerOutputs(true);
+        }
+
         _progressCallback = nullptr;
         _productionVFS = nullptr;
         _interactiveVFS = nullptr;
@@ -664,11 +673,24 @@ public:
         NSLog(@"RISEBridge::saveAs: unknown format '%@'", formatName);
         return NO;
     }
+    // L5a round-9 — format-aware EncodeOpts.  HDR archival formats
+    // (EXR / .hdr / RGBEA) preserve scene-referred linear values
+    // > 1.0; their encoders explicitly ignore `viewTransform` and
+    // `bpp`, but pass an identity transform anyway so a future
+    // encoder change can't accidentally clip a save.  LDR formats
+    // (PNG / TIFF-8 / TGA / PPM) get the user's current display EV
+    // baked in via `ForLDRDisplay(ev)`, matching the on-screen
+    // viewport result the user is likely trying to preserve.
     EncodeOpts opts;
-    opts.colorSpace    = eColorSpace_sRGB;
-    opts.bpp           = 8;
-    opts.viewTransform = ViewTransform::ForLDRDisplay(
-        static_cast<float>(ev), eDisplayTransform_None);
+    opts.colorSpace = eColorSpace_sRGB;
+    if (enc->SupportsHDR()) {
+        opts.bpp           = 0;  // ignored by HDR encoders
+        opts.viewTransform = ViewTransform::Identity();
+    } else {
+        opts.bpp           = 8;
+        opts.viewTransform = ViewTransform::ForLDRDisplay(
+            static_cast<float>(ev), eDisplayTransform_None);
+    }
     return _productionVFS->SaveAs(
         std::string([path UTF8String]), enc, opts) ? YES : NO;
 }

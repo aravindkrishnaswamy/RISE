@@ -236,6 +236,12 @@ bool RiseBridge::loadScene(const std::string& absPath) {
         return false;
     }
 
+    // L5d — interactive GUI: drop file_rasterizeroutput chunks at
+    // parse time so loading a scene doesn't auto-write PNG/EXR/etc.
+    // on every Render tap.  Users save via the Save action (writes
+    // to a user-picked path through the L2 IFrameEncoder pipeline).
+    m_job->SetSuppressFileRasterizerOutputs(true);
+
     // Progress callback must be attached BEFORE LoadAsciiScene — the parser
     // itself reports progress.
     m_job->SetProgress(m_progress.get());
@@ -610,11 +616,22 @@ bool RiseBridge::saveAs(const std::string& path,
         LOGE("saveAs: unknown format '%s'", formatName.c_str());
         return false;
     }
+    // L5d — format-aware EncodeOpts.  HDR archival formats (EXR /
+    // .hdr / RGBEA) preserve scene-referred linear values > 1.0;
+    // their encoders ignore `viewTransform` and `bpp`, but pass
+    // identity anyway so a future encoder change can't clip.  LDR
+    // formats (PNG / TIFF-8 / TGA / PPM) get the user's current
+    // display EV baked in via `ForLDRDisplay(ev)`.
     RISE::EncodeOpts opts;
-    opts.colorSpace    = RISE::eColorSpace_sRGB;
-    opts.bpp           = 8;
-    opts.viewTransform = ViewTransform::ForLDRDisplay(
-        static_cast<float>(ev), RISE::eDisplayTransform_None);
+    opts.colorSpace = RISE::eColorSpace_sRGB;
+    if (enc->SupportsHDR()) {
+        opts.bpp           = 0;
+        opts.viewTransform = ViewTransform::Identity();
+    } else {
+        opts.bpp           = 8;
+        opts.viewTransform = ViewTransform::ForLDRDisplay(
+            static_cast<float>(ev), RISE::eDisplayTransform_None);
+    }
     return m_productionVFS->SaveAs(path, enc, opts);
 }
 

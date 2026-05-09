@@ -104,6 +104,12 @@ fun ViewportPane(
     remainingMs: Long?,
     onRender: () -> Unit,
     onCancel: () -> Unit,
+    /// L5d — invoked when the user picks a format from the Save
+    /// dropdown.  Callee saves the production VFS's last-rendered
+    /// FrameStore through bridge.saveAs, returns the absolute path
+    /// for snackbar display.  See RenderViewModel.saveRendered.
+    canSave: Boolean = false,
+    onSave: (String) -> Unit = {},
     /// Bumped by [RenderViewModel] each time the underlying viewport
     /// controller is restarted (scene load, after a production
     /// render).  We re-apply the persisted [selectedTool] on every
@@ -215,7 +221,7 @@ fun ViewportPane(
 
     Card(modifier, shape = RoundedCornerShape(16.dp)) {
         Column(Modifier.fillMaxSize().padding(8.dp)) {
-            // Top: render-state strip with Render/Cancel button
+            // Top: render-state strip with Render/Cancel/Save buttons
             ViewportStateStrip(
                 state = state,
                 progress = progress,
@@ -224,6 +230,8 @@ fun ViewportPane(
                 interactionEnabled = interactionEnabled,
                 onRender = onRender,
                 onCancel = onCancel,
+                canSave = canSave,
+                onSave = onSave,
             )
             Spacer(Modifier.height(8.dp))
             Row(Modifier.weight(1f).fillMaxWidth()) {
@@ -319,6 +327,8 @@ private fun ViewportStateStrip(
     interactionEnabled: Boolean,
     onRender: () -> Unit,
     onCancel: () -> Unit,
+    canSave: Boolean = false,
+    onSave: (String) -> Unit = {},
 ) {
     Column(Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -343,6 +353,36 @@ private fun ViewportStateStrip(
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(onClick = onCancel) { Text("Cancel") }
             } else {
+                // L5d — Save Rendered Image button.  Visible only when
+                // the production VFS has at least one frame's worth of
+                // data (Done / Cancelled).  EXR is the default; PNG /
+                // TIFF cover the LDR side.  Tap-and-hold-style dropdown:
+                // anchor button shows "Save", a hidden DropdownMenu
+                // appears on tap and presents the format choices.
+                if (canSave) {
+                    var saveExpanded by remember { mutableStateOf(false) }
+                    Box {
+                        OutlinedButton(onClick = { saveExpanded = true }) { Text("Save…") }
+                        DropdownMenu(
+                            expanded = saveExpanded,
+                            onDismissRequest = { saveExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("EXR (HDR)") },
+                                onClick = { saveExpanded = false; onSave("EXR") },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("PNG (LDR)") },
+                                onClick = { saveExpanded = false; onSave("PNG") },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("TIFF (LDR)") },
+                                onClick = { saveExpanded = false; onSave("TIFF") },
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                }
                 OutlinedButton(onClick = onRender, enabled = interactionEnabled) { Text("Render") }
             }
         }

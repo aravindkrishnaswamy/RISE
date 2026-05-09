@@ -24,6 +24,7 @@
 #include <QMenuBar>
 #include <QStatusBar>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QMessageBox>
 #include <QLabel>
 #include <QApplication>
@@ -169,6 +170,18 @@ void MainWindow::createMenuBar()
     });
     saveAction->setShortcut(QKeySequence::Save);
 
+    // L5d — Save Rendered Image action (parity with macOS File >
+    // Save Rendered Image…).  Disabled until the engine has at
+    // least started a render; remains enabled across the rest of
+    // the app's lifetime so the user can save the LAST rendered
+    // result even after a cancel or scene reload's Render click.
+    // The QFileDialog filter defaults to EXR (HDR archival) with
+    // PNG / TIFF as LDR alternatives.
+    m_saveImageAction = fileMenu->addAction("Save Rendered &Image...",
+        this, &MainWindow::onSaveRenderedImage);
+    m_saveImageAction->setShortcut(QKeySequence("Ctrl+Shift+S"));
+    m_saveImageAction->setEnabled(false);  // toggled by onStateChanged
+
     fileMenu->addSeparator();
     auto* exitAction = fileMenu->addAction("E&xit", this, &QWidget::close);
     exitAction->setShortcut(QKeySequence::Quit);
@@ -234,6 +247,81 @@ bool MainWindow::event(QEvent* ev)
         onHDRAvailabilityChanged(HDRRenderWidget::probeAnyAdapterHDRAvailable());
     }
     return QMainWindow::event(ev);
+}
+
+// ============================================================
+// L5d — Save Rendered Image
+// ============================================================
+
+void MainWindow::onSaveRenderedImage()
+{
+    if (!m_engine) return;
+
+    // QFileDialog filter syntax: "Description (*.ext);;Description (*.ext)"
+    // The first filter is the default (HDR archival EXR).  PNG and
+    // TIFF cover the LDR side; users who need HDR / RGBEA / TGA /
+    // PPM can still type the extension and the engine's
+    // extension-aware lookup will find the right encoder.
+    const QString filter =
+        "OpenEXR HDR Image (*.exr);;"
+        "PNG Image (*.png);;"
+        "TIFF Image (*.tif *.tiff);;"
+        "Radiance HDR (*.hdr);;"
+        "All Files (*)";
+
+    // Default filename: scene basename + ".exr".  loadedFilePath
+    // may contain a full path; strip directories and the
+    // .RISEscene extension.
+    QString defaultName = "rendered.exr";
+    const QString scenePath = m_engine->loadedFilePath();
+    if (!scenePath.isEmpty()) {
+        QFileInfo info(scenePath);
+        defaultName = info.completeBaseName() + ".exr";
+    }
+
+    QString selectedFilter;
+    QString path = QFileDialog::getSaveFileName(
+        this,
+        "Save Rendered Image",
+        defaultName,
+        filter,
+        &selectedFilter);
+    if (path.isEmpty()) return;
+
+    // If the user didn't type an extension, infer one from the
+    // selected filter.  QFileDialog appends the filter's extension
+    // automatically on most platforms but we belt-and-brace it.
+    QFileInfo chosen(path);
+    if (chosen.suffix().isEmpty()) {
+        if      (selectedFilter.contains("*.exr"))  path += ".exr";
+        else if (selectedFilter.contains("*.png"))  path += ".png";
+        else if (selectedFilter.contains("*.tif"))  path += ".tiff";
+        else if (selectedFilter.contains("*.hdr"))  path += ".hdr";
+        else                                        path += ".exr";
+    }
+
+    // Map the final extension → bridge format name (case-insensitive).
+    const QString ext = QFileInfo(path).suffix().toLower();
+    QString formatName;
+    if      (ext == "exr")                formatName = "EXR";
+    else if (ext == "png")                formatName = "PNG";
+    else if (ext == "tif" || ext == "tiff") formatName = "TIFF";
+    else if (ext == "hdr")                formatName = "HDR";
+    else if (ext == "rgbea")              formatName = "RGBEA";
+    else if (ext == "tga")                formatName = "TGA";
+    else if (ext == "ppm")                formatName = "PPM";
+    else                                  formatName = "EXR";  // safe default
+
+    const bool ok = m_engine->saveAs(path, formatName, /*ev=*/0.0);
+    if (ok) {
+        statusBar()->showMessage(
+            QString("Saved %1 (%2)").arg(QFileInfo(path).fileName(), formatName),
+            5000);
+    } else {
+        QMessageBox::warning(this, "Save Failed",
+            QString("Could not write %1 as %2.  See the log for details.")
+                .arg(QFileInfo(path).fileName(), formatName));
+    }
 }
 
 void MainWindow::onHDRAvailabilityChanged(bool available)
@@ -489,6 +577,23 @@ void MainWindow::onStateChanged(int newState)
 
     bool hasScene = (state != RenderEngine::Idle);
     m_controlsWidget->setHasScene(hasScene);
+
+    // L5d — gate File > Save Rendered Image.  The production VFS's
+    // FrameStore exists once the rasterizer has emitted at least
+    // one OutputImage; that happens any time we transition through
+    // Rendering / Cancelling.  Completed / Cancelled retain the
+    // last contents (`bridge.clearAll` doesn't free the VFS, per
+    // L4 §7.5).  Re-loading a scene transitions back through
+    // Loading → SceneLoaded which has no fresh output yet — gate
+    // off until the next render starts.
+    if (m_saveImageAction) {
+        const bool canSave =
+            state == RenderEngine::Rendering
+         || state == RenderEngine::Cancelling
+         || state == RenderEngine::Completed
+         || state == RenderEngine::Cancelled;
+        m_saveImageAction->setEnabled(canSave);
+    }
 
     // When the engine has just finished loading a scene, build the
     // viewport bridge over it and switch to the viewport pane.  When

@@ -6753,6 +6753,24 @@ bool Job::AddFileRasterizerOutput(
 		return false;
 	}
 
+	// L5d — GUI hosts set m_suppressFileRasterizerOutputs at
+	// construction so loading a scene with `file_rasterizeroutput`
+	// chunks doesn't litter the user's filesystem with auto-generated
+	// PNGs / EXRs every time they hit Render in the UI.  We log the
+	// dropped pattern + return true so the parser doesn't fail (the
+	// scene is otherwise valid; the only side effect omitted is the
+	// auto-write itself).  CLI keeps the default false → byte-
+	// identical legacy behaviour.
+	if( m_suppressFileRasterizerOutputs ) {
+		GlobalLog()->PrintEx( eLog_Info,
+			"Job:: dropping file_rasterizeroutput \"%s\" "
+			"(GUI mode — interactive renders no longer write "
+			"to scene-author-specified paths; use File > Save "
+			"Rendered Image to write to a user-chosen path).",
+			szPattern ? szPattern : "(null)" );
+		return true;
+	}
+
 	COLOR_SPACE gc = eColorSpace_sRGB;
 	switch( color_space )
 	{

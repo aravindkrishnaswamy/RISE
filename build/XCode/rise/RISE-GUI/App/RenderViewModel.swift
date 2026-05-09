@@ -913,6 +913,100 @@ final class RenderViewModel: ObservableObject {
         renderState != .rendering && renderState != .cancelling && renderState != .loading
     }
 
+    /// L5a round-9 — gate for File > Save Rendered Image.  The
+    /// production VFS's FrameStore exists once the rasterizer has
+    /// emitted at least one OutputImage; that happens any time we
+    /// transition through `.rendering`.  After completion or cancel
+    /// the FrameStore retains its last contents (the bridge's
+    /// `clearAll` does NOT free the VFS, per L4 §7.5), so saving
+    /// from `.completed` or `.cancelled` produces the user's
+    /// last-rendered frame.  Loading a fresh scene transitions
+    /// through `.loading` → `.sceneLoaded`, neither of which has
+    /// fresh output yet — disable until the next render starts.
+    var canSaveImage: Bool {
+        switch renderState {
+        case .rendering, .cancelling, .completed, .cancelled:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// L5a round-9 — File > Save Rendered Image.  Opens an
+    /// NSSavePanel pre-populated with HDR-first format choices
+    /// (EXR default, then PNG / TIFF), looks up the encoder by
+    /// extension, and dispatches through the bridge's format-aware
+    /// `saveAs`.  HDR formats (EXR) write scene-referred linear
+    /// half/float values; LDR formats (PNG, TIFF-8) bake in the
+    /// current view exposure (today: 0 EV — no slider exposed yet).
+    /// No-op if `canSaveImage` is false (e.g. no render yet).
+    func saveRenderedImage() {
+        guard canSaveImage else { return }
+
+        let panel = NSSavePanel()
+        panel.title = "Save Rendered Image"
+        panel.message = "Choose a file format. EXR preserves the full HDR " +
+                        "result; PNG / TIFF clip to SDR with the current display EV."
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+
+        // HDR-first dropdown.  NSSavePanel uses `allowedContentTypes`
+        // to populate the Format popup; the FIRST entry is the
+        // default selection.  We keep the list short — EXR (HDR
+        // archival), PNG (LDR most-portable), TIFF (LDR/16-bit
+        // archival).  HDR Radiance / RGBEA / TGA / PPM are niche
+        // and accessible via the CLI; adding them here clutters the
+        // dropdown without obvious user benefit.
+        var allowedTypes: [UTType] = []
+        if let exr = UTType(filenameExtension: "exr") { allowedTypes.append(exr) }
+        allowedTypes.append(.png)
+        if let tif = UTType(filenameExtension: "tiff") { allowedTypes.append(tif) }
+        panel.allowedContentTypes = allowedTypes
+
+        // Default filename: scene basename + ".exr" (the HDR-first
+        // default).  If no scene loaded somehow (shouldn't happen
+        // given canSaveImage gate), fall back to a generic name.
+        let baseName: String
+        if let path = loadedFilePath {
+            baseName = (path as NSString).lastPathComponent
+                .replacingOccurrences(of: ".RISEscene", with: "")
+        } else {
+            baseName = "rendered"
+        }
+        panel.nameFieldStringValue = "\(baseName).exr"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        // Map extension → bridge format name.  ByExtension is
+        // case-insensitive in the registry, but we normalise here
+        // so the bridge log line is consistent.
+        let ext = url.pathExtension.lowercased()
+        let formatName: String
+        switch ext {
+        case "exr":           formatName = "EXR"
+        case "png":           formatName = "PNG"
+        case "tif", "tiff":   formatName = "TIFF"
+        case "hdr":           formatName = "HDR"
+        case "rgbea":         formatName = "RGBEA"
+        case "tga":           formatName = "TGA"
+        case "ppm":           formatName = "PPM"
+        default:
+            // Unknown extension — fall back to EXR so we don't
+            // silently produce an unwritable file.
+            formatName = "EXR"
+        }
+
+        let ok = bridge.save(as: url.path, format: formatName, exposureEV: 0.0)
+        if !ok {
+            let alert = NSAlert()
+            alert.messageText = "Save Failed"
+            alert.informativeText = "Could not write \(url.lastPathComponent) " +
+                                    "as \(formatName).  See the log for details."
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
+    }
+
     /// Reload editor contents from the current loadedFilePath.
     func refreshEditorContents() {
         guard let path = loadedFilePath else { return }

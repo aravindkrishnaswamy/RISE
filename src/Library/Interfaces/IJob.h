@@ -2093,6 +2093,22 @@ namespace RISE
 		// Adds rasterizer outputs
 		//
 
+		//! L5d — Suppress `file_rasterizeroutput` chunks at parse time.
+		//! When set true (typically by GUI hosts at construction),
+		//! `AddFileRasterizerOutput` becomes a no-op that logs at
+		//! Info level and returns `true` (so parsing doesn't fail).
+		//! This prevents interactive renders inside the GUI from
+		//! silently writing PNG / EXR / etc. files referenced by
+		//! the loaded scene's `file_rasterizeroutput` chunks
+		//! (which are intended for command-line batch renders).
+		//!
+		//! Default-implemented as a no-op so out-of-tree IJob
+		//! subclasses (mocks, test stubs) don't have to override.
+		//! CLI does NOT enable this — preserves byte-identical
+		//! legacy behaviour for `bin/rise scene.RISEscene`.
+		virtual void SetSuppressFileRasterizerOutputs( bool /*suppress*/ ) {}
+		virtual bool GetSuppressFileRasterizerOutputs() const { return false; }
+
 		//! Creates a file rasterizer output
 		//! This should be called after a rasterizer has been set
 		//! Note that setting a new rasterizer after adding file rasterizer outputs will

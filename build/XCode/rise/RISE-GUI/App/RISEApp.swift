@@ -54,6 +54,44 @@ struct RISEApp: App {
                     }
                 }
                 .disabled(!viewModel.canOpenScene)
+
+                Divider()
+
+                // L5a round-9 — File > Save Rendered Image…  Disabled
+                // until the user has started at least one render
+                // (`canSaveImage` gates on renderState ∈ {.rendering,
+                // .cancelling, .completed, .cancelled} — see
+                // RenderViewModel).  Opens an NSSavePanel with HDR
+                // EXR as the default, with PNG / TIFF as LDR
+                // alternatives in the format dropdown.
+                Button("Save Rendered Image...") {
+                    viewModel.saveRenderedImage()
+                }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(!viewModel.canSaveImage)
+            }
+
+            // L5a round-9 — EDR Preview menu item, parity with the
+            // Windows port's "View > HDR Preview".  EDR is a display
+            // option (not a per-render parameter), so it belongs in
+            // the menu bar rather than the rendering controls panel.
+            //
+            // CommandGroup(after: .toolbar) APPENDS to the existing
+            // system "View" menu (which contains Enter Full Screen).
+            // The wrong choice here — `CommandMenu("View")` — creates
+            // a SECOND View menu with our items split off; SwiftUI's
+            // menu-merging is by-placement, not by-name.  The
+            // `.toolbar` placement exists on every macOS app and is
+            // the conventional anchor for app-supplied View items.
+            //
+            // SwiftUI renders a bound `Toggle` inside a CommandGroup
+            // as a checkable menu item with a leading checkmark; the
+            // disabled state mirrors `edrAvailable` so the item greys
+            // out when the active screen lacks EDR headroom (e.g.
+            // window dragged to an external SDR monitor).
+            CommandGroup(after: .toolbar) {
+                Toggle("EDR Preview", isOn: $viewModel.edrEnabled)
+                    .disabled(!viewModel.edrAvailable)
             }
         }
     }

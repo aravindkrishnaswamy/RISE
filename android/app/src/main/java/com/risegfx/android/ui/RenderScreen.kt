@@ -24,14 +24,19 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.risegfx.android.R
 import com.risegfx.android.RiseApplication
+import kotlinx.coroutines.launch
 
 /**
  * Top-level screen.  A compact scene-picker dropdown sits in the top
@@ -91,46 +97,78 @@ fun RenderScreen(
     // entry's display name.
     var selectedScene by remember { mutableStateOf<SceneEntry?>(null) }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background,
-    ) {
-        Column(Modifier.fillMaxSize().padding(12.dp)) {
-            ScenePickerBar(
-                modifier = Modifier.fillMaxWidth(),
-                selected = selectedScene,
-                onSceneSelected = { entry ->
-                    selectedScene = entry
-                    viewModel.loadAndRender(SceneCatalog.absolutePath(riseRoot, entry))
-                },
-            )
-            Spacer(Modifier.height(12.dp))
-            if (sceneLoaded) {
-                ViewportPane(
-                    modifier = Modifier.fillMaxWidth().fillMaxHeight(),
-                    frame = frame,
-                    hasAnimation = hasAnimation,
-                    interactionEnabled = interactionEnabled,
-                    state = state,
-                    progress = progress,
-                    elapsedMs = elapsedMs,
-                    remainingMs = remainingMs,
-                    onRender = { viewModel.startRender() },
-                    onCancel = viewModel::cancel,
-                    viewportEpoch = viewportEpoch,
-                    sceneTime = sceneTimeDouble.toFloat(),
-                    onSceneTimeChange = { viewModel.updateSceneTime(it.toDouble()) },
+    // L5d — Snackbar for "saved to <path>" / "save failed" messages
+    // emitted by the Save dropdown in ViewportPane.
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
+
+    // L5d — gate the Save dropdown.  The production VFS retains its
+    // last frame across Done / Cancelled, so saving from either is
+    // valid.  Disable in Loading / Rendering / Cancelling because
+    // the FrameStore may be partial (saving mid-render is supported
+    // by bridge.saveAs but the partial result is rarely what users
+    // want — match the Mac/Win convention of "save the finished
+    // image").
+    val canSave = state is RenderState.Done || state is RenderState.Cancelled
+
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        containerColor = MaterialTheme.colorScheme.background,
+    ) { padding ->
+        Surface(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            color = MaterialTheme.colorScheme.background,
+        ) {
+            Column(Modifier.fillMaxSize().padding(12.dp)) {
+                ScenePickerBar(
+                    modifier = Modifier.fillMaxWidth(),
+                    selected = selectedScene,
+                    onSceneSelected = { entry ->
+                        selectedScene = entry
+                        viewModel.loadAndRender(SceneCatalog.absolutePath(riseRoot, entry))
+                    },
                 )
-            } else {
-                RenderCanvas(
-                    modifier = Modifier.fillMaxWidth().fillMaxHeight(),
-                    frame = frame,
-                    state = state,
-                    progress = progress,
-                    elapsedMs = elapsedMs,
-                    remainingMs = remainingMs,
-                    onCancel = viewModel::cancel,
-                )
+                Spacer(Modifier.height(12.dp))
+                if (sceneLoaded) {
+                    ViewportPane(
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight(),
+                        frame = frame,
+                        hasAnimation = hasAnimation,
+                        interactionEnabled = interactionEnabled,
+                        state = state,
+                        progress = progress,
+                        elapsedMs = elapsedMs,
+                        remainingMs = remainingMs,
+                        onRender = { viewModel.startRender() },
+                        onCancel = viewModel::cancel,
+                        canSave = canSave,
+                        onSave = { format ->
+                            val path = viewModel.saveRendered(format)
+                            coroutineScope.launch {
+                                if (path != null) {
+                                    snackbarHostState.showSnackbar(
+                                        "Saved $format → $path")
+                                } else {
+                                    snackbarHostState.showSnackbar(
+                                        "Save failed (see log)")
+                                }
+                            }
+                        },
+                        viewportEpoch = viewportEpoch,
+                        sceneTime = sceneTimeDouble.toFloat(),
+                        onSceneTimeChange = { viewModel.updateSceneTime(it.toDouble()) },
+                    )
+                } else {
+                    RenderCanvas(
+                        modifier = Modifier.fillMaxWidth().fillMaxHeight(),
+                        frame = frame,
+                        state = state,
+                        progress = progress,
+                        elapsedMs = elapsedMs,
+                        remainingMs = remainingMs,
+                        onCancel = viewModel::cancel,
+                    )
+                }
             }
         }
     }

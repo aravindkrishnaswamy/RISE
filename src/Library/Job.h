@@ -88,6 +88,17 @@ namespace RISE
 		// etc. follow the same contract.
 		IRasterizer*								pRasterizer;
 
+		// L5d — when true, `AddFileRasterizerOutput` becomes a no-op
+		// (logs at info level + returns true so parser doesn't fail).
+		// GUI hosts (mac SwiftUI / Windows Qt / Android Compose) flip
+		// this on at construction so loading a `.RISEscene` with
+		// `file_rasterizeroutput` chunks doesn't silently litter the
+		// filesystem with auto-generated PNG/EXR/etc.  Each interactive
+		// render in the GUI would otherwise overwrite a file the user
+		// didn't ask to be created.  CLI keeps the default (false) so
+		// command-line behaviour is byte-identical to legacy.
+		bool										m_suppressFileRasterizerOutputs = false;
+
 	public:
 		//! Snapshot of every parameter each `Set*Rasterizer` accepts.
 		//! Recorded into `rasterizerRegistry` alongside the instance
@@ -231,6 +242,12 @@ namespace RISE
 		ILightManager*				GetLights()			{ return pLightManager; };
 		IRasterizer*				GetRasterizer()		{ return pRasterizer; };
 
+		// L5d — suppress file_rasterizeroutput at parse time.
+		// See member-variable comment for rationale.
+		void SetSuppressFileRasterizerOutputs( bool suppress ) override
+			{ m_suppressFileRasterizerOutputs = suppress; }
+		bool GetSuppressFileRasterizerOutputs() const override
+			{ return m_suppressFileRasterizerOutputs; }
 
 
 		//
