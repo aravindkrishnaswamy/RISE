@@ -244,9 +244,17 @@ namespace RISE
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.
-		void SetSuppressFileRasterizerOutputs( bool suppress ) override
+		// `override` is intentionally OMITTED to match the rest of
+		// Job's member-function style (no other override of an IJob
+		// method in this class is marked `override`).  Adding it on
+		// just these two would trip
+		// `-Winconsistent-missing-override` against every other
+		// method in the file.  Adding `override` everywhere is the
+		// strictly-more-correct fix but is out of scope for this
+		// landing.
+		void SetSuppressFileRasterizerOutputs( bool suppress )
 			{ m_suppressFileRasterizerOutputs = suppress; }
-		bool GetSuppressFileRasterizerOutputs() const override
+		bool GetSuppressFileRasterizerOutputs() const
 			{ return m_suppressFileRasterizerOutputs; }
 
 
