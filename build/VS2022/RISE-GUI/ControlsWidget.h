@@ -48,6 +48,14 @@ public:
     // load / external programmatic change).
     void setExposureEV(double ev);
 
+    // L5e round-2 — Grey out the exposure slider while HDR Preview
+    // is on.  The HDR display path uses ForHDRDisplay (no tone
+    // curve, OS-compositor-driven dynamic-range mapping); applying
+    // our own exposure on top double-maps the radiance signal,
+    // visible as flicker / hue shifts on HDR-capable monitors.
+    // Same gating rule as the View > Tone Curve menu.
+    void setHDREnabled(bool hdrOn);
+
 public slots:
     void updateProgress(double fraction, const QString& title);
     void updateElapsedTime(double seconds);

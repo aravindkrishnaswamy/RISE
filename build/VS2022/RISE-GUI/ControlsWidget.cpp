@@ -165,6 +165,21 @@ void ControlsWidget::onExposureSliderChanged(int value)
     emit exposureChanged(ev);
 }
 
+void ControlsWidget::setHDREnabled(bool hdrOn)
+{
+    // Disable both the slider widget and dim its label so the row
+    // visually agrees that the control is inert.  Slider value is
+    // preserved across the HDR toggle so flipping HDR off restores
+    // the user's previous EV setting without a jump.
+    if (m_exposureSlider) m_exposureSlider->setEnabled(!hdrOn);
+    if (m_exposureLabel) {
+        m_exposureLabel->setStyleSheet(
+            hdrOn
+                ? "font-family: monospace; color: rgba(127, 127, 127, 0.5);"
+                : "font-family: monospace; color: gray;");
+    }
+}
+
 void ControlsWidget::onExposureResetRequested()
 {
     // Snap-to-zero.  setValue triggers valueChanged → label

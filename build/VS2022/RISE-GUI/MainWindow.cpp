@@ -277,6 +277,13 @@ void MainWindow::onHDRToggled(bool checked)
     if (m_toneCurveMenu) {
         m_toneCurveMenu->setEnabled(!checked);
     }
+    // L5e round-2 — Same gate for the exposure slider.  Applying
+    // exposure on top of the HDR compositor's dynamic-range map
+    // double-maps the radiance signal — flicker / hue shifts on
+    // HDR-capable monitors.
+    if (m_controlsWidget) {
+        m_controlsWidget->setHDREnabled(checked);
+    }
 }
 
 bool MainWindow::event(QEvent* ev)

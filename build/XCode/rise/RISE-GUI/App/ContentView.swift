@@ -307,10 +307,17 @@ struct ContentView: View {
                 // higher-count taps precedence.  No "Reset" button —
                 // the gesture is the only affordance, matching DCC
                 // norms (Houdini, Maya).
+                // L5e round-2 — `!viewModel.edrEnabled` gate added.
+                // In HDR / EDR display mode the OS compositor owns
+                // the dynamic-range mapping, and applying our own
+                // exposure on top double-maps the radiance signal —
+                // visually jarring on HDR-capable monitors.  Same
+                // disable rule the View > Tone Curve menu uses.
                 Divider()
                 ExposureSliderRow(
                     ev: $viewModel.viewExposureEV,
                     enabled: viewModel.renderState != .idle
+                          && !viewModel.edrEnabled
                 )
 
                 // Progress
