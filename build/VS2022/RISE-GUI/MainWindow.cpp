@@ -9,6 +9,7 @@
 #include "MainWindow.h"
 #include "RenderEngine.h"
 #include "RenderWidget.h"
+#include "HDRRenderWidget.h"
 #include "ControlsWidget.h"
 #include "LogWidget.h"
 #include "SceneEditor.h"
@@ -17,6 +18,8 @@
 #include "ViewportToolbar.h"
 #include "ViewportTimeline.h"
 #include "ViewportProperties.h"
+
+#include <QAction>
 
 #include <QMenuBar>
 #include <QStatusBar>
@@ -47,9 +50,22 @@ MainWindow::MainWindow(QWidget* parent)
 
     // Create widgets
     m_renderWidget = new RenderWidget();
+    m_hdrRenderWidget = new HDRRenderWidget();  // L5b — Windows HDR
     m_controlsWidget = new ControlsWidget();
     m_logWidget = new LogWidget();
     m_sceneEditor = new SceneEditor();
+
+    // L5b — production-pane sub-stack: SDR widget at idx 0,
+    // HDR widget at idx 1.  The View > HDR Preview action flips
+    // between them.  Both connected to the engine; only the
+    // currently-active one receives updates (the engine emits
+    // either `imageUpdated` or `hdrImageUpdated` depending on its
+    // own HDR-mode flag, which `onHDRToggled` keeps in sync with
+    // the stack's current index).
+    m_productionPaneStack = new QStackedWidget();
+    m_productionPaneStack->addWidget(m_renderWidget);     // index 0 — SDR
+    m_productionPaneStack->addWidget(m_hdrRenderWidget);  // index 1 — HDR
+    m_productionPaneStack->setCurrentIndex(0);
 
     // Bottom splitter: controls (260px) | log
     m_bottomSplitter = new QSplitter(Qt::Horizontal);
@@ -62,8 +78,11 @@ MainWindow::MainWindow(QWidget* parent)
     // Stacked widget toggles between the passive render view and the
     // interactive viewport pane.  The viewport pane is built lazily
     // when a scene loads (see rebuildViewportForLoadedScene).
+    // L5b: at index 0 we now host the production-pane sub-stack
+    // (SDR | HDR) instead of the bare RenderWidget; the View > HDR
+    // Preview toggle flips the inner stack.
     m_viewStack = new QStackedWidget();
-    m_viewStack->addWidget(m_renderWidget);   // index 0
+    m_viewStack->addWidget(m_productionPaneStack);   // index 0
 
     // Right splitter: stack | bottom panel (280px fixed height)
     m_rightSplitter = new QSplitter(Qt::Vertical);
@@ -92,6 +111,13 @@ MainWindow::MainWindow(QWidget* parent)
         m_renderWidget->setProgress(fraction);
     });
     connect(m_engine, &RenderEngine::imageUpdated, m_renderWidget, &RenderWidget::updateImage);
+    // L5b — HDR signal routes to the HDR widget.  Both are wired
+    // unconditionally; the engine emits one or the other based on
+    // its mode flag.
+    connect(m_engine, &RenderEngine::hdrImageUpdated,
+            m_hdrRenderWidget, &HDRRenderWidget::updateHDRImage);
+    connect(m_hdrRenderWidget, &HDRRenderWidget::hdrAvailabilityChanged,
+            this, &MainWindow::onHDRAvailabilityChanged);
     connect(m_engine, &RenderEngine::sceneSizeDetected, this, &MainWindow::onSceneSizeDetected);
     connect(m_engine, &RenderEngine::logMessage, m_logWidget, &LogWidget::appendLog);
     connect(m_engine, &RenderEngine::elapsedTimeUpdated, m_controlsWidget, &ControlsWidget::updateElapsedTime);
@@ -115,6 +141,13 @@ MainWindow::MainWindow(QWidget* parent)
 
     // Set initial status
     statusBar()->showMessage(QString("RISE %1 \u2014 Ready").arg(m_engine->versionString()));
+
+    // L5b \u2014 initial HDR-availability probe.  HDRRenderWidget is at
+    // index 1 of the production sub-stack and so won't fire its own
+    // Show event until the toggle is flipped \u2014 chicken-and-egg.
+    // The static probe enumerates all DXGI outputs without needing
+    // a swap chain.
+    onHDRAvailabilityChanged(HDRRenderWidget::probeAnyAdapterHDRAvailable());
 }
 
 void MainWindow::createMenuBar()
@@ -150,12 +183,73 @@ void MainWindow::createMenuBar()
     auto* findAction = editMenu->addAction("&Find...");
     findAction->setShortcut(QKeySequence::Find);
 
+    // --- View menu ---
+    // L5b — adds the HDR Preview toggle.  Disabled by default; the
+    // HDRRenderWidget enables it once it confirms the active monitor
+    // reports an HDR colorspace + max luminance > SDR (queried via
+    // IDXGIOutput6::GetDesc1 on widget creation and on screen-change
+    // events).  Same UX pattern as the macOS ContentView toggle
+    // gated by NSScreen.maximumPotentialExtendedDynamicRangeColor-
+    // ComponentValue.
+    auto* viewMenu = menuBar()->addMenu("&View");
+    m_hdrToggleAction = viewMenu->addAction("&HDR Preview");
+    m_hdrToggleAction->setCheckable(true);
+    m_hdrToggleAction->setChecked(false);
+    m_hdrToggleAction->setEnabled(false);  // enabled by onHDRAvailabilityChanged
+    connect(m_hdrToggleAction, &QAction::toggled,
+            this, &MainWindow::onHDRToggled);
+
     // --- Render menu ---
     auto* renderMenu = menuBar()->addMenu("&Render");
     renderMenu->addAction("&Render", this, &MainWindow::onRender);
     renderMenu->addAction("Render &Animation", this, &MainWindow::onRenderAnimation);
     renderMenu->addSeparator();
     renderMenu->addAction("&Cancel", this, &MainWindow::onCancel);
+}
+
+// ============================================================
+// L5b — HDR toggle handlers
+// ============================================================
+
+void MainWindow::onHDRToggled(bool checked)
+{
+    // Engine flag drives the encode path (RGBA16F vs RGBA8 +
+    // ForHDRDisplay vs ForLDRDisplay).  ProductionPaneStack flips
+    // which widget is visible.  Order matters slightly: flip the
+    // engine first so the immediate Repaint inside setHDREnabled
+    // emits to the widget that's about to become visible.
+    if (m_engine) m_engine->setHDREnabled(checked);
+    if (m_productionPaneStack) {
+        m_productionPaneStack->setCurrentIndex(checked ? 1 : 0);
+    }
+}
+
+bool MainWindow::event(QEvent* ev)
+{
+    // L5b — top-level screen change (user dragged the window
+    // between monitors).  Re-run the DXGI probe so the toggle
+    // reflects the new active monitor's HDR capability.  The
+    // probe is cheap (factory enumeration, no swap chain).
+    if (ev->type() == QEvent::ScreenChangeInternal) {
+        onHDRAvailabilityChanged(HDRRenderWidget::probeAnyAdapterHDRAvailable());
+    }
+    return QMainWindow::event(ev);
+}
+
+void MainWindow::onHDRAvailabilityChanged(bool available)
+{
+    if (!m_hdrToggleAction) return;
+    m_hdrToggleAction->setEnabled(available);
+    if (!available && m_hdrToggleAction->isChecked()) {
+        // Active monitor lost HDR capability (e.g. window dragged
+        // back to an SDR display) — silently flip OFF.  Match the
+        // macOS auto-disable behaviour from L5a round-7.
+        m_hdrToggleAction->setChecked(false);
+    } else if (available && !m_hdrToggleAction->isChecked()) {
+        // Auto-enable on first detection (matches the macOS round-2
+        // auto-enable when EDR becomes available).
+        m_hdrToggleAction->setChecked(true);
+    }
 }
 
 void MainWindow::createStatusBar()

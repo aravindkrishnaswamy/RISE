@@ -547,12 +547,15 @@ void RenderEngine::clearScene()
     m_loadedFilePath.clear();
     m_hasAnimation = false;
     m_pixelBuffer.clear();
+    m_hdrPixelBuffer.clear();  // L5b — drop the binary16 cache too
     m_imageWidth = 0;
     m_imageHeight = 0;
     m_sizeDetected = false;
 
     emit hasAnimationChanged(false);
     emit imageUpdated(QImage());
+    // Empty HDR signal so HDRRenderWidget can clear its swap chain.
+    emit hdrImageUpdated(QByteArray(), 0, 0);
     setState(Idle);
 }
 
@@ -615,19 +618,94 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
 {
     if (W == 0 || H == 0 || !m_productionVFS) return;
 
-    // Resize buffer on first call / dim change.
-    const size_t need = static_cast<size_t>(W) * H * 4;
+    // L5b — snapshot the HDR-mode flag ONCE so the encode (the
+    // RenderToBuffer call below) and the dispatch (the QueuedConnection
+    // emit at the end) agree even if a UI-thread setHDREnabled toggle
+    // lands between them.  Same round-2 P2-A pattern as the macOS
+    // bridge; without snapshot-once a mode flip mid-emit could deliver
+    // half-floats through `imageUpdated` (interpreted as RGBA8) or
+    // uint8 sRGB through `hdrImageUpdated` (interpreted as binary16).
+    const bool useHDR = m_hdrEnabled.load();
+    const float ev    = static_cast<float>(m_viewExposureEV.load());
+
+    // Buffer + size bookkeeping.  Both buffers track image dims; the
+    // SDR buffer is 4 bytes/pixel (RGBA8), the HDR buffer is 8
+    // bytes/pixel (4 binary16 RGBA).  Resizing on dim change is
+    // independent — keeping the inactive buffer's last allocation
+    // around so a HDR-toggle round-trip doesn't reallocate.
+    const size_t needSDR = static_cast<size_t>(W) * H * 4;
+    const size_t needHDR = static_cast<size_t>(W) * H * 4;  // uint16 count, NOT bytes
     if (m_imageWidth != static_cast<int>(W)
-        || m_imageHeight != static_cast<int>(H)
-        || m_pixelBuffer.size() != need) {
-        m_pixelBuffer.assign(need, 0);
+        || m_imageHeight != static_cast<int>(H)) {
+        m_pixelBuffer.assign(needSDR, 0);
+        m_hdrPixelBuffer.assign(needHDR, 0);
         m_imageWidth  = static_cast<int>(W);
         m_imageHeight = static_cast<int>(H);
+    } else {
+        // Dim unchanged but a mode flip may have left the
+        // currently-active buffer un-allocated (toggle happened
+        // before the first render at this dim in this mode).
+        if (useHDR && m_hdrPixelBuffer.size() != needHDR) {
+            m_hdrPixelBuffer.assign(needHDR, 0);
+        } else if (!useHDR && m_pixelBuffer.size() != needSDR) {
+            m_pixelBuffer.assign(needSDR, 0);
+        }
     }
 
+    if (useHDR) {
+        // HDR path: extended-linear-sRGB binary16 (no tone curve, no
+        // gamma; values may exceed 1.0).  Same TargetFormat the macOS
+        // EDR path uses — the platform-specific code is just the
+        // DXGI swap chain set up in HDRRenderWidget.
+        const ViewTransform xf = ViewTransform::ForHDRDisplay(ev);
+        if (halfOpenRoi) {
+            const unsigned int y0 = halfOpenRoi->top;
+            const unsigned int x0 = halfOpenRoi->left;
+            const unsigned int y1 = std::min<unsigned int>(halfOpenRoi->bottom, H);
+            const unsigned int x1 = std::min<unsigned int>(halfOpenRoi->right,  W);
+            if (y1 <= y0 || x1 <= x0) return;
+            // Pixel stride is 4 uint16 = 8 bytes; row stride is W*8.
+            uint16_t* base = m_hdrPixelBuffer.data()
+                             + (static_cast<size_t>(y0) * W + x0) * 4;
+            m_productionVFS->RenderToBuffer(
+                base, static_cast<size_t>(W) * 4 * sizeof(uint16_t),
+                *halfOpenRoi,
+                TargetFormat::RGBA16F_ExtendedLinearSRGB, xf);
+        } else {
+            m_productionVFS->RenderToBuffer(
+                m_hdrPixelBuffer.data(),
+                static_cast<size_t>(W) * 4 * sizeof(uint16_t),
+                RISE::Rect(0, 0, H, W),
+                TargetFormat::RGBA16F_ExtendedLinearSRGB, xf);
+        }
+
+        // Snapshot pixels into a QByteArray for QueuedConnection
+        // delivery.  The detached array is independent of
+        // m_hdrPixelBuffer, so a subsequent worker-thread tile
+        // callback can keep writing while the UI thread consumes
+        // this snapshot.
+        const int byteCount = static_cast<int>(needHDR * sizeof(uint16_t));
+        QByteArray halfFloats(reinterpret_cast<const char*>(m_hdrPixelBuffer.data()),
+                              byteCount);
+        bool firstTime = !m_sizeDetected;
+        QPointer<RenderEngine> guard(this);
+        QMetaObject::invokeMethod(this, [guard, halfFloats, firstTime, W, H]() {
+            if (!guard) return;
+            emit guard->hdrImageUpdated(halfFloats,
+                                        static_cast<int>(W),
+                                        static_cast<int>(H));
+            if (firstTime) {
+                guard->m_sizeDetected = true;
+                emit guard->sceneSizeDetected(static_cast<int>(W),
+                                              static_cast<int>(H));
+            }
+        }, Qt::QueuedConnection);
+        return;
+    }
+
+    // SDR path (legacy, unchanged behaviour).
     const ViewTransform xf = ViewTransform::ForLDRDisplay(
-        static_cast<float>(m_viewExposureEV.load()),
-        eDisplayTransform_None);
+        ev, eDisplayTransform_None);
 
     if (halfOpenRoi) {
         // Region-bounded path.  RenderToBuffer writes pixels at
@@ -746,6 +824,34 @@ void RenderEngine::setViewExposureEV(double ev)
     m_productionVFS->GetDimensions(W, H);
     if (W == 0 || H == 0) return;
     // Slider scrub: re-render the full image at the new EV.
+    std::lock_guard<std::mutex> lock(m_bufferMutex);
+    renderViewportToBufferAndEmit_locked(W, H, nullptr);
+}
+
+// L5b — flip HDR display mode.  Triggers an immediate re-emit so the
+// active widget (HDRRenderWidget when on, RenderWidget when off) gets
+// fresh content at the new TargetFormat / ViewTransform without
+// waiting for the next render.
+//
+// Mac round-7 fix history (RISEBridge.mm `setHDREnabled:`): toggling
+// EDR OFF must NOT clobber the SDR-side cached pixmap that BlitWhole-
+// AndDispatch was keeping current — the macOS bridge fixed this by
+// only Repaint-ing on EDR-ON transitions.  Qt is simpler because
+// only ONE display widget is active at a time (QStackedWidget):
+// toggling either direction Repaints the new active path.  The
+// inactive path's cached buffer (m_pixelBuffer / m_hdrPixelBuffer)
+// is preserved, so a subsequent toggle back doesn't lose state.
+void RenderEngine::setHDREnabled(bool enabled)
+{
+    const bool prev = m_hdrEnabled.exchange(enabled);
+    if (prev == enabled) return;
+    if (!m_productionVFS) return;
+    unsigned int W = 0, H = 0;
+    m_productionVFS->GetDimensions(W, H);
+    if (W == 0 || H == 0) return;
+    // Repaint at the new mode.  Caller is on the UI thread; locking
+    // m_bufferMutex serialises against any in-flight rasterizer-
+    // worker tile-complete callback that's mid-emit.
     std::lock_guard<std::mutex> lock(m_bufferMutex);
     renderViewportToBufferAndEmit_locked(W, H, nullptr);
 }

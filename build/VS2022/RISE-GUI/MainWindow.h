@@ -14,10 +14,12 @@
 #include <QSplitter>
 #include <QStringList>
 
+class QAction;
 class QMenu;
 class QStackedWidget;
 class RenderEngine;
 class RenderWidget;
+class HDRRenderWidget;
 class ControlsWidget;
 class LogWidget;
 class SceneEditor;
@@ -48,6 +50,24 @@ private slots:
     void onSceneSizeDetected(int width, int height);
     void onSaveAndReload(const QString& filePath);
 
+    // L5b — HDR display path.  `onHDRToggled` flips the engine's
+    // HDR mode AND the QStackedWidget's currently-shown production
+    // pane between RenderWidget (SDR) and HDRRenderWidget (HDR).
+    // `onHDRAvailabilityChanged` updates the toggle's enabled state
+    // when the user drags the window between an HDR-capable monitor
+    // and an SDR monitor (driven by HDRRenderWidget's screen-change
+    // probe).
+    void onHDRToggled(bool checked);
+    void onHDRAvailabilityChanged(bool available);
+
+protected:
+    // L5b — re-probe HDR availability on window screen change.
+    // The HDRRenderWidget's own event() handler covers the case
+    // where it's the currently-shown widget; MainWindow's handler
+    // covers the SDR-mode case where the HDR widget is hidden in
+    // QStackedWidget and won't receive ScreenChangeInternal events.
+    bool event(QEvent* ev) override;
+
 private:
     void createMenuBar();
     void createStatusBar();
@@ -64,6 +84,9 @@ private:
 
     RenderEngine* m_engine = nullptr;
     RenderWidget* m_renderWidget = nullptr;
+    HDRRenderWidget* m_hdrRenderWidget = nullptr;  // L5b — Windows HDR display
+    QStackedWidget* m_productionPaneStack = nullptr;  // SDR / HDR within production
+    QAction*        m_hdrToggleAction = nullptr;       // View > HDR Preview
     ControlsWidget* m_controlsWidget = nullptr;
     LogWidget* m_logWidget = nullptr;
     SceneEditor* m_sceneEditor = nullptr;

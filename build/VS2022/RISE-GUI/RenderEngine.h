@@ -12,6 +12,7 @@
 #define RENDERENGINE_H
 
 #include <QObject>
+#include <QByteArray>
 #include <QImage>
 #include <QTimer>
 #include <QElapsedTimer>
@@ -74,6 +75,22 @@ signals:
     void errorOccurred(const QString& message);
     void hasAnimationChanged(bool hasAnimation);
 
+    // L5b — HDR display path (Windows scRGB via DXGI swap chain).
+    // Fired in place of `imageUpdated` when HDR mode is on.  The
+    // payload is binary16 RGBA half-float in extended-linear-sRGB
+    // primaries (the same `RGBA16F_ExtendedLinearSRGB` TargetFormat
+    // the macOS EDR path uses).  Values can exceed 1.0 for
+    // highlights past SDR clip.  Consumed by `HDRRenderWidget`'s
+    // DXGI swap chain (set up with `DXGI_FORMAT_R16G16B16A16_FLOAT`
+    // + `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`).
+    //
+    // `halfFloats` is row-major, 8 bytes per pixel (4 binary16 RGBA),
+    // length == W * H * 8.  Emitted via QueuedConnection; the
+    // QByteArray detaches its data so a worker-thread emit doesn't
+    // race the slot's read against the next worker-thread overwrite
+    // of `m_hdrPixelBuffer`.
+    void hdrImageUpdated(const QByteArray& halfFloats, int width, int height);
+
 public slots:
     void loadScene(const QString& filePath);
     void startRender();
@@ -90,6 +107,20 @@ public slots:
     // has produced output.  See docs/FRAMESTORE_DESIGN.md §11 L4c.
     void setViewExposureEV(double ev);
     bool saveAs(const QString& path, const QString& formatName, double ev);
+
+    // L5b — toggle HDR display path on/off.  When ON, every emit
+    // (tile-complete, frame-complete, exposure scrub) renders the
+    // FrameStore at `RGBA16F_ExtendedLinearSRGB` + `ForHDRDisplay(ev)`
+    // and fires `hdrImageUpdated` instead of `imageUpdated`.  When
+    // OFF, the legacy SDR `RGBA8_sRGB` path runs and `imageUpdated`
+    // fires.  The toggle re-emits the current FrameStore at the new
+    // mode immediately (matching the macOS `setHDREnabled` semantics
+    // — see RISEBridge.mm round-7 fix), so the display switches
+    // without waiting for the next render.  Calling with the current
+    // state is a no-op.  Safe to call before any render has produced
+    // output (the re-emit just no-ops in that case).
+    void setHDREnabled(bool enabled);
+    bool hdrEnabled() const { return m_hdrEnabled.load(); }
 
     /// Advance the in-memory scene to time `t` AND regenerate every
     /// populated photon map.  Called by MainWindow before kicking the
@@ -192,6 +223,20 @@ private:
     // UI thread).  Applied at RenderToBuffer time as a ForLDRDisplay
     // ViewTransform — does NOT re-trigger the rasterizer.
     std::atomic<double> m_viewExposureEV{0.0};
+
+    // L5b — HDR display state.  `m_hdrEnabled` is atomic so the VFS
+    // callback path (rasterizer worker thread) can read it without
+    // locking; setHDREnabled (UI thread) writes it.  The HDR pixel
+    // buffer is binary16 RGBA half-float (8 bytes per pixel), kept
+    // alongside `m_pixelBuffer` (the SDR uint8 RGBA) so a HDR-toggle
+    // round-trip doesn't need to reallocate either buffer.
+    // `renderViewportToBufferAndEmit_locked` selects which buffer +
+    // TargetFormat + ViewTransform to use based on a snapshot of
+    // `m_hdrEnabled` taken once per emit (matching the round-2 P2-A
+    // pattern from the macOS bridge — encode + dispatch must agree
+    // even if a UI toggle lands between RenderToBuffer and emit).
+    std::atomic<bool>     m_hdrEnabled{false};
+    std::vector<uint16_t> m_hdrPixelBuffer;  // binary16 RGBA, 4 per pixel
 };
 
 #endif // RENDERENGINE_H

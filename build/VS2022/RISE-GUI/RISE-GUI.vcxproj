@@ -98,6 +98,7 @@
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="RenderEngine.cpp" />
     <ClCompile Include="RenderWidget.cpp" />
+    <ClCompile Include="HDRRenderWidget.cpp" />
     <ClCompile Include="ControlsWidget.cpp" />
     <ClCompile Include="LogWidget.cpp" />
     <ClCompile Include="SceneEditor.cpp" />
@@ -115,6 +116,7 @@
     <ClCompile Include="$(QtMocOutDir)moc_MainWindow.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_RenderEngine.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_RenderWidget.cpp" />
+    <ClCompile Include="$(QtMocOutDir)moc_HDRRenderWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_ControlsWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_LogWidget.cpp" />
     <ClCompile Include="$(QtMocOutDir)moc_SceneEditor.cpp" />
@@ -141,6 +143,12 @@
       <AdditionalInputs>%(FullPath)</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="RenderWidget.h">
+      <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
+      <Message>MOC %(Filename).h</Message>
+      <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
+      <AdditionalInputs>%(FullPath)</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="HDRRenderWidget.h">
       <Command>"$(QtMocExe)" "%(FullPath)" -o "$(QtMocOutDir)moc_%(Filename).cpp"</Command>
       <Message>MOC %(Filename).h</Message>
       <Outputs>$(QtMocOutDir)moc_%(Filename).cpp</Outputs>
