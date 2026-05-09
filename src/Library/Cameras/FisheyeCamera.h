@@ -36,7 +36,7 @@ namespace RISE
 			Matrix4	ComputeScaleFromAR( ) const;
 
 			//! Recomputes camera parameters from class values
-			void Recompute( const unsigned int width, const unsigned int height );
+			void Recompute( const unsigned int width, const unsigned int height ) override;
 
 		public:
 			//! Sets the camera based on two basis vectors and position
@@ -72,11 +72,11 @@ namespace RISE
 			inline Scalar GetScaleStored()         const { return scale; }
 			inline void   SetScaleStored( Scalar v )     { scale = v; }
 
-			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const;
+			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const override;
 
 			// For keyframing the scale
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			void SetIntermediateValue( const IKeyframeParameter& val );
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			void SetIntermediateValue( const IKeyframeParameter& val ) override;
 		};
 	}
 }

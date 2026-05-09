@@ -623,6 +623,11 @@
 		F24B73FE2F52A632008304C4 /* ColorDefs.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09ED069C42900069C9E5 /* ColorDefs.h */; };
 		F24B73FF2F52A632008304C4 /* ColorUtils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F09EE069C42900069C9E5 /* ColorUtils.cpp */; };
 		F24B74002F52A632008304C4 /* ColorUtils.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F09EF069C42900069C9E5 /* ColorUtils.h */; };
+		F24B74622F52A632008304C4 /* RGBToSpectrumTable.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A036069C42900069C9E5 /* RGBToSpectrumTable.cpp */; };
+		F24B74632F52A632008304C4 /* RGBToSpectrumTable_ROMMData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2BAFED100000000000000A1 /* RGBToSpectrumTable_ROMMData.cpp */; };
+		F24B74642F52A632008304C4 /* RGBSpectra.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A03B069C42900069C9E5 /* RGBSpectra.cpp */; };
+		F24B74652F52A632008304C4 /* HosekWilkieSpectralRadianceMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A045069C42900069C9E5 /* HosekWilkieSpectralRadianceMap.cpp */; };
+		F24B74662F52A632008304C4 /* HosekWilkieSkyModel.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A041069C42900069C9E5 /* HosekWilkieSkyModel.cpp */; };
 		F2D1A031069C42900069C9E5 /* RGBSigmoidPolynomial.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A030069C42900069C9E5 /* RGBSigmoidPolynomial.h */; };
 		F2D1A034069C42900069C9E5 /* RGBToSpectrumTable.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A033069C42900069C9E5 /* RGBToSpectrumTable.h */; };
 		F2D1A037069C42900069C9E5 /* RGBToSpectrumTable.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A036069C42900069C9E5 /* RGBToSpectrumTable.cpp */; };
@@ -5613,6 +5618,11 @@
 				F24B73FE2F52A632008304C4 /* ColorDefs.h in Sources */,
 				F24B73FF2F52A632008304C4 /* ColorUtils.cpp in Sources */,
 				F24B74002F52A632008304C4 /* ColorUtils.h in Sources */,
+				F24B74622F52A632008304C4 /* RGBToSpectrumTable.cpp in Sources */,
+				F24B74632F52A632008304C4 /* RGBToSpectrumTable_ROMMData.cpp in Sources */,
+				F24B74642F52A632008304C4 /* RGBSpectra.cpp in Sources */,
+				F24B74652F52A632008304C4 /* HosekWilkieSpectralRadianceMap.cpp in Sources */,
+				F24B74662F52A632008304C4 /* HosekWilkieSkyModel.cpp in Sources */,
 				F24B74012F52A632008304C4 /* CompositeOperator.h in Sources */,
 				F24B74022F52A632008304C4 /* RGB.h in Sources */,
 				F24B74032F52A632008304C4 /* SmartColor.h in Sources */,

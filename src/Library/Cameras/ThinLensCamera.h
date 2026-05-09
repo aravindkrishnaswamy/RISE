@@ -108,7 +108,7 @@ namespace RISE
 			Matrix4	ComputeScaleFromAR( ) const;
 
 			//! Recomputes camera parameters from class values
-			void Recompute( const unsigned int width, const unsigned int height );
+			void Recompute( const unsigned int width, const unsigned int height ) override;
 
 		public:
 			ThinLensCamera(
@@ -190,7 +190,7 @@ namespace RISE
 			inline void SetApertureRotation( Scalar v )        { apertureRotation = v; }
 			inline void SetAnamorphicSqueeze( Scalar v )       { anamorphicSqueeze = v; }
 
-			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const;
+			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const override;
 
 			//! Landing 5: photographic exposure compensation in EV stops.
 			//! Returns 0 when iso == 0 (physical exposure disabled);
@@ -225,8 +225,8 @@ namespace RISE
 				const Point2& ptOnScreen, const Point2& lensSample ) const;
 
 			// For keyframamble interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			void SetIntermediateValue( const IKeyframeParameter& val );
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			void SetIntermediateValue( const IKeyframeParameter& val ) override;
 		};
 	}
 }

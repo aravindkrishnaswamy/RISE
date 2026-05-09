@@ -44,7 +44,7 @@ namespace RISE
 			Matrix4	ComputeScaleFromFOV( ) const;
 
 			//! Recomputes camera parameters from class values
-			void Recompute( const unsigned int width, const unsigned int height );
+			void Recompute( const unsigned int width, const unsigned int height ) override;
 
 		public:
 			//! Sets the camera based on two basis vectors and position
@@ -80,7 +80,7 @@ namespace RISE
 				const Scalar fstop = Scalar( 0 )	///< [in] Landing 5: f-number for EV computation.  Required when iso > 0.
 				);
 
-			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const;
+			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const override;
 
 			//! Landing 5: returns the pre-computed photographic exposure
 			//! compensation in EV stops.  See ICamera.h for the formula
@@ -119,8 +119,8 @@ namespace RISE
 			void RegenerateData() override;
 
 			// For keyframing the FOV
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			void SetIntermediateValue( const IKeyframeParameter& val );
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			void SetIntermediateValue( const IKeyframeParameter& val ) override;
 		};
 	}
 }

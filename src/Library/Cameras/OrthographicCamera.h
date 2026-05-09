@@ -33,7 +33,7 @@ namespace RISE
 			Matrix4	ComputeScaleFromAR( ) const;
 
 			//! Recomputes camera parameters from class values
-			void Recompute( const unsigned int width, const unsigned int height );
+			void Recompute( const unsigned int width, const unsigned int height ) override;
 
 		public:
 			//! Sets the camera based on two basis vectors and position
@@ -69,7 +69,7 @@ namespace RISE
 			inline Vector2 GetViewportScaleStored()         const { return viewportScale; }
 			inline void    SetViewportScaleStored( const Vector2& v ) { viewportScale = v; }
 
-			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const;
+			bool GenerateRay( const RuntimeContext& rc, Ray& r, const Point2& ptOnScreen ) const override;
 		};
 	}
 }
