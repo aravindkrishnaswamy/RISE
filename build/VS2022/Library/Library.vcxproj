@@ -1113,4 +1113,59 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <!--
+    OIDN install-tree guard.  RISE links against in-tree OIDN at
+    extlib\oidn\install\lib (preferred over a system OIDN so device
+    backends like Metal / CUDA stay enabled).  If that tree is
+    missing (e.g. wiped by `git clean` with the ignored-files flag,
+    since extlib\oidn\.gitignore marks install/ ignored) but the
+    cmake build at extlib\oidn\source\build still has Release
+    artifacts, run cmake's install step to repair.  If both are
+    missing, fail with a single actionable message instead of cryptic
+    LNK1104 errors from RISE-CLI / RISE-GUI / Tools later in the
+    build.  See CLAUDE.md "One-time setup: OIDN with GPU support".
+  -->
+  <Target Name="VerifyOidnInstall" BeforeTargets="ClCompile">
+    <PropertyGroup>
+      <OidnInstallLib>$(SolutionDir)..\..\extlib\oidn\install\lib\OpenImageDenoise.lib</OidnInstallLib>
+      <OidnBuildLib>$(SolutionDir)..\..\extlib\oidn\source\build\Release\OpenImageDenoise.lib</OidnBuildLib>
+      <OidnBuildDir>$(SolutionDir)..\..\extlib\oidn\source\build</OidnBuildDir>
+    </PropertyGroup>
+    <Message
+      Condition="!Exists('$(OidnInstallLib)') And Exists('$(OidnBuildLib)')"
+      Importance="high"
+      Text="OIDN install tree missing but build artifacts present — running `cmake --install` to repair." />
+    <Exec
+      Condition="!Exists('$(OidnInstallLib)') And Exists('$(OidnBuildLib)')"
+      Command="cmake --install &quot;$(OidnBuildDir)&quot; --config Release"
+      ContinueOnError="true" />
+    <Error
+      Condition="!Exists('$(OidnInstallLib)')"
+      Text="OIDN install missing at extlib\oidn\install\lib\. Run from repo root: pwsh -File extlib\oidn\build.ps1  (see CLAUDE.md &quot;One-time setup: OIDN with GPU support&quot;)" />
+  </Target>
+  <!--
+    Stale-RISE.lib guard.  Library is a static lib; its build cycle
+    is Compile (.cpp to .obj) followed by Lib (.obj to RISE.lib).
+    MSBuild's incremental tracker can desync between these two
+    steps: if a build is interrupted, cancelled, or fails after
+    Compile but before Lib, the .obj files end up newer than
+    RISE.lib but Lib never re-runs to pick them up.  Then
+    RISE-GUI / RISE-CLI / Tools relink against the stale RISE.lib,
+    silently linking new headers against an old vtable layout — a
+    silent corruption (the IJob L5d insertions hit this on
+    2026-05-09).
+    Fix: whenever Compile actually runs, delete the existing
+    RISE.lib first.  This guarantees one of two outcomes:
+      (a) Lib.exe runs to produce a fresh RISE.lib (correct),
+      (b) Lib.exe is skipped and RISE.lib stays missing, so
+          dependent projects get a hard LNK1104 instead of
+          silently linking corrupt vtables.
+    Cost: zero on no-op incremental builds (BeforeTargets="ClCompile"
+    only fires when ClCompile actually runs); otherwise forces
+    Lib.exe to re-link, which is what should happen anyway.
+  -->
+  <Target Name="ForceLibFreshness" BeforeTargets="ClCompile">
+    <Delete Files="$(OutDir)$(TargetName)$(TargetExt)"
+            Condition="Exists('$(OutDir)$(TargetName)$(TargetExt)')" />
+  </Target>
 </Project>
