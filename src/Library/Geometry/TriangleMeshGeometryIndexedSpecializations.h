@@ -200,6 +200,37 @@ namespace RISE
 					Vector2Ops::mkVector2(*thisTri.pCoords[1],*thisTri.pCoords[0])*a+
 					Vector2Ops::mkVector2(*thisTri.pCoords[2],*thisTri.pCoords[0])*b );
 
+				// L12.D — TEXCOORD_1 interpolation.  pTexCoords1 is the
+				// secondary UV array on ITriangleMeshGeometryIndexed3,
+				// indexed parallel to pCoords (same iCoords[k] from the
+				// IndexedTriangle stage — glTF assets that ship both
+				// TEXCOORD_0 and TEXCOORD_1 use the same vertex indices
+				// for both).  Recover the index by pointer arithmetic
+				// against pCoords[0]'s base, the same trick the per-
+				// vertex color block below uses for pColors.  Falls back
+				// to pCoord (UV0) when TEXCOORD_1 is absent so painters
+				// wrapped to sample UV1 on assets without it degrade to
+				// sampling UV0 — matches how the importer warns when an
+				// asset declares texcoord=1 but provides no UV1.
+				if( !pTexCoords1.empty() && !pCoords.empty() ) {
+					const Point2* pCoordsBase = &pCoords[0];
+					const size_t i0 = (size_t)( thisTri.pCoords[0] - pCoordsBase );
+					const size_t i1 = (size_t)( thisTri.pCoords[1] - pCoordsBase );
+					const size_t i2 = (size_t)( thisTri.pCoords[2] - pCoordsBase );
+					if( i0 < pTexCoords1.size() && i1 < pTexCoords1.size() && i2 < pTexCoords1.size() ) {
+						ri.ptCoord1 = Point2Ops::mkPoint2( pTexCoords1[i0],
+							Vector2Ops::mkVector2( pTexCoords1[i1], pTexCoords1[i0] ) * a +
+							Vector2Ops::mkVector2( pTexCoords1[i2], pTexCoords1[i0] ) * b );
+						ri.bHasTexCoord1 = true;
+					} else {
+						ri.ptCoord1 = ri.ptCoord;
+						ri.bHasTexCoord1 = false;
+					}
+				} else {
+					ri.ptCoord1 = ri.ptCoord;
+					ri.bHasTexCoord1 = false;
+				}
+
 				// Per-vertex color interpolation.  pColors is indexed by
 				// vertex *position* index (the convention every common
 				// exporter produces — see the comment on

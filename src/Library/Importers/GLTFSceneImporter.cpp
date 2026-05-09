@@ -442,20 +442,23 @@ namespace
 		return requestedRole;
 	}
 
-	// glTF KHR_texture_transform: wrap a registered texture painter with
-	// a per-binding UV affine transform when the texture_view declares one.
-	// Returns `baseName` unchanged when there is no transform or it is the
-	// identity (skipping the wrapper saves the per-sample branch).
+	// glTF KHR_texture_transform + L12.D TEXCOORD_1 binding: wrap a
+	// registered texture painter with a per-binding UV affine transform
+	// (when the texture_view declares one) AND a TEXCOORD_1 selector
+	// (when the binding's texcoord field is 1).  Both wrappers are
+	// optional and stack independently — we apply the UV-set selector
+	// OUTSIDE the UV transform so the transform is computed in the
+	// selected UV space, matching how glTF specifies KHR_texture_transform
+	// (the transform applies to whichever texCoord the binding uses).
 	//
-	// Wrapper name is keyed by (matIdx, role) so two materials sharing the
-	// same image but using different transforms get distinct wrappers, and
-	// because glTF allows at most one binding per role per material, the
-	// name is unique within the painter manager.
+	// Order: base painter (image) -> UV transform (if non-identity)
+	//        -> TEXCOORD_1 selector (if binding picks UV1).
 	//
-	// `texcoord != 0` (KHR_texture_transform `texCoord` override or
-	// `textureInfo.texcoord`) is logged once at warning level — Phase-1
-	// only honours TEXCOORD_0; routing TEXCOORD_1 through the painter
-	// graph lands separately.
+	// Wrapper names are keyed by (matIdx, role) so two materials sharing
+	// the same image but using different transforms / texcoord sets get
+	// distinct wrappers, and because glTF allows at most one binding
+	// per role per material, the name is unique within the painter
+	// manager.
 	std::string WrapWithUVTransform(
 		IJob&                       job,
 		const std::string&          prefix,
@@ -468,54 +471,69 @@ namespace
 			return baseName;
 		}
 
-		// Phase-1 limitation reminder: only TEXCOORD_0 is interpolated
-		// onto ri.ptCoord today.  A binding that points to TEXCOORD_1
-		// (via textureInfo.texCoord OR the transform's texCoord override)
-		// silently falls back to TEXCOORD_0 — the value still renders,
-		// it just samples through the wrong UV channel.  Logging once
-		// per (material, role) so the asset author can decide whether
-		// the visual mismatch matters.
+		std::string current = baseName;
+
+		// KHR_texture_transform: wrap when the binding declares a
+		// non-identity affine.  Identity transforms collapse to a
+		// passthrough — skip the wrapper to save a per-sample branch.
+		if( view.has_transform ) {
+			const cgltf_texture_transform& t = view.transform;
+			const bool identity =
+				std::fabs( (double)t.offset[0] )         < 1e-9 &&
+				std::fabs( (double)t.offset[1] )         < 1e-9 &&
+				std::fabs( (double)t.rotation )          < 1e-9 &&
+				std::fabs( (double)t.scale[0] - 1.0 )    < 1e-9 &&
+				std::fabs( (double)t.scale[1] - 1.0 )    < 1e-9;
+			if( !identity ) {
+				std::ostringstream oss;
+				oss << prefix << ".uvxform." << role << "." << matIdx;
+				const std::string wrapName = oss.str();
+				const bool ok = job.AddUVTransformPainter(
+					wrapName.c_str(), current.c_str(),
+					(double)t.offset[0], (double)t.offset[1],
+					(double)t.rotation,
+					(double)t.scale[0], (double)t.scale[1] );
+				if( ok ) {
+					current = wrapName;
+				} else {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"GLTFSceneImporter:: failed to wrap painter `%s` with UV transform; "
+						"sampling will use the un-transformed UVs", current.c_str() );
+				}
+			}
+		}
+
+		// L12.D — TEXCOORD_1 selector.  Resolve which UV set this binding
+		// picks: textureInfo.texCoord is the default, but
+		// KHR_texture_transform.texCoord (if set) overrides it.  Only
+		// 0 and 1 are common in practice; we honour 1 explicitly and
+		// log other values (which we don't support).  Geometry side
+		// mirrors ptCoord into ptCoord1 when the asset has no UV1, so
+		// the wrapper is safe even on TEXCOORD_1-less meshes (samples
+		// degrade to UV0).
 		const int boundTexcoord = view.has_transform && view.transform.has_texcoord
 			? (int)view.transform.texcoord
 			: (int)view.texcoord;
-		if( boundTexcoord != 0 ) {
-			GlobalLog()->PrintEx( eLog_Info,
-				"GLTFSceneImporter:: material[%zu] role `%s` uses TEXCOORD_%d; "
-				"only TEXCOORD_0 is supported in this build, sampling will use "
+		if( boundTexcoord == 1 ) {
+			std::ostringstream oss;
+			oss << prefix << ".uv1." << role << "." << matIdx;
+			const std::string wrapName = oss.str();
+			const bool ok = job.AddTexCoord1Painter( wrapName.c_str(), current.c_str() );
+			if( ok ) {
+				current = wrapName;
+			} else {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"GLTFSceneImporter:: failed to wrap painter `%s` with TEXCOORD_1 selector; "
+					"sampling will use TEXCOORD_0 instead", current.c_str() );
+			}
+		} else if( boundTexcoord != 0 ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"GLTFSceneImporter:: material[%zu] role `%s` declares texCoord=%d; "
+				"only TEXCOORD_0 and TEXCOORD_1 are supported, sampling will use "
 				"TEXCOORD_0 instead", matIdx, role, boundTexcoord );
 		}
 
-		if( !view.has_transform ) {
-			return baseName;
-		}
-
-		const cgltf_texture_transform& t = view.transform;
-		const bool identity =
-			std::fabs( (double)t.offset[0] )         < 1e-9 &&
-			std::fabs( (double)t.offset[1] )         < 1e-9 &&
-			std::fabs( (double)t.rotation )          < 1e-9 &&
-			std::fabs( (double)t.scale[0] - 1.0 )    < 1e-9 &&
-			std::fabs( (double)t.scale[1] - 1.0 )    < 1e-9;
-		if( identity ) {
-			return baseName;
-		}
-
-		std::ostringstream oss;
-		oss << prefix << ".uvxform." << role << "." << matIdx;
-		const std::string wrapName = oss.str();
-
-		const bool ok = job.AddUVTransformPainter(
-			wrapName.c_str(), baseName.c_str(),
-			(double)t.offset[0], (double)t.offset[1],
-			(double)t.rotation,
-			(double)t.scale[0], (double)t.scale[1] );
-		if( !ok ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"GLTFSceneImporter:: failed to wrap painter `%s` with UV transform; "
-				"sampling will use the un-transformed UVs", baseName.c_str() );
-			return baseName;
-		}
-		return wrapName;
+		return current;
 	}
 
 	// Create the texture painter (png_painter or jpg_painter) for the
@@ -540,7 +558,38 @@ namespace
 		const std::set<std::string>* preRegistered = NULL,
 		bool                lowmemTextures = false )	// matches the slow-path AddXXXTexturePainter `lowmem` arg; only consulted when preRegistered is null/miss.
 	{
-		if( !tex || !tex->image ) {
+		if( !tex ) {
+			return std::string();
+		}
+
+		// L12.E — KHR_texture_basisu detection.  cgltf populates
+		// `tex->has_basisu` and `tex->basisu_image` when the asset
+		// declares the extension.  Per the glTF spec, the texture's
+		// primary `source` (PNG/JPEG) MAY be omitted when a Basis-
+		// encoded `KHR_texture_basisu.source` is supplied — clients
+		// without KTX2 / Basis support are expected to fall back to
+		// `source` only if it is present.  RISE doesn't ship a Basis
+		// Universal decoder yet (extlib submodule + transcoder is a
+		// separate landing); detect here so we either fall back
+		// gracefully to the PNG/JPEG `source` (with a warning) or
+		// return empty (rendered as the material's uniform fallback)
+		// when the asset is KTX2-only.
+		if( tex->has_basisu ) {
+			if( tex->image ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"GLTFSceneImporter:: texture role `%s` declares KHR_texture_basisu "
+					"(KTX2 / Basis Universal); RISE does not yet decode KTX2.  Falling "
+					"back to the texture's primary PNG/JPEG `source`.", role );
+			} else {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"GLTFSceneImporter:: texture role `%s` is KTX2-ONLY (no PNG/JPEG "
+					"fallback) and RISE does not yet decode KTX2.  This binding will "
+					"render as the material's uniform-colour fallback.", role );
+				return std::string();
+			}
+		}
+
+		if( !tex->image ) {
 			return std::string();
 		}
 		const size_t imgIdx = (size_t)( tex->image - data->images );
@@ -1016,28 +1065,68 @@ namespace
 			// Clamp attenuation_color to (0, 1] to avoid log domain issues
 			// (a value of 0 in any channel would imply infinite absorption,
 			// which would render the object completely opaque in that band).
+			//
+			// glTF spec semantics on `thickness_factor`:
+			//   thickness_factor == 0 ⇒ THIN-WALLED material (the asset
+			//     is a 2D sheet; no volume traversal happens).  RISE
+			//     doesn't have a true thin-walled mode — attaching a
+			//     HomogeneousMedium would still apply absorption along
+			//     the (essentially zero-length) ray inside the sheet,
+			//     producing no visible tint.  We skip the medium
+			//     attachment in that case and warn — assets that need
+			//     thin-walled tinting should bake the colour into the
+			//     transmission BSDF τ painter directly.
+			//   thickness_factor > 0  ⇒ thick-walled (solid object;
+			//     RISE path-traces through the volume and the actual
+			//     ray length × σ_a does the absorption integral).
+			//   `thickness_texture` (per-pixel scale of thickness on
+			//     the G channel) only matters in the thin-walled path
+			//     since it modulates the Beer-Lambert thickness term;
+			//     RISE's thick-walled path uses geometric path length
+			//     directly.  Warn so authors know it's ignored.
 			if( mat.has_volume && mat.volume.attenuation_distance > 0 ) {
 				const cgltf_volume& vol = mat.volume;
-				const double dist = (double)vol.attenuation_distance;
-				auto SafeLog = []( double x ) -> double {
-					return std::log( std::max( 1e-6, std::min( 1.0, x ) ) );
-				};
-				const double sigma_a[3] = {
-					-SafeLog( (double)vol.attenuation_color[0] ) / dist,
-					-SafeLog( (double)vol.attenuation_color[1] ) / dist,
-					-SafeLog( (double)vol.attenuation_color[2] ) / dist
-				};
-				const double sigma_s[3] = { 0.0, 0.0, 0.0 };
 
-				const std::string medName = MediumName( prefix, matIdx );
-				job.AddHomogeneousMedium(
-					medName.c_str(),
-					sigma_a, sigma_s,
-					/*phase*/ "isotropic",
-					/*phase_g*/ 0.0 );
-				// The medium gets bound to per-primitive objects in the
-				// Walker (via SetObjectInteriorMedium) since materials are
-				// scene-wide but interior media attach to objects.
+				if( vol.thickness_factor <= 0 ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"GLTFSceneImporter:: material `%s` declares KHR_materials_volume "
+						"with thickness_factor = %.3f (thin-walled).  RISE applies "
+						"Beer-Lambert via path-traced ray length only; thin-walled "
+						"absorption is not currently modelled, so the colour tint "
+						"will be invisible.  Set thickness_factor > 0 to use thick-"
+						"walled absorption, or bake the tint into baseColor / τ.",
+						matName.c_str(), (double)vol.thickness_factor );
+				} else {
+					if( vol.thickness_texture.texture ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"GLTFSceneImporter:: material `%s` declares thicknessTexture; "
+							"RISE's thick-walled path uses geometric path length × σ_a "
+							"and ignores the per-pixel thickness modulation (only the "
+							"thickness_factor scalar gates thin/thick-walled mode).",
+							matName.c_str() );
+					}
+
+					const double dist = (double)vol.attenuation_distance;
+					auto SafeLog = []( double x ) -> double {
+						return std::log( std::max( 1e-6, std::min( 1.0, x ) ) );
+					};
+					const double sigma_a[3] = {
+						-SafeLog( (double)vol.attenuation_color[0] ) / dist,
+						-SafeLog( (double)vol.attenuation_color[1] ) / dist,
+						-SafeLog( (double)vol.attenuation_color[2] ) / dist
+					};
+					const double sigma_s[3] = { 0.0, 0.0, 0.0 };
+
+					const std::string medName = MediumName( prefix, matIdx );
+					job.AddHomogeneousMedium(
+						medName.c_str(),
+						sigma_a, sigma_s,
+						/*phase*/ "isotropic",
+						/*phase_g*/ 0.0 );
+					// The medium gets bound to per-primitive objects in the
+					// Walker (via SetObjectInteriorMedium) since materials are
+					// scene-wide but interior media attach to objects.
+				}
 			}
 		} else {
 			// Landing 7 — KHR_materials_specular.
@@ -1969,9 +2058,13 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 					// CreateMaterial under MediumName(prefix, matIdx)).
 					// Bind it to this object instance so Beer-Lambert
 					// absorption applies to rays inside the volume.
+					// Mirrors the gate in CreateMaterial — thin-walled
+					// (thickness_factor == 0) materials don't register a
+					// medium, so don't try to bind one.
 					if( opts.importMaterials && prim.material &&
 					    prim.material->has_volume &&
-					    prim.material->volume.attenuation_distance > 0 ) {
+					    prim.material->volume.attenuation_distance > 0 &&
+					    prim.material->volume.thickness_factor > 0 ) {
 						const size_t mi = (size_t)( prim.material - data->materials );
 						const std::string medName = MediumName( prefix, mi );
 						job.SetObjectInteriorMedium( objName.c_str(), medName.c_str() );
@@ -2589,7 +2682,18 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 	// PNG/JPEG we can decode.
 	auto enqueue = [&]( const cgltf_texture* tex, const char* role )
 	{
-		if( !tex || !tex->image ) return;
+		if( !tex ) return;
+		// L12.E: keep the KTX2 / Basis Universal handling in lock-step
+		// with CreateTexturePainter — without this skip, KTX2-only
+		// bindings would fall through to the PNG/JPEG decode path here
+		// even though CreateTexturePainter rejects them later.  The
+		// PNG decoder asked to read KTX2-formatted bytes is the
+		// observed crash mode (PNGReader::BeginRead AV inside
+		// AddTexturePaintersBatch's ParallelFor on a KTX2-bearing
+		// asset).  Safe: when both paths agree to skip, the binding
+		// gracefully renders as the material's uniform-colour fallback.
+		if( tex->has_basisu && !tex->image ) return;
+		if( !tex->image ) return;
 		const size_t imgIdx = (size_t)( tex->image - data->images );
 		const std::string painterName = ImagePainterName( prefix, role, imgIdx );
 		if( seen.find( painterName ) != seen.end() ) {

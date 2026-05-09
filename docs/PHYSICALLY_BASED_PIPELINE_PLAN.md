@@ -187,16 +187,13 @@ that builds on the foundation.
 | 3 | Spectral upsampling (Jakob-Hanika) + spectral Hosek-Wilkie sun-and-sky | Spectral | No | IMPROVEMENTS.md #11 | TODO |
 | 4 | Per-light-type intensity override (drop unit-blind override) | Lights | Minor | None | **DONE** (Group A bundle) |
 | 5 | Physical camera model (ISO + fstop + shutter → EV stack into LDR outputs) | Camera | No (additive) | 1 | **DONE — minimal variant** (Group A bundle).  No new chunk; ISO is opt-in on existing `pinhole_camera` / `thinlens_camera`.  Realistic-camera (lens-element ray tracing) is a separate future landing. |
-| 6 | Layered material energy-conservation audit | Materials | No | None | **PARTIAL — audit shipped**.  [tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp) covers 8 configs (incl. Finding D coloured-input regime).  Three KNOWN-FAIL configurations flagged; the compensation work for each is its own future landing.  Detailed disposition in §"Landing 6" below. |
+| 6 | Layered material energy-conservation audit | Materials | No | None | **PARTIAL — audit + sheen fix shipped**.  [tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp) covers 8 configs.  Sheen grazing divergence (Findings B / configs #2, #6) FIXED via Imageworks production-friendly Charlie Λ (Estevez & Kulla 2017).  Composite recursion-budget loss (Finding A / configs #3, #7) remains its own future landing.  Detailed disposition in §"Landing 6" below. |
 | 7 | `KHR_materials_specular` (specular_factor + specular_color → F0) | Materials | No (additive defaults) | None | **DONE** — `pbr_metallic_roughness_material` accepts `specular_factor` and `specular_color`; importer reads `KHR_materials_specular`'s scalar fields.  Defaults preserve every existing scene bit-identically.  Texture-sampled specular is L12. |
 | 8 | Anisotropy (anisotropy_factor + anisotropy_rotation → α_x / α_y) | Materials | No (additive defaults) | None | **DONE**.  `pbr_metallic_roughness_material` accepts `anisotropy_factor` (αt = mix(α, 1, anisotropy²)) AND `anisotropy_rotation` (tangent-frame rotation around w; round-2 fix per adversarial review).  GGX BRDF / SPF now apply the rotation per shading point.  `anisotropy_texture` (per-pixel rotation + strength) is L12.  Defaults preserve every existing scene. |
-| 6 | Energy-conservation audit on layered material composition | Materials | Maybe | None |
-| 7 | `KHR_materials_specular` (real F0 + tint) | Materials | Yes (PBR mat params) | 6 |
-| 8 | Anisotropy material parameter (BRDF already supports it) | Materials | Yes (PBR mat params) | 6 |
-| 9 | `KHR_materials_iridescence` (thin-film) | Materials | Yes | 6, 3 |
-| 10 | Wake clearcoat / sheen / transmission textures (`#if 0` slots) | Materials | Yes | 6 |
-| 11 | `KHR_materials_volume` end-to-end (volumetric attenuation behind refractive surfaces) | Materials | Yes | 7, existing null-scattering volumes |
-| 12 | Importer fidelity batch: KHR_texture_transform, KTX2 / Basisu, ORM packed, TEXCOORD_1 routing | Importer | Minor | None |
+| 9 | `KHR_materials_iridescence` (thin-film) | Materials | Yes | 6, 3 | TODO |
+| 10 | Wake clearcoat / sheen / transmission textures (`#if 0` slots) | Materials | Yes | 6 | **PARTIAL** — sheen + transmission texture slots are wired in scene-language; clearcoat texture routing depends on Finding A composite redesign. |
+| 11 | `KHR_materials_volume` end-to-end (volumetric attenuation behind refractive surfaces) | Materials | Yes | 7, existing null-scattering volumes | **DONE** — importer creates `HomogeneousMedium` from `attenuation_color` + `attenuation_distance` and binds it as `SetObjectInteriorMedium` on transmissive primitives.  Thin-walled (`thickness_factor == 0`) materials skip the medium per spec.  `thickness_texture` is ignored with a warning (RISE has no per-pixel medium parameters). |
+| 12 | Importer fidelity batch: KHR_texture_transform, KTX2 / Basisu, ORM packed, TEXCOORD_1 routing | Importer | Minor | None | **PARTIAL** — KHR_texture_transform / ORM-packed / TEXCOORD_1 DONE; KTX2 detection-with-fallback DONE, full Basis Universal decoder is its own future landing. |
 | 13 | `occlusionTexture` (pragmatic) | Materials | No (additive defaults) | None | **DONE — Phase-1 minimal**.  Importer wires `occlusionTexture` into a baseColor modulator chain (R-channel × occlusionStrength × strength painter).  Applied uniformly to all bounces (small over-darkening of direct lighting; recovers high-frequency baked AO geometry can't reach).  Opt-out via `respect_baked_occlusion FALSE` on `gltf_import`.  Bounce-gated "indirect-only" version is future work. |
 | 14 | Verify alphaMode = BLEND | Materials | No | None | **DONE**.  Khronos's `AlphaBlendModeTest.glb` renders with three distinct behaviours per row (OPAQUE / MASK / BLEND), confirming the existing transparency_shaderop wiring works.  Sponza's `dirt_decal` BLEND material is too subtle to inspect in the canonical hero shot, so the test asset is the load-bearing verification. |
 
@@ -599,20 +596,38 @@ Out:
 
 ---
 
-## Landing 6 — Layered material energy-conservation audit [PARTIAL — audit shipped]
+## Landing 6 — Layered material energy-conservation audit [PARTIAL — audit + sheen fix shipped]
 
 **Audit scaffolding shipped.**  [tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp)
 drives every L7-L11-relevant layered configuration through a Monte-
 Carlo furnace test and reports the directional albedo `ρ(θ_i) =
 E[Σ_j kray_j]` at θ ∈ {0°, 30°, 60°, 80°}.  Per-config posture
-(`kPosturePass` vs `kPostureKnownFailure`) keeps the test useful for
-regression catching while documenting limitations whose fix is its
-own future landing.  Test exits 0 today; any drift will surface as
-a regression.
+(`kPosturePass` / `kPostureBounded` / `kPostureKnownFailure`) keeps
+the test useful for regression catching while documenting limitations
+whose fix is its own future landing.  Test exits 0 today; any drift
+will surface as a regression.
 
-**Compensation work NOT yet shipped — split into focused follow-up
-landings based on what the audit found.**  Three findings rank-ordered
-by impact on the L7-L11 landings:
+**Sheen grazing fix shipped (Finding B).**  [src/Library/Materials/CharlieSheen.h](../src/Library/Materials/CharlieSheen.h)
+hosts the shared D / Λ / V helpers used by both
+[src/Library/Materials/SheenBRDF.cpp](../src/Library/Materials/SheenBRDF.cpp)
+and [src/Library/Materials/SheenSPF.cpp](../src/Library/Materials/SheenSPF.cpp).
+Implements the Imageworks production-friendly Charlie shadowing-
+masking (Estevez & Kulla 2017, the same closed form the Khronos
+KHR_materials_sheen reference + glTF Sample Renderer use).  The
+α-coefficient blend uses weight `w = (1 − α)²` on the α=0 endpoint
+to match Khronos's `lambdaSheenNumericHelper`; an earlier draft used
+linear blending which passed energy bounding but deviated ~3-8 %
+from the reference renderer at mid-roughness.  Replaces the
+Ashikhmin / Neubelt closed form whose `n·l + n·v − n·l·n·v`
+denominator diverged as `cos θ → 0`.  Results: ρ(80°) on the sheen-
+alone config drops from **8.7** to **0.55** (configurations #2 and
+#6, both PASS at 5% bounded posture).
+
+**Composite recursion redesign NOT yet shipped (Finding A).**
+Configurations #3 and #7 still fail with ρ(0°) ≈ 0.04 — `CompositeSPF`'s
+random-walk recursion budget clips below-layer diffuse paths under
+delta-mediated specular tops.  Remains the dominant blocker for
+clearcoat-over-paint scenes; its own landing.
 
 ### Audit results (FURNACE_SAMPLES = 100,000 per (config, angle))
 
@@ -620,11 +635,11 @@ by impact on the L7-L11 landings:
 |---|---|---|---|---|---|---|
 | 0 | Lambertian alone (sanity) | 1.0000 | 1.0000 | 1.0000 | 1.0000 | PASS @ 1% — methodology confirmed |
 | 1 | GGX-PBR (schlick_f0, α=0.16) | 1.016 | 1.015 | 1.020 | 1.032 | PASS @ 5% — Kulla-Conty over-corrects ~1-3 % at moderate roughness; matches pbrt-v4 furnace tolerance |
-| 2 | Sheen alone (Charlie, no LUT) | 0.252 | 0.394 | **1.456** | **8.725** | KNOWN-FAIL — Charlie's `n·l + n·v − n·l·n·v` denominator diverges at grazing.  Needs sheen-albedo LUT (Heitz simplified or Zeltner-LTC). |
+| 2 | Sheen alone (Imageworks-Charlie Λ) | 0.088 | 0.128 | 0.281 | 0.545 | PASS @ 5% bounded — energy-bounded by the Estevez & Kulla 2017 production-friendly Λ; no grazing blow-up. |
 | 3 | Composite: dielectric / Lambertian | **0.040** | **0.042** | **0.089** | 0.388 | KNOWN-FAIL — `CompositeSPF` random walk exits with the dielectric's surface-Fresnel only.  Below-layer diffuse paths get clipped by the recursion budget (`kMaxRecur = 4`, `kMaxDiffuseRecur = 2`).  This is the catastrophic loss the importer's Phase-5 warning flagged.  Needs the random-walk's recursion accounting redesigned, OR replacement with a proper analytic layered-BSDF (Belcour 2018 / Heitz 2017 LTC-Layered). |
 | 4 | Composite: GGX / Lambertian | 1.025 | 1.027 | 1.036 | 1.051 | PASS @ 6% — non-delta GGX top doesn't trigger the recursion-loss path; gain matches GGX baseline + a tiny systematic walk bias |
 | 5 | Composite: GGX / GGX-PBR (clearcoat over PBR), white inputs | 1.025 | 1.026 | 1.036 | 1.052 | PASS @ 6% — passes with white baseColor; the importer's "near-black" warning was suspected stale based on this alone, but #7 below shows it's regime-dependent. |
-| 6 | Composite: Sheen / GGX-PBR | 0.249 | 0.402 | **1.448** | **8.867** | KNOWN-FAIL — inherits #2's grazing divergence.  Once #2 is fixed (sheen-albedo LUT), #6 should follow without additional work. |
+| 6 | Composite: Sheen / GGX-PBR | 0.087 | 0.128 | 0.280 | 0.547 | PASS @ 5% bounded — Imageworks Λ keeps the layered case bounded too; sheen-over-PBR no longer blows up at grazing. |
 | 7 | Composite: clearcoat / red GGX-PBR (Finding D) | **0.040** | **0.040** | **0.068** | **0.205** | KNOWN-FAIL — same loss profile as #3.  Confirms the importer warning at [GLTFSceneImporter.cpp:851](../src/Library/Importers/GLTFSceneImporter.cpp:851) is real for diffuse-dominant materials.  Tied to Finding A — same recursion-budget bug, different regime. |
 
 ### Findings, in priority order
@@ -647,10 +662,16 @@ out.  Two paths forward, both significant landings:
     semantics; integrates with the L7-L11 layer extensions (sheen,
     clearcoat, iridescence) more naturally.
 
-**Finding B — Sheen at grazing diverges (#2, #6).**  Documented in
-the literature; expected.  Fix is mechanical: precompute and
-sample the sheen-albedo LUT at material construction time (~1 day
-of work, well-defined reference impl available).
+**Finding B — Sheen at grazing diverges (#2, #6).**  ✅ FIXED.
+Replaced the Ashikhmin / Neubelt closed-form `V` with the Imageworks
+production-friendly Charlie Λ (Estevez & Kulla 2017 — same form the
+Khronos KHR_materials_sheen reference renderer uses).  The Λ
+polynomial is energy-bounded by construction at all `cos θ ∈ [0, 1]`,
+so no per-sample clamps and no LUT bake step needed.  Both #2 and #6
+now PASS at the 5% bounded posture.  See [src/Library/Materials/SheenBRDF.cpp](../src/Library/Materials/SheenBRDF.cpp)
+and [src/Library/Materials/SheenSPF.cpp](../src/Library/Materials/SheenSPF.cpp);
+duplicated helpers across the value() and Scatter() sites are
+documented as "keep in sync".
 
 **Finding C — GGX baseline gains 1-3% via Kulla-Conty over-
 correction (#1, #4, #5).**  Within tolerance and matches pbrt-v4 /
@@ -689,10 +710,10 @@ The audit's findings unblock most of L7-L11 with caveats:
 - **L10 (clearcoat / sheen / transmission textures):** PARTIALLY
   blocked.  Clearcoat textures need the layered-PBR composite to
   be wired (importer's `#if 0`), which depends on Finding A's
-  resolution.  Sheen textures additionally need Finding B's LUT
-  compensation to render correctly at grazing — without it, every
-  sheen asset shows the 8× grazing blow-up.  Transmission
-  textures are independent (single-layer dielectric).
+  resolution.  Sheen is now energy-bounded (Finding B fixed) so
+  sheen textures render correctly at all angles without further
+  work.  Transmission textures are independent (single-layer
+  dielectric).
 - **L11 (KHR_materials_volume):** unblocked.  Beer-Lambert through
   a single-layer dielectric; doesn't traverse the random walk.
 
@@ -983,13 +1004,36 @@ parameter wiring.  Mostly mechanical given the existing scalar paths.
 
 ---
 
-## Landing 11 — `KHR_materials_volume` end-to-end
+## Landing 11 — `KHR_materials_volume` end-to-end [DONE]
 
-### Goal
+### Status
 
-Beer-Lambert attenuation through refractive surfaces with a thickness
-texture and attenuation distance / color, so glass and translucent
-materials show real internal absorption.
+**Shipped**: importer reads `attenuation_color` + `attenuation_distance`,
+builds a `HomogeneousMedium` with σ_a = -log(attenuation_color) /
+attenuation_distance per channel (Beer-Lambert), and binds it to each
+volume-bearing object via `SetObjectInteriorMedium`.  Existing null-
+scattering volume integrator does the absorption integral along
+ray-traced path lengths through the medium.
+
+`thickness_factor`: gated correctly per glTF spec.
+- `thickness_factor > 0`: thick-walled (solid object).  RISE's path-
+  traced ray length × σ_a does the absorption integral natively;
+  current behaviour is correct.
+- `thickness_factor == 0`: thin-walled (2D sheet).  RISE doesn't have
+  a true thin-walled mode (would need σ_a applied as a per-surface
+  attenuation factor on the transmission BSDF rather than along ray
+  length).  Importer skips medium attachment + warns; recommended
+  fix is to bake the colour into baseColor / τ.
+
+`thickness_texture`: ignored with a warning.  Per-pixel thickness
+modulation only matters for the thin-walled path (which RISE doesn't
+implement); the thick-walled path uses geometric path length and
+gets the right absorption integral without the per-pixel scale.
+
+Verified end-to-end via [scenes/Tests/Importers/gltf_import_attenuation.RISEscene](../scenes/Tests/Importers/gltf_import_attenuation.RISEscene)
+— Khronos's AttenuationTest array (18 materials testing varied
+attenuation_distance + thickness_factor) renders with visible per-
+material absorption variation.
 
 ### Dependencies
 
@@ -998,12 +1042,6 @@ materials show real internal absorption.
 - Existing null-scattering volume framework (#7 in
   IMPROVEMENTS.md) — wire as the in-volume integrator when
   thickness and attenuation imply non-trivial transport.
-
-### Scope
-
-In: `thickness_factor` + `thickness_texture` + `attenuation_distance`
-+ `attenuation_color` parameters on the material; importer wiring;
-material wiring through to the existing volume integrator.
 
 ---
 
@@ -1022,8 +1060,8 @@ PBR asset does.
 | 12.A | `KHR_texture_transform` | **DONE** — `UVTransformPainter` wraps each binding when `view.has_transform == true`; identity transforms collapse to passthrough.  Math verified by `tests/UVTransformPainterTest.cpp` (7 / 7 pass: identity, T, S, R 90°, combined TRS, GetAlpha forwarding). |
 | 12.B | ORM-packed detection | **DONE** — `IsORMPacked` detects when occlusion and metallicRoughness slots reference the same `cgltf_texture *`; `EffectiveRole` routes the AO painter lookup through the MR painter name when packed.  PreDecodeTextures' `seen` set then dedupes, eliminating one PNG decode + one painter manager entry per ORM-packed material.  Color-space and wrap mode are identical for both bindings (both linear, shared sampler), so the share is safe.  Untouched on non-ORM assets (DamagedHelmet, OrientationTest etc.). |
 | 12.C | `anisotropy_texture` + `specular_texture` | **DONE — partial** — `specular_factor` × `specularTexture.A`, `specular_color` × `specularColorTexture.RGB`, and `anisotropy_factor` × `anisotropyTexture.B` are now per-pixel via the existing painter graph (ChannelPainter → BlendPainter chain into `AddPBRMetallicRoughnessMaterial`'s painter-string args).  No GGX BRDF/SPF change needed — the pre-existing `resolveOrSynth` in `Job::AddPBRMetallicRoughnessMaterial` already accepts a painter name in place of a scalar.  Per-pixel anisotropy DIRECTION (encoded in `anisotropyTexture.RG`) requires `atan2(2G−1, 2R−1)` per sample, which doesn't compose from BlendPainter / ChannelPainter primitives — deferred to a follow-up landing that adds an `ATan2Painter` (or changes `pTangentRotation`'s contract to a (cos, sin) pair).  Importer logs once when an asset uses per-pixel rotation so the visual mismatch is visible. |
-| 12.D | `TEXCOORD_1` routing | DEFERRED — needs `ri.ptCoord1` plumbing through triangle interpolation; bigger landing.  Importer logs once per (material, role) when a binding uses TEXCOORD_1, so the visual mismatch is at least documented. |
-| 12.E | `KHR_texture_basisu` (KTX2) | DEFERRED — separate landing, needs Basis Universal submodule integration. |
+| 12.D | `TEXCOORD_1` routing | **DONE** — `ri.ptCoord1` + `bHasTexCoord1` added to RayIntersectionGeometric.  Triangle-mesh intersection interpolates `pTexCoords1` parallel to `pCoords` (recovers index via pointer arithmetic, no PointerTriangle bloat).  New `TexCoord1Painter` wraps any source painter and swaps in `ri.ptCoord1` before sampling.  Importer's `WrapWithUVTransform` now also wraps with TexCoord1Painter when the binding declares `texCoord = 1` (textureInfo.texCoord OR KHR_texture_transform.texCoord override).  Verified end-to-end via [scenes/Tests/Importers/gltf_import_multi_uv.RISEscene](../scenes/Tests/Importers/gltf_import_multi_uv.RISEscene) — Khronos's MultiUVTest renders the gltf logo (emissive on UV1) overlaid on the +pattern (baseColor on UV0). |
+| 12.E | `KHR_texture_basisu` (KTX2) | **PARTIAL — graceful detection + fallback** — importer detects `tex->has_basisu` and either (a) falls back to the texture's PNG/JPEG `source` with a warning, or (b) returns empty when the asset is KTX2-only (binding renders as the material's uniform fallback, no crash).  Full KTX2 / Basis Universal decoding requires the basisu submodule + transcoder integration; deferred to its own landing. |
 
 ### Scope
 

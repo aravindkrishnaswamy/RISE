@@ -68,6 +68,14 @@ static BDPTVertex MakeSentinelSurfaceVertex()
 	v.geomNormal    = Vector3( 0.0,  0.0,   1.0 );
 	v.onb.CreateFromW( v.normal );
 	v.ptCoord       = Point2( 0.375, 0.625 );
+	// ptCoord1 sentinel intentionally distinct from ptCoord — on real
+	// glTF assets with a TEXCOORD_1 binding, the secondary UV chart can
+	// be wholly different (lightmap atlas, AO bake) from the primary;
+	// the rebuild must propagate the secondary coords independently or
+	// any TexCoord1Painter wrapped by the importer would silently sample
+	// from TEXCOORD_0 on every BDPT/VCM-rebuilt path vertex.
+	v.ptCoord1      = Point2( 0.875, 0.125 );
+	v.bHasTexCoord1 = true;
 	v.ptObjIntersec = Point3( 0.125, -0.875, 0.5 );
 	v.vColor          = RISEPel( 0.42, 0.71, 0.13 );
 	v.bHasVertexColor = true;
@@ -129,6 +137,17 @@ void TestPopulateRIG_AllFields()
 		   IsClose( ri.ptCoord.y, 0.625 ),
 		"ptCoord should mirror vertex.ptCoord" );
 
+	// ptCoord1 — TEXCOORD_1 (secondary glTF UV).  Distinct from ptCoord
+	// so a swapped-source field (e.g. accidentally copying ptCoord into
+	// both slots) is detectable.
+	Check( IsClose( ri.ptCoord1.x, 0.875 ) &&
+		   IsClose( ri.ptCoord1.y, 0.125 ),
+		"ptCoord1 should mirror vertex.ptCoord1" );
+
+	// bHasTexCoord1 — gates whether TexCoord1Painter swaps in ptCoord1.
+	Check( ri.bHasTexCoord1 == true,
+		"bHasTexCoord1 should mirror vertex.bHasTexCoord1" );
+
 	// ptObjIntersec
 	Check( IsClose( ri.ptObjIntersec.x, 0.125 )  &&
 		   IsClose( ri.ptObjIntersec.y, -0.875 ) &&
@@ -176,6 +195,11 @@ void TestPopulateRIG_DefaultsAlsoCopy()
 	// them — a no-op helper would let the sentinel through.
 	ri.vColor          = RISEPel( 9.99, 9.99, 9.99 );
 	ri.bHasVertexColor = true;
+	// Same defensive sentinel for the UV1 fields — if the helper
+	// silently leaves them, a TexCoord1Painter wrapped on the rebuilt
+	// ri would sample at the sentinel UV instead of UV0.
+	ri.ptCoord1        = Point2( 9.99, 9.99 );
+	ri.bHasTexCoord1   = true;
 
 	PathVertexEval::PopulateRIGFromVertex( v, ri );
 
@@ -186,6 +210,13 @@ void TestPopulateRIG_DefaultsAlsoCopy()
 
 	Check( ri.bHasVertexColor == false,
 		"bHasVertexColor should be overwritten with vertex.bHasVertexColor (false)" );
+
+	Check( IsClose( ri.ptCoord1.x, 0.0 ) &&
+		   IsClose( ri.ptCoord1.y, 0.0 ),
+		"ptCoord1 should be overwritten with vertex.ptCoord1 (zero) — not the pre-existing sentinel" );
+
+	Check( ri.bHasTexCoord1 == false,
+		"bHasTexCoord1 should be overwritten with vertex.bHasTexCoord1 (false)" );
 }
 
 //////////////////////////////////////////////////////////////////////

@@ -1,7 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SheenBRDF.cpp - Implementation of the Charlie / Neubelt sheen
-//  BRDF; see header for the math.
+//  SheenBRDF.cpp - Imageworks production-friendly Charlie sheen
+//  BRDF (Estevez & Kulla 2017).  D / Λ / V helpers are shared with
+//  SheenSPF via CharlieSheen.h so a coefficient drift in one site
+//  cannot silently desync the BRDF and the SPF.  See header for the
+//  math.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -12,44 +15,12 @@
 
 #include "pch.h"
 #include "SheenBRDF.h"
+#include "CharlieSheen.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/math_utils.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
-
-namespace
-{
-	// Charlie microfacet distribution
-	//   D(α, n·h) = (2 + 1/α) / (2π) · sin(θ_h)^(1/α)
-	// where sin(θ_h) = sqrt(1 - (n·h)²).
-	inline Scalar SheenD( const Scalar alpha, const Scalar nDotH )
-	{
-		const Scalar a = r_max( alpha, Scalar(1e-3) );
-		const Scalar invA = Scalar(1) / a;
-		const Scalar sin2 = r_max( Scalar(0), Scalar(1) - nDotH * nDotH );
-		const Scalar sinTh = std::sqrt( sin2 );
-		// pow(0, x) is 0 for x>0; pow(1e-30, ...) yields 0 in practice and
-		// the result is multiplied by sheenColor which can be 0 too, so this
-		// is safe for grazing angles.
-		const Scalar p = std::pow( sinTh, invA );
-		return (Scalar(2) + invA) * p / (Scalar(2) * PI);
-	}
-
-	// Ashikhmin / Neubelt visibility (Khronos KHR_materials_sheen formulation):
-	//   V(n·l, n·v) = 1 / (4 · (n·l + n·v − n·l·n·v) · n·l · n·v)
-	// The `· n·l · n·v` factor in the denominator is what gives Charlie its
-	// characteristic grazing-bright / centre-dark profile; an earlier
-	// revision dropped it and produced over-bright sheen at normal incidence.
-	// Bounded above for grazing directions to avoid blowups.
-	inline Scalar SheenV( const Scalar nDotL, const Scalar nDotV )
-	{
-		const Scalar cosProd = nDotL * nDotV;
-		const Scalar denom = Scalar(4) * ( nDotL + nDotV - cosProd ) * cosProd;
-		if( denom < Scalar(1e-6) ) return Scalar(0);
-		return Scalar(1) / denom;
-	}
-}
 
 SheenBRDF::SheenBRDF(
 	const IPainter& sheenColor,
@@ -90,8 +61,8 @@ RISEPel SheenBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometri
 	const Scalar nDotH = r_max( Scalar(0), Vector3Ops::Dot( n, h ) );
 
 	const Scalar alpha = r_max( ColorMath::MaxValue( pRoughness.GetColor( ri ) ), Scalar(1e-3) );
-	const Scalar D = SheenD( alpha, nDotH );
-	const Scalar V = SheenV( nDotL, nDotV );
+	const Scalar D = CharlieSheen::D( alpha, nDotH );
+	const Scalar V = CharlieSheen::V( alpha, nDotL, nDotV );
 
 	return pColor.GetColor( ri ) * (D * V);
 }
@@ -114,8 +85,8 @@ Scalar SheenBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometr
 	const Scalar nDotH = r_max( Scalar(0), Vector3Ops::Dot( n, h ) );
 
 	const Scalar alpha = r_max( pRoughness.GetColorNM( ri, nm ), Scalar(1e-3) );
-	const Scalar D = SheenD( alpha, nDotH );
-	const Scalar V = SheenV( nDotL, nDotV );
+	const Scalar D = CharlieSheen::D( alpha, nDotH );
+	const Scalar V = CharlieSheen::V( alpha, nDotL, nDotV );
 
 	return pColor.GetColorNM( ri, nm ) * D * V;
 }

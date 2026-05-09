@@ -2484,6 +2484,14 @@ namespace RISE
 		//! Pel before Spectral within each family.
 		static const std::vector<std::string>& StandardRasterizerTypes();
 
+		//! Adds a TEXCOORD_1 selector painter.  See IJob.h for the doc.
+		//! Appended at end of class to mirror the IJob vtable position.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddTexCoord1Painter(
+									const char* name,				///< [in] Name of the painter
+									const char* source				///< [in] Source painter
+									);
+
 	private:
 		//! Lazy-build a rasterizer of the given chunk-name with
 		//! sensible defaults and a shader picked from the scene's

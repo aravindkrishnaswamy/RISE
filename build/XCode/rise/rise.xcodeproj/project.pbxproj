@@ -480,6 +480,8 @@
 		F2D1A011069C42900069C9E5 /* GLTFSceneImporter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */; };
 		F2D1A012069C42900069C9E5 /* ChannelPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A003069C42900069C9E5 /* ChannelPainter.h */; };
 		F2D1A013069C42900069C9E5 /* UVTransformPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A004069C42900069C9E5 /* UVTransformPainter.h */; };
+		F2D1A014069C42900069C9E5 /* TexCoord1Painter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */; };
+		F2D1A015069C42900069C9E5 /* CharlieSheen.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A006069C42900069C9E5 /* CharlieSheen.h */; };
 		F2C0EF12069C42900069C9E5 /* cgltf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EF04069C42900069C9E5 /* cgltf.cpp */; };
 		F2C0EF13069C42900069C9E5 /* cgltf.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EF03069C42900069C9E5 /* cgltf.h */; };
 		F24B73732F52A632008304C4 /* PNGWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0985069C42900069C9E5 /* PNGWriter.cpp */; };
@@ -1203,6 +1205,8 @@
 		F2D1A021069C42910069C9E5 /* GLTFSceneImporter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */; };
 		F2D1A022069C42910069C9E5 /* ChannelPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A003069C42900069C9E5 /* ChannelPainter.h */; };
 		F2D1A023069C42910069C9E5 /* UVTransformPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A004069C42900069C9E5 /* UVTransformPainter.h */; };
+		F2D1A024069C42910069C9E5 /* TexCoord1Painter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */; };
+		F2D1A025069C42910069C9E5 /* CharlieSheen.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A006069C42900069C9E5 /* CharlieSheen.h */; };
 		F2C0EF22069C42910069C9E5 /* cgltf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EF04069C42900069C9E5 /* cgltf.cpp */; };
 		F2C0EF23069C42910069C9E5 /* cgltf.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0EF03069C42900069C9E5 /* cgltf.h */; };
 		F27F0BE6069C42910069C9E5 /* PNGWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0985069C42900069C9E5 /* PNGWriter.cpp */; };
@@ -2229,6 +2233,8 @@
 		F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GLTFSceneImporter.h; sourceTree = "<group>"; };
 		F2D1A003069C42900069C9E5 /* ChannelPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChannelPainter.h; sourceTree = "<group>"; };
 		F2D1A004069C42900069C9E5 /* UVTransformPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = UVTransformPainter.h; sourceTree = "<group>"; };
+		F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TexCoord1Painter.h; sourceTree = "<group>"; };
+		F2D1A006069C42900069C9E5 /* CharlieSheen.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CharlieSheen.h; sourceTree = "<group>"; };
 		F2C0EF03069C42900069C9E5 /* cgltf.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = cgltf.h; sourceTree = "<group>"; };
 		F2C0EF04069C42900069C9E5 /* cgltf.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = cgltf.cpp; sourceTree = "<group>"; };
 		F27F0985069C42900069C9E5 /* PNGWriter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PNGWriter.cpp; sourceTree = "<group>"; };
@@ -3100,6 +3106,7 @@
 				F24C545B2F84597B009AF16D /* GGXBRDF.h */,
 				F24C545C2F84597B009AF16D /* GGXBRDF.cpp */,
 				F24C545D2F84597B009AF16D /* GGXMaterial.h */,
+				F2D1A006069C42900069C9E5 /* CharlieSheen.h */,
 				B7A4ED10F0DE4E61A0A3D001 /* SheenBRDF.h */,
 				B7A4ED11F0DE4E61A0A3D001 /* SheenBRDF.cpp */,
 				B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */,
@@ -3299,6 +3306,7 @@
 				F27F0936069C42900069C9E5 /* BlendPainter.h */,
 				F2D1A003069C42900069C9E5 /* ChannelPainter.h */,
 				F2D1A004069C42900069C9E5 /* UVTransformPainter.h */,
+				F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */,
 				F27F0937069C42900069C9E5 /* CheckerPainter.cpp */,
 				F27F0938069C42900069C9E5 /* CheckerPainter.h */,
 				F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */,
@@ -3961,6 +3969,8 @@
 				F2D1A021069C42910069C9E5 /* GLTFSceneImporter.h in Headers */,
 				F2D1A022069C42910069C9E5 /* ChannelPainter.h in Headers */,
 				F2D1A023069C42910069C9E5 /* UVTransformPainter.h in Headers */,
+				F2D1A024069C42910069C9E5 /* TexCoord1Painter.h in Headers */,
+				F2D1A025069C42910069C9E5 /* CharlieSheen.h in Headers */,
 				F2D9B07E2F896BFA0077A171 /* FilteredFilm.h in Headers */,
 				F27F0AB7069C42910069C9E5 /* TriangleMeshLoaderPLY.h in Headers */,
 				F286395B2F9244AC0009D9AE /* ThreadLocalSplatBuffer.h in Headers */,
@@ -4991,6 +5001,8 @@
 				F2D1A011069C42900069C9E5 /* GLTFSceneImporter.h in Sources */,
 				F2D1A012069C42900069C9E5 /* ChannelPainter.h in Sources */,
 				F2D1A013069C42900069C9E5 /* UVTransformPainter.h in Sources */,
+				F2D1A014069C42900069C9E5 /* TexCoord1Painter.h in Sources */,
+				F2D1A015069C42900069C9E5 /* CharlieSheen.h in Sources */,
 				F24B723E2F52A632008304C4 /* TriangleMeshLoaderPLY.cpp in Sources */,
 				F24B723F2F52A632008304C4 /* TriangleMeshLoaderPLY.h in Sources */,
 				F24B72402F52A632008304C4 /* TriangleMeshLoaderPSurf.cpp in Sources */,

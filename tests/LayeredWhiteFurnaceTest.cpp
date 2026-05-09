@@ -90,7 +90,8 @@ static const int    NUM_THETA   = sizeof(THETA_DEG) / sizeof(THETA_DEG[0]);
 // something unexpectedly drifts.
 enum AuditPosture
 {
-	kPosturePass,			// Must pass within tolerance.  Failure is a regression.
+	kPosturePass,			// Must pass within tolerance: 1.0 - tol ≤ ρ ≤ 1.0 + tol.  Failure is a regression.
+	kPostureBounded,		// 2026-05: must be energy-bounded (0 ≤ ρ ≤ 1.0 + tol) but no lower constraint — for single-scattering BRDFs (Charlie sheen) that legitimately dissipate energy without violating conservation.  Catches both negative values and over-unity blow-ups.
 	kPostureKnownFailure	// Documented non-conservation; record numbers but don't fail.
 };
 
@@ -240,6 +241,20 @@ static void Run( ConfigReport& r, ISPF& spf )
 				if( r.note.empty() ) r.note = "energy loss (regression)";
 			}
 		}
+		else if( r.posture == kPostureBounded )
+		{
+			// Energy-bounded: must be in [0, 1 + tol].  Catches the
+			// pre-Imageworks Charlie blow-up (ρ → 8+ at grazing) but
+			// allows the new bounded sheen to report ρ < 1 legitimately.
+			if( r.albedo[i] > 1.0 + r.tolerance ) {
+				r.passed = false;
+				if( r.note.empty() ) r.note = "GAIN (energy violation)";
+			}
+			else if( r.albedo[i] < 0.0 ) {
+				r.passed = false;
+				if( r.note.empty() ) r.note = "negative albedo (regression)";
+			}
+		}
 		else	// kPostureKnownFailure: record numbers, don't fail
 		{
 			r.passed = true;
@@ -269,7 +284,7 @@ static void PrintReport( const std::vector<ConfigReport>& rs )
 		for( int i = 0; i < NUM_THETA; ++i ) {
 			std::cout << "  " << std::setw( 8 ) << r.albedo[i];
 		}
-		if( r.posture == kPosturePass ) {
+		if( r.posture == kPosturePass || r.posture == kPostureBounded ) {
 			std::cout << "  " << ( r.passed ? "PASS" : "FAIL" );
 			if( !r.note.empty() ) std::cout << " (" << r.note << ")";
 		} else {
@@ -439,12 +454,17 @@ int main()
 	{ ConfigReport& r = add( "1. GGX-PBR (baseline, Kulla-Conty)", kPosturePass, 0.05, 0 );
 	  Run( r, *ggxPBR ); }
 
-	// 2. Sheen alone (Charlie distribution, no LUT compensation).  KNOWN
-	//    NON-CONSERVING: Charlie's denominator (n.l + n.v - n.l*n.v)
-	//    blows up at grazing without the Heitz-simplified or Zeltner-LTC
-	//    sheen-albedo LUT.  Documented in literature; expected here.
-	{ ConfigReport& r = add( "2. Sheen alone (Charlie, no LUT)", kPostureKnownFailure, 0.0,
-	    "Charlie diverges at grazing; needs LUT compensation" );
+	// 2. Sheen alone (Imageworks production-friendly Charlie, L6 fix
+	//    landed 2026-05).  Was kPostureKnownFailure pre-fix because the
+	//    Ashikhmin/Neubelt closed-form V function blew up at grazing
+	//    angles (ρ ≈ 8.7 at θ=80°).  Switched to Estevez & Kulla 2017
+	//    "Production Friendly Microfacet Sheen BRDF" with a polynomial-
+	//    fit Λ shadowing-masking term that bounds the BRDF to ≤ 1 by
+	//    construction.  Now kPostureBounded: ρ may legitimately fall
+	//    below 1 (Charlie sheen is single-scattering and dissipates
+	//    energy at grazing) but must NOT exceed 1.  5% MC tolerance.
+	{ ConfigReport& r = add( "2. Sheen alone (Imageworks-Charlie)", kPostureBounded, 0.05,
+	    "Energy-bounded by Estevez/Kulla Λ; ρ < 1 expected at grazing" );
 	  Run( r, *sheen ); }
 
 	// 3. Composite: dielectric over Lambertian.  KNOWN FAILURE on the
@@ -479,10 +499,12 @@ int main()
 	  Run( r, *compGgxPbr ); }
 
 	// 6. Composite: Sheen top over GGX-PBR base.  Tracks the standalone-
-	//    sheen failure mode at grazing; KNOWN FAILURE for the same
-	//    reason (Charlie's grazing divergence).
-	{ ConfigReport& r = add( "6. Sheen / GGX-PBR (sheen over PBR)", kPostureKnownFailure, 0.0,
-	    "sheen-over-PBR inherits sheen's Charlie grazing divergence" );
+	//    sheen behaviour after the Imageworks-Charlie fix (config #2).
+	//    Still bounded above by 1 (no longer a known failure), but the
+	//    composite walk amplifies sheen's intrinsic energy dissipation
+	//    so ρ stays well under unity even at θ=0.  5% tolerance.
+	{ ConfigReport& r = add( "6. Sheen / GGX-PBR (sheen over PBR)", kPostureBounded, 0.05,
+	    "Energy-bounded; sheen-over-PBR inherits sheen's bounded dissipation" );
 	  Run( r, *compSheenPbr ); }
 
 	// 7. Finding D verification: clearcoat (F0 = 0.04) over a

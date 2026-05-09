@@ -113,6 +113,20 @@ namespace RISE
 				return source.GetColorNM( ri2, nm );
 			}
 
+			SpectralPacket GetSpectrum( const RayIntersectionGeometric& ri ) const
+			{
+				// Spectral counterpart of GetColor / GetColorNM.  Without
+				// this override the base Painter::GetSpectrum returns a
+				// dummy SpectralPacket — any spectral painter wrapped by
+				// a UV transform (e.g. KHR_texture_transform on a spectral
+				// emissive map) would silently lose its spectral response
+				// on the spectral integrator path.
+				if( isIdentity ) return source.GetSpectrum( ri );
+				RayIntersectionGeometric ri2 = ri;
+				ri2.ptCoord = ApplyTransform( ri.ptCoord );
+				return source.GetSpectrum( ri2 );
+			}
+
 			Scalar GetAlpha( const RayIntersectionGeometric& ri ) const
 			{
 				if( isIdentity ) return source.GetAlpha( ri );

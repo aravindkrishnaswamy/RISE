@@ -1639,6 +1639,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		v.geomNormal = ri.geometric.vGeomNormal;
 		v.onb = ri.geometric.onb;
 		v.ptCoord = ri.geometric.ptCoord;
+		v.ptCoord1 = ri.geometric.ptCoord1;
+		v.bHasTexCoord1 = ri.geometric.bHasTexCoord1;
 		v.ptObjIntersec = ri.geometric.ptObjIntersec;
 		v.vColor = ri.geometric.vColor;
 		v.bHasVertexColor = ri.geometric.bHasVertexColor;
@@ -2621,6 +2623,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		v.geomNormal = ri.geometric.vGeomNormal;
 		v.onb = ri.geometric.onb;
 		v.ptCoord = ri.geometric.ptCoord;
+		v.ptCoord1 = ri.geometric.ptCoord1;
+		v.bHasTexCoord1 = ri.geometric.bHasTexCoord1;
 		v.ptObjIntersec = ri.geometric.ptObjIntersec;
 		v.vColor = ri.geometric.vColor;
 		v.bHasVertexColor = ri.geometric.bHasVertexColor;
@@ -3240,13 +3244,15 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		// Evaluate emitted radiance at this point
+		// Evaluate emitted radiance at this point.  PopulateRIGFromVertex
+		// is the canonical RIG-rebuild — same contract as the helper used
+		// by the connection sites at lines 4341 / 7265.  Without it,
+		// emissive painters bound to TEXCOORD_1 (or any non-default UV)
+		// silently sample at (0,0) on the (s=0) emitter strategy because
+		// the manual rebuild left ptCoord / ptCoord1 / bHasTexCoord1
+		// default-constructed.
 		RayIntersectionGeometric rig( Ray( eyeEnd.position, woFromEmitter ), nullRasterizerState );
-		rig.bHit = true;
-		rig.ptIntersection = eyeEnd.position;
-		rig.vNormal = eyeEnd.normal;
-		rig.vGeomNormal = eyeEnd.geomNormal;
-		rig.onb = eyeEnd.onb;
+		PathVertexEval::PopulateRIGFromVertex( eyeEnd, rig );
 
 		const RISEPel Le = pEmitter->emittedRadiance( rig, woFromEmitter, eyeEnd.geomNormal );
 
@@ -3511,11 +3517,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				RayIntersectionGeometric rig(
 					Ray( lightStart.position, -dirToLight ),
 					nullRasterizerState );
-				rig.bHit = true;
-				rig.ptIntersection = lightStart.position;
-				rig.vNormal = lightStart.normal;
-				rig.vGeomNormal = lightStart.geomNormal;
-				rig.onb = lightStart.onb;
+				PathVertexEval::PopulateRIGFromVertex( lightStart, rig );
 
 				Le = pEmitter->emittedRadiance(
 					rig,
@@ -3742,11 +3744,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				if( pEmitter ) {
 					RayIntersectionGeometric rig(
 						Ray( lightEnd.position, dirToCam ), nullRasterizerState );
-					rig.bHit = true;
-					rig.ptIntersection = lightEnd.position;
-					rig.vNormal = lightEnd.normal;
-					rig.vGeomNormal = lightEnd.geomNormal;
-					rig.onb = lightEnd.onb;
+					PathVertexEval::PopulateRIGFromVertex( lightEnd, rig );
 					fLight = pEmitter->emittedRadiance( rig, dirToCam, lightEnd.geomNormal );
 				}
 			}
@@ -4633,11 +4631,7 @@ Scalar BDPTIntegrator::EvalEmitterRadianceNM(
 	}
 
 	RayIntersectionGeometric rig( Ray( vertex.position, outDir ), nullRasterizerState );
-	rig.bHit = true;
-	rig.ptIntersection = vertex.position;
-	rig.vNormal = vertex.normal;
-	rig.vGeomNormal = vertex.geomNormal;
-	rig.onb = vertex.onb;
+	PathVertexEval::PopulateRIGFromVertex( vertex, rig );
 
 	return pEmitter->emittedRadianceNM( rig, outDir, vertex.geomNormal, nm );
 }
@@ -5011,6 +5005,8 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		v.geomNormal = ri.geometric.vGeomNormal;
 		v.onb = ri.geometric.onb;
 		v.ptCoord = ri.geometric.ptCoord;
+		v.ptCoord1 = ri.geometric.ptCoord1;
+		v.bHasTexCoord1 = ri.geometric.bHasTexCoord1;
 		v.ptObjIntersec = ri.geometric.ptObjIntersec;
 		v.pMaterial = ri.pMaterial;
 		v.pObject = ri.pObject;
@@ -5878,6 +5874,8 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		v.geomNormal = ri.geometric.vGeomNormal;
 		v.onb = ri.geometric.onb;
 		v.ptCoord = ri.geometric.ptCoord;
+		v.ptCoord1 = ri.geometric.ptCoord1;
+		v.bHasTexCoord1 = ri.geometric.bHasTexCoord1;
 		v.ptObjIntersec = ri.geometric.ptObjIntersec;
 		v.pMaterial = ri.pMaterial;
 		v.pObject = ri.pObject;
@@ -6687,11 +6685,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			if( pEmitter ) {
 				RayIntersectionGeometric rig(
 					Ray( lightStart.position, -dirToLight ), nullRasterizerState );
-				rig.bHit = true;
-				rig.ptIntersection = lightStart.position;
-				rig.vNormal = lightStart.normal;
-				rig.vGeomNormal = lightStart.geomNormal;
-				rig.onb = lightStart.onb;
+				PathVertexEval::PopulateRIGFromVertex( lightStart, rig );
 				LeNM = pEmitter->emittedRadianceNM( rig, -dirToLight, lightStart.geomNormal, nm );
 			}
 		} else if( lightStart.pLight ) {
@@ -6870,11 +6864,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				if( pEmitter ) {
 					RayIntersectionGeometric rig(
 						Ray( lightEnd.position, dirToCam ), nullRasterizerState );
-					rig.bHit = true;
-					rig.ptIntersection = lightEnd.position;
-					rig.vNormal = lightEnd.normal;
-					rig.vGeomNormal = lightEnd.geomNormal;
-					rig.onb = lightEnd.onb;
+					PathVertexEval::PopulateRIGFromVertex( lightEnd, rig );
 					LeNM = pEmitter->emittedRadianceNM( rig, dirToCam, lightEnd.geomNormal, nm );
 				}
 			} else if( lightEnd.pLight ) {
@@ -7436,10 +7426,7 @@ bool BDPTIntegrator::HasDispersiveDeltaVertex(
 		// lookup.
 		Ray dummyRay( Point3Ops::mkPoint3( v.position, v.normal ), -v.normal );
 		RayIntersectionGeometric rig( dummyRay, nullRasterizerState );
-		rig.ptIntersection = v.position;
-		rig.vNormal = v.normal;
-		rig.vGeomNormal = v.geomNormal;
-		rig.onb = v.onb;
+		PathVertexEval::PopulateRIGFromVertex( v, rig );
 
 		IORStack vertexIor( 1.0 );
 		BuildVertexIORStack( v, vertexIor );

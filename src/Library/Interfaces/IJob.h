@@ -2688,6 +2688,18 @@ namespace RISE
 		virtual std::string GetRasterizerParameter(
 			const char* /*rasterizerName*/,
 			const char* /*paramName*/ ) const { return std::string(); }
+
+		//! Adds a TEXCOORD_1 selector painter (glTF L12.D).  Wraps a
+		//! source painter to sample at ri.ptCoord1 instead of ri.ptCoord.
+		//! Appended at the end of IJob to preserve the vtable layout
+		//! for out-of-tree consumers compiled against the prior header.
+		//! Default impl returns false for ABI safety; concrete `Job`
+		//! overrides.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddTexCoord1Painter(
+									const char* /*name*/,			///< [in] Name of the painter
+									const char* /*source*/			///< [in] Source painter
+									) { return false; }
 	};
 
 

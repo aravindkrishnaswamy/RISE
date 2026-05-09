@@ -1960,6 +1960,28 @@ bool Job::AddChannelPainter(
 	return true;
 }
 
+//! Adds a TEXCOORD_1 selector painter.  See IJob.h for the doc.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddTexCoord1Painter(
+							const char* name,
+							const char* source
+							)
+{
+	IPainter* pSrc = pPntManager->GetItem( source );
+	if( !pSrc ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddTexCoord1Painter:: source painter `%s` not found", source );
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateTexCoord1Painter( &pPainter, *pSrc );
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
 //! Adds a UV-transform wrapper painter.  See IJob.h for the doc.
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddUVTransformPainter(

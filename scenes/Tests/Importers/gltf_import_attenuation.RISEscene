@@ -1,0 +1,85 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#
+#   File:           gltf_import_attenuation.RISEscene
+#   Description:    L11 verification: Khronos's AttenuationTest.glb arrays 18 PBR materials in
+#                   five rows (R1-R5) testing different parameter combinations of
+#                   KHR_materials_volume + KHR_materials_transmission + KHR_materials_ior.
+#                   Each block is a 1x1x1 cube; rows test:
+#                     R1: solid Lambertian with baseColor matching what the volume should
+#                         absorb to — comparison reference (no actual transmission).
+#                     R2: same volume params, varying thicknessFactor (0.25 → 2.0).
+#                     R3: thickness encoded via thicknessTexture (Phase 1 ignored).
+#                     R4: same as R2 but flat (no per-row thickness variation).
+#                     R5: varying attenuationDistance (0.25 → 4).
+#                   With L11 wired (importer reads attenuation_color + attenuation_distance,
+#                   builds HomogeneousMedium with σ_a = -log(attenuation_color)/distance, binds
+#                   to each volume-bearing object via SetObjectInteriorMedium), R5 should show
+#                   a clear gradient: short attenuation distance → strong absorption → blue
+#                   tint; long distance → weak absorption → tint approaches the unfiltered
+#                   background.  R2 should show similar variation as thickness rises.  R1
+#                   solid samples are the "reference": each block matches what the
+#                   transmission+volume blocks should produce when correctly tuned.
+#
+#                   Path tracing required (transmission + refraction); high spp because
+#                   Beer-Lambert through a refractive boundary involves multiple branches.
+#
+#   Author:         Aravind Krishnaswamy
+#   Birthdate:      2026-05-07
+#
+#############################################################################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				64
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/gltf_import_attenuation
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+# Asset bbox: X = [-3.5, 6.5], Y = [-3, 3], Z = [-0.5, 1.5].  Camera
+# in front, looking back, framed for the X strip.
+pinhole_camera
+{
+	location		1.0 0 12
+	lookat			1.0 0 0
+	up				0 1 0
+	width			1024
+	height			512
+	fov				55.0
+}
+
+gltf_import
+{
+	file			scenes/Tests/Geometry/assets/AttenuationTest.glb
+	name_prefix		atten
+}
+
+# Asset has no lights.  A bright key + soft fill so refraction of the
+# background through the cubes is visible.
+directional_light
+{
+	name			key
+	power			3.5
+	color			1.0 1.0 1.0
+	# RISE convention: direction FROM surface TO light.
+	direction		0.4 0.6 1.0
+}
+
+ambient_light
+{
+	name			ambient
+	power			0.4
+	color			1.0 1.0 1.0
+}
