@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -41,6 +42,7 @@ import kotlinx.coroutines.withContext
  * bounding rectangle and drained at ~30 Hz — doing a recomposition per tile
  * would overwhelm Compose and burn CPU.
  */
+@OptIn(FlowPreview::class)  // Flow.sample is in the preview API.
 class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
 
     private val _state = MutableStateFlow<RenderState>(RenderState.Idle)
@@ -96,6 +98,29 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
 
     var frame by mutableStateOf<ImageBitmap?>(null)
         private set
+
+    // L5e — LDR preview controls: exposure (EV stops, [-6, +6])
+    // and tone curve (DISPLAY_TRANSFORM enum int, default ACES).
+    // Both are pure read-back parameters: setting them re-emits
+    // the cached FrameStore through nativeSet* without re-running
+    // the rasterizer, so dragging the slider is instant.
+    private val _viewExposureEV = MutableStateFlow(0.0)
+    val viewExposureEV: StateFlow<Double> = _viewExposureEV.asStateFlow()
+
+    private val _viewToneCurve = MutableStateFlow(2 /* ACES */)
+    val viewToneCurve: StateFlow<Int> = _viewToneCurve.asStateFlow()
+
+    fun setViewExposureEV(ev: Double) {
+        val clamped = ev.coerceIn(-6.0, 6.0)
+        _viewExposureEV.value = clamped
+        RiseNative.nativeSetViewExposureEV(clamped)
+    }
+
+    fun setViewToneCurve(curve: Int) {
+        val clamped = curve.coerceIn(0, 4)
+        _viewToneCurve.value = clamped
+        RiseNative.nativeSetViewToneCurve(clamped)
+    }
 
     // Active render coroutine — cancelled on onCleared or user cancel request.
     private var renderJob: Job? = null

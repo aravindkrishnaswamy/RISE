@@ -181,6 +181,21 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// docs/FRAMESTORE_DESIGN.md §11 L4b.
 - (void)setViewExposureEV:(double)ev;
 
+/// L5e — Set the LDR view tone curve.  `curve` is a value of the
+/// `DISPLAY_TRANSFORM` enum cast to `int`:
+///   0 = None      (legacy clip-at-1.0 behaviour)
+///   1 = Reinhard  (x / (1 + x))
+///   2 = ACES      (Narkowicz fit; library default)
+///   3 = AgX       (Sobotka scalar)
+///   4 = Hable     (Uncharted 2 filmic)
+/// The default is ACES.  Like `setViewExposureEV`, applies at
+/// display read-back time only — no rasterizer re-run.  Triggers an
+/// immediate Repaint so the on-screen image swaps curves live.
+/// Ignored when the EDR (HDR) preview is on (HDR display path is
+/// by-construction tone-curve-free; the OS compositor handles the
+/// display-side mapping).
+- (void)setViewToneCurve:(int)curve;
+
 /// Save the current FrameStore contents to disk via the L2
 /// IFrameEncoder pipeline.  `formatName` is one of
 /// "PNG", "EXR", "TIFF", "HDR", "RGBEA", "TGA", "PPM" (matched

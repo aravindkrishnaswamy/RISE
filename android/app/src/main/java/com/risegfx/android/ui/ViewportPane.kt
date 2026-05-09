@@ -8,6 +8,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -110,6 +113,13 @@ fun ViewportPane(
     /// for snackbar display.  See RenderViewModel.saveRendered.
     canSave: Boolean = false,
     onSave: (String) -> Unit = {},
+    /// L5e — LDR preview controls.  Exposure is in EV stops, range
+    /// [-6, +6]; tone curve is a DISPLAY_TRANSFORM enum int (0-4).
+    /// Both setters bypass the rasterizer; immediate refresh.
+    viewExposureEV: Double = 0.0,
+    onExposureChange: (Double) -> Unit = {},
+    viewToneCurve: Int = 2 /* ACES */,
+    onToneCurveChange: (Int) -> Unit = {},
     /// Bumped by [RenderViewModel] each time the underlying viewport
     /// controller is restarted (scene load, after a production
     /// render).  We re-apply the persisted [selectedTool] on every
@@ -232,6 +242,22 @@ fun ViewportPane(
                 onCancel = onCancel,
                 canSave = canSave,
                 onSave = onSave,
+            )
+            // L5e — Exposure slider + Tone Curve dropdown.  Lives
+            // ABOVE the canvas (under the state strip), visually
+            // distinct from the time slider that lives at the
+            // BOTTOM of the canvas with time-formatted readout.
+            // Header row tells the user which slider this is at a
+            // glance.  Double-tap on the slider track resets to 0
+            // (TapGesture overlay; Material3 Slider doesn't expose
+            // a built-in reset path).
+            Spacer(Modifier.height(4.dp))
+            ExposureControlsRow(
+                exposureEV = viewExposureEV.toFloat(),
+                onExposureChange = { onExposureChange(it.toDouble()) },
+                toneCurve = viewToneCurve,
+                onToneCurveChange = onToneCurveChange,
+                enabled = state !is RenderState.Idle,
             )
             Spacer(Modifier.height(8.dp))
             Row(Modifier.weight(1f).fillMaxWidth()) {
@@ -420,10 +446,10 @@ private fun ViewportToolbar(
         // across all material-icons versions; Undo/Redo aren't.  Same
         // semantics: backward = undo, forward = redo.
         IconButton(onClick = onUndo, enabled = enabled) {
-            Icon(Icons.Default.ArrowBack, contentDescription = "Undo")
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Undo")
         }
         IconButton(onClick = onRedo, enabled = enabled) {
-            Icon(Icons.Default.ArrowForward, contentDescription = "Redo")
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Redo")
         }
     }
 }
@@ -637,7 +663,7 @@ private fun ViewportAccordionPanel(
         Text(if (header.isEmpty()) "Scene" else header,
             style = MaterialTheme.typography.titleSmall,
             modifier = Modifier.padding(bottom = 4.dp))
-        Divider()
+        HorizontalDivider()
 
         LazyColumn(modifier = Modifier.weight(1f).padding(top = 4.dp)) {
             items(kAccordionSections, key = { it.category }) { section ->
@@ -724,7 +750,7 @@ private fun AccordionSection(
             ) {
                 Icon(
                     imageVector = if (isExpanded) Icons.Default.KeyboardArrowDown
-                                  else            Icons.Default.KeyboardArrowRight,
+                                  else            Icons.AutoMirrored.Filled.KeyboardArrowRight,
                     contentDescription = if (isExpanded) "Collapse" else "Expand",
                 )
                 Spacer(Modifier.width(4.dp))
@@ -1067,5 +1093,130 @@ private fun ScrubHandle(
             modifier = Modifier.size(16.dp),
         )
     }
+}
+
+// L5e — Exposure slider + Tone Curve dropdown.  Compact row above
+// the canvas.  Visually distinct from the bottom time slider:
+//   * Header row labels "Exposure" with EV-formatted value
+//     ("+1.2 EV", "0.0 EV", "-3.5 EV") — time slider uses time
+//     formatting ("2.45 s") and lives below the canvas.
+//   * Tone curve dropdown sits next to the slider.
+//
+// **Reset to 0 EV**: tap the EV-readout text in the header row.
+// An earlier round used `Modifier.pointerInput { detectTapGestures(
+// onDoubleTap = …) }` stacked atop the Slider as a double-tap
+// reset target, but that approach broke the slider entirely:
+// `detectTapGestures` reads pointer-down events from the channel
+// during its tap-vs-drag disambiguation — once the overlay's
+// coroutine consumes the initial DOWN, the Slider underneath
+// misses it and never starts dragging.  Even after the gesture
+// detector exits without claiming the drag, the early-channel-
+// read damage is done.  Tapping the EV value label is the more
+// reliable Compose pattern AND a wider, more discoverable tap
+// target on touch devices.
+@Composable
+private fun ExposureControlsRow(
+    exposureEV: Float,
+    onExposureChange: (Float) -> Unit,
+    toneCurve: Int,
+    onToneCurveChange: (Int) -> Unit,
+    enabled: Boolean,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Default.WbSunny,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                "Exposure",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+            )
+            Spacer(Modifier.weight(1f))
+
+            // EV readout doubles as a tap-to-reset target.  TextButton
+            // gives ripple feedback + Material's recommended min-tap-
+            // target sizing; compact contentPadding keeps it from
+            // dominating the row.  Auto-disabled when already at 0 EV
+            // so the affordance only lights up when there's something
+            // to reset (also makes "tap to reset" intent obvious to
+            // users who haven't read the tooltip).
+            TextButton(
+                onClick = { onExposureChange(0f) },
+                enabled = enabled && exposureEV != 0f,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                modifier = Modifier.heightIn(min = 32.dp),
+            ) {
+                Text(
+                    formatEV(exposureEV),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Spacer(Modifier.width(4.dp))
+
+            // Tone curve dropdown.  Compact button labelled with
+            // current curve; tap to open menu.  Greyed out via
+            // `enabled` (caller passes false in idle state).
+            var tcExpanded by remember { mutableStateOf(false) }
+            Box {
+                OutlinedButton(
+                    onClick = { tcExpanded = true },
+                    enabled = enabled,
+                    modifier = Modifier.heightIn(min = 32.dp),
+                ) {
+                    Text(toneCurveLabel(toneCurve),
+                         style = MaterialTheme.typography.bodySmall)
+                }
+                DropdownMenu(
+                    expanded = tcExpanded,
+                    onDismissRequest = { tcExpanded = false },
+                ) {
+                    val labels = listOf("None", "Reinhard", "ACES", "AgX", "Hable")
+                    labels.forEachIndexed { idx, label ->
+                        DropdownMenuItem(
+                            text = { Text(label) },
+                            onClick = {
+                                tcExpanded = false
+                                onToneCurveChange(idx)
+                            },
+                            trailingIcon = if (idx == toneCurve) {
+                                { Icon(Icons.Default.Check, contentDescription = null,
+                                       modifier = Modifier.size(16.dp)) }
+                            } else null,
+                        )
+                    }
+                }
+            }
+        }
+
+        // Bare slider, no overlay — the EV readout above is the
+        // reset affordance.  Pointer-input pipeline stays
+        // unobstructed so drag events land cleanly.
+        Slider(
+            value = exposureEV.coerceIn(-6f, 6f),
+            onValueChange = { onExposureChange(it) },
+            valueRange = -6f..6f,
+            enabled = enabled,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+private fun formatEV(v: Float): String {
+    val sign = if (v > 0f) "+" else ""
+    return String.format("%s%.1f EV", sign, v)
+}
+
+private fun toneCurveLabel(curve: Int): String = when (curve) {
+    0 -> "None"
+    1 -> "Reinhard"
+    2 -> "ACES"
+    3 -> "AgX"
+    4 -> "Hable"
+    else -> "?"
 }
 

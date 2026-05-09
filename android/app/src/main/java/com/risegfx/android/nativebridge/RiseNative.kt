@@ -145,6 +145,19 @@ object RiseNative {
     external fun nativeSetViewExposureEV(ev: Double)
 
     /**
+     * L5e — LDR view tone curve.  Mirrors `RiseBridge::setViewToneCurve`:
+     *   0 = None      (legacy clip-at-1.0)
+     *   1 = Reinhard
+     *   2 = ACES      (default)
+     *   3 = AgX
+     *   4 = Hable
+     * Same lifecycle as [nativeSetViewExposureEV]: applies at
+     * read-back time only, immediate framebuffer refresh, ignored
+     * while HDR display is on.
+     */
+    external fun nativeSetViewToneCurve(curve: Int)
+
+    /**
      * Encode the current FrameStore to a file via the L2 IFrameEncoder
      * registry.  [formatName] is one of "PNG", "EXR", "TIFF", "HDR",
      * "RGBEA", "TGA", "PPM" (case-insensitive).  [ev] applies to the

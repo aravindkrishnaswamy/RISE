@@ -154,12 +154,12 @@ void RiseBridge::initialize(const std::string& projectRoot,
     // the parent directory, so we pre-create the directories the bundled
     // scenes need. Harmless if they already exist.
     //
-    // Add to this list whenever a new bundled scene writes to a nested
-    // output pattern. Plain "rendered/<sceneName>" only needs the top-level
-    // "rendered" directory to exist.
+    // Add to this list whenever a new bundled scene writes to a NESTED
+    // output pattern (e.g. "rendered/foo/frame" needs "rendered/foo").
+    // Plain "rendered/<sceneName>" only needs the top-level "rendered"
+    // directory, which is already covered.
     static const char* kRenderedDirs[] = {
         "rendered",
-        "rendered/teapot",   // teapot.RISEscene writes "rendered/teapot/frame"
     };
     for (const char* sub : kRenderedDirs) {
         const std::string dir = projectRoot + "/" + sub;
@@ -468,9 +468,11 @@ void RiseBridge::onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi) {
     {
         std::lock_guard<std::mutex> lock(m_fbMutex);
         if (!m_framebuffer || m_fbWidth != W || m_fbHeight != H) return;
+        // L5e — bake in the user-selected tone curve (default ACES).
+        const RISE::DISPLAY_TRANSFORM tc =
+            static_cast<RISE::DISPLAY_TRANSFORM>(m_viewToneCurve.load());
         const ViewTransform xf = ViewTransform::ForLDRDisplay(
-            static_cast<float>(m_viewExposureEV.load()),
-            RISE::eDisplayTransform_None);
+            static_cast<float>(m_viewExposureEV.load()), tc);
         if (halfOpenRoi) {
             // Region path — see RISEBridge.mm:EmitRegion_locked
             // and FrameStore.cpp:748-750 for the dst-offset rationale:
@@ -564,9 +566,11 @@ void RiseBridge::onInteractiveVFSFrameComplete() {
     {
         std::lock_guard<std::mutex> lock(m_fbMutex);
         if (!m_framebuffer || m_fbWidth != W || m_fbHeight != H) return;
+        // L5e — same tone-curve snapshot as the production path.
+        const RISE::DISPLAY_TRANSFORM tc =
+            static_cast<RISE::DISPLAY_TRANSFORM>(m_viewToneCurve.load());
         const ViewTransform xf = ViewTransform::ForLDRDisplay(
-            static_cast<float>(m_viewExposureEV.load()),
-            RISE::eDisplayTransform_None);
+            static_cast<float>(m_viewExposureEV.load()), tc);
         m_interactiveVFS->RenderToBuffer(
             m_framebuffer, static_cast<size_t>(W) * 4,
             RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf);
@@ -605,6 +609,15 @@ void RiseBridge::setViewExposureEV(double ev) {
     onInteractiveVFSFrameComplete();
 }
 
+void RiseBridge::setViewToneCurve(int curve) {
+    // L5e — same lifecycle as setViewExposureEV: atomic store,
+    // re-render both VFS surfaces.  No-op for VFSes that haven't
+    // allocated yet.
+    m_viewToneCurve.store(curve);
+    onProductionVFSTileComplete(nullptr);
+    onInteractiveVFSFrameComplete();
+}
+
 bool RiseBridge::saveAs(const std::string& path,
                         const std::string& formatName,
                         double             ev) {
@@ -628,9 +641,13 @@ bool RiseBridge::saveAs(const std::string& path,
         opts.bpp           = 0;
         opts.viewTransform = ViewTransform::Identity();
     } else {
+        // L5e — bake the user's currently-active tone curve into
+        // the LDR save so the file matches the on-screen viewport.
+        const RISE::DISPLAY_TRANSFORM tc =
+            static_cast<RISE::DISPLAY_TRANSFORM>(m_viewToneCurve.load());
         opts.bpp           = 8;
         opts.viewTransform = ViewTransform::ForLDRDisplay(
-            static_cast<float>(ev), RISE::eDisplayTransform_None);
+            static_cast<float>(ev), tc);
     }
     return m_productionVFS->SaveAs(path, enc, opts);
 }

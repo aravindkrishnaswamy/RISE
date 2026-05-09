@@ -132,6 +132,14 @@ JNIF(void, nativeSetViewExposureEV)(JNIEnv* /*env*/, jobject /*thiz*/,
     getBridge().setViewExposureEV(static_cast<double>(ev));
 }
 
+// L5e — LDR view tone curve.  See RiseBridge::setViewToneCurve for
+// the int → DISPLAY_TRANSFORM mapping (0 None / 1 Reinhard /
+// 2 ACES default / 3 AgX / 4 Hable).
+JNIF(void, nativeSetViewToneCurve)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                   jint curve) {
+    getBridge().setViewToneCurve(static_cast<int>(curve));
+}
+
 JNIF(jboolean, nativeSaveAs)(JNIEnv* env, jobject /*thiz*/,
                              jstring jPath, jstring jFormat, jdouble ev) {
     return getBridge().saveAs(jstringToStd(env, jPath),

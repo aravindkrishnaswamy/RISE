@@ -88,6 +88,39 @@ ControlsWidget::ControlsWidget(QWidget* parent)
     m_progressGroup->hide();
     mainLayout->addWidget(m_progressGroup);
 
+    // L5e — Exposure slider.  Lives in the Controls panel (under
+    // the Render group) so it's visually distinct from the
+    // animation-time slider in the viewport pane.  Header row is
+    // "Exposure  +0.0 EV" so the function is obvious at a glance;
+    // double-click anywhere on the slider track resets to 0 EV
+    // (ExposureSlider subclass overrides mouseDoubleClickEvent).
+    auto* exposureGroup = new QWidget();
+    auto* exposureLayout = new QVBoxLayout(exposureGroup);
+    exposureLayout->setContentsMargins(0, 4, 0, 0);
+    exposureLayout->setSpacing(2);
+
+    auto* exposureHeader = new QHBoxLayout();
+    auto* exposureTitle = new QLabel("Exposure");
+    exposureTitle->setStyleSheet("color: gray;");
+    m_exposureLabel = new QLabel("0.0 EV");
+    m_exposureLabel->setStyleSheet("font-family: monospace; color: gray;");
+    m_exposureLabel->setAlignment(Qt::AlignRight);
+    exposureHeader->addWidget(exposureTitle);
+    exposureHeader->addStretch();
+    exposureHeader->addWidget(m_exposureLabel);
+    exposureLayout->addLayout(exposureHeader);
+
+    m_exposureSlider = new ExposureSlider();
+    m_exposureSlider->setRange(kExposureSliderMin, kExposureSliderMax);
+    m_exposureSlider->setValue(0);
+    m_exposureSlider->setSingleStep(1);   //  0.1 EV
+    m_exposureSlider->setPageStep(10);    //  1.0 EV
+    m_exposureSlider->setToolTip(
+        "Display exposure in EV stops.  Double-click the slider to reset to 0.");
+    exposureLayout->addWidget(m_exposureSlider);
+
+    mainLayout->addWidget(exposureGroup);
+
     mainLayout->addStretch();
 
     // Connections
@@ -98,7 +131,45 @@ ControlsWidget::ControlsWidget(QWidget* parent)
     connect(m_renderAnimBtn, &QPushButton::clicked, this, &ControlsWidget::renderAnimationClicked);
     connect(m_cancelBtn, &QPushButton::clicked, this, &ControlsWidget::cancelClicked);
 
+    // L5e — exposure-slider wiring.  valueChanged → forward as
+    // double EV; resetRequested (double-click) → snap to 0 +
+    // forward.  The valueChanged signal also fires when we
+    // programmatically setValue(0), so there's a single consumer
+    // path for both gestures.
+    connect(m_exposureSlider, &QSlider::valueChanged,
+            this, &ControlsWidget::onExposureSliderChanged);
+    connect(m_exposureSlider, &ExposureSlider::resetRequested,
+            this, &ControlsWidget::onExposureResetRequested);
+
     updateButtonStates();
+}
+
+void ControlsWidget::setExposureEV(double ev)
+{
+    // External programmatic setter (e.g. on scene load).  Block
+    // signals so we don't echo back to the engine.
+    const int v = qBound(kExposureSliderMin, static_cast<int>(ev * 10.0), kExposureSliderMax);
+    QSignalBlocker blocker(m_exposureSlider);
+    m_exposureSlider->setValue(v);
+    m_exposureLabel->setText(QString("%1%2 EV")
+        .arg(ev > 0 ? "+" : "")
+        .arg(ev, 0, 'f', 1));
+}
+
+void ControlsWidget::onExposureSliderChanged(int value)
+{
+    const double ev = value / 10.0;
+    m_exposureLabel->setText(QString("%1%2 EV")
+        .arg(ev > 0 ? "+" : "")
+        .arg(ev, 0, 'f', 1));
+    emit exposureChanged(ev);
+}
+
+void ControlsWidget::onExposureResetRequested()
+{
+    // Snap-to-zero.  setValue triggers valueChanged → label
+    // refresh + exposureChanged emit through the normal path.
+    m_exposureSlider->setValue(0);
 }
 
 void ControlsWidget::setRenderState(RenderEngine::State state)

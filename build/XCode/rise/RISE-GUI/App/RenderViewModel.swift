@@ -166,6 +166,36 @@ final class RenderViewModel: ObservableObject {
         }
     }
 
+    // L5e — LDR preview controls.  Both apply at display read-back
+    // time only (no rasterizer re-run); the bridge's setters trip
+    // an immediate Repaint so the on-screen image swaps live.
+    //
+    // `viewExposureEV` clamps to [-6, +6] in the slider UI but the
+    // Published value isn't itself clamped — programmatic resets to
+    // 0 (double-click on the slider track) and any future scene-
+    // metadata exposure import won't fight the clamp.  Range chosen
+    // to match the convergent 12-stop dynamic range of typical
+    // scene-referred radiance values without making the slider's
+    // sub-pixel granularity feel too coarse.
+    //
+    // `viewToneCurve` raw int matches RISE's DISPLAY_TRANSFORM
+    // enum (0 None, 1 Reinhard, 2 ACES, 3 AgX, 4 Hable).  Default
+    // 2 (ACES) is the modern preview standard — see L5e design
+    // briefing in the conversation log.  Stored as Int instead of
+    // a Swift enum so the same value can flow through the
+    // bridge's `setViewToneCurve:` ObjC method without an extra
+    // mapping layer.
+    @Published var viewExposureEV: Double = 0.0 {
+        didSet {
+            bridge.setViewExposureEV(viewExposureEV)
+        }
+    }
+    @Published var viewToneCurve: Int = 2 /* ACES */ {
+        didSet {
+            bridge.setViewToneCurve(Int32(viewToneCurve))
+        }
+    }
+
     /// Returns the underlying RISEBridge — needed by the SwiftUI
     /// `MetalEDRView` so it can hook the HDR block + push the
     /// resulting frames through Metal.  Callers MUST NOT retain

@@ -712,9 +712,13 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
         return;
     }
 
-    // SDR path (legacy, unchanged behaviour).
-    const ViewTransform xf = ViewTransform::ForLDRDisplay(
-        ev, eDisplayTransform_None);
+    // SDR path.  L5e — bake in the user-selected tone curve from
+    // `m_viewToneCurve` (default ACES) instead of the previous
+    // hardcoded `eDisplayTransform_None`.  Ignored on the HDR path
+    // above (ForHDRDisplay is by-construction tone-curve-free).
+    const DISPLAY_TRANSFORM tc =
+        static_cast<DISPLAY_TRANSFORM>(m_viewToneCurve.load());
+    const ViewTransform xf = ViewTransform::ForLDRDisplay(ev, tc);
 
     if (halfOpenRoi) {
         // Region-bounded path.  RenderToBuffer writes pixels at
@@ -837,6 +841,23 @@ void RenderEngine::setViewExposureEV(double ev)
     renderViewportToBufferAndEmit_locked(W, H, nullptr);
 }
 
+// L5e — Tone-curve scrub.  Same lifecycle as setViewExposureEV:
+// no rasterizer re-run, no-op until the FrameStore is allocated,
+// immediate Repaint to refresh the active display widget.  Tone
+// curve is irrelevant on the HDR display path (ForHDRDisplay
+// always uses _None internally) but Repaint is still safe — it
+// just re-emits the same HDR bytes.
+void RenderEngine::setViewToneCurve(int curve)
+{
+    m_viewToneCurve.store(curve);
+    if (!m_productionVFS) return;
+    unsigned int W = 0, H = 0;
+    m_productionVFS->GetDimensions(W, H);
+    if (W == 0 || H == 0) return;
+    std::lock_guard<std::mutex> lock(m_bufferMutex);
+    renderViewportToBufferAndEmit_locked(W, H, nullptr);
+}
+
 // L5b — flip HDR display mode.  Triggers an immediate re-emit so the
 // active widget (HDRRenderWidget when on, RenderWidget when off) gets
 // fresh content at the new TargetFormat / ViewTransform without
@@ -888,9 +909,13 @@ bool RenderEngine::saveAs(const QString& path,
         opts.bpp           = 0;
         opts.viewTransform = ViewTransform::Identity();
     } else {
+        // L5e — bake the user's currently-active tone curve into
+        // the LDR save so the file matches the on-screen viewport.
+        const DISPLAY_TRANSFORM tc =
+            static_cast<DISPLAY_TRANSFORM>(m_viewToneCurve.load());
         opts.bpp           = 8;
         opts.viewTransform = ViewTransform::ForLDRDisplay(
-            static_cast<float>(ev), eDisplayTransform_None);
+            static_cast<float>(ev), tc);
     }
     return m_productionVFS->SaveAs(
         std::string(path.toUtf8().constData()), enc, opts);
