@@ -25,6 +25,7 @@ namespace RISE
 	namespace Implementation
 	{
 		class OIDNDenoiser;	// forward decl — full type only needed in Rasterizer.cpp
+		class FrameStore;	// forward decl — held as a counted reference
 
 		class Rasterizer : public virtual IRasterizer, public virtual Reference
 		{
@@ -32,6 +33,20 @@ namespace RISE
 			typedef std::vector<IRasterizerOutput*>	RasterizerOutputListType;
 			RasterizerOutputListType				outs;
 			IProgressCallback*						pProgressFunc;
+
+			//! L6a — Canonical FrameStore the rasterizer writes into
+			//! (Phase 2 design, see docs/FRAMESTORE_DESIGN.md §6).
+			//! L6a (this commit): held but unused — the helper still
+			//! routes pixel writes through `mPersistentImage`.  L6b
+			//! flips `PixelBasedRasterizerHelper` to write through
+			//! `mFrameStore->AsBeautyRasterImage()` and bracket per-
+			//! block writes with `BeginTile`/`EndTile`.  Counted
+			//! reference: addref'd in the Rasterizer constructor when
+			//! non-null, released in the destructor.  May be null
+			//! (allows a transitional period where Job hasn't yet been
+			//! migrated to allocate one — see L6a's verification
+			//! commit).
+			FrameStore*								mFrameStore;
 
 #ifdef RISE_ENABLE_OIDN
 			bool									bDenoisingEnabled;
@@ -58,7 +73,11 @@ namespace RISE
 			mutable OIDNDenoiser*					mDenoiser;
 #endif
 
-			Rasterizer();
+			//! Constructor.  `frameStore` may be null while L6a is
+			//! mid-migration; non-null is the L6b+ target state.
+			//! When non-null, this constructor addrefs it; the
+			//! destructor releases.
+			explicit Rasterizer( FrameStore* frameStore = nullptr );
 			virtual ~Rasterizer();
 
 			// Figures out the number of threads to spawn based on the number of
@@ -88,6 +107,21 @@ namespace RISE
 			virtual void FreeRasterizerOutputs( );
 			virtual void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const;
 			virtual void SetProgressCallback( IProgressCallback* pFunc );
+
+			// L6a — IRasterizer override.  Returns the FrameStore
+			// passed at construction time (may be null until Job
+			// migrates to allocate one).
+			// `virtual` is explicitly written here to match the
+			// style of every other IRasterizer override in this
+			// section (AddRasterizerOutput, SetProgressCallback,
+			// etc. all spell out `virtual`).  `override` is
+			// intentionally OMITTED because the surrounding
+			// overrides aren't marked `override`; adding it here
+			// trips `-Winconsistent-missing-override` against the
+			// pre-existing methods.  See user memory:
+			// `feedback_override_keyword_in_job.md`.
+			virtual FrameStore* GetFrameStore() const
+				{ return mFrameStore; }
 
 #ifdef RISE_ENABLE_OIDN
 			void SetDenoisingEnabled( bool enabled ) { bDenoisingEnabled = enabled; }

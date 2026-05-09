@@ -12,9 +12,11 @@
 //
 //  Reference convention: FrameStore inherits from
 //  RISE::Implementation::Reference.  Construct with `new FrameStore(spec)`
-//  (refcount starts at 0, callers addref before sharing or use
-//  safe_release to clean up).  This matches the rest of the library
-//  (see RasterImage_Template, FilteredFilm, etc.).
+//  (refcount starts at 1 — Reference's default — so the `new` call
+//  hands the caller the initial ref; subsequent sharers `addref()`,
+//  and `safe_release()` drops a ref + null-clears the pointer).
+//  Verified by tests/FrameStoreTest.cpp:619.  This matches the rest
+//  of the library (see RasterImage_Template, FilteredFilm, etc.).
 //
 //  Observer convention: observers attach to the FrameStore, NOT to
 //  the rasterizer.  See IRenderObserver.h and

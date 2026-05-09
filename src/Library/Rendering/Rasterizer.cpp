@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "Rasterizer.h"
+#include "FrameStore.h"
 #include "OIDNDenoiser.h"
 #include "../Interfaces/IOptions.h"
 #include "../Utilities/CPU.h"
@@ -21,8 +22,9 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-Rasterizer::Rasterizer() :
+Rasterizer::Rasterizer( FrameStore* frameStore ) :
   pProgressFunc( 0 )
+  ,mFrameStore( frameStore )
 #ifdef RISE_ENABLE_OIDN
   ,bDenoisingEnabled( false )
   ,mDenoisingQuality( OidnQuality::Auto )
@@ -32,6 +34,14 @@ Rasterizer::Rasterizer() :
   ,mDenoiser( new OIDNDenoiser() )
 #endif
 {
+	// L6a — addref the FrameStore so the rasterizer keeps it alive
+	// for its own lifetime.  Job (or whatever else owns the original
+	// allocation) is welcome to release its own ref independently;
+	// FrameStore stays alive until the LAST holder releases.  Null
+	// is permitted during the L6a → L6b transition window.
+	if( mFrameStore ) {
+		mFrameStore->addref();
+	}
 }
 
 Rasterizer::~Rasterizer( )
@@ -41,6 +51,10 @@ Rasterizer::~Rasterizer( )
 	delete mDenoiser;
 	mDenoiser = 0;
 #endif
+	// L6a — drop our FrameStore reference.  If we held the last ref
+	// (e.g. Job already torn down), this destroys the FrameStore;
+	// otherwise the surviving holder keeps it alive.
+	safe_release( mFrameStore );
 }
 
 int Rasterizer::HowManyThreadsToSpawn() const
