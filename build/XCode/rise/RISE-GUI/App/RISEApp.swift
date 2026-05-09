@@ -92,6 +92,26 @@ struct RISEApp: App {
             CommandGroup(after: .toolbar) {
                 Toggle("EDR Preview", isOn: $viewModel.edrEnabled)
                     .disabled(!viewModel.edrAvailable)
+
+                // L5e — Tone Curve submenu.  Driven by
+                // `viewModel.viewToneCurve` (Int matching RISE's
+                // DISPLAY_TRANSFORM enum: 0 None, 1 Reinhard, 2
+                // ACES, 3 AgX, 4 Hable).  SwiftUI's `Picker` inside
+                // a CommandGroup renders as a submenu with the
+                // selected option marked.  Greyed out when EDR is
+                // on — HDR display is by-construction tone-curve-
+                // free; the OS compositor handles the display map.
+                Menu("Tone Curve") {
+                    Picker("Tone Curve", selection: $viewModel.viewToneCurve) {
+                        Text("None").tag(0)
+                        Text("Reinhard").tag(1)
+                        Text("ACES").tag(2)
+                        Text("AgX").tag(3)
+                        Text("Hable").tag(4)
+                    }
+                    .pickerStyle(.inline)
+                }
+                .disabled(viewModel.edrEnabled)
             }
         }
     }

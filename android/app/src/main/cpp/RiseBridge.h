@@ -217,6 +217,16 @@ public:
     // "PPM", case-insensitive).  Both no-op until the first render
     // has produced output.  See docs/FRAMESTORE_DESIGN.md §11 L4d.
     void setViewExposureEV(double ev);
+
+    // L5e — Set the LDR view tone curve.  `curve` is the
+    // RISE::DISPLAY_TRANSFORM enum cast to int (0 None, 1
+    // Reinhard, 2 ACES default, 3 AgX, 4 Hable).  Same lifecycle
+    // as setViewExposureEV: applies at read-back time only, no
+    // rasterizer re-run, immediate framebuffer refresh.  Ignored
+    // when HDR display is on (HDR path is by-construction tone-
+    // curve-free).
+    void setViewToneCurve(int curve);
+
     bool saveAs(const std::string& path,
                 const std::string& formatName,
                 double             ev);
@@ -289,6 +299,10 @@ private:
     RISE::Implementation::ViewportFrameStore* m_interactiveVFS = nullptr;
     bool                                      m_productionVFSAttachedToRasterizer = false;
     std::atomic<double>                       m_viewExposureEV{0.0};
+
+    // L5e — LDR view tone curve.  Default 2 = ACES; matches the
+    // modern preview-standard convergent across other platforms.
+    std::atomic<int>                          m_viewToneCurve{2 /* eDisplayTransform_ACES */};
     void ensureProductionVFSAttachedToRasterizer();
     void ensureInteractiveVFSCreated();
     // L4 round-7 P1: tile callback takes the half-open roi so we

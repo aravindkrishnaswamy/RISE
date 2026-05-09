@@ -122,6 +122,17 @@ public slots:
     void setHDREnabled(bool enabled);
     bool hdrEnabled() const { return m_hdrEnabled.load(); }
 
+    // L5e — LDR preview controls (parity with macOS).  Both apply
+    // at display read-back time only — no rasterizer re-run; an
+    // immediate Repaint refreshes the on-screen image.  `curve` is
+    // a value of the `DISPLAY_TRANSFORM` enum cast to int:
+    //   0 None / 1 Reinhard / 2 ACES (default) / 3 AgX / 4 Hable.
+    // Tone curve is ignored when HDR is on (the HDR display path
+    // is by-construction tone-curve-free; the OS compositor
+    // handles the display map).
+    void setViewToneCurve(int curve);
+    int  viewToneCurve() const { return m_viewToneCurve.load(); }
+
     /// Advance the in-memory scene to time `t` AND regenerate every
     /// populated photon map.  Called by MainWindow before kicking the
     /// production rasterizer so post-scrub renders pick up caustics
@@ -237,6 +248,11 @@ private:
     // even if a UI toggle lands between RenderToBuffer and emit).
     std::atomic<bool>     m_hdrEnabled{false};
     std::vector<uint16_t> m_hdrPixelBuffer;  // binary16 RGBA, 4 per pixel
+
+    // L5e — LDR view tone curve.  Default 2 = ACES; matches
+    // the modern preview-standard convergent in macOS / Karma /
+    // Maya Arnold.  Cast to DISPLAY_TRANSFORM at consumption.
+    std::atomic<int>      m_viewToneCurve{2 /* eDisplayTransform_ACES */};
 };
 
 #endif // RENDERENGINE_H

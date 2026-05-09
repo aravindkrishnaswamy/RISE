@@ -294,6 +294,32 @@ struct ContentView: View {
                 // `viewModel.edrEnabled` published property; the menu
                 // item disables itself when `edrAvailable` is false.
 
+                // L5e — Exposure slider.  Lives in the Controls panel
+                // (under the Render buttons) so it's visually distinct
+                // from the animation-time slider that appears in the
+                // viewport pane.  Title bar makes the function obvious
+                // at a glance: "Exposure  +0.0 EV".  Double-click on
+                // the slider track resets to 0 — a TapGesture-with-
+                // count-2 layered behind the Slider, sized to its
+                // bounds.  The Slider consumes single-clicks for its
+                // own drag; double-clicks fall through to the gesture
+                // because SwiftUI's gesture-priority resolution gives
+                // higher-count taps precedence.  No "Reset" button —
+                // the gesture is the only affordance, matching DCC
+                // norms (Houdini, Maya).
+                // L5e round-2 — `!viewModel.edrEnabled` gate added.
+                // In HDR / EDR display mode the OS compositor owns
+                // the dynamic-range mapping, and applying our own
+                // exposure on top double-maps the radiance signal —
+                // visually jarring on HDR-capable monitors.  Same
+                // disable rule the View > Tone Curve menu uses.
+                Divider()
+                ExposureSliderRow(
+                    ev: $viewModel.viewExposureEV,
+                    enabled: viewModel.renderState != .idle
+                          && !viewModel.edrEnabled
+                )
+
                 // Progress
                 if viewModel.renderState == .rendering || viewModel.renderState == .cancelling {
                     VStack(alignment: .leading, spacing: 4) {
@@ -481,5 +507,60 @@ struct ContentView: View {
             return (path as NSString).lastPathComponent
         }
         return "RISE"
+    }
+}
+
+// L5e — Exposure slider row.  Title + value readout above a clamped
+// [-6, +6] EV slider.  Double-clicking anywhere on the slider's
+// bounding rect resets to 0 (TapGesture(count: 2) layered as a
+// background; SwiftUI's gesture-priority gives the higher-count tap
+// precedence over the Slider's own drag handling, so a quick
+// double-tap doesn't first land a stray drag).  Greyed out before
+// the first scene load — the slider has no semantically meaningful
+// effect there because the FrameStore doesn't exist yet, and an
+// active-looking slider whose drags do nothing is confusing UX.
+private struct ExposureSliderRow: View {
+    @Binding var ev: Double
+    let enabled: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Image(systemName: "sun.max")
+                    .imageScale(.small)
+                Text("Exposure")
+                    .font(.caption)
+                Spacer()
+                Text(formatEV(ev))
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundColor(.secondary)
+            }
+            Slider(value: $ev, in: -6.0...6.0)
+                .controlSize(.small)
+                .background(
+                    // Reset-to-zero double-click target.  Color.clear
+                    // is hit-testable but invisible.  Sized to the
+                    // Slider's bounds via .background placement; the
+                    // gesture only fires on count == 2 so single-
+                    // clicks pass through to the Slider's drag gate.
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(
+                            TapGesture(count: 2).onEnded {
+                                ev = 0.0
+                            }
+                        )
+                )
+        }
+        .disabled(!enabled)
+        .help("Display exposure in EV stops.  Double-click the slider to reset to 0.")
+    }
+
+    private func formatEV(_ v: Double) -> String {
+        // "+1.2 EV" / "0.0 EV" / "-3.5 EV" — matches the convention
+        // used by photo apps (Lightroom etc.) and DCC viewers.
+        let sign = v > 0 ? "+" : ""
+        return String(format: "\(sign)%.1f EV", v)
     }
 }

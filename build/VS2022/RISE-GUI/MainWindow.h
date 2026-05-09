@@ -15,6 +15,7 @@
 #include <QStringList>
 
 class QAction;
+class QActionGroup;
 class QMenu;
 class QStackedWidget;
 class RenderEngine;
@@ -95,6 +96,8 @@ private:
     QStackedWidget* m_productionPaneStack = nullptr;  // SDR / HDR within production
     QAction*        m_hdrToggleAction = nullptr;       // View > HDR Preview
     QAction*        m_saveImageAction = nullptr;       // L5d — File > Save Rendered Image…
+    QMenu*          m_toneCurveMenu = nullptr;         // L5e — View > Tone Curve
+    QActionGroup*   m_toneCurveGroup = nullptr;        // L5e — exclusive group for tone-curve radio
     ControlsWidget* m_controlsWidget = nullptr;
     LogWidget* m_logWidget = nullptr;
     SceneEditor* m_sceneEditor = nullptr;

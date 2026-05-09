@@ -73,6 +73,8 @@ fun RenderScreen(
     val sceneLoaded      by viewModel.sceneLoaded.collectAsState()
     val viewportEpoch    by viewModel.viewportEpoch.collectAsState()
     val sceneTimeDouble  by viewModel.sceneTime.collectAsState()
+    val viewExposureEV   by viewModel.viewExposureEV.collectAsState()
+    val viewToneCurve    by viewModel.viewToneCurve.collectAsState()
     val frame            = viewModel.frame
     val context     = LocalContext.current
     val riseRoot    = remember { (context.applicationContext as RiseApplication).riseRoot }
@@ -141,6 +143,10 @@ fun RenderScreen(
                         remainingMs = remainingMs,
                         onRender = { viewModel.startRender() },
                         onCancel = viewModel::cancel,
+                        viewExposureEV = viewExposureEV,
+                        onExposureChange = { viewModel.setViewExposureEV(it) },
+                        viewToneCurve = viewToneCurve,
+                        onToneCurveChange = { viewModel.setViewToneCurve(it) },
                         canSave = canSave,
                         onSave = { format ->
                             val path = viewModel.saveRendered(format)

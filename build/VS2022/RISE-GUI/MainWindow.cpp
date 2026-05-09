@@ -20,6 +20,7 @@
 #include "ViewportProperties.h"
 
 #include <QAction>
+#include <QActionGroup>
 
 #include <QMenuBar>
 #include <QStatusBar>
@@ -136,6 +137,12 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_controlsWidget, &ControlsWidget::renderAnimationClicked, this, &MainWindow::onRenderAnimation);
     connect(m_controlsWidget, &ControlsWidget::cancelClicked, this, &MainWindow::onCancel);
 
+    // L5e — exposure slider drives engine.setViewExposureEV.
+    // Engine is mid-render-safe (atomic + Repaint, no rasterizer
+    // re-run), so even rapid drag updates settle in <1 frame.
+    connect(m_controlsWidget, &ControlsWidget::exposureChanged,
+            m_engine, &RenderEngine::setViewExposureEV);
+
     // Connect editor signals
     connect(m_sceneEditor, &SceneEditor::closeRequested, this, &MainWindow::onEditToggle);
     connect(m_sceneEditor, &SceneEditor::saveAndReloadRequested, this, &MainWindow::onSaveAndReload);
@@ -212,6 +219,35 @@ void MainWindow::createMenuBar()
     connect(m_hdrToggleAction, &QAction::toggled,
             this, &MainWindow::onHDRToggled);
 
+    // L5e — Tone Curve submenu.  Mirror of the macOS
+    // View > Tone Curve picker.  Exclusive QActionGroup gives the
+    // submenu radio-button semantics; engine default = 2 (ACES).
+    // Greyed out when HDR Preview is on (HDR display path is
+    // by-construction tone-curve-free).
+    auto* toneCurveMenu = viewMenu->addMenu("&Tone Curve");
+    m_toneCurveGroup = new QActionGroup(this);
+    m_toneCurveGroup->setExclusive(true);
+    struct ToneCurveEntry { const char* label; int curve; };
+    const ToneCurveEntry entries[] = {
+        { "&None",      0 },
+        { "&Reinhard",  1 },
+        { "&ACES",      2 },
+        { "Ag&X",       3 },
+        { "&Hable",     4 },
+    };
+    for (const auto& e : entries) {
+        auto* a = toneCurveMenu->addAction(e.label);
+        a->setCheckable(true);
+        a->setChecked(e.curve == 2);  // ACES default
+        a->setData(e.curve);
+        m_toneCurveGroup->addAction(a);
+    }
+    connect(m_toneCurveGroup, &QActionGroup::triggered,
+            this, [this](QAction* a) {
+                if (m_engine) m_engine->setViewToneCurve(a->data().toInt());
+            });
+    m_toneCurveMenu = toneCurveMenu;
+
     // --- Render menu ---
     auto* renderMenu = menuBar()->addMenu("&Render");
     renderMenu->addAction("&Render", this, &MainWindow::onRender);
@@ -234,6 +270,19 @@ void MainWindow::onHDRToggled(bool checked)
     if (m_engine) m_engine->setHDREnabled(checked);
     if (m_productionPaneStack) {
         m_productionPaneStack->setCurrentIndex(checked ? 1 : 0);
+    }
+    // L5e — Tone curve is irrelevant on the HDR display path
+    // (the OS compositor handles the display map).  Grey out
+    // the submenu when HDR is on.
+    if (m_toneCurveMenu) {
+        m_toneCurveMenu->setEnabled(!checked);
+    }
+    // L5e round-2 — Same gate for the exposure slider.  Applying
+    // exposure on top of the HDR compositor's dynamic-range map
+    // double-maps the radiance signal — flicker / hue shifts on
+    // HDR-capable monitors.
+    if (m_controlsWidget) {
+        m_controlsWidget->setHDREnabled(checked);
     }
 }
 

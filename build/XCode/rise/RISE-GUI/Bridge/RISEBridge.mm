@@ -145,6 +145,18 @@ public:
     void SetExposureEV(double ev) { exposureEV_.store(ev); }
     double ExposureEV() const     { return exposureEV_.load(); }
 
+    // L5e — Live tone-curve scrub for the LDR display path.  Same
+    // atomic-snapshot pattern as exposure: rasterizer-thread reads
+    // it via `ToneCurve()` inside `SelectTargetFormatAndXform`, the
+    // UI thread writes it via `SetToneCurve` then calls Repaint to
+    // get a fresh emit.  Default ACES (the modern preview standard;
+    // `_None` was the legacy bit-equivalent default kept while we
+    // were chasing L4 regression coverage, no longer needed).
+    void SetToneCurve(int curve) {
+        toneCurve_.store(curve);
+    }
+    int ToneCurve() const { return toneCurve_.load(); }
+
     // Force a repaint with the current EV.  Used by the bridge's
     // exposure-scrub path: Swift slider drag → bridge calls
     // SetExposureEV(newEV) + Repaint() → block fires with the
@@ -227,20 +239,25 @@ private:
     // versa.  Snapshot-once eliminates the window without needing
     // setHDREnabled to participate in bufferMutex_.
     static void SelectTargetFormatAndXform(
-        bool useHDR, float ev,
+        bool useHDR, float ev, int toneCurveInt,
         TargetFormat& outFmt, ViewTransform& outXform) {
         if (useHDR) {
             outFmt   = TargetFormat::RGBA16F_ExtendedLinearSRGB;
             // ForHDRDisplay: exposure applied, NO tone curve (HDR
-            // highlights propagate to display unmolested).
+            // highlights propagate to display unmolested).  The
+            // toneCurve argument is intentionally ignored in this
+            // branch; the OS compositor handles the display-side map.
             outXform = ViewTransform::ForHDRDisplay(ev);
         } else {
             outFmt   = TargetFormat::RGBA16_sRGB;
-            // ForLDRDisplay with eDisplayTransform_None preserves
-            // legacy producer behaviour (tone curve disabled by
-            // default; the Swift consumer applies its own curve
-            // via the slider, if any).
-            outXform = ViewTransform::ForLDRDisplay(ev, eDisplayTransform_None);
+            // L5e — bake in the user-selected tone curve (default
+            // ACES, see toneCurve_'s in-class initialiser below).
+            // Was previously hardcoded to eDisplayTransform_None
+            // (legacy clip-at-1.0 behaviour kept for L4 byte-
+            // identical regression coverage); now drops through
+            // to whatever the user picked from View > Tone Curve.
+            DISPLAY_TRANSFORM tc = static_cast<DISPLAY_TRANSFORM>(toneCurveInt);
+            outXform = ViewTransform::ForLDRDisplay(ev, tc);
         }
     }
 
@@ -292,10 +309,11 @@ private:
         // L5a round-2 P2-A: snapshot HDR mode + EV ONCE so encode
         // (RenderToBuffer) and dispatch (FireBlock_locked) agree
         // even if setHDREnabled lands in between.
-        const bool useHDR = hdrEnabled_.load();
-        const float ev    = static_cast<float>(exposureEV_.load());
+        const bool useHDR    = hdrEnabled_.load();
+        const float ev       = static_cast<float>(exposureEV_.load());
+        const int   tcInt    = toneCurve_.load();
         TargetFormat fmt; ViewTransform xf;
-        SelectTargetFormatAndXform(useHDR, ev, fmt, xf);
+        SelectTargetFormatAndXform(useHDR, ev, tcInt, fmt, xf);
         uint16_t* base = buffer_.data()
                          + (static_cast<size_t>(y0) * W + x0) * 4;
         const size_t dstStride = static_cast<size_t>(W) * 4 * sizeof(uint16_t);
@@ -324,10 +342,11 @@ private:
         // L5a round-2 P2-A: same mode-snapshot pattern as
         // EmitRegion_locked — snapshot once so encode + dispatch
         // agree across a concurrent setHDREnabled.
-        const bool useHDR = hdrEnabled_.load();
-        const float ev    = static_cast<float>(exposureEV_.load());
+        const bool useHDR    = hdrEnabled_.load();
+        const float ev       = static_cast<float>(exposureEV_.load());
+        const int   tcInt    = toneCurve_.load();
         TargetFormat fmt; ViewTransform xf;
-        SelectTargetFormatAndXform(useHDR, ev, fmt, xf);
+        SelectTargetFormatAndXform(useHDR, ev, tcInt, fmt, xf);
         vfs->RenderToBuffer(buffer_.data(),
                             static_cast<size_t>(W) * 4 * sizeof(uint16_t),
                             RISE::Rect(0, 0, H, W),
@@ -345,6 +364,13 @@ private:
     unsigned int          bufH_ = 0;
     std::atomic<double>   exposureEV_{0.0};
     std::atomic<bool>     hdrEnabled_{false};
+    // L5e — LDR view tone curve, default ACES (matches the modern
+    // preview-standard convergent across Blender / Karma / Maya
+    // Arnold).  Stored as int so the UI can pass through the
+    // bridge's @interface without leaking the DISPLAY_TRANSFORM
+    // enum into the public bridge header.  Cast back to enum at
+    // consumption inside SelectTargetFormatAndXform.
+    std::atomic<int>      toneCurve_{static_cast<int>(eDisplayTransform_ACES)};
 };
 
 // ============================================================
@@ -658,6 +684,19 @@ public:
     _interactiveVFSCallbacks->Repaint(_interactiveVFS);
 }
 
+- (void)setViewToneCurve:(int)curve {
+    // L5e — broadcast tone curve to both helpers and repaint.
+    // Same lifecycle as setViewExposureEV: no rasterizer re-run,
+    // no-op for VFSes that haven't allocated yet.  Tone curve is
+    // ignored on the HDR display path (ForHDRDisplay always uses
+    // _None internally) but Repaint is still safe — it just
+    // re-emits the same HDR bytes.
+    _productionVFSCallbacks->SetToneCurve(curve);
+    _interactiveVFSCallbacks->SetToneCurve(curve);
+    _productionVFSCallbacks->Repaint(_productionVFS);
+    _interactiveVFSCallbacks->Repaint(_interactiveVFS);
+}
+
 - (BOOL)saveAs:(NSString *)path
         format:(NSString *)formatName
     exposureEV:(double)ev {
@@ -687,9 +726,15 @@ public:
         opts.bpp           = 0;  // ignored by HDR encoders
         opts.viewTransform = ViewTransform::Identity();
     } else {
+        // L5e — bake in the user's currently-active tone curve so
+        // the saved LDR image matches the on-screen viewport (the
+        // user is most often saving exactly what they're looking at).
+        // Production VFS callbacks track the canonical state.
+        const DISPLAY_TRANSFORM tc = static_cast<DISPLAY_TRANSFORM>(
+            _productionVFSCallbacks->ToneCurve());
         opts.bpp           = 8;
         opts.viewTransform = ViewTransform::ForLDRDisplay(
-            static_cast<float>(ev), eDisplayTransform_None);
+            static_cast<float>(ev), tc);
     }
     return _productionVFS->SaveAs(
         std::string([path UTF8String]), enc, opts) ? YES : NO;

@@ -51,7 +51,7 @@ class RiseApplication : Application() {
                 context = this@RiseApplication,
                 assetSubDir = ASSETS_SUBDIR,
                 destDir = riseRoot,
-                currentVersionCode = BuildConfig.VERSION_CODE,
+                currentFingerprint = BuildConfig.RISE_ASSETS_FINGERPRINT,
             )
             Log.i(TAG, "ensureInitialized: extracted $copied files to $riseRoot")
 
