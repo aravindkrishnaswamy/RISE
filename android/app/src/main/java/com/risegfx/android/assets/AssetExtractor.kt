@@ -10,23 +10,25 @@ import java.io.FileOutputStream
  * Recursively copies a subtree of the APK's AssetManager onto the real
  * filesystem under the app's filesDir. The RISE library uses std::ifstream
  * to open scene, texture and mesh files, which cannot read APK assets
- * directly — so we extract once on first launch (or after a version bump)
+ * directly — so we extract once on first launch (or after a content change)
  * and point the library's MediaPathLocator at the extracted copy.
  *
- * Extraction is skipped if the version recorded in SharedPreferences matches
- * the current [android.os.BuildConfig.VERSION_CODE].
+ * Staleness is keyed on a SHA-256 fingerprint of the bundled asset tree
+ * (computed by `app/build.gradle.kts` and surfaced as
+ * [com.risegfx.android.BuildConfig.RISE_ASSETS_FINGERPRINT]).  Editing a
+ * scene under `scenes/` upstream changes the fingerprint, so the next
+ * install re-extracts without needing a `versionCode` bump.
  */
 object AssetExtractor {
 
     private const val TAG = "RISE-Extract"
     private const val PREFS = "rise_assets"
-    private const val KEY_VERSION = "extracted_version_code"
+    private const val KEY_FINGERPRINT = "extracted_assets_fingerprint"
 
     /**
      * Extract [assetSubDir] from the APK into [destDir] if the previously
-     * recorded version does not match [currentVersionCode]. Deletes the
-     * destination first so stale files from an older app version are
-     * cleaned up.
+     * recorded fingerprint does not match [currentFingerprint]. Deletes the
+     * destination first so stale files from an older bundle are cleaned up.
      *
      * Returns the number of files copied (0 if no extraction was needed).
      */
@@ -34,23 +36,23 @@ object AssetExtractor {
         context: Context,
         assetSubDir: String,
         destDir: File,
-        currentVersionCode: Int,
+        currentFingerprint: String,
     ): Int {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val recorded = prefs.getInt(KEY_VERSION, -1)
-        if (recorded == currentVersionCode && destDir.isDirectory && destDir.list()?.isNotEmpty() == true) {
-            Log.i(TAG, "extractIfStale: up to date (version $recorded), skipping")
+        val recorded = prefs.getString(KEY_FINGERPRINT, null)
+        if (recorded == currentFingerprint && destDir.isDirectory && destDir.list()?.isNotEmpty() == true) {
+            Log.i(TAG, "extractIfStale: up to date (fingerprint $recorded), skipping")
             return 0
         }
 
-        Log.i(TAG, "extractIfStale: version $recorded -> $currentVersionCode, extracting $assetSubDir")
+        Log.i(TAG, "extractIfStale: fingerprint $recorded -> $currentFingerprint, extracting $assetSubDir")
         if (destDir.exists()) {
             destDir.deleteRecursively()
         }
         destDir.mkdirs()
 
         val copied = copyRecursive(context.assets, assetSubDir, destDir)
-        prefs.edit().putInt(KEY_VERSION, currentVersionCode).apply()
+        prefs.edit().putString(KEY_FINGERPRINT, currentFingerprint).apply()
         Log.i(TAG, "extractIfStale: copied $copied files")
         return copied
     }

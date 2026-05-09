@@ -5,23 +5,29 @@ import java.io.File
 /**
  * Curated set of bundled scenes the app exposes in the left pane.
  *
- * Scene paths are relative to the extracted RISE root (filesDir/rise/...).
- * The whole tree (scenes + textures + meshes + light probes) is shipped
- * inside the APK under app/src/main/assets/rise/ and copied to filesDir on
- * first launch by [com.risegfx.android.assets.AssetExtractor].
+ * The `relativePath` strings here are the SOURCE OF TRUTH for what gets
+ * bundled into the APK.  At Gradle configuration time, `app/build.gradle.kts`
+ * scrapes this file with a regex (`relativePath = "..."`) to discover the
+ * scene list, then recursively walks each scene's `> run`, `load`, and
+ * `file` directives to drag in every dependency (scripts, textures, meshes,
+ * light probes).  The closure is synced into
+ * `${buildDir}/generated/rise-assets/rise/...` and packaged with the APK.
  *
- * If you want to add another scene from the upstream scenes/ directory,
- * the checklist is:
- *   1. Copy the .RISEscene file into the matching subpath under
- *      app/src/main/assets/rise/scenes/
- *   2. Find every dependency it references (`> run`, `load`, `file ...`)
- *      and copy those into the matching subpath under assets/rise/
- *   3. If the scene's `file_rasterizeroutput` pattern writes to a nested
- *      subdirectory like "rendered/foo/frame", add "rendered/foo" to
- *      kRenderedDirs in cpp/RiseBridge.cpp::initialize()
- *   4. Add a [SceneEntry] below
- *   5. Bump versionCode in app/build.gradle.kts so the AssetExtractor
- *      re-extracts on next launch
+ * A SHA-256 fingerprint of the synced files is pushed through
+ * `BuildConfig.RISE_ASSETS_FINGERPRINT` so [com.risegfx.android.assets.AssetExtractor]
+ * re-extracts on first launch after a content change — no versionCode bump
+ * required for routine scene edits.
+ *
+ * To bundle a different scene:
+ *   1. Add a [SceneEntry] below.  The `relativePath` must point at a real
+ *      file under the repo root; the build fails fast if not.
+ *   2. Rebuild — Gradle picks up the new dependencies automatically.
+ *
+ * Caveat: scenes whose `file_rasterizeroutput` pattern writes to a nested
+ * subdirectory like "rendered/foo/bar" still need that directory to exist
+ * at runtime.  Add it to `kRenderedDirs` in cpp/RiseBridge.cpp::initialize().
+ * Plain `rendered/<sceneName>` patterns only need the top-level "rendered"
+ * directory, which is always created.
  */
 data class SceneEntry(
     val displayName: String,
@@ -31,52 +37,40 @@ data class SceneEntry(
 
 object SceneCatalog {
     val bundled: List<SceneEntry> = listOf(
-        // -- Smallest, fastest, no asset deps. Always render-able. ----------
         SceneEntry(
-            displayName = "Shapes",
-            relativePath = "scenes/Tests/Geometry/shapes.RISEscene",
-            description = "Standard shader over spheres, boxes and an ellipsoid. Pure geometry, no textures or meshes — also used by the instrumented test.",
+            displayName = "PT Jewel Vault",
+            relativePath = "scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene",
+            description = "Path-guiding showcase: an enclosed gallery lit only through a narrow slot window. Tests deep indirect bounces against gold/copper/bronze metallics and amber/sapphire glass.",
         ),
         SceneEntry(
-            displayName = "Sombrero",
-            relativePath = "scenes/FeatureBased/Parser/sombrero.RISEscene",
-            description = "Parser-generated sombrero surface. Showcases RISE's procedural scene description with no external assets.",
+            displayName = "Kaleidoscope Atrium",
+            relativePath = "scenes/FeatureBased/Parser/kaleidoscope_atrium.RISEscene",
+            description = "Parser-generated mirrored atrium — recursive reflections without external assets.",
         ),
         SceneEntry(
-            displayName = "Pillow",
-            relativePath = "scenes/FeatureBased/Parser/pillow.RISEscene",
-            description = "Parser showcase: deformed quad with subdivision, lit with the standard colour palette.",
-        ),
-
-        // -- Painters and materials ---------------------------------------
-        SceneEntry(
-            displayName = "Black Body Radiator",
-            relativePath = "scenes/Tests/Painters/blackbodyradiator.RISEscene",
-            description = "Physically-based black body painter sweep across temperatures.",
+            displayName = "MLT Veach Egg (VCM displaced)",
+            relativePath = "scenes/FeatureBased/MLT/mlt_veach_egg_vcm_displaced.RISEscene",
+            description = "Metropolis Light Transport on the displaced Veach-egg: caustics through a heavily-deformed dielectric shell. Slow, rewarding.",
         ),
         SceneEntry(
-            displayName = "Painters Gallery",
-            relativePath = "scenes/Tests/Painters/painters.RISEscene",
-            description = "Sampling of RISE painters (Perlin, Worley, checker, texture map). Uses a paradise.png environment texture.",
+            displayName = "GGX Showcase",
+            relativePath = "scenes/FeatureBased/Materials/ggx_showcase.RISEscene",
+            description = "GGX microfacet sweep across roughness and metallic parameters.",
         ),
         SceneEntry(
-            displayName = "Materials Gallery",
-            relativePath = "scenes/Tests/Materials/materials.RISEscene",
-            description = "BRDF/SPF showcase: Lambertian, Phong, Cook-Torrance, dielectric and refractive surfaces with the classic teapot.",
+            displayName = "Tidepools",
+            relativePath = "scenes/FeatureBased/Combined/tidepools.RISEscene",
+            description = "Procedural cracked-mud tidepool surface lit by the Uffizi HDR light probe. Combines voronoi painters, dielectric water, and image-based lighting.",
         ),
-
-        // -- Lighting and global illumination ------------------------------
         SceneEntry(
-            displayName = "GI Spheres",
-            relativePath = "scenes/FeatureBased/Combined/gi_spheres.RISEscene",
-            description = "Cornell-style global illumination test with coloured spheres. Slower — exercises path tracing and direct lighting together.",
+            displayName = "Pool Caustics (VCM)",
+            relativePath = "scenes/Tests/VCM/pool_caustics_vcm.RISEscene",
+            description = "Vertex-Connection-and-Merging stress test: refractive caustics on a pool floor.",
         ),
-
-        // -- Hero showcase: a full mesh scene with HDR environment ---------
         SceneEntry(
-            displayName = "Teapot",
-            relativePath = "scenes/FeatureBased/Geometry/teapot.RISEscene",
-            description = "Bezier-patch Utah teapot with a water bumpmap and the rnl HDR light probe. The fastest mesh-based showcase in the upstream catalogue — still significantly slower than the primitive scenes above.",
+            displayName = "Diacaustic (VCM)",
+            relativePath = "scenes/Tests/VCM/diacaustic_vcm.RISEscene",
+            description = "Mirror-ring diacaustic — VCM merges resolve the bright reflection caustic that PT misses.",
         ),
     )
 
