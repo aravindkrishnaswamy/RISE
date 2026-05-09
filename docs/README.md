@@ -18,6 +18,7 @@ This directory holds focused design notes and planning docs. Start at [../README
 - [VCM.md](VCM.md): Vertex Connection and Merging integrator (BDPT + photon mapping under one MIS umbrella), recurrence design, post-pass conversion, and Veach-transparency handling for specular chains.
 - [MIS_HEURISTICS.md](MIS_HEURISTICS.md): which MIS heuristic each integrator uses (PT power-2, BDPT power-2, VCM balance, MLT inherits BDPT) and why the BDPT-power / VCM-balance asymmetry is the SOTA convention rather than a mismatch.  Read before proposing to "unify" the heuristics.
 - [OIDN.md](OIDN.md): Intel Open Image Denoise integration — audit of current usage vs. upstream feature set, ranked improvement backlog with stable IDs, and decision log. Update entries in place as work lands.
+- [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md): why the production Jakob-Hanika spectral-uplift LUT (`extlib/jakob-hanika-luts/romm.coeff`) ships with ~22 % gamut-edge cells unconverged, why solver-tuning won't help (the targets aren't physically reachable in ROMM RGB), and what NOT to try.  Read before "improving" the LUT generator.
 
 ## Active / Recent Plans
 
@@ -39,6 +40,7 @@ These describe shipped work. Retained as historical design records; the body sho
 
 - [IMPROVEMENTS.md](IMPROVEMENTS.md): ranked backlog of rendering improvements (transport, materials, samplers, volumes), with acceptance criteria and starting files per item. Items 1–9 marked DONE; items 10–11 pending.
 - [CAMERAS_ROADMAP.md](CAMERAS_ROADMAP.md): survey of production / research camera models beyond pinhole / ortho / fisheye / thin-lens, scored against RISE's spectral pipeline, plus a phased implementation roadmap (thin-lens enrichments → output-format cameras → ODS → realistic multi-element lens → polynomial-optics acceleration → diffraction & flare → sensor/shutter). Named-camera scaffolding has shipped; tier feature work has not started.
+- [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md): brief for the proposed migration from `RISEPel = ROMMRGBPel` to a working space whose primaries lie inside the visible spectral locus (sRGB Linear or ACES AP1).  Triggered by the [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md) gamut-corner failures and the BioSpec / JH chromatic-adapt friction surfaced in Landing 3 v2.  Two-stage plan (LUT-only first, then `RISEPel` typedef change); separate workstream from any current task.
 
 ## Engineering Skills
 
