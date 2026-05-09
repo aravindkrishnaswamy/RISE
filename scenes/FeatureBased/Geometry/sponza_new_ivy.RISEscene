@@ -1,7 +1,7 @@
 RISE ASCII SCENE 5
 #############################################################################################################
 #                                                                                                           #
-#   File:           sponza_new.RISEscene                                                                    #
+#   File:           sponza_new_ivy.RISEscene                                                                #
 #   Description:    Loads Intel/Khronos's New Sponza (NewSponza_Main_glTF_003.gltf) — the                   #
 #                   modern, PBR-textured rebuild of the classic Crytek Sponza atrium.                       #
 #                   ~155 nodes, dozens of unique materials, full PBR (baseColor + metallic-                 #
@@ -64,39 +64,9 @@ scene_options
 }
 
 ##################################################
-# Hosek-Wilkie analytic sun-and-sky (Landing 3.D).
-# Replaces the earlier `uniformcolor_painter sky_dome`
-# tinted-blue env map with a physically-grounded
-# spectral sun-and-sky model.  This chunk atomically:
-#
-#   - Creates the HW radiance map and registers it
-#     as the SCENE GLOBAL radiance map (consumed by
-#     camera misses + path-tracer NEE / IBL queries).
-#   - Creates a matched directional_light named
-#     `__hw_sun__` whose direction tracks the same
-#     `solar_elevation` / `solar_azimuth` so sun
-#     and sky can't drift apart.
-#
-# Solar pose chosen for the canonical Sponza hero
-# shot: sun high but not zenith (60°) and slightly
-# off-axis from the camera (135° = behind / right
-# of the entrance) so sunlight rakes across the
-# atrium's columns and casts long shadows up the
-# colonnade.  Dial elevation down toward 30-45°
-# for late-afternoon golden-hour mood; raise
-# turbidity for hazier / warmer atmosphere.
-#
-# `sky_intensity_scale = 1.0` keeps the model's
-# physical-unit output as-is (HW emits real
-# radiance in W/m²/sr); the prior tinted painter
-# needed `radiance_scale = 40` because it was a
-# unit-luminance painter pretending to be an env.
-# `sun_intensity_scale = 3.14` is the RISE
-# convention (unit-flux key — π for π-normalised
-# Lambertian throughput).  Bump
-# `lights_intensity_override` on the gltf_import
-# chunk down if the warm lamps now overwhelm the
-# sunlit areas.
+# Hosek-Wilkie analytic sun-and-sky (Landing 3.D) —
+# matches the base `sponza_new.RISEscene`; see
+# the long comment there for the rationale.
 ##################################################
 
 hosek_wilkie_skylight
@@ -129,31 +99,18 @@ standard_shader
 
 ##################################################
 # Rasterizer + output.  pathtracing_pel_rasterizer
-# at 32 spp, 640x360 for iteration speed (bump
+# at 64 spp, 640x360 for iteration speed (bump
 # samples to 256+ and resolution to 1280x720 for a
-# final-quality render).
-#
-# `radiance_map` is intentionally NOT bound here:
-# the `hosek_wilkie_skylight` chunk above registers
-# its own radiance map as the SCENE GLOBAL — binding
-# `radiance_map <name>` here would CREATE A NEW one
-# from the named painter and overwrite the HW
-# global, which is the opposite of what we want.
-# `radiance_background TRUE` is still meaningful
-# because it controls a separate ray-caster flag
-# (whether camera misses sample the env map for the
-# background colour) and is independent of which
-# global radiance map is active.
-#
-# Path guiding turned on per the variance-measurement
-# session 2026-05-09: on Sponza specifically, online
-# PGL with 2-iteration warmup gives 4.8x lower mean
-# per-pixel σ² and 7.7x lower max σ² (firefly
-# suppression) at the same wall budget vs unguided
-# path tracing.  See docs/skills/variance-measurement
-# (worked example for `bdpt_jewel_vault` for the
-# protocol; the corresponding Sponza measurement
-# lives in this session's chat log).
+# final-quality render).  The radiance_map is the
+# sky_dome painter above; radiance_background TRUE
+# makes the open ceiling actually show the sky
+# colour rather than rendering as black, AND lets
+# rays that exit through the ceiling pick up the
+# sky's contribution.  radiance_scale tunes the
+# overall sky brightness; ~3.0 here because the
+# sky is the ONLY light source (the earlier
+# directional sun + ambient_light fill have been
+# retired in favour of pure environment lighting).
 ##################################################
 
 pathtracing_pel_rasterizer
@@ -179,7 +136,7 @@ pathtracing_pel_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/sponza_new
+	pattern				rendered/sponza_new_ivy
 	type				EXR
 	color_space			ROMMRGB_Linear
 	exr_compression		piz
@@ -194,7 +151,7 @@ file_rasterizeroutput
 
 file_rasterizeroutput
 {
-	pattern				rendered/sponza_new
+	pattern				rendered/sponza_new_ivy
 	type				PNG
 	bpp					8
 	color_space			sRGB
@@ -268,45 +225,104 @@ gltf_import
 }
 
 ##################################################
-# Companion scenes:
+# Sponza ivy growth add-on (Intel Sponza addon pack
+# `pkg_b_ivy`).  Loaded as a SECOND `gltf_import`
+# after the base atrium — the chunk parser supports
+# any number of glTF imports as long as each carries
+# a unique `name_prefix` (created geometry / material
+# / object / texture entries inherit the prefix to
+# keep the manager namespaces clean).  Ivy is
+# authored to fit the base atrium's coordinates 1:1,
+# so no transform is needed.
 #
-#   sponza_new_curtains.RISEscene  — base + Intel
-#   addon pack `pkg_a_curtains` (red / blue / green
-#   fabric draped between upper colonnade columns).
+# Asset specifics:
+#  - 2 materials: `IvyLeaf` (basecolour + normal +
+#    metalness + roughness) and `Lianas` (the
+#    woody vines).
+#  - 2 meshes / 2 nodes / 1 scene; standard PBR
+#    metallicRoughness, no KHR extensions, all
+#    `alphaMode = OPAQUE` (the leaves are full
+#    polygons rather than alpha-cut planes).
+#  - Asset has no lights or cameras of its own, so
+#    `import_lights = FALSE` / `import_cameras =
+#    FALSE` keeps the base scene's light + camera
+#    configuration intact.
+#  - Same `lowmem_textures = TRUE` as the base for
+#    matching load-time / per-sample-cost trade-off.
 #
-#   sponza_new_ivy.RISEscene       — base + Intel
-#   addon pack `pkg_b_ivy` (ivy leaves + lianas
-#   crawling up the columns).
-#
-# Both companions are this scene file with one
-# additional `gltf_import` block — see those files
-# for the layering pattern (different `name_prefix`
-# per import keeps manager namespaces clean).
+# Sibling scene `sponza_new.RISEscene` is the base
+# atrium without this block — load that one when
+# rendering the canonical hero shot.  Sibling
+# `sponza_new_curtains.RISEscene` swaps this addon
+# for the curtains pack.
 ##################################################
 
+gltf_import
+{
+	file				C:/Users/micro/Downloads/pkg_b_ivy1/pkg_b_ivy/NewSponza_IvyGrowth_glTF.gltf
+	name_prefix			sponza_ivy
+	import_meshes		TRUE
+	import_materials	TRUE
+	import_normal_maps	TRUE
+	import_cameras		FALSE
+	import_lights		FALSE
+	lowmem_textures		TRUE
+}
+
 ##################################################
-# Camera.  Position + target taken from the asset's
-# PhysCamera001 node + its `Target` node:
+# Cameras.  Two hand-authored pinhole cameras, both
+# framed to put the ivy front-and-centre — they're
+# variations on the same vantage point (eye-level
+# inside the atrium, looking up at the entrance arch
+# where the ivy actually drapes).  The asset's six
+# PhysCameraNNN nodes are also imported by the base
+# `gltf_import` block above and remain available
+# under `sponza.cam.PhysCamera001`..`006`, but none
+# of them frame the ivy: the scene's canonical
+# PhysCamera001 looks down the colonnade away from
+# the entrance, and PhysCamera006 (the closest to
+# the ivy bbox) targets the back wall, not the ivy
+# above the entrance arch.
 #
-#   PhysCamera001         translation = (-8.807, 1.592, -0.858)
-#   PhysCamera001.Target  translation = (-3.004, 2.762,  0.237)
+# RISE camera-precedence rule: cameras are added in
+# parse order; the LAST chunk added wins active-
+# camera status by default (see `gltf_import`
+# documentation in the base scene file).  At
+# runtime, switch via `SetActiveCamera <name>` —
+# both cameras are always available regardless of
+# which is the default.
 #
-# That's eye-level, just outside the atrium entrance,
-# looking down the colonnade with a slight upward
-# tilt -- the canonical hero shot.  yfov 1.0212 rad
-# ≈ 58.5°; we use degrees here.
+# Camera reel (default = `ivy_arch_zoom`):
+#   `ivy_arch_wide` — fov 58.5°, sweeping arch view
+#                     with ceiling sky framing the
+#                     ivy on both sides.
+#   `ivy_arch_zoom` — fov 40°, tighter framing on
+#                     the ivy mass itself.  Default.
 ##################################################
 
+# Wide arch view — added FIRST so it's NOT the default.
 pinhole_camera
 {
-	location			-8.807 1.592 -0.858
-	lookat				-3.004 2.762  0.237
-	up					 0.0   1.0    0.0
-	# Iteration resolution.  Bump to 1280x720 for final-
-	# quality renders.
+	name				ivy_arch_wide
+	location			-3.0  1.6  0.0
+	lookat				-7.0 10.0  0.0
+	up					 0.0  1.0  0.0
 	width				640
 	height				360
 	fov					58.5
+}
+
+# Tighter zoom on the ivy mass — added LAST so it's the
+# default when the scene loads.
+pinhole_camera
+{
+	name				ivy_arch_zoom
+	location			-3.0  1.6  0.0
+	lookat				-7.0  9.0  0.0
+	up					 0.0  1.0  0.0
+	width				640
+	height				360
+	fov					40.0
 }
 
 ##################################################
