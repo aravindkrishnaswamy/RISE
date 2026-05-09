@@ -275,7 +275,12 @@ namespace
 			return std::make_pair( false, RISEPel( 0, 0, 0 ) );
 		}
 		xyz = xyz * v;
-		return std::make_pair( true, RISEPel( xyz.X, xyz.Y, xyz.Z ) );
+		// Proper XYZ -> ROMM RGB via implicit RISEPel(XYZPel)
+		// constructor (ColorUtils::XYZtoROMMRGB).  Replaces the
+		// channel-relabel "RISEPel(xyz.X, xyz.Y, xyz.Z)" hack which
+		// bypassed the chromatic adaptation + matrix multiply, treating
+		// CIE XYZ tristimulus as if it were ROMM RGB channels.
+		return std::make_pair( true, RISEPel( xyz ) );
 	}
 }
 

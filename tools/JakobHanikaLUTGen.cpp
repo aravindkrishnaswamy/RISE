@@ -103,6 +103,20 @@ static const double kXYZtoROMM[3][3] = {
 	{  0.0,     0.0,     1.2123 }
 };
 
+// Bradford D65 → D50 chromatic adaptation, copied from
+// `mxXYZD65toXYZD50` in src/Library/Utilities/Color/Color.cpp.  The
+// runtime XYZtoROMMRGB pipeline applies this BEFORE kXYZtoROMM
+// because the standard CIE 1931 observer XYZ values are commonly
+// referred to a D65 whitepoint, while ROMM's whitepoint is D50.
+// Keep this matrix in sync with Color.cpp's mxXYZD65toXYZD50 (any
+// drift would re-introduce the BioSpec-vs-JH conflict that this
+// generator was reworked to resolve).
+static const double kXYZD65toD50[3][3] = {
+	{  1.0479, 0.0229, -0.0502 },
+	{  0.0296, 0.9904, -0.0171 },
+	{ -0.0092, 0.0151,  0.7519 }
+};
+
 // CIE Standard Illuminant D50 SPD at 5nm spacing, 380-780nm.
 // Used as the reference illuminant for albedo upsampling: when we
 // integrate S(λ) against the observer, we multiply by D50 first
@@ -154,24 +168,34 @@ static inline double EvalSigmoid( const double c[3], double lambda ) {
 }
 
 // Integrate S(c, λ) · CIE_obs(λ) over the visible range under a FLAT
-// illuminant and convert XYZ → ROMM RGB.  This is the forward model
-// whose inverse we solve.  Returns 3-vector in ROMM RGB space.
+// illuminant and convert XYZ → ROMM RGB via the same XYZ→ROMM
+// pipeline the runtime uses (`ColorUtils::XYZtoROMMRGB`): D65 → D50
+// Bradford adapt followed by `kXYZtoROMM` matrix.  This is the
+// forward model whose inverse we solve.  Returns 3-vector in ROMM
+// RGB space.
 //
-// Why flat illuminant and not D50:
-//   The runtime spectral integrator (PixelBasedSpectralIntegratingRasterizer)
-//   computes radiance × CIE-observer per wavelength sample and sums.
-//   The "illuminant" baked into the result is whatever the path tracer's
-//   lights emit at each wavelength — there's no separate D50 multiplier.
-//   For the LUT round-trip to be self-consistent with how the runtime
-//   actually integrates (so that GetColorNM-uplifted texels reproduce
-//   their input RGB when sampled under the same flat assumption), we
-//   must invert the SAME forward model: just `∫ S · CIE dλ`.
+// Why flat illuminant and not D65:
+//   The runtime spectral integrator computes `∫ S · L · CIE dλ` where
+//   L is whatever the scene's lights emit per wavelength — there is
+//   no fixed reference illuminant baked into the integrator itself.
+//   Inverting that forward model would require the LUT to know L at
+//   training time.  We instead train under L=1 (flat) and rely on
+//   the runtime to multiply by L per sample; the resulting LUT round-
+//   trips ROMM→sigmoid→XYZ→ROMM exactly when L=1, and stays close
+//   for natural-daylight L (which most scenes use).
 //
-//   In real scenes with non-flat lights, the runtime computes
-//   `∫ S · L · CIE dλ` which is the physically-correct rendering of the
-//   reflectance S under illuminant L.  No further D50 correction is
-//   needed; the LUT just needs to faithfully represent S given a "neutral"
-//   reference RGB (the equal-energy / E illuminant choice).
+// Why D65 → D50 adapt now (vs the matrix-only convention this file
+// used through 2026-04):
+//   The matrix-only convention required the runtime to also use a
+//   matrix-only conversion — `IntegratorXYZtoROMMRGB` — at film
+//   resolve, which works for JH-uplifted spectra but is WRONG for
+//   physically-grounded spectra (BioSpec skin under blackbody@6500K
+//   integrated D65-reference XYZ that, matrix-multiplied without
+//   adapt, produces lavender skin).  The fix is to align the
+//   generator with the runtime's standard XYZtoROMMRGB pipeline
+//   (adapt + matrix) and let both JH and physical spectra resolve
+//   through the same path.  See the user-facing chat session
+//   "Option B" discussion for the full derivation.
 static void IntegrateToROMM( const double c[3], double romm[3] )
 {
 	double X = 0.0, Y = 0.0, Z = 0.0;
@@ -193,10 +217,17 @@ static void IntegrateToROMM( const double c[3], double romm[3] )
 	Y *= inv;
 	Z *= inv;
 
-	// XYZ → ROMM (D50)
-	romm[0] = kXYZtoROMM[0][0] * X + kXYZtoROMM[0][1] * Y + kXYZtoROMM[0][2] * Z;
-	romm[1] = kXYZtoROMM[1][0] * X + kXYZtoROMM[1][1] * Y + kXYZtoROMM[1][2] * Z;
-	romm[2] = kXYZtoROMM[2][0] * X + kXYZtoROMM[2][1] * Y + kXYZtoROMM[2][2] * Z;
+	// Bradford D65 → D50 chromatic adaptation.  Matches the
+	// `mxXYZD65toXYZD50` step in `ColorUtils::XYZtoROMMRGB` so the
+	// LUT trained here is consumed by the standard runtime pipeline.
+	const double Xd = kXYZD65toD50[0][0]*X + kXYZD65toD50[0][1]*Y + kXYZD65toD50[0][2]*Z;
+	const double Yd = kXYZD65toD50[1][0]*X + kXYZD65toD50[1][1]*Y + kXYZD65toD50[1][2]*Z;
+	const double Zd = kXYZD65toD50[2][0]*X + kXYZD65toD50[2][1]*Y + kXYZD65toD50[2][2]*Z;
+
+	// XYZ (D50 reference) → ROMM RGB via kXYZtoROMM matrix.
+	romm[0] = kXYZtoROMM[0][0] * Xd + kXYZtoROMM[0][1] * Yd + kXYZtoROMM[0][2] * Zd;
+	romm[1] = kXYZtoROMM[1][0] * Xd + kXYZtoROMM[1][1] * Yd + kXYZtoROMM[1][2] * Zd;
+	romm[2] = kXYZtoROMM[2][0] * Xd + kXYZtoROMM[2][1] * Yd + kXYZtoROMM[2][2] * Zd;
 }
 
 // Solve for sigmoid coefficients matching `target` (ROMM RGB).

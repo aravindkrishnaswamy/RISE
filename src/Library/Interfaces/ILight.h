@@ -117,10 +117,42 @@ namespace RISE
 		virtual void ComputeDirectLighting(
 			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection details at point to compute lighting information
 			const IRayCaster& pCaster,						///< [in] The ray caster to use for occlusion testing
-			const IBSDF& brdf,								///< [in] BRDF of the object 
+			const IBSDF& brdf,								///< [in] BRDF of the object
 			const bool bReceivesShadows,					///< [in] Should shadow checking be performed?
 			RISEPel& amount									///< [out] Amount of lighting
 			) const = 0;
+
+		//! Per-wavelength direct-lighting contribution at wavelength
+		//! `nm`.  Used by the spectral integrators (LightSampler /
+		//! BDPTIntegrator NM path) to evaluate a non-mesh (delta-
+		//! position or delta-direction) light contribution with the
+		//! per-NM BSDF (`brdf.valueNM`) rather than the RGB BSDF.
+		//!
+		//! The spectral character comes from the BSDF: each light's
+		//! emission is treated as a flat scalar (Illuminant E
+		//! projection of its RGB color via `ColorMath::Luminance`),
+		//! matching RISE's JH-LUT-trained-with-flat-E convention
+		//! (see tools/JakobHanikaLUTGen.cpp:160-174 for the rationale).
+		//! This is the per-NM analog of the RGB `ComputeDirectLighting`.
+		//!
+		//! Default impl falls back to running the RGB version and
+		//! projecting to luminance — preserves the previous (incorrect
+		//! for spectral) behaviour for any out-of-tree light type.
+		//! Concrete RISE light types (Ambient / Directional / Point /
+		//! Spot) override this to multiply per-NM BSDF correctly.
+		virtual Scalar ComputeDirectLightingNM(
+			const RayIntersectionGeometric& ri,				///< [in] Geometric intersection details at point to compute lighting information
+			const IRayCaster& pCaster,						///< [in] The ray caster to use for occlusion testing
+			const IBSDF& brdf,								///< [in] BSDF of the object (per-NM eval via valueNM)
+			const bool bReceivesShadows,					///< [in] Should shadow checking be performed?
+			const Scalar nm									///< [in] Wavelength (nm) at which to evaluate
+			) const
+		{
+			RISEPel amount( 0, 0, 0 );
+			ComputeDirectLighting( ri, pCaster, brdf, bReceivesShadows, amount );
+			(void)nm;  // default fallback discards wavelength
+			return Scalar(0.2126) * amount.r + Scalar(0.7152) * amount.g + Scalar(0.0722) * amount.b;
+		}
 	};
 }
 

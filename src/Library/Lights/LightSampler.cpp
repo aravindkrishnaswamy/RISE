@@ -1463,12 +1463,20 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			const Scalar exitance = ColorMath::MaxValue( l->radiantExitance() );
 			if( exitance <= 0 )
 			{
-				// Evaluate using luminance approximation of RGB contribution
-				RISEPel amount( 0, 0, 0 );
-				l->ComputeDirectLighting( ri, caster, brdf,
+				// Per-NM direct lighting evaluation — uses brdf.valueNM
+				// (per-wavelength BSDF) so the surface's spectral
+				// character is preserved.  The previous implementation
+				// computed the RGB direct lighting through brdf.value
+				// then projected to luminance — the per-NM BSDF was
+				// never queried, so a saturated green surface (whose
+				// JH spectrum peaks at green wavelengths) under ambient
+				// light was rendered as near-white because the
+				// integrated contribution was a flat scalar (Y of green
+				// RGB) regardless of wavelength.  See AmbientLight.h /
+				// DirectionalLight.cpp for the per-NM implementations.
+				result += l->ComputeDirectLightingNM( ri, caster, brdf,
 					pShadingObject ? pShadingObject->DoesReceiveShadows() : true,
-					amount );
-				result += ColorMath::Luminance( amount );
+					nm );
 			}
 		}
 	}

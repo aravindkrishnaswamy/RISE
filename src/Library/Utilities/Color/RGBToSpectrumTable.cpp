@@ -7,13 +7,12 @@
 #include "pch.h"
 #define _USE_MATH_DEFINES
 #include "RGBToSpectrumTable.h"
+#include "RGBToSpectrumTable_ROMMData.h"
 #include "ColorMath.h"
-#include "../MediaPathLocator.h"
 #include "../../Interfaces/ILog.h"
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -24,24 +23,35 @@
 
 using namespace RISE;
 
-namespace
-{
-	const char*  kROMMPath    = "extlib/jakob-hanika-luts/romm.coeff";
-	const char   kMagic[4]    = { 'R', 'J', 'H', 'L' };
-	const uint32_t kVersion   = 0x00010000;
-}
-
 const RGBToSpectrumTable& RGBToSpectrumTable::ROMM()
 {
-	// Lazy singleton.  std::call_once guarantees Load() runs once and
-	// completes before any other thread observes `loaded = true` —
-	// concurrent rendering threads on first frame can't race the
-	// `data.resize()` / `fread()` work inside Load().  After
-	// initialisation the read path is lock-free (the const data
-	// vector + flag are the only state read by operator()).
+	// Lazy singleton.  std::call_once guarantees LoadFromMemory()
+	// runs once and completes before any other thread observes
+	// `loaded = true` — concurrent rendering threads on first frame
+	// can't race the `data.resize()` / `memcpy()` work inside the
+	// loader.  After initialisation the read path is lock-free (the
+	// const data vector + flag are the only state read by operator()).
+	//
+	// The LUT data is baked into the binary via
+	// RGBToSpectrumTable_ROMMData.cpp (auto-generated from
+	// extlib/jakob-hanika-luts/romm.coeff by
+	// tools/GenerateROMMSpectrumLUTHeader.py).  Earlier revisions
+	// fopen()'d the .coeff file at first access; that broke the
+	// Windows GUI launched from Explorer (no RISE_MEDIA_PATH, cwd =
+	// bin/, MediaPathLocator could not resolve the relative path,
+	// std::call_once latched the failed state, every spectral
+	// painter fell back to a constant 0.5 spectrum, and textured
+	// glTF assets rendered uniform lavender).  Embedding the data
+	// makes the LUT trivially available regardless of how the
+	// process was launched.
 	static RGBToSpectrumTable instance;
 	static std::once_flag     loadOnce;
-	std::call_once( loadOnce, [](){ instance.Load( kROMMPath ); } );
+	std::call_once( loadOnce, [](){
+		instance.LoadFromMemory(
+			kROMMDataResolution,
+			kROMMDataFloats,
+			kROMMDataNumFloats );
+	} );
 	return instance;
 }
 
@@ -51,79 +61,42 @@ RGBToSpectrumTable::RGBToSpectrumTable() :
 {
 }
 
-bool RGBToSpectrumTable::Load( const char* relativePath )
+bool RGBToSpectrumTable::LoadFromMemory(
+	unsigned int  res,
+	const float*  bodyFloats,
+	unsigned int  numFloats )
 {
-	const String resolved = GlobalMediaPathLocator().Find( relativePath );
-	const std::string path = std::string( resolved.c_str() );
-	std::FILE* fp = std::fopen( path.c_str(), "rb" );
-	if( !fp ) {
-		GlobalLog()->PrintEx( eLog_Warning,
-			"RGBToSpectrumTable: cannot open '%s' (resolved from '%s'); "
-			"spectral painters will fall back to constant 0.5 spectrum.",
-			path.c_str(), relativePath );
-		return false;
-	}
-
-	char     magic[4];
-	uint32_t version, res, nChannels, nCoeffs;
-	if( std::fread( magic,      1, 4, fp ) != 4 ||
-	    std::fread( &version,   4, 1, fp ) != 1 ||
-	    std::fread( &res,       4, 1, fp ) != 1 ||
-	    std::fread( &nChannels, 4, 1, fp ) != 1 ||
-	    std::fread( &nCoeffs,   4, 1, fp ) != 1 ) {
-		GlobalLog()->PrintEx( eLog_Warning,
-			"RGBToSpectrumTable: '%s' truncated header.", path.c_str() );
-		std::fclose( fp );
-		return false;
-	}
-
-	if( std::memcmp( magic, kMagic, 4 ) != 0 ) {
-		GlobalLog()->PrintEx( eLog_Warning,
-			"RGBToSpectrumTable: '%s' bad magic; expected 'RJHL'.",
-			path.c_str() );
-		std::fclose( fp );
-		return false;
-	}
-	if( version != kVersion ) {
-		GlobalLog()->PrintEx( eLog_Warning,
-			"RGBToSpectrumTable: '%s' version 0x%08x, expected 0x%08x.",
-			path.c_str(), (unsigned)version, (unsigned)kVersion );
-		std::fclose( fp );
-		return false;
-	}
-	if( nChannels != 3 || nCoeffs != 3 ) {
-		GlobalLog()->PrintEx( eLog_Warning,
-			"RGBToSpectrumTable: '%s' nChannels=%u, nCoeffs=%u; "
-			"expected 3 each.",
-			path.c_str(), (unsigned)nChannels, (unsigned)nCoeffs );
-		std::fclose( fp );
-		return false;
-	}
 	if( res < 8 || res > 256 ) {
 		GlobalLog()->PrintEx( eLog_Warning,
-			"RGBToSpectrumTable: '%s' resolution=%u out of range [8, 256].",
-			path.c_str(), (unsigned)res );
-		std::fclose( fp );
+			"RGBToSpectrumTable: baked-in resolution=%u out of range [8, 256].",
+			res );
 		return false;
 	}
 
-	const size_t totalCells = size_t( 3 ) * res * res * res;
-	data.resize( totalCells );
-	const size_t got = std::fread( data.data(), sizeof(CoeffSet), totalCells, fp );
-	std::fclose( fp );
-	if( got != totalCells ) {
+	// The body is laid out as 3 * res^3 cells, each cell `(c0, c1, c2)`
+	// triples — `kROMMDataNumFloats` should equal 3 * res^3 * 3.
+	const size_t totalCells   = size_t( 3 ) * res * res * res;
+	const size_t expectedFloats = totalCells * 3;
+	if( size_t( numFloats ) != expectedFloats ) {
 		GlobalLog()->PrintEx( eLog_Warning,
-			"RGBToSpectrumTable: '%s' truncated body (read %zu of %zu cells).",
-			path.c_str(), got, totalCells );
-		data.clear();
+			"RGBToSpectrumTable: baked-in body size mismatch "
+			"(got %u floats, expected %zu for resolution %u).",
+			numFloats, expectedFloats, res );
 		return false;
 	}
+
+	data.resize( totalCells );
+	// CoeffSet is a POD `(float c0, c1, c2)`, so copying the float
+	// array directly into it is a structurally-correct memcpy.  The
+	// bake script writes the floats in the exact same memory order
+	// the on-disk loader used to fread() into the same vector.
+	std::memcpy( data.data(), bodyFloats, expectedFloats * sizeof(float) );
 
 	resolution = int( res );
 	loaded     = true;
 	GlobalLog()->PrintEx( eLog_Info,
-		"RGBToSpectrumTable: loaded '%s' (resolution=%d, %zu cells).",
-		path.c_str(), resolution, totalCells );
+		"RGBToSpectrumTable: loaded baked-in ROMM LUT (resolution=%d, %zu cells).",
+		resolution, totalCells );
 	return true;
 }
 

@@ -94,6 +94,19 @@ namespace RISE
 
 			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const;
 
+			//! Per-wavelength direct-lighting evaluation.  Mirrors the
+			//! RGB ComputeDirectLighting (cosine, shadow check) but
+			//! uses brdf.valueNM(direction, ri, nm) so the surface's
+			//! spectral character is preserved.  Light color projected
+			//! to luminance per the JH-flat-E convention.
+			Scalar	ComputeDirectLightingNM(
+				const RayIntersectionGeometric& ri,
+				const IRayCaster& pCaster,
+				const IBSDF& brdf,
+				const bool bReceivesShadows,
+				const Scalar nm
+				) const;
+
 			// For keyframamble interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
 			void SetIntermediateValue( const IKeyframeParameter& val );

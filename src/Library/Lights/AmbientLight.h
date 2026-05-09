@@ -79,6 +79,28 @@ namespace RISE
 				amount = cColor * radiantEnergy * brdf.value( ri.vNormal, ri );
 			}
 
+			//! Per-wavelength evaluation: project the light color to
+			//! luminance (flat-E projection) and multiply by the per-NM
+			//! BSDF.  Matches the RGB version but uses brdf.valueNM,
+			//! preserving the surface's spectral character (which the
+			//! previous Luminance(amount_RGB) projection collapsed to
+			//! white because amount_RGB had the per-NM BSDF replaced by
+			//! its RGB equivalent).
+			inline Scalar ComputeDirectLightingNM(
+				const RayIntersectionGeometric& ri,
+				const IRayCaster&,
+				const IBSDF& brdf,
+				const bool,
+				const Scalar nm
+				) const
+			{
+				const Scalar lightLum =
+					Scalar(0.2126) * cColor.r +
+					Scalar(0.7152) * cColor.g +
+					Scalar(0.0722) * cColor.b;
+				return lightLum * radiantEnergy * brdf.valueNM( ri.vNormal, ri, nm );
+			}
+
 			inline void	FinalizeTransformations(){Transformable::FinalizeTransformations();};
 
 			// For keyframamble interface

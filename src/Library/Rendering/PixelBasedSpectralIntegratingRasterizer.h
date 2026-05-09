@@ -55,6 +55,16 @@ namespace RISE
 			const unsigned int						nSpectralSamples;
 			const bool								bUseHWSS;
 
+			// Per-sample MC luminance normalization scale.  Equals
+			// (lambda_diff / k_y) where k_y = ∫Ȳ(λ)dλ over the
+			// integration range, scaling the MC estimator so a perfect-
+			// white reflector under flat illuminant integrates to Y = 1
+			// (matching the RGB rasterizer's white = 1 convention).
+			// Cached at construction; uniform scale, preserves
+			// chromaticity (per-sample gamut clipping operates on
+			// chromaticity only, luminance Y is invariant to this scale).
+			Scalar									mYNormalization;
+
 			StabilityConfig				stabilityConfig;
 
 			virtual ~PixelBasedSpectralIntegratingRasterizer();

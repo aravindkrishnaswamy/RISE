@@ -7249,15 +7249,18 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateAllStrat
 					const bool bReceivesShadows = eyeEnd.pObject
 						? eyeEnd.pObject->DoesReceiveShadows() : true;
 
-					RISEPel amount( 0, 0, 0 );
-					l->ComputeDirectLighting( ri, caster, *pBSDF,
-						bReceivesShadows, amount );
-
-					const Scalar luminance = ColorMath::Luminance( amount );
-					if( luminance > 0 )
+					// Per-NM direct lighting evaluation — see
+					// LightSampler::EvaluateDirectLightingNM site 1
+					// for the rationale.  The previous flat-luminance
+					// projection collapsed the surface's spectral
+					// character; the per-NM virtual queries brdf.valueNM
+					// at the connecting wavelength.
+					const Scalar leNM = l->ComputeDirectLightingNM(
+						ri, caster, *pBSDF, bReceivesShadows, nm );
+					if( leNM > 0 )
 					{
 						ConnectionResultNM cr;
-						cr.contribution = eyeEnd.throughputNM * luminance;
+						cr.contribution = eyeEnd.throughputNM * leNM;
 						cr.misWeight = 1.0;
 						cr.needsSplat = false;
 						cr.valid = true;

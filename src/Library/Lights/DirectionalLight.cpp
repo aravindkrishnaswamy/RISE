@@ -63,6 +63,36 @@ void DirectionalLight::ComputeDirectLighting(
 	amount = (cColor * brdf.value( vDirection, ri )) * (fDot * radiantEnergy);
 }
 
+Scalar DirectionalLight::ComputeDirectLightingNM(
+	const RayIntersectionGeometric& ri,
+	const IRayCaster& pCaster,
+	const IBSDF& brdf,
+	const bool bReceivesShadows,
+	const Scalar nm
+	) const
+{
+	// Same geometry as the RGB ComputeDirectLighting: cosine of angle
+	// between light direction and surface normal, shadow ray test.
+	// Only the BSDF eval differs (per-NM scalar instead of per-RGB).
+	const Scalar fDot = Vector3Ops::Dot( vDirection, ri.vNormal );
+	if( fDot <= 0.0 ) {
+		return Scalar(0);
+	}
+
+	if( bReceivesShadows ) {
+		Ray rayToLight( ri.ptIntersection, vDirection );
+		if( pCaster.CastShadowRay( rayToLight, RISE_INFINITY ) ) {
+			return Scalar(0);
+		}
+	}
+
+	const Scalar lightLum =
+		Scalar(0.2126) * cColor.r +
+		Scalar(0.7152) * cColor.g +
+		Scalar(0.0722) * cColor.b;
+	return lightLum * brdf.valueNM( vDirection, ri, nm ) * fDot * radiantEnergy;
+}
+
 static const unsigned int DIRECTION_ID = 100;
 static const unsigned int COLOR_ID = 101;
 static const unsigned int ENERGY_ID = 102;

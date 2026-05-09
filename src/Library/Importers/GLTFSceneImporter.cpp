@@ -1981,17 +1981,18 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 					// (opaque single-sided) when no material is bound.
 					const bool doubleSided = ( prim.material && prim.material->double_sided );
 
-					// flip_v=TRUE: glTF 2.0 puts the UV origin at upper-left
-					// (V increases DOWNWARD in image space), but RISE's
-					// BilinRasterImageAccessor samples with the V-from-
-					// BOTTOM convention (OpenGL-style: `row = V * height`
-					// where V=0 returns the bottom row of the loaded
-					// image).  So glTF V=0 (top of image) must become
-					// RISE V=1 — flip at the loader.  Empirical: Avocado.glb's
-					// pit renders with the brown texture only with the
-					// flip.  A 2026-05-01 commit briefly switched this to
-					// FALSE based on a misreading of the accessor; restored
-					// here after re-checking the rendered output.
+					// flip_v=FALSE: glTF 2.0 spec puts the UV origin at the
+					// upper-left of the texture, matching RISE's
+					// BilinRasterImageAccessor which uses V=0 at row 0 =
+					// top of decoded PNG/JPEG.  No flip needed.  The
+					// rendering bug that was previously chased here
+					// (avocado pit reading green instead of brown) was
+					// actually caused by Landing 2's mip-LOD path
+					// over-averaging the small brown/yellow regions of
+					// the baseColor atlas; with mipmap disabled at the
+					// importer level, base-bilinear sampling at flip_v=
+					// FALSE renders Avocado.glb correctly.  Verified
+					// against the working state at 1c62acb.
 					// Build + register the primitive's geometry through the
 					// already-parsed cgltf_data we own — NOT through
 					// `job.AddGLTFTriangleMeshGeometry`, which would
@@ -2029,7 +2030,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 							(unsigned int)meshIdx, (unsigned int)pi,
 							doubleSided,
 							/*face_normals*/ false,
-							/*flip_v*/ true );
+							/*flip_v*/ false );
 						if( gOK ) {
 							registeredGeoms.insert( geom );
 						}
@@ -2750,19 +2751,7 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		pd.colorSpace  = cs;
 		pd.wrap_s      = wrapS;
 		pd.wrap_t      = wrapT;
-		// Landing 2: request mipmap (= LOD-aware sampling) for any
-		// non-normal-role texture.  Vector-quantity normal maps stay
-		// on bilinear-only because box-filter prefiltering corrupts
-		// the encoded vectors (proper slope-space prefiltering is
-		// future work).
-		//
-		// The Job layer composes mipmap with `lowmemory`: when
-		// lowmem is also set, the painter routes to footprint
-		// stochastic supersampling instead of building a pyramid
-		// (avoids ~33% extra memory per texture, which on
-		// NewSponza-class assets is multiple GB).  At infinite spp
-		// the supersampling path converges to the same integral
-		// as the pyramid lookup — different memory/quality trade.
+		// Landing 2: per-role; false for normal maps.
 		pd.mipmap      = ( std::strcmp( role, "normal" ) != 0 );
 		// Landing 3: emissive textures need Unbounded uplift so HDR
 		// values (KHR_materials_emissive_strength > 1) survive without

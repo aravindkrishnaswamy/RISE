@@ -4397,22 +4397,15 @@ namespace RISE
 					unsigned int primitive_idx = bag.GetUInt(   "primitive",     0 );
 					bool double_sided          = bag.GetBool(   "double_sided",  false );
 					bool face_normals          = bag.GetBool(   "face_normals",  false );
-					// Default flip_v to TRUE.  glTF 2.0's UV origin is upper-
-					// left (V increases DOWNWARD in image space), but RISE's
-					// `BilinRasterImageAccessor` uses the OpenGL-style "V from
-					// bottom" convention internally — sampling `row = V *
-					// height` where V=0 returns the BOTTOM row.  glTF V=0
-					// (top of image) therefore needs to land at RISE V=1.
-					// An earlier revision (commit 49472aa, 2026-05-01)
-					// claimed RISE used V-from-top and switched the default
-					// to FALSE, but empirical testing on Avocado.glb (the
-					// canonical pit-on-flesh diagnostic) shows the swap
-					// renders WITH the swap visible — pit's UVs sample the
-					// green flesh region instead of the brown pit region.
-					// Restoring flip_v=TRUE puts the brown pit back on the
-					// pit and matches every Khronos sample asset's reference
-					// render.
-					bool flip_v                = bag.GetBool(   "flip_v",        true );
+					// Default flip_v to FALSE.  glTF 2.0 spec says V=0 is at
+					// the upper-left of the texture; PNG/JPEG decoders store
+					// row 0 at the top and RISE's BilinRasterImageAccessor
+					// passes V verbatim into the vertical-pixel index, so
+					// glTF V=0 already lands at the correct row without a
+					// flip.  Verified end-to-end via Avocado.glb (clean
+					// brown pit + yellow flesh + green skin) at commit
+					// 1c62acb.
+					bool flip_v                = bag.GetBool(   "flip_v",        false );
 					return pJob.AddGLTFTriangleMeshGeometry(
 						name.c_str(), file.c_str(),
 						mesh_idx, primitive_idx,

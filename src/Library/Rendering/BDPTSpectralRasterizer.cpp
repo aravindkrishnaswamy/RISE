@@ -182,8 +182,15 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 					thisXYZ = thisXYZ * weighted;
 					const Scalar fx = cr.rasterPos.x;
 					const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+					// Proper XYZ -> ROMM RGB via implicit RISEPel(XYZPel).
+					// Replaces the channel-relabel "RISEPel(X, Y, Z)" hack
+					// which bypassed ColorUtils::XYZtoROMMRGB entirely.
+					// Splat path: don't apply mYNormalization here — the
+					// splat film's own Resolve normalizes by sample count
+					// (see SplatFilm.Resolve), and the per-sample value
+					// already encodes the spectral radiance estimate.
 					SplatContributionToFilm( fx, fy,
-						RISEPel( thisXYZ.X, thisXYZ.Y, thisXYZ.Z ),
+						RISEPel( thisXYZ ),
 						camera.GetWidth(), camera.GetHeight() );
 				}
 			}
@@ -322,8 +329,9 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 								splatXYZ = splatXYZ * weighted;
 								const Scalar fx = cr.rasterPos.x;
 								const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+								// Proper XYZ -> ROMM RGB conversion (hero).
 								SplatContributionToFilm( fx, fy,
-									RISEPel( splatXYZ.X, splatXYZ.Y, splatXYZ.Z ),
+									RISEPel( splatXYZ ),
 									camera.GetWidth(), camera.GetHeight() );
 							}
 						} else {
@@ -403,8 +411,9 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 								splatXYZ = splatXYZ * weighted;
 								const Scalar fx = cr.rasterPos.x;
 								const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+								// Proper XYZ -> ROMM RGB conversion (companion).
 								SplatContributionToFilm( fx, fy,
-									RISEPel( splatXYZ.X, splatXYZ.Y, splatXYZ.Z ),
+									RISEPel( splatXYZ ),
 									camera.GetWidth(), camera.GetHeight() );
 							}
 						} else {
@@ -423,7 +432,11 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 		}
 
 		if( totalActive > 0 ) {
-			return spectralSum * (1.0 / Scalar(totalActive));
+			// MC normalization: (1/N) for sample-mean × (b-a)/k_y to
+			// scale into a properly-normalized integral (white = 1).
+			// Inherited mYNormalization = (b-a)/k_y; uniform scale =>
+			// chromaticity preserved.
+			return spectralSum * ( mYNormalization / Scalar(totalActive) );
 		}
 		return spectralSum;
 	}
@@ -459,8 +472,8 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 		}
 	}
 
-	// Average over spectral samples
-	return spectralSum * (1.0 / Scalar(nSpectralSamples));
+	// MC normalization: (1/N) × (b-a)/k_y.  See HWSS branch above.
+	return spectralSum * ( mYNormalization / Scalar(nSpectralSamples) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -496,7 +509,9 @@ void BDPTSpectralRasterizer::IntegratePixel(
 		ProgressivePixel& px = pProgFilm->Get( x, y );
 		if( px.converged ) {
 			if( px.alphaSum > 0 ) {
-				cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+				// px.colorSum is XYZPel; defer XYZ->ROMM RGB to here.
+				const XYZPel avgXYZ = px.colorSum * (1.0/px.alphaSum);
+				cret = RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum );
 			}
 			return;
 		}
@@ -538,7 +553,9 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			static_cast<uint32_t>(x), static_cast<uint32_t>(y) );
 	}
 
-	RISEPel colAccrued( 0, 0, 0 );
+	// PBRT-v4 RGBFilm-style accumulator: XYZ throughout, deferred
+	// XYZ->ROMM RGB conversion at the per-pixel resolve below.
+	XYZPel colAccrued( 0, 0, 0 );
 	Scalar weights = 0;
 	Scalar alphas = 0;
 	Scalar wMean = 0;
@@ -616,7 +633,8 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			const XYZPel sampleXYZ = IntegratePixelSpectral( rc, ptOnScreen, pScene, *pCamera,
 				pixelSampleIndex, pixelSeed, mortonIndex, log2SPP, 0 );
 #endif
-			const RISEPel samplePel( sampleXYZ.X, sampleXYZ.Y, sampleXYZ.Z );
+			// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
+			// now accumulates XYZ; no per-sample chromaticity clip.
 
 			// Approach C: cross-pixel filter-weighted splat — see
 			// BDPTPelRasterizer::IntegratePixel for the rationale.
@@ -624,15 +642,16 @@ void BDPTSpectralRasterizer::IntegratePixel(
 				pFilteredFilm->Splat(
 					ptOnScreen.x,
 					static_cast<Scalar>(height) - ptOnScreen.y,
-					samplePel,
+					sampleXYZ,
 					*pPixelFilter );
 			}
 
-			colAccrued = colAccrued + samplePel * weight;
+			colAccrued = colAccrued + sampleXYZ * weight;
 			alphas += weight;
 
 			if( pProgFilm ) {
-				const Scalar lum = ColorMath::MaxValue(samplePel);
+				// XYZ.Y is the CIE photometric luminance.
+				const Scalar lum = sampleXYZ.Y;
 				wN++;
 				const Scalar delta = lum - wMean;
 				wMean += delta / Scalar(wN);
@@ -677,6 +696,8 @@ void BDPTSpectralRasterizer::IntegratePixel(
 	}
 
 	if( alphas > 0 ) {
-		cret = RISEColor( colAccrued * (1.0 / alphas), alphas / weights );
+		// Single XYZ -> ROMM RGB conversion at resolve.
+		const XYZPel avgXYZ = colAccrued * (1.0 / alphas);
+		cret = RISEColor( RISEPel( avgXYZ ), alphas / weights );
 	}
 }

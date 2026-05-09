@@ -163,7 +163,12 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 		}
 
 		if( totalActive > 0 ) {
-			return spectralSum * (1.0 / Scalar(totalActive));
+			// MC normalization: (1/N) for sample-mean × (b-a)/k_y to
+			// scale into a properly-normalized integral so a perfect-
+			// white reflector under flat illuminant gives Y = 1.
+			// Inherited mYNormalization = (b-a)/k_y; uniform scale =>
+			// chromaticity preserved.
+			return spectralSum * ( mYNormalization / Scalar(totalActive) );
 		}
 		return spectralSum;
 	}
@@ -186,7 +191,8 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 		}
 	}
 
-	return spectralSum * (1.0 / Scalar(nSpectralSamples));
+	// MC normalization: (1/N) × (b-a)/k_y.  See HWSS branch above.
+	return spectralSum * ( mYNormalization / Scalar(nSpectralSamples) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -230,7 +236,10 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 			ProgressivePixel& px = pProgFilm->Get( x, y );
 			if( px.converged ) {
 				if( px.alphaSum > 0 ) {
-					cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+					// px.colorSum is XYZPel; defer XYZ->ROMM RGB to
+					// here via implicit RISEPel(XYZPel) constructor.
+					const XYZPel avgXYZ = px.colorSum * (1.0/px.alphaSum);
+					cret = RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum );
 				}
 				return;
 			}
@@ -259,7 +268,10 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 			}
 		}
 
-		RISEPel colAccrued( 0, 0, 0 );
+		// PBRT-v4 RGBFilm-style accumulator: XYZ throughout, deferred
+		// XYZ->ROMM RGB conversion at the per-pixel resolve below.
+		// Removes per-sample chromaticity gamut clip bias.
+		XYZPel colAccrued( 0, 0, 0 );
 		Scalar weights = 0;
 		Scalar alphas = 0;
 		Scalar wMean = 0;
@@ -332,22 +344,23 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 
 				const XYZPel sampleXYZ = IntegratePixelSpectral(
 					rc, rast, ptOnScreen, pScene, sampler, pRadianceMap );
-				const RISEPel samplePel( sampleXYZ.X, sampleXYZ.Y, sampleXYZ.Z );
+				// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
+				// now accumulates XYZ; no per-sample chromaticity clip.
 
 				if( filmMode ) {
-					pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, samplePel, *pPixelFilter );
-					colAccrued = colAccrued + samplePel;
+					pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, sampleXYZ, *pPixelFilter );
+					colAccrued = colAccrued + sampleXYZ;
 					alphas += 1.0;
 				} else {
-					colAccrued = colAccrued + samplePel * weight;
+					colAccrued = colAccrued + sampleXYZ * weight;
 					alphas += weight;
 				}
 
 				// Welford update gated on `adaptive` only (see
 				// BDPTPelRasterizer for the multi-pass selection-bias
-				// rationale).
+				// rationale).  XYZ.Y is the CIE photometric luminance.
 				if( adaptive ) {
-					const Scalar lum = ColorMath::MaxValue(samplePel);
+					const Scalar lum = sampleXYZ.Y;
 					wN++;
 					const Scalar delta = lum - wMean;
 					wMean += delta / Scalar(wN);
@@ -394,7 +407,9 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 			const Scalar t = Scalar(sampleIndex) / Scalar(targetSamples);
 			cret = RISEColor( RISEPel(t, t, t), 1.0 );
 		} else if( alphas > 0 ) {
-			cret = RISEColor( colAccrued * (1.0 / alphas), alphas / weights );
+			// Single XYZ -> ROMM RGB conversion at resolve.
+			const XYZPel avgXYZ = colAccrued * (1.0 / alphas);
+			cret = RISEColor( RISEPel( avgXYZ ), alphas / weights );
 		}
 	}
 	else
@@ -418,7 +433,8 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 		const XYZPel sampleXYZ = IntegratePixelSpectral(
 			rc, rast, Point2(x, height-y), pScene, sampler, pRadianceMap );
 
-		cret = RISEColor( RISEPel( sampleXYZ.X, sampleXYZ.Y, sampleXYZ.Z ), 1.0 );
+		// Proper XYZ -> ROMM RGB via implicit RISEPel(XYZPel).
+		cret = RISEColor( RISEPel( sampleXYZ ), 1.0 );
 
 		rc.pSampler = 0;
 	}

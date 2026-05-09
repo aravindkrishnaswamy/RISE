@@ -1,0 +1,68 @@
+RISE ASCII SCENE 5
+# Performance comparison: textured Avocado, spectral path tracing through
+# pixelintegratingspectral_rasterizer + pathtracer shaderop.
+# Matched spp/recursion/lights with perf_avocado_rgb.RISEscene above —
+# same path tracer, integrated in spectral.  Per-sample texture cost:
+# SampleTextured (RGB) + Jakob-Hanika LUT lookup + sigmoid eval at the
+# sample's wavelength.
+
+pathtracing_shaderop
+{
+	name		pathtracer
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pathtracer
+}
+
+pixelintegratingspectral_rasterizer
+{
+	samples				16
+	lum_samples			1
+	nmbegin				380
+	nmend				780
+	num_wavelengths		32
+	max_recursion		5
+	hwss				false
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/perf_avocado_spectral
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0.06 0.04 0.10
+	lookat				0 0.025 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					40.0
+}
+
+gltf_import
+{
+	file				scenes/Tests/Geometry/assets/Avocado.glb
+	name_prefix			avocado_perf_spectral
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.5 0.7 0.5
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.20
+	color		1.0 1.0 1.0
+}

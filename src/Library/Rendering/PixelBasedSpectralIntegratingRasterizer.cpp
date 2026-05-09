@@ -44,9 +44,23 @@ PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer
 	  wavelength_steps( (lambda_diff)/Scalar(num_wavelengths) ),
 	  nSpectralSamples( specsamp ),
 	  bUseHWSS( useHWSS_ ),
+	  mYNormalization( 1.0 ),
 	  stabilityConfig( stabilityCfg )
 {
 	useZSobol = useZSobol_;
+	// Cache the MC luminance normalization scale = (b - a) / k_y where
+	// k_y = ∫Ȳ(λ)dλ over [lambda_begin, lambda_end].  The MC estimator
+	// (1/N)·Σ X̄(λᵢ)·V(λᵢ) for uniformly sampled λᵢ ∈ [a, b]
+	// approximates the AVERAGE of the integrand; multiplying by (b-a)
+	// converts to the integral, then dividing by k_y normalizes a
+	// perfect-white reflector under flat illuminant to Y = 1.  Without
+	// this scale, spectral renders are uniformly ~3.7× dimmer than
+	// equivalent RGB renders (for the standard [380, 780] range
+	// k_y ≈ 106.86, so (b-a) / k_y ≈ 3.74).
+	const Scalar k_y = ColorUtils::CIE_Y_Integral( lambda_begin_, lambda_end_ );
+	if( k_y > NEARZERO ) {
+		mYNormalization = lambda_diff / k_y;
+	}
 }
 
 PixelBasedSpectralIntegratingRasterizer::~PixelBasedSpectralIntegratingRasterizer( )
@@ -85,7 +99,9 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample(
 		if( bHit && nmvalue > 0 ) {
 			XYZPel thisNM( 0, 0, 0 );
 			if( ColorUtils::XYZFromNM( thisNM, nm ) ) {
-				thisNM = thisNM * nmvalue;
+				// Single-sample MC normalization: same (b-a)/k_y scale
+				// as the multi-sample branch (N=1 case omits the 1/N).
+				thisNM = thisNM * ( nmvalue * mYNormalization );
 				c = ColorXYZ( thisNM, 1.0 );
 			}
 		} else if( bHit ) {
@@ -141,7 +157,13 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSample(
 			}
 		}
 
-		sum = sum * (1.0/Scalar(nSpectralSamples));
+		// MC normalization: (1/N) for sample-mean × (b-a)/k_y to scale
+		// the average into a properly-normalized integral so a perfect-
+		// white reflector under flat illuminant gives Y = 1.  Without
+		// the (b-a)/k_y factor the result is ~3.7× dim (matches the
+		// observed RGB-vs-spectral brightness gap).  Uniform scale =>
+		// chromaticity preserved.
+		sum = sum * ( mYNormalization / Scalar(nSpectralSamples) );
 
 		if( bHit ) {
 			c = ColorXYZ( sum, 1.0 );
@@ -199,7 +221,8 @@ bool PixelBasedSpectralIntegratingRasterizer::TakeSingleSampleHWSS(
 	}
 
 	if( totalActive > 0 ) {
-		totalSum = totalSum * (1.0 / Scalar(totalActive));
+		// MC normalization: (1/N) × (b-a)/k_y.  See non-HWSS branch.
+		totalSum = totalSum * ( mYNormalization / Scalar(totalActive) );
 	}
 
 	if( bHit ) {
@@ -237,7 +260,12 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 			ProgressivePixel& px = pProgFilm->Get( x, y );
 			if( px.converged ) {
 				if( px.alphaSum > 0 ) {
-					cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
+					// px.colorSum is XYZPel (PBRT-v4 RGBFilm-style
+					// accumulator).  Implicit RISEPel(XYZPel) constructor
+					// invokes ColorUtils::XYZtoROMMRGB once at this
+					// resolve point.
+					const XYZPel avgXYZ = px.colorSum * (1.0/px.alphaSum);
+					cret = RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum );
 				}
 				return;
 			}
@@ -265,7 +293,10 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 			}
 		}
 
-		RISEPel colAccrued( 0, 0, 0 );
+		// PBRT-v4 RGBFilm-style accumulator: XYZ throughout, deferred
+		// XYZ->ROMM RGB conversion at the per-pixel resolve below.
+		// Removes per-sample chromaticity gamut clip bias for out-of-
+		// gamut spectral-locus contributions.
 		ColorXYZ colAccruedXYZ( 0, 0, 0, 0 );
 		Scalar weights = 0;
 		Scalar alphas = 0;
@@ -278,7 +309,8 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 
 		if( pProgFilm ) {
 			ProgressivePixel& px = pProgFilm->Get( x, y );
-			colAccrued = px.colorSum;
+			colAccruedXYZ.base = px.colorSum;
+			colAccruedXYZ.a = px.alphaSum;
 			weights = px.weightSum;
 			alphas = px.alphaSum;
 			wMean = px.wMean;
@@ -336,20 +368,22 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 				Ray ray;
 				if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
 					TakeSingleSample( rc, rast, ray, c );
-					const RISEPel cpel( c.base );
+					// XYZ-only path: accumulate XYZ in both FilteredFilm
+					// and the local colAccruedXYZ.  No per-sample XYZ->
+					// ROMM conversion (deferred to per-pixel resolve).
 					if( filmMode ) {
 						pFilteredFilm->Splat( ptOnScreen.x, static_cast<Scalar>(height) - ptOnScreen.y, c.base, *pPixelFilter );
 						colAccruedXYZ = colAccruedXYZ + c;
-						colAccrued = colAccrued + cpel;
 						alphas += c.a;
 					} else {
 						colAccruedXYZ = colAccruedXYZ + c*weight;
-						colAccrued = colAccrued + cpel*weight;
 						alphas += c.a * weight;
 					}
 
 					if( pProgFilm ) {
-						const Scalar lum = ColorMath::MaxValue( cpel );
+						// XYZ.Y is the CIE photometric luminance — more
+						// principled than the previous max-of-RGB heuristic.
+						const Scalar lum = c.base.Y;
 						wN++;
 						const Scalar delta = lum - wMean;
 						wMean += delta / Scalar(wN);
@@ -386,7 +420,8 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 
 		if( pProgFilm ) {
 			ProgressivePixel& px = pProgFilm->Get( x, y );
-			px.colorSum = colAccrued;
+			// Persist per-pixel state in XYZ — no clipping until Resolve.
+			px.colorSum = colAccruedXYZ.base;
 			px.weightSum = weights;
 			px.alphaSum = alphas;
 			px.wMean = wMean;
@@ -396,10 +431,12 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 			px.converged = converged;
 		}
 
-		if( pProgFilm && alphas > 0 ) {
-			cret = RISEColor( colAccrued * (1.0/alphas), alphas/weights );
-		} else if( !pProgFilm && colAccruedXYZ.a > 0 ) {
-			cret = RISEColor( colAccruedXYZ.base * (1.0/colAccruedXYZ.a), colAccruedXYZ.a/weights );
+		if( alphas > 0 ) {
+			// Single XYZ -> ROMM RGB conversion at resolve via implicit
+			// RISEPel(XYZPel) constructor (ColorUtils::XYZtoROMMRGB).
+			// Applies MoveXYZIntoROMMRGBGamut once here, per pixel.
+			const XYZPel avgXYZ = colAccruedXYZ.base * (1.0/alphas);
+			cret = RISEColor( RISEPel( avgXYZ ), alphas/weights );
 		}
 	}
 	else

@@ -11,14 +11,20 @@
 //  `alphax` / `alphay` parameters expect.  See docs/GLTF_IMPORT.md §4
 //  (PBR mapping) for the full graph.
 //
-//  Spectral path: NM lookups pass through to the source painter and
-//  then sample the chosen channel's "narrow-band slice" by treating
-//  the source's spectral value as if it were already RGB-decomposed.
-//  This is a coarse approximation (channel selection isn't a meaningful
-//  spectral op) but it lets the painter participate in spectral
-//  rasterizers without crashing; users authoring spectral PBR scenes
-//  should source roughness / metallic factors from scalar painters
-//  (e.g. uniformcolor_painter) rather than channel-extracted RGB.
+//  Spectral path: a channel extraction selects ONE scalar from the
+//  source's RGB triple — the result is wavelength-independent by
+//  construction (a roughness or metallic value doesn't have a
+//  spectrum).  GetColorNM therefore samples the source's RGB,
+//  extracts the requested channel, and returns that scalar at every
+//  wavelength.  Earlier revisions called source.GetColorNM(ri, nm)
+//  and ignored the channel selector, which produced wrong
+//  per-wavelength scalars for the standard glTF metallicRoughness
+//  texture layout (R=AO, G=roughness, B=metallic, all packed in one
+//  RGB texture): in spectral mode the metallic painter would
+//  silently sample the JH-uplifted spectrum of (R, G, B) instead of
+//  just the B value, treating organic surfaces as ~17 % metallic
+//  and skewing diffuse / Fresnel splits warm.  The fix matches the
+//  RGB path: pull the scalar from source.GetColor(ri).
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: April 30, 2026
@@ -102,17 +108,23 @@ namespace RISE
 
 			Scalar GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
 			{
-				// Channel selection has no meaningful spectral analogue;
-				// pass the source's narrow-band value through the
-				// scale/bias affinity.  Acceptable for PBR scenes that
-				// drive roughness / metallic from scalar (uniformcolor)
-				// painters; questionable for ones that try to spectralise
-				// a per-channel RGB texture.  Alpha doesn't have an NM
-				// equivalent either -- fall back to the source's NM
-				// value, which collapses to luminance for opaque painters.
-				const Scalar v = (channel == CHAN_A)
-					? source.GetAlpha( ri )
-					: source.GetColorNM( ri, nm );
+				// Mirror the RGB path: pull the scalar channel from the
+				// source's RGB output — a roughness / metallic / AO
+				// scalar is wavelength-independent, so we return the
+				// same value at every nm.  `nm` is intentionally unused.
+				(void)nm;
+				Scalar v = Scalar( 0 );
+				if( channel == CHAN_A ) {
+					v = source.GetAlpha( ri );
+				} else {
+					const RISEPel s = source.GetColor( ri );
+					switch( channel ) {
+						case CHAN_R: v = s.r; break;
+						case CHAN_G: v = s.g; break;
+						case CHAN_B: v = s.b; break;
+						case CHAN_A: break;	// handled above (unreachable here)
+					}
+				}
 				Scalar out = scale * v + bias;
 				if( channel == CHAN_A ) {
 					out = (out < Scalar(0)) ? Scalar(0)

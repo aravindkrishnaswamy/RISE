@@ -1278,6 +1278,8 @@
 		F2D1A032069C42910069C9E5 /* RGBSigmoidPolynomial.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A030069C42900069C9E5 /* RGBSigmoidPolynomial.h */; };
 		F2D1A035069C42910069C9E5 /* RGBToSpectrumTable.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A033069C42900069C9E5 /* RGBToSpectrumTable.h */; };
 		F2D1A03D069C42910069C9E5 /* RGBToSpectrumTable.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A036069C42900069C9E5 /* RGBToSpectrumTable.cpp */; };
+		F2BAFED100000000000000B1 /* RGBToSpectrumTable_ROMMData.h in Headers */ = {isa = PBXBuildFile; fileRef = F2BAFED100000000000000A2 /* RGBToSpectrumTable_ROMMData.h */; };
+		F2BAFED100000000000000B2 /* RGBToSpectrumTable_ROMMData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2BAFED100000000000000A1 /* RGBToSpectrumTable_ROMMData.cpp */; };
 		F2D1A03A069C42910069C9E5 /* RGBSpectra.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A038069C42900069C9E5 /* RGBSpectra.h */; };
 		F2D1A03E069C42910069C9E5 /* RGBSpectra.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A03B069C42900069C9E5 /* RGBSpectra.cpp */; };
 		F2D1A047069C42910069C9E5 /* HosekWilkieSkyModel.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A03F069C42900069C9E5 /* HosekWilkieSkyModel.h */; };
@@ -2331,6 +2333,8 @@
 		F2D1A030069C42900069C9E5 /* RGBSigmoidPolynomial.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RGBSigmoidPolynomial.h; sourceTree = "<group>"; };
 		F2D1A033069C42900069C9E5 /* RGBToSpectrumTable.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RGBToSpectrumTable.h; sourceTree = "<group>"; };
 		F2D1A036069C42900069C9E5 /* RGBToSpectrumTable.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RGBToSpectrumTable.cpp; sourceTree = "<group>"; };
+		F2BAFED100000000000000A1 /* RGBToSpectrumTable_ROMMData.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RGBToSpectrumTable_ROMMData.cpp; sourceTree = "<group>"; };
+		F2BAFED100000000000000A2 /* RGBToSpectrumTable_ROMMData.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RGBToSpectrumTable_ROMMData.h; sourceTree = "<group>"; };
 		F2D1A038069C42900069C9E5 /* RGBSpectra.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RGBSpectra.h; sourceTree = "<group>"; };
 		F2D1A03B069C42900069C9E5 /* RGBSpectra.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RGBSpectra.cpp; sourceTree = "<group>"; };
 		F2D1A03F069C42900069C9E5 /* HosekWilkieSkyModel.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = HosekWilkieSkyModel.h; sourceTree = "<group>"; };
@@ -3747,6 +3751,8 @@
 				F2D1A030069C42900069C9E5 /* RGBSigmoidPolynomial.h */,
 				F2D1A033069C42900069C9E5 /* RGBToSpectrumTable.h */,
 				F2D1A036069C42900069C9E5 /* RGBToSpectrumTable.cpp */,
+				F2BAFED100000000000000A2 /* RGBToSpectrumTable_ROMMData.h */,
+				F2BAFED100000000000000A1 /* RGBToSpectrumTable_ROMMData.cpp */,
 				F2D1A038069C42900069C9E5 /* RGBSpectra.h */,
 				F2D1A03B069C42900069C9E5 /* RGBSpectra.cpp */,
 				F27F09F0069C42900069C9E5 /* CompositeOperator.h */,
@@ -4371,6 +4377,7 @@
 				F27F0C4B069C42910069C9E5 /* ColorUtils.h in Headers */,
 				F2D1A032069C42910069C9E5 /* RGBSigmoidPolynomial.h in Headers */,
 				F2D1A035069C42910069C9E5 /* RGBToSpectrumTable.h in Headers */,
+				F2BAFED100000000000000B1 /* RGBToSpectrumTable_ROMMData.h in Headers */,
 				F2D1A03A069C42910069C9E5 /* RGBSpectra.h in Headers */,
 				F2D1A047069C42910069C9E5 /* HosekWilkieSkyModel.h in Headers */,
 				F2D1A049069C42910069C9E5 /* HosekWilkieSpectralRadianceMap.h in Headers */,
@@ -4843,6 +4850,7 @@
 				F27F0C46069C42910069C9E5 /* Color.cpp in Sources */,
 				F27F0C4A069C42910069C9E5 /* ColorUtils.cpp in Sources */,
 				F2D1A03D069C42910069C9E5 /* RGBToSpectrumTable.cpp in Sources */,
+				F2BAFED100000000000000B2 /* RGBToSpectrumTable_ROMMData.cpp in Sources */,
 				F2D1A03E069C42910069C9E5 /* RGBSpectra.cpp in Sources */,
 				F2D1A048069C42910069C9E5 /* HosekWilkieSkyModel.cpp in Sources */,
 				F2D1A04A069C42910069C9E5 /* HosekWilkieSpectralRadianceMap.cpp in Sources */,

@@ -42,7 +42,7 @@ FilteredFilm::~FilteredFilm()
 void FilteredFilm::Splat(
 	const Scalar screenX,
 	const Scalar screenY,
-	const RISEPel& color,
+	const XYZPel& color,
 	const IPixelFilter& filter
 	)
 {
@@ -89,13 +89,27 @@ void FilteredFilm::Resolve(
 	IRasterImage& target
 	) const
 {
+	// XYZ -> ROMM RGB conversion happens here, exactly once per pixel.
+	// The implicit `RISEPel(XYZPel)` constructor invokes the standard
+	// `ColorUtils::XYZtoROMMRGB` (Bradford D65 -> D50 chromatic adapt
+	// + gamut clip + matrix).  This matches the JH LUT generator's
+	// post-2026-05 forward model (`tools/JakobHanikaLUTGen.cpp::
+	// IntegrateToROMM`), so JH-uplifted spectra and physical spectra
+	// (BioSpec, blackbody, measured SPDs) both round-trip through the
+	// same conversion.  An earlier interim revision dispatched on a
+	// `bIntegratorMode` flag to a matrix-only `IntegratorXYZtoROMMRGB`,
+	// which broke physically-grounded scenes (BioSpec under blackbody
+	// rendered lavender because the unadapted D65 XYZ shoved blue
+	// through the `mxXYZD50toROMM` matrix's third row).  Removing the
+	// flag and aligning the LUT with the standard pipeline fixes
+	// both classes of scene at once.
 	for( unsigned int y=0; y<height; y++ ) {
 		for( unsigned int x=0; x<width; x++ ) {
 			const FilteredPixel& pixel = pixels[y * width + x];
 
 			if( fabs(pixel.weightSum) > 1e-10 ) {
-				const RISEPel resolved = pixel.colorSum * (1.0 / pixel.weightSum);
-				target.SetPEL( x, y, RISEColor( resolved, 1.0 ) );
+				const XYZPel resolvedXYZ = pixel.colorSum * (1.0 / pixel.weightSum);
+				target.SetPEL( x, y, RISEColor( RISEPel( resolvedXYZ ), 1.0 ) );
 			}
 		}
 	}
@@ -105,13 +119,17 @@ void FilteredFilm::Unresolve(
 	IRasterImage& target
 	) const
 {
+	// Inverse of Resolve: subtract the standard-XYZ-resolved ROMM RGB
+	// value previously written.  Mirror Resolve's conversion choice
+	// so the round-trip cancels exactly.
 	for( unsigned int y=0; y<height; y++ ) {
 		for( unsigned int x=0; x<width; x++ ) {
 			const FilteredPixel& pixel = pixels[y * width + x];
 
 			if( fabs(pixel.weightSum) > 1e-10 ) {
 				RISEColor existing = target.GetPEL( x, y );
-				const RISEPel resolved = pixel.colorSum * (1.0 / pixel.weightSum);
+				const XYZPel resolvedXYZ = pixel.colorSum * (1.0 / pixel.weightSum);
+				const RISEPel resolved = RISEPel( resolvedXYZ );
 				RISEColor combined( existing.base - resolved, existing.a );
 				target.SetPEL( x, y, combined );
 			}
@@ -122,7 +140,7 @@ void FilteredFilm::Unresolve(
 void FilteredFilm::Clear()
 {
 	for( unsigned int i=0; i<pixels.size(); i++ ) {
-		pixels[i].colorSum = RISEPel( 0, 0, 0 );
+		pixels[i].colorSum = XYZPel( 0, 0, 0 );
 		pixels[i].weightSum = 0;
 	}
 }

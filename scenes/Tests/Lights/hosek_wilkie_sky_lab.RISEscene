@@ -155,8 +155,8 @@ sphere_geometry
 infiniteplane_geometry
 {
 	name		ground_geom
-	size_u		200
-	size_v		200
+	xtile		200
+	ytile		200
 }
 
 standard_object

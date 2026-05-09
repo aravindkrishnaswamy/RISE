@@ -18,6 +18,7 @@
 #define PROGRESSIVE_FILM_
 
 #include "../Interfaces/IReference.h"
+#include "../Utilities/Color/ColorUtils.h"
 #include <vector>
 #include <cstdint>
 
@@ -34,7 +35,19 @@ namespace RISE
 		// on separate regions.  Leave natural layout.
 		struct ProgressivePixel
 		{
-			RISEPel		colorSum;		///< Weighted color accumulator
+			// PBRT-v4 RGBFilm-style storage: per-pixel accumulator is in
+			// CIE XYZ tristimulus (a linear color space, no gamut),
+			// converted to RISEPel ROMM RGB exactly once at Resolve.
+			// Eliminates the per-sample chromaticity gamut clip
+			// (MoveXYZIntoROMMRGBGamut, fired by the implicit
+			// RISEPel(XYZPel) conversion) that systematically suppressed
+			// out-of-gamut spectral-locus contributions toward white.
+			// For RGB rasterizers: implicit XYZPel(const ROMMRGBPel&)
+			// at write is a lossless 3x3 matrix multiply (no clip);
+			// implicit RISEPel(const XYZPel&) at read does fire the
+			// chromaticity clip, but for in-gamut RGB samples the clip
+			// is a no-op, so RGB rasterizers behave identically.
+			XYZPel		colorSum;		///< Weighted XYZ accumulator (linear, no clip)
 			Scalar		weightSum;		///< Weight accumulator (for averaging)
 			Scalar		alphaSum;		///< Alpha accumulator
 
@@ -92,14 +105,24 @@ namespace RISE
 
 			/// Resolve the current progressive state into a display image.
 			/// Writes colorSum/weightSum as the running average for each pixel.
+			/// XYZ -> ROMM RGB conversion (standard `ColorUtils::XYZtoROMMRGB`
+			/// = Bradford D65->D50 adapt + chromaticity gamut clip + matrix)
+			/// happens here, exactly once per pixel.  The implicit
+			/// RISEPel(XYZPel) constructor in RISEColor's argument list is
+			/// the dispatch point.  An earlier interim revision dispatched
+			/// to a matrix-only `IntegratorXYZtoROMMRGB` for spectral
+			/// rasterizers; that broke physical-spectrum scenes (BioSpec
+			/// under blackbody rendered lavender) and is no longer needed
+			/// now that the JH LUT generator applies the same standard
+			/// adapt+matrix as its forward model.
 			void Resolve( IRasterImage& target ) const
 			{
 				for( unsigned int y = 0; y < height; y++ ) {
 					for( unsigned int x = 0; x < width; x++ ) {
 						const ProgressivePixel& px = pixels[y * width + x];
 						if( px.weightSum > 0 && px.alphaSum > 0 ) {
-							const RISEPel avg = px.colorSum * (1.0 / px.alphaSum);
-							target.SetPEL( x, y, RISEColor( avg, px.alphaSum / px.weightSum ) );
+							const XYZPel avgXYZ = px.colorSum * (1.0 / px.alphaSum);
+							target.SetPEL( x, y, RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum ) );
 						}
 					}
 				}

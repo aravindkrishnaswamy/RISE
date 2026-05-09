@@ -42,13 +42,21 @@ namespace RISE
 		{
 		protected:
 
+			// PBRT-v4 RGBFilm-style storage: accumulator is XYZPel (linear
+			// CIE XYZ), converted to ROMM RGB once at Resolve via the
+			// standard `ColorUtils::XYZtoROMMRGB` (D65->D50 Bradford
+			// adapt + gamut clip + matrix).  Splat takes XYZPel so
+			// spectral integrators feed XYZ directly; RGB integrators
+			// rely on the implicit XYZPel(const ROMMRGBPel&) lossless
+			// conversion at the call site (3x3 matrix + chromatic
+			// adaptation, no clip).
 			struct FilteredPixel
 			{
-				RISEPel		colorSum;
+				XYZPel		colorSum;
 				Scalar		weightSum;
 
 				FilteredPixel() :
-				colorSum( RISEPel( 0, 0, 0 ) ),
+				colorSum( XYZPel( 0, 0, 0 ) ),
 				weightSum( 0 )
 				{
 				}
@@ -69,10 +77,13 @@ namespace RISE
 
 			//! Thread-safe: splats a sample contribution to all pixels within
 			//! the filter's support around the given screen position.
+			//! Accumulator is XYZ (linear, no gamut clip).  Spectral
+			//! integrators pass XYZPel directly; RGB integrators rely on
+			//! the implicit XYZPel(const ROMMRGBPel&) lossless conversion.
 			void Splat(
 				const Scalar screenX,					///< [in] Sample screen X position
 				const Scalar screenY,					///< [in] Sample screen Y position
-				const RISEPel& color,					///< [in] Sample radiance
+				const XYZPel& color,					///< [in] Sample radiance (CIE XYZ tristimulus)
 				const IPixelFilter& filter				///< [in] Pixel filter for weight evaluation
 				);
 

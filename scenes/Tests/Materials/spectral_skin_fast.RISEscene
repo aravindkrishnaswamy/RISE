@@ -1,0 +1,116 @@
+RISE ASCII SCENE 5
+# Fast diagnostic version of spectral_skinmodel.RISEscene for iterating
+# on the spectral_skin chromaticity / SSS regression after the spectral
+# normalization fix.
+
+blackbody_painter
+{
+	name				speclum2
+	temperature			6500
+}
+
+pathtracing_shaderop
+{
+	name	pathtracer
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pathtracer
+}
+
+pixelintegratingspectral_rasterizer
+{
+	max_recursion		10
+	samples				1024
+	nmbegin				380
+	nmend				720
+	num_wavelengths		8
+	lum_samples			1
+	integrate_rgb		FALSE
+	show_luminaires		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/spectral_skin_fast
+	type				PNG
+	bpp				8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			-6 -1.5 12.0
+	lookat				-6 -1.5 0
+	up					0 1 0
+	width				200
+	height				200
+	fov					30.0
+}
+
+biospec_skin_material
+{
+	name							skin
+	melanosomes_in_epidermis		0.019
+	folds_aspect_ratio				0.75
+}
+
+biospec_skin_material
+{
+	name							ears
+	melanosomes_in_epidermis		0.019
+	subdermal_layer					FALSE
+	folds_aspect_ratio				0.75
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			speclum2
+	scale				10.0
+	material			none
+}
+
+risemesh_geometry
+{
+	name				headgeom
+	file				models/risemesh/she_head.risemesh
+}
+
+risemesh_geometry
+{
+	name				earsgeom
+	file				models/risemesh/she_ears.risemesh
+}
+
+standard_object
+{
+	name				head
+	geometry			headgeom
+	orientation			-90.0 0.0 20.0
+	material			skin
+}
+
+standard_object
+{
+	name				ears
+	geometry			earsgeom
+	orientation			-90.0 0.0 20.0
+	material			ears
+}
+
+infiniteplane_geometry
+{
+	name				lightgeom2
+}
+
+standard_object
+{
+	name				light2
+	geometry			lightgeom2
+	position			0 0.0 -70.0
+	orientation			0 0 0
+	material			white_lum
+}

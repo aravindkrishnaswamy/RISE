@@ -1,0 +1,116 @@
+RISE ASCII SCENE 5
+# Same scene as chromaticity_test_spectral but using RGB integrator,
+# for direct chromaticity comparison.  Each sphere should render as
+# its specified saturated color.
+
+pathtracing_shaderop
+{
+	name		pathtracer
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pathtracer
+}
+
+pixelpel_rasterizer
+{
+	samples				256
+	lum_samples			1
+	max_recursion		3
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/chromaticity_test_rgb
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0 0 6
+	lookat				0 0 0
+	up					0 1 0
+	width				300
+	height				100
+	fov					40.0
+}
+
+uniformcolor_painter
+{
+	name		pnt_red
+	color		0.8 0.0 0.0
+	colorspace	Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name		pnt_green
+	color		0.0 0.8 0.0
+	colorspace	Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name		pnt_blue
+	color		0.0 0.0 0.8
+	colorspace	Rec709RGB_Linear
+}
+
+lambertian_material
+{
+	name		mat_red
+	reflectance	pnt_red
+}
+
+lambertian_material
+{
+	name		mat_green
+	reflectance	pnt_green
+}
+
+lambertian_material
+{
+	name		mat_blue
+	reflectance	pnt_blue
+}
+
+sphere_geometry
+{
+	name		sph
+	radius		0.7
+}
+
+standard_object
+{
+	name		sph_red
+	geometry	sph
+	material	mat_red
+	position	-1.6 0 0
+}
+
+standard_object
+{
+	name		sph_green
+	geometry	sph
+	material	mat_green
+	position	0 0 0
+}
+
+standard_object
+{
+	name		sph_blue
+	geometry	sph
+	material	mat_blue
+	position	1.6 0 0
+}
+
+ambient_light
+{
+	name		amb
+	power		1.0
+	color		1.0 1.0 1.0
+}

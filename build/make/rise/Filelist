@@ -38,6 +38,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/Color/Color.cpp						\
 	$(PATHLIBRARY)Utilities/Color/ColorUtils.cpp				\
 	$(PATHLIBRARY)Utilities/Color/RGBToSpectrumTable.cpp		\
+	$(PATHLIBRARY)Utilities/Color/RGBToSpectrumTable_ROMMData.cpp	\
 	$(PATHLIBRARY)Utilities/Color/RGBSpectra.cpp				\
 	$(PATHLIBRARY)Utilities/HosekWilkieSkyModel.cpp				\
 	$(PATHLIBRARY)Rendering/HosekWilkieSpectralRadianceMap.cpp	\

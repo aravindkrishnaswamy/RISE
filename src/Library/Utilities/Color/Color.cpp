@@ -192,6 +192,16 @@ ROMMRGBPel ColorUtils::XYZtoROMMRGB( const XYZPel& xyz )
 	return XYZtoRGBMatrixMultiply<ROMMRGBPel>( xyzD50, mxXYZD50toROMM );
 }
 
+ROMMRGBPel ColorUtils::IntegratorXYZtoROMMRGB( const XYZPel& xyz )
+{
+	// Matrix-only XYZ -> ROMM RGB matching the JH LUT generator's
+	// convention exactly: just `mxXYZD50toROMM × xyz` with no chromatic
+	// adaptation and no gamut clip.  See ColorUtils.h for the rationale
+	// — the standard XYZtoROMMRGB above adds a D65->D50 step that the
+	// LUT generator never applied, breaking the JH round-trip.
+	return XYZtoRGBMatrixMultiply<ROMMRGBPel>( xyz, mxXYZD50toROMM );
+}
+
 ROMMRGBPel ColorUtils::ProPhotoRGB_Linearization( const ProPhotoRGBPel& rgb )
 {
 	ROMMRGBPel ret;

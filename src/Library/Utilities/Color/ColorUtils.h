@@ -76,9 +76,45 @@ namespace RISE
 
 		//! Converts a particular wavelength of light into an CIE_XYZ value
 		/// \return TRUE if the conversion was successful, FALSE otherwise
-		bool XYZFromNM( 
+		bool XYZFromNM(
 			XYZPel& p,								///< [out] Resultant CIE_XYZ value
 			const Scalar nm							///< [in] Wavelength to convert
+			);
+
+		//! XYZ -> ROMM RGB conversion that matches the JH LUT
+		//! generator's convention exactly (matrix-only — NO chromatic
+		//! adaptation, NO gamut clip).
+		//!
+		//! Background: tools/JakobHanikaLUTGen.cpp::IntegrateToROMM
+		//! integrates `sigmoid × CMF / k_y_E` and applies
+		//! `mxXYZD50toROMM` directly to that result — no D65->D50
+		//! step, no gamut clip.  The standard `XYZtoROMMRGB` adds a
+		//! D65->D50 chromatic adaptation that the LUT generator never
+		//! accounted for; using it on integrator-output XYZ adds an
+		//! extra warm-shift + B-suppression that breaks the JH
+		//! round-trip — surfaces lose ~30% B and shift ~5% R, with
+		//! the visible result of warm/brown bias on every spectral
+		//! render.  Use this function instead at the per-pixel resolve
+		//! point in any spectral-output pipeline.
+		ROMMRGBPel IntegratorXYZtoROMMRGB(
+			const XYZPel& xyz						///< [in] Integrated XYZ from spectral integration
+			);
+
+		//! Returns ∫Ȳ(λ)dλ over [lambda_begin, lambda_end] using the
+		//! CIE 1931 2° standard observer.  Used by spectral rasterizers
+		//! to normalize the MC luminance estimator so a perfect-white
+		//! reflector under flat illuminant integrates to Y = 1
+		//! (matching the RGB rasterizer's white = 1 convention).
+		//!
+		//! Math: the MC estimator (1/N)·Σ X̄(λᵢ)·V(λᵢ) for uniformly
+		//! sampled λᵢ ∈ [a, b] approximates the AVERAGE of the
+		//! integrand, not the integral.  Scale by (b-a) to get the
+		//! integral, then divide by k_y = ∫Ȳdλ to normalize.  Net
+		//! per-sample factor: (b-a)/k_y, applied as a uniform scale
+		//! that preserves chromaticity.
+		Scalar CIE_Y_Integral(
+			const Scalar lambda_begin,					///< [in] Start wavelength (nm)
+			const Scalar lambda_end						///< [in] End wavelength (nm)
 			);
 
 		//! Moves the given XYZPel into the Rec 709 RGB gamut

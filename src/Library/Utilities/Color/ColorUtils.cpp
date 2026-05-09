@@ -324,6 +324,30 @@ bool ColorUtils::XYZFromNM( XYZPel& p, const Scalar nm )
 	return false;
 }
 
+Scalar ColorUtils::CIE_Y_Integral( const Scalar lambda_begin, const Scalar lambda_end )
+{
+	// Trapezoidal integration of Ȳ over [lambda_begin, lambda_end]
+	// using the CIE 1931 2° table at 5nm steps.  Endpoints outside
+	// the table range contribute 0.  Cached for the standard
+	// [380, 780] range; recomputed on a slow path for any other.
+	using namespace CIE_DATA;
+	const Scalar lo = lambda_begin < min_wavelength ? Scalar( min_wavelength ) : lambda_begin;
+	const Scalar hi = lambda_end   > max_wavelength ? Scalar( max_wavelength ) : lambda_end;
+	if( hi <= lo ) return Scalar( 0 );
+
+	const Scalar step = Scalar( wavelength_step );
+	const int firstIdx = static_cast<int>( ( lo - min_wavelength ) / step );
+	const int lastIdx  = static_cast<int>( ( hi - min_wavelength ) / step );
+	if( lastIdx <= firstIdx ) return Scalar( 0 );
+
+	Scalar sum = Scalar( 0 );
+	for( int i = firstIdx; i < lastIdx; ++i ) {
+		// Trapezoidal: 0.5 × (y_i + y_{i+1}) × step.
+		sum += Scalar( 0.5 ) * ( y_2[i] + y_2[i + 1] ) * step;
+	}
+	return sum;
+}
+
 void ColorUtils::MoveXYZIntoRec709RGBGamut( XYZPel& p )
 {
 	xyYPel pxy = XYZtoxyY( p );

@@ -1,0 +1,60 @@
+RISE ASCII SCENE 5
+# Performance comparison: textured Avocado, RGB path tracing.
+# Matched spp/recursion/lights with perf_avocado_spectral_hwss.RISEscene.
+
+pathtracing_shaderop
+{
+	name		pathtracer
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pathtracer
+}
+
+pixelpel_rasterizer
+{
+	samples				16
+	lum_samples			1
+	max_recursion		5
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/perf_avocado_rgb
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+pinhole_camera
+{
+	location			0.06 0.04 0.10
+	lookat				0 0.025 0
+	up					0 1 0
+	width				512
+	height				512
+	fov					40.0
+}
+
+gltf_import
+{
+	file				scenes/Tests/Geometry/assets/Avocado.glb
+	name_prefix			avocado_perf_rgb
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.5 0.7 0.5
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.20
+	color		1.0 1.0 1.0
+}

@@ -137,9 +137,9 @@ void VCMSpectralRasterizer::IntegratePixel(
 		ProgressivePixel& px = pProgFilm->Get( x, y );
 		if( px.converged ) {
 			if( px.alphaSum > 0 ) {
-				cret = RISEColor(
-					px.colorSum * ( Scalar( 1 ) / px.alphaSum ),
-					px.alphaSum / px.weightSum );
+				// px.colorSum is XYZPel; defer XYZ->ROMM RGB to here.
+				const XYZPel avgXYZ = px.colorSum * ( Scalar( 1 ) / px.alphaSum );
+				cret = RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum );
 			}
 			return;
 		}
@@ -195,7 +195,9 @@ void VCMSpectralRasterizer::IntegratePixel(
 	}
 
 	// Load persistent state from the progressive film.
-	RISEPel colAccrued( 0, 0, 0 );
+	// PBRT-v4 RGBFilm-style accumulator: XYZ throughout, deferred
+	// XYZ->ROMM RGB conversion at the per-pixel resolve below.
+	XYZPel colAccrued( 0, 0, 0 );
 	Scalar weightsAccrued = 0;
 	Scalar alphasAccrued = 0;
 	Scalar wMean = 0;
@@ -559,10 +561,15 @@ void VCMSpectralRasterizer::IntegratePixel(
 			}
 
 			if( totalActive > 0 ) {
-				spectralSum = spectralSum * ( Scalar( 1 ) / Scalar( totalActive ) );
+				// MC normalization: (1/N) for sample-mean × (b-a)/k_y to
+				// scale into a properly-normalized integral (white = 1).
+				// Inherited mYNormalization = (b-a)/k_y; uniform scale =>
+				// chromaticity preserved.
+				spectralSum = spectralSum * ( mYNormalization / Scalar( totalActive ) );
 			}
 
-			const RISEPel samplePel( spectralSum.X, spectralSum.Y, spectralSum.Z );
+			// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
+			// now accumulates XYZ; no per-sample chromaticity clip.
 
 			// Approach C: cross-pixel filter-weighted splat — see
 			// BDPTPelRasterizer::IntegratePixel for the rationale.
@@ -570,19 +577,20 @@ void VCMSpectralRasterizer::IntegratePixel(
 				pFilteredFilm->Splat(
 					ptOnScreen.x,
 					static_cast<Scalar>(height) - ptOnScreen.y,
-					samplePel,
+					spectralSum,
 					*pPixelFilter );
 			}
 
-			colAccrued = colAccrued + samplePel * weight;
+			colAccrued = colAccrued + spectralSum * weight;
 			alphasAccrued += weight;
 
 			// Welford update gated on `adaptive` only — see
 			// BDPTPelRasterizer for the multi-pass selection-bias
 			// rationale (progressive must not trigger convergence-
 			// based termination on heavy-tailed sample distributions).
+			// XYZ.Y is the CIE photometric luminance.
 			if( adaptive ) {
-				const Scalar lum = ColorMath::MaxValue( samplePel );
+				const Scalar lum = spectralSum.Y;
 				wN++;
 				const Scalar delta = lum - wMean;
 				wMean += delta / Scalar( wN );
@@ -649,8 +657,9 @@ void VCMSpectralRasterizer::IntegratePixel(
 		const Scalar t = Scalar( pixelSampleIndex ) / Scalar( targetSamples );
 		cret = RISEColor( RISEPel( t, t, t ), 1.0 );
 	} else if( alphasAccrued > 0 ) {
-		colAccrued = colAccrued * ( Scalar( 1 ) / alphasAccrued );
-		cret = RISEColor( colAccrued, alphasAccrued / weightsAccrued );
+		// Single XYZ -> ROMM RGB conversion at resolve.
+		const XYZPel avgXYZ = colAccrued * ( Scalar( 1 ) / alphasAccrued );
+		cret = RISEColor( RISEPel( avgXYZ ), alphasAccrued / weightsAccrued );
 	} else {
 		cret = RISEColor( 0, 0, 0, 0 );
 	}

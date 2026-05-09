@@ -69,7 +69,20 @@ namespace RISE
 		// measured along the auxiliary ray direction.
 		// Plane: dot(P - P0, N) = 0; substituting P = origin + t·dir:
 		//   t = dot(P0 - origin, N) / dot(dir, N)
-		const Vector3 P0( ri.ptIntersection.x, ri.ptIntersection.y, ri.ptIntersection.z );
+		//
+		// IMPORTANT: triangle-mesh geometry calls this helper BEFORE
+		// Object::IntersectRay populates ri.ptIntersection /
+		// ri.ptObjIntersec — those are computed by the Object layer
+		// AFTER the geometry returns (Object.cpp:434).  At this point
+		// ri.range IS set (line 174 of the indexed-mesh
+		// specialization), so we recover the object-space hit point
+		// from the ray and range directly.  Reading ri.ptIntersection
+		// here would silently use (0, 0, 0) and produce a wildly
+		// inflated dpdx — the bug that caused all glTF-imported
+		// textured meshes to render at LOD ~10 (single-pixel mip
+		// average) starting with Landing 2 (a78593b, 2026-05-06).
+		const Point3 hitPt = ri.ray.PointAtLength( ri.range );
+		const Vector3 P0( hitPt.x, hitPt.y, hitPt.z );
 		const Vector3 N  = ri.vNormal;
 
 		const Scalar dxNum = ( P0.x - rxO.x ) * N.x + ( P0.y - rxO.y ) * N.y + ( P0.z - rxO.z ) * N.z;

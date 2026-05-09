@@ -306,6 +306,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable.cpp">
       <Filter>Utilities\Color</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable_ROMMData.cpp">
+      <Filter>Utilities\Color</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBSpectra.cpp">
       <Filter>Utilities\Color</Filter>
     </ClCompile>
@@ -1270,6 +1273,9 @@
       <Filter>Utilities\Color</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable_ROMMData.h">
       <Filter>Utilities\Color</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBSpectra.h">
