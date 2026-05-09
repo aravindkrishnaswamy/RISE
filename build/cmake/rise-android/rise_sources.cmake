@@ -252,6 +252,14 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Rendering/MLTSpectralRasterizer.cpp"
     "${RISE_LIB}/Rendering/AOVBuffers.cpp"
     "${RISE_LIB}/Rendering/OIDNDenoiser.cpp"
+    "${RISE_LIB}/Rendering/FrameStoreColorSpace.cpp"
+    "${RISE_LIB}/Rendering/TargetFormat.cpp"
+    "${RISE_LIB}/Rendering/ViewTransform.cpp"
+    "${RISE_LIB}/Rendering/FrameStore.cpp"
+    "${RISE_LIB}/Rendering/FrameEncoders.cpp"
+    "${RISE_LIB}/Rendering/FrameSink.cpp"
+    "${RISE_LIB}/Rendering/FileEncoderObserver.cpp"
+    "${RISE_LIB}/Rendering/ViewportFrameStore.cpp"
 
     # SRCLIBSHADEROPS
     "${RISE_LIB}/Shaders/SSS/PointSetOctree.cpp"

@@ -15,6 +15,10 @@
 #include "pch.h"
 #include "FileRasterizerOutput.h"
 #include "DisplayTransformWriter.h"
+#include "FrameStore.h"
+#include "FrameSink.h"
+#include "FileEncoderObserver.h"
+#include "FrameEncoders.h"
 #include "../Interfaces/IOptions.h"
 #include "../RISE_API.h"
 #include "../Painters/CheckerPainter.h"
@@ -22,6 +26,7 @@
 #include "../Utilities/DiskFileWriteBuffer.h"
 #include "../Utilities/RasterSanityScan.h"
 
+#include <cassert>
 #include <string.h>
 #include <stdio.h>
 
@@ -123,6 +128,27 @@ FileRasterizerOutput::FileRasterizerOutput(
 
 FileRasterizerOutput::~FileRasterizerOutput()
 {
+	// Caller contract: an IRasterizerOutput is destroyed AFTER all
+	// Output* calls on it have returned.  In RISE, this is enforced
+	// by the rasterizer / Job lifetime — Job keeps the rasterizer
+	// alive while RasterizeScene runs, and only after that returns
+	// does the IRasterizerOutput get released.  See L3 adversarial
+	// review M1.
+	//
+	// `RemoveObserver` waits for in-flight observer DISPATCHES (the
+	// L1-round-2 P2 fix), but NOT for in-flight `framesink_->OutputImage`
+	// calls — those can be mid-CopyTileFromRasterImage when the
+	// dtor runs.  That is acceptable only because the contract above
+	// guarantees no concurrent Output* call is in flight when the
+	// dtor runs.  IRasterizerOutput.h does not formally state this
+	// (filed as a documentation follow-up); the assumption is
+	// pervasive throughout the codebase.
+	if ( framestore_ && encoderObserver_ ) {
+		framestore_->RemoveObserver( encoderObserver_ );
+	}
+	safe_release( encoderObserver_ );
+	safe_release( framesink_ );
+	safe_release( framestore_ );
 }
 
 void FileRasterizerOutput::OutputIntermediateImage( const IRasterImage&, const Rect* )
@@ -132,128 +158,154 @@ void FileRasterizerOutput::OutputIntermediateImage( const IRasterImage&, const R
 
 void FileRasterizerOutput::SetCameraExposureCompensationEV( Scalar ev )
 {
+	// Caller contract: the rasterizer calls this serially on the
+	// same worker thread that drives Output*.  cameraExposureEV
+	// is therefore not made atomic — both reads (in EnsureChain)
+	// and writes (here) happen-before each other through the
+	// rasterizer's own synchronization.  See L3 adversarial review L1.
+	//
 	// Landing 5: HDR archival outputs ignore both the static
 	// `exposureEV` (constructor enforces this) AND the rasterizer-
 	// supplied camera EV.  Same rationale: we want EXR / RGBE /
 	// HDR to remain "linear radiance ground truth" so that the
 	// integrator's output is recoverable bit-for-bit.  Force-zero
-	// here to keep the WriteImageToFile sum trivially correct.
+	// here for HDR formats so the encoder's `staticEV + cameraEV`
+	// sum stays at zero.
 	cameraExposureEV = IsHDRFormat( type ) ? Scalar( 0 ) : ev;
+
+	// If the chain is already allocated (rasterizer set EV
+	// mid-render after the first frame), update the FrameStore's
+	// metadata too — IFrameEncoder::Encode reads the camera EV
+	// from store.Meta() at write time.
+	if ( framestore_ ) {
+		framestore_->MutableMeta().cameraExposureEV =
+			static_cast<double>( cameraExposureEV );
+	}
 }
 
-inline unsigned int VoidPtrToUInt( const void* v )
+namespace
 {
-	return (unsigned int)*((unsigned int*)(&v));
-}
-
-void FileRasterizerOutput::WriteImageToFile( const IRasterImage& pImage, const unsigned int frame, const char* szSuffix )
-{
-	IRasterImageWriter*		pWriter = 0;
-
-	static const int MAX_BUFFER_SIZE = 2048;
-	char	buf[MAX_BUFFER_SIZE];
-
-	if( bMultiple ) {
-		snprintf( buf, MAX_BUFFER_SIZE, "%s%s%.4d.%s", szPattern, szSuffix, frame, extensions[type] );
-	} else {
-		snprintf( buf, MAX_BUFFER_SIZE, "%s%s.%s", szPattern, szSuffix, extensions[type] );
-	}
-
-	DiskFileWriteBuffer*		mb = new DiskFileWriteBuffer( buf );
-
-	if( !mb->ReadyToWrite() ) {
-		// Some tragic error happened trying to open the required file for writing
-		// Note the error and write the results to a temp file so that the user doesn't
-		// lose the data
-
-		safe_release( mb );
-
-		const FileRasterizerOutput* pMe = this;
-		if( bMultiple ) {
-			snprintf( buf, MAX_BUFFER_SIZE, "fro_temp_%d%s_%.4d.%s", VoidPtrToUInt((void*)pMe), szSuffix, frame, extensions[type] );
-		} else {
-			snprintf( buf, MAX_BUFFER_SIZE, "fro_temp_%d%s.%s", VoidPtrToUInt((void*)pMe), szSuffix, extensions[type] );
-		}
-
-		mb = new DiskFileWriteBuffer( buf );
-
-		// If that doesn't work either we are just screwed
-		if( !mb->ReadyToWrite() ){
-			GlobalLog()->PrintEasyError( "Fatal error in trying to write image, couldn't even write the emergency file!" );
-			return;
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Failed to open specified file, rendered scene written to emergency file '%s' instead!", buf );
-		}
-	}
-
-	GlobalLog()->PrintNew( mb, __FILE__, __LINE__, "DiskFileWriteBuffer" );
-
-	switch( type )
+	// Map the legacy FRO_TYPE enum to the FrameEncoderRegistry's
+	// FormatName string.  Order matches FRO_TYPE values:
+	//   TGA=0, PPM=1, PNG=2, HDR=3, TIFF=4, RGBEA=5, EXR=6.
+	const char* FormatNameForType( FileRasterizerOutput::FRO_TYPE t )
 	{
-	case TGA:
-		RISE_API_CreateTGAWriter( &pWriter, *mb, color_space );
-		break;
-	case PNG:
-		RISE_API_CreatePNGWriter( &pWriter, *mb, bpp, color_space );
-		break;
-	case HDR:
-		RISE_API_CreateHDRWriter( &pWriter, *mb, color_space );
-		break;
-	case RGBEA:
-		RISE_API_CreateRGBEAWriter( &pWriter, *mb );
-		break;
-	case TIFF:
-		RISE_API_CreateTIFFWriter( &pWriter, *mb, color_space );
-		break;
-	case EXR:
-		RISE_API_CreateEXRWriter( &pWriter, *mb, color_space, exr_compression, exr_with_alpha );
-		break;
-	default:
-	case PPM:
-		RISE_API_CreatePPMWriter( &pWriter, *mb, color_space );
-		break;
-	};
+		switch ( t ) {
+			case FileRasterizerOutput::TGA:   return "TGA";
+			case FileRasterizerOutput::PPM:   return "PPM";
+			case FileRasterizerOutput::PNG:   return "PNG";
+			case FileRasterizerOutput::HDR:   return "HDR";
+			case FileRasterizerOutput::TIFF:  return "TIFF";
+			case FileRasterizerOutput::RGBEA: return "RGBEA";
+			case FileRasterizerOutput::EXR:   return "EXR";
+		}
+		// Match the legacy WriteImageToFile switch's `default: PPM`
+		// fallback (FileRasterizerOutput.cpp pre-L3, lines 311-316):
+		// out-of-range FRO_TYPE values produced a PPM file rather
+		// than dropping the render.  Preserve that for byte-identity
+		// of any (real or future) scene that hits an unknown enum.
+		// See L3 adversarial review HIGH-1.
+		return "PPM";
+	}
+}
 
-	// Wrap the format writer in a DisplayTransformWriter when this
-	// output has a non-default display pipeline AND the format is
-	// LDR (the IsHDRFormat gate is enforced in the constructor for
-	// HDR types — this is belt-and-suspenders).  The wrapper holds
-	// an addref'd reference to pWriter; we keep our own ref too and
-	// release both at end-of-write.
-	//
-	// Landing 5: stack camera-supplied EV with the static
-	// `exposure_compensation`.  Both default to 0, and the
-	// SetCameraExposureCompensationEV setter zeros itself out for
-	// HDR formats, so summing here is safe even when the writer's
-	// HDR-format guard already cleared `exposureEV`.
-	IRasterImageWriter* pEffectiveWriter = pWriter;
-	DisplayTransformWriter* pDtWriter = 0;
-	const Scalar totalExposureEV = exposureEV + cameraExposureEV;
-	const bool useDisplayTransform =
-		!IsHDRFormat( type ) &&
-		( display_transform != eDisplayTransform_None || totalExposureEV != Scalar( 0 ) );
-	if( useDisplayTransform ) {
-		pDtWriter = new DisplayTransformWriter( *pWriter, totalExposureEV, display_transform );
-		GlobalLog()->PrintNew( pDtWriter, __FILE__, __LINE__, "DisplayTransformWriter" );
-		pEffectiveWriter = pDtWriter;
+void FileRasterizerOutput::EnsureChain( unsigned int width, unsigned int height )
+{
+	if ( framestore_ ) {
+		// Already allocated.  In the typical case dims are fixed
+		// across frames (the rasterizer's image size is fixed by
+		// the camera resolution at scene-construction time).  But
+		// scenes can reconfigure the camera resolution between
+		// frames; if that happens we must reallocate the chain so
+		// the FrameStore matches the new rasterizer image —
+		// otherwise FrameSink::CopyImageIntoStore clamps to the
+		// smaller dim and silently produces black-padded or
+		// cropped output.  See L3 adversarial review M4.
+		if ( framestore_->Width()  == width &&
+		     framestore_->Height() == height ) {
+			return;
+		}
+
+		GlobalLog()->PrintEx( eLog_Warning,
+			"FileRasterizerOutput:: rasterizer image size changed "
+			"(%ux%u -> %ux%u); reallocating FrameStore + sink + observer.",
+			static_cast<unsigned>( framestore_->Width() ),
+			static_cast<unsigned>( framestore_->Height() ),
+			width, height );
+
+		// Tear down the existing chain in dtor order.
+		framestore_->RemoveObserver( encoderObserver_ );
+		safe_release( encoderObserver_ );
+		safe_release( framesink_ );
+		safe_release( framestore_ );
+		encoderObserver_ = nullptr;
+		framesink_       = nullptr;
+		framestore_      = nullptr;
+		// Fall through to the allocate-fresh path below.
 	}
 
-	pImage.DumpImage( pEffectiveWriter );
+	// Allocate FrameStore.  TileEdge of 32 matches the typical
+	// rasterizer tile size; the L3 ingest path doesn't depend on
+	// alignment between rasterizer tiles and FrameStore tiles
+	// (CopyImageIntoStore walks the FrameStore tile grid and
+	// reads from src by absolute pixel coordinates), so any
+	// reasonable value works.
+	FrameStore::Spec spec;
+	spec.width    = width;
+	spec.height   = height;
+	spec.tileEdge = 32;
+	framestore_ = new FrameStore( spec );  // refcount = 1
+	framestore_->MutableMeta().cameraExposureEV =
+		static_cast<double>( cameraExposureEV );
 
-	safe_release( mb );
+	// Look up the encoder for this format.
+	IFrameEncoder* encoder =
+		FrameEncoderRegistry::Get().ByFormatName( FormatNameForType( type ) );
+	if ( !encoder ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"FileRasterizerOutput:: No IFrameEncoder registered for format '%s' "
+			"(FRO_TYPE=%d) — output disabled", FormatNameForType( type ), (int)type );
+		// Leave framestore_ allocated but skip sink/observer setup;
+		// Output* calls will silently no-op.
+		return;
+	}
 
-	GlobalLog()->PrintEx( eLog_Event, "FileRasterizerOutput:: Written to \'%s\'", buf );
+	// Build the encoder options from the constructor parameters.
+	// This is the legacy → new mapping that L2 byte-identical
+	// regression validates: same color_space + bpp + EXR knobs +
+	// (exposureEV, display_transform) → same EncodeOpts → same
+	// bytes.  cameraExposureEV is consumed via FrameStore.Meta()
+	// inside the encoder, NOT added here, so we don't double-count.
+	EncodeOpts opts;
+	opts.colorSpace     = color_space;
+	opts.bpp            = bpp;
+	opts.exrCompression = exr_compression;
+	opts.exrWithAlpha   = exr_with_alpha;
+	opts.viewTransform.exposureEV = static_cast<float>( exposureEV );
+	opts.viewTransform.toneCurve  = display_transform;
 
-	// Pre-write would have been ideal but the writer consumes the
-	// image via DumpImage so we scan afterwards — same cost, purely
-	// diagnostic.  Negative radiance is physically impossible; small
-	// counts typically indicate a pixel reconstruction filter with
-	// negative side lobes (Mitchell / Lanczos) interacting with
-	// bright neighbors.  Larger counts or large magnitudes point at
-	// an actual integrator bug worth investigating.
+	// Wire up the chain:  rasterizer → FrameSink → FrameStore
+	// → FileEncoderObserver → DiskFileWriteBuffer.  The observer's
+	// OnFrameComplete fires from FrameStore::MarkFrameComplete
+	// after FrameSink finishes copying tile data.
+	framesink_ = new FrameSink( framestore_ );  // addrefs framestore_
+	encoderObserver_ = new FileEncoderObserver(
+		framestore_, encoder, opts,
+		std::string( szPattern ), bMultiple );
+	framestore_->AddObserver( encoderObserver_ );
+}
+
+// Shared post-write diagnostic.  Kept from the legacy
+// implementation: scans the rasterizer's IRasterImage for
+// negative-radiance pixels (typically reconstruction-filter
+// side lobes) and emits a warning.  Purely advisory, doesn't
+// affect the output bytes.
+namespace
+{
+	void ScanForPathologicalPixels( const IRasterImage& pImage, const char* contextName )
 	{
 		const RasterSanityReport r = ScanRasterImageForPathologicalPixels( pImage );
-		if( r.negativeCount > 0 ) {
+		if ( r.negativeCount > 0 ) {
 			GlobalLog()->PrintEx( eLog_Warning,
 				"FileRasterizerOutput:: '%s' contains %u pixels with negative "
 				"radiance (max magnitude %.4e).  Common cause: pixel reconstruction "
@@ -261,33 +313,41 @@ void FileRasterizerOutput::WriteImageToFile( const IRasterImage& pImage, const u
 				"with bright neighbors.  Switch to a non-negative filter "
 				"(gaussian, triangle, box) if this is visually distracting, or "
 				"accept minor clamping to 0 in LDR output formats.",
-				buf, r.negativeCount, (double)r.maxNegativeMagnitude );
+				contextName, r.negativeCount, (double)r.maxNegativeMagnitude );
 		}
 	}
-
-	// Release the wrapper first (drops its addref on pWriter), then
-	// release our own ref on pWriter.  Order matters: if we released
-	// pWriter first, the wrapper's destructor would call release()
-	// on an already-freed inner writer.
-	if( pDtWriter ) {
-		GlobalLog()->PrintDelete( pDtWriter, __FILE__, __LINE__ );
-		safe_release( pDtWriter );
-	}
-	GlobalLog()->PrintDelete( pWriter, __FILE__, __LINE__ );
-	safe_release( pWriter );
 }
 
-void FileRasterizerOutput::OutputImage( const IRasterImage& pImage, const Rect* /*pRegion*/, const unsigned int frame )
+// L3 shim implementations: each Output* call ensures the
+// FrameStore + FrameSink + FileEncoderObserver chain is
+// allocated, then forwards to the FrameSink.  The sink copies
+// pixels into the FrameStore (per-tile shared_mutex held during
+// the write) and calls the appropriate Mark* method, which
+// fires the observer's OnFrameComplete /
+// OnPreDenoiseComplete / OnDenoiseComplete — at which point
+// the observer opens DiskFileWriteBuffer and runs the
+// IFrameEncoder.  Bytes produced are L2-byte-identical to the
+// legacy WriteImageToFile path (which has been removed; all
+// regression coverage is in tests/FrameEncoderTest.cpp +
+// tests/FileRasterizerOutputShimTest.cpp).
+
+void FileRasterizerOutput::OutputImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame )
 {
-	WriteImageToFile( pImage, frame, "" );
+	EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
+	if ( framesink_ ) framesink_->OutputImage( pImage, pRegion, frame );
+	ScanForPathologicalPixels( pImage, szPattern );
 }
 
-void FileRasterizerOutput::OutputPreDenoisedImage( const IRasterImage& pImage, const Rect* /*pRegion*/, const unsigned int frame )
+void FileRasterizerOutput::OutputPreDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame )
 {
-	WriteImageToFile( pImage, frame, "" );
+	EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
+	if ( framesink_ ) framesink_->OutputPreDenoisedImage( pImage, pRegion, frame );
+	ScanForPathologicalPixels( pImage, szPattern );
 }
 
-void FileRasterizerOutput::OutputDenoisedImage( const IRasterImage& pImage, const Rect* /*pRegion*/, const unsigned int frame )
+void FileRasterizerOutput::OutputDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame )
 {
-	WriteImageToFile( pImage, frame, "_denoised" );
+	EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
+	if ( framesink_ ) framesink_->OutputDenoisedImage( pImage, pRegion, frame );
+	ScanForPathologicalPixels( pImage, szPattern );
 }

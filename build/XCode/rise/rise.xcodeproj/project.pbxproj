@@ -1488,6 +1488,33 @@
 		F2C7C8F02F7881E80030CB78 /* AOVBuffers.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */; };
 		F2C7C8F12F7881E80030CB78 /* AOVBuffers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */; };
 		F2C7C8F22F7881E80030CB78 /* OIDNDenoiser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */; };
+		FA00000000000000000000F3 /* FrameStoreColorSpace.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */; };
+		FA00000000000000000000F4 /* FrameStoreColorSpace.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */; };
+		FA00000000000000000000F5 /* FrameStoreColorSpace.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F1 /* FrameStoreColorSpace.h */; };
+		FA00000000000000000000F8 /* TargetFormat.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F7 /* TargetFormat.cpp */; };
+		FA00000000000000000000F9 /* TargetFormat.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F7 /* TargetFormat.cpp */; };
+		FA00000000000000000000FA /* TargetFormat.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F6 /* TargetFormat.h */; };
+		FA00000000000000000000FD /* ViewTransform.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000FC /* ViewTransform.cpp */; };
+		FA00000000000000000000FE /* ViewTransform.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000FC /* ViewTransform.cpp */; };
+		FA00000000000000000000FF /* ViewTransform.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000FB /* ViewTransform.h */; };
+		FA00000000000000000001F3 /* FrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F2 /* FrameStore.cpp */; };
+		FA00000000000000000001F4 /* FrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F2 /* FrameStore.cpp */; };
+		FA00000000000000000001F5 /* FrameStore.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F1 /* FrameStore.h */; };
+		FA00000000000000000001F7 /* Channel.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F6 /* Channel.h */; };
+		FA00000000000000000001F9 /* IRenderObserver.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F8 /* IRenderObserver.h */; };
+		FA00000000000000000002F1 /* FrameEncoders.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000002F0 /* FrameEncoders.cpp */; };
+		FA00000000000000000002F2 /* FrameEncoders.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000002F0 /* FrameEncoders.cpp */; };
+		FA00000000000000000002F4 /* FrameEncoders.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000002F3 /* FrameEncoders.h */; };
+		FA00000000000000000002F6 /* IFrameEncoder.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000002F5 /* IFrameEncoder.h */; };
+		FA00000000000000000003F1 /* FrameSink.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F0 /* FrameSink.cpp */; };
+		FA00000000000000000003F2 /* FrameSink.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F0 /* FrameSink.cpp */; };
+		FA00000000000000000003F4 /* FrameSink.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F3 /* FrameSink.h */; };
+		FA00000000000000000003F6 /* FileEncoderObserver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F5 /* FileEncoderObserver.cpp */; };
+		FA00000000000000000003F7 /* FileEncoderObserver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F5 /* FileEncoderObserver.cpp */; };
+		FA00000000000000000003F9 /* FileEncoderObserver.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F8 /* FileEncoderObserver.h */; };
+		FA00000000000000000004F1 /* ViewportFrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000004F0 /* ViewportFrameStore.cpp */; };
+		FA00000000000000000004F2 /* ViewportFrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000004F0 /* ViewportFrameStore.cpp */; };
+		FA00000000000000000004F4 /* ViewportFrameStore.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000004F3 /* ViewportFrameStore.h */; };
 		F2C7C8F52F78B0A70030CB78 /* PathGuidingField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */; };
 		F2C7C8F62F78B0A70030CB78 /* PathGuidingField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */; };
 		F2C7C8F72F78B0A70030CB78 /* PathGuidingField.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */; };
@@ -2458,6 +2485,25 @@
 		F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AOVBuffers.cpp; sourceTree = "<group>"; };
 		F2C7C8EB2F7881E80030CB78 /* OIDNDenoiser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OIDNDenoiser.h; sourceTree = "<group>"; };
 		F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = OIDNDenoiser.cpp; sourceTree = "<group>"; };
+		FA00000000000000000000F1 /* FrameStoreColorSpace.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FrameStoreColorSpace.h; sourceTree = "<group>"; };
+		FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FrameStoreColorSpace.cpp; sourceTree = "<group>"; };
+		FA00000000000000000000F6 /* TargetFormat.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TargetFormat.h; sourceTree = "<group>"; };
+		FA00000000000000000000F7 /* TargetFormat.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = TargetFormat.cpp; sourceTree = "<group>"; };
+		FA00000000000000000000FB /* ViewTransform.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ViewTransform.h; sourceTree = "<group>"; };
+		FA00000000000000000000FC /* ViewTransform.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ViewTransform.cpp; sourceTree = "<group>"; };
+		FA00000000000000000001F1 /* FrameStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FrameStore.h; sourceTree = "<group>"; };
+		FA00000000000000000001F2 /* FrameStore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FrameStore.cpp; sourceTree = "<group>"; };
+		FA00000000000000000001F6 /* Channel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Channel.h; sourceTree = "<group>"; };
+		FA00000000000000000001F8 /* IRenderObserver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IRenderObserver.h; sourceTree = "<group>"; };
+		FA00000000000000000002F0 /* FrameEncoders.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FrameEncoders.cpp; sourceTree = "<group>"; };
+		FA00000000000000000002F3 /* FrameEncoders.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FrameEncoders.h; sourceTree = "<group>"; };
+		FA00000000000000000002F5 /* IFrameEncoder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IFrameEncoder.h; sourceTree = "<group>"; };
+		FA00000000000000000003F0 /* FrameSink.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FrameSink.cpp; sourceTree = "<group>"; };
+		FA00000000000000000003F3 /* FrameSink.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FrameSink.h; sourceTree = "<group>"; };
+		FA00000000000000000003F5 /* FileEncoderObserver.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FileEncoderObserver.cpp; sourceTree = "<group>"; };
+		FA00000000000000000003F8 /* FileEncoderObserver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FileEncoderObserver.h; sourceTree = "<group>"; };
+		FA00000000000000000004F0 /* ViewportFrameStore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ViewportFrameStore.cpp; sourceTree = "<group>"; };
+		FA00000000000000000004F3 /* ViewportFrameStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ViewportFrameStore.h; sourceTree = "<group>"; };
 		F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathGuidingField.h; sourceTree = "<group>"; };
 		F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathGuidingField.cpp; sourceTree = "<group>"; };
 		F2CD000100000000000000A1 /* ChunkDescriptor.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChunkDescriptor.h; sourceTree = "<group>"; };
@@ -2956,6 +3002,8 @@
 				F27F088A069C428F0069C9E5 /* IRasterImageWriter.h */,
 				F27F088B069C428F0069C9E5 /* IRasterizer.h */,
 				F27F088C069C428F0069C9E5 /* IRasterizerOutput.h */,
+				FA00000000000000000001F8 /* IRenderObserver.h */,
+				FA00000000000000000002F5 /* IFrameEncoder.h */,
 				F27F088D069C428F0069C9E5 /* IRasterizeSequence.h */,
 				F27F088E069C428F0069C9E5 /* IRayCaster.h */,
 				F27F088F069C428F0069C9E5 /* IRayIntersectionModifier.h */,
@@ -3413,6 +3461,23 @@
 				F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */,
 				F2C7C8EB2F7881E80030CB78 /* OIDNDenoiser.h */,
 				F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */,
+				FA00000000000000000000F1 /* FrameStoreColorSpace.h */,
+				FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */,
+				FA00000000000000000000F6 /* TargetFormat.h */,
+				FA00000000000000000000F7 /* TargetFormat.cpp */,
+				FA00000000000000000000FB /* ViewTransform.h */,
+				FA00000000000000000000FC /* ViewTransform.cpp */,
+				FA00000000000000000001F1 /* FrameStore.h */,
+				FA00000000000000000001F2 /* FrameStore.cpp */,
+				FA00000000000000000001F6 /* Channel.h */,
+				FA00000000000000000002F3 /* FrameEncoders.h */,
+				FA00000000000000000002F0 /* FrameEncoders.cpp */,
+				FA00000000000000000003F3 /* FrameSink.h */,
+				FA00000000000000000003F0 /* FrameSink.cpp */,
+				FA00000000000000000003F8 /* FileEncoderObserver.h */,
+				FA00000000000000000003F5 /* FileEncoderObserver.cpp */,
+				FA00000000000000000004F3 /* ViewportFrameStore.h */,
+				FA00000000000000000004F0 /* ViewportFrameStore.cpp */,
 				F2C5D5E42F716C5000546C97 /* BDPTPelRasterizer.h */,
 				F2C5D5E52F716C5000546C97 /* BDPTPelRasterizer.cpp */,
 				F2C5D5DA2F716BAA00546C97 /* BDPTRasterizerBase.h */,
@@ -4333,6 +4398,17 @@
 				F27F0CA9069C42910069C9E5 /* VolumeOp_AlphaScaledComposite.h in Headers */,
 				F2C7C8EF2F7881E80030CB78 /* OIDNDenoiser.h in Headers */,
 				F2C7C8F02F7881E80030CB78 /* AOVBuffers.h in Headers */,
+				FA00000000000000000000F5 /* FrameStoreColorSpace.h in Headers */,
+				FA00000000000000000000FA /* TargetFormat.h in Headers */,
+				FA00000000000000000000FF /* ViewTransform.h in Headers */,
+				FA00000000000000000001F5 /* FrameStore.h in Headers */,
+				FA00000000000000000001F7 /* Channel.h in Headers */,
+				FA00000000000000000001F9 /* IRenderObserver.h in Headers */,
+				FA00000000000000000002F4 /* FrameEncoders.h in Headers */,
+				FA00000000000000000002F6 /* IFrameEncoder.h in Headers */,
+				FA00000000000000000003F4 /* FrameSink.h in Headers */,
+				FA00000000000000000003F9 /* FileEncoderObserver.h in Headers */,
+				FA00000000000000000004F4 /* ViewportFrameStore.h in Headers */,
 				F27F0CAA069C42910069C9E5 /* VolumeOp_Average.h in Headers */,
 				F27F0CAB069C42910069C9E5 /* VolumeOp_Composite.h in Headers */,
 				F27F0CAC069C42910069C9E5 /* VolumeOp_GradISO.h in Headers */,
@@ -4526,6 +4602,14 @@
 				F27F0AAA069C42910069C9E5 /* TorusGeometry.cpp in Sources */,
 				F2C7C8ED2F7881E80030CB78 /* AOVBuffers.cpp in Sources */,
 				F2C7C8EE2F7881E80030CB78 /* OIDNDenoiser.cpp in Sources */,
+				FA00000000000000000000F3 /* FrameStoreColorSpace.cpp in Sources */,
+				FA00000000000000000000F8 /* TargetFormat.cpp in Sources */,
+				FA00000000000000000000FD /* ViewTransform.cpp in Sources */,
+				FA00000000000000000001F3 /* FrameStore.cpp in Sources */,
+				FA00000000000000000002F1 /* FrameEncoders.cpp in Sources */,
+				FA00000000000000000003F1 /* FrameSink.cpp in Sources */,
+				FA00000000000000000003F6 /* FileEncoderObserver.cpp in Sources */,
+				FA00000000000000000004F1 /* ViewportFrameStore.cpp in Sources */,
 				F27F0AAC069C42910069C9E5 /* TriangleMeshGeometry.cpp in Sources */,
 				F27F0AAE069C42910069C9E5 /* TriangleMeshGeometryIndexed.cpp in Sources */,
 				F27F0AB2069C42910069C9E5 /* TriangleMeshLoader3DS.cpp in Sources */,
@@ -5311,6 +5395,14 @@
 				F24B73792F52A632008304C4 /* RGBEAWriter.cpp in Sources */,
 				F2C7C8F12F7881E80030CB78 /* AOVBuffers.cpp in Sources */,
 				F2C7C8F22F7881E80030CB78 /* OIDNDenoiser.cpp in Sources */,
+				FA00000000000000000000F4 /* FrameStoreColorSpace.cpp in Sources */,
+				FA00000000000000000000F9 /* TargetFormat.cpp in Sources */,
+				FA00000000000000000000FE /* ViewTransform.cpp in Sources */,
+				FA00000000000000000001F4 /* FrameStore.cpp in Sources */,
+				FA00000000000000000002F2 /* FrameEncoders.cpp in Sources */,
+				FA00000000000000000003F2 /* FrameSink.cpp in Sources */,
+				FA00000000000000000003F7 /* FileEncoderObserver.cpp in Sources */,
+				FA00000000000000000004F2 /* ViewportFrameStore.cpp in Sources */,
 				F24B737A2F52A632008304C4 /* RGBEAWriter.h in Sources */,
 				F24B737B2F52A632008304C4 /* TGAReader.cpp in Sources */,
 				F24B737C2F52A632008304C4 /* TGAReader.h in Sources */,
@@ -5853,7 +5945,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-				CLANG_CXX_LANGUAGE_STANDARD = "compiler-default";
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -5969,7 +6061,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-				CLANG_CXX_LANGUAGE_STANDARD = "compiler-default";
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CLANG_ENABLE_OBJC_WEAK = YES;
@@ -6084,7 +6176,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-				CLANG_CXX_LANGUAGE_STANDARD = "compiler-default";
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CLANG_ENABLE_OBJC_WEAK = YES;

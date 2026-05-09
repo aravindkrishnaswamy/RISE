@@ -102,6 +102,30 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
                       right:(uint32_t)right
                      bottom:(uint32_t)bottom;
 
+#pragma mark - Live exposure scrubbing & multi-format Save-As (L4b)
+
+/// Set the view exposure compensation in EV stops.  Updates the
+/// ViewTransform applied when reading the canonical HDR FrameStore
+/// for live display — does NOT trigger a rasterizer re-run.  Calling
+/// this triggers an immediate re-emit of the cached image through
+/// the existing imageOutputBlock so the slider feels live.  No-op
+/// until at least one render has produced output.  See
+/// docs/FRAMESTORE_DESIGN.md §11 L4b.
+- (void)setViewExposureEV:(double)ev;
+
+/// Save the current FrameStore contents to disk via the L2
+/// IFrameEncoder pipeline.  `formatName` is one of
+/// "PNG", "EXR", "TIFF", "HDR", "RGBEA", "TGA", "PPM" (matched
+/// case-insensitively by the FrameEncoderRegistry).  `ev` applies
+/// to the LDR-fixed encoders (PNG/TIFF/TGA/PPM) where the tone curve
+/// + sRGB transfer is applied; HDR encoders ignore it (scene-referred
+/// linear).  Returns YES on success.  Safe to call mid-render — the
+/// encoder walks the FrameStore under the per-tile shared_mutex so
+/// concurrent writes are correctly synchronised (L4 round-1 fix).
+- (BOOL)saveAs:(NSString *)path
+        format:(NSString *)formatName
+    exposureEV:(double)ev;
+
 #pragma mark - Render-time ETA estimator
 /// Starts a new ETA session. Call at the beginning of every render.
 - (void)etaBegin;

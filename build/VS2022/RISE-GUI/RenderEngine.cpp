@@ -12,7 +12,6 @@
 #include "RISE_API.h"
 #include "Interfaces/IJobPriv.h"
 #include "Interfaces/IProgressCallback.h"
-#include "Interfaces/IJobRasterizerOutput.h"
 #include "Interfaces/IRasterizer.h"
 #include "Interfaces/IScene.h"
 #include "Interfaces/ILogPriv.h"
@@ -21,15 +20,35 @@
 #include "Utilities/MediaPathLocator.h"
 #include "Utilities/Reference.h"
 
+// L4c — ViewportFrameStore-driven viewport pipeline replaces the
+// legacy IJobRasterizerOutput adapter (ImageOutputAdapter).  The
+// rasterizer feeds pixels into the canonical HDR FrameStore wrapped
+// by ViewportFrameStore; on each tile/frame observer callback the
+// engine RenderToBuffer(RGBA8_sRGB)s directly into m_pixelBuffer
+// (saving the RGBA16-then->>8 hop the legacy ImageOutputAdapter
+// path performed) and emits the existing imageUpdated() Qt signal.
+// Adds live exposure scrubbing (setViewExposureEV) and multi-format
+// SaveAs without re-render.  See docs/FRAMESTORE_DESIGN.md §11 L4c.
+#include "Rendering/ViewportFrameStore.h"
+#include "Rendering/FrameStore.h"
+#include "Rendering/FrameEncoders.h"
+#include "Rendering/TargetFormat.h"
+#include "Rendering/ViewTransform.h"
+#include "Interfaces/IFrameEncoder.h"
+
 #include <QDir>
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QCoreApplication>
+#include <QImage>
+#include <QPointer>
 
+#include <atomic>
 #include <cstdlib>
 #include <algorithm>
 
 using namespace RISE;
+using namespace RISE::FrameStoreOutput;
 
 // ============================================================
 // C++ callback adapter: IProgressCallback
@@ -53,33 +72,10 @@ public:
     }
 };
 
-// ============================================================
-// C++ callback adapter: IJobRasterizerOutput
-// ============================================================
-class ImageOutputAdapter : public IJobRasterizerOutput {
-public:
-    RenderEngine* engine;
-
-    ImageOutputAdapter(RenderEngine* e) : engine(e) {}
-
-    bool PremultipliedAlpha() override { return false; }
-    int GetColorSpace() override { return 1; } // sRGB
-
-    void OutputImageRGBA16(
-        const unsigned short* pImageData,
-        const unsigned int width,
-        const unsigned int height,
-        const unsigned int rc_top,
-        const unsigned int rc_left,
-        const unsigned int rc_bottom,
-        const unsigned int rc_right) override
-    {
-        if (engine) {
-            engine->onImageOutput(pImageData, width, height,
-                                  rc_top, rc_left, rc_bottom, rc_right);
-        }
-    }
-};
+// (Legacy ImageOutputAdapter removed by L4c — see header comment.
+// VFS observer callbacks fan out to RenderEngine::onTileComplete /
+// onFrameComplete; the engine renders directly into m_pixelBuffer
+// at RGBA8_sRGB.)
 
 // ============================================================
 // C++ callback adapter: ILogPrinter
@@ -148,15 +144,42 @@ RenderEngine::RenderEngine(QObject* parent)
 
 RenderEngine::~RenderEngine()
 {
-    if (m_workerThread) {
-        m_workerThread->quit();
-        m_workerThread->wait();
-    }
+    // L4 round-4 P1-A + round-5 P1-B — synchronously wait for any
+    // in-flight background thread (load, render, or animation)
+    // BEFORE touching m_job or m_viewportFrameStore.  Without this,
+    // a dtor running while LoadAsciiScene OR Rasterize is on a
+    // QThread stack would race m_job access against m_job->release()
+    // and (for renders) race VFS callback lambdas (which capture
+    // `this` raw) against engine destruction.  cancelRender flips
+    // m_cancelFlag, which the progress callback returns to the
+    // rasterizer for renders; LoadAsciiScene doesn't observe the
+    // flag but is typically short enough that the dtor will block
+    // briefly until it returns naturally.
+    m_cancelFlag = true;
+    // waitForWorkerToFinish() also drains queued events posted by
+    // the prior worker (round-6 P1 + round-7 P2): without that, a
+    // stale `setState(Completed)` etc. from a worker the dtor just
+    // joined could fire later against a freed receiver / VFS / Job.
+    // Two-layer defense: (a) every queued lambda captures a
+    // QPointer<RenderEngine> guard and early-returns if it cleared,
+    // and (b) `removePostedEvents(this)` inside
+    // `waitForWorkerToFinish` drops all pending queued events so
+    // Qt's delivery path doesn't even attempt to dispatch them.
+    waitForWorkerToFinish();
 
+    // Tear-down ordering: drop the Job (which destroys the rasterizer,
+    // joining its worker pool en route) FIRST.  By the time
+    // m_job->release() returns no callbacks can be in flight against
+    // m_viewportFrameStore.  Then null the VFS callbacks so any
+    // late-fire (defensive — should be impossible after Job release)
+    // bypasses the captured `this` lambda.  Finally release the
+    // engine's VFS reference (the rasterizer's reference is already
+    // gone via the rasterizer's dtor).  This ordering matters because
+    // the VFS callback lambdas capture `this` raw — running them
+    // after RenderEngine destruction begins would UAF.  See L4
+    // round-4 P2-B adversarial review.
     if (m_job) {
         m_job->SetProgress(nullptr);
-        // Drop rasterizer outputs first so the dispatch wrapping
-        // m_imageOutput is destroyed before the adapter it references.
         if (auto* rasterizer = m_job->GetRasterizer()) {
             rasterizer->FreeRasterizerOutputs();
         }
@@ -164,8 +187,70 @@ RenderEngine::~RenderEngine()
         m_job = nullptr;
     }
 
-    delete m_imageOutput;
-    m_imageOutput = nullptr;
+    if (m_viewportFrameStore) {
+        // Defensive: nil the callbacks before release so any path
+        // that re-enters them post-destruction (e.g. due to a
+        // future bug) gracefully no-ops instead of dereferencing
+        // `this`.  Per ViewportFrameStore.h these setters are NOT
+        // thread-safe in general, but at this point we've drained
+        // observers via Job->release()'s rasterizer dtor → outputs
+        // dtor → VFS dtor → RemoveObserver cv-wait.
+        m_viewportFrameStore->SetTileCompleteCallback(nullptr);
+        m_viewportFrameStore->SetFrameCompleteCallback(nullptr);
+        m_viewportFrameStore->SetPreDenoiseCompleteCallback(nullptr);
+        m_viewportFrameStore->SetDenoiseCompleteCallback(nullptr);
+        m_viewportFrameStore->release();
+        m_viewportFrameStore = nullptr;
+    }
+}
+
+void RenderEngine::waitForWorkerToFinish()
+{
+    // Synchronously join any in-flight background thread (load,
+    // render, or animation).  Called from the dtor + scene-reload
+    // paths so the new operation doesn't race the previous worker's
+    // tile callbacks / completion lambda against freshly-created
+    // VFS / Job state.  See L4 round-4 P1-A + round-5 P1-B reviews.
+    QThread* thread = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_workerThreadMutex);
+        thread = m_workerThread;
+    }
+    if (thread) {
+        thread->wait();   // blocks until the lambda returns
+    }
+
+    // L4 round-7 P2 — drain any UI-thread queued events the prior
+    // worker posted via Qt::QueuedConnection BEFORE returning.
+    // Without this, a stale `setState(Completed)` / `setState(Error)`
+    // / `m_elapsedTimer->stop()` / progressUpdated / imageUpdated /
+    // logMessage from the previous render would fire DURING or
+    // AFTER loadScene / clearScene / startRender, overwriting the
+    // newly-set state.  Round-6's `removePostedEvents` was only in
+    // the dtor; centralising the drain here means scene-transition
+    // call sites get it too.  This nukes ALL pending events for
+    // `this` (not just QMetaCallEvents), which is acceptable
+    // because RenderEngine only receives events it posted to
+    // itself (no incoming user events from other QObjects).
+    QCoreApplication::removePostedEvents(this);
+}
+
+void RenderEngine::trackWorkerThread(QThread* thread)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_workerThreadMutex);
+        m_workerThread = thread;
+    }
+    // Auto-clear m_workerThread on thread finish so the dtor's
+    // wait() observes a real in-flight thread and a stale pointer
+    // doesn't survive past QThread's deleteLater.  DirectConnection
+    // so the slot runs on the worker thread itself (the lambda
+    // body has just returned; no Qt event loop dispatching needed).
+    connect(thread, &QThread::finished, this, [this, thread]() {
+        std::lock_guard<std::mutex> lock(m_workerThreadMutex);
+        if (m_workerThread == thread) m_workerThread = nullptr;
+    }, Qt::DirectConnection);
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
 }
 
 QString RenderEngine::versionString() const
@@ -226,38 +311,57 @@ void RenderEngine::loadScene(const QString& filePath)
 {
     if (!m_job) return;
 
+    // L4 round-4 P1-A + round-5 P1-B — wait for any in-flight worker
+    // (load OR render) to finish before swapping scenes.  Otherwise
+    // the previous worker's m_job deref or post-completion lambda +
+    // VFS tile callbacks could race the new scene's rasterizer
+    // construction.
+    m_cancelFlag = true;
+    waitForWorkerToFinish();
+    m_cancelFlag = false;
+
     setState(Loading);
     m_loadedFilePath = filePath;
 
     setupMediaPaths(filePath);
 
     // The previous scene's rasterizer state goes away inside
-    // LoadAsciiScene; the dispatch wrapping m_imageOutput goes with
-    // it, so the adapter must die before that happens (and a fresh
-    // one will be lazy-allocated on the next startRender).
+    // LoadAsciiScene.  The VFS persists across scene loads (the
+    // engine's reference keeps it alive); the rasterizer's reference
+    // is dropped via FreeRasterizerOutputs.  The dim-change machinery
+    // inside ViewportFrameStore::EnsureChain handles the FrameStore's
+    // resolution-swap on the new scene's first OutputImage.
     if (auto* rasterizer = m_job->GetRasterizer()) {
         rasterizer->FreeRasterizerOutputs();
+        m_vfsAttachedToRasterizer = false;
     }
-    delete m_imageOutput;
-    m_imageOutput = nullptr;
 
-    // Run LoadAsciiScene on a worker thread
-    QThread* thread = QThread::create([this, filePath]() {
+    // Run LoadAsciiScene on a worker thread.  L4 round-5 P1-B:
+    // tracked via trackWorkerThread so engine destruction during
+    // a load synchronously waits for the load to finish (otherwise
+    // the lambda's m_job deref + QMetaObject::invokeMethod(this,...)
+    // race the dtor's release(this) and m_job->release()).
+    // L4 round-6 P1 — capture a QPointer guard so the queued
+    // completion lambda becomes a no-op if the engine was destroyed
+    // before Qt got around to delivering it.  See ~RenderEngine().
+    QPointer<RenderEngine> guard(this);
+    QThread* thread = QThread::create([this, filePath, guard]() {
         bool ok = m_job->LoadAsciiScene(filePath.toUtf8().constData());
 
-        QMetaObject::invokeMethod(this, [this, ok]() {
+        QMetaObject::invokeMethod(this, [guard, ok]() {
+            if (!guard) return;
             if (ok) {
-                m_hasAnimation = m_job->AreThereAnyKeyframedObjects();
-                emit hasAnimationChanged(m_hasAnimation);
-                setState(SceneLoaded);
+                guard->m_hasAnimation = guard->m_job->AreThereAnyKeyframedObjects();
+                emit guard->hasAnimationChanged(guard->m_hasAnimation);
+                guard->setState(SceneLoaded);
             } else {
-                setState(Error);
-                emit errorOccurred("Failed to load scene file.");
+                guard->setState(Error);
+                emit guard->errorOccurred("Failed to load scene file.");
             }
         }, Qt::QueuedConnection);
     });
 
-    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    trackWorkerThread(thread);
     thread->start();
 }
 
@@ -273,17 +377,14 @@ void RenderEngine::startRender()
     auto* progressCb = new ProgressCallbackAdapter(this);
     m_job->SetProgress(progressCb);
 
-    // Install image output callback once per scene.  The dispatch the
-    // rasterizer wraps around this adapter holds it by reference, so
-    // we MUST keep the adapter alive for as long as the dispatch is
-    // in the rasterizer's output list (i.e. until the next scene load
-    // or until RenderEngine is destroyed).  Re-adding on every render
-    // would compound: the prior dispatch stays in the list with a
-    // dangling reference once we delete the adapter.
-    if (!m_imageOutput) {
-        m_imageOutput = new ImageOutputAdapter(this);
-        m_job->AddCallbackRasterizerOutput(m_imageOutput);
-    }
+    // Install ViewportFrameStore as the rasterizer's IRasterizerOutput.
+    // The engine owns the initial reference; Attach() addrefs the
+    // rasterizer's side.  FreeRasterizerOutputs at next startRender
+    // (or on scene load) drops the rasterizer's side, leaving the
+    // engine as the sole owner — so the VFS + its FrameStore + its
+    // observer chain persist across renders, the same observer
+    // callbacks fire, no rebinding required.  See L4 design §7.5.
+    ensureViewportFrameStoreAttached();
 
     // Start elapsed timer
     m_renderClock.start();
@@ -293,26 +394,34 @@ void RenderEngine::startRender()
     }
     m_elapsedTimer->start();
 
-    QThread* thread = QThread::create([this, progressCb]() {
+    // L4 round-6 P1 — QPointer guard for the queued completion
+    // lambda; see ~RenderEngine() and loadScene's matching guard.
+    // If we early-return because the engine is gone, the
+    // ProgressCallbackAdapter still leaks (allocated above with
+    // `new`) — that's acceptable: the rasterizer is on its way down
+    // and the leak is bounded to one Render() invocation.
+    QPointer<RenderEngine> guard(this);
+    QThread* thread = QThread::create([this, progressCb, guard]() {
         bool ok = m_job->Rasterize();
 
-        QMetaObject::invokeMethod(this, [this, ok, progressCb]() {
-            m_elapsedTimer->stop();
-            m_job->SetProgress(nullptr);
+        QMetaObject::invokeMethod(this, [guard, ok, progressCb]() {
+            if (!guard) { delete progressCb; return; }
+            guard->m_elapsedTimer->stop();
+            guard->m_job->SetProgress(nullptr);
             delete progressCb;
 
-            if (m_cancelFlag) {
-                setState(Cancelled);
+            if (guard->m_cancelFlag) {
+                guard->setState(Cancelled);
             } else if (ok) {
-                setState(Completed);
+                guard->setState(Completed);
             } else {
-                setState(Error);
-                emit errorOccurred("Rasterization failed.");
+                guard->setState(Error);
+                emit guard->errorOccurred("Rasterization failed.");
             }
         }, Qt::QueuedConnection);
     });
 
-    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    trackWorkerThread(thread);
     thread->start();
 }
 
@@ -327,21 +436,20 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
     m_cancelFlag = false;
     m_sizeDetected = false;
 
-    // Clear outputs from previous renders.  The dispatch wrapping any
-    // existing m_imageOutput is in this list, so it gets destroyed
-    // here — drop the bare pointer immediately so we don't reuse a
-    // dangling adapter (it'd be wrapped by no live dispatch).
+    // Clear outputs from previous renders so the rasterizer's outs
+    // list doesn't accumulate stale references across animation
+    // start / stop cycles.  FreeRasterizerOutputs drops the
+    // rasterizer's reference to our VFS; the engine still holds a
+    // reference, so the VFS survives Free → re-Attach.
     rasterizer->FreeRasterizerOutputs();
-    delete m_imageOutput;
-    m_imageOutput = nullptr;
+    m_vfsAttachedToRasterizer = false;
 
     // Install progress callback
     auto* progressCb = new ProgressCallbackAdapter(this);
     m_job->SetProgress(progressCb);
 
-    // Install image output callback (recreated since we just freed it).
-    m_imageOutput = new ImageOutputAdapter(this);
-    m_job->AddCallbackRasterizerOutput(m_imageOutput);
+    // (Re-)attach VFS to the rasterizer for this render pass.
+    ensureViewportFrameStoreAttached();
 
     // TODO: Create and attach VideoEncoder for H.264 output
     // VideoEncoder* videoEncoder = new VideoEncoder(videoOutputPath.toStdString());
@@ -356,36 +464,39 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
     }
     m_elapsedTimer->start();
 
-    QThread* thread = QThread::create([this, progressCb, rasterizer]() {
+    // L4 round-6 P1 — QPointer guard for the queued completion lambda.
+    QPointer<RenderEngine> guard(this);
+    QThread* thread = QThread::create([this, progressCb, rasterizer, guard]() {
         bool ok = m_job->RasterizeAnimationUsingOptions();
 
         // TODO: Finalize video encoder here
         // if (videoEncoder) videoEncoder->finalize();
 
-        // Free rasterizer outputs (this destroys the dispatch wrapping
-        // m_imageOutput, so the adapter must die in lockstep on the UI
-        // thread before any subsequent render tries to reuse it).
+        // Free rasterizer outputs at end-of-animation.  This drops
+        // the rasterizer's reference to the engine's VFS; the engine
+        // keeps its own reference, so the VFS (and its FrameStore
+        // contents) persist for post-render Save-As / exposure scrub.
         rasterizer->FreeRasterizerOutputs();
 
-        QMetaObject::invokeMethod(this, [this, ok, progressCb]() {
-            m_elapsedTimer->stop();
-            m_job->SetProgress(nullptr);
+        QMetaObject::invokeMethod(this, [guard, ok, progressCb]() {
+            if (!guard) { delete progressCb; return; }
+            guard->m_elapsedTimer->stop();
+            guard->m_job->SetProgress(nullptr);
             delete progressCb;
-            delete m_imageOutput;
-            m_imageOutput = nullptr;
+            guard->m_vfsAttachedToRasterizer = false;
 
-            if (m_cancelFlag) {
-                setState(Cancelled);
+            if (guard->m_cancelFlag) {
+                guard->setState(Cancelled);
             } else if (ok) {
-                setState(Completed);
+                guard->setState(Completed);
             } else {
-                setState(Error);
-                emit errorOccurred("Animation rasterization failed.");
+                guard->setState(Error);
+                emit guard->errorOccurred("Animation rasterization failed.");
             }
         }, Qt::QueuedConnection);
     });
 
-    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    trackWorkerThread(thread);
     thread->start();
 }
 
@@ -413,14 +524,23 @@ void RenderEngine::setSceneTime(double t)
 
 void RenderEngine::clearScene()
 {
+    // L4 round-4 P1-A + round-5 P1-B — wait for any in-flight
+    // worker (load OR render) before wiping scene state.
+    m_cancelFlag = true;
+    waitForWorkerToFinish();
+    m_cancelFlag = false;
+
     if (m_job) {
-        // Same lifecycle ordering as loadScene: drop the dispatch
-        // before the adapter, then ClearAll wipes the rasterizer.
+        // ClearAll wipes the rasterizer; we drop the rasterizer's
+        // VFS reference first so the rasterizer's dtor doesn't
+        // touch the engine's VFS after we've moved on.  The engine
+        // keeps its own VFS reference — same instance is reused on
+        // the next loadScene + startRender (the lazy chain alloc
+        // inside VFS handles the dim change if any).
         if (auto* rasterizer = m_job->GetRasterizer()) {
             rasterizer->FreeRasterizerOutputs();
+            m_vfsAttachedToRasterizer = false;
         }
-        delete m_imageOutput;
-        m_imageOutput = nullptr;
         m_job->ClearAll();
     }
 
@@ -452,58 +572,213 @@ void RenderEngine::onProgress(double progress, double total, const std::string& 
         m_eta.Update(progress, total);
     }
 
-    QMetaObject::invokeMethod(this, [this, fraction, qtTitle]() {
-        emit progressUpdated(fraction, qtTitle);
+    // L4 round-6 P1 — QPointer guard.  This site fires from the
+    // rasterizer worker pool and posts to the UI thread; if the
+    // engine is destroyed between the post and the delivery, the
+    // guard auto-clears and the lambda no-ops.
+    QPointer<RenderEngine> guard(this);
+    QMetaObject::invokeMethod(this, [guard, fraction, qtTitle]() {
+        if (!guard) return;
+        emit guard->progressUpdated(fraction, qtTitle);
     }, Qt::QueuedConnection);
 }
 
-void RenderEngine::onImageOutput(const unsigned short* pImageData,
-                                  unsigned int width, unsigned int height,
-                                  unsigned int rc_top, unsigned int rc_left,
-                                  unsigned int rc_bottom, unsigned int rc_right)
+// L4c — VFS observer fan-in.
+//
+// Replaces the legacy onImageOutput (which converted RGBA16 → RGBA8
+// pixel-by-pixel via `>> 8`).  The VFS's per-tile shared_mutex (L1)
+// makes RenderToBuffer thread-safe alongside concurrent rasterizer
+// writes; we render directly into m_pixelBuffer at RGBA8_sRGB
+// (saving the RGBA16 hop entirely).  Multiple worker threads can
+// land tile callbacks concurrently — m_bufferMutex serialises them
+// so the QImage emission isn't torn.
+// Render `roi` (full image when roi == nullptr) into m_pixelBuffer +
+// emit imageUpdated.  Caller must hold m_bufferMutex.
+//
+// L4 round-7 P1 perf fix: per-tile invocations now write only the
+// changed region into m_pixelBuffer (was: full-image RenderToBuffer
+// every tile fire, ~4× regression vs legacy `>> 8`-of-tile path).
+// The QImage emission is still full-image because Qt's Compose
+// painter wants a complete pixmap, but the per-tile rasterizer→
+// buffer cost scales with tile area instead of frame area.  Frame-
+// complete fires once per frame (not hot) and uses the full-image
+// path to guarantee post-denoise / post-resolve coherence.
+//
+// RGBA8_sRGB direct: gamma + sRGB primaries + uint8 quantize, no
+// intermediate uint16 buffer.  Slight ±1-LSB difference in some
+// pixels vs the legacy RGBA16-then->>8 path because VFS's `Q8`
+// (FrameStore.cpp:629-634) rounds-to-nearest while legacy
+// `Integerize<sRGBPel,unsigned short>` (Color_Template.h:118-122)
+// truncates.  Visible impact: sub-quantum on most displays.
+void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned int H,
+                                                        const RISE::Rect* halfOpenRoi)
 {
-    std::lock_guard<std::mutex> lock(m_bufferMutex);
+    if (W == 0 || H == 0 || !m_viewportFrameStore) return;
 
-    // Initialize buffer on first call
-    if (m_imageWidth != (int)width || m_imageHeight != (int)height) {
-        m_imageWidth = width;
-        m_imageHeight = height;
-        m_pixelBuffer.resize(width * height * 4, 0);
+    // Resize buffer on first call / dim change.
+    const size_t need = static_cast<size_t>(W) * H * 4;
+    if (m_imageWidth != static_cast<int>(W)
+        || m_imageHeight != static_cast<int>(H)
+        || m_pixelBuffer.size() != need) {
+        m_pixelBuffer.assign(need, 0);
+        m_imageWidth  = static_cast<int>(W);
+        m_imageHeight = static_cast<int>(H);
     }
 
-    // Convert RGBA16 region to RGBA8 in the pixel buffer
-    // The pImageData contains the full image in RGBA16 format
-    for (unsigned int y = rc_top; y <= rc_bottom && y < height; ++y) {
-        for (unsigned int x = rc_left; x <= rc_right && x < width; ++x) {
-            size_t srcIdx = (y * width + x) * 4;
-            size_t dstIdx = (y * width + x) * 4;
+    const ViewTransform xf = ViewTransform::ForLDRDisplay(
+        static_cast<float>(m_viewExposureEV.load()),
+        eDisplayTransform_None);
 
-            // Convert 16-bit [0..65535] to 8-bit [0..255]
-            m_pixelBuffer[dstIdx + 0] = static_cast<uint8_t>(pImageData[srcIdx + 0] >> 8);
-            m_pixelBuffer[dstIdx + 1] = static_cast<uint8_t>(pImageData[srcIdx + 1] >> 8);
-            m_pixelBuffer[dstIdx + 2] = static_cast<uint8_t>(pImageData[srcIdx + 2] >> 8);
-            m_pixelBuffer[dstIdx + 3] = static_cast<uint8_t>(pImageData[srcIdx + 3] >> 8);
-        }
+    if (halfOpenRoi) {
+        // Region-bounded path.  RenderToBuffer writes pixels at
+        // dst[(y - y0) * dstStride + (x - x0) * bpp]
+        // (FrameStore.cpp:748-750), so to land them at their actual
+        // (y, x) image coordinates we point dst at the (y0, x0) pixel
+        // of the full-image buffer and pass the FULL row stride.
+        const unsigned int y0 = halfOpenRoi->top;
+        const unsigned int x0 = halfOpenRoi->left;
+        const unsigned int y1 = std::min<unsigned int>(halfOpenRoi->bottom, H);
+        const unsigned int x1 = std::min<unsigned int>(halfOpenRoi->right,  W);
+        if (y1 <= y0 || x1 <= x0) return;
+        uint8_t* base = m_pixelBuffer.data()
+                        + (static_cast<size_t>(y0) * W + x0) * 4;
+        m_viewportFrameStore->RenderToBuffer(
+            base, static_cast<size_t>(W) * 4,
+            *halfOpenRoi, TargetFormat::RGBA8_sRGB, xf);
+    } else {
+        m_viewportFrameStore->RenderToBuffer(
+            m_pixelBuffer.data(), static_cast<size_t>(W) * 4,
+            RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf);
     }
 
     QImage image = buildImageFromBuffer();
     bool firstTime = !m_sizeDetected;
 
-    QMetaObject::invokeMethod(this, [this, image, firstTime, width, height]() {
-        emit imageUpdated(image);
+    // L4 round-6 P1 — QPointer guard.  This is the VFS-tile-callback
+    // fan-out (rasterizer worker → UI thread); if the engine is
+    // destroyed mid-render, the guard makes the queued lambda a no-op
+    // instead of dereferencing a freed `this`.
+    QPointer<RenderEngine> guard(this);
+    QMetaObject::invokeMethod(this, [guard, image, firstTime, W, H]() {
+        if (!guard) return;
+        emit guard->imageUpdated(image);
         if (firstTime) {
-            m_sizeDetected = true;
-            emit sceneSizeDetected(width, height);
+            guard->m_sizeDetected = true;
+            emit guard->sceneSizeDetected(static_cast<int>(W), static_cast<int>(H));
         }
     }, Qt::QueuedConnection);
+}
+
+void RenderEngine::onVFSTileComplete(const RISE::Rect& halfOpenRoi)
+{
+    if (!m_viewportFrameStore) return;
+    // GetDimensions takes chainMutex_ shared internally — safe against
+    // a concurrent resolution-change reallocation in the rasterizer
+    // thread (see L4 round-4 P2-D adversarial review).  The earlier
+    // raw GetFrameStore()->Width()/Height() pattern was racy.
+    unsigned int W = 0, H = 0;
+    m_viewportFrameStore->GetDimensions(W, H);
+    if (W == 0 || H == 0) return;
+
+    std::lock_guard<std::mutex> lock(m_bufferMutex);
+    renderViewportToBufferAndEmit_locked(W, H, &halfOpenRoi);
+}
+
+void RenderEngine::onVFSFrameComplete()
+{
+    if (!m_viewportFrameStore) return;
+    unsigned int W = 0, H = 0;
+    m_viewportFrameStore->GetDimensions(W, H);
+    if (W == 0 || H == 0) return;
+    std::lock_guard<std::mutex> lock(m_bufferMutex);
+    renderViewportToBufferAndEmit_locked(W, H, nullptr);  // full image
+}
+
+void RenderEngine::ensureViewportFrameStoreAttached()
+{
+    if (!m_job) return;
+    IRasterizer* rasterizer = m_job->GetRasterizer();
+    if (!rasterizer) return;
+
+    if (!m_viewportFrameStore) {
+        m_viewportFrameStore = new Implementation::ViewportFrameStore();
+
+        // Lambda captures `this` raw; the engine outlives the VFS
+        // (engine releases its VFS reference in ~RenderEngine, AFTER
+        // joining the worker pool via m_job->release()), so by the
+        // time any in-flight observer callback completes, `this` is
+        // still valid.  See -RenderEngine() ordering rationale.
+        m_viewportFrameStore->SetTileCompleteCallback(
+            [this](const RISE::Rect& roi, uint64_t /*gen*/) {
+                this->onVFSTileComplete(roi);
+            });
+        m_viewportFrameStore->SetFrameCompleteCallback(
+            [this](unsigned int /*frame*/, uint64_t /*gen*/) {
+                this->onVFSFrameComplete();
+            });
+        m_viewportFrameStore->SetPreDenoiseCompleteCallback(
+            [this](unsigned int /*frame*/, uint64_t /*gen*/) {
+                this->onVFSFrameComplete();
+            });
+        m_viewportFrameStore->SetDenoiseCompleteCallback(
+            [this](unsigned int /*frame*/, uint64_t /*gen*/) {
+                this->onVFSFrameComplete();
+            });
+    }
+
+    if (!m_vfsAttachedToRasterizer) {
+        m_viewportFrameStore->Attach(rasterizer);
+        m_vfsAttachedToRasterizer = true;
+    }
+}
+
+// Live exposure scrubbing — applies a new EV stop to the cached
+// FrameStore on the next emit, with no rasterizer re-run.  Calling
+// it triggers an immediate repaint via the same render-to-buffer-and-
+// emit path tile callbacks use, so the slider feels live.  No-op
+// until the FrameStore has been allocated (i.e. a render has produced
+// at least one OutputImage).
+void RenderEngine::setViewExposureEV(double ev)
+{
+    m_viewExposureEV.store(ev);
+    if (!m_viewportFrameStore) return;
+    unsigned int W = 0, H = 0;
+    m_viewportFrameStore->GetDimensions(W, H);
+    if (W == 0 || H == 0) return;
+    // Slider scrub: re-render the full image at the new EV.
+    std::lock_guard<std::mutex> lock(m_bufferMutex);
+    renderViewportToBufferAndEmit_locked(W, H, nullptr);
+}
+
+bool RenderEngine::saveAs(const QString& path,
+                          const QString& formatName,
+                          double         ev)
+{
+    if (!m_viewportFrameStore) return false;
+    IFrameEncoder* enc =
+        Implementation::FrameEncoderRegistry::Get().ByFormatName(
+            formatName.toUtf8().constData());
+    if (!enc) return false;
+    EncodeOpts opts;
+    opts.colorSpace    = eColorSpace_sRGB;
+    opts.bpp           = 8;
+    opts.viewTransform = ViewTransform::ForLDRDisplay(
+        static_cast<float>(ev), eDisplayTransform_None);
+    return m_viewportFrameStore->SaveAs(
+        std::string(path.toUtf8().constData()), enc, opts);
 }
 
 void RenderEngine::onLogMessage(int level, const std::string& message)
 {
     QString qtMsg = QString::fromUtf8(message.c_str());
 
-    QMetaObject::invokeMethod(this, [this, level, qtMsg]() {
-        emit logMessage(level, qtMsg);
+    // L4 round-6 P1 — log lines fire from any thread (including
+    // post-render shutdown); QPointer guard prevents UAF if the
+    // engine is destroyed before the queued lambda is delivered.
+    QPointer<RenderEngine> guard(this);
+    QMetaObject::invokeMethod(this, [guard, level, qtMsg]() {
+        if (!guard) return;
+        emit guard->logMessage(level, qtMsg);
     }, Qt::QueuedConnection);
 }
 

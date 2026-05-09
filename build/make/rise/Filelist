@@ -282,7 +282,15 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/MLTRasterizer.cpp								\
 	$(PATHLIBRARY)Rendering/MLTSpectralRasterizer.cpp						\
 	$(PATHLIBRARY)Rendering/AOVBuffers.cpp									\
-	$(PATHLIBRARY)Rendering/OIDNDenoiser.cpp
+	$(PATHLIBRARY)Rendering/OIDNDenoiser.cpp								\
+	$(PATHLIBRARY)Rendering/FrameStoreColorSpace.cpp						\
+	$(PATHLIBRARY)Rendering/TargetFormat.cpp								\
+	$(PATHLIBRARY)Rendering/ViewTransform.cpp								\
+	$(PATHLIBRARY)Rendering/FrameStore.cpp								\
+	$(PATHLIBRARY)Rendering/FrameEncoders.cpp							\
+	$(PATHLIBRARY)Rendering/FrameSink.cpp								\
+	$(PATHLIBRARY)Rendering/FileEncoderObserver.cpp						\
+	$(PATHLIBRARY)Rendering/ViewportFrameStore.cpp
 
 # ShaderOps
 SRCLIBSHADEROPS =\

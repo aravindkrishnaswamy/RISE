@@ -2,7 +2,6 @@
 #include "RiseBridge.h"
 
 #include "Interfaces/IProgressCallback.h"
-#include "Interfaces/IJobRasterizerOutput.h"
 
 namespace rise_jni {
 namespace {
@@ -33,48 +32,14 @@ private:
     RiseBridge* m_bridge;
 };
 
-// -----------------------------------------------------------------------------
-// Rasterizer output adapter
-// -----------------------------------------------------------------------------
-// Receives the full RGBA16 image every call with a dirty rectangle. See
-// src/Library/Interfaces/IJobRasterizerOutput.h for the exact signature.
-// We request sRGB colour space (matches the Mac bridge) so the library
-// applies gamma and a simple uint16 >> 8 downconvert is visually correct
-// on the Kotlin side.
-class RasterizerOutputAdapter : public RISE::IJobRasterizerOutput {
-public:
-    explicit RasterizerOutputAdapter(RiseBridge* bridge) : m_bridge(bridge) {}
-    ~RasterizerOutputAdapter() override = default;
-
-    bool PremultipliedAlpha() override { return false; }
-    int  GetColorSpace()      override { return 1; } // sRGB
-
-    void OutputImageRGBA16(
-        const unsigned short* pImageData,
-        const unsigned int    width,
-        const unsigned int    height,
-        const unsigned int    rc_top,
-        const unsigned int    rc_left,
-        const unsigned int    rc_bottom,
-        const unsigned int    rc_right) override
-    {
-        if (!m_bridge || !pImageData) return;
-        m_bridge->writeDirtyRegion(pImageData, width, height,
-                                   rc_top, rc_left, rc_bottom, rc_right);
-    }
-
-private:
-    RiseBridge* m_bridge;
-};
+// (Legacy RasterizerOutputAdapter / newRasterizerOutput removed by
+// L4d.  ViewportFrameStore now plays the IRasterizerOutput role
+// directly; see RiseBridge::ensureViewportFrameStoreAttached.)
 
 } // namespace
 
 RISE::IProgressCallback* newProgressCallback(RiseBridge* bridge) {
     return new ProgressAdapter(bridge);
-}
-
-RISE::IJobRasterizerOutput* newRasterizerOutput(RiseBridge* bridge) {
-    return new RasterizerOutputAdapter(bridge);
 }
 
 } // namespace rise_jni

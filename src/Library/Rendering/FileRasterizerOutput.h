@@ -26,6 +26,11 @@ namespace RISE
 	{
 		static const char extensions[7][6] = { "tga", "ppm", "png", "hdr", "tiff", "rgbea", "exr" };
 
+		// Forward declarations for the L3 lazy-allocated chain.
+		class FrameStore;
+		class FrameSink;
+		class FileEncoderObserver;
+
 		class FileRasterizerOutput : public virtual IRasterizerOutput, public virtual Reference
 		{
 		public:
@@ -73,17 +78,28 @@ namespace RISE
 			EXR_COMPRESSION		exr_compression;
 			bool				exr_with_alpha;
 
+			// L3 — lazy-allocated FrameStore + sink + observer chain.
+			// Allocated on first OutputImage / OutputPreDenoisedImage /
+			// OutputDenoisedImage call (we need the rasterizer's image
+			// dims, which aren't known at construction time).  The
+			// trio is reused across subsequent frames in the
+			// bMultiple animation case: only the per-frame OnFrameComplete
+			// callback advances; the FrameStore buffer is overwritten
+			// in place by FrameSink::CopyImageIntoStore.
+			FrameStore*           framestore_       = nullptr;
+			FrameSink*            framesink_        = nullptr;
+			FileEncoderObserver*  encoderObserver_  = nullptr;
+
 			virtual ~FileRasterizerOutput( );
 
-			//! Shared writer used by OutputImage / OutputPreDenoisedImage /
-			//! OutputDenoisedImage.  szSuffix is inserted into the filename
-			//! stem ("" for the normal file, "_denoised" for the denoised
-			//! variant).
-			void WriteImageToFile(
-				const IRasterImage& pImage,
-				const unsigned int frame,
-				const char* szSuffix
-				);
+			//! Lazy-allocate the FrameStore + FrameSink +
+			//! FileEncoderObserver chain on first Output* call.
+			//! After this returns, framestore_/framesink_/observer_
+			//! are non-null and the observer is registered on the
+			//! store.  Idempotent: subsequent calls with the same
+			//! dims are no-ops.  Asserts in debug if dims change
+			//! across calls (would require reallocating the chain).
+			void EnsureChain( unsigned int width, unsigned int height );
 
 		public:
 			FileRasterizerOutput(
@@ -98,10 +114,10 @@ namespace RISE
 				const bool exr_with_alpha_
 				);
 
-			virtual void	OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion );
-			virtual void	OutputImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame );
-			virtual void	OutputPreDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame );
-			virtual void	OutputDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame );
+			void	OutputIntermediateImage( const IRasterImage& pImage, const Rect* pRegion ) override;
+			void	OutputImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame ) override;
+			void	OutputPreDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame ) override;
+			void	OutputDenoisedImage( const IRasterImage& pImage, const Rect* pRegion, const unsigned int frame ) override;
 
 			//! Landing 5: receive the scene camera's photographic exposure
 			//! compensation in EV stops.  Called by the rasterizer at frame

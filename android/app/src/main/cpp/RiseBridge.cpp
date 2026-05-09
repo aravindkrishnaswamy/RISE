@@ -21,10 +21,27 @@
 #include "Interfaces/IRasterImage.h"
 #include "Interfaces/IScene.h"
 #include "Interfaces/ILogPriv.h"
+#include "Interfaces/IFrameEncoder.h"
 #include "Utilities/MediaPathLocator.h"
 #include "Utilities/Reference.h"
 #include "SceneEditor/SceneEditController.h"
 #include "Rendering/InteractivePelRasterizer.h"
+
+// L4d — ViewportFrameStore-driven production-render path.
+// The rasterizer feeds pixels into a canonical HDR FrameStore wrapped
+// by ViewportFrameStore; on each tile/frame observer callback the
+// bridge RenderToBuffer(RGBA8_sRGB)s directly into m_framebuffer
+// (saving the RGBA16-then->>8 hop the legacy RasterizerOutputAdapter
+// performed) and fires the existing onRegionInvalidated JNI
+// notification.  Adds live exposure scrubbing (setViewExposureEV)
+// and multi-format Save-As without re-render.
+#include "Rendering/ViewportFrameStore.h"
+#include "Rendering/FrameStore.h"
+#include "Rendering/FrameEncoders.h"
+#include "Rendering/TargetFormat.h"
+#include "Rendering/ViewTransform.h"
+
+using namespace RISE::FrameStoreOutput;
 
 #define LOG_TAG "RISE-Bridge"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
@@ -41,17 +58,40 @@ RiseBridge::RiseBridge() = default;
 
 RiseBridge::~RiseBridge() {
     teardownJob();
+    // Tear-down ordering: teardownJob() destroys the Job (which destroys
+    // the rasterizer, joining its worker pool en route).  By the time
+    // teardownJob() returns no callbacks can be in flight against the
+    // bridge's VFS.  Now safely release the bridge's VFS reference,
+    // after defensively nulling the callbacks (L4 round-4 P2-B) so
+    // any future late-fire bypasses the captured `this` lambda.
+    if (m_viewportFrameStore) {
+        m_viewportFrameStore->SetTileCompleteCallback(nullptr);
+        m_viewportFrameStore->SetFrameCompleteCallback(nullptr);
+        m_viewportFrameStore->SetPreDenoiseCompleteCallback(nullptr);
+        m_viewportFrameStore->SetDenoiseCompleteCallback(nullptr);
+        m_viewportFrameStore->release();
+        m_viewportFrameStore = nullptr;
+    }
     {
         std::lock_guard<std::mutex> lock(m_fbMutex);
         std::free(m_framebuffer);
         m_framebuffer = nullptr;
     }
-    if (m_kotlinCallback) {
-        JNIEnv* env = getJniEnv();
-        if (env) {
-            env->DeleteGlobalRef(m_kotlinCallback);
+    {
+        // L4 round-5 P1-A — serialise vs any in-flight worker
+        // CallVoidMethod.  By this dtor point teardownJob() has
+        // already joined the rasterizer's worker pool (via
+        // m_job->release() → ~Rasterizer), so in practice no worker
+        // can still be inside a CallVoidMethod here.  Defensive
+        // mutex acquisition costs nothing.
+        std::lock_guard<std::mutex> lock(m_kotlinCallbackMutex);
+        if (m_kotlinCallback) {
+            JNIEnv* env = getJniEnv();
+            if (env) {
+                env->DeleteGlobalRef(m_kotlinCallback);
+            }
+            m_kotlinCallback = nullptr;
         }
-        m_kotlinCallback = nullptr;
     }
 }
 
@@ -130,6 +170,17 @@ void RiseBridge::initialize(const std::string& projectRoot,
 
 void RiseBridge::setCallback(JNIEnv* env, jobject kotlinCallback) {
     if (!env) return;
+    // L4 round-5 P1-A — serialise the global-ref swap against
+    // worker-thread CallVoidMethod sites.  RenderViewModel
+    // (RenderViewModel.kt:327) calls nativeSetCallback(null) at
+    // ViewModel onCleared without first joining the
+    // Dispatchers.IO-launched nativeRasterize coroutine, so this
+    // path can race the rasterizer worker pool firing
+    // onProgressTick / onLogLine / onVFSTileComplete.  Without
+    // the mutex the pre-L4d setCallback would
+    // DeleteGlobalRef under the worker's nose and the next
+    // CallVoidMethod would UAF the jobject.
+    std::lock_guard<std::mutex> lock(m_kotlinCallbackMutex);
     if (m_kotlinCallback) {
         env->DeleteGlobalRef(m_kotlinCallback);
         m_kotlinCallback = nullptr;
@@ -145,6 +196,14 @@ void RiseBridge::teardownJob() {
     stopViewport();
 
     if (m_job) {
+        // L4d: drop the rasterizer's VFS reference before destroying
+        // the rasterizer.  The bridge's VFS reference keeps the VFS
+        // alive across scene reloads — the next rasterize call will
+        // re-Attach to the new scene's rasterizer.
+        if (RISE::IRasterizer* rasterizer = m_job->GetRasterizer()) {
+            rasterizer->FreeRasterizerOutputs();
+        }
+        m_vfsAttachedToRasterizer = false;
         // RISE_CreateJobPriv returns a refcounted pointer; the safe cleanup
         // is to release the reference we hold. The library's Reference
         // implementation will delete the job when refcount hits zero.
@@ -161,10 +220,11 @@ bool RiseBridge::loadScene(const std::string& absPath) {
     m_cancel.store(false);
     teardownJob();
 
-    // Lazily create the callback adapters. They hold a bare back-pointer to
-    // the bridge and never outlive it (the bridge owns the unique_ptrs).
+    // Lazily create the progress callback adapter.  The legacy
+    // IJobRasterizerOutput adapter is gone — VFS replaces it (created
+    // lazily inside ensureViewportFrameStoreAttached on the first
+    // rasterize call once the rasterizer exists).
     if (!m_progress) m_progress.reset(newProgressCallback(this));
-    if (!m_output)   m_output.reset(newRasterizerOutput(this));
 
     if (!RISE::RISE_CreateJobPriv(&m_job) || !m_job) {
         LOGE("loadScene: RISE_CreateJobPriv failed");
@@ -192,16 +252,18 @@ bool RiseBridge::rasterize() {
 
     m_cancel.store(false);
 
-    // Mac bridge precedent: attach the output AFTER LoadAsciiScene — the
-    // library wipes the rasterizer's output list during scene load.
-    // Clear any prior outputs to avoid the leak bug in RISEBridge.mm.
+    // Attach VFS to the rasterizer for this render.  The bridge owns
+    // the persistent VFS reference; FreeRasterizerOutputs drops the
+    // rasterizer's reference and re-Attach below bumps it again.
+    // Library wipes the rasterizer's output list during scene load
+    // (so the first rasterize after a load has an empty outs list),
+    // but later rasterize calls need the explicit Free → Attach
+    // dance to avoid stacking duplicate references.
     if (RISE::IRasterizer* raster = m_job->GetRasterizer()) {
         raster->FreeRasterizerOutputs();
+        m_vfsAttachedToRasterizer = false;
     }
-    if (!m_job->AddCallbackRasterizerOutput(m_output.get())) {
-        LOGE("rasterize: AddCallbackRasterizerOutput failed");
-        return false;
-    }
+    ensureViewportFrameStoreAttached();
 
     // BLOCKING. Library spawns its own pthread worker pool, dispatches tiles,
     // joins on completion. Tile callbacks fire from the workers; cancellation
@@ -246,15 +308,21 @@ void RiseBridge::ensureFramebuffer(unsigned w, unsigned h) {
         m_fbHeight = h;
         fired = true;
     }
-    if (fired && m_kotlinCallback) {
-        JNIEnv* env = getJniEnv();
-        if (env) {
-            ScopedLocalFrame frame(env, 8);
-            env->CallVoidMethod(m_kotlinCallback, g_cb.onSceneReady,
-                                static_cast<jint>(w), static_cast<jint>(h));
-            if (env->ExceptionCheck()) {
-                env->ExceptionDescribe();
-                env->ExceptionClear();
+    if (fired) {
+        // L4 round-5 P1-A — hold m_kotlinCallbackMutex across
+        // CallVoidMethod so a concurrent setCallback(null) on the
+        // UI thread can't DeleteGlobalRef the jobject mid-call.
+        std::lock_guard<std::mutex> lock(m_kotlinCallbackMutex);
+        if (m_kotlinCallback) {
+            JNIEnv* env = getJniEnv();
+            if (env) {
+                ScopedLocalFrame frame(env, 8);
+                env->CallVoidMethod(m_kotlinCallback, g_cb.onSceneReady,
+                                    static_cast<jint>(w), static_cast<jint>(h));
+                if (env->ExceptionCheck()) {
+                    env->ExceptionDescribe();
+                    env->ExceptionClear();
+                }
             }
         }
     }
@@ -291,18 +359,177 @@ void RiseBridge::writeDirtyRegion(const unsigned short* src16,
         }
     }
 
-    if (m_kotlinCallback) {
-        JNIEnv* env = getJniEnv();
-        if (env) {
-            ScopedLocalFrame frame(env, 4);
-            env->CallVoidMethod(m_kotlinCallback, g_cb.onRegionInvalidated,
-                                packRect(top, left, bottom, right));
-            if (env->ExceptionCheck()) {
-                env->ExceptionDescribe();
-                env->ExceptionClear();
+    {
+        // L4 round-5 P1-A — see ensureFramebuffer rationale.
+        std::lock_guard<std::mutex> lock(m_kotlinCallbackMutex);
+        if (m_kotlinCallback) {
+            JNIEnv* env = getJniEnv();
+            if (env) {
+                ScopedLocalFrame frame(env, 4);
+                env->CallVoidMethod(m_kotlinCallback, g_cb.onRegionInvalidated,
+                                    packRect(top, left, bottom, right));
+                if (env->ExceptionCheck()) {
+                    env->ExceptionDescribe();
+                    env->ExceptionClear();
+                }
             }
         }
     }
+}
+
+// L4d — VFS-driven production-render path.
+// VFS observer callbacks fire from rasterizer worker threads.  We
+// take m_fbMutex (the same mutex writeDirtyRegion takes), call
+// ViewportFrameStore::RenderToBuffer at RGBA8_sRGB directly into
+// m_framebuffer, then notify Kotlin via the same onRegionInvalidated
+// JNI hop the legacy path used.  Net change: no RGBA16 staging
+// buffer, no per-pixel `>> 8` walk in the bridge — the LDR path
+// runs once inside RenderToBuffer.
+void RiseBridge::ensureViewportFrameStoreAttached() {
+    if (!m_job) return;
+    RISE::IRasterizer* rasterizer = m_job->GetRasterizer();
+    if (!rasterizer) return;
+
+    if (!m_viewportFrameStore) {
+        m_viewportFrameStore = new RISE::Implementation::ViewportFrameStore();
+
+        // Lambda captures `this` raw; the bridge is a process-wide
+        // singleton (getBridge()) — its lifetime spans the whole
+        // process, so any VFS callback always finds `this` valid.
+        m_viewportFrameStore->SetTileCompleteCallback(
+            [this](const RISE::Rect& roi, uint64_t /*gen*/) {
+                this->onVFSTileComplete(&roi);
+            });
+        m_viewportFrameStore->SetFrameCompleteCallback(
+            [this](unsigned int /*frame*/, uint64_t /*gen*/) {
+                this->onVFSFrameComplete();
+            });
+        m_viewportFrameStore->SetPreDenoiseCompleteCallback(
+            [this](unsigned int /*frame*/, uint64_t /*gen*/) {
+                this->onVFSFrameComplete();
+            });
+        m_viewportFrameStore->SetDenoiseCompleteCallback(
+            [this](unsigned int /*frame*/, uint64_t /*gen*/) {
+                this->onVFSFrameComplete();
+            });
+    }
+
+    if (!m_vfsAttachedToRasterizer) {
+        m_viewportFrameStore->Attach(rasterizer);
+        m_vfsAttachedToRasterizer = true;
+    }
+}
+
+// L4 round-7 P1 perf fix: render only the changed region into the
+// matching slice of m_framebuffer, and notify Kotlin with that
+// region's bounds.  Per-tile work is now O(tile-area) not O(image-
+// area) — was a ~4× regression vs the legacy `>> 8`-of-tile path.
+// `halfOpenRoi == nullptr` → render full image (used by frame-
+// complete and exposure-scrub paths).
+void RiseBridge::onVFSTileComplete(const RISE::Rect* halfOpenRoi) {
+    if (!m_viewportFrameStore) return;
+    // GetDimensions takes chainMutex_ shared internally — safe against
+    // a concurrent resolution-change reallocation in the rasterizer
+    // thread (see L4 round-4 P2-D adversarial review).
+    unsigned int W = 0, H = 0;
+    m_viewportFrameStore->GetDimensions(W, H);
+    if (W == 0 || H == 0) return;
+
+    // Make sure m_framebuffer is sized + Kotlin has been notified
+    // of dims (onSceneReady) BEFORE the first RenderToBuffer write.
+    ensureFramebuffer(W, H);
+
+    // Compute the inclusive bounds we'll send to Kotlin AFTER
+    // clipping to image dims.  (0,0,H-1,W-1) for full-image emits.
+    unsigned int emitTop = 0, emitLeft = 0, emitBottom = H - 1, emitRight = W - 1;
+    if (halfOpenRoi) {
+        const unsigned int y0 = halfOpenRoi->top;
+        const unsigned int x0 = halfOpenRoi->left;
+        const unsigned int y1 = std::min<unsigned int>(halfOpenRoi->bottom, H);
+        const unsigned int x1 = std::min<unsigned int>(halfOpenRoi->right,  W);
+        if (y1 <= y0 || x1 <= x0) return;
+        emitTop    = y0;
+        emitLeft   = x0;
+        emitBottom = y1 - 1;
+        emitRight  = x1 - 1;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_fbMutex);
+        if (!m_framebuffer || m_fbWidth != W || m_fbHeight != H) return;
+        const ViewTransform xf = ViewTransform::ForLDRDisplay(
+            static_cast<float>(m_viewExposureEV.load()),
+            RISE::eDisplayTransform_None);
+        if (halfOpenRoi) {
+            // Region path — see RISEBridge.mm:EmitRegion_locked
+            // and FrameStore.cpp:748-750 for the dst-offset rationale:
+            // RenderToBuffer writes pixels at
+            //   dst[(y - y0) * dstStride + (x - x0) * bpp]
+            // so we point dst at the (y0, x0) pixel of the framebuffer
+            // and pass the FULL row stride.
+            uint8_t* base = m_framebuffer
+                            + (static_cast<size_t>(emitTop) * W + emitLeft) * 4;
+            m_viewportFrameStore->RenderToBuffer(
+                base, static_cast<size_t>(W) * 4,
+                *halfOpenRoi, TargetFormat::RGBA8_sRGB, xf);
+        } else {
+            m_viewportFrameStore->RenderToBuffer(
+                m_framebuffer, static_cast<size_t>(W) * 4,
+                RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf);
+        }
+    }
+
+    // Notify Kotlin of the dirty region (inclusive bounds).
+    // L4 round-5 P1-A — guard the global ref against a concurrent
+    // setCallback(null) UAF.
+    {
+        std::lock_guard<std::mutex> lock(m_kotlinCallbackMutex);
+        if (m_kotlinCallback) {
+            JNIEnv* env = getJniEnv();
+            if (env) {
+                ScopedLocalFrame frame(env, 4);
+                env->CallVoidMethod(m_kotlinCallback, g_cb.onRegionInvalidated,
+                                    packRect(emitTop, emitLeft, emitBottom, emitRight));
+                if (env->ExceptionCheck()) {
+                    env->ExceptionDescribe();
+                    env->ExceptionClear();
+                }
+            }
+        }
+    }
+}
+
+void RiseBridge::onVFSFrameComplete() {
+    // Frame-complete fires once per frame (not per tile) — full-image
+    // emit guarantees post-denoise / post-resolve coherence.
+    onVFSTileComplete(nullptr);
+}
+
+void RiseBridge::setViewExposureEV(double ev) {
+    m_viewExposureEV.store(ev);
+    // Re-render the cached FrameStore at the new EV.  Slider scrub
+    // wants the FULL image refreshed; pass nullptr to land on the
+    // full-image path.
+    onVFSTileComplete(nullptr);
+}
+
+bool RiseBridge::saveAs(const std::string& path,
+                        const std::string& formatName,
+                        double             ev) {
+    if (!m_viewportFrameStore) return false;
+    RISE::IFrameEncoder* enc =
+        RISE::Implementation::FrameEncoderRegistry::Get().ByFormatName(
+            formatName.c_str());
+    if (!enc) {
+        LOGE("saveAs: unknown format '%s'", formatName.c_str());
+        return false;
+    }
+    RISE::EncodeOpts opts;
+    opts.colorSpace    = RISE::eColorSpace_sRGB;
+    opts.bpp           = 8;
+    opts.viewTransform = ViewTransform::ForLDRDisplay(
+        static_cast<float>(ev), RISE::eDisplayTransform_None);
+    return m_viewportFrameStore->SaveAs(path, enc, opts);
 }
 
 bool RiseBridge::onProgressTick(double progress, double total) {
@@ -313,17 +540,26 @@ bool RiseBridge::onProgressTick(double progress, double total) {
         std::lock_guard<std::mutex> lock(m_etaMutex);
         m_eta.Update(progress, total);
     }
-    if (m_kotlinCallback) {
-        JNIEnv* env = getJniEnv();
-        if (env) {
-            ScopedLocalFrame frame(env, 4);
-            const float p = (total > 0.0)
-                ? static_cast<float>(progress / total)
-                : 0.0f;
-            env->CallVoidMethod(m_kotlinCallback, g_cb.onProgress, p);
-            if (env->ExceptionCheck()) {
-                env->ExceptionDescribe();
-                env->ExceptionClear();
+    {
+        // L4 round-5 P1-A — guard against concurrent
+        // setCallback(null) UAF on the JNI global ref.  This is the
+        // hottest call site (rasterizer fires onProgress hundreds
+        // of times per render) so we want minimum lock time, but
+        // dropping the lock around CallVoidMethod would re-open
+        // the UAF window the mutex was added to close.
+        std::lock_guard<std::mutex> lock(m_kotlinCallbackMutex);
+        if (m_kotlinCallback) {
+            JNIEnv* env = getJniEnv();
+            if (env) {
+                ScopedLocalFrame frame(env, 4);
+                const float p = (total > 0.0)
+                    ? static_cast<float>(progress / total)
+                    : 0.0f;
+                env->CallVoidMethod(m_kotlinCallback, g_cb.onProgress, p);
+                if (env->ExceptionCheck()) {
+                    env->ExceptionDescribe();
+                    env->ExceptionClear();
+                }
             }
         }
     }
@@ -349,7 +585,11 @@ int64_t RiseBridge::etaRemainingMs() const {
 }
 
 void RiseBridge::onLogLine(int level, const char* message) {
-    if (!m_kotlinCallback || !message) return;
+    if (!message) return;
+    // L4 round-5 P1-A — log lines fire from any thread; serialise
+    // jobject access against a concurrent setCallback(null).
+    std::lock_guard<std::mutex> lock(m_kotlinCallbackMutex);
+    if (!m_kotlinCallback) return;
     JNIEnv* env = getJniEnv();
     if (!env) return;
     ScopedLocalFrame frame(env, 8);

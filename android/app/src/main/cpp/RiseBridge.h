@@ -30,12 +30,13 @@
 namespace RISE {
     class IJobPriv;
     class IProgressCallback;
-    class IJobRasterizerOutput;
     class ILogPrinter;
     class SceneEditController;
     class IRayCaster;
     class IRasterizer;
     class IRasterizerOutput;
+    struct Rect;
+    namespace Implementation { class ViewportFrameStore; }
 }
 
 namespace rise_jni {
@@ -208,6 +209,18 @@ public:
 
     bool viewportProductionRender();
 
+    // L4d — live exposure scrubbing & multi-format Save-As over the
+    // canonical HDR FrameStore.  setViewExposureEV adjusts the
+    // ViewTransform applied at framebuffer read-back without re-rendering;
+    // saveAs encodes the cached FrameStore via the L2 IFrameEncoder
+    // registry (formats: "PNG", "EXR", "TIFF", "HDR", "RGBEA", "TGA",
+    // "PPM", case-insensitive).  Both no-op until the first render
+    // has produced output.  See docs/FRAMESTORE_DESIGN.md §11 L4d.
+    void setViewExposureEV(double ev);
+    bool saveAs(const std::string& path,
+                const std::string& formatName,
+                double             ev);
+
     // Properties panel accessors — descriptor-driven snapshot.
     void         viewportRefreshProperties();
     int          viewportPanelMode() const;       // 0=None,1=Camera,2=Rasterizer,3=Object,4=Light
@@ -250,8 +263,26 @@ private:
 
     // Callback adapters (forward-declared here; defined in RiseCallbacks.cpp)
     std::unique_ptr<RISE::IProgressCallback>    m_progress;
-    std::unique_ptr<RISE::IJobRasterizerOutput> m_output;
     RISE::ILogPrinter*                          m_logPrinter; // reference-counted inside the library; released via safe_release in teardown
+
+    // L4d — ViewportFrameStore replaces the legacy
+    // IJobRasterizerOutput RasterizerOutputAdapter.  The bridge owns
+    // one persistent VFS reference; the rasterizer's reference is
+    // bumped on Attach() and dropped via FreeRasterizerOutputs()
+    // between renders.  Production-render path; the interactive
+    // viewport's ViewportPreviewSink (m_viewportSink below) is a
+    // separate sink, deferred to a follow-up landing.  See
+    // docs/FRAMESTORE_DESIGN.md §11 L4d.
+    RISE::Implementation::ViewportFrameStore* m_viewportFrameStore = nullptr;
+    bool                                      m_vfsAttachedToRasterizer = false;
+    std::atomic<double>                       m_viewExposureEV{0.0};
+    void ensureViewportFrameStoreAttached();
+    // L4 round-7 P1: tile callback now takes the half-open roi so
+    // we can RenderToBuffer just the changed region (was: full image
+    // every tile fire — ~4× regression vs legacy).  nullptr → full
+    // image (used by frame-complete + setViewExposureEV slider scrub).
+    void onVFSTileComplete(const RISE::Rect* halfOpenRoi);
+    void onVFSFrameComplete();
 
     // Job & state
     RISE::IJobPriv*    m_job = nullptr;
@@ -270,7 +301,20 @@ private:
     unsigned           m_fbHeight = 0;
 
     // JNI global ref to the Kotlin RiseCallback. Held by the bridge;
-    // released in setCallback(nullptr) or ~RiseBridge.
+    // released in setCallback(nullptr) or ~RiseBridge.  Guarded by
+    // m_kotlinCallbackMutex (L4 round-5 P1-A): worker threads from
+    // the rasterizer pool fire callbacks (onProgressTick / onLogLine
+    // / onVFSTileComplete / writeDirtyRegion / ensureFramebuffer)
+    // that JNI-CallVoidMethod against this jobject from arbitrary
+    // threads, while the UI thread can call setCallback(null) at
+    // ViewModel teardown without waiting for an in-flight render
+    // (RenderViewModel.kt:313 documents this — `cancel()` doesn't
+    // join the rasterize coroutine).  Without the mutex,
+    // DeleteGlobalRef would race CallVoidMethod and UAF.  Holding
+    // the mutex across CallVoidMethod is safe because the Kotlin
+    // callbacks (onProgress/onSceneReady/etc.) don't re-enter the
+    // bridge; they post Compose state updates and return.
+    mutable std::mutex m_kotlinCallbackMutex;
     jobject m_kotlinCallback = nullptr;
 
     // Snapshots of init config so global.options regeneration is possible

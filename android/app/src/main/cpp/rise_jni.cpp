@@ -118,6 +118,28 @@ JNIF(jboolean, nativeHasAnimatedObjects)(JNIEnv* /*env*/, jobject /*thiz*/) {
     return getBridge().hasAnimatedObjects() ? JNI_TRUE : JNI_FALSE;
 }
 
+// -----------------------------------------------------------------------------
+// L4d — live exposure scrubbing & multi-format Save-As
+// -----------------------------------------------------------------------------
+// The view-EV slider in Compose calls nativeSetViewExposureEV on every
+// drag tick; the bridge re-RenderToBuffer's the cached HDR FrameStore
+// at the new EV without re-running the rasterizer (instant repaint).
+// nativeSaveAs encodes the cached FrameStore via the L2 IFrameEncoder
+// pipeline to any registered format ("PNG"/"EXR"/"TIFF"/"HDR"/"RGBEA"/
+// "TGA"/"PPM" — case-insensitive) at the Save-As menu pick.
+JNIF(void, nativeSetViewExposureEV)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                    jdouble ev) {
+    getBridge().setViewExposureEV(static_cast<double>(ev));
+}
+
+JNIF(jboolean, nativeSaveAs)(JNIEnv* env, jobject /*thiz*/,
+                             jstring jPath, jstring jFormat, jdouble ev) {
+    return getBridge().saveAs(jstringToStd(env, jPath),
+                              jstringToStd(env, jFormat),
+                              static_cast<double>(ev))
+           ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIF(jdouble, nativeViewportLastSceneTime)(JNIEnv* /*env*/, jobject /*thiz*/) {
     // Canonical scene time tracked by the SceneEditController.  Used
     // by RenderViewModel just before nativeSetSceneTime so the

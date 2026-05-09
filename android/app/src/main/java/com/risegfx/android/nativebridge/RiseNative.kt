@@ -126,6 +126,36 @@ object RiseNative {
     external fun nativeEtaRemainingMs(): Long
 
     // -----------------------------------------------------------------------
+    // L4d — live exposure scrubbing & multi-format Save-As over the
+    // canonical HDR FrameStore.  These read from the FrameStore the
+    // production render populated; they do NOT re-trigger the
+    // rasterizer.  Both no-op until at least one render has produced
+    // output (the FrameStore is lazily allocated on the first
+    // OutputImage call).  See docs/FRAMESTORE_DESIGN.md §11 L4d.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Adjust the view exposure compensation in EV stops and trigger an
+     * immediate repaint at the new EV.  No rasterizer re-run; the
+     * cached HDR FrameStore is re-rendered into the framebuffer
+     * through the same path tile callbacks use, then
+     * [RiseCallback.onRegionInvalidated] fires so Compose redraws.
+     * Cheap enough to call on every drag tick of an exposure slider.
+     */
+    external fun nativeSetViewExposureEV(ev: Double)
+
+    /**
+     * Encode the current FrameStore to a file via the L2 IFrameEncoder
+     * registry.  [formatName] is one of "PNG", "EXR", "TIFF", "HDR",
+     * "RGBEA", "TGA", "PPM" (case-insensitive).  [ev] applies to the
+     * LDR-fixed encoders (PNG / TIFF / TGA / PPM) where the tone
+     * curve + sRGB transfer is applied; HDR encoders ignore it.
+     * Returns false on encoder lookup failure or before the first
+     * render has produced output.
+     */
+    external fun nativeSaveAs(absPath: String, formatName: String, ev: Double): Boolean
+
+    // -----------------------------------------------------------------------
     // Interactive viewport — mirrors RISEViewportBridge on macOS and
     // ViewportBridge on Windows.  See the C++ SceneEditController for the
     // canonical contract.  The viewport reuses the same framebuffer +

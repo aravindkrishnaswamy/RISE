@@ -1,0 +1,310 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  ViewportFrameStore.h - Platform-agnostic GUI-viewport facade
+//  over a FrameStore + FrameSink + observer.
+//
+//  This is the L4 building block every platform GUI plugs into:
+//
+//    macOS SwiftUI / Windows Qt / Android Compose
+//                    │
+//                    │  (1) attach as IRasterizerOutput on whatever
+//                    │      rasterizer is current; rasterizer feeds
+//                    │      pixels into the embedded FrameStore via
+//                    │      the embedded FrameSink
+//                    │
+//                    │  (2) on tile / frame completion callbacks,
+//                    │      platform code marshals to its UI thread
+//                    │      and triggers a repaint
+//                    │
+//                    │  (3) on UI-thread display refresh, calls
+//                    │      RenderToBuffer(target_format, view_xform)
+//                    │      to fill the platform-native pixel buffer
+//                    │      with the latest HDR-buffer state — runs
+//                    │      under FrameStore's per-tile shared_mutex
+//                    │      so it's safe to call concurrent with
+//                    │      writes
+//                    │
+//                    │  (4) on Save-As menu pick, calls SaveAs(path,
+//                    │      encoder, opts) to write a file using the
+//                    │      L2 IFrameEncoder pipeline
+//                    │
+//                    └──> ViewportFrameStore (this class)
+//                          ├── FrameStore (canonical HDR buffer)
+//                          ├── FrameSink (IRasterizerOutput → FrameStore)
+//                          └── internal BridgeObserver (fans Mark*
+//                              events out to user-supplied callbacks)
+//
+//  Rasterizer-swap behaviour (per design doc §7.5): the FrameStore
+//  is owned by THIS class, not by any specific rasterizer.  When
+//  the user changes the active rasterizer in the UI, the platform
+//  code calls Detach(oldRasterizer) + Attach(newRasterizer); the
+//  FrameStore + observer + tile/frame callbacks all survive
+//  unchanged.  The new rasterizer's first OutputImage refills the
+//  same FrameStore.  No reattachment of observers required.
+//
+//  Lazy allocation: the FrameStore + FrameSink + BridgeObserver
+//  are constructed on the FIRST IRasterizerOutput callback, when
+//  the rasterizer's image dimensions become known.  Subsequent
+//  output calls reuse the chain.  Resolution changes (rare but
+//  possible, e.g. camera-resolution swap mid-session) trigger a
+//  reallocate-and-reattach — same pattern as
+//  FileRasterizerOutput::EnsureChain (L3).
+//
+//  Lifetime: ViewportFrameStore inherits from Reference per the
+//  RISE convention.  Platform code creates with `new`, registers
+//  with `addref` (or via AddRasterizerOutput which addrefs), and
+//  releases via `safe_release` when the viewport tears down.
+//
+//  Author: design landing L4
+//  License: see LICENSE.TXT
+//
+//////////////////////////////////////////////////////////////////////
+
+#ifndef VIEWPORTFRAMESTORE_H_
+#define VIEWPORTFRAMESTORE_H_
+
+#include <cstdint>
+#include <functional>
+#include <shared_mutex>
+#include <string>
+#include <vector>
+
+#include "../Interfaces/IRasterizerOutput.h"
+#include "../Utilities/Reference.h"
+#include "TargetFormat.h"
+#include "ViewTransform.h"
+
+namespace RISE
+{
+	class IRasterizer;
+	class IFrameEncoder;
+	struct EncodeOpts;
+	class IWriteBuffer;
+
+	namespace Implementation
+	{
+		class FrameStore;
+		class FrameSink;
+
+		class ViewportFrameStore : public virtual IRasterizerOutput,
+		                           public virtual Reference
+		{
+		public:
+			//! Callback for tile-completion events.  Fires from a
+			//! rasterizer worker thread; platform code is
+			//! responsible for marshalling to its UI thread (Qt
+			//! signals, Swift dispatch_async, Compose
+			//! LaunchedEffect, etc.).  See §7.5 of the design doc.
+			//!
+			//! Threading: the std::function is read from the
+			//! rasterizer thread on every callback fire.  Setters
+			//! are NOT race-protected — set callbacks at
+			//! construction time before Attach() and don't mutate
+			//! mid-render.  If you need per-rasterizer-swap
+			//! rebinding, marshal it through the existing callback
+			//! (e.g. set a `nextCallback` field on a shared
+			//! state struct that the callback reads atomically).
+			using TileCompleteCallback =
+				std::function<void( const Rect& roi, uint64_t generation )>;
+
+			//! Callback for full-frame completion (also fires for
+			//! pre-denoise / denoise events; see SetXxxCallback
+			//! variants below for finer-grained hooks).
+			using FrameCompleteCallback =
+				std::function<void( unsigned int frame, uint64_t generation )>;
+
+			ViewportFrameStore();
+
+			// ── Callbacks ──────────────────────────────────────
+			// All callback setters are NOT thread-safe — set them
+			// at construction time before attaching to a rasterizer.
+			// Mid-render reassignment risks data-race observation
+			// (the std::function is read from the rasterizer thread).
+
+			void SetTileCompleteCallback( TileCompleteCallback cb );
+			void SetFrameCompleteCallback( FrameCompleteCallback cb );
+			void SetPreDenoiseCompleteCallback( FrameCompleteCallback cb );
+			void SetDenoiseCompleteCallback( FrameCompleteCallback cb );
+
+			// ── Rasterizer attachment ─────────────────────────
+			//! Add this object as an IRasterizerOutput on the given
+			//! rasterizer.  The rasterizer's outputs list addrefs
+			//! us.
+			//!
+			//! IMPORTANT: IRasterizer today only exposes
+			//! AddRasterizerOutput + FreeRasterizerOutputs (the
+			//! latter all-or-nothing); there is no per-output
+			//! removal API.  Calling Attach(rasA), then later
+			//! Attach(rasB) WITHOUT first calling
+			//! `rasA->FreeRasterizerOutputs()` leaves this object
+			//! in BOTH outputs lists with refcount accumulated
+			//! across both — which is fine for the typical
+			//! single-active-rasterizer pattern (see §7.5 of
+			//! docs/FRAMESTORE_DESIGN.md), but means the platform
+			//! code IS responsible for calling
+			//! `oldRasterizer->FreeRasterizerOutputs()` (or
+			//! letting the old rasterizer's destructor run) to
+			//! avoid two rasterizers concurrently driving this
+			//! VFS.  See L4 adversarial review MED-1.
+			void Attach( IRasterizer* rasterizer );
+
+			//! Inverse of Attach — but in practice a no-op due to
+			//! IRasterizer's current API (no per-output removal).
+			//! Provided for symmetry with Attach; the platform code
+			//! must drive teardown via the rasterizer's lifetime
+			//! (FreeRasterizerOutputs / dtor) to actually detach.
+			//! See header doc on Attach for the full contract.
+			void Detach( IRasterizer* rasterizer );
+
+			// ── State queries ─────────────────────────────────
+			//! Returns the underlying FrameStore once allocated
+			//! (after the first OutputImage call); nullptr until
+			//! then.  Caller does NOT take ownership; treat as
+			//! borrowed reference bounded by this object's
+			//! lifetime.
+			//!
+			//! NOTE: this is a RAW read of the chain pointer with no
+			//! lock — a concurrent resolution-change in
+			//! `EnsureChain` on the rasterizer thread can invalidate
+			//! the returned pointer between this call and any
+			//! `Width()/Height()/GetChannel<>()` follow-up.  Use
+			//! `GetDimensions()` for the common "fetch dims for a
+			//! buffer-sizing decision" pattern; that accessor takes
+			//! the chain mutex internally so the dims are stable.
+			//! `RenderToBuffer` / `SaveAs` / `SaveTo` / `Generation`
+			//! are all internally chain-mutex-safe and so they can
+			//! consume `GetFrameStore()` indirectly without races —
+			//! they snapshot+addref under the lock.
+			FrameStore* GetFrameStore() const { return framestore_; }
+
+			//! Returns (width, height) of the current FrameStore via
+			//! the chain-mutex snapshot pattern (P2-D, L4 round-4).
+			//! Returns (0, 0) if the chain hasn't been allocated yet.
+			//! Use this in preference to
+			//! `GetFrameStore()->Width()/Height()` when racing with
+			//! a possible resolution change in the rasterizer thread.
+			void GetDimensions( unsigned int& outW, unsigned int& outH ) const;
+
+			//! Convenience: forwards to FrameStore::Generation()
+			//! when the chain is allocated; returns 0 otherwise.
+			//! UI repaint loops compare this to last-painted-gen
+			//! to gate updates.
+			uint64_t Generation() const;
+
+			// ── Display refresh ───────────────────────────────
+			//! Render the current FrameStore beauty channel into
+			//! `dst` using `fmt` + `xform`.  Thread-safe at TWO
+			//! levels: the FrameStore's per-tile shared_mutex
+			//! protects pixel reads against concurrent rasterizer
+			//! writes (L1), AND a facade-level shared_mutex
+			//! addref-snapshots the FrameStore pointer before
+			//! reading so a concurrent resolution-change
+			//! reallocation can't invalidate the snapshot
+			//! mid-render (L4 round-2 P1-2).  No-op if the
+			//! FrameStore hasn't been allocated yet.
+			//!
+			//! `dst` is row-major in `fmt`'s pixel layout;
+			//! `dstStride` is bytes per row.  `roi` may extend
+			//! up to (FrameStore.Width(), FrameStore.Height()).
+			void RenderToBuffer(
+				void*                dst,
+				size_t               dstStride,
+				const Rect&          roi,
+				FrameStoreOutput::TargetFormat fmt,
+				const FrameStoreOutput::ViewTransform& xform ) const;
+
+			// ── Save As ───────────────────────────────────────
+			//! Encode the current FrameStore via `encoder` (typically
+			//! from FrameEncoderRegistry::Get().ByFormatName(...))
+			//! and write to `path` via DiskFileWriteBuffer.  Returns
+			//! true on success.  No-op if the FrameStore hasn't been
+			//! allocated yet (returns false).
+			bool SaveAs(
+				const std::string&  path,
+				IFrameEncoder*      encoder,
+				const EncodeOpts&   opts ) const;
+
+			//! Variant: encode into an arbitrary IWriteBuffer (for
+			//! tests, network mirrors, in-memory previews).  Same
+			//! return semantics as the path-taking overload.
+			bool SaveTo(
+				IWriteBuffer&       dst,
+				IFrameEncoder*      encoder,
+				const EncodeOpts&   opts ) const;
+
+			// ── IRasterizerOutput passthrough to FrameSink ────
+			void OutputIntermediateImage(
+				const IRasterImage& pImage, const Rect* pRegion ) override;
+			void OutputImage(
+				const IRasterImage& pImage, const Rect* pRegion,
+				const unsigned int frame ) override;
+			void OutputPreDenoisedImage(
+				const IRasterImage& pImage, const Rect* pRegion,
+				const unsigned int frame ) override;
+			void OutputDenoisedImage(
+				const IRasterImage& pImage, const Rect* pRegion,
+				const unsigned int frame ) override;
+			void SetCameraExposureCompensationEV( Scalar ev ) override;
+
+		protected:
+			virtual ~ViewportFrameStore();
+
+		private:
+			//! Lazy-allocate / reallocate the FrameStore + sink +
+			//! observer chain when image dimensions are first known
+			//! or have changed since the last allocation.  See L3
+			//! adversarial review M4 for the resolution-change
+			//! rationale.
+			void EnsureChain( unsigned int width, unsigned int height );
+
+			//! Tear down the chain (used by EnsureChain on
+			//! resolution change and by the destructor).  Safe to
+			//! call when nothing is allocated.
+			void TeardownChain();
+
+			class BridgeObserver;
+
+			//! Chain pointer guard.  Protects (framestore_,
+			//! framesink_, observer_) against concurrent
+			//! reader / writer access:
+			//!   - Reader threads (UI repaints calling
+			//!     RenderToBuffer / SaveAs / Generation) take a
+			//!     shared_lock briefly to addref `framestore_`
+			//!     into a local variable, then release the lock
+			//!     and operate against the local — so a concurrent
+			//!     resolution-change reallocation in the rasterizer
+			//!     thread can swap the chain without invalidating
+			//!     the reader's captured snapshot.
+			//!   - Writer thread (EnsureChain on resolution change)
+			//!     takes the unique_lock briefly to swap pointers.
+			//!     Pixel writes themselves (BeginTile/EndTile/
+			//!     CopyTileFromRasterImage) DON'T need this lock —
+			//!     they go through the FrameStore's per-tile
+			//!     shared_mutex.  This guard is only for the
+			//!     facade-level pointer lifetime.
+			//! See L4 round-2 review P1-2.
+			mutable std::shared_mutex chainMutex_;
+
+			FrameStore*        framestore_ = nullptr;
+			FrameSink*         framesink_  = nullptr;
+			BridgeObserver*    observer_   = nullptr;
+
+			// Stored here (not in observer) so a rebuild during
+			// resolution change preserves the user's callbacks.
+			TileCompleteCallback   tileCb_;
+			FrameCompleteCallback  frameCb_;
+			FrameCompleteCallback  preDenoiseCb_;
+			FrameCompleteCallback  denoiseCb_;
+
+			// Last-seen camera EV from SetCameraExposureCompensationEV;
+			// re-applied to a freshly-allocated FrameStore so the
+			// next encoder run sees the current camera state even
+			// across resolution changes.
+			Scalar cameraExposureEV_;
+		};
+	}
+
+	using Implementation::ViewportFrameStore;
+}
+
+#endif
