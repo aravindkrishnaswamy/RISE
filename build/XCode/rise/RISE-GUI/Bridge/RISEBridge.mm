@@ -8,6 +8,12 @@
 #import "RISEBridge.h"
 #import "MovieRasterizerOutput.h"
 
+// L5a — NSScreen.maximumExtendedDynamicRangeColorComponentValue
+// for headroom detection.  AppKit pulls in CGColorSpace
+// (kCGColorSpaceExtendedLinearSRGB is documented but consumed on
+// the Swift / Metal side in MetalEDRView, not here).
+#import <AppKit/AppKit.h>
+
 // C++ RISE engine includes
 #include "RISE_API.h"
 #include "Interfaces/IJobPriv.h"
@@ -112,6 +118,27 @@ public:
         block_ = [block copy];
     }
 
+    // L5a — HDR (extended-linear-sRGB binary16) block.  See
+    // RISEBridge.h documentation on RISEHDRImageOutputBlock.
+    // SetHDRBlock + SetHDREnabled are the dual of SetBlock + the
+    // implicit LDR mode.  When both blocks are set and HDR is ON,
+    // only the HDR block fires.
+    void SetHDRBlock(RISEHDRImageOutputBlock block) {
+        std::lock_guard<std::mutex> lock(bufferMutex_);
+        hdrBlock_ = [block copy];
+    }
+
+    void SetHDREnabled(bool enabled) {
+        // Atomic so the rasterizer-thread callback can read it
+        // without locking; the Repaint() path re-runs
+        // RenderToBuffer at the new format on the UI thread.
+        // Buffer realloc on mode change is handled by
+        // EnsureBuffer_locked picking up `bytesPerPixel` from the
+        // current TargetFormatInfo.
+        hdrEnabled_.store(enabled);
+    }
+    bool HDREnabled() const { return hdrEnabled_.load(); }
+
     // Live exposure-EV scrub.  Atomic so the rasterizer-thread
     // callback can read it without locking; the Repaint() path
     // re-runs RenderToBuffer with the new EV.
@@ -164,6 +191,9 @@ public:
 private:
     // Ensure the staging buffer matches the current FrameStore dims.
     // Returns false if the chain hasn't been allocated yet.
+    // Buffer is sized in uint16_t units; both `RGBA16_sRGB` (LDR)
+    // and `RGBA16F_ExtendedLinearSRGB` (HDR) are 8 bytes/pixel = 4
+    // uint16 per pixel, so the same buffer fits both modes.
     bool EnsureBuffer_locked(Implementation::ViewportFrameStore* vfs,
                              unsigned int& W, unsigned int& H) {
         // GetDimensions takes chainMutex_ shared internally — safe
@@ -180,10 +210,68 @@ private:
         return true;
     }
 
+    // L5a — pick (TargetFormat, ViewTransform) for the supplied
+    // mode snapshot.  HDR mode emits binary16 in extended-linear-
+    // sRGB (no tone curve, no gamma, values can exceed 1.0); LDR
+    // mode emits uint16 sRGB (tone-curve + sRGB transfer applied).
+    //
+    // L5a round-2 P2-A fix — `useHDR` is a snapshot taken ONCE per
+    // emit (at the start of EmitRegion_locked / EmitFullImage_locked)
+    // and used for both the encode (here) and the block dispatch
+    // (`FireBlock_locked` below).  The previous code read
+    // `hdrEnabled_.load()` independently in both places, so a UI
+    // toggle landing between RenderToBuffer and FireBlock_locked
+    // could deliver bytes encoded in one format through the
+    // callback expecting the other — uint16 sRGB bytes
+    // re-interpreted as half-floats by the Metal path, or vice
+    // versa.  Snapshot-once eliminates the window without needing
+    // setHDREnabled to participate in bufferMutex_.
+    static void SelectTargetFormatAndXform(
+        bool useHDR, float ev,
+        TargetFormat& outFmt, ViewTransform& outXform) {
+        if (useHDR) {
+            outFmt   = TargetFormat::RGBA16F_ExtendedLinearSRGB;
+            // ForHDRDisplay: exposure applied, NO tone curve (HDR
+            // highlights propagate to display unmolested).
+            outXform = ViewTransform::ForHDRDisplay(ev);
+        } else {
+            outFmt   = TargetFormat::RGBA16_sRGB;
+            // ForLDRDisplay with eDisplayTransform_None preserves
+            // legacy producer behaviour (tone curve disabled by
+            // default; the Swift consumer applies its own curve
+            // via the slider, if any).
+            outXform = ViewTransform::ForLDRDisplay(ev, eDisplayTransform_None);
+        }
+    }
+
+    // Fire whichever block matches `useHDR` — snapshot taken at
+    // the start of the emit alongside the format selection above.
+    // Caller holds bufferMutex_, so block_ / hdrBlock_ are stable
+    // through the call.
+    void FireBlock_locked(bool useHDR,
+                          unsigned int W, unsigned int H,
+                          unsigned int top, unsigned int left,
+                          unsigned int bottom, unsigned int right) {
+        @autoreleasepool {
+            if (useHDR) {
+                if (hdrBlock_) {
+                    hdrBlock_(buffer_.data(), W, H, top, left, bottom, right);
+                }
+            } else {
+                if (block_) {
+                    block_(buffer_.data(), W, H, top, left, bottom, right);
+                }
+            }
+        }
+    }
+
     // Render a sub-region of the FrameStore into the matching slice
     // of the staging buffer + fire the block with inclusive bounds.
     // L4 round-7 P1 perf fix: per-tile work is now O(tile-area) not
     // O(image-area), matching the legacy dispatch path.
+    // L5a: format + view-transform now selected by SelectTargetFormat-
+    // AndXform (LDR vs HDR-EDR).  Buffer fmt+stride are 8bpp either
+    // way, so the same staging buffer fits both modes.
     void EmitRegion_locked(Implementation::ViewportFrameStore* vfs,
                            const RISE::Rect& halfOpenRoi) {
         unsigned int W = 0, H = 0;
@@ -201,60 +289,62 @@ private:
         // (FrameStore.cpp:748-750), so to land them at their actual
         // (y, x) image coordinates we point `dst` at the (y0, x0)
         // pixel of the full-image buffer and pass the FULL row stride.
-        const ViewTransform xf = ViewTransform::ForLDRDisplay(
-            static_cast<float>(exposureEV_.load()),
-            eDisplayTransform_None);
+        // L5a round-2 P2-A: snapshot HDR mode + EV ONCE so encode
+        // (RenderToBuffer) and dispatch (FireBlock_locked) agree
+        // even if setHDREnabled lands in between.
+        const bool useHDR = hdrEnabled_.load();
+        const float ev    = static_cast<float>(exposureEV_.load());
+        TargetFormat fmt; ViewTransform xf;
+        SelectTargetFormatAndXform(useHDR, ev, fmt, xf);
         uint16_t* base = buffer_.data()
                          + (static_cast<size_t>(y0) * W + x0) * 4;
         const size_t dstStride = static_cast<size_t>(W) * 4 * sizeof(uint16_t);
-        vfs->RenderToBuffer(base, dstStride, halfOpenRoi,
-                            TargetFormat::RGBA16_sRGB, xf);
-
-        if (block_) {
-            @autoreleasepool {
-                // Inclusive bounds expected by Swift's `top...bottom`,
-                // `left...right` iteration.
-                block_(buffer_.data(), W, H,
-                       /*top=*/y0, /*left=*/x0,
-                       /*bottom=*/y1 - 1, /*right=*/x1 - 1);
-            }
-        }
+        vfs->RenderToBuffer(base, dstStride, halfOpenRoi, fmt, xf);
+        FireBlock_locked(useHDR, W, H,
+                         /*top=*/y0, /*left=*/x0,
+                         /*bottom=*/y1 - 1, /*right=*/x1 - 1);
     }
 
     // Render the full image — used by Repaint() (live exposure
     // scrub on the UI thread, no roi available) and OnFrameComplete
-    // (per-frame final pass).  RGBA16_sRGB is L0's "Today's
-    // IJobRasterizerOutput RGBA16 format".  NOT bit-identical to
-    // legacy `Integerize<sRGBPel,unsigned short>(65535)`: VFS's `Q16`
-    // (FrameStore.cpp:653-658) rounds-to-nearest while legacy
-    // truncates — at most ±1 LSB difference, imperceptible after
-    // the Swift `>> 8` to RGBA8.  See L4 round-4 P1-B review.
+    // (per-frame final pass).  Format selected by HDR toggle:
+    // - LDR: `RGBA16_sRGB` (uint16 fixed sRGB).  NOT bit-identical to
+    //   legacy `Integerize<sRGBPel,unsigned short>(65535)`: VFS's
+    //   `Q16` (FrameStore.cpp:653-658) rounds-to-nearest while
+    //   legacy truncates — at most ±1 LSB after Swift's `>> 8` to
+    //   RGBA8, imperceptible.  See L4 round-4 P1-B review.
+    // - HDR: `RGBA16F_ExtendedLinearSRGB` (binary16 half-float).
+    //   Linear sRGB primaries with no transfer applied; values
+    //   can exceed 1.0 for highlights past SDR clip.  Consumed by
+    //   a Swift CAMetalLayer with
+    //   colorspace = kCGColorSpaceExtendedLinearSRGB.
     void EmitFullImage_locked(Implementation::ViewportFrameStore* vfs) {
         unsigned int W = 0, H = 0;
         if (!EnsureBuffer_locked(vfs, W, H)) return;
-        const ViewTransform xf = ViewTransform::ForLDRDisplay(
-            static_cast<float>(exposureEV_.load()),
-            eDisplayTransform_None);
+        // L5a round-2 P2-A: same mode-snapshot pattern as
+        // EmitRegion_locked — snapshot once so encode + dispatch
+        // agree across a concurrent setHDREnabled.
+        const bool useHDR = hdrEnabled_.load();
+        const float ev    = static_cast<float>(exposureEV_.load());
+        TargetFormat fmt; ViewTransform xf;
+        SelectTargetFormatAndXform(useHDR, ev, fmt, xf);
         vfs->RenderToBuffer(buffer_.data(),
                             static_cast<size_t>(W) * 4 * sizeof(uint16_t),
                             RISE::Rect(0, 0, H, W),
-                            TargetFormat::RGBA16_sRGB,
-                            xf);
-        if (block_) {
-            @autoreleasepool {
-                block_(buffer_.data(), W, H,
-                       /*top=*/0, /*left=*/0,
-                       /*bottom=*/H - 1, /*right=*/W - 1);
-            }
-        }
+                            fmt, xf);
+        FireBlock_locked(useHDR, W, H,
+                         /*top=*/0, /*left=*/0,
+                         /*bottom=*/H - 1, /*right=*/W - 1);
     }
 
-    RISEImageOutputBlock  block_;
+    RISEImageOutputBlock     block_;     // LDR (RGBA16 sRGB)
+    RISEHDRImageOutputBlock  hdrBlock_;  // HDR (binary16 extended-linear-sRGB)
     std::mutex            bufferMutex_;
     std::vector<uint16_t> buffer_;
     unsigned int          bufW_ = 0;
     unsigned int          bufH_ = 0;
     std::atomic<double>   exposureEV_{0.0};
+    std::atomic<bool>     hdrEnabled_{false};
 };
 
 // ============================================================
@@ -286,18 +376,42 @@ public:
 @implementation RISEBridge {
     IJobPriv* _job;
     BlockProgressCallback* _progressCallback;
-    // L4b: ViewportFrameStore pipeline replaces BlockRasterizerOutput.
-    // The VFS *is* the rasterizer's IRasterizerOutput; the bridge owns
-    // the C++ Reference (intrusive refcount) and the rasterizer addrefs
-    // it on Attach().  The callbacks helper is a plain C++ object owned
-    // by the bridge — it captures the user's RISEImageOutputBlock and
-    // bridges VFS observer events back to it via RenderToBuffer.
-    Implementation::ViewportFrameStore* _viewportFrameStore;
-    std::unique_ptr<ViewportFrameStoreCallbacks> _vfsCallbacks;
-    BOOL _vfsAttachedToRasterizer;
+    // L5a round-5 — TWO independent ViewportFrameStores, one per
+    // path.  Production VFS is for the full-quality renderer
+    // (Render / Render-Animation buttons), with per-tile updates
+    // and a downstream-consumer-friendly observer chain.
+    // Interactive VFS is for the live-preview rasterizer driven
+    // by the SceneEditController, with frame-complete-only
+    // observer fires (no per-tile DrawToggles flash) and an
+    // independent resolution lifecycle (preview-scale thrash
+    // reallocates only this VFS).
+    //
+    // Each VFS has its own callbacks helper bound to a separate
+    // pair of blocks (production-LDR / production-HDR vs
+    // interactive-LDR / interactive-HDR).  This separation:
+    //   * Ensures cancelling a production render preserves
+    //     production pixels (interactive output writes into a
+    //     different FrameStore).
+    //   * Prevents per-tile interactive output from triggering
+    //     observer fires that drive the Metal layer.
+    //   * Decouples resolution lifecycles so the interactive
+    //     preview-scale state machine doesn't churn production's
+    //     FrameStore allocations.
+    Implementation::ViewportFrameStore* _productionVFS;
+    Implementation::ViewportFrameStore* _interactiveVFS;
+    std::unique_ptr<ViewportFrameStoreCallbacks> _productionVFSCallbacks;
+    std::unique_ptr<ViewportFrameStoreCallbacks> _interactiveVFSCallbacks;
+    BOOL _productionVFSAttachedToRasterizer;
     BlockLogPrinter* _logPrinter;
     RISEProgressBlock _progressBlock;
+    // Production blocks (LDR + HDR).  Fire from the production
+    // rasterizer's tile/frame events through `_productionVFS`.
     RISEImageOutputBlock _imageOutputBlock;
+    RISEHDRImageOutputBlock _hdrImageOutputBlock;
+    // Interactive blocks (LDR + HDR).  Fire ONLY from frame-complete
+    // events on the interactive rasterizer through `_interactiveVFS`.
+    RISEImageOutputBlock _interactiveImageOutputBlock;
+    RISEHDRImageOutputBlock _interactiveHDRImageOutputBlock;
     RISELogBlock _logBlock;
     NSString* _videoOutputPath;
     RenderETAEstimator _eta;  // fed from worker thread, sampled from UI thread
@@ -322,19 +436,15 @@ public:
         RISE_CreateJobPriv(&_job);
 
         _progressCallback = nullptr;
-        _viewportFrameStore = nullptr;
-        // L4 round-4 P2-C — eagerly construct the VFS callbacks
-        // helper here.  Previously this was lazy inside
-        // -ensureVFSAttachedToRasterizer:, which made
-        // -setImageOutputBlock: races dependent on init-vs-rasterize
-        // ordering: a Swift caller that sets the block while a render
-        // is in flight could race the unique_ptr load against the
-        // lazy `_vfsCallbacks = make_unique<...>` write on the
-        // rasterize-spawning thread.  Eager construction is cheap
-        // (helper just owns a buffer that's allocated on first emit
-        // and an atomic EV) and resolves the race entirely.
-        _vfsCallbacks = std::make_unique<ViewportFrameStoreCallbacks>(nullptr);
-        _vfsAttachedToRasterizer = NO;
+        _productionVFS = nullptr;
+        _interactiveVFS = nullptr;
+        // L4 round-4 P2-C — eagerly construct both VFS callbacks
+        // helpers here so block setters never race a lazy init on
+        // the rasterize thread.  Cheap construction (just the
+        // buffer-mutex + atomic ev + the to-be-set blocks).
+        _productionVFSCallbacks = std::make_unique<ViewportFrameStoreCallbacks>(nullptr);
+        _interactiveVFSCallbacks = std::make_unique<ViewportFrameStoreCallbacks>(nullptr);
+        _productionVFSAttachedToRasterizer = NO;
         _logPrinter = nullptr;
     }
     return self;
@@ -350,7 +460,7 @@ public:
     }
     // Tear-down ordering: drop the Job (which destroys the rasterizer,
     // joining its worker threads en route — by the time _job->release()
-    // returns no callbacks can be in flight against `_viewportFrameStore`).
+    // returns no callbacks can be in flight against either VFS).
     // Then release the bridge's VFS reference (the rasterizer's reference
     // is already gone via the rasterizer's dtor) which frees the VFS,
     // its FrameStore, and its observer chain.  Only after VFS is freed
@@ -365,23 +475,28 @@ public:
         _job->release();
         _job = nullptr;
     }
-    if (_viewportFrameStore) {
-        // L4 round-4 P2-A defensive: nil the callbacks before
-        // release so any path that re-enters them post-destruction
-        // gracefully no-ops instead of dereferencing the freed
-        // helper / `self`.  By this point the rasterizer's worker
-        // pool is joined (it was joined inside the rasterizer's
-        // dtor running from `_job->release()` above), so observer
-        // dispatch is drained — but defense in depth is cheap.
-        _viewportFrameStore->SetTileCompleteCallback(nullptr);
-        _viewportFrameStore->SetFrameCompleteCallback(nullptr);
-        _viewportFrameStore->SetPreDenoiseCompleteCallback(nullptr);
-        _viewportFrameStore->SetDenoiseCompleteCallback(nullptr);
-        _viewportFrameStore->release();
-        _viewportFrameStore = nullptr;
-    }
-    _vfsCallbacks.reset();
-    _vfsAttachedToRasterizer = NO;
+    // L4 round-4 P2-A defensive: nil the callbacks before release
+    // so any path that re-enters them post-destruction gracefully
+    // no-ops instead of dereferencing the freed helper / `self`.
+    // By this point the rasterizer's worker pool is joined (via
+    // `_job->release()` above), so observer dispatch is drained —
+    // but defense in depth is cheap.  Round-5: same treatment for
+    // both VFSes.
+    auto teardownVFS = [](Implementation::ViewportFrameStore*& vfs) {
+        if (vfs) {
+            vfs->SetTileCompleteCallback(nullptr);
+            vfs->SetFrameCompleteCallback(nullptr);
+            vfs->SetPreDenoiseCompleteCallback(nullptr);
+            vfs->SetDenoiseCompleteCallback(nullptr);
+            vfs->release();
+            vfs = nullptr;
+        }
+    };
+    teardownVFS(_productionVFS);
+    teardownVFS(_interactiveVFS);
+    _productionVFSCallbacks.reset();
+    _interactiveVFSCallbacks.reset();
+    _productionVFSAttachedToRasterizer = NO;
 }
 
 + (NSString *)versionString {
@@ -439,37 +554,109 @@ public:
 }
 
 - (void)setImageOutputBlock:(RISEImageOutputBlock)block {
+    // L5a round-5 — production-LDR slot.  See header doc.
     _imageOutputBlock = [block copy];
+    _productionVFSCallbacks->SetBlock(_imageOutputBlock);
+}
 
-    // The callbacks helper is created eagerly in -init (P2-C);
-    // `_vfsCallbacks` is always non-null.  SetBlock locks
-    // bufferMutex_ internally, so this is safe to call concurrent
-    // with a rasterizer worker firing tile callbacks — the worker
-    // sees either the old or the new block (atomically), never a
-    // half-swapped state.  Setting nil suppresses block fires
-    // (the helper still owns the buffer + VFS attachment so a later
-    // setImageOutputBlock: can re-engage).
-    _vfsCallbacks->SetBlock(_imageOutputBlock);
+- (void)setHDRImageOutputBlock:(RISEHDRImageOutputBlock)block {
+    // L5a round-5 — production-HDR slot.  See header doc.
+    _hdrImageOutputBlock = [block copy];
+    _productionVFSCallbacks->SetHDRBlock(_hdrImageOutputBlock);
+}
+
+- (void)setInteractiveImageOutputBlock:(RISEImageOutputBlock)block {
+    // L5a round-5 — interactive-LDR slot.  Fires only on
+    // frame-complete events from the live-preview rasterizer.
+    _interactiveImageOutputBlock = [block copy];
+    _interactiveVFSCallbacks->SetBlock(_interactiveImageOutputBlock);
+}
+
+- (void)setInteractiveHDRImageOutputBlock:(RISEHDRImageOutputBlock)block {
+    // L5a round-5 — interactive-HDR slot.  Same conditions as
+    // above but binary16 / extended-linear-sRGB for EDR layers.
+    _interactiveHDRImageOutputBlock = [block copy];
+    _interactiveVFSCallbacks->SetHDRBlock(_interactiveHDRImageOutputBlock);
+}
+
+- (void)setHDREnabled:(BOOL)enabled {
+    // Toggle the HDR pipeline on BOTH callback helpers — production
+    // and interactive switch in lockstep.
+    const bool e = enabled ? true : false;
+    _productionVFSCallbacks->SetHDREnabled(e);
+    _interactiveVFSCallbacks->SetHDREnabled(e);
+
+    if (e) {
+        // Toggling ON: Repaint each VFS so the freshly-attached
+        // Metal layer picks up the latest cached pixels without
+        // waiting for the next bridge fire — slider-style live
+        // response.
+        _productionVFSCallbacks->Repaint(_productionVFS);
+        _interactiveVFSCallbacks->Repaint(_interactiveVFS);
+    }
+    // Toggling OFF (round-7 fix): do NOT Repaint.  Repaint would
+    // fire each helper's LDR block at the current FrameStore
+    // contents — including production's, which is wired to write
+    // `renderedImage`.  That would clobber whatever the
+    // interactive viewport's `BlitWholeAndDispatch` (legacy
+    // NSImage path, fires unconditionally) had just set.  The
+    // user's complaint: drag from HDR (interactive showing) → SDR
+    // (NSImage takes over) was showing the production image
+    // because production's Repaint ran last and overwrote
+    // interactive.  Skipping the toggle-off Repaint preserves
+    // the most-recent BlitWholeAndDispatch state in
+    // `renderedImage`, which matches what the user was viewing
+    // on the HDR display when interactive was the active
+    // renderer.  Production's HDR block still drives its own
+    // Metal layer when EDR is on; we just don't backfill an
+    // LDR copy on EDR-off transitions.
+}
+
+- (float)displayMaxEDRHeadroom {
+    // Query the active screen's EDR CAPABILITY (max potential
+    // headroom).  Returns 1.0 (SDR) for screens that lack EDR or
+    // when no screen is available (headless / pre-window-show);
+    // >1.0 indicates EDR-capable (e.g. ~16.0 on a Pro Display
+    // XDR; ~1.6 on a recent MacBook Pro mini-LED display in
+    // SDR-Reference mode, ~5.5 in HDR mode).
+    //
+    // L5a round-3: switched from
+    // `maximumExtendedDynamicRangeColorComponentValue` (CURRENT
+    // headroom, gated on the OS having actually transitioned the
+    // screen into EDR mode) to
+    // `maximumPotentialExtendedDynamicRangeColorComponentValue`
+    // (CAPABILITY — the maximum the screen could ever display).
+    // The capability check is what we want for toggle availability:
+    // setting `CAMetalLayer.wantsExtendedDynamicRangeContent = YES`
+    // signals the OS to transition the screen when EDR content is
+    // actually present, so the user shouldn't need to first enable
+    // HDR in System Settings just to make the toggle clickable.
+    NSScreen* screen = [NSScreen mainScreen];
+    if (!screen) return 1.0f;
+    return static_cast<float>(screen.maximumPotentialExtendedDynamicRangeColorComponentValue);
 }
 
 - (void)setViewExposureEV:(double)ev {
-    // Live exposure scrubbing — adjusts the ViewTransform applied to
-    // the cached HDR FrameStore on the next emit, with no rasterizer
-    // re-run.  The current value is read atomically inside the
-    // callbacks helper's RenderToBuffer call.  Calling Repaint() here
-    // is what makes the slider feel "live" — without it the new EV
-    // wouldn't take effect until the next tile/frame callback fires.
-    // Returns immediately if the chain hasn't been allocated yet
-    // (i.e. no render has produced output yet).
-    if (!_vfsCallbacks) return;
-    _vfsCallbacks->SetExposureEV(ev);
-    _vfsCallbacks->Repaint(_viewportFrameStore);
+    // Live exposure scrubbing — adjusts the ViewTransform applied
+    // to the cached HDR FrameStores on the next emit, with no
+    // rasterizer re-run.  Round-5: broadcast to BOTH helpers and
+    // repaint both VFSes so the slider drives both the production
+    // texture AND the interactive overlay layer.  No-op for either
+    // VFS that hasn't been chain-allocated yet.
+    _productionVFSCallbacks->SetExposureEV(ev);
+    _interactiveVFSCallbacks->SetExposureEV(ev);
+    _productionVFSCallbacks->Repaint(_productionVFS);
+    _interactiveVFSCallbacks->Repaint(_interactiveVFS);
 }
 
 - (BOOL)saveAs:(NSString *)path
         format:(NSString *)formatName
     exposureEV:(double)ev {
-    if (!_viewportFrameStore || !path || !formatName) return NO;
+    // Save-As targets the PRODUCTION VFS — that's where the
+    // full-quality, multi-output rendered result lives.  Saving
+    // from the interactive (live-preview) VFS would dump the
+    // low-quality preview, not the production result.
+    if (!_productionVFS || !path || !formatName) return NO;
     IFrameEncoder* enc =
         Implementation::FrameEncoderRegistry::Get().ByFormatName(
             [formatName UTF8String]);
@@ -482,64 +669,83 @@ public:
     opts.bpp           = 8;
     opts.viewTransform = ViewTransform::ForLDRDisplay(
         static_cast<float>(ev), eDisplayTransform_None);
-    return _viewportFrameStore->SaveAs(
+    return _productionVFS->SaveAs(
         std::string([path UTF8String]), enc, opts) ? YES : NO;
 }
 
-// Lazy-create the VFS + callbacks helper, and attach to the
-// current rasterizer.  Idempotent across multiple rasterize calls.
-// Called from the rasterize / rasterizeAnimation / rasterizeRegion
-// paths after `FreeRasterizerOutputs()` so the rasterizer's outputs
-// list starts clean.  See L4 docs §11 L4b.
+// Lazy-allocate the PRODUCTION VFS + bind its observer callbacks
+// to the production helper.  Tile-complete + frame-complete +
+// pre-denoise + denoise are all wired so production renders show
+// per-tile progressive fills.  Called from the
+// rasterize / rasterizeAnimation / rasterizeRegion paths via
+// `-ensureVFSAttachedToRasterizer:`.
+- (void)ensureProductionVFSCreated {
+    if (_productionVFS) return;
+    _productionVFS = new Implementation::ViewportFrameStore();
+    ViewportFrameStoreCallbacks* helper = _productionVFSCallbacks.get();
+    Implementation::ViewportFrameStore* vfs = _productionVFS;
+    vfs->SetTileCompleteCallback(
+        [helper, vfs](const RISE::Rect& roi, uint64_t gen) {
+            helper->OnTileComplete(vfs, roi, gen);
+        });
+    vfs->SetFrameCompleteCallback(
+        [helper, vfs](unsigned int frame, uint64_t gen) {
+            helper->OnFrameComplete(vfs, frame, gen);
+        });
+    vfs->SetPreDenoiseCompleteCallback(
+        [helper, vfs](unsigned int frame, uint64_t gen) {
+            helper->OnFrameComplete(vfs, frame, gen);
+        });
+    vfs->SetDenoiseCompleteCallback(
+        [helper, vfs](unsigned int frame, uint64_t gen) {
+            helper->OnFrameComplete(vfs, frame, gen);
+        });
+}
+
+// L5a round-5 — lazy-allocate the INTERACTIVE VFS + bind ONLY
+// frame-complete observer slots (tile-complete deliberately left
+// unbound).  This is what eliminates the per-tile DrawToggles red
+// flash from the interactive preview: the interactive rasterizer
+// still fires `OutputIntermediateImage` per tile, and VFS still
+// processes those into the FrameStore (so the buffer accumulates
+// pixels), but no observer fires → no Metal-layer present per
+// tile.  Only end-of-pass `OutputImage` fires the frame-complete
+// observer, driving an atomic full-frame update of the interactive
+// Metal layer.  Called from `-opaqueInteractiveViewportFrameStore`
+// when the interactive viewport bridge requests the handle.
+- (void)ensureInteractiveVFSCreated {
+    if (_interactiveVFS) return;
+    _interactiveVFS = new Implementation::ViewportFrameStore();
+    ViewportFrameStoreCallbacks* helper = _interactiveVFSCallbacks.get();
+    Implementation::ViewportFrameStore* vfs = _interactiveVFS;
+    // Tile-complete deliberately NOT bound — see method doc.
+    vfs->SetFrameCompleteCallback(
+        [helper, vfs](unsigned int frame, uint64_t gen) {
+            helper->OnFrameComplete(vfs, frame, gen);
+        });
+    vfs->SetPreDenoiseCompleteCallback(
+        [helper, vfs](unsigned int frame, uint64_t gen) {
+            helper->OnFrameComplete(vfs, frame, gen);
+        });
+    vfs->SetDenoiseCompleteCallback(
+        [helper, vfs](unsigned int frame, uint64_t gen) {
+            helper->OnFrameComplete(vfs, frame, gen);
+        });
+}
+
 - (void)ensureVFSAttachedToRasterizer:(IRasterizer*)rasterizer {
     if (!rasterizer) return;
 
-    if (!_viewportFrameStore) {
-        _viewportFrameStore = new Implementation::ViewportFrameStore();
-        // Reference starts at refcount=1 (Reference ctor).  Bridge
-        // owns this initial reference; the rasterizer's Attach()
-        // bumps it to 2.  On bridge teardown we release once,
-        // matching the rasterizer-side release that comes from
-        // FreeRasterizerOutputs() / rasterizer dtor.
-
-        // The VFS callback helper is constructed eagerly in -init
-        // (P2-C); `_vfsCallbacks` is guaranteed non-null.  Bind the
-        // helper to the VFS observer slots once per VFS lifetime.
-        // VFS's setters are not thread-safe per
-        // ViewportFrameStore.h:118-122, so binding once at VFS
-        // construction time (before any Attach) is the safe pattern.
-        // Lambda captures: helper is owned by the bridge and outlives
-        // any rasterizer-side callback (the rasterizer's dtor joins
-        // its worker pool before our dealloc reaches the helper.reset()
-        // step — see -dealloc ordering rationale).
-        ViewportFrameStoreCallbacks* helper = _vfsCallbacks.get();
-        Implementation::ViewportFrameStore* vfs = _viewportFrameStore;
-        vfs->SetTileCompleteCallback(
-            [helper, vfs](const RISE::Rect& roi, uint64_t gen) {
-                helper->OnTileComplete(vfs, roi, gen);
-            });
-        vfs->SetFrameCompleteCallback(
-            [helper, vfs](unsigned int frame, uint64_t gen) {
-                helper->OnFrameComplete(vfs, frame, gen);
-            });
-        vfs->SetPreDenoiseCompleteCallback(
-            [helper, vfs](unsigned int frame, uint64_t gen) {
-                helper->OnFrameComplete(vfs, frame, gen);
-            });
-        vfs->SetDenoiseCompleteCallback(
-            [helper, vfs](unsigned int frame, uint64_t gen) {
-                helper->OnFrameComplete(vfs, frame, gen);
-            });
-    }
+    [self ensureProductionVFSCreated];
 
     // (Re-)attach.  Each rasterize call begins with FreeRasterizerOutputs
     // which dropped the rasterizer's reference; we reattach here.  Attach
     // is also safe to call repeatedly without a Free in between (it'll
     // just stack a redundant reference) — the BOOL guard avoids that
     // case for clarity.
-    if (!_vfsAttachedToRasterizer) {
-        _viewportFrameStore->Attach(rasterizer);
-        _vfsAttachedToRasterizer = YES;
+    if (!_productionVFSAttachedToRasterizer) {
+        _productionVFS->Attach(rasterizer);
+        _productionVFSAttachedToRasterizer = YES;
     }
 }
 
@@ -613,7 +819,7 @@ public:
     IRasterizer* rasterizer = _job->GetRasterizer();
     if (rasterizer) {
         rasterizer->FreeRasterizerOutputs();
-        _vfsAttachedToRasterizer = NO;
+        _productionVFSAttachedToRasterizer = NO;
     }
 
     [self ensureVFSAttachedToRasterizer:rasterizer];
@@ -635,7 +841,7 @@ public:
     // Clear outputs from previous renders to prevent accumulation of
     // callback dispatchers and old movie outputs.
     rasterizer->FreeRasterizerOutputs();
-    _vfsAttachedToRasterizer = NO;
+    _productionVFSAttachedToRasterizer = NO;
 
     [self ensureVFSAttachedToRasterizer:rasterizer];
 
@@ -678,7 +884,7 @@ public:
     IRasterizer* rasterizer = _job->GetRasterizer();
     if (rasterizer) {
         rasterizer->FreeRasterizerOutputs();
-        _vfsAttachedToRasterizer = NO;
+        _productionVFSAttachedToRasterizer = NO;
     }
 
     [self ensureVFSAttachedToRasterizer:rasterizer];
@@ -720,6 +926,29 @@ public:
     // casts this back to IJobPriv* in its .mm.  Lifetime is tied to
     // this RISEBridge — the viewport must not outlive us.
     return static_cast<void *>(_job);
+}
+
+- (void)attachViewportFrameStoreToOpaqueRasterizer:(void *)opaqueRasterizer {
+    // L5a round-3 — wire a rasterizer into the production VFS.
+    // Suitable for additional production-style rasterizers; not
+    // useful for the SceneEditController-driven interactive
+    // viewport (use `opaqueInteractiveViewportFrameStore` + the
+    // sink fan-out for that path — see header doc).
+    if (!opaqueRasterizer) return;
+    [self ensureProductionVFSCreated];
+    IRasterizer* rasterizer = static_cast<IRasterizer*>(opaqueRasterizer);
+    _productionVFS->Attach(rasterizer);
+}
+
+- (void *)opaqueInteractiveViewportFrameStore {
+    // L5a round-5 — opaque INTERACTIVE VFS handle for the
+    // interactive viewport's preview-sink fan-out.  Lazy-creates
+    // if needed.  Independent of the production VFS — see the
+    // header doc-comment for why this separation matters
+    // (cancel-preserves-production, no per-tile flash, no
+    // resolution-thrash interfering with production buffers).
+    [self ensureInteractiveVFSCreated];
+    return static_cast<void*>(_interactiveVFS);
 }
 
 @end

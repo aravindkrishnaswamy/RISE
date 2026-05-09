@@ -108,6 +108,10 @@ namespace RISE
 		}
 
 		// Caller MUST hold chainMutex_ as unique_lock when calling this.
+		// L5a round-8 — also tears down every dormant chain cached
+		// for preview-scale oscillation reuse; only invoked from the
+		// destructor (since EnsureChain now parks rather than tears
+		// down on dim change).
 		void ViewportFrameStore::TeardownChain()
 		{
 			if ( framestore_ && observer_ ) {
@@ -121,6 +125,60 @@ namespace RISE
 
 			safe_release( framestore_ );
 			framestore_ = nullptr;
+
+			// Drain dormant cache.  Each entry's observer was
+			// registered on its FrameStore at allocation time and
+			// kept registered through parking; remove + delete
+			// before releasing the FrameStore, mirroring the active
+			// chain's teardown order above.
+			for ( auto& d : dormant_ ) {
+				if ( d.fs && d.obs ) {
+					d.fs->RemoveObserver( d.obs );
+				}
+				delete d.obs;
+				safe_release( d.sink );
+				safe_release( d.fs );
+			}
+			dormant_.clear();
+		}
+
+		// Caller MUST hold chainMutex_ as unique_lock when calling this.
+		// Moves the current active triple onto the front of dormant_
+		// (MRU position) and clears the active pointers.  If the
+		// dormant cache is at capacity, evicts the LRU entry (back of
+		// the vector) — its FrameStore is fully torn down (observer
+		// removed + deleted, sink released, store released).
+		void ViewportFrameStore::ParkActiveAsDormant_locked()
+		{
+			if ( !framestore_ ) {
+				return;  // nothing to park
+			}
+
+			// Evict LRU first if we'd otherwise exceed the cap.  The
+			// cap is `kMaxDormantChains` for parked entries
+			// (active is in addition to that).
+			if ( dormant_.size() >= kMaxDormantChains ) {
+				DormantChain& evict = dormant_.back();
+				if ( evict.fs && evict.obs ) {
+					evict.fs->RemoveObserver( evict.obs );
+				}
+				delete evict.obs;
+				safe_release( evict.sink );
+				safe_release( evict.fs );
+				dormant_.pop_back();
+			}
+
+			DormantChain entry;
+			entry.fs   = framestore_;
+			entry.sink = framesink_;
+			entry.obs  = observer_;
+			entry.w    = static_cast<unsigned int>( framestore_->Width() );
+			entry.h    = static_cast<unsigned int>( framestore_->Height() );
+			dormant_.insert( dormant_.begin(), entry );
+
+			framestore_ = nullptr;
+			framesink_  = nullptr;
+			observer_   = nullptr;
 		}
 
 		// ─────────────────────────────────────────────────────────────
@@ -460,7 +518,7 @@ namespace RISE
 				}
 			}
 
-			// Slow path: realloc.  Take unique_lock to swap the
+			// Slow path: dim mismatch.  Take unique_lock to swap the
 			// chain pointers.  Reader threads holding addref'd
 			// snapshots of the OLD framestore_ are unaffected —
 			// their reference keeps the old store alive until they
@@ -479,17 +537,43 @@ namespace RISE
 				return;
 			}
 
-			if ( framestore_ ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"ViewportFrameStore:: rasterizer image size changed "
-					"(%ux%u -> %ux%u); reallocating FrameStore + sink + observer.",
-					static_cast<unsigned>( framestore_->Width() ),
-					static_cast<unsigned>( framestore_->Height() ),
-					width, height );
-				TeardownChain();
+			// L5a round-8 — preview-scale oscillation reuse.  Park
+			// the current active (if any) into dormant_ rather than
+			// destroying it.  A subsequent pass at the same dims
+			// (very common during interactive drag adaptation; see
+			// SceneEditController::DoOneRenderPass scale ramp)
+			// reactivates the parked entry instead of paying the
+			// allocation + observer-registration cost.  LRU
+			// eviction on overflow keeps total memory bounded.
+			ParkActiveAsDormant_locked();
+
+			// Look for a dormant entry that matches the requested
+			// dims.  Iterate front-to-back so a hit on the most-
+			// recently-parked entry is also the cheapest.
+			for ( auto it = dormant_.begin(); it != dormant_.end(); ++it ) {
+				if ( it->w == width && it->h == height ) {
+					framestore_ = it->fs;
+					framesink_  = it->sink;
+					observer_   = it->obs;
+					dormant_.erase( it );
+					// Camera EV may have changed while this chain
+					// was parked — re-apply the latest snapshot so
+					// encoders / RenderToBuffer see current state.
+					framestore_->MutableMeta().cameraExposureEV =
+						static_cast<double>( cameraExposureEV_ );
+					return;
+				}
 			}
 
-			// Allocate fresh chain.
+			// Cache miss — allocate fresh chain at the new dims.
+			// Logged at info level so the interactive preview-scale
+			// sweep doesn't spam warnings (unlike the previous
+			// unconditional reallocate-and-warn path).
+			GlobalLog()->PrintEx( eLog_Info,
+				"ViewportFrameStore:: allocating new FrameStore "
+				"chain for %ux%u (dormant cache size %zu).",
+				width, height, dormant_.size() );
+
 			FrameStore::Spec spec;
 			spec.width    = width;
 			spec.height   = height;

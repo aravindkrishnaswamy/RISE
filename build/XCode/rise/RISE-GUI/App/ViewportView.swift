@@ -34,6 +34,17 @@ struct ViewportView: View {
     /// panel re-reads bridge.panelMode + propertySnapshot.
     var onSelectionMayHaveChanged: () -> Void = {}
 
+    /// L5a round-5 — TWO EDR renderers passed through from
+    /// RenderViewModel.  Production handles the full-quality
+    /// render output (opaque base layer); interactive handles
+    /// the live-preview overlay (transparent layer above
+    /// production).  Both nil → legacy NSImage path.
+    /// `edrEnabled` gates BOTH layers (when off, neither
+    /// renderer is attached and the legacy path runs).
+    var productionEDRRenderer:  MetalEDRRenderer? = nil
+    var interactiveEDRRenderer: MetalEDRRenderer? = nil
+    var edrEnabled: Bool = false
+
     @State private var selectedTool: ViewportTool = .select
 
     var body: some View {
@@ -42,6 +53,8 @@ struct ViewportView: View {
                 ViewportCanvas(
                     image: $image,
                     cursor: interactionEnabled ? selectedTool.nsCursor : .arrow,
+                    productionEDRRenderer:  edrEnabled ? productionEDRRenderer  : nil,
+                    interactiveEDRRenderer: edrEnabled ? interactiveEDRRenderer : nil,
                     surfaceDimensionsProvider: { [weak bridge] in
                         bridge?.cameraSurfaceDimensions ?? .zero
                     },
@@ -121,6 +134,14 @@ struct ViewportView: View {
 private struct ViewportCanvas: NSViewRepresentable {
     @Binding var image: NSImage?
     let cursor: NSCursor
+    /// L5a round-5 — production + interactive EDR renderers, each
+    /// driving its own CAMetalLayer sublayer in ViewportNSView.
+    /// Production layer is opaque base (full-quality renders);
+    /// interactive layer composites on top with transparent
+    /// background (live preview during editing).  Either or both
+    /// may be nil (LDR fallback / Metal-incapable host).
+    let productionEDRRenderer:  MetalEDRRenderer?
+    let interactiveEDRRenderer: MetalEDRRenderer?
     /// Closure that returns the camera's stable full-resolution
     /// dimensions for surface-point math.  Closure (rather than a
     /// captured value) so each pointer event reads the freshest
@@ -139,6 +160,11 @@ private struct ViewportCanvas: NSViewRepresentable {
         v.onPointerUp   = onPointerUp
         v.toolCursor    = cursor
         v.surfaceDimensionsProvider = surfaceDimensionsProvider
+        // Order matters: setting production first adds its sublayer
+        // BENEATH the interactive sublayer (CALayer.addSublayer
+        // appends to the end of `sublayers`, painting on top).
+        v.productionEDRRenderer  = productionEDRRenderer
+        v.interactiveEDRRenderer = interactiveEDRRenderer
         return v
     }
 
@@ -149,11 +175,20 @@ private struct ViewportCanvas: NSViewRepresentable {
         nsView.onPointerUp   = onPointerUp
         nsView.toolCursor = cursor
         nsView.surfaceDimensionsProvider = surfaceDimensionsProvider
+        nsView.productionEDRRenderer  = productionEDRRenderer
+        nsView.interactiveEDRRenderer = interactiveEDRRenderer
         // Force AppKit to recompute the cursor rect so the new tool's
         // cursor takes effect immediately even if the pointer is still
         // hovering over the view.
         nsView.window?.invalidateCursorRects(for: nsView)
         nsView.needsDisplay = true
+    }
+
+    static func dismantleNSView(_ nsView: ViewportNSView, coordinator: ()) {
+        // Drop EDR attachments cleanly so renderer layer-refs
+        // nil-resolve before SwiftUI tears down our NSView.
+        nsView.productionEDRRenderer  = nil
+        nsView.interactiveEDRRenderer = nil
     }
 }
 
@@ -165,11 +200,104 @@ final class ViewportNSView: NSView {
             // be recomputed (the rect tracks the aspect-fit draw area,
             // not the full view bounds).
             window?.invalidateCursorRects(for: self)
+            // L5a round-5: re-layout EDR sublayers at the new
+            // image's aspect-fit drawRect.
+            if hasAnyEDRLayer {
+                needsLayout = true
+                needsDisplay = true
+            }
         }
     }
     var onPointerDown: ((CGPoint) -> Void)?
     var onPointerMove: ((CGPoint) -> Void)?
     var onPointerUp:   ((CGPoint) -> Void)?
+
+    /// L5a round-6 — production + interactive EDR renderers BOTH
+    /// drive a single shared CAMetalLayer ('m_edrLayer').  The
+    /// architectural separation (two VFSes with independent
+    /// lifecycles) lives in the bridge layer; on screen we show
+    /// ONE unified surface (latest-renderer-wins, matching the
+    /// legacy NSImage path's UX).  The earlier round-5 design
+    /// stacked two layers and showed the interactive overlay's
+    /// alpha=0 regions revealing production underneath — visually
+    /// the user saw the interactive layer "punching through" to
+    /// production.  Round-6 reverts to a single layer with opaque
+    /// composition; both renderers configure the layer
+    /// idempotently (same settings) and present into successive
+    /// drawables, with `cmd.present(drawable)` ordering naturally
+    /// giving "latest write wins".
+    var productionEDRRenderer: MetalEDRRenderer? {
+        didSet {
+            if oldValue !== productionEDRRenderer {
+                updateEDRLayer()
+            }
+        }
+    }
+    var interactiveEDRRenderer: MetalEDRRenderer? {
+        didSet {
+            if oldValue !== interactiveEDRRenderer {
+                updateEDRLayer()
+            }
+        }
+    }
+    private var edrLayer: CAMetalLayer? = nil
+
+    private func updateEDRLayer() {
+        let active = productionEDRRenderer != nil
+                     || interactiveEDRRenderer != nil
+        if active {
+            if !wantsLayer {
+                wantsLayer = true
+            }
+            if edrLayer == nil {
+                let m = CAMetalLayer()
+                edrLayer = m
+                layer?.addSublayer(m)
+            }
+            if let m = edrLayer {
+                layoutEDRLayer(m)
+                // Both renderers attach to the same layer.  Layer
+                // config is idempotent (rgba16Float, extended-
+                // linear-sRGB, EDR-aware, opaque); the second
+                // attach() applies the same settings without harm.
+                productionEDRRenderer?.attach(layer: m)
+                interactiveEDRRenderer?.attach(layer: m)
+            }
+            needsDisplay = true
+        } else {
+            // Both renderers are nil → drop the layer.
+            edrLayer?.removeFromSuperlayer()
+            edrLayer = nil
+            needsDisplay = true
+        }
+    }
+
+    private var hasAnyEDRLayer: Bool {
+        edrLayer != nil
+    }
+
+    private func layoutEDRLayer(_ m: CAMetalLayer) {
+        // Disable implicit animations so the layer snaps to the
+        // new frame rather than tweening — important during scene
+        // load when the image dims (and therefore drawRect) change.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let target = currentImageDrawRect() ?? bounds
+        m.frame = target
+        // Drawable size in physical pixels (Retina backing).
+        let scale = window?.backingScaleFactor ?? 1.0
+        let drawableSize = CGSize(width: max(1, target.width * scale),
+                                  height: max(1, target.height * scale))
+        if m.drawableSize != drawableSize {
+            m.drawableSize = drawableSize
+        }
+        CATransaction.commit()
+    }
+
+    override func layout() {
+        super.layout()
+        if let m = edrLayer { layoutEDRLayer(m) }
+    }
 
     /// Returns the camera's stable full-resolution dimensions so
     /// `surfacePoint` converts to a coord space that doesn't drift
@@ -190,14 +318,44 @@ final class ViewportNSView: NSView {
 
     override var isFlipped: Bool { true }   // top-left origin like UIKit / Metal
 
+    /// L5a round-7 — pick the "source dims" we use for aspect-fit
+    /// math.  Prefer the NSImage's size (set by the legacy LDR
+    /// path); fall back to the camera's full-resolution dims from
+    /// `surfaceDimensionsProvider` when the image is nil.
+    ///
+    /// Why the fallback matters with EDR on: the production HDR
+    /// block fires when EDR Preview is enabled, and the production
+    /// LDR block (which would have set `renderedImage` →
+    /// ViewportNSView.image) is suppressed at the bridge.  Until
+    /// the interactive viewport fires its first NSImage block
+    /// after a render starts/finishes, `image` is nil — and the
+    /// pre-round-7 code returned nil from this helper, which
+    /// (a) caused `surfacePoint(from:)` to drop every pointer
+    /// event silently (so the toolbar's tools couldn't engage in
+    /// edit mode after cancel), and (b) caused `layoutEDRLayer`
+    /// to size the Metal layer at full bounds (no aspect-fit) →
+    /// stretched preview.  The camera's dims survive the EDR
+    /// toggle; using them as a fallback keeps both flows working.
+    private func currentSourceDims() -> NSSize? {
+        if let image = image,
+           image.size.width > 0,
+           image.size.height > 0 {
+            return image.size
+        }
+        if let dims = surfaceDimensionsProvider?(),
+           dims.width > 0,
+           dims.height > 0 {
+            return dims
+        }
+        return nil
+    }
+
     /// Compute the aspect-fit rect that `draw(_:)` will use for the
-    /// current image inside the current bounds.  Returns nil when
-    /// there is no image — the cursor rect collapses to nothing and
-    /// the default system cursor wins.
+    /// current source-dims inside the current bounds.  Returns nil
+    /// when there are no source dims — the cursor rect collapses
+    /// to nothing and the default system cursor wins.
     private func currentImageDrawRect() -> NSRect? {
-        guard let image = image else { return nil }
-        let imgSize = image.size
-        guard imgSize.width > 0, imgSize.height > 0 else { return nil }
+        guard let imgSize = currentSourceDims() else { return nil }
         let scale = min(bounds.width / imgSize.width, bounds.height / imgSize.height)
         let drawW = imgSize.width * scale
         let drawH = imgSize.height * scale
@@ -226,6 +384,15 @@ final class ViewportNSView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         NSColor.windowBackgroundColor.setFill()
         bounds.fill()
+
+        // L5a round-5: when ANY EDR layer is active (production OR
+        // interactive), skip the NSImage draw — the Metal layer(s)
+        // cover the aspect-fit drawRect.  Drawing NSImage underneath
+        // would either be invisible (production opaque) or flash
+        // briefly before the GPU pass overlays it.
+        if productionEDRRenderer != nil || interactiveEDRRenderer != nil {
+            return
+        }
 
         guard let image = image else {
             // Placeholder — Phase 3 has no live preview yet.
@@ -280,7 +447,6 @@ final class ViewportNSView: NSView {
     private func surfacePoint(from event: NSEvent) -> CGPoint? {
         let p = self.convert(event.locationInWindow, from: nil)
         guard let drawRect = currentImageDrawRect() else { return nil }
-        guard let image = image else { return nil }
         guard drawRect.width > 0, drawRect.height > 0 else { return nil }
 
         // Use the camera's STABLE full-resolution dimensions — not
@@ -297,16 +463,29 @@ final class ViewportNSView: NSView {
         // controller's mFullResW/H which DO NOT flicker, so the
         // delta is stable and the camera tunings (×0.0087 rad/px
         // etc.) behave consistently independent of subsample state.
-        // Fall back to image.size when no provider is wired or the
-        // cache is uninitialised — same as the old behaviour.
+        //
+        // L5a round-7 — fall back to image.size THEN to a generic
+        // bounds-based mapping if neither provider nor image are
+        // available.  The provider is the right answer for almost
+        // every real flow; image-fallback covers the immediate-
+        // post-init window before the bridge wires the provider;
+        // the final bounds fallback (just normalised 0..1 coords)
+        // ensures clicks are at least propagated rather than
+        // silently dropped.  With EDR on, image may be nil while
+        // the production rasterizer's HDR-only block is firing
+        // (production LDR block is suppressed → no NSImage update);
+        // pre-round-7 the early-return on nil image silently
+        // discarded every pointer event in that window.
         let providedDims = surfaceDimensionsProvider?() ?? .zero
         let surfaceSize: NSSize
         if providedDims.width > 0 && providedDims.height > 0 {
             surfaceSize = providedDims
-        } else {
+        } else if let image = image,
+                  image.size.width > 0, image.size.height > 0 {
             surfaceSize = image.size
+        } else {
+            return nil
         }
-        guard surfaceSize.width > 0, surfaceSize.height > 0 else { return nil }
 
         let nx = (p.x - drawRect.minX) / drawRect.width
         let ny = (p.y - drawRect.minY) / drawRect.height

@@ -101,7 +101,19 @@ struct ContentView: View {
                     let interacting = (viewModel.renderState != .rendering
                                        && viewModel.renderState != .cancelling
                                        && viewModel.renderState != .loading)
+                    let edrActive = viewModel.edrAvailable && viewModel.edrEnabled
                     HStack(spacing: 0) {
+                        // L5a round-3 — pass the EDR renderer
+                        // straight into ViewportView.  The viewport's
+                        // ViewportNSView hosts a CAMetalLayer
+                        // sublayer at the aspect-fit drawRect when
+                        // EDR is on, leaving the toolbar / scrubber /
+                        // properties panel SwiftUI overlays + the
+                        // pointer-event NSResponder chain fully
+                        // functional.  Interactive editing now works
+                        // in EDR mode (round-3 fix for the "EDR
+                        // hides the toolbar / blocks pointer events"
+                        // round-2 regression).
                         ViewportView(
                             bridge: vb,
                             image: $viewModel.renderedImage,
@@ -116,7 +128,10 @@ struct ContentView: View {
                             // scrub to t=0.
                             timelineMax: vb.animationTimeEnd > 0 ? vb.animationTimeEnd : 5.0,
                             interactionEnabled: interacting,
-                            onSelectionMayHaveChanged: { propertyRefresh += 1 }
+                            onSelectionMayHaveChanged: { propertyRefresh += 1 },
+                            productionEDRRenderer:  viewModel.productionEDRRenderer,
+                            interactiveEDRRenderer: viewModel.interactiveEDRRenderer,
+                            edrEnabled: edrActive
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -272,6 +287,35 @@ struct ContentView: View {
                             .foregroundColor(.orange)
                     }
                 }
+
+                // L5a — EDR (extended dynamic range) preview toggle.
+                // Greyed out when the active screen lacks EDR
+                // headroom (`maximumExtendedDynamicRangeColorComponentValue`
+                // == 1.0, e.g. external SDR monitor).  When enabled,
+                // the canvas swaps to a CAMetalLayer with binary16
+                // half-float pixels in extended-linear-sRGB; HDR
+                // highlights past 1.0 propagate to the display
+                // unmolested.  Interactive editor pointer events
+                // are suspended while EDR preview is on.
+                Divider()
+                Toggle(isOn: $viewModel.edrEnabled) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "sun.max")
+                            .imageScale(.small)
+                        Text("EDR Preview")
+                            .font(.caption)
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .disabled(!viewModel.edrAvailable)
+                .help(viewModel.edrAvailable
+                    ? "Display rendered output with extended-dynamic-range "
+                    + "highlights past SDR clip on the current screen "
+                    + "(half-float / extended-linear-sRGB).  Interactive "
+                    + "editing is suspended while preview is on."
+                    : "EDR not available on the active display "
+                    + "(no headroom past SDR white).")
 
                 // Progress
                 if viewModel.renderState == .rendering || viewModel.renderState == .cancelling {

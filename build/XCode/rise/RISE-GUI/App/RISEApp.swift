@@ -14,6 +14,15 @@ struct RISEApp: App {
                         let frame = NSRect(x: 0, y: 0, width: 1024, height: 768)
                         window.setFrame(frame, display: true)
                         window.center()
+                        // L5a round-2 P1-3 fix — register the host
+                        // window with the view model so EDR
+                        // headroom can be probed against the
+                        // window's actual screen (vs `mainScreen`,
+                        // which follows keyboard focus).  Triggers
+                        // a refreshEDRAvailability via the didSet
+                        // hook + subscribes to the window's own
+                        // didChangeScreenNotification.
+                        viewModel.hostWindow = window
                     }
                 }
         }

@@ -15,8 +15,10 @@ NS_ASSUME_NONNULL_BEGIN
 typedef BOOL (^RISEProgressBlock)(double progress, double total, NSString *title);
 
 /// Block type for receiving rendered image data (progressive updates).
-/// pImageData is RGBA16 (4 channels, 16 bits each = 8 bytes/pixel).
+/// pImageData is RGBA16 sRGB (4 channels, 16 bits each = 8 bytes/pixel,
+/// uint16 fixed-point with sRGB primaries + sRGB transfer applied).
 /// The region defines which portion of the full image was updated.
+/// Use this block for the legacy LDR display path (NSImage / CGImage).
 typedef void (^RISEImageOutputBlock)(const uint16_t *pImageData,
                                      uint32_t width,
                                      uint32_t height,
@@ -24,6 +26,24 @@ typedef void (^RISEImageOutputBlock)(const uint16_t *pImageData,
                                      uint32_t regionLeft,
                                      uint32_t regionBottom,
                                      uint32_t regionRight);
+
+/// L5a — HDR display block.  pImageData is `RGBA16F_ExtendedLinearSRGB`
+/// (4 channels, IEEE 754 binary16 half-floats, linear sRGB primaries
+/// with a Linear transfer — i.e. no gamma applied).  Values can
+/// legitimately exceed 1.0 (HDR highlights); the OS / CAMetalLayer
+/// path tone-maps to the display's actual EDR headroom.  Bytewise
+/// the same 8-bytes-per-pixel layout as RISEImageOutputBlock, but
+/// the bits encode binary16 not uint16 — Swift consumers MUST
+/// interpret accordingly (e.g. via `withMemoryRebound(to: Float16.self, ...)`).
+/// Fired only while `setHDREnabled:YES` is in effect on a screen
+/// with `maximumExtendedDynamicRangeColorComponentValue > 1.0`.
+typedef void (^RISEHDRImageOutputBlock)(const uint16_t *pImageData,
+                                        uint32_t width,
+                                        uint32_t height,
+                                        uint32_t regionTop,
+                                        uint32_t regionLeft,
+                                        uint32_t regionBottom,
+                                        uint32_t regionRight);
 
 /// Log severity levels matching RISE's LOG_ENUM.
 typedef NS_ENUM(NSInteger, RISELogLevel) {
@@ -58,8 +78,56 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// Sets the progress callback block. Pass nil to clear.
 - (void)setProgressBlock:(nullable RISEProgressBlock)block;
 
-/// Sets the image output callback block for progressive render updates. Pass nil to clear.
+/// PRODUCTION-render LDR callback.  Fires on every tile/frame event
+/// from the production rasterizer (the one driven by Render +
+/// Render-Animation buttons), when HDR is OFF.  Pass nil to clear.
+/// L5a round-5 split: this is one of FOUR independent block slots
+/// — production-LDR, production-HDR, interactive-LDR, interactive-
+/// HDR — each driving its own ViewportFrameStore.  Production
+/// renders are full-quality, multi-output (display + file +
+/// denoise + ...), per-tile updates; the production VFS is the
+/// one downstream consumers like FileRasterizerOutput attach to.
 - (void)setImageOutputBlock:(nullable RISEImageOutputBlock)block;
+
+/// PRODUCTION-render HDR callback (extended-linear-sRGB binary16
+/// for CAMetalLayer EDR composition).  Same firing conditions as
+/// `-setImageOutputBlock:` but for HDR-enabled mode.  Wire from a
+/// Swift Metal renderer configured with
+/// `wantsExtendedDynamicRangeContent = YES`.
+- (void)setHDRImageOutputBlock:(nullable RISEHDRImageOutputBlock)block;
+
+/// L5a round-5 — INTERACTIVE-render LDR callback.  Fires only on
+/// frame-complete events from the interactive (live-preview)
+/// rasterizer, when HDR is OFF.  Per-tile fires are deliberately
+/// suppressed for the interactive path (no DrawToggles red
+/// flashes, no per-tile preview-scale-thrash buffer clears).  The
+/// interactive VFS is independent of the production VFS — its
+/// pixels never overwrite production output, so cancelling a
+/// production render preserves the partial production image.
+- (void)setInteractiveImageOutputBlock:(nullable RISEImageOutputBlock)block;
+
+/// L5a round-5 — INTERACTIVE-render HDR callback.  HDR variant of
+/// `-setInteractiveImageOutputBlock:`.  Wire from a separate
+/// Swift Metal renderer/layer that overlays the production EDR
+/// surface so partial production results stay visible underneath.
+- (void)setInteractiveHDRImageOutputBlock:(nullable RISEHDRImageOutputBlock)block;
+
+/// L5a — toggle HDR pipeline.  When YES, the bridge emits the
+/// HDR block with binary16 half-float pixels in extendedLinearSRGB;
+/// the LDR block is suppressed.  When NO (default), the legacy LDR
+/// block fires with RGBA16-sRGB.  Toggle from Swift after detecting
+/// EDR headroom via -displayMaxEDRHeadroom; mid-render toggle is
+/// supported and triggers an immediate re-emit at the new format.
+- (void)setHDREnabled:(BOOL)enabled;
+
+/// L5a — current EDR headroom of the active screen, expressed as
+/// the maximum allowed component value (1.0 = SDR, no EDR; >1.0 =
+/// EDR-capable).  Wraps
+/// `[NSScreen.mainScreen maximumExtendedDynamicRangeColorComponentValue]`;
+/// Swift code can poll this on `didChangeScreen` notifications and
+/// flip -setHDREnabled: accordingly.  Returns 1.0 if no screen is
+/// available (e.g. headless / pre-window-show).
+- (float)displayMaxEDRHeadroom;
 
 /// Sets the log callback block for receiving engine log messages. Pass nil to clear.
 /// The block may be called from any thread.
@@ -151,6 +219,37 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// share the same in-memory scene.  The handle is owned by this
 /// RISEBridge — callers must not retain or release it.
 - (void *)opaqueJobHandle;
+
+/// L5a round-3 — attach this bridge's ViewportFrameStore as an
+/// IRasterizerOutput on the supplied IRasterizer.  Suitable for
+/// rasterizers whose outputs list is NOT clobbered each render
+/// pass (e.g. the production rasterizer).  NOT suitable for the
+/// interactive viewport — `SceneEditController::DoOnePass`
+/// explicitly calls `FreeRasterizerOutputs()` before re-installing
+/// only its preview sink (SceneEditController.cpp:1630-1631), so
+/// any external attach is silently dropped.  For that case use
+/// `-opaqueViewportFrameStore` and fan VFS into the sink directly.
+///
+/// Lazily creates the VFS if it doesn't yet exist.  The bridge
+/// keeps a strong VFS reference for the bridge's lifetime; the
+/// rasterizer addrefs on Attach.
+- (void)attachViewportFrameStoreToOpaqueRasterizer:(void *)opaqueRasterizer;
+
+/// L5a round-5 — returns the INTERACTIVE ViewportFrameStore as an
+/// opaque pointer (cast to `RISE::Implementation::ViewportFrameStore*`
+/// inside `.mm` files).  Used by RISEViewportBridge's preview
+/// sink to fan the interactive rasterizer's OutputImage into VFS.
+/// The interactive VFS is INDEPENDENT of the production VFS:
+///   - It only fires frame-complete observers (not per-tile), so
+///     no DrawToggles red flashing while editing.
+///   - Its pixels never overwrite production output — cancelling
+///     a production render preserves the partial production image
+///     in the production VFS.
+///   - Resolution thrash from the interactive preview-scale state
+///     machine reallocates only THIS VFS, not production.
+/// Lifetime: borrowed pointer; lives for the lifetime of this
+/// RISEBridge.  Callers MUST NOT release it.
+- (void *)opaqueInteractiveViewportFrameStore;
 
 @end
 

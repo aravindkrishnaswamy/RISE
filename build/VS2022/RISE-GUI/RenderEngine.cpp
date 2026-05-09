@@ -146,7 +146,7 @@ RenderEngine::~RenderEngine()
 {
     // L4 round-4 P1-A + round-5 P1-B — synchronously wait for any
     // in-flight background thread (load, render, or animation)
-    // BEFORE touching m_job or m_viewportFrameStore.  Without this,
+    // BEFORE touching m_job or m_productionVFS.  Without this,
     // a dtor running while LoadAsciiScene OR Rasterize is on a
     // QThread stack would race m_job access against m_job->release()
     // and (for renders) race VFS callback lambdas (which capture
@@ -170,7 +170,7 @@ RenderEngine::~RenderEngine()
     // Tear-down ordering: drop the Job (which destroys the rasterizer,
     // joining its worker pool en route) FIRST.  By the time
     // m_job->release() returns no callbacks can be in flight against
-    // m_viewportFrameStore.  Then null the VFS callbacks so any
+    // m_productionVFS.  Then null the VFS callbacks so any
     // late-fire (defensive — should be impossible after Job release)
     // bypasses the captured `this` lambda.  Finally release the
     // engine's VFS reference (the rasterizer's reference is already
@@ -187,7 +187,7 @@ RenderEngine::~RenderEngine()
         m_job = nullptr;
     }
 
-    if (m_viewportFrameStore) {
+    if (m_productionVFS) {
         // Defensive: nil the callbacks before release so any path
         // that re-enters them post-destruction (e.g. due to a
         // future bug) gracefully no-ops instead of dereferencing
@@ -195,12 +195,12 @@ RenderEngine::~RenderEngine()
         // thread-safe in general, but at this point we've drained
         // observers via Job->release()'s rasterizer dtor → outputs
         // dtor → VFS dtor → RemoveObserver cv-wait.
-        m_viewportFrameStore->SetTileCompleteCallback(nullptr);
-        m_viewportFrameStore->SetFrameCompleteCallback(nullptr);
-        m_viewportFrameStore->SetPreDenoiseCompleteCallback(nullptr);
-        m_viewportFrameStore->SetDenoiseCompleteCallback(nullptr);
-        m_viewportFrameStore->release();
-        m_viewportFrameStore = nullptr;
+        m_productionVFS->SetTileCompleteCallback(nullptr);
+        m_productionVFS->SetFrameCompleteCallback(nullptr);
+        m_productionVFS->SetPreDenoiseCompleteCallback(nullptr);
+        m_productionVFS->SetDenoiseCompleteCallback(nullptr);
+        m_productionVFS->release();
+        m_productionVFS = nullptr;
     }
 }
 
@@ -333,7 +333,7 @@ void RenderEngine::loadScene(const QString& filePath)
     // resolution-swap on the new scene's first OutputImage.
     if (auto* rasterizer = m_job->GetRasterizer()) {
         rasterizer->FreeRasterizerOutputs();
-        m_vfsAttachedToRasterizer = false;
+        m_productionVFSAttachedToRasterizer = false;
     }
 
     // Run LoadAsciiScene on a worker thread.  L4 round-5 P1-B:
@@ -384,7 +384,7 @@ void RenderEngine::startRender()
     // engine as the sole owner — so the VFS + its FrameStore + its
     // observer chain persist across renders, the same observer
     // callbacks fire, no rebinding required.  See L4 design §7.5.
-    ensureViewportFrameStoreAttached();
+    ensureProductionVFSAttachedToRasterizer();
 
     // Start elapsed timer
     m_renderClock.start();
@@ -442,14 +442,14 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
     // rasterizer's reference to our VFS; the engine still holds a
     // reference, so the VFS survives Free → re-Attach.
     rasterizer->FreeRasterizerOutputs();
-    m_vfsAttachedToRasterizer = false;
+    m_productionVFSAttachedToRasterizer = false;
 
     // Install progress callback
     auto* progressCb = new ProgressCallbackAdapter(this);
     m_job->SetProgress(progressCb);
 
     // (Re-)attach VFS to the rasterizer for this render pass.
-    ensureViewportFrameStoreAttached();
+    ensureProductionVFSAttachedToRasterizer();
 
     // TODO: Create and attach VideoEncoder for H.264 output
     // VideoEncoder* videoEncoder = new VideoEncoder(videoOutputPath.toStdString());
@@ -483,7 +483,7 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
             guard->m_elapsedTimer->stop();
             guard->m_job->SetProgress(nullptr);
             delete progressCb;
-            guard->m_vfsAttachedToRasterizer = false;
+            guard->m_productionVFSAttachedToRasterizer = false;
 
             if (guard->m_cancelFlag) {
                 guard->setState(Cancelled);
@@ -539,7 +539,7 @@ void RenderEngine::clearScene()
         // inside VFS handles the dim change if any).
         if (auto* rasterizer = m_job->GetRasterizer()) {
             rasterizer->FreeRasterizerOutputs();
-            m_vfsAttachedToRasterizer = false;
+            m_productionVFSAttachedToRasterizer = false;
         }
         m_job->ClearAll();
     }
@@ -613,7 +613,7 @@ void RenderEngine::onProgress(double progress, double total, const std::string& 
 void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned int H,
                                                         const RISE::Rect* halfOpenRoi)
 {
-    if (W == 0 || H == 0 || !m_viewportFrameStore) return;
+    if (W == 0 || H == 0 || !m_productionVFS) return;
 
     // Resize buffer on first call / dim change.
     const size_t need = static_cast<size_t>(W) * H * 4;
@@ -642,11 +642,11 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
         if (y1 <= y0 || x1 <= x0) return;
         uint8_t* base = m_pixelBuffer.data()
                         + (static_cast<size_t>(y0) * W + x0) * 4;
-        m_viewportFrameStore->RenderToBuffer(
+        m_productionVFS->RenderToBuffer(
             base, static_cast<size_t>(W) * 4,
             *halfOpenRoi, TargetFormat::RGBA8_sRGB, xf);
     } else {
-        m_viewportFrameStore->RenderToBuffer(
+        m_productionVFS->RenderToBuffer(
             m_pixelBuffer.data(), static_cast<size_t>(W) * 4,
             RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf);
     }
@@ -669,66 +669,66 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
     }, Qt::QueuedConnection);
 }
 
-void RenderEngine::onVFSTileComplete(const RISE::Rect& halfOpenRoi)
+void RenderEngine::onProductionVFSTileComplete(const RISE::Rect& halfOpenRoi)
 {
-    if (!m_viewportFrameStore) return;
+    if (!m_productionVFS) return;
     // GetDimensions takes chainMutex_ shared internally — safe against
     // a concurrent resolution-change reallocation in the rasterizer
     // thread (see L4 round-4 P2-D adversarial review).  The earlier
     // raw GetFrameStore()->Width()/Height() pattern was racy.
     unsigned int W = 0, H = 0;
-    m_viewportFrameStore->GetDimensions(W, H);
+    m_productionVFS->GetDimensions(W, H);
     if (W == 0 || H == 0) return;
 
     std::lock_guard<std::mutex> lock(m_bufferMutex);
     renderViewportToBufferAndEmit_locked(W, H, &halfOpenRoi);
 }
 
-void RenderEngine::onVFSFrameComplete()
+void RenderEngine::onProductionVFSFrameComplete()
 {
-    if (!m_viewportFrameStore) return;
+    if (!m_productionVFS) return;
     unsigned int W = 0, H = 0;
-    m_viewportFrameStore->GetDimensions(W, H);
+    m_productionVFS->GetDimensions(W, H);
     if (W == 0 || H == 0) return;
     std::lock_guard<std::mutex> lock(m_bufferMutex);
     renderViewportToBufferAndEmit_locked(W, H, nullptr);  // full image
 }
 
-void RenderEngine::ensureViewportFrameStoreAttached()
+void RenderEngine::ensureProductionVFSAttachedToRasterizer()
 {
     if (!m_job) return;
     IRasterizer* rasterizer = m_job->GetRasterizer();
     if (!rasterizer) return;
 
-    if (!m_viewportFrameStore) {
-        m_viewportFrameStore = new Implementation::ViewportFrameStore();
+    if (!m_productionVFS) {
+        m_productionVFS = new Implementation::ViewportFrameStore();
 
         // Lambda captures `this` raw; the engine outlives the VFS
         // (engine releases its VFS reference in ~RenderEngine, AFTER
         // joining the worker pool via m_job->release()), so by the
         // time any in-flight observer callback completes, `this` is
         // still valid.  See -RenderEngine() ordering rationale.
-        m_viewportFrameStore->SetTileCompleteCallback(
+        m_productionVFS->SetTileCompleteCallback(
             [this](const RISE::Rect& roi, uint64_t /*gen*/) {
-                this->onVFSTileComplete(roi);
+                this->onProductionVFSTileComplete(roi);
             });
-        m_viewportFrameStore->SetFrameCompleteCallback(
+        m_productionVFS->SetFrameCompleteCallback(
             [this](unsigned int /*frame*/, uint64_t /*gen*/) {
-                this->onVFSFrameComplete();
+                this->onProductionVFSFrameComplete();
             });
-        m_viewportFrameStore->SetPreDenoiseCompleteCallback(
+        m_productionVFS->SetPreDenoiseCompleteCallback(
             [this](unsigned int /*frame*/, uint64_t /*gen*/) {
-                this->onVFSFrameComplete();
+                this->onProductionVFSFrameComplete();
             });
-        m_viewportFrameStore->SetDenoiseCompleteCallback(
+        m_productionVFS->SetDenoiseCompleteCallback(
             [this](unsigned int /*frame*/, uint64_t /*gen*/) {
-                this->onVFSFrameComplete();
+                this->onProductionVFSFrameComplete();
             });
     }
 
-    if (!m_vfsAttachedToRasterizer) {
-        m_viewportFrameStore->Attach(rasterizer);
-        m_vfsAttachedToRasterizer = true;
+    if (!m_productionVFSAttachedToRasterizer) {
+        m_productionVFS->Attach(rasterizer);
+        m_productionVFSAttachedToRasterizer = true;
     }
 }
 
@@ -741,9 +741,9 @@ void RenderEngine::ensureViewportFrameStoreAttached()
 void RenderEngine::setViewExposureEV(double ev)
 {
     m_viewExposureEV.store(ev);
-    if (!m_viewportFrameStore) return;
+    if (!m_productionVFS) return;
     unsigned int W = 0, H = 0;
-    m_viewportFrameStore->GetDimensions(W, H);
+    m_productionVFS->GetDimensions(W, H);
     if (W == 0 || H == 0) return;
     // Slider scrub: re-render the full image at the new EV.
     std::lock_guard<std::mutex> lock(m_bufferMutex);
@@ -754,7 +754,7 @@ bool RenderEngine::saveAs(const QString& path,
                           const QString& formatName,
                           double         ev)
 {
-    if (!m_viewportFrameStore) return false;
+    if (!m_productionVFS) return false;
     IFrameEncoder* enc =
         Implementation::FrameEncoderRegistry::Get().ByFormatName(
             formatName.toUtf8().constData());
@@ -764,7 +764,7 @@ bool RenderEngine::saveAs(const QString& path,
     opts.bpp           = 8;
     opts.viewTransform = ViewTransform::ForLDRDisplay(
         static_cast<float>(ev), eDisplayTransform_None);
-    return m_viewportFrameStore->SaveAs(
+    return m_productionVFS->SaveAs(
         std::string(path.toUtf8().constData()), enc, opts);
 }
 

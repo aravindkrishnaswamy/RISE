@@ -273,16 +273,38 @@ private:
     // viewport's ViewportPreviewSink (m_viewportSink below) is a
     // separate sink, deferred to a follow-up landing.  See
     // docs/FRAMESTORE_DESIGN.md §11 L4d.
-    RISE::Implementation::ViewportFrameStore* m_viewportFrameStore = nullptr;
-    bool                                      m_vfsAttachedToRasterizer = false;
+    // L5a round-5 — TWO independent ViewportFrameStores, mirroring
+    // the macOS architecture (see
+    // build/XCode/rise/RISE-GUI/Bridge/RISEBridge.mm for the full
+    // rationale).  Production VFS receives per-tile + per-frame
+    // updates from the production rasterizer (rasterize() call).
+    // Interactive VFS receives ONLY frame-complete fires from the
+    // SceneEditController-driven live-preview rasterizer (no
+    // per-tile observer wiring → no DrawToggles flash, no
+    // preview-scale resolution thrash interfering with production).
+    // Both currently render into the same `m_framebuffer` for
+    // Compose display; a future landing can split the display
+    // surface to give interactive its own overlay buffer.
+    RISE::Implementation::ViewportFrameStore* m_productionVFS = nullptr;
+    RISE::Implementation::ViewportFrameStore* m_interactiveVFS = nullptr;
+    bool                                      m_productionVFSAttachedToRasterizer = false;
     std::atomic<double>                       m_viewExposureEV{0.0};
-    void ensureViewportFrameStoreAttached();
-    // L4 round-7 P1: tile callback now takes the half-open roi so
-    // we can RenderToBuffer just the changed region (was: full image
+    void ensureProductionVFSAttachedToRasterizer();
+    void ensureInteractiveVFSCreated();
+    // L4 round-7 P1: tile callback takes the half-open roi so we
+    // can RenderToBuffer just the changed region (was: full image
     // every tile fire — ~4× regression vs legacy).  nullptr → full
-    // image (used by frame-complete + setViewExposureEV slider scrub).
-    void onVFSTileComplete(const RISE::Rect* halfOpenRoi);
-    void onVFSFrameComplete();
+    // image (used by frame-complete + setViewExposureEV scrub).
+    void onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi);
+    void onProductionVFSFrameComplete();
+    // L5a round-5 — interactive VFS fires frame-complete only
+    // (tile callback intentionally not bound), matching the
+    // SceneEditController preview cadence.
+    void onInteractiveVFSFrameComplete();
+    // Returns the interactive VFS for fan-out from
+    // ViewportPreviewSink (the SceneEditController-driven sink).
+    // Lazy-creates if not yet allocated.  Borrowed pointer.
+    RISE::Implementation::ViewportFrameStore* getOrCreateInteractiveVFS();
 
     // Job & state
     RISE::IJobPriv*    m_job = nullptr;

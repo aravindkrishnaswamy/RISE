@@ -145,6 +145,75 @@ final class RenderViewModel: ObservableObject {
     /// Live time-scrubber state, displayed on the viewport's bottom slider.
     @Published var sceneTime: Double = 0
 
+    // L5a — EDR (extended dynamic range) state.
+    //
+    // `edrAvailable` mirrors the active screen's
+    // `maximumExtendedDynamicRangeColorComponentValue > 1.0`.  If
+    // false (e.g. a vanilla SDR display), the EDR toggle in the UI
+    // stays disabled regardless of `edrEnabled`.
+    //
+    // `edrEnabled` is the user's toggle.  When both are true, the
+    // bridge fires the HDR block (binary16 in extended-linear-sRGB)
+    // and `RenderImageView` swaps in `MetalEDRView`; otherwise the
+    // legacy LDR `Image(nsImage:)` path runs.  Toggling at any
+    // time is supported — the bridge's `setHDREnabled:` triggers
+    // an immediate Repaint so the screen reflects the new mode
+    // without waiting for the next render pass.
+    @Published var edrAvailable: Bool = false
+    @Published var edrEnabled:   Bool = false {
+        didSet {
+            bridge.setHDREnabled(edrEnabled && edrAvailable)
+        }
+    }
+
+    /// Returns the underlying RISEBridge — needed by the SwiftUI
+    /// `MetalEDRView` so it can hook the HDR block + push the
+    /// resulting frames through Metal.  Callers MUST NOT retain
+    /// this bridge; its lifetime is bounded by the RenderViewModel.
+    var bridgeForEDR: RISEBridge { bridge }
+
+    /// L5a round-5 — TWO durable EDR renderers, one per bridge
+    /// path.  Production renderer drives the "main image" Metal
+    /// layer (per-tile + per-frame production fires).  Interactive
+    /// renderer drives an "overlay" Metal layer with transparent
+    /// background that composites over production (frame-complete
+    /// only — no per-tile flash, no preview-scale resolution
+    /// thrash).  Both built lazily at init when Metal is
+    /// available; nil on Metal-incapable hosts.
+    var productionEDRRenderer:  MetalEDRRenderer?
+    var interactiveEDRRenderer: MetalEDRRenderer?
+
+    /// Back-compat alias for callers that just want the
+    /// "primary" EDR renderer (used by the no-scene-loaded
+    /// `RenderImageView` placeholder, which only has a single
+    /// surface to fill).  Defaults to production.
+    var edrRenderer: MetalEDRRenderer? { productionEDRRenderer }
+
+    /// L5a round-2 P1-3 — handle to the host NSWindow used for
+    /// per-screen EDR-headroom probing (vs `mainScreen` which
+    /// follows keyboard focus, not the RISE window).  Set by
+    /// SwiftUI via the window-tracking onAppear handler in
+    /// ContentView; unset on window-will-close.
+    weak var hostWindow: NSWindow? = nil {
+        didSet {
+            // (Re-)subscribe to the new window's screen-change
+            // notification.  Old subscription is leaked-as-token
+            // since we drop the reference; NotificationCenter
+            // tolerates that.
+            if let win = hostWindow {
+                NotificationCenter.default.addObserver(
+                    forName: NSWindow.didChangeScreenNotification,
+                    object: win, queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.refreshEDRAvailability()
+                    }
+                }
+            }
+            refreshEDRAvailability()
+        }
+    }
+
     private let bridge = RISEBridge()
 
     /// Lazily constructed when a scene successfully loads; torn down on
@@ -174,6 +243,92 @@ final class RenderViewModel: ObservableObject {
                     self.logMessages.removeFirst(self.logMessages.count - Self.maxLogMessages)
                 }
             }
+        }
+
+        // L5a round-5 — two durable EDR renderers, one per role.
+        // Each binds to its respective bridge HDR-block slot once
+        // for the renderer's lifetime; both attach to their own
+        // CAMetalLayer (stacked production-bottom / interactive-
+        // top) when ViewportNSView lays them out.  nil if Metal
+        // is unavailable; in that case `edrAvailable` stays false
+        // and the toggle is disabled.
+        self.productionEDRRenderer  = MetalEDRRenderer(bridge: bridge,
+                                                       role: .production)
+        self.interactiveEDRRenderer = MetalEDRRenderer(bridge: bridge,
+                                                       role: .interactive)
+
+        // L5a — initial EDR availability probe + subscribe to
+        // screen-config changes so the toggle dims/lights as the
+        // monitor configuration changes (resolution, attach/detach).
+        // Per-window screen tracking (window-dragged-to-different-
+        // monitor) is set up in `hostWindow.didSet` once SwiftUI
+        // hands us the window reference (round-2 P1-3 fix —
+        // `[NSScreen mainScreen]` follows keyboard focus, not the
+        // RISE window).
+        refreshEDRAvailability()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshEDRAvailability()
+            }
+        }
+    }
+
+    /// L5a — refresh `edrAvailable` from the screen the RISE
+    /// window is currently on.  Falls back to `[NSScreen
+    /// mainScreen]` (keyboard-focus screen) when no host window
+    /// is registered yet — typical at app launch before SwiftUI
+    /// attaches the window reference.
+    ///
+    /// Round-3 fix: probe `maximumPotentialExtendedDynamicRange…`
+    /// (CAPABILITY) instead of `maximumExtendedDynamicRange…`
+    /// (CURRENT, gated on the OS having actually transitioned the
+    /// screen into EDR mode).  The previous code read `current`,
+    /// which returns 1.0 for many EDR-capable Macs while the
+    /// screen is in SDR mode — making the toggle un-checkable
+    /// even though setting `wantsExtendedDynamicRangeContent =
+    /// YES` would trigger the transition automatically.  Headroom
+    /// values: ~1.6 on a recent MacBook Pro mini-LED in
+    /// SDR-Reference mode, ~5.5 with HDR enabled in System
+    /// Settings, up to ~16.0 on a Pro Display XDR.  When toggled
+    /// off (e.g. window dragged to an SDR monitor), force
+    /// `edrEnabled = false` so the bridge switches back to the
+    /// LDR pipeline immediately.
+    func refreshEDRAvailability() {
+        // Prefer the host window's screen if registered; the
+        // bridge's `displayMaxEDRHeadroom` reads `mainScreen`
+        // which follows focus rather than the window.
+        let headroom: Float
+        if let screen = hostWindow?.screen {
+            headroom = Float(screen.maximumPotentialExtendedDynamicRangeColorComponentValue)
+        } else {
+            headroom = bridge.displayMaxEDRHeadroom()
+        }
+        // Renderer must also be available — Metal-incapable hosts
+        // (extremely rare on modern Macs) have productionEDRRenderer
+        // == nil even on EDR-capable screens.
+        let available = headroom > 1.0 && productionEDRRenderer != nil
+        let availabilityChanged = (edrAvailable != available)
+        if availabilityChanged {
+            edrAvailable = available
+        }
+        if !available && edrEnabled {
+            edrEnabled = false   // setter pushes setHDREnabled:NO
+        }
+        // L5a round-3 — when EDR transitions from unavailable → available
+        // (typical at app launch on an EDR-capable Mac after the host
+        // window attaches and the screen probe runs), auto-enable the
+        // toggle so the user gets EDR rendering by default.  This is
+        // the user-friendly "if your hardware supports it, use it"
+        // policy.  The user can still toggle it off manually; they can
+        // also toggle it back on if it auto-flipped off due to a
+        // window-screen change.  We only auto-enable on the false→true
+        // transition (not on every refresh) so we don't fight the user
+        // if they explicitly disabled the toggle while available.
+        if availabilityChanged && available && !edrEnabled {
+            edrEnabled = true   // setter pushes setHDREnabled:YES
         }
     }
 

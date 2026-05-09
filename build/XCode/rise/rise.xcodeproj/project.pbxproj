@@ -47,8 +47,6 @@
 		6DBFAA7809C4D2A20048A09D /* TranslucentPelPhotonMapShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DBFAA5209C4D2A20048A09D /* TranslucentPelPhotonMapShaderOp.h */; };
 		6DBFAA7909C4D2A20048A09D /* TransparencyShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA5309C4D2A20048A09D /* TransparencyShaderOp.cpp */; };
 		6DBFAA7A09C4D2A20048A09D /* TransparencyShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DBFAA5409C4D2A20048A09D /* TransparencyShaderOp.h */; };
-		B7A4ED03F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED01F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp */; };
-		B7A4ED04F0DE4E61A0A3D001 /* AlphaTestShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = B7A4ED02F0DE4E61A0A3D001 /* AlphaTestShaderOp.h */; };
 		6DBFAA8209C4D2CD0048A09D /* commandconsole.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA8109C4D2CD0048A09D /* commandconsole.cpp */; };
 		6DFD32EF0A0FBB1D00E99FBE /* CPU_Count.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DFD32ED0A0FBB1D00E99FBE /* CPU_Count.cpp */; };
 		6DFD32F00A0FBB1D00E99FBE /* CPU.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DFD32EE0A0FBB1D00E99FBE /* CPU.h */; };
@@ -56,6 +54,28 @@
 		6DFD32F70A0FBBAA00E99FBE /* EXRReader.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DFD32F30A0FBBAA00E99FBE /* EXRReader.h */; };
 		6DFD32F80A0FBBAA00E99FBE /* EXRWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DFD32F40A0FBBAA00E99FBE /* EXRWriter.cpp */; };
 		6DFD32F90A0FBBAA00E99FBE /* EXRWriter.h in Headers */ = {isa = PBXBuildFile; fileRef = 6DFD32F50A0FBBAA00E99FBE /* EXRWriter.h */; };
+		AAB7C04202604280000000A1 /* VertexColorPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = AAB7C04202604280000000A3 /* VertexColorPainter.h */; };
+		AAB7C04202604280000000A2 /* VertexColorPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = AAB7C04202604280000000A3 /* VertexColorPainter.h */; };
+		ACE1000000000000000000A4 /* BVH.h in Headers */ = {isa = PBXBuildFile; fileRef = ACE1000000000000000000A2 /* BVH.h */; };
+		ACE1000000000000000000A5 /* AccelerationConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = ACE1000000000000000000A3 /* AccelerationConfig.h */; };
+		B7A4ED03F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED01F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp */; };
+		B7A4ED04F0DE4E61A0A3D001 /* AlphaTestShaderOp.h in Headers */ = {isa = PBXBuildFile; fileRef = B7A4ED02F0DE4E61A0A3D001 /* AlphaTestShaderOp.h */; };
+		B7A4ED05F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED01F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp */; };
+		B7A4ED06F0DE4E61A0A3D001 /* AlphaTestShaderOp.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED02F0DE4E61A0A3D001 /* AlphaTestShaderOp.h */; };
+		B7A4ED15F0DE4E61A0A3D001 /* SheenBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED11F0DE4E61A0A3D001 /* SheenBRDF.cpp */; };
+		B7A4ED16F0DE4E61A0A3D001 /* SheenSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED13F0DE4E61A0A3D001 /* SheenSPF.cpp */; };
+		B7A4ED17F0DE4E61A0A3D001 /* SheenBRDF.h in Headers */ = {isa = PBXBuildFile; fileRef = B7A4ED10F0DE4E61A0A3D001 /* SheenBRDF.h */; };
+		B7A4ED18F0DE4E61A0A3D001 /* SheenSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */; };
+		B7A4ED19F0DE4E61A0A3D001 /* SheenMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */; };
+		B7A4ED1AF0DE4E61A0A3D001 /* SheenBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED11F0DE4E61A0A3D001 /* SheenBRDF.cpp */; };
+		B7A4ED1BF0DE4E61A0A3D001 /* SheenSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED13F0DE4E61A0A3D001 /* SheenSPF.cpp */; };
+		B7A4ED1CF0DE4E61A0A3D001 /* SheenBRDF.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED10F0DE4E61A0A3D001 /* SheenBRDF.h */; };
+		B7A4ED1DF0DE4E61A0A3D001 /* SheenSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */; };
+		B7A4ED1EF0DE4E61A0A3D001 /* SheenMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */; };
+		CDA10000000000000000000C /* ControlledSmoothness2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000A /* ControlledSmoothness2DPainter.cpp */; };
+		CDA10000000000000000000D /* ControlledSmoothness2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000B /* ControlledSmoothness2DPainter.h */; };
+		CDA10000000000000000000E /* ControlledSmoothness2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000A /* ControlledSmoothness2DPainter.cpp */; };
+		CDA10000000000000000000F /* ControlledSmoothness2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000B /* ControlledSmoothness2DPainter.h */; };
 		DDDD00000000000000000001 /* DisplacedGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000005 /* DisplacedGeometry.cpp */; };
 		DDDD00000000000000000002 /* DisplacedGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000006 /* DisplacedGeometry.h */; };
 		DDDD00000000000000000003 /* DisplacedGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000005 /* DisplacedGeometry.cpp */; };
@@ -170,7 +190,6 @@
 		F24B72482F52A632008304C4 /* IBilinearPatchGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0854069C428F0069C9E5 /* IBilinearPatchGeometry.h */; };
 		F24B724A2F52A632008304C4 /* IBuffer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0856069C428F0069C9E5 /* IBuffer.h */; };
 		F24B724B2F52A632008304C4 /* ICamera.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0857069C428F0069C9E5 /* ICamera.h */; };
-		FCA01000000000000000A001 /* ICameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
 		F24B724C2F52A632008304C4 /* ICommunicator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0858069C428F0069C9E5 /* ICommunicator.h */; };
 		F24B724D2F52A632008304C4 /* ICubicInterpolator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0859069C428F0069C9E5 /* ICubicInterpolator.h */; };
 		F24B724E2F52A632008304C4 /* IDeletedCallback.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F085A069C428F0069C9E5 /* IDeletedCallback.h */; };
@@ -277,7 +296,6 @@
 		F24B72B32F52A632008304C4 /* GenericManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C4069C42900069C9E5 /* GenericManager.h */; };
 		F24B72B42F52A632008304C4 /* GeometryManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C5069C42900069C9E5 /* GeometryManager.h */; };
 		F24B72B52F52A632008304C4 /* LightManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C6069C42900069C9E5 /* LightManager.cpp */; };
-		FCA01000000000000000A004 /* CameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A006 /* CameraManager.h */; };
 		F24B72B62F52A632008304C4 /* LightManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C7069C42900069C9E5 /* LightManager.h */; };
 		F24B72B72F52A632008304C4 /* MaterialManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C8069C42900069C9E5 /* MaterialManager.h */; };
 		F24B72B82F52A632008304C4 /* ModifierManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C9069C42900069C9E5 /* ModifierManager.h */; };
@@ -368,8 +386,6 @@
 		F24B730D2F52A632008304C4 /* WardIsotropicGaussianSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */; };
 		F24B730E2F52A632008304C4 /* BumpMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F091E069C42900069C9E5 /* BumpMap.cpp */; };
 		F24B730F2F52A632008304C4 /* BumpMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F091F069C42900069C9E5 /* BumpMap.h */; };
-		F2C0F010069C42900069C9E5 /* NormalMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0F001069C42900069C9E5 /* NormalMap.cpp */; };
-		F2C0F011069C42900069C9E5 /* NormalMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0F002069C42900069C9E5 /* NormalMap.h */; };
 		F24B73102F52A632008304C4 /* InterpolatedNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */; };
 		F24B73112F52A632008304C4 /* InterpolatedNoise.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0922069C42900069C9E5 /* InterpolatedNoise.h */; };
 		F24B73122F52A632008304C4 /* Noise.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0923069C42900069C9E5 /* Noise.h */; };
@@ -403,8 +419,6 @@
 		F24B732E2F52A632008304C4 /* Painter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0941069C42900069C9E5 /* Painter.h */; };
 		F24B732F2F52A632008304C4 /* Perlin2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0942069C42900069C9E5 /* Perlin2DPainter.cpp */; };
 		F24B73302F52A632008304C4 /* Perlin2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0943069C42900069C9E5 /* Perlin2DPainter.h */; };
-		CDA10000000000000000000C /* ControlledSmoothness2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000A /* ControlledSmoothness2DPainter.cpp */; };
-		CDA10000000000000000000D /* ControlledSmoothness2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000B /* ControlledSmoothness2DPainter.h */; };
 		F24B73312F52A632008304C4 /* Perlin3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0944069C42900069C9E5 /* Perlin3DPainter.cpp */; };
 		F24B73322F52A632008304C4 /* Perlin3DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0945069C42900069C9E5 /* Perlin3DPainter.h */; };
 		F24B73332F52A632008304C4 /* SpectralColorPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0946069C42900069C9E5 /* SpectralColorPainter.cpp */; };
@@ -412,7 +426,6 @@
 		F24B73352F52A632008304C4 /* TexturePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0948069C42900069C9E5 /* TexturePainter.cpp */; };
 		F24B73362F52A632008304C4 /* TexturePainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0949069C42900069C9E5 /* TexturePainter.h */; };
 		F24B73372F52A632008304C4 /* UniformColorPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F094A069C42900069C9E5 /* UniformColorPainter.h */; };
-		AAB7C04202604280000000A1 /* VertexColorPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = AAB7C04202604280000000A3 /* VertexColorPainter.h */; };
 		F24B73382F52A632008304C4 /* Voronoi2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094B069C42900069C9E5 /* Voronoi2DPainter.cpp */; };
 		F24B73392F52A632008304C4 /* Voronoi2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F094C069C42900069C9E5 /* Voronoi2DPainter.h */; };
 		F24B733A2F52A632008304C4 /* Voronoi3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094D069C42900069C9E5 /* Voronoi3DPainter.cpp */; };
@@ -472,18 +485,6 @@
 		F24B73702F52A632008304C4 /* NNBRasterImageAccessor.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0982069C42900069C9E5 /* NNBRasterImageAccessor.h */; };
 		F24B73712F52A632008304C4 /* PNGReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0983069C42900069C9E5 /* PNGReader.cpp */; };
 		F24B73722F52A632008304C4 /* PNGReader.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0984069C42900069C9E5 /* PNGReader.h */; };
-		F2C0EE10069C42900069C9E5 /* JPEGReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE01069C42900069C9E5 /* JPEGReader.cpp */; };
-		F2C0EE11069C42900069C9E5 /* JPEGReader.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE02069C42900069C9E5 /* JPEGReader.h */; };
-		F2C0EE12069C42900069C9E5 /* stb_image.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE04069C42900069C9E5 /* stb_image.cpp */; };
-		F2C0EE13069C42900069C9E5 /* stb_image.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE03069C42900069C9E5 /* stb_image.h */; };
-		F2D1A010069C42900069C9E5 /* GLTFSceneImporter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */; };
-		F2D1A011069C42900069C9E5 /* GLTFSceneImporter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */; };
-		F2D1A012069C42900069C9E5 /* ChannelPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A003069C42900069C9E5 /* ChannelPainter.h */; };
-		F2D1A013069C42900069C9E5 /* UVTransformPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A004069C42900069C9E5 /* UVTransformPainter.h */; };
-		F2D1A014069C42900069C9E5 /* TexCoord1Painter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */; };
-		F2D1A015069C42900069C9E5 /* CharlieSheen.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A006069C42900069C9E5 /* CharlieSheen.h */; };
-		F2C0EF12069C42900069C9E5 /* cgltf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EF04069C42900069C9E5 /* cgltf.cpp */; };
-		F2C0EF13069C42900069C9E5 /* cgltf.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EF03069C42900069C9E5 /* cgltf.h */; };
 		F24B73732F52A632008304C4 /* PNGWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0985069C42900069C9E5 /* PNGWriter.cpp */; };
 		F24B73742F52A632008304C4 /* PNGWriter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0986069C42900069C9E5 /* PNGWriter.h */; };
 		F24B73752F52A632008304C4 /* PPMWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0987069C42900069C9E5 /* PPMWriter.cpp */; };
@@ -598,8 +599,6 @@
 		F24B73E62F52A632008304C4 /* TranslucentPelPhotonMapShaderOp.h in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA5209C4D2A20048A09D /* TranslucentPelPhotonMapShaderOp.h */; };
 		F24B73E72F52A632008304C4 /* TransparencyShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA5309C4D2A20048A09D /* TransparencyShaderOp.cpp */; };
 		F24B73E82F52A632008304C4 /* TransparencyShaderOp.h in Sources */ = {isa = PBXBuildFile; fileRef = 6DBFAA5409C4D2A20048A09D /* TransparencyShaderOp.h */; };
-		B7A4ED05F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED01F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp */; };
-		B7A4ED06F0DE4E61A0A3D001 /* AlphaTestShaderOp.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED02F0DE4E61A0A3D001 /* AlphaTestShaderOp.h */; };
 		F24B73E92F52A632008304C4 /* AdvancedShader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277341B07ECCBB200C0B600 /* AdvancedShader.cpp */; };
 		F24B73EA2F52A632008304C4 /* AdvancedShader.h in Sources */ = {isa = PBXBuildFile; fileRef = F277341C07ECCBB200C0B600 /* AdvancedShader.h */; };
 		F24B73EB2F52A632008304C4 /* StandardShader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F298C65107B14247007CDF08 /* StandardShader.cpp */; };
@@ -757,16 +756,6 @@
 		F24C54642F84597B009AF16D /* GGXSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C545E2F84597B009AF16D /* GGXSPF.h */; };
 		F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545C2F84597B009AF16D /* GGXBRDF.cpp */; };
 		F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545F2F84597B009AF16D /* GGXSPF.cpp */; };
-		B7A4ED15F0DE4E61A0A3D001 /* SheenBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED11F0DE4E61A0A3D001 /* SheenBRDF.cpp */; };
-		B7A4ED16F0DE4E61A0A3D001 /* SheenSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED13F0DE4E61A0A3D001 /* SheenSPF.cpp */; };
-		B7A4ED17F0DE4E61A0A3D001 /* SheenBRDF.h in Headers */ = {isa = PBXBuildFile; fileRef = B7A4ED10F0DE4E61A0A3D001 /* SheenBRDF.h */; };
-		B7A4ED18F0DE4E61A0A3D001 /* SheenSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */; };
-		B7A4ED19F0DE4E61A0A3D001 /* SheenMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */; };
-		B7A4ED1AF0DE4E61A0A3D001 /* SheenBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED11F0DE4E61A0A3D001 /* SheenBRDF.cpp */; };
-		B7A4ED1BF0DE4E61A0A3D001 /* SheenSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED13F0DE4E61A0A3D001 /* SheenSPF.cpp */; };
-		B7A4ED1CF0DE4E61A0A3D001 /* SheenBRDF.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED10F0DE4E61A0A3D001 /* SheenBRDF.h */; };
-		B7A4ED1DF0DE4E61A0A3D001 /* SheenSPF.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */; };
-		B7A4ED1EF0DE4E61A0A3D001 /* SheenMaterial.h in Sources */ = {isa = PBXBuildFile; fileRef = B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */; };
 		F24C54692F859F87009AF16D /* RandomWalkSSS.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C54672F859F87009AF16D /* RandomWalkSSS.h */; };
 		F24C546A2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
 		F24C546B2F859F87009AF16D /* RandomWalkSSS.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C54682F859F87009AF16D /* RandomWalkSSS.cpp */; };
@@ -904,7 +893,6 @@
 		F27F0AC0069C42910069C9E5 /* IBilinearPatchGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0854069C428F0069C9E5 /* IBilinearPatchGeometry.h */; };
 		F27F0AC2069C42910069C9E5 /* IBuffer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0856069C428F0069C9E5 /* IBuffer.h */; };
 		F27F0AC3069C42910069C9E5 /* ICamera.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0857069C428F0069C9E5 /* ICamera.h */; };
-		FCA01000000000000000A002 /* ICameraManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
 		F27F0AC4069C42910069C9E5 /* ICommunicator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0858069C428F0069C9E5 /* ICommunicator.h */; };
 		F27F0AC5069C42910069C9E5 /* ICubicInterpolator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0859069C428F0069C9E5 /* ICubicInterpolator.h */; };
 		F27F0AC6069C42910069C9E5 /* IDeletedCallback.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F085A069C428F0069C9E5 /* IDeletedCallback.h */; };
@@ -1011,7 +999,6 @@
 		F27F0B2D069C42910069C9E5 /* GenericManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C4069C42900069C9E5 /* GenericManager.h */; };
 		F27F0B2E069C42910069C9E5 /* GeometryManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C5069C42900069C9E5 /* GeometryManager.h */; };
 		F27F0B2F069C42910069C9E5 /* LightManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C6069C42900069C9E5 /* LightManager.cpp */; };
-		FCA01000000000000000A005 /* CameraManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A006 /* CameraManager.h */; };
 		F27F0B30069C42910069C9E5 /* LightManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C7069C42900069C9E5 /* LightManager.h */; };
 		F27F0B31069C42910069C9E5 /* MaterialManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C8069C42900069C9E5 /* MaterialManager.h */; };
 		F27F0B32069C42910069C9E5 /* ModifierManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C9069C42900069C9E5 /* ModifierManager.h */; };
@@ -1097,8 +1084,6 @@
 		F27F0B84069C42910069C9E5 /* WardIsotropicGaussianSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */; };
 		F27F0B85069C42910069C9E5 /* BumpMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F091E069C42900069C9E5 /* BumpMap.cpp */; };
 		F27F0B86069C42910069C9E5 /* BumpMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F091F069C42900069C9E5 /* BumpMap.h */; };
-		F2C0F020069C42910069C9E5 /* NormalMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0F001069C42900069C9E5 /* NormalMap.cpp */; };
-		F2C0F021069C42910069C9E5 /* NormalMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0F002069C42900069C9E5 /* NormalMap.h */; };
 		F27F0B87069C42910069C9E5 /* InterpolatedNoise.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */; };
 		F27F0B88069C42910069C9E5 /* InterpolatedNoise.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0922069C42900069C9E5 /* InterpolatedNoise.h */; };
 		F27F0B89069C42910069C9E5 /* Noise.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0923069C42900069C9E5 /* Noise.h */; };
@@ -1132,8 +1117,6 @@
 		F27F0BA5069C42910069C9E5 /* Painter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0941069C42900069C9E5 /* Painter.h */; };
 		F27F0BA6069C42910069C9E5 /* Perlin2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0942069C42900069C9E5 /* Perlin2DPainter.cpp */; };
 		F27F0BA7069C42910069C9E5 /* Perlin2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0943069C42900069C9E5 /* Perlin2DPainter.h */; };
-		CDA10000000000000000000E /* ControlledSmoothness2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000A /* ControlledSmoothness2DPainter.cpp */; };
-		CDA10000000000000000000F /* ControlledSmoothness2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000B /* ControlledSmoothness2DPainter.h */; };
 		F27F0BA8069C42910069C9E5 /* Perlin3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0944069C42900069C9E5 /* Perlin3DPainter.cpp */; };
 		F27F0BA9069C42910069C9E5 /* Perlin3DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0945069C42900069C9E5 /* Perlin3DPainter.h */; };
 		F27F0BAA069C42910069C9E5 /* SpectralColorPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0946069C42900069C9E5 /* SpectralColorPainter.cpp */; };
@@ -1141,7 +1124,6 @@
 		F27F0BAC069C42910069C9E5 /* TexturePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0948069C42900069C9E5 /* TexturePainter.cpp */; };
 		F27F0BAD069C42910069C9E5 /* TexturePainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0949069C42900069C9E5 /* TexturePainter.h */; };
 		F27F0BAE069C42910069C9E5 /* UniformColorPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F094A069C42900069C9E5 /* UniformColorPainter.h */; };
-		AAB7C04202604280000000A2 /* VertexColorPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = AAB7C04202604280000000A3 /* VertexColorPainter.h */; };
 		F27F0BAF069C42910069C9E5 /* Voronoi2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094B069C42900069C9E5 /* Voronoi2DPainter.cpp */; };
 		F27F0BB0069C42910069C9E5 /* Voronoi2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F094C069C42900069C9E5 /* Voronoi2DPainter.h */; };
 		F27F0BB1069C42910069C9E5 /* Voronoi3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094D069C42900069C9E5 /* Voronoi3DPainter.cpp */; };
@@ -1197,18 +1179,6 @@
 		F27F0BE3069C42910069C9E5 /* NNBRasterImageAccessor.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0982069C42900069C9E5 /* NNBRasterImageAccessor.h */; };
 		F27F0BE4069C42910069C9E5 /* PNGReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0983069C42900069C9E5 /* PNGReader.cpp */; };
 		F27F0BE5069C42910069C9E5 /* PNGReader.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0984069C42900069C9E5 /* PNGReader.h */; };
-		F2C0EE20069C42910069C9E5 /* JPEGReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE01069C42900069C9E5 /* JPEGReader.cpp */; };
-		F2C0EE21069C42910069C9E5 /* JPEGReader.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0EE02069C42900069C9E5 /* JPEGReader.h */; };
-		F2C0EE22069C42910069C9E5 /* stb_image.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE04069C42900069C9E5 /* stb_image.cpp */; };
-		F2C0EE23069C42910069C9E5 /* stb_image.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0EE03069C42900069C9E5 /* stb_image.h */; };
-		F2D1A020069C42910069C9E5 /* GLTFSceneImporter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */; };
-		F2D1A021069C42910069C9E5 /* GLTFSceneImporter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */; };
-		F2D1A022069C42910069C9E5 /* ChannelPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A003069C42900069C9E5 /* ChannelPainter.h */; };
-		F2D1A023069C42910069C9E5 /* UVTransformPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A004069C42900069C9E5 /* UVTransformPainter.h */; };
-		F2D1A024069C42910069C9E5 /* TexCoord1Painter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */; };
-		F2D1A025069C42910069C9E5 /* CharlieSheen.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A006069C42900069C9E5 /* CharlieSheen.h */; };
-		F2C0EF22069C42910069C9E5 /* cgltf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EF04069C42900069C9E5 /* cgltf.cpp */; };
-		F2C0EF23069C42910069C9E5 /* cgltf.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0EF03069C42900069C9E5 /* cgltf.h */; };
 		F27F0BE6069C42910069C9E5 /* PNGWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0985069C42900069C9E5 /* PNGWriter.cpp */; };
 		F27F0BE7069C42910069C9E5 /* PNGWriter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0986069C42900069C9E5 /* PNGWriter.h */; };
 		F27F0BE8069C42910069C9E5 /* PPMWriter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0987069C42900069C9E5 /* PPMWriter.cpp */; };
@@ -1414,16 +1384,32 @@
 		F2A00000000000000000001C /* SMSPhotonMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001D /* SMSPhotonMap.h */; };
 		F2A00000000000000000001E /* SMSPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001F /* SMSPhotonMap.cpp */; };
 		F2A000000000000000000020 /* SMSPhotonMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2A00000000000000000001F /* SMSPhotonMap.cpp */; };
+		F2A5C0D12FB30E000077A171 /* OidnConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A5C0D02FB30E000077A171 /* OidnConfig.h */; };
+		F2A5C0E12FC50E000077A171 /* RasterizerDefaults.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A5C0E02FC50E000077A171 /* RasterizerDefaults.h */; };
 		F2B10A000000000000BA5E02 /* BidirectionalRasterizerBase.h in Headers */ = {isa = PBXBuildFile; fileRef = F2B10A000000000000BA5E00 /* BidirectionalRasterizerBase.h */; };
 		F2B10A000000000000BA5E03 /* BidirectionalRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */; };
 		F2B10A000000000000BA5E04 /* BidirectionalRasterizerBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */; };
+		F2C0EE10069C42900069C9E5 /* JPEGReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE01069C42900069C9E5 /* JPEGReader.cpp */; };
+		F2C0EE11069C42900069C9E5 /* JPEGReader.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE02069C42900069C9E5 /* JPEGReader.h */; };
+		F2C0EE12069C42900069C9E5 /* stb_image.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE04069C42900069C9E5 /* stb_image.cpp */; };
+		F2C0EE13069C42900069C9E5 /* stb_image.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE03069C42900069C9E5 /* stb_image.h */; };
+		F2C0EE20069C42910069C9E5 /* JPEGReader.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE01069C42900069C9E5 /* JPEGReader.cpp */; };
+		F2C0EE21069C42910069C9E5 /* JPEGReader.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0EE02069C42900069C9E5 /* JPEGReader.h */; };
+		F2C0EE22069C42910069C9E5 /* stb_image.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EE04069C42900069C9E5 /* stb_image.cpp */; };
+		F2C0EE23069C42910069C9E5 /* stb_image.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0EE03069C42900069C9E5 /* stb_image.h */; };
+		F2C0EF12069C42900069C9E5 /* cgltf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EF04069C42900069C9E5 /* cgltf.cpp */; };
+		F2C0EF13069C42900069C9E5 /* cgltf.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EF03069C42900069C9E5 /* cgltf.h */; };
+		F2C0EF22069C42910069C9E5 /* cgltf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0EF04069C42900069C9E5 /* cgltf.cpp */; };
+		F2C0EF23069C42910069C9E5 /* cgltf.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0EF03069C42900069C9E5 /* cgltf.h */; };
+		F2C0F010069C42900069C9E5 /* NormalMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0F001069C42900069C9E5 /* NormalMap.cpp */; };
+		F2C0F011069C42900069C9E5 /* NormalMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F2C0F002069C42900069C9E5 /* NormalMap.h */; };
+		F2C0F020069C42910069C9E5 /* NormalMap.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C0F001069C42900069C9E5 /* NormalMap.cpp */; };
+		F2C0F021069C42910069C9E5 /* NormalMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C0F002069C42900069C9E5 /* NormalMap.h */; };
 		F2C5D5272F6C725300546C97 /* CompositeEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */; };
 		F2C5D5282F6C725300546C97 /* CompositeEmitter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5252F6C725300546C97 /* CompositeEmitter.h */; };
 		F2C5D5292F6C725300546C97 /* CompositeEmitter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */; };
 		F2C5D55E2F6CD86F00546C97 /* BSPTreeSAH.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D55C2F6CD86F00546C97 /* BSPTreeSAH.h */; };
 		F2C5D55F2F6CD86F00546C97 /* BSPTreeSAHNode.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D55D2F6CD86F00546C97 /* BSPTreeSAHNode.h */; };
-		ACE1000000000000000000A4 /* BVH.h in Headers */ = {isa = PBXBuildFile; fileRef = ACE1000000000000000000A2 /* BVH.h */; };
-		ACE1000000000000000000A5 /* AccelerationConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = ACE1000000000000000000A3 /* AccelerationConfig.h */; };
 		F2C5D5652F6E447400546C97 /* SplatFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5642F6E447400546C97 /* SplatFilm.cpp */; };
 		F2C5D5672F6E447400546C97 /* SplatFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5632F6E447400546C97 /* SplatFilm.h */; };
 		F2C5D5692F6E447400546C97 /* RasterizerStateCache.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5622F6E447400546C97 /* RasterizerStateCache.h */; };
@@ -1492,33 +1478,6 @@
 		F2C7C8F02F7881E80030CB78 /* AOVBuffers.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8E92F7881E80030CB78 /* AOVBuffers.h */; };
 		F2C7C8F12F7881E80030CB78 /* AOVBuffers.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */; };
 		F2C7C8F22F7881E80030CB78 /* OIDNDenoiser.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */; };
-		FA00000000000000000000F3 /* FrameStoreColorSpace.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */; };
-		FA00000000000000000000F4 /* FrameStoreColorSpace.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */; };
-		FA00000000000000000000F5 /* FrameStoreColorSpace.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F1 /* FrameStoreColorSpace.h */; };
-		FA00000000000000000000F8 /* TargetFormat.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F7 /* TargetFormat.cpp */; };
-		FA00000000000000000000F9 /* TargetFormat.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F7 /* TargetFormat.cpp */; };
-		FA00000000000000000000FA /* TargetFormat.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F6 /* TargetFormat.h */; };
-		FA00000000000000000000FD /* ViewTransform.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000FC /* ViewTransform.cpp */; };
-		FA00000000000000000000FE /* ViewTransform.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000FC /* ViewTransform.cpp */; };
-		FA00000000000000000000FF /* ViewTransform.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000FB /* ViewTransform.h */; };
-		FA00000000000000000001F3 /* FrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F2 /* FrameStore.cpp */; };
-		FA00000000000000000001F4 /* FrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F2 /* FrameStore.cpp */; };
-		FA00000000000000000001F5 /* FrameStore.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F1 /* FrameStore.h */; };
-		FA00000000000000000001F7 /* Channel.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F6 /* Channel.h */; };
-		FA00000000000000000001F9 /* IRenderObserver.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F8 /* IRenderObserver.h */; };
-		FA00000000000000000002F1 /* FrameEncoders.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000002F0 /* FrameEncoders.cpp */; };
-		FA00000000000000000002F2 /* FrameEncoders.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000002F0 /* FrameEncoders.cpp */; };
-		FA00000000000000000002F4 /* FrameEncoders.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000002F3 /* FrameEncoders.h */; };
-		FA00000000000000000002F6 /* IFrameEncoder.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000002F5 /* IFrameEncoder.h */; };
-		FA00000000000000000003F1 /* FrameSink.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F0 /* FrameSink.cpp */; };
-		FA00000000000000000003F2 /* FrameSink.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F0 /* FrameSink.cpp */; };
-		FA00000000000000000003F4 /* FrameSink.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F3 /* FrameSink.h */; };
-		FA00000000000000000003F6 /* FileEncoderObserver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F5 /* FileEncoderObserver.cpp */; };
-		FA00000000000000000003F7 /* FileEncoderObserver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F5 /* FileEncoderObserver.cpp */; };
-		FA00000000000000000003F9 /* FileEncoderObserver.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F8 /* FileEncoderObserver.h */; };
-		FA00000000000000000004F1 /* ViewportFrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000004F0 /* ViewportFrameStore.cpp */; };
-		FA00000000000000000004F2 /* ViewportFrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000004F0 /* ViewportFrameStore.cpp */; };
-		FA00000000000000000004F4 /* ViewportFrameStore.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000004F3 /* ViewportFrameStore.h */; };
 		F2C7C8F52F78B0A70030CB78 /* PathGuidingField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */; };
 		F2C7C8F62F78B0A70030CB78 /* PathGuidingField.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */; };
 		F2C7C8F72F78B0A70030CB78 /* PathGuidingField.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */; };
@@ -1528,6 +1487,18 @@
 		F2CD000200000000000000C1 /* ChunkParserRegistry.h in Headers */ = {isa = PBXBuildFile; fileRef = F2CD000200000000000000A1 /* ChunkParserRegistry.h */; };
 		F2CD000300000000000000B1 /* IAsciiChunkParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F2CD000300000000000000A1 /* IAsciiChunkParser.h */; };
 		F2CD000300000000000000C1 /* IAsciiChunkParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F2CD000300000000000000A1 /* IAsciiChunkParser.h */; };
+		F2D1A010069C42900069C9E5 /* GLTFSceneImporter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */; };
+		F2D1A011069C42900069C9E5 /* GLTFSceneImporter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */; };
+		F2D1A012069C42900069C9E5 /* ChannelPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A003069C42900069C9E5 /* ChannelPainter.h */; };
+		F2D1A013069C42900069C9E5 /* UVTransformPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A004069C42900069C9E5 /* UVTransformPainter.h */; };
+		F2D1A014069C42900069C9E5 /* TexCoord1Painter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */; };
+		F2D1A015069C42900069C9E5 /* CharlieSheen.h in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A006069C42900069C9E5 /* CharlieSheen.h */; };
+		F2D1A020069C42910069C9E5 /* GLTFSceneImporter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */; };
+		F2D1A021069C42910069C9E5 /* GLTFSceneImporter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */; };
+		F2D1A022069C42910069C9E5 /* ChannelPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A003069C42900069C9E5 /* ChannelPainter.h */; };
+		F2D1A023069C42910069C9E5 /* UVTransformPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A004069C42900069C9E5 /* UVTransformPainter.h */; };
+		F2D1A024069C42910069C9E5 /* TexCoord1Painter.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */; };
+		F2D1A025069C42910069C9E5 /* CharlieSheen.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D1A006069C42900069C9E5 /* CharlieSheen.h */; };
 		F2D9B07E2F896BFA0077A171 /* FilteredFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */; };
 		F2D9B07F2F896BFA0077A171 /* FilteredFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */; };
 		F2D9B0802F896BFA0077A171 /* FilteredFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */; };
@@ -1542,8 +1513,6 @@
 		F2D9B08F2F899DCE0077A171 /* PathTracingIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */; };
 		F2D9B0C32F89F5070077A171 /* ProgressiveConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C22F89F5070077A171 /* ProgressiveConfig.h */; };
 		F2D9B0C72F89F7B40077A171 /* AdaptiveSamplingConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */; };
-		F2A5C0D12FB30E000077A171 /* OidnConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A5C0D02FB30E000077A171 /* OidnConfig.h */; };
-		F2A5C0E12FC50E000077A171 /* RasterizerDefaults.h in Headers */ = {isa = PBXBuildFile; fileRef = F2A5C0E02FC50E000077A171 /* RasterizerDefaults.h */; };
 		F2D9B0C82F89F7B40077A171 /* AliasTable.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C52F89F7B40077A171 /* AliasTable.h */; };
 		F2D9B0C92F89F7B40077A171 /* BDPTUtilities.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */; };
 		F2D9B0CC2F8A8DEC0077A171 /* PathVertexEval.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0CB2F8A8DEC0077A171 /* PathVertexEval.h */; };
@@ -1700,6 +1669,37 @@
 		F2EE004000000000000000C1 /* RayDifferentials.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE004000000000000000A1 /* RayDifferentials.h */; };
 		F2EE004100000000000000B1 /* TextureFootprintCompute.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE004100000000000000A1 /* TextureFootprintCompute.h */; };
 		F2EE004100000000000000C1 /* TextureFootprintCompute.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE004100000000000000A1 /* TextureFootprintCompute.h */; };
+		FA00000000000000000000F3 /* FrameStoreColorSpace.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */; };
+		FA00000000000000000000F4 /* FrameStoreColorSpace.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */; };
+		FA00000000000000000000F5 /* FrameStoreColorSpace.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F1 /* FrameStoreColorSpace.h */; };
+		FA00000000000000000000F8 /* TargetFormat.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F7 /* TargetFormat.cpp */; };
+		FA00000000000000000000F9 /* TargetFormat.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F7 /* TargetFormat.cpp */; };
+		FA00000000000000000000FA /* TargetFormat.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F6 /* TargetFormat.h */; };
+		FA00000000000000000000FD /* ViewTransform.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000FC /* ViewTransform.cpp */; };
+		FA00000000000000000000FE /* ViewTransform.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000FC /* ViewTransform.cpp */; };
+		FA00000000000000000000FF /* ViewTransform.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000FB /* ViewTransform.h */; };
+		FA00000000000000000001F3 /* FrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F2 /* FrameStore.cpp */; };
+		FA00000000000000000001F4 /* FrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F2 /* FrameStore.cpp */; };
+		FA00000000000000000001F5 /* FrameStore.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F1 /* FrameStore.h */; };
+		FA00000000000000000001F7 /* Channel.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F6 /* Channel.h */; };
+		FA00000000000000000001F9 /* IRenderObserver.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000001F8 /* IRenderObserver.h */; };
+		FA00000000000000000002F1 /* FrameEncoders.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000002F0 /* FrameEncoders.cpp */; };
+		FA00000000000000000002F2 /* FrameEncoders.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000002F0 /* FrameEncoders.cpp */; };
+		FA00000000000000000002F4 /* FrameEncoders.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000002F3 /* FrameEncoders.h */; };
+		FA00000000000000000002F6 /* IFrameEncoder.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000002F5 /* IFrameEncoder.h */; };
+		FA00000000000000000003F1 /* FrameSink.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F0 /* FrameSink.cpp */; };
+		FA00000000000000000003F2 /* FrameSink.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F0 /* FrameSink.cpp */; };
+		FA00000000000000000003F4 /* FrameSink.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F3 /* FrameSink.h */; };
+		FA00000000000000000003F6 /* FileEncoderObserver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F5 /* FileEncoderObserver.cpp */; };
+		FA00000000000000000003F7 /* FileEncoderObserver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F5 /* FileEncoderObserver.cpp */; };
+		FA00000000000000000003F9 /* FileEncoderObserver.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000003F8 /* FileEncoderObserver.h */; };
+		FA00000000000000000004F1 /* ViewportFrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000004F0 /* ViewportFrameStore.cpp */; };
+		FA00000000000000000004F2 /* ViewportFrameStore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000004F0 /* ViewportFrameStore.cpp */; };
+		FA00000000000000000004F4 /* ViewportFrameStore.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000004F3 /* ViewportFrameStore.h */; };
+		FCA01000000000000000A001 /* ICameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
+		FCA01000000000000000A002 /* ICameraManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A003 /* ICameraManager.h */; };
+		FCA01000000000000000A004 /* CameraManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A006 /* CameraManager.h */; };
+		FCA01000000000000000A005 /* CameraManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FCA01000000000000000A006 /* CameraManager.h */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -1753,8 +1753,6 @@
 		6DBFAA5209C4D2A20048A09D /* TranslucentPelPhotonMapShaderOp.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TranslucentPelPhotonMapShaderOp.h; sourceTree = "<group>"; };
 		6DBFAA5309C4D2A20048A09D /* TransparencyShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TransparencyShaderOp.cpp; sourceTree = "<group>"; };
 		6DBFAA5409C4D2A20048A09D /* TransparencyShaderOp.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TransparencyShaderOp.h; sourceTree = "<group>"; };
-		B7A4ED01F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AlphaTestShaderOp.cpp; sourceTree = "<group>"; };
-		B7A4ED02F0DE4E61A0A3D001 /* AlphaTestShaderOp.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AlphaTestShaderOp.h; sourceTree = "<group>"; };
 		6DBFAA8109C4D2CD0048A09D /* commandconsole.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; name = commandconsole.cpp; path = ../../../src/RISE/commandconsole.cpp; sourceTree = SOURCE_ROOT; };
 		6DFD32ED0A0FBB1D00E99FBE /* CPU_Count.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CPU_Count.cpp; sourceTree = "<group>"; };
 		6DFD32EE0A0FBB1D00E99FBE /* CPU.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CPU.h; sourceTree = "<group>"; };
@@ -1764,6 +1762,18 @@
 		6DFD32F50A0FBBAA00E99FBE /* EXRWriter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EXRWriter.h; sourceTree = "<group>"; };
 		876B3710A0D34ED183373077 /* BezierClipping.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BezierClipping.h; sourceTree = "<group>"; };
 		8DD76F6C0486A84900D96B5E /* rise */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = rise; sourceTree = BUILT_PRODUCTS_DIR; };
+		AAB7C04202604280000000A3 /* VertexColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = VertexColorPainter.h; sourceTree = "<group>"; };
+		ACE1000000000000000000A2 /* BVH.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BVH.h; sourceTree = "<group>"; };
+		ACE1000000000000000000A3 /* AccelerationConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AccelerationConfig.h; sourceTree = "<group>"; };
+		B7A4ED01F0DE4E61A0A3D001 /* AlphaTestShaderOp.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AlphaTestShaderOp.cpp; sourceTree = "<group>"; };
+		B7A4ED02F0DE4E61A0A3D001 /* AlphaTestShaderOp.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AlphaTestShaderOp.h; sourceTree = "<group>"; };
+		B7A4ED10F0DE4E61A0A3D001 /* SheenBRDF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SheenBRDF.h; sourceTree = "<group>"; };
+		B7A4ED11F0DE4E61A0A3D001 /* SheenBRDF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SheenBRDF.cpp; sourceTree = "<group>"; };
+		B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SheenSPF.h; sourceTree = "<group>"; };
+		B7A4ED13F0DE4E61A0A3D001 /* SheenSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SheenSPF.cpp; sourceTree = "<group>"; };
+		B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SheenMaterial.h; sourceTree = "<group>"; };
+		CDA10000000000000000000A /* ControlledSmoothness2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ControlledSmoothness2DPainter.cpp; sourceTree = "<group>"; };
+		CDA10000000000000000000B /* ControlledSmoothness2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ControlledSmoothness2DPainter.h; sourceTree = "<group>"; };
 		DDDD00000000000000000005 /* DisplacedGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DisplacedGeometry.cpp; sourceTree = "<group>"; };
 		DDDD00000000000000000006 /* DisplacedGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DisplacedGeometry.h; sourceTree = "<group>"; };
 		DDDD0000000000000000000B /* GerstnerWavePainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GerstnerWavePainter.cpp; sourceTree = "<group>"; };
@@ -1793,11 +1803,6 @@
 		F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HeterogeneousMedium.cpp; sourceTree = "<group>"; };
 		F24C545B2F84597B009AF16D /* GGXBRDF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXBRDF.h; sourceTree = "<group>"; };
 		F24C545C2F84597B009AF16D /* GGXBRDF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = GGXBRDF.cpp; sourceTree = "<group>"; };
-		B7A4ED10F0DE4E61A0A3D001 /* SheenBRDF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SheenBRDF.h; sourceTree = "<group>"; };
-		B7A4ED11F0DE4E61A0A3D001 /* SheenBRDF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SheenBRDF.cpp; sourceTree = "<group>"; };
-		B7A4ED12F0DE4E61A0A3D001 /* SheenSPF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SheenSPF.h; sourceTree = "<group>"; };
-		B7A4ED13F0DE4E61A0A3D001 /* SheenSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SheenSPF.cpp; sourceTree = "<group>"; };
-		B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SheenMaterial.h; sourceTree = "<group>"; };
 		F24C545D2F84597B009AF16D /* GGXMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXMaterial.h; sourceTree = "<group>"; };
 		F24C545E2F84597B009AF16D /* GGXSPF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GGXSPF.h; sourceTree = "<group>"; };
 		F24C545F2F84597B009AF16D /* GGXSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = GGXSPF.cpp; sourceTree = "<group>"; };
@@ -1932,7 +1937,6 @@
 		F27F0854069C428F0069C9E5 /* IBilinearPatchGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IBilinearPatchGeometry.h; sourceTree = "<group>"; };
 		F27F0856069C428F0069C9E5 /* IBuffer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IBuffer.h; sourceTree = "<group>"; };
 		F27F0857069C428F0069C9E5 /* ICamera.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICamera.h; sourceTree = "<group>"; };
-		FCA01000000000000000A003 /* ICameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICameraManager.h; sourceTree = "<group>"; };
 		F27F0858069C428F0069C9E5 /* ICommunicator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICommunicator.h; sourceTree = "<group>"; };
 		F27F0859069C428F0069C9E5 /* ICubicInterpolator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICubicInterpolator.h; sourceTree = "<group>"; };
 		F27F085A069C428F0069C9E5 /* IDeletedCallback.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IDeletedCallback.h; sourceTree = "<group>"; };
@@ -2035,7 +2039,6 @@
 		F27F08C0069C42900069C9E5 /* DAGObjectManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DAGObjectManager.h; sourceTree = "<group>"; };
 		F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DeletedCallbackDispatcher.h; sourceTree = "<group>"; };
 		F27F08C2069C42900069C9E5 /* Function1DManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function1DManager.h; sourceTree = "<group>"; };
-		FCA01000000000000000A006 /* CameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CameraManager.h; sourceTree = "<group>"; };
 		F27F08C3069C42900069C9E5 /* Function2DManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function2DManager.h; sourceTree = "<group>"; };
 		F27F08C4069C42900069C9E5 /* GenericManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GenericManager.h; sourceTree = "<group>"; };
 		F27F08C5069C42900069C9E5 /* GeometryManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GeometryManager.h; sourceTree = "<group>"; };
@@ -2125,8 +2128,6 @@
 		F27F091C069C42900069C9E5 /* WardIsotropicGaussianSPF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = WardIsotropicGaussianSPF.h; sourceTree = "<group>"; };
 		F27F091E069C42900069C9E5 /* BumpMap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = BumpMap.cpp; sourceTree = "<group>"; };
 		F27F091F069C42900069C9E5 /* BumpMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BumpMap.h; sourceTree = "<group>"; };
-		F2C0F001069C42900069C9E5 /* NormalMap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = NormalMap.cpp; sourceTree = "<group>"; };
-		F2C0F002069C42900069C9E5 /* NormalMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = NormalMap.h; sourceTree = "<group>"; };
 		F27F0921069C42900069C9E5 /* InterpolatedNoise.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = InterpolatedNoise.cpp; sourceTree = "<group>"; };
 		F27F0922069C42900069C9E5 /* InterpolatedNoise.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = InterpolatedNoise.h; sourceTree = "<group>"; };
 		F27F0923069C42900069C9E5 /* Noise.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Noise.h; sourceTree = "<group>"; };
@@ -2160,8 +2161,6 @@
 		F27F0941069C42900069C9E5 /* Painter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Painter.h; sourceTree = "<group>"; };
 		F27F0942069C42900069C9E5 /* Perlin2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Perlin2DPainter.cpp; sourceTree = "<group>"; };
 		F27F0943069C42900069C9E5 /* Perlin2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Perlin2DPainter.h; sourceTree = "<group>"; };
-		CDA10000000000000000000A /* ControlledSmoothness2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ControlledSmoothness2DPainter.cpp; sourceTree = "<group>"; };
-		CDA10000000000000000000B /* ControlledSmoothness2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ControlledSmoothness2DPainter.h; sourceTree = "<group>"; };
 		F27F0944069C42900069C9E5 /* Perlin3DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Perlin3DPainter.cpp; sourceTree = "<group>"; };
 		F27F0945069C42900069C9E5 /* Perlin3DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Perlin3DPainter.h; sourceTree = "<group>"; };
 		F27F0946069C42900069C9E5 /* SpectralColorPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SpectralColorPainter.cpp; sourceTree = "<group>"; };
@@ -2169,7 +2168,6 @@
 		F27F0948069C42900069C9E5 /* TexturePainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TexturePainter.cpp; sourceTree = "<group>"; };
 		F27F0949069C42900069C9E5 /* TexturePainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TexturePainter.h; sourceTree = "<group>"; };
 		F27F094A069C42900069C9E5 /* UniformColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = UniformColorPainter.h; sourceTree = "<group>"; };
-		AAB7C04202604280000000A3 /* VertexColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = VertexColorPainter.h; sourceTree = "<group>"; };
 		F27F094B069C42900069C9E5 /* Voronoi2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Voronoi2DPainter.cpp; sourceTree = "<group>"; };
 		F27F094C069C42900069C9E5 /* Voronoi2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Voronoi2DPainter.h; sourceTree = "<group>"; };
 		F27F094D069C42900069C9E5 /* Voronoi3DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Voronoi3DPainter.cpp; sourceTree = "<group>"; };
@@ -2225,18 +2223,6 @@
 		F27F0982069C42900069C9E5 /* NNBRasterImageAccessor.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = NNBRasterImageAccessor.h; sourceTree = "<group>"; };
 		F27F0983069C42900069C9E5 /* PNGReader.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PNGReader.cpp; sourceTree = "<group>"; };
 		F27F0984069C42900069C9E5 /* PNGReader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PNGReader.h; sourceTree = "<group>"; };
-		F2C0EE01069C42900069C9E5 /* JPEGReader.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = JPEGReader.cpp; sourceTree = "<group>"; };
-		F2C0EE02069C42900069C9E5 /* JPEGReader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = JPEGReader.h; sourceTree = "<group>"; };
-		F2C0EE03069C42900069C9E5 /* stb_image.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = stb_image.h; sourceTree = "<group>"; };
-		F2C0EE04069C42900069C9E5 /* stb_image.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = stb_image.cpp; sourceTree = "<group>"; };
-		F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GLTFSceneImporter.cpp; sourceTree = "<group>"; };
-		F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GLTFSceneImporter.h; sourceTree = "<group>"; };
-		F2D1A003069C42900069C9E5 /* ChannelPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChannelPainter.h; sourceTree = "<group>"; };
-		F2D1A004069C42900069C9E5 /* UVTransformPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = UVTransformPainter.h; sourceTree = "<group>"; };
-		F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TexCoord1Painter.h; sourceTree = "<group>"; };
-		F2D1A006069C42900069C9E5 /* CharlieSheen.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CharlieSheen.h; sourceTree = "<group>"; };
-		F2C0EF03069C42900069C9E5 /* cgltf.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = cgltf.h; sourceTree = "<group>"; };
-		F2C0EF04069C42900069C9E5 /* cgltf.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = cgltf.cpp; sourceTree = "<group>"; };
 		F27F0985069C42900069C9E5 /* PNGWriter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PNGWriter.cpp; sourceTree = "<group>"; };
 		F27F0986069C42900069C9E5 /* PNGWriter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PNGWriter.h; sourceTree = "<group>"; };
 		F27F0987069C42900069C9E5 /* PPMWriter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PPMWriter.cpp; sourceTree = "<group>"; };
@@ -2436,14 +2422,22 @@
 		F2A00000000000000000001B /* SMSPhoton.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSPhoton.h; sourceTree = "<group>"; };
 		F2A00000000000000000001D /* SMSPhotonMap.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SMSPhotonMap.h; sourceTree = "<group>"; };
 		F2A00000000000000000001F /* SMSPhotonMap.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SMSPhotonMap.cpp; sourceTree = "<group>"; };
+		F2A5C0D02FB30E000077A171 /* OidnConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OidnConfig.h; sourceTree = "<group>"; };
+		F2A5C0E02FC50E000077A171 /* RasterizerDefaults.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RasterizerDefaults.h; sourceTree = "<group>"; };
 		F2B10A000000000000BA5E00 /* BidirectionalRasterizerBase.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BidirectionalRasterizerBase.h; sourceTree = "<group>"; };
 		F2B10A000000000000BA5E01 /* BidirectionalRasterizerBase.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BidirectionalRasterizerBase.cpp; sourceTree = "<group>"; };
+		F2C0EE01069C42900069C9E5 /* JPEGReader.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = JPEGReader.cpp; sourceTree = "<group>"; };
+		F2C0EE02069C42900069C9E5 /* JPEGReader.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = JPEGReader.h; sourceTree = "<group>"; };
+		F2C0EE03069C42900069C9E5 /* stb_image.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = stb_image.h; sourceTree = "<group>"; };
+		F2C0EE04069C42900069C9E5 /* stb_image.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = stb_image.cpp; sourceTree = "<group>"; };
+		F2C0EF03069C42900069C9E5 /* cgltf.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = cgltf.h; sourceTree = "<group>"; };
+		F2C0EF04069C42900069C9E5 /* cgltf.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = cgltf.cpp; sourceTree = "<group>"; };
+		F2C0F001069C42900069C9E5 /* NormalMap.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = NormalMap.cpp; sourceTree = "<group>"; };
+		F2C0F002069C42900069C9E5 /* NormalMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = NormalMap.h; sourceTree = "<group>"; };
 		F2C5D5252F6C725300546C97 /* CompositeEmitter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CompositeEmitter.h; sourceTree = "<group>"; };
 		F2C5D5262F6C725300546C97 /* CompositeEmitter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CompositeEmitter.cpp; sourceTree = "<group>"; };
 		F2C5D55C2F6CD86F00546C97 /* BSPTreeSAH.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BSPTreeSAH.h; sourceTree = "<group>"; };
 		F2C5D55D2F6CD86F00546C97 /* BSPTreeSAHNode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BSPTreeSAHNode.h; sourceTree = "<group>"; };
-		ACE1000000000000000000A2 /* BVH.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BVH.h; sourceTree = "<group>"; };
-		ACE1000000000000000000A3 /* AccelerationConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AccelerationConfig.h; sourceTree = "<group>"; };
 		F2C5D5622F6E447400546C97 /* RasterizerStateCache.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RasterizerStateCache.h; sourceTree = "<group>"; };
 		F2C5D5632F6E447400546C97 /* SplatFilm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SplatFilm.h; sourceTree = "<group>"; };
 		F2C5D5642F6E447400546C97 /* SplatFilm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SplatFilm.cpp; sourceTree = "<group>"; };
@@ -2491,30 +2485,17 @@
 		F2C7C8EA2F7881E80030CB78 /* AOVBuffers.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AOVBuffers.cpp; sourceTree = "<group>"; };
 		F2C7C8EB2F7881E80030CB78 /* OIDNDenoiser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OIDNDenoiser.h; sourceTree = "<group>"; };
 		F2C7C8EC2F7881E80030CB78 /* OIDNDenoiser.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = OIDNDenoiser.cpp; sourceTree = "<group>"; };
-		FA00000000000000000000F1 /* FrameStoreColorSpace.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FrameStoreColorSpace.h; sourceTree = "<group>"; };
-		FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FrameStoreColorSpace.cpp; sourceTree = "<group>"; };
-		FA00000000000000000000F6 /* TargetFormat.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TargetFormat.h; sourceTree = "<group>"; };
-		FA00000000000000000000F7 /* TargetFormat.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = TargetFormat.cpp; sourceTree = "<group>"; };
-		FA00000000000000000000FB /* ViewTransform.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ViewTransform.h; sourceTree = "<group>"; };
-		FA00000000000000000000FC /* ViewTransform.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ViewTransform.cpp; sourceTree = "<group>"; };
-		FA00000000000000000001F1 /* FrameStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FrameStore.h; sourceTree = "<group>"; };
-		FA00000000000000000001F2 /* FrameStore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FrameStore.cpp; sourceTree = "<group>"; };
-		FA00000000000000000001F6 /* Channel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Channel.h; sourceTree = "<group>"; };
-		FA00000000000000000001F8 /* IRenderObserver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IRenderObserver.h; sourceTree = "<group>"; };
-		FA00000000000000000002F0 /* FrameEncoders.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FrameEncoders.cpp; sourceTree = "<group>"; };
-		FA00000000000000000002F3 /* FrameEncoders.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FrameEncoders.h; sourceTree = "<group>"; };
-		FA00000000000000000002F5 /* IFrameEncoder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IFrameEncoder.h; sourceTree = "<group>"; };
-		FA00000000000000000003F0 /* FrameSink.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FrameSink.cpp; sourceTree = "<group>"; };
-		FA00000000000000000003F3 /* FrameSink.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FrameSink.h; sourceTree = "<group>"; };
-		FA00000000000000000003F5 /* FileEncoderObserver.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FileEncoderObserver.cpp; sourceTree = "<group>"; };
-		FA00000000000000000003F8 /* FileEncoderObserver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FileEncoderObserver.h; sourceTree = "<group>"; };
-		FA00000000000000000004F0 /* ViewportFrameStore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ViewportFrameStore.cpp; sourceTree = "<group>"; };
-		FA00000000000000000004F3 /* ViewportFrameStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ViewportFrameStore.h; sourceTree = "<group>"; };
 		F2C7C8F32F78B0A70030CB78 /* PathGuidingField.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathGuidingField.h; sourceTree = "<group>"; };
 		F2C7C8F42F78B0A70030CB78 /* PathGuidingField.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathGuidingField.cpp; sourceTree = "<group>"; };
 		F2CD000100000000000000A1 /* ChunkDescriptor.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChunkDescriptor.h; sourceTree = "<group>"; };
 		F2CD000200000000000000A1 /* ChunkParserRegistry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChunkParserRegistry.h; sourceTree = "<group>"; };
 		F2CD000300000000000000A1 /* IAsciiChunkParser.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IAsciiChunkParser.h; sourceTree = "<group>"; };
+		F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GLTFSceneImporter.cpp; sourceTree = "<group>"; };
+		F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GLTFSceneImporter.h; sourceTree = "<group>"; };
+		F2D1A003069C42900069C9E5 /* ChannelPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChannelPainter.h; sourceTree = "<group>"; };
+		F2D1A004069C42900069C9E5 /* UVTransformPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = UVTransformPainter.h; sourceTree = "<group>"; };
+		F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TexCoord1Painter.h; sourceTree = "<group>"; };
+		F2D1A006069C42900069C9E5 /* CharlieSheen.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CharlieSheen.h; sourceTree = "<group>"; };
 		F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FilteredFilm.h; sourceTree = "<group>"; };
 		F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FilteredFilm.cpp; sourceTree = "<group>"; };
 		F2D9B0812F899DBE0077A171 /* PathTracingPelRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTracingPelRasterizer.h; sourceTree = "<group>"; };
@@ -2525,8 +2506,6 @@
 		F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathTracingIntegrator.cpp; sourceTree = "<group>"; };
 		F2D9B0C22F89F5070077A171 /* ProgressiveConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ProgressiveConfig.h; sourceTree = "<group>"; };
 		F2D9B0C42F89F7B40077A171 /* AdaptiveSamplingConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AdaptiveSamplingConfig.h; sourceTree = "<group>"; };
-		F2A5C0D02FB30E000077A171 /* OidnConfig.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OidnConfig.h; sourceTree = "<group>"; };
-		F2A5C0E02FC50E000077A171 /* RasterizerDefaults.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RasterizerDefaults.h; sourceTree = "<group>"; };
 		F2D9B0C52F89F7B40077A171 /* AliasTable.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AliasTable.h; sourceTree = "<group>"; };
 		F2D9B0C62F89F7B40077A171 /* BDPTUtilities.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BDPTUtilities.h; sourceTree = "<group>"; };
 		F2D9B0CA2F8A8DEC0077A171 /* PathTransportUtilities.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTransportUtilities.h; sourceTree = "<group>"; };
@@ -2621,6 +2600,27 @@
 		F2EE003300000000000000A1 /* EXRCompression.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EXRCompression.h; sourceTree = "<group>"; };
 		F2EE004000000000000000A1 /* RayDifferentials.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RayDifferentials.h; sourceTree = "<group>"; };
 		F2EE004100000000000000A1 /* TextureFootprintCompute.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TextureFootprintCompute.h; sourceTree = "<group>"; };
+		FA00000000000000000000F1 /* FrameStoreColorSpace.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FrameStoreColorSpace.h; sourceTree = "<group>"; };
+		FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FrameStoreColorSpace.cpp; sourceTree = "<group>"; };
+		FA00000000000000000000F6 /* TargetFormat.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TargetFormat.h; sourceTree = "<group>"; };
+		FA00000000000000000000F7 /* TargetFormat.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = TargetFormat.cpp; sourceTree = "<group>"; };
+		FA00000000000000000000FB /* ViewTransform.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ViewTransform.h; sourceTree = "<group>"; };
+		FA00000000000000000000FC /* ViewTransform.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ViewTransform.cpp; sourceTree = "<group>"; };
+		FA00000000000000000001F1 /* FrameStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FrameStore.h; sourceTree = "<group>"; };
+		FA00000000000000000001F2 /* FrameStore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FrameStore.cpp; sourceTree = "<group>"; };
+		FA00000000000000000001F6 /* Channel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Channel.h; sourceTree = "<group>"; };
+		FA00000000000000000001F8 /* IRenderObserver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IRenderObserver.h; sourceTree = "<group>"; };
+		FA00000000000000000002F0 /* FrameEncoders.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FrameEncoders.cpp; sourceTree = "<group>"; };
+		FA00000000000000000002F3 /* FrameEncoders.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FrameEncoders.h; sourceTree = "<group>"; };
+		FA00000000000000000002F5 /* IFrameEncoder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IFrameEncoder.h; sourceTree = "<group>"; };
+		FA00000000000000000003F0 /* FrameSink.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FrameSink.cpp; sourceTree = "<group>"; };
+		FA00000000000000000003F3 /* FrameSink.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FrameSink.h; sourceTree = "<group>"; };
+		FA00000000000000000003F5 /* FileEncoderObserver.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FileEncoderObserver.cpp; sourceTree = "<group>"; };
+		FA00000000000000000003F8 /* FileEncoderObserver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FileEncoderObserver.h; sourceTree = "<group>"; };
+		FA00000000000000000004F0 /* ViewportFrameStore.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ViewportFrameStore.cpp; sourceTree = "<group>"; };
+		FA00000000000000000004F3 /* ViewportFrameStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ViewportFrameStore.h; sourceTree = "<group>"; };
+		FCA01000000000000000A003 /* ICameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICameraManager.h; sourceTree = "<group>"; };
+		FCA01000000000000000A006 /* CameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CameraManager.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -2668,34 +2668,6 @@
 			name = rise;
 			sourceTree = "<group>";
 		};
-		F2C0EE05069C42900069C9E5 /* extlib */ = {
-			isa = PBXGroup;
-			children = (
-				F2C0EE06069C42900069C9E5 /* stb */,
-				F2C0EF06069C42900069C9E5 /* cgltf */,
-			);
-			name = extlib;
-			path = ../../../extlib;
-			sourceTree = SOURCE_ROOT;
-		};
-		F2C0EE06069C42900069C9E5 /* stb */ = {
-			isa = PBXGroup;
-			children = (
-				F2C0EE03069C42900069C9E5 /* stb_image.h */,
-				F2C0EE04069C42900069C9E5 /* stb_image.cpp */,
-			);
-			path = stb;
-			sourceTree = "<group>";
-		};
-		F2C0EF06069C42900069C9E5 /* cgltf */ = {
-			isa = PBXGroup;
-			children = (
-				F2C0EF03069C42900069C9E5 /* cgltf.h */,
-				F2C0EF04069C42900069C9E5 /* cgltf.cpp */,
-			);
-			path = cgltf;
-			sourceTree = "<group>";
-		};
 		08FB7795FE84155DC02AAC07 /* Source */ = {
 			isa = PBXGroup;
 			children = (
@@ -2727,6 +2699,15 @@
 				6DBFAA5009C4D2A20048A09D /* SubSurfaceScatteringShaderOp.h */,
 			);
 			path = SSS;
+			sourceTree = "<group>";
+		};
+		ACE1000000000000000000A1 /* Acceleration */ = {
+			isa = PBXGroup;
+			children = (
+				ACE1000000000000000000A2 /* BVH.h */,
+				ACE1000000000000000000A3 /* AccelerationConfig.h */,
+			);
+			path = Acceleration;
 			sourceTree = "<group>";
 		};
 		F24C3E022F54FB56005DA46B /* Frameworks */ = {
@@ -2806,15 +2787,6 @@
 			name = Library;
 			path = ../../../src/Library;
 			sourceTree = SOURCE_ROOT;
-		};
-		ACE1000000000000000000A1 /* Acceleration */ = {
-			isa = PBXGroup;
-			children = (
-				ACE1000000000000000000A2 /* BVH.h */,
-				ACE1000000000000000000A3 /* AccelerationConfig.h */,
-			);
-			path = Acceleration;
-			sourceTree = "<group>";
 		};
 		F27F07EB069C428F0069C9E5 /* Animation */ = {
 			isa = PBXGroup;
@@ -2935,15 +2907,6 @@
 				F27F0850069C428F0069C9E5 /* TriangleMeshLoaderRAW2.h */,
 			);
 			path = Geometry;
-			sourceTree = "<group>";
-		};
-		F2D1A100069C42900069C9E5 /* Importers */ = {
-			isa = PBXGroup;
-			children = (
-				F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */,
-				F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */,
-			);
-			path = Importers;
 			sourceTree = "<group>";
 		};
 		F27F0851069C428F0069C9E5 /* Interfaces */ = {
@@ -3841,6 +3804,43 @@
 				F27F0A59069C42900069C9E5 /* ZuckerHummelOperator.h */,
 			);
 			path = Volume;
+			sourceTree = "<group>";
+		};
+		F2C0EE05069C42900069C9E5 /* extlib */ = {
+			isa = PBXGroup;
+			children = (
+				F2C0EE06069C42900069C9E5 /* stb */,
+				F2C0EF06069C42900069C9E5 /* cgltf */,
+			);
+			name = extlib;
+			path = ../../../extlib;
+			sourceTree = SOURCE_ROOT;
+		};
+		F2C0EE06069C42900069C9E5 /* stb */ = {
+			isa = PBXGroup;
+			children = (
+				F2C0EE03069C42900069C9E5 /* stb_image.h */,
+				F2C0EE04069C42900069C9E5 /* stb_image.cpp */,
+			);
+			path = stb;
+			sourceTree = "<group>";
+		};
+		F2C0EF06069C42900069C9E5 /* cgltf */ = {
+			isa = PBXGroup;
+			children = (
+				F2C0EF03069C42900069C9E5 /* cgltf.h */,
+				F2C0EF04069C42900069C9E5 /* cgltf.cpp */,
+			);
+			path = cgltf;
+			sourceTree = "<group>";
+		};
+		F2D1A100069C42900069C9E5 /* Importers */ = {
+			isa = PBXGroup;
+			children = (
+				F2D1A001069C42900069C9E5 /* GLTFSceneImporter.cpp */,
+				F2D1A002069C42900069C9E5 /* GLTFSceneImporter.h */,
+			);
+			path = Importers;
 			sourceTree = "<group>";
 		};
 		F2E0FF0000000000000000G1 /* SceneEditorSuggestions */ = {

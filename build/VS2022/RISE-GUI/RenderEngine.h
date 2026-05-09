@@ -118,14 +118,14 @@ private:
     // so we can RenderToBuffer just the changed region (was: full
     // image every tile fire — ~4× regression vs legacy).  Frame-
     // complete uses full-image (once per frame, not hot).
-    void onVFSTileComplete(const RISE::Rect& halfOpenRoi);
-    void onVFSFrameComplete();
+    void onProductionVFSTileComplete(const RISE::Rect& halfOpenRoi);
+    void onProductionVFSFrameComplete();
     // halfOpenRoi == nullptr → full image; non-null → render only
     // the [y0, y1) × [x0, x1) region into m_pixelBuffer's matching
     // image-space slice.
     void renderViewportToBufferAndEmit_locked(unsigned int W, unsigned int H,
                                               const RISE::Rect* halfOpenRoi);
-    void ensureViewportFrameStoreAttached();
+    void ensureProductionVFSAttachedToRasterizer();
 
     RISE::IJobPriv* m_job = nullptr;
     std::atomic<bool> m_cancelFlag{false};
@@ -184,8 +184,8 @@ private:
     // dropped via FreeRasterizerOutputs() between renders.  The VFS
     // (and its FrameStore + observer chain) survives scene reloads
     // and rasterizer swaps — exactly the L4 design intent (§7.5).
-    RISE::Implementation::ViewportFrameStore* m_viewportFrameStore = nullptr;
-    bool                                      m_vfsAttachedToRasterizer = false;
+    RISE::Implementation::ViewportFrameStore* m_productionVFS = nullptr;
+    bool                                      m_productionVFSAttachedToRasterizer = false;
 
     // Live exposure-EV (atomic for cross-thread reads from the VFS
     // callback path on rasterizer workers vs setter calls from the

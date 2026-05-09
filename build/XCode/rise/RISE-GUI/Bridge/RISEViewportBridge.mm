@@ -25,6 +25,7 @@
 #include "Utilities/Reference.h"
 #include "SceneEditor/SceneEditController.h"
 #include "Rendering/InteractivePelRasterizer.h"
+#include "Rendering/ViewportFrameStore.h"
 
 #include <atomic>
 #include <vector>
@@ -84,12 +85,18 @@ public:
     ViewportPreviewSink()
     : mBlock( nil )
     , mController( nullptr )
+    , mFanoutVFS( nullptr )
     , mSuppressNext( false )
     {}
 
     virtual ~ViewportPreviewSink() {
         // _block is __strong; nilling on dealloc lets ARC release it.
         mBlock = nil;
+        // L5a round-4 — release our addref on the fan-out VFS.
+        if( mFanoutVFS ) {
+            mFanoutVFS->release();
+            mFanoutVFS = nullptr;
+        }
     }
 
     void SetBlock( RISEViewportImageBlock block ) {
@@ -100,14 +107,43 @@ public:
     // lifetime.  Used to query IsCancelRequested at end-of-pass.
     void SetController( SceneEditController* c ) { mController = c; }
 
+    // L5a round-4 — fan-out target for EDR.  When set, every
+    // OutputImage call ALSO drives `vfs->OutputImage(pImage, ...)`,
+    // which in turn fires the bridge's HDR/LDR observer block.
+    // SceneEditController calls `mInteractiveRasterizer->FreeRasterizer-
+    // Outputs()` before every render pass and re-attaches ONLY this
+    // sink (SceneEditController.cpp:1630-1631), so attaching VFS
+    // directly to the rasterizer doesn't work — the controller
+    // clobbers it.  Fanning out from inside this sink survives the
+    // clobber because we own the VFS reference here.  Addref'd on
+    // SetFanoutVFS, released on dtor.
+    void SetFanoutVFS( Implementation::ViewportFrameStore* vfs ) {
+        if( mFanoutVFS == vfs ) return;
+        if( vfs ) vfs->addref();
+        if( mFanoutVFS ) mFanoutVFS->release();
+        mFanoutVFS = vfs;
+    }
+
     // Set true to drop the very next OutputImage call.  Auto-clears
     // after one drop.  Atomic so the bridge can call this from the
     // UI thread while the render thread fires OutputImage from a
     // worker thread.
     void SuppressNextFrame() { mSuppressNext.store( true ); }
 
-    // Per-tile callback fires many times per render pass — explicitly
-    // ignore.  We don't want the user seeing tile-by-tile fills.
+    // Per-tile callback fires many times per render pass — and
+    // each fire would draw red tile-corner toggles (DrawToggles)
+    // into the IRasterImage before pixels are written.  Legacy
+    // NSImage path ignores per-tile fires entirely.  L5a round-5:
+    // we ALSO suppress fan-out to the interactive VFS at this
+    // level — interactive's frame-complete-only observer is what
+    // drives the Metal layer.  The interactive VFS's tile-callback
+    // slot is intentionally left unbound (see
+    // `-ensureInteractiveVFSCreated` in RISEBridge.mm), so even
+    // though VFS::OutputIntermediateImage processes tile pixels
+    // into the FrameStore, no observer fires → no Metal-layer
+    // present per tile → no red flash visible to the user.
+    // Round-4 fanned this and produced the red flashing the user
+    // reported; round-5 reverts that.
     void OutputIntermediateImage( const IRasterImage& /*pImage*/,
                                   const RISE::Rect* /*pRegion*/ ) override {
         // intentionally empty
@@ -128,20 +164,27 @@ public:
     // serves a distinct purpose (preserving the production image
     // until the user starts dragging).
     void OutputImage( const IRasterImage& pImage,
-                      const RISE::Rect* /*pRegion*/,
-                      const unsigned int /*frame*/ ) override {
+                      const RISE::Rect* pRegion,
+                      const unsigned int frame ) override {
         if( mSuppressNext.exchange( false ) ) {
             // One-shot suppression (post-production) — skip exactly
             // this dispatch.  The next render's frame goes through.
             return;
         }
+        // L5a round-4 — fan into VFS first so EDR mode gets the
+        // frame-complete observer fire (which drives the Metal
+        // layer present).  Then run the legacy NSImage path.
+        if( mFanoutVFS ) {
+            mFanoutVFS->OutputImage( pImage, pRegion, frame );
+        }
         BlitWholeAndDispatch( pImage );
     }
 
 private:
-    __strong RISEViewportImageBlock mBlock;
-    SceneEditController*            mController;     // borrowed
-    std::atomic<bool>               mSuppressNext;
+    __strong RISEViewportImageBlock                mBlock;
+    SceneEditController*                            mController;   // borrowed
+    Implementation::ViewportFrameStore*             mFanoutVFS;    // strong (addref'd in SetFanoutVFS)
+    std::atomic<bool>                               mSuppressNext;
 
     static unsigned char Clamp8( double v ) {
         if( v <= 0.0 ) return 0;
@@ -291,6 +334,24 @@ private:
 
     _previewSink = new ViewportPreviewSink();
     _previewSink->addref();
+
+    // L5a round-4 — fan the preview sink's OutputImage /
+    // OutputIntermediateImage calls into the host bridge's VFS so
+    // progressive interactive renders also drive the EDR / HDR /
+    // LDR observer block.  Round-3 tried attaching VFS directly to
+    // `_interactiveRasterizer`, but `SceneEditController::DoOnePass`
+    // calls `FreeRasterizerOutputs()` before re-adding only its
+    // own preview sink each pass (SceneEditController.cpp:1630-1631),
+    // so any external rasterizer-attach is dropped.  Fanning from
+    // inside the sink survives the clobber because the sink owns
+    // the VFS reference itself.  Both paths fire from every pass:
+    // the legacy NSImage block (ViewportPreviewSink → Swift image
+    // binding) AND the VFS observer (HDR block → Metal layer).
+    void* opaqueVFS = [_host opaqueInteractiveViewportFrameStore];
+    if (opaqueVFS) {
+        _previewSink->SetFanoutVFS(
+            static_cast<Implementation::ViewportFrameStore*>(opaqueVFS));
+    }
 }
 
 - (void)releaseLivePreview {

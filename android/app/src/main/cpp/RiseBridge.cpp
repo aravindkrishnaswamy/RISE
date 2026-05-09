@@ -60,18 +60,23 @@ RiseBridge::~RiseBridge() {
     teardownJob();
     // Tear-down ordering: teardownJob() destroys the Job (which destroys
     // the rasterizer, joining its worker pool en route).  By the time
-    // teardownJob() returns no callbacks can be in flight against the
-    // bridge's VFS.  Now safely release the bridge's VFS reference,
+    // teardownJob() returns no callbacks can be in flight against
+    // either VFS.  Now safely release the bridge's VFS references,
     // after defensively nulling the callbacks (L4 round-4 P2-B) so
     // any future late-fire bypasses the captured `this` lambda.
-    if (m_viewportFrameStore) {
-        m_viewportFrameStore->SetTileCompleteCallback(nullptr);
-        m_viewportFrameStore->SetFrameCompleteCallback(nullptr);
-        m_viewportFrameStore->SetPreDenoiseCompleteCallback(nullptr);
-        m_viewportFrameStore->SetDenoiseCompleteCallback(nullptr);
-        m_viewportFrameStore->release();
-        m_viewportFrameStore = nullptr;
-    }
+    // Round-5: same treatment for both production and interactive VFS.
+    auto teardownVFS = [](RISE::Implementation::ViewportFrameStore*& vfs) {
+        if (vfs) {
+            vfs->SetTileCompleteCallback(nullptr);
+            vfs->SetFrameCompleteCallback(nullptr);
+            vfs->SetPreDenoiseCompleteCallback(nullptr);
+            vfs->SetDenoiseCompleteCallback(nullptr);
+            vfs->release();
+            vfs = nullptr;
+        }
+    };
+    teardownVFS(m_productionVFS);
+    teardownVFS(m_interactiveVFS);
     {
         std::lock_guard<std::mutex> lock(m_fbMutex);
         std::free(m_framebuffer);
@@ -176,7 +181,7 @@ void RiseBridge::setCallback(JNIEnv* env, jobject kotlinCallback) {
     // ViewModel onCleared without first joining the
     // Dispatchers.IO-launched nativeRasterize coroutine, so this
     // path can race the rasterizer worker pool firing
-    // onProgressTick / onLogLine / onVFSTileComplete.  Without
+    // onProgressTick / onLogLine / onProductionVFSTileComplete.  Without
     // the mutex the pre-L4d setCallback would
     // DeleteGlobalRef under the worker's nose and the next
     // CallVoidMethod would UAF the jobject.
@@ -203,7 +208,7 @@ void RiseBridge::teardownJob() {
         if (RISE::IRasterizer* rasterizer = m_job->GetRasterizer()) {
             rasterizer->FreeRasterizerOutputs();
         }
-        m_vfsAttachedToRasterizer = false;
+        m_productionVFSAttachedToRasterizer = false;
         // RISE_CreateJobPriv returns a refcounted pointer; the safe cleanup
         // is to release the reference we hold. The library's Reference
         // implementation will delete the job when refcount hits zero.
@@ -222,7 +227,7 @@ bool RiseBridge::loadScene(const std::string& absPath) {
 
     // Lazily create the progress callback adapter.  The legacy
     // IJobRasterizerOutput adapter is gone — VFS replaces it (created
-    // lazily inside ensureViewportFrameStoreAttached on the first
+    // lazily inside ensureProductionVFSAttachedToRasterizer on the first
     // rasterize call once the rasterizer exists).
     if (!m_progress) m_progress.reset(newProgressCallback(this));
 
@@ -261,9 +266,9 @@ bool RiseBridge::rasterize() {
     // dance to avoid stacking duplicate references.
     if (RISE::IRasterizer* raster = m_job->GetRasterizer()) {
         raster->FreeRasterizerOutputs();
-        m_vfsAttachedToRasterizer = false;
+        m_productionVFSAttachedToRasterizer = false;
     }
-    ensureViewportFrameStoreAttached();
+    ensureProductionVFSAttachedToRasterizer();
 
     // BLOCKING. Library spawns its own pthread worker pool, dispatches tiles,
     // joins on completion. Tile callbacks fire from the workers; cancellation
@@ -385,38 +390,38 @@ void RiseBridge::writeDirtyRegion(const unsigned short* src16,
 // JNI hop the legacy path used.  Net change: no RGBA16 staging
 // buffer, no per-pixel `>> 8` walk in the bridge — the LDR path
 // runs once inside RenderToBuffer.
-void RiseBridge::ensureViewportFrameStoreAttached() {
+void RiseBridge::ensureProductionVFSAttachedToRasterizer() {
     if (!m_job) return;
     RISE::IRasterizer* rasterizer = m_job->GetRasterizer();
     if (!rasterizer) return;
 
-    if (!m_viewportFrameStore) {
-        m_viewportFrameStore = new RISE::Implementation::ViewportFrameStore();
+    if (!m_productionVFS) {
+        m_productionVFS = new RISE::Implementation::ViewportFrameStore();
 
         // Lambda captures `this` raw; the bridge is a process-wide
         // singleton (getBridge()) — its lifetime spans the whole
         // process, so any VFS callback always finds `this` valid.
-        m_viewportFrameStore->SetTileCompleteCallback(
+        m_productionVFS->SetTileCompleteCallback(
             [this](const RISE::Rect& roi, uint64_t /*gen*/) {
-                this->onVFSTileComplete(&roi);
+                this->onProductionVFSTileComplete(&roi);
             });
-        m_viewportFrameStore->SetFrameCompleteCallback(
+        m_productionVFS->SetFrameCompleteCallback(
             [this](unsigned int /*frame*/, uint64_t /*gen*/) {
-                this->onVFSFrameComplete();
+                this->onProductionVFSFrameComplete();
             });
-        m_viewportFrameStore->SetPreDenoiseCompleteCallback(
+        m_productionVFS->SetPreDenoiseCompleteCallback(
             [this](unsigned int /*frame*/, uint64_t /*gen*/) {
-                this->onVFSFrameComplete();
+                this->onProductionVFSFrameComplete();
             });
-        m_viewportFrameStore->SetDenoiseCompleteCallback(
+        m_productionVFS->SetDenoiseCompleteCallback(
             [this](unsigned int /*frame*/, uint64_t /*gen*/) {
-                this->onVFSFrameComplete();
+                this->onProductionVFSFrameComplete();
             });
     }
 
-    if (!m_vfsAttachedToRasterizer) {
-        m_viewportFrameStore->Attach(rasterizer);
-        m_vfsAttachedToRasterizer = true;
+    if (!m_productionVFSAttachedToRasterizer) {
+        m_productionVFS->Attach(rasterizer);
+        m_productionVFSAttachedToRasterizer = true;
     }
 }
 
@@ -426,13 +431,13 @@ void RiseBridge::ensureViewportFrameStoreAttached() {
 // area) — was a ~4× regression vs the legacy `>> 8`-of-tile path.
 // `halfOpenRoi == nullptr` → render full image (used by frame-
 // complete and exposure-scrub paths).
-void RiseBridge::onVFSTileComplete(const RISE::Rect* halfOpenRoi) {
-    if (!m_viewportFrameStore) return;
+void RiseBridge::onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi) {
+    if (!m_productionVFS) return;
     // GetDimensions takes chainMutex_ shared internally — safe against
     // a concurrent resolution-change reallocation in the rasterizer
     // thread (see L4 round-4 P2-D adversarial review).
     unsigned int W = 0, H = 0;
-    m_viewportFrameStore->GetDimensions(W, H);
+    m_productionVFS->GetDimensions(W, H);
     if (W == 0 || H == 0) return;
 
     // Make sure m_framebuffer is sized + Kotlin has been notified
@@ -469,11 +474,11 @@ void RiseBridge::onVFSTileComplete(const RISE::Rect* halfOpenRoi) {
             // and pass the FULL row stride.
             uint8_t* base = m_framebuffer
                             + (static_cast<size_t>(emitTop) * W + emitLeft) * 4;
-            m_viewportFrameStore->RenderToBuffer(
+            m_productionVFS->RenderToBuffer(
                 base, static_cast<size_t>(W) * 4,
                 *halfOpenRoi, TargetFormat::RGBA8_sRGB, xf);
         } else {
-            m_viewportFrameStore->RenderToBuffer(
+            m_productionVFS->RenderToBuffer(
                 m_framebuffer, static_cast<size_t>(W) * 4,
                 RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf);
         }
@@ -499,24 +504,105 @@ void RiseBridge::onVFSTileComplete(const RISE::Rect* halfOpenRoi) {
     }
 }
 
-void RiseBridge::onVFSFrameComplete() {
+void RiseBridge::onProductionVFSFrameComplete() {
     // Frame-complete fires once per frame (not per tile) — full-image
     // emit guarantees post-denoise / post-resolve coherence.
-    onVFSTileComplete(nullptr);
+    onProductionVFSTileComplete(nullptr);
+}
+
+// L5a round-5 — interactive VFS lazy-create.  ONLY frame-complete
+// observers are bound; tile-complete is intentionally left
+// unwired so per-tile OutputIntermediateImage events from the
+// interactive rasterizer don't drive m_framebuffer writes (no
+// DrawToggles flash, no preview-scale resolution-thrash visible
+// to Compose).  Mirrors macOS RISEBridge.mm:ensureInteractiveVFSCreated.
+void RiseBridge::ensureInteractiveVFSCreated() {
+    if (m_interactiveVFS) return;
+    m_interactiveVFS = new RISE::Implementation::ViewportFrameStore();
+    // Tile-complete deliberately NOT bound — see method doc.
+    m_interactiveVFS->SetFrameCompleteCallback(
+        [this](unsigned int /*frame*/, uint64_t /*gen*/) {
+            this->onInteractiveVFSFrameComplete();
+        });
+    m_interactiveVFS->SetPreDenoiseCompleteCallback(
+        [this](unsigned int /*frame*/, uint64_t /*gen*/) {
+            this->onInteractiveVFSFrameComplete();
+        });
+    m_interactiveVFS->SetDenoiseCompleteCallback(
+        [this](unsigned int /*frame*/, uint64_t /*gen*/) {
+            this->onInteractiveVFSFrameComplete();
+        });
+}
+
+RISE::Implementation::ViewportFrameStore* RiseBridge::getOrCreateInteractiveVFS() {
+    ensureInteractiveVFSCreated();
+    return m_interactiveVFS;
+}
+
+// L5a round-5 — interactive VFS frame-complete observer.  Same
+// shape as `onProductionVFSTileComplete(nullptr)` (full-image
+// path) but reads dims + RenderToBuffer's from the interactive
+// VFS, so the production VFS's pixels are not disturbed.  Both
+// VFSes currently render into the same `m_framebuffer` for
+// Compose display — a future landing can give interactive its
+// own overlay framebuffer; this method is the single Android-
+// side site that would change for that.
+void RiseBridge::onInteractiveVFSFrameComplete() {
+    if (!m_interactiveVFS) return;
+    unsigned int W = 0, H = 0;
+    m_interactiveVFS->GetDimensions(W, H);
+    if (W == 0 || H == 0) return;
+
+    ensureFramebuffer(W, H);
+
+    {
+        std::lock_guard<std::mutex> lock(m_fbMutex);
+        if (!m_framebuffer || m_fbWidth != W || m_fbHeight != H) return;
+        const ViewTransform xf = ViewTransform::ForLDRDisplay(
+            static_cast<float>(m_viewExposureEV.load()),
+            RISE::eDisplayTransform_None);
+        m_interactiveVFS->RenderToBuffer(
+            m_framebuffer, static_cast<size_t>(W) * 4,
+            RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf);
+    }
+
+    // Full-image dirty notification — interactive always emits the
+    // whole frame (no per-tile observer wiring), so we tell Compose
+    // the entire image is dirty.
+    {
+        std::lock_guard<std::mutex> lock(m_kotlinCallbackMutex);
+        if (m_kotlinCallback) {
+            JNIEnv* env = getJniEnv();
+            if (env) {
+                ScopedLocalFrame frame(env, 4);
+                env->CallVoidMethod(m_kotlinCallback, g_cb.onRegionInvalidated,
+                                    packRect(0, 0, H - 1, W - 1));
+                if (env->ExceptionCheck()) {
+                    env->ExceptionDescribe();
+                    env->ExceptionClear();
+                }
+            }
+        }
+    }
 }
 
 void RiseBridge::setViewExposureEV(double ev) {
     m_viewExposureEV.store(ev);
-    // Re-render the cached FrameStore at the new EV.  Slider scrub
-    // wants the FULL image refreshed; pass nullptr to land on the
-    // full-image path.
-    onVFSTileComplete(nullptr);
+    // Re-render BOTH VFS surfaces at the new EV.  Production
+    // re-runs through the full-image tile-complete path; interactive
+    // re-runs through its frame-complete path.  Round-5: round-trip
+    // both so the slider works whichever surface is currently
+    // displayed (Compose currently shows whichever wrote to
+    // m_framebuffer last; future split-buffer compose will pick
+    // per-layer).
+    onProductionVFSTileComplete(nullptr);
+    onInteractiveVFSFrameComplete();
 }
 
 bool RiseBridge::saveAs(const std::string& path,
                         const std::string& formatName,
                         double             ev) {
-    if (!m_viewportFrameStore) return false;
+    if (!m_productionVFS) return false;
     RISE::IFrameEncoder* enc =
         RISE::Implementation::FrameEncoderRegistry::Get().ByFormatName(
             formatName.c_str());
@@ -529,7 +615,7 @@ bool RiseBridge::saveAs(const std::string& path,
     opts.bpp           = 8;
     opts.viewTransform = ViewTransform::ForLDRDisplay(
         static_cast<float>(ev), RISE::eDisplayTransform_None);
-    return m_viewportFrameStore->SaveAs(path, enc, opts);
+    return m_productionVFS->SaveAs(path, enc, opts);
 }
 
 bool RiseBridge::onProgressTick(double progress, double total) {
@@ -636,17 +722,42 @@ class ViewportPreviewSink : public RISE::IRasterizerOutput,
                             public RISE::Implementation::Reference {
 public:
     explicit ViewportPreviewSink(RiseBridge* b) : m_bridge(b) {}
-    ~ViewportPreviewSink() override = default;
+    ~ViewportPreviewSink() override {
+        if (m_fanoutVFS) {
+            m_fanoutVFS->release();
+            m_fanoutVFS = nullptr;
+        }
+    }
 
     // Borrowed; the bridge keeps the controller alive for the sink's
     // lifetime.  Used to query IsCancelRequested at end-of-pass.
     void SetController(RISE::SceneEditController* c) { m_controller = c; }
+
+    // L5a round-5 — INTERACTIVE VFS to fan-out OutputImage into.
+    // The interactive rasterizer's per-pass output is fed into
+    // this VFS's frame-complete observer, which writes
+    // m_framebuffer + fires onRegionInvalidated.  Per-tile fires
+    // (OutputIntermediateImage) DELIBERATELY do NOT fan into VFS
+    // — they would drive per-tile observer fires (DrawToggles
+    // flash) AND would force the VFS to reallocate on every
+    // preview-scale change.  Frame-complete-only keeps it smooth.
+    // Mirrors macOS RISEViewportBridge.mm:ViewportPreviewSink::
+    // SetFanoutVFS.  Strong ref (addref'd here, released in dtor).
+    void SetFanoutVFS(RISE::Implementation::ViewportFrameStore* vfs) {
+        if (m_fanoutVFS == vfs) return;
+        if (vfs) vfs->addref();
+        if (m_fanoutVFS) m_fanoutVFS->release();
+        m_fanoutVFS = vfs;
+    }
 
     // Drop the very next OutputImage call.  Auto-clears after one drop.
     void SuppressNextFrame() { m_suppressNext.store(true); }
 
     // Per-tile callback fires many times per render — explicitly ignore
     // (matches the macOS / Windows policy: avoid distracting tile fills).
+    // L5a round-5: ALSO do not fan into VFS at this level — see
+    // SetFanoutVFS doc.  The interactive VFS's tile-complete observer
+    // is intentionally not bound (see RiseBridge::ensureInteractiveVFSCreated).
     void OutputIntermediateImage(const RISE::IRasterImage& /*pImage*/,
                                  const RISE::Rect* /*pRegion*/) override {}
 
@@ -658,8 +769,8 @@ public:
     // partial buffers visually usable.  The one-shot suppress is kept
     // for the post-production case.
     void OutputImage(const RISE::IRasterImage& pImage,
-                     const RISE::Rect* /*pRegion*/,
-                     const unsigned int /*frame*/) override {
+                     const RISE::Rect* pRegion,
+                     const unsigned int frame) override {
         if (!m_bridge) return;
         if (m_suppressNext.exchange(false)) {
             // One-shot suppression (post-production) — skip exactly
@@ -670,14 +781,22 @@ public:
         const unsigned int H = pImage.GetHeight();
         if (W == 0 || H == 0) return;
 
-        // Reuse the bridge's framebuffer: ensure it's allocated for these
-        // dimensions, then blit pixel by pixel.
-        m_bridge->ensureFramebuffer(W, H);
+        // L5a round-5 — fan into the interactive VFS if wired.
+        // VFS's OutputImage path copies pixels into the FrameStore
+        // and fires the frame-complete observer, which is what
+        // updates m_framebuffer + the JNI notification (single
+        // unified pixel-conversion + Compose-notify path).  When
+        // VFS isn't wired (e.g. very early / Metal-incapable build),
+        // fall back to the legacy manual blit so the viewport still
+        // shows pixels.
+        if (m_fanoutVFS) {
+            m_fanoutVFS->OutputImage(pImage, pRegion, frame);
+            return;
+        }
 
-        // Read into a temporary RGBA16 then call writeDirtyRegion which
-        // already handles RGBA16 → RGBA8 conversion + Kotlin notification.
-        // This keeps a single conversion + notification path for both
-        // production and viewport renders.
+        // Legacy fallback path — kept for back-compat in the
+        // unlikely case the interactive VFS isn't yet allocated.
+        m_bridge->ensureFramebuffer(W, H);
         std::vector<unsigned short> rgba16;
         rgba16.resize(static_cast<size_t>(W) * H * 4);
         for (unsigned int y = 0; y < H; ++y) {
@@ -699,9 +818,10 @@ public:
     }
 
 private:
-    RiseBridge*                m_bridge = nullptr;
-    RISE::SceneEditController* m_controller = nullptr;   // borrowed
-    std::atomic<bool>          m_suppressNext{false};
+    RiseBridge*                                  m_bridge = nullptr;
+    RISE::SceneEditController*                   m_controller = nullptr;   // borrowed
+    RISE::Implementation::ViewportFrameStore*    m_fanoutVFS = nullptr;    // strong (addref'd in SetFanoutVFS)
+    std::atomic<bool>                            m_suppressNext{false};
 };
 
 }  // anonymous namespace
@@ -723,6 +843,15 @@ void RiseBridge::buildViewportLivePreview() {
 
     auto* sink = new ViewportPreviewSink(this);
     sink->addref();
+    // L5a round-5 — fan the interactive sink's OutputImage into the
+    // bridge's interactive VFS.  Mirrors macOS round-5 architecture:
+    // production and interactive paths feed independent VFSes so
+    // cancel preserves production output, no per-tile DrawToggles
+    // flash on interactive, no preview-scale resolution thrash
+    // interfering with production buffers.
+    if (auto* iVFS = getOrCreateInteractiveVFS()) {
+        sink->SetFanoutVFS(iVFS);
+    }
     m_viewportSink = sink;
 }
 

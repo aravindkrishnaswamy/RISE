@@ -255,12 +255,47 @@ namespace RISE
 			//! or have changed since the last allocation.  See L3
 			//! adversarial review M4 for the resolution-change
 			//! rationale.
+			//!
+			//! L5a round-8 — the interactive viewport oscillates
+			//! between a handful of preview-scale resolutions during
+			//! a single drag (camera dims swap each pass, see
+			//! `SceneEditController::DoOneRenderPass` adaptive
+			//! scaling).  The previous behaviour
+			//! (TeardownChain + fresh allocate every time the dims
+			//! changed) churned the FrameStore's tile-grid
+			//! allocations, observer registration, and seqlock
+			//! arrays per pass — measurably visible as repeated
+			//! "rasterizer image size changed" warnings during
+			//! interactive editing.  EnsureChain now parks the
+			//! current active chain into `dormant_` on dim change
+			//! and looks up dormant entries for a matching size
+			//! before allocating fresh.  The dormant cache is
+			//! capped at `kMaxDormantChains` (LRU eviction) so a
+			//! pathological resolution sweep can't unboundedly
+			//! retain stale FrameStores.
+			//!
+			//! Threading: still called only from the rasterizer
+			//! thread (single-active-rasterizer contract, §7.5);
+			//! the dormant list is therefore only mutated under
+			//! `chainMutex_` unique-lock.  Reader threads
+			//! (`RenderToBuffer`, `SaveAs`, `Generation`) only ever
+			//! observe the active `framestore_` snapshot — they
+			//! never see the dormant entries.
 			void EnsureChain( unsigned int width, unsigned int height );
 
-			//! Tear down the chain (used by EnsureChain on
-			//! resolution change and by the destructor).  Safe to
-			//! call when nothing is allocated.
+			//! Tear down the active chain AND every dormant chain
+			//! cached for resolution oscillation reuse (used by
+			//! the destructor).  Safe to call when nothing is
+			//! allocated.
 			void TeardownChain();
+
+			//! Park the current active chain into `dormant_` (with
+			//! LRU eviction at `kMaxDormantChains`).  Caller must
+			//! hold `chainMutex_` unique-lock.  Active pointers are
+			//! cleared; caller is responsible for repopulating
+			//! them with either a dormant-cache hit or a fresh
+			//! allocation before returning.
+			void ParkActiveAsDormant_locked();
 
 			class BridgeObserver;
 
@@ -288,6 +323,36 @@ namespace RISE
 			FrameStore*        framestore_ = nullptr;
 			FrameSink*         framesink_  = nullptr;
 			BridgeObserver*    observer_   = nullptr;
+
+			// L5a round-8 — dormant-chain cache for preview-scale
+			// resolution oscillation.  A `DormantChain` holds a
+			// fully-built (FrameStore, FrameSink, BridgeObserver)
+			// triple at a specific (width,height); on dim change
+			// EnsureChain parks the current active here and either
+			// reactivates a matching dormant entry or allocates a
+			// new one.  The observer stays registered on its
+			// FrameStore the whole time it's parked — that's safe
+			// because no rasterizer is feeding the parked
+			// FrameStore (the framesink is detached from the
+			// active output chain), so no observer events fire on
+			// dormant stores.
+			//
+			// Sized to cover the typical interactive preview-scale
+			// sweep (1, 2, 4, 8 — four levels at heavy adaptation).
+			// Past that, LRU eviction releases the least-recently-
+			// active chain.  Memory budget: at 4K source res,
+			// each FrameStore is ~177 MB at scale 1, ~44 at scale 2,
+			// ~11 at scale 4, ~3 at scale 8 — worst-case ~235 MB
+			// across active + 3 dormant.  Tunable here.
+			static constexpr size_t kMaxDormantChains = 3;
+			struct DormantChain {
+				FrameStore*     fs   = nullptr;
+				FrameSink*      sink = nullptr;
+				BridgeObserver* obs  = nullptr;
+				unsigned int    w    = 0;
+				unsigned int    h    = 0;
+			};
+			std::vector<DormantChain> dormant_;
 
 			// Stored here (not in observer) so a rebuild during
 			// resolution change preserves the user's callbacks.
