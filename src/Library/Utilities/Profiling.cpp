@@ -171,8 +171,9 @@ namespace RISE
 // builds clean on every supported toolchain.
 namespace RISE {
 #if defined(__GNUC__) || defined(__clang__)
-	__attribute__((used))
-#endif
+	extern "C" const char kRiseProfilingDisabledAnchor __attribute__((used)) = 0;
+#else
 	extern "C" const char kRiseProfilingDisabledAnchor = 0;
+#endif
 }
 #endif

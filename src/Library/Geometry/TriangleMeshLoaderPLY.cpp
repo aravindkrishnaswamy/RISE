@@ -27,6 +27,8 @@
 #include "../Utilities/MediaPathLocator.h"
 #include <stdio.h>
 #include <ctype.h>
+#include <string>
+#include <vector>
 
 using namespace RISE;
 using namespace RISE::Implementation;
