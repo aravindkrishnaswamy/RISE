@@ -46,6 +46,7 @@
 #include "../Utilities/Threads/Threads.h"
 #include "../Utilities/ThreadPool.h"
 #include "AdaptiveTileSizer.h"
+#include "FrameStore.h"  // L6d-2a — FrameStoreBulkBracket RAII guard
 #include "../Lights/LightSampler.h"
 #include "../Shaders/BDPTIntegrator.h"
 #include "../Shaders/BDPTVertex.h"
@@ -808,31 +809,80 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 // from BidirectionalRasterizerBase — both algorithms use the same
 // lazy-scratch splat composition.
 
-// L6f known-limitation — VCM's pSplatFilm splats are composited
-// into a SCRATCH image (`pScratchImage` via `ResolveSplatIntoScratch`),
-// NOT into the rasterizer's canonical `mFrameStore`.  The legacy
-// IRasterizerOutput chain receives the composited scratch (which
-// has splats) — file outputs work correctly.  But direct
-// FrameStore observers attached to `mFrameStore` (post-L6e-2 bound
-// VFS, future direct-FrameStore observers) receive
-// `OnFrameComplete` while `mFrameStore` still holds splat-less
-// beauty — the canonical store doesn't have VCM's t==1 strategy
-// contributions.  This is a pre-existing post-L6e-2 limitation
-// surfaced by L6f's rasterizer-driven Mark*; the proper fix is to
-// have VCM compose splats INTO `mFrameStore` (mirror BDPT's
-// `pSplatFilm->Resolve(*pImage, ...)` pattern at the end of
-// RasterizeScene).  Tracked as part of L6d-2 (VCM/MLT FrameStore
-// migration).  Until then, GUI viewports rendering VCM scenes via
-// bound VFS may show splat-less previews; CLI file outputs are
-// unaffected.
+// L6d-2a — VCM's pSplatFilm splats now resolve DIRECTLY into the
+// rasterizer's canonical store (which `img` aliases when the VFS is
+// bound, or the persistent internal RISERasterImage otherwise).  This
+// fixes the L6f-flagged splat-less-canonical regression for direct
+// FrameStore observers (post-L6e-2 bound VFS): once the splat resolve
+// has run on `mFrameStore`, the rasterizer-driven `MarkFrameComplete`
+// (post-L6f, fired inside `PixelBasedRasterizerHelper::FlushToOutputs`)
+// dispatches `OnFrameComplete` to observers reading the splatted
+// final.  CLI file outputs were already correct via the legacy
+// IRasterizerOutput chain (which received the composited scratch);
+// they're now correct AND see the same canonical content the
+// FrameStore observers do.
+//
+// Why not in `FlushPreDenoisedToOutputs`: OIDN's denoise pass runs
+// on `mFrameStore` AFTER `FlushPreDenoisedToOutputs` returns and
+// BEFORE `FlushDenoisedToOutputs` is called.  OIDN must NOT see
+// splats (BDPT's docs/OIDN.md decision: splatted accumulation
+// pattern is incompatible with OIDN's per-pixel-independent-noise
+// assumption).  So pre-denoise must keep using the scratch path —
+// it composites splats into a separate RISERasterImage so legacy
+// pre-denoise file outputs still see splatted content while the
+// canonical store stays splat-less for OIDN's input.  Bound-VFS
+// observers receiving `OnPreDenoiseComplete` see splat-less
+// canonical for VCM (acceptable: pre-denoise is intermediate; the
+// final post-denoise + splat fire later catches them up).
+//
+// Mutation safety: `pSplatFilm->Resolve(target, spp)` is ADDITIVE.
+// pSplatFilm is reallocated fresh per render in `PreRenderSetup`
+// (VCMRasterizerBase.cpp:372-373), so accumulated splats don't leak
+// across renders.  For animation: `PreRenderSetup` runs PER FRAME
+// from `RenderFrameOfAnimation` (PixelBasedRasterizerHelper.cpp:~1152),
+// followed by an inter-frame `pImage->Clear()` (~line 1600) that
+// wipes the splat-mutated buffer before the next frame's per-pixel
+// writes start.  Net: per-render Resolve is called exactly once on
+// `mFrameStore` (via either FlushTo or FlushDenoised — the
+// non-OIDN/OIDN paths are mutually exclusive in
+// `PixelBasedRasterizerHelper::RasterizeScene`).  If a future
+// refactor of `RenderFrameOfAnimation`'s setup ordering moves the
+// PreRenderSetup OUT of the per-frame loop, this invariant breaks
+// and splats from frame N would be replayed onto frame N+1.
+//
+// Bracketing: `FrameStoreBulkBracket` (L6e-1.1 RAII) protects
+// concurrent direct readers against torn writes during the
+// per-pixel splat add.  The bracket releases BEFORE the rasterizer's
+// `FlushTo/Denoised` calls `mFrameStore->MarkFrameComplete`
+// (post-L6f), so async observers that wake on the Mark see the
+// splatted final without holding the bracket — no observer-side
+// deadlock risk.
+//
+// Behavioural drift: `GetLastRenderedImage()` (read-back of the
+// rasterizer's persistent buffer) now returns content WITH splats
+// post-render in non-bound mode (was splat-less pre-fix).  No
+// in-tree consumer of `GetLastRenderedImage` for VCM today; flagged
+// here for the next reader who adds one.
+
 void VCMRasterizerBase::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	if( !pSplatFilm ) {
 		PixelBasedRasterizerHelper::FlushToOutputs( img, rcRegion, frame );
 		return;
 	}
-	IRasterImage& composited = ResolveSplatIntoScratch( img );
-	PixelBasedRasterizerHelper::FlushToOutputs( composited, rcRegion, frame );
+	// L6d-2a — splat-resolve into `img` directly.  `img` is the
+	// rasterizer's `*pImage` from `RasterizeScene`'s
+	// `AcquireRenderImage`; in bound mode it IS the FrameStore beauty
+	// view.  Const-cast is honest: the const here is a parameter
+	// declaration — the underlying buffer is the rasterizer's mutable
+	// canonical state.
+	IRasterImage& target = const_cast<IRasterImage&>( img );
+	const Scalar splatSpp = GetEffectiveSplatSPP( target.GetWidth(), target.GetHeight() );
+	{
+		FrameStoreBulkBracket bracket( mFrameStore, target );
+		pSplatFilm->Resolve( target, splatSpp );
+	}
+	PixelBasedRasterizerHelper::FlushToOutputs( target, rcRegion, frame );
 }
 
 void VCMRasterizerBase::FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
@@ -841,6 +891,10 @@ void VCMRasterizerBase::FlushPreDenoisedToOutputs( const IRasterImage& img, cons
 		PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( img, rcRegion, frame );
 		return;
 	}
+	// L6d-2a — keep the legacy scratch path here.  Mutating `img`
+	// (mFrameStore beauty view in bound mode) would taint OIDN's
+	// next-step denoise input with splats.  See top-of-section
+	// comment for the rationale.
 	IRasterImage& composited = ResolveSplatIntoScratch( img );
 	PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( composited, rcRegion, frame );
 }
@@ -855,6 +909,15 @@ void VCMRasterizerBase::FlushDenoisedToOutputs( const IRasterImage& img, const R
 		PixelBasedRasterizerHelper::FlushDenoisedToOutputs( img, rcRegion, frame );
 		return;
 	}
-	IRasterImage& composited = ResolveSplatIntoScratch( img );
-	PixelBasedRasterizerHelper::FlushDenoisedToOutputs( composited, rcRegion, frame );
+	// L6d-2a — splat-resolve into `img` directly (same pattern as
+	// FlushToOutputs above).  OIDN denoise has already mutated
+	// `mFrameStore` to the denoised eye-subpath; we now overlay
+	// VCM's t==1 splats ON TOP of the denoised content.
+	IRasterImage& target = const_cast<IRasterImage&>( img );
+	const Scalar splatSpp = GetEffectiveSplatSPP( target.GetWidth(), target.GetHeight() );
+	{
+		FrameStoreBulkBracket bracket( mFrameStore, target );
+		pSplatFilm->Resolve( target, splatSpp );
+	}
+	PixelBasedRasterizerHelper::FlushDenoisedToOutputs( target, rcRegion, frame );
 }
