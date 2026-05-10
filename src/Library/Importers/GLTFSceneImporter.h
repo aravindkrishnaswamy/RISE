@@ -76,6 +76,8 @@ namespace RISE
 			double pointIntensityOverride;			///< Landing 4: per-type intensity override for KHR_lights_punctual point lights.  Units: CANDELA (lm/sr).  Replaces zero authored intensities for point lights only.  Default 0 (no override).  Typical values: ~100 for a bare 60-W incandescent (~800 lm omnidirectional ÷ 4π sr), ~1500 for a 100-W LED bulb.  Stacks with `lightsIntensityOverride` (per-type wins).
 			double spotIntensityOverride;			///< Landing 4: per-type intensity override for KHR_lights_punctual spot lights.  Units: CANDELA (lm/sr) — peak intensity along the spot axis.  Replaces zero authored intensities for spot lights only.  Default 0 (no override).  Stacks with `lightsIntensityOverride` (per-type wins).
 			bool respectBakedOcclusion;				///< Landing 13: when TRUE (default), honour glTF `occlusionTexture` by multiplying the baseColor (diffuse path) by the texture's R channel times the material's `occlusionStrength`.  This is the pragmatic glTF-faithful import — a path tracer computes real occlusion via shadow rays so applying baked AO double-counts direct lighting somewhat, but assets bake AO at frequencies geometry can't recover (column flutes, brick mortar, fabric folds), so dropping it loses information the artist deliberately encoded.  Set FALSE for strict-PB workflows where you want the integrator's own occlusion.  Note: Phase-1 implementation modulates ALL bounces uniformly (direct + indirect); a future refinement could gate on bounce count to apply only to indirect-diffuse.
+			double emissiveIntensityScale;			///< Multiplier applied AFTER the asset's per-material `KHR_materials_emissive_strength` (or default 1.0).  Default 1.0 (no change).  Use this to brighten emissive surfaces uniformly across an import without editing the asset — e.g. a deep-dusk candle scene whose flame meshes are authored at a daytime-balanced strength can multiply by 50–200 to make the candles dominate.  Unlike `lightsIntensityOverride` this is a SCALE (composes with authored values), not a zero-replacement, because emissive materials typically ship with meaningful chromatic/relative values the renderer should preserve the ratios of.  Negative or zero values are treated as 0 (kills all emissive in the import) — use that to mute decorative emissives without other edits.  Affects every material's `emissiveScale` once at import time, so render-time cost is unchanged.
+			double emissiveTint[3];					///< Per-channel RGB multiplier applied to every material's `emissiveFactor` BEFORE any texture multiply.  Default (1,1,1) — no tint.  Use to recolour emissive surfaces uniformly across an import without editing the asset — e.g. a candle pack whose `Flame_MAT` is authored at pure yellow `(1,1,0)` can be tinted to warm orange via `emissiveTint = (1.0, 0.5, 0.1)`, giving final emissive colour `(1, 0.5, 0)` (componentwise product; the asset's blue channel is 0 so the tint's blue can't add any).  Composes with `emissiveIntensityScale`: the brightness scale and the chromatic tint are independent knobs.  Folded in once at import time, no per-sample cost.  Note: this multiplies the FACTOR not the painted texture, so if a material has an emissive texture the tint multiplies its global modulator (per glTF spec §3.9.4 the texture is itself multiplied by emissiveFactor) — visually equivalent to tinting the texture for solid-coloured emissives, slightly different for textured ones (the tint affects the spatially-uniform factor, not the per-pixel texture values).
 
 			//! Sentinel for "use the file's default scene" (i.e., the scene
 			//! the glTF JSON's top-level `"scene"` field points at, falling
@@ -98,8 +100,9 @@ namespace RISE
 			  directionalIntensityOverride( 0.0 ),
 			  pointIntensityOverride( 0.0 ),
 			  spotIntensityOverride( 0.0 ),
-			  respectBakedOcclusion( true )
-			{}
+			  respectBakedOcclusion( true ),
+			  emissiveIntensityScale( 1.0 )
+			{ emissiveTint[0] = 1.0; emissiveTint[1] = 1.0; emissiveTint[2] = 1.0; }
 		};
 
 		//! GLTFSceneImporter does NOT inherit from Reference; it's a one-shot

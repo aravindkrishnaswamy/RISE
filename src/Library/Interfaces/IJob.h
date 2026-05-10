@@ -1267,7 +1267,11 @@ namespace RISE
 							const double directional_intensity_override,	///< [in] Landing 4: per-type override for directional lights.  Units: LUX (lm/m²).  Replaces zero authored intensities for directional lights only; lights set non-zero stay untouched.  Default 0 (no override).  Typical: ~120000 noon clear-sky sun, ~10000 overcast day, ~100 moonlight.
 							const double point_intensity_override,			///< [in] Landing 4: per-type override for point lights.  Units: CANDELA (lm/sr).  Replaces zero authored intensities for point lights only.  Default 0 (no override).  Typical: ~100 for a 60-W incandescent (~800 lm omnidirectional ÷ 4π sr), ~1500 for a 100-W LED bulb.
 							const double spot_intensity_override,			///< [in] Landing 4: per-type override for spot lights.  Units: CANDELA (lm/sr) — peak intensity along the spot axis.  Replaces zero authored intensities for spot lights only.  Default 0 (no override).
-							const bool respect_baked_occlusion = true		///< [in] Landing 13: when TRUE (default), honour `occlusionTexture` by multiplying the diffuse path by the texture's R channel × `occlusionStrength`.  Phase-1 implementation modulates ALL bounces (small over-darkening of direct lighting; recovers high-frequency baked AO geometry can't reach).  Set FALSE for strict-PB workflows.
+							const bool respect_baked_occlusion = true,		///< [in] Landing 13: when TRUE (default), honour `occlusionTexture` by multiplying the diffuse path by the texture's R channel × `occlusionStrength`.  Phase-1 implementation modulates ALL bounces (small over-darkening of direct lighting; recovers high-frequency baked AO geometry can't reach).  Set FALSE for strict-PB workflows.
+							const double emissive_intensity_scale = 1.0,	///< [in] Multiplier applied AFTER each material's authored `KHR_materials_emissive_strength` (or default 1.0).  Default 1.0 (no change).  Use to brighten ALL emissive surfaces in the import uniformly without editing the asset (e.g. a deep-dusk candle scene whose flame meshes are authored at daytime-balanced strength can multiply by 50–200 to make the candles dominate).  Unlike `lights_intensity_override` this is a SCALE (composes with authored values) — emissive materials typically ship with meaningful chromatic / relative values whose ratios should be preserved.  Values ≤ 0 kill all emissive in the import.  Folded in once at import time, no per-sample cost.
+							const double emissive_tint_r = 1.0,		///< [in] Per-channel R multiplier applied to every material's `emissiveFactor`.  Default 1.0 (no tint).  Use to recolour emissive surfaces uniformly across the import without editing the asset.  The tint multiplies the FACTOR componentwise, so an authored 0.0 channel can't be lifted (multiplying by a non-zero tint stays 0.0).  Folded in once at import time.
+							const double emissive_tint_g = 1.0,		///< [in] Per-channel G multiplier (see `emissive_tint_r`).  Example: (1.0, 0.5, 0.1) tints a pure-yellow flame (1,1,0) to warm orange (1, 0.5, 0).
+							const double emissive_tint_b = 1.0		///< [in] Per-channel B multiplier (see `emissive_tint_r`).
 							) = 0;
 
 		//! Creates a triangle mesh geometry from a glTF 2.0 file (.gltf or .glb).
@@ -2756,6 +2760,51 @@ namespace RISE
 									const double /*sunIntensityScale*/,
 									const bool   /*createSun*/
 									) { return false; }
+
+		// ----- Methods appended below this line (vtable-stable) -----
+		// New methods MUST be appended here so that any in-tree
+		// consumer compiled against an older version of this header
+		// keeps the same vtable slot indices for the methods it
+		// knows about.  Mid-insertion shifts every subsequent slot
+		// and miscompiles stale .obj files.
+
+		//
+		// Film — pixel-grid descriptor.
+		//
+		// A scene has exactly one active Film.  InitializeContainers
+		// installs a default qHD (960 x 540, square pixels) so a
+		// scene that omits the `film` chunk still renders; SetFilm
+		// replaces it.  CLI flags (--width / --height / --pixel-ar)
+		// will call SetFilm post-parse to override the scene-file
+		// value (intent for Phase D).
+		//
+		// Phase B1 contract: cameras still take xres/yres/pixelAR
+		// through Add*Camera (used for their internal Frame projection
+		// math) but the rasterizer reads its grid dimensions from
+		// Scene::GetFilm().  Scene::SetFilm now re-syncs every
+		// registered camera's Frame + pixelAR to the new Film, so
+		// dims can never silently desync — whether SetFilm is called
+		// by the parser, the glTF/Blender/3DSMax importers, the CLI
+		// override path, or a late `film` chunk after a camera chunk.
+		// SetActiveCamera is also safe: every camera's Frame already
+		// matches Film at switch time.
+		//
+		// Multi-camera scenes: every camera in the manager is
+		// resynced to the latest SetFilm call, so per-camera dims are
+		// not preserved across a SetFilm.  Author one Film per scene
+		// and let all cameras share it.
+		//
+		// Same concurrency contract as the camera mutators above —
+		// must not run concurrently with rendering.
+
+		//! Replaces the active Film with one carrying the supplied
+		//! width / height / pixelAR.  Returns false on zero
+		//! dimensions or non-positive pixelAR.
+		virtual bool SetFilm(
+			const unsigned int width,								///< [in] Image width in pixels
+			const unsigned int height,								///< [in] Image height in pixels
+			const double pixelAR									///< [in] Pixel aspect ratio (1.0 = square pixels)
+			) = 0;
 	};
 
 

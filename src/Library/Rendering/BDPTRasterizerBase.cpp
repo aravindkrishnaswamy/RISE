@@ -303,9 +303,12 @@ void BDPTRasterizerBase::RasterizeScene(
 	BeginRenderTimer();
 #endif
 
-	// Acquire scene dimensions
-	const unsigned int width = pCam->GetWidth();
-	const unsigned int height = pCam->GetHeight();
+	// Acquire scene dimensions from the active Film.  As of the
+	// 2026-05 Camera/Film/Output split, resolution lives on the Film
+	// (queried here), not the camera.
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
 
 	// Training can cast probe rays to estimate incident radiance,
 	// so the ray caster needs the scene attached before training starts.

@@ -176,8 +176,9 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			GlobalLog()->PrintSourceError( "PixelBasedPelRasterizer::PreRenderSetup:: Scene contains no camera!", __FILE__, __LINE__ );
 			return;
 		}
-		const unsigned int width = pCam->GetWidth();
-		const unsigned int height = pCam->GetHeight();
+		const IFilm* pFilm = pScene.GetFilm();
+		const unsigned int width = pFilm->GetWidth();
+		const unsigned int height = pFilm->GetHeight();
 		const unsigned int bootstrapTrainingSPP = 1;
 		unsigned int currentTrainingSPP = bootstrapTrainingSPP;
 		Scalar previousPositiveSampleDensity = 0;
@@ -402,8 +403,9 @@ void PixelBasedPelRasterizer::PreRenderSetup(
 			GlobalLog()->PrintSourceError( "PixelBasedPelRasterizer::PreRenderSetup (optimalMIS):: Scene contains no camera!", __FILE__, __LINE__ );
 			return;
 		}
-		const unsigned int width = pCam->GetWidth();
-		const unsigned int height = pCam->GetHeight();
+		const IFilm* pFilm = pScene.GetFilm();
+		const unsigned int width = pFilm->GetWidth();
+		const unsigned int height = pFilm->GetHeight();
 
 		OptimalMISAccumulator::Config accConfig;
 		accConfig.tileSize = stabilityConfig.optimalMISTileSize;

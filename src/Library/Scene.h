@@ -54,6 +54,13 @@ namespace RISE
 			// stable pActiveCamera until it returns.
 			ICamera*					pActiveCamera;
 
+			//! Active Film (pixel-grid descriptor — width / height /
+			//! pixelAR).  Always non-null after Job::InitializeContainers
+			//! installs the qHD default.  Replaced by SetFilm (called
+			//! from the `film` chunk parser, the CLI overrides, or a
+			//! programmatic IJob::SetFilm).
+			IFilm*						pFilm;
+
 			const IRadianceMap*			pGlobalRadianceMap;
 			IPhotonMap*					pCausticMap;
 			IPhotonMap*					pGlobalMap;
@@ -94,6 +101,7 @@ namespace RISE
 			const ICamera*				GetCamera( )	const	{ return pActiveCamera; }
 			const ICameraManager*		GetCameras( )	const	{ return pCameraManager; }
 			String						GetActiveCameraName( ) const { return activeCameraName; }
+			const IFilm*				GetFilm( )		const	{ return pFilm; }
 
 			inline const IRadianceMap*			GetGlobalRadianceMap() const { return pGlobalRadianceMap; }
 			inline const IPhotonMap*			GetCausticPelMap()	const	{ return pCausticMap; }
@@ -122,7 +130,17 @@ namespace RISE
 			bool		RemoveCamera( const char* szName );
 			bool		SetActiveCamera( const char* szName );
 			void		SetCameraManager( ICameraManager* pCameraManager_ );
+			void		SetFilm( IFilm* pFilm_ );
+			void		ResizeFilm( unsigned int width, unsigned int height, Scalar pixelAR );
 			void		SetObjectManager( const IObjectManager* pObjectManager_ );
+
+		private:
+			// Walk the camera manager and call SetDimensionsAndPixelAR
+			// on every CameraCommon-derived camera.  Shared between
+			// SetFilm (pointer swap) and ResizeFilm (in-place mutation).
+			void		ResyncCamerasToFilmDims( unsigned int width, unsigned int height, Scalar pixelAR );
+
+		public:
 			void		SetLightManager( const ILightManager* pLightManager_ );
 
 			void		SetGlobalRadianceMap( const IRadianceMap* pRadianceMap );

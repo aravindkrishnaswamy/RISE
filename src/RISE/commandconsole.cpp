@@ -199,7 +199,82 @@ int main( int argc, char** argv )
 	IJobPriv* pJob = 0;
 	RISE_CreateJobPriv( &pJob );
 
-	// If there was a file specified in the arguments, then assume its an 
+	// Parse CLI flags first to extract Film overrides + the positional
+	// scene-file argument.  Supported flags (any order, anywhere on the
+	// command line):
+	//   --width N         override Film width (pixels; positive integer)
+	//   --height N        override Film height (pixels; positive integer)
+	//   --pixel-ar X      override Film pixel aspect ratio (positive float)
+	// Values are applied AFTER LoadAsciiScene returns, so they replace
+	// whatever the scene file authored.  This is how agents render test
+	// scenes at lower resolution without editing scene files.
+	//
+	// Validation: each numeric flag's value must parse as a strictly
+	// positive number.  `--width foo` (non-numeric) and `--width -5`
+	// (negative) fail loudly rather than silently consuming the next
+	// argv as a malformed override.
+	int  cliFilmWidth   = 0;	// 0 = no override
+	int  cliFilmHeight  = 0;
+	double cliFilmPixelAR = 0.0;
+	bool cliArgError = false;
+	const char* sceneArg = 0;
+	for( int ai = 1; ai < argc; ai++ ) {
+		const char* a = argv[ai];
+		auto consumeIntFlag = [&]( const char* name, int& dst ) -> bool {
+			if( ai+1 >= argc ) {
+				std::cerr << "ERROR: " << name << " requires a positive integer; got end-of-args.\n";
+				cliArgError = true; return false;
+			}
+			char* endp = nullptr;
+			const long v = strtol( argv[ai+1], &endp, 10 );
+			if( endp == argv[ai+1] || *endp != '\0' || v <= 0 ) {
+				std::cerr << "ERROR: " << name << " requires a positive integer; got `" << argv[ai+1] << "`.\n";
+				cliArgError = true; return false;
+			}
+			dst = (int)v; ++ai; return true;
+		};
+		auto consumeDoubleFlag = [&]( const char* name, double& dst ) -> bool {
+			if( ai+1 >= argc ) {
+				std::cerr << "ERROR: " << name << " requires a positive float; got end-of-args.\n";
+				cliArgError = true; return false;
+			}
+			char* endp = nullptr;
+			const double v = strtod( argv[ai+1], &endp );
+			if( endp == argv[ai+1] || *endp != '\0' || v <= 0.0 ) {
+				std::cerr << "ERROR: " << name << " requires a positive float; got `" << argv[ai+1] << "`.\n";
+				cliArgError = true; return false;
+			}
+			dst = v; ++ai; return true;
+		};
+
+		if( strcmp(a, "--width") == 0 ) {
+			consumeIntFlag( "--width", cliFilmWidth );
+		} else if( strcmp(a, "--height") == 0 ) {
+			consumeIntFlag( "--height", cliFilmHeight );
+		} else if( strcmp(a, "--pixel-ar") == 0 ) {
+			consumeDoubleFlag( "--pixel-ar", cliFilmPixelAR );
+		} else if( a[0] != '-' && !sceneArg ) {
+			sceneArg = a;	// First non-flag positional = scene file
+		}
+	}
+	if( cliArgError ) {
+		return 1;	// Fail fast — don't render with a malformed override.
+	}
+	const bool haveCliFilmOverride =
+		( cliFilmWidth > 0 ) || ( cliFilmHeight > 0 ) || ( cliFilmPixelAR > 0.0 );
+
+	// Detect mutually-exclusive flag combos: the perf-rating shortcuts
+	// (-pr / -highperf / -highperf2) ignore Film overrides, and a user
+	// who passed both probably misunderstood the CLI.
+	if( haveCliFilmOverride && argc > 1 ) {
+		const char* a1 = argv[1];
+		if( strcmp(a1,"-pr")==0 || strcmp(a1,"-highperf")==0 || strcmp(a1,"-highperf2")==0 ) {
+			std::cerr << "WARNING: --width / --height / --pixel-ar have no effect with "
+			          << a1 << " (the perf-rating path uses a fixed scene).\n";
+		}
+	}
+
+	// If there was a file specified in the arguments, then assume its an
 	// ascii scene file and load it
 	if( argc > 1 ) {
 
@@ -220,25 +295,41 @@ int main( int argc, char** argv )
 			double pr = DoHighIntensityPerformanceRating2( &stddev );
 			GlobalLog()->PrintEx( eLog_Event, "  High Intensity Performance of this computer [%.0f] with standard deviation of [%.3f]", pr, stddev );
 			return 1;
-		} else {
+		} else if( sceneArg ) {
 #ifdef _WIN32
 
 //			SetPriorityClass( GetCurrentProcess(), IDLE_PRIORITY_CLASS );
 
 			char fullname[_MAX_PATH] = {0};
-			GetLongPathName( argv[1], fullname, _MAX_PATH );
+			GetLongPathName( sceneArg, fullname, _MAX_PATH );
 			std::cout << "Loading ascii scene file: " << fullname << std::endl;
 
 			StdOutProgress progress( "Parsing scene: " );
 			pJob->SetProgress( &progress );
-			if( pJob->LoadAsciiScene( argv[1] ) ) {
+			if( pJob->LoadAsciiScene( sceneArg ) ) {
+				// CLI Film overrides — applied AFTER scene parse so they
+				// replace whatever the scene file's `film` chunk (or
+				// camera-chunk auto-sync) installed.  Partial overrides
+				// (only --width or only --height) preserve the
+				// non-overridden axes from the current Film.
+				if( haveCliFilmOverride ) {
+					const IFilm* curFilm = pJob->GetScene()->GetFilm();
+					const unsigned int w   = ( cliFilmWidth   > 0 ) ? (unsigned)cliFilmWidth   : ( curFilm ? curFilm->GetWidth()   : 960 );
+					const unsigned int h   = ( cliFilmHeight  > 0 ) ? (unsigned)cliFilmHeight  : ( curFilm ? curFilm->GetHeight()  : 540 );
+					const double       pAR = ( cliFilmPixelAR > 0 ) ? cliFilmPixelAR           : ( curFilm ? curFilm->GetPixelAR() : 1.0 );
+					if( !pJob->SetFilm( w, h, pAR ) ) {
+						GlobalLog()->PrintEasyError(
+							"CLI Film override failed (invalid width/height/pixelAR); using scene-file values." );
+					}
+				}
 				const ICamera* pCamera = pJob->GetScene()->GetCamera();
 				if( pCamera ) {
 
 					// Don't do this if it is disabled in the options file
 					if( !GlobalOptions().ReadBool( "no_windowed_rasterizer_output", false ) ) {
+						const IFilm* pFilm = pJob->GetScene()->GetFilm();
 						IRasterizerOutput* pWinRO = new Implementation::Win32WindowRasterizerOutput(
-							pCamera->GetWidth(), pCamera->GetHeight(),
+							pFilm->GetWidth(), pFilm->GetHeight(),
 							50, 50, "R.I.S.E. Render Window" );
 
 						GlobalLog()->PrintNew( pWinRO, __FILE__, __LINE__, "window RO" );
@@ -249,8 +340,16 @@ int main( int argc, char** argv )
 			}
 
 #else
-			std::cout << "Loading ascii scene file: " << argv[1] << std::endl;
-			pJob->LoadAsciiScene( argv[1] );
+			std::cout << "Loading ascii scene file: " << sceneArg << std::endl;
+			if( pJob->LoadAsciiScene( sceneArg ) ) {
+				if( haveCliFilmOverride ) {
+					const IFilm* curFilm = pJob->GetScene()->GetFilm();
+					const unsigned int w   = ( cliFilmWidth   > 0 ) ? (unsigned)cliFilmWidth   : ( curFilm ? curFilm->GetWidth()   : 960 );
+					const unsigned int h   = ( cliFilmHeight  > 0 ) ? (unsigned)cliFilmHeight  : ( curFilm ? curFilm->GetHeight()  : 540 );
+					const double       pAR = ( cliFilmPixelAR > 0 ) ? cliFilmPixelAR           : ( curFilm ? curFilm->GetPixelAR() : 1.0 );
+					pJob->SetFilm( w, h, pAR );
+				}
+			}
 #endif
 		}
 	}

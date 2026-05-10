@@ -100,11 +100,17 @@ namespace
 		const double inv = 1.0 / normY;
 		X *= inv; Y *= inv; Z *= inv;
 
-		// XYZ(D50) → ROMM (D50 native), inlined here from the matrix
-		// in src/Library/Utilities/Color/Color.cpp.
-		romm.r = Scalar(  1.3460 * X - 0.2556 * Y - 0.0511 * Z );
-		romm.g = Scalar( -0.5446 * X + 1.5082 * Y + 0.0205 * Z );
-		romm.b = Scalar(  0.0    * X + 0.0    * Y + 1.2123 * Z );
+		// Match the LUT generator's forward model exactly: Bradford
+		// D65 → D50 chromatic adaptation followed by the D50→ROMM
+		// matrix.  Both matrices inlined from
+		// src/Library/Utilities/Color/Color.cpp (mxXYZD65toXYZD50 /
+		// mxXYZD50toROMM) — keep in sync if those are retuned.
+		const double Xd =  1.0479 * X + 0.0229 * Y - 0.0502 * Z;
+		const double Yd =  0.0296 * X + 0.9904 * Y - 0.0171 * Z;
+		const double Zd = -0.0092 * X + 0.0151 * Y + 0.7519 * Z;
+		romm.r = Scalar(  1.3460 * Xd - 0.2556 * Yd - 0.0511 * Zd );
+		romm.g = Scalar( -0.5446 * Xd + 1.5082 * Yd + 0.0205 * Zd );
+		romm.b = Scalar(  0.0    * Xd + 0.0    * Yd + 1.2123 * Zd );
 	}
 }
 

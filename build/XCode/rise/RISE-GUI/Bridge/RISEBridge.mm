@@ -22,6 +22,7 @@
 #include "Interfaces/ILogPriv.h"
 #include "Interfaces/IScene.h"
 #include "Interfaces/ICamera.h"
+#include "Interfaces/IFilm.h"
 #include "Utilities/RTime.h"
 #include "Utilities/MediaPathLocator.h"
 #include "Utilities/RenderETAEstimator.h"
@@ -882,21 +883,23 @@ public:
 }
 
 - (uint32_t)cameraWidth {
+    // Post-master-merge — camera dims live on the scene-level Film
+    // (origin/master's camera-Film split, commit 45aa217).
     if (!_job) return 0;
     IScenePriv* scene = _job->GetScene();
     if (!scene) return 0;
-    const ICamera* camera = scene->GetCamera();
-    if (!camera) return 0;
-    return camera->GetWidth();
+    const IFilm* film = scene->GetFilm();
+    if (!film) return 0;
+    return film->GetWidth();
 }
 
 - (uint32_t)cameraHeight {
     if (!_job) return 0;
     IScenePriv* scene = _job->GetScene();
     if (!scene) return 0;
-    const ICamera* camera = scene->GetCamera();
-    if (!camera) return 0;
-    return camera->GetHeight();
+    const IFilm* film = scene->GetFilm();
+    if (!film) return 0;
+    return film->GetHeight();
 }
 
 - (void)setSceneTime:(double)t {

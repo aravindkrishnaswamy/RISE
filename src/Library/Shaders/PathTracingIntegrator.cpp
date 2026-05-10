@@ -1025,6 +1025,32 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
 	{
+		// Runaway-throughput guard.  PT can compound per-bounce BSDF
+		// kray amplification (Ward / multi-lobe-select divides by
+		// selection probability < 1) into exponential throughput
+		// growth in scenes with deep-bounce recursion through glossy
+		// metallic chains.  Without a cap, ~70 such bounces overflow
+		// the float32 EXR archival format to +/-inf, producing pixels
+		// that "never converge" no matter how many samples you throw
+		// at them.  Use the absolute per-channel magnitude so a path
+		// that has swung negative (rare but possible if a BSDF returns
+		// a negative kray due to e.g. Kulla-Conty `1 - Eavg` precision
+		// at high alpha) still terminates.  RR cannot reach in here --
+		// its survival prob is gated on signed MaxValue(throughput) >=
+		// rrThreshold (default 0.05), so paths that diverge negative
+		// have rrProb collapse and never terminate.  Cap at 1e6: well
+		// above any physically plausible throughput on a non-pathological
+		// path (typical caustics peak around 1e1-1e3) but well below
+		// the float32 EXR overflow ceiling (~3.4e38).
+		{
+			const Scalar absMax = r_max( r_max( fabs( throughput[0] ),
+			                                    fabs( throughput[1] ) ),
+			                             fabs( throughput[2] ) );
+			if( !std::isfinite( absMax ) || absMax > Scalar(1e6) ) {
+				break;
+			}
+		}
+
 		sampler.StartStream( 16 + depth );
 
 		// ============================================================
@@ -2764,6 +2790,13 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 
 	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
 	{
+		// Runaway-throughput guard -- see RGB IntegrateFromHit.  Per-
+		// channel max collapses to fabs() in the NM (per-wavelength)
+		// path.
+		if( !std::isfinite( throughput ) || fabs( throughput ) > Scalar(1e6) ) {
+			break;
+		}
+
 		sampler.StartStream( 16 + depth );
 
 		// ============================================================
@@ -4090,6 +4123,22 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
 	{
+		// Runaway-throughput guard -- see RGB IntegrateFromHit.  HWSS
+		// carries per-wavelength throughput in throughputComp[]; take
+		// the max across the bundle.
+		{
+			Scalar maxThr = 0;
+			bool anyBad = false;
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				const Scalar v = throughputComp[w];
+				if( !std::isfinite( v ) ) { anyBad = true; break; }
+				if( fabs( v ) > maxThr ) maxThr = fabs( v );
+			}
+			if( anyBad || maxThr > Scalar(1e6) ) {
+				break;
+			}
+		}
+
 		sampler.StartStream( 16 + depth );
 
 		// ============================================================

@@ -702,8 +702,9 @@ void OIDNDenoiser::CollectFirstHitAOVs(
 		return;
 	}
 
-	const unsigned int width = pCamera->GetWidth();
-	const unsigned int height = pCamera->GetHeight();
+	const IFilm* pFilm = scene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
 
 	// Multi-sample per pixel so the AOVs match the beauty's effective
 	// projection.  Each call to GenerateRay() re-samples the aperture

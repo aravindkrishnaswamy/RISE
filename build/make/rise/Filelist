@@ -270,6 +270,7 @@ SRCLIBRENDERING =\
 	$(PATHLIBRARY)Rendering/Rasterizer.cpp									\
 	$(PATHLIBRARY)Rendering/RayCaster.cpp									\
 	$(PATHLIBRARY)Rendering/EnvironmentSampler.cpp							\
+	$(PATHLIBRARY)Rendering/Film.cpp										\
 	$(PATHLIBRARY)Rendering/SplatFilm.cpp									\
 	$(PATHLIBRARY)Rendering/ThreadLocalSplatBuffer.cpp						\
 	$(PATHLIBRARY)Rendering/FilteredFilm.cpp								\

@@ -172,16 +172,16 @@ std::string RenderETAEstimator::FormatDuration( const double seconds )
 	double s = seconds;
 	if( s < 0.0 ) s = 0.0;
 	if( s > 359999.0 ) s = 359999.0;  // 99:59:59 cap for display
-	const long total = static_cast<long>( s + 0.5 );
-	const long hh = total / 3600;
-	const long mm = ( total % 3600 ) / 60;
-	const long ss = total % 60;
+	const int total = static_cast<int>( s + 0.5 );
+	const int hh = total / 3600;
+	const int mm = ( total % 3600 ) / 60;
+	const int ss = total % 60;
 
-	char buf[16];
+	char buf[32];
 	if( hh > 0 ) {
-		std::snprintf( buf, sizeof( buf ), "%02ld:%02ld:%02ld", hh, mm, ss );
+		std::snprintf( buf, sizeof( buf ), "%02d:%02d:%02d", hh, mm, ss );
 	} else {
-		std::snprintf( buf, sizeof( buf ), "%ld:%02ld", mm, ss );
+		std::snprintf( buf, sizeof( buf ), "%d:%02d", mm, ss );
 	}
 	return std::string( buf );
 }

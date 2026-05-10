@@ -133,8 +133,8 @@ void DoStill( int rank, int size, IJobPriv* pJob )
 	GlobalLog()->PrintNew( sro, __FILE__, __LINE__, "store rasterizer output" );
 	pJob->GetRasterizer()->AddRasterizerOutput( sro );
 
-	unsigned int total_width = pJob->GetScene()->GetCamera()->GetWidth();
-	unsigned int total_height = pJob->GetScene()->GetCamera()->GetHeight();
+	unsigned int total_width = pJob->GetScene()->GetFilm()->GetWidth();
+	unsigned int total_height = pJob->GetScene()->GetFilm()->GetHeight();
 
 	if( rank == 0 )
 	{

@@ -267,8 +267,16 @@ namespace
 	std::string ObjectName   ( const std::string& prefix, size_t nodeIdx, size_t prim ) {
 		std::ostringstream oss; oss << prefix << ".obj.n" << nodeIdx << ".p" << prim; return oss.str();
 	}
-	std::string LightName    ( const std::string& prefix, size_t idx ) {
-		std::ostringstream oss; oss << prefix << ".light." << idx; return oss.str();
+	// LightName is keyed on the GLTF NODE index (not the light-DEFINITION
+	// index in `data->lights`), because KHR_lights_punctual is shared by
+	// reference: a single light definition can be instanced across many
+	// nodes (e.g. pkg_d_10k_candles points 10 000 candle nodes at one
+	// shared point-light definition).  Keying by the definition index
+	// would collide on the manager AddItem step, silently dropping every
+	// light past the first instance.  Keying on the unique nodeIdx
+	// preserves all per-instance placements.
+	std::string LightName    ( const std::string& prefix, size_t nodeIdx ) {
+		std::ostringstream oss; oss << prefix << ".light.n" << nodeIdx; return oss.str();
 	}
 	// Camera name builder.  Multi-camera support (2026-05-01): every glTF
 	// node carrying a camera gets registered with a stable name derived
@@ -710,7 +718,10 @@ namespace
 		size_t              matIdx,
 		const std::set<std::string>* preRegisteredTextures,	// pre-decoded painters; see PreDecodeTextures
 		bool                lowmemTextures,		// passed to CreateTexturePainter slow path; matches PreDecodeTextures' setting
-		bool                respectBakedOcclusion )	// Landing 13: honour `occlusionTexture` if present
+		bool                respectBakedOcclusion,	// Landing 13: honour `occlusionTexture` if present
+		double              emissiveIntensityScale,	// User-facing brightness knob applied AFTER KHR_materials_emissive_strength; default 1.0 from opts (= no change).  Values <= 0 kill all emissive.
+		const double        emissiveTint[3] )		// User-facing chromatic tint multiplied componentwise into emissiveFactor; default (1,1,1).  Use e.g. (1, 0.5, 0.1) to warm-tint a yellow flame asset.
+
 	{
 		const cgltf_material& mat = data->materials[ matIdx ];
 
@@ -927,10 +938,19 @@ namespace
 			emissiveTextureName = WrapWithUVTransform( job, prefix, matIdx, "emissive",
 				emissiveTextureName, mat.emissive_texture );
 		}
+		// `emissiveTint` (default (1,1,1) from opts) is the user-facing
+		// per-channel multiplier on top of the asset's authored
+		// emissiveFactor — used to recolour emissives uniformly across an
+		// import without editing the asset (e.g. tinting a yellow `(1,1,0)`
+		// flame to warm orange via `(1, 0.5, 0.1)`).  Folded in here once
+		// at material build time; no per-sample cost.  Note the tint can
+		// only attenuate channels the authored factor already has signal
+		// in (an authored 0.0 channel stays 0.0 — multiplying by a non-zero
+		// tint can't add a colour the asset never authored).
 		const cgltf_float ef[3] = {
-			mat.emissive_factor[0],
-			mat.emissive_factor[1],
-			mat.emissive_factor[2] };
+			mat.emissive_factor[0] * (cgltf_float)emissiveTint[0],
+			mat.emissive_factor[1] * (cgltf_float)emissiveTint[1],
+			mat.emissive_factor[2] * (cgltf_float)emissiveTint[2] };
 		const bool factorIsZero = (ef[0] <= 0 && ef[1] <= 0 && ef[2] <= 0);
 		const bool factorIsWhite = (ef[0] >= 1.0 && ef[1] >= 1.0 && ef[2] >= 1.0);
 
@@ -970,9 +990,19 @@ namespace
 		// radiance, used by glTF authoring tools to push emission past the
 		// [0,1] sRGB-encoded texture range.  Default 1.0 when extension is
 		// absent, so the unconditional read is safe.
-		const double emissiveScale = mat.has_emissive_strength
+		//
+		// `opts.emissiveIntensityScale` (default 1.0) is applied on top of
+		// the asset's authored value as a uniform user-facing brightness
+		// knob (`emissive_intensity_scale` chunk param) — unchanged at the
+		// default, multiplies all materials' emissive uniformly when set
+		// > 1, kills all emissive when set <= 0.  Folded in here once at
+		// import time so the per-sample render cost is unchanged.
+		const double emissiveBaseScale = mat.has_emissive_strength
 			? (double)mat.emissive_strength.emissive_strength
 			: 1.0;
+		const double emissiveScale = ( emissiveIntensityScale > 0.0 )
+			? emissiveBaseScale * emissiveIntensityScale
+			: 0.0;
 
 		const std::string matName = MaterialName( prefix, matIdx );
 
@@ -1568,7 +1598,11 @@ namespace
 	bool CreateLightForNode(
 		IJob&				job,
 		const std::string&  prefix,
-		size_t              lightIdx,
+		size_t              nodeIdx,					// caller's per-node index in data->nodes — used to
+														// build a UNIQUE manager name for the light, so
+														// instanced KHR_lights_punctual references (one
+														// shared definition referenced by many nodes,
+														// e.g. pkg_d_10k_candles) don't collide on AddItem
 		const cgltf_light*  light,
 		const cgltf_float   worldMatrix[16],
 		double              uniformOverride,			// legacy: applies to all types when > 0; see GLTFImportOptions::lightsIntensityOverride
@@ -1596,7 +1630,7 @@ namespace
 		const double dny = (dlen > 1e-8) ? dy / dlen : 0;
 		const double dnz = (dlen > 1e-8) ? dz / dlen : -1;
 
-		const std::string name = LightName( prefix, lightIdx );
+		const std::string name = LightName( prefix, nodeIdx );
 		// glTF light color is documented as linear sRGB (linear Rec.709).
 		// RISE's `Add*Light` methods treat the supplied triple as sRGB,
 		// gamma-decoding it on use -- so we'd lose ~58% of the intensity
@@ -1905,7 +1939,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 	// Materials -- create up front (de-duplicates across primitives).
 	if( opts.importMaterials ) {
 		for( size_t mi = 0; mi < data->materials_count; ++mi ) {
-			CreateMaterial( job, prefix, data, szFilename, mi, &mRegisteredTextures, opts.lowmemTextures, opts.respectBakedOcclusion );
+			CreateMaterial( job, prefix, data, szFilename, mi, &mRegisteredTextures, opts.lowmemTextures, opts.respectBakedOcclusion, opts.emissiveIntensityScale, opts.emissiveTint );
 		}
 	}
 
@@ -2086,10 +2120,12 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 				}
 			}
 
-			// Light
+			// Light.  Pass `nodeIdx` (NOT the light-definition index)
+			// to keep the manager name unique across instances that
+			// reference the same shared light definition — see
+			// LightName comment for the pkg_d_10k_candles motivation.
 			if( opts.importLights && node->light ) {
-				const size_t lightIdx = (size_t)( node->light - data->lights );
-				CreateLightForNode( job, prefix, lightIdx, node->light, world,
+				CreateLightForNode( job, prefix, nodeIdx, node->light, world,
 					opts.lightsIntensityOverride,
 					opts.directionalIntensityOverride,
 					opts.pointIntensityOverride,
@@ -2151,6 +2187,12 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 					// internals; pick benign defaults.  Users override via
 					// a pinhole_camera chunk after the import or by
 					// tweaking the active camera at runtime.
+					// Drive Scene's active Film from the import-default
+					// camera dims (Phase B1).  glTF doesn't carry an
+					// authored render resolution; the 800x600 is RISE's
+					// import-time fallback.  Phase B2 / Phase D CLI
+					// override / GUI panel can replace the Film later.
+					job.SetFilm( 800, 600, 1.0 );
 					added = job.AddPinholeCamera(
 						camName.c_str(),
 						location, lookat, up,
@@ -2214,6 +2256,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 							(unsigned)nodeIdx,
 							(double)cam->data.orthographic.zfar );
 					}
+					job.SetFilm( 800, 600, 1.0 );	// Phase B1 — see Pinhole branch above.
 					added = job.AddOrthographicCamera(
 						camName.c_str(),
 						location, lookat, up,

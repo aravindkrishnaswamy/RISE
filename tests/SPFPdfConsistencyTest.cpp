@@ -13,12 +13,12 @@
 //       compare observed counts against Pdf()-predicted expected counts.
 //
 //  Build (from project root):
-//    c++ -arch arm64 -Isrc/Library -I/opt/homebrew/include \
-//        -O3 -ffast-math -funroll-loops -Wall -pedantic \
-//        -Wno-c++11-long-long -DCOLORS_RGB -DMERSENNE53 \
-//        -DNO_TIFF_SUPPORT -DNO_EXR_SUPPORT -DRISE_ENABLE_MAILBOXING \
+//    c++ -arch arm64 -Isrc/Library -I/opt/homebrew/include
+//        -O3 -ffast-math -funroll-loops -Wall -pedantic
+//        -Wno-c++11-long-long -DCOLORS_RGB -DMERSENNE53
+//        -DNO_TIFF_SUPPORT -DNO_EXR_SUPPORT -DRISE_ENABLE_MAILBOXING
 //        -c tests/SPFPdfConsistencyTest.cpp -o tests/SPFPdfConsistencyTest.o
-//    c++ -arch arm64 -o tests/spf_pdf_test tests/SPFPdfConsistencyTest.o \
+//    c++ -arch arm64 -o tests/spf_pdf_test tests/SPFPdfConsistencyTest.o
 //        bin/librise.a -L/opt/homebrew/lib -lpng -lz
 //
 //  Author: Aravind Krishnaswamy

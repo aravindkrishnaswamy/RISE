@@ -1114,6 +1114,8 @@ namespace
 		const std::vector<VCMMisQuantities>& lightMis,
 		const IRayCaster& caster,
 		const ICamera& camera,
+		const unsigned int filmWidth,
+		const unsigned int filmHeight,
 		SplatFilm& splatFilm,
 		const VCMNormalization& norm,
 		const IPixelFilter* pixelFilter,
@@ -1272,7 +1274,7 @@ namespace
 			}
 
 			const Scalar fx = rasterPos.x;
-			const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - rasterPos.y;
+			const Scalar fy = static_cast<Scalar>( filmHeight ) - rasterPos.y;
 
 			if( pixelFilter ) {
 				splatFilm.SplatFiltered( fx, fy, rgb.second, *pixelFilter );
@@ -1283,8 +1285,8 @@ namespace
 				const int sx = static_cast<int>( rx );
 				const int sy = static_cast<int>( ry );
 				if( sx < 0 || sy < 0 ||
-				    static_cast<unsigned int>( sx ) >= camera.GetWidth() ||
-				    static_cast<unsigned int>( sy ) >= camera.GetHeight() ) continue;
+				    static_cast<unsigned int>( sx ) >= filmWidth ||
+				    static_cast<unsigned int>( sy ) >= filmHeight ) continue;
 				splatFilm.Splat( sx, sy, rgb.second );
 			}
 		}
@@ -1294,7 +1296,7 @@ namespace
 void VCMIntegrator::SplatLightSubpathToCamera(
 	const std::vector<BDPTVertex>& lightVerts,
 	const std::vector<VCMMisQuantities>& lightMis,
-	const IScene& /*scene*/,
+	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
 	SplatFilm& splatFilm,
@@ -1302,8 +1304,10 @@ void VCMIntegrator::SplatLightSubpathToCamera(
 	const IPixelFilter* pixelFilter
 	) const
 {
+	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<PelTag>(
-		lightVerts, lightMis, caster, camera, splatFilm, norm, pixelFilter, PelTag{} );
+		lightVerts, lightMis, caster, camera, pFilm->GetWidth(), pFilm->GetHeight(),
+		splatFilm, norm, pixelFilter, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1843,7 +1847,7 @@ Scalar VCMIntegrator::EvaluateNEENM(
 void VCMIntegrator::SplatLightSubpathToCameraNM(
 	const std::vector<BDPTVertex>& lightVerts,
 	const std::vector<VCMMisQuantities>& lightMis,
-	const IScene& /*scene*/,
+	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
 	SplatFilm& splatFilm,
@@ -1852,8 +1856,10 @@ void VCMIntegrator::SplatLightSubpathToCameraNM(
 	const IPixelFilter* pixelFilter
 	) const
 {
+	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<NMTag>(
-		lightVerts, lightMis, caster, camera, splatFilm, norm, pixelFilter, NMTag( nm ) );
+		lightVerts, lightMis, caster, camera, pFilm->GetWidth(), pFilm->GetHeight(),
+		splatFilm, norm, pixelFilter, NMTag( nm ) );
 }
 
 //////////////////////////////////////////////////////////////////////

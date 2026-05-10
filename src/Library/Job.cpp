@@ -15,6 +15,7 @@
 #define _USE_MATH_DEFINES
 #include "Job.h"
 #include "RISE_API.h"
+#include "Rendering/Film.h"		// kDefaultFilm* / kMaxFilm* constants
 #include <cmath>
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -111,9 +112,13 @@ Job::~Job( )
 // SceneEditController removes the need for the lock today.
 RISE::Implementation::FrameStore* Job::ResolveJobFrameStoreForActiveCamera()
 {
-	const ICamera* cam = pScene ? pScene->GetCamera() : nullptr;
-	if( !cam ) return nullptr;
-	return EnsureJobFrameStore_locked( cam->GetWidth(), cam->GetHeight() );
+	// Post-master-merge — camera dims live on the scene-level Film
+	// (origin/master 45aa217 split: ICamera no longer exposes
+	// GetWidth/GetHeight; the canonical pixel grid is `Scene::GetFilm()`).
+	if( !pScene ) return nullptr;
+	const IFilm* film = pScene->GetFilm();
+	if( !film ) return nullptr;
+	return EnsureJobFrameStore_locked( film->GetWidth(), film->GetHeight() );
 }
 
 RISE::Implementation::FrameStore* Job::EnsureJobFrameStore_locked(
@@ -185,6 +190,20 @@ void Job::InitializeContainers()
 	pScene->SetCameraManager( pCameraManager );
 	pScene->SetObjectManager( pObjectManager );
 	pScene->SetLightManager( pLightManager );
+
+	// Default film: quarter HD (qHD) at square pixels.  Chosen as a
+	// fast iteration default for test renders — agents and humans
+	// authoring scenes don't have to set width/height for a quick
+	// preview.  Override via a `film` chunk in the scene file or
+	// via the CLI flags --width / --height / --pixel-ar.  Defaults
+	// (and upper bound) live in Rendering/Film.h as the single
+	// source of truth.
+	{
+		IFilm* pDefaultFilm = 0;
+		RISE_API_CreateFilm( &pDefaultFilm, kDefaultFilmWidth, kDefaultFilmHeight, kDefaultFilmPixelAR );
+		pScene->SetFilm( pDefaultFilm );
+		safe_release( pDefaultFilm );
+	}
 
 	// Adding null painter and null material
 	{
@@ -294,6 +313,41 @@ bool Job::SetLightSampleRRThreshold(
 	return true;
 }
 
+bool Job::SetFilm(
+	const unsigned int width,
+	const unsigned int height,
+	const double pixelAR
+	)
+{
+	// Reject zero dims and non-positive pixelAR (the existing minimal
+	// guard) AND values above the sanity bounds in Rendering/Film.h.
+	// The upper bound catches both typos (e.g. `width 19200`) and
+	// signed-to-unsigned wrap (`width -100` → ~4294967196 in unsigned)
+	// that would otherwise quietly try to allocate gigabytes of
+	// frame buffer.
+	if( width == 0 || height == 0 || pixelAR <= 0.0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetFilm: zero/negative dims rejected (width=%u, height=%u, pixelAR=%g).  "
+			"Active Film unchanged.", width, height, pixelAR );
+		return false;
+	}
+	if( width > kMaxFilmWidth || height > kMaxFilmHeight ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::SetFilm: dims exceed sanity bound (width=%u, height=%u; max=%u x %u).  "
+			"Active Film unchanged.  If this is intentional, raise kMaxFilm{Width,Height} in Rendering/Film.h.",
+			width, height, kMaxFilmWidth, kMaxFilmHeight );
+		return false;
+	}
+
+	IFilm* pNewFilm = 0;
+	if( !RISE_API_CreateFilm( &pNewFilm, width, height, pixelAR ) ) {
+		return false;
+	}
+	pScene->SetFilm( pNewFilm );
+	safe_release( pNewFilm );
+	return true;
+}
+
 
 //
 // Cameras
@@ -321,6 +375,12 @@ bool Job::AddPinholeCamera(
 	const double fstop
 	)
 {
+	// Caller (parser / programmatic API) is responsible for ensuring
+	// the Scene's active Film matches the camera's xres/yres/pixelAR
+	// before calling — see IJob::SetFilm.  Phase B1 originally
+	// auto-synced Film here, but that silently overrode explicit
+	// SetFilm calls and didn't help multi-camera scenes (since
+	// Scene::SetActiveCamera doesn't re-sync Film).
 	ICamera* pCamera = 0;
 	RISE_API_CreatePinholeCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), iso, fstop );
 	const bool ok = pScene->AddCamera( name, pCamera );
@@ -345,6 +405,11 @@ bool Job::AddPinholeCameraONB(
 	const double fstop
 	)
 {
+	// Note: Phase B1 originally auto-synced Film here.  Removed because
+	// it silently overrode an explicit Job::SetFilm() and didn't help
+	// the multi-camera-different-dims case anyway (Scene::SetActiveCamera
+	// doesn't re-sync).  The parser now drives Film via Job::SetFilm
+	// before calling AddXxxCamera; programmatic callers must do the same.
 	OrthonormalBasis3D onb = OrthonormalBasis3D( Vector3(ONB_U), Vector3(ONB_V), Vector3(ONB_W) );
 	ICamera* pCamera = 0;
 	RISE_API_CreatePinholeCameraONB( &pCamera, onb, Point3(ptLocation), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, iso, fstop );
@@ -381,6 +446,11 @@ bool Job::AddThinlensCamera(
 	const double iso
 	)
 {
+	// Note: Phase B1 originally auto-synced Film here.  Removed because
+	// it silently overrode an explicit Job::SetFilm() and didn't help
+	// the multi-camera-different-dims case anyway (Scene::SetActiveCamera
+	// doesn't re-sync).  The parser now drives Film via Job::SetFilm
+	// before calling AddXxxCamera; programmatic callers must do the same.
 	ICamera* pCamera = 0;
 	RISE_API_CreateThinlensCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), sensorSize, focalLength, fstop, focusDistance, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), apertureBlades, apertureRotation, anamorphicSqueeze, tiltX, tiltY, shiftX, shiftY, iso );
 	const bool ok = pScene->AddCamera( name, pCamera );
@@ -404,6 +474,11 @@ bool Job::AddFisheyeCamera(
 	const double scale
 	)
 {
+	// Note: Phase B1 originally auto-synced Film here.  Removed because
+	// it silently overrode an explicit Job::SetFilm() and didn't help
+	// the multi-camera-different-dims case anyway (Scene::SetActiveCamera
+	// doesn't re-sync).  The parser now drives Film via Job::SetFilm
+	// before calling AddXxxCamera; programmatic callers must do the same.
 	ICamera* pCamera = 0;
 	RISE_API_CreateFisheyeCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), scale );
 	const bool ok = pScene->AddCamera( name, pCamera );
@@ -427,6 +502,11 @@ bool Job::AddOrthographicCamera(
 	const double target_orientation[2]
 	)
 {
+	// Note: Phase B1 originally auto-synced Film here.  Removed because
+	// it silently overrode an explicit Job::SetFilm() and didn't help
+	// the multi-camera-different-dims case anyway (Scene::SetActiveCamera
+	// doesn't re-sync).  The parser now drives Film via Job::SetFilm
+	// before calling AddXxxCamera; programmatic callers must do the same.
 	ICamera* pCamera = 0;
 	RISE_API_CreateOrthographicCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), xres, yres, Vector2(vpScale), pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation) );
 	const bool ok = pScene->AddCamera( name, pCamera );
@@ -3992,7 +4072,11 @@ bool Job::ImportGLTFScene(
 					const double directional_intensity_override,
 					const double point_intensity_override,
 					const double spot_intensity_override,
-					const bool respect_baked_occlusion
+					const bool respect_baked_occlusion,
+					const double emissive_intensity_scale,
+					const double emissive_tint_r,
+					const double emissive_tint_g,
+					const double emissive_tint_b
 					)
 {
 	GLTFSceneImporter importer( filename );
@@ -4013,6 +4097,10 @@ bool Job::ImportGLTFScene(
 	opts.pointIntensityOverride        = point_intensity_override;
 	opts.spotIntensityOverride         = spot_intensity_override;
 	opts.respectBakedOcclusion         = respect_baked_occlusion;
+	opts.emissiveIntensityScale        = emissive_intensity_scale;
+	opts.emissiveTint[0]               = emissive_tint_r;
+	opts.emissiveTint[1]               = emissive_tint_g;
+	opts.emissiveTint[2]               = emissive_tint_b;
 	return importer.ImportScene( *this, opts );
 }
 

@@ -82,7 +82,7 @@ namespace RISE
 			///
 			/// `fx`, `fy` are in image-buffer coordinates (y=0 at top)
 			/// — callers convert from `cr.rasterPos` by flipping y with
-			/// `camera.GetHeight() - cr.rasterPos.y`.
+			/// `pScene.GetFilm()->GetHeight() - cr.rasterPos.y`.
 			void SplatContributionToFilm(
 				const Scalar fx,
 				const Scalar fy,

@@ -160,7 +160,7 @@ namespace {
 	// Works for any camera with a standard pinhole-like mxTrans.
 	//
 	static void ComputePixelAreaAndDistance(
-		const ICamera& cam,
+		const CameraCommon& cam,
 		Scalar& pixelArea,
 		Scalar& distToPlane )
 	{

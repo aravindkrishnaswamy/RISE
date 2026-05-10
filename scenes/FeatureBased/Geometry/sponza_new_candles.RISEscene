@@ -1,7 +1,7 @@
 RISE ASCII SCENE 5
 #############################################################################################################
 #                                                                                                           #
-#   File:           sponza_new.RISEscene                                                                    #
+#   File:           sponza_new_candles.RISEscene                                                            #
 #   Description:    Loads Intel/Khronos's New Sponza (NewSponza_Main_glTF_003.gltf) — the                   #
 #                   modern, PBR-textured rebuild of the classic Crytek Sponza atrium.                       #
 #                   ~155 nodes, dozens of unique materials, full PBR (baseColor + metallic-                 #
@@ -64,49 +64,37 @@ scene_options
 }
 
 ##################################################
-# Hosek-Wilkie analytic sun-and-sky (Landing 3.D).
-# Replaces the earlier `uniformcolor_painter sky_dome`
-# tinted-blue env map with a physically-grounded
-# spectral sun-and-sky model.  This chunk atomically:
+# Hosek-Wilkie analytic sun-and-sky — DEEP DUSK
+# preset for the candle torture-test scene.  The
+# 10 000 candles are meant to be the dominant
+# illumination; the sky is dialled down to a faint
+# blue-purple residual so shadows fill softly
+# without washing out the warm candlelight, and the
+# matched directional sun is OFF entirely (the sun
+# is below the horizon at this hour).
 #
-#   - Creates the HW radiance map and registers it
-#     as the SCENE GLOBAL radiance map (consumed by
-#     camera misses + path-tracer NEE / IBL queries).
-#   - Creates a matched directional_light named
-#     `__hw_sun__` whose direction tracks the same
-#     `solar_elevation` / `solar_azimuth` so sun
-#     and sky can't drift apart.
-#
-# Solar pose chosen for the canonical Sponza hero
-# shot: sun high but not zenith (60°) and slightly
-# off-axis from the camera (135° = behind / right
-# of the entrance) so sunlight rakes across the
-# atrium's columns and casts long shadows up the
-# colonnade.  Dial elevation down toward 30-45°
-# for late-afternoon golden-hour mood; raise
-# turbidity for hazier / warmer atmosphere.
-#
-# `sky_intensity_scale = 1.0` keeps the model's
-# physical-unit output as-is (HW emits real
-# radiance in W/m²/sr); the prior tinted painter
-# needed `radiance_scale = 40` because it was a
-# unit-luminance painter pretending to be an env.
-# `sun_intensity_scale = 3.14` is the RISE
-# convention (unit-flux key — π for π-normalised
-# Lambertian throughput).  Bump
-# `lights_intensity_override` on the gltf_import
-# chunk down if the warm lamps now overwhelm the
-# sunlit areas.
+# Tuning knobs if the look needs to shift:
+#  - `solar_elevation` controls residual sky tint:
+#    1° gives a bluer twilight, 5-10° pushes it
+#    closer to amber sunset (the HW model is only
+#    valid for elevation ≥ 0).
+#  - `sky_intensity_scale` sets the sky brightness
+#    relative to the candles.  0.05 = barely
+#    perceptible blue fill (current); raise toward
+#    0.3 for "first hour after sunset" mood.
+#  - To bring the directional sun back for a
+#    golden-hour variant, set `create_sun TRUE`
+#    and pick `solar_elevation 5-10°`.
 ##################################################
 
 hosek_wilkie_skylight
 {
-	solar_elevation		60.0
-	solar_azimuth		135.0
-	turbidity			3.0
-	sky_intensity_scale	1.0
-	sun_intensity_scale	3.14
-	create_sun			TRUE
+	solar_elevation		1.0
+	solar_azimuth		270.0
+	turbidity			4.0
+	sky_intensity_scale	0.005
+	sun_intensity_scale	0.0
+	create_sun			FALSE
 }
 
 ##################################################
@@ -179,7 +167,7 @@ pathtracing_pel_rasterizer
 
 file_rasterizeroutput
 {
-	pattern				rendered/sponza_new
+	pattern				rendered/sponza_new_candles
 	type				EXR
 	color_space			ROMMRGB_Linear
 	exr_compression		piz
@@ -194,7 +182,7 @@ file_rasterizeroutput
 
 file_rasterizeroutput
 {
-	pattern				rendered/sponza_new
+	pattern				rendered/sponza_new_candles
 	type				PNG
 	bpp					8
 	color_space			sRGB
@@ -261,10 +249,113 @@ gltf_import
 	# By-eye uniform light override.  All 24 of the asset's
 	# bundled lights (1 directional + 23 points) ship at
 	# intensity=0 (Khronos convention: "lighting is up to
-	# the renderer").  100.0 wakes them all uniformly to a
-	# level that pairs well with radiance_scale=40 above.
-	lights_intensity_override	100.0
+	# the renderer").  Most other sponza scenes wake them
+	# at 100.0 (paired with the bright sunlit HW sky), but
+	# in THIS deep-dusk candle scene the candles are meant
+	# to dominate — a 5 cd setting gives just enough wall-
+	# sconce character to keep the colonnade silhouettes
+	# readable without competing with the candles' warm
+	# pools-of-light atmosphere.  Drop to 0.0 for pure
+	# candlelight; bump to 20-30 if the wall fixtures
+	# should feel like proper interior lighting.
+	lights_intensity_override	5.0
 	lowmem_textures		TRUE
+}
+
+##################################################
+# Sponza 10 000 candles add-on (Intel Sponza addon
+# pack `pkg_d_10k_candles`).  Loaded as a SECOND
+# `gltf_import` after the base atrium — the chunk
+# parser supports any number of glTF imports as
+# long as each carries a unique `name_prefix`
+# (created geometry / material / object / texture
+# entries inherit the prefix to keep the manager
+# namespaces clean).  Candles are authored to fit
+# the base atrium's coordinates 1:1, so no
+# transform is needed.
+#
+# Asset specifics:
+#  - 10 002 nodes total: a root + a sub-root +
+#    10 000 instanced `InstanceN` children, each
+#    of which (a) places the shared candle mesh
+#    via translation/rotation/scale and (b) carries
+#    its own KHR_lights_punctual reference to the
+#    single shared light definition (warm-orange
+#    point, intensity = 1 cd, colour ~(1, 0.234,
+#    0)).  After import that's 10 000 distinct
+#    point lights in the scene.
+#  - 1 mesh shared across all instances (Wax,
+#    Wick, Flame primitives).  3 materials:
+#    Wax_MAT, Wick_MAT, and Flame_MAT (the latter
+#    has emissiveFactor = (1, 1, 0) for the small
+#    yellow flame glow).  No KHR extensions, no
+#    textures, all `alphaMode = OPAQUE`.
+#  - Asset has no cameras of its own
+#    (`import_cameras = FALSE`).
+#  - `import_lights = FALSE` here is DELIBERATE —
+#    each candle node carries BOTH a 1 cd warm-
+#    orange KHR_lights_punctual point light AND a
+#    yellow-emissive `Flame_MAT` mesh, which is
+#    physically redundant: both light sources sit
+#    at the same world position and represent the
+#    same flame.  RISE's path tracer NEE-samples
+#    both sets — when the point lights are live,
+#    every shading point pays for the alias-table
+#    + light-BVH lookup AND the emissive-mesh
+#    lookup, and (measured) the scene takes 5.5×
+#    longer (1m 23s → 7m 41s on the reference
+#    machine) for almost no visible improvement —
+#    actually a SUBTLE LOSS of contrast because
+#    the point-light NEE adds a smooth fill-light
+#    layer that real candle scenes don't have.
+#    Setting `import_lights = FALSE` keeps the
+#    emissive flame meshes (which carry the
+#    visible flames AND the surrounding warm
+#    glow correctly) and skips the redundant
+#    point-light path.  The light_BVH stays on
+#    by default for the base scene's 24 lamps.
+#    A perf TODO is open to investigate why 10k
+#    point lights serialise so hard relative to
+#    the emissive-mesh equivalent — the light_BVH
+#    SHOULD make selection O(log N), but observed
+#    thread utilisation drops from ~100% to ~17%.
+#
+# Sibling scenes `sponza_new.RISEscene`,
+# `sponza_new_curtains.RISEscene`, and
+# `sponza_new_ivy.RISEscene` use sunlit HW skylight
+# settings instead of this scene's deep-dusk preset.
+##################################################
+
+gltf_import
+{
+	file				C:/Users/micro/Downloads/pkg_d_10k_candles/pkg_d_10k_candles/NewSponza_4_Combined_glTF.gltf
+	name_prefix			sponza_candles
+	import_meshes		TRUE
+	import_materials	TRUE
+	import_normal_maps	TRUE
+	import_cameras		FALSE
+	import_lights		FALSE
+	# `Flame_MAT` ships with emissiveFactor=(1,1,0) and
+	# emissiveStrength=1.0 — i.e. unit-yellow with no boost.
+	# That's a daytime-balanced authoring choice; in this
+	# deep-dusk scene the flames need to dominate the
+	# illumination, so multiply the emissive by 100×.
+	# Drop to ~20-50 if the flames blow out the highlights;
+	# bump to 200-500 if the colonnade reads too dark in
+	# the periphery.  The scale composes with the asset's
+	# `KHR_materials_emissive_strength` (1.0 here), so this
+	# IS the effective strength multiplier on the flame.
+	emissive_intensity_scale 100.0
+	# Warm-orange flame tint.  Asset's flame is authored at
+	# pure yellow (1, 1, 0) -- no warmth.  This tint
+	# multiplies that componentwise to (1, 0.5, 0), close
+	# to a real candle's ~1900 K colour temperature.  The
+	# B channel can't be lifted (asset has B = 0), but real
+	# candles have very little blue anyway -- the orange
+	# comes from reducing G relative to R.  Adjust toward
+	# (1, 0.4, 0) for deeper warmth or (1, 0.7, 0) for
+	# yellower / brighter flames.
+	emissive_tint 1.0 0.5 0.1
 }
 
 ##################################################
@@ -285,23 +376,65 @@ gltf_import
 ##################################################
 
 ##################################################
-# Camera.  Position + target taken from the asset's
-# PhysCamera001 node + its `Target` node:
+# Camera.  Hand-placed for THIS deep-dusk candle
+# variant — the canonical PhysCamera001 framing
+# ("eye level, just outside the entrance, looking
+# down the colonnade") is wrong here for a simple
+# spatial reason: pkg_d_10k_candles populates only
+# ONE colonnade (every candle sits at Z ∈ [-11.1,
+# -0.7], i.e. the -Z side of the atrium) and the
+# PhysCamera001 vantage at Z=-0.86 looking diagonally
+# toward +Z aims AWAY from the candle band.  Only
+# 38 % of the 10k candles fall inside its frustum
+# and most of the dark side-walls / floor in front
+# of the entrance carry the rest of the frame.
 #
-#   PhysCamera001         translation = (-8.807, 1.592, -0.858)
-#   PhysCamera001.Target  translation = (-3.004, 2.762,  0.237)
+# This camera instead stands at eye level INSIDE the
+# nave near the entrance, on the +Z (non-candle) side,
+# looking diagonally across the atrium toward the
+# back wall on the candle side:
 #
-# That's eye-level, just outside the atrium entrance,
-# looking down the colonnade with a slight upward
-# tilt -- the canonical hero shot.  yfov 1.0212 rad
-# ≈ 58.5°; we use degrees here.
+#   location  (-8.0, 1.6,  1.0)   -- 1m past the
+#                                    entrance, slightly
+#                                    +Z of nave centre,
+#                                    1.6m eye height
+#   lookat    ( 5.0, 1.6, -5.0)   -- across to the
+#                                    deep candle band
+#                                    near the back wall
+#
+# ~71 % of the 10k candles sit inside this frustum at
+# 16:9 / yfov 58.5° (vs 38 % for PhysCamera001 and
+# 49 % for the next-best PhysCamera004 balcony shot).
+# Composition: candle wall fills the right half of
+# the frame as a luminous cascade, stone columns
+# silhouetted left, faint floor reflection from the
+# nearest candles, sconce on the right wall lit at
+# 5 cd as a single warm spot.  PhysCamera001..006
+# are still imported above and remain switchable
+# at runtime via SetActiveCamera if a different shot
+# is wanted.
+#
+# Other framings tried during authoring (in
+# var_test/_candles_optB.RISEscene and _optC):
+#   B = PhysCamera004 (Y=6.92 balcony sweep) — clean
+#       architectural shot, candles cascade left;
+#       49 % FOV coverage.  Good alternative.
+#   C = PhysCamera002 (Y=7.35, back wall looking
+#       back to entrance, DOWN onto floor) — wide
+#       carpet of all 10k candles end-to-end; best
+#       "torture test" shot, lowest atmospheric
+#       intimacy.
+#
+# yfov 58.5° (vertical) — same FOV as PhysCamera001
+# for visual comparability across the sponza_new_*
+# scene family.
 ##################################################
 
 pinhole_camera
 {
-	location			-8.807 1.592 -0.858
-	lookat				-3.004 2.762  0.237
-	up					 0.0   1.0    0.0
+	location			-8.0 1.6  1.0
+	lookat				 5.0 1.6 -5.0
+	up					 0.0 1.0  0.0
 	# Iteration resolution.  Bump to 1280x720 for final-
 	# quality renders.
 	width				640

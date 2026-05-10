@@ -30,6 +30,7 @@ namespace RISE
 	class IAnimator;
 	class ICamera;
 	class ICameraManager;
+	class IFilm;
 	class IIrradianceCache;
 
 	class IScene : public virtual IReference
@@ -109,6 +110,22 @@ namespace RISE
 		///
 		/// See docs/INTERACTIVE_EDITOR_PLAN.md §7 (Timeline Scrubbing).
 		virtual void						SetSceneTimeForPreview( const Scalar time ) const = 0;
+
+		// ----- Methods appended below this line (vtable-stable) -----
+		// New methods MUST be appended after this point so that any
+		// in-tree consumer compiled against an older version of this
+		// header keeps the same vtable slot indices for the methods
+		// it knows about (insertions in the middle would shift every
+		// subsequent slot, miscompiling stale .obj files).
+
+		/// \return The active Film — the pixel-grid descriptor (width,
+		/// height, pixelAR) the rasterizer will produce.  A scene
+		/// always has a Film once Job::InitializeContainers has run
+		/// (the default is qHD 960x540 with square pixels); a `film`
+		/// chunk in the scene file or a CLI override replaces it.
+		/// Rasterizers MUST query the film here for grid dimensions
+		/// rather than reading them off the camera.
+		virtual const IFilm*				GetFilm( )		const = 0;
 	};
 }
 
@@ -119,6 +136,7 @@ namespace RISE
 #include "IAnimator.h"
 #include "ICamera.h"
 #include "ICameraManager.h"
+#include "IFilm.h"
 #include "IIrradianceCache.h"
 
 #endif

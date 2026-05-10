@@ -23,6 +23,7 @@
 #include "Interfaces/IBilinearPatchGeometry.h"
 #include "Interfaces/ICamera.h"
 #include "Interfaces/IDetectorSphere.h"
+#include "Interfaces/IFilm.h"
 #include "Interfaces/IFunction1DManager.h"
 #include "Interfaces/IFunction2DManager.h"
 #include "Interfaces/IFunction3D.h"
@@ -1817,6 +1818,25 @@ bool RISE_API_CreateIrradianceCache(
 								const Scalar neighbor_spacing_scale	///< [in] Scale for capping reuse radius by local neighbor spacing
 								);
 
+
+
+	//////////////////////////////////////////////////////////
+	// Film
+	//////////////////////////////////////////////////////////
+
+	//! Creates a Film — the pixel-grid descriptor that the
+	//! rasterizer reads to know what resolution and pixel aspect
+	//! ratio to produce.  A Scene has one active Film at a time;
+	//! the default (qHD 960x540, square pixels) is installed by
+	//! Job::InitializeContainers and can be overridden by a
+	//! `film` chunk in the scene file or by a CLI flag.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateFilm(
+								IFilm** ppi,					///< [out] Pointer to receive the film object
+								const unsigned int width,		///< [in] Image width in pixels
+								const unsigned int height,		///< [in] Image height in pixels
+								const Scalar pixelAR			///< [in] Pixel aspect ratio (1.0 = square pixels)
+								);
 
 
 	//////////////////////////////////////////////////////////

@@ -316,6 +316,13 @@ namespace RISE
 			const double threshold									///< [in] RR threshold (0=disabled)
 			);
 
+		//! Replaces the active Film.  See IJob.h for semantics.
+		bool SetFilm(
+			const unsigned int width,
+			const unsigned int height,
+			const double pixelAR
+			);
+
 		//
 		// Cameras — see IJob.h for the multi-camera contract.  Each
 		// AddXxxCamera registers the camera under `name` in the
@@ -1335,7 +1342,11 @@ namespace RISE
 							const double directional_intensity_override,
 							const double point_intensity_override,
 							const double spot_intensity_override,
-							const bool   respect_baked_occlusion = true
+							const bool   respect_baked_occlusion = true,
+							const double emissive_intensity_scale = 1.0,
+							const double emissive_tint_r = 1.0,
+							const double emissive_tint_g = 1.0,
+							const double emissive_tint_b = 1.0
 							);
 
 		//! Creates a triangle mesh geometry from a glTF 2.0 file.  See IJob.h

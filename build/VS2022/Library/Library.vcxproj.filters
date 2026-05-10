@@ -2054,6 +2054,9 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\IEnumCallback.h">
       <Filter>Interfaces</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IFilm.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Interfaces\IFullInterpolator.h">
       <Filter>Interfaces</Filter>
     </ClInclude>
@@ -2750,6 +2753,9 @@
       <Filter>Rendering\Rasterizers\Pixel Spectral</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\EnvironmentSampler.h">
+      <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\Film.h">
       <Filter>Rendering</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\FilteredFilm.h">
