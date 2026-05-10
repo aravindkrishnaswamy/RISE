@@ -99,6 +99,46 @@ namespace RISE
 		// command-line behaviour is byte-identical to legacy.
 		bool										m_suppressFileRasterizerOutputs = false;
 
+		// L6b — canonical FrameStore allocated at the active camera's
+		// dims and threaded into every rasterizer factory.  Per
+		// docs/FRAMESTORE_DESIGN.md §7.5 the FrameStore SURVIVES
+		// rasterizer swaps: when the user changes the active rasterizer,
+		// we keep the same FrameStore so observers (file outputs,
+		// platform UI viewports) don't have to re-attach.  Reallocated
+		// only when the active camera's resolution changes (rare for
+		// production; common for the interactive viewport which scrubs
+		// preview-scale).  Held by counted reference; the rasterizer's
+		// own ctor addrefs (see Rasterizer.cpp), so this Job-side
+		// reference is independent — releasing the rasterizer doesn't
+		// destroy the FrameStore until Job releases too.  Null until
+		// the first `Set*Rasterizer` call resolves an active camera.
+		Implementation::FrameStore*					m_jobFrameStore = nullptr;
+
+		// Ensure m_jobFrameStore exists at the requested dims.  If
+		// already allocated at matching dims, returns the existing
+		// pointer (no reallocation).  If dims differ or the FrameStore
+		// hasn't been allocated yet, releases any previous instance
+		// and allocates fresh.  Returns nullptr if width or height
+		// are zero (caller should pass nullptr to the factory).
+		Implementation::FrameStore* EnsureJobFrameStore_locked(
+			unsigned int width, unsigned int height );
+
+		// L6b — convenience wrapper: looks up the active camera's dims
+		// and calls EnsureJobFrameStore_locked.  Used by every
+		// `Set*Rasterizer` impl to thread a non-null FrameStore into
+		// the factory.  Returns nullptr if no scene / no active
+		// camera (the rasterizer's Phase 1 internal-IRasterImage path
+		// keeps working).
+		Implementation::FrameStore* ResolveJobFrameStoreForActiveCamera();
+
+		// L6b — Push the canonical FrameStore to every rasterizer in
+		// the registry.  Called after scene load completes (and any
+		// other moment the active camera's dims may have changed
+		// after rasterizer construction), so the rasterizer receives
+		// the FrameStore it could not get at construction time
+		// (typical scene files declare rasterizer BEFORE camera).
+		void PushJobFrameStoreToRasterizers();
+
 	public:
 		//! Snapshot of every parameter each `Set*Rasterizer` accepts.
 		//! Recorded into `rasterizerRegistry` alongside the instance

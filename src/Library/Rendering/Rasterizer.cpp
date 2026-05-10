@@ -97,3 +97,20 @@ void Rasterizer::SetProgressCallback( IProgressCallback* pFunc )
 	pProgressFunc = pFunc;
 }
 
+// L6b — Late-binding FrameStore setter.  Called by Job after scene
+// load when the canonical FrameStore can finally be allocated against
+// the active camera's dims.  Lifecycle mirrors the ctor: addref the
+// new store + release the old.  Idempotent at the same pointer
+// (addref + release on the same object cancel out).
+void Rasterizer::SetFrameStore( FrameStore* frameStore )
+{
+	if( frameStore == mFrameStore ) {
+		return;  // no-op when caller passes the same pointer
+	}
+	if( frameStore ) {
+		frameStore->addref();
+	}
+	safe_release( mFrameStore );  // null-safe + zeroes the local
+	mFrameStore = frameStore;
+}
+

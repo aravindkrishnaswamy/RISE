@@ -123,6 +123,27 @@ namespace RISE
 			virtual FrameStore* GetFrameStore() const
 				{ return mFrameStore; }
 
+			// L6b — Late-binding FrameStore setter.  Used by `Job` to
+			// push the canonical FrameStore into the rasterizer AFTER
+			// scene load completes (most scene files declare the
+			// rasterizer chunk BEFORE the camera chunk, so at
+			// rasterizer-construction time the active camera dims
+			// aren't yet known and the factory was passed nullptr).
+			//
+			// Releases any previous FrameStore and addrefs the new
+			// one (matching the lifecycle Rasterizer::Rasterizer
+			// established).  Passing nullptr clears the FrameStore
+			// (rasterizer falls back to its internal IRasterImage
+			// path until L6c).
+			//
+			// Threading: caller must establish the same "rasterizer
+			// is parked, no render in flight" precondition the rest
+			// of `Job`'s mutable-state mutations honor (see Job.h
+			// CONCURRENCY CONTRACT).  L6c will introduce a
+			// chain-mutex so reader threads (UI viewports, encoders)
+			// can read FrameStore concurrently with this swap.
+			void SetFrameStore( FrameStore* frameStore );
+
 #ifdef RISE_ENABLE_OIDN
 			void SetDenoisingEnabled( bool enabled ) { bDenoisingEnabled = enabled; }
 			void SetDenoisingQuality( OidnQuality quality ) { mDenoisingQuality = quality; }

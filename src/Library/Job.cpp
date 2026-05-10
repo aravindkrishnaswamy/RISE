@@ -25,6 +25,8 @@
 #include "Shaders/DirectLightingShaderOp.h"
 #include "Shaders/DistributionTracingShaderOp.h"
 #include "Shaders/FinalGatherShaderOp.h"
+#include "Rendering/FrameStore.h"
+#include "Rendering/Rasterizer.h"
 #include "Utilities/RString.h"
 #include "Utilities/RasterizerDefaults.h"
 #include <stdio.h>
@@ -78,6 +80,70 @@ Job::Job( )
 Job::~Job( )
 {
 	DestroyContainers();
+}
+
+// L6b — lazy-allocate (or reuse) the canonical FrameStore.  The
+// FrameStore is reused across rasterizer swaps (per docs/FRAMESTORE_-
+// DESIGN.md §7.5) — a Set*Rasterizer call with the same active-
+// camera dims keeps the existing FrameStore so that file outputs +
+// platform UI viewport observers stay attached.  Reallocation
+// happens only when:
+//   - the FrameStore hasn't been allocated yet, OR
+//   - the caller's (width,height) differs from the allocated dims
+//     (camera resolution change — rare in production, typical
+//     during interactive viewport preview-scale stepping).
+//
+// On reallocation, the previous FrameStore is released by Job;
+// any rasterizer or observer that still holds a counted reference
+// keeps it alive until they release.  The new FrameStore is
+// returned with refcount = 1 (Reference's default), addref'd by
+// the caller (the rasterizer's ctor) when it's stored.
+//
+// Returns nullptr if width or height are zero — caller should pass
+// nullptr to the factory in that case (Phase 1 fallback to internal
+// IRasterImage path).
+//
+// Naming convention "_locked" is forward-looking: when L6c ships the
+// helper rewrite, this method will need a chain-mutex pattern
+// analogous to ViewportFrameStore's chainMutex_ to coordinate with
+// reader threads (UI viewports, encoders).  L6b's single-threaded
+// "Job is parked while rasterizer is mutated" contract from
+// SceneEditController removes the need for the lock today.
+RISE::Implementation::FrameStore* Job::ResolveJobFrameStoreForActiveCamera()
+{
+	const ICamera* cam = pScene ? pScene->GetCamera() : nullptr;
+	if( !cam ) return nullptr;
+	return EnsureJobFrameStore_locked( cam->GetWidth(), cam->GetHeight() );
+}
+
+RISE::Implementation::FrameStore* Job::EnsureJobFrameStore_locked(
+	unsigned int width, unsigned int height )
+{
+	if( width == 0 || height == 0 ) {
+		return nullptr;
+	}
+	if( m_jobFrameStore ) {
+		const unsigned int curW =
+			static_cast<unsigned int>( m_jobFrameStore->Width() );
+		const unsigned int curH =
+			static_cast<unsigned int>( m_jobFrameStore->Height() );
+		if( curW == width && curH == height ) {
+			return m_jobFrameStore;  // reuse — survives rasterizer swap
+		}
+		// Dims differ → reallocate.  Release Job's reference; any
+		// rasterizer / observer still holding a ref keeps the OLD
+		// store alive until they themselves release.
+		safe_release( m_jobFrameStore );
+	}
+	RISE::Implementation::FrameStore::Spec spec;
+	spec.width    = width;
+	spec.height   = height;
+	spec.tileEdge = 32;  // matches the rasterizer's typical block size
+	m_jobFrameStore = new RISE::Implementation::FrameStore( spec );
+	GlobalLog()->PrintEx( eLog_Info,
+		"Job:: allocated canonical FrameStore (%ux%u, tileEdge=%u).",
+		width, height, static_cast<unsigned>( spec.tileEdge ) );
+	return m_jobFrameStore;
 }
 
 void Job::InitializeContainers()
@@ -164,6 +230,13 @@ void Job::DestroyContainers()
 	rasterizerRegistry.clear();
 	pRasterizer = 0;
 	activeRasterizerName.clear();
+
+	// L6b — release the canonical FrameStore.  Each rasterizer that
+	// the registry just released also held its own counted reference
+	// (per Rasterizer::~Rasterizer in src/Library/Rendering/Rasterizer.cpp
+	// L6a-1), so this Job-side release is the LAST holder once the
+	// registry is drained — the FrameStore is destroyed here.
+	safe_release( m_jobFrameStore );
 
 	safe_shutdown_and_release( pGeomManager );
 	safe_shutdown_and_release( pCameraManager );
@@ -5759,7 +5832,8 @@ bool Job::SetPixelBasedPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
-	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+	RISE_API_CreatePixelBasedPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, _jobFs);
 
 	// Always propagate the parsed progressiveConfig — including
 	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
@@ -5897,7 +5971,8 @@ bool Job::SetPixelBasedSpectralIntegratingRasterizer(
 		}
 		*/
 	} else {
-		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, spectralConfig.spectralSamples, spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
+		RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+		RISE_API_CreatePixelBasedSpectralIntegratingRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, spectralConfig.spectralSamples, spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS, _jobFs);
 	}
 
 	safe_release( pPixelSampler );
@@ -5990,8 +6065,9 @@ bool Job::SetBDPTPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
 	RISE_API_CreateBDPTPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
-		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
+		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, _jobFs);
 
 	// Always propagate the parsed progressiveConfig — including
 	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
@@ -6088,9 +6164,10 @@ bool Job::SetBDPTSpectralRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
 	RISE_API_CreateBDPTSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
 		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples,
-		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
+		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS, _jobFs);
 
 	// Always propagate the parsed progressiveConfig — including
 	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
@@ -6190,6 +6267,7 @@ bool Job::SetVCMPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
 	RISE_API_CreateVCMPelRasterizer(
 		&pRaster,
 		pCaster,
@@ -6207,7 +6285,7 @@ bool Job::SetVCMPelRasterizer(
 		guidingConfig,
 		adaptiveConfig,
 		stabilityConfig,
-		pixelFilterConfig.blueNoiseSampler );
+		pixelFilterConfig.blueNoiseSampler, _jobFs);
 
 	// Always propagate the parsed progressiveConfig — including
 	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
@@ -6311,6 +6389,7 @@ bool Job::SetVCMSpectralRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
 	RISE_API_CreateVCMSpectralRasterizer(
 		&pRaster,
 		pCaster,
@@ -6333,7 +6412,7 @@ bool Job::SetVCMSpectralRasterizer(
 		adaptiveConfig,
 		stabilityConfig,
 		pixelFilterConfig.blueNoiseSampler,
-		spectralConfig.useHWSS );
+		spectralConfig.useHWSS, _jobFs);
 
 	// Always propagate the parsed progressiveConfig — including
 	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
@@ -6433,8 +6512,9 @@ bool Job::SetPathTracingPelRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
 	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
-		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, smsConfig.twoStage, smsConfig.useLevenbergMarquardt, smsConfig.seedingMode, smsConfig.targetBounces, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler );
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, smsConfig.twoStage, smsConfig.useLevenbergMarquardt, smsConfig.seedingMode, smsConfig.targetBounces, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, _jobFs);
 
 	// Always propagate the parsed progressiveConfig — including
 	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
@@ -6529,9 +6609,10 @@ bool Job::SetPathTracingSpectralRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
 	RISE_API_CreatePathTracingSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
 		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples,
-		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, smsConfig.twoStage, smsConfig.useLevenbergMarquardt, smsConfig.seedingMode, smsConfig.targetBounces, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS );
+		smsConfig.enabled, smsConfig.maxIterations, smsConfig.threshold, smsConfig.maxChainDepth, smsConfig.biased, smsConfig.bernoulliTrials, smsConfig.multiTrials, smsConfig.photonCount, smsConfig.twoStage, smsConfig.useLevenbergMarquardt, smsConfig.seedingMode, smsConfig.targetBounces, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS, _jobFs);
 
 	// Always propagate the parsed progressiveConfig — including
 	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
@@ -6614,9 +6695,10 @@ bool Job::SetMLTRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
 	RISE_API_CreateMLTRasterizerWithFilter( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
 		nBootstrap, nChains, nMutationsPerPixel, largeStepProb, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
-		pPixelSampler, pPixelFilter );
+		pPixelSampler, pPixelFilter, _jobFs);
 
 	safe_release( pCaster );
 	safe_release( pPixelSampler );
@@ -6686,10 +6768,11 @@ bool Job::SetMLTSpectralRasterizer(
 	}
 
 	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
 	RISE_API_CreateMLTSpectralRasterizerWithFilter( &pRaster, pCaster, maxEyeDepth, maxLightDepth,
 		nBootstrap, nChains, nMutationsPerPixel, largeStepProb,
 		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.spectralSamples, spectralConfig.useHWSS, oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
-		pPixelSampler, pPixelFilter );
+		pPixelSampler, pPixelFilter, _jobFs);
 
 	safe_release( pCaster );
 	safe_release( pPixelSampler );
@@ -8023,7 +8106,42 @@ bool Job::LoadAsciiScene(
 	bool bRet = sceneParser->ParseAndLoadScene( *this );
 	safe_release( sceneParser );
 
+	// L6b — push the canonical FrameStore to every rasterizer in the
+	// registry now that scene load is complete and the active camera's
+	// dims are finally known.  Most scene files declare the rasterizer
+	// chunk BEFORE the camera chunk, so at rasterizer-construction time
+	// the ResolveJobFrameStoreForActiveCamera() call returned nullptr.
+	// Re-resolve here and SetFrameStore on each registry entry.
+	if( bRet ) {
+		PushJobFrameStoreToRasterizers();
+	}
 	return bRet;
+}
+
+// L6b — push the canonical FrameStore to every registered rasterizer.
+// Called after scene load completes and after SetActiveCamera in case
+// the new camera has different dimensions.  Each rasterizer addrefs
+// the FrameStore via Rasterizer::SetFrameStore (releases its previous
+// reference if any) so the ref count is balanced.  Safe to call when
+// no FrameStore can be allocated yet (no active camera) — passes
+// nullptr through, which clears any stale FrameStore on each rasterizer.
+void Job::PushJobFrameStoreToRasterizers()
+{
+	RISE::Implementation::FrameStore* fs = ResolveJobFrameStoreForActiveCamera();
+	for( RasterizerRegistry::iterator it = rasterizerRegistry.begin();
+	     it != rasterizerRegistry.end(); ++it )
+	{
+		if( !it->second.instance ) continue;
+		// Cast to the concrete `Rasterizer` impl to access SetFrameStore.
+		// This is safe — every in-tree rasterizer derives from
+		// `Implementation::Rasterizer`, and the registry only holds
+		// instances we constructed via RISE_API factories.
+		RISE::Implementation::Rasterizer* r =
+			dynamic_cast<RISE::Implementation::Rasterizer*>( it->second.instance );
+		if( r ) {
+			r->SetFrameStore( fs );
+		}
+	}
 }
 
 //! Runs an ascii script
