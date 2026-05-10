@@ -432,6 +432,30 @@ namespace RISE
 		// bracket window — `std::shared_mutex` is non-recursive, so a
 		// second `BeginTile` on a tile already locked by the same thread
 		// would deadlock.
+		// Forward-decl for the L7 propagation helper.  Full type in
+		// `Rendering/AOVBuffers.h` (gated on `RISE_ENABLE_OIDN`).
+		class AOVBuffers;
+
+		// L7 — Copy AOVBuffers contents into FrameStore's Albedo +
+		// Normal channels.  No-op when:
+		//   * `fs` is null.
+		//   * `aov`'s dims are zero.
+		//   * `fs` and `aov` dim-mismatch.
+		//   * neither Albedo nor Normal channel was requested in
+		//     `fs`'s Spec at construction time.
+		//
+		// Bracketed via `FrameStoreBulkBracket` for concurrent-reader
+		// correctness on the canonical store.  Type narrowing
+		// (float→double) is loss-free for finite values.
+		//
+		// Called from `PixelBasedRasterizerHelper::RasterizeScene`,
+		// `RasterizeSceneAnimation`, `BDPTRasterizerBase::RasterizeScene`,
+		// and `MLTRasterizer::RasterizeScene` /
+		// `RasterizeSceneAnimation` after their respective
+		// `CollectFirstHitAOVs` calls — see commit messages for
+		// L7 + the L7 follow-up that wired MLT.
+		void PropagateAOVsToFrameStore( FrameStore* fs, const AOVBuffers& aov );
+
 		class FrameStoreBulkBracket
 		{
 		public:

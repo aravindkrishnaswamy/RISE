@@ -94,96 +94,65 @@ namespace RISE
 			// destructs (typically by Detach()-ing first AND
 			// joining any rasterizer threads).
 			//
-			// Take the chain-mutex unique-lock so any reader
-			// thread that's mid-RenderToBuffer / SaveAs and
-			// holding only an addref'd snapshot of framestore_
-			// has finished its captured-pointer dereference (the
-			// readers release the mutex before doing the actual
-			// work, but they do hold the snapshot's addref the
-			// whole time — releasing the chain in TeardownChain
-			// drops our reference, the reader's addref keeps
-			// the FrameStore alive until they release).
-			std::unique_lock<std::shared_mutex> lock( chainMutex_ );
-			TeardownChain();
+			// L8 review round 3 — DEADLOCK FIX: route through the
+			// phased BindFrameStore(nullptr) path rather than holding
+			// chainMutex_ unique_lock around `TeardownChain()`'s
+			// `RemoveObserver` wait.  BindFrameStore's Phase 1
+			// snapshots + clears under the lock, Phase 2/3 tear
+			// down OUTSIDE the lock (so observer dispatches that
+			// re-enter chainMutex_ via vfs->RenderToBuffer can
+			// complete), Phase 4 is a no-op for external==nullptr.
+			// See BindFrameStore comment for the full rationale.
+			//
+			// Snapshot semantics for in-flight readers: same as
+			// pre-fix.  Reader threads that already captured an
+			// addref'd `framestore_` snapshot continue to hold it
+			// alive past Phase 1's clear; their work completes
+			// against the captured pointer; they release.  Phase 3
+			// then sees zero refs and destroys the FrameStore.
+			BindFrameStore( nullptr );
 		}
 
-		// Caller MUST hold chainMutex_ as unique_lock when calling this.
-		// L5a round-8 — also tears down every dormant chain cached
-		// for preview-scale oscillation reuse; only invoked from the
-		// destructor (since EnsureChain now parks rather than tears
-		// down on dim change).
-		// L6e-2a — also handles external-bind teardown.  In external
-		// mode `framestore_` is an ALIAS for `externalFrameStore_`
-		// (same pointer, single addref held on `externalFrameStore_`).
-		// We must release through `externalFrameStore_` exactly once
-		// and clear the alias; releasing `framestore_` directly would
-		// be redundant (same refcount) but indistinguishable from
-		// internal-mode teardown.
-		void ViewportFrameStore::TeardownChain()
-		{
-			if ( framestore_ && observer_ ) {
-				framestore_->RemoveObserver( observer_ );
-			}
-			delete observer_;
-			observer_ = nullptr;
-
-			safe_release( framesink_ );
-			framesink_ = nullptr;
-
-			if ( externalFrameStore_ ) {
-				// External-bound: framestore_ is an alias; the addref
-				// lives on externalFrameStore_.  Clear the alias,
-				// release through the canonical pointer.
-				framestore_ = nullptr;
-				safe_release( externalFrameStore_ );
-				externalFrameStore_ = nullptr;
-			} else {
-				// Internal-mode: VFS owned the FrameStore via
-				// `framestore_`'s addref.
-				safe_release( framestore_ );
-				framestore_ = nullptr;
-			}
-
-			// Drain dormant cache (only populated in internal mode;
-			// external mode bypasses the cache entirely).  Each
-			// entry's observer was registered on its FrameStore at
-			// allocation time and kept registered through parking;
-			// remove + delete before releasing the FrameStore,
-			// mirroring the active chain's teardown order above.
-			for ( auto& d : dormant_ ) {
-				if ( d.fs && d.obs ) {
-					d.fs->RemoveObserver( d.obs );
-				}
-				delete d.obs;
-				safe_release( d.sink );
-				safe_release( d.fs );
-			}
-			dormant_.clear();
-		}
+		// L8 review round 3 — the previous `TeardownChain()` method
+		// was removed to eliminate a deadlock hazard.  It called
+		// `RemoveObserver` while assuming the caller held
+		// `chainMutex_` unique_lock; under that assumption, an
+		// in-flight observer dispatch on a worker thread that
+		// re-enters `chainMutex_` (via `RenderToBuffer`) would
+		// deadlock against `RemoveObserver`'s wait protocol.
+		//
+		// Replacement: `BindFrameStore(nullptr)` does the same
+		// teardown work via the phased pattern (snapshot + drop
+		// lock + RemoveObserver + cleanup + nothing-to-install).
+		// The dtor uses it; `EnsureChain` still uses
+		// `ParkActiveAsDormant_locked` for dim changes (which
+		// doesn't call `RemoveObserver`).  No other in-tree caller
+		// existed.
 
 		// Caller MUST hold chainMutex_ as unique_lock when calling this.
 		// Moves the current active triple onto the front of dormant_
 		// (MRU position) and clears the active pointers.  If the
-		// dormant cache is at capacity, evicts the LRU entry (back of
-		// the vector) — its FrameStore is fully torn down (observer
-		// removed + deleted, sink released, store released).
-		void ViewportFrameStore::ParkActiveAsDormant_locked()
+		// dormant cache is at capacity, returns the LRU entry via
+		// `outEvicted` for the caller to tear down OUTSIDE the lock
+		// (its `RemoveObserver` waits for in-flight observer dispatches
+		// to drain — those dispatches re-enter `chainMutex_` via
+		// `RenderToBuffer`, so calling RemoveObserver while holding
+		// the lock deadlocks).  Caller is responsible for invoking
+		// `TeardownDormant_unlocked` on the returned entry once the
+		// lock is dropped.  See L8 review round 4.
+		void ViewportFrameStore::ParkActiveAsDormant_locked( DormantChain& outEvicted )
 		{
+			outEvicted = DormantChain();
 			if ( !framestore_ ) {
 				return;  // nothing to park
 			}
 
 			// Evict LRU first if we'd otherwise exceed the cap.  The
 			// cap is `kMaxDormantChains` for parked entries
-			// (active is in addition to that).
+			// (active is in addition to that).  Move-out the LRU into
+			// `outEvicted`; teardown is the caller's job (post-fix).
 			if ( dormant_.size() >= kMaxDormantChains ) {
-				DormantChain& evict = dormant_.back();
-				if ( evict.fs && evict.obs ) {
-					evict.fs->RemoveObserver( evict.obs );
-				}
-				delete evict.obs;
-				safe_release( evict.sink );
-				safe_release( evict.fs );
+				outEvicted = dormant_.back();
 				dormant_.pop_back();
 			}
 
@@ -198,6 +167,24 @@ namespace RISE
 			framestore_ = nullptr;
 			framesink_  = nullptr;
 			observer_   = nullptr;
+		}
+
+		// Tear down a dormant entry returned from
+		// `ParkActiveAsDormant_locked` evictions.  Caller MUST NOT
+		// hold `chainMutex_` — `RemoveObserver` waits for in-flight
+		// observer dispatches whose callbacks re-enter chainMutex_
+		// via `RenderToBuffer`.  See L8 review round 4 for the
+		// dispatch-mutex inversion that motivated this split.
+		// No-op on a default-constructed (empty) DormantChain.
+		void ViewportFrameStore::TeardownDormant_unlocked( DormantChain& d )
+		{
+			if ( d.fs && d.obs ) {
+				d.fs->RemoveObserver( d.obs );
+			}
+			delete d.obs;
+			safe_release( d.sink );
+			safe_release( d.fs );
+			d = DormantChain();
 		}
 
 		// ─────────────────────────────────────────────────────────────
@@ -287,26 +274,102 @@ namespace RISE
 
 		void ViewportFrameStore::BindFrameStore( FrameStore* external )
 		{
-			std::unique_lock<std::shared_mutex> lock( chainMutex_ );
+			// L8 review round 3 — DEADLOCK FIX.
+			//
+			// Pre-fix: this method held `chainMutex_` unique_lock the
+			// whole way, including across `TeardownChain()`'s
+			// `RemoveObserver` call.  `RemoveObserver` blocks until
+			// any in-flight observer dispatch on the old store
+			// returns.  But the observer chain ultimately calls back
+			// into `vfs->RenderToBuffer` (the bridge's tile-complete
+			// callback path), which itself takes `chainMutex_`
+			// shared_lock.  Worker thread blocked waiting for
+			// shared_lock → main thread blocked waiting for worker's
+			// dispatch to finish → DEADLOCK.  Reproduced as user-
+			// reported hang on second-render-after-scene-reload.
+			//
+			// Post-fix: phase the work so `RemoveObserver` runs
+			// WITHOUT `chainMutex_` held:
+			//   1. Snapshot old state under unique_lock + clear
+			//      member pointers.  Concurrent readers from this
+			//      point see "no chain" (RenderToBuffer no-ops).
+			//   2. Release the lock.
+			//   3. Call `RemoveObserver` + cleanup.  Workers can
+			//      acquire shared_lock for RenderToBuffer; their
+			//      dispatches complete; in-flight counter
+			//      decrements; RemoveObserver returns.
+			//   4. Re-acquire the lock to install the new state.
+			//
+			// Consequence: brief gap between Phase 2 and Phase 4
+			// where readers see no chain.  Acceptable — same window
+			// as a transient unbind-then-bind cycle, and the bridge's
+			// tile callbacks during that gap simply don't update.
 
-			// Idempotent — re-binding the same pointer is a no-op,
-			// avoids tearing down + re-registering an observer that
-			// would point at the same store.
-			if ( external == externalFrameStore_ ) {
-				return;
+			// ----- Phase 1: snapshot + clear under unique_lock. -----
+			FrameStore*     oldExternal = nullptr;
+			FrameStore*     oldFs       = nullptr;
+			FrameSink*      oldSink     = nullptr;
+			BridgeObserver* oldObs      = nullptr;
+			std::vector<DormantChain> oldDormant;
+			{
+				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
+
+				// Idempotent — re-binding the same pointer is a no-op,
+				// avoids tearing down + re-registering an observer that
+				// would point at the same store.
+				if ( external == externalFrameStore_ ) {
+					return;
+				}
+
+				// Snapshot member state into locals + clear members.
+				oldExternal = externalFrameStore_;
+				oldFs       = framestore_;
+				oldSink     = framesink_;
+				oldObs      = observer_;
+				oldDormant.swap( dormant_ );
+
+				externalFrameStore_ = nullptr;
+				framestore_         = nullptr;
+				framesink_          = nullptr;
+				observer_           = nullptr;
 			}
 
-			// Tear down whatever's currently active.  TeardownChain
-			// is now external-aware (handles both internal-mode +
-			// external-mode teardown correctly under one entry
-			// point).
-			TeardownChain();
+			// ----- Phase 2/3: teardown OUTSIDE chainMutex_. -----
+			// RemoveObserver can wait for in-flight observer
+			// dispatches without blocking workers that need
+			// chainMutex_ shared_lock for RenderToBuffer.
+			if ( oldFs && oldObs ) {
+				oldFs->RemoveObserver( oldObs );
+			}
+			delete oldObs;
+			safe_release( oldSink );
+			if ( oldExternal ) {
+				// External-bound: framestore_ was an alias for
+				// externalFrameStore_; the addref lived on
+				// externalFrameStore_.  Release through it.
+				safe_release( oldExternal );
+			} else {
+				// Internal mode: framestore_ owned its addref.
+				safe_release( oldFs );
+			}
+			// Drain dormant cache (only populated in internal mode;
+			// external mode bypasses the cache entirely).
+			for ( auto& d : oldDormant ) {
+				if ( d.fs && d.obs ) {
+					d.fs->RemoveObserver( d.obs );
+				}
+				delete d.obs;
+				safe_release( d.sink );
+				safe_release( d.fs );
+			}
 
+			// ----- Phase 4: install new state under unique_lock. -----
 			// Bind to the new external (if non-null).  `nullptr`
 			// reverts to internal-managed mode — the next
 			// `Output*Image` call will lazy-allocate a fresh internal
 			// store via `EnsureChain`.
 			if ( external ) {
+				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
 				external->addref();  // VFS owns one defensive ref
 				externalFrameStore_ = external;
 				framestore_         = external;
@@ -729,70 +792,95 @@ namespace RISE
 			// release.  Reader threads NOT yet inside a snapshot
 			// (about to take the shared_lock) wait until our swap
 			// completes; they then see the NEW framestore_.
-			std::unique_lock<std::shared_mutex> lock( chainMutex_ );
-
-			// Re-check under unique_lock (a concurrent rasterizer
-			// thread shouldn't be possible per the contract above,
-			// but defensive against future contract relaxations).
-			if ( framestore_ &&
-			     framestore_->Width()  == width &&
-			     framestore_->Height() == height )
+			//
+			// L8 review round 4 — the LRU eviction's `RemoveObserver`
+			// must run OUTSIDE chainMutex_ to avoid the dispatch-mutex
+			// inversion documented in `BindFrameStore`.  We snapshot
+			// the eviction candidate here (under the lock) and tear it
+			// down post-lock.  Same dormant cache semantics; fewer
+			// deadlock paths.
+			DormantChain evicted;
 			{
-				return;
-			}
+				std::unique_lock<std::shared_mutex> lock( chainMutex_ );
 
-			// L5a round-8 — preview-scale oscillation reuse.  Park
-			// the current active (if any) into dormant_ rather than
-			// destroying it.  A subsequent pass at the same dims
-			// (very common during interactive drag adaptation; see
-			// SceneEditController::DoOneRenderPass scale ramp)
-			// reactivates the parked entry instead of paying the
-			// allocation + observer-registration cost.  LRU
-			// eviction on overflow keeps total memory bounded.
-			ParkActiveAsDormant_locked();
-
-			// Look for a dormant entry that matches the requested
-			// dims.  Iterate front-to-back so a hit on the most-
-			// recently-parked entry is also the cheapest.
-			for ( auto it = dormant_.begin(); it != dormant_.end(); ++it ) {
-				if ( it->w == width && it->h == height ) {
-					framestore_ = it->fs;
-					framesink_  = it->sink;
-					observer_   = it->obs;
-					dormant_.erase( it );
-					// Camera EV may have changed while this chain
-					// was parked — re-apply the latest snapshot so
-					// encoders / RenderToBuffer see current state.
-					framestore_->MutableMeta().cameraExposureEV =
-						static_cast<double>( cameraExposureEV_ );
+				// Re-check under unique_lock (a concurrent rasterizer
+				// thread shouldn't be possible per the contract above,
+				// but defensive against future contract relaxations).
+				if ( framestore_ &&
+				     framestore_->Width()  == width &&
+				     framestore_->Height() == height )
+				{
 					return;
 				}
-			}
 
-			// Cache miss — allocate fresh chain at the new dims.
-			// Logged at info level so the interactive preview-scale
-			// sweep doesn't spam warnings (unlike the previous
-			// unconditional reallocate-and-warn path).
-			GlobalLog()->PrintEx( eLog_Info,
-				"ViewportFrameStore:: allocating new FrameStore "
-				"chain for %ux%u (dormant cache size %zu).",
-				width, height, dormant_.size() );
+				// L5a round-8 — preview-scale oscillation reuse.  Park
+				// the current active (if any) into dormant_ rather than
+				// destroying it.  A subsequent pass at the same dims
+				// (very common during interactive drag adaptation; see
+				// SceneEditController::DoOneRenderPass scale ramp)
+				// reactivates the parked entry instead of paying the
+				// allocation + observer-registration cost.  LRU
+				// eviction on overflow returns an entry to evict; we
+				// tear it down OUTSIDE the lock below.
+				ParkActiveAsDormant_locked( evicted );
 
-			FrameStore::Spec spec;
-			spec.width    = width;
-			spec.height   = height;
-			spec.tileEdge = 32;  // match rasterizer tile size; not load-bearing
-			framestore_ = new FrameStore( spec );  // refcount = 1
-			framestore_->MutableMeta().cameraExposureEV =
-				static_cast<double>( cameraExposureEV_ );
+				// Look for a dormant entry that matches the requested
+				// dims.  Iterate front-to-back so a hit on the most-
+				// recently-parked entry is also the cheapest.
+				bool reactivated = false;
+				for ( auto it = dormant_.begin(); it != dormant_.end(); ++it ) {
+					if ( it->w == width && it->h == height ) {
+						framestore_ = it->fs;
+						framesink_  = it->sink;
+						observer_   = it->obs;
+						dormant_.erase( it );
+						// Camera EV may have changed while this chain
+						// was parked — re-apply the latest snapshot so
+						// encoders / RenderToBuffer see current state.
+						framestore_->MutableMeta().cameraExposureEV =
+							static_cast<double>( cameraExposureEV_ );
+						reactivated = true;
+						break;
+					}
+				}
 
-			framesink_ = new FrameSink( framestore_ );
+				if ( !reactivated ) {
+					// Cache miss — allocate fresh chain at the new dims.
+					// Logged at info level so the interactive preview-
+					// scale sweep doesn't spam warnings (unlike the
+					// previous unconditional reallocate-and-warn path).
+					GlobalLog()->PrintEx( eLog_Info,
+						"ViewportFrameStore:: allocating new FrameStore "
+						"chain for %ux%u (dormant cache size %zu).",
+						width, height, dormant_.size() );
 
-			// Build observer + register on the FrameStore.
-			// `new` because BridgeObserver doesn't extend Reference
-			// (it's an internal-only lifecycle managed by us).
-			observer_ = new BridgeObserver( *this );
-			framestore_->AddObserver( observer_ );
+					FrameStore::Spec spec;
+					spec.width    = width;
+					spec.height   = height;
+					spec.tileEdge = 32;  // match rasterizer tile size; not load-bearing
+					framestore_ = new FrameStore( spec );  // refcount = 1
+					framestore_->MutableMeta().cameraExposureEV =
+						static_cast<double>( cameraExposureEV_ );
+
+					framesink_ = new FrameSink( framestore_ );
+
+					// Build observer + register on the FrameStore.
+					// `new` because BridgeObserver doesn't extend
+					// Reference (it's an internal-only lifecycle
+					// managed by us).  AddObserver is a brief
+					// lock-and-push — safe to call under chainMutex_.
+					observer_ = new BridgeObserver( *this );
+					framestore_->AddObserver( observer_ );
+				}
+			}  // chainMutex_ released here
+
+			// Post-lock teardown of the LRU eviction (if any).  Same
+			// rationale as `BindFrameStore` Phase 3 — RemoveObserver
+			// can wait for in-flight dispatches whose callbacks need
+			// chainMutex_ shared_lock; calling it without the lock
+			// lets those dispatches drain.  No-op on empty/default
+			// DormantChain.
+			TeardownDormant_unlocked( evicted );
 		}
 
 	} // namespace Implementation

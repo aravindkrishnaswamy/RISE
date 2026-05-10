@@ -181,6 +181,12 @@ namespace RISE
 			virtual unsigned int GetDenoiseAOVSamplesPerPixel() const override;
 #endif
 
+			// L8 round 7 — `ShouldFireToggleObserverEvents()` is now
+			// false by default on the base class (see header doc on
+			// `PixelBasedRasterizerHelper`); no per-rasterizer
+			// override needed.  The previous round-6 override here
+			// was redundant once the base default flipped.
+
 		private:
 			Config                mCfg;
 			mutable bool          mIdleMode;

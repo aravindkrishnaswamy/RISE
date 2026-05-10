@@ -393,6 +393,51 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		}
 	}
 
+	// L6e-3 follow-up — toggle visibility restoration.  Pre-L6e-2
+	// the bridge received per-block intermediate updates via
+	// `VFS::OutputIntermediateImage` (legacy IRasterizerOutput
+	// chain) which copied the toggle-marked image to its internal
+	// FrameStore + fired `OnTileComplete` on observers.  Bound-mode
+	// VFS short-circuits OutputIntermediateImage entirely — the
+	// only `OnTileComplete` events come from `BeginTile/EndTile` on
+	// the canonical store, and the single `EndTile` at the end of
+	// this block fires AFTER the per-pixel loop has overwritten
+	// the toggles, so the user never sees them.
+	//
+	// Restoration: split the bracket.  Fire an EndTile pass here
+	// (toggle-marked content visible to direct-FrameStore readers
+	// like the bound VFS), then re-acquire the locks before the
+	// per-pixel loop.  Net: 2 OnTileComplete events per block per
+	// tile (was 1 post-L6e-1.1, was 2 pre-L6e-2 via the legacy
+	// path — back to parity).  Bridges' tile-complete callbacks
+	// see toggles briefly between events, then the final pixel
+	// content.
+	//
+	// `skipBlockOutput`-true case (VCM): no toggles drawn → no
+	// in-progress event needed → keep the single EndTile at the
+	// end of the block.
+	//
+	// L8 round 6 — gated on `ShouldFireToggleObserverEvents()` so
+	// `InteractivePelRasterizer` (~30Hz preview) can opt out: the
+	// extra OnTileComplete fires drove a measurable per-frame
+	// perf cost during fast manipulation (each fire goes through
+	// the bridge's bufferMutex → vfs->RenderToBuffer → block
+	// dispatch).  Interactive renders refresh the whole frame at
+	// frame-complete cadence; per-tile toggles are noise rather
+	// than useful progress.
+	if( fsBracket && !skipBlockOutput && ShouldFireToggleObserverEvents() ) {
+		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+				mFrameStore->EndTile( tx, ty );
+			}
+		}
+		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+				mFrameStore->BeginTile( tx, ty );
+			}
+		}
+	}
+
 	for( unsigned int y=rect.top; y<=rect.bottom; y++ )
 	{
 		for( unsigned int x=rect.left; x<=rect.right; x++ )
@@ -483,12 +528,32 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 
 	// L6e-1.1 — DrawToggles + in-progress observer dispatch inside
 	// the bracket; see SPRasterizeSingleBlock for rationale.
-	if( !skipBlockOutput && framedata.field == FIELD_BOTH ) {
+	const bool drewToggles =
+		( !skipBlockOutput && framedata.field == FIELD_BOTH );
+	if( drewToggles ) {
 		DrawToggles( image, rect, RISEColor( 1,0,0,1 ), 0.20 );
 
 		RasterizerOutputListType::const_iterator	r, s;
 		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 			(*r)->OutputIntermediateImage( image, &rect );
+		}
+	}
+
+	// L6e-3 follow-up — split bracket so direct-FrameStore observers
+	// (post-L6e-2 bound VFS) see the toggle-marked content briefly
+	// before per-pixel writes overwrite it.  See SPRasterizeSingleBlock
+	// for the rationale; this is the animation-path twin.
+	// L8 round 6 — same per-rasterizer gate as the static path.
+	if( fsBracket && drewToggles && ShouldFireToggleObserverEvents() ) {
+		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+				mFrameStore->EndTile( tx, ty );
+			}
+		}
+		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+				mFrameStore->BeginTile( tx, ty );
+			}
 		}
 	}
 
@@ -710,10 +775,23 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 
 	// Compute tile size once — keeps tilesPerThread ≥ 8 across all
 	// image dimensions and thread counts.
-	const unsigned int tileEdge = ComputeTileSize(
+	unsigned int tileEdge = ComputeTileSize(
 		width, height,
 		static_cast<unsigned int>( HowManyThreadsToSpawn() ),
 		8, 8, 64 );
+
+	// L8 round 8 — align to the FrameStore's tile grid when the
+	// rasterizer is writing through `mFrameStore->AsBeautyRasterImage()`
+	// (the typical L6c+ path).  Without alignment, adaptive tile sizes
+	// smaller than `mFrameStore->TileEdge()` cause multiple worker
+	// blocks to compete for the same FrameStore tile's exclusive
+	// lock, producing a `bufferMutex_ ↔ tile` lock inversion with the
+	// synchronous `OnTileComplete` observer dispatch.  See
+	// `AlignTileSizeToFrameStore` doc for the full root cause.
+	if( mFrameStore ) {
+		tileEdge = AlignTileSizeToFrameStore(
+			tileEdge, static_cast<unsigned int>( mFrameStore->TileEdge() ) );
+	}
 
 	// If there is no raster sequence, create a default one
 	IRasterizeSequence* blocks = 0;
@@ -951,6 +1029,15 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 				*pAOVBuffers,
 				GetDenoiseAOVSamplesPerPixel() );
 		}
+		// L7 — Persist AOV data into the canonical FrameStore so
+		// downstream consumers (multichannel EXR, AOV-aware
+		// viewports) can read it.  Pre-L7 the AOV data was
+		// consumed by `ApplyDenoise` below and discarded; post-L7
+		// it lives in the FrameStore Albedo+Normal channels for
+		// the FrameStore's lifetime.  Cheap (one full-image copy
+		// at end of render); bracketed for concurrent-reader
+		// correctness.
+		PropagateAOVsToFrameStore_( *pAOVBuffers );
 		{
 			// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
 			// ApplyDenoise reads `*pImage` row-by-row and overwrites
@@ -1160,10 +1247,16 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 
 	const IIrradianceCache* pIrradianceCache = pScene.GetIrradianceCache();
 	if( pIrradianceCache && !pIrradianceCache->Precomputed() ) {
-		const unsigned int tileEdgeAnim = ComputeTileSize(
+		unsigned int tileEdgeAnim = ComputeTileSize(
 			image.GetWidth(), image.GetHeight(),
 			static_cast<unsigned int>( HowManyThreadsToSpawn() ),
 			8, 8, 64 );
+		// L8 round 8 — align to FrameStore tile grid.  See
+		// `AlignTileSizeToFrameStore` doc.
+		if( mFrameStore && &image == &mFrameStore->AsBeautyRasterImage() ) {
+			tileEdgeAnim = AlignTileSizeToFrameStore(
+				tileEdgeAnim, static_cast<unsigned int>( mFrameStore->TileEdge() ) );
+		}
 		MortonRasterizeSequence* irrad_seq = new MortonRasterizeSequence( tileEdgeAnim );
 		pProgressFunc->SetTitle( "Irradiance Pass: " );
 		// Use legacy per-pass progress for the irradiance pre-pass so
@@ -1202,10 +1295,16 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 
 		ISampling2D* pSavedSampling = pSampling;
 
-		const unsigned int tileEdgeAnim = ComputeTileSize(
+		unsigned int tileEdgeAnim = ComputeTileSize(
 			width, height,
 			static_cast<unsigned int>( HowManyThreadsToSpawn() ),
 			8, 8, 64 );
+		// L8 round 8 — align to FrameStore tile grid (animation
+		// progressive path).  See `AlignTileSizeToFrameStore` doc.
+		if( mFrameStore && &image == &mFrameStore->AsBeautyRasterImage() ) {
+			tileEdgeAnim = AlignTileSizeToFrameStore(
+				tileEdgeAnim, static_cast<unsigned int>( mFrameStore->TileEdge() ) );
+		}
 
 		// Number of tiles we'll dispatch per pass — matches what
 		// MortonRasterizeSequence will produce below.  Used to extend
@@ -1392,10 +1491,21 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	// If there is no raster sequence, create a default one
 	MortonRasterizeSequence* blocks = 0;
 	if( !pRasterSequence ) {
-		const unsigned int tileEdgeAnim = ComputeTileSize(
+		unsigned int tileEdgeAnim = ComputeTileSize(
 			width, height,
 			static_cast<unsigned int>( HowManyThreadsToSpawn() ),
 			8, 8, 64 );
+		// L8 round 8 — align to FrameStore tile grid when the
+		// FrameStore matches the render dims (workers will write
+		// through `AsBeautyRasterImage`).  See
+		// `AlignTileSizeToFrameStore` doc.
+		if( mFrameStore &&
+		    static_cast<unsigned int>( mFrameStore->Width()  ) == width &&
+		    static_cast<unsigned int>( mFrameStore->Height() ) == height )
+		{
+			tileEdgeAnim = AlignTileSizeToFrameStore(
+				tileEdgeAnim, static_cast<unsigned int>( mFrameStore->TileEdge() ) );
+		}
 		blocks = new MortonRasterizeSequence( tileEdgeAnim );
 		pRasterSequence = blocks;
 	}
@@ -1450,10 +1560,23 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	BoundsFromRect( animRenderStartX, animRenderStartY, animRenderEndX, animRenderEndY, pRect, width, height );
 	const unsigned int animRenderPixelsX = animRenderEndX - animRenderStartX + 1;
 	const unsigned int animRenderPixelsY = animRenderEndY - animRenderStartY + 1;
-	const unsigned int animTileEdge = ComputeTileSize(
+	unsigned int animTileEdge = ComputeTileSize(
 		width, height,
 		static_cast<unsigned int>( HowManyThreadsToSpawn() ),
 		8, 8, 64 );
+	// L8 round 8 — align to FrameStore tile grid (animation
+	// driver loop's tile-count accounting).  Must match the
+	// tile size used in `RenderFrameOfAnimation` for the per-pass
+	// MortonRasterizeSequence — otherwise progress accounting
+	// drifts vs the actual dispatch count.  See
+	// `AlignTileSizeToFrameStore` doc.
+	if( mFrameStore &&
+	    static_cast<unsigned int>( mFrameStore->Width()  ) == width &&
+	    static_cast<unsigned int>( mFrameStore->Height() ) == height )
+	{
+		animTileEdge = AlignTileSizeToFrameStore(
+			animTileEdge, static_cast<unsigned int>( mFrameStore->TileEdge() ) );
+	}
 	const unsigned int animTilesX = ( animRenderPixelsX + animTileEdge - 1 ) / animTileEdge;
 	const unsigned int animTilesY = ( animRenderPixelsY + animTileEdge - 1 ) / animTileEdge;
 	const unsigned int animNumTilesPerPass = animTilesX * animTilesY;
@@ -1568,6 +1691,13 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 					*pAOVBuffers,
 					GetDenoiseAOVSamplesPerPixel() );
 			}
+			// L7 — propagate AOVs into the canonical FrameStore for
+			// this frame.  See PropagateAOVsToFrameStore_ for the
+			// contract.  Animation per-frame: the FrameStore's AOV
+			// channels get the LATEST frame's data on each call;
+			// observers reading after frameIdx's MarkFrameComplete
+			// see frameIdx's AOVs.
+			PropagateAOVsToFrameStore_( *pAOVBuffers );
 			{
 				// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
 				FrameStoreBulkBracket bracket( mFrameStore, *pImage );
@@ -1720,6 +1850,21 @@ IRasterImage* PixelBasedRasterizerHelper::AcquireRenderImage( unsigned int width
 	mPersistentImage->addref();
 	return mPersistentImage;
 }
+
+#ifdef RISE_ENABLE_OIDN
+// L7 — Thin wrapper delegating to the free utility in
+// FrameStore.cpp.  Kept as a member for source compatibility with
+// the existing call sites in this file (RasterizeScene + animation
+// + BDPT subclass via inheritance).  L7 follow-up extracted the
+// real implementation so MLTRasterizer (which doesn't inherit from
+// PixelBasedRasterizerHelper) can use the same logic.  See
+// `RISE::Implementation::PropagateAOVsToFrameStore` in FrameStore.h
+// for the contract.
+void PixelBasedRasterizerHelper::PropagateAOVsToFrameStore_( const AOVBuffers& aov ) const
+{
+	RISE::Implementation::PropagateAOVsToFrameStore( mFrameStore, aov );
+}
+#endif  // RISE_ENABLE_OIDN
 
 void PixelBasedRasterizerHelper::ReleaseRenderImage( IRasterImage* pImage ) const
 {

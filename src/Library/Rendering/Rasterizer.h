@@ -18,6 +18,7 @@
 #include "../Utilities/OidnConfig.h"
 #include "../Interfaces/IRasterizer.h"
 #include <chrono>
+#include <mutex>
 #include <vector>
 
 namespace RISE
@@ -32,6 +33,40 @@ namespace RISE
 		protected:
 			typedef std::vector<IRasterizerOutput*>	RasterizerOutputListType;
 			RasterizerOutputListType				outs;
+
+			//! L8 review round 5 — protects `outs` against concurrent
+			//! mutation from non-render threads.
+			//!
+			//! Background: the public mutators (`AddRasterizerOutput`,
+			//! `FreeRasterizerOutputs`) used to be unlocked.  In the
+			//! macOS GUI, Swift's `attachViewportFrameStoreToOpaqueRasterizer`
+			//! re-runs whenever the SwiftUI view body recomputes (per
+			//! display refresh, ~60 Hz), each call ending in
+			//! `Rasterizer::AddRasterizerOutput(vfs)` from the UI
+			//! thread.  Meanwhile, render workers iterate `outs`
+			//! unlocked (~20 sites across PT/BDPT/VCM/MLT subclasses)
+			//! firing OutputImage / OutputIntermediateImage.
+			//! Concurrent `push_back` during iteration is a `vector`
+			//! data race that can produce iterator-invalidation hangs
+			//! or crashes (the user-visible "hung after several
+			//! load→render cycles" symptom).
+			//!
+			//! AddRasterizerOutput + FreeRasterizerOutputs +
+			//! EnumerateRasterizerOutputs + ReannounceFrameStore take
+			//! this lock.  Iteration sites in subclasses remain
+			//! unlocked under the contract: callers must not invoke
+			//! `AddRasterizerOutput` / `FreeRasterizerOutputs` while
+			//! a render is in flight on the same rasterizer.  Bridge
+			//! enforces this at `[self rasterize]` entry
+			//! (FreeRasterizerOutputs + Attach happen before
+			//! `_job->Rasterize()` returns to the caller); but the
+			//! Swift-side display-refresh path violated it before
+			//! L8 round 5.  Companion fixes: dedup AddRasterizerOutput
+			//! (so the Swift path becomes a no-op when already
+			//! attached) and gate the bridge's `attachViewport...`
+			//! re-entries.
+			mutable std::mutex						outsMutex;
+
 			IProgressCallback*						pProgressFunc;
 
 			//! L6a — Canonical FrameStore the rasterizer writes into

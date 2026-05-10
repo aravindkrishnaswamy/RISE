@@ -72,7 +72,16 @@ namespace RISE
 			// to 0 so non-physical cameras (and any output that the
 			// rasterizer never calls SetCameraExposureCompensationEV
 			// on) keep pre-L5 behaviour bit-identically.
-			Scalar				cameraExposureEV;
+			Scalar				cameraExposureEV;       ///< HDR-zeroed local value
+			//! L8 review round 2 — Raw camera EV (NOT HDR-zeroed).
+			//! Used to repopulate `framestore_->Meta()` when binding
+			//! to a fresh canonical (in OnRasterizerFrameStoreChanged
+			//! and EnsureChain) so HDR FROs don't write zero Meta
+			//! and clobber LDR FROs sharing the same canonical
+			//! store.  Encoder-side per-format gate
+			//! (`IsHDRFormat()` in FrameEncoders.cpp) handles
+			//! HDR-vs-LDR EV-application logic at READ time.
+			Scalar				rawCameraExposureEV;
 
 			// New (Landing 1) — EXR-specific knobs (ignored for non-EXR types)
 			EXR_COMPRESSION		exr_compression;
@@ -86,9 +95,31 @@ namespace RISE
 			// bMultiple animation case: only the per-frame OnFrameComplete
 			// callback advances; the FrameStore buffer is overwritten
 			// in place by FrameSink::CopyImageIntoStore.
+			//
+			// L8 — when the rasterizer pushes a CANONICAL FrameStore via
+			// `OnRasterizerFrameStoreChanged` (post-L6e-2b), the
+			// internal chain is torn down + the FileEncoderObserver
+			// re-registered on the canonical store.  In bound mode
+			// `framestore_` aliases the canonical pointer (single
+			// addref held by us as a defensive ref); `framesink_`
+			// stays null (no copy needed); `encoderObserver_` is
+			// registered on the canonical store and fires when the
+			// rasterizer drives `MarkFrameComplete` (post-L6f).
+			// Output*Image methods become no-ops in bound mode —
+			// observers fire from the rasterizer side, not the
+			// IRasterizerOutput chain.
 			FrameStore*           framestore_       = nullptr;
 			FrameSink*            framesink_        = nullptr;
 			FileEncoderObserver*  encoderObserver_  = nullptr;
+
+			//! L8 — true when `framestore_` is the canonical
+			//! FrameStore pushed via `OnRasterizerFrameStoreChanged`
+			//! (vs an internal-allocated one in legacy mode).  Drives
+			//! the Output*Image short-circuit and changes teardown
+			//! semantics (in bound mode, framestore_ is an alias —
+			//! the addref lives on `boundCanonical_`).
+			bool                  boundToCanonical_ = false;
+			FrameStore*           boundCanonical_   = nullptr;  ///< addref'd in bound mode; null otherwise
 
 			virtual ~FileRasterizerOutput( );
 
@@ -99,7 +130,24 @@ namespace RISE
 			//! store.  Idempotent: subsequent calls with the same
 			//! dims are no-ops.  Asserts in debug if dims change
 			//! across calls (would require reallocating the chain).
+			//!
+			//! L8 — only used in LEGACY (no-canonical-bind) mode.
+			//! When `boundToCanonical_` is true the chain is managed
+			//! by `OnRasterizerFrameStoreChanged` instead.
 			void EnsureChain( unsigned int width, unsigned int height );
+
+			//! L8 — Tear down the current observer + (if internal
+			//! mode) sink + framestore.  Used by both the dtor and
+			//! `OnRasterizerFrameStoreChanged` when transitioning
+			//! between bound/internal modes.
+			void TeardownChain_();
+
+			//! L8 — Build a FileEncoderObserver bound to `store` and
+			//! register it.  Caller has either just allocated `store`
+			//! (legacy/internal mode) or just received it from the
+			//! rasterizer (bound mode).  Returns false on encoder
+			//! lookup failure.
+			bool BuildAndAttachObserver_( FrameStore* store );
 
 		public:
 			FileRasterizerOutput(
@@ -125,6 +173,38 @@ namespace RISE
 			//! WriteImageToFile time.  HDR formats clear it to 0 (consistent
 			//! with their treatment of `exposureEV` from Landing 1).
 			void			SetCameraExposureCompensationEV( Scalar ev ) override;
+
+			//! L8 — `OnRasterizerFrameStoreChanged` notification handler
+			//! (post-L6e-2b virtual on `IRasterizerOutput`).  Switches
+			//! FileRasterizerOutput into BOUND mode: the
+			//! FileEncoderObserver registers on the rasterizer's
+			//! canonical FrameStore directly, the legacy FrameSink
+			//! intermediary is removed, and `Output*Image` methods
+			//! short-circuit to no-ops (the rasterizer drives Mark*
+			//! observer events directly post-L6f).
+			//!
+			//! Pre-L8 the FileRasterizerOutput chain was:
+			//!   rasterizer → IRasterizerOutput::OutputImage →
+			//!     FrameSink::CopyImageIntoStore (internal FrameStore) →
+			//!     MarkFrameComplete (internal store) →
+			//!     FileEncoderObserver (registered on internal store) →
+			//!     IFrameEncoder → DiskFileWriteBuffer.
+			//!
+			//! Post-L8 (bound mode):
+			//!   rasterizer's canonical mFrameStore →
+			//!     MarkFrameComplete (canonical, post-L6f) →
+			//!     FileEncoderObserver (registered on canonical) →
+			//!     IFrameEncoder → DiskFileWriteBuffer.
+			//!
+			//! Eliminates the per-frame full-image copy
+			//! (CopyImageIntoStore) AND the duplicate FrameStore
+			//! allocation (one per FRO became zero).  At 4K the
+			//! per-frame copy was ~50 MB of memory bandwidth.
+			//!
+			//! Idempotent on same-pointer: matching pointer + already-
+			//! bound = no-op.  Null pointer = revert to legacy lazy
+			//! mode.
+			void OnRasterizerFrameStoreChanged( Implementation::FrameStore* framestore ) override;
 		};
 	}
 }

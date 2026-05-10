@@ -157,6 +157,51 @@ namespace RISE
 			//! production default keeps DOF/AA coverage; interactive
 			//! preview overrides to 1 for latency.
 			virtual unsigned int GetDenoiseAOVSamplesPerPixel() const;
+
+			//! L8 round 6 — Whether `SPRasterizeSingleBlock` /
+			//! `SPRasterizeSingleBlockOfAnimation` should fire the
+			//! "split bracket" pair that exposes the toggle-decorated
+			//! image to FrameStore observers BEFORE the per-pixel
+			//! writes overwrite it.
+			//!
+			//! **Default FALSE** as of L8 round 7 — the split-bracket
+			//! doubles the per-tile OnTileComplete observer dispatch
+			//! count, and each dispatch contends on the bridge's
+			//! `bufferMutex_` (the Mac bridge serialises
+			//! `RenderToBuffer` calls across all workers).  Round 7
+			//! testing showed production renders deadlocking after a
+			//! few blocks under the combined load of split-bracket
+			//! events + interactive scrub state lingering from a
+			//! prior SceneEditController pass.
+			//!
+			//! Restoring the toggle visualisation is tracked as a
+			//! follow-up — likely via a FrameStore-level periodic
+			//! "intermediate state" dispatch (one observer fire every
+			//! N ms or once per render-thread quantum) rather than
+			//! per-block.  That decouples the toggle UX from per-tile
+			//! observer load.
+			//!
+			//! Subclasses can still override to `true` to opt back
+			//! into the per-block behaviour (e.g. for diagnostic
+			//! builds that want to verify tile bracketing).
+			virtual bool ShouldFireToggleObserverEvents() const { return false; }
+
+			//! L7 — Propagate per-pixel albedo + normal data from the
+			//! `AOVBuffers` (built by `CollectFirstHitAOVs` or
+			//! per-block `Accumulate*`) into the canonical
+			//! `mFrameStore`'s Albedo + Normal channels.  No-op when
+			//! `mFrameStore` is null or doesn't have those channels
+			//! requested in its Spec, or when dims mismatch the
+			//! AOVBuffers.  Bracketed via `FrameStoreBulkBracket` so
+			//! direct AOV-channel readers don't see torn writes.
+			//!
+			//! Called from `RasterizeScene` post-CollectFirstHitAOVs,
+			//! before `ApplyDenoise` mutates the beauty channel.
+			//! Pre-L7: AOV data was used by OIDN once and discarded;
+			//! post-L7 it persists in the canonical FrameStore for
+			//! downstream consumers (multichannel EXR, AOV-aware
+			//! viewports, future compositing pipelines).
+			void PropagateAOVsToFrameStore_( const AOVBuffers& aov ) const;
 #endif
 
 			/// Returns true when the pixel filter's support extends beyond

@@ -852,10 +852,24 @@ void BDPTRasterizerBase::RasterizeScene(
 
 	// Compute tile size from image × threads so small-scene/high-core
 	// renders always get adequate tile-count for work-stealing.
-	const unsigned int bdptTileEdge = ComputeTileSize(
+	unsigned int bdptTileEdge = ComputeTileSize(
 		width, height,
 		static_cast<unsigned int>( HowManyThreadsToSpawn() ),
 		8, 8, 64 );
+	// L8 round 8 — align to FrameStore tile grid when BDPT is
+	// writing through the canonical FrameStore (post-L6d).  Without
+	// alignment, multiple worker blocks can compete for the same
+	// FrameStore tile's exclusive lock, producing the `bufferMutex_`
+	// / per-tile lock inversion that hangs the render after a few
+	// blocks.  See `AlignTileSizeToFrameStore` doc in
+	// `AdaptiveTileSizer.h` for the full root cause.
+	if( mFrameStore &&
+	    static_cast<unsigned int>( mFrameStore->Width()  ) == width &&
+	    static_cast<unsigned int>( mFrameStore->Height() ) == height )
+	{
+		bdptTileEdge = AlignTileSizeToFrameStore(
+			bdptTileEdge, static_cast<unsigned int>( mFrameStore->TileEdge() ) );
+	}
 
 	// If there is no raster sequence, create a default one
 	MortonRasterizeSequence* blocks = 0;
@@ -1160,6 +1174,14 @@ void BDPTRasterizerBase::RasterizeScene(
 	// After denoising we add the splatted contributions raw — they
 	// may carry residual noise but their energy is unbiased.
 	if( bWillDenoise ) {
+		// L7 — propagate AOVs into the canonical FrameStore before
+		// the denoise pass mutates the beauty channel.  BDPT
+		// accumulated AOVs during the per-block render via
+		// `pAOVBuffers->Accumulate*` (no separate
+		// CollectFirstHitAOVs call needed since accumulation is
+		// in-line).  See `PropagateAOVsToFrameStore_` doc for the
+		// contract.
+		PropagateAOVsToFrameStore_( *pAOVBuffers );
 		// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
 		// OIDN realistically can throw (CUDA / Metal device errors,
 		// OOM in scratch buffers); RAII unwinds correctly in that

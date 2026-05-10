@@ -89,10 +89,18 @@
 #include "../Utilities/Threads/Threads.h"
 #include <atomic>
 
+// L6d-2b — `FrameStore.h` is needed UNCONDITIONALLY by
+// `CopyToFrameStore_` (uses `mFrameStore->TileEdge()` /
+// `TileCountX/Y()` / `CopyTileFromRasterImage`) and by the
+// `Mark*Complete` calls in `Flush*` (use `mFrameStore->MarkFrameComplete`
+// etc.).  Pre-fix: gated behind RISE_ENABLE_OIDN — masked on
+// macOS (which always builds with OIDN) but broke Linux's default
+// no-OIDN configuration with "incomplete type" errors on
+// `mFrameStore->...` member access.
+#include "FrameStore.h"
 #ifdef RISE_ENABLE_OIDN
 #include "AOVBuffers.h"
 #include "OIDNDenoiser.h"
-#include "FrameStore.h"  // L6d-2b — CopyToFrameStore_ helper
 #endif
 
 using namespace RISE;
@@ -1241,6 +1249,17 @@ void MLTRasterizer::RasterizeScene(
 
 			AOVBuffers aovBuffers( width, height );
 			OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
+			// L7 follow-up — propagate AOVs into the canonical
+			// FrameStore so direct observers (multichannel EXR,
+			// AOV-aware viewports) see MLT's albedo + normal
+			// alongside its beauty.  Pre-fix MLT's CollectFirstHitAOVs
+			// data was used by ApplyDenoise then discarded, leaving
+			// the canonical's Albedo/Normal channels black for MLT
+			// scenes — silent stale-AOV bug surfaced by L7's
+			// canonical-AOV exposure.  See PT/BDPT for the matching
+			// pattern.
+			RISE::Implementation::PropagateAOVsToFrameStore(
+				mFrameStore, aovBuffers );
 			// MLT always uses Fast prefilter regardless of the
 			// `mDenoisingPrefilter` setting — its splat film is
 			// incompatible with the inline accumulation that
@@ -1389,6 +1408,13 @@ void MLTRasterizer::RasterizeSceneAnimation(
 
 				AOVBuffers aovBuffers( width, height );
 				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
+				// L7 follow-up — propagate AOVs into the canonical
+				// FrameStore for this frame.  Animation per-frame:
+				// each PropagateAOVsToFrameStore overwrites the
+				// previous frame's AOV data; observers reading after
+				// frameIdx's MarkFrameComplete see frameIdx's AOVs.
+				RISE::Implementation::PropagateAOVsToFrameStore(
+					mFrameStore, aovBuffers );
 				// MLT always uses Fast prefilter (see RasterizeScene
 				// for the rationale).  Cache hits across frames thanks
 				// to OIDN-P0-2 device/filter caching — only frame 1

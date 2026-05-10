@@ -17,6 +17,9 @@
 #include "FrameStore.h"
 #include "../Interfaces/IRenderObserver.h"
 #include "../Utilities/Color/ColorUtils.h"
+#ifdef RISE_ENABLE_OIDN
+#include "AOVBuffers.h"  // L7 — PropagateAOVsToFrameStore
+#endif
 
 #include <algorithm>
 #include <cassert>
@@ -542,6 +545,60 @@ namespace RISE
 			}
 		}
 
+		// ─────────────────────────────────────────────────────────────
+		// L7 — AOV propagation utility.
+		// Originally lived as a private member of
+		// `PixelBasedRasterizerHelper` (`PropagateAOVsToFrameStore_`);
+		// L7 follow-up extracted to a free function so MLTRasterizer
+		// (which inherits from `Rasterizer`, not the helper) can also
+		// populate the canonical FrameStore's AOV channels.  See
+		// FrameStore.h doc + commit messages for the contract.
+		// ─────────────────────────────────────────────────────────────
+		void PropagateAOVsToFrameStore( FrameStore* fs, const AOVBuffers& aov )
+		{
+#ifdef RISE_ENABLE_OIDN
+			if( !fs ) return;
+
+			const unsigned int aovW = aov.GetWidth();
+			const unsigned int aovH = aov.GetHeight();
+			if( aovW == 0 || aovH == 0 ) return;
+
+			const unsigned int fsW = static_cast<unsigned int>( fs->Width() );
+			const unsigned int fsH = static_cast<unsigned int>( fs->Height() );
+			if( aovW != fsW || aovH != fsH ) return;
+
+			auto* albedoCh = fs->GetChannel<FrameStoreOutput::ChannelId::Albedo>();
+			auto* normalCh = fs->GetChannel<FrameStoreOutput::ChannelId::Normal>();
+			if( !albedoCh && !normalCh ) return;
+
+			const float* albedoSrc = aov.GetAlbedoPtr();
+			const float* normalSrc = aov.GetNormalPtr();
+
+			{
+				FrameStoreBulkBracket bracket( fs, fs->AsBeautyRasterImage() );
+				for( unsigned int y = 0; y < aovH; ++y ) {
+					for( unsigned int x = 0; x < aovW; ++x ) {
+						const size_t idx = ( static_cast<size_t>( y ) * aovW + x ) * 3u;
+						if( albedoCh ) {
+							RISEPel& pel = albedoCh->At( x, y );
+							pel.r = static_cast<Chel>( albedoSrc[idx + 0] );
+							pel.g = static_cast<Chel>( albedoSrc[idx + 1] );
+							pel.b = static_cast<Chel>( albedoSrc[idx + 2] );
+						}
+						if( normalCh ) {
+							Vector3& n = normalCh->At( x, y );
+							n.x = static_cast<Scalar>( normalSrc[idx + 0] );
+							n.y = static_cast<Scalar>( normalSrc[idx + 1] );
+							n.z = static_cast<Scalar>( normalSrc[idx + 2] );
+						}
+					}
+				}
+			}
+#else
+			(void)fs; (void)aov;  // OIDN compiled out → no AOVBuffers type
+#endif
+		}
+
 		// Snapshot the observer list under the mutex, increment the
 		// in-flight counter, release the mutex, invoke callbacks
 		// without the mutex held, then decrement and notify any
@@ -579,6 +636,29 @@ namespace RISE
 		template <typename Fn>
 		void FrameStore::DispatchObservers( Fn&& fn )
 		{
+			// L8 review round 4 — RAII guards on the in-flight counter
+			// + thread-local depth.  Pre-fix: if `fn(obs)` threw, the
+			// `--observerDispatchInFlight_` and `--g_observerDispatchDepth`
+			// at the bottom were skipped → the counter stayed at +1
+			// forever → every subsequent `RemoveObserver` waited
+			// forever (the cv predicate `inflight == 0` never became
+			// true).  This manifests as the hang on second render
+			// after scene reload reported by the user: anything that
+			// called `RemoveObserver` (e.g. `BindFrameStore` Phase 3,
+			// `~ViewportFrameStore`, `ParkActiveAsDormant_locked`
+			// eviction) blocked indefinitely.
+			//
+			// Bridge tile callbacks DO call into Cocoa / Obj-C blocks;
+			// any thrown Obj-C exception unwinds through C++ as
+			// `std::terminate` on macOS by default, but if the user's
+			// block uses `@try`/`@catch` mid-stack and re-throws as
+			// C++, or if any std::function copy/move throws on heap
+			// exhaustion, we reach the unguarded path.  Also: a
+			// `system_error` from `std::shared_mutex::lock` (resource
+			// exhaustion, EAGAIN) inside `RenderToBuffer` is on the
+			// observer-callback path and would propagate out.  Cheap
+			// to harden against; correctness consequence of NOT
+			// hardening is exactly the user-visible hang.
 			std::vector<IRenderObserver*> snapshot;
 			{
 				std::lock_guard<std::mutex> lock( observerMutex_ );
@@ -586,22 +666,39 @@ namespace RISE
 				++observerDispatchInFlight_;
 			}
 			++g_observerDispatchDepth;
-			for ( IRenderObserver* obs : snapshot ) {
-				// Recheck registration before invoking.  An earlier
-				// callback in this same dispatch may have removed
-				// (and possibly destroyed) `obs` since the snapshot
-				// was taken.
-				bool stillRegistered;
+
+			try {
+				for ( IRenderObserver* obs : snapshot ) {
+					// Recheck registration before invoking.  An earlier
+					// callback in this same dispatch may have removed
+					// (and possibly destroyed) `obs` since the snapshot
+					// was taken.
+					bool stillRegistered;
+					{
+						std::lock_guard<std::mutex> lock( observerMutex_ );
+						stillRegistered = std::find( observers_.begin(),
+						                             observers_.end(),
+						                             obs ) != observers_.end();
+					}
+					if ( stillRegistered ) {
+						fn( obs );
+					}
+				}
+			} catch ( ... ) {
+				// Decrement the counter + depth, notify waiters, then
+				// rethrow.  Rethrowing preserves the original behaviour
+				// (callers / std::terminate diagnostics see the same
+				// exception type); the only behavioural change is that
+				// the counter no longer leaks on the unwind path.
+				--g_observerDispatchDepth;
 				{
 					std::lock_guard<std::mutex> lock( observerMutex_ );
-					stillRegistered = std::find( observers_.begin(),
-					                             observers_.end(),
-					                             obs ) != observers_.end();
+					--observerDispatchInFlight_;
 				}
-				if ( stillRegistered ) {
-					fn( obs );
-				}
+				observerDispatchDone_.notify_all();
+				throw;
 			}
+
 			--g_observerDispatchDepth;
 			{
 				std::lock_guard<std::mutex> lock( observerMutex_ );
@@ -692,14 +789,25 @@ namespace RISE
 			b = ApplyTransfer( info.transferFn, b );
 
 			// Alpha handling:
-			//   - LDR fixed targets (8-bit / 16-bit fixed point):
-			//     sanitise NaN/Inf/negative to 0 and clamp >1 to 1
-			//     so the quantiser has well-defined input.
-			//   - HDR float targets (RGBA32F_*, RGBA16F_*): pass
+			//   - FIXED-point targets (8-bit / 16-bit unsigned, both
+			//     LDR-fixed sRGB AND L5c HDR10 PQ): sanitise NaN/Inf/
+			//     negative to 0 and clamp >1 to 1 so the quantiser has
+			//     well-defined input.  Without the pre-clamp, NaN
+			//     alpha would survive into the Q8/Q16 lambdas where
+			//     `if (v < 0.0)` and `if (v > 65535.0)` both evaluate
+			//     false for NaN and `static_cast<uint16_t>(NaN)` is UB.
+			//   - HDR FLOAT targets (RGBA32F_*, RGBA16F_*): pass
 			//     alpha through bit-identically.  Archival paths
 			//     (EXR / .hdr) need to preserve out-of-range alpha
 			//     for round-trip fidelity with reconstruction-
 			//     filter ringing or premultiplied workflows.
+			//
+			// L5c — gate generalised from `isLDRFixed` to `!isFloat`.
+			// Pre-L5c the gate was `isLDRFixed` because every fixed-
+			// point format was also LDR (8/16-bit sRGB).  HDR10 PQ
+			// 16-bit FIXED breaks that coupling: it's HDR (no tone
+			// curve) but quantised (needs alpha clamp).  The new
+			// gate matches the downstream quantiser branch structure.
 			//
 			// NaN/Inf check uses bit-pattern memcpy because under
 			// `-ffast-math` the compiler may constant-fold both
@@ -708,7 +816,7 @@ namespace RISE
 			// Sanitise comment for the broader rationale.  L1
 			// adversarial review MED-8 + P3.
 			double a = alpha;
-			if ( info.isLDRFixed ) {
+			if ( !info.isFloat ) {
 				static_assert( sizeof(double) == 8, "double must be 64-bit IEEE 754" );
 				uint64_t bits;
 				std::memcpy( &bits, &a, sizeof(bits) );
@@ -741,13 +849,13 @@ namespace RISE
 						case ChannelOrder::BGRA: p[0]=B; p[1]=G; p[2]=R; p[3]=A;  break;
 					}
 				} else {
-					// 16-bit unsigned.  Today this is RGBA16_sRGB only
-					// (4 channels).  Defensive assert: any future 3-channel
-					// 16-bit format would silently overrun the destination
-					// pixel by 2 bytes per pixel without this guard.  See
-					// L1 adversarial review MED-5.
-					assert( info.channelCount == 4 && info.channelOrder == ChannelOrder::RGBA
-					        && "16-bit branch only supports 4-channel RGBA layouts" );
+					// 16-bit unsigned.  Pre-L5c only RGBA16_sRGB
+					// landed here (4-channel RGBA).  L5c added
+					// RGBA16_BT2020_PQ (still 4-channel RGBA, just
+					// HDR PQ-encoded) and RGB16_BT2020_PQ (3-channel
+					// RGB, HDR10 PNG without alpha).  The branch now
+					// dispatches on `channelCount` + `channelOrder`
+					// matching the 8-bit branch's pattern above.
 					auto Q16 = []( double x ) -> uint16_t {
 						double v = x * 65535.0 + 0.5;
 						if ( v < 0.0 )      v = 0.0;
@@ -759,7 +867,21 @@ namespace RISE
 					const uint16_t B = Q16( b );
 					const uint16_t A = Q16( a );
 					uint16_t* p = static_cast<uint16_t*>( dst );
-					p[0]=R; p[1]=G; p[2]=B; p[3]=A;
+					switch ( info.channelOrder ) {
+						case ChannelOrder::RGBA:
+							assert( info.channelCount == 4 );
+							p[0]=R; p[1]=G; p[2]=B; p[3]=A;
+							break;
+						case ChannelOrder::RGB:
+							assert( info.channelCount == 3 );
+							p[0]=R; p[1]=G; p[2]=B;
+							break;
+						case ChannelOrder::BGRA:
+							// Reserved for future Win32-DIB-16 variants.
+							assert( info.channelCount == 4 );
+							p[0]=B; p[1]=G; p[2]=R; p[3]=A;
+							break;
+					}
 				}
 			} else if ( info.isHalfFloat ) {
 				// 16-bit float (4-channel; only RGBA16F formats exist).

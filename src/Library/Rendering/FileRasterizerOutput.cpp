@@ -51,6 +51,7 @@ FileRasterizerOutput::FileRasterizerOutput(
   exposureEV( exposureEV_ ),
   display_transform( display_transform_ ),
   cameraExposureEV( Scalar( 0 ) ),	// Landing 5: defaults to 0 = no camera-side EV; rasterizer overrides per-frame.
+  rawCameraExposureEV( Scalar( 0 ) ),	// L8-r2: raw (un-HDR-zeroed) value for shared Meta writes.
   exr_compression( exr_compression_ ),
   exr_with_alpha( exr_with_alpha_ )
 {
@@ -143,12 +144,53 @@ FileRasterizerOutput::~FileRasterizerOutput()
 	// dtor runs.  IRasterizerOutput.h does not formally state this
 	// (filed as a documentation follow-up); the assumption is
 	// pervasive throughout the codebase.
+	//
+	// L8 — TeardownChain_ handles BOTH bound and internal mode
+	// (releases through `boundCanonical_` in bound mode, through
+	// `framestore_` in internal mode).  In BOUND mode there's no
+	// `framesink_` to worry about (null) — the only in-flight
+	// concern is `MarkFrameComplete` driving our observer's
+	// `OnFrameComplete`.  `FrameStore::RemoveObserver` blocks until
+	// any in-flight dispatch on this observer returns (per the L1
+	// round-2 fix), so the dtor is safe even if the rasterizer
+	// fires `MarkFrameComplete` immediately before our destruction.
+	// The wait is bounded by the encoder's `Encode` runtime (one
+	// file write).  See impl below.
+	TeardownChain_();
+}
+
+// L8 — Tear down whichever chain is currently active.  Used by both
+// the dtor and `OnRasterizerFrameStoreChanged` when transitioning
+// modes.  Refcount bookkeeping splits on `boundToCanonical_`:
+//   * Bound mode: `framestore_` is an alias for `boundCanonical_`;
+//     the addref lives on `boundCanonical_`.  Release through there.
+//     `framesink_` is null in bound mode (no internal sink needed).
+//   * Internal mode: `framestore_` owns its addref (allocated in
+//     EnsureChain via `new FrameStore`); release through it.
+//     `framesink_` was allocated alongside.
+void FileRasterizerOutput::TeardownChain_()
+{
 	if ( framestore_ && encoderObserver_ ) {
 		framestore_->RemoveObserver( encoderObserver_ );
 	}
 	safe_release( encoderObserver_ );
+	encoderObserver_ = nullptr;
+
 	safe_release( framesink_ );
-	safe_release( framestore_ );
+	framesink_ = nullptr;
+
+	if ( boundToCanonical_ ) {
+		// framestore_ aliases boundCanonical_; clear the alias
+		// (don't release) and release through boundCanonical_.
+		framestore_       = nullptr;
+		safe_release( boundCanonical_ );
+		boundCanonical_   = nullptr;
+		boundToCanonical_ = false;
+	} else {
+		// Internal mode — framestore_ owns its addref.
+		safe_release( framestore_ );
+		framestore_ = nullptr;
+	}
 }
 
 void FileRasterizerOutput::OutputIntermediateImage( const IRasterImage&, const Rect* )
@@ -164,22 +206,31 @@ void FileRasterizerOutput::SetCameraExposureCompensationEV( Scalar ev )
 	// and writes (here) happen-before each other through the
 	// rasterizer's own synchronization.  See L3 adversarial review L1.
 	//
-	// Landing 5: HDR archival outputs ignore both the static
-	// `exposureEV` (constructor enforces this) AND the rasterizer-
-	// supplied camera EV.  Same rationale: we want EXR / RGBE /
-	// HDR to remain "linear radiance ground truth" so that the
-	// integrator's output is recoverable bit-for-bit.  Force-zero
-	// here for HDR formats so the encoder's `staticEV + cameraEV`
-	// sum stays at zero.
-	cameraExposureEV = IsHDRFormat( type ) ? Scalar( 0 ) : ev;
+	// L8 review round 2 — Single source of truth is
+	// `framestore_->Meta().cameraExposureEV`.  We always write the
+	// RAW `ev` to it (no HDR-zeroing at the write side).  Encoder
+	// gates per-format reading via `IsHDRFormat()` (FrameEncoders.cpp:75)
+	// — HDR encoders skip the camera-EV apply block entirely; LDR
+	// encoders apply it.
+	//
+	// Pre-round-2: HDR FROs force-zeroed `cameraExposureEV` then
+	// wrote 0 to shared Meta.  In bound mode multiple FROs share
+	// one canonical store — an HDR FRO would clobber LDR FROs'
+	// values to zero.  The HDR-zeroing was redundant given the
+	// encoder-side IsHDRFormat gate; removing it lets all writers
+	// (FROs + VFS) write the same raw `ev` to Meta consistently
+	// without any clobber concern.
+	//
+	// Local `cameraExposureEV` field still preserves the
+	// HDR-zeroed value for any FRO-internal logic that depends on
+	// it (today there's none; vestige kept for ABI ease).  The
+	// encoder reads `framestore_->Meta()` directly, NOT this field.
+	cameraExposureEV    = IsHDRFormat( type ) ? Scalar( 0 ) : ev;
+	rawCameraExposureEV = ev;
 
-	// If the chain is already allocated (rasterizer set EV
-	// mid-render after the first frame), update the FrameStore's
-	// metadata too — IFrameEncoder::Encode reads the camera EV
-	// from store.Meta() at write time.
 	if ( framestore_ ) {
 		framestore_->MutableMeta().cameraExposureEV =
-			static_cast<double>( cameraExposureEV );
+			static_cast<double>( rawCameraExposureEV );
 	}
 }
 
@@ -209,8 +260,118 @@ namespace
 	}
 }
 
+// L8 — Build a FileEncoderObserver bound to `store` and register it.
+// Caller has either just allocated `store` (legacy mode) or just
+// received it from the rasterizer (bound mode).  Returns false on
+// encoder lookup failure (registry doesn't have an encoder for this
+// FRO_TYPE — unlikely but defensive).
+bool FileRasterizerOutput::BuildAndAttachObserver_( FrameStore* store )
+{
+	if ( !store ) return false;
+
+	IFrameEncoder* encoder =
+		FrameEncoderRegistry::Get().ByFormatName( FormatNameForType( type ) );
+	if ( !encoder ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"FileRasterizerOutput:: No IFrameEncoder registered for format '%s' "
+			"(FRO_TYPE=%d) — output disabled", FormatNameForType( type ), (int)type );
+		return false;
+	}
+
+	// Build the encoder options from the constructor parameters.
+	// This is the legacy → new mapping that L2 byte-identical
+	// regression validates: same color_space + bpp + EXR knobs +
+	// (exposureEV, display_transform) → same EncodeOpts → same
+	// bytes.  cameraExposureEV is consumed via FrameStore.Meta()
+	// inside the encoder, NOT added here, so we don't double-count.
+	EncodeOpts opts;
+	opts.colorSpace     = color_space;
+	opts.bpp            = bpp;
+	opts.exrCompression = exr_compression;
+	opts.exrWithAlpha   = exr_with_alpha;
+	opts.viewTransform.exposureEV = static_cast<float>( exposureEV );
+	opts.viewTransform.toneCurve  = display_transform;
+
+	encoderObserver_ = new FileEncoderObserver(
+		store, encoder, opts,
+		std::string( szPattern ), bMultiple );
+	store->AddObserver( encoderObserver_ );
+	return true;
+}
+
+// L8 — Notification handler.  Called by `Rasterizer::SetFrameStore`
+// (post-L6e-2b) when the rasterizer's canonical FrameStore is
+// installed or swapped.  We tear down whatever chain is currently
+// active (legacy internal OR previously-bound canonical) and
+// re-bind to the new canonical.
+//
+// `framestore` may be null — caller is unbinding (e.g. rasterizer's
+// FrameStore was cleared).  In that case we revert to legacy lazy
+// mode; the next Output*Image call's EnsureChain will allocate a
+// fresh internal store.
+//
+// Same-pointer idempotent: re-binding to the SAME canonical is a
+// no-op (avoids tearing down + rebuilding the observer registration).
+void FileRasterizerOutput::OnRasterizerFrameStoreChanged( FrameStore* framestore )
+{
+	if ( boundToCanonical_ && framestore == boundCanonical_ ) {
+		return;  // idempotent same-pointer rebind
+	}
+
+	// Tear down whatever's currently active (legacy or bound).
+	TeardownChain_();
+
+	if ( !framestore ) {
+		// Unbind — revert to legacy lazy-internal mode.  The next
+		// Output*Image call (if any) re-allocates an internal store.
+		return;
+	}
+
+	// Bind to the canonical.  Mirror EnsureChain's setup but skip
+	// the FrameSink + internal-store allocation — observers receive
+	// MarkFrameComplete from the rasterizer's FlushToOutputs path
+	// (post-L6f) on the canonical store directly.
+	framestore->addref();  // defensive ref; canonical is also held
+	                       // by Job + the rasterizer.
+	boundCanonical_   = framestore;
+	framestore_       = framestore;  // alias for legacy code paths
+	boundToCanonical_ = true;
+	// framesink_ stays null in bound mode.
+
+	// L8 review round 2 — Write our cached RAW camera EV into the
+	// canonical's Meta.  All bound FROs (regardless of HDR/LDR)
+	// write the same raw value here, so multi-FRO scenes don't
+	// clobber.  HDR encoders skip Meta-EV at READ time via the
+	// `IsHDRFormat()` gate in FrameEncoders.cpp:75; LDR encoders
+	// apply it.  This restores Meta as the single source of truth
+	// (the round-1 fix introducing per-observer EV double-applied
+	// when VFS ALSO wrote to Meta — see ViewportFrameStore.cpp:670).
+	framestore->MutableMeta().cameraExposureEV =
+		static_cast<double>( rawCameraExposureEV );
+
+	if ( !BuildAndAttachObserver_( framestore ) ) {
+		// Encoder lookup failed.  Tear down to leave us in a clean
+		// "no observer" state; Output* calls remain no-ops.
+		TeardownChain_();
+		return;
+	}
+
+	GlobalLog()->PrintEx( eLog_Event,
+		"FileRasterizerOutput::OnRasterizerFrameStoreChanged: bound to "
+		"canonical FrameStore %ux%u (format=%s)",
+		static_cast<unsigned>( framestore->Width() ),
+		static_cast<unsigned>( framestore->Height() ),
+		FormatNameForType( type ) );
+}
+
 void FileRasterizerOutput::EnsureChain( unsigned int width, unsigned int height )
 {
+	// L8 — bound mode: the canonical FrameStore is already installed
+	// via OnRasterizerFrameStoreChanged.  No-op here; the rasterizer
+	// drives MarkFrameComplete on its canonical store and the
+	// FileEncoderObserver fires from there directly.
+	if ( boundToCanonical_ ) return;
+
 	if ( framestore_ ) {
 		// Already allocated.  In the typical case dims are fixed
 		// across frames (the rasterizer's image size is fixed by
@@ -255,44 +416,29 @@ void FileRasterizerOutput::EnsureChain( unsigned int width, unsigned int height 
 	spec.height   = height;
 	spec.tileEdge = 32;
 	framestore_ = new FrameStore( spec );  // refcount = 1
-	framestore_->MutableMeta().cameraExposureEV =
-		static_cast<double>( cameraExposureEV );
 
-	// Look up the encoder for this format.
-	IFrameEncoder* encoder =
-		FrameEncoderRegistry::Get().ByFormatName( FormatNameForType( type ) );
-	if ( !encoder ) {
-		GlobalLog()->PrintEx( eLog_Error,
-			"FileRasterizerOutput:: No IFrameEncoder registered for format '%s' "
-			"(FRO_TYPE=%d) — output disabled", FormatNameForType( type ), (int)type );
-		// Leave framestore_ allocated but skip sink/observer setup;
-		// Output* calls will silently no-op.
+	// L8 review round 2 — Write the cached RAW camera EV into the
+	// freshly-allocated internal FrameStore's Meta.  Encoder reads
+	// from Meta + gates on IsHDRFormat at write time.  This is
+	// LEGACY (internal-store) mode; bound mode handles the same
+	// in OnRasterizerFrameStoreChanged.
+	framestore_->MutableMeta().cameraExposureEV =
+		static_cast<double>( rawCameraExposureEV );
+
+	// L8 — extracted observer build.  In legacy mode we ALSO need
+	// the FrameSink to copy pixels into our internal FrameStore on
+	// each Output*Image call (the rasterizer doesn't write to it
+	// directly).  Bound mode skips both because the rasterizer
+	// writes to the canonical store directly.
+	framesink_ = new FrameSink( framestore_ );  // addrefs framestore_
+	if ( !BuildAndAttachObserver_( framestore_ ) ) {
+		// Encoder lookup failed — leave framestore_ + framesink_
+		// allocated but skip observer setup.  Output* calls run the
+		// FrameSink copy (which is harmless without an observer to
+		// trigger encoding) until teardown.  Matches pre-L8
+		// fall-through behaviour.
 		return;
 	}
-
-	// Build the encoder options from the constructor parameters.
-	// This is the legacy → new mapping that L2 byte-identical
-	// regression validates: same color_space + bpp + EXR knobs +
-	// (exposureEV, display_transform) → same EncodeOpts → same
-	// bytes.  cameraExposureEV is consumed via FrameStore.Meta()
-	// inside the encoder, NOT added here, so we don't double-count.
-	EncodeOpts opts;
-	opts.colorSpace     = color_space;
-	opts.bpp            = bpp;
-	opts.exrCompression = exr_compression;
-	opts.exrWithAlpha   = exr_with_alpha;
-	opts.viewTransform.exposureEV = static_cast<float>( exposureEV );
-	opts.viewTransform.toneCurve  = display_transform;
-
-	// Wire up the chain:  rasterizer → FrameSink → FrameStore
-	// → FileEncoderObserver → DiskFileWriteBuffer.  The observer's
-	// OnFrameComplete fires from FrameStore::MarkFrameComplete
-	// after FrameSink finishes copying tile data.
-	framesink_ = new FrameSink( framestore_ );  // addrefs framestore_
-	encoderObserver_ = new FileEncoderObserver(
-		framestore_, encoder, opts,
-		std::string( szPattern ), bMultiple );
-	framestore_->AddObserver( encoderObserver_ );
 }
 
 // Shared post-write diagnostic.  Kept from the legacy

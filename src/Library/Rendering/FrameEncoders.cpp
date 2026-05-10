@@ -18,10 +18,19 @@
 #include "FrameStore.h"
 
 #include "../Interfaces/ILog.h"
+#include "../Interfaces/IWriteBuffer.h"
 #include "../RISE_API.h"
 
 #include <algorithm>
 #include <cassert>
+#include <cstring>
+#include <vector>
+
+// L5c — libpng for HDR10 PNG encoder.
+#ifndef NO_PNG_SUPPORT
+#include <png.h>
+#include <zlib.h>  // Z_BEST_COMPRESSION
+#endif
 #include <cctype>
 
 using namespace RISE;
@@ -163,6 +172,173 @@ namespace RISE
 		}
 
 		// ─────────────────────────────────────────────────────────────
+		// L5c — HDR10 PNG encoder (BT.2020 + PQ + cICP)
+		// ─────────────────────────────────────────────────────────────
+#ifndef NO_PNG_SUPPORT
+		namespace
+		{
+			// libpng I/O glue — write callback that pumps `length`
+			// bytes into an `IWriteBuffer*`.  Same pattern used by
+			// the legacy `PNGWriter::EndWrite` (see
+			// RasterImages/PNGWriter.cpp:202 `png_write_data`).
+			void HDR10PNG_WriteCallback( png_structp png_ptr, png_bytep data, png_size_t length )
+			{
+				IWriteBuffer* buf = static_cast<IWriteBuffer*>( png_get_io_ptr( png_ptr ) );
+				if ( !buf ) return;
+				buf->setBytes( static_cast<const void*>( data ), static_cast<unsigned int>( length ) );
+			}
+			void HDR10PNG_FlushCallback( png_structp /*png_ptr*/ )
+			{
+				// IWriteBuffer flushes implicitly on close — no-op here.
+			}
+		}
+#endif  // NO_PNG_SUPPORT
+
+		void HDR10PNGFrameEncoder::Encode(
+			const FrameStore&    store,
+			IWriteBuffer&        dst,
+			const EncodeOpts&    opts )
+		{
+#ifdef NO_PNG_SUPPORT
+			(void)store; (void)dst; (void)opts;
+			GlobalLog()->PrintSourceError(
+				"HDR10PNGFrameEncoder::Encode: NO_PNG_SUPPORT — "
+				"libpng not compiled in; cannot emit HDR10 PNG",
+				__FILE__, __LINE__ );
+			return;
+#else
+			// L5c review P1 — host-endian guard.  `png_set_swap`
+			// below assumes little-endian host (the only platforms
+			// RISE targets today: x86_64, arm64).  On big-endian
+			// hosts (theoretical PowerPC) the swap would
+			// double-swap to little-endian and produce malformed
+			// PNG.  Hard-fail at compile time rather than emit
+			// silently broken output.
+			static_assert(
+#ifdef __BYTE_ORDER__
+				__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
+#else
+				// Compilers without __BYTE_ORDER__: assume little-endian
+				// (the only practical targets) but the pre-processor
+				// runs the static_assert as `true` in that branch.
+				true,
+#endif
+				"HDR10 PNG encoder assumes little-endian host (uses png_set_swap "
+				"to convert host-endian uint16 samples to PNG's big-endian)" );
+
+			const unsigned int W = static_cast<unsigned int>( store.Width() );
+			const unsigned int H = static_cast<unsigned int>( store.Height() );
+			if ( W == 0 || H == 0 ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"HDR10PNGFrameEncoder::Encode: empty FrameStore (%ux%u); skipping",
+					W, H );
+				return;
+			}
+
+			// Step 1 — allocate a uint16 RGB buffer and render the
+			// FrameStore through the L5c RGB16_BT2020_PQ pipeline.
+			// 3-channel (no alpha) keeps the file size minimal and
+			// matches the typical HDR10 PNG profile (PNG color type 2).
+			const size_t rowStride = static_cast<size_t>( W ) * 3u * sizeof( uint16_t );
+			std::vector<uint8_t> bytes( rowStride * H );
+
+			Rect roi( 0, 0, H, W );  // top, left, bottom, right (inclusive)
+			store.Render(
+				bytes.data(),
+				rowStride,
+				roi,
+				FrameStoreOutput::TargetFormat::RGB16_BT2020_PQ,
+				opts.viewTransform );
+
+			// Step 2 — initialise libpng for write.
+			png_structp png_ptr = png_create_write_struct( PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr );
+			if ( !png_ptr ) {
+				GlobalLog()->PrintSourceError(
+					"HDR10PNGFrameEncoder::Encode: png_create_write_struct failed",
+					__FILE__, __LINE__ );
+				return;
+			}
+			png_infop info_ptr = png_create_info_struct( png_ptr );
+			if ( !info_ptr ) {
+				png_destroy_write_struct( &png_ptr, nullptr );
+				GlobalLog()->PrintSourceError(
+					"HDR10PNGFrameEncoder::Encode: png_create_info_struct failed",
+					__FILE__, __LINE__ );
+				return;
+			}
+
+			// libpng uses setjmp/longjmp for error reporting.  If any
+			// libpng call fails inside the protected region below,
+			// control returns here and we clean up.
+			if ( setjmp( png_jmpbuf( png_ptr ) ) ) {
+				png_destroy_write_struct( &png_ptr, &info_ptr );
+				GlobalLog()->PrintSourceError(
+					"HDR10PNGFrameEncoder::Encode: libpng error during write",
+					__FILE__, __LINE__ );
+				return;
+			}
+
+			png_set_write_fn( png_ptr, &dst, HDR10PNG_WriteCallback, HDR10PNG_FlushCallback );
+
+			// Filtering + compression — match the legacy PNGWriter
+			// settings for byte-shape consistency with the SDR PNG
+			// path (PNG_NO_FILTERS + Z_BEST_COMPRESSION).
+			png_set_filter( png_ptr, 0, PNG_NO_FILTERS );
+			png_set_compression_level( png_ptr, Z_BEST_COMPRESSION );
+
+			// PNG IHDR — 16-bit RGB (no alpha, matches RGB16_BT2020_PQ).
+			png_set_IHDR(
+				png_ptr, info_ptr,
+				W, H,
+				/*bit_depth=*/   16,
+				/*color_type=*/  PNG_COLOR_TYPE_RGB,
+				PNG_INTERLACE_NONE,
+				PNG_COMPRESSION_TYPE_DEFAULT,
+				PNG_FILTER_TYPE_DEFAULT );
+
+			// Step 3 — write info header THEN write the cICP chunk.
+			// PNG spec puts cICP after IHDR and before any IDAT;
+			// libpng's `png_write_info` outputs IHDR + any registered
+			// ancillary chunks.  We use `png_write_chunk` AFTER
+			// `png_write_info` to emit cICP — that places it after
+			// the IHDR and any auto-emitted ancillary chunks but
+			// BEFORE the IDAT pixel data, which is spec-compliant.
+			png_write_info( png_ptr, info_ptr );
+
+			// cICP (Coding-Independent Code Points) — 4 bytes:
+			//   colorPrimaries          = 9   (BT.2020)
+			//   transferCharacteristics = 16  (SMPTE ST.2084 / PQ)
+			//   matrixCoefficients      = 0   (Identity / RGB)
+			//   videoFullRangeFlag      = 1   (full range, 0..65535)
+			//
+			// PNG cICP chunk is documented in PNG 3rd Edition (W3C
+			// 2024); cICP values are CICP H.273 / ITU-T T.273
+			// registered code points.  Modern HDR-aware viewers
+			// (Chrome 100+, Edge 100+, macOS Preview 14+) honour
+			// this and tone-map the content to the display's HDR
+			// capabilities.
+			static constexpr png_byte kCICPType[5] = { 'c', 'I', 'C', 'P', 0 };
+			png_byte cICP_data[4] = { 9, 16, 0, 1 };
+			png_write_chunk( png_ptr, kCICPType, cICP_data, sizeof( cICP_data ) );
+
+			// Endian fix-up — libpng expects 16-bit samples in
+			// network (big-endian) byte order.  Our `Render` produced
+			// the data in HOST endianness.  On little-endian hosts
+			// (the only platforms RISE targets today), swap.
+			png_set_swap( png_ptr );
+
+			// Step 4 — write rows.
+			for ( unsigned int y = 0; y < H; ++y ) {
+				png_bytep rowp = bytes.data() + static_cast<size_t>( y ) * rowStride;
+				png_write_row( png_ptr, rowp );
+			}
+
+			png_write_end( png_ptr, info_ptr );
+			png_destroy_write_struct( &png_ptr, &info_ptr );
+#endif
+		}
+
+		// ─────────────────────────────────────────────────────────────
 		// FrameEncoderRegistry
 		// ─────────────────────────────────────────────────────────────
 
@@ -216,6 +392,11 @@ namespace RISE
 			Register( new RGBEAFrameEncoder() );
 			Register( new TGAFrameEncoder() );
 			Register( new PPMFrameEncoder() );
+			// L5c — HDR10 PNG encoder.  Same .png extension as PNG;
+			// users select via FormatName "HDR10_PNG" rather than
+			// extension lookup (ByExtension("png") still returns the
+			// SDR PNG encoder, which is the safer default).
+			Register( new HDR10PNGFrameEncoder() );
 		}
 
 		void FrameEncoderRegistry::Register( IFrameEncoder* encoder )

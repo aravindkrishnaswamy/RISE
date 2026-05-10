@@ -348,11 +348,16 @@ namespace RISE
 			//! never see the dormant entries.
 			void EnsureChain( unsigned int width, unsigned int height );
 
-			//! Tear down the active chain AND every dormant chain
-			//! cached for resolution oscillation reuse (used by
-			//! the destructor).  Safe to call when nothing is
-			//! allocated.
-			void TeardownChain();
+			// L8 review round 3 — `TeardownChain()` removed.  Was
+			// holding `chainMutex_` unique_lock around
+			// `RemoveObserver`, deadlocking against in-flight
+			// observer dispatches that re-enter chainMutex_ via
+			// `RenderToBuffer`.  Replacement: `BindFrameStore(nullptr)`
+			// uses a phased pattern (snapshot + drop lock + RemoveObserver
+			// + cleanup) that doesn't deadlock.  See
+			// ViewportFrameStore.cpp for details.
+
+			struct DormantChain;
 
 			//! Park the current active chain into `dormant_` (with
 			//! LRU eviction at `kMaxDormantChains`).  Caller must
@@ -360,7 +365,23 @@ namespace RISE
 			//! cleared; caller is responsible for repopulating
 			//! them with either a dormant-cache hit or a fresh
 			//! allocation before returning.
-			void ParkActiveAsDormant_locked();
+			//!
+			//! L8 review round 4 — if eviction fires, the LRU entry
+			//! is returned via `outEvicted` for the caller to tear
+			//! down via `TeardownDormant_unlocked` AFTER releasing
+			//! the lock.  Calling RemoveObserver under chainMutex_
+			//! deadlocks against in-flight observer dispatches whose
+			//! callbacks re-enter chainMutex_ via RenderToBuffer
+			//! (same pattern that motivated the BindFrameStore phased
+			//! refactor).  Default-constructed DormantChain returned
+			//! when nothing is evicted.
+			void ParkActiveAsDormant_locked( DormantChain& outEvicted );
+
+			//! Tear down a DormantChain returned from a
+			//! ParkActiveAsDormant_locked eviction.  Caller MUST NOT
+			//! hold chainMutex_.  See L8 review round 4 for the
+			//! dispatch-mutex inversion this split avoids.
+			void TeardownDormant_unlocked( DormantChain& d );
 
 			class BridgeObserver;
 

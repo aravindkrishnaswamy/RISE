@@ -67,6 +67,27 @@ namespace RISE
 			RGBA32F_ROMM_Linear         = 10,///< Bit-identical archival in ROMM primaries
 			RGB32F_ROMM_Linear          = 11,///< Same, no alpha
 
+			// L5c — 16-bit FIXED HDR10 PQ (BT.2020 primaries, ST.2084
+			// transfer, 16-bit unsigned per channel).  Distinct from the
+			// 16-bit FLOAT RGBA16F_BT2020_PQ above: that one is for the
+			// Windows DXGI / Mac CAMetalLayer display swap chains
+			// (which expect half-float); these 16-bit FIXED formats are
+			// for FILE encoders (HDR10 PNG with cICP, HDR10 TIFF) that
+			// need uint16 samples.
+			//
+			// Pipeline through `FrameStore::EncodePixel`:
+			//     ROMM linear → exposure → ROMM→BT.2020 matrix
+			//       → (NO tone curve; isLDRFixed=false)
+			//       → ApplyPQTransfer (encoded → [0, 1])
+			//       → quantise to uint16 ([0, 65535])
+			//
+			// Out-of-PQ-range scene values (linear > 10000 nits scene-
+			// referred) are clamped at the PQ ceiling by
+			// `ApplyPQTransfer` before quantisation, so the uint16
+			// output is always well-defined.
+			RGBA16_BT2020_PQ            = 12,///< HDR10 PNG/TIFF (4-channel, 16-bit unsigned)
+			RGB16_BT2020_PQ             = 13,///< HDR10 PNG (3-channel, 16-bit unsigned)
+
 			// Sentinel (must stay last; iteration helper)
 			COUNT
 		};

@@ -58,6 +58,9 @@
 #include "../Utilities/Threads/Threads.h"
 #include <atomic>
 
+// L7 follow-up — `FrameStore.h` needed unconditionally for the AOV
+// propagation utility.  See MLTRasterizer.cpp for the same fix.
+#include "FrameStore.h"
 #ifdef RISE_ENABLE_OIDN
 #include "AOVBuffers.h"
 #include "OIDNDenoiser.h"
@@ -1015,6 +1018,9 @@ void MLTSpectralRasterizer::RasterizeScene(
 
 			AOVBuffers aovBuffers( width, height );
 			OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
+			// L7 follow-up — propagate AOVs into canonical FrameStore.
+			RISE::Implementation::PropagateAOVsToFrameStore(
+				mFrameStore, aovBuffers );
 			mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
 				mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
 				GetRenderElapsedSeconds() );
@@ -1123,6 +1129,10 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 
 				AOVBuffers aovBuffers( width, height );
 				OIDNDenoiser::CollectFirstHitAOVs( pScene, *pCaster, aovBuffers );
+				// L7 follow-up — propagate AOVs to canonical FrameStore
+				// per frame.  Animation: latest frame's data wins.
+				RISE::Implementation::PropagateAOVsToFrameStore(
+					mFrameStore, aovBuffers );
 				mDenoiser->ApplyDenoise( *pImage, aovBuffers, width, height,
 					mDenoisingQuality, mDenoisingDevice, OidnPrefilter::Fast,
 					GetRenderElapsedSeconds() );

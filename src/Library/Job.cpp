@@ -144,10 +144,57 @@ RISE::Implementation::FrameStore* Job::EnsureJobFrameStore_locked(
 	spec.width    = width;
 	spec.height   = height;
 	spec.tileEdge = 32;  // matches the rasterizer's typical block size
+
+#ifdef RISE_ENABLE_OIDN
+	// L7 — request AOV channels (Albedo + Normal) when OIDN is
+	// compiled in.  These are populated by the rasterizer's AOV
+	// collection pass (`OIDNDenoiser::CollectFirstHitAOVs` for PT,
+	// per-block `Accumulate*` for BDPT) inside the
+	// `bDenoisingEnabled` branch — see
+	// `PixelBasedRasterizerHelper::PropagateAOVsToFrameStore_` for
+	// the contract.  Exposed via `FrameStore::GetChannel<Albedo>()`
+	// / `<Normal>()` for downstream consumers (multichannel EXR
+	// encoders, denoiser GUIs, AOV-aware viewports).
+	//
+	// Memory cost (at 4K = 3840×2160 = ~8.3M pixels):
+	//   * Albedo: `Channel<RISEPel>` = 3 × `Chel`/double per pixel
+	//     = 24 B/pixel × 8.3M ≈ 199 MB.
+	//   * Normal: `Channel<Vector3>` = 3 × `Scalar`/double per
+	//     pixel = 24 B/pixel × 8.3M ≈ 199 MB.
+	//   * Combined: ~400 MB.
+	// Acceptable when OIDN is enabled — OIDN's own working
+	// buffers are larger.  When OIDN is compiled OUT
+	// (`RISE_ENABLE_OIDN=0`), the channels would still be
+	// requested but never written → ~400 MB of dead memory.
+	// Compile-time gate avoids that regression.
+	//
+	// Runtime caveat: when OIDN is compiled in but
+	// `bDenoisingEnabled=false` for a particular render (user
+	// disabled denoise via scene config), AOV propagation is
+	// skipped — channels stay zero.  Downstream consumers reading
+	// AOVs in that mode see black.  Out-of-scope for L7; future
+	// work could add an "AOV-only collect" path that runs
+	// independent of denoise, or expose `bAOVPopulated` on the
+	// FrameStore so consumers can early-skip empty AOVs.
+	//
+	// Pre-L7: `aovChannels` left empty → AOV channels in FrameStore
+	// stayed null, even though OIDN collected the same data per
+	// frame and threw it away after denoise.  L7 retains the data
+	// in the canonical store for the lifetime of the FrameStore.
+	spec.aovChannels.push_back( FrameStoreOutput::ChannelId::Albedo );
+	spec.aovChannels.push_back( FrameStoreOutput::ChannelId::Normal );
+#endif  // RISE_ENABLE_OIDN
+
 	m_jobFrameStore = new RISE::Implementation::FrameStore( spec );
 	GlobalLog()->PrintEx( eLog_Info,
-		"Job:: allocated canonical FrameStore (%ux%u, tileEdge=%u).",
-		width, height, static_cast<unsigned>( spec.tileEdge ) );
+		"Job:: allocated canonical FrameStore (%ux%u, tileEdge=%u, AOVs=%s).",
+		width, height, static_cast<unsigned>( spec.tileEdge ),
+#ifdef RISE_ENABLE_OIDN
+		"Albedo+Normal"
+#else
+		"(none; OIDN compiled out)"
+#endif
+		);
 	return m_jobFrameStore;
 }
 

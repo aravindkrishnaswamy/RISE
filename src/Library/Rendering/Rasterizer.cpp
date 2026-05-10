@@ -69,14 +69,27 @@ int Rasterizer::HowManyThreadsToSpawn() const
 
 void Rasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
 {
-	if( ro ) {
-		ro->addref();
-		outs.push_back( ro );
+	if( !ro ) return;
+
+	// L8 review round 5 — mutex + dedup.  See `outsMutex` comment in
+	// Rasterizer.h.  Dedup eliminates the unbounded-vector-growth
+	// + iterator-invalidation symptom from Swift's per-display-refresh
+	// `attachViewportFrameStoreToOpaqueRasterizer` calls (each was
+	// pushing a duplicate VFS into `outs` before this fix; logs
+	// showed 30+ duplicates accumulated per render).
+	std::lock_guard<std::mutex> lock( outsMutex );
+	for( IRasterizerOutput* existing : outs ) {
+		if( existing == ro ) {
+			return;  // already registered, no-op
+		}
 	}
+	ro->addref();
+	outs.push_back( ro );
 }
 
 void Rasterizer::FreeRasterizerOutputs( )
 {
+	std::lock_guard<std::mutex> lock( outsMutex );
 	RasterizerOutputListType::iterator	i, e;
 	for( i=outs.begin(), e=outs.end(); i!=e; i++ ) {
 		safe_release( (*i) );
@@ -86,10 +99,18 @@ void Rasterizer::FreeRasterizerOutputs( )
 
 void Rasterizer::EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const
 {
-	RasterizerOutputListType::const_iterator	i, e;
-	for( i=outs.begin(), e=outs.end(); i!=e; i++ ) {
-		pFunc( *(*i) );
-	}	
+	// L8 review round 5 — snapshot under lock then invoke without it.
+	// `pFunc` could re-enter `AddRasterizerOutput` / `FreeRasterizerOutputs`
+	// (recursive lock would deadlock) and shouldn't hold the lock for
+	// the duration of arbitrary callback work.
+	RasterizerOutputListType snapshot;
+	{
+		std::lock_guard<std::mutex> lock( outsMutex );
+		snapshot = outs;
+	}
+	for( IRasterizerOutput* ro : snapshot ) {
+		pFunc( *ro );
+	}
 }
 
 void Rasterizer::SetProgressCallback( IProgressCallback* pFunc )
@@ -147,7 +168,14 @@ void Rasterizer::ReannounceFrameStore()
 	// review P1-A.  If any callback re-enters
 	// `AddRasterizerOutput`/`FreeRasterizerOutputs`, the live
 	// iterator would otherwise be invalidated.
-	const RasterizerOutputListType snapshot = outs;
+	// L8 round 5 — snapshot now happens under `outsMutex` to guard
+	// against concurrent mutators from non-render threads (Swift
+	// UI display-refresh path).
+	RasterizerOutputListType snapshot;
+	{
+		std::lock_guard<std::mutex> lock( outsMutex );
+		snapshot = outs;
+	}
 	for( RasterizerOutputListType::const_iterator it = snapshot.begin(),
 	     e = snapshot.end(); it != e; ++it )
 	{

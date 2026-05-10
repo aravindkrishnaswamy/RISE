@@ -36,6 +36,7 @@
 #ifndef FRAMEENCODERS_H_
 #define FRAMEENCODERS_H_
 
+#include <cassert>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -166,6 +167,63 @@ namespace RISE
 		protected:
 			virtual ~PPMFrameEncoder() {}
 			IRasterImageWriter* CreateWriter( IWriteBuffer& dst, const EncodeOpts& opts ) const override;
+		};
+
+		// L5c — HDR10 PNG encoder.  Renders the FrameStore directly
+		// to RGB16_BT2020_PQ (16-bit fixed BT.2020 primaries +
+		// SMPTE ST.2084 PQ transfer) and emits a 16-bit RGB PNG with
+		// a `cICP` chunk declaring the HDR10 colour space (BT.2020
+		// primaries / PQ transfer / RGB matrix / full range).  Modern
+		// browsers and HDR-aware viewers (Chrome/Edge 100+, macOS
+		// Preview on HDR displays) honor cICP and tone-map the
+		// content to the display's HDR capabilities.  Older viewers
+		// without cICP support display the raw PQ-encoded uint16
+		// values, which look washed-out on SDR — the user-facing
+		// expectation is "view in an HDR-aware app".
+		//
+		// This encoder OVERRIDES `Encode` (rather than
+		// `CreateWriter`) because the HDR10 path bypasses the
+		// legacy `IRasterImageWriter`-via-RISEColor-per-pixel
+		// pipeline (which goes through the COLOR_SPACE legacy enum
+		// that doesn't have BT.2020 + PQ entries) in favour of the
+		// L1+ `FrameStore::Render` polymorphic readback into a
+		// `uint16` buffer + libpng directly.
+		//
+		// File extension is "png" (overlaps with PNGFrameEncoder);
+		// users select via FormatName "HDR10_PNG" rather than
+		// extension lookup.  ByExtension("png") still returns
+		// PNGFrameEncoder (the SDR default).  The bridges' Save-As
+		// dropdown can list both.
+		class HDR10PNGFrameEncoder : public FrameEncoderBase
+		{
+		public:
+			std::string FormatName() const override { return "HDR10_PNG"; }
+			std::vector<std::string> Extensions() const override { return { "png" }; }
+			bool SupportsHDR() const override  { return true; }
+			bool SupportsAOVs() const override { return false; }
+
+			// Override Encode (rather than CreateWriter) — see class
+			// doc for why the legacy IRasterImageWriter path doesn't
+			// fit HDR10's BT.2020 + PQ requirements.
+			void Encode(
+				const FrameStore&    store,
+				IWriteBuffer&        dst,
+				const EncodeOpts&    opts ) override;
+
+		protected:
+			virtual ~HDR10PNGFrameEncoder() {}
+			// L5c review P1 — `Encode` is overridden directly so the
+			// base's `CreateWriter`-driven path is never reached.
+			// Assert (rather than silently return null) so future
+			// refactors that accidentally call back through the base
+			// pipeline crash loudly in debug.
+			IRasterImageWriter* CreateWriter( IWriteBuffer& /*dst*/, const EncodeOpts& /*opts*/ ) const override
+			{
+				assert( false && "HDR10PNGFrameEncoder::CreateWriter unreachable — "
+				                  "L5c overrides Encode directly; do not call CreateWriter" );
+				return nullptr;
+			}
+			bool IsHDRFormat() const override { return true; }
 		};
 
 		// ─────────────────────────────────────────────────────────────

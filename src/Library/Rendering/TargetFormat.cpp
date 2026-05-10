@@ -91,6 +91,22 @@ namespace RISE
 			{ 12, 3, false, true, false, false,
 				ChannelOrder::RGB,   FSColorSpace::ROMM_Linear,       TransferFunction::Linear,
 				"RGB32F_ROMM_Linear" },
+
+			// RGBA16_BT2020_PQ (L5c) — HDR10 16-bit fixed.  isFloat=false
+			// triggers uint16 quantisation in EncodePixel; isLDRFixed=false
+			// skips the tone curve so HDR scene-referred values flow through
+			// to the PQ encoder unchanged.  Alpha is clamped to [0,1] inside
+			// the !isFloat branch (see L5c EncodePixel changes).
+			{ 8, 4, true,  false, false, false,
+				ChannelOrder::RGBA,  FSColorSpace::BT2020_Linear,     TransferFunction::PQ_ST2084,
+				"RGBA16_BT2020_PQ" },
+
+			// RGB16_BT2020_PQ (L5c) — same, no alpha.  Used by HDR10 PNG
+			// encoders that emit RGB-only (PNG color type 2) — saves one
+			// uint16 per pixel vs the RGBA variant.
+			{ 6, 3, false, false, false, false,
+				ChannelOrder::RGB,   FSColorSpace::BT2020_Linear,     TransferFunction::PQ_ST2084,
+				"RGB16_BT2020_PQ" },
 		};
 
 		// Compile-time check that the table covers every enum value
