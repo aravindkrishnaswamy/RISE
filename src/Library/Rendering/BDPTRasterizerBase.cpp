@@ -799,9 +799,17 @@ void BDPTRasterizerBase::RasterizeScene(
 	}
 #endif
 
-	// Create the primary image and a scratch copy for progressive output
-	IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
-	GlobalLog()->PrintNew( pImage, __FILE__, __LINE__, "image" );
+	// L6d — Use the canonical FrameStore beauty view as the splat
+	// target when available (Job has provided one + dims match).
+	// `AcquireRenderImage` is inherited from
+	// `PixelBasedRasterizerHelper`; it returns the FrameStore's
+	// `BeautyRasterImageView` shim or falls back to mPersistentImage
+	// when the FrameStore is null / dim-mismatch.  Pre-L6d this code
+	// path bypassed AcquireRenderImage and always allocated a fresh
+	// `RISERasterImage` which then got copied into the FrameStore
+	// later via `FrameSink::CopyImageIntoStore`.  Post-L6d the
+	// rasterizer's per-pixel writes land directly in the FrameStore.
+	IRasterImage* pImage = AcquireRenderImage( width, height );
 
 	safe_release( pScratchImage );
 	pScratchImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
