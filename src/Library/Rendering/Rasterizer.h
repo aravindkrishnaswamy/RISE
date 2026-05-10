@@ -144,6 +144,28 @@ namespace RISE
 			// can read FrameStore concurrently with this swap.
 			void SetFrameStore( FrameStore* frameStore );
 
+			// L6e-1.1 — Capability hook: does this rasterizer accept
+			// the canonical Job-allocated FrameStore push, or does it
+			// run on its own internal RISERasterImage path?
+			//
+			// Default true (every PT/BDPT/VCM/interactive subclass
+			// writes through the FrameStore beauty view).  MLT and
+			// MLTSpectral override to false because their PSSMLT
+			// per-round Resolve allocates a fresh local
+			// `RISERasterImage` and never touches the FrameStore
+			// (until L6d-2 migrates them to multi-round-aware
+			// FrameStore writes).  Without this opt-out, the Job's
+			// post-scene-load `PushJobFrameStoreToRasterizers` would
+			// hand MLT a FrameStore that `GetFrameStore()` then
+			// surfaces to direct readers as perpetually stale (the
+			// rasterizer never writes into it).
+			//
+			// Pre-fix this was a string-match on registry name in
+			// `Job::PushJobFrameStoreToRasterizers`; brittle to
+			// rename + scattered the policy away from the rasterizer
+			// that owns the constraint.  See L6e-1.1 review #2 P0.
+			virtual bool AcceptsFrameStorePush() const { return true; }
+
 #ifdef RISE_ENABLE_OIDN
 			void SetDenoisingEnabled( bool enabled ) { bDenoisingEnabled = enabled; }
 			void SetDenoisingQuality( OidnQuality quality ) { mDenoisingQuality = quality; }

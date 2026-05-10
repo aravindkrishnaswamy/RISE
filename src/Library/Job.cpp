@@ -437,7 +437,19 @@ bool Job::AddOrthographicCamera(
 bool Job::SetActiveCamera( const char* name )
 {
 	if( !pScene ) return false;
-	return pScene->SetActiveCamera( name );
+	const bool ok = pScene->SetActiveCamera( name );
+	if( ok ) {
+		// L6b — when the active camera changes, its dimensions may
+		// differ from the previously-active camera's, so the
+		// canonical FrameStore needs to be re-resolved (which
+		// triggers reallocation in `EnsureJobFrameStore_locked` if
+		// dims differ) and pushed to every rasterizer in the
+		// registry.  Without this, switching to a camera with
+		// different dimensions leaves rasterizers holding the OLD
+		// FrameStore + `GetFrameStore()` exposes the stale store.
+		PushJobFrameStoreToRasterizers();
+	}
+	return ok;
 }
 
 std::string Job::GetActiveCameraName() const
@@ -8132,15 +8144,29 @@ void Job::PushJobFrameStoreToRasterizers()
 	     it != rasterizerRegistry.end(); ++it )
 	{
 		if( !it->second.instance ) continue;
-		// Cast to the concrete `Rasterizer` impl to access SetFrameStore.
-		// This is safe — every in-tree rasterizer derives from
+
+		// Cast to the concrete `Rasterizer` impl to access SetFrameStore
+		// + the AcceptsFrameStorePush capability hook.  This is safe —
+		// every in-tree rasterizer derives from
 		// `Implementation::Rasterizer`, and the registry only holds
 		// instances we constructed via RISE_API factories.
 		RISE::Implementation::Rasterizer* r =
 			dynamic_cast<RISE::Implementation::Rasterizer*>( it->second.instance );
-		if( r ) {
-			r->SetFrameStore( fs );
-		}
+		if( !r ) continue;
+
+		// L6e-1.1 — capability gate via virtual on `Rasterizer`
+		// (replaces a brittle string-match on registry name).  MLT
+		// (and MLTSpectral via inheritance) opts out — its PSSMLT
+		// per-round Resolve allocates a fresh local
+		// `RISERasterImage` and never writes into the canonical
+		// FrameStore, so a push would leave `GetFrameStore()`
+		// returning a perpetually-stale store.  L6d-2 will revisit
+		// by either threading per-round Clear+Resolve into the
+		// FrameStore beauty, or keeping MLT on the legacy path
+		// indefinitely.  See `Rasterizer::AcceptsFrameStorePush`.
+		if( !r->AcceptsFrameStorePush() ) continue;
+
+		r->SetFrameStore( fs );
 	}
 }
 
