@@ -112,6 +112,13 @@ namespace RISE
 		// for preview-scale oscillation reuse; only invoked from the
 		// destructor (since EnsureChain now parks rather than tears
 		// down on dim change).
+		// L6e-2a — also handles external-bind teardown.  In external
+		// mode `framestore_` is an ALIAS for `externalFrameStore_`
+		// (same pointer, single addref held on `externalFrameStore_`).
+		// We must release through `externalFrameStore_` exactly once
+		// and clear the alias; releasing `framestore_` directly would
+		// be redundant (same refcount) but indistinguishable from
+		// internal-mode teardown.
 		void ViewportFrameStore::TeardownChain()
 		{
 			if ( framestore_ && observer_ ) {
@@ -123,14 +130,26 @@ namespace RISE
 			safe_release( framesink_ );
 			framesink_ = nullptr;
 
-			safe_release( framestore_ );
-			framestore_ = nullptr;
+			if ( externalFrameStore_ ) {
+				// External-bound: framestore_ is an alias; the addref
+				// lives on externalFrameStore_.  Clear the alias,
+				// release through the canonical pointer.
+				framestore_ = nullptr;
+				safe_release( externalFrameStore_ );
+				externalFrameStore_ = nullptr;
+			} else {
+				// Internal-mode: VFS owned the FrameStore via
+				// `framestore_`'s addref.
+				safe_release( framestore_ );
+				framestore_ = nullptr;
+			}
 
-			// Drain dormant cache.  Each entry's observer was
-			// registered on its FrameStore at allocation time and
-			// kept registered through parking; remove + delete
-			// before releasing the FrameStore, mirroring the active
-			// chain's teardown order above.
+			// Drain dormant cache (only populated in internal mode;
+			// external mode bypasses the cache entirely).  Each
+			// entry's observer was registered on its FrameStore at
+			// allocation time and kept registered through parking;
+			// remove + delete before releasing the FrameStore,
+			// mirroring the active chain's teardown order above.
 			for ( auto& d : dormant_ ) {
 				if ( d.fs && d.obs ) {
 					d.fs->RemoveObserver( d.obs );
@@ -235,6 +254,69 @@ namespace RISE
 		}
 
 		// ─────────────────────────────────────────────────────────────
+		// L6e-2a — External FrameStore binding
+		// ─────────────────────────────────────────────────────────────
+
+		void ViewportFrameStore::BindFrameStore( FrameStore* external )
+		{
+			std::unique_lock<std::shared_mutex> lock( chainMutex_ );
+
+			// Idempotent — re-binding the same pointer is a no-op,
+			// avoids tearing down + re-registering an observer that
+			// would point at the same store.
+			if ( external == externalFrameStore_ ) {
+				return;
+			}
+
+			// Tear down whatever's currently active.  TeardownChain
+			// is now external-aware (handles both internal-mode +
+			// external-mode teardown correctly under one entry
+			// point).
+			TeardownChain();
+
+			// Bind to the new external (if non-null).  `nullptr`
+			// reverts to internal-managed mode — the next
+			// `Output*Image` call will lazy-allocate a fresh internal
+			// store via `EnsureChain`.
+			if ( external ) {
+				external->addref();  // VFS owns one defensive ref
+				externalFrameStore_ = external;
+				framestore_         = external;
+				// `framesink_` stays null — the IRasterizerOutput
+				// chain becomes a no-op for VFS bound to an external
+				// store (the rasterizer's per-tile bracketing already
+				// fires observers on the same store).
+
+				// Build observer + register on the external store.
+				// `BridgeObserver` is internal-only lifecycle managed
+				// by us, same pattern as `EnsureChain`.
+				observer_ = new BridgeObserver( *this );
+				external->AddObserver( observer_ );
+
+				// Re-apply the camera EV snapshot (matches
+				// `EnsureChain` post-allocate / dormant-rehydrate).
+				external->MutableMeta().cameraExposureEV =
+					static_cast<double>( cameraExposureEV_ );
+
+				GlobalLog()->PrintEx( eLog_Event,
+					"ViewportFrameStore::BindFrameStore: bound to "
+					"external FrameStore %ux%u",
+					static_cast<unsigned int>( external->Width() ),
+					static_cast<unsigned int>( external->Height() ) );
+			} else {
+				GlobalLog()->PrintEx( eLog_Event,
+					"ViewportFrameStore::BindFrameStore: unbound — "
+					"reverted to internal-managed mode" );
+			}
+		}
+
+		bool ViewportFrameStore::IsExternallyBound() const
+		{
+			std::shared_lock<std::shared_mutex> lock( chainMutex_ );
+			return externalFrameStore_ != nullptr;
+		}
+
+		// ─────────────────────────────────────────────────────────────
 		// State queries
 		// ─────────────────────────────────────────────────────────────
 
@@ -248,6 +330,21 @@ namespace RISE
 		static FrameStore* SnapshotFrameStore(
 			std::shared_mutex& mtx,
 			FrameStore* const& ptr )
+		{
+			std::shared_lock<std::shared_mutex> lock( mtx );
+			if ( !ptr ) return nullptr;
+			ptr->addref();
+			return ptr;
+		}
+
+		// L6e-2a — same pattern as SnapshotFrameStore but for
+		// `framesink_`.  Used by the legacy-mode fallback in the
+		// IRasterizerOutput passthrough methods (OutputImage etc.)
+		// so a concurrent `BindFrameStore` swap on another thread
+		// can't tear down `framesink_` mid-call.  Caller releases.
+		static FrameSink* SnapshotFrameSink(
+			std::shared_mutex& mtx,
+			FrameSink* const& ptr )
 		{
 			std::shared_lock<std::shared_mutex> lock( mtx );
 			if ( !ptr ) return nullptr;
@@ -352,6 +449,19 @@ namespace RISE
 			const IRasterImage& pImage,
 			const Rect*         pRegion )
 		{
+			// L6e-2a — When externally bound, the rasterizer's
+			// per-tile `BeginTile/EndTile` bracketing (post-L6e-1)
+			// has ALREADY fired `OnTileComplete` on the same
+			// FrameStore we observe.  Re-running
+			// `CopyTileFromRasterImage` here would (a) re-copy data
+			// that's already in the canonical store, and (b) double-
+			// fire the observer chain → repaints + UI work for no
+			// pixel change.  Short-circuit.
+			{
+				std::shared_lock<std::shared_mutex> lock( chainMutex_ );
+				if ( externalFrameStore_ ) return;
+			}
+
 			EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
 
 			// Unlike FrameSink::OutputIntermediateImage (which
@@ -443,9 +553,43 @@ namespace RISE
 			const Rect*         pRegion,
 			const unsigned int  frame )
 		{
+			// L6e-2a — externally bound: rasterizer's
+			// `FrameStoreBulkBracket` (post-L6e-1.1) already wrote
+			// every pixel into the canonical store; we just need to
+			// fire `OnFrameComplete` on observers (no copy).
+			//
+			// L6f-TODO — this MarkFrameComplete is the SOLE
+			// frame-complete signal in bound mode today; rasterizers
+			// don't (yet) call MarkFrameComplete on `mFrameStore`.
+			// L6f will move the frame-complete signal into the
+			// rasterizer itself, at which point bound-mode VFS will
+			// double-fire.  When L6f lands, gate this branch on a
+			// "rasterizer drives frame-complete" capability flag, or
+			// retire the IRasterizerOutput chain entirely for VFS
+			// consumers (which is the L6f endgame anyway).  See
+			// L6e-2a adversarial review P1.
+			{
+				FrameStore* boundSnap = SnapshotFrameStore( chainMutex_, externalFrameStore_ );
+				if ( boundSnap ) {
+					boundSnap->MarkFrameComplete( frame );
+					boundSnap->release();
+					return;
+				}
+			}
+
 			EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
-			if ( framesink_ ) {
-				framesink_->OutputImage( pImage, pRegion, frame );
+			// L6e-2a — snapshot framesink_ under chainMutex_ so a
+			// concurrent BindFrameStore swap can't tear it down
+			// mid-call.  Pre-fix: raw deref with no chain-lock —
+			// safe under the single-rasterizer-thread contract that
+			// drives Output*Image, but BindFrameStore can be called
+			// from any thread (typically a UI thread post-L6e-2c),
+			// breaking the contract's assumption.  See L6e-2a
+			// adversarial review P1.
+			FrameSink* sinkSnap = SnapshotFrameSink( chainMutex_, framesink_ );
+			if ( sinkSnap ) {
+				sinkSnap->OutputImage( pImage, pRegion, frame );
+				sinkSnap->release();
 			}
 		}
 
@@ -454,9 +598,25 @@ namespace RISE
 			const Rect*         pRegion,
 			const unsigned int  frame )
 		{
+			// L6e-2a — externally bound: skip copy, fire pre-denoise
+			// observer chain on the bound store.
+			// L6f-TODO — see OutputImage for the future double-fire
+			// concern when rasterizers start calling
+			// MarkPreDenoiseComplete on `mFrameStore` directly.
+			{
+				FrameStore* boundSnap = SnapshotFrameStore( chainMutex_, externalFrameStore_ );
+				if ( boundSnap ) {
+					boundSnap->MarkPreDenoiseComplete( frame );
+					boundSnap->release();
+					return;
+				}
+			}
+
 			EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
-			if ( framesink_ ) {
-				framesink_->OutputPreDenoisedImage( pImage, pRegion, frame );
+			FrameSink* sinkSnap = SnapshotFrameSink( chainMutex_, framesink_ );
+			if ( sinkSnap ) {
+				sinkSnap->OutputPreDenoisedImage( pImage, pRegion, frame );
+				sinkSnap->release();
 			}
 		}
 
@@ -465,9 +625,25 @@ namespace RISE
 			const Rect*         pRegion,
 			const unsigned int  frame )
 		{
+			// L6e-2a — externally bound: skip copy, fire denoise
+			// observer chain on the bound store.
+			// L6f-TODO — see OutputImage for the future double-fire
+			// concern when rasterizers start calling
+			// MarkDenoiseComplete on `mFrameStore` directly.
+			{
+				FrameStore* boundSnap = SnapshotFrameStore( chainMutex_, externalFrameStore_ );
+				if ( boundSnap ) {
+					boundSnap->MarkDenoiseComplete( frame );
+					boundSnap->release();
+					return;
+				}
+			}
+
 			EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
-			if ( framesink_ ) {
-				framesink_->OutputDenoisedImage( pImage, pRegion, frame );
+			FrameSink* sinkSnap = SnapshotFrameSink( chainMutex_, framesink_ );
+			if ( sinkSnap ) {
+				sinkSnap->OutputDenoisedImage( pImage, pRegion, frame );
+				sinkSnap->release();
 			}
 		}
 
@@ -505,6 +681,20 @@ namespace RISE
 			// VFS), this reasoning breaks; see L4 adversarial
 			// review MED-3.
 			//
+			// L6e-2a — When externally bound (`BindFrameStore`),
+			// internal allocation is skipped entirely — `framestore_`
+			// already points at the rasterizer's `mFrameStore`, which
+			// is sized + managed by the Job layer.  Dimension
+			// mismatches in the externally-bound case are a Job-layer
+			// concern (resolution change re-binds via L6e-2b's
+			// rebinding hook) — the VFS just observes.
+			{
+				std::shared_lock<std::shared_mutex> lock( chainMutex_ );
+				if ( externalFrameStore_ ) {
+					return;
+				}
+			}
+
 			// Fast path: dims match — read framestore_ pointer
 			// under shared_lock (other readers may be in
 			// RenderToBuffer / SaveAs / Generation concurrently).

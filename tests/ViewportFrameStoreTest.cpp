@@ -745,6 +745,123 @@ namespace
 		vfs->release();
 	}
 
+	// ─── Section 9 (L6e-2a): External FrameStore bind ───────────
+	//
+	// Verify that BindFrameStore:
+	//   - Initially: VFS reports IsExternallyBound() == false.
+	//   - After bind: IsExternallyBound() == true; GetFrameStore()
+	//     returns the bound pointer; tile observer fires on the
+	//     external store's BeginTile/EndTile (post-L6e-1 rasterizer-
+	//     side bracketing pattern).
+	//   - IRasterizerOutput methods short-circuit when bound (no
+	//     copy, no spurious double-fire).
+	//   - OutputImage on a bound VFS still fires OnFrameComplete
+	//     (frame-complete event preserved via direct MarkFrameComplete
+	//     call on the bound store).
+	//   - Unbind reverts to internal-managed mode; subsequent
+	//     OutputImage allocates fresh internal store.
+	//   - Idempotent: re-binding the same pointer is a no-op
+	//     (no observer thrash).
+	//   - Refcount: bind addrefs the external; unbind / dtor
+	//     releases.  The external is NOT destroyed by VFS while
+	//     the test holds its own ref.
+	void TestExternalBind_L6e2a()
+	{
+		auto* vfs = new ViewportFrameStore();
+		Check( !vfs->IsExternallyBound(),
+			"L6e-2a: IsExternallyBound==false before any bind" );
+
+		// Allocate an external FrameStore (Job-allocated, in
+		// production).  Test holds one addref; bind will take a
+		// second.
+		FrameStore::Spec spec;
+		spec.width    = kImgW;
+		spec.height   = kImgH;
+		spec.tileEdge = 8;  // 4 tiles × 4 tiles for the 16x16
+		auto* extFs = new FrameStore( spec );  // refcount=1
+		extFs->addref();                        // refcount=2 (test owns one)
+
+		// Wire callback that increments on tile + frame events.
+		std::atomic<int> tileCount{ 0 };
+		std::atomic<int> frameCount{ 0 };
+		vfs->SetTileCompleteCallback( [&tileCount]( const Rect&, uint64_t ) {
+			++tileCount;
+		} );
+		vfs->SetFrameCompleteCallback( [&frameCount]( unsigned int, uint64_t ) {
+			++frameCount;
+		} );
+
+		vfs->BindFrameStore( extFs );
+		Check( vfs->IsExternallyBound(),
+			"L6e-2a: IsExternallyBound==true after bind" );
+		Check( vfs->GetFrameStore() == extFs,
+			"L6e-2a: GetFrameStore returns bound external pointer" );
+
+		// Drive a tile complete on the external — VFS observer
+		// should fire its tile callback.
+		extFs->BeginTile( 0, 0 );
+		extFs->EndTile( 0, 0 );
+		Check( tileCount.load() == 1,
+			"L6e-2a: BeginTile/EndTile on external fires tile callback" );
+
+		// IRasterizerOutput::OutputIntermediateImage when bound:
+		// short-circuits (rasterizer's bracketing already drove
+		// observers).  Verify no double-fire by comparing tileCount
+		// before/after.
+		const int beforeIntermediate = tileCount.load();
+		auto* img = MakeTestImage();
+		vfs->OutputIntermediateImage( *img, nullptr );
+		Check( tileCount.load() == beforeIntermediate,
+			"L6e-2a: OutputIntermediateImage no-op when externally bound (no double-fire)" );
+
+		// IRasterizerOutput::OutputImage when bound: still fires
+		// OnFrameComplete via direct MarkFrameComplete on the bound
+		// store (frame-complete signal preserved).
+		const int beforeFinal = frameCount.load();
+		vfs->OutputImage( *img, nullptr, /*frame=*/0 );
+		Check( frameCount.load() == beforeFinal + 1,
+			"L6e-2a: OutputImage fires OnFrameComplete on bound store" );
+
+		// Mid-bind unbind: revert to internal mode.
+		vfs->BindFrameStore( nullptr );
+		Check( !vfs->IsExternallyBound(),
+			"L6e-2a: IsExternallyBound==false after unbind" );
+		Check( vfs->GetFrameStore() == nullptr,
+			"L6e-2a: GetFrameStore null after unbind (chain torn down)" );
+
+		// After unbind, OutputImage allocates a fresh INTERNAL
+		// FrameStore — NOT the external (which we still hold a ref
+		// to).
+		vfs->OutputImage( *img, nullptr, /*frame=*/1 );
+		Check( vfs->GetFrameStore() != nullptr,
+			"L6e-2a: OutputImage post-unbind allocates fresh internal store" );
+		Check( vfs->GetFrameStore() != extFs,
+			"L6e-2a: post-unbind FrameStore is INTERNAL (not the ex-external)" );
+		Check( !vfs->IsExternallyBound(),
+			"L6e-2a: post-unbind still reports IsExternallyBound==false" );
+
+		// Idempotent re-bind: bind to the same external twice → no
+		// observer thrash (tileCount shouldn't bump from re-binding).
+		vfs->BindFrameStore( extFs );
+		const int beforeIdempotent = tileCount.load();
+		vfs->BindFrameStore( extFs );
+		extFs->BeginTile( 0, 1 );
+		extFs->EndTile( 0, 1 );
+		Check( tileCount.load() == beforeIdempotent + 1,
+			"L6e-2a: idempotent re-bind doesn't duplicate observer (one tile event = one callback)" );
+
+		// Test-owned ref keeps extFs alive until we release.
+		// Releasing VFS releases its bind addref.
+		safe_release( img );
+		vfs->release();
+
+		// VFS gone, external still has the test's addref.  Verify
+		// by reading its dims (would crash if released to 0).
+		Check( extFs->Width() == kImgW && extFs->Height() == kImgH,
+			"L6e-2a: external FrameStore survives VFS destruction (test held its own ref)" );
+		safe_release( extFs );
+	}
+
 	// ─── Section 8: cameraExposureEV propagates to Meta ───────────
 	void TestCameraExposureFlow()
 	{
@@ -794,6 +911,7 @@ int main()
 	TestMidRenderSaveAs();
 	TestChainRaceUnderResolutionChange();
 	TestCameraExposureFlow();
+	TestExternalBind_L6e2a();
 
 	std::cout << "------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";

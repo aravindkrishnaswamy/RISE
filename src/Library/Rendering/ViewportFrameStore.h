@@ -156,10 +156,66 @@ namespace RISE
 			//! See header doc on Attach for the full contract.
 			void Detach( IRasterizer* rasterizer );
 
+			//! L6e-2a — Bind this VFS to consume an EXTERNAL
+			//! `FrameStore*` directly.  When non-null, the VFS:
+			//!   * Stops allocating its own internal FrameStore in
+			//!     `EnsureChain` (skips the lazy-allocate path).
+			//!   * Registers its `BridgeObserver` on the external
+			//!     FrameStore so tile/frame events flow to the
+			//!     user-supplied callbacks.  The IRasterizerOutput
+			//!     methods become no-ops — the rasterizer's per-tile
+			//!     `BeginTile/EndTile` bracketing already drove the
+			//!     observer chain on the same FrameStore (post-L6e-1
+			//!     bracketing + L6e-1.1 RAII bulk bracket).
+			//!   * Has `RenderToBuffer`, `SaveAs`, `SaveTo`,
+			//!     `Generation`, `GetDimensions` all read from the
+			//!     bound external FrameStore.
+			//!
+			//! Use case: rasterizer → FrameStore is now the canonical
+			//! pixel store (post-L6c).  Pre-L6e-2 the VFS allocated a
+			//! second FrameStore and `FrameSink` copied tiles across.
+			//! Post-L6e-2 the VFS observes the rasterizer's FrameStore
+			//! directly — eliminating the cross-store copy + the
+			//! per-output FrameStore allocation.
+			//!
+			//! Lifetime: VFS addrefs `external` on bind and releases
+			//! it on unbind / destruct.  Caller retains its own
+			//! reference (typically the rasterizer's reference + the
+			//! Job's reference both keep it alive across the VFS
+			//! lifetime; this addref is defensive).
+			//!
+			//! Threading: takes `chainMutex_` unique-lock to swap
+			//! the chain pointers.  Reader threads in
+			//! `RenderToBuffer` / `SaveAs` / `Generation` are
+			//! unaffected — they snapshot+addref under the lock and
+			//! their captured snapshot stays valid even if we swap
+			//! mid-render.
+			//!
+			//! Passing `nullptr` unbinds — VFS reverts to the legacy
+			//! lazy-internal-allocate path.  The previously-bound
+			//! external FrameStore is released; an internal store
+			//! will be allocated on the next `Output*Image` call.
+			//! Calling `BindFrameStore(nullptr)` after `BindFrameStore(extA)`
+			//! does NOT preserve the dormant cache — `dormant_` is
+			//! purely an internal-allocation optimisation that
+			//! doesn't apply to externally-managed stores.
+			//!
+			//! Idempotent: re-binding the same external pointer is
+			//! a no-op (avoids spurious observer remove/re-add).
+			void BindFrameStore( FrameStore* external );
+
+			//! Whether this VFS is currently bound to an external
+			//! FrameStore via `BindFrameStore`.  Diagnostic — most
+			//! consumers don't need to check this.
+			bool IsExternallyBound() const;
+
 			// ── State queries ─────────────────────────────────
-			//! Returns the underlying FrameStore once allocated
-			//! (after the first OutputImage call); nullptr until
-			//! then.  Caller does NOT take ownership; treat as
+			//! Returns the underlying FrameStore.  In INTERNAL mode
+			//! (the legacy default), this is null until the first
+			//! `OutputImage` call lazy-allocates the chain.  In
+			//! EXTERNAL mode (post-`BindFrameStore`), this is the
+			//! bound external pointer — non-null from the moment of
+			//! bind.  Caller does NOT take ownership; treat as
 			//! borrowed reference bounded by this object's
 			//! lifetime.
 			//!
@@ -323,6 +379,23 @@ namespace RISE
 			FrameStore*        framestore_ = nullptr;
 			FrameSink*         framesink_  = nullptr;
 			BridgeObserver*    observer_   = nullptr;
+
+			// L6e-2a — When non-null, `framestore_` ABOVE points at
+			// an externally-managed FrameStore (typically the
+			// rasterizer's `mFrameStore`).  In that mode:
+			//   * `framesink_` is null — the IRasterizerOutput chain
+			//     is the legacy copy path which is bypassed.
+			//   * `observer_` is registered on the external store.
+			//   * `EnsureChain` short-circuits (no lazy allocate).
+			//   * `dormant_` is unused (it's an internal-allocation
+			//     optimisation; external stores are managed by Job).
+			//   * VFS owns one addref on the external store
+			//     (defensive — the Job + rasterizer also hold refs).
+			//
+			// `nullptr` => internal-managed mode (the legacy path).
+			// Tracked separately so we can distinguish "VFS-allocated
+			// the framestore" from "Job-allocated, VFS borrows".
+			FrameStore*        externalFrameStore_ = nullptr;
 
 			// L5a round-8 — dormant-chain cache for preview-scale
 			// resolution oscillation.  A `DormantChain` holds a
