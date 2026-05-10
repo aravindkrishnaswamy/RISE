@@ -30,7 +30,7 @@ namespace RISE
 			Point3				vPosition;			/// Location of the camera in the world
 			Point3				vLookAt;			/// A point in the world camera is looking at
 			Vector3				vUp;				/// What is considered up in the world
-			const Scalar		pixelAR;			/// Pixel aspect ratio
+			Scalar				pixelAR;			/// Pixel aspect ratio (mutable since 2026-05 so SetPixelAR can re-sync to Scene's Film)
 			Scalar				exposureTime;		/// Exposure time of the camera
 			Scalar				scanningRate;		/// Rate at which the camera records each scanline (normalized unit time / scanline)
 			Scalar				pixelRate;			/// Rate at which the camera records each pixel (normalized unit time / pixel)
@@ -95,15 +95,17 @@ namespace RISE
 			inline Point3 GetRestLocation() const         { return vPosition; }
 
 			// Additional getters/setters used by the descriptor-driven
-			// properties panel.  pixelAR is intentionally read-only —
-			// it's stored as `const` and changing it would require
-			// recreating the camera.
+			// properties panel and by Scene::SetFilm to re-sync each
+			// camera's projection to a newly-installed Film (post-CLI
+			// override, post-late-`film`-chunk, or programmatic
+			// SetFilm).
 			inline Scalar  GetPixelAR()                   const { return pixelAR; }
 			inline Scalar  GetExposureTimeStored()        const { return exposureTime; }
 			inline Scalar  GetScanningRateStored()        const { return scanningRate; }
 			inline Scalar  GetPixelRateStored()           const { return pixelRate; }
 			inline Vector3 GetEulerOrientation()          const { return orientation; }
 			inline Vector2 GetTargetOrientation()         const { return target_orientation; }
+			inline void    SetPixelAR( Scalar v )               { pixelAR = v; /* RegenerateData by caller */ }
 			inline void    SetExposureTimeStored( Scalar v )    { exposureTime = v; }
 			inline void    SetScanningRateStored( Scalar v )    { scanningRate = v; }
 			inline void    SetPixelRateStored( Scalar v )       { pixelRate = v; }
@@ -119,6 +121,19 @@ namespace RISE
 			inline void SetDimensions( unsigned int w, unsigned int h )
 			{
 				frame.SetDimensions( w, h );
+				RegenerateData();
+			}
+
+			//! Update width, height, and pixelAR atomically and rebuild
+			//! the projection matrix once.  Used by Scene::SetFilm when
+			//! a new Film is installed AFTER cameras have been added —
+			//! every camera's frame must follow Film, otherwise the
+			//! rasterizer enumerates Film-many pixels but GenerateRay
+			//! projects through the old camera dims.
+			inline void SetDimensionsAndPixelAR( unsigned int w, unsigned int h, Scalar pAR )
+			{
+				frame.SetDimensions( w, h );
+				pixelAR = pAR;
 				RegenerateData();
 			}
 

@@ -16,9 +16,11 @@
 #include "Animation/Animator.h"
 #include "RISE_API.h"
 #include "Interfaces/ICameraManager.h"
+#include "Interfaces/IEnumCallback.h"
 #include "Interfaces/IPhotonTracer.h"
 #include "Interfaces/IPhotonMap.h"
 #include "Interfaces/IProgressCallback.h"
+#include "Cameras/CameraCommon.h"		// for SetFilm camera-resync dynamic_cast
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -30,6 +32,7 @@ Scene::Scene( ) :
   pCameraManager( 0 ),
   activeCameraName(),
   pActiveCamera( 0 ),
+  pFilm( 0 ),
   pGlobalRadianceMap( 0 ),
   pCausticMap( 0 ),
   pGlobalMap( 0 ),
@@ -88,6 +91,13 @@ void Scene::Shutdown()
 	safe_release( prevActive );
 	safe_shutdown_and_release( pCameraManager );
 	activeCameraName = String();
+	// pFilm released AFTER pCameraManager intentionally — Phase B
+	// will plumb cameras to hold a strong ref on the active film,
+	// so cameras must drop their refs (via the manager's Shutdown)
+	// before Scene's own ref is released.  Phase B reviewers: if
+	// you change cameras to cache a raw IFilm* without addref,
+	// move this release UP above the camera teardown.
+	safe_release( pFilm );
 	safe_release( pObjectManager );
 	safe_release( pLightManager );
 	safe_release( pLuminaryManager );
@@ -120,6 +130,93 @@ void Scene::SetCameraManager( ICameraManager* pCameraManager_ )
 		pCameraManager_->addref();
 		pCameraManager = pCameraManager_;
 	}
+}
+
+// Camera-resync helper used by both SetFilm (pointer swap) and
+// ResizeFilm (in-place dim mutation).  Without this, a CLI override
+// (`--width 480 --height 270`) or a `film` chunk authored after the
+// camera chunk, or the SceneEditController preview-scale pump, would
+// change Film while the cameras' projection matrices still bake the
+// old dims — rasterizer enumerates Film-many pixels but GenerateRay
+// projects through the old dims, producing a re-FRAMED image instead
+// of a re-RESOLVED one.  Walk the manager and update every camera so
+// SetActiveCamera switches are also safe.  Cameras not derived from
+// CameraCommon (none in tree today, but possible) are silently
+// skipped.
+void Scene::ResyncCamerasToFilmDims(
+	unsigned int width,
+	unsigned int height,
+	Scalar       pixelAR
+	)
+{
+	if( !pCameraManager ) {
+		return;
+	}
+	struct ResyncCb : public IEnumCallback<const char*> {
+		ICameraManager*    mgr;
+		unsigned int       w, h;
+		Scalar             pAR;
+		bool operator()( const char* const& name ) override {
+			ICamera* cam = mgr->GetItem( name );
+			if( cam ) {
+				if( Implementation::CameraCommon* cc =
+				    dynamic_cast<Implementation::CameraCommon*>( cam ) )
+				{
+					cc->SetDimensionsAndPixelAR( w, h, pAR );
+				}
+			}
+			return true;
+		}
+	};
+	ResyncCb cb;
+	cb.mgr = pCameraManager;
+	cb.w   = width;
+	cb.h   = height;
+	cb.pAR = pixelAR;
+	pCameraManager->EnumerateItemNames( cb );
+}
+
+void Scene::SetFilm( IFilm* pFilm_ )
+{
+	// Last-write-wins.  Same concurrency contract as the camera
+	// mutators above (no concurrent rendering).  Null is treated as
+	// a no-op rather than clearing — there is no rasterizer codepath
+	// that handles a null film, and accidentally nulling it would
+	// just defer the crash.
+	//
+	// Addref-then-release order (not release-then-addref).  Self-
+	// assignment SetFilm(pFilm) with refcount==1 would destroy the
+	// object on release before addref runs — UAF.  Addref first is
+	// the standard refcounted-swap idiom; the temporary `prev` keeps
+	// the old strong ref alive until the swap is committed.
+	if( !pFilm_ ) {
+		return;
+	}
+	pFilm_->addref();
+	IFilm* prev = pFilm;
+	pFilm = pFilm_;
+	safe_release( prev );
+
+	ResyncCamerasToFilmDims( pFilm->GetWidth(), pFilm->GetHeight(), pFilm->GetPixelAR() );
+}
+
+void Scene::ResizeFilm(
+	unsigned int width,
+	unsigned int height,
+	Scalar       pixelAR
+	)
+{
+	// Hot path: mutate the existing Film's dims in place + re-sync
+	// cameras.  Zero allocation per call, so the SceneEditController
+	// preview-scale pump can toggle dims at every interactive frame
+	// without churning the heap.  Caller is responsible for ensuring
+	// pFilm exists (Job::InitializeContainers installs the qHD
+	// default unconditionally).
+	if( !pFilm ) {
+		return;
+	}
+	pFilm->Resize( width, height, pixelAR );
+	ResyncCamerasToFilmDims( width, height, pixelAR );
 }
 
 // Lifetime model for the active camera.
@@ -242,6 +339,12 @@ bool Scene::RemoveCamera( const char* szName )
 
 bool Scene::SetActiveCamera( const char* szName )
 {
+	// SetFilm re-syncs EVERY camera's frame to the active Film, so
+	// switching the active camera is always safe — whichever camera
+	// becomes active already has its frame matching Film.  Multi-
+	// camera scenes that authored different per-camera dims will see
+	// every camera resync to the most-recent Film; per-camera dims
+	// are not preserved across SetFilm.  See Scene::SetFilm.
 	if( !pCameraManager || !szName || !*szName ) {
 		return false;
 	}

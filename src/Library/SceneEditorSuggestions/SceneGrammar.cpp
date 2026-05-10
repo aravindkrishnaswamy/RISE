@@ -71,6 +71,7 @@ namespace RISE
 			case ChunkCategory::Function:         return "Functions";
 			case ChunkCategory::Material:         return "Materials";
 			case ChunkCategory::Camera:           return "Cameras";
+			case ChunkCategory::Film:             return "Film";
 			case ChunkCategory::Geometry:         return "Geometry";
 			case ChunkCategory::Modifier:         return "Modifiers";
 			case ChunkCategory::Medium:           return "Media";

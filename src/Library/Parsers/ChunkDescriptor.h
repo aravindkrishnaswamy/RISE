@@ -127,6 +127,7 @@ namespace RISE
 		Function,
 		Material,
 		Camera,
+		Film,
 		Geometry,
 		Modifier,
 		Medium,

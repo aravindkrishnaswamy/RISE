@@ -276,6 +276,13 @@ namespace RISE
 			const double threshold									///< [in] RR threshold (0=disabled)
 			);
 
+		//! Replaces the active Film.  See IJob.h for semantics.
+		bool SetFilm(
+			const unsigned int width,
+			const unsigned int height,
+			const double pixelAR
+			);
+
 		//
 		// Cameras — see IJob.h for the multi-camera contract.  Each
 		// AddXxxCamera registers the camera under `name` in the

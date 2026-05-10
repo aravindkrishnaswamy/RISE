@@ -197,6 +197,52 @@ namespace RISE
 		//! (returns true, no-op).  Single-threaded; called once per RasterizeScene.
 		virtual bool BuildPendingPhotonMaps( IProgressCallback* pProgress ) = 0;
 
+		// ----- Methods appended below this line (vtable-stable) -----
+		// New methods MUST be appended here so that any in-tree
+		// consumer compiled against an older version of this header
+		// keeps the same vtable slot indices for the methods it
+		// knows about.  Mid-insertion shifts every subsequent slot
+		// and miscompiles stale .obj files.
+
+		//! Replaces the active Film with the supplied one.  The Job
+		//! installs a default qHD film during InitializeContainers; a
+		//! `film` chunk in the scene file or a CLI override calls
+		//! SetFilm to swap it.  Passing null is a no-op (active film
+		//! is preserved); a scene without a film cannot render, so
+		//! there is no "clear the film" path.  Same concurrency
+		//! contract as the camera mutators above — must not run
+		//! concurrently with rendering.
+		virtual void SetFilm(
+			IFilm* pFilm_										///< [in] Film to install (replaces any prior film); null is a no-op
+			) = 0;
+
+		//! Mutate the existing active Film's dims in place (no
+		//! allocation) and re-sync every camera's Frame to match.
+		//! Hot-path alternative to SetFilm for the SceneEditController
+		//! preview-scale pump — avoids the per-frame IFilm allocation
+		//! that SetFilm would otherwise incur when toggling between
+		//! rest and scaled dims at every interactive frame.  Active
+		//! Film must already exist (the qHD default installed by
+		//! Job::InitializeContainers ensures it).
+		//!
+		//! **Concurrency contract.**  Same as SetFilm and the camera
+		//! mutators above — must NOT run concurrently with rendering.
+		//! `Implementation::Film::Resize` writes width / height /
+		//! pixelAR as plain non-atomic stores, so a concurrent reader
+		//! on another thread would see a torn (width-new, height-old)
+		//! triple.  Callers serialize externally: the editor's render
+		//! thread is the sole driver of preview-scale Resize calls,
+		//! and `MainWindow::onRender()` plus
+		//! `SceneEditController::RequestProductionRender` both Stop()
+		//! the editor before triggering a production render so the
+		//! editor's render thread is joined before the production
+		//! rasterizer reads Film.
+		virtual void ResizeFilm(
+			unsigned int width,									///< [in] New width in pixels
+			unsigned int height,								///< [in] New height in pixels
+			Scalar       pixelAR								///< [in] New pixel aspect ratio
+			) = 0;
+
 		//! Shutsdown the scene, forces the deletion and clearing of everything
 		virtual void Shutdown() = 0;
 	};

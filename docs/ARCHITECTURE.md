@@ -89,6 +89,104 @@ The top-level BVH / octree in `ObjectManager` is built from world-space bounding
 
 `ObjectManager::RayElementIntersection` requires native closest-hit semantics (only commit when the new hit is strictly closer than `ri.range`) because the BVH<> contract calls leaf processors with a shared `ri` and expects each call to be defensive about overwriting it. `BSPTreeSAHNode` had this guard externally (per-element local `myRI` + compare), so the per-prim `RayElementIntersection` could be sloppy; the BVH's per-node SoA SIMD design relies on the processor itself doing the closest-hit check inline. This is the same fix pattern as Tier-A cleanup §2 in the BVH retrospective for `TriangleMeshGeometryIndexed::RayElementIntersection`.
 
+## Camera / Film / Output Separation
+
+Output settings (image width, height, pixel aspect ratio, tone-map, file
+format) are conceptually *not* a property of the camera — the same camera
+should be renderable at multiple resolutions, exposure curves, and file
+formats. Pre-2026-05 RISE bundled all of them onto `ICamera`; the refactor
+splits them into three layers, matching the Blender / PBRT / Mitsuba
+convention:
+
+```
++----------------------------------------+
+|   Output (FileRasterizerOutput)        |   tone-map, color space, file format
++----------------------------------------+
+                ^
+                | rasterized pixels
++----------------------------------------+
+|   Film (IFilm / Implementation::Film)  |   width, height, pixelAR
++----------------------------------------+
+                ^
+                | pixel-grid math, ray-gen
++----------------------------------------+
+|   Camera (ICamera / *Camera)           |   FOV, focal length, aperture,
++----------------------------------------+   exposure (shutter), iso, fstop,
+                                             scanning_rate, pixel_rate
+                                             (sensor read-out — kept on
+                                             camera because rolling-shutter
+                                             timing is a sensor property)
+```
+
+**Single Film per scene.** The Scene owns one active Film; the rasterizer
+queries `pScene->GetFilm()->GetWidth()` etc. for its pixel grid.
+`Job::InitializeContainers` installs a default qHD (960 × 540, square
+pixels) so a scene with no `film` chunk and no explicit `Job::SetFilm`
+still renders at a reasonable test-scene size.
+
+**Three ways to override the default Film:**
+
+1. Author a `film` chunk in the scene file:
+   ```
+   film {
+       width 1920
+       height 1080
+       pixelAR 1.0
+   }
+   ```
+   Place the `film` chunk BEFORE camera chunks if you want the film's
+   value to win — camera chunks with explicit `width`/`height`/`pixelAR`
+   call `Job::SetFilm` themselves (transitional Phase B1 auto-sync) and
+   would otherwise overwrite the film chunk's value.
+
+2. CLI override (`bin/RISE-CLI`):
+   ```
+   RISE-CLI --width 480 --height 270 scene.RISEscene
+   ```
+   Partial overrides (only `--width`) preserve the non-overridden axes.
+   This is how agents render test scenes at low resolution without
+   editing the scene file — see [AGENTS.md](../AGENTS.md) "Render test
+   scenes at lower resolution".
+
+3. Programmatic API: `pJob->SetFilm(width, height, pixelAR)` before
+   `pJob->LoadAsciiScene` (then the file's `film` chunk overrides) or
+   after (then the file's value persists; this is the CLI-override
+   pattern). Both `IJob::SetFilm` and `IScenePriv::SetFilm` exist; the
+   Scene-level setter is private API.
+
+**`Scene::SetFilm` re-syncs every camera.** When `SetFilm` installs a new
+Film, it walks the camera manager and updates every camera's `Frame`
+(width, height) and `pixelAR` to match. This is what makes the CLI
+override (`--width / --height` after `LoadAsciiScene`) and the
+`film`-after-camera scene-authoring flow work correctly: the rasterizer
+reads Film for grid dimensions, the camera projects from its own Frame,
+and they always match because SetFilm enforces the invariant. The
+`SceneEditController` preview-scale path now relies on this too — it
+just calls `SetFilm(scaled)` at the start of a reduced-res pass and
+`SetFilm(rest)` at the end; both transitions resync cameras
+automatically.
+
+**Multi-camera with different per-camera dims is not preserved.** Every
+SetFilm call resyncs every camera. If you author two cameras at
+different resolutions and switch between them with `SetActiveCamera`,
+you'll find both cameras at the latest SetFilm dims, not at their
+authored dims. If you genuinely need multi-resolution per-camera, run
+the renderer twice with different `--width / --height` overrides.
+
+**Internals.** `CameraCommon` keeps non-virtual `GetWidth()` / `GetHeight()` /
+`GetPixelAR()` for the camera-utility helpers (`ImportancePinhole`,
+`ComputePixelAreaAndDistance`, etc.) — but the public `ICamera` contract
+no longer exposes them. External callers (rasterizers, CLI binaries,
+tools) MUST query the Film. `SetDimensionsAndPixelAR(w, h, pAR)` on
+`CameraCommon` is the single mutator `Scene::SetFilm` calls per camera
+to update both Frame and pixelAR atomically and rebuild the projection
+matrix once.
+
+**Regression coverage.** [tests/FilmCameraResyncTest.cpp](../tests/FilmCameraResyncTest.cpp) exercises the
+five paths most likely to drift: post-construction `SetFilm`, multi-
+camera resync, repeated SetFilm tracking the latest dims, SetFilm
+before any camera, and parsing `film` chunks AFTER camera chunks.
+
 ## Filtered Film And OIDN Denoiser Interaction
 
 ### FilteredFilm

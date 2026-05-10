@@ -169,9 +169,10 @@ unsigned int PixelBasedRasterizerHelper::PredictTimeToRasterizeScene( const ISce
 	// Create a runtime context
 	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_IRRADIANCE_CACHE, false );
 
-	// Acquire scene dimensions
-	const unsigned int width = pCam->GetWidth();
-	const unsigned int height = pCam->GetHeight();
+	// Acquire scene dimensions from the active Film.
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
 
 	pCaster->AttachScene( &pScene );
 	pScene.GetObjects()->PrepareForRendering();
@@ -539,9 +540,10 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	BeginRenderTimer();
 #endif
 
-	// Acquire scene dimensions
-	const unsigned int width = pCam->GetWidth();
-	const unsigned int height = pCam->GetHeight();
+	// Acquire scene dimensions from the active Film.
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
 
 	IRasterImage* pImage = AcquireRenderImage( width, height );
 
@@ -1210,9 +1212,10 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		return;
 	}
 
-	// Acquire scene dimensions
-	const unsigned int width = pCam->GetWidth();
-	const unsigned int height = pCam->GetHeight();
+	// Acquire scene dimensions from the active Film.
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
 	const Scalar step_size = num_frames>1?(time_end-time_start)/Scalar(num_frames-1):0;
 
 	// If there is no raster sequence, create a default one

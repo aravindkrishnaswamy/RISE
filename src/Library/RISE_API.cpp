@@ -3589,6 +3589,32 @@ bool RISE_API_CreateIrradianceCache(
 
 
 //////////////////////////////////////////////////////////
+// Film
+//////////////////////////////////////////////////////////
+
+#include "Rendering/Film.h"
+
+namespace RISE
+{
+	bool RISE_API_CreateFilm(
+								IFilm** ppi,
+								const unsigned int width,
+								const unsigned int height,
+								const Scalar pixelAR
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new Implementation::Film( width, height, pixelAR );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "film" );
+		return true;
+	}
+}
+
+
+//////////////////////////////////////////////////////////
 // Rasterizer outputs
 //////////////////////////////////////////////////////////
 

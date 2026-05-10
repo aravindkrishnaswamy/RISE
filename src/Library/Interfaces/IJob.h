@@ -2760,6 +2760,51 @@ namespace RISE
 									const double /*sunIntensityScale*/,
 									const bool   /*createSun*/
 									) { return false; }
+
+		// ----- Methods appended below this line (vtable-stable) -----
+		// New methods MUST be appended here so that any in-tree
+		// consumer compiled against an older version of this header
+		// keeps the same vtable slot indices for the methods it
+		// knows about.  Mid-insertion shifts every subsequent slot
+		// and miscompiles stale .obj files.
+
+		//
+		// Film — pixel-grid descriptor.
+		//
+		// A scene has exactly one active Film.  InitializeContainers
+		// installs a default qHD (960 x 540, square pixels) so a
+		// scene that omits the `film` chunk still renders; SetFilm
+		// replaces it.  CLI flags (--width / --height / --pixel-ar)
+		// will call SetFilm post-parse to override the scene-file
+		// value (intent for Phase D).
+		//
+		// Phase B1 contract: cameras still take xres/yres/pixelAR
+		// through Add*Camera (used for their internal Frame projection
+		// math) but the rasterizer reads its grid dimensions from
+		// Scene::GetFilm().  Scene::SetFilm now re-syncs every
+		// registered camera's Frame + pixelAR to the new Film, so
+		// dims can never silently desync — whether SetFilm is called
+		// by the parser, the glTF/Blender/3DSMax importers, the CLI
+		// override path, or a late `film` chunk after a camera chunk.
+		// SetActiveCamera is also safe: every camera's Frame already
+		// matches Film at switch time.
+		//
+		// Multi-camera scenes: every camera in the manager is
+		// resynced to the latest SetFilm call, so per-camera dims are
+		// not preserved across a SetFilm.  Author one Film per scene
+		// and let all cameras share it.
+		//
+		// Same concurrency contract as the camera mutators above —
+		// must not run concurrently with rendering.
+
+		//! Replaces the active Film with one carrying the supplied
+		//! width / height / pixelAR.  Returns false on zero
+		//! dimensions or non-positive pixelAR.
+		virtual bool SetFilm(
+			const unsigned int width,								///< [in] Image width in pixels
+			const unsigned int height,								///< [in] Image height in pixels
+			const double pixelAR									///< [in] Pixel aspect ratio (1.0 = square pixels)
+			) = 0;
 	};
 
 

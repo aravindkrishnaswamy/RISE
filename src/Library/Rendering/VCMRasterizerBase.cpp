@@ -351,8 +351,9 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* /*pRec
 	if( !pCamera ) {
 		return;
 	}
-	const unsigned int width = pCamera->GetWidth();
-	const unsigned int height = pCamera->GetHeight();
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
 
 	// PreRenderSetup runs ONE light pass to populate the photon
 	// store used by VM merging.  The t=1 splat strategy is handled
@@ -681,8 +682,9 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 	if( !pCamera ) {
 		return;
 	}
-	const unsigned int width = pCamera->GetWidth();
-	const unsigned int height = pCamera->GetHeight();
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
 
 	// ---------------------------------------------------------------
 	// Progressive radius reduction.

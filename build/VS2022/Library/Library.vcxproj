@@ -343,6 +343,7 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizerRGB.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\Film.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\Rasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\RayCaster.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\SplatFilm.cpp" />
@@ -546,6 +547,7 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\IDetectorSphere.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IEmitter.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IEnumCallback.h" />
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IFilm.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IFullInterpolator.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IFunction1D.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IFunction1DManager.h" />
@@ -1040,6 +1042,7 @@
     <ClInclude Include="..\..\..\src\Library\Rendering\PathTracingSpectralRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizerRGB.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\PreviewScheduler.h" />
+    <ClInclude Include="..\..\..\src\Library\Rendering\Film.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\ProgressiveFilm.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\SplatFilm.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\ThreadLocalSplatBuffer.h" />

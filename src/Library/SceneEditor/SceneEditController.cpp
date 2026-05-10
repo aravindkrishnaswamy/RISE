@@ -45,6 +45,8 @@
 #include "../Interfaces/IKeyframable.h"
 #include "../Interfaces/ICamera.h"
 #include "../Interfaces/ICameraManager.h"
+#include "../Interfaces/IFilm.h"
+#include "../RISE_API.h"			// for RISE_API_CreateFilm (preview-scale Film swap)
 #include "../Cameras/CameraCommon.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Interfaces/IObject.h"
@@ -238,9 +240,9 @@ void SceneEditController::Start()
 	// in the preview-scale dims, so a scene reload picks up new dims
 	// on the next render without further bookkeeping.
 	if( const IScene* scene = mJob.GetScene() ) {
-		if( const ICamera* cam = scene->GetCamera() ) {
-			mFullResW.store( cam->GetWidth(),  std::memory_order_release );
-			mFullResH.store( cam->GetHeight(), std::memory_order_release );
+		if( const IFilm* film = scene->GetFilm() ) {
+			mFullResW.store( film->GetWidth(),  std::memory_order_release );
+			mFullResH.store( film->GetHeight(), std::memory_order_release );
 		}
 	}
 
@@ -914,9 +916,9 @@ bool SceneEditController::GetCameraDimensions( unsigned int& w, unsigned int& h 
 		// event entirely.  This path runs only at startup, before
 		// any render pass refreshes the cache.
 		if( const IScene* scene = mJob.GetScene() ) {
-			if( const ICamera* cam = scene->GetCamera() ) {
-				w = cam->GetWidth();
-				h = cam->GetHeight();
+			if( const IFilm* film = scene->GetFilm() ) {
+				w = film->GetWidth();
+				h = film->GetHeight();
 				return w > 0 && h > 0;
 			}
 		}
@@ -1023,7 +1025,7 @@ void SceneEditController::PickAt( const Point2& px )
 	// small-Y — the opposite of the top-left view-coords the bridge
 	// hands us.  Without this flip, clicking visually low picks objects
 	// rendered visually high (camera-projection inversion).
-	const Scalar pickPxY = static_cast<Scalar>( cam->GetHeight() ) - px.y;
+	const Scalar pickPxY = static_cast<Scalar>( scene->GetFilm()->GetHeight() ) - px.y;
 
 	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, /*threaded*/false );
 	Ray r;
@@ -1660,38 +1662,58 @@ void SceneEditController::DoOneRenderPass()
 	// Bridges reading via GetCameraDimensions now see stable dims
 	// independent of the swap window below.
 	if( const IScene* scene = mJob.GetScene() ) {
-		if( const ICamera* refCam = scene->GetCamera() ) {
-			mFullResW.store( refCam->GetWidth(),  std::memory_order_release );
-			mFullResH.store( refCam->GetHeight(), std::memory_order_release );
+		if( const IFilm* refFilm = scene->GetFilm() ) {
+			mFullResW.store( refFilm->GetWidth(),  std::memory_order_release );
+			mFullResH.store( refFilm->GetHeight(), std::memory_order_release );
 		}
 	}
 
-	Implementation::CameraCommon* cam = nullptr;
-	unsigned int origW = 0, origH = 0;
+	// Preview-scale path: mutate the existing Film's dims in place
+	// for the duration of the pass, then mutate them back.  Uses
+	// IScenePriv::ResizeFilm — zero allocation per frame, unlike
+	// SetFilm which would allocate a fresh IFilm at every transition.
+	// Scene::ResizeFilm re-syncs every camera's Frame too, so the
+	// rasterizer's pixel grid and the cameras' projection matrices
+	// stay in lockstep across the swap.
+	//
+	// RAII restore: the rest-dims must be restored even if the
+	// rasterize call returns by an unusual path (currently only
+	// cancellation; future bugs / std::bad_alloc / etc. shouldn't
+	// strand Film at scaled dims forever, which would render the
+	// viewport at low res after a single failed pass).
+	struct FilmDimRestore {
+		IScenePriv*   sp;
+		unsigned int  w, h;
+		Scalar        pAR;
+		bool          armed;
+		~FilmDimRestore() { if( armed && sp ) sp->ResizeFilm( w, h, pAR ); }
+	} restoreGuard{ nullptr, 0, 0, Scalar( 1 ), false };
+
 	if( scale > 1 )
 	{
-		ICamera* baseCam = mJob.GetScene()->GetCameraMutable();
-		cam = dynamic_cast<Implementation::CameraCommon*>( baseCam );
-		if( cam )
+		IScenePriv* sp = mJob.GetScene();
+		if( sp )
 		{
-			origW = cam->GetWidth();
-			origH = cam->GetHeight();
-			const unsigned int sw = origW / scale > 0 ? origW / scale : 1;
-			const unsigned int sh = origH / scale > 0 ? origH / scale : 1;
-			cam->SetDimensions( sw, sh );
+			const IFilm* curFilm = sp->GetFilm();
+			if( curFilm )
+			{
+				const unsigned int restW   = curFilm->GetWidth();
+				const unsigned int restH   = curFilm->GetHeight();
+				const Scalar       restPAR = curFilm->GetPixelAR();
+				const unsigned int sw = restW / scale > 0 ? restW / scale : 1;
+				const unsigned int sh = restH / scale > 0 ? restH / scale : 1;
+				sp->ResizeFilm( sw, sh, restPAR );
+				restoreGuard = { sp, restW, restH, restPAR, true };
+			}
 		}
 	}
 
 	const auto t0 = std::chrono::steady_clock::now();
 	mInteractiveRasterizer->RasterizeScene( *scene, /*pRect*/0, /*seq*/0 );
 	const auto elapsed = std::chrono::steady_clock::now() - t0;
-
-	if( cam )
-	{
-		// Restore original dimensions so the production rasterizer (and
-		// any UI reading width/height) sees the canonical values.
-		cam->SetDimensions( origW, origH );
-	}
+	// restoreGuard's destructor runs at the end of this scope and
+	// restores rest dims whether we exited normally, via cancellation,
+	// or (hypothetically) via a propagated exception.
 
 	// Adapt for the NEXT pass — only while the user is actively
 	// dragging AND this wasn't an idle-refinement pass.  Skipping

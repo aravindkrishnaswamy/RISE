@@ -39,7 +39,7 @@ void TestGrammarCoverage()
 	// caustic Newton-convergence study.  Bump this count when adding
 	// new chunks; the alphabetised registration in CreateAllChunkParsers()
 	// is the source of truth.
-	EXPECT( kws.size() == 139 );
+	EXPECT( kws.size() == 140 );	// 2026-05 Camera/Film/Output split: + `film`
 
 	// Every chunk must have a non-empty descriptor (Phase 1c invariant:
 	// Describe() is pure-virtual, so every registered parser has its own
@@ -161,7 +161,7 @@ void TestSuggestChunkKeywordsAtRoot()
 	SuggestionEngine engine;
 	const std::string buf = "RISE ASCII SCENE 5\n\n";
 	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
-	EXPECT( sugs.size() == 139 );
+	EXPECT( sugs.size() == 140 );	// 2026-05 Camera/Film/Output split: + `film`
 	bool found_ambient = false;
 	for( const Suggestion& s : sugs ) {
 		if( s.insertText == "ambient_light" ) { found_ambient = true; break; }

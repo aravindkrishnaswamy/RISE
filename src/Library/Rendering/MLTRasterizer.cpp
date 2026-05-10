@@ -1210,8 +1210,9 @@ void MLTRasterizer::RasterizeScene(
 	BeginRenderTimer();
 #endif
 
-	const unsigned int width = pCamera->GetWidth();
-	const unsigned int height = pCamera->GetHeight();
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
 
 	// AttachScene creates and Prepare()s the unified LightSampler
 	pCaster->AttachScene( &pScene );
@@ -1307,8 +1308,9 @@ void MLTRasterizer::RasterizeSceneAnimation(
 		return;
 	}
 
-	const unsigned int width = pCamera->GetWidth();
-	const unsigned int height = pCamera->GetHeight();
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
 	const Scalar step_size = num_frames > 1
 		? ( time_end - time_start ) / Scalar( num_frames - 1 )
 		: 0;

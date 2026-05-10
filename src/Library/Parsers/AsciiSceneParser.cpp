@@ -113,6 +113,7 @@
 #include "../Sampling/HaltonPoints.h"
 #include "MathExpressionEvaluator.h"
 #include "../Utilities/RasterizerDefaults.h"
+#include "../Rendering/Film.h"		// kDefaultFilm* constants for `film` chunk
 
 #ifdef WIN32
 #include <malloc.h>
@@ -3495,6 +3496,14 @@ namespace RISE
 						}
 					}
 
+					// Drive scene-level Film from the authored camera dims
+					// — only when the user gave explicit values on the
+					// camera chunk.  Without that gate, a `film` chunk's
+					// value would be silently overwritten by the camera
+					// chunk's descriptor defaults (256x256, 1.0).
+					if( bag.Has( "width" ) || bag.Has( "height" ) || bag.Has( "pixelAR" ) ) {
+						pJob.SetFilm( xres, yres, pixelAR );
+					}
 					return pJob.AddPinholeCamera( name.c_str(), loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, iso, fstop );
 				}
 
@@ -3558,6 +3567,9 @@ namespace RISE
 					double ONB_U[3] = {onb.u().x, onb.u().y, onb.u().z};
 					double ONB_V[3] = {onb.v().x, onb.v().y, onb.v().z};
 					double ONB_W[3] = {onb.w().x, onb.w().y, onb.w().z};
+					if( bag.Has( "width" ) || bag.Has( "height" ) || bag.Has( "pixelAR" ) ) {
+						pJob.SetFilm( xres, yres, pixelAR );
+					}
 					return pJob.AddPinholeCameraONB( name.c_str(), ONB_U, ONB_V, ONB_W, loc, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate );
 				}
 
@@ -3762,6 +3774,9 @@ namespace RISE
 						return false;
 					}
 
+					if( bag.Has( "width" ) || bag.Has( "height" ) || bag.Has( "pixelAR" ) ) {
+						pJob.SetFilm( xres, yres, pixelAR );
+					}
 					return pJob.AddThinlensCamera( name.c_str(), loc, lookat, up, sensor, focal, fstop, focus, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, blades, rotation, squeeze, tilt_x, tilt_y, shift_x, shift_y, iso );
 				}
 
@@ -3866,6 +3881,9 @@ namespace RISE
 					target_orientation[0] *= DEG_TO_RAD;
 					target_orientation[1] *= DEG_TO_RAD;
 
+					if( bag.Has( "width" ) || bag.Has( "height" ) || bag.Has( "pixelAR" ) ) {
+						pJob.SetFilm( xres, yres, pixelAR );
+					}
 					return pJob.AddFisheyeCamera( name.c_str(), loc, lookat, up, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, scale );
 				}
 
@@ -3929,6 +3947,9 @@ namespace RISE
 					target_orientation[0] *= DEG_TO_RAD;
 					target_orientation[1] *= DEG_TO_RAD;
 
+					if( bag.Has( "width" ) || bag.Has( "height" ) || bag.Has( "pixelAR" ) ) {
+						pJob.SetFilm( xres, yres, pixelAR );
+					}
 					return pJob.AddOrthographicCamera( name.c_str(), loc, lookat, up, xres, yres, vpscale, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation );
 				}
 
@@ -3940,6 +3961,52 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "viewport_scale"; p.kind = ValueKind::Double; p.description = "Orthographic viewport scale"; p.defaultValueHint = "1.0"; }
 						AddCameraCommonParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// Film — pixel-grid descriptor
+			//
+			// The `film` chunk authors the scene's output resolution.
+			// Place it BEFORE any camera chunk so the camera parsers'
+			// transitional Film auto-sync (Phase B1, which uses the
+			// camera's authored xres/yres/pixelAR) doesn't override the
+			// film chunk's value.  Camera chunks' width/height/pixelAR
+			// remain accepted in v5 scenes for backward compatibility;
+			// the explicit `film` chunk is what the GUI's Output
+			// Settings panel and the CLI --width / --height flags
+			// drive.
+			//////////////////////////////////////////
+
+			struct FilmAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					// Defaults pulled from Rendering/Film.h so a `film {}`
+					// chunk produces the same Film as omitting the chunk
+					// (Job::InitializeContainers uses the same constants).
+					const unsigned int width   = bag.GetUInt(   "width",   kDefaultFilmWidth );
+					const unsigned int height  = bag.GetUInt(   "height",  kDefaultFilmHeight );
+					const double       pixelAR = bag.GetDouble( "pixelAR", kDefaultFilmPixelAR );
+					return pJob.SetFilm( width, height, pixelAR );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword     = "film";
+						cd.category    = ChunkCategory::Film;
+						cd.description = "Pixel-grid descriptor.  Sets the rendered image's "
+						                 "width, height, and pixel aspect ratio.  Defaults to "
+						                 "qHD (960 x 540) with square pixels if absent.  CLI "
+						                 "flags --width / --height / --pixel-ar override this.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "width";   p.kind = ValueKind::UInt;   p.description = "Image width (pixels)";  p.defaultValueHint = "960"; }
+						{ auto& p = P(); p.name = "height";  p.kind = ValueKind::UInt;   p.description = "Image height (pixels)"; p.defaultValueHint = "540"; }
+						{ auto& p = P(); p.name = "pixelAR"; p.kind = ValueKind::Double; p.description = "Pixel aspect ratio (1.0 = square)"; p.defaultValueHint = "1.0"; }
 						return cd;
 					}();
 					return d;
@@ -8008,6 +8075,11 @@ namespace RISE
 		// Cameras
 		add( "scene_options",                         new SceneOptionsAsciiChunkParser() );
 		add( "camera_defaults",                       new CameraDefaultsAsciiChunkParser() );
+		// Film — pixel-grid descriptor.  See FilmAsciiChunkParser
+		// definition for the contract; the chunk should be authored
+		// BEFORE any camera chunk in the scene file.
+		add( "film",                                  new FilmAsciiChunkParser() );
+
 		add( "pinhole_camera",                        new PinholeCameraAsciiChunkParser() );
 		add( "onb_pinhole_camera",                    new ONBPinholeCameraAsciiChunkParser() );
 		add( "thinlens_camera",                       new ThinlensCameraAsciiChunkParser() );

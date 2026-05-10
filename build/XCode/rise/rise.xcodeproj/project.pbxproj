@@ -196,6 +196,7 @@
 		F24B724F2F52A632008304C4 /* IDetectorSphere.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F085B069C428F0069C9E5 /* IDetectorSphere.h */; };
 		F24B72502F52A632008304C4 /* IEmitter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F085C069C428F0069C9E5 /* IEmitter.h */; };
 		F24B72512F52A632008304C4 /* IEnumCallback.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F085D069C428F0069C9E5 /* IEnumCallback.h */; };
+		FF11FFFF000000000000F1A2 /* IFilm.h in Sources */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A1 /* IFilm.h */; };
 		F24B72522F52A632008304C4 /* IFullInterpolator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F085E069C428F0069C9E5 /* IFullInterpolator.h */; };
 		F24B72532F52A632008304C4 /* IFunction1D.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F085F069C428F0069C9E5 /* IFunction1D.h */; };
 		F24B72542F52A632008304C4 /* IFunction1DManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0860069C428F0069C9E5 /* IFunction1DManager.h */; };
@@ -913,6 +914,7 @@
 		F27F0AC7069C42910069C9E5 /* IDetectorSphere.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F085B069C428F0069C9E5 /* IDetectorSphere.h */; };
 		F27F0AC8069C42910069C9E5 /* IEmitter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F085C069C428F0069C9E5 /* IEmitter.h */; };
 		F27F0AC9069C42910069C9E5 /* IEnumCallback.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F085D069C428F0069C9E5 /* IEnumCallback.h */; };
+		FF11FFFF000000000000F1A3 /* IFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A1 /* IFilm.h */; };
 		F27F0ACA069C42910069C9E5 /* IFullInterpolator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F085E069C428F0069C9E5 /* IFullInterpolator.h */; };
 		F27F0ACB069C42910069C9E5 /* IFunction1D.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F085F069C428F0069C9E5 /* IFunction1D.h */; };
 		F27F0ACC069C42910069C9E5 /* IFunction1DManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0860069C428F0069C9E5 /* IFunction1DManager.h */; };
@@ -1439,6 +1441,9 @@
 		F2C5D5672F6E447400546C97 /* SplatFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5632F6E447400546C97 /* SplatFilm.h */; };
 		F2C5D5692F6E447400546C97 /* RasterizerStateCache.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D5622F6E447400546C97 /* RasterizerStateCache.h */; };
 		F2C5D56A2F6E447400546C97 /* SplatFilm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D5642F6E447400546C97 /* SplatFilm.cpp */; };
+		FF11FFFF000000000000F1A5 /* Film.h in Headers */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A4 /* Film.h */; };
+		FF11FFFF000000000000F1A7 /* Film.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A6 /* Film.cpp */; };
+		FF11FFFF000000000000F1A8 /* Film.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FF11FFFF000000000000F1A6 /* Film.cpp */; };
 		F2C5D56F2F6E44CD00546C97 /* BDPTIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D56D2F6E44CD00546C97 /* BDPTIntegrator.cpp */; };
 		F2C5D5702F6E44CD00546C97 /* BDPTIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5D56D2F6E44CD00546C97 /* BDPTIntegrator.cpp */; };
 		F2C5D5712F6E44CD00546C97 /* BDPTVertex.h in Headers */ = {isa = PBXBuildFile; fileRef = F2C5D56E2F6E44CD00546C97 /* BDPTVertex.h */; };
@@ -1968,6 +1973,7 @@
 		F27F085B069C428F0069C9E5 /* IDetectorSphere.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IDetectorSphere.h; sourceTree = "<group>"; };
 		F27F085C069C428F0069C9E5 /* IEmitter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IEmitter.h; sourceTree = "<group>"; };
 		F27F085D069C428F0069C9E5 /* IEnumCallback.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IEnumCallback.h; sourceTree = "<group>"; };
+		FF11FFFF000000000000F1A1 /* IFilm.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IFilm.h; sourceTree = "<group>"; };
 		F27F085E069C428F0069C9E5 /* IFullInterpolator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IFullInterpolator.h; sourceTree = "<group>"; };
 		F27F085F069C428F0069C9E5 /* IFunction1D.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IFunction1D.h; sourceTree = "<group>"; };
 		F27F0860069C428F0069C9E5 /* IFunction1DManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IFunction1DManager.h; sourceTree = "<group>"; };
@@ -2477,6 +2483,8 @@
 		F2C5D5622F6E447400546C97 /* RasterizerStateCache.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RasterizerStateCache.h; sourceTree = "<group>"; };
 		F2C5D5632F6E447400546C97 /* SplatFilm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SplatFilm.h; sourceTree = "<group>"; };
 		F2C5D5642F6E447400546C97 /* SplatFilm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SplatFilm.cpp; sourceTree = "<group>"; };
+		FF11FFFF000000000000F1A4 /* Film.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Film.h; sourceTree = "<group>"; };
+		FF11FFFF000000000000F1A6 /* Film.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Film.cpp; sourceTree = "<group>"; };
 		F2C5D56C2F6E44CD00546C97 /* BDPTIntegrator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BDPTIntegrator.h; sourceTree = "<group>"; };
 		F2C5D56D2F6E44CD00546C97 /* BDPTIntegrator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = BDPTIntegrator.cpp; sourceTree = "<group>"; };
 		F2C5D56E2F6E44CD00546C97 /* BDPTVertex.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BDPTVertex.h; sourceTree = "<group>"; };
@@ -2960,6 +2968,7 @@
 				F27F085B069C428F0069C9E5 /* IDetectorSphere.h */,
 				F27F085C069C428F0069C9E5 /* IEmitter.h */,
 				F27F085D069C428F0069C9E5 /* IEnumCallback.h */,
+				FF11FFFF000000000000F1A1 /* IFilm.h */,
 				F27F085E069C428F0069C9E5 /* IFullInterpolator.h */,
 				F27F085F069C428F0069C9E5 /* IFunction1D.h */,
 				F27F0860069C428F0069C9E5 /* IFunction1DManager.h */,
@@ -3498,6 +3507,8 @@
 				F2C5D5622F6E447400546C97 /* RasterizerStateCache.h */,
 				F2C5D5632F6E447400546C97 /* SplatFilm.h */,
 				F2C5D5642F6E447400546C97 /* SplatFilm.cpp */,
+				FF11FFFF000000000000F1A4 /* Film.h */,
+				FF11FFFF000000000000F1A6 /* Film.cpp */,
 				F27F0998069C42900069C9E5 /* BlockRasterizeSequence.h */,
 				F2EE003000000000000000A1 /* DisplayTransform.h */,
 				F2EE003100000000000000A1 /* DisplayTransformWriter.h */,
@@ -4037,6 +4048,7 @@
 				F27F0AC7069C42910069C9E5 /* IDetectorSphere.h in Headers */,
 				F27F0AC8069C42910069C9E5 /* IEmitter.h in Headers */,
 				F27F0AC9069C42910069C9E5 /* IEnumCallback.h in Headers */,
+				FF11FFFF000000000000F1A3 /* IFilm.h in Headers */,
 				F24C548D2F87D990009AF16D /* MajorantGrid.h in Headers */,
 				F27F0ACA069C42910069C9E5 /* IFullInterpolator.h in Headers */,
 				F27F0ACB069C42910069C9E5 /* IFunction1D.h in Headers */,
@@ -4146,6 +4158,7 @@
 				F27F0B2B069C42910069C9E5 /* Function1DManager.h in Headers */,
 				F27F0B2C069C42910069C9E5 /* Function2DManager.h in Headers */,
 				F2C5D5672F6E447400546C97 /* SplatFilm.h in Headers */,
+				FF11FFFF000000000000F1A5 /* Film.h in Headers */,
 				F24C54972F88556A009AF16D /* OptimalMISAccumulator.h in Headers */,
 				F2C5D5692F6E447400546C97 /* RasterizerStateCache.h in Headers */,
 				F27F0B2D069C42910069C9E5 /* GenericManager.h in Headers */,
@@ -4737,6 +4750,7 @@
 				F27F0B79069C42910069C9E5 /* TranslucentSPF.cpp in Sources */,
 				F27F0B7B069C42910069C9E5 /* WardAnisotropicEllipticalGaussianBRDF.cpp in Sources */,
 				F2C5D56A2F6E447400546C97 /* SplatFilm.cpp in Sources */,
+				FF11FFFF000000000000F1A8 /* Film.cpp in Sources */,
 				F27F0B7E069C42910069C9E5 /* WardAnisotropicEllipticalGaussianSPF.cpp in Sources */,
 				F28639562F9244920009D9AE /* ThreadPool.cpp in Sources */,
 				F2863A042F9244920009D9AE /* CPUTopology.cpp in Sources */,
@@ -5081,6 +5095,7 @@
 				F24B724F2F52A632008304C4 /* IDetectorSphere.h in Sources */,
 				F24B72502F52A632008304C4 /* IEmitter.h in Sources */,
 				F24B72512F52A632008304C4 /* IEnumCallback.h in Sources */,
+				FF11FFFF000000000000F1A2 /* IFilm.h in Sources */,
 				F24B72522F52A632008304C4 /* IFullInterpolator.h in Sources */,
 				F24B72532F52A632008304C4 /* IFunction1D.h in Sources */,
 				F24B72542F52A632008304C4 /* IFunction1DManager.h in Sources */,
@@ -5416,6 +5431,7 @@
 				F24B73512F52A632008304C4 /* GlobalPelPhotonTracer.cpp in Sources */,
 				F24B73522F52A632008304C4 /* GlobalPelPhotonTracer.h in Sources */,
 				F2C5D5652F6E447400546C97 /* SplatFilm.cpp in Sources */,
+				FF11FFFF000000000000F1A7 /* Film.cpp in Sources */,
 				F24B73532F52A632008304C4 /* GlobalSpectralPhotonMap.cpp in Sources */,
 				F24B73542F52A632008304C4 /* GlobalSpectralPhotonMap.h in Sources */,
 				F24B73552F52A632008304C4 /* GlobalSpectralPhotonTracer.cpp in Sources */,

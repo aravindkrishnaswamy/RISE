@@ -1,0 +1,117 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+# film_chunk — exercises the `film` chunk added in 2026-05.
+#
+# The pinhole_camera below has NO width/height/pixelAR — it relies
+# entirely on the `film` chunk for the pixel grid.  Renders at
+# 320x180 (16:9) to confirm the parser wires `film` → Scene's active
+# Film correctly, and the rasterizer reads from there.
+#
+# Verification: a clean render produces a 320x180 PNG.  CLI overrides
+# (RISE-CLI --width 100 --height 80 ...) further override this.
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Output settings (Camera/Film/Output split)
+##################################################
+
+film
+{
+	width   320
+	height  180
+	pixelAR 1.0
+}
+
+##################################################
+# Renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion	5
+	samples			4
+	lum_samples		1
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/film_chunk
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Camera (NO width/height — uses Film's values)
+##################################################
+
+pinhole_camera
+{
+	location		0 0 10
+	lookat			0 0 0
+	up				0 1 0
+	fov				30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name		grey
+	color		0.5 0.5 0.5
+}
+
+uniformcolor_painter
+{
+	name		white
+	color		1 1 1
+}
+
+##################################################
+# Material
+##################################################
+
+lambertian_material
+{
+	name		matte
+	reflectance	grey
+}
+
+##################################################
+# Object
+##################################################
+
+standard_object
+{
+	name			sphere
+	geometry		sphere
+	material		matte
+}
+
+sphere_geometry
+{
+	name	sphere
+	radius	1.5
+}
+
+##################################################
+# Light
+##################################################
+
+omni_light
+{
+	name		key
+	power		800
+	color		white
+	position	5 5 5
+}

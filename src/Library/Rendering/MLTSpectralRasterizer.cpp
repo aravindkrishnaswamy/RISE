@@ -994,8 +994,9 @@ void MLTSpectralRasterizer::RasterizeScene(
 	BeginRenderTimer();
 #endif
 
-	const unsigned int width = pCamera->GetWidth();
-	const unsigned int height = pCamera->GetHeight();
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
 
 	pCaster->AttachScene( &pScene );
 	pScene.GetObjects()->PrepareForRendering();
@@ -1057,8 +1058,9 @@ void MLTSpectralRasterizer::RasterizeSceneAnimation(
 		return;
 	}
 
-	const unsigned int width = pCamera->GetWidth();
-	const unsigned int height = pCamera->GetHeight();
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int width = pFilm->GetWidth();
+	const unsigned int height = pFilm->GetHeight();
 	const Scalar step_size = num_frames > 1
 		? ( time_end - time_start ) / Scalar( num_frames - 1 )
 		: 0;

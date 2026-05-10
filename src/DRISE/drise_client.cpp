@@ -185,8 +185,8 @@ bool DoWorkerJob_Image( IMemoryBuffer* pBuffer, IMemoryBuffer*& pCompletedTaskBu
 	pCompletedTaskBuffer->setUInt( nScanlineStart );
 	pCompletedTaskBuffer->setUInt( nScanlineEnd );
 
-	unsigned int rend_width = pJob->GetScene()->GetCamera()->GetWidth();
-//	unsigned int rend_height = pJob->GetScene()->GetCamera()->GetHeight();
+	unsigned int rend_width = pJob->GetScene()->GetFilm()->GetWidth();
+//	unsigned int rend_height = pJob->GetScene()->GetFilm()->GetHeight();
 
 	for( unsigned int y=nScanlineStart; y<=nScanlineEnd; y++ ) {
 		pCompletedTaskBuffer->setBytes( &sro->pStoredOutput[y*rend_width+xstart], sizeof( RISEColor ) * total_width );
@@ -261,8 +261,8 @@ bool DoWorkerJob_Animation( IMemoryBuffer* pBuffer, IMemoryBuffer*& pCompletedTa
 	//
 	// Copy the output to the completed task buffer
 	//
-	const unsigned int total_width = pJob->GetScene()->GetCamera()->GetWidth();
-	const unsigned int total_height = pJob->GetScene()->GetCamera()->GetHeight();
+	const unsigned int total_width = pJob->GetScene()->GetFilm()->GetWidth();
+	const unsigned int total_height = pJob->GetScene()->GetFilm()->GetHeight();
 	pCompletedTaskBuffer = new Implementation::MemoryBuffer( sizeof( RISEColor ) * total_width * total_height + sizeof( unsigned int ) * 4 );
 	
 	pCompletedTaskBuffer->setBytes( &sro->pStoredOutput[0], sizeof( RISEColor ) * total_width * total_height );

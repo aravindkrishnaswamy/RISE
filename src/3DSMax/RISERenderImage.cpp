@@ -121,6 +121,11 @@ bool SetupCamera( RISE::IJobPriv& job, const ViewParams& view, const int width, 
 	// See if there is a camera already set
 	RISE::ICamera* pCamera = job.GetScene()->GetCamera();
 	if( !pCamera ) {
+		// Drive Scene's active Film from the 3DSMax render dims BEFORE
+		// adding the camera.  SetFilm resyncs all cameras to these
+		// dims so the rasterizer (which reads Film) and the camera's
+		// projection matrix match.
+		job.SetFilm( width, height, 1.0 );
 		job.AddPinholeCamera( "default", loc, lookat, up, fov, width, height, 1.0, 0, 0, 0, o, to );
 	} else {
 		// Otherwise, modify the existing camera with the MAX camera settings

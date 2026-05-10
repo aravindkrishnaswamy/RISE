@@ -239,6 +239,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Rendering/Rasterizer.cpp"
     "${RISE_LIB}/Rendering/RayCaster.cpp"
     "${RISE_LIB}/Rendering/EnvironmentSampler.cpp"
+    "${RISE_LIB}/Rendering/Film.cpp"
     "${RISE_LIB}/Rendering/SplatFilm.cpp"
     "${RISE_LIB}/Rendering/ThreadLocalSplatBuffer.cpp"
     "${RISE_LIB}/Rendering/FilteredFilm.cpp"

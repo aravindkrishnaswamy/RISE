@@ -2187,6 +2187,12 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 					// internals; pick benign defaults.  Users override via
 					// a pinhole_camera chunk after the import or by
 					// tweaking the active camera at runtime.
+					// Drive Scene's active Film from the import-default
+					// camera dims (Phase B1).  glTF doesn't carry an
+					// authored render resolution; the 800x600 is RISE's
+					// import-time fallback.  Phase B2 / Phase D CLI
+					// override / GUI panel can replace the Film later.
+					job.SetFilm( 800, 600, 1.0 );
 					added = job.AddPinholeCamera(
 						camName.c_str(),
 						location, lookat, up,
@@ -2250,6 +2256,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 							(unsigned)nodeIdx,
 							(double)cam->data.orthographic.zfar );
 					}
+					job.SetFilm( 800, 600, 1.0 );	// Phase B1 — see Pinhole branch above.
 					added = job.AddOrthographicCamera(
 						camName.c_str(),
 						location, lookat, up,

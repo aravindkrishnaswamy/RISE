@@ -100,6 +100,18 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 		return 0;
 	}
 
+	// Hot-path Film cache.  IntegratePixelNM contains three per-splat
+	// branches (s>=1 strategies, hero + companion wavelengths, t==1
+	// connection) each of which used to call pScene.GetFilm() THREE
+	// times (twice for ->GetWidth() and ->GetHeight() on the splat
+	// site, plus the rasterPos→film flip).  Hoisting to function entry
+	// turns those into plain unsigned-int reads.  Film never changes
+	// mid-render so the cache is always valid for the lifetime of the
+	// call.
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int filmW = pFilm->GetWidth();
+	const unsigned int filmH = pFilm->GetHeight();
+
 	SobolSampler sampler( sampleIndex, pixelSeed );
 
 	// Thread-local scratch — persist allocations across pixel samples,
@@ -181,7 +193,7 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 				if( weighted > 0 && ColorUtils::XYZFromNM( thisXYZ, nm ) ) {
 					thisXYZ = thisXYZ * weighted;
 					const Scalar fx = cr.rasterPos.x;
-					const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+					const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
 					// Proper XYZ -> ROMM RGB via implicit RISEPel(XYZPel).
 					// Replaces the channel-relabel "RISEPel(X, Y, Z)" hack
 					// which bypassed ColorUtils::XYZtoROMMRGB entirely.
@@ -191,7 +203,7 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 					// already encodes the spectral radiance estimate.
 					SplatContributionToFilm( fx, fy,
 						RISEPel( thisXYZ ),
-						camera.GetWidth(), camera.GetHeight() );
+						filmW, filmH );
 				}
 			}
 			else
@@ -222,6 +234,15 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 	PixelAOV* pAOV
 	) const
 {
+	// Hot-path Film cache — see IntegratePixelNM above for the
+	// rationale.  Spectral path additionally has a hero/companion
+	// inner loop and an HWSS path that hits the same splat sites,
+	// each per-wavelength.  Caching at function entry collapses 4-6
+	// virtual calls per splat site into local int reads.
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int filmW = pFilm->GetWidth();
+	const unsigned int filmH = pFilm->GetHeight();
+
 	XYZPel spectralSum( 0, 0, 0 );
 
 	if( bUseHWSS )
@@ -328,11 +349,11 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 							if( weighted > 0 && ColorUtils::XYZFromNM( splatXYZ, heroNM ) ) {
 								splatXYZ = splatXYZ * weighted;
 								const Scalar fx = cr.rasterPos.x;
-								const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+								const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
 								// Proper XYZ -> ROMM RGB conversion (hero).
 								SplatContributionToFilm( fx, fy,
 									RISEPel( splatXYZ ),
-									camera.GetWidth(), camera.GetHeight() );
+									filmW, filmH );
 							}
 						} else {
 							heroValue += weighted;
@@ -410,11 +431,11 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 							if( weighted > 0 && ColorUtils::XYZFromNM( splatXYZ, companionNM ) ) {
 								splatXYZ = splatXYZ * weighted;
 								const Scalar fx = cr.rasterPos.x;
-								const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
+								const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
 								// Proper XYZ -> ROMM RGB conversion (companion).
 								SplatContributionToFilm( fx, fy,
 									RISEPel( splatXYZ ),
-									camera.GetWidth(), camera.GetHeight() );
+									filmW, filmH );
 							}
 						} else {
 							compValue += weighted;

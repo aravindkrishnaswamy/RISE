@@ -230,6 +230,57 @@ shader-op-driven effect, render with PT.
 
 ---
 
+## 8.5. The `film` chunk — pixel-grid output settings
+
+Output settings (image width, height, pixel aspect ratio) live on a
+scene-level `film` chunk, not on the camera.  The camera handles
+imaging optics (FOV, aperture, focal length); the `film` describes
+the discretization of the continuous image to pixels.  Background:
+[docs/ARCHITECTURE.md](ARCHITECTURE.md) "Camera / Film / Output
+Separation".
+
+```
+film {
+    width 1920
+    height 1080
+    pixelAR 1.0
+}
+```
+
+- `width` (UInt, default 960) — image width in pixels.
+- `height` (UInt, default 540) — image height in pixels.
+- `pixelAR` (Double, default 1.0) — pixel aspect ratio. 1.0 = square
+  pixels (the common case). Use ≠ 1.0 for anamorphic / NTSC-style
+  non-square pixel grids.
+
+If no `film` chunk is present, the default is **qHD = 960 × 540 with
+square pixels** — sized for fast iteration on test scenes. Override
+at the command line with `RISE-CLI --width N --height N --pixel-ar X`.
+
+**Authoring order: last `SetFilm` wins.** Camera chunks (pinhole_camera,
+thinlens_camera, etc.) accept legacy `width`/`height`/`pixelAR`
+parameters; writing those triggers an internal `Job::SetFilm` call
+that re-syncs every camera's Frame to the new dims. The `film` chunk
+does the same. Whichever chunk runs LAST in the scene file wins —
+both Film and every camera's Frame end up matching.
+
+The order-independence comes from `Scene::SetFilm`: each call
+re-syncs every camera in the manager. So you can author the `film`
+chunk before or after the camera chunks, or have multiple camera
+chunks at different per-camera resolutions, and the final state is
+always: Film = the most recent SetFilm call, every camera's
+projection matches Film.
+
+**Multi-camera with different per-camera dims is not preserved.**
+Authoring two cameras at different resolutions and switching between
+them with `SetActiveCamera` won't restore the per-camera dims —
+every camera resyncs to whatever Film is. If you genuinely want
+multiple cameras at different resolutions, you need separate render
+invocations (e.g., `RISE-CLI --width A scene.RISEscene` then
+`RISE-CLI --width B scene.RISEscene`).
+
+---
+
 ## 9. Sanity-check workflow
 
 When a new scene renders unexpectedly:

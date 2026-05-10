@@ -88,6 +88,41 @@ export RISE_MEDIA_PATH="$(pwd)/"
 printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 ```
 
+### Render test scenes at lower resolution (CLI override)
+
+Production scenes often author 1920×1080 (or higher) in their `film`
+chunk or camera-chunk dims; rendering at full res for an iteration cycle
+is slow.  Override the resolution at the command line — no scene-file
+edit required:
+
+```sh
+# Linux/macOS
+./bin/rise --width 480 --height 270 scenes/Tests/Geometry/shapes.RISEscene
+```
+
+```powershell
+# Windows
+.\bin\RISE-CLI.exe --width 480 --height 270 scenes\Tests\Geometry\shapes.RISEscene
+```
+
+Flags:
+
+- `--width N` — image width in pixels (positive integer)
+- `--height N` — image height in pixels (positive integer)
+- `--pixel-ar X` — pixel aspect ratio (positive float; 1.0 = square)
+
+Partial overrides preserve the non-overridden axes from whatever the
+scene file installed.  Order does not matter — the flag scanner accepts
+`RISE-CLI scene.RISEscene --width 480 --height 270` and
+`RISE-CLI --width 480 --height 270 scene.RISEscene` identically.
+
+If the scene file omits a `film` chunk and the camera chunk has no
+explicit `width`/`height`, the default qHD (960 × 540, square pixels)
+applies — the agent doesn't have to author anything for a fast preview.
+Background and full design are in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Camera / Film / Output
+Separation".
+
 > **Render renders sequentially, never in parallel.** A single `./bin/rise`
 > render is already an embarrassingly-parallel job that takes every CPU core
 > (>700 % CPU on a typical workstation). Stacking two renders concurrently

@@ -46,11 +46,16 @@ namespace RISE
 		/// \return Transformation matrix
 		virtual Matrix4 GetMatrix( ) const = 0;
 
-		/// \return The width of the frame of the camera
-		virtual unsigned int GetWidth( ) const = 0;
-
-		/// \return The height of the frame of the camera
-		virtual unsigned int GetHeight( ) const = 0;
+		// Note: GetWidth() / GetHeight() were removed from ICamera in
+		// the 2026-05 Camera/Film/Output refactor.  Resolution is now
+		// a property of IFilm (the scene-level pixel-grid descriptor),
+		// not of the camera.  External callers must query the scene's
+		// active film: `pScene->GetFilm()->GetWidth()`.  Internal
+		// camera math still caches the dimensions in CameraCommon's
+		// `frame` member (populated at construction time from the
+		// active film); CameraCommon retains non-virtual GetWidth() /
+		// GetHeight() member functions for use by the camera-utility
+		// helpers, but they are NOT part of the ICamera contract.
 
 		/// \return The exposure time of the camera in some units (normalized unit time).  This is the same primary unit of animations
 		virtual Scalar GetExposureTime( ) const = 0;

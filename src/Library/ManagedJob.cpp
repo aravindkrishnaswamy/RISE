@@ -313,8 +313,8 @@ namespace RISE
 			const char* sztitle = (const char*)(intptr).ToPointer();
 
 			IRasterizerOutput* pWinRO = new Implementation::Win32WindowRasterizerOutput(
-						pBackObj->GetScene()->GetCamera()->GetWidth(),
-						pBackObj->GetScene()->GetCamera()->GetHeight(),
+						pBackObj->GetScene()->GetFilm()->GetWidth(),
+						pBackObj->GetScene()->GetFilm()->GetHeight(),
 						xpos, ypos, sztitle );
 
 			pBackObj->GetRasterizer()->AddRasterizerOutput( pWinRO );

@@ -96,6 +96,16 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 		return RISEPel( 0, 0, 0 );
 	}
 
+	// Hot-path Film cache.  Hoisted out of the per-splat loop so the
+	// rasterPos→film flip and the SplatContributionToFilm call below
+	// see plain unsigned ints instead of paying 3 virtual calls
+	// (GetFilm + GetWidth + GetHeight) per splat.  IntegratePixelRGB
+	// runs per pixel; the film never changes mid-render so caching at
+	// function entry is safe.
+	const IFilm* pFilm = pScene.GetFilm();
+	const unsigned int filmW = pFilm->GetWidth();
+	const unsigned int filmH = pFilm->GetHeight();
+
 	SobolSampler sampler( sampleIndex, pixelSeed );
 
 	// Per-thread scratch — eliminates per-sample allocator traffic
@@ -205,9 +215,8 @@ RISEPel BDPTPelRasterizer::IntegratePixelRGB(
 			if( cr.needsSplat && pSplatFilm )
 			{
 				const Scalar fx = cr.rasterPos.x;
-				const Scalar fy = static_cast<Scalar>( camera.GetHeight() ) - cr.rasterPos.y;
-				SplatContributionToFilm( fx, fy, weighted,
-					camera.GetWidth(), camera.GetHeight() );
+				const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
+				SplatContributionToFilm( fx, fy, weighted, filmW, filmH );
 			}
 			else
 			{

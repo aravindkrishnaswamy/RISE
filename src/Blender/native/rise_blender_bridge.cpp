@@ -572,6 +572,15 @@ namespace
 		double orientation[3] = { 0.0, 0.0, 0.0 };
 		double target_orientation[2] = { 0.0, 0.0 };
 
+		// Drive Scene's active Film from the Blender render-settings
+		// dims BEFORE adding the camera.  SetFilm re-syncs all
+		// cameras to these dims; AddXxxCamera below registers the new
+		// camera with matching Frame.  Without this, the rasterizer
+		// would query Film (still at the InitializeContainers default
+		// qHD) and project through the camera's authored dims —
+		// re-FRAMED instead of re-RESOLVED.
+		job.SetFilm( camera.width, camera.height, camera.pixel_aspect );
+
 		if( camera.projection_type == RISE_BLENDER_CAMERA_ORTHOGRAPHIC ) {
 			const double square_dimension = std::max<unsigned int>( camera.width, camera.height );
 			const double vp_scale[2] = {
