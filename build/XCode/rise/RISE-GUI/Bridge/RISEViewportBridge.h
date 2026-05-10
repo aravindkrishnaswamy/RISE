@@ -164,6 +164,7 @@ typedef NS_ENUM(NSInteger, RISEViewportPanelMode) {
     RISEViewportPanelModeRasterizer = 2,
     RISEViewportPanelModeObject     = 3,
     RISEViewportPanelModeLight      = 4,
+    RISEViewportPanelModeFilm       = 5,  ///< Output Settings (single Film per scene)
 };
 
 /// Mirrors RISE::SceneEditController::Category — drives the
@@ -174,6 +175,7 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
     RISEViewportCategoryRasterizer = 2,
     RISEViewportCategoryObject     = 3,
     RISEViewportCategoryLight      = 4,
+    RISEViewportCategoryFilm       = 5,   ///< Output Settings (single Film per scene)
 };
 
 /// Current panel mode — lets the SwiftUI parent decide whether to
@@ -204,7 +206,8 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 
 /// Scene-level active entity name for `category`, independent of
 /// the UI selection.  Camera → active camera; Rasterizer → active
-/// rasterizer chunk name; Object/Light/None → empty.  Used to
+/// rasterizer chunk name; Film → "default" (a scene has exactly one
+/// Film by construction); Object/Light/None → empty.  Used to
 /// populate the dropdown on first scene load with the scene's
 /// current active entity rather than "(pick one)".
 - (NSString *)activeNameForCategory:(RISEViewportCategory)category

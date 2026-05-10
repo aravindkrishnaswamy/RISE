@@ -1,9 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  ViewportProperties.cpp - Right-side accordion implementation.
-//    Four sections, single selection, descriptor-driven property
-//    rows under the expanded section.  See header for layout and
-//    macOS / Android counterparts.
+//    Five sections (Cameras / Rasterizer / Objects / Lights / Output
+//    Settings), single selection, descriptor-driven property rows
+//    under the expanded section.  See header for layout and macOS /
+//    Android counterparts.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -176,12 +177,15 @@ struct AccordionSectionDef {
 };
 
 // Top-down order: Cameras first (most-used), Rasterizer second
-// (scene-global), Objects third (long lists), Lights last.
+// (scene-global), Objects third (long lists), Lights, then Output
+// Settings (Film — last because it's a one-row global config the
+// user typically touches once at the start of a session).
 static const AccordionSectionDef kSectionDefs[] = {
-    { ViewportBridge::Category::Camera,     "Cameras"    },
-    { ViewportBridge::Category::Rasterizer, "Rasterizer" },
-    { ViewportBridge::Category::Object,     "Objects"    },
-    { ViewportBridge::Category::Light,      "Lights"     },
+    { ViewportBridge::Category::Camera,     "Cameras"         },
+    { ViewportBridge::Category::Rasterizer, "Rasterizer"      },
+    { ViewportBridge::Category::Object,     "Objects"         },
+    { ViewportBridge::Category::Light,      "Lights"          },
+    { ViewportBridge::Category::Film,       "Output Settings" },
 };
 
 }  // namespace
@@ -409,6 +413,7 @@ void ViewportProperties::rebuildPropertyRows()
         case ViewportBridge::PanelMode::Rasterizer: propsCat = Category::Rasterizer; break;
         case ViewportBridge::PanelMode::Object:     propsCat = Category::Object;     break;
         case ViewportBridge::PanelMode::Light:      propsCat = Category::Light;      break;
+        case ViewportBridge::PanelMode::Film:       propsCat = Category::Film;       break;
         default: return;
     }
     auto sectionIt = m_sections.find(static_cast<int>(propsCat));

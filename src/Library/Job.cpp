@@ -321,15 +321,14 @@ bool Job::SetFilm(
 	const double pixelAR
 	)
 {
-	// Reject zero dims and non-positive pixelAR (the existing minimal
-	// guard) AND values above the sanity bounds in Rendering/Film.h.
-	// The upper bound catches both typos (e.g. `width 19200`) and
-	// signed-to-unsigned wrap (`width -100` → ~4294967196 in unsigned)
-	// that would otherwise quietly try to allocate gigabytes of
-	// frame buffer.
-	if( width == 0 || height == 0 || pixelAR <= 0.0 ) {
+	// Reject zero dims and non-finite / non-positive pixelAR.  `NaN <=
+	// 0.0` is false (NaN comparisons always return false), so the plain
+	// `pixelAR <= 0.0` check used to let NaN through and poison every
+	// camera's projection matrix on the resync.  std::isfinite catches
+	// NaN AND ±inf in one predicate.
+	if( width == 0 || height == 0 || !std::isfinite(pixelAR) || pixelAR <= 0.0 ) {
 		GlobalLog()->PrintEx( eLog_Error,
-			"Job::SetFilm: zero/negative dims rejected (width=%u, height=%u, pixelAR=%g).  "
+			"Job::SetFilm: zero / non-finite / negative dims rejected (width=%u, height=%u, pixelAR=%g).  "
 			"Active Film unchanged.", width, height, pixelAR );
 		return false;
 	}
@@ -341,12 +340,40 @@ bool Job::SetFilm(
 		return false;
 	}
 
+	// Same-dim short-circuit: a panel edit that types the current value
+	// back (or the parser declaring the same Film via the chunk default)
+	// would otherwise allocate a fresh IFilm, swap-release the previous
+	// one, and call SetDimensionsAndPixelAR on every camera — wasted
+	// work plus a render-thread cancel-and-park that flickers the
+	// preview for no reason.  Bail when nothing actually changed.
+	if( pScene ) {
+		const IFilm* pCurFilm = pScene->GetFilm();
+		if( pCurFilm
+			&& pCurFilm->GetWidth()   == width
+			&& pCurFilm->GetHeight()  == height
+			&& pCurFilm->GetPixelAR() == pixelAR )
+		{
+			return true;
+		}
+	}
+
 	IFilm* pNewFilm = 0;
 	if( !RISE_API_CreateFilm( &pNewFilm, width, height, pixelAR ) ) {
 		return false;
 	}
 	pScene->SetFilm( pNewFilm );
 	safe_release( pNewFilm );
+
+	// L6b — Film dims drive the canonical FrameStore.  Without this
+	// push, every rasterizer in the registry keeps its old FrameStore
+	// at the previous dims, and any consumer reading `Job::GetFrameStore`
+	// after SetFilm sees a stale store sized for the previous Film.
+	// `PushJobFrameStoreToRasterizers` internally calls
+	// `ResolveJobFrameStoreForActiveCamera` → `EnsureJobFrameStore_locked`
+	// which reallocates the FrameStore if dims changed and addref-
+	// swap-releases each rasterizer's reference in lockstep.  Same
+	// pattern `SetActiveCamera` uses for the same reason.
+	PushJobFrameStoreToRasterizers();
 	return true;
 }
 

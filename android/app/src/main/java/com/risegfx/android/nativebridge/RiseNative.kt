@@ -258,6 +258,7 @@ object RiseNative {
      *   2 = Rasterizer
      *   3 = Object
      *   4 = Light
+     *   5 = Film (Output Settings — single Film per scene)
      */
     external fun nativeViewportPanelMode(): Int
     external fun nativeViewportPanelHeader(): String
@@ -279,8 +280,9 @@ object RiseNative {
 
     /**
      * Accordion list entries for `category` (mirrors SceneEditCategory_*
-     * — 1 Camera, 2 Rasterizer, 3 Object, 4 Light).  Bridges cache by
-     * scene epoch and re-pull when [nativeViewportSceneEpoch] advances.
+     * — 1 Camera, 2 Rasterizer, 3 Object, 4 Light, 5 Film).  Bridges
+     * cache by scene epoch and re-pull when [nativeViewportSceneEpoch]
+     * advances.
      */
     external fun nativeViewportCategoryEntityCount(category: Int): Int
     external fun nativeViewportCategoryEntityName(category: Int, idx: Int): String

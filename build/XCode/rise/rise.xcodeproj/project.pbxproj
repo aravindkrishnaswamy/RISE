@@ -1687,6 +1687,10 @@
 		F2EE002000000000000000C1 /* ChunkDescriptorRegistry.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE002000000000000000A1 /* ChunkDescriptorRegistry.h */; };
 		F2EE002100000000000000B1 /* ChunkDescriptorRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */; };
 		F2EE002100000000000000C1 /* ChunkDescriptorRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */; };
+		F2EE002200000000000000B1 /* FilmIntrospection.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002200000000000000A1 /* FilmIntrospection.h */; };
+		F2EE002200000000000000C1 /* FilmIntrospection.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE002200000000000000A1 /* FilmIntrospection.h */; };
+		F2EE002300000000000000B1 /* FilmIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002300000000000000A1 /* FilmIntrospection.cpp */; };
+		F2EE002300000000000000C1 /* FilmIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002300000000000000A1 /* FilmIntrospection.cpp */; };
 		F2EE003000000000000000B1 /* DisplayTransform.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE003000000000000000A1 /* DisplayTransform.h */; };
 		F2EE003000000000000000C1 /* DisplayTransform.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE003000000000000000A1 /* DisplayTransform.h */; };
 		F2EE003100000000000000B1 /* DisplayTransformWriter.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE003100000000000000A1 /* DisplayTransformWriter.h */; };
@@ -2638,6 +2642,8 @@
 		F2EE001900000000000000A1 /* RasterizerIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RasterizerIntrospection.cpp; sourceTree = "<group>"; };
 		F2EE002000000000000000A1 /* ChunkDescriptorRegistry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChunkDescriptorRegistry.h; sourceTree = "<group>"; };
 		F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ChunkDescriptorRegistry.cpp; sourceTree = "<group>"; };
+		F2EE002200000000000000A1 /* FilmIntrospection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FilmIntrospection.h; sourceTree = "<group>"; };
+		F2EE002300000000000000A1 /* FilmIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FilmIntrospection.cpp; sourceTree = "<group>"; };
 		F2EE003000000000000000A1 /* DisplayTransform.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DisplayTransform.h; sourceTree = "<group>"; };
 		F2EE003100000000000000A1 /* DisplayTransformWriter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DisplayTransformWriter.h; sourceTree = "<group>"; };
 		F2EE003200000000000000A1 /* DisplayTransformWriter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DisplayTransformWriter.cpp; sourceTree = "<group>"; };
@@ -3938,6 +3944,8 @@
 				F2EE001900000000000000A1 /* RasterizerIntrospection.cpp */,
 				F2EE002000000000000000A1 /* ChunkDescriptorRegistry.h */,
 				F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */,
+				F2EE002200000000000000A1 /* FilmIntrospection.h */,
+				F2EE002300000000000000A1 /* FilmIntrospection.cpp */,
 			);
 			path = SceneEditor;
 			sourceTree = "<group>";
@@ -4276,6 +4284,7 @@
 				F2EE001600000000000000C1 /* LightIntrospection.h in Headers */,
 				F2EE001800000000000000C1 /* RasterizerIntrospection.h in Headers */,
 				F2EE002000000000000000C1 /* ChunkDescriptorRegistry.h in Headers */,
+				F2EE002200000000000000C1 /* FilmIntrospection.h in Headers */,
 				F2EE003000000000000000C1 /* DisplayTransform.h in Headers */,
 				F2EE003100000000000000C1 /* DisplayTransformWriter.h in Headers */,
 				F2EE003300000000000000C1 /* EXRCompression.h in Headers */,
@@ -4801,6 +4810,7 @@
 				F2EE001700000000000000C1 /* LightIntrospection.cpp in Sources */,
 				F2EE001900000000000000C1 /* RasterizerIntrospection.cpp in Sources */,
 				F2EE002100000000000000C1 /* ChunkDescriptorRegistry.cpp in Sources */,
+				F2EE002300000000000000C1 /* FilmIntrospection.cpp in Sources */,
 				F2EE003200000000000000C1 /* DisplayTransformWriter.cpp in Sources */,
 				F2EE001100000000000000C1 /* InteractivePelRasterizer.cpp in Sources */,
 				F2C5D5C92F6F416B00546C97 /* BurleyNormalizedDiffusionProfile.cpp in Sources */,
@@ -5408,6 +5418,8 @@
 				F2EE001900000000000000B1 /* RasterizerIntrospection.cpp in Sources */,
 				F2EE002000000000000000B1 /* ChunkDescriptorRegistry.h in Sources */,
 				F2EE002100000000000000B1 /* ChunkDescriptorRegistry.cpp in Sources */,
+				F2EE002200000000000000B1 /* FilmIntrospection.h in Sources */,
+				F2EE002300000000000000B1 /* FilmIntrospection.cpp in Sources */,
 				F2EE003000000000000000B1 /* DisplayTransform.h in Sources */,
 				F2EE003100000000000000B1 /* DisplayTransformWriter.h in Sources */,
 				F2EE003200000000000000B1 /* DisplayTransformWriter.cpp in Sources */,

@@ -1,10 +1,11 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  PropertiesPanel.swift - Right-side accordion for the interactive
-//    viewport.  Four sections (Cameras / Rasterizer / Objects /
-//    Lights) each list the scene's entities for that category;
-//    clicking a row activates it on the C++ side and shows the
-//    selected entity's read-only/edit properties below.
+//    viewport.  Five sections (Cameras / Rasterizer / Objects /
+//    Lights / Output Settings — the scene Film) each list the scene's
+//    entities for that category; clicking a row activates it on the
+//    C++ side and shows the selected entity's read-only/edit
+//    properties below.
 //
 //    Single selection across the whole panel: picking a row in any
 //    section clears whichever was picked before, and auto-expands
@@ -76,10 +77,11 @@ struct AccordionSection: Identifiable, Hashable {
 }
 
 private let kAccordionSections: [AccordionSection] = [
-    AccordionSection(id: "cameras",     title: "Cameras",    category: .camera),
-    AccordionSection(id: "rasterizer",  title: "Rasterizer", category: .rasterizer),
-    AccordionSection(id: "objects",     title: "Objects",    category: .object),
-    AccordionSection(id: "lights",      title: "Lights",     category: .light),
+    AccordionSection(id: "cameras",     title: "Cameras",         category: .camera),
+    AccordionSection(id: "rasterizer",  title: "Rasterizer",      category: .rasterizer),
+    AccordionSection(id: "objects",     title: "Objects",         category: .object),
+    AccordionSection(id: "lights",      title: "Lights",          category: .light),
+    AccordionSection(id: "film",        title: "Output Settings", category: .film),
 ]
 
 struct PropertiesPanel: View {
@@ -202,9 +204,10 @@ struct PropertiesPanel: View {
 }
 
 /// One accordion section: header + dropdown picker for the section's
-/// entity list.  All four sections use the dropdown for visual
-/// consistency and to handle worst-case entity counts (Objects can
-/// run into the hundreds).
+/// entity list.  All sections use the dropdown for visual consistency
+/// and to handle worst-case entity counts (Objects can run into the
+/// hundreds).  Output Settings is single-entry but uses the same widget
+/// chrome to keep the layout uniform.
 private struct AccordionSectionView: View {
     let section: AccordionSection
     let entities: [String]

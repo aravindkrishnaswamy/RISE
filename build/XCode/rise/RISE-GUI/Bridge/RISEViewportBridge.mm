@@ -572,6 +572,7 @@ private:
         case 2: return RISEViewportPanelModeRasterizer;
         case 3: return RISEViewportPanelModeObject;
         case 4: return RISEViewportPanelModeLight;
+        case 5: return RISEViewportPanelModeFilm;
         default: return RISEViewportPanelModeNone;
     }
 }
@@ -610,6 +611,7 @@ private:
         case 2: return RISEViewportCategoryRasterizer;
         case 3: return RISEViewportCategoryObject;
         case 4: return RISEViewportCategoryLight;
+        case 5: return RISEViewportCategoryFilm;
         default: return RISEViewportCategoryNone;
     }
 }

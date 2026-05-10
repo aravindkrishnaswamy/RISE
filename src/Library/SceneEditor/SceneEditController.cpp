@@ -37,6 +37,7 @@
 #include "ObjectIntrospection.h"
 #include "LightIntrospection.h"
 #include "RasterizerIntrospection.h"
+#include "FilmIntrospection.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IScenePriv.h"
 #include "../Interfaces/IObjectManager.h"
@@ -784,6 +785,13 @@ unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
 		const ILightManager* m = scene->GetLights();
 		return m ? m->getItemCount() : 0;
 	}
+	case Category::Film: {
+		// A scene has exactly one Film (Job::InitializeContainers
+		// installs the default qHD Film; SetFilm replaces it but the
+		// "one Film per scene" invariant holds).  Surface as a
+		// single-entry list so the accordion's list view renders.
+		return scene->GetFilm() ? 1 : 0;
+	}
 	case Category::None:
 	default:
 		return 0;
@@ -826,6 +834,14 @@ String SceneEditController::CategoryEntityName( Category cat, unsigned int idx )
 		if( idx >= cb.names.size() ) return String();
 		return cb.names[idx];
 	}
+	case Category::Film: {
+		// Single-entry list; the entry name is the conventional
+		// "default" so the accordion shows a clickable row.  The
+		// scene doesn't track per-Film names (there's only one),
+		// so this is a fixed label.
+		if( idx != 0 || !scene->GetFilm() ) return String();
+		return String( "default" );
+	}
 	case Category::None:
 	default:
 		return String();
@@ -842,6 +858,13 @@ String SceneEditController::CategoryActiveName( Category cat ) const
 	case Category::Rasterizer: {
 		const std::string s = mJob.GetActiveRasterizerName();
 		return String( s.c_str() );
+	}
+	case Category::Film: {
+		// The Film entity is always named "default" — see
+		// CategoryEntityName above.  Returning the same string here lets
+		// the accordion's "active row" highlight resolve correctly.
+		const IScene* scene = mJob.GetScene();
+		return ( scene && scene->GetFilm() ) ? String( "default" ) : String();
 	}
 	case Category::Object:
 	case Category::Light:
@@ -1297,6 +1320,12 @@ SceneEditController::PanelMode SceneEditController::CurrentPanelMode() const
 		return mSelectionName.size() > 1 ? PanelMode::Object : PanelMode::None;
 	case Category::Light:
 		return mSelectionName.size() > 1 ? PanelMode::Light : PanelMode::None;
+	case Category::Film:
+		// Single Film per scene — auto-select on section expand so
+		// the user doesn't have to click through a one-entry list.
+		// Properties resolve against scene->GetFilm() regardless of
+		// the selection name.
+		return PanelMode::Film;
 	case Category::None:
 	default:
 		return PanelMode::None;
@@ -1334,6 +1363,8 @@ String SceneEditController::CurrentPanelHeader() const
 		s += mSelectionName.c_str();
 		return String( s.c_str() );
 	}
+	case PanelMode::Film:
+		return String( "Output Settings" );
 	case PanelMode::None:
 	default:
 		return String();
@@ -1390,6 +1421,13 @@ void SceneEditController::RefreshProperties()
 		const ILightPriv* light = lights->GetItem( mSelectionName.c_str() );
 		if( !light ) return;
 		std::vector<CameraProperty> rows = LightIntrospection::Inspect( mSelectionName, *light );
+		mProperties.insert( mProperties.end(), rows.begin(), rows.end() );
+		return;
+	}
+	case PanelMode::Film: {
+		const IFilm* film = scene->GetFilm();
+		if( !film ) return;
+		std::vector<CameraProperty> rows = FilmIntrospection::Inspect( *film );
 		mProperties.insert( mProperties.end(), rows.begin(), rows.end() );
 		return;
 	}
@@ -1613,6 +1651,43 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		const bool ok = mJob.SetRasterizerParameter(
 			mSelectionName.c_str(), name.c_str(), valueStr.c_str() );
 		if( !ok ) return false;
+
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+		return true;
+	}
+
+	case Category::Film: {
+		// SetFilm replaces the Scene's IFilm, resyncs every camera's
+		// projection, and reallocates Job's FrameStore — that's a
+		// scene mutation the render thread reads per-pixel, so the
+		// same cancel-and-park pattern as Rasterizer/Light applies.
+		// No undo support (matches Rasterizer); Phase 4 may add a
+		// dedicated SetFilmProperty SceneEdit op.
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+		const bool ok = FilmIntrospection::SetProperty( mJob, name, valueStr );
+		if( !ok ) return false;
+
+		// Refresh the full-res dim cache so bridge callers reading
+		// `GetCameraDimensions` between the unlock-and-notify below and
+		// the next render pass starting see the NEW dims (the render
+		// thread also refreshes them at the top of `DoOneRenderPass`).
+		// Without this, the brief window between SetFilm and the next
+		// pass exposes a stale cache that maps pointer events through
+		// the old projection.
+		const IScene* sceneRef = mJob.GetScene();
+		const IFilm*  filmRef  = sceneRef ? sceneRef->GetFilm() : nullptr;
+		if( filmRef ) {
+			mFullResW.store( filmRef->GetWidth(),  std::memory_order_release );
+			mFullResH.store( filmRef->GetHeight(), std::memory_order_release );
+		}
 
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();

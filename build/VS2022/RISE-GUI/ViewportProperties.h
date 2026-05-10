@@ -1,10 +1,11 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  ViewportProperties.h - Right-side accordion for the interactive
-//    viewport.  Four sections (Cameras / Rasterizer / Objects /
-//    Lights) each list the scene's entities; clicking a row activates
-//    it on the C++ side and shows its read-only/edit properties below.
-//    Mirrors the macOS PropertiesPanel.swift and Android ViewportPane.
+//    viewport.  Five sections (Cameras / Rasterizer / Objects / Lights
+//    / Output Settings — the scene Film) each list the scene's entities;
+//    clicking a row activates it on the C++ side and shows its
+//    read-only/edit properties below.  Mirrors the macOS
+//    PropertiesPanel.swift and Android ViewportPane.
 //
 //////////////////////////////////////////////////////////////////////
 

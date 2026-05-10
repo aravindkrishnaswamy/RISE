@@ -2868,7 +2868,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditCategory_Camera     = 1,
 		SceneEditCategory_Rasterizer = 2,
 		SceneEditCategory_Object     = 3,
-		SceneEditCategory_Light      = 4
+		SceneEditCategory_Light      = 4,
+		SceneEditCategory_Film       = 5   ///< Output Settings (single Film per scene)
 	};
 
 	//! Construct a SceneEditController over an existing job.
@@ -2969,6 +2970,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//!   2 = Rasterizer
 	//!   3 = Object
 	//!   4 = Light
+	//!   5 = Film (Output Settings — single Film per scene)
 	//! Maps onto SceneEditController::PanelMode.  -1 on null controller.
 	int RISE_API_SceneEditController_PanelMode( SceneEditController* p );
 
@@ -3089,15 +3091,16 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! category with no row picked (the section opens, the property
 	//! panel below shows nothing).  Camera / Rasterizer selections
 	//! also activate the named entity (calls SetActiveCamera /
-	//! SetActiveRasterizer respectively); Object / Light selections
-	//! are UI state only.  Returns false on null controller or
-	//! category-specific failures (e.g. unknown camera name).
+	//! SetActiveRasterizer respectively); Object / Light / Film
+	//! selections are UI state only.  Returns false on null controller
+	//! or category-specific failures (e.g. unknown camera name).
 	bool RISE_API_SceneEditController_SetSelection(
 		SceneEditController* p, int category, const char* name );
 
 	//! Scene-level active entity for a category, independent of the UI
 	//! selection.  Camera → active camera name; Rasterizer → active
-	//! rasterizer type name; Object/Light/None → empty.  Used by the
+	//! rasterizer type name; Film → "default" (a scene has exactly one
+	//! Film by construction); Object/Light/None → empty.  Used by the
 	//! accordion to populate the dropdown with the scene's current
 	//! active entity on first load.  Returns false on null controller.
 	bool RISE_API_SceneEditController_CategoryActiveName(

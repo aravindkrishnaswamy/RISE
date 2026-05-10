@@ -378,6 +378,7 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\ObjectIntrospection.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\LightIntrospection.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\RasterizerIntrospection.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\FilmIntrospection.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp" />
@@ -835,6 +836,7 @@
     <ClInclude Include="..\..\..\src\Library\SceneEditor\ObjectIntrospection.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\LightIntrospection.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\RasterizerIntrospection.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\FilmIntrospection.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShader.h" />
