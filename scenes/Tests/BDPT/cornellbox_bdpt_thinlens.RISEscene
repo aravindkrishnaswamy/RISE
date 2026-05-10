@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -57,13 +57,17 @@ file_rasterizeroutput
 # Focus on the short block (~490 units from camera).
 # Very large aperture for dramatic depth-of-field blur.
 
+film
+{
+	width			512
+	height			512
+}
+
 thinlens_camera
 {
 	location			278 200 -350
 	lookat				278 200 280
 	up					0 1 0
-	width				512
-	height				512
 	sensor_size			16.79           # mm — matches FOV ~50° with the 18 mm focal
 	focal_length		18.0            # mm
 	fstop				0.225           # wide-open lens preserves the historical strong DoF blur

@@ -125,7 +125,7 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 #define MAX_CHARS_PER_LINE		8192
-#define CURRENT_SCENE_VERSION	5
+#define CURRENT_SCENE_VERSION	6
 
 // std_string_npos no longer needed - using std::string::npos directly
 static MultiHalton mh;
@@ -713,9 +713,10 @@ namespace RISE
 				{ auto& p = P(); p.name = "location";           p.kind = ValueKind::DoubleVec3; p.description = "World-space position"; }
 				{ auto& p = P(); p.name = "lookat";             p.kind = ValueKind::DoubleVec3; p.description = "Look-at target point"; }
 				{ auto& p = P(); p.name = "up";                 p.kind = ValueKind::DoubleVec3; p.description = "Up vector"; p.defaultValueHint = "0 1 0"; }
-				{ auto& p = P(); p.name = "width";              p.kind = ValueKind::UInt;       p.description = "Image width (pixels)"; p.defaultValueHint = "640"; }
-				{ auto& p = P(); p.name = "height";             p.kind = ValueKind::UInt;       p.description = "Image height (pixels)"; p.defaultValueHint = "480"; }
-				{ auto& p = P(); p.name = "pixelAR";            p.kind = ValueKind::Double;     p.description = "Pixel aspect ratio"; p.defaultValueHint = "1.0"; }
+				// width / height / pixelAR moved to the `film` chunk
+				// in scene format v6 (Phase B2 of the Camera/Film/Output
+				// split).  Camera chunks are now imaging-only; the
+				// rasterizer reads grid dims from `Scene::GetFilm()`.
 				{ auto& p = P(); p.name = "exposure";           p.kind = ValueKind::Double;     p.description = "Shutter exposure time"; p.defaultValueHint = "0"; }
 				{ auto& p = P(); p.name = "scanning_rate";      p.kind = ValueKind::Double;     p.description = "Rolling-shutter rate"; p.defaultValueHint = "0"; }
 				{ auto& p = P(); p.name = "pixel_rate";         p.kind = ValueKind::Double;     p.description = "Per-pixel time offset"; p.defaultValueHint = "0"; }
@@ -3433,9 +3434,6 @@ namespace RISE
 					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
 					double fov          = 30.0 * DEG_TO_RAD;
 					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
-					unsigned int xres   = bag.GetUInt(   "width",         256 );
-					unsigned int yres   = bag.GetUInt(   "height",        256 );
-					double pixelAR      = bag.GetDouble( "pixelAR",       1.0 );
 					double exposure     = bag.GetDouble( "exposure",      0 );
 					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
 					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
@@ -3496,15 +3494,7 @@ namespace RISE
 						}
 					}
 
-					// Drive scene-level Film from the authored camera dims
-					// — only when the user gave explicit values on the
-					// camera chunk.  Without that gate, a `film` chunk's
-					// value would be silently overwritten by the camera
-					// chunk's descriptor defaults (256x256, 1.0).
-					if( bag.Has( "width" ) || bag.Has( "height" ) || bag.Has( "pixelAR" ) ) {
-						pJob.SetFilm( xres, yres, pixelAR );
-					}
-					return pJob.AddPinholeCamera( name.c_str(), loc, lookat, up, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, iso, fstop );
+					return pJob.AddPinholeCamera( name.c_str(), loc, lookat, up, fov, exposure, scanningRate, pixelRate, orientation, target_orientation, iso, fstop );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3530,9 +3520,6 @@ namespace RISE
 					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
 					double fov          = 30.0 * DEG_TO_RAD;
 					if( bag.Has( "fov" ) ) fov = bag.GetDouble( "fov" ) * DEG_TO_RAD;
-					unsigned int xres   = bag.GetUInt(   "width",         256 );
-					unsigned int yres   = bag.GetUInt(   "height",        256 );
-					double pixelAR      = bag.GetDouble( "pixelAR",       1.0 );
 					double exposure     = bag.GetDouble( "exposure",      0 );
 					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
 					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
@@ -3567,10 +3554,7 @@ namespace RISE
 					double ONB_U[3] = {onb.u().x, onb.u().y, onb.u().z};
 					double ONB_V[3] = {onb.v().x, onb.v().y, onb.v().z};
 					double ONB_W[3] = {onb.w().x, onb.w().y, onb.w().z};
-					if( bag.Has( "width" ) || bag.Has( "height" ) || bag.Has( "pixelAR" ) ) {
-						pJob.SetFilm( xres, yres, pixelAR );
-					}
-					return pJob.AddPinholeCameraONB( name.c_str(), ONB_U, ONB_V, ONB_W, loc, fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate );
+					return pJob.AddPinholeCameraONB( name.c_str(), ONB_U, ONB_V, ONB_W, loc, fov, exposure, scanningRate, pixelRate );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3585,9 +3569,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "vb";            p.kind = ValueKind::DoubleVec3; p.description = "Second ONB axis (used per `components`)"; }
 						{ auto& p = P(); p.name = "components";    p.kind = ValueKind::Enum;       p.enumValues = {"UV","VU","UW","WU","VW","WV"}; p.description = "Which ONB components va/vb represent"; }
 						{ auto& p = P(); p.name = "fov";           p.kind = ValueKind::Double;     p.description = "Field of view (degrees)"; p.defaultValueHint = "30"; }
-						{ auto& p = P(); p.name = "width";         p.kind = ValueKind::UInt;       p.description = "Image width"; p.defaultValueHint = "256"; }
-						{ auto& p = P(); p.name = "height";        p.kind = ValueKind::UInt;       p.description = "Image height"; p.defaultValueHint = "256"; }
-						{ auto& p = P(); p.name = "pixelAR";       p.kind = ValueKind::Double;     p.description = "Pixel aspect ratio"; p.defaultValueHint = "1.0"; }
+						// width / height / pixelAR moved to the `film` chunk
+						// in scene format v6 (Phase B2 of the Camera/Film/Output
+						// split).  Camera chunks are now imaging-only.
 						{ auto& p = P(); p.name = "exposure";      p.kind = ValueKind::Double;     p.description = "Shutter exposure"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "scanning_rate"; p.kind = ValueKind::Double;     p.description = "Rolling-shutter rate"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "pixel_rate";    p.kind = ValueKind::Double;     p.description = "Per-pixel time offset"; p.defaultValueHint = "0"; }
@@ -3611,8 +3595,6 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
-					unsigned int xres = bag.GetUInt(   "width",            256 );
-					unsigned int yres = bag.GetUInt(   "height",           256 );
 					// Photographic quartet — units (Phase 1.2):
 					//
 					//   sensor_size, focal_length, shift_x, shift_y
@@ -3668,7 +3650,6 @@ namespace RISE
 					// at the top of the .RISEscene file.
 					const double sceneUnitMeters = s_sceneOptions.scene_unit_meters;
 
-					double pixelAR      = bag.GetDouble( "pixelAR",        1.0 );
 					double exposure     = bag.GetDouble( "exposure",       0 );
 					double scanningRate = bag.GetDouble( "scanning_rate",  0 );
 					double pixelRate    = bag.GetDouble( "pixel_rate",     0 );
@@ -3774,10 +3755,7 @@ namespace RISE
 						return false;
 					}
 
-					if( bag.Has( "width" ) || bag.Has( "height" ) || bag.Has( "pixelAR" ) ) {
-						pJob.SetFilm( xres, yres, pixelAR );
-					}
-					return pJob.AddThinlensCamera( name.c_str(), loc, lookat, up, sensor, focal, fstop, focus, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, blades, rotation, squeeze, tilt_x, tilt_y, shift_x, shift_y, iso );
+					return pJob.AddThinlensCamera( name.c_str(), loc, lookat, up, sensor, focal, fstop, focus, sceneUnitMeters, exposure, scanningRate, pixelRate, orientation, target_orientation, blades, rotation, squeeze, tilt_x, tilt_y, shift_x, shift_y, iso );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3844,9 +3822,6 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
-					unsigned int xres   = bag.GetUInt(   "width",         256 );
-					unsigned int yres   = bag.GetUInt(   "height",        256 );
-					double pixelAR      = bag.GetDouble( "pixelAR",       1.0 );
 					double exposure     = bag.GetDouble( "exposure",      0 );
 					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
 					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
@@ -3881,10 +3856,7 @@ namespace RISE
 					target_orientation[0] *= DEG_TO_RAD;
 					target_orientation[1] *= DEG_TO_RAD;
 
-					if( bag.Has( "width" ) || bag.Has( "height" ) || bag.Has( "pixelAR" ) ) {
-						pJob.SetFilm( xres, yres, pixelAR );
-					}
-					return pJob.AddFisheyeCamera( name.c_str(), loc, lookat, up, xres, yres, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation, scale );
+					return pJob.AddFisheyeCamera( name.c_str(), loc, lookat, up, exposure, scanningRate, pixelRate, orientation, target_orientation, scale );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3906,9 +3878,6 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name = AllocateCameraName( bag.GetString( "name", "" ) );
-					unsigned int xres = bag.GetUInt( "width",  256 );
-					unsigned int yres = bag.GetUInt( "height", 256 );
-					double pixelAR    = bag.GetDouble( "pixelAR",       1.0 );
 					double exposure   = bag.GetDouble( "exposure",      0 );
 					double scanningRate = bag.GetDouble( "scanning_rate", 0 );
 					double pixelRate    = bag.GetDouble( "pixel_rate",    0 );
@@ -3947,10 +3916,7 @@ namespace RISE
 					target_orientation[0] *= DEG_TO_RAD;
 					target_orientation[1] *= DEG_TO_RAD;
 
-					if( bag.Has( "width" ) || bag.Has( "height" ) || bag.Has( "pixelAR" ) ) {
-						pJob.SetFilm( xres, yres, pixelAR );
-					}
-					return pJob.AddOrthographicCamera( name.c_str(), loc, lookat, up, xres, yres, vpscale, pixelAR, exposure, scanningRate, pixelRate, orientation, target_orientation );
+					return pJob.AddOrthographicCamera( name.c_str(), loc, lookat, up, vpscale, exposure, scanningRate, pixelRate, orientation, target_orientation );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3971,14 +3937,16 @@ namespace RISE
 			// Film — pixel-grid descriptor
 			//
 			// The `film` chunk authors the scene's output resolution.
-			// Place it BEFORE any camera chunk so the camera parsers'
-			// transitional Film auto-sync (Phase B1, which uses the
-			// camera's authored xres/yres/pixelAR) doesn't override the
-			// film chunk's value.  Camera chunks' width/height/pixelAR
-			// remain accepted in v5 scenes for backward compatibility;
-			// the explicit `film` chunk is what the GUI's Output
-			// Settings panel and the CLI --width / --height flags
-			// drive.
+			// As of scene format v6 (Phase B2), camera chunks no longer
+			// accept `width` / `height` / `pixelAR`; the `film` chunk
+			// is the sole authoring surface for raster dims.  The CLI
+			// flags --width / --height / --pixel-ar override whatever
+			// the scene's film chunk authored (and override the qHD
+			// default when neither is present).  Position within the
+			// scene file is unimportant: Job::SetFilm walks the camera
+			// manager and resyncs every camera's pixelAR + dim cache
+			// on each call, so a late `film` chunk after several
+			// cameras still wins.
 			//////////////////////////////////////////
 
 			struct FilmAsciiChunkParser : public IAsciiChunkParser
@@ -8297,7 +8265,26 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 		int version = atoi( num );
 
 		if( version != CURRENT_SCENE_VERSION ) {
-			GlobalLog()->PrintEx( eLog_Error, "AsciiSceneParser: Scene version problem, scene is version \'%d\', we require \'%d\'", version, CURRENT_SCENE_VERSION );
+			if( version == 5 ) {
+				// Phase B2 (2026-05) introduced format v6.  v5 scenes
+				// authored width / height / pixelAR INSIDE camera
+				// chunks; v6 moves those into a top-level `film` chunk
+				// and drops them from camera chunks.  Run the
+				// migration script:
+				//     python tools/migrate_scenes_v5_to_v6.py <path>
+				// to update v5 scenes in place.
+				GlobalLog()->PrintEx( eLog_Error,
+					"AsciiSceneParser: Scene is version 5; the parser expects version %d.  "
+					"v5 authored width/height/pixelAR inside camera chunks; v6 moves them "
+					"into a top-level `film` chunk.  Migrate with: "
+					"`python tools/migrate_scenes_v5_to_v6.py <path>` (in-place; idempotent). "
+					"See docs/SCENE_CONVENTIONS.md \"The `film` chunk\".",
+					CURRENT_SCENE_VERSION );
+			} else {
+				GlobalLog()->PrintEx( eLog_Error,
+					"AsciiSceneParser: Scene version problem, scene is version \'%d\', we require \'%d\'",
+					version, CURRENT_SCENE_VERSION );
+			}
 			return false;
 		}
 	}

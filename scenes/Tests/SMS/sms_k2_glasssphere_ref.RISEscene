@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 # VCM reference for sms_k2_glasssphere.RISEscene.
 
 > set accelerator B 10 8
@@ -38,13 +38,17 @@ file_rasterizeroutput
 	color_space			Rec709RGB_Linear
 }
 
+film
+{
+	width			200
+	height			150
+}
+
 pinhole_camera
 {
 	location			0 2.0 3
 	lookat				0 0.2 0
 	up					0 1 0
-	width				200
-	height				150
 	fov					45.0
 }
 

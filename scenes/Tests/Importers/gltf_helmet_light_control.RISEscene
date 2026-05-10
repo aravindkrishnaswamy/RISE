@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 # Light-control scene: identical camera + lights to gltf_import_damaged_helmet
 # but with a known Lambertian-white sphere instead of the helmet asset.  If
 # this renders bright, the helmet's darkness is a metallic-without-IBL PBR
@@ -25,13 +25,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			0 0 3
 	lookat				0 0 0
 	up					0 1 0
-	width				512
-	height				512
 	fov					35.0
 }
 

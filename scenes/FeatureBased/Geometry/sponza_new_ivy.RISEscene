@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                                                                                           #
 #   File:           sponza_new_ivy.RISEscene                                                                #
@@ -301,14 +301,18 @@ gltf_import
 ##################################################
 
 # Wide arch view — added FIRST so it's NOT the default.
+film
+{
+	width			640
+	height			360
+}
+
 pinhole_camera
 {
 	name				ivy_arch_wide
 	location			-3.0  1.6  0.0
 	lookat				-7.0 10.0  0.0
 	up					 0.0  1.0  0.0
-	width				640
-	height				360
 	fov					58.5
 }
 
@@ -320,8 +324,6 @@ pinhole_camera
 	location			-3.0  1.6  0.0
 	lookat				-7.0  9.0  0.0
 	up					 0.0  1.0  0.0
-	width				640
-	height				360
 	fov					40.0
 }
 

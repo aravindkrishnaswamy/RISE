@@ -38,7 +38,7 @@ Active work is mainly in `src/Library`, `src/RISE`, `scenes/FeatureBased`, `scen
 - `Job::SetPrimaryAcceleration()` replaces the object manager. Calling it after adding objects discards them. Default since 2026-05 is **top-level BVH4** (SAH-binned, BVH4 SIMD collapse — same `BVH<>` template as the per-mesh accelerator) with leaf cap 4 and depth cap 32. Pre-2026-05 was no top-level structure (linear loop). Constructor flag `bUseBSPtree` is the historical name; semantically it now means "build a top-level BVH" (the BSPTreeSAH path was removed when ObjectManager moved to `BVH<>`). See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Top-Level Acceleration (TLAS)" and the BVH retrospective Tier D1 entry.
 - Most scene elements are named and stored in managers. Parser chunks usually resolve dependencies by name through those managers.
 - `Job::InitializeContainers()` installs `"none"` defaults for a null material and null painter, and also creates several default shader ops.
-- The scene parser currently expects the header `RISE ASCII SCENE 5`.
+- The scene parser currently expects the header `RISE ASCII SCENE 6`. v5 scenes (legacy: width/height/pixelAR authored inside camera chunks) must be migrated — see the `Build And Test` → `Migrate a v5 scene to v6` recipe below for the script invocation, properties (idempotent, multi-camera handling, macro/CRLF preservation), and when NOT to use it. The parser emits a clear error pointing at the same recipe if it loads a v5 scene.
 - In `.RISEscene` files, chunk braces must appear on their own lines.
 - Parser support for macros, math expressions, embedded commands, and `FOR` / `ENDFOR` loops is implemented centrally in `AsciiSceneParser.cpp`.
 - Tests are standalone executables, not a framework-based suite.
@@ -122,6 +122,65 @@ applies — the agent doesn't have to author anything for a fast preview.
 Background and full design are in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Camera / Film / Output
 Separation".
+
+### Migrate a v5 scene to v6
+
+If the parser fails to load a scene with an error mentioning "Scene is
+version 5" or you're handed a `.RISEscene` that still authors
+`width` / `height` / `pixelAR` inside a `pinhole_camera` (or any other
+camera) chunk, run the migration tool:
+
+```sh
+# One file
+python tools/migrate_scenes_v5_to_v6.py path/to/scene.RISEscene
+
+# A whole directory (recursive; modifies in place)
+python tools/migrate_scenes_v5_to_v6.py path/to/dir/
+
+# Default: migrate every scene under scenes/
+python tools/migrate_scenes_v5_to_v6.py
+```
+
+What the script does to each v5 file:
+
+1. Bumps the header from `RISE ASCII SCENE 5` → `RISE ASCII SCENE 6`.
+2. Lifts every `width` / `height` / `pixelAR` line out of every
+   `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`,
+   `fisheye_camera`, and `orthographic_camera` chunk.
+3. Emits a top-level `film { width … height … pixelAR … }` chunk
+   immediately before the first camera chunk in the file.
+4. **Multi-camera files**: if multiple cameras authored different dims,
+   the LAST camera's values win in the emitted `film` chunk (matches the
+   v5 parser's last-write-wins semantics, so renders stay
+   bit-equivalent to pre-migration).
+
+Properties to rely on:
+
+- **Idempotent.** Running it on a v6 scene (or a v5 scene that already
+  has a `film` chunk and no camera-chunk dims) is a no-op.
+- **Preserves macros, math expressions (`$(...)`), `@FOO` references,
+  and CRLF vs LF line endings.** It edits only the lines it relocates;
+  every other byte is left alone.
+- **Never touches an existing `film` chunk.** Files that already have
+  one get the version bump only.
+
+When NOT to use it:
+
+- The scene already loads cleanly — leave it alone.
+- You're authoring a new scene from scratch — write a v6 header and a
+  `film` chunk directly; no need to run the migrator.
+- The "scene" is actually a glTF / OBJ / 3DS file — the migrator only
+  handles `.RISEscene` text.
+
+After running, verify with one short render:
+
+```sh
+printf "render\nquit\n" | ./bin/rise --width 320 --height 180 path/to/scene.RISEscene
+```
+
+`git diff --shortstat` gives you the blast radius.  Full details in
+[docs/SCENE_CONVENTIONS.md](docs/SCENE_CONVENTIONS.md) §8.5 ("The `film`
+chunk").
 
 > **Render renders sequentially, never in parallel.** A single `./bin/rise`
 > render is already an embarrassingly-parallel job that takes every CPU core

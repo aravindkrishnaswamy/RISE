@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -55,13 +55,17 @@ file_rasterizeroutput
 # and fstop come from camera_defaults above.
 ##################################################
 
+film
+{
+	width			400
+	height			300
+}
+
 thinlens_camera
 {
 	location			0 1 5
 	lookat				0 1 0
 	up					0 1 0
-	width				400
-	height				300
 	focus_distance		5               # metres — onto the ball; the floor stretches out of DOF behind
 }
 

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -52,13 +52,17 @@ file_rasterizeroutput
 # consistent bump shading direction.  Without the fix, the mirrored
 # instance shades inverted because cross(N_world, T_world) ends up
 # pointing the wrong way relative to the transformed surface.
+film
+{
+	width			1024
+	height			512
+}
+
 pinhole_camera
 {
 	location			0 0 9
 	lookat				0 0 0
 	up					0 1 0
-	width				1024
-	height				512
 	fov					42.0
 }
 

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                                                                                           #
 #   File:           hosek_wilkie_sky_lab.RISEscene                                                          #
@@ -79,13 +79,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			0 1.5 6
 	lookat				0 0.5 0
 	up					0 1 0
-	width				512
-	height				512
 	fov					45.0
 }
 

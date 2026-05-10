@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 # 3x3 grid of Reaction-Diffusion fog volumes.
 # Row 1: Vary FEED/KILL (spots / mixed / stripes)
 # Row 2: Vary ITERATIONS (less evolved / medium / well evolved)
@@ -25,13 +25,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			0 210 -500
 	lookat				0 210 0
 	up					0 1 0
-	width				512
-	height				512
 	fov					50.0
 }
 

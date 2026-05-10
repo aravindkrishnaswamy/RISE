@@ -112,9 +112,11 @@ Job::~Job( )
 // SceneEditController removes the need for the lock today.
 RISE::Implementation::FrameStore* Job::ResolveJobFrameStoreForActiveCamera()
 {
-	// Post-master-merge — camera dims live on the scene-level Film
-	// (origin/master 45aa217 split: ICamera no longer exposes
-	// GetWidth/GetHeight; the canonical pixel grid is `Scene::GetFilm()`).
+	// Camera dims live on the scene-level Film (Phase A 45aa217 split:
+	// ICamera no longer exposes GetWidth/GetHeight; the canonical pixel
+	// grid is `Scene::GetFilm()`).  Phase B2 (scene format v6) made the
+	// `film` chunk the sole authoring surface; Film is always present
+	// post-InitializeContainers, so this bail-out is defensive only.
 	if( !pScene ) return nullptr;
 	const IFilm* film = pScene->GetFilm();
 	if( !film ) return nullptr;
@@ -357,15 +359,33 @@ bool Job::SetFilm(
 // drops the local strong ref.  The manager retains the addref taken
 // by AddItem.
 
+// Helper: read xres/yres/pixelAR from the Scene's active Film for the
+// camera factories (which still take dims as ctor args for their
+// internal Frame projection math).  Single point of truth, cuts
+// repetitive `pScene->GetFilm()->GetWidth()` boilerplate in every
+// Add*Camera body.  Caller is responsible for SetFilm-ing whatever
+// dims they actually want — InitializeContainers installs the qHD
+// default so this is always non-null.
+void Job::ReadFilmDims( unsigned int& xres, unsigned int& yres, double& pixelAR ) const
+{
+	const IFilm* pFilm = pScene ? pScene->GetFilm() : nullptr;
+	if( pFilm ) {
+		xres    = pFilm->GetWidth();
+		yres    = pFilm->GetHeight();
+		pixelAR = pFilm->GetPixelAR();
+	} else {
+		xres    = kDefaultFilmWidth;
+		yres    = kDefaultFilmHeight;
+		pixelAR = kDefaultFilmPixelAR;
+	}
+}
+
 bool Job::AddPinholeCamera(
 	const char* name,
 	const double ptLocation[3],
 	const double ptLookAt[3],
 	const double vUp[3],
 	const double fov,
-	const unsigned int xres,
-	const unsigned int yres,
-	const double pixelAR,
 	const double exposure,
 	const double scanningRate,
 	const double pixelRate,
@@ -375,12 +395,8 @@ bool Job::AddPinholeCamera(
 	const double fstop
 	)
 {
-	// Caller (parser / programmatic API) is responsible for ensuring
-	// the Scene's active Film matches the camera's xres/yres/pixelAR
-	// before calling — see IJob::SetFilm.  Phase B1 originally
-	// auto-synced Film here, but that silently overrode explicit
-	// SetFilm calls and didn't help multi-camera scenes (since
-	// Scene::SetActiveCamera doesn't re-sync Film).
+	unsigned int xres, yres; double pixelAR;
+	ReadFilmDims( xres, yres, pixelAR );
 	ICamera* pCamera = 0;
 	RISE_API_CreatePinholeCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), iso, fstop );
 	const bool ok = pScene->AddCamera( name, pCamera );
@@ -395,9 +411,6 @@ bool Job::AddPinholeCameraONB(
 	const double ONB_W[3],
 	const double ptLocation[3],
 	const double fov,
-	const unsigned int xres,
-	const unsigned int yres,
-	const double pixelAR,
 	const double exposure,
 	const double scanningRate,
 	const double pixelRate,
@@ -405,11 +418,12 @@ bool Job::AddPinholeCameraONB(
 	const double fstop
 	)
 {
-	// Note: Phase B1 originally auto-synced Film here.  Removed because
-	// it silently overrode an explicit Job::SetFilm() and didn't help
-	// the multi-camera-different-dims case anyway (Scene::SetActiveCamera
-	// doesn't re-sync).  The parser now drives Film via Job::SetFilm
-	// before calling AddXxxCamera; programmatic callers must do the same.
+	unsigned int xres, yres; double pixelAR;
+	ReadFilmDims( xres, yres, pixelAR );
+	// Phase B2: dims read from Scene's active Film via ReadFilmDims
+	// (called above).  Programmatic callers and importers drive Film
+	// via SetFilm before AddXxxCamera; the parser does the same via
+	// the `film` chunk.
 	OrthonormalBasis3D onb = OrthonormalBasis3D( Vector3(ONB_U), Vector3(ONB_V), Vector3(ONB_W) );
 	ICamera* pCamera = 0;
 	RISE_API_CreatePinholeCameraONB( &pCamera, onb, Point3(ptLocation), fov, xres, yres, pixelAR, exposure, scanningRate, pixelRate, iso, fstop );
@@ -428,9 +442,6 @@ bool Job::AddThinlensCamera(
 	const double fstop,
 	const double focusDistance,
 	const double sceneUnitMeters,
-	const unsigned int xres,
-	const unsigned int yres,
-	const double pixelAR,
 	const double exposure,
 	const double scanningRate,
 	const double pixelRate,
@@ -446,11 +457,8 @@ bool Job::AddThinlensCamera(
 	const double iso
 	)
 {
-	// Note: Phase B1 originally auto-synced Film here.  Removed because
-	// it silently overrode an explicit Job::SetFilm() and didn't help
-	// the multi-camera-different-dims case anyway (Scene::SetActiveCamera
-	// doesn't re-sync).  The parser now drives Film via Job::SetFilm
-	// before calling AddXxxCamera; programmatic callers must do the same.
+	unsigned int xres, yres; double pixelAR;
+	ReadFilmDims( xres, yres, pixelAR );
 	ICamera* pCamera = 0;
 	RISE_API_CreateThinlensCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), sensorSize, focalLength, fstop, focusDistance, sceneUnitMeters, xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), apertureBlades, apertureRotation, anamorphicSqueeze, tiltX, tiltY, shiftX, shiftY, iso );
 	const bool ok = pScene->AddCamera( name, pCamera );
@@ -463,9 +471,6 @@ bool Job::AddFisheyeCamera(
 	const double ptLocation[3],
 	const double ptLookAt[3],
 	const double vUp[3],
-	const unsigned int xres,
-	const unsigned int yres,
-	const double pixelAR,
 	const double exposure,
 	const double scanningRate,
 	const double pixelRate,
@@ -474,11 +479,8 @@ bool Job::AddFisheyeCamera(
 	const double scale
 	)
 {
-	// Note: Phase B1 originally auto-synced Film here.  Removed because
-	// it silently overrode an explicit Job::SetFilm() and didn't help
-	// the multi-camera-different-dims case anyway (Scene::SetActiveCamera
-	// doesn't re-sync).  The parser now drives Film via Job::SetFilm
-	// before calling AddXxxCamera; programmatic callers must do the same.
+	unsigned int xres, yres; double pixelAR;
+	ReadFilmDims( xres, yres, pixelAR );
 	ICamera* pCamera = 0;
 	RISE_API_CreateFisheyeCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), xres, yres, pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation), scale );
 	const bool ok = pScene->AddCamera( name, pCamera );
@@ -491,10 +493,7 @@ bool Job::AddOrthographicCamera(
 	const double ptLocation[3],
 	const double ptLookAt[3],
 	const double vUp[3],
-	const unsigned int xres,
-	const unsigned int yres,
 	const double vpScale[2],
-	const double pixelAR,
 	const double exposure,
 	const double scanningRate,
 	const double pixelRate,
@@ -502,11 +501,12 @@ bool Job::AddOrthographicCamera(
 	const double target_orientation[2]
 	)
 {
-	// Note: Phase B1 originally auto-synced Film here.  Removed because
-	// it silently overrode an explicit Job::SetFilm() and didn't help
-	// the multi-camera-different-dims case anyway (Scene::SetActiveCamera
-	// doesn't re-sync).  The parser now drives Film via Job::SetFilm
-	// before calling AddXxxCamera; programmatic callers must do the same.
+	unsigned int xres, yres; double pixelAR;
+	ReadFilmDims( xres, yres, pixelAR );
+	// Phase B2: dims read from Scene's active Film via ReadFilmDims
+	// (called above).  Programmatic callers and importers drive Film
+	// via SetFilm before AddXxxCamera; the parser does the same via
+	// the `film` chunk.
 	ICamera* pCamera = 0;
 	RISE_API_CreateOrthographicCamera( &pCamera, Point3(ptLocation), Point3(ptLookAt), Vector3(vUp), xres, yres, Vector2(vpScale), pixelAR, exposure, scanningRate, pixelRate, Vector3(orientation), Vector2(target_orientation) );
 	const bool ok = pScene->AddCamera( name, pCamera );

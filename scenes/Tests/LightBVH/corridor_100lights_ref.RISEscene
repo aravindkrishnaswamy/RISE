@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #   Torture test: 100-light corridor, 10000 units long, 200 wide, 200 tall.                                #
 #   100 point lights at equal spacing (every 100 units).  At 64spp with global                              #
@@ -27,13 +27,17 @@ file_rasterizeroutput
 	type				HDR
 }
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			100 100 200
 	lookat				100 80 5000
 	up					0 1 0
-	width				512
-	height				512
 	fov					70.0
 }
 

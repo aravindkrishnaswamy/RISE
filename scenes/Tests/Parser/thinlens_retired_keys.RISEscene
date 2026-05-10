@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -49,13 +49,17 @@ file_rasterizeroutput
 # Cameras — uses the retired keys; expected to fail
 ##################################################
 
+film
+{
+	width			64
+	height			64
+}
+
 thinlens_camera
 {
 	location			0 0 5
 	lookat				0 0 0
 	up					0 1 0
-	width				64
-	height				64
 	fov					40              # RETIRED — should be rejected
 	aperture_size		0.5             # RETIRED — should be rejected
 	focal_length		3.5

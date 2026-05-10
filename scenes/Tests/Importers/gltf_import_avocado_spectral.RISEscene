@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                                                                                           #
 #   File:           gltf_import_avocado_spectral.RISEscene                                                  #
@@ -59,13 +59,17 @@ file_rasterizeroutput
 
 # Match the RGB-integrator scene's framing 1:1 so visual side-by-side
 # comparison reads cleanly.
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			0.06 0.04 0.10
 	lookat				0 0.025 0
 	up					0 1 0
-	width				512
-	height				512
 	fov					40.0
 }
 

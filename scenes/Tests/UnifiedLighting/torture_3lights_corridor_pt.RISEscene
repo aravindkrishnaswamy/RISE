@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #   Control: same corridor geometry as 100-light version, but only 3 nearby lights.                         #
 #   This simulates what spatial selection would achieve — 100% of samples go to                              #
@@ -26,13 +26,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			100 100 200
 	lookat				100 80 5000
 	up					0 1 0
-	width				512
-	height				512
 	fov					70.0
 }
 

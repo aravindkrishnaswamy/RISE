@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 # BDPT version of the luminous orb scene.
 # Same geometry/materials as mlt_luminous_orb.RISEscene, with the MLT rasterizer
 # replaced by BDPT so we can compare convergence on the same SDS caustic paths.
@@ -24,13 +24,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			400
+	height			400
+}
+
 pinhole_camera
 {
 	location			278 450 -650
 	lookat				278 50 278
 	up					0 1 0
-	width				400
-	height				400
 	fov					42.0
 }
 

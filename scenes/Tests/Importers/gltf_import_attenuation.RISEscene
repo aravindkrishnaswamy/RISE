@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #
 #   File:           gltf_import_attenuation.RISEscene
@@ -50,13 +50,17 @@ file_rasterizeroutput
 
 # Asset bbox: X = [-3.5, 6.5], Y = [-3, 3], Z = [-0.5, 1.5].  Camera
 # in front, looking back, framed for the X strip.
+film
+{
+	width			1024
+	height			512
+}
+
 pinhole_camera
 {
 	location		1.0 0 12
 	lookat			1.0 0 0
 	up				0 1 0
-	width			1024
-	height			512
 	fov				55.0
 }
 

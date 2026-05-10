@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -53,13 +53,17 @@ file_rasterizeroutput
 # render with ~1.5 px CoC blur.  Enabling `tilt_y 45` rotates the
 # focal plane to match the row's diagonal — every sphere snaps sharp.
 
+film
+{
+	width			512
+	height			256
+}
+
 thinlens_camera
 {
 	location			0 0 4
 	lookat				0 0 0
 	up					0 1 0
-	width				512
-	height				256
 	sensor_size			36              # mm — full-frame
 	focal_length		100             # mm — short telephoto
 	fstop				1.4             # cinema-prime fast aperture

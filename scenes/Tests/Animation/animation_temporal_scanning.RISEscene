@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -72,13 +72,17 @@ UNDEF SCANLINE_RATE
 DEFINE EXPOSURE 			0.05
 DEFINE SCANLINE_RATE 		0.001
 
+film
+{
+	width			600
+	height			@TOTAL_SCANLINES
+}
+
 pinhole_camera
 {
 	location			0 0 0.5
 	lookat				0 0 0
 	up					0 1 0
-	width				600
-	height				@TOTAL_SCANLINES
 	fov					20.0
 	exposure			@EXPOSURE
 	scanning_rate		@SCANLINE_RATE

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #   Double-Refractive Slab (Close, No SMS): Standard path tracing only — no SMS, so caustics beneath the    #
 #   slab will be mostly missing.                                                                            #
@@ -27,13 +27,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			400
+	height			300
+}
+
 pinhole_camera
 {
 	location			0 2.0 3
 	lookat				0 0.2 0
 	up					0 1 0
-	width				400
-	height				300
 	fov					45.0
 }
 

@@ -115,7 +115,9 @@ namespace RISE
 		// scenes parse unchanged.
 		//
 
-		//! Adds a pinhole camera
+		//! Adds a pinhole camera.  Width / height / pixelAR are read
+		//! from the scene's active Film at construction; call
+		//! `SetFilm` first to install non-default dims.
 		/// \return TRUE if successful, FALSE on null/empty name or
 		/// duplicate name.
 		virtual bool AddPinholeCamera(
@@ -124,9 +126,6 @@ namespace RISE
 			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
 			const double vUp[3],									///< [in] Up vector of the camera
 			const double fov,										///< [in] Field of view in radians
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
-			const double pixelAR,									///< [in] Pixel aspect ratio
 			const double exposure,									///< [in] Exposure time of the camera
 			const double scanningRate,								///< [in] Rate at which each scanline is recorded
 			const double pixelRate,									///< [in] Rate at which each pixel is recorded
@@ -136,7 +135,8 @@ namespace RISE
 			const double fstop = 0.0								///< [in] Landing 5: f-number for EV computation.  Required when iso > 0; ignored otherwise.  Pinhole has no geometric DOF, so fstop only drives the exposure stack.
 			) = 0;
 
-		//! Adds a pinhole camera oriented via an orthonormal basis
+		//! Adds a pinhole camera oriented via an orthonormal basis.
+		//! Dims read from the scene's active Film — see AddPinholeCamera.
 		virtual bool AddPinholeCameraONB(
 			const char* name,										///< [in] Name to register the camera under
 			const double ONB_U[3],									///< [in] U vector of orthonormal basis
@@ -144,9 +144,6 @@ namespace RISE
 			const double ONB_W[3],									///< [in] W vector of orthonormal basis
 			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
 			const double fov,										///< [in] Field of view in radians
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
-			const double pixelAR,									///< [in] Pixel aspect ratio
 			const double exposure,									///< [in] Exposure time of the camera
 			const double scanningRate,								///< [in] Rate at which each scanline is recorded
 			const double pixelRate,									///< [in] Rate at which each pixel is recorded
@@ -164,6 +161,7 @@ namespace RISE
 		///     (default 1.0 = metres scene; 0.001 = mm; 0.0254 = inches).
 		///   - The camera converts mm → scene-units internally so the
 		///     lens equation is unit-consistent with focus_distance.
+		//! Dims read from the scene's active Film — see AddPinholeCamera.
 		virtual bool AddThinlensCamera(
 			const char* name,										///< [in] Name to register the camera under
 			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
@@ -174,9 +172,6 @@ namespace RISE
 			const double fstop,										///< [in] f-number (dimensionless; aperture diameter = focalLength/fstop)
 			const double focusDistance,								///< [in] Focus plane distance (scene units; must be > focal_in_scene_units)
 			const double sceneUnitMeters,							///< [in] Meters per scene unit (1.0 = metres scene; 0.001 = mm scene)
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
-			const double pixelAR,									///< [in] Pixel aspect ratio
 			const double exposure,									///< [in] Exposure time of the camera
 			const double scanningRate,								///< [in] Rate at which each scanline is recorded
 			const double pixelRate,									///< [in] Rate at which each pixel is recorded
@@ -192,15 +187,12 @@ namespace RISE
 			const double iso = 0.0									///< [in] Landing 5: ISO sensitivity.  Default 0 = physical exposure disabled (existing behaviour preserved bit-identically).  When > 0, fstop and exposure must also be > 0; evCompensation is computed and stacks into LDR outputs' exposure_compensation.  See AddPinholeCamera for the formula.
 			) = 0;
 
-		//! Adds a fisheye camera
+		//! Adds a fisheye camera.  Dims read from active Film — see AddPinholeCamera.
 		virtual bool AddFisheyeCamera(
 			const char* name,										///< [in] Name to register the camera under
 			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
 			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
 			const double vUp[3],									///< [in] Up vector of the camera
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
-			const double pixelAR,									///< [in] Pixel aspect ratio
 			const double exposure,									///< [in] Exposure time of the camera
 			const double scanningRate,								///< [in] Rate at which each scanline is recorded
 			const double pixelRate,									///< [in] Rate at which each pixel is recorded
@@ -209,16 +201,13 @@ namespace RISE
 			const double scale										///< [in] Scale factor to exagerrate the effects
 			) = 0;
 
-		//! Adds an orthographic camera
+		//! Adds an orthographic camera.  Dims read from active Film.
 		virtual bool AddOrthographicCamera(
 			const char* name,										///< [in] Name to register the camera under
 			const double ptLocation[3],								///< [in] Absolute location of where the camera is located
 			const double ptLookAt[3], 								///< [in] Absolute point the camera is looking at
 			const double vUp[3],									///< [in] Up vector of the camera
-			const unsigned int xres,								///< [in] X resolution of virtual screen
-			const unsigned int yres,								///< [in] Y resolution of virtual screen
 			const double vpScale[2],								///< [in] Viewport scale factor
-			const double pixelAR,									///< [in] Pixel aspect ratio
 			const double exposure,									///< [in] Exposure time of the camera
 			const double scanningRate,								///< [in] Rate at which each scanline is recorded
 			const double pixelRate,									///< [in] Rate at which each pixel is recorded

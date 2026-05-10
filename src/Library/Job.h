@@ -332,16 +332,13 @@ namespace RISE
 		// active).
 		//
 
-		//! Adds a pinhole camera
+		//! Adds a pinhole camera (dims read from active Film)
 		bool AddPinholeCamera(
 			const char* name,										///< [in] Name to register the camera under
 			const double ptLocation[3],
 			const double ptLookAt[3],
 			const double vUp[3],
 			const double fov,
-			const unsigned int xres,
-			const unsigned int yres,
-			const double pixelAR,
 			const double exposure,
 			const double scanningRate,
 			const double pixelRate,
@@ -351,7 +348,7 @@ namespace RISE
 			const double fstop = 0.0
 			);
 
-		//! Adds an ONB pinhole camera
+		//! Adds an ONB pinhole camera (dims read from active Film)
 		bool AddPinholeCameraONB(
 			const char* name,										///< [in] Name to register the camera under
 			const double ONB_U[3],
@@ -359,9 +356,6 @@ namespace RISE
 			const double ONB_W[3],
 			const double ptLocation[3],
 			const double fov,
-			const unsigned int xres,
-			const unsigned int yres,
-			const double pixelAR,
 			const double exposure,
 			const double scanningRate,
 			const double pixelRate,
@@ -382,9 +376,6 @@ namespace RISE
 			const double fstop,
 			const double focusDistance,
 			const double sceneUnitMeters,
-			const unsigned int xres,
-			const unsigned int yres,
-			const double pixelAR,
 			const double exposure,
 			const double scanningRate,
 			const double pixelRate,
@@ -400,15 +391,12 @@ namespace RISE
 			const double iso = 0.0
 			);
 
-		//! Adds a fisheye camera
+		//! Adds a fisheye camera (dims read from active Film)
 		bool AddFisheyeCamera(
 			const char* name,										///< [in] Name to register the camera under
 			const double ptLocation[3],
 			const double ptLookAt[3],
 			const double vUp[3],
-			const unsigned int xres,
-			const unsigned int yres,
-			const double pixelAR,
 			const double exposure,
 			const double scanningRate,
 			const double pixelRate,
@@ -417,16 +405,13 @@ namespace RISE
 			const double scale
 			);
 
-		//! Adds an orthographic camera
+		//! Adds an orthographic camera (dims read from active Film)
 		bool AddOrthographicCamera(
 			const char* name,										///< [in] Name to register the camera under
 			const double ptLocation[3],
 			const double ptLookAt[3],
 			const double vUp[3],
-			const unsigned int xres,
-			const unsigned int yres,
 			const double vpScale[2],
-			const double pixelAR,
 			const double exposure,
 			const double scanningRate,
 			const double pixelRate,
@@ -2602,6 +2587,12 @@ namespace RISE
 		//! does both) and `pRasterizer` / `activeRasterizerName`
 		//! point at it.
 		bool InstantiateRasterizerWithDefaults( const std::string& name );
+
+		//! Read xres/yres/pixelAR from the Scene's active Film for
+		//! the camera factories (Phase B2).  Single helper used by
+		//! every Add*Camera impl so the camera-factory dim-arg
+		//! plumbing has one source of truth — the Scene's Film.
+		void ReadFilmDims( unsigned int& xres, unsigned int& yres, double& pixelAR ) const;
 	};
 }
 

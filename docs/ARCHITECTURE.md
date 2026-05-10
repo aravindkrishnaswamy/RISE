@@ -134,10 +134,12 @@ still renders at a reasonable test-scene size.
        pixelAR 1.0
    }
    ```
-   Place the `film` chunk BEFORE camera chunks if you want the film's
-   value to win — camera chunks with explicit `width`/`height`/`pixelAR`
-   call `Job::SetFilm` themselves (transitional Phase B1 auto-sync) and
-   would otherwise overwrite the film chunk's value.
+   Camera chunks no longer accept `width`/`height`/`pixelAR` (scene
+   format v6, Phase B2): cameras read those from the active Film at
+   construction.  If a scene declares multiple `film` chunks, the
+   last-declared wins (each one resyncs every previously-added
+   camera's Frame to the new dims).  Old v5 scenes are migrated via
+   `python tools/migrate_scenes_v5_to_v6.py`.
 
 2. CLI override (`bin/RISE-CLI`):
    ```

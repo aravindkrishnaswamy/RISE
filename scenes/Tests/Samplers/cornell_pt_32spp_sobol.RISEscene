@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -42,13 +42,17 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+film
+{
+	width			1024
+	height			1024
+}
+
 pinhole_camera
 {
 	location			278 273 -800
 	lookat				278 273 200
 	up					0 1 0
-	width				1024
-	height				1024
 	fov					37.0
 }
 

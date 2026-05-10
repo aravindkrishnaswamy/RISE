@@ -122,14 +122,13 @@ bool SetupCamera( RISE::IJobPriv& job, const ViewParams& view, const int width, 
 	RISE::ICamera* pCamera = job.GetScene()->GetCamera();
 	if( !pCamera ) {
 		// Drive Scene's active Film from the 3DSMax render dims BEFORE
-		// adding the camera.  SetFilm resyncs all cameras to these
-		// dims so the rasterizer (which reads Film) and the camera's
-		// projection matrix match.
+		// adding the camera.  Job::AddPinholeCamera reads xres/yres/
+		// pixelAR from the active Film at construction.
 		job.SetFilm( width, height, 1.0 );
-		job.AddPinholeCamera( "default", loc, lookat, up, fov, width, height, 1.0, 0, 0, 0, o, to );
+		job.AddPinholeCamera( "default", loc, lookat, up, fov, 0, 0, 0, o, to );
 	} else {
 		// Otherwise, modify the existing camera with the MAX camera settings
-        // I know this is a hack, but we can use the IKeyframamble interface to set intermediate values 
+        // I know this is a hack, but we can use the IKeyframamble interface to set intermediate values
 		// to change the existing camera setting's parameters
 		char val[256] = {0};
 
@@ -173,25 +172,13 @@ bool SetupCamera( RISE::IJobPriv& job, const ViewParams& view, const int width, 
 			}
 		}
 
-		// Width
-		{
-			sprintf( val, "%u", width );
-			RISE::IKeyframeParameter* p = pCamera->KeyframeFromParameters( "width", val );
-			if( p ) {
-				pCamera->SetIntermediateValue( *p );
-				p->release();
-			}
-		}
-
-		// Height
-		{
-			sprintf( val, "%u", height );
-			RISE::IKeyframeParameter* p = pCamera->KeyframeFromParameters( "height", val );
-			if( p ) {
-				pCamera->SetIntermediateValue( *p );
-				p->release();
-			}
-		}
+		// Width / height are owned by the scene Film in v6 (Phase B2),
+		// not the camera.  SetFilm replaces the active Film AND resyncs
+		// every registered camera's projection — so a render-size change
+		// between SetupCamera() calls now reaches both the rasterizer
+		// (which reads its grid dims from Scene::GetFilm) and the camera
+		// (whose projection auto-resyncs to the new Film).
+		job.SetFilm( width, height, 1.0 );
 
 		// Tell the camera to get itself ready for rendering
 		pCamera->RegenerateData();

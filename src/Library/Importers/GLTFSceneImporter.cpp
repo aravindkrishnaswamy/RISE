@@ -2183,22 +2183,16 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 					// fov in radians (despite the chunk's "degrees" hint).
 					const double yfov_rad = (double)cam->data.perspective.yfov;
 
-					// Resolution / pixel rate / scanning rate are RISE
-					// internals; pick benign defaults.  Users override via
-					// a pinhole_camera chunk after the import or by
-					// tweaking the active camera at runtime.
-					// Drive Scene's active Film from the import-default
-					// camera dims (Phase B1).  glTF doesn't carry an
-					// authored render resolution; the 800x600 is RISE's
-					// import-time fallback.  Phase B2 / Phase D CLI
-					// override / GUI panel can replace the Film later.
+					// glTF doesn't carry an authored render resolution;
+					// install an 800x600 fallback Film so the camera's
+					// projection matches the rasterizer's grid.  CLI
+					// override / GUI panel / a follow-up `film` chunk
+					// can replace the Film later.
 					job.SetFilm( 800, 600, 1.0 );
 					added = job.AddPinholeCamera(
 						camName.c_str(),
 						location, lookat, up,
 						yfov_rad,
-						/*xres*/ 800, /*yres*/ 600,
-						/*pixelAR*/ 1.0,
 						/*exposure*/ 1.0,
 						/*scanningRate*/ 0.0,
 						/*pixelRate*/ 0.0,
@@ -2212,7 +2206,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 						added = job.AddPinholeCamera(
 							camName.c_str(),
 							location, lookat, up, yfov_rad,
-							800, 600, 1.0, 1.0, 0.0, 0.0,
+							1.0, 0.0, 0.0,
 							orientation, target_orient );
 					}
 					if( !added ) {
@@ -2256,13 +2250,11 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 							(unsigned)nodeIdx,
 							(double)cam->data.orthographic.zfar );
 					}
-					job.SetFilm( 800, 600, 1.0 );	// Phase B1 — see Pinhole branch above.
+					job.SetFilm( 800, 600, 1.0 );	// see Pinhole branch above
 					added = job.AddOrthographicCamera(
 						camName.c_str(),
 						location, lookat, up,
-						/*xres*/ 800, /*yres*/ 600,
 						vpScale,
-						/*pixelAR*/ 1.0,
 						/*exposure*/ 1.0,
 						/*scanningRate*/ 0.0,
 						/*pixelRate*/ 0.0,
@@ -2276,7 +2268,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 						added = job.AddOrthographicCamera(
 							camName.c_str(),
 							location, lookat, up,
-							800, 600, vpScale, 1.0, 1.0, 0.0, 0.0,
+							vpScale, 1.0, 0.0, 0.0,
 							orientation, target_orient );
 					}
 					if( !added ) {

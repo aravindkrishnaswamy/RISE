@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                                                                                           #
 #   File:           physical_exposure.RISEscene                                                             #
@@ -148,13 +148,17 @@ file_rasterizeroutput
 # to engage the L5 EV stack.
 ##################################################
 
+film
+{
+	width			320
+	height			240
+}
+
 pinhole_camera
 {
 	location	0  0  20
 	lookat		0  0  0
 	up			0  1  0
-	width		320
-	height		240
 	fov			30.0
 	exposure	0.004
 	iso			0

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #   CSG all-operations dielectric test for BDPT                                                             #
 #   Tests union, intersection, and subtraction with glass materials.                                        #
@@ -35,13 +35,17 @@ file_rasterizeroutput
 # Camera
 ##################################################
 
+film
+{
+	width			640
+	height			320
+}
+
 pinhole_camera
 {
 	location			0 3.5 7.5
 	lookat				0 1.0 0
 	up					0 1 0
-	width				640
-	height				320
 	fov					58.0
 }
 

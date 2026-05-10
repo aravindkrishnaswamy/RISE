@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 # Fast diagnostic version of spectral_skinmodel.RISEscene for iterating
 # on the spectral_skin chromaticity / SSS regression after the spectral
 # normalization fix.
@@ -40,13 +40,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			200
+	height			200
+}
+
 pinhole_camera
 {
 	location			-6 -1.5 12.0
 	lookat				-6 -1.5 0
 	up					0 1 0
-	width				200
-	height				200
 	fov					30.0
 }
 

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 # Performance comparison: textured Avocado, spectral path tracing through
 # pixelintegratingspectral_rasterizer + pathtracer shaderop.
 # Matched spp/recursion/lights with perf_avocado_rgb.RISEscene above —
@@ -36,13 +36,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			0.06 0.04 0.10
 	lookat				0 0.025 0
 	up					0 1 0
-	width				512
-	height				512
 	fov					40.0
 }
 

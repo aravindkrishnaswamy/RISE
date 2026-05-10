@@ -16,7 +16,7 @@ This directory defines the scene, script, command, and options parsers. For most
 The current parser expects scene files to begin with:
 
 ```text
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 ```
 
 Chunk syntax rules:
@@ -167,6 +167,12 @@ The descriptor surfaces this list as quick-pick presets in the editor's properti
 `thinlens_camera` consults a scene-level `camera_defaults` chunk (Phase 1.1) for `sensor_size`, `focal_length`, and `fstop` when those are omitted on the camera itself.  This is the natural way to express "this whole shot is on full-frame 35mm" once and have every camera in the file inherit it:
 
 ```
+film
+{
+    width  800
+    height 600
+}
+
 camera_defaults
 {
     sensor_size  36
@@ -179,11 +185,15 @@ thinlens_camera
     location       0 0 5
     lookat         0 0 0
     up             0 1 0
-    width          800
-    height         600
     focus_distance 5     # only param required per camera
 }
 ```
+
+Note: raster dims (`width`, `height`, `pixelAR`) live in the top-level
+`film` chunk in scene format v6 (Phase B2 of the Camera/Film/Output
+split). Camera chunks are imaging-only and reject `width` / `height`
+parameters. Omit the `film` chunk entirely if the default qHD
+(960 × 540) is acceptable.
 
 **Declaration order matters:** `camera_defaults` must appear **before** the camera chunks that consume it (same convention as `standard_shader` and other scene-level config).  Cameras with explicit values override the defaults; `focus_distance` has no scene-level fallback (it's shot-specific).
 
@@ -292,7 +302,7 @@ Parameter sets shared across many chunks live in [AsciiSceneParser.cpp](AsciiSce
 
 | Helper | Used by | Adds |
 |--------|---------|------|
-| `AddCameraCommonParams` | All 5 cameras | `location`, `lookat`, `up`, `width`, `height`, `pixelAR`, `exposure`, `pitch`, `yaw`, `roll`, `target_orientation`, … |
+| `AddCameraCommonParams` | All 5 cameras | `location`, `lookat`, `up`, `exposure`, `pitch`, `yaw`, `roll`, `target_orientation`, … (raster dims — `width`, `height`, `pixelAR` — moved to the top-level `film` chunk in scene format v6 / Phase B2) |
 | `AddPixelFilterParams` | All 10 rasterizers | `pixel_filter`, `pixel_filter_width`, `pixel_filter_height`, `pixel_filter_paramA/B` |
 | `AddSpectralCoreParams` | All 5 spectral rasterizers | `spectral_samples`, `nmbegin`, `nmend`, `num_wavelengths`, `hwss` |
 | `AddSpectralRGBSpdParams` | `pixelintegratingspectral_rasterizer` only (soft-deprecated, see [docs/SPECTRAL_PARITY_AUDIT.md](../../../docs/SPECTRAL_PARITY_AUDIT.md) §2.1–§2.5) | `integrate_rgb`, `rgb_spd`, `rgb_spd_wavelengths`, `rgb_spd_r/g/b` |

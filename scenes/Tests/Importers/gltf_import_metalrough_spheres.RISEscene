@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                                                                                           #
 #   File:           gltf_import_metalrough_spheres.RISEscene                                                #
@@ -42,13 +42,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			0 0 18
 	lookat				0 0 0
 	up					0 1 0
-	width				512
-	height				512
 	fov					40.0
 }
 

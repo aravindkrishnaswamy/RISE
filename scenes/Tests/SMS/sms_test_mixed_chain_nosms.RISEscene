@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #   SMS Multi-Object Chain Test: Mixed reflection/refraction chain.
 #   Three spheres in a line: mirror, glass, mirror.
@@ -29,13 +29,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			200
+	height			200
+}
+
 pinhole_camera
 {
 	location			0 4 8
 	lookat				0 0.5 0
 	up					0 1 0
-	width				200
-	height				200
 	fov					45.0
 }
 

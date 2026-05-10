@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 # BDPT version of Veach's sealed glass egg scene
 # Same geometry/materials as mlt_veach_egg.RISEscene, with the MLT rasterizer
 # swapped for BDPT so we can compare convergence on the same SDS-heavy paths.
@@ -24,13 +24,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			400
+	height			400
+}
+
 pinhole_camera
 {
 	location			278 350 -650
 	lookat				278 200 278
 	up					0 1 0
-	width				400
-	height				400
 	fov					40.0
 }
 

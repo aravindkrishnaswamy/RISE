@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                                                                                           #
 #   File:           pbr_metallic_roughness.RISEscene                                                        #
@@ -38,13 +38,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			768
+	height			256
+}
+
 pinhole_camera
 {
 	location			0 0 6
 	lookat				0 0 0
 	up					0 1 0
-	width				768
-	height				256
 	fov					40.0
 }
 

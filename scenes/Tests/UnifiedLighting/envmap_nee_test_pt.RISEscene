@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #   Test scene for environment map importance sampling (Stage 1E).                                          #
 #   Multiple spheres with varying materials (diffuse, mirror, glossy, glass) on a reflective ground         #
@@ -36,13 +36,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			800
+	height			400
+}
+
 pinhole_camera
 {
 	location			0 3 -8
 	lookat				0 0.8 0
 	up					0 1 0
-	width				800
-	height				400
 	fov					50
 }
 
