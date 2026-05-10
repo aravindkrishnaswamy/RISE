@@ -82,6 +82,14 @@ private:
     Category                        m_currentSelectionCat = Category::None;
     QString                         m_currentSelectionName;
     unsigned int                    m_lastEpoch = 0;
+
+    // Re-entry guard: a ScrubHandle drag drives setProperty → re-render
+    // → imageUpdated → refresh().  Rebuilding the property rows would
+    // delete the very ScrubHandle whose mouseMoveEvent is on the stack,
+    // killing the implicit mouse grab and freezing the drag at the
+    // first move.  The ScrubHandle's begin/end bracket flips this on
+    // and off; refresh() short-circuits while it is set.
+    bool                            m_scrubbing = false;
 };
 
 #endif // VIEWPORTPROPERTIES_H

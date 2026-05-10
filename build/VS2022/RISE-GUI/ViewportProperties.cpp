@@ -19,7 +19,10 @@
 #include <QScrollArea>
 #include <QFrame>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPaintEvent>
 #include <QPointer>
+#include <QPolygonF>
 #include <QToolButton>
 #include <QMenu>
 
@@ -91,13 +94,12 @@ public:
         , m_beginBracket(std::move(beginBracket))
         , m_endBracket(std::move(endBracket))
     {
-        setText(QStringLiteral("↕"));
+        // Glyph is painted in paintEvent — we draw two filled triangles
+        // rather than rely on a Unicode arrow glyph being present in the
+        // system font (Mac uses the SF Symbol `chevron.up.chevron.down`;
+        // there is no portable Windows-font equivalent).
         setFixedSize(16, 18);
-        setAlignment(Qt::AlignCenter);
         setCursor(Qt::SizeVerCursor);
-        setStyleSheet(
-            "color: palette(placeholder-text); "
-            "font-size: 11px; font-weight: bold;");
         setToolTip(QObject::tr(
             "Drag up/down to change.  Shift = fine, Alt = coarse."));
     }
@@ -157,6 +159,37 @@ protected:
         } else {
             QLabel::mouseReleaseEvent(e);
         }
+    }
+
+    void paintEvent(QPaintEvent*) override
+    {
+        // Two filled triangles, up over down, matching SF Symbol
+        // `chevron.up.chevron.down`.  Geometry is in widget-local
+        // coordinates with a 2 px border so the glyph never clips at
+        // odd DPI scales.
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(Qt::NoPen);
+        QColor c = palette().color(QPalette::PlaceholderText);
+        if (!c.isValid()) c = palette().color(QPalette::WindowText);
+        p.setBrush(c);
+
+        const qreal w  = width();
+        const qreal h  = height();
+        const qreal pad = 2.0;
+        const qreal triH = (h - 2 * pad - 1.0) * 0.5;   // 1 px gap between
+
+        QPolygonF up;
+        up << QPointF(pad,          pad + triH)
+           << QPointF(w - pad,      pad + triH)
+           << QPointF(w * 0.5,      pad);
+        p.drawPolygon(up);
+
+        QPolygonF down;
+        down << QPointF(pad,        h - pad - triH)
+             << QPointF(w - pad,    h - pad - triH)
+             << QPointF(w * 0.5,    h - pad);
+        p.drawPolygon(down);
     }
 
 private:
@@ -457,8 +490,16 @@ void ViewportProperties::rebuildPropertyRows()
                                 m_lastValue.insert(n, v);
                             }
                         },
-                        [this]() { if (m_bridge) m_bridge->beginPropertyScrub(); },
-                        [this]() { if (m_bridge) m_bridge->endPropertyScrub();   });
+                        [this]() {
+                            m_scrubbing = true;
+                            if (m_bridge) m_bridge->beginPropertyScrub();
+                        },
+                        [this]() {
+                            m_scrubbing = false;
+                            if (m_bridge) m_bridge->endPropertyScrub();
+                            // Pull canonical values back after the user lets go.
+                            refresh();
+                        });
                     fieldRow->addWidget(handle);
                 }
                 fieldRow->addWidget(edit, 1);
@@ -554,6 +595,12 @@ void ViewportProperties::rebuildPropertyRows()
 void ViewportProperties::refresh()
 {
     if (!m_bridge) return;
+    // While a ScrubHandle drag is in flight, do NOT rebuild the rows —
+    // doing so would deleteLater() the handle whose mouseMoveEvent put
+    // setProperty() → imageUpdated → here on the stack, killing the
+    // mouse grab.  endPropertyScrub calls refresh() once the user lets
+    // go to re-sync canonical values.
+    if (m_scrubbing) return;
 
     m_headerLabel->setText(m_bridge->panelHeader());
 
