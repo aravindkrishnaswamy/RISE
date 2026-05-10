@@ -46,11 +46,13 @@ VCMPelRasterizer::VCMPelRasterizer(
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig_,
-	const bool useZSobol
+	const bool useZSobol,
+	RISE::Implementation::FrameStore* frameStore
 	) :
-	PixelBasedRasterizerHelper( pCaster_ ),
-	VCMRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, mergeRadius, enableVC, enableVM, stabilityConfig_ ),
-	PixelBasedPelRasterizer( pCaster_, guidingConfig, adaptiveConfig, stabilityConfig_, useZSobol )
+	Rasterizer( frameStore ),
+	PixelBasedRasterizerHelper( pCaster_ , frameStore),
+	VCMRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, mergeRadius, enableVC, enableVM, stabilityConfig_ , frameStore),
+	PixelBasedPelRasterizer( pCaster_, guidingConfig, adaptiveConfig, stabilityConfig_, useZSobol , frameStore)
 {
 }
 

@@ -92,7 +92,7 @@ namespace RISE
 				{}
 			};
 
-			InteractivePelRasterizer( IRayCaster* pCaster, const Config& cfg );
+			InteractivePelRasterizer( IRayCaster* pCaster, const Config& cfg , RISE::Implementation::FrameStore* frameStore = nullptr);
 
 			enum PreviewDenoiseMode
 			{

@@ -81,7 +81,8 @@ namespace RISE
 				const AdaptiveSamplingConfig& adaptiveConfig,
 				const StabilityConfig& stabilityConfig,
 				bool useZSobol_,
-				bool useHWSS_
+				bool useHWSS_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 
 			virtual void PreRenderSetup(

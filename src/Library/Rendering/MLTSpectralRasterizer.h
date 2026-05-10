@@ -160,7 +160,8 @@ namespace RISE
 				const Scalar lambda_begin_,
 				const Scalar lambda_end_,
 				const unsigned int nSpectralSamples_,
-				const bool useHWSS_
+				const bool useHWSS_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 
 			//////////////////////////////////////////////////////////////

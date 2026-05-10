@@ -4839,7 +4839,7 @@ namespace RISE
 			return false;
 		}
 
-		PixelBasedPelRasterizer* pRasterizer = new PixelBasedPelRasterizer( caster, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+		PixelBasedPelRasterizer* pRasterizer = new PixelBasedPelRasterizer( caster, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol, frameStore);
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
@@ -4894,7 +4894,7 @@ namespace RISE
 			return false;
 		}
 
-		PixelBasedSpectralIntegratingRasterizer* pRasterizer = new PixelBasedSpectralIntegratingRasterizer( caster, lambda_begin, lambda_end, num_wavelengths, specSamples, stabilityConfig, useZSobol, useHWSS );
+		PixelBasedSpectralIntegratingRasterizer* pRasterizer = new PixelBasedSpectralIntegratingRasterizer( caster, lambda_begin, lambda_end, num_wavelengths, specSamples, stabilityConfig, useZSobol, useHWSS, frameStore);
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
@@ -4957,7 +4957,7 @@ namespace RISE
 			return false;
 		}
 
-		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -5012,7 +5012,7 @@ namespace RISE
 
 		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
 			caster, maxEyeDepth, maxLightDepth,
-			lambda_begin, lambda_end, num_wavelengths, spectral_samples, guidingConfig, stabilityConfig, useZSobol, useHWSS );
+			lambda_begin, lambda_end, num_wavelengths, spectral_samples, guidingConfig, stabilityConfig, useZSobol, useHWSS, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -5074,7 +5074,7 @@ namespace RISE
 			guidingConfig,
 			adaptiveConfig,
 			stabilityConfig,
-			useZSobol );
+			useZSobol, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -5146,7 +5146,7 @@ namespace RISE
 			adaptiveConfig,
 			stabilityConfig,
 			useZSobol,
-			useHWSS );
+			useHWSS, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -5223,7 +5223,7 @@ namespace RISE
 		}
 
 		PathTracingPelRasterizer* pRasterizer = new PathTracingPelRasterizer(
-			caster, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+			caster, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -5305,7 +5305,7 @@ namespace RISE
 
 		PathTracingSpectralRasterizer* pRasterizer = new PathTracingSpectralRasterizer(
 			caster, lambda_begin, lambda_end, num_wavelengths, spectral_samples,
-			smsConfig, adaptiveConfig, stabilityConfig, useZSobol, useHWSS );
+			smsConfig, adaptiveConfig, stabilityConfig, useZSobol, useHWSS, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -5372,7 +5372,7 @@ namespace RISE
 		}
 
 		MLTRasterizer* pRasterizer = new MLTRasterizer( caster, maxEyeDepth, maxLightDepth,
-			nBootstrap, nChains, nMutationsPerPixel, largeStepProb );
+			nBootstrap, nChains, nMutationsPerPixel, largeStepProb, frameStore);
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
@@ -5455,7 +5455,7 @@ namespace RISE
 
 		MLTSpectralRasterizer* pRasterizer = new MLTSpectralRasterizer( caster, maxEyeDepth, maxLightDepth,
 			nBootstrap, nChains, nMutationsPerPixel, largeStepProb,
-			lambda_begin, lambda_end, nSpectralSamples, useHWSS );
+			lambda_begin, lambda_end, nSpectralSamples, useHWSS, frameStore);
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );

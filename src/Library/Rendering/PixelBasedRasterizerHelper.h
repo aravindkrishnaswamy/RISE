@@ -267,7 +267,7 @@ namespace RISE
 			}
 
 		public:
-			PixelBasedRasterizerHelper( IRayCaster* pCaster_ );
+			PixelBasedRasterizerHelper( IRayCaster* pCaster_ , RISE::Implementation::FrameStore* frameStore = nullptr);
 
 			/// Called after a RuntimeContext is created, before any rendering
 			/// with it.  Subclasses can override to inject per-context state

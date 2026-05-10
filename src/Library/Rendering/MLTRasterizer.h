@@ -307,7 +307,8 @@ namespace RISE
 				const unsigned int nBootstrap_,
 				const unsigned int nChains_,
 				const unsigned int nMutationsPerPixel_,
-				const Scalar largeStepProb_
+				const Scalar largeStepProb_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 
 			//////////////////////////////////////////////////////////////

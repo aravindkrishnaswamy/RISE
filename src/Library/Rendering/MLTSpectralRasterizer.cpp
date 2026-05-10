@@ -81,9 +81,11 @@ MLTSpectralRasterizer::MLTSpectralRasterizer(
 	const Scalar lambda_begin_,
 	const Scalar lambda_end_,
 	const unsigned int nSpectralSamples_,
-	const bool useHWSS_
+	const bool useHWSS_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
-  MLTRasterizer( pCaster_, maxEyeDepth, maxLightDepth, nBootstrap_, nChains_, nMutationsPerPixel_, largeStepProb_ ),
+  Rasterizer( frameStore ),
+  MLTRasterizer( pCaster_, maxEyeDepth, maxLightDepth, nBootstrap_, nChains_, nMutationsPerPixel_, largeStepProb_, frameStore ),
   lambda_begin( lambda_begin_ ),
   lambda_end( lambda_end_ ),
   nSpectralSamples( nSpectralSamples_ ),

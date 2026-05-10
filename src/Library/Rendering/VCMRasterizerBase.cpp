@@ -64,7 +64,8 @@ VCMRasterizerBase::VCMRasterizerBase(
 	const Scalar mergeRadius,
 	const bool enableVC,
 	const bool enableVM,
-	const StabilityConfig& stabilityCfg
+	const StabilityConfig& stabilityCfg,
+	RISE::Implementation::FrameStore* frameStore
 	) :
 	PixelBasedRasterizerHelper( pCaster_ ),
 	BidirectionalRasterizerBase( pCaster_, stabilityCfg ),

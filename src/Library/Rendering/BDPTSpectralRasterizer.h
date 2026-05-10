@@ -113,7 +113,8 @@ namespace RISE
 				const PathGuidingConfig& guidingConfig,
 				const StabilityConfig& stabilityConfig,
 				bool useZSobol_,
-				bool useHWSS_
+				bool useHWSS_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 		};
 	}

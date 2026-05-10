@@ -40,7 +40,8 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
-	IRayCaster* pCaster_
+	IRayCaster* pCaster_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
   pCaster( pCaster_ ),
   pSampling( 0 ),
