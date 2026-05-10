@@ -862,6 +862,65 @@ namespace
 		safe_release( extFs );
 	}
 
+	// ─── Section 10 (L6e-2b): SetFrameStore notification ─────────
+	//
+	// Verify that `IRasterizerOutput::OnRasterizerFrameStoreChanged`
+	// fires when a Rasterizer's `SetFrameStore` is called, and that
+	// VFS's override forwards to `BindFrameStore` so VFS auto-rebinds
+	// across resolution changes.
+	//
+	// We can't easily construct a real Rasterizer in a unit test
+	// (full library dependency tree); instead, test the override
+	// directly: VFS::OnRasterizerFrameStoreChanged(fs) must
+	// observably switch the bound store.
+	void TestSetFrameStoreNotification_L6e2b()
+	{
+		auto* vfs = new ViewportFrameStore();
+
+		FrameStore::Spec specA;
+		specA.width = 8; specA.height = 8; specA.tileEdge = 8;
+		auto* fsA = new FrameStore( specA );
+		fsA->addref();  // test holds one
+
+		FrameStore::Spec specB;
+		specB.width = 12; specB.height = 12; specB.tileEdge = 4;
+		auto* fsB = new FrameStore( specB );
+		fsB->addref();  // test holds one
+
+		// Initial notification — same as a Job-pushed initial bind.
+		vfs->OnRasterizerFrameStoreChanged( fsA );
+		Check( vfs->IsExternallyBound(),
+			"L6e-2b: notification fired with non-null binds VFS" );
+		Check( vfs->GetFrameStore() == fsA,
+			"L6e-2b: VFS now points at fsA" );
+
+		// Resolution-change notification — Job allocated a new
+		// FrameStore on dim change.
+		vfs->OnRasterizerFrameStoreChanged( fsB );
+		Check( vfs->IsExternallyBound(),
+			"L6e-2b: still bound after dim-change notification" );
+		Check( vfs->GetFrameStore() == fsB,
+			"L6e-2b: VFS rebound to fsB across dim change" );
+
+		// Null notification — rasterizer cleared its FrameStore.
+		// Should revert to internal-managed mode.
+		vfs->OnRasterizerFrameStoreChanged( nullptr );
+		Check( !vfs->IsExternallyBound(),
+			"L6e-2b: null notification reverts to internal mode" );
+		Check( vfs->GetFrameStore() == nullptr,
+			"L6e-2b: GetFrameStore null after unbind" );
+
+		// Test holds the only refs now (VFS released both on rebind).
+		Check( fsA->Width()  == 8 && fsA->Height() == 8,
+			"L6e-2b: fsA outlived the VFS rebind" );
+		Check( fsB->Width()  == 12 && fsB->Height() == 12,
+			"L6e-2b: fsB outlived the VFS rebind" );
+
+		safe_release( fsA );
+		safe_release( fsB );
+		vfs->release();
+	}
+
 	// ─── Section 8: cameraExposureEV propagates to Meta ───────────
 	void TestCameraExposureFlow()
 	{
@@ -912,6 +971,7 @@ int main()
 	TestChainRaceUnderResolutionChange();
 	TestCameraExposureFlow();
 	TestExternalBind_L6e2a();
+	TestSetFrameStoreNotification_L6e2b();
 
 	std::cout << "------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";

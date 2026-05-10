@@ -302,6 +302,15 @@ namespace RISE
 				const unsigned int frame ) override;
 			void SetCameraExposureCompensationEV( Scalar ev ) override;
 
+			//! L6e-2b — Picks up the rasterizer's current FrameStore
+			//! and binds to it.  Fires when the rasterizer swaps its
+			//! canonical FrameStore (Job push on scene-load,
+			//! resolution change, active-camera switch).  Forwards
+			//! to `BindFrameStore(framestore)` — same lifecycle as
+			//! a manual bind.  Passing nullptr (rasterizer cleared
+			//! its FrameStore) reverts to internal-managed mode.
+			void OnRasterizerFrameStoreChanged( Implementation::FrameStore* framestore ) override;
+
 		protected:
 			virtual ~ViewportFrameStore();
 
