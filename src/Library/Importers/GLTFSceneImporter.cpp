@@ -267,8 +267,16 @@ namespace
 	std::string ObjectName   ( const std::string& prefix, size_t nodeIdx, size_t prim ) {
 		std::ostringstream oss; oss << prefix << ".obj.n" << nodeIdx << ".p" << prim; return oss.str();
 	}
-	std::string LightName    ( const std::string& prefix, size_t idx ) {
-		std::ostringstream oss; oss << prefix << ".light." << idx; return oss.str();
+	// LightName is keyed on the GLTF NODE index (not the light-DEFINITION
+	// index in `data->lights`), because KHR_lights_punctual is shared by
+	// reference: a single light definition can be instanced across many
+	// nodes (e.g. pkg_d_10k_candles points 10 000 candle nodes at one
+	// shared point-light definition).  Keying by the definition index
+	// would collide on the manager AddItem step, silently dropping every
+	// light past the first instance.  Keying on the unique nodeIdx
+	// preserves all per-instance placements.
+	std::string LightName    ( const std::string& prefix, size_t nodeIdx ) {
+		std::ostringstream oss; oss << prefix << ".light.n" << nodeIdx; return oss.str();
 	}
 	// Camera name builder.  Multi-camera support (2026-05-01): every glTF
 	// node carrying a camera gets registered with a stable name derived
@@ -1568,7 +1576,11 @@ namespace
 	bool CreateLightForNode(
 		IJob&				job,
 		const std::string&  prefix,
-		size_t              lightIdx,
+		size_t              nodeIdx,					// caller's per-node index in data->nodes — used to
+														// build a UNIQUE manager name for the light, so
+														// instanced KHR_lights_punctual references (one
+														// shared definition referenced by many nodes,
+														// e.g. pkg_d_10k_candles) don't collide on AddItem
 		const cgltf_light*  light,
 		const cgltf_float   worldMatrix[16],
 		double              uniformOverride,			// legacy: applies to all types when > 0; see GLTFImportOptions::lightsIntensityOverride
@@ -1596,7 +1608,7 @@ namespace
 		const double dny = (dlen > 1e-8) ? dy / dlen : 0;
 		const double dnz = (dlen > 1e-8) ? dz / dlen : -1;
 
-		const std::string name = LightName( prefix, lightIdx );
+		const std::string name = LightName( prefix, nodeIdx );
 		// glTF light color is documented as linear sRGB (linear Rec.709).
 		// RISE's `Add*Light` methods treat the supplied triple as sRGB,
 		// gamma-decoding it on use -- so we'd lose ~58% of the intensity
@@ -2086,10 +2098,12 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 				}
 			}
 
-			// Light
+			// Light.  Pass `nodeIdx` (NOT the light-definition index)
+			// to keep the manager name unique across instances that
+			// reference the same shared light definition — see
+			// LightName comment for the pkg_d_10k_candles motivation.
 			if( opts.importLights && node->light ) {
-				const size_t lightIdx = (size_t)( node->light - data->lights );
-				CreateLightForNode( job, prefix, lightIdx, node->light, world,
+				CreateLightForNode( job, prefix, nodeIdx, node->light, world,
 					opts.lightsIntensityOverride,
 					opts.directionalIntensityOverride,
 					opts.pointIntensityOverride,
