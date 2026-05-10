@@ -307,6 +307,52 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		}
 	}
 
+	// L6e-1 — When the rasterizer's per-pixel writes target the
+	// canonical FrameStore (image IS mFrameStore->AsBeautyRasterImage()
+	// per L6c-1's AcquireRenderImage), bracket the writes with
+	// BeginTile / EndTile so concurrent readers (UI viewports,
+	// encoders mid-render) see post-bracket state instead of torn
+	// per-pixel writes.  The bracketing also bumps each tile's
+	// generation counter and fires the FrameStore's observer chain
+	// — which L6e-2 will use to drive direct-from-rasterizer-FrameStore
+	// repaints (replacing the bridge VFS-internal FrameStore + the
+	// FrameSink cross-store copy).
+	//
+	// Multi-tile coverage: the rasterizer's adaptive block size (8..64,
+	// see AdaptiveTileSizer.cpp) may differ from the FrameStore's
+	// fixed 32-pixel tile edge.  Cases:
+	//   * block ≥ 32: one block covers 1 or more FrameStore tiles.
+	//     We BeginTile / EndTile each tile that overlaps the block's
+	//     pixel range.
+	//   * block < 32: multiple blocks share a FrameStore tile; the
+	//     per-tile exclusive lock serializes them.  Acceptable
+	//     correctness + light perf cost for small dispatch sizes.
+	//
+	// The pixel-write loop below is intentionally unchanged.  Reordering
+	// it (e.g. iterate tile-by-tile within the block) would change the
+	// per-pixel RNG sample stream → byte-identity break against the
+	// legacy `RISERasterImage` path.  Holding all overlapping tile
+	// locks across the original row-major loop preserves the order.
+	const bool fsBracket =
+		( mFrameStore &&
+		  image.GetWidth()  == mFrameStore->Width() &&
+		  image.GetHeight() == mFrameStore->Height() );
+	size_t fsTx0 = 0, fsTy0 = 0, fsTx1 = 0, fsTy1 = 0;
+	if( fsBracket ) {
+		const size_t te = mFrameStore->TileEdge();
+		fsTx0 = static_cast<size_t>( rect.left )   / te;
+		fsTy0 = static_cast<size_t>( rect.top )    / te;
+		fsTx1 = std::min( mFrameStore->TileCountX(),
+		                  ( static_cast<size_t>( rect.right )  / te ) + 1 );
+		fsTy1 = std::min( mFrameStore->TileCountY(),
+		                  ( static_cast<size_t>( rect.bottom ) / te ) + 1 );
+		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+				mFrameStore->BeginTile( tx, ty );
+			}
+		}
+	}
+
 	for( unsigned int y=rect.top; y<=rect.bottom; y++ )
 	{
 		for( unsigned int x=rect.left; x<=rect.right; x++ )
@@ -317,6 +363,17 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 			if( c.a < 0.0 ) c.a = 0.0;
 			if( c.a > 1.0 ) c.a = 1.0;
 			image.SetPEL( x, y, c );
+		}
+	}
+
+	if( fsBracket ) {
+		// EndTile fires per-tile observers (OnTileComplete) and bumps
+		// the global generation.  Order doesn't matter — each tile's
+		// observer fire is independent.
+		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+				mFrameStore->EndTile( tx, ty );
+			}
 		}
 	}
 
@@ -367,6 +424,28 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 		}
 	}
 
+	// L6e-1 — same FrameStore tile bracketing as SPRasterizeSingleBlock
+	// (see comment block in that method).  Iteration order preserved.
+	const bool fsBracket =
+		( mFrameStore &&
+		  image.GetWidth()  == mFrameStore->Width() &&
+		  image.GetHeight() == mFrameStore->Height() );
+	size_t fsTx0 = 0, fsTy0 = 0, fsTx1 = 0, fsTy1 = 0;
+	if( fsBracket ) {
+		const size_t te = mFrameStore->TileEdge();
+		fsTx0 = static_cast<size_t>( rect.left )   / te;
+		fsTy0 = static_cast<size_t>( rect.top )    / te;
+		fsTx1 = std::min( mFrameStore->TileCountX(),
+		                  ( static_cast<size_t>( rect.right )  / te ) + 1 );
+		fsTy1 = std::min( mFrameStore->TileCountY(),
+		                  ( static_cast<size_t>( rect.bottom ) / te ) + 1 );
+		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+				mFrameStore->BeginTile( tx, ty );
+			}
+		}
+	}
+
 	for( unsigned int y=rect.top; y<=rect.bottom; y++ ) {
 		if( framedata.field == FIELD_BOTH || y%2 == (unsigned int)framedata.field ) {
 			const Scalar base_scanline_time = framedata.base_cur_time + framedata.scanningRate*y;
@@ -391,6 +470,14 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 				if( c.a < 0.0 ) c.a = 0.0;
 				if( c.a > 1.0 ) c.a = 1.0;
 				image.SetPEL( x, y, c );
+			}
+		}
+	}
+
+	if( fsBracket ) {
+		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+				mFrameStore->EndTile( tx, ty );
 			}
 		}
 	}
