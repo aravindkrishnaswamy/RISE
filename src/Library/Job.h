@@ -1295,7 +1295,11 @@ namespace RISE
 							const double directional_intensity_override,
 							const double point_intensity_override,
 							const double spot_intensity_override,
-							const bool   respect_baked_occlusion = true
+							const bool   respect_baked_occlusion = true,
+							const double emissive_intensity_scale = 1.0,
+							const double emissive_tint_r = 1.0,
+							const double emissive_tint_g = 1.0,
+							const double emissive_tint_b = 1.0
 							);
 
 		//! Creates a triangle mesh geometry from a glTF 2.0 file.  See IJob.h

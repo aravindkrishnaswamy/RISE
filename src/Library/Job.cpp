@@ -3907,7 +3907,11 @@ bool Job::ImportGLTFScene(
 					const double directional_intensity_override,
 					const double point_intensity_override,
 					const double spot_intensity_override,
-					const bool respect_baked_occlusion
+					const bool respect_baked_occlusion,
+					const double emissive_intensity_scale,
+					const double emissive_tint_r,
+					const double emissive_tint_g,
+					const double emissive_tint_b
 					)
 {
 	GLTFSceneImporter importer( filename );
@@ -3928,6 +3932,10 @@ bool Job::ImportGLTFScene(
 	opts.pointIntensityOverride        = point_intensity_override;
 	opts.spotIntensityOverride         = spot_intensity_override;
 	opts.respectBakedOcclusion         = respect_baked_occlusion;
+	opts.emissiveIntensityScale        = emissive_intensity_scale;
+	opts.emissiveTint[0]               = emissive_tint_r;
+	opts.emissiveTint[1]               = emissive_tint_g;
+	opts.emissiveTint[2]               = emissive_tint_b;
 	return importer.ImportScene( *this, opts );
 }
 

@@ -1,0 +1,464 @@
+RISE ASCII SCENE 5
+#############################################################################################################
+#                                                                                                           #
+#   File:           sponza_new_candles.RISEscene                                                            #
+#   Description:    Loads Intel/Khronos's New Sponza (NewSponza_Main_glTF_003.gltf) — the                   #
+#                   modern, PBR-textured rebuild of the classic Crytek Sponza atrium.                       #
+#                   ~155 nodes, dozens of unique materials, full PBR (baseColor + metallic-                 #
+#                   roughness + normal + emissive maps) for every surface.                                  #
+#                                                                                                           #
+#                   The asset itself is NOT in this repo (it's ~1.5 GB of textures + buffer).               #
+#                   Download once from Intel's GitHub mirror or Khronos's glTF-Sample-Assets:               #
+#                                                                                                           #
+#                       https://github.com/KhronosGroup/glTF-Sample-Assets                                  #
+#                       https://www.intel.com/content/www/us/en/developer/topic-technology/graphics-       #
+#                                            research/samples.html                                          #
+#                                                                                                           #
+#                   This scene file expects the asset at:                                                   #
+#                                                                                                           #
+#                     C:/Users/micro/Downloads/main_sponza/main_sponza/                                     #
+#                       ├── NewSponza_Main_glTF_003.gltf                                                    #
+#                       ├── NewSponza_Main_glTF_003.bin                                                     #
+#                       └── textures/                                                                       #
+#                            └── *.png  (137 files — albedo / metalness / roughness / normal)               #
+#                                                                                                           #
+#                   Update the `file` parameter in the `gltf_import` block below to point at                #
+#                   wherever you put the .gltf.                                                             #
+#                                                                                                           #
+#                   What you should see in a healthy render:                                                #
+#                     - The familiar Sponza atrium viewed from outside the entrance, looking                #
+#                       down the colonnaded hall.                                                           #
+#                     - Stone arches with normal-mapped detail; gilded ornament_doors with                  #
+#                       crisp metallic highlights; wooden door + plaster walls with diffuse                 #
+#                       roughness; lamps emissive-glowing.                                                  #
+#                     - Sun streaming in from the open ceiling; soft sky-fill on the shadowed               #
+#                       side; ambient bounce filling the deep interior.                                     #
+#                                                                                                           #
+#                   Asset conventions:                                                                      #
+#                     - Y-up (the "Yup" suffix in the filename).  Eye level ≈ 1.6 m.                        #
+#                     - Atrium runs along the X axis; entrance at -X, back wall at +X.                      #
+#                     - Columns and arches are along Z (the colonnade depth).                               #
+#                     - Asset's bundled lights are all intensity=0 (the artists left lighting               #
+#                       to the renderer); we wake them via lights_intensity_override below                 #
+#                       and add a sky_dome environment radiance_map for fill.                              #
+#                     - Asset's bundled cameras are all valid; we still override with our own               #
+#                       pinhole below so the framing matches PhysCamera001 (the canonical                   #
+#                       hero shot) without depending on quaternion-import correctness.                      #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-04-30                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Scene-level options.  Sponza is authored in
+# metres, which is RISE's default scene_unit (1.0),
+# so this declaration is documentation more than
+# a real conversion -- but it pins the convention
+# in case scene_unit's default ever changes.
+##################################################
+
+scene_options
+{
+	scene_unit		1.0
+}
+
+##################################################
+# Hosek-Wilkie analytic sun-and-sky — DEEP DUSK
+# preset for the candle torture-test scene.  The
+# 10 000 candles are meant to be the dominant
+# illumination; the sky is dialled down to a faint
+# blue-purple residual so shadows fill softly
+# without washing out the warm candlelight, and the
+# matched directional sun is OFF entirely (the sun
+# is below the horizon at this hour).
+#
+# Tuning knobs if the look needs to shift:
+#  - `solar_elevation` controls residual sky tint:
+#    1° gives a bluer twilight, 5-10° pushes it
+#    closer to amber sunset (the HW model is only
+#    valid for elevation ≥ 0).
+#  - `sky_intensity_scale` sets the sky brightness
+#    relative to the candles.  0.05 = barely
+#    perceptible blue fill (current); raise toward
+#    0.3 for "first hour after sunset" mood.
+#  - To bring the directional sun back for a
+#    golden-hour variant, set `create_sun TRUE`
+#    and pick `solar_elevation 5-10°`.
+##################################################
+
+hosek_wilkie_skylight
+{
+	solar_elevation		1.0
+	solar_azimuth		270.0
+	turbidity			4.0
+	sky_intensity_scale	0.005
+	sun_intensity_scale	0.0
+	create_sun			FALSE
+}
+
+##################################################
+# Shader.  Path tracing -- the atrium has a single
+# directional sun streaming through the open ceiling,
+# and the entire interior is lit by indirect bounces
+# off the walls / floor / column ornament.  Direct
+# lighting alone (DefaultDirectLighting) leaves the
+# colonnade depths black; path tracing is the right
+# integrator for an interior of this geometry-to-
+# light-source ratio.  DefaultPathTracing is the
+# stock recursive-eye-walk PT shaderop.
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+##################################################
+# Rasterizer + output.  pathtracing_pel_rasterizer
+# at 32 spp, 640x360 for iteration speed (bump
+# samples to 256+ and resolution to 1280x720 for a
+# final-quality render).
+#
+# `radiance_map` is intentionally NOT bound here:
+# the `hosek_wilkie_skylight` chunk above registers
+# its own radiance map as the SCENE GLOBAL — binding
+# `radiance_map <name>` here would CREATE A NEW one
+# from the named painter and overwrite the HW
+# global, which is the opposite of what we want.
+# `radiance_background TRUE` is still meaningful
+# because it controls a separate ray-caster flag
+# (whether camera misses sample the env map for the
+# background colour) and is independent of which
+# global radiance map is active.
+#
+# Path guiding turned on per the variance-measurement
+# session 2026-05-09: on Sponza specifically, online
+# PGL with 2-iteration warmup gives 4.8x lower mean
+# per-pixel σ² and 7.7x lower max σ² (firefly
+# suppression) at the same wall budget vs unguided
+# path tracing.  See docs/skills/variance-measurement
+# (worked example for `bdpt_jewel_vault` for the
+# protocol; the corresponding Sponza measurement
+# lives in this session's chat log).
+##################################################
+
+pathtracing_pel_rasterizer
+{
+    samples                       32
+    radiance_background           TRUE
+    pathguiding                   TRUE
+    pathguiding_online            TRUE
+    pathguiding_warmup_iterations 2
+    pathguiding_iterations        6
+}
+
+##################################################
+# HDR primary output (Landing 1).  EXR is the
+# integrator's verbatim output: linear ROMM-primaries
+# radiance, half-float, PIZ-compressed.  No exposure,
+# no display transform.  This is the radiometric
+# ground truth — use it as the source of truth for
+# variance / RMSE comparisons across PB pipeline
+# landings, and for external colour-managed
+# compositing (Nuke + OCIO, Resolve, etc.).
+##################################################
+
+file_rasterizeroutput
+{
+	pattern				rendered/sponza_new_candles
+	type				EXR
+	color_space			ROMMRGB_Linear
+	exr_compression		piz
+}
+
+##################################################
+# PNG display preview.  sRGB OETF only — radiance
+# values from the by-eye light calibration above
+# already land in display range, so no exposure or
+# tone curve is needed here.
+##################################################
+
+file_rasterizeroutput
+{
+	pattern				rendered/sponza_new_candles
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Bulk import the entire .gltf.
+#
+#   - import_meshes/materials/normal_maps: TRUE
+#     (the whole point of the scene)
+#   - import_cameras: TRUE -- the asset declares 6
+#     PhysCamera nodes (PhysCamera001..006); each
+#     becomes an alternative camera under the name
+#     `sponza.cam.PhysCamera001` etc.  The user can
+#     SetActiveCamera at runtime to switch hero
+#     shots.  Pre-multi-camera-CL this was forced
+#     FALSE because we could only carry one camera;
+#     post-CL the asset's six-shot reel is a feature.
+#     The hand-placed pinhole below is added AFTER
+#     this chunk and therefore wins active-camera
+#     status via RISE's last-added-wins auto-promote
+#     rule -- the importer's own SetActiveCamera
+#     during the walk only reorders within the
+#     gltf_import chunk's contribution.  The 6
+#     PhysCamera entries are switchable extras.
+#   - import_lights: TRUE -- the asset carries 24
+#     KHR_lights_punctual entries (1 white directional
+#     "sun" placeholder, 1 white point, 21 warm-orange
+#     point lights for the colonnade lamp fixtures, +
+#     one variant warm point) all authored at
+#     intensity=0 by Khronos convention ("lighting is
+#     up to the renderer").  We pair this with
+#     `lights_intensity_override` below to wake the
+#     dormant fixtures up uniformly so the warm-orange
+#     oil lamps actually contribute -- they give the
+#     atrium the trademark warm pools-of-light against
+#     the cool sky environment.
+#   - lowmem_textures: TRUE -- the texture set is
+#     137 PBR PNGs (~2.6 GB on disk).  Without this,
+#     load time is dominated by libpng decode +
+#     sRGB->linear conversion across the whole set
+#     (~60-80 s on this corpus).  TRUE defers the
+#     color-space conversion to per-sample at render
+#     time, dropping load to ~5 s at the cost of
+#     ~25% per-sample render-time overhead (the
+#     sRGB->linear decode moves from load-time to
+#     ray-hit time, where the cost is spread out and
+#     partially hidden by other shading work).  This
+#     is the right knob for iteration on a scene
+#     this large; flip back to FALSE for a one-shot
+#     high-spp final render where total wall-clock
+#     favours the upfront-decode path.
+##################################################
+
+gltf_import
+{
+	file				C:/Users/micro/Downloads/main_sponza/main_sponza/NewSponza_Main_glTF_003.gltf
+	name_prefix			sponza
+	import_meshes		TRUE
+	import_materials	TRUE
+	import_normal_maps	TRUE
+	import_cameras		TRUE
+	import_lights		TRUE
+	# By-eye uniform light override.  All 24 of the asset's
+	# bundled lights (1 directional + 23 points) ship at
+	# intensity=0 (Khronos convention: "lighting is up to
+	# the renderer").  Most other sponza scenes wake them
+	# at 100.0 (paired with the bright sunlit HW sky), but
+	# in THIS deep-dusk candle scene the candles are meant
+	# to dominate — a 5 cd setting gives just enough wall-
+	# sconce character to keep the colonnade silhouettes
+	# readable without competing with the candles' warm
+	# pools-of-light atmosphere.  Drop to 0.0 for pure
+	# candlelight; bump to 20-30 if the wall fixtures
+	# should feel like proper interior lighting.
+	lights_intensity_override	5.0
+	lowmem_textures		TRUE
+}
+
+##################################################
+# Sponza 10 000 candles add-on (Intel Sponza addon
+# pack `pkg_d_10k_candles`).  Loaded as a SECOND
+# `gltf_import` after the base atrium — the chunk
+# parser supports any number of glTF imports as
+# long as each carries a unique `name_prefix`
+# (created geometry / material / object / texture
+# entries inherit the prefix to keep the manager
+# namespaces clean).  Candles are authored to fit
+# the base atrium's coordinates 1:1, so no
+# transform is needed.
+#
+# Asset specifics:
+#  - 10 002 nodes total: a root + a sub-root +
+#    10 000 instanced `InstanceN` children, each
+#    of which (a) places the shared candle mesh
+#    via translation/rotation/scale and (b) carries
+#    its own KHR_lights_punctual reference to the
+#    single shared light definition (warm-orange
+#    point, intensity = 1 cd, colour ~(1, 0.234,
+#    0)).  After import that's 10 000 distinct
+#    point lights in the scene.
+#  - 1 mesh shared across all instances (Wax,
+#    Wick, Flame primitives).  3 materials:
+#    Wax_MAT, Wick_MAT, and Flame_MAT (the latter
+#    has emissiveFactor = (1, 1, 0) for the small
+#    yellow flame glow).  No KHR extensions, no
+#    textures, all `alphaMode = OPAQUE`.
+#  - Asset has no cameras of its own
+#    (`import_cameras = FALSE`).
+#  - `import_lights = FALSE` here is DELIBERATE —
+#    each candle node carries BOTH a 1 cd warm-
+#    orange KHR_lights_punctual point light AND a
+#    yellow-emissive `Flame_MAT` mesh, which is
+#    physically redundant: both light sources sit
+#    at the same world position and represent the
+#    same flame.  RISE's path tracer NEE-samples
+#    both sets — when the point lights are live,
+#    every shading point pays for the alias-table
+#    + light-BVH lookup AND the emissive-mesh
+#    lookup, and (measured) the scene takes 5.5×
+#    longer (1m 23s → 7m 41s on the reference
+#    machine) for almost no visible improvement —
+#    actually a SUBTLE LOSS of contrast because
+#    the point-light NEE adds a smooth fill-light
+#    layer that real candle scenes don't have.
+#    Setting `import_lights = FALSE` keeps the
+#    emissive flame meshes (which carry the
+#    visible flames AND the surrounding warm
+#    glow correctly) and skips the redundant
+#    point-light path.  The light_BVH stays on
+#    by default for the base scene's 24 lamps.
+#    A perf TODO is open to investigate why 10k
+#    point lights serialise so hard relative to
+#    the emissive-mesh equivalent — the light_BVH
+#    SHOULD make selection O(log N), but observed
+#    thread utilisation drops from ~100% to ~17%.
+#
+# Sibling scenes `sponza_new.RISEscene`,
+# `sponza_new_curtains.RISEscene`, and
+# `sponza_new_ivy.RISEscene` use sunlit HW skylight
+# settings instead of this scene's deep-dusk preset.
+##################################################
+
+gltf_import
+{
+	file				C:/Users/micro/Downloads/pkg_d_10k_candles/pkg_d_10k_candles/NewSponza_4_Combined_glTF.gltf
+	name_prefix			sponza_candles
+	import_meshes		TRUE
+	import_materials	TRUE
+	import_normal_maps	TRUE
+	import_cameras		FALSE
+	import_lights		FALSE
+	# `Flame_MAT` ships with emissiveFactor=(1,1,0) and
+	# emissiveStrength=1.0 — i.e. unit-yellow with no boost.
+	# That's a daytime-balanced authoring choice; in this
+	# deep-dusk scene the flames need to dominate the
+	# illumination, so multiply the emissive by 100×.
+	# Drop to ~20-50 if the flames blow out the highlights;
+	# bump to 200-500 if the colonnade reads too dark in
+	# the periphery.  The scale composes with the asset's
+	# `KHR_materials_emissive_strength` (1.0 here), so this
+	# IS the effective strength multiplier on the flame.
+	emissive_intensity_scale 100.0
+	# Warm-orange flame tint.  Asset's flame is authored at
+	# pure yellow (1, 1, 0) -- no warmth.  This tint
+	# multiplies that componentwise to (1, 0.5, 0), close
+	# to a real candle's ~1900 K colour temperature.  The
+	# B channel can't be lifted (asset has B = 0), but real
+	# candles have very little blue anyway -- the orange
+	# comes from reducing G relative to R.  Adjust toward
+	# (1, 0.4, 0) for deeper warmth or (1, 0.7, 0) for
+	# yellower / brighter flames.
+	emissive_tint 1.0 0.5 0.1
+}
+
+##################################################
+# Companion scenes:
+#
+#   sponza_new_curtains.RISEscene  — base + Intel
+#   addon pack `pkg_a_curtains` (red / blue / green
+#   fabric draped between upper colonnade columns).
+#
+#   sponza_new_ivy.RISEscene       — base + Intel
+#   addon pack `pkg_b_ivy` (ivy leaves + lianas
+#   crawling up the columns).
+#
+# Both companions are this scene file with one
+# additional `gltf_import` block — see those files
+# for the layering pattern (different `name_prefix`
+# per import keeps manager namespaces clean).
+##################################################
+
+##################################################
+# Camera.  Hand-placed for THIS deep-dusk candle
+# variant — the canonical PhysCamera001 framing
+# ("eye level, just outside the entrance, looking
+# down the colonnade") is wrong here for a simple
+# spatial reason: pkg_d_10k_candles populates only
+# ONE colonnade (every candle sits at Z ∈ [-11.1,
+# -0.7], i.e. the -Z side of the atrium) and the
+# PhysCamera001 vantage at Z=-0.86 looking diagonally
+# toward +Z aims AWAY from the candle band.  Only
+# 38 % of the 10k candles fall inside its frustum
+# and most of the dark side-walls / floor in front
+# of the entrance carry the rest of the frame.
+#
+# This camera instead stands at eye level INSIDE the
+# nave near the entrance, on the +Z (non-candle) side,
+# looking diagonally across the atrium toward the
+# back wall on the candle side:
+#
+#   location  (-8.0, 1.6,  1.0)   -- 1m past the
+#                                    entrance, slightly
+#                                    +Z of nave centre,
+#                                    1.6m eye height
+#   lookat    ( 5.0, 1.6, -5.0)   -- across to the
+#                                    deep candle band
+#                                    near the back wall
+#
+# ~71 % of the 10k candles sit inside this frustum at
+# 16:9 / yfov 58.5° (vs 38 % for PhysCamera001 and
+# 49 % for the next-best PhysCamera004 balcony shot).
+# Composition: candle wall fills the right half of
+# the frame as a luminous cascade, stone columns
+# silhouetted left, faint floor reflection from the
+# nearest candles, sconce on the right wall lit at
+# 5 cd as a single warm spot.  PhysCamera001..006
+# are still imported above and remain switchable
+# at runtime via SetActiveCamera if a different shot
+# is wanted.
+#
+# Other framings tried during authoring (in
+# var_test/_candles_optB.RISEscene and _optC):
+#   B = PhysCamera004 (Y=6.92 balcony sweep) — clean
+#       architectural shot, candles cascade left;
+#       49 % FOV coverage.  Good alternative.
+#   C = PhysCamera002 (Y=7.35, back wall looking
+#       back to entrance, DOWN onto floor) — wide
+#       carpet of all 10k candles end-to-end; best
+#       "torture test" shot, lowest atmospheric
+#       intimacy.
+#
+# yfov 58.5° (vertical) — same FOV as PhysCamera001
+# for visual comparability across the sponza_new_*
+# scene family.
+##################################################
+
+pinhole_camera
+{
+	location			-8.0 1.6  1.0
+	lookat				 5.0 1.6 -5.0
+	up					 0.0 1.0  0.0
+	# Iteration resolution.  Bump to 1280x720 for final-
+	# quality renders.
+	width				640
+	height				360
+	fov					58.5
+}
+
+##################################################
+# Lighting.  All of the asset's bundled lights are
+# intensity=0, so we light the scene ourselves.
+#
+# This scene's only light source is the sky_dome
+# radiance_map declared on the rasterizer above.
+# An earlier revision had a directional sun with
+# power 3.5 plus an ambient_light fill -- both have
+# been retired in favour of pure environment-light
+# illumination via the radiance_map (PT-correct,
+# integrator samples it through NEE, no ambient
+# hack).  The trade-off: no hot rectangular sun
+# shafts on the floor, but a cleaner uniform
+# diffuse-sky look that converges faster at low spp
+# and matches what the open-ceiling atrium would
+# look like under heavy overcast.  Bump
+# radiance_scale on the rasterizer to brighten;
+# colour the sky_dome painter to tint.
+##################################################
+

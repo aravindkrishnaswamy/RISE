@@ -4317,6 +4317,9 @@ namespace RISE
 					double point_intensity_override        = bag.GetDouble( "point_intensity_override",         0.0 );
 					double spot_intensity_override         = bag.GetDouble( "spot_intensity_override",          0.0 );
 					bool   respect_baked_occlusion         = bag.GetBool(   "respect_baked_occlusion",          true );
+					double emissive_intensity_scale        = bag.GetDouble( "emissive_intensity_scale",         1.0 );
+					double emissive_tint[3] = { 1.0, 1.0, 1.0 };
+					bag.GetVec3( "emissive_tint", emissive_tint );
 					if( lights_intensity_override > 0.0 ) {
 						GlobalLog()->PrintEx( eLog_Warning,
 							"gltf_import:: `lights_intensity_override` is unit-blind (it conflates lux for "
@@ -4336,7 +4339,11 @@ namespace RISE
 						directional_intensity_override,
 						point_intensity_override,
 						spot_intensity_override,
-						respect_baked_occlusion );
+						respect_baked_occlusion,
+						emissive_intensity_scale,
+						emissive_tint[0],
+						emissive_tint[1],
+						emissive_tint[2] );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -4381,6 +4388,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "point_intensity_override";       p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual point lights.  Units: CANDELA (lm/sr) -- glTF's authored unit for point intensity.  Replaces zero authored intensities for point lights only.  Typical values: ~100 for a 60-W incandescent (~800 lm omnidirectional / 4 pi sr), ~1500 for a 100-W LED bulb."; p.defaultValueHint = "0 (no override)"; }
 						{ auto& p = P(); p.name = "spot_intensity_override";        p.kind = ValueKind::Double; p.description = "Per-type override for KHR_lights_punctual spot lights.  Units: CANDELA (lm/sr) along the spot's central axis -- glTF's authored unit for spot intensity.  Replaces zero authored intensities for spot lights only."; p.defaultValueHint = "0 (no override)"; }
 						{ auto& p = P(); p.name = "respect_baked_occlusion";       p.kind = ValueKind::Bool;   p.description = "Landing 13: when TRUE (default), import glTF `occlusionTexture` as a multiplier on the material's diffuse baseColor (× R-channel × occlusionStrength).  Recovers high-frequency baked AO that geometry can't reach (column flutes, brick mortar, fabric folds) but slightly double-counts the path tracer's own occlusion on direct light.  Set FALSE for strict-PB workflows where you want only the integrator's computed occlusion."; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "emissive_intensity_scale";      p.kind = ValueKind::Double; p.description = "Multiplier applied AFTER each material's authored `KHR_materials_emissive_strength` (or default 1.0).  Default 1.0 (no change).  Use to brighten ALL emissive surfaces in the import uniformly without editing the asset (e.g. a deep-dusk candle scene whose flame meshes are authored at daytime-balanced strength can multiply by 50-200 to make the candles dominate).  Unlike `lights_intensity_override` this is a SCALE (composes with authored values) -- emissive materials typically ship with meaningful chromatic / relative values whose ratios should be preserved.  Values <= 0 kill all emissive in the import.  Folded in once at import time, no per-sample cost."; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "emissive_tint";                 p.kind = ValueKind::DoubleVec3; p.description = "Per-channel R G B multiplier applied componentwise to every material's `emissiveFactor`.  Default (1, 1, 1) -- no tint.  Use to recolour emissive surfaces uniformly across the import without editing the asset, e.g. tint a pure-yellow flame `(1, 1, 0)` to warm orange via `emissive_tint 1.0 0.5 0.1` (final emissive becomes `(1, 0.5, 0)`).  Composes with `emissive_intensity_scale` (independent brightness vs chroma knobs).  Multiplies the FACTOR not the painted texture, so an authored 0.0 channel stays 0.0 (the tint can attenuate channels but cannot add a colour the asset never authored)."; p.defaultValueHint = "1 1 1"; }
 						return cd;
 					}();
 					return d;

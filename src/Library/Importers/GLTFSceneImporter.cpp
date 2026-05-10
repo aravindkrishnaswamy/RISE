@@ -718,7 +718,10 @@ namespace
 		size_t              matIdx,
 		const std::set<std::string>* preRegisteredTextures,	// pre-decoded painters; see PreDecodeTextures
 		bool                lowmemTextures,		// passed to CreateTexturePainter slow path; matches PreDecodeTextures' setting
-		bool                respectBakedOcclusion )	// Landing 13: honour `occlusionTexture` if present
+		bool                respectBakedOcclusion,	// Landing 13: honour `occlusionTexture` if present
+		double              emissiveIntensityScale,	// User-facing brightness knob applied AFTER KHR_materials_emissive_strength; default 1.0 from opts (= no change).  Values <= 0 kill all emissive.
+		const double        emissiveTint[3] )		// User-facing chromatic tint multiplied componentwise into emissiveFactor; default (1,1,1).  Use e.g. (1, 0.5, 0.1) to warm-tint a yellow flame asset.
+
 	{
 		const cgltf_material& mat = data->materials[ matIdx ];
 
@@ -935,10 +938,19 @@ namespace
 			emissiveTextureName = WrapWithUVTransform( job, prefix, matIdx, "emissive",
 				emissiveTextureName, mat.emissive_texture );
 		}
+		// `emissiveTint` (default (1,1,1) from opts) is the user-facing
+		// per-channel multiplier on top of the asset's authored
+		// emissiveFactor — used to recolour emissives uniformly across an
+		// import without editing the asset (e.g. tinting a yellow `(1,1,0)`
+		// flame to warm orange via `(1, 0.5, 0.1)`).  Folded in here once
+		// at material build time; no per-sample cost.  Note the tint can
+		// only attenuate channels the authored factor already has signal
+		// in (an authored 0.0 channel stays 0.0 — multiplying by a non-zero
+		// tint can't add a colour the asset never authored).
 		const cgltf_float ef[3] = {
-			mat.emissive_factor[0],
-			mat.emissive_factor[1],
-			mat.emissive_factor[2] };
+			mat.emissive_factor[0] * (cgltf_float)emissiveTint[0],
+			mat.emissive_factor[1] * (cgltf_float)emissiveTint[1],
+			mat.emissive_factor[2] * (cgltf_float)emissiveTint[2] };
 		const bool factorIsZero = (ef[0] <= 0 && ef[1] <= 0 && ef[2] <= 0);
 		const bool factorIsWhite = (ef[0] >= 1.0 && ef[1] >= 1.0 && ef[2] >= 1.0);
 
@@ -978,9 +990,19 @@ namespace
 		// radiance, used by glTF authoring tools to push emission past the
 		// [0,1] sRGB-encoded texture range.  Default 1.0 when extension is
 		// absent, so the unconditional read is safe.
-		const double emissiveScale = mat.has_emissive_strength
+		//
+		// `opts.emissiveIntensityScale` (default 1.0) is applied on top of
+		// the asset's authored value as a uniform user-facing brightness
+		// knob (`emissive_intensity_scale` chunk param) — unchanged at the
+		// default, multiplies all materials' emissive uniformly when set
+		// > 1, kills all emissive when set <= 0.  Folded in here once at
+		// import time so the per-sample render cost is unchanged.
+		const double emissiveBaseScale = mat.has_emissive_strength
 			? (double)mat.emissive_strength.emissive_strength
 			: 1.0;
+		const double emissiveScale = ( emissiveIntensityScale > 0.0 )
+			? emissiveBaseScale * emissiveIntensityScale
+			: 0.0;
 
 		const std::string matName = MaterialName( prefix, matIdx );
 
@@ -1917,7 +1939,7 @@ bool GLTFSceneImporter::ImportScene( IJob& job, const GLTFImportOptions& opts )
 	// Materials -- create up front (de-duplicates across primitives).
 	if( opts.importMaterials ) {
 		for( size_t mi = 0; mi < data->materials_count; ++mi ) {
-			CreateMaterial( job, prefix, data, szFilename, mi, &mRegisteredTextures, opts.lowmemTextures, opts.respectBakedOcclusion );
+			CreateMaterial( job, prefix, data, szFilename, mi, &mRegisteredTextures, opts.lowmemTextures, opts.respectBakedOcclusion, opts.emissiveIntensityScale, opts.emissiveTint );
 		}
 	}
 
