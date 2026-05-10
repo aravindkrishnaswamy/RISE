@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #   Control scene: same as torture_manydistant but with ONLY the nearby light.                              #
 #   This shows what proper sampling looks like — 100% of NEE budget goes to the                             #
@@ -28,13 +28,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			278 273 -800
 	lookat				278 273 200
 	up					0 1 0
-	width				512
-	height				512
 	fov					37.0
 }
 

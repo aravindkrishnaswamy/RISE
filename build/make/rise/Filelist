@@ -404,6 +404,7 @@ SRCLIBSCENEEDITOR =\
 	$(PATHLIBRARY)SceneEditor/ObjectIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/LightIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/RasterizerIntrospection.cpp			\
+	$(PATHLIBRARY)SceneEditor/FilmIntrospection.cpp					\
 	$(PATHLIBRARY)SceneEditor/ChunkDescriptorRegistry.cpp
 
 # Miscellaneous stuff

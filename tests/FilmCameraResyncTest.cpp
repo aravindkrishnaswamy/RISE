@@ -95,7 +95,7 @@ static void TestCLIStyleOverride()
 
 	pJob->SetFilm( 100, 80, 1.0 );
 	Check( pJob->AddPinholeCamera( "main", loc, lookat, up,
-		Scalar( 0.785398 ), 100, 80, Scalar( 1.0 ),
+		Scalar( 0.785398 ),
 		0, 0, 0, orientation, target_orientation ),
 		"AddPinholeCamera(100x80) after SetFilm(100x80) succeeds" );
 
@@ -147,11 +147,16 @@ static void TestMultiCameraResync()
 	const double orientation[3] = {0,0,0};
 	const double target_orientation[2] = {0,0};
 
+	// Alpha gets 100x100 Film, then beta resizes Film to 200x200
+	// (which also resyncs alpha — that's the Phase B1 invariant the
+	// "all cameras follow Film" multi-camera section below tests).
+	pJob->SetFilm( 100, 100, 1.0 );
 	pJob->AddPinholeCamera( "alpha", loc, lookat, up,
-		Scalar( 0.785398 ), 100, 100, Scalar( 1.0 ),
+		Scalar( 0.785398 ),
 		0, 0, 0, orientation, target_orientation );
+	pJob->SetFilm( 200, 200, 1.0 );
 	pJob->AddPinholeCamera( "beta", loc, lookat, up,
-		Scalar( 0.785398 ), 200, 200, Scalar( 1.0 ),
+		Scalar( 0.785398 ),
 		0, 0, 0, orientation, target_orientation );
 
 	// "beta" is active (last-added wins); "alpha" is NOT active.
@@ -190,8 +195,9 @@ static void TestRepeatedSetFilm()
 
 	const double loc[3] = {0,0,5}, lookat[3] = {0,0,0}, up[3] = {0,1,0};
 	const double orientation[3] = {0,0,0}, target_orientation[2] = {0,0};
+	pJob->SetFilm( 100, 100, 1.0 );
 	pJob->AddPinholeCamera( "main", loc, lookat, up,
-		Scalar( 0.785398 ), 100, 100, Scalar( 1.0 ),
+		Scalar( 0.785398 ),
 		0, 0, 0, orientation, target_orientation );
 
 	pJob->SetFilm( 200, 200, 1.0 );
@@ -233,9 +239,12 @@ static void TestSetFilmBeforeAddCamera()
 
 //////////////////////////////////////////////////////////////////////
 // 5. Scene file with `film` chunk AFTER the camera chunk:
-//    the camera's Frame must end up matching the film chunk, NOT
-//    the camera chunk's authored dims.  This is the "late film
-//    chunk" bug class flagged in the Phase B1 review.
+//    the camera's Frame must end up matching the film chunk's dims.
+//    In v6 cameras don't carry their own dims at all — they read
+//    from the active Film at construction — but a `film` chunk after
+//    the camera still needs to RESYNC the already-added camera (via
+//    Scene::ResizeFilm's resync logic).  Locks down the resync
+//    invariant for the late-film-chunk authoring order.
 //////////////////////////////////////////////////////////////////////
 
 static void TestFilmChunkAfterCamera()
@@ -243,7 +252,13 @@ static void TestFilmChunkAfterCamera()
 	std::cout << "Testing parsing `film` chunk AFTER `pinhole_camera` chunk..." << std::endl;
 
 	const char* sceneText =
-		"RISE ASCII SCENE 5\n"
+		"RISE ASCII SCENE 6\n"
+		"\n"
+		"film\n"
+		"{\n"
+		"\twidth   100\n"
+		"\theight  100\n"
+		"}\n"
 		"\n"
 		"pinhole_camera\n"
 		"{\n"
@@ -251,9 +266,6 @@ static void TestFilmChunkAfterCamera()
 		"\tlocation 0 0 5\n"
 		"\tlookat   0 0 0\n"
 		"\tup       0 1 0\n"
-		"\twidth    100\n"
-		"\theight   100\n"
-		"\tpixelAR  1.0\n"
 		"\tfov      30\n"
 		"}\n"
 		"\n"
@@ -274,21 +286,20 @@ static void TestFilmChunkAfterCamera()
 	IScenePriv* scene = pJob->GetScene();
 	Check( pJob->LoadAsciiScene( tmpPath ), "scene loads" );
 
-	// The `film` chunk runs AFTER the `pinhole_camera` chunk.  Its
-	// SetFilm call must resync the already-added camera.  Without the
-	// resync, Film=1920x1080 but camera Frame still =100x100 — the
-	// bug the reviewer flagged.
+	// First `film` chunk installs 100x100, camera adds at 100x100,
+	// second `film` chunk overrides to 1920x1080 and resyncs the
+	// already-added camera.
 	const IFilm* film = scene->GetFilm();
 	Check( film && film->GetWidth() == 1920 && film->GetHeight() == 1080,
-	       "Film matches the film chunk (1920x1080)" );
+	       "Film matches the second (last) film chunk (1920x1080)" );
 
 	unsigned int w, h; Scalar pAR;
 	Check( GetCameraDims( scene->GetCamera(), w, h, pAR ),
 	       "camera is CameraCommon-derived" );
 	Check( w == 1920 && h == 1080,
-	       "camera Frame matches Film (1920x1080), not authored 100x100" );
+	       "camera Frame matches latest Film (1920x1080), not initial 100x100" );
 	Check( pAR == 1.5,
-	       "camera pixelAR matches film chunk (1.5), not authored 1.0" );
+	       "camera pixelAR matches latest film chunk (1.5)" );
 
 	std::remove( tmpPath );
 	pJob->release();

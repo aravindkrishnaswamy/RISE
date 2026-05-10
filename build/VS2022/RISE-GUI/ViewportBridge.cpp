@@ -268,6 +268,7 @@ ViewportBridge::PanelMode ViewportBridge::panelMode() const
         case 2: return PanelMode::Rasterizer;
         case 3: return PanelMode::Object;
         case 4: return PanelMode::Light;
+        case 5: return PanelMode::Film;
         default: return PanelMode::None;
     }
 }
@@ -308,6 +309,7 @@ ViewportBridge::Category ViewportBridge::selectionCategory() const
         case 2: return Category::Rasterizer;
         case 3: return Category::Object;
         case 4: return Category::Light;
+        case 5: return Category::Film;
         default: return Category::None;
     }
 }

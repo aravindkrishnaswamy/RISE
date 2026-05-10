@@ -144,7 +144,8 @@ public:
         Camera     = 1,
         Rasterizer = 2,
         Object     = 3,
-        Light      = 4
+        Light      = 4,
+        Film       = 5    ///< Output Settings (single Film per scene)
     };
 
     /// Mirrors RISE::SceneEditController::Category — identical numeric
@@ -156,7 +157,8 @@ public:
         Camera     = 1,
         Rasterizer = 2,
         Object     = 3,
-        Light      = 4
+        Light      = 4,
+        Film       = 5    ///< Output Settings (single Film per scene)
     };
 
     PanelMode panelMode() const;
@@ -172,7 +174,8 @@ public:
 
     /// Scene-level active entity name for `category`, independent of
     /// the UI selection.  Camera → active camera; Rasterizer →
-    /// active rasterizer chunk name; Object/Light/None → empty.
+    /// active rasterizer chunk name; Film → "default" (a scene has
+    /// exactly one Film by construction); Object/Light/None → empty.
     /// Used to populate the dropdown on first scene load with the
     /// scene's current active entity rather than blank.
     QString activeNameForCategory(Category cat) const;
@@ -185,7 +188,7 @@ public:
     /// Apply a selection.  Empty `name` opens the section without
     /// picking a row.  Camera / Rasterizer selections also activate
     /// the named entity (calls SetActiveCamera / SetActiveRasterizer
-    /// respectively); Object / Light selections are UI state only.
+    /// respectively); Object / Light / Film selections are UI state only.
     bool setSelection(Category cat, const QString& name);
 
     /// Monotonic counter — bumped on any structural mutation.  The

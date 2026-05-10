@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 # Invariant: disp_scale=0 must render identically to pure tessellation (displacement=none).
 # Visually eye-check vs. displaced_sphere.RISEscene with displacement=none.
 
@@ -25,13 +25,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			256
+	height			256
+}
+
 pinhole_camera
 {
 	location			0 0 4
 	lookat				0 0 0
 	up					0 1 0
-	width				256
-	height				256
 	fov					30.0
 }
 

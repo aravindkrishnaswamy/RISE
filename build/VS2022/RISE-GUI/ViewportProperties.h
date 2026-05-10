@@ -1,10 +1,11 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  ViewportProperties.h - Right-side accordion for the interactive
-//    viewport.  Four sections (Cameras / Rasterizer / Objects /
-//    Lights) each list the scene's entities; clicking a row activates
-//    it on the C++ side and shows its read-only/edit properties below.
-//    Mirrors the macOS PropertiesPanel.swift and Android ViewportPane.
+//    viewport.  Five sections (Cameras / Rasterizer / Objects / Lights
+//    / Output Settings — the scene Film) each list the scene's entities;
+//    clicking a row activates it on the C++ side and shows its
+//    read-only/edit properties below.  Mirrors the macOS
+//    PropertiesPanel.swift and Android ViewportPane.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -81,6 +82,14 @@ private:
     Category                        m_currentSelectionCat = Category::None;
     QString                         m_currentSelectionName;
     unsigned int                    m_lastEpoch = 0;
+
+    // Re-entry guard: a ScrubHandle drag drives setProperty → re-render
+    // → imageUpdated → refresh().  Rebuilding the property rows would
+    // delete the very ScrubHandle whose mouseMoveEvent is on the stack,
+    // killing the implicit mouse grab and freezing the drag at the
+    // first move.  The ScrubHandle's begin/end bracket flips this on
+    // and off; refresh() short-circuits while it is set.
+    bool                            m_scrubbing = false;
 };
 
 #endif // VIEWPORTPROPERTIES_H

@@ -111,7 +111,7 @@ void TestGrammarCoverage()
 void TestContextSceneRoot()
 {
 	std::cout << "ContextSceneRoot\n";
-	const std::string buf = "RISE ASCII SCENE 5\n\npng_pain";
+	const std::string buf = "RISE ASCII SCENE 6\n\npng_pain";
 	CompletionContext c = ResolveCompletionContext( buf, buf.size() );
 	EXPECT( c.scope == Scope::SceneRoot );
 	EXPECT( c.partialToken == "png_pain" );
@@ -121,7 +121,7 @@ void TestContextInBlockParamName()
 {
 	std::cout << "ContextInBlockParamName\n";
 	const std::string buf =
-		"RISE ASCII SCENE 5\n"
+		"RISE ASCII SCENE 6\n"
 		"ambient_light\n"
 		"{\n"
 		"\tpow";
@@ -135,7 +135,7 @@ void TestContextInBlockParamValue()
 {
 	std::cout << "ContextInBlockParamValue\n";
 	const std::string buf =
-		"RISE ASCII SCENE 5\n"
+		"RISE ASCII SCENE 6\n"
 		"ambient_light\n"
 		"{\n"
 		"\tpower 1";
@@ -149,7 +149,7 @@ void TestContextInComment()
 {
 	std::cout << "ContextInComment\n";
 	const std::string buf =
-		"RISE ASCII SCENE 5\n"
+		"RISE ASCII SCENE 6\n"
 		"# ambient_lig";
 	CompletionContext c = ResolveCompletionContext( buf, buf.size() );
 	EXPECT( c.scope == Scope::InComment );
@@ -159,7 +159,7 @@ void TestSuggestChunkKeywordsAtRoot()
 {
 	std::cout << "SuggestChunkKeywordsAtRoot\n";
 	SuggestionEngine engine;
-	const std::string buf = "RISE ASCII SCENE 5\n\n";
+	const std::string buf = "RISE ASCII SCENE 6\n\n";
 	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
 	EXPECT( sugs.size() == 140 );	// 2026-05 Camera/Film/Output split: + `film`
 	bool found_ambient = false;
@@ -174,7 +174,7 @@ void TestSuggestParametersInAmbientLight()
 	std::cout << "SuggestParametersInAmbientLight\n";
 	SuggestionEngine engine;
 	const std::string buf =
-		"RISE ASCII SCENE 5\n"
+		"RISE ASCII SCENE 6\n"
 		"ambient_light\n"
 		"{\n"
 		"\t";
@@ -201,7 +201,7 @@ void TestNonRepeatableParameterFilteredAfterUse()
 	// `name` is already present — should be suppressed from the suggestions
 	// at the next line's start (not currently being typed).
 	const std::string buf =
-		"RISE ASCII SCENE 5\n"
+		"RISE ASCII SCENE 6\n"
 		"ambient_light\n"
 		"{\n"
 		"\tname my_light\n"
@@ -226,7 +226,7 @@ void TestInlineCompletionShowsAuthoredNonRepeatable()
 	// hiding the only `s*` ExactPrefix candidate while the user is
 	// spelling it out makes the parameter impossible to type.
 	const std::string buf =
-		"RISE ASCII SCENE 5\n"
+		"RISE ASCII SCENE 6\n"
 		"pixelpel_rasterizer\n"
 		"{\n"
 		"\tsamples\t4\n"
@@ -251,7 +251,7 @@ void TestNameIndexSkipsCommentedOutNames()
 {
 	std::cout << "NameIndexSkipsCommentedOutNames\n";
 	const std::string buf =
-		"RISE ASCII SCENE 5\n"
+		"RISE ASCII SCENE 6\n"
 		"lambertian_material\n"
 		"{\n"
 		"\tname real_mat\n"
@@ -282,7 +282,7 @@ void TestAliasShowsAsItsOwnSuggestion()
 {
 	std::cout << "AliasShowsAsItsOwnSuggestion\n";
 	SuggestionEngine engine;
-	const std::string buf = "RISE ASCII SCENE 5\n\n";
+	const std::string buf = "RISE ASCII SCENE 6\n\n";
 	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
 	std::size_t pathtracing = 0, alias = 0;
 	for( const Suggestion& s : sugs ) {
@@ -300,7 +300,7 @@ void TestParameterContextMenuIncludesValuePlaceholder()
 	std::cout << "ParameterContextMenuIncludesValuePlaceholder\n";
 	SuggestionEngine engine;
 	const std::string buf =
-		"RISE ASCII SCENE 5\n"
+		"RISE ASCII SCENE 6\n"
 		"ambient_light\n"
 		"{\n"
 		"\t";
@@ -334,7 +334,7 @@ void TestUnambiguousCompletionMarked()
 	// parameter (lum_samples) by prefix, so that candidate should
 	// be marked as the unambiguous ghost-text completion.
 	const std::string buf =
-		"RISE ASCII SCENE 5\n"
+		"RISE ASCII SCENE 6\n"
 		"pixelpel_rasterizer\n"
 		"{\n"
 		"\tlum_sa";

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -65,13 +65,17 @@ animation_options
 # Cameras
 ##################################################
 
+film
+{
+	width			1200
+	height			800
+}
+
 pinhole_camera
 {
 	location			0 0 7.5
 	lookat				0 0 0
 	up					0 1 0
-	width				1200
-	height				800
 	fov					39.0
 #	exposure			$((1.0/@FRAMES)*0.5)	
 }

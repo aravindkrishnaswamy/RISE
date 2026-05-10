@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #   File:           diamond_teapot_pour.RISEscene
 #   Description:    Showcase + stress test.  Polished marble teapot floats above a dark wood table,
@@ -45,13 +45,17 @@ file_rasterizeroutput
 # Camera (pinhole — keeps the diamond cascade sharp)
 ##################################################
 
+film
+{
+	width			350
+	height			500
+}
+
 pinhole_camera
 {
 	location			1.06256 1.38004 1.04797
 	lookat				0 1.15948 -0.0180852
 	up					0  1  0
-	width				350
-	height				500
 	fov					54
 
 	theta				3.54561

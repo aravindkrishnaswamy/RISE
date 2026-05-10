@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                                                                                           #
 #   File:           pt_painter_sdf3d_fog.RISEscene                                                          #
@@ -31,13 +31,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			256
+	height			256
+}
+
 pinhole_camera
 {
 	location			278 273 -280
 	lookat				278 273 280
 	up					0 1 0
-	width				256
-	height				256
 	fov					65.0
 }
 

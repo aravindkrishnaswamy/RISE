@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 # Displaced tessellated sphere SMS test.  Same scene as sms_k2_glasssphere_tess
 # but with an actual non-zero displacement applied to the sphere via a perlin
 # noise painter.  This exercises the FULL displaced-geometry pipeline:
@@ -51,13 +51,17 @@ file_rasterizeroutput
 	color_space			Rec709RGB_Linear
 }
 
+film
+{
+	width			200
+	height			150
+}
+
 pinhole_camera
 {
 	location			0 2.0 3
 	lookat				0 0.2 0
 	up					0 1 0
-	width				200
-	height				150
 	fov					45.0
 }
 

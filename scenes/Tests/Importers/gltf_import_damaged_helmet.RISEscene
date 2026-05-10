@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                                                                                           #
 #   File:           gltf_import_damaged_helmet.RISEscene                                                    #
@@ -38,13 +38,17 @@ file_rasterizeroutput
 
 # Helmet bounds are roughly a unit cube around origin (asset is exported
 # in metres, ~1m tall).  Camera at +Z looking back, slight tilt up.
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			0 0 3
 	lookat				0 0 0
 	up					0 1 0
-	width				512
-	height				512
 	fov					35.0
 }
 

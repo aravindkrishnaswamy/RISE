@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 # Same scene as chromaticity_test_spectral but using RGB integrator,
 # for direct chromaticity comparison.  Each sphere should render as
 # its specified saturated color.
@@ -29,13 +29,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			300
+	height			100
+}
+
 pinhole_camera
 {
 	location			0 0 6
 	lookat				0 0 0
 	up					0 1 0
-	width				300
-	height				100
 	fov					40.0
 }
 

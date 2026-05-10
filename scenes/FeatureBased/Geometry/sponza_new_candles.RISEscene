@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                                                                                           #
 #   File:           sponza_new_candles.RISEscene                                                            #
@@ -430,6 +430,12 @@ gltf_import
 # scene family.
 ##################################################
 
+film
+{
+	width			640
+	height			360
+}
+
 pinhole_camera
 {
 	location			-8.0 1.6  1.0
@@ -437,8 +443,6 @@ pinhole_camera
 	up					 0.0 1.0  0.0
 	# Iteration resolution.  Bump to 1280x720 for final-
 	# quality renders.
-	width				640
-	height				360
 	fov					58.5
 }
 

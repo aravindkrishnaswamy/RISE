@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -59,13 +59,17 @@ file_rasterizeroutput
 # vase + glass sphere are tack-sharp, the floor and outer columns
 # fall off into bokeh.
 
+film
+{
+	width			800
+	height			600
+}
+
 thinlens_camera
 {
 	location			-3.5 2.0 6.0
 	lookat				0 1.5 0
 	up					0 1 0
-	width				800
-	height				600
 	sensor_size			36              # mm — full-frame
 	focal_length		85              # mm — short tele
 	fstop				1.4

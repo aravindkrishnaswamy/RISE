@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -70,13 +70,17 @@ file_rasterizeroutput
 # Camera - in the dark receiver chamber
 ##################################################
 
+film
+{
+	width			800
+	height			800
+}
+
 pinhole_camera
 {
 	location			278 200 -400
 	lookat				278 200 280
 	up					0 1 0
-	width				800
-	height				800
 	fov					50.0
 }
 

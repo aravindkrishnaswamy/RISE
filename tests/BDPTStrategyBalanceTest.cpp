@@ -330,13 +330,17 @@ static void PrintRelDiff( const char* label, const double a[3], const double b[3
 // any shadow logic the integrators differ on).
 
 static const char* kSceneCommon =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n"
+	"\n"
 	"pinhole_camera\n"
 	"{\n"
 	"\tlocation 0 0 3.5\n"
 	"\tlookat 0 0 0\n"
 	"\tup 0 1 0\n"
-	"\twidth 32\n"
-	"\theight 32\n"
 	"\tfov 30.0\n"
 	"}\n"
 	"\n"
@@ -524,8 +528,8 @@ static void RunTopologyTest(
 {
 	std::cout << "Testing PT-vs-BDPT: " << topologyName << std::endl;
 
-	const std::string ptScene   = std::string("RISE ASCII SCENE 5\n") + kRasterizerPT   + sceneCommonBlock;
-	const std::string bdptScene = std::string("RISE ASCII SCENE 5\n") + kRasterizerBDPT + sceneCommonBlock;
+	const std::string ptScene   = std::string("RISE ASCII SCENE 6\n") + kRasterizerPT   + sceneCommonBlock;
+	const std::string bdptScene = std::string("RISE ASCII SCENE 6\n") + kRasterizerBDPT + sceneCommonBlock;
 
 	const std::string ptPath   = WriteSceneToTempFile( ptScene.c_str(),   "pt"   );
 	const std::string bdptPath = WriteSceneToTempFile( bdptScene.c_str(), "bdpt" );

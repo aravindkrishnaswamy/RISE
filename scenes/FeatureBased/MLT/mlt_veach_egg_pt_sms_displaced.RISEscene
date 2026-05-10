@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -61,13 +61,17 @@ file_rasterizeroutput
 # Camera - identical to MLT/BDPT versions
 ##################################################
 
+film
+{
+	width			400
+	height			400
+}
+
 pinhole_camera
 {
 	location			278 450 -650
 	lookat				278 250 278
 	up					0 1 0
-	width				400
-	height				400
 	fov					40.0
 }
 

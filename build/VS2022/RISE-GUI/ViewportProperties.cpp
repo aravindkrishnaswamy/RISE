@@ -1,9 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  ViewportProperties.cpp - Right-side accordion implementation.
-//    Four sections, single selection, descriptor-driven property
-//    rows under the expanded section.  See header for layout and
-//    macOS / Android counterparts.
+//    Five sections (Cameras / Rasterizer / Objects / Lights / Output
+//    Settings), single selection, descriptor-driven property rows
+//    under the expanded section.  See header for layout and macOS /
+//    Android counterparts.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -18,7 +19,10 @@
 #include <QScrollArea>
 #include <QFrame>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPaintEvent>
 #include <QPointer>
+#include <QPolygonF>
 #include <QToolButton>
 #include <QMenu>
 
@@ -90,13 +94,12 @@ public:
         , m_beginBracket(std::move(beginBracket))
         , m_endBracket(std::move(endBracket))
     {
-        setText(QStringLiteral("↕"));
+        // Glyph is painted in paintEvent — we draw two filled triangles
+        // rather than rely on a Unicode arrow glyph being present in the
+        // system font (Mac uses the SF Symbol `chevron.up.chevron.down`;
+        // there is no portable Windows-font equivalent).
         setFixedSize(16, 18);
-        setAlignment(Qt::AlignCenter);
         setCursor(Qt::SizeVerCursor);
-        setStyleSheet(
-            "color: palette(placeholder-text); "
-            "font-size: 11px; font-weight: bold;");
         setToolTip(QObject::tr(
             "Drag up/down to change.  Shift = fine, Alt = coarse."));
     }
@@ -158,6 +161,37 @@ protected:
         }
     }
 
+    void paintEvent(QPaintEvent*) override
+    {
+        // Two filled triangles, up over down, matching SF Symbol
+        // `chevron.up.chevron.down`.  Geometry is in widget-local
+        // coordinates with a 2 px border so the glyph never clips at
+        // odd DPI scales.
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(Qt::NoPen);
+        QColor c = palette().color(QPalette::PlaceholderText);
+        if (!c.isValid()) c = palette().color(QPalette::WindowText);
+        p.setBrush(c);
+
+        const qreal w  = width();
+        const qreal h  = height();
+        const qreal pad = 2.0;
+        const qreal triH = (h - 2 * pad - 1.0) * 0.5;   // 1 px gap between
+
+        QPolygonF up;
+        up << QPointF(pad,          pad + triH)
+           << QPointF(w - pad,      pad + triH)
+           << QPointF(w * 0.5,      pad);
+        p.drawPolygon(up);
+
+        QPolygonF down;
+        down << QPointF(pad,        h - pad - triH)
+             << QPointF(w - pad,    h - pad - triH)
+             << QPointF(w * 0.5,    h - pad);
+        p.drawPolygon(down);
+    }
+
 private:
     QPointer<QLineEdit> m_target;
     QString    m_name;
@@ -176,12 +210,15 @@ struct AccordionSectionDef {
 };
 
 // Top-down order: Cameras first (most-used), Rasterizer second
-// (scene-global), Objects third (long lists), Lights last.
+// (scene-global), Objects third (long lists), Lights, then Output
+// Settings (Film — last because it's a one-row global config the
+// user typically touches once at the start of a session).
 static const AccordionSectionDef kSectionDefs[] = {
-    { ViewportBridge::Category::Camera,     "Cameras"    },
-    { ViewportBridge::Category::Rasterizer, "Rasterizer" },
-    { ViewportBridge::Category::Object,     "Objects"    },
-    { ViewportBridge::Category::Light,      "Lights"     },
+    { ViewportBridge::Category::Camera,     "Cameras"         },
+    { ViewportBridge::Category::Rasterizer, "Rasterizer"      },
+    { ViewportBridge::Category::Object,     "Objects"         },
+    { ViewportBridge::Category::Light,      "Lights"          },
+    { ViewportBridge::Category::Film,       "Output Settings" },
 };
 
 }  // namespace
@@ -409,6 +446,7 @@ void ViewportProperties::rebuildPropertyRows()
         case ViewportBridge::PanelMode::Rasterizer: propsCat = Category::Rasterizer; break;
         case ViewportBridge::PanelMode::Object:     propsCat = Category::Object;     break;
         case ViewportBridge::PanelMode::Light:      propsCat = Category::Light;      break;
+        case ViewportBridge::PanelMode::Film:       propsCat = Category::Film;       break;
         default: return;
     }
     auto sectionIt = m_sections.find(static_cast<int>(propsCat));
@@ -452,8 +490,16 @@ void ViewportProperties::rebuildPropertyRows()
                                 m_lastValue.insert(n, v);
                             }
                         },
-                        [this]() { if (m_bridge) m_bridge->beginPropertyScrub(); },
-                        [this]() { if (m_bridge) m_bridge->endPropertyScrub();   });
+                        [this]() {
+                            m_scrubbing = true;
+                            if (m_bridge) m_bridge->beginPropertyScrub();
+                        },
+                        [this]() {
+                            m_scrubbing = false;
+                            if (m_bridge) m_bridge->endPropertyScrub();
+                            // Pull canonical values back after the user lets go.
+                            refresh();
+                        });
                     fieldRow->addWidget(handle);
                 }
                 fieldRow->addWidget(edit, 1);
@@ -549,6 +595,12 @@ void ViewportProperties::rebuildPropertyRows()
 void ViewportProperties::refresh()
 {
     if (!m_bridge) return;
+    // While a ScrubHandle drag is in flight, do NOT rebuild the rows —
+    // doing so would deleteLater() the handle whose mouseMoveEvent put
+    // setProperty() → imageUpdated → here on the stack, killing the
+    // mouse grab.  endPropertyScrub calls refresh() once the user lets
+    // go to re-sync canonical values.
+    if (m_scrubbing) return;
 
     m_headerLabel->setText(m_bridge->panelHeader());
 

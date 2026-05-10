@@ -192,13 +192,16 @@ fun ViewportPane(
 
             // Re-pull per-section entity lists when the scene epoch
             // advances (scene reload, structural mutation).  The
-            // four-section accordion lives over (Cameras, Rasterizer,
-            // Objects, Lights), with category ints 1/2/3/4.
+            // accordion lives over Cameras / Rasterizer / Objects /
+            // Lights / Output Settings (Film) — category ints 1..5
+            // derived from `kAccordionSections` below so adding a new
+            // section is a one-line change.
             val epoch = RiseNative.nativeViewportSceneEpoch()
+            val categoryIds = kAccordionSections.map { it.category }.toIntArray()
             if (epoch != lastEpoch) {
                 lastEpoch = epoch
                 val fresh = mutableMapOf<Int, List<String>>()
-                for (cat in intArrayOf(1, 2, 3, 4)) {
+                for (cat in categoryIds) {
                     val nEntries = RiseNative.nativeViewportCategoryEntityCount(cat)
                     fresh[cat] = (0 until nEntries).map { idx ->
                         RiseNative.nativeViewportCategoryEntityName(cat, idx)
@@ -212,7 +215,7 @@ fun ViewportPane(
             // happen without adding/removing cameras).  Re-pull every
             // refresh.
             val freshActive = mutableMapOf<Int, String>()
-            for (cat in intArrayOf(1, 2, 3, 4)) {
+            for (cat in categoryIds) {
                 freshActive[cat] = RiseNative.nativeViewportCategoryActiveName(cat)
             }
             activeNameByCategory = freshActive
@@ -716,6 +719,7 @@ private val kAccordionSections = listOf(
     AccordionSectionDef(category = 2, title = "Rasterizer"),
     AccordionSectionDef(category = 3, title = "Objects"),
     AccordionSectionDef(category = 4, title = "Lights"),
+    AccordionSectionDef(category = 5, title = "Output Settings"),
 )
 
 @Composable

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #   triplecaustic_vcm.RISEscene                                                                             #
 #   VCM Pel variant of the canonical three-sphere dielectric caustic scene.  Red/green/blue glass spheres  #
@@ -29,13 +29,17 @@ file_rasterizeroutput
 	color_space			ROMMRGB_Linear
 }
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			0 0.0 3.0
 	lookat				0 0 0
 	up					0 1 0
-	width				512
-	height				512
 	fov					30.0
 }
 

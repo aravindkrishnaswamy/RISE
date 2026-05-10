@@ -52,6 +52,10 @@ extlib/*/*.vcxproj.filters
 /scenes/Internal
 /models/risemesh/internal
 
+# Python bytecode caches (tools/migrate_scenes_v5_to_v6.py etc.)
+__pycache__/
+*.pyc
+
 # Legacy glTF importer used to extract embedded image data into a
 # sibling .gltf_cache/ subdir.  Phase 3 retired the disk round-trip
 # (now handled in-memory via Job::AddInMemoryPNG/JPEGTexturePainter).

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -63,13 +63,17 @@ animation_options
 # Camera - high oblique view across the courtyard into the pool
 ##################################################
 
+film
+{
+	width			800
+	height			600
+}
+
 pinhole_camera
 {
 	location			0 4.0 6.5
 	lookat				0 0 0.5
 	up					0 1 0
-	width				800
-	height				600
 	fov					70.0
 }
 

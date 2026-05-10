@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 # k=1 SMS debug: single refractive plane with smooth displacement.
 # Light above plane, floor below plane.  Light refracts through plane
 # and produces a caustic on the floor.  If SMS can't render this, the
@@ -42,13 +42,17 @@ file_rasterizeroutput
 	color_space			Rec709RGB_Linear
 }
 
+film
+{
+	width			200
+	height			150
+}
+
 pinhole_camera
 {
 	location			0 2.0 3
 	lookat				0 0.2 0
 	up					0 1 0
-	width				200
-	height				150
 	fov					45.0
 }
 

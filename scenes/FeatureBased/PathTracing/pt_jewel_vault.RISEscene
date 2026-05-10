@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -74,13 +74,17 @@ file_rasterizeroutput
 # with dramatic light spilling across the scene.
 ##################################################
 
+film
+{
+	width			512
+	height			384
+}
+
 pinhole_camera
 {
 	location			2.0 3.8 11.5
 	lookat				-1.0 2.0 3.5
 	up					0 1 0
-	width				512
-	height				384
 	fov					52.0
 }
 

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #   Double-Refractive Slab (Close, SMS): SMS should produce visible caustic structure that matches the       #
 #   photon map reference.                                                                                    #
@@ -40,13 +40,17 @@ file_rasterizeroutput
 	color_space			Rec709RGB_Linear
 }
 
+film
+{
+	width			400
+	height			300
+}
+
 pinhole_camera
 {
 	location			0 2.0 3
 	lookat				0 0.2 0
 	up					0 1 0
-	width				400
-	height				300
 	fov					45.0
 }
 

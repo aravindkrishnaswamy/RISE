@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -51,13 +51,17 @@ file_rasterizeroutput
 # Cameras - Fisheye for wide panoramic view
 ##################################################
 
+film
+{
+	width			800
+	height			800
+}
+
 fisheye_camera
 {
 	location			0 2 18
 	lookat				0 0 0
 	up					0 1 0
-	width				800
-	height				800
 	scale				1.0
 }
 

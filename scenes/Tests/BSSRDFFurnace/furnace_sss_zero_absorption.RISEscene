@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -36,13 +36,17 @@ file_rasterizeroutput
 	color_space			ROMMRGB_Linear
 }
 
+film
+{
+	width			200
+	height			150
+}
+
 pinhole_camera
 {
 	location			0 0 60
 	lookat				0 0 0
 	up					0 1 0
-	width				200
-	height				150
 	fov					30.0
 }
 

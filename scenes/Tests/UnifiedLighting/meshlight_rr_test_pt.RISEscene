@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #   Test scene for light-sample Russian roulette (Stage 1D).                                                #
 #   A Cornell box with a single mesh light ceiling panel.  Rendered with light_rr_threshold = 0.5            #
@@ -27,13 +27,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			278 273 -800
 	lookat				278 273 0
 	up					0 1 0
-	width				512
-	height				512
 	fov					39.3
 }
 

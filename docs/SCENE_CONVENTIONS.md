@@ -257,19 +257,26 @@ If no `film` chunk is present, the default is **qHD = 960 × 540 with
 square pixels** — sized for fast iteration on test scenes. Override
 at the command line with `RISE-CLI --width N --height N --pixel-ar X`.
 
-**Authoring order: last `SetFilm` wins.** Camera chunks (pinhole_camera,
-thinlens_camera, etc.) accept legacy `width`/`height`/`pixelAR`
-parameters; writing those triggers an internal `Job::SetFilm` call
-that re-syncs every camera's Frame to the new dims. The `film` chunk
-does the same. Whichever chunk runs LAST in the scene file wins —
-both Film and every camera's Frame end up matching.
+**Camera chunks no longer accept `width`/`height`/`pixelAR`.** Scene
+format v6 (Phase B2 of the Camera/Film/Output split, 2026-05) moved
+those into the dedicated `film` chunk above.  Cameras read dims from
+the active Film at construction.  v5 scenes that authored
+`width`/`height` inside camera chunks must be migrated:
 
-The order-independence comes from `Scene::SetFilm`: each call
-re-syncs every camera in the manager. So you can author the `film`
-chunk before or after the camera chunks, or have multiple camera
-chunks at different per-camera resolutions, and the final state is
-always: Film = the most recent SetFilm call, every camera's
-projection matches Film.
+```sh
+python tools/migrate_scenes_v5_to_v6.py [path-or-dir]
+```
+
+The script is idempotent — running it on a v6 scene is a no-op.
+Loading a v5 scene through the parser without migration produces a
+clear error pointing at this command.
+
+**Multiple `film` chunks: last-declared wins.** Each `film` chunk
+calls `Scene::ResizeFilm` which mutates the active Film in place AND
+resyncs every previously-added camera's projection matrix.  So you
+can author multiple `film` chunks (rare; useful for scene-time
+overrides) and the final state is always: Film = the most recent
+chunk, every camera's projection matches Film.
 
 **Multi-camera with different per-camera dims is not preserved.**
 Authoring two cameras at different resolutions and switching between

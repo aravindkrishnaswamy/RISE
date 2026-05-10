@@ -573,12 +573,9 @@ namespace
 		double target_orientation[2] = { 0.0, 0.0 };
 
 		// Drive Scene's active Film from the Blender render-settings
-		// dims BEFORE adding the camera.  SetFilm re-syncs all
-		// cameras to these dims; AddXxxCamera below registers the new
-		// camera with matching Frame.  Without this, the rasterizer
-		// would query Film (still at the InitializeContainers default
-		// qHD) and project through the camera's authored dims —
-		// re-FRAMED instead of re-RESOLVED.
+		// dims BEFORE adding the camera.  Job::Add*Camera reads
+		// xres/yres/pixelAR from the active Film at construction; no
+		// need to thread them through the call.
 		job.SetFilm( camera.width, camera.height, camera.pixel_aspect );
 
 		if( camera.projection_type == RISE_BLENDER_CAMERA_ORTHOGRAPHIC ) {
@@ -593,10 +590,7 @@ namespace
 				location,
 				lookat,
 				up,
-				camera.width,
-				camera.height,
 				vp_scale,
-				camera.pixel_aspect,
 				0.0,
 				0.0,
 				0.0,
@@ -616,9 +610,6 @@ namespace
 			lookat,
 			up,
 			camera.fov_y_radians,
-			camera.width,
-			camera.height,
-			camera.pixel_aspect,
 			0.0,
 			0.0,
 			0.0,

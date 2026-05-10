@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 # k=1 SMS debug: smoothly-displaced plane as a single specular surface
 # (using perfectreflector as the simplest k=1 case).  The plane is
 # tilted so that a small area light above it reflects onto the floor
@@ -34,13 +34,17 @@ file_rasterizeroutput
 	color_space			sRGB
 }
 
+film
+{
+	width			200
+	height			150
+}
+
 pinhole_camera
 {
 	location			0 2.0 3
 	lookat				0 0.2 0
 	up					0 1 0
-	width				200
-	height				150
 	fov					45.0
 }
 

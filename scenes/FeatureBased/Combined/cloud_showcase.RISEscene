@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #   File:           cloud_showcase.RISEscene                                                                #
 #   Description:    Cloud showcase using global medium with enclosing sky dome geometry.                     #
@@ -44,13 +44,17 @@ file_rasterizeroutput
 # Camera -- inside a cloud-filled sky box
 ##################################################
 
+film
+{
+	width			800
+	height			500
+}
+
 pinhole_camera
 {
 	location			278 80 -250
 	lookat				278 200 280
 	up					0 1 0
-	width				800
-	height				500
 	fov					65.0
 }
 

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                                                                                           #
 #   File:           gltf_import_avocado.RISEscene                                                           #
@@ -43,13 +43,17 @@ file_rasterizeroutput
 # Camera framed for Avocado (tiny mesh; close-in camera).  Note: the
 # gltf_import chunk would create its own camera if Avocado.glb shipped
 # one -- it doesn't, so this user-authored camera wins.
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			0.06 0.04 0.10
 	lookat				0 0.025 0
 	up					0 1 0
-	width				512
-	height				512
 	fov					40.0
 }
 

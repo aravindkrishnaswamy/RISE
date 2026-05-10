@@ -79,7 +79,8 @@ namespace RISE
 			Camera     = 1,   ///< Cameras section, picking activates SetActiveCamera
 			Rasterizer = 2,   ///< Rasterizer section, picking activates SetActiveRasterizer
 			Object     = 3,   ///< Objects section, picking from list or viewport
-			Light      = 4    ///< Lights section
+			Light      = 4,   ///< Lights section
+			Film       = 5    ///< Output Settings section (single Film per scene)
 		};
 
 		//! @param job                     borrowed; caller keeps alive.
@@ -181,6 +182,8 @@ namespace RISE
 		//   Rasterizer → calls SetActiveRasterizer (next render uses it).
 		//   Object     → UI state only.
 		//   Light      → UI state only.
+		//   Film       → UI state only (single Film per scene; selection
+		//                just opens the Output Settings panel).
 		// Both Camera and Rasterizer flows go through the cancel-and-park
 		// machinery so the swap can't race a mid-flight render pass.
 
@@ -213,10 +216,11 @@ namespace RISE
 
 		//! Scene-level active entity for a category, independent of the
 		//! UI selection.  Camera → IScene::GetActiveCameraName; Rasterizer
-		//! → IJob::GetActiveRasterizerName; Object/Light/None → empty
+		//! → IJob::GetActiveRasterizerName; Film → "default" (a scene has
+		//! exactly one Film by construction); Object/Light/None → empty
 		//! (no scene-level "active" concept for those).  The accordion
 		//! dropdowns display this on first scene load so the user sees
-		//! the active camera / rasterizer rather than "(pick one)".
+		//! the active camera / rasterizer / film rather than "(pick one)".
 		String       CategoryActiveName( Category cat ) const;
 
 		//! Monotonic counter — set ONCE at controller construction from
@@ -315,7 +319,8 @@ namespace RISE
 			Camera     = 1,
 			Rasterizer = 2,
 			Object     = 3,
-			Light      = 4
+			Light      = 4,
+			Film       = 5    ///< Output Settings panel for the scene's IFilm
 		};
 
 		PanelMode CurrentPanelMode() const;

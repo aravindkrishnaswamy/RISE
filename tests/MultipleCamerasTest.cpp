@@ -205,8 +205,8 @@ static void TestJobAPI()
 	const double orient[3] = { 0, 0, 0 };
 	const double targ[2]   = { 0, 0 };
 
-	Check( pJob->AddPinholeCamera( "first",  loc, lookat, up, 0.78, 64, 64, 1.0, 0, 0, 0, orient, targ ), "Job::AddPinholeCamera first" );
-	Check( pJob->AddPinholeCamera( "second", loc, lookat, up, 0.78, 64, 64, 1.0, 0, 0, 0, orient, targ ), "Job::AddPinholeCamera second" );
+	Check( pJob->AddPinholeCamera( "first",  loc, lookat, up, 0.78, 0, 0, 0, orient, targ ), "Job::AddPinholeCamera first" );
+	Check( pJob->AddPinholeCamera( "second", loc, lookat, up, 0.78, 0, 0, 0, orient, targ ), "Job::AddPinholeCamera second" );
 	Check( strcmp( pJob->GetScene()->GetActiveCameraName().c_str(), "second" ) == 0,
 	       "Job last-added wins" );
 
@@ -249,7 +249,7 @@ static std::string MakeTempScenePath( const char* tag )
 // lines (parser requirement, see CLAUDE.md).  All test fixtures here
 // follow that.
 static const char* kSceneShell =
-	"RISE ASCII SCENE 5\n"
+	"RISE ASCII SCENE 6\n"
 	"standard_shader\n"
 	"{\n"
 	"\tname global\n"

@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -54,13 +54,17 @@ file_rasterizeroutput
 # Cameras
 ##################################################
 
+film
+{
+	width			1024
+	height			512
+}
+
 thinlens_camera
 {
 	location			0 0 8
 	lookat				0 0 0
 	up					0 1 0
-	width				1024
-	height				512
 	sensor_size			36              # mm — full-frame 35mm
 	focal_length		100             # mm — short telephoto
 	fstop				1.4             # cinema-prime fast aperture

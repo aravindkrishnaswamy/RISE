@@ -1,4 +1,4 @@
-RISE ASCII SCENE 5
+RISE ASCII SCENE 6
 #############################################################################################################
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
@@ -40,13 +40,17 @@ file_rasterizeroutput
 # Duck.glb's bounding box is roughly  X: -69..96   Y: 10..164   Z: -61..54
 # (measured in cm by the asset's own accessor metadata).  Camera placed
 # accordingly so the duck fills the frame.
+film
+{
+	width			512
+	height			512
+}
+
 pinhole_camera
 {
 	location			0 90 320
 	lookat				15 90 0
 	up					0 1 0
-	width				512
-	height				512
 	fov					40.0
 }
 
