@@ -814,13 +814,24 @@ namespace
 		Check( tileCount.load() == beforeIntermediate,
 			"L6e-2a: OutputIntermediateImage no-op when externally bound (no double-fire)" );
 
-		// IRasterizerOutput::OutputImage when bound: still fires
-		// OnFrameComplete via direct MarkFrameComplete on the bound
-		// store (frame-complete signal preserved).
-		const int beforeFinal = frameCount.load();
+		// L6f — IRasterizerOutput::OutputImage when bound is a
+		// COMPLETE no-op.  Frame-complete signaling now comes from
+		// the rasterizer's `FlushToOutputs` calling
+		// `mFrameStore->MarkFrameComplete` directly (post-flush of
+		// the IRasterizerOutput chain).  We can't construct a real
+		// rasterizer in this unit test, so simulate by calling
+		// `extFs->MarkFrameComplete` directly to confirm the
+		// observer chain is still wired correctly.
+		const int beforeFinalNoop = frameCount.load();
 		vfs->OutputImage( *img, nullptr, /*frame=*/0 );
-		Check( frameCount.load() == beforeFinal + 1,
-			"L6e-2a: OutputImage fires OnFrameComplete on bound store" );
+		Check( frameCount.load() == beforeFinalNoop,
+			"L6f: OutputImage when bound is no-op (no double-fire on rasterizer-driven Mark*)" );
+
+		// Simulate rasterizer-side MarkFrameComplete on the bound
+		// store; observer fires as expected.
+		extFs->MarkFrameComplete( 0 );
+		Check( frameCount.load() == beforeFinalNoop + 1,
+			"L6f: rasterizer-side MarkFrameComplete fires OnFrameComplete on bound store" );
 
 		// Mid-bind unbind: revert to internal mode.
 		vfs->BindFrameStore( nullptr );

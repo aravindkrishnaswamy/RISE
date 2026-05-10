@@ -591,28 +591,18 @@ namespace RISE
 			const Rect*         pRegion,
 			const unsigned int  frame )
 		{
-			// L6e-2a — externally bound: rasterizer's
-			// `FrameStoreBulkBracket` (post-L6e-1.1) already wrote
-			// every pixel into the canonical store; we just need to
-			// fire `OnFrameComplete` on observers (no copy).
-			//
-			// L6f-TODO — this MarkFrameComplete is the SOLE
-			// frame-complete signal in bound mode today; rasterizers
-			// don't (yet) call MarkFrameComplete on `mFrameStore`.
-			// L6f will move the frame-complete signal into the
-			// rasterizer itself, at which point bound-mode VFS will
-			// double-fire.  When L6f lands, gate this branch on a
-			// "rasterizer drives frame-complete" capability flag, or
-			// retire the IRasterizerOutput chain entirely for VFS
-			// consumers (which is the L6f endgame anyway).  See
-			// L6e-2a adversarial review P1.
+			// L6e-2a / L6f — externally bound: complete no-op.  The
+			// rasterizer's per-tile `BeginTile/EndTile` (post-L6e-1)
+			// already drove `OnTileComplete`; the rasterizer's
+			// post-flush `MarkFrameComplete` (post-L6f) on the
+			// canonical store now drives `OnFrameComplete` —
+			// observers fan out from there.  Pre-L6f this branch
+			// also fired `MarkFrameComplete` itself; that's now the
+			// rasterizer's job, and firing here would DOUBLE-FIRE
+			// observers on the same store.
 			{
-				FrameStore* boundSnap = SnapshotFrameStore( chainMutex_, externalFrameStore_ );
-				if ( boundSnap ) {
-					boundSnap->MarkFrameComplete( frame );
-					boundSnap->release();
-					return;
-				}
+				std::shared_lock<std::shared_mutex> lock( chainMutex_ );
+				if ( externalFrameStore_ ) return;
 			}
 
 			EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
@@ -636,18 +626,11 @@ namespace RISE
 			const Rect*         pRegion,
 			const unsigned int  frame )
 		{
-			// L6e-2a — externally bound: skip copy, fire pre-denoise
-			// observer chain on the bound store.
-			// L6f-TODO — see OutputImage for the future double-fire
-			// concern when rasterizers start calling
-			// MarkPreDenoiseComplete on `mFrameStore` directly.
+			// L6e-2a / L6f — externally bound: complete no-op.
+			// Rasterizer drives `MarkPreDenoiseComplete` post-flush.
 			{
-				FrameStore* boundSnap = SnapshotFrameStore( chainMutex_, externalFrameStore_ );
-				if ( boundSnap ) {
-					boundSnap->MarkPreDenoiseComplete( frame );
-					boundSnap->release();
-					return;
-				}
+				std::shared_lock<std::shared_mutex> lock( chainMutex_ );
+				if ( externalFrameStore_ ) return;
 			}
 
 			EnsureChain( pImage.GetWidth(), pImage.GetHeight() );
@@ -663,18 +646,11 @@ namespace RISE
 			const Rect*         pRegion,
 			const unsigned int  frame )
 		{
-			// L6e-2a — externally bound: skip copy, fire denoise
-			// observer chain on the bound store.
-			// L6f-TODO — see OutputImage for the future double-fire
-			// concern when rasterizers start calling
-			// MarkDenoiseComplete on `mFrameStore` directly.
+			// L6e-2a / L6f — externally bound: complete no-op.
+			// Rasterizer drives `MarkDenoiseComplete` post-flush.
 			{
-				FrameStore* boundSnap = SnapshotFrameStore( chainMutex_, externalFrameStore_ );
-				if ( boundSnap ) {
-					boundSnap->MarkDenoiseComplete( frame );
-					boundSnap->release();
-					return;
-				}
+				std::shared_lock<std::shared_mutex> lock( chainMutex_ );
+				if ( externalFrameStore_ ) return;
 			}
 
 			EnsureChain( pImage.GetWidth(), pImage.GetHeight() );

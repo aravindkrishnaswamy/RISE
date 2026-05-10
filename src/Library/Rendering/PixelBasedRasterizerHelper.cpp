@@ -1581,6 +1581,21 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 #endif
 		{
 			// L6e-1.1 — bracket the inter-frame Clear via RAII.
+			//
+			// L6f known-limitation — `FlushToOutputs` (above) fired
+			// `MarkFrameComplete(frameIdx)` synchronously on
+			// `mFrameStore`.  Synchronous observers
+			// (FileEncoderObserver) finished writing before this
+			// Clear executes.  ASYNC observers (e.g. UI repaint
+			// patterns that signal a UI thread and return) may
+			// wake AFTER the Clear and read black for a beat.
+			// Pre-L6f (legacy VFS-internal FrameStore mode) had the
+			// same race window: VFS-internal store also got cleared
+			// between frames.  No regression vs pre-L6f, just
+			// surfaced by the rasterizer-driven Mark* rendering
+			// the per-frame timing more obvious.  L6e-3 (interactive
+			// VFS migration) will need to address this for
+			// animation-in-GUI workflows.
 			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
 			pImage->Clear( RISEColor(0,0,0,0), pRect );
 		}
@@ -1752,12 +1767,49 @@ IRasterizeSequence* PixelBasedRasterizerHelper::CreateDefaultRasterSequence( uns
 	return new MortonRasterizeSequence( tileEdge );
 }
 
+// L6f — Frame-complete signaling moves into the rasterizer.
+//
+// Pre-L6f, `MarkFrameComplete` / `MarkPreDenoiseComplete` /
+// `MarkDenoiseComplete` on the FrameStore was driven by
+// `FrameSink::Output*Image` (legacy IRasterizerOutput → FrameStore
+// adapter).  That worked when the VFS owned a separate internal
+// FrameStore (FrameSink fed it), but post-L6e-2 the VFS observes
+// the rasterizer's CANONICAL `mFrameStore` directly — and the
+// legacy IRasterizerOutput chain becomes redundant for that
+// signaling.
+//
+// Post-L6f, the rasterizer fires the Mark* events on its own
+// `mFrameStore` AFTER the legacy IRasterizerOutput dispatch so:
+//
+//   * Legacy IRasterizerOutput consumers (FileRasterizerOutput,
+//     callback sinks, FrameSink-backed VFS instances in
+//     internal-managed mode) see `OutputImage` first, do their work
+//     (file write, internal-FrameStore copy + own-MarkFrameComplete).
+//
+//   * THEN the rasterizer's `MarkFrameComplete` fires on the
+//     CANONICAL FrameStore.  Direct FrameStore observers (post-L6e-2
+//     bound VFS, FileEncoderObserver) receive it from the rasterizer
+//     side, NOT from the IRasterizerOutput chain.
+//
+//   * VFS in bound mode is now a no-op for `OutputImage` — the
+//     rasterizer-side Mark* is the sole frame-complete signal.
+//     See `ViewportFrameStore::OutputImage`'s post-L6f short-
+//     circuit.
+//
+// `mFrameStore` is null for MLT (which opted out of the FrameStore
+// push via `AcceptsFrameStorePush()`); the null-check below is the
+// degenerate-case guard.
+
 void PixelBasedRasterizerHelper::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
-	// Write to output objects
+	// Write to output objects (legacy IRasterizerOutput chain).
 	RasterizerOutputListType::const_iterator	r, s;
 	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 		(*r)->OutputImage( img, rcRegion, frame );
+	}
+	// L6f — fire `OnFrameComplete` on canonical-FrameStore observers.
+	if( mFrameStore ) {
+		mFrameStore->MarkFrameComplete( frame );
 	}
 }
 
@@ -1767,6 +1819,10 @@ void PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( const IRasterImage& 
 	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 		(*r)->OutputPreDenoisedImage( img, rcRegion, frame );
 	}
+	// L6f — fire `OnPreDenoiseComplete` on canonical-FrameStore observers.
+	if( mFrameStore ) {
+		mFrameStore->MarkPreDenoiseComplete( frame );
+	}
 }
 
 void PixelBasedRasterizerHelper::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
@@ -1774,6 +1830,10 @@ void PixelBasedRasterizerHelper::FlushDenoisedToOutputs( const IRasterImage& img
 	RasterizerOutputListType::const_iterator	r, s;
 	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 		(*r)->OutputDenoisedImage( img, rcRegion, frame );
+	}
+	// L6f — fire `OnDenoiseComplete` on canonical-FrameStore observers.
+	if( mFrameStore ) {
+		mFrameStore->MarkDenoiseComplete( frame );
 	}
 }
 
