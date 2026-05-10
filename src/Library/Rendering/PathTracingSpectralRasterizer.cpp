@@ -41,10 +41,12 @@ PathTracingSpectralRasterizer::PathTracingSpectralRasterizer(
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityCfg,
 	bool useZSobol_,
-	bool useHWSS_
+	bool useHWSS_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
-  PixelBasedRasterizerHelper( pCaster_ ),
-  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, stabilityCfg, useZSobol_, useHWSS_ ),
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster_ , frameStore),
+  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, stabilityCfg, useZSobol_, useHWSS_ , frameStore),
   pIntegrator( 0 ),
   adaptiveConfig( adaptiveConfig ),
   pSMSPhotonMap( 0 ),

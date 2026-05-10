@@ -487,15 +487,17 @@ bool RISE::Implementation::CreateInteractiveMaterialPreviewPipeline(
 	return true;
 }
 
-InteractivePelRasterizer::InteractivePelRasterizer( IRayCaster* pCaster, const Config& cfg )
-: PixelBasedRasterizerHelper( pCaster )
+InteractivePelRasterizer::InteractivePelRasterizer( IRayCaster* pCaster, const Config& cfg , RISE::Implementation::FrameStore* frameStore)
+:
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster , frameStore)
 , PixelBasedPelRasterizer(
     pCaster,
     PathGuidingConfig(),       // disabled by default
     AdaptiveSamplingConfig(),  // maxSamples=0 == disabled
     StabilityConfig(),         // default stability bounds
     /*useZSobol*/false
-  )
+  , frameStore)
 , mCfg( cfg )
 , mIdleMode( false )
 , mPreviewDenoiseMode( PreviewDenoise_Off )

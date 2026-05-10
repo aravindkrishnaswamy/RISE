@@ -56,11 +56,13 @@ BDPTSpectralRasterizer::BDPTSpectralRasterizer(
 	const PathGuidingConfig& guidingConfig,
 	const StabilityConfig& stabilityConfig,
 	bool useZSobol_,
-	bool useHWSS_
+	bool useHWSS_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
-  PixelBasedRasterizerHelper( pCaster_ ),
-  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, guidingConfig, stabilityConfig ),
-  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, StabilityConfig(), false, useHWSS_ )
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster_ , frameStore),
+  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, guidingConfig, stabilityConfig , frameStore),
+  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, StabilityConfig(), false, useHWSS_ , frameStore)
 {
 	useZSobol = useZSobol_;
 }

@@ -25,6 +25,7 @@ namespace RISE
 	namespace Implementation
 	{
 		class OIDNDenoiser;	// forward decl — full type only needed in Rasterizer.cpp
+		class FrameStore;	// forward decl — held as a counted reference
 
 		class Rasterizer : public virtual IRasterizer, public virtual Reference
 		{
@@ -32,6 +33,20 @@ namespace RISE
 			typedef std::vector<IRasterizerOutput*>	RasterizerOutputListType;
 			RasterizerOutputListType				outs;
 			IProgressCallback*						pProgressFunc;
+
+			//! L6a — Canonical FrameStore the rasterizer writes into
+			//! (Phase 2 design, see docs/FRAMESTORE_DESIGN.md §6).
+			//! L6a (this commit): held but unused — the helper still
+			//! routes pixel writes through `mPersistentImage`.  L6b
+			//! flips `PixelBasedRasterizerHelper` to write through
+			//! `mFrameStore->AsBeautyRasterImage()` and bracket per-
+			//! block writes with `BeginTile`/`EndTile`.  Counted
+			//! reference: addref'd in the Rasterizer constructor when
+			//! non-null, released in the destructor.  May be null
+			//! (allows a transitional period where Job hasn't yet been
+			//! migrated to allocate one — see L6a's verification
+			//! commit).
+			FrameStore*								mFrameStore;
 
 #ifdef RISE_ENABLE_OIDN
 			bool									bDenoisingEnabled;
@@ -58,7 +73,11 @@ namespace RISE
 			mutable OIDNDenoiser*					mDenoiser;
 #endif
 
-			Rasterizer();
+			//! Constructor.  `frameStore` may be null while L6a is
+			//! mid-migration; non-null is the L6b+ target state.
+			//! When non-null, this constructor addrefs it; the
+			//! destructor releases.
+			explicit Rasterizer( FrameStore* frameStore = nullptr );
 			virtual ~Rasterizer();
 
 			// Figures out the number of threads to spawn based on the number of
@@ -88,6 +107,64 @@ namespace RISE
 			virtual void FreeRasterizerOutputs( );
 			virtual void EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& pFunc ) const;
 			virtual void SetProgressCallback( IProgressCallback* pFunc );
+
+			// L6a — IRasterizer override.  Returns the FrameStore
+			// passed at construction time (may be null until Job
+			// migrates to allocate one).
+			// `virtual` is explicitly written here to match the
+			// style of every other IRasterizer override in this
+			// section (AddRasterizerOutput, SetProgressCallback,
+			// etc. all spell out `virtual`).  `override` is
+			// intentionally OMITTED because the surrounding
+			// overrides aren't marked `override`; adding it here
+			// trips `-Winconsistent-missing-override` against the
+			// pre-existing methods.  See user memory:
+			// `feedback_override_keyword_in_job.md`.
+			virtual FrameStore* GetFrameStore() const
+				{ return mFrameStore; }
+
+			// L6b — Late-binding FrameStore setter.  Used by `Job` to
+			// push the canonical FrameStore into the rasterizer AFTER
+			// scene load completes (most scene files declare the
+			// rasterizer chunk BEFORE the camera chunk, so at
+			// rasterizer-construction time the active camera dims
+			// aren't yet known and the factory was passed nullptr).
+			//
+			// Releases any previous FrameStore and addrefs the new
+			// one (matching the lifecycle Rasterizer::Rasterizer
+			// established).  Passing nullptr clears the FrameStore
+			// (rasterizer falls back to its internal IRasterImage
+			// path until L6c).
+			//
+			// Threading: caller must establish the same "rasterizer
+			// is parked, no render in flight" precondition the rest
+			// of `Job`'s mutable-state mutations honor (see Job.h
+			// CONCURRENCY CONTRACT).  L6c will introduce a
+			// chain-mutex so reader threads (UI viewports, encoders)
+			// can read FrameStore concurrently with this swap.
+			void SetFrameStore( FrameStore* frameStore );
+
+			// L6e-1.1 — Capability hook: does this rasterizer accept
+			// the canonical Job-allocated FrameStore push, or does it
+			// run on its own internal RISERasterImage path?
+			//
+			// Default true (every PT/BDPT/VCM/interactive subclass
+			// writes through the FrameStore beauty view).  MLT and
+			// MLTSpectral override to false because their PSSMLT
+			// per-round Resolve allocates a fresh local
+			// `RISERasterImage` and never touches the FrameStore
+			// (until L6d-2 migrates them to multi-round-aware
+			// FrameStore writes).  Without this opt-out, the Job's
+			// post-scene-load `PushJobFrameStoreToRasterizers` would
+			// hand MLT a FrameStore that `GetFrameStore()` then
+			// surfaces to direct readers as perpetually stale (the
+			// rasterizer never writes into it).
+			//
+			// Pre-fix this was a string-match on registry name in
+			// `Job::PushJobFrameStoreToRasterizers`; brittle to
+			// rename + scattered the policy away from the rasterizer
+			// that owns the constraint.  See L6e-1.1 review #2 P0.
+			virtual bool AcceptsFrameStorePush() const { return true; }
 
 #ifdef RISE_ENABLE_OIDN
 			void SetDenoisingEnabled( bool enabled ) { bDenoisingEnabled = enabled; }

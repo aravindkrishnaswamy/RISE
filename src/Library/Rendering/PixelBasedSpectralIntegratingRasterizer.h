@@ -117,7 +117,8 @@ namespace RISE
 				const unsigned int specsamp,
 				const StabilityConfig& stabilityCfg,
 				bool useZSobol_,
-				bool useHWSS_
+				bool useHWSS_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;

@@ -4831,14 +4831,15 @@ namespace RISE
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
-								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		PixelBasedPelRasterizer* pRasterizer = new PixelBasedPelRasterizer( caster, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+		PixelBasedPelRasterizer* pRasterizer = new PixelBasedPelRasterizer( caster, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol, frameStore);
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
@@ -4885,14 +4886,15 @@ namespace RISE
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,			///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
-								const bool useHWSS				///< [in] Use Hero Wavelength Spectral Sampling
+								const bool useHWSS,				///< [in] Use Hero Wavelength Spectral Sampling
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		PixelBasedSpectralIntegratingRasterizer* pRasterizer = new PixelBasedSpectralIntegratingRasterizer( caster, lambda_begin, lambda_end, num_wavelengths, specSamples, stabilityConfig, useZSobol, useHWSS );
+		PixelBasedSpectralIntegratingRasterizer* pRasterizer = new PixelBasedSpectralIntegratingRasterizer( caster, lambda_begin, lambda_end, num_wavelengths, specSamples, stabilityConfig, useZSobol, useHWSS, frameStore);
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
@@ -4947,14 +4949,15 @@ namespace RISE
 								const PathGuidingConfig& guidingConfig,
 								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
-								const bool useZSobol
+								const bool useZSobol,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+		BDPTPelRasterizer* pRasterizer = new BDPTPelRasterizer( caster, maxEyeDepth, maxLightDepth, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -4999,7 +5002,8 @@ namespace RISE
 								const PathGuidingConfig& guidingConfig,
 								const StabilityConfig& stabilityConfig,
 								const bool useZSobol,
-								const bool useHWSS
+								const bool useHWSS,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
@@ -5008,7 +5012,7 @@ namespace RISE
 
 		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
 			caster, maxEyeDepth, maxLightDepth,
-			lambda_begin, lambda_end, num_wavelengths, spectral_samples, guidingConfig, stabilityConfig, useZSobol, useHWSS );
+			lambda_begin, lambda_end, num_wavelengths, spectral_samples, guidingConfig, stabilityConfig, useZSobol, useHWSS, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -5052,7 +5056,8 @@ namespace RISE
 								const PathGuidingConfig& guidingConfig,
 								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
-								const bool useZSobol
+								const bool useZSobol,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
@@ -5069,7 +5074,7 @@ namespace RISE
 			guidingConfig,
 			adaptiveConfig,
 			stabilityConfig,
-			useZSobol );
+			useZSobol, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -5118,7 +5123,8 @@ namespace RISE
 								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
 								const bool useZSobol,
-								const bool useHWSS
+								const bool useHWSS,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
@@ -5140,7 +5146,7 @@ namespace RISE
 			adaptiveConfig,
 			stabilityConfig,
 			useZSobol,
-			useHWSS );
+			useHWSS, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -5190,7 +5196,8 @@ namespace RISE
 								const PathGuidingConfig& guidingConfig,
 								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
-								const bool useZSobol
+								const bool useZSobol,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
@@ -5216,7 +5223,7 @@ namespace RISE
 		}
 
 		PathTracingPelRasterizer* pRasterizer = new PathTracingPelRasterizer(
-			caster, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol );
+			caster, smsConfig, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -5270,7 +5277,8 @@ namespace RISE
 								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
 								const bool useZSobol,
-								const bool useHWSS
+								const bool useHWSS,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
@@ -5297,7 +5305,7 @@ namespace RISE
 
 		PathTracingSpectralRasterizer* pRasterizer = new PathTracingSpectralRasterizer(
 			caster, lambda_begin, lambda_end, num_wavelengths, spectral_samples,
-			smsConfig, adaptiveConfig, stabilityConfig, useZSobol, useHWSS );
+			smsConfig, adaptiveConfig, stabilityConfig, useZSobol, useHWSS, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -5355,7 +5363,8 @@ namespace RISE
 							const OidnDevice oidnDevice,
 							const OidnPrefilter oidnPrefilter,
 								ISampling2D* pSampler,
-								IPixelFilter* pFilter
+								IPixelFilter* pFilter,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
@@ -5363,7 +5372,7 @@ namespace RISE
 		}
 
 		MLTRasterizer* pRasterizer = new MLTRasterizer( caster, maxEyeDepth, maxLightDepth,
-			nBootstrap, nChains, nMutationsPerPixel, largeStepProb );
+			nBootstrap, nChains, nMutationsPerPixel, largeStepProb, frameStore);
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
@@ -5408,12 +5417,14 @@ namespace RISE
 								const unsigned int nChains,
 								const unsigned int nMutationsPerPixel,
 								const Scalar largeStepProb,
-								const bool oidnDenoise
+								const bool oidnDenoise,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		return RISE_API_CreateMLTRasterizerWithFilter( ppi, caster,
 			maxEyeDepth, maxLightDepth, nBootstrap, nChains,
-			nMutationsPerPixel, largeStepProb, oidnDenoise, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast, 0, 0 );
+			nMutationsPerPixel, largeStepProb, oidnDenoise, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast, 0, 0,
+			frameStore );  // L6a-2: thread through
 	}
 
 	bool RISE_API_CreateMLTSpectralRasterizerWithFilter(
@@ -5434,7 +5445,8 @@ namespace RISE
 							const OidnDevice oidnDevice,
 							const OidnPrefilter oidnPrefilter,
 								ISampling2D* pSampler,
-								IPixelFilter* pFilter
+								IPixelFilter* pFilter,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		if( !ppi ) {
@@ -5443,7 +5455,7 @@ namespace RISE
 
 		MLTSpectralRasterizer* pRasterizer = new MLTSpectralRasterizer( caster, maxEyeDepth, maxLightDepth,
 			nBootstrap, nChains, nMutationsPerPixel, largeStepProb,
-			lambda_begin, lambda_end, nSpectralSamples, useHWSS );
+			lambda_begin, lambda_end, nSpectralSamples, useHWSS, frameStore);
 
 #ifdef RISE_ENABLE_OIDN
 		pRasterizer->SetDenoisingEnabled( oidnDenoise );
@@ -5486,13 +5498,15 @@ namespace RISE
 								const Scalar lambda_end,
 								const unsigned int nSpectralSamples,
 								const bool useHWSS,
-								const bool oidnDenoise
+								const bool oidnDenoise,
+								Implementation::FrameStore* frameStore    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								)
 	{
 		return RISE_API_CreateMLTSpectralRasterizerWithFilter( ppi, caster,
 			maxEyeDepth, maxLightDepth, nBootstrap, nChains,
 			nMutationsPerPixel, largeStepProb, lambda_begin, lambda_end,
-			nSpectralSamples, useHWSS, oidnDenoise, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast, 0, 0 );
+			nSpectralSamples, useHWSS, oidnDenoise, OidnQuality::Auto, OidnDevice::Auto, OidnPrefilter::Fast, 0, 0,
+			frameStore );  // L6a-2: thread through
 	}
 }
 

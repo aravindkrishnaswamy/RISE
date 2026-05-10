@@ -88,7 +88,8 @@ namespace RISE
 				const AdaptiveSamplingConfig& adaptiveCfg,
 				const StabilityConfig& stabilityConfig,
 				const bool useZSobol,
-				const bool useHWSS
+				const bool useHWSS,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 		};
 	}

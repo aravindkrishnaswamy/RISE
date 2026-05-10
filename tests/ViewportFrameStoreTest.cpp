@@ -745,6 +745,193 @@ namespace
 		vfs->release();
 	}
 
+	// ─── Section 9 (L6e-2a): External FrameStore bind ───────────
+	//
+	// Verify that BindFrameStore:
+	//   - Initially: VFS reports IsExternallyBound() == false.
+	//   - After bind: IsExternallyBound() == true; GetFrameStore()
+	//     returns the bound pointer; tile observer fires on the
+	//     external store's BeginTile/EndTile (post-L6e-1 rasterizer-
+	//     side bracketing pattern).
+	//   - IRasterizerOutput methods short-circuit when bound (no
+	//     copy, no spurious double-fire).
+	//   - OutputImage on a bound VFS still fires OnFrameComplete
+	//     (frame-complete event preserved via direct MarkFrameComplete
+	//     call on the bound store).
+	//   - Unbind reverts to internal-managed mode; subsequent
+	//     OutputImage allocates fresh internal store.
+	//   - Idempotent: re-binding the same pointer is a no-op
+	//     (no observer thrash).
+	//   - Refcount: bind addrefs the external; unbind / dtor
+	//     releases.  The external is NOT destroyed by VFS while
+	//     the test holds its own ref.
+	void TestExternalBind_L6e2a()
+	{
+		auto* vfs = new ViewportFrameStore();
+		Check( !vfs->IsExternallyBound(),
+			"L6e-2a: IsExternallyBound==false before any bind" );
+
+		// Allocate an external FrameStore (Job-allocated, in
+		// production).  Test holds one addref; bind will take a
+		// second.
+		FrameStore::Spec spec;
+		spec.width    = kImgW;
+		spec.height   = kImgH;
+		spec.tileEdge = 8;  // 4 tiles × 4 tiles for the 16x16
+		auto* extFs = new FrameStore( spec );  // refcount=1
+		extFs->addref();                        // refcount=2 (test owns one)
+
+		// Wire callback that increments on tile + frame events.
+		std::atomic<int> tileCount{ 0 };
+		std::atomic<int> frameCount{ 0 };
+		vfs->SetTileCompleteCallback( [&tileCount]( const Rect&, uint64_t ) {
+			++tileCount;
+		} );
+		vfs->SetFrameCompleteCallback( [&frameCount]( unsigned int, uint64_t ) {
+			++frameCount;
+		} );
+
+		vfs->BindFrameStore( extFs );
+		Check( vfs->IsExternallyBound(),
+			"L6e-2a: IsExternallyBound==true after bind" );
+		Check( vfs->GetFrameStore() == extFs,
+			"L6e-2a: GetFrameStore returns bound external pointer" );
+
+		// Drive a tile complete on the external — VFS observer
+		// should fire its tile callback.
+		extFs->BeginTile( 0, 0 );
+		extFs->EndTile( 0, 0 );
+		Check( tileCount.load() == 1,
+			"L6e-2a: BeginTile/EndTile on external fires tile callback" );
+
+		// IRasterizerOutput::OutputIntermediateImage when bound:
+		// short-circuits (rasterizer's bracketing already drove
+		// observers).  Verify no double-fire by comparing tileCount
+		// before/after.
+		const int beforeIntermediate = tileCount.load();
+		auto* img = MakeTestImage();
+		vfs->OutputIntermediateImage( *img, nullptr );
+		Check( tileCount.load() == beforeIntermediate,
+			"L6e-2a: OutputIntermediateImage no-op when externally bound (no double-fire)" );
+
+		// L6f — IRasterizerOutput::OutputImage when bound is a
+		// COMPLETE no-op.  Frame-complete signaling now comes from
+		// the rasterizer's `FlushToOutputs` calling
+		// `mFrameStore->MarkFrameComplete` directly (post-flush of
+		// the IRasterizerOutput chain).  We can't construct a real
+		// rasterizer in this unit test, so simulate by calling
+		// `extFs->MarkFrameComplete` directly to confirm the
+		// observer chain is still wired correctly.
+		const int beforeFinalNoop = frameCount.load();
+		vfs->OutputImage( *img, nullptr, /*frame=*/0 );
+		Check( frameCount.load() == beforeFinalNoop,
+			"L6f: OutputImage when bound is no-op (no double-fire on rasterizer-driven Mark*)" );
+
+		// Simulate rasterizer-side MarkFrameComplete on the bound
+		// store; observer fires as expected.
+		extFs->MarkFrameComplete( 0 );
+		Check( frameCount.load() == beforeFinalNoop + 1,
+			"L6f: rasterizer-side MarkFrameComplete fires OnFrameComplete on bound store" );
+
+		// Mid-bind unbind: revert to internal mode.
+		vfs->BindFrameStore( nullptr );
+		Check( !vfs->IsExternallyBound(),
+			"L6e-2a: IsExternallyBound==false after unbind" );
+		Check( vfs->GetFrameStore() == nullptr,
+			"L6e-2a: GetFrameStore null after unbind (chain torn down)" );
+
+		// After unbind, OutputImage allocates a fresh INTERNAL
+		// FrameStore — NOT the external (which we still hold a ref
+		// to).
+		vfs->OutputImage( *img, nullptr, /*frame=*/1 );
+		Check( vfs->GetFrameStore() != nullptr,
+			"L6e-2a: OutputImage post-unbind allocates fresh internal store" );
+		Check( vfs->GetFrameStore() != extFs,
+			"L6e-2a: post-unbind FrameStore is INTERNAL (not the ex-external)" );
+		Check( !vfs->IsExternallyBound(),
+			"L6e-2a: post-unbind still reports IsExternallyBound==false" );
+
+		// Idempotent re-bind: bind to the same external twice → no
+		// observer thrash (tileCount shouldn't bump from re-binding).
+		vfs->BindFrameStore( extFs );
+		const int beforeIdempotent = tileCount.load();
+		vfs->BindFrameStore( extFs );
+		extFs->BeginTile( 0, 1 );
+		extFs->EndTile( 0, 1 );
+		Check( tileCount.load() == beforeIdempotent + 1,
+			"L6e-2a: idempotent re-bind doesn't duplicate observer (one tile event = one callback)" );
+
+		// Test-owned ref keeps extFs alive until we release.
+		// Releasing VFS releases its bind addref.
+		safe_release( img );
+		vfs->release();
+
+		// VFS gone, external still has the test's addref.  Verify
+		// by reading its dims (would crash if released to 0).
+		Check( extFs->Width() == kImgW && extFs->Height() == kImgH,
+			"L6e-2a: external FrameStore survives VFS destruction (test held its own ref)" );
+		safe_release( extFs );
+	}
+
+	// ─── Section 10 (L6e-2b): SetFrameStore notification ─────────
+	//
+	// Verify that `IRasterizerOutput::OnRasterizerFrameStoreChanged`
+	// fires when a Rasterizer's `SetFrameStore` is called, and that
+	// VFS's override forwards to `BindFrameStore` so VFS auto-rebinds
+	// across resolution changes.
+	//
+	// We can't easily construct a real Rasterizer in a unit test
+	// (full library dependency tree); instead, test the override
+	// directly: VFS::OnRasterizerFrameStoreChanged(fs) must
+	// observably switch the bound store.
+	void TestSetFrameStoreNotification_L6e2b()
+	{
+		auto* vfs = new ViewportFrameStore();
+
+		FrameStore::Spec specA;
+		specA.width = 8; specA.height = 8; specA.tileEdge = 8;
+		auto* fsA = new FrameStore( specA );
+		fsA->addref();  // test holds one
+
+		FrameStore::Spec specB;
+		specB.width = 12; specB.height = 12; specB.tileEdge = 4;
+		auto* fsB = new FrameStore( specB );
+		fsB->addref();  // test holds one
+
+		// Initial notification — same as a Job-pushed initial bind.
+		vfs->OnRasterizerFrameStoreChanged( fsA );
+		Check( vfs->IsExternallyBound(),
+			"L6e-2b: notification fired with non-null binds VFS" );
+		Check( vfs->GetFrameStore() == fsA,
+			"L6e-2b: VFS now points at fsA" );
+
+		// Resolution-change notification — Job allocated a new
+		// FrameStore on dim change.
+		vfs->OnRasterizerFrameStoreChanged( fsB );
+		Check( vfs->IsExternallyBound(),
+			"L6e-2b: still bound after dim-change notification" );
+		Check( vfs->GetFrameStore() == fsB,
+			"L6e-2b: VFS rebound to fsB across dim change" );
+
+		// Null notification — rasterizer cleared its FrameStore.
+		// Should revert to internal-managed mode.
+		vfs->OnRasterizerFrameStoreChanged( nullptr );
+		Check( !vfs->IsExternallyBound(),
+			"L6e-2b: null notification reverts to internal mode" );
+		Check( vfs->GetFrameStore() == nullptr,
+			"L6e-2b: GetFrameStore null after unbind" );
+
+		// Test holds the only refs now (VFS released both on rebind).
+		Check( fsA->Width()  == 8 && fsA->Height() == 8,
+			"L6e-2b: fsA outlived the VFS rebind" );
+		Check( fsB->Width()  == 12 && fsB->Height() == 12,
+			"L6e-2b: fsB outlived the VFS rebind" );
+
+		safe_release( fsA );
+		safe_release( fsB );
+		vfs->release();
+	}
+
 	// ─── Section 8: cameraExposureEV propagates to Meta ───────────
 	void TestCameraExposureFlow()
 	{
@@ -794,6 +981,8 @@ int main()
 	TestMidRenderSaveAs();
 	TestChainRaceUnderResolutionChange();
 	TestCameraExposureFlow();
+	TestExternalBind_L6e2a();
+	TestSetFrameStoreNotification_L6e2b();
 
 	std::cout << "------------------------------------------------------\n";
 	std::cout << "passed " << gPassCount << ", failed " << gFailCount << "\n";

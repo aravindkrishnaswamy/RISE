@@ -6173,14 +6173,13 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	for( unsigned int trial = 0; trial < totalTrials; trial++ )
 	{
 		std::vector<ManifoldVertex> trialSeed = baseSeedChain;
-		Scalar trialProposalPdf = 1.0;
 		bool useSurfaceSample = false;
 
-		// Trials 0..numBaseSeeds-1 consume the Fresnel-branched base
-		// seeds (multiple chains when branching fires at trial 0).
-		// Each base seed carries its own `proposalPdf`; the contribution
-		// formula divides by it later to absorb the RR weighting that
-		// the chain throughput's Fresnel factor cancels.
+		// Trials 0..numBaseSeeds-1 consume the base seeds (Fresnel-
+		// branched at trial 0 in legacy code; since the 2026-05 path-
+		// tree branching excision there is exactly one base seed and
+		// its `proposalPdf` is always 1.0, so this snell-mode path no
+		// longer divides by it).
 		// Subsequent trials consume photon seeds; if photons run out,
 		// the surface-sample fallback fires for k=1 mirror chains.
 		//
@@ -6198,12 +6197,10 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		if( trial < numBaseSeeds )
 		{
 			trialSeed = baseSeeds[trial].chain;
-			trialProposalPdf = baseSeeds[trial].proposalPdf;
 			// Surface-sample fallback only fires on the very first base
 			// seed when it's the degenerate k=1 mirror case.
 			if( trial == 0 && surfaceSampleReflectionFallback ) {
 				useSurfaceSample = true;
-				trialProposalPdf = 1.0;   // surface-sample = uniform proposal, no Fresnel RR
 			}
 		}
 		else
@@ -6536,10 +6533,6 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 		{
 			trialContribution = trialContribution / mResult.pdf;
 		}
-
-		// Proposal-pdf division.  Always 1.0 since SMS path-tree
-		// branching was excised in 2026-05; division retained as a
-		// no-op for downstream-call-shape compatibility.
 
 #if SMS_TRACE_DIAGNOSTIC
 		if( traceHere ) {

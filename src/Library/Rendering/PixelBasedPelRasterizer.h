@@ -77,7 +77,8 @@ namespace RISE
 				const PathGuidingConfig& guidingCfg,
 				const AdaptiveSamplingConfig& adaptiveCfg,
 				const StabilityConfig& stabilityCfg,
-				bool useZSobol_
+				bool useZSobol_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;

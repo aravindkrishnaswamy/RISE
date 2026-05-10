@@ -30,9 +30,11 @@ PixelBasedSpectralIntegratingRasterizerRGB::PixelBasedSpectralIntegratingRasteri
 		const IFunction1D& spd_g_,
 		const IFunction1D& spd_b_,
 		const bool bSpectralHalton_,
-		const bool bTimeHalton_
-		) : 
-  PixelBasedRasterizerHelper( pCaster_ ),
+		const bool bTimeHalton_,
+		RISE::Implementation::FrameStore* frameStore
+		) :
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster_, frameStore ),
 	  lambda_begin( lambda_begin_ ),
 	  lambda_end( lambda_end_ ),
 	  lambda_diff( lambda_end_-lambda_begin_ ),

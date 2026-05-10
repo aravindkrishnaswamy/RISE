@@ -780,6 +780,19 @@ public:
 // observer, driving an atomic full-frame update of the interactive
 // Metal layer.  Called from `-opaqueInteractiveViewportFrameStore`
 // when the interactive viewport bridge requests the handle.
+//
+// Note (L6e-2c): the INTERACTIVE VFS deliberately does NOT call
+// `Attach(rasterizer)` — it's exposed as an opaque handle to the
+// interactive viewport which feeds it via the
+// `ViewportPreviewSink` fan-out (frame-complete only) per L5a's
+// SceneEditController-driven preview-scale oscillation.  As a
+// result the interactive VFS stays in INTERNAL-managed mode (the
+// L5a dormant-cache codepath in EnsureChain is still load-bearing
+// for resolution oscillation reuse).  Only the PRODUCTION VFS
+// migrated to direct-bind in L6e-2b.  Migrating the interactive
+// path requires routing the SceneEditController's per-pass
+// rasterizer through Attach / OnRasterizerFrameStoreChanged
+// instead of OutputImage; deferred until L6e-3.
 - (void)ensureInteractiveVFSCreated {
     if (_interactiveVFS) return;
     _interactiveVFS = new Implementation::ViewportFrameStore();
@@ -810,6 +823,34 @@ public:
     // is also safe to call repeatedly without a Free in between (it'll
     // just stack a redundant reference) — the BOOL guard avoids that
     // case for clarity.
+    //
+    // L6e-2b/c — `Attach` (post-commit-f6b0bb4) automatically calls
+    // `BindFrameStore(rasterizer->GetFrameStore())` if the rasterizer
+    // already has a canonical FrameStore (typical: Job's
+    // `PushJobFrameStoreToRasterizers` ran on scene-load before any
+    // bridge attached a VFS).  Subsequent `Rasterizer::SetFrameStore`
+    // swaps (camera-dim change, active-camera switch) automatically
+    // re-bind via the new `OnRasterizerFrameStoreChanged` virtual
+    // dispatched on every attached output.  Net effect: for PT / BDPT
+    // / VCM / interactive rasterizers the VFS now observes the
+    // rasterizer's mFrameStore directly — no VFS-internal FrameStore
+    // allocation, no FrameSink cross-store copy.
+    //
+    // Caveat: MLT integrators (`mlt_rasterizer`, `mlt_spectral_rasterizer`)
+    // override `Rasterizer::AcceptsFrameStorePush()` to false (per
+    // L6e-1.1), so Job never pushes a FrameStore to them and
+    // `rasterizer->GetFrameStore()` returns null at Attach time.  VFS
+    // stays in legacy FrameSink-copy mode for those rasterizers
+    // until L6d-2 migrates MLT to multi-round-aware FrameStore writes.
+    //
+    // Note: the EXTERNAL FrameStore bind survives `FreeRasterizerOutputs`
+    // (rasterizer drops its ref to VFS but VFS still holds the addref
+    // on the FrameStore + observer registration).  When the BOOL flips
+    // and we re-Attach, `BindFrameStore` is idempotent on same-pointer
+    // rebind — same observer, no thrash.
+    //
+    // Bridge code below is unchanged because the migration is additive
+    // (BindFrameStore is opt-in; Attach now always opts in).
     if (!_productionVFSAttachedToRasterizer) {
         _productionVFS->Attach(rasterizer);
         _productionVFSAttachedToRasterizer = YES;
@@ -1001,6 +1042,11 @@ public:
     // useful for the SceneEditController-driven interactive
     // viewport (use `opaqueInteractiveViewportFrameStore` + the
     // sink fan-out for that path — see header doc).
+    //
+    // L6e-2b/c — `Attach` auto-binds the VFS to the rasterizer's
+    // canonical FrameStore (when present) so subsequent reads /
+    // writes go straight through `mFrameStore`.  See
+    // `-ensureVFSAttachedToRasterizer:` for the migration commentary.
     if (!opaqueRasterizer) return;
     [self ensureProductionVFSCreated];
     IRasterizer* rasterizer = static_cast<IRasterizer*>(opaqueRasterizer);

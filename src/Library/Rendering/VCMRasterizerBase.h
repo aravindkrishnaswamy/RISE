@@ -126,7 +126,8 @@ namespace RISE
 				const Scalar mergeRadius,
 				const bool enableVC,
 				const bool enableVM,
-				const StabilityConfig& stabilityCfg
+				const StabilityConfig& stabilityCfg,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 
 			/// Normalization snapshot read by the eye pass.  Public

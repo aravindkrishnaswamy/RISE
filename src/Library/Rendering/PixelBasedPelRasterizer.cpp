@@ -103,9 +103,11 @@ PixelBasedPelRasterizer::PixelBasedPelRasterizer(
 	const PathGuidingConfig& guidingCfg,
 	const AdaptiveSamplingConfig& adaptiveCfg,
 	const StabilityConfig& stabilityCfg,
-	bool useZSobol_
+	bool useZSobol_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
-  PixelBasedRasterizerHelper( pCaster_ ),
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster_ , frameStore),
 #ifdef RISE_ENABLE_OPENPGL
   pGuidingField( 0 ),
   guidingAlphaScale( 1.0 ),

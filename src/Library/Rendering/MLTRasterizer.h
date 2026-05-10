@@ -307,7 +307,8 @@ namespace RISE
 				const unsigned int nBootstrap_,
 				const unsigned int nChains_,
 				const unsigned int nMutationsPerPixel_,
-				const Scalar largeStepProb_
+				const Scalar largeStepProb_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 
 			//////////////////////////////////////////////////////////////
@@ -326,6 +327,20 @@ namespace RISE
 
 			void AttachToScene( const IScene* ){};
 			void DetachFromScene( const IScene* ){};
+
+			// L6e-1.1 — opt out of the Job's post-scene-load
+			// FrameStore push.  MLT's PSSMLT per-round Resolve
+			// allocates a fresh local `RISERasterImage` and never
+			// writes into the canonical FrameStore (until L6d-2
+			// migrates it to multi-round-aware FrameStore writes).
+			// Accepting the push would leave `GetFrameStore()`
+			// returning a perpetually stale store to direct
+			// readers.  See `Rasterizer::AcceptsFrameStorePush` for
+			// the contract.  `virtual` matches the surrounding
+			// override style; `override` intentionally OMITTED to
+			// avoid `-Winconsistent-missing-override` cascade
+			// against pre-existing methods.
+			virtual bool AcceptsFrameStorePush() const { return false; }
 
 			unsigned int PredictTimeToRasterizeScene(
 				const IScene& pScene,

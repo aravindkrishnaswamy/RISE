@@ -26,7 +26,9 @@
 
 namespace RISE
 {
-	class IRasterizer : public virtual IReference 
+	namespace Implementation { class FrameStore; }
+
+	class IRasterizer : public virtual IReference
 	{
 	protected:
 		IRasterizer(){};
@@ -88,6 +90,34 @@ namespace RISE
 		virtual void SetProgressCallback(
 			IProgressCallback* pFunc						///< [in] Callback functor to call to report progress
 			) = 0;
+
+		//! L6 Phase 2 — canonical FrameStore the rasterizer writes
+		//! into.  In L6a (foundation) the rasterizer holds the
+		//! pointer but doesn't use it — internal `mPersistentImage`
+		//! (RISERasterImage) is still the write target.  L6b moves
+		//! the per-tile splat path through the FrameStore's beauty
+		//! channel.  May return nullptr if the caller (typically
+		//! `Job`) hasn't supplied one to the factory; rasterizer
+		//! consumers MUST check before dereferencing.  Non-pure
+		//! with a null default so existing out-of-tree IRasterizer
+		//! subclasses (mocks / test stubs) don't break — the
+		//! in-tree `Rasterizer` base class overrides.
+		//!
+		//! Lifetime contract — IMPORTANT for L6b consumers:
+		//! the returned raw pointer is owned by the rasterizer,
+		//! NOT addref'd before return.  Callers that need to
+		//! retain the pointer past the rasterizer's lifetime MUST
+		//! `addref()` it themselves and `release()` when done.  A
+		//! caller that just dereferences the pointer for an
+		//! immediate read/write MUST hold a counted reference to
+		//! the rasterizer for the duration of the dereference,
+		//! otherwise a concurrent rasterizer destruction (Job
+		//! swap, scene reload) drops the FrameStore underneath.
+		//! Mirror the `ViewportFrameStore::SnapshotFrameStore`
+		//! addref-snapshot pattern (Rendering/ViewportFrameStore.cpp)
+		//! when handing the FrameStore to a thread that may outlive
+		//! the rasterizer.
+		virtual Implementation::FrameStore* GetFrameStore() const { return nullptr; }
 	};
 }
 

@@ -64,7 +64,8 @@ VCMRasterizerBase::VCMRasterizerBase(
 	const Scalar mergeRadius,
 	const bool enableVC,
 	const bool enableVM,
-	const StabilityConfig& stabilityCfg
+	const StabilityConfig& stabilityCfg,
+	RISE::Implementation::FrameStore* frameStore
 	) :
 	PixelBasedRasterizerHelper( pCaster_ ),
 	BidirectionalRasterizerBase( pCaster_, stabilityCfg ),
@@ -807,6 +808,23 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 // from BidirectionalRasterizerBase — both algorithms use the same
 // lazy-scratch splat composition.
 
+// L6f known-limitation — VCM's pSplatFilm splats are composited
+// into a SCRATCH image (`pScratchImage` via `ResolveSplatIntoScratch`),
+// NOT into the rasterizer's canonical `mFrameStore`.  The legacy
+// IRasterizerOutput chain receives the composited scratch (which
+// has splats) — file outputs work correctly.  But direct
+// FrameStore observers attached to `mFrameStore` (post-L6e-2 bound
+// VFS, future direct-FrameStore observers) receive
+// `OnFrameComplete` while `mFrameStore` still holds splat-less
+// beauty — the canonical store doesn't have VCM's t==1 strategy
+// contributions.  This is a pre-existing post-L6e-2 limitation
+// surfaced by L6f's rasterizer-driven Mark*; the proper fix is to
+// have VCM compose splats INTO `mFrameStore` (mirror BDPT's
+// `pSplatFilm->Resolve(*pImage, ...)` pattern at the end of
+// RasterizeScene).  Tracked as part of L6d-2 (VCM/MLT FrameStore
+// migration).  Until then, GUI viewports rendering VCM scenes via
+// bound VFS may show splat-less previews; CLI file outputs are
+// unaffected.
 void VCMRasterizerBase::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
 	if( !pSplatFilm ) {

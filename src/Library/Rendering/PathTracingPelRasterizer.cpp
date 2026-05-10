@@ -35,10 +35,12 @@ PathTracingPelRasterizer::PathTracingPelRasterizer(
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
-	bool useZSobol_
+	bool useZSobol_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
-  PixelBasedRasterizerHelper( pCaster_ ),
-  PixelBasedPelRasterizer( pCaster_, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol_ ),
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster_ , frameStore),
+  PixelBasedPelRasterizer( pCaster_, guidingConfig, adaptiveConfig, stabilityConfig, useZSobol_ , frameStore),
   pIntegrator( 0 ),
   pSMSPhotonMap( 0 ),
   mSMSPhotonCount( smsConfig.enabled ? smsConfig.photonCount : 0 )

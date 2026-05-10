@@ -97,12 +97,38 @@ namespace RISE
 			void Clear( const RISEColor& c, const Rect* rc ) override
 			{
 				if ( !parent_.beauty_ ) return;
-				const unsigned int x0 = rc ? rc->left   : 0;
-				const unsigned int y0 = rc ? rc->top    : 0;
-				const unsigned int x1 = rc ? rc->right  : static_cast<unsigned int>( parent_.width_ );
-				const unsigned int y1 = rc ? rc->bottom : static_cast<unsigned int>( parent_.height_ );
-				for ( unsigned int y = y0; y < y1; ++y ) {
-					for ( unsigned int x = x0; x < x1; ++x ) {
+				// L6c-1 P0 fix — bounds semantics must match
+				// `RISERasterImage::Clear` (RasterImage.h:156-174)
+				// which iterates `<= rc->bottom / right` (INCLUSIVE).
+				// The pre-fix view used exclusive `<` bounds, which
+				// missed the last row + column of every sub-rect
+				// clear.  The bug was masked while no production
+				// code path called Clear-with-rc on the view, but
+				// L6c routes the rasterizer's
+				// `PrepareImageForNewRender` through the view, and
+				// that path passes a non-null pRect for animation
+				// frames (PixelBasedRasterizerHelper.cpp:1396).  Per
+				// the canonical Rect-bounds reference at
+				// ViewportFrameStore.cpp:374-393, RISE's `Rect` is
+				// inclusive at the IRasterImage boundary; FrameStore-
+				// internal code converts to half-open at its own
+				// boundary.  Mirror RasterImage's `<=`:
+				const unsigned int x0 = rc ? rc->left
+				                            : 0;
+				const unsigned int y0 = rc ? rc->top
+				                            : 0;
+				const unsigned int xEnd = rc
+				    ? rc->right + 1u   // inclusive → exclusive end
+				    : static_cast<unsigned int>( parent_.width_ );
+				const unsigned int yEnd = rc
+				    ? rc->bottom + 1u  // inclusive → exclusive end
+				    : static_cast<unsigned int>( parent_.height_ );
+				const unsigned int xClamp = std::min( xEnd,
+				    static_cast<unsigned int>( parent_.width_ ) );
+				const unsigned int yClamp = std::min( yEnd,
+				    static_cast<unsigned int>( parent_.height_ ) );
+				for ( unsigned int y = y0; y < yClamp; ++y ) {
+					for ( unsigned int x = x0; x < xClamp; ++x ) {
 						parent_.beauty_->At( x, y ) = c.base;
 						if ( parent_.alpha_ ) parent_.alpha_->At( x, y ) = c.a;
 					}
@@ -442,6 +468,78 @@ namespace RISE
 			DispatchObservers( [&]( IRenderObserver* obs ) {
 				obs->OnDenoiseComplete( frame, gen );
 			} );
+		}
+
+		// ─────────────────────────────────────────────────────────────
+		// FrameStoreBulkBracket — RAII guard for full-image writes.
+		// See FrameStore.h for the contract.
+		// ─────────────────────────────────────────────────────────────
+
+		FrameStoreBulkBracket::FrameStoreBulkBracket( FrameStore* fs, const IRasterImage& image )
+			: mFs( nullptr )
+		{
+			if( !fs ) return;
+			// Identity check: only bracket when `image` is the actual
+			// FrameStore beauty view.  A dim-only check would falsely
+			// fire on private RISERasterImages whose dims happen to
+			// match camera dims (e.g. BDPT path-guiding training image,
+			// `pPreDenoised` scratch in the OIDN path).
+			if( &image != &fs->AsBeautyRasterImage() ) return;
+
+			const size_t ntx = fs->TileCountX();
+			const size_t nty = fs->TileCountY();
+
+			// Partial-acquire safety: `std::shared_mutex::lock` is
+			// allowed to throw `std::system_error` (resource
+			// exhaustion, EAGAIN on POSIX).  If we throw partway
+			// through the loop without unwinding, the destructor (mFs
+			// is null until all-acquired) leaves N partial locks held
+			// forever → process-wide deadlock.  Track per-tile
+			// progress and release-in-reverse on any throw before
+			// rethrowing.  See L6e-1.1 final adversarial review P0.
+			size_t acquiredTx = 0, acquiredTy = 0;  // (tx,ty) of NEXT to acquire
+			try {
+				for( size_t ty = 0; ty < nty; ++ty ) {
+					for( size_t tx = 0; tx < ntx; ++tx ) {
+						fs->BeginTile( tx, ty );
+						acquiredTx = tx + 1;
+						acquiredTy = ty;
+					}
+					acquiredTx = 0;
+					acquiredTy = ty + 1;
+				}
+			} catch( ... ) {
+				// Walk the prefix of acquired tiles in reverse and
+				// release.  We use `EndTile` (not `unlock` directly)
+				// so the bookkeeping stays inside FrameStore.  Note:
+				// this fires `OnTileComplete` for half the tiles
+				// during a throw — observer behaviour is "best
+				// effort" in the partial-failure case, which is the
+				// least-bad option (deadlock is worse).
+				for( size_t ty = acquiredTy + 1; ty-- > 0; ) {
+					const size_t txEnd = ( ty == acquiredTy ) ? acquiredTx : ntx;
+					for( size_t tx = txEnd; tx-- > 0; ) {
+						fs->EndTile( tx, ty );
+					}
+				}
+				throw;
+			}
+			mFs = fs;  // record only after every BeginTile succeeded
+		}
+
+		FrameStoreBulkBracket::~FrameStoreBulkBracket() noexcept
+		{
+			if( !mFs ) return;
+			const size_t ntx = mFs->TileCountX();
+			const size_t nty = mFs->TileCountY();
+			// Release order matches acquire — irrelevant for correctness
+			// (per-tile mutexes are independent), preserved for
+			// readability + observer-fire ordering.
+			for( size_t ty = 0; ty < nty; ++ty ) {
+				for( size_t tx = 0; tx < ntx; ++tx ) {
+					mFs->EndTile( tx, ty );
+				}
+			}
 		}
 
 		// Snapshot the observer list under the mutex, increment the

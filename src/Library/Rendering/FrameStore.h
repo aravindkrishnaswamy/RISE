@@ -12,9 +12,11 @@
 //
 //  Reference convention: FrameStore inherits from
 //  RISE::Implementation::Reference.  Construct with `new FrameStore(spec)`
-//  (refcount starts at 0, callers addref before sharing or use
-//  safe_release to clean up).  This matches the rest of the library
-//  (see RasterImage_Template, FilteredFilm, etc.).
+//  (refcount starts at 1 — Reference's default — so the `new` call
+//  hands the caller the initial ref; subsequent sharers `addref()`,
+//  and `safe_release()` drops a ref + null-clears the pointer).
+//  Verified by tests/FrameStoreTest.cpp:619.  This matches the rest
+//  of the library (see RasterImage_Template, FilteredFilm, etc.).
 //
 //  Observer convention: observers attach to the FrameStore, NOT to
 //  the rasterizer.  See IRenderObserver.h and
@@ -383,6 +385,73 @@ namespace RISE
 			// FrameStore is non-copyable (Reference rules).
 			FrameStore( const FrameStore& )            = delete;
 			FrameStore& operator=( const FrameStore& ) = delete;
+		};
+
+		// L6e-1.1 — RAII guard for bulk full-image FrameStore writes.
+		//
+		// Some stages of the render pipeline write to the WHOLE image at
+		// once instead of per-block (Resolve, OIDN denoise, Clear,
+		// SplatFilm composition).  Per-block bracketing in
+		// `SPRasterizeSingleBlock` doesn't cover them.  This guard
+		// acquires every FrameStore tile's exclusive lock at construction
+		// and releases all of them at destruction (so concurrent UI/
+		// encoder readers see a clean post-write state, never a torn
+		// half-written one).  Exception-safe — if the bracketed
+		// `Resolve` / `ApplyDenoise` throws (OIDN device error, OOM in
+		// scratch buffers), the destructor still runs and releases every
+		// tile lock.  Free-function Begin/End helpers would deadlock in
+		// that scenario.
+		//
+		// The guard is a no-op (locks nothing, releases nothing) when:
+		//   * `fs` is null (no FrameStore bound), OR
+		//   * `&image != &fs->AsBeautyRasterImage()` (the image being
+		//     written is NOT the FrameStore beauty view — e.g. a private
+		//     `RISERasterImage` whose dims happen to match camera dims,
+		//     such as BDPT's path-guiding training image).  Identity
+		//     check (not dim-match) prevents spurious tile-bumps + false
+		//     OnTileComplete observer fires on un-modified FrameStore
+		//     tiles.
+		//
+		// Lock acquisition is row-major (ty outer, tx inner) — same order
+		// as `FrameStore::Render`'s shared-lock walk, so no AB/BA
+		// deadlock between concurrent bulk-bracketed writers and a
+		// concurrent reader.  Per-block writers in
+		// `SPRasterizeSingleBlock` use the same order over their own
+		// rect, so a bulk-bracket holder waits cleanly behind any
+		// in-progress per-block writers (or vice versa).
+		//
+		// Each `EndTile` fires `OnTileComplete` to observers + bumps the
+		// global generation counter, so a full-image bulk write produces
+		// one observer notification per FrameStore tile (same fan-out as
+		// a fully-rendered per-block frame).  Observers MUST NOT throw
+		// from `OnTileComplete` — the destructor is implicitly
+		// `noexcept` and a throw during stack unwinding would call
+		// `std::terminate`.
+		//
+		// IMPORTANT: do NOT construct nested inside an active per-tile
+		// bracket window — `std::shared_mutex` is non-recursive, so a
+		// second `BeginTile` on a tile already locked by the same thread
+		// would deadlock.
+		class FrameStoreBulkBracket
+		{
+		public:
+			FrameStoreBulkBracket( FrameStore* fs, const IRasterImage& image );
+			// `noexcept` is explicit — the destructor calls
+			// `EndTile` on every tile, which fires `OnTileComplete`
+			// observers; observers MUST NOT throw (a throw during
+			// stack unwinding from a noexcept dtor calls
+			// `std::terminate`).  Marking explicit makes that
+			// contract self-documenting at the declaration site.
+			~FrameStoreBulkBracket() noexcept;
+
+			// Non-copyable, non-movable — strict scope semantics.
+			FrameStoreBulkBracket( const FrameStoreBulkBracket& )            = delete;
+			FrameStoreBulkBracket& operator=( const FrameStoreBulkBracket& ) = delete;
+			FrameStoreBulkBracket( FrameStoreBulkBracket&& )                 = delete;
+			FrameStoreBulkBracket& operator=( FrameStoreBulkBracket&& )      = delete;
+
+		private:
+			FrameStore* mFs;  ///< null when guard is a no-op
 		};
 
 	} // namespace Implementation
