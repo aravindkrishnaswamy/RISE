@@ -31,6 +31,7 @@
 #include "../RISE_API.h"
 #include "../Interfaces/IScenePriv.h"
 
+#include "FrameStore.h"  // L6c — needed unconditionally by AcquireRenderImage
 #ifdef RISE_ENABLE_OIDN
 #include "AOVBuffers.h"
 #include "OIDNDenoiser.h"
@@ -1430,6 +1431,73 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 // to skip the clear so previous content shows through.
 IRasterImage* PixelBasedRasterizerHelper::AcquireRenderImage( unsigned int width, unsigned int height ) const
 {
+	// L6c — prefer the canonical FrameStore beauty channel (via the
+	// `BeautyRasterImageView` shim) when one has been provided AND
+	// its dims match the requested render dims.  Effect: per-pixel
+	// `image.SetPEL(x, y, c)` calls in `SPRasterizeSingleBlock` write
+	// DIRECTLY into the FrameStore's row-major beauty storage (a
+	// `Channel<RISEPel>` indexed `data_[y*width + x]` per
+	// Channel.h:130) instead of allocating a separate
+	// `RISERasterImage` per render.
+	//
+	// The legacy `OutputImage → FrameSink → CopyTileFromRasterImage`
+	// path stays active.  At L6c-1 the rasterizer's `mFrameStore`
+	// and the bridge VFS / FileRasterizerOutput's per-output
+	// FrameStore are DIFFERENT instances, so FrameSink performs a
+	// real cross-store copy (rasterizer.beauty → output.beauty)
+	// that fires the per-tile `BeginTile/EndTile` observer dispatch
+	// on the OUTPUT-side store — that's what GUI viewports and
+	// `FileEncoderObserver` consume for repaint / disk-write
+	// notification.  L6e collapses the bridge VFS into the
+	// rasterizer's mFrameStore (single store, observer pinned to
+	// the canonical), and L6f retires the redundant FrameSink copy
+	// once observers move to direct FrameStore subscription.
+	//
+	// L6c-1 does NOT yet bracket the rasterizer's per-pixel writes
+	// with `BeginTile/EndTile`.  Concurrent-reader correctness on
+	// `mFrameStore` is therefore NOT guaranteed in L6c-1 — but no
+	// such reader exists today (bridges read their own
+	// VFS-internal FrameStore which IS bracketed via FrameSink's
+	// CopyTileFromRasterImage).  L6e MUST add the bracketing in
+	// `SPRasterizeSingleBlock` before the bridges migrate, or
+	// concurrent UI repaints will see torn writes.  TODO L6e.
+	//
+	// The FrameStore view's `addref` / `release` forward to the
+	// owning FrameStore (see FrameStore.cpp:78-80), so the existing
+	// AcquireRenderImage / ReleaseRenderImage refcount accounting
+	// is preserved.
+	//
+	// Fallback to mPersistentImage when:
+	//   * `mFrameStore` is null (Job didn't allocate one — typically
+	//     because no active camera at construction time AND no
+	//     post-load push has happened yet, e.g. test rasterizers
+	//     constructed via `RISE_API_Create*Rasterizer` directly
+	//     without a Job); OR
+	//   * FrameStore dims differ from the requested render dims
+	//     (e.g. `InteractivePelRasterizer` rendering at a preview-
+	//     scale subset of the camera's full resolution).
+	//
+	// **NOTE:** BDPT and VCM rasterizers do NOT call
+	// `AcquireRenderImage` — they allocate fresh `RISERasterImage`
+	// instances inside their own `RasterizeScene` overrides
+	// (BDPTRasterizerBase.cpp:803, VCMRasterizerBase similar).
+	// L6c-1 therefore only impacts the PT / pixelpel /
+	// pixelintegratingspectral / interactive / MLT path that flows
+	// through `PixelBasedRasterizerHelper::RasterizeScene`.  L6d
+	// folds the others in.
+	if( mFrameStore ) {
+		const unsigned int fsW =
+			static_cast<unsigned int>( mFrameStore->Width() );
+		const unsigned int fsH =
+			static_cast<unsigned int>( mFrameStore->Height() );
+		if( fsW == width && fsH == height ) {
+			IRasterImage& view = mFrameStore->AsBeautyRasterImage();
+			view.addref();  // forwards to FrameStore::addref
+			return &view;
+		}
+	}
+
+	// Phase 1 fallback (mPersistentImage path).
 	if( !mPersistentImage || mPersistentW != width || mPersistentH != height ) {
 		safe_release( mPersistentImage );
 		mPersistentImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );

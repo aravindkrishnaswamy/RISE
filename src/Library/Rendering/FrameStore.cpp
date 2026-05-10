@@ -97,12 +97,38 @@ namespace RISE
 			void Clear( const RISEColor& c, const Rect* rc ) override
 			{
 				if ( !parent_.beauty_ ) return;
-				const unsigned int x0 = rc ? rc->left   : 0;
-				const unsigned int y0 = rc ? rc->top    : 0;
-				const unsigned int x1 = rc ? rc->right  : static_cast<unsigned int>( parent_.width_ );
-				const unsigned int y1 = rc ? rc->bottom : static_cast<unsigned int>( parent_.height_ );
-				for ( unsigned int y = y0; y < y1; ++y ) {
-					for ( unsigned int x = x0; x < x1; ++x ) {
+				// L6c-1 P0 fix — bounds semantics must match
+				// `RISERasterImage::Clear` (RasterImage.h:156-174)
+				// which iterates `<= rc->bottom / right` (INCLUSIVE).
+				// The pre-fix view used exclusive `<` bounds, which
+				// missed the last row + column of every sub-rect
+				// clear.  The bug was masked while no production
+				// code path called Clear-with-rc on the view, but
+				// L6c routes the rasterizer's
+				// `PrepareImageForNewRender` through the view, and
+				// that path passes a non-null pRect for animation
+				// frames (PixelBasedRasterizerHelper.cpp:1396).  Per
+				// the canonical Rect-bounds reference at
+				// ViewportFrameStore.cpp:374-393, RISE's `Rect` is
+				// inclusive at the IRasterImage boundary; FrameStore-
+				// internal code converts to half-open at its own
+				// boundary.  Mirror RasterImage's `<=`:
+				const unsigned int x0 = rc ? rc->left
+				                            : 0;
+				const unsigned int y0 = rc ? rc->top
+				                            : 0;
+				const unsigned int xEnd = rc
+				    ? rc->right + 1u   // inclusive → exclusive end
+				    : static_cast<unsigned int>( parent_.width_ );
+				const unsigned int yEnd = rc
+				    ? rc->bottom + 1u  // inclusive → exclusive end
+				    : static_cast<unsigned int>( parent_.height_ );
+				const unsigned int xClamp = std::min( xEnd,
+				    static_cast<unsigned int>( parent_.width_ ) );
+				const unsigned int yClamp = std::min( yEnd,
+				    static_cast<unsigned int>( parent_.height_ ) );
+				for ( unsigned int y = y0; y < yClamp; ++y ) {
+					for ( unsigned int x = x0; x < xClamp; ++x ) {
 						parent_.beauty_->At( x, y ) = c.base;
 						if ( parent_.alpha_ ) parent_.alpha_->At( x, y ) = c.a;
 					}
