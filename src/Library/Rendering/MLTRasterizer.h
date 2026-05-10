@@ -328,19 +328,24 @@ namespace RISE
 			void AttachToScene( const IScene* ){};
 			void DetachFromScene( const IScene* ){};
 
-			// L6e-1.1 — opt out of the Job's post-scene-load
-			// FrameStore push.  MLT's PSSMLT per-round Resolve
-			// allocates a fresh local `RISERasterImage` and never
-			// writes into the canonical FrameStore (until L6d-2
-			// migrates it to multi-round-aware FrameStore writes).
-			// Accepting the push would leave `GetFrameStore()`
-			// returning a perpetually stale store to direct
-			// readers.  See `Rasterizer::AcceptsFrameStorePush` for
-			// the contract.  `virtual` matches the surrounding
-			// override style; `override` intentionally OMITTED to
-			// avoid `-Winconsistent-missing-override` cascade
-			// against pre-existing methods.
-			virtual bool AcceptsFrameStorePush() const { return false; }
+			// L6d-2b — MLT now opts BACK INTO the FrameStore push.
+			// L6d-2b copies each per-round local image into
+			// `mFrameStore` before flushing (see
+			// `MLTRasterizer::Flush*` implementations) so direct
+			// FrameStore observers receive `OnFrameComplete` /
+			// `OnPreDenoiseComplete` / `OnDenoiseComplete` reading
+			// the up-to-date splatted final.
+			//
+			// Pre-L6d-2b: `AcceptsFrameStorePush` returned `false`
+			// (L6e-1.1 string-match-replacement) so Job never
+			// pushed a FrameStore to MLT and MLT's per-round Resolve
+			// allocated a fresh local `RISERasterImage` per round
+			// without ever reaching the canonical store.  Bound-VFS
+			// observers attached to MLT's `mFrameStore` would have
+			// stayed perpetually empty.
+			//
+			// Inheriting the default `true` from `Rasterizer` —
+			// override removed entirely.
 
 			unsigned int PredictTimeToRasterizeScene(
 				const IScene& pScene,
@@ -393,6 +398,17 @@ namespace RISE
 			void FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
 			void FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
 			void FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const;
+
+			// L6d-2b — Copy a fully-rendered local image into the
+			// rasterizer's canonical `mFrameStore` (per-tile,
+			// bracketed via `FrameStore::CopyTileFromRasterImage`).
+			// Returns true on a SUCCESSFUL copy (mFrameStore present
+			// + dims match); false when no copy happened (mFrameStore
+			// null or dim-mismatch).  Callers gate Mark* fires on
+			// the return value — firing MarkFrameComplete on a
+			// stale-content store would mislead observers.
+			// See impl in MLTRasterizer.cpp for the contract.
+			bool CopyToFrameStore_( const IRasterImage& src ) const;
 		};
 	}
 }

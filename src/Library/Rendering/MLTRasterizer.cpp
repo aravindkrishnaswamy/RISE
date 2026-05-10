@@ -92,6 +92,7 @@
 #ifdef RISE_ENABLE_OIDN
 #include "AOVBuffers.h"
 #include "OIDNDenoiser.h"
+#include "FrameStore.h"  // L6d-2b — CopyToFrameStore_ helper
 #endif
 
 using namespace RISE;
@@ -1412,26 +1413,119 @@ void MLTRasterizer::RasterizeSceneAnimation(
 	}
 }
 
+// L6d-2b — Helper: copy a fully-rendered local `IRasterImage` into
+// the rasterizer's canonical `mFrameStore` via per-tile
+// `CopyTileFromRasterImage` calls.  Each per-tile copy is itself
+// bracketed (BeginTile/EndTile) inside FrameStore::CopyTileFromRasterImage
+// so concurrent direct readers see the canonical store update tile-
+// by-tile (matches the live-render bracketing pattern from L6e-1).
+//
+// Returns true when the copy ran successfully (mFrameStore present
+// and dims match `src`); false otherwise.  Caller gates Mark* fires
+// on the return: firing MarkFrameComplete on a stale-content
+// canonical (e.g. a dim-mismatched mFrameStore) would tell direct
+// observers "frame N is done" while the canonical still holds a
+// previous frame's content — observers would paint stale data as
+// if it were fresh.
+//
+// False-return cases:
+//   * `mFrameStore` is null (rasterizer constructed without Job, or
+//     Job didn't allocate a canonical store yet — should not happen
+//     post-L6d-2b's `AcceptsFrameStorePush() == true`, but defensive).
+//   * Dim mismatch — shouldn't normally happen since MLT renders at
+//     active-camera dims and Job's `EnsureJobFrameStore_locked`
+//     allocates at the same dims, but a mid-render camera resize
+//     (animation, GUI resize) could trigger it.
+//
+// Threading contract: callers (the `Flush*` methods) must run on
+// the same thread that drives `Rasterizer::SetFrameStore` (typically
+// the main thread via Job's `PushJobFrameStoreToRasterizers`) so
+// `mFrameStore` doesn't get torn down mid-copy.  This is the same
+// implicit contract every other rasterizer relies on (PT/BDPT/VCM
+// also dereference `mFrameStore` without an explicit chain mutex
+// in their Flush paths).  L6e-2c/L6e-3 will revisit if the contract
+// needs strengthening for true concurrent SetFrameStore.
+bool MLTRasterizer::CopyToFrameStore_( const IRasterImage& src ) const
+{
+	if( !mFrameStore ) return false;
+	const unsigned int w = src.GetWidth();
+	const unsigned int h = src.GetHeight();
+	if( w  != static_cast<unsigned int>( mFrameStore->Width() ) ) return false;
+	if( h  != static_cast<unsigned int>( mFrameStore->Height() ) ) return false;
+
+	const size_t te  = mFrameStore->TileEdge();
+	const size_t tcX = mFrameStore->TileCountX();
+	const size_t tcY = mFrameStore->TileCountY();
+	for( size_t ty = 0; ty < tcY; ++ty ) {
+		for( size_t tx = 0; tx < tcX; ++tx ) {
+			const unsigned int x0 = static_cast<unsigned int>( tx * te );
+			const unsigned int y0 = static_cast<unsigned int>( ty * te );
+			const unsigned int x1 = static_cast<unsigned int>(
+				std::min( ( tx + 1 ) * te, static_cast<size_t>( w ) ) );
+			const unsigned int y1 = static_cast<unsigned int>(
+				std::min( ( ty + 1 ) * te, static_cast<size_t>( h ) ) );
+			const Rect srcRect( y0, x0, y1, x1 );
+			mFrameStore->CopyTileFromRasterImage( tx, ty, src, srcRect );
+		}
+	}
+	return true;
+}
+
+// L6d-2b — Each MLT Flush method now:
+//   1. Copies the local final image into `mFrameStore` (per-tile,
+//      firing `OnTileComplete` per tile so direct observers watch
+//      the canonical store update incrementally — same UX as
+//      live-render per-block bracketing).
+//   2. Dispatches to legacy IRasterizerOutput consumers.
+//   3. Fires `MarkFrameComplete` / `MarkPreDenoiseComplete` /
+//      `MarkDenoiseComplete` on `mFrameStore` (mirrors the L6f
+//      pattern in `PixelBasedRasterizerHelper::Flush*`).
+//
+// Net effect for direct FrameStore observers (post-L6e-2 bound VFS):
+// MLT renders now visibly populate the canonical store and fire
+// the right frame-complete events.  Legacy IRasterizerOutput
+// consumers (file outputs) are unaffected — they receive the same
+// `img` they always did.
+//
+// `img` is the fresh per-render local `RISERasterImage` produced by
+// `RenderFrameOfMLT`.  After OIDN denoise, the denoised content is
+// in the SAME `img` (denoise is in-place); the second copy +
+// MarkDenoiseComplete then refreshes the canonical store.
+
 void MLTRasterizer::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
+	const bool copied = CopyToFrameStore_( img );
 	RasterizerOutputListType::const_iterator r, s;
 	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 		(*r)->OutputImage( img, rcRegion, frame );
+	}
+	// L6d-2b — gate Mark* on copy success.  Firing on a stale
+	// (dim-mismatched) canonical would mislead direct observers.
+	if( copied ) {
+		mFrameStore->MarkFrameComplete( frame );
 	}
 }
 
 void MLTRasterizer::FlushPreDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
+	const bool copied = CopyToFrameStore_( img );
 	RasterizerOutputListType::const_iterator r, s;
 	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 		(*r)->OutputPreDenoisedImage( img, rcRegion, frame );
+	}
+	if( copied ) {
+		mFrameStore->MarkPreDenoiseComplete( frame );
 	}
 }
 
 void MLTRasterizer::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
+	const bool copied = CopyToFrameStore_( img );
 	RasterizerOutputListType::const_iterator r, s;
 	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 		(*r)->OutputDenoisedImage( img, rcRegion, frame );
+	}
+	if( copied ) {
+		mFrameStore->MarkDenoiseComplete( frame );
 	}
 }
