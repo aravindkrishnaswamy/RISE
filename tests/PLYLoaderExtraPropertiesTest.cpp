@@ -13,10 +13,13 @@
 //   - ASCII PLY with float position + uchar red/green/blue
 //   - Old PLY using 'vertex_index' (singular) face list name
 
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
 
@@ -35,13 +38,14 @@ namespace
 
 	std::string TempPath( const char* suffix )
 	{
-		char buf[L_tmpnam];
-		// tmpnam is portable enough for a deterministic-ish path; the
-		// content is what matters, not the filename.
-		const char* p = std::tmpnam( buf );
-		std::string path = p ? p : "rise_ply_test";
-		path += suffix;
-		return path;
+		static std::atomic<unsigned> counter{ 0 };
+		const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+		std::string name = "rise_ply_test_";
+		name += std::to_string( static_cast<unsigned long long>( stamp ) );
+		name += "_";
+		name += std::to_string( counter.fetch_add( 1 ) );
+		name += suffix;
+		return ( std::filesystem::temp_directory_path() / name ).string();
 	}
 
 	void RemoveQuiet( const std::string& p )

@@ -103,14 +103,25 @@ CXXFLAGS_ARCH = -march=x86-64-v3 -mfpmath=sse
 # -O3 but kept for documentation.
 CXXFLAGS = $(CXXFLAGS_COMMON) $(CXXFLAGS_ARCH) -fexpensive-optimizations
 
-# Turn this on, if you don't have a proper libpng library installed
-DEF_PNG = -DNO_PNG_SUPPORT
+# PNG / TIFF support — auto-detected by header presence, mirroring the
+# OpenEXR detection block below.  Install libpng-dev / libtiff-dev on
+# Debian/Ubuntu (libpng-devel / libtiff-devel on Fedora/RHEL) to enable;
+# no install ⇒ -DNO_*_SUPPORT and the writers no-op.
+ifneq ($(wildcard /usr/include/png.h),)
+DEF_PNG    =
+LDLIBS_PNG = -lpng
+else
+DEF_PNG    = -DNO_PNG_SUPPORT
+LDLIBS_PNG =
+endif
 
-# TIFF / OIDN / OpenPGL are disabled by default on Linux because
-# the open-source build does not ship them and the user is expected to build
-# a bare rendering core first.  Flip the defines to empty and add the include
-# / lib flags from Config.OSX as a template if you want support.
-DEF_TIFF = -DNO_TIFF_SUPPORT
+ifneq ($(wildcard /usr/include/tiffio.h)$(wildcard /usr/include/x86_64-linux-gnu/tiffio.h),)
+DEF_TIFF    =
+LDLIBS_TIFF = -ltiff
+else
+DEF_TIFF    = -DNO_TIFF_SUPPORT
+LDLIBS_TIFF =
+endif
 
 # OpenEXR is REQUIRED on Linux as of Landing 1 of the PB pipeline plan
 # (docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_1.md).  Install via your
@@ -140,12 +151,13 @@ endif
 DEF_MAILBOXING = -DRISE_ENABLE_MAILBOXING
 
 #DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) -D_DEBUG
-DEFS = $(DEF_PNG) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_MAILBOXING)
+DEFS = $(DEF_PNG) $(DEF_TIFF) $(DEF_PTHREAD) $(DEF_RAND) $(DEF_MAILBOXING)
 
 # libraries to link with.  On modern 64-bit Linux, /usr/lib32 does not exist
 # out of the box (and would be the wrong place anyway) — let the linker use
-# its default search path.  libpng / libtiff are disabled, OpenEXR is now
-# required (added by Landing 1 of the PB pipeline plan).  libz is kept
-# because a handful of code paths still reference it, and libdl is
-# required for dlopen in the plugin loader.
-LDLIBS = -lpthread -lz -ldl $(LDLIBS_EXR)
+# its default search path.  libpng / libtiff are linked when their headers
+# are detected above (else the writers fall back to NO_*_SUPPORT no-ops).
+# OpenEXR is required (added by Landing 1 of the PB pipeline plan).  libz
+# is kept because a handful of code paths still reference it, and libdl
+# is required for dlopen in the plugin loader.
+LDLIBS = -lpthread -lz -ldl $(LDLIBS_EXR) $(LDLIBS_PNG) $(LDLIBS_TIFF)

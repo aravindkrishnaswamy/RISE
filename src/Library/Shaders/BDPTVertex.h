@@ -179,6 +179,8 @@ namespace RISE
 		BDPTVertex() :
 		type( SURFACE ),
 		ptCoord( Point2( 0, 0 ) ),
+		ptCoord1( Point2( 0, 0 ) ),
+		bHasTexCoord1( false ),
 		ptObjIntersec( Point3( 0, 0, 0 ) ),
 		pMaterial( 0 ),
 		pObject( 0 ),

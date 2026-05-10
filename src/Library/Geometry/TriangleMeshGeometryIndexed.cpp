@@ -35,7 +35,7 @@
 
 inline unsigned int VoidPtrToUInt( const void* v )
 {
-	return (unsigned int)*((unsigned int*)(&v));
+	return (unsigned int)reinterpret_cast<uintptr_t>(v);
 }
 
 using namespace RISE;
