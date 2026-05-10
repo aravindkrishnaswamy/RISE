@@ -31,6 +31,7 @@
 #include "../RISE_API.h"
 #include "../Interfaces/IScenePriv.h"
 
+#include "FrameStore.h"  // L6c — needed unconditionally by AcquireRenderImage
 #ifdef RISE_ENABLE_OIDN
 #include "AOVBuffers.h"
 #include "OIDNDenoiser.h"
@@ -40,7 +41,8 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 PixelBasedRasterizerHelper::PixelBasedRasterizerHelper(
-	IRayCaster* pCaster_
+	IRayCaster* pCaster_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
   pCaster( pCaster_ ),
   pSampling( 0 ),
@@ -296,6 +298,91 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 
 	const bool skipBlockOutput = SkipPerBlockIntermediateOutput();
 
+	// L6e-1.1 — DrawToggles + the pre-block OutputIntermediateImage
+	// dispatch BOTH moved inside the fsBracket window (below).  Why:
+	//   * DrawToggles writes pixels into `image`; if `image` is the
+	//     FrameStore beauty view, those writes need per-tile lock
+	//     protection so concurrent direct-FrameStore readers don't
+	//     observe a torn toggle-decoration mid-flight.
+	//   * The OutputIntermediateImage call follows DrawToggles in
+	//     the original code so that legacy IRasterizerOutput
+	//     consumers see `image` WITH the toggle decoration drawn —
+	//     this is the in-progress visual feedback.  Splitting the
+	//     two would silently regress that visualisation (observers
+	//     would see image without toggles).
+	// Both happen inside the bracket below.
+
+	// L6e-1 — When the rasterizer's per-pixel writes target the
+	// canonical FrameStore (image IS mFrameStore->AsBeautyRasterImage()
+	// per L6c-1's AcquireRenderImage), bracket the writes with
+	// BeginTile / EndTile so concurrent readers (UI viewports,
+	// encoders mid-render) see post-bracket state instead of torn
+	// per-pixel writes.  The bracketing also bumps each tile's
+	// generation counter and fires the FrameStore's observer chain
+	// — which L6e-2 will use to drive direct-from-rasterizer-FrameStore
+	// repaints (replacing the bridge VFS-internal FrameStore + the
+	// FrameSink cross-store copy).
+	//
+	// Multi-tile coverage: the rasterizer's adaptive block size (8..64,
+	// see AdaptiveTileSizer.cpp) may differ from the FrameStore's
+	// fixed 32-pixel tile edge.  Cases:
+	//   * block ≥ 32: one block covers 1 or more FrameStore tiles.
+	//     We BeginTile / EndTile each tile that overlaps the block's
+	//     pixel range.
+	//   * block < 32: multiple blocks share a FrameStore tile; the
+	//     per-tile exclusive lock serializes them.  Acceptable
+	//     correctness + light perf cost for small dispatch sizes.
+	//
+	// The pixel-write loop below is intentionally unchanged.  Reordering
+	// it (e.g. iterate tile-by-tile within the block) would change the
+	// per-pixel RNG sample stream → byte-identity break against the
+	// legacy `RISERasterImage` path.  Holding all overlapping tile
+	// locks across the original row-major loop preserves the order.
+	// L6e-1.1 — identity gate (was dim-only).  A private buffer
+	// (e.g. BDPT path-guiding training image) sized at camera dims
+	// would otherwise spuriously fire BeginTile/EndTile on every
+	// FrameStore tile during the training pass, bumping generation
+	// counters and firing OnTileComplete observers for tiles that
+	// were never actually modified in `mFrameStore`.
+	const bool fsBracket =
+		( mFrameStore &&
+		  &image == &mFrameStore->AsBeautyRasterImage() );
+	size_t fsTx0 = 0, fsTy0 = 0, fsTx1 = 0, fsTy1 = 0;
+	if( fsBracket ) {
+		const size_t te = mFrameStore->TileEdge();
+		fsTx0 = static_cast<size_t>( rect.left )   / te;
+		fsTy0 = static_cast<size_t>( rect.top )    / te;
+		fsTx1 = std::min( mFrameStore->TileCountX(),
+		                  ( static_cast<size_t>( rect.right )  / te ) + 1 );
+		fsTy1 = std::min( mFrameStore->TileCountY(),
+		                  ( static_cast<size_t>( rect.bottom ) / te ) + 1 );
+		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+				mFrameStore->BeginTile( tx, ty );
+			}
+		}
+	}
+
+	// L6e-1.1 — Draw toggles + dispatch in-progress observer fire
+	// INSIDE the bracket so toggle writes are lock-protected, and
+	// observers still see the same toggle-decorated image they did
+	// pre-fix.  Legacy IRasterizerOutput consumers run synchronously
+	// on this thread; they don't recurse back into the FrameStore
+	// for THIS rasterizer's mFrameStore, so holding all overlapping
+	// tile locks across this dispatch is safe.
+	//
+	// CONTRACT (load-bearing for L6e-2 onwards): IRasterizerOutput
+	// implementations MUST NOT call back into `mFrameStore`
+	// (BeginTile/EndTile, Render, AsBeautyRasterImage()->GetPEL
+	// without external sync) from inside `OutputIntermediateImage`.
+	// We currently hold an exclusive lock on every overlapping tile;
+	// re-entry would self-deadlock on the non-recursive
+	// std::shared_mutex.  Audit of in-tree IRasterizerOutput impls
+	// (FrameSink, FileRasterizerOutput, Win32WindowRasterizerOutput,
+	// CallbackRasterizerOutputDispatch, ViewportFrameStore) confirms
+	// none re-enter `mFrameStore` today.  L6e-2 direct-FrameStore
+	// observers will use the IRenderObserver chain, NOT
+	// IRasterizerOutput, and are a different code path.
 	if( !skipBlockOutput ) {
 		// Draw red toggles to show we are working on this tile
 		DrawToggles( image, rect, RISEColor( 1,0,0,1 ), 0.20 );
@@ -316,6 +403,17 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 			if( c.a < 0.0 ) c.a = 0.0;
 			if( c.a > 1.0 ) c.a = 1.0;
 			image.SetPEL( x, y, c );
+		}
+	}
+
+	if( fsBracket ) {
+		// EndTile fires per-tile observers (OnTileComplete) and bumps
+		// the global generation.  Order doesn't matter — each tile's
+		// observer fire is independent.
+		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+				mFrameStore->EndTile( tx, ty );
+			}
 		}
 	}
 
@@ -356,8 +454,36 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	// that the per-pass Resolve writes).
 	const bool skipBlockOutput = SkipPerBlockIntermediateOutput();
 
+	// L6e-1.1 — DrawToggles + the in-progress observer dispatch
+	// moved INSIDE the fsBracket window (below); see comment in
+	// SPRasterizeSingleBlock for rationale.
+
+	// L6e-1 — same FrameStore tile bracketing as SPRasterizeSingleBlock
+	// (see comment block in that method).  Iteration order preserved.
+	// L6e-1.1 — identity gate (was dim-only); see comment in
+	// SPRasterizeSingleBlock.
+	const bool fsBracket =
+		( mFrameStore &&
+		  &image == &mFrameStore->AsBeautyRasterImage() );
+	size_t fsTx0 = 0, fsTy0 = 0, fsTx1 = 0, fsTy1 = 0;
+	if( fsBracket ) {
+		const size_t te = mFrameStore->TileEdge();
+		fsTx0 = static_cast<size_t>( rect.left )   / te;
+		fsTy0 = static_cast<size_t>( rect.top )    / te;
+		fsTx1 = std::min( mFrameStore->TileCountX(),
+		                  ( static_cast<size_t>( rect.right )  / te ) + 1 );
+		fsTy1 = std::min( mFrameStore->TileCountY(),
+		                  ( static_cast<size_t>( rect.bottom ) / te ) + 1 );
+		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+				mFrameStore->BeginTile( tx, ty );
+			}
+		}
+	}
+
+	// L6e-1.1 — DrawToggles + in-progress observer dispatch inside
+	// the bracket; see SPRasterizeSingleBlock for rationale.
 	if( !skipBlockOutput && framedata.field == FIELD_BOTH ) {
-		// Draw red toggles to show we are working on this tile
 		DrawToggles( image, rect, RISEColor( 1,0,0,1 ), 0.20 );
 
 		RasterizerOutputListType::const_iterator	r, s;
@@ -390,6 +516,14 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 				if( c.a < 0.0 ) c.a = 0.0;
 				if( c.a > 1.0 ) c.a = 1.0;
 				image.SetPEL( x, y, c );
+			}
+		}
+	}
+
+	if( fsBracket ) {
+		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+			for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+				mFrameStore->EndTile( tx, ty );
 			}
 		}
 	}
@@ -707,7 +841,15 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 			if( runPreview ) {
 				// Intermediate preview: rebuild the displayed image from the
 				// accumulated progressive state so every update is cumulative.
-				progFilm.Resolve( *pImage );
+				{
+					// L6e-1.1 — bracket the full-image Resolve via
+					// RAII so concurrent UI readers see the
+					// post-Resolve image, never a torn half-resolved
+					// state.  Exception-safe: if Resolve throws, the
+					// destructor still releases every tile lock.
+					FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+					progFilm.Resolve( *pImage );
+				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
 				RasterizerOutputListType::const_iterator r, s;
@@ -757,6 +899,8 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// images (negative lobes / ringing confuse the denoiser).  The
 	// inline box-filtered estimate provides the clean input OIDN needs.
 	if( pFilteredFilm ) {
+		// L6e-1.1 — bracket the full-image filter resolve via RAII.
+		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
 #ifdef RISE_ENABLE_OIDN
 		if( !bDenoisingEnabled ) {
 			pFilteredFilm->Resolve( *pImage );
@@ -807,9 +951,22 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 				*pAOVBuffers,
 				GetDenoiseAOVSamplesPerPixel() );
 		}
-		mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
-			mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-			GetRenderElapsedSeconds() );
+		{
+			// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
+			// ApplyDenoise reads `*pImage` row-by-row and overwrites
+			// every pixel with the denoised output; a concurrent
+			// reader would otherwise observe a torn read/write
+			// mid-frame.  Critically, OIDN is one of the few
+			// bracketed sites that REALISTICALLY can throw (CUDA /
+			// Metal device errors, OOM in scratch buffers); the
+			// RAII guard's destructor unwinds correctly in that case
+			// where the previous Begin/End-pair pattern would have
+			// leaked all tile locks → process-wide deadlock.
+			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+			mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
+				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+				GetRenderElapsedSeconds() );
+		}
 #endif
 
 		// File outputs write the denoised image with a "_denoised" suffix;
@@ -1123,7 +1280,11 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 			if( runPreview ) {
 				// Rebuild `image` from the accumulated progressive
 				// state so each preview is cumulative across passes.
-				progFilm.Resolve( image );
+				{
+					// L6e-1.1 — bracket via RAII.
+					FrameStoreBulkBracket bracket( mFrameStore, image );
+					progFilm.Resolve( image );
+				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( image );
 				RasterizerOutputListType::const_iterator r, s;
@@ -1136,7 +1297,11 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 
 		// Ensure `image` carries the final progressive state even when
 		// the loop exited early (cancellation) without a final preview.
-		progFilm.Resolve( image );
+		{
+			// L6e-1.1 — bracket via RAII.
+			FrameStoreBulkBracket bracket( mFrameStore, image );
+			progFilm.Resolve( image );
+		}
 
 #ifdef RISE_ENABLE_OIDN
 		// Normalize per-pixel AOV by progressive-film alpha sum so the
@@ -1182,13 +1347,19 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	// The Clear() still runs unconditionally so the per-frame film
 	// state doesn't carry stale data into the next animation frame.
 	if( pFilteredFilm ) {
+		// L6e-1.1 — bracket the full-image filter resolve via RAII.
+		// pFilteredFilm->Clear() resets the FILM, not `image`, so it
+		// stays outside the bracket scope.
+		{
+			FrameStoreBulkBracket bracket( mFrameStore, image );
 #ifdef RISE_ENABLE_OIDN
-		if( !bDenoisingEnabled ) {
-			pFilteredFilm->Resolve( image );
-		}
+			if( !bDenoisingEnabled ) {
+				pFilteredFilm->Resolve( image );
+			}
 #else
-		pFilteredFilm->Resolve( image );
+			pFilteredFilm->Resolve( image );
 #endif
+		}
 		pFilteredFilm->Clear();
 	}
 }
@@ -1229,9 +1400,22 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		pRasterSequence = blocks;
 	}
 
-	// Create the image we are going to render to
-	IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
-	GlobalLog()->PrintNew( pImage, __FILE__, __LINE__, "image" );
+	// L6e-1.1 — Acquire the render image via the helper so the
+	// animation render path uses the canonical FrameStore beauty
+	// view when one is available (same as the static path post-
+	// L6c-1).  Pre-fix this allocated a fresh `RISERasterImage`
+	// directly; the per-block bracketing in
+	// `SPRasterizeSingleBlockOfAnimation` would then erroneously
+	// fire `BeginTile/EndTile` on `mFrameStore` because its dim-
+	// check (`image.GetWidth() == mFrameStore->Width()`) was true
+	// (animation renders at the same dims as static), even though
+	// the per-pixel writes landed in the local RISERasterImage,
+	// NOT the FrameStore.  Direct L6e-2 observers would receive
+	// `OnTileComplete` for tiles that were never modified.
+	// Routing through `AcquireRenderImage` makes the image
+	// genuinely the FrameStore view (when dims match) so the
+	// bracketing fires for actual writes.
+	IRasterImage* pImage = AcquireRenderImage( width, height );
 
 	// Allocate film buffer for wide-support pixel filter reconstruction
 	safe_release( pFilteredFilm );
@@ -1384,9 +1568,13 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 					*pAOVBuffers,
 					GetDenoiseAOVSamplesPerPixel() );
 			}
-			mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
-				mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
-				GetRenderElapsedSeconds() );
+			{
+				// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
+				FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+				mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
+					mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
+					GetRenderElapsedSeconds() );
+			}
 			FlushDenoisedToOutputs( *pImage, pRect, frameIdx );
 		} else {
 			FlushToOutputs( *pImage, pRect, frameIdx );
@@ -1394,7 +1582,26 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 #else
 		FlushToOutputs( *pImage, pRect, frameIdx );
 #endif
-		pImage->Clear( RISEColor(0,0,0,0), pRect );
+		{
+			// L6e-1.1 — bracket the inter-frame Clear via RAII.
+			//
+			// L6f known-limitation — `FlushToOutputs` (above) fired
+			// `MarkFrameComplete(frameIdx)` synchronously on
+			// `mFrameStore`.  Synchronous observers
+			// (FileEncoderObserver) finished writing before this
+			// Clear executes.  ASYNC observers (e.g. UI repaint
+			// patterns that signal a UI thread and return) may
+			// wake AFTER the Clear and read black for a beat.
+			// Pre-L6f (legacy VFS-internal FrameStore mode) had the
+			// same race window: VFS-internal store also got cleared
+			// between frames.  No regression vs pre-L6f, just
+			// surfaced by the rasterizer-driven Mark* rendering
+			// the per-frame timing more obvious.  L6e-3 (interactive
+			// VFS migration) will need to address this for
+			// animation-in-GUI workflows.
+			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+			pImage->Clear( RISEColor(0,0,0,0), pRect );
+		}
 	}
 
 	// Reset progress-weighting state.
@@ -1432,6 +1639,73 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 // to skip the clear so previous content shows through.
 IRasterImage* PixelBasedRasterizerHelper::AcquireRenderImage( unsigned int width, unsigned int height ) const
 {
+	// L6c — prefer the canonical FrameStore beauty channel (via the
+	// `BeautyRasterImageView` shim) when one has been provided AND
+	// its dims match the requested render dims.  Effect: per-pixel
+	// `image.SetPEL(x, y, c)` calls in `SPRasterizeSingleBlock` write
+	// DIRECTLY into the FrameStore's row-major beauty storage (a
+	// `Channel<RISEPel>` indexed `data_[y*width + x]` per
+	// Channel.h:130) instead of allocating a separate
+	// `RISERasterImage` per render.
+	//
+	// The legacy `OutputImage → FrameSink → CopyTileFromRasterImage`
+	// path stays active.  At L6c-1 the rasterizer's `mFrameStore`
+	// and the bridge VFS / FileRasterizerOutput's per-output
+	// FrameStore are DIFFERENT instances, so FrameSink performs a
+	// real cross-store copy (rasterizer.beauty → output.beauty)
+	// that fires the per-tile `BeginTile/EndTile` observer dispatch
+	// on the OUTPUT-side store — that's what GUI viewports and
+	// `FileEncoderObserver` consume for repaint / disk-write
+	// notification.  L6e collapses the bridge VFS into the
+	// rasterizer's mFrameStore (single store, observer pinned to
+	// the canonical), and L6f retires the redundant FrameSink copy
+	// once observers move to direct FrameStore subscription.
+	//
+	// L6c-1 does NOT yet bracket the rasterizer's per-pixel writes
+	// with `BeginTile/EndTile`.  Concurrent-reader correctness on
+	// `mFrameStore` is therefore NOT guaranteed in L6c-1 — but no
+	// such reader exists today (bridges read their own
+	// VFS-internal FrameStore which IS bracketed via FrameSink's
+	// CopyTileFromRasterImage).  L6e MUST add the bracketing in
+	// `SPRasterizeSingleBlock` before the bridges migrate, or
+	// concurrent UI repaints will see torn writes.  TODO L6e.
+	//
+	// The FrameStore view's `addref` / `release` forward to the
+	// owning FrameStore (see FrameStore.cpp:78-80), so the existing
+	// AcquireRenderImage / ReleaseRenderImage refcount accounting
+	// is preserved.
+	//
+	// Fallback to mPersistentImage when:
+	//   * `mFrameStore` is null (Job didn't allocate one — typically
+	//     because no active camera at construction time AND no
+	//     post-load push has happened yet, e.g. test rasterizers
+	//     constructed via `RISE_API_Create*Rasterizer` directly
+	//     without a Job); OR
+	//   * FrameStore dims differ from the requested render dims
+	//     (e.g. `InteractivePelRasterizer` rendering at a preview-
+	//     scale subset of the camera's full resolution).
+	//
+	// **NOTE:** BDPT and VCM rasterizers do NOT call
+	// `AcquireRenderImage` — they allocate fresh `RISERasterImage`
+	// instances inside their own `RasterizeScene` overrides
+	// (BDPTRasterizerBase.cpp:803, VCMRasterizerBase similar).
+	// L6c-1 therefore only impacts the PT / pixelpel /
+	// pixelintegratingspectral / interactive / MLT path that flows
+	// through `PixelBasedRasterizerHelper::RasterizeScene`.  L6d
+	// folds the others in.
+	if( mFrameStore ) {
+		const unsigned int fsW =
+			static_cast<unsigned int>( mFrameStore->Width() );
+		const unsigned int fsH =
+			static_cast<unsigned int>( mFrameStore->Height() );
+		if( fsW == width && fsH == height ) {
+			IRasterImage& view = mFrameStore->AsBeautyRasterImage();
+			view.addref();  // forwards to FrameStore::addref
+			return &view;
+		}
+	}
+
+	// Phase 1 fallback (mPersistentImage path).
 	if( !mPersistentImage || mPersistentW != width || mPersistentH != height ) {
 		safe_release( mPersistentImage );
 		mPersistentImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
@@ -1454,6 +1728,11 @@ void PixelBasedRasterizerHelper::ReleaseRenderImage( IRasterImage* pImage ) cons
 	safe_release( pImage );
 }
 
+// L6e-1.1 — Full-image bulk-write bracketing has been hoisted to the
+// `Implementation::FrameStoreBulkBracket` RAII guard in FrameStore.h.
+// Use it at every full-image write site (Resolve / Clear / Denoise /
+// SplatFilm composition).  See its header doc for the contract.
+
 // Default per-render entry: clear to a random pastel (debug visual —
 // uncovered tiles stand out) and fire OutputIntermediateImage so any
 // observer sees the "render started" signal.  Interactive subclasses
@@ -1461,12 +1740,19 @@ void PixelBasedRasterizerHelper::ReleaseRenderImage( IRasterImage* pImage ) cons
 // while new tiles render in place, eliminating cancel-restart flashes.
 void PixelBasedRasterizerHelper::PrepareImageForNewRender( IRasterImage& img, const Rect* pRect ) const
 {
-	// GlobalRNG is fine here — single-threaded prelude.
-	img.Clear( RISEColor(
-		GlobalRNG().CanonicalRandom()*0.6+0.3,
-		GlobalRNG().CanonicalRandom()*0.6+0.3,
-		GlobalRNG().CanonicalRandom()*0.6+0.3,
-		1.0 ), pRect );
+	{
+		// L6e-1.1 — bracket the bulk Clear via RAII so an exception
+		// thrown by `Clear` (extremely unlikely for a primitive
+		// memset-shaped op, but principled) still releases all tile
+		// locks.  No-op when `img` isn't the FrameStore beauty view.
+		FrameStoreBulkBracket bracket( mFrameStore, img );
+		// GlobalRNG is fine here — single-threaded prelude.
+		img.Clear( RISEColor(
+			GlobalRNG().CanonicalRandom()*0.6+0.3,
+			GlobalRNG().CanonicalRandom()*0.6+0.3,
+			GlobalRNG().CanonicalRandom()*0.6+0.3,
+			1.0 ), pRect );
+	}
 
 	for( RasterizerOutputListType::const_iterator r = outs.begin(), s = outs.end(); r != s; ++r ) {
 		(*r)->OutputIntermediateImage( img, pRect );
@@ -1484,12 +1770,49 @@ IRasterizeSequence* PixelBasedRasterizerHelper::CreateDefaultRasterSequence( uns
 	return new MortonRasterizeSequence( tileEdge );
 }
 
+// L6f — Frame-complete signaling moves into the rasterizer.
+//
+// Pre-L6f, `MarkFrameComplete` / `MarkPreDenoiseComplete` /
+// `MarkDenoiseComplete` on the FrameStore was driven by
+// `FrameSink::Output*Image` (legacy IRasterizerOutput → FrameStore
+// adapter).  That worked when the VFS owned a separate internal
+// FrameStore (FrameSink fed it), but post-L6e-2 the VFS observes
+// the rasterizer's CANONICAL `mFrameStore` directly — and the
+// legacy IRasterizerOutput chain becomes redundant for that
+// signaling.
+//
+// Post-L6f, the rasterizer fires the Mark* events on its own
+// `mFrameStore` AFTER the legacy IRasterizerOutput dispatch so:
+//
+//   * Legacy IRasterizerOutput consumers (FileRasterizerOutput,
+//     callback sinks, FrameSink-backed VFS instances in
+//     internal-managed mode) see `OutputImage` first, do their work
+//     (file write, internal-FrameStore copy + own-MarkFrameComplete).
+//
+//   * THEN the rasterizer's `MarkFrameComplete` fires on the
+//     CANONICAL FrameStore.  Direct FrameStore observers (post-L6e-2
+//     bound VFS, FileEncoderObserver) receive it from the rasterizer
+//     side, NOT from the IRasterizerOutput chain.
+//
+//   * VFS in bound mode is now a no-op for `OutputImage` — the
+//     rasterizer-side Mark* is the sole frame-complete signal.
+//     See `ViewportFrameStore::OutputImage`'s post-L6f short-
+//     circuit.
+//
+// `mFrameStore` is null for MLT (which opted out of the FrameStore
+// push via `AcceptsFrameStorePush()`); the null-check below is the
+// degenerate-case guard.
+
 void PixelBasedRasterizerHelper::FlushToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
 {
-	// Write to output objects
+	// Write to output objects (legacy IRasterizerOutput chain).
 	RasterizerOutputListType::const_iterator	r, s;
 	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 		(*r)->OutputImage( img, rcRegion, frame );
+	}
+	// L6f — fire `OnFrameComplete` on canonical-FrameStore observers.
+	if( mFrameStore ) {
+		mFrameStore->MarkFrameComplete( frame );
 	}
 }
 
@@ -1499,6 +1822,10 @@ void PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( const IRasterImage& 
 	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 		(*r)->OutputPreDenoisedImage( img, rcRegion, frame );
 	}
+	// L6f — fire `OnPreDenoiseComplete` on canonical-FrameStore observers.
+	if( mFrameStore ) {
+		mFrameStore->MarkPreDenoiseComplete( frame );
+	}
 }
 
 void PixelBasedRasterizerHelper::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const
@@ -1506,6 +1833,10 @@ void PixelBasedRasterizerHelper::FlushDenoisedToOutputs( const IRasterImage& img
 	RasterizerOutputListType::const_iterator	r, s;
 	for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 		(*r)->OutputDenoisedImage( img, rcRegion, frame );
+	}
+	// L6f — fire `OnDenoiseComplete` on canonical-FrameStore observers.
+	if( mFrameStore ) {
+		mFrameStore->MarkDenoiseComplete( frame );
 	}
 }
 

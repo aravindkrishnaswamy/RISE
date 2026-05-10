@@ -108,8 +108,10 @@ MLTRasterizer::MLTRasterizer(
 	const unsigned int nBootstrap_,
 	const unsigned int nChains_,
 	const unsigned int nMutationsPerPixel_,
-	const Scalar largeStepProb_
+	const Scalar largeStepProb_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
+  Rasterizer( frameStore ),
   pCaster( pCaster_ ),
   pIntegrator( 0 ),
   pSampling( 0 ),

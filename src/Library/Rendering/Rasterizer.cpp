@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "Rasterizer.h"
+#include "FrameStore.h"
 #include "OIDNDenoiser.h"
 #include "../Interfaces/IOptions.h"
 #include "../Utilities/CPU.h"
@@ -21,8 +22,9 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-Rasterizer::Rasterizer() :
+Rasterizer::Rasterizer( FrameStore* frameStore ) :
   pProgressFunc( 0 )
+  ,mFrameStore( frameStore )
 #ifdef RISE_ENABLE_OIDN
   ,bDenoisingEnabled( false )
   ,mDenoisingQuality( OidnQuality::Auto )
@@ -32,6 +34,14 @@ Rasterizer::Rasterizer() :
   ,mDenoiser( new OIDNDenoiser() )
 #endif
 {
+	// L6a — addref the FrameStore so the rasterizer keeps it alive
+	// for its own lifetime.  Job (or whatever else owns the original
+	// allocation) is welcome to release its own ref independently;
+	// FrameStore stays alive until the LAST holder releases.  Null
+	// is permitted during the L6a → L6b transition window.
+	if( mFrameStore ) {
+		mFrameStore->addref();
+	}
 }
 
 Rasterizer::~Rasterizer( )
@@ -41,6 +51,10 @@ Rasterizer::~Rasterizer( )
 	delete mDenoiser;
 	mDenoiser = 0;
 #endif
+	// L6a — drop our FrameStore reference.  If we held the last ref
+	// (e.g. Job already torn down), this destroys the FrameStore;
+	// otherwise the surviving holder keeps it alive.
+	safe_release( mFrameStore );
 }
 
 int Rasterizer::HowManyThreadsToSpawn() const
@@ -81,5 +95,60 @@ void Rasterizer::EnumerateRasterizerOutputs( IEnumCallback<IRasterizerOutput>& p
 void Rasterizer::SetProgressCallback( IProgressCallback* pFunc )
 {
 	pProgressFunc = pFunc;
+}
+
+// L6b — Late-binding FrameStore setter.  Called by Job after scene
+// load when the canonical FrameStore can finally be allocated against
+// the active camera's dims.  Lifecycle mirrors the ctor: addref the
+// new store + release the old.  Idempotent at the same pointer
+// (addref + release on the same object cancel out).
+//
+// L6e-2b — After the swap, fire `OnRasterizerFrameStoreChanged` on
+// every attached `IRasterizerOutput` so direct-consumers (e.g.
+// `ViewportFrameStore` post-L6e-2a) can rebind to the new store.
+// Default impl on `IRasterizerOutput` is a no-op, so file outputs +
+// legacy callback sinks are unaffected.
+void Rasterizer::SetFrameStore( FrameStore* frameStore )
+{
+	// Same-pointer early-return: the caller wants no-op semantics
+	// (typical: Job's `PushJobFrameStoreToRasterizers` re-runs after
+	// a non-camera-related event and the FrameStore hasn't actually
+	// changed).  Outputs that were already bound to this pointer
+	// don't need a redundant notification — they're already in the
+	// right state.  Outputs that attached AFTER the original swap
+	// catch up via `Attach`'s `GetFrameStore()` pull, NOT via a
+	// SetFrameStore re-dispatch.  See L6e-2b adversarial review P2.
+	if( frameStore == mFrameStore ) {
+		return;  // no-op when caller passes the same pointer
+	}
+	if( frameStore ) {
+		frameStore->addref();
+	}
+	safe_release( mFrameStore );  // null-safe + zeroes the local
+	mFrameStore = frameStore;
+
+	// Notify every attached output of the new FrameStore.  The
+	// dispatch happens AFTER `mFrameStore` is updated so observers
+	// that re-query via `GetFrameStore()` see the new state.
+	//
+	// L6e-2b adversarial review P1-A — snapshot the outs list
+	// before iterating.  `outs` is a `std::vector<IRasterizerOutput*>`;
+	// if any callback re-enters `AddRasterizerOutput` (push_back →
+	// potential reallocation) or `FreeRasterizerOutputs` (clear),
+	// the live iterator is invalidated → UB.  Today's
+	// `ViewportFrameStore::OnRasterizerFrameStoreChanged` doesn't
+	// re-enter, but the `IRasterizerOutput` contract doesn't forbid
+	// it (the default impl is no-op; subclasses are free to do what
+	// they like).  The snapshot is cheap (vector of pointers) and
+	// makes the dispatch robust against any future override.
+	//
+	// Iteration order: the snapshot preserves the insertion order
+	// matching `EnumerateRasterizerOutputs`'s contract.
+	const RasterizerOutputListType snapshot = outs;
+	for( RasterizerOutputListType::const_iterator it = snapshot.begin(),
+	     e = snapshot.end(); it != e; ++it )
+	{
+		(*it)->OnRasterizerFrameStoreChanged( mFrameStore );
+	}
 }
 

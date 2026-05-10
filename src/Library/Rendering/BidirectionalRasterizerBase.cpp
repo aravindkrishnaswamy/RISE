@@ -25,7 +25,8 @@ using namespace RISE::Implementation;
 
 BidirectionalRasterizerBase::BidirectionalRasterizerBase(
 	IRayCaster* pCaster_,
-	const StabilityConfig& stabilityCfg
+	const StabilityConfig& stabilityCfg,
+	RISE::Implementation::FrameStore* frameStore
 	) :
 	PixelBasedRasterizerHelper( pCaster_ ),
 	pSplatFilm( 0 ),

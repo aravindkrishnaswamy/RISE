@@ -34,9 +34,11 @@ PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer
 		const unsigned int specsamp,
 		const StabilityConfig& stabilityCfg,
 		bool useZSobol_,
-		bool useHWSS_
+		bool useHWSS_,
+		RISE::Implementation::FrameStore* frameStore
 		) :
-  PixelBasedRasterizerHelper( pCaster_ ),
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster_ , frameStore),
 	  lambda_begin( lambda_begin_ ),
 	  lambda_end( lambda_end_ ),
 	  lambda_diff( lambda_end_-lambda_begin_ ),

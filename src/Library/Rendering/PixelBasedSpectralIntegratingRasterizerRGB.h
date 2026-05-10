@@ -90,7 +90,8 @@ namespace RISE
 				const IFunction1D& spd_g_,
 				const IFunction1D& spd_b_,
 				const bool bSpectralHalton_,
-				const bool bTimeHalton_
+				const bool bTimeHalton_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 		};
 	}

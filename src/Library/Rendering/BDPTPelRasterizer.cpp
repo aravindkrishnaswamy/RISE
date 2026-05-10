@@ -41,11 +41,13 @@ BDPTPelRasterizer::BDPTPelRasterizer(
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveCfg,
 	const StabilityConfig& stabilityCfg,
-	bool useZSobol_
+	bool useZSobol_,
+	RISE::Implementation::FrameStore* frameStore
 	) :
-  PixelBasedRasterizerHelper( pCaster_ ),
-  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, guidingConfig, stabilityCfg ),
-  PixelBasedPelRasterizer( pCaster_, PathGuidingConfig(), AdaptiveSamplingConfig(), StabilityConfig(), false ),
+  Rasterizer( frameStore ),
+  PixelBasedRasterizerHelper( pCaster_ , frameStore),
+  BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, guidingConfig, stabilityCfg , frameStore),
+  PixelBasedPelRasterizer( pCaster_, PathGuidingConfig(), AdaptiveSamplingConfig(), StabilityConfig(), false , frameStore),
   adaptiveConfig( adaptiveCfg )
 {
 	useZSobol = useZSobol_;

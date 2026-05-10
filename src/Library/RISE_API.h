@@ -72,6 +72,14 @@
 
 namespace RISE
 {
+	// L6a-2 — forward decl for the optional `FrameStore*` param
+	// appended to every `RISE_API_Create*Rasterizer` factory.
+	// Default `nullptr` keeps existing call sites compiling
+	// unchanged; callers that want a non-null FrameStore (Job in
+	// L6b, anyone wanting a pre-allocated canonical buffer) pass
+	// it positionally.  Defined in
+	// `src/Library/Rendering/FrameStore.h`.
+	namespace Implementation { class FrameStore; }
 
 	//////////////////////////////////////////////////////////
 	// Library versioning information
@@ -2385,7 +2393,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
-								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Creates a pixel based spectral integrating rasterizer
@@ -2404,7 +2413,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,			///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
-								const bool useHWSS				///< [in] Use Hero Wavelength Spectral Sampling
+								const bool useHWSS,				///< [in] Use Hero Wavelength Spectral Sampling
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Creates a Pel (RGB) BDPT rasterizer
@@ -2423,7 +2433,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
-								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Creates a spectral BDPT rasterizer
@@ -2446,7 +2457,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
-								const bool useHWSS					///< [in] Use Hero Wavelength Spectral Sampling
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Creates a Pel (RGB) Vertex Connection and Merging rasterizer
@@ -2468,7 +2480,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
-								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Creates a spectral Vertex Connection and Merging rasterizer
@@ -2495,7 +2508,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
-								const bool useHWSS					///< [in] Use Hero Wavelength Spectral Sampling
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Creates a pure path tracing Pel rasterizer (bypasses shader ops)
@@ -2524,7 +2538,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
-								const bool useZSobol				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Creates a pure path tracing spectral rasterizer (bypasses shader ops)
@@ -2557,7 +2572,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
-								const bool useHWSS					///< [in] Use Hero Wavelength Spectral Sampling
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Configures progressive multi-pass rendering on a pixel-based rasterizer.
@@ -2585,7 +2601,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int nChains,					///< [in] Number of Markov chains
 								const unsigned int nMutationsPerPixel,		///< [in] Mutations per pixel budget
 								const Scalar largeStepProb,					///< [in] Large step probability
-								const bool oidnDenoise						///< [in] Enable OIDN denoising post-process
+								const bool oidnDenoise,						///< [in] Enable OIDN denoising post-process
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Extended MLT rasterizer factory with pixel sampler + filter.
@@ -2606,7 +2623,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const OidnDevice oidnDevice,				///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 								const OidnPrefilter oidnPrefilter,			///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								ISampling2D* pSampler,						///< [in] Pixel sampler (stored but unused by the MLT loop); may be null
-								IPixelFilter* pFilter						///< [in] Reconstruction kernel; may be null for unfiltered point splats
+								IPixelFilter* pFilter,						///< [in] Reconstruction kernel; may be null for unfiltered point splats
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Creates a spectral MLT (Metropolis Light Transport / PSSMLT) rasterizer.
@@ -2626,7 +2644,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const Scalar lambda_end,			///< [in] End of spectral range (nm)
 								const unsigned int nSpectralSamples,///< [in] Spectral samples per evaluation
 								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
-								const bool oidnDenoise				///< [in] Enable OIDN denoising post-process
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//! Extended spectral MLT rasterizer factory with pixel sampler + filter.
@@ -2649,7 +2668,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								ISampling2D* pSampler,				///< [in] Pixel sampler (stored but unused by the MLT loop); may be null
-								IPixelFilter* pFilter				///< [in] Reconstruction kernel; may be null for unfiltered point splats
+								IPixelFilter* pFilter,				///< [in] Reconstruction kernel; may be null for unfiltered point splats
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
 	//////////////////////////////////////////////////////////

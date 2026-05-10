@@ -40,6 +40,7 @@
 #include "AOVBuffers.h"
 #include "OIDNDenoiser.h"
 #include "ProgressiveFilm.h"
+#include "FrameStore.h"  // L6e-1.1 — FrameStoreBulkBracket RAII guard
 #include "FilteredFilm.h"
 #include "../RISE_API.h"
 
@@ -252,7 +253,8 @@ BDPTRasterizerBase::BDPTRasterizerBase(
 	unsigned int maxEyeDepth,
 	unsigned int maxLightDepth,
 	const PathGuidingConfig& guidingCfg,
-	const StabilityConfig& stabilityCfg
+	const StabilityConfig& stabilityCfg,
+	RISE::Implementation::FrameStore* frameStore
 	) :
   PixelBasedRasterizerHelper( pCaster_ ),
   BidirectionalRasterizerBase( pCaster_, stabilityCfg ),
@@ -801,9 +803,17 @@ void BDPTRasterizerBase::RasterizeScene(
 	}
 #endif
 
-	// Create the primary image and a scratch copy for progressive output
-	IRasterImage* pImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
-	GlobalLog()->PrintNew( pImage, __FILE__, __LINE__, "image" );
+	// L6d — Use the canonical FrameStore beauty view as the splat
+	// target when available (Job has provided one + dims match).
+	// `AcquireRenderImage` is inherited from
+	// `PixelBasedRasterizerHelper`; it returns the FrameStore's
+	// `BeautyRasterImageView` shim or falls back to mPersistentImage
+	// when the FrameStore is null / dim-mismatch.  Pre-L6d this code
+	// path bypassed AcquireRenderImage and always allocated a fresh
+	// `RISERasterImage` which then got copied into the FrameStore
+	// later via `FrameSink::CopyImageIntoStore`.  Post-L6d the
+	// rasterizer's per-pixel writes land directly in the FrameStore.
+	IRasterImage* pImage = AcquireRenderImage( width, height );
 
 	safe_release( pScratchImage );
 	pScratchImage = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
@@ -824,7 +834,15 @@ void BDPTRasterizerBase::RasterizeScene(
 	}
 
 	{
-		pImage->Clear( RISEColor( GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, 1.0 ), pRect );
+		{
+			// L6e-1.1 — bracket the full-image initial Clear via RAII
+			// so concurrent UI/encoder readers see a clean
+			// (post-Clear) frame rather than a torn half-cleared one.
+			// Mirrors the bracketing in
+			// `PixelBasedRasterizerHelper::PrepareImageForNewRender`.
+			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+			pImage->Clear( RISEColor( GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, GlobalRNG().CanonicalRandom()*0.6+0.3, 1.0 ), pRect );
+		}
 
 		RasterizerOutputListType::const_iterator r, s;
 		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
@@ -949,7 +967,14 @@ void BDPTRasterizerBase::RasterizeScene(
 				// Intermediate preview: rebuild the primary image from the
 				// accumulated progressive state, then composite splats into a
 				// scratch copy for display.
-				progFilm.Resolve( *pImage );
+				{
+					// L6e-1.1 — bracket the full-image Resolve via RAII
+					// so a concurrent direct-FrameStore reader observes
+					// the post-Resolve image, not a torn half-resolved
+					// one.
+					FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+					progFilm.Resolve( *pImage );
+				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
 				RasterizerOutputListType::const_iterator r, s;
@@ -1097,6 +1122,8 @@ void BDPTRasterizerBase::RasterizeScene(
 	// the pre-denoised output below also uses inline + splat so the
 	// user can compare fairly against the denoised result.
 	if( pFilteredFilm && !bWillDenoise ) {
+		// L6e-1.1 — bracket the full-image filter resolve via RAII.
+		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
 		pFilteredFilm->Resolve( *pImage );
 	}
 
@@ -1133,6 +1160,11 @@ void BDPTRasterizerBase::RasterizeScene(
 	// After denoising we add the splatted contributions raw — they
 	// may carry residual noise but their energy is unbiased.
 	if( bWillDenoise ) {
+		// L6e-1.1 — bracket the full-image OIDN denoise via RAII.
+		// OIDN realistically can throw (CUDA / Metal device errors,
+		// OOM in scratch buffers); RAII unwinds correctly in that
+		// case.
+		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
 		mDenoiser->ApplyDenoise( *pImage, *pAOVBuffers, width, height,
 			mDenoisingQuality, mDenoisingDevice, mDenoisingPrefilter,
 			GetRenderElapsedSeconds() );
@@ -1145,7 +1177,11 @@ void BDPTRasterizerBase::RasterizeScene(
 	// by the total number of pixel samples to get the correct
 	// per-pixel average.  Splats are added AFTER denoising because
 	// their splatted accumulation pattern is incompatible with OIDN.
-	pSplatFilm->Resolve( *pImage, GetEffectiveSplatSPP( width, height ) );
+	{
+		// L6e-1.1 — bracket the full-image splat resolve via RAII.
+		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+		pSplatFilm->Resolve( *pImage, GetEffectiveSplatSPP( width, height ) );
+	}
 
 #ifdef RISE_ENABLE_OPENPGL
 	{

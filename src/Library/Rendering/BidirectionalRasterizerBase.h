@@ -59,7 +59,8 @@ namespace RISE
 
 			BidirectionalRasterizerBase(
 				IRayCaster* pCaster_,
-				const StabilityConfig& stabilityCfg
+				const StabilityConfig& stabilityCfg,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 
 			virtual ~BidirectionalRasterizerBase();

@@ -425,6 +425,17 @@ void RiseBridge::ensureProductionVFSAttachedToRasterizer() {
             });
     }
 
+    // L6e-2b/c — `Attach` auto-binds the VFS to the rasterizer's
+    // canonical FrameStore via `BindFrameStore(rasterizer->GetFrameStore())`.
+    // Subsequent `Rasterizer::SetFrameStore` swaps (camera-dim change,
+    // active-camera switch) re-bind via the new
+    // `OnRasterizerFrameStoreChanged` notification, dispatched on
+    // every attached output.  Net effect: for PT / BDPT / VCM the VFS
+    // now observes the rasterizer's mFrameStore directly — no
+    // VFS-internal FrameStore allocation, no FrameSink cross-store
+    // copy.  MLT rasterizers opt out of the FrameStore push (per
+    // L6e-1.1's `AcceptsFrameStorePush()` virtual) and stay on the
+    // legacy FrameSink path until L6d-2.
     if (!m_productionVFSAttachedToRasterizer) {
         m_productionVFS->Attach(rasterizer);
         m_productionVFSAttachedToRasterizer = true;

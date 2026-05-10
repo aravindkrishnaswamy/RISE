@@ -61,10 +61,12 @@ VCMSpectralRasterizer::VCMSpectralRasterizer(
 	const AdaptiveSamplingConfig& adaptiveCfg,
 	const StabilityConfig& stabilityConfig_,
 	const bool useZSobol,
-	const bool useHWSS
+	const bool useHWSS,
+	RISE::Implementation::FrameStore* frameStore
 	) :
-	PixelBasedRasterizerHelper( pCaster_ ),
-	VCMRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, mergeRadius, enableVC, enableVM, stabilityConfig_ ),
+	Rasterizer( frameStore ),
+	PixelBasedRasterizerHelper( pCaster_ , frameStore),
+	VCMRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, mergeRadius, enableVC, enableVM, stabilityConfig_ , frameStore),
 	PixelBasedSpectralIntegratingRasterizer(
 		pCaster_,
 		lambda_begin,
@@ -73,7 +75,7 @@ VCMSpectralRasterizer::VCMSpectralRasterizer(
 		spectralSamples,
 		stabilityConfig_,
 		useZSobol,
-		useHWSS ),
+		useHWSS , frameStore),
 	adaptiveConfig( adaptiveCfg )
 {
 }

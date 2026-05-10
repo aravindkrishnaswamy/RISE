@@ -90,7 +90,8 @@ namespace RISE
 				const PathGuidingConfig& guidingConfig,
 				const AdaptiveSamplingConfig& adaptiveConfig,
 				const StabilityConfig& stabilityConfig,
-				bool useZSobol_
+				bool useZSobol_,
+				RISE::Implementation::FrameStore* frameStore = nullptr
 				);
 		};
 	}
