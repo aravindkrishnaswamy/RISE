@@ -144,6 +144,26 @@ namespace RISE
 			// can read FrameStore concurrently with this swap.
 			void SetFrameStore( FrameStore* frameStore );
 
+			// L6e-3 — Re-fire `OnRasterizerFrameStoreChanged(mFrameStore)`
+			// on every attached `IRasterizerOutput` WITHOUT swapping
+			// `mFrameStore`.  Use case: callers that have cleared the
+			// rasterizer's outs list (e.g. `FreeRasterizerOutputs` then
+			// `AddRasterizerOutput(newSink)`) and need the freshly-
+			// attached output to receive the current FrameStore
+			// binding without going through the
+			// `SetFrameStore(nullptr) → SetFrameStore(fs)` toggle
+			// (which would tear down + rebuild observer state on
+			// already-bound consumers — see L6e-3 review P0).
+			//
+			// Idempotent: calling on a rasterizer with null mFrameStore
+			// just dispatches `OnRasterizerFrameStoreChanged(nullptr)`,
+			// which most outputs treat as a no-op.
+			//
+			// Threading: same as `SetFrameStore` — caller must run on
+			// the same thread that drives the rasterizer (no
+			// concurrent SetFrameStore in-flight).
+			void ReannounceFrameStore();
+
 			// L6e-1.1 — Capability hook: does this rasterizer accept
 			// the canonical Job-allocated FrameStore push, or does it
 			// run on its own internal RISERasterImage path?

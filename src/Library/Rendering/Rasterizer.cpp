@@ -127,23 +127,26 @@ void Rasterizer::SetFrameStore( FrameStore* frameStore )
 	safe_release( mFrameStore );  // null-safe + zeroes the local
 	mFrameStore = frameStore;
 
-	// Notify every attached output of the new FrameStore.  The
-	// dispatch happens AFTER `mFrameStore` is updated so observers
-	// that re-query via `GetFrameStore()` see the new state.
+	// L6e-3 — Re-dispatch path lives in `ReannounceFrameStore`
+	// below; the swap path here calls into it after updating
+	// `mFrameStore`.
+
+	ReannounceFrameStore();
+}
+
+void Rasterizer::ReannounceFrameStore()
+{
+	// L6e-3 — Re-fire `OnRasterizerFrameStoreChanged(mFrameStore)`
+	// on every attached output.  Caller has either just swapped
+	// `mFrameStore` (called from `SetFrameStore`) or wants the
+	// outs to receive the CURRENT binding without a swap (e.g.
+	// after `FreeRasterizerOutputs` + `AddRasterizerOutput(newSink)`
+	// in the SceneEditController interactive flow).
 	//
-	// L6e-2b adversarial review P1-A — snapshot the outs list
-	// before iterating.  `outs` is a `std::vector<IRasterizerOutput*>`;
-	// if any callback re-enters `AddRasterizerOutput` (push_back →
-	// potential reallocation) or `FreeRasterizerOutputs` (clear),
-	// the live iterator is invalidated → UB.  Today's
-	// `ViewportFrameStore::OnRasterizerFrameStoreChanged` doesn't
-	// re-enter, but the `IRasterizerOutput` contract doesn't forbid
-	// it (the default impl is no-op; subclasses are free to do what
-	// they like).  The snapshot is cheap (vector of pointers) and
-	// makes the dispatch robust against any future override.
-	//
-	// Iteration order: the snapshot preserves the insertion order
-	// matching `EnumerateRasterizerOutputs`'s contract.
+	// Snapshot `outs` before iterating — see L6e-2b adversarial
+	// review P1-A.  If any callback re-enters
+	// `AddRasterizerOutput`/`FreeRasterizerOutputs`, the live
+	// iterator would otherwise be invalidated.
 	const RasterizerOutputListType snapshot = outs;
 	for( RasterizerOutputListType::const_iterator it = snapshot.begin(),
 	     e = snapshot.end(); it != e; ++it )

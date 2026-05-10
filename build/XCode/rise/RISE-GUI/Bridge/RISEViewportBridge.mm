@@ -117,11 +117,33 @@ public:
     // clobbers it.  Fanning out from inside this sink survives the
     // clobber because we own the VFS reference here.  Addref'd on
     // SetFanoutVFS, released on dtor.
+    //
+    // L6e-3 — `OnRasterizerFrameStoreChanged` (below) now forwards
+    // the rasterizer's per-pass FrameStore to the VFS's
+    // `BindFrameStore` so the VFS observes the canonical store
+    // directly.  `OutputImage`'s fan-out call to `vfs->OutputImage`
+    // is then a no-op (per L6f's bound-mode short-circuit) — the
+    // frame-complete event flows from rasterizer's
+    // `MarkFrameComplete` (post-L6f) directly through the VFS
+    // observer chain.  We keep the fan-out call for safety (if
+    // SceneEditController ever skips the FrameStore push, the
+    // legacy fan-out covers).
     void SetFanoutVFS( Implementation::ViewportFrameStore* vfs ) {
         if( mFanoutVFS == vfs ) return;
         if( vfs ) vfs->addref();
         if( mFanoutVFS ) mFanoutVFS->release();
         mFanoutVFS = vfs;
+    }
+
+    // L6e-3 — Forward rasterizer FrameStore swaps to the fan-out VFS
+    // so it auto-binds (post-L6e-2a `BindFrameStore`).  Fires every
+    // time SceneEditController's per-pass `EnsureInteractiveFrameStore_`
+    // calls `Rasterizer::SetFrameStore` (which dispatches on every
+    // attached IRasterizerOutput in the rasterizer's outs).
+    void OnRasterizerFrameStoreChanged( Implementation::FrameStore* framestore ) override {
+        if( mFanoutVFS ) {
+            mFanoutVFS->BindFrameStore( framestore );
+        }
     }
 
     // Set true to drop the very next OutputImage call.  Auto-clears

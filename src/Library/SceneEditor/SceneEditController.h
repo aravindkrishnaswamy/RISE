@@ -41,6 +41,7 @@
 namespace RISE
 {
 	namespace Implementation { class InteractivePelRasterizer; }
+	namespace Implementation { class FrameStore; }
 
 	class SceneEditController
 	{
@@ -378,6 +379,16 @@ namespace RISE
 		//! Called from OnPointerDown when the Select tool is active.
 		void PickAt( const Point2& px );
 
+		//! L6e-3 — Ensure `mInteractiveFrameStore` matches the given
+		//! dimensions and push it to the interactive rasterizer via
+		//! `SetFrameStore`.  Called from `DoOneRenderPass` AFTER the
+		//! per-pass camera-dim swap so the FrameStore tracks the
+		//! current preview-scale dims.  Same-dim short-circuit avoids
+		//! reallocation thrash across passes that don't change scale.
+		//! No-op when `mInteractiveRasterizer` is null (test/skeleton
+		//! mode).  See impl in SceneEditController.cpp.
+		void EnsureInteractiveFrameStore_( unsigned int width, unsigned int height );
+
 		IJobPriv&                   mJob;
 		IRasterizer*                mInteractiveRasterizer;  // borrowed
 		// Cached downcast of mInteractiveRasterizer for the polish-pass
@@ -422,6 +433,31 @@ namespace RISE
 		IRasterizerOutput*          mPreviewSink;
 		IProgressCallback*          mProgressSink;
 		ILogPrinter*                mLogSink;
+
+		// L6e-3 — Per-pass FrameStore for the interactive rasterizer.
+		// Allocated/reused in `DoOneRenderPass` to track the current
+		// preview-scale dims (which the camera-dim swap mutates each
+		// pass between full-res and 1/scale-res).  Pushed to
+		// `mInteractiveRasterizer` via `SetFrameStore` so per-pixel
+		// writes during `RasterizeScene` land in this store, AND the
+		// `OnRasterizerFrameStoreChanged` notification fires on the
+		// preview sink — `ViewportPreviewSink::OnRasterizerFrameStoreChanged`
+		// (Mac bridge) forwards to the interactive VFS's
+		// `BindFrameStore` so direct FrameStore observers track the
+		// current per-pass canonical buffer.
+		//
+		// Pre-L6e-3: the interactive VFS stayed in internal-managed
+		// mode (legacy IRasterizerOutput chain → FrameSink copy →
+		// VFS-internal store via `ViewportPreviewSink::OutputImage`'s
+		// fan-out to `mFanoutVFS->OutputImage`).  L5a's dormant cache
+		// amortized the per-scale reallocation in VFS-internal mode.
+		//
+		// Post-L6e-3: bound mode for interactive.  The dormant-cache
+		// equivalent lives here in SceneEditController — we keep the
+		// FrameStore around across passes when dims match, reallocate
+		// only when scale changes shrink/grow the active dims.
+		// `Reference`-counted; we own one addref.
+		mutable RISE::Implementation::FrameStore* mInteractiveFrameStore;
 
 		CancellableProgressCallback mCancelProgress;
 

@@ -51,6 +51,8 @@
 #include "../Interfaces/IRayCaster.h"
 #include "../Intersection/RayIntersection.h"
 #include "../Rendering/InteractivePelRasterizer.h"
+#include "../Rendering/FrameStore.h"  // L6e-3 — per-pass interactive FrameStore
+#include "../Rendering/Rasterizer.h"  // L6e-3 — Implementation::Rasterizer for SetFrameStore
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/RuntimeContext.h"
 #include <chrono>
@@ -106,6 +108,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mPreviewSink( 0 )
 , mProgressSink( 0 )
 , mLogSink( 0 )
+, mInteractiveFrameStore( 0 )
 , mCancelProgress( 0 )
 , mRenderThread()
 , mMutex()
@@ -208,6 +211,14 @@ SceneEditController::~SceneEditController()
 	{
 		mInteractiveRasterizer->release();
 		mInteractiveRasterizer = 0;
+	}
+	// L6e-3 — release our per-pass FrameStore.  Stop() already joined
+	// the render thread, so no DoOneRenderPass is in flight by the
+	// time we reach here.
+	if( mInteractiveFrameStore )
+	{
+		mInteractiveFrameStore->release();
+		mInteractiveFrameStore = 0;
 	}
 }
 
@@ -1613,6 +1624,81 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 	}
 }
 
+// L6e-3 — Allocate or reuse `mInteractiveFrameStore` to match the
+// requested per-pass dims, then push to the interactive rasterizer
+// via `SetFrameStore`.
+//
+// Lifecycle: same `FrameStore::Spec` defaults as Job's
+// `EnsureJobFrameStore_locked` (tileEdge=32, beauty channel only).
+// Reuse on dim-match avoids the FrameStore alloc + observer-thrash
+// cost across passes that don't change scale.  When dims change
+// (preview-scale ramp / camera resize), release the old store +
+// allocate a fresh one — `SetFrameStore` on the rasterizer fires
+// `OnRasterizerFrameStoreChanged` on the rasterizer's outs (the
+// preview sink, just re-attached above), which in turn drives the
+// interactive VFS's `BindFrameStore` rebind on the platform side
+// (`ViewportPreviewSink::OnRasterizerFrameStoreChanged` in
+// RISEViewportBridge.mm).
+//
+// Threading: called from the render thread (the one that drives
+// `RasterizeScene`).  `SetFrameStore` is single-threaded relative to
+// `RasterizeScene` per the Rasterizer threading contract — same as
+// Job's `PushJobFrameStoreToRasterizers`.
+void SceneEditController::EnsureInteractiveFrameStore_( unsigned int width, unsigned int height )
+{
+	if( !mInteractiveRasterizer ) return;
+	if( width == 0 || height == 0 ) return;
+
+	// Same-dim short-circuit: reuse the existing FrameStore.
+	if( mInteractiveFrameStore &&
+	    mInteractiveFrameStore->Width()  == width &&
+	    mInteractiveFrameStore->Height() == height )
+	{
+		Implementation::Rasterizer* r =
+			dynamic_cast<Implementation::Rasterizer*>( mInteractiveRasterizer );
+		if( r ) {
+			if( r->GetFrameStore() != mInteractiveFrameStore ) {
+				// Pointer changed (rare; suggests something else
+				// swapped mFrameStore between passes — Job push?).
+				// Restore via the standard SetFrameStore path.
+				r->SetFrameStore( mInteractiveFrameStore );
+			} else {
+				// Same pointer.  `FreeRasterizerOutputs` (just
+				// above in DoOneRenderPass) cleared the rasterizer's
+				// outs list, so the freshly-attached preview sink
+				// hasn't received the `OnRasterizerFrameStoreChanged`
+				// for THIS pointer.  `ReannounceFrameStore` re-fires
+				// the dispatch on the current outs list without the
+				// SetFrameStore(nullptr)→SetFrameStore(fs) toggle —
+				// avoids a tear-down/rebuild cycle of bound observers
+				// (BridgeObserver lifecycle on the VFS side).  See
+				// L6e-3 adversarial review P0.
+				r->ReannounceFrameStore();
+			}
+		}
+		return;
+	}
+
+	// Dim changed — release old, allocate new.
+	if( mInteractiveFrameStore ) {
+		mInteractiveFrameStore->release();
+		mInteractiveFrameStore = 0;
+	}
+
+	FrameStoreOutput::FrameStoreSpec spec;
+	spec.width    = width;
+	spec.height   = height;
+	spec.tileEdge = 32;  // matches Job's EnsureJobFrameStore_locked
+	mInteractiveFrameStore = new Implementation::FrameStore( spec );
+	// new returns refcount 1; that's our owned reference.
+
+	Implementation::Rasterizer* r =
+		dynamic_cast<Implementation::Rasterizer*>( mInteractiveRasterizer );
+	if( r ) {
+		r->SetFrameStore( mInteractiveFrameStore );
+	}
+}
+
 void SceneEditController::DoOneRenderPass()
 {
 	if( !mInteractiveRasterizer )
@@ -1680,6 +1766,24 @@ void SceneEditController::DoOneRenderPass()
 			const unsigned int sh = origH / scale > 0 ? origH / scale : 1;
 			cam->SetDimensions( sw, sh );
 		}
+	}
+
+	// L6e-3 — Make sure the interactive rasterizer has a FrameStore
+	// at the CURRENT (post-scale-swap) dims so per-pixel writes
+	// during `RasterizeScene` land in the canonical store.  Pre-L6e-3
+	// the rasterizer's mFrameStore was the Job-allocated full-res
+	// store; preview-scale renders fell back to mPersistentImage
+	// (dim mismatch in `AcquireRenderImage`), starving direct VFS
+	// observers.  Post-L6e-3, the interactive VFS observes
+	// `mInteractiveFrameStore` and sees fresh content per pass —
+	// see ViewportPreviewSink::OnRasterizerFrameStoreChanged in
+	// RISEViewportBridge.mm.
+	{
+		const unsigned int passW = cam ? cam->GetWidth()  :
+			static_cast<unsigned int>( scene->GetCamera() ? scene->GetCamera()->GetWidth()  : 0 );
+		const unsigned int passH = cam ? cam->GetHeight() :
+			static_cast<unsigned int>( scene->GetCamera() ? scene->GetCamera()->GetHeight() : 0 );
+		EnsureInteractiveFrameStore_( passW, passH );
 	}
 
 	const auto t0 = std::chrono::steady_clock::now();
