@@ -46,9 +46,12 @@ pathtracing_shaderop
 
 standard_shader
 {
+	# pathtracing_shaderop already does NEE direct lighting via MIS;
+	# stacking DefaultDirectLighting on top double-counts every direct
+	# illumination contribution.  Job::CreateStandardShader() emits a
+	# warning about this combination -- keep the shader stack lean.
 	name				glossy_shader
 	shaderop			pt
-	shaderop			DefaultDirectLighting
 }
 
 standard_shader
