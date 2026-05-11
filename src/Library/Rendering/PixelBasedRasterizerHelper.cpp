@@ -475,6 +475,7 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 	using FlushClock = std::chrono::steady_clock;
 	const auto kFlushInterval = std::chrono::milliseconds( 100 );
 	auto lastFlush = FlushClock::now();
+	bool earlyAbort = false;
 
 	for( unsigned int y=rect.top; y<=rect.bottom; y++ )
 	{
@@ -505,9 +506,46 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 					}
 				}
 				lastFlush = now;
+
+				// L8 round 12 — intra-block cancellation check.
+				// Without this, a single heavy-scene block (multi-
+				// second per-pixel cost) blocks the worker for its
+				// entire duration; the `SceneEditController` adapter
+				// can't react to a pointer-move-driven cancellation
+				// until the block returns from `RasterizeBlockDispatcher::
+				// GetNextBlock`'s per-block Progress check — way too
+				// late for an interactive UX (the preview-scale ramp
+				// can't observe the cancellation pressure, so it
+				// never bumps the scale up to "drop down to lower
+				// resolution faster renders" — user's report).
+				//
+				// Querying the rasterizer's progress callback at the
+				// flush cadence (every 100 ms wall clock) gives
+				// per-100-ms cancellation responsiveness regardless
+				// of how slow a single tile is.  Pass the current
+				// accumulated weighted-progress values so the bar
+				// doesn't jitter — we're only here to check the
+				// return value's cancellation semantics, not to
+				// publish a fresh progress reading.
+				if( pProgressFunc ) {
+					const double prog = mProgressTotal > 0 ? mProgressBase : 0.0;
+					const double tot  = mProgressTotal > 0 ? mProgressTotal : 1.0;
+					if( !pProgressFunc->Progress( prog, tot ) ) {
+						earlyAbort = true;
+						break;
+					}
+				}
 			}
 		}
 	}
+
+	(void)earlyAbort;  // The end-of-block EndTile loop below still runs
+	                   // regardless — releases the tile mutexes that
+	                   // were re-acquired by the last flush's BeginTile
+	                   // loop.  The outer `RasterizeBlockDispatcher`
+	                   // sees the cancellation through its own
+	                   // per-block Progress check on the next
+	                   // GetNextBlock call.
 
 	if( fsBracket ) {
 		// EndTile fires per-tile observers (OnTileComplete) and bumps
@@ -622,6 +660,7 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	using FlushClockAnim = std::chrono::steady_clock;
 	const auto kFlushIntervalAnim = std::chrono::milliseconds( 100 );
 	auto lastFlushAnim = FlushClockAnim::now();
+	bool earlyAbortAnim = false;
 
 	for( unsigned int y=rect.top; y<=rect.bottom; y++ ) {
 		if( framedata.field == FIELD_BOTH || y%2 == (unsigned int)framedata.field ) {
@@ -664,9 +703,22 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 					}
 				}
 				lastFlushAnim = now;
+
+				// L8 round 12 — intra-block cancellation check (anim
+				// path twin of the static path's check).  See
+				// SPRasterizeSingleBlock comment for rationale.
+				if( pProgressFunc ) {
+					const double prog = mProgressTotal > 0 ? mProgressBase : 0.0;
+					const double tot  = mProgressTotal > 0 ? mProgressTotal : 1.0;
+					if( !pProgressFunc->Progress( prog, tot ) ) {
+						earlyAbortAnim = true;
+						break;
+					}
+				}
 			}
 		}
 	}
+	(void)earlyAbortAnim;
 
 	if( fsBracket ) {
 		for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
