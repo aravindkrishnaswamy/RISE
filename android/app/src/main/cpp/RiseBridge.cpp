@@ -953,6 +953,14 @@ void RiseBridge::releaseViewportLivePreview() {
     if (m_viewportCaster)       { m_viewportCaster->release();     m_viewportCaster = nullptr; }
 }
 
+bool RiseBridge::scaleFilmToFit(unsigned int maxSurfaceW,
+                                unsigned int maxSurfaceH,
+                                unsigned int maxLongEdge) {
+    if (!m_job) return false;
+    if (maxSurfaceW == 0 || maxSurfaceH == 0 || maxLongEdge == 0) return false;
+    return m_job->ScaleFilmToFit(maxSurfaceW, maxSurfaceH, maxLongEdge);
+}
+
 bool RiseBridge::startViewport(bool suppressFirstFrame) {
     if (m_viewportController) return true;
     if (!m_job) return false;

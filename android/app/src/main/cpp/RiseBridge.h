@@ -159,6 +159,19 @@ public:
     bool isViewportRunning() const { return m_viewportRunning; }
     bool hasLivePreview() const    { return m_viewportRasterizer != nullptr; }
 
+    // Shrink the loaded scene's Film so the interactive preview
+    // renders at a screen-appropriate resolution rather than blindly
+    // inheriting whatever the .RISEscene file declared.  Caller passes
+    // the display surface dims in pixels; the long edge is also
+    // capped at maxLongEdge.  Wraps IJobPriv::ScaleFilmToFit — never
+    // upscales, preserves aspect + pixelAR.  Call AFTER loadScene and
+    // BEFORE startViewport so the override is in place when the
+    // render thread spawns.  Returns false on null job or invalid
+    // arguments.
+    bool scaleFilmToFit(unsigned int maxSurfaceW,
+                        unsigned int maxSurfaceH,
+                        unsigned int maxLongEdge);
+
     // Drop exactly one upcoming preview frame.  Race-prone if called
     // *after* startViewport's render thread has already fired —
     // prefer the suppressFirstFrame argument on startViewport for

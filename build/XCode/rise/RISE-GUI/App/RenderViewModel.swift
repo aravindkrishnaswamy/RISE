@@ -632,6 +632,24 @@ final class RenderViewModel: ObservableObject {
                         guard let self = self else { return }
                         self.renderedImage = image
                     }
+                    // Override the scene's authored Film with a screen-
+                    // appropriate size for the INTERACTIVE preview.  The
+                    // available surface is the screen's visible area
+                    // (main NSScreen minus menubar / Dock); the long
+                    // edge is capped at 800 px so we never burn cycles
+                    // pushing pixels the viewport view would just
+                    // downscale.  Must run BEFORE start() so the first
+                    // render pass picks up the new dims.  Production
+                    // renders launched from this app will use these
+                    // dims too — author a larger value in the Output
+                    // Settings panel to override.
+                    if let screen = NSScreen.main {
+                        let visible = screen.visibleFrame
+                        vb?.scaleFilmToFitSurfaceW(
+                            UInt(max(1, Int(visible.size.width))),
+                            surfaceH: UInt(max(1, Int(visible.size.height))),
+                            maxLongEdge: 800)
+                    }
                     // The viewport is always on once a scene is loaded —
                     // there is no separate "interact mode" toggle.  Start
                     // the bridge's render thread now so the user can drag,

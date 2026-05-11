@@ -150,6 +150,19 @@ ViewportBridge::ViewportBridge(RenderEngine* engine, QObject* parent)
     }
 }
 
+void ViewportBridge::scaleFilmToFit(int surfaceW, int surfaceH, int maxLongEdge)
+{
+    if (surfaceW <= 0 || surfaceH <= 0 || maxLongEdge <= 0) return;
+    if (!m_engine) return;
+    void* opaque = m_engine->opaqueJobHandle();
+    if (!opaque) return;
+    IJobPriv* pJob = static_cast<IJobPriv*>(opaque);
+    pJob->ScaleFilmToFit(
+        static_cast<unsigned int>(surfaceW),
+        static_cast<unsigned int>(surfaceH),
+        static_cast<unsigned int>(maxLongEdge));
+}
+
 ViewportBridge::~ViewportBridge()
 {
     stop();

@@ -193,6 +193,22 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
 
                 _sceneLoaded.value = true
 
+                // Override the scene's authored Film with a screen-
+                // appropriate size for the GUI session.  The available
+                // surface is the device display; the long edge is
+                // capped at 800 px so we never burn cycles pushing
+                // pixels Android's SurfaceView would just downscale.
+                // Must run BEFORE runProductionRenderInternal (which
+                // fires the FIRST render of the just-loaded scene) so
+                // the override is in place from the very first frame.
+                // To render at scene-authored dims, edit the Output
+                // Settings panel after load.
+                val dm = getApplication<RiseApplication>().resources.displayMetrics
+                RiseNative.nativeScaleFilmToFit(
+                    dm.widthPixels.coerceAtLeast(1),
+                    dm.heightPixels.coerceAtLeast(1),
+                    800)
+
                 // New scene resets the scrub position.  hasAnimation
                 // has to flip after each load (and clear back to
                 // false on scenes that don't declare animation,

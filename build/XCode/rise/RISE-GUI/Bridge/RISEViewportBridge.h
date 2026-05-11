@@ -56,6 +56,18 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 
 @property (nonatomic, readonly) BOOL isRunning;
 
+/// Shrink the scene Film so the interactive preview renders at a
+/// screen-appropriate resolution rather than blindly inheriting
+/// whatever the .RISEscene file declared.  Wraps the C++
+/// `IJobPriv::ScaleFilmToFit` — never upscales, preserves the
+/// scene's authored aspect ratio + pixelAR.  Caller passes the
+/// available rendering-surface dims in pixels; the long edge is
+/// also capped at `maxLongEdge`.  Call once after init, before
+/// `start`.
+- (void)scaleFilmToFitSurfaceW:(NSUInteger)surfaceW
+                       surfaceH:(NSUInteger)surfaceH
+                    maxLongEdge:(NSUInteger)maxLongEdge;
+
 #pragma mark - Toolbar
 
 @property (nonatomic) RISEViewportTool currentTool;

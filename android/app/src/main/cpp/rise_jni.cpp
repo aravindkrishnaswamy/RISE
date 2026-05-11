@@ -198,6 +198,14 @@ JNIF(jboolean, nativeViewportStart)(JNIEnv* /*env*/, jobject /*thiz*/,
                                     jboolean suppressFirstFrame) {
     return getBridge().startViewport(suppressFirstFrame == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
 }
+JNIF(jboolean, nativeScaleFilmToFit)(JNIEnv* /*env*/, jobject /*thiz*/,
+                                     jint surfaceW, jint surfaceH, jint maxLongEdge) {
+    if (surfaceW <= 0 || surfaceH <= 0 || maxLongEdge <= 0) return JNI_FALSE;
+    return getBridge().scaleFilmToFit(
+        static_cast<unsigned int>(surfaceW),
+        static_cast<unsigned int>(surfaceH),
+        static_cast<unsigned int>(maxLongEdge)) ? JNI_TRUE : JNI_FALSE;
+}
 JNIF(void, nativeViewportStop)(JNIEnv* /*env*/, jobject /*thiz*/) {
     getBridge().stopViewport();
 }

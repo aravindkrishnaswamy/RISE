@@ -2794,6 +2794,26 @@ namespace RISE
 			const unsigned int height,								///< [in] Image height in pixels
 			const double pixelAR									///< [in] Pixel aspect ratio (1.0 = square pixels)
 			) = 0;
+
+		//! Shrink the active Film so it fits within a (maxSurfaceW,
+		//! maxSurfaceH) rendering surface AND so its long edge does not
+		//! exceed maxLongEdge — preserving the scene's authored aspect
+		//! ratio and pixelAR.  Never upscales: if the scene's Film
+		//! already fits, this is a no-op.  Returns true on success or
+		//! no-op; false on zero arguments or a SetFilm failure.
+		//!
+		//! Intended for interactive GUI editors that want to render the
+		//! preview at a screen-appropriate resolution rather than
+		//! blindly using whatever the .RISEscene file declared.  Call
+		//! after scene-parse, before the interactive controller starts.
+		//! Production renders that want the scene's authored dims
+		//! should NOT use this — they should render whatever the scene
+		//! declared.
+		virtual bool ScaleFilmToFit(
+			const unsigned int maxSurfaceW,							///< [in] Available viewport width in pixels (must be > 0)
+			const unsigned int maxSurfaceH,							///< [in] Available viewport height in pixels (must be > 0)
+			const unsigned int maxLongEdge							///< [in] Hard cap on the longer of the two output edges (must be > 0)
+			) = 0;
 	};
 
 

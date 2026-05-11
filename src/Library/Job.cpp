@@ -16,6 +16,7 @@
 #include "Job.h"
 #include "RISE_API.h"
 #include "Rendering/Film.h"		// kDefaultFilm* / kMaxFilm* constants
+#include <algorithm>
 #include <cmath>
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -422,6 +423,50 @@ bool Job::SetFilm(
 	// pattern `SetActiveCamera` uses for the same reason.
 	PushJobFrameStoreToRasterizers();
 	return true;
+}
+
+bool Job::ScaleFilmToFit(
+	const unsigned int maxSurfaceW,
+	const unsigned int maxSurfaceH,
+	const unsigned int maxLongEdge
+	)
+{
+	if( maxSurfaceW == 0 || maxSurfaceH == 0 || maxLongEdge == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::ScaleFilmToFit: zero argument rejected (surface=%ux%u, longEdge=%u).",
+			maxSurfaceW, maxSurfaceH, maxLongEdge );
+		return false;
+	}
+	if( !pScene ) return false;
+	const IFilm* pFilm = pScene->GetFilm();
+	if( !pFilm ) return false;
+
+	const unsigned int origW   = pFilm->GetWidth();
+	const unsigned int origH   = pFilm->GetHeight();
+	const double       origPAR = pFilm->GetPixelAR();
+	if( origW == 0 || origH == 0 ) return false;
+
+	// Pick the largest scale factor s such that every constraint
+	// holds: s*origW <= maxSurfaceW, s*origH <= maxSurfaceH,
+	// s*max(origW,origH) <= maxLongEdge.  Capping at 1.0 ensures we
+	// only ever shrink — a tiny scene authored at 128 x 128 stays at
+	// 128 x 128 and gets stretched by the viewport widget instead of
+	// being needlessly re-rendered at a larger resolution.
+	const unsigned int longOrig = origW >= origH ? origW : origH;
+	const double s = std::min( { 1.0,
+	                             double( maxSurfaceW )  / double( origW ),
+	                             double( maxSurfaceH )  / double( origH ),
+	                             double( maxLongEdge )  / double( longOrig ) } );
+	const unsigned int newW = static_cast<unsigned int>( std::max< long long >(
+		1, static_cast<long long>( std::round( s * origW ) ) ) );
+	const unsigned int newH = static_cast<unsigned int>( std::max< long long >(
+		1, static_cast<long long>( std::round( s * origH ) ) ) );
+
+	// SetFilm has its own same-dim short-circuit, but bail early to
+	// avoid the GlobalLog noise SetFilm would emit on a successful
+	// no-op.
+	if( newW == origW && newH == origH ) return true;
+	return SetFilm( newW, newH, origPAR );
 }
 
 

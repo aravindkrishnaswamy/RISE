@@ -59,6 +59,18 @@ object RiseNative {
     external fun nativeLoadScene(absPath: String): Boolean
 
     /**
+     * Shrink the loaded scene's Film so the interactive preview
+     * renders at a screen-appropriate resolution rather than blindly
+     * inheriting whatever the .RISEscene file declared.  Caller
+     * passes the display surface dims in pixels; the long edge is
+     * also capped at [maxLongEdge].  Never upscales (a tiny authored
+     * Film stays the size it was).  Call AFTER [nativeLoadScene] and
+     * BEFORE [nativeViewportStart] so the override is in place when
+     * the render thread spawns.
+     */
+    external fun nativeScaleFilmToFit(surfaceW: Int, surfaceH: Int, maxLongEdge: Int): Boolean
+
+    /**
      * Render the currently loaded scene. BLOCKING. Returns false if the
      * render was cancelled or failed.
      */

@@ -84,6 +84,16 @@ public:
     /// stays on screen until the user actually starts dragging.
     void suppressNextFrame();
 
+    /// Shrink the scene Film so the interactive preview renders at a
+    /// screen-appropriate resolution rather than blindly inheriting
+    /// whatever the .RISEscene file declared.  Wraps
+    /// `IJobPriv::ScaleFilmToFit` — never upscales, preserves the
+    /// scene's authored aspect ratio + pixelAR.  Caller passes the
+    /// available rendering-surface dims in window pixels; the long
+    /// edge is also capped at `maxLongEdge`.  Call once after the
+    /// bridge is constructed and before `start()`.
+    void scaleFilmToFit(int surfaceW, int surfaceH, int maxLongEdge);
+
     void setTool(ViewportTool t);
 
     // Pointer events — coordinates are in viewport surface pixel space.

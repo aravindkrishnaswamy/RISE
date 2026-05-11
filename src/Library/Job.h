@@ -323,6 +323,14 @@ namespace RISE
 			const double pixelAR
 			);
 
+		//! Shrink the active Film to fit a viewport surface + long-edge
+		//! cap, preserving aspect.  See IJob.h for semantics.
+		bool ScaleFilmToFit(
+			const unsigned int maxSurfaceW,
+			const unsigned int maxSurfaceH,
+			const unsigned int maxLongEdge
+			);
+
 		//
 		// Cameras — see IJob.h for the multi-camera contract.  Each
 		// AddXxxCamera registers the camera under `name` in the

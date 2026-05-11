@@ -652,6 +652,19 @@ void MainWindow::onStateChanged(int newState)
         rebuildViewportForLoadedScene();
         if (m_viewportPane) m_viewStack->setCurrentWidget(m_viewportPane);
         if (m_viewportBridge) {
+            // Override the scene's authored Film with a screen-appropriate
+            // size for the INTERACTIVE preview.  The available render
+            // surface is approximated by the screen's work area; the long
+            // edge is capped at 800 px so we never burn cycles pushing
+            // pixels the viewport widget would just downscale.  Must run
+            // BEFORE start() so the first render pass picks up the new
+            // dims.  Note: production renders launched from this app
+            // (RequestProductionRender) will also use these dims — author
+            // a larger value in the Output Settings panel to override.
+            if (QScreen* screen = QApplication::primaryScreen()) {
+                const QRect avail = screen->availableGeometry();
+                m_viewportBridge->scaleFilmToFit(avail.width(), avail.height(), 800);
+            }
             m_viewportBridge->start();
             // The new controller defaults to Select internally; if the
             // user had a camera tool selected on the previous scene,

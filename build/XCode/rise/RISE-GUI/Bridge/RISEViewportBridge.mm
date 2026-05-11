@@ -421,6 +421,20 @@ private:
     _ownsRunning = NO;
 }
 
+- (void)scaleFilmToFitSurfaceW:(NSUInteger)surfaceW
+                       surfaceH:(NSUInteger)surfaceH
+                    maxLongEdge:(NSUInteger)maxLongEdge {
+    if (!_host) return;
+    if (surfaceW == 0 || surfaceH == 0 || maxLongEdge == 0) return;
+    void* jobOpaque = [_host opaqueJobHandle];
+    if (!jobOpaque) return;
+    IJobPriv* pJob = static_cast<IJobPriv*>(jobOpaque);
+    pJob->ScaleFilmToFit(
+        static_cast<unsigned int>(surfaceW),
+        static_cast<unsigned int>(surfaceH),
+        static_cast<unsigned int>(maxLongEdge));
+}
+
 - (BOOL)isRunning {
     return _ownsRunning;
 }
