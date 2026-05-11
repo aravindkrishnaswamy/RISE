@@ -128,23 +128,74 @@ acquire/release pairs.
 
 1. **Ship the L8 work** — aggregate impact is 0.38% with correctness preserved
    across all 7 scenes and 6 rasterizer types.
-2. **Investigate the spectral-BDPT +14% in a follow-up** — likely candidates:
-   - Gate `IsCancelled()` virtual dispatch behind a fast-path atomic-load when no
-     CancellableProgressCallback is installed.
-   - Make the intra-block flush threshold scale with image area (a 256² spectral
-     BDPT at heavy splat density may not benefit from 100 ms cadence the way a
-     1024² PT does).
-   - Re-test against `bdpt_pel_rasterizer` to confirm whether the regression is
-     specific to the spectral path or generic to BDPT under certain workloads.
+2. **Don't gate the intra-block flush** — investigation in the follow-up below
+   confirmed the flush is a contributor but a targeted gate hurts on aggregate.
 3. **Keep the BDPT/VCM speedups** — the `pScratchImage` realloc fix is principled
    correctness work and any incidental perf gain is welcome.
 
+## Follow-up investigation (2026-05-11): spectral-BDPT regression
+
+After landing the L8 work I revisited the `cornellbox_bdpt_spectral` +14% number
+because it's the largest single-scene regression. The investigation found three
+things, all of which argue *against* a code change:
+
+**1. The "+14%" magnitude is half measurement noise.**  Two K=5 sweeps and one
+K=8 cycled sweep across two days produced spectral-BDPT regressions of +14%,
++11%, and +7.5% — same machine, same baseline / HEAD binaries, same warmup
+discipline. The regression is real (Welch t = 5-6 against baseline) but its
+magnitude swings ~2× from run to run, indicating significant thermal /
+scheduler / allocator state contribution.
+
+**2. The intra-block flush is a contributor but not the whole story.**
+Disabling the flush via two paths — both `kFlushInterval = 1 hour` and a clean
+virtual-gate override (`ShouldIntraBlockFlush()` defaulting `false` for
+production, `true` for `InteractivePelRasterizer`) — recovered 30-60% of the
+single-scene regression in some runs, ~0% in others. The recovery never lands
+above the noise floor reliably.
+
+**3. The clean fix hurts on aggregate.**  Running the gating fix through the
+full 7-scene K=5 sweep:
+
+| | base | HEAD | fix |
+|---|---|---|---|
+| Aggregate sum-of-means | 87.30 s | 86.00 s (**−1.49%**) | 88.22 s (+1.05%) |
+
+HEAD is actually 1.5% **faster** than baseline on aggregate. The gating fix —
+which removes the flush mechanism on production rasterizers — gives back the
+BDPT/VCM/MLT speedups (which seem to be entangled with the L8 changes via
+`-flto` cross-TU inlining decisions) while only weakly recovering the
+spectral-BDPT outlier. Net: +2.5% slower than HEAD aggregate. **The fix is a
+step backwards** and was reverted.
+
+**Profile evidence**: `sample $PID 16 -mayDie` against HEAD and baseline runs
+shows the top hotspots are unchanged in identity (BVH traversal, BDPT
+integrator, BDPTVertex / IORStack churn through `_xzm_xzone_malloc_tiny`).
+What's elevated on HEAD is `mach_absolute_time` (called from the macOS
+allocator's per-free telemetry — i.e. driven by malloc volume, not by my
+intra-block `chrono::now()`). The malloc volume increase has no obvious
+single-line cause in the L8 diff and is likely a cross-TU LTO inlining shift in
+how `BDPTIntegrator::EvaluateAllStrategiesNM` allocates per-strategy vertex
+stacks. Untangling LTO is well outside the budget of a "fix one scene's
+regression" task.
+
+**Conclusion**: the L8 work is net-positive for performance. The spectral-BDPT
+regression is a known outlier within the aggregate envelope and is not worth
+chasing via a targeted gating fix — the cost of the fix exceeds the gain.
+
+A future investigation could try `-fno-lto` on `BidirectionalRasterizerBase.cpp`
+and `PixelBasedRasterizerHelper.cpp` to isolate inlining vs. algorithmic
+contributions, but the effort-to-reward ratio is poor for a sub-2-second
+absolute swing on one scene at our current measurement noise floor.
+
 ## Artifacts
 
-- Raw CSV: `/tmp/perfsweep_results.csv` (70 rows: 2 binaries × 7 scenes × 5 trials)
-- Sweep log: `/tmp/perfsweep.log`
+- Raw CSVs: `/tmp/perfsweep_results.csv`, `/tmp/triple_results.csv`,
+  `/tmp/full_fix_results.csv`
+- Sweep logs: `/tmp/perfsweep.log`, `/tmp/triple_bench.log`, `/tmp/full_fix_bench.log`
 - Per-scene PNG snapshots: `/tmp/diff_baseline/`, `/tmp/diff_head/`, `/tmp/diff_head2/`
-- Harness: `/tmp/perfsweep.sh`, `/tmp/render_for_diff.sh`
+- Profile samples: `/tmp/sample_head.txt`, `/tmp/sample_base.txt`, `/tmp/sample_fix.txt`
+- Harnesses: `/tmp/perfsweep.sh`, `/tmp/render_for_diff.sh`, `/tmp/quad_bench.sh`,
+  `/tmp/triple_bench.sh`, `/tmp/full_fix_bench.sh`
 - Analyzers: `/tmp/perfanalyze.py`, `/tmp/imgdiff.py`, `/tmp/imgdiff2.py`
 
 These live in `/tmp` and are NOT checked in — they're scratch from this measurement
