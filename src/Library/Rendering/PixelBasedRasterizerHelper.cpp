@@ -22,6 +22,7 @@
 #include "../Utilities/ThreadPool.h"
 #include "AdaptiveTileSizer.h"
 #include "PreviewScheduler.h"
+#include <chrono>
 
 #include "ScanlineRasterizeSequence.h"
 #include "BlockRasterizeSequence.h"
@@ -438,6 +439,43 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 		}
 	}
 
+	// L8 round 11 — time-based intra-block tile-bracket flush.
+	//
+	// Without this, a single rasterizer block on a heavy scene (deep
+	// PT, complex BSDFs) can take many seconds.  During that time
+	// the worker holds exclusive locks on all the block's FrameStore
+	// tiles + the per-pixel loop never bumps `globalGeneration_`.
+	// The platform bridge's 30 Hz polling timer (round 9) sees no
+	// generation change and emits nothing — net visible effect: the
+	// app looks hung between the start and end of a block, even
+	// though workers are making real progress.
+	//
+	// Fix: every `kFlushInterval` of wall-clock time spent in the
+	// per-pixel loop, EndTile + BeginTile every tile in the worker's
+	// block.  EndTile releases the per-tile mutex, bumps the global
+	// generation, fires observers (no-op for bound-mode VFS post
+	// round-9), and BeginTile re-acquires the mutex.  The poll now
+	// catches the generation advance and emits a partial-block
+	// snapshot of the FrameStore.  100 ms gives ~10 visible updates
+	// per second on heavy scenes; on fast scenes (block < 100 ms)
+	// the flush is skipped and overhead is exactly zero.
+	//
+	// Order: each flush walks the same (tx, ty) order as the end-of-
+	// block EndTile loop below, so per-tile observer fires are
+	// consistent in cadence.  Total observer fires per block =
+	// (1 + ceil(blockTime / kFlushInterval)) × tilesInBlock, vs the
+	// previous 1 × tilesInBlock — for fast blocks this is one fire
+	// per tile (unchanged); for slow blocks it grows linearly with
+	// block time.
+	//
+	// Why not row-based: a row-based flush (e.g., every 8 rows) at
+	// 8 µs/pixel = 2 ms / row gives a 16 ms flush cadence — too
+	// frequent for fast scenes, and the per-flush mutex overhead
+	// would dominate.  Time-based scales naturally with scene cost.
+	using FlushClock = std::chrono::steady_clock;
+	const auto kFlushInterval = std::chrono::milliseconds( 100 );
+	auto lastFlush = FlushClock::now();
+
 	for( unsigned int y=rect.top; y<=rect.bottom; y++ )
 	{
 		for( unsigned int x=rect.left; x<=rect.right; x++ )
@@ -448,6 +486,26 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 			if( c.a < 0.0 ) c.a = 0.0;
 			if( c.a > 1.0 ) c.a = 1.0;
 			image.SetPEL( x, y, c );
+		}
+
+		// Outer-loop time check so the cost is one steady_clock::now()
+		// per row, not per pixel.  Skip on the final row — the
+		// end-of-block EndTile loop runs immediately after.
+		if( fsBracket && !skipBlockOutput && y < rect.bottom ) {
+			const auto now = FlushClock::now();
+			if( now - lastFlush >= kFlushInterval ) {
+				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+						mFrameStore->EndTile( tx, ty );
+					}
+				}
+				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+						mFrameStore->BeginTile( tx, ty );
+					}
+				}
+				lastFlush = now;
+			}
 		}
 	}
 
@@ -557,6 +615,14 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 		}
 	}
 
+	// L8 round 11 — time-based intra-block flush; see
+	// SPRasterizeSingleBlock for the rationale.  Same shape for the
+	// animation path so heavy animated scenes get the same partial-
+	// block visibility.
+	using FlushClockAnim = std::chrono::steady_clock;
+	const auto kFlushIntervalAnim = std::chrono::milliseconds( 100 );
+	auto lastFlushAnim = FlushClockAnim::now();
+
 	for( unsigned int y=rect.top; y<=rect.bottom; y++ ) {
 		if( framedata.field == FIELD_BOTH || y%2 == (unsigned int)framedata.field ) {
 			const Scalar base_scanline_time = framedata.base_cur_time + framedata.scanningRate*y;
@@ -581,6 +647,23 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 				if( c.a < 0.0 ) c.a = 0.0;
 				if( c.a > 1.0 ) c.a = 1.0;
 				image.SetPEL( x, y, c );
+			}
+		}
+
+		if( fsBracket && !skipBlockOutput && y < rect.bottom ) {
+			const auto now = FlushClockAnim::now();
+			if( now - lastFlushAnim >= kFlushIntervalAnim ) {
+				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+						mFrameStore->EndTile( tx, ty );
+					}
+				}
+				for( size_t ty = fsTy0; ty < fsTy1; ++ty ) {
+					for( size_t tx = fsTx0; tx < fsTx1; ++tx ) {
+						mFrameStore->BeginTile( tx, ty );
+					}
+				}
+				lastFlushAnim = now;
 			}
 		}
 	}
