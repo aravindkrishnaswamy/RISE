@@ -11,8 +11,10 @@
 #include "../Interfaces/ILog.h"
 #include <climits>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 using namespace RISE;
 
@@ -54,12 +56,52 @@ namespace
 		// Reject partial-token parses (e.g. "1.5abc" → 1.5) and empty
 		// input by checking the strtod endpoint, mirroring ParseUInt.
 		// NaN / inf gating is the caller's responsibility (SetProperty
-		// applies std::isfinite for pixelAR after parse) since some
-		// future double-typed param might legitimately accept ±inf.
+		// applies a bit-pattern NaN/Inf check for pixelAR after parse)
+		// since some future double-typed param might legitimately
+		// accept ±inf.
 		const char* start = s.c_str();
 		char* endp = nullptr;
 		out = std::strtod( start, &endp );
 		return endp != start && *endp == '\0';
+	}
+
+	// `-ffast-math` (enabled in CXXFLAGS for OSX builds) implies
+	// `-ffinite-math-only`, which lets the compiler assume every
+	// double is neither NaN nor ±Inf.  Under that assumption, **both**
+	// `std::isfinite(v)` (which folds to `true`) **and** bit-pattern
+	// checks via `memcpy(&bits, &v, 8); bits & 0x7FF0000000000000`
+	// (which the optimiser can prove unreachable for "finite" v) get
+	// elided at LTO time, even though `std::strtod` legitimately
+	// returns ±Inf and NaN for "inf" / "nan" inputs.  Result: invalid
+	// `pixelAR=inf` slips past `SetProperty` and poisons every
+	// camera's projection matrix on the next resync.
+	//
+	// To defeat the optimiser's reachability analysis we route `v`
+	// through a `volatile double` slot and re-load it.  `volatile`
+	// guarantees an actual memory store + load, severing the
+	// optimiser's chain of inference that `v` came from a `-ffinite-
+	// math-only`-marked source.  The compiler MUST treat the
+	// post-load value as opaque (could be NaN / ±Inf) and emit the
+	// real bit comparison.  The `noinline` attribute is belt-and-
+	// braces: without it, LTO could still hoist the check past the
+	// volatile barrier if it tracks the original `v` separately.
+	//
+	// IEEE-754 binary64 layout:
+	//   exponent bits (62..52) all set + mantissa zero      → ±Inf
+	//   exponent bits (62..52) all set + mantissa non-zero  → NaN
+	// `(bits & 0x7FF0000000000000) == 0x7FF0000000000000`   rejects both.
+	#if defined(__GNUC__) || defined(__clang__)
+	__attribute__((noinline))
+	#endif
+	bool IsFiniteOpaque( double v )
+	{
+		volatile double opaque = v;
+		double          real_v = opaque;
+		static_assert( sizeof(double) == 8, "double must be 64-bit IEEE 754" );
+		std::uint64_t bits = 0;
+		std::memcpy( &bits, &real_v, sizeof(bits) );
+		const std::uint64_t expMask = 0x7ff0000000000000ULL;
+		return ( bits & expMask ) != expMask;
 	}
 }
 
@@ -143,11 +185,13 @@ bool FilmIntrospection::SetProperty( IJobPriv& job,
 	else if( n == "pixelAR" ) {
 		Scalar v = 0;
 		if( !ParseDouble( value, v ) ) return false;
-		// std::sscanf("%lf") parses "nan", "inf", "+inf", "-inf" — gate
+		// `std::strtod` parses "nan", "inf", "+inf", "-inf" — gate
 		// against them explicitly.  `NaN <= 0.0` is false, so a plain
 		// `v <= 0.0` check lets NaN slip past and poison every camera's
-		// projection matrix on the resync.
-		if( !std::isfinite( v ) || v <= 0.0 ) return false;
+		// projection matrix on the resync.  See `IsFiniteOpaque` for
+		// why we can't just use `std::isfinite` (the OSX `-ffast-math`
+		// `-ffinite-math-only` setting folds the check to `true`).
+		if( !IsFiniteOpaque( v ) || v <= 0.0 ) return false;
 		pAR = v;
 	}
 	else {
