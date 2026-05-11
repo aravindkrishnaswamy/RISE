@@ -87,6 +87,8 @@ namespace
 		{
 		case RISE_BLENDER_COLOR_SRGB:
 			return "sRGB";
+		case RISE_BLENDER_COLOR_ROMM_LINEAR:
+			return "ROMMRGB_Linear";
 		case RISE_BLENDER_COLOR_LINEAR:
 		default:
 			return "Rec709RGB_Linear";
@@ -95,10 +97,16 @@ namespace
 
 	char texture_color_space_value( const int color_space )
 	{
+		// Char encoding mirrors Job::AddPNGTexturePainter etc.:
+		//   0 = Rec709RGB_Linear
+		//   1 = sRGB
+		//   2 = ROMMRGB_Linear  (preserves bit-exact vector data)
 		switch( color_space )
 		{
 		case RISE_BLENDER_COLOR_SRGB:
 			return 1;
+		case RISE_BLENDER_COLOR_ROMM_LINEAR:
+			return 2;
 		case RISE_BLENDER_COLOR_LINEAR:
 		default:
 			return 0;
@@ -728,6 +736,17 @@ namespace
 		case RISE_BLENDER_MODIFIER_BUMP:
 			if( !job.AddBumpMapModifier( modifier.name, modifier.source_painter_name, modifier.scale, modifier.window ) ) {
 				write_error( error_message, error_message_size, "Failed to create a bump modifier" );
+				return false;
+			}
+			return true;
+
+		case RISE_BLENDER_MODIFIER_NORMAL_MAP:
+			// AddNormalMapModifier(name, painter, scale) — glTF
+			// normalTexture.scale.  The painter must have been
+			// registered with ROMMRGB_Linear colour space so the
+			// encoded surface tangent stays bit-exact.
+			if( !job.AddNormalMapModifier( modifier.name, modifier.source_painter_name, modifier.scale ) ) {
+				write_error( error_message, error_message_size, "Failed to create a normal-map modifier" );
 				return false;
 			}
 			return true;

@@ -40,11 +40,16 @@ enum rise_blender_painter_kind {
 
 enum rise_blender_color_space {
 	RISE_BLENDER_COLOR_LINEAR = 0,
-	RISE_BLENDER_COLOR_SRGB = 1
+	RISE_BLENDER_COLOR_SRGB = 1,
+	// ROMM-Linear bypasses both gamma decoding and the
+	// Rec709->ROMM colour matrix — required for normal-map painters
+	// so the RGB-encoded surface tangent stays bit-exact.
+	RISE_BLENDER_COLOR_ROMM_LINEAR = 2
 };
 
 enum rise_blender_modifier_kind {
-	RISE_BLENDER_MODIFIER_BUMP = 0
+	RISE_BLENDER_MODIFIER_BUMP = 0,
+	RISE_BLENDER_MODIFIER_NORMAL_MAP = 1
 };
 
 enum rise_blender_material_model {

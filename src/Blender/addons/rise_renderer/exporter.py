@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import array
+import math
 import os
 import re
 import tempfile
@@ -26,6 +27,9 @@ COLOR_SPACE_SRGB = 1
 FILTER_BILINEAR = 1
 
 MODIFIER_BUMP = 0
+MODIFIER_NORMAL_MAP = 1
+
+COLOR_SPACE_ROMM_LINEAR = 2
 
 MATERIAL_LAMBERT = 0
 MATERIAL_GGX = 1
@@ -612,22 +616,66 @@ def _warn_unsupported_principled_features(state: _ExportState, material, wrapper
     _check_principled_feature(state, node, material_name, "Subsurface Weight", 0.0, "subsurface")
 
 
-def _direct_bump_modifier(material, wrapper: PrincipledBSDFWrapper, state: _ExportState) -> str | None:
+class _ImageSocketWrapper:
+    """Minimal wrapper that lets _validate_texture_wrapper inspect a
+    raw ShaderNodeTexImage as if it were a node_shader_utils texture
+    wrapper.  Used by both the bump and normal-map paths."""
+
+    def __init__(self, node_image, colorspace_is_data: bool, colorspace_name: str):
+        self.node_image = node_image
+        self.image = node_image.image
+        self.colorspace_is_data = colorspace_is_data
+        self.colorspace_name = colorspace_name
+
+    def has_mapping_node(self) -> bool:
+        vector_input = self.node_image.inputs["Vector"]
+        return vector_input.is_linked and vector_input.links[0].from_node.bl_idname == "ShaderNodeMapping"
+
+    @property
+    def texcoords(self) -> str:
+        vector_input = self.node_image.inputs["Vector"]
+        if not vector_input.is_linked:
+            return "UV"
+        return vector_input.links[0].from_socket.name
+
+    @property
+    def projection(self) -> str:
+        return self.node_image.projection
+
+    @property
+    def extension(self) -> str:
+        return self.node_image.extension
+
+
+def _direct_normal_modifier(material, wrapper: PrincipledBSDFWrapper, state: _ExportState) -> str | None:
+    """Detect a Principled BSDF wired with either a Bump node (height
+    map) or a Normal Map node (tangent-space RGB) and produce a
+    RISE-side modifier.
+
+    Returns the modifier name, or None if the Normal slot isn't
+    connected to one of the supported chains.
+    """
+
     node = wrapper.node_principled_bsdf
     normal_input = _node_input(node, "Normal")
     if normal_input is None or not normal_input.is_linked:
         return None
 
     normal_node = normal_input.links[0].from_node
-    if normal_node.bl_idname == "ShaderNodeNormalMap":
-        _warn_once(state, f"RISE does not support tangent-space normal maps on '{material.name_full}'.")
-        return None
-    if normal_node.bl_idname != "ShaderNodeBump":
-        _warn_once(state, f"RISE only supports a direct Bump node on '{material.name_full}'.")
-        return None
 
-    normal_source = _node_input(normal_node, "Normal")
-    if normal_source is not None and normal_source.is_linked:
+    if normal_node.bl_idname == "ShaderNodeNormalMap":
+        return _build_normal_map_modifier(material, normal_node, state)
+
+    if normal_node.bl_idname == "ShaderNodeBump":
+        return _build_bump_modifier(material, normal_node, state)
+
+    _warn_once(state, f"RISE only supports a direct Bump or Normal Map node on '{material.name_full}'.")
+    return None
+
+
+def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | None:
+    nested_normal = _node_input(normal_node, "Normal")
+    if nested_normal is not None and nested_normal.is_linked:
         _warn_once(state, f"RISE ignores nested normal inputs feeding the Bump node on '{material.name_full}'.")
 
     height_input = _node_input(normal_node, "Height")
@@ -640,33 +688,7 @@ def _direct_bump_modifier(material, wrapper: PrincipledBSDFWrapper, state: _Expo
         _warn_once(state, f"RISE only supports direct image textures as Bump height sources on '{material.name_full}'.")
         return None
 
-    class _ImageSocketWrapper:
-        def __init__(self, node_image):
-            self.node_image = node_image
-            self.image = node_image.image
-            self.colorspace_is_data = True
-            self.colorspace_name = "Non-Color"
-
-        def has_mapping_node(self):
-            vector_input = self.node_image.inputs["Vector"]
-            return vector_input.is_linked and vector_input.links[0].from_node.bl_idname == "ShaderNodeMapping"
-
-        @property
-        def texcoords(self):
-            vector_input = self.node_image.inputs["Vector"]
-            if not vector_input.is_linked:
-                return "UV"
-            return vector_input.links[0].from_socket.name
-
-        @property
-        def projection(self):
-            return self.node_image.projection
-
-        @property
-        def extension(self):
-            return self.node_image.extension
-
-    texture_wrapper = _ImageSocketWrapper(image_node)
+    texture_wrapper = _ImageSocketWrapper(image_node, colorspace_is_data=True, colorspace_name="Non-Color")
     validated = _validate_texture_wrapper(texture_wrapper, state, f"the Bump node on '{material.name_full}'")
     if not validated:
         return None
@@ -698,6 +720,70 @@ def _direct_bump_modifier(material, wrapper: PrincipledBSDFWrapper, state: _Expo
     )
     state.modifier_cache[modifier_key] = modifier_name
     return modifier_name
+
+
+def _build_normal_map_modifier(material, normal_map_node, state: _ExportState) -> str | None:
+    """Translate a ShaderNodeNormalMap into a RISE NormalMap modifier.
+
+    Mirrors glTF KHR normalTexture semantics: the painter must be
+    loaded as ROMMRGB_Linear so the RGB-encoded tangent stays
+    bit-exact, and the strength scalar maps to normalTexture.scale.
+    """
+
+    if getattr(normal_map_node, "space", "TANGENT") != "TANGENT":
+        _warn_once(state, f"RISE only supports tangent-space Normal Map nodes on '{material.name_full}'.")
+        return None
+
+    color_input = _node_input(normal_map_node, "Color")
+    if color_input is None or not color_input.is_linked:
+        _warn_once(state, f"RISE only supports image-driven Normal Map nodes on '{material.name_full}'.")
+        return None
+
+    image_node = color_input.links[0].from_node
+    if image_node.bl_idname != "ShaderNodeTexImage":
+        _warn_once(state, f"RISE only supports direct image textures as Normal Map sources on '{material.name_full}'.")
+        return None
+
+    texture_wrapper = _ImageSocketWrapper(image_node, colorspace_is_data=True, colorspace_name="Non-Color")
+    validated = _validate_texture_wrapper(texture_wrapper, state, f"the Normal Map on '{material.name_full}'")
+    if not validated:
+        return None
+
+    filepath, _color_space_ignored = validated
+    kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
+    # Normal-map painters MUST be loaded as ROMM-Linear to bypass
+    # both gamma decoding AND the Rec709->ROMM matrix that would
+    # otherwise warp the encoded tangent (see RISE comments on
+    # AddNormalMapModifier).
+    painter_name = _add_texture_painter(
+        state,
+        f"{material.name_full}_normal",
+        filepath,
+        kind,
+        COLOR_SPACE_ROMM_LINEAR,
+    )
+    strength = _socket_default_float(normal_map_node, "Strength", 1.0)
+    modifier_key = ("normal_map", painter_name, round(strength, 6))
+    if modifier_key in state.modifier_cache:
+        return state.modifier_cache[modifier_key]
+
+    modifier_name = _unique_name(state, "mod", f"{material.name_full}_normal")
+    state.modifiers.append(
+        ModifierData(
+            name=modifier_name,
+            kind=MODIFIER_NORMAL_MAP,
+            source_painter_name=painter_name,
+            scale=float(strength),
+            window=0.0,
+        )
+    )
+    state.modifier_cache[modifier_key] = modifier_name
+    return modifier_name
+
+
+# Back-compat alias (older code path called the bump-only helper).
+def _direct_bump_modifier(material, wrapper: PrincipledBSDFWrapper, state: _ExportState) -> str | None:
+    return _direct_normal_modifier(material, wrapper, state)
 
 
 def _parse_volume_socket(socket, state: _ExportState, context_name: str) -> _VolumeSpec | None:
@@ -1078,7 +1164,7 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 tuple(emission_color[index] * emission_strength for index in range(3)),
             )
 
-    modifier_name = _direct_bump_modifier(material, wrapper, state)
+    modifier_name = _direct_normal_modifier(material, wrapper, state)
     alpha_socket = _node_input(wrapper.node_principled_bsdf, "Alpha")
     if alpha_socket is not None:
         alpha_value_socket = float(alpha_socket.default_value)
@@ -1201,20 +1287,24 @@ def _camera_payload(camera_object, render_settings: RenderSettingsData, state: _
     )
 
 
-def _light_payload(light_object, matrix_world, state: _ExportState) -> LightData:
+def _light_payload(light_object, matrix_world, state: _ExportState) -> LightData | None:
+    """Translate a Blender light to a RISE LightData.
+
+    AREA lights return None here; the caller is expected to invoke
+    `_register_area_light_mesh` which materialises the area light as
+    an emissive mesh-luminary instead (so soft shadows, falloff, and
+    distance attenuation match Cycles).
+    """
+
     light = light_object.data
+    if light.type == "AREA":
+        return None
+
     light_type = {
         "POINT": 0,
         "SPOT": 1,
         "SUN": 2,
-        "AREA": 3,
     }.get(light.type, 4)
-
-    if light.type == "AREA":
-        _warn_once(
-            state,
-            "Blender area lights are currently approximated as point lights in the RISE sidecar renderer.",
-        )
 
     color = list(light.color)
     if getattr(light, "use_temperature", False):
@@ -1236,6 +1326,145 @@ def _light_payload(light_object, matrix_world, state: _ExportState) -> LightData
         spot_size=float(getattr(light, "spot_size", 0.0)),
         spot_blend=float(getattr(light, "spot_blend", 0.0)),
     )
+
+
+def _area_light_geometry(shape: str, size_x: float, size_y: float, segments: int = 32):
+    """Build a planar mesh (vertices, normals, uvs, indices) for an area
+    light in the light's LOCAL space.  The mesh faces -Z (Blender's
+    convention for area-light shine direction)."""
+
+    verts: list[float] = []
+    normals: list[float] = [0.0, 0.0, -1.0]
+    uvs: list[float] = []
+    vidx: list[int] = []
+    nidx: list[int] = []
+    uidx: list[int] = []
+
+    if shape in ("SQUARE", "RECTANGLE"):
+        hx = size_x * 0.5
+        hy = size_y * 0.5
+        verts.extend([-hx, -hy, 0.0,
+                       hx, -hy, 0.0,
+                       hx,  hy, 0.0,
+                      -hx,  hy, 0.0])
+        uvs.extend([0.0, 0.0, 0.0,
+                    1.0, 0.0, 0.0,
+                    1.0, 1.0, 0.0,
+                    0.0, 1.0, 0.0])
+        # Two triangles, wound so the +Z face is the back side
+        # (single-sided emission goes out the -Z face).
+        vidx.extend([0, 2, 1,  0, 3, 2])
+        nidx.extend([0, 0, 0,  0, 0, 0])
+        uidx.extend([0, 2, 1,  0, 3, 2])
+    else:
+        # DISK / ELLIPSE — triangle fan around the centre.
+        hx = size_x * 0.5
+        hy = size_y * 0.5
+        verts.extend([0.0, 0.0, 0.0])
+        uvs.extend([0.5, 0.5, 0.0])
+        for i in range(segments):
+            theta = (i / segments) * 2.0 * math.pi
+            x = hx * math.cos(theta)
+            y = hy * math.sin(theta)
+            verts.extend([x, y, 0.0])
+            uvs.extend([0.5 + 0.5 * math.cos(theta), 0.5 + 0.5 * math.sin(theta), 0.0])
+        for i in range(segments):
+            v0 = 0
+            v1 = 1 + i
+            v2 = 1 + ((i + 1) % segments)
+            # Wound so emission goes -Z.
+            vidx.extend([v0, v2, v1])
+            nidx.extend([0, 0, 0])
+            uidx.extend([v0, v2, v1])
+
+    return verts, normals, uvs, vidx, nidx, uidx
+
+
+def _register_area_light_mesh(light_object, matrix_world, state: _ExportState) -> ObjectData | None:
+    """Materialise a Blender area light as an emissive mesh luminary.
+
+    Returns the ObjectData for the emissive surface, or None when the
+    light shape isn't a recognised area type.  The mesh + emissive
+    material are added to ``state`` so the export caller doesn't need
+    to plumb them separately.
+    """
+
+    light = light_object.data
+    shape = getattr(light, "shape", "SQUARE")
+
+    if shape == "RECTANGLE":
+        size_x, size_y = float(light.size), float(light.size_y)
+    elif shape == "ELLIPSE":
+        size_x, size_y = float(light.size), float(light.size_y)
+    else:
+        # SQUARE / DISK / anything else uses the single size.
+        size_x = size_y = float(light.size)
+
+    if size_x <= 0.0 or size_y <= 0.0:
+        return None
+
+    area = (size_x * size_y) if shape in ("SQUARE", "RECTANGLE") else math.pi * (size_x * 0.5) * (size_y * 0.5)
+    if area <= 0.0:
+        return None
+
+    # Cycles area-light energy is total radiant flux (W).  Lambertian
+    # luminary exitance M = energy / area; radiance L = M / π.
+    # The bridge's AddLambertianLuminaireMaterial multiplies the
+    # emission painter colour by π under the hood (Lambertian
+    # normalisation), so we pre-divide by π here to keep total power
+    # equal to light.energy.
+    color = list(light.color)
+    if getattr(light, "use_temperature", False):
+        temperature_color = list(light.temperature_color)
+        color[0] *= temperature_color[0]
+        color[1] *= temperature_color[1]
+        color[2] *= temperature_color[2]
+    intensity = (float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0)))) / (math.pi * area)
+    emission_color = (color[0] * intensity, color[1] * intensity, color[2] * intensity)
+
+    base_name = _safe_name(light_object.name_full)
+    emission_painter = _add_uniform_painter(state, f"{base_name}_area_emission", emission_color)
+    black_painter = _black_painter(state)
+
+    mat_name = _unique_name(state, "mat", f"{light_object.name_full}_area")
+    state.materials.append(
+        MaterialData(
+            name=mat_name,
+            model=MATERIAL_LAMBERT,
+            diffuse_painter_name=black_painter,
+            emission_painter_name=emission_painter,
+            double_sided=False,
+        )
+    )
+
+    verts, normals, uvs, vidx, nidx, uidx = _area_light_geometry(shape, size_x, size_y)
+    mesh_name = _unique_name(state, "mesh", f"{light_object.name_full}_area")
+    state.meshes.append(
+        MeshData(
+            name=mesh_name,
+            vertices=verts,
+            normals=normals,
+            uvs=uvs,
+            vertex_indices=vidx,
+            normal_indices=nidx,
+            uv_indices=uidx,
+            double_sided=False,
+            use_face_normals=False,
+        )
+    )
+
+    object_name = _unique_name(state, "obj", f"{light_object.name_full}_area")
+    obj = ObjectData(
+        name=object_name,
+        geometry_name=mesh_name,
+        material_name=mat_name,
+        transform=_flatten_matrix(matrix_world),
+        casts_shadows=True,
+        receives_shadows=True,
+        visible=True,
+    )
+    state.objects.append(obj)
+    return obj
 
 
 def _validate_mesh_payload(mesh: MeshData):
@@ -1648,7 +1877,18 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
                 }
             )
         elif original_object.type == "LIGHT":
-            lights.append(_light_payload(object_instance.object, object_instance.matrix_world.copy(), state))
+            light_data = _light_payload(object_instance.object, object_instance.matrix_world.copy(), state)
+            if light_data is not None:
+                lights.append(light_data)
+            elif object_instance.object.data.type == "AREA":
+                # Area lights become emissive mesh-luminaries so the
+                # PT integrator's NEE sees them with real falloff +
+                # soft shadows + shape-correct sampling.
+                _register_area_light_mesh(
+                    object_instance.object,
+                    object_instance.matrix_world.copy(),
+                    state,
+                )
         elif original_object.type == "VOLUME":
             _volume_object_medium(original_object, object_instance.object, object_instance.matrix_world.copy(), state)
 
