@@ -61,11 +61,55 @@ namespace RISE
 				IRasterizeSequence& seq
 				) const;
 
-			void DrawToggles( 
-				IRasterImage& image, 
-				const Rect& rc_region, 
-				const RISEColor& toggle_color, 
-				const double toggle_size 
+			//! Original "red corner-marker" tile decoration.  Kept as a
+			//! back-pocket debug viz; no production call site as of
+			//! L8 round 19 (`DimTileBorder` replaced it everywhere
+			//! that DrawToggles was previously invoked).  See
+			//! `DimTileBorder` for the rationale.
+			void DrawToggles(
+				IRasterImage& image,
+				const Rect& rc_region,
+				const RISEColor& toggle_color,
+				const double toggle_size
+				) const;
+
+			//! Tile-border dim — replaces `DrawToggles` as the per-
+			//! block "this is being rendered" visual indicator.
+			//!
+			//! Multiplies each pixel's RGB by `dim_factor` for pixels
+			//! within `border_w` of any edge of `rc_region`.  Alpha is
+			//! untouched.  The block's interior is left as-is so the
+			//! previous frame's content remains visible there — useful
+			//! when the user is watching variance reduction across
+			//! progressive passes.
+			//!
+			//! Why border instead of full-tile dim or corner markers:
+			//!   * Corner markers (the old DrawToggles) flash in then
+			//!     out unevenly as the per-pixel loop overwrites
+			//!     corners at different times; user-reported as
+			//!     visually noisy.
+			//!   * Full-tile dim loses spatial context — user can't
+			//!     see the previous frame's content while waiting for
+			//!     this block to re-render.
+			//!   * Border-only preserves the interior (variance-
+			//!     reduction reference) while still signalling "this
+			//!     block is being processed" via a ring around it.
+			//!
+			//! Cost: O(border_w × perimeter) pixel ops per block,
+			//! typically ~1000-2000 ops/block on a 64x64 block with
+			//! 5 px border, ~1 ms total over a multi-second render.
+			//! Negligible.
+			//!
+			//! Edge case: if the block is too small to support two
+			//! non-overlapping border strips (height or width <=
+			//! 2 × border_w, only happens at image edges where the
+			//! block is clipped), the whole region is dimmed.  No
+			//! double-dim from overlapping strips.
+			void DimTileBorder(
+				IRasterImage& image,
+				const Rect& rc_region,
+				unsigned int border_w,
+				double dim_factor
 				) const;
 
 			/// Renders one pass. Returns false if the progress callback

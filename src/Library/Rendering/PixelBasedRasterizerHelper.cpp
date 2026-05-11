@@ -274,6 +274,87 @@ void PixelBasedRasterizerHelper::DrawToggles( IRasterImage& image, const Rect& r
 	image.Clear( toggle_color, &rcCurrentToggle );
 }
 
+// L8 round 19 — tile-border dim.  See header doc for the design
+// rationale.  Replaces `DrawToggles` at both call sites in
+// `SPRasterizeSingleBlock` / `SPRasterizeSingleBlockOfAnimation`.
+//
+// Implementation: four non-overlapping rectangular strips covering
+// the border ring (top, bottom, left, right — left/right exclude
+// the corners which the top/bottom strips already covered).
+// Inside each strip we read the pixel, multiply RGB by dim_factor,
+// write it back.  Alpha is preserved.
+//
+// Hot-path note: we use `IRasterImage::GetPEL` / `SetPEL` rather
+// than a contiguous-buffer memcpy because the underlying pixel
+// storage differs across rasterizer implementations (RGB beauty,
+// spectral wavelength bins, FilteredFilm, FrameStore view).  The
+// per-pixel virtual dispatch is irrelevant on this code path —
+// total work is ~1000 ops/block per render, which is well below
+// noise even for a multi-thousand-block render.
+void PixelBasedRasterizerHelper::DimTileBorder(
+	IRasterImage& image,
+	const Rect& rc_region,
+	unsigned int border_w,
+	double dim_factor ) const
+{
+	const unsigned int t = rc_region.top;
+	const unsigned int b = rc_region.bottom;
+	const unsigned int l = rc_region.left;
+	const unsigned int r = rc_region.right;
+	if( b <= t || r <= l ) return;
+
+	const unsigned int H = b - t;
+	const unsigned int W = r - l;
+
+	// Per-pixel dim helper — captures `image` + `dim_factor` and
+	// applies the multiply.  Tight inner loop; compiler will inline.
+	auto dim_one = [&]( unsigned int x, unsigned int y ) {
+		RISEColor c = image.GetPEL( x, y );
+		c.base.r *= dim_factor;
+		c.base.g *= dim_factor;
+		c.base.b *= dim_factor;
+		image.SetPEL( x, y, c );
+	};
+
+	// Edge case: block too small for two non-overlapping border
+	// strips.  Happens at image edges where a block is clipped.
+	// Dim the whole clipped region — no risk of double-dimming
+	// from overlapping strips.
+	if( H <= 2 * border_w || W <= 2 * border_w ) {
+		for( unsigned int y = t; y < b; ++y ) {
+			for( unsigned int x = l; x < r; ++x ) {
+				dim_one( x, y );
+			}
+		}
+		return;
+	}
+
+	// Top strip: full width, top `border_w` rows.
+	for( unsigned int y = t; y < t + border_w; ++y ) {
+		for( unsigned int x = l; x < r; ++x ) {
+			dim_one( x, y );
+		}
+	}
+	// Bottom strip: full width, bottom `border_w` rows.
+	for( unsigned int y = b - border_w; y < b; ++y ) {
+		for( unsigned int x = l; x < r; ++x ) {
+			dim_one( x, y );
+		}
+	}
+	// Left strip: excluding top/bottom strips already done.
+	for( unsigned int y = t + border_w; y < b - border_w; ++y ) {
+		for( unsigned int x = l; x < l + border_w; ++x ) {
+			dim_one( x, y );
+		}
+	}
+	// Right strip: excluding top/bottom strips already done.
+	for( unsigned int y = t + border_w; y < b - border_w; ++y ) {
+		for( unsigned int x = r - border_w; x < r; ++x ) {
+			dim_one( x, y );
+		}
+	}
+}
+
 void* RasterizeBlock_ThreadProc( void* ptr )
 {
 	RasterizeBlockDispatcher* pDispatcher = (RasterizeBlockDispatcher*)ptr;
@@ -385,8 +466,22 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 	// observers will use the IRenderObserver chain, NOT
 	// IRasterizerOutput, and are a different code path.
 	if( !skipBlockOutput ) {
-		// Draw red toggles to show we are working on this tile
-		DrawToggles( image, rect, RISEColor( 1,0,0,1 ), 0.20 );
+		// L8 round 19 — dim a 5-pixel border around the block at
+		// 40% brightness to signal "this block is being rendered".
+		// Replaces the previous red corner-markers (`DrawToggles`):
+		//   * Border dim preserves the BLOCK INTERIOR so the user
+		//     can see previous-frame content fade away as variance
+		//     reduces across progressive passes.
+		//   * The 5-pixel ring is wide enough to be visible at
+		//     typical viewport zoom levels without occluding much
+		//     of the interior; the 0.4 dim factor gives strong
+		//     visual contrast against full-brightness rendered
+		//     pixels without crushing the previous-frame content
+		//     to black.
+		//   * Per-block cost: O(border_w × perimeter) ≈ ~1000
+		//     pixel ops on a 64x64 block, well below noise on a
+		//     multi-second render.
+		DimTileBorder( image, rect, 5, 0.4 );
 
 		RasterizerOutputListType::const_iterator	r, s;
 		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
@@ -619,12 +714,15 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 		}
 	}
 
-	// L6e-1.1 — DrawToggles + in-progress observer dispatch inside
-	// the bracket; see SPRasterizeSingleBlock for rationale.
+	// L6e-1.1 — block-border dim + in-progress observer dispatch
+	// inside the bracket; see SPRasterizeSingleBlock for rationale.
+	// L8 round 19 — `DrawToggles` replaced with `DimTileBorder`;
+	// preserves the variable name `drewToggles` for downstream gate
+	// reuse but the actual visual is now a 5-pixel border dim.
 	const bool drewToggles =
 		( !skipBlockOutput && framedata.field == FIELD_BOTH );
 	if( drewToggles ) {
-		DrawToggles( image, rect, RISEColor( 1,0,0,1 ), 0.20 );
+		DimTileBorder( image, rect, 5, 0.4 );
 
 		RasterizerOutputListType::const_iterator	r, s;
 		for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
@@ -633,7 +731,7 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 	}
 
 	// L6e-3 follow-up — split bracket so direct-FrameStore observers
-	// (post-L6e-2 bound VFS) see the toggle-marked content briefly
+	// (post-L6e-2 bound VFS) see the border-dimmed content briefly
 	// before per-pixel writes overwrite it.  See SPRasterizeSingleBlock
 	// for the rationale; this is the animation-path twin.
 	// L8 round 6 — same per-rasterizer gate as the static path.
