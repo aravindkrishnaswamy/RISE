@@ -230,16 +230,67 @@ public:
     // (`RenderImageBuffer.handleOutput`) iterates only the supplied
     // bounds when downconverting RGBA16 → RGBA8, so passing the
     // tile region keeps per-tile work O(tile) rather than O(image).
-    // Round-7 P1 fix for the 4× regression vs the legacy
-    // CallbackRasterizerOutputDispatch path: the legacy dispatch
-    // also wrote ONLY the per-tile rect into its pBuffer + fired
-    // the block region-bounded; the L4b initial drop was firing
-    // RenderToBuffer(full-image-roi) on every tile callback.
     void OnTileComplete(Implementation::ViewportFrameStore* vfs,
                         const RISE::Rect& halfOpenRoi,
                         uint64_t          /*generation*/) {
         if (!vfs) return;
         std::lock_guard<std::mutex> lock(bufferMutex_);
+        EmitRegion_locked(vfs, halfOpenRoi);
+    }
+
+    // L8 round 17 — synchronous per-tile observer dispatch with
+    // try_lock on bufferMutex_.  Wired into the production VFS's
+    // SetTileCompleteCallback so the worker thread that just fired
+    // EndTile gets a chance to push the tile-decorated pixels to
+    // the UI *immediately* — specifically to make the red toggle
+    // markers (DrawToggles, painted before the per-pixel loop)
+    // visible during the round-13 split-bracket's EndTile→BeginTile
+    // window.
+    //
+    // The previous design (round 9 — bridge tileCb_ left unwired)
+    // relied on a 30 Hz polling timer to catch toggle-decorated
+    // FrameStore state, but the unlock window between split-EndTile
+    // and split-BeginTile is microseconds — a 33 ms poll almost
+    // never hits it.  Wiring this callback runs synchronously on
+    // the worker thread, so it executes *while* the tile is still
+    // unlocked.
+    //
+    // Why try_lock (not blocking lock) on bufferMutex_:
+    //   * The background pollQueue (round 16) holds bufferMutex_
+    //     during its full-image emits — ~5-20 ms per tick.  If the
+    //     worker observer blocked on bufferMutex_ while the bg poll
+    //     was running, every worker would wait ~20 ms per tile per
+    //     block.  At 100 blocks × 4 tiles per render that's
+    //     800 × 20 ms = 16 s of serialised wait — catastrophic.
+    //   * try_lock + skip-on-busy means: if the bg poll is busy
+    //     when this fires, the toggle for this tile is missed
+    //     (the bg poll will catch the FINAL pixels at its next
+    //     tick).  Probability of catching the toggle is roughly
+    //     (33 - bg_poll_duration) / 33, typically 60-85%.
+    //   * Workers don't block.  Per-tile observer cost is
+    //     ~bufferMutex_ try_lock + EmitRegion_locked (~50-100 µs
+    //     per tile) only when the lock is acquired; near-zero
+    //     when skipped.
+    //
+    // Why this doesn't re-introduce the round-1 lock inversion:
+    //   * The inversion required Worker A (in observer, holding
+    //     bufferMutex_) to wait on `shared_lock(Worker B's tile)`
+    //     while Worker B (holding its tile exclusive) waited on
+    //     bufferMutex_.  A's observer only reads A's OWN tile (the
+    //     one that just unlocked via EndTile); it never tries to
+    //     read B's tile.  So A's `shared_lock(A's tile)` succeeds
+    //     immediately (no writer holds it — A just released it),
+    //     and the cycle doesn't form.
+    //   * If A's emit path were to read multiple tiles (e.g., a
+    //     full-image emit), inversion could re-form.
+    //     `EmitRegion_locked` strictly reads only the tile passed
+    //     in `halfOpenRoi`, so the assumption holds.
+    void OnTileCompleteTry(Implementation::ViewportFrameStore* vfs,
+                           const RISE::Rect& halfOpenRoi,
+                           uint64_t          /*generation*/) {
+        if (!vfs) return;
+        std::unique_lock<std::mutex> lock(bufferMutex_, std::try_to_lock);
+        if (!lock.owns_lock()) return;  // bg poll busy, skip
         EmitRegion_locked(vfs, halfOpenRoi);
     }
 
@@ -849,26 +900,30 @@ public:
     _productionVFS = new Implementation::ViewportFrameStore();
     ViewportFrameStoreCallbacks* helper = _productionVFSCallbacks.get();
     Implementation::ViewportFrameStore* vfs = _productionVFS;
-    // L8 round 9 — tile-complete callback DELIBERATELY NOT WIRED.
-    // The previous design ran a synchronous `OnTileComplete` from
-    // every rasterizer worker thread, which acquired the helper's
-    // `bufferMutex_` for ~85 µs per tile and serialised workers
-    // across that one mutex.  Combined with the per-tile
-    // `vfs->RenderToBuffer` inside the lock (taking FrameStore
-    // shared_locks), it produced a `bufferMutex_ ↔ tile-mutex`
-    // inversion when two worker blocks landed on the same FrameStore
-    // tile.
+    // L8 round 9 / 17 — Tile-complete callback wired to a
+    // try_lock-protected synchronous emit (round 17), restoring
+    // per-tile red-toggle visibility that round 9's unwired
+    // tile-callback design + 30 Hz polling could not deliver
+    // (the toggle "unlock window" between the round-13
+    // split-bracket's EndTile-all and BeginTile-all is microseconds,
+    // versus the 33 ms poll interval — almost never caught).
     //
-    // Lockless replacement: the UI thread (the Swift
-    // `RenderViewModel`'s display Timer at 30 Hz) calls
-    // `-pollProductionVFS` on every tick.  That method routes to
-    // `helper->PollAndEmitIfDirty(vfs)`, which compares
-    // `vfs->Generation()` against the last-emitted sentinel and
-    // re-emits the full image only when the generation advances.
-    // Workers never block on the bridge; their per-tile EndTile
-    // calls just bump the atomic generation counter inside
-    // `FrameStore`.  See `PollAndEmitIfDirty` header doc for the
-    // full architecture rationale.
+    // The synchronous callback runs on the rasterizer worker thread,
+    // immediately after the tile's exclusive lock has been released.
+    // It TRY-locks the helper's `bufferMutex_` so a concurrent
+    // background-queue poll can't make the worker block; on a
+    // try-lock miss it simply returns and the bg poll will pick the
+    // tile up at the next 33 ms tick (the toggle visualisation for
+    // that specific tile is lost in that case, but per-block partial
+    // updates and end-of-block final pixels are unaffected).  The
+    // emit reads ONLY the just-released tile's region — no
+    // cross-tile reads, so the round-1 `bufferMutex_ ↔ tile-mutex`
+    // inversion can't re-form.  See `OnTileCompleteTry` doc for
+    // the full rationale.
+    vfs->SetTileCompleteCallback(
+        [helper, vfs](const RISE::Rect& roi, uint64_t gen) {
+            helper->OnTileCompleteTry(vfs, roi, gen);
+        });
     vfs->SetFrameCompleteCallback(
         [helper, vfs](unsigned int frame, uint64_t gen) {
             helper->OnFrameComplete(vfs, frame, gen);
