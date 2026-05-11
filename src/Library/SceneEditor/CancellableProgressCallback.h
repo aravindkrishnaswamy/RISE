@@ -53,6 +53,11 @@ namespace RISE
 		// IProgressCallback
 		bool Progress( const double progress, const double total ) override;
 		void SetTitle( const char* title ) override;
+		//! L8 round 15 — override `IsCancelled` so `PixelBasedRasterizerHelper`'s
+		//! intra-block cancellation check can query without publishing a
+		//! stale progress reading (which bounced the UI progress bar
+		//! backward).  Forwards to the existing atomic cancel flag.
+		bool IsCancelled() const override { return IsCancelRequested(); }
 
 	private:
 		std::atomic<IProgressCallback*> mInner;

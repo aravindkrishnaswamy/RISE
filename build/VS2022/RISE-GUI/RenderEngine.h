@@ -175,8 +175,16 @@ private:
     // halfOpenRoi == nullptr → full image; non-null → render only
     // the [y0, y1) × [x0, x1) region into m_pixelBuffer's matching
     // image-space slice.
+    //
+    // L8 round 14 — `nonBlocking` opt-in for the polling path so a
+    // slow worker block doesn't beachball the Qt GUI thread.  When
+    // true, RenderToBuffer uses `try_lock_shared` per tile and
+    // skips contended tiles; the staging buffer retains its prior
+    // contents for those tiles.  See `FrameStore::Render` doc for
+    // the architecture rationale.
     void renderViewportToBufferAndEmit_locked(unsigned int W, unsigned int H,
-                                              const RISE::Rect* halfOpenRoi);
+                                              const RISE::Rect* halfOpenRoi,
+                                              bool nonBlocking = false);
     void ensureProductionVFSAttachedToRasterizer();
 
     RISE::IJobPriv* m_job = nullptr;

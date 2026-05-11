@@ -507,33 +507,30 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlock( const RuntimeContext& r
 				}
 				lastFlush = now;
 
-				// L8 round 12 — intra-block cancellation check.
-				// Without this, a single heavy-scene block (multi-
-				// second per-pixel cost) blocks the worker for its
-				// entire duration; the `SceneEditController` adapter
-				// can't react to a pointer-move-driven cancellation
-				// until the block returns from `RasterizeBlockDispatcher::
-				// GetNextBlock`'s per-block Progress check — way too
-				// late for an interactive UX (the preview-scale ramp
-				// can't observe the cancellation pressure, so it
-				// never bumps the scale up to "drop down to lower
-				// resolution faster renders" — user's report).
+				// L8 round 12+15 — intra-block cancellation check.
+				// Heavy scenes with multi-second per-pixel blocks
+				// otherwise can't see a pointer-move cancellation
+				// until the dispatcher's per-block Progress check
+				// fires at end-of-block — way too late for an
+				// interactive UX (the preview-scale ramp can't react,
+				// so it never bumps the scale up to "drop down to
+				// lower resolution").
 				//
-				// Querying the rasterizer's progress callback at the
-				// flush cadence (every 100 ms wall clock) gives
-				// per-100-ms cancellation responsiveness regardless
-				// of how slow a single tile is.  Pass the current
-				// accumulated weighted-progress values so the bar
-				// doesn't jitter — we're only here to check the
-				// return value's cancellation semantics, not to
-				// publish a fresh progress reading.
-				if( pProgressFunc ) {
-					const double prog = mProgressTotal > 0 ? mProgressBase : 0.0;
-					const double tot  = mProgressTotal > 0 ? mProgressTotal : 1.0;
-					if( !pProgressFunc->Progress( prog, tot ) ) {
-						earlyAbort = true;
-						break;
-					}
+				// Round 15 — query `IsCancelled()` directly instead
+				// of calling `Progress(prog, tot)`.  The latter
+				// doubles as a progress publisher; passing
+				// `mProgressBase` (the dispatcher's per-pass starting
+				// value) re-reports a STALE reading that is LOWER
+				// than the dispatcher's most recent
+				// `Progress(mProgressBase + idx*weight, ...)` per-block
+				// publish.  The Swift / Qt / Kotlin progress-bar
+				// observer just sees raw `progress/total`, so the bar
+				// visibly bounced backward every 100 ms of block work
+				// — user-reported.  `IsCancelled()` is a pure query
+				// with no publish side effect.
+				if( pProgressFunc && pProgressFunc->IsCancelled() ) {
+					earlyAbort = true;
+					break;
 				}
 			}
 		}
@@ -704,16 +701,12 @@ void PixelBasedRasterizerHelper::SPRasterizeSingleBlockOfAnimation(
 				}
 				lastFlushAnim = now;
 
-				// L8 round 12 — intra-block cancellation check (anim
-				// path twin of the static path's check).  See
+				// L8 round 12+15 — intra-block cancellation check
+				// (anim path twin of the static path's check).  See
 				// SPRasterizeSingleBlock comment for rationale.
-				if( pProgressFunc ) {
-					const double prog = mProgressTotal > 0 ? mProgressBase : 0.0;
-					const double tot  = mProgressTotal > 0 ? mProgressTotal : 1.0;
-					if( !pProgressFunc->Progress( prog, tot ) ) {
-						earlyAbortAnim = true;
-						break;
-					}
+				if( pProgressFunc && pProgressFunc->IsCancelled() ) {
+					earlyAbortAnim = true;
+					break;
 				}
 			}
 		}

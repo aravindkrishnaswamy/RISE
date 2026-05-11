@@ -648,7 +648,8 @@ void RenderEngine::onProgress(double progress, double total, const std::string& 
 // `Integerize<sRGBPel,unsigned short>` (Color_Template.h:118-122)
 // truncates.  Visible impact: sub-quantum on most displays.
 void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned int H,
-                                                        const RISE::Rect* halfOpenRoi)
+                                                        const RISE::Rect* halfOpenRoi,
+                                                        bool nonBlocking)
 {
     if (W == 0 || H == 0 || !m_productionVFS) return;
 
@@ -704,13 +705,13 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
             m_productionVFS->RenderToBuffer(
                 base, static_cast<size_t>(W) * 4 * sizeof(uint16_t),
                 *halfOpenRoi,
-                TargetFormat::RGBA16F_ExtendedLinearSRGB, xf);
+                TargetFormat::RGBA16F_ExtendedLinearSRGB, xf, nonBlocking);
         } else {
             m_productionVFS->RenderToBuffer(
                 m_hdrPixelBuffer.data(),
                 static_cast<size_t>(W) * 4 * sizeof(uint16_t),
                 RISE::Rect(0, 0, H, W),
-                TargetFormat::RGBA16F_ExtendedLinearSRGB, xf);
+                TargetFormat::RGBA16F_ExtendedLinearSRGB, xf, nonBlocking);
         }
 
         // Snapshot pixels into a QByteArray for QueuedConnection
@@ -760,11 +761,11 @@ void RenderEngine::renderViewportToBufferAndEmit_locked(unsigned int W, unsigned
                         + (static_cast<size_t>(y0) * W + x0) * 4;
         m_productionVFS->RenderToBuffer(
             base, static_cast<size_t>(W) * 4,
-            *halfOpenRoi, TargetFormat::RGBA8_sRGB, xf);
+            *halfOpenRoi, TargetFormat::RGBA8_sRGB, xf, nonBlocking);
     } else {
         m_productionVFS->RenderToBuffer(
             m_pixelBuffer.data(), static_cast<size_t>(W) * 4,
-            RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf);
+            RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf, nonBlocking);
     }
 
     QImage image = buildImageFromBuffer();
@@ -840,7 +841,10 @@ void RenderEngine::pollProductionVFS()
     m_productionVFS->GetDimensions(W, H);
     if (W == 0 || H == 0) return;
     std::lock_guard<std::mutex> lock(m_bufferMutex);
-    renderViewportToBufferAndEmit_locked(W, H, nullptr);  // full image
+    // L8 round 14 — `nonBlocking=true`.  See FrameStore::Render doc;
+    // prevents the Qt GUI thread from beachballing when workers
+    // hold a slow per-pixel block's tile exclusive.
+    renderViewportToBufferAndEmit_locked(W, H, nullptr, /*nonBlocking=*/true);
     m_lastSeenGeneration = gen;
 }
 

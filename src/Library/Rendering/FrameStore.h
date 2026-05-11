@@ -217,19 +217,40 @@ namespace RISE
 			//! `roi`; rows are `dstStride` BYTES apart (not pixels).
 			//! `roi` may extend up to (Width(), Height()).
 			//!
-			//! Thread-safe: per-tile seqlock means concurrent reads
+			//! Thread-safe: per-tile shared_mutex means concurrent reads
 			//! and writes don't tear.  If a tile is being written at
-			//! the moment of read, this function spin-yields and
-			//! retries.
+			//! the moment of read, this function BLOCKS until the
+			//! writer releases the tile's exclusive lock.
 			//!
 			//! Tone curve is applied iff GetTargetFormatInfo(fmt).isLDRFixed
 			//! AND xform.toneCurve != None.  HDR float targets always
 			//! skip the tone curve (the display compositor handles it).
+			//!
+			//! L8 round 14 — `nonBlocking` parameter.
+			//!   * `false` (default): take each tile's `shared_lock`
+			//!     in blocking mode.  Concurrent writers cause this
+			//!     call to wait for the entire writer's exclusive
+			//!     hold window — fine for end-of-render encoders
+			//!     (file outputs, Save-As) that need a complete
+			//!     coherent snapshot.
+			//!   * `true`: use `try_lock_shared` per tile.  If a
+			//!     writer holds exclusive, SKIP the tile — its
+			//!     pixels in `dst` remain at whatever value the
+			//!     caller initialised them to (typically the
+			//!     previous emit's bytes).  Used by the platform
+			//!     bridges' 30 Hz progressive-update poll so a slow
+			//!     per-pixel block can't beachball the bridge: the
+			//!     poll returns fast with whatever was readable.
+			//!     Subsequent polls catch contended tiles when
+			//!     they're free (between worker flushes — see
+			//!     `PixelBasedRasterizerHelper`'s 100 ms intra-block
+			//!     flush, round 11).
 			void Render( void*                 dst,
 			             size_t                dstStride,
 			             const Rect&           roi,
 			             FrameStoreOutput::TargetFormat fmt,
-			             const FrameStoreOutput::ViewTransform& xform ) const;
+			             const FrameStoreOutput::ViewTransform& xform,
+			             bool                  nonBlocking = false ) const;
 
 			// ── metadata ──────────────────────────────────────────
 

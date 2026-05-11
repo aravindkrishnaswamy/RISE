@@ -488,11 +488,12 @@ namespace RISE
 			size_t               dstStride,
 			const Rect&          roi,
 			FrameStoreOutput::TargetFormat fmt,
-			const FrameStoreOutput::ViewTransform& xform ) const
+			const FrameStoreOutput::ViewTransform& xform,
+			bool                 nonBlocking ) const
 		{
 			FrameStore* snap = SnapshotFrameStore( chainMutex_, framestore_ );
 			if ( !snap ) return;
-			snap->Render( dst, dstStride, roi, fmt, xform );
+			snap->Render( dst, dstStride, roi, fmt, xform, nonBlocking );
 			snap->release();
 		}
 

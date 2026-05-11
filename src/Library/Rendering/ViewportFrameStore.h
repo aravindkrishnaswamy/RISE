@@ -262,12 +262,22 @@ namespace RISE
 			//! `dst` is row-major in `fmt`'s pixel layout;
 			//! `dstStride` is bytes per row.  `roi` may extend
 			//! up to (FrameStore.Width(), FrameStore.Height()).
+			//!
+			//! L8 round 14 — `nonBlocking` parameter.  When `true`,
+			//! forwarded to `FrameStore::Render` as the
+			//! `try_lock_shared` opt-in: tiles currently held
+			//! exclusive by a writer are skipped (their bytes in
+			//! `dst` are left untouched).  Used by the platform
+			//! bridges' 30 Hz polling timer so a slow per-pixel
+			//! block on a worker can't beachball the polling thread.
+			//! See `FrameStore::Render` for details.
 			void RenderToBuffer(
 				void*                dst,
 				size_t               dstStride,
 				const Rect&          roi,
 				FrameStoreOutput::TargetFormat fmt,
-				const FrameStoreOutput::ViewTransform& xform ) const;
+				const FrameStoreOutput::ViewTransform& xform,
+				bool                 nonBlocking = false ) const;
 
 			// ── Save As ───────────────────────────────────────
 			//! Encode the current FrameStore via `encoder` (typically

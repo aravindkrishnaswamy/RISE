@@ -211,7 +211,16 @@ public:
         const uint64_t gen = vfs->Generation();
         if (gen == lastSeenGeneration_) return;  // no new pixels
         std::lock_guard<std::mutex> lock(bufferMutex_);
-        EmitFullImage_locked(vfs);
+        // L8 round 14 — `nonBlocking=true`.  A slow per-pixel block
+        // on a worker can hold a tile's exclusive lock for seconds;
+        // a blocking RenderToBuffer would beachball the poll thread
+        // (which is the Mac main thread, driving the UI run loop)
+        // for that whole duration.  Non-blocking variant skips
+        // contended tiles — their staging-buffer bytes keep the
+        // previous poll's content, and the next poll within 100 ms
+        // catches them when the worker's intra-block flush
+        // (round 11) briefly releases the tile.
+        EmitFullImage_locked(vfs, /*nonBlocking=*/true);
         lastSeenGeneration_ = gen;
     }
 
@@ -382,7 +391,18 @@ private:
     //   can exceed 1.0 for highlights past SDR clip.  Consumed by
     //   a Swift CAMetalLayer with
     //   colorspace = kCGColorSpaceExtendedLinearSRGB.
-    void EmitFullImage_locked(Implementation::ViewportFrameStore* vfs) {
+    // L8 round 14 — `nonBlocking` opt-in for the polling path so a
+    // slow worker block doesn't beachball the bridge thread.  When
+    // true, RenderToBuffer uses `try_lock_shared` per tile and
+    // skips contended tiles; the staging buffer retains its prior
+    // contents for those tiles (a previous emit's bytes), and the
+    // next poll within 100 ms catches them as workers flush.
+    //
+    // Default `false` for Repaint / OnFrameComplete callers — they
+    // need a complete coherent snapshot (slider scrub, end-of-render
+    // final frame).
+    void EmitFullImage_locked(Implementation::ViewportFrameStore* vfs,
+                              bool nonBlocking = false) {
         unsigned int W = 0, H = 0;
         if (!EnsureBuffer_locked(vfs, W, H)) return;
         // L5a round-2 P2-A: same mode-snapshot pattern as
@@ -396,7 +416,7 @@ private:
         vfs->RenderToBuffer(buffer_.data(),
                             static_cast<size_t>(W) * 4 * sizeof(uint16_t),
                             RISE::Rect(0, 0, H, W),
-                            fmt, xf);
+                            fmt, xf, nonBlocking);
         FireBlock_locked(useHDR, W, H,
                          /*top=*/0, /*left=*/0,
                          /*bottom=*/H - 1, /*right=*/W - 1);

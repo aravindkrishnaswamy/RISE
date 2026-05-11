@@ -921,7 +921,8 @@ namespace RISE
 			size_t dstStride,
 			const Rect& roi,
 			TargetFormat fmt,
-			const ViewTransform& xform ) const
+			const ViewTransform& xform,
+			bool nonBlocking ) const
 		{
 			if ( !dst || !beauty_ ) return;
 
@@ -934,9 +935,8 @@ namespace RISE
 			const TargetFormatInfo& info = GetTargetFormatInfo( fmt );
 			const size_t bpp = info.bytesPerPixel;
 
-			// Iterate by tile so the seqlock works at the right
-			// granularity.  For each tile, capture seq before+after,
-			// retry on mismatch.  Pixels outside the tile-aligned
+			// Iterate by tile so the per-tile shared_mutex works at
+			// the right granularity.  Pixels outside the tile-aligned
 			// clipped region are ignored.
 			const size_t tx0 = x0 / tileEdge_;
 			const size_t ty0 = y0 / tileEdge_;
@@ -954,12 +954,21 @@ namespace RISE
 					// readers can hold this concurrently; if a
 					// writer holds the exclusive lock (BeginTile/
 					// EndTile window) we block here until they
-					// release.  std::shared_mutex provides the
-					// happens-before edges that make pixel reads
-					// data-race-free under the C++ memory model.
-					// See L1 adversarial review P1.
+					// release — UNLESS `nonBlocking` is true, in
+					// which case we try_lock_shared and SKIP the
+					// tile on contention (the caller's `dst` buffer
+					// retains whatever pixels were there before;
+					// see Render() header doc for the polling-poll
+					// use case).
 					std::shared_lock<std::shared_mutex> readLock(
-						TileLockAt( tx, ty ).mtx );
+						TileLockAt( tx, ty ).mtx, std::defer_lock );
+					if ( nonBlocking ) {
+						if ( !readLock.try_lock() ) {
+							continue;  // tile held exclusive, skip
+						}
+					} else {
+						readLock.lock();
+					}
 
 					// Copy + transform pixels in [tileX0, tileX1) × [tileY0, tileY1).
 					for ( unsigned int y = tileY0; y < tileY1; ++y ) {

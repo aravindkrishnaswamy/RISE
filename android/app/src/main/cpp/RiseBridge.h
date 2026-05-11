@@ -317,7 +317,8 @@ private:
     // can RenderToBuffer just the changed region (was: full image
     // every tile fire — ~4× regression vs legacy).  nullptr → full
     // image (used by frame-complete + setViewExposureEV scrub).
-    void onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi);
+    void onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi,
+                                     bool nonBlocking = false);
     void onProductionVFSFrameComplete();
     // L8 round 9 — lockless progressive-update poll.  Called from
     // the Kotlin Choreographer at the display refresh rate during

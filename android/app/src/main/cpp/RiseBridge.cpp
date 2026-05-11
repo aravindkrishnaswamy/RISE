@@ -464,7 +464,8 @@ void RiseBridge::ensureProductionVFSAttachedToRasterizer() {
 // area) — was a ~4× regression vs the legacy `>> 8`-of-tile path.
 // `halfOpenRoi == nullptr` → render full image (used by frame-
 // complete and exposure-scrub paths).
-void RiseBridge::onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi) {
+void RiseBridge::onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi,
+                                             bool nonBlocking) {
     if (!m_productionVFS) return;
     // GetDimensions takes chainMutex_ shared internally — safe against
     // a concurrent resolution-change reallocation in the rasterizer
@@ -511,11 +512,11 @@ void RiseBridge::onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi) {
                             + (static_cast<size_t>(emitTop) * W + emitLeft) * 4;
             m_productionVFS->RenderToBuffer(
                 base, static_cast<size_t>(W) * 4,
-                *halfOpenRoi, TargetFormat::RGBA8_sRGB, xf);
+                *halfOpenRoi, TargetFormat::RGBA8_sRGB, xf, nonBlocking);
         } else {
             m_productionVFS->RenderToBuffer(
                 m_framebuffer, static_cast<size_t>(W) * 4,
-                RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf);
+                RISE::Rect(0, 0, H, W), TargetFormat::RGBA8_sRGB, xf, nonBlocking);
         }
     }
 
@@ -567,7 +568,10 @@ void RiseBridge::pollProductionVFS() {
     if (!m_productionVFS) return;
     const uint64_t gen = m_productionVFS->Generation();
     if (gen == m_lastSeenGeneration) return;  // no new pixels
-    onProductionVFSTileComplete(nullptr);     // full-image emit
+    // L8 round 14 — `nonBlocking=true`.  See FrameStore::Render doc;
+    // prevents the Choreographer / poll path from blocking on a
+    // slow worker block's tile exclusive.
+    onProductionVFSTileComplete(nullptr, /*nonBlocking=*/true);
     m_lastSeenGeneration = gen;
 }
 
