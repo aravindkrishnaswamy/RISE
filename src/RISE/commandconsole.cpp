@@ -16,13 +16,23 @@
 // Common includes
 //
 #include <iostream>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <mutex>
+#include <thread>
+#include <vector>
 #include "../Library/RISE_API.h"
 #include "../Library/Interfaces/ILogPriv.h"
 #include "../Library/Interfaces/IOptions.h"
 #include "../Library/Interfaces/IJobPriv.h"
+#include "../Library/Interfaces/IFilm.h"
+#include "../Library/Interfaces/IScene.h"
 #include "../Library/Utilities/RTime.h"
 #include "../Library/Utilities/MediaPathLocator.h"
 #include "../Library/Parsers/StdOutProgress.h"
+#include "../Library/Rendering/ViewportFrameStore.h"
+#include "../Library/Rendering/FrameStore.h"
 
 //
 // Windows version has a windows window that shows the render progress
@@ -354,6 +364,108 @@ int main( int argc, char** argv )
 		}
 	}
 
+	// L8 perf — Optional CLI emulation of the GUI bridge's
+	// production-render setup.  Enabled by `RISE_GUI_EMUL` env var.
+	// Mimics the threading + memory pressure that the real macOS /
+	// Windows / Android bridges create around a production render:
+	//
+	//   * `ViewportFrameStore` attached to the production rasterizer
+	//     (so per-tile observer dispatches fire on the bound store).
+	//   * Per-tile tile-complete callback wired on a worker thread
+	//     (round 17 `OnTileCompleteTry`); try-locks the staging mutex
+	//     and emits ONLY the just-completed tile's region — the
+	//     just-released tile mutex is the only one this lock-iterates,
+	//     so workers can't deadlock each other.
+	//   * 30 Hz background poll thread doing the full-image emit
+	//     under the staging mutex (round 16 `PollAndEmitIfDirty`).
+	//     The full-image emit takes per-tile shared_locks on every
+	//     tile; we use the BLOCKING 5-arg `RenderToBuffer` so this
+	//     compiles on both the L8 baseline and HEAD (the post-round-14
+	//     `nonBlocking` parameter is HEAD-only).  Worst case: the
+	//     poll waits for one slow tile.  Workers themselves never
+	//     block on the staging mutex (try-lock).
+	//
+	// Disabled by default — zero impact on standard CLI use.
+	const char* envEmul = std::getenv( "RISE_GUI_EMUL" );
+	const bool guiEmulEnabled = envEmul && *envEmul;
+	Implementation::ViewportFrameStore* guiEmulVfs = nullptr;
+	std::mutex                          guiEmulBufferMutex;
+	std::vector<uint8_t>                guiEmulBuffer;
+	std::atomic<bool>                   guiEmulRunning( false );
+	std::atomic<uint64_t>               guiEmulLastSeenGen( 0 );
+	std::thread                         guiEmulPollThread;
+	unsigned int                        guiEmulW = 0;
+	unsigned int                        guiEmulH = 0;
+
+	// Function-scope lambdas — captures are stable for the lifetime
+	// of main (and of `guiEmulVfs`).  If these were declared inside
+	// the `if(pRas)` block, the SetTileCompleteCallback's reference-
+	// captured closure would become a use-after-free when the if
+	// block exited (the first such mistake crashed with SIGSEGV
+	// before any tile rendered).
+	//
+	// CRITICAL split: the region-emit (tile callback path) reads
+	// ONLY the just-completed tile's ROI; the full-emit (poll path)
+	// reads the whole image.  DO NOT call the full-emit from the
+	// per-tile worker callback — full-emit takes per-tile
+	// shared_locks across every tile, and workers holding their own
+	// tiles exclusive will block each other into a fan-out stall.
+	auto guiEmulEmitRegion = [&]( const RISE::Rect& roi ) {
+		if( !guiEmulVfs || guiEmulW == 0 || guiEmulH == 0 ) return;
+		FrameStoreOutput::ViewTransform xf;
+		guiEmulVfs->RenderToBuffer(
+			guiEmulBuffer.data(),
+			static_cast<size_t>( guiEmulW ) * 4,
+			roi,
+			FrameStoreOutput::TargetFormat::RGBA8_sRGB,
+			xf );
+	};
+	auto guiEmulEmitFull = [&]() {
+		if( !guiEmulVfs || guiEmulW == 0 || guiEmulH == 0 ) return;
+		RISE::Rect roi( 0, 0, guiEmulH, guiEmulW );
+		guiEmulEmitRegion( roi );
+	};
+
+	if( guiEmulEnabled && pJob->GetScene() )
+	{
+		const IFilm* pFilm = pJob->GetScene()->GetFilm();
+		if( pFilm ) {
+			guiEmulW = pFilm->GetWidth();
+			guiEmulH = pFilm->GetHeight();
+			guiEmulBuffer.resize( static_cast<size_t>( guiEmulW ) * guiEmulH * 4 );
+			guiEmulVfs = new Implementation::ViewportFrameStore();
+			IRasterizer* pRas = pJob->GetRasterizer();
+			if( pRas ) {
+				guiEmulVfs->Attach( pRas );
+
+				guiEmulVfs->SetTileCompleteCallback(
+					[&]( const RISE::Rect& roi, uint64_t /*gen*/ ) {
+						std::unique_lock<std::mutex> lock( guiEmulBufferMutex, std::try_to_lock );
+						if( !lock.owns_lock() ) return;
+						guiEmulEmitRegion( roi );
+					} );
+
+				guiEmulRunning.store( true, std::memory_order_release );
+				guiEmulPollThread = std::thread( [&] {
+					while( guiEmulRunning.load( std::memory_order_acquire ) ) {
+						std::this_thread::sleep_for( std::chrono::milliseconds( 33 ) );
+						if( !guiEmulVfs ) continue;
+						const uint64_t gen = guiEmulVfs->Generation();
+						if( gen == guiEmulLastSeenGen.load( std::memory_order_acquire ) ) continue;
+						std::lock_guard<std::mutex> lock( guiEmulBufferMutex );
+						guiEmulEmitFull();
+						guiEmulLastSeenGen.store( gen, std::memory_order_release );
+					}
+				} );
+
+				std::cout << "RISE_GUI_EMUL active: VFS attached @ "
+				          << guiEmulW << "x" << guiEmulH
+				          << " + 30Hz poll + region-emit tile callback"
+				          << std::endl;
+			}
+		}
+	}
+
 	char					line[8192]={0};		// <sigh>....
 
 	// Basically sit here forever
@@ -380,6 +492,18 @@ int main( int argc, char** argv )
 		if( !commandParser->ParseCommand( line, *pJob ) ) {
 			std::cout << "\"" << line << "\"" << " Unknown command or command failure" << std::endl;
 		}
+	}
+
+	// Tear down GUI emulation BEFORE releasing the job (the VFS is
+	// attached to the rasterizer, whose lifetime is the job's).
+	if( guiEmulRunning.load( std::memory_order_acquire ) ) {
+		guiEmulRunning.store( false, std::memory_order_release );
+		if( guiEmulPollThread.joinable() ) guiEmulPollThread.join();
+	}
+	if( guiEmulVfs ) {
+		guiEmulVfs->SetTileCompleteCallback( nullptr );
+		guiEmulVfs->release();
+		guiEmulVfs = nullptr;
 	}
 
 	// Delete objects

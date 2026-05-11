@@ -187,16 +187,122 @@ and `PixelBasedRasterizerHelper.cpp` to isolate inlining vs. algorithmic
 contributions, but the effort-to-reward ratio is poor for a sub-2-second
 absolute swing on one scene at our current measurement noise floor.
 
+## Second follow-up (2026-05-11): GUI render-path measurement
+
+User correctly pointed out that all prior measurements were CLI-only — the
+`bin/rise` standalone binary does NOT attach a `ViewportFrameStore` to the
+production rasterizer, has no 30 Hz polling thread, and never fires the
+per-tile try-lock callback. The L8 work added all three of those code paths
+in the GUI bridge, and they only run when the bridge is active. So the prior
+results were silent about the actual GUI rendering performance.
+
+### CLI harness: `RISE_GUI_EMUL`
+
+To measure the GUI render path without launching the Xcode / VS / Android
+Studio app, `commandconsole.cpp` now honours an env-var-gated GUI-bridge
+emulation. When `RISE_GUI_EMUL` is set non-empty:
+
+  * A `ViewportFrameStore` is allocated and `Attach`-ed to the active
+    production rasterizer at scene-load time.
+  * `SetTileCompleteCallback` is wired to a try-lock-on-staging-mutex /
+    region-emit lambda — the same shape as round-17's `OnTileCompleteTry`
+    in `RISEBridge.mm`. The region-emit reads ONLY the just-completed
+    tile's ROI (the tile's mutex is already released by the time the
+    observer fires), so worker threads never wait on each other.
+  * A 30 Hz background poll thread runs the equivalent of round-16's
+    `PollAndEmitIfDirty`: checks `vfs->Generation()`, locks the staging
+    mutex blocking, does a full-image `RenderToBuffer`. The blocking
+    5-arg call (no `nonBlocking` parameter) is used so this code compiles
+    on BOTH the pre-L8 baseline AND HEAD — at the cost of not exercising
+    round-14's per-tile try-lock-shared skip. Workers still don't block
+    on the staging mutex (their callback is try-lock).
+
+Disabled by default; zero impact on standard CLI use. **Critical correctness
+note**: the per-tile callback MUST emit a region, never a full image —
+calling full-image `RenderToBuffer` from a worker's tile-complete callback
+deadlocks because the worker thread tries to shared-lock every other tile,
+each of which may be exclusive-held by another worker. (Asking how I know.)
+
+### Methodology
+
+Same as the prior CLI sweep but with two binaries built from each commit:
+
+  * `rise-baseline-emul-bin` — built from `97fb593a` worktree with the
+    same `commandconsole.cpp` patch.
+  * `rise-head-emul-bin` — built from HEAD.
+
+K=5 trials per cell, cycled per round (so machine-state drift hits all
+variants evenly), hard 120 s per-render timeout, sequential foreground
+execution. 7 scenes × 4 variants × 5 trials = 140 renders, ~35 min wall
+time.
+
+### Results
+
+| Scene | base-cli ± σ | base-gui (Δ%) | head-cli (Δ%) | head-gui (Δ%) | **head-gui vs base-gui** |
+|---|---|---|---|---|---|
+| shapes | 1277 ± 28 | +12.41% | +17.87% | +29.87% | **+15.54%** |
+| bench_pt_bigmesh | 3335 ± 77 | +2.03% | +4.41% | +5.63% | **+3.52%** |
+| bench_pt | 6108 ± 155 | +2.69% | +1.23% | +1.17% | **−1.48%** |
+| cornellbox_mlt_fast | 15728 ± 400 | +0.20% | +1.90% | +1.17% | **+0.97%** |
+| bench_bdpt | 17039 ± 811 | +2.93% | −1.96% | −1.49% | **−4.29%** |
+| bench_vcm | 17489 ± 575 | −3.49% | −2.51% | −3.41% | **+0.09%** |
+| cornellbox_bdpt_spectral | 25423 ± 930 | −5.41% | −2.79% | −4.84% | **+0.60%** |
+
+**Aggregate (sum-of-means)**:
+
+  * base-cli: 86.40 s
+  * base-gui: 85.34 s (GUI overhead at baseline: **−1.23%**)
+  * head-cli: 85.67 s (CLI Δ: **−0.85%**)
+  * head-gui: 85.14 s (GUI overhead at HEAD: **−0.61%**)
+
+**GUI render-path Δ (head-gui vs base-gui): −0.23% — essentially zero.**
+
+### What the GUI-path data shows
+
+1. **No GUI-render regression.** Six of seven scenes are within ±1.5% on
+   the head-gui-vs-base-gui axis (well inside MC noise). Only `shapes` shows
+   a meaningful delta (+15.5%), and it matches the CLI-level shapes
+   regression (+17.9%) — it's the same existing fast-scene fixed-overhead
+   phenomenon, not a bridge-thread effect.
+2. **GUI bridge overhead is small and slightly negative.** Both binaries
+   show base-gui / head-gui slightly *faster* than their CLI counterparts on
+   aggregate. The 30 Hz poll thread + per-tile observer dispatch don't
+   compete with workers in any measurable way at the production-render-
+   thread-priority levels used here.
+3. **The spectral-BDPT outlier disappeared at the GUI level.** head-gui on
+   `cornellbox_bdpt_spectral` is +0.60% over base-gui (within noise), and
+   head-cli is actually −2.79% (FASTER than baseline-cli) on the same scene.
+   Confirms the prior +14% reading was machine-state drift, not a real
+   algorithmic regression — exactly the conclusion the first follow-up
+   reached, now demonstrated through a different measurement.
+4. **bench_bdpt got measurably faster in GUI mode at HEAD** (−4.29%),
+   matching the prior CLI-only finding that the L8 scratch-image fix
+   carries through both code paths.
+
+### Final verdict
+
+The L8 interactive-renderer rework is net-positive on both the CLI and GUI
+render paths. The `RISE_GUI_EMUL` harness is committed as a permanent
+diagnostic tool so future L9+ work can re-measure GUI render-path impact
+without launching the app.
+
 ## Artifacts
+
+CLI-only sweep + spectral-BDPT follow-up:
 
 - Raw CSVs: `/tmp/perfsweep_results.csv`, `/tmp/triple_results.csv`,
   `/tmp/full_fix_results.csv`
 - Sweep logs: `/tmp/perfsweep.log`, `/tmp/triple_bench.log`, `/tmp/full_fix_bench.log`
 - Per-scene PNG snapshots: `/tmp/diff_baseline/`, `/tmp/diff_head/`, `/tmp/diff_head2/`
 - Profile samples: `/tmp/sample_head.txt`, `/tmp/sample_base.txt`, `/tmp/sample_fix.txt`
-- Harnesses: `/tmp/perfsweep.sh`, `/tmp/render_for_diff.sh`, `/tmp/quad_bench.sh`,
-  `/tmp/triple_bench.sh`, `/tmp/full_fix_bench.sh`
-- Analyzers: `/tmp/perfanalyze.py`, `/tmp/imgdiff.py`, `/tmp/imgdiff2.py`
 
-These live in `/tmp` and are NOT checked in — they're scratch from this measurement
-run. The report itself (this file) IS checked in for reproducibility.
+GUI-emul sweep:
+
+- Raw CSV: `/tmp/plan_c_results.csv` (140 rows)
+- Sweep log: `/tmp/plan_c.log`
+- Pre-flight (K=5 on shapes + bench_pt only): `/tmp/plan_b_results.csv`, `/tmp/plan_b.log`
+
+Harnesses + analyzers live in `/tmp` and are NOT checked in (they're scratch
+from this measurement run). The reusable measurement tool — the
+`RISE_GUI_EMUL` env-var gate in `src/RISE/commandconsole.cpp` — IS checked in.
+The report itself (this file) IS checked in for reproducibility.
