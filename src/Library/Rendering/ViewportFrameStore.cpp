@@ -389,13 +389,21 @@ namespace RISE
 				external->MutableMeta().cameraExposureEV =
 					static_cast<double>( cameraExposureEV_ );
 
-				GlobalLog()->PrintEx( eLog_Event,
+				// L8 round-18d — eLog_Info (was eLog_Event).  With the
+				// interactive preview-scale path firing this message on
+				// every dim transition (4 -> 8 -> 4 -> 2 -> 1 across a
+				// single drag), the in-app log window was being spammed
+				// with one line per pass.  Demote to Info — the
+				// console / file logger still records it for debugging
+				// (eLog_All includes Info), but the user-facing window
+				// (eLog_Console = Serious | Event) hides it.
+				GlobalLog()->PrintEx( eLog_Info,
 					"ViewportFrameStore::BindFrameStore: bound to "
 					"external FrameStore %ux%u",
 					static_cast<unsigned int>( external->Width() ),
 					static_cast<unsigned int>( external->Height() ) );
 			} else {
-				GlobalLog()->PrintEx( eLog_Event,
+				GlobalLog()->PrintEx( eLog_Info,
 					"ViewportFrameStore::BindFrameStore: unbound — "
 					"reverted to internal-managed mode" );
 			}
