@@ -149,6 +149,17 @@ RenderEngine::RenderEngine(QObject* parent)
         }
         emit remainingTimeUpdated(remaining, hasEstimate);
     });
+
+    // L8 round 9 — progressive-update poll timer.  Drives the
+    // lockless `pollProductionVFS` at 30 Hz during an active
+    // render.  Started in `startRender` / `startAnimationRender`,
+    // stopped at the finish path of each.  See `pollProductionVFS`
+    // for the architecture rationale.
+    m_progressivePollTimer = new QTimer(this);
+    m_progressivePollTimer->setInterval(33);  // ~30 Hz
+    connect(m_progressivePollTimer, &QTimer::timeout, this, [this]() {
+        pollProductionVFS();
+    });
 }
 
 RenderEngine::~RenderEngine()
@@ -402,6 +413,8 @@ void RenderEngine::startRender()
         m_eta.Begin();
     }
     m_elapsedTimer->start();
+    // L8 round 9 — start the lockless progressive-update poll.
+    m_progressivePollTimer->start();
 
     // L4 round-6 P1 — QPointer guard for the queued completion
     // lambda; see ~RenderEngine() and loadScene's matching guard.
@@ -416,6 +429,11 @@ void RenderEngine::startRender()
         QMetaObject::invokeMethod(this, [guard, ok, progressCb]() {
             if (!guard) { delete progressCb; return; }
             guard->m_elapsedTimer->stop();
+            // L8 round 9 — stop the progressive-update poll + run
+            // one final poll to flush any generation bumps between
+            // the last 30 Hz tick and the OnFrameComplete fire.
+            guard->m_progressivePollTimer->stop();
+            guard->pollProductionVFS();
             guard->m_job->SetProgress(nullptr);
             delete progressCb;
 
@@ -472,6 +490,8 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
         m_eta.Begin();
     }
     m_elapsedTimer->start();
+    // L8 round 9 — start the lockless progressive-update poll.
+    m_progressivePollTimer->start();
 
     // L4 round-6 P1 — QPointer guard for the queued completion lambda.
     QPointer<RenderEngine> guard(this);
@@ -490,6 +510,11 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
         QMetaObject::invokeMethod(this, [guard, ok, progressCb]() {
             if (!guard) { delete progressCb; return; }
             guard->m_elapsedTimer->stop();
+            // L8 round 9 — stop the progressive-update poll + run
+            // one final poll to flush any generation bumps between
+            // the last 30 Hz tick and the OnFrameComplete fire.
+            guard->m_progressivePollTimer->stop();
+            guard->pollProductionVFS();
             guard->m_job->SetProgress(nullptr);
             delete progressCb;
             guard->m_productionVFSAttachedToRasterizer = false;
@@ -783,6 +808,40 @@ void RenderEngine::onProductionVFSFrameComplete()
     if (W == 0 || H == 0) return;
     std::lock_guard<std::mutex> lock(m_bufferMutex);
     renderViewportToBufferAndEmit_locked(W, H, nullptr);  // full image
+    // L8 round 9 — sync the poll sentinel so a subsequent
+    // pollProductionVFS doesn't redo the same work.
+    m_lastSeenGeneration = m_productionVFS->Generation();
+}
+
+void RenderEngine::pollProductionVFS()
+{
+    // L8 round 9 — UI-thread polling entry point.  Driven by
+    // `m_progressivePollTimer` at 30 Hz during an active render.
+    // The previous design ran a synchronous `OnTileComplete`
+    // callback from every rasterizer worker thread, acquiring
+    // `m_bufferMutex` for ~85 µs per tile + calling
+    // `renderViewportToBufferAndEmit_locked` (which takes per-tile
+    // FrameStore shared_locks).  Two workers landing on the same
+    // FrameStore tile produced a `m_bufferMutex ↔ tile-mutex`
+    // inversion that hung the render.
+    //
+    // Lockless replacement: workers no longer fire the tile
+    // callback at all (see `ensureProductionVFSAttachedToRasterizer`
+    // wiring above — `SetTileCompleteCallback` deliberately
+    // omitted).  They just bump the atomic `globalGeneration_`
+    // counter in `FrameStore` on every `EndTile`.  This method
+    // reads that counter on the Qt main thread and emits one full
+    // image when it advances.  Workers never block on the UI side.
+    if (!m_productionVFS) return;
+    const uint64_t gen = m_productionVFS->Generation();
+    if (gen == m_lastSeenGeneration) return;  // no new pixels
+
+    unsigned int W = 0, H = 0;
+    m_productionVFS->GetDimensions(W, H);
+    if (W == 0 || H == 0) return;
+    std::lock_guard<std::mutex> lock(m_bufferMutex);
+    renderViewportToBufferAndEmit_locked(W, H, nullptr);  // full image
+    m_lastSeenGeneration = gen;
 }
 
 void RenderEngine::ensureProductionVFSAttachedToRasterizer()
@@ -799,10 +858,25 @@ void RenderEngine::ensureProductionVFSAttachedToRasterizer()
         // joining the worker pool via m_job->release()), so by the
         // time any in-flight observer callback completes, `this` is
         // still valid.  See -RenderEngine() ordering rationale.
-        m_productionVFS->SetTileCompleteCallback(
-            [this](const RISE::Rect& roi, uint64_t /*gen*/) {
-                this->onProductionVFSTileComplete(roi);
-            });
+        //
+        // L8 round 9 — tile-complete callback DELIBERATELY NOT WIRED.
+        // The previous design ran a synchronous `OnTileComplete` from
+        // every rasterizer worker thread, acquiring `m_bufferMutex`
+        // for ~85 µs per tile and serialising workers across that one
+        // mutex.  Combined with the per-tile `vfs->RenderToBuffer`
+        // inside the lock (taking FrameStore shared_locks), it
+        // produced a `m_bufferMutex ↔ tile-mutex` inversion when two
+        // worker blocks landed on the same FrameStore tile.
+        //
+        // Lockless replacement: the Qt main thread's `QTimer`
+        // (`m_progressivePollTimer`, started in `startRender`) polls
+        // `vfs->Generation()` at 30 Hz on the GUI thread.  When the
+        // counter advances, `pollProductionVFS` re-emits the full
+        // image.  Workers never block on the bridge; their per-tile
+        // EndTile calls just bump the atomic generation counter
+        // inside `FrameStore`.  See `pollProductionVFS` impl below
+        // and `ViewportFrameStoreCallbacks::PollAndEmitIfDirty`
+        // header doc (RISEBridge.mm) for the full architecture.
         m_productionVFS->SetFrameCompleteCallback(
             [this](unsigned int /*frame*/, uint64_t /*gen*/) {
                 this->onProductionVFSFrameComplete();

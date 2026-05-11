@@ -254,6 +254,15 @@ final class RenderViewModel: ObservableObject {
     private let imageBuffer = RenderImageBuffer()
     private var renderStartTime: Date? = nil
     private var displayTimer: Timer? = nil
+    /// L8 round 9 — drives the lockless progressive-update path.
+    /// Worker threads no longer fire per-tile observer callbacks
+    /// into the bridge; instead this Timer polls the production
+    /// VFS's atomic generation counter at ~30 Hz on the main run
+    /// loop.  When the counter advances the bridge emits one
+    /// full-image refresh.  Started in startRender / start*Render,
+    /// invalidated in finishRender + cancel paths.  ~5 ms work
+    /// per tick when dirty; ~10 ns when nothing has changed.
+    private var progressivePollTimer: Timer? = nil
     private var renderTask: Task<Void, Never>? = nil
 
     private static let maxLogMessages = 10000
@@ -665,6 +674,28 @@ final class RenderViewModel: ObservableObject {
             }
         }
 
+        // L8 round 9 — progressive-update Timer.  Drives the
+        // lockless polling path: every ~33 ms (30 Hz) we call
+        // `bridge.pollProductionVFS`, which checks the production
+        // VFS's atomic generation counter and emits a full-image
+        // refresh only when workers have produced new pixels.
+        // Workers no longer fire per-tile observer callbacks into
+        // the bridge (round-9 design), so this Timer is the sole
+        // driver of progressive updates during a render.
+        //
+        // Timer fires on the main run loop — fine for the polling
+        // (atomic load + compare is ~10 ns when nothing has changed,
+        // a one-shot emit when dirty).  The emit-when-dirty path
+        // does the per-pixel encode + Swift block dispatch in
+        // ~5 ms at 800x600, well under the 33 ms tick budget.
+        //
+        // Invalidated in the renderTask's finishRender block below.
+        let bridgeForPoll = bridge
+        progressivePollTimer = Timer.scheduledTimer(
+            withTimeInterval: 1.0 / 30.0, repeats: true) { _ in
+            bridgeForPoll.pollProductionVFS()
+        }
+
         let cancelRef = cancelFlag
         let bridgeForProgress = bridge
         bridge.setProgressBlock { [weak self] (prog: Double, total: Double, title: String) -> Bool in
@@ -717,6 +748,16 @@ final class RenderViewModel: ObservableObject {
                 self.renderTask = nil
                 self.displayTimer?.invalidate()
                 self.displayTimer = nil
+                // L8 round 9 — stop the progressive-update poll.
+                // The final OnFrameComplete observer (which still
+                // fires from the rasterizer's main thread) has
+                // already emitted the last image bytes, BUT we
+                // poll one more time below to guarantee any
+                // generation bumps between the last 30 Hz tick and
+                // the OnFrameComplete are surfaced too.
+                self.progressivePollTimer?.invalidate()
+                self.progressivePollTimer = nil
+                self.bridge.pollProductionVFS()
                 if let start = self.renderStartTime {
                     self.elapsedTime = Date().timeIntervalSince(start)
                 }
@@ -770,6 +811,18 @@ final class RenderViewModel: ObservableObject {
                 self.elapsedTime = Date().timeIntervalSince(start)
                 self.remainingTime = bridgeForTimer.etaRemainingSeconds()?.doubleValue
             }
+        }
+
+        // L8 round 9 — progressive-update poll for animation render.
+        // Same as `startRender`'s loop; see comment there for the
+        // architecture rationale.  Animation passes through many
+        // frames; each frame's intra-render progress refreshes the
+        // viewport via this 30 Hz poll, then the per-frame
+        // OnFrameComplete delivers the final frame bytes.
+        let bridgeForPoll = bridge
+        progressivePollTimer = Timer.scheduledTimer(
+            withTimeInterval: 1.0 / 30.0, repeats: true) { _ in
+            bridgeForPoll.pollProductionVFS()
         }
 
         let cancelRef = cancelFlag
@@ -830,6 +883,16 @@ final class RenderViewModel: ObservableObject {
                 self.renderTask = nil
                 self.displayTimer?.invalidate()
                 self.displayTimer = nil
+                // L8 round 9 — stop the progressive-update poll.
+                // The final OnFrameComplete observer (which still
+                // fires from the rasterizer's main thread) has
+                // already emitted the last image bytes, BUT we
+                // poll one more time below to guarantee any
+                // generation bumps between the last 30 Hz tick and
+                // the OnFrameComplete are surfaced too.
+                self.progressivePollTimer?.invalidate()
+                self.progressivePollTimer = nil
+                self.bridge.pollProductionVFS()
                 if let start = self.renderStartTime {
                     self.elapsedTime = Date().timeIntervalSince(start)
                 }

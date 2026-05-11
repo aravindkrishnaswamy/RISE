@@ -140,6 +140,21 @@ JNIF(void, nativeSetViewToneCurve)(JNIEnv* /*env*/, jobject /*thiz*/,
     getBridge().setViewToneCurve(static_cast<int>(curve));
 }
 
+// L8 round 9 — lockless progressive-update poll.  Called by the
+// Kotlin side's `Choreographer.postFrameCallback` loop at the
+// display refresh rate during an active render.  Reads the
+// production VFS's atomic generation counter; no-ops if the counter
+// hasn't advanced since the last poll, otherwise emits one
+// full-image refresh via the standard `onRegionInvalidated` JNI
+// path.  Workers fire NO synchronous bridge callbacks per tile;
+// they just bump the generation counter in `FrameStore::EndTile`.
+// See `RiseBridge::pollProductionVFS` impl + `RISEBridge.mm`
+// `ViewportFrameStoreCallbacks::PollAndEmitIfDirty` (architecture
+// spec) for the full rationale.
+JNIF(void, nativePollProductionVFS)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    getBridge().pollProductionVFS();
+}
+
 JNIF(jboolean, nativeSaveAs)(JNIEnv* env, jobject /*thiz*/,
                              jstring jPath, jstring jFormat, jdouble ev) {
     return getBridge().saveAs(jstringToStd(env, jPath),

@@ -162,6 +162,16 @@ private:
     // complete uses full-image (once per frame, not hot).
     void onProductionVFSTileComplete(const RISE::Rect& halfOpenRoi);
     void onProductionVFSFrameComplete();
+    // L8 round 9 — lockless progressive-update poll.  Runs on the
+    // Qt main thread via `m_progressivePollTimer`; reads the
+    // production VFS's atomic generation counter and no-ops if no
+    // workers have produced new pixels since the last call.
+    // Otherwise renders the full image into the staging buffer and
+    // emits a QImage to the UI.  See `RenderEngine.cpp` impl for
+    // the deadlock-avoidance rationale (replaces the per-tile
+    // `onProductionVFSTileComplete` callback which acquired
+    // `m_bufferMutex` from every worker thread).
+    void pollProductionVFS();
     // halfOpenRoi == nullptr → full image; non-null → render only
     // the [y0, y1) × [x0, x1) region into m_pixelBuffer's matching
     // image-space slice.
@@ -228,6 +238,17 @@ private:
     // and rasterizer swaps — exactly the L4 design intent (§7.5).
     RISE::Implementation::ViewportFrameStore* m_productionVFS = nullptr;
     bool                                      m_productionVFSAttachedToRasterizer = false;
+
+    // L8 round 9 — sentinel for the lockless polling path.  Read +
+    // written ONLY on the Qt main thread (the `m_progressivePollTimer`
+    // tick handler).  Compares `vfs->Generation()` so a poll that
+    // catches no new pixels returns immediately.  See
+    // `pollProductionVFS` impl.
+    uint64_t m_lastSeenGeneration = 0;
+    // 30 Hz timer driving the progressive-update poll.  Started in
+    // `startRender` / `startAnimationRender`, stopped in the finish
+    // path of each.
+    QTimer*  m_progressivePollTimer = nullptr;
 
     // Live exposure-EV (atomic for cross-thread reads from the VFS
     // callback path on rasterizer workers vs setter calls from the

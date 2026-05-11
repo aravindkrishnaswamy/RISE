@@ -298,6 +298,14 @@ private:
     RISE::Implementation::ViewportFrameStore* m_productionVFS = nullptr;
     RISE::Implementation::ViewportFrameStore* m_interactiveVFS = nullptr;
     bool                                      m_productionVFSAttachedToRasterizer = false;
+    // L8 round 9 — sentinel for the lockless progressive-update
+    // polling path.  Read + written ONLY from `pollProductionVFS`
+    // (Kotlin Choreographer thread; see MainActivity JNI wiring)
+    // and from `onProductionVFSFrameComplete` (rasterizer main
+    // thread, fires once per render).  These do not overlap in
+    // practice — the Choreographer poll quiesces well before
+    // OnFrameComplete fires the final emit — so no atomic is needed.
+    uint64_t                                  m_lastSeenGeneration = 0;
     std::atomic<double>                       m_viewExposureEV{0.0};
 
     // L5e — LDR view tone curve.  Default 2 = ACES; matches the
@@ -311,6 +319,14 @@ private:
     // image (used by frame-complete + setViewExposureEV scrub).
     void onProductionVFSTileComplete(const RISE::Rect* halfOpenRoi);
     void onProductionVFSFrameComplete();
+    // L8 round 9 — lockless progressive-update poll.  Called from
+    // the Kotlin Choreographer at the display refresh rate during
+    // an active render.  See `pollProductionVFS` impl in
+    // RiseBridge.cpp + `ViewportFrameStoreCallbacks::PollAndEmitIfDirty`
+    // doc in RISEBridge.mm (the architecture spec).
+public:
+    void pollProductionVFS();
+private:
     // L5a round-5 — interactive VFS fires frame-complete only
     // (tile callback intentionally not bound), matching the
     // SceneEditController preview cadence.

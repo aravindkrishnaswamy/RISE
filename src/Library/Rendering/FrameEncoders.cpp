@@ -317,9 +317,14 @@ namespace RISE
 			// (Chrome 100+, Edge 100+, macOS Preview 14+) honour
 			// this and tone-map the content to the display's HDR
 			// capabilities.
-			static constexpr png_byte kCICPType[5] = { 'c', 'I', 'C', 'P', 0 };
+			// Android NDK bundles an older libpng whose
+			// `png_write_chunk` declares `chunk_name` / `data` as
+			// non-const `png_bytep` (modern libpng uses
+			// `png_const_bytep`).  Declaring the locals as plain
+			// non-const arrays satisfies both APIs.
+			png_byte cICPType[5]  = { 'c', 'I', 'C', 'P', 0 };
 			png_byte cICP_data[4] = { 9, 16, 0, 1 };
-			png_write_chunk( png_ptr, kCICPType, cICP_data, sizeof( cICP_data ) );
+			png_write_chunk( png_ptr, cICPType, cICP_data, sizeof( cICP_data ) );
 
 			// Endian fix-up — libpng expects 16-bit samples in
 			// network (big-endian) byte order.  Our `Render` produced

@@ -196,6 +196,31 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// display-side mapping).
 - (void)setViewToneCurve:(int)curve;
 
+/// L8 round 9 — UI-thread polling entry points for the lockless
+/// progressive-update path.  Call from a display Timer (~30 Hz
+/// recommended) during an active render so the on-screen image
+/// refreshes as workers produce new pixels.
+///
+/// Each call atomically reads the underlying FrameStore's
+/// generation counter (which workers bump on every EndTile) and:
+///   * No-ops if the counter hasn't changed since the last poll.
+///   * Otherwise emits a full-image `RenderToBuffer` and fires the
+///     LDR / HDR block(s) for the bound layer.
+///
+/// Cost when nothing has changed: ~10 ns (one atomic load + compare).
+/// Cost when dirty: one full-image emit (~5 ms at 800x600).
+/// Safe to call at any rate; the no-change short-circuit means
+/// over-polling is cheap.
+///
+/// Workers fire NO synchronous bridge callbacks per tile in this
+/// design — `setImageOutputBlock` / `setInteractiveImageOutputBlock`
+/// (and their HDR siblings) ONLY fire from polling here and from
+/// the end-of-render `OnFrameComplete` event.  See round-9 commit
+/// message + `ViewportFrameStoreCallbacks::PollAndEmitIfDirty`
+/// rationale in RISEBridge.mm for the full architecture.
+- (void)pollProductionVFS;
+- (void)pollInteractiveVFS;
+
 /// Save the current FrameStore contents to disk via the L2
 /// IFrameEncoder pipeline.  `formatName` is one of
 /// "PNG", "EXR", "TIFF", "HDR", "RGBEA", "TGA", "PPM" (matched

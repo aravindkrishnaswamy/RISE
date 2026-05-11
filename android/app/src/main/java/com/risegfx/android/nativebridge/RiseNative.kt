@@ -158,6 +158,24 @@ object RiseNative {
     external fun nativeSetViewToneCurve(curve: Int)
 
     /**
+     * L8 round 9 — lockless progressive-update poll.  Called from a
+     * `Choreographer.postFrameCallback` loop at the display refresh
+     * rate during an active render.  The native impl checks the
+     * production VFS's atomic generation counter and emits one
+     * full-image refresh ONLY when the counter has advanced since
+     * the previous poll.  Cost when nothing has changed: ~10 ns
+     * (one atomic load + compare).  Cost when dirty: one full-image
+     * encode (~5 ms at 800x600).
+     *
+     * Worker threads no longer fire per-tile observer callbacks
+     * across the JNI boundary; they just bump the atomic generation
+     * counter inside `FrameStore::EndTile`.  This poll is the sole
+     * driver of progressive UI updates during a render.  Safe to
+     * call at any rate; over-polling is cheap.
+     */
+    external fun nativePollProductionVFS()
+
+    /**
      * Encode the current FrameStore to a file via the L2 IFrameEncoder
      * registry.  [formatName] is one of "PNG", "EXR", "TIFF", "HDR",
      * "RGBEA", "TGA", "PPM" (case-insensitive).  [ev] applies to the

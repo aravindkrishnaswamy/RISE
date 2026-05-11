@@ -407,10 +407,26 @@ void RiseBridge::ensureProductionVFSAttachedToRasterizer() {
         // Lambda captures `this` raw; the bridge is a process-wide
         // singleton (getBridge()) — its lifetime spans the whole
         // process, so any VFS callback always finds `this` valid.
-        m_productionVFS->SetTileCompleteCallback(
-            [this](const RISE::Rect& roi, uint64_t /*gen*/) {
-                this->onProductionVFSTileComplete(&roi);
-            });
+        //
+        // L8 round 9 — tile-complete callback DELIBERATELY NOT WIRED.
+        // The previous design ran a synchronous `OnTileComplete`
+        // from every rasterizer worker thread, acquiring
+        // `m_bufferMutex` for ~85 µs per tile + calling
+        // `RenderToBuffer` inside the lock (taking FrameStore
+        // shared_locks).  Two worker blocks landing on the same
+        // FrameStore tile produced a `m_bufferMutex ↔ tile-mutex`
+        // inversion that hung the render after a handful of blocks.
+        //
+        // Lockless replacement: the Kotlin side's `Choreographer`
+        // callback (post-L8 round 9 wiring in MainActivity.kt) calls
+        // `Java_..._pollProductionVFS()` at the display refresh
+        // cadence.  That JNI hop reads `vfs->Generation()` and only
+        // does a full-image emit when the counter advances.  Workers
+        // never block on the JNI / Kotlin side; their per-tile
+        // EndTile calls just bump the atomic generation counter in
+        // FrameStore.  See `pollProductionVFS` impl below for the
+        // architecture rationale (cross-references the macOS bridge
+        // doc which is the spec).
         m_productionVFS->SetFrameCompleteCallback(
             [this](unsigned int /*frame*/, uint64_t /*gen*/) {
                 this->onProductionVFSFrameComplete();
@@ -527,6 +543,32 @@ void RiseBridge::onProductionVFSFrameComplete() {
     // Frame-complete fires once per frame (not per tile) — full-image
     // emit guarantees post-denoise / post-resolve coherence.
     onProductionVFSTileComplete(nullptr);
+    // L8 round 9 — sync the poll sentinel so a subsequent
+    // pollProductionVFS doesn't redo the same work.
+    if (m_productionVFS) {
+        m_lastSeenGeneration = m_productionVFS->Generation();
+    }
+}
+
+void RiseBridge::pollProductionVFS() {
+    // L8 round 9 — UI-thread polling entry point.  Driven by the
+    // Kotlin side's `Choreographer` callback at the display refresh
+    // cadence during an active render.  See companion comment in
+    // `ensureProductionVFSAttachedToRasterizer` for the architecture
+    // rationale; the Mac (`RISEBridge.mm`) impl is the spec.
+    //
+    // Reads `vfs->Generation()` atomically.  No-ops when the counter
+    // matches the last-emitted sentinel (workers haven't produced
+    // new pixels since the previous poll).  Otherwise routes through
+    // the same full-image emit path that `onProductionVFSFrameComplete`
+    // uses — the lock + RenderToBuffer + onRegionInvalidated JNI hop.
+    // Workers never block on this; they only bump the atomic
+    // generation counter inside `FrameStore` via `EndTile`.
+    if (!m_productionVFS) return;
+    const uint64_t gen = m_productionVFS->Generation();
+    if (gen == m_lastSeenGeneration) return;  // no new pixels
+    onProductionVFSTileComplete(nullptr);     // full-image emit
+    m_lastSeenGeneration = gen;
 }
 
 // L5a round-5 — interactive VFS lazy-create.  ONLY frame-complete

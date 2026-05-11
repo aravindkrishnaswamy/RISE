@@ -168,6 +168,51 @@ public:
         if (!vfs) return;
         std::lock_guard<std::mutex> lock(bufferMutex_);
         EmitFullImage_locked(vfs);
+        // L8 round 9 — sync the polling sentinel so a subsequent
+        // Poll() call doesn't re-emit the same generation.
+        lastSeenGeneration_ = vfs->Generation();
+    }
+
+    // L8 round 9 — Lockless progressive-update path.
+    //
+    // Replaces the synchronous per-tile `OnTileComplete` callback
+    // that previously fired from rasterizer worker threads.  That
+    // path acquired `bufferMutex_` from every worker for ~85 μs per
+    // tile and serialised them all on a single mutex.  Combined
+    // with the synchronous `vfs->RenderToBuffer` call inside the
+    // lock (which itself takes per-tile `shared_lock` on the
+    // FrameStore), it produced a `bufferMutex_ ↔ tile-mutex`
+    // inversion when two worker blocks landed in the same FrameStore
+    // tile (pre round-8 tile-alignment fix) and ~4% wall-clock
+    // overhead from observer serialisation even when no inversion
+    // fired.
+    //
+    // Post round-9: workers no longer call into the bridge from
+    // `EndTile`.  Instead, the UI thread polls `vfs->Generation()`
+    // (a `std::atomic<uint64_t>` already bumped on every EndTile)
+    // at its own cadence — typically a 30 Hz `NSTimer` driven from
+    // the Swift `RenderViewModel`.  When the generation advances,
+    // `PollAndEmitIfDirty` does a single full-frame
+    // `EmitFullImage_locked` on the UI thread.  Net properties:
+    //   * Workers: zero `bufferMutex_` contention; render time is
+    //     independent of bridge / Swift / Cocoa observer work.
+    //   * UI thread: bounded ~15% utilisation during render
+    //     (~5 ms × 30 Hz emit cost); idle when generation hasn't
+    //     advanced.
+    //   * Visual: smooth 30 fps update of the in-progress image.
+    //     Per-pixel cadence is whatever the workers produce; UI
+    //     reads at 30 Hz.
+    //
+    // No-op when `vfs` is null or its generation hasn't changed
+    // since the last call.  Safe to call repeatedly (cheap when
+    // nothing is dirty).
+    void PollAndEmitIfDirty(Implementation::ViewportFrameStore* vfs) {
+        if (!vfs) return;
+        const uint64_t gen = vfs->Generation();
+        if (gen == lastSeenGeneration_) return;  // no new pixels
+        std::lock_guard<std::mutex> lock(bufferMutex_);
+        EmitFullImage_locked(vfs);
+        lastSeenGeneration_ = gen;
     }
 
     // Tile-complete callback.  Renders ONLY the changed region into
@@ -372,6 +417,16 @@ private:
     // enum into the public bridge header.  Cast back to enum at
     // consumption inside SelectTargetFormatAndXform.
     std::atomic<int>      toneCurve_{static_cast<int>(eDisplayTransform_ACES)};
+
+    // L8 round 9 — sentinel for the lockless polling path.
+    // Read + written ONLY on the UI thread that drives Poll() — no
+    // synchronisation needed.  Initialised to 0 so the first poll
+    // unconditionally emits (matches the workers' generation, which
+    // starts at 0 too and bumps on the first EndTile).  Reset
+    // implicitly by Repaint(), which syncs to the current generation
+    // after its full-image emit so the next poll doesn't redo the
+    // same work.
+    uint64_t lastSeenGeneration_ = 0;
 };
 
 // ============================================================
@@ -698,6 +753,28 @@ public:
     _interactiveVFSCallbacks->Repaint(_interactiveVFS);
 }
 
+// L8 round 9 — UI-thread polling entry points.  Driven by the Swift
+// side's display Timer at ~30 Hz during a render.  Each call:
+//   * Reads `vfs->Generation()` (atomic, lock-free).
+//   * No-ops if the generation matches the last-emitted sentinel —
+//     workers haven't produced new pixels since the previous poll.
+//   * Otherwise acquires `bufferMutex_` (uncontended in this design
+//     — workers no longer take it during their hot path), emits one
+//     full-image RenderToBuffer + block dispatch, updates the
+//     sentinel.
+//
+// The work happens on whatever thread Swift calls from — typically
+// the main run loop driving the display Timer.  Workers never wait
+// on the bridge for observer dispatch, so wall-clock render time is
+// independent of UI / Cocoa work.  See `PollAndEmitIfDirty` header
+// doc for the architecture rationale.
+- (void)pollProductionVFS {
+    _productionVFSCallbacks->PollAndEmitIfDirty(_productionVFS);
+}
+- (void)pollInteractiveVFS {
+    _interactiveVFSCallbacks->PollAndEmitIfDirty(_interactiveVFS);
+}
+
 - (BOOL)saveAs:(NSString *)path
         format:(NSString *)formatName
     exposureEV:(double)ev {
@@ -752,10 +829,26 @@ public:
     _productionVFS = new Implementation::ViewportFrameStore();
     ViewportFrameStoreCallbacks* helper = _productionVFSCallbacks.get();
     Implementation::ViewportFrameStore* vfs = _productionVFS;
-    vfs->SetTileCompleteCallback(
-        [helper, vfs](const RISE::Rect& roi, uint64_t gen) {
-            helper->OnTileComplete(vfs, roi, gen);
-        });
+    // L8 round 9 — tile-complete callback DELIBERATELY NOT WIRED.
+    // The previous design ran a synchronous `OnTileComplete` from
+    // every rasterizer worker thread, which acquired the helper's
+    // `bufferMutex_` for ~85 µs per tile and serialised workers
+    // across that one mutex.  Combined with the per-tile
+    // `vfs->RenderToBuffer` inside the lock (taking FrameStore
+    // shared_locks), it produced a `bufferMutex_ ↔ tile-mutex`
+    // inversion when two worker blocks landed on the same FrameStore
+    // tile.
+    //
+    // Lockless replacement: the UI thread (the Swift
+    // `RenderViewModel`'s display Timer at 30 Hz) calls
+    // `-pollProductionVFS` on every tick.  That method routes to
+    // `helper->PollAndEmitIfDirty(vfs)`, which compares
+    // `vfs->Generation()` against the last-emitted sentinel and
+    // re-emits the full image only when the generation advances.
+    // Workers never block on the bridge; their per-tile EndTile
+    // calls just bump the atomic generation counter inside
+    // `FrameStore`.  See `PollAndEmitIfDirty` header doc for the
+    // full architecture rationale.
     vfs->SetFrameCompleteCallback(
         [helper, vfs](unsigned int frame, uint64_t gen) {
             helper->OnFrameComplete(vfs, frame, gen);

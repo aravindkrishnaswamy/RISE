@@ -95,6 +95,17 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     // Polling job that samples elapsed/remaining from the native estimator
     // while a render is in flight. Cancelled when the render ends.
     private var etaPollJob: Job? = null
+    // L8 round 9 — Drives the lockless progressive-update path.
+    // Worker threads no longer fire per-tile callbacks across the
+    // JNI boundary; instead this coroutine calls
+    // `RiseNative.nativePollProductionVFS()` at the display refresh
+    // cadence (~33 ms = 30 Hz).  When the production VFS's atomic
+    // generation counter has advanced, the native side emits one
+    // full-image refresh via the standard `onRegionInvalidated`
+    // JNI hop; otherwise the poll is a ~10 ns no-op.  Started in
+    // `runProductionRenderInternal` just before `nativeRasterize`,
+    // cancelled after.
+    private var progressivePollJob: Job? = null
 
     var frame by mutableStateOf<ImageBitmap?>(null)
         private set
@@ -224,11 +235,18 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
             } catch (c: CancellationException) {
                 etaPollJob?.cancel()
                 etaPollJob = null
+                // L8 round 9 — also cancel the progressive-update poll
+                // on cancellation paths so it doesn't outlive the
+                // render coroutine.
+                progressivePollJob?.cancel()
+                progressivePollJob = null
                 _state.value = RenderState.Cancelled
                 throw c
             } catch (t: Throwable) {
                 etaPollJob?.cancel()
                 etaPollJob = null
+                progressivePollJob?.cancel()
+                progressivePollJob = null
                 Log.e(TAG, "startRender failed", t)
                 _state.value = RenderState.Error(t.message ?: t::class.simpleName.orEmpty())
             }
@@ -293,9 +311,29 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
             }
         }
 
+        // L8 round 9 — drive the lockless progressive-update poll
+        // at 30 Hz.  Workers don't fire per-tile callbacks any more
+        // (see `RiseBridge::ensureProductionVFSAttachedToRasterizer`
+        // — `SetTileCompleteCallback` deliberately omitted); this
+        // is the sole driver of progressive UI updates during the
+        // render.
+        progressivePollJob = viewModelScope.launch {
+            while (isActive) {
+                RiseNative.nativePollProductionVFS()
+                delay(PROGRESSIVE_POLL_INTERVAL_MS)
+            }
+        }
+
         val ok = withContext(Dispatchers.IO) { RiseNative.nativeRasterize() }
 
         drainDirtyAndRepublish()
+
+        // L8 round 9 — stop the progressive poll + run one final
+        // poll to flush any generation bumps between the last 30 Hz
+        // tick and the OnFrameComplete fire.
+        progressivePollJob?.cancel()
+        progressivePollJob = null
+        RiseNative.nativePollProductionVFS()
 
         etaPollJob?.cancel()
         etaPollJob = null
@@ -487,5 +525,10 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         private const val TAG = "RISE-VM"
         private const val INVALIDATE_HZ = 30
         private const val ETA_POLL_INTERVAL_MS = 500L
+        // L8 round 9 — 33 ms ≈ 30 Hz, matches the typical display
+        // refresh.  Tradeoff: shorter = smoother UI update cadence
+        // + more frequent no-op polls (cheap; ~10 ns atomic load).
+        // Longer = less UI smoothness during heavy renders.
+        private const val PROGRESSIVE_POLL_INTERVAL_MS = 33L
     }
 }

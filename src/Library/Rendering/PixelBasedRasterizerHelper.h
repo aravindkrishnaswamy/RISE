@@ -158,34 +158,6 @@ namespace RISE
 			//! preview overrides to 1 for latency.
 			virtual unsigned int GetDenoiseAOVSamplesPerPixel() const;
 
-			//! L8 round 6 — Whether `SPRasterizeSingleBlock` /
-			//! `SPRasterizeSingleBlockOfAnimation` should fire the
-			//! "split bracket" pair that exposes the toggle-decorated
-			//! image to FrameStore observers BEFORE the per-pixel
-			//! writes overwrite it.
-			//!
-			//! **Default FALSE** as of L8 round 7 — the split-bracket
-			//! doubles the per-tile OnTileComplete observer dispatch
-			//! count, and each dispatch contends on the bridge's
-			//! `bufferMutex_` (the Mac bridge serialises
-			//! `RenderToBuffer` calls across all workers).  Round 7
-			//! testing showed production renders deadlocking after a
-			//! few blocks under the combined load of split-bracket
-			//! events + interactive scrub state lingering from a
-			//! prior SceneEditController pass.
-			//!
-			//! Restoring the toggle visualisation is tracked as a
-			//! follow-up — likely via a FrameStore-level periodic
-			//! "intermediate state" dispatch (one observer fire every
-			//! N ms or once per render-thread quantum) rather than
-			//! per-block.  That decouples the toggle UX from per-tile
-			//! observer load.
-			//!
-			//! Subclasses can still override to `true` to opt back
-			//! into the per-block behaviour (e.g. for diagnostic
-			//! builds that want to verify tile bracketing).
-			virtual bool ShouldFireToggleObserverEvents() const { return false; }
-
 			//! L7 — Propagate per-pixel albedo + normal data from the
 			//! `AOVBuffers` (built by `CollectFirstHitAOVs` or
 			//! per-block `Accumulate*`) into the canonical
@@ -203,6 +175,39 @@ namespace RISE
 			//! viewports, future compositing pipelines).
 			void PropagateAOVsToFrameStore_( const AOVBuffers& aov ) const;
 #endif
+
+			//! L8 round 6 / round 9 — Whether `SPRasterizeSingleBlock`
+			//! / `SPRasterizeSingleBlockOfAnimation` should fire the
+			//! "split bracket" pair that exposes the toggle-decorated
+			//! image to FrameStore observers BEFORE the per-pixel
+			//! writes overwrite it.
+			//!
+			//! **Default FALSE** as of L8 round 7+ — toggle visibility
+			//! is now restored via the platform bridges' UI-thread
+			//! polling path (see `RISEBridge.mm`
+			//! `ViewportFrameStoreCallbacks::PollAndEmitIfDirty` and
+			//! its Windows / Android peers), which reads the
+			//! production FrameStore at 30 Hz without per-tile worker
+			//! callbacks.  The old per-tile split-bracket fire path
+			//! doubled OnTileComplete observer dispatches and
+			//! serialised workers on the bridge's `bufferMutex_`,
+			//! producing a `bufferMutex_ ↔ tile-mutex` lock inversion
+			//! that hung renders.
+			//!
+			//! Subclasses can still override to `true` to opt back
+			//! into the per-block behaviour (e.g. for diagnostic
+			//! builds that want to verify tile bracketing); the
+			//! polling path is independent and would simply observe
+			//! both event streams.
+			//!
+			//! **Placement note**: this method intentionally lives
+			//! OUTSIDE the `RISE_ENABLE_OIDN` guard above — it has
+			//! nothing to do with denoising and is called from the
+			//! tile bracket regardless of OIDN availability.
+			//! Pre-round-9 it lived inside the guard, which broke
+			//! the Android build (Android does not define
+			//! `RISE_ENABLE_OIDN`).
+			virtual bool ShouldFireToggleObserverEvents() const { return false; }
 
 			/// Returns true when the pixel filter's support extends beyond
 			/// a single pixel, requiring film-based reconstruction.
