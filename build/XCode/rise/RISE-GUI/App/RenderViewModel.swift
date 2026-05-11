@@ -689,12 +689,24 @@ final class RenderViewModel: ObservableObject {
         // does the per-pixel encode + Swift block dispatch in
         // ~5 ms at 800x600, well under the 33 ms tick budget.
         //
+        // L8 round 10 — added to `.common` run-loop mode so the
+        // timer fires during user interaction (button hovers, menu
+        // tracking, scrolling).  `Timer.scheduledTimer(...)` and
+        // `RunLoop.main.add(timer, forMode: .default)` only fire in
+        // `.default` mode, which is paused during AppKit event
+        // tracking — net visible effect was "no progressive updates
+        // until I release the cancel button", which the user
+        // reported as "only the whole frame updates."  `.common`
+        // ties the timer to every mode that AppKit promotes into the
+        // common-modes set (default + tracking + modal etc.).
+        //
         // Invalidated in the renderTask's finishRender block below.
         let bridgeForPoll = bridge
-        progressivePollTimer = Timer.scheduledTimer(
-            withTimeInterval: 1.0 / 30.0, repeats: true) { _ in
+        let pollTimer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { _ in
             bridgeForPoll.pollProductionVFS()
         }
+        RunLoop.main.add(pollTimer, forMode: .common)
+        progressivePollTimer = pollTimer
 
         let cancelRef = cancelFlag
         let bridgeForProgress = bridge
@@ -815,15 +827,17 @@ final class RenderViewModel: ObservableObject {
 
         // L8 round 9 — progressive-update poll for animation render.
         // Same as `startRender`'s loop; see comment there for the
-        // architecture rationale.  Animation passes through many
-        // frames; each frame's intra-render progress refreshes the
-        // viewport via this 30 Hz poll, then the per-frame
-        // OnFrameComplete delivers the final frame bytes.
+        // architecture rationale + the round-10 .common-mode note.
+        // Animation passes through many frames; each frame's
+        // intra-render progress refreshes the viewport via this 30 Hz
+        // poll, then the per-frame OnFrameComplete delivers the
+        // final frame bytes.
         let bridgeForPoll = bridge
-        progressivePollTimer = Timer.scheduledTimer(
-            withTimeInterval: 1.0 / 30.0, repeats: true) { _ in
+        let pollTimer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { _ in
             bridgeForPoll.pollProductionVFS()
         }
+        RunLoop.main.add(pollTimer, forMode: .common)
+        progressivePollTimer = pollTimer
 
         let cancelRef = cancelFlag
         let bridgeForProgress = bridge
