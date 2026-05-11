@@ -110,6 +110,24 @@ IRasterImage& BidirectionalRasterizerBase::GetIntermediateOutputImage(
 
 	// Lazy allocation: only pay the scratch cost once we actually need
 	// to compose splats or filtered film.
+	//
+	// L8 round 10 — also reallocate when the dims have CHANGED since
+	// the previous render.  Pre-fix the dim-check was missing, so a
+	// resize-then-render sequence kept the OLD-dim scratch image
+	// alive and the `SetPEL(x, y, ...)` loop wrote out-of-bounds past
+	// its `RISEColor[oldW * oldH]` buffer.  At smaller-new-dim that's
+	// silent corruption; at larger-new-dim it's a `EXC_BAD_ACCESS`
+	// crash on the first row past `oldH` (the user-reported
+	// segmentation fault on render-after-resize).  `RISERasterImage`
+	// doesn't expose a resize helper, so a discard + re-alloc is the
+	// simplest correct fix; the scratch buffer is short-lived
+	// (one render) so the per-render alloc cost is acceptable.
+	if( pScratchImage &&
+	    ( pScratchImage->GetWidth()  != w ||
+	      pScratchImage->GetHeight() != h ) )
+	{
+		safe_release( pScratchImage );
+	}
 	if( !pScratchImage ) {
 		pScratchImage = new RISERasterImage( w, h, RISEColor( 0, 0, 0, 0 ) );
 	}
@@ -142,6 +160,16 @@ IRasterImage& BidirectionalRasterizerBase::ResolveSplatIntoScratch(
 {
 	const unsigned int w = src.GetWidth();
 	const unsigned int h = src.GetHeight();
+	// L8 round 10 — sibling of the dim-check fix in
+	// `GetIntermediateOutputImage` above.  Same `pScratchImage`
+	// cached pointer, same `SetPEL(x, y, ...)` loop, same
+	// out-of-bounds-on-resize bug if the dim-check is missing.
+	if( pScratchImage &&
+	    ( pScratchImage->GetWidth()  != w ||
+	      pScratchImage->GetHeight() != h ) )
+	{
+		safe_release( pScratchImage );
+	}
 	if( !pScratchImage ) {
 		pScratchImage = new RISERasterImage( w, h, RISEColor( 0, 0, 0, 0 ) );
 	}
