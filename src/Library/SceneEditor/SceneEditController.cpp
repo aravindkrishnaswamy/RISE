@@ -1904,6 +1904,31 @@ void SceneEditController::DoOneRenderPass()
 	// cancellation; future bugs / std::bad_alloc / etc. shouldn't
 	// strand Film at scaled dims forever, which would render the
 	// viewport at low res after a single failed pass).
+	// L8 round-18c — BUG FIX.  This RAII guard previously assigned
+	// itself via aggregate-init syntax:
+	//
+	//     restoreGuard = { sp, restW, restH, restPAR, true };
+	//
+	// That expression constructs a TEMPORARY `FilmDimRestore`
+	// (armed=true), copy-assigns it into `restoreGuard`, and then
+	// destroys the temporary at end-of-full-expression.  The
+	// temporary's destructor runs synchronously WHILE WE'RE STILL
+	// IN THE SCALE-SWAP CODE, and because the temporary's `armed`
+	// is true, it immediately calls `sp->ResizeFilm(restW, restH)`
+	// — restoring the Film to the FULL-RES dims a single line
+	// after we shrunk it.  `RasterizeScene` then reads pFilm at
+	// full-res and renders the entire 800x600 image regardless of
+	// `mPreviewScale`.
+	//
+	// User-visible symptom: low-res preview ladder never engages
+	// during fast camera rotations; the user sees only CenterOut-
+	// preempted high-res partials.  edit-diag confirmed scale=32
+	// but raster-diag showed film=800x600 on every pass.
+	//
+	// Fix: set the guard's fields individually (no temporary).
+	// Alternatively the struct could `=delete` its copy ops or
+	// take an explicit Arm() method, but field-by-field is the
+	// smallest surgical change.
 	struct FilmDimRestore {
 		IScenePriv*   sp;
 		unsigned int  w, h;
@@ -1926,7 +1951,14 @@ void SceneEditController::DoOneRenderPass()
 				const unsigned int sw = restW / scale > 0 ? restW / scale : 1;
 				const unsigned int sh = restH / scale > 0 ? restH / scale : 1;
 				sp->ResizeFilm( sw, sh, restPAR );
-				restoreGuard = { sp, restW, restH, restPAR, true };
+				// Arm the guard via field-by-field assignment — see
+				// long comment above for why aggregate-init via
+				// `restoreGuard = { ... }` was wrong.
+				restoreGuard.sp    = sp;
+				restoreGuard.w     = restW;
+				restoreGuard.h     = restH;
+				restoreGuard.pAR   = restPAR;
+				restoreGuard.armed = true;
 			}
 		}
 	}
