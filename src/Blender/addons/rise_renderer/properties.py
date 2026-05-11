@@ -403,6 +403,46 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         default=False,
     )
 
+    pixel_filter: bpy.props.EnumProperty(
+        name="Pixel Filter",
+        description="Pixel reconstruction filter (anti-aliasing kernel). Cycles defaults to Blackman-Harris ~1.5 px; we default to Gaussian 1.5 px which is close in look and supported across all RISE integrators",
+        items=(
+            ("0", "None", "No reconstruction — fastest, but aliased"),
+            ("1", "Box", "Constant kernel; fastest filtered option"),
+            ("2", "Tent", "Linear / triangle falloff"),
+            ("3", "Gaussian", "Gaussian falloff (default, closest match to Cycles)"),
+            ("4", "Mitchell-Netravali", "Mitchell B=C=1/3; sharper, slight ringing"),
+            ("5", "Catmull-Rom", "Sharpening cubic"),
+            ("6", "Cubic B-Spline", "Soft cubic"),
+            ("7", "Blackman", "Windowed-sinc, very sharp, more ringing"),
+        ),
+        default="3",
+    )
+    pixel_filter_width: bpy.props.FloatProperty(
+        name="Filter Width",
+        description="Filter kernel width in pixels (for Box/Tent/Gaussian/Blackman). Cycles default is 1.5",
+        default=1.5,
+        min=0.5,
+        max=8.0,
+        precision=2,
+    )
+    pixel_filter_param_a: bpy.props.FloatProperty(
+        name="Filter Param A",
+        description="Filter-specific parameter A: Gaussian alpha decay (default 2.0) or Mitchell B (default 1/3)",
+        default=0.0,
+        min=0.0,
+        max=10.0,
+        precision=3,
+    )
+    pixel_filter_param_b: bpy.props.FloatProperty(
+        name="Filter Param B",
+        description="Filter-specific parameter B: Mitchell C (default 1/3)",
+        default=0.0,
+        min=0.0,
+        max=10.0,
+        precision=3,
+    )
+
 
 CLASSES = (
     RISEAddonPreferences,

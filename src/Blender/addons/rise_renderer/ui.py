@@ -195,6 +195,14 @@ class RISE_RENDER_PT_output(_RISEPanel):
         prog_col.enabled = settings.progressive_enabled
         prog_col.prop(settings, "progressive_samples_per_pass")
 
+        layout.separator()
+        layout.prop(settings, "pixel_filter")
+        filter_col = layout.column()
+        filter_col.enabled = settings.pixel_filter != "0"
+        filter_col.prop(settings, "pixel_filter_width")
+        filter_col.prop(settings, "pixel_filter_param_a")
+        filter_col.prop(settings, "pixel_filter_param_b")
+
 
 class RISE_RENDER_PT_bridge(_RISEPanel):
     bl_label = "Bridge"

@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 
 
-_EXPECTED_API_VERSION = 3
+_EXPECTED_API_VERSION = 4
 
 
 class BridgeError(RuntimeError):
@@ -85,6 +85,15 @@ class _Material(ctypes.Structure):
         ("scatter_painter_name", ctypes.c_char_p),
         ("emission_painter_name", ctypes.c_char_p),
         ("double_sided", ctypes.c_int),
+        # PBR Metallic-Roughness slots
+        ("base_color_painter_name", ctypes.c_char_p),
+        ("metallic_painter_name", ctypes.c_char_p),
+        ("roughness_painter_name", ctypes.c_char_p),
+        ("specular_factor_painter_name", ctypes.c_char_p),
+        ("specular_color_painter_name", ctypes.c_char_p),
+        ("anisotropy_factor_painter_name", ctypes.c_char_p),
+        ("anisotropy_rotation_painter_name", ctypes.c_char_p),
+        ("emissive_scale", ctypes.c_double),
     ]
 
 
@@ -208,6 +217,10 @@ class _RenderSettings(ctypes.Structure):
         ("progressive_enabled", ctypes.c_int),
         ("progressive_samples_per_pass", ctypes.c_uint32),
         ("use_zsobol", ctypes.c_int),
+        ("pixel_filter", ctypes.c_uint32),
+        ("pixel_filter_width", ctypes.c_float),
+        ("pixel_filter_param_a", ctypes.c_float),
+        ("pixel_filter_param_b", ctypes.c_float),
         ("temporary_directory", ctypes.c_char_p),
     ]
 
@@ -233,6 +246,10 @@ class _Scene(ctypes.Structure):
         ("world_strength", ctypes.c_float),
         ("use_world_ambient", ctypes.c_int),
         ("global_medium_name", ctypes.c_char_p),
+        ("world_radiance_painter_name", ctypes.c_char_p),
+        ("world_radiance_scale", ctypes.c_float),
+        ("world_radiance_orientation", ctypes.c_float * 3),
+        ("world_radiance_is_background", ctypes.c_int),
     ]
 
 
@@ -420,6 +437,11 @@ class _SceneHandle:
         self.scene.world_strength = float(scene.world_strength)
         self.scene.use_world_ambient = int(scene.use_world_ambient)
         self.scene.global_medium_name = self._cstring(scene.global_medium_name)
+        self.scene.world_radiance_painter_name = self._cstring(getattr(scene, "world_radiance_painter_name", None))
+        self.scene.world_radiance_scale = float(getattr(scene, "world_radiance_scale", 1.0))
+        radiance_orientation = getattr(scene, "world_radiance_orientation", (0.0, 0.0, 0.0))
+        self.scene.world_radiance_orientation = (ctypes.c_float * 3)(*radiance_orientation)
+        self.scene.world_radiance_is_background = int(getattr(scene, "world_radiance_is_background", 1))
 
     def _cstring(self, value: str | None):
         if value is None:
@@ -506,6 +528,14 @@ class _SceneHandle:
         payload.scatter_painter_name = self._cstring(material.scatter_painter_name)
         payload.emission_painter_name = self._cstring(material.emission_painter_name)
         payload.double_sided = int(material.double_sided)
+        payload.base_color_painter_name = self._cstring(getattr(material, "base_color_painter_name", None))
+        payload.metallic_painter_name = self._cstring(getattr(material, "metallic_painter_name", None))
+        payload.roughness_painter_name = self._cstring(getattr(material, "roughness_painter_name", None))
+        payload.specular_factor_painter_name = self._cstring(getattr(material, "specular_factor_painter_name", None))
+        payload.specular_color_painter_name = self._cstring(getattr(material, "specular_color_painter_name", None))
+        payload.anisotropy_factor_painter_name = self._cstring(getattr(material, "anisotropy_factor_painter_name", None))
+        payload.anisotropy_rotation_painter_name = self._cstring(getattr(material, "anisotropy_rotation_painter_name", None))
+        payload.emissive_scale = float(getattr(material, "emissive_scale", 0.0))
         return payload
 
     def _marshal_mesh(self, mesh):
@@ -624,6 +654,10 @@ class _SceneHandle:
         payload.progressive_enabled = int(settings.progressive_enabled)
         payload.progressive_samples_per_pass = int(settings.progressive_samples_per_pass)
         payload.use_zsobol = int(settings.use_zsobol)
+        payload.pixel_filter = int(settings.pixel_filter)
+        payload.pixel_filter_width = float(settings.pixel_filter_width)
+        payload.pixel_filter_param_a = float(settings.pixel_filter_param_a)
+        payload.pixel_filter_param_b = float(settings.pixel_filter_param_b)
         payload.temporary_directory = self._cstring(settings.temporary_directory)
         return payload
 

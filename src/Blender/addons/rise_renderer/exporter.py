@@ -37,6 +37,8 @@ PHASE_HG = 1
 MEDIUM_HOMOGENEOUS = 0
 MEDIUM_HETEROGENEOUS_VDB = 1
 
+MATERIAL_PBR_METALLIC_ROUGHNESS = 3
+
 SUPPORTED_IMAGE_KINDS = {
     ".png": PAINTER_TEXTURE_PNG,
     ".exr": PAINTER_TEXTURE_EXR,
@@ -107,6 +109,10 @@ class RenderSettingsData:
     progressive_enabled: bool
     progressive_samples_per_pass: int
     use_zsobol: bool
+    pixel_filter: int
+    pixel_filter_width: float
+    pixel_filter_param_a: float
+    pixel_filter_param_b: float
     temporary_directory: str
 
 
@@ -164,6 +170,15 @@ class MaterialData:
     scatter_painter_name: str | None = None
     emission_painter_name: str | None = None
     double_sided: bool = True
+    # PBR Metallic-Roughness slots
+    base_color_painter_name: str | None = None
+    metallic_painter_name: str | None = None
+    roughness_painter_name: str | None = None
+    specular_factor_painter_name: str | None = None
+    specular_color_painter_name: str | None = None
+    anisotropy_factor_painter_name: str | None = None
+    anisotropy_rotation_painter_name: str | None = None
+    emissive_scale: float = 1.0
 
 
 @dataclass
@@ -249,6 +264,10 @@ class SceneData:
     world_strength: float
     use_world_ambient: bool
     global_medium_name: str | None = None
+    world_radiance_painter_name: str | None = None
+    world_radiance_scale: float = 1.0
+    world_radiance_orientation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    world_radiance_is_background: bool = True
     warnings: list[str] = field(default_factory=list)
 
 
@@ -586,11 +605,11 @@ def _check_principled_feature(state: _ExportState, node, material_name: str, soc
 def _warn_unsupported_principled_features(state: _ExportState, material, wrapper: PrincipledBSDFWrapper):
     node = wrapper.node_principled_bsdf
     material_name = material.name_full
+    # Anisotropy + specular tint now flow through
+    # AddPBRMetallicRoughnessMaterial so they're not warned anymore.
     _check_principled_feature(state, node, material_name, "Coat Weight", 0.0, "clearcoat")
     _check_principled_feature(state, node, material_name, "Sheen Weight", 0.0, "sheen")
     _check_principled_feature(state, node, material_name, "Subsurface Weight", 0.0, "subsurface")
-    _check_principled_feature(state, node, material_name, "Anisotropy", 0.0, "anisotropy")
-    _check_principled_feature(state, node, material_name, "Specular Tint", (0.0, 0.0, 0.0, 1.0), "specular tint")
 
 
 def _direct_bump_modifier(material, wrapper: PrincipledBSDFWrapper, state: _ExportState) -> str | None:
@@ -972,43 +991,47 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         texture_wrapper=wrapper.metallic_texture,
     )
 
+    # RISE_API_CreatePBRMetallicRoughnessMaterial squares roughness
+    # internally into the GGX alpha, so we hand it the raw roughness
+    # value (or texture) — no need to pre-square here.
     roughness = _clamp01(wrapper.roughness)
     roughness_texture = wrapper.roughness_texture if wrapper.roughness_texture and wrapper.roughness_texture.image else None
-    if roughness_texture is not None:
-        _warn_once(
-            state,
-            f"RISE currently uses roughness textures directly for GGX alpha on '{material.name_full}' instead of squaring them.",
-        )
-    alpha_value = max(roughness * roughness, 1e-4)
-    alpha_painter = _scalar_or_texture_painter(
+    roughness_painter = _scalar_or_texture_painter(
         state,
-        f"{material.name_full}_alpha",
-        alpha_value,
+        f"{material.name_full}_roughness",
+        roughness,
         texture_wrapper=roughness_texture,
     )
 
+    # Specular IOR Level slot — KHR_materials_specular `specular_factor`.
+    # Cycles' default is 0.5 which produces F0=0.04 for dielectrics; the
+    # PBR-MR factory uses `0.04 * specular_factor`, so a Cycles value of
+    # 0.5 needs to map to RISE's specular_factor=1.0.  Multiplying by 2
+    # bridges the conventions exactly.
     specular = _clamp01(wrapper.specular)
-    dielectric_f0_painter = _scalar_or_texture_painter(
+    specular_factor_painter = _scalar_or_texture_painter(
         state,
-        f"{material.name_full}_dielectric_f0",
+        f"{material.name_full}_specular_factor",
         specular,
         texture_wrapper=wrapper.specular_texture,
-        scale=0.08,
+        scale=2.0,
     )
-    diffuse_painter = _add_blend_painter(
+
+    # Anisotropy and rotation — read sockets directly because the
+    # PrincipledBSDFWrapper doesn't surface them.
+    principled_node = wrapper.node_principled_bsdf
+    anisotropy_value = _clamp01(_socket_default_float(principled_node, "Anisotropic", 0.0))
+    anisotropy_rotation_value = float(_socket_default_float(principled_node, "Anisotropic Rotation", 0.0))
+    anisotropy_factor_painter = _add_uniform_painter(
         state,
-        f"{material.name_full}_diffuse",
-        _black_painter(state),
-        base_painter,
-        metallic_painter,
-    )
-    specular_painter = _add_blend_painter(
+        f"{material.name_full}_anisotropy",
+        (anisotropy_value, anisotropy_value, anisotropy_value),
+    ) if anisotropy_value > 1e-4 else None
+    anisotropy_rotation_painter = _add_uniform_painter(
         state,
-        f"{material.name_full}_specular",
-        base_painter,
-        dielectric_f0_painter,
-        metallic_painter,
-    )
+        f"{material.name_full}_anisotropy_rotation",
+        (anisotropy_rotation_value, anisotropy_rotation_value, anisotropy_rotation_value),
+    ) if abs(anisotropy_rotation_value) > 1e-4 else None
 
     transmission_texture = wrapper.transmission_texture if wrapper.transmission_texture and wrapper.transmission_texture.image else None
     transmission = _clamp01(wrapper.transmission)
@@ -1110,17 +1133,21 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             double_sided=double_sided,
         )
     else:
-        ior_painter = _add_uniform_painter(state, f"{material.name_full}_ggx_ior", (2.45, 2.45, 2.45))
-        extinction_painter = _add_uniform_painter(state, f"{material.name_full}_ggx_ext", (3.45, 3.45, 3.45))
+        # Opaque Principled BSDF — route through
+        # RISE_API_CreatePBRMetallicRoughnessMaterial, which handles
+        # the metallic/dielectric blend, F0=0.04 dielectric Fresnel,
+        # roughness² alpha, anisotropy, and emission natively (so we
+        # don't need the Luminaire wrapper).
         payload = MaterialData(
             name=_unique_name(state, "mat", material.name_full),
-            model=MATERIAL_GGX,
-            diffuse_painter_name=diffuse_painter,
-            specular_painter_name=specular_painter,
-            alpha_x_painter_name=alpha_painter,
-            alpha_y_painter_name=alpha_painter,
-            ior_painter_name=ior_painter,
-            extinction_painter_name=extinction_painter,
+            model=MATERIAL_PBR_METALLIC_ROUGHNESS,
+            base_color_painter_name=base_painter,
+            metallic_painter_name=metallic_painter,
+            roughness_painter_name=roughness_painter,
+            specular_factor_painter_name=specular_factor_painter,
+            anisotropy_factor_painter_name=anisotropy_factor_painter,
+            anisotropy_rotation_painter_name=anisotropy_rotation_painter,
+            emissive_scale=1.0,
             emission_painter_name=emission_painter,
             double_sided=double_sided,
         )
@@ -1392,6 +1419,10 @@ def build_render_settings(scene) -> RenderSettingsData:
         progressive_enabled=bool(rise.progressive_enabled),
         progressive_samples_per_pass=int(rise.progressive_samples_per_pass),
         use_zsobol=bool(rise.use_zsobol),
+        pixel_filter=int(rise.pixel_filter),
+        pixel_filter_width=float(rise.pixel_filter_width),
+        pixel_filter_param_a=float(rise.pixel_filter_param_a),
+        pixel_filter_param_b=float(rise.pixel_filter_param_b),
         temporary_directory=str(temporary_directory),
     )
 
@@ -1424,6 +1455,95 @@ def _density_grid_name(volume_data, state: _ExportState, object_name: str) -> st
     if density_grid.name != "density":
         _warn_once(state, f"RISE uses grid '{density_grid.name}' as the density source for volume object '{object_name}'.")
     return density_grid.name
+
+
+def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, tuple[float, float, float], bool]:
+    """Walk the world's Surface output for image-based lighting.
+
+    Returns ``(painter_name, strength, orientation_xyz_radians, is_background)``.
+    ``painter_name`` is None when the world has no Environment Texture
+    backing its Background, in which case the legacy ambient-color
+    fallback applies.  The Environment Texture's Vector input is
+    intentionally ignored — RISE installs the HDRI as a spherical
+    environment with the supplied Euler orientation, so the painter
+    itself takes the raw HDR pixels.
+    """
+    if scene.world is None or not scene.world.use_nodes or scene.world.node_tree is None:
+        return None, 1.0, (0.0, 0.0, 0.0), True
+
+    output_node = _find_world_output(scene.world)
+    if output_node is None:
+        return None, 1.0, (0.0, 0.0, 0.0), True
+
+    surface_socket = _node_input(output_node, "Surface")
+    if surface_socket is None or not surface_socket.is_linked:
+        return None, 1.0, (0.0, 0.0, 0.0), True
+
+    background = surface_socket.links[0].from_node
+    if background.bl_idname != "ShaderNodeBackground":
+        _warn_once(state, "RISE only walks World Background nodes for image-based lighting; other shader chains are ignored.")
+        return None, 1.0, (0.0, 0.0, 0.0), True
+
+    strength_socket = _node_input(background, "Strength")
+    strength = float(strength_socket.default_value) if strength_socket is not None and not strength_socket.is_linked else 1.0
+
+    color_socket = _node_input(background, "Color")
+    if color_socket is None or not color_socket.is_linked:
+        return None, strength, (0.0, 0.0, 0.0), True
+
+    env_node = color_socket.links[0].from_node
+    if env_node.bl_idname != "ShaderNodeTexEnvironment":
+        _warn_once(state, "RISE only supports a direct Environment Texture into the world Background Color; other node chains fall back to the ambient approximation.")
+        return None, strength, (0.0, 0.0, 0.0), True
+
+    image = env_node.image
+    if image is None:
+        return None, strength, (0.0, 0.0, 0.0), True
+
+    if image.source != "FILE" or image.packed_file is not None:
+        _warn_once(state, "RISE only supports external file-backed Environment Textures (no packed / generated images yet).")
+        return None, strength, (0.0, 0.0, 0.0), True
+
+    filepath = _resolved_image_path(image)
+    if not filepath or not os.path.exists(filepath):
+        _warn_once(state, "RISE could not resolve the Environment Texture's image file.")
+        return None, strength, (0.0, 0.0, 0.0), True
+
+    extension = os.path.splitext(filepath)[1].lower()
+    kind = SUPPORTED_IMAGE_KINDS.get(extension)
+    if kind is None:
+        _warn_once(state, "RISE supports HDR / EXR / PNG / TIFF Environment Textures.")
+        return None, strength, (0.0, 0.0, 0.0), True
+
+    # The Environment Texture's Vector input optionally feeds through
+    # a Mapping node for rotation.  We map the Mapping node's Rotation
+    # input (Euler XYZ in radians) into RadianceMapConfig.orientation.
+    orientation = (0.0, 0.0, 0.0)
+    vector_socket = _node_input(env_node, "Vector")
+    if vector_socket is not None and vector_socket.is_linked:
+        mapping = vector_socket.links[0].from_node
+        if mapping.bl_idname == "ShaderNodeMapping":
+            rotation_socket = _node_input(mapping, "Rotation")
+            if rotation_socket is not None and not rotation_socket.is_linked:
+                rot = rotation_socket.default_value
+                orientation = (float(rot[0]), float(rot[1]), float(rot[2]))
+
+    # Image colour space — env textures are typically linear HDR /
+    # EXR, but PNG / TIFF that the user marks as a colour image must
+    # still gamma-decode on read.
+    color_space = COLOR_SPACE_LINEAR
+    if kind in (PAINTER_TEXTURE_PNG, PAINTER_TEXTURE_TIFF):
+        if not getattr(image.colorspace_settings, "is_data", False) and image.colorspace_settings.name == "sRGB":
+            color_space = COLOR_SPACE_SRGB
+
+    painter_name = _add_texture_painter(
+        state,
+        "world_radiance",
+        filepath,
+        kind,
+        color_space,
+    )
+    return painter_name, strength, orientation, True
 
 
 def _world_volume_medium(scene, state: _ExportState) -> str | None:
@@ -1552,22 +1672,22 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
                 )
             )
 
+    # World — image-based lighting takes priority; the ambient
+    # approximation is only used when no Environment Texture is
+    # configured.
+    world_radiance_painter, world_radiance_scale, world_radiance_orientation, world_radiance_is_background = \
+        _world_radiance_map(scene, state)
+
     world_color = (0.0, 0.0, 0.0)
     world_strength = 0.0
-    if render_settings.use_world_ambient and scene.world is not None:
-        if lights:
+    if world_radiance_painter is None and render_settings.use_world_ambient and scene.world is not None:
+        if scene.world.use_nodes:
             _warn_once(
                 state,
-                "RISE disables the world ambient approximation when explicit lights are present because the ambient fallback can flatten shading noticeably.",
+                "RISE reduces non-image-based world shaders to the world viewport colour for ambient approximation; plug an Environment Texture into Background.Color for proper IBL.",
             )
-        else:
-            if scene.world.use_nodes:
-                _warn_once(
-                    state,
-                    "RISE currently reduces Blender world nodes to the world viewport color for ambient approximation.",
-                )
-            world_color = _float_color3(scene.world.color)
-            world_strength = 1.0
+        world_color = _float_color3(scene.world.color)
+        world_strength = 1.0
 
     scene_data = SceneData(
         camera=camera,
@@ -1582,6 +1702,10 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
         world_strength=world_strength,
         use_world_ambient=render_settings.use_world_ambient,
         global_medium_name=global_medium_name,
+        world_radiance_painter_name=world_radiance_painter,
+        world_radiance_scale=world_radiance_scale,
+        world_radiance_orientation=world_radiance_orientation,
+        world_radiance_is_background=world_radiance_is_background,
         warnings=state.warnings,
     )
 

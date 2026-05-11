@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RISE Render Engine",
     "author": "RISE contributors",
-    "version": (0, 3, 0),
+    "version": (0, 4, 0),
     "blender": (4, 0, 0),
     "location": "Render Properties > Render Engine",
     "description": "Render Blender scenes with the Realistic Image Synthesis Engine",

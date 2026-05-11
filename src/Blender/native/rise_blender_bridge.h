@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 3
+#define RISE_BLENDER_API_VERSION 4
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,7 +50,19 @@ enum rise_blender_modifier_kind {
 enum rise_blender_material_model {
 	RISE_BLENDER_MATERIAL_LAMBERT = 0,
 	RISE_BLENDER_MATERIAL_GGX = 1,
-	RISE_BLENDER_MATERIAL_DIELECTRIC = 2
+	RISE_BLENDER_MATERIAL_DIELECTRIC = 2,
+	RISE_BLENDER_MATERIAL_PBR_METALLIC_ROUGHNESS = 3
+};
+
+enum rise_blender_pixel_filter {
+	RISE_BLENDER_PIXEL_FILTER_NONE = 0,
+	RISE_BLENDER_PIXEL_FILTER_BOX = 1,
+	RISE_BLENDER_PIXEL_FILTER_TENT = 2,
+	RISE_BLENDER_PIXEL_FILTER_GAUSSIAN = 3,
+	RISE_BLENDER_PIXEL_FILTER_MITCHELL = 4,
+	RISE_BLENDER_PIXEL_FILTER_CATMULL_ROM = 5,
+	RISE_BLENDER_PIXEL_FILTER_CUBIC_BSPLINE = 6,
+	RISE_BLENDER_PIXEL_FILTER_BLACKMAN = 7
 };
 
 enum rise_blender_phase_type {
@@ -131,6 +143,7 @@ typedef struct rise_blender_modifier {
 typedef struct rise_blender_material {
 	const char* name;
 	int model;
+	// Lambert / GGX / Dielectric slots
 	const char* diffuse_painter_name;
 	const char* specular_painter_name;
 	const char* alpha_x_painter_name;
@@ -141,6 +154,15 @@ typedef struct rise_blender_material {
 	const char* scatter_painter_name;
 	const char* emission_painter_name;
 	int double_sided;
+	// PBR Metallic-Roughness slots (KHR_materials core + KHR_materials_anisotropy)
+	const char* base_color_painter_name;
+	const char* metallic_painter_name;
+	const char* roughness_painter_name;
+	const char* specular_factor_painter_name;       // NULL = "1.0"
+	const char* specular_color_painter_name;        // NULL = "none" (untinted dielectric F0)
+	const char* anisotropy_factor_painter_name;     // NULL = "0.0"
+	const char* anisotropy_rotation_painter_name;   // NULL = "0.0"
+	double emissive_scale;
 } rise_blender_material;
 
 typedef struct rise_blender_mesh {
@@ -269,6 +291,13 @@ typedef struct rise_blender_render_settings {
 	// Sampler — Morton-indexed Sobol (blue-noise error distribution)
 	int use_zsobol;
 
+	// Pixel reconstruction filter — anti-aliasing kernel.  Default is
+	// gaussian (1.5 px); "none" matches the pre-v4 behaviour.
+	uint32_t pixel_filter;             // rise_blender_pixel_filter
+	float pixel_filter_width;          // ignored when filter is gaussian / catmull-rom / cubic_bspline / mitchell
+	float pixel_filter_param_a;        // gaussian: alpha decay (~2.0); mitchell: B; otherwise 0
+	float pixel_filter_param_b;        // mitchell: C; otherwise 0
+
 	const char* temporary_directory;
 } rise_blender_render_settings;
 
@@ -292,6 +321,15 @@ typedef struct rise_blender_scene {
 	float world_strength;
 	int use_world_ambient;
 	const char* global_medium_name;
+	// World HDRI / environment map (image-based lighting).  When
+	// world_radiance_painter_name is non-null and non-empty, the
+	// bridge installs it as the global RadianceMapConfig on the
+	// rasterizer.  The painter itself must be registered in
+	// rise_blender_scene.painters.
+	const char* world_radiance_painter_name;
+	float world_radiance_scale;
+	float world_radiance_orientation[3];    // radians
+	int world_radiance_is_background;
 } rise_blender_scene;
 
 typedef struct rise_blender_capabilities {

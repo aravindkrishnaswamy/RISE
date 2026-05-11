@@ -69,22 +69,6 @@ namespace
 		);
 	}
 
-	double linear_to_srgb_channel( const float value )
-	{
-		const double clamped = clamp_value<double>( value, 0.0, 1.0 );
-		if( clamped <= 0.0031308 ) {
-			return clamped * 12.92;
-		}
-		return 1.055 * std::pow( clamped, 1.0 / 2.4 ) - 0.055;
-	}
-
-	void linear_rgb_to_srgb( const float linear[3], double srgb[3] )
-	{
-		srgb[0] = linear_to_srgb_channel( linear[0] );
-		srgb[1] = linear_to_srgb_channel( linear[1] );
-		srgb[2] = linear_to_srgb_channel( linear[2] );
-	}
-
 	void normalize3( double value[3] )
 	{
 		const double magnitude = std::sqrt( value[0]*value[0] + value[1]*value[1] + value[2]*value[2] );
@@ -806,6 +790,57 @@ namespace
 		return false;
 	}
 
+	bool add_pbr_metallic_roughness_material(
+		RISE::IJobPriv& job,
+		const rise_blender_material& material,
+		char* error_message,
+		const size_t error_message_size
+	)
+	{
+		// AddPBRMetallicRoughnessMaterial bakes emission into the
+		// material itself, so we don't need the Luminaire wrapper
+		// here.  Painter slots default to RISE's documented sentinels
+		// when the bridge passes null: specular_factor="1.0",
+		// specular_color="none" (untinted), anisotropy_factor="0.0",
+		// anisotropy_rotation="0.0".  emissive="none" disables.
+		const char* base_color = material.base_color_painter_name;
+		const char* metallic = material.metallic_painter_name;
+		const char* roughness = material.roughness_painter_name;
+		if( !base_color || !metallic || !roughness ) {
+			write_error( error_message, error_message_size, "PBR metallic-roughness material missing base_color/metallic/roughness" );
+			return false;
+		}
+
+		const char* emissive = ( material.emission_painter_name && material.emission_painter_name[0] )
+			? material.emission_painter_name : "none";
+		const char* specular_factor = ( material.specular_factor_painter_name && material.specular_factor_painter_name[0] )
+			? material.specular_factor_painter_name : "1.0";
+		const char* specular_color = ( material.specular_color_painter_name && material.specular_color_painter_name[0] )
+			? material.specular_color_painter_name : "none";
+		const char* anisotropy_factor = ( material.anisotropy_factor_painter_name && material.anisotropy_factor_painter_name[0] )
+			? material.anisotropy_factor_painter_name : "0.0";
+		const char* anisotropy_rotation = ( material.anisotropy_rotation_painter_name && material.anisotropy_rotation_painter_name[0] )
+			? material.anisotropy_rotation_painter_name : "0.0";
+
+		if( !job.AddPBRMetallicRoughnessMaterial(
+			material.name,
+			base_color,
+			metallic,
+			roughness,
+			1.5,                              // ior — preserved for API stability, ignored
+			emissive,
+			material.emissive_scale > 0.0 ? material.emissive_scale : 1.0,
+			specular_factor,
+			specular_color,
+			anisotropy_factor,
+			anisotropy_rotation ) )
+		{
+			write_error( error_message, error_message_size, "Failed to create a PBR metallic-roughness material" );
+			return false;
+		}
+		return true;
+	}
+
 	bool add_material(
 		RISE::IJobPriv& job,
 		const rise_blender_material& material,
@@ -816,6 +851,12 @@ namespace
 		if( !material.name || !material.name[0] ) {
 			write_error( error_message, error_message_size, "Encountered a material with no name" );
 			return false;
+		}
+
+		// PBR-MR handles its own emission inside the factory — no
+		// Luminaire wrapper needed.
+		if( material.model == RISE_BLENDER_MATERIAL_PBR_METALLIC_ROUGHNESS ) {
+			return add_pbr_metallic_roughness_material( job, material, error_message, error_message_size );
 		}
 
 		if( material.emission_painter_name && material.emission_painter_name[0] ) {
@@ -925,8 +966,12 @@ namespace
 			return false;
 		}
 
-		double color[3];
-		linear_rgb_to_srgb( light.color, color );
+		// Blender's light.color is already in linear (Rec.709)
+		// primaries; pass it straight through to RISE rather than
+		// running it through the sRGB OETF (which would gamma-encode
+		// the value, then RISE — expecting linear input — would
+		// brighten mid-greys by ~47 %).
+		double color[3] = { light.color[0], light.color[1], light.color[2] };
 
 		switch( light.type )
 		{
@@ -1374,9 +1419,84 @@ namespace
 		progressive_config.samplesPerPass = std::max<uint32_t>( settings.progressive_samples_per_pass, 1u );
 	}
 
+	void build_pixel_filter_config(
+		const rise_blender_render_settings& settings,
+		RISE::PixelFilterConfig& pixel_filter_config
+	)
+	{
+		// Default everything to the RISE-internal defaults (width=1,
+		// height=1, paramA=0, paramB=0) — each branch overrides what
+		// it cares about.  Mirrors the scene-language parser at
+		// src/Library/Job.cpp:5850+.
+		const double width = settings.pixel_filter_width > 0.0f ? settings.pixel_filter_width : 1.5;
+		const double paramA = settings.pixel_filter_param_a;
+		const double paramB = settings.pixel_filter_param_b;
+		pixel_filter_config.width = width;
+		pixel_filter_config.height = width;
+		pixel_filter_config.paramA = paramA;
+		pixel_filter_config.paramB = paramB;
+
+		switch( settings.pixel_filter )
+		{
+		case RISE_BLENDER_PIXEL_FILTER_NONE:
+			pixel_filter_config.filter = "none";
+			break;
+		case RISE_BLENDER_PIXEL_FILTER_BOX:
+			pixel_filter_config.filter = "box";
+			break;
+		case RISE_BLENDER_PIXEL_FILTER_TENT:
+			pixel_filter_config.filter = "tent";
+			break;
+		case RISE_BLENDER_PIXEL_FILTER_GAUSSIAN:
+			// Gaussian takes paramA = width, paramB = alpha (decay).
+			// Default alpha 2.0 matches the typical Mitsuba / PBRT default.
+			pixel_filter_config.filter = "gaussian";
+			pixel_filter_config.paramA = width;
+			pixel_filter_config.paramB = paramB > 0.0 ? paramB : 2.0;
+			break;
+		case RISE_BLENDER_PIXEL_FILTER_MITCHELL:
+			// Mitchell-Netravali B+C standard: B = C = 1/3.
+			pixel_filter_config.filter = "mitchell-netravali";
+			pixel_filter_config.paramA = paramA > 0.0 ? paramA : 1.0 / 3.0;
+			pixel_filter_config.paramB = paramB > 0.0 ? paramB : 1.0 / 3.0;
+			break;
+		case RISE_BLENDER_PIXEL_FILTER_CATMULL_ROM:
+			pixel_filter_config.filter = "catmull-rom";
+			break;
+		case RISE_BLENDER_PIXEL_FILTER_CUBIC_BSPLINE:
+			pixel_filter_config.filter = "cubic_bspline";
+			break;
+		case RISE_BLENDER_PIXEL_FILTER_BLACKMAN:
+			pixel_filter_config.filter = "windowed_sinc_blackman";
+			break;
+		default:
+			pixel_filter_config.filter = "gaussian";
+			pixel_filter_config.paramA = width;
+			pixel_filter_config.paramB = 2.0;
+			break;
+		}
+	}
+
+	void build_radiance_map_config(
+		const rise_blender_scene& scene,
+		RISE::RadianceMapConfig& radiance_map_config
+	)
+	{
+		if( !scene.world_radiance_painter_name || !scene.world_radiance_painter_name[0] ) {
+			return;
+		}
+		radiance_map_config.name = RISE::String( scene.world_radiance_painter_name );
+		radiance_map_config.scale = scene.world_radiance_scale > 0.0f ? scene.world_radiance_scale : 1.0;
+		radiance_map_config.orientation[0] = scene.world_radiance_orientation[0];
+		radiance_map_config.orientation[1] = scene.world_radiance_orientation[1];
+		radiance_map_config.orientation[2] = scene.world_radiance_orientation[2];
+		radiance_map_config.isBackground = scene.world_radiance_is_background != 0;
+	}
+
 	bool configure_rasterizer(
 		RISE::IJobPriv& job,
 		const rise_blender_render_settings& settings,
+		const rise_blender_scene& scene,
 		char* error_message,
 		const size_t error_message_size
 	)
@@ -1406,10 +1526,10 @@ namespace
 		const RISE::OidnPrefilter oidn_prefilter = oidn_prefilter_from_int( settings.oidn_prefilter );
 
 		RISE::PixelFilterConfig pixel_filter_config;
-		pixel_filter_config.filter = "none";
-		pixel_filter_config.paramA = 0.0;
-		pixel_filter_config.paramB = 0.0;
+		build_pixel_filter_config( settings, pixel_filter_config );
+
 		RISE::RadianceMapConfig radiance_map_config;
+		build_radiance_map_config( scene, radiance_map_config );
 
 		if( settings.use_path_tracing ) {
 			// Pure path tracing — bypasses the shader-op chain and
@@ -1608,7 +1728,7 @@ extern "C" int rise_blender_render_scene(
 		return 0;
 	}
 
-	if( !configure_rasterizer( *job, *settings, error_message, error_message_size ) ) {
+	if( !configure_rasterizer( *job, *settings, *scene, error_message, error_message_size ) ) {
 		RISE::safe_release( job );
 		return 0;
 	}
