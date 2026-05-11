@@ -176,29 +176,50 @@ namespace RISE
 			void PropagateAOVsToFrameStore_( const AOVBuffers& aov ) const;
 #endif
 
-			//! L8 round 6 / round 9 — Whether `SPRasterizeSingleBlock`
+			//! L8 round 6 / 9 / 13 — Whether `SPRasterizeSingleBlock`
 			//! / `SPRasterizeSingleBlockOfAnimation` should fire the
 			//! "split bracket" pair that exposes the toggle-decorated
 			//! image to FrameStore observers BEFORE the per-pixel
 			//! writes overwrite it.
 			//!
-			//! **Default FALSE** as of L8 round 7+ — toggle visibility
-			//! is now restored via the platform bridges' UI-thread
-			//! polling path (see `RISEBridge.mm`
-			//! `ViewportFrameStoreCallbacks::PollAndEmitIfDirty` and
-			//! its Windows / Android peers), which reads the
-			//! production FrameStore at 30 Hz without per-tile worker
-			//! callbacks.  The old per-tile split-bracket fire path
-			//! doubled OnTileComplete observer dispatches and
-			//! serialised workers on the bridge's `bufferMutex_`,
-			//! producing a `bufferMutex_ ↔ tile-mutex` lock inversion
-			//! that hung renders.
+			//! **Default TRUE** as of L8 round 13 — restores the
+			//! pre-regression "red tile-corner toggles appear
+			//! immediately when a render starts" UX.
 			//!
-			//! Subclasses can still override to `true` to opt back
-			//! into the per-block behaviour (e.g. for diagnostic
-			//! builds that want to verify tile bracketing); the
-			//! polling path is independent and would simply observe
-			//! both event streams.
+			//! Timeline:
+			//!   Round 1 (original) — added the split-bracket
+			//!     EndTile→BeginTile pair after DrawToggles so
+			//!     FrameStore observers see the toggle-decorated
+			//!     image briefly before the per-pixel loop overwrites
+			//!     the red corners.
+			//!   Round 7 — defaulted FALSE to dodge a
+			//!     `bufferMutex_ ↔ tile-mutex` lock inversion that
+			//!     was caused by the bridge's synchronous per-tile
+			//!     observer dispatch holding `bufferMutex_` while
+			//!     trying to acquire a tile shared_lock.
+			//!   Round 9 — eliminated the inversion structurally:
+			//!     the platform bridges no longer wire the per-tile
+			//!     observer callback at all (production VFS's
+			//!     `tileCb_` is left null; the 30 Hz polling timer
+			//!     is the sole driver of progressive UI updates).
+			//!     Observer dispatch from EndTile becomes a no-op at
+			//!     the bridge layer.
+			//!   Round 13 — re-enable by default.  The split-bracket
+			//!     `EndTile` bumps `globalGeneration_`, which the
+			//!     bridge's poll catches within ~33 ms — the user
+			//!     sees the red toggles as soon as the block starts,
+			//!     even for heavy scenes whose per-pixel loop takes
+			//!     seconds.
+			//!
+			//! Cost: one extra mutex unlock/lock + generation bump
+			//! per tile per block — ~100 ns each on Apple Silicon,
+			//! ~1 µs total even for a 64x64 block with 4 FS tiles.
+			//! Negligible vs the per-pixel cost of ANY rendering
+			//! integrator.
+			//!
+			//! Subclasses can still override to `false` to opt out
+			//! (e.g. for benchmarks where the toggle visualisation
+			//! adds measurement noise).
 			//!
 			//! **Placement note**: this method intentionally lives
 			//! OUTSIDE the `RISE_ENABLE_OIDN` guard above — it has
@@ -207,7 +228,7 @@ namespace RISE
 			//! Pre-round-9 it lived inside the guard, which broke
 			//! the Android build (Android does not define
 			//! `RISE_ENABLE_OIDN`).
-			virtual bool ShouldFireToggleObserverEvents() const { return false; }
+			virtual bool ShouldFireToggleObserverEvents() const { return true; }
 
 			/// Returns true when the pixel filter's support extends beyond
 			/// a single pixel, requiring film-based reconstruction.
