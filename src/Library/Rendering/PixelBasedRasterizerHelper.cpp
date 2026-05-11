@@ -38,9 +38,6 @@
 #include "OIDNDenoiser.h"
 #endif
 
-#include <cstdio>      // L8 round-18 diag — std::fprintf for RISE_EDIT_DIAG
-#include <cstdlib>     // L8 round-18 diag — std::getenv for RISE_EDIT_DIAG
-
 using namespace RISE;
 using namespace RISE::Implementation;
 
@@ -876,25 +873,6 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	const unsigned int height = pFilm->GetHeight();
 
 	IRasterImage* pImage = AcquireRenderImage( width, height );
-
-	// L8 round-18 diag — env-var-gated stderr trace of the actual
-	// render dims (Film vs FrameStore vs returned image).  Confirms
-	// whether preview-scale dim swaps are reaching the rasterizer.
-	static const bool kRasterDiag = []{
-		const char* e = std::getenv( "RISE_EDIT_DIAG" );
-		return e && *e;
-	}();
-	if( kRasterDiag ) {
-		const unsigned int imgW = pImage ? pImage->GetWidth()  : 0;
-		const unsigned int imgH = pImage ? pImage->GetHeight() : 0;
-		const unsigned int fsW  = mFrameStore ?
-			static_cast<unsigned int>( mFrameStore->Width()  ) : 0;
-		const unsigned int fsH  = mFrameStore ?
-			static_cast<unsigned int>( mFrameStore->Height() ) : 0;
-		std::fprintf( stderr,
-			"[raster-diag] RasterizeScene  film=%ux%u  fs=%ux%u  img=%ux%u\n",
-			width, height, fsW, fsH, imgW, imgH );
-	}
 
 	// Allocate film buffer for wide-support pixel filter reconstruction
 	safe_release( pFilteredFilm );
