@@ -1765,7 +1765,39 @@ void SceneEditController::EnsureInteractiveFrameStore_( unsigned int width, unsi
 	FrameStoreOutput::FrameStoreSpec spec;
 	spec.width    = width;
 	spec.height   = height;
-	spec.tileEdge = 32;  // matches Job's EnsureJobFrameStore_locked
+	// L8 round 10 — interactive uses an 8-pixel FrameStore tileEdge,
+	// NOT the 32 the Job's production FrameStore uses.
+	//
+	// Why the divergence: `PixelBasedRasterizerHelper::RasterizeScene`
+	// rounds the rasterizer's adaptive block size UP to a multiple of
+	// the FrameStore's tileEdge (`AlignTileSizeToFrameStore`, round
+	// 8) to prevent two workers from competing for the same
+	// FrameStore tile.  With tileEdge=32, a preview-scale render at
+	// 100x75 (1/8 of 800x600) gets only 4x3=12 blocks — fewer
+	// cancellation checkpoints, and CenterOut leaves the outer ring
+	// of tiles unrendered when the next pointer event cancels the
+	// pass.  User-visible symptom: "only the centre of the image
+	// manages to update; edges lag" — the "low resolution drop
+	// downs" that pre-round-8 produced (small chunky tiles filling
+	// the whole image quickly) disappear, replaced by larger tiles
+	// that only the centre of the image has time to render.
+	//
+	// tileEdge=8 makes the alignment effectively a no-op for the
+	// interactive path: `ComputeTileSize` already returns multiples
+	// of 8, so the rounding doesn't change the rasterizer's block
+	// size.  100x75 at tile=8 gives ~13x10=130 blocks, which
+	// CenterOut spirals through quickly — when the user's next
+	// pointer event cancels, far more of the image has rendered.
+	// At this granularity the per-FrameStore-tile mutex still
+	// prevents data races, but blocks are small enough that two
+	// workers landing on the same FS tile briefly serialise (~8 px
+	// of work) rather than waiting for a 32x32 block to finish.
+	//
+	// Production keeps tileEdge=32 — its renders run to completion
+	// (no per-drag cancellation), and larger tiles amortise the
+	// mutex / observer-dispatch overhead better at full image
+	// resolutions.  The asymmetry is intentional.
+	spec.tileEdge = 8;
 	mInteractiveFrameStore = new Implementation::FrameStore( spec );
 	// new returns refcount 1; that's our owned reference.
 
