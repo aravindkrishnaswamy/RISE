@@ -60,6 +60,7 @@
 #include "../Utilities/RuntimeContext.h"
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>     // L8 round-18 diag — std::getenv for RISE_EDIT_DIAG
 #include <string>
 
 using namespace RISE;
@@ -369,6 +370,16 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	if( isMotionTool )
 	{
 		mPreviewScale.store( kPreviewScaleMotionStart, std::memory_order_release );
+	}
+
+	// L8 round-18 diag — log the gesture start so we can correlate
+	// adaptive-scale ramp behaviour with which tool was active.
+	if( const char* e = std::getenv( "RISE_EDIT_DIAG" ); e && *e ) {
+		std::fprintf( stderr,
+			"[edit-diag] OnPointerDown  tool=%d  isMotion=%d  scaleSet=%u\n",
+			static_cast<int>( mTool ),
+			isMotionTool ? 1 : 0,
+			mPreviewScale.load( std::memory_order_acquire ) );
 	}
 }
 
@@ -1848,6 +1859,25 @@ void SceneEditController::DoOneRenderPass()
 	// step ramping prevents oscillation.
 	const unsigned int scale = mPreviewScale.load( std::memory_order_acquire );
 
+	// L8 round-18 diag — temporary stderr trace of the adaptive
+	// scaling state at pass start.  Enabled when the env var
+	// `RISE_EDIT_DIAG` is set to a non-empty value (any non-empty
+	// string).  Used to diagnose user-reported "low-res ladder not
+	// engaging on fast rotations".  Remove once the regression is
+	// understood.
+	static const bool kEditDiag = []{
+		const char* e = std::getenv( "RISE_EDIT_DIAG" );
+		return e && *e;
+	}();
+	if( kEditDiag ) {
+		std::fprintf( stderr,
+			"[edit-diag] pass start  scale=%u  pointerDown=%d  scrub=%d  refine=%d\n",
+			scale,
+			mPointerDown.load( std::memory_order_acquire ) ? 1 : 0,
+			mScrubInProgress.load( std::memory_order_acquire ) ? 1 : 0,
+			mInRefinementPass ? 1 : 0 );
+	}
+
 	// Refresh the full-res dims cache BEFORE any swap.  This is the
 	// canonical moment when the camera is at its rest dims (the
 	// previous pass restored them, and no swap has happened yet for
@@ -2001,5 +2031,24 @@ void SceneEditController::DoOneRenderPass()
 		{
 			mPreviewScale.store( next, std::memory_order_release );
 		}
+		if( kEditDiag ) {
+			std::fprintf( stderr,
+				"[edit-diag] pass end    scale=%u  elapsed_ms=%lld  cancelled=%d  next=%u  gesture=1\n",
+				scale,
+				static_cast<long long>( ms ),
+				wasCancelled ? 1 : 0,
+				next );
+		}
+	}
+	else if( kEditDiag )
+	{
+		const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>( elapsed ).count();
+		std::fprintf( stderr,
+			"[edit-diag] pass end    scale=%u  elapsed_ms=%lld  cancelled=%d  next=%u  gesture=0%s\n",
+			scale,
+			static_cast<long long>( ms ),
+			mCancelProgress.IsCancelRequested() ? 1 : 0,
+			scale,
+			mInRefinementPass ? " (refine)" : "" );
 	}
 }
