@@ -1703,6 +1703,20 @@
 		F2EE004000000000000000C1 /* RayDifferentials.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE004000000000000000A1 /* RayDifferentials.h */; };
 		F2EE004100000000000000B1 /* TextureFootprintCompute.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE004100000000000000A1 /* TextureFootprintCompute.h */; };
 		F2EE004100000000000000C1 /* TextureFootprintCompute.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE004100000000000000A1 /* TextureFootprintCompute.h */; };
+		F2EE005000000000000000B1 /* FireflyTrace.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE005000000000000000A1 /* FireflyTrace.h */; };
+		F2EE005000000000000000C1 /* FireflyTrace.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE005000000000000000A1 /* FireflyTrace.h */; };
+		F2EE005100000000000000B1 /* PathValueOps.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE005100000000000000A1 /* PathValueOps.h */; };
+		F2EE005100000000000000C1 /* PathValueOps.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE005100000000000000A1 /* PathValueOps.h */; };
+		F2EE005200000000000000B1 /* PixelFilterConfig.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE005200000000000000A1 /* PixelFilterConfig.h */; };
+		F2EE005200000000000000C1 /* PixelFilterConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE005200000000000000A1 /* PixelFilterConfig.h */; };
+		F2EE005300000000000000B1 /* RadianceMapConfig.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE005300000000000000A1 /* RadianceMapConfig.h */; };
+		F2EE005300000000000000C1 /* RadianceMapConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE005300000000000000A1 /* RadianceMapConfig.h */; };
+		F2EE005400000000000000B1 /* SMSConfig.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE005400000000000000A1 /* SMSConfig.h */; };
+		F2EE005400000000000000C1 /* SMSConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE005400000000000000A1 /* SMSConfig.h */; };
+		F2EE005500000000000000B1 /* SpectralConfig.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE005500000000000000A1 /* SpectralConfig.h */; };
+		F2EE005500000000000000C1 /* SpectralConfig.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE005500000000000000A1 /* SpectralConfig.h */; };
+		F2EE005600000000000000B1 /* SpectralValueTraits.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE005600000000000000A1 /* SpectralValueTraits.h */; };
+		F2EE005600000000000000C1 /* SpectralValueTraits.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE005600000000000000A1 /* SpectralValueTraits.h */; };
 		FA00000000000000000000F3 /* FrameStoreColorSpace.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */; };
 		FA00000000000000000000F4 /* FrameStoreColorSpace.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */; };
 		FA00000000000000000000F5 /* FrameStoreColorSpace.h in Headers */ = {isa = PBXBuildFile; fileRef = FA00000000000000000000F1 /* FrameStoreColorSpace.h */; };
@@ -2650,6 +2664,13 @@
 		F2EE003300000000000000A1 /* EXRCompression.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = EXRCompression.h; sourceTree = "<group>"; };
 		F2EE004000000000000000A1 /* RayDifferentials.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RayDifferentials.h; sourceTree = "<group>"; };
 		F2EE004100000000000000A1 /* TextureFootprintCompute.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TextureFootprintCompute.h; sourceTree = "<group>"; };
+		F2EE005000000000000000A1 /* FireflyTrace.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FireflyTrace.h; sourceTree = "<group>"; };
+		F2EE005100000000000000A1 /* PathValueOps.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PathValueOps.h; sourceTree = "<group>"; };
+		F2EE005200000000000000A1 /* PixelFilterConfig.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PixelFilterConfig.h; sourceTree = "<group>"; };
+		F2EE005300000000000000A1 /* RadianceMapConfig.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RadianceMapConfig.h; sourceTree = "<group>"; };
+		F2EE005400000000000000A1 /* SMSConfig.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SMSConfig.h; sourceTree = "<group>"; };
+		F2EE005500000000000000A1 /* SpectralConfig.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SpectralConfig.h; sourceTree = "<group>"; };
+		F2EE005600000000000000A1 /* SpectralValueTraits.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SpectralValueTraits.h; sourceTree = "<group>"; };
 		FA00000000000000000000F1 /* FrameStoreColorSpace.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FrameStoreColorSpace.h; sourceTree = "<group>"; };
 		FA00000000000000000000F2 /* FrameStoreColorSpace.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FrameStoreColorSpace.cpp; sourceTree = "<group>"; };
 		FA00000000000000000000F6 /* TargetFormat.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TargetFormat.h; sourceTree = "<group>"; };
@@ -3755,6 +3776,12 @@
 				F27F0A41069C42900069C9E5 /* Threads */,
 				F27F0A45069C42900069C9E5 /* Transformable.cpp */,
 				F27F0A46069C42900069C9E5 /* Transformable.h */,
+				F2EE005000000000000000A1 /* FireflyTrace.h */,
+				F2EE005100000000000000A1 /* PathValueOps.h */,
+				F2EE005200000000000000A1 /* PixelFilterConfig.h */,
+				F2EE005300000000000000A1 /* RadianceMapConfig.h */,
+				F2EE005400000000000000A1 /* SMSConfig.h */,
+				F2EE005500000000000000A1 /* SpectralConfig.h */,
 			);
 			path = Utilities;
 			sourceTree = "<group>";
@@ -3784,6 +3811,7 @@
 				F27F09F4069C42900069C9E5 /* SpectralPacket_Template.h */,
 				F27F09F5069C42900069C9E5 /* sRGB.h */,
 				F27F09F6069C42900069C9E5 /* WardToneMappingOperator.h */,
+				F2EE005600000000000000A1 /* SpectralValueTraits.h */,
 			);
 			path = Color;
 			sourceTree = "<group>";
@@ -4290,6 +4318,13 @@
 				F2EE003300000000000000C1 /* EXRCompression.h in Headers */,
 				F2EE004000000000000000C1 /* RayDifferentials.h in Headers */,
 				F2EE004100000000000000C1 /* TextureFootprintCompute.h in Headers */,
+				F2EE005000000000000000C1 /* FireflyTrace.h in Headers */,
+				F2EE005100000000000000C1 /* PathValueOps.h in Headers */,
+				F2EE005200000000000000C1 /* PixelFilterConfig.h in Headers */,
+				F2EE005300000000000000C1 /* RadianceMapConfig.h in Headers */,
+				F2EE005400000000000000C1 /* SMSConfig.h in Headers */,
+				F2EE005500000000000000C1 /* SpectralConfig.h in Headers */,
+				F2EE005600000000000000C1 /* SpectralValueTraits.h in Headers */,
 				F2EE001000000000000000C1 /* InteractivePelRasterizer.h in Headers */,
 				F27F0BBD069C42910069C9E5 /* pch.h in Headers */,
 				F27F0BBF069C42910069C9E5 /* CausticPelPhotonMap.h in Headers */,
@@ -5426,6 +5461,13 @@
 				F2EE003300000000000000B1 /* EXRCompression.h in Sources */,
 				F2EE004000000000000000B1 /* RayDifferentials.h in Sources */,
 				F2EE004100000000000000B1 /* TextureFootprintCompute.h in Sources */,
+				F2EE005000000000000000B1 /* FireflyTrace.h in Sources */,
+				F2EE005100000000000000B1 /* PathValueOps.h in Sources */,
+				F2EE005200000000000000B1 /* PixelFilterConfig.h in Sources */,
+				F2EE005300000000000000B1 /* RadianceMapConfig.h in Sources */,
+				F2EE005400000000000000B1 /* SMSConfig.h in Sources */,
+				F2EE005500000000000000B1 /* SpectralConfig.h in Sources */,
+				F2EE005600000000000000B1 /* SpectralValueTraits.h in Sources */,
 				F2EE001000000000000000B1 /* InteractivePelRasterizer.h in Sources */,
 				F2EE001100000000000000B1 /* InteractivePelRasterizer.cpp in Sources */,
 				F24B73452F52A632008304C4 /* pch.cpp in Sources */,

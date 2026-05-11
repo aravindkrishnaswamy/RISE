@@ -1014,10 +1014,10 @@
     <ClCompile Include="..\..\..\src\Library\Shaders\AlphaTestShaderOp.cpp">
       <Filter>Shaders\Shader Ops</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Shaders\Sss\PointSetOctree.cpp">
+    <ClCompile Include="..\..\..\src\Library\Shaders\SSS\PointSetOctree.cpp">
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Shaders\Sss\SubSurfaceScatteringShaderOp.cpp">
+    <ClCompile Include="..\..\..\src\Library\Shaders\SSS\SubSurfaceScatteringShaderOp.cpp">
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\RISE_API.cpp">
@@ -2465,16 +2465,16 @@
     <ClInclude Include="..\..\..\src\Library\Shaders\AlphaTestShaderOp.h">
       <Filter>Shaders\Shader Ops</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Shaders\Sss\DiffusionApproximationExtinction.h">
+    <ClInclude Include="..\..\..\src\Library\Shaders\SSS\DiffusionApproximationExtinction.h">
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Shaders\Sss\PointSetOctree.h">
+    <ClInclude Include="..\..\..\src\Library\Shaders\SSS\PointSetOctree.h">
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Shaders\Sss\SimpleExtinction.h">
+    <ClInclude Include="..\..\..\src\Library\Shaders\SSS\SimpleExtinction.h">
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Shaders\Sss\SubSurfaceScatteringShaderOp.h">
+    <ClInclude Include="..\..\..\src\Library\Shaders\SSS\SubSurfaceScatteringShaderOp.h">
       <Filter>Shaders\Shader Ops\SSS</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\RISE_API.h">
@@ -2976,6 +2976,27 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\ZSobolSampler.h">
       <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireflyTrace.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\PathValueOps.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\PixelFilterConfig.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RadianceMapConfig.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\SMSConfig.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\SpectralConfig.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\SpectralValueTraits.h">
+      <Filter>Utilities\Color</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Volume\VolumeAccessor_Painter.h">
       <Filter>Volume</Filter>
