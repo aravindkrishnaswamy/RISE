@@ -44,6 +44,7 @@ class RISE_RENDER_PT_settings(_RISEPanel):
         layout.prop(settings, "use_world_ambient")
         layout.prop(settings, "choose_one_light")
         layout.prop(settings, "show_lights")
+        layout.prop(settings, "use_zsobol")
 
 
 class RISE_RENDER_PT_path_tracing(_RISEPanel):
@@ -61,10 +62,18 @@ class RISE_RENDER_PT_path_tracing(_RISEPanel):
 
         sms_col = layout.column()
         sms_col.enabled = settings.sms_enabled
+        sms_col.prop(settings, "sms_seeding_mode")
+        sms_col.prop(settings, "sms_target_bounces")
         sms_col.prop(settings, "sms_max_iterations")
         sms_col.prop(settings, "sms_threshold")
         sms_col.prop(settings, "sms_max_chain_depth")
         sms_col.prop(settings, "sms_biased")
+        sms_col.prop(settings, "sms_bernoulli_trials")
+        sms_col.prop(settings, "sms_multi_trials")
+        sms_col.prop(settings, "sms_two_stage")
+        sms_col.prop(settings, "sms_use_levenberg_marquardt")
+        sms_col.prop(settings, "sms_photon_count")
+        sms_col.prop(settings, "sms_max_photon_seeds")
 
 
 class RISE_RENDER_PT_adaptive(_RISEPanel):
@@ -112,8 +121,13 @@ class RISE_RENDER_PT_guiding(_RISEPanel):
         guiding_col.enabled = supports_guiding and settings.path_guiding_enabled
         guiding_col.prop(settings, "path_guiding_training_iterations")
         guiding_col.prop(settings, "path_guiding_training_spp")
+        guiding_col.prop(settings, "path_guiding_combine_training")
+        guiding_col.prop(settings, "path_guiding_online")
+        guiding_col.prop(settings, "path_guiding_warmup_iterations")
         guiding_col.prop(settings, "path_guiding_alpha")
+        guiding_col.prop(settings, "path_guiding_learned_alpha")
         guiding_col.prop(settings, "path_guiding_max_depth")
+        guiding_col.prop(settings, "path_guiding_max_light_depth")
         guiding_col.prop(settings, "path_guiding_sampling_type")
         guiding_col.prop(settings, "path_guiding_ris_candidates")
 
@@ -138,6 +152,12 @@ class RISE_RENDER_PT_stability(_RISEPanel):
         layout.prop(settings, "stability_max_transmission_bounce")
         layout.prop(settings, "stability_max_translucent_bounce")
         layout.prop(settings, "stability_max_volume_bounce")
+        layout.prop(settings, "stability_use_light_bvh")
+        layout.prop(settings, "stability_optimal_mis")
+        omis_col = layout.column()
+        omis_col.enabled = settings.stability_optimal_mis
+        omis_col.prop(settings, "stability_optimal_mis_training_iterations")
+        omis_col.prop(settings, "stability_optimal_mis_tile_size")
 
 
 class RISE_RENDER_PT_output(_RISEPanel):
@@ -160,8 +180,20 @@ class RISE_RENDER_PT_output(_RISEPanel):
         oidn_row.enabled = supports_oidn
         oidn_row.prop(settings, "oidn_denoise")
 
+        oidn_col = layout.column()
+        oidn_col.enabled = supports_oidn and settings.oidn_denoise
+        oidn_col.prop(settings, "oidn_quality")
+        oidn_col.prop(settings, "oidn_device")
+        oidn_col.prop(settings, "oidn_prefilter")
+
         if capabilities is not None and not capabilities.supports_oidn:
             layout.label(text="This bridge build does not include OIDN.", icon="INFO")
+
+        layout.separator()
+        layout.prop(settings, "progressive_enabled")
+        prog_col = layout.column()
+        prog_col.enabled = settings.progressive_enabled
+        prog_col.prop(settings, "progressive_samples_per_pass")
 
 
 class RISE_RENDER_PT_bridge(_RISEPanel):

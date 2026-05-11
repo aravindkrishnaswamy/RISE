@@ -28,7 +28,10 @@
 #include <Interfaces/IProgressCallback.h>
 #include <Utilities/AdaptiveSamplingConfig.h>
 #include <Utilities/Math3D/Math3D.h>
+#include <Utilities/OidnConfig.h>
 #include <Utilities/PathGuidingField.h>
+#include <Utilities/ProgressiveConfig.h>
+#include <Utilities/SMSConfig.h>
 #include <Utilities/StabilityConfig.h>
 
 #ifdef RISE_BLENDER_ENABLE_OPENVDB
@@ -39,7 +42,6 @@
 namespace
 {
 	const char* kShaderName = "rise_blender_surface";
-	const char* kPathTracingShaderOpName = "rise_blender_pathtracer";
 	const double kPi = 3.14159265358979323846;
 
 	template<typename T>
@@ -95,13 +97,6 @@ namespace
 		value[2] /= magnitude;
 	}
 
-	void copy_float3_to_double( const float src[3], double dst[3] )
-	{
-		dst[0] = src[0];
-		dst[1] = src[1];
-		dst[2] = src[2];
-	}
-
 	const char* uniform_color_space_name( const int color_space )
 	{
 		switch( color_space )
@@ -126,11 +121,6 @@ namespace
 		}
 	}
 
-	const char* phase_type_name( const int phase_type )
-	{
-		return phase_type == RISE_BLENDER_PHASE_HG ? "hg" : "isotropic";
-	}
-
 	unsigned int bounce_limit_from_ui( const uint32_t value )
 	{
 		return value == 0 ? UINT_MAX : value;
@@ -139,6 +129,41 @@ namespace
 	RISE::GuidingSamplingType guiding_sampling_type_from_int( const uint32_t value )
 	{
 		return value == 1 ? RISE::eGuidingRIS : RISE::eGuidingOneSampleMIS;
+	}
+
+	RISE::OidnQuality oidn_quality_from_int( const uint32_t value )
+	{
+		switch( value )
+		{
+		case 1: return RISE::OidnQuality::High;
+		case 2: return RISE::OidnQuality::Balanced;
+		case 3: return RISE::OidnQuality::Fast;
+		case 0:
+		default:
+			return RISE::OidnQuality::Auto;
+		}
+	}
+
+	RISE::OidnDevice oidn_device_from_int( const uint32_t value )
+	{
+		switch( value )
+		{
+		case 1: return RISE::OidnDevice::CPU;
+		case 2: return RISE::OidnDevice::GPU;
+		case 0:
+		default:
+			return RISE::OidnDevice::Auto;
+		}
+	}
+
+	RISE::OidnPrefilter oidn_prefilter_from_int( const uint32_t value )
+	{
+		return value == 1 ? RISE::OidnPrefilter::Accurate : RISE::OidnPrefilter::Fast;
+	}
+
+	RISE::SMSSeedingMode sms_seeding_mode_from_int( const uint32_t value )
+	{
+		return value == 1 ? RISE::SMSSeedingMode::Uniform : RISE::SMSSeedingMode::Snell;
 	}
 
 	RISE::Matrix4 blender_matrix_to_rise_matrix( const float transform[16] )
@@ -1258,26 +1283,12 @@ namespace
 
 	bool configure_shader( RISE::IJobPriv& job, const rise_blender_render_settings& settings, char* error_message, const size_t error_message_size )
 	{
-		if( settings.use_path_tracing ) {
-			if( !job.AddPathTracingShaderOp(
-				kPathTracingShaderOpName,
-				settings.sms_enabled != 0,
-				std::max<uint32_t>( settings.sms_max_iterations, 1u ),
-				settings.sms_threshold > 0.0f ? settings.sms_threshold : 1e-5f,
-				std::max<uint32_t>( settings.sms_max_chain_depth, 1u ),
-				settings.sms_biased != 0 ) )
-			{
-				write_error( error_message, error_message_size, "Failed to create the path tracing shader op" );
-				return false;
-			}
-
-			const char* shader_ops[1] = { kPathTracingShaderOpName };
-			if( !job.AddStandardShader( kShaderName, 1, shader_ops ) ) {
-				write_error( error_message, error_message_size, "Failed to assemble the RISE shader stack" );
-				return false;
-			}
-			return true;
-		}
+		// SetPathTracingPelRasterizer bypasses the shader-op chain
+		// (the path tracer integrator owns shading), so the named
+		// shader is only consulted by the legacy direct path.  We
+		// always register a default 4-op stack so the same name
+		// resolves for both modes.
+		(void)settings;
 
 		const char* shader_ops[4] = {
 			"DefaultDirectLighting",
@@ -1292,6 +1303,75 @@ namespace
 		}
 
 		return true;
+	}
+
+	void build_sms_config( const rise_blender_render_settings& settings, RISE::SMSConfig& sms_config )
+	{
+		sms_config.enabled = settings.sms_enabled != 0;
+		sms_config.maxIterations = std::max<uint32_t>( settings.sms_max_iterations, 1u );
+		sms_config.threshold = settings.sms_threshold > 0.0f ? settings.sms_threshold : 1e-5;
+		sms_config.maxChainDepth = std::max<uint32_t>( settings.sms_max_chain_depth, 1u );
+		sms_config.biased = settings.sms_biased != 0;
+		sms_config.bernoulliTrials = std::max<uint32_t>( settings.sms_bernoulli_trials, 1u );
+		sms_config.multiTrials = std::max<uint32_t>( settings.sms_multi_trials, 1u );
+		sms_config.photonCount = settings.sms_photon_count;
+		sms_config.maxPhotonSeedsPerShadingPoint = settings.sms_max_photon_seeds;
+		sms_config.twoStage = settings.sms_two_stage != 0;
+		sms_config.useLevenbergMarquardt = settings.sms_use_levenberg_marquardt != 0;
+		sms_config.seedingMode = sms_seeding_mode_from_int( settings.sms_seeding_mode );
+		sms_config.targetBounces = settings.sms_target_bounces;
+	}
+
+	void build_path_guiding_config( const rise_blender_render_settings& settings, RISE::PathGuidingConfig& guiding_config )
+	{
+		guiding_config.enabled = settings.path_guiding_enabled != 0;
+		guiding_config.trainingIterations = std::max<uint32_t>( settings.path_guiding_training_iterations, 1u );
+		guiding_config.trainingSPP = std::max<uint32_t>( settings.path_guiding_training_spp, 1u );
+		guiding_config.combineTrainingIterations = settings.path_guiding_combine_training != 0;
+		guiding_config.online = settings.path_guiding_online != 0;
+		guiding_config.warmupIterations = settings.path_guiding_warmup_iterations;
+		guiding_config.alpha = clamp_value<double>( settings.path_guiding_alpha, 0.0, 1.0 );
+		guiding_config.learnedAlpha = settings.path_guiding_learned_alpha != 0;
+		guiding_config.maxGuidingDepth = settings.path_guiding_max_depth;
+		guiding_config.maxLightGuidingDepth = settings.path_guiding_max_light_depth;
+		guiding_config.samplingType = guiding_sampling_type_from_int( settings.path_guiding_sampling_type );
+		guiding_config.risCandidates = std::max<uint32_t>( settings.path_guiding_ris_candidates, 2u );
+		guiding_config.completePathGuiding = false;
+		guiding_config.completePathStrategySelection = false;
+		guiding_config.completePathStrategySamples = 2;
+	}
+
+	void build_adaptive_config( const rise_blender_render_settings& settings, RISE::AdaptiveSamplingConfig& adaptive_config )
+	{
+		adaptive_config.maxSamples = settings.adaptive_max_samples > 0 ?
+			std::max<uint32_t>( settings.adaptive_max_samples, std::max<uint32_t>( settings.pixel_samples, 1u ) ) :
+			0u;
+		adaptive_config.threshold = settings.adaptive_threshold > 0.0f ? settings.adaptive_threshold : 0.01f;
+		adaptive_config.showMap = settings.adaptive_show_map != 0 && adaptive_config.maxSamples > 0;
+	}
+
+	void build_stability_config( const rise_blender_render_settings& settings, RISE::StabilityConfig& stability_config )
+	{
+		stability_config.directClamp = std::max( 0.0f, settings.stability_direct_clamp );
+		stability_config.indirectClamp = std::max( 0.0f, settings.stability_indirect_clamp );
+		stability_config.filterGlossy = std::max( 0.0f, settings.stability_filter_glossy );
+		stability_config.rrMinDepth = settings.stability_rr_min_depth;
+		stability_config.rrThreshold = std::max( 0.0f, settings.stability_rr_threshold );
+		stability_config.maxDiffuseBounce = bounce_limit_from_ui( settings.stability_max_diffuse_bounce );
+		stability_config.maxGlossyBounce = bounce_limit_from_ui( settings.stability_max_glossy_bounce );
+		stability_config.maxTransmissionBounce = bounce_limit_from_ui( settings.stability_max_transmission_bounce );
+		stability_config.maxTranslucentBounce = bounce_limit_from_ui( settings.stability_max_translucent_bounce );
+		stability_config.maxVolumeBounce = bounce_limit_from_ui( settings.stability_max_volume_bounce );
+		stability_config.useLightBVH = settings.stability_use_light_bvh != 0;
+		stability_config.optimalMIS = settings.stability_optimal_mis != 0;
+		stability_config.optimalMISTrainingIterations = std::max<uint32_t>( settings.stability_optimal_mis_training_iterations, 1u );
+		stability_config.optimalMISTileSize = std::max<uint32_t>( settings.stability_optimal_mis_tile_size, 1u );
+	}
+
+	void build_progressive_config( const rise_blender_render_settings& settings, RISE::ProgressiveConfig& progressive_config )
+	{
+		progressive_config.enabled = settings.progressive_enabled != 0;
+		progressive_config.samplesPerPass = std::max<uint32_t>( settings.progressive_samples_per_pass, 1u );
 	}
 
 	bool configure_rasterizer(
@@ -1315,42 +1395,53 @@ namespace
 #endif
 		}
 
-		RISE::PathGuidingConfig guiding_config;
-		guiding_config.enabled = settings.path_guiding_enabled != 0;
-		guiding_config.trainingIterations = std::max<uint32_t>( settings.path_guiding_training_iterations, 1u );
-		guiding_config.trainingSPP = std::max<uint32_t>( settings.path_guiding_training_spp, 1u );
-		guiding_config.alpha = clamp_value<double>( settings.path_guiding_alpha, 0.0, 1.0 );
-		guiding_config.maxGuidingDepth = settings.path_guiding_max_depth;
-		guiding_config.samplingType = guiding_sampling_type_from_int( settings.path_guiding_sampling_type );
-		guiding_config.risCandidates = std::max<uint32_t>( settings.path_guiding_ris_candidates, 2u );
-		guiding_config.completePathGuiding = false;
-		guiding_config.completePathStrategySelection = false;
-		guiding_config.completePathStrategySamples = 2;
+		RISE::SMSConfig sms_config;                         build_sms_config( settings, sms_config );
+		RISE::PathGuidingConfig guiding_config;             build_path_guiding_config( settings, guiding_config );
+		RISE::AdaptiveSamplingConfig adaptive_config;       build_adaptive_config( settings, adaptive_config );
+		RISE::StabilityConfig stability_config;             build_stability_config( settings, stability_config );
+		RISE::ProgressiveConfig progressive_config;         build_progressive_config( settings, progressive_config );
 
-		RISE::AdaptiveSamplingConfig adaptive_config;
-		adaptive_config.maxSamples = settings.adaptive_max_samples > 0 ?
-			std::max<uint32_t>( settings.adaptive_max_samples, std::max<uint32_t>( settings.pixel_samples, 1u ) ) :
-			0u;
-		adaptive_config.threshold = settings.adaptive_threshold > 0.0f ? settings.adaptive_threshold : 0.01f;
-		adaptive_config.showMap = settings.adaptive_show_map != 0 && adaptive_config.maxSamples > 0;
-
-		RISE::StabilityConfig stability_config;
-		stability_config.directClamp = std::max( 0.0f, settings.stability_direct_clamp );
-		stability_config.indirectClamp = std::max( 0.0f, settings.stability_indirect_clamp );
-		stability_config.filterGlossy = std::max( 0.0f, settings.stability_filter_glossy );
-		stability_config.rrMinDepth = settings.stability_rr_min_depth;
-		stability_config.rrThreshold = std::max( 0.0f, settings.stability_rr_threshold );
-		stability_config.maxDiffuseBounce = bounce_limit_from_ui( settings.stability_max_diffuse_bounce );
-		stability_config.maxGlossyBounce = bounce_limit_from_ui( settings.stability_max_glossy_bounce );
-		stability_config.maxTransmissionBounce = bounce_limit_from_ui( settings.stability_max_transmission_bounce );
-		stability_config.maxTranslucentBounce = bounce_limit_from_ui( settings.stability_max_translucent_bounce );
-		stability_config.maxVolumeBounce = bounce_limit_from_ui( settings.stability_max_volume_bounce );
+		const RISE::OidnQuality oidn_quality = oidn_quality_from_int( settings.oidn_quality );
+		const RISE::OidnDevice oidn_device = oidn_device_from_int( settings.oidn_device );
+		const RISE::OidnPrefilter oidn_prefilter = oidn_prefilter_from_int( settings.oidn_prefilter );
 
 		RISE::PixelFilterConfig pixel_filter_config;
 		pixel_filter_config.filter = "none";
 		pixel_filter_config.paramA = 0.0;
 		pixel_filter_config.paramB = 0.0;
 		RISE::RadianceMapConfig radiance_map_config;
+
+		if( settings.use_path_tracing ) {
+			// Pure path tracing — bypasses the shader-op chain and
+			// owns SMS, NEE, MIS, and direct/indirect integration in
+			// one integrator.  This is the modern path; mirrors the
+			// scene-language `pathtracing_pel_rasterizer` chunk.
+			if( !job.SetPathTracingPelRasterizer(
+				std::max<uint32_t>( settings.pixel_samples, 1u ),
+				kShaderName,
+				radiance_map_config,
+				pixel_filter_config,
+				settings.show_lights != 0,
+				sms_config,
+				settings.oidn_denoise != 0,
+				oidn_quality,
+				oidn_device,
+				oidn_prefilter,
+				guiding_config,
+				adaptive_config,
+				stability_config,
+				progressive_config ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create the path tracing rasterizer" );
+				return false;
+			}
+
+			return true;
+		}
+
+		// Legacy non-PT path — drives the recursive shader-op stack
+		// (`DefaultDirectLighting` etc.).  SMS is unavailable here
+		// because SMS lives in the path-tracing integrator only.
 		if( !job.SetPixelBasedPelRasterizer(
 			std::max<uint32_t>( settings.pixel_samples, 1u ),
 			std::max<uint32_t>( settings.light_samples, 1u ),
@@ -1362,9 +1453,13 @@ namespace
 			pixel_filter_config,
 			settings.show_lights != 0,
 			settings.oidn_denoise != 0,
+			oidn_quality,
+			oidn_device,
+			oidn_prefilter,
 			guiding_config,
 			adaptive_config,
-			stability_config ) )
+			stability_config,
+			progressive_config ) )
 		{
 			write_error( error_message, error_message_size, "Failed to create the pixel rasterizer" );
 			return false;

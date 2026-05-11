@@ -63,14 +63,27 @@ class RenderSettingsData:
     sms_threshold: float
     sms_max_chain_depth: int
     sms_biased: bool
+    sms_bernoulli_trials: int
+    sms_multi_trials: int
+    sms_photon_count: int
+    sms_max_photon_seeds: int
+    sms_two_stage: bool
+    sms_use_levenberg_marquardt: bool
+    sms_seeding_mode: int
+    sms_target_bounces: int
     adaptive_max_samples: int
     adaptive_threshold: float
     adaptive_show_map: bool
     path_guiding_enabled: bool
     path_guiding_training_iterations: int
     path_guiding_training_spp: int
+    path_guiding_combine_training: bool
+    path_guiding_online: bool
+    path_guiding_warmup_iterations: int
     path_guiding_alpha: float
+    path_guiding_learned_alpha: bool
     path_guiding_max_depth: int
+    path_guiding_max_light_depth: int
     path_guiding_sampling_type: int
     path_guiding_ris_candidates: int
     stability_direct_clamp: float
@@ -83,7 +96,17 @@ class RenderSettingsData:
     stability_max_transmission_bounce: int
     stability_max_translucent_bounce: int
     stability_max_volume_bounce: int
+    stability_use_light_bvh: bool
+    stability_optimal_mis: bool
+    stability_optimal_mis_training_iterations: int
+    stability_optimal_mis_tile_size: int
     oidn_denoise: bool
+    oidn_quality: int
+    oidn_device: int
+    oidn_prefilter: int
+    progressive_enabled: bool
+    progressive_samples_per_pass: int
+    use_zsobol: bool
     temporary_directory: str
 
 
@@ -1325,14 +1348,27 @@ def build_render_settings(scene) -> RenderSettingsData:
         sms_threshold=float(rise.sms_threshold),
         sms_max_chain_depth=int(rise.sms_max_chain_depth),
         sms_biased=bool(rise.sms_biased),
+        sms_bernoulli_trials=int(rise.sms_bernoulli_trials),
+        sms_multi_trials=int(rise.sms_multi_trials),
+        sms_photon_count=int(rise.sms_photon_count),
+        sms_max_photon_seeds=int(rise.sms_max_photon_seeds),
+        sms_two_stage=bool(rise.sms_two_stage),
+        sms_use_levenberg_marquardt=bool(rise.sms_use_levenberg_marquardt),
+        sms_seeding_mode=int(rise.sms_seeding_mode),
+        sms_target_bounces=int(rise.sms_target_bounces),
         adaptive_max_samples=int(rise.adaptive_max_samples),
         adaptive_threshold=float(rise.adaptive_threshold),
         adaptive_show_map=bool(rise.adaptive_show_map),
         path_guiding_enabled=bool(rise.path_guiding_enabled),
         path_guiding_training_iterations=int(rise.path_guiding_training_iterations),
         path_guiding_training_spp=int(rise.path_guiding_training_spp),
+        path_guiding_combine_training=bool(rise.path_guiding_combine_training),
+        path_guiding_online=bool(rise.path_guiding_online),
+        path_guiding_warmup_iterations=int(rise.path_guiding_warmup_iterations),
         path_guiding_alpha=float(rise.path_guiding_alpha),
+        path_guiding_learned_alpha=bool(rise.path_guiding_learned_alpha),
         path_guiding_max_depth=int(rise.path_guiding_max_depth),
+        path_guiding_max_light_depth=int(rise.path_guiding_max_light_depth),
         path_guiding_sampling_type=int(rise.path_guiding_sampling_type),
         path_guiding_ris_candidates=int(rise.path_guiding_ris_candidates),
         stability_direct_clamp=float(rise.stability_direct_clamp),
@@ -1345,7 +1381,17 @@ def build_render_settings(scene) -> RenderSettingsData:
         stability_max_transmission_bounce=int(rise.stability_max_transmission_bounce),
         stability_max_translucent_bounce=int(rise.stability_max_translucent_bounce),
         stability_max_volume_bounce=int(rise.stability_max_volume_bounce),
+        stability_use_light_bvh=bool(rise.stability_use_light_bvh),
+        stability_optimal_mis=bool(rise.stability_optimal_mis),
+        stability_optimal_mis_training_iterations=int(rise.stability_optimal_mis_training_iterations),
+        stability_optimal_mis_tile_size=int(rise.stability_optimal_mis_tile_size),
         oidn_denoise=bool(rise.oidn_denoise),
+        oidn_quality=int(rise.oidn_quality),
+        oidn_device=int(rise.oidn_device),
+        oidn_prefilter=int(rise.oidn_prefilter),
+        progressive_enabled=bool(rise.progressive_enabled),
+        progressive_samples_per_pass=int(rise.progressive_samples_per_pass),
+        use_zsobol=bool(rise.use_zsobol),
         temporary_directory=str(temporary_directory),
     )
 

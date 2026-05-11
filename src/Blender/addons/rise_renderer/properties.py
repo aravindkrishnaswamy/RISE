@@ -93,6 +93,60 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         description="Use the faster biased SMS mode",
         default=True,
     )
+    sms_bernoulli_trials: bpy.props.IntProperty(
+        name="Bernoulli Trials",
+        description="Maximum trials per shading point in unbiased SMS mode (ignored when Biased is on)",
+        default=100,
+        min=1,
+        max=10000,
+    )
+    sms_multi_trials: bpy.props.IntProperty(
+        name="Multi Trials",
+        description="Independent Newton solves per evaluation; >1 uncovers separate basins on bumpy surfaces at proportional cost",
+        default=1,
+        min=1,
+        max=64,
+    )
+    sms_photon_count: bpy.props.IntProperty(
+        name="Photon Count",
+        description="Photon-aided seed budget; 0 disables. Use for diacaustic / mirror-chain scenes the deterministic seed misses",
+        default=0,
+        min=0,
+        max=10000000,
+    )
+    sms_max_photon_seeds: bpy.props.IntProperty(
+        name="Max Photon Seeds",
+        description="Cap on photon seeds run through Newton at each shading point; 0 = unlimited",
+        default=16,
+        min=0,
+        max=1024,
+    )
+    sms_two_stage: bpy.props.BoolProperty(
+        name="Two-Stage Solver",
+        description="Two-stage Newton solver (Zeltner 2020 §5). Helps on smooth analytic primitives with normal-map perturbation; regresses on heavily-displaced meshes",
+        default=False,
+    )
+    sms_use_levenberg_marquardt: bpy.props.BoolProperty(
+        name="Levenberg-Marquardt",
+        description="Damp the Newton Jacobian to recover ~5pp Newton-fail rate on heavy-displacement meshes at ~50-100% solver cost",
+        default=False,
+    )
+    sms_seeding_mode: bpy.props.EnumProperty(
+        name="Seeding",
+        description="SMS seeding strategy. Snell suits displaced refractive caustics; Uniform suits smooth analytic primitives",
+        items=(
+            ("0", "Snell", "Deterministic Snell-trace from shading point toward light"),
+            ("1", "Uniform", "Mitsuba-faithful uniform-area sample on cached caustic-caster shapes"),
+        ),
+        default="0",
+    )
+    sms_target_bounces: bpy.props.IntProperty(
+        name="Target Bounces",
+        description="Required specular-vertex count per seed chain (Mitsuba m_config.bounces analogue). 0 = no target. Set to natural caustic K (typically 2 for glass shells)",
+        default=0,
+        min=0,
+        max=16,
+    )
 
     adaptive_max_samples: bpy.props.IntProperty(
         name="Max Samples",
@@ -134,6 +188,23 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         min=1,
         max=1024,
     )
+    path_guiding_combine_training: bpy.props.BoolProperty(
+        name="Combine Training",
+        description="Accumulate every training iteration's pixels into the final image weighted by SPP (Müller 2017 §5)",
+        default=True,
+    )
+    path_guiding_online: bpy.props.BoolProperty(
+        name="Online Guiding",
+        description="The training loop IS the entire render — every sample feeds both the field and the image. Best for low-SPP regimes",
+        default=False,
+    )
+    path_guiding_warmup_iterations: bpy.props.IntProperty(
+        name="Warmup Iterations",
+        description="Training iterations rendered with alpha=0 (pure BSDF) before switching to the configured alpha",
+        default=1,
+        min=0,
+        max=64,
+    )
     path_guiding_alpha: bpy.props.FloatProperty(
         name="Guiding Alpha",
         description="Blend probability for sampling from the learned guiding distribution",
@@ -142,10 +213,22 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         max=1.0,
         precision=3,
     )
+    path_guiding_learned_alpha: bpy.props.BoolProperty(
+        name="Learned Alpha",
+        description="Per-cell Adam-learned α (Müller 2017 v2 / Tom94 practical-path-guiding). ~2% mean-σ² reduction at 256 SPP",
+        default=True,
+    )
     path_guiding_max_depth: bpy.props.IntProperty(
         name="Guiding Depth",
         description="Maximum eye-path bounce depth that uses guided sampling",
-        default=3,
+        default=8,
+        min=0,
+        max=256,
+    )
+    path_guiding_max_light_depth: bpy.props.IntProperty(
+        name="Light Guiding Depth",
+        description="Maximum light-subpath bounce depth for guided sampling (0 = disabled). Off by default",
+        default=0,
         min=0,
         max=256,
     )
@@ -240,10 +323,83 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         min=0,
         max=256,
     )
+    stability_use_light_bvh: bpy.props.BoolProperty(
+        name="Light BVH",
+        description="Use the light BVH for importance-weighted many-light selection",
+        default=True,
+    )
+    stability_optimal_mis: bpy.props.BoolProperty(
+        name="Optimal MIS",
+        description="Variance-minimising MIS weights (Kondapaneni 2019) for direct lighting; trains second-moment statistics over a few iterations",
+        default=False,
+    )
+    stability_optimal_mis_training_iterations: bpy.props.IntProperty(
+        name="Optimal MIS Training",
+        description="Training iterations for optimal MIS",
+        default=4,
+        min=1,
+        max=64,
+    )
+    stability_optimal_mis_tile_size: bpy.props.IntProperty(
+        name="Optimal MIS Tile Size",
+        description="Spatial-binning tile size for optimal MIS",
+        default=16,
+        min=1,
+        max=256,
+    )
 
     oidn_denoise: bpy.props.BoolProperty(
         name="OIDN Denoise",
         description="Run Intel Open Image Denoise after rendering when supported by the bridge build",
+        default=False,
+    )
+    oidn_quality: bpy.props.EnumProperty(
+        name="OIDN Quality",
+        description="OIDN quality preset. Auto picks Fast/Balanced/High based on a render-time heuristic",
+        items=(
+            ("0", "Auto", "Pick a preset based on render time per megapixel"),
+            ("1", "High", "Highest quality, slowest"),
+            ("2", "Balanced", "Balanced quality and speed"),
+            ("3", "Fast", "Fastest, lower quality"),
+        ),
+        default="0",
+    )
+    oidn_device: bpy.props.EnumProperty(
+        name="OIDN Device",
+        description="OIDN device backend",
+        items=(
+            ("0", "Auto", "Prefer GPU; silently fall back to CPU"),
+            ("1", "CPU", "Force CPU"),
+            ("2", "GPU", "Prefer GPU; warn on fallback to CPU"),
+        ),
+        default="0",
+    )
+    oidn_prefilter: bpy.props.EnumProperty(
+        name="OIDN Aux Source",
+        description="Albedo / normal source mode. Accurate preserves caustic / reflection detail at ~2× warm-cache cost",
+        items=(
+            ("0", "Fast", "First-hit retrace pass (cheap, white at perfect glass / mirror)"),
+            ("1", "Accurate", "Inline first-non-delta accumulation + prefilter"),
+        ),
+        default="0",
+    )
+
+    progressive_enabled: bpy.props.BoolProperty(
+        name="Progressive Rendering",
+        description="Render in multiple progressive passes so the image refines visibly while it accumulates samples",
+        default=True,
+    )
+    progressive_samples_per_pass: bpy.props.IntProperty(
+        name="Samples Per Pass",
+        description="Samples per pixel each progressive pass adds before refreshing the image",
+        default=32,
+        min=1,
+        max=4096,
+    )
+
+    use_zsobol: bpy.props.BoolProperty(
+        name="Z-Sobol Sampler",
+        description="Use Morton-indexed Sobol for blue-noise error distribution",
         default=False,
     )
 

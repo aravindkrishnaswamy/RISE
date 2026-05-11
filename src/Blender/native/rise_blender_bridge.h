@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 2
+#define RISE_BLENDER_API_VERSION 3
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,6 +61,34 @@ enum rise_blender_phase_type {
 enum rise_blender_medium_kind {
 	RISE_BLENDER_MEDIUM_HOMOGENEOUS = 0,
 	RISE_BLENDER_MEDIUM_HETEROGENEOUS_VDB = 1
+};
+
+enum rise_blender_oidn_quality {
+	RISE_BLENDER_OIDN_QUALITY_AUTO = 0,
+	RISE_BLENDER_OIDN_QUALITY_HIGH = 1,
+	RISE_BLENDER_OIDN_QUALITY_BALANCED = 2,
+	RISE_BLENDER_OIDN_QUALITY_FAST = 3
+};
+
+enum rise_blender_oidn_device {
+	RISE_BLENDER_OIDN_DEVICE_AUTO = 0,
+	RISE_BLENDER_OIDN_DEVICE_CPU = 1,
+	RISE_BLENDER_OIDN_DEVICE_GPU = 2
+};
+
+enum rise_blender_oidn_prefilter {
+	RISE_BLENDER_OIDN_PREFILTER_FAST = 0,
+	RISE_BLENDER_OIDN_PREFILTER_ACCURATE = 1
+};
+
+enum rise_blender_sms_seeding {
+	RISE_BLENDER_SMS_SEEDING_SNELL = 0,
+	RISE_BLENDER_SMS_SEEDING_UNIFORM = 1
+};
+
+enum rise_blender_path_guiding_sampling {
+	RISE_BLENDER_PG_ONE_SAMPLE_MIS = 0,
+	RISE_BLENDER_PG_RIS = 1
 };
 
 typedef struct rise_blender_camera {
@@ -177,21 +205,42 @@ typedef struct rise_blender_render_settings {
 	int use_path_tracing;
 	int choose_one_light;
 	int show_lights;
+
+	// SMS — Specular Manifold Sampling (Zeltner 2020 + RISE extensions)
 	int sms_enabled;
 	uint32_t sms_max_iterations;
 	float sms_threshold;
 	uint32_t sms_max_chain_depth;
 	int sms_biased;
+	uint32_t sms_bernoulli_trials;
+	uint32_t sms_multi_trials;
+	uint32_t sms_photon_count;
+	uint32_t sms_max_photon_seeds;
+	int sms_two_stage;
+	int sms_use_levenberg_marquardt;
+	uint32_t sms_seeding_mode;     // rise_blender_sms_seeding
+	uint32_t sms_target_bounces;
+
+	// Adaptive sampling
 	uint32_t adaptive_max_samples;
 	float adaptive_threshold;
 	int adaptive_show_map;
+
+	// Path guiding (OpenPGL)
 	int path_guiding_enabled;
 	uint32_t path_guiding_training_iterations;
 	uint32_t path_guiding_training_spp;
+	int path_guiding_combine_training;
+	int path_guiding_online;
+	uint32_t path_guiding_warmup_iterations;
 	float path_guiding_alpha;
+	int path_guiding_learned_alpha;
 	uint32_t path_guiding_max_depth;
+	uint32_t path_guiding_max_light_depth;
 	uint32_t path_guiding_sampling_type;
 	uint32_t path_guiding_ris_candidates;
+
+	// Stability — clamping, RR, bounce limits, light BVH, optimal MIS
 	float stability_direct_clamp;
 	float stability_indirect_clamp;
 	float stability_filter_glossy;
@@ -202,7 +251,24 @@ typedef struct rise_blender_render_settings {
 	uint32_t stability_max_transmission_bounce;
 	uint32_t stability_max_translucent_bounce;
 	uint32_t stability_max_volume_bounce;
+	int stability_use_light_bvh;
+	int stability_optimal_mis;
+	uint32_t stability_optimal_mis_training_iterations;
+	uint32_t stability_optimal_mis_tile_size;
+
+	// OIDN — denoiser quality / device / prefilter mode
 	int oidn_denoise;
+	uint32_t oidn_quality;         // rise_blender_oidn_quality
+	uint32_t oidn_device;          // rise_blender_oidn_device
+	uint32_t oidn_prefilter;       // rise_blender_oidn_prefilter
+
+	// Progressive multi-pass rendering
+	int progressive_enabled;
+	uint32_t progressive_samples_per_pass;
+
+	// Sampler — Morton-indexed Sobol (blue-noise error distribution)
+	int use_zsobol;
+
 	const char* temporary_directory;
 } rise_blender_render_settings;
 

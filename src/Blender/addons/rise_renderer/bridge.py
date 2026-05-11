@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 
 
-_EXPECTED_API_VERSION = 2
+_EXPECTED_API_VERSION = 3
 
 
 class BridgeError(RuntimeError):
@@ -164,14 +164,27 @@ class _RenderSettings(ctypes.Structure):
         ("sms_threshold", ctypes.c_float),
         ("sms_max_chain_depth", ctypes.c_uint32),
         ("sms_biased", ctypes.c_int),
+        ("sms_bernoulli_trials", ctypes.c_uint32),
+        ("sms_multi_trials", ctypes.c_uint32),
+        ("sms_photon_count", ctypes.c_uint32),
+        ("sms_max_photon_seeds", ctypes.c_uint32),
+        ("sms_two_stage", ctypes.c_int),
+        ("sms_use_levenberg_marquardt", ctypes.c_int),
+        ("sms_seeding_mode", ctypes.c_uint32),
+        ("sms_target_bounces", ctypes.c_uint32),
         ("adaptive_max_samples", ctypes.c_uint32),
         ("adaptive_threshold", ctypes.c_float),
         ("adaptive_show_map", ctypes.c_int),
         ("path_guiding_enabled", ctypes.c_int),
         ("path_guiding_training_iterations", ctypes.c_uint32),
         ("path_guiding_training_spp", ctypes.c_uint32),
+        ("path_guiding_combine_training", ctypes.c_int),
+        ("path_guiding_online", ctypes.c_int),
+        ("path_guiding_warmup_iterations", ctypes.c_uint32),
         ("path_guiding_alpha", ctypes.c_float),
+        ("path_guiding_learned_alpha", ctypes.c_int),
         ("path_guiding_max_depth", ctypes.c_uint32),
+        ("path_guiding_max_light_depth", ctypes.c_uint32),
         ("path_guiding_sampling_type", ctypes.c_uint32),
         ("path_guiding_ris_candidates", ctypes.c_uint32),
         ("stability_direct_clamp", ctypes.c_float),
@@ -184,7 +197,17 @@ class _RenderSettings(ctypes.Structure):
         ("stability_max_transmission_bounce", ctypes.c_uint32),
         ("stability_max_translucent_bounce", ctypes.c_uint32),
         ("stability_max_volume_bounce", ctypes.c_uint32),
+        ("stability_use_light_bvh", ctypes.c_int),
+        ("stability_optimal_mis", ctypes.c_int),
+        ("stability_optimal_mis_training_iterations", ctypes.c_uint32),
+        ("stability_optimal_mis_tile_size", ctypes.c_uint32),
         ("oidn_denoise", ctypes.c_int),
+        ("oidn_quality", ctypes.c_uint32),
+        ("oidn_device", ctypes.c_uint32),
+        ("oidn_prefilter", ctypes.c_uint32),
+        ("progressive_enabled", ctypes.c_int),
+        ("progressive_samples_per_pass", ctypes.c_uint32),
+        ("use_zsobol", ctypes.c_int),
         ("temporary_directory", ctypes.c_char_p),
     ]
 
@@ -557,14 +580,27 @@ class _SceneHandle:
         payload.sms_threshold = float(settings.sms_threshold)
         payload.sms_max_chain_depth = int(settings.sms_max_chain_depth)
         payload.sms_biased = int(settings.sms_biased)
+        payload.sms_bernoulli_trials = int(settings.sms_bernoulli_trials)
+        payload.sms_multi_trials = int(settings.sms_multi_trials)
+        payload.sms_photon_count = int(settings.sms_photon_count)
+        payload.sms_max_photon_seeds = int(settings.sms_max_photon_seeds)
+        payload.sms_two_stage = int(settings.sms_two_stage)
+        payload.sms_use_levenberg_marquardt = int(settings.sms_use_levenberg_marquardt)
+        payload.sms_seeding_mode = int(settings.sms_seeding_mode)
+        payload.sms_target_bounces = int(settings.sms_target_bounces)
         payload.adaptive_max_samples = int(settings.adaptive_max_samples)
         payload.adaptive_threshold = float(settings.adaptive_threshold)
         payload.adaptive_show_map = int(settings.adaptive_show_map)
         payload.path_guiding_enabled = int(settings.path_guiding_enabled)
         payload.path_guiding_training_iterations = int(settings.path_guiding_training_iterations)
         payload.path_guiding_training_spp = int(settings.path_guiding_training_spp)
+        payload.path_guiding_combine_training = int(settings.path_guiding_combine_training)
+        payload.path_guiding_online = int(settings.path_guiding_online)
+        payload.path_guiding_warmup_iterations = int(settings.path_guiding_warmup_iterations)
         payload.path_guiding_alpha = float(settings.path_guiding_alpha)
+        payload.path_guiding_learned_alpha = int(settings.path_guiding_learned_alpha)
         payload.path_guiding_max_depth = int(settings.path_guiding_max_depth)
+        payload.path_guiding_max_light_depth = int(settings.path_guiding_max_light_depth)
         payload.path_guiding_sampling_type = int(settings.path_guiding_sampling_type)
         payload.path_guiding_ris_candidates = int(settings.path_guiding_ris_candidates)
         payload.stability_direct_clamp = float(settings.stability_direct_clamp)
@@ -577,7 +613,17 @@ class _SceneHandle:
         payload.stability_max_transmission_bounce = int(settings.stability_max_transmission_bounce)
         payload.stability_max_translucent_bounce = int(settings.stability_max_translucent_bounce)
         payload.stability_max_volume_bounce = int(settings.stability_max_volume_bounce)
+        payload.stability_use_light_bvh = int(settings.stability_use_light_bvh)
+        payload.stability_optimal_mis = int(settings.stability_optimal_mis)
+        payload.stability_optimal_mis_training_iterations = int(settings.stability_optimal_mis_training_iterations)
+        payload.stability_optimal_mis_tile_size = int(settings.stability_optimal_mis_tile_size)
         payload.oidn_denoise = int(settings.oidn_denoise)
+        payload.oidn_quality = int(settings.oidn_quality)
+        payload.oidn_device = int(settings.oidn_device)
+        payload.oidn_prefilter = int(settings.oidn_prefilter)
+        payload.progressive_enabled = int(settings.progressive_enabled)
+        payload.progressive_samples_per_pass = int(settings.progressive_samples_per_pass)
+        payload.use_zsobol = int(settings.use_zsobol)
         payload.temporary_directory = self._cstring(settings.temporary_directory)
         return payload
 
