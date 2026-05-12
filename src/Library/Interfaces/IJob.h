@@ -307,6 +307,52 @@ namespace RISE
 									const unsigned int smoothnessMode	///< [in] One of 0/1/2/3/5/99 — see header
 									) = 0;
 
+		//! Adds a polynomial-based Function2D painter.  See
+		//! `Painters/PolynomialFunction2DPainter.h` for the polynomial
+		//! family enum (0=radial_bump, 1=monomial, 2=paraboloid,
+		//! 3=hyperbolic_saddle, 4=monkey_saddle, 5=bivariate) and the
+		//! coefficient ordering for bivariate.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddPolynomialFunction2DPainter(
+									const char* name,					///< [in] Name of the painter
+									const char* pa,						///< [in] Zero/low-end color painter
+									const char* pb,						///< [in] Positive/peak-end color painter
+									const unsigned int polynomialType,	///< [in] Type enum (0..5)
+									const double center[2],				///< [in] (U, V) origin for normalised coords
+									const double scale[2],				///< [in] (U, V) divisor
+									const double amplitude,				///< [in] Global multiplier
+									const unsigned int degree,			///< [in] Degree (radial_bump / bivariate)
+									const unsigned int powerX,			///< [in] x exponent (monomial)
+									const unsigned int powerY,			///< [in] y exponent (monomial)
+									const double* pCoeffs,				///< [in] Bivariate coefficients (or nullptr)
+									const unsigned int nCoeffs			///< [in] Number of bivariate coefficients (or 0)
+									) = 0;
+
+		//! Adds a composable Function2D painter.  Combines two named child
+		//! Function2Ds per a binary operator (sum/product/lerp/max/min/
+		//! difference), after per-operand weight and (u,v) affine
+		//! transform, then a final output remap.  Both children must be
+		//! already-registered Function2D-implementing painters.  Op
+		//! integers: 0=Sum, 1=Product, 2=Lerp, 3=Max, 4=Min, 5=Difference.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddCompositeFunction2DPainter(
+									const char* name,					///< [in] Name of the painter
+									const char* pa,						///< [in] Low-value color painter
+									const char* pb,						///< [in] High-value color painter
+									const char* childA,					///< [in] First operand Function2D (name)
+									const char* childB,					///< [in] Second operand Function2D (name)
+									const unsigned int op,				///< [in] Operator (0..5)
+									const double weightA,				///< [in] Scalar multiplier on A
+									const double uvScaleA[2],			///< [in] (U, V) scale for A
+									const double uvOffsetA[2],			///< [in] (U, V) offset for A
+									const double weightB,				///< [in] Scalar multiplier on B
+									const double uvScaleB[2],			///< [in] (U, V) scale for B
+									const double uvOffsetB[2],			///< [in] (U, V) offset for B
+									const double lerpT,					///< [in] Lerp parameter (clamped to [0,1])
+									const double outputScale,			///< [in] Final-stage scalar multiplier
+									const double outputOffset			///< [in] Final-stage scalar offset
+									) = 0;
+
 		//! Adds a sum-of-sines water-wave painter (Gerstner height variant).
 		//! Intended to drive a DisplacedGeometry via the IFunction2D hook.
 		/// \return TRUE if successful, FALSE otherwise

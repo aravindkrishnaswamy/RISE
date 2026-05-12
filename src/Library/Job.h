@@ -497,6 +497,43 @@ namespace RISE
 									const unsigned int smoothnessMode
 									);
 
+		//! Adds a polynomial-based Function2D painter.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddPolynomialFunction2DPainter(
+									const char* name,
+									const char* pa,
+									const char* pb,
+									const unsigned int polynomialType,
+									const double center[2],
+									const double scale[2],
+									const double amplitude,
+									const unsigned int degree,
+									const unsigned int powerX,
+									const unsigned int powerY,
+									const double* pCoeffs,
+									const unsigned int nCoeffs
+									) override;
+
+		//! Adds a composable Function2D painter.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddCompositeFunction2DPainter(
+									const char* name,
+									const char* pa,
+									const char* pb,
+									const char* childA,
+									const char* childB,
+									const unsigned int op,
+									const double weightA,
+									const double uvScaleA[2],
+									const double uvOffsetA[2],
+									const double weightB,
+									const double uvScaleB[2],
+									const double uvOffsetB[2],
+									const double lerpT,
+									const double outputScale,
+									const double outputOffset
+									) override;
+
 		//! Adds a sum-of-sines water-wave painter (Gerstner height variant).
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddGerstnerWavePainter(

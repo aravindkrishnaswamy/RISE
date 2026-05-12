@@ -1494,6 +1494,8 @@ namespace RISE
 #include "Painters/MandelbrotPainter.h"
 #include "Painters/Perlin2DPainter.h"
 #include "Painters/ControlledSmoothness2DPainter.h"
+#include "Painters/CompositeFunction2DPainter.h"
+#include "Painters/PolynomialFunction2DPainter.h"
 #include "Painters/GerstnerWavePainter.h"
 #include "Painters/Perlin3DPainter.h"
 #include "Painters/Turbulence3DPainter.h"
@@ -1637,6 +1639,113 @@ namespace RISE
 
 		(*ppi) = new ControlledSmoothness2DPainter( cA, cB, centerU, centerV, radius, amplitude, mode );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "controlled-smoothness 2D painter" );
+		return true;
+	}
+
+	//! Creates a polynomial-based Function2D painter.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePolynomialFunction2DPainter(
+								IPainter** ppi,
+								const IPainter& cA,
+								const IPainter& cB,
+								const unsigned int polynomialType,
+								const Scalar centerU,
+								const Scalar centerV,
+								const Scalar scaleU,
+								const Scalar scaleV,
+								const Scalar amplitude,
+								const unsigned int degree,
+								const unsigned int powerX,
+								const unsigned int powerY,
+								const Scalar* pCoeffs,
+								const unsigned int nCoeffs
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Map the integer to the painter's enum.  Unknown values fall
+		// through to RadialBump (the most innocuous default) with a
+		// warning — silently dropping the chunk would be worse.
+		PolynomialFunction2DPainter::PolynomialType resolvedType;
+		switch( polynomialType ) {
+		case 0: resolvedType = PolynomialFunction2DPainter::eRadialBump;       break;
+		case 1: resolvedType = PolynomialFunction2DPainter::eMonomial;         break;
+		case 2: resolvedType = PolynomialFunction2DPainter::eParaboloid;       break;
+		case 3: resolvedType = PolynomialFunction2DPainter::eHyperbolicSaddle; break;
+		case 4: resolvedType = PolynomialFunction2DPainter::eMonkeySaddle;     break;
+		case 5: resolvedType = PolynomialFunction2DPainter::eBivariate;        break;
+		default:
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreatePolynomialFunction2DPainter: unknown polynomial type %u; using radial_bump",
+				polynomialType );
+			resolvedType = PolynomialFunction2DPainter::eRadialBump;
+			break;
+		}
+
+		(*ppi) = new PolynomialFunction2DPainter(
+			cA, cB, resolvedType,
+			centerU, centerV, scaleU, scaleV, amplitude,
+			degree, powerX, powerY,
+			pCoeffs, nCoeffs );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "polynomial function2d painter" );
+		return true;
+	}
+
+	//! Creates a composable Function2D painter (binary operator on two operand Function2Ds).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateCompositeFunction2DPainter(
+								IPainter** ppi,
+								const IPainter& cA,
+								const IPainter& cB,
+								const IFunction2D& childA,
+								const IFunction2D& childB,
+								const unsigned int op,
+								const Scalar weightA,
+								const Scalar uvScaleAU,
+								const Scalar uvScaleAV,
+								const Scalar uvOffsetAU,
+								const Scalar uvOffsetAV,
+								const Scalar weightB,
+								const Scalar uvScaleBU,
+								const Scalar uvScaleBV,
+								const Scalar uvOffsetBU,
+								const Scalar uvOffsetBV,
+								const Scalar lerpT,
+								const Scalar outputScale,
+								const Scalar outputOffset
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Map the integer to the painter's enum.  Unknown values fall
+		// through to Sum (the most common case for layered displacement)
+		// with a warning — silently dropping the chunk would be worse.
+		CompositeFunction2DPainter::CompositeOp resolvedOp;
+		switch( op ) {
+		case 0: resolvedOp = CompositeFunction2DPainter::eSum;        break;
+		case 1: resolvedOp = CompositeFunction2DPainter::eProduct;    break;
+		case 2: resolvedOp = CompositeFunction2DPainter::eLerp;       break;
+		case 3: resolvedOp = CompositeFunction2DPainter::eMax;        break;
+		case 4: resolvedOp = CompositeFunction2DPainter::eMin;        break;
+		case 5: resolvedOp = CompositeFunction2DPainter::eDifference; break;
+		default:
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreateCompositeFunction2DPainter: unknown op %u; using Sum",
+				op );
+			resolvedOp = CompositeFunction2DPainter::eSum;
+			break;
+		}
+
+		(*ppi) = new CompositeFunction2DPainter(
+			cA, cB, childA, childB, resolvedOp,
+			weightA, uvScaleAU, uvScaleAV, uvOffsetAU, uvOffsetAV,
+			weightB, uvScaleBU, uvScaleBV, uvOffsetBU, uvOffsetBV,
+			lerpT, outputScale, outputOffset );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "composite function2d painter" );
 		return true;
 	}
 

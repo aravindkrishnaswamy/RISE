@@ -813,6 +813,116 @@ bool Job::AddControlledSmoothness2DPainter(
 	return true;
 }
 
+//! Adds a polynomial-based Function2D painter.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddPolynomialFunction2DPainter(
+							const char* name,
+							const char* pa,
+							const char* pb,
+							const unsigned int polynomialType,
+							const double center[2],
+							const double scale[2],
+							const double amplitude,
+							const unsigned int degree,
+							const unsigned int powerX,
+							const unsigned int powerY,
+							const double* pCoeffs,
+							const unsigned int nCoeffs
+							)
+{
+	IPainter* pA = pPntManager->GetItem( pa );
+	IPainter* pB = pPntManager->GetItem( pb );
+
+	if( !pA || !pB ) {
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreatePolynomialFunction2DPainter(
+		&pPainter, *pA, *pB,
+		polynomialType,
+		center[0], center[1],
+		scale[0],  scale[1],
+		amplitude,
+		degree, powerX, powerY,
+		pCoeffs, nCoeffs );
+	if( !pPainter ) {
+		return false;
+	}
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
+//! Adds a composable Function2D painter that combines two operand
+//! Function2Ds per a binary operator.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddCompositeFunction2DPainter(
+							const char* name,
+							const char* pa,
+							const char* pb,
+							const char* childA,
+							const char* childB,
+							const unsigned int op,
+							const double weightA,
+							const double uvScaleA[2],
+							const double uvOffsetA[2],
+							const double weightB,
+							const double uvScaleB[2],
+							const double uvOffsetB[2],
+							const double lerpT,
+							const double outputScale,
+							const double outputOffset
+							)
+{
+	IPainter* pColA = pPntManager->GetItem( pa );
+	IPainter* pColB = pPntManager->GetItem( pb );
+
+	if( !pColA || !pColB ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddCompositeFunction2DPainter '%s': color painter lookup failed (colora='%s', colorb='%s')",
+			name, pa, pb );
+		return false;
+	}
+
+	// Children must already be registered as Function2Ds — i.e. a painter
+	// whose implementation derives from `Painter` (which exposes the
+	// IFunction2D Evaluate hook).  pPntManager + pFunc2DManager are kept
+	// in lockstep by the Add*Painter helpers above, so a failure here
+	// means the named painter doesn't actually evaluate as a Function2D.
+	IFunction2D* pChildA = pFunc2DManager->GetItem( childA );
+	IFunction2D* pChildB = pFunc2DManager->GetItem( childB );
+
+	if( !pChildA || !pChildB ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job::AddCompositeFunction2DPainter '%s': child Function2D lookup failed (child_a='%s', child_b='%s'); both children must be Function2D-implementing painters (Perlin2D, Gerstner, ControlledSmoothness2D, ConstantFunction2D, or another composite)",
+			name, childA, childB );
+		return false;
+	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateCompositeFunction2DPainter(
+		&pPainter,
+		*pColA, *pColB,
+		*pChildA, *pChildB,
+		op,
+		weightA,
+		uvScaleA[0], uvScaleA[1], uvOffsetA[0], uvOffsetA[1],
+		weightB,
+		uvScaleB[0], uvScaleB[1], uvOffsetB[0], uvOffsetB[1],
+		lerpT,
+		outputScale,
+		outputOffset );
+	if( !pPainter ) {
+		return false;
+	}
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
 //! Adds a sum-of-sines water-wave painter
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddGerstnerWavePainter(

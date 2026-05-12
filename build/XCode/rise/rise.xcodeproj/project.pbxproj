@@ -76,6 +76,14 @@
 		CDA10000000000000000000D /* ControlledSmoothness2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000B /* ControlledSmoothness2DPainter.h */; };
 		CDA10000000000000000000E /* ControlledSmoothness2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000A /* ControlledSmoothness2DPainter.cpp */; };
 		CDA10000000000000000000F /* ControlledSmoothness2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = CDA10000000000000000000B /* ControlledSmoothness2DPainter.h */; };
+		CC0F00000000000000000003 /* CompositeFunction2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000001 /* CompositeFunction2DPainter.cpp */; };
+		CC0F00000000000000000004 /* CompositeFunction2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000002 /* CompositeFunction2DPainter.h */; };
+		CC0F00000000000000000005 /* CompositeFunction2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000001 /* CompositeFunction2DPainter.cpp */; };
+		CC0F00000000000000000006 /* CompositeFunction2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000002 /* CompositeFunction2DPainter.h */; };
+		CC0F00000000000000000009 /* PolynomialFunction2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000007 /* PolynomialFunction2DPainter.cpp */; };
+		CC0F0000000000000000000A /* PolynomialFunction2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000008 /* PolynomialFunction2DPainter.h */; };
+		CC0F0000000000000000000B /* PolynomialFunction2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000007 /* PolynomialFunction2DPainter.cpp */; };
+		CC0F0000000000000000000C /* PolynomialFunction2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000008 /* PolynomialFunction2DPainter.h */; };
 		DDDD00000000000000000001 /* DisplacedGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000005 /* DisplacedGeometry.cpp */; };
 		DDDD00000000000000000002 /* DisplacedGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000006 /* DisplacedGeometry.h */; };
 		DDDD00000000000000000003 /* DisplacedGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DDDD00000000000000000005 /* DisplacedGeometry.cpp */; };
@@ -1822,6 +1830,10 @@
 		B7A4ED14F0DE4E61A0A3D001 /* SheenMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SheenMaterial.h; sourceTree = "<group>"; };
 		CDA10000000000000000000A /* ControlledSmoothness2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ControlledSmoothness2DPainter.cpp; sourceTree = "<group>"; };
 		CDA10000000000000000000B /* ControlledSmoothness2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ControlledSmoothness2DPainter.h; sourceTree = "<group>"; };
+		CC0F00000000000000000001 /* CompositeFunction2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CompositeFunction2DPainter.cpp; sourceTree = "<group>"; };
+		CC0F00000000000000000002 /* CompositeFunction2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CompositeFunction2DPainter.h; sourceTree = "<group>"; };
+		CC0F00000000000000000007 /* PolynomialFunction2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = PolynomialFunction2DPainter.cpp; sourceTree = "<group>"; };
+		CC0F00000000000000000008 /* PolynomialFunction2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PolynomialFunction2DPainter.h; sourceTree = "<group>"; };
 		DDDD00000000000000000005 /* DisplacedGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DisplacedGeometry.cpp; sourceTree = "<group>"; };
 		DDDD00000000000000000006 /* DisplacedGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DisplacedGeometry.h; sourceTree = "<group>"; };
 		DDDD0000000000000000000B /* GerstnerWavePainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GerstnerWavePainter.cpp; sourceTree = "<group>"; };
@@ -3357,6 +3369,10 @@
 				F27F0943069C42900069C9E5 /* Perlin2DPainter.h */,
 				CDA10000000000000000000A /* ControlledSmoothness2DPainter.cpp */,
 				CDA10000000000000000000B /* ControlledSmoothness2DPainter.h */,
+				CC0F00000000000000000001 /* CompositeFunction2DPainter.cpp */,
+				CC0F00000000000000000002 /* CompositeFunction2DPainter.h */,
+				CC0F00000000000000000007 /* PolynomialFunction2DPainter.cpp */,
+				CC0F00000000000000000008 /* PolynomialFunction2DPainter.h */,
 				DDDD0000000000000000000B /* GerstnerWavePainter.cpp */,
 				DDDD0000000000000000000C /* GerstnerWavePainter.h */,
 				F27F0944069C42900069C9E5 /* Perlin3DPainter.cpp */,
@@ -4281,6 +4297,8 @@
 				F27F0BA5069C42910069C9E5 /* Painter.h in Headers */,
 				F27F0BA7069C42910069C9E5 /* Perlin2DPainter.h in Headers */,
 				CDA10000000000000000000F /* ControlledSmoothness2DPainter.h in Headers */,
+				CC0F00000000000000000006 /* CompositeFunction2DPainter.h in Headers */,
+				CC0F0000000000000000000C /* PolynomialFunction2DPainter.h in Headers */,
 				DDDD0000000000000000000A /* GerstnerWavePainter.h in Headers */,
 				F27F0BA9069C42910069C9E5 /* Perlin3DPainter.h in Headers */,
 				F27F0BAB069C42910069C9E5 /* SpectralColorPainter.h in Headers */,
@@ -4819,6 +4837,8 @@
 				F27F0BA4069C42910069C9E5 /* Painter.cpp in Sources */,
 				F27F0BA6069C42910069C9E5 /* Perlin2DPainter.cpp in Sources */,
 				CDA10000000000000000000E /* ControlledSmoothness2DPainter.cpp in Sources */,
+				CC0F00000000000000000005 /* CompositeFunction2DPainter.cpp in Sources */,
+				CC0F0000000000000000000B /* PolynomialFunction2DPainter.cpp in Sources */,
 				DDDD00000000000000000009 /* GerstnerWavePainter.cpp in Sources */,
 				F27F0BA8069C42910069C9E5 /* Perlin3DPainter.cpp in Sources */,
 				F27F0BAA069C42910069C9E5 /* SpectralColorPainter.cpp in Sources */,
@@ -5398,6 +5418,10 @@
 				F24B73302F52A632008304C4 /* Perlin2DPainter.h in Sources */,
 				CDA10000000000000000000C /* ControlledSmoothness2DPainter.cpp in Sources */,
 				CDA10000000000000000000D /* ControlledSmoothness2DPainter.h in Sources */,
+				CC0F00000000000000000003 /* CompositeFunction2DPainter.cpp in Sources */,
+				CC0F00000000000000000004 /* CompositeFunction2DPainter.h in Sources */,
+				CC0F00000000000000000009 /* PolynomialFunction2DPainter.cpp in Sources */,
+				CC0F0000000000000000000A /* PolynomialFunction2DPainter.h in Sources */,
 				DDDD00000000000000000007 /* GerstnerWavePainter.cpp in Sources */,
 				DDDD00000000000000000008 /* GerstnerWavePainter.h in Sources */,
 				F24B73312F52A632008304C4 /* Perlin3DPainter.cpp in Sources */,

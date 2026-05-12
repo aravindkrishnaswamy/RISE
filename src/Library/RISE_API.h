@@ -869,6 +869,68 @@ namespace RISE
 								const unsigned int smoothnessMode	///< [in] 0/1/2/3/5/99
 								);
 
+	//! Creates a polynomial-based Function2D painter.  Evaluates a
+	//! polynomial in normalised coords (x,y) = ((u−center.u)/scale.u,
+	//! (v−center.v)/scale.v).  `polynomialType`:
+	//!   0 = radial_bump        (amplitude × max(0, 1 − r²)^degree)
+	//!   1 = monomial           (amplitude × x^powerX × y^powerY)
+	//!   2 = paraboloid         (amplitude × (x² + y²))
+	//!   3 = hyperbolic_saddle  (amplitude × (x² − y²))
+	//!   4 = monkey_saddle      (amplitude × (x³ − 3·x·y²))
+	//!   5 = bivariate          (amplitude × Σ a_{ij} x^i y^j, i+j ≤ degree)
+	//! For bivariate, pCoeffs supplies the (degree+1)(degree+2)/2
+	//! coefficients in row-major triangular order — see
+	//! `Painters/PolynomialFunction2DPainter.h` for the exact
+	//! ordering.  Pass nullptr / 0 for non-bivariate types.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePolynomialFunction2DPainter(
+								IPainter** ppi,					///< [out] Pointer to receive the painter
+								const IPainter& cA,				///< [in] Zero/low-end color painter
+								const IPainter& cB,				///< [in] Positive/peak-end color painter
+								const unsigned int polynomialType,	///< [in] Type enum (0..5)
+								const Scalar centerU,			///< [in] U origin for normalised x
+								const Scalar centerV,			///< [in] V origin for normalised y
+								const Scalar scaleU,			///< [in] U divisor (x = (u − cu)/sU)
+								const Scalar scaleV,			///< [in] V divisor
+								const Scalar amplitude,			///< [in] Global multiplier
+								const unsigned int degree,		///< [in] Degree (radial_bump / bivariate)
+								const unsigned int powerX,		///< [in] x exponent (monomial only)
+								const unsigned int powerY,		///< [in] y exponent (monomial only)
+								const Scalar* pCoeffs,			///< [in] Bivariate coefficients (or nullptr)
+								const unsigned int nCoeffs		///< [in] Number of bivariate coefficients (or 0)
+								);
+
+	//! Creates a composable Function2D painter.  Combines two operand
+	//! Function2Ds per a chosen binary operator (sum/product/lerp/max/min/
+	//! difference), after applying per-operand weight and (u,v) affine
+	//! transform, then a global output remap.  Implements both IPainter
+	//! (color interp between cA/cB by composite value) and IFunction2D
+	//! (the scalar combination — driveable by DisplacedGeometry).
+	//! Operator integer mapping: 0=Sum, 1=Product, 2=Lerp, 3=Max, 4=Min,
+	//! 5=Difference.  Unknown values fall back to Sum with a warning.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateCompositeFunction2DPainter(
+								IPainter** ppi,					///< [out] Pointer to receive the painter
+								const IPainter& cA,				///< [in] Low-value color painter
+								const IPainter& cB,				///< [in] High-value color painter
+								const IFunction2D& childA,		///< [in] First operand Function2D
+								const IFunction2D& childB,		///< [in] Second operand Function2D
+								const unsigned int op,			///< [in] Operator (0/1/2/3/4/5)
+								const Scalar weightA,			///< [in] Scalar multiplier on A
+								const Scalar uvScaleAU,			///< [in] U scale applied to (u,v) before sampling A
+								const Scalar uvScaleAV,			///< [in] V scale applied to (u,v) before sampling A
+								const Scalar uvOffsetAU,		///< [in] U offset applied to (u,v) before sampling A
+								const Scalar uvOffsetAV,		///< [in] V offset applied to (u,v) before sampling A
+								const Scalar weightB,			///< [in] Scalar multiplier on B
+								const Scalar uvScaleBU,			///< [in] U scale applied to (u,v) before sampling B
+								const Scalar uvScaleBV,			///< [in] V scale applied to (u,v) before sampling B
+								const Scalar uvOffsetBU,		///< [in] U offset applied to (u,v) before sampling B
+								const Scalar uvOffsetBV,		///< [in] V offset applied to (u,v) before sampling B
+								const Scalar lerpT,				///< [in] Lerp parameter (clamped to [0,1]; only used if op == Lerp)
+								const Scalar outputScale,		///< [in] Final-stage scalar multiplier
+								const Scalar outputOffset		///< [in] Final-stage scalar offset
+								);
+
 	//! Creates a sum-of-sines water-wave painter (Gerstner height variant).
 	/// Evaluate(u,v) returns the summed height of `numWaves` sine waves derived
 	/// from wind parameters + a deterministic seed.  Intended for

@@ -1,0 +1,347 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           polynomial_displacement_catalog.RISEscene                                               #
+#   Description:    Visual catalog of `polynomial_function2d_painter` types.  Six unit spheres are          #
+#                   tessellated and displaced by polynomials of varying degree and family.  Each sphere     #
+#                   exposes one named polynomial form so the surface character is directly comparable.      #
+#                                                                                                           #
+#                   Layout (looking at +Z):                                                                 #
+#                                                                                                           #
+#                       row 0 (y=+1.5):  radial_bump d=1   radial_bump d=3      monomial x²                 #
+#                       row 1 (y=-1.5):  paraboloid x²+y²  hyperbolic x²−y²     monkey saddle x³−3xy²       #
+#                                                                                                           #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-05-12                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+bdpt_pel_rasterizer
+{
+	samples			8
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/polynomial_displacement_catalog
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			900
+	height			600
+}
+
+pinhole_camera
+{
+	location		0 0 12
+	lookat			0 0 0
+	up				0 1 0
+	fov				28.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+# --- Polynomial family A: radial-bump, varying degree ---
+# f = amplitude × max(0, 1 − r²)^degree
+# r² = x² + y², (x,y) ∈ [-1,1]² via default center/scale.
+# degree=1 → parabolic dome (C⁰ at boundary).
+polynomial_function2d_painter
+{
+	name		poly_radial_d1
+	colora		color_navy
+	colorb		color_orange
+	type		radial_bump
+	amplitude	0.25
+	degree		1
+}
+
+# degree=3 → sextic bump (C² at boundary): the same support disk but a
+# visibly smoother transition into the un-displaced surface.
+polynomial_function2d_painter
+{
+	name		poly_radial_d3
+	colora		color_navy
+	colorb		color_orange
+	type		radial_bump
+	amplitude	0.25
+	degree		3
+}
+
+# --- Polynomial family B: monomial ---
+# f = amplitude × x^power_x × y^power_y.
+# (px=2, py=0) → parabolic ridge along V (the displacement is 0 along
+# the central meridian, max at the eastern / western seams).
+polynomial_function2d_painter
+{
+	name		poly_monomial_x2
+	colora		color_navy
+	colorb		color_orange
+	type		monomial
+	amplitude	0.25
+	power_x		2
+	power_y		0
+}
+
+# --- Polynomial family C: paraboloid ---
+# f = amplitude × (x² + y²).  Always non-negative; max at the corners.
+polynomial_function2d_painter
+{
+	name		poly_paraboloid
+	colora		color_navy
+	colorb		color_orange
+	type		paraboloid
+	amplitude	0.20
+}
+
+# --- Polynomial family D: hyperbolic saddle ---
+# f = amplitude × (x² − y²).  Push along x, pull along y.
+polynomial_function2d_painter
+{
+	name		poly_saddle
+	colora		color_navy
+	colorb		color_orange
+	type		hyperbolic_saddle
+	amplitude	0.25
+}
+
+# --- Polynomial family E: monkey saddle (cubic, 3-fold symmetric) ---
+# f = amplitude × (x³ − 3xy²).
+polynomial_function2d_painter
+{
+	name		poly_monkey
+	colora		color_navy
+	colorb		color_orange
+	type		monkey_saddle
+	amplitude	0.25
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name		mat_radial_d1
+	reflectance	poly_radial_d1
+}
+
+lambertian_material
+{
+	name		mat_radial_d3
+	reflectance	poly_radial_d3
+}
+
+lambertian_material
+{
+	name		mat_monomial_x2
+	reflectance	poly_monomial_x2
+}
+
+lambertian_material
+{
+	name		mat_paraboloid
+	reflectance	poly_paraboloid
+}
+
+lambertian_material
+{
+	name		mat_saddle
+	reflectance	poly_saddle
+}
+
+lambertian_material
+{
+	name		mat_monkey
+	reflectance	poly_monkey
+}
+
+##################################################
+# Geometry
+##################################################
+
+sphere_geometry
+{
+	name		sphere_base
+	radius		1.0
+}
+
+displaced_geometry
+{
+	name			sphere_radial_d1
+	base_geometry	sphere_base
+	detail			96
+	displacement	poly_radial_d1
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+displaced_geometry
+{
+	name			sphere_radial_d3
+	base_geometry	sphere_base
+	detail			96
+	displacement	poly_radial_d3
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+displaced_geometry
+{
+	name			sphere_monomial_x2
+	base_geometry	sphere_base
+	detail			96
+	displacement	poly_monomial_x2
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+displaced_geometry
+{
+	name			sphere_paraboloid
+	base_geometry	sphere_base
+	detail			96
+	displacement	poly_paraboloid
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+displaced_geometry
+{
+	name			sphere_saddle
+	base_geometry	sphere_base
+	detail			96
+	displacement	poly_saddle
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+displaced_geometry
+{
+	name			sphere_monkey
+	base_geometry	sphere_base
+	detail			96
+	displacement	poly_monkey
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+##################################################
+# Objects (3×2 grid centred on origin, X-spacing 2.5, Y-spacing 2.5)
+##################################################
+
+# Row 0 (y = +1.25): radial bumps + monomial x²
+standard_object
+{
+	name		obj_radial_d1
+	geometry	sphere_radial_d1
+	position	-2.5 1.25 0
+	orientation	0 0 0
+	material	mat_radial_d1
+	receives_shadows false
+}
+
+standard_object
+{
+	name		obj_radial_d3
+	geometry	sphere_radial_d3
+	position	0 1.25 0
+	orientation	0 0 0
+	material	mat_radial_d3
+	receives_shadows false
+}
+
+standard_object
+{
+	name		obj_monomial_x2
+	geometry	sphere_monomial_x2
+	position	2.5 1.25 0
+	orientation	0 0 0
+	material	mat_monomial_x2
+	receives_shadows false
+}
+
+# Row 1 (y = -1.25): paraboloid, hyperbolic saddle, monkey saddle
+standard_object
+{
+	name		obj_paraboloid
+	geometry	sphere_paraboloid
+	position	-2.5 -1.25 0
+	orientation	0 0 0
+	material	mat_paraboloid
+	receives_shadows false
+}
+
+standard_object
+{
+	name		obj_saddle
+	geometry	sphere_saddle
+	position	0 -1.25 0
+	orientation	0 0 0
+	material	mat_saddle
+	receives_shadows false
+}
+
+standard_object
+{
+	name		obj_monkey
+	geometry	sphere_monkey
+	position	2.5 -1.25 0
+	orientation	0 0 0
+	material	mat_monkey
+	receives_shadows false
+}
+
+##################################################
+# Lighting — strong key from upper right with a softer fill from the left
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1.0 1.0 1.0
+	direction	0.7 0.7 1.0
+}
+
+directional_light
+{
+	name		fill
+	power		1.0
+	color		1.0 1.0 1.0
+	direction	-0.6 -0.2 0.5
+}

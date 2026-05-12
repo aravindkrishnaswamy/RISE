@@ -1,0 +1,166 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           composite_displaced_sphere.RISEscene                                                    #
+#   Description:    Demonstrates `composite_function2d_painter` driving displacement on a sphere.  The      #
+#                   composite sums a low-frequency Gerstner-wave painter (the large-scale undulation) with  #
+#                   a high-frequency Perlin painter (the fine-grain noise).  This is the canonical          #
+#                   "polynomial + Perlin"-style multi-scale displacement from the design doc, adapted to    #
+#                   the painters that actually exist in the codebase.                                       #
+#                                                                                                           #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-05-11                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+bdpt_pel_rasterizer
+{
+	samples			8
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/composite_displaced_sphere
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			600
+	height			600
+}
+
+pinhole_camera
+{
+	location		0 0 4
+	lookat			0 0 0
+	up				0 1 0
+	fov				30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+# Large-scale undulation: low-frequency Gerstner-wave field.  Replaces the
+# "polynomial" of the design doc — the codebase has no polynomial painter,
+# but Gerstner serves the same "smooth long-wavelength base" role.
+gerstnerwave_painter
+{
+	name				pnt_base_waves
+	colora				color_black
+	colorb				color_white
+	num_waves			4
+	median_wavelength	0.6
+	wavelength_range	1.5
+	median_amplitude	0.04
+	amplitude_power		0.5
+	wind_dir			1.0 0.3
+	directional_spread	0.4
+	dispersion_speed	1.0
+	seed				11
+	time				0.0
+}
+
+# High-frequency detail: octave Perlin noise.
+perlin2d_painter
+{
+	name			pnt_detail_noise
+	colora			color_black
+	colorb			color_white
+	persistence		0.55
+	scale			20 20
+	shift			0 0
+	octaves			3
+}
+
+# Composite displacement: base undulation + scaled-down high-freq detail.
+# Both operands sample (u,v) at their natural rate (uv_scale 1,1) since
+# each child already has its own intrinsic frequency built in.  The
+# weight_b=0.25 dampens the noise so the underlying wave shape stays
+# recognisable.
+composite_function2d_painter
+{
+	name			pnt_layered_displacement
+	op				sum
+	colora			color_navy
+	colorb			color_orange
+	child_a			pnt_base_waves
+	weight_a		1.0
+	child_b			pnt_detail_noise
+	weight_b		0.25
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name			mat_sphere
+	reflectance		pnt_layered_displacement
+}
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name			sphere_base
+	radius			1.0
+}
+
+# Tessellated, displaced.  `displacement` references our composite, which
+# DisplacedGeometry calls per mesh vertex.  disp_scale is the global
+# amplitude knob — the composite produces values roughly in
+# [-0.04 - 0.25, 0.04 + 0.25] = [-0.29, 0.29] before this scaling, so
+# disp_scale 1.0 keeps deformations well below the radius (1.0).
+displaced_geometry
+{
+	name			sphere_displaced
+	base_geometry	sphere_base
+	detail			128
+	displacement	pnt_layered_displacement
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+standard_object
+{
+	name			ball
+	geometry		sphere_displaced
+	orientation		0 0 0
+	position		0 0 0
+	material		mat_sphere
+	receives_shadows false
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.6 0.6 1.0
+}

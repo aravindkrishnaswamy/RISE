@@ -1,0 +1,145 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           composite_sum_multi_scale.RISEscene                                                     #
+#   Description:    Demonstrates `composite_function2d_painter` summing two Perlin sources at different     #
+#                   (u,v) scales — a multi-scale / fBM-like composition.  The composite drives a            #
+#                   Lambertian material on a flat box so the result is visible as a 2D pattern.             #
+#                                                                                                           #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-05-11                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+bdpt_pel_rasterizer
+{
+	samples			8
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/composite_sum_multi_scale
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			600
+	height			600
+}
+
+pinhole_camera
+{
+	location		0 0 6
+	lookat			0 0 0
+	up				0 1 0
+	fov				30.0
+}
+
+##################################################
+# Painters
+##################################################
+
+> run scenes/colors.RISEscript
+
+# Single Perlin source — the composite scales (u,v) per-operand so we get
+# two frequency bands out of one underlying noise.
+perlin2d_painter
+{
+	name			pnt_perlin_base
+	colora			color_black
+	colorb			color_white
+	persistence		0.5
+	scale			1 1
+	shift			0 0
+	octaves			3
+}
+
+# A constant-1 Function2D painter used to cap the composite when we need a
+# bias; left registered for re-use by other scenes via `child_a none`-style
+# defaults.  Not currently consumed.
+# (No constant_function2d_painter chunk exists; this comment is a marker
+# for the design discussion only.)
+
+# Composite: sum of low-freq Perlin (uv_scale 4x) + high-freq Perlin (uv_scale 16x)
+# with weighted falloff at higher frequencies (fBM-style).  Both children
+# reference the SAME underlying Perlin painter — the composite's per-operand
+# uv_scale gives the multi-scale band structure.
+#
+# Output is remapped from Perlin's intrinsic ~[-1, 1] range to [0, 1] via
+# output_scale=0.5 + output_offset=0.5 so the color blend uses the full
+# colora→colorb range.
+composite_function2d_painter
+{
+	name			pnt_composite
+	op				sum
+	colora			color_navy
+	colorb			color_orange
+	child_a			pnt_perlin_base
+	weight_a		1.0
+	uv_scale_a		4 4
+	uv_offset_a		0 0
+	child_b			pnt_perlin_base
+	weight_b		0.4
+	uv_scale_b		16 16
+	uv_offset_b		17 31
+	output_scale	0.5
+	output_offset	0.5
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name			mat_composite
+	reflectance		pnt_composite
+}
+
+##################################################
+# Objects
+##################################################
+
+box_geometry
+{
+	name			box_geom
+	width			3
+	height			3
+	depth			0.1
+}
+
+standard_object
+{
+	name			panel
+	geometry		box_geom
+	orientation		0 0 0
+	position		0 0 0
+	material		mat_composite
+	receives_shadows false
+}
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0 0 1
+}

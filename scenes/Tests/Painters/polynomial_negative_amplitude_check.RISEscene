@@ -1,0 +1,149 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           polynomial_negative_amplitude_check.RISEscene                                           #
+#   Description:    Sign-of-amplitude regression check.  Two spheres with the SAME radial-bump painter,     #
+#                   one at amplitude = +0.25 (positive dome) and one at amplitude = -0.25 (inverted         #
+#                   divot).  colora = navy (zero/negative end), colorb = orange (positive end).             #
+#                                                                                                           #
+#                   Correct behaviour (after the P2 fix):                                                   #
+#                     - Positive sphere centre: f = +0.25 → orange (colorb).                                #
+#                     - Negative sphere centre: f = -0.25 → navy   (colora) because the value is            #
+#                       negative; the painter does NOT silently flip the colour mapping just because        #
+#                       the author authored a negative amplitude.                                           #
+#                                                                                                           #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-05-12                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+bdpt_pel_rasterizer
+{
+	samples		8
+}
+
+file_rasterizeroutput
+{
+	pattern		rendered/polynomial_negative_amplitude_check
+	type		PNG
+	bpp			8
+	color_space	sRGB
+}
+
+film
+{
+	width		600
+	height		300
+}
+
+pinhole_camera
+{
+	location	0 0 8
+	lookat		0 0 0
+	up			0 1 0
+	fov			28.0
+}
+
+> run scenes/colors.RISEscript
+
+# Positive-amplitude radial bump: dome with orange peak.
+polynomial_function2d_painter
+{
+	name		poly_pos
+	colora		color_navy
+	colorb		color_orange
+	type		radial_bump
+	amplitude	0.25
+	degree		2
+}
+
+# Negative-amplitude radial bump: divot.  Function value at center is
+# −0.25 → t = v / |amplitude| = −1 → clamped to 0 → colorA (navy).
+# (Before the fix this rendered as colorB because the code divided by
+# amplitude instead of |amplitude|, flipping t to +1.)
+polynomial_function2d_painter
+{
+	name		poly_neg
+	colora		color_navy
+	colorb		color_orange
+	type		radial_bump
+	amplitude	-0.25
+	degree		2
+}
+
+lambertian_material
+{
+	name		mat_pos
+	reflectance	poly_pos
+}
+
+lambertian_material
+{
+	name		mat_neg
+	reflectance	poly_neg
+}
+
+sphere_geometry
+{
+	name		sphere_base
+	radius		1.0
+}
+
+displaced_geometry
+{
+	name			sphere_pos
+	base_geometry	sphere_base
+	detail			96
+	displacement	poly_pos
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+displaced_geometry
+{
+	name			sphere_neg
+	base_geometry	sphere_base
+	detail			96
+	displacement	poly_neg
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+standard_object
+{
+	name		obj_pos
+	geometry	sphere_pos
+	position	-1.6 0 0
+	orientation	0 0 0
+	material	mat_pos
+	receives_shadows false
+}
+
+standard_object
+{
+	name		obj_neg
+	geometry	sphere_neg
+	position	1.6 0 0
+	orientation	0 0 0
+	material	mat_neg
+	receives_shadows false
+}
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1.0 1.0 1.0
+	direction	0.7 0.7 1.0
+}

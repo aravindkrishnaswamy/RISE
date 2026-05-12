@@ -1559,6 +1559,179 @@ namespace RISE
 				}
 			};
 
+			struct PolynomialFunction2DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				// Map user-facing type string → API integer.  Unknown
+				// strings fall through to 0 (radial_bump) with a
+				// warning, matching the API layer's guard.
+				static unsigned int ParseType( const std::string& s )
+				{
+					if( s == "radial_bump" )       return 0;
+					if( s == "monomial" )          return 1;
+					if( s == "paraboloid" )        return 2;
+					if( s == "hyperbolic_saddle" ) return 3;
+					if( s == "monkey_saddle" )     return 4;
+					if( s == "bivariate" )         return 5;
+					GlobalLog()->PrintEx( eLog_Warning,
+						"polynomial_function2d_painter: unknown type '%s'; defaulting to 'radial_bump'",
+						s.c_str() );
+					return 0;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name      = bag.GetString( "name",      "noname" );
+					std::string colora    = bag.GetString( "colora",    "none" );
+					std::string colorb    = bag.GetString( "colorb",    "none" );
+					std::string typeStr   = bag.GetString( "type",      "radial_bump" );
+					double amplitude      = bag.GetDouble( "amplitude", 1.0 );
+					unsigned int degree   = bag.GetUInt(   "degree",    2 );
+					unsigned int powerX   = bag.GetUInt(   "power_x",   0 );
+					unsigned int powerY   = bag.GetUInt(   "power_y",   0 );
+
+					// Defaults: centre and scale map [0,1]² UV → [-1, 1]²,
+					// the natural domain for unit-form polynomials.
+					double center[2] = { 0.5, 0.5 };
+					double scale[2]  = { 0.5, 0.5 };
+					if( bag.Has( "center" ) ) sscanf( bag.GetString( "center" ).c_str(), "%lf %lf", &center[0], &center[1] );
+					if( bag.Has( "scale" )  ) sscanf( bag.GetString( "scale"  ).c_str(), "%lf %lf", &scale[0],  &scale[1]  );
+
+					// Bivariate coefficients: space-separated doubles.
+					// Token-by-token parse so the user may supply any
+					// length, with implicit zero-fill / clipping per
+					// the API contract.
+					std::vector<double> coeffs;
+					if( bag.Has( "coefficients" ) ) {
+						const std::string& s = bag.GetString( "coefficients" );
+						std::istringstream iss( s );
+						double v;
+						while( iss >> v ) {
+							coeffs.push_back( v );
+						}
+					}
+
+					const unsigned int polynomialType = ParseType( typeStr );
+
+					return pJob.AddPolynomialFunction2DPainter(
+						name.c_str(),
+						colora.c_str(), colorb.c_str(),
+						polynomialType,
+						center, scale,
+						amplitude,
+						degree, powerX, powerY,
+						coeffs.empty() ? nullptr : coeffs.data(),
+						static_cast<unsigned int>( coeffs.size() ) );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "polynomial_function2d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Polynomial-based Function2D painter.  Evaluates a polynomial in normalised coords ((u−center.u)/scale.u, (v−center.v)/scale.v); the `type` selects one of: radial_bump (compact-support bump), monomial (single term x^px·y^py), paraboloid, hyperbolic_saddle, monkey_saddle, or bivariate (general).  Drives `displaced_geometry` and texture materials alike.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "colora";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Zero/low-end colour"; }
+						{ auto& p = P(); p.name = "colorb";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Positive/peak-end colour"; }
+						{ auto& p = P(); p.name = "type";         p.kind = ValueKind::String;    p.description = "Polynomial family: radial_bump | monomial | paraboloid | hyperbolic_saddle | monkey_saddle | bivariate"; p.defaultValueHint = "radial_bump"; }
+						{ auto& p = P(); p.name = "center";       p.kind = ValueKind::DoubleVec3;p.description = "(U, V) origin for the normalised coordinates"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "scale";        p.kind = ValueKind::DoubleVec3;p.description = "(U, V) divisor: x = (u − center.u)/scale.u"; p.defaultValueHint = "0.5 0.5"; }
+						{ auto& p = P(); p.name = "amplitude";    p.kind = ValueKind::Double;    p.description = "Global multiplier"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "degree";       p.kind = ValueKind::UInt;      p.description = "Degree for radial_bump (smoothness exponent) and bivariate (max total degree)"; p.defaultValueHint = "2"; }
+						{ auto& p = P(); p.name = "power_x";      p.kind = ValueKind::UInt;      p.description = "x exponent for monomial type"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "power_y";      p.kind = ValueKind::UInt;      p.description = "y exponent for monomial type"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "coefficients"; p.kind = ValueKind::String;    p.description = "Bivariate coefficients, space-separated, row-major triangular order: a00, a10, a01, a20, a11, a02, a30, a21, a12, a03, ... (a_ij = coefficient of x^i y^j).  Length up to (degree+1)(degree+2)/2; shorter is OK (rest implicitly zero)."; p.defaultValueHint = ""; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct CompositeFunction2DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				// Map the user-facing op string to the integer the API
+				// expects.  Unknown values resolve to 0 (Sum) with a
+				// warning at Finalize time; the API layer also guards.
+				static unsigned int ParseOp( const std::string& s )
+				{
+					if( s == "sum" )        return 0;
+					if( s == "product" )    return 1;
+					if( s == "lerp" )       return 2;
+					if( s == "max" )        return 3;
+					if( s == "min" )        return 4;
+					if( s == "difference" ) return 5;
+					GlobalLog()->PrintEx( eLog_Warning,
+						"composite_function2d_painter: unknown op '%s'; defaulting to 'sum'",
+						s.c_str() );
+					return 0;
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name         = bag.GetString( "name",          "noname" );
+					std::string colora       = bag.GetString( "colora",        "none" );
+					std::string colorb       = bag.GetString( "colorb",        "none" );
+					std::string childA       = bag.GetString( "child_a",       "none" );
+					std::string childB       = bag.GetString( "child_b",       "none" );
+					std::string opStr        = bag.GetString( "op",            "sum" );
+					double weightA           = bag.GetDouble( "weight_a",      1.0 );
+					double weightB           = bag.GetDouble( "weight_b",      1.0 );
+					double lerpT             = bag.GetDouble( "lerp_t",        0.5 );
+					double outputScale       = bag.GetDouble( "output_scale",  1.0 );
+					double outputOffset      = bag.GetDouble( "output_offset", 0.0 );
+
+					// (U, V) affine transform per operand.  Default
+					// scale 1.0 1.0 and offset 0 0 = identity, so the
+					// minimal-config case (just `op`, `child_a`,
+					// `child_b`) Just Works.
+					double uvScaleA[2]  = { 1.0, 1.0 };
+					double uvOffsetA[2] = { 0.0, 0.0 };
+					double uvScaleB[2]  = { 1.0, 1.0 };
+					double uvOffsetB[2] = { 0.0, 0.0 };
+					if( bag.Has( "uv_scale_a"  ) ) sscanf( bag.GetString( "uv_scale_a"  ).c_str(), "%lf %lf", &uvScaleA[0],  &uvScaleA[1]  );
+					if( bag.Has( "uv_offset_a" ) ) sscanf( bag.GetString( "uv_offset_a" ).c_str(), "%lf %lf", &uvOffsetA[0], &uvOffsetA[1] );
+					if( bag.Has( "uv_scale_b"  ) ) sscanf( bag.GetString( "uv_scale_b"  ).c_str(), "%lf %lf", &uvScaleB[0],  &uvScaleB[1]  );
+					if( bag.Has( "uv_offset_b" ) ) sscanf( bag.GetString( "uv_offset_b" ).c_str(), "%lf %lf", &uvOffsetB[0], &uvOffsetB[1] );
+
+					const unsigned int op = ParseOp( opStr );
+
+					return pJob.AddCompositeFunction2DPainter(
+						name.c_str(),
+						colora.c_str(), colorb.c_str(),
+						childA.c_str(), childB.c_str(),
+						op,
+						weightA, uvScaleA, uvOffsetA,
+						weightB, uvScaleB, uvOffsetB,
+						lerpT,
+						outputScale, outputOffset );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "composite_function2d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Composable Function2D painter: combines two operand Function2Ds per a binary operator (sum/product/lerp/max/min/difference), with per-operand weight + (u,v) affine transform and a global output remap.  Used for multi-scale displacement and procedural texture composition.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "op";            p.kind = ValueKind::String;    p.description = "Binary operator: sum | product | lerp | max | min | difference"; p.defaultValueHint = "sum"; }
+						{ auto& p = P(); p.name = "colora";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Low-value color painter"; }
+						{ auto& p = P(); p.name = "colorb";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "High-value color painter"; }
+						{ auto& p = P(); p.name = "child_a";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First operand Function2D (must be a Function2D-implementing painter)"; }
+						{ auto& p = P(); p.name = "child_b";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second operand Function2D (must be a Function2D-implementing painter)"; }
+						{ auto& p = P(); p.name = "weight_a";      p.kind = ValueKind::Double;    p.description = "Scalar multiplier applied to A before the operator"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "weight_b";      p.kind = ValueKind::Double;    p.description = "Scalar multiplier applied to B before the operator"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "uv_scale_a";    p.kind = ValueKind::DoubleVec3;p.description = "(U, V) scale applied to (u,v) before sampling A (only first two components used)"; p.defaultValueHint = "1.0 1.0"; }
+						{ auto& p = P(); p.name = "uv_offset_a";   p.kind = ValueKind::DoubleVec3;p.description = "(U, V) offset applied to (u,v) before sampling A"; p.defaultValueHint = "0.0 0.0"; }
+						{ auto& p = P(); p.name = "uv_scale_b";    p.kind = ValueKind::DoubleVec3;p.description = "(U, V) scale applied to (u,v) before sampling B"; p.defaultValueHint = "1.0 1.0"; }
+						{ auto& p = P(); p.name = "uv_offset_b";   p.kind = ValueKind::DoubleVec3;p.description = "(U, V) offset applied to (u,v) before sampling B"; p.defaultValueHint = "0.0 0.0"; }
+						{ auto& p = P(); p.name = "lerp_t";        p.kind = ValueKind::Double;    p.description = "Lerp parameter (clamped to [0,1]); only used when op = lerp"; p.defaultValueHint = "0.5"; }
+						{ auto& p = P(); p.name = "output_scale";  p.kind = ValueKind::Double;    p.description = "Final-stage scalar multiplier applied AFTER the operator"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "output_offset"; p.kind = ValueKind::Double;    p.description = "Final-stage scalar offset added AFTER output_scale"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct Perlin3DPainterAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -7990,6 +8163,8 @@ namespace RISE
 		add( "mandelbrot_painter",                    new MandelbrotPainterAsciiChunkParser() );
 		add( "perlin2d_painter",                      new Perlin2DPainterAsciiChunkParser() );
 		add( "controlled_smoothness2d_painter",       new ControlledSmoothness2DPainterAsciiChunkParser() );
+		add( "polynomial_function2d_painter",         new PolynomialFunction2DPainterAsciiChunkParser() );
+		add( "composite_function2d_painter",          new CompositeFunction2DPainterAsciiChunkParser() );
 		add( "gerstnerwave_painter",                  new GerstnerWavePainterAsciiChunkParser() );
 		add( "perlin3d_painter",                      new Perlin3DPainterAsciiChunkParser() );
 		add( "turbulence3d_painter",                  new Turbulence3DPainterAsciiChunkParser() );

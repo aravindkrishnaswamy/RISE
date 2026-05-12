@@ -44,7 +44,7 @@ These describe shipped work. Retained as historical design records; the body sho
 
 ## Engineering Skills
 
-- [skills/](skills/): process skills distilled from prior RISE sessions — multi-reviewer code review, perf work with baselines, ABI-preserving API evolution, const-correctness decision tree, precision-fix-the-formulation, SMS firefly diagnosis, BDPT/VCM MIS balance, variance measurement, effective scene authoring, write-highly-effective-tests. Read the matching skill BEFORE starting a task of that shape. Model-agnostic markdown; Claude Code auto-invokes via `.claude/skills/` shims.
+- [skills/](skills/): process skills distilled from prior RISE sessions — multi-reviewer code review, perf work with baselines, const-correctness decision tree, precision-fix-the-formulation, SMS firefly diagnosis, BDPT/VCM MIS balance, variance measurement, effective scene authoring, write-highly-effective-tests. Read the matching skill BEFORE starting a task of that shape. Model-agnostic markdown; Claude Code auto-invokes via `.claude/skills/` shims.
 
 ## Related Docs Outside `docs/`
 
