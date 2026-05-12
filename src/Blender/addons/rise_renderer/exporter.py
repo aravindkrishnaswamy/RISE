@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import array
+import math
 import os
 import re
 import tempfile
@@ -26,6 +27,9 @@ COLOR_SPACE_SRGB = 1
 FILTER_BILINEAR = 1
 
 MODIFIER_BUMP = 0
+MODIFIER_NORMAL_MAP = 1
+
+COLOR_SPACE_ROMM_LINEAR = 2
 
 MATERIAL_LAMBERT = 0
 MATERIAL_GGX = 1
@@ -305,6 +309,12 @@ class _ExportState:
         self.painter_cache: dict[tuple, str] = {}
         self.modifier_cache: dict[tuple, str] = {}
         self.medium_cache: dict[tuple, str] = {}
+        # Cache of unpacked (or otherwise resolved-to-disk) image
+        # filepaths, keyed by id(bpy.types.Image).  Some scenes embed
+        # the HDRI / texture inside the .blend; we transparently
+        # round-trip them through a temp file because RISE's painter
+        # loaders only accept filepaths.
+        self.image_path_cache: dict[int, str] = {}
 
 
 def _warn_once(state: _ExportState, message: str):
@@ -394,16 +404,90 @@ def _resolved_image_path(image) -> str | None:
     return os.path.realpath(resolved)
 
 
+_PACKED_UNPACK_DIR_NAME = "rise_blender_unpack"
+
+
+def _unpack_image_to_disk(image, state: _ExportState | None) -> str | None:
+    """Write a packed bpy.types.Image's raw bytes to a temp file so the
+    RISE bridge (filepath-based loaders) can read it.
+
+    For .hdr / .exr / .png / .jpg / .tiff sources the packed bytes ARE
+    the original file content — we just dump them verbatim.  Result is
+    cached per state so repeated references to the same image don't
+    re-write the file.
+    """
+    if image is None or image.packed_file is None:
+        return None
+
+    cache = state.image_path_cache if state is not None else None
+    if cache is not None:
+        cached = cache.get(id(image))
+        if cached and os.path.exists(cached):
+            return cached
+
+    extension = os.path.splitext(image.filepath_raw or image.name or "")[1].lower()
+    if extension not in SUPPORTED_IMAGE_KINDS:
+        # No usable extension on filepath — guess from the image's
+        # detected format if available.  Default to .hdr because
+        # packed env textures are by far the most common case.
+        format_name = getattr(image, "file_format", "") or ""
+        format_map = {
+            "HDR": ".hdr",
+            "OPEN_EXR": ".exr",
+            "OPEN_EXR_MULTILAYER": ".exr",
+            "PNG": ".png",
+            "JPEG": ".jpg",
+            "JPEG2000": ".jpg",
+            "TIFF": ".tif",
+        }
+        extension = format_map.get(format_name.upper(), ".hdr")
+
+    out_dir = os.path.join(bpy.app.tempdir or tempfile.gettempdir(), _PACKED_UNPACK_DIR_NAME)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError:
+        return None
+
+    safe_stem = _safe_name(image.name_full or image.name or "image")
+    out_path = os.path.join(out_dir, f"{safe_stem}_{id(image):x}{extension}")
+
+    try:
+        # PackedFile.data is a bytes-like attribute in Blender 3.x+;
+        # `bytes(...)` works on it directly.
+        with open(out_path, "wb") as handle:
+            handle.write(bytes(image.packed_file.data))
+    except OSError as exc:
+        if state is not None:
+            _warn_once(state, f"RISE could not unpack image '{image.name_full}' to disk: {exc}.")
+        return None
+
+    if cache is not None:
+        cache[id(image)] = out_path
+    return out_path
+
+
+def _resolve_image_for_bridge(image, state: _ExportState | None) -> str | None:
+    """Return an on-disk filepath for an image, unpacking it if needed.
+
+    Priority:
+        1. The user-supplied filepath, if it exists on disk.
+        2. The packed bytes round-tripped through a temp file.
+    """
+    direct = _resolved_image_path(image)
+    if direct and os.path.exists(direct):
+        return direct
+    if image is not None and image.packed_file is not None:
+        return _unpack_image_to_disk(image, state)
+    return direct  # may be a missing-path string for downstream warning
+
+
 def _validate_texture_wrapper(texture_wrapper, state: _ExportState, context_name: str) -> tuple[str, int] | None:
     if texture_wrapper is None or texture_wrapper.image is None:
         return None
 
     image = texture_wrapper.image
-    if image.source != "FILE":
-        _warn_once(state, f"RISE only supports external file-backed textures for {context_name}.")
-        return None
-    if image.packed_file is not None:
-        _warn_once(state, f"RISE does not support packed textures for {context_name}.")
+    if image.source not in ("FILE", "GENERATED"):
+        _warn_once(state, f"RISE only supports file-backed or packed textures for {context_name}.")
         return None
     if getattr(texture_wrapper, "has_mapping_node", None) and texture_wrapper.has_mapping_node():
         _warn_once(state, f"RISE currently ignores Mapping nodes for {context_name}.")
@@ -418,7 +502,7 @@ def _validate_texture_wrapper(texture_wrapper, state: _ExportState, context_name
         _warn_once(state, f"RISE currently supports only repeat image extension for {context_name}.")
         return None
 
-    filepath = _resolved_image_path(image)
+    filepath = _resolve_image_for_bridge(image, state)
     if not filepath or not os.path.exists(filepath):
         _warn_once(state, f"RISE could not resolve the image file used for {context_name}.")
         return None
@@ -612,22 +696,66 @@ def _warn_unsupported_principled_features(state: _ExportState, material, wrapper
     _check_principled_feature(state, node, material_name, "Subsurface Weight", 0.0, "subsurface")
 
 
-def _direct_bump_modifier(material, wrapper: PrincipledBSDFWrapper, state: _ExportState) -> str | None:
+class _ImageSocketWrapper:
+    """Minimal wrapper that lets _validate_texture_wrapper inspect a
+    raw ShaderNodeTexImage as if it were a node_shader_utils texture
+    wrapper.  Used by both the bump and normal-map paths."""
+
+    def __init__(self, node_image, colorspace_is_data: bool, colorspace_name: str):
+        self.node_image = node_image
+        self.image = node_image.image
+        self.colorspace_is_data = colorspace_is_data
+        self.colorspace_name = colorspace_name
+
+    def has_mapping_node(self) -> bool:
+        vector_input = self.node_image.inputs["Vector"]
+        return vector_input.is_linked and vector_input.links[0].from_node.bl_idname == "ShaderNodeMapping"
+
+    @property
+    def texcoords(self) -> str:
+        vector_input = self.node_image.inputs["Vector"]
+        if not vector_input.is_linked:
+            return "UV"
+        return vector_input.links[0].from_socket.name
+
+    @property
+    def projection(self) -> str:
+        return self.node_image.projection
+
+    @property
+    def extension(self) -> str:
+        return self.node_image.extension
+
+
+def _direct_normal_modifier(material, wrapper: PrincipledBSDFWrapper, state: _ExportState) -> str | None:
+    """Detect a Principled BSDF wired with either a Bump node (height
+    map) or a Normal Map node (tangent-space RGB) and produce a
+    RISE-side modifier.
+
+    Returns the modifier name, or None if the Normal slot isn't
+    connected to one of the supported chains.
+    """
+
     node = wrapper.node_principled_bsdf
     normal_input = _node_input(node, "Normal")
     if normal_input is None or not normal_input.is_linked:
         return None
 
     normal_node = normal_input.links[0].from_node
-    if normal_node.bl_idname == "ShaderNodeNormalMap":
-        _warn_once(state, f"RISE does not support tangent-space normal maps on '{material.name_full}'.")
-        return None
-    if normal_node.bl_idname != "ShaderNodeBump":
-        _warn_once(state, f"RISE only supports a direct Bump node on '{material.name_full}'.")
-        return None
 
-    normal_source = _node_input(normal_node, "Normal")
-    if normal_source is not None and normal_source.is_linked:
+    if normal_node.bl_idname == "ShaderNodeNormalMap":
+        return _build_normal_map_modifier(material, normal_node, state)
+
+    if normal_node.bl_idname == "ShaderNodeBump":
+        return _build_bump_modifier(material, normal_node, state)
+
+    _warn_once(state, f"RISE only supports a direct Bump or Normal Map node on '{material.name_full}'.")
+    return None
+
+
+def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | None:
+    nested_normal = _node_input(normal_node, "Normal")
+    if nested_normal is not None and nested_normal.is_linked:
         _warn_once(state, f"RISE ignores nested normal inputs feeding the Bump node on '{material.name_full}'.")
 
     height_input = _node_input(normal_node, "Height")
@@ -640,33 +768,7 @@ def _direct_bump_modifier(material, wrapper: PrincipledBSDFWrapper, state: _Expo
         _warn_once(state, f"RISE only supports direct image textures as Bump height sources on '{material.name_full}'.")
         return None
 
-    class _ImageSocketWrapper:
-        def __init__(self, node_image):
-            self.node_image = node_image
-            self.image = node_image.image
-            self.colorspace_is_data = True
-            self.colorspace_name = "Non-Color"
-
-        def has_mapping_node(self):
-            vector_input = self.node_image.inputs["Vector"]
-            return vector_input.is_linked and vector_input.links[0].from_node.bl_idname == "ShaderNodeMapping"
-
-        @property
-        def texcoords(self):
-            vector_input = self.node_image.inputs["Vector"]
-            if not vector_input.is_linked:
-                return "UV"
-            return vector_input.links[0].from_socket.name
-
-        @property
-        def projection(self):
-            return self.node_image.projection
-
-        @property
-        def extension(self):
-            return self.node_image.extension
-
-    texture_wrapper = _ImageSocketWrapper(image_node)
+    texture_wrapper = _ImageSocketWrapper(image_node, colorspace_is_data=True, colorspace_name="Non-Color")
     validated = _validate_texture_wrapper(texture_wrapper, state, f"the Bump node on '{material.name_full}'")
     if not validated:
         return None
@@ -698,6 +800,70 @@ def _direct_bump_modifier(material, wrapper: PrincipledBSDFWrapper, state: _Expo
     )
     state.modifier_cache[modifier_key] = modifier_name
     return modifier_name
+
+
+def _build_normal_map_modifier(material, normal_map_node, state: _ExportState) -> str | None:
+    """Translate a ShaderNodeNormalMap into a RISE NormalMap modifier.
+
+    Mirrors glTF KHR normalTexture semantics: the painter must be
+    loaded as ROMMRGB_Linear so the RGB-encoded tangent stays
+    bit-exact, and the strength scalar maps to normalTexture.scale.
+    """
+
+    if getattr(normal_map_node, "space", "TANGENT") != "TANGENT":
+        _warn_once(state, f"RISE only supports tangent-space Normal Map nodes on '{material.name_full}'.")
+        return None
+
+    color_input = _node_input(normal_map_node, "Color")
+    if color_input is None or not color_input.is_linked:
+        _warn_once(state, f"RISE only supports image-driven Normal Map nodes on '{material.name_full}'.")
+        return None
+
+    image_node = color_input.links[0].from_node
+    if image_node.bl_idname != "ShaderNodeTexImage":
+        _warn_once(state, f"RISE only supports direct image textures as Normal Map sources on '{material.name_full}'.")
+        return None
+
+    texture_wrapper = _ImageSocketWrapper(image_node, colorspace_is_data=True, colorspace_name="Non-Color")
+    validated = _validate_texture_wrapper(texture_wrapper, state, f"the Normal Map on '{material.name_full}'")
+    if not validated:
+        return None
+
+    filepath, _color_space_ignored = validated
+    kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
+    # Normal-map painters MUST be loaded as ROMM-Linear to bypass
+    # both gamma decoding AND the Rec709->ROMM matrix that would
+    # otherwise warp the encoded tangent (see RISE comments on
+    # AddNormalMapModifier).
+    painter_name = _add_texture_painter(
+        state,
+        f"{material.name_full}_normal",
+        filepath,
+        kind,
+        COLOR_SPACE_ROMM_LINEAR,
+    )
+    strength = _socket_default_float(normal_map_node, "Strength", 1.0)
+    modifier_key = ("normal_map", painter_name, round(strength, 6))
+    if modifier_key in state.modifier_cache:
+        return state.modifier_cache[modifier_key]
+
+    modifier_name = _unique_name(state, "mod", f"{material.name_full}_normal")
+    state.modifiers.append(
+        ModifierData(
+            name=modifier_name,
+            kind=MODIFIER_NORMAL_MAP,
+            source_painter_name=painter_name,
+            scale=float(strength),
+            window=0.0,
+        )
+    )
+    state.modifier_cache[modifier_key] = modifier_name
+    return modifier_name
+
+
+# Back-compat alias (older code path called the bump-only helper).
+def _direct_bump_modifier(material, wrapper: PrincipledBSDFWrapper, state: _ExportState) -> str | None:
+    return _direct_normal_modifier(material, wrapper, state)
 
 
 def _parse_volume_socket(socket, state: _ExportState, context_name: str) -> _VolumeSpec | None:
@@ -1078,7 +1244,7 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
                 tuple(emission_color[index] * emission_strength for index in range(3)),
             )
 
-    modifier_name = _direct_bump_modifier(material, wrapper, state)
+    modifier_name = _direct_normal_modifier(material, wrapper, state)
     alpha_socket = _node_input(wrapper.node_principled_bsdf, "Alpha")
     if alpha_socket is not None:
         alpha_value_socket = float(alpha_socket.default_value)
@@ -1201,20 +1367,37 @@ def _camera_payload(camera_object, render_settings: RenderSettingsData, state: _
     )
 
 
-def _light_payload(light_object, matrix_world, state: _ExportState) -> LightData:
+def _light_payload(light_object, matrix_world, state: _ExportState) -> LightData | None:
+    """Translate a Blender light to a RISE LightData.
+
+    Radiometric calibration (audit item #10):
+
+    - RISE PointLight / SpotLight expect ``radiantEnergy`` in W/sr
+      (radiant intensity per steradian — see PointLight.cpp line 75:
+      `emittedRadiance = cColor * radiantEnergy [watts/sr]`).
+    - Cycles' point/spot `light.energy` is total radiant flux (W)
+      treated as if emitted isotropically over the sphere.  So
+      converting needs a 1/(4π) factor.
+    - RISE DirectionalLight expects ``radiantEnergy`` as direct
+      irradiance (no 1/d² applied — see DirectionalLight.cpp line 63).
+      Cycles' sun `light.energy` is already irradiance (W/m²), so no
+      conversion is needed.
+
+    AREA lights return None here; the caller is expected to invoke
+    `_register_area_light_mesh` which materialises the area light as
+    an emissive mesh-luminary instead (so soft shadows, falloff, and
+    shape-correct sampling match Cycles).
+    """
+
     light = light_object.data
+    if light.type == "AREA":
+        return None
+
     light_type = {
         "POINT": 0,
         "SPOT": 1,
         "SUN": 2,
-        "AREA": 3,
     }.get(light.type, 4)
-
-    if light.type == "AREA":
-        _warn_once(
-            state,
-            "Blender area lights are currently approximated as point lights in the RISE sidecar renderer.",
-        )
 
     color = list(light.color)
     if getattr(light, "use_temperature", False):
@@ -1226,16 +1409,167 @@ def _light_payload(light_object, matrix_world, state: _ExportState) -> LightData
     direction = (-matrix_world.col[2].to_3d()).normalized()
     position = matrix_world.translation
 
+    # Blender energy + Cycles exposure (stops) → physical light units.
+    raw_energy = float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0)))
+    if light.type in ("POINT", "SPOT"):
+        # Cycles total-flux (W) → RISE radiant intensity (W/sr).
+        # 1/(4π) ≈ 0.0795775.
+        intensity = raw_energy / (4.0 * math.pi)
+    else:
+        # SUN / fallthrough: energy is already irradiance.
+        intensity = raw_energy
+
     return LightData(
         name=_unique_name(state, "light", light_object.name_full),
         type=light_type,
         color=(float(color[0]), float(color[1]), float(color[2])),
-        intensity=float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0))),
+        intensity=intensity,
         position=(float(position.x), float(position.y), float(position.z)),
         direction=(float(direction.x), float(direction.y), float(direction.z)),
         spot_size=float(getattr(light, "spot_size", 0.0)),
         spot_blend=float(getattr(light, "spot_blend", 0.0)),
     )
+
+
+def _area_light_geometry(shape: str, size_x: float, size_y: float, segments: int = 32):
+    """Build a planar mesh (vertices, normals, uvs, indices) for an area
+    light in the light's LOCAL space.  The mesh faces -Z (Blender's
+    convention for area-light shine direction)."""
+
+    verts: list[float] = []
+    normals: list[float] = [0.0, 0.0, -1.0]
+    uvs: list[float] = []
+    vidx: list[int] = []
+    nidx: list[int] = []
+    uidx: list[int] = []
+
+    if shape in ("SQUARE", "RECTANGLE"):
+        hx = size_x * 0.5
+        hy = size_y * 0.5
+        verts.extend([-hx, -hy, 0.0,
+                       hx, -hy, 0.0,
+                       hx,  hy, 0.0,
+                      -hx,  hy, 0.0])
+        uvs.extend([0.0, 0.0, 0.0,
+                    1.0, 0.0, 0.0,
+                    1.0, 1.0, 0.0,
+                    0.0, 1.0, 0.0])
+        # Two triangles, wound so the +Z face is the back side
+        # (single-sided emission goes out the -Z face).
+        vidx.extend([0, 2, 1,  0, 3, 2])
+        nidx.extend([0, 0, 0,  0, 0, 0])
+        uidx.extend([0, 2, 1,  0, 3, 2])
+    else:
+        # DISK / ELLIPSE — triangle fan around the centre.
+        hx = size_x * 0.5
+        hy = size_y * 0.5
+        verts.extend([0.0, 0.0, 0.0])
+        uvs.extend([0.5, 0.5, 0.0])
+        for i in range(segments):
+            theta = (i / segments) * 2.0 * math.pi
+            x = hx * math.cos(theta)
+            y = hy * math.sin(theta)
+            verts.extend([x, y, 0.0])
+            uvs.extend([0.5 + 0.5 * math.cos(theta), 0.5 + 0.5 * math.sin(theta), 0.0])
+        for i in range(segments):
+            v0 = 0
+            v1 = 1 + i
+            v2 = 1 + ((i + 1) % segments)
+            # Wound so emission goes -Z.
+            vidx.extend([v0, v2, v1])
+            nidx.extend([0, 0, 0])
+            uidx.extend([v0, v2, v1])
+
+    return verts, normals, uvs, vidx, nidx, uidx
+
+
+def _register_area_light_mesh(light_object, matrix_world, state: _ExportState) -> ObjectData | None:
+    """Materialise a Blender area light as an emissive mesh luminary.
+
+    Returns the ObjectData for the emissive surface, or None when the
+    light shape isn't a recognised area type.  The mesh + emissive
+    material are added to ``state`` so the export caller doesn't need
+    to plumb them separately.
+    """
+
+    light = light_object.data
+    shape = getattr(light, "shape", "SQUARE")
+
+    if shape == "RECTANGLE":
+        size_x, size_y = float(light.size), float(light.size_y)
+    elif shape == "ELLIPSE":
+        size_x, size_y = float(light.size), float(light.size_y)
+    else:
+        # SQUARE / DISK / anything else uses the single size.
+        size_x = size_y = float(light.size)
+
+    if size_x <= 0.0 or size_y <= 0.0:
+        return None
+
+    area = (size_x * size_y) if shape in ("SQUARE", "RECTANGLE") else math.pi * (size_x * 0.5) * (size_y * 0.5)
+    if area <= 0.0:
+        return None
+
+    # Cycles area-light energy is total radiant flux (W).  We encode
+    # the painter as per-area radiant exitance M = energy / area
+    # (W/m²); RISE's LambertianEmitter then applies the standard
+    # Lambertian 1/π normalisation internally
+    # (LambertianEmitter.cpp line 54:
+    #   emittedRadiance = radExPainter.GetColor(ri) * INV_PI * scale).
+    # Total emitted flux integrates back to ∫ L cosθ dω dA = M × A
+    # = energy, matching Cycles.
+    color = list(light.color)
+    if getattr(light, "use_temperature", False):
+        temperature_color = list(light.temperature_color)
+        color[0] *= temperature_color[0]
+        color[1] *= temperature_color[1]
+        color[2] *= temperature_color[2]
+    intensity = (float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0)))) / area
+    emission_color = (color[0] * intensity, color[1] * intensity, color[2] * intensity)
+
+    base_name = _safe_name(light_object.name_full)
+    emission_painter = _add_uniform_painter(state, f"{base_name}_area_emission", emission_color)
+    black_painter = _black_painter(state)
+
+    mat_name = _unique_name(state, "mat", f"{light_object.name_full}_area")
+    state.materials.append(
+        MaterialData(
+            name=mat_name,
+            model=MATERIAL_LAMBERT,
+            diffuse_painter_name=black_painter,
+            emission_painter_name=emission_painter,
+            double_sided=False,
+        )
+    )
+
+    verts, normals, uvs, vidx, nidx, uidx = _area_light_geometry(shape, size_x, size_y)
+    mesh_name = _unique_name(state, "mesh", f"{light_object.name_full}_area")
+    state.meshes.append(
+        MeshData(
+            name=mesh_name,
+            vertices=verts,
+            normals=normals,
+            uvs=uvs,
+            vertex_indices=vidx,
+            normal_indices=nidx,
+            uv_indices=uidx,
+            double_sided=False,
+            use_face_normals=False,
+        )
+    )
+
+    object_name = _unique_name(state, "obj", f"{light_object.name_full}_area")
+    obj = ObjectData(
+        name=object_name,
+        geometry_name=mesh_name,
+        material_name=mat_name,
+        transform=_flatten_matrix(matrix_world),
+        casts_shadows=True,
+        receives_shadows=True,
+        visible=True,
+    )
+    state.objects.append(obj)
+    return obj
 
 
 def _validate_mesh_payload(mesh: MeshData):
@@ -1270,13 +1604,25 @@ def _validate_mesh_payload(mesh: MeshData):
 
 
 def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _MaterialBinding]]:
-    cached = state.geometry_cache.get(eval_object.as_pointer())
+    # GeometryNodes-instanced geometry reuses a small pool of
+    # eval_object prototypes across many instances and rebinds their
+    # materials in-place during depsgraph iteration.  Caching by
+    # eval_object.as_pointer() alone collides — e.g., the tadpoles
+    # demo flips one prototype between 'head' and 'tail' partway
+    # through 10 000 instances.  Mix the per-instance material
+    # signature into the cache key so head and tail bind correctly.
+    mat_signature = tuple(
+        s.material.name if s.material else None
+        for s in eval_object.material_slots
+    )
+    cache_key = (eval_object.as_pointer(), mat_signature)
+    cached = state.geometry_cache.get(cache_key)
     if cached is not None:
         return cached
 
     mesh = eval_object.to_mesh()
     if mesh is None:
-        state.geometry_cache[eval_object.as_pointer()] = []
+        state.geometry_cache[cache_key] = []
         return []
 
     results: list[tuple[int, str, _MaterialBinding]] = []
@@ -1284,7 +1630,7 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
         mesh.calc_loop_triangles()
         triangle_count = len(mesh.loop_triangles)
         if triangle_count == 0:
-            state.geometry_cache[eval_object.as_pointer()] = []
+            state.geometry_cache[cache_key] = []
             return []
 
         vertex_values = array.array("f", [0.0]) * (len(mesh.vertices) * 3)
@@ -1323,9 +1669,18 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
                 bucket["uv_indices"].extend(int(v) for v in triangle_loops[start:start + 3])
 
         for material_index, bucket in buckets.items():
+            # GeometryNodes-generated meshes put per-instance materials
+            # on the mesh data, not on the host object's material_slots
+            # (the original geonodes object often has zero slots).
+            # Read the mesh's own slot first; fall back to the object
+            # override for cases where the mesh slot is None.
             material = None
-            if material_index < len(eval_object.material_slots):
-                material = eval_object.material_slots[material_index].material
+            if material_index < len(mesh.materials):
+                material = mesh.materials[material_index]
+            if material is None and material_index < len(eval_object.material_slots):
+                slot_material = eval_object.material_slots[material_index].material
+                if slot_material is not None:
+                    material = slot_material
 
             binding = _material_payload(material, state)
             mesh_name = _unique_name(state, "mesh", f"{eval_object.name_full}_m{material_index}")
@@ -1346,7 +1701,7 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
     finally:
         eval_object.to_mesh_clear()
 
-    state.geometry_cache[eval_object.as_pointer()] = results
+    state.geometry_cache[cache_key] = results
     return results
 
 
@@ -1457,16 +1812,137 @@ def _density_grid_name(volume_data, state: _ExportState, object_name: str) -> st
     return density_grid.name
 
 
+def _walk_world_for_environment(output_node):
+    """Walk the world shader graph from `output_node.Surface`, returning
+    ``(env_node, background, is_camera_visible)`` for the first
+    Environment Texture found.
+
+    Tracks whether the Environment Texture is reachable from camera
+    rays (so we know whether to mark the radiance map as a visible
+    background or as IBL-only).  Handles the very common Cycles
+    pattern:
+
+        World Output ← Mix Shader (Factor=Light Path.Is Camera Ray)
+                          ├── Shader 0  (used when factor=0,
+                          │              i.e. indirect rays):  HDRI
+                          └── Shader 1  (used when factor=1,
+                                         i.e. camera rays):    black / colour
+
+    plus plain ``Background → Environment Texture`` chains and a few
+    pass-through nodes (RGB Curves, Hue/Saturation, Bright/Contrast,
+    Gamma) that artists drop between the HDRI and the Background.
+    Returns ``(None, None, True)`` when no Environment Texture is
+    reachable.
+    """
+
+    PASS_THROUGH = {
+        "ShaderNodeRGBCurve",
+        "ShaderNodeBrightContrast",
+        "ShaderNodeHueSaturation",
+        "ShaderNodeGamma",
+        "ShaderNodeInvert",
+    }
+
+    surface = _node_input(output_node, "Surface")
+    if surface is None or not surface.is_linked:
+        return None, None, True
+
+    # BFS over the shader graph, tagging each visited node with whether
+    # it's reachable from camera rays / from indirect rays.  Start at
+    # the Surface output, which is reachable from both.
+    visited: dict[int, tuple[bool, bool, "Background | None"]] = {}
+    queue: list[tuple[object, bool, bool, object]] = [
+        (surface.links[0].from_node, True, True, None)
+    ]
+    env_found = None
+    env_camera_visible = False
+    env_background = None
+
+    while queue:
+        node, cam, ind, last_background = queue.pop(0)
+        key = id(node)
+        prev_cam, prev_ind, prev_bg = visited.get(key, (False, False, None))
+        new_cam = prev_cam or cam
+        new_ind = prev_ind or ind
+        if new_cam == prev_cam and new_ind == prev_ind and prev_bg is last_background:
+            continue
+        visited[key] = (new_cam, new_ind, last_background)
+
+        bl = node.bl_idname
+
+        if bl == "ShaderNodeTexEnvironment":
+            if env_found is None or (not env_camera_visible and new_ind):
+                env_found = node
+                env_camera_visible = new_cam
+                env_background = last_background
+            continue
+
+        if bl == "ShaderNodeMixShader":
+            factor = node.inputs[0] if len(node.inputs) > 0 else None
+            shader_a = node.inputs[1] if len(node.inputs) > 1 else None
+            shader_b = node.inputs[2] if len(node.inputs) > 2 else None
+            gated_by_camera = False
+            if factor is not None and factor.is_linked:
+                src = factor.links[0]
+                if (src.from_node.bl_idname == "ShaderNodeLightPath"
+                        and src.from_socket.name == "Is Camera Ray"):
+                    gated_by_camera = True
+            if gated_by_camera:
+                # factor=0 → Shader 0 used for indirect rays (and
+                # transmission, glossy, etc. — all non-camera).
+                # factor=1 → Shader 1 used for camera rays.
+                if shader_a is not None and shader_a.is_linked:
+                    queue.append((shader_a.links[0].from_node, False, ind, last_background))
+                if shader_b is not None and shader_b.is_linked:
+                    queue.append((shader_b.links[0].from_node, cam, False, last_background))
+            else:
+                # Unknown / non-Light-Path factor — both branches
+                # contribute equally to both reachabilities.
+                for s in (shader_a, shader_b):
+                    if s is not None and s.is_linked:
+                        queue.append((s.links[0].from_node, cam, ind, last_background))
+            continue
+
+        if bl == "ShaderNodeAddShader":
+            for s in node.inputs[:2]:
+                if s.is_linked:
+                    queue.append((s.links[0].from_node, cam, ind, last_background))
+            continue
+
+        if bl == "ShaderNodeBackground":
+            color_in = _node_input(node, "Color")
+            if color_in is not None and color_in.is_linked:
+                queue.append((color_in.links[0].from_node, cam, ind, node))
+            continue
+
+        if bl in PASS_THROUGH:
+            for inp in node.inputs:
+                if inp.is_linked and inp.type == "RGBA":
+                    queue.append((inp.links[0].from_node, cam, ind, last_background))
+            continue
+
+        # Unknown node — follow every linked colour/shader input
+        # conservatively.  Avoids missing an HDRI tucked behind a
+        # MixRGB or similar.
+        for inp in node.inputs:
+            if inp.is_linked and inp.type in {"RGBA", "SHADER", "VECTOR", "VALUE"}:
+                queue.append((inp.links[0].from_node, cam, ind, last_background))
+
+    return env_found, env_background, env_camera_visible
+
+
 def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, tuple[float, float, float], bool]:
     """Walk the world's Surface output for image-based lighting.
 
-    Returns ``(painter_name, strength, orientation_xyz_radians, is_background)``.
-    ``painter_name`` is None when the world has no Environment Texture
-    backing its Background, in which case the legacy ambient-color
-    fallback applies.  The Environment Texture's Vector input is
-    intentionally ignored — RISE installs the HDRI as a spherical
-    environment with the supplied Euler orientation, so the painter
-    itself takes the raw HDR pixels.
+    Returns ``(painter_name, strength, orientation_xyz_radians,
+    is_background)``.  ``painter_name`` is None when no Environment
+    Texture is reachable from the world's surface output, in which
+    case the legacy ambient-colour fallback applies.
+
+    Supports the trivial ``Background → Environment Texture`` chain
+    and the standard Cycles ``Mix Shader gated by Light Path.Is
+    Camera Ray`` pattern (HDRI for indirect, separate colour for the
+    camera-visible background).
     """
     if scene.world is None or not scene.world.use_nodes or scene.world.node_tree is None:
         return None, 1.0, (0.0, 0.0, 0.0), True
@@ -1475,45 +1951,40 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
     if output_node is None:
         return None, 1.0, (0.0, 0.0, 0.0), True
 
-    surface_socket = _node_input(output_node, "Surface")
-    if surface_socket is None or not surface_socket.is_linked:
+    env_node, background_node, is_camera_visible = _walk_world_for_environment(output_node)
+    if env_node is None:
+        _warn_once(state, "RISE could not find an Environment Texture in the world shader graph; falling back to ambient approximation.")
         return None, 1.0, (0.0, 0.0, 0.0), True
 
-    background = surface_socket.links[0].from_node
-    if background.bl_idname != "ShaderNodeBackground":
-        _warn_once(state, "RISE only walks World Background nodes for image-based lighting; other shader chains are ignored.")
-        return None, 1.0, (0.0, 0.0, 0.0), True
-
-    strength_socket = _node_input(background, "Strength")
-    strength = float(strength_socket.default_value) if strength_socket is not None and not strength_socket.is_linked else 1.0
-
-    color_socket = _node_input(background, "Color")
-    if color_socket is None or not color_socket.is_linked:
-        return None, strength, (0.0, 0.0, 0.0), True
-
-    env_node = color_socket.links[0].from_node
-    if env_node.bl_idname != "ShaderNodeTexEnvironment":
-        _warn_once(state, "RISE only supports a direct Environment Texture into the world Background Color; other node chains fall back to the ambient approximation.")
-        return None, strength, (0.0, 0.0, 0.0), True
+    # Background strength scales the HDRI.  When the HDRI sits in the
+    # indirect-only branch of a Mix Shader, the camera-visible branch
+    # (often a black or tinted Background) is currently dropped — the
+    # camera will see the HDRI itself as the background.  Override via
+    # is_background = False so we leave camera rays unaffected.
+    strength = 1.0
+    if background_node is not None:
+        strength_socket = _node_input(background_node, "Strength")
+        if strength_socket is not None and not strength_socket.is_linked:
+            strength = float(strength_socket.default_value)
 
     image = env_node.image
     if image is None:
-        return None, strength, (0.0, 0.0, 0.0), True
+        return None, 1.0, (0.0, 0.0, 0.0), True
 
-    if image.source != "FILE" or image.packed_file is not None:
-        _warn_once(state, "RISE only supports external file-backed Environment Textures (no packed / generated images yet).")
-        return None, strength, (0.0, 0.0, 0.0), True
+    if image.source not in ("FILE", "GENERATED"):
+        _warn_once(state, f"RISE only supports file-backed or packed Environment Textures (source={image.source!r}).")
+        return None, 1.0, (0.0, 0.0, 0.0), True
 
-    filepath = _resolved_image_path(image)
+    filepath = _resolve_image_for_bridge(image, state)
     if not filepath or not os.path.exists(filepath):
-        _warn_once(state, "RISE could not resolve the Environment Texture's image file.")
-        return None, strength, (0.0, 0.0, 0.0), True
+        _warn_once(state, "RISE could not resolve the Environment Texture's image file (and unpack-to-temp also failed).")
+        return None, 1.0, (0.0, 0.0, 0.0), True
 
     extension = os.path.splitext(filepath)[1].lower()
     kind = SUPPORTED_IMAGE_KINDS.get(extension)
     if kind is None:
         _warn_once(state, "RISE supports HDR / EXR / PNG / TIFF Environment Textures.")
-        return None, strength, (0.0, 0.0, 0.0), True
+        return None, 1.0, (0.0, 0.0, 0.0), True
 
     # The Environment Texture's Vector input optionally feeds through
     # a Mapping node for rotation.  We map the Mapping node's Rotation
@@ -1543,7 +2014,7 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
         kind,
         color_space,
     )
-    return painter_name, strength, orientation, True
+    return painter_name, strength, orientation, bool(is_camera_visible)
 
 
 def _world_volume_medium(scene, state: _ExportState) -> str | None:
@@ -1648,7 +2119,18 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
                 }
             )
         elif original_object.type == "LIGHT":
-            lights.append(_light_payload(object_instance.object, object_instance.matrix_world.copy(), state))
+            light_data = _light_payload(object_instance.object, object_instance.matrix_world.copy(), state)
+            if light_data is not None:
+                lights.append(light_data)
+            elif object_instance.object.data.type == "AREA":
+                # Area lights become emissive mesh-luminaries so the
+                # PT integrator's NEE sees them with real falloff +
+                # soft shadows + shape-correct sampling.
+                _register_area_light_mesh(
+                    object_instance.object,
+                    object_instance.matrix_world.copy(),
+                    state,
+                )
         elif original_object.type == "VOLUME":
             _volume_object_medium(original_object, object_instance.object, object_instance.matrix_world.copy(), state)
 

@@ -87,6 +87,8 @@ namespace
 		{
 		case RISE_BLENDER_COLOR_SRGB:
 			return "sRGB";
+		case RISE_BLENDER_COLOR_ROMM_LINEAR:
+			return "ROMMRGB_Linear";
 		case RISE_BLENDER_COLOR_LINEAR:
 		default:
 			return "Rec709RGB_Linear";
@@ -95,10 +97,16 @@ namespace
 
 	char texture_color_space_value( const int color_space )
 	{
+		// Char encoding mirrors Job::AddPNGTexturePainter etc.:
+		//   0 = Rec709RGB_Linear
+		//   1 = sRGB
+		//   2 = ROMMRGB_Linear  (preserves bit-exact vector data)
 		switch( color_space )
 		{
 		case RISE_BLENDER_COLOR_SRGB:
 			return 1;
+		case RISE_BLENDER_COLOR_ROMM_LINEAR:
+			return 2;
 		case RISE_BLENDER_COLOR_LINEAR:
 		default:
 			return 0;
@@ -152,27 +160,28 @@ namespace
 
 	RISE::Matrix4 blender_matrix_to_rise_matrix( const float transform[16] )
 	{
+		// Blender's mathutils.Matrix iterates by ROWS (per the 4.x
+		// API), so the addon's _flatten_matrix produces row-major:
+		//   transform[r*4 + c] = m[r][c]
+		// Blender uses column-vector math (v' = M·v) with translation
+		// at m[0,3], m[1,3], m[2,3].
+		//
+		// RISE Matrix4 uses _<col><row> naming and the same column-
+		// vector convention (Job.cpp matmul confirms this), so the
+		// math element at (row R, col C) maps to mx._<col=C, row=R>.
+		// In code: mx._<c><r> = transform[r*4 + c].
+		//
+		// Pre-2026-05 the rotation 3x3 block was transposed (the
+		// off-diagonal indices read from the row instead of the
+		// column), which made a Blender 90 deg Z rotation render as
+		// -90 deg.  Translations were unaffected, which is why
+		// axis-aligned default scenes looked correct.
 		RISE::Matrix4 matrix;
 
-		matrix._00 = transform[0];
-		matrix._01 = transform[1];
-		matrix._02 = transform[2];
-		matrix._03 = transform[12];
-
-		matrix._10 = transform[4];
-		matrix._11 = transform[5];
-		matrix._12 = transform[6];
-		matrix._13 = transform[13];
-
-		matrix._20 = transform[8];
-		matrix._21 = transform[9];
-		matrix._22 = transform[10];
-		matrix._23 = transform[14];
-
-		matrix._30 = transform[3];
-		matrix._31 = transform[7];
-		matrix._32 = transform[11];
-		matrix._33 = transform[15];
+		matrix._00 = transform[ 0]; matrix._01 = transform[ 4]; matrix._02 = transform[ 8]; matrix._03 = transform[12];
+		matrix._10 = transform[ 1]; matrix._11 = transform[ 5]; matrix._12 = transform[ 9]; matrix._13 = transform[13];
+		matrix._20 = transform[ 2]; matrix._21 = transform[ 6]; matrix._22 = transform[10]; matrix._23 = transform[14];
+		matrix._30 = transform[ 3]; matrix._31 = transform[ 7]; matrix._32 = transform[11]; matrix._33 = transform[15];
 
 		return matrix;
 	}
@@ -728,6 +737,17 @@ namespace
 		case RISE_BLENDER_MODIFIER_BUMP:
 			if( !job.AddBumpMapModifier( modifier.name, modifier.source_painter_name, modifier.scale, modifier.window ) ) {
 				write_error( error_message, error_message_size, "Failed to create a bump modifier" );
+				return false;
+			}
+			return true;
+
+		case RISE_BLENDER_MODIFIER_NORMAL_MAP:
+			// AddNormalMapModifier(name, painter, scale) — glTF
+			// normalTexture.scale.  The painter must have been
+			// registered with ROMMRGB_Linear colour space so the
+			// encoded surface tangent stays bit-exact.
+			if( !job.AddNormalMapModifier( modifier.name, modifier.source_painter_name, modifier.scale ) ) {
+				write_error( error_message, error_message_size, "Failed to create a normal-map modifier" );
 				return false;
 			}
 			return true;
