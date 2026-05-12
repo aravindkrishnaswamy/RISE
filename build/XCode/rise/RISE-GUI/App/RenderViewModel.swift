@@ -645,8 +645,8 @@ final class RenderViewModel: ObservableObject {
                     // Settings panel to override.
                     if let screen = NSScreen.main {
                         let visible = screen.visibleFrame
-                        vb?.scaleFilmToFitSurfaceW(
-                            UInt(max(1, Int(visible.size.width))),
+                        vb?.scaleFilm(
+                            toFitSurfaceW: UInt(max(1, Int(visible.size.width))),
                             surfaceH: UInt(max(1, Int(visible.size.height))),
                             maxLongEdge: 800)
                     }
