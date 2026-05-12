@@ -209,6 +209,14 @@ namespace RISE
 		virtual void SetUseLightBVH(
 			const bool enable									///< [in] True to enable light BVH
 			) = 0;
+
+		/// True when the rasterizer was built with `radiance_background
+		/// true` (the default) and missed primary rays should display
+		/// the global radiance map.  Integrators that compute their own
+		/// primary-ray miss radiance (PT, BDPT) consult this so an
+		/// `isBackground = false` configuration leaves camera rays
+		/// black while indirect bounces still pick up the IBL.
+		virtual bool IsRadianceMapVisibleAsBackground() const = 0;
 	};
 }
 

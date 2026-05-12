@@ -170,6 +170,11 @@ namespace RISE
 			/// Enables or disables the light BVH.
 			void SetUseLightBVH( const bool enable );
 
+			/// See IRayCaster::IsRadianceMapVisibleAsBackground.
+			/// (No `override` — RayCaster matches the file's existing
+			///  style; see CLAUDE.md's note on -Winconsistent-missing-override.)
+			bool IsRadianceMapVisibleAsBackground() const { return bConsiderRMapAsBackground; }
+
 		};
 	}
 }

@@ -2682,6 +2682,17 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 	// No medium, or medium with no scatter and no surface hit
 	if( !ri.geometric.bHit )
 	{
+		// Camera ray missed all geometry.  Honour the rasterizer's
+		// `radiance_background` / RadianceMapConfig::isBackground
+		// switch: when false (`Mix Shader gated by Light Path.Is
+		// Camera Ray` pattern in Blender; same scene-language flag
+		// for hand-authored scenes), the environment radiance still
+		// drives indirect bounces but primary rays return black,
+		// matching Cycles' default for that pattern.
+		if( !caster.IsRadianceMapVisibleAsBackground() ) {
+			return RISEPel( 0, 0, 0 );
+		}
+
 		// Environment map
 		RISEPel envResult( 0, 0, 0 );
 		if( pRadianceMap )
@@ -4833,6 +4844,14 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 	// No medium, or medium with no scatter and no surface hit
 	if( !ri.geometric.bHit )
 	{
+		// See RGB IntegrateRay above for the rationale —
+		// `isBackground = false` returns 0 for primary rays so the
+		// camera-visible background stays black while indirect
+		// bounces still pick up the IBL contribution.
+		if( !caster.IsRadianceMapVisibleAsBackground() ) {
+			return Scalar( 0 );
+		}
+
 		Scalar envResult = 0;
 		if( pRadianceMap )
 		{
@@ -5013,6 +5032,16 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	// No medium, or medium with no scatter and no surface hit
 	if( !ri.geometric.bHit )
 	{
+		// See RGB IntegrateRay above — when isBackground=false the
+		// camera-visible background stays black; indirect bounces
+		// still pull from the global radiance map elsewhere.
+		if( !caster.IsRadianceMapVisibleAsBackground() ) {
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				result[w] = 0;
+			}
+			return;
+		}
+
 		if( pRadianceMap )
 		{
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {

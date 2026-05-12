@@ -309,6 +309,12 @@ class _ExportState:
         self.painter_cache: dict[tuple, str] = {}
         self.modifier_cache: dict[tuple, str] = {}
         self.medium_cache: dict[tuple, str] = {}
+        # Cache of unpacked (or otherwise resolved-to-disk) image
+        # filepaths, keyed by id(bpy.types.Image).  Some scenes embed
+        # the HDRI / texture inside the .blend; we transparently
+        # round-trip them through a temp file because RISE's painter
+        # loaders only accept filepaths.
+        self.image_path_cache: dict[int, str] = {}
 
 
 def _warn_once(state: _ExportState, message: str):
@@ -398,16 +404,90 @@ def _resolved_image_path(image) -> str | None:
     return os.path.realpath(resolved)
 
 
+_PACKED_UNPACK_DIR_NAME = "rise_blender_unpack"
+
+
+def _unpack_image_to_disk(image, state: _ExportState | None) -> str | None:
+    """Write a packed bpy.types.Image's raw bytes to a temp file so the
+    RISE bridge (filepath-based loaders) can read it.
+
+    For .hdr / .exr / .png / .jpg / .tiff sources the packed bytes ARE
+    the original file content — we just dump them verbatim.  Result is
+    cached per state so repeated references to the same image don't
+    re-write the file.
+    """
+    if image is None or image.packed_file is None:
+        return None
+
+    cache = state.image_path_cache if state is not None else None
+    if cache is not None:
+        cached = cache.get(id(image))
+        if cached and os.path.exists(cached):
+            return cached
+
+    extension = os.path.splitext(image.filepath_raw or image.name or "")[1].lower()
+    if extension not in SUPPORTED_IMAGE_KINDS:
+        # No usable extension on filepath — guess from the image's
+        # detected format if available.  Default to .hdr because
+        # packed env textures are by far the most common case.
+        format_name = getattr(image, "file_format", "") or ""
+        format_map = {
+            "HDR": ".hdr",
+            "OPEN_EXR": ".exr",
+            "OPEN_EXR_MULTILAYER": ".exr",
+            "PNG": ".png",
+            "JPEG": ".jpg",
+            "JPEG2000": ".jpg",
+            "TIFF": ".tif",
+        }
+        extension = format_map.get(format_name.upper(), ".hdr")
+
+    out_dir = os.path.join(bpy.app.tempdir or tempfile.gettempdir(), _PACKED_UNPACK_DIR_NAME)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError:
+        return None
+
+    safe_stem = _safe_name(image.name_full or image.name or "image")
+    out_path = os.path.join(out_dir, f"{safe_stem}_{id(image):x}{extension}")
+
+    try:
+        # PackedFile.data is a bytes-like attribute in Blender 3.x+;
+        # `bytes(...)` works on it directly.
+        with open(out_path, "wb") as handle:
+            handle.write(bytes(image.packed_file.data))
+    except OSError as exc:
+        if state is not None:
+            _warn_once(state, f"RISE could not unpack image '{image.name_full}' to disk: {exc}.")
+        return None
+
+    if cache is not None:
+        cache[id(image)] = out_path
+    return out_path
+
+
+def _resolve_image_for_bridge(image, state: _ExportState | None) -> str | None:
+    """Return an on-disk filepath for an image, unpacking it if needed.
+
+    Priority:
+        1. The user-supplied filepath, if it exists on disk.
+        2. The packed bytes round-tripped through a temp file.
+    """
+    direct = _resolved_image_path(image)
+    if direct and os.path.exists(direct):
+        return direct
+    if image is not None and image.packed_file is not None:
+        return _unpack_image_to_disk(image, state)
+    return direct  # may be a missing-path string for downstream warning
+
+
 def _validate_texture_wrapper(texture_wrapper, state: _ExportState, context_name: str) -> tuple[str, int] | None:
     if texture_wrapper is None or texture_wrapper.image is None:
         return None
 
     image = texture_wrapper.image
-    if image.source != "FILE":
-        _warn_once(state, f"RISE only supports external file-backed textures for {context_name}.")
-        return None
-    if image.packed_file is not None:
-        _warn_once(state, f"RISE does not support packed textures for {context_name}.")
+    if image.source not in ("FILE", "GENERATED"):
+        _warn_once(state, f"RISE only supports file-backed or packed textures for {context_name}.")
         return None
     if getattr(texture_wrapper, "has_mapping_node", None) and texture_wrapper.has_mapping_node():
         _warn_once(state, f"RISE currently ignores Mapping nodes for {context_name}.")
@@ -422,7 +502,7 @@ def _validate_texture_wrapper(texture_wrapper, state: _ExportState, context_name
         _warn_once(state, f"RISE currently supports only repeat image extension for {context_name}.")
         return None
 
-    filepath = _resolved_image_path(image)
+    filepath = _resolve_image_for_bridge(image, state)
     if not filepath or not os.path.exists(filepath):
         _warn_once(state, f"RISE could not resolve the image file used for {context_name}.")
         return None
@@ -1524,13 +1604,25 @@ def _validate_mesh_payload(mesh: MeshData):
 
 
 def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _MaterialBinding]]:
-    cached = state.geometry_cache.get(eval_object.as_pointer())
+    # GeometryNodes-instanced geometry reuses a small pool of
+    # eval_object prototypes across many instances and rebinds their
+    # materials in-place during depsgraph iteration.  Caching by
+    # eval_object.as_pointer() alone collides — e.g., the tadpoles
+    # demo flips one prototype between 'head' and 'tail' partway
+    # through 10 000 instances.  Mix the per-instance material
+    # signature into the cache key so head and tail bind correctly.
+    mat_signature = tuple(
+        s.material.name if s.material else None
+        for s in eval_object.material_slots
+    )
+    cache_key = (eval_object.as_pointer(), mat_signature)
+    cached = state.geometry_cache.get(cache_key)
     if cached is not None:
         return cached
 
     mesh = eval_object.to_mesh()
     if mesh is None:
-        state.geometry_cache[eval_object.as_pointer()] = []
+        state.geometry_cache[cache_key] = []
         return []
 
     results: list[tuple[int, str, _MaterialBinding]] = []
@@ -1538,7 +1630,7 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
         mesh.calc_loop_triangles()
         triangle_count = len(mesh.loop_triangles)
         if triangle_count == 0:
-            state.geometry_cache[eval_object.as_pointer()] = []
+            state.geometry_cache[cache_key] = []
             return []
 
         vertex_values = array.array("f", [0.0]) * (len(mesh.vertices) * 3)
@@ -1577,9 +1669,18 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
                 bucket["uv_indices"].extend(int(v) for v in triangle_loops[start:start + 3])
 
         for material_index, bucket in buckets.items():
+            # GeometryNodes-generated meshes put per-instance materials
+            # on the mesh data, not on the host object's material_slots
+            # (the original geonodes object often has zero slots).
+            # Read the mesh's own slot first; fall back to the object
+            # override for cases where the mesh slot is None.
             material = None
-            if material_index < len(eval_object.material_slots):
-                material = eval_object.material_slots[material_index].material
+            if material_index < len(mesh.materials):
+                material = mesh.materials[material_index]
+            if material is None and material_index < len(eval_object.material_slots):
+                slot_material = eval_object.material_slots[material_index].material
+                if slot_material is not None:
+                    material = slot_material
 
             binding = _material_payload(material, state)
             mesh_name = _unique_name(state, "mesh", f"{eval_object.name_full}_m{material_index}")
@@ -1600,7 +1701,7 @@ def _mesh_buckets(eval_object, state: _ExportState) -> list[tuple[int, str, _Mat
     finally:
         eval_object.to_mesh_clear()
 
-    state.geometry_cache[eval_object.as_pointer()] = results
+    state.geometry_cache[cache_key] = results
     return results
 
 
@@ -1711,16 +1812,137 @@ def _density_grid_name(volume_data, state: _ExportState, object_name: str) -> st
     return density_grid.name
 
 
+def _walk_world_for_environment(output_node):
+    """Walk the world shader graph from `output_node.Surface`, returning
+    ``(env_node, background, is_camera_visible)`` for the first
+    Environment Texture found.
+
+    Tracks whether the Environment Texture is reachable from camera
+    rays (so we know whether to mark the radiance map as a visible
+    background or as IBL-only).  Handles the very common Cycles
+    pattern:
+
+        World Output ← Mix Shader (Factor=Light Path.Is Camera Ray)
+                          ├── Shader 0  (used when factor=0,
+                          │              i.e. indirect rays):  HDRI
+                          └── Shader 1  (used when factor=1,
+                                         i.e. camera rays):    black / colour
+
+    plus plain ``Background → Environment Texture`` chains and a few
+    pass-through nodes (RGB Curves, Hue/Saturation, Bright/Contrast,
+    Gamma) that artists drop between the HDRI and the Background.
+    Returns ``(None, None, True)`` when no Environment Texture is
+    reachable.
+    """
+
+    PASS_THROUGH = {
+        "ShaderNodeRGBCurve",
+        "ShaderNodeBrightContrast",
+        "ShaderNodeHueSaturation",
+        "ShaderNodeGamma",
+        "ShaderNodeInvert",
+    }
+
+    surface = _node_input(output_node, "Surface")
+    if surface is None or not surface.is_linked:
+        return None, None, True
+
+    # BFS over the shader graph, tagging each visited node with whether
+    # it's reachable from camera rays / from indirect rays.  Start at
+    # the Surface output, which is reachable from both.
+    visited: dict[int, tuple[bool, bool, "Background | None"]] = {}
+    queue: list[tuple[object, bool, bool, object]] = [
+        (surface.links[0].from_node, True, True, None)
+    ]
+    env_found = None
+    env_camera_visible = False
+    env_background = None
+
+    while queue:
+        node, cam, ind, last_background = queue.pop(0)
+        key = id(node)
+        prev_cam, prev_ind, prev_bg = visited.get(key, (False, False, None))
+        new_cam = prev_cam or cam
+        new_ind = prev_ind or ind
+        if new_cam == prev_cam and new_ind == prev_ind and prev_bg is last_background:
+            continue
+        visited[key] = (new_cam, new_ind, last_background)
+
+        bl = node.bl_idname
+
+        if bl == "ShaderNodeTexEnvironment":
+            if env_found is None or (not env_camera_visible and new_ind):
+                env_found = node
+                env_camera_visible = new_cam
+                env_background = last_background
+            continue
+
+        if bl == "ShaderNodeMixShader":
+            factor = node.inputs[0] if len(node.inputs) > 0 else None
+            shader_a = node.inputs[1] if len(node.inputs) > 1 else None
+            shader_b = node.inputs[2] if len(node.inputs) > 2 else None
+            gated_by_camera = False
+            if factor is not None and factor.is_linked:
+                src = factor.links[0]
+                if (src.from_node.bl_idname == "ShaderNodeLightPath"
+                        and src.from_socket.name == "Is Camera Ray"):
+                    gated_by_camera = True
+            if gated_by_camera:
+                # factor=0 → Shader 0 used for indirect rays (and
+                # transmission, glossy, etc. — all non-camera).
+                # factor=1 → Shader 1 used for camera rays.
+                if shader_a is not None and shader_a.is_linked:
+                    queue.append((shader_a.links[0].from_node, False, ind, last_background))
+                if shader_b is not None and shader_b.is_linked:
+                    queue.append((shader_b.links[0].from_node, cam, False, last_background))
+            else:
+                # Unknown / non-Light-Path factor — both branches
+                # contribute equally to both reachabilities.
+                for s in (shader_a, shader_b):
+                    if s is not None and s.is_linked:
+                        queue.append((s.links[0].from_node, cam, ind, last_background))
+            continue
+
+        if bl == "ShaderNodeAddShader":
+            for s in node.inputs[:2]:
+                if s.is_linked:
+                    queue.append((s.links[0].from_node, cam, ind, last_background))
+            continue
+
+        if bl == "ShaderNodeBackground":
+            color_in = _node_input(node, "Color")
+            if color_in is not None and color_in.is_linked:
+                queue.append((color_in.links[0].from_node, cam, ind, node))
+            continue
+
+        if bl in PASS_THROUGH:
+            for inp in node.inputs:
+                if inp.is_linked and inp.type == "RGBA":
+                    queue.append((inp.links[0].from_node, cam, ind, last_background))
+            continue
+
+        # Unknown node — follow every linked colour/shader input
+        # conservatively.  Avoids missing an HDRI tucked behind a
+        # MixRGB or similar.
+        for inp in node.inputs:
+            if inp.is_linked and inp.type in {"RGBA", "SHADER", "VECTOR", "VALUE"}:
+                queue.append((inp.links[0].from_node, cam, ind, last_background))
+
+    return env_found, env_background, env_camera_visible
+
+
 def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, tuple[float, float, float], bool]:
     """Walk the world's Surface output for image-based lighting.
 
-    Returns ``(painter_name, strength, orientation_xyz_radians, is_background)``.
-    ``painter_name`` is None when the world has no Environment Texture
-    backing its Background, in which case the legacy ambient-color
-    fallback applies.  The Environment Texture's Vector input is
-    intentionally ignored — RISE installs the HDRI as a spherical
-    environment with the supplied Euler orientation, so the painter
-    itself takes the raw HDR pixels.
+    Returns ``(painter_name, strength, orientation_xyz_radians,
+    is_background)``.  ``painter_name`` is None when no Environment
+    Texture is reachable from the world's surface output, in which
+    case the legacy ambient-colour fallback applies.
+
+    Supports the trivial ``Background → Environment Texture`` chain
+    and the standard Cycles ``Mix Shader gated by Light Path.Is
+    Camera Ray`` pattern (HDRI for indirect, separate colour for the
+    camera-visible background).
     """
     if scene.world is None or not scene.world.use_nodes or scene.world.node_tree is None:
         return None, 1.0, (0.0, 0.0, 0.0), True
@@ -1729,45 +1951,40 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
     if output_node is None:
         return None, 1.0, (0.0, 0.0, 0.0), True
 
-    surface_socket = _node_input(output_node, "Surface")
-    if surface_socket is None or not surface_socket.is_linked:
+    env_node, background_node, is_camera_visible = _walk_world_for_environment(output_node)
+    if env_node is None:
+        _warn_once(state, "RISE could not find an Environment Texture in the world shader graph; falling back to ambient approximation.")
         return None, 1.0, (0.0, 0.0, 0.0), True
 
-    background = surface_socket.links[0].from_node
-    if background.bl_idname != "ShaderNodeBackground":
-        _warn_once(state, "RISE only walks World Background nodes for image-based lighting; other shader chains are ignored.")
-        return None, 1.0, (0.0, 0.0, 0.0), True
-
-    strength_socket = _node_input(background, "Strength")
-    strength = float(strength_socket.default_value) if strength_socket is not None and not strength_socket.is_linked else 1.0
-
-    color_socket = _node_input(background, "Color")
-    if color_socket is None or not color_socket.is_linked:
-        return None, strength, (0.0, 0.0, 0.0), True
-
-    env_node = color_socket.links[0].from_node
-    if env_node.bl_idname != "ShaderNodeTexEnvironment":
-        _warn_once(state, "RISE only supports a direct Environment Texture into the world Background Color; other node chains fall back to the ambient approximation.")
-        return None, strength, (0.0, 0.0, 0.0), True
+    # Background strength scales the HDRI.  When the HDRI sits in the
+    # indirect-only branch of a Mix Shader, the camera-visible branch
+    # (often a black or tinted Background) is currently dropped — the
+    # camera will see the HDRI itself as the background.  Override via
+    # is_background = False so we leave camera rays unaffected.
+    strength = 1.0
+    if background_node is not None:
+        strength_socket = _node_input(background_node, "Strength")
+        if strength_socket is not None and not strength_socket.is_linked:
+            strength = float(strength_socket.default_value)
 
     image = env_node.image
     if image is None:
-        return None, strength, (0.0, 0.0, 0.0), True
+        return None, 1.0, (0.0, 0.0, 0.0), True
 
-    if image.source != "FILE" or image.packed_file is not None:
-        _warn_once(state, "RISE only supports external file-backed Environment Textures (no packed / generated images yet).")
-        return None, strength, (0.0, 0.0, 0.0), True
+    if image.source not in ("FILE", "GENERATED"):
+        _warn_once(state, f"RISE only supports file-backed or packed Environment Textures (source={image.source!r}).")
+        return None, 1.0, (0.0, 0.0, 0.0), True
 
-    filepath = _resolved_image_path(image)
+    filepath = _resolve_image_for_bridge(image, state)
     if not filepath or not os.path.exists(filepath):
-        _warn_once(state, "RISE could not resolve the Environment Texture's image file.")
-        return None, strength, (0.0, 0.0, 0.0), True
+        _warn_once(state, "RISE could not resolve the Environment Texture's image file (and unpack-to-temp also failed).")
+        return None, 1.0, (0.0, 0.0, 0.0), True
 
     extension = os.path.splitext(filepath)[1].lower()
     kind = SUPPORTED_IMAGE_KINDS.get(extension)
     if kind is None:
         _warn_once(state, "RISE supports HDR / EXR / PNG / TIFF Environment Textures.")
-        return None, strength, (0.0, 0.0, 0.0), True
+        return None, 1.0, (0.0, 0.0, 0.0), True
 
     # The Environment Texture's Vector input optionally feeds through
     # a Mapping node for rotation.  We map the Mapping node's Rotation
@@ -1797,7 +2014,7 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
         kind,
         color_space,
     )
-    return painter_name, strength, orientation, True
+    return painter_name, strength, orientation, bool(is_camera_visible)
 
 
 def _world_volume_medium(scene, state: _ExportState) -> str | None:
