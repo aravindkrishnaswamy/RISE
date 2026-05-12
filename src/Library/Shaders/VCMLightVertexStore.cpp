@@ -384,6 +384,9 @@ namespace
 			BalanceSegmentParallel( verts, leftBox, from, median - 1, cutoff,
 				pool, outstanding, doneMut, doneCv );
 			if( outstanding.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
+				{
+					std::lock_guard<std::mutex> lk( doneMut );
+				}
 				doneCv.notify_all();
 			}
 		} );
@@ -433,6 +436,9 @@ void LightVertexStore::BuildKDTreeParallel()
 		BalanceSegmentParallel( mVertices, bbox, 0, static_cast<int>( N ) - 1, cutoff,
 			pool, outstanding, doneMut, doneCv );
 		if( outstanding.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
+			{
+				std::lock_guard<std::mutex> lk( doneMut );
+			}
 			doneCv.notify_all();
 		}
 	} );

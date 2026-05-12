@@ -260,7 +260,10 @@ namespace RISE
 			// Negate wi to get toward-surface direction for ri.ray.Dir()
 			Ray evalRay( vertex.position, -wi );
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-			PopulateRIGFromVertex( vertex, ri );
+			ri.bHit = true;
+			ri.ptIntersection = vertex.position;
+			ri.vNormal = vertex.normal;
+			ri.onb = vertex.onb;
 
 			IORStack stack( 1.0 );
 			BuildVertexIORStack( vertex, stack );
@@ -382,7 +385,10 @@ namespace RISE
 
 			Ray evalRay( vertex.position, -wi );
 			RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-			PopulateRIGFromVertex( vertex, ri );
+			ri.bHit = true;
+			ri.ptIntersection = vertex.position;
+			ri.vNormal = vertex.normal;
+			ri.onb = vertex.onb;
 
 			IORStack stack( 1.0 );
 			BuildVertexIORStack( vertex, stack );

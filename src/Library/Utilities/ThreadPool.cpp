@@ -150,9 +150,12 @@ void ThreadPool::ParallelFor( unsigned int n, std::function<void( unsigned int )
 	{
 		std::lock_guard<std::mutex> lk( tasksMut );
 		for( unsigned int i = 0; i < n; i++ ) {
-			tasks.push_back( [i, &body, &remaining, &doneCv] {
+			tasks.push_back( [i, &body, &remaining, &doneMut, &doneCv] {
 				body( i );
 				if( remaining.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
+					{
+						std::lock_guard<std::mutex> lk2( doneMut );
+					}
 					doneCv.notify_all();
 				}
 			} );
