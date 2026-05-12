@@ -1,0 +1,687 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           composite_wacky_creature.RISEscene                                                      #
+#   Description:    Two wacky displaced creatures rendered side-by-side, each built from a deep cascade of  #
+#                   `composite_function2d_painter` chunks driving a `displaced_geometry`.  The two share    #
+#                   the file but are intentionally orthogonal in every way:                                 #
+#                                                                                                           #
+#                     Creature 1 (LEFT):  "honey-amber blob"                                                #
+#                       Shape leaves: monkey_saddle, paraboloid, three radial bumps (eye-eye-mouth),        #
+#                                     chin bulge, two Perlins                                               #
+#                       Composite ops: sum, difference, sum, sum, difference, sum, sum (7 layers)           #
+#                       Material: `subsurfacescattering_material` — honey-amber translucent SSS so          #
+#                                 the lumpy mass GLOWS, with absorption tinted toward warm wavelengths      #
+#                                                                                                           #
+#                     Creature 2 (RIGHT): "spiky metallic shell"                                            #
+#                       Shape leaves: BIVARIATE polynomial (rotated saddle x² + xy − y²), TWO Gerstner      #
+#                                     wave fields (long + short wavelength), monomial cubic ridges,         #
+#                                     three tight "spikes" (radial bumps with scale=0.05 — very pointy)     #
+#                       Composite ops: sum, lerp, MAX × 3 (spikes), sum (6 layers).  The `max` op is the    #
+#                                     key — it gives sharp pointy spikes rather than smooth additive bumps. #
+#                       Material: `pbr_metallic_roughness_material` with metallic=1 and a Voronoi3D base    #
+#                                 color of metallic-tinted patches (gold, copper, gunmetal, steel) for a    #
+#                                 "patchwork meteorite" look                                                 #
+#                                                                                                           #
+#                   The two creatures together exercise every displacement op (sum / difference / lerp /    #
+#                   max), every polynomial family except hyperbolic_saddle, plus Gerstner waves at two      #
+#                   wavelengths, and demonstrate that the same composite painter system can drive both      #
+#                   organic-SSS and inorganic-metallic looks.                                               #
+#                                                                                                           #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-05-12                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup
+##################################################
+
+# DefaultPathTracing (not DefaultDirectLighting) is required for the
+# SSS volume to actually scatter — the direct-lighting shader op skips
+# the volume integration entirely.  Path tracer + 64 spp gives the SSS
+# enough samples to converge while keeping the metallic creature clean.
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples		64
+}
+
+file_rasterizeroutput
+{
+	pattern		rendered/composite_wacky_creature
+	type		PNG
+	bpp			8
+	color_space	sRGB
+}
+
+##################################################
+# Camera — wide framing for two creatures side-by-side
+##################################################
+
+film
+{
+	width		1200
+	height		600
+}
+
+pinhole_camera
+{
+	location	0 0.3 7
+	lookat		0 0 0
+	up			0 1 0
+	fov			40.0
+}
+
+> run scenes/colors.RISEscript
+
+#############################################################################################################
+# === CREATURE 1: honey-amber SSS blob ============================================================
+#############################################################################################################
+
+##################################################
+# Displacement leaves (creature 1)
+##################################################
+
+# Cubic "monkey saddle" gives the base its 3-fold asymmetry.
+polynomial_function2d_painter
+{
+	name		c1_poly_monkey
+	colora		color_black
+	colorb		color_white
+	type		monkey_saddle
+	amplitude	0.20
+}
+
+# Gentle paraboloid bowl — pushes the corners outward.
+polynomial_function2d_painter
+{
+	name		c1_poly_para
+	colora		color_black
+	colorb		color_white
+	type		paraboloid
+	amplitude	0.05
+}
+
+# Left-eye knob.
+polynomial_function2d_painter
+{
+	name		c1_poly_knob_left
+	colora		color_black
+	colorb		color_white
+	type		radial_bump
+	amplitude	0.18
+	degree		2
+	center		0.40 0.45
+	scale		0.13 0.13
+}
+
+# Right-eye knob — slightly smaller for asymmetry.
+polynomial_function2d_painter
+{
+	name		c1_poly_knob_right
+	colora		color_black
+	colorb		color_white
+	type		radial_bump
+	amplitude	0.16
+	degree		2
+	center		0.60 0.55
+	scale		0.14 0.14
+}
+
+# Mouth divot (subtracted in L5).
+polynomial_function2d_painter
+{
+	name		c1_poly_mouth
+	colora		color_black
+	colorb		color_white
+	type		radial_bump
+	amplitude	0.22
+	degree		2
+	center		0.50 0.65
+	scale		0.12 0.12
+}
+
+# Chin bulge.
+polynomial_function2d_painter
+{
+	name		c1_poly_chin
+	colora		color_black
+	colorb		color_white
+	type		radial_bump
+	amplitude	0.10
+	degree		2
+	center		0.50 0.78
+	scale		0.18 0.18
+}
+
+# Medium-scale Perlin.
+perlin2d_painter
+{
+	name		c1_pnt_blobs
+	colora		color_black
+	colorb		color_white
+	scale		1 1
+	shift		0 0
+	persistence	0.5
+	octaves		4
+}
+
+# High-frequency Perlin for "skin".
+perlin2d_painter
+{
+	name		c1_pnt_grain
+	colora		color_black
+	colorb		color_white
+	scale		1 1
+	shift		0 0
+	persistence	0.4
+	octaves		3
+}
+
+##################################################
+# Creature 1 composite cascade — 7 layers
+##################################################
+
+composite_function2d_painter
+{
+	name		c1_disp_l1
+	op			sum
+	colora		color_navy
+	colorb		color_orange
+	child_a		c1_poly_monkey
+	weight_a	1.0
+	child_b		c1_poly_para
+	weight_b	1.0
+}
+
+composite_function2d_painter
+{
+	name		c1_disp_l2
+	op			sum
+	colora		color_navy
+	colorb		color_orange
+	child_a		c1_disp_l1
+	weight_a	1.0
+	child_b		c1_pnt_blobs
+	weight_b	0.06
+	uv_scale_b	4 4
+}
+
+composite_function2d_painter
+{
+	name		c1_disp_l3
+	op			sum
+	colora		color_navy
+	colorb		color_orange
+	child_a		c1_disp_l2
+	weight_a	1.0
+	child_b		c1_poly_knob_left
+	weight_b	1.0
+}
+
+composite_function2d_painter
+{
+	name		c1_disp_l4
+	op			sum
+	colora		color_navy
+	colorb		color_orange
+	child_a		c1_disp_l3
+	weight_a	1.0
+	child_b		c1_poly_knob_right
+	weight_b	1.0
+}
+
+composite_function2d_painter
+{
+	name		c1_disp_l5
+	op			difference
+	colora		color_navy
+	colorb		color_orange
+	child_a		c1_disp_l4
+	weight_a	1.0
+	child_b		c1_poly_mouth
+	weight_b	1.0
+}
+
+composite_function2d_painter
+{
+	name		c1_disp_l6
+	op			sum
+	colora		color_navy
+	colorb		color_orange
+	child_a		c1_disp_l5
+	weight_a	1.0
+	child_b		c1_poly_chin
+	weight_b	1.0
+}
+
+composite_function2d_painter
+{
+	name		c1_disp_final
+	op			sum
+	colora		color_navy
+	colorb		color_orange
+	child_a		c1_disp_l6
+	weight_a	1.0
+	child_b		c1_pnt_grain
+	weight_b	0.02
+	uv_scale_b	25 25
+}
+
+##################################################
+# Creature 1 material — Voronoi-3D-coloured volumetric SSS
+#
+# The scattering coefficient is a VORONOI3D painter, so different 3D
+# regions of the sphere have different per-channel scattering rates.
+# Each cell's "gen" colour points to an HDR uniformcolor painter
+# (values ~0.5–8) — those out-of-[0,1] magnitudes are needed because
+# scattering coefficients live in the 1–10 1/unit range to actually
+# scatter visibly.  In each cell, the channel with the highest σ_s
+# dominates the back-scattered radiance, so a "red-dominant" cell
+# glows red translucent, a "cyan-dominant" cell glows cyan, etc.
+# Absorption is kept low and roughly symmetric so the scattering
+# pattern (not the absorption) controls the emergent colour.
+#
+# Cell borders are turned off (bordersize 0) — borders would render
+# as zero-scattering "transparent windows" inside the volume, which
+# reads weirdly against the SSS diffusion.
+##################################################
+
+# --- HDR scattering palettes (one per Voronoi cell) ---
+# Each gives a distinct dominant-channel scattering profile.
+
+uniformcolor_painter
+{
+	name		hdr_scatter_red
+	color		8.0 0.5 0.5
+	colorspace	ROMMRGB_Linear
+}
+uniformcolor_painter
+{
+	name		hdr_scatter_green
+	color		0.5 8.0 0.5
+	colorspace	ROMMRGB_Linear
+}
+uniformcolor_painter
+{
+	name		hdr_scatter_blue
+	color		0.5 0.5 8.0
+	colorspace	ROMMRGB_Linear
+}
+uniformcolor_painter
+{
+	name		hdr_scatter_yellow
+	color		8.0 8.0 0.5
+	colorspace	ROMMRGB_Linear
+}
+uniformcolor_painter
+{
+	name		hdr_scatter_cyan
+	color		0.5 8.0 8.0
+	colorspace	ROMMRGB_Linear
+}
+uniformcolor_painter
+{
+	name		hdr_scatter_magenta
+	color		8.0 0.5 8.0
+	colorspace	ROMMRGB_Linear
+}
+uniformcolor_painter
+{
+	name		hdr_scatter_amber
+	color		8.0 4.0 0.8
+	colorspace	ROMMRGB_Linear
+}
+uniformcolor_painter
+{
+	name		hdr_scatter_violet
+	color		5.0 1.0 8.0
+	colorspace	ROMMRGB_Linear
+}
+
+# --- Voronoi3D scattering field ---
+voronoi3d_painter
+{
+	name		c1_sss_scattering
+	border		color_black
+	bordersize	0.0
+	gen			 0.45  0.30  0.10	hdr_scatter_red
+	gen			-0.40  0.40 -0.15	hdr_scatter_amber
+	gen			 0.20 -0.45  0.30	hdr_scatter_yellow
+	gen			-0.30 -0.30 -0.20	hdr_scatter_cyan
+	gen			 0.40  0.10 -0.40	hdr_scatter_blue
+	gen			-0.10  0.45  0.35	hdr_scatter_green
+	gen			 0.30 -0.20 -0.30	hdr_scatter_magenta
+	gen			-0.45  0.05  0.20	hdr_scatter_violet
+}
+
+# --- Low, symmetric absorption ---
+# Lets the scattering pattern decide the colour rather than tinting
+# everything one global hue.  Slight uniform attenuation only.
+uniformcolor_painter
+{
+	name		c1_sss_absorption
+	color		0.10 0.10 0.10
+	colorspace	ROMMRGB_Linear
+}
+
+subsurfacescattering_material
+{
+	name		mat_creature1
+	ior			1.3
+	absorption	c1_sss_absorption
+	scattering	c1_sss_scattering
+	g			0.0
+	roughness	0.0
+}
+
+#############################################################################################################
+# === CREATURE 2: spiky metallic shell =============================================================
+#############################################################################################################
+
+##################################################
+# Displacement leaves (creature 2)
+##################################################
+
+# Bivariate polynomial: f = x² + xy − y² (a rotated saddle).
+# Coefficients (row-major triangular order, total degree 2):
+#   a00=0, a10=0, a01=0,  a20=1, a11=1, a02=-1
+# This gives an asymmetric saddle as the structural base.
+polynomial_function2d_painter
+{
+	name		c2_poly_bivariate
+	colora		color_black
+	colorb		color_white
+	type		bivariate
+	amplitude	0.18
+	degree		2
+	coefficients	0 0 0 1 1 -1
+}
+
+# Monomial cubic ridge along U (x³).
+polynomial_function2d_painter
+{
+	name		c2_poly_xcubed
+	colora		color_black
+	colorb		color_white
+	type		monomial
+	amplitude	0.12
+	power_x		3
+	power_y		0
+}
+
+# Long-wavelength Gerstner — slow rolling surface variation.
+gerstnerwave_painter
+{
+	name				c2_gerstner_long
+	colora				color_black
+	colorb				color_white
+	num_waves			6
+	median_wavelength	0.5
+	wavelength_range	2.0
+	median_amplitude	0.07
+	amplitude_power		0.7
+	wind_dir			1.0 0.5
+	directional_spread	0.6
+	dispersion_speed	1.0
+	seed				23
+	time				0.0
+}
+
+# Short-wavelength Gerstner — fine ripples.
+gerstnerwave_painter
+{
+	name				c2_gerstner_short
+	colora				color_black
+	colorb				color_white
+	num_waves			16
+	median_wavelength	0.06
+	wavelength_range	2.5
+	median_amplitude	0.012
+	amplitude_power		0.9
+	wind_dir			0.3 1.0
+	directional_spread	1.0
+	dispersion_speed	1.0
+	seed				77
+	time				0.0
+}
+
+# Three "spikes" — tight radial bumps at scattered front-facing UV
+# positions.  scale=(0.05, 0.05) is very tight → tall + narrow peaks.
+polynomial_function2d_painter
+{
+	name		c2_spike_a
+	colora		color_black
+	colorb		color_white
+	type		radial_bump
+	amplitude	0.30
+	degree		1
+	center		0.35 0.30
+	scale		0.05 0.05
+}
+
+polynomial_function2d_painter
+{
+	name		c2_spike_b
+	colora		color_black
+	colorb		color_white
+	type		radial_bump
+	amplitude	0.28
+	degree		1
+	center		0.65 0.40
+	scale		0.05 0.05
+}
+
+polynomial_function2d_painter
+{
+	name		c2_spike_c
+	colora		color_black
+	colorb		color_white
+	type		radial_bump
+	amplitude	0.25
+	degree		1
+	center		0.50 0.70
+	scale		0.06 0.06
+}
+
+##################################################
+# Creature 2 composite cascade — 6 layers
+##################################################
+
+# L1: rotated-saddle base + long-wavelength flowing waves
+composite_function2d_painter
+{
+	name		c2_disp_l1
+	op			sum
+	colora		color_navy
+	colorb		color_orange
+	child_a		c2_poly_bivariate
+	weight_a	1.0
+	child_b		c2_gerstner_long
+	weight_b	1.0
+}
+
+# L2: blend in cubic ridge (lerp = 50/50 mean — softens both)
+composite_function2d_painter
+{
+	name		c2_disp_l2
+	op			lerp
+	colora		color_navy
+	colorb		color_orange
+	child_a		c2_disp_l1
+	weight_a	1.0
+	child_b		c2_poly_xcubed
+	weight_b	1.0
+	lerp_t		0.35
+}
+
+# L3..L5: stamp spikes via max — each spike "wins" where it's tall,
+# preserving its pointy character rather than averaging it down.
+composite_function2d_painter
+{
+	name		c2_disp_l3
+	op			max
+	colora		color_navy
+	colorb		color_orange
+	child_a		c2_disp_l2
+	weight_a	1.0
+	child_b		c2_spike_a
+	weight_b	1.0
+}
+
+composite_function2d_painter
+{
+	name		c2_disp_l4
+	op			max
+	colora		color_navy
+	colorb		color_orange
+	child_a		c2_disp_l3
+	weight_a	1.0
+	child_b		c2_spike_b
+	weight_b	1.0
+}
+
+composite_function2d_painter
+{
+	name		c2_disp_l5
+	op			max
+	colora		color_navy
+	colorb		color_orange
+	child_a		c2_disp_l4
+	weight_a	1.0
+	child_b		c2_spike_c
+	weight_b	1.0
+}
+
+# L6: + short-wavelength ripple grain (sum)
+composite_function2d_painter
+{
+	name		c2_disp_final
+	op			sum
+	colora		color_navy
+	colorb		color_orange
+	child_a		c2_disp_l5
+	weight_a	1.0
+	child_b		c2_gerstner_short
+	weight_b	1.0
+}
+
+##################################################
+# Creature 2 material — PBR metallic with Voronoi3D base color
+##################################################
+
+# Six metallic-tinted Voronoi cells.  Cell positions scattered in a
+# small 3D box so each metal "alloy" patch covers a recognisable
+# region of the sphere.
+voronoi3d_painter
+{
+	name		c2_pnt_metal_cells
+	border		color_black
+	bordersize	0.02
+	gen			 0.40  0.25  0.10	color_gold
+	gen			-0.35  0.40 -0.15	color_orange
+	gen			 0.20 -0.40  0.30	color_lightsteelblue
+	gen			-0.30 -0.30 -0.20	color_slateblue
+	gen			 0.40  0.10 -0.40	color_indianred
+	gen			-0.45  0.05  0.20	color_firebrick
+}
+
+pbr_metallic_roughness_material
+{
+	name		mat_creature2
+	base_color	c2_pnt_metal_cells
+	metallic	1.0
+	roughness	0.25
+}
+
+#############################################################################################################
+# Geometry + objects
+#############################################################################################################
+
+sphere_geometry
+{
+	name		sphere_base
+	radius		1.0
+}
+
+# Creature 1: SSS blob, left
+displaced_geometry
+{
+	name			sphere_creature1
+	base_geometry	sphere_base
+	detail			128
+	displacement	c1_disp_final
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+# Creature 2: spiky metallic, right
+displaced_geometry
+{
+	name			sphere_creature2
+	base_geometry	sphere_base
+	detail			128
+	displacement	c2_disp_final
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+standard_object
+{
+	name		obj_creature1
+	geometry	sphere_creature1
+	position	-1.6 0 0
+	orientation	0 0 0
+	material	mat_creature1
+	receives_shadows false
+}
+
+standard_object
+{
+	name		obj_creature2
+	geometry	sphere_creature2
+	position	1.6 0 0
+	orientation	0 0 0
+	material	mat_creature2
+	receives_shadows false
+}
+
+#############################################################################################################
+# Lighting — three-point setup, brighter to feed the SSS forward-scatter
+# and to give the metal something punchy to reflect.
+#############################################################################################################
+
+directional_light
+{
+	name		key
+	power		3.5
+	color		1.0 0.95 0.85
+	direction	0.6 0.7 1.0
+}
+
+directional_light
+{
+	name		fill
+	power		1.4
+	color		0.6 0.75 1.0
+	direction	-0.8 -0.2 0.5
+}
+
+directional_light
+{
+	name		rim
+	power		1.6
+	color		1.0 1.0 1.0
+	direction	-0.4 -0.5 -0.8
+}

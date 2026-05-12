@@ -1,0 +1,449 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           composite_polynomial_catalog.RISEscene                                                  #
+#   Description:    Catalog of `composite_function2d_painter` operating on `polynomial_function2d_painter`  #
+#                   leaves (and one Perlin source).  Six displaced spheres laid out 3x2, each demonstrating #
+#                   a different binary composition.                                                         #
+#                                                                                                           #
+#                   Layout (looking at +Z, both rows show the polynomial-painter as the structural base):  #
+#                                                                                                           #
+#                       row 0 (y = +1.25):  paraboloid + radial_bump                                        #
+#                                           paraboloid + Perlin       (polynomial base + noise detail —     #
+#                                                                      the canonical "poly + Perlin" of     #
+#                                                                      the original design doc)             #
+#                                           monkey_saddle + small Perlin                                    #
+#                                                                                                           #
+#                       row 1 (y = -1.25):  radial_bump * Perlin       (masked / windowed Perlin)           #
+#                                           paraboloid − radial_bump   (difference — bowl with a divot)     #
+#                                           lerp(paraboloid, hyperbolic_saddle, t=0.5)                      #
+#                                                                                                           #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-05-12                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+bdpt_pel_rasterizer
+{
+	samples		8
+}
+
+file_rasterizeroutput
+{
+	pattern		rendered/composite_polynomial_catalog
+	type		PNG
+	bpp			8
+	color_space	sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width		900
+	height		600
+}
+
+pinhole_camera
+{
+	location	0 0 12
+	lookat		0 0 0
+	up			0 1 0
+	fov			28.0
+}
+
+##################################################
+# Leaf painters (shared across multiple composites)
+##################################################
+
+> run scenes/colors.RISEscript
+
+# --- Polynomial leaves ---
+polynomial_function2d_painter
+{
+	name		poly_paraboloid
+	colora		color_navy
+	colorb		color_orange
+	type		paraboloid
+	amplitude	0.10
+}
+
+# Radial bump used both as a stand-alone leaf and as the mask in the
+# product composition.  Default center / scale → support disk covers
+# the UV mid-band.
+polynomial_function2d_painter
+{
+	name		poly_radial_bump
+	colora		color_navy
+	colorb		color_orange
+	type		radial_bump
+	amplitude	0.20
+	degree		2
+}
+
+polynomial_function2d_painter
+{
+	name		poly_monkey
+	colora		color_navy
+	colorb		color_orange
+	type		monkey_saddle
+	amplitude	0.15
+}
+
+polynomial_function2d_painter
+{
+	name		poly_hyperbolic
+	colora		color_navy
+	colorb		color_orange
+	type		hyperbolic_saddle
+	amplitude	0.20
+}
+
+# Radial bump tuned for the difference composition — a deeper, tighter
+# divot so the bowl-minus-bump scoop is sharply localised at the centre
+# rather than a broad pull-in.  scale=(0.25, 0.25) shrinks the support
+# disk to ~half the UV span; amplitude=0.45 is ~half the sphere radius.
+polynomial_function2d_painter
+{
+	name		poly_radial_bump_deep
+	colora		color_navy
+	colorb		color_orange
+	type		radial_bump
+	amplitude	0.45
+	degree		2
+	scale		0.25 0.25
+}
+
+# --- Perlin leaves ---
+perlin2d_painter
+{
+	name		pnt_perlin
+	colora		color_black
+	colorb		color_white
+	persistence	0.5
+	scale		1 1
+	shift		0 0
+	octaves		3
+}
+
+##################################################
+# Composite painters — six grid cells
+##################################################
+
+# Row 0, col 0:  paraboloid + radial_bump  (two polynomials summed)
+# Smooth bowl with a localised dome at centre.
+composite_function2d_painter
+{
+	name		comp_para_plus_bump
+	op			sum
+	colora		color_navy
+	colorb		color_orange
+	child_a		poly_paraboloid
+	weight_a	1.0
+	child_b		poly_radial_bump
+	weight_b	1.0
+}
+
+# Row 0, col 1:  paraboloid + Perlin  (canonical polynomial base + noise)
+# poly_paraboloid sampled at native UV; Perlin sampled at 8x frequency
+# so it reads as fine surface detail riding on the smooth bowl.
+composite_function2d_painter
+{
+	name		comp_para_plus_perlin
+	op			sum
+	colora		color_navy
+	colorb		color_orange
+	child_a		poly_paraboloid
+	weight_a	1.0
+	uv_scale_a	1.0 1.0
+	child_b		pnt_perlin
+	weight_b	0.04
+	uv_scale_b	8.0 8.0
+}
+
+# Row 0, col 2:  monkey_saddle + small Perlin  (cubic art + fine grain)
+# Perlin at 20x is at the resolution where individual undulations are
+# the size of facets — visible as a "rough" finish on the monkey saddle.
+composite_function2d_painter
+{
+	name		comp_monkey_plus_perlin
+	op			sum
+	colora		color_navy
+	colorb		color_orange
+	child_a		poly_monkey
+	weight_a	1.0
+	child_b		pnt_perlin
+	weight_b	0.025
+	uv_scale_b	20.0 20.0
+}
+
+# Row 1, col 0:  radial_bump * Perlin  (masked / windowed Perlin)
+# Perlin only contributes inside the bump's support disk; outside, the
+# product is zero → the sphere stays smooth.  weight_b=2.5 pushes the
+# multiplied amplitude up so the grain reads clearly inside the mask;
+# uv_scale_b=12 doubles the Perlin frequency vs the row-0 / col-1 scene
+# so the masked region shows distinct high-frequency oscillations rather
+# than broad swells.
+composite_function2d_painter
+{
+	name		comp_bump_times_perlin
+	op			product
+	colora		color_navy
+	colorb		color_orange
+	child_a		poly_radial_bump
+	weight_a	1.0
+	child_b		pnt_perlin
+	weight_b	2.5
+	uv_scale_b	12.0 12.0
+}
+
+# Row 1, col 1:  paraboloid − radial_bump  (bowl with a divot)
+# Outside the bump's support disk, displacement is paraboloid (positive,
+# growing toward the equator).  Inside, the central radial bump is
+# SUBTRACTED, scooping a divot out of the centre.
+composite_function2d_painter
+{
+	name		comp_para_minus_bump
+	op			difference
+	colora		color_navy
+	colorb		color_orange
+	child_a		poly_paraboloid
+	weight_a	1.0
+	child_b		poly_radial_bump_deep
+	weight_b	1.0
+}
+
+# Row 1, col 2:  lerp(paraboloid, hyperbolic_saddle, t=0.5)
+# 50/50 blend of a bowl and a saddle.  Result is the average: a "shallow
+# bowl with a saddle-like asymmetry along the diagonals".
+composite_function2d_painter
+{
+	name		comp_para_lerp_saddle
+	op			lerp
+	colora		color_navy
+	colorb		color_orange
+	child_a		poly_paraboloid
+	weight_a	1.0
+	child_b		poly_hyperbolic
+	weight_b	1.0
+	lerp_t		0.5
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name		mat_para_plus_bump
+	reflectance	comp_para_plus_bump
+}
+
+lambertian_material
+{
+	name		mat_para_plus_perlin
+	reflectance	comp_para_plus_perlin
+}
+
+lambertian_material
+{
+	name		mat_monkey_plus_perlin
+	reflectance	comp_monkey_plus_perlin
+}
+
+lambertian_material
+{
+	name		mat_bump_times_perlin
+	reflectance	comp_bump_times_perlin
+}
+
+lambertian_material
+{
+	name		mat_para_minus_bump
+	reflectance	comp_para_minus_bump
+}
+
+lambertian_material
+{
+	name		mat_para_lerp_saddle
+	reflectance	comp_para_lerp_saddle
+}
+
+##################################################
+# Geometry
+##################################################
+
+sphere_geometry
+{
+	name		sphere_base
+	radius		1.0
+}
+
+displaced_geometry
+{
+	name			sphere_para_plus_bump
+	base_geometry	sphere_base
+	detail			96
+	displacement	comp_para_plus_bump
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+displaced_geometry
+{
+	name			sphere_para_plus_perlin
+	base_geometry	sphere_base
+	detail			96
+	displacement	comp_para_plus_perlin
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+displaced_geometry
+{
+	name			sphere_monkey_plus_perlin
+	base_geometry	sphere_base
+	detail			96
+	displacement	comp_monkey_plus_perlin
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+displaced_geometry
+{
+	name			sphere_bump_times_perlin
+	base_geometry	sphere_base
+	detail			96
+	displacement	comp_bump_times_perlin
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+displaced_geometry
+{
+	name			sphere_para_minus_bump
+	base_geometry	sphere_base
+	detail			96
+	displacement	comp_para_minus_bump
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+displaced_geometry
+{
+	name			sphere_para_lerp_saddle
+	base_geometry	sphere_base
+	detail			96
+	displacement	comp_para_lerp_saddle
+	disp_scale		1.0
+	maxpolygons		10
+	maxdepth		14
+	bsp				TRUE
+}
+
+##################################################
+# Objects (3x2 grid, X-spacing 2.5, Y-spacing 2.5)
+##################################################
+
+standard_object
+{
+	name		obj_para_plus_bump
+	geometry	sphere_para_plus_bump
+	position	-2.5 1.25 0
+	orientation	0 0 0
+	material	mat_para_plus_bump
+	receives_shadows false
+}
+
+standard_object
+{
+	name		obj_para_plus_perlin
+	geometry	sphere_para_plus_perlin
+	position	0 1.25 0
+	orientation	0 0 0
+	material	mat_para_plus_perlin
+	receives_shadows false
+}
+
+standard_object
+{
+	name		obj_monkey_plus_perlin
+	geometry	sphere_monkey_plus_perlin
+	position	2.5 1.25 0
+	orientation	0 0 0
+	material	mat_monkey_plus_perlin
+	receives_shadows false
+}
+
+standard_object
+{
+	name		obj_bump_times_perlin
+	geometry	sphere_bump_times_perlin
+	position	-2.5 -1.25 0
+	orientation	0 0 0
+	material	mat_bump_times_perlin
+	receives_shadows false
+}
+
+standard_object
+{
+	name		obj_para_minus_bump
+	geometry	sphere_para_minus_bump
+	position	0 -1.25 0
+	orientation	0 0 0
+	material	mat_para_minus_bump
+	receives_shadows false
+}
+
+standard_object
+{
+	name		obj_para_lerp_saddle
+	geometry	sphere_para_lerp_saddle
+	position	2.5 -1.25 0
+	orientation	0 0 0
+	material	mat_para_lerp_saddle
+	receives_shadows false
+}
+
+##################################################
+# Lighting — strong key + softer fill (matches polynomial catalog)
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1.0 1.0 1.0
+	direction	0.7 0.7 1.0
+}
+
+directional_light
+{
+	name		fill
+	power		1.0
+	color		1.0 1.0 1.0
+	direction	-0.6 -0.2 0.5
+}
