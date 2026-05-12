@@ -1290,10 +1290,23 @@ def _camera_payload(camera_object, render_settings: RenderSettingsData, state: _
 def _light_payload(light_object, matrix_world, state: _ExportState) -> LightData | None:
     """Translate a Blender light to a RISE LightData.
 
+    Radiometric calibration (audit item #10):
+
+    - RISE PointLight / SpotLight expect ``radiantEnergy`` in W/sr
+      (radiant intensity per steradian — see PointLight.cpp line 75:
+      `emittedRadiance = cColor * radiantEnergy [watts/sr]`).
+    - Cycles' point/spot `light.energy` is total radiant flux (W)
+      treated as if emitted isotropically over the sphere.  So
+      converting needs a 1/(4π) factor.
+    - RISE DirectionalLight expects ``radiantEnergy`` as direct
+      irradiance (no 1/d² applied — see DirectionalLight.cpp line 63).
+      Cycles' sun `light.energy` is already irradiance (W/m²), so no
+      conversion is needed.
+
     AREA lights return None here; the caller is expected to invoke
     `_register_area_light_mesh` which materialises the area light as
     an emissive mesh-luminary instead (so soft shadows, falloff, and
-    distance attenuation match Cycles).
+    shape-correct sampling match Cycles).
     """
 
     light = light_object.data
@@ -1316,11 +1329,21 @@ def _light_payload(light_object, matrix_world, state: _ExportState) -> LightData
     direction = (-matrix_world.col[2].to_3d()).normalized()
     position = matrix_world.translation
 
+    # Blender energy + Cycles exposure (stops) → physical light units.
+    raw_energy = float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0)))
+    if light.type in ("POINT", "SPOT"):
+        # Cycles total-flux (W) → RISE radiant intensity (W/sr).
+        # 1/(4π) ≈ 0.0795775.
+        intensity = raw_energy / (4.0 * math.pi)
+    else:
+        # SUN / fallthrough: energy is already irradiance.
+        intensity = raw_energy
+
     return LightData(
         name=_unique_name(state, "light", light_object.name_full),
         type=light_type,
         color=(float(color[0]), float(color[1]), float(color[2])),
-        intensity=float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0))),
+        intensity=intensity,
         position=(float(position.x), float(position.y), float(position.z)),
         direction=(float(direction.x), float(direction.y), float(direction.z)),
         spot_size=float(getattr(light, "spot_size", 0.0)),
@@ -1407,19 +1430,21 @@ def _register_area_light_mesh(light_object, matrix_world, state: _ExportState) -
     if area <= 0.0:
         return None
 
-    # Cycles area-light energy is total radiant flux (W).  Lambertian
-    # luminary exitance M = energy / area; radiance L = M / π.
-    # The bridge's AddLambertianLuminaireMaterial multiplies the
-    # emission painter colour by π under the hood (Lambertian
-    # normalisation), so we pre-divide by π here to keep total power
-    # equal to light.energy.
+    # Cycles area-light energy is total radiant flux (W).  We encode
+    # the painter as per-area radiant exitance M = energy / area
+    # (W/m²); RISE's LambertianEmitter then applies the standard
+    # Lambertian 1/π normalisation internally
+    # (LambertianEmitter.cpp line 54:
+    #   emittedRadiance = radExPainter.GetColor(ri) * INV_PI * scale).
+    # Total emitted flux integrates back to ∫ L cosθ dω dA = M × A
+    # = energy, matching Cycles.
     color = list(light.color)
     if getattr(light, "use_temperature", False):
         temperature_color = list(light.temperature_color)
         color[0] *= temperature_color[0]
         color[1] *= temperature_color[1]
         color[2] *= temperature_color[2]
-    intensity = (float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0)))) / (math.pi * area)
+    intensity = (float(light.energy) * (2.0 ** float(getattr(light, "exposure", 0.0)))) / area
     emission_color = (color[0] * intensity, color[1] * intensity, color[2] * intensity)
 
     base_name = _safe_name(light_object.name_full)
