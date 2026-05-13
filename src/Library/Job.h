@@ -512,7 +512,7 @@ namespace RISE
 									const unsigned int powerY,
 									const double* pCoeffs,
 									const unsigned int nCoeffs
-									) override;
+									);
 
 		//! Adds a composable Function2D painter.
 		/// \return TRUE if successful, FALSE otherwise
@@ -532,7 +532,7 @@ namespace RISE
 									const double lerpT,
 									const double outputScale,
 									const double outputOffset
-									) override;
+									);
 
 		//! Adds a sum-of-sines water-wave painter (Gerstner height variant).
 		/// \return TRUE if successful, FALSE otherwise
