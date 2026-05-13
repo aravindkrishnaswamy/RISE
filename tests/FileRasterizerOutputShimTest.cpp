@@ -35,7 +35,12 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include <unistd.h>  // getpid (POSIX)
+#ifdef _WIN32
+	#include <process.h>		// _getpid()
+	#define getpid _getpid
+#else
+	#include <unistd.h>		// getpid() (POSIX)
+#endif
 
 #include "../src/Library/Rendering/FileRasterizerOutput.h"
 #include "../src/Library/Rendering/FrameEncoders.h"
