@@ -929,6 +929,14 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 
 		if( !isFinalRound )
 		{
+			// See MLTRasterizer.cpp for the full rationale: copy the
+			// resolved round-image into the canonical `mFrameStore`
+			// so a `BindFrameStore`-bound `ViewportFrameStore` sees
+			// per-tile `OnTileComplete` events.  Without this, VFS's
+			// `OutputIntermediateImage` short-circuits and the GUI
+			// never displays per-round previews.  No
+			// `MarkFrameComplete` — progressive, not final.
+			CopyToFrameStore_( *pImage );
 			RasterizerOutputListType::const_iterator r, s;
 			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 				(*r)->OutputIntermediateImage( *pImage, 0 );

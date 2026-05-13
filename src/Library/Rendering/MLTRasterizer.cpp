@@ -1136,7 +1136,22 @@ bool MLTRasterizer::RenderFrameOfMLT(
 
 		if( !isFinalRound )
 		{
-			// Intermediate round: send preview update only
+			// Intermediate round: send preview update only.
+			//
+			// Copy the resolved round-image into the canonical
+			// `mFrameStore` first — `CopyToFrameStore_` brackets each
+			// tile in BeginTile/EndTile, firing `OnTileComplete` on
+			// direct observers (the path a `BindFrameStore`-bound
+			// `ViewportFrameStore` uses to repaint).  Without this,
+			// VFS's `OutputIntermediateImage` short-circuits in the
+			// externally-bound case (it assumes the rasterizer drove
+			// per-tile bracketing on the canonical store, as PT/BDPT
+			// do during their per-block render loop) and the GUI
+			// never sees per-round previews even though the progress
+			// bar advances.  No `MarkFrameComplete`: this is
+			// progressive, not final — mirrors the post-block
+			// behaviour in `PixelBasedRasterizerHelper`.
+			CopyToFrameStore_( *pImage );
 			RasterizerOutputListType::const_iterator r, s;
 			for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
 				(*r)->OutputIntermediateImage( *pImage, 0 );
