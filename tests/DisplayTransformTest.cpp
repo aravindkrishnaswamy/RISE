@@ -13,6 +13,8 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <limits>
 
@@ -28,12 +30,27 @@ static bool IsClose( double a, double b, double eps = 1e-6 )
 
 // ---- Sanitisation: every curve must reject negatives / NaN / Inf ----
 
+// Build the IEEE 754 +Inf / -Inf / quiet-NaN bit patterns via memcpy.
+// `std::numeric_limits<double>::infinity()` (and similar literal forms)
+// emit -Wnan-infinity-disabled under -ffast-math, since fast-math
+// declares them UB; but the production Sanitise() exists precisely to
+// handle these bit patterns when they arrive at runtime from HDR
+// readers / numerically-degenerate BSDFs, so the test has to feed them
+// in.  A memcpy from a constant bit pattern produces the value at
+// runtime without the compiler seeing a literal infinity in source.
+static double MakeBits( std::uint64_t bits )
+{
+    double d;
+    std::memcpy( &d, &bits, sizeof(d) );
+    return d;
+}
+
 static void TestSanitiseUniform()
 {
     std::cout << "TestSanitiseUniform..." << std::endl;
-    const double nan = std::numeric_limits<double>::quiet_NaN();
-    const double pinf = std::numeric_limits<double>::infinity();
-    const double ninf = -std::numeric_limits<double>::infinity();
+    const double nan  = MakeBits( 0x7FF8000000000001ULL );
+    const double pinf = MakeBits( 0x7FF0000000000000ULL );
+    const double ninf = MakeBits( 0xFFF0000000000000ULL );
 
     for( int dt_int = 0; dt_int <= 4; ++dt_int ) {
         const DISPLAY_TRANSFORM dt = static_cast<DISPLAY_TRANSFORM>(dt_int);

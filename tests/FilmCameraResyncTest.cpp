@@ -36,6 +36,12 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#ifdef _WIN32
+	#include <process.h>		// _getpid()
+	#define getpid _getpid
+#else
+	#include <unistd.h>			// getpid()
+#endif
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
@@ -276,7 +282,23 @@ static void TestFilmChunkAfterCamera()
 		"\tpixelAR 1.5\n"
 		"}\n";
 
-	const char* tmpPath = "rendered/_film_after_camera_test.RISEscene";
+	// Write the scene to a pid-scoped temp file so the test is robust
+	// to the CWD (worktrees / fresh clones don't have a `rendered/`
+	// dir relative to CWD).  Matches the idiom in
+	// VCMStrategyBalanceTest / BDPTStrategyBalanceTest.
+	char tmpPath[ 512 ];
+#ifdef _WIN32
+	const char* tmpDir = std::getenv( "TEMP" );
+	if( !tmpDir ) tmpDir = std::getenv( "TMP" );
+	if( !tmpDir ) tmpDir = ".";
+	std::snprintf( tmpPath, sizeof(tmpPath),
+		"%s\\_film_after_camera_test_%d.RISEscene",
+		tmpDir, static_cast<int>(::getpid()) );
+#else
+	std::snprintf( tmpPath, sizeof(tmpPath),
+		"/tmp/_film_after_camera_test_%d.RISEscene",
+		static_cast<int>(::getpid()) );
+#endif
 	{
 		std::ofstream f( tmpPath );
 		f << sceneText;
