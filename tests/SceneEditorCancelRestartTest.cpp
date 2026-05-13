@@ -209,8 +209,21 @@ static void TestRapidEditsCancelPriorRender()
 	}
 	c.OnPointerUp( Point2( 130, 100 ) );
 
-	// Give the render thread a moment to settle on the final state.
-	std::this_thread::sleep_for( std::chrono::milliseconds( 400 ) );
+	// Wait for the render thread to settle on the final state — poll
+	// for a completed pass rather than sleeping a fixed wall-clock
+	// duration.  Windows scheduler granularity is ~15.6 ms by default,
+	// so the simulated render's 5 ms slices take ~16 ms each in
+	// practice (full 200 ms pass ≈ 640 ms wall time); a fixed 400 ms
+	// wait races against Stop() and the assertion fails on Windows.
+	// Bound the poll at 3 s so the test still terminates if the render
+	// thread genuinely never completes.
+	const auto deadline = std::chrono::steady_clock::now()
+	                    + std::chrono::seconds( 3 );
+	while( c.CompletedCount() == 0
+	    && std::chrono::steady_clock::now() < deadline )
+	{
+		std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+	}
 	c.Stop();
 
 	const unsigned int cancels   = c.ForTest_GetCancelCount();

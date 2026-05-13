@@ -383,7 +383,11 @@ namespace
 		rgbea.viewTransform = ViewTransform::Identity();
 		DiffOneFormat( "RGBEA", rgbea );
 
-		// TIFF default.
+#ifndef NO_TIFF_SUPPORT
+		// TIFF default.  Skipped under NO_TIFF_SUPPORT — the encoder
+		// is still registered (registry-sanity tests above cover that)
+		// but produces empty output, which trips the "non-empty output"
+		// Check at the end of DiffOneFormat.
 		EncodeOpts tiff;
 		tiff.viewTransform = ViewTransform::Identity();
 		tiff.colorSpace    = eColorSpace_sRGB;
@@ -392,6 +396,7 @@ namespace
 		// TIFF with tone curve.
 		tiff.viewTransform = ViewTransform::ForLDRDisplay( 0.0f, eDisplayTransform_Reinhard );
 		DiffOneFormat( "TIFF", tiff );
+#endif
 
 		// TGA.
 		EncodeOpts tga;

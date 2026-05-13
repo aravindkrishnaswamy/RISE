@@ -347,7 +347,10 @@ namespace
 		             0.0, eDisplayTransform_None, eExrCompression_Piz, true,
 		             "rgbea", "RGBEA" );
 
-		// TIFF
+#ifndef NO_TIFF_SUPPORT
+		// TIFF — skipped under NO_TIFF_SUPPORT; the TIFFWriter is a
+		// stub that writes 0 bytes, so DiffOneCase's "shim wrote non-empty
+		// file" + "L2 produced non-empty bytes" Checks would fail.
 		DiffOneCase( FileRasterizerOutput::TIFF, 8, eColorSpace_sRGB,
 		             0.0, eDisplayTransform_None, eExrCompression_Piz, true,
 		             "tiff", "TIFF default" );
@@ -356,6 +359,7 @@ namespace
 		DiffOneCase( FileRasterizerOutput::TIFF, 8, eColorSpace_sRGB,
 		             0.0, eDisplayTransform_Reinhard, eExrCompression_Piz, true,
 		             "tiff", "TIFF +Reinhard" );
+#endif
 
 		// TGA
 		DiffOneCase( FileRasterizerOutput::TGA, 8, eColorSpace_sRGB,
