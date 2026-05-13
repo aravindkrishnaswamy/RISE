@@ -36,6 +36,17 @@
 
 namespace RISE
 {
+	//! One quick-pick resolution surfaced in the Output Settings
+	//! accordion's dropdown.  Labels are deliberately ASCII so
+	//! every platform's combo-box widget renders them identically
+	//! (no UTF-8 multiplication sign).
+	struct FilmPreset
+	{
+		const char*  label;     // user-visible: "1920 x 1080 (FHD)"
+		unsigned int width;     // pixels
+		unsigned int height;    // pixels
+	};
+
 	class FilmIntrospection
 	{
 	public:
@@ -61,6 +72,25 @@ namespace RISE
 		//! prev-value before a panel edit.
 		static String GetPropertyValue( const IFilm& film,
 		                                const String& name );
+
+		//! Number of entries in the quick-pick preset list.
+		static unsigned int PresetCount();
+
+		//! Read-only access to entry `idx`.  Returns nullptr if idx is
+		//! out of range.  Pointer stays valid for the program lifetime.
+		static const FilmPreset* PresetAt( unsigned int idx );
+
+		//! Find the preset whose (width, height) matches the given
+		//! dims exactly.  Returns -1 when no preset matches (Film is
+		//! at a custom resolution, e.g. post-ScaleFilmToFit override).
+		static int FindPresetByDims( unsigned int width, unsigned int height );
+
+		//! Find the preset whose label matches the given string
+		//! (case-sensitive, exact match).  Returns -1 when no match.
+		//! Used by the accordion's selection round-trip: the platform
+		//! UI hands back the label string the user clicked, and we
+		//! resolve it back to the (width, height) to apply via SetFilm.
+		static int FindPresetByLabel( const String& label );
 	};
 }
 

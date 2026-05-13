@@ -320,6 +320,78 @@ static void TestGetPropertyValueRoundtrip()
 	Check( film2->GetPixelAR() == Scalar( 1.5 ), "round-tripped pixelAR matches" );
 }
 
+//////////////////////////////////////////////////////////////////////
+// 7. Preset list — surface for the accordion's dropdown.
+//////////////////////////////////////////////////////////////////////
+
+static void TestPresetListShape()
+{
+	std::cout << "Testing FilmIntrospection preset list shape..." << std::endl;
+	const unsigned int n = FilmIntrospection::PresetCount();
+	// User asked for "5-7 common resolutions"; pin the count so the
+	// list can't accidentally drift to one entry again.
+	Check( n >= 5 && n <= 7, "preset count between 5 and 7 inclusive" );
+
+	// Every entry has a non-empty label and positive dims.
+	for( unsigned int i = 0; i < n; ++i ) {
+		const FilmPreset* p = FilmIntrospection::PresetAt( i );
+		Check( p != nullptr,                "PresetAt(i) non-null" );
+		Check( p && p->label && p->label[0],"preset has non-empty label" );
+		Check( p && p->width  > 0,          "preset width  > 0" );
+		Check( p && p->height > 0,          "preset height > 0" );
+	}
+
+	// Out-of-range index returns null.
+	Check( FilmIntrospection::PresetAt( n )      == nullptr, "PresetAt(n) null" );
+	Check( FilmIntrospection::PresetAt( n + 99 ) == nullptr, "PresetAt(n+99) null" );
+}
+
+static void TestPresetCoversLowToHigh()
+{
+	std::cout << "Testing preset list spans low to high resolutions..." << std::endl;
+	const unsigned int n = FilmIntrospection::PresetCount();
+	const FilmPreset* lo = FilmIntrospection::PresetAt( 0 );
+	const FilmPreset* hi = FilmIntrospection::PresetAt( n - 1 );
+	Check( lo && hi,                                          "endpoints present" );
+	// Endpoints define the "low to HD/4K" coverage the request asked
+	// for: the smallest entry sits under HD (720) and the largest
+	// reaches 4K (2160).
+	Check( lo && lo->width  <= 720,  "smallest preset width <= 720 (sub-HD)" );
+	Check( hi && hi->height >= 2160, "largest preset height >= 2160 (4K)" );
+
+	// Entries are strictly increasing in long-edge — the dropdown
+	// reads naturally top-to-bottom from low to high.
+	for( unsigned int i = 1; i < n; ++i ) {
+		const FilmPreset* a = FilmIntrospection::PresetAt( i - 1 );
+		const FilmPreset* b = FilmIntrospection::PresetAt( i );
+		Check( a && b && a->width  < b->width,  "preset widths strictly increasing" );
+		Check( a && b && a->height < b->height, "preset heights strictly increasing" );
+	}
+}
+
+static void TestFindPresetRoundTrip()
+{
+	std::cout << "Testing FindPresetByDims / FindPresetByLabel round-trip..." << std::endl;
+	const unsigned int n = FilmIntrospection::PresetCount();
+	for( unsigned int i = 0; i < n; ++i ) {
+		const FilmPreset* p = FilmIntrospection::PresetAt( i );
+		Check( p != nullptr, "preset present" );
+		if( !p ) continue;
+		const int byDims  = FilmIntrospection::FindPresetByDims(  p->width, p->height );
+		const int byLabel = FilmIntrospection::FindPresetByLabel( String( p->label ) );
+		Check( byDims  == static_cast<int>( i ), "FindPresetByDims  round-trips" );
+		Check( byLabel == static_cast<int>( i ), "FindPresetByLabel round-trips" );
+	}
+
+	// Non-matches return -1.
+	Check( FilmIntrospection::FindPresetByDims( 800, 450 ) == -1,
+		"800 x 450 is not a preset (ScaleFilmToFit result)" );
+	Check( FilmIntrospection::FindPresetByLabel( String( "no such label" ) ) == -1,
+		"unknown label rejected" );
+	Check( FilmIntrospection::FindPresetByLabel( String( "" ) ) == -1,
+		"empty label rejected" );
+}
+
 int main()
 {
 	std::cout << "=== FilmIntrospection Test (Phase G) ===" << std::endl;
@@ -331,6 +403,9 @@ int main()
 	TestSetPropertyRejectsInvalid();
 	TestSetPropertyNoOpSameDims();
 	TestGetPropertyValueRoundtrip();
+	TestPresetListShape();
+	TestPresetCoversLowToHigh();
+	TestFindPresetRoundTrip();
 
 	std::cout << std::endl;
 	std::cout << "=== Results: " << passCount << " passed, "

@@ -786,11 +786,13 @@ unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
 		return m ? m->getItemCount() : 0;
 	}
 	case Category::Film: {
-		// A scene has exactly one Film (Job::InitializeContainers
-		// installs the default qHD Film; SetFilm replaces it but the
-		// "one Film per scene" invariant holds).  Surface as a
-		// single-entry list so the accordion's list view renders.
-		return scene->GetFilm() ? 1 : 0;
+		// A scene has exactly one Film, but the accordion's dropdown
+		// is used as a quick-pick preset selector: each entry is a
+		// (width, height) the user can apply with one click.  The
+		// list is fixed (see FilmIntrospection::kFilmPresets) — 480x270
+		// through 4K UHD.  Hand-tuning to a non-preset resolution is
+		// done via the width / height property rows below the dropdown.
+		return scene->GetFilm() ? FilmIntrospection::PresetCount() : 0;
 	}
 	case Category::None:
 	default:
@@ -835,12 +837,11 @@ String SceneEditController::CategoryEntityName( Category cat, unsigned int idx )
 		return cb.names[idx];
 	}
 	case Category::Film: {
-		// Single-entry list; the entry name is the conventional
-		// "default" so the accordion shows a clickable row.  The
-		// scene doesn't track per-Film names (there's only one),
-		// so this is a fixed label.
-		if( idx != 0 || !scene->GetFilm() ) return String();
-		return String( "default" );
+		// Quick-pick preset by index — see FilmIntrospection.cpp's
+		// kFilmPresets for the canonical list of labels and dims.
+		if( !scene->GetFilm() ) return String();
+		const FilmPreset* p = FilmIntrospection::PresetAt( idx );
+		return p ? String( p->label ) : String();
 	}
 	case Category::None:
 	default:
@@ -860,11 +861,24 @@ String SceneEditController::CategoryActiveName( Category cat ) const
 		return String( s.c_str() );
 	}
 	case Category::Film: {
-		// The Film entity is always named "default" — see
-		// CategoryEntityName above.  Returning the same string here lets
-		// the accordion's "active row" highlight resolve correctly.
+		// If the current Film matches one of the canonical preset dims
+		// exactly, return that preset's label so the accordion's
+		// dropdown highlights it.  Otherwise return empty — common when
+		// the Film was screen-fit by ScaleFilmToFit, where the resulting
+		// dims don't usually land on a preset (e.g. 800 x 450 isn't a
+		// preset).  Empty leaves the dropdown unselected, signalling
+		// "custom size" — the user sees the actual dims in the property
+		// rows below.
 		const IScene* scene = mJob.GetScene();
-		return ( scene && scene->GetFilm() ) ? String( "default" ) : String();
+		if( !scene ) return String();
+		const IFilm* film = scene->GetFilm();
+		if( !film ) return String();
+		const int idx = FilmIntrospection::FindPresetByDims(
+			film->GetWidth(), film->GetHeight() );
+		if( idx < 0 ) return String();
+		const FilmPreset* p = FilmIntrospection::PresetAt(
+			static_cast<unsigned int>( idx ) );
+		return p ? String( p->label ) : String();
 	}
 	case Category::Object:
 	case Category::Light:
@@ -886,14 +900,34 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 	// Camera / Rasterizer activations are real scene mutations — they
 	// rebind the rasterizer's view of the scene, which the render
 	// thread reads per-pixel.  Same cancel-and-park serialization as
-	// the existing SetProperty("active_camera") path uses.  Object /
-	// Light selections are pure UI state and don't need the lock.
+	// the existing SetProperty("active_camera") path uses.  Film
+	// preset picks call SetFilm under the same lock (rebuilds the
+	// FrameStore + resyncs every camera).  Object / Light selections
+	// are pure UI state and don't need the lock.
 	const bool needsRenderSerialization =
-		( cat == Category::Camera || cat == Category::Rasterizer )
+		( cat == Category::Camera || cat == Category::Rasterizer
+		  || cat == Category::Film )
 		&& entityName.size() > 1;   // empty name = just expand, no swap
 
 	if( needsRenderSerialization )
 	{
+		// Resolve the Film preset BEFORE taking the lock.  A miss is
+		// not an error — empty-name we already excluded above, but a
+		// non-empty unknown label (e.g. stale UI state) should fall
+		// through to the UI-only path rather than holding the lock for
+		// nothing.
+		const FilmPreset* filmPreset = nullptr;
+		if( cat == Category::Film ) {
+			const int presetIdx = FilmIntrospection::FindPresetByLabel( entityName );
+			if( presetIdx < 0 ) {
+				mSelectionCategory = cat;
+				mSelectionName     = entityName;
+				return true;
+			}
+			filmPreset = FilmIntrospection::PresetAt(
+				static_cast<unsigned int>( presetIdx ) );
+		}
+
 		std::unique_lock<std::mutex> lk( mMutex );
 		if( mRendering.load( std::memory_order_acquire ) )
 		{
@@ -914,6 +948,31 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 		{
 			ok = mJob.SetActiveRasterizer( entityName.c_str() );
 		}
+		else if( cat == Category::Film && filmPreset )
+		{
+			// Preserve the scene's pixelAR — the preset is just the
+			// new (width, height); pixelAR stays whatever the user
+			// authored (or the screen-fit / property-panel-edit set).
+			const IScene* sceneRef = mJob.GetScene();
+			const IFilm*  filmRef  = sceneRef ? sceneRef->GetFilm() : nullptr;
+			const double  pAR      = filmRef ? filmRef->GetPixelAR() : 1.0;
+			ok = mJob.SetFilm( filmPreset->width, filmPreset->height, pAR );
+
+			// Refresh the full-res dim cache inside the critical
+			// section (same pattern as SetProperty(Film)).  Bridge
+			// callers reading GetCameraDimensions in the brief
+			// unlock-and-notify window need to see the new dims.
+			if( ok ) {
+				const IScene* sceneAfter = mJob.GetScene();
+				const IFilm*  filmAfter  = sceneAfter ? sceneAfter->GetFilm() : nullptr;
+				if( filmAfter ) {
+					mFullResW.store( filmAfter->GetWidth(),
+						std::memory_order_release );
+					mFullResH.store( filmAfter->GetHeight(),
+						std::memory_order_release );
+				}
+			}
+		}
 		if( !ok ) return false;
 
 		mSelectionCategory = cat;
@@ -925,7 +984,7 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 	}
 
 	// UI-only path (Object / Light, or empty-name expand-only for
-	// Camera / Rasterizer).
+	// Camera / Rasterizer / Film).
 	mSelectionCategory = cat;
 	mSelectionName     = entityName;
 	return true;

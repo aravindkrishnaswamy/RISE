@@ -212,3 +212,57 @@ String FilmIntrospection::GetPropertyValue( const IFilm& film, const String& nam
 	if( n == "pixelAR" ) return FormatDouble( film.GetPixelAR() );
 	return String();
 }
+
+namespace
+{
+	// Quick-pick resolutions surfaced in the Output Settings accordion's
+	// dropdown.  All 16:9 — the canonical "render output" aspect ratio
+	// for production work — covering thumbnail through 4K.  Picking an
+	// entry applies the dims exactly; if the scene's authored camera was
+	// at a different aspect, the camera projection rebuilds to the new
+	// shape on the resync (use the property rows below the dropdown to
+	// hand-tune to a non-16:9 target).
+	const FilmPreset kFilmPresets[] = {
+		{ "480 x 270",          480,  270  },
+		{ "640 x 360 (nHD)",    640,  360  },
+		{ "960 x 540 (qHD)",    960,  540  },
+		{ "1280 x 720 (HD)",    1280, 720  },
+		{ "1920 x 1080 (FHD)",  1920, 1080 },
+		{ "2560 x 1440 (QHD)",  2560, 1440 },
+		{ "3840 x 2160 (4K)",   3840, 2160 },
+	};
+	constexpr unsigned int kFilmPresetCount =
+		sizeof(kFilmPresets) / sizeof(kFilmPresets[0]);
+}
+
+unsigned int FilmIntrospection::PresetCount()
+{
+	return kFilmPresetCount;
+}
+
+const FilmPreset* FilmIntrospection::PresetAt( unsigned int idx )
+{
+	if( idx >= kFilmPresetCount ) return nullptr;
+	return &kFilmPresets[idx];
+}
+
+int FilmIntrospection::FindPresetByDims( unsigned int width, unsigned int height )
+{
+	for( unsigned int i = 0; i < kFilmPresetCount; ++i ) {
+		if( kFilmPresets[i].width  == width
+		 && kFilmPresets[i].height == height ) {
+			return static_cast<int>( i );
+		}
+	}
+	return -1;
+}
+
+int FilmIntrospection::FindPresetByLabel( const String& label )
+{
+	for( unsigned int i = 0; i < kFilmPresetCount; ++i ) {
+		if( std::strcmp( kFilmPresets[i].label, label.c_str() ) == 0 ) {
+			return static_cast<int>( i );
+		}
+	}
+	return -1;
+}
