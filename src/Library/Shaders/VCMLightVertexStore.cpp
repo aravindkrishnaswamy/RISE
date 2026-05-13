@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 
 using namespace RISE;
@@ -324,12 +325,33 @@ void LightVertexStore::Query(
 //   equivalent to BuildKDTree (not byte-identical in non-median slots,
 //   but identical-for-queries).  The unit test asserts query-equivalence
 //   against a brute-force oracle rather than memcmp.
+//
+// Lifetime of sync primitives:
+//   The latch (mutex/cv/outstanding counter) is heap-allocated and
+//   shared via shared_ptr across the driver, every spawned task
+//   lambda, and the entire recursion.  The previous design put these
+//   on the driver's stack and had a use-after-free race: the waiter
+//   could observe `outstanding == 0` and tear down its stack frame
+//   while the last task was still mid-`notify_all` (or even
+//   mid-`lock_guard`) on the now-destroyed mutex.  Anchoring lifetime
+//   to "driver waits done AND every task lambda destroyed" closes
+//   the race.
 //////////////////////////////////////////////////////////////////////
 namespace
 {
+	// Heap-resident latch state for the kd-tree parallel build.
+	// See file-level comment above for the rationale.
+	struct KDTreeLatchState
+	{
+		std::mutex					mut;
+		std::condition_variable		cv;
+		std::atomic<unsigned int>	outstanding;
+		explicit KDTreeLatchState( unsigned int n ) : outstanding( n ) {}
+	};
+
 	// Copy of BalanceSegment but queues sub-ranges into the pool
-	// until they fall below the cutoff.  outstanding tracks the
-	// number of pending subtree tasks so the caller can wait.
+	// until they fall below the cutoff.  `sync->outstanding` tracks
+	// the number of pending subtree tasks so the driver can wait.
 	void BalanceSegmentParallel(
 		std::vector<LightVertex>& verts,
 		BoundingBox bbox,               // by-value: each task has its own
@@ -337,9 +359,7 @@ namespace
 		const int to,
 		const std::size_t cutoff,
 		ThreadPool& pool,
-		std::atomic<unsigned int>& outstanding,
-		std::mutex& doneMut,
-		std::condition_variable& doneCv
+		const std::shared_ptr<KDTreeLatchState>& sync
 		)
 	{
 		if( to - from <= 0 ) {
@@ -379,21 +399,23 @@ namespace
 
 		// Fire off the left subtree as a pool task, recurse on right
 		// in this thread so we always keep one active path of work.
-		outstanding.fetch_add( 1, std::memory_order_relaxed );
-		pool.Submit( [&verts, leftBox, from, median, cutoff, &pool, &outstanding, &doneMut, &doneCv] {
+		// `sync` is captured by value into the lambda so the latch
+		// state lives until every spawned task has destructed.
+		sync->outstanding.fetch_add( 1, std::memory_order_relaxed );
+		pool.Submit( [&verts, leftBox, from, median, cutoff, &pool, sync] {
 			BalanceSegmentParallel( verts, leftBox, from, median - 1, cutoff,
-				pool, outstanding, doneMut, doneCv );
-			if( outstanding.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
+				pool, sync );
+			if( sync->outstanding.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
 				{
-					std::lock_guard<std::mutex> lk( doneMut );
+					std::lock_guard<std::mutex> lk( sync->mut );
 				}
-				doneCv.notify_all();
+				sync->cv.notify_all();
 			}
 		} );
 
 		// Right subtree on the current task.
 		BalanceSegmentParallel( verts, rightBox, median + 1, to, cutoff,
-			pool, outstanding, doneMut, doneCv );
+			pool, sync );
 	}
 }
 
@@ -428,24 +450,26 @@ void LightVertexStore::BuildKDTreeParallel()
 		return;
 	}
 
-	std::atomic<unsigned int> outstanding( 1 );
-	std::mutex doneMut;
-	std::condition_variable doneCv;
+	// Initial outstanding = 1 accounts for the root task.  Each
+	// spawned child fetch_add's before Submit and fetch_sub's at the
+	// end of its lambda; the root task itself fetch_sub's at the end
+	// of its own lambda.  Whoever drives the counter to 0 signals.
+	auto sync = std::make_shared<KDTreeLatchState>( 1 );
 
-	pool.Submit( [this, bbox, N, cutoff, &pool, &outstanding, &doneMut, &doneCv] {
+	pool.Submit( [this, bbox, N, cutoff, &pool, sync] {
 		BalanceSegmentParallel( mVertices, bbox, 0, static_cast<int>( N ) - 1, cutoff,
-			pool, outstanding, doneMut, doneCv );
-		if( outstanding.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
+			pool, sync );
+		if( sync->outstanding.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
 			{
-				std::lock_guard<std::mutex> lk( doneMut );
+				std::lock_guard<std::mutex> lk( sync->mut );
 			}
-			doneCv.notify_all();
+			sync->cv.notify_all();
 		}
 	} );
 
-	std::unique_lock<std::mutex> lk( doneMut );
-	doneCv.wait( lk, [&outstanding] {
-		return outstanding.load( std::memory_order_acquire ) == 0;
+	std::unique_lock<std::mutex> lk( sync->mut );
+	sync->cv.wait( lk, [&sync] {
+		return sync->outstanding.load( std::memory_order_acquire ) == 0;
 	} );
 
 	mBuilt = true;

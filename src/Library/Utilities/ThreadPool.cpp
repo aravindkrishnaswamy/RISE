@@ -13,6 +13,7 @@
 #include "../Interfaces/IOptions.h"
 #include <algorithm>
 #include <chrono>
+#include <memory>
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -122,6 +123,30 @@ void ThreadPool::Submit( std::function<void()> task )
 	tasksCv.notify_one();
 }
 
+namespace
+{
+	// Heap-resident latch state for ParallelFor.  Owned jointly by the
+	// caller (waiter) and every task lambda via a shared_ptr captured
+	// by value into each lambda.
+	//
+	// Lifetime: the LatchState lives until BOTH the waiter has
+	// released its reference AND every task lambda's std::function
+	// target has been destroyed.  This is the fix for a use-after-free
+	// race that existed when these primitives lived on the caller's
+	// stack: the waiter could observe `remaining == 0` (via the atomic)
+	// and tear down the stack frame while the last worker was still
+	// mid-`notify_all` or even mid-`lock_guard` on the (now destroyed)
+	// mutex.  Anchoring lifetime here closes the race without forcing
+	// every non-last task through a mutex on the hot path.
+	struct ParallelForLatchState
+	{
+		std::mutex					mut;
+		std::condition_variable		cv;
+		std::atomic<unsigned int>	remaining;
+		explicit ParallelForLatchState( unsigned int n ) : remaining( n ) {}
+	};
+}
+
 void ThreadPool::ParallelFor( unsigned int n, std::function<void( unsigned int )> body )
 {
 	if( n == 0 ) {
@@ -143,20 +168,20 @@ void ThreadPool::ParallelFor( unsigned int n, std::function<void( unsigned int )
 	}
 
 	// Latch — atomic counter + mutex/cv for completion signalling.
-	std::atomic<unsigned int> remaining( n );
-	std::mutex doneMut;
-	std::condition_variable doneCv;
+	// Heap-allocated and shared (see ParallelForLatchState comment for
+	// the lifetime-race rationale).
+	auto sync = std::make_shared<ParallelForLatchState>( n );
 
 	{
 		std::lock_guard<std::mutex> lk( tasksMut );
 		for( unsigned int i = 0; i < n; i++ ) {
-			tasks.push_back( [i, &body, &remaining, &doneMut, &doneCv] {
+			tasks.push_back( [i, &body, sync] {
 				body( i );
-				if( remaining.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
+				if( sync->remaining.fetch_sub( 1, std::memory_order_acq_rel ) == 1 ) {
 					{
-						std::lock_guard<std::mutex> lk2( doneMut );
+						std::lock_guard<std::mutex> lk2( sync->mut );
 					}
-					doneCv.notify_all();
+					sync->cv.notify_all();
 				}
 			} );
 		}
@@ -182,17 +207,17 @@ void ThreadPool::ParallelFor( unsigned int n, std::function<void( unsigned int )
 	// of this ParallelFor call, which is already the user's intent
 	// (they traded throughput for system responsiveness).
 	if( forceLow ) {
-		std::unique_lock<std::mutex> lk( doneMut );
-		doneCv.wait( lk, [&remaining] {
-			return remaining.load( std::memory_order_acquire ) == 0;
+		std::unique_lock<std::mutex> lk( sync->mut );
+		sync->cv.wait( lk, [&sync] {
+			return sync->remaining.load( std::memory_order_acquire ) == 0;
 		} );
 	} else {
-		while( remaining.load( std::memory_order_acquire ) > 0 ) {
+		while( sync->remaining.load( std::memory_order_acquire ) > 0 ) {
 			if( !ExecuteOnePendingTask() ) {
 				// Queue is empty but tasks still running — wait.
-				std::unique_lock<std::mutex> lk( doneMut );
-				doneCv.wait_for( lk, std::chrono::milliseconds( 1 ), [&remaining] {
-					return remaining.load( std::memory_order_acquire ) == 0;
+				std::unique_lock<std::mutex> lk( sync->mut );
+				sync->cv.wait_for( lk, std::chrono::milliseconds( 1 ), [&sync] {
+					return sync->remaining.load( std::memory_order_acquire ) == 0;
 				} );
 			}
 		}
