@@ -31,18 +31,32 @@
 //
 //  Algorithm
 //
-//    Shoot a probe ray in a fixed direction from the seed point.
-//    Every time the ray hits a surface with the outward normal
-//    pointing ALONG the ray direction (dot > 0) we're exiting that
-//    object, which means the seed point was inside it.  Record the
-//    object plus its scalar IOR (read via the material's
-//    GetSpecularInfo).  Advance the probe past the hit and repeat
-//    until the probe exits all containing volumes.
+//    Shoot a probe ray in a fixed direction from the seed point and
+//    count, PER OBJECT, the net parity of exits-vs-entries along the
+//    probe.  An object contains the seed iff its net parity is
+//    positive (more exits than entries — the probe must cross its
+//    boundary one more time outward than inward to leave).
 //
-//    The recorded objects are pushed onto the stack in reverse
-//    order: outermost first, innermost last.  The stack convention
-//    is that the top is the immediate medium, which matches what
-//    DielectricSPF's bFromInside check expects.
+//    Counting exits-only is INCORRECT.  A probe that passes
+//    THROUGH an object (camera in front of a glass sphere, probe
+//    direction going +Z through it) sees one entry and one exit;
+//    counting only the exit would treat the object as containing
+//    the seed.  That bug caused every BDPT/VCM/MLT sphere render
+//    where the camera sat behind a glass object to compute the
+//    first refraction at the sphere with reversed IORs (glass→air
+//    instead of air→glass), missing ~66% of the scene radiance.
+//    See `tests/IORStackSeedingRegressionTest.cpp` for the pinning
+//    regression test.
+//
+//    Per-object tallying:
+//      - cosN > 0 (probe aligned with outward normal): EXIT, parity++.
+//      - cosN < 0 (probe opposite to outward normal):  ENTRY, parity--.
+//
+//    Objects with parity > 0 at the end are pushed in OUTERMOST-FIRST
+//    order (stack convention: bottom = outermost, top = innermost).
+//    Order is determined by each containing object's FIRST exit's
+//    probe-step index: smaller index = closer to seed = innermost.
+//    Insertion-sort by firstExitStep descending and push in that order.
 //
 //    A small iteration cap prevents pathological geometry (e.g.
 //    coincident surfaces, self-intersecting objects) from spinning
@@ -112,9 +126,29 @@ namespace RISE
 				return;
 			}
 
+			// Per-object containment is determined by per-object PARITY of
+			// exits-vs-entries along the probe ray.  An object contains
+			// the seed point iff the probe sees one more exit than entry
+			// (i.e. it must cross the boundary one more time outward
+			// than inward to leave the object).
+			//
+			// Counting exits only (or deduping per object) is INCORRECT
+			// because a probe that simply *passes through* an object —
+			// camera in front of a glass sphere with probe direction
+			// going through it — sees one entry and one exit.  Without
+			// parity tracking, that probe would record the sphere as
+			// "containing" the camera and pre-seed the stack with it,
+			// causing the first eye-ray hit on the sphere to be treated
+			// as an exit (refraction direction computed glass→air
+			// instead of air→glass).
+			//
+			// The `parity` field is +1 per exit, -1 per entry.  A net
+			// positive value means the seed is inside that object.
 			struct Entry {
 				const IObject* pObj;
 				Scalar ior;
+				int parity;
+				int firstExitStep;  // probe step of FIRST exit, for stack-order sort
 			};
 			// Stack-allocated small buffer; real scenes rarely nest more
 			// than 2-3 refractive volumes so the fixed cap is generous.
@@ -149,36 +183,45 @@ namespace RISE
 				// silently leaves the seed stack empty (PBRT 4e §10.1.1).
 				const Scalar cosN = Vector3Ops::Dot(
 					ri.geometric.vGeomNormal, probe.Dir() );
-				if( cosN > 0 && ri.pObject && ri.pMaterial )
+
+				if( ri.pObject && ri.pMaterial )
 				{
-					// We're exiting this object, so the seed point was
-					// inside it.  Query IOR via the material's specular
-					// info; only refractive materials count.
+					// Only track refractive materials — pure reflectors
+					// (mirrors) and Lambertian surfaces have no "interior"
+					// the ray travels through with a different IOR.
 					IORStack queryStack( Scalar( 1.0 ) );
 					const SpecularInfo info =
 						ri.pMaterial->GetSpecularInfo( ri.geometric, queryStack );
 					if( info.valid && info.canRefract && info.ior > 0 )
 					{
-						// Deduplicate: non-convex geometry can produce
-						// exit → re-enter → exit crossings along a single
-						// probe ray, which would push the same object
-						// twice onto the stack.  Parity check (odd # of
-						// exits means we're inside) is handled by the
-						// rest of the loop — we just need to avoid the
-						// duplicate push here.
-						bool alreadyRecorded = false;
+						// Find or create per-object entry.  Linear scan is
+						// fine — kMaxNestingDepth is 8.
+						Entry* e = 0;
 						for( std::size_t d = 0; d < containingCount; d++ ) {
 							if( containing[d].pObj == ri.pObject ) {
-								alreadyRecorded = true;
+								e = &containing[d];
 								break;
 							}
 						}
-						if( !alreadyRecorded &&
-							containingCount < kMaxNestingDepth )
+						if( !e && containingCount < kMaxNestingDepth ) {
+							e = &containing[containingCount++];
+							e->pObj = ri.pObject;
+							e->ior = info.ior;
+							e->parity = 0;
+							e->firstExitStep = -1;
+						}
+						if( e )
 						{
-							containing[containingCount].pObj = ri.pObject;
-							containing[containingCount].ior = info.ior;
-							containingCount++;
+							// +1 per exit, -1 per entry.  Positive net =
+							// seed is inside this object.
+							if( cosN > 0 ) {
+								e->parity++;
+								if( e->firstExitStep < 0 ) {
+									e->firstExitStep = step;
+								}
+							} else {
+								e->parity--;
+							}
 						}
 					}
 				}
@@ -188,14 +231,38 @@ namespace RISE
 				probe.Advance( kSeedEps );
 			}
 
-			// Push outermost first, innermost last — collection order is
-			// innermost-first (probe hit them first traveling outward),
-			// so walk the array in reverse.
-			for( std::size_t i = containingCount; i > 0; i-- )
-			{
-				const Entry& e = containing[i - 1];
-				stack.SetCurrentObject( e.pObj );
-				stack.push( e.ior );
+			// Push containing objects (parity > 0) onto the stack.
+			//
+			// Stack ORDER: bottom = outermost, top = innermost.  Along an
+			// outward-going probe, the FIRST exit of an object is at its
+			// INNERMOST surface, the LAST exit at its OUTERMOST.  Objects
+			// with smaller firstExitStep are inner — push them last.
+			// Insertion-sort to OUTERMOST-FIRST (largest firstExitStep
+			// first); buffer is at most 8 entries.
+			//
+			// Objects with parity == 0 (probe passed through) and
+			// parity < 0 (unbalanced entries — only possible from
+			// pathological geometry hitting the step cap) are skipped.
+			Entry* ordered[kMaxNestingDepth];
+			std::size_t orderedCount = 0;
+			for( std::size_t i = 0; i < containingCount; i++ ) {
+				if( containing[i].parity <= 0 ) {
+					continue;
+				}
+				// Insert into ordered[] keeping descending firstExitStep.
+				std::size_t j = orderedCount;
+				while( j > 0 && ordered[j-1]->firstExitStep <
+					containing[i].firstExitStep )
+				{
+					ordered[j] = ordered[j-1];
+					j--;
+				}
+				ordered[j] = &containing[i];
+				orderedCount++;
+			}
+			for( std::size_t i = 0; i < orderedCount; i++ ) {
+				stack.SetCurrentObject( ordered[i]->pObj );
+				stack.push( ordered[i]->ior );
 			}
 		}
 	}
