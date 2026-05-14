@@ -33,6 +33,7 @@
 #define SUBSURFACE_SCATTERING_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "SubSurfaceScatteringBSDF.h"
 #include "SubSurfaceScatteringSPF.h"
@@ -50,7 +51,7 @@ namespace RISE
 			SubSurfaceScatteringBSDF*				pBSDF;
 			SubSurfaceScatteringSPF*				pSPF;
 			BurleyNormalizedDiffusionProfile*		pProfile;
-			const IPainter&							iorPainter;
+			const IScalarPainter&					iorPainter;
 			const Scalar							surfaceRoughness;
 
 			virtual ~SubSurfaceScatteringMaterial()
@@ -63,9 +64,9 @@ namespace RISE
 
 		public:
 			SubSurfaceScatteringMaterial(
-				const IPainter& ior,
-				const IPainter& absorption,
-				const IPainter& scattering,
+				const IScalarPainter& ior,
+				const IScalarPainter& absorption,
+				const IScalarPainter& scattering,
 				const Scalar g,
 				const Scalar roughness
 				) :
@@ -112,7 +113,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetColor( ri )[0];
+				info.ior = iorPainter.GetValuesAt( ri ).v[0];
 				info.valid = true;
 				return info;
 			}
@@ -126,7 +127,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetColorNM( ri, nm );
+				info.ior = iorPainter.GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
 			}

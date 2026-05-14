@@ -36,8 +36,8 @@ namespace RISE
 
 		public:
 			GenericHumanTissueMaterial(
-				const IPainter& sca,										///< Scattering co-efficient
-				const IPainter& g,											///< g factor in the HG phase function
+				const IScalarPainter& sca,										///< Scattering co-efficient
+				const IScalarPainter& g,											///< g factor in the HG phase function
 				const Scalar hb_ratio_,										///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
 				const Scalar whole_blood,									///< Percentage of the tissue made up of whole blood
 				const Scalar bilirubin_concentration,						///< Concentration of Bilirubin in whole blood

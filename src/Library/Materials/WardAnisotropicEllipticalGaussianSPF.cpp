@@ -22,8 +22,8 @@ using namespace RISE::Implementation;
 WardAnisotropicEllipticalGaussianSPF::WardAnisotropicEllipticalGaussianSPF(
 	const IPainter& diffuse_,
 	const IPainter& specular_,
-	const IPainter& alphax_,
-	const IPainter& alphay_
+	const IScalarPainter& alphax_,
+	const IScalarPainter& alphay_
 	) :
   diffuse( diffuse_ ),
   specular( specular_ ),
@@ -157,13 +157,12 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 		scattered.AddScatteredRay( d );
 	}
 
-	const RISEPel ax = alphax.GetColor(ri);
-	const RISEPel ay = alphay.GetColor(ri);
+	const ScalarTriple axt = alphax.GetValuesAt(ri);
+	const ScalarTriple ayt = alphay.GetValuesAt(ri);
 
-	if( ax[0] == ax[1] && ax[1] == ax[2] &&
-		ay[0] == ay[1] && ay[1] == ay[2] )
+	if( !alphax.HasPerChannelVariation() && !alphay.HasPerChannelVariation() )
 	{
-		GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), ax[0], ay[0] );
+		GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), axt.v[0], ayt.v[0] );
 
 		if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 			s.kray = specular.GetColor(ri);
@@ -175,7 +174,7 @@ void WardAnisotropicEllipticalGaussianSPF::Scatter(
 		const Point2 ptrand( sampler.Get1D(),sampler.Get1D() );
 		const RISEPel spec = specular.GetColor(ri);
 		for( int i=0; i<3; i++ ) {
-			GenerateSpecularRay( s, myonb, ri, ptrand, alphax.GetColor(ri)[i], alphay.GetColor(ri)[i] );
+			GenerateSpecularRay( s, myonb, ri, ptrand, axt.v[i], ayt.v[i] );
 
 			if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 				s.kray = 0;
@@ -202,7 +201,7 @@ void WardAnisotropicEllipticalGaussianSPF::ScatterNM(
 
 	ScatteredRay d, s;
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
-	GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), alphax.GetColorNM(ri,nm), alphay.GetColorNM(ri,nm) );
+	GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), alphax.GetValueAtNM(ri,nm), alphay.GetValueAtNM(ri,nm) );
 
 	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		d.krayNM = diffuse.GetColorNM(ri,nm);
@@ -276,11 +275,11 @@ Scalar WardAnisotropicEllipticalGaussianSPF::Pdf(
 	const IORStack& ior_stack
 	) const
 {
-	const RISEPel ax = alphax.GetColor(ri);
-	const RISEPel ay = alphay.GetColor(ri);
+	const ScalarTriple ax = alphax.GetValuesAt(ri);
+	const ScalarTriple ay = alphay.GetValuesAt(ri);
 	// Use average values across channels
-	const Scalar ax_val = (ax[0] + ax[1] + ax[2]) / 3.0;
-	const Scalar ay_val = (ay[0] + ay[1] + ay[2]) / 3.0;
+	const Scalar ax_val = (ax.v[0] + ax.v[1] + ax.v[2]) / 3.0;
+	const Scalar ay_val = (ay.v[0] + ay.v[1] + ay.v[2]) / 3.0;
 
 	// Weight by MaxValue(kray) to match RandomlySelect
 	const Scalar wDiff = ColorMath::MaxValue( diffuse.GetColor(ri) );
@@ -296,8 +295,8 @@ Scalar WardAnisotropicEllipticalGaussianSPF::PdfNM(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar ax_val = alphax.GetColorNM(ri,nm);
-	const Scalar ay_val = alphay.GetColorNM(ri,nm);
+	const Scalar ax_val = alphax.GetValueAtNM(ri,nm);
+	const Scalar ay_val = alphay.GetValueAtNM(ri,nm);
 
 	// Weight by krayNM magnitude to match RandomlySelect
 	const Scalar wDiff = fabs( diffuse.GetColorNM(ri,nm) );

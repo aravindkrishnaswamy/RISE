@@ -22,6 +22,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 #include "GGXBRDF.h"
 
@@ -36,12 +37,12 @@ namespace RISE
 		protected:
 			virtual ~GGXSPF();
 
-			const IPainter& pDiffuse;
-			const IPainter& pSpecular;
-			const IPainter& pAlphaX;
-			const IPainter& pAlphaY;
-			const IPainter& pIOR;
-			const IPainter& pExtinction;
+			const IPainter&			pDiffuse;
+			const IPainter&			pSpecular;
+			const IScalarPainter&	pAlphaX;		// roughness (physical scalar)
+			const IScalarPainter&	pAlphaY;
+			const IScalarPainter&	pIOR;
+			const IScalarPainter&	pExtinction;
 			const FresnelMode fresnelMode;
 			//! Landing 8: optional tangent-frame rotation per
 			//! KHR_materials_anisotropy.  See GGXBRDF.h for details;
@@ -52,10 +53,10 @@ namespace RISE
 			GGXSPF(
 				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& alphaX,
-				const IPainter& alphaY,
-				const IPainter& ior,
-				const IPainter& ext,
+				const IScalarPainter& alphaX,
+				const IScalarPainter& alphaY,
+				const IScalarPainter& ior,
+				const IScalarPainter& ext,
 				const FresnelMode fresnel_mode = eFresnelConductor,
 				const IPainter* tangent_rotation = nullptr
 				);

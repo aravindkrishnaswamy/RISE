@@ -16,6 +16,7 @@
 #define DIELECTRIC_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "DielectricSPF.h"
 
@@ -23,8 +24,8 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		class DielectricMaterial : 
-			public virtual IMaterial, 
+		class DielectricMaterial :
+			public virtual IMaterial,
 			public virtual Reference
 		{
 		protected:
@@ -36,7 +37,7 @@ namespace RISE
 			}
 
 		public:
-			DielectricMaterial( const IPainter& tau_, const IPainter& ri, const IPainter& scat, const bool hg )
+			DielectricMaterial( const IScalarPainter& tau_, const IScalarPainter& ri, const IScalarPainter& scat, const bool hg )
 			{
 				pSPF = new DielectricSPF( tau_, ri, scat, hg );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );

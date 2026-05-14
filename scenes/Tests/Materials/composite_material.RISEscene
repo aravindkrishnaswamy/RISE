@@ -209,7 +209,7 @@ lambertian_material
 dielectric_material
 {
 	name				mat_glass
-	tau					pnt_glass_tau
+	tau			1
 	ior					1.5
 }
 
@@ -221,7 +221,7 @@ translucent_material
 	tau					pnt_translucent_tau
 	ext					pnt_translucent_ext
 	N					10.0
-	scattering			pnt_translucent_scat
+	scattering			0.5
 }
 
 # Emissive layer

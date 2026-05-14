@@ -16,6 +16,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -27,8 +28,8 @@ namespace RISE
 		protected:
 			virtual ~GenericHumanTissueSPF( );
 
-			const IPainter&				sca;							///< Scattering co-efficient (says how much scattering happens)
-			const IPainter&				g;								///< Henyey-Greenstein phase function g factor
+			const IScalarPainter&		sca;							///< Scattering co-efficient (physical scalar)
+			const IScalarPainter&		g;								///< Henyey-Greenstein phase function g factor (physical scalar)
 
 			const Scalar				whole_blood;					///< Amount of tissue composed of whole blood
 			const Scalar				betacarotene_concentration;		///< Concentration of beta-carotene in the dermis
@@ -53,8 +54,8 @@ namespace RISE
 
 		public:
 			GenericHumanTissueSPF( 
-				const IPainter& sca_,									///< Scattering co-efficient (how much scattering happens)
-				const IPainter& g_,										///< Anisotropy factor for the HG phase function
+				const IScalarPainter& sca_,									///< Scattering co-efficient (how much scattering happens)
+				const IScalarPainter& g_,										///< Anisotropy factor for the HG phase function
 				const Scalar whole_blood_,								///< Amount of tissue composed of whole blood
 				const Scalar betacarotene_concentration,				///< Concentration of beta-carotene in the dermis
 				const Scalar bilirubin_concentration,					///< Concentration of bilirubin in whole blood

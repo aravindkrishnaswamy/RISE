@@ -16,6 +16,7 @@
 #define POLISHED_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "LambertianBRDF.h"
 #include "PolishedSPF.h"
@@ -37,11 +38,11 @@ namespace RISE
 			}
 
 		public:
-			PolishedMaterial( 
-				const IPainter& Rd_, 
-				const IPainter& tau_, 
-				const IPainter& Nt_,
-				const IPainter& s,
+			PolishedMaterial(
+				const IPainter& Rd_,
+				const IScalarPainter& tau_,
+				const IScalarPainter& Nt_,
+				const IScalarPainter& s,
 				const bool hg
 				)
 			{

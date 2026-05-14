@@ -18,10 +18,10 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-WardIsotropicGaussianBRDF::WardIsotropicGaussianBRDF( 
+WardIsotropicGaussianBRDF::WardIsotropicGaussianBRDF(
 	const IPainter& diffuse_,
 	const IPainter& specular_,
-	const IPainter& alpha_
+	const IScalarPainter& alpha_
 	) :
   diffuse( diffuse_ ),
   specular( specular_ ),
@@ -73,15 +73,17 @@ static void ComputeFactors(
 RISEPel WardIsotropicGaussianBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	RISEPel d, s;
-	ComputeFactors<RISEPel>( d, s, vLightIn, ri, ri.onb.w(), alpha.GetColor(ri) );
-	
+	const ScalarTriple at = alpha.GetValuesAt(ri);
+	const RISEPel a( at.v[0], at.v[1], at.v[2] );
+	ComputeFactors<RISEPel>( d, s, vLightIn, ri, ri.onb.w(), a );
+
 	return d*diffuse.GetColor(ri) + s*specular.GetColor(ri);
 }
 
 Scalar WardIsotropicGaussianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar d=0, s=0;
-	ComputeFactors<Scalar>( d, s, vLightIn, ri, ri.onb.w(), alpha.GetColorNM(ri,nm) );
+	ComputeFactors<Scalar>( d, s, vLightIn, ri, ri.onb.w(), alpha.GetValueAtNM(ri,nm) );
 
 	return d*diffuse.GetColorNM(ri,nm) + s*specular.GetColorNM(ri,nm);
 }

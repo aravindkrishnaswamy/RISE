@@ -19,7 +19,7 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-IsotropicPhongSPF::IsotropicPhongSPF( const IPainter& Rd_, const IPainter& Rs_, const IPainter& exp ) :
+IsotropicPhongSPF::IsotropicPhongSPF( const IPainter& Rd_, const IPainter& Rs_, const IScalarPainter& exp ) :
   Rd( Rd_ ), Rs( Rs_ ), exponent( exp )
 {
 	Rd.addref();
@@ -90,7 +90,8 @@ void IsotropicPhongSPF::Scatter(
 	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
 	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
-	const RISEPel N = exponent.GetColor(ri);
+	const ScalarTriple Nt = exponent.GetValuesAt(ri);
+	const Scalar N[3] = { Nt.v[0], Nt.v[1], Nt.v[2] };
 
 	ScatteredRay diffuse, specular;
 	GenerateDiffuseRay( diffuse, rdotn, ri,  Point2( sampler.Get1D(), sampler.Get1D() ) );
@@ -102,7 +103,7 @@ void IsotropicPhongSPF::Scatter(
 		diffuse.isDelta = false;
 	}
 
-	if( N[0] == N[1] && N[1] == N[2] ) {
+	if( !exponent.HasPerChannelVariation() ) {
 		GenerateSpecularRay( specular, n, reflected, ri,  Point2( sampler.Get1D(), sampler.Get1D() ), N[0] );
 
 		// kray = BRDF * cos_o / pdf = Rs * (N+2)/(2*pi) * cos^N(alpha) * cos_o
@@ -167,7 +168,7 @@ void IsotropicPhongSPF::ScatterNM(
 	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
 	ScatteredRay diffuse, specular;
-	const Scalar N = exponent.GetColorNM(ri,nm);
+	const Scalar N = exponent.GetValueAtNM(ri,nm);
 	GenerateDiffuseRay( diffuse, rdotn, ri,  Point2( sampler.Get1D(), sampler.Get1D() ) );
 	GenerateSpecularRay( specular, n, reflected, ri,  Point2( sampler.Get1D(), sampler.Get1D() ),  N );
 
@@ -220,8 +221,8 @@ Scalar IsotropicPhongSPF::Pdf(
 
 	// Specular component: phong lobe around reflection direction
 	// Use average exponent across channels
-	const RISEPel N = exponent.GetColor(ri);
-	const Scalar Navg = (N[0] + N[1] + N[2]) / 3.0;
+	const ScalarTriple Nt = exponent.GetValuesAt(ri);
+	const Scalar Navg = (Nt.v[0] + Nt.v[1] + Nt.v[2]) / 3.0;
 	const Scalar cosAlpha = Vector3Ops::Dot( woNorm, Vector3Ops::Normalize(reflected) );
 	const Scalar specPdf = (cosAlpha > 0) ? (Navg + 1.0) * INV_PI * 0.5 * pow( cosAlpha, Navg ) : 0;
 
@@ -260,7 +261,7 @@ Scalar IsotropicPhongSPF::PdfNM(
 	const Scalar diffusePdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
 
 	// Specular component
-	const Scalar N = exponent.GetColorNM(ri,nm);
+	const Scalar N = exponent.GetValueAtNM(ri,nm);
 	const Scalar cosAlpha = Vector3Ops::Dot( woNorm, Vector3Ops::Normalize(reflected) );
 	const Scalar specPdf = (cosAlpha > 0) ? (N + 1.0) * INV_PI * 0.5 * pow( cosAlpha, N ) : 0;
 

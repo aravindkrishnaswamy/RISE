@@ -17,6 +17,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -28,12 +29,12 @@ namespace RISE
 		protected:
 			virtual ~IsotropicPhongSPF( );
 
-			const IPainter&	Rd;						// diffuse reflectance
-			const IPainter&	Rs;						// specular reflectance
-			const IPainter&	exponent;				// phong exponent
+			const IPainter&			Rd;					// diffuse reflectance
+			const IPainter&			Rs;					// specular reflectance
+			const IScalarPainter&	exponent;			// phong exponent (physical scalar)
 
 		public:
-			IsotropicPhongSPF( const IPainter& Rd_, const IPainter& Rs_, const IPainter& exp );
+			IsotropicPhongSPF( const IPainter& Rd_, const IPainter& Rs_, const IScalarPainter& exp );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.

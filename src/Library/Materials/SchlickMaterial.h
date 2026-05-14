@@ -15,6 +15,7 @@
 #define SCHLICK_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "SchlickBRDF.h"
 #include "SchlickSPF.h"
@@ -39,10 +40,10 @@ namespace RISE
 
 		public:
 			SchlickMaterial(
-				const IPainter& diffuse, 
-				const IPainter& specular, 
-				const IPainter& roughness,
-				const IPainter& isotropy
+				const IPainter& diffuse,
+				const IPainter& specular,
+				const IScalarPainter& roughness,
+				const IScalarPainter& isotropy
 				)
 			{
 				pBRDF = new SchlickBRDF( diffuse, specular, roughness, isotropy );

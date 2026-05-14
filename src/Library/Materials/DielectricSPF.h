@@ -1,7 +1,14 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  DielectricSPF.h - Defines a dielectric SPF, which is
-//  is basically like glass
+//  is basically like glass.
+//
+//  All three parameters (tau, ior, scattering) are PHYSICAL SCALARS
+//  carried by `IScalarPainter`, NOT colors carried by `IPainter`.
+//  See docs/ISCALARPAINTER_REFACTOR.md — the old IPainter routing
+//  forced inline-numeric scattering values through the JH spectral
+//  uplift, producing wrong values per wavelength and rendering glass
+//  spheres as speckled invisible blobs in every spectral rasterizer.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: May 21, 2003
@@ -16,7 +23,7 @@
 #define DIELECTRIC_SPF_
 
 #include "../Interfaces/ISPF.h"
-#include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -30,9 +37,9 @@ namespace RISE
 		protected:
 			virtual ~DielectricSPF( );
 
-			const IPainter&				tau;			// Transmittance
-			const IPainter&				rIndex;			// Index of refraction
-			const IPainter&				scat;			// Scattering function (either Phong or HG)
+			const IScalarPainter&		tau;			// Transmittance (per-channel + spectral)
+			const IScalarPainter&		rIndex;			// Index of refraction (spectral for dispersion)
+			const IScalarPainter&		scat;			// Scattering function (Phong cone width or HG asymmetry)
 			const bool					bHG;			// Use Henyey-Greenstein phase function scattering
 
 			Scalar GenerateScatteredRay(
@@ -61,9 +68,9 @@ namespace RISE
 
 		public:
 			DielectricSPF(
-				const IPainter& tau_,
-				const IPainter& ri,
-				const IPainter& s,
+				const IScalarPainter& tau_,
+				const IScalarPainter& ri,
+				const IScalarPainter& s,
 				const bool hg
 				);
 
@@ -75,8 +82,9 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
-				info.ior = rIndex.GetColor( ri )[0];
-				info.attenuation = tau.GetColor( ri );
+				info.ior = rIndex.GetValuesAt( ri ).v[0];
+				const ScalarTriple t = tau.GetValuesAt( ri );
+				info.attenuation = RISEPel( t.v[0], t.v[1], t.v[2] );
 				info.valid = true;
 				return info;
 			}
@@ -90,7 +98,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
-				info.ior = rIndex.GetColorNM( ri, nm );
+				info.ior = rIndex.GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
 			}

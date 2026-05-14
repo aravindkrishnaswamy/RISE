@@ -26,6 +26,7 @@
 #define DONNER_JENSEN_SKIN_BSSRDF_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "SubSurfaceScatteringBSDF.h"
 #include "SubSurfaceScatteringSPF.h"
@@ -43,7 +44,7 @@ namespace RISE
 			SubSurfaceScatteringBSDF*				pBSDF;
 			SubSurfaceScatteringSPF*				pSPF;
 			DonnerJensenSkinDiffusionProfile*		pProfile;
-			const IPainter&							iorPainter;
+			const IScalarPainter&					iorPainter;
 			const Scalar							surfaceRoughness;
 
 			virtual ~DonnerJensenSkinBSSRDFMaterial()
@@ -56,15 +57,15 @@ namespace RISE
 
 		public:
 			DonnerJensenSkinBSSRDFMaterial(
-				const IPainter& melanin_fraction_,
-				const IPainter& melanin_blend_,
-				const IPainter& hemoglobin_epidermis_,
-				const IPainter& carotene_fraction_,
-				const IPainter& hemoglobin_dermis_,
-				const IPainter& epidermis_thickness_,
-				const IPainter& ior_epidermis_,
-				const IPainter& ior_dermis_,
-				const IPainter& blood_oxygenation_,
+				const IScalarPainter& melanin_fraction_,
+				const IScalarPainter& melanin_blend_,
+				const IScalarPainter& hemoglobin_epidermis_,
+				const IScalarPainter& carotene_fraction_,
+				const IScalarPainter& hemoglobin_dermis_,
+				const IScalarPainter& epidermis_thickness_,
+				const IScalarPainter& ior_epidermis_,
+				const IScalarPainter& ior_dermis_,
+				const IScalarPainter& blood_oxygenation_,
 				const Scalar roughness
 				) :
 			iorPainter( ior_epidermis_ ),
@@ -72,9 +73,12 @@ namespace RISE
 			{
 				iorPainter.addref();
 				// Surface BSDF/SPF use epidermis IOR for Fresnel reflection.
-				// The absorption and scattering painters are not used by the
-				// surface BSDF/SPF for BSSRDF materials, so we pass the IOR
-				// painter as a dummy.
+				// SubSurfaceScattering{BSDF,SPF} take IScalarPainter for
+				// ior / absorption / scattering.  Absorption / scattering
+				// slots are unused by the surface lobes for BSSRDF
+				// materials (transport happens via the diffusion
+				// profile), so the same painter is reused as a benign
+				// placeholder.
 				pBSDF = new SubSurfaceScatteringBSDF( ior_epidermis_, ior_epidermis_, ior_epidermis_, 0.0, roughness );
 				GlobalLog()->PrintNew( pBSDF, __FILE__, __LINE__, "BSDF" );
 
@@ -122,7 +126,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetColor( ri )[0];
+				info.ior = iorPainter.GetValuesAt( ri ).v[0];
 				info.valid = true;
 				return info;
 			}
@@ -136,7 +140,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetColorNM( ri, nm );
+				info.ior = iorPainter.GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
 			}

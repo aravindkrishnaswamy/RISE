@@ -22,6 +22,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -35,13 +36,13 @@ namespace RISE
 		protected:
 			virtual ~SheenSPF();
 
-			const IPainter& pColor;
-			const IPainter& pRoughness;
+			const IPainter&			pColor;
+			const IScalarPainter&	pRoughness;		// physical scalar
 
 		public:
 			SheenSPF(
 				const IPainter& sheenColor,
-				const IPainter& sheenRoughness
+				const IScalarPainter& sheenRoughness
 				);
 
 			void Scatter(

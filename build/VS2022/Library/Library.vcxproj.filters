@@ -1545,7 +1545,40 @@
     <ClInclude Include="..\..\..\src\Library\Painters\TexturePainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\TextureScalarPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\UniformColorPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\UniformScalarPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\PainterToScalarAdapter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\RGBScalarPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\PiecewiseLinearScalarPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\SellmeierScalarPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\PolynomialScalarPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Function1DScalarPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Function2DScalarPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\ScaledScalarPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\MultiplyScalarPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\VertexColorPainter.h">
@@ -2174,6 +2207,12 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\IPainterManager.h">
       <Filter>Interfaces</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IScalarPainter.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IScalarPainterManager.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Interfaces\IParametricSurface.h">
       <Filter>Interfaces</Filter>
     </ClInclude>
@@ -2343,6 +2382,9 @@
       <Filter>Managers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Managers\PainterManager.h">
+      <Filter>Managers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Managers\ScalarPainterManager.h">
       <Filter>Managers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Managers\ShaderManager.h">

@@ -21,13 +21,13 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-TranslucentSPF::TranslucentSPF( 
+TranslucentSPF::TranslucentSPF(
 	const IPainter& rF,
-	const IPainter& T, 
-	const IPainter& ext,
-	const IPainter& N_, 
-	const IPainter& scat 
-	) : 
+	const IPainter& T,
+	const IScalarPainter& ext,
+	const IScalarPainter& N_,
+	const IScalarPainter& scat
+	) :
   pRefFront( rF ),
   pTrans( T ),
   pExtinction( ext ),
@@ -97,7 +97,7 @@ void TranslucentSPF::Scatter(
 		if( trans.kray[0] > 0 ) {
 			myonb.FlipW();
 
-			const RISEPel Nfactor = N.GetColor(ri);
+			const ScalarTriple Nfactor_t = N.GetValuesAt(ri); const RISEPel Nfactor( Nfactor_t.v[0], Nfactor_t.v[1], Nfactor_t.v[2] );
 			if( (Nfactor[0] == Nfactor[1]) && (Nfactor[1] == Nfactor[2]) ) {
 				rv = GeometricUtilities::Perturb( myonb.w(),
 					acos( pow(sampler.Get1D(), 1.0 / (Nfactor[0] + 1.0)) ),
@@ -141,7 +141,8 @@ void TranslucentSPF::Scatter(
 	{
 		// Coming out the other side
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
-		const RISEPel ab = pExtinction.GetColor(ri);
+		const ScalarTriple abt = pExtinction.GetValuesAt(ri);
+		const RISEPel ab( abt.v[0], abt.v[1], abt.v[2] );
 		front.kray = ColorMath::exponential( -distance*ab );
 
 		front.type = ScatteredRay::eRayDiffuse;
@@ -149,7 +150,8 @@ void TranslucentSPF::Scatter(
 		// Don't bother checking scattering if the ray is totally extinguished
 		if( ColorMath::MaxValue(front.kray) > 0 ) {
 			// Check the scattering parameter
-			const RISEPel scat = pScat.GetColor(ri);
+			const ScalarTriple scat_t = pScat.GetValuesAt(ri);
+			const RISEPel scat( scat_t.v[0], scat_t.v[1], scat_t.v[2] );
 
 			if( ColorMath::MaxValue(scat) > 0 ) {
 				// Multiple scatter back
@@ -158,7 +160,7 @@ void TranslucentSPF::Scatter(
 				trans.type = ScatteredRay::eRayTranslucent;
 				trans.kray = front.kray * scat;
 
-				const RISEPel Nfactor = N.GetColor(ri);
+				const ScalarTriple Nfactor_t = N.GetValuesAt(ri); const RISEPel Nfactor( Nfactor_t.v[0], Nfactor_t.v[1], Nfactor_t.v[2] );
 				if( (Nfactor[0] == Nfactor[1]) && (Nfactor[1] == Nfactor[2]) ) {
 					rv = GeometricUtilities::Perturb( myonb.w(),
 						acos( pow(sampler.Get1D(), 1.0 / (Nfactor[0] + 1.0)) ),
@@ -260,7 +262,7 @@ void TranslucentSPF::ScatterNM(
 		if( trans.krayNM > 0 ) {
 			myonb.FlipW();
 
-			const Scalar Nval = N.GetColorNM(ri,nm);
+			const Scalar Nval = N.GetValueAtNM(ri,nm);
 			rv = GeometricUtilities::Perturb( myonb.w(),
 				acos( pow(sampler.Get1D(), 1.0 / (Nval + 1.0)) ),
 				TWO_PI * sampler.Get1D() );
@@ -280,19 +282,19 @@ void TranslucentSPF::ScatterNM(
 	{
 		// Coming out the other side
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
-		front.krayNM = pTrans.GetColorNM(ri,nm) * exp(-(pExtinction.GetColorNM(ri,nm)*distance));
+		front.krayNM = pTrans.GetColorNM(ri,nm) * exp(-(pExtinction.GetValueAtNM(ri,nm)*distance));
 
 		front.type = ScatteredRay::eRayDiffuse;
 
 		// Don't bother checking scattering if the ray is totally extinguished
 		if( front.krayNM > 0 ) {
 			// Check the scattering parameter
-			const Scalar scat = pScat.GetColorNM(ri,nm);
+			const Scalar scat = pScat.GetValueAtNM(ri,nm);
 
 			if( scat > 0 ) {
 				// Multiple scatter back
 				myonb.FlipW();
-				const Scalar Nval_scat = N.GetColorNM(ri,nm);
+				const Scalar Nval_scat = N.GetValueAtNM(ri,nm);
 				rv = GeometricUtilities::Perturb( myonb.w(),
 					acos( pow(sampler.Get1D(), 1.0 / (Nval_scat + 1.0)) ),
 					TWO_PI * sampler.Get1D() );
@@ -315,7 +317,7 @@ void TranslucentSPF::ScatterNM(
 
 		// Exit ray leaves the object — pop from IOR stack
 		{
-			const Scalar Nval_front = N.GetColorNM(ri,nm);
+			const Scalar Nval_front = N.GetValueAtNM(ri,nm);
 			rv = GeometricUtilities::Perturb( n,
 				acos( pow(sampler.Get1D(), 1.0 / (Nval_front + 1.0)) ),
 				TWO_PI * sampler.Get1D() );

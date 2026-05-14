@@ -25,6 +25,7 @@
 
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -38,18 +39,18 @@ namespace RISE
 		protected:
 			virtual ~SubSurfaceScatteringBSDF();
 
-			const IPainter&		ior;
-			const IPainter&		absorption;
-			const IPainter&		scattering;
-			const Scalar		g;
-			const Scalar		roughness;
-			const Scalar		alpha;		// GGX alpha = roughness^2
+			const IScalarPainter&	ior;
+			const IScalarPainter&	absorption;
+			const IScalarPainter&	scattering;
+			const Scalar			g;
+			const Scalar			roughness;
+			const Scalar			alpha;		// GGX alpha = roughness^2
 
 		public:
 			SubSurfaceScatteringBSDF(
-				const IPainter& ior_,
-				const IPainter& absorption_,
-				const IPainter& scattering_,
+				const IScalarPainter& ior_,
+				const IScalarPainter& absorption_,
+				const IScalarPainter& scattering_,
 				const Scalar g_,
 				const Scalar roughness_
 				);

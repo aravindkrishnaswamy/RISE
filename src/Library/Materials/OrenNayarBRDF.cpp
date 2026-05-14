@@ -20,9 +20,9 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-OrenNayarBRDF::OrenNayarBRDF( 
-	const IPainter& reflectance, 
-	const IPainter& roughness
+OrenNayarBRDF::OrenNayarBRDF(
+	const IPainter& reflectance,
+	const IScalarPainter& roughness
 	) :
   pReflectance( reflectance ),
   pRoughness( roughness )
@@ -79,7 +79,9 @@ void OrenNayarBRDF::ComputeFactor(
 RISEPel OrenNayarBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	RISEPel L1, L2;
-	ComputeFactor<RISEPel>( L1, L2, vLightIn, ri, ri.onb.w(), pRoughness.GetColor(ri) );
+	const ScalarTriple r = pRoughness.GetValuesAt(ri);
+	const RISEPel roughness( r.v[0], r.v[1], r.v[2] );
+	ComputeFactor<RISEPel>( L1, L2, vLightIn, ri, ri.onb.w(), roughness );
 	const RISEPel rho = pReflectance.GetColor(ri);
 
 	return (L1*INV_PI*rho) + (L2*INV_PI*(rho*rho));
@@ -88,7 +90,7 @@ RISEPel OrenNayarBRDF::value( const Vector3& vLightIn, const RayIntersectionGeom
 Scalar OrenNayarBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar L1=0, L2=0;
-	ComputeFactor<Scalar>( L1, L2, vLightIn, ri, ri.onb.w(), pRoughness.GetColorNM(ri,nm) );
+	ComputeFactor<Scalar>( L1, L2, vLightIn, ri, ri.onb.w(), pRoughness.GetValueAtNM(ri,nm) );
 	const Scalar rho = pReflectance.GetColorNM(ri,nm);
 
 	return (L1*INV_PI*rho) + (L2*INV_PI*(rho*rho));

@@ -23,6 +23,7 @@
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IMaterial.h"		// For FresnelMode
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -36,12 +37,12 @@ namespace RISE
 		protected:
 			virtual ~GGXBRDF();
 
-			const IPainter& pDiffuse;
-			const IPainter& pSpecular;
-			const IPainter& pAlphaX;
-			const IPainter& pAlphaY;
-			const IPainter& pIOR;
-			const IPainter& pExtinction;
+			const IPainter&			pDiffuse;
+			const IPainter&			pSpecular;
+			const IScalarPainter&	pAlphaX;		// roughness (physical scalar)
+			const IScalarPainter&	pAlphaY;
+			const IScalarPainter&	pIOR;
+			const IScalarPainter&	pExtinction;
 			const FresnelMode fresnelMode;
 			//! Landing 8: optional tangent-frame rotation (radians,
 			//! applied around w to the (u, v) basis) per
@@ -56,10 +57,10 @@ namespace RISE
 			GGXBRDF(
 				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& alphaX,
-				const IPainter& alphaY,
-				const IPainter& ior,
-				const IPainter& ext,
+				const IScalarPainter& alphaX,
+				const IScalarPainter& alphaY,
+				const IScalarPainter& ior,
+				const IScalarPainter& ext,
 				const FresnelMode fresnel_mode = eFresnelConductor,
 				const IPainter* tangent_rotation = nullptr
 				);

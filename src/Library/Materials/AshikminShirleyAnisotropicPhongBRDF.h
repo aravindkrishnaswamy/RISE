@@ -17,6 +17,7 @@
 
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -28,25 +29,25 @@ namespace RISE
 		protected:
 			virtual ~AshikminShirleyAnisotropicPhongBRDF( );
 
-			const IPainter&			Nu;			// Phong exponents
-			const IPainter&			Nv;
+			const IScalarPainter&	Nu;			// Phong exponent (physical scalar)
+			const IScalarPainter&	Nv;
 
 			const IPainter&			Rd;			// diffuse reflectance
 			const IPainter&			Rs;			// specular reflectance
 
 		public:
 			template< class T >
-			static void ComputeDiffuseSpecularFactors( 
-				T& diffuse, 
+			static void ComputeDiffuseSpecularFactors(
+				T& diffuse,
 				T& specular,
-				const Vector3& vLightIn, 
+				const Vector3& vLightIn,
 				const RayIntersectionGeometric& ri,
-				const T& NU, 
-				const T& NV, 
-				const T& Rs 
+				const T& NU,
+				const T& NV,
+				const T& Rs
 				);
 
-			AshikminShirleyAnisotropicPhongBRDF( const IPainter& Nu_, const IPainter& Nv_, const IPainter& Rd_, const IPainter& Rs_ );
+			AshikminShirleyAnisotropicPhongBRDF( const IScalarPainter& Nu_, const IScalarPainter& Nv_, const IPainter& Rd_, const IPainter& Rs_ );
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;

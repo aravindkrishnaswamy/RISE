@@ -20,8 +20,8 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 OrenNayarSPF::OrenNayarSPF(
-	const IPainter& reflectance, 
-	const IPainter& roughness
+	const IPainter& reflectance,
+	const IScalarPainter& roughness
 	) :
   pReflectance( reflectance ),
   pRoughness( roughness )
@@ -58,7 +58,9 @@ void OrenNayarSPF::Scatter(
 
 	// Compute the weight
 	RISEPel L1, L2;
-	OrenNayarBRDF::ComputeFactor<RISEPel>( L1, L2, diffuse.ray.Dir(), ri, ri.onb.w(), pRoughness.GetColor(ri) );
+	const ScalarTriple r = pRoughness.GetValuesAt(ri);
+	const RISEPel roughness( r.v[0], r.v[1], r.v[2] );
+	OrenNayarBRDF::ComputeFactor<RISEPel>( L1, L2, diffuse.ray.Dir(), ri, ri.onb.w(), roughness );
 
 	const RISEPel rho = pReflectance.GetColor(ri);
 	diffuse.kray = L1*rho + (L2*rho*rho);
@@ -94,7 +96,7 @@ void OrenNayarSPF::ScatterNM(
 	
 	// Compute the weight
 	Scalar L1=0, L2=0;
-	OrenNayarBRDF::ComputeFactor( L1, L2, diffuse.ray.Dir(), ri, myonb.w(), pRoughness.GetColorNM(ri,nm) );
+	OrenNayarBRDF::ComputeFactor( L1, L2, diffuse.ray.Dir(), ri, myonb.w(), pRoughness.GetValueAtNM(ri,nm) );
 
 	const Scalar rho = pReflectance.GetColorNM(ri,nm);
 	diffuse.krayNM = L1*rho + (L2*rho*rho);

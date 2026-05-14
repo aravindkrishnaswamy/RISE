@@ -28,9 +28,9 @@ static inline Scalar ToScalarAlpha( const RISEPel& a ) { return a[0]; }
 CookTorranceBRDF::CookTorranceBRDF(
 	const IPainter& diffuse,
 	const IPainter& specular,
-	const IPainter& masking,
-	const IPainter& ior,
-	const IPainter& ext
+	const IScalarPainter& masking,
+	const IScalarPainter& ior,
+	const IScalarPainter& ext
 	) :
   pDiffuse( diffuse ),
   pSpecular( specular ),
@@ -83,14 +83,17 @@ T CookTorranceBRDF::ComputeFactor( const Vector3& vLightIn, const RayIntersectio
 RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	const Vector3 n = ri.onb.w();
-	const RISEPel alphaColor = pMasking.GetColor(ri);
-	const Scalar scalarAlpha = ColorMath::MaxValue( alphaColor );
+	const ScalarTriple alphaT = pMasking.GetValuesAt(ri);
+	const RISEPel alphaColor( alphaT.v[0], alphaT.v[1], alphaT.v[2] );
+	const Scalar scalarAlpha = alphaT.v[0];
 
 	const RISEPel factor = ComputeFactor<RISEPel>( vLightIn, ri, n, alphaColor );
 
 	const RISEPel specColor = pSpecular.GetColor(ri);
-	const RISEPel ior = pIOR.GetColor(ri);
-	const RISEPel ext = pExtinction.GetColor(ri);
+	const ScalarTriple iorT = pIOR.GetValuesAt(ri);
+	const ScalarTriple extT = pExtinction.GetValuesAt(ri);
+	const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
+	const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 
 	RISEPel specular(0,0,0);
 
@@ -123,10 +126,10 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	const Vector3 n = ri.onb.w();
-	const Scalar alpha = pMasking.GetColorNM(ri,nm);
+	const Scalar alpha = pMasking.GetValueAtNM(ri,nm);
 	const Scalar specColor = pSpecular.GetColorNM(ri,nm);
-	const Scalar iorVal = pIOR.GetColorNM(ri,nm);
-	const Scalar extVal = pExtinction.GetColorNM(ri,nm);
+	const Scalar iorVal = pIOR.GetValueAtNM(ri,nm);
+	const Scalar extVal = pExtinction.GetValueAtNM(ri,nm);
 
 	Scalar specular = 0;
 
@@ -166,8 +169,10 @@ RISEPel CookTorranceBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	// microfacet terms — those distribute energy across the lobe but
 	// don't change total integrated reflectance to first order).
 	const Vector3 n = ri.onb.w();
-	const RISEPel ior = pIOR.GetColor( ri );
-	const RISEPel ext = pExtinction.GetColor( ri );
+	const ScalarTriple iorT = pIOR.GetValuesAt( ri );
+	const ScalarTriple extT = pExtinction.GetValuesAt( ri );
+	const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
+	const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 	const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
 		ri.ray.Dir(), n, RISEPel( 1, 1, 1 ), ior, ext );
 	return pDiffuse.GetColor( ri ) + pSpecular.GetColor( ri ) * fresnel;

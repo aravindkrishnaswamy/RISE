@@ -38,6 +38,8 @@
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Materials/GGXBRDF.h"
 
 using namespace RISE;
@@ -185,10 +187,10 @@ static bool TestReciprocity( FresnelMode mode, const char* modeName )
 
 	UniformColorPainter* diffuse = new UniformColorPainter( RISEPel(0.3, 0.3, 0.3) );  diffuse->addref();
 	UniformColorPainter* specular = new UniformColorPainter( RISEPel(0.5, 0.5, 0.5) );  specular->addref();
-	UniformColorPainter* alphaX = new UniformColorPainter( RISEPel(0.4, 0.4, 0.4) );  alphaX->addref();
-	UniformColorPainter* alphaY = new UniformColorPainter( RISEPel(0.4, 0.4, 0.4) );  alphaY->addref();
-	UniformColorPainter* ior = new UniformColorPainter( RISEPel(2.5, 2.5, 2.5) );  ior->addref();
-	UniformColorPainter* ext = new UniformColorPainter( RISEPel(3.0, 3.0, 3.0) );  ext->addref();
+	UniformScalarPainter* alphaX = new UniformScalarPainter(0.4);  alphaX->addref();
+	UniformScalarPainter* alphaY = new UniformScalarPainter(0.4);  alphaY->addref();
+	UniformScalarPainter* ior = new UniformScalarPainter(2.5);  ior->addref();
+	UniformScalarPainter* ext = new UniformScalarPainter(3.0);  ext->addref();
 
 	GGXBRDF* brdf = new GGXBRDF( *diffuse, *specular, *alphaX, *alphaY, *ior, *ext, mode );
 	brdf->addref();
@@ -278,10 +280,10 @@ static bool TestEnergyBound( FresnelMode mode, const char* modeName )
 
 	UniformColorPainter* diffuse = new UniformColorPainter( RISEPel(0.5, 0.5, 0.5) );  diffuse->addref();
 	UniformColorPainter* specular = new UniformColorPainter( RISEPel(0.5, 0.5, 0.5) );  specular->addref();
-	UniformColorPainter* alphaX = new UniformColorPainter( RISEPel(0.3, 0.3, 0.3) );  alphaX->addref();
-	UniformColorPainter* alphaY = new UniformColorPainter( RISEPel(0.3, 0.3, 0.3) );  alphaY->addref();
-	UniformColorPainter* ior = new UniformColorPainter( RISEPel(2.5, 2.5, 2.5) );  ior->addref();
-	UniformColorPainter* ext = new UniformColorPainter( RISEPel(3.0, 3.0, 3.0) );  ext->addref();
+	UniformScalarPainter* alphaX = new UniformScalarPainter(0.3);  alphaX->addref();
+	UniformScalarPainter* alphaY = new UniformScalarPainter(0.3);  alphaY->addref();
+	UniformScalarPainter* ior = new UniformScalarPainter(2.5);  ior->addref();
+	UniformScalarPainter* ext = new UniformScalarPainter(3.0);  ext->addref();
 
 	GGXBRDF* brdf = new GGXBRDF( *diffuse, *specular, *alphaX, *alphaY, *ior, *ext, mode );
 	brdf->addref();

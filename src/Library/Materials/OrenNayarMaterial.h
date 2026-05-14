@@ -15,6 +15,7 @@
 #define ORENNAYAR_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "OrenNayarBRDF.h"
 #include "OrenNayarSPF.h"
@@ -39,8 +40,8 @@ namespace RISE
 
 		public:
 			OrenNayarMaterial(
-				const IPainter& reflectance, 
-				const IPainter& roughness
+				const IPainter& reflectance,
+				const IScalarPainter& roughness
 				)
 			{
 				pBRDF = new OrenNayarBRDF( reflectance, roughness );

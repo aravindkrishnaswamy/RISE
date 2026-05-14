@@ -23,8 +23,8 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 AshikminShirleyAnisotropicPhongSPF::AshikminShirleyAnisotropicPhongSPF(
-	const IPainter& Nu_,
-	const IPainter& Nv_,
+	const IScalarPainter& Nu_,
+	const IScalarPainter& Nv_,
 	const IPainter& Rd_,
 	const IPainter& Rs_
 	) :
@@ -160,17 +160,17 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 		myonb.FlipW();
 	}
 
-	const RISEPel NU = Nu.GetColor(ri);
-	const RISEPel NV = Nv.GetColor(ri);
+	const ScalarTriple NUt = Nu.GetValuesAt(ri);
+	const ScalarTriple NVt = Nv.GetValuesAt(ri);
+	const Scalar NU[3] = { NUt.v[0], NUt.v[1], NUt.v[2] };
+	const Scalar NV[3] = { NVt.v[0], NVt.v[1], NVt.v[2] };
 
 	ScatteredRay	specular;
 	specular.type = ScatteredRay::eRayReflection;
 
 	const RISEPel rho = Rs.GetColor(ri);
 
-	if( NU[0] == NU[1] && NU[1] == NU[2] &&
-		NV[0] == NV[1] && NV[1] == NV[2]
-		)
+	if( !Nu.HasPerChannelVariation() && !Nv.HasPerChannelVariation() )
 	{
 		Scalar diffuseFactor_unused=0, specFactor=0;
 		if( GenerateSpecularRay( specular, diffuseFactor_unused, specFactor, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), NU[0], NV[0], ColorMath::MaxValue(rho) ) ) {
@@ -235,8 +235,8 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 		myonb.FlipW();
 	}
 
-	const Scalar NU = Nu.GetColorNM(ri,nm);
-	const Scalar NV = Nv.GetColorNM(ri,nm);
+	const Scalar NU = Nu.GetValueAtNM(ri,nm);
+	const Scalar NV = Nv.GetValueAtNM(ri,nm);
 
 	ScatteredRay	specular;
 	specular.type = ScatteredRay::eRayReflection;
@@ -340,11 +340,11 @@ Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 	const IORStack& ior_stack
 	) const
 {
-	const RISEPel nu = Nu.GetColor(ri);
-	const RISEPel nv = Nv.GetColor(ri);
+	const ScalarTriple nu = Nu.GetValuesAt(ri);
+	const ScalarTriple nv = Nv.GetValuesAt(ri);
 	// Use average values across channels
-	const Scalar nu_val = (nu[0] + nu[1] + nu[2]) / 3.0;
-	const Scalar nv_val = (nv[0] + nv[1] + nv[2]) / 3.0;
+	const Scalar nu_val = (nu.v[0] + nu.v[1] + nu.v[2]) / 3.0;
+	const Scalar nv_val = (nv.v[0] + nv.v[1] + nv.v[2]) / 3.0;
 
 	// Compute representative weights at the mirror reflection direction.
 	// In Scatter: kray_spec = Rs * specFactor, kray_diff = Rd * diffFactor,
@@ -381,8 +381,8 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar nu_val = Nu.GetColorNM(ri,nm);
-	const Scalar nv_val = Nv.GetColorNM(ri,nm);
+	const Scalar nu_val = Nu.GetValueAtNM(ri,nm);
+	const Scalar nv_val = Nv.GetValueAtNM(ri,nm);
 
 	// Representative weights at mirror direction (same as Pdf)
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );

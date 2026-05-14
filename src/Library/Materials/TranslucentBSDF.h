@@ -16,7 +16,7 @@
 
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IPainter.h"
-#include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -28,12 +28,12 @@ namespace RISE
 		protected:
 			virtual ~TranslucentBSDF();
 
-			const IPainter&	pRefFront;			// Reflectance
-			const IPainter&	pTrans;				// Transmittance
-			const IPainter& exponent;			// The exponent
+			const IPainter&			pRefFront;			// Reflectance (color)
+			const IPainter&			pTrans;				// Transmittance (color)
+			const IScalarPainter&	exponent;			// Phong exponent (physical scalar)
 
 		public:
-			TranslucentBSDF( const IPainter& rF, const IPainter& T, const IPainter& exp );
+			TranslucentBSDF( const IPainter& rF, const IPainter& T, const IScalarPainter& exp );
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;

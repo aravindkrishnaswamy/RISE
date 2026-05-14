@@ -36,25 +36,25 @@ namespace RISE
 
 		public:
 			BioSpecSkinMaterial(
-				const IPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
-				const IPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
-				const IPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
-				const IPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
-				const IPainter& ior_SC_,									///< Index of refraction of the stratum corneum
-				const IPainter& ior_epidermis_,								///< Index of refraction of the epidermis
-				const IPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
-				const IPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
-				const IPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
-				const IPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
-				const IPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
-				const IPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
-				const IPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
-				const IPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
-				const IPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
-				const IPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
-				const IPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
-				const IPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
-				const IPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
+				const IScalarPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
+				const IScalarPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
+				const IScalarPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
+				const IScalarPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
+				const IScalarPainter& ior_SC_,									///< Index of refraction of the stratum corneum
+				const IScalarPainter& ior_epidermis_,								///< Index of refraction of the epidermis
+				const IScalarPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
+				const IScalarPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
+				const IScalarPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
+				const IScalarPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
+				const IScalarPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
+				const IScalarPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
+				const IScalarPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
+				const IScalarPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
+				const IScalarPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
+				const IScalarPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
+				const IScalarPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
+				const IScalarPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
+				const IScalarPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
 				const bool bSubdermalLayer									///< Should the model simulate a perfectly reflecting subdermal layer?
 				) : 
 			pSPF( 0 )

@@ -17,7 +17,7 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-TranslucentBSDF::TranslucentBSDF( const IPainter& rF, const IPainter& T, const IPainter& exp ) :
+TranslucentBSDF::TranslucentBSDF( const IPainter& rF, const IPainter& T, const IScalarPainter& exp ) :
   pRefFront( rF ), pTrans( T ), exponent( exp )
 {
 	pRefFront.addref();
@@ -69,7 +69,9 @@ static char GetReflectedSide( T& intensity, const Vector3& vLightIn, const RayIn
 RISEPel TranslucentBSDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	RISEPel intensity = RISEPel(1,1,1);
-	switch( GetReflectedSide<RISEPel>(intensity, vLightIn, ri, ri.onb.w(), exponent.GetColor(ri) ) )
+	const ScalarTriple exp_t = exponent.GetValuesAt(ri);
+	const RISEPel exp_rgb( exp_t.v[0], exp_t.v[1], exp_t.v[2] );
+	switch( GetReflectedSide<RISEPel>(intensity, vLightIn, ri, ri.onb.w(), exp_rgb ) )
 	{
 	case 0:
 		return pTrans.GetColor(ri) * intensity * INV_PI;
@@ -90,7 +92,7 @@ RISEPel TranslucentBSDF::value( const Vector3& vLightIn, const RayIntersectionGe
 Scalar TranslucentBSDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar intensity = 1.0;
-	switch( GetReflectedSide<Scalar>(intensity, vLightIn, ri, ri.onb.w(), exponent.GetColorNM(ri,nm) ) )
+	switch( GetReflectedSide<Scalar>(intensity, vLightIn, ri, ri.onb.w(), exponent.GetValueAtNM(ri,nm) ) )
 	{
 	case 0:
 		return pTrans.GetColorNM(ri,nm) * intensity * INV_PI;

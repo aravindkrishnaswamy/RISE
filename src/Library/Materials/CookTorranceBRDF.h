@@ -16,32 +16,33 @@
 
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
 {
 	namespace Implementation
 	{
-		class CookTorranceBRDF : 
-			public virtual IBSDF, 
+		class CookTorranceBRDF :
+			public virtual IBSDF,
 			public virtual Reference
 		{
 		protected:
 			virtual ~CookTorranceBRDF();
 
-			const IPainter& pDiffuse;
-			const IPainter& pSpecular;
-			const IPainter& pMasking;
-			const IPainter& pIOR;
-			const IPainter& pExtinction;
+			const IPainter&			pDiffuse;
+			const IPainter&			pSpecular;
+			const IScalarPainter&	pMasking;		// roughness (physical scalar)
+			const IScalarPainter&	pIOR;
+			const IScalarPainter&	pExtinction;
 
 		public:
-			CookTorranceBRDF( 
-				const IPainter& diffuse, 
-				const IPainter& specular, 
-				const IPainter& masking,
-				const IPainter& ior,
-				const IPainter& ext
+			CookTorranceBRDF(
+				const IPainter& diffuse,
+				const IPainter& specular,
+				const IScalarPainter& masking,
+				const IScalarPainter& ior,
+				const IScalarPainter& ext
 				);
 
 			template< class T >

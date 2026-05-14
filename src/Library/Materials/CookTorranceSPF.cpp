@@ -27,9 +27,9 @@ using namespace RISE::Implementation;
 CookTorranceSPF::CookTorranceSPF(
 	const IPainter& diffuse,
 	const IPainter& specular,
-	const IPainter& masking,
-	const IPainter& ior,
-	const IPainter& ext
+	const IScalarPainter& masking,
+	const IScalarPainter& ior,
+	const IScalarPainter& ext
 	) :
   pDiffuse( diffuse ),
   pSpecular( specular ),
@@ -68,7 +68,7 @@ void CookTorranceSPF::Scatter(
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-	Scalar alpha = ColorMath::MaxValue( pMasking.GetColor(ri) );
+	Scalar alpha = pMasking.GetValuesAt(ri).v[0];
 
 	// Glossy filtering: increase effective roughness
 	if( ri.glossyFilterWidth > 0 ) {
@@ -135,9 +135,13 @@ void CookTorranceSPF::Scatter(
 						const Scalar diffPdf = cosTheta * INV_PI;
 						const Scalar mixPdf = (total > 1e-10) ? ((wd + wms) * diffPdf + ws * vndfPdf) / total : vndfPdf;
 
+						const ScalarTriple iorT = pIOR.GetValuesAt(ri);
+						const ScalarTriple extT = pExtinction.GetValuesAt(ri);
+						const RISEPel iorPel( iorT.v[0], iorT.v[1], iorT.v[2] );
+						const RISEPel extPel( extT.v[0], extT.v[1], extT.v[2] );
 						const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
 							ri.ray.Dir(), n, RISEPel(1,1,1),
-							pIOR.GetColor(ri), pExtinction.GetColor(ri) );
+							iorPel, extPel );
 
 						// With VNDF sampling, kray = BRDF_spec * cos / pdf_spec
 						// simplifies to: pSpecular * fresnel * G1(wo)
@@ -181,8 +185,10 @@ void CookTorranceSPF::Scatter(
 				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosTheta, alpha );
 				const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
 
-				const RISEPel ior = pIOR.GetColor(ri);
-				const RISEPel ext = pExtinction.GetColor(ri);
+				const ScalarTriple iorT = pIOR.GetValuesAt(ri);
+				const ScalarTriple extT = pExtinction.GetValuesAt(ri);
+				const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
+				const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 				const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
 				const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
 
@@ -225,7 +231,7 @@ void CookTorranceSPF::ScatterNM(
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-	Scalar alpha = pMasking.GetColorNM(ri,nm);
+	Scalar alpha = pMasking.GetValueAtNM(ri,nm);
 
 	// Glossy filtering: increase effective roughness
 	if( ri.glossyFilterWidth > 0 ) {
@@ -292,7 +298,7 @@ void CookTorranceSPF::ScatterNM(
 
 						const Scalar fresnel = Optics::CalculateConductorReflectance(
 							ri.ray.Dir(), n, 1.0,
-							pIOR.GetColorNM(ri,nm), pExtinction.GetColorNM(ri,nm) );
+							pIOR.GetValueAtNM(ri,nm), pExtinction.GetValueAtNM(ri,nm) );
 
 						const Scalar G1wo = MicrofacetUtils::GGX_G1( alpha, cosTheta );
 						const Scalar krayNM = pSpecular.GetColorNM(ri,nm) * fresnel * G1wo / pSpecSelect;
@@ -332,8 +338,8 @@ void CookTorranceSPF::ScatterNM(
 				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosTheta, alpha );
 				const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
 
-				const Scalar iorVal = pIOR.GetColorNM(ri,nm);
-				const Scalar extVal = pExtinction.GetColorNM(ri,nm);
+				const Scalar iorVal = pIOR.GetValueAtNM(ri,nm);
+				const Scalar extVal = pExtinction.GetValueAtNM(ri,nm);
 				const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
 				const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
 
@@ -372,7 +378,7 @@ Scalar CookTorranceSPF::Pdf(
 	if( cosTheta <= 0 ) return 0;
 
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-	Scalar alpha = ColorMath::MaxValue( pMasking.GetColor(ri) );
+	Scalar alpha = pMasking.GetValuesAt(ri).v[0];
 	if( ri.glossyFilterWidth > 0 ) {
 		alpha = r_min( alpha + ri.glossyFilterWidth, Scalar(1.0) );
 	}

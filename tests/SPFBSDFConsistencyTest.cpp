@@ -47,6 +47,8 @@
 #include "../src/Library/Interfaces/IBSDF.h"
 #include "../src/Library/Interfaces/IPainter.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
 
 // SPF implementations
 #include "../src/Library/Materials/LambertianSPF.h"
@@ -545,24 +547,46 @@ int main()
     UniformColorPainter* polishScat = new UniformColorPainter( RISEPel(20.0, 20.0, 20.0) ); polishScat->addref();
     UniformColorPainter* sssAbsorb  = new UniformColorPainter( RISEPel(0.01, 0.01, 0.01) ); sssAbsorb->addref();
     UniformColorPainter* sssScat    = new UniformColorPainter( RISEPel(1.0, 1.0, 1.0) );  sssScat->addref();
+    UniformScalarPainter* sssAbsorbSc = new UniformScalarPainter( 0.01 ); sssAbsorbSc->addref();
+    UniformScalarPainter* sssScatSc   = new UniformScalarPainter( 1.0 );  sssScatSc->addref();
     UniformColorPainter* zeroExt    = new UniformColorPainter( RISEPel(0.0, 0.0, 0.0) );  zeroExt->addref();
     UniformColorPainter* one        = new UniformColorPainter( RISEPel(1.0, 1.0, 1.0) );  one->addref();
+
+    // Scalar twins of the numeric values that drive the consistency
+    // test — IScalarPainter slots (physical scalars), no JH spectral
+    // uplift.  Declared BEFORE the SPF/BRDF construction so they are
+    // visible to every consumer in this block.
+    UniformScalarPainter* tauScalar      = new UniformScalarPainter( 0.9 );    tauScalar->addref();
+    UniformScalarPainter* iorScalar      = new UniformScalarPainter( 1.5 );    iorScalar->addref();
+    UniformScalarPainter* scatScalar     = new UniformScalarPainter( 0.3 );    scatScalar->addref();
+    UniformScalarPainter* polishScatSc   = new UniformScalarPainter( 20.0 );   polishScatSc->addref();
+    UniformScalarPainter* roughnessSc    = new UniformScalarPainter( 0.3 );    roughnessSc->addref();
+    UniformScalarPainter* highExpSc      = new UniformScalarPainter( 50.0 );   highExpSc->addref();
+    UniformScalarPainter* ashNuSc        = new UniformScalarPainter( 100.0 );  ashNuSc->addref();
+    UniformScalarPainter* ashNvSc        = new UniformScalarPainter( 50.0 );   ashNvSc->addref();
+    UniformScalarPainter* alphaSmallSc   = new UniformScalarPainter( 0.2 );    alphaSmallSc->addref();
+    UniformScalarPainter* alphaSmallYSc  = new UniformScalarPainter( 0.3 );    alphaSmallYSc->addref();
+    UniformScalarPainter* isotropySc     = new UniformScalarPainter( 0.8 );    isotropySc->addref();
+    UniformScalarPainter* lowSc          = new UniformScalarPainter( 0.1 );    lowSc->addref();
+    UniformScalarPainter* extinctionSc   = new UniformScalarPainter( 0.0 );    extinctionSc->addref();
+    UniformScalarPainter* phongNSc       = new UniformScalarPainter( 10.0 );   phongNSc->addref();
+    UniformScalarPainter* scatFactorSc   = new UniformScalarPainter( 0.3 );    scatFactorSc->addref();
 
     // ---- Construct SPFs ----
     std::cout << "Constructing SPFs..." << std::flush;
     LambertianSPF* lambertianSPF = new LambertianSPF( *white );  lambertianSPF->addref();
-    OrenNayarSPF* orenNayarSPF = new OrenNayarSPF( *white, *roughness );  orenNayarSPF->addref();
-    IsotropicPhongSPF* phongSPF = new IsotropicPhongSPF( *gray, *spec, *highExp );  phongSPF->addref();
-    CookTorranceSPF* cookTorranceSPF = new CookTorranceSPF( *gray, *spec, *low, *ior, *extinction );  cookTorranceSPF->addref();
-    GGXSPF* ggxIsoSPF = new GGXSPF( *gray, *spec, *alphaSmall, *alphaSmall, *ior, *extinction );  ggxIsoSPF->addref();
-    GGXSPF* ggxAnisoSPF = new GGXSPF( *gray, *spec, *alphaSmall, *alphaSmallY, *ior, *extinction );  ggxAnisoSPF->addref();
-    SchlickSPF* schlickSPF = new SchlickSPF( *gray, *spec, *roughness, *isotropy );  schlickSPF->addref();
-    WardIsotropicGaussianSPF* wardIsoSPF = new WardIsotropicGaussianSPF( *gray, *spec, *alphaSmall );  wardIsoSPF->addref();
-    WardAnisotropicEllipticalGaussianSPF* wardAnisoSPF = new WardAnisotropicEllipticalGaussianSPF( *gray, *spec, *alphaSmall, *alphaSmallY );  wardAnisoSPF->addref();
-    AshikminShirleyAnisotropicPhongSPF* ashikminSPF = new AshikminShirleyAnisotropicPhongSPF( *ashNu, *ashNv, *gray, *spec );  ashikminSPF->addref();
-    TranslucentSPF* translucentSPF = new TranslucentSPF( *gray, *trans, *extinction, *phongN, *scatFactor );  translucentSPF->addref();
-    PolishedSPF* polishedSPF = new PolishedSPF( *gray, *tauPainter, *ior, *polishScat, false );  polishedSPF->addref();
-    SubSurfaceScatteringSPF* sssSPF = new SubSurfaceScatteringSPF( *ior, *sssAbsorb, *sssScat, 0.8, 0.3 );  sssSPF->addref();
+    OrenNayarSPF* orenNayarSPF = new OrenNayarSPF( *white, *roughnessSc );  orenNayarSPF->addref();
+    IsotropicPhongSPF* phongSPF = new IsotropicPhongSPF( *gray, *spec, *highExpSc );  phongSPF->addref();
+    CookTorranceSPF* cookTorranceSPF = new CookTorranceSPF( *gray, *spec, *lowSc, *iorScalar, *extinctionSc );  cookTorranceSPF->addref();
+    GGXSPF* ggxIsoSPF = new GGXSPF( *gray, *spec, *alphaSmallSc, *alphaSmallSc, *iorScalar, *extinctionSc );  ggxIsoSPF->addref();
+    GGXSPF* ggxAnisoSPF = new GGXSPF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc, *iorScalar, *extinctionSc );  ggxAnisoSPF->addref();
+    SchlickSPF* schlickSPF = new SchlickSPF( *gray, *spec, *roughnessSc, *isotropySc );  schlickSPF->addref();
+    WardIsotropicGaussianSPF* wardIsoSPF = new WardIsotropicGaussianSPF( *gray, *spec, *alphaSmallSc );  wardIsoSPF->addref();
+    WardAnisotropicEllipticalGaussianSPF* wardAnisoSPF = new WardAnisotropicEllipticalGaussianSPF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc );  wardAnisoSPF->addref();
+    AshikminShirleyAnisotropicPhongSPF* ashikminSPF = new AshikminShirleyAnisotropicPhongSPF( *ashNuSc, *ashNvSc, *gray, *spec );  ashikminSPF->addref();
+    TranslucentSPF* translucentSPF = new TranslucentSPF( *gray, *trans, *extinctionSc, *phongNSc, *scatFactorSc );  translucentSPF->addref();
+    PolishedSPF* polishedSPF = new PolishedSPF( *gray, *tauScalar, *iorScalar, *polishScatSc, false );  polishedSPF->addref();
+    SubSurfaceScatteringSPF* sssSPF = new SubSurfaceScatteringSPF( *iorScalar, *sssAbsorbSc, *sssScatSc, 0.8, 0.3 );  sssSPF->addref();
     LambertianSPF* lambertian2SPF = new LambertianSPF( *spec );  lambertian2SPF->addref();
     CompositeSPF* compositeSPF = new CompositeSPF( *lambertianSPF, *lambertian2SPF, 4, 2, 2, 2, 2, 0.1, *zeroExt );  compositeSPF->addref();
 
@@ -571,25 +595,26 @@ int main()
     // Delta SPFs
     std::cout << "Constructing delta SPFs..." << std::flush;
     PerfectReflectorSPF* perfReflSPF = new PerfectReflectorSPF( *one );  perfReflSPF->addref();
-    PerfectRefractorSPF* perfRefrSPF = new PerfectRefractorSPF( *one, *ior );  perfRefrSPF->addref();
-    DielectricSPF* dielectricSPF = new DielectricSPF( *tauPainter, *ior, *scatFactor, false );  dielectricSPF->addref();
+    PerfectRefractorSPF* perfRefrSPF = new PerfectRefractorSPF( *one, *iorScalar );  perfRefrSPF->addref();
+
+    DielectricSPF* dielectricSPF = new DielectricSPF( *tauScalar, *iorScalar, *scatScalar, false );  dielectricSPF->addref();
 
     std::cout << " done." << std::endl;
 
     // ---- Construct BRDFs (paired with SPFs) ----
     std::cout << "Constructing BRDFs..." << std::flush;
     LambertianBRDF* lambertianBRDF = new LambertianBRDF( *white );  lambertianBRDF->addref();
-    OrenNayarBRDF* orenNayarBRDF = new OrenNayarBRDF( *white, *roughness );  orenNayarBRDF->addref();
-    IsotropicPhongBRDF* phongBRDF = new IsotropicPhongBRDF( *gray, *spec, *highExp );  phongBRDF->addref();
-    CookTorranceBRDF* cookTorranceBRDF = new CookTorranceBRDF( *gray, *spec, *low, *ior, *extinction );  cookTorranceBRDF->addref();
-    GGXBRDF* ggxIsoBRDF = new GGXBRDF( *gray, *spec, *alphaSmall, *alphaSmall, *ior, *extinction );  ggxIsoBRDF->addref();
-    GGXBRDF* ggxAnisoBRDF = new GGXBRDF( *gray, *spec, *alphaSmall, *alphaSmallY, *ior, *extinction );  ggxAnisoBRDF->addref();
-    SchlickBRDF* schlickBRDF = new SchlickBRDF( *gray, *spec, *roughness, *isotropy );  schlickBRDF->addref();
-    WardIsotropicGaussianBRDF* wardIsoBRDF = new WardIsotropicGaussianBRDF( *gray, *spec, *alphaSmall );  wardIsoBRDF->addref();
-    WardAnisotropicEllipticalGaussianBRDF* wardAnisoBRDF = new WardAnisotropicEllipticalGaussianBRDF( *gray, *spec, *alphaSmall, *alphaSmallY );  wardAnisoBRDF->addref();
-    AshikminShirleyAnisotropicPhongBRDF* ashikminBRDF = new AshikminShirleyAnisotropicPhongBRDF( *ashNu, *ashNv, *gray, *spec );  ashikminBRDF->addref();
-    TranslucentBSDF* translucentBSDF = new TranslucentBSDF( *gray, *trans, *phongN );  translucentBSDF->addref();
-    SubSurfaceScatteringBSDF* sssBSDF = new SubSurfaceScatteringBSDF( *ior, *sssAbsorb, *sssScat, 0.8, 0.3 );  sssBSDF->addref();
+    OrenNayarBRDF* orenNayarBRDF = new OrenNayarBRDF( *white, *roughnessSc );  orenNayarBRDF->addref();
+    IsotropicPhongBRDF* phongBRDF = new IsotropicPhongBRDF( *gray, *spec, *highExpSc );  phongBRDF->addref();
+    CookTorranceBRDF* cookTorranceBRDF = new CookTorranceBRDF( *gray, *spec, *lowSc, *iorScalar, *extinctionSc );  cookTorranceBRDF->addref();
+    GGXBRDF* ggxIsoBRDF = new GGXBRDF( *gray, *spec, *alphaSmallSc, *alphaSmallSc, *iorScalar, *extinctionSc );  ggxIsoBRDF->addref();
+    GGXBRDF* ggxAnisoBRDF = new GGXBRDF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc, *iorScalar, *extinctionSc );  ggxAnisoBRDF->addref();
+    SchlickBRDF* schlickBRDF = new SchlickBRDF( *gray, *spec, *roughnessSc, *isotropySc );  schlickBRDF->addref();
+    WardIsotropicGaussianBRDF* wardIsoBRDF = new WardIsotropicGaussianBRDF( *gray, *spec, *alphaSmallSc );  wardIsoBRDF->addref();
+    WardAnisotropicEllipticalGaussianBRDF* wardAnisoBRDF = new WardAnisotropicEllipticalGaussianBRDF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc );  wardAnisoBRDF->addref();
+    AshikminShirleyAnisotropicPhongBRDF* ashikminBRDF = new AshikminShirleyAnisotropicPhongBRDF( *ashNuSc, *ashNvSc, *gray, *spec );  ashikminBRDF->addref();
+    TranslucentBSDF* translucentBSDF = new TranslucentBSDF( *gray, *trans, *phongNSc );  translucentBSDF->addref();
+    SubSurfaceScatteringBSDF* sssBSDF = new SubSurfaceScatteringBSDF( *iorScalar, *sssAbsorbSc, *sssScatSc, 0.8, 0.3 );  sssBSDF->addref();
 
     std::cout << " done." << std::endl;
 

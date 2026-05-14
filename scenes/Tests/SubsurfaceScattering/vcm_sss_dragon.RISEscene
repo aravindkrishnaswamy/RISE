@@ -138,8 +138,8 @@ subsurfacescattering_material
 {
 	name				dragon_skin
 	ior					1.3
-	absorption			pnt_absorption
-	scattering			pnt_scattering
+	absorption			1.2 0.6 0.06
+	scattering			1.2 1.5 1.8
 	g					0.0
 	roughness			0.3
 }

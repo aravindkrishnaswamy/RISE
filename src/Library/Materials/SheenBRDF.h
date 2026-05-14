@@ -39,6 +39,7 @@
 
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -52,13 +53,13 @@ namespace RISE
 		protected:
 			virtual ~SheenBRDF();
 
-			const IPainter& pColor;
-			const IPainter& pRoughness;
+			const IPainter&			pColor;
+			const IScalarPainter&	pRoughness;		// physical scalar
 
 		public:
 			SheenBRDF(
 				const IPainter& sheenColor,
-				const IPainter& sheenRoughness
+				const IScalarPainter& sheenRoughness
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;

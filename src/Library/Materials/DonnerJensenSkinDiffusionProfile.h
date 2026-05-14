@@ -105,6 +105,7 @@
 
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/IFunction1D.h"
 #include "../Utilities/Reference.h"
 #include "MultipoleDiffusion.h"
@@ -119,15 +120,15 @@ namespace RISE
 		{
 		protected:
 			// Donner 2008 biophysical parameters (IPainter references)
-			const IPainter&		pnt_melanin_fraction;		///< C_m: melanin volume fraction (0-0.5)
-			const IPainter&		pnt_melanin_blend;			///< beta_m: eumelanin vs pheomelanin (0-1)
-			const IPainter&		pnt_hemoglobin_epidermis;	///< C_he: hemoglobin fraction in epidermis (0-0.05)
-			const IPainter&		pnt_carotene_fraction;		///< C_bc: carotene fraction (0-0.05)
-			const IPainter&		pnt_hemoglobin_dermis;		///< C_hd: hemoglobin fraction in dermis (0-0.1)
-			const IPainter&		pnt_epidermis_thickness;	///< Epidermis thickness (cm), default 0.025
-			const IPainter&		pnt_ior_epidermis;			///< IOR of epidermis, default 1.4
-			const IPainter&		pnt_ior_dermis;				///< IOR of dermis, default 1.38
-			const IPainter&		pnt_blood_oxygenation;		///< gamma: blood oxygenation (0-1), default 0.7
+			const IScalarPainter&		pnt_melanin_fraction;		///< C_m: melanin volume fraction (0-0.5)
+			const IScalarPainter&		pnt_melanin_blend;			///< beta_m: eumelanin vs pheomelanin (0-1)
+			const IScalarPainter&		pnt_hemoglobin_epidermis;	///< C_he: hemoglobin fraction in epidermis (0-0.05)
+			const IScalarPainter&		pnt_carotene_fraction;		///< C_bc: carotene fraction (0-0.05)
+			const IScalarPainter&		pnt_hemoglobin_dermis;		///< C_hd: hemoglobin fraction in dermis (0-0.1)
+			const IScalarPainter&		pnt_epidermis_thickness;	///< Epidermis thickness (cm), default 0.025
+			const IScalarPainter&		pnt_ior_epidermis;			///< IOR of epidermis, default 1.4
+			const IScalarPainter&		pnt_ior_dermis;				///< IOR of dermis, default 1.38
+			const IScalarPainter&		pnt_blood_oxygenation;		///< gamma: blood oxygenation (0-1), default 0.7
 
 			// Chromophore extinction lookup tables
 			IFunction1D*		pEumelaninExt;
@@ -209,15 +210,15 @@ namespace RISE
 
 		public:
 			DonnerJensenSkinDiffusionProfile(
-				const IPainter& melanin_fraction_,
-				const IPainter& melanin_blend_,
-				const IPainter& hemoglobin_epidermis_,
-				const IPainter& carotene_fraction_,
-				const IPainter& hemoglobin_dermis_,
-				const IPainter& epidermis_thickness_,
-				const IPainter& ior_epidermis_,
-				const IPainter& ior_dermis_,
-				const IPainter& blood_oxygenation_
+				const IScalarPainter& melanin_fraction_,
+				const IScalarPainter& melanin_blend_,
+				const IScalarPainter& hemoglobin_epidermis_,
+				const IScalarPainter& carotene_fraction_,
+				const IScalarPainter& hemoglobin_dermis_,
+				const IScalarPainter& epidermis_thickness_,
+				const IScalarPainter& ior_epidermis_,
+				const IScalarPainter& ior_dermis_,
+				const IScalarPainter& blood_oxygenation_
 				);
 
 			//

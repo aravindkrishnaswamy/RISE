@@ -16,30 +16,31 @@
 
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
 {
 	namespace Implementation
 	{
-		class SchlickBRDF : 
-			public virtual IBSDF, 
+		class SchlickBRDF :
+			public virtual IBSDF,
 			public virtual Reference
 		{
 		protected:
 			virtual ~SchlickBRDF();
 
-			const IPainter& pDiffuse;
-			const IPainter& pSpecular;
-			const IPainter& pRoughness;
-			const IPainter& pIsotropy;
+			const IPainter&			pDiffuse;
+			const IPainter&			pSpecular;
+			const IScalarPainter&	pRoughness;		// physical scalar
+			const IScalarPainter&	pIsotropy;
 
 		public:
-			SchlickBRDF( 
-				const IPainter& diffuse, 
+			SchlickBRDF(
+				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& roughness,
-				const IPainter& isotropy
+				const IScalarPainter& roughness,
+				const IScalarPainter& isotropy
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;

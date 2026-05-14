@@ -39,6 +39,9 @@
 #include "../src/Library/Utilities/BSSRDFSampling.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Painters/RGBScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Materials/BurleyNormalizedDiffusionProfile.h"
 
 using namespace RISE;
@@ -69,7 +72,7 @@ static Scalar SchlickFresnel( Scalar cosTheta, Scalar eta )
 /// (destructor is protected, so stack allocation is forbidden).
 /// Caller is responsible for calling release().
 static BurleyNormalizedDiffusionProfile* MakeProfile(
-	const IPainter& ior, const IPainter& abs, const IPainter& scat, Scalar g )
+	const IScalarPainter& ior, const IScalarPainter& abs, const IScalarPainter& scat, Scalar g )
 {
 	BurleyNormalizedDiffusionProfile* p =
 		new BurleyNormalizedDiffusionProfile( ior, abs, scat, g );
@@ -145,9 +148,11 @@ void TestProfileNormalization()
 
 	for( const auto& tc : cases )
 	{
-		UniformColorPainter* pIOR  = new UniformColorPainter( RISEPel(1.3, 1.3, 1.3) );  pIOR->addref();
-		UniformColorPainter* pAbs  = new UniformColorPainter( tc.absorption );  pAbs->addref();
-		UniformColorPainter* pScat = new UniformColorPainter( tc.scattering );  pScat->addref();
+		UniformScalarPainter* pIOR = new UniformScalarPainter(1.3);  pIOR->addref();
+		RGBScalarPainter* pAbs = new RGBScalarPainter(
+			tc.absorption[0], tc.absorption[1], tc.absorption[2] );  pAbs->addref();
+		RGBScalarPainter* pScat = new RGBScalarPainter(
+			tc.scattering[0], tc.scattering[1], tc.scattering[2] );  pScat->addref();
 
 		BurleyNormalizedDiffusionProfile* pProfile = MakeProfile( *pIOR, *pAbs, *pScat, tc.g );
 
@@ -206,9 +211,9 @@ void TestSamplingPDFConsistency()
 {
 	std::cout << "Test B: Sampling/PDF consistency" << std::endl;
 
-	UniformColorPainter* pIOR  = new UniformColorPainter( RISEPel(1.3, 1.3, 1.3) );  pIOR->addref();
-	UniformColorPainter* pAbs  = new UniformColorPainter( RISEPel(0.01, 0.3, 1.0) );  pAbs->addref();
-	UniformColorPainter* pScat = new UniformColorPainter( RISEPel(2.0, 2.0, 2.0) );   pScat->addref();
+	UniformScalarPainter* pIOR = new UniformScalarPainter(1.3);  pIOR->addref();
+	RGBScalarPainter* pAbs  = new RGBScalarPainter( 0.01, 0.3, 1.0 );  pAbs->addref();
+	RGBScalarPainter* pScat = new RGBScalarPainter( 2.0, 2.0, 2.0 );   pScat->addref();
 
 	BurleyNormalizedDiffusionProfile* pProfile = MakeProfile( *pIOR, *pAbs, *pScat, 0.0 );
 
@@ -277,9 +282,9 @@ void TestFresnelConservation()
 	bool allPass = true;
 	for( Scalar eta : iors )
 	{
-		UniformColorPainter* pIOR  = new UniformColorPainter( RISEPel(eta, eta, eta) );  pIOR->addref();
-		UniformColorPainter* pAbs  = new UniformColorPainter( RISEPel(0.1, 0.1, 0.1) );  pAbs->addref();
-		UniformColorPainter* pScat = new UniformColorPainter( RISEPel(1.0, 1.0, 1.0) );   pScat->addref();
+		UniformScalarPainter* pIOR  = new UniformScalarPainter( eta );  pIOR->addref();
+		UniformScalarPainter* pAbs  = new UniformScalarPainter( 0.1 ); pAbs->addref();
+		UniformScalarPainter* pScat = new UniformScalarPainter( 1.0 ); pScat->addref();
 
 		BurleyNormalizedDiffusionProfile* pProfile = MakeProfile( *pIOR, *pAbs, *pScat, 0.0 );
 
@@ -507,9 +512,9 @@ void TestFlatSlabEnergyConservation()
 
 	RayIntersectionGeometric ri = MakeDummyRI();
 
-	UniformColorPainter* pIOR  = new UniformColorPainter( RISEPel(1.3, 1.3, 1.3) );  pIOR->addref();
-	UniformColorPainter* pAbs  = new UniformColorPainter( RISEPel(0.01, 0.3, 1.0) );  pAbs->addref();
-	UniformColorPainter* pScat = new UniformColorPainter( RISEPel(2.0, 2.0, 2.0) );   pScat->addref();
+	UniformScalarPainter* pIOR = new UniformScalarPainter(1.3);  pIOR->addref();
+	RGBScalarPainter* pAbs  = new RGBScalarPainter( 0.01, 0.3, 1.0 );  pAbs->addref();
+	RGBScalarPainter* pScat = new RGBScalarPainter( 2.0, 2.0, 2.0 );   pScat->addref();
 
 	BurleyNormalizedDiffusionProfile* pProfile = MakeProfile( *pIOR, *pAbs, *pScat, 0.0 );
 
@@ -577,9 +582,9 @@ void TestFlatSlabEnergyConservation()
 	// Also test zero absorption: total should = 1.0
 	std::cout << "  Zero absorption (A=1): ";
 
-	UniformColorPainter* pIOR2  = new UniformColorPainter( RISEPel(1.3, 1.3, 1.3) );  pIOR2->addref();
-	UniformColorPainter* pAbs2  = new UniformColorPainter( RISEPel(0.0, 0.0, 0.0) );  pAbs2->addref();
-	UniformColorPainter* pScat2 = new UniformColorPainter( RISEPel(2.0, 2.0, 2.0) );  pScat2->addref();
+	UniformScalarPainter* pIOR2  = new UniformScalarPainter( 1.3 );  pIOR2->addref();
+	UniformScalarPainter* pAbs2  = new UniformScalarPainter( 0.0 );  pAbs2->addref();
+	UniformScalarPainter* pScat2 = new UniformScalarPainter( 2.0 );  pScat2->addref();
 
 	BurleyNormalizedDiffusionProfile* pProfile2 = MakeProfile( *pIOR2, *pAbs2, *pScat2, 0.0 );
 

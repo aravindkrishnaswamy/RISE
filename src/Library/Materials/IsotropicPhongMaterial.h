@@ -16,6 +16,7 @@
 #define ISOTROPICPHONG_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "IsotropicPhongBRDF.h"
 #include "IsotropicPhongSPF.h"
@@ -37,7 +38,7 @@ namespace RISE
 			IsotropicPhongSPF*			pSPF;
 
 		public:
-			IsotropicPhongMaterial( const IPainter& Rd_, const IPainter& Rs_, const IPainter& exp )
+			IsotropicPhongMaterial( const IPainter& Rd_, const IPainter& Rs_, const IScalarPainter& exp )
 			{
 				pBRDF = new IsotropicPhongBRDF( Rd_, Rs_, exp );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );

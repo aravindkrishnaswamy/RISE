@@ -38,6 +38,8 @@
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Materials/GGXBRDF.h"
 #include "../src/Library/Materials/GGXSPF.h"
 
@@ -479,10 +481,10 @@ static bool TestMaterialPointwiseConsistency(
 	const Scalar specVal = (fresnelMode == eFresnelSchlickF0) ? 0.5 : 0.8;
 	UniformColorPainter* diffuse = new UniformColorPainter( RISEPel(0.3, 0.3, 0.3) );  diffuse->addref();
 	UniformColorPainter* specular = new UniformColorPainter( RISEPel(specVal, specVal, specVal) );  specular->addref();
-	UniformColorPainter* pAlphaX = new UniformColorPainter( RISEPel(alphaXval, alphaXval, alphaXval) );  pAlphaX->addref();
-	UniformColorPainter* pAlphaY = new UniformColorPainter( RISEPel(alphaYval, alphaYval, alphaYval) );  pAlphaY->addref();
-	UniformColorPainter* ior = new UniformColorPainter( RISEPel(2.5, 2.5, 2.5) );  ior->addref();
-	UniformColorPainter* ext = new UniformColorPainter( RISEPel(3.0, 3.0, 3.0) );  ext->addref();
+	UniformScalarPainter* pAlphaX = new UniformScalarPainter( alphaXval );  pAlphaX->addref();
+	UniformScalarPainter* pAlphaY = new UniformScalarPainter( alphaYval );  pAlphaY->addref();
+	UniformScalarPainter* ior = new UniformScalarPainter(2.5);  ior->addref();
+	UniformScalarPainter* ext = new UniformScalarPainter(3.0);  ext->addref();
 
 	GGXBRDF* brdf = new GGXBRDF( *diffuse, *specular, *pAlphaX, *pAlphaY, *ior, *ext, fresnelMode );  brdf->addref();
 	GGXSPF*  spf = new GGXSPF( *diffuse, *specular, *pAlphaX, *pAlphaY, *ior, *ext, fresnelMode );   spf->addref();

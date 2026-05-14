@@ -18,6 +18,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 #include "OrenNayarBRDF.h"
 
@@ -25,20 +26,20 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		class OrenNayarSPF : 
-			public virtual ISPF, 
+		class OrenNayarSPF :
+			public virtual ISPF,
 			public virtual Reference
 		{
 		protected:
 			virtual ~OrenNayarSPF( );
 
-			const IPainter&	pReflectance;
-			const IPainter& pRoughness;
+			const IPainter&			pReflectance;
+			const IScalarPainter&	pRoughness;
 
 		public:
-			OrenNayarSPF( 
-				const IPainter& reflectance, 
-				const IPainter& roughness
+			OrenNayarSPF(
+				const IPainter& reflectance,
+				const IScalarPainter& roughness
 				);
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return

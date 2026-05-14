@@ -42,6 +42,7 @@
 
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -53,10 +54,10 @@ namespace RISE
 			public virtual Reference
 		{
 		protected:
-			const IPainter&		ior;			///< Index of refraction at the boundary
-			const IPainter&		absorption;		///< Absorption coefficient sigma_a
-			const IPainter&		scattering;		///< Scattering coefficient sigma_s
-			const Scalar		g;				///< HG asymmetry parameter
+			const IScalarPainter&	ior;			///< Index of refraction at the boundary (physical scalar)
+			const IScalarPainter&	absorption;		///< Absorption coefficient sigma_a (physical scalar)
+			const IScalarPainter&	scattering;		///< Scattering coefficient sigma_s (physical scalar)
+			const Scalar			g;				///< HG asymmetry parameter
 
 			virtual ~BurleyNormalizedDiffusionProfile();
 
@@ -71,9 +72,9 @@ namespace RISE
 
 		public:
 			BurleyNormalizedDiffusionProfile(
-				const IPainter& ior_,
-				const IPainter& absorption_,
-				const IPainter& scattering_,
+				const IScalarPainter& ior_,
+				const IScalarPainter& absorption_,
+				const IScalarPainter& scattering_,
 				const Scalar g_
 				);
 

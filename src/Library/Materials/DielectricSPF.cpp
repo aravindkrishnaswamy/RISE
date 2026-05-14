@@ -20,12 +20,12 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-DielectricSPF::DielectricSPF( 
-	const IPainter& tau_, 
-	const IPainter& ri, 
-	const IPainter& s,
+DielectricSPF::DielectricSPF(
+	const IScalarPainter& tau_,
+	const IScalarPainter& ri,
+	const IScalarPainter& s,
 	const bool hg
-	) : 
+	) :
   tau( tau_ ),
   rIndex( ri ),
   scat( s ),
@@ -175,10 +175,14 @@ void DielectricSPF::DoSingleRGBComponent(
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
 
+		const ScalarTriple tauVals = tau.GetValuesAt( ri );
 		if( oneofthree ) {
-			dielectric.kray[oneofthree-1] = pow(tau.GetColor(ri)[oneofthree-1],distance);
+			dielectric.kray[oneofthree-1] = pow( tauVals.v[oneofthree-1], distance );
 		} else {
-			dielectric.kray = ColorMath::pow(tau.GetColor(ri),distance);
+			dielectric.kray = RISEPel(
+				pow( tauVals.v[0], distance ),
+				pow( tauVals.v[1], distance ),
+				pow( tauVals.v[2], distance ) );
 		}
 	} else {
 		if( oneofthree ) {
@@ -221,35 +225,27 @@ void DielectricSPF::Scatter(
 	) const
 {
 	Scalar		cosine = -Vector3Ops::Dot(ri.onb.w(), ri.ray.Dir());
-	
-	const RISEPel ior = rIndex.GetColor(ri);
-	const RISEPel scattering = scat.GetColor(ri);
 
-	// Check to see if we have any dispersion.
-	// Use relative tolerance to avoid false positives from color space
-	// conversion artifacts.  Physical quantities like IOR and scattering
-	// are often specified through painters that undergo sRGB-to-ROMM
-	// conversion, which can introduce small per-channel differences
-	// even for intentionally uniform values.
-	const Scalar iorMax = r_max( r_max( ior[0], ior[1] ), ior[2] );
-	const Scalar scatMax = r_max( r_max( scattering[0], scattering[1] ), scattering[2] );
-	static const Scalar DISPERSE_REL_TOL = 1e-4;
-	const bool iorDisperse = iorMax > NEARZERO &&
-		(fabs(ior[0] - ior[1]) > iorMax * DISPERSE_REL_TOL ||
-		 fabs(ior[1] - ior[2]) > iorMax * DISPERSE_REL_TOL);
-	const bool scatDisperse = scatMax > NEARZERO &&
-		(fabs(scattering[0] - scattering[1]) > scatMax * DISPERSE_REL_TOL ||
-		 fabs(scattering[1] - scattering[2]) > scatMax * DISPERSE_REL_TOL);
-	const bool disperse = iorDisperse || scatDisperse;
+	// IOR + scattering coefficient are now physical scalars carried by
+	// `IScalarPainter`.  Dispersion is detected via the painter's own
+	// static-property report (HasPerChannelVariation) — no FP fuzzy
+	// compare needed.  `tau`'s per-channel variation is irrelevant to
+	// the disperse-vs-uniform path branch; only ior and scat trigger
+	// the per-channel scatter loop.
+	const ScalarTriple iorVals  = rIndex.GetValuesAt( ri );
+	const ScalarTriple scatVals = scat.GetValuesAt( ri );
+	const bool disperse =
+		rIndex.HasPerChannelVariation() ||
+		scat.HasPerChannelVariation();
 
 	if( !disperse ) {
 		// No dispersion
-		DoSingleRGBComponent( ri, Point2(sampler.Get1D(),sampler.Get1D()), scattered, ior_stack, false, ior[0], scattering[0], cosine );
+		DoSingleRGBComponent( ri, Point2(sampler.Get1D(),sampler.Get1D()), scattered, ior_stack, false, iorVals.v[0], scatVals.v[0], cosine );
 	} else {
 		// We have dispersion, so we must process each component seperately
 		Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 		for( int i=0; i<3; i++ ) {
-			DoSingleRGBComponent( ri, ptrand, scattered, ior_stack, i+1, ior[i], scattering[i], cosine );
+			DoSingleRGBComponent( ri, ptrand, scattered, ior_stack, i+1, iorVals.v[i], scatVals.v[i], cosine );
 		}
 	}
 }
@@ -274,13 +270,13 @@ void DielectricSPF::ScatterNM(
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
 
-		dielectric.krayNM = pow( tau.GetColorNM(ri,nm), distance );
+		dielectric.krayNM = pow( tau.GetValueAtNM( ri, nm ), distance );
 	} else {
 		dielectric.krayNM = 1.0;
 	}
 
 	bool bDielectric, bFresnel;
-	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2(sampler.Get1D(),sampler.Get1D()), scat.GetColorNM(ri,nm), rIndex.GetColorNM(ri,nm), ior_stack );
+	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2(sampler.Get1D(),sampler.Get1D()), scat.GetValueAtNM( ri, nm ), rIndex.GetValueAtNM( ri, nm ), ior_stack );
 	
 	if( bDielectric && ref < 1.0 ) {
 		dielectric.krayNM = dielectric.krayNM * (1.0-ref);

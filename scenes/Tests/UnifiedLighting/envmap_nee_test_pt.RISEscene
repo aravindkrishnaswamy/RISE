@@ -141,7 +141,7 @@ cooktorrance_material
 dielectric_material
 {
 	name				mat_glass
-	tau					pnt_glass_tau
+	tau			0.95 0.98 0.95
 	ior					1.5
 	scattering			100000.0
 }

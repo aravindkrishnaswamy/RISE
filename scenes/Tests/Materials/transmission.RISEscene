@@ -110,20 +110,20 @@ uniformcolor_painter
 dielectric_material
 {
 	name				m_glass_clear
-	tau					white
-	ior					ior_glass
+	tau			1
+	ior			1.5
 }
 dielectric_material
 {
 	name				m_glass_green
-	tau					white
-	ior					ior_glass
+	tau			1
+	ior			1.5
 }
 dielectric_material
 {
 	name				m_glass_red
-	tau					white
-	ior					ior_glass
+	tau			1
+	ior			1.5
 }
 
 # σ_a = -ln(attenuation_color) / attenuation_distance

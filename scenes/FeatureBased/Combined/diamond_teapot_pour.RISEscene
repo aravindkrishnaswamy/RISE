@@ -154,8 +154,8 @@ polished_material
 dielectric_material
 {
 	name				diamond_mat
-	tau					pnt_diamond_tau
-	ior					pnt_diamond_ior
+	tau			0.999
+	ior			2.4 2.42 2.45
 	scattering			10000
 }
 

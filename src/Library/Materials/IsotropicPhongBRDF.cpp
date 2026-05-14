@@ -17,7 +17,7 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-IsotropicPhongBRDF::IsotropicPhongBRDF( const IPainter& rd, const IPainter& rs, const IPainter& exp ) : 
+IsotropicPhongBRDF::IsotropicPhongBRDF( const IPainter& rd, const IPainter& rs, const IScalarPainter& exp ) :
   refdiffuse( rd ),
   refspecular( rs ),
   exponent( exp )
@@ -79,7 +79,9 @@ static void ComputeDiffuseSpecularFactors(
 RISEPel IsotropicPhongBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	RISEPel diffuseFactor, specularFactor;
-	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri,  exponent.GetColor(ri) );
+	const ScalarTriple e = exponent.GetValuesAt(ri);
+	const RISEPel exp( e.v[0], e.v[1], e.v[2] );
+	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, exp );
 
 	return ((refdiffuse.GetColor(ri) * diffuseFactor) + (refspecular.GetColor(ri)*specularFactor));
 }
@@ -87,7 +89,7 @@ RISEPel IsotropicPhongBRDF::value( const Vector3& vLightIn, const RayIntersectio
 Scalar IsotropicPhongBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar diffuseFactor=0, specularFactor=0;
-	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, exponent.GetColorNM(ri,nm) );
+	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, exponent.GetValueAtNM(ri,nm) );
 
 	return ((refdiffuse.GetColorNM(ri,nm) * diffuseFactor) + (refspecular.GetColorNM(ri,nm)*specularFactor));
 }

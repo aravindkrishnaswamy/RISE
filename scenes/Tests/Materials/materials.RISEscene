@@ -136,7 +136,7 @@ schlick_material
 	rd					50pgrey
 	rs					color_white
 	roughness			0.01
-	isotropy			isotropy
+	isotropy			0.01 0.2 0.1
 }
 
 uniformcolor_painter

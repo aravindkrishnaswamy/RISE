@@ -36,10 +36,54 @@
 #include "Utilities/MediaPathLocator.h"
 #include "Utilities/ThreadPool.h"
 #include "Interfaces/IOptions.h"
+#include "Interfaces/IScalarPainter.h"
+#include "Interfaces/IPainterManager.h"
+#include "Painters/PainterToScalarAdapter.h"
 #include "Intersection/RayIntersectionGeometric.h"
+#include <cctype>
+#include <cstdlib>
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+// Forward declarations for scalar-painter resolution helpers — full
+// definitions live alongside the first `AddDielectricMaterial` and
+// are shared by every material conversion in this file.
+static IScalarPainter* ResolveScalarPainterArg(
+	IScalarPainterManager* mgr,
+	const char* value,
+	bool requireSingle = false );
+static IScalarPainter* ResolveOrDiagnoseScalar(
+	IScalarPainterManager* smgr,
+	IPainterManager* pmgr,
+	const char* chunkKind,
+	const char* chunkName,
+	const char* paramName,
+	const char* value,
+	bool requireSingle = false );
+
+namespace {
+
+// Adapter that exposes an `IPainter` graph as an `IScalarPainter` —
+// used internally by `Job::AddPBRMetallicRoughnessMaterial` so it can
+// keep composing roughness / anisotropy through `BlendPainter` (which
+// is colour-typed) while still feeding the scalar-typed `alphaX` /
+// `alphaY` / `ior` / `ext` slots on the new GGX construction surface.
+//
+// Reads the underlying IPainter via `GetColor` / `GetColorNM`.  This
+// preserves the existing PBR painter-graph composition and avoids
+// rebuilding it on a scalar-painter substrate (which doesn't yet have
+// the equivalent of `BlendPainter`).  PBR scenes have always routed
+// these values through the `IPainter` colour-space (zero - point04 -
+// roughness² inputs are all bounded < 1, so the JH spectral-uplift
+// concerns that motivated the rest of the IScalarPainter refactor
+// don't bite here).
+// Phase 5 cleanup (2026-05-14): the local `IPainterToScalarAdapter`
+// class previously defined here was a duplicate of the public
+// `Painters/PainterToScalarAdapter.h` header.  Removed; callers
+// below now construct `PainterToScalarAdapter` directly.
+
+} // namespace
 
 namespace RISE
 {
@@ -215,6 +259,7 @@ void Job::InitializeContainers()
 	RISE_API_CreateShaderOpManager( &pShaderOpManager );
 	RISE_API_CreateCameraManager( &pCameraManager );
 	RISE_API_CreatePainterManager( &pPntManager );
+	RISE_API_CreateScalarPainterManager( &pScalarPntManager );
 	RISE_API_CreateFunction1DManager( &pFunc1DManager );
 	RISE_API_CreateFunction2DManager( &pFunc2DManager );
 	// Top-level acceleration default: SAH BVH (BVH4-collapsed, SIMD AABB
@@ -310,6 +355,7 @@ void Job::DestroyContainers()
 	safe_shutdown_and_release( pGeomManager );
 	safe_shutdown_and_release( pCameraManager );
 	safe_shutdown_and_release( pPntManager );
+	safe_shutdown_and_release( pScalarPntManager );
 	safe_shutdown_and_release( pFunc1DManager );
 	safe_shutdown_and_release( pFunc2DManager );
 	safe_shutdown_and_release( pLightManager );
@@ -2527,40 +2573,194 @@ bool Job::AddPolishedMaterial(
 							)
 {
 	IPainter* pRef = pPntManager->GetItem( ref );
-	IPainter* pTau = pPntManager->GetItem( tau );
-	if( !pRef || !pTau ) {
+	if( !pRef ) {
 		return false;
 	}
 
-	IPainter*		sc = pPntManager->GetItem( scat );
-	IPainter*		refract = pPntManager->GetItem( Nt );
+	IScalarPainter* pTau     = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "polished_material", name, "tau",        tau );
+	IScalarPainter* pRefract = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "polished_material", name, "ior",        Nt );
+	IScalarPainter* pScat    = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "polished_material", name, "scattering", scat );
 
-	if( !sc )
-	{
-		double fScat = atof(scat);
-		RISE_API_CreateUniformColorPainter( &sc, RISEPel(fScat,fScat,fScat) );
-	} else {
-		sc->addref();
-	}
-
-	if( !refract )
-	{
-		double fRefract = atof(Nt);
-		RISE_API_CreateUniformColorPainter( &refract, RISEPel(fRefract,fRefract,fRefract) );
-	} else {
-		refract->addref();
+	if( !pTau || !pRefract || !pScat ) {
+		safe_release( pTau );
+		safe_release( pRefract );
+		safe_release( pScat );
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreatePolishedMaterial( &pMaterial, *pRef, *pTau, *refract, *sc, hg );
+	RISE_API_CreatePolishedMaterial( &pMaterial, *pRef, *pTau, *pRefract, *pScat, hg );
 
 	pMatManager->AddItem( pMaterial, name );
 
 	safe_release( pMaterial );
-	safe_release( sc );
-	safe_release( refract );
+	safe_release( pTau );
+	safe_release( pRefract );
+	safe_release( pScat );
 
 	return true;
+}
+
+// Resolve a `const char*` material-parameter string to an `IScalarPainter*`
+// owned by the caller (refcount 1, must be released).  Accepts:
+//   - The name of a registered `scalar_painter` chunk → looked up via
+//     `pScalarPntManager`.
+//   - An inline 3-double triple "r g b" → `RGBScalarPainter`.
+//   - An inline single double "v" → `UniformScalarPainter`.
+// Returns nullptr if the string is neither a known name nor parseable as
+// a numeric literal.
+//
+// This is the scalar-side equivalent of the named-or-inline pattern
+// used elsewhere in Job.cpp for `IPainter`, except it stays in the
+// physical-scalar domain — no JH spectral uplift, no colorspace
+// conversion.  Numeric literals like `scattering 1000000` round-trip
+// exactly through the spectral path.
+// Resolve a scalar painter from a `const char*`.  `requireSingle =
+// true` rejects per-channel painters (RGB triples, RGBScalarPainter
+// names, etc.) — used by material slots that read `.v[0]` only and
+// would silently lose the G/B channels.  Returns nullptr on any
+// failure; the targeted diagnostic is emitted by
+// `ResolveOrDiagnoseScalar` (the caller-facing wrapper).
+static IScalarPainter* ResolveScalarPainterArg(
+	IScalarPainterManager* mgr,
+	const char* value,
+	bool requireSingle )
+{
+	if( !mgr || !value ) return nullptr;
+
+	IScalarPainter* named = mgr->GetItem( value );
+	if( named ) {
+		if( requireSingle && named->HasPerChannelVariation() ) {
+			// Caller emits the diagnostic — return nullptr so the
+			// "bound-to-per-channel" branch in ResolveOrDiagnoseScalar
+			// can fire with the chunk name + param name.
+			return nullptr;
+		}
+		named->addref();
+		return named;
+	}
+
+	auto onlyTrailingWhitespace = []( const char* p ) -> bool {
+		while( *p ) {
+			if( !std::isspace( static_cast<unsigned char>( *p ) ) ) return false;
+			++p;
+		}
+		return true;
+	};
+
+	// 3-double inline triple — more specific, tried first.
+	{
+		char* end1 = nullptr;
+		const double r = std::strtod( value, &end1 );
+		if( end1 != value ) {
+			char* end2 = nullptr;
+			const double g = std::strtod( end1, &end2 );
+			if( end2 != end1 ) {
+				char* end3 = nullptr;
+				const double b = std::strtod( end2, &end3 );
+				if( end3 != end2 && onlyTrailingWhitespace( end3 ) ) {
+					if( requireSingle && !( r == g && g == b ) ) {
+						return nullptr;
+					}
+					IScalarPainter* p = nullptr;
+					if( requireSingle ) {
+						RISE_API_CreateUniformScalarPainter( &p,
+							Scalar( r ) );
+					} else {
+						RISE_API_CreateRGBScalarPainter( &p,
+							Scalar( r ), Scalar( g ), Scalar( b ) );
+					}
+					return p;
+				}
+			}
+		}
+	}
+
+	// Single-double scalar.
+	{
+		char* end = nullptr;
+		const double v = std::strtod( value, &end );
+		if( end != value && onlyTrailingWhitespace( end ) ) {
+			IScalarPainter* p = nullptr;
+			RISE_API_CreateUniformScalarPainter( &p, Scalar( v ) );
+			return p;
+		}
+	}
+
+	return nullptr;
+}
+
+// Helper: resolve a scalar parameter and emit a targeted diagnostic
+// (distinguishing legacy-`IPainter`-binding, per-channel-painter-in-
+// single-slot, and unknown-name) when resolution fails.  Returns the
+// resolved painter (caller owns, refcount 1) or nullptr on failure
+// with the diagnostic already logged.
+//
+// `requireSingle = true` is used by material slots that internally
+// read `.v[0]` only — without the check, an author binding
+// `roughness 1 0 0` or a `values 0.1 0.4 0.9` RGBScalarPainter would
+// silently lose the G/B channels in the RGB path but interpolate
+// wavelength-dependently in the spectral path, producing physically
+// incoherent results.
+static IScalarPainter* ResolveOrDiagnoseScalar(
+	IScalarPainterManager* smgr,
+	IPainterManager* pmgr,
+	const char* chunkKind,
+	const char* chunkName,
+	const char* paramName,
+	const char* value,
+	bool requireSingle )
+{
+	IScalarPainter* p = ResolveScalarPainterArg( smgr, value, requireSingle );
+	if( p ) return p;
+
+	// Distinguish three failure modes for actionable diagnostics:
+	//   (a) the name is bound to a per-channel scalar_painter but
+	//       the slot only reads one value;
+	//   (b) the name is bound to a legacy `IPainter` chunk; or
+	//   (c) the name is unknown.
+	if( requireSingle && smgr ) {
+		IScalarPainter* named = smgr->GetItem( value );
+		if( named && named->HasPerChannelVariation() ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"%s `%s`: parameter `%s` is bound to per-channel scalar_painter `%s`, but this slot reads a single scalar — use a wavelength-uniform painter (`value` or `file` / `sellmeier` / etc.) instead.",
+				chunkKind, chunkName, paramName, value );
+			return nullptr;
+		}
+	}
+
+	IPainter* legacy = pmgr ? pmgr->GetItem( value ) : nullptr;
+	if( legacy ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"%s `%s`: parameter `%s` is bound to `IPainter` chunk `%s`; this slot now requires a `scalar_painter` (physical scalar, no JH spectral uplift).  See docs/ISCALARPAINTER_REFACTOR.md.",
+			chunkKind, chunkName, paramName, value );
+	} else if( requireSingle ) {
+		// Inline-triple-in-single-slot path: scrub the value to see
+		// whether it parses as 3 numbers, and if so emit the specific
+		// "per-channel triple supplied where single scalar required"
+		// message instead of the generic one.
+		char* end1 = nullptr;
+		(void)std::strtod( value, &end1 );
+		char* end2 = nullptr;
+		(void)std::strtod( end1, &end2 );
+		char* end3 = nullptr;
+		(void)std::strtod( end2, &end3 );
+		const bool tripleShaped = ( end3 != end2 && end2 != end1 && end1 != value );
+		if( tripleShaped ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"%s `%s`: parameter `%s` value `%s` is a per-channel RGB triple but this slot reads a single scalar — use one number, not three.",
+				chunkKind, chunkName, paramName, value );
+		} else {
+			GlobalLog()->PrintEx( eLog_Error,
+				"%s `%s`: parameter `%s` value `%s` is neither a registered scalar_painter nor an inline numeric literal — see docs/ISCALARPAINTER_REFACTOR.md",
+				chunkKind, chunkName, paramName, value );
+		}
+	} else {
+		GlobalLog()->PrintEx( eLog_Error,
+			"%s `%s`: parameter `%s` value `%s` is neither a registered scalar_painter nor an inline numeric literal — see docs/ISCALARPAINTER_REFACTOR.md",
+			chunkKind, chunkName, paramName, value );
+	}
+	return nullptr;
 }
 
 //! Creates a Dielectric material
@@ -2573,84 +2773,32 @@ bool Job::AddDielectricMaterial(
 							const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
 							)
 {
-	IPainter* pTau = pPntManager->GetItem( tau );
-	if( !pTau )
-	{
-		double fTau = atof(tau);
-		if( fTau > 0 ) {
-			RISE_API_CreateUniformColorPainter( &pTau, RISEPel(fTau,fTau,fTau) );
-		} else {
-			return false;
-		}
-	} else {
-		pTau->addref();
-	}
+	// tau/ior/scattering are all physical scalars carried by
+	// `IScalarPainter`.  Previously they routed through `IPainter` →
+	// `UniformColorPainter::GetColorNM` → JH spectral uplift, which
+	// silently mangled inline-numeric values like `scattering 1000000`
+	// in every spectral rasterizer (clamped to ~1.0, glass rendered
+	// invisible).  The scalar painter path never touches colorspace.
+	IScalarPainter* pTau  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "dielectric_material", name, "tau",        tau );
+	IScalarPainter* pIor  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "dielectric_material", name, "ior",        rIndex );
+	IScalarPainter* pScat = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "dielectric_material", name, "scattering", scat );
 
-	IPainter*		rindex = pPntManager->GetItem( rIndex );
-	IPainter*		sc = pPntManager->GetItem( scat );
-
-	// IOR and scattering are physical quantities, not perceptual colors.
-	// When specified as inline numeric values, create painters directly
-	// in native color space (ROMM RGB) to avoid sRGB conversion artifacts
-	// that introduce per-channel differences for uniform values.
-	// Support both single-value and 3-component inline specifications.
-	if( !sc )
-	{
-		double sv[3] = {0, 0, 0};
-		if( sscanf(scat, "%lf %lf %lf", &sv[0], &sv[1], &sv[2]) == 3 ) {
-			RISE_API_CreateUniformColorPainter( &sc, RISEPel(sv[0],sv[1],sv[2]) );
-		} else {
-			double fScat = atof(scat);
-			RISE_API_CreateUniformColorPainter( &sc, RISEPel(fScat,fScat,fScat) );
-		}
-	} else {
-		// Painter resolved by name — it may have gone through sRGB-to-ROMM
-		// color space conversion, which introduces per-channel differences
-		// for intentionally uniform physical quantities.  Detect this and
-		// normalize to exact grey to prevent false chromatic dispersion.
-		sc->addref();
-		RayIntersectionGeometric dummyRig( Ray(), nullRasterizerState );
-		const RISEPel scColor = sc->GetColor( dummyRig );
-		const Scalar scMax = r_max( r_max( scColor[0], scColor[1] ), scColor[2] );
-		const Scalar scMin = r_min( r_min( scColor[0], scColor[1] ), scColor[2] );
-		if( scMax > NEARZERO && (scMax - scMin) / scMax < 0.1 ) {
-			const Scalar avg = (scColor[0] + scColor[1] + scColor[2]) / 3.0;
-			safe_release( sc );
-			RISE_API_CreateUniformColorPainter( &sc, RISEPel(avg,avg,avg) );
-		}
-	}
-
-	if( !rindex )
-	{
-		double iv[3] = {0, 0, 0};
-		if( sscanf(rIndex, "%lf %lf %lf", &iv[0], &iv[1], &iv[2]) == 3 ) {
-			RISE_API_CreateUniformColorPainter( &rindex, RISEPel(iv[0],iv[1],iv[2]) );
-		} else {
-			double frindex = atof(rIndex);
-			RISE_API_CreateUniformColorPainter( &rindex, RISEPel(frindex,frindex,frindex) );
-		}
-	} else {
-		rindex->addref();
-		RayIntersectionGeometric dummyRig( Ray(), nullRasterizerState );
-		const RISEPel iorColor = rindex->GetColor( dummyRig );
-		const Scalar iorMax = r_max( r_max( iorColor[0], iorColor[1] ), iorColor[2] );
-		const Scalar iorMin = r_min( r_min( iorColor[0], iorColor[1] ), iorColor[2] );
-		if( iorMax > NEARZERO && (iorMax - iorMin) / iorMax < 0.1 ) {
-			const Scalar avg = (iorColor[0] + iorColor[1] + iorColor[2]) / 3.0;
-			safe_release( rindex );
-			RISE_API_CreateUniformColorPainter( &rindex, RISEPel(avg,avg,avg) );
-		}
+	if( !pTau || !pIor || !pScat ) {
+		safe_release( pTau );
+		safe_release( pIor );
+		safe_release( pScat );
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateDielectricMaterial( &pMaterial, *pTau, *rindex, *sc, hg );
+	RISE_API_CreateDielectricMaterial( &pMaterial, *pTau, *pIor, *pScat, hg );
 
 	pMatManager->AddItem( pMaterial, name );
 
 	safe_release( pMaterial );
 	safe_release( pTau );
-	safe_release( sc );
-	safe_release( rindex );
+	safe_release( pIor );
+	safe_release( pScat );
 
 	return true;
 }
@@ -2666,31 +2814,18 @@ bool Job::AddSubSurfaceScatteringMaterial(
 							const char* roughness			///< [in] Surface roughness [0,1]
 							)
 {
-	IPainter* pIOR = pPntManager->GetItem( ior );
-	if( !pIOR )
-	{
-		double fIOR = atof(ior);
-		RISE_API_CreateUniformColorPainter( &pIOR, RISEPel(fIOR,fIOR,fIOR) );
-	} else {
-		pIOR->addref();
-	}
+	// ior is a single scalar (BSDF/SPF read `.v[0]` only).  Absorption
+	// and scattering are per-channel (the diffusion profile evaluates
+	// each RGB channel independently for sigma_a / sigma_s).
+	IScalarPainter* pIOR        = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "subsurfacescattering_material", name, "ior",        ior,        /*requireSingle*/ true );
+	IScalarPainter* pAbsorption = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "subsurfacescattering_material", name, "absorption", absorption );
+	IScalarPainter* pScattering = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "subsurfacescattering_material", name, "scattering", scattering );
 
-	IPainter* pAbsorption = pPntManager->GetItem( absorption );
-	if( !pAbsorption )
-	{
-		double fAbsorption = atof(absorption);
-		RISE_API_CreateUniformColorPainter( &pAbsorption, RISEPel(fAbsorption,fAbsorption,fAbsorption) );
-	} else {
-		pAbsorption->addref();
-	}
-
-	IPainter* pScattering = pPntManager->GetItem( scattering );
-	if( !pScattering )
-	{
-		double fScattering = atof(scattering);
-		RISE_API_CreateUniformColorPainter( &pScattering, RISEPel(fScattering,fScattering,fScattering) );
-	} else {
-		pScattering->addref();
+	if( !pIOR || !pAbsorption || !pScattering ) {
+		safe_release( pIOR );
+		safe_release( pAbsorption );
+		safe_release( pScattering );
+		return false;
 	}
 
 	double gVal = atof(g);
@@ -2721,31 +2856,15 @@ bool Job::AddRandomWalkSSSMaterial(
 							const char* maxBounces			///< [in] Maximum walk steps
 							)
 {
-	IPainter* pIOR = pPntManager->GetItem( ior );
-	if( !pIOR )
-	{
-		double fIOR = atof(ior);
-		RISE_API_CreateUniformColorPainter( &pIOR, RISEPel(fIOR,fIOR,fIOR) );
-	} else {
-		pIOR->addref();
-	}
+	IScalarPainter* pIOR        = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "randomwalk_sss_material", name, "ior",        ior,        /*requireSingle*/ true );
+	IScalarPainter* pAbsorption = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "randomwalk_sss_material", name, "absorption", absorption );
+	IScalarPainter* pScattering = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "randomwalk_sss_material", name, "scattering", scattering );
 
-	IPainter* pAbsorption = pPntManager->GetItem( absorption );
-	if( !pAbsorption )
-	{
-		double fAbsorption = atof(absorption);
-		RISE_API_CreateUniformColorPainter( &pAbsorption, RISEPel(fAbsorption,fAbsorption,fAbsorption) );
-	} else {
-		pAbsorption->addref();
-	}
-
-	IPainter* pScattering = pPntManager->GetItem( scattering );
-	if( !pScattering )
-	{
-		double fScattering = atof(scattering);
-		RISE_API_CreateUniformColorPainter( &pScattering, RISEPel(fScattering,fScattering,fScattering) );
-	} else {
-		pScattering->addref();
+	if( !pIOR || !pAbsorption || !pScattering ) {
+		safe_release( pIOR );
+		safe_release( pAbsorption );
+		safe_release( pScattering );
+		return false;
 	}
 
 	double gVal = atof(g);
@@ -2771,7 +2890,7 @@ bool Job::AddIsotropicPhongMaterial(
 							const char* name,				///< [in] Name of the material
 							const char* rd,					///< [in] Diffuse reflectance painter
 							const char* rs,					///< [in] Specular reflectance painter
-							const char* exponent			///< [in] Phong exponent
+							const char* exponent			///< [in] Phong exponent (physical scalar)
 							)
 {
 	IPainter* pRd = pPntManager->GetItem(rd);
@@ -2781,14 +2900,10 @@ bool Job::AddIsotropicPhongMaterial(
 		return false;
 	}
 
-	IPainter*		pExp = pPntManager->GetItem( exponent );
-
-	if( !pExp )
-	{
-		double fexp = atof(exponent);
-		RISE_API_CreateUniformColorPainter( &pExp, RISEPel(fexp,fexp,fexp) );
-	} else {
-		pExp->addref();
+	IScalarPainter* pExp = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "isotropic_phong_material", name, "exponent", exponent );
+	if( !pExp ) {
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
@@ -2808,8 +2923,8 @@ bool Job::AddAshikminShirleyAnisotropicPhongMaterial(
 							const char* name,				///< [in] Name of the material
 							const char* rd,					///< [in] Diffuse reflectance painter
 							const char* rs,					///< [in] Specular reflectance painter
-							const char* Nu,					///< [in] Phong exponent in U
-							const char* Nv					///< [in] Phong exponent in V
+							const char* Nu,					///< [in] Phong exponent in U (physical scalar)
+							const char* Nv					///< [in] Phong exponent in V (physical scalar)
 							)
 {
 	IPainter* pRd = pPntManager->GetItem(rd);
@@ -2819,25 +2934,16 @@ bool Job::AddAshikminShirleyAnisotropicPhongMaterial(
 		return false;
 	}
 
-	IPainter*		pNu = pPntManager->GetItem( Nu );
-	IPainter*		pNv = pPntManager->GetItem( Nv );
+	IScalarPainter* pNu = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ashikminshirley_anisotropicphong_material", name, "Nu", Nu );
+	IScalarPainter* pNv = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ashikminshirley_anisotropicphong_material", name, "Nv", Nv );
 
-	if( !pNu )
-	{
-		double fnu = atof(Nu);
-		RISE_API_CreateUniformColorPainter( &pNu, RISEPel(fnu,fnu,fnu) );
-	} else {
-		pNu->addref();
+	if( !pNu || !pNv ) {
+		safe_release( pNu );
+		safe_release( pNv );
+		return false;
 	}
-
-	if( !pNv )
-	{
-		double fnv = atof(Nv);
-		RISE_API_CreateUniformColorPainter( &pNv, RISEPel(fnv,fnv,fnv) );
-	} else {
-		pNv->addref();
-	}
-
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateAshikminShirleyAnisotropicPhongMaterial( &pMaterial, *pRd, *pRs, *pNu, *pNv );
@@ -2878,25 +2984,19 @@ bool Job::AddPerfectReflectorMaterial(
 bool Job::AddPerfectRefractorMaterial(
 							const char* name,				///< [in] Name of the material
 							const char* ref,				///< [in] Amount of refraction painter
-							const char* ior					///< [in] Index of refraction
+							const char* ior					///< [in] Index of refraction (physical scalar)
 							)
 {
 	IPainter* pRd = pPntManager->GetItem(ref);
-
 	if( !pRd ) {
 		return false;
 	}
 
-	IPainter*		pIOR = pPntManager->GetItem( ior );
-
-	if( !pIOR )
-	{
-		double fior = atof(ior);
-		RISE_API_CreateUniformColorPainter( &pIOR, RISEPel(fior,fior,fior) );
-	} else {
-		pIOR->addref();
+	IScalarPainter* pIOR = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager,
+		"perfectrefractor_material", name, "ior", ior );
+	if( !pIOR ) {
+		return false;
 	}
-
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreatePerfectRefractorMaterial( &pMaterial, *pRd, *pIOR );
@@ -2920,40 +3020,30 @@ bool Job::AddTranslucentMaterial(
 							const char* scat				///< [in] Multiple scattering component
 							)
 {
-	IPainter* pRf = pPntManager->GetItem(rF);
+	IPainter* pRf  = pPntManager->GetItem(rF);
 	IPainter* pTau = pPntManager->GetItem(T);
-	IPainter* pExt = pPntManager->GetItem(ext);
 
-	if( !pRf || !pTau || !pExt ) {
+	if( !pRf || !pTau ) {
 		return false;
 	}
 
-	IPainter*		pN = pPntManager->GetItem( N );
+	IScalarPainter* pExt  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "translucent_material", name, "extinction", ext );
+	IScalarPainter* pN    = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "translucent_material", name, "N",          N );
+	IScalarPainter* pScat = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "translucent_material", name, "scattering", scat );
 
-	if( !pN )
-	{
-		double fn = atof(N);
-		RISE_API_CreateUniformColorPainter( &pN, RISEPel(fn,fn,fn) );
-	} else {
-		pN->addref();
+	if( !pExt || !pN || !pScat ) {
+		safe_release( pExt );
+		safe_release( pN );
+		safe_release( pScat );
+		return false;
 	}
-
-	IPainter*		pScat = pPntManager->GetItem( scat );
-
-	if( !pScat )
-	{
-		double fscat = atof(scat);
-		RISE_API_CreateUniformColorPainter( &pScat, RISEPel(fscat,fscat,fscat) );
-	} else {
-		pScat->addref();
-	}
-
 
 	IMaterial* pMaterial = 0;
 	RISE_API_CreateTranslucentMaterial( &pMaterial, *pRf, *pTau, *pExt, *pN, *pScat );
 
 	pMatManager->AddItem( pMaterial, name );
 
+	safe_release( pExt );
 	safe_release( pN );
 	safe_release( pScat );
 	safe_release( pMaterial );
@@ -2986,58 +3076,54 @@ bool Job::AddBioSpecSkinMaterial(
 	)
 {
 
-	IPainter* pnt_thickness_SC_ = pPntManager->GetItem( thickness_SC_ );
-	IPainter* pnt_thickness_epidermis_ = pPntManager->GetItem( thickness_epidermis_ );
-	IPainter* pnt_thickness_papillary_dermis_ = pPntManager->GetItem( thickness_papillary_dermis_ );
-	IPainter* pnt_thickness_reticular_dermis_ = pPntManager->GetItem( thickness_reticular_dermis_ );
-	IPainter* pnt_ior_SC_ = pPntManager->GetItem( ior_SC_ );
-	IPainter* pnt_ior_epidermis_ = pPntManager->GetItem( ior_epidermis_ );
-	IPainter* pnt_ior_papillary_dermis_ = pPntManager->GetItem( ior_papillary_dermis_ );
-	IPainter* pnt_ior_reticular_dermis_ = pPntManager->GetItem( ior_reticular_dermis_ );
-	IPainter* pnt_concentration_eumelanin_ = pPntManager->GetItem( concentration_eumelanin_ );
-	IPainter* pnt_concentration_pheomelanin_ = pPntManager->GetItem( concentration_pheomelanin_ );
-	IPainter* pnt_melanosomes_in_epidermis_ = pPntManager->GetItem( melanosomes_in_epidermis_ );
-	IPainter* pnt_hb_ratio_ = pPntManager->GetItem( hb_ratio_ );
-	IPainter* pnt_whole_blood_in_papillary_dermis_ = pPntManager->GetItem( whole_blood_in_papillary_dermis_ );
-	IPainter* pnt_whole_blood_in_reticular_dermis_ = pPntManager->GetItem( whole_blood_in_reticular_dermis_ );
-	IPainter* pnt_bilirubin_concentration_ = pPntManager->GetItem( bilirubin_concentration_ );
-	IPainter* pnt_betacarotene_concentration_SC_ = pPntManager->GetItem( betacarotene_concentration_SC_ );
-	IPainter* pnt_betacarotene_concentration_epidermis_ = pPntManager->GetItem( betacarotene_concentration_epidermis_ );
-	IPainter* pnt_betacarotene_concentration_dermis_ = pPntManager->GetItem( betacarotene_concentration_dermis_ );
-	IPainter* pnt_folds_aspect_ratio_ = pPntManager->GetItem( folds_aspect_ratio_ );
+	// Resolve every BioSpec parameter to an IScalarPainter (physical
+	// scalars).  Every slot here reads `.v[0]` inside the SPF —
+	// `requireSingle = true` so per-channel inputs are rejected at
+	// parse time instead of silently dropping G/B channels.  If any
+	// fails to resolve, release whatever we have and bail with a
+	// clear per-parameter diagnostic.
+#define RESOLVE_BIOSPEC( x ) \
+	IScalarPainter* pnt_##x = ResolveOrDiagnoseScalar( \
+		pScalarPntManager, pPntManager, "biospec_skin_material", name, #x, x, /*requireSingle*/ true )
 
-	{
-#define CHECK_FOR_VALUE( x )\
-		{\
-			if( !pnt_##x ) {\
-				double d = atof( x );\
-				RISE_API_CreateUniformColorPainter( &pnt_##x, RISEPel(d,d,d) );\
-			} else {\
-				pnt_##x->addref();\
-			}\
+	RESOLVE_BIOSPEC(thickness_SC_);
+	RESOLVE_BIOSPEC(thickness_epidermis_);
+	RESOLVE_BIOSPEC(thickness_papillary_dermis_);
+	RESOLVE_BIOSPEC(thickness_reticular_dermis_);
+	RESOLVE_BIOSPEC(ior_SC_);
+	RESOLVE_BIOSPEC(ior_epidermis_);
+	RESOLVE_BIOSPEC(ior_papillary_dermis_);
+	RESOLVE_BIOSPEC(ior_reticular_dermis_);
+	RESOLVE_BIOSPEC(concentration_eumelanin_);
+	RESOLVE_BIOSPEC(concentration_pheomelanin_);
+	RESOLVE_BIOSPEC(melanosomes_in_epidermis_);
+	RESOLVE_BIOSPEC(hb_ratio_);
+	RESOLVE_BIOSPEC(whole_blood_in_papillary_dermis_);
+	RESOLVE_BIOSPEC(whole_blood_in_reticular_dermis_);
+	RESOLVE_BIOSPEC(bilirubin_concentration_);
+	RESOLVE_BIOSPEC(betacarotene_concentration_SC_);
+	RESOLVE_BIOSPEC(betacarotene_concentration_epidermis_);
+	RESOLVE_BIOSPEC(betacarotene_concentration_dermis_);
+	RESOLVE_BIOSPEC(folds_aspect_ratio_);
+
+#undef RESOLVE_BIOSPEC
+
+	IScalarPainter* all[19] = {
+		pnt_thickness_SC_, pnt_thickness_epidermis_, pnt_thickness_papillary_dermis_,
+		pnt_thickness_reticular_dermis_, pnt_ior_SC_, pnt_ior_epidermis_,
+		pnt_ior_papillary_dermis_, pnt_ior_reticular_dermis_,
+		pnt_concentration_eumelanin_, pnt_concentration_pheomelanin_,
+		pnt_melanosomes_in_epidermis_, pnt_hb_ratio_,
+		pnt_whole_blood_in_papillary_dermis_, pnt_whole_blood_in_reticular_dermis_,
+		pnt_bilirubin_concentration_,
+		pnt_betacarotene_concentration_SC_, pnt_betacarotene_concentration_epidermis_,
+		pnt_betacarotene_concentration_dermis_, pnt_folds_aspect_ratio_,
+	};
+	for( int i=0; i<19; ++i ) {
+		if( !all[i] ) {
+			for( int j=0; j<19; ++j ) safe_release( all[j] );
+			return false;
 		}
-
-	CHECK_FOR_VALUE(thickness_SC_);
-	CHECK_FOR_VALUE(thickness_epidermis_);
-	CHECK_FOR_VALUE(thickness_papillary_dermis_);
-	CHECK_FOR_VALUE(thickness_reticular_dermis_);
-	CHECK_FOR_VALUE(ior_SC_);
-	CHECK_FOR_VALUE(ior_epidermis_);
-	CHECK_FOR_VALUE(ior_papillary_dermis_);
-	CHECK_FOR_VALUE(ior_reticular_dermis_);
-	CHECK_FOR_VALUE(concentration_eumelanin_);
-	CHECK_FOR_VALUE(concentration_pheomelanin_);
-	CHECK_FOR_VALUE(melanosomes_in_epidermis_);
-	CHECK_FOR_VALUE(hb_ratio_);
-	CHECK_FOR_VALUE(whole_blood_in_papillary_dermis_);
-	CHECK_FOR_VALUE(whole_blood_in_reticular_dermis_);
-	CHECK_FOR_VALUE(bilirubin_concentration_);
-	CHECK_FOR_VALUE(betacarotene_concentration_SC_);
-	CHECK_FOR_VALUE(betacarotene_concentration_epidermis_);
-	CHECK_FOR_VALUE(betacarotene_concentration_dermis_);
-	CHECK_FOR_VALUE(folds_aspect_ratio_);
-
-#undef CHECK_FOR_VALUE
 	}
 
 	IMaterial* pMaterial = 0;
@@ -3067,6 +3153,10 @@ bool Job::AddBioSpecSkinMaterial(
 	pMatManager->AddItem( pMaterial, name );
 
 	safe_release( pMaterial );
+	// Release the 19 resolved scalar painters — the SPF holds its
+	// own refs (taken in `BioSpecSkinSPF` ctor), so releasing here
+	// drops them back to refcount 1 instead of leaking at 2.
+	for( int i = 0; i < 19; ++i ) safe_release( all[i] );
 
 	return true;
 }
@@ -3085,38 +3175,35 @@ bool Job::AddDonnerJensenSkinBSSRDFMaterial(
 	const char* roughness
 	)
 {
-	IPainter* pnt_melanin_fraction_ = pPntManager->GetItem( melanin_fraction_ );
-	IPainter* pnt_melanin_blend_ = pPntManager->GetItem( melanin_blend_ );
-	IPainter* pnt_hemoglobin_epidermis_ = pPntManager->GetItem( hemoglobin_epidermis_ );
-	IPainter* pnt_carotene_fraction_ = pPntManager->GetItem( carotene_fraction_ );
-	IPainter* pnt_hemoglobin_dermis_ = pPntManager->GetItem( hemoglobin_dermis_ );
-	IPainter* pnt_epidermis_thickness_ = pPntManager->GetItem( epidermis_thickness_ );
-	IPainter* pnt_ior_epidermis_ = pPntManager->GetItem( ior_epidermis_ );
-	IPainter* pnt_ior_dermis_ = pPntManager->GetItem( ior_dermis_ );
-	IPainter* pnt_blood_oxygenation_ = pPntManager->GetItem( blood_oxygenation_ );
+	// All 9 Donner-Jensen slots are read as `.v[0]` inside the
+	// diffusion profile — `requireSingle = true` rejects per-channel
+	// inputs at parse time.
+#define RESOLVE_DJ( x ) \
+	IScalarPainter* pnt_##x = ResolveOrDiagnoseScalar( \
+		pScalarPntManager, pPntManager, "donnerjensenskin_bssrdf_material", name, #x, x, /*requireSingle*/ true )
 
-	{
-#define CHECK_FOR_VALUE( x )\
-		{\
-			if( !pnt_##x ) {\
-				double d = atof( x );\
-				RISE_API_CreateUniformColorPainter( &pnt_##x, RISEPel(d,d,d) );\
-			} else {\
-				pnt_##x->addref();\
-			}\
+	RESOLVE_DJ(melanin_fraction_);
+	RESOLVE_DJ(melanin_blend_);
+	RESOLVE_DJ(hemoglobin_epidermis_);
+	RESOLVE_DJ(carotene_fraction_);
+	RESOLVE_DJ(hemoglobin_dermis_);
+	RESOLVE_DJ(epidermis_thickness_);
+	RESOLVE_DJ(ior_epidermis_);
+	RESOLVE_DJ(ior_dermis_);
+	RESOLVE_DJ(blood_oxygenation_);
+
+#undef RESOLVE_DJ
+
+	IScalarPainter* all_dj[9] = {
+		pnt_melanin_fraction_, pnt_melanin_blend_, pnt_hemoglobin_epidermis_,
+		pnt_carotene_fraction_, pnt_hemoglobin_dermis_, pnt_epidermis_thickness_,
+		pnt_ior_epidermis_, pnt_ior_dermis_, pnt_blood_oxygenation_,
+	};
+	for( int i=0; i<9; ++i ) {
+		if( !all_dj[i] ) {
+			for( int j=0; j<9; ++j ) safe_release( all_dj[j] );
+			return false;
 		}
-
-	CHECK_FOR_VALUE(melanin_fraction_);
-	CHECK_FOR_VALUE(melanin_blend_);
-	CHECK_FOR_VALUE(hemoglobin_epidermis_);
-	CHECK_FOR_VALUE(carotene_fraction_);
-	CHECK_FOR_VALUE(hemoglobin_dermis_);
-	CHECK_FOR_VALUE(epidermis_thickness_);
-	CHECK_FOR_VALUE(ior_epidermis_);
-	CHECK_FOR_VALUE(ior_dermis_);
-	CHECK_FOR_VALUE(blood_oxygenation_);
-
-#undef CHECK_FOR_VALUE
 	}
 
 	const double roughnessVal = atof( roughness );
@@ -3138,6 +3225,9 @@ bool Job::AddDonnerJensenSkinBSSRDFMaterial(
 	pMatManager->AddItem( pMaterial, name );
 
 	safe_release( pMaterial );
+	// Release the 9 resolved scalar painters — the material's
+	// diffusion profile holds its own refs.
+	for( int i = 0; i < 9; ++i ) safe_release( all_dj[i] );
 
 	return true;
 }
@@ -3157,19 +3247,13 @@ bool Job::AddGenericHumanTissueMaterial(
 {
 	GlobalLog()->PrintEasyWarning( "Job::AddGenericHumanTissueMaterial:: This is an experiment and has not bee tested or verfied, its use is not recommended" );
 
-	IPainter* pG = pPntManager->GetItem(g);
+	IScalarPainter* pG   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "generichumantissue_material", name, "g",   g,   /*requireSingle*/ true );
+	IScalarPainter* pSca = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "generichumantissue_material", name, "sca", sca, /*requireSingle*/ true );
 
-	if( !pG ) {
+	if( !pG || !pSca ) {
+		safe_release( pG );
+		safe_release( pSca );
 		return false;
-	}
-
-	IPainter* pSca = pPntManager->GetItem(sca);
-
-	if( !pSca ) {
-		double d = atof( sca );
-		RISE_API_CreateUniformColorPainter( &pSca, RISEPel(d,d,d) );
-	} else {
-		pSca->addref();
 	}
 
 	IMaterial* pMaterial = 0;
@@ -3184,6 +3268,8 @@ bool Job::AddGenericHumanTissueMaterial(
 
 	pMatManager->AddItem( pMaterial, name );
 	safe_release( pMaterial );
+	safe_release( pSca );
+	safe_release( pG );
 
 	return true;
 }
@@ -3242,14 +3328,10 @@ bool Job::AddWardIsotropicGaussianMaterial(
 		return false;
 	}
 
-	IPainter*		pAlpha = pPntManager->GetItem( alpha );
-
-	if( !pAlpha )
-	{
-		double fa = atof(alpha);
-		RISE_API_CreateUniformColorPainter( &pAlpha, RISEPel(fa,fa,fa) );
-	} else {
-		pAlpha->addref();
+	IScalarPainter* pAlpha = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ward_isotropic_material", name, "alpha", alpha );
+	if( !pAlpha ) {
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
@@ -3280,23 +3362,15 @@ bool Job::AddWardAnisotropicEllipticalGaussianMaterial(
 		return false;
 	}
 
-	IPainter*		pAlphaX = pPntManager->GetItem( alphax );
-	IPainter*		pAlphaY = pPntManager->GetItem( alphay );
+	IScalarPainter* pAlphaX = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ward_anisotropic_material", name, "alphax", alphax );
+	IScalarPainter* pAlphaY = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ward_anisotropic_material", name, "alphay", alphay );
 
-	if( !pAlphaX )
-	{
-		double fa = atof(alphax);
-		RISE_API_CreateUniformColorPainter( &pAlphaX, RISEPel(fa,fa,fa) );
-	} else {
-		pAlphaX->addref();
-	}
-
-	if( !pAlphaY )
-	{
-		double fa = atof(alphay);
-		RISE_API_CreateUniformColorPainter( &pAlphaY, RISEPel(fa,fa,fa) );
-	} else {
-		pAlphaY->addref();
+	if( !pAlphaX || !pAlphaY ) {
+		safe_release( pAlphaX );
+		safe_release( pAlphaY );
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
@@ -3351,41 +3425,21 @@ bool Job::AddGGXMaterial(
 		return false;
 	}
 
-	IPainter* pAlphaX = pPntManager->GetItem( alphaX );
-	IPainter* pAlphaY = pPntManager->GetItem( alphaY );
-	IPainter* pIOR = pPntManager->GetItem( ior );
-	IPainter* pExt = pPntManager->GetItem( ext );
+	IScalarPainter* pAlphaX = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_material", name, "alphax", alphaX );
+	IScalarPainter* pAlphaY = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_material", name, "alphay", alphaY );
+	IScalarPainter* pIOR = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_material", name, "ior", ior );
+	IScalarPainter* pExt = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_material", name, "ext", ext );
 
-	if( !pAlphaX )
-	{
-		double fa = atof(alphaX);
-		RISE_API_CreateUniformColorPainter( &pAlphaX, RISEPel(fa,fa,fa) );
-	} else {
-		pAlphaX->addref();
-	}
-
-	if( !pAlphaY )
-	{
-		double fa = atof(alphaY);
-		RISE_API_CreateUniformColorPainter( &pAlphaY, RISEPel(fa,fa,fa) );
-	} else {
-		pAlphaY->addref();
-	}
-
-	if( !pIOR )
-	{
-		double fa = atof(ior);
-		RISE_API_CreateUniformColorPainter( &pIOR, RISEPel(fa,fa,fa) );
-	} else {
-		pIOR->addref();
-	}
-
-	if( !pExt )
-	{
-		double fa = atof(ext);
-		RISE_API_CreateUniformColorPainter( &pExt, RISEPel(fa,fa,fa) );
-	} else {
-		pExt->addref();
+	if( !pAlphaX || !pAlphaY || !pIOR || !pExt ) {
+		safe_release( pAlphaX );
+		safe_release( pAlphaY );
+		safe_release( pIOR );
+		safe_release( pExt );
+		return false;
 	}
 
 	// Landing 8: tangent_rotation is "none" (no rotation, default) OR
@@ -3447,15 +3501,22 @@ bool Job::AddGGXEmissiveMaterial(
 		return false;
 	}
 
-	IPainter* pAlphaX = pPntManager->GetItem( alphaX );
-	IPainter* pAlphaY = pPntManager->GetItem( alphaY );
-	IPainter* pIOR    = pPntManager->GetItem( ior );
-	IPainter* pExt    = pPntManager->GetItem( ext );
+	IScalarPainter* pAlphaX = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_emissive_material", name, "alphax", alphaX );
+	IScalarPainter* pAlphaY = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_emissive_material", name, "alphay", alphaY );
+	IScalarPainter* pIOR = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_emissive_material", name, "ior", ior );
+	IScalarPainter* pExt = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "ggx_emissive_material", name, "ext", ext );
 
-	if( !pAlphaX ) { double fa = atof(alphaX); RISE_API_CreateUniformColorPainter( &pAlphaX, RISEPel(fa,fa,fa) ); } else { pAlphaX->addref(); }
-	if( !pAlphaY ) { double fa = atof(alphaY); RISE_API_CreateUniformColorPainter( &pAlphaY, RISEPel(fa,fa,fa) ); } else { pAlphaY->addref(); }
-	if( !pIOR    ) { double fa = atof(ior);    RISE_API_CreateUniformColorPainter( &pIOR,    RISEPel(fa,fa,fa) ); } else { pIOR->addref();    }
-	if( !pExt    ) { double fa = atof(ext);    RISE_API_CreateUniformColorPainter( &pExt,    RISEPel(fa,fa,fa) ); } else { pExt->addref();    }
+	if( !pAlphaX || !pAlphaY || !pIOR || !pExt ) {
+		safe_release( pAlphaX );
+		safe_release( pAlphaY );
+		safe_release( pIOR );
+		safe_release( pExt );
+		return false;
+	}
 
 	// Resolve the optional emissive painter.  "none" / NULL means no emitter.
 	IPainter* pEmissive = 0;
@@ -3686,18 +3747,84 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 	// (opaque); ior is preserved but unused in schlick_f0 mode.  Emissive
 	// flows through unchanged.  Anisotropy rotation flows through as the
 	// `tangent_rotation` painter; "0.0" / unset → no rotation.
-	return AddGGXEmissiveMaterial(
-		name,
-		nRd.c_str(),
-		nRs.c_str(),
-		nAlphaX.c_str(),
-		nAlphaY.c_str(),
-		nIORPnt.c_str(),
-		nZero.c_str(),				// extinction (unused in schlick_f0)
-		emissive,
-		emissive_scale,
-		"schlick_f0",				// glTF metallicRoughness uses Schlick from F0
-		anisotropy_rotation );		// Landing 8: tangent rotation painter / scalar
+	//
+	// alphaX / alphaY / ior / ext are scalar-typed slots on the new GGX
+	// construction surface, but PBR's internal composition lives in the
+	// IPainter graph (BlendPainter etc., colour-typed).  We adapt each
+	// composed IPainter back into an `IScalarPainter` here via
+	// `Painters/PainterToScalarAdapter.h` so the painter graph keeps
+	// its existing composition without needing scalar-domain blend ops.
+	IPainter* pRdPnt    = pPntManager->GetItem( nRd.c_str() );
+	IPainter* pRsPnt    = pPntManager->GetItem( nRs.c_str() );
+	IPainter* pAlphaXP  = pPntManager->GetItem( nAlphaX.c_str() );
+	IPainter* pAlphaYP  = pPntManager->GetItem( nAlphaY.c_str() );
+	IPainter* pIORPnt   = pPntManager->GetItem( nIORPnt.c_str() );
+	IPainter* pZeroPnt  = pPntManager->GetItem( nZero.c_str() );
+
+	if( !pRdPnt || !pRsPnt || !pAlphaXP || !pAlphaYP || !pIORPnt || !pZeroPnt ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddPBRMetallicRoughnessMaterial:: internal painter lookup failed for `%s`", name );
+		return false;
+	}
+
+	// Adapt the four scalar slots.  Each adapter takes its own ref on
+	// the underlying IPainter (inside its ctor) and is released after
+	// the material steals its own ref via the GGX{BRDF,SPF} ctors.
+	// `Reference`-derived objects start at refcount 1, so the local
+	// pointer owns that ref; no extra addref() is needed.  (Removing
+	// the explicit addref() here in 2026-05 — the prior code left
+	// every adapter permanently at refcount = 2, leaking one ref per
+	// PBR material instantiated.)
+	IScalarPainter* pAlphaXSc = new PainterToScalarAdapter( *pAlphaXP );
+	IScalarPainter* pAlphaYSc = new PainterToScalarAdapter( *pAlphaYP );
+	IScalarPainter* pIORSc    = new PainterToScalarAdapter( *pIORPnt );
+	IScalarPainter* pExtSc    = new PainterToScalarAdapter( *pZeroPnt );
+
+	// Resolve the optional emissive painter.
+	IPainter* pEmissive = 0;
+	const bool wantEmissive = ( emissive && std::string( emissive ) != "none" );
+	if( wantEmissive ) {
+		pEmissive = pPntManager->GetItem( emissive );
+		if( !pEmissive ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"Job::AddPBRMetallicRoughnessMaterial:: emissive painter `%s` not found", emissive );
+			safe_release( pAlphaXSc );
+			safe_release( pAlphaYSc );
+			safe_release( pIORSc );
+			safe_release( pExtSc );
+			return false;
+		}
+	}
+
+	// Landing 8: optional tangent rotation painter.
+	IPainter* pTangentRotation = 0;
+	if( anisotropy_rotation && std::string( anisotropy_rotation ) != "none" ) {
+		pTangentRotation = pPntManager->GetItem( anisotropy_rotation );
+		if( !pTangentRotation ) {
+			const double fa = atof( anisotropy_rotation );
+			RISE_API_CreateUniformColorPainter( &pTangentRotation, RISEPel( fa, fa, fa ) );
+		} else {
+			pTangentRotation->addref();
+		}
+	}
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateGGXEmissiveMaterial(
+		&pMaterial, *pRdPnt, *pRsPnt, *pAlphaXSc, *pAlphaYSc, *pIORSc, *pExtSc,
+		pEmissive, emissive_scale,
+		ResolveFresnelMode( "schlick_f0" ),
+		pTangentRotation );
+
+	pMatManager->AddItem( pMaterial, name );
+
+	safe_release( pMaterial );
+	safe_release( pAlphaXSc );
+	safe_release( pAlphaYSc );
+	safe_release( pIORSc );
+	safe_release( pExtSc );
+	safe_release( pTangentRotation );
+
+	return true;
 }
 
 bool Job::AddSheenMaterial(
@@ -3713,13 +3840,10 @@ bool Job::AddSheenMaterial(
 		return false;
 	}
 
-	IPainter* pRoughness = pPntManager->GetItem( sheen_roughness );
+	IScalarPainter* pRoughness = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "sheen_material", name, "sheen_roughness", sheen_roughness, /*requireSingle*/ true );
 	if( !pRoughness ) {
-		// Allow scalar string fallback ("0.5" -> uniform 0.5).
-		const double v = atof( sheen_roughness );
-		RISE_API_CreateUniformColorPainter( &pRoughness, RISEPel( v, v, v ) );
-	} else {
-		pRoughness->addref();
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
@@ -3747,32 +3871,18 @@ bool Job::AddCookTorranceMaterial(
 		return false;
 	}
 
-	IPainter*		pFacet = pPntManager->GetItem( facet );
-	IPainter*		pIOR = pPntManager->GetItem( ior );
-	IPainter*		pExt = pPntManager->GetItem( ext );
+	IScalarPainter* pFacet = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "cooktorrance_material", name, "facet", facet );
+	IScalarPainter* pIOR = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "cooktorrance_material", name, "ior", ior );
+	IScalarPainter* pExt = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "cooktorrance_material", name, "ext", ext );
 
-	if( !pFacet )
-	{
-		double fa = atof(facet);
-		RISE_API_CreateUniformColorPainter( &pFacet, RISEPel(fa,fa,fa) );
-	} else {
-		pFacet->addref();
-	}
-
-	if( !pIOR )
-	{
-		double fa = atof(ior);
-		RISE_API_CreateUniformColorPainter( &pIOR, RISEPel(fa,fa,fa) );
-	} else {
-		pIOR->addref();
-	}
-
-	if( !pExt )
-	{
-		double fa = atof(ext);
-		RISE_API_CreateUniformColorPainter( &pExt, RISEPel(fa,fa,fa) );
-	} else {
-		pExt->addref();
+	if( !pFacet || !pIOR || !pExt ) {
+		safe_release( pFacet );
+		safe_release( pIOR );
+		safe_release( pExt );
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
@@ -3793,7 +3903,7 @@ bool Job::AddCookTorranceMaterial(
 bool Job::AddOrenNayarMaterial(
 	const char* name,											///< [in] Name of the material
 	const char* reflectance,									///< [in] Reflectance
-	const char* roughness										///< [in] Roughness factor
+	const char* roughness										///< [in] Roughness factor (physical scalar)
 	)
 {
 	IPainter* pRef = pPntManager->GetItem(reflectance);
@@ -3802,14 +3912,10 @@ bool Job::AddOrenNayarMaterial(
 		return false;
 	}
 
-	IPainter*		pRoughness = pPntManager->GetItem( roughness );
-
-	if( !pRoughness )
-	{
-		double fa = atof(roughness);
-		RISE_API_CreateUniformColorPainter( &pRoughness, RISEPel(fa,fa,fa) );
-	} else {
-		pRoughness->addref();
+	IScalarPainter* pRoughness = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "orennayar_material", name, "roughness", roughness );
+	if( !pRoughness ) {
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
@@ -3840,24 +3946,15 @@ bool Job::AddSchlickMaterial(
 		return false;
 	}
 
-	IPainter*		pRoughness = pPntManager->GetItem( roughness );
+	IScalarPainter* pRoughness = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "schlick_material", name, "roughness", roughness );
+	IScalarPainter* pIsotropy = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "schlick_material", name, "isotropy", isotropy );
 
-	if( !pRoughness )
-	{
-		double fa = atof(roughness);
-		RISE_API_CreateUniformColorPainter( &pRoughness, RISEPel(fa,fa,fa) );
-	} else {
-		pRoughness->addref();
-	}
-
-	IPainter*		pIsotropy = pPntManager->GetItem( isotropy );
-
-	if( !pIsotropy )
-	{
-		double fa = atof(isotropy);
-		RISE_API_CreateUniformColorPainter( &pIsotropy, RISEPel(fa,fa,fa) );
-	} else {
-		pIsotropy->addref();
+	if( !pRoughness || !pIsotropy ) {
+		safe_release( pRoughness );
+		safe_release( pIsotropy );
+		return false;
 	}
 
 	IMaterial* pMaterial = 0;
@@ -3930,14 +4027,9 @@ bool Job::AddPhongLuminaireMaterial(
 		return false;
 	}
 
-	IPainter*	pN = pPntManager->GetItem( N );
-
-	if( !pN )
-	{
-		double fn = atof(N);
-		RISE_API_CreateUniformColorPainter( &pN, RISEPel(fn,fn,fn) );
-	} else {
-		pN->addref();
+	IScalarPainter* pN = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "phongluminaire_material", name, "exponent", N );
+	if( !pN ) {
+		return false;
 	}
 
 	IMaterial* pLumMaterial = 0;

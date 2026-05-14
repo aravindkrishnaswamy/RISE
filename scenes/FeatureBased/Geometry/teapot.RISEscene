@@ -152,9 +152,9 @@ polished_material
 {
 	name				polished
 	reflectance			pnt_iri
-	tau					color_silver
+	tau					0.90 0.91 0.98
 	scattering			256.0
-	ior					10000	
+	ior					10000
 }
 
 perfectreflector_material

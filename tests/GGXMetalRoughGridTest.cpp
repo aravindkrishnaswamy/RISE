@@ -34,6 +34,8 @@
 #include "../src/Library/Utilities/OrthonormalBasis3D.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Materials/GGXBRDF.h"
 
 using namespace RISE;
@@ -63,10 +65,10 @@ static GGXBRDF* MakePBRBrdf(
 
 	UniformColorPainter* pRd = new UniformColorPainter( rd );  pRd->addref();
 	UniformColorPainter* pRs = new UniformColorPainter( f0 );  pRs->addref();
-	UniformColorPainter* pAx = new UniformColorPainter( RISEPel(alpha, alpha, alpha) );  pAx->addref();
-	UniformColorPainter* pAy = new UniformColorPainter( RISEPel(alpha, alpha, alpha) );  pAy->addref();
-	UniformColorPainter* pIor = new UniformColorPainter( RISEPel(1.5, 1.5, 1.5) );  pIor->addref();
-	UniformColorPainter* pExt = new UniformColorPainter( RISEPel(0.0, 0.0, 0.0) );  pExt->addref();
+	UniformScalarPainter* pAx = new UniformScalarPainter( alpha );  pAx->addref();
+	UniformScalarPainter* pAy = new UniformScalarPainter( alpha );  pAy->addref();
+	UniformScalarPainter* pIor = new UniformScalarPainter(1.5);  pIor->addref();
+	UniformScalarPainter* pExt = new UniformScalarPainter(0.0);  pExt->addref();
 
 	// Use schlick_f0 mode — the same mode that Job::AddPBRMetallicRoughnessMaterial
 	// passes to GGX after the Phase 3 flip.

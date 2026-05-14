@@ -21,9 +21,9 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 BurleyNormalizedDiffusionProfile::BurleyNormalizedDiffusionProfile(
-	const IPainter& ior_,
-	const IPainter& absorption_,
-	const IPainter& scattering_,
+	const IScalarPainter& ior_,
+	const IScalarPainter& absorption_,
+	const IScalarPainter& scattering_,
 	const Scalar g_
 	) :
   ior( ior_ ),
@@ -109,16 +109,16 @@ RISEPel BurleyNormalizedDiffusionProfile::EvaluateProfile(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const RISEPel sa = absorption.GetColor( ri );
-	const RISEPel ss = scattering.GetColor( ri );
+	const ScalarTriple sa = absorption.GetValuesAt( ri );
+	const ScalarTriple ss = scattering.GetValuesAt( ri );
 
 	RISEPel result;
 	for( int c = 0; c < 3; c++ )
 	{
 		// Similarity relation: reduce scattering to account for
 		// anisotropy of the phase function (Wyman et al. 1989)
-		const Scalar ss_prime = ss[c] * (1.0 - g);
-		const Scalar st_prime = ss_prime + sa[c];
+		const Scalar ss_prime = ss.v[c] * (1.0 - g);
+		const Scalar st_prime = ss_prime + sa.v[c];
 		const Scalar albedo = st_prime > 1e-10 ? ss_prime / st_prime : 0.0;
 		const Scalar mfp = st_prime > 1e-10 ? 1.0 / st_prime : 0.0;
 		const Scalar s = ComputeScalingFactor( albedo );
@@ -135,8 +135,8 @@ Scalar BurleyNormalizedDiffusionProfile::EvaluateProfileNM(
 	const Scalar nm
 	) const
 {
-	const Scalar sa = absorption.GetColorNM( ri, nm );
-	const Scalar ss = scattering.GetColorNM( ri, nm );
+	const Scalar sa = absorption.GetValueAtNM( ri, nm );
+	const Scalar ss = scattering.GetValueAtNM( ri, nm );
 
 	const Scalar ss_prime = ss * (1.0 - g);
 	const Scalar st_prime = ss_prime + sa;
@@ -157,11 +157,11 @@ Scalar BurleyNormalizedDiffusionProfile::SampleRadius(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const RISEPel sa = absorption.GetColor( ri );
-	const RISEPel ss = scattering.GetColor( ri );
+	const ScalarTriple sa = absorption.GetValuesAt( ri );
+	const ScalarTriple ss = scattering.GetValuesAt( ri );
 
-	const Scalar ss_prime = ss[channel] * (1.0 - g);
-	const Scalar st_prime = ss_prime + sa[channel];
+	const Scalar ss_prime = ss.v[channel] * (1.0 - g);
+	const Scalar st_prime = ss_prime + sa.v[channel];
 	const Scalar albedo = st_prime > 1e-10 ? ss_prime / st_prime : 0.0;
 	const Scalar mfp = st_prime > 1e-10 ? 1.0 / st_prime : 0.0;
 	const Scalar s = ComputeScalingFactor( albedo );
@@ -200,11 +200,11 @@ Scalar BurleyNormalizedDiffusionProfile::PdfRadius(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const RISEPel sa = absorption.GetColor( ri );
-	const RISEPel ss = scattering.GetColor( ri );
+	const ScalarTriple sa = absorption.GetValuesAt( ri );
+	const ScalarTriple ss = scattering.GetValuesAt( ri );
 
-	const Scalar ss_prime = ss[channel] * (1.0 - g);
-	const Scalar st_prime = ss_prime + sa[channel];
+	const Scalar ss_prime = ss.v[channel] * (1.0 - g);
+	const Scalar st_prime = ss_prime + sa.v[channel];
 	const Scalar albedo = st_prime > 1e-10 ? ss_prime / st_prime : 0.0;
 	const Scalar mfp = st_prime > 1e-10 ? 1.0 / st_prime : 0.0;
 	const Scalar s = ComputeScalingFactor( albedo );
@@ -232,7 +232,7 @@ Scalar BurleyNormalizedDiffusionProfile::FresnelTransmission(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const Scalar eta = ior.GetColor( ri )[0];
+	const Scalar eta = ior.GetValuesAt( ri ).v[0];
 	return 1.0 - SchlickFresnel( fabs(cosTheta), eta );
 }
 
@@ -240,7 +240,7 @@ Scalar BurleyNormalizedDiffusionProfile::GetIOR(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	return ior.GetColor( ri )[0];
+	return ior.GetValuesAt( ri ).v[0];
 }
 
 //=============================================================

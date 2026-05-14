@@ -398,7 +398,7 @@ orennayar_material
 dielectric_material
 {
 	name				clear_glass
-	tau					pnt_clear_glass
+	tau			0.998
 	ior					1.52
 	scattering			100000.0
 }
@@ -407,7 +407,7 @@ dielectric_material
 dielectric_material
 {
 	name				green_glass
-	tau					pnt_tinted_glass
+	tau			0.96 0.98 0.96
 	ior					1.48
 	scattering			100000.0
 }
@@ -419,7 +419,7 @@ dielectric_material
 dielectric_material
 {
 	name				fog_shell_mat
-	tau					pnt_fog_shell
+	tau			0.999
 	ior					1.001
 	scattering			100000.0
 }

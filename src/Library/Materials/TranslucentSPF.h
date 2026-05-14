@@ -17,6 +17,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -28,15 +29,15 @@ namespace RISE
 		protected:
 			virtual ~TranslucentSPF( );
 
-			const IPainter&					pRefFront;			// Reflectance
-			const IPainter&					pTrans;				// Transmittance of the primary layer
-			const IPainter&					pExtinction;		// Extinction factor of overall interior
-			const IPainter&					N;					// Phong exponent
-			const IPainter&					pScat;				// Multiple scattering factor
+			const IPainter&					pRefFront;			// Reflectance (color)
+			const IPainter&					pTrans;				// Transmittance of the primary layer (color)
+			const IScalarPainter&			pExtinction;		// Extinction factor (physical scalar)
+			const IScalarPainter&			N;					// Phong exponent (physical scalar)
+			const IScalarPainter&			pScat;				// Multiple scattering factor (physical scalar)
 
 
 		public:
-			TranslucentSPF( const IPainter& rF, const IPainter& T, const IPainter& ext, const IPainter& N_, const IPainter& scat );
+			TranslucentSPF( const IPainter& rF, const IPainter& T, const IScalarPainter& ext, const IScalarPainter& N_, const IScalarPainter& scat );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.  

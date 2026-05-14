@@ -109,8 +109,8 @@ uniformcolor_painter
 dielectric_material
 {
 	name				glass
-	tau					pnt_glass_tau
-	ior					pnt_glass_ior
+	tau			1
+	ior			1.5
 }
 
 ##################################################

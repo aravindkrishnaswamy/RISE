@@ -18,6 +18,7 @@
 #define WARD_ISOTROPIC_GAUSSIAN_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "WardIsotropicGaussianBRDF.h"
 #include "WardIsotropicGaussianSPF.h"
@@ -41,10 +42,10 @@ namespace RISE
 			}
 
 		public:
-			WardIsotropicGaussianMaterial( 
+			WardIsotropicGaussianMaterial(
 				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& alpha
+				const IScalarPainter& alpha
 				)
 			{
 				pBRDF = new WardIsotropicGaussianBRDF( diffuse, specular, alpha );

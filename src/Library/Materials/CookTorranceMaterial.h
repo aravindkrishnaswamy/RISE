@@ -15,6 +15,7 @@
 #define COOKTORRANCE_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "CookTorranceBRDF.h"
 #include "CookTorranceSPF.h"
@@ -39,11 +40,11 @@ namespace RISE
 
 		public:
 			CookTorranceMaterial(
-				const IPainter& diffuse, 
+				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& masking,
-				const IPainter& ior,
-				const IPainter& ext
+				const IScalarPainter& masking,
+				const IScalarPainter& ior,
+				const IScalarPainter& ext
 				)
 			{
 				pBRDF = new CookTorranceBRDF( diffuse, specular, masking, ior, ext );

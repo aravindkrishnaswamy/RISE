@@ -18,6 +18,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 #include "CookTorranceBRDF.h"
 
@@ -32,19 +33,19 @@ namespace RISE
 		protected:
 			virtual ~CookTorranceSPF( );
 
-			const IPainter& pDiffuse;
-			const IPainter& pSpecular;
-			const IPainter& pMasking;
-			const IPainter& pIOR;
-			const IPainter& pExtinction;
+			const IPainter&			pDiffuse;
+			const IPainter&			pSpecular;
+			const IScalarPainter&	pMasking;		// roughness (physical scalar)
+			const IScalarPainter&	pIOR;
+			const IScalarPainter&	pExtinction;
 
 		public:
 			CookTorranceSPF(
 				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& masking,
-				const IPainter& ior,
-				const IPainter& ext
+				const IScalarPainter& masking,
+				const IScalarPainter& ior,
+				const IScalarPainter& ext
 				);
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return

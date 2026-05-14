@@ -38,6 +38,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -51,19 +52,19 @@ namespace RISE
 		protected:
 			virtual ~SubSurfaceScatteringSPF();
 
-			const IPainter&		ior;		// Index of refraction
-			const IPainter&		absorption;	// Absorption coefficient (kept for parameter storage)
-			const IPainter&		scattering;	// Scattering coefficient (kept for parameter storage)
-			const Scalar		g;			// HG asymmetry parameter (kept for parameter storage)
-			const Scalar		roughness;	// Surface roughness for microfacet boundary [0, 1]
-			const Scalar		alpha;		// GGX alpha = roughness^2
-			const bool			bAbsorbBackFace;	// If true, back-face hits are absorbed (no scattering)
+			const IScalarPainter&	ior;		// Index of refraction (physical scalar)
+			const IScalarPainter&	absorption;	// Absorption coefficient (kept for parameter storage)
+			const IScalarPainter&	scattering;	// Scattering coefficient (kept for parameter storage)
+			const Scalar			g;			// HG asymmetry parameter (kept for parameter storage)
+			const Scalar			roughness;	// Surface roughness for microfacet boundary [0, 1]
+			const Scalar			alpha;		// GGX alpha = roughness^2
+			const bool				bAbsorbBackFace;	// If true, back-face hits are absorbed (no scattering)
 
 		public:
 			SubSurfaceScatteringSPF(
-				const IPainter& ior_,
-				const IPainter& absorption_,
-				const IPainter& scattering_,
+				const IScalarPainter& ior_,
+				const IScalarPainter& absorption_,
+				const IScalarPainter& scattering_,
 				const Scalar g_,
 				const Scalar roughness_,
 				const bool bAbsorbBackFace_ = false

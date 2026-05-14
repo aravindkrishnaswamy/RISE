@@ -42,6 +42,8 @@
 #include "../src/Library/Interfaces/ISPF.h"
 #include "../src/Library/Interfaces/IPainter.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
 
 // SPF implementations
 #include "../src/Library/Materials/LambertianSPF.h"
@@ -475,17 +477,33 @@ int main()
     UniformColorPainter* ashNu      = new UniformColorPainter( RISEPel(100.0, 100.0, 100.0) ); ashNu->addref();
     UniformColorPainter* ashNv      = new UniformColorPainter( RISEPel(50.0, 50.0, 50.0) );  ashNv->addref();
 
+    // Scalar twins — IScalarPainter slots (physical scalars), no JH
+    // spectral uplift.  Declared before any SPF/BRDF constructions
+    // that consume them.
+    UniformScalarPainter* roughnessSc   = new UniformScalarPainter( 0.3 );    roughnessSc->addref();
+    UniformScalarPainter* highExpSc     = new UniformScalarPainter( 50.0 );   highExpSc->addref();
+    UniformScalarPainter* ashNuSc       = new UniformScalarPainter( 100.0 );  ashNuSc->addref();
+    UniformScalarPainter* ashNvSc       = new UniformScalarPainter( 50.0 );   ashNvSc->addref();
+    UniformScalarPainter* alphaSmallSc  = new UniformScalarPainter( 0.2 );    alphaSmallSc->addref();
+    UniformScalarPainter* alphaSmallYSc = new UniformScalarPainter( 0.3 );    alphaSmallYSc->addref();
+    UniformScalarPainter* isotropySc    = new UniformScalarPainter( 0.8 );    isotropySc->addref();
+    UniformScalarPainter* lowSc         = new UniformScalarPainter( 0.1 );    lowSc->addref();
+    UniformScalarPainter* extinctionSc  = new UniformScalarPainter( 0.0 );    extinctionSc->addref();
+    UniformScalarPainter* iorScalarTop  = new UniformScalarPainter( 1.5 );    iorScalarTop->addref();
+    UniformScalarPainter* phongNSc      = new UniformScalarPainter( 10.0 );   phongNSc->addref();
+    UniformScalarPainter* scatFactorSc  = new UniformScalarPainter( 0.3 );    scatFactorSc->addref();
+
     // Construct SPFs
     LambertianSPF* lambertian = new LambertianSPF( *white );  lambertian->addref();
-    OrenNayarSPF* orenNayar = new OrenNayarSPF( *white, *roughness );  orenNayar->addref();
-    IsotropicPhongSPF* phong = new IsotropicPhongSPF( *gray, *spec, *highExp );  phong->addref();
-    CookTorranceSPF* cookTorrance = new CookTorranceSPF( *gray, *spec, *low, *ior, *extinction );  cookTorrance->addref();
-    GGXSPF* ggxIso = new GGXSPF( *gray, *spec, *alphaSmall, *alphaSmall, *ior, *extinction );  ggxIso->addref();
-    GGXSPF* ggxAniso = new GGXSPF( *gray, *spec, *alphaSmall, *alphaSmallY, *ior, *extinction );  ggxAniso->addref();
-    SchlickSPF* schlick = new SchlickSPF( *gray, *spec, *roughness, *isotropy );  schlick->addref();
-    WardIsotropicGaussianSPF* wardIso = new WardIsotropicGaussianSPF( *gray, *spec, *alphaSmall );  wardIso->addref();
-    WardAnisotropicEllipticalGaussianSPF* wardAniso = new WardAnisotropicEllipticalGaussianSPF( *gray, *spec, *alphaSmall, *alphaSmallY );  wardAniso->addref();
-    AshikminShirleyAnisotropicPhongSPF* ashikmin = new AshikminShirleyAnisotropicPhongSPF( *ashNu, *ashNv, *gray, *spec );  ashikmin->addref();
+    OrenNayarSPF* orenNayar = new OrenNayarSPF( *white, *roughnessSc );  orenNayar->addref();
+    IsotropicPhongSPF* phong = new IsotropicPhongSPF( *gray, *spec, *highExpSc );  phong->addref();
+    CookTorranceSPF* cookTorrance = new CookTorranceSPF( *gray, *spec, *lowSc, *iorScalarTop, *extinctionSc );  cookTorrance->addref();
+    GGXSPF* ggxIso = new GGXSPF( *gray, *spec, *alphaSmallSc, *alphaSmallSc, *iorScalarTop, *extinctionSc );  ggxIso->addref();
+    GGXSPF* ggxAniso = new GGXSPF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc, *iorScalarTop, *extinctionSc );  ggxAniso->addref();
+    SchlickSPF* schlick = new SchlickSPF( *gray, *spec, *roughnessSc, *isotropySc );  schlick->addref();
+    WardIsotropicGaussianSPF* wardIso = new WardIsotropicGaussianSPF( *gray, *spec, *alphaSmallSc );  wardIso->addref();
+    WardAnisotropicEllipticalGaussianSPF* wardAniso = new WardAnisotropicEllipticalGaussianSPF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc );  wardAniso->addref();
+    AshikminShirleyAnisotropicPhongSPF* ashikmin = new AshikminShirleyAnisotropicPhongSPF( *ashNuSc, *ashNvSc, *gray, *spec );  ashikmin->addref();
 
     // Initialize the global log to prevent null pointer crashes
     GlobalLog();
@@ -502,14 +520,21 @@ int main()
     UniformColorPainter* sssScat     = new UniformColorPainter( RISEPel(1.0, 1.0, 1.0) );  sssScat->addref();
     UniformColorPainter* zeroExt     = new UniformColorPainter( RISEPel(0.0, 0.0, 0.0) );  zeroExt->addref();
 
-    // Translucent SPF: front reflectance, transmittance, extinction, Phong N, scattering
-    TranslucentSPF* translucent = new TranslucentSPF( *gray, *trans, *extinction, *phongN, *scatFactor );  translucent->addref();
+    // Scalar twins (IScalarPainter slots — physical scalars, no JH uplift).
+    UniformScalarPainter* tauScalar     = new UniformScalarPainter( 0.9 );   tauScalar->addref();
+    UniformScalarPainter* iorScalar     = new UniformScalarPainter( 1.5 );   iorScalar->addref();
+    UniformScalarPainter* polishScatSc  = new UniformScalarPainter( 20.0 );  polishScatSc->addref();
 
-    // Polished SPF: diffuse Rd, dielectric transmittance tau, IOR Nt, scattering (Phong exponent), bHG=false
-    PolishedSPF* polished = new PolishedSPF( *gray, *tauPainter, *ior, *polishScat, false );  polished->addref();
+    // Translucent SPF: front reflectance, transmittance (color); extinction, Phong N, scattering (scalar).
+    TranslucentSPF* translucent = new TranslucentSPF( *gray, *trans, *extinctionSc, *phongNSc, *scatFactorSc );  translucent->addref();
+
+    // Polished SPF: diffuse Rd (color), tau/IOR/scattering as IScalarPainter.
+    PolishedSPF* polished = new PolishedSPF( *gray, *tauScalar, *iorScalar, *polishScatSc, false );  polished->addref();
 
     // SubSurfaceScattering SPF: IOR, absorption, scattering, g=0.8, roughness=0.3
-    SubSurfaceScatteringSPF* sss = new SubSurfaceScatteringSPF( *ior, *sssAbsorb, *sssScat, 0.8, 0.3 );  sss->addref();
+    UniformScalarPainter* sssAbsorbSc = new UniformScalarPainter( 0.01 ); sssAbsorbSc->addref();
+    UniformScalarPainter* sssScatSc   = new UniformScalarPainter( 1.0 );  sssScatSc->addref();
+    SubSurfaceScatteringSPF* sss = new SubSurfaceScatteringSPF( *iorScalar, *sssAbsorbSc, *sssScatSc, 0.8, 0.3 );  sss->addref();
 
     // Composite SPF: two Lambertian layers, max_recur=4, reflection/refraction/diffuse/translucent limits, thickness=0.1, zero extinction
     LambertianSPF* lambertian2 = new LambertianSPF( *spec );  lambertian2->addref();

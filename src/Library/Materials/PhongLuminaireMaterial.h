@@ -17,6 +17,7 @@
 
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "PhongEmitter.h"
 
@@ -37,7 +38,7 @@ namespace RISE
 			}
 
 		public:
-			PhongLuminaireMaterial( const IPainter& radEx, const Scalar scale, const IPainter& N, const IMaterial& pMaterial_ ) : 
+			PhongLuminaireMaterial( const IPainter& radEx, const Scalar scale, const IScalarPainter& N, const IMaterial& pMaterial_ ) :
 			pMaterial( pMaterial_ )
 			{
 				pMaterial.addref();

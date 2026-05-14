@@ -19,11 +19,11 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-WardAnisotropicEllipticalGaussianBRDF::WardAnisotropicEllipticalGaussianBRDF( 
+WardAnisotropicEllipticalGaussianBRDF::WardAnisotropicEllipticalGaussianBRDF(
 	const IPainter& diffuse_,
 	const IPainter& specular_,
-	const IPainter& alphax_,
-	const IPainter& alphay_
+	const IScalarPainter& alphax_,
+	const IScalarPainter& alphay_
 	) :
   diffuse( diffuse_ ),
   specular( specular_ ),
@@ -83,7 +83,11 @@ static void ComputeFactors(
 RISEPel WardAnisotropicEllipticalGaussianBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	RISEPel d, s;
-	ComputeFactors<RISEPel>( d, s, vLightIn, ri, alphax.GetColor(ri), alphay.GetColor(ri) );
+	const ScalarTriple axt = alphax.GetValuesAt(ri);
+	const ScalarTriple ayt = alphay.GetValuesAt(ri);
+	const RISEPel ax( axt.v[0], axt.v[1], axt.v[2] );
+	const RISEPel ay( ayt.v[0], ayt.v[1], ayt.v[2] );
+	ComputeFactors<RISEPel>( d, s, vLightIn, ri, ax, ay );
 
 	return d*diffuse.GetColor(ri) + s*specular.GetColor(ri);
 }
@@ -91,7 +95,7 @@ RISEPel WardAnisotropicEllipticalGaussianBRDF::value( const Vector3& vLightIn, c
 Scalar WardAnisotropicEllipticalGaussianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar d=0, s=0;
-	ComputeFactors<Scalar>( d, s, vLightIn, ri, alphax.GetColorNM(ri,nm), alphay.GetColorNM(ri,nm) );
+	ComputeFactors<Scalar>( d, s, vLightIn, ri, alphax.GetValueAtNM(ri,nm), alphay.GetValueAtNM(ri,nm) );
 
 	return d*diffuse.GetColorNM(ri,nm) + s*specular.GetColorNM(ri,nm);
 }

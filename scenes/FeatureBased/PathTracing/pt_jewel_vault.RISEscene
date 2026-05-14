@@ -364,7 +364,7 @@ ward_isotropic_material
 dielectric_material
 {
 	name				clear_glass_mat
-	tau					pnt_clear_tau
+	tau			0.998
 	ior					1.52
 	scattering			100000.0
 }
@@ -373,7 +373,7 @@ dielectric_material
 dielectric_material
 {
 	name				amber_glass_mat
-	tau					pnt_amber_tau
+	tau			0.998 0.72 0.32
 	ior					1.58
 	scattering			100000.0
 }
@@ -382,7 +382,7 @@ dielectric_material
 dielectric_material
 {
 	name				sapphire_glass_mat
-	tau					pnt_sapphire_tau
+	tau			0.35 0.55 0.998
 	ior					1.77
 	scattering			100000.0
 }

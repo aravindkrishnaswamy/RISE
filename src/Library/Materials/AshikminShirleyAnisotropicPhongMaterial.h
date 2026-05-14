@@ -17,6 +17,7 @@
 
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "AshikminShirleyAnisotropicPhongBRDF.h"
 #include "AshikminShirleyAnisotropicPhongSPF.h"
@@ -39,10 +40,10 @@ namespace RISE
 
 		public:
 			AshikminShirleyAnisotropicPhongMaterial(
-				const IPainter& Nu_, 
-				const IPainter& Nv_, 
-				const IPainter& Rd_, 
-				const IPainter& Rs_ 
+				const IScalarPainter& Nu_,
+				const IScalarPainter& Nv_,
+				const IPainter& Rd_,
+				const IPainter& Rs_
 				)
 			{
 				pBRDF = new AshikminShirleyAnisotropicPhongBRDF( Nu_, Nv_, Rd_, Rs_ );

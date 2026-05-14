@@ -128,7 +128,7 @@ checker_painter
 dielectric_material
 {
 	name				glass_lens
-	tau					pnt_glass_clear
+	tau			0.97 0.97 0.99
 	ior					1.52
 	scattering			100000.0
 }
@@ -137,7 +137,7 @@ dielectric_material
 dielectric_material
 {
 	name				glass_rose
-	tau					pnt_glass_rose
+	tau			0.95 0.75 0.8
 	ior					1.62
 	scattering			100000.0
 }

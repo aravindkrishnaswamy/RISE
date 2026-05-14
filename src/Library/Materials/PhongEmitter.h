@@ -17,6 +17,7 @@
 
 #include "../Interfaces/IEmitter.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -28,14 +29,14 @@ namespace RISE
 		protected:
 			const IPainter&			radEx;
 			const Scalar			scale;
-			const IPainter&			phongN;
+			const IScalarPainter&	phongN;
 			RISEPel					averageRadEx;
 			VisibleSpectralPacket	averageSpectrum;
-			
+
 			virtual ~PhongEmitter();
 
 		public:
-			PhongEmitter( const IPainter& radEx_, const Scalar scale_, const IPainter& N );
+			PhongEmitter( const IPainter& radEx_, const Scalar scale_, const IScalarPainter& N );
 
 			virtual RISEPel	emittedRadiance( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N) const;
 			virtual Scalar	emittedRadianceNM( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N, const Scalar nm ) const;

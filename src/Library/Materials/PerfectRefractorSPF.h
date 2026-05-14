@@ -18,6 +18,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -27,8 +28,8 @@ namespace RISE
 		class PerfectRefractorSPF : public virtual ISPF, public virtual Reference
 		{
 		protected:
-			const IPainter&				refractivity;
-			const IPainter&				Nt;
+			const IPainter&				refractivity;			// Per-wavelength refractive attenuation (color)
+			const IScalarPainter&		Nt;						// Index of refraction (physical scalar, supports dispersion via spectral painter)
 
 			virtual ~PerfectRefractorSPF( );
 
@@ -42,7 +43,7 @@ namespace RISE
 				) const;
 
 		public:
-			PerfectRefractorSPF( const IPainter& ref, const IPainter& Nt_ );
+			PerfectRefractorSPF( const IPainter& ref, const IScalarPainter& Nt_ );
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
@@ -52,7 +53,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
-				info.ior = Nt.GetColor( ri )[0];
+				info.ior = Nt.GetValuesAt( ri ).v[0];
 				info.attenuation = refractivity.GetColor( ri );
 				info.valid = true;
 				return info;
@@ -67,7 +68,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
-				info.ior = Nt.GetColorNM( ri, nm );
+				info.ior = Nt.GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
 			}

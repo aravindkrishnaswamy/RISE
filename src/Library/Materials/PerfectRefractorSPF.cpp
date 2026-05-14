@@ -20,8 +20,8 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 PerfectRefractorSPF::PerfectRefractorSPF(
-	const IPainter& ref, 
-	const IPainter& Nt_ 
+	const IPainter& ref,
+	const IScalarPainter& Nt_
 	) :
   refractivity( ref ),
   Nt( Nt_ )
@@ -135,17 +135,16 @@ void PerfectRefractorSPF::Scatter(
 	) const
 {
 	Scalar		cosine = Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
-	
-	const RISEPel ior = Nt.GetColor(ri);
 
-	// Check to see if we have any dispersion
-	if( (ior[0] == ior[1]) && (ior[1] == ior[2]) ) {
-		// No dispersion
-		DoSingleRGBComponent( ri, scattered, ior_stack, false, ior[0], cosine );
+	const ScalarTriple ior = Nt.GetValuesAt(ri);
+
+	// Dispersion is now an explicit static-property report from the
+	// IScalarPainter — no FP-fuzzy compare needed.
+	if( !Nt.HasPerChannelVariation() ) {
+		DoSingleRGBComponent( ri, scattered, ior_stack, false, ior.v[0], cosine );
 	} else {
-		// We have dispersion, so we must process each component seperately
 		for( int i=0; i<3; i++ ) {
-			DoSingleRGBComponent( ri, scattered, ior_stack, i+1, ior[i], cosine );
+			DoSingleRGBComponent( ri, scattered, ior_stack, i+1, ior.v[i], cosine );
 		}
 	}
 }
@@ -170,7 +169,7 @@ void PerfectRefractorSPF::ScatterNM(
 
 	Vector3	vRefracted = ri.ray.Dir();
 
-	Scalar newIOR = Nt.GetColorNM(ri,nm);
+	Scalar newIOR = Nt.GetValueAtNM(ri,nm);
 
 	// Use the IOR stack as the authoritative source for inside/outside
 	// determination when available (see DoSingleRGBComponent for details)

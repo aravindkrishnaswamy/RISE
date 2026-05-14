@@ -21,10 +21,10 @@
 
 using namespace RISE;
 
-IPainter* UniformColorPainterFromScalar( const Scalar val )
+IScalarPainter* UniformScalarPainterFromScalar( const Scalar val )
 {
-	IPainter* ret = 0;
-	RISE_API_CreateUniformColorPainter( &ret, RISEPel( val, val, val ) );
+	IScalarPainter* ret = 0;
+	RISE_API_CreateUniformScalarPainter( &ret, val );
 	return ret;
 }
 
@@ -83,25 +83,25 @@ int main( int argc, char** argv )
 
 		RISE_API_CreateBioSpecSkinMaterial( 
 			&pMaterial,
-			*(UniformColorPainterFromScalar( thickness_SC )),
-			*(UniformColorPainterFromScalar( thickness_epidermis )),
-			*(UniformColorPainterFromScalar( thickness_papillary_dermis )),
-			*(UniformColorPainterFromScalar( thickness_reticular_dermis )),
-			*(UniformColorPainterFromScalar( ior_SC )),
-			*(UniformColorPainterFromScalar( ior_epidermis )),
-			*(UniformColorPainterFromScalar( ior_papillary_dermis )),
-			*(UniformColorPainterFromScalar( ior_reticular_dermis )),
-			*(UniformColorPainterFromScalar( concentration_eumelanin )),
-			*(UniformColorPainterFromScalar( concentration_pheomelanin )),
-			*(UniformColorPainterFromScalar( melanosomes_in_epidermis )),
-			*(UniformColorPainterFromScalar( hb_ratio )),
-			*(UniformColorPainterFromScalar( whole_blood_in_papillary_dermis )),
-			*(UniformColorPainterFromScalar( whole_blood_in_reticular_dermis )),
-			*(UniformColorPainterFromScalar( bilirubin_concentration )),
-			*(UniformColorPainterFromScalar( betacarotene_concentration_SC )),
-			*(UniformColorPainterFromScalar( betacarotene_concentration_epidermis )),
-			*(UniformColorPainterFromScalar( betacarotene_concentration_dermis )),
-			*(UniformColorPainterFromScalar( folds_aspect_ratio )),
+			*(UniformScalarPainterFromScalar( thickness_SC )),
+			*(UniformScalarPainterFromScalar( thickness_epidermis )),
+			*(UniformScalarPainterFromScalar( thickness_papillary_dermis )),
+			*(UniformScalarPainterFromScalar( thickness_reticular_dermis )),
+			*(UniformScalarPainterFromScalar( ior_SC )),
+			*(UniformScalarPainterFromScalar( ior_epidermis )),
+			*(UniformScalarPainterFromScalar( ior_papillary_dermis )),
+			*(UniformScalarPainterFromScalar( ior_reticular_dermis )),
+			*(UniformScalarPainterFromScalar( concentration_eumelanin )),
+			*(UniformScalarPainterFromScalar( concentration_pheomelanin )),
+			*(UniformScalarPainterFromScalar( melanosomes_in_epidermis )),
+			*(UniformScalarPainterFromScalar( hb_ratio )),
+			*(UniformScalarPainterFromScalar( whole_blood_in_papillary_dermis )),
+			*(UniformScalarPainterFromScalar( whole_blood_in_reticular_dermis )),
+			*(UniformScalarPainterFromScalar( bilirubin_concentration )),
+			*(UniformScalarPainterFromScalar( betacarotene_concentration_SC )),
+			*(UniformScalarPainterFromScalar( betacarotene_concentration_epidermis )),
+			*(UniformScalarPainterFromScalar( betacarotene_concentration_dermis )),
+			*(UniformScalarPainterFromScalar( folds_aspect_ratio )),
 			bSubdermalLayer
 			);
 	}

@@ -90,7 +90,7 @@ lambertian_luminaire_material
 dielectric_material
 {
 	name				glass_mat
-	tau					pnt_glass_tau
+	tau			0.998
 	ior					1.5
 	scattering			100000.0
 }

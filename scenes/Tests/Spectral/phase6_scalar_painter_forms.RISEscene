@@ -1,0 +1,304 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#   File:           phase6_scalar_painter_forms.RISEscene                                                   #
+#   Description:    Exercise multiple scalar_painter forms in a single scene — `value`, `values` (RGB),     #
+#                   `sellmeier` (analytic dispersion), `file` (piecewise-linear), and `polynomial`.         #
+#                   Three dielectric spheres, each driven by a different scalar_painter form.               #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      May 14, 2026                                                                            #
+#############################################################################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+bdpt_spectral_rasterizer
+{
+	samples					96
+	max_eye_depth			5
+	max_light_depth			5
+	nmbegin					405
+	nmend					705
+	num_wavelengths			8
+	spectral_samples		1
+	hwss					true
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/phase6_scalar_painter_forms
+	type				PNG
+	bpp				16
+	color_space			ProPhotoRGB
+}
+
+film
+{
+	width			256
+	height			128
+}
+
+pinhole_camera
+{
+	location			0.278 0.273 -0.900
+	lookat				0.278 0.273 0
+	up					0 1 0
+	fov					37.0
+}
+
+# Per-wavelength tau (piecewise-linear from data file).
+scalar_painter
+{
+	name				tau_glass
+	file				colors/flat_1.spectra
+}
+
+# Sellmeier dispersion (BK7 crown glass).
+scalar_painter
+{
+	name				ior_bk7
+	sellmeier			1.03961212 0.231792344 1.01046945 0.00600069867 0.0200179144 103.560653
+}
+
+# Polynomial(λ) — n(λ) = 1.5 + 1e-5·(λ-550)² (mild blue-shifted dispersion).
+# Polynomial is evaluated in nm directly; coefficients = (c0, c1, ...).
+scalar_painter
+{
+	name				ior_poly
+	polynomial			1.5 0 0
+}
+
+# Inline `values` form — per-RGB-channel IOR (no spectral interpolation; just R/G/B triplet).
+scalar_painter
+{
+	name				ior_rgb
+	values				1.40 1.50 1.60
+}
+
+# Scattering inline scalar (uniform).
+scalar_painter
+{
+	name				scat_uniform
+	value				1000000
+}
+
+# Cornell-box wall reflectance.
+spectral_painter
+{
+	name				pnt_white
+	file				colors/cornellbox_white.spectra
+	nmbegin				400
+	nmend				700
+	scale				4
+}
+
+spectral_painter
+{
+	name				pnt_red
+	file				colors/cornellbox_red.spectra
+	nmbegin				400
+	nmend				700
+	scale				4
+}
+
+spectral_painter
+{
+	name				pnt_green
+	file				colors/cornellbox_green.spectra
+	nmbegin				400
+	nmend				700
+	scale				4
+}
+
+spectral_painter
+{
+	name				pnt_light
+	file				colors/cornellbox_light.spectra
+	nmbegin				386
+	nmend				711
+	scale				4
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			pnt_red
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_light
+	scale				10.0
+	material			none
+}
+
+# Glass 1: BK7 dispersion (sellmeier).
+dielectric_material
+{
+	name				glass_bk7
+	tau					tau_glass
+	ior					ior_bk7
+	scattering			scat_uniform
+}
+
+# Glass 2: polynomial IOR (constant 1.5).
+dielectric_material
+{
+	name				glass_poly
+	tau					tau_glass
+	ior					ior_poly
+	scattering			scat_uniform
+}
+
+# Glass 3: per-channel RGB IOR (chromatic dispersion via inline values).
+dielectric_material
+{
+	name				glass_rgb
+	tau					tau_glass
+	ior					ior_rgb
+	scattering			scat_uniform
+}
+
+# Cornell box geometry.
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					0.5528 0 0
+	ptb					0 0 0
+	ptc					0 0 0.5592
+	ptd					0.5496 0 0.5592
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta					0.556 0.5488 0.0
+	ptb					0.556 0.5488 0.5592
+	ptc					0 0.5488 0.5592
+	ptd					0.0 0.5488 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta					0.5496 0 0.5592
+	ptb					0 0 0.5592
+	ptc					0 0.5488 0.5592
+	ptd					0.556 0.5488 0.5592
+}
+
+clippedplane_geometry
+{
+	name				rwallgeom
+	pta					0 0 0.5592
+	ptb					0 0 0
+	ptc					0 0.5488 0.0
+	ptd					0 0.5488 0.5592
+}
+
+clippedplane_geometry
+{
+	name				lwallgeom
+	pta					0.5528 0 0
+	ptb					0.5496 0 0.5592
+	ptc					0.556 0.5488 0.5592
+	ptd					0.556 0.5488 0
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta					0.3430 0.5487999 0.2270
+	ptb					0.3430 0.5487999 0.3320
+	ptc					0.2130 0.5487999 0.3320
+	ptd					0.2130 0.5487999 0.2270
+}
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				0.07
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				rwall
+	geometry			rwallgeom
+	material			green
+}
+
+standard_object
+{
+	name				lwall
+	geometry			lwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+# Three glass spheres side-by-side: BK7 (left), polynomial (centre), RGB-triple (right).
+standard_object
+{
+	name				sphere_bk7
+	geometry			spheregeom
+	position			0.13 0.10 0.20
+	material			glass_bk7
+}
+
+standard_object
+{
+	name				sphere_poly
+	geometry			spheregeom
+	position			0.28 0.10 0.20
+	material			glass_poly
+}
+
+standard_object
+{
+	name				sphere_rgb
+	geometry			spheregeom
+	position			0.43 0.10 0.20
+	material			glass_rgb
+}

@@ -214,7 +214,7 @@ ward_anisotropic_material
 dielectric_material
 {
 	name				crown_glass
-	tau					pnt_glass
+	tau			0.94 0.98 1
 	ior					1.52
 	scattering			7000.0
 }

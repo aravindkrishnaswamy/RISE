@@ -376,7 +376,7 @@ subsurfacescattering_material
 {
 	name		mat_creature1
 	ior			1.3
-	absorption	c1_sss_absorption
+	absorption			0.1
 	scattering	c1_sss_scattering
 	g			0.0
 	roughness	0.0

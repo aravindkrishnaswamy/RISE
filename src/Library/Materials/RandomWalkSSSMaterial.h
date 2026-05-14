@@ -33,6 +33,7 @@
 #define RANDOM_WALK_SSS_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "SubSurfaceScatteringBSDF.h"
 #include "SubSurfaceScatteringSPF.h"
@@ -50,7 +51,7 @@ namespace RISE
 			SubSurfaceScatteringBSDF*		pBSDF;
 			SubSurfaceScatteringSPF*		pSPF;
 			RandomWalkSSSParams				m_rwParams;
-			const IPainter&					iorPainter;
+			const IScalarPainter&			iorPainter;
 			const Scalar					surfaceRoughness;
 
 			virtual ~RandomWalkSSSMaterial()
@@ -62,9 +63,9 @@ namespace RISE
 
 		public:
 			RandomWalkSSSMaterial(
-				const IPainter& ior,
-				const IPainter& absorption,
-				const IPainter& scattering,
+				const IScalarPainter& ior,
+				const IScalarPainter& absorption,
+				const IScalarPainter& scattering,
 				const Scalar g,
 				const Scalar roughness,
 				const unsigned int maxBounces
@@ -81,15 +82,8 @@ namespace RISE
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 
 				// Evaluate painters at a dummy intersection to extract
-				// scalar coefficients for the random walk.
-				//
-				// LIMITATION: textured or procedural painters are
-				// sampled once here and flattened to constant values.
-				// Spatially-varying absorption/scattering and
-				// wavelength-dependent IOR for the subsurface walk
-				// are not currently supported.  Supporting them would
-				// require passing painter references through to the
-				// walk algorithm and evaluating per-intersection.
+				// scalar coefficients for the random walk.  Same
+				// flatten-to-constant LIMITATION as before.
 				RayIntersectionGeometric dummyRI(
 					Ray( Point3(0,0,0), Vector3(0,1,0) ),
 					nullRasterizerState );
@@ -98,13 +92,15 @@ namespace RISE
 				dummyRI.vNormal = Vector3( 0, 1, 0 );
 				dummyRI.onb.CreateFromW( dummyRI.vNormal );
 
-				m_rwParams.sigma_a = absorption.GetColor( dummyRI );
-				m_rwParams.sigma_s = scattering.GetColor( dummyRI );
+				const ScalarTriple sa_t = absorption.GetValuesAt( dummyRI );
+				const ScalarTriple ss_t = scattering.GetValuesAt( dummyRI );
+				m_rwParams.sigma_a = RISEPel( sa_t.v[0], sa_t.v[1], sa_t.v[2] );
+				m_rwParams.sigma_s = RISEPel( ss_t.v[0], ss_t.v[1], ss_t.v[2] );
 				SSSCoefficients::FromCoefficients(
 					m_rwParams.sigma_a, m_rwParams.sigma_s,
 					m_rwParams.sigma_t );
 				m_rwParams.g = g;
-				m_rwParams.ior = ior.GetColor( dummyRI )[0];
+				m_rwParams.ior = ior.GetValuesAt( dummyRI ).v[0];
 				m_rwParams.maxBounces = maxBounces;
 			}
 
@@ -141,7 +137,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetColor( ri )[0];
+				info.ior = iorPainter.GetValuesAt( ri ).v[0];
 				info.valid = true;
 				return info;
 			}
@@ -155,7 +151,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetColorNM( ri, nm );
+				info.ior = iorPainter.GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
 			}

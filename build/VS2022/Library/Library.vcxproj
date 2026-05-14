@@ -584,6 +584,8 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\IOptions.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IPainterManager.h" />
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Interfaces\IScalarPainterManager.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IParametricSurface.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IPhotonMap.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IPhotonTracer.h" />
@@ -649,6 +651,7 @@
     <ClInclude Include="..\..\..\src\Library\Managers\ModifierManager.h" />
     <ClInclude Include="..\..\..\src\Library\Managers\ObjectManager.h" />
     <ClInclude Include="..\..\..\src\Library\Managers\PainterManager.h" />
+    <ClInclude Include="..\..\..\src\Library\Managers\ScalarPainterManager.h" />
     <ClInclude Include="..\..\..\src\Library\Managers\ShaderManager.h" />
     <ClInclude Include="..\..\..\src\Library\Managers\ShaderOpManager.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongBRDF.h" />
@@ -731,7 +734,18 @@
     <ClInclude Include="..\..\..\src\Library\Painters\Worley3DPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\SpectralColorPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\TexturePainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\TextureScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\UniformColorPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\UniformScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\PainterToScalarAdapter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\RGBScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\PiecewiseLinearScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\SellmeierScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\PolynomialScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\Function1DScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\Function2DScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\ScaledScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\MultiplyScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\VertexColorPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Voronoi2DPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Voronoi3DPainter.h" />

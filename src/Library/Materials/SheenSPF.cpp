@@ -28,7 +28,7 @@ using namespace RISE::Implementation;
 
 SheenSPF::SheenSPF(
 	const IPainter& sheenColor,
-	const IPainter& sheenRoughness
+	const IScalarPainter& sheenRoughness
 	) :
   pColor( sheenColor ),
   pRoughness( sheenRoughness )
@@ -73,7 +73,7 @@ void SheenSPF::Scatter(
 	const Vector3 h = Vector3Ops::Normalize( wo + v );
 	const Scalar nDotH = r_max( Scalar(0), Vector3Ops::Dot( n, h ) );
 
-	const Scalar alpha = r_max( ColorMath::MaxValue( pRoughness.GetColor( ri ) ), Scalar(1e-3) );
+	const Scalar alpha = r_max( pRoughness.GetValuesAt( ri ).v[0], Scalar(1e-3) );
 	const Scalar D = CharlieSheen::D( alpha, nDotH );
 	const Scalar V = CharlieSheen::V( alpha, nDotL, nDotV );
 
@@ -117,7 +117,7 @@ void SheenSPF::ScatterNM(
 	const Vector3 h = Vector3Ops::Normalize( wo + v );
 	const Scalar nDotH = r_max( Scalar(0), Vector3Ops::Dot( n, h ) );
 
-	const Scalar alpha = r_max( pRoughness.GetColorNM( ri, nm ), Scalar(1e-3) );
+	const Scalar alpha = r_max( pRoughness.GetValueAtNM( ri, nm ), Scalar(1e-3) );
 	const Scalar D = CharlieSheen::D( alpha, nDotH );
 	const Scalar V = CharlieSheen::V( alpha, nDotL, nDotV );
 

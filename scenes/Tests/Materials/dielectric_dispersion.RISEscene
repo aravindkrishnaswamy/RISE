@@ -115,7 +115,7 @@ dielectric_material
 {
 	name				funkya
 	tau					color_white
-	ior					pnt_ior
+	ior			1.33 1.57 2.57
 	scattering			10000
 }
 
@@ -124,7 +124,7 @@ dielectric_material
 	name				funkyb
 	tau					color_white
 	ior					1.33
-	scattering			pnt_scat
+	scattering			500 5000 1e+09
 }
 
 

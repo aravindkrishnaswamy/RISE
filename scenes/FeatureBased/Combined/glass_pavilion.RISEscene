@@ -165,7 +165,7 @@ lambertian_material
 dielectric_material
 {
 	name				glass
-	tau					pnt_glass
+	tau			0.95 0.97 0.98
 	ior					1.52
 	scattering			10000.0
 }

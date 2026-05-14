@@ -14,6 +14,7 @@
 #define GGX_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "GGXBRDF.h"
 #include "GGXSPF.h"
@@ -43,10 +44,10 @@ namespace RISE
 			GGXMaterial(
 				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& alphaX,
-				const IPainter& alphaY,
-				const IPainter& ior,
-				const IPainter& ext,
+				const IScalarPainter& alphaX,
+				const IScalarPainter& alphaY,
+				const IScalarPainter& ior,
+				const IScalarPainter& ext,
 				const FresnelMode fresnel_mode = eFresnelConductor,
 				const IPainter* tangent_rotation = nullptr	///< Landing 8 / KHR_materials_anisotropy.  See GGXBRDF.h for semantics.
 				) : pEmitter( 0 )
@@ -68,10 +69,10 @@ namespace RISE
 			GGXMaterial(
 				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& alphaX,
-				const IPainter& alphaY,
-				const IPainter& ior,
-				const IPainter& ext,
+				const IScalarPainter& alphaX,
+				const IScalarPainter& alphaY,
+				const IScalarPainter& ior,
+				const IScalarPainter& ext,
 				const IPainter* emissive,
 				const Scalar    emissiveScale,
 				const FresnelMode fresnel_mode = eFresnelConductor,

@@ -18,7 +18,7 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-PhongEmitter::PhongEmitter( const IPainter& radEx_, const Scalar scale_, const IPainter& N ) :
+PhongEmitter::PhongEmitter( const IPainter& radEx_, const Scalar scale_, const IScalarPainter& N ) :
   radEx( radEx_ ),
   scale( scale_ ),
   phongN( N )
@@ -53,7 +53,8 @@ RISEPel PhongEmitter::emittedRadiance( const RayIntersectionGeometric& ri, const
 
 	// According to the PDF for phong PDF(theta_i) = (n+1)/(2*PI) * cos^n(alpha)
 	//   where alpha = angle between outgoing and direction of perfect specular (in this case the normal)
-	const RISEPel	pN = phongN.GetColor( ri );
+	const ScalarTriple pN_t = phongN.GetValuesAt( ri );
+	const RISEPel	pN( pN_t.v[0], pN_t.v[1], pN_t.v[2] );
 	const RISEPel	k = (pN + 1) * pow(co,pN) * (1.0 / TWO_PI);
 	return (radEx.GetColor(ri) * k * scale);
 }
@@ -67,7 +68,7 @@ Scalar PhongEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri, cons
 
 	// According to the PDF for phong PDF(theta_i) = (n+1)/(2*PI) * cos^n(alpha)
 	//   where alpha = angle between outgoing and direction of perfect specular (in this case the normal)
-	const Scalar	pN = phongN.GetColorNM( ri, nm );
+	const Scalar	pN = phongN.GetValueAtNM( ri, nm );
 	const Scalar	k = (pN + 1) * pow(co,pN) * (1.0 / TWO_PI);
 	return (radEx.GetColorNM( ri, nm ) * k * scale);
 }
@@ -84,10 +85,10 @@ Scalar PhongEmitter::averageRadiantExitanceNM( const Scalar nm ) const
 
 Vector3 PhongEmitter::getEmmittedPhotonDir( const RayIntersectionGeometric& ri, const Point2& random ) const
 {
-	const RISEPel N = phongN.GetColor(ri);
-	if( N[0] == N[1] && N[1] == N[2] ) {
-		return GeometricUtilities::CreatePhongVector( ri.onb, random, N[0] );
+	const ScalarTriple N_t = phongN.GetValuesAt(ri);
+	if( N_t.IsUniform() ) {
+		return GeometricUtilities::CreatePhongVector( ri.onb, random, N_t.v[0] );
 	} else {
-		return GeometricUtilities::CreatePhongVector( ri.onb, random, N[int(floor(random.x*3))] );
+		return GeometricUtilities::CreatePhongVector( ri.onb, random, N_t.v[int(floor(random.x*3))] );
 	}
 }

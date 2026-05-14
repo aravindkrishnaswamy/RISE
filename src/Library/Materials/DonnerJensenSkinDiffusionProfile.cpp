@@ -44,15 +44,15 @@ const Scalar DonnerJensenSkinDiffusionProfile::ms_spectral_wavelengths[NUM_SPECT
 //=============================================================
 
 DonnerJensenSkinDiffusionProfile::DonnerJensenSkinDiffusionProfile(
-	const IPainter& melanin_fraction_,
-	const IPainter& melanin_blend_,
-	const IPainter& hemoglobin_epidermis_,
-	const IPainter& carotene_fraction_,
-	const IPainter& hemoglobin_dermis_,
-	const IPainter& epidermis_thickness_,
-	const IPainter& ior_epidermis_,
-	const IPainter& ior_dermis_,
-	const IPainter& blood_oxygenation_
+	const IScalarPainter& melanin_fraction_,
+	const IScalarPainter& melanin_blend_,
+	const IScalarPainter& hemoglobin_epidermis_,
+	const IScalarPainter& carotene_fraction_,
+	const IScalarPainter& hemoglobin_dermis_,
+	const IScalarPainter& epidermis_thickness_,
+	const IScalarPainter& ior_epidermis_,
+	const IScalarPainter& ior_dermis_,
+	const IScalarPainter& blood_oxygenation_
 	) :
   pnt_melanin_fraction( melanin_fraction_ ),
   pnt_melanin_blend( melanin_blend_ ),
@@ -206,15 +206,15 @@ void DonnerJensenSkinDiffusionProfile::ComputePerLayerCoefficients(
 	) const
 {
 	// Extract painter values
-	const Scalar C_m = pnt_melanin_fraction.GetColor( ri )[0];
-	const Scalar beta_m = pnt_melanin_blend.GetColor( ri )[0];
-	const Scalar C_he = pnt_hemoglobin_epidermis.GetColor( ri )[0];
-	const Scalar C_bc = pnt_carotene_fraction.GetColor( ri )[0];
-	const Scalar C_hd = pnt_hemoglobin_dermis.GetColor( ri )[0];
-	const Scalar thickness_epi = pnt_epidermis_thickness.GetColor( ri )[0];
-	const Scalar ior_epi = pnt_ior_epidermis.GetColor( ri )[0];
-	const Scalar ior_derm = pnt_ior_dermis.GetColor( ri )[0];
-	const Scalar gamma = pnt_blood_oxygenation.GetColor( ri )[0];
+	const Scalar C_m = pnt_melanin_fraction.GetValuesAt(ri).v[0];
+	const Scalar beta_m = pnt_melanin_blend.GetValuesAt(ri).v[0];
+	const Scalar C_he = pnt_hemoglobin_epidermis.GetValuesAt(ri).v[0];
+	const Scalar C_bc = pnt_carotene_fraction.GetValuesAt(ri).v[0];
+	const Scalar C_hd = pnt_hemoglobin_dermis.GetValuesAt(ri).v[0];
+	const Scalar thickness_epi = pnt_epidermis_thickness.GetValuesAt(ri).v[0];
+	const Scalar ior_epi = pnt_ior_epidermis.GetValuesAt(ri).v[0];
+	const Scalar ior_derm = pnt_ior_dermis.GetValuesAt(ri).v[0];
+	const Scalar gamma = pnt_blood_oxygenation.GetValuesAt(ri).v[0];
 
 	const Scalar baseline = ComputeSkinBaselineAbsorption( nm );
 
@@ -720,7 +720,7 @@ Scalar DonnerJensenSkinDiffusionProfile::FresnelTransmission(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const Scalar eta = pnt_ior_epidermis.GetColor( ri )[0];
+	const Scalar eta = pnt_ior_epidermis.GetValuesAt(ri).v[0];
 	return 1.0 - SchlickFresnel( fabs(cosTheta), eta );
 }
 
@@ -728,7 +728,7 @@ Scalar DonnerJensenSkinDiffusionProfile::GetIOR(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	return pnt_ior_epidermis.GetColor( ri )[0];
+	return pnt_ior_epidermis.GetValuesAt(ri).v[0];
 }
 
 //=============================================================

@@ -20,6 +20,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -33,15 +34,15 @@ namespace RISE
 		protected:
 			virtual ~WardIsotropicGaussianSPF( );
 
-			const IPainter&	diffuse;			// diffuse reflectance
-			const IPainter&	specular;			// specular reflectance
-			const IPainter&	alpha;				// phong exponent
+			const IPainter&			diffuse;			// diffuse reflectance
+			const IPainter&			specular;			// specular reflectance
+			const IScalarPainter&	alpha;				// surface slope RMS (physical scalar)
 
 		public:
 			WardIsotropicGaussianSPF(
 				const IPainter& diffuse_,
 				const IPainter& specular_,
-				const IPainter& alpha_
+				const IScalarPainter& alpha_
 				);
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return

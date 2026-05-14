@@ -114,6 +114,12 @@
 #include "MathExpressionEvaluator.h"
 #include "../Utilities/RasterizerDefaults.h"
 #include "../Rendering/Film.h"		// kDefaultFilm* constants for `film` chunk
+#include "../RISE_API.h"				// IScalarPainter constructors (Phase 2)
+#include "../Interfaces/IScalarPainter.h"
+#include "../Interfaces/IScalarPainterManager.h"
+#include "../Interfaces/IFunction1DManager.h"
+#include "../Interfaces/IFunction2DManager.h"
+#include "../Painters/RGBScalarPainter.h"		// for ScalarTriple::IsUniform et al
 
 #ifdef WIN32
 #include <malloc.h>
@@ -368,6 +374,106 @@ namespace RISE
 			// can validate energy conservation at scene-definition time.
 			struct PainterColor { double c[3]; };
 			static thread_local std::map<std::string, PainterColor> s_painterColors;
+
+			//! Resolve a scalar painter from a chunk parameter value.
+			//!
+			//! Accepts three input shapes:
+			//!   - Inline scalar literal: `1.5` → UniformScalarPainter(1.5).
+			//!   - Inline RGB-triple literal: `1.3 1.5 2.0` → RGBScalarPainter.
+			//!   - Name of a registered scalar_painter: looked up in
+			//!     `pJob.GetScalarPainters()`.
+			//!
+			//! Returns nullptr on lookup failure / unparseable value.  The
+			//! returned painter is owned by the caller (refcount 1, must
+			//! be released).  `requireSingle = true` causes a per-channel
+			//! painter to be rejected with a clear error — used by single-
+			//! scalar material slots (roughness, exponent, etc.).
+			//!
+			//! `paramName` is just for diagnostic messages.
+			[[maybe_unused]] static IScalarPainter* ResolveScalarPainter(
+				IJob& pJob,
+				const std::string& value,
+				const char* paramName,
+				bool requireSingle = false )
+			{
+				IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+				if( !pPriv ) return nullptr;
+
+				// Try named-lookup first — the most common case in scenes
+				// that already define a `scalar_painter` block.
+				IScalarPainter* named =
+					pPriv->GetScalarPainters()->GetItem( value.c_str() );
+				if( named ) {
+					if( requireSingle && named->HasPerChannelVariation() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scalar parameter `%s`: bound to per-channel painter `%s`, but slot requires a wavelength-uniform scalar",
+							paramName, value.c_str() );
+						return nullptr;
+					}
+					named->addref();
+					return named;
+				}
+
+				// Inline numeric forms.  Use `strtod` end-pointer to
+				// reject trailing non-whitespace — silent truncation
+				// would let `1.5 garbage_name` parse as `1.5`, masking
+				// typos in named-painter references.
+				auto onlyTrailingWhitespace = []( const char* p ) -> bool {
+					while( *p ) {
+						if( ! std::isspace( static_cast<unsigned char>( *p ) ) ) return false;
+						++p;
+					}
+					return true;
+				};
+
+				// 3-double first (more specific).
+				{
+					const char* s = value.c_str();
+					char* end1 = nullptr;
+					const double r = std::strtod( s, &end1 );
+					if( end1 != s ) {
+						char* end2 = nullptr;
+						const double g = std::strtod( end1, &end2 );
+						if( end2 != end1 ) {
+							char* end3 = nullptr;
+							const double b = std::strtod( end2, &end3 );
+							if( end3 != end2 && onlyTrailingWhitespace( end3 ) ) {
+								if( requireSingle ) {
+									if( r == g && g == b ) {
+										IScalarPainter* p = nullptr;
+										RISE_API_CreateUniformScalarPainter( &p, Scalar( r ) );
+										return p;
+									}
+									GlobalLog()->PrintEx( eLog_Error,
+										"scalar parameter `%s`: inline triple (%g %g %g) supplied where a wavelength-uniform scalar is required",
+										paramName, r, g, b );
+									return nullptr;
+								}
+								IScalarPainter* p = nullptr;
+								RISE_API_CreateRGBScalarPainter( &p,
+									Scalar( r ), Scalar( g ), Scalar( b ) );
+								return p;
+							}
+						}
+					}
+				}
+				// 1-double next.
+				{
+					const char* s = value.c_str();
+					char* end = nullptr;
+					const double v = std::strtod( s, &end );
+					if( end != s && onlyTrailingWhitespace( end ) ) {
+						IScalarPainter* p = nullptr;
+						RISE_API_CreateUniformScalarPainter( &p, Scalar( v ) );
+						return p;
+					}
+				}
+
+				GlobalLog()->PrintEx( eLog_Error,
+					"scalar parameter `%s`: value `%s` is neither a named scalar_painter nor a numeric literal",
+					paramName, value.c_str() );
+				return nullptr;
+			}
 
 			// Scene-level camera defaults (set by `camera_defaults`
 			// chunk).  thinlens_camera consults this as fallback when
@@ -968,6 +1074,241 @@ namespace RISE
 						{ auto& p = P(); p.name = "file";    p.kind = ValueKind::Filename; p.description = "Spectrum text file (pairs)"; }
 						{ auto& p = P(); p.name = "nmfile";  p.kind = ValueKind::Filename; p.description = "Wavelength list file"; }
 						{ auto& p = P(); p.name = "ampfile"; p.kind = ValueKind::Filename; p.description = "Amplitude list file"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			//////////////////////////////////////////
+			// scalar_painter — IScalarPainter chunk (Phase 2 of
+			// IScalarPainter refactor, see docs/ISCALARPAINTER_REFACTOR.md).
+			//
+			// Dispatches on which optional fields are present:
+			//   value <s>                              → UniformScalarPainter
+			//   values <r> <g> <b>                     → RGBScalarPainter
+			//   file <path>                            → PiecewiseLinearScalarPainter (2-col file)
+			//   sellmeier <B1> <B2> <B3> <C1> <C2> <C3>→ SellmeierScalarPainter
+			//   polynomial <c0> <c1> ...               → PolynomialScalarPainter
+			//   function1d <name>                      → Function1DScalarPainter wrapping a named IFunction1D
+			//   function2d <name>                      → Function2DScalarPainter wrapping a named IFunction2D
+			//   base <name> [scale <s>]                → ScaledScalarPainter (default scale = 1.0)
+			//   multiply <a> <b>                       → MultiplyScalarPainter
+			//
+			// At most one of {value, values, file, sellmeier, polynomial,
+			// function1d, function2d, base, multiply} may be present.
+			// Mutually exclusive — the parser raises an error otherwise.
+			//////////////////////////////////////////
+			struct ScalarPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+
+					// Tally which form is present.
+					const bool hasValue       = bag.Has( "value" );
+					const bool hasValues      = bag.Has( "values" );
+					const bool hasFile        = bag.Has( "file" );
+					const bool hasSellmeier   = bag.Has( "sellmeier" );
+					const bool hasPolynomial  = bag.Has( "polynomial" );
+					const bool hasFunction1d  = bag.Has( "function1d" );
+					const bool hasFunction2d  = bag.Has( "function2d" );
+					const bool hasBase        = bag.Has( "base" );
+					const bool hasMultiply    = bag.Has( "multiply" );
+
+					const int formCount = (int)hasValue + (int)hasValues + (int)hasFile +
+						(int)hasSellmeier + (int)hasPolynomial + (int)hasFunction1d +
+						(int)hasFunction2d + (int)hasBase + (int)hasMultiply;
+					if( formCount == 0 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply)",
+							name.c_str() );
+						return false;
+					}
+					if( formCount > 1 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scalar_painter `%s`: multiple forms specified (mutually exclusive)",
+							name.c_str() );
+						return false;
+					}
+
+					IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+					if( !pPriv ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scalar_painter `%s`: IJobPriv unavailable", name.c_str() );
+						return false;
+					}
+
+					IScalarPainter* painter = nullptr;
+
+					if( hasValue ) {
+						const double v = bag.GetDouble( "value" );
+						RISE_API_CreateUniformScalarPainter( &painter, Scalar( v ) );
+					}
+					else if( hasValues ) {
+						const std::string raw = bag.GetString( "values" );
+						double rgb[3] = { 0, 0, 0 };
+						const int matched = sscanf( raw.c_str(), "%lf %lf %lf",
+							&rgb[0], &rgb[1], &rgb[2] );
+						if( matched != 3 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: `values` requires three numeric components (got %d in `%s`)",
+								name.c_str(), matched, raw.c_str() );
+							return false;
+						}
+						RISE_API_CreateRGBScalarPainter( &painter,
+							Scalar( rgb[0] ), Scalar( rgb[1] ), Scalar( rgb[2] ) );
+					}
+					else if( hasFile ) {
+						std::string fname = bag.GetString( "file" );
+						FILE* f = fopen( GlobalMediaPathLocator().Find( String( fname.c_str() ) ).c_str(), "r" );
+						if( !f ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: failed to open file `%s`",
+								name.c_str(), fname.c_str() );
+							return false;
+						}
+						std::vector<std::pair<Scalar, Scalar>> samples;
+						while( !feof( f ) ) {
+							double nm = 0.0, val = 0.0;
+							if( fscanf( f, "%lf %lf", &nm, &val ) == 2 ) {
+								samples.emplace_back( Scalar( nm ), Scalar( val ) );
+							} else {
+								break;
+							}
+						}
+						fclose( f );
+						if( samples.empty() ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: file `%s` produced no samples",
+								name.c_str(), fname.c_str() );
+							return false;
+						}
+						RISE_API_CreatePiecewiseLinearScalarPainter( &painter, samples );
+					}
+					else if( hasSellmeier ) {
+						double B1=0, B2=0, B3=0, C1=0, C2=0, C3=0;
+						const std::string s = bag.GetString( "sellmeier" );
+						if( sscanf( s.c_str(), "%lf %lf %lf %lf %lf %lf",
+								&B1, &B2, &B3, &C1, &C2, &C3 ) != 6 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: sellmeier needs 6 values (B1 B2 B3 C1 C2 C3)",
+								name.c_str() );
+							return false;
+						}
+						RISE_API_CreateSellmeierScalarPainter( &painter,
+							Scalar( B1 ), Scalar( B2 ), Scalar( B3 ),
+							Scalar( C1 ), Scalar( C2 ), Scalar( C3 ) );
+					}
+					else if( hasPolynomial ) {
+						const std::string s = bag.GetString( "polynomial" );
+						std::vector<Scalar> coeffs;
+						std::istringstream iss( s );
+						double c;
+						while( iss >> c ) coeffs.push_back( Scalar( c ) );
+						// Reject trailing non-numeric content — silent
+						// truncation would let a typo produce a different
+						// polynomial than authored.  After the loop,
+						// `iss.eof()` is true iff every input token was
+						// consumed as a number; `fail()` is set when the
+						// last `>>` ran off either valid input or a bad
+						// token, which is fine if we hit EOF cleanly.
+						if( ! iss.eof() ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: polynomial has trailing non-numeric content in `%s`",
+								name.c_str(), s.c_str() );
+							return false;
+						}
+						if( coeffs.empty() ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: polynomial needs at least one coefficient",
+								name.c_str() );
+							return false;
+						}
+						RISE_API_CreatePolynomialScalarPainter( &painter, coeffs );
+					}
+					else if( hasFunction1d ) {
+						const std::string ref = bag.GetString( "function1d" );
+						IFunction1D* f = pPriv->GetFunction1Ds()->GetItem( ref.c_str() );
+						if( !f ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: function1d `%s` not found",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						RISE_API_CreateFunction1DScalarPainter( &painter, f );
+					}
+					else if( hasFunction2d ) {
+						const std::string ref = bag.GetString( "function2d" );
+						IFunction2D* f = pPriv->GetFunction2Ds()->GetItem( ref.c_str() );
+						if( !f ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: function2d `%s` not found",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						RISE_API_CreateFunction2DScalarPainter( &painter, f );
+					}
+					else if( hasBase ) {
+						const std::string ref = bag.GetString( "base" );
+						const double scale = bag.GetDouble( "scale", 1.0 );
+						IScalarPainter* base = pPriv->GetScalarPainters()->GetItem( ref.c_str() );
+						if( !base ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: base scalar_painter `%s` not found",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						RISE_API_CreateScaledScalarPainter( &painter, base, Scalar( scale ) );
+					}
+					else if( hasMultiply ) {
+						const std::string s = bag.GetString( "multiply" );
+						char aname[256] = {0}, bname[256] = {0};
+						if( sscanf( s.c_str(), "%255s %255s", aname, bname ) != 2 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: multiply needs two scalar_painter names",
+								name.c_str() );
+							return false;
+						}
+						IScalarPainter* a = pPriv->GetScalarPainters()->GetItem( aname );
+						IScalarPainter* b = pPriv->GetScalarPainters()->GetItem( bname );
+						if( !a || !b ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: multiply operands `%s` / `%s` not found",
+								name.c_str(), aname, bname );
+							return false;
+						}
+						RISE_API_CreateMultiplyScalarPainter( &painter, a, b );
+					}
+
+					if( !painter ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"scalar_painter `%s`: construction failed", name.c_str() );
+						return false;
+					}
+
+					pPriv->GetScalarPainters()->AddItem( painter, name.c_str() );
+					painter->release();
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "scalar_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Physical-scalar painter (no colorspace).  Used for IOR, scattering, roughness, etc.  Pick exactly one form via the optional fields below.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "value";      p.kind = ValueKind::Double;     p.description = "Single scalar value (form 1: UniformScalarPainter)"; }
+						{ auto& p = P(); p.name = "values";     p.kind = ValueKind::DoubleVec3; p.description = "Per-channel (R G B) scalars (form 2: RGBScalarPainter)"; }
+						{ auto& p = P(); p.name = "file";       p.kind = ValueKind::Filename;   p.description = "2-column (nm value) file (form 3: PiecewiseLinearScalarPainter)"; }
+						{ auto& p = P(); p.name = "sellmeier";  p.kind = ValueKind::String;     p.description = "Sellmeier coefficients `B1 B2 B3 C1 C2 C3` (form 4: SellmeierScalarPainter)"; }
+						{ auto& p = P(); p.name = "polynomial"; p.kind = ValueKind::String;     p.description = "Polynomial coefficients `c0 c1 c2 ...` (form 5: PolynomialScalarPainter)"; }
+						{ auto& p = P(); p.name = "function1d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction1D to wrap (form 6: Function1DScalarPainter)"; }
+						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction2D to wrap (form 7: Function2DScalarPainter)"; }
+						{ auto& p = P(); p.name = "base";       p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Base scalar_painter for ScaledScalarPainter (form 8)"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;     p.description = "Scale factor (companion to `base`)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "multiply";   p.kind = ValueKind::String;     p.description = "Two scalar_painter names `a b` (form 9: MultiplyScalarPainter)"; }
 						return cd;
 					}();
 					return d;
@@ -2677,9 +3018,9 @@ namespace RISE
 						cd.description = "Fresnel dielectric (reflect + refract) with optional volumetric scattering.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";              p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance"; }
-						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Index of refraction"; }
-						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient"; p.defaultValueHint = "10000"; }
+						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "10000"; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
@@ -2833,8 +3174,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
 						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
-						{ auto& p = P(); p.name = "nu";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "U-direction exponent"; }
-						{ auto& p = P(); p.name = "nv";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "V-direction exponent"; }
+						{ auto& p = P(); p.name = "nu";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "U-direction exponent (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "nv";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "V-direction exponent (scalar_painter, or inline `r g b` or scalar)"; }
 						return cd;
 					}();
 					return d;
@@ -2862,7 +3203,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "rd";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
 						{ auto& p = P(); p.name = "rs";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
-						{ auto& p = P(); p.name = "N";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent"; }
+						{ auto& p = P(); p.name = "N";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Phong exponent (scalar_painter, or inline `r g b` or scalar)"; }
 						return cd;
 					}();
 					return d;
@@ -3154,7 +3495,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "rd";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
 						{ auto& p = P(); p.name = "rs";    p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
-						{ auto& p = P(); p.name = "alpha"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
+						{ auto& p = P(); p.name = "alpha"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface slope RMS (scalar_painter, or inline `r g b` or scalar)"; }
 						return cd;
 					}();
 					return d;
@@ -3183,8 +3524,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "rd";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
 						{ auto& p = P(); p.name = "rs";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
-						{ auto& p = P(); p.name = "alphax"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X-direction roughness"; }
-						{ auto& p = P(); p.name = "alphay"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y-direction roughness"; }
+						{ auto& p = P(); p.name = "alphax"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "X-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "alphay"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Y-direction slope RMS (scalar_painter, or inline `r g b` or scalar)"; }
 						return cd;
 					}();
 					return d;
@@ -3338,9 +3679,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "rd";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
 						{ auto& p = P(); p.name = "rs";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
-						{ auto& p = P(); p.name = "facets";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Microfacet slope distribution"; }
-						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Fresnel IOR"; }
-						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction"; }
+						{ auto& p = P(); p.name = "facets";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Microfacet slope distribution (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Fresnel IOR (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (scalar_painter, or inline `r g b` or scalar)"; }
 						return cd;
 					}();
 					return d;
@@ -3366,7 +3707,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "reflectance"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Albedo"; }
-						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness (sigma)"; }
+						{ auto& p = P(); p.name = "roughness";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness sigma (scalar_painter, or inline `r g b` or scalar)"; }
 						return cd;
 					}();
 					return d;
@@ -3425,8 +3766,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "rd";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
 						{ auto& p = P(); p.name = "rs";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Specular reflectance"; }
-						{ auto& p = P(); p.name = "roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness"; }
-						{ auto& p = P(); p.name = "isotropy";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Isotropy factor"; }
+						{ auto& p = P(); p.name = "roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Surface roughness (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "isotropy";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Isotropy factor (scalar_painter, or inline `r g b` or scalar)"; }
 						return cd;
 					}();
 					return d;
@@ -8153,6 +8494,7 @@ namespace RISE
 		add( "uniformcolor_painter",                  new UniformColorPainterAsciiChunkParser() );
 		add( "vertex_color_painter",                  new VertexColorPainterAsciiChunkParser() );
 		add( "spectral_painter",                      new SpectralPainterAsciiChunkParser() );
+		add( "scalar_painter",                        new ScalarPainterAsciiChunkParser() );
 		add( "png_painter",                           new PngPainterAsciiChunkParser() );
 		add( "jpg_painter",                           new JpegPainterAsciiChunkParser() );
 		add( "hdr_painter",                           new HdrPainterAsciiChunkParser() );

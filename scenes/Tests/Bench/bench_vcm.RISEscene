@@ -94,8 +94,8 @@ lambertian_luminaire_material
 dielectric_material
 {
 	name				glass
-	tau					pnt_glass_tau
-	ior					pnt_glass_ior
+	tau			0.9999
+	ior			1.5
 }
 
 clippedplane_geometry

@@ -41,9 +41,9 @@ static Scalar DielectricFresnelCos( const Scalar cosI, const Scalar eta_i, const
 }
 
 SubSurfaceScatteringSPF::SubSurfaceScatteringSPF(
-	const IPainter& ior_,
-	const IPainter& absorption_,
-	const IPainter& scattering_,
+	const IScalarPainter& ior_,
+	const IScalarPainter& absorption_,
+	const IScalarPainter& scattering_,
 	const Scalar g_,
 	const Scalar roughness_,
 	const bool bAbsorbBackFace_
@@ -79,8 +79,8 @@ void SubSurfaceScatteringSPF::Scatter(
 	const IORStack& ior_stack
 	) const
 {
-	const RISEPel iorVal = ior.GetColor( ri );
-	const Scalar n = iorVal[0];
+	const ScalarTriple iorVal = ior.GetValuesAt( ri );
+	const Scalar n = iorVal.v[0];
 
 	const bool bFromInside = ior_stack.containsCurrent();
 
@@ -230,7 +230,7 @@ void SubSurfaceScatteringSPF::ScatterNM(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar n = ior.GetColorNM( ri, nm );
+	const Scalar n = ior.GetValueAtNM( ri, nm );
 
 	const bool bFromInside = ior_stack.containsCurrent();
 

@@ -20,6 +20,7 @@
 
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -27,23 +28,23 @@ namespace RISE
 	namespace Implementation
 	{
 		class WardAnisotropicEllipticalGaussianBRDF :
-			public virtual IBSDF, 
+			public virtual IBSDF,
 			public virtual Reference
 		{
 		protected:
 			virtual ~WardAnisotropicEllipticalGaussianBRDF();
 
-			const IPainter&	diffuse;
-			const IPainter& specular;
-			const IPainter& alphax;			// standard deviation (RMS) of the surface slope in x
-			const IPainter& alphay;			// standard deviation (RMS) of the surface slope in y
+			const IPainter&			diffuse;
+			const IPainter&			specular;
+			const IScalarPainter&	alphax;			// surface slope RMS (physical scalar)
+			const IScalarPainter&	alphay;
 
 		public:
-			WardAnisotropicEllipticalGaussianBRDF( 
+			WardAnisotropicEllipticalGaussianBRDF(
 				const IPainter& diffuse_,
 				const IPainter& specular_,
-				const IPainter& alphax_,
-				const IPainter& alphay_
+				const IScalarPainter& alphax_,
+				const IScalarPainter& alphay_
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;

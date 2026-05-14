@@ -154,7 +154,7 @@ polished_material
 {
 	name				polished_marble
 	reflectance			pnt_cream
-	tau					pnt_cream
+	tau			0.95 0.92 0.85
 	ior					1.5
 	scattering			50.0
 }

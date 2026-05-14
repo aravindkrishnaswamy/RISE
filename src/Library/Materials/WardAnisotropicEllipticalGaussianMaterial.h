@@ -18,6 +18,7 @@
 #define WARD_ANISOTROPIC_ELLIPTICAL_GAUSSIAN_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "WardAnisotropicEllipticalGaussianBRDF.h"
 #include "WardAnisotropicEllipticalGaussianSPF.h"
@@ -41,11 +42,11 @@ namespace RISE
 			}
 
 		public:
-			WardAnisotropicEllipticalGaussianMaterial( 
+			WardAnisotropicEllipticalGaussianMaterial(
 				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& alphax,
-				const IPainter& alphay
+				const IScalarPainter& alphax,
+				const IScalarPainter& alphay
 				)
 			{
 				pBRDF = new WardAnisotropicEllipticalGaussianBRDF( diffuse, specular, alphax, alphay );

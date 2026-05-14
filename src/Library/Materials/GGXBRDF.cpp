@@ -33,10 +33,10 @@ using namespace RISE::Implementation;
 GGXBRDF::GGXBRDF(
 	const IPainter& diffuse,
 	const IPainter& specular,
-	const IPainter& alphaX,
-	const IPainter& alphaY,
-	const IPainter& ior,
-	const IPainter& ext,
+	const IScalarPainter& alphaX,
+	const IScalarPainter& alphaY,
+	const IScalarPainter& ior,
+	const IScalarPainter& ext,
 	const FresnelMode fresnel_mode,
 	const IPainter* tangent_rotation
 	) :
@@ -116,8 +116,8 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	}
 
 	// Read roughness parameters, clamped to avoid division-by-zero in NDF
-	const Scalar alphaX = r_max( ColorMath::MaxValue( pAlphaX.GetColor(ri) ), Scalar(1e-4) );
-	const Scalar alphaY = r_max( ColorMath::MaxValue( pAlphaY.GetColor(ri) ), Scalar(1e-4) );
+	const Scalar alphaX = r_max( pAlphaX.GetValuesAt(ri).v[0], Scalar(1e-4) );
+	const Scalar alphaY = r_max( pAlphaY.GetValuesAt(ri).v[0], Scalar(1e-4) );
 
 	// Half-vector and tangent-space projections
 	const Vector3 h = Vector3Ops::Normalize( v + r );
@@ -163,8 +163,10 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 		}
 		else
 		{
-			const RISEPel ior = pIOR.GetColor(ri);
-			const RISEPel ext = pExtinction.GetColor(ri);
+			const ScalarTriple iorT = pIOR.GetValuesAt(ri);
+			const ScalarTriple extT = pExtinction.GetValuesAt(ri);
+			const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
+			const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 			const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
 				ri.ray.Dir(), h, RISEPel(1,1,1), ior, ext );
 			specular = specColor * fresnel * specFactor;
@@ -191,8 +193,10 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 		}
 		else
 		{
-			const RISEPel ior = pIOR.GetColor(ri);
-			const RISEPel ext = pExtinction.GetColor(ri);
+			const ScalarTriple iorT = pIOR.GetValuesAt(ri);
+			const ScalarTriple extT = pExtinction.GetValuesAt(ri);
+			const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
+			const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 			const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
 			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
 			specular = specular + specColor * F_ms * f_ms;
@@ -226,8 +230,8 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		return 0;
 	}
 
-	const Scalar alphaX = r_max( pAlphaX.GetColorNM(ri,nm), Scalar(1e-4) );
-	const Scalar alphaY = r_max( pAlphaY.GetColorNM(ri,nm), Scalar(1e-4) );
+	const Scalar alphaX = r_max( pAlphaX.GetValueAtNM(ri,nm), Scalar(1e-4) );
+	const Scalar alphaY = r_max( pAlphaY.GetValueAtNM(ri,nm), Scalar(1e-4) );
 
 	const Vector3 h = Vector3Ops::Normalize( v + r );
 	const Vector3 h_local(
@@ -267,8 +271,8 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		}
 		else
 		{
-			const Scalar iorVal = pIOR.GetColorNM(ri,nm);
-			const Scalar extVal = pExtinction.GetColorNM(ri,nm);
+			const Scalar iorVal = pIOR.GetValueAtNM(ri,nm);
+			const Scalar extVal = pExtinction.GetValueAtNM(ri,nm);
 			const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), h, 1.0, iorVal, extVal );
 			if( fresnel > 0 ) {
 				specular = specColor * fresnel * specFactor;
@@ -294,8 +298,8 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		}
 		else
 		{
-			const Scalar iorVal = pIOR.GetColorNM(ri,nm);
-			const Scalar extVal = pExtinction.GetColorNM(ri,nm);
+			const Scalar iorVal = pIOR.GetValueAtNM(ri,nm);
+			const Scalar extVal = pExtinction.GetValueAtNM(ri,nm);
 			const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
 			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
 			specular = specular + specColor * F_ms * f_ms;
@@ -337,8 +341,10 @@ RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	}
 	else
 	{
-		const RISEPel ior = pIOR.GetColor( ri );
-		const RISEPel ext = pExtinction.GetColor( ri );
+		const ScalarTriple iorT = pIOR.GetValuesAt( ri );
+		const ScalarTriple extT = pExtinction.GetValuesAt( ri );
+		const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
+		const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 		const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
 			ri.ray.Dir(), n, RISEPel( 1, 1, 1 ), ior, ext );
 		return diffColor + specColor * fresnel;

@@ -16,6 +16,7 @@
 #define TRANSLUCENT_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "TranslucentBSDF.h"
 #include "TranslucentSPF.h"
@@ -39,7 +40,7 @@ namespace RISE
 			}
 
 		public:
-			TranslucentMaterial( const IPainter& rF, const IPainter& T, const IPainter& ext, const IPainter& N_, const IPainter& scat )
+			TranslucentMaterial( const IPainter& rF, const IPainter& T, const IScalarPainter& ext, const IScalarPainter& N_, const IScalarPainter& scat )
 			{
 				pBRDF = new TranslucentBSDF( rF, T, N_ );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );

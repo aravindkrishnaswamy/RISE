@@ -16,26 +16,27 @@
 
 #include "../Interfaces/IBSDF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
 {
 	namespace Implementation
 	{
-		class OrenNayarBRDF : 
-			public virtual IBSDF, 
+		class OrenNayarBRDF :
+			public virtual IBSDF,
 			public virtual Reference
 		{
 		protected:
 			virtual ~OrenNayarBRDF();
 
-			const IPainter&	pReflectance;
-			const IPainter& pRoughness;
+			const IPainter&			pReflectance;
+			const IScalarPainter&	pRoughness;
 
 		public:
-			OrenNayarBRDF( 
-				const IPainter& reflectance, 
-				const IPainter& roughness
+			OrenNayarBRDF(
+				const IPainter& reflectance,
+				const IScalarPainter& roughness
 				);
 
 			template< class T >

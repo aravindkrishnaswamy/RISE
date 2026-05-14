@@ -95,7 +95,7 @@ perfectrefractor_material
 {
 	name				dispersive
 	refractance			color_white
-	ior					pnt_ior
+	ior			1.33 1.57 2.57
 }
 
 ##################################################

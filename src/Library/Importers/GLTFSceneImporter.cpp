@@ -1081,26 +1081,25 @@ namespace
 					matName.c_str(), (double)mat.transmission.transmission_factor );
 			}
 			const double trans = (double)mat.transmission.transmission_factor;
-			const std::string nTau = PainterName( prefix, "trans_tau", matIdx );
-			const double tau[3] = { trans, trans, trans };
-			job.AddUniformColorPainter( nTau.c_str(), tau, "Rec709RGB_Linear" );
-
 			const double iorValue = mat.has_ior
 				? (double)mat.ior.ior
 				: 1.5;
-			const std::string nIor = PainterName( prefix, "trans_ior", matIdx );
-			const double iorPel[3] = { iorValue, iorValue, iorValue };
-			job.AddUniformColorPainter( nIor.c_str(), iorPel, "Rec709RGB_Linear" );
 
-			const std::string nScat = PainterName( prefix, "trans_scat", matIdx );
-			const double zero[3] = { 0.0, 0.0, 0.0 };
-			job.AddUniformColorPainter( nScat.c_str(), zero, "Rec709RGB_Linear" );
+			// `tau/ior/scattering` are physical scalars carried by
+			// `IScalarPainter` (see docs/ISCALARPAINTER_REFACTOR.md).
+			// `Job::AddDielectricMaterial` resolves inline numeric
+			// literals into `UniformScalarPainter`, so we can skip
+			// the painter-manager round-trip entirely.
+			char tauStr[32], iorStr[32], scatStr[8];
+			snprintf( tauStr, sizeof( tauStr ), "%g", trans );
+			snprintf( iorStr, sizeof( iorStr ), "%g", iorValue );
+			snprintf( scatStr, sizeof( scatStr ), "%g", 0.0 );
 
 			ok = job.AddDielectricMaterial(
 				baseMatName.c_str(),
-				nTau.c_str(),
-				nIor.c_str(),
-				nScat.c_str(),
+				tauStr,
+				iorStr,
+				scatStr,
 				/*hg*/ false );
 
 			// KHR_materials_volume: thick-walled volumetric absorption.

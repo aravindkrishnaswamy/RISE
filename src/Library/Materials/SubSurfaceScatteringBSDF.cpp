@@ -26,9 +26,9 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 SubSurfaceScatteringBSDF::SubSurfaceScatteringBSDF(
-	const IPainter& ior_,
-	const IPainter& absorption_,
-	const IPainter& scattering_,
+	const IScalarPainter& ior_,
+	const IScalarPainter& absorption_,
+	const IScalarPainter& scattering_,
 	const Scalar g_,
 	const Scalar roughness_
 	) :
@@ -82,7 +82,7 @@ RISEPel SubSurfaceScatteringBSDF::value(
 	if( NdotO <= 0 || NdotI <= 0 )
 		return RISEPel( 0, 0, 0 );
 
-	const Scalar n_ior = ior.GetColor( ri )[0];
+	const Scalar n_ior = ior.GetValuesAt( ri ).v[0];
 
 	if( alpha > 1e-6 )
 	{
@@ -125,7 +125,7 @@ Scalar SubSurfaceScatteringBSDF::valueNM(
 	if( NdotO <= 0 || NdotI <= 0 )
 		return 0;
 
-	const Scalar n_ior = ior.GetColorNM( ri, nm );
+	const Scalar n_ior = ior.GetValueAtNM( ri, nm );
 
 	if( alpha > 1e-6 )
 	{

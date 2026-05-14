@@ -18,6 +18,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -59,32 +60,32 @@ namespace RISE
 			/////////////////////////////////////////////////
 			// Parameters passed into the model
 			/////////////////////////////////////////////////
-			const IPainter&					pnt_thickness_SC;							///< Thickness of the stratum corneum (in cm)
-			const IPainter&					pnt_thickness_epidermis;					///< Thickness of the epidermis (in cm)
-			const IPainter&					pnt_thickness_papillary_dermis;				///< Thickness of the papillary dermis (in cm)
-			const IPainter&					pnt_thickness_reticular_dermis;				///< Thickness of the reticular layer (in cm)
+			const IScalarPainter&					pnt_thickness_SC;							///< Thickness of the stratum corneum (in cm)
+			const IScalarPainter&					pnt_thickness_epidermis;					///< Thickness of the epidermis (in cm)
+			const IScalarPainter&					pnt_thickness_papillary_dermis;				///< Thickness of the papillary dermis (in cm)
+			const IScalarPainter&					pnt_thickness_reticular_dermis;				///< Thickness of the reticular layer (in cm)
 
-			const IPainter&					pnt_ior_SC;									///< Index of refraction of the stratum corneum
-			const IPainter&					pnt_ior_epidermis;							///< Index of refraction of the epidermis
-			const IPainter&					pnt_ior_papillary_dermis;					///< Index of refraction of the papillary dermis
-			const IPainter&					pnt_ior_reticular_dermis;					///< Index of refraction of the reticular layer
+			const IScalarPainter&					pnt_ior_SC;									///< Index of refraction of the stratum corneum
+			const IScalarPainter&					pnt_ior_epidermis;							///< Index of refraction of the epidermis
+			const IScalarPainter&					pnt_ior_papillary_dermis;					///< Index of refraction of the papillary dermis
+			const IScalarPainter&					pnt_ior_reticular_dermis;					///< Index of refraction of the reticular layer
 
-			const IPainter&					pnt_concentration_eumelanin;				///< Average Concentration of eumelanin in the melanosomes
-			const IPainter&					pnt_concentration_pheomelanin;				///< Average Concentration of pheomelan in in the melanosomes
+			const IScalarPainter&					pnt_concentration_eumelanin;				///< Average Concentration of eumelanin in the melanosomes
+			const IScalarPainter&					pnt_concentration_pheomelanin;				///< Average Concentration of pheomelan in in the melanosomes
 
-			const IPainter&					pnt_melanosomes_in_epidermis;				///< Percentage of the epidermis composed of melanosomes
+			const IScalarPainter&					pnt_melanosomes_in_epidermis;				///< Percentage of the epidermis composed of melanosomes
 
-			const IPainter&					pnt_hb_ratio;								///< Oxy/deoxy hemoglobin ratio
-			const IPainter&					pnt_whole_blood_in_papillary_dermis;		///< Percentage of the papillary dermis composed of whole blood
-			const IPainter&					pnt_whole_blood_in_reticular_dermis;		///< Percentage of the reticular layer composed of whole blood
+			const IScalarPainter&					pnt_hb_ratio;								///< Oxy/deoxy hemoglobin ratio
+			const IScalarPainter&					pnt_whole_blood_in_papillary_dermis;		///< Percentage of the papillary dermis composed of whole blood
+			const IScalarPainter&					pnt_whole_blood_in_reticular_dermis;		///< Percentage of the reticular layer composed of whole blood
 
-			const IPainter&					pnt_betacarotene_concentration_SC;			///< Concentration of beta-carotene in the stratum corneum
-			const IPainter&					pnt_betacarotene_concentration_epidermis;	///< Concentration of beta-carotene in the epidermis
-			const IPainter&					pnt_betacarotene_concentration_dermis;		///< Concentration of beta-carotene in the dermis
+			const IScalarPainter&					pnt_betacarotene_concentration_SC;			///< Concentration of beta-carotene in the stratum corneum
+			const IScalarPainter&					pnt_betacarotene_concentration_epidermis;	///< Concentration of beta-carotene in the epidermis
+			const IScalarPainter&					pnt_betacarotene_concentration_dermis;		///< Concentration of beta-carotene in the dermis
 
-			const IPainter&					pnt_bilirubin_concentration;				///< Concentration of bilirubin in whole blood
+			const IScalarPainter&					pnt_bilirubin_concentration;				///< Concentration of bilirubin in whole blood
 
-			const IPainter&					pnt_folds_aspect_ratio;						///< Aspect ratio of the skin wrinkles and folds
+			const IScalarPainter&					pnt_folds_aspect_ratio;						///< Aspect ratio of the skin wrinkles and folds
 			const bool						subdermal_layer;							///< Should we simulate a reflective subdermal layer?
 
 			/////////////////////////////////////////////////
@@ -638,25 +639,25 @@ namespace RISE
 		public:
 
 			BioSpecSkinSPF(
-				const IPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
-				const IPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
-				const IPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
-				const IPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
-				const IPainter& ior_SC_,									///< Index of refraction of the stratum corneum
-				const IPainter& ior_epidermis_,								///< Index of refraction of the epidermis
-				const IPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
-				const IPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
-				const IPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
-				const IPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
-				const IPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
-				const IPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
-				const IPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
-				const IPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
-				const IPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
-				const IPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
-				const IPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
-				const IPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
-				const IPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
+				const IScalarPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
+				const IScalarPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
+				const IScalarPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
+				const IScalarPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
+				const IScalarPainter& ior_SC_,									///< Index of refraction of the stratum corneum
+				const IScalarPainter& ior_epidermis_,								///< Index of refraction of the epidermis
+				const IScalarPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
+				const IScalarPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
+				const IScalarPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
+				const IScalarPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
+				const IScalarPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
+				const IScalarPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
+				const IScalarPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
+				const IScalarPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
+				const IScalarPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
+				const IScalarPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
+				const IScalarPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
+				const IScalarPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
+				const IScalarPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
 				const bool bSubdermalLayer									///< Should the model simulate a perfectly reflecting subdermal layer?
 				);
 

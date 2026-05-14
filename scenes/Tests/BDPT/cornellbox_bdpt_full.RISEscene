@@ -145,8 +145,8 @@ perfectreflector_material
 dielectric_material
 {
 	name				glass
-	tau					pnt_glass_tau
-	ior					pnt_glass_ior
+	tau			0.98
+	ior			1.5
 }
 
 ##################################################

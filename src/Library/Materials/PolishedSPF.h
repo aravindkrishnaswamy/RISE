@@ -17,6 +17,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -26,10 +27,10 @@ namespace RISE
 		class PolishedSPF : public virtual ISPF, public virtual Reference
 		{
 		protected:
-			const IPainter&				Rd;					// Reflectance of diffuse substrate
-			const IPainter&				tau;				// Transmittance of the dielectric
-			const IPainter&				Nt;					// Index of refraction of dielectric coating
-			const IPainter&				scat;				// Scattering function (either Phong or HG)
+			const IPainter&				Rd;					// Reflectance of diffuse substrate (color)
+			const IScalarPainter&		tau;				// Transmittance of the dielectric (physical scalar)
+			const IScalarPainter&		Nt;					// Index of refraction of dielectric coating (physical scalar)
+			const IScalarPainter&		scat;				// Scattering function (Phong cone or HG asymmetry — physical scalar)
 			const bool					bHG;				// Use Henyey-Greenstein phase function scattering
 
 			virtual ~PolishedSPF( );
@@ -48,9 +49,9 @@ namespace RISE
 		public:
 			PolishedSPF(
 				const IPainter& Rd_,
-				const IPainter& tau_,
-				const IPainter& Nt_,
-				const IPainter& s,
+				const IScalarPainter& tau_,
+				const IScalarPainter& Nt_,
+				const IScalarPainter& s,
 				const bool hg
 				);
 
@@ -60,10 +61,10 @@ namespace RISE
 				) const
 			{
 				SpecularInfo info;
-				const Scalar s = scat.GetColor( ri )[0];
+				const Scalar s = scat.GetValuesAt( ri ).v[0];
 				info.isSpecular = bHG ? (s >= 1.0) : (s >= 1000000.0);
 				info.canRefract = true;
-				info.ior = Nt.GetColor( ri )[0];
+				info.ior = Nt.GetValuesAt( ri ).v[0];
 				info.valid = true;
 				return info;
 			}
@@ -75,10 +76,10 @@ namespace RISE
 				) const
 			{
 				SpecularInfo info;
-				const Scalar s = scat.GetColorNM( ri, nm );
+				const Scalar s = scat.GetValueAtNM( ri, nm );
 				info.isSpecular = bHG ? (s >= 1.0) : (s >= 1000000.0);
 				info.canRefract = true;
-				info.ior = Nt.GetColorNM( ri, nm );
+				info.ior = Nt.GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
 			}

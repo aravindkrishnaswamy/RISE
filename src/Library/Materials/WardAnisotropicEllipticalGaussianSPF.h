@@ -20,6 +20,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -33,17 +34,17 @@ namespace RISE
 		protected:
 			virtual ~WardAnisotropicEllipticalGaussianSPF( );
 
-			const IPainter&	diffuse;			// diffuse reflectance
-			const IPainter&	specular;			// specular reflectance
-			const IPainter& alphax;			// standard deviation (RMS) of the surface slope in x
-			const IPainter& alphay;			// standard deviation (RMS) of the surface slope in y
+			const IPainter&			diffuse;			// diffuse reflectance
+			const IPainter&			specular;			// specular reflectance
+			const IScalarPainter&	alphax;				// surface slope RMS (physical scalar)
+			const IScalarPainter&	alphay;
 
 		public:
 			WardAnisotropicEllipticalGaussianSPF(
 				const IPainter& diffuse_,
 				const IPainter& specular_,
-				const IPainter& alphax_,
-				const IPainter& alphay_
+				const IScalarPainter& alphax_,
+				const IScalarPainter& alphay_
 				);
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return

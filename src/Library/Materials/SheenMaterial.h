@@ -18,6 +18,7 @@
 #define SHEEN_MATERIAL_
 
 #include "../Interfaces/IMaterial.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "SheenBRDF.h"
 #include "SheenSPF.h"
@@ -43,7 +44,7 @@ namespace RISE
 		public:
 			SheenMaterial(
 				const IPainter& sheenColor,
-				const IPainter& sheenRoughness
+				const IScalarPainter& sheenRoughness
 				)
 			{
 				pBRDF = new SheenBRDF( sheenColor, sheenRoughness );

@@ -254,7 +254,7 @@ orennayar_material
 dielectric_material
 {
 	name				water
-	tau					pnt_water
+	tau			0.85 0.92 0.95
 	ior					1.33
 	scattering			5000.0
 }

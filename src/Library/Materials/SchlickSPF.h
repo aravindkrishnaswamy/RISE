@@ -17,6 +17,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -30,17 +31,17 @@ namespace RISE
 		protected:
 			virtual ~SchlickSPF( );
 
-			const IPainter& pDiffuse;
-			const IPainter& pSpecular;
-			const IPainter& pRoughness;
-			const IPainter& pIsotropy;
+			const IPainter&			pDiffuse;
+			const IPainter&			pSpecular;
+			const IScalarPainter&	pRoughness;		// physical scalar
+			const IScalarPainter&	pIsotropy;
 
 		public:
 			SchlickSPF(
 				const IPainter& diffuse,
 				const IPainter& specular,
-				const IPainter& roughness,
-				const IPainter& isotropy
+				const IScalarPainter& roughness,
+				const IScalarPainter& isotropy
 				);
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return

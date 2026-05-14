@@ -245,7 +245,7 @@ lambertian_luminaire_material
 dielectric_material
 {
 	name				glass_water
-	tau					pnt_water_glass
+	tau			0.92 0.96 1
 	ior					1.33
 	scattering			100000.0
 }
@@ -254,7 +254,7 @@ dielectric_material
 dielectric_material
 {
 	name				glass_amber
-	tau					pnt_amber_glass
+	tau			1 0.88 0.65
 	ior					1.52
 	scattering			100000.0
 }
@@ -263,7 +263,7 @@ dielectric_material
 dielectric_material
 {
 	name				glass_emerald
-	tau					pnt_emerald_glass
+	tau			0.7 0.95 0.75
 	ior					1.58
 	scattering			100000.0
 }
@@ -272,7 +272,7 @@ dielectric_material
 dielectric_material
 {
 	name				glass_ruby
-	tau					pnt_ruby_glass
+	tau			0.98 0.72 0.72
 	ior					1.65
 	scattering			100000.0
 }
@@ -281,7 +281,7 @@ dielectric_material
 dielectric_material
 {
 	name				glass_sapphire
-	tau					pnt_sapphire_glass
+	tau			0.72 0.78 0.98
 	ior					1.77
 	scattering			100000.0
 }
@@ -290,7 +290,7 @@ dielectric_material
 dielectric_material
 {
 	name				glass_clear
-	tau					pnt_clear_glass
+	tau			0.97 0.97 0.99
 	ior					1.72
 	scattering			100000.0
 }
@@ -299,7 +299,7 @@ dielectric_material
 dielectric_material
 {
 	name				glass_diamond
-	tau					pnt_diamond_glass
+	tau			0.98 0.98 1
 	ior					2.42
 	scattering			100000.0
 }
@@ -308,7 +308,7 @@ dielectric_material
 dielectric_material
 {
 	name				glass_crystal
-	tau					pnt_crystal_glass
+	tau			0.94 0.96 1
 	ior					1.46
 	scattering			100000.0
 }

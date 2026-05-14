@@ -143,7 +143,7 @@ polished_material
 {
 	name				support
 	reflectance			pnt_support
-	tau					pnt_pearl
+	tau			0.96 0.97 0.94
 	ior					1.45
 	scattering			260.0
 }
@@ -152,7 +152,7 @@ polished_material
 {
 	name				support_pearl
 	reflectance			pnt_support_pearl
-	tau					pnt_pearl
+	tau			0.96 0.97 0.94
 	ior					1.45
 	scattering			320.0
 }
@@ -294,7 +294,7 @@ FOR YY -2 2 0.4
 		{
 			name			satin@YY@XX
 			reflectance		pnt_satin@YY@XX
-			tau				pnt_pearl
+			tau			0.96 0.97 0.94
 			ior				1.5
 			scattering		560.0
 		}

@@ -22,25 +22,25 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 BioSpecSkinSPF::BioSpecSkinSPF(
-	const IPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
-	const IPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
-	const IPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
-	const IPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
-	const IPainter& ior_SC_,									///< Index of refraction of the stratum corneum
-	const IPainter& ior_epidermis_,								///< Index of refraction of the epidermis
-	const IPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
-	const IPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
-	const IPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
-	const IPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
-	const IPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
-	const IPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
-	const IPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
-	const IPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
-	const IPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
-	const IPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
-	const IPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
-	const IPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
-	const IPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
+	const IScalarPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
+	const IScalarPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
+	const IScalarPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
+	const IScalarPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
+	const IScalarPainter& ior_SC_,									///< Index of refraction of the stratum corneum
+	const IScalarPainter& ior_epidermis_,								///< Index of refraction of the epidermis
+	const IScalarPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
+	const IScalarPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
+	const IScalarPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
+	const IScalarPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
+	const IScalarPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
+	const IScalarPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
+	const IScalarPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
+	const IScalarPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
+	const IScalarPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
+	const IScalarPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
+	const IScalarPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
+	const IScalarPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
+	const IScalarPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
 	const bool bSubdermalLayer_									///< Should the model simulate a perfectly reflecting subdermal layer?
 	) : 
   pnt_thickness_SC( thickness_SC_ ),
@@ -889,32 +889,32 @@ void BioSpecSkinSPF::Scatter(
 
 	// Setup the instance specific variables
 	SkinParams sp;
-	sp.thickness_SC = pnt_thickness_SC.GetColor(ri)[0];
-	sp.thickness_epidermis = pnt_thickness_epidermis.GetColor(ri)[0];
-	sp.thickness_papillary_dermis = pnt_thickness_papillary_dermis.GetColor(ri)[0];
-	sp.thickness_reticular_dermis = pnt_thickness_reticular_dermis.GetColor(ri)[0];
+	sp.thickness_SC = pnt_thickness_SC.GetValuesAt(ri).v[0];
+	sp.thickness_epidermis = pnt_thickness_epidermis.GetValuesAt(ri).v[0];
+	sp.thickness_papillary_dermis = pnt_thickness_papillary_dermis.GetValuesAt(ri).v[0];
+	sp.thickness_reticular_dermis = pnt_thickness_reticular_dermis.GetValuesAt(ri).v[0];
 
-	sp.ior_SC = pnt_ior_SC.GetColor(ri)[0];
-	sp.ior_epidermis = pnt_ior_epidermis.GetColor(ri)[0];
-	sp.ior_papillary_dermis = pnt_ior_papillary_dermis.GetColor(ri)[0];
-	sp.ior_reticular_dermis = pnt_ior_reticular_dermis.GetColor(ri)[0];
+	sp.ior_SC = pnt_ior_SC.GetValuesAt(ri).v[0];
+	sp.ior_epidermis = pnt_ior_epidermis.GetValuesAt(ri).v[0];
+	sp.ior_papillary_dermis = pnt_ior_papillary_dermis.GetValuesAt(ri).v[0];
+	sp.ior_reticular_dermis = pnt_ior_reticular_dermis.GetValuesAt(ri).v[0];
 
-	sp.concentration_eumelanin = pnt_concentration_eumelanin.GetColor(ri)[0];
-	sp.concentration_pheomelanin = pnt_concentration_pheomelanin.GetColor(ri)[0];
+	sp.concentration_eumelanin = pnt_concentration_eumelanin.GetValuesAt(ri).v[0];
+	sp.concentration_pheomelanin = pnt_concentration_pheomelanin.GetValuesAt(ri).v[0];
 
-	sp.melanosomes_in_epidermis = pnt_melanosomes_in_epidermis.GetColor(ri)[0];
+	sp.melanosomes_in_epidermis = pnt_melanosomes_in_epidermis.GetValuesAt(ri).v[0];
 
-	sp.hb_ratio = pnt_hb_ratio.GetColor(ri)[0];
-	sp.whole_blood_in_papillary_dermis = pnt_whole_blood_in_papillary_dermis.GetColor(ri)[0];
-	sp.whole_blood_in_reticular_dermis = pnt_whole_blood_in_reticular_dermis.GetColor(ri)[0];
+	sp.hb_ratio = pnt_hb_ratio.GetValuesAt(ri).v[0];
+	sp.whole_blood_in_papillary_dermis = pnt_whole_blood_in_papillary_dermis.GetValuesAt(ri).v[0];
+	sp.whole_blood_in_reticular_dermis = pnt_whole_blood_in_reticular_dermis.GetValuesAt(ri).v[0];
 
-	sp.betacarotene_concentration_SC = pnt_betacarotene_concentration_SC.GetColor(ri)[0];
-	sp.betacarotene_concentration_epidermis = pnt_betacarotene_concentration_epidermis.GetColor(ri)[0];
-	sp.betacarotene_concentration_dermis = pnt_betacarotene_concentration_dermis.GetColor(ri)[0];
+	sp.betacarotene_concentration_SC = pnt_betacarotene_concentration_SC.GetValuesAt(ri).v[0];
+	sp.betacarotene_concentration_epidermis = pnt_betacarotene_concentration_epidermis.GetValuesAt(ri).v[0];
+	sp.betacarotene_concentration_dermis = pnt_betacarotene_concentration_dermis.GetValuesAt(ri).v[0];
 
-	sp.bilirubin_concentration = pnt_bilirubin_concentration.GetColor(ri)[0];
+	sp.bilirubin_concentration = pnt_bilirubin_concentration.GetValuesAt(ri).v[0];
 
-	sp.folds_aspect_ratio = pnt_folds_aspect_ratio.GetColor(ri)[0];
+	sp.folds_aspect_ratio = pnt_folds_aspect_ratio.GetValuesAt(ri).v[0];
 
 	Vector3 photon_out;
 
@@ -972,32 +972,32 @@ void BioSpecSkinSPF::ScatterNM(
 {
 	// Setup the instance specific variables
 	SkinParams sp;
-	sp.thickness_SC = pnt_thickness_SC.GetColorNM(ri,nm);
-	sp.thickness_epidermis = pnt_thickness_epidermis.GetColorNM(ri,nm);
-	sp.thickness_papillary_dermis = pnt_thickness_papillary_dermis.GetColorNM(ri,nm);
-	sp.thickness_reticular_dermis = pnt_thickness_reticular_dermis.GetColorNM(ri,nm);
+	sp.thickness_SC = pnt_thickness_SC.GetValueAtNM(ri,nm);
+	sp.thickness_epidermis = pnt_thickness_epidermis.GetValueAtNM(ri,nm);
+	sp.thickness_papillary_dermis = pnt_thickness_papillary_dermis.GetValueAtNM(ri,nm);
+	sp.thickness_reticular_dermis = pnt_thickness_reticular_dermis.GetValueAtNM(ri,nm);
 
-	sp.ior_SC = pnt_ior_SC.GetColorNM(ri,nm);
-	sp.ior_epidermis = pnt_ior_epidermis.GetColorNM(ri,nm);
-	sp.ior_papillary_dermis = pnt_ior_papillary_dermis.GetColorNM(ri,nm);
-	sp.ior_reticular_dermis = pnt_ior_reticular_dermis.GetColorNM(ri,nm);
+	sp.ior_SC = pnt_ior_SC.GetValueAtNM(ri,nm);
+	sp.ior_epidermis = pnt_ior_epidermis.GetValueAtNM(ri,nm);
+	sp.ior_papillary_dermis = pnt_ior_papillary_dermis.GetValueAtNM(ri,nm);
+	sp.ior_reticular_dermis = pnt_ior_reticular_dermis.GetValueAtNM(ri,nm);
 
-	sp.concentration_eumelanin = pnt_concentration_eumelanin.GetColorNM(ri,nm);
-	sp.concentration_pheomelanin = pnt_concentration_pheomelanin.GetColorNM(ri,nm);
+	sp.concentration_eumelanin = pnt_concentration_eumelanin.GetValueAtNM(ri,nm);
+	sp.concentration_pheomelanin = pnt_concentration_pheomelanin.GetValueAtNM(ri,nm);
 
-	sp.melanosomes_in_epidermis = pnt_melanosomes_in_epidermis.GetColorNM(ri,nm);
+	sp.melanosomes_in_epidermis = pnt_melanosomes_in_epidermis.GetValueAtNM(ri,nm);
 
-	sp.hb_ratio = pnt_hb_ratio.GetColorNM(ri,nm);
-	sp.whole_blood_in_papillary_dermis = pnt_whole_blood_in_papillary_dermis.GetColorNM(ri,nm);
-	sp.whole_blood_in_reticular_dermis = pnt_whole_blood_in_reticular_dermis.GetColorNM(ri,nm);
+	sp.hb_ratio = pnt_hb_ratio.GetValueAtNM(ri,nm);
+	sp.whole_blood_in_papillary_dermis = pnt_whole_blood_in_papillary_dermis.GetValueAtNM(ri,nm);
+	sp.whole_blood_in_reticular_dermis = pnt_whole_blood_in_reticular_dermis.GetValueAtNM(ri,nm);
 
-	sp.betacarotene_concentration_SC = pnt_betacarotene_concentration_SC.GetColorNM(ri,nm);
-	sp.betacarotene_concentration_epidermis = pnt_betacarotene_concentration_epidermis.GetColorNM(ri,nm);
-	sp.betacarotene_concentration_dermis = pnt_betacarotene_concentration_dermis.GetColorNM(ri,nm);
+	sp.betacarotene_concentration_SC = pnt_betacarotene_concentration_SC.GetValueAtNM(ri,nm);
+	sp.betacarotene_concentration_epidermis = pnt_betacarotene_concentration_epidermis.GetValueAtNM(ri,nm);
+	sp.betacarotene_concentration_dermis = pnt_betacarotene_concentration_dermis.GetValueAtNM(ri,nm);
 
-	sp.bilirubin_concentration = pnt_bilirubin_concentration.GetColorNM(ri,nm);
+	sp.bilirubin_concentration = pnt_bilirubin_concentration.GetValueAtNM(ri,nm);
 
-	sp.folds_aspect_ratio = pnt_folds_aspect_ratio.GetColorNM(ri,nm);
+	sp.folds_aspect_ratio = pnt_folds_aspect_ratio.GetValueAtNM(ri,nm);
 
 	Vector3 photon_out;
 

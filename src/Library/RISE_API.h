@@ -40,6 +40,8 @@
 #include "Interfaces/ICameraManager.h"
 #include "Interfaces/IPainter.h"
 #include "Interfaces/IPainterManager.h"
+#include "Interfaces/IScalarPainter.h"
+#include "Interfaces/IScalarPainterManager.h"
 #include "Interfaces/IPiecewiseFunction.h"
 #include "Interfaces/IPixelFilter.h"
 #include "Interfaces/IPhotonTracer.h"
@@ -493,67 +495,78 @@ namespace RISE
 								const IPainter& ref				///< [in] Reflectance
 								);
 
-	//! Creates a Polished material
+	//! Creates a Polished material.  Scalar params (tau, IOR, scattering)
+	//! are physical scalars carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePolishedMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
 								const IPainter& ref,			///< [in] Reflectance of diffuse substrate
-								const IPainter& tau,			///< [in] Transmittance of the dielectric top
-								const IPainter& Nt,				///< [in] Index of refraction of dielectric coating
-								const IPainter& scat,			///< [in] Scattering function (either Phong or HG)
+								const IScalarPainter& tau,		///< [in] Transmittance of the dielectric top
+								const IScalarPainter& Nt,		///< [in] Index of refraction of dielectric coating
+								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG asymmetry)
 								const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
 								);
 
-	//! Creates a Dielectric material
+	//! Creates a Dielectric material.  Scalar params (tau, IOR, scattering)
+	//! are physical scalars carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateDielectricMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& tau,			///< [in] Transmittance
-								const IPainter& rIndex,			///< [in] Index of refraction
-								const IPainter& scat,			///< [in] Scattering function (either Phong or HG)
+								const IScalarPainter& tau,		///< [in] Transmittance (per-channel + spectral)
+								const IScalarPainter& rIndex,	///< [in] Index of refraction
+								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG)
 								const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
 								);
 
-	//! Creates a SubSurface Scattering material
+	//! Creates a SubSurface Scattering material.  ior / absorption /
+	//! scattering are physical scalars carried by `IScalarPainter`
+	//! — see docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSubSurfaceScatteringMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& ior,			///< [in] Index of refraction
-								const IPainter& absorption,		///< [in] Absorption coefficient
-								const IPainter& scattering,		///< [in] Scattering coefficient
+								const IScalarPainter& ior,		///< [in] Index of refraction
+								const IScalarPainter& absorption,///< [in] Absorption coefficient
+								const IScalarPainter& scattering,///< [in] Scattering coefficient
 								const Scalar g,					///< [in] HG asymmetry parameter
 								const Scalar roughness			///< [in] Surface roughness [0,1]
 								);
 
-	//! Creates a Random Walk SSS material
+	//! Creates a Random Walk SSS material.  ior / absorption /
+	//! scattering are physical scalars carried by `IScalarPainter`.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateRandomWalkSSSMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& ior,			///< [in] Index of refraction
-								const IPainter& absorption,		///< [in] Absorption coefficient
-								const IPainter& scattering,		///< [in] Scattering coefficient
+								const IScalarPainter& ior,		///< [in] Index of refraction
+								const IScalarPainter& absorption,///< [in] Absorption coefficient
+								const IScalarPainter& scattering,///< [in] Scattering coefficient
 								const Scalar g,					///< [in] HG asymmetry parameter
 								const Scalar roughness,			///< [in] Surface roughness [0,1]
 								const unsigned int maxBounces	///< [in] Maximum walk steps
 								);
 
-	//! Creates an isotropic phong material
+	//! Creates an isotropic phong material.
+	//! `exponent` is a physical scalar carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateIsotropicPhongMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& rd,				///< [in] Diffuse reflectance
-								const IPainter& rs,				///< [in] Specular reflectance
-								const IPainter& exponent		///< [in] Phong exponent
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& rd,					///< [in] Diffuse reflectance
+								const IPainter& rs,					///< [in] Specular reflectance
+								const IScalarPainter& exponent		///< [in] Phong exponent (physical scalar)
 								);
 
-	//! Creates the anisotropic phong material of Ashikmin and Shirley
+	//! Creates the anisotropic phong material of Ashikmin and Shirley.
+	//! `Nu` / `Nv` are physical scalars carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateAshikminShirleyAnisotropicPhongMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& rd,				///< [in] Diffuse reflectance
-								const IPainter& rs,				///< [in] Specular reflectance
-								const IPainter& Nu,				///< [in] Phong exponent in U
-								const IPainter& Nv				///< [in] Phong exponent in V
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& rd,					///< [in] Diffuse reflectance
+								const IPainter& rs,					///< [in] Specular reflectance
+								const IScalarPainter& Nu,			///< [in] Phong exponent in U (physical scalar)
+								const IScalarPainter& Nv			///< [in] Phong exponent in V (physical scalar)
 								);
 
 	//! Creates a perfect reflector
@@ -564,47 +577,51 @@ namespace RISE
 								);
 
 	//! Creates a perfect refractor
+	//! `ior` is a physical scalar carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePerfectRefractorMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
 								const IPainter& ref,			///< [in] Amount of refraction
-								const IPainter& ior				///< [in] Index of refraction
+								const IScalarPainter& ior		///< [in] Index of refraction
 								);
 
-	//! Creates a translucent material
+	//! Creates a translucent material.  Scalar params (extinction,
+	//! Phong exponent, multiple-scattering) are physical scalars
+	//! carried by `IScalarPainter` — see docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateTranslucentMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& rF,				///< [in] Reflectance
-								const IPainter& T,				///< [in] Transmittance
-								const IPainter& ext,			///< [in] Extinction
-								const IPainter& N,				///< [in] Phong exponent
-								const IPainter& scat			///< [in] Multiple scattering component
+								const IPainter& rF,				///< [in] Reflectance (color)
+								const IPainter& T,				///< [in] Transmittance (color)
+								const IScalarPainter& ext,		///< [in] Extinction (scalar)
+								const IScalarPainter& N,		///< [in] Phong exponent (scalar)
+								const IScalarPainter& scat		///< [in] Multiple scattering component (scalar)
 								);
 
 	//! Creates a BioSpec skin material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBioSpecSkinMaterial(
 								IMaterial** ppi,											///< [out] Pointer to recieve the material
-								const IPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
-								const IPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
-								const IPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
-								const IPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
-								const IPainter& ior_SC_,									///< Index of refraction of the stratum corneum
-								const IPainter& ior_epidermis_,								///< Index of refraction of the epidermis
-								const IPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
-								const IPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
-								const IPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
-								const IPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
-								const IPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
-								const IPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
-								const IPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
-								const IPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
-								const IPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
-								const IPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
-								const IPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
-								const IPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
-								const IPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
+								const IScalarPainter& thickness_SC_,								///< Thickness of the stratum corneum (in cm)
+								const IScalarPainter& thickness_epidermis_,						///< Thickness of the epidermis (in cm)
+								const IScalarPainter& thickness_papillary_dermis_,				///< Thickness of the papillary dermis (in cm)
+								const IScalarPainter& thickness_reticular_dermis_,				///< Thickness of the reticular dermis (in cm)
+								const IScalarPainter& ior_SC_,									///< Index of refraction of the stratum corneum
+								const IScalarPainter& ior_epidermis_,								///< Index of refraction of the epidermis
+								const IScalarPainter& ior_papillary_dermis_,						///< Index of refraction of the papillary dermis
+								const IScalarPainter& ior_reticular_dermis_,						///< Index of refraction of the reticular dermis
+								const IScalarPainter& concentration_eumelanin_,					///< Average Concentration of eumelanin in the melanosomes
+								const IScalarPainter& concentration_pheomelanin_,					///< Average Concentration of pheomelanin in the melanosomes
+								const IScalarPainter& melanosomes_in_epidermis_,					///< Percentage of the epidermis made up of melanosomes
+								const IScalarPainter& hb_ratio_,									///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
+								const IScalarPainter& whole_blood_in_papillary_dermis_,			///< Percentage of the papillary dermis made up of whole blood
+								const IScalarPainter& whole_blood_in_reticular_dermis_,			///< Percentage of the reticular dermis made up of whole blood
+								const IScalarPainter& bilirubin_concentration_,					///< Concentration of Bilirubin in whole blood
+								const IScalarPainter& betacarotene_concentration_SC_,				///< Concentration of Beta-Carotene in the stratum corneum
+								const IScalarPainter& betacarotene_concentration_epidermis_,		///< Concentration of Beta-Carotene in the epidermis
+								const IScalarPainter& betacarotene_concentration_dermis_,			///< Concentration of Beta-Carotene in the dermis
+								const IScalarPainter& folds_aspect_ratio_,						///< Aspect ratio of the little folds and wrinkles on the skin surface
 								const bool bSubdermalLayer									///< Should the model simulate a perfectly reflecting subdermal layer?
 								);
 
@@ -612,24 +629,25 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateDonnerJensenSkinBSSRDFMaterial(
 								IMaterial** ppi,											///< [out] Pointer to recieve the material
-								const IPainter& melanin_fraction_,							///< C_m: melanin volume fraction (0-0.5)
-								const IPainter& melanin_blend_,								///< beta_m: eumelanin vs pheomelanin blend (0-1)
-								const IPainter& hemoglobin_epidermis_,						///< C_he: hemoglobin fraction in epidermis (0-0.05)
-								const IPainter& carotene_fraction_,							///< C_bc: carotene fraction (0-0.05)
-								const IPainter& hemoglobin_dermis_,							///< C_hd: hemoglobin fraction in dermis (0-0.1)
-								const IPainter& epidermis_thickness_,						///< Epidermis thickness in cm (default 0.025)
-								const IPainter& ior_epidermis_,								///< Index of refraction of epidermis (default 1.4)
-								const IPainter& ior_dermis_,								///< Index of refraction of dermis (default 1.38)
-								const IPainter& blood_oxygenation_,							///< Blood oxygenation ratio (default 0.7)
+								const IScalarPainter& melanin_fraction_,							///< C_m: melanin volume fraction (0-0.5)
+								const IScalarPainter& melanin_blend_,								///< beta_m: eumelanin vs pheomelanin blend (0-1)
+								const IScalarPainter& hemoglobin_epidermis_,						///< C_he: hemoglobin fraction in epidermis (0-0.05)
+								const IScalarPainter& carotene_fraction_,							///< C_bc: carotene fraction (0-0.05)
+								const IScalarPainter& hemoglobin_dermis_,							///< C_hd: hemoglobin fraction in dermis (0-0.1)
+								const IScalarPainter& epidermis_thickness_,						///< Epidermis thickness in cm (default 0.025)
+								const IScalarPainter& ior_epidermis_,								///< Index of refraction of epidermis (default 1.4)
+								const IScalarPainter& ior_dermis_,								///< Index of refraction of dermis (default 1.38)
+								const IScalarPainter& blood_oxygenation_,							///< Blood oxygenation ratio (default 0.7)
 								const Scalar roughness										///< Surface roughness for microfacet boundary [0, 1]
 								);
 
-	//! Creates a generic human tissue material
+	//! Creates a generic human tissue material.  `sca` and `g` are
+	//! physical scalars carried by `IScalarPainter`.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateGenericHumanTissueMaterial(
 								IMaterial** ppi,											///< [out] Pointer to recieve the material
-								const IPainter& sca,										///< [in] Scattering co-efficient
-								const IPainter& g,											///< [in] The g factor in the HG phase function
+								const IScalarPainter& sca,									///< [in] Scattering co-efficient (scalar)
+								const IScalarPainter& g,									///< [in] HG phase function g (scalar)
 								const Scalar whole_blood_,									///< Percentage of the tissue made up of whole blood
 								const Scalar hb_ratio_,										///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
 								const Scalar bilirubin_concentration_,						///< Concentration of Bilirubin in whole blood
@@ -652,50 +670,57 @@ namespace RISE
 								const IPainter& extinction									///< [in] Extinction coefficient for absorption between layers
 								);
 
-	//! Creates Ward's isotropic gaussian material
+	//! Creates Ward's isotropic gaussian material.
+	//! `alpha` is a physical scalar carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateWardIsotropicGaussianMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& alpha			///< [in] Standard deviation (RMS) of surface slope
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance
+								const IScalarPainter& alpha			///< [in] Surface slope RMS (physical scalar)
 								);
 
-	//! Creates Ward's anisotropic elliptical gaussian material
+	//! Creates Ward's anisotropic elliptical gaussian material.
+	//! `alphax` / `alphay` are physical scalars carried by `IScalarPainter` —
+	//! see docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateWardAnisotropicEllipticalGaussianMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& alphax,			///< [in] Standard deviation (RMS) of surface slope in x
-								const IPainter& alphay			///< [in] Standard deviation (RMS) of surface slope in y
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance
+								const IScalarPainter& alphax,		///< [in] Surface slope RMS in x (physical scalar)
+								const IScalarPainter& alphay		///< [in] Surface slope RMS in y (physical scalar)
 								);
 
-	//! Creates a GGX anisotropic microfacet material
+	//! Creates a GGX anisotropic microfacet material.
+	//! `alphaX` / `alphaY` (roughness), `ior`, and `ext` are physical scalars
+	//! carried by `IScalarPainter` — see docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateGGXMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance / F0
-								const IPainter& alphaX,			///< [in] Roughness in tangent u direction
-								const IPainter& alphaY,			///< [in] Roughness in tangent v direction
-								const IPainter& ior,			///< [in] Index of refraction (ignored in Schlick mode)
-								const IPainter& ext,			///< [in] Extinction coefficient (ignored in Schlick mode)
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance / F0
+								const IScalarPainter& alphaX,		///< [in] Roughness in tangent u direction (physical scalar)
+								const IScalarPainter& alphaY,		///< [in] Roughness in tangent v direction (physical scalar)
+								const IScalarPainter& ior,			///< [in] Index of refraction (physical scalar; ignored in Schlick mode)
+								const IScalarPainter& ext,			///< [in] Extinction coefficient (physical scalar; ignored in Schlick mode)
 								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
 								const IPainter* tangent_rotation = nullptr			///< [in] Landing 8 / KHR_materials_anisotropy: optional painter giving tangent-frame rotation in radians.  NULL = no rotation (default; bit-identical to pre-L8).
 								);
 
 	//! Creates a GGX material with an optional emissive painter.  Pass
 	//! emissive=NULL to skip the emitter (equivalent to RISE_API_CreateGGXMaterial).
+	//! Same scalar-slot conventions as RISE_API_CreateGGXMaterial.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateGGXEmissiveMaterial(
 								IMaterial** ppi,
 								const IPainter& diffuse,
 								const IPainter& specular,
-								const IPainter& alphaX,
-								const IPainter& alphaY,
-								const IPainter& ior,
-								const IPainter& ext,
+								const IScalarPainter& alphaX,
+								const IScalarPainter& alphaY,
+								const IScalarPainter& ior,
+								const IScalarPainter& ext,
 								const IPainter* emissive,		///< [in] Optional; NULL = no emitter
 								const Scalar    emissive_scale,
 								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
@@ -742,38 +767,44 @@ namespace RISE
 	//! bottom=baseGGX) pairing for glTF KHR_materials_sheen assets.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSheenMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& sheenColor,		///< [in] Sheen tint colour (typical 0..1)
-								const IPainter& sheenRoughness	///< [in] Sheen roughness (typical 0..1; clamped to >= 1e-3 internally)
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& sheenColor,			///< [in] Sheen tint colour (typical 0..1)
+								const IScalarPainter& sheenRoughness	///< [in] Sheen roughness (physical scalar, typical 0..1; clamped to >= 1e-3 internally)
 								);
 
-	//! Creates a Cook Torrance material
+	//! Creates a Cook Torrance material.
+	//! `facet` (roughness), `ior`, and `ext` are physical scalars carried by
+	//! `IScalarPainter` — see docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateCookTorranceMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& facet,			///< [in] Facet distribution
-								const IPainter& ior,			///< [in] IOR delta
-								const IPainter& ext				///< [in] Extinction factor
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance
+								const IScalarPainter& facet,		///< [in] Facet distribution (roughness — physical scalar)
+								const IScalarPainter& ior,			///< [in] Index of refraction (physical scalar)
+								const IScalarPainter& ext			///< [in] Extinction coefficient (physical scalar)
 								);
 
-	//! Creates a Oren-Nayar material
+	//! Creates a Oren-Nayar material.
+	//! `roughness` is a physical scalar carried by `IScalarPainter` — see
+	//! docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateOrenNayarMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& reflectance,	///< [in] Reflectance
-								const IPainter& roughness		///< [in] Roughness
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& reflectance,		///< [in] Reflectance
+								const IScalarPainter& roughness		///< [in] Roughness (physical scalar)
 								);
 
-	//! Creates a Schlick material
+	//! Creates a Schlick material.
+	//! `roughness` and `isotropy` are physical scalars carried by
+	//! `IScalarPainter` — see docs/ISCALARPAINTER_REFACTOR.md.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSchlickMaterial(
-								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& diffuse,		///< [in] Diffuse reflectance
-								const IPainter& specular,		///< [in] Specular reflectance
-								const IPainter& roughness,		///< [in] Roughness
-								const IPainter& isotropy		///< [in] Isotropy
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance
+								const IScalarPainter& roughness,	///< [in] Roughness (physical scalar)
+								const IScalarPainter& isotropy		///< [in] Isotropy (physical scalar)
 								);
 
 	//! Creates a datadriven material
@@ -793,13 +824,14 @@ namespace RISE
 								const Scalar scale				///< [in] Value to scale radiant exitance by
 								);
 
-	//! Creates a phong luminaire material
+	//! Creates a phong luminaire material.  `N` is a physical scalar
+	//! carried by `IScalarPainter` (Phong exponent).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePhongLuminaireMaterial(
 								IMaterial** ppi,				///< [out] Pointer to recieve the material
-								const IPainter& radEx,			///< [in] Radiance exitance
+								const IPainter& radEx,			///< [in] Radiance exitance (color)
 								const IMaterial& mat,			///< [in] Material to use for all non emmission properties
-								const IPainter& N,				///< [in] Phong exponent
+								const IScalarPainter& N,		///< [in] Phong exponent (scalar)
 								const Scalar scale				///< [in] Value to scale radiant exitance by
 								);
 
@@ -1537,6 +1569,99 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreatePainterManager(
 								IPainterManager** ppi			///< [out] Pointer to recieve the manager
+								);
+
+	//! Creates a scalar-painter manager (see IScalarPainter.h).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateScalarPainterManager(
+								IScalarPainterManager** ppi		///< [out] Pointer to recieve the manager
+								);
+
+	// =========================================================================
+	// Scalar painters (physical-scalar values; no colorspace).  Each
+	// painter implements `IScalarPainter` (see IScalarPainter.h).  Used
+	// for material parameters like IOR, scattering, roughness, etc.
+	// =========================================================================
+
+	//! Constant scalar value at every position and wavelength.
+	bool RISE_API_CreateUniformScalarPainter(
+								IScalarPainter** ppi,			///< [out] Created painter
+								Scalar value					///< [in]  Scalar value
+								);
+
+	//! Per-channel scalar triple (R, G, B authored independently).  In
+	//! the spectral path interpolates piecewise-linearly across the
+	//! channel nominal wavelengths (450/550/650 nm).
+	bool RISE_API_CreateRGBScalarPainter(
+								IScalarPainter** ppi,
+								Scalar r,
+								Scalar g,
+								Scalar b
+								);
+
+	//! Piecewise-linear interpolation across (nm, value) samples.
+	//! `samples` is a vector of (wavelength, scalar) pairs; the
+	//! constructor sorts and clamps outside the sample range.
+	bool RISE_API_CreatePiecewiseLinearScalarPainter(
+								IScalarPainter** ppi,
+								const std::vector<std::pair<Scalar, Scalar>>& samples
+								);
+
+	//! Analytic Sellmeier IOR formula:
+	//!   n²(λ) = 1 + Σᵢ Bᵢ·λ² / (λ² - Cᵢ),  λ in micrometres.
+	bool RISE_API_CreateSellmeierScalarPainter(
+								IScalarPainter** ppi,
+								Scalar B1, Scalar B2, Scalar B3,
+								Scalar C1, Scalar C2, Scalar C3
+								);
+
+	//! Polynomial function of wavelength:
+	//!   f(λ) = c₀ + c₁·λ + … + cₙ·λⁿ
+	//! Horner-form evaluation.
+	bool RISE_API_CreatePolynomialScalarPainter(
+								IScalarPainter** ppi,
+								const std::vector<Scalar>& coeffs
+								);
+
+	//! Wraps an existing IFunction1D as a wavelength-varying scalar
+	//! painter.  Lets authors reuse RISE's existing function-1d
+	//! infrastructure (piecewise-linear, polynomial, custom C++
+	//! subclasses) as a scalar painter.
+	bool RISE_API_CreateFunction1DScalarPainter(
+								IScalarPainter** ppi,
+								IFunction1D* pFunc				///< [in] Wavelength-driven function (addref'd)
+								);
+
+	//! Wraps an existing IFunction2D as a spatially-varying scalar
+	//! painter.  Evaluates at `(ri.ptCoord.x, ri.ptCoord.y)`.
+	bool RISE_API_CreateFunction2DScalarPainter(
+								IScalarPainter** ppi,
+								IFunction2D* pFunc				///< [in] Spatial function (addref'd)
+								);
+
+	//! Texture-driven scalar painter.  Samples the raster texture at
+	//! `ri.ptCoord` and returns the chosen channel value as a pure
+	//! scalar — no JH-uplift, no colorspace conversion.
+	bool RISE_API_CreateTextureScalarPainter(
+								IScalarPainter** ppi,
+								IRasterImageAccessor* pRIA,		///< [in] Texture accessor (addref'd)
+								unsigned int channel			///< [in] 0=R, 1=G, 2=B
+								);
+
+	//! Composition: child scalar painter × constant.
+	bool RISE_API_CreateScaledScalarPainter(
+								IScalarPainter** ppi,
+								IScalarPainter* pChild,			///< [in] Base painter (addref'd)
+								Scalar scale
+								);
+
+	//! Composition: element-wise product of two scalar painters
+	//! (`ScalarTriple` and per-wavelength).  Used for spatial × spectral
+	//! and similar combinations.
+	bool RISE_API_CreateMultiplyScalarPainter(
+								IScalarPainter** ppi,
+								IScalarPainter* pA,				///< [in] Painter A (addref'd)
+								IScalarPainter* pB				///< [in] Painter B (addref'd)
 								);
 
 	//! Creates a camera manager

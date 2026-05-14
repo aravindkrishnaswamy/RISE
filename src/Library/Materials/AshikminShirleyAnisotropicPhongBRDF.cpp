@@ -19,7 +19,7 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-AshikminShirleyAnisotropicPhongBRDF::AshikminShirleyAnisotropicPhongBRDF( const IPainter& Nu_, const IPainter& Nv_, const IPainter& Rd_, const IPainter& Rs_ ) : 
+AshikminShirleyAnisotropicPhongBRDF::AshikminShirleyAnisotropicPhongBRDF( const IScalarPainter& Nu_, const IScalarPainter& Nv_, const IPainter& Rd_, const IPainter& Rs_ ) :
   Nu( Nu_ ), Nv( Nv_ ), Rd( Rd_ ), Rs( Rs_ )
 {
 	Nu.addref();
@@ -99,7 +99,11 @@ RISEPel AshikminShirleyAnisotropicPhongBRDF::value( const Vector3& vLightIn, con
 	RISEPel	OMRs = RISEPel(1.0,1.0,1.0) - pRs;
 
 	RISEPel diffuseFactor, specularFactor;
-	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, Nu.GetColor(ri), Nv.GetColor(ri), pRs );
+	const ScalarTriple nu = Nu.GetValuesAt(ri);
+	const ScalarTriple nv = Nv.GetValuesAt(ri);
+	const RISEPel NUp( nu.v[0], nu.v[1], nu.v[2] );
+	const RISEPel NVp( nv.v[0], nv.v[1], nv.v[2] );
+	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, NUp, NVp, pRs );
 
 	const RISEPel diffuse = (Rd.GetColor(ri) * OMRs * diffuseFactor);
 	// specularFactor already contains Fresnel F(h·k) = Rs + (1-Rs)(1-cos)^5,
@@ -115,7 +119,7 @@ Scalar AshikminShirleyAnisotropicPhongBRDF::valueNM( const Vector3& vLightIn, co
 	const Scalar	OMRs = 1.0 - pRs;
 
 	Scalar diffuseFactor, specularFactor;
-	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, Nu.GetColorNM(ri,nm), Nv.GetColorNM(ri,nm), pRs );
+	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, Nu.GetValueAtNM(ri,nm), Nv.GetValueAtNM(ri,nm), pRs );
 
 	const Scalar diffuse = (Rd.GetColorNM(ri,nm) * OMRs * diffuseFactor);
 	// specularFactor already contains Fresnel — no extra Rs multiplication

@@ -28,6 +28,7 @@
 #include "Interfaces/IObjectManager.h"
 #include "Interfaces/ILightManager.h"
 #include "Interfaces/IPainterManager.h"
+#include "Interfaces/IScalarPainterManager.h"
 #include "Interfaces/IMaterialManager.h"
 #include "Interfaces/IShaderManager.h"
 #include "Interfaces/IShaderOpManager.h"
@@ -63,6 +64,7 @@ namespace RISE
 		IGeometryManager*							pGeomManager;		// Set of all geometry in the job
 		ICameraManager*								pCameraManager;		// Set of all cameras in the job
 		IPainterManager*							pPntManager;		// Set of all painters in the job
+		IScalarPainterManager*						pScalarPntManager;	// Set of all scalar painters in the job
 		IFunction1DManager*							pFunc1DManager;		// Set of all 1D functions in the job
 		IFunction2DManager*							pFunc2DManager;		// Set of all 2D functions in the job
 		IMaterialManager*							pMatManager;		// Set of all materials in the job
@@ -272,6 +274,7 @@ namespace RISE
 		IGeometryManager*			GetGeometries()		{ return pGeomManager; };
 		ICameraManager*				GetCameras()		{ return pCameraManager; };
 		IPainterManager*			GetPainters()		{ return pPntManager; };
+		IScalarPainterManager*		GetScalarPainters()	{ return pScalarPntManager; };
 		IFunction1DManager*			GetFunction1Ds()	{ return pFunc1DManager; };
 		IFunction2DManager*			GetFunction2Ds()	{ return pFunc2DManager; };
 		IMaterialManager*			GetMaterials()		{ return pMatManager; };

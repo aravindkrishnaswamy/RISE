@@ -229,7 +229,7 @@ polished_material
 dielectric_material
 {
 	name				clear_glass
-	tau					pnt_clear_glass
+	tau			0.97 0.98 1
 	ior					1.54
 	scattering			100000.0
 }
@@ -237,7 +237,7 @@ dielectric_material
 dielectric_material
 {
 	name				lens_glass
-	tau					pnt_lens_glass
+	tau			1 0.82 0.62
 	ior					1.58
 	scattering			100000.0
 }
@@ -245,7 +245,7 @@ dielectric_material
 dielectric_material
 {
 	name				prism_glass
-	tau					pnt_prism_glass
+	tau			0.64 0.88 1
 	ior					1.66
 	scattering			100000.0
 }

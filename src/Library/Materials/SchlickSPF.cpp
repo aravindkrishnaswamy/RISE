@@ -22,8 +22,8 @@ using namespace RISE::Implementation;
 SchlickSPF::SchlickSPF(
 	const IPainter& diffuse,
 	const IPainter& specular,
-	const IPainter& roughness,
-	const IPainter& isotropy
+	const IScalarPainter& roughness,
+	const IScalarPainter& isotropy
 	) :
   pDiffuse( diffuse ),
   pSpecular( specular ),
@@ -257,27 +257,26 @@ void SchlickSPF::Scatter(
 		scattered.AddScatteredRay( d );
 	}
 
-	RISEPel roughness = pRoughness.GetColor(ri);
-	const RISEPel isotropy = pIsotropy.GetColor(ri);
+	ScalarTriple rt = pRoughness.GetValuesAt(ri);
+	const ScalarTriple it = pIsotropy.GetValuesAt(ri);
 
 	// Glossy filtering: increase effective roughness to blur
 	// secondary glossy reflections, reducing caustic noise.
 	if( ri.glossyFilterWidth > 0 ) {
 		for( int ch = 0; ch < 3; ch++ ) {
-			roughness[ch] = r_min( roughness[ch] + ri.glossyFilterWidth, Scalar(1.0) );
+			rt.v[ch] = r_min( rt.v[ch] + ri.glossyFilterWidth, Scalar(1.0) );
 		}
 	}
 
-	if( roughness[0] == roughness[1] && roughness[1] == roughness[2] &&
-		isotropy[0] == isotropy[1] && isotropy[1] == isotropy[2] )
+	if( !pRoughness.HasPerChannelVariation() && !pIsotropy.HasPerChannelVariation() )
 	{
 		Scalar fresnel = 0;
-		GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), roughness[0], isotropy[0] );
+		GenerateSpecularRay( s, fresnel, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), rt.v[0], it.v[0] );
 
 		if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 			const RISEPel rho = pSpecular.GetColor(ri);
 			s.kray = rho + (RISEPel(1.0,1.0,1.0)-rho) * fresnel;
-			s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), roughness[0], isotropy[0] );
+			s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), rt.v[0], it.v[0] );
 			s.isDelta = false;
 			scattered.AddScatteredRay( s );
 		}
@@ -289,12 +288,12 @@ void SchlickSPF::Scatter(
 
 		for( int i=0; i<3; i++ ) {
 			Scalar fresnel = 0;
-			GenerateSpecularRay( s, fresnel, myonb, ri, ptrand, roughness[i], isotropy[i] );
+			GenerateSpecularRay( s, fresnel, myonb, ri, ptrand, rt.v[i], it.v[i] );
 
 			if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 				s.kray = 0;
 				s.kray[i] = rho[i] + (1.0-rho[i]) * fresnel;
-				s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), roughness[i], isotropy[i] );
+				s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), rt.v[i], it.v[i] );
 				s.isDelta = false;
 				scattered.AddScatteredRay( s );
 			}
@@ -317,8 +316,8 @@ void SchlickSPF::ScatterNM(
 
 	ScatteredRay d, s;
 	Scalar fresnel = 0;
-	Scalar roughnessNM = pRoughness.GetColorNM(ri,nm);
-	const Scalar isotropyNM = pIsotropy.GetColorNM(ri,nm);
+	Scalar roughnessNM = pRoughness.GetValueAtNM(ri,nm);
+	const Scalar isotropyNM = pIsotropy.GetValueAtNM(ri,nm);
 
 	// Glossy filtering: increase effective roughness
 	if( ri.glossyFilterWidth > 0 ) {
@@ -366,15 +365,15 @@ Scalar SchlickSPF::Pdf(
 	const Scalar diffusePdf = cosTheta * INV_PI;
 
 	// Specular PDF: Schlick half-vector sampling (use average roughness/isotropy)
-	RISEPel roughness = pRoughness.GetColor(ri);
-	const RISEPel isotropy = pIsotropy.GetColor(ri);
+	ScalarTriple roughness = pRoughness.GetValuesAt(ri);
+	const ScalarTriple isotropy = pIsotropy.GetValuesAt(ri);
 	if( ri.glossyFilterWidth > 0 ) {
 		for( int ch = 0; ch < 3; ch++ ) {
-			roughness[ch] = r_min( roughness[ch] + ri.glossyFilterWidth, Scalar(1.0) );
+			roughness.v[ch] = r_min( roughness.v[ch] + ri.glossyFilterWidth, Scalar(1.0) );
 		}
 	}
-	const Scalar rAvg = (roughness[0] + roughness[1] + roughness[2]) / 3.0;
-	const Scalar pAvg = (isotropy[0] + isotropy[1] + isotropy[2]) / 3.0;
+	const Scalar rAvg = (roughness.v[0] + roughness.v[1] + roughness.v[2]) / 3.0;
+	const Scalar pAvg = (isotropy.v[0] + isotropy.v[1] + isotropy.v[2]) / 3.0;
 	const Scalar specPdf = ComputeSchlickSpecularPdf( ri, wo, rAvg, pAvg );
 
 	// Weight by relative importance of diffuse vs specular
@@ -413,8 +412,8 @@ Scalar SchlickSPF::PdfNM(
 	const Scalar diffusePdf = cosTheta * INV_PI;
 
 	// Specular PDF
-	Scalar r = pRoughness.GetColorNM(ri,nm);
-	const Scalar p = pIsotropy.GetColorNM(ri,nm);
+	Scalar r = pRoughness.GetValueAtNM(ri,nm);
+	const Scalar p = pIsotropy.GetValueAtNM(ri,nm);
 	if( ri.glossyFilterWidth > 0 ) {
 		r = r_min( r + ri.glossyFilterWidth, Scalar(1.0) );
 	}

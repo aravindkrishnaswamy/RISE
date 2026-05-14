@@ -238,6 +238,8 @@
 		F24B72702F52A632008304C4 /* IOptions.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F087C069C428F0069C9E5 /* IOptions.h */; };
 		F24B72712F52A632008304C4 /* IPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F087D069C428F0069C9E5 /* IPainter.h */; };
 		F24B72722F52A632008304C4 /* IPainterManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F087E069C428F0069C9E5 /* IPainterManager.h */; };
+		FA1ABSC10000000000000005 /* IScalarPainterManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000004 /* IScalarPainterManager.h */; };
+		FA1ABSC10000000000000001 /* IScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000000 /* IScalarPainter.h */; };
 		F24B72732F52A632008304C4 /* IParametricSurface.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F087F069C428F0069C9E5 /* IParametricSurface.h */; };
 		F24B72742F52A632008304C4 /* IPhotonMap.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0880069C428F0069C9E5 /* IPhotonMap.h */; };
 		F24B72752F52A632008304C4 /* IPhotonTracer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0881069C428F0069C9E5 /* IPhotonTracer.h */; };
@@ -311,6 +313,7 @@
 		F24B72B92F52A632008304C4 /* ObjectManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08CA069C42900069C9E5 /* ObjectManager.cpp */; };
 		F24B72BA2F52A632008304C4 /* ObjectManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08CB069C42900069C9E5 /* ObjectManager.h */; };
 		F24B72BB2F52A632008304C4 /* PainterManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08CC069C42900069C9E5 /* PainterManager.h */; };
+		FA1ABSC10000000000000009 /* ScalarPainterManager.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000008 /* ScalarPainterManager.h */; };
 		F24B72BC2F52A632008304C4 /* ShaderManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08CD069C42900069C9E5 /* ShaderManager.h */; };
 		F24B72BD2F52A632008304C4 /* DataDrivenBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F277344F07ECCEDC00C0B600 /* DataDrivenBSDF.cpp */; };
 		F24B72BE2F52A632008304C4 /* DataDrivenBSDF.h in Sources */ = {isa = PBXBuildFile; fileRef = F277345007ECCEDC00C0B600 /* DataDrivenBSDF.h */; };
@@ -435,6 +438,17 @@
 		F24B73352F52A632008304C4 /* TexturePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0948069C42900069C9E5 /* TexturePainter.cpp */; };
 		F24B73362F52A632008304C4 /* TexturePainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0949069C42900069C9E5 /* TexturePainter.h */; };
 		F24B73372F52A632008304C4 /* UniformColorPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F094A069C42900069C9E5 /* UniformColorPainter.h */; };
+		FA1ABSC10000000000000035 /* PainterToScalarAdapter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */; };
+		FA1ABSC10000000000000031 /* MultiplyScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */; };
+		FA1ABSC1000000000000002D /* ScaledScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000002C /* ScaledScalarPainter.h */; };
+		FA1ABSC10000000000000029 /* TextureScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000028 /* TextureScalarPainter.h */; };
+		FA1ABSC10000000000000025 /* Function2DScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000024 /* Function2DScalarPainter.h */; };
+		FA1ABSC10000000000000021 /* Function1DScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000020 /* Function1DScalarPainter.h */; };
+		FA1ABSC1000000000000001D /* PolynomialScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000001C /* PolynomialScalarPainter.h */; };
+		FA1ABSC10000000000000019 /* SellmeierScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000018 /* SellmeierScalarPainter.h */; };
+		FA1ABSC10000000000000015 /* PiecewiseLinearScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000014 /* PiecewiseLinearScalarPainter.h */; };
+		FA1ABSC10000000000000011 /* RGBScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000010 /* RGBScalarPainter.h */; };
+		FA1ABSC1000000000000000D /* UniformScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000000C /* UniformScalarPainter.h */; };
 		F24B73382F52A632008304C4 /* Voronoi2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094B069C42900069C9E5 /* Voronoi2DPainter.cpp */; };
 		F24B73392F52A632008304C4 /* Voronoi2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F094C069C42900069C9E5 /* Voronoi2DPainter.h */; };
 		F24B733A2F52A632008304C4 /* Voronoi3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094D069C42900069C9E5 /* Voronoi3DPainter.cpp */; };
@@ -956,6 +970,8 @@
 		F27F0AE8069C42910069C9E5 /* IOptions.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F087C069C428F0069C9E5 /* IOptions.h */; };
 		F27F0AE9069C42910069C9E5 /* IPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F087D069C428F0069C9E5 /* IPainter.h */; };
 		F27F0AEA069C42910069C9E5 /* IPainterManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F087E069C428F0069C9E5 /* IPainterManager.h */; };
+		FA1ABHD10000000000000006 /* IScalarPainterManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000004 /* IScalarPainterManager.h */; };
+		FA1ABHD10000000000000002 /* IScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000000 /* IScalarPainter.h */; };
 		F27F0AEB069C42910069C9E5 /* IParametricSurface.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F087F069C428F0069C9E5 /* IParametricSurface.h */; };
 		F27F0AEC069C42910069C9E5 /* IPhotonMap.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0880069C428F0069C9E5 /* IPhotonMap.h */; };
 		F27F0AED069C42910069C9E5 /* IPhotonTracer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0881069C428F0069C9E5 /* IPhotonTracer.h */; };
@@ -1029,6 +1045,7 @@
 		F27F0B33069C42910069C9E5 /* ObjectManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08CA069C42900069C9E5 /* ObjectManager.cpp */; };
 		F27F0B34069C42910069C9E5 /* ObjectManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08CB069C42900069C9E5 /* ObjectManager.h */; };
 		F27F0B35069C42910069C9E5 /* PainterManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08CC069C42900069C9E5 /* PainterManager.h */; };
+		FA1ABHD1000000000000000A /* ScalarPainterManager.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000008 /* ScalarPainterManager.h */; };
 		F27F0B36069C42910069C9E5 /* ShaderManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08CD069C42900069C9E5 /* ShaderManager.h */; };
 		F27F0B37069C42910069C9E5 /* AshikminShirleyAnisotropicPhongBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08CF069C42900069C9E5 /* AshikminShirleyAnisotropicPhongBRDF.cpp */; };
 		F27F0B38069C42910069C9E5 /* AshikminShirleyAnisotropicPhongBRDF.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08D0069C42900069C9E5 /* AshikminShirleyAnisotropicPhongBRDF.h */; };
@@ -1148,6 +1165,17 @@
 		F27F0BAC069C42910069C9E5 /* TexturePainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0948069C42900069C9E5 /* TexturePainter.cpp */; };
 		F27F0BAD069C42910069C9E5 /* TexturePainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0949069C42900069C9E5 /* TexturePainter.h */; };
 		F27F0BAE069C42910069C9E5 /* UniformColorPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F094A069C42900069C9E5 /* UniformColorPainter.h */; };
+		FA1ABHD10000000000000036 /* PainterToScalarAdapter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */; };
+		FA1ABHD10000000000000032 /* MultiplyScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */; };
+		FA1ABHD1000000000000002E /* ScaledScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000002C /* ScaledScalarPainter.h */; };
+		FA1ABHD1000000000000002A /* TextureScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000028 /* TextureScalarPainter.h */; };
+		FA1ABHD10000000000000026 /* Function2DScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000024 /* Function2DScalarPainter.h */; };
+		FA1ABHD10000000000000022 /* Function1DScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000020 /* Function1DScalarPainter.h */; };
+		FA1ABHD1000000000000001E /* PolynomialScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000001C /* PolynomialScalarPainter.h */; };
+		FA1ABHD1000000000000001A /* SellmeierScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000018 /* SellmeierScalarPainter.h */; };
+		FA1ABHD10000000000000016 /* PiecewiseLinearScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000014 /* PiecewiseLinearScalarPainter.h */; };
+		FA1ABHD10000000000000012 /* RGBScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000010 /* RGBScalarPainter.h */; };
+		FA1ABHD1000000000000000E /* UniformScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000000C /* UniformScalarPainter.h */; };
 		F27F0BAF069C42910069C9E5 /* Voronoi2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094B069C42900069C9E5 /* Voronoi2DPainter.cpp */; };
 		F27F0BB0069C42910069C9E5 /* Voronoi2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F094C069C42900069C9E5 /* Voronoi2DPainter.h */; };
 		F27F0BB1069C42910069C9E5 /* Voronoi3DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F094D069C42900069C9E5 /* Voronoi3DPainter.cpp */; };
@@ -2037,6 +2065,8 @@
 		F27F087C069C428F0069C9E5 /* IOptions.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IOptions.h; sourceTree = "<group>"; };
 		F27F087D069C428F0069C9E5 /* IPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IPainter.h; sourceTree = "<group>"; };
 		F27F087E069C428F0069C9E5 /* IPainterManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IPainterManager.h; sourceTree = "<group>"; };
+		FA1ABFR10000000000000004 /* IScalarPainterManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IScalarPainterManager.h; sourceTree = "<group>"; };
+		FA1ABFR10000000000000000 /* IScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IScalarPainter.h; sourceTree = "<group>"; };
 		F27F087F069C428F0069C9E5 /* IParametricSurface.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IParametricSurface.h; sourceTree = "<group>"; };
 		F27F0880069C428F0069C9E5 /* IPhotonMap.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IPhotonMap.h; sourceTree = "<group>"; };
 		F27F0881069C428F0069C9E5 /* IPhotonTracer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = IPhotonTracer.h; sourceTree = "<group>"; };
@@ -2110,6 +2140,7 @@
 		F27F08CA069C42900069C9E5 /* ObjectManager.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ObjectManager.cpp; sourceTree = "<group>"; };
 		F27F08CB069C42900069C9E5 /* ObjectManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ObjectManager.h; sourceTree = "<group>"; };
 		F27F08CC069C42900069C9E5 /* PainterManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterManager.h; sourceTree = "<group>"; };
+		FA1ABFR10000000000000008 /* ScalarPainterManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ScalarPainterManager.h; sourceTree = "<group>"; };
 		F27F08CD069C42900069C9E5 /* ShaderManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ShaderManager.h; sourceTree = "<group>"; };
 		F27F08CF069C42900069C9E5 /* AshikminShirleyAnisotropicPhongBRDF.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = AshikminShirleyAnisotropicPhongBRDF.cpp; sourceTree = "<group>"; };
 		F27F08D0069C42900069C9E5 /* AshikminShirleyAnisotropicPhongBRDF.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AshikminShirleyAnisotropicPhongBRDF.h; sourceTree = "<group>"; };
@@ -2229,6 +2260,17 @@
 		F27F0948069C42900069C9E5 /* TexturePainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TexturePainter.cpp; sourceTree = "<group>"; };
 		F27F0949069C42900069C9E5 /* TexturePainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TexturePainter.h; sourceTree = "<group>"; };
 		F27F094A069C42900069C9E5 /* UniformColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = UniformColorPainter.h; sourceTree = "<group>"; };
+		FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterToScalarAdapter.h; sourceTree = "<group>"; };
+		FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MultiplyScalarPainter.h; sourceTree = "<group>"; };
+		FA1ABFR1000000000000002C /* ScaledScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ScaledScalarPainter.h; sourceTree = "<group>"; };
+		FA1ABFR10000000000000028 /* TextureScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TextureScalarPainter.h; sourceTree = "<group>"; };
+		FA1ABFR10000000000000024 /* Function2DScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function2DScalarPainter.h; sourceTree = "<group>"; };
+		FA1ABFR10000000000000020 /* Function1DScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function1DScalarPainter.h; sourceTree = "<group>"; };
+		FA1ABFR1000000000000001C /* PolynomialScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PolynomialScalarPainter.h; sourceTree = "<group>"; };
+		FA1ABFR10000000000000018 /* SellmeierScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SellmeierScalarPainter.h; sourceTree = "<group>"; };
+		FA1ABFR10000000000000014 /* PiecewiseLinearScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PiecewiseLinearScalarPainter.h; sourceTree = "<group>"; };
+		FA1ABFR10000000000000010 /* RGBScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RGBScalarPainter.h; sourceTree = "<group>"; };
+		FA1ABFR1000000000000000C /* UniformScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = UniformScalarPainter.h; sourceTree = "<group>"; };
 		F27F094B069C42900069C9E5 /* Voronoi2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Voronoi2DPainter.cpp; sourceTree = "<group>"; };
 		F27F094C069C42900069C9E5 /* Voronoi2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Voronoi2DPainter.h; sourceTree = "<group>"; };
 		F27F094D069C42900069C9E5 /* Voronoi3DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Voronoi3DPainter.cpp; sourceTree = "<group>"; };
@@ -3041,6 +3083,8 @@
 				F27F087C069C428F0069C9E5 /* IOptions.h */,
 				F27F087D069C428F0069C9E5 /* IPainter.h */,
 				F27F087E069C428F0069C9E5 /* IPainterManager.h */,
+				FA1ABFR10000000000000004 /* IScalarPainterManager.h */,
+				FA1ABFR10000000000000000 /* IScalarPainter.h */,
 				F27F087F069C428F0069C9E5 /* IParametricSurface.h */,
 				F27F0880069C428F0069C9E5 /* IPhotonMap.h */,
 				F27F0881069C428F0069C9E5 /* IPhotonTracer.h */,
@@ -3142,6 +3186,7 @@
 				F27F08CA069C42900069C9E5 /* ObjectManager.cpp */,
 				F27F08CB069C42900069C9E5 /* ObjectManager.h */,
 				F27F08CC069C42900069C9E5 /* PainterManager.h */,
+				FA1ABFR10000000000000008 /* ScalarPainterManager.h */,
 				F27F08CD069C42900069C9E5 /* ShaderManager.h */,
 			);
 			path = Managers;
@@ -3382,6 +3427,17 @@
 				F27F0948069C42900069C9E5 /* TexturePainter.cpp */,
 				F27F0949069C42900069C9E5 /* TexturePainter.h */,
 				F27F094A069C42900069C9E5 /* UniformColorPainter.h */,
+				FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */,
+				FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */,
+				FA1ABFR1000000000000002C /* ScaledScalarPainter.h */,
+				FA1ABFR10000000000000028 /* TextureScalarPainter.h */,
+				FA1ABFR10000000000000024 /* Function2DScalarPainter.h */,
+				FA1ABFR10000000000000020 /* Function1DScalarPainter.h */,
+				FA1ABFR1000000000000001C /* PolynomialScalarPainter.h */,
+				FA1ABFR10000000000000018 /* SellmeierScalarPainter.h */,
+				FA1ABFR10000000000000014 /* PiecewiseLinearScalarPainter.h */,
+				FA1ABFR10000000000000010 /* RGBScalarPainter.h */,
+				FA1ABFR1000000000000000C /* UniformScalarPainter.h */,
 				AAB7C04202604280000000A3 /* VertexColorPainter.h */,
 				F27F094B069C42900069C9E5 /* Voronoi2DPainter.cpp */,
 				F27F094C069C42900069C9E5 /* Voronoi2DPainter.h */,
@@ -4144,6 +4200,8 @@
 				F27F0AE8069C42910069C9E5 /* IOptions.h in Headers */,
 				F27F0AE9069C42910069C9E5 /* IPainter.h in Headers */,
 				F27F0AEA069C42910069C9E5 /* IPainterManager.h in Headers */,
+				FA1ABHD10000000000000006 /* IScalarPainterManager.h in Headers */,
+				FA1ABHD10000000000000002 /* IScalarPainter.h in Headers */,
 				F24C54342F79FFF1009AF16D /* CompletePathGuide.h in Headers */,
 				F27F0AEB069C42910069C9E5 /* IParametricSurface.h in Headers */,
 				F2D9B1382F8FA5C40077A171 /* VCMSpectralRasterizer.h in Headers */,
@@ -4222,6 +4280,7 @@
 				F27F0B32069C42910069C9E5 /* ModifierManager.h in Headers */,
 				F27F0B34069C42910069C9E5 /* ObjectManager.h in Headers */,
 				F27F0B35069C42910069C9E5 /* PainterManager.h in Headers */,
+				FA1ABHD1000000000000000A /* ScalarPainterManager.h in Headers */,
 				F27F0B36069C42910069C9E5 /* ShaderManager.h in Headers */,
 				F27F0B38069C42910069C9E5 /* AshikminShirleyAnisotropicPhongBRDF.h in Headers */,
 				F27F0B39069C42910069C9E5 /* AshikminShirleyAnisotropicPhongMaterial.h in Headers */,
@@ -4304,6 +4363,17 @@
 				F27F0BAB069C42910069C9E5 /* SpectralColorPainter.h in Headers */,
 				F27F0BAD069C42910069C9E5 /* TexturePainter.h in Headers */,
 				F27F0BAE069C42910069C9E5 /* UniformColorPainter.h in Headers */,
+				FA1ABHD10000000000000036 /* PainterToScalarAdapter.h in Headers */,
+				FA1ABHD10000000000000032 /* MultiplyScalarPainter.h in Headers */,
+				FA1ABHD1000000000000002E /* ScaledScalarPainter.h in Headers */,
+				FA1ABHD1000000000000002A /* TextureScalarPainter.h in Headers */,
+				FA1ABHD10000000000000026 /* Function2DScalarPainter.h in Headers */,
+				FA1ABHD10000000000000022 /* Function1DScalarPainter.h in Headers */,
+				FA1ABHD1000000000000001E /* PolynomialScalarPainter.h in Headers */,
+				FA1ABHD1000000000000001A /* SellmeierScalarPainter.h in Headers */,
+				FA1ABHD10000000000000016 /* PiecewiseLinearScalarPainter.h in Headers */,
+				FA1ABHD10000000000000012 /* RGBScalarPainter.h in Headers */,
+				FA1ABHD1000000000000000E /* UniformScalarPainter.h in Headers */,
 				AAB7C04202604280000000A2 /* VertexColorPainter.h in Headers */,
 				F27F0BB0069C42910069C9E5 /* Voronoi2DPainter.h in Headers */,
 				F27F0BB2069C42910069C9E5 /* Voronoi3DPainter.h in Headers */,
@@ -5194,6 +5264,8 @@
 				F24B72702F52A632008304C4 /* IOptions.h in Sources */,
 				F24B72712F52A632008304C4 /* IPainter.h in Sources */,
 				F24B72722F52A632008304C4 /* IPainterManager.h in Sources */,
+				FA1ABSC10000000000000005 /* IScalarPainterManager.h in Sources */,
+				FA1ABSC10000000000000001 /* IScalarPainter.h in Sources */,
 				F24B72732F52A632008304C4 /* IParametricSurface.h in Sources */,
 				F24B72742F52A632008304C4 /* IPhotonMap.h in Sources */,
 				F24B72752F52A632008304C4 /* IPhotonTracer.h in Sources */,
@@ -5282,6 +5354,7 @@
 				F24B72B92F52A632008304C4 /* ObjectManager.cpp in Sources */,
 				F24B72BA2F52A632008304C4 /* ObjectManager.h in Sources */,
 				F24B72BB2F52A632008304C4 /* PainterManager.h in Sources */,
+				FA1ABSC10000000000000009 /* ScalarPainterManager.h in Sources */,
 				F24B72BC2F52A632008304C4 /* ShaderManager.h in Sources */,
 				F24B72BD2F52A632008304C4 /* DataDrivenBSDF.cpp in Sources */,
 				F24B72BE2F52A632008304C4 /* DataDrivenBSDF.h in Sources */,
@@ -5433,6 +5506,17 @@
 				F24C54492F7CAB4F009AF16D /* HomogeneousMedium.cpp in Sources */,
 				F24C544A2F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp in Sources */,
 				F24B73372F52A632008304C4 /* UniformColorPainter.h in Sources */,
+				FA1ABSC10000000000000035 /* PainterToScalarAdapter.h in Sources */,
+				FA1ABSC10000000000000031 /* MultiplyScalarPainter.h in Sources */,
+				FA1ABSC1000000000000002D /* ScaledScalarPainter.h in Sources */,
+				FA1ABSC10000000000000029 /* TextureScalarPainter.h in Sources */,
+				FA1ABSC10000000000000025 /* Function2DScalarPainter.h in Sources */,
+				FA1ABSC10000000000000021 /* Function1DScalarPainter.h in Sources */,
+				FA1ABSC1000000000000001D /* PolynomialScalarPainter.h in Sources */,
+				FA1ABSC10000000000000019 /* SellmeierScalarPainter.h in Sources */,
+				FA1ABSC10000000000000015 /* PiecewiseLinearScalarPainter.h in Sources */,
+				FA1ABSC10000000000000011 /* RGBScalarPainter.h in Sources */,
+				FA1ABSC1000000000000000D /* UniformScalarPainter.h in Sources */,
 				AAB7C04202604280000000A1 /* VertexColorPainter.h in Sources */,
 				F24B73382F52A632008304C4 /* Voronoi2DPainter.cpp in Sources */,
 				F24B73392F52A632008304C4 /* Voronoi2DPainter.h in Sources */,

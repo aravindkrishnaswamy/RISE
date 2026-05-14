@@ -18,6 +18,7 @@
 
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ILog.h"
 #include "PerfectRefractorSPF.h"
 
@@ -36,7 +37,7 @@ namespace RISE
 			}
 
 		public:
-			PerfectRefractorMaterial( const IPainter& ref, const IPainter& Nt_ )
+			PerfectRefractorMaterial( const IPainter& ref, const IScalarPainter& Nt_ )
 			{
 				pSPF = new PerfectRefractorSPF( ref, Nt_ );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );

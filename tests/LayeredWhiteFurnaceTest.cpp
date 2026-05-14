@@ -49,7 +49,9 @@
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Interfaces/ISPF.h"
 #include "../src/Library/Interfaces/IPainter.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
 
 #include "../src/Library/Materials/LambertianSPF.h"
 #include "../src/Library/Materials/GGXSPF.h"
@@ -312,6 +314,8 @@ int main()
 	UniformColorPainter* one      = new UniformColorPainter( RISEPel( 1.0, 1.0, 1.0 ) );  one->addref();
 	UniformColorPainter* zero     = new UniformColorPainter( RISEPel( 0.0, 0.0, 0.0 ) );  zero->addref();
 	UniformColorPainter* iorPnt   = new UniformColorPainter( RISEPel( 1.5, 1.5, 1.5 ) );  iorPnt->addref();
+	UniformScalarPainter* zeroSc  = new UniformScalarPainter( 0.0 );  zeroSc->addref();
+	UniformScalarPainter* iorSc   = new UniformScalarPainter( 1.5 );  iorSc->addref();
 
 	// Finding D verification: a coloured / low-metallic / dominant-
 	// diffuse PBR base, similar to what the importer's "near-black
@@ -330,11 +334,13 @@ int main()
 	// surface, so any L6 finding is comparable to the established
 	// single-material baseline.
 	UniformColorPainter* alpha    = new UniformColorPainter( RISEPel( 0.16, 0.16, 0.16 ) );  alpha->addref();
+	UniformScalarPainter* alphaSc = new UniformScalarPainter( 0.16 );  alphaSc->addref();
 
 	// Sheen roughness in the middle of the legal [0, 1] range.
 	// Charlie distribution's energy loss at grazing depends on
 	// roughness; 0.5 is broadly representative of fabric assets.
 	UniformColorPainter* sheenR   = new UniformColorPainter( RISEPel( 0.5, 0.5, 0.5 ) );  sheenR->addref();
+	UniformScalarPainter* sheenRSc = new UniformScalarPainter( 0.5 );  sheenRSc->addref();
 
 	// ---------- Build SPFs ----------
 
@@ -345,20 +351,25 @@ int main()
 	// acts as F0 directly under schlick_f0; (1 - max(F0)) is
 	// applied inside the BSDF for the diffuse weight.
 	GGXSPF* ggxPBR = new GGXSPF(
-		*one, *one, *alpha, *alpha, *iorPnt, *zero, eFresnelSchlickF0 );
+		*one, *one, *alphaSc, *alphaSc, *iorSc, *zeroSc, eFresnelSchlickF0 );
 	ggxPBR->addref();
 
 	// Sheen alone.
-	SheenSPF* sheen = new SheenSPF( *one, *sheenR );  sheen->addref();
+	SheenSPF* sheen = new SheenSPF( *one, *sheenRSc );  sheen->addref();
 
 	// Dielectric "clear coat" with full transmission (tau = 1)
-	// and zero in-volume scattering, IOR 1.5.
-	DielectricSPF* dielectric = new DielectricSPF( *one, *iorPnt, *zero, /*hg*/ false );
+	// and zero in-volume scattering, IOR 1.5.  tau/ior/scattering
+	// are physical scalars carried by `IScalarPainter` — they no
+	// longer route through `IPainter` and the JH spectral uplift.
+	UniformScalarPainter* sOne  = new UniformScalarPainter( 1.0 );  sOne->addref();
+	UniformScalarPainter* sZero = new UniformScalarPainter( 0.0 );  sZero->addref();
+	UniformScalarPainter* sIor  = new UniformScalarPainter( 1.5 );  sIor->addref();
+	DielectricSPF* dielectric = new DielectricSPF( *sOne, *sIor, *sZero, /*hg*/ false );
 	dielectric->addref();
 
 	// GGX-only top layer for clearcoat-style composite.
 	GGXSPF* ggxOnly = new GGXSPF(
-		*zero, *one, *alpha, *alpha, *iorPnt, *zero, eFresnelSchlickF0 );
+		*zero, *one, *alphaSc, *alphaSc, *iorSc, *zeroSc, eFresnelSchlickF0 );
 	ggxOnly->addref();
 
 	// Finding D: coloured + diffuse-dominant GGX-PBR base.
@@ -367,12 +378,12 @@ int main()
 	// roughness ≈ 0.4.  rd = baseColor (because metallic=0 leaves
 	// the entire baseColor as diffuse weight); rs = F0 = 0.04.
 	GGXSPF* ggxRedDiff = new GGXSPF(
-		*redDiff, *dielF0, *alpha, *alpha, *iorPnt, *zero, eFresnelSchlickF0 );
+		*redDiff, *dielF0, *alphaSc, *alphaSc, *iorSc, *zeroSc, eFresnelSchlickF0 );
 	ggxRedDiff->addref();
 
 	// Finding D: clearcoat with F0 = 0.04 (standard glTF clearcoat).
 	GGXSPF* clearcoatDiel = new GGXSPF(
-		*zero, *dielF0, *alpha, *alpha, *iorPnt, *zero, eFresnelSchlickF0 );
+		*zero, *dielF0, *alphaSc, *alphaSc, *iorSc, *zeroSc, eFresnelSchlickF0 );
 	clearcoatDiel->addref();
 
 	// Composite layers.  Recursion budgets match the scene-language
@@ -559,6 +570,9 @@ int main()
 	safe_release( iorPnt );
 	safe_release( zero );
 	safe_release( one );
+	safe_release( sOne );
+	safe_release( sZero );
+	safe_release( sIor );
 	safe_release( g_stubObject );
 
 	return ( failures > 0 ) ? 1 : 0;

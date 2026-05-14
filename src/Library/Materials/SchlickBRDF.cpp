@@ -21,11 +21,11 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-SchlickBRDF::SchlickBRDF( 
-	const IPainter& diffuse, 
-	const IPainter& specular, 
-	const IPainter& roughness,
-	const IPainter& isotropy
+SchlickBRDF::SchlickBRDF(
+	const IPainter& diffuse,
+	const IPainter& specular,
+	const IScalarPainter& roughness,
+	const IScalarPainter& isotropy
 	) :
   pDiffuse( diffuse ),
   pSpecular( specular ),
@@ -90,19 +90,23 @@ static T ComputeFactor(
 RISEPel SchlickBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	RISEPel fresnel;
-	const RISEPel factor = ComputeFactor<RISEPel>( fresnel, vLightIn, ri, pRoughness.GetColor(ri), pIsotropy.GetColor(ri) );
+	const ScalarTriple rt = pRoughness.GetValuesAt(ri);
+	const ScalarTriple it = pIsotropy.GetValuesAt(ri);
+	const RISEPel rPel( rt.v[0], rt.v[1], rt.v[2] );
+	const RISEPel iPel( it.v[0], it.v[1], it.v[2] );
+	const RISEPel factor = ComputeFactor<RISEPel>( fresnel, vLightIn, ri, rPel, iPel );
 	if( ColorMath::MaxValue(factor) > 0 ) {
 		const RISEPel rho = pSpecular.GetColor(ri);
 		return (pDiffuse.GetColor(ri)*INV_PI) + ((rho + (RISEPel(1.0,1.0,1.0)-rho)*fresnel) * factor);
 	}
-	
-	return RISEPel(0,0,0);  
+
+	return RISEPel(0,0,0);
 }
 
 Scalar SchlickBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar fresnel=0;
-	const Scalar factor = ComputeFactor<Scalar>( fresnel, vLightIn, ri, pRoughness.GetColorNM(ri,nm), pIsotropy.GetColorNM(ri,nm) );
+	const Scalar factor = ComputeFactor<Scalar>( fresnel, vLightIn, ri, pRoughness.GetValueAtNM(ri,nm), pIsotropy.GetValueAtNM(ri,nm) );
 	if( factor > 0 ) {
 		const Scalar rho = pSpecular.GetColorNM(ri,nm);
 		return (pDiffuse.GetColorNM(ri,nm)*INV_PI) + (rho + (1.0-rho)*fresnel) * factor;
