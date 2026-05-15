@@ -377,7 +377,11 @@ subsurfacescattering_material
 	name		mat_creature1
 	ior			1.3
 	absorption			0.1
-	scattering	c1_sss_scattering
+	# Per-pixel voronoi scattering (`c1_sss_scattering`) is not
+	# expressible in the IScalarPainter pipe (no `voronoi3d` scalar
+	# form yet); collapse to a uniform scalar.  The spatial colour
+	# variation still drives the rest of the composite material.
+	scattering	1.0
 	g			0.0
 	roughness	0.0
 }

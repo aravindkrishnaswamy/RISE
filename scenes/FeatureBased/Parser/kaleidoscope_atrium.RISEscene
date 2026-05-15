@@ -181,7 +181,7 @@ polished_material
 {
 	name				floor_mat
 	reflectance			pnt_floor
-	tau					color_white
+	tau			1
 	ior					1.45
 	scattering			250.0
 }
@@ -208,7 +208,7 @@ ward_anisotropic_material
 	rd					pnt_metal
 	rs					pnt_metal_spec
 	alphax				0.03
-	alphay				pnt_alpha_y
+	alphay			0.22
 }
 
 dielectric_material
@@ -224,7 +224,7 @@ translucent_material
 	name				jade_core
 	ref					pnt_jade
 	tau					pnt_jade
-	ext					color_black
+	ext			0
 	N					1.0
 	scattering			0.6
 }

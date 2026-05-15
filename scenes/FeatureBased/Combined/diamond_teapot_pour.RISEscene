@@ -146,7 +146,7 @@ polished_material
 {
 	name				marble_mat
 	reflectance			pnt_marble
-	tau					color_white
+	tau			1
 	scattering			512.0
 	ior					1.5
 }

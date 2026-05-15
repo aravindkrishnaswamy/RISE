@@ -88,7 +88,7 @@ uniformcolor_painter
 dielectric_material
 {
 	name				glass
-	tau					color_white
+	tau			1
 	ior					1.45
 	scattering			100000
 }

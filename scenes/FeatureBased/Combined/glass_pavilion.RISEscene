@@ -142,7 +142,7 @@ polished_material
 {
 	name				polished_floor
 	reflectance			pnt_floor_checker
-	tau					pnt_floor_checker
+	tau					1.0
 	ior					1.5
 	scattering			600.0
 }

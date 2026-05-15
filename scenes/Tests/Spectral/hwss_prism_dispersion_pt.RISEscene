@@ -127,12 +127,18 @@ lambertian_luminaire_material
 	scale				10.0
 	material			none
 }
+scalar_painter
+{
+	name				pnt_trans_scalar
+	file				colors/flat_1.spectra
+}
+
 
 dielectric_material
 {
 	name				glass
-	tau					pnt_trans
-	ior					linear_ior
+	tau			pnt_trans_scalar
+	ior			1.3 1.5 2
 	scattering			1000000
 }
 

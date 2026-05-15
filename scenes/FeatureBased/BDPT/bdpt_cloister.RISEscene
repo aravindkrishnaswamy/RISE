@@ -233,7 +233,7 @@ polished_material
 {
 	name				pedestal_mat
 	reflectance			pnt_pedestal
-	tau					color_white
+	tau			1
 	ior					1.5
 	scattering			350.0
 }

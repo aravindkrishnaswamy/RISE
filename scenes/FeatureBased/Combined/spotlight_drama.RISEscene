@@ -211,7 +211,7 @@ translucent_material
 	name				jade
 	ref					pnt_jade_ref
 	tau					pnt_jade_tau
-	ext					color_black
+	ext			0
 	N					1.4
 	scattering			0.7
 }
@@ -223,7 +223,7 @@ translucent_material
 	name				wax
 	ref					pnt_wax_ref
 	tau					pnt_wax_tau
-	ext					color_black
+	ext			0
 	N					1.5
 	scattering			0.5
 }

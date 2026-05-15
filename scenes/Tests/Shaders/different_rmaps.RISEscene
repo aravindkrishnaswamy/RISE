@@ -123,7 +123,7 @@ polished_material
 {
 	name				polished
 	reflectance			color_steelblue
-	tau					color_white
+	tau			1
 	ior					1.57
 	scattering			10000
 }

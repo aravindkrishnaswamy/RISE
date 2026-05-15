@@ -259,12 +259,16 @@ dielectric_material
 	scattering			5000.0
 }
 
-# Wet pebbles - polished with Perlin texture
+# Wet pebbles - polished with Perlin texture.  Tau (transmittance)
+# does not vary spatially with the perlin diffuse base under
+# IScalarPainter (no `texture` form on scalar_painter), so we lock
+# tau to unity here — the spatial colour variation still lives in
+# the perlin painter via `reflectance`.
 polished_material
 {
 	name				wet_rock
 	reflectance			pnt_rock
-	tau					pnt_rock
+	tau					1.0
 	ior					1.45
 	scattering			800.0
 }

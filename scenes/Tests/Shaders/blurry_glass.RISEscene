@@ -99,7 +99,7 @@ lambertian_material
 dielectric_material
 {
 	name				glass
-	tau					color_white
+	tau			1
 	ior					1.57
 	scattering			4000
 }

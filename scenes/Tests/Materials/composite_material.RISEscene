@@ -219,7 +219,7 @@ translucent_material
 	name				mat_translucent
 	ref					pnt_translucent_ref
 	tau					pnt_translucent_tau
-	ext					pnt_translucent_ext
+	ext			2 3 5
 	N					10.0
 	scattering			0.5
 }

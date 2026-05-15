@@ -117,7 +117,7 @@ translucent_material
 	name				trans
 	ref					pnt_iri
 	tau					pnt_iri
-	ext					color_black
+	ext			0
 }
 /*
 lambertian_luminaire_material

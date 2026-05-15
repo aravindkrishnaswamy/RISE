@@ -96,7 +96,7 @@ translucent_material
 	name				translucent
 	ref					color_white
 	tau					color_white
-	ext					color_black
+	ext			0
 	N					0.0
 	scattering			0.0
 }

@@ -120,7 +120,7 @@ translucent_material
 	name				trans
 	ref					pnt_cnt
 	tau					pnt_cnt
-	ext					color_black
+	ext			0
 	N					1.0
 	scattering			0.8
 }

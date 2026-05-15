@@ -141,7 +141,7 @@ translucent_material
 	name				mat_translucent
 	ref					pnt_grey
 	tau					pnt_translucent_tau
-	ext					color_white
+	ext			1
 	N					1.3
 	scattering			0.0
 }

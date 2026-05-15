@@ -87,7 +87,7 @@ ashikminshirley_anisotropicphong_material
 	rd					50pgrey
 	rs					color_white
 	nu					1.0
-	nv					NV
+	nv			100 200 400
 }
 
 uniformcolor_painter
@@ -102,7 +102,7 @@ cooktorrance_material
 	name				ct
 	rd					50pgrey
 	rs					color_white
-	facets				facets
+	facets			0.1 0.15 0.3
 	ior					1.8
 	extinction			0
 }
@@ -120,7 +120,7 @@ ward_anisotropic_material
 	rd					50pgrey
 	rs					color_white
 	alphax				0.9
-	alphay				alphay
+	alphay			0.1 0.2 0.3
 }
 
 uniformcolor_painter
@@ -151,7 +151,7 @@ ward_isotropic_material
 	name				wi
 	rd					50pgrey
 	rs					color_white	
-	alpha				alpha
+	alpha			0.1 0.2 0.3
 }
 
 ##################################################

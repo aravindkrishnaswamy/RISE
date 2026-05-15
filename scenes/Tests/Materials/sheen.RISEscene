@@ -98,21 +98,21 @@ sheen_material
 {
 	name				m_velvet
 	sheen_color			sheen_white
-	sheen_roughness		rough_sharp
+	sheen_roughness			0.1
 }
 
 sheen_material
 {
 	name				m_satin
 	sheen_color			sheen_gold
-	sheen_roughness		rough_med
+	sheen_roughness			0.5
 }
 
 sheen_material
 {
 	name				m_blurred
 	sheen_color			sheen_pink
-	sheen_roughness		rough_blurred
+	sheen_roughness			1
 }
 
 sphere_geometry

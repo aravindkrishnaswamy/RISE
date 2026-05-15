@@ -223,8 +223,8 @@ ward_anisotropic_material
 	name				brushed_metal
 	rd					pnt_brushed_metal
 	rs					pnt_brushed_spec
-	alphax				pnt_aniso_alpha_x
-	alphay				pnt_aniso_alpha_y
+	alphax			0.01
+	alphay			0.3
 }
 
 # Display platform - lines pattern
@@ -247,8 +247,8 @@ ashikminshirley_anisotropicphong_material
 	name				ashikmin_mat
 	rd					pnt_warm_white
 	rs					pnt_warm_white
-	nu					pnt_nu
-	nv					pnt_nv
+	nu			10
+	nv			500
 }
 
 # Glossy ruby sphere - Schlick

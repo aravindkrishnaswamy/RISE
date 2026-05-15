@@ -97,7 +97,7 @@ checker_painter
 dielectric_material
 {
 	name				dieA
-	tau					color_white
+	tau			1
 	ior					1.33
 	scattering				1
 }
@@ -105,7 +105,7 @@ dielectric_material
 dielectric_material
 {
 	name				dieB
-	tau					color_white
+	tau			1
 	ior					1.33
 	scattering				16
 }
@@ -113,7 +113,7 @@ dielectric_material
 dielectric_material
 {
 	name				dieC
-	tau					color_white
+	tau			1
 	ior					1.33
 	scattering				100
 }
@@ -121,7 +121,7 @@ dielectric_material
 dielectric_material
 {
 	name				dieD
-	tau					color_white
+	tau			1
 	ior					1.33
 	scattering				1000
 }
@@ -129,7 +129,7 @@ dielectric_material
 dielectric_material
 {
 	name				dieE
-	tau					color_white
+	tau			1
 	ior					1.33
 	scattering				100000
 }

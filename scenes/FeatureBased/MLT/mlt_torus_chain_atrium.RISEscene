@@ -410,17 +410,11 @@ torus_geometry
 FOR I 0 14 1
 
 	# ==== EVEN LINK (K = 2*I) ====
-	uniformcolor_painter
-	{
-		name			pnt_tau_e!I
-		color			$(0.15+0.849*cos(@I*4.1888)*cos(@I*4.1888)) $(0.15+0.849*cos(@I*4.1888+2.0944)*cos(@I*4.1888+2.0944)) $(0.15+0.849*cos(@I*4.1888+4.1888)*cos(@I*4.1888+4.1888))
-		colorspace		RISERGB
-	}
-
+	# Per-channel tau RGB inlined (RGBScalarPainter form).
 	dielectric_material
 	{
 		name			glass_e!I
-		tau				pnt_tau_e!I
+		tau				$(0.15+0.849*cos(@I*4.1888)*cos(@I*4.1888)) $(0.15+0.849*cos(@I*4.1888+2.0944)*cos(@I*4.1888+2.0944)) $(0.15+0.849*cos(@I*4.1888+4.1888)*cos(@I*4.1888+4.1888))
 		ior				$(1.33+@I*0.06)
 		scattering		100000.0
 	}
@@ -435,17 +429,10 @@ FOR I 0 14 1
 	}
 
 	# ==== ODD LINK (K = 2*I + 1) ====
-	uniformcolor_painter
-	{
-		name			pnt_tau_o!I
-		color			$(0.15+0.849*cos(@I*4.1888+2.0944)*cos(@I*4.1888+2.0944)) $(0.15+0.849*cos(@I*4.1888+4.1888)*cos(@I*4.1888+4.1888)) $(0.15+0.849*cos(@I*4.1888+6.2832)*cos(@I*4.1888+6.2832))
-		colorspace		RISERGB
-	}
-
 	dielectric_material
 	{
 		name			glass_o!I
-		tau				pnt_tau_o!I
+		tau				$(0.15+0.849*cos(@I*4.1888+2.0944)*cos(@I*4.1888+2.0944)) $(0.15+0.849*cos(@I*4.1888+4.1888)*cos(@I*4.1888+4.1888)) $(0.15+0.849*cos(@I*4.1888+6.2832)*cos(@I*4.1888+6.2832))
 		ior				$(1.36+@I*0.06)
 		scattering		100000.0
 	}
