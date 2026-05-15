@@ -42,30 +42,22 @@ static Scalar DielectricFresnelCos( const Scalar cosI, const Scalar eta_i, const
 
 SubSurfaceScatteringSPF::SubSurfaceScatteringSPF(
 	const IScalarPainter& ior_,
-	const IScalarPainter& absorption_,
-	const IScalarPainter& scattering_,
 	const Scalar g_,
 	const Scalar roughness_,
 	const bool bAbsorbBackFace_
 	) :
   ior( ior_ ),
-  absorption( absorption_ ),
-  scattering( scattering_ ),
   g( g_ ),
   roughness( roughness_ ),
   alpha( roughness_ * roughness_ ),
   bAbsorbBackFace( bAbsorbBackFace_ )
 {
 	ior.addref();
-	absorption.addref();
-	scattering.addref();
 }
 
 SubSurfaceScatteringSPF::~SubSurfaceScatteringSPF()
 {
 	ior.release();
-	absorption.release();
-	scattering.release();
 }
 
 //=============================================================

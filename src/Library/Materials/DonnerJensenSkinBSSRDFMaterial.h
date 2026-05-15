@@ -73,16 +73,10 @@ namespace RISE
 			{
 				iorPainter.addref();
 				// Surface BSDF/SPF use epidermis IOR for Fresnel reflection.
-				// SubSurfaceScattering{BSDF,SPF} take IScalarPainter for
-				// ior / absorption / scattering.  Absorption / scattering
-				// slots are unused by the surface lobes for BSSRDF
-				// materials (transport happens via the diffusion
-				// profile), so the same painter is reused as a benign
-				// placeholder.
-				pBSDF = new SubSurfaceScatteringBSDF( ior_epidermis_, ior_epidermis_, ior_epidermis_, 0.0, roughness );
+				pBSDF = new SubSurfaceScatteringBSDF( ior_epidermis_, 0.0, roughness );
 				GlobalLog()->PrintNew( pBSDF, __FILE__, __LINE__, "BSDF" );
 
-				pSPF = new SubSurfaceScatteringSPF( ior_epidermis_, ior_epidermis_, ior_epidermis_, 0.0, roughness, true );
+				pSPF = new SubSurfaceScatteringSPF( ior_epidermis_, 0.0, roughness, true );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 
 				pProfile = new DonnerJensenSkinDiffusionProfile(

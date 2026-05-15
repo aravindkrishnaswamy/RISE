@@ -531,10 +531,8 @@ int main()
     // Polished SPF: diffuse Rd (color), tau/IOR/scattering as IScalarPainter.
     PolishedSPF* polished = new PolishedSPF( *gray, *tauScalar, *iorScalar, *polishScatSc, false );  polished->addref();
 
-    // SubSurfaceScattering SPF: IOR, absorption, scattering, g=0.8, roughness=0.3
-    UniformScalarPainter* sssAbsorbSc = new UniformScalarPainter( 0.01 ); sssAbsorbSc->addref();
-    UniformScalarPainter* sssScatSc   = new UniformScalarPainter( 1.0 );  sssScatSc->addref();
-    SubSurfaceScatteringSPF* sss = new SubSurfaceScatteringSPF( *iorScalar, *sssAbsorbSc, *sssScatSc, 0.8, 0.3 );  sss->addref();
+    // SubSurfaceScattering SPF: IOR, g=0.8, roughness=0.3
+    SubSurfaceScatteringSPF* sss = new SubSurfaceScatteringSPF( *iorScalar, 0.8, 0.3 );  sss->addref();
 
     // Composite SPF: two Lambertian layers, max_recur=4, reflection/refraction/diffuse/translucent limits, thickness=0.1, zero extinction
     LambertianSPF* lambertian2 = new LambertianSPF( *spec );  lambertian2->addref();

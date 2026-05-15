@@ -27,28 +27,20 @@ using namespace RISE::Implementation;
 
 SubSurfaceScatteringBSDF::SubSurfaceScatteringBSDF(
 	const IScalarPainter& ior_,
-	const IScalarPainter& absorption_,
-	const IScalarPainter& scattering_,
 	const Scalar g_,
 	const Scalar roughness_
 	) :
   ior( ior_ ),
-  absorption( absorption_ ),
-  scattering( scattering_ ),
   g( g_ ),
   roughness( roughness_ ),
   alpha( roughness_ * roughness_ )
 {
 	ior.addref();
-	absorption.addref();
-	scattering.addref();
 }
 
 SubSurfaceScatteringBSDF::~SubSurfaceScatteringBSDF()
 {
 	ior.release();
-	absorption.release();
-	scattering.release();
 }
 
 /// Exact dielectric Fresnel reflectance from cosine and IOR.

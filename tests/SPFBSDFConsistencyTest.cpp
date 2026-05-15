@@ -547,8 +547,6 @@ int main()
     UniformColorPainter* polishScat = new UniformColorPainter( RISEPel(20.0, 20.0, 20.0) ); polishScat->addref();
     UniformColorPainter* sssAbsorb  = new UniformColorPainter( RISEPel(0.01, 0.01, 0.01) ); sssAbsorb->addref();
     UniformColorPainter* sssScat    = new UniformColorPainter( RISEPel(1.0, 1.0, 1.0) );  sssScat->addref();
-    UniformScalarPainter* sssAbsorbSc = new UniformScalarPainter( 0.01 ); sssAbsorbSc->addref();
-    UniformScalarPainter* sssScatSc   = new UniformScalarPainter( 1.0 );  sssScatSc->addref();
     UniformColorPainter* zeroExt    = new UniformColorPainter( RISEPel(0.0, 0.0, 0.0) );  zeroExt->addref();
     UniformColorPainter* one        = new UniformColorPainter( RISEPel(1.0, 1.0, 1.0) );  one->addref();
 
@@ -586,7 +584,7 @@ int main()
     AshikminShirleyAnisotropicPhongSPF* ashikminSPF = new AshikminShirleyAnisotropicPhongSPF( *ashNuSc, *ashNvSc, *gray, *spec );  ashikminSPF->addref();
     TranslucentSPF* translucentSPF = new TranslucentSPF( *gray, *trans, *extinctionSc, *phongNSc, *scatFactorSc );  translucentSPF->addref();
     PolishedSPF* polishedSPF = new PolishedSPF( *gray, *tauScalar, *iorScalar, *polishScatSc, false );  polishedSPF->addref();
-    SubSurfaceScatteringSPF* sssSPF = new SubSurfaceScatteringSPF( *iorScalar, *sssAbsorbSc, *sssScatSc, 0.8, 0.3 );  sssSPF->addref();
+    SubSurfaceScatteringSPF* sssSPF = new SubSurfaceScatteringSPF( *iorScalar, 0.8, 0.3 );  sssSPF->addref();
     LambertianSPF* lambertian2SPF = new LambertianSPF( *spec );  lambertian2SPF->addref();
     CompositeSPF* compositeSPF = new CompositeSPF( *lambertianSPF, *lambertian2SPF, 4, 2, 2, 2, 2, 0.1, *zeroExt );  compositeSPF->addref();
 
@@ -614,7 +612,7 @@ int main()
     WardAnisotropicEllipticalGaussianBRDF* wardAnisoBRDF = new WardAnisotropicEllipticalGaussianBRDF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc );  wardAnisoBRDF->addref();
     AshikminShirleyAnisotropicPhongBRDF* ashikminBRDF = new AshikminShirleyAnisotropicPhongBRDF( *ashNuSc, *ashNvSc, *gray, *spec );  ashikminBRDF->addref();
     TranslucentBSDF* translucentBSDF = new TranslucentBSDF( *gray, *trans, *phongNSc );  translucentBSDF->addref();
-    SubSurfaceScatteringBSDF* sssBSDF = new SubSurfaceScatteringBSDF( *iorScalar, *sssAbsorbSc, *sssScatSc, 0.8, 0.3 );  sssBSDF->addref();
+    SubSurfaceScatteringBSDF* sssBSDF = new SubSurfaceScatteringBSDF( *iorScalar, 0.8, 0.3 );  sssBSDF->addref();
 
     std::cout << " done." << std::endl;
 

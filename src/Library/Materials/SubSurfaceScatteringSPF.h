@@ -53,8 +53,6 @@ namespace RISE
 			virtual ~SubSurfaceScatteringSPF();
 
 			const IScalarPainter&	ior;		// Index of refraction (physical scalar)
-			const IScalarPainter&	absorption;	// Absorption coefficient (kept for parameter storage)
-			const IScalarPainter&	scattering;	// Scattering coefficient (kept for parameter storage)
 			const Scalar			g;			// HG asymmetry parameter (kept for parameter storage)
 			const Scalar			roughness;	// Surface roughness for microfacet boundary [0, 1]
 			const Scalar			alpha;		// GGX alpha = roughness^2
@@ -63,8 +61,6 @@ namespace RISE
 		public:
 			SubSurfaceScatteringSPF(
 				const IScalarPainter& ior_,
-				const IScalarPainter& absorption_,
-				const IScalarPainter& scattering_,
 				const Scalar g_,
 				const Scalar roughness_,
 				const bool bAbsorbBackFace_ = false

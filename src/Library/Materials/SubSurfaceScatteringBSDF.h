@@ -40,8 +40,6 @@ namespace RISE
 			virtual ~SubSurfaceScatteringBSDF();
 
 			const IScalarPainter&	ior;
-			const IScalarPainter&	absorption;
-			const IScalarPainter&	scattering;
 			const Scalar			g;
 			const Scalar			roughness;
 			const Scalar			alpha;		// GGX alpha = roughness^2
@@ -49,8 +47,6 @@ namespace RISE
 		public:
 			SubSurfaceScatteringBSDF(
 				const IScalarPainter& ior_,
-				const IScalarPainter& absorption_,
-				const IScalarPainter& scattering_,
 				const Scalar g_,
 				const Scalar roughness_
 				);
