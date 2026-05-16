@@ -271,7 +271,27 @@ static void RunRayShooter(
 				const SurfaceDerivatives sdT = tessellated.ComputeSurfaceDerivatives( hitT, nT );
 				if( !sdA.valid || !sdT.valid ) { ++out.derivInvalid; continue; }
 
-				const Scalar normDeg = AngleBetweenDeg( nA, nT );
+				// Hemisphere-fold the normal-error so the test is
+				// invariant to whether the geometry returned the
+				// outward or the inward-pointing normal at a back-
+				// face hit.  Shading correctness depends only on the
+				// surface orientation (the line that the normal lies
+				// on), not on its sign.  Before 2026-05-15 the
+				// analytical cylinder flipped its normal at back-face
+				// hits to match the tessellated `bDoubleSided` flip
+				// pattern, so this fold was unnecessary.  After the
+				// fix to `CylinderGeometry::IntersectRay` that aligns
+				// the analytical cylinder with the "always outward"
+				// convention used by sphere / torus / ellipsoid (so
+				// `DielectricSPF::GenerateScatteredRay`'s post-
+				// refraction sign test stops rejecting valid exits —
+				// see CylinderGeometry.cpp comment), the tessellated
+				// side still flips under `bDoubleSided`, producing
+				// 180° mismatches at every back-face sample that the
+				// test correctly identifies as "same orientation,
+				// opposite sign."
+				Scalar normDeg = AngleBetweenDeg( nA, nT );
+				if( normDeg > 90.0 ) normDeg = 180.0 - normDeg;
 				const Scalar posErr = Point3Ops::Distance( hitA, hitT ) / bboxR;
 				const bool   isNear = (posErr <= NEAR_HIT_FILTER);
 

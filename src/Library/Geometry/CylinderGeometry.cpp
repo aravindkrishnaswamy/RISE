@@ -136,15 +136,27 @@ void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool , 
 	ri.range = h.dRange;
 	ri.range2 = h.dRange2;
 
-	// Now compute the normal and texture mapping co-ordinates
+	// Now compute the normal and texture mapping co-ordinates.
+	//
+	// Normal convention: ALWAYS outward (away from the cylinder axis),
+	// matching SphereGeometry / EllipsoidGeometry / other analytic
+	// primitives.  Earlier revisions flipped the normal to face the
+	// ray (i.e. inward at back-face hits) but that breaks
+	// `DielectricSPF::GenerateScatteredRay`'s post-refraction
+	// direction check at lines 141-145 (DielectricSPF.cpp), which
+	// assumes the standard "vNormal points out of the medium" path-
+	// tracer convention.  With the inward-pointing normal at a
+	// back-face exit, the refracted-ray sign test rejects every
+	// valid exit, leaving only Fresnel reflection and rendering the
+	// cylinder dielectric as solid black after a few bounces.
+	// `Optics::CalculateRefractedRay` / `CalculateDielectricReflectance`
+	// are sign-symmetric (they flip the normal internally if it
+	// faces the ray), so leaving the normal outward at back-face
+	// hits is consistent across both code paths.
 	if( ri.bHit )
 	{
 		ri.ptIntersection = ri.ray.PointAtLength( ri.range );
 		GeometricUtilities::CylinderNormal( ri.ptIntersection, m_chAxis, ri.vNormal );
-
-		if( bHitFarSide ) {
-			ri.vNormal = -ri.vNormal;
-		}
 		ri.vGeomNormal = ri.vNormal;	// analytical surface: shading == geometric
 
 		if( bComputeExitInfo ) {
