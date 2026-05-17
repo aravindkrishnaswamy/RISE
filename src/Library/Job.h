@@ -238,6 +238,17 @@ namespace RISE
 		typedef std::map<String, IMedium*>		MediumMap;
 		MediumMap									mediaMap;				// Named participating media
 
+		// Materials registered via a composing factory
+		// (`AddPBRMetallicRoughnessMaterial`, `AddGGXEmissiveMaterial`)
+		// rather than a direct `Add*Material` call.  The interactive
+		// editor's Materials panel consults `IsMaterialComposed` to
+		// surface these as read-only — rebinding a slot on a composed
+		// material would break the painter-graph contract the
+		// composition relies on (e.g. PBR-MR's metallic/roughness
+		// blend chain).  Set is keyed by the material's manager-
+		// registered name and grows-only (no removal path today).
+		std::set<String>							composedMaterialNames;
+
 		//
 		// Helper functions
 		//
@@ -1549,6 +1560,12 @@ namespace RISE
 		//! Enumerate registered medium names; see IJob.h.
 		void EnumerateMediumNames(
 			IEnumCallback<const char*>& cb
+			) const;
+
+		//! True if the named material was registered via a composing
+		//! factory; see IJob.h.
+		bool IsMaterialComposed(
+			const char* name
 			) const;
 
 

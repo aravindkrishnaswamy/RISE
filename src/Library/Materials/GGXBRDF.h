@@ -37,12 +37,17 @@ namespace RISE
 		protected:
 			virtual ~GGXBRDF();
 
-			const IPainter&			pDiffuse;
-			const IPainter&			pSpecular;
-			const IScalarPainter&	pAlphaX;		// roughness (physical scalar)
-			const IScalarPainter&	pAlphaY;
-			const IScalarPainter&	pIOR;
-			const IScalarPainter&	pExtinction;
+			//! Pointer storage so the interactive editor can rebind
+			//! via Set*.  See LambertianBRDF for pattern.  The names
+			//! already start with `p` (a pre-Phase-4 naming choice
+			//! that happens to match the new pointer reality, so no
+			//! site rename was needed when changing `&` to `*`).
+			const IPainter*			pDiffuse;
+			const IPainter*			pSpecular;
+			const IScalarPainter*	pAlphaX;		// roughness (physical scalar)
+			const IScalarPainter*	pAlphaY;
+			const IScalarPainter*	pIOR;
+			const IScalarPainter*	pExtinction;
 			const FresnelMode fresnelMode;
 			//! Landing 8: optional tangent-frame rotation (radians,
 			//! applied around w to the (u, v) basis) per
@@ -68,6 +73,24 @@ namespace RISE
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to BOTH the BRDF and SPF in lockstep so they
+			//! never drift.  Tangent rotation is already pointer-typed
+			//! (it's optional/nullable) so SetTangentRotation accepts
+			//! a pointer; pass null to clear.
+			inline const IPainter&       GetDiffuse()    const { return *pDiffuse; }
+			inline const IPainter&       GetSpecular()   const { return *pSpecular; }
+			inline const IScalarPainter& GetAlphaX()     const { return *pAlphaX; }
+			inline const IScalarPainter& GetAlphaY()     const { return *pAlphaY; }
+			inline const IScalarPainter& GetIOR()        const { return *pIOR; }
+			inline const IScalarPainter& GetExtinction() const { return *pExtinction; }
+			void SetDiffuse( const IPainter& v );
+			void SetSpecular( const IPainter& v );
+			void SetAlphaX( const IScalarPainter& v );
+			void SetAlphaY( const IScalarPainter& v );
+			void SetIOR( const IScalarPainter& v );
+			void SetExtinction( const IScalarPainter& v );
 		};
 	}
 }

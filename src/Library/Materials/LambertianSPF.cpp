@@ -20,14 +20,23 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 LambertianSPF::LambertianSPF( const IPainter& ref ) :
-  reflectance( ref )
+  pReflectance( &ref )
 {
-	reflectance.addref();
+	pReflectance->addref();
 }
 
 LambertianSPF::~LambertianSPF( )
 {
-	reflectance.release();
+	safe_release( pReflectance );
+}
+
+void LambertianSPF::SetReflectance( const IPainter& ref )
+{
+	// addref-before-release ordering so a self-rebind is safe; see
+	// the matching comment in LambertianBRDF::SetReflectance.
+	ref.addref();
+	safe_release( pReflectance );
+	pReflectance = &ref;
 }
 
 void LambertianSPF::Scatter(
@@ -52,7 +61,7 @@ void LambertianSPF::Scatter(
 		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( ri.onb, ptrand ) );
 	}
 
-	diffuse.kray = reflectance.GetColor(ri);
+	diffuse.kray = pReflectance->GetColor(ri);
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
 	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;
@@ -84,7 +93,7 @@ void LambertianSPF::ScatterNM(
 		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( ri.onb, ptrand ) );
 	}
 	
-	diffuse.krayNM = reflectance.GetColorNM(ri, nm);
+	diffuse.krayNM = pReflectance->GetColorNM(ri, nm);
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
 	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;

@@ -61,6 +61,15 @@ namespace RISE
 		void SetMaterialManager( class IMaterialManager* mgr ) { mMaterialManager = mgr; }
 		void SetShaderManager( class IShaderManager* mgr ) { mShaderManager = mgr; }
 
+		//! Painter manager hooks for `SceneEdit::SetMaterialProperty`.
+		//! Apply uses these to resolve the painter-name string the
+		//! panel sends into the actual IPainter*/IScalarPainter*
+		//! to bind on the material.  Null managers cause material
+		//! property edits to fail at Apply (matching the material /
+		//! shader degradation pattern).
+		void SetPainterManager( class IPainterManager* mgr ) { mPainterManager = mgr; }
+		void SetScalarPainterManager( class IScalarPainterManager* mgr ) { mScalarPainterManager = mgr; }
+
 		//! Optional Job pointer installed by SceneEditController so
 		//! Phase-1-unlock object property edits (currently
 		//! `SetObjectInteriorMedium`) can resolve medium names through
@@ -124,9 +133,11 @@ namespace RISE
 
 	private:
 		IScenePriv&  mScene;
-		class IMaterialManager* mMaterialManager;   // borrowed; nullable
-		class IShaderManager*   mShaderManager;     // borrowed; nullable
-		IJob*                   mJob;               // borrowed; nullable
+		class IMaterialManager*       mMaterialManager;       // borrowed; nullable
+		class IShaderManager*         mShaderManager;         // borrowed; nullable
+		class IPainterManager*        mPainterManager;        // borrowed; nullable (Phase 4)
+		class IScalarPainterManager*  mScalarPainterManager;  // borrowed; nullable (Phase 4)
+		IJob*                         mJob;                   // borrowed; nullable
 		EditHistory  mHistory;
 		DirtyScope   mLastScope;
 		int          mCompositeDepth;

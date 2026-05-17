@@ -212,11 +212,53 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// Apply an edit to a named property.  Returns YES on success.
 - (BOOL)setPropertyName:(NSString *)name value:(NSString *)value;
 
+/// Phase 4b: per-category property snapshot.  Returns the rows
+/// for `category`'s expanded section.  Empty array if the section
+/// has no selection (collapsed).  After `refreshProperties`, every
+/// category with a non-empty selection has a populated snapshot.
+- (NSArray<RISEViewportProperty *> *)propertySnapshotFor:(RISEViewportCategory)category
+    NS_SWIFT_NAME(propertySnapshot(for:));
+
+/// Phase 4b: per-category SetProperty.  Routes the edit through
+/// the per-section selection so the Material section's edits go
+/// to the right material even when Object is the primary
+/// selection (auto-synced multi-section state).
+- (BOOL)setPropertyForCategory:(RISEViewportCategory)category
+                          name:(NSString *)name
+                         value:(NSString *)value
+    NS_SWIFT_NAME(setProperty(for:name:value:));
+
 #pragma mark - Accordion list entries
 
 /// Display names of the entries in `category`.  Pulled by the
 /// accordion's list view; the platform UI caches by sceneEpoch.
 - (NSArray<NSString *> *)categoryEntities:(RISEViewportCategory)category;
+
+/// Phase 4b: per-category panel selection.  Returns the entity
+/// name picked in `category`'s section, or empty when nothing is
+/// picked (section collapsed).  Distinct from `selectionName`
+/// which returns only the PRIMARY (most-recently-set) selection:
+/// after an Object pick, both `selectionName(for: .object)` and
+/// `selectionName(for: .material)` return non-empty (the latter
+/// is the Object's bound material name, auto-filled).
+- (NSString *)selectionNameFor:(RISEViewportCategory)category
+    NS_SWIFT_NAME(selectionName(for:));
+
+/// Phase 4b: is `category`'s accordion section expanded?
+/// Tracked SEPARATELY from the per-category selection so a
+/// click on a section header (which sends empty-name SetSelection)
+/// still expands the section in the panel.  Without consulting
+/// this flag, the panel would gate expansion on a non-empty
+/// selection — collapsing every header-only click.
+- (BOOL)isSectionExpandedFor:(RISEViewportCategory)category
+    NS_SWIFT_NAME(isSectionExpanded(for:));
+
+/// Phase 4b: collapse `category`'s section.  Clears the
+/// expanded flag AND the per-category selection.  Does NOT
+/// touch other sections — use `setSelection(.none, name:"")`
+/// for the panel-wide collapse.
+- (void)collapseSectionFor:(RISEViewportCategory)category
+    NS_SWIFT_NAME(collapseSection(for:));
 
 /// Scene-level active entity name for `category`, independent of
 /// the UI selection.  Camera → active camera; Rasterizer → active

@@ -28,8 +28,11 @@ namespace RISE
 		class PerfectRefractorSPF : public virtual ISPF, public virtual Reference
 		{
 		protected:
-			const IPainter&				refractivity;			// Per-wavelength refractive attenuation (color)
-			const IScalarPainter&		Nt;						// Index of refraction (physical scalar, supports dispersion via spectral painter)
+			//! Pointer storage so the interactive editor can rebind
+			//! via SetRefractivity / SetIOR.  See LambertianBRDF
+			//! for the matching pattern + lifetime contract.
+			const IPainter*				pRefractivity;			// Per-wavelength refractive attenuation (color)
+			const IScalarPainter*		pNt;						// Index of refraction (physical scalar, supports dispersion via spectral painter)
 
 			virtual ~PerfectRefractorSPF( );
 
@@ -45,6 +48,16 @@ namespace RISE
 		public:
 			PerfectRefractorSPF( const IPainter& ref, const IScalarPainter& Nt_ );
 
+			//! Read-back + rebind for the interactive editor's
+			//! MaterialIntrospection.  refractivity is an IPainter
+			//! (per-wavelength colour attenuation); Nt is an
+			//! IScalarPainter (physical scalar IOR with optional
+			//! per-channel dispersion).
+			inline const IPainter&       GetRefractivity() const { return *pRefractivity; }
+			inline const IScalarPainter& GetIOR()          const { return *pNt; }
+			void SetRefractivity( const IPainter& ref );
+			void SetIOR( const IScalarPainter& Nt_ );
+
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack
@@ -53,8 +66,8 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
-				info.ior = Nt.GetValuesAt( ri ).v[0];
-				info.attenuation = refractivity.GetColor( ri );
+				info.ior = pNt->GetValuesAt( ri ).v[0];
+				info.attenuation = pRefractivity->GetColor( ri );
 				info.valid = true;
 				return info;
 			}
@@ -68,7 +81,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
-				info.ior = Nt.GetValueAtNM( ri, nm );
+				info.ior = pNt->GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
 			}

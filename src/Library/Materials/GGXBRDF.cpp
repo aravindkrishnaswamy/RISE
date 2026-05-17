@@ -40,21 +40,21 @@ GGXBRDF::GGXBRDF(
 	const FresnelMode fresnel_mode,
 	const IPainter* tangent_rotation
 	) :
-  pDiffuse( diffuse ),
-  pSpecular( specular ),
-  pAlphaX( alphaX ),
-  pAlphaY( alphaY ),
-  pIOR( ior ),
-  pExtinction( ext ),
+  pDiffuse( &diffuse ),
+  pSpecular( &specular ),
+  pAlphaX( &alphaX ),
+  pAlphaY( &alphaY ),
+  pIOR( &ior ),
+  pExtinction( &ext ),
   fresnelMode( fresnel_mode ),
   pTangentRotation( tangent_rotation )
 {
-	pDiffuse.addref();
-	pSpecular.addref();
-	pAlphaX.addref();
-	pAlphaY.addref();
-	pIOR.addref();
-	pExtinction.addref();
+	pDiffuse->addref();
+	pSpecular->addref();
+	pAlphaX->addref();
+	pAlphaY->addref();
+	pIOR->addref();
+	pExtinction->addref();
 	if( pTangentRotation ) pTangentRotation->addref();
 }
 
@@ -72,14 +72,21 @@ namespace
 
 GGXBRDF::~GGXBRDF()
 {
-	pDiffuse.release();
-	pSpecular.release();
-	pAlphaX.release();
-	pAlphaY.release();
-	pIOR.release();
-	pExtinction.release();
+	safe_release( pDiffuse );
+	safe_release( pSpecular );
+	safe_release( pAlphaX );
+	safe_release( pAlphaY );
+	safe_release( pIOR );
+	safe_release( pExtinction );
 	if( pTangentRotation ) pTangentRotation->release();
 }
+
+void GGXBRDF::SetDiffuse( const IPainter& v )       { v.addref(); safe_release( pDiffuse );    pDiffuse    = &v; }
+void GGXBRDF::SetSpecular( const IPainter& v )      { v.addref(); safe_release( pSpecular );   pSpecular   = &v; }
+void GGXBRDF::SetAlphaX( const IScalarPainter& v )  { v.addref(); safe_release( pAlphaX );     pAlphaX     = &v; }
+void GGXBRDF::SetAlphaY( const IScalarPainter& v )  { v.addref(); safe_release( pAlphaY );     pAlphaY     = &v; }
+void GGXBRDF::SetIOR( const IScalarPainter& v )     { v.addref(); safe_release( pIOR );        pIOR        = &v; }
+void GGXBRDF::SetExtinction( const IScalarPainter& v ) { v.addref(); safe_release( pExtinction ); pExtinction = &v; }
 
 namespace
 {
@@ -116,8 +123,8 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	}
 
 	// Read roughness parameters, clamped to avoid division-by-zero in NDF
-	const Scalar alphaX = r_max( pAlphaX.GetValuesAt(ri).v[0], Scalar(1e-4) );
-	const Scalar alphaY = r_max( pAlphaY.GetValuesAt(ri).v[0], Scalar(1e-4) );
+	const Scalar alphaX = r_max( pAlphaX->GetValuesAt(ri).v[0], Scalar(1e-4) );
+	const Scalar alphaY = r_max( pAlphaY->GetValuesAt(ri).v[0], Scalar(1e-4) );
 
 	// Half-vector and tangent-space projections
 	const Vector3 h = Vector3Ops::Normalize( v + r );
@@ -146,7 +153,7 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 	// Single-scatter specular: D * G2 / (4 * cosWi * cosWo)
 	const Scalar specFactor = D * G2 / (4.0 * nv * nr);
 
-	const RISEPel specColor = pSpecular.GetColor(ri);
+	const RISEPel specColor = pSpecular->GetColor(ri);
 
 	RISEPel specular(0,0,0);
 
@@ -163,8 +170,8 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 		}
 		else
 		{
-			const ScalarTriple iorT = pIOR.GetValuesAt(ri);
-			const ScalarTriple extT = pExtinction.GetValuesAt(ri);
+			const ScalarTriple iorT = pIOR->GetValuesAt(ri);
+			const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 			const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 			const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 			const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
@@ -193,8 +200,8 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 		}
 		else
 		{
-			const ScalarTriple iorT = pIOR.GetValuesAt(ri);
-			const ScalarTriple extT = pExtinction.GetValuesAt(ri);
+			const ScalarTriple iorT = pIOR->GetValuesAt(ri);
+			const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 			const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 			const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 			const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
@@ -205,7 +212,7 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 
 	// Diffuse lobe.  In Schlick mode, modulate by (1 - max(F0)) per glTF spec
 	// to enforce the (1-F) energy split between diffuse and specular.
-	RISEPel diffuse = pDiffuse.GetColor(ri) * INV_PI;
+	RISEPel diffuse = pDiffuse->GetColor(ri) * INV_PI;
 	if( fresnelMode == eFresnelSchlickF0 )
 	{
 		const Scalar maxF0 = ColorMath::MaxValue( specColor );
@@ -230,8 +237,8 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		return 0;
 	}
 
-	const Scalar alphaX = r_max( pAlphaX.GetValueAtNM(ri,nm), Scalar(1e-4) );
-	const Scalar alphaY = r_max( pAlphaY.GetValueAtNM(ri,nm), Scalar(1e-4) );
+	const Scalar alphaX = r_max( pAlphaX->GetValueAtNM(ri,nm), Scalar(1e-4) );
+	const Scalar alphaY = r_max( pAlphaY->GetValueAtNM(ri,nm), Scalar(1e-4) );
 
 	const Vector3 h = Vector3Ops::Normalize( v + r );
 	const Vector3 h_local(
@@ -254,7 +261,7 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 	const Scalar G2 = MicrofacetUtils::GGX_G2_Aniso( alphaX, alphaY, wi_local, wo_local );
 	const Scalar specFactor = D * G2 / (4.0 * nv * nr);
 
-	const Scalar specColor = pSpecular.GetColorNM(ri,nm);
+	const Scalar specColor = pSpecular->GetColorNM(ri,nm);
 
 	Scalar specular = 0;
 
@@ -271,8 +278,8 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		}
 		else
 		{
-			const Scalar iorVal = pIOR.GetValueAtNM(ri,nm);
-			const Scalar extVal = pExtinction.GetValueAtNM(ri,nm);
+			const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
+			const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
 			const Scalar fresnel = Optics::CalculateConductorReflectance( ri.ray.Dir(), h, 1.0, iorVal, extVal );
 			if( fresnel > 0 ) {
 				specular = specColor * fresnel * specFactor;
@@ -298,15 +305,15 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		}
 		else
 		{
-			const Scalar iorVal = pIOR.GetValueAtNM(ri,nm);
-			const Scalar extVal = pExtinction.GetValueAtNM(ri,nm);
+			const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
+			const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
 			const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
 			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
 			specular = specular + specColor * F_ms * f_ms;
 		}
 	}
 
-	Scalar diffuse = pDiffuse.GetColorNM(ri,nm) * INV_PI;
+	Scalar diffuse = pDiffuse->GetColorNM(ri,nm) * INV_PI;
 	if( fresnelMode == eFresnelSchlickF0 )
 	{
 		// In NM, F0 is scalar; same (1-F0) split applies.
@@ -328,8 +335,8 @@ RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	// hemispherical Schlick average here; review found it
 	// overestimates near-normal and underestimates at grazing.
 	const Vector3 n = ri.onb.w();
-	const RISEPel specColor = pSpecular.GetColor( ri );
-	const RISEPel diffColor = pDiffuse.GetColor( ri );
+	const RISEPel specColor = pSpecular->GetColor( ri );
+	const RISEPel diffColor = pDiffuse->GetColor( ri );
 
 	if( fresnelMode == eFresnelSchlickF0 )
 	{
@@ -341,8 +348,8 @@ RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	}
 	else
 	{
-		const ScalarTriple iorT = pIOR.GetValuesAt( ri );
-		const ScalarTriple extT = pExtinction.GetValuesAt( ri );
+		const ScalarTriple iorT = pIOR->GetValuesAt( ri );
+		const ScalarTriple extT = pExtinction->GetValuesAt( ri );
 		const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 		const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 		const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(

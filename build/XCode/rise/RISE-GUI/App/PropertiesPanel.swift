@@ -89,7 +89,10 @@ struct PropertiesPanel: View {
     let bridge: RISEViewportBridge
     @Binding var refreshTrigger: Int          // increment to force a snapshot reload
 
-    @State private var rows: [PropertyRow] = []
+    @State private var rows: [PropertyRow] = []   // primary-section rows; kept for the header / panel-wide refresh trigger
+    @State private var rowsByCategory: [Int: [PropertyRow]] = [:]   // Phase 4b: per-section property rows
+    @State private var selectionByCategory: [Int: String] = [:]      // Phase 4b: per-section picked entity
+    @State private var expandedByCategory: [Int: Bool] = [:]         // Phase 4b: per-section accordion expansion (independent of selection)
     @State private var header: String = ""
     @State private var mode: RISEViewportPanelMode = .none
     @State private var selectionCategory: RISEViewportCategory = .none
@@ -134,20 +137,25 @@ struct PropertiesPanel: View {
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(kAccordionSections) { section in
-                        // Prefer the user's explicit pick when present;
-                        // otherwise fall back to the scene's active
-                        // entity (Camera = active camera, Rasterizer =
-                        // active rasterizer, Object/Light = empty).
-                        // This way the dropdown shows the active
-                        // entity on first load instead of "(pick one)".
+                        // Phase 4b: read expanded state + selection
+                        // INDEPENDENTLY from the controller.  A
+                        // section header click sends an empty-name
+                        // SetSelection — that sets expanded=true with
+                        // an empty pick, so the section opens with
+                        // its dropdown visible but no entity-specific
+                        // rows below.  Auto-sync of Material on an
+                        // Object pick is handled controller-side.
+                        let perCatPick = selectionByCategory[section.category.rawValue] ?? ""
                         let resolvedName: String =
-                            (section.category == selectionCategory && !selectionName.isEmpty)
-                                ? selectionName
+                            !perCatPick.isEmpty
+                                ? perCatPick
                                 : (activeNameByCategory[section.category.rawValue] ?? "")
+                        let sectionExpanded = expandedByCategory[section.category.rawValue] ?? false
+                        let sectionRows = rowsByCategory[section.category.rawValue] ?? []
                         AccordionSectionView(
                             section: section,
                             entities: entitiesByCategory[section.category.rawValue] ?? [],
-                            isExpanded: section.category == selectionCategory,
+                            isExpanded: sectionExpanded,
                             selectedName: resolvedName,
                             onSelectRow: { name in
                                 bridge.setSelection(section.category, name: name)
@@ -156,11 +164,17 @@ struct PropertiesPanel: View {
                             onToggle: { newExpanded in
                                 if newExpanded {
                                     // Open this section: empty-name selection
-                                    // means "expand without picking a row".
+                                    // sets the expanded flag without picking
+                                    // a specific entity.
                                     bridge.setSelection(section.category, name: "")
-                                } else if selectionCategory == section.category {
-                                    // Collapse the currently-open section.
-                                    bridge.setSelection(.none, name: "")
+                                } else if sectionExpanded {
+                                    // Collapse this section ONLY — leave
+                                    // other sections alone.  Pre-Phase-4b
+                                    // this was a panel-wide collapse via
+                                    // setSelection(.none, ...), but the
+                                    // multi-section model needs a per-
+                                    // section close.
+                                    bridge.collapseSection(for: section.category)
                                 }
                                 reload()
                             },
@@ -170,11 +184,17 @@ struct PropertiesPanel: View {
                                 ? { promptForNewCameraName(activeName: activeNameByCategory[section.category.rawValue] ?? "") }
                                 : nil
                         )
-                        // Property rows render directly under the
-                        // expanded section — keeps the cause/effect
-                        // visually obvious.
-                        if section.category == selectionCategory && mode != .none {
-                            PropertyList(rows: rows, bridge: bridge, onCommitted: reload)
+                        // Property rows render directly under each
+                        // expanded section.  Edit routes through the
+                        // per-category SetProperty so the Material
+                        // section's edits go to the right material
+                        // even when Object is the primary selection.
+                        if sectionExpanded && !sectionRows.isEmpty {
+                            PropertyList(
+                                rows: sectionRows,
+                                bridge: bridge,
+                                category: section.category,
+                                onCommitted: reload )
                                 .padding(.leading, 12)
                         }
                     }
@@ -258,10 +278,34 @@ struct PropertiesPanel: View {
         selectionName = bridge.selectionName
         rows = bridge.propertySnapshot().map(PropertyRow.from)
 
+        // Phase 4b: per-category state.  Expansion + selection are
+        // tracked separately so a header click (empty-name
+        // SetSelection) opens the section without picking a row.
+        // The controller auto-fills the Material section's
+        // selection + expansion when an Object is picked.
+        var freshSelections: [Int: String] = [:]
+        var freshExpanded:   [Int: Bool]   = [:]
+        var freshRows:       [Int: [PropertyRow]] = [:]
+        for section in kAccordionSections {
+            let cat = section.category
+            let isExpanded = bridge.isSectionExpanded(for: cat)
+            freshExpanded[cat.rawValue] = isExpanded
+            freshSelections[cat.rawValue] = bridge.selectionName(for: cat)
+            if isExpanded {
+                // Property rows render for every expanded section,
+                // including ones with empty selection (Camera /
+                // Rasterizer / Film render their active-entity rows
+                // as a sensible default; Object / Light / Material
+                // stay empty until a pick).
+                freshRows[cat.rawValue] = bridge.propertySnapshot(for: cat).map(PropertyRow.from)
+            }
+        }
+        selectionByCategory = freshSelections
+        expandedByCategory  = freshExpanded
+        rowsByCategory      = freshRows
+
         // Re-pull per-section entity lists when the scene epoch
-        // advances (scene reload, structural mutation).  Cheap to
-        // pull on every refresh too — the lists are small — but the
-        // epoch gate keeps the JNI-style chatter down on busy frames.
+        // advances (scene reload, structural mutation).
         let epoch = UInt(bridge.sceneEpoch)
         if epoch != lastEpoch {
             lastEpoch = epoch
@@ -405,6 +449,7 @@ private struct EntityDropdown: View {
 private struct PropertyList: View {
     let rows: [PropertyRow]
     let bridge: RISEViewportBridge
+    let category: RISEViewportCategory      // Phase 4b: per-section edit routing
     let onCommitted: () -> Void
 
     var body: some View {
@@ -419,7 +464,11 @@ private struct PropertyList: View {
                     PropertyRowView(
                         row: row,
                         onCommit: { newValue in
-                            _ = bridge.setPropertyName(row.name, value: newValue)
+                            // Per-category SetProperty so a Material
+                            // section row edits the bound material
+                            // even when Object is the primary
+                            // selection.
+                            _ = bridge.setProperty(for: category, name: row.name, value: newValue)
                             onCommitted()
                         },
                         onScrubBegin: { bridge.beginPropertyScrub() },

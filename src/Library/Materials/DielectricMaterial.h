@@ -70,6 +70,19 @@ namespace RISE
 			{
 				return pSPF->GetSpecularInfoNM( ri, ior_stack, nm );
 			}
+
+			//! Read-back + rebind for the interactive editor.  All
+			//! three Dielectric slots are physical-scalar pipe
+			//! (IScalarPainter) per the docs/ISCALARPAINTER_REFACTOR
+			//! discipline — they carry IOR / transmittance /
+			//! scattering coefficients that must NOT pass through
+			//! JH spectral uplift.
+			inline const IScalarPainter& GetTransmittance() const { return pSPF->GetTransmittance(); }
+			inline const IScalarPainter& GetIOR()           const { return pSPF->GetIOR(); }
+			inline const IScalarPainter& GetScattering()    const { return pSPF->GetScattering(); }
+			inline void SetTransmittance( const IScalarPainter& v ) { pSPF->SetTransmittance( v ); }
+			inline void SetIOR( const IScalarPainter& v )           { pSPF->SetIOR( v ); }
+			inline void SetScattering( const IScalarPainter& v )    { pSPF->SetScattering( v ); }
 		};
 	}
 }

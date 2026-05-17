@@ -324,18 +324,22 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
         m_sections.insert(catInt, w);
 
         // Toggle: clicking the header expands/collapses the section.
-        // Single-selection rule means expanding section X collapses
-        // every other section, which we achieve by routing the
-        // toggle through the bridge: setting an empty-name selection
-        // for that category opens it and closes the others.  When
-        // the user collapses the active section, we set Category::None.
+        // Phase 4b multi-section model:
+        //  - Open: empty-name SetSelection sets the per-cat expanded
+        //    flag without picking a specific entity.
+        //  - Close: per-section CollapseSection (clears just THIS
+        //    section's expanded flag + per-cat selection, leaves
+        //    other sections alone).  Pre-Phase-4b this was a panel-
+        //    wide collapse via SetSelection(None), which would now
+        //    close every expanded section including the auto-synced
+        //    Material section.
         connect(w.toggle, &QToolButton::toggled, this,
                 [this, cat](bool checked) {
                     if (!m_bridge) return;
                     if (checked) {
                         m_bridge->setSelection(cat, QString());
-                    } else if (m_currentSelectionCat == cat) {
-                        m_bridge->setSelection(ViewportBridge::Category::None, QString());
+                    } else {
+                        m_bridge->collapseSection(cat);
                     }
                     refresh();
                 });
@@ -413,36 +417,33 @@ void ViewportProperties::syncAccordionFromSelection()
 {
     if (!m_bridge) return;
 
-    const Category cat = m_bridge->selectionCategory();
-    const QString name = m_bridge->selectionName();
-    m_currentSelectionCat = cat;
-    m_currentSelectionName = name;
+    // Track primary for the panel header etc.
+    m_currentSelectionCat  = m_bridge->selectionCategory();
+    m_currentSelectionName = m_bridge->selectionName();
 
-    // Single-selection / single-expansion rule: the section
-    // matching `cat` is expanded; all others are collapsed.
+    // Phase 4b: per-category expansion is tracked SEPARATELY from
+    // the per-category selection (so a header click expands the
+    // section even when no entity is picked yet).  Auto-sync of
+    // Material expansion on Object pick is handled controller-side.
     for (auto it = m_sections.begin(); it != m_sections.end(); ++it) {
         SectionWidgets& w = it.value();
         const Category sectionCat = static_cast<Category>(it.key());
-        const bool open = (sectionCat == cat);
+        const QString perCatName = m_bridge->selectionNameForCategory(sectionCat);
+        const bool open = m_bridge->isSectionExpanded(sectionCat);
 
         const QSignalBlocker toggleBlock(w.toggle);
         w.toggle->setChecked(open);
         w.toggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
         w.body->setVisible(open);
 
-        // Highlight the matching entry.  When this section is the
-        // expanded one, prefer the user's explicit selection name;
-        // otherwise fall back to the scene's active entity for this
-        // category so the dropdown shows e.g. the active camera /
-        // rasterizer on first load instead of being empty.
         if (w.combo) {
             const QSignalBlocker comboBlock(w.combo);
-            QString display = (open && !name.isEmpty())
-                                  ? name
+            QString display = !perCatName.isEmpty()
+                                  ? perCatName
                                   : m_bridge->activeNameForCategory(sectionCat);
             if (!display.isEmpty()) {
                 const int idx = w.combo->findText(display, Qt::MatchExactly);
-                w.combo->setCurrentIndex(idx);     // setCurrentIndex(-1) is fine when not found
+                w.combo->setCurrentIndex(idx);
             } else {
                 w.combo->setCurrentIndex(-1);
             }
@@ -455,29 +456,35 @@ void ViewportProperties::rebuildPropertyRows()
     if (!m_bridge) return;
     clearPropertyRows();
 
-    const ViewportBridge::PanelMode mode = m_bridge->panelMode();
-    if (mode == ViewportBridge::PanelMode::None) return;
+    // Force a refresh so the controller's per-category snapshots
+    // are up to date before we read them per-section.
+    (void)m_bridge->propertySnapshot();
 
-    // The properties live under whichever section is currently
-    // expanded.  Map PanelMode → Category (they share numeric values
-    // but the explicit switch makes the intent obvious).
-    Category propsCat = Category::None;
-    switch (mode) {
-        case ViewportBridge::PanelMode::Camera:     propsCat = Category::Camera;     break;
-        case ViewportBridge::PanelMode::Rasterizer: propsCat = Category::Rasterizer; break;
-        case ViewportBridge::PanelMode::Object:     propsCat = Category::Object;     break;
-        case ViewportBridge::PanelMode::Light:      propsCat = Category::Light;      break;
-        case ViewportBridge::PanelMode::Film:       propsCat = Category::Film;       break;
-        case ViewportBridge::PanelMode::Material:   propsCat = Category::Material;   break;
-        default: return;
+    // Phase 4b: build property rows for every section that is
+    // currently expanded.  Empty-selection expanded sections still
+    // get a (possibly empty) row list — Camera/Rasterizer/Film
+    // render their active-entity rows even when no specific entity
+    // is picked.  Edits route through SetPropertyForCategory so the
+    // right per-section entity is targeted.
+    for (auto it = m_sections.begin(); it != m_sections.end(); ++it) {
+        const Category sectionCat = static_cast<Category>(it.key());
+        SectionWidgets& section = it.value();
+        QVBoxLayout* propsLayout = section.propsLayout;
+        if (!propsLayout) continue;
+
+        if (!m_bridge->isSectionExpanded(sectionCat)) continue;
+
+        rebuildPropertyRowsFor(sectionCat, section);
     }
-    auto sectionIt = m_sections.find(static_cast<int>(propsCat));
-    if (sectionIt == m_sections.end()) return;
-    SectionWidgets& section = sectionIt.value();
+}
+
+void ViewportProperties::rebuildPropertyRowsFor(Category sectionCat, SectionWidgets& section)
+{
+    if (!m_bridge) return;
     QVBoxLayout* propsLayout = section.propsLayout;
     if (!propsLayout) return;
 
-    const QVector<ViewportProperty> props = m_bridge->propertySnapshot();
+    const QVector<ViewportProperty> props = m_bridge->propertySnapshotFor(sectionCat);
     for (const ViewportProperty& p : props) {
         if (p.editable) {
             auto* container = new QWidget;
@@ -493,6 +500,12 @@ void ViewportProperties::rebuildPropertyRows()
 
             auto* edit = new QLineEdit;
             edit->setObjectName(p.name);
+            // Phase 4b: tag every QLineEdit with its section's
+            // category so onLineEditFinished routes through the
+            // per-category SetProperty.  Without this, edits in the
+            // Material section while Object is the primary would
+            // wrong-target the object.
+            edit->setProperty("riseSectionCategory", static_cast<int>(sectionCat));
             edit->setText(p.value);
             connect(edit, &QLineEdit::editingFinished,
                     this, &ViewportProperties::onLineEditFinished);
@@ -506,9 +519,9 @@ void ViewportProperties::rebuildPropertyRows()
                 if (isScrubbableKind(p.kind)) {
                     auto* handle = new ScrubHandle(
                         edit, p.name, p.kind,
-                        [this](const QString& n, const QString& v) {
+                        [this, sectionCat](const QString& n, const QString& v) {
                             if (!m_bridge) return;
-                            if (m_bridge->setProperty(n, v)) {
+                            if (m_bridge->setPropertyForCategory(sectionCat, n, v)) {
                                 m_lastValue.insert(n, v);
                             }
                         },
@@ -545,9 +558,9 @@ void ViewportProperties::rebuildPropertyRows()
                         const QString val = preset.value;
                         QAction* action = menu->addAction(lbl);
                         connect(action, &QAction::triggered, this,
-                                [this, propName, val]() {
+                                [this, sectionCat, propName, val]() {
                                     if (!m_bridge) return;
-                                    if (m_bridge->setProperty(propName, val)) {
+                                    if (m_bridge->setPropertyForCategory(sectionCat, propName, val)) {
                                         m_lastValue.insert(propName, val);
                                         refresh();
                                     }
@@ -646,7 +659,14 @@ void ViewportProperties::onLineEditFinished()
     const QString name = edit->objectName();
     const QString val  = edit->text();
     if (val == m_lastValue.value(name)) return;
-    if (m_bridge->setProperty(name, val)) {
+    // Phase 4b: read the section's category off the edit widget so
+    // the edit routes through SetPropertyForCategory.  Pre-Phase-4b
+    // this used the primary selection, which was wrong for rows in
+    // an auto-synced secondary section (e.g. Material rows when
+    // Object was primary).
+    const int catInt = edit->property("riseSectionCategory").toInt();
+    const Category cat = static_cast<Category>(catInt);
+    if (m_bridge->setPropertyForCategory(cat, name, val)) {
         m_lastValue.insert(name, val);
         refresh();
     }

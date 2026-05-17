@@ -78,6 +78,26 @@ namespace RISE
 			{
 				return pSPF->GetSpecularInfoNM( ri, ior_stack, nm );
 			}
+
+			//! Read-back + rebind for the interactive editor's
+			//! MaterialIntrospection.  diffuse_reflectance is an
+			//! IPainter; transmittance / ior / scattering are
+			//! IScalarPainter (physical scalar pipe).  Material's
+			//! SetDiffuseReflectance hits BOTH the LambertianBRDF
+			//! (which it owns for the substrate lobe) and the
+			//! PolishedSPF (the dielectric-over-Lambertian SPF) so
+			//! BRDF and SPF stay in lockstep on diffuse colour.
+			inline const IPainter&       GetDiffuseReflectance() const { return pSPF->GetDiffuseReflectance(); }
+			inline const IScalarPainter& GetTransmittance()      const { return pSPF->GetTransmittance(); }
+			inline const IScalarPainter& GetIOR()                const { return pSPF->GetIOR(); }
+			inline const IScalarPainter& GetScattering()         const { return pSPF->GetScattering(); }
+			inline void SetDiffuseReflectance( const IPainter& v ) {
+				pBRDF->SetReflectance( v );
+				pSPF->SetDiffuseReflectance( v );
+			}
+			inline void SetTransmittance( const IScalarPainter& v ) { pSPF->SetTransmittance( v ); }
+			inline void SetIOR( const IScalarPainter& v )           { pSPF->SetIOR( v ); }
+			inline void SetScattering( const IScalarPainter& v )    { pSPF->SetScattering( v ); }
 		};
 	}
 }

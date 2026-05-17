@@ -438,3 +438,86 @@ bool ViewportBridge::setProperty(const QString& name, const QString& value)
     return RISE_API_SceneEditController_SetProperty(m_controller,
         name.toUtf8().constData(), value.toUtf8().constData());
 }
+
+QVector<ViewportProperty> ViewportBridge::propertySnapshotFor(Category cat)
+{
+    QVector<ViewportProperty> out;
+    if (!m_controller) return out;
+    // `RefreshProperties` (called by `propertySnapshot()` when the
+    // panel re-paints) populates per-category snapshots in one pass;
+    // we don't need to refresh again here.  Callers should ensure
+    // `propertySnapshot()` was called first (the panel's refresh path
+    // already does this; multi-section panels read multiple
+    // `propertySnapshotFor` after one refresh).
+    const int catInt = static_cast<int>(cat);
+    const unsigned int n = RISE_API_SceneEditController_PropertyCountFor(m_controller, catInt);
+    out.reserve(static_cast<int>(n));
+    char nameBuf[128];
+    char valBuf[256];
+    char descBuf[512];
+    char presetLabelBuf[256];
+    char presetValueBuf[256];
+    char unitLabelBuf[64];
+    for (unsigned int i = 0; i < n; ++i) {
+        RISE_API_SceneEditController_PropertyNameFor(m_controller, catInt, i, nameBuf, sizeof(nameBuf));
+        RISE_API_SceneEditController_PropertyValueFor(m_controller, catInt, i, valBuf, sizeof(valBuf));
+        RISE_API_SceneEditController_PropertyDescriptionFor(m_controller, catInt, i, descBuf, sizeof(descBuf));
+        ViewportProperty p;
+        p.name = QString::fromUtf8(nameBuf);
+        p.value = QString::fromUtf8(valBuf);
+        p.description = QString::fromUtf8(descBuf);
+        p.kind = RISE_API_SceneEditController_PropertyKindFor(m_controller, catInt, i);
+        p.editable = RISE_API_SceneEditController_PropertyEditableFor(m_controller, catInt, i);
+
+        const unsigned int numPresets = RISE_API_SceneEditController_PropertyPresetCountFor(m_controller, catInt, i);
+        p.presets.reserve(static_cast<int>(numPresets));
+        for (unsigned int j = 0; j < numPresets; ++j) {
+            if (!RISE_API_SceneEditController_PropertyPresetLabelFor(m_controller, catInt, i, j, presetLabelBuf, sizeof(presetLabelBuf))) continue;
+            if (!RISE_API_SceneEditController_PropertyPresetValueFor(m_controller, catInt, i, j, presetValueBuf, sizeof(presetValueBuf))) continue;
+            ViewportPropertyPreset preset;
+            preset.label = QString::fromUtf8(presetLabelBuf);
+            preset.value = QString::fromUtf8(presetValueBuf);
+            p.presets.append(preset);
+        }
+
+        if (RISE_API_SceneEditController_PropertyUnitLabelFor(m_controller, catInt, i, unitLabelBuf, sizeof(unitLabelBuf))) {
+            p.unitLabel = QString::fromUtf8(unitLabelBuf);
+        }
+
+        out.append(p);
+    }
+    return out;
+}
+
+bool ViewportBridge::setPropertyForCategory(Category cat, const QString& name, const QString& value)
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_SetPropertyForCategory(
+        m_controller, static_cast<int>(cat),
+        name.toUtf8().constData(), value.toUtf8().constData());
+}
+
+QString ViewportBridge::selectionNameForCategory(Category cat) const
+{
+    if (!m_controller) return QString();
+    char buf[128] = {0};
+    if (!RISE_API_SceneEditController_GetSelectionForCategory(
+            m_controller, static_cast<int>(cat), buf, sizeof(buf))) {
+        return QString();
+    }
+    return QString::fromUtf8(buf);
+}
+
+bool ViewportBridge::isSectionExpanded(Category cat) const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_IsSectionExpanded(
+        m_controller, static_cast<int>(cat));
+}
+
+void ViewportBridge::collapseSection(Category cat)
+{
+    if (!m_controller) return;
+    RISE_API_SceneEditController_CollapseSection(
+        m_controller, static_cast<int>(cat));
+}

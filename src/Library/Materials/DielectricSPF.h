@@ -37,9 +37,11 @@ namespace RISE
 		protected:
 			virtual ~DielectricSPF( );
 
-			const IScalarPainter&		tau;			// Transmittance (per-channel + spectral)
-			const IScalarPainter&		rIndex;			// Index of refraction (spectral for dispersion)
-			const IScalarPainter&		scat;			// Scattering function (Phong cone width or HG asymmetry)
+			//! Pointer storage so the interactive editor can rebind
+			//! via Set*.  See LambertianBRDF for pattern.
+			const IScalarPainter*		pTau;			// Transmittance (per-channel + spectral)
+			const IScalarPainter*		pRIndex;		// Index of refraction (spectral for dispersion)
+			const IScalarPainter*		pScat;			// Scattering function (Phong cone width or HG asymmetry)
 			const bool					bHG;			// Use Henyey-Greenstein phase function scattering
 
 			Scalar GenerateScatteredRay(
@@ -74,6 +76,14 @@ namespace RISE
 				const bool hg
 				);
 
+			//! Read-back + rebind for the interactive editor.
+			inline const IScalarPainter& GetTransmittance() const { return *pTau; }
+			inline const IScalarPainter& GetIOR()           const { return *pRIndex; }
+			inline const IScalarPainter& GetScattering()    const { return *pScat; }
+			void SetTransmittance( const IScalarPainter& v );
+			void SetIOR( const IScalarPainter& v );
+			void SetScattering( const IScalarPainter& v );
+
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack
@@ -82,8 +92,8 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
-				info.ior = rIndex.GetValuesAt( ri ).v[0];
-				const ScalarTriple t = tau.GetValuesAt( ri );
+				info.ior = pRIndex->GetValuesAt( ri ).v[0];
+				const ScalarTriple t = pTau->GetValuesAt( ri );
 				info.attenuation = RISEPel( t.v[0], t.v[1], t.v[2] );
 				info.valid = true;
 				return info;
@@ -98,7 +108,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = true;
 				info.canRefract = true;
-				info.ior = rIndex.GetValueAtNM( ri, nm );
+				info.ior = pRIndex->GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
 			}

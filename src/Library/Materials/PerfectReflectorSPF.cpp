@@ -20,14 +20,21 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 PerfectReflectorSPF::PerfectReflectorSPF( const IPainter& R_ ) :
-  reflectivity( R_ )
+  pReflectivity( &R_ )
 {
-	reflectivity.addref();
+	pReflectivity->addref();
 }
 
 PerfectReflectorSPF::~PerfectReflectorSPF( )
 {
-	reflectivity.release();
+	safe_release( pReflectivity );
+}
+
+void PerfectReflectorSPF::SetReflectance( const IPainter& R )
+{
+	R.addref();
+	safe_release( pReflectivity );
+	pReflectivity = &R;
 }
 
 void PerfectReflectorSPF::Scatter( 
@@ -43,7 +50,7 @@ void PerfectReflectorSPF::Scatter(
 	specular.pdf = 1.0;
 
 	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
-	specular.kray = reflectivity.GetColor(ri);
+	specular.kray = pReflectivity->GetColor(ri);
 
 	if( Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		scattered.AddScatteredRay( specular );
@@ -64,7 +71,7 @@ void PerfectReflectorSPF::ScatterNM(
 	specular.pdf = 1.0;
 
 	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), ri.onb.w() ) );
-	specular.krayNM = reflectivity.GetColorNM(ri,nm);
+	specular.krayNM = pReflectivity->GetColorNM(ri,nm);
 
 	if( Vector3Ops::Dot( specular.ray.Dir(), ri.onb.w() ) > 0.0 ) {
 		scattered.AddScatteredRay( specular );

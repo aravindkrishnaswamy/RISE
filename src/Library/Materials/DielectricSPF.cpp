@@ -26,21 +26,42 @@ DielectricSPF::DielectricSPF(
 	const IScalarPainter& s,
 	const bool hg
 	) :
-  tau( tau_ ),
-  rIndex( ri ),
-  scat( s ),
+  pTau( &tau_ ),
+  pRIndex( &ri ),
+  pScat( &s ),
   bHG( hg )
 {
-	tau.addref();
-	rIndex.addref();
-	scat.addref();
+	pTau->addref();
+	pRIndex->addref();
+	pScat->addref();
 }
 
 DielectricSPF::~DielectricSPF( )
 {
-	tau.release();
-	rIndex.release();
-	scat.release();
+	safe_release( pTau );
+	safe_release( pRIndex );
+	safe_release( pScat );
+}
+
+void DielectricSPF::SetTransmittance( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pTau );
+	pTau = &v;
+}
+
+void DielectricSPF::SetIOR( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pRIndex );
+	pRIndex = &v;
+}
+
+void DielectricSPF::SetScattering( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pScat );
+	pScat = &v;
 }
 
 //! Returns true if there was reflection
@@ -175,7 +196,7 @@ void DielectricSPF::DoSingleRGBComponent(
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
 
-		const ScalarTriple tauVals = tau.GetValuesAt( ri );
+		const ScalarTriple tauVals = pTau->GetValuesAt( ri );
 		if( oneofthree ) {
 			dielectric.kray[oneofthree-1] = pow( tauVals.v[oneofthree-1], distance );
 		} else {
@@ -232,11 +253,11 @@ void DielectricSPF::Scatter(
 	// compare needed.  `tau`'s per-channel variation is irrelevant to
 	// the disperse-vs-uniform path branch; only ior and scat trigger
 	// the per-channel scatter loop.
-	const ScalarTriple iorVals  = rIndex.GetValuesAt( ri );
-	const ScalarTriple scatVals = scat.GetValuesAt( ri );
+	const ScalarTriple iorVals  = pRIndex->GetValuesAt( ri );
+	const ScalarTriple scatVals = pScat->GetValuesAt( ri );
 	const bool disperse =
-		rIndex.HasPerChannelVariation() ||
-		scat.HasPerChannelVariation();
+		pRIndex->HasPerChannelVariation() ||
+		pScat->HasPerChannelVariation();
 
 	if( !disperse ) {
 		// No dispersion
@@ -270,13 +291,13 @@ void DielectricSPF::ScatterNM(
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
 		bFromInside = true;
 
-		dielectric.krayNM = pow( tau.GetValueAtNM( ri, nm ), distance );
+		dielectric.krayNM = pow( pTau->GetValueAtNM( ri, nm ), distance );
 	} else {
 		dielectric.krayNM = 1.0;
 	}
 
 	bool bDielectric, bFresnel;
-	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2(sampler.Get1D(),sampler.Get1D()), scat.GetValueAtNM( ri, nm ), rIndex.GetValueAtNM( ri, nm ), ior_stack );
+	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2(sampler.Get1D(),sampler.Get1D()), pScat->GetValueAtNM( ri, nm ), pRIndex->GetValueAtNM( ri, nm ), ior_stack );
 	
 	if( bDielectric && ref < 1.0 ) {
 		dielectric.krayNM = dielectric.krayNM * (1.0-ref);

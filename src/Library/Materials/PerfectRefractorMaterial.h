@@ -70,6 +70,15 @@ namespace RISE
 			{
 				return pSPF->GetSpecularInfoNM( ri, ior_stack, nm );
 			}
+
+			//! Read-back + rebind for the interactive editor's
+			//! MaterialIntrospection.  Two slots: `refractivity`
+			//! is the IPainter colour-attenuation; `ior` is the
+			//! IScalarPainter physical IOR (supports dispersion).
+			inline const IPainter&       GetRefractivity() const { return pSPF->GetRefractivity(); }
+			inline const IScalarPainter& GetIOR()          const { return pSPF->GetIOR(); }
+			inline void SetRefractivity( const IPainter& ref ) { pSPF->SetRefractivity( ref ); }
+			inline void SetIOR( const IScalarPainter& Nt_ )    { pSPF->SetIOR( Nt_ ); }
 		};
 	}
 }

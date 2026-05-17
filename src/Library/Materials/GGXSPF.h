@@ -37,12 +37,16 @@ namespace RISE
 		protected:
 			virtual ~GGXSPF();
 
-			const IPainter&			pDiffuse;
-			const IPainter&			pSpecular;
-			const IScalarPainter&	pAlphaX;		// roughness (physical scalar)
-			const IScalarPainter&	pAlphaY;
-			const IScalarPainter&	pIOR;
-			const IScalarPainter&	pExtinction;
+			//! Pointer storage for the interactive editor (Phase 4);
+			//! see GGXBRDF.h for the rationale + the symmetric
+			//! pattern.  Material's Set* forwards hit both BRDF and
+			//! SPF in lockstep so they never drift.
+			const IPainter*			pDiffuse;
+			const IPainter*			pSpecular;
+			const IScalarPainter*	pAlphaX;		// roughness (physical scalar)
+			const IScalarPainter*	pAlphaY;
+			const IScalarPainter*	pIOR;
+			const IScalarPainter*	pExtinction;
 			const FresnelMode fresnelMode;
 			//! Landing 8: optional tangent-frame rotation per
 			//! KHR_materials_anisotropy.  See GGXBRDF.h for details;
@@ -88,6 +92,16 @@ namespace RISE
 				const Scalar nm,
 				const IORStack& ior_stack
 				) const;
+
+			//! Read-back + rebind for the interactive editor.  See
+			//! GGXBRDF.h — every Set* call here is paired with the
+			//! BRDF's matching Set* by Material's forwarder.
+			void SetDiffuse( const IPainter& v );
+			void SetSpecular( const IPainter& v );
+			void SetAlphaX( const IScalarPainter& v );
+			void SetAlphaY( const IScalarPainter& v );
+			void SetIOR( const IScalarPainter& v );
+			void SetExtinction( const IScalarPainter& v );
 		};
 	}
 }

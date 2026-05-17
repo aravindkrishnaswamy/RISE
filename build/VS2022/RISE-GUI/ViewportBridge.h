@@ -178,6 +178,29 @@ public:
     QVector<ViewportProperty> propertySnapshot();
     bool setProperty(const QString& name, const QString& value);
 
+    /// Phase 4b: per-category property snapshot + per-category
+    /// SetProperty.  Each section in the multi-section panel reads
+    /// its own snapshot from `propertySnapshotFor` and routes edits
+    /// through `setPropertyForCategory` so a Material-section row
+    /// edits the right material even when Object is the primary
+    /// selection (auto-synced state).
+    QVector<ViewportProperty> propertySnapshotFor(Category cat);
+    bool setPropertyForCategory(Category cat, const QString& name, const QString& value);
+    /// Per-category selection accessor.  Returns the entity name
+    /// picked in `cat`'s section, or empty when nothing is picked.
+    /// An Object pick auto-fills the Material section's selection
+    /// (controller-side); both sections then report non-empty.
+    QString selectionNameForCategory(Category cat) const;
+
+    /// Is `cat`'s accordion section expanded?  Tracked separately
+    /// from the per-category selection so a section-header click
+    /// (empty-name SetSelection) still expands the section.
+    bool isSectionExpanded(Category cat) const;
+
+    /// Collapse `cat`'s section: clears expanded flag + per-
+    /// category selection.  Does NOT affect other sections.
+    void collapseSection(Category cat);
+
     /// Accordion list entries for `category`.  Each entry is the
     /// display name (manager-registered name for cameras / objects /
     /// lights, chunk-name for rasterizers).  Empty list when the

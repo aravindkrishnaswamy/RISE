@@ -29,10 +29,23 @@ namespace RISE
 		protected:
 			virtual ~LambertianSPF( );
 
-			const IPainter&	reflectance;				// Reflectance
+			//! Pointer (not reference) so the interactive editor can
+			//! rebind via `SetReflectance`.  Lifetime: addref'd in
+			//! ctor + setter, released in dtor + on rebind.  Matches
+			//! the LambertianBRDF::pReflectance pattern; the Material
+			//! sets both sides in lockstep so the BRDF and SPF stay
+			//! consistent.
+			const IPainter*	pReflectance;
 
 		public:
 			LambertianSPF( const IPainter& ref );
+
+			//! Rebind the reflectance painter.  Caller is responsible
+			//! for the cancel-and-park gate against the render thread.
+			//! The Material's SetReflectance forwards to BOTH this
+			//! and LambertianBRDF's SetReflectance so the two never
+			//! drift.
+			void SetReflectance( const IPainter& ref );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.  

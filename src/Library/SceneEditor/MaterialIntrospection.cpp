@@ -15,6 +15,9 @@
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IPainter.h"
 #include "../Interfaces/IPainterManager.h"
+#include "../Interfaces/IScalarPainter.h"
+#include "../Interfaces/IScalarPainterManager.h"
+#include "../Interfaces/IJob.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Materials/Material.h"   // NullMaterial — Job's default-registered "none" material
 #include "../Materials/LambertianMaterial.h"
@@ -85,6 +88,66 @@ String FindPainterName( const IPainterManager* mgr, const IPainter* target )
 	return cb.found;
 }
 
+// Same as `FindPainterName` but for IScalarPainter — the physical-
+// scalar pipe described in `docs/ISCALARPAINTER_REFACTOR.md`.  The
+// two managers are distinct (IPainter vs IScalarPainter) so the
+// reverse-lookup needs its own helper rather than a templatized
+// generic — IManager<T>::GetItem is not a static cast point.
+//
+// `[[maybe_unused]]` because Stage 4A only surfaces the Lambertian
+// painter binding (IPainter); the IScalarPainter-using callers
+// land in Stage 4B per-material rollout.  Marking explicit so a
+// clean Stage-4A build doesn't trip `-Wunused-function`.
+[[maybe_unused]]
+String FindScalarPainterName( const IScalarPainterManager* mgr, const IScalarPainter* target )
+{
+	if( !mgr || !target ) return String();
+	struct Cb : public IEnumCallback<const char*> {
+		const IScalarPainterManager* mgr;
+		const IScalarPainter*        target;
+		String                       found;
+		bool operator()( const char* const& name ) override {
+			if( const_cast<IScalarPainterManager*>(mgr)->GetItem( name ) == target ) {
+				found = String( name );
+				return false;
+			}
+			return true;
+		}
+	};
+	Cb cb;
+	cb.mgr    = mgr;
+	cb.target = target;
+	const_cast<IScalarPainterManager*>( mgr )->EnumerateItemNames( cb );
+	return cb.found;
+}
+
+// Build the {label, value} preset list for a painter slot from the
+// passed-in manager.  Returns an empty vector when the manager is
+// null (caller already gated on availability).  Caller adds a
+// synthetic "(unbound)" entry if/where applicable.
+template <class MgrT>
+std::vector<ParameterPreset> CollectPainterPresets( const MgrT* mgr )
+{
+	std::vector<ParameterPreset> out;
+	if( !mgr ) return out;
+	struct Cb : public IEnumCallback<const char*> {
+		std::vector<ParameterPreset>* out;
+		bool operator()( const char* const& name ) override {
+			if( name ) {
+				ParameterPreset p;
+				p.label = std::string( name );
+				p.value = std::string( name );
+				out->push_back( p );
+			}
+			return true;
+		}
+	};
+	Cb cb;
+	cb.out = &out;
+	const_cast<MgrT*>( mgr )->EnumerateItemNames( cb );
+	return out;
+}
+
 }  // namespace
 
 String MaterialIntrospection::GetTypeName( const IMaterial& material )
@@ -140,8 +203,77 @@ String MaterialIntrospection::GetTypeName( const IMaterial& material )
 	return String( "(unknown type)" );
 }
 
+namespace {
+
+// Build one painter-slot row for the panel.  Caller has already
+// reverse-looked-up the binding's name; `nameResolved` is true iff
+// that lookup found a registered name.
+//
+// Important: a slot whose current binding is NOT registered with
+// the matching manager is surfaced as READ-ONLY even when
+// `panelEditable` would otherwise allow the edit.  An unregistered
+// painter has no recoverable name, so the SceneEdit's
+// `prevPropertyValue` capture would be empty, and an Undo would
+// silently no-op.  Better to refuse the edit up-front than to let
+// the user rebind and then discover undo doesn't restore.
+CameraProperty MakePainterSlotRow(
+	const char* slotName, const String& binding, bool nameResolved,
+	const std::vector<ParameterPreset>& presets,
+	bool panelEditable, const char* description )
+{
+	CameraProperty p;
+	p.name        = String( slotName );
+	p.value       = binding;
+	p.description = String( description );
+	p.kind        = ValueKind::Reference;   // panel renders as text + presets dropdown
+	p.editable    = panelEditable && nameResolved;
+	p.presets     = presets;
+	return p;
+}
+
+// Reverse-lookup + row-build for an IPainter slot.  Returns a
+// read-only row when `painter` is unregistered with `painters`
+// (no recoverable name = no undoable rebind).
+CameraProperty BuildPainterSlot(
+	const char* slot, const IPainter& painter,
+	const IPainterManager* painters, bool composed,
+	const char* desc )
+{
+	const String n = FindPainterName( painters, &painter );
+	const bool nameResolved = n.size() > 1;
+	return MakePainterSlotRow(
+		slot,
+		nameResolved ? n : String( "(unregistered painter)" ),
+		nameResolved,
+		CollectPainterPresets( painters ),
+		!composed && painters != 0,
+		desc );
+}
+
+// Same shape for an IScalarPainter slot.
+CameraProperty BuildScalarPainterSlot(
+	const char* slot, const IScalarPainter& painter,
+	const IScalarPainterManager* scalarPainters, bool composed,
+	const char* desc )
+{
+	const String n = FindScalarPainterName( scalarPainters, &painter );
+	const bool nameResolved = n.size() > 1;
+	return MakePainterSlotRow(
+		slot,
+		nameResolved ? n : String( "(unregistered scalar_painter)" ),
+		nameResolved,
+		CollectPainterPresets( scalarPainters ),
+		!composed && scalarPainters != 0,
+		desc );
+}
+
+}  // namespace
+
 std::vector<CameraProperty> MaterialIntrospection::Inspect(
-	const String& name, const IMaterial& material, const IPainterManager* painters )
+	const String& name, const IMaterial& material,
+	const IPainterManager* painters,
+	const IScalarPainterManager* scalarPainters,
+	const IJob* job )
 {
 	std::vector<CameraProperty> rows;
 
@@ -151,20 +283,94 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 
 	rows.push_back( MakeReadOnlyRow(
 		"Type", GetTypeName( material ),
-		"Concrete material kind.  Each kind has its own set of painter / scalar slots — full per-type editing arrives in a future Phase 4 PR." ) );
+		"Concrete material kind.  Each kind has its own set of painter / scalar slots." ) );
 
-	// Per-type field surfacing.  Today only Lambertian exposes a
-	// reverse-readable painter binding; other materials follow the
-	// same pattern once their BRDF/SPF gain runtime reverse-getters
-	// (and ideally setters for editable round-trip).
-	if( const LambertianMaterial* lam = dynamic_cast<const LambertianMaterial*>( &material ) ) {
-		const IPainter& refl = lam->GetReflectance();
-		const String refName = FindPainterName( painters, &refl );
+	// Composed-material gate: PBR-MR and GGX-Emissive built a painter
+	// graph internally; rebinding any slot would break the graph's
+	// downstream computations.  Surface a clear note and mark every
+	// slot row read-only.  Per-slot rows still display so the user
+	// can SEE the bindings — they just can't edit.
+	const bool composed = job && job->IsMaterialComposed( name.c_str() );
+	if( composed ) {
 		rows.push_back( MakeReadOnlyRow(
-			"reflectance", refName.size() > 1 ? refName : String( "(unregistered painter)" ),
-			"Painter that drives the Lambertian reflectance (BRDF + SPF use the same instance).  "
-			"Read-only in this Phase 2 surface; editing this binding requires per-material runtime "
-			"setters that don't exist yet — see MaterialIntrospection.h for the Phase 4 roadmap." ) );
+			"composed", String( "yes" ),
+			"This material was registered via a composing factory "
+			"(`pbr_metallic_roughness_material` or `ggx_emissive_material`) "
+			"that built an internal painter graph.  Slot rows below are "
+			"read-only — rebinding one would break the graph.  To change "
+			"this material's appearance, edit the upstream painters directly." ) );
+	}
+
+	// Per-type field surfacing.  The pattern: for each known
+	// material type, walk its painter slots, reverse-lookup each
+	// binding's name, build a Reference-kind row with the matching
+	// preset list, mark editable based on the composed gate.
+	if( const LambertianMaterial* lam = dynamic_cast<const LambertianMaterial*>( &material ) ) {
+		rows.push_back( BuildPainterSlot( "reflectance", lam->GetReflectance(),
+			painters, composed,
+			"Painter that drives the Lambertian reflectance (BRDF + SPF share the same instance).  "
+			"Picking a different painter from the dropdown rebinds the slot live." ) );
+	}
+	else if( const PerfectReflectorMaterial* pr = dynamic_cast<const PerfectReflectorMaterial*>( &material ) ) {
+		rows.push_back( BuildPainterSlot( "reflectance", pr->GetReflectance(),
+			painters, composed,
+			"Painter for the mirror's reflectance tint.  Multiplies SMS chain throughput "
+			"so a coloured mirror passes its tint through caustic chains." ) );
+	}
+	else if( const PerfectRefractorMaterial* pf = dynamic_cast<const PerfectRefractorMaterial*>( &material ) ) {
+		rows.push_back( BuildPainterSlot( "refractivity", pf->GetRefractivity(),
+			painters, composed,
+			"Painter for per-wavelength refractive colour attenuation (Beer-Lambert-like tint applied to the transmitted ray)." ) );
+		rows.push_back( BuildScalarPainterSlot( "ior", pf->GetIOR(),
+			scalarPainters, composed,
+			"Scalar painter for the index of refraction.  Use a spectral scalar painter for dispersion." ) );
+	}
+	else if( const PolishedMaterial* pol = dynamic_cast<const PolishedMaterial*>( &material ) ) {
+		rows.push_back( BuildPainterSlot( "diffuse_reflectance", pol->GetDiffuseReflectance(),
+			painters, composed,
+			"Painter for the substrate's diffuse reflectance (the Lambertian layer under the dielectric coat)." ) );
+		rows.push_back( BuildScalarPainterSlot( "transmittance", pol->GetTransmittance(),
+			scalarPainters, composed,
+			"Scalar painter for the dielectric coat's transmittance — physical scalar, NOT a colour." ) );
+		rows.push_back( BuildScalarPainterSlot( "ior", pol->GetIOR(),
+			scalarPainters, composed,
+			"Scalar painter for the dielectric coat's IOR." ) );
+		rows.push_back( BuildScalarPainterSlot( "scattering", pol->GetScattering(),
+			scalarPainters, composed,
+			"Scalar painter for the coat's scattering function (Phong cone width or HG asymmetry depending on the material's `hg` flag)." ) );
+	}
+	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
+		rows.push_back( BuildScalarPainterSlot( "transmittance", die->GetTransmittance(),
+			scalarPainters, composed,
+			"Scalar painter for the dielectric's transmittance per channel — physical scalar pipe." ) );
+		rows.push_back( BuildScalarPainterSlot( "ior", die->GetIOR(),
+			scalarPainters, composed,
+			"Scalar painter for the index of refraction.  Use a spectral scalar painter for dispersion." ) );
+		rows.push_back( BuildScalarPainterSlot( "scattering", die->GetScattering(),
+			scalarPainters, composed,
+			"Scalar painter for the scattering function (Phong cone width or HG asymmetry per the material's `hg` flag)." ) );
+	}
+	else if( const GGXMaterial* ggx = dynamic_cast<const GGXMaterial*>( &material ) ) {
+		rows.push_back( BuildPainterSlot( "diffuse",  ggx->GetDiffuse(),
+			painters, composed,
+			"Painter for the diffuse (Lambertian) base lobe — IPainter colour pipe." ) );
+		rows.push_back( BuildPainterSlot( "specular", ggx->GetSpecular(),
+			painters, composed,
+			"Painter for the specular tint OR Schlick F0 input depending on `fresnel_mode` "
+			"(conductor mode = tint multiplier; schlick_f0 mode = F0 directly per glTF spec)." ) );
+		rows.push_back( BuildScalarPainterSlot( "alphax",   ggx->GetAlphaX(),
+			scalarPainters, composed,
+			"Anisotropic roughness in the tangent direction — physical scalar." ) );
+		rows.push_back( BuildScalarPainterSlot( "alphay",   ggx->GetAlphaY(),
+			scalarPainters, composed,
+			"Anisotropic roughness in the bitangent direction — physical scalar.  "
+			"Set equal to alphax for isotropic GGX." ) );
+		rows.push_back( BuildScalarPainterSlot( "ior",      ggx->GetIOR(),
+			scalarPainters, composed,
+			"Index of refraction (Fresnel conductor mode only; ignored in schlick_f0)." ) );
+		rows.push_back( BuildScalarPainterSlot( "ext",      ggx->GetExtinction(),
+			scalarPainters, composed,
+			"Extinction coefficient (Fresnel conductor mode only)." ) );
 	}
 
 	// Read-only volumetric / SSS indicators — useful diagnostic info
@@ -191,5 +397,171 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			"Light can pass through this material (glass or other transmissive medium)." ) );
 	}
 
+	// Suppress the unused-parameter warning for scalarPainters until
+	// scalar-painter slot surfacing lands per material in Stage 4B.
+	(void)scalarPainters;
+
 	return rows;
+}
+
+// -------------------------------------------------------------------
+// Per-material slot get/set dispatch.  Each material type added in
+// Stage 4B fills in its case here.  Lambertian is the working
+// prototype.
+// -------------------------------------------------------------------
+
+MaterialSlotRef MaterialIntrospection::GetSlot(
+	const IMaterial& material, const String& slotName )
+{
+	MaterialSlotRef out;
+
+	if( const LambertianMaterial* lam = dynamic_cast<const LambertianMaterial*>( &material ) ) {
+		if( slotName == String( "reflectance" ) ) {
+			out.kind    = MaterialSlotRef::Painter;
+			out.painter = &lam->GetReflectance();
+			return out;
+		}
+	}
+	else if( const PerfectReflectorMaterial* pr = dynamic_cast<const PerfectReflectorMaterial*>( &material ) ) {
+		if( slotName == String( "reflectance" ) ) {
+			out.kind    = MaterialSlotRef::Painter;
+			out.painter = &pr->GetReflectance();
+			return out;
+		}
+	}
+	else if( const PerfectRefractorMaterial* pf = dynamic_cast<const PerfectRefractorMaterial*>( &material ) ) {
+		if( slotName == String( "refractivity" ) ) {
+			out.kind    = MaterialSlotRef::Painter;
+			out.painter = &pf->GetRefractivity();
+			return out;
+		}
+		if( slotName == String( "ior" ) ) {
+			out.kind          = MaterialSlotRef::ScalarPainter;
+			out.scalarPainter = &pf->GetIOR();
+			return out;
+		}
+	}
+	else if( const PolishedMaterial* pol = dynamic_cast<const PolishedMaterial*>( &material ) ) {
+		if( slotName == String( "diffuse_reflectance" ) ) {
+			out.kind = MaterialSlotRef::Painter; out.painter = &pol->GetDiffuseReflectance(); return out;
+		}
+		if( slotName == String( "transmittance" ) ) {
+			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &pol->GetTransmittance(); return out;
+		}
+		if( slotName == String( "ior" ) ) {
+			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &pol->GetIOR(); return out;
+		}
+		if( slotName == String( "scattering" ) ) {
+			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &pol->GetScattering(); return out;
+		}
+	}
+	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
+		if( slotName == String( "transmittance" ) ) {
+			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &die->GetTransmittance(); return out;
+		}
+		if( slotName == String( "ior" ) ) {
+			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &die->GetIOR(); return out;
+		}
+		if( slotName == String( "scattering" ) ) {
+			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &die->GetScattering(); return out;
+		}
+	}
+	else if( const GGXMaterial* ggx = dynamic_cast<const GGXMaterial*>( &material ) ) {
+		if( slotName == String( "diffuse" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &ggx->GetDiffuse();    return out; }
+		if( slotName == String( "specular" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &ggx->GetSpecular();   return out; }
+		if( slotName == String( "alphax" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetAlphaX();     return out; }
+		if( slotName == String( "alphay" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetAlphaY();     return out; }
+		if( slotName == String( "ior" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetIOR();        return out; }
+		if( slotName == String( "ext" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetExtinction(); return out; }
+	}
+
+	// Unknown slot for this material type — out.kind stays None.
+	return out;
+}
+
+bool MaterialIntrospection::SetSlot(
+	IMaterial& material, const String& slotName,
+	const IPainter* painter, const IScalarPainter* scalarPainter )
+{
+	if( LambertianMaterial* lam = dynamic_cast<LambertianMaterial*>( &material ) ) {
+		if( slotName == String( "reflectance" ) ) {
+			if( !painter ) return false;
+			lam->SetReflectance( *painter );
+			return true;
+		}
+		return false;
+	}
+	if( PerfectReflectorMaterial* pr = dynamic_cast<PerfectReflectorMaterial*>( &material ) ) {
+		if( slotName == String( "reflectance" ) ) {
+			if( !painter ) return false;
+			pr->SetReflectance( *painter );
+			return true;
+		}
+		return false;
+	}
+	if( PerfectRefractorMaterial* pf = dynamic_cast<PerfectRefractorMaterial*>( &material ) ) {
+		if( slotName == String( "refractivity" ) ) {
+			if( !painter ) return false;
+			pf->SetRefractivity( *painter );
+			return true;
+		}
+		if( slotName == String( "ior" ) ) {
+			if( !scalarPainter ) return false;
+			pf->SetIOR( *scalarPainter );
+			return true;
+		}
+		return false;
+	}
+	if( PolishedMaterial* pol = dynamic_cast<PolishedMaterial*>( &material ) ) {
+		if( slotName == String( "diffuse_reflectance" ) ) {
+			if( !painter ) return false;
+			pol->SetDiffuseReflectance( *painter );
+			return true;
+		}
+		if( slotName == String( "transmittance" ) ) {
+			if( !scalarPainter ) return false;
+			pol->SetTransmittance( *scalarPainter );
+			return true;
+		}
+		if( slotName == String( "ior" ) ) {
+			if( !scalarPainter ) return false;
+			pol->SetIOR( *scalarPainter );
+			return true;
+		}
+		if( slotName == String( "scattering" ) ) {
+			if( !scalarPainter ) return false;
+			pol->SetScattering( *scalarPainter );
+			return true;
+		}
+		return false;
+	}
+	if( DielectricMaterial* die = dynamic_cast<DielectricMaterial*>( &material ) ) {
+		if( slotName == String( "transmittance" ) ) {
+			if( !scalarPainter ) return false;
+			die->SetTransmittance( *scalarPainter );
+			return true;
+		}
+		if( slotName == String( "ior" ) ) {
+			if( !scalarPainter ) return false;
+			die->SetIOR( *scalarPainter );
+			return true;
+		}
+		if( slotName == String( "scattering" ) ) {
+			if( !scalarPainter ) return false;
+			die->SetScattering( *scalarPainter );
+			return true;
+		}
+		return false;
+	}
+	if( GGXMaterial* ggx = dynamic_cast<GGXMaterial*>( &material ) ) {
+		if( slotName == String( "diffuse" ) )  { if( !painter ) return false; ggx->SetDiffuse( *painter );  return true; }
+		if( slotName == String( "specular" ) ) { if( !painter ) return false; ggx->SetSpecular( *painter ); return true; }
+		if( slotName == String( "alphax" ) )   { if( !scalarPainter ) return false; ggx->SetAlphaX( *scalarPainter );     return true; }
+		if( slotName == String( "alphay" ) )   { if( !scalarPainter ) return false; ggx->SetAlphaY( *scalarPainter );     return true; }
+		if( slotName == String( "ior" ) )      { if( !scalarPainter ) return false; ggx->SetIOR( *scalarPainter );        return true; }
+		if( slotName == String( "ext" ) )      { if( !scalarPainter ) return false; ggx->SetExtinction( *scalarPainter ); return true; }
+		return false;
+	}
+
+	return false;
 }

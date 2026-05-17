@@ -1507,6 +1507,12 @@ namespace RISE
 			IEnumCallback<const char*>& cb							///< [in] Functor called once per registered medium name
 			) const = 0;
 
+		// `IsMaterialComposed` lives in the appended-default-impl
+		// region at the end of IJob (see the "ABI POLICY" comment
+		// down there for the reasoning).  Out-of-tree IJob impls
+		// pick up the `false` default automatically — only Job
+		// (which tracks composed-name registrations) overrides.
+
 
 		//
 		// Adds modifiers
@@ -2775,6 +2781,23 @@ namespace RISE
 		virtual std::string GetRasterizerParameter(
 			const char* /*rasterizerName*/,
 			const char* /*paramName*/ ) const { return std::string(); }
+
+		//! True if the named material was registered via a composing
+		//! factory (`AddPBRMetallicRoughnessMaterial`,
+		//! `AddGGXEmissiveMaterial`) rather than authored directly.
+		//! Composing factories build a painter graph and feed the
+		//! resulting painters into a `ggx_material` (or similar) —
+		//! the registered material has slot bindings that are NOT
+		//! independently authored; rebinding one would break the
+		//! graph's downstream computations.  The interactive editor's
+		//! Materials panel consults this to surface composed-material
+		//! slots as read-only.  Default `return false` lets out-of-
+		//! tree IJob subclasses skip the override — they don't track
+		//! composed names, so "no, not composed" is the safe answer.
+		//! Only `Job` overrides for its scene-side tracking.
+		virtual bool IsMaterialComposed(
+			const char* /*name*/
+			) const { return false; }
 
 		//! Adds a TEXCOORD_1 selector painter (glTF L12.D).  Wraps a
 		//! source painter to sample at ri.ptCoord1 instead of ri.ptCoord.

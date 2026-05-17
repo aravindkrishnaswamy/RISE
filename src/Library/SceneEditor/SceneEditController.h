@@ -191,6 +191,33 @@ namespace RISE
 		Category GetSelectionCategory() const;
 		String   GetSelectionName() const;
 
+		//! Per-category selection accessor (Phase 4b).  Returns the
+		//! entity picked in `cat`'s section, or empty when nothing
+		//! is picked in that section.  Distinct from
+		//! `GetSelectionName()` which returns only the primary
+		//! (most-recently-set) selection: this accessor lets the
+		//! panel render multiple sections expanded simultaneously
+		//! (e.g. picking an Object expands BOTH the Object and the
+		//! Material section, where Material auto-tracks the
+		//! object's bound material).
+		String GetSelectionNameForCategory( Category cat ) const;
+
+		//! True if `cat`'s accordion section is expanded — tracked
+		//! separately from the per-category selection so a user can
+		//! click a section header to expand it without yet picking
+		//! an entity in that section (the dropdown shows the active-
+		//! fallback name; the property list renders the active entity
+		//! for sections that have one — Camera, Rasterizer, Film —
+		//! or stays empty for Object/Light/Material until a pick).
+		bool IsSectionExpanded( Category cat ) const;
+
+		//! Collapse `cat`'s section: clears both the expanded flag
+		//! AND the per-category selection.  If this was the primary
+		//! category, the primary tuple falls back to any other
+		//! expanded section with a non-empty selection, or to
+		//! Category::None if none remains.
+		void CollapseSection( Category cat );
+
 		//! Apply a (category, entityName) selection.  Empty entityName
 		//! is allowed for Camera / Rasterizer / Object / Light: it
 		//! means "expand this section, clear the picked entity".  For
@@ -343,6 +370,24 @@ namespace RISE
 		int  PropertyKind( unsigned int idx ) const;       // ValueKind cast to int
 		bool PropertyEditable( unsigned int idx ) const;
 
+		//! Per-category property snapshot accessors (Phase 4b).
+		//! `RefreshProperties()` populates per-category snapshots
+		//! for every category with a non-empty selection; these
+		//! accessors let the panel render each expanded section's
+		//! rows independently.  The single-arg `PropertyCount()` /
+		//! `PropertyName(idx)` / ... accessors above continue to
+		//! return the PRIMARY category's rows for back-compat.
+		unsigned int PropertyCountFor( Category cat ) const;
+		String       PropertyNameFor( Category cat, unsigned int idx ) const;
+		String       PropertyValueFor( Category cat, unsigned int idx ) const;
+		String       PropertyDescriptionFor( Category cat, unsigned int idx ) const;
+		int          PropertyKindFor( Category cat, unsigned int idx ) const;
+		bool         PropertyEditableFor( Category cat, unsigned int idx ) const;
+		unsigned int PropertyPresetCountFor( Category cat, unsigned int idx ) const;
+		String       PropertyPresetLabelFor( Category cat, unsigned int idx, unsigned int presetIdx ) const;
+		String       PropertyPresetValueFor( Category cat, unsigned int idx, unsigned int presetIdx ) const;
+		String       PropertyUnitLabelFor( Category cat, unsigned int idx ) const;
+
 		//! Quick-pick preset accessors for the editor combo box.
 		//! Empty for parameters whose descriptor declares no presets.
 		unsigned int PropertyPresetCount( unsigned int idx ) const;
@@ -363,9 +408,22 @@ namespace RISE
 
 		//! Apply an edit to a named property.  Triggers a re-render via
 		//! the existing edit-pending machinery.  Returns false if the
-		//! parse fails or the property is read-only.  Currently routes
-		//! to camera properties only (object editing is future work).
+		//! parse fails or the property is read-only.  Routes through
+		//! the PRIMARY selection — for the multi-section editing path
+		//! (per-section edits when both Object and Material sections
+		//! are expanded), use `SetPropertyForCategory` so the edit
+		//! routes to the right per-category selection.
 		bool SetProperty( const String& name, const String& valueStr );
+
+		//! Same as SetProperty but routes through `cat`'s per-
+		//! category selection (Phase 4b multi-section panel).  When
+		//! `cat` matches the primary selection's category, this is
+		//! equivalent to `SetProperty(name, valueStr)`.  When the
+		//! Materials section is expanded as a secondary because
+		//! primary is Object, an edit in that section routes here
+		//! with `cat = Material` and the controller resolves the
+		//! material name via the Object's bound material.
+		bool SetPropertyForCategory( Category cat, const String& name, const String& valueStr );
 
 		//! Clone the currently-active camera under a new name and
 		//! promote the clone to active.  `proposedName` is the user's
@@ -421,13 +479,28 @@ namespace RISE
 		Implementation::InteractivePelRasterizer* mInteractiveImpl;
 		SceneEditor                 mEditor;
 		Tool                        mTool;
-		// Selection state — single tuple across the whole panel.  Both
-		// fields are written from the UI thread (PickAt during a
-		// pointer-down, SetSelection from the accordion list, the
-		// camera-tool branch in OnPointerDown) and read from the same
-		// thread by RefreshProperties / CurrentPanelMode / etc.  No
-		// concurrency concern: pointer events and panel reads both
-		// occur on the platform UI thread.
+		// Selection state — Phase 4b moved from a single tuple to
+		// a per-category model so the panel can show multiple
+		// sections expanded simultaneously (Object pick auto-
+		// expands the Material section bound to that object's
+		// material, etc.).  `mSelectionByCategory[i]` is the picked
+		// entity name for Category(i), empty when nothing is picked
+		// in that section.  `mSelectionCategory` + `mSelectionName`
+		// stay as the "primary" — the most recently set non-empty
+		// pick, used for the panel header / single-tuple callers.
+		// All writes happen on the UI thread; render thread doesn't
+		// touch these.
+		static constexpr int        kNumCategories = 7;   // None..Material
+		String                      mSelectionByCategory[ kNumCategories ];
+		//! Per-category "is the accordion section expanded?" flag,
+		//! tracked SEPARATELY from `mSelectionByCategory` so a user
+		//! who clicks a section HEADER (to open the section with no
+		//! entity picked yet) gets an expanded-but-empty section.
+		//! Without this split, my Phase 4b panel collapsed every
+		//! section whose per-cat selection was empty — including
+		//! the "just-opened with no pick yet" state.  SetSelection
+		//! sets the flag; CollapseSection clears it.
+		bool                        mSectionExpanded[ kNumCategories ];
 		Category                    mSelectionCategory;
 		String                      mSelectionName;
 		// Bumped on any structural mutation (scene load, camera add,
@@ -591,7 +664,15 @@ namespace RISE
 		static constexpr unsigned int kPolishSampleCount = 4;
 
 		// Properties-panel snapshot (rebuilt on RefreshProperties).
-		std::vector<CameraProperty> mProperties;
+		// `mProperties` is the PRIMARY-selection snapshot (kept for
+		// back-compat with the single-tuple PropertyXxx accessors).
+		// `mPropertiesByCategory[i]` is the per-section snapshot —
+		// populated for every category with a non-empty selection
+		// in `RefreshProperties`.  Phase 4b's multi-section panel
+		// reads the per-category arrays so each expanded section
+		// renders its own rows independently.
+		std::vector<CameraProperty>                          mProperties;
+		std::vector<CameraProperty>                          mPropertiesByCategory[ kNumCategories ];
 
 		// Disable copy / move
 		SceneEditController( const SceneEditController& );

@@ -44,21 +44,21 @@ GGXSPF::GGXSPF(
 	const FresnelMode fresnel_mode,
 	const IPainter* tangent_rotation
 	) :
-  pDiffuse( diffuse ),
-  pSpecular( specular ),
-  pAlphaX( alphaX ),
-  pAlphaY( alphaY ),
-  pIOR( ior ),
-  pExtinction( ext ),
+  pDiffuse( &diffuse ),
+  pSpecular( &specular ),
+  pAlphaX( &alphaX ),
+  pAlphaY( &alphaY ),
+  pIOR( &ior ),
+  pExtinction( &ext ),
   fresnelMode( fresnel_mode ),
   pTangentRotation( tangent_rotation )
 {
-	pDiffuse.addref();
-	pSpecular.addref();
-	pAlphaX.addref();
-	pAlphaY.addref();
-	pIOR.addref();
-	pExtinction.addref();
+	pDiffuse->addref();
+	pSpecular->addref();
+	pAlphaX->addref();
+	pAlphaY->addref();
+	pIOR->addref();
+	pExtinction->addref();
 	if( pTangentRotation ) pTangentRotation->addref();
 }
 
@@ -88,14 +88,21 @@ namespace
 
 GGXSPF::~GGXSPF()
 {
-	pDiffuse.release();
-	pSpecular.release();
-	pAlphaX.release();
-	pAlphaY.release();
-	pIOR.release();
-	pExtinction.release();
+	safe_release( pDiffuse );
+	safe_release( pSpecular );
+	safe_release( pAlphaX );
+	safe_release( pAlphaY );
+	safe_release( pIOR );
+	safe_release( pExtinction );
 	if( pTangentRotation ) pTangentRotation->release();
 }
+
+void GGXSPF::SetDiffuse( const IPainter& v )         { v.addref(); safe_release( pDiffuse );    pDiffuse    = &v; }
+void GGXSPF::SetSpecular( const IPainter& v )        { v.addref(); safe_release( pSpecular );   pSpecular   = &v; }
+void GGXSPF::SetAlphaX( const IScalarPainter& v )    { v.addref(); safe_release( pAlphaX );     pAlphaX     = &v; }
+void GGXSPF::SetAlphaY( const IScalarPainter& v )    { v.addref(); safe_release( pAlphaY );     pAlphaY     = &v; }
+void GGXSPF::SetIOR( const IScalarPainter& v )       { v.addref(); safe_release( pIOR );        pIOR        = &v; }
+void GGXSPF::SetExtinction( const IScalarPainter& v ){ v.addref(); safe_release( pExtinction ); pExtinction = &v; }
 
 void GGXSPF::Scatter(
 	const RayIntersectionGeometric& ri,
@@ -118,8 +125,8 @@ void GGXSPF::Scatter(
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
 
-	Scalar alphaX = r_max( pAlphaX.GetValuesAt(ri).v[0], Scalar(1e-4) );
-	Scalar alphaY = r_max( pAlphaY.GetValuesAt(ri).v[0], Scalar(1e-4) );
+	Scalar alphaX = r_max( pAlphaX->GetValuesAt(ri).v[0], Scalar(1e-4) );
+	Scalar alphaY = r_max( pAlphaY->GetValuesAt(ri).v[0], Scalar(1e-4) );
 
 	// Glossy filtering: increase effective roughness
 	if( ri.glossyFilterWidth > 0 ) {
@@ -131,8 +138,8 @@ void GGXSPF::Scatter(
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
 	// 3-lobe mixture weights: diffuse + specular + multiscatter
-	const Scalar wd = ColorMath::MaxValue( pDiffuse.GetColor(ri) );
-	const Scalar ws = ColorMath::MaxValue( pSpecular.GetColor(ri) );
+	const Scalar wd = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
+	const Scalar ws = ColorMath::MaxValue( pSpecular->GetColor(ri) );
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alphaEff );
 	const Scalar wms = ws * (1.0 - Eavg);
 	const Scalar total = wd + ws + wms;
@@ -158,11 +165,11 @@ void GGXSPF::Scatter(
 			const Scalar mixPdf = (total > 1e-10) ?
 				((wd + wms) * diffPdf + ws * specPdf) / total : diffPdf;
 
-			RISEPel kray = pDiffuse.GetColor(ri) * (1.0 / pDiffuseSelect);
+			RISEPel kray = pDiffuse->GetColor(ri) * (1.0 / pDiffuseSelect);
 			if( fresnelMode == eFresnelSchlickF0 )
 			{
 				// (1 - max(F0)) energy split per glTF spec
-				const RISEPel specColor = pSpecular.GetColor(ri);
+				const RISEPel specColor = pSpecular->GetColor(ri);
 				const Scalar maxF0 = ColorMath::MaxValue( specColor );
 				kray = kray * r_max( Scalar(0), Scalar(1.0) - maxF0 );
 			}
@@ -202,7 +209,7 @@ void GGXSPF::Scatter(
 							((wd + wms) * diffPdf + ws * vndfPdf) / total : vndfPdf;
 
 						// Fresnel evaluated at microfacet normal m, not macrosurface normal
-						const RISEPel specColor = pSpecular.GetColor(ri);
+						const RISEPel specColor = pSpecular->GetColor(ri);
 						RISEPel F;
 						if( fresnelMode == eFresnelSchlickF0 )
 						{
@@ -211,8 +218,8 @@ void GGXSPF::Scatter(
 						}
 						else
 						{
-							const ScalarTriple iorT = pIOR.GetValuesAt(ri);
-							const ScalarTriple extT = pExtinction.GetValuesAt(ri);
+							const ScalarTriple iorT = pIOR->GetValuesAt(ri);
+							const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 							const RISEPel iorPel( iorT.v[0], iorT.v[1], iorT.v[2] );
 							const RISEPel extPel( extT.v[0], extT.v[1], extT.v[2] );
 							F = specColor * Optics::CalculateConductorReflectance<RISEPel>(
@@ -276,7 +283,7 @@ void GGXSPF::Scatter(
 				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosTheta, alphaEff );
 				const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff );
 
-				const RISEPel specColor = pSpecular.GetColor(ri);
+				const RISEPel specColor = pSpecular->GetColor(ri);
 				RISEPel kray;
 				if( fresnelMode == eFresnelSchlickF0 )
 				{
@@ -286,8 +293,8 @@ void GGXSPF::Scatter(
 				}
 				else
 				{
-					const ScalarTriple iorT = pIOR.GetValuesAt(ri);
-					const ScalarTriple extT = pExtinction.GetValuesAt(ri);
+					const ScalarTriple iorT = pIOR->GetValuesAt(ri);
+					const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 					const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 					const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 					const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
@@ -329,8 +336,8 @@ void GGXSPF::ScatterNM(
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
 
-	Scalar alphaX = r_max( pAlphaX.GetValueAtNM(ri,nm), Scalar(1e-4) );
-	Scalar alphaY = r_max( pAlphaY.GetValueAtNM(ri,nm), Scalar(1e-4) );
+	Scalar alphaX = r_max( pAlphaX->GetValueAtNM(ri,nm), Scalar(1e-4) );
+	Scalar alphaY = r_max( pAlphaY->GetValueAtNM(ri,nm), Scalar(1e-4) );
 
 	if( ri.glossyFilterWidth > 0 ) {
 		alphaX = r_min( alphaX + ri.glossyFilterWidth, Scalar(1.0) );
@@ -340,8 +347,8 @@ void GGXSPF::ScatterNM(
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
 	// 3-lobe mixture weights
-	const Scalar wd = pDiffuse.GetColorNM(ri,nm);
-	const Scalar ws = pSpecular.GetColorNM(ri,nm);
+	const Scalar wd = pDiffuse->GetColorNM(ri,nm);
+	const Scalar ws = pSpecular->GetColorNM(ri,nm);
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alphaEff );
 	const Scalar wms = ws * (1.0 - Eavg);
 	const Scalar total = wd + ws + wms;
@@ -366,10 +373,10 @@ void GGXSPF::ScatterNM(
 			const Scalar mixPdf = (total > 1e-10) ?
 				((wd + wms) * diffPdf + ws * specPdf) / total : diffPdf;
 
-			Scalar krayNM = pDiffuse.GetColorNM(ri,nm) / pDiffuseSelect;
+			Scalar krayNM = pDiffuse->GetColorNM(ri,nm) / pDiffuseSelect;
 			if( fresnelMode == eFresnelSchlickF0 )
 			{
-				const Scalar F0 = pSpecular.GetColorNM(ri,nm);
+				const Scalar F0 = pSpecular->GetColorNM(ri,nm);
 				krayNM = krayNM * r_max( Scalar(0), Scalar(1.0) - F0 );
 			}
 
@@ -408,7 +415,7 @@ void GGXSPF::ScatterNM(
 							((wd + wms) * diffPdf + ws * vndfPdf) / total : vndfPdf;
 
 						// Fresnel evaluated at microfacet normal m
-						const Scalar specColor = pSpecular.GetColorNM(ri,nm);
+						const Scalar specColor = pSpecular->GetColorNM(ri,nm);
 						Scalar F;
 						if( fresnelMode == eFresnelSchlickF0 )
 						{
@@ -419,7 +426,7 @@ void GGXSPF::ScatterNM(
 						{
 							const Scalar fresnel = Optics::CalculateConductorReflectance(
 								ri.ray.Dir(), m, 1.0,
-								pIOR.GetValueAtNM(ri,nm), pExtinction.GetValueAtNM(ri,nm) );
+								pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
 							F = specColor * fresnel;
 						}
 
@@ -480,18 +487,18 @@ void GGXSPF::ScatterNM(
 				Scalar krayNM;
 				if( fresnelMode == eFresnelSchlickF0 )
 				{
-					const Scalar F0 = pSpecular.GetColorNM(ri,nm);
+					const Scalar F0 = pSpecular->GetColorNM(ri,nm);
 					const Scalar F_avg = SchlickFresnelAvg<Scalar>( F0 );
 					const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
 					krayNM = F_ms * (1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect);
 				}
 				else
 				{
-					const Scalar iorVal = pIOR.GetValueAtNM(ri,nm);
-					const Scalar extVal = pExtinction.GetValueAtNM(ri,nm);
+					const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
+					const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
 					const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
 					const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
-					krayNM = pSpecular.GetColorNM(ri,nm) * F_ms *
+					krayNM = pSpecular->GetColorNM(ri,nm) * F_ms *
 						(1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect);
 				}
 
@@ -529,8 +536,8 @@ Scalar GGXSPF::Pdf(
 
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
 
-	Scalar alphaX = r_max( pAlphaX.GetValuesAt(ri).v[0], Scalar(1e-4) );
-	Scalar alphaY = r_max( pAlphaY.GetValuesAt(ri).v[0], Scalar(1e-4) );
+	Scalar alphaX = r_max( pAlphaX->GetValuesAt(ri).v[0], Scalar(1e-4) );
+	Scalar alphaY = r_max( pAlphaY->GetValuesAt(ri).v[0], Scalar(1e-4) );
 	if( ri.glossyFilterWidth > 0 ) {
 		alphaX = r_min( alphaX + ri.glossyFilterWidth, Scalar(1.0) );
 		alphaY = r_min( alphaY + ri.glossyFilterWidth, Scalar(1.0) );
@@ -538,8 +545,8 @@ Scalar GGXSPF::Pdf(
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
 	// 3-lobe mixture PDF weighted by painter albedos
-	const Scalar wd = ColorMath::MaxValue( pDiffuse.GetColor(ri) );
-	const Scalar ws = ColorMath::MaxValue( pSpecular.GetColor(ri) );
+	const Scalar wd = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
+	const Scalar ws = ColorMath::MaxValue( pSpecular->GetColor(ri) );
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alphaEff );
 	const Scalar wms = ws * (1.0 - Eavg);
 	const Scalar total = wd + ws + wms;
@@ -572,8 +579,8 @@ Scalar GGXSPF::PdfNM(
 
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
 
-	Scalar alphaX = r_max( pAlphaX.GetValueAtNM(ri,nm), Scalar(1e-4) );
-	Scalar alphaY = r_max( pAlphaY.GetValueAtNM(ri,nm), Scalar(1e-4) );
+	Scalar alphaX = r_max( pAlphaX->GetValueAtNM(ri,nm), Scalar(1e-4) );
+	Scalar alphaY = r_max( pAlphaY->GetValueAtNM(ri,nm), Scalar(1e-4) );
 	if( ri.glossyFilterWidth > 0 ) {
 		alphaX = r_min( alphaX + ri.glossyFilterWidth, Scalar(1.0) );
 		alphaY = r_min( alphaY + ri.glossyFilterWidth, Scalar(1.0) );
@@ -581,8 +588,8 @@ Scalar GGXSPF::PdfNM(
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
 	// 3-lobe mixture PDF weighted by per-wavelength albedos
-	const Scalar wd = pDiffuse.GetColorNM(ri,nm);
-	const Scalar ws = pSpecular.GetColorNM(ri,nm);
+	const Scalar wd = pDiffuse->GetColorNM(ri,nm);
+	const Scalar ws = pSpecular->GetColorNM(ri,nm);
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alphaEff );
 	const Scalar wms = ws * (1.0 - Eavg);
 	const Scalar total = wd + ws + wms;

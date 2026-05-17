@@ -61,6 +61,18 @@ namespace RISE
 			//! was constructed with — reverse-lookup against the
 			//! IPainterManager gives the user-visible name.
 			inline const IPainter& GetReflectance() const { return pBRDF->GetReflectance(); }
+
+			//! Rebind the reflectance painter on BOTH the BRDF and
+			//! the SPF in lockstep — they MUST point at the same
+			//! painter instance for the rasterizer's BRDF-shaded and
+			//! SPF-scattered paths to agree.  Caller is responsible
+			//! for the cancel-and-park gate against the render
+			//! thread; see `MaterialIntrospection::SetSlot` and the
+			//! controller's Material SetProperty branch.
+			inline void SetReflectance( const IPainter& reflectance ) {
+				pBRDF->SetReflectance( reflectance );
+				pSPF->SetReflectance( reflectance );
+			}
 		};
 	}
 }

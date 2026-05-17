@@ -28,7 +28,13 @@ namespace RISE
 		protected:
 			virtual ~LambertianBRDF();
 
-			const IPainter&	pReflectance;
+			//! Pointer (not reference) so the interactive editor can
+			//! rebind via `SetReflectance` — see Phase 4 in
+			//! MaterialIntrospection.h.  Lifetime: owned via addref
+			//! in the constructor and SetReflectance; released in
+			//! the destructor and on each rebind.  Never null after
+			//! construction.
+			const IPainter*	pReflectance;
 
 		public:
 			LambertianBRDF( const IPainter& reflectance );
@@ -39,10 +45,17 @@ namespace RISE
 
 			//! Read-back accessor for the interactive editor's
 			//! `MaterialIntrospection` — reverse-lookup the painter's
-			//! registered name via the IPainterManager.  Stays a
-			//! const-ref because the BRDF stores the painter as a
-			//! reference; full edit-rebind support is future work.
-			inline const IPainter& GetReflectance() const { return pReflectance; }
+			//! registered name via the IPainterManager.
+			inline const IPainter& GetReflectance() const { return *pReflectance; }
+
+			//! Rebind the reflectance painter.  Releases the prior
+			//! painter and addrefs the new one.  Caller (typically
+			//! `MaterialIntrospection::SetSlot` via SceneEditor) is
+			//! responsible for the cancel-and-park gate against the
+			//! render thread — the pointer swap itself is a single
+			//! word write, but the prior painter's `release()` could
+			//! free a painter a worker is mid-sample on.
+			void SetReflectance( const IPainter& reflectance );
 		};
 	}
 }

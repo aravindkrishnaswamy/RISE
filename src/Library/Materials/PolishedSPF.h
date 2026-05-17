@@ -27,10 +27,12 @@ namespace RISE
 		class PolishedSPF : public virtual ISPF, public virtual Reference
 		{
 		protected:
-			const IPainter&				Rd;					// Reflectance of diffuse substrate (color)
-			const IScalarPainter&		tau;				// Transmittance of the dielectric (physical scalar)
-			const IScalarPainter&		Nt;					// Index of refraction of dielectric coating (physical scalar)
-			const IScalarPainter&		scat;				// Scattering function (Phong cone or HG asymmetry — physical scalar)
+			//! Pointer storage so the interactive editor can rebind
+			//! via Set*.  See LambertianBRDF for the pattern.
+			const IPainter*				pRd;				// Reflectance of diffuse substrate (color)
+			const IScalarPainter*		pTau;				// Transmittance of the dielectric (physical scalar)
+			const IScalarPainter*		pNt;				// Index of refraction of dielectric coating (physical scalar)
+			const IScalarPainter*		pScat;				// Scattering function (Phong cone or HG asymmetry — physical scalar)
 			const bool					bHG;				// Use Henyey-Greenstein phase function scattering
 
 			virtual ~PolishedSPF( );
@@ -55,16 +57,26 @@ namespace RISE
 				const bool hg
 				);
 
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetDiffuseReflectance() const { return *pRd; }
+			inline const IScalarPainter& GetTransmittance()      const { return *pTau; }
+			inline const IScalarPainter& GetIOR()                const { return *pNt; }
+			inline const IScalarPainter& GetScattering()         const { return *pScat; }
+			void SetDiffuseReflectance( const IPainter& v );
+			void SetTransmittance( const IScalarPainter& v );
+			void SetIOR( const IScalarPainter& v );
+			void SetScattering( const IScalarPainter& v );
+
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
 				const IORStack& ior_stack
 				) const
 			{
 				SpecularInfo info;
-				const Scalar s = scat.GetValuesAt( ri ).v[0];
+				const Scalar s = pScat->GetValuesAt( ri ).v[0];
 				info.isSpecular = bHG ? (s >= 1.0) : (s >= 1000000.0);
 				info.canRefract = true;
-				info.ior = Nt.GetValuesAt( ri ).v[0];
+				info.ior = pNt->GetValuesAt( ri ).v[0];
 				info.valid = true;
 				return info;
 			}
@@ -76,10 +88,10 @@ namespace RISE
 				) const
 			{
 				SpecularInfo info;
-				const Scalar s = scat.GetValueAtNM( ri, nm );
+				const Scalar s = pScat->GetValueAtNM( ri, nm );
 				info.isSpecular = bHG ? (s >= 1.0) : (s >= 1000000.0);
 				info.canRefract = true;
-				info.ior = Nt.GetValueAtNM( ri, nm );
+				info.ior = pNt->GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
 			}

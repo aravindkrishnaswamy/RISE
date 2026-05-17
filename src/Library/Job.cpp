@@ -3552,7 +3552,15 @@ bool Job::AddGGXEmissiveMaterial(
 		&pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt, pEmissive, emissive_scale,
 		ResolveFresnelMode( fresnel_mode ), pTangentRotation );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool added = pMatManager->AddItem( pMaterial, name );
+	// Only mark as composed when AddItem actually registered the
+	// new material — a duplicate-name failure (existing direct
+	// material under the same name) would otherwise mark THAT
+	// pre-existing material as composed, falsely freezing its
+	// slot rows in the interactive editor.
+	if( added ) {
+		composedMaterialNames.insert( String( name ) );
+	}
 
 	safe_release( pMaterial );
 	safe_release( pAlphaX );
@@ -3561,7 +3569,7 @@ bool Job::AddGGXEmissiveMaterial(
 	safe_release( pExt );
 	safe_release( pTangentRotation );
 
-	return true;
+	return added;
 }
 
 //! AddPBRMetallicRoughnessMaterial: glTF-spec PBR material composition.
@@ -3815,7 +3823,12 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 		ResolveFresnelMode( "schlick_f0" ),
 		pTangentRotation );
 
-	pMatManager->AddItem( pMaterial, name );
+	const bool added = pMatManager->AddItem( pMaterial, name );
+	// Only mark as composed on successful registration — see the
+	// matching guard in AddGGXEmissiveMaterial for rationale.
+	if( added ) {
+		composedMaterialNames.insert( String( name ) );
+	}
 
 	safe_release( pMaterial );
 	safe_release( pAlphaXSc );
@@ -3824,7 +3837,7 @@ bool Job::AddPBRMetallicRoughnessMaterial(
 	safe_release( pExtSc );
 	safe_release( pTangentRotation );
 
-	return true;
+	return added;
 }
 
 bool Job::AddSheenMaterial(
@@ -5328,6 +5341,12 @@ void Job::EnumerateMediumNames( IEnumCallback<const char*>& cb ) const
 		const char* n = it->first.c_str();
 		if( !cb( n ) ) return;
 	}
+}
+
+bool Job::IsMaterialComposed( const char* name ) const
+{
+	if( !name ) return false;
+	return composedMaterialNames.find( String( name ) ) != composedMaterialNames.end();
 }
 
 //! Creates a CSG object
@@ -8467,7 +8486,18 @@ bool Job::RemoveMaterial(
 	const char* name								///< [in] Name of the material to remove
 	)
 {
-	return pMatManager->RemoveItem( name );
+	const bool removed = pMatManager->RemoveItem( name );
+	// Drop the composed-material marker even if removal failed:
+	// the manager's RemoveItem rejects unknown names, but if the
+	// caller happened to clear a stale marker for a name that was
+	// never registered (degenerate), we want the set + manager to
+	// stay in sync.  More importantly: a successful removal MUST
+	// erase the marker, or a subsequent direct-material add under
+	// the same name would inherit the read-only flag.
+	if( name ) {
+		composedMaterialNames.erase( String( name ) );
+	}
+	return removed;
 }
 
 //! Removes the given geometry from the scene

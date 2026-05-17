@@ -3301,6 +3301,75 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	unsigned int RISE_API_SceneEditController_SceneEpoch(
 		SceneEditController* p );
 
+	//! Phase 4b — per-category selection accessor.  Returns the
+	//! entity name picked in `category`'s panel section, or empty
+	//! when nothing is picked in that section.  Distinct from
+	//! `_GetSelectionName` which returns only the primary
+	//! (most-recently-set) selection: the multi-section panel uses
+	//! this to query each section's expansion + content
+	//! independently (an Object pick auto-fills the Material section
+	//! with the bound material name, so both sections report
+	//! non-empty selections after a single click).  Returns false on
+	//! null controller or bufLen == 0.
+	bool RISE_API_SceneEditController_GetSelectionForCategory(
+		SceneEditController* p, int category, char* buf, unsigned int bufLen );
+
+	//! Phase 4b — is `category`'s accordion section expanded?
+	//! Tracked SEPARATELY from the per-category selection so a
+	//! user can click a section header to expand it without yet
+	//! picking an entity (the dropdown shows the active-fallback;
+	//! Camera/Rasterizer/Film render their active entity's rows
+	//! beneath).  Returns false on null controller.
+	bool RISE_API_SceneEditController_IsSectionExpanded(
+		SceneEditController* p, int category );
+
+	//! Phase 4b — collapse `category`'s section: clears both the
+	//! expanded flag AND the per-category selection.  Does NOT
+	//! affect other sections (use `_SetSelection` with category
+	//! None for the panel-wide collapse).
+	bool RISE_API_SceneEditController_CollapseSection(
+		SceneEditController* p, int category );
+
+	//! Phase 4b — per-category property snapshot accessors.  Each
+	//! mirrors the matching single-tuple PropertyXxx call but takes
+	//! a `category` (mirroring `SceneEditCategory_*`) so multi-
+	//! section panels can read each expanded section's rows.
+	//! `_RefreshProperties` populates all per-category snapshots in
+	//! one pass; callers don't need to refresh per-category.
+	unsigned int RISE_API_SceneEditController_PropertyCountFor(
+		SceneEditController* p, int category );
+	bool RISE_API_SceneEditController_PropertyNameFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_PropertyValueFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_PropertyDescriptionFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+	int RISE_API_SceneEditController_PropertyKindFor(
+		SceneEditController* p, int category, unsigned int idx );
+	bool RISE_API_SceneEditController_PropertyEditableFor(
+		SceneEditController* p, int category, unsigned int idx );
+	unsigned int RISE_API_SceneEditController_PropertyPresetCountFor(
+		SceneEditController* p, int category, unsigned int idx );
+	bool RISE_API_SceneEditController_PropertyPresetLabelFor(
+		SceneEditController* p, int category, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_PropertyPresetValueFor(
+		SceneEditController* p, int category, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen );
+	bool RISE_API_SceneEditController_PropertyUnitLabelFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen );
+
+	//! Phase 4b — per-category SetProperty.  Routes the edit through
+	//! `category`'s per-section selection (matches the panel's
+	//! multi-section layout: editing a row in the Materials section
+	//! while Object is the primary still targets the right material).
+	bool RISE_API_SceneEditController_SetPropertyForCategory(
+		SceneEditController* p, int category, const char* name, const char* valueStr );
+
 	//! Clone the currently-active camera under a new name and switch
 	//! the scene to the new camera.  `proposedName` is the user's
 	//! choice; on duplicate the controller appends a numeric dedup

@@ -34,8 +34,13 @@
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IMaterialManager.h"
+#include "../Interfaces/IPainter.h"
+#include "../Interfaces/IPainterManager.h"
+#include "../Interfaces/IScalarPainter.h"
+#include "../Interfaces/IScalarPainterManager.h"
 #include "../Interfaces/IShader.h"
 #include "../Interfaces/IShaderManager.h"
+#include "MaterialIntrospection.h"
 #include "../Interfaces/ILight.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Interfaces/ILightManager.h"
@@ -53,6 +58,8 @@ SceneEditor::SceneEditor( IScenePriv& scene )
 : mScene( scene )
 , mMaterialManager( 0 )
 , mShaderManager( 0 )
+, mPainterManager( 0 )
+, mScalarPainterManager( 0 )
 , mJob( 0 )
 , mHistory()
 , mLastScope( Dirty_None )
@@ -867,6 +874,115 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		return true;
 	}
 
+	if( edit.op == SceneEdit::SetMaterialProperty )
+	{
+		// objectName carries the material's manager-registered name;
+		// propertyName the slot identifier ("reflectance", "ior",
+		// etc.); propertyValue the painter name (IPainter or
+		// IScalarPainter depending on slot type).  Caller (the
+		// controller's Material SetProperty branch) is responsible
+		// for cancel-and-park around this call — painter rebinds
+		// release the prior painter, which could free a painter a
+		// worker is mid-sample on.
+		if( !mMaterialManager ) return false;
+		IMaterial* mat = mMaterialManager->GetItem( edit.objectName.c_str() );
+		if( !mat ) return false;
+
+		// Composed materials reject up-front — see SceneEdit.h doc
+		// + IJob::IsMaterialComposed.  Without this gate, the
+		// MaterialIntrospection::SetSlot dispatch would succeed
+		// even though the rebinding would break the painter graph
+		// the composition relies on.
+		if( mJob && mJob->IsMaterialComposed( edit.objectName.c_str() ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor: SetMaterialProperty rejected on `%s` — composed material "
+				"(PBR-MR / GGX-Emissive); rebinding a slot would break the painter graph. "
+				"Edit upstream painters instead.",
+				edit.objectName.c_str() );
+			return false;
+		}
+
+		// Resolve the slot's pipe (IPainter vs IScalarPainter) by
+		// asking MaterialIntrospection what it expects.  The two
+		// pipes are NOT interchangeable per CLAUDE.md's IScalarPainter
+		// section — binding an IPainter into an IScalarPainter slot
+		// would silently JH-uplift inline-numeric values, breaking
+		// physical-scalar inputs.
+		const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, edit.propertyName );
+		if( cur.kind == MaterialSlotRef::None ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor: SetMaterialProperty rejected — `%s` has no slot named `%s`",
+				edit.objectName.c_str(), edit.propertyName.c_str() );
+			return false;
+		}
+
+		// Resolve the new painter name through the appropriate
+		// manager.  Capture prev binding via reverse-lookup BEFORE
+		// the mutation so undo can replay losslessly.  CRITICAL:
+		// reject the edit if the prior binding has no recoverable
+		// manager-registered name — an empty prev would push an
+		// undo entry that silently no-ops on the way back, leaving
+		// the user with no way to revert.  The GUI's introspection
+		// layer (MaterialIntrospection::BuildPainterSlot) already
+		// marks unregistered slots read-only so the GUI path can't
+		// reach here, but programmatic callers via
+		// RISE_API_SceneEditController_SetPropertyForCategory can
+		// still trigger this gate.
+		const IPainter*       newPainter       = 0;
+		const IScalarPainter* newScalarPainter = 0;
+		if( cur.kind == MaterialSlotRef::Painter ) {
+			if( !mPainterManager ) return false;
+			newPainter = mPainterManager->GetItem( edit.propertyValue.c_str() );
+			if( !newPainter ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: SetMaterialProperty rejected — painter `%s` is not registered",
+					edit.propertyValue.c_str() );
+				return false;
+			}
+			// Reverse-lookup the prior painter's name for undo.
+			edit.prevPropertyValue = FindManagerName( mPainterManager, cur.painter );
+			if( edit.prevPropertyValue.size() <= 1 ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: SetMaterialProperty on `%s.%s` rejected — "
+					"current painter has no manager-registered name, so undo "
+					"cannot restore the prior binding.  Register the painter "
+					"with IPainterManager before editing the slot.",
+					edit.objectName.c_str(), edit.propertyName.c_str() );
+				return false;
+			}
+		} else {  // ScalarPainter
+			if( !mScalarPainterManager ) return false;
+			newScalarPainter = mScalarPainterManager->GetItem( edit.propertyValue.c_str() );
+			if( !newScalarPainter ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: SetMaterialProperty rejected — scalar_painter `%s` is not registered",
+					edit.propertyValue.c_str() );
+				return false;
+			}
+			edit.prevPropertyValue = FindManagerName( mScalarPainterManager, cur.scalarPainter );
+			if( edit.prevPropertyValue.size() <= 1 ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: SetMaterialProperty on `%s.%s` rejected — "
+					"current scalar_painter has no manager-registered name, "
+					"so undo cannot restore the prior binding.  Register the "
+					"scalar_painter with IScalarPainterManager before editing.",
+					edit.objectName.c_str(), edit.propertyName.c_str() );
+				return false;
+			}
+		}
+
+		if( !MaterialIntrospection::SetSlot( *mat, edit.propertyName, newPainter, newScalarPainter ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor: SetMaterialProperty internal dispatch failed for `%s.%s`",
+				edit.objectName.c_str(), edit.propertyName.c_str() );
+			return false;
+		}
+
+		mLastScope = Dirty_Camera;   // no spatial-structure invalidation
+		mHistory.Push( edit );
+		return true;
+	}
+
 	if( edit.op == SceneEdit::SetLightProperty )
 	{
 		// objectName carries the light's manager name; propertyName
@@ -1174,6 +1290,35 @@ bool SceneEditor::Undo()
 		return true;
 	}
 
+	if( edit.op == SceneEdit::SetMaterialProperty )
+	{
+		// Inverse: rebind the slot to the captured prev painter
+		// name.  If prev is empty (e.g. the slot was previously
+		// bound to a painter that wasn't registered in the
+		// manager — unusual but possible for in-process-only
+		// painters), the undo silently no-ops since we have no
+		// painter pointer to restore.
+		if( !mMaterialManager ) return false;
+		IMaterial* mat = mMaterialManager->GetItem( edit.objectName.c_str() );
+		if( !mat ) return false;
+		if( edit.prevPropertyValue.size() <= 1 ) return true;
+
+		// Re-resolve the slot's pipe to pick the right manager for
+		// the prev-name lookup.  (We don't store the pipe kind in
+		// the SceneEdit struct; the material's slot type is stable
+		// across the op, so re-querying is reliable.)
+		const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, edit.propertyName );
+		if( cur.kind == MaterialSlotRef::Painter && mPainterManager ) {
+			const IPainter* prev = mPainterManager->GetItem( edit.prevPropertyValue.c_str() );
+			if( prev ) MaterialIntrospection::SetSlot( *mat, edit.propertyName, prev, 0 );
+		} else if( cur.kind == MaterialSlotRef::ScalarPainter && mScalarPainterManager ) {
+			const IScalarPainter* prev = mScalarPainterManager->GetItem( edit.prevPropertyValue.c_str() );
+			if( prev ) MaterialIntrospection::SetSlot( *mat, edit.propertyName, 0, prev );
+		}
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
 	if( edit.op == SceneEdit::SetLightProperty )
 	{
 		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
@@ -1359,6 +1504,26 @@ bool SceneEditor::Redo()
 			return false;
 		}
 		mJob->SetActiveCamera( edit.objectName.c_str() );
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetMaterialProperty )
+	{
+		// Re-apply propertyValue (the post-edit binding).  Same
+		// dispatch shape as the Undo branch but using the new
+		// painter name instead of the prev one.
+		if( !mMaterialManager ) return false;
+		IMaterial* mat = mMaterialManager->GetItem( edit.objectName.c_str() );
+		if( !mat ) return false;
+		const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, edit.propertyName );
+		if( cur.kind == MaterialSlotRef::Painter && mPainterManager ) {
+			const IPainter* p = mPainterManager->GetItem( edit.propertyValue.c_str() );
+			if( p ) MaterialIntrospection::SetSlot( *mat, edit.propertyName, p, 0 );
+		} else if( cur.kind == MaterialSlotRef::ScalarPainter && mScalarPainterManager ) {
+			const IScalarPainter* p = mScalarPainterManager->GetItem( edit.propertyValue.c_str() );
+			if( p ) MaterialIntrospection::SetSlot( *mat, edit.propertyName, 0, p );
+		}
 		mLastScope = Dirty_Camera;
 		return true;
 	}

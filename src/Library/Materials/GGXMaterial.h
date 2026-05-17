@@ -99,6 +99,26 @@ namespace RISE
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return pEmitter; };
+
+			//! Read-back + rebind for the interactive editor.  Each
+			//! `Set*` hits BOTH the BRDF and the SPF in lockstep so
+			//! the shaded value and scattering distribution stay in
+			//! agreement.  Composed materials (PBR-MR, GGX-Emissive)
+			//! are gated upstream via IJob::IsMaterialComposed — the
+			//! editor refuses to call SetSlot on them so this Material
+			//! doesn't need to gate per-slot itself.
+			inline const IPainter&       GetDiffuse()    const { return pBRDF->GetDiffuse(); }
+			inline const IPainter&       GetSpecular()   const { return pBRDF->GetSpecular(); }
+			inline const IScalarPainter& GetAlphaX()     const { return pBRDF->GetAlphaX(); }
+			inline const IScalarPainter& GetAlphaY()     const { return pBRDF->GetAlphaY(); }
+			inline const IScalarPainter& GetIOR()        const { return pBRDF->GetIOR(); }
+			inline const IScalarPainter& GetExtinction() const { return pBRDF->GetExtinction(); }
+			inline void SetDiffuse( const IPainter& v )         { pBRDF->SetDiffuse( v );    pSPF->SetDiffuse( v ); }
+			inline void SetSpecular( const IPainter& v )        { pBRDF->SetSpecular( v );   pSPF->SetSpecular( v ); }
+			inline void SetAlphaX( const IScalarPainter& v )    { pBRDF->SetAlphaX( v );     pSPF->SetAlphaX( v ); }
+			inline void SetAlphaY( const IScalarPainter& v )    { pBRDF->SetAlphaY( v );     pSPF->SetAlphaY( v ); }
+			inline void SetIOR( const IScalarPainter& v )       { pBRDF->SetIOR( v );        pSPF->SetIOR( v ); }
+			inline void SetExtinction( const IScalarPainter& v ){ pBRDF->SetExtinction( v ); pSPF->SetExtinction( v ); }
 		};
 	}
 }

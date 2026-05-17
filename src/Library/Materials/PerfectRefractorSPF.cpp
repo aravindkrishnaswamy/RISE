@@ -23,17 +23,31 @@ PerfectRefractorSPF::PerfectRefractorSPF(
 	const IPainter& ref,
 	const IScalarPainter& Nt_
 	) :
-  refractivity( ref ),
-  Nt( Nt_ )
+  pRefractivity( &ref ),
+  pNt( &Nt_ )
 {
-	refractivity.addref();
-	Nt.addref();
+	pRefractivity->addref();
+	pNt->addref();
 }
 
 PerfectRefractorSPF::~PerfectRefractorSPF( )
 {
-	refractivity.release();
-	Nt.release();
+	safe_release( pRefractivity );
+	safe_release( pNt );
+}
+
+void PerfectRefractorSPF::SetRefractivity( const IPainter& ref )
+{
+	ref.addref();
+	safe_release( pRefractivity );
+	pRefractivity = &ref;
+}
+
+void PerfectRefractorSPF::SetIOR( const IScalarPainter& Nt_ )
+{
+	Nt_.addref();
+	safe_release( pNt );
+	pNt = &Nt_;
 }
 
 void PerfectRefractorSPF::DoSingleRGBComponent( 
@@ -107,9 +121,9 @@ void PerfectRefractorSPF::DoSingleRGBComponent(
 	if( ref < 1.0 ) {
 		specular.ray.Set( ri.ptIntersection, vRefracted );
 		if( oneofthree ) {
-			specular.kray[oneofthree-1] = refractivity.GetColor(ri)[oneofthree-1] * ((1.0-ref));
+			specular.kray[oneofthree-1] = pRefractivity->GetColor(ri)[oneofthree-1] * ((1.0-ref));
 		} else {
-			specular.kray = refractivity.GetColor(ri) * (1.0-ref);
+			specular.kray = pRefractivity->GetColor(ri) * (1.0-ref);
 		}
 
 		scattered.AddScatteredRay( specular );
@@ -136,11 +150,11 @@ void PerfectRefractorSPF::Scatter(
 {
 	Scalar		cosine = Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() );
 
-	const ScalarTriple ior = Nt.GetValuesAt(ri);
+	const ScalarTriple ior = pNt->GetValuesAt(ri);
 
 	// Dispersion is now an explicit static-property report from the
 	// IScalarPainter — no FP-fuzzy compare needed.
-	if( !Nt.HasPerChannelVariation() ) {
+	if( !pNt->HasPerChannelVariation() ) {
 		DoSingleRGBComponent( ri, scattered, ior_stack, false, ior.v[0], cosine );
 	} else {
 		for( int i=0; i<3; i++ ) {
@@ -169,7 +183,7 @@ void PerfectRefractorSPF::ScatterNM(
 
 	Vector3	vRefracted = ri.ray.Dir();
 
-	Scalar newIOR = Nt.GetValueAtNM(ri,nm);
+	Scalar newIOR = pNt->GetValueAtNM(ri,nm);
 
 	// Use the IOR stack as the authoritative source for inside/outside
 	// determination when available (see DoSingleRGBComponent for details)
@@ -218,7 +232,7 @@ void PerfectRefractorSPF::ScatterNM(
 
 	if( ref < 1.0 ) {
 		specular.ray.Set( ri.ptIntersection, vRefracted );
-		specular.krayNM = refractivity.GetColorNM(ri,nm) * (1.0-ref);
+		specular.krayNM = pRefractivity->GetColorNM(ri,nm) * (1.0-ref);
 
 		scattered.AddScatteredRay( specular );
 	}

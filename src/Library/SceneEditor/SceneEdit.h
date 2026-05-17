@@ -190,6 +190,31 @@ namespace RISE
 			//! `RemoveCamera(newName)` + `SetActiveCamera(prev)`.
 			AddCamera,
 
+			//! Material edit.  `objectName` carries the material's
+			//! manager-registered name.  `propertyName` carries the
+			//! slot identifier (matches the chunk parameter name —
+			//! "reflectance", "ior", "alphax", "diffuse", etc.).
+			//! `propertyValue` carries the painter name (IPainter or
+			//! IScalarPainter depending on slot type — the per-
+			//! material dispatcher in `SceneEditor::Apply` knows
+			//! which manager to consult).  `prevPropertyValue` is
+			//! the previously-bound painter name, captured via the
+			//! material's Get accessor + reverse-lookup through the
+			//! matching manager.
+			//!
+			//! Forward path: routes through per-material `SetXxx`
+			//! virtual setters (added across all 25 material types
+			//! in Phase 4) which release the prior painter, addref
+			//! the new one, and bind it on the BRDF / SPF / Material.
+			//! No spatial-structure invalidation — material edits are
+			//! pointer swaps the render thread reads coherently
+			//! between passes (with cancel-and-park at the
+			//! controller).  Composed materials (PBRMetallicRoughness,
+			//! GGXEmissive — composed via painter graph) are rejected
+			//! up-front because rebinding a slot would break the
+			//! graph; the rejection comes via `IJob::IsMaterialComposed`.
+			SetMaterialProperty,
+
 			// Composite markers — bracket a user drag so undo
 			// collapses one drag into one history entry.
 			CompositeBegin,         ///< objectName = label for UI

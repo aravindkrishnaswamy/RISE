@@ -27,12 +27,20 @@ namespace RISE
 		class PerfectReflectorSPF : public virtual ISPF, public virtual Reference
 		{
 		protected:
-			const IPainter&		reflectivity;
+			//! Pointer (not reference) so the interactive editor can
+			//! rebind via `SetReflectance`.  See LambertianBRDF for
+			//! the matching pattern + lifetime contract.
+			const IPainter*		pReflectivity;
 
 			virtual ~PerfectReflectorSPF();
 
 		public:
 			PerfectReflectorSPF( const IPainter& R_ );
+
+			//! Read-back + rebind for the interactive editor's
+			//! MaterialIntrospection.
+			inline const IPainter& GetReflectance() const { return *pReflectivity; }
+			void SetReflectance( const IPainter& R );
 
 			SpecularInfo GetSpecularInfo(
 				const RayIntersectionGeometric& ri,
@@ -47,7 +55,7 @@ namespace RISE
 				// applies the mirror's actual colour.  Without this, the SMS
 				// reflective-caustic path multiplied by the default white
 				// (1,1,1) and lost the orange tint of e.g. a metallic ring.
-				info.attenuation = reflectivity.GetColor( ri );
+				info.attenuation = pReflectivity->GetColor( ri );
 				info.valid = true;
 				return info;
 			}

@@ -756,6 +756,90 @@ private:
     return ok;
 }
 
+#pragma mark - Phase 4b per-category accessors
+
+- (NSString *)selectionNameFor:(RISEViewportCategory)category {
+    if (!_controller) return @"";
+    char buf[128] = {0};
+    if (!RISE_API_SceneEditController_GetSelectionForCategory(
+            _controller, (int)category, buf, sizeof(buf))) {
+        return @"";
+    }
+    NSString *s = [NSString stringWithUTF8String:buf];
+    return s ?: @"";
+}
+
+- (BOOL)isSectionExpandedFor:(RISEViewportCategory)category {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_IsSectionExpanded(_controller, (int)category) ? YES : NO;
+}
+
+- (void)collapseSectionFor:(RISEViewportCategory)category {
+    if (!_controller) return;
+    RISE_API_SceneEditController_CollapseSection(_controller, (int)category);
+}
+
+- (NSArray<RISEViewportProperty *> *)propertySnapshotFor:(RISEViewportCategory)category {
+    if (!_controller) return @[];
+    const int cat = (int)category;
+    const unsigned int n = RISE_API_SceneEditController_PropertyCountFor(_controller, cat);
+    NSMutableArray<RISEViewportProperty *> *out = [NSMutableArray arrayWithCapacity:n];
+    char nameBuf[128];
+    char valBuf[256];
+    char descBuf[512];
+    char presetLabelBuf[256];
+    char presetValueBuf[256];
+    char unitLabelBuf[64];
+    for (unsigned int i = 0; i < n; ++i) {
+        RISE_API_SceneEditController_PropertyNameFor(_controller, cat, i, nameBuf, sizeof(nameBuf));
+        RISE_API_SceneEditController_PropertyValueFor(_controller, cat, i, valBuf, sizeof(valBuf));
+        RISE_API_SceneEditController_PropertyDescriptionFor(_controller, cat, i, descBuf, sizeof(descBuf));
+        const int kind = RISE_API_SceneEditController_PropertyKindFor(_controller, cat, i);
+        const bool editable = RISE_API_SceneEditController_PropertyEditableFor(_controller, cat, i);
+
+        const unsigned int numPresets = RISE_API_SceneEditController_PropertyPresetCountFor(_controller, cat, i);
+        NSMutableArray<RISEViewportPropertyPreset *> *presets =
+            [NSMutableArray arrayWithCapacity:numPresets];
+        for (unsigned int j = 0; j < numPresets; ++j) {
+            if (!RISE_API_SceneEditController_PropertyPresetLabelFor(_controller, cat, i, j, presetLabelBuf, sizeof(presetLabelBuf))) continue;
+            if (!RISE_API_SceneEditController_PropertyPresetValueFor(_controller, cat, i, j, presetValueBuf, sizeof(presetValueBuf))) continue;
+            NSString *label = [NSString stringWithUTF8String:presetLabelBuf];
+            NSString *value = [NSString stringWithUTF8String:presetValueBuf];
+            if (!label || !value) continue;
+            [presets addObject:[[RISEViewportPropertyPreset alloc]
+                                initWithLabel:label value:value]];
+        }
+
+        NSString *unitLabel = @"";
+        if( RISE_API_SceneEditController_PropertyUnitLabelFor(_controller, cat, i, unitLabelBuf, sizeof(unitLabelBuf)) ) {
+            NSString *u = [NSString stringWithUTF8String:unitLabelBuf];
+            if( u ) unitLabel = u;
+        }
+
+        RISEViewportProperty *p = [[RISEViewportProperty alloc] initWithName:[NSString stringWithUTF8String:nameBuf]
+                                                                       value:[NSString stringWithUTF8String:valBuf]
+                                                                  describing:[NSString stringWithUTF8String:descBuf]
+                                                                        kind:kind
+                                                                    editable:editable ? YES : NO
+                                                                     presets:presets
+                                                                   unitLabel:unitLabel];
+        [out addObject:p];
+    }
+    return out;
+}
+
+- (BOOL)setPropertyForCategory:(RISEViewportCategory)category
+                          name:(NSString *)name
+                         value:(NSString *)value {
+    if (!_controller || !name || !value) return NO;
+    BOOL ok = RISE_API_SceneEditController_SetPropertyForCategory(
+        _controller, (int)category, [name UTF8String], [value UTF8String]) ? YES : NO;
+    if (ok) {
+        [self refreshProperties];
+    }
+    return ok;
+}
+
 @end
 
 @implementation RISEViewportProperty {

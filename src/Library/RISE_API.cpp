@@ -6535,4 +6535,131 @@ namespace RISE
 		const String prop = String( proposedName ? proposedName : "" );
 		return p->CloneActiveCamera( prop, outName, outLen );
 	}
+
+	// -------------------------------------------------------------------
+	// Phase 4b — per-category selection + per-category property accessors.
+	// Each is a thin wrapper around the matching SceneEditController
+	// method.  The buffer-handling pattern follows the rest of the
+	// SceneEditController C-API: CopyToBuf-style truncation with null-
+	// terminator, returns false on null controller / null buf / bufLen 0.
+	// -------------------------------------------------------------------
+
+	bool RISE_API_SceneEditController_GetSelectionForCategory(
+		SceneEditController* p, int category, char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		const SceneEditController::Category cat =
+			static_cast<SceneEditController::Category>( category );
+		CopyToBuf( p->GetSelectionNameForCategory( cat ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_IsSectionExpanded(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return false;
+		return p->IsSectionExpanded( static_cast<SceneEditController::Category>( category ) );
+	}
+
+	bool RISE_API_SceneEditController_CollapseSection(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return false;
+		p->CollapseSection( static_cast<SceneEditController::Category>( category ) );
+		return true;
+	}
+
+	unsigned int RISE_API_SceneEditController_PropertyCountFor(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return 0;
+		return p->PropertyCountFor( static_cast<SceneEditController::Category>( category ) );
+	}
+
+	bool RISE_API_SceneEditController_PropertyNameFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyNameFor( static_cast<SceneEditController::Category>( category ), idx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyValueFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyValueFor( static_cast<SceneEditController::Category>( category ), idx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyDescriptionFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyDescriptionFor( static_cast<SceneEditController::Category>( category ), idx ), buf, bufLen );
+		return true;
+	}
+
+	int RISE_API_SceneEditController_PropertyKindFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		if( !p ) return -1;
+		return p->PropertyKindFor( static_cast<SceneEditController::Category>( category ), idx );
+	}
+
+	bool RISE_API_SceneEditController_PropertyEditableFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		if( !p ) return false;
+		return p->PropertyEditableFor( static_cast<SceneEditController::Category>( category ), idx );
+	}
+
+	unsigned int RISE_API_SceneEditController_PropertyPresetCountFor(
+		SceneEditController* p, int category, unsigned int idx )
+	{
+		if( !p ) return 0;
+		return p->PropertyPresetCountFor( static_cast<SceneEditController::Category>( category ), idx );
+	}
+
+	bool RISE_API_SceneEditController_PropertyPresetLabelFor(
+		SceneEditController* p, int category, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyPresetLabelFor(
+			static_cast<SceneEditController::Category>( category ), idx, presetIdx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyPresetValueFor(
+		SceneEditController* p, int category, unsigned int idx, unsigned int presetIdx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyPresetValueFor(
+			static_cast<SceneEditController::Category>( category ), idx, presetIdx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_PropertyUnitLabelFor(
+		SceneEditController* p, int category, unsigned int idx,
+		char* buf, unsigned int bufLen )
+	{
+		if( !p || !buf || bufLen == 0 ) return false;
+		CopyToBuf( p->PropertyUnitLabelFor(
+			static_cast<SceneEditController::Category>( category ), idx ), buf, bufLen );
+		return true;
+	}
+
+	bool RISE_API_SceneEditController_SetPropertyForCategory(
+		SceneEditController* p, int category, const char* name, const char* valueStr )
+	{
+		if( !p || !name || !valueStr ) return false;
+		return p->SetPropertyForCategory(
+			static_cast<SceneEditController::Category>( category ),
+			String( name ), String( valueStr ) );
+	}
 }

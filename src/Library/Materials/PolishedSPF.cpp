@@ -28,24 +28,52 @@ PolishedSPF::PolishedSPF(
 	const IScalarPainter& s,
 	const bool hg
 	) :
-  Rd( Rd_ ),
-  tau( tau_ ),
-  Nt( Nt_ ),
-  scat( s ),
+  pRd( &Rd_ ),
+  pTau( &tau_ ),
+  pNt( &Nt_ ),
+  pScat( &s ),
   bHG( hg )
 {
-	Rd.addref();
-	tau.addref();
-	Nt.addref();
-	scat.addref();
+	pRd->addref();
+	pTau->addref();
+	pNt->addref();
+	pScat->addref();
 }
 
 PolishedSPF::~PolishedSPF( )
 {
-	Rd.release();
-	tau.release();
-	Nt.release();
-	scat.release();
+	safe_release( pRd );
+	safe_release( pTau );
+	safe_release( pNt );
+	safe_release( pScat );
+}
+
+void PolishedSPF::SetDiffuseReflectance( const IPainter& v )
+{
+	v.addref();
+	safe_release( pRd );
+	pRd = &v;
+}
+
+void PolishedSPF::SetTransmittance( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pTau );
+	pTau = &v;
+}
+
+void PolishedSPF::SetIOR( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pNt );
+	pNt = &v;
+}
+
+void PolishedSPF::SetScattering( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pScat );
+	pScat = &v;
 }
 
 Scalar PolishedSPF::GenerateScatteredRayFromPolish(
@@ -131,9 +159,9 @@ void PolishedSPF::Scatter(
 	dielectric.type = ScatteredRay::eRayReflection;
 	RISEPel Rs;
 
-	const ScalarTriple scattering = scat.GetValuesAt(ri);
-	const ScalarTriple ior        = Nt.GetValuesAt(ri);
-	const ScalarTriple tauVals    = tau.GetValuesAt(ri);
+	const ScalarTriple scattering = pScat->GetValuesAt(ri);
+	const ScalarTriple ior        = pNt->GetValuesAt(ri);
+	const ScalarTriple tauVals    = pTau->GetValuesAt(ri);
 
 	const bool bBackface = Vector3Ops::Dot( ri.vGeomNormal, ri.ray.Dir() ) > 0;
 	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
@@ -143,7 +171,7 @@ void PolishedSPF::Scatter(
 	// report; tau's per-channel variation alone doesn't trigger
 	// dispersion because tau is multiplicative attenuation rather
 	// than a wavelength-bound dispersion source.
-	const bool disperse = scat.HasPerChannelVariation() || Nt.HasPerChannelVariation();
+	const bool disperse = pScat->HasPerChannelVariation() || pNt->HasPerChannelVariation();
 	if( !disperse )
 	{
 		Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(sampler.Get1D(),sampler.Get1D()), scattering.v[0], ior.v[0], ior_stack );
@@ -174,7 +202,7 @@ void PolishedSPF::Scatter(
 		diffuse.isDelta = false;
 
 		// Generate a reflected ray with a cosine distribution
-		diffuse.kray = Rd.GetColor(ri) * (1.0-Rs);
+		diffuse.kray = pRd->GetColor(ri) * (1.0-Rs);
  		diffuse.ray.Set(
 			ri.ptIntersection,
 			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(sampler.Get1D(),sampler.Get1D()) )
@@ -214,8 +242,8 @@ void PolishedSPF::ScatterNM(
 	const Vector3 n = bBackface ? -ri.vNormal : ri.vNormal;
 	const Vector3 rv = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
-	Scalar Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(sampler.Get1D(),sampler.Get1D()), scat.GetValueAtNM(ri,nm), Nt.GetValueAtNM(ri,nm), ior_stack );
-	dielectric.krayNM = tau.GetValueAtNM(ri,nm) * Rs;
+	Scalar Rs = GenerateScatteredRayFromPolish( dielectric, n, rv, ri, Point2(sampler.Get1D(),sampler.Get1D()), pScat->GetValueAtNM(ri,nm), pNt->GetValueAtNM(ri,nm), ior_stack );
+	dielectric.krayNM = pTau->GetValueAtNM(ri,nm) * Rs;
 
 
 	if( Vector3Ops::Dot( dielectric.ray.Dir(), ri.onb.w() ) > 0.0 ) {
@@ -229,7 +257,7 @@ void PolishedSPF::ScatterNM(
 		diffuse.isDelta = false;
 
 		// Generate a reflected ray with a cosine distribution
-		diffuse.krayNM = Rd.GetColorNM(ri,nm) * (1.0-Rs);
+		diffuse.krayNM = pRd->GetColorNM(ri,nm) * (1.0-Rs);
 		diffuse.ray.Set(
 			ri.ptIntersection,
 			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(sampler.Get1D(),sampler.Get1D()) )
@@ -269,17 +297,17 @@ Scalar PolishedSPF::EvaluateKrayNM(
 	Vector3 vRefracted = ri.ray.Dir();
 	Scalar Rs = 0.0;
 	const Scalar iorTop = ior_stack.top();
-	const Scalar iorCoat = Nt.GetValueAtNM( ri, nm );
+	const Scalar iorCoat = pNt->GetValueAtNM( ri, nm );
 	if( Optics::CalculateRefractedRay( n, iorTop, iorCoat, vRefracted ) ) {
 		Rs = Optics::CalculateDielectricReflectance(
 			ri.ray.Dir(), vRefracted, n, iorTop, iorCoat );
 	}
 
 	if( rayType == ScatteredRay::eRayReflection ) {
-		return tau.GetValueAtNM( ri, nm ) * Rs;
+		return pTau->GetValueAtNM( ri, nm ) * Rs;
 	}
 	else if( rayType == ScatteredRay::eRayDiffuse ) {
-		return Rd.GetColorNM( ri, nm ) * ( 1.0 - Rs );
+		return pRd->GetColorNM( ri, nm ) * ( 1.0 - Rs );
 	}
 
 	return -1;
@@ -361,8 +389,8 @@ Scalar PolishedSPF::Pdf(
 	const IORStack& ior_stack
 	) const
 {
-	const ScalarTriple s = scat.GetValuesAt(ri);
-	const ScalarTriple ior_val = Nt.GetValuesAt(ri);
+	const ScalarTriple s = pScat->GetValuesAt(ri);
+	const ScalarTriple ior_val = pNt->GetValuesAt(ri);
 	// Use average values across channels
 	const Scalar s_val = (s.v[0] + s.v[1] + s.v[2]) / 3.0;
 	const Scalar ior_avg = (ior_val.v[0] + ior_val.v[1] + ior_val.v[2]) / 3.0;
@@ -390,9 +418,9 @@ Scalar PolishedSPF::Pdf(
 	// specular kray = tau * Rs, diffuse kray = Rd * (1 - Rs).  tau
 	// is a per-wavelength scalar; max over its three channels is
 	// the right proxy for spectral magnitude.
-	const ScalarTriple tauVals = tau.GetValuesAt(ri);
+	const ScalarTriple tauVals = pTau->GetValuesAt(ri);
 	const Scalar wSpec = r_max( r_max( tauVals.v[0], tauVals.v[1] ), tauVals.v[2] ) * Rs;
-	const Scalar wDiff = ColorMath::MaxValue( Rd.GetColor(ri) * (1.0 - Rs) );
+	const Scalar wDiff = ColorMath::MaxValue( pRd->GetColor(ri) * (1.0 - Rs) );
 
 	return PolishedPdf( ri, wo, s_val, ior_avg, bHG, ior_stack, wSpec, wDiff );
 }
@@ -404,8 +432,8 @@ Scalar PolishedSPF::PdfNM(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar s_val = scat.GetValueAtNM(ri,nm);
-	const Scalar ior_val = Nt.GetValueAtNM(ri,nm);
+	const Scalar s_val = pScat->GetValueAtNM(ri,nm);
+	const Scalar ior_val = pNt->GetValueAtNM(ri,nm);
 
 	// Compute Fresnel reflectance for lobe weighting
 	// Side-of-surface decision uses the GEOMETRIC normal (front/back is
@@ -427,8 +455,8 @@ Scalar PolishedSPF::PdfNM(
 	}
 
 	// Weight by krayNM magnitude: specular = tau*Rs, diffuse = Rd*(1-Rs)
-	const Scalar wSpec = fabs( tau.GetValueAtNM(ri,nm) * Rs );
-	const Scalar wDiff = fabs( Rd.GetColorNM(ri,nm) * (1.0 - Rs) );
+	const Scalar wSpec = fabs( pTau->GetValueAtNM(ri,nm) * Rs );
+	const Scalar wDiff = fabs( pRd->GetColorNM(ri,nm) * (1.0 - Rs) );
 
 	return PolishedPdf( ri, wo, s_val, ior_val, bHG, ior_stack, wSpec, wDiff );
 }

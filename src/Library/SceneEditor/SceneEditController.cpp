@@ -87,6 +87,7 @@ constexpr int          SceneEditController::kFastMs;
 constexpr int          SceneEditController::kRefineIdleMs;
 constexpr int          SceneEditController::kRefineWakeMs;
 constexpr int          SceneEditController::kScrubWatchdogMs;
+constexpr int          SceneEditController::kNumCategories;
 
 // Process-global epoch counter — incremented on every controller
 // construction so each new controller starts at a unique mSceneEpoch
@@ -108,6 +109,10 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mTool( Tool::Select )
 , mSelectionCategory( Category::None )
 , mSelectionName()
+// `mSectionExpanded` and `mSelectionByCategory` are value-init'd via
+// default-member-init (bool defaults to false; String defaults to
+// empty) so they need no explicit ctor entry.  Listed here as a
+// documentation reminder.
 , mSceneEpoch( NextEpoch().fetch_add( 1, std::memory_order_acq_rel ) )
 , mLastPx( 0, 0 )
 , mPointerDown( false )
@@ -136,6 +141,12 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 	{
 		mInteractiveRasterizer->addref();
 	}
+	// Per-category arrays — bool array members are NOT
+	// default-init'd to false (would be indeterminate otherwise).
+	// String members default-init correctly to empty.
+	for( int i = 0; i < kNumCategories; ++i ) {
+		mSectionExpanded[i] = false;
+	}
 	// Phase 3: install material + shader manager hooks so
 	// SetObjectMaterial / SetObjectShader edits can resolve names
 	// at apply time.  Test harnesses that build a SceneEditor
@@ -143,6 +154,12 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 	// degrades to "transform / camera ops only" mode.
 	mEditor.SetMaterialManager( mJob.GetMaterials() );
 	mEditor.SetShaderManager( mJob.GetShaders() );
+	// Phase 4: plumb the painter managers so SceneEdit::
+	// SetMaterialProperty can resolve painter-name strings (the
+	// panel's painter-rebind value) into the actual IPainter*
+	// / IScalarPainter* the material expects on its slot.
+	mEditor.SetPainterManager( mJob.GetPainters() );
+	mEditor.SetScalarPainterManager( mJob.GetScalarPainters() );
 	// Plumb IJob so SceneEdit::SetObjectInteriorMedium can resolve
 	// medium names through IJob::GetMedium and recover prev-state via
 	// IJob::EnumerateMediumNames.  IJobPriv inherits IJob virtually,
@@ -358,15 +375,14 @@ void SceneEditController::OnPointerDown( const Point2& px )
 		// (pre-accordion) panel auto-flipped to Camera mode whenever
 		// one of these tools was active; the accordion's selection-
 		// driven panel mode preserves that UX by writing a Camera
-		// selection here.  Empty entityName when no camera is
-		// registered (degenerate scene) — the section still opens but
-		// the property panel falls back to the active camera via
-		// RefreshProperties' GetCamera() fallback.
+		// selection here.  Phase 4b: route through SetSelection
+		// (empty name) so mSectionExpanded[Camera] and
+		// mSelectionByCategory[Camera] update along with the
+		// primary tuple.  Empty-name avoids the cancel-and-park +
+		// SetActiveCamera round-trip — the Camera section opens
+		// with the active camera as the dropdown's fallback.
 		if( mSelectionCategory != Category::Camera ) {
-			const IScene* scene = mJob.GetScene();
-			const std::string activeName = scene ? std::string( scene->GetActiveCameraName().c_str() ) : std::string();
-			mSelectionCategory = Category::Camera;
-			mSelectionName     = activeName.empty() ? String() : String( activeName.c_str() );
+			SetSelection( Category::Camera, String() );
 		}
 		break;
 
@@ -721,6 +737,14 @@ void SceneEditController::Undo()
 		// behaviour and shows the active-camera fallback rows.
 		if( !SelectionStillResolves( mJob, mSelectionCategory, mSelectionName ) ) {
 			mSelectionName = String();
+			// Clear the per-cat entry too so the panel's per-section
+			// state stays consistent with the primary.  Don't touch
+			// mSectionExpanded — the user's section remains open
+			// with no entity picked (matches "header click" UX).
+			const int idx = static_cast<int>( mSelectionCategory );
+			if( idx > 0 && idx < kNumCategories ) {
+				mSelectionByCategory[idx] = String();
+			}
 		}
 		mEditPending.store( true, std::memory_order_release );
 		// Bump epoch — Undo of AddCamera removes an entity, which
@@ -751,6 +775,14 @@ void SceneEditController::Redo()
 		// resolution typically succeeds.)
 		if( !SelectionStillResolves( mJob, mSelectionCategory, mSelectionName ) ) {
 			mSelectionName = String();
+			// Clear the per-cat entry too so the panel's per-section
+			// state stays consistent with the primary.  Don't touch
+			// mSectionExpanded — the user's section remains open
+			// with no entity picked (matches "header click" UX).
+			const int idx = static_cast<int>( mSelectionCategory );
+			if( idx > 0 && idx < kNumCategories ) {
+				mSelectionByCategory[idx] = String();
+			}
 		}
 		mEditPending.store( true, std::memory_order_release );
 		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
@@ -1011,10 +1043,93 @@ String SceneEditController::CategoryActiveName( Category cat ) const
 	}
 }
 
+namespace {
+
+// Look up the material name currently bound to the named object.
+// Used by `SetSelection` to auto-fill the Materials section when an
+// Object is picked.  Returns empty when the object isn't registered,
+// has no material bound, or its material isn't registered with the
+// manager under a recoverable name (the latter is degenerate; would
+// require a programmatic AssignMaterial with an unregistered IMaterial*).
+String FindObjectMaterialName( const IJobPriv& job, const String& objName )
+{
+	if( objName.size() <= 1 ) return String();
+	const IScene* scene = const_cast<IJobPriv&>( job ).GetScene();
+	if( !scene ) return String();
+	const IObjectManager* objs = scene->GetObjects();
+	if( !objs ) return String();
+	const IObject* obj = const_cast<IObjectManager*>( objs )->GetItem( objName.c_str() );
+	if( !obj ) return String();
+	const IMaterial* mat = obj->GetMaterial();
+	if( !mat ) return String();
+	IMaterialManager* mats = const_cast<IJobPriv&>( job ).GetMaterials();
+	if( !mats ) return String();
+	struct Cb : public IEnumCallback<const char*> {
+		IMaterialManager*    mgr;
+		const IMaterial*     target;
+		String               found;
+		bool operator()( const char* const& name ) override {
+			if( mgr->GetItem( name ) == target ) { found = String( name ); return false; }
+			return true;
+		}
+	};
+	Cb cb;
+	cb.mgr    = mats;
+	cb.target = mat;
+	mats->EnumerateItemNames( cb );
+	return cb.found;
+}
+
+}  // namespace
+
+String SceneEditController::GetSelectionNameForCategory( Category cat ) const
+{
+	const int i = static_cast<int>( cat );
+	if( i < 0 || i >= kNumCategories ) return String();
+	return mSelectionByCategory[i];
+}
+
+bool SceneEditController::IsSectionExpanded( Category cat ) const
+{
+	const int i = static_cast<int>( cat );
+	if( i <= 0 || i >= kNumCategories ) return false;   // None (=0) is never "expanded"
+	return mSectionExpanded[i];
+}
+
+void SceneEditController::CollapseSection( Category cat )
+{
+	const int i = static_cast<int>( cat );
+	if( i <= 0 || i >= kNumCategories ) return;   // None is a no-op
+	mSectionExpanded[i] = false;
+	mSelectionByCategory[i] = String();
+	// If the collapsed section was the primary, fall back to any
+	// other still-expanded section with a non-empty selection; if
+	// no remaining candidate, drop to None.  This keeps the
+	// "primary tuple" coherent for callers that use GetSelectionCategory.
+	if( mSelectionCategory == cat ) {
+		mSelectionCategory = Category::None;
+		mSelectionName     = String();
+		for( int j = 1; j < kNumCategories; ++j ) {
+			if( mSectionExpanded[j] && mSelectionByCategory[j].size() > 1 ) {
+				mSelectionCategory = static_cast<Category>( j );
+				mSelectionName     = mSelectionByCategory[j];
+				break;
+			}
+		}
+	}
+}
+
 bool SceneEditController::SetSelection( Category cat, const String& entityName )
 {
-	// Category::None: clear the selection entirely.  No side effect.
+	// Category::None: clear every per-category selection + the
+	// expanded flags AND the primary tuple.  No side effect on
+	// the scene.  The panel's "collapse this section without
+	// affecting others" flow is `CollapseSection`, not this.
 	if( cat == Category::None ) {
+		for( int i = 0; i < kNumCategories; ++i ) {
+			mSelectionByCategory[i] = String();
+			mSectionExpanded[i]     = false;
+		}
 		mSelectionCategory = Category::None;
 		mSelectionName     = String();
 		return true;
@@ -1100,16 +1215,48 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 
 		mSelectionCategory = cat;
 		mSelectionName     = entityName;
+		mSelectionByCategory[ static_cast<int>( cat ) ] = entityName;
+		mSectionExpanded[ static_cast<int>( cat ) ]     = true;
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
 		mCV.notify_one();
 		return true;
 	}
 
-	// UI-only path (Object / Light, or empty-name expand-only for
-	// Camera / Rasterizer / Film).
+	// UI-only path (Object / Light / Material, or empty-name
+	// expand-only for Camera / Rasterizer / Film).  Setting
+	// `mSectionExpanded[cat] = true` is the key fix from the
+	// post-Phase-4b regression: a header click sends empty name,
+	// and without this flag the panel saw "nothing picked" and
+	// rendered the section collapsed.
+	const int catIdx = static_cast<int>( cat );
 	mSelectionCategory = cat;
 	mSelectionName     = entityName;
+	mSelectionByCategory[ catIdx ] = entityName;
+	mSectionExpanded[ catIdx ]     = true;
+
+	// Phase 4b auto-sync rules:
+	// (a) Object pick (non-empty) -> auto-fill AND auto-expand the
+	//     Materials section with the object's bound material name.
+	//     Empty material binding still expands Materials (the user
+	//     sees the section open with a "(unset)" combo).
+	// (b) Material direct pick (non-empty) -> clear AND collapse
+	//     the Object section per the user-confirmed rule.
+	if( cat == Category::Object ) {
+		if( entityName.size() > 1 ) {
+			const int matIdx = static_cast<int>( Category::Material );
+			mSelectionByCategory[ matIdx ] = FindObjectMaterialName( mJob, entityName );
+			mSectionExpanded[ matIdx ]     = true;
+		}
+		// Note: a "section header click" on Object with empty name
+		// does NOT auto-expand Material — the user explicitly
+		// opened just Object.  Material expands when an entity is
+		// actually picked.
+	} else if( cat == Category::Material && entityName.size() > 1 ) {
+		const int objIdx = static_cast<int>( Category::Object );
+		mSelectionByCategory[ objIdx ] = String();
+		mSectionExpanded[ objIdx ]     = false;
+	}
 	return true;
 }
 
@@ -1150,8 +1297,19 @@ void SceneEditController::ForTest_SetSelection( Category cat, const String& name
 	// Test bypass: write selection state directly without going through
 	// the cancel-and-park serialization in SetSelection.  Tests run with
 	// no live render thread, so there's nothing to serialize against.
+	// Phase 4b: must also update the per-category state arrays so test
+	// assertions on `IsSectionExpanded` / `GetSelectionNameForCategory`
+	// (and RefreshProperties' per-cat snapshot population) see the
+	// same state a UI-driven SetSelection would produce.  We don't
+	// apply the Object→Material auto-sync here — tests that want it
+	// can call SetSelection directly.
 	mSelectionCategory = cat;
 	mSelectionName     = name;
+	const int idx = static_cast<int>( cat );
+	if( idx > 0 && idx < kNumCategories ) {
+		mSelectionByCategory[idx] = name;
+		mSectionExpanded[idx]     = true;
+	}
 }
 
 unsigned int SceneEditController::ForTest_GetCancelCount() const
@@ -1210,19 +1368,22 @@ void SceneEditController::PickAt( const Point2& px )
 {
 	// Pick the topmost object under the click and route the result
 	// through SetSelection so the accordion auto-expands to Objects
-	// and the property panel switches to that object.  No hit ⇒ clear
-	// the selection (None category, accordion fully collapsed).
-	mSelectionCategory = Category::None;
-	mSelectionName     = String();
+	// AND (per Phase 4b auto-sync) the Materials section auto-fills
+	// with the object's bound material.  No hit ⇒ clear via
+	// SetSelection(None) which collapses every expanded section.
+	// Crucial: must NOT write to mSelectionCategory/mSelectionName
+	// directly here — that bypasses the per-category state
+	// (mSectionExpanded + mSelectionByCategory) the panel reads,
+	// leaving the new selection invisible to the GUI.
 
 	const IScene* scene = mJob.GetScene();
-	if( !scene ) return;
+	if( !scene ) { SetSelection( Category::None, String() ); return; }
 
 	const ICamera* cam = scene->GetCamera();
-	if( !cam ) return;
+	if( !cam ) { SetSelection( Category::None, String() ); return; }
 
 	IObjectManager* objs = const_cast<IObjectManager*>( scene->GetObjects() );
-	if( !objs ) return;
+	if( !objs ) { SetSelection( Category::None, String() ); return; }
 
 	// Spatial structure must be current before IntersectRay — defensive
 	// in case nothing has rendered yet (rebuild is a no-op when valid).
@@ -1245,7 +1406,10 @@ void SceneEditController::PickAt( const Point2& px )
 
 	RuntimeContext rc( GlobalRNG(), RuntimeContext::PASS_NORMAL, /*threaded*/false );
 	Ray r;
-	if( !cam->GenerateRay( rc, r, Point2( px.x, pickPxY ) ) ) return;
+	if( !cam->GenerateRay( rc, r, Point2( px.x, pickPxY ) ) ) {
+		SetSelection( Category::None, String() );
+		return;
+	}
 
 	RasterizerState rast;
 	RayIntersection ri( r, rast );
@@ -1258,10 +1422,22 @@ void SceneEditController::PickAt( const Point2& px )
 		FindObjectNameCallback cb( ri.pObject, objs );
 		objs->EnumerateItemNames( cb );
 		if( cb.foundName.size() > 1 ) {
-			mSelectionCategory = Category::Object;
-			mSelectionName     = cb.foundName;
+			// SetSelection(Object, name) is the right path:
+			// (a) updates the primary tuple,
+			// (b) updates mSelectionByCategory[Object] + sets the
+			//     expanded flag,
+			// (c) auto-syncs Materials section to the object's
+			//     bound material (Phase 4b auto-sync rule).
+			SetSelection( Category::Object, cb.foundName );
+			return;
 		}
 	}
+
+	// No hit (or hit on an unregistered object) — collapse the panel
+	// entirely, matching pre-Phase-4b behaviour.  If users prefer
+	// "no-hit = no change to selection", flip this to a no-op and
+	// the Object/Material sections will stay where they were.
+	SetSelection( Category::None, String() );
 }
 
 // Render thread -------------------------------------------------------
@@ -1566,78 +1742,109 @@ String SceneEditController::CurrentPanelHeader() const
 void SceneEditController::RefreshProperties()
 {
 	mProperties.clear();
+	for( int i = 0; i < kNumCategories; ++i ) mPropertiesByCategory[i].clear();
+
 	const IScene* scene = mJob.GetScene();
 	if( !scene ) return;
 
-	switch( CurrentPanelMode() ) {
-	case PanelMode::Camera: {
-		// Cameras keep the existing descriptor-driven editable surface.
-		// The accordion's list view replaces the synthetic
-		// "active_camera" picker row that lived at the top of the panel
-		// before this change — there's no need for an in-panel picker
-		// when the section's list is right above.  If no real camera
-		// is currently selected (empty selection name, e.g. user just
-		// expanded the Cameras section), surface the active camera's
-		// rows so the panel isn't blank.
-		const ICamera* cam = 0;
-		if( mSelectionName.size() > 1 ) {
-			const ICameraManager* cams = scene->GetCameras();
-			if( cams ) cam = cams->GetItem( mSelectionName.c_str() );
+	// Build per-category property rows for every category that has
+	// a non-empty selection.  Each section in the panel renders its
+	// own rows from `mPropertiesByCategory[cat]`.  For back-compat
+	// with the single-tuple PropertyXxx accessors, also populate
+	// `mProperties` from the PRIMARY category's rows.
+	auto buildRowsFor = [&]( Category cat, const String& selName ) -> std::vector<CameraProperty> {
+		std::vector<CameraProperty> out;
+		switch( cat ) {
+		case Category::Camera: {
+			const ICamera* cam = 0;
+			if( selName.size() > 1 ) {
+				const ICameraManager* cams = scene->GetCameras();
+				if( cams ) cam = cams->GetItem( selName.c_str() );
+			}
+			if( !cam ) cam = scene->GetCamera();
+			if( !cam ) break;
+			out = CameraIntrospection::Inspect( *cam );
+			break;
 		}
-		if( !cam ) cam = scene->GetCamera();
-		if( !cam ) return;
-		std::vector<CameraProperty> camProps = CameraIntrospection::Inspect( *cam );
-		mProperties.insert( mProperties.end(), camProps.begin(), camProps.end() );
-		return;
+		case Category::Rasterizer:
+			out = RasterizerIntrospection::Inspect( mJob, selName );
+			break;
+		case Category::Object: {
+			IObjectManager* objs = const_cast<IObjectManager*>( scene->GetObjects() );
+			if( !objs ) break;
+			const IObject* obj = objs->GetItem( selName.c_str() );
+			if( !obj ) break;
+			out = ObjectIntrospection::Inspect( selName, *obj,
+				mJob.GetMaterials(), mJob.GetShaders(), &mJob );
+			break;
+		}
+		case Category::Light: {
+			const ILightManager* lights = scene->GetLights();
+			if( !lights ) break;
+			const ILightPriv* light = lights->GetItem( selName.c_str() );
+			if( !light ) break;
+			out = LightIntrospection::Inspect( selName, *light );
+			break;
+		}
+		case Category::Film: {
+			const IFilm* film = scene->GetFilm();
+			if( !film ) break;
+			out = FilmIntrospection::Inspect( *film );
+			break;
+		}
+		case Category::Material: {
+			const IMaterialManager* mats = mJob.GetMaterials();
+			if( !mats ) break;
+			const IMaterial* mat =
+				const_cast<IMaterialManager*>( mats )->GetItem( selName.c_str() );
+			if( !mat ) break;
+			out = MaterialIntrospection::Inspect( selName, *mat,
+				mJob.GetPainters(), mJob.GetScalarPainters(), &mJob );
+			break;
+		}
+		case Category::None:
+		default:
+			break;
+		}
+		return out;
+	};
+
+	// Per-category snapshots.  Build rows for every section whose
+	// expanded flag is true — that includes "header just clicked,
+	// no entity picked yet" (the section's combo renders, and
+	// Camera/Rasterizer/Film fall back to their active-entity
+	// rows so users see something rather than a blank section).
+	for( int i = 1; i < kNumCategories; ++i ) {
+		if( !mSectionExpanded[i] ) continue;
+		const Category cat = static_cast<Category>( i );
+		mPropertiesByCategory[i] = buildRowsFor( cat, mSelectionByCategory[i] );
 	}
-	case PanelMode::Rasterizer: {
-		std::vector<CameraProperty> rows = RasterizerIntrospection::Inspect( mJob, mSelectionName );
-		mProperties.insert( mProperties.end(), rows.begin(), rows.end() );
-		return;
-	}
-	case PanelMode::Object: {
-		IObjectManager* objs = const_cast<IObjectManager*>( scene->GetObjects() );
-		if( !objs ) return;
-		const IObject* obj = objs->GetItem( mSelectionName.c_str() );
-		if( !obj ) return;
-		std::vector<CameraProperty> rows = ObjectIntrospection::Inspect(
-			mSelectionName, *obj,
-			mJob.GetMaterials(),
-			mJob.GetShaders(),
-			&mJob );   // medium lookup + name enumeration via IJob virtuals
-		mProperties.insert( mProperties.end(), rows.begin(), rows.end() );
-		return;
-	}
-	case PanelMode::Light: {
-		const ILightManager* lights = scene->GetLights();
-		if( !lights ) return;
-		const ILightPriv* light = lights->GetItem( mSelectionName.c_str() );
-		if( !light ) return;
-		std::vector<CameraProperty> rows = LightIntrospection::Inspect( mSelectionName, *light );
-		mProperties.insert( mProperties.end(), rows.begin(), rows.end() );
-		return;
-	}
-	case PanelMode::Film: {
-		const IFilm* film = scene->GetFilm();
-		if( !film ) return;
-		std::vector<CameraProperty> rows = FilmIntrospection::Inspect( *film );
-		mProperties.insert( mProperties.end(), rows.begin(), rows.end() );
-		return;
-	}
-	case PanelMode::Material: {
-		const IMaterialManager* mats = mJob.GetMaterials();
-		if( !mats ) return;
-		const IMaterial* mat = const_cast<IMaterialManager*>( mats )->GetItem( mSelectionName.c_str() );
-		if( !mat ) return;
-		std::vector<CameraProperty> rows = MaterialIntrospection::Inspect(
-			mSelectionName, *mat, mJob.GetPainters() );
-		mProperties.insert( mProperties.end(), rows.begin(), rows.end() );
-		return;
-	}
+
+	// Back-compat single-tuple snapshot drives the existing
+	// PropertyCount() / PropertyName(idx) / ... accessors.  Routes
+	// the primary category's rows.
+	switch( CurrentPanelMode() ) {
+	case PanelMode::Camera:
+		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Camera ) ];
+		break;
+	case PanelMode::Rasterizer:
+		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Rasterizer ) ];
+		break;
+	case PanelMode::Object:
+		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Object ) ];
+		break;
+	case PanelMode::Light:
+		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Light ) ];
+		break;
+	case PanelMode::Film:
+		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Film ) ];
+		break;
+	case PanelMode::Material:
+		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Material ) ];
+		break;
 	case PanelMode::None:
 	default:
-		// Leave mProperties empty.
-		return;
+		break;
 	}
 }
 
@@ -1702,6 +1909,90 @@ String SceneEditController::PropertyUnitLabel( unsigned int idx ) const
 {
 	if( idx >= mProperties.size() ) return String();
 	return mProperties[idx].unitLabel;
+}
+
+// -------------------------------------------------------------------
+// Phase 4b — per-category property accessors.  Each looks up the
+// correct mPropertiesByCategory[cat] vector and forwards to the
+// matching CameraProperty field.  Bounds-check the category enum and
+// the row index; out-of-range returns sensible empty / -1 values
+// (matches the single-tuple accessors above).
+// -------------------------------------------------------------------
+
+namespace {
+inline const std::vector<RISE::CameraProperty>* PropsForCat(
+	const std::vector<RISE::CameraProperty>* arr, RISE::SceneEditController::Category cat )
+{
+	const int i = static_cast<int>( cat );
+	if( i < 0 || i >= 7 ) return 0;
+	return &arr[i];
+}
+}
+
+unsigned int SceneEditController::PropertyCountFor( Category cat ) const
+{
+	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	return v ? static_cast<unsigned int>( v->size() ) : 0u;
+}
+
+String SceneEditController::PropertyNameFor( Category cat, unsigned int idx ) const
+{
+	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (*v)[idx].name : String();
+}
+
+String SceneEditController::PropertyValueFor( Category cat, unsigned int idx ) const
+{
+	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (*v)[idx].value : String();
+}
+
+String SceneEditController::PropertyDescriptionFor( Category cat, unsigned int idx ) const
+{
+	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (*v)[idx].description : String();
+}
+
+int SceneEditController::PropertyKindFor( Category cat, unsigned int idx ) const
+{
+	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? static_cast<int>( (*v)[idx].kind ) : -1;
+}
+
+bool SceneEditController::PropertyEditableFor( Category cat, unsigned int idx ) const
+{
+	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (*v)[idx].editable : false;
+}
+
+unsigned int SceneEditController::PropertyPresetCountFor( Category cat, unsigned int idx ) const
+{
+	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? static_cast<unsigned int>( (*v)[idx].presets.size() ) : 0u;
+}
+
+String SceneEditController::PropertyPresetLabelFor( Category cat, unsigned int idx, unsigned int presetIdx ) const
+{
+	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	if( !v || idx >= v->size() ) return String();
+	const auto& presets = (*v)[idx].presets;
+	if( presetIdx >= presets.size() ) return String();
+	return String( presets[presetIdx].label.c_str() );
+}
+
+String SceneEditController::PropertyPresetValueFor( Category cat, unsigned int idx, unsigned int presetIdx ) const
+{
+	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	if( !v || idx >= v->size() ) return String();
+	const auto& presets = (*v)[idx].presets;
+	if( presetIdx >= presets.size() ) return String();
+	return String( presets[presetIdx].value.c_str() );
+}
+
+String SceneEditController::PropertyUnitLabelFor( Category cat, unsigned int idx ) const
+{
+	const auto* v = PropsForCat( mPropertiesByCategory, cat );
+	return ( v && idx < v->size() ) ? (*v)[idx].unitLabel : String();
 }
 
 namespace {
@@ -1812,6 +2103,29 @@ bool SceneEditController::CloneActiveCamera(
 	return true;
 }
 
+bool SceneEditController::SetPropertyForCategory( Category cat, const String& name, const String& valueStr )
+{
+	// Hacky-but-pragmatic implementation: SetProperty's existing
+	// switch reads `mSelectionCategory` + `mSelectionName` inline
+	// throughout its ~150-line body.  Rather than parameterize that
+	// body over (cat, selName) — which would force every per-
+	// category branch to take both — temporarily swap the primary
+	// tuple for the call and restore on return.  Both fields are
+	// UI-thread-only writes (no render-thread reads), so the
+	// temporary mutation isn't racy.  Future cleanup: refactor
+	// SetProperty's body into a helper that takes (cat, selName)
+	// explicitly and drop this swap.
+	const Category savedCat  = mSelectionCategory;
+	const String   savedName = mSelectionName;
+	const int idx = static_cast<int>( cat );
+	mSelectionCategory = cat;
+	mSelectionName     = ( idx >= 0 && idx < kNumCategories ) ? mSelectionByCategory[idx] : String();
+	const bool ok = SetProperty( name, valueStr );
+	mSelectionCategory = savedCat;
+	mSelectionName     = savedName;
+	return ok;
+}
+
 bool SceneEditController::SetProperty( const String& name, const String& valueStr )
 {
 	switch( mSelectionCategory ) {
@@ -1917,6 +2231,20 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 
 		const bool ok = mEditor.Apply( edit );
 		if( !ok ) return false;
+
+		// Phase 4b auto-sync follow-through: when the user changes
+		// the selected Object's material binding (or interior medium)
+		// via the property panel, the Material/medium row in the
+		// auto-synced section must follow.  Without this, the
+		// Material section keeps showing the OLD material's
+		// properties while the Object now uses the new one.
+		// Mirrors the Object-pick auto-fill in SetSelection, but
+		// only updates the per-cat selection — we leave the
+		// expanded flag alone so a user who collapsed Materials
+		// doesn't have it pop back open on every edit.
+		if( edit.op == SceneEdit::SetObjectMaterial ) {
+			mSelectionByCategory[ static_cast<int>( Category::Material ) ] = valueStr;
+		}
 
 		mEditPending.store( true, std::memory_order_release );
 		lk.unlock();
@@ -2029,15 +2357,34 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 	}
 
 	case Category::Material: {
-		// Phase 2 ships Materials as read-only — see
-		// MaterialIntrospection.h for the Phase 4 roadmap.  Any
-		// attempted edit is rejected with a log so users understand
-		// the row isn't editable even though the GUI may submit one.
-		GlobalLog()->PrintEx( eLog_Warning,
-			"SceneEditController::SetProperty: material edits are read-only in Phase 2 "
-			"(attempted to set `%s` on `%s`)",
-			name.c_str(), mSelectionName.c_str() );
-		return false;
+		// Phase 4: route through SceneEdit::SetMaterialProperty so
+		// the edit goes through the undo/redo + composite history.
+		// Cancel-and-park: material edits release the prior painter
+		// (potentially destroying it if no one else holds a ref),
+		// which the render thread may be mid-sample on.  Same lock
+		// pattern Light / Object / Film use for the same reason.
+		if( mSelectionName.size() <= 1 ) return false;
+
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+		SceneEdit edit;
+		edit.op            = SceneEdit::SetMaterialProperty;
+		edit.objectName    = mSelectionName;
+		edit.propertyName  = name;
+		edit.propertyValue = valueStr;
+
+		const bool ok = mEditor.Apply( edit );
+		if( !ok ) return false;
+
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+		return true;
 	}
 
 	case Category::None:

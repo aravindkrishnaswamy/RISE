@@ -64,9 +64,18 @@ private:
     /// row to reflect the bridge's current selection tuple.
     void syncAccordionFromSelection();
 
-    /// Rebuild the property-row list under whichever section is
-    /// currently expanded.  Property rows are entity-specific.
+    /// Rebuild the property-row list for every section with a non-
+    /// empty per-category selection (Phase 4b multi-section panel).
+    /// Iterates `m_sections` and delegates to
+    /// `rebuildPropertyRowsFor` per section.
     void rebuildPropertyRows();
+
+    /// Build the property rows for a single section into that
+    /// section's `propsLayout`.  Edits are routed through
+    /// `setPropertyForCategory(sectionCat, ...)` so each section's
+    /// edits target the right entity even when multiple sections
+    /// are expanded (e.g. Object + auto-synced Material).
+    void rebuildPropertyRowsFor(Category sectionCat, SectionWidgets& section);
 
     using Category = ViewportBridge::Category;
     using SectionWidgets = ViewportPropertiesInternal::AccordionSectionWidgets;
