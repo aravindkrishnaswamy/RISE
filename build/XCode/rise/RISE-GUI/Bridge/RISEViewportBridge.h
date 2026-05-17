@@ -177,6 +177,7 @@ typedef NS_ENUM(NSInteger, RISEViewportPanelMode) {
     RISEViewportPanelModeObject     = 3,
     RISEViewportPanelModeLight      = 4,
     RISEViewportPanelModeFilm       = 5,  ///< Output Settings (single Film per scene)
+    RISEViewportPanelModeMaterial   = 6,  ///< Materials (read-only in Phase 2)
 };
 
 /// Mirrors RISE::SceneEditController::Category — drives the
@@ -188,6 +189,7 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
     RISEViewportCategoryObject     = 3,
     RISEViewportCategoryLight      = 4,
     RISEViewportCategoryFilm       = 5,   ///< Output Settings (single Film per scene)
+    RISEViewportCategoryMaterial   = 6,   ///< Materials (read-only in Phase 2)
 };
 
 /// Current panel mode — lets the SwiftUI parent decide whether to
@@ -244,6 +246,24 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 /// change a category's entity list.  Bridge callers cache
 /// (epoch, category) → list and re-pull when this advances.
 @property (nonatomic, readonly) NSUInteger sceneEpoch;
+
+#pragma mark - Multi-camera
+
+/// Clone the currently-active camera under a new name and switch
+/// the scene to it.  `proposedName` is the user's choice; on
+/// duplicate the controller appends a numeric dedup suffix.
+/// Returns the actual name registered (the proposal verbatim if
+/// available, or a deduplicated variant), or `nil` on no-active-
+/// camera / unclonable type.  Caller passes a non-empty NSString
+/// (an empty string falls back to "camera_copy").
+///
+/// Persistence caveat: the clone lives only in the in-memory
+/// Scene/Job.  Reloading the .RISEscene file via the editor
+/// drops it (scene-text round-trip is still pending Phase 6
+/// work).  The Swift caller should surface a one-shot warning
+/// the first time per session.
+- (nullable NSString *)addCameraFromActive:(NSString *)proposedName
+    NS_SWIFT_NAME(addCameraFromActive(proposedName:));
 
 @end
 

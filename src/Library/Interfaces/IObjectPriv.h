@@ -73,6 +73,16 @@ namespace RISE
 			const IMedium& medium									///< [in] The medium to assign
 			) = 0;
 
+		//! Clears any previously-assigned interior medium so the
+		//! object has no participating-medium interior (equivalent to
+		//! the scene-file state where `interior_medium` is absent or
+		//! set to `"none"`).  Used by the interactive editor's
+		//! `interior_medium` row when the user selects the `(none)`
+		//! preset — the AssignInteriorMedium reference signature has
+		//! no null-sentinel, so we need a separate clear path for
+		//! parser-parity round-trip.
+		virtual void ClearInteriorMedium() = 0;
+
 		//! Sets the epsilon error threshold to use when computing intersections
 		virtual void SetSurfaceIntersecError(
 			Scalar d												///< [in] Amount of error to assume when doing intersection calculations.  This value can range from 1e-3 to about 1e-12

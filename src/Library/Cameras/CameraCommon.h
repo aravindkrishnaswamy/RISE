@@ -105,6 +105,14 @@ namespace RISE
 			inline Scalar  GetPixelRateStored()           const { return pixelRate; }
 			inline Vector3 GetEulerOrientation()          const { return orientation; }
 			inline Vector2 GetTargetOrientation()         const { return target_orientation; }
+			//! True iff this camera was constructed via an ONB
+			//! constructor (`Add*CameraONB`).  ONB-constructed cameras
+			//! bypass the lookAt/up + target_orientation math in
+			//! `Recompute()`, so the editor's snapshot/clone path
+			//! must refuse to re-create them through the non-ONB
+			//! factory (which would silently degrade the camera's
+			//! basis representation).
+			inline bool    IsFromONB()                    const { return from_onb; }
 			inline void    SetPixelAR( Scalar v )               { pixelAR = v; /* RegenerateData by caller */ }
 			inline void    SetExposureTimeStored( Scalar v )    { exposureTime = v; }
 			inline void    SetScanningRateStored( Scalar v )    { scanningRate = v; }

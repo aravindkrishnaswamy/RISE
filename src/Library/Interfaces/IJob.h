@@ -24,6 +24,7 @@
 #include "IPainter.h"           // for SpectrumKind enum (Landing 3)
 #include "IProgressCallback.h"
 #include "IJobRasterizerOutput.h"
+#include "IEnumCallback.h"      // for EnumerateMediumNames callback
 #include <string>
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
@@ -41,6 +42,10 @@ namespace RISE
 	// ITriangleMeshGeometry.h dependency chain.  Used by
 	// AddPrebuiltTriangleMeshGeometry, declared near the bottom.
 	class ITriangleMeshGeometryIndexed;
+
+	// Forward declaration so `GetMedium` can return a pointer without
+	// pulling IMedium.h's full dependency chain into this header.
+	class IMedium;
 
 	//! One entry in a parallel-decode batch passed to
 	//! IJob::AddTexturePaintersBatch.  Either filePath xor (bytes,numBytes)
@@ -1485,6 +1490,22 @@ namespace RISE
 			const char* object_name,								///< [in] Name of the object
 			const char* medium_name									///< [in] Name of the medium
 			) = 0;
+
+		//! Looks up a registered medium by name.  Returns null if no
+		//! medium with that name is registered.  Used by the interactive
+		//! editor to validate `interior_medium` edits and to recover
+		//! the prior medium's name for undo via reverse-lookup against
+		//! `IObject::GetInteriorMedium()`.
+		virtual const IMedium* GetMedium(
+			const char* name										///< [in] Name of the requested medium
+			) const = 0;
+
+		//! Enumerates registered medium names.  Used by the interactive
+		//! editor's properties panel to populate the `interior_medium`
+		//! preset dropdown.  Iteration order is unspecified.
+		virtual void EnumerateMediumNames(
+			IEnumCallback<const char*>& cb							///< [in] Functor called once per registered medium name
+			) const = 0;
 
 
 		//

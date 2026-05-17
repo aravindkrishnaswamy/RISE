@@ -3056,7 +3056,8 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditCategory_Rasterizer = 2,
 		SceneEditCategory_Object     = 3,
 		SceneEditCategory_Light      = 4,
-		SceneEditCategory_Film       = 5   ///< Output Settings (single Film per scene)
+		SceneEditCategory_Film       = 5,  ///< Output Settings (single Film per scene)
+		SceneEditCategory_Material   = 6   ///< Materials (read-only in Phase 2; future Phase 4 unlocks edits)
 	};
 
 	//! Construct a SceneEditController over an existing job.
@@ -3299,6 +3300,23 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! advances.  0 on null controller.
 	unsigned int RISE_API_SceneEditController_SceneEpoch(
 		SceneEditController* p );
+
+	//! Clone the currently-active camera under a new name and switch
+	//! the scene to the new camera.  `proposedName` is the user's
+	//! choice; on duplicate the controller appends a numeric dedup
+	//! suffix.  The actual chosen name is written to `outName`
+	//! (NUL-terminated; caller-owned buffer of `outLen` bytes).
+	//! Returns false on null controller, no-active-camera, an
+	//! unclonable camera type, or `outLen == 0`.  Bumps the controller's
+	//! SceneEpoch so the platform UI auto-rebuilds the camera list.
+	//!
+	//! Persistence: the clone lives only in memory.  Reloading the
+	//! .RISEscene file drops it (scene-text round-trip is the
+	//! pending Phase 6 work).
+	bool RISE_API_SceneEditController_AddCameraFromActive(
+		SceneEditController* p,
+		const char* proposedName,
+		char* outName, unsigned int outLen );
 }
 
 #endif

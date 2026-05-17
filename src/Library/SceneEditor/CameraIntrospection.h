@@ -28,10 +28,13 @@
 #include "../Interfaces/ICamera.h"
 #include "../Parsers/ChunkDescriptor.h"
 #include "../Utilities/RString.h"
+#include "SceneEdit.h"   // for CameraSnapshot used by Capture/ApplyCameraSnapshot
 #include <vector>
 
 namespace RISE
 {
+	class IJob;
+
 	struct CameraProperty
 	{
 		String                       name;          // parameter name as it appears in scene files
@@ -76,6 +79,29 @@ namespace RISE
 		//! Returns empty string for unknown / unreadable properties.
 		static String GetPropertyValue( const ICamera& camera,
 		                                const String& name );
+
+		//! Snapshot every field of the camera into a value-typed
+		//! struct.  Used by `SceneEdit::AddCamera` so Redo can
+		//! deterministically recreate the new camera even after the
+		//! source has been edited.  Returns false if the camera is
+		//! not one of the four built-in types (Pinhole / ThinLens /
+		//! Fisheye / Orthographic) — out-of-tree camera types fall
+		//! back to "can't be cloned" rather than corrupting state.
+		static bool CaptureCameraSnapshot( const ICamera& camera,
+		                                   CameraSnapshot& outSnapshot );
+
+		//! Register a new camera under `newName` using the snapshot's
+		//! field values.  Dispatches on `snapshot.type` to the matching
+		//! `IJob::Add*Camera` factory.  Returns false on null/empty
+		//! name, duplicate name (per Add*Camera contract), or unknown
+		//! type discriminator.  By the existing "last added wins"
+		//! policy the new camera becomes active on success — callers
+		//! that need to preserve a different active camera (e.g. undo
+		//! restoring the prior active) MUST call SetActiveCamera
+		//! AFTER returning.
+		static bool AddCameraFromSnapshot( IJob& job,
+		                                   const String& newName,
+		                                   const CameraSnapshot& snapshot );
 
 	private:
 		// Returns "pinhole_camera" / "thinlens_camera" / etc., or

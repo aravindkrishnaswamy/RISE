@@ -120,12 +120,20 @@ String ReadLightParam( const ILight& light, const std::string& paramName )
 
 // Whether a descriptor parameter is runtime-editable for a light of
 // this type.  The chunk descriptor lists every construction-time
-// param, but a few (name, shootphotons) don't have a runtime setter
-// and are surfaced read-only in the panel.
-bool IsRuntimeEditable( ILight::LightType /*type*/, const std::string& paramName )
+// param; `name` is shown as panel header and renaming would
+// invalidate every object's light reference, so it stays read-only.
+// `shootphotons` is editable on photon-capable types (Point / Spot)
+// via `ILight::SetCanGeneratePhotons`; non-photon-capable types
+// (Ambient / Directional) hard-code `CanGeneratePhotons() == false`
+// and don't surface a shootphotons row in their chunk descriptors
+// in the first place.
+bool IsRuntimeEditable( ILight::LightType type, const std::string& paramName )
 {
-	if( paramName == "name" )         return false;  // shown as panel header
-	if( paramName == "shootphotons" ) return false;  // no runtime SetCanGeneratePhotons API yet
+	if( paramName == "name" ) return false;  // shown as panel header
+	if( paramName == "shootphotons" ) {
+		return type == ILight::LightType::Point
+		    || type == ILight::LightType::Spot;
+	}
 	return true;
 }
 
@@ -198,16 +206,12 @@ std::vector<CameraProperty> LightIntrospection::Inspect( const String& name, con
 		rows.push_back( cp );
 	}
 
-	// Read-only metadata footer — only emit for light kinds where
-	// photon emission is a meaningful concept (point + spot).  The
-	// other kinds default `CanGeneratePhotons` to false; surfacing
-	// the row for them would imply a settable property that
-	// effectively isn't.
-	if( type == ILight::LightType::Point || type == ILight::LightType::Spot ) {
-		rows.push_back( MakeReadOnlyRow(
-			"Photons", String( light.CanGeneratePhotons() ? "yes" : "no" ),
-			"Whether the light emits photons for the photon-mapping passes (set via the scene file's `shootphotons` param)." ) );
-	}
+	// `shootphotons` is surfaced by the descriptor loop above as an
+	// editable bool row when the type is Point / Spot, so there is no
+	// separate "Photons" summary footer.  Pre-Phase-1 the footer
+	// duplicated the row info as a read-only "yes/no" line; after the
+	// runtime setter landed, the descriptor row IS the source of
+	// truth.
 
 	return rows;
 }

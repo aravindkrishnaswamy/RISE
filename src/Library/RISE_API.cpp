@@ -6525,4 +6525,14 @@ namespace RISE
 		if( !p ) return 0;
 		return p->SceneEpoch();
 	}
+
+	bool RISE_API_SceneEditController_AddCameraFromActive(
+		SceneEditController* p,
+		const char* proposedName,
+		char* outName, unsigned int outLen )
+	{
+		if( !p || !outName || outLen == 0 ) return false;
+		const String prop = String( proposedName ? proposedName : "" );
+		return p->CloneActiveCamera( prop, outName, outLen );
+	}
 }

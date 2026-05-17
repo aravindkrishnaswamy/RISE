@@ -750,6 +750,9 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\FilmIntrospection.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\MaterialIntrospection.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
@@ -1923,6 +1926,9 @@
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\FilmIntrospection.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\MaterialIntrospection.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.h">

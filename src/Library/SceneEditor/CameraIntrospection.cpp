@@ -11,10 +11,14 @@
 #include "../Cameras/ThinLensCamera.h"
 #include "../Cameras/FisheyeCamera.h"
 #include "../Cameras/OrthographicCamera.h"
+#include "../Interfaces/IJob.h"
+#include "../Interfaces/IJobPriv.h"
+#include "../Interfaces/ICameraManager.h"
 #include "../Parsers/ChunkParserRegistry.h"
 #include "ChunkDescriptorRegistry.h"
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Interfaces/ILog.h"
+#include <cmath>
 #include <cstdio>
 #include <map>
 #include <mutex>
@@ -874,5 +878,150 @@ bool CameraIntrospection::SetProperty( ICamera& camera,
 	}
 
 	cam->RegenerateData();
+	return true;
+}
+
+// -------------------------------------------------------------------
+// CameraSnapshot capture / apply for SceneEdit::AddCamera.
+//
+// Reads from the concrete camera type (via dynamic_cast on
+// CameraCommon-derived classes) and into a value-typed `CameraSnapshot`
+// that embeds cleanly in the SceneEdit history.  Apply dispatches on
+// the discriminator and calls the matching `IJob::Add*Camera`.  See
+// CameraIntrospection.h for the contract.
+// -------------------------------------------------------------------
+
+bool CameraIntrospection::CaptureCameraSnapshot( const ICamera& camera, CameraSnapshot& out )
+{
+	const CameraCommon* cam = dynamic_cast<const CameraCommon*>( &camera );
+	if( !cam ) return false;
+
+	// ONB-constructed cameras don't round-trip through the lookAt /
+	// up factory path (Recompute branches on `from_onb` and bypasses
+	// the orbit-around-lookAt math for the ONB case).  The snapshot
+	// has no ONB representation today, so we'd silently degrade an
+	// ONB clone to a non-ONB approximation with synthesised lookAt /
+	// up.  Reject up-front instead — out-of-tree callers who need
+	// ONB-camera cloning can supply their own snapshot type.
+	if( cam->IsFromONB() ) return false;
+
+	// Shared fields — RestLocation / StoredLookAt are the pre-orbit
+	// reference values that the Add* factories accept verbatim.
+	const Point3  loc = cam->GetRestLocation();
+	const Point3  la  = cam->GetStoredLookAt();
+	const Vector3 up  = cam->GetStoredUp();
+	out.location[0] = loc.x;  out.location[1] = loc.y;  out.location[2] = loc.z;
+	out.lookat[0]   = la.x;   out.lookat[1]   = la.y;   out.lookat[2]   = la.z;
+	out.up[0]       = up.x;   out.up[1]       = up.y;   out.up[2]       = up.z;
+	out.exposure     = cam->GetExposureTimeStored();
+	out.scanningRate = cam->GetScanningRateStored();
+	out.pixelRate    = cam->GetPixelRateStored();
+	out.pixelAR      = cam->GetPixelAR();
+	const Vector3 orient = cam->GetEulerOrientation();
+	out.orientation[0] = orient.x;  out.orientation[1] = orient.y;  out.orientation[2] = orient.z;
+	const Vector2 target = cam->GetTargetOrientation();
+	out.target_orientation[0] = target.x;  out.target_orientation[1] = target.y;
+
+	if( const PinholeCamera* p = dynamic_cast<const PinholeCamera*>( cam ) ) {
+		out.type   = CameraSnapshot::Pinhole;
+		out.fov    = p->GetFovStored();
+		out.iso    = p->GetIsoStored();
+		out.fstop  = p->GetFstop();
+		return true;
+	}
+	if( const ThinLensCamera* t = dynamic_cast<const ThinLensCamera*>( cam ) ) {
+		out.type              = CameraSnapshot::ThinLens;
+		out.sensorSize        = t->GetSensorSize();
+		out.focalLength       = t->GetFocalLengthStored();
+		out.fstop             = t->GetFstop();
+		out.focusDistance     = t->GetFocusDistanceStored();
+		out.sceneUnitMeters   = t->GetSceneUnitMeters();
+		out.apertureBlades    = t->GetApertureBlades();
+		out.apertureRotation  = t->GetApertureRotation();
+		out.anamorphicSqueeze = t->GetAnamorphicSqueeze();
+		out.tiltX             = t->GetTiltX();
+		out.tiltY             = t->GetTiltY();
+		out.shiftX            = t->GetShiftX();
+		out.shiftY            = t->GetShiftY();
+		out.iso               = t->GetIsoStored();
+		return true;
+	}
+	if( const FisheyeCamera* f = dynamic_cast<const FisheyeCamera*>( cam ) ) {
+		out.type         = CameraSnapshot::Fisheye;
+		out.fisheyeScale = f->GetScaleStored();
+		return true;
+	}
+	if( const OrthographicCamera* o = dynamic_cast<const OrthographicCamera*>( cam ) ) {
+		out.type             = CameraSnapshot::Orthographic;
+		const Vector2 vs     = o->GetViewportScaleStored();
+		out.viewportScale[0] = vs.x;  out.viewportScale[1] = vs.y;
+		return true;
+	}
+	return false;
+}
+
+bool CameraIntrospection::AddCameraFromSnapshot( IJob& job, const String& newName, const CameraSnapshot& s )
+{
+	if( newName.size() <= 1 ) return false;   // empty name
+	const char* n = newName.c_str();
+
+	bool ok = false;
+	switch( s.type ) {
+	case CameraSnapshot::Pinhole:
+		ok = job.AddPinholeCamera( n,
+			s.location, s.lookat, s.up,
+			s.fov, s.exposure, s.scanningRate, s.pixelRate,
+			s.orientation, s.target_orientation,
+			s.iso, s.fstop );
+		break;
+	case CameraSnapshot::ThinLens:
+		ok = job.AddThinlensCamera( n,
+			s.location, s.lookat, s.up,
+			s.sensorSize, s.focalLength, s.fstop, s.focusDistance,
+			s.sceneUnitMeters,
+			s.exposure, s.scanningRate, s.pixelRate,
+			s.orientation, s.target_orientation,
+			s.apertureBlades, s.apertureRotation, s.anamorphicSqueeze,
+			s.tiltX, s.tiltY, s.shiftX, s.shiftY,
+			s.iso );
+		break;
+	case CameraSnapshot::Fisheye:
+		ok = job.AddFisheyeCamera( n,
+			s.location, s.lookat, s.up,
+			s.exposure, s.scanningRate, s.pixelRate,
+			s.orientation, s.target_orientation,
+			s.fisheyeScale );
+		break;
+	case CameraSnapshot::Orthographic:
+		ok = job.AddOrthographicCamera( n,
+			s.location, s.lookat, s.up,
+			s.viewportScale,
+			s.exposure, s.scanningRate, s.pixelRate,
+			s.orientation, s.target_orientation );
+		break;
+	default:
+		return false;
+	}
+	if( !ok ) return false;
+
+	// Restore the source camera's pixelAR.  The Add*Camera factories
+	// read pixelAR from the scene's active Film, but `SetPixelAR`
+	// lets a camera diverge from the Film value (e.g. the Phase-1
+	// SetFilm work post-CLI override).  Without this re-sync the
+	// clone would inherit the Film's pixelAR even when the source
+	// had been overridden.  Look the new camera back up by name and
+	// patch + Regenerate.
+	if( IJobPriv* priv = dynamic_cast<IJobPriv*>( &job ) ) {
+		if( ICameraManager* cams = priv->GetCameras() ) {
+			if( ICamera* base = cams->GetItem( n ) ) {
+				if( CameraCommon* cc = dynamic_cast<CameraCommon*>( base ) ) {
+					if( s.pixelAR > 0 && std::fabs( cc->GetPixelAR() - s.pixelAR ) > 1e-12 ) {
+						cc->SetPixelAR( s.pixelAR );
+						cc->RegenerateData();
+					}
+				}
+			}
+		}
+	}
 	return true;
 }

@@ -38,6 +38,9 @@
 #include "LightIntrospection.h"
 #include "RasterizerIntrospection.h"
 #include "FilmIntrospection.h"
+#include "MaterialIntrospection.h"
+#include "../Interfaces/IMaterialManager.h"
+#include "../Interfaces/IPainterManager.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IScenePriv.h"
 #include "../Interfaces/IObjectManager.h"
@@ -60,6 +63,7 @@
 #include "../Utilities/RuntimeContext.h"
 #include <chrono>
 #include <cstdio>
+#include <ctime>          // for time() used by CloneActiveCamera dedup fallback
 #include <string>
 
 using namespace RISE;
@@ -139,6 +143,11 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 	// degrades to "transform / camera ops only" mode.
 	mEditor.SetMaterialManager( mJob.GetMaterials() );
 	mEditor.SetShaderManager( mJob.GetShaders() );
+	// Plumb IJob so SceneEdit::SetObjectInteriorMedium can resolve
+	// medium names through IJob::GetMedium and recover prev-state via
+	// IJob::EnumerateMediumNames.  IJobPriv inherits IJob virtually,
+	// so the upcast is implicit.
+	mEditor.SetJob( &mJob );
 }
 
 namespace {
@@ -642,14 +651,112 @@ void SceneEditController::EndPropertyScrub()
 	KickRender();
 }
 
+namespace {
+
+// Verify the controller's (category, name) selection still names an
+// entity that exists in the live scene.  Returns true if the tuple
+// is still valid; false if the referenced entity has gone away
+// (Undo of AddCamera, future RemoveObject op, etc.).  Used after
+// Undo/Redo to detect when the panel needs to drop a stale entity
+// pointer.
+bool SelectionStillResolves( const IJobPriv& job,
+	SceneEditController::Category cat, const String& name )
+{
+	if( name.size() <= 1 ) return true;   // empty name = section-only, no entity to check
+	const IScene* scene = const_cast<IJobPriv&>( job ).GetScene();
+	if( !scene ) return true;             // skeleton mode — nothing to validate
+	using Cat = SceneEditController::Category;
+	switch( cat ) {
+	case Cat::Camera: {
+		const ICameraManager* m = scene->GetCameras();
+		return m && m->GetItem( name.c_str() ) != 0;
+	}
+	case Cat::Object: {
+		const IObjectManager* m = scene->GetObjects();
+		return m && const_cast<IObjectManager*>( m )->GetItem( name.c_str() ) != 0;
+	}
+	case Cat::Light: {
+		const ILightManager* m = scene->GetLights();
+		return m && const_cast<ILightManager*>( m )->GetItem( name.c_str() ) != 0;
+	}
+	case Cat::Material: {
+		const IMaterialManager* m = const_cast<IJobPriv&>( job ).GetMaterials();
+		return m && const_cast<IMaterialManager*>( m )->GetItem( name.c_str() ) != 0;
+	}
+	case Cat::Rasterizer:
+	case Cat::Film:
+	case Cat::None:
+	default:
+		return true;
+	}
+}
+
+}  // namespace
+
 void SceneEditController::Undo()
 {
-	if( mEditor.Undo() ) KickRender();
+	// Cancel-and-park around Undo: many ops mutate state the render
+	// thread reads per-pixel (camera pointers via AddCamera/RemoveCamera,
+	// light keyframe state, material/shader pointers via the property
+	// panel).  Without parking, an Undo that fires while a pass is in
+	// flight can free a pointer the worker is mid-deref.  Forward
+	// Apply paths (Light/Object/Film/Rasterizer branches in
+	// SetProperty + the CloneActiveCamera path) already park; the
+	// inverse path needs the same protection.
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	const bool didWork = mEditor.Undo();
+	if( didWork ) {
+		// If Undo removed the entity our panel selection pointed at
+		// (e.g. Undo of AddCamera removes the clone we just made
+		// active), the (category, name) tuple is stale — the panel
+		// would otherwise render a header for an entity that no
+		// longer exists.  Reset to category-only (empty name) so
+		// the panel falls back to "section open, no row picked"
+		// behaviour and shows the active-camera fallback rows.
+		if( !SelectionStillResolves( mJob, mSelectionCategory, mSelectionName ) ) {
+			mSelectionName = String();
+		}
+		mEditPending.store( true, std::memory_order_release );
+		// Bump epoch — Undo of AddCamera removes an entity, which
+		// changes the Camera category's entity list.  Cheap to bump
+		// unconditionally; covers future structural-undo ops too.
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+		lk.unlock();
+		mCV.notify_one();
+	}
 }
 
 void SceneEditController::Redo()
 {
-	if( mEditor.Redo() ) KickRender();
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	const bool didWork = mEditor.Redo();
+	if( didWork ) {
+		// Symmetric with Undo: if Redo brought back a removed
+		// entity the selection had pointed at, the tuple may
+		// re-resolve cleanly.  If it doesn't, drop to category-
+		// only.  (Today the only Redo path that adds an entity is
+		// AddCamera, which uses the original name — so the
+		// resolution typically succeeds.)
+		if( !SelectionStillResolves( mJob, mSelectionCategory, mSelectionName ) ) {
+			mSelectionName = String();
+		}
+		mEditPending.store( true, std::memory_order_release );
+		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+		lk.unlock();
+		mCV.notify_one();
+	}
 }
 
 Scalar SceneEditController::LastSceneTime() const
@@ -794,6 +901,13 @@ unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
 		// done via the width / height property rows below the dropdown.
 		return scene->GetFilm() ? FilmIntrospection::PresetCount() : 0;
 	}
+	case Category::Material: {
+		// Read-only Phase 2 surface — list every registered material
+		// so the user can pick one and see its type + (Lambertian
+		// only) reflectance painter binding.
+		const IMaterialManager* m = mJob.GetMaterials();
+		return m ? m->getItemCount() : 0;
+	}
 	case Category::None:
 	default:
 		return 0;
@@ -843,6 +957,14 @@ String SceneEditController::CategoryEntityName( Category cat, unsigned int idx )
 		const FilmPreset* p = FilmIntrospection::PresetAt( idx );
 		return p ? String( p->label ) : String();
 	}
+	case Category::Material: {
+		const IMaterialManager* m = mJob.GetMaterials();
+		if( !m ) return String();
+		CollectNamesCallback cb;
+		const_cast<IMaterialManager*>( m )->EnumerateItemNames( cb );
+		if( idx >= cb.names.size() ) return String();
+		return cb.names[idx];
+	}
 	case Category::None:
 	default:
 		return String();
@@ -882,6 +1004,7 @@ String SceneEditController::CategoryActiveName( Category cat ) const
 	}
 	case Category::Object:
 	case Category::Light:
+	case Category::Material:
 	case Category::None:
 	default:
 		return String();
@@ -1385,6 +1508,11 @@ SceneEditController::PanelMode SceneEditController::CurrentPanelMode() const
 		// Properties resolve against scene->GetFilm() regardless of
 		// the selection name.
 		return PanelMode::Film;
+	case Category::Material:
+		// Same guard as Object/Light — empty name means "section open,
+		// no row picked yet"; we show nothing in the panel until the
+		// user clicks a material.
+		return mSelectionName.size() > 1 ? PanelMode::Material : PanelMode::None;
 	case Category::None:
 	default:
 		return PanelMode::None;
@@ -1424,6 +1552,11 @@ String SceneEditController::CurrentPanelHeader() const
 	}
 	case PanelMode::Film:
 		return String( "Output Settings" );
+	case PanelMode::Material: {
+		std::string s = "Material: ";
+		s += mSelectionName.c_str();
+		return String( s.c_str() );
+	}
 	case PanelMode::None:
 	default:
 		return String();
@@ -1470,7 +1603,8 @@ void SceneEditController::RefreshProperties()
 		std::vector<CameraProperty> rows = ObjectIntrospection::Inspect(
 			mSelectionName, *obj,
 			mJob.GetMaterials(),
-			mJob.GetShaders() );
+			mJob.GetShaders(),
+			&mJob );   // medium lookup + name enumeration via IJob virtuals
 		mProperties.insert( mProperties.end(), rows.begin(), rows.end() );
 		return;
 	}
@@ -1487,6 +1621,16 @@ void SceneEditController::RefreshProperties()
 		const IFilm* film = scene->GetFilm();
 		if( !film ) return;
 		std::vector<CameraProperty> rows = FilmIntrospection::Inspect( *film );
+		mProperties.insert( mProperties.end(), rows.begin(), rows.end() );
+		return;
+	}
+	case PanelMode::Material: {
+		const IMaterialManager* mats = mJob.GetMaterials();
+		if( !mats ) return;
+		const IMaterial* mat = const_cast<IMaterialManager*>( mats )->GetItem( mSelectionName.c_str() );
+		if( !mat ) return;
+		std::vector<CameraProperty> rows = MaterialIntrospection::Inspect(
+			mSelectionName, *mat, mJob.GetPainters() );
 		mProperties.insert( mProperties.end(), rows.begin(), rows.end() );
 		return;
 	}
@@ -1560,6 +1704,114 @@ String SceneEditController::PropertyUnitLabel( unsigned int idx ) const
 	return mProperties[idx].unitLabel;
 }
 
+namespace {
+
+// Generate a unique camera name from a user-proposed base + the
+// existing camera-name set in the scene.  If `proposed` isn't taken,
+// returns it verbatim; otherwise appends "_2", "_3", ... until an
+// unused name is found.  At most 1000 suffix attempts before
+// fallback to a timestamp-style suffix; in practice this branch is
+// unreachable since the scene won't accumulate thousands of clones.
+String UniqueCameraName( const String& proposed, const ICameraManager& cams )
+{
+	if( proposed.size() <= 1 ) {
+		// Empty proposal — default to "camera_copy"
+		return String( "camera_copy" );
+	}
+	if( !cams.GetItem( proposed.c_str() ) ) return proposed;
+	char buf[256];
+	for( int i = 2; i < 1000; ++i ) {
+		std::snprintf( buf, sizeof(buf), "%s_%d", proposed.c_str(), i );
+		if( !cams.GetItem( buf ) ) return String( buf );
+	}
+	std::snprintf( buf, sizeof(buf), "%s_%lld", proposed.c_str(), static_cast<long long>( std::time( 0 ) ) );
+	return String( buf );
+}
+
+}  // namespace
+
+bool SceneEditController::CloneActiveCamera(
+	const String& proposedName, char* outName, unsigned int outLen )
+{
+	if( !outName || outLen == 0 ) return false;
+	outName[0] = '\0';
+
+	IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	ICameraManager* cams = const_cast<ICameraManager*>( scene->GetCameras() );
+	if( !cams ) return false;
+
+	// Cancel-and-park BEFORE capturing the snapshot.  The render
+	// thread reads + writes the active camera's stored fields
+	// concurrently (e.g. an in-flight orbit drag updates
+	// target_orientation while we'd otherwise be reading it for the
+	// snapshot).  Parking serialises the read against rendering AND
+	// against any other UI-thread tool that re-issues an edit; the
+	// snapshot fields are doubles / Vector* which would tear under a
+	// concurrent write.  Also serialises against `Job::Add*Camera`
+	// mutating the ICameraManager (any future second clone path).
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	const ICamera* activeCam = scene->GetCamera();
+	if( !activeCam ) return false;
+
+	// Capture inside the lock — see comment above.
+	CameraSnapshot snapshot;
+	if( !CameraIntrospection::CaptureCameraSnapshot( *activeCam, snapshot ) ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::CloneActiveCamera: source camera type not clonable "
+			"(currently only non-ONB Pinhole / ThinLens / Fisheye / Orthographic round-trip)" );
+		return false;
+	}
+
+	// Pick a unique name under the lock so concurrent clones can't
+	// pick the same dedup suffix.
+	const String finalName = UniqueCameraName( proposedName, *cams );
+
+	// Buffer-size precheck: refuse to mutate the scene if the chosen
+	// name won't fit in the caller's buffer.  An after-the-fact check
+	// would leave a registered orphan camera while reporting failure,
+	// which is the worst-of-both outcome (the GUIs would show a
+	// "couldn't add" alert next to a new camera entry in the list).
+	// finalName.size() includes the trailing NUL (RString convention),
+	// so the buffer needs at least that many bytes.
+	if( finalName.size() > outLen ) {
+		outName[0] = '\0';
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::CloneActiveCamera: outName buffer too small for `%s` (need %u, got %u) — not adding camera",
+			finalName.c_str(), static_cast<unsigned>( finalName.size() ), outLen );
+		return false;
+	}
+
+	SceneEdit edit;
+	edit.op             = SceneEdit::AddCamera;
+	edit.objectName     = finalName;
+	edit.cameraSnapshot = snapshot;
+
+	const bool ok = mEditor.Apply( edit );
+	if( !ok ) return false;
+
+	// Write back the chosen name — buffer fits by the precheck above.
+	{
+		const char* s = finalName.c_str();
+		const size_t needed = finalName.size();
+		for( size_t i = 0; i < needed; ++i ) outName[i] = s[i];
+	}
+
+	// Bump the scene epoch so platform UIs poll a fresh camera list.
+	mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+
+	mEditPending.store( true, std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+	return true;
+}
+
 bool SceneEditController::SetProperty( const String& name, const String& valueStr )
 {
 	switch( mSelectionCategory ) {
@@ -1628,6 +1880,10 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 			edit.op = SceneEdit::SetObjectShader;
 			edit.propertyValue = valueStr;
 		}
+		else if( name == String( "interior_medium" ) ) {
+			edit.op = SceneEdit::SetObjectInteriorMedium;
+			edit.propertyValue = valueStr;
+		}
 		else if( name == String( "casts_shadows" ) || name == String( "receives_shadows" ) ) {
 			IObjectManager* objs = const_cast<IObjectManager*>( scene->GetObjects() );
 			const IObject* obj = objs ? objs->GetItem( mSelectionName.c_str() ) : 0;
@@ -1645,8 +1901,26 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 			return false;
 		}
 
-		if( !mEditor.Apply( edit ) ) return false;
-		KickRender();
+		// Cancel-and-park around the Apply: object property edits
+		// (material / shader / interior_medium / shadow flags)
+		// swap pointers the render thread reads per-shading-call.
+		// `AssignMaterial / AssignShader / AssignInteriorMedium`
+		// safe_release the previous pointer; without parking, a
+		// worker mid-shade through the old pointer would race a
+		// destructor.  Same pattern Light / Rasterizer / Film use.
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+		const bool ok = mEditor.Apply( edit );
+		if( !ok ) return false;
+
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
 		return true;
 	}
 
@@ -1752,6 +2026,18 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		lk.unlock();
 		mCV.notify_one();
 		return true;
+	}
+
+	case Category::Material: {
+		// Phase 2 ships Materials as read-only — see
+		// MaterialIntrospection.h for the Phase 4 roadmap.  Any
+		// attempted edit is rejected with a log so users understand
+		// the row isn't editable even though the GUI may submit one.
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::SetProperty: material edits are read-only in Phase 2 "
+			"(attempted to set `%s` on `%s`)",
+			name.c_str(), mSelectionName.c_str() );
+		return false;
 	}
 
 	case Category::None:

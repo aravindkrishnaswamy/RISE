@@ -81,6 +81,7 @@ private let kAccordionSections: [AccordionSection] = [
     AccordionSection(id: "rasterizer",  title: "Rasterizer",      category: .rasterizer),
     AccordionSection(id: "objects",     title: "Objects",         category: .object),
     AccordionSection(id: "lights",      title: "Lights",          category: .light),
+    AccordionSection(id: "materials",   title: "Materials",       category: .material),
     AccordionSection(id: "film",        title: "Output Settings", category: .film),
 ]
 
@@ -96,6 +97,17 @@ struct PropertiesPanel: View {
     @State private var entitiesByCategory: [Int: [String]] = [:]
     @State private var activeNameByCategory: [Int: String] = [:]
     @State private var lastEpoch: UInt = 0
+    // Tracks whether we've already shown the "new cameras only live in
+    // memory" caveat in this session, so we surface it exactly once.
+    @State private var addCameraCaveatShown: Bool = false
+    // Re-entry guard against the "+" button firing a second prompt
+    // while the first NSAlert is still on screen.  NSAlert.runModal()
+    // blocks AppKit's event loop for the alert window but does not
+    // disable the parent panel's button — a synthetic Return-key
+    // event or rapid double-click could open a second alert behind
+    // the first.  Set the flag for the modal's lifetime; the button's
+    // .disabled binding consults it.
+    @State private var addCameraInFlight: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -151,7 +163,12 @@ struct PropertiesPanel: View {
                                     bridge.setSelection(.none, name: "")
                                 }
                                 reload()
-                            }
+                            },
+                            // Only the Cameras section gets the "+" action.
+                            // Other categories return nil → button hidden.
+                            onAddEntity: section.category == .camera
+                                ? { promptForNewCameraName(activeName: activeNameByCategory[section.category.rawValue] ?? "") }
+                                : nil
                         )
                         // Property rows render directly under the
                         // expanded section — keeps the cause/effect
@@ -168,6 +185,69 @@ struct PropertiesPanel: View {
         .frame(minWidth: 240, idealWidth: 280)
         .onAppear { reload() }
         .onChange(of: refreshTrigger) { _, _ in reload() }
+    }
+
+    /// Prompt the user for a new camera name, then call the bridge's
+    /// `addCameraFromActive` to clone the current camera under that
+    /// name.  Default proposal is "<active>_copy".  On first
+    /// successful add per session, also surfaces a caveat alert that
+    /// the new camera lives in memory only (the SceneEditor's
+    /// scene-text round-trip is not yet implemented; reloading the
+    /// .RISEscene file would drop it).
+    private func promptForNewCameraName(activeName: String) {
+        if addCameraInFlight { return }
+        addCameraInFlight = true
+        defer { addCameraInFlight = false }
+
+        let alert = NSAlert()
+        alert.messageText = "Add Camera"
+        alert.informativeText =
+            "Cloning the current camera.  Pick a name for the new camera.\n\n" +
+            "Notes:\n" +
+            "  • The clone is in-memory only — saving the .RISEscene file\n" +
+            "    from the editor does not yet emit added cameras.\n" +
+            "  • Duplicate names get a numeric suffix appended."
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        let proposal = activeName.isEmpty ? "camera_copy" : "\(activeName)_copy"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        input.stringValue = proposal
+        input.becomeFirstResponder()
+        alert.accessoryView = input
+        let response = alert.runModal()
+        if response != .alertFirstButtonReturn {
+            return
+        }
+        let chosenName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let newName = bridge.addCameraFromActive(proposedName: chosenName), !newName.isEmpty else {
+            // Failure cases (no active camera, unclonable type, etc.)
+            // Surface a short alert so the user understands why the
+            // click had no effect — the controller already logged a
+            // warning to RISE_Log.txt with the details.
+            let fail = NSAlert()
+            fail.messageText = "Couldn't add camera"
+            fail.informativeText = "The current camera could not be cloned.  See RISE_Log.txt for details."
+            fail.alertStyle = .warning
+            fail.runModal()
+            return
+        }
+        // Promote the new camera to the panel's selection so the user
+        // sees its properties immediately.
+        bridge.setSelection(.camera, name: newName)
+        reload()
+
+        // One-shot persistence caveat per session.
+        if !addCameraCaveatShown {
+            addCameraCaveatShown = true
+            let caveat = NSAlert()
+            caveat.messageText = "New camera \"\(newName)\" added"
+            caveat.informativeText =
+                "Heads up — added cameras are kept in memory only until the\n" +
+                "scene-text round-trip lands.  Save your scene file from a\n" +
+                "text editor to preserve them across reloads."
+            caveat.alertStyle = .informational
+            caveat.runModal()
+        }
     }
 
     private func reload() {
@@ -215,6 +295,12 @@ private struct AccordionSectionView: View {
     let selectedName: String
     let onSelectRow: (String) -> Void
     let onToggle: (Bool) -> Void
+    /// Optional "+" button action.  Currently only the Cameras section
+    /// supplies this; other sections pass `nil` and the button is
+    /// hidden.  When the section is collapsed the button is also
+    /// hidden (the only "add" action belongs alongside an open
+    /// section's content).
+    let onAddEntity: (() -> Void)?
 
     var body: some View {
         DisclosureGroup(
@@ -245,12 +331,24 @@ private struct AccordionSectionView: View {
                 }
             },
             label: {
-                Text(section.title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture { onToggle(!isExpanded) }
+                HStack(spacing: 4) {
+                    Text(section.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onTapGesture { onToggle(!isExpanded) }
+                    if isExpanded, let onAdd = onAddEntity {
+                        Button {
+                            onAdd()
+                        } label: {
+                            Image(systemName: "plus.circle")
+                                .font(.system(size: 12))
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Add — clone the current entity under a new name")
+                    }
+                }
             }
         )
         .padding(.vertical, 2)

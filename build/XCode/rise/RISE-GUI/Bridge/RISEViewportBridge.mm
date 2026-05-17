@@ -587,6 +587,7 @@ private:
         case 3: return RISEViewportPanelModeObject;
         case 4: return RISEViewportPanelModeLight;
         case 5: return RISEViewportPanelModeFilm;
+        case 6: return RISEViewportPanelModeMaterial;
         default: return RISEViewportPanelModeNone;
     }
 }
@@ -626,6 +627,7 @@ private:
         case 3: return RISEViewportCategoryObject;
         case 4: return RISEViewportCategoryLight;
         case 5: return RISEViewportCategoryFilm;
+        case 6: return RISEViewportCategoryMaterial;
         default: return RISEViewportCategoryNone;
     }
 }
@@ -652,6 +654,20 @@ private:
 - (NSUInteger)sceneEpoch {
     if (!_controller) return 0;
     return static_cast<NSUInteger>( RISE_API_SceneEditController_SceneEpoch(_controller) );
+}
+
+- (nullable NSString *)addCameraFromActive:(NSString *)proposedName {
+    if (!_controller) return nil;
+    const char* utf8 = proposedName ? [proposedName UTF8String] : "";
+    // 256 bytes covers any realistic camera name; the controller-side
+    // dedup loop won't produce strings longer than ~base+10 chars
+    // before falling back to a timestamp suffix.
+    char outName[256] = {0};
+    if (!RISE_API_SceneEditController_AddCameraFromActive(
+            _controller, utf8, outName, sizeof(outName))) {
+        return nil;
+    }
+    return [NSString stringWithUTF8String:outName];
 }
 
 - (NSString *)panelHeader {

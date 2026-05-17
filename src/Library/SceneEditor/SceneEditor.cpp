@@ -39,6 +39,8 @@
 #include "../Interfaces/ILight.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Interfaces/ILightManager.h"
+#include "../Interfaces/IMedium.h"
+#include "../Interfaces/IJob.h"
 #include "../Interfaces/IKeyframable.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Utilities/Math3D/Math3D.h"
@@ -51,6 +53,7 @@ SceneEditor::SceneEditor( IScenePriv& scene )
 : mScene( scene )
 , mMaterialManager( 0 )
 , mShaderManager( 0 )
+, mJob( 0 )
 , mHistory()
 , mLastScope( Dirty_None )
 , mCompositeDepth( 0 )
@@ -420,6 +423,35 @@ IObjectPriv* SceneEditor::FindObject( const String& name ) const
 
 namespace {
 
+// Trim surrounding whitespace + parse the common bool spellings the
+// parser's ParseStateBag::GetBool accepts (`true`/`false`/`TRUE`/
+// `FALSE`/`1`/`0`/`yes`/`no` + case variants).  Returns `false` on
+// parse failure; `out` is overwritten only on success.  Used by the
+// SetLightProperty shootphotons branch + its undo/redo counterparts
+// so the edit-time vocabulary matches what users can write in their
+// scene files.
+bool ParseLenientBool( const String& v, bool& out )
+{
+	// Find first / last non-whitespace.
+	const char* p = v.c_str();
+	const char* end = p + (v.size() > 0 ? v.size() - 1 : 0);  // RString length excludes trailing NUL
+	while( p < end && ( *p == ' ' || *p == '\t' ) ) ++p;
+	while( end > p && ( end[-1] == ' ' || end[-1] == '\t' ) ) --end;
+	const size_t n = static_cast<size_t>( end - p );
+	auto eqi = [&]( const char* s, size_t len ) -> bool {
+		if( n != len ) return false;
+		for( size_t i = 0; i < n; ++i ) {
+			char a = p[i];
+			if( a >= 'A' && a <= 'Z' ) a = static_cast<char>( a - 'A' + 'a' );
+			if( a != s[i] ) return false;
+		}
+		return true;
+	};
+	if( eqi( "true",  4 ) || eqi( "yes", 3 ) || eqi( "1", 1 ) ) { out = true;  return true; }
+	if( eqi( "false", 5 ) || eqi( "no",  2 ) || eqi( "0", 1 ) ) { out = false; return true; }
+	return false;
+}
+
 // Translate a chunk-descriptor parameter name to the keyframe-API name
 // that `ILight::KeyframeFromParameters` accepts.  The two namespaces
 // diverged historically — chunk names follow the parser vocabulary
@@ -517,6 +549,31 @@ String FindManagerName( MgrT* mgr, const ItemT* target )
 	return cb.found;
 }
 
+// Reverse-lookup a medium pointer to its registered name through
+// IJob's enumeration + lookup pair.  Media live in `Job::mediaMap`
+// rather than a real manager (every other entity has an IManager<T>
+// subclass), so the lookup goes through the IJob virtuals
+// `GetMedium` / `EnumerateMediumNames` rather than a manager
+// template.  Same O(N) cost / cadence as `FindManagerName`.
+String FindMediumName( const IJob* job, const IMedium* target )
+{
+	if( !job || !target ) return String();
+	struct Cb : public IEnumCallback<const char*> {
+		const IJob*    job;
+		const IMedium* target;
+		String         found;
+		bool operator()( const char* const& name ) override {
+			if( job->GetMedium( name ) == target ) { found = String( name ); return false; }
+			return true;
+		}
+	};
+	Cb cb;
+	cb.job    = job;
+	cb.target = target;
+	job->EnumerateMediumNames( cb );
+	return cb.found;
+}
+
 }  // namespace
 
 void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit )
@@ -558,6 +615,20 @@ void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		obj.SetShadowParams( ( flags & 1 ) != 0, ( flags & 2 ) != 0 );
 		break;
 	}
+	case SceneEdit::SetObjectInteriorMedium:
+		// Empty propertyValue OR the literal string "none" is the
+		// "clear interior medium" sentinel.  Both match the load-
+		// time parser's `interior_medium "none"` behaviour (which
+		// short-circuits the SetObjectInteriorMedium call entirely
+		// — see AsciiSceneParser.cpp StandardObjectAsciiChunkParser).
+		// Non-"none" non-empty resolves through IJob::GetMedium.
+		if( edit.propertyValue.size() <= 1 || edit.propertyValue == String( "none" ) ) {
+			obj.ClearInteriorMedium();
+		} else if( mJob ) {
+			const IMedium* med = mJob->GetMedium( edit.propertyValue.c_str() );
+			if( med ) obj.AssignInteriorMedium( *med );
+		}
+		break;
 	default:
 		// Caller guarantees IsObjectOp(edit.op) — this is a coding
 		// error if reached, but we silently no-op rather than crash.
@@ -646,6 +717,27 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 			edit.prevShadowFlags = static_cast<Scalar>(
 				( obj->DoesCastShadows()    ? 1 : 0 )
 			  | ( obj->DoesReceiveShadows() ? 2 : 0 ) );
+			break;
+		case SceneEdit::SetObjectInteriorMedium:
+			// Empty propertyValue OR the literal "none" = "clear the
+			// interior medium" (parser-parity sentinel; see
+			// SceneEdit.h doc).  Non-"none" non-empty must resolve to
+			// a registered medium.  Validate BEFORE pushing history —
+			// same rationale as material / shader: silently no-op'ing
+			// a stale/mistyped name would still push a poison undo
+			// entry.
+			if( edit.propertyValue.size() > 1 && edit.propertyValue != String( "none" ) ) {
+				if( !mJob || !mJob->GetMedium( edit.propertyValue.c_str() ) ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"SceneEditor: interior_medium edit rejected — `%s` is not a registered medium",
+						edit.propertyValue.c_str() );
+					return false;
+				}
+			}
+			// Reverse-lookup the prior medium for undo.  Empty result
+			// = "no medium was bound"; undo's ClearInteriorMedium path
+			// handles that round-trip cleanly.
+			edit.prevPropertyValue = FindMediumName( mJob, obj->GetInteriorMedium() );
 			break;
 		default:
 			break;
@@ -746,6 +838,35 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		return true;
 	}
 
+	if( edit.op == SceneEdit::AddCamera )
+	{
+		// objectName carries the NEW camera's name.  cameraSnapshot
+		// carries the full source-camera state at Apply time.
+		// prevPropertyValue captures the previously-active camera's
+		// name so undo can restore the prior selection (Add*Camera
+		// auto-promotes the new camera to active under the "last
+		// added wins" policy, so without the capture we wouldn't
+		// know which camera was active before the clone).
+		if( !mJob ) return false;
+		if( edit.objectName.size() <= 1 ) return false;
+
+		edit.prevPropertyValue = String( mJob->GetActiveCameraName().c_str() );
+
+		if( !CameraIntrospection::AddCameraFromSnapshot( *mJob, edit.objectName, edit.cameraSnapshot ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor: AddCamera failed for `%s` (duplicate name or unknown type)",
+				edit.objectName.c_str() );
+			return false;
+		}
+		// Add*Camera auto-promoted the new camera; ensure the active
+		// matches `edit.objectName` for the caller's expectation.
+		mJob->SetActiveCamera( edit.objectName.c_str() );
+
+		mLastScope = Dirty_Camera;
+		mHistory.Push( edit );
+		return true;
+	}
+
 	if( edit.op == SceneEdit::SetLightProperty )
 	{
 		// objectName carries the light's manager name; propertyName
@@ -754,6 +875,27 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		if( !lights ) return false;
 		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
 		if( !light ) return false;
+
+		// `shootphotons` is a non-keyframable bool — the keyframe
+		// machinery has no parameter for it, so dispatch to the
+		// dedicated ILight::SetCanGeneratePhotons setter instead.
+		// Capture prev as "true"/"false" so undo replays through the
+		// same path.  No RegenerateData call: the flag is read lazily
+		// during the next photon-mapping pass; nothing to bake.
+		if( edit.propertyName == String( "shootphotons" ) ) {
+			edit.prevPropertyValue = String( light->CanGeneratePhotons() ? "true" : "false" );
+			bool newVal = false;
+			if( !ParseLenientBool( edit.propertyValue, newVal ) ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: shootphotons edit rejected — `%s` is not a recognised boolean (try true/false/yes/no/1/0)",
+					edit.propertyValue.c_str() );
+				return false;
+			}
+			light->SetCanGeneratePhotons( newVal );
+			mLastScope = Dirty_Camera;
+			mHistory.Push( edit );
+			return true;
+		}
 
 		// Capture prev value through the same readback the introspection
 		// panel uses, so undo replays losslessly via the keyframe path.
@@ -827,6 +969,14 @@ bool SceneEditor::Undo()
 						obj->SetShadowParams( ( flags & 1 ) != 0, ( flags & 2 ) != 0 );
 						break;
 					}
+					case SceneEdit::SetObjectInteriorMedium:
+						if( inner.prevPropertyValue.size() <= 1 ) {
+							obj->ClearInteriorMedium();
+						} else if( mJob ) {
+							const IMedium* med = mJob->GetMedium( inner.prevPropertyValue.c_str() );
+							if( med ) obj->AssignInteriorMedium( *med );
+						}
+						break;
 					default:
 						RestoreObjectTransform( *obj, inner.prevTransform );
 						RunObjectInvariantChain( *obj );
@@ -873,6 +1023,39 @@ bool SceneEditor::Undo()
 				}
 				sawPropertyOp = true;
 			}
+			else if( inner.op == SceneEdit::SetLightProperty )
+			{
+				// Mirror the single-edit Undo path: shootphotons through
+				// the direct setter, everything else through keyframe.
+				ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
+				ILightPriv* light = lights ? lights->GetItem( inner.objectName.c_str() ) : 0;
+				if( light ) {
+					if( inner.propertyName == String( "shootphotons" ) ) {
+						bool prevVal = false;
+						ParseLenientBool( inner.prevPropertyValue, prevVal );
+						light->SetCanGeneratePhotons( prevVal );
+					} else {
+						IKeyframeParameter* p = light->KeyframeFromParameters(
+							ChunkNameToKeyframeName( inner.propertyName ), inner.prevPropertyValue );
+						if( p ) {
+							light->SetIntermediateValue( *p );
+							safe_release( p );
+							light->RegenerateData();
+						}
+					}
+				}
+				sawPropertyOp = true;
+			}
+			else if( inner.op == SceneEdit::AddCamera )
+			{
+				if( mJob ) {
+					mJob->RemoveCamera( inner.objectName.c_str() );
+					if( inner.prevPropertyValue.size() > 1 ) {
+						mJob->SetActiveCamera( inner.prevPropertyValue.c_str() );
+					}
+				}
+				sawCameraOp = true;
+			}
 		}
 		if( cam ) cam->RegenerateData();
 
@@ -914,6 +1097,16 @@ bool SceneEditor::Undo()
 			obj->SetShadowParams( ( flags & 1 ) != 0, ( flags & 2 ) != 0 );
 			break;
 		}
+		case SceneEdit::SetObjectInteriorMedium:
+			if( edit.prevPropertyValue.size() <= 1 ) {
+				// Empty prev = object had no medium before; restore
+				// "no medium" state via ClearInteriorMedium.
+				obj->ClearInteriorMedium();
+			} else if( mJob ) {
+				const IMedium* med = mJob->GetMedium( edit.prevPropertyValue.c_str() );
+				if( med ) obj->AssignInteriorMedium( *med );
+			}
+			break;
 		default:
 			// Transform op.
 			RestoreObjectTransform( *obj, edit.prevTransform );
@@ -957,12 +1150,45 @@ bool SceneEditor::Undo()
 		return true;
 	}
 
+	if( edit.op == SceneEdit::AddCamera )
+	{
+		// Inverse: remove the just-added camera, then restore the
+		// pre-Add active camera (RemoveCamera auto-promotes
+		// lexicographically, which doesn't match the user's prior
+		// selection — explicit SetActiveCamera fixes that).  When
+		// the captured prev camera no longer exists (some other code
+		// path removed it between Apply and Undo — rare today, but
+		// possible once a Phase-4 RemoveCamera op lands), log and
+		// leave the auto-promoted active in place rather than
+		// silently swallowing the inconsistency.
+		if( !mJob ) return false;
+		mJob->RemoveCamera( edit.objectName.c_str() );
+		if( edit.prevPropertyValue.size() > 1 ) {
+			if( !mJob->SetActiveCamera( edit.prevPropertyValue.c_str() ) ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: undo of AddCamera could not restore prior active `%s` (no longer registered); auto-promoted camera remains active",
+					edit.prevPropertyValue.c_str() );
+			}
+		}
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
 	if( edit.op == SceneEdit::SetLightProperty )
 	{
 		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
 		if( !lights ) return false;
 		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
 		if( !light ) return false;
+		// shootphotons round-trips through the direct setter, not the
+		// keyframe path.  Match the Apply branch above.
+		if( edit.propertyName == String( "shootphotons" ) ) {
+			bool prevVal = false;
+			ParseLenientBool( edit.prevPropertyValue, prevVal );  // prev was captured by us, can't fail
+			light->SetCanGeneratePhotons( prevVal );
+			mLastScope = Dirty_Camera;
+			return true;
+		}
 		// Replay prev value through the same keyframe machinery.
 		IKeyframeParameter* p = light->KeyframeFromParameters(
 			ChunkNameToKeyframeName( edit.propertyName ), edit.prevPropertyValue );
@@ -1006,7 +1232,18 @@ bool SceneEditor::Redo()
 				if( obj )
 				{
 					ApplyObjectOpForward( *obj, inner );
-					RunObjectInvariantChain( *obj );
+					// Spatial structure only needs invalidating for
+					// transform ops; property-style ops (material /
+					// shader / shadow / interior_medium) leave the
+					// bbox alone.  Symmetric with Apply()'s gate.
+					const bool isTransformOp =
+						inner.op == SceneEdit::TranslateObject
+					 || inner.op == SceneEdit::RotateObjectArb
+					 || inner.op == SceneEdit::SetObjectPosition
+					 || inner.op == SceneEdit::SetObjectOrientation
+					 || inner.op == SceneEdit::SetObjectScale
+					 || inner.op == SceneEdit::SetObjectStretch;
+					if( isTransformOp ) RunObjectInvariantChain( *obj );
 				}
 				sawObjectOp = true;
 			}
@@ -1036,6 +1273,38 @@ bool SceneEditor::Redo()
 				}
 				sawPropertyOp = true;
 			}
+			else if( inner.op == SceneEdit::AddCamera )
+			{
+				if( mJob ) {
+					CameraIntrospection::AddCameraFromSnapshot(
+						*mJob, inner.objectName, inner.cameraSnapshot );
+					mJob->SetActiveCamera( inner.objectName.c_str() );
+				}
+				sawCameraOp = true;
+			}
+			else if( inner.op == SceneEdit::SetLightProperty )
+			{
+				// Mirror the single-edit Redo path: shootphotons via
+				// the direct setter, everything else via keyframe.
+				ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
+				ILightPriv* light = lights ? lights->GetItem( inner.objectName.c_str() ) : 0;
+				if( light ) {
+					if( inner.propertyName == String( "shootphotons" ) ) {
+						bool newVal = false;
+						ParseLenientBool( inner.propertyValue, newVal );
+						light->SetCanGeneratePhotons( newVal );
+					} else {
+						IKeyframeParameter* p = light->KeyframeFromParameters(
+							ChunkNameToKeyframeName( inner.propertyName ), inner.propertyValue );
+						if( p ) {
+							light->SetIntermediateValue( *p );
+							safe_release( p );
+							light->RegenerateData();
+						}
+					}
+				}
+				sawPropertyOp = true;
+			}
 		}
 		if( cam ) cam->RegenerateData();
 		if( sawObjectOp )                          mLastScope = Dirty_ObjectTransform;
@@ -1051,7 +1320,18 @@ bool SceneEditor::Redo()
 		IObjectPriv* obj = FindObject( edit.objectName );
 		if( !obj ) return false;
 		ApplyObjectOpForward( *obj, edit );
-		RunObjectInvariantChain( *obj );
+		// Property-style ops don't move geometry — symmetric with
+		// Apply()'s isTransformOp gate.  Pre-Phase-1 this path ran
+		// the chain unconditionally, costing a spurious BSP
+		// invalidation per material/shader/shadow redo.
+		const bool isTransformOp =
+			edit.op == SceneEdit::TranslateObject
+		 || edit.op == SceneEdit::RotateObjectArb
+		 || edit.op == SceneEdit::SetObjectPosition
+		 || edit.op == SceneEdit::SetObjectOrientation
+		 || edit.op == SceneEdit::SetObjectScale
+		 || edit.op == SceneEdit::SetObjectStretch;
+		if( isTransformOp ) RunObjectInvariantChain( *obj );
 		mLastScope = Dirty_ObjectTransform;
 		return true;
 	}
@@ -1069,12 +1349,35 @@ bool SceneEditor::Redo()
 		return true;
 	}
 
+	if( edit.op == SceneEdit::AddCamera )
+	{
+		// Re-create the cloned camera from the captured snapshot.
+		// Mirrors Apply: deterministic recreation even if the source
+		// has changed in the interim.
+		if( !mJob ) return false;
+		if( !CameraIntrospection::AddCameraFromSnapshot( *mJob, edit.objectName, edit.cameraSnapshot ) ) {
+			return false;
+		}
+		mJob->SetActiveCamera( edit.objectName.c_str() );
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
 	if( edit.op == SceneEdit::SetLightProperty )
 	{
 		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
 		if( !lights ) return false;
 		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
 		if( !light ) return false;
+		// shootphotons re-replays through the direct setter to match
+		// the Apply / Undo paths.
+		if( edit.propertyName == String( "shootphotons" ) ) {
+			bool newVal = false;
+			ParseLenientBool( edit.propertyValue, newVal );  // value was already validated by Apply
+			light->SetCanGeneratePhotons( newVal );
+			mLastScope = Dirty_Camera;
+			return true;
+		}
 		// Translate chunk-name → keyframe-name before dispatching:
 		// the panel surfaces chunk vocabulary (power/inner/outer)
 		// while ILight::KeyframeFromParameters expects keyframe

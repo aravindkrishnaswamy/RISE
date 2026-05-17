@@ -29,6 +29,8 @@
 #include "../Interfaces/IMaterialManager.h"
 #include "../Interfaces/IShader.h"
 #include "../Interfaces/IShaderManager.h"
+#include "../Interfaces/IMedium.h"
+#include "../Interfaces/IJob.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Parsers/ChunkDescriptor.h"
 
@@ -98,13 +100,80 @@ String FindManagerName( const MgrT* mgr, const ItemT* target )
 	return cb.found;
 }
 
+// Collect medium presets via the IJob enumeration callback.  Mirrors
+// `CollectManagerPresets` but routes through IJob's GetMedium /
+// EnumerateMediumNames pair since media live in a Job-private
+// std::map<string, IMedium*> rather than a real IManager<T>.
+//
+// Prepends a synthetic "(none)" entry with an empty value so the
+// user can clear the interior medium binding from the panel.  Apply
+// translates empty-value -> ClearInteriorMedium, matching parser-
+// load behaviour where `interior_medium "none"` leaves the interior
+// unset.
+std::vector<ParameterPreset> CollectMediumPresets( const IJob* job )
+{
+	std::vector<ParameterPreset> out;
+	{
+		// Synthetic "clear" entry, always first in the menu.  Label
+		// uses a leading "—" so it can't visually collide with a
+		// user-registered medium named "(none)" — the dispatch is
+		// by VALUE (empty string for clear, registered name for a
+		// real medium) so a name collision is functionally safe, but
+		// a distinct label keeps the picker readable.
+		ParameterPreset clear;
+		clear.label = std::string( "— (none)" );
+		clear.value = std::string();   // empty = clear
+		out.push_back( clear );
+	}
+	if( !job ) return out;
+	struct Cb : public IEnumCallback<const char*> {
+		std::vector<ParameterPreset>* out;
+		bool operator()( const char* const& name ) override {
+			if( name ) {
+				ParameterPreset p;
+				p.label = std::string( name );
+				p.value = std::string( name );
+				out->push_back( p );
+			}
+			return true;
+		}
+	};
+	Cb cb;
+	cb.out = &out;
+	job->EnumerateMediumNames( cb );
+	return out;
+}
+
+// Reverse-lookup a medium pointer to its registered name.  Empty if
+// the object has no interior medium or the pointer isn't registered.
+String FindMediumName( const IJob* job, const IMedium* target )
+{
+	if( !job || !target ) return String();
+	struct Cb : public IEnumCallback<const char*> {
+		const IJob*    job;
+		const IMedium* target;
+		String         found;
+		bool operator()( const char* const& name ) override {
+			if( job->GetMedium( name ) == target ) { found = String( name ); return false; }
+			return true;
+		}
+	};
+	Cb cb;
+	cb.job    = job;
+	cb.target = target;
+	job->EnumerateMediumNames( cb );
+	return cb.found;
+}
+
 // Read a descriptor parameter's current value as a parser-formatted
 // string.  Returns empty for params we don't yet have a runtime
 // reader for (geometry name, modifier name, quaternion / matrix
-// decomposition, interior_medium, radiance_*) — the panel surfaces
-// those read-only with the descriptor's default-hint.
+// decomposition, radiance_*) — the panel surfaces those read-only
+// with the descriptor's default-hint.  `interior_medium` reads back
+// through the optional IJob* (reverse-lookup) when provided.
 String ReadObjectParam( const String& paramName, const IObject& obj,
-	const IMaterialManager* materials, const IShaderManager* shaders )
+	const IMaterialManager* materials, const IShaderManager* shaders,
+	const IJob* job )
 {
 	const Matrix4 m = obj.GetFinalTransformMatrix();
 	char buf[256];
@@ -148,6 +217,17 @@ String ReadObjectParam( const String& paramName, const IObject& obj,
 	if( paramName == String( "receives_shadows" ) ) {
 		return String( obj.DoesReceiveShadows() ? "true" : "false" );
 	}
+	if( paramName == String( "interior_medium" ) ) {
+		const IMedium* med = obj.GetInteriorMedium();
+		const String found = FindMediumName( job, med );
+		// Empty result = "no interior medium bound".  Return empty
+		// (NOT "none") so the panel value field is blank — matching
+		// how `material`/`shader` rows display the actual bound name.
+		// The preset list's synthetic "(none)" entry has an empty
+		// value too, so re-selecting it routes through
+		// ClearInteriorMedium symmetrically.
+		return found;
+	}
 	return String();
 }
 
@@ -164,13 +244,14 @@ bool IsRuntimeEditable( const std::string& paramName )
 	if( paramName == "shader" )           return true;
 	if( paramName == "casts_shadows" )    return true;
 	if( paramName == "receives_shadows" ) return true;
+	if( paramName == "interior_medium" )  return true;
 	return false;
 }
 
 }  // namespace
 
 std::vector<CameraProperty> ObjectIntrospection::Inspect( const String& name, const IObject& obj,
-	const IMaterialManager* materials, const IShaderManager* shaders )
+	const IMaterialManager* materials, const IShaderManager* shaders, const IJob* job )
 {
 	std::vector<CameraProperty> rows;
 
@@ -202,19 +283,22 @@ std::vector<CameraProperty> ObjectIntrospection::Inspect( const String& name, co
 		cp.description = String( p.description.c_str() );
 		cp.unitLabel   = String( p.unitLabel.c_str() );
 
-		// Add presets for material / shader rows from their managers.
-		if( p.name == "material" )  cp.presets = CollectManagerPresets( materials );
-		else if( p.name == "shader" ) cp.presets = CollectManagerPresets( shaders );
+		// Add presets for material / shader / interior_medium rows
+		// from their respective lookup sources.
+		if( p.name == "material" )            cp.presets = CollectManagerPresets( materials );
+		else if( p.name == "shader" )         cp.presets = CollectManagerPresets( shaders );
+		else if( p.name == "interior_medium" ) cp.presets = CollectMediumPresets( job );
 		else cp.presets = p.presets;
 
-		const String currentValue = ReadObjectParam( cp.name, obj, materials, shaders );
+		const String currentValue = ReadObjectParam( cp.name, obj, materials, shaders, job );
 		if( IsRuntimeEditable( p.name ) ) {
 			cp.value    = currentValue.size() > 1 ? currentValue : String();
 			cp.editable = true;
-			// Material / shader edits need a manager — if absent,
-			// degrade to read-only.
+			// Material / shader / interior_medium edits need their
+			// lookup source — if absent, degrade to read-only.
 			if( p.name == "material" && !materials ) cp.editable = false;
 			if( p.name == "shader"   && !shaders   ) cp.editable = false;
+			if( p.name == "interior_medium" && !job ) cp.editable = false;
 		} else {
 			cp.value    = currentValue.size() > 1
 				? currentValue

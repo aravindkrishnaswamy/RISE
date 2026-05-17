@@ -155,7 +155,8 @@ public:
         Rasterizer = 2,
         Object     = 3,
         Light      = 4,
-        Film       = 5    ///< Output Settings (single Film per scene)
+        Film       = 5,   ///< Output Settings (single Film per scene)
+        Material   = 6    ///< Materials (read-only in Phase 2)
     };
 
     /// Mirrors RISE::SceneEditController::Category — identical numeric
@@ -168,7 +169,8 @@ public:
         Rasterizer = 2,
         Object     = 3,
         Light      = 4,
-        Film       = 5    ///< Output Settings (single Film per scene)
+        Film       = 5,   ///< Output Settings (single Film per scene)
+        Material   = 6    ///< Materials (read-only in Phase 2)
     };
 
     PanelMode panelMode() const;
@@ -205,6 +207,20 @@ public:
     /// properties panel watches it and re-pulls entity lists when it
     /// advances.
     unsigned int sceneEpoch() const;
+
+    /// Clone the currently-active camera under a new name and
+    /// promote the clone to active.  `proposedName` is the user's
+    /// choice; on duplicate the controller appends a numeric dedup
+    /// suffix.  Returns the actual name registered (the proposal
+    /// verbatim if available, or a deduplicated variant), or an
+    /// empty QString on no-active-camera / unclonable type.
+    ///
+    /// Persistence caveat: the clone lives only in the in-memory
+    /// Scene/Job.  Reloading the .RISEscene file from the editor
+    /// drops it (scene-text round-trip is the pending Phase 6
+    /// work).  Caller should surface a one-shot warning the first
+    /// time per session.
+    QString addCameraFromActive(const QString& proposedName);
 
 signals:
     /// Emitted on the UI thread with each completed preview frame.

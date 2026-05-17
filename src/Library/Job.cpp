@@ -5315,6 +5315,21 @@ bool Job::SetObjectInteriorMedium(
 	return true;
 }
 
+const IMedium* Job::GetMedium( const char* name ) const
+{
+	if( !name ) return 0;
+	MediumMap::const_iterator it = mediaMap.find( String( name ) );
+	return it == mediaMap.end() ? 0 : it->second;
+}
+
+void Job::EnumerateMediumNames( IEnumCallback<const char*>& cb ) const
+{
+	for( MediumMap::const_iterator it = mediaMap.begin(); it != mediaMap.end(); ++it ) {
+		const char* n = it->first.c_str();
+		if( !cb( n ) ) return;
+	}
+}
+
 //! Creates a CSG object
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddCSGObject(

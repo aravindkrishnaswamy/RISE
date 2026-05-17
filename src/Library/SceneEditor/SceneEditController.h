@@ -80,7 +80,8 @@ namespace RISE
 			Rasterizer = 2,   ///< Rasterizer section, picking activates SetActiveRasterizer
 			Object     = 3,   ///< Objects section, picking from list or viewport
 			Light      = 4,   ///< Lights section
-			Film       = 5    ///< Output Settings section (single Film per scene)
+			Film       = 5,   ///< Output Settings section (single Film per scene)
+			Material   = 6    ///< Materials section (read-only in Phase 2)
 		};
 
 		//! @param job                     borrowed; caller keeps alive.
@@ -320,7 +321,8 @@ namespace RISE
 			Rasterizer = 2,
 			Object     = 3,
 			Light      = 4,
-			Film       = 5    ///< Output Settings panel for the scene's IFilm
+			Film       = 5,   ///< Output Settings panel for the scene's IFilm
+			Material   = 6    ///< Materials panel (read-only in Phase 2)
 		};
 
 		PanelMode CurrentPanelMode() const;
@@ -364,6 +366,23 @@ namespace RISE
 		//! parse fails or the property is read-only.  Currently routes
 		//! to camera properties only (object editing is future work).
 		bool SetProperty( const String& name, const String& valueStr );
+
+		//! Clone the currently-active camera under a new name and
+		//! promote the clone to active.  `proposedName` is the user's
+		//! choice; on duplicate the controller appends a numeric
+		//! dedup suffix so the call always succeeds when there IS an
+		//! active camera to clone.  The chosen name is written into
+		//! `outName` (NUL-terminated; caller-owned buffer of
+		//! `outLen` bytes).  Returns false on no-active-camera, an
+		//! unsupported camera type, or `outLen == 0`.  Bumps
+		//! `SceneEpoch` so platform UIs auto-rebuild the camera list.
+		//!
+		//! Persistence caveat: the clone lives in the in-memory
+		//! Scene/Job only.  Reloading the .RISEscene file via
+		//! `LoadAsciiScene` drops it — the SceneEditor's scene-text
+		//! round-trip (Phase 6 serializer) is still pending.
+		bool CloneActiveCamera( const String& proposedName,
+		                        char* outName, unsigned int outLen );
 
 	protected:
 		//! Test override point.  Production override calls

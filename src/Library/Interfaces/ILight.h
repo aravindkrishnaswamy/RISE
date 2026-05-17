@@ -43,6 +43,18 @@ namespace RISE
 		//! Asks if the light can generate photons for the purpose of photon mapping
 		virtual bool CanGeneratePhotons() const = 0;
 
+		//! Toggle photon-mapping eligibility at runtime.  Used by the
+		//! interactive editor's `shootphotons` row.  Default impl is a
+		//! no-op so out-of-tree subclasses still link AND so light
+		//! kinds that don't carry photon-mapping storage
+		//! (AmbientLight / DirectionalLight) silently absorb the edit
+		//! — `CanGeneratePhotons()` returns false unconditionally for
+		//! those kinds so the editor doesn't surface the row in the
+		//! first place.  Concrete photon-capable types
+		//! (PointLight / SpotLight) override to write their stored
+		//! `bShootPhotons` flag.
+		virtual void SetCanGeneratePhotons( bool /*b*/ ) {}
+
 		//! Asks the light for its radiant exitance
 		virtual RISEPel radiantExitance() const = 0;
 

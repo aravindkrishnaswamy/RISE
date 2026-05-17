@@ -71,6 +71,12 @@ private:
     using Category = ViewportBridge::Category;
     using SectionWidgets = ViewportPropertiesInternal::AccordionSectionWidgets;
 
+    /// Show the "Add Camera" modal and, on OK, route through the
+    /// bridge.  Shows a one-shot caveat alert on first successful add
+    /// in the session noting that new cameras live in memory only
+    /// until the scene-text round-trip lands.
+    void onAddCameraClicked();
+
     ViewportBridge*                 m_bridge = nullptr;
     QLabel*                         m_headerLabel = nullptr;
     QVBoxLayout*                    m_listLayout = nullptr;
@@ -82,6 +88,9 @@ private:
     Category                        m_currentSelectionCat = Category::None;
     QString                         m_currentSelectionName;
     unsigned int                    m_lastEpoch = 0;
+    /// Tracks whether we've already surfaced the in-memory-only caveat
+    /// in this session, so the alert fires exactly once per session.
+    bool                            m_addCameraCaveatShown = false;
 
     // Re-entry guard: a ScrubHandle drag drives setProperty → re-render
     // → imageUpdated → refresh().  Rebuilding the property rows would

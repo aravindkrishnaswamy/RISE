@@ -358,6 +358,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/SceneEditor/LightIntrospection.cpp"
     "${RISE_LIB}/SceneEditor/RasterizerIntrospection.cpp"
     "${RISE_LIB}/SceneEditor/FilmIntrospection.cpp"
+    "${RISE_LIB}/SceneEditor/MaterialIntrospection.cpp"
     "${RISE_LIB}/SceneEditor/ChunkDescriptorRegistry.cpp"
 
     # SRCLIBMISC

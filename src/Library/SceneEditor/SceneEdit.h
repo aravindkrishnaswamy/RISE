@@ -22,6 +22,81 @@
 
 namespace RISE
 {
+	//! Value-typed snapshot of an ICamera's stored state.  Used by
+	//! `SceneEdit::AddCamera` so Redo can re-create the cloned
+	//! camera deterministically even if the source camera's state
+	//! changed between the original Apply and the Redo.
+	//!
+	//! `type` discriminator picks which subset of fields the Add*
+	//! factory consumes — the unused fields carry zeros and are
+	//! harmless if read.  Kept trivially-copyable so it composes
+	//! into the SceneEdit value-record.
+	struct CameraSnapshot
+	{
+		enum Type { Pinhole = 0, ThinLens = 1, Fisheye = 2, Orthographic = 3 };
+
+		int          type;
+
+		// Shared across all camera kinds.
+		double       location[3];
+		double       lookat[3];
+		double       up[3];
+		double       exposure;
+		double       scanningRate;
+		double       pixelRate;
+		double       orientation[3];
+		double       target_orientation[2];
+		//! Source camera's pixelAR.  The Add*Camera factories read
+		//! pixelAR from the scene's active Film (last-Set wins), but
+		//! `SetPixelAR` lets a camera diverge from the Film value.
+		//! Captured here so the clone matches the source even after
+		//! the Film's pixelAR has moved.
+		double       pixelAR;
+
+		// Pinhole / ThinLens.
+		double       iso;
+		double       fov;             // Pinhole only
+
+		// ThinLens.
+		double       sensorSize;
+		double       focalLength;
+		double       fstop;
+		double       focusDistance;
+		double       sceneUnitMeters;
+		unsigned int apertureBlades;
+		double       apertureRotation;
+		double       anamorphicSqueeze;
+		double       tiltX;
+		double       tiltY;
+		double       shiftX;
+		double       shiftY;
+
+		// Fisheye.
+		double       fisheyeScale;
+
+		// Orthographic.
+		double       viewportScale[2];
+
+		CameraSnapshot()
+		: type( Pinhole )
+		, exposure( 0 ), scanningRate( 0 ), pixelRate( 0 )
+		, pixelAR( 1.0 )
+		, iso( 0 ), fov( 0 )
+		, sensorSize( 0 ), focalLength( 0 ), fstop( 0 ), focusDistance( 0 )
+		, sceneUnitMeters( 1 )
+		, apertureBlades( 0 ), apertureRotation( 0 ), anamorphicSqueeze( 1 )
+		, tiltX( 0 ), tiltY( 0 ), shiftX( 0 ), shiftY( 0 )
+		, fisheyeScale( 1 )
+		{
+			location[0] = location[1] = location[2] = 0;
+			lookat[0]   = lookat[1]   = lookat[2]   = 0;
+			up[0]       = 0; up[1] = 1; up[2] = 0;
+			orientation[0] = orientation[1] = orientation[2] = 0;
+			target_orientation[0] = target_orientation[1] = 0;
+			viewportScale[0] = viewportScale[1] = 1;
+		}
+	};
+
 	//! A single editor mutation captured as a value.
 	/// The forward op uses the v3a / v3b / s payload fields.  The
 	/// "prev*" fields capture the state immediately BEFORE the
@@ -44,6 +119,21 @@ namespace RISE
 			SetObjectMaterial,      ///< propertyValue = material name; prev captured for undo
 			SetObjectShader,        ///< propertyValue = shader name
 			SetObjectShadowFlags,   ///< s as int: bit0=castsShadows, bit1=receivesShadows
+			//! Swap (or clear) an object's interior participating medium
+			//! by name.  Non-empty propertyValue is a medium name that
+			//! must resolve through IJob::GetMedium; empty propertyValue
+			//! routes through IObjectPriv::ClearInteriorMedium for
+			//! parser-parity with `interior_medium "none"` (which the
+			//! load-time parser treats as "leave the interior empty").
+			//! prevPropertyValue captures the old medium name via
+			//! reverse-lookup against IJob::EnumerateMediumNames so
+			//! undo round-trips losslessly — empty prev means "no
+			//! medium was bound" and the undo path calls
+			//! ClearInteriorMedium accordingly.  Object reference IS
+			//! resolved (FindObject), but the invariant chain is NOT
+			//! run — interior_medium swap is a pointer change that
+			//! doesn't invalidate spatial structure.
+			SetObjectInteriorMedium,
 
 			// Camera (objectName ignored)
 			SetCameraTransform,     ///< v3a = pos, v3b = look-at
@@ -83,6 +173,22 @@ namespace RISE
 			//! the same KeyframeFromParameters + SetIntermediateValue
 			//! + RegenerateData pipeline the forward path uses.
 			SetLightProperty,
+
+			//! Register a new camera by cloning the state of an
+			//! existing one.  `objectName` carries the NEW camera's
+			//! name (the name the user picked or the auto-generated
+			//! dedup suffix).  `prevPropertyValue` captures the name
+			//! of the camera that was active immediately before the
+			//! Add so undo can restore the prior active-camera
+			//! selection.  `cameraSnapshot` carries the full field
+			//! set captured from the source camera at Apply time so
+			//! Redo can recreate the new camera deterministically
+			//! even if the source has since changed.  Forward path
+			//! goes through `IJob::Add{Pinhole,Thinlens,Fisheye,
+			//! Orthographic}Camera` (which set the new camera active
+			//! by the "last added wins" policy).  Undo route:
+			//! `RemoveCamera(newName)` + `SetActiveCamera(prev)`.
+			AddCamera,
 
 			// Composite markers — bracket a user drag so undo
 			// collapses one drag into one history entry.
@@ -143,6 +249,11 @@ namespace RISE
 		//! to fit the trivially-copyable struct shape.
 		Scalar   prevShadowFlags;
 
+		//! Used by AddCamera: full source-camera state at Apply time.
+		//! Embedded directly (rather than via shared_ptr) so SceneEdit
+		//! stays trivially-copyable.
+		CameraSnapshot cameraSnapshot;
+
 		SceneEdit()
 		: op( CompositeBegin )
 		, objectName()
@@ -170,7 +281,8 @@ namespace RISE
 			    || op == SetObjectStretch
 			    || op == SetObjectMaterial
 			    || op == SetObjectShader
-			    || op == SetObjectShadowFlags;
+			    || op == SetObjectShadowFlags
+			    || op == SetObjectInteriorMedium;
 		}
 
 		//! Returns true if this edit op mutates the camera.

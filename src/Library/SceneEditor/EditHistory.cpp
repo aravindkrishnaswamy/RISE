@@ -103,6 +103,7 @@ namespace
 		case SceneEdit::SetObjectMaterial:      return "Set Material";
 		case SceneEdit::SetObjectShader:        return "Set Shader";
 		case SceneEdit::SetObjectShadowFlags:   return "Set Shadow Flags";
+		case SceneEdit::SetObjectInteriorMedium:return "Set Interior Medium";
 		case SceneEdit::SetCameraTransform:     return "Set Camera";
 		case SceneEdit::OrbitCamera:            return "Orbit Camera";
 		case SceneEdit::PanCamera:              return "Pan Camera";
@@ -111,6 +112,7 @@ namespace
 		case SceneEdit::SetSceneTime:           return "Set Time";
 		case SceneEdit::SetCameraProperty:      return "Edit Property";
 		case SceneEdit::SetLightProperty:       return "Edit Light Property";
+		case SceneEdit::AddCamera:              return "Add Camera";
 		case SceneEdit::CompositeBegin:         return "Edit";
 		case SceneEdit::CompositeEnd:           return "Edit";
 		}

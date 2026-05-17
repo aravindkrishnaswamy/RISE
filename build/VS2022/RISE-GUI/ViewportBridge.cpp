@@ -282,6 +282,7 @@ ViewportBridge::PanelMode ViewportBridge::panelMode() const
         case 3: return PanelMode::Object;
         case 4: return PanelMode::Light;
         case 5: return PanelMode::Film;
+        case 6: return PanelMode::Material;
         default: return PanelMode::None;
     }
 }
@@ -323,6 +324,7 @@ ViewportBridge::Category ViewportBridge::selectionCategory() const
         case 3: return Category::Object;
         case 4: return Category::Light;
         case 5: return Category::Film;
+        case 6: return Category::Material;
         default: return Category::None;
     }
 }
@@ -351,6 +353,21 @@ unsigned int ViewportBridge::sceneEpoch() const
 {
     if (!m_controller) return 0;
     return RISE_API_SceneEditController_SceneEpoch(m_controller);
+}
+
+QString ViewportBridge::addCameraFromActive(const QString& proposedName)
+{
+    if (!m_controller) return QString();
+    const QByteArray utf8 = proposedName.toUtf8();
+    // 256 bytes covers any realistic camera name; the controller-side
+    // dedup loop won't produce names longer than ~base+10 chars before
+    // its timestamp-suffix fallback.
+    char outName[256] = {0};
+    if (!RISE_API_SceneEditController_AddCameraFromActive(
+            m_controller, utf8.constData(), outName, sizeof(outName))) {
+        return QString();
+    }
+    return QString::fromUtf8(outName);
 }
 
 QString ViewportBridge::panelHeader() const

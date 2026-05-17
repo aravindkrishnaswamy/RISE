@@ -49,6 +49,8 @@ namespace RISE
 				return bShootPhotons;
 			}
 
+			inline void SetCanGeneratePhotons( bool b ) { bShootPhotons = b; }
+
 			inline bool IsPositionalLight() const { return true; }
 
 			inline Vector3 emissionDirection() const { return vDirection; }

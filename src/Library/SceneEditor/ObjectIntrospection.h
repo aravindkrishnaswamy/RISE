@@ -33,6 +33,7 @@ namespace RISE
 {
 	class IMaterialManager;
 	class IShaderManager;
+	class IJob;
 
 	class ObjectIntrospection
 	{
@@ -42,11 +43,16 @@ namespace RISE
 		//! emit material / shader presets as quick-pick combo entries
 		//! (so the user can swap material by selecting from a list).
 		//! Pass null managers to skip those rows.
+		//! Optional IJob enables `interior_medium` editing — uses
+		//! `EnumerateMediumNames` for the preset list and `GetMedium`
+		//! for prev-value reverse-lookup.  Pass null IJob to keep the
+		//! interior_medium row read-only.
 		static std::vector<CameraProperty> Inspect(
 			const String& name,
 			const IObject& obj,
 			const IMaterialManager* materials = 0,
-			const IShaderManager*   shaders   = 0 );
+			const IShaderManager*   shaders   = 0,
+			const IJob*             job       = 0 );
 	};
 }
 

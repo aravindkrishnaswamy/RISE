@@ -1541,6 +1541,16 @@ namespace RISE
 			const char* medium_name									///< [in] Name of the medium
 			);
 
+		//! Look up a registered medium by name; see IJob.h.
+		const IMedium* GetMedium(
+			const char* name
+			) const;
+
+		//! Enumerate registered medium names; see IJob.h.
+		void EnumerateMediumNames(
+			IEnumCallback<const char*>& cb
+			) const;
+
 
 		//
 		// Adds modifiers

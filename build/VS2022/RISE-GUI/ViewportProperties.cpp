@@ -25,6 +25,8 @@
 #include <QPolygonF>
 #include <QToolButton>
 #include <QMenu>
+#include <QInputDialog>
+#include <QMessageBox>
 
 #include <cmath>
 #include <functional>
@@ -218,6 +220,7 @@ static const AccordionSectionDef kSectionDefs[] = {
     { ViewportBridge::Category::Rasterizer, "Rasterizer"      },
     { ViewportBridge::Category::Object,     "Objects"         },
     { ViewportBridge::Category::Light,      "Lights"          },
+    { ViewportBridge::Category::Material,   "Materials"       },
     { ViewportBridge::Category::Film,       "Output Settings" },
 };
 
@@ -288,7 +291,25 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
         w.combo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         w.combo->setStyleSheet(
             "QComboBox { padding: 2px 6px; border: 1px solid palette(mid); border-radius: 3px; }");
-        bodyLayout->addWidget(w.combo);
+
+        // Cameras section gets a "+" button next to the combo for
+        // cloning the active camera under a new name.  Other sections
+        // use the combo alone — no add affordance for them yet.
+        if (cat == Category::Camera) {
+            auto* row = new QHBoxLayout();
+            row->setContentsMargins(0, 0, 0, 0);
+            row->setSpacing(4);
+            row->addWidget(w.combo, 1);
+            auto* addBtn = new QToolButton(w.body);
+            addBtn->setText(QStringLiteral("+"));
+            addBtn->setToolTip(tr("Clone the active camera under a new name"));
+            addBtn->setStyleSheet("QToolButton { padding: 1px 6px; }");
+            connect(addBtn, &QToolButton::clicked, this, &ViewportProperties::onAddCameraClicked);
+            row->addWidget(addBtn);
+            bodyLayout->addLayout(row);
+        } else {
+            bodyLayout->addWidget(w.combo);
+        }
 
         w.propsFrame = new QFrame(w.body);
         w.propsLayout = new QVBoxLayout(w.propsFrame);
@@ -447,6 +468,7 @@ void ViewportProperties::rebuildPropertyRows()
         case ViewportBridge::PanelMode::Object:     propsCat = Category::Object;     break;
         case ViewportBridge::PanelMode::Light:      propsCat = Category::Light;      break;
         case ViewportBridge::PanelMode::Film:       propsCat = Category::Film;       break;
+        case ViewportBridge::PanelMode::Material:   propsCat = Category::Material;   break;
         default: return;
     }
     auto sectionIt = m_sections.find(static_cast<int>(propsCat));
@@ -627,5 +649,55 @@ void ViewportProperties::onLineEditFinished()
     if (m_bridge->setProperty(name, val)) {
         m_lastValue.insert(name, val);
         refresh();
+    }
+}
+
+void ViewportProperties::onAddCameraClicked()
+{
+    if (!m_bridge) return;
+
+    // Default proposed name = "<active>_copy"
+    const QString activeName = m_bridge->activeNameForCategory(Category::Camera);
+    const QString defaultProposal = activeName.isEmpty()
+        ? QStringLiteral("camera_copy")
+        : (activeName + QStringLiteral("_copy"));
+
+    bool ok = false;
+    QString proposed = QInputDialog::getText(
+        this,
+        tr("Add Camera"),
+        tr("Cloning the current camera.  Pick a name for the new camera.\n\n"
+           "• The clone is in-memory only — saving the .RISEscene file\n"
+           "  from the editor does not yet emit added cameras.\n"
+           "• Duplicate names get a numeric suffix appended."),
+        QLineEdit::Normal,
+        defaultProposal,
+        &ok);
+    if (!ok) return;
+    proposed = proposed.trimmed();
+
+    const QString chosenName = m_bridge->addCameraFromActive(proposed);
+    if (chosenName.isEmpty()) {
+        QMessageBox::warning(
+            this,
+            tr("Couldn't add camera"),
+            tr("The current camera could not be cloned.  See RISE_Log.txt for details."));
+        return;
+    }
+
+    // Promote the new camera to the panel's selection so the user
+    // sees its properties immediately.
+    m_bridge->setSelection(Category::Camera, chosenName);
+    refresh();
+
+    // One-shot persistence caveat per session.
+    if (!m_addCameraCaveatShown) {
+        m_addCameraCaveatShown = true;
+        QMessageBox::information(
+            this,
+            tr("New camera \"%1\" added").arg(chosenName),
+            tr("Heads up — added cameras are kept in memory only until the\n"
+               "scene-text round-trip lands.  Save your scene file from a\n"
+               "text editor to preserve them across reloads."));
     }
 }

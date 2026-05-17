@@ -32,6 +32,7 @@
 namespace RISE
 {
 	class IObjectPriv;
+	class IJob;
 
 	class SceneEditor
 	{
@@ -59,6 +60,15 @@ namespace RISE
 		//! mode used by Phase-1/2 unit tests that pass IScenePriv only.
 		void SetMaterialManager( class IMaterialManager* mgr ) { mMaterialManager = mgr; }
 		void SetShaderManager( class IShaderManager* mgr ) { mShaderManager = mgr; }
+
+		//! Optional Job pointer installed by SceneEditController so
+		//! Phase-1-unlock object property edits (currently
+		//! `SetObjectInteriorMedium`) can resolve medium names through
+		//! `IJob::GetMedium` and recover prev-state via
+		//! `IJob::EnumerateMediumNames`.  Null Job causes those ops to
+		//! fail at Apply time — the editor stays usable for transform /
+		//! material / shader / shadow / camera / light ops without it.
+		void SetJob( IJob* job ) { mJob = job; }
 
 		//! Apply an edit.  On success, runs the invariant chain,
 		//! pushes the edit (with its prevTransform/prevTime captured
@@ -116,6 +126,7 @@ namespace RISE
 		IScenePriv&  mScene;
 		class IMaterialManager* mMaterialManager;   // borrowed; nullable
 		class IShaderManager*   mShaderManager;     // borrowed; nullable
+		IJob*                   mJob;               // borrowed; nullable
 		EditHistory  mHistory;
 		DirtyScope   mLastScope;
 		int          mCompositeDepth;

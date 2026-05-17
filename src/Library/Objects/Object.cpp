@@ -166,6 +166,12 @@ bool Object::AssignInteriorMedium( const IMedium& medium )
 	return true;
 }
 
+void Object::ClearInteriorMedium()
+{
+	safe_release( pInteriorMedium );
+	pInteriorMedium = 0;
+}
+
 const IMaterial* Object::GetMaterial() const
 {
 	return pMaterial;

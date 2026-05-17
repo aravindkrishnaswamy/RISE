@@ -56,6 +56,11 @@ namespace RISE
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
 
+			//! Read-back accessor for the interactive editor's
+			//! `MaterialIntrospection`.  Returns the painter the BRDF
+			//! was constructed with — reverse-lookup against the
+			//! IPainterManager gives the user-visible name.
+			inline const IPainter& GetReflectance() const { return pBRDF->GetReflectance(); }
 		};
 	}
 }
