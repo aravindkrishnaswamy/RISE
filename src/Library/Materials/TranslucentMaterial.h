@@ -63,6 +63,20 @@ namespace RISE
 			// them are unphysical.  Light transport through translucent objects
 			// is handled correctly by the eye/light subpath tracing.
 			inline bool CouldLightPassThrough() const { return false; };
+
+			//! Read-back + rebind for the interactive editor.  `ref`/`tau`/`N`
+			//! exist on both BSDF and SPF — Material forwards in lockstep.
+			//! `ext`/`scat` exist only on the SPF (BSDF doesn't carry them).
+			inline const IPainter&       GetRefFront()   const { return pSPF->GetRefFront(); }
+			inline const IPainter&       GetTrans()      const { return pSPF->GetTrans(); }
+			inline const IScalarPainter& GetExtinction() const { return pSPF->GetExtinction(); }
+			inline const IScalarPainter& GetN()          const { return pSPF->GetN(); }
+			inline const IScalarPainter& GetScat()       const { return pSPF->GetScat(); }
+			inline void SetRefFront( const IPainter& v )         { pBRDF->SetRefFront( v ); pSPF->SetRefFront( v ); }
+			inline void SetTrans( const IPainter& v )            { pBRDF->SetTrans( v );    pSPF->SetTrans( v ); }
+			inline void SetExtinction( const IScalarPainter& v ) { pSPF->SetExtinction( v ); }
+			inline void SetN( const IScalarPainter& v )          { pBRDF->SetN( v );        pSPF->SetN( v ); }
+			inline void SetScat( const IScalarPainter& v )       { pSPF->SetScat( v ); }
 		};
 	}
 }

@@ -33,11 +33,13 @@ namespace RISE
 		protected:
 			virtual ~CookTorranceSPF( );
 
-			const IPainter&			pDiffuse;
-			const IPainter&			pSpecular;
-			const IScalarPainter&	pMasking;		// roughness (physical scalar)
-			const IScalarPainter&	pIOR;
-			const IScalarPainter&	pExtinction;
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IPainter*			pDiffuse;
+			const IPainter*			pSpecular;
+			const IScalarPainter*	pMasking;		// roughness (physical scalar)
+			const IScalarPainter*	pIOR;
+			const IScalarPainter*	pExtinction;
 
 		public:
 			CookTorranceSPF(
@@ -47,6 +49,18 @@ namespace RISE
 				const IScalarPainter& ior,
 				const IScalarPainter& ext
 				);
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetDiffuse()    const { return *pDiffuse; }
+			inline const IPainter&       GetSpecular()   const { return *pSpecular; }
+			inline const IScalarPainter& GetMasking()    const { return *pMasking; }
+			inline const IScalarPainter& GetIOR()        const { return *pIOR; }
+			inline const IScalarPainter& GetExtinction() const { return *pExtinction; }
+			void SetDiffuse( const IPainter& v );
+			void SetSpecular( const IPainter& v );
+			void SetMasking( const IScalarPainter& v );
+			void SetIOR( const IScalarPainter& v );
+			void SetExtinction( const IScalarPainter& v );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.

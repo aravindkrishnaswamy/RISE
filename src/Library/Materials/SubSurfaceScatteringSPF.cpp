@@ -46,18 +46,25 @@ SubSurfaceScatteringSPF::SubSurfaceScatteringSPF(
 	const Scalar roughness_,
 	const bool bAbsorbBackFace_
 	) :
-  ior( ior_ ),
+  pIOR( &ior_ ),
   g( g_ ),
   roughness( roughness_ ),
   alpha( roughness_ * roughness_ ),
   bAbsorbBackFace( bAbsorbBackFace_ )
 {
-	ior.addref();
+	pIOR->addref();
 }
 
 SubSurfaceScatteringSPF::~SubSurfaceScatteringSPF()
 {
-	ior.release();
+	safe_release( pIOR );
+}
+
+void SubSurfaceScatteringSPF::SetIOR( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pIOR );
+	pIOR = &v;
 }
 
 //=============================================================
@@ -71,7 +78,7 @@ void SubSurfaceScatteringSPF::Scatter(
 	const IORStack& ior_stack
 	) const
 {
-	const ScalarTriple iorVal = ior.GetValuesAt( ri );
+	const ScalarTriple iorVal = pIOR->GetValuesAt( ri );
 	const Scalar n = iorVal.v[0];
 
 	const bool bFromInside = ior_stack.containsCurrent();
@@ -222,7 +229,7 @@ void SubSurfaceScatteringSPF::ScatterNM(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar n = ior.GetValueAtNM( ri, nm );
+	const Scalar n = pIOR->GetValueAtNM( ri, nm );
 
 	const bool bFromInside = ior_stack.containsCurrent();
 

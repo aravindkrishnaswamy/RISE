@@ -51,7 +51,11 @@ namespace RISE
 			SubSurfaceScatteringBSDF*				pBSDF;
 			SubSurfaceScatteringSPF*				pSPF;
 			BurleyNormalizedDiffusionProfile*		pProfile;
-			const IScalarPainter&					iorPainter;
+			//! Pointer so the interactive editor can rebind via SetIOR
+			//! (the diffusion profile keeps the old binding because it
+			//! was constructed once with `ior`; per-slot live edit on
+			//! the diffusion profile is out of scope).
+			const IScalarPainter*					pIORPainter;
 			const Scalar							surfaceRoughness;
 
 			virtual ~SubSurfaceScatteringMaterial()
@@ -59,7 +63,7 @@ namespace RISE
 				safe_release( pBSDF );
 				safe_release( pSPF );
 				safe_release( pProfile );
-				iorPainter.release();
+				safe_release( pIORPainter );
 			}
 
 		public:
@@ -70,10 +74,10 @@ namespace RISE
 				const Scalar g,
 				const Scalar roughness
 				) :
-			iorPainter( ior ),
+			pIORPainter( &ior ),
 			surfaceRoughness( roughness )
 			{
-				iorPainter.addref();
+				pIORPainter->addref();
 				pBSDF = new SubSurfaceScatteringBSDF( ior, g, roughness );
 				GlobalLog()->PrintNew( pBSDF, __FILE__, __LINE__, "BSDF" );
 
@@ -113,7 +117,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetValuesAt( ri ).v[0];
+				info.ior = pIORPainter->GetValuesAt( ri ).v[0];
 				info.valid = true;
 				return info;
 			}
@@ -127,9 +131,24 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetValueAtNM( ri, nm );
+				info.ior = pIORPainter->GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
+			}
+
+			//! Read-back + rebind for the interactive editor.  Only the
+			//! IOR painter is rebindable; absorption/scattering were
+			//! consumed by the diffusion profile at construction time and
+			//! are not surfaced as editable slots.  IOR rebinding hits
+			//! BSDF, SPF, and the local cached pointer in lockstep — the
+			//! diffusion profile stays bound to the original instance.
+			inline const IScalarPainter& GetIOR() const { return *pIORPainter; }
+			inline void SetIOR( const IScalarPainter& v ) {
+				v.addref();
+				safe_release( pIORPainter );
+				pIORPainter = &v;
+				pBSDF->SetIOR( v );
+				pSPF->SetIOR( v );
 			}
 		};
 	}

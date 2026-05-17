@@ -31,10 +31,12 @@ namespace RISE
 		protected:
 			virtual ~SchlickSPF( );
 
-			const IPainter&			pDiffuse;
-			const IPainter&			pSpecular;
-			const IScalarPainter&	pRoughness;		// physical scalar
-			const IScalarPainter&	pIsotropy;
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IPainter*			pDiffuse;
+			const IPainter*			pSpecular;
+			const IScalarPainter*	pRoughness;		// physical scalar
+			const IScalarPainter*	pIsotropy;
 
 		public:
 			SchlickSPF(
@@ -43,6 +45,16 @@ namespace RISE
 				const IScalarPainter& roughness,
 				const IScalarPainter& isotropy
 				);
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetDiffuse()   const { return *pDiffuse; }
+			inline const IPainter&       GetSpecular()  const { return *pSpecular; }
+			inline const IScalarPainter& GetRoughness() const { return *pRoughness; }
+			inline const IScalarPainter& GetIsotropy()  const { return *pIsotropy; }
+			void SetDiffuse( const IPainter& v );
+			void SetSpecular( const IPainter& v );
+			void SetRoughness( const IScalarPainter& v );
+			void SetIsotropy( const IScalarPainter& v );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.

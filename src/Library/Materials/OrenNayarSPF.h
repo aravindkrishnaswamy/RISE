@@ -33,14 +33,24 @@ namespace RISE
 		protected:
 			virtual ~OrenNayarSPF( );
 
-			const IPainter&			pReflectance;
-			const IScalarPainter&	pRoughness;
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			//! Field names already start with `p` — pre-Phase-4 naming
+			//! that happens to match the new pointer reality.
+			const IPainter*			pReflectance;
+			const IScalarPainter*	pRoughness;
 
 		public:
 			OrenNayarSPF(
 				const IPainter& reflectance,
 				const IScalarPainter& roughness
 				);
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetReflectance() const { return *pReflectance; }
+			inline const IScalarPainter& GetRoughness()   const { return *pRoughness; }
+			void SetReflectance( const IPainter& v );
+			void SetRoughness( const IScalarPainter& v );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.  

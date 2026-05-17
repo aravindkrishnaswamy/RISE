@@ -28,8 +28,10 @@ namespace RISE
 		protected:
 			virtual ~GenericHumanTissueSPF( );
 
-			const IScalarPainter&		sca;							///< Scattering co-efficient (physical scalar)
-			const IScalarPainter&		g;								///< Henyey-Greenstein phase function g factor (physical scalar)
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IScalarPainter*		pSca;							///< Scattering co-efficient (physical scalar)
+			const IScalarPainter*		pG;								///< Henyey-Greenstein phase function g factor (physical scalar)
 
 			const Scalar				whole_blood;					///< Amount of tissue composed of whole blood
 			const Scalar				betacarotene_concentration;		///< Concentration of beta-carotene in the dermis
@@ -53,7 +55,7 @@ namespace RISE
 				) const;
 
 		public:
-			GenericHumanTissueSPF( 
+			GenericHumanTissueSPF(
 				const IScalarPainter& sca_,									///< Scattering co-efficient (how much scattering happens)
 				const IScalarPainter& g_,										///< Anisotropy factor for the HG phase function
 				const Scalar whole_blood_,								///< Amount of tissue composed of whole blood
@@ -62,6 +64,12 @@ namespace RISE
 				const Scalar hb_ratio_,									///< Oxy/deoxy hemoglobin ratio
 				const bool diffuse_										///< Is the scattering just diffuse ?
 				);
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IScalarPainter& GetSca() const { return *pSca; }
+			inline const IScalarPainter& GetG()   const { return *pG; }
+			void SetSca( const IScalarPainter& v );
+			void SetG( const IScalarPainter& v );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.  

@@ -51,14 +51,18 @@ namespace RISE
 			SubSurfaceScatteringBSDF*		pBSDF;
 			SubSurfaceScatteringSPF*		pSPF;
 			RandomWalkSSSParams				m_rwParams;
-			const IScalarPainter&			iorPainter;
+			//! Pointer so the interactive editor can rebind via SetIOR
+			//! (the random-walk params capture a SCALAR snapshot of `ior`
+			//! at construction; per-slot live edit on the walk params is
+			//! out of scope).
+			const IScalarPainter*			pIORPainter;
 			const Scalar					surfaceRoughness;
 
 			virtual ~RandomWalkSSSMaterial()
 			{
 				safe_release( pBSDF );
 				safe_release( pSPF );
-				iorPainter.release();
+				safe_release( pIORPainter );
 			}
 
 		public:
@@ -70,10 +74,10 @@ namespace RISE
 				const Scalar roughness,
 				const unsigned int maxBounces
 				) :
-			iorPainter( ior ),
+			pIORPainter( &ior ),
 			surfaceRoughness( roughness )
 			{
-				iorPainter.addref();
+				pIORPainter->addref();
 
 				pBSDF = new SubSurfaceScatteringBSDF( ior, g, roughness );
 				GlobalLog()->PrintNew( pBSDF, __FILE__, __LINE__, "BSDF" );
@@ -137,7 +141,7 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetValuesAt( ri ).v[0];
+				info.ior = pIORPainter->GetValuesAt( ri ).v[0];
 				info.valid = true;
 				return info;
 			}
@@ -151,9 +155,25 @@ namespace RISE
 				SpecularInfo info;
 				info.isSpecular = (surfaceRoughness * surfaceRoughness <= 1e-6);
 				info.canRefract = true;
-				info.ior = iorPainter.GetValueAtNM( ri, nm );
+				info.ior = pIORPainter->GetValueAtNM( ri, nm );
 				info.valid = true;
 				return info;
+			}
+
+			//! Read-back + rebind for the interactive editor.  Only the
+			//! IOR painter is rebindable.  Absorption/scattering were
+			//! sampled-once into m_rwParams at construction time and are
+			//! NOT re-flattened on SetIOR (changing them at runtime is
+			//! out of scope for this interface).  IOR rebinding hits
+			//! BSDF, SPF, and the cached pointer in lockstep; m_rwParams.ior
+			//! keeps the construction-time scalar.
+			inline const IScalarPainter& GetIOR() const { return *pIORPainter; }
+			inline void SetIOR( const IScalarPainter& v ) {
+				v.addref();
+				safe_release( pIORPainter );
+				pIORPainter = &v;
+				pBSDF->SetIOR( v );
+				pSPF->SetIOR( v );
 			}
 		};
 	}

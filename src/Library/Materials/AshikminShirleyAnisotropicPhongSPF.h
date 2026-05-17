@@ -29,14 +29,26 @@ namespace RISE
 		protected:
 			virtual ~AshikminShirleyAnisotropicPhongSPF( );
 
-			const IScalarPainter&	Nu;				// Phong exponent (physical scalar)
-			const IScalarPainter&	Nv;
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IScalarPainter*	pNu;			// Phong exponent (physical scalar)
+			const IScalarPainter*	pNv;
 
-			const IPainter&			Rd;				// diffuse reflectance
-			const IPainter&			Rs;				// specular reflectance
+			const IPainter*			pRd;			// diffuse reflectance
+			const IPainter*			pRs;			// specular reflectance
 
 		public:
 			AshikminShirleyAnisotropicPhongSPF( const IScalarPainter& Nu_, const IScalarPainter& Nv_, const IPainter& Rd_, const IPainter& Rs_ );
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IScalarPainter& GetNu() const { return *pNu; }
+			inline const IScalarPainter& GetNv() const { return *pNv; }
+			inline const IPainter&       GetRd() const { return *pRd; }
+			inline const IPainter&       GetRs() const { return *pRs; }
+			void SetNu( const IScalarPainter& v );
+			void SetNv( const IScalarPainter& v );
+			void SetRd( const IPainter& v );
+			void SetRs( const IPainter& v );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.

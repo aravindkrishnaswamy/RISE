@@ -30,8 +30,10 @@ namespace RISE
 		protected:
 			virtual ~OrenNayarBRDF();
 
-			const IPainter&			pReflectance;
-			const IScalarPainter&	pRoughness;
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IPainter*			pReflectance;
+			const IScalarPainter*	pRoughness;
 
 		public:
 			OrenNayarBRDF(
@@ -45,6 +47,12 @@ namespace RISE
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetReflectance() const { return *pReflectance; }
+			inline const IScalarPainter& GetRoughness()   const { return *pRoughness; }
+			void SetReflectance( const IPainter& v );
+			void SetRoughness( const IScalarPainter& v );
 		};
 	}
 }

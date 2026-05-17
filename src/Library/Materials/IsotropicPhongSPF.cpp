@@ -20,18 +20,39 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 IsotropicPhongSPF::IsotropicPhongSPF( const IPainter& Rd_, const IPainter& Rs_, const IScalarPainter& exp ) :
-  Rd( Rd_ ), Rs( Rs_ ), exponent( exp )
+  pRd( &Rd_ ), pRs( &Rs_ ), pExponent( &exp )
 {
-	Rd.addref();
-	Rs.addref();
-	exponent.addref();
+	pRd->addref();
+	pRs->addref();
+	pExponent->addref();
 }
 
 IsotropicPhongSPF::~IsotropicPhongSPF( )
 {
-	Rd.release();
-	Rs.release();
-	exponent.release();
+	safe_release( pRd );
+	safe_release( pRs );
+	safe_release( pExponent );
+}
+
+void IsotropicPhongSPF::SetRd( const IPainter& v )
+{
+	v.addref();
+	safe_release( pRd );
+	pRd = &v;
+}
+
+void IsotropicPhongSPF::SetRs( const IPainter& v )
+{
+	v.addref();
+	safe_release( pRs );
+	pRs = &v;
+}
+
+void IsotropicPhongSPF::SetExponent( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pExponent );
+	pExponent = &v;
 }
 
 static void GenerateDiffuseRay(
@@ -90,7 +111,7 @@ void IsotropicPhongSPF::Scatter(
 	const Vector3 n = rdotn > 0 ? -ri.onb.w() : ri.onb.w();
 	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
-	const ScalarTriple Nt = exponent.GetValuesAt(ri);
+	const ScalarTriple Nt = pExponent->GetValuesAt(ri);
 	const Scalar N[3] = { Nt.v[0], Nt.v[1], Nt.v[2] };
 
 	ScatteredRay diffuse, specular;
@@ -103,7 +124,7 @@ void IsotropicPhongSPF::Scatter(
 		diffuse.isDelta = false;
 	}
 
-	if( !exponent.HasPerChannelVariation() ) {
+	if( !pExponent->HasPerChannelVariation() ) {
 		GenerateSpecularRay( specular, n, reflected, ri,  Point2( sampler.Get1D(), sampler.Get1D() ), N[0] );
 
 		// kray = BRDF * cos_o / pdf = Rs * (N+2)/(2*pi) * cos^N(alpha) * cos_o
@@ -111,7 +132,7 @@ void IsotropicPhongSPF::Scatter(
 		//      = Rs * (N+2)/(N+1) * cos_o
 		// This is bounded since cos_o ∈ [0,1] and (N+2)/(N+1) ∈ (1,2]
 		const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), n );
-		specular.kray = Rs.GetColor(ri) * ((N[0]+2.0)/(N[0]+1.0)) * r_max(cos_o, 0.0);
+		specular.kray = pRs->GetColor(ri) * ((N[0]+2.0)/(N[0]+1.0)) * r_max(cos_o, 0.0);
 
 		// PDF for phong lobe: (N+1)/(2*pi) * cos^N(alpha), alpha = angle from reflection direction
 		const Scalar cosAlpha = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), Vector3Ops::Normalize(reflected) );
@@ -124,7 +145,7 @@ void IsotropicPhongSPF::Scatter(
 
 		scattered.AddScatteredRay( specular );
 	} else {
-		const RISEPel spec = Rs.GetColor(ri);
+		const RISEPel spec = pRs->GetColor(ri);
 		const Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 		for( int i=0; i<3; i++ ) {
 			GenerateSpecularRay( specular, n, reflected, ri,  ptrand, N[i] );
@@ -146,7 +167,7 @@ void IsotropicPhongSPF::Scatter(
 		}
 	}
 
-	diffuse.kray = Rd.GetColor(ri);
+	diffuse.kray = pRd->GetColor(ri);
 	scattered.AddScatteredRay( diffuse );
 }
 
@@ -168,14 +189,14 @@ void IsotropicPhongSPF::ScatterNM(
 	const Vector3 reflected = Optics::CalculateReflectedRay( ri.ray.Dir(), n );
 
 	ScatteredRay diffuse, specular;
-	const Scalar N = exponent.GetValueAtNM(ri,nm);
+	const Scalar N = pExponent->GetValueAtNM(ri,nm);
 	GenerateDiffuseRay( diffuse, rdotn, ri,  Point2( sampler.Get1D(), sampler.Get1D() ) );
 	GenerateSpecularRay( specular, n, reflected, ri,  Point2( sampler.Get1D(), sampler.Get1D() ),  N );
 
-	diffuse.krayNM = Rd.GetColorNM(ri,nm);
+	diffuse.krayNM = pRd->GetColorNM(ri,nm);
 	{
 		const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), n );
-		specular.krayNM = Rs.GetColorNM(ri,nm) * ((N+2.0)/(N+1.0)) * r_max(cos_o, 0.0);
+		specular.krayNM = pRs->GetColorNM(ri,nm) * ((N+2.0)/(N+1.0)) * r_max(cos_o, 0.0);
 	}
 
 	// Set PDF for diffuse ray
@@ -221,14 +242,14 @@ Scalar IsotropicPhongSPF::Pdf(
 
 	// Specular component: phong lobe around reflection direction
 	// Use average exponent across channels
-	const ScalarTriple Nt = exponent.GetValuesAt(ri);
+	const ScalarTriple Nt = pExponent->GetValuesAt(ri);
 	const Scalar Navg = (Nt.v[0] + Nt.v[1] + Nt.v[2]) / 3.0;
 	const Scalar cosAlpha = Vector3Ops::Dot( woNorm, Vector3Ops::Normalize(reflected) );
 	const Scalar specPdf = (cosAlpha > 0) ? (Navg + 1.0) * INV_PI * 0.5 * pow( cosAlpha, Navg ) : 0;
 
 	// Weight by relative importance of diffuse vs specular reflectance
-	const RISEPel rd = Rd.GetColor(ri);
-	const RISEPel rs = Rs.GetColor(ri);
+	const RISEPel rd = pRd->GetColor(ri);
+	const RISEPel rs = pRs->GetColor(ri);
 	const Scalar dWeight = ColorMath::MaxValue(rd);
 	const Scalar sWeight = ColorMath::MaxValue(rs);
 	const Scalar totalWeight = dWeight + sWeight;
@@ -261,13 +282,13 @@ Scalar IsotropicPhongSPF::PdfNM(
 	const Scalar diffusePdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
 
 	// Specular component
-	const Scalar N = exponent.GetValueAtNM(ri,nm);
+	const Scalar N = pExponent->GetValueAtNM(ri,nm);
 	const Scalar cosAlpha = Vector3Ops::Dot( woNorm, Vector3Ops::Normalize(reflected) );
 	const Scalar specPdf = (cosAlpha > 0) ? (N + 1.0) * INV_PI * 0.5 * pow( cosAlpha, N ) : 0;
 
 	// Weight by relative importance
-	const Scalar rd = Rd.GetColorNM(ri,nm);
-	const Scalar rs = Rs.GetColorNM(ri,nm);
+	const Scalar rd = pRd->GetColorNM(ri,nm);
+	const Scalar rs = pRs->GetColorNM(ri,nm);
 	const Scalar totalWeight = rd + rs;
 
 	if( totalWeight < NEARZERO ) {

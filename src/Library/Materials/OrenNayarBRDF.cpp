@@ -24,17 +24,31 @@ OrenNayarBRDF::OrenNayarBRDF(
 	const IPainter& reflectance,
 	const IScalarPainter& roughness
 	) :
-  pReflectance( reflectance ),
-  pRoughness( roughness )
+  pReflectance( &reflectance ),
+  pRoughness( &roughness )
 {
-	pReflectance.addref();
-	pRoughness.addref();
+	pReflectance->addref();
+	pRoughness->addref();
 }
 
 OrenNayarBRDF::~OrenNayarBRDF( )
 {
-	pReflectance.release();
-	pRoughness.release();
+	safe_release( pReflectance );
+	safe_release( pRoughness );
+}
+
+void OrenNayarBRDF::SetReflectance( const IPainter& v )
+{
+	v.addref();
+	safe_release( pReflectance );
+	pReflectance = &v;
+}
+
+void OrenNayarBRDF::SetRoughness( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pRoughness );
+	pRoughness = &v;
 }
 
 template< class T >
@@ -79,10 +93,10 @@ void OrenNayarBRDF::ComputeFactor(
 RISEPel OrenNayarBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	RISEPel L1, L2;
-	const ScalarTriple r = pRoughness.GetValuesAt(ri);
+	const ScalarTriple r = pRoughness->GetValuesAt(ri);
 	const RISEPel roughness( r.v[0], r.v[1], r.v[2] );
 	ComputeFactor<RISEPel>( L1, L2, vLightIn, ri, ri.onb.w(), roughness );
-	const RISEPel rho = pReflectance.GetColor(ri);
+	const RISEPel rho = pReflectance->GetColor(ri);
 
 	return (L1*INV_PI*rho) + (L2*INV_PI*(rho*rho));
 }
@@ -90,8 +104,8 @@ RISEPel OrenNayarBRDF::value( const Vector3& vLightIn, const RayIntersectionGeom
 Scalar OrenNayarBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar L1=0, L2=0;
-	ComputeFactor<Scalar>( L1, L2, vLightIn, ri, ri.onb.w(), pRoughness.GetValueAtNM(ri,nm) );
-	const Scalar rho = pReflectance.GetColorNM(ri,nm);
+	ComputeFactor<Scalar>( L1, L2, vLightIn, ri, ri.onb.w(), pRoughness->GetValueAtNM(ri,nm) );
+	const Scalar rho = pReflectance->GetColorNM(ri,nm);
 
 	return (L1*INV_PI*rho) + (L2*INV_PI*(rho*rho));
 }
@@ -101,7 +115,7 @@ RISEPel OrenNayarBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	// Oren-Nayar is energy-conserving: total reflectance ≈ Rd
 	// regardless of roughness.  The L1 / L2 terms only redistribute
 	// directional scattering shape.
-	return pReflectance.GetColor( ri );
+	return pReflectance->GetColor( ri );
 }
 
 // Explicit instantiation so other TUs (OrenNayarSPF.cpp) can link to the

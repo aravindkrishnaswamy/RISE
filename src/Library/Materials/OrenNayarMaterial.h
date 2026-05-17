@@ -60,6 +60,12 @@ namespace RISE
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
 
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to BOTH BRDF and SPF in lockstep.
+			inline const IPainter&       GetReflectance() const { return pBRDF->GetReflectance(); }
+			inline const IScalarPainter& GetRoughness()   const { return pBRDF->GetRoughness(); }
+			inline void SetReflectance( const IPainter& v )       { pBRDF->SetReflectance( v ); pSPF->SetReflectance( v ); }
+			inline void SetRoughness( const IScalarPainter& v )   { pBRDF->SetRoughness( v );   pSPF->SetRoughness( v ); }
 		};
 	}
 }

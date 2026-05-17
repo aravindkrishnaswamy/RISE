@@ -57,6 +57,13 @@ namespace RISE
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return pEmitter; };
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to the LambertianEmitter — the wrapped base
+			//! material is intentionally NOT editable through this
+			//! surface (users edit it via its own row in the panel).
+			inline const IPainter& GetRadEx() const { return pEmitter->GetRadEx(); }
+			inline void SetRadEx( const IPainter& v ) { pEmitter->SetRadEx( v ); }
 		};
 	}
 }

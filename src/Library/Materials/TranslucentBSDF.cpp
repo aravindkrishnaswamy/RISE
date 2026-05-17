@@ -18,19 +18,23 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 TranslucentBSDF::TranslucentBSDF( const IPainter& rF, const IPainter& T, const IScalarPainter& exp ) :
-  pRefFront( rF ), pTrans( T ), exponent( exp )
+  pRefFront( &rF ), pTrans( &T ), pExponent( &exp )
 {
-	pRefFront.addref();
-	pTrans.addref();
-	exponent.addref();
+	pRefFront->addref();
+	pTrans->addref();
+	pExponent->addref();
 }
 
 TranslucentBSDF::~TranslucentBSDF( )
 {
-	pRefFront.release();
-	pTrans.release();
-	exponent.release();
+	safe_release( pRefFront );
+	safe_release( pTrans );
+	safe_release( pExponent );
 }
+
+void TranslucentBSDF::SetRefFront( const IPainter& v )      { v.addref(); safe_release( pRefFront ); pRefFront = &v; }
+void TranslucentBSDF::SetTrans( const IPainter& v )         { v.addref(); safe_release( pTrans );    pTrans    = &v; }
+void TranslucentBSDF::SetN( const IScalarPainter& v )       { v.addref(); safe_release( pExponent ); pExponent = &v; }
 
 template< class T >
 static char GetReflectedSide( T& intensity, const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Vector3& n, const T& exponent )
@@ -69,18 +73,18 @@ static char GetReflectedSide( T& intensity, const Vector3& vLightIn, const RayIn
 RISEPel TranslucentBSDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	RISEPel intensity = RISEPel(1,1,1);
-	const ScalarTriple exp_t = exponent.GetValuesAt(ri);
+	const ScalarTriple exp_t = pExponent->GetValuesAt(ri);
 	const RISEPel exp_rgb( exp_t.v[0], exp_t.v[1], exp_t.v[2] );
 	switch( GetReflectedSide<RISEPel>(intensity, vLightIn, ri, ri.onb.w(), exp_rgb ) )
 	{
 	case 0:
-		return pTrans.GetColor(ri) * intensity * INV_PI;
+		return pTrans->GetColor(ri) * intensity * INV_PI;
 		break;
 	case 1:
-		return pRefFront.GetColor(ri) * INV_PI;
+		return pRefFront->GetColor(ri) * INV_PI;
 		break;
 	case 2:
-		return pRefFront.GetColor(ri) * INV_PI;
+		return pRefFront->GetColor(ri) * INV_PI;
 		break;
 	default:
 	case 3:
@@ -92,16 +96,16 @@ RISEPel TranslucentBSDF::value( const Vector3& vLightIn, const RayIntersectionGe
 Scalar TranslucentBSDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar intensity = 1.0;
-	switch( GetReflectedSide<Scalar>(intensity, vLightIn, ri, ri.onb.w(), exponent.GetValueAtNM(ri,nm) ) )
+	switch( GetReflectedSide<Scalar>(intensity, vLightIn, ri, ri.onb.w(), pExponent->GetValueAtNM(ri,nm) ) )
 	{
 	case 0:
-		return pTrans.GetColorNM(ri,nm) * intensity * INV_PI;
+		return pTrans->GetColorNM(ri,nm) * intensity * INV_PI;
 		break;
 	case 1:
-		return pRefFront.GetColorNM(ri,nm) * intensity * INV_PI;
+		return pRefFront->GetColorNM(ri,nm) * intensity * INV_PI;
 		break;
 	case 2:
-		return pRefFront.GetColorNM(ri,nm) * intensity * INV_PI;
+		return pRefFront->GetColorNM(ri,nm) * intensity * INV_PI;
 		break;
 	default:
 	case 3:
@@ -115,5 +119,5 @@ RISEPel TranslucentBSDF::albedo( const RayIntersectionGeometric& ri ) const
 	// Only the reflective lobe returns energy back toward the camera —
 	// transmitted energy reaches the OIDN beauty pass via what's behind
 	// the surface, not via this BSDF's albedo AOV.
-	return pRefFront.GetColor( ri );
+	return pRefFront->GetColor( ri );
 }

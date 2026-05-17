@@ -23,21 +23,25 @@ WardIsotropicGaussianBRDF::WardIsotropicGaussianBRDF(
 	const IPainter& specular_,
 	const IScalarPainter& alpha_
 	) :
-  diffuse( diffuse_ ),
-  specular( specular_ ),
-  alpha( alpha_ )
+  pDiffuse( &diffuse_ ),
+  pSpecular( &specular_ ),
+  pAlpha( &alpha_ )
 {
-	diffuse.addref();
-	specular.addref();
-	alpha.addref();
+	pDiffuse->addref();
+	pSpecular->addref();
+	pAlpha->addref();
 }
 
 WardIsotropicGaussianBRDF::~WardIsotropicGaussianBRDF( )
 {
-	diffuse.release();
-	specular.release();
-	alpha.release();
+	safe_release( pDiffuse );
+	safe_release( pSpecular );
+	safe_release( pAlpha );
 }
+
+void WardIsotropicGaussianBRDF::SetDiffuse( const IPainter& v )      { v.addref(); safe_release( pDiffuse );  pDiffuse  = &v; }
+void WardIsotropicGaussianBRDF::SetSpecular( const IPainter& v )     { v.addref(); safe_release( pSpecular ); pSpecular = &v; }
+void WardIsotropicGaussianBRDF::SetAlpha( const IScalarPainter& v )  { v.addref(); safe_release( pAlpha );    pAlpha    = &v; }
 
 template< class T >
 static void ComputeFactors( 
@@ -73,24 +77,24 @@ static void ComputeFactors(
 RISEPel WardIsotropicGaussianBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	RISEPel d, s;
-	const ScalarTriple at = alpha.GetValuesAt(ri);
+	const ScalarTriple at = pAlpha->GetValuesAt(ri);
 	const RISEPel a( at.v[0], at.v[1], at.v[2] );
 	ComputeFactors<RISEPel>( d, s, vLightIn, ri, ri.onb.w(), a );
 
-	return d*diffuse.GetColor(ri) + s*specular.GetColor(ri);
+	return d*pDiffuse->GetColor(ri) + s*pSpecular->GetColor(ri);
 }
 
 Scalar WardIsotropicGaussianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar d=0, s=0;
-	ComputeFactors<Scalar>( d, s, vLightIn, ri, ri.onb.w(), alpha.GetValueAtNM(ri,nm) );
+	ComputeFactors<Scalar>( d, s, vLightIn, ri, ri.onb.w(), pAlpha->GetValueAtNM(ri,nm) );
 
-	return d*diffuse.GetColorNM(ri,nm) + s*specular.GetColorNM(ri,nm);
+	return d*pDiffuse->GetColorNM(ri,nm) + s*pSpecular->GetColorNM(ri,nm);
 }
 
 RISEPel WardIsotropicGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) const
 {
 	// Ward's Gaussian normalization makes the spec lobe integrate to
 	// ≈ Rs over the hemisphere, so total reflectance ≈ Rd + Rs.
-	return diffuse.GetColor( ri ) + specular.GetColor( ri );
+	return pDiffuse->GetColor( ri ) + pSpecular->GetColor( ri );
 }

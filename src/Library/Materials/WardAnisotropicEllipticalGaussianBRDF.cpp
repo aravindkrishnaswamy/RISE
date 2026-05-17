@@ -25,24 +25,29 @@ WardAnisotropicEllipticalGaussianBRDF::WardAnisotropicEllipticalGaussianBRDF(
 	const IScalarPainter& alphax_,
 	const IScalarPainter& alphay_
 	) :
-  diffuse( diffuse_ ),
-  specular( specular_ ),
-  alphax( alphax_ ),
-  alphay( alphay_ )
+  pDiffuse( &diffuse_ ),
+  pSpecular( &specular_ ),
+  pAlphaX( &alphax_ ),
+  pAlphaY( &alphay_ )
 {
-	diffuse.addref();
-	specular.addref();
-	alphax.addref();
-	alphay.addref();
+	pDiffuse->addref();
+	pSpecular->addref();
+	pAlphaX->addref();
+	pAlphaY->addref();
 }
 
 WardAnisotropicEllipticalGaussianBRDF::~WardAnisotropicEllipticalGaussianBRDF( )
 {
-	diffuse.release();
-	specular.release();
-	alphax.release();
-	alphay.release();
+	safe_release( pDiffuse );
+	safe_release( pSpecular );
+	safe_release( pAlphaX );
+	safe_release( pAlphaY );
 }
+
+void WardAnisotropicEllipticalGaussianBRDF::SetDiffuse( const IPainter& v )      { v.addref(); safe_release( pDiffuse );  pDiffuse  = &v; }
+void WardAnisotropicEllipticalGaussianBRDF::SetSpecular( const IPainter& v )     { v.addref(); safe_release( pSpecular ); pSpecular = &v; }
+void WardAnisotropicEllipticalGaussianBRDF::SetAlphaX( const IScalarPainter& v ) { v.addref(); safe_release( pAlphaX );   pAlphaX   = &v; }
+void WardAnisotropicEllipticalGaussianBRDF::SetAlphaY( const IScalarPainter& v ) { v.addref(); safe_release( pAlphaY );   pAlphaY   = &v; }
 
 template< class T >
 static void ComputeFactors( 
@@ -83,21 +88,21 @@ static void ComputeFactors(
 RISEPel WardAnisotropicEllipticalGaussianBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	RISEPel d, s;
-	const ScalarTriple axt = alphax.GetValuesAt(ri);
-	const ScalarTriple ayt = alphay.GetValuesAt(ri);
+	const ScalarTriple axt = pAlphaX->GetValuesAt(ri);
+	const ScalarTriple ayt = pAlphaY->GetValuesAt(ri);
 	const RISEPel ax( axt.v[0], axt.v[1], axt.v[2] );
 	const RISEPel ay( ayt.v[0], ayt.v[1], ayt.v[2] );
 	ComputeFactors<RISEPel>( d, s, vLightIn, ri, ax, ay );
 
-	return d*diffuse.GetColor(ri) + s*specular.GetColor(ri);
+	return d*pDiffuse->GetColor(ri) + s*pSpecular->GetColor(ri);
 }
 
 Scalar WardAnisotropicEllipticalGaussianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar d=0, s=0;
-	ComputeFactors<Scalar>( d, s, vLightIn, ri, alphax.GetValueAtNM(ri,nm), alphay.GetValueAtNM(ri,nm) );
+	ComputeFactors<Scalar>( d, s, vLightIn, ri, pAlphaX->GetValueAtNM(ri,nm), pAlphaY->GetValueAtNM(ri,nm) );
 
-	return d*diffuse.GetColorNM(ri,nm) + s*specular.GetColorNM(ri,nm);
+	return d*pDiffuse->GetColorNM(ri,nm) + s*pSpecular->GetColorNM(ri,nm);
 }
 
 RISEPel WardAnisotropicEllipticalGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) const
@@ -105,5 +110,5 @@ RISEPel WardAnisotropicEllipticalGaussianBRDF::albedo( const RayIntersectionGeom
 	// Same energy argument as the isotropic variant: Ward's anisotropic
 	// elliptical Gaussian normalization makes the spec lobe integrate
 	// to ≈ Rs, so total reflectance ≈ Rd + Rs.
-	return diffuse.GetColor( ri ) + specular.GetColor( ri );
+	return pDiffuse->GetColor( ri ) + pSpecular->GetColor( ri );
 }

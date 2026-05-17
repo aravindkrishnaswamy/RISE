@@ -30,17 +30,24 @@ SubSurfaceScatteringBSDF::SubSurfaceScatteringBSDF(
 	const Scalar g_,
 	const Scalar roughness_
 	) :
-  ior( ior_ ),
+  pIOR( &ior_ ),
   g( g_ ),
   roughness( roughness_ ),
   alpha( roughness_ * roughness_ )
 {
-	ior.addref();
+	pIOR->addref();
 }
 
 SubSurfaceScatteringBSDF::~SubSurfaceScatteringBSDF()
 {
-	ior.release();
+	safe_release( pIOR );
+}
+
+void SubSurfaceScatteringBSDF::SetIOR( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pIOR );
+	pIOR = &v;
 }
 
 /// Exact dielectric Fresnel reflectance from cosine and IOR.
@@ -74,7 +81,7 @@ RISEPel SubSurfaceScatteringBSDF::value(
 	if( NdotO <= 0 || NdotI <= 0 )
 		return RISEPel( 0, 0, 0 );
 
-	const Scalar n_ior = ior.GetValuesAt( ri ).v[0];
+	const Scalar n_ior = pIOR->GetValuesAt( ri ).v[0];
 
 	if( alpha > 1e-6 )
 	{
@@ -117,7 +124,7 @@ Scalar SubSurfaceScatteringBSDF::valueNM(
 	if( NdotO <= 0 || NdotI <= 0 )
 		return 0;
 
-	const Scalar n_ior = ior.GetValueAtNM( ri, nm );
+	const Scalar n_ior = pIOR->GetValueAtNM( ri, nm );
 
 	if( alpha > 1e-6 )
 	{

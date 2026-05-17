@@ -24,21 +24,25 @@ WardIsotropicGaussianSPF::WardIsotropicGaussianSPF(
 	const IPainter& specular_,
 	const IScalarPainter& alpha_
 	) :
-  diffuse( diffuse_ ),
-  specular( specular_ ),
-  alpha( alpha_ )
+  pDiffuse( &diffuse_ ),
+  pSpecular( &specular_ ),
+  pAlpha( &alpha_ )
 {
-	diffuse.addref();
-	specular.addref();
-	alpha.addref();
+	pDiffuse->addref();
+	pSpecular->addref();
+	pAlpha->addref();
 }
 
 WardIsotropicGaussianSPF::~WardIsotropicGaussianSPF( )
 {
-	diffuse.release();
-	specular.release();
-	alpha.release();
+	safe_release( pDiffuse );
+	safe_release( pSpecular );
+	safe_release( pAlpha );
 }
+
+void WardIsotropicGaussianSPF::SetDiffuse( const IPainter& v )      { v.addref(); safe_release( pDiffuse );  pDiffuse  = &v; }
+void WardIsotropicGaussianSPF::SetSpecular( const IPainter& v )     { v.addref(); safe_release( pSpecular ); pSpecular = &v; }
+void WardIsotropicGaussianSPF::SetAlpha( const IScalarPainter& v )  { v.addref(); safe_release( pAlpha );    pAlpha    = &v; }
 
 static inline void GenerateDiffuseRay(
 		ScatteredRay& diffuse,
@@ -114,29 +118,29 @@ void WardIsotropicGaussianSPF::Scatter(
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
 
 	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
-		d.kray = diffuse.GetColor(ri);
+		d.kray = pDiffuse->GetColor(ri);
 		// Cosine-weighted hemisphere: pdf = cos(theta) / PI
 		const Scalar cos_theta = Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() );
 		d.pdf = cos_theta * INV_PI;
 		scattered.AddScatteredRay( d );
 	}
 
-	const ScalarTriple at = alpha.GetValuesAt(ri);
+	const ScalarTriple at = pAlpha->GetValuesAt(ri);
 	const Scalar a[3] = { at.v[0], at.v[1], at.v[2] };
 
-	if( !alpha.HasPerChannelVariation() )
+	if( !pAlpha->HasPerChannelVariation() )
 	{
 		GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), a[0] );
 
 		if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
-			s.kray = specular.GetColor(ri);
+			s.kray = pSpecular->GetColor(ri);
 			scattered.AddScatteredRay( s );
 		}
 	}
 	else
 	{
 		const Point2 ptrand( sampler.Get1D(),sampler.Get1D() );
-		const RISEPel spec = specular.GetColor(ri);
+		const RISEPel spec = pSpecular->GetColor(ri);
 		for( int i=0; i<3; i++ ) {
 			GenerateSpecularRay( s, myonb, ri, ptrand, a[i] );
 
@@ -165,16 +169,16 @@ void WardIsotropicGaussianSPF::ScatterNM(
 
 	ScatteredRay d, s;
 	GenerateDiffuseRay( d, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()) );
-	GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), alpha.GetValueAtNM(ri,nm) );
+	GenerateSpecularRay( s, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), pAlpha->GetValueAtNM(ri,nm) );
 
 	if( Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() ) > 0.0 ) {
-		d.krayNM = diffuse.GetColorNM(ri,nm);
+		d.krayNM = pDiffuse->GetColorNM(ri,nm);
 		const Scalar cos_theta = Vector3Ops::Dot( d.ray.Dir(), ri.onb.w() );
 		d.pdf = cos_theta * INV_PI;
 		scattered.AddScatteredRay( d );
 	}
 	if( Vector3Ops::Dot( s.ray.Dir(), ri.onb.w() ) > 0.0 ) {
-		s.krayNM = specular.GetColorNM(ri,nm);
+		s.krayNM = pSpecular->GetColorNM(ri,nm);
 		scattered.AddScatteredRay( s );
 	}
 }
@@ -236,13 +240,13 @@ Scalar WardIsotropicGaussianSPF::Pdf(
 	const IORStack& ior_stack
 	) const
 {
-	const ScalarTriple a = alpha.GetValuesAt(ri);
+	const ScalarTriple a = pAlpha->GetValuesAt(ri);
 	// Use the average alpha across channels
 	const Scalar alpha_val = (a.v[0] + a.v[1] + a.v[2]) / 3.0;
 
 	// Weight by MaxValue(kray) to match RandomlySelect
-	const Scalar wDiff = ColorMath::MaxValue( diffuse.GetColor(ri) );
-	const Scalar wSpec = ColorMath::MaxValue( specular.GetColor(ri) );
+	const Scalar wDiff = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
+	const Scalar wSpec = ColorMath::MaxValue( pSpecular->GetColor(ri) );
 
 	return WardIsotropicPdf( ri, wo, alpha_val, wDiff, wSpec );
 }
@@ -254,11 +258,11 @@ Scalar WardIsotropicGaussianSPF::PdfNM(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar alpha_val = alpha.GetValueAtNM(ri,nm);
+	const Scalar alpha_val = pAlpha->GetValueAtNM(ri,nm);
 
 	// Weight by krayNM magnitude to match RandomlySelect
-	const Scalar wDiff = fabs( diffuse.GetColorNM(ri,nm) );
-	const Scalar wSpec = fabs( specular.GetColorNM(ri,nm) );
+	const Scalar wDiff = fabs( pDiffuse->GetColorNM(ri,nm) );
+	const Scalar wSpec = fabs( pSpecular->GetColorNM(ri,nm) );
 
 	return WardIsotropicPdf( ri, wo, alpha_val, wDiff, wSpec );
 }

@@ -31,26 +31,32 @@ CookTorranceSPF::CookTorranceSPF(
 	const IScalarPainter& ior,
 	const IScalarPainter& ext
 	) :
-  pDiffuse( diffuse ),
-  pSpecular( specular ),
-  pMasking( masking ),
-  pIOR( ior ),
-  pExtinction( ext )
+  pDiffuse( &diffuse ),
+  pSpecular( &specular ),
+  pMasking( &masking ),
+  pIOR( &ior ),
+  pExtinction( &ext )
 {
-	pDiffuse.addref();
-	pSpecular.addref();
-	pMasking.addref();
-	pIOR.addref();
-	pExtinction.addref();
+	pDiffuse->addref();
+	pSpecular->addref();
+	pMasking->addref();
+	pIOR->addref();
+	pExtinction->addref();
 }
 CookTorranceSPF::~CookTorranceSPF( )
 {
-	pDiffuse.release();
-	pSpecular.release();
-	pMasking.release();
-	pIOR.release();
-	pExtinction.release();
+	safe_release( pDiffuse );
+	safe_release( pSpecular );
+	safe_release( pMasking );
+	safe_release( pIOR );
+	safe_release( pExtinction );
 }
+
+void CookTorranceSPF::SetDiffuse( const IPainter& v )        { v.addref(); safe_release( pDiffuse );    pDiffuse    = &v; }
+void CookTorranceSPF::SetSpecular( const IPainter& v )       { v.addref(); safe_release( pSpecular );   pSpecular   = &v; }
+void CookTorranceSPF::SetMasking( const IScalarPainter& v )  { v.addref(); safe_release( pMasking );    pMasking    = &v; }
+void CookTorranceSPF::SetIOR( const IScalarPainter& v )      { v.addref(); safe_release( pIOR );        pIOR        = &v; }
+void CookTorranceSPF::SetExtinction( const IScalarPainter& v ){ v.addref(); safe_release( pExtinction ); pExtinction = &v; }
 
 void CookTorranceSPF::Scatter(
 	const RayIntersectionGeometric& ri,
@@ -68,7 +74,7 @@ void CookTorranceSPF::Scatter(
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-	Scalar alpha = pMasking.GetValuesAt(ri).v[0];
+	Scalar alpha = pMasking->GetValuesAt(ri).v[0];
 
 	// Glossy filtering: increase effective roughness
 	if( ri.glossyFilterWidth > 0 ) {
@@ -76,8 +82,8 @@ void CookTorranceSPF::Scatter(
 	}
 
 	// 3-lobe mixture weights: diffuse + specular + multiscatter
-	const Scalar wd = ColorMath::MaxValue( pDiffuse.GetColor(ri) );
-	const Scalar ws = ColorMath::MaxValue( pSpecular.GetColor(ri) );
+	const Scalar wd = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
+	const Scalar ws = ColorMath::MaxValue( pSpecular->GetColor(ri) );
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
 	const Scalar wms = ws * (1.0 - Eavg);
 	const Scalar total = wd + ws + wms;
@@ -105,7 +111,7 @@ void CookTorranceSPF::Scatter(
 			ScatteredRay diffuse;
 			diffuse.type = ScatteredRay::eRayDiffuse;
 			diffuse.ray.Set( ri.ptIntersection, wo );
-			diffuse.kray = pDiffuse.GetColor(ri) * (1.0 / pDiffuseSelect);
+			diffuse.kray = pDiffuse->GetColor(ri) * (1.0 / pDiffuseSelect);
 			diffuse.pdf = mixPdf;
 			diffuse.isDelta = false;
 			scattered.AddScatteredRay( diffuse );
@@ -135,8 +141,8 @@ void CookTorranceSPF::Scatter(
 						const Scalar diffPdf = cosTheta * INV_PI;
 						const Scalar mixPdf = (total > 1e-10) ? ((wd + wms) * diffPdf + ws * vndfPdf) / total : vndfPdf;
 
-						const ScalarTriple iorT = pIOR.GetValuesAt(ri);
-						const ScalarTriple extT = pExtinction.GetValuesAt(ri);
+						const ScalarTriple iorT = pIOR->GetValuesAt(ri);
+						const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 						const RISEPel iorPel( iorT.v[0], iorT.v[1], iorT.v[2] );
 						const RISEPel extPel( extT.v[0], extT.v[1], extT.v[2] );
 						const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
@@ -147,7 +153,7 @@ void CookTorranceSPF::Scatter(
 						// simplifies to: pSpecular * fresnel * G1(wo)
 						// Divide by selection probability for unbiased single-lobe estimate
 						const Scalar G1wo = MicrofacetUtils::GGX_G1( alpha, cosTheta );
-						const RISEPel specColor = pSpecular.GetColor(ri);
+						const RISEPel specColor = pSpecular->GetColor(ri);
 						const RISEPel kray = specColor * fresnel * (G1wo / pSpecSelect);
 
 						if( ColorMath::MaxValue( kray ) > 0 )
@@ -185,8 +191,8 @@ void CookTorranceSPF::Scatter(
 				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosTheta, alpha );
 				const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
 
-				const ScalarTriple iorT = pIOR.GetValuesAt(ri);
-				const ScalarTriple extT = pExtinction.GetValuesAt(ri);
+				const ScalarTriple iorT = pIOR->GetValuesAt(ri);
+				const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 				const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 				const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 				const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
@@ -196,7 +202,7 @@ void CookTorranceSPF::Scatter(
 				// BRDF_ms = F_ms * (1-Ess_o) * (1-Ess_i) / (PI * (1-Eavg))
 				// pdf_cosine = cos / PI
 				// kray = F_ms * (1-Ess_o) * (1-Ess_i) / (1-Eavg) / pMSSelect
-				const RISEPel specColor = pSpecular.GetColor(ri);
+				const RISEPel specColor = pSpecular->GetColor(ri);
 				const RISEPel kray = specColor * F_ms *
 					((1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect));
 
@@ -231,7 +237,7 @@ void CookTorranceSPF::ScatterNM(
 
 	const Vector3 n = myonb.w();
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-	Scalar alpha = pMasking.GetValueAtNM(ri,nm);
+	Scalar alpha = pMasking->GetValueAtNM(ri,nm);
 
 	// Glossy filtering: increase effective roughness
 	if( ri.glossyFilterWidth > 0 ) {
@@ -239,8 +245,8 @@ void CookTorranceSPF::ScatterNM(
 	}
 
 	// 3-lobe mixture weights
-	const Scalar wd = pDiffuse.GetColorNM(ri,nm);
-	const Scalar ws = pSpecular.GetColorNM(ri,nm);
+	const Scalar wd = pDiffuse->GetColorNM(ri,nm);
+	const Scalar ws = pSpecular->GetColorNM(ri,nm);
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
 	const Scalar wms = ws * (1.0 - Eavg);
 	const Scalar total = wd + ws + wms;
@@ -266,7 +272,7 @@ void CookTorranceSPF::ScatterNM(
 			ScatteredRay diffuse;
 			diffuse.type = ScatteredRay::eRayDiffuse;
 			diffuse.ray.Set( ri.ptIntersection, wo );
-			diffuse.krayNM = pDiffuse.GetColorNM(ri,nm) / pDiffuseSelect;
+			diffuse.krayNM = pDiffuse->GetColorNM(ri,nm) / pDiffuseSelect;
 			diffuse.pdf = mixPdf;
 			diffuse.isDelta = false;
 			scattered.AddScatteredRay( diffuse );
@@ -298,10 +304,10 @@ void CookTorranceSPF::ScatterNM(
 
 						const Scalar fresnel = Optics::CalculateConductorReflectance(
 							ri.ray.Dir(), n, 1.0,
-							pIOR.GetValueAtNM(ri,nm), pExtinction.GetValueAtNM(ri,nm) );
+							pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
 
 						const Scalar G1wo = MicrofacetUtils::GGX_G1( alpha, cosTheta );
-						const Scalar krayNM = pSpecular.GetColorNM(ri,nm) * fresnel * G1wo / pSpecSelect;
+						const Scalar krayNM = pSpecular->GetColorNM(ri,nm) * fresnel * G1wo / pSpecSelect;
 
 						if( krayNM > 0 )
 						{
@@ -338,12 +344,12 @@ void CookTorranceSPF::ScatterNM(
 				const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( cosTheta, alpha );
 				const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
 
-				const Scalar iorVal = pIOR.GetValueAtNM(ri,nm);
-				const Scalar extVal = pExtinction.GetValueAtNM(ri,nm);
+				const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
+				const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
 				const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
 				const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
 
-				const Scalar krayNM = pSpecular.GetColorNM(ri,nm) * F_ms *
+				const Scalar krayNM = pSpecular->GetColorNM(ri,nm) * F_ms *
 					(1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect);
 
 				if( krayNM > 0 )
@@ -378,14 +384,14 @@ Scalar CookTorranceSPF::Pdf(
 	if( cosTheta <= 0 ) return 0;
 
 	const Vector3 wi = Vector3Ops::Normalize( -(ri.ray.Dir()) );
-	Scalar alpha = pMasking.GetValuesAt(ri).v[0];
+	Scalar alpha = pMasking->GetValuesAt(ri).v[0];
 	if( ri.glossyFilterWidth > 0 ) {
 		alpha = r_min( alpha + ri.glossyFilterWidth, Scalar(1.0) );
 	}
 
 	// 3-lobe mixture PDF weighted by painter albedos
-	const Scalar wd = ColorMath::MaxValue( pDiffuse.GetColor(ri) );
-	const Scalar ws = ColorMath::MaxValue( pSpecular.GetColor(ri) );
+	const Scalar wd = ColorMath::MaxValue( pDiffuse->GetColor(ri) );
+	const Scalar ws = ColorMath::MaxValue( pSpecular->GetColor(ri) );
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
 	const Scalar wms = ws * (1.0 - Eavg);
 	const Scalar total = wd + ws + wms;

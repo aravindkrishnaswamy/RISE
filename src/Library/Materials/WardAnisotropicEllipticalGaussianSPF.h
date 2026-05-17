@@ -34,10 +34,12 @@ namespace RISE
 		protected:
 			virtual ~WardAnisotropicEllipticalGaussianSPF( );
 
-			const IPainter&			diffuse;			// diffuse reflectance
-			const IPainter&			specular;			// specular reflectance
-			const IScalarPainter&	alphax;				// surface slope RMS (physical scalar)
-			const IScalarPainter&	alphay;
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IPainter*			pDiffuse;			// diffuse reflectance
+			const IPainter*			pSpecular;			// specular reflectance
+			const IScalarPainter*	pAlphaX;			// surface slope RMS (physical scalar)
+			const IScalarPainter*	pAlphaY;
 
 		public:
 			WardAnisotropicEllipticalGaussianSPF(
@@ -46,6 +48,16 @@ namespace RISE
 				const IScalarPainter& alphax_,
 				const IScalarPainter& alphay_
 				);
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetDiffuse()  const { return *pDiffuse; }
+			inline const IPainter&       GetSpecular() const { return *pSpecular; }
+			inline const IScalarPainter& GetAlphaX()   const { return *pAlphaX; }
+			inline const IScalarPainter& GetAlphaY()   const { return *pAlphaY; }
+			void SetDiffuse( const IPainter& v );
+			void SetSpecular( const IPainter& v );
+			void SetAlphaX( const IScalarPainter& v );
+			void SetAlphaY( const IScalarPainter& v );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.

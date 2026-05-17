@@ -53,8 +53,10 @@ namespace RISE
 		protected:
 			virtual ~SheenBRDF();
 
-			const IPainter&			pColor;
-			const IScalarPainter&	pRoughness;		// physical scalar
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IPainter*			pColor;
+			const IScalarPainter*	pRoughness;		// physical scalar
 
 		public:
 			SheenBRDF(
@@ -65,6 +67,12 @@ namespace RISE
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetColor()     const { return *pColor; }
+			inline const IScalarPainter& GetRoughness() const { return *pRoughness; }
+			void SetColor( const IPainter& v );
+			void SetRoughness( const IScalarPainter& v );
 		};
 	}
 }

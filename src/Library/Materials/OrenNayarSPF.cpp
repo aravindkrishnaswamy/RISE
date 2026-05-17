@@ -23,16 +23,30 @@ OrenNayarSPF::OrenNayarSPF(
 	const IPainter& reflectance,
 	const IScalarPainter& roughness
 	) :
-  pReflectance( reflectance ),
-  pRoughness( roughness )
+  pReflectance( &reflectance ),
+  pRoughness( &roughness )
 {
-	pReflectance.addref();
-	pRoughness.addref();
+	pReflectance->addref();
+	pRoughness->addref();
 }
 OrenNayarSPF::~OrenNayarSPF( )
 {
-	pReflectance.release();
-	pRoughness.release();
+	safe_release( pReflectance );
+	safe_release( pRoughness );
+}
+
+void OrenNayarSPF::SetReflectance( const IPainter& v )
+{
+	v.addref();
+	safe_release( pReflectance );
+	pReflectance = &v;
+}
+
+void OrenNayarSPF::SetRoughness( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pRoughness );
+	pRoughness = &v;
 }
 
 void OrenNayarSPF::Scatter(
@@ -58,11 +72,11 @@ void OrenNayarSPF::Scatter(
 
 	// Compute the weight
 	RISEPel L1, L2;
-	const ScalarTriple r = pRoughness.GetValuesAt(ri);
+	const ScalarTriple r = pRoughness->GetValuesAt(ri);
 	const RISEPel roughness( r.v[0], r.v[1], r.v[2] );
 	OrenNayarBRDF::ComputeFactor<RISEPel>( L1, L2, diffuse.ray.Dir(), ri, ri.onb.w(), roughness );
 
-	const RISEPel rho = pReflectance.GetColor(ri);
+	const RISEPel rho = pReflectance->GetColor(ri);
 	diffuse.kray = L1*rho + (L2*rho*rho);
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
@@ -96,9 +110,9 @@ void OrenNayarSPF::ScatterNM(
 	
 	// Compute the weight
 	Scalar L1=0, L2=0;
-	OrenNayarBRDF::ComputeFactor( L1, L2, diffuse.ray.Dir(), ri, myonb.w(), pRoughness.GetValueAtNM(ri,nm) );
+	OrenNayarBRDF::ComputeFactor( L1, L2, diffuse.ray.Dir(), ri, myonb.w(), pRoughness->GetValueAtNM(ri,nm) );
 
-	const Scalar rho = pReflectance.GetColorNM(ri,nm);
+	const Scalar rho = pReflectance->GetColorNM(ri,nm);
 	diffuse.krayNM = L1*rho + (L2*rho*rho);
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi

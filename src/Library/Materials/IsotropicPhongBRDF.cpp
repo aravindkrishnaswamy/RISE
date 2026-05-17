@@ -18,20 +18,41 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 IsotropicPhongBRDF::IsotropicPhongBRDF( const IPainter& rd, const IPainter& rs, const IScalarPainter& exp ) :
-  refdiffuse( rd ),
-  refspecular( rs ),
-  exponent( exp )
+  pRd( &rd ),
+  pRs( &rs ),
+  pExponent( &exp )
 {
-	refdiffuse.addref();
-	refspecular.addref();
-	exponent.addref();
+	pRd->addref();
+	pRs->addref();
+	pExponent->addref();
 }
 
 IsotropicPhongBRDF::~IsotropicPhongBRDF( )
 {
-	refdiffuse.release();
-	refspecular.release();
-	exponent.release();
+	safe_release( pRd );
+	safe_release( pRs );
+	safe_release( pExponent );
+}
+
+void IsotropicPhongBRDF::SetRd( const IPainter& v )
+{
+	v.addref();
+	safe_release( pRd );
+	pRd = &v;
+}
+
+void IsotropicPhongBRDF::SetRs( const IPainter& v )
+{
+	v.addref();
+	safe_release( pRs );
+	pRs = &v;
+}
+
+void IsotropicPhongBRDF::SetExponent( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pExponent );
+	pExponent = &v;
 }
 
 template< class T >
@@ -79,24 +100,24 @@ static void ComputeDiffuseSpecularFactors(
 RISEPel IsotropicPhongBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	RISEPel diffuseFactor, specularFactor;
-	const ScalarTriple e = exponent.GetValuesAt(ri);
+	const ScalarTriple e = pExponent->GetValuesAt(ri);
 	const RISEPel exp( e.v[0], e.v[1], e.v[2] );
 	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, exp );
 
-	return ((refdiffuse.GetColor(ri) * diffuseFactor) + (refspecular.GetColor(ri)*specularFactor));
+	return ((pRd->GetColor(ri) * diffuseFactor) + (pRs->GetColor(ri)*specularFactor));
 }
 
 Scalar IsotropicPhongBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	Scalar diffuseFactor=0, specularFactor=0;
-	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, exponent.GetValueAtNM(ri,nm) );
+	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, pExponent->GetValueAtNM(ri,nm) );
 
-	return ((refdiffuse.GetColorNM(ri,nm) * diffuseFactor) + (refspecular.GetColorNM(ri,nm)*specularFactor));
+	return ((pRd->GetColorNM(ri,nm) * diffuseFactor) + (pRs->GetColorNM(ri,nm)*specularFactor));
 }
 
 RISEPel IsotropicPhongBRDF::albedo( const RayIntersectionGeometric& ri ) const
 {
 	// Conventional Phong reflectance: Rd + Rs (the normalized lobe
 	// integrates to ≈ Rs over the hemisphere).
-	return refdiffuse.GetColor( ri ) + refspecular.GetColor( ri );
+	return pRd->GetColor( ri ) + pRs->GetColor( ri );
 }

@@ -62,6 +62,19 @@ namespace RISE
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to BOTH BRDF and SPF in lockstep.
+			inline const IPainter&       GetDiffuse()    const { return pBRDF->GetDiffuse(); }
+			inline const IPainter&       GetSpecular()   const { return pBRDF->GetSpecular(); }
+			inline const IScalarPainter& GetMasking()    const { return pBRDF->GetMasking(); }
+			inline const IScalarPainter& GetIOR()        const { return pBRDF->GetIOR(); }
+			inline const IScalarPainter& GetExtinction() const { return pBRDF->GetExtinction(); }
+			inline void SetDiffuse( const IPainter& v )        { pBRDF->SetDiffuse( v );    pSPF->SetDiffuse( v ); }
+			inline void SetSpecular( const IPainter& v )       { pBRDF->SetSpecular( v );   pSPF->SetSpecular( v ); }
+			inline void SetMasking( const IScalarPainter& v )  { pBRDF->SetMasking( v );    pSPF->SetMasking( v ); }
+			inline void SetIOR( const IScalarPainter& v )      { pBRDF->SetIOR( v );        pSPF->SetIOR( v ); }
+			inline void SetExtinction( const IScalarPainter& v ){ pBRDF->SetExtinction( v ); pSPF->SetExtinction( v ); }
 		};
 	}
 }

@@ -19,29 +19,53 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 PhongEmitter::PhongEmitter( const IPainter& radEx_, const Scalar scale_, const IScalarPainter& N ) :
-  radEx( radEx_ ),
+  pRadEx( &radEx_ ),
   scale( scale_ ),
-  phongN( N )
+  pPhongN( &N )
 {
-	radEx.addref();
-	phongN.addref();
+	pRadEx->addref();
+	pPhongN->addref();
+	RefreshAverages();
+}
+
+PhongEmitter::~PhongEmitter( )
+{
+	safe_release( pRadEx );
+	safe_release( pPhongN );
+}
+
+void PhongEmitter::RefreshAverages()
+{
+	averageRadEx = RISEPel( 0, 0, 0 );
+	averageSpectrum = VisibleSpectralPacket();
 
 	// Sample the texture space of the radiance exitance to compute the average radiant exitance
 	RayIntersectionGeometric rig( Ray(), nullRasterizerState );
 	for( int i=0; i<100; i++ ) {
 		rig.ptCoord = Point2( GlobalRNG().CanonicalRandom(), GlobalRNG().CanonicalRandom() );
-		averageRadEx = averageRadEx + radEx.GetColor(rig);
-		averageSpectrum = averageSpectrum + radEx.GetSpectrum(rig);
+		averageRadEx = averageRadEx + pRadEx->GetColor(rig);
+		averageSpectrum = averageSpectrum + pRadEx->GetSpectrum(rig);
 	}
 
 	averageRadEx = averageRadEx * (scale/Scalar(100.0));
 	averageSpectrum = averageSpectrum * (scale/Scalar(100.0));
 }
 
-PhongEmitter::~PhongEmitter( )
+void PhongEmitter::SetRadEx( const IPainter& v )
 {
-	radEx.release();
-	phongN.release();
+	v.addref();
+	safe_release( pRadEx );
+	pRadEx = &v;
+	RefreshAverages();
+}
+
+void PhongEmitter::SetN( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pPhongN );
+	pPhongN = &v;
+	// No average refresh needed — phongN affects the per-direction
+	// emission shape but not the per-area average colour.
 }
 
 RISEPel PhongEmitter::emittedRadiance( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N) const
@@ -53,10 +77,10 @@ RISEPel PhongEmitter::emittedRadiance( const RayIntersectionGeometric& ri, const
 
 	// According to the PDF for phong PDF(theta_i) = (n+1)/(2*PI) * cos^n(alpha)
 	//   where alpha = angle between outgoing and direction of perfect specular (in this case the normal)
-	const ScalarTriple pN_t = phongN.GetValuesAt( ri );
+	const ScalarTriple pN_t = pPhongN->GetValuesAt( ri );
 	const RISEPel	pN( pN_t.v[0], pN_t.v[1], pN_t.v[2] );
 	const RISEPel	k = (pN + 1) * pow(co,pN) * (1.0 / TWO_PI);
-	return (radEx.GetColor(ri) * k * scale);
+	return (pRadEx->GetColor(ri) * k * scale);
 }
 
 Scalar PhongEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N, const Scalar nm) const
@@ -68,9 +92,9 @@ Scalar PhongEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri, cons
 
 	// According to the PDF for phong PDF(theta_i) = (n+1)/(2*PI) * cos^n(alpha)
 	//   where alpha = angle between outgoing and direction of perfect specular (in this case the normal)
-	const Scalar	pN = phongN.GetValueAtNM( ri, nm );
+	const Scalar	pN = pPhongN->GetValueAtNM( ri, nm );
 	const Scalar	k = (pN + 1) * pow(co,pN) * (1.0 / TWO_PI);
-	return (radEx.GetColorNM( ri, nm ) * k * scale);
+	return (pRadEx->GetColorNM( ri, nm ) * k * scale);
 }
 
 RISEPel PhongEmitter::averageRadiantExitance() const
@@ -85,7 +109,7 @@ Scalar PhongEmitter::averageRadiantExitanceNM( const Scalar nm ) const
 
 Vector3 PhongEmitter::getEmmittedPhotonDir( const RayIntersectionGeometric& ri, const Point2& random ) const
 {
-	const ScalarTriple N_t = phongN.GetValuesAt(ri);
+	const ScalarTriple N_t = pPhongN->GetValuesAt(ri);
 	if( N_t.IsUniform() ) {
 		return GeometricUtilities::CreatePhongVector( ri.onb, random, N_t.v[0] );
 	} else {

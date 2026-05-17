@@ -32,27 +32,33 @@ CookTorranceBRDF::CookTorranceBRDF(
 	const IScalarPainter& ior,
 	const IScalarPainter& ext
 	) :
-  pDiffuse( diffuse ),
-  pSpecular( specular ),
-  pMasking( masking ),
-  pIOR( ior ),
-  pExtinction( ext )
+  pDiffuse( &diffuse ),
+  pSpecular( &specular ),
+  pMasking( &masking ),
+  pIOR( &ior ),
+  pExtinction( &ext )
 {
-	pDiffuse.addref();
-	pSpecular.addref();
-	pMasking.addref();
-	pIOR.addref();
-	pExtinction.addref();
+	pDiffuse->addref();
+	pSpecular->addref();
+	pMasking->addref();
+	pIOR->addref();
+	pExtinction->addref();
 }
 
 CookTorranceBRDF::~CookTorranceBRDF( )
 {
-	pDiffuse.release();
-	pSpecular.release();
-	pMasking.release();
-	pIOR.release();
-	pExtinction.release();
+	safe_release( pDiffuse );
+	safe_release( pSpecular );
+	safe_release( pMasking );
+	safe_release( pIOR );
+	safe_release( pExtinction );
 }
+
+void CookTorranceBRDF::SetDiffuse( const IPainter& v )        { v.addref(); safe_release( pDiffuse );    pDiffuse    = &v; }
+void CookTorranceBRDF::SetSpecular( const IPainter& v )       { v.addref(); safe_release( pSpecular );   pSpecular   = &v; }
+void CookTorranceBRDF::SetMasking( const IScalarPainter& v )  { v.addref(); safe_release( pMasking );    pMasking    = &v; }
+void CookTorranceBRDF::SetIOR( const IScalarPainter& v )      { v.addref(); safe_release( pIOR );        pIOR        = &v; }
+void CookTorranceBRDF::SetExtinction( const IScalarPainter& v ){ v.addref(); safe_release( pExtinction ); pExtinction = &v; }
 
 template< class T >
 T CookTorranceBRDF::ComputeFactor( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Vector3& n, const T& alpha )
@@ -83,15 +89,15 @@ T CookTorranceBRDF::ComputeFactor( const Vector3& vLightIn, const RayIntersectio
 RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
 {
 	const Vector3 n = ri.onb.w();
-	const ScalarTriple alphaT = pMasking.GetValuesAt(ri);
+	const ScalarTriple alphaT = pMasking->GetValuesAt(ri);
 	const RISEPel alphaColor( alphaT.v[0], alphaT.v[1], alphaT.v[2] );
 	const Scalar scalarAlpha = alphaT.v[0];
 
 	const RISEPel factor = ComputeFactor<RISEPel>( vLightIn, ri, n, alphaColor );
 
-	const RISEPel specColor = pSpecular.GetColor(ri);
-	const ScalarTriple iorT = pIOR.GetValuesAt(ri);
-	const ScalarTriple extT = pExtinction.GetValuesAt(ri);
+	const RISEPel specColor = pSpecular->GetColor(ri);
+	const ScalarTriple iorT = pIOR->GetValuesAt(ri);
+	const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 	const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 	const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 
@@ -120,16 +126,16 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 		}
 	}
 
-	return pDiffuse.GetColor(ri)*INV_PI + specular;
+	return pDiffuse->GetColor(ri)*INV_PI + specular;
 }
 
 Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	const Vector3 n = ri.onb.w();
-	const Scalar alpha = pMasking.GetValueAtNM(ri,nm);
-	const Scalar specColor = pSpecular.GetColorNM(ri,nm);
-	const Scalar iorVal = pIOR.GetValueAtNM(ri,nm);
-	const Scalar extVal = pExtinction.GetValueAtNM(ri,nm);
+	const Scalar alpha = pMasking->GetValueAtNM(ri,nm);
+	const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+	const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
+	const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
 
 	Scalar specular = 0;
 
@@ -159,7 +165,7 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 		}
 	}
 
-	return pDiffuse.GetColorNM(ri,nm)*INV_PI + specular;
+	return pDiffuse->GetColorNM(ri,nm)*INV_PI + specular;
 }
 
 RISEPel CookTorranceBRDF::albedo( const RayIntersectionGeometric& ri ) const
@@ -169,11 +175,11 @@ RISEPel CookTorranceBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	// microfacet terms — those distribute energy across the lobe but
 	// don't change total integrated reflectance to first order).
 	const Vector3 n = ri.onb.w();
-	const ScalarTriple iorT = pIOR.GetValuesAt( ri );
-	const ScalarTriple extT = pExtinction.GetValuesAt( ri );
+	const ScalarTriple iorT = pIOR->GetValuesAt( ri );
+	const ScalarTriple extT = pExtinction->GetValuesAt( ri );
 	const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 	const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 	const RISEPel fresnel = Optics::CalculateConductorReflectance<RISEPel>(
 		ri.ray.Dir(), n, RISEPel( 1, 1, 1 ), ior, ext );
-	return pDiffuse.GetColor( ri ) + pSpecular.GetColor( ri ) * fresnel;
+	return pDiffuse->GetColor( ri ) + pSpecular->GetColor( ri ) * fresnel;
 }

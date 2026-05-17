@@ -21,27 +21,44 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
-LambertianEmitter::LambertianEmitter( const IPainter& radEx, const Scalar scale_ ) : 
-  radExPainter( radEx ),
+LambertianEmitter::LambertianEmitter( const IPainter& radEx, const Scalar scale_ ) :
+  pRadEx( &radEx ),
   scale( scale_ )
 {
-	radExPainter.addref();
+	pRadEx->addref();
+	RefreshAverages();
+}
+
+LambertianEmitter::~LambertianEmitter( )
+{
+	safe_release( pRadEx );
+}
+
+void LambertianEmitter::RefreshAverages()
+{
+	// Re-initialise then accumulate — important on Set so we don't add
+	// on top of the previous painter's contribution.
+	averageRadEx = RISEPel( 0, 0, 0 );
+	averageSpectrum = VisibleSpectralPacket();
 
 	// Sample the texture space of the radiance exitance to compute the average radiant exitance
 	RayIntersectionGeometric rig( Ray(), nullRasterizerState );
 	for( int i=0; i<100; i++ ) {
 		rig.ptCoord = Point2( GlobalRNG().CanonicalRandom(), GlobalRNG().CanonicalRandom() );
-		averageRadEx = averageRadEx + radEx.GetColor(rig);
-		averageSpectrum = averageSpectrum + radEx.GetSpectrum(rig);
+		averageRadEx = averageRadEx + pRadEx->GetColor(rig);
+		averageSpectrum = averageSpectrum + pRadEx->GetSpectrum(rig);
 	}
 
 	averageRadEx = averageRadEx * (scale/Scalar(100.0));
 	averageSpectrum = averageSpectrum * (scale/Scalar(100.0));
 }
 
-LambertianEmitter::~LambertianEmitter( )
+void LambertianEmitter::SetRadEx( const IPainter& v )
 {
-	radExPainter.release();
+	v.addref();
+	safe_release( pRadEx );
+	pRadEx = &v;
+	RefreshAverages();
 }
 
 RISEPel LambertianEmitter::emittedRadiance( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N) const
@@ -51,7 +68,7 @@ RISEPel LambertianEmitter::emittedRadiance( const RayIntersectionGeometric& ri, 
 	if( Vector3Ops::Dot( out, N ) <= 0 ) {
 		return RISEPel( 0, 0, 0 );
 	}
-	return (radExPainter.GetColor( ri ) * INV_PI * scale);
+	return (pRadEx->GetColor( ri ) * INV_PI * scale);
 }
 
 Scalar LambertianEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri, const Vector3& out, const Vector3& N, const Scalar nm ) const
@@ -59,7 +76,7 @@ Scalar LambertianEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri,
 	if( Vector3Ops::Dot( out, N ) <= 0 ) {
 		return 0;
 	}
-	return (radExPainter.GetColorNM( ri, nm ) * INV_PI * scale);
+	return (pRadEx->GetColorNM( ri, nm ) * INV_PI * scale);
 }
 
 RISEPel LambertianEmitter::averageRadiantExitance() const

@@ -36,14 +36,22 @@ namespace RISE
 		protected:
 			virtual ~SheenSPF();
 
-			const IPainter&			pColor;
-			const IScalarPainter&	pRoughness;		// physical scalar
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IPainter*			pColor;
+			const IScalarPainter*	pRoughness;		// physical scalar
 
 		public:
 			SheenSPF(
 				const IPainter& sheenColor,
 				const IScalarPainter& sheenRoughness
 				);
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetColor()     const { return *pColor; }
+			inline const IScalarPainter& GetRoughness() const { return *pRoughness; }
+			void SetColor( const IPainter& v );
+			void SetRoughness( const IScalarPainter& v );
 
 			void Scatter(
 				const RayIntersectionGeometric& ri,

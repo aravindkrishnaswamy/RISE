@@ -52,7 +52,7 @@ namespace RISE
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
 				pSPF = new WardIsotropicGaussianSPF( diffuse, specular, alpha );
-				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "SPF" );
+				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 			}
 
 			/// \return The BRDF for this material.  NULL If there is no BRDF
@@ -63,6 +63,15 @@ namespace RISE
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to BOTH BRDF and SPF in lockstep.
+			inline const IPainter&       GetDiffuse()  const { return pBRDF->GetDiffuse(); }
+			inline const IPainter&       GetSpecular() const { return pBRDF->GetSpecular(); }
+			inline const IScalarPainter& GetAlpha()    const { return pBRDF->GetAlpha(); }
+			inline void SetDiffuse( const IPainter& v )      { pBRDF->SetDiffuse( v );  pSPF->SetDiffuse( v ); }
+			inline void SetSpecular( const IPainter& v )     { pBRDF->SetSpecular( v ); pSPF->SetSpecular( v ); }
+			inline void SetAlpha( const IScalarPainter& v )  { pBRDF->SetAlpha( v );    pSPF->SetAlpha( v ); }
 		};
 	}
 }

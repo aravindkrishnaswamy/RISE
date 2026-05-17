@@ -29,8 +29,11 @@ namespace RISE
 		{
 		protected:
 			const IMaterial&			pMaterial;
-			IEmitter*					pEmitter;
-			
+			//! Concrete pointer so the editor's `SetRadEx` / `SetN`
+			//! reach `PhongEmitter`'s setters (the base IEmitter
+			//! interface doesn't expose them).
+			PhongEmitter*				pEmitter;
+
 			virtual ~PhongLuminaireMaterial()
 			{
 				pMaterial.release();
@@ -55,6 +58,15 @@ namespace RISE
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return pEmitter; };
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to the PhongEmitter — the wrapped base material
+			//! is intentionally NOT editable through this surface (users
+			//! edit it via its own row in the panel).
+			inline const IPainter&       GetRadEx() const { return pEmitter->GetRadEx(); }
+			inline const IScalarPainter& GetN()     const { return pEmitter->GetN(); }
+			inline void SetRadEx( const IPainter& v )     { pEmitter->SetRadEx( v ); }
+			inline void SetN( const IScalarPainter& v )   { pEmitter->SetN( v ); }
 		};
 	}
 }

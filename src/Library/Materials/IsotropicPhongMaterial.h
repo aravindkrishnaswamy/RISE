@@ -55,6 +55,16 @@ namespace RISE
 
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return 0; };
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to BOTH BRDF and SPF in lockstep so the two
+			//! lobe instances never reference different painters.
+			inline const IPainter&       GetRd()       const { return pBRDF->GetRd(); }
+			inline const IPainter&       GetRs()       const { return pBRDF->GetRs(); }
+			inline const IScalarPainter& GetExponent() const { return pBRDF->GetExponent(); }
+			inline void SetRd( const IPainter& v )       { pBRDF->SetRd( v );       pSPF->SetRd( v ); }
+			inline void SetRs( const IPainter& v )       { pBRDF->SetRs( v );       pSPF->SetRs( v ); }
+			inline void SetExponent( const IScalarPainter& v ) { pBRDF->SetExponent( v ); pSPF->SetExponent( v ); }
 		};
 	}
 }

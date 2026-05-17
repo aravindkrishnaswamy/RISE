@@ -29,12 +29,22 @@ namespace RISE
 		protected:
 			virtual ~IsotropicPhongSPF( );
 
-			const IPainter&			Rd;					// diffuse reflectance
-			const IPainter&			Rs;					// specular reflectance
-			const IScalarPainter&	exponent;			// phong exponent (physical scalar)
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IPainter*			pRd;				// diffuse reflectance
+			const IPainter*			pRs;				// specular reflectance
+			const IScalarPainter*	pExponent;			// phong exponent (physical scalar)
 
 		public:
 			IsotropicPhongSPF( const IPainter& Rd_, const IPainter& Rs_, const IScalarPainter& exp );
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetRd()       const { return *pRd; }
+			inline const IPainter&       GetRs()       const { return *pRs; }
+			inline const IScalarPainter& GetExponent() const { return *pExponent; }
+			void SetRd( const IPainter& v );
+			void SetRs( const IPainter& v );
+			void SetExponent( const IScalarPainter& v );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.

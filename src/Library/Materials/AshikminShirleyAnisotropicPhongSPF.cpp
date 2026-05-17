@@ -28,24 +28,29 @@ AshikminShirleyAnisotropicPhongSPF::AshikminShirleyAnisotropicPhongSPF(
 	const IPainter& Rd_,
 	const IPainter& Rs_
 	) :
-  Nu( Nu_ ),
-  Nv( Nv_ ),
-  Rd( Rd_ ),
-  Rs( Rs_ )
+  pNu( &Nu_ ),
+  pNv( &Nv_ ),
+  pRd( &Rd_ ),
+  pRs( &Rs_ )
 {
-	Nu.addref();
-	Nv.addref();
-	Rd.addref();
-	Rs.addref();
+	pNu->addref();
+	pNv->addref();
+	pRd->addref();
+	pRs->addref();
 }
 
 AshikminShirleyAnisotropicPhongSPF::~AshikminShirleyAnisotropicPhongSPF( )
 {
-	Nu.release();
-	Nv.release();
-	Rd.release();
-	Rs.release();
+	safe_release( pNu );
+	safe_release( pNv );
+	safe_release( pRd );
+	safe_release( pRs );
 }
+
+void AshikminShirleyAnisotropicPhongSPF::SetNu( const IScalarPainter& v ) { v.addref(); safe_release( pNu ); pNu = &v; }
+void AshikminShirleyAnisotropicPhongSPF::SetNv( const IScalarPainter& v ) { v.addref(); safe_release( pNv ); pNv = &v; }
+void AshikminShirleyAnisotropicPhongSPF::SetRd( const IPainter& v )       { v.addref(); safe_release( pRd ); pRd = &v; }
+void AshikminShirleyAnisotropicPhongSPF::SetRs( const IPainter& v )       { v.addref(); safe_release( pRs ); pRs = &v; }
 
 static bool GenerateSpecularRay(
 	ScatteredRay& specular,
@@ -160,17 +165,17 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 		myonb.FlipW();
 	}
 
-	const ScalarTriple NUt = Nu.GetValuesAt(ri);
-	const ScalarTriple NVt = Nv.GetValuesAt(ri);
+	const ScalarTriple NUt = pNu->GetValuesAt(ri);
+	const ScalarTriple NVt = pNv->GetValuesAt(ri);
 	const Scalar NU[3] = { NUt.v[0], NUt.v[1], NUt.v[2] };
 	const Scalar NV[3] = { NVt.v[0], NVt.v[1], NVt.v[2] };
 
 	ScatteredRay	specular;
 	specular.type = ScatteredRay::eRayReflection;
 
-	const RISEPel rho = Rs.GetColor(ri);
+	const RISEPel rho = pRs->GetColor(ri);
 
-	if( !Nu.HasPerChannelVariation() && !Nv.HasPerChannelVariation() )
+	if( !pNu->HasPerChannelVariation() && !pNv->HasPerChannelVariation() )
 	{
 		Scalar diffuseFactor_unused=0, specFactor=0;
 		if( GenerateSpecularRay( specular, diffuseFactor_unused, specFactor, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), NU[0], NV[0], ColorMath::MaxValue(rho) ) ) {
@@ -217,7 +222,7 @@ void AshikminShirleyAnisotropicPhongSPF::Scatter(
 	static const Scalar diffuseNorm = 28.0 / 23.0;
 
 	const RISEPel oneMinusRs = RISEPel(1,1,1) - rho;
-	diffuse.kray = Rd.GetColor(ri) * oneMinusRs * (diffuseNorm * fromK1 * fromK2);
+	diffuse.kray = pRd->GetColor(ri) * oneMinusRs * (diffuseNorm * fromK1 * fromK2);
 
 	scattered.AddScatteredRay( diffuse );
 }
@@ -235,15 +240,15 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 		myonb.FlipW();
 	}
 
-	const Scalar NU = Nu.GetValueAtNM(ri,nm);
-	const Scalar NV = Nv.GetValueAtNM(ri,nm);
+	const Scalar NU = pNu->GetValueAtNM(ri,nm);
+	const Scalar NV = pNv->GetValueAtNM(ri,nm);
 
 	ScatteredRay	specular;
 	specular.type = ScatteredRay::eRayReflection;
 	Scalar specFactor=0;
 	Scalar diffuseFactor=0;
 
-	const Scalar rho = Rs.GetColorNM(ri,nm);
+	const Scalar rho = pRs->GetColorNM(ri,nm);
 
 	if( GenerateSpecularRay( specular, diffuseFactor, specFactor, myonb, ri, Point2(sampler.Get1D(),sampler.Get1D()), NU, NV, rho ) ) {
 		// specFactor already includes Fresnel (which contains Rs) — no extra rho.
@@ -267,7 +272,7 @@ void AshikminShirleyAnisotropicPhongSPF::ScatterNM(
 		const Scalar fromK2 = 1.0 - pow( 1.0 - r_max(0.0, cos_i) * 0.5, 5.0 );
 		static const Scalar diffuseNorm = 28.0 / 23.0;
 
-		diffuse.krayNM = Rd.GetColorNM(ri,nm) * (1.0 - rho) * (diffuseNorm * fromK1 * fromK2);
+		diffuse.krayNM = pRd->GetColorNM(ri,nm) * (1.0 - rho) * (diffuseNorm * fromK1 * fromK2);
 		scattered.AddScatteredRay( diffuse );
 	}
 }
@@ -340,8 +345,8 @@ Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 	const IORStack& ior_stack
 	) const
 {
-	const ScalarTriple nu = Nu.GetValuesAt(ri);
-	const ScalarTriple nv = Nv.GetValuesAt(ri);
+	const ScalarTriple nu = pNu->GetValuesAt(ri);
+	const ScalarTriple nv = pNv->GetValuesAt(ri);
 	// Use average values across channels
 	const Scalar nu_val = (nu.v[0] + nu.v[1] + nu.v[2]) / 3.0;
 	const Scalar nv_val = (nv.v[0] + nv.v[1] + nv.v[2]) / 3.0;
@@ -360,7 +365,7 @@ Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 	}
 
 	// At mirror reflection, h = n, hdotk = cos_i
-	const Scalar rs_val = ColorMath::MaxValue( Rs.GetColor(ri) );
+	const Scalar rs_val = ColorMath::MaxValue( pRs->GetColor(ri) );
 	const Scalar fresnel_m = rs_val + (1.0 - rs_val) * pow(1.0 - cos_i, 5.0);
 	const Scalar specFactor_m = r_min( fresnel_m / cos_i, 1.0 );
 
@@ -369,7 +374,7 @@ Scalar AshikminShirleyAnisotropicPhongSPF::Pdf(
 	const Scalar diffFactor_m = energyConservation * fromK * fromK;
 
 	const Scalar wSpec = rs_val * specFactor_m;
-	const Scalar wDiff = ColorMath::MaxValue( Rd.GetColor(ri) ) * diffFactor_m;
+	const Scalar wDiff = ColorMath::MaxValue( pRd->GetColor(ri) ) * diffFactor_m;
 
 	return AshikminShirleySpecularPdf( ri, wo, nu_val, nv_val, wSpec, wDiff );
 }
@@ -381,8 +386,8 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 	const IORStack& ior_stack
 	) const
 {
-	const Scalar nu_val = Nu.GetValueAtNM(ri,nm);
-	const Scalar nv_val = Nv.GetValueAtNM(ri,nm);
+	const Scalar nu_val = pNu->GetValueAtNM(ri,nm);
+	const Scalar nv_val = pNv->GetValueAtNM(ri,nm);
 
 	// Representative weights at mirror direction (same as Pdf)
 	const Vector3 wi = Vector3Ops::Normalize( -ri.ray.Dir() );
@@ -393,7 +398,7 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 		return 0;
 	}
 
-	const Scalar rs_val = fabs( Rs.GetColorNM(ri,nm) );
+	const Scalar rs_val = fabs( pRs->GetColorNM(ri,nm) );
 	const Scalar fresnel_m = rs_val + (1.0 - rs_val) * pow(1.0 - cos_i, 5.0);
 	const Scalar specFactor_m = r_min( fresnel_m / cos_i, 1.0 );
 
@@ -402,7 +407,7 @@ Scalar AshikminShirleyAnisotropicPhongSPF::PdfNM(
 	const Scalar diffFactor_m = energyConservation * fromK * fromK;
 
 	const Scalar wSpec = rs_val * specFactor_m;
-	const Scalar wDiff = fabs( Rd.GetColorNM(ri,nm) ) * diffFactor_m;
+	const Scalar wDiff = fabs( pRd->GetColorNM(ri,nm) ) * diffFactor_m;
 
 	return AshikminShirleySpecularPdf( ri, wo, nu_val, nv_val, wSpec, wDiff );
 }

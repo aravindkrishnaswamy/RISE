@@ -52,7 +52,9 @@ namespace RISE
 		protected:
 			virtual ~SubSurfaceScatteringSPF();
 
-			const IScalarPainter&	ior;		// Index of refraction (physical scalar)
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IScalarPainter*	pIOR;		// Index of refraction (physical scalar)
 			const Scalar			g;			// HG asymmetry parameter (kept for parameter storage)
 			const Scalar			roughness;	// Surface roughness for microfacet boundary [0, 1]
 			const Scalar			alpha;		// GGX alpha = roughness^2
@@ -65,6 +67,10 @@ namespace RISE
 				const Scalar roughness_,
 				const bool bAbsorbBackFace_ = false
 				);
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IScalarPainter& GetIOR() const { return *pIOR; }
+			void SetIOR( const IScalarPainter& v );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.

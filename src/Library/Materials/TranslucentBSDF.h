@@ -28,9 +28,11 @@ namespace RISE
 		protected:
 			virtual ~TranslucentBSDF();
 
-			const IPainter&			pRefFront;			// Reflectance (color)
-			const IPainter&			pTrans;				// Transmittance (color)
-			const IScalarPainter&	exponent;			// Phong exponent (physical scalar)
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IPainter*			pRefFront;			// Reflectance (color)
+			const IPainter*			pTrans;				// Transmittance (color)
+			const IScalarPainter*	pExponent;			// Phong exponent (physical scalar)
 
 		public:
 			TranslucentBSDF( const IPainter& rF, const IPainter& T, const IScalarPainter& exp );
@@ -38,6 +40,16 @@ namespace RISE
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
+
+			//! Read-back + rebind for the interactive editor.  Exponent
+			//! getter is named `GetN` for symmetry with the SPF's `N`
+			//! parameter and the scene-file slot name.
+			inline const IPainter&       GetRefFront() const { return *pRefFront; }
+			inline const IPainter&       GetTrans()    const { return *pTrans; }
+			inline const IScalarPainter& GetN()        const { return *pExponent; }
+			void SetRefFront( const IPainter& v );
+			void SetTrans( const IPainter& v );
+			void SetN( const IScalarPainter& v );
 		};
 	}
 }

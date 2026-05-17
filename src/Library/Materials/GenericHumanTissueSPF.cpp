@@ -32,17 +32,17 @@ GenericHumanTissueSPF::GenericHumanTissueSPF(
 	const Scalar bilirubin_concentration_,					///< Concentration of bilirubin in whole blood
 	const Scalar hb_ratio_,									///< Oxy/deoxy hemoglobin ratio
 	const bool diffuse_										///< Is the scattering just diffuse ?
-	) : 
-  sca( sca_ ),
-  g( g_ ),
+	) :
+  pSca( &sca_ ),
+  pG( &g_ ),
   whole_blood( whole_blood_ ),
   betacarotene_concentration( betacarotene_concentration_ ),
   bilirubin_concentration( bilirubin_concentration_ ),
   hb_ratio( hb_ratio_ ),
   diffuse( diffuse_ )
 {
-	sca.addref();
-	g.addref();
+	pSca->addref();
+	pG->addref();
 
 	// Hemoglobin absorption function
 	{
@@ -89,13 +89,19 @@ GenericHumanTissueSPF::GenericHumanTissueSPF(
 
 GenericHumanTissueSPF::~GenericHumanTissueSPF( )
 {
-	g.release();
+	// Pre-refactor this released only `g` — `sca` leaked.  The
+	// pointer rewrite makes the pair symmetric.
+	safe_release( pSca );
+	safe_release( pG );
 
 	safe_release( pOxyHemoglobinExt );
 	safe_release( pDeoxyHemoglobinExt );
 	safe_release( pBilirubinExt );
 	safe_release( pBetaCaroteneExt );
 }
+
+void GenericHumanTissueSPF::SetSca( const IScalarPainter& v ) { v.addref(); safe_release( pSca ); pSca = &v; }
+void GenericHumanTissueSPF::SetG( const IScalarPainter& v )   { v.addref(); safe_release( pG );   pG   = &v; }
 
 
 Scalar GenericHumanTissueSPF::ComputeTissueAbsorptionCoefficient(
@@ -139,7 +145,7 @@ void GenericHumanTissueSPF::Scatter(
 			return;
 		}
 
-		const Scalar ps = (1.0-exp(-(sca.GetValuesAt(ri).v[0] * distance)));
+		const Scalar ps = (1.0-exp(-(pSca->GetValuesAt(ri).v[0] * distance)));
 
 		if( x < (pa + ps) ) {
 			// Scattering
@@ -151,7 +157,7 @@ void GenericHumanTissueSPF::Scatter(
 				));
 			} else {
 				// Apply the henyey-greenstein phase function for the scattering
-				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, g.GetValuesAt(ri).v[0] ));
+				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, pG->GetValuesAt(ri).v[0] ));
 			}
 		}
 		
@@ -166,7 +172,7 @@ void GenericHumanTissueSPF::Scatter(
 			));
 		} else {
 			// Apply the henyey-greenstein phase function for the scattering
-			trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, g.GetValuesAt(ri).v[0] ));
+			trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, pG->GetValuesAt(ri).v[0] ));
 		}
 	}
 
@@ -202,7 +208,7 @@ void GenericHumanTissueSPF::ScatterNM(
 			return;
 		}
 
-		const Scalar ps = (1.0-exp(-(sca.GetValueAtNM(ri,nm) * distance)));
+		const Scalar ps = (1.0-exp(-(pSca->GetValueAtNM(ri,nm) * distance)));
 
 		if( x < (pa + ps) ) {
 			// Scattering
@@ -214,7 +220,7 @@ void GenericHumanTissueSPF::ScatterNM(
 				));
 			} else {
 				// Apply the henyey-greenstein phase function for the scattering
-				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, g.GetValuesAt(ri).v[0] ));
+				trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, pG->GetValuesAt(ri).v[0] ));
 			}
 		}
 		
@@ -229,7 +235,7 @@ void GenericHumanTissueSPF::ScatterNM(
 			));
 		} else {
 			// Apply the henyey-greenstein phase function for the scattering
-			trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, g.GetValueAtNM(ri,nm) ));
+			trans.ray.SetDir(HenyeyGreensteinPhaseFunction::SampleWithG( ri.ray.Dir(), sampler, pG->GetValueAtNM(ri,nm) ));
 		}
 	}
 

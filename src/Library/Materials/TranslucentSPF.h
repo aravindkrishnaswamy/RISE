@@ -29,15 +29,29 @@ namespace RISE
 		protected:
 			virtual ~TranslucentSPF( );
 
-			const IPainter&					pRefFront;			// Reflectance (color)
-			const IPainter&					pTrans;				// Transmittance of the primary layer (color)
-			const IScalarPainter&			pExtinction;		// Extinction factor (physical scalar)
-			const IScalarPainter&			N;					// Phong exponent (physical scalar)
-			const IScalarPainter&			pScat;				// Multiple scattering factor (physical scalar)
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IPainter*					pRefFront;			// Reflectance (color)
+			const IPainter*					pTrans;				// Transmittance of the primary layer (color)
+			const IScalarPainter*			pExtinction;		// Extinction factor (physical scalar)
+			const IScalarPainter*			pN;					// Phong exponent (physical scalar)
+			const IScalarPainter*			pScat;				// Multiple scattering factor (physical scalar)
 
 
 		public:
 			TranslucentSPF( const IPainter& rF, const IPainter& T, const IScalarPainter& ext, const IScalarPainter& N_, const IScalarPainter& scat );
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IPainter&       GetRefFront()   const { return *pRefFront; }
+			inline const IPainter&       GetTrans()      const { return *pTrans; }
+			inline const IScalarPainter& GetExtinction() const { return *pExtinction; }
+			inline const IScalarPainter& GetN()          const { return *pN; }
+			inline const IScalarPainter& GetScat()       const { return *pScat; }
+			void SetRefFront( const IPainter& v );
+			void SetTrans( const IPainter& v );
+			void SetExtinction( const IScalarPainter& v );
+			void SetN( const IScalarPainter& v );
+			void SetScat( const IScalarPainter& v );
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return
 			//! the reflected and transmitted rays along with attenuation factors.  

@@ -26,17 +26,31 @@ SheenBRDF::SheenBRDF(
 	const IPainter& sheenColor,
 	const IScalarPainter& sheenRoughness
 	) :
-  pColor( sheenColor ),
-  pRoughness( sheenRoughness )
+  pColor( &sheenColor ),
+  pRoughness( &sheenRoughness )
 {
-	pColor.addref();
-	pRoughness.addref();
+	pColor->addref();
+	pRoughness->addref();
 }
 
 SheenBRDF::~SheenBRDF()
 {
-	pColor.release();
-	pRoughness.release();
+	safe_release( pColor );
+	safe_release( pRoughness );
+}
+
+void SheenBRDF::SetColor( const IPainter& v )
+{
+	v.addref();
+	safe_release( pColor );
+	pColor = &v;
+}
+
+void SheenBRDF::SetRoughness( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pRoughness );
+	pRoughness = &v;
 }
 
 RISEPel SheenBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
@@ -60,11 +74,11 @@ RISEPel SheenBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometri
 	const Vector3 h = Vector3Ops::Normalize( l + v );
 	const Scalar nDotH = r_max( Scalar(0), Vector3Ops::Dot( n, h ) );
 
-	const Scalar alpha = r_max( pRoughness.GetValuesAt( ri ).v[0], Scalar(1e-3) );
+	const Scalar alpha = r_max( pRoughness->GetValuesAt( ri ).v[0], Scalar(1e-3) );
 	const Scalar D = CharlieSheen::D( alpha, nDotH );
 	const Scalar V = CharlieSheen::V( alpha, nDotL, nDotV );
 
-	return pColor.GetColor( ri ) * (D * V);
+	return pColor->GetColor( ri ) * (D * V);
 }
 
 Scalar SheenBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
@@ -84,11 +98,11 @@ Scalar SheenBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometr
 	const Vector3 h = Vector3Ops::Normalize( l + v );
 	const Scalar nDotH = r_max( Scalar(0), Vector3Ops::Dot( n, h ) );
 
-	const Scalar alpha = r_max( pRoughness.GetValueAtNM( ri, nm ), Scalar(1e-3) );
+	const Scalar alpha = r_max( pRoughness->GetValueAtNM( ri, nm ), Scalar(1e-3) );
 	const Scalar D = CharlieSheen::D( alpha, nDotH );
 	const Scalar V = CharlieSheen::V( alpha, nDotL, nDotV );
 
-	return pColor.GetColorNM( ri, nm ) * D * V;
+	return pColor->GetColorNM( ri, nm ) * D * V;
 }
 
 RISEPel SheenBRDF::albedo( const RayIntersectionGeometric& ri ) const
@@ -98,5 +112,5 @@ RISEPel SheenBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	// directional albedo that drops below 1 as roughness decreases, but
 	// this is used for RR / importance estimation, not for the rendered
 	// image, so a slightly conservative (over-)estimate is fine.
-	return pColor.GetColor( ri );
+	return pColor->GetColor( ri );
 }

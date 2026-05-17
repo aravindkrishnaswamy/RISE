@@ -39,7 +39,9 @@ namespace RISE
 		protected:
 			virtual ~SubSurfaceScatteringBSDF();
 
-			const IScalarPainter&	ior;
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IScalarPainter*	pIOR;
 			const Scalar			g;
 			const Scalar			roughness;
 			const Scalar			alpha;		// GGX alpha = roughness^2
@@ -54,6 +56,10 @@ namespace RISE
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IScalarPainter& GetIOR() const { return *pIOR; }
+			void SetIOR( const IScalarPainter& v );
 		};
 	}
 }

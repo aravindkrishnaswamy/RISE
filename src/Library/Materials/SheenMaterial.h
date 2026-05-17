@@ -57,6 +57,13 @@ namespace RISE
 			inline IBSDF* GetBSDF() const     { return pBRDF; }
 			inline ISPF*  GetSPF()  const     { return pSPF;  }
 			inline IEmitter* GetEmitter() const { return 0; }
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to BOTH BRDF and SPF in lockstep.
+			inline const IPainter&       GetColor()     const { return pBRDF->GetColor(); }
+			inline const IScalarPainter& GetRoughness() const { return pBRDF->GetRoughness(); }
+			inline void SetColor( const IPainter& v )         { pBRDF->SetColor( v );     pSPF->SetColor( v ); }
+			inline void SetRoughness( const IScalarPainter& v ){ pBRDF->SetRoughness( v ); pSPF->SetRoughness( v ); }
 		};
 	}
 }

@@ -29,11 +29,13 @@ namespace RISE
 		protected:
 			virtual ~AshikminShirleyAnisotropicPhongBRDF( );
 
-			const IScalarPainter&	Nu;			// Phong exponent (physical scalar)
-			const IScalarPainter&	Nv;
+			//! Pointer storage so the interactive editor can rebind via
+			//! Set*.  See LambertianBRDF for pattern + lifetime contract.
+			const IScalarPainter*	pNu;		// Phong exponent (physical scalar)
+			const IScalarPainter*	pNv;
 
-			const IPainter&			Rd;			// diffuse reflectance
-			const IPainter&			Rs;			// specular reflectance
+			const IPainter*			pRd;		// diffuse reflectance
+			const IPainter*			pRs;		// specular reflectance
 
 		public:
 			template< class T >
@@ -52,6 +54,16 @@ namespace RISE
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
 			virtual Scalar valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			virtual RISEPel albedo( const RayIntersectionGeometric& ri ) const;
+
+			//! Read-back + rebind for the interactive editor.
+			inline const IScalarPainter& GetNu() const { return *pNu; }
+			inline const IScalarPainter& GetNv() const { return *pNv; }
+			inline const IPainter&       GetRd() const { return *pRd; }
+			inline const IPainter&       GetRs() const { return *pRs; }
+			void SetNu( const IScalarPainter& v );
+			void SetNv( const IScalarPainter& v );
+			void SetRd( const IPainter& v );
+			void SetRs( const IPainter& v );
 		};
 	}
 }

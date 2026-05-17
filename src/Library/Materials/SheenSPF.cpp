@@ -30,17 +30,31 @@ SheenSPF::SheenSPF(
 	const IPainter& sheenColor,
 	const IScalarPainter& sheenRoughness
 	) :
-  pColor( sheenColor ),
-  pRoughness( sheenRoughness )
+  pColor( &sheenColor ),
+  pRoughness( &sheenRoughness )
 {
-	pColor.addref();
-	pRoughness.addref();
+	pColor->addref();
+	pRoughness->addref();
 }
 
 SheenSPF::~SheenSPF()
 {
-	pColor.release();
-	pRoughness.release();
+	safe_release( pColor );
+	safe_release( pRoughness );
+}
+
+void SheenSPF::SetColor( const IPainter& v )
+{
+	v.addref();
+	safe_release( pColor );
+	pColor = &v;
+}
+
+void SheenSPF::SetRoughness( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pRoughness );
+	pRoughness = &v;
 }
 
 void SheenSPF::Scatter(
@@ -73,13 +87,13 @@ void SheenSPF::Scatter(
 	const Vector3 h = Vector3Ops::Normalize( wo + v );
 	const Scalar nDotH = r_max( Scalar(0), Vector3Ops::Dot( n, h ) );
 
-	const Scalar alpha = r_max( pRoughness.GetValuesAt( ri ).v[0], Scalar(1e-3) );
+	const Scalar alpha = r_max( pRoughness->GetValuesAt( ri ).v[0], Scalar(1e-3) );
 	const Scalar D = CharlieSheen::D( alpha, nDotH );
 	const Scalar V = CharlieSheen::V( alpha, nDotL, nDotV );
 
 	// kray = f(wo) · cosθ_o / pdf(wo); pdf for cosine-hemisphere is
 	// cosθ_o / π, so kray = f · π.
-	const RISEPel kray = pColor.GetColor( ri ) * (D * V * PI);
+	const RISEPel kray = pColor->GetColor( ri ) * (D * V * PI);
 
 	ScatteredRay s;
 	s.type = ScatteredRay::eRayDiffuse;
@@ -117,14 +131,14 @@ void SheenSPF::ScatterNM(
 	const Vector3 h = Vector3Ops::Normalize( wo + v );
 	const Scalar nDotH = r_max( Scalar(0), Vector3Ops::Dot( n, h ) );
 
-	const Scalar alpha = r_max( pRoughness.GetValueAtNM( ri, nm ), Scalar(1e-3) );
+	const Scalar alpha = r_max( pRoughness->GetValueAtNM( ri, nm ), Scalar(1e-3) );
 	const Scalar D = CharlieSheen::D( alpha, nDotH );
 	const Scalar V = CharlieSheen::V( alpha, nDotL, nDotV );
 
 	ScatteredRay s;
 	s.type = ScatteredRay::eRayDiffuse;
 	s.ray.Set( ri.ptIntersection, wo );
-	s.krayNM = pColor.GetColorNM( ri, nm ) * D * V * PI;
+	s.krayNM = pColor->GetColorNM( ri, nm ) * D * V * PI;
 	s.pdf = nDotL * INV_PI;
 	s.isDelta = false;
 	scattered.AddScatteredRay( s );

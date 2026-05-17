@@ -71,6 +71,16 @@ namespace RISE
 			{
 				return 0;
 			}
+
+			//! Read-back + rebind for the interactive editor.  Material
+			//! forwards to the SPF (no BRDF for this material).  The four
+			//! Scalar parameters (whole_blood, *_concentration, hb_ratio)
+			//! are baked into the SPF at construction and not editable
+			//! through this interface.
+			inline const IScalarPainter& GetSca() const { return pSPF->GetSca(); }
+			inline const IScalarPainter& GetG()   const { return pSPF->GetG(); }
+			inline void SetSca( const IScalarPainter& v ) { pSPF->SetSca( v ); }
+			inline void SetG( const IScalarPainter& v )   { pSPF->SetG( v ); }
 		};
 	}
 }
