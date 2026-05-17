@@ -138,10 +138,12 @@ namespace RISE
 
 			//! Read-back + rebind for the interactive editor.  Only the
 			//! IOR painter is rebindable; absorption/scattering were
-			//! consumed by the diffusion profile at construction time and
-			//! are not surfaced as editable slots.  IOR rebinding hits
-			//! BSDF, SPF, and the local cached pointer in lockstep — the
-			//! diffusion profile stays bound to the original instance.
+			//! consumed by the diffusion profile's scattering model at
+			//! construction and are not surfaced as editable slots.
+			//! IOR rebinding hits BSDF, SPF, the local cached pointer,
+			//! AND the diffusion profile in lockstep so the BSSRDF
+			//! Fresnel transmission stays coherent with the surface
+			//! boundary.
 			inline const IScalarPainter& GetIOR() const { return *pIORPainter; }
 			inline void SetIOR( const IScalarPainter& v ) {
 				v.addref();
@@ -149,6 +151,7 @@ namespace RISE
 				pIORPainter = &v;
 				pBSDF->SetIOR( v );
 				pSPF->SetIOR( v );
+				pProfile->SetIOR( v );
 			}
 		};
 	}

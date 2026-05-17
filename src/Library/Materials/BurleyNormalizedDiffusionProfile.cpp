@@ -26,21 +26,28 @@ BurleyNormalizedDiffusionProfile::BurleyNormalizedDiffusionProfile(
 	const IScalarPainter& scattering_,
 	const Scalar g_
 	) :
-  ior( ior_ ),
+  pIOR( &ior_ ),
   absorption( absorption_ ),
   scattering( scattering_ ),
   g( g_ )
 {
-	ior.addref();
+	pIOR->addref();
 	absorption.addref();
 	scattering.addref();
 }
 
 BurleyNormalizedDiffusionProfile::~BurleyNormalizedDiffusionProfile()
 {
-	ior.release();
+	safe_release( pIOR );
 	absorption.release();
 	scattering.release();
+}
+
+void BurleyNormalizedDiffusionProfile::SetIOR( const IScalarPainter& v )
+{
+	v.addref();
+	safe_release( pIOR );
+	pIOR = &v;
 }
 
 //=============================================================
@@ -232,7 +239,7 @@ Scalar BurleyNormalizedDiffusionProfile::FresnelTransmission(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	const Scalar eta = ior.GetValuesAt( ri ).v[0];
+	const Scalar eta = pIOR->GetValuesAt( ri ).v[0];
 	return 1.0 - SchlickFresnel( fabs(cosTheta), eta );
 }
 
@@ -240,7 +247,7 @@ Scalar BurleyNormalizedDiffusionProfile::GetIOR(
 	const RayIntersectionGeometric& ri
 	) const
 {
-	return ior.GetValuesAt( ri ).v[0];
+	return pIOR->GetValuesAt( ri ).v[0];
 }
 
 //=============================================================

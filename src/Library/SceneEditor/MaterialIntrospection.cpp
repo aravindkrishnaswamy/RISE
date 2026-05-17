@@ -318,7 +318,7 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			"so a coloured mirror passes its tint through caustic chains." ) );
 	}
 	else if( const PerfectRefractorMaterial* pf = dynamic_cast<const PerfectRefractorMaterial*>( &material ) ) {
-		rows.push_back( BuildPainterSlot( "refractivity", pf->GetRefractivity(),
+		rows.push_back( BuildPainterSlot( "refractance", pf->GetRefractivity(),
 			painters, composed,
 			"Painter for per-wavelength refractive colour attenuation (Beer-Lambert-like tint applied to the transmitted ray)." ) );
 		rows.push_back( BuildScalarPainterSlot( "ior", pf->GetIOR(),
@@ -326,10 +326,10 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			"Scalar painter for the index of refraction.  Use a spectral scalar painter for dispersion." ) );
 	}
 	else if( const PolishedMaterial* pol = dynamic_cast<const PolishedMaterial*>( &material ) ) {
-		rows.push_back( BuildPainterSlot( "diffuse_reflectance", pol->GetDiffuseReflectance(),
+		rows.push_back( BuildPainterSlot( "reflectance", pol->GetDiffuseReflectance(),
 			painters, composed,
 			"Painter for the substrate's diffuse reflectance (the Lambertian layer under the dielectric coat)." ) );
-		rows.push_back( BuildScalarPainterSlot( "transmittance", pol->GetTransmittance(),
+		rows.push_back( BuildScalarPainterSlot( "tau", pol->GetTransmittance(),
 			scalarPainters, composed,
 			"Scalar painter for the dielectric coat's transmittance — physical scalar, NOT a colour." ) );
 		rows.push_back( BuildScalarPainterSlot( "ior", pol->GetIOR(),
@@ -340,7 +340,7 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			"Scalar painter for the coat's scattering function (Phong cone width or HG asymmetry depending on the material's `hg` flag)." ) );
 	}
 	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
-		rows.push_back( BuildScalarPainterSlot( "transmittance", die->GetTransmittance(),
+		rows.push_back( BuildScalarPainterSlot( "tau", die->GetTransmittance(),
 			scalarPainters, composed,
 			"Scalar painter for the dielectric's transmittance per channel — physical scalar pipe." ) );
 		rows.push_back( BuildScalarPainterSlot( "ior", die->GetIOR(),
@@ -351,10 +351,10 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			"Scalar painter for the scattering function (Phong cone width or HG asymmetry per the material's `hg` flag)." ) );
 	}
 	else if( const GGXMaterial* ggx = dynamic_cast<const GGXMaterial*>( &material ) ) {
-		rows.push_back( BuildPainterSlot( "diffuse",  ggx->GetDiffuse(),
+		rows.push_back( BuildPainterSlot( "rd",  ggx->GetDiffuse(),
 			painters, composed,
 			"Painter for the diffuse (Lambertian) base lobe — IPainter colour pipe." ) );
-		rows.push_back( BuildPainterSlot( "specular", ggx->GetSpecular(),
+		rows.push_back( BuildPainterSlot( "rs", ggx->GetSpecular(),
 			painters, composed,
 			"Painter for the specular tint OR Schlick F0 input depending on `fresnel_mode` "
 			"(conductor mode = tint multiplier; schlick_f0 mode = F0 directly per glTF spec)." ) );
@@ -368,18 +368,18 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 		rows.push_back( BuildScalarPainterSlot( "ior",      ggx->GetIOR(),
 			scalarPainters, composed,
 			"Index of refraction (Fresnel conductor mode only; ignored in schlick_f0)." ) );
-		rows.push_back( BuildScalarPainterSlot( "ext",      ggx->GetExtinction(),
+		rows.push_back( BuildScalarPainterSlot( "extinction",      ggx->GetExtinction(),
 			scalarPainters, composed,
 			"Extinction coefficient (Fresnel conductor mode only)." ) );
 	}
 	else if( const IsotropicPhongMaterial* iph = dynamic_cast<const IsotropicPhongMaterial*>( &material ) ) {
-		rows.push_back( BuildPainterSlot( "Rd", iph->GetRd(),
+		rows.push_back( BuildPainterSlot( "rd", iph->GetRd(),
 			painters, composed,
 			"Diffuse reflectance painter — IPainter colour pipe (BRDF + SPF share the same instance)." ) );
-		rows.push_back( BuildPainterSlot( "Rs", iph->GetRs(),
+		rows.push_back( BuildPainterSlot( "rs", iph->GetRs(),
 			painters, composed,
 			"Specular reflectance painter for the Phong lobe — IPainter colour pipe." ) );
-		rows.push_back( BuildScalarPainterSlot( "exponent", iph->GetExponent(),
+		rows.push_back( BuildScalarPainterSlot( "N", iph->GetExponent(),
 			scalarPainters, composed,
 			"Phong exponent — physical scalar.  Higher = sharper specular lobe." ) );
 	}
@@ -392,10 +392,10 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			"Surface roughness σ (radians) — physical scalar.  σ=0 collapses to Lambertian." ) );
 	}
 	else if( const SchlickMaterial* sch = dynamic_cast<const SchlickMaterial*>( &material ) ) {
-		rows.push_back( BuildPainterSlot( "diffuse", sch->GetDiffuse(),
+		rows.push_back( BuildPainterSlot( "rd", sch->GetDiffuse(),
 			painters, composed,
 			"Diffuse reflectance painter — IPainter colour pipe." ) );
-		rows.push_back( BuildPainterSlot( "specular", sch->GetSpecular(),
+		rows.push_back( BuildPainterSlot( "rs", sch->GetSpecular(),
 			painters, composed,
 			"Specular reflectance painter (F0 for Schlick Fresnel) — IPainter colour pipe." ) );
 		rows.push_back( BuildScalarPainterSlot( "roughness", sch->GetRoughness(),
@@ -406,49 +406,49 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			"Anisotropy parameter — physical scalar.  1.0 = isotropic." ) );
 	}
 	else if( const SheenMaterial* sh = dynamic_cast<const SheenMaterial*>( &material ) ) {
-		rows.push_back( BuildPainterSlot( "color", sh->GetColor(),
+		rows.push_back( BuildPainterSlot( "sheen_color", sh->GetColor(),
 			painters, composed,
 			"Sheen tint painter (Charlie distribution) — IPainter colour pipe." ) );
-		rows.push_back( BuildScalarPainterSlot( "roughness", sh->GetRoughness(),
+		rows.push_back( BuildScalarPainterSlot( "sheen_roughness", sh->GetRoughness(),
 			scalarPainters, composed,
 			"Sheen roughness α — physical scalar, clamped to [1e-3, 1]." ) );
 	}
 	else if( const AshikminShirleyAnisotropicPhongMaterial* as = dynamic_cast<const AshikminShirleyAnisotropicPhongMaterial*>( &material ) ) {
-		rows.push_back( BuildScalarPainterSlot( "Nu", as->GetNu(),
+		rows.push_back( BuildScalarPainterSlot( "nu", as->GetNu(),
 			scalarPainters, composed,
 			"Phong exponent along tangent u — physical scalar." ) );
-		rows.push_back( BuildScalarPainterSlot( "Nv", as->GetNv(),
+		rows.push_back( BuildScalarPainterSlot( "nv", as->GetNv(),
 			scalarPainters, composed,
 			"Phong exponent along bitangent v — physical scalar.  Set equal to Nu for isotropic Phong." ) );
-		rows.push_back( BuildPainterSlot( "Rd", as->GetRd(),
+		rows.push_back( BuildPainterSlot( "rd", as->GetRd(),
 			painters, composed,
 			"Diffuse reflectance painter — IPainter colour pipe." ) );
-		rows.push_back( BuildPainterSlot( "Rs", as->GetRs(),
+		rows.push_back( BuildPainterSlot( "rs", as->GetRs(),
 			painters, composed,
 			"Specular reflectance painter (Schlick F0) — IPainter colour pipe." ) );
 	}
 	else if( const CookTorranceMaterial* ct = dynamic_cast<const CookTorranceMaterial*>( &material ) ) {
-		rows.push_back( BuildPainterSlot( "diffuse", ct->GetDiffuse(),
+		rows.push_back( BuildPainterSlot( "rd", ct->GetDiffuse(),
 			painters, composed,
 			"Diffuse reflectance painter — IPainter colour pipe." ) );
-		rows.push_back( BuildPainterSlot( "specular", ct->GetSpecular(),
+		rows.push_back( BuildPainterSlot( "rs", ct->GetSpecular(),
 			painters, composed,
 			"Specular tint painter — IPainter colour pipe." ) );
-		rows.push_back( BuildScalarPainterSlot( "masking", ct->GetMasking(),
+		rows.push_back( BuildScalarPainterSlot( "facets", ct->GetMasking(),
 			scalarPainters, composed,
 			"Surface roughness for the GGX microfacet distribution — physical scalar." ) );
 		rows.push_back( BuildScalarPainterSlot( "ior", ct->GetIOR(),
 			scalarPainters, composed,
 			"Index of refraction for the conductor Fresnel — physical scalar." ) );
-		rows.push_back( BuildScalarPainterSlot( "ext", ct->GetExtinction(),
+		rows.push_back( BuildScalarPainterSlot( "extinction", ct->GetExtinction(),
 			scalarPainters, composed,
 			"Extinction coefficient for the conductor Fresnel — physical scalar." ) );
 	}
 	else if( const WardIsotropicGaussianMaterial* wi = dynamic_cast<const WardIsotropicGaussianMaterial*>( &material ) ) {
-		rows.push_back( BuildPainterSlot( "diffuse", wi->GetDiffuse(),
+		rows.push_back( BuildPainterSlot( "rd", wi->GetDiffuse(),
 			painters, composed,
 			"Diffuse reflectance painter — IPainter colour pipe." ) );
-		rows.push_back( BuildPainterSlot( "specular", wi->GetSpecular(),
+		rows.push_back( BuildPainterSlot( "rs", wi->GetSpecular(),
 			painters, composed,
 			"Specular reflectance painter — IPainter colour pipe." ) );
 		rows.push_back( BuildScalarPainterSlot( "alpha", wi->GetAlpha(),
@@ -456,10 +456,10 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			"Surface slope RMS for Ward's isotropic Gaussian — physical scalar." ) );
 	}
 	else if( const WardAnisotropicEllipticalGaussianMaterial* wa = dynamic_cast<const WardAnisotropicEllipticalGaussianMaterial*>( &material ) ) {
-		rows.push_back( BuildPainterSlot( "diffuse", wa->GetDiffuse(),
+		rows.push_back( BuildPainterSlot( "rd", wa->GetDiffuse(),
 			painters, composed,
 			"Diffuse reflectance painter — IPainter colour pipe." ) );
-		rows.push_back( BuildPainterSlot( "specular", wa->GetSpecular(),
+		rows.push_back( BuildPainterSlot( "rs", wa->GetSpecular(),
 			painters, composed,
 			"Specular reflectance painter — IPainter colour pipe." ) );
 		rows.push_back( BuildScalarPainterSlot( "alphax", wa->GetAlphaX(),
@@ -476,13 +476,13 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 		rows.push_back( BuildPainterSlot( "tau", tl->GetTrans(),
 			painters, composed,
 			"Transmittance painter for the primary layer — IPainter colour pipe." ) );
-		rows.push_back( BuildScalarPainterSlot( "ext", tl->GetExtinction(),
+		rows.push_back( BuildScalarPainterSlot( "extinction", tl->GetExtinction(),
 			scalarPainters, composed,
 			"Extinction factor (Beer-Lambert per unit distance) — physical scalar." ) );
 		rows.push_back( BuildScalarPainterSlot( "N", tl->GetN(),
 			scalarPainters, composed,
 			"Phong exponent for the back-scatter lobe — physical scalar." ) );
-		rows.push_back( BuildScalarPainterSlot( "scat", tl->GetScat(),
+		rows.push_back( BuildScalarPainterSlot( "scattering", tl->GetScat(),
 			scalarPainters, composed,
 			"Multiple-scattering fraction (0..1) — physical scalar." ) );
 	}
@@ -519,7 +519,7 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			"Scalars baked into the BSDF/SPF/walk.  Editing requires reconstruction." ) );
 	}
 	else if( const LambertianLuminaireMaterial* llm = dynamic_cast<const LambertianLuminaireMaterial*>( &material ) ) {
-		rows.push_back( BuildPainterSlot( "radEx", llm->GetRadEx(),
+		rows.push_back( BuildPainterSlot( "exitance", llm->GetRadEx(),
 			painters, composed,
 			"Radiant exitance painter for the Lambertian emission lobe — IPainter colour pipe.  "
 			"Rebinding triggers a 100-sample refresh of the cached light-importance average." ) );
@@ -528,7 +528,7 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 			"This luminaire wraps a base material.  Pick that material in the panel to edit its slots." ) );
 	}
 	else if( const PhongLuminaireMaterial* plm = dynamic_cast<const PhongLuminaireMaterial*>( &material ) ) {
-		rows.push_back( BuildPainterSlot( "radEx", plm->GetRadEx(),
+		rows.push_back( BuildPainterSlot( "exitance", plm->GetRadEx(),
 			painters, composed,
 			"Radiant exitance painter for the Phong emission lobe — IPainter colour pipe.  "
 			"Rebinding triggers a 100-sample refresh of the cached light-importance average." ) );
@@ -597,7 +597,7 @@ MaterialSlotRef MaterialIntrospection::GetSlot(
 		}
 	}
 	else if( const PerfectRefractorMaterial* pf = dynamic_cast<const PerfectRefractorMaterial*>( &material ) ) {
-		if( slotName == String( "refractivity" ) ) {
+		if( slotName == String( "refractance" ) ) {
 			out.kind    = MaterialSlotRef::Painter;
 			out.painter = &pf->GetRefractivity();
 			return out;
@@ -609,10 +609,10 @@ MaterialSlotRef MaterialIntrospection::GetSlot(
 		}
 	}
 	else if( const PolishedMaterial* pol = dynamic_cast<const PolishedMaterial*>( &material ) ) {
-		if( slotName == String( "diffuse_reflectance" ) ) {
+		if( slotName == String( "reflectance" ) ) {
 			out.kind = MaterialSlotRef::Painter; out.painter = &pol->GetDiffuseReflectance(); return out;
 		}
-		if( slotName == String( "transmittance" ) ) {
+		if( slotName == String( "tau" ) ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &pol->GetTransmittance(); return out;
 		}
 		if( slotName == String( "ior" ) ) {
@@ -623,7 +623,7 @@ MaterialSlotRef MaterialIntrospection::GetSlot(
 		}
 	}
 	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
-		if( slotName == String( "transmittance" ) ) {
+		if( slotName == String( "tau" ) ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &die->GetTransmittance(); return out;
 		}
 		if( slotName == String( "ior" ) ) {
@@ -634,62 +634,62 @@ MaterialSlotRef MaterialIntrospection::GetSlot(
 		}
 	}
 	else if( const GGXMaterial* ggx = dynamic_cast<const GGXMaterial*>( &material ) ) {
-		if( slotName == String( "diffuse" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &ggx->GetDiffuse();    return out; }
-		if( slotName == String( "specular" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &ggx->GetSpecular();   return out; }
+		if( slotName == String( "rd" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &ggx->GetDiffuse();    return out; }
+		if( slotName == String( "rs" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &ggx->GetSpecular();   return out; }
 		if( slotName == String( "alphax" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetAlphaX();     return out; }
 		if( slotName == String( "alphay" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetAlphaY();     return out; }
 		if( slotName == String( "ior" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetIOR();        return out; }
-		if( slotName == String( "ext" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetExtinction(); return out; }
+		if( slotName == String( "extinction" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetExtinction(); return out; }
 	}
 	else if( const IsotropicPhongMaterial* iph = dynamic_cast<const IsotropicPhongMaterial*>( &material ) ) {
-		if( slotName == String( "Rd" ) )       { out.kind = MaterialSlotRef::Painter;       out.painter       = &iph->GetRd();       return out; }
-		if( slotName == String( "Rs" ) )       { out.kind = MaterialSlotRef::Painter;       out.painter       = &iph->GetRs();       return out; }
-		if( slotName == String( "exponent" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &iph->GetExponent(); return out; }
+		if( slotName == String( "rd" ) )       { out.kind = MaterialSlotRef::Painter;       out.painter       = &iph->GetRd();       return out; }
+		if( slotName == String( "rs" ) )       { out.kind = MaterialSlotRef::Painter;       out.painter       = &iph->GetRs();       return out; }
+		if( slotName == String( "N" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &iph->GetExponent(); return out; }
 	}
 	else if( const OrenNayarMaterial* on = dynamic_cast<const OrenNayarMaterial*>( &material ) ) {
 		if( slotName == String( "reflectance" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &on->GetReflectance(); return out; }
 		if( slotName == String( "roughness" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &on->GetRoughness();   return out; }
 	}
 	else if( const SchlickMaterial* sch = dynamic_cast<const SchlickMaterial*>( &material ) ) {
-		if( slotName == String( "diffuse" ) )   { out.kind = MaterialSlotRef::Painter;       out.painter       = &sch->GetDiffuse();   return out; }
-		if( slotName == String( "specular" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &sch->GetSpecular();  return out; }
+		if( slotName == String( "rd" ) )   { out.kind = MaterialSlotRef::Painter;       out.painter       = &sch->GetDiffuse();   return out; }
+		if( slotName == String( "rs" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &sch->GetSpecular();  return out; }
 		if( slotName == String( "roughness" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &sch->GetRoughness(); return out; }
 		if( slotName == String( "isotropy" ) )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &sch->GetIsotropy();  return out; }
 	}
 	else if( const SheenMaterial* sh = dynamic_cast<const SheenMaterial*>( &material ) ) {
-		if( slotName == String( "color" ) )     { out.kind = MaterialSlotRef::Painter;       out.painter       = &sh->GetColor();     return out; }
-		if( slotName == String( "roughness" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &sh->GetRoughness(); return out; }
+		if( slotName == String( "sheen_color" ) )     { out.kind = MaterialSlotRef::Painter;       out.painter       = &sh->GetColor();     return out; }
+		if( slotName == String( "sheen_roughness" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &sh->GetRoughness(); return out; }
 	}
 	else if( const AshikminShirleyAnisotropicPhongMaterial* as = dynamic_cast<const AshikminShirleyAnisotropicPhongMaterial*>( &material ) ) {
-		if( slotName == String( "Nu" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &as->GetNu(); return out; }
-		if( slotName == String( "Nv" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &as->GetNv(); return out; }
-		if( slotName == String( "Rd" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &as->GetRd(); return out; }
-		if( slotName == String( "Rs" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &as->GetRs(); return out; }
+		if( slotName == String( "nu" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &as->GetNu(); return out; }
+		if( slotName == String( "nv" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &as->GetNv(); return out; }
+		if( slotName == String( "rd" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &as->GetRd(); return out; }
+		if( slotName == String( "rs" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &as->GetRs(); return out; }
 	}
 	else if( const CookTorranceMaterial* ct = dynamic_cast<const CookTorranceMaterial*>( &material ) ) {
-		if( slotName == String( "diffuse" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &ct->GetDiffuse();    return out; }
-		if( slotName == String( "specular" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &ct->GetSpecular();   return out; }
-		if( slotName == String( "masking" ) )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ct->GetMasking();    return out; }
+		if( slotName == String( "rd" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &ct->GetDiffuse();    return out; }
+		if( slotName == String( "rs" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &ct->GetSpecular();   return out; }
+		if( slotName == String( "facets" ) )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ct->GetMasking();    return out; }
 		if( slotName == String( "ior" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ct->GetIOR();        return out; }
-		if( slotName == String( "ext" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ct->GetExtinction(); return out; }
+		if( slotName == String( "extinction" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ct->GetExtinction(); return out; }
 	}
 	else if( const WardIsotropicGaussianMaterial* wi = dynamic_cast<const WardIsotropicGaussianMaterial*>( &material ) ) {
-		if( slotName == String( "diffuse" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &wi->GetDiffuse();  return out; }
-		if( slotName == String( "specular" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &wi->GetSpecular(); return out; }
+		if( slotName == String( "rd" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &wi->GetDiffuse();  return out; }
+		if( slotName == String( "rs" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &wi->GetSpecular(); return out; }
 		if( slotName == String( "alpha" ) )    { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wi->GetAlpha();    return out; }
 	}
 	else if( const WardAnisotropicEllipticalGaussianMaterial* wa = dynamic_cast<const WardAnisotropicEllipticalGaussianMaterial*>( &material ) ) {
-		if( slotName == String( "diffuse" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &wa->GetDiffuse();  return out; }
-		if( slotName == String( "specular" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &wa->GetSpecular(); return out; }
+		if( slotName == String( "rd" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &wa->GetDiffuse();  return out; }
+		if( slotName == String( "rs" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &wa->GetSpecular(); return out; }
 		if( slotName == String( "alphax" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wa->GetAlphaX();   return out; }
 		if( slotName == String( "alphay" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wa->GetAlphaY();   return out; }
 	}
 	else if( const TranslucentMaterial* tl = dynamic_cast<const TranslucentMaterial*>( &material ) ) {
 		if( slotName == String( "ref" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &tl->GetRefFront();   return out; }
 		if( slotName == String( "tau" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &tl->GetTrans();      return out; }
-		if( slotName == String( "ext" ) )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetExtinction(); return out; }
+		if( slotName == String( "extinction" ) )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetExtinction(); return out; }
 		if( slotName == String( "N" ) )    { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetN();          return out; }
-		if( slotName == String( "scat" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetScat();       return out; }
+		if( slotName == String( "scattering" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetScat();       return out; }
 	}
 	else if( const GenericHumanTissueMaterial* ght = dynamic_cast<const GenericHumanTissueMaterial*>( &material ) ) {
 		if( slotName == String( "sca" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ght->GetSca(); return out; }
@@ -702,10 +702,10 @@ MaterialSlotRef MaterialIntrospection::GetSlot(
 		if( slotName == String( "ior" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &rwm->GetIOR(); return out; }
 	}
 	else if( const LambertianLuminaireMaterial* llm = dynamic_cast<const LambertianLuminaireMaterial*>( &material ) ) {
-		if( slotName == String( "radEx" ) ) { out.kind = MaterialSlotRef::Painter; out.painter = &llm->GetRadEx(); return out; }
+		if( slotName == String( "exitance" ) ) { out.kind = MaterialSlotRef::Painter; out.painter = &llm->GetRadEx(); return out; }
 	}
 	else if( const PhongLuminaireMaterial* plm = dynamic_cast<const PhongLuminaireMaterial*>( &material ) ) {
-		if( slotName == String( "radEx" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &plm->GetRadEx(); return out; }
+		if( slotName == String( "exitance" ) ) { out.kind = MaterialSlotRef::Painter;       out.painter       = &plm->GetRadEx(); return out; }
 		if( slotName == String( "N" ) )     { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &plm->GetN();     return out; }
 	}
 
@@ -734,7 +734,7 @@ bool MaterialIntrospection::SetSlot(
 		return false;
 	}
 	if( PerfectRefractorMaterial* pf = dynamic_cast<PerfectRefractorMaterial*>( &material ) ) {
-		if( slotName == String( "refractivity" ) ) {
+		if( slotName == String( "refractance" ) ) {
 			if( !painter ) return false;
 			pf->SetRefractivity( *painter );
 			return true;
@@ -747,12 +747,12 @@ bool MaterialIntrospection::SetSlot(
 		return false;
 	}
 	if( PolishedMaterial* pol = dynamic_cast<PolishedMaterial*>( &material ) ) {
-		if( slotName == String( "diffuse_reflectance" ) ) {
+		if( slotName == String( "reflectance" ) ) {
 			if( !painter ) return false;
 			pol->SetDiffuseReflectance( *painter );
 			return true;
 		}
-		if( slotName == String( "transmittance" ) ) {
+		if( slotName == String( "tau" ) ) {
 			if( !scalarPainter ) return false;
 			pol->SetTransmittance( *scalarPainter );
 			return true;
@@ -770,7 +770,7 @@ bool MaterialIntrospection::SetSlot(
 		return false;
 	}
 	if( DielectricMaterial* die = dynamic_cast<DielectricMaterial*>( &material ) ) {
-		if( slotName == String( "transmittance" ) ) {
+		if( slotName == String( "tau" ) ) {
 			if( !scalarPainter ) return false;
 			die->SetTransmittance( *scalarPainter );
 			return true;
@@ -788,18 +788,18 @@ bool MaterialIntrospection::SetSlot(
 		return false;
 	}
 	if( GGXMaterial* ggx = dynamic_cast<GGXMaterial*>( &material ) ) {
-		if( slotName == String( "diffuse" ) )  { if( !painter ) return false; ggx->SetDiffuse( *painter );  return true; }
-		if( slotName == String( "specular" ) ) { if( !painter ) return false; ggx->SetSpecular( *painter ); return true; }
+		if( slotName == String( "rd" ) )  { if( !painter ) return false; ggx->SetDiffuse( *painter );  return true; }
+		if( slotName == String( "rs" ) ) { if( !painter ) return false; ggx->SetSpecular( *painter ); return true; }
 		if( slotName == String( "alphax" ) )   { if( !scalarPainter ) return false; ggx->SetAlphaX( *scalarPainter );     return true; }
 		if( slotName == String( "alphay" ) )   { if( !scalarPainter ) return false; ggx->SetAlphaY( *scalarPainter );     return true; }
 		if( slotName == String( "ior" ) )      { if( !scalarPainter ) return false; ggx->SetIOR( *scalarPainter );        return true; }
-		if( slotName == String( "ext" ) )      { if( !scalarPainter ) return false; ggx->SetExtinction( *scalarPainter ); return true; }
+		if( slotName == String( "extinction" ) )      { if( !scalarPainter ) return false; ggx->SetExtinction( *scalarPainter ); return true; }
 		return false;
 	}
 	if( IsotropicPhongMaterial* iph = dynamic_cast<IsotropicPhongMaterial*>( &material ) ) {
-		if( slotName == String( "Rd" ) )       { if( !painter ) return false; iph->SetRd( *painter ); return true; }
-		if( slotName == String( "Rs" ) )       { if( !painter ) return false; iph->SetRs( *painter ); return true; }
-		if( slotName == String( "exponent" ) ) { if( !scalarPainter ) return false; iph->SetExponent( *scalarPainter ); return true; }
+		if( slotName == String( "rd" ) )       { if( !painter ) return false; iph->SetRd( *painter ); return true; }
+		if( slotName == String( "rs" ) )       { if( !painter ) return false; iph->SetRs( *painter ); return true; }
+		if( slotName == String( "N" ) ) { if( !scalarPainter ) return false; iph->SetExponent( *scalarPainter ); return true; }
 		return false;
 	}
 	if( OrenNayarMaterial* on = dynamic_cast<OrenNayarMaterial*>( &material ) ) {
@@ -808,41 +808,41 @@ bool MaterialIntrospection::SetSlot(
 		return false;
 	}
 	if( SchlickMaterial* sch = dynamic_cast<SchlickMaterial*>( &material ) ) {
-		if( slotName == String( "diffuse" ) )   { if( !painter ) return false; sch->SetDiffuse( *painter );  return true; }
-		if( slotName == String( "specular" ) )  { if( !painter ) return false; sch->SetSpecular( *painter ); return true; }
+		if( slotName == String( "rd" ) )   { if( !painter ) return false; sch->SetDiffuse( *painter );  return true; }
+		if( slotName == String( "rs" ) )  { if( !painter ) return false; sch->SetSpecular( *painter ); return true; }
 		if( slotName == String( "roughness" ) ) { if( !scalarPainter ) return false; sch->SetRoughness( *scalarPainter ); return true; }
 		if( slotName == String( "isotropy" ) )  { if( !scalarPainter ) return false; sch->SetIsotropy( *scalarPainter );  return true; }
 		return false;
 	}
 	if( SheenMaterial* sh = dynamic_cast<SheenMaterial*>( &material ) ) {
-		if( slotName == String( "color" ) )     { if( !painter ) return false; sh->SetColor( *painter ); return true; }
-		if( slotName == String( "roughness" ) ) { if( !scalarPainter ) return false; sh->SetRoughness( *scalarPainter ); return true; }
+		if( slotName == String( "sheen_color" ) )     { if( !painter ) return false; sh->SetColor( *painter ); return true; }
+		if( slotName == String( "sheen_roughness" ) ) { if( !scalarPainter ) return false; sh->SetRoughness( *scalarPainter ); return true; }
 		return false;
 	}
 	if( AshikminShirleyAnisotropicPhongMaterial* as = dynamic_cast<AshikminShirleyAnisotropicPhongMaterial*>( &material ) ) {
-		if( slotName == String( "Nu" ) ) { if( !scalarPainter ) return false; as->SetNu( *scalarPainter ); return true; }
-		if( slotName == String( "Nv" ) ) { if( !scalarPainter ) return false; as->SetNv( *scalarPainter ); return true; }
-		if( slotName == String( "Rd" ) ) { if( !painter ) return false; as->SetRd( *painter ); return true; }
-		if( slotName == String( "Rs" ) ) { if( !painter ) return false; as->SetRs( *painter ); return true; }
+		if( slotName == String( "nu" ) ) { if( !scalarPainter ) return false; as->SetNu( *scalarPainter ); return true; }
+		if( slotName == String( "nv" ) ) { if( !scalarPainter ) return false; as->SetNv( *scalarPainter ); return true; }
+		if( slotName == String( "rd" ) ) { if( !painter ) return false; as->SetRd( *painter ); return true; }
+		if( slotName == String( "rs" ) ) { if( !painter ) return false; as->SetRs( *painter ); return true; }
 		return false;
 	}
 	if( CookTorranceMaterial* ct = dynamic_cast<CookTorranceMaterial*>( &material ) ) {
-		if( slotName == String( "diffuse" ) )  { if( !painter ) return false; ct->SetDiffuse( *painter );  return true; }
-		if( slotName == String( "specular" ) ) { if( !painter ) return false; ct->SetSpecular( *painter ); return true; }
-		if( slotName == String( "masking" ) )  { if( !scalarPainter ) return false; ct->SetMasking( *scalarPainter );    return true; }
+		if( slotName == String( "rd" ) )  { if( !painter ) return false; ct->SetDiffuse( *painter );  return true; }
+		if( slotName == String( "rs" ) ) { if( !painter ) return false; ct->SetSpecular( *painter ); return true; }
+		if( slotName == String( "facets" ) )  { if( !scalarPainter ) return false; ct->SetMasking( *scalarPainter );    return true; }
 		if( slotName == String( "ior" ) )      { if( !scalarPainter ) return false; ct->SetIOR( *scalarPainter );        return true; }
-		if( slotName == String( "ext" ) )      { if( !scalarPainter ) return false; ct->SetExtinction( *scalarPainter ); return true; }
+		if( slotName == String( "extinction" ) )      { if( !scalarPainter ) return false; ct->SetExtinction( *scalarPainter ); return true; }
 		return false;
 	}
 	if( WardIsotropicGaussianMaterial* wi = dynamic_cast<WardIsotropicGaussianMaterial*>( &material ) ) {
-		if( slotName == String( "diffuse" ) )  { if( !painter ) return false; wi->SetDiffuse( *painter );  return true; }
-		if( slotName == String( "specular" ) ) { if( !painter ) return false; wi->SetSpecular( *painter ); return true; }
+		if( slotName == String( "rd" ) )  { if( !painter ) return false; wi->SetDiffuse( *painter );  return true; }
+		if( slotName == String( "rs" ) ) { if( !painter ) return false; wi->SetSpecular( *painter ); return true; }
 		if( slotName == String( "alpha" ) )    { if( !scalarPainter ) return false; wi->SetAlpha( *scalarPainter ); return true; }
 		return false;
 	}
 	if( WardAnisotropicEllipticalGaussianMaterial* wa = dynamic_cast<WardAnisotropicEllipticalGaussianMaterial*>( &material ) ) {
-		if( slotName == String( "diffuse" ) )  { if( !painter ) return false; wa->SetDiffuse( *painter );  return true; }
-		if( slotName == String( "specular" ) ) { if( !painter ) return false; wa->SetSpecular( *painter ); return true; }
+		if( slotName == String( "rd" ) )  { if( !painter ) return false; wa->SetDiffuse( *painter );  return true; }
+		if( slotName == String( "rs" ) ) { if( !painter ) return false; wa->SetSpecular( *painter ); return true; }
 		if( slotName == String( "alphax" ) )   { if( !scalarPainter ) return false; wa->SetAlphaX( *scalarPainter ); return true; }
 		if( slotName == String( "alphay" ) )   { if( !scalarPainter ) return false; wa->SetAlphaY( *scalarPainter ); return true; }
 		return false;
@@ -850,9 +850,9 @@ bool MaterialIntrospection::SetSlot(
 	if( TranslucentMaterial* tl = dynamic_cast<TranslucentMaterial*>( &material ) ) {
 		if( slotName == String( "ref" ) )  { if( !painter ) return false; tl->SetRefFront( *painter ); return true; }
 		if( slotName == String( "tau" ) )  { if( !painter ) return false; tl->SetTrans( *painter );    return true; }
-		if( slotName == String( "ext" ) )  { if( !scalarPainter ) return false; tl->SetExtinction( *scalarPainter ); return true; }
+		if( slotName == String( "extinction" ) )  { if( !scalarPainter ) return false; tl->SetExtinction( *scalarPainter ); return true; }
 		if( slotName == String( "N" ) )    { if( !scalarPainter ) return false; tl->SetN( *scalarPainter );          return true; }
-		if( slotName == String( "scat" ) ) { if( !scalarPainter ) return false; tl->SetScat( *scalarPainter );       return true; }
+		if( slotName == String( "scattering" ) ) { if( !scalarPainter ) return false; tl->SetScat( *scalarPainter );       return true; }
 		return false;
 	}
 	if( GenericHumanTissueMaterial* ght = dynamic_cast<GenericHumanTissueMaterial*>( &material ) ) {
@@ -869,11 +869,11 @@ bool MaterialIntrospection::SetSlot(
 		return false;
 	}
 	if( LambertianLuminaireMaterial* llm = dynamic_cast<LambertianLuminaireMaterial*>( &material ) ) {
-		if( slotName == String( "radEx" ) ) { if( !painter ) return false; llm->SetRadEx( *painter ); return true; }
+		if( slotName == String( "exitance" ) ) { if( !painter ) return false; llm->SetRadEx( *painter ); return true; }
 		return false;
 	}
 	if( PhongLuminaireMaterial* plm = dynamic_cast<PhongLuminaireMaterial*>( &material ) ) {
-		if( slotName == String( "radEx" ) ) { if( !painter ) return false; plm->SetRadEx( *painter ); return true; }
+		if( slotName == String( "exitance" ) ) { if( !painter ) return false; plm->SetRadEx( *painter ); return true; }
 		if( slotName == String( "N" ) )     { if( !scalarPainter ) return false; plm->SetN( *scalarPainter ); return true; }
 		return false;
 	}

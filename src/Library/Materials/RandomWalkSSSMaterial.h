@@ -162,11 +162,12 @@ namespace RISE
 
 			//! Read-back + rebind for the interactive editor.  Only the
 			//! IOR painter is rebindable.  Absorption/scattering were
-			//! sampled-once into m_rwParams at construction time and are
-			//! NOT re-flattened on SetIOR (changing them at runtime is
-			//! out of scope for this interface).  IOR rebinding hits
-			//! BSDF, SPF, and the cached pointer in lockstep; m_rwParams.ior
-			//! keeps the construction-time scalar.
+			//! sampled-once into m_rwParams at construction time and
+			//! stay frozen (changing them at runtime is out of scope).
+			//! IOR rebinding hits BSDF, SPF, the cached pointer, AND
+			//! re-flattens m_rwParams.ior so the random walk's Fresnel,
+			//! refraction-into-medium, and SampleExit code use the new
+			//! value coherently with the surface boundary.
 			inline const IScalarPainter& GetIOR() const { return *pIORPainter; }
 			inline void SetIOR( const IScalarPainter& v ) {
 				v.addref();
@@ -174,6 +175,19 @@ namespace RISE
 				pIORPainter = &v;
 				pBSDF->SetIOR( v );
 				pSPF->SetIOR( v );
+
+				// Re-flatten m_rwParams.ior from the NEW painter at the
+				// same dummy intersection used in the constructor.  See
+				// the ctor body above — the snapshot model is unchanged;
+				// only the painter being snapshotted changes.
+				RayIntersectionGeometric dummyRI(
+					Ray( Point3(0,0,0), Vector3(0,1,0) ),
+					nullRasterizerState );
+				dummyRI.bHit = true;
+				dummyRI.ptIntersection = Point3( 0, 0, 0 );
+				dummyRI.vNormal = Vector3( 0, 1, 0 );
+				dummyRI.onb.CreateFromW( dummyRI.vNormal );
+				m_rwParams.ior = v.GetValuesAt( dummyRI ).v[0];
 			}
 		};
 	}

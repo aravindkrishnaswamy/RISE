@@ -54,7 +54,14 @@ namespace RISE
 			public virtual Reference
 		{
 		protected:
-			const IScalarPainter&	ior;			///< Index of refraction at the boundary (physical scalar)
+			//! Pointer storage so the interactive editor can rebind via
+			//! SetIOR (called by SubSurfaceScatteringMaterial.SetIOR to
+			//! keep the profile coherent with the BSDF/SPF after a live
+			//! IOR edit).  Absorption/scattering stay reference-style
+			//! because we don't expose Set* for them — they parameterise
+			//! the diffusion model and changing them requires a profile
+			//! reconstruction (out of scope).
+			const IScalarPainter*	pIOR;			///< Index of refraction at the boundary (physical scalar)
 			const IScalarPainter&	absorption;		///< Absorption coefficient sigma_a (physical scalar)
 			const IScalarPainter&	scattering;		///< Scattering coefficient sigma_s (physical scalar)
 			const Scalar			g;				///< HG asymmetry parameter
@@ -113,6 +120,12 @@ namespace RISE
 			Scalar GetIOR(
 				const RayIntersectionGeometric& ri
 				) const;
+
+			//! Live-rebind the IOR painter for the interactive editor.
+			//! Must be called in lockstep with the BSDF/SPF SetIOR by
+			//! SubSurfaceScatteringMaterial so the BSSRDF Fresnel and
+			//! the surface boundary stay coherent.
+			void SetIOR( const IScalarPainter& v );
 
 			//
 			// ISubSurfaceExtinctionFunction interface
