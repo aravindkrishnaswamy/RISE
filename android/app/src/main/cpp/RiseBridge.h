@@ -181,6 +181,29 @@ public:
     void viewportSuppressNextFrame();
 
     void viewportSetTool(int tool);
+    int  viewportCurrentTool() const;
+    int  viewportCategoryForTool(int tool) const;
+    int  viewportDefaultSubToolForCategory(int category) const;
+    int  viewportGetLastSubToolForCategory(int category) const;
+
+    /// Gizmo handle math — recompute the per-tool screen-space layout
+    /// for the current Object selection + camera, then expose the
+    /// array for the Compose overlay.  See SceneEditController for
+    /// the underlying contract.
+    void viewportRefreshGizmoHandles();
+    unsigned int viewportGizmoHandleCount() const;
+
+    /// Fill `out[5]` with `{kind, axis, screenX, screenY, screenRadius}`
+    /// for handle `idx`.  Returns true on success.  `kind` and `axis`
+    /// are stored as doubles to keep the JNI handoff a single
+    /// jdoubleArray copy.
+    bool viewportGizmoHandle(unsigned int idx, double out[5]) const;
+
+    int  viewportGizmoHandleAt(double x, double y) const;
+    bool viewportIsGizmoDragActive() const;
+    int  viewportActiveGizmoKind() const;
+    int  viewportActiveGizmoAxis() const;
+
     void viewportPointerDown(double x, double y);
     void viewportPointerMove(double x, double y);
     void viewportPointerUp(double x, double y);

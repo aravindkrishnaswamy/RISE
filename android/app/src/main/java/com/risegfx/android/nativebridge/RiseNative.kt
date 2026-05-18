@@ -233,6 +233,80 @@ object RiseNative {
     external fun nativeViewportSuppressNextFrame()
 
     external fun nativeViewportSetTool(tool: Int)
+
+    /**
+     * Read the active toolbar tool — the value most recently passed to
+     * [nativeViewportSetTool], or `Select` (0) on a fresh bridge.
+     * Returns 0 when no controller is attached.  Numeric values match
+     * the SceneEditController::Tool enum.
+     */
+    external fun nativeViewportCurrentTool(): Int
+
+    /**
+     * Map a tool int to its category int (Photoshop-style toolbar slot
+     * membership).  0 = Select, 1 = Camera, 2 = ObjectTransform.  Pure
+     * function — does not require a controller.  Out-of-range `tool`
+     * returns 0 (Select).
+     */
+    external fun nativeViewportCategoryForTool(tool: Int): Int
+
+    /**
+     * Per-category default sub-tool — the one a slot button shows
+     * before the user picks anything from its flyout.
+     */
+    external fun nativeViewportDefaultSubToolForCategory(category: Int): Int
+
+    /**
+     * Photoshop "last-used" memory: returns the sub-tool the user most
+     * recently picked from this category's flyout, or the category
+     * default if nothing's been picked yet.  Returns Select (0) on
+     * null controller / out-of-range category.
+     */
+    external fun nativeViewportGetLastSubToolForCategory(category: Int): Int
+
+    /**
+     * Recompute the gizmo handle array for the current Object selection
+     * + tool + camera projection.  No-op when the active tool isn't
+     * in the ObjectTransform category, no Object is selected, or the
+     * camera projection is degenerate.  Callers invoke this once per
+     * preview frame before reading the handle array.
+     */
+    external fun nativeViewportRefreshGizmoHandles()
+
+    /** Number of gizmo handles in the current array. */
+    external fun nativeViewportGizmoHandleCount(): Int
+
+    /**
+     * Read one gizmo handle's fields packed into a primitive-double
+     * array so the JNI boundary is just one `GetDoubleArrayElements`
+     * batch (cheaper than per-field JNI calls × 5 × N).  Layout:
+     * `[kind, axis, screenX, screenY, screenRadius]`.  Returns a
+     * length-5 array on success or an empty array on miss.
+     */
+    external fun nativeViewportGizmoHandle(index: Int): DoubleArray
+
+    /**
+     * Hit-test the current gizmo handle array against an image-pixel-
+     * space pointer position.  Returns the index of the closest hit
+     * handle, or -1 on miss / null controller.  Pure read — does not
+     * mutate drag state; the Compose overlay uses this to render
+     * hover feedback before a real pointer-down.
+     */
+    external fun nativeViewportGizmoHandleAt(x: Double, y: Double): Int
+
+    /**
+     * True iff a gizmo handle was hit on the most recent pointer-down
+     * and the drag is still active (no pointer-up yet).
+     */
+    external fun nativeViewportIsGizmoDragActive(): Boolean
+
+    /**
+     * Active drag handle kind / axis, or -1 when no drag is in progress.
+     * Numeric values match SceneEditController::GizmoHandle::Kind.
+     */
+    external fun nativeViewportActiveGizmoKind(): Int
+    external fun nativeViewportActiveGizmoAxis(): Int
+
     external fun nativeViewportPointerDown(x: Double, y: Double)
     external fun nativeViewportPointerMove(x: Double, y: Double)
     external fun nativeViewportPointerUp(x: Double, y: Double)

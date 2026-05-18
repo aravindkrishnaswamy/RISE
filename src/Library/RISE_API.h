@@ -3101,6 +3101,87 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	//! Set the active toolbar mode.  Use SceneEditTool_* constants.
 	bool RISE_API_SceneEditController_SetTool( SceneEditController* p, int tool );
 
+	//! Read the active toolbar tool — the value most recently passed to
+	//! SetTool, or the default `Select` on a fresh controller.  Returns
+	//! `Select` (0) on null controller.  Numeric values match
+	//! SceneEditTool_* constants.
+	int  RISE_API_SceneEditController_CurrentTool( SceneEditController* p );
+
+	//! Map a tool int to its category int (Photoshop-style toolbar
+	//! slot membership).  0 = Select, 1 = Camera, 2 = ObjectTransform.
+	//! Pure-function; takes no controller pointer.  Out-of-range
+	//! `tool` returns 0 (Select).
+	int  RISE_API_SceneEditController_CategoryForTool( int tool );
+
+	//! Per-category default sub-tool (the one a category's slot shows
+	//! before the user picks anything from the flyout).  Pure-function.
+	//! Out-of-range `category` returns Select (0).
+	int  RISE_API_SceneEditController_DefaultSubToolForCategory( int category );
+
+	//! Photoshop "last-used" memory: returns the sub-tool the user
+	//! most recently picked from this category's flyout, or the
+	//! category default if nothing has been picked yet.  Returns
+	//! Select (0) on null controller / out-of-range category.
+	int  RISE_API_SceneEditController_GetLastSubToolForCategory(
+		SceneEditController* p, int category );
+
+	//! Gizmo handle math — recompute the screen-space handle array
+	//! from the current Object selection + tool + camera projection.
+	//! No-op when the active tool isn't an Object-transform tool,
+	//! when no Object is selected, or when the camera projection is
+	//! degenerate.  Returns true on success (including the "no-op,
+	//! count is 0" case); false on null controller.
+	//!
+	//! Platform UIs call this once per preview frame before reading
+	//! the handle array.  Handle positions are in the camera's
+	//! CURRENT image-pixel space — the same space the bridge's
+	//! pointer events live in.  Apply the same `fullW`/`fullH`
+	//! normalisation pointer events use (`GetCameraDimensions`) to
+	//! map to widget space.
+	bool RISE_API_SceneEditController_RefreshGizmoHandles( SceneEditController* p );
+
+	//! Number of gizmo handles in the current array (0 when the
+	//! gizmo system has no active object-transform tool / no
+	//! selection).  Read AFTER `RefreshGizmoHandles`.
+	unsigned int RISE_API_SceneEditController_GizmoHandleCount(
+		SceneEditController* p );
+
+	//! Read one gizmo handle.  Out parameters are populated when the
+	//! call succeeds; values stay valid until the next refresh.
+	//!   outKind: `GizmoHandle::Kind` cast to int (0..6).
+	//!   outAxis: 0=X, 1=Y, 2=Z; -1 for screen-aligned handles.
+	//!   outScreenX / outScreenY: image-pixel-space position.
+	//!   outScreenRadius: hit-test radius / icon size hint in pixels.
+	//! Returns false on null controller, out-of-range idx, or any
+	//! null out-parameter pointer (caller may pass null for fields
+	//! they don't need; non-null pointers all share the same return
+	//! semantics).
+	bool RISE_API_SceneEditController_GizmoHandle(
+		SceneEditController* p, unsigned int idx,
+		int* outKind, int* outAxis,
+		double* outScreenX, double* outScreenY, double* outScreenRadius );
+
+	//! Hit-test the current gizmo handle array against an image-
+	//! pixel-space pointer position.  Returns the index of the
+	//! closest hit handle, or -1 on miss / null controller.  Pure
+	//! read (doesn't mutate drag state) — the platform UI can use
+	//! this to render hover feedback before a real pointer-down.
+	int  RISE_API_SceneEditController_GizmoHandleAt(
+		SceneEditController* p, Scalar x, Scalar y );
+
+	//! True iff a gizmo handle was hit on the most recent
+	//! `OnPointerDown` and the drag is still active (no
+	//! `OnPointerUp` yet).  False on null controller.  Platform UIs
+	//! use this to switch the cursor / draw the active-handle
+	//! highlight between PointerDown and PointerUp.
+	bool RISE_API_SceneEditController_IsGizmoDragActive( SceneEditController* p );
+
+	//! Active drag handle kind / axis.  Both return -1 when no drag
+	//! is in progress (or on null controller).  Numeric values match
+	//! `GizmoHandle::Kind`.
+	int  RISE_API_SceneEditController_ActiveGizmoKind( SceneEditController* p );
+	int  RISE_API_SceneEditController_ActiveGizmoAxis( SceneEditController* p );
+
 	//! Pointer events from the platform UI.  Coordinates are in the
 	//! preview surface's pixel space.
 	bool RISE_API_SceneEditController_OnPointerDown(

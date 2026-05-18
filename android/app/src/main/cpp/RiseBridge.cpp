@@ -1017,6 +1017,65 @@ void RiseBridge::stopViewport() {
 void RiseBridge::viewportSetTool(int t) {
     if (m_viewportController) RISE::RISE_API_SceneEditController_SetTool(m_viewportController, t);
 }
+int RiseBridge::viewportCurrentTool() const {
+    if (!m_viewportController) return 0;
+    return RISE::RISE_API_SceneEditController_CurrentTool(m_viewportController);
+}
+int RiseBridge::viewportCategoryForTool(int tool) const {
+    return RISE::RISE_API_SceneEditController_CategoryForTool(tool);
+}
+int RiseBridge::viewportDefaultSubToolForCategory(int category) const {
+    return RISE::RISE_API_SceneEditController_DefaultSubToolForCategory(category);
+}
+int RiseBridge::viewportGetLastSubToolForCategory(int category) const {
+    if (!m_viewportController) {
+        return RISE::RISE_API_SceneEditController_DefaultSubToolForCategory(category);
+    }
+    return RISE::RISE_API_SceneEditController_GetLastSubToolForCategory(
+        m_viewportController, category);
+}
+void RiseBridge::viewportRefreshGizmoHandles() {
+    if (m_viewportController) {
+        RISE::RISE_API_SceneEditController_RefreshGizmoHandles(m_viewportController);
+    }
+}
+unsigned int RiseBridge::viewportGizmoHandleCount() const {
+    if (!m_viewportController) return 0;
+    return RISE::RISE_API_SceneEditController_GizmoHandleCount(m_viewportController);
+}
+bool RiseBridge::viewportGizmoHandle(unsigned int idx, double out[5]) const {
+    if (!m_viewportController) return false;
+    int kind = 0;
+    int axis = 0;
+    double x = 0, y = 0, r = 0;
+    if (!RISE::RISE_API_SceneEditController_GizmoHandle(
+            m_viewportController, idx, &kind, &axis, &x, &y, &r)) {
+        return false;
+    }
+    out[0] = static_cast<double>(kind);
+    out[1] = static_cast<double>(axis);
+    out[2] = x;
+    out[3] = y;
+    out[4] = r;
+    return true;
+}
+int RiseBridge::viewportGizmoHandleAt(double x, double y) const {
+    if (!m_viewportController) return -1;
+    return RISE::RISE_API_SceneEditController_GizmoHandleAt(
+        m_viewportController, x, y);
+}
+bool RiseBridge::viewportIsGizmoDragActive() const {
+    if (!m_viewportController) return false;
+    return RISE::RISE_API_SceneEditController_IsGizmoDragActive(m_viewportController);
+}
+int RiseBridge::viewportActiveGizmoKind() const {
+    if (!m_viewportController) return -1;
+    return RISE::RISE_API_SceneEditController_ActiveGizmoKind(m_viewportController);
+}
+int RiseBridge::viewportActiveGizmoAxis() const {
+    if (!m_viewportController) return -1;
+    return RISE::RISE_API_SceneEditController_ActiveGizmoAxis(m_viewportController);
+}
 void RiseBridge::viewportPointerDown(double x, double y) {
     if (m_viewportController) RISE::RISE_API_SceneEditController_OnPointerDown(m_viewportController, x, y);
 }

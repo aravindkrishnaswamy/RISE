@@ -49,6 +49,19 @@ using namespace RISE;
 - (instancetype)initWithLabel:(NSString *)label value:(NSString *)value;
 @end
 
+// Class extension: private initialiser for RISEViewportGizmoHandle —
+// needed by the `gizmoHandles` accessor on RISEViewportBridge which
+// builds the snapshot array.  The implementation lives at the bottom
+// of this file; this extension hoists the selector into scope for
+// the accessor.
+@interface RISEViewportGizmoHandle ()
+- (instancetype)_initWithKind:(RISEViewportGizmoKind)kind
+                         axis:(NSInteger)axis
+                      screenX:(CGFloat)screenX
+                      screenY:(CGFloat)screenY
+                 screenRadius:(CGFloat)screenRadius;
+@end
+
 namespace {
 
 // ============================================================
@@ -442,12 +455,81 @@ private:
 #pragma mark - Toolbar
 
 - (RISEViewportTool)currentTool {
-    return RISEViewportToolSelect;  // C-API doesn't surface CurrentTool yet
+    if (!_controller) return RISEViewportToolSelect;
+    const int t = RISE_API_SceneEditController_CurrentTool(_controller);
+    // The controller's int values match RISEViewportTool 1:1.
+    return static_cast<RISEViewportTool>(t);
 }
 
 - (void)setCurrentTool:(RISEViewportTool)tool {
     if (!_controller) return;
     RISE_API_SceneEditController_SetTool(_controller, static_cast<int>(tool));
+}
+
++ (RISEViewportToolCategory)categoryForTool:(RISEViewportTool)tool {
+    const int c = RISE_API_SceneEditController_CategoryForTool(static_cast<int>(tool));
+    return static_cast<RISEViewportToolCategory>(c);
+}
+
++ (RISEViewportTool)defaultSubToolForCategory:(RISEViewportToolCategory)category {
+    const int t = RISE_API_SceneEditController_DefaultSubToolForCategory(static_cast<int>(category));
+    return static_cast<RISEViewportTool>(t);
+}
+
+- (RISEViewportTool)lastSubToolForCategory:(RISEViewportToolCategory)category {
+    if (!_controller) {
+        return [RISEViewportBridge defaultSubToolForCategory:category];
+    }
+    const int t = RISE_API_SceneEditController_GetLastSubToolForCategory(
+        _controller, static_cast<int>(category));
+    return static_cast<RISEViewportTool>(t);
+}
+
+#pragma mark - Gizmo overlay
+
+- (void)refreshGizmoHandles {
+    if (!_controller) return;
+    RISE_API_SceneEditController_RefreshGizmoHandles(_controller);
+}
+
+- (NSArray<RISEViewportGizmoHandle *> *)gizmoHandles {
+    if (!_controller) return @[];
+    const unsigned int n = RISE_API_SceneEditController_GizmoHandleCount(_controller);
+    NSMutableArray<RISEViewportGizmoHandle *> *out = [NSMutableArray arrayWithCapacity:n];
+    for (unsigned int i = 0; i < n; ++i) {
+        int kind = 0;
+        int axis = 0;
+        double x = 0, y = 0, r = 0;
+        if (!RISE_API_SceneEditController_GizmoHandle(
+                _controller, i, &kind, &axis, &x, &y, &r)) {
+            continue;
+        }
+        RISEViewportGizmoHandle *h = [[RISEViewportGizmoHandle alloc]
+            _initWithKind:static_cast<RISEViewportGizmoKind>(kind)
+                     axis:static_cast<NSInteger>(axis)
+                  screenX:static_cast<CGFloat>(x)
+                  screenY:static_cast<CGFloat>(y)
+             screenRadius:static_cast<CGFloat>(r)];
+        [out addObject:h];
+    }
+    return out;
+}
+
+- (BOOL)gizmoDragActive {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_IsGizmoDragActive(_controller) ? YES : NO;
+}
+
+- (RISEViewportGizmoKind)activeGizmoKind {
+    if (!_controller) return RISEViewportGizmoKindAxisArrow;  // sentinel via axis = -1 also unused
+    const int k = RISE_API_SceneEditController_ActiveGizmoKind(_controller);
+    if (k < 0) return RISEViewportGizmoKindAxisArrow;
+    return static_cast<RISEViewportGizmoKind>(k);
+}
+
+- (NSInteger)activeGizmoAxis {
+    if (!_controller) return -1;
+    return RISE_API_SceneEditController_ActiveGizmoAxis(_controller);
 }
 
 #pragma mark - Pointer events
@@ -902,5 +984,43 @@ private:
 
 - (NSString *)label { return _label; }
 - (NSString *)value { return _value; }
+
+@end
+
+#pragma mark - RISEViewportGizmoHandle
+// `_initWithKind:` selector is hoisted into scope by the class
+// extension at the top of this file so the `gizmoHandles` accessor
+// (defined earlier) can call it.
+
+@implementation RISEViewportGizmoHandle {
+    RISEViewportGizmoKind _kind;
+    NSInteger             _axis;
+    CGFloat               _screenX;
+    CGFloat               _screenY;
+    CGFloat               _screenRadius;
+}
+
+- (instancetype)_initWithKind:(RISEViewportGizmoKind)kind
+                         axis:(NSInteger)axis
+                      screenX:(CGFloat)screenX
+                      screenY:(CGFloat)screenY
+                 screenRadius:(CGFloat)screenRadius
+{
+    self = [super init];
+    if (self) {
+        _kind = kind;
+        _axis = axis;
+        _screenX = screenX;
+        _screenY = screenY;
+        _screenRadius = screenRadius;
+    }
+    return self;
+}
+
+- (RISEViewportGizmoKind)kind         { return _kind; }
+- (NSInteger)axis                     { return _axis; }
+- (CGFloat)screenX                    { return _screenX; }
+- (CGFloat)screenY                    { return _screenY; }
+- (CGFloat)screenRadius               { return _screenRadius; }
 
 @end

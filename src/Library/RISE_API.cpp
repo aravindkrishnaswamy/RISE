@@ -6235,6 +6235,95 @@ namespace RISE
 		return true;
 	}
 
+	int RISE_API_SceneEditController_CurrentTool( SceneEditController* p )
+	{
+		if( !p ) return SceneEditTool_Select;
+		return static_cast<int>( p->CurrentTool() );
+	}
+
+	int RISE_API_SceneEditController_CategoryForTool( int tool )
+	{
+		if( tool < SceneEditTool_Select || tool > SceneEditTool_RollCamera ) {
+			return static_cast<int>( SceneEditController::ToolCategory::Select );
+		}
+		const auto t = static_cast<SceneEditController::Tool>( tool );
+		return static_cast<int>( SceneEditController::CategoryForTool( t ) );
+	}
+
+	int RISE_API_SceneEditController_DefaultSubToolForCategory( int category )
+	{
+		if( category < 0 || category >= SceneEditController::kNumToolCategories ) {
+			return SceneEditTool_Select;
+		}
+		const auto cat = static_cast<SceneEditController::ToolCategory>( category );
+		return static_cast<int>( SceneEditController::DefaultSubToolForCategory( cat ) );
+	}
+
+	int RISE_API_SceneEditController_GetLastSubToolForCategory(
+		SceneEditController* p, int category )
+	{
+		if( !p ) return SceneEditTool_Select;
+		if( category < 0 || category >= SceneEditController::kNumToolCategories ) {
+			return SceneEditTool_Select;
+		}
+		const auto cat = static_cast<SceneEditController::ToolCategory>( category );
+		return static_cast<int>( p->GetLastSubToolForCategory( cat ) );
+	}
+
+	bool RISE_API_SceneEditController_RefreshGizmoHandles( SceneEditController* p )
+	{
+		if( !p ) return false;
+		p->RefreshGizmoHandles();
+		return true;
+	}
+
+	unsigned int RISE_API_SceneEditController_GizmoHandleCount(
+		SceneEditController* p )
+	{
+		if( !p ) return 0;
+		return p->GizmoHandleCount();
+	}
+
+	bool RISE_API_SceneEditController_GizmoHandle(
+		SceneEditController* p, unsigned int idx,
+		int* outKind, int* outAxis,
+		double* outScreenX, double* outScreenY, double* outScreenRadius )
+	{
+		if( !p ) return false;
+		if( idx >= p->GizmoHandleCount() ) return false;
+		if( outKind         ) *outKind         = p->GizmoHandleKind( idx );
+		if( outAxis         ) *outAxis         = p->GizmoHandleAxis( idx );
+		if( outScreenX      ) *outScreenX      = p->GizmoHandleScreenX( idx );
+		if( outScreenY      ) *outScreenY      = p->GizmoHandleScreenY( idx );
+		if( outScreenRadius ) *outScreenRadius = p->GizmoHandleScreenRadius( idx );
+		return true;
+	}
+
+	int RISE_API_SceneEditController_GizmoHandleAt(
+		SceneEditController* p, Scalar x, Scalar y )
+	{
+		if( !p ) return -1;
+		return p->GizmoHandleAt( Point2( x, y ) );
+	}
+
+	bool RISE_API_SceneEditController_IsGizmoDragActive( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->IsGizmoDragActive();
+	}
+
+	int RISE_API_SceneEditController_ActiveGizmoKind( SceneEditController* p )
+	{
+		if( !p ) return -1;
+		return p->ActiveGizmoKind();
+	}
+
+	int RISE_API_SceneEditController_ActiveGizmoAxis( SceneEditController* p )
+	{
+		if( !p ) return -1;
+		return p->ActiveGizmoAxis();
+	}
+
 	bool RISE_API_SceneEditController_OnPointerDown(
 		SceneEditController* p, Scalar x, Scalar y )
 	{

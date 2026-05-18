@@ -17,6 +17,7 @@
 
 @class RISEBridge;
 @class RISEViewportProperty;
+@class RISEViewportGizmoHandle;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -71,6 +72,73 @@ typedef NS_ENUM(NSInteger, RISEViewportTool) {
 #pragma mark - Toolbar
 
 @property (nonatomic) RISEViewportTool currentTool;
+
+/// Photoshop-style toolbar category — the "slot" a tool sits in.
+/// Mirrors `RISE::SceneEditController::ToolCategory`; numeric values
+/// are part of the C-API contract.  `select` has a single tool;
+/// `camera` covers Orbit/Pan/Zoom/Roll; `objectTransform` covers
+/// Translate/Rotate/Scale and is the one that surfaces a gizmo
+/// overlay when an object is selected.
+typedef NS_ENUM(NSInteger, RISEViewportToolCategory) {
+    RISEViewportToolCategorySelect          = 0,
+    RISEViewportToolCategoryCamera          = 1,
+    RISEViewportToolCategoryObjectTransform = 2
+};
+
+/// Map a tool to its category.  Pure-function (no bridge state); the
+/// Swift toolbar uses this to compute slot membership for the current
+/// `currentTool`.
++ (RISEViewportToolCategory)categoryForTool:(RISEViewportTool)tool;
+
+/// Default sub-tool the category's slot shows before the user picks
+/// anything from the flyout.  Pure-function.
++ (RISEViewportTool)defaultSubToolForCategory:(RISEViewportToolCategory)category;
+
+/// Photoshop "last-used" memory: returns the sub-tool the user most
+/// recently picked from this category's flyout, or the category
+/// default if nothing's been picked yet.
+- (RISEViewportTool)lastSubToolForCategory:(RISEViewportToolCategory)category
+    NS_SWIFT_NAME(lastSubTool(for:));
+
+#pragma mark - Gizmo overlay
+
+/// Kind of gizmo handle — what UI gesture the platform overlay binds
+/// to it.  Mirrors `RISE::SceneEditController::GizmoHandle::Kind`.
+typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
+    RISEViewportGizmoKindAxisArrow        = 0,  ///< Translate: drag along world axis
+    RISEViewportGizmoKindAxisPlane        = 1,  ///< Translate: drag in plane perpendicular to axis
+    RISEViewportGizmoKindScreenCenter     = 2,  ///< Translate: drag in screen plane (axis = -1)
+    RISEViewportGizmoKindAxisRing         = 3,  ///< Rotate: drag tangent to ring around world axis
+    RISEViewportGizmoKindScreenRing       = 4,  ///< Rotate: view-axis spin (axis = -1)
+    RISEViewportGizmoKindAxisScaleHandle  = 5,  ///< Scale: drag along world axis (cube glyph at tip)
+    RISEViewportGizmoKindUniformScaleCube = 6   ///< Scale: uniform (axis = -1)
+};
+
+/// Recompute the gizmo handle array for the current Object selection
+/// + tool + camera projection.  No-op when:
+///   - the active tool isn't in the ObjectTransform category
+///   - no Object is selected
+///   - the camera projection is degenerate
+/// Caller invokes this once per preview frame before reading
+/// `gizmoHandles`.
+- (void)refreshGizmoHandles;
+
+/// Snapshot of the current gizmo handle array (empty if no gizmo
+/// is currently shown).  Read AFTER `refreshGizmoHandles`.  The
+/// returned NSArray is a fresh copy; values stay valid even if the
+/// controller refreshes its internal array between calls.
+@property (nonatomic, readonly) NSArray<RISEViewportGizmoHandle *> *gizmoHandles;
+
+/// True iff a gizmo handle was hit on the most recent pointer-down
+/// and the drag is still active (no pointer-up yet).  The overlay
+/// uses this to switch the active-handle highlight on / off.
+@property (nonatomic, readonly) BOOL gizmoDragActive;
+
+/// Currently-active drag handle kind / axis, or -1 when no drag is
+/// in progress.  Together with `gizmoDragActive` these drive the
+/// overlay's active-handle styling.
+@property (nonatomic, readonly) RISEViewportGizmoKind activeGizmoKind;
+@property (nonatomic, readonly) NSInteger             activeGizmoAxis;
 
 #pragma mark - Pointer events
 //
@@ -309,6 +377,18 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
 - (nullable NSString *)addCameraFromActive:(NSString *)proposedName
     NS_SWIFT_NAME(addCameraFromActive(proposedName:));
 
+@end
+
+/// One gizmo handle from the controller's screen-space layout.
+/// Positions are in the camera's CURRENT image-pixel space — the same
+/// space `cameraSurfaceDimensions` describes; the overlay applies the
+/// view's `fullW`/`fullH` normalisation to map to widget points.
+@interface RISEViewportGizmoHandle : NSObject
+@property (nonatomic, readonly) RISEViewportGizmoKind kind;
+@property (nonatomic, readonly) NSInteger axis;          ///< 0=X, 1=Y, 2=Z; -1 for screen-aligned
+@property (nonatomic, readonly) CGFloat screenX;
+@property (nonatomic, readonly) CGFloat screenY;
+@property (nonatomic, readonly) CGFloat screenRadius;
 @end
 
 /// Single quick-pick preset, surfaced from the descriptor's

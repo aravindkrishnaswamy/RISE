@@ -63,6 +63,136 @@ namespace RISE
 			RollCamera      = 8    ///< drag rolls the camera around the forward axis
 		};
 
+		//! Photoshop-style tool palette: tools are grouped into category
+		//! "slots", and each slot remembers its last-used sub-tool so a
+		//! single click on the slot re-activates that sub-tool rather
+		//! than the category default.  Long-press / right-click opens
+		//! a flyout with all sub-tools in the category.
+		//!
+		//! Numeric values are part of the C-API surface (bridges pass
+		//! ints), so don't reorder.  `ScrubTimeline` is intentionally
+		//! NOT in any category — the timeline scrub lives in the
+		//! bottom timeline bar, not the main toolbar.
+		enum class ToolCategory : int
+		{
+			Select          = 0,   ///< { Select }              (single sub-tool, no flyout)
+			Camera          = 1,   ///< { Orbit, Pan, Zoom, Roll }
+			ObjectTransform = 2    ///< { Translate, Rotate, Scale } — needs gizmos
+		};
+
+		static constexpr int kNumToolCategories = 3;
+
+		//! Which category does `t` belong to?  ScrubTimeline returns
+		//! Select as a fallback (it's not in the main toolbar but
+		//! callers expect SOMETHING).  This invariant must hold:
+		//! every Tool value maps to exactly one ToolCategory.
+		static ToolCategory CategoryForTool( Tool t );
+
+		//! Return the per-category default sub-tool — the one the
+		//! toolbar slot shows when the user hasn't picked anything
+		//! yet.  Used by the platform UI to seed the slot's initial
+		//! icon and by `GetLastSubToolForCategory` as a fallback.
+		static Tool DefaultSubToolForCategory( ToolCategory cat );
+
+		//! Photoshop "last-used" memory: returns the sub-tool the
+		//! user most recently picked from this category's flyout
+		//! (or the category default if the user hasn't activated
+		//! anything in this category yet).  A single click on the
+		//! slot uses this; the flyout always offers the full set.
+		Tool GetLastSubToolForCategory( ToolCategory cat ) const;
+
+		//! Screen-space gizmo handle for the platform overlay to draw
+		//! and the controller's pointer dispatch to hit-test.  Positions
+		//! are in the camera's CURRENT image-pixel space — UI code that
+		//! converts to widget-space must apply the same `fullW`/`fullH`
+		//! normalisation it uses for pointer events (see
+		//! `GetCameraDimensions`).  Layout convention is "world-axis
+		//! only" (per the locked design): handles align to world X/Y/Z,
+		//! not to the object's local basis.  Refreshed on demand via
+		//! `RefreshGizmoHandles`; values stay valid until the next
+		//! refresh (or controller mutation that invalidates the array).
+		struct GizmoHandle
+		{
+			//! What kind of UI gesture this handle accepts.  Numeric
+			//! values are C-API surface — don't reorder.
+			enum Kind : int
+			{
+				AxisArrow        = 0,  ///< Translate: drag along world axis
+				AxisPlane        = 1,  ///< Translate: drag in plane perpendicular to axis
+				ScreenCenter     = 2,  ///< Translate: drag in screen plane (axis == -1)
+				AxisRing         = 3,  ///< Rotate: drag tangent to ring around world axis
+				ScreenRing       = 4,  ///< Rotate: drag tangent to view-aligned ring (axis == -1)
+				AxisScaleHandle  = 5,  ///< Scale: drag along world axis (cube glyph at tip)
+				UniformScaleCube = 6   ///< Scale: drag uniformly (axis == -1)
+			};
+			int    kind;          ///< `Kind` cast to int (C-API surface)
+			int    axis;          ///< 0=X, 1=Y, 2=Z; -1 for screen-aligned handles
+			double screenX;       ///< Image-pixel-space X (camera's current dims)
+			double screenY;       ///< Image-pixel-space Y
+			double screenRadius;  ///< Hit-test radius in pixels (drawn icon size hint)
+		};
+
+		//! Recompute the gizmo handle array for the current selection +
+		//! tool + camera.  Sets the count to 0 (no handles drawn) when:
+		//!   - the active tool isn't in `ToolCategory::ObjectTransform`
+		//!   - no Object is selected
+		//!   - the camera's projection is degenerate (singular matrix
+		//!     or pivot behind the eye)
+		//! Called by the platform UI before reading the handle array
+		//! (typically once per preview frame).
+		void RefreshGizmoHandles();
+
+		unsigned int GizmoHandleCount() const;
+		int          GizmoHandleKind( unsigned int idx ) const;
+		int          GizmoHandleAxis( unsigned int idx ) const;
+		double       GizmoHandleScreenX( unsigned int idx ) const;
+		double       GizmoHandleScreenY( unsigned int idx ) const;
+		double       GizmoHandleScreenRadius( unsigned int idx ) const;
+
+		//! Test/debug hook: project a world-space point to the camera's
+		//! current image-pixel space.  Returns false if the point is
+		//! behind the camera, the projection is degenerate, or no
+		//! camera is attached.
+		bool ForTest_ProjectWorldToScreen( double wx, double wy, double wz,
+		                                   double& outSx, double& outSy ) const;
+
+		//! Test/debug hook: returns the world-space pivot used by the
+		//! gizmo system for the current Object selection.  Reads the
+		//! object's `FinalTransformMatrix` translation column (the
+		//! world-space origin of the object's local frame).  False if
+		//! no Object is selected or the object's transform is
+		//! unresolvable.
+		bool ForTest_GetSelectionPivotWorld( double& wx, double& wy, double& wz ) const;
+
+		//! Hit-test the current gizmo handle array against an image-
+		//! pixel-space pointer position.  Returns the index of the
+		//! closest handle whose screen-space proximity is within its
+		//! `screenRadius`, or -1 on miss.  Front-to-back priority
+		//! follows the handle array order (center / planes / rings
+		//! come BEFORE axis arrows so the central glyphs aren't
+		//! occluded by longer arrow shafts during hit-test).
+		//!
+		//! The pointer dispatch (`OnPointerDown`) uses this to switch
+		//! from the legacy "drag-anywhere translates" math to a
+		//! handle-constrained drag for the duration of the gesture;
+		//! exposed publicly so the platform UI can render hover state
+		//! (e.g. highlight the handle whose hit-test would catch the
+		//! cursor's current position).
+		int  GizmoHandleAt( const Point2& px ) const;
+
+		//! True iff a gizmo handle was hit on the most recent
+		//! `OnPointerDown` and the drag is still active (not yet
+		//! followed by `OnPointerUp`).  The platform UI uses this to
+		//! switch the cursor / draw the "active handle" highlight.
+		bool IsGizmoDragActive() const;
+
+		//! Active drag handle kind (`GizmoHandle::Kind` cast to int),
+		//! or -1 when no gizmo drag is in progress.  Exposed for the
+		//! platform overlay so it can highlight the active glyph
+		//! between PointerDown and PointerUp.
+		int  ActiveGizmoKind() const;
+		int  ActiveGizmoAxis() const;
+
 		//! Discriminator for the right-side accordion sections.
 		//! Selection is a (Category, entityName) tuple — see
 		//! `mSelectionCategory` / `mSelectionName`.  Numeric values are
@@ -490,6 +620,43 @@ namespace RISE
 		Implementation::InteractivePelRasterizer* mInteractiveImpl;
 		SceneEditor                 mEditor;
 		Tool                        mTool;
+		//! Photoshop-style per-category "last-used" sub-tool memory.
+		//! Updated by every `SetTool` call (the tool's category slot
+		//! remembers it).  Indexed by `ToolCategory` int values.
+		Tool                        mLastSubToolPerCategory[ kNumToolCategories ];
+		//! Gizmo handle cache — refreshed by `RefreshGizmoHandles` and
+		//! read by the platform overlay + pointer dispatch.  Empty
+		//! when the active tool isn't an Object-transform tool or no
+		//! Object is selected.
+		std::vector<GizmoHandle>    mGizmoHandles;
+
+		//! Active gizmo drag state.  Captured at OnPointerDown when
+		//! the pointer hits a handle; consumed by OnPointerMove to
+		//! drive constrained drag math; cleared at OnPointerUp.
+		//!
+		//! `axisDir[a]` is the screen-space direction (in pixels per
+		//! world unit, NOT normalised) of world axis `a` at the
+		//! pivot, captured at drag-start.  Holding these constant for
+		//! the whole drag means a 1-px pointer move produces a
+		//! consistent world delta even if the camera shifts mid-drag
+		//! (in practice the camera doesn't, but the invariant makes
+		//! the math predictable for tests).
+		struct GizmoDragState
+		{
+			bool    active;
+			int     kind;             ///< `GizmoHandle::Kind` cast to int
+			int     axis;             ///< 0=X, 1=Y, 2=Z; -1 for screen-aligned
+			Point3  pivotWorld;       ///< pivot at drag-start
+			double  pivotScreenX;     ///< pivot's screen projection at drag-start
+			double  pivotScreenY;
+			double  axisDirX[3];      ///< pixels per world unit, x component
+			double  axisDirY[3];      ///< pixels per world unit, y component
+			bool    axisOk[3];        ///< false if axis colinear with view at drag-start
+			Vector3 prevOrient;       ///< object Euler at drag-start (for Rotate)
+			Vector3 prevStretch;      ///< object stretch at drag-start (for Scale)
+			double  prevAngle;        ///< pointer angle around pivot (for Ring drags)
+		};
+		GizmoDragState              mGizmoDrag;
 		// Selection state — Phase 4b moved from a single tuple to
 		// a per-category model so the panel can show multiple
 		// sections expanded simultaneously (Object pick auto-

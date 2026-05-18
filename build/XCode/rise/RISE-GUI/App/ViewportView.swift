@@ -46,6 +46,12 @@ struct ViewportView: View {
     var edrEnabled: Bool = false
 
     @State private var selectedTool: ViewportTool = .select
+    /// Bumps each time the gizmo overlay should re-pull its handle
+    /// snapshot.  Tied to pointer-down / pointer-up / tool change
+    /// (which are the events that can change which gizmo is shown)
+    /// and to `image` changes (camera motion shifts the projected
+    /// handle positions).
+    @State private var gizmoRefreshTrigger: Int = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -66,19 +72,46 @@ struct ViewportView: View {
                         // tools doesn't change selection but the
                         // panel refresh is cheap so we always notify.
                         onSelectionMayHaveChanged()
+                        gizmoRefreshTrigger &+= 1
                     },
                     onPointerMove: { p in
                         guard interactionEnabled else { return }
                         bridge.pointerMove(x: Double(p.x), y: Double(p.y))
+                        if bridge.gizmoDragActive {
+                            gizmoRefreshTrigger &+= 1
+                        }
                     },
                     onPointerUp: { p in
                         guard interactionEnabled else { return }
                         bridge.pointerUp(x: Double(p.x), y: Double(p.y))
+                        gizmoRefreshTrigger &+= 1
                     }
                 )
 
+                // Gizmo overlay — drawn on top of the rendered frame
+                // when an Object-transform tool is active.  Hit
+                // testing is OFF for the overlay so pointer events
+                // continue to flow through to ViewportCanvas; the
+                // controller's `OnPointerDown` is what consults the
+                // handle array via hit-test.
+                if selectedTool.category == .objectTransform {
+                    ViewportGizmoOverlay(
+                        bridge: bridge,
+                        refreshTrigger: gizmoRefreshTrigger,
+                        surfaceDimensionsProvider: { [weak bridge] in
+                            bridge?.cameraSurfaceDimensions ?? .zero
+                        }
+                    )
+                    .allowsHitTesting(false)
+                }
+
                 ViewportToolbar(
                     selectedTool: $selectedTool,
+                    lastSubToolForCategory: { [weak bridge] cat in
+                        guard let b = bridge else { return cat.subTools.first ?? .select }
+                        let last = b.lastSubTool(for: cat.bridgeValue)
+                        return ViewportTool(rawValue: last.rawValue) ?? (cat.subTools.first ?? .select)
+                    },
                     onUndo: { bridge.undo() },
                     onRedo: { bridge.redo() }
                 )
@@ -91,6 +124,18 @@ struct ViewportView: View {
                     // bump the refresh so the panel switches between
                     // empty / camera / object as the user toggles.
                     onSelectionMayHaveChanged()
+                    // Tool change can flip the gizmo shape (Translate
+                    // → Rotate switches between arrows and rings); a
+                    // refresh-trigger bump forces the overlay to
+                    // re-pull the handle array.
+                    gizmoRefreshTrigger &+= 1
+                }
+                .onChange(of: image) { _, _ in
+                    // Camera motion / preview-scale changes shift the
+                    // projected handle positions; rebuild the snapshot
+                    // each time a new frame arrives so the gizmo
+                    // tracks the rendered image.
+                    gizmoRefreshTrigger &+= 1
                 }
             }
             // Re-sync the toolbar's selection to the underlying

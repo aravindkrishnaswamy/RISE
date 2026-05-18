@@ -228,6 +228,84 @@ void ViewportBridge::setTool(ViewportTool t)
     RISE_API_SceneEditController_SetTool(m_controller, static_cast<int>(t));
 }
 
+ViewportTool ViewportBridge::currentTool() const
+{
+    if (!m_controller) return ViewportTool::Select;
+    return static_cast<ViewportTool>(
+        RISE_API_SceneEditController_CurrentTool(m_controller));
+}
+
+ViewportBridge::ToolCategory ViewportBridge::categoryForTool(ViewportTool t)
+{
+    return static_cast<ToolCategory>(
+        RISE_API_SceneEditController_CategoryForTool(static_cast<int>(t)));
+}
+
+ViewportTool ViewportBridge::defaultSubToolForCategory(ToolCategory cat)
+{
+    return static_cast<ViewportTool>(
+        RISE_API_SceneEditController_DefaultSubToolForCategory(static_cast<int>(cat)));
+}
+
+ViewportTool ViewportBridge::lastSubToolForCategory(ToolCategory cat) const
+{
+    if (!m_controller) return defaultSubToolForCategory(cat);
+    return static_cast<ViewportTool>(
+        RISE_API_SceneEditController_GetLastSubToolForCategory(
+            m_controller, static_cast<int>(cat)));
+}
+
+void ViewportBridge::refreshGizmoHandles()
+{
+    if (!m_controller) return;
+    RISE_API_SceneEditController_RefreshGizmoHandles(m_controller);
+}
+
+QVector<ViewportBridge::GizmoHandle> ViewportBridge::gizmoHandles() const
+{
+    QVector<GizmoHandle> out;
+    if (!m_controller) return out;
+    const unsigned int n = RISE_API_SceneEditController_GizmoHandleCount(m_controller);
+    out.reserve(static_cast<int>(n));
+    for (unsigned int i = 0; i < n; ++i) {
+        int kind = 0;
+        int axis = 0;
+        double x = 0, y = 0, r = 0;
+        if (!RISE_API_SceneEditController_GizmoHandle(
+                m_controller, i, &kind, &axis, &x, &y, &r)) {
+            continue;
+        }
+        GizmoHandle h;
+        h.kind         = static_cast<GizmoKind>(kind);
+        h.axis         = axis;
+        h.screenX      = x;
+        h.screenY      = y;
+        h.screenRadius = r;
+        out.push_back(h);
+    }
+    return out;
+}
+
+bool ViewportBridge::gizmoDragActive() const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_IsGizmoDragActive(m_controller);
+}
+
+ViewportBridge::GizmoKind ViewportBridge::activeGizmoKind() const
+{
+    if (!m_controller) return GizmoKind::AxisArrow;
+    const int k = RISE_API_SceneEditController_ActiveGizmoKind(m_controller);
+    if (k < 0) return GizmoKind::AxisArrow;
+    return static_cast<GizmoKind>(k);
+}
+
+int ViewportBridge::activeGizmoAxis() const
+{
+    if (!m_controller) return -1;
+    return RISE_API_SceneEditController_ActiveGizmoAxis(m_controller);
+}
+
 void ViewportBridge::pointerDown(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerDown(m_controller, x, y); }
 void ViewportBridge::pointerMove(double x, double y) { if (m_controller) RISE_API_SceneEditController_OnPointerMove(m_controller, x, y); }
 void ViewportBridge::pointerUp(double x, double y)   { if (m_controller) RISE_API_SceneEditController_OnPointerUp(m_controller, x, y); }

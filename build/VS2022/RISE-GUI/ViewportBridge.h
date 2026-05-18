@@ -95,6 +95,78 @@ public:
     void scaleFilmToFit(int surfaceW, int surfaceH, int maxLongEdge);
 
     void setTool(ViewportTool t);
+    ViewportTool currentTool() const;
+
+    /// Photoshop-style toolbar category — the "slot" a tool sits in.
+    /// Mirrors `RISE::SceneEditController::ToolCategory`.  Numeric
+    /// values are part of the C-API contract.
+    enum class ToolCategory : int {
+        Select          = 0,
+        Camera          = 1,
+        ObjectTransform = 2
+    };
+
+    /// Map a tool to its category.  Pure-function — no bridge state.
+    /// Qt UI uses this to compute the active slot for the current
+    /// `currentTool()`.
+    static ToolCategory categoryForTool(ViewportTool t);
+
+    /// Default sub-tool the category's slot shows before the user
+    /// picks anything from the flyout.  Pure-function.
+    static ViewportTool defaultSubToolForCategory(ToolCategory cat);
+
+    /// Photoshop "last-used" memory: returns the sub-tool the user
+    /// most recently picked from this category's flyout, or the
+    /// category default if nothing's been picked yet.
+    ViewportTool lastSubToolForCategory(ToolCategory cat) const;
+
+    // Gizmo overlay -------------------------------------------------
+
+    /// Kind of gizmo handle — what UI gesture the platform overlay
+    /// binds to it.  Mirrors `RISE::SceneEditController::GizmoHandle::Kind`.
+    enum class GizmoKind : int {
+        AxisArrow        = 0,
+        AxisPlane        = 1,
+        ScreenCenter     = 2,
+        AxisRing         = 3,
+        ScreenRing       = 4,
+        AxisScaleHandle  = 5,
+        UniformScaleCube = 6
+    };
+
+    /// One gizmo handle.  Positions are in the camera's CURRENT
+    /// image-pixel space — the QPainter overlay maps to widget
+    /// coords using the same `cameraSurfaceDimensions()` ratio
+    /// pointer events use.
+    struct GizmoHandle {
+        GizmoKind kind        = GizmoKind::AxisArrow;
+        int       axis        = -1;     ///< 0=X, 1=Y, 2=Z; -1 for screen-aligned
+        double    screenX     = 0.0;
+        double    screenY     = 0.0;
+        double    screenRadius = 0.0;
+    };
+
+    /// Recompute the gizmo handle array.  Caller invokes this once
+    /// per preview frame before reading `gizmoHandles()`.  No-op
+    /// when the active tool isn't in ObjectTransform, no Object is
+    /// selected, or the camera is degenerate.
+    void refreshGizmoHandles();
+
+    /// Snapshot of the current gizmo handle array (empty when no
+    /// gizmo is currently shown).  Returns a fresh copy so values
+    /// stay valid even if the controller refreshes internally.
+    QVector<GizmoHandle> gizmoHandles() const;
+
+    /// True iff a gizmo handle was hit on the most recent pointer-
+    /// down and the drag is still active.  Drives the overlay's
+    /// active-handle highlight on/off.
+    bool gizmoDragActive() const;
+
+    /// Active drag handle kind / axis, or sentinel values when no
+    /// drag is in progress: kind defaults to AxisArrow, axis to -1.
+    /// Use together with `gizmoDragActive()` for unambiguous state.
+    GizmoKind activeGizmoKind() const;
+    int       activeGizmoAxis() const;
 
     // Pointer events — coordinates are in viewport surface pixel space.
     void pointerDown(double x, double y);

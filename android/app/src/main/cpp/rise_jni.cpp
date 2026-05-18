@@ -221,6 +221,45 @@ JNIF(void, nativeViewportSuppressNextFrame)(JNIEnv* /*env*/, jobject /*thiz*/) {
 JNIF(void, nativeViewportSetTool)(JNIEnv* /*env*/, jobject /*thiz*/, jint tool) {
     getBridge().viewportSetTool(static_cast<int>(tool));
 }
+JNIF(jint, nativeViewportCurrentTool)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return static_cast<jint>(getBridge().viewportCurrentTool());
+}
+JNIF(jint, nativeViewportCategoryForTool)(JNIEnv* /*env*/, jobject /*thiz*/, jint tool) {
+    return static_cast<jint>(getBridge().viewportCategoryForTool(static_cast<int>(tool)));
+}
+JNIF(jint, nativeViewportDefaultSubToolForCategory)(JNIEnv* /*env*/, jobject /*thiz*/, jint category) {
+    return static_cast<jint>(getBridge().viewportDefaultSubToolForCategory(static_cast<int>(category)));
+}
+JNIF(jint, nativeViewportGetLastSubToolForCategory)(JNIEnv* /*env*/, jobject /*thiz*/, jint category) {
+    return static_cast<jint>(getBridge().viewportGetLastSubToolForCategory(static_cast<int>(category)));
+}
+JNIF(void, nativeViewportRefreshGizmoHandles)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    getBridge().viewportRefreshGizmoHandles();
+}
+JNIF(jint, nativeViewportGizmoHandleCount)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return static_cast<jint>(getBridge().viewportGizmoHandleCount());
+}
+JNIF(jdoubleArray, nativeViewportGizmoHandle)(JNIEnv* env, jobject /*thiz*/, jint index) {
+    double tmp[5] = { 0, 0, 0, 0, 0 };
+    if (!getBridge().viewportGizmoHandle(static_cast<unsigned int>(index), tmp)) {
+        return env->NewDoubleArray(0);
+    }
+    jdoubleArray arr = env->NewDoubleArray(5);
+    if (arr) env->SetDoubleArrayRegion(arr, 0, 5, tmp);
+    return arr;
+}
+JNIF(jint, nativeViewportGizmoHandleAt)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble x, jdouble y) {
+    return static_cast<jint>(getBridge().viewportGizmoHandleAt(x, y));
+}
+JNIF(jboolean, nativeViewportIsGizmoDragActive)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return getBridge().viewportIsGizmoDragActive() ? JNI_TRUE : JNI_FALSE;
+}
+JNIF(jint, nativeViewportActiveGizmoKind)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return static_cast<jint>(getBridge().viewportActiveGizmoKind());
+}
+JNIF(jint, nativeViewportActiveGizmoAxis)(JNIEnv* /*env*/, jobject /*thiz*/) {
+    return static_cast<jint>(getBridge().viewportActiveGizmoAxis());
+}
 JNIF(void, nativeViewportPointerDown)(JNIEnv* /*env*/, jobject /*thiz*/, jdouble x, jdouble y) {
     getBridge().viewportPointerDown(x, y);
 }

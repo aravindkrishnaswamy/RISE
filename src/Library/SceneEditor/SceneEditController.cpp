@@ -109,6 +109,12 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mInteractiveImpl( dynamic_cast<Implementation::InteractivePelRasterizer*>( interactiveRasterizer ) )
 , mEditor( *job.GetScene() )
 , mTool( Tool::Select )
+// Photoshop-style per-category memory.  Initialize each slot to
+// its category default so first-time-click on any slot has a
+// meaningful tool to fall back to.  Element [Select] = Select,
+// [Camera] = OrbitCamera, [ObjectTransform] = TranslateObject.
+, mLastSubToolPerCategory{ Tool::Select, Tool::OrbitCamera, Tool::TranslateObject }
+, mGizmoDrag()                              // zero-initialized; `active` defaults to false
 , mSelectionCategory( Category::None )
 , mSelectionName()
 // `mSectionExpanded` and `mSelectionByCategory` are value-init'd via
@@ -233,6 +239,236 @@ inline bool ParsePropertyBool( const String& valueStr, bool& out )
 	return false;
 }
 
+// --- Gizmo math ------------------------------------------------------
+//
+// World→screen projection through the camera's `mxTrans` matrix (the
+// same matrix `GenerateRay` uses to map screen → world).  Derivation:
+//
+//   `mxTrans` maps screen point S=(sx,sy,0) → world point T.  The
+//   ray fired through screen point S has origin O and direction
+//   (O - T) (see `PinholeCamera::GenerateRay`'s use of
+//   `Vector3Ops::mkVector3(origin, transP) = origin - transP` — the
+//   screen plane sits BEHIND the pinhole at sensor-plane distance 1).
+//   Ray equation: P = O + t·(O - T) for t > 0 in-front-of-camera.
+//
+//   Solving for T gives T = O - (P - O)/t.  Apply `invMxTrans`
+//   (affine: translation acts on points, linear part on vectors).
+//   Let A = invM·P and B = invM·O.  Difference (A - B) is the image
+//   of vector (P - O) under invM's linear part.  Then:
+//       (sx, sy, 0) = B - (1/t)·(A - B) = B + (1/t)·(B - A)
+//
+//   From the z-component (must equal 0 because the screen sits at
+//   z=0 in mxTrans's source space):
+//       1/t = B.z / (A.z - B.z)
+//
+//   The point is in front of the camera iff 1/t > 0.  For the
+//   pinhole construction in `CameraCommon::Recompute`, B.z == 1 (the
+//   origin maps to screen-space `(W/2, H/2, 1)` — at z=+1 because the
+//   screen plane sits at z=-1 after m1's pre-translate).  Other
+//   camera types that follow the same `m3 · m2 · m1` chain inherit
+//   this.  In-front check is then `A.z > B.z`.
+//
+// Works for any camera whose `GetMatrix()` follows the standard
+// translate / FOV-stretch / basis-rotate chain.  Returns false for
+// behind-camera points, points AT the eye, and degenerate (det == 0)
+// matrices.
+inline bool ProjectWorldToScreen_(
+	const Matrix4& mxTrans,
+	const Point3&  origin,
+	const Point3&  worldPos,
+	double&        outSx,
+	double&        outSy )
+{
+	const Scalar det = Matrix4Ops::Determinant( mxTrans );
+	if( det == 0.0 ) return false;
+	const Matrix4 inv = Matrix4Ops::Inverse( mxTrans );
+	const Point3 A = Point3Ops::Transform( inv, worldPos );
+	const Point3 B = Point3Ops::Transform( inv, origin );
+	const Scalar denom = A.z - B.z;
+	if( denom == 0.0 ) return false;
+	const Scalar invT = B.z / denom;
+	if( !( invT > 0.0 ) ) return false;               // behind camera or AT eye
+	const double sx = static_cast<double>( B.x + invT * ( B.x - A.x ) );
+	const double sy = static_cast<double>( B.y + invT * ( B.y - A.y ) );
+	if( !std::isfinite( sx ) || !std::isfinite( sy ) ) return false;
+	outSx = sx;
+	outSy = sy;
+	return true;
+}
+
+// Constants controlling handle layout.  Screen-space lengths are in
+// the camera's CURRENT image-pixel space — platform overlays scale
+// them to widget space using the same `fullW`/`fullH` normalisation
+// they apply to pointer events.  Chosen by hand to give comfortable
+// click targets on a 1280×720 viewport with a 1.5× HiDPI factor;
+// can be re-tuned without breaking the math or the C-API.
+constexpr double kAxisArrowLengthPx = 80.0;   // tip distance from pivot
+constexpr double kAxisPlaneOffsetPx = 40.0;   // plane-handle offset along each axis
+constexpr double kAxisRingRadiusPx  = 80.0;   // rotation ring radius
+constexpr double kCenterRadiusPx    = 16.0;   // screen-center / uniform-scale glyph
+constexpr double kAxisHitRadiusPx   = 14.0;   // hit-test radius for axis arrows / cubes
+constexpr double kPlaneHitRadiusPx  = 18.0;   // hit-test radius for plane / ring tangent
+constexpr double kRingHitRadiusPx   = 10.0;   // tolerance around the projected ring circumference
+
+// Probe the world axes at the pivot to capture their screen-space
+// directions (pixels per world unit).  `outAxisDir[a][0]` is the
+// x-component of world axis `a` projected at the pivot, etc.
+// `outAxisOk[a]` is false when the axis is colinear with view at the
+// pivot (the projection collapses to a single point).
+inline void ProbeAxesAtPivot_(
+	const Matrix4& mxTrans,
+	const Point3&  origin,
+	const Point3&  pivotWorld,
+	double         cx,
+	double         cy,
+	double         outAxisDirX[3],
+	double         outAxisDirY[3],
+	bool           outAxisOk[3] )
+{
+	for( int a = 0; a < 3; ++a ) {
+		Vector3 v( 0, 0, 0 );
+		switch( a ) {
+		case 0: v = Vector3( 1, 0, 0 ); break;
+		case 1: v = Vector3( 0, 1, 0 ); break;
+		case 2: v = Vector3( 0, 0, 1 ); break;
+		}
+		const Point3 axisWorld(
+			pivotWorld.x + v.x, pivotWorld.y + v.y, pivotWorld.z + v.z );
+		double ax = 0, ay = 0;
+		const bool ok = ProjectWorldToScreen_( mxTrans, origin, axisWorld, ax, ay );
+		if( !ok ) { outAxisOk[a] = false; continue; }
+		const double dx = ax - cx;
+		const double dy = ay - cy;
+		const double mag = std::sqrt( dx*dx + dy*dy );
+		if( !( mag > 0.0 ) || !std::isfinite( mag ) ) {
+			outAxisOk[a] = false;
+			continue;
+		}
+		outAxisDirX[a] = dx;       // pixels per world unit along x
+		outAxisDirY[a] = dy;
+		outAxisOk[a]   = true;
+	}
+}
+
+// Construct the per-tool gizmo handles for an Object pivot at
+// `pivotWorld` viewed through `(mxTrans, origin)`.  `outHandles` is
+// cleared first; on failure (pivot doesn't project) it remains empty.
+//
+// Handle ordering MATTERS for hit-test priority: the controller's
+// hit-test (B3) iterates front-to-back and accepts the first hit, so
+// CENTER glyphs go FIRST (they sit on top of axis arrows visually).
+// Within axes, X / Y / Z order is canonical.
+inline void BuildGizmoHandles_(
+	SceneEditController::Tool                       tool,
+	const Matrix4&                                  mxTrans,
+	const Point3&                                   origin,
+	const Point3&                                   pivotWorld,
+	std::vector<SceneEditController::GizmoHandle>&  outHandles )
+{
+	using Kind = SceneEditController::GizmoHandle::Kind;
+	using T    = SceneEditController::Tool;
+	outHandles.clear();
+
+	double cx = 0, cy = 0;
+	if( !ProjectWorldToScreen_( mxTrans, origin, pivotWorld, cx, cy ) ) return;
+
+	// Probe each world axis with a fixed world-space delta so we can
+	// derive the screen-space direction of that axis at the pivot.
+	// Direction in screen-space = normalised (axisProj - pivotProj).
+	// World-axis-only convention (per the locked design).
+	const double kAxisProbeWorld = 1.0;
+	double axisDirX[3][2] = { { 0, 0 }, { 0, 0 }, { 0, 0 } };
+	bool   axisOk[3]      = { false, false, false };
+
+	for( int a = 0; a < 3; ++a ) {
+		Vector3 v( 0, 0, 0 );
+		switch( a ) {
+		case 0: v = Vector3( kAxisProbeWorld, 0, 0 ); break;
+		case 1: v = Vector3( 0, kAxisProbeWorld, 0 ); break;
+		case 2: v = Vector3( 0, 0, kAxisProbeWorld ); break;
+		}
+		const Point3 axisWorld(
+			pivotWorld.x + v.x, pivotWorld.y + v.y, pivotWorld.z + v.z );
+		double ax = 0, ay = 0;
+		if( !ProjectWorldToScreen_( mxTrans, origin, axisWorld, ax, ay ) ) continue;
+		double dx = ax - cx;
+		double dy = ay - cy;
+		const double mag = std::sqrt( dx*dx + dy*dy );
+		if( !( mag > 0.0 ) || !std::isfinite( mag ) ) continue;
+		axisDirX[a][0] = dx / mag;
+		axisDirX[a][1] = dy / mag;
+		axisOk[a] = true;
+	}
+
+	auto pushHandle = [&]( int kind, int axis, double sx, double sy, double r ) {
+		SceneEditController::GizmoHandle h;
+		h.kind = kind;
+		h.axis = axis;
+		h.screenX = sx;
+		h.screenY = sy;
+		h.screenRadius = r;
+		outHandles.push_back( h );
+	};
+
+	switch( tool ) {
+	case T::TranslateObject:
+		// Center first (front-to-back priority).
+		pushHandle( static_cast<int>( Kind::ScreenCenter ), -1, cx, cy, kCenterRadiusPx );
+		// Axis-plane handles at the midpoint of each axis pair.
+		// `axis` field stores the axis NOT in the plane: YZ plane → axis=0,
+		// XZ plane → axis=1, XY plane → axis=2.
+		for( int a = 0; a < 3; ++a ) {
+			const int b = ( a + 1 ) % 3;
+			const int c = ( a + 2 ) % 3;
+			if( !axisOk[b] || !axisOk[c] ) continue;
+			const double sx = cx + ( axisDirX[b][0] + axisDirX[c][0] ) * kAxisPlaneOffsetPx;
+			const double sy = cy + ( axisDirX[b][1] + axisDirX[c][1] ) * kAxisPlaneOffsetPx;
+			pushHandle( static_cast<int>( Kind::AxisPlane ), a, sx, sy, kPlaneHitRadiusPx );
+		}
+		// Axis arrows last so they're hit-tested AFTER planes (planes
+		// sit closer to centre and would otherwise eat clicks meant
+		// for the longer arrow shafts).
+		for( int a = 0; a < 3; ++a ) {
+			if( !axisOk[a] ) continue;
+			const double sx = cx + axisDirX[a][0] * kAxisArrowLengthPx;
+			const double sy = cy + axisDirX[a][1] * kAxisArrowLengthPx;
+			pushHandle( static_cast<int>( Kind::AxisArrow ), a, sx, sy, kAxisHitRadiusPx );
+		}
+		break;
+
+	case T::RotateObject:
+		// View-aligned screen ring first — outermost; the user clicks
+		// "outside" the world-axis rings to trigger view-axis spin.
+		pushHandle( static_cast<int>( Kind::ScreenRing ), -1, cx, cy, kAxisRingRadiusPx + 20.0 );
+		// World-axis rings.  Stored centre is the pivot's projection;
+		// `screenRadius` is the ring radius in pixels.  The platform
+		// overlay draws an ellipse from the world-space ring projected
+		// (B5/B6/B7); hit-test (B3) uses distance from the projected
+		// ellipse approximation.
+		for( int a = 0; a < 3; ++a ) {
+			if( !axisOk[a] ) continue;
+			pushHandle( static_cast<int>( Kind::AxisRing ), a, cx, cy, kAxisRingRadiusPx );
+		}
+		break;
+
+	case T::ScaleObject:
+		// Uniform-scale cube at center first.
+		pushHandle( static_cast<int>( Kind::UniformScaleCube ), -1, cx, cy, kCenterRadiusPx );
+		// Per-axis scale cubes at the tip of each world axis arrow.
+		for( int a = 0; a < 3; ++a ) {
+			if( !axisOk[a] ) continue;
+			const double sx = cx + axisDirX[a][0] * kAxisArrowLengthPx;
+			const double sy = cy + axisDirX[a][1] * kAxisArrowLengthPx;
+			pushHandle( static_cast<int>( Kind::AxisScaleHandle ), a, sx, sy, kAxisHitRadiusPx );
+		}
+		break;
+
+	default:
+		// Not an object-transform tool — no gizmo.
+		break;
+	}
+}
+
 }  // namespace
 
 SceneEditController::~SceneEditController()
@@ -328,8 +564,207 @@ void SceneEditController::SetLogSink( ILogPrinter* sink )            { mLogSink 
 
 // Tool state ----------------------------------------------------------
 
-void SceneEditController::SetTool( Tool t ) { mTool = t; }
+SceneEditController::ToolCategory SceneEditController::CategoryForTool( Tool t )
+{
+	switch( t ) {
+	case Tool::Select:           return ToolCategory::Select;
+	case Tool::TranslateObject:  return ToolCategory::ObjectTransform;
+	case Tool::RotateObject:     return ToolCategory::ObjectTransform;
+	case Tool::ScaleObject:      return ToolCategory::ObjectTransform;
+	case Tool::OrbitCamera:      return ToolCategory::Camera;
+	case Tool::PanCamera:        return ToolCategory::Camera;
+	case Tool::ZoomCamera:       return ToolCategory::Camera;
+	case Tool::RollCamera:       return ToolCategory::Camera;
+	case Tool::ScrubTimeline:    return ToolCategory::Select;  // timeline lives in
+	                                                            // the bottom bar, not
+	                                                            // the main toolbar —
+	                                                            // fall back to Select
+	                                                            // for the slot membership
+	                                                            // query.
+	}
+	return ToolCategory::Select;
+}
+
+SceneEditController::Tool SceneEditController::DefaultSubToolForCategory( ToolCategory cat )
+{
+	switch( cat ) {
+	case ToolCategory::Select:          return Tool::Select;
+	case ToolCategory::Camera:          return Tool::OrbitCamera;     ///< most-used camera tool
+	case ToolCategory::ObjectTransform: return Tool::TranslateObject; ///< most common transform
+	}
+	return Tool::Select;
+}
+
+SceneEditController::Tool SceneEditController::GetLastSubToolForCategory( ToolCategory cat ) const
+{
+	const int idx = static_cast<int>( cat );
+	if( idx < 0 || idx >= kNumToolCategories ) return DefaultSubToolForCategory( cat );
+	return mLastSubToolPerCategory[ idx ];
+}
+
+void SceneEditController::SetTool( Tool t )
+{
+	mTool = t;
+	// Photoshop-style memory: remember this sub-tool as the
+	// category's last-used.  Single-click on the slot will resume
+	// this tool; the flyout always offers the full set.
+	const int idx = static_cast<int>( CategoryForTool( t ) );
+	if( idx >= 0 && idx < kNumToolCategories ) {
+		mLastSubToolPerCategory[ idx ] = t;
+	}
+}
+
 SceneEditController::Tool SceneEditController::CurrentTool() const { return mTool; }
+
+// Gizmo handle math ---------------------------------------------------
+
+void SceneEditController::RefreshGizmoHandles()
+{
+	mGizmoHandles.clear();
+
+	// Only Object-transform tools draw gizmos.
+	if( CategoryForTool( mTool ) != ToolCategory::ObjectTransform ) return;
+
+	// Object selection required.
+	const String objName = mSelectionByCategory[ static_cast<int>( Category::Object ) ];
+	if( objName.empty() ) return;
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return;
+	const IObjectManager* objs = scene->GetObjects();
+	if( !objs ) return;
+	IObjectPriv* obj = objs->GetItem( objName.c_str() );
+	if( !obj ) return;
+
+	const Matrix4 objM = obj->GetFinalTransformMatrix();
+	const Point3 pivotWorld( objM._30, objM._31, objM._32 );
+
+	const ICamera* cam = scene->GetCamera();
+	if( !cam ) return;
+
+	BuildGizmoHandles_( mTool, cam->GetMatrix(), cam->GetLocation(),
+	                    pivotWorld, mGizmoHandles );
+}
+
+unsigned int SceneEditController::GizmoHandleCount() const
+{
+	return static_cast<unsigned int>( mGizmoHandles.size() );
+}
+
+int SceneEditController::GizmoHandleKind( unsigned int idx ) const
+{
+	if( idx >= mGizmoHandles.size() ) return 0;
+	return mGizmoHandles[ idx ].kind;
+}
+
+int SceneEditController::GizmoHandleAxis( unsigned int idx ) const
+{
+	if( idx >= mGizmoHandles.size() ) return -1;
+	return mGizmoHandles[ idx ].axis;
+}
+
+double SceneEditController::GizmoHandleScreenX( unsigned int idx ) const
+{
+	if( idx >= mGizmoHandles.size() ) return 0.0;
+	return mGizmoHandles[ idx ].screenX;
+}
+
+double SceneEditController::GizmoHandleScreenY( unsigned int idx ) const
+{
+	if( idx >= mGizmoHandles.size() ) return 0.0;
+	return mGizmoHandles[ idx ].screenY;
+}
+
+double SceneEditController::GizmoHandleScreenRadius( unsigned int idx ) const
+{
+	if( idx >= mGizmoHandles.size() ) return 0.0;
+	return mGizmoHandles[ idx ].screenRadius;
+}
+
+bool SceneEditController::ForTest_ProjectWorldToScreen(
+	double wx, double wy, double wz,
+	double& outSx, double& outSy ) const
+{
+	const IScene* scene = mJob.GetScene();
+	const ICamera* cam = scene ? scene->GetCamera() : 0;
+	if( !cam ) return false;
+	return ProjectWorldToScreen_(
+		cam->GetMatrix(), cam->GetLocation(),
+		Point3( Scalar( wx ), Scalar( wy ), Scalar( wz ) ),
+		outSx, outSy );
+}
+
+bool SceneEditController::ForTest_GetSelectionPivotWorld(
+	double& wx, double& wy, double& wz ) const
+{
+	const String objName = mSelectionByCategory[ static_cast<int>( Category::Object ) ];
+	if( objName.empty() ) return false;
+	const IScene* scene = mJob.GetScene();
+	if( !scene ) return false;
+	const IObjectManager* objs = scene->GetObjects();
+	if( !objs ) return false;
+	IObjectPriv* obj = objs->GetItem( objName.c_str() );
+	if( !obj ) return false;
+	const Matrix4 m = obj->GetFinalTransformMatrix();
+	wx = static_cast<double>( m._30 );
+	wy = static_cast<double>( m._31 );
+	wz = static_cast<double>( m._32 );
+	return true;
+}
+
+int SceneEditController::GizmoHandleAt( const Point2& px ) const
+{
+	using K = GizmoHandle::Kind;
+	int hitIdx = -1;
+	double hitDist2 = 0;
+	for( unsigned int i = 0; i < mGizmoHandles.size(); ++i ) {
+		const GizmoHandle& h = mGizmoHandles[i];
+		const double dx = static_cast<double>( px.x ) - h.screenX;
+		const double dy = static_cast<double>( px.y ) - h.screenY;
+		const double dist2 = dx*dx + dy*dy;
+		// Ring handles: hit-test the CIRCUMFERENCE at distance
+		// `screenRadius`, not the disc.  All other kinds use a disc
+		// of radius `screenRadius`.
+		const bool isRing =
+			h.kind == static_cast<int>( K::AxisRing ) ||
+			h.kind == static_cast<int>( K::ScreenRing );
+		bool inside = false;
+		double effDist2 = dist2;
+		if( isRing ) {
+			const double dist = std::sqrt( dist2 );
+			const double ringErr = std::fabs( dist - h.screenRadius );
+			inside = ringErr < kRingHitRadiusPx;
+			effDist2 = ringErr * ringErr;
+		} else {
+			inside = dist2 < h.screenRadius * h.screenRadius;
+		}
+		if( !inside ) continue;
+		// Front-to-back priority: first hit wins.  Earlier handles
+		// in the array are conceptually "on top" — center/plane glyphs
+		// hit-tested before axis arrows, matching the visual stacking
+		// the platform overlay draws.
+		if( hitIdx < 0 || effDist2 < hitDist2 ) {
+			hitIdx = static_cast<int>( i );
+			hitDist2 = effDist2;
+			break;  // front-to-back: take the first array hit
+		}
+	}
+	return hitIdx;
+}
+
+bool SceneEditController::IsGizmoDragActive() const
+{
+	return mGizmoDrag.active;
+}
+
+int SceneEditController::ActiveGizmoKind() const
+{
+	return mGizmoDrag.active ? mGizmoDrag.kind : -1;
+}
+
+int SceneEditController::ActiveGizmoAxis() const
+{
+	return mGizmoDrag.active ? mGizmoDrag.axis : -1;
+}
 
 // Pointer events ------------------------------------------------------
 
@@ -363,6 +798,52 @@ void SceneEditController::OnPointerDown( const Point2& px )
 		{
 			mEditor.BeginComposite( "Drag" );
 			isMotionTool = true;
+
+			// Gizmo hit-test.  Refresh the handle array against the
+			// CURRENT camera + object state, then check whether the
+			// pointer landed on any handle.  On hit, capture the
+			// drag-start state so OnPointerMove can convert pointer
+			// pixel deltas to constrained world deltas without each
+			// frame re-probing the camera (which would let the math
+			// drift if the camera moved mid-drag).
+			RefreshGizmoHandles();
+			const int hit = GizmoHandleAt( px );
+			mGizmoDrag.active = false;
+			if( hit >= 0 ) {
+				const GizmoHandle& h = mGizmoHandles[ hit ];
+				mGizmoDrag.kind = h.kind;
+				mGizmoDrag.axis = h.axis;
+
+				// Capture pivot (world) + projection.
+				double wx = 0, wy = 0, wz = 0;
+				if( ForTest_GetSelectionPivotWorld( wx, wy, wz ) ) {
+					mGizmoDrag.pivotWorld = Point3( wx, wy, wz );
+
+					const IScene* scene = mJob.GetScene();
+					const ICamera* cam = scene ? scene->GetCamera() : 0;
+					if( cam ) {
+						double cx = 0, cy = 0;
+						if( ProjectWorldToScreen_(
+							cam->GetMatrix(), cam->GetLocation(),
+							mGizmoDrag.pivotWorld, cx, cy ) )
+						{
+							mGizmoDrag.pivotScreenX = cx;
+							mGizmoDrag.pivotScreenY = cy;
+							ProbeAxesAtPivot_(
+								cam->GetMatrix(), cam->GetLocation(),
+								mGizmoDrag.pivotWorld, cx, cy,
+								mGizmoDrag.axisDirX, mGizmoDrag.axisDirY,
+								mGizmoDrag.axisOk );
+							// For ring drags, record the pointer-down angle so
+							// per-frame deltas come from `atan2(now) - atan2(last)`.
+							mGizmoDrag.prevAngle = std::atan2(
+								static_cast<double>( px.y ) - cy,
+								static_cast<double>( px.x ) - cx );
+							mGizmoDrag.active = true;
+						}
+					}
+				}
+			}
 		}
 		break;
 
@@ -439,33 +920,171 @@ void SceneEditController::OnPointerMove( const Point2& px )
 	{
 	case Tool::TranslateObject:
 		if( !haveObject ) return;
-		edit.op = SceneEdit::TranslateObject;
 		edit.objectName = mSelectionName;
-		// Phase 3 will project the screen-space delta into world space
-		// using the camera + depth-at-pick.  For Phase 2 we use a
-		// simple scaled mapping so the test can drive the controller
-		// without the camera math.
-		edit.v3a = Vector3( delta.x * 0.01, -delta.y * 0.01, 0 );
+		if( mGizmoDrag.active ) {
+			// Constrained drag — math driven by the captured handle
+			// kind / axis.  Conversion from pixel delta to world delta
+			// uses the at-drag-start screen-space velocities of the
+			// world axes (`mGizmoDrag.axisDir{X,Y}[a]` = pixels per
+			// world unit along axis `a`).
+			using K = GizmoHandle::Kind;
+			Vector3 worldDelta( 0, 0, 0 );
+			if( mGizmoDrag.kind == static_cast<int>( K::AxisArrow ) ) {
+				const int a = mGizmoDrag.axis;
+				if( a < 0 || a > 2 || !mGizmoDrag.axisOk[a] ) return;
+				const double adx = mGizmoDrag.axisDirX[a];
+				const double ady = mGizmoDrag.axisDirY[a];
+				const double mag2 = adx*adx + ady*ady;
+				if( mag2 == 0 ) return;
+				const double wa = ( static_cast<double>( delta.x ) * adx
+				                  + static_cast<double>( delta.y ) * ady ) / mag2;
+				worldDelta = ( a == 0 ) ? Vector3( wa, 0, 0 )
+				           : ( a == 1 ) ? Vector3( 0, wa, 0 )
+				           :              Vector3( 0, 0, wa );
+			}
+			else if( mGizmoDrag.kind == static_cast<int>( K::AxisPlane ) ) {
+				// Plane spanned by the two axes NOT == mGizmoDrag.axis.
+				const int a = mGizmoDrag.axis;
+				if( a < 0 || a > 2 ) return;
+				const int b = ( a + 1 ) % 3;
+				const int c = ( a + 2 ) % 3;
+				if( !mGizmoDrag.axisOk[b] || !mGizmoDrag.axisOk[c] ) return;
+				// Solve 2x2:  [adx_b adx_c] [wb]   [dx]
+				//             [ady_b ady_c] [wc] = [dy]
+				const double m00 = mGizmoDrag.axisDirX[b];
+				const double m01 = mGizmoDrag.axisDirX[c];
+				const double m10 = mGizmoDrag.axisDirY[b];
+				const double m11 = mGizmoDrag.axisDirY[c];
+				const double det = m00*m11 - m01*m10;
+				if( det == 0 ) return;
+				const double dx = static_cast<double>( delta.x );
+				const double dy = static_cast<double>( delta.y );
+				const double wb = (  m11 * dx - m01 * dy ) / det;
+				const double wc = ( -m10 * dx + m00 * dy ) / det;
+				worldDelta = Vector3( 0, 0, 0 );
+				if( b == 0 ) worldDelta.x += wb;
+				else if( b == 1 ) worldDelta.y += wb;
+				else worldDelta.z += wb;
+				if( c == 0 ) worldDelta.x += wc;
+				else if( c == 1 ) worldDelta.y += wc;
+				else worldDelta.z += wc;
+			}
+			else if( mGizmoDrag.kind == static_cast<int>( K::ScreenCenter ) ) {
+				// Minimum-norm 3-DoF solve: ds = A·W where A is the
+				// 2x3 matrix of axisDir columns.  Returns the smallest
+				// W (in world space) producing the observed pixel
+				// delta.  Skipped axes (degenerate at the pivot) get
+				// zero rows so the solve naturally excludes them.
+				double m00 = 0, m01 = 0, m11 = 0;  // A·A^T (symmetric)
+				for( int a = 0; a < 3; ++a ) {
+					if( !mGizmoDrag.axisOk[a] ) continue;
+					m00 += mGizmoDrag.axisDirX[a] * mGizmoDrag.axisDirX[a];
+					m01 += mGizmoDrag.axisDirX[a] * mGizmoDrag.axisDirY[a];
+					m11 += mGizmoDrag.axisDirY[a] * mGizmoDrag.axisDirY[a];
+				}
+				const double det = m00 * m11 - m01 * m01;
+				if( det == 0 ) return;
+				const double dx = static_cast<double>( delta.x );
+				const double dy = static_cast<double>( delta.y );
+				// λ = (A·A^T)^{-1} · ds
+				const double lx = (  m11 * dx - m01 * dy ) / det;
+				const double ly = ( -m01 * dx + m00 * dy ) / det;
+				// W = A^T · λ
+				worldDelta = Vector3( 0, 0, 0 );
+				for( int a = 0; a < 3; ++a ) {
+					if( !mGizmoDrag.axisOk[a] ) continue;
+					const double w = mGizmoDrag.axisDirX[a] * lx
+					               + mGizmoDrag.axisDirY[a] * ly;
+					if( a == 0 ) worldDelta.x = w;
+					else if( a == 1 ) worldDelta.y = w;
+					else worldDelta.z = w;
+				}
+			}
+			else {
+				// Unrecognized handle for Translate tool — no-op.
+				return;
+			}
+			edit.op = SceneEdit::TranslateObject;
+			edit.v3a = worldDelta;
+		} else {
+			// No gizmo handle captured: legacy free-drag math.  Same
+			// placeholder used by pre-gizmo builds — kept for the
+			// "no overlay drawn yet" period BEFORE the platform UIs
+			// land their gizmo renderers (B5/B6/B7).  Once those land,
+			// a drag that doesn't hit a handle is intentionally a
+			// no-op (matches Unity / Maya gizmo conventions).
+			edit.op = SceneEdit::TranslateObject;
+			edit.v3a = Vector3( delta.x * 0.01, -delta.y * 0.01, 0 );
+		}
 		break;
 
 	case Tool::RotateObject:
 		if( !haveObject ) return;
-		edit.op = SceneEdit::RotateObjectArb;
 		edit.objectName = mSelectionName;
-		edit.v3a = Vector3( 0, 1, 0 );  // y-axis (placeholder for Phase 3)
-		edit.s   = delta.x * 0.005;
+		if( mGizmoDrag.active ) {
+			using K = GizmoHandle::Kind;
+			// Angle of pointer around the projected pivot.  Delta is
+			// taken from the previous-frame angle so cumulative drag
+			// integrates naturally; wraparound is handled by clamping
+			// the delta into (-π, +π].
+			const double ax = static_cast<double>( px.x ) - mGizmoDrag.pivotScreenX;
+			const double ay = static_cast<double>( px.y ) - mGizmoDrag.pivotScreenY;
+			const double angleNow = std::atan2( ay, ax );
+			double dAngle = angleNow - mGizmoDrag.prevAngle;
+			while( dAngle > 3.14159265358979 )  dAngle -= 6.28318530717958;
+			while( dAngle < -3.14159265358979 ) dAngle += 6.28318530717958;
+			mGizmoDrag.prevAngle = angleNow;
+
+			Vector3 worldAxis( 0, 0, 0 );
+			if( mGizmoDrag.kind == static_cast<int>( K::AxisRing ) ) {
+				const int a = mGizmoDrag.axis;
+				if( a < 0 || a > 2 ) return;
+				worldAxis = ( a == 0 ) ? Vector3( 1, 0, 0 )
+				          : ( a == 1 ) ? Vector3( 0, 1, 0 )
+				          :              Vector3( 0, 0, 1 );
+			}
+			else if( mGizmoDrag.kind == static_cast<int>( K::ScreenRing ) ) {
+				// View-axis spin: rotate around the camera→pivot
+				// direction in world.  Approximates the optical axis
+				// (exact when the pivot is dead-centre on screen;
+				// usable elsewhere).
+				const IScene* scene = mJob.GetScene();
+				const ICamera* cam = scene ? scene->GetCamera() : 0;
+				if( !cam ) return;
+				const Point3 camPos = cam->GetLocation();
+				const Vector3 fwd = Vector3Ops::Normalize(
+					Vector3Ops::mkVector3( mGizmoDrag.pivotWorld, camPos ) );
+				worldAxis = fwd;
+			}
+			else {
+				return;
+			}
+			edit.op = SceneEdit::RotateObjectArb;
+			edit.v3a = worldAxis;
+			edit.s   = Scalar( dAngle );
+		} else {
+			edit.op = SceneEdit::RotateObjectArb;
+			edit.v3a = Vector3( 0, 1, 0 );  // y-axis (legacy placeholder)
+			edit.s   = delta.x * 0.005;
+		}
 		break;
 
 	case Tool::ScaleObject:
 		if( !haveObject ) return;
+		edit.objectName = mSelectionName;
+		// Scale dispatch through the gizmo handle is intentionally a
+		// thin wrapper on the legacy placeholder for B3 — RISE's
+		// `SetObjectStretch` is absolute (no incremental-stretch op
+		// + no public stretch-getter on ITransformable), so a clean
+		// "drag accumulates a stretch factor" requires either a new
+		// SceneEdit op or a non-trivial matrix-decomposition path.
+		// Both are out of scope here.  Once that infrastructure lands,
+		// the per-axis (AxisScaleHandle, axis = a) and uniform
+		// (UniformScaleCube, axis = -1) branches will use the at-
+		// drag-start stretch + per-frame factor pattern that Translate
+		// already follows.
 		{
-			// Convert vertical drag to a scale factor delta.  Up-drag
-			// shrinks (negative dy), down-drag grows.  Apply as an
-			// incremental "set scale to current * (1 + k*dy)" — but
-			// without a getter for current scale we fall back to a
-			// modest stretch op for Phase 2 placeholder.
 			edit.op = SceneEdit::SetObjectStretch;
-			edit.objectName = mSelectionName;
 			const Scalar f = 1.0 + delta.y * 0.005;
 			edit.v3a = Vector3( f, f, f );
 		}
@@ -521,6 +1140,9 @@ void SceneEditController::OnPointerUp( const Point2& px )
 		{
 			mEditor.EndComposite();
 		}
+		// Always clear the drag state, including the "armed but no
+		// motion happened" case where OnPointerMove never fired.
+		mGizmoDrag.active = false;
 		break;
 	case Tool::OrbitCamera:
 	case Tool::PanCamera:
