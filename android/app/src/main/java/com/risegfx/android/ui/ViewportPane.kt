@@ -719,6 +719,9 @@ private val kAccordionSections = listOf(
     AccordionSectionDef(category = 2, title = "Rasterizer"),
     AccordionSectionDef(category = 3, title = "Objects"),
     AccordionSectionDef(category = 4, title = "Lights"),
+    // category = 6 (Material) intentionally omitted — separate gap,
+    // not in scope for the media UX surfacing.
+    AccordionSectionDef(category = 7, title = "Media"),
     AccordionSectionDef(category = 5, title = "Output Settings"),
 )
 

@@ -221,6 +221,7 @@ static const AccordionSectionDef kSectionDefs[] = {
     { ViewportBridge::Category::Object,     "Objects"         },
     { ViewportBridge::Category::Light,      "Lights"          },
     { ViewportBridge::Category::Material,   "Materials"       },
+    { ViewportBridge::Category::Medium,     "Media"           },
     { ViewportBridge::Category::Film,       "Output Settings" },
 };
 

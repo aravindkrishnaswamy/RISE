@@ -156,7 +156,8 @@ public:
         Object     = 3,
         Light      = 4,
         Film       = 5,   ///< Output Settings (single Film per scene)
-        Material   = 6    ///< Materials (read-only in Phase 2)
+        Material   = 6,   ///< Materials
+        Medium     = 7    ///< Participating media
     };
 
     /// Mirrors RISE::SceneEditController::Category — identical numeric

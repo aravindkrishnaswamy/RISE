@@ -1103,6 +1103,41 @@ String FindObjectMaterialName( const IJobPriv& job, const String& objName )
 	return cb.found;
 }
 
+// Look up the interior medium name currently bound to the named
+// object.  Used by `SetSelection` to auto-fill the Media section
+// when an Object is picked, mirroring the Material auto-sync.
+// Returns empty when the object has no interior medium bound, or
+// the medium isn't registered under a recoverable name.
+String FindObjectInteriorMediumName( const IJobPriv& job, const String& objName )
+{
+	if( objName.size() <= 1 ) return String();
+	const IScene* scene = const_cast<IJobPriv&>( job ).GetScene();
+	if( !scene ) return String();
+	const IObjectManager* objs = scene->GetObjects();
+	if( !objs ) return String();
+	const IObject* obj = const_cast<IObjectManager*>( objs )->GetItem( objName.c_str() );
+	if( !obj ) return String();
+	const IMedium* med = obj->GetInteriorMedium();
+	if( !med ) return String();
+	// Media don't have a IManager<T> — reverse-lookup via the IJob
+	// EnumerateMediumNames / GetMedium pair (same shape as
+	// FindMediumName in SceneEditor.cpp).
+	struct Cb : public IEnumCallback<const char*> {
+		const IJobPriv* job;
+		const IMedium*  target;
+		String          found;
+		bool operator()( const char* const& name ) override {
+			if( job->GetMedium( name ) == target ) { found = String( name ); return false; }
+			return true;
+		}
+	};
+	Cb cb;
+	cb.job    = &job;
+	cb.target = med;
+	job.EnumerateMediumNames( cb );
+	return cb.found;
+}
+
 }  // namespace
 
 String SceneEditController::GetSelectionNameForCategory( Category cat ) const
@@ -1260,22 +1295,32 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 
 	// Phase 4b auto-sync rules:
 	// (a) Object pick (non-empty) -> auto-fill AND auto-expand the
-	//     Materials section with the object's bound material name.
-	//     Empty material binding still expands Materials (the user
-	//     sees the section open with a "(unset)" combo).
+	//     Materials AND Media sections with the object's bound
+	//     material / interior-medium names.  Empty binding still
+	//     expands the section (the user sees an open section with
+	//     a "(unset)" combo).
 	// (b) Material direct pick (non-empty) -> clear AND collapse
 	//     the Object section per the user-confirmed rule.
+	// (c) Medium direct pick (non-empty) -> same as (b): collapse
+	//     Object, since the user is editing media independently.
 	if( cat == Category::Object ) {
 		if( entityName.size() > 1 ) {
 			const int matIdx = static_cast<int>( Category::Material );
 			mSelectionByCategory[ matIdx ] = FindObjectMaterialName( mJob, entityName );
 			mSectionExpanded[ matIdx ]     = true;
+
+			const int medIdx = static_cast<int>( Category::Medium );
+			mSelectionByCategory[ medIdx ] = FindObjectInteriorMediumName( mJob, entityName );
+			mSectionExpanded[ medIdx ]     = true;
 		}
 		// Note: a "section header click" on Object with empty name
-		// does NOT auto-expand Material — the user explicitly
-		// opened just Object.  Material expands when an entity is
-		// actually picked.
+		// does NOT auto-expand Material/Media — the user explicitly
+		// opened just Object.  They expand when an entity is picked.
 	} else if( cat == Category::Material && entityName.size() > 1 ) {
+		const int objIdx = static_cast<int>( Category::Object );
+		mSelectionByCategory[ objIdx ] = String();
+		mSectionExpanded[ objIdx ]     = false;
+	} else if( cat == Category::Medium && entityName.size() > 1 ) {
 		const int objIdx = static_cast<int>( Category::Object );
 		mSelectionByCategory[ objIdx ] = String();
 		mSectionExpanded[ objIdx ]     = false;
@@ -2286,6 +2331,15 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		// doesn't have it pop back open on every edit.
 		if( edit.op == SceneEdit::SetObjectMaterial ) {
 			mSelectionByCategory[ static_cast<int>( Category::Material ) ] = valueStr;
+		}
+		if( edit.op == SceneEdit::SetObjectInteriorMedium ) {
+			// Empty / "none" clears the Medium row (the parser also
+			// accepts "none" as the unbind sentinel).  Anything else
+			// pins the Medium section's selection to the new binding.
+			mSelectionByCategory[ static_cast<int>( Category::Medium ) ] =
+				( valueStr.size() <= 1 || valueStr == String( "none" ) )
+				? String()
+				: valueStr;
 		}
 
 		mEditPending.store( true, std::memory_order_release );

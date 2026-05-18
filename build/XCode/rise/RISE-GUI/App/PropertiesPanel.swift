@@ -82,6 +82,7 @@ private let kAccordionSections: [AccordionSection] = [
     AccordionSection(id: "objects",     title: "Objects",         category: .object),
     AccordionSection(id: "lights",      title: "Lights",          category: .light),
     AccordionSection(id: "materials",   title: "Materials",       category: .material),
+    AccordionSection(id: "media",       title: "Media",           category: .medium),
     AccordionSection(id: "film",        title: "Output Settings", category: .film),
 ]
 
