@@ -748,6 +748,16 @@ void SceneEditController::Undo()
 				mSelectionByCategory[idx] = String();
 			}
 		}
+		// Re-derive auto-synced Material / Medium section selections
+		// from the (potentially restored) Object binding.  Forward
+		// path updates these in SetProperty after the Apply succeeds;
+		// undo restores the underlying object state but doesn't
+		// touch the per-category panel selection, so without this
+		// resync the Material/Media sections keep showing the post-
+		// edit binding's NAME while the object now has the pre-edit
+		// binding's content.  Cheap to re-look-up unconditionally —
+		// it's two reverse-lookups against the registered manager.
+		ResyncObjectBoundSections_();
 		mEditPending.store( true, std::memory_order_release );
 		// Bump epoch — Undo of AddCamera removes an entity, which
 		// changes the Camera category's entity list.  Cheap to bump
@@ -786,6 +796,10 @@ void SceneEditController::Redo()
 				mSelectionByCategory[idx] = String();
 			}
 		}
+		// Re-derive auto-synced Material / Medium section selections
+		// from the (potentially re-applied) Object binding — same
+		// rationale as Undo's resync.
+		ResyncObjectBoundSections_();
 		mEditPending.store( true, std::memory_order_release );
 		mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
 		lk.unlock();
@@ -1139,6 +1153,30 @@ String FindObjectInteriorMediumName( const IJobPriv& job, const String& objName 
 }
 
 }  // namespace
+
+void SceneEditController::ResyncObjectBoundSections_()
+{
+	// Forward path: SetProperty's Object branch pins the auto-synced
+	// Material / Medium section names after a successful Apply.
+	// Undo / Redo restore the underlying object binding but don't
+	// touch the per-category panel selection — so without this
+	// helper, the Material / Media sections keep showing the post-
+	// edit binding's NAME while the object now has the pre-edit
+	// binding's content (or vice versa for Redo).
+	//
+	// The fix: re-read the bound material + interior medium from
+	// the currently-pinned Object and update the per-cat selection
+	// state to match.  No-op if no Object is pinned.
+	const int objIdx = static_cast<int>( Category::Object );
+	if( objIdx < 0 || objIdx >= kNumCategories ) return;
+	const String objName = mSelectionByCategory[ objIdx ];
+	if( objName.size() <= 1 ) return;
+
+	const int matIdx = static_cast<int>( Category::Material );
+	const int medIdx = static_cast<int>( Category::Medium );
+	mSelectionByCategory[ matIdx ] = FindObjectMaterialName( mJob, objName );
+	mSelectionByCategory[ medIdx ] = FindObjectInteriorMediumName( mJob, objName );
+}
 
 String SceneEditController::GetSelectionNameForCategory( Category cat ) const
 {

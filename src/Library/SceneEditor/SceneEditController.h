@@ -475,6 +475,13 @@ namespace RISE
 		//! mode).  See impl in SceneEditController.cpp.
 		void EnsureInteractiveFrameStore_( unsigned int width, unsigned int height );
 
+		//! Re-derive the auto-synced Material / Medium section
+		//! selection names from the currently-pinned Object's bound
+		//! material and interior medium.  Called after Undo / Redo
+		//! to keep the per-category panel state coherent with the
+		//! restored scene state.  No-op if no Object is pinned.
+		void ResyncObjectBoundSections_();
+
 		IJobPriv&                   mJob;
 		IRasterizer*                mInteractiveRasterizer;  // borrowed
 		// Cached downcast of mInteractiveRasterizer for the polish-pass

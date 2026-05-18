@@ -258,6 +258,76 @@ static void TestCategoryEnumeration()
 	pJob->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+// Test 4: Undo/Redo of an `interior_medium` edit must resync the
+//         per-category Media section selection.  Forward path pins
+//         the new medium name; undo restores the object's prior
+//         binding inside SceneEditor::Undo but doesn't touch the
+//         controller's per-cat panel selection.  Without the resync,
+//         the Media section would keep showing the post-edit binding's
+//         NAME while the object actually has the pre-edit binding's
+//         content — the section's editable rows would read from a
+//         medium the object no longer references.
+//
+//         Regression for the [P2] gap caught in the 43ed7f3f review.
+//////////////////////////////////////////////////////////////////////
+
+static void TestInteriorMediumUndoResync()
+{
+	std::cout << "Test: Undo/Redo of interior_medium resyncs Media section" << std::endl;
+
+	Job* pJob = MakeMinimalJob();
+
+	// Two named media to swap between.
+	double s[3] = { 0.1, 0.1, 0.1 };
+	pJob->AddHomogeneousMedium( "fog",  s, s, "isotropic", 0.0 );
+	pJob->AddHomogeneousMedium( "haze", s, s, "isotropic", 0.0 );
+
+	// A sphere with no initial interior medium.
+	pJob->AddSphereGeometry( "sphere_geom", 1.0 );
+	double white[3] = { 1, 1, 1 };
+	pJob->AddUniformColorPainter( "white", white, "sRGB" );
+	pJob->AddLambertianMaterial( "lambert_white", "white" );
+	const double zero3[3] = { 0, 0, 0 };
+	const double one3[3]  = { 1, 1, 1 };
+	RadianceMapConfig nilRMap;
+	pJob->AddObject(
+		"sphere", "sphere_geom",
+		"lambert_white",
+		nullptr, nullptr,
+		nilRMap, zero3, zero3, one3, true, true );
+
+	// Bind the initial interior medium to "fog" via the Job API.
+	pJob->SetObjectInteriorMedium( "sphere", "fog" );
+
+	{
+	SceneEditController c( *pJob, /*interactiveRasterizer*/0 );
+	const auto MEDIUM = SceneEditController::Category::Medium;
+
+	// Use SetSelection (real UI path) so the Object→Medium auto-sync
+	// fires.  ForTest_SetSelection deliberately bypasses auto-sync.
+	c.SetSelection( SceneEditController::Category::Object, String( "sphere" ) );
+	Check( c.GetSelectionNameForCategory( MEDIUM ) == String( "fog" ),
+	       "Object pick auto-fills Media section with 'fog' (fresh controller)" );
+
+	Check( c.SetProperty( String( "interior_medium" ), String( "haze" ) ),
+	       "SetProperty(interior_medium=haze)" );
+	Check( c.GetSelectionNameForCategory( MEDIUM ) == String( "haze" ),
+	       "Media section pinned to 'haze' after forward edit" );
+
+	// Controller-level Undo invokes ResyncObjectBoundSections_.
+	c.Undo();
+	Check( c.GetSelectionNameForCategory( MEDIUM ) == String( "fog" ),
+	       "Media section resynced to 'fog' after Undo (regression for 43ed7f3f gap)" );
+
+	// Redo flips back to "haze".
+	c.Redo();
+	Check( c.GetSelectionNameForCategory( MEDIUM ) == String( "haze" ),
+	       "Media section resynced to 'haze' after Redo" );
+	}
+	pJob->release();
+}
+
 int main()
 {
 	std::cout << "SceneEditorMediaFullCoverageTest" << std::endl;
@@ -265,6 +335,7 @@ int main()
 	TestHomogeneousFullMatrix();
 	TestSigmaCacheLockstep();
 	TestCategoryEnumeration();
+	TestInteriorMediumUndoResync();
 
 	std::cout << "\n" << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount == 0 ? 0 : 1;
