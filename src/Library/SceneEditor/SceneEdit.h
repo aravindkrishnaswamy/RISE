@@ -215,6 +215,20 @@ namespace RISE
 			//! graph; the rejection comes via `IJob::IsMaterialComposed`.
 			SetMaterialProperty,
 
+			//! Edit a property on a medium.  objectName carries the
+			//! medium's manager-registered name, propertyName the slot
+			//! identifier ("absorption" / "scattering" / "emission"
+			//! per the parser), propertyValue a `"r g b"` triple
+			//! parsed via ParseStrictVec3.  Only HomogeneousMedium
+			//! accepts edits today — Heterogeneous rejects because its
+			//! majorant grid was baked at construction.
+			//!
+			//! Caller is responsible for the cancel-and-park gate
+			//! around Apply — Set* on the medium re-derives sigma_t
+			//! and sigma_t_max which are read by distance-sampling
+			//! workers; the swap is racy without the park.
+			SetMediumProperty,
+
 			// Composite markers — bracket a user drag so undo
 			// collapses one drag into one history entry.
 			CompositeBegin,         ///< objectName = label for UI

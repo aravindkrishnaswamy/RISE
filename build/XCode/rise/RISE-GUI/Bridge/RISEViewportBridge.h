@@ -177,7 +177,8 @@ typedef NS_ENUM(NSInteger, RISEViewportPanelMode) {
     RISEViewportPanelModeObject     = 3,
     RISEViewportPanelModeLight      = 4,
     RISEViewportPanelModeFilm       = 5,  ///< Output Settings (single Film per scene)
-    RISEViewportPanelModeMaterial   = 6,  ///< Materials (read-only in Phase 2)
+    RISEViewportPanelModeMaterial   = 6,  ///< Materials
+    RISEViewportPanelModeMedium     = 7,  ///< Participating media
 };
 
 /// Mirrors RISE::SceneEditController::Category — drives the
@@ -189,7 +190,8 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
     RISEViewportCategoryObject     = 3,
     RISEViewportCategoryLight      = 4,
     RISEViewportCategoryFilm       = 5,   ///< Output Settings (single Film per scene)
-    RISEViewportCategoryMaterial   = 6,   ///< Materials (read-only in Phase 2)
+    RISEViewportCategoryMaterial   = 6,   ///< Materials
+    RISEViewportCategoryMedium     = 7,   ///< Participating media
 };
 
 /// Current panel mode — lets the SwiftUI parent decide whether to

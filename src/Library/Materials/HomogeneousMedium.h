@@ -119,6 +119,21 @@ namespace RISE
 			) const;
 
 		bool IsHomogeneous() const;
+
+		//! Read-back + rebind for the interactive editor.  Setters
+		//! update the derived `m_sigma_t = sigma_a + sigma_s` and
+		//! `m_sigma_t_max` in lockstep — these caches are read by the
+		//! distance-sampling and transmittance evaluation paths and
+		//! would drift if the dependent inputs changed without a
+		//! refresh.  Caller is responsible for the cancel-and-park
+		//! gate against the render thread, same as the material
+		//! painter rebinders.
+		inline const RISEPel& GetAbsorption() const { return m_sigma_a; }
+		inline const RISEPel& GetScattering() const { return m_sigma_s; }
+		inline const RISEPel& GetEmission()   const { return m_emission; }
+		void SetAbsorption( const RISEPel& v );
+		void SetScattering( const RISEPel& v );
+		void SetEmission( const RISEPel& v );
 	};
 }
 

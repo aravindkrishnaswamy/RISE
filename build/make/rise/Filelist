@@ -408,6 +408,7 @@ SRCLIBSCENEEDITOR =\
 	$(PATHLIBRARY)SceneEditor/RasterizerIntrospection.cpp			\
 	$(PATHLIBRARY)SceneEditor/FilmIntrospection.cpp					\
 	$(PATHLIBRARY)SceneEditor/MaterialIntrospection.cpp				\
+	$(PATHLIBRARY)SceneEditor/MediaIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/ChunkDescriptorRegistry.cpp
 
 # Miscellaneous stuff

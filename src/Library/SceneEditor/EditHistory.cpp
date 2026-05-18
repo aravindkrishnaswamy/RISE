@@ -114,6 +114,7 @@ namespace
 		case SceneEdit::SetLightProperty:       return "Edit Light Property";
 		case SceneEdit::AddCamera:              return "Add Camera";
 		case SceneEdit::SetMaterialProperty:    return "Edit Material Property";
+		case SceneEdit::SetMediumProperty:      return "Edit Medium Property";
 		case SceneEdit::CompositeBegin:         return "Edit";
 		case SceneEdit::CompositeEnd:           return "Edit";
 		}

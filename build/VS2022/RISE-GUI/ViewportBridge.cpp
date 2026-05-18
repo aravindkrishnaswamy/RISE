@@ -283,6 +283,7 @@ ViewportBridge::PanelMode ViewportBridge::panelMode() const
         case 4: return PanelMode::Light;
         case 5: return PanelMode::Film;
         case 6: return PanelMode::Material;
+        case 7: return PanelMode::Medium;
         default: return PanelMode::None;
     }
 }
@@ -325,6 +326,7 @@ ViewportBridge::Category ViewportBridge::selectionCategory() const
         case 4: return Category::Light;
         case 5: return Category::Film;
         case 6: return Category::Material;
+        case 7: return Category::Medium;
         default: return Category::None;
     }
 }

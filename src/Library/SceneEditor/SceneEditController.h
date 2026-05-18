@@ -81,7 +81,10 @@ namespace RISE
 			Object     = 3,   ///< Objects section, picking from list or viewport
 			Light      = 4,   ///< Lights section
 			Film       = 5,   ///< Output Settings section (single Film per scene)
-			Material   = 6    ///< Materials section (read-only in Phase 2)
+			Material   = 6,   ///< Materials section
+			Medium     = 7    ///< Participating media section (Homogeneous editable;
+			                  ///< Heterogeneous read-only because the majorant grid is
+			                  ///< baked at construction).
 		};
 
 		//! @param job                     borrowed; caller keeps alive.
@@ -349,7 +352,8 @@ namespace RISE
 			Object     = 3,
 			Light      = 4,
 			Film       = 5,   ///< Output Settings panel for the scene's IFilm
-			Material   = 6    ///< Materials panel (read-only in Phase 2)
+			Material   = 6,   ///< Materials panel
+			Medium     = 7    ///< Participating media panel
 		};
 
 		PanelMode CurrentPanelMode() const;
@@ -490,7 +494,7 @@ namespace RISE
 		// pick, used for the panel header / single-tuple callers.
 		// All writes happen on the UI thread; render thread doesn't
 		// touch these.
-		static constexpr int        kNumCategories = 7;   // None..Material
+		static constexpr int        kNumCategories = 8;   // None..Medium
 		String                      mSelectionByCategory[ kNumCategories ];
 		//! Per-category "is the accordion section expanded?" flag,
 		//! tracked SEPARATELY from `mSelectionByCategory` so a user

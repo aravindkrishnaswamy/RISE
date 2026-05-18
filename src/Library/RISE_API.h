@@ -3057,7 +3057,9 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		SceneEditCategory_Object     = 3,
 		SceneEditCategory_Light      = 4,
 		SceneEditCategory_Film       = 5,  ///< Output Settings (single Film per scene)
-		SceneEditCategory_Material   = 6   ///< Materials (read-only in Phase 2; future Phase 4 unlocks edits)
+		SceneEditCategory_Material   = 6,  ///< Materials (editable for non-composed types)
+		SceneEditCategory_Medium     = 7   ///< Participating media (Homogeneous editable;
+		                                   ///< Heterogeneous read-only)
 	};
 
 	//! Construct a SceneEditController over an existing job.

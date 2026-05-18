@@ -39,7 +39,9 @@
 #include "RasterizerIntrospection.h"
 #include "FilmIntrospection.h"
 #include "MaterialIntrospection.h"
+#include "MediaIntrospection.h"
 #include "../Interfaces/IMaterialManager.h"
+#include "../Interfaces/IMedium.h"
 #include "../Interfaces/IPainterManager.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IScenePriv.h"
@@ -940,6 +942,20 @@ unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
 		const IMaterialManager* m = mJob.GetMaterials();
 		return m ? m->getItemCount() : 0;
 	}
+	case Category::Medium: {
+		// Media live in `Job::mediaMap` rather than a real manager.
+		// Enumerate via `IJob::EnumerateMediumNames` and count.
+		struct Count : public IEnumCallback<const char*> {
+			unsigned int n = 0;
+			bool operator()( const char* const& name ) override {
+				if( name ) ++n;
+				return true;
+			}
+		};
+		Count cb;
+		mJob.EnumerateMediumNames( cb );
+		return cb.n;
+	}
 	case Category::None:
 	default:
 		return 0;
@@ -997,6 +1013,12 @@ String SceneEditController::CategoryEntityName( Category cat, unsigned int idx )
 		if( idx >= cb.names.size() ) return String();
 		return cb.names[idx];
 	}
+	case Category::Medium: {
+		CollectNamesCallback cb;
+		mJob.EnumerateMediumNames( cb );
+		if( idx >= cb.names.size() ) return String();
+		return cb.names[idx];
+	}
 	case Category::None:
 	default:
 		return String();
@@ -1037,6 +1059,7 @@ String SceneEditController::CategoryActiveName( Category cat ) const
 	case Category::Object:
 	case Category::Light:
 	case Category::Material:
+	case Category::Medium:
 	case Category::None:
 	default:
 		return String();
@@ -1689,6 +1712,11 @@ SceneEditController::PanelMode SceneEditController::CurrentPanelMode() const
 		// no row picked yet"; we show nothing in the panel until the
 		// user clicks a material.
 		return mSelectionName.size() > 1 ? PanelMode::Material : PanelMode::None;
+	case Category::Medium:
+		// Same guard as Object/Light/Material — empty name means
+		// "section open, no row picked yet"; we render nothing until
+		// the user clicks a medium row.
+		return mSelectionName.size() > 1 ? PanelMode::Medium : PanelMode::None;
 	case Category::None:
 	default:
 		return PanelMode::None;
@@ -1730,6 +1758,11 @@ String SceneEditController::CurrentPanelHeader() const
 		return String( "Output Settings" );
 	case PanelMode::Material: {
 		std::string s = "Material: ";
+		s += mSelectionName.c_str();
+		return String( s.c_str() );
+	}
+	case PanelMode::Medium: {
+		std::string s = "Medium: ";
 		s += mSelectionName.c_str();
 		return String( s.c_str() );
 	}
@@ -1802,6 +1835,12 @@ void SceneEditController::RefreshProperties()
 				mJob.GetPainters(), mJob.GetScalarPainters(), &mJob );
 			break;
 		}
+		case Category::Medium: {
+			const IMedium* med = mJob.GetMedium( selName.c_str() );
+			if( !med ) break;
+			out = MediaIntrospection::Inspect( selName, *med );
+			break;
+		}
 		case Category::None:
 		default:
 			break;
@@ -1841,6 +1880,9 @@ void SceneEditController::RefreshProperties()
 		break;
 	case PanelMode::Material:
 		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Material ) ];
+		break;
+	case PanelMode::Medium:
+		mProperties = mPropertiesByCategory[ static_cast<int>( Category::Medium ) ];
 		break;
 	case PanelMode::None:
 	default:
@@ -2374,6 +2416,35 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 
 		SceneEdit edit;
 		edit.op            = SceneEdit::SetMaterialProperty;
+		edit.objectName    = mSelectionName;
+		edit.propertyName  = name;
+		edit.propertyValue = valueStr;
+
+		const bool ok = mEditor.Apply( edit );
+		if( !ok ) return false;
+
+		mEditPending.store( true, std::memory_order_release );
+		lk.unlock();
+		mCV.notify_one();
+		return true;
+	}
+
+	case Category::Medium: {
+		// Route through SceneEdit::SetMediumProperty.  Same cancel-
+		// and-park as Material — medium setters re-derive sigma_t and
+		// sigma_t_max caches that the render thread reads via
+		// SampleDistance / EvalTransmittance.
+		if( mSelectionName.size() <= 1 ) return false;
+
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+		SceneEdit edit;
+		edit.op            = SceneEdit::SetMediumProperty;
 		edit.objectName    = mSelectionName;
 		edit.propertyName  = name;
 		edit.propertyValue = valueStr;

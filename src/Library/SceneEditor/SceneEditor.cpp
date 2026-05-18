@@ -41,6 +41,8 @@
 #include "../Interfaces/IShader.h"
 #include "../Interfaces/IShaderManager.h"
 #include "MaterialIntrospection.h"
+#include "MediaIntrospection.h"
+#include "../Animation/KeyframableHelper.h"   // ParseStrictVec3
 #include "../Interfaces/ILight.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Interfaces/ILightManager.h"
@@ -581,6 +583,37 @@ String FindMediumName( const IJob* job, const IMedium* target )
 	return cb.found;
 }
 
+// Read a single medium property as a parser-formatted "r g b" string
+// so undo can replay it through the same ParseStrictVec3 +
+// MediaIntrospection::SetSlotValue pipeline the forward path uses.
+// Matches the format LightIntrospection / MediaIntrospection use for
+// vec3 rows.  Returns empty for unsupported slot / type — Apply
+// detects empty prev and rejects the edit rather than push a phantom
+// undo entry.
+String ReadMediumProperty( const IMedium& medium, const String& propertyName )
+{
+	MediumSlotValue v = MediaIntrospection::GetSlotValue( medium, propertyName );
+	if( v.kind != MediumSlotValue::Vec3 ) return String();
+	char buf[128];
+	std::snprintf( buf, sizeof(buf), "%g %g %g", v.v3[0], v.v3[1], v.v3[2] );
+	return String( buf );
+}
+
+// Apply a medium property value parsed from a "r g b" string via the
+// strict parser that rejects NaN / Inf / garbage / trailing junk.
+// Returns true on success, false on parse failure or unsupported
+// slot (e.g. trying to set "absorption" on a HeterogeneousMedium —
+// MediaIntrospection::SetSlotValue refuses).
+bool ApplyMediumPropertyValue( IMedium& medium, const String& propertyName, const String& valueStr )
+{
+	double d[3];
+	if( !RISE::Implementation::ParseStrictVec3( valueStr, d ) ) return false;
+	MediumSlotValue v;
+	v.kind  = MediumSlotValue::Vec3;
+	v.v3[0] = d[0]; v.v3[1] = d[1]; v.v3[2] = d[2];
+	return MediaIntrospection::SetSlotValue( medium, propertyName, v );
+}
+
 }  // namespace
 
 void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit )
@@ -1035,6 +1068,35 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		return true;
 	}
 
+	if( edit.op == SceneEdit::SetMediumProperty )
+	{
+		// objectName carries the medium's manager name; propertyName
+		// the slot identifier ("absorption" / "scattering" /
+		// "emission"); propertyValue the "r g b" string.  Caller
+		// (controller's Medium SetProperty branch) handles the
+		// cancel-and-park gate — setters re-derive sigma_t cache
+		// which is read by distance-sampling workers.
+		if( !mJob ) return false;
+		const IMedium* medConst = mJob->GetMedium( edit.objectName.c_str() );
+		if( !medConst ) return false;
+		IMedium* medium = const_cast<IMedium*>( medConst );
+
+		// Capture prev BEFORE mutating so undo replays losslessly.
+		// Empty prev means the slot/medium combo isn't supported
+		// (e.g. HeterogeneousMedium "absorption") — reject up-front
+		// rather than push a phantom edit.
+		edit.prevPropertyValue = ReadMediumProperty( *medium, edit.propertyName );
+		if( edit.prevPropertyValue.size() <= 1 ) return false;
+
+		if( !ApplyMediumPropertyValue( *medium, edit.propertyName, edit.propertyValue ) ) {
+			return false;
+		}
+
+		mLastScope = Dirty_Camera;   // medium edit affects rendering but no spatial reseed
+		mHistory.Push( edit );
+		return true;
+	}
+
 	return false;
 }
 
@@ -1158,6 +1220,17 @@ bool SceneEditor::Undo()
 							safe_release( p );
 							light->RegenerateData();
 						}
+					}
+				}
+				sawPropertyOp = true;
+			}
+			else if( inner.op == SceneEdit::SetMediumProperty )
+			{
+				if( mJob ) {
+					const IMedium* medConst = mJob->GetMedium( inner.objectName.c_str() );
+					if( medConst && inner.prevPropertyValue.size() > 1 ) {
+						IMedium* medium = const_cast<IMedium*>( medConst );
+						ApplyMediumPropertyValue( *medium, inner.propertyName, inner.prevPropertyValue );
 					}
 				}
 				sawPropertyOp = true;
@@ -1345,6 +1418,20 @@ bool SceneEditor::Undo()
 		return true;
 	}
 
+	if( edit.op == SceneEdit::SetMediumProperty )
+	{
+		// Inverse: re-apply the captured prev value through the same
+		// parser the forward path uses.
+		if( !mJob ) return false;
+		const IMedium* medConst = mJob->GetMedium( edit.objectName.c_str() );
+		if( !medConst ) return false;
+		IMedium* medium = const_cast<IMedium*>( medConst );
+		if( edit.prevPropertyValue.size() <= 1 ) return true;
+		ApplyMediumPropertyValue( *medium, edit.propertyName, edit.prevPropertyValue );
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
 	// Composite Begin/End popped on its own — degenerate, treat as noop.
 	if( SceneEdit::IsCompositeMarker( edit.op ) )
 	{
@@ -1446,6 +1533,17 @@ bool SceneEditor::Redo()
 							safe_release( p );
 							light->RegenerateData();
 						}
+					}
+				}
+				sawPropertyOp = true;
+			}
+			else if( inner.op == SceneEdit::SetMediumProperty )
+			{
+				if( mJob ) {
+					const IMedium* medConst = mJob->GetMedium( inner.objectName.c_str() );
+					if( medConst ) {
+						IMedium* medium = const_cast<IMedium*>( medConst );
+						ApplyMediumPropertyValue( *medium, inner.propertyName, inner.propertyValue );
 					}
 				}
 				sawPropertyOp = true;
@@ -1553,6 +1651,20 @@ bool SceneEditor::Redo()
 		light->SetIntermediateValue( *p );
 		safe_release( p );
 		light->RegenerateData();
+		mLastScope = Dirty_Camera;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetMediumProperty )
+	{
+		// Re-apply propertyValue (the post-edit value).  Same dispatch
+		// shape as the Undo branch but using the new value instead of
+		// the prev one.
+		if( !mJob ) return false;
+		const IMedium* medConst = mJob->GetMedium( edit.objectName.c_str() );
+		if( !medConst ) return false;
+		IMedium* medium = const_cast<IMedium*>( medConst );
+		ApplyMediumPropertyValue( *medium, edit.propertyName, edit.propertyValue );
 		mLastScope = Dirty_Camera;
 		return true;
 	}

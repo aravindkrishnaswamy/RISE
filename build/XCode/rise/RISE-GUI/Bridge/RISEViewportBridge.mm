@@ -588,6 +588,7 @@ private:
         case 4: return RISEViewportPanelModeLight;
         case 5: return RISEViewportPanelModeFilm;
         case 6: return RISEViewportPanelModeMaterial;
+        case 7: return RISEViewportPanelModeMedium;
         default: return RISEViewportPanelModeNone;
     }
 }
@@ -628,6 +629,7 @@ private:
         case 4: return RISEViewportCategoryLight;
         case 5: return RISEViewportCategoryFilm;
         case 6: return RISEViewportCategoryMaterial;
+        case 7: return RISEViewportCategoryMedium;
         default: return RISEViewportCategoryNone;
     }
 }

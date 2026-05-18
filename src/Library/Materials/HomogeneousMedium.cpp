@@ -54,6 +54,28 @@ HomogeneousMedium::~HomogeneousMedium()
 	safe_release( m_pPhase );
 }
 
+void HomogeneousMedium::SetAbsorption( const RISEPel& v )
+{
+	m_sigma_a = v;
+	m_sigma_t = m_sigma_a + m_sigma_s;
+	m_sigma_t_max = ColorMath::MaxValue( m_sigma_t );
+}
+
+void HomogeneousMedium::SetScattering( const RISEPel& v )
+{
+	m_sigma_s = v;
+	m_sigma_t = m_sigma_a + m_sigma_s;
+	m_sigma_t_max = ColorMath::MaxValue( m_sigma_t );
+}
+
+void HomogeneousMedium::SetEmission( const RISEPel& v )
+{
+	// Emission doesn't feed sigma_t / sigma_t_max — sigma_t controls
+	// distance sampling, emission contributes radiance.  No derived
+	// state refresh needed.
+	m_emission = v;
+}
+
 MediumCoefficients HomogeneousMedium::GetCoefficients(
 	const Point3& pt
 	) const
