@@ -79,6 +79,18 @@ namespace RISE
 			inline RISEPel   emissionColor() const  { return cColor; }
 			inline Scalar    emissionEnergy() const { return radiantEnergy; }
 			inline LightType lightType() const      { return LightType::Directional; }
+			//! ILight's default `emissionDirection()` returns
+			//! `Vector3(0,1,0)`.  Without this override, the introspection
+			//! panel reads stale (0,1,0) regardless of edits, AND
+			//! `SetLightProperty("direction")` undo silently drops the
+			//! entry because `ReadLightParam` captures the wrong prev
+			//! value.  Rendering was always correct (ComputeDirectLighting
+			//! reads `vDirection` directly).  Detected by
+			//! SceneEditorLightFullCoverageTest's `dir direction.x/.z`
+			//! checks; before this override the magnitude check passed
+			//! by coincidence (|(0,1,0)| = 1) while the components were
+			//! wrong.
+			inline Vector3   emissionDirection() const { return vDirection; }
 
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const
 			{
