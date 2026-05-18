@@ -141,6 +141,17 @@ namespace RISE
 		//! Implementation in KeyframableHelper.cpp so callers can't
 		//! inline-fold the body.
 		bool ParseStrictScalar( const String& s, Scalar& out );
+
+		//! Strict 3-vector parse — tokenises on whitespace, requires
+		//! exactly three components, each routed through
+		//! ParseStrictScalar.  Use this in place of `sscanf("%lf %lf
+		//! %lf", ...)` for editable vec3 fields (color, direction,
+		//! target, position, orientation, scale): plain `sscanf`
+		//! accepts "nan nan nan" and "inf 0 0" and writes the
+		//! resulting non-finite values into light/transform state.
+		//! Returns false (and leaves `out` untouched) on any parse
+		//! failure or non-finite component.
+		bool ParseStrictVec3( const String& s, double out[3] );
 	}
 }
 

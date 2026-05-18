@@ -146,22 +146,21 @@ IKeyframeParameter* Transformable::KeyframeFromParameters( const String& name, c
 
 	// Check the name and see if its something we recognize
 	if( name == "position" ) {
-		Point3 v;
-		if( sscanf( value.c_str(), "%lf %lf %lf", &v.x, &v.y, &v.z ) == 3 ) {
-			p = new Point3Keyframe( v, POSITION_ID );
+		double d[3];
+		if( ParseStrictVec3( value, d ) ) {
+			p = new Point3Keyframe( Point3( d[0], d[1], d[2] ), POSITION_ID );
 		}
 	} else if( name == "orientation" ) {
-		Vector3 v;
-		if( sscanf( value.c_str(), "%lf %lf %lf", &v.x, &v.y, &v.z ) == 3 ) {
-			v.x *= DEG_TO_RAD;
-			v.y *= DEG_TO_RAD;
-			v.z *= DEG_TO_RAD;
-			p = new Vector3Keyframe( v, ORIENTATION_ID );
+		double d[3];
+		if( ParseStrictVec3( value, d ) ) {
+			p = new Vector3Keyframe(
+				Vector3( d[0] * DEG_TO_RAD, d[1] * DEG_TO_RAD, d[2] * DEG_TO_RAD ),
+				ORIENTATION_ID );
 		}
 	} else if( name == "scale" ) {
-		Vector3 v;
-		if( sscanf( value.c_str(), "%lf %lf %lf", &v.x, &v.y, &v.z ) == 3 ) {
-			p = new Vector3Keyframe( v, SCALE_ID );
+		double d[3];
+		if( ParseStrictVec3( value, d ) ) {
+			p = new Vector3Keyframe( Vector3( d[0], d[1], d[2] ), SCALE_ID );
 		}
 	} else {
 		return 0;

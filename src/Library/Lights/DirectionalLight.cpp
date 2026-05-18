@@ -103,13 +103,13 @@ IKeyframeParameter* DirectionalLight::KeyframeFromParameters( const String& name
 
 	// Check the name and see if its something we recognize
 	if( name == "direction" ) {
-		Vector3 v;
-		if( sscanf( value.c_str(), "%lf %lf %lf", &v.x, &v.y, &v.z ) == 3 ) {
-			p = new Vector3Keyframe( v, DIRECTION_ID );
+		double d[3];
+		if( ParseStrictVec3( value, d ) ) {
+			p = new Vector3Keyframe( Vector3( d[0], d[1], d[2] ), DIRECTION_ID );
 		}
 	} else if( name == "color" ) {
 		double d[3];
-		if( sscanf( value.c_str(), "%lf %lf %lf", &d[0], &d[1], &d[2] ) == 3 ) {
+		if( ParseStrictVec3( value, d ) ) {
 			p = new Parameter<RISEPel>( RISEPel(d), COLOR_ID );
 		}
 	} else if( name == "energy" ) {

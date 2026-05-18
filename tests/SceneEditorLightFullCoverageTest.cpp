@@ -152,6 +152,33 @@ static void TestAmbientLightFullMatrix()
 	       "amb inf power rejected (was: atof returned +inf)" );
 	Check( std::abs( static_cast<double>( light->emissionEnergy() - guardEnergy ) ) < 1e-9,
 	       "amb power still unchanged after all rejections" );
+
+	// -- trailing-junk scalars rejected --
+	Check( !c.SetProperty( String( "power" ), String( "1abc" ) ),
+	       "amb trailing-junk 'NaNabc' power rejected" );
+	Check( !c.SetProperty( String( "power" ), String( "1 2" ) ),
+	       "amb multi-token '1 2' power rejected (scalar field expects single value)" );
+	Check( !c.SetProperty( String( "power" ), String( "" ) ),
+	       "amb empty power rejected" );
+	Check( !c.SetProperty( String( "power" ), String( "   " ) ),
+	       "amb whitespace-only power rejected" );
+	Check( !c.SetProperty( String( "power" ), String( "+" ) ),
+	       "amb sign-only power rejected (regression for matchCI3 OOB on short input)" );
+	Check( !c.SetProperty( String( "power" ), String( "i" ) ),
+	       "amb short 'i' rejected without OOB read past null terminator" );
+	Check( std::abs( static_cast<double>( light->emissionEnergy() - guardEnergy ) ) < 1e-9,
+	       "amb power still unchanged after trailing-junk rejections" );
+
+	// -- NaN/Inf vec3 components rejected (color) --
+	const RISEPel cGuard = light->emissionColor();
+	Check( !c.SetProperty( String( "color" ), String( "nan nan nan" ) ),
+	       "amb NaN-component color rejected" );
+	Check( !c.SetProperty( String( "color" ), String( "1 inf 1" ) ),
+	       "amb Inf-component color rejected" );
+	Check( !c.SetProperty( String( "color" ), String( "1 2 3 4" ) ),
+	       "amb 4-component color rejected (trailing token)" );
+	Check( std::abs( static_cast<double>( light->emissionColor().r - cGuard.r ) ) < 1e-9,
+	       "amb color.r unchanged after vec3-NaN rejections" );
 	}
 	pJob->release();
 }

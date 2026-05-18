@@ -98,7 +98,7 @@ IKeyframeParameter* PointLight::KeyframeFromParameters( const String& name, cons
 	// Check the name and see if its something we recognize
 	if( name == "color" ) {
 		double d[3];
-		if( sscanf( value.c_str(), "%lf %lf %lf", &d[0], &d[1], &d[2] ) == 3 ) {
+		if( ParseStrictVec3( value, d ) ) {
 			p = new Parameter<RISEPel>( RISEPel(d), COLOR_ID );
 		}
 	} else if( name == "energy" ) {
