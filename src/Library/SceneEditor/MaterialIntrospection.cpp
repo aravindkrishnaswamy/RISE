@@ -476,7 +476,7 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 		rows.push_back( BuildPainterSlot( "tau", tl->GetTrans(),
 			painters, composed,
 			"Transmittance painter for the primary layer — IPainter colour pipe." ) );
-		rows.push_back( BuildScalarPainterSlot( "extinction", tl->GetExtinction(),
+		rows.push_back( BuildScalarPainterSlot( "ext", tl->GetExtinction(),
 			scalarPainters, composed,
 			"Extinction factor (Beer-Lambert per unit distance) — physical scalar." ) );
 		rows.push_back( BuildScalarPainterSlot( "N", tl->GetN(),
@@ -687,7 +687,7 @@ MaterialSlotRef MaterialIntrospection::GetSlot(
 	else if( const TranslucentMaterial* tl = dynamic_cast<const TranslucentMaterial*>( &material ) ) {
 		if( slotName == String( "ref" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &tl->GetRefFront();   return out; }
 		if( slotName == String( "tau" ) )  { out.kind = MaterialSlotRef::Painter;       out.painter       = &tl->GetTrans();      return out; }
-		if( slotName == String( "extinction" ) )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetExtinction(); return out; }
+		if( slotName == String( "ext" ) )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetExtinction(); return out; }
 		if( slotName == String( "N" ) )    { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetN();          return out; }
 		if( slotName == String( "scattering" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &tl->GetScat();       return out; }
 	}
@@ -850,7 +850,7 @@ bool MaterialIntrospection::SetSlot(
 	if( TranslucentMaterial* tl = dynamic_cast<TranslucentMaterial*>( &material ) ) {
 		if( slotName == String( "ref" ) )  { if( !painter ) return false; tl->SetRefFront( *painter ); return true; }
 		if( slotName == String( "tau" ) )  { if( !painter ) return false; tl->SetTrans( *painter );    return true; }
-		if( slotName == String( "extinction" ) )  { if( !scalarPainter ) return false; tl->SetExtinction( *scalarPainter ); return true; }
+		if( slotName == String( "ext" ) )  { if( !scalarPainter ) return false; tl->SetExtinction( *scalarPainter ); return true; }
 		if( slotName == String( "N" ) )    { if( !scalarPainter ) return false; tl->SetN( *scalarPainter );          return true; }
 		if( slotName == String( "scattering" ) ) { if( !scalarPainter ) return false; tl->SetScat( *scalarPainter );       return true; }
 		return false;
