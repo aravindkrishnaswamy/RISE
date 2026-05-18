@@ -35,24 +35,31 @@ namespace RISE
 			}
 
 		public:
+			// Parameter order matches GenericHumanTissueSPF and the sole
+			// caller in RISE_API_CreateGenericHumanTissueMaterial.  An
+			// earlier declaration named these (hb_ratio_, whole_blood, bili,
+			// beta) but the API caller passes (whole_blood, beta, bili,
+			// hb_ratio_) positionally — the locals' names lied about the
+			// values they held, even though two compensating shuffles meant
+			// the SPF still received correct values.
 			GenericHumanTissueMaterial(
 				const IScalarPainter& sca,										///< Scattering co-efficient
 				const IScalarPainter& g,											///< g factor in the HG phase function
-				const Scalar hb_ratio_,										///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
 				const Scalar whole_blood,									///< Percentage of the tissue made up of whole blood
-				const Scalar bilirubin_concentration,						///< Concentration of Bilirubin in whole blood
 				const Scalar betacarotene_concentration,					///< Concentration of Beta-Carotene in whole blood
+				const Scalar bilirubin_concentration,						///< Concentration of Bilirubin in whole blood
+				const Scalar hb_ratio_,										///< Ratio of oxyhemoglobin to deoxyhemoglobin in blood
 				const bool diffuse											///< Is the tissue just diffuse?
-				) : 
+				) :
 			pSPF( 0 )
 			{
 				pSPF = new GenericHumanTissueSPF(
 					sca,
-					g, 
-					hb_ratio_,
+					g,
 					whole_blood,
-					bilirubin_concentration,
 					betacarotene_concentration,
+					bilirubin_concentration,
+					hb_ratio_,
 					diffuse
 					);
 			}
