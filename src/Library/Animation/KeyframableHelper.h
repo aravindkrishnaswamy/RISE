@@ -18,6 +18,12 @@
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/Color/Color.h"
 
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+
 #ifndef KEYFRAMABLE_HELPER_
 #define KEYFRAMABLE_HELPER_
 
@@ -106,6 +112,35 @@ namespace RISE
 
 		typedef Parameter<Point3> Point3Keyframe;
 		typedef Parameter<Vector3> Vector3Keyframe;
+
+		//! Strict scalar parse used by light KeyframeFromParameters.
+		//! Returns true and fills `out` only if `s` parsed to a finite
+		//! scalar (rejects "garbage", "nan", "inf").  Without this,
+		//! the prior `atof(value.c_str())` silently mapped invalid
+		//! input to 0 / NaN / ±inf and the keyframe machinery happily
+		//! wrote it through to light state — the interactive editor
+		//! then displayed a phantom-successful edit while the render
+		//! either went dark (energy=0) or produced NaN pixels.  Caller
+		//! should return null (i.e. reject the edit) on false.
+		//!
+		//! IMPORTANT: this code is compiled with `-ffast-math`, which
+		//! permits the compiler to assume NaN / Inf never occur and
+		//! optimise `std::isfinite` / `std::isnan` to constants — even
+		//! a bit-pattern check after `memcpy` gets dead-code-eliminated
+		//! because the optimiser tracks that `parsed` "must" be finite
+		//! under fast-math.  Defence-in-depth is THREE layers:
+		//!   1. Textual pre-check rejects "nan" / "inf" / "infinity"
+		//!      (case-insensitive, with optional sign + whitespace)
+		//!      before strtod even runs.  `strtod` is what would
+		//!      produce the NaN/Inf for those inputs.
+		//!   2. `volatile` on the parsed result blocks the optimiser
+		//!      from re-deriving the value across the bit-pattern
+		//!      check.
+		//!   3. Bit-pattern check via memcpy as backup for cases like
+		//!      "1e1000" that overflow to +Inf during strtod.
+		//! Implementation in KeyframableHelper.cpp so callers can't
+		//! inline-fold the body.
+		bool ParseStrictScalar( const String& s, Scalar& out );
 	}
 }
 

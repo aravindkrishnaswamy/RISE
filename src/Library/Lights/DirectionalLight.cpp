@@ -113,7 +113,11 @@ IKeyframeParameter* DirectionalLight::KeyframeFromParameters( const String& name
 			p = new Parameter<RISEPel>( RISEPel(d), COLOR_ID );
 		}
 	} else if( name == "energy" ) {
-		p = new Parameter<Scalar>( atof(value.c_str()), ENERGY_ID );
+		Scalar parsed;
+		if( !ParseStrictScalar( value, parsed ) ) {
+			return 0;
+		}
+		p = new Parameter<Scalar>( parsed, ENERGY_ID );
 	} else {
 		return Transformable::KeyframeFromParameters( name, value );
 	}

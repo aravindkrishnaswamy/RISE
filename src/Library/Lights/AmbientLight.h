@@ -127,7 +127,11 @@ namespace RISE
 						p = new Parameter<RISEPel>( RISEPel(d), kColorID );
 					}
 				} else if( name == "energy" ) {
-					p = new Parameter<Scalar>( atof(value.c_str()), kEnergyID );
+					Scalar parsed;
+					if( !ParseStrictScalar( value, parsed ) ) {
+						return 0;
+					}
+					p = new Parameter<Scalar>( parsed, kEnergyID );
 				} else {
 					return Transformable::KeyframeFromParameters( name, value );
 				}

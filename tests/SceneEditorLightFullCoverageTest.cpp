@@ -137,6 +137,21 @@ static void TestAmbientLightFullMatrix()
 	//    returns null, Apply returns false) --
 	Check( !c.SetProperty( String( "color" ), String( "not-a-vec3" ) ),
 	       "amb invalid color rejected with false return" );
+
+	// -- invalid scalar rejected (strict parse: "garbage" / "nan" /
+	//    "inf" must NOT silently flow into light state as 0 / NaN /
+	//    ±inf via the prior atof() path) --
+	const Scalar guardEnergy = light->emissionEnergy();
+	Check( !c.SetProperty( String( "power" ), String( "garbage" ) ),
+	       "amb invalid power rejected (was: atof returned 0)" );
+	Check( std::abs( static_cast<double>( light->emissionEnergy() - guardEnergy ) ) < 1e-9,
+	       "amb power unchanged after rejected garbage edit" );
+	Check( !c.SetProperty( String( "power" ), String( "nan" ) ),
+	       "amb NaN power rejected (was: atof returned NaN)" );
+	Check( !c.SetProperty( String( "power" ), String( "inf" ) ),
+	       "amb inf power rejected (was: atof returned +inf)" );
+	Check( std::abs( static_cast<double>( light->emissionEnergy() - guardEnergy ) ) < 1e-9,
+	       "amb power still unchanged after all rejections" );
 	}
 	pJob->release();
 }
@@ -209,6 +224,17 @@ static void TestPointLightFullMatrix()
 	// -- invalid vec3 rejected --
 	Check( !c.SetProperty( String( "position" ), String( "not a vec" ) ),
 	       "pt invalid position rejected" );
+
+	// -- invalid scalar rejected (strict parse on power) --
+	const Scalar guardEnergy = light->emissionEnergy();
+	Check( !c.SetProperty( String( "power" ), String( "garbage" ) ),
+	       "pt invalid power rejected (was: atof returned 0)" );
+	Check( !c.SetProperty( String( "power" ), String( "nan" ) ),
+	       "pt NaN power rejected" );
+	Check( !c.SetProperty( String( "power" ), String( "inf" ) ),
+	       "pt inf power rejected" );
+	Check( std::abs( static_cast<double>( light->emissionEnergy() - guardEnergy ) ) < 1e-9,
+	       "pt power unchanged after invalid-scalar rejections" );
 	}
 	pJob->release();
 }
@@ -292,6 +318,27 @@ static void TestSpotLightFullMatrix()
 	Check( light->CanGeneratePhotons() == s0, "spot shootphotons restored" );
 	Check( c.Editor().Redo(), "spot shootphotons redo" );
 	Check( light->CanGeneratePhotons() != s0, "spot shootphotons re-toggled" );
+
+	// -- invalid scalar rejected on every scalar slot --
+	const Scalar guardEnergy = light->emissionEnergy();
+	const Scalar guardInner = light->emissionInnerAngle();
+	const Scalar guardOuter = light->emissionOuterAngle();
+	Check( !c.SetProperty( String( "power" ), String( "garbage" ) ),
+	       "spot invalid power rejected" );
+	Check( !c.SetProperty( String( "power" ), String( "nan" ) ),
+	       "spot NaN power rejected" );
+	Check( !c.SetProperty( String( "inner" ), String( "garbage" ) ),
+	       "spot invalid inner rejected" );
+	Check( !c.SetProperty( String( "inner" ), String( "inf" ) ),
+	       "spot inf inner rejected" );
+	Check( !c.SetProperty( String( "outer" ), String( "junk" ) ),
+	       "spot invalid outer rejected" );
+	Check( std::abs( static_cast<double>( light->emissionEnergy() - guardEnergy ) ) < 1e-9,
+	       "spot power unchanged after invalid-scalar rejections" );
+	Check( std::abs( static_cast<double>( light->emissionInnerAngle() - guardInner ) ) < 1e-9,
+	       "spot inner_angle unchanged after invalid-scalar rejections" );
+	Check( std::abs( static_cast<double>( light->emissionOuterAngle() - guardOuter ) ) < 1e-9,
+	       "spot outer_angle unchanged after invalid-scalar rejections" );
 	}
 	pJob->release();
 }
@@ -349,6 +396,15 @@ static void TestDirectionalLightFullMatrix()
 	       "dir invalid direction rejected" );
 	Check( !c.SetProperty( String( "color" ), String( "x y z" ) ),
 	       "dir invalid color rejected" );
+
+	// -- invalid scalar power rejected (strict parse) --
+	const Scalar guardEnergy = light->emissionEnergy();
+	Check( !c.SetProperty( String( "power" ), String( "garbage" ) ),
+	       "dir invalid power rejected" );
+	Check( !c.SetProperty( String( "power" ), String( "nan" ) ),
+	       "dir NaN power rejected" );
+	Check( std::abs( static_cast<double>( light->emissionEnergy() - guardEnergy ) ) < 1e-9,
+	       "dir power unchanged after invalid-scalar rejections" );
 	}
 	pJob->release();
 }
