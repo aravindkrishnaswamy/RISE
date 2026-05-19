@@ -115,11 +115,12 @@ static void TestProjectionPivotAtScreenCenter()
 //////////////////////////////////////////////////////////////////////
 //
 // Test 2: World +X projects to the right of center; world +Y
-// projects ABOVE center in (sx, sy) image-pixel space (the same
-// space the pixel-based rasterizer feeds GenerateRay — see
-// `PixelBasedPelRasterizer.cpp:614` which builds `Point2(x,
-// height-y)`).  Note that "above center" in this space means
-// `sy > H/2` — the convention is +Y = up.
+// projects ABOVE center in WIDGET-Y-DOWN pointer coordinates (the
+// space `ViewportCanvas` delivers pointer events in — `isFlipped =
+// true`, origin at top-left).  "Above center" in widget-Y-DOWN means
+// `sy < H/2`.  The controller's projection helper flips Y around the
+// image height internally so gizmo math, pointer events, and overlay
+// drawing all live in the same coordinate space.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -139,8 +140,8 @@ static void TestProjectionAxisDirections()
 
 	Check( okX, "projection of (+X) succeeds" );
 	Check( okY, "projection of (+Y) succeeds" );
-	Check( ax > cx, "world +X projects to sx > center.sx (right in screen)" );
-	Check( by > cy, "world +Y projects to sy > center.sy (+Y = up in GenerateRay space)" );
+	Check( ax > cx, "world +X projects to sx > center.sx (right in widget space)" );
+	Check( by < cy, "world +Y projects to sy < center.sy (+Y = up in widget-Y-DOWN)" );
 
 	job->release();
 }
@@ -701,16 +702,18 @@ static void TestScreenCenterDragTranslates()
 	c.OnPointerDown( down );
 	Check( c.IsGizmoDragActive(), "ScreenCenter drag armed" );
 
-	// 40 px right + 30 px up in screen.  Object should move +X / +Y
-	// (+Y in image-pixel space = up in GenerateRay space).  Z stays
-	// zero because the on-axis camera makes world-Z degenerate.
+	// 40 px right + 30 px DOWN in widget-Y-DOWN pointer space.
+	// Object should move +X (right) and -Y (world-Y down, since
+	// dragging the gizmo center down should pull the object down
+	// in world).  Z stays zero because the on-axis camera makes
+	// world-Z degenerate.
 	c.OnPointerMove( Point2( down.x + 40.0, down.y + 30.0 ) );
 	c.OnPointerUp( Point2( down.x + 40.0, down.y + 30.0 ) );
 
 	double wx = 0, wy = 0, wz = 0;
 	c.ForTest_GetSelectionPivotWorld( wx, wy, wz );
-	Check( wx > 0,   "object moved +X" );
-	Check( wy > 0,   "object moved +Y" );
+	Check( wx > 0,   "object moved +X (drag right)" );
+	Check( wy < 0,   "object moved -Y (drag down in widget-Y-DOWN)" );
 	Check( std::fabs( wz ) < 1e-6, "object Z unchanged (degenerate axis)" );
 
 	job->release();

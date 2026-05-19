@@ -6,12 +6,11 @@
 //    renders the per-tool glyphs (arrows, plane quads, rings, scale
 //    cubes) in widget-space.
 //
-//  Coordinate convention: the bridge returns positions in the
-//  camera's image-pixel space (matching pointer events).  The overlay
-//  uses the same `surfaceDimensionsProvider` as ViewportCanvas to
-//  normalise to widget points — image pixel `(0, H)` is widget top,
-//  `(0, 0)` is widget bottom (matches the Y-up `(x, height-y)`
-//  convention `PixelBasedPelRasterizer` feeds GenerateRay).
+//  Coordinate convention: the bridge returns positions in WIDGET-
+//  pixel-Y-DOWN space — the same space pointer events arrive in
+//  (matches `ViewportCanvas`'s `isFlipped = true` NSView convention
+//  with origin at top-left).  The overlay multiplies by the
+//  letter-box scale and offset and draws directly.
 //
 //  This is the platform-side counterpart of the screen-space layout
 //  computed by SceneEditController; all math lives in C++ so the
@@ -50,13 +49,13 @@ struct ViewportGizmoOverlay: View {
                 let ox     = (size.width  - dispW) * 0.5
                 let oy     = (size.height - dispH) * 0.5
 
-                // Image-pixel-space `(sx, sy)` uses +Y = up (see
-                // PixelBasedPelRasterizer.cpp:614 which feeds
-                // `Point2(x, height - y)`).  Widget-space has +Y =
-                // down, so flip Y around the surface height.
+                // Bridge already returns widget-Y-DOWN positions (the
+                // controller flips around image height inside
+                // `ProjectWorldToScreen_`); just apply the letter-box
+                // scale and offset.
                 func toWidget(_ px: CGFloat, _ py: CGFloat) -> CGPoint {
                     let wx = ox + px * scale
-                    let wy = oy + (surface.height - py) * scale
+                    let wy = oy + py * scale
                     return CGPoint(x: wx, y: wy)
                 }
 

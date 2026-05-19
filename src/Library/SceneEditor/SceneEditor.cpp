@@ -638,6 +638,22 @@ void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 	case SceneEdit::SetObjectStretch:
 		obj.SetStretch( edit.v3a );
 		break;
+	case SceneEdit::ScaleObjectFromAnchor:
+		// Anchor-based scale: restore the drag-start matrix, then
+		// push a stretch-by-factor matrix on top so the result is
+		// `prevTransform · Stretch(v3a)`.  See SceneEdit.h's enum
+		// comment for why this op exists vs `SetObjectStretch`.
+		// Order on the stack matters: PushTop pushes to the FRONT
+		// of `m_transformstack`, and `FinalizeTransformations`
+		// left-multiplies entries front-to-back into the final
+		// matrix, so the second push lands OUTSIDE the first in
+		// the final composition (= the factor is applied to the
+		// object's local geometry FIRST, then the drag-start
+		// transform places the scaled geometry in the world).
+		obj.ClearAllTransforms();
+		obj.PushTopTransStack( edit.prevTransform );
+		obj.PushTopTransStack( Matrix4Ops::Stretch( edit.v3a ) );
+		break;
 	case SceneEdit::SetObjectMaterial:
 		if( mMaterialManager ) {
 			IMaterial* mat = mMaterialManager->GetItem( edit.propertyValue.c_str() );
@@ -727,7 +743,17 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		// shadow flags) use `prevPropertyValue` (or `prevShadowFlags`
 		// for the bit-packed bool pair) so the appropriate per-op
 		// restorer in Undo can replay the prior state.
-		edit.prevTransform = obj->GetFinalTransformMatrix();
+		//
+		// EXCEPTION: `ScaleObjectFromAnchor` carries a controller-
+		// supplied anchor matrix captured at drag-START — overwriting
+		// it on every per-frame Apply would replace the anchor with
+		// the previous frame's already-scaled state, so the cumulative
+		// drag factor would compound across frames.  The controller
+		// pre-populates `prevTransform` once at OnPointerDown; we keep
+		// it through every frame of the drag.
+		if( edit.op != SceneEdit::ScaleObjectFromAnchor ) {
+			edit.prevTransform = obj->GetFinalTransformMatrix();
+		}
 
 		switch( edit.op ) {
 		case SceneEdit::SetObjectMaterial:
@@ -794,7 +820,8 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		 || edit.op == SceneEdit::SetObjectPosition
 		 || edit.op == SceneEdit::SetObjectOrientation
 		 || edit.op == SceneEdit::SetObjectScale
-		 || edit.op == SceneEdit::SetObjectStretch;
+		 || edit.op == SceneEdit::SetObjectStretch
+		 || edit.op == SceneEdit::ScaleObjectFromAnchor;
 		if( isTransformOp ) {
 			RunObjectInvariantChain( *obj );
 		}
@@ -1474,7 +1501,8 @@ bool SceneEditor::Redo()
 					 || inner.op == SceneEdit::SetObjectPosition
 					 || inner.op == SceneEdit::SetObjectOrientation
 					 || inner.op == SceneEdit::SetObjectScale
-					 || inner.op == SceneEdit::SetObjectStretch;
+					 || inner.op == SceneEdit::SetObjectStretch
+					 || inner.op == SceneEdit::ScaleObjectFromAnchor;
 					if( isTransformOp ) RunObjectInvariantChain( *obj );
 				}
 				sawObjectOp = true;
@@ -1573,7 +1601,8 @@ bool SceneEditor::Redo()
 		 || edit.op == SceneEdit::SetObjectPosition
 		 || edit.op == SceneEdit::SetObjectOrientation
 		 || edit.op == SceneEdit::SetObjectScale
-		 || edit.op == SceneEdit::SetObjectStretch;
+		 || edit.op == SceneEdit::SetObjectStretch
+		 || edit.op == SceneEdit::ScaleObjectFromAnchor;
 		if( isTransformOp ) RunObjectInvariantChain( *obj );
 		mLastScope = Dirty_ObjectTransform;
 		return true;

@@ -53,7 +53,14 @@ enum ViewportTool: Int, CaseIterable, Identifiable {
         }
     }
 
-    /// SF Symbol name for the toolbar button icon.
+    /// SF Symbol name for the toolbar button icon.  Force monochrome
+    /// rendering at the call site (see `SlotIcon` below) — macOS 26's
+    /// SF Symbols catalog renders several of these in multicolor mode
+    /// by default, which on the toolbar reads as ambiguous discs
+    /// instead of recognizable arrow glyphs.  These four-arrow /
+    /// diagonal-arrow / rotation-arrow symbols are the canonical
+    /// "translate / rotate / scale" icons used across Photoshop,
+    /// Blender, and Maya.
     var iconName: String {
         switch self {
         case .select:          return "cursorarrow"
@@ -208,10 +215,24 @@ struct ViewportToolbar: View {
 }
 
 /// One Photoshop-style toolbar slot: a button showing the category's
-/// last-used sub-tool icon, with a context-menu / long-press flyout
-/// to switch the active sub-tool.  Clicking the button activates the
-/// shown sub-tool; right-clicking (or long-press on a trackpad)
-/// opens the flyout so the user can pick a different one.
+/// last-used sub-tool icon, with a right-click / control-click
+/// flyout to switch the active sub-tool.  Clicking activates the
+/// shown sub-tool; right-clicking opens the sub-tool list (matches
+/// AppKit's NSMenu-on-secondary-click idiom).
+///
+/// Long-press was tried (Adobe's "press and hold" gesture) but
+/// SwiftUI on macOS 26 routes both `.simultaneousGesture` and
+/// `.onLongPressGesture` through the Button's tap recognizer in a
+/// way that swallows the tap entirely — single clicks stopped
+/// activating the slot.  Right-click is the workable alternative
+/// and remains the standard macOS secondary-action gesture.
+///
+/// Uses a plain `Button` rather than SwiftUI's `Menu` because `Menu`
+/// (even with `.borderlessButton` menuStyle) strips the label's
+/// background modifiers, so the slot would never show its depressed
+/// / active highlight.  `Button` with `.buttonStyle(.plain)` renders
+/// the label exactly as authored, letting the inner `SlotIcon`'s
+/// accent-coloured background appear when the category is active.
 private struct CategorySlot: View {
     let category: ViewportToolCategory
     @Binding var selectedTool: ViewportTool
@@ -219,7 +240,7 @@ private struct CategorySlot: View {
 
     var body: some View {
         let tools = category.subTools
-        let showFlyout = tools.count > 1
+        let hasFlyout = tools.count > 1
         // The tool icon to show on the slot button: if the current
         // selectedTool belongs to this category, use it (so the slot
         // always reflects what's active).  Otherwise the category's
@@ -231,11 +252,15 @@ private struct CategorySlot: View {
         }()
         let isSelected = (selectedTool.category == category)
 
-        if showFlyout {
-            // Menu with a primary tap action: clicking the body picks
-            // `shownTool`, while the trailing-chevron / right-click
-            // / long-press opens the sub-tool list.
-            Menu {
+        Button {
+            selectedTool = shownTool
+        } label: {
+            SlotIcon(tool: shownTool, isSelected: isSelected, hasFlyout: hasFlyout)
+        }
+        .buttonStyle(.plain)
+        .help(category.tooltip)
+        .contextMenu {
+            if hasFlyout {
                 ForEach(tools) { sub in
                     Button {
                         selectedTool = sub
@@ -243,24 +268,7 @@ private struct CategorySlot: View {
                         Label(sub.label, systemImage: sub.iconName)
                     }
                 }
-            } label: {
-                SlotIcon(tool: shownTool, isSelected: isSelected, hasFlyout: true)
-            } primaryAction: {
-                selectedTool = shownTool
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help(category.tooltip)
-        } else {
-            // Single-tool slot (Select).  No flyout.
-            Button {
-                selectedTool = shownTool
-            } label: {
-                SlotIcon(tool: shownTool, isSelected: isSelected, hasFlyout: false)
-            }
-            .buttonStyle(.borderless)
-            .help(category.tooltip)
         }
     }
 }
@@ -273,6 +281,7 @@ private struct SlotIcon: View {
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             Image(systemName: tool.iconName)
+                .symbolRenderingMode(.monochrome)
                 .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
                 .foregroundColor(isSelected ? .white : .primary)
                 .frame(width: 28, height: 28)

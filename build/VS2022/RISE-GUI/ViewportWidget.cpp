@@ -31,6 +31,7 @@ void ViewportWidget::setImage(const QImage& image)
 
 void ViewportWidget::setActiveTool(ViewportTool t)
 {
+    m_activeTool = t;
     // Map each tool to a Qt cursor.  Object Translate / Rotate / Scale
     // and standalone Scrub aren't surfaced in the toolbar but still
     // appear here in case the controller is driven from elsewhere
@@ -52,6 +53,23 @@ void ViewportWidget::setActiveTool(ViewportTool t)
     // arrow).  The actual cursor swap happens in mouseMoveEvent /
     // leaveEvent, driven by the pointer's current position.
     unsetCursor();
+    // Tool change can flip the gizmo shape (Translate → Rotate
+    // switches arrows for rings); repaint so the overlay updates.
+    update();
+}
+
+void ViewportWidget::setProductionRendering(bool inProgress)
+{
+    if (m_productionRendering == inProgress) return;
+    m_productionRendering = inProgress;
+    update();
+}
+
+bool ViewportWidget::gizmoOverlayActive() const
+{
+    return !m_productionRendering
+        && ViewportBridge::categoryForTool(m_activeTool)
+           == ViewportBridge::ToolCategory::ObjectTransform;
 }
 
 QRect ViewportWidget::imageDrawRect() const
@@ -100,6 +118,103 @@ void ViewportWidget::paintEvent(QPaintEvent* /*event*/)
     const QRect drawRect = imageDrawRect();
     if (drawRect.isEmpty()) return;
     p.drawImage(drawRect, m_image);
+
+    if (gizmoOverlayActive() && m_bridge) {
+        const QSize surface = m_bridge->cameraSurfaceDimensions();
+        if (surface.width() > 0 && surface.height() > 0) {
+            paintGizmoOverlay(p, drawRect, surface);
+        }
+    }
+}
+
+void ViewportWidget::paintGizmoOverlay(QPainter& p, const QRect& drawRect,
+                                       const QSize& surface)
+{
+    // Pull the latest handle array from the controller.  The bridge's
+    // `refreshGizmoHandles()` runs the C++-side recomputation against
+    // the current camera state; `gizmoHandles()` returns a fresh copy.
+    m_bridge->refreshGizmoHandles();
+    const QVector<ViewportBridge::GizmoHandle> handles = m_bridge->gizmoHandles();
+    if (handles.isEmpty()) return;
+
+    // Map a (surface-pixel-space) handle position to widget coords.
+    // The controller's `ProjectWorldToScreen_` already outputs
+    // widget-Y-DOWN against the stable target dims (`surface`), so we
+    // only apply the letter-box scale + offset here.
+    const double scaleX = static_cast<double>(drawRect.width())  / surface.width();
+    const double scaleY = static_cast<double>(drawRect.height()) / surface.height();
+    auto toWidget = [&](double sx, double sy) -> QPointF {
+        return QPointF(drawRect.left() + sx * scaleX,
+                       drawRect.top()  + sy * scaleY);
+    };
+
+    auto axisColor = [&](int axis) -> QColor {
+        switch (axis) {
+        case 0:  return QColor(220,  60,  60);   // X — red
+        case 1:  return QColor( 80, 200,  80);   // Y — green
+        case 2:  return QColor( 80, 120, 230);   // Z — blue
+        default: return QColor(230, 200,  60);   // screen-aligned — yellow
+        }
+    };
+
+    const bool   dragActive  = m_bridge->gizmoDragActive();
+    const auto   activeKind  = m_bridge->activeGizmoKind();
+    const int    activeAxis  = m_bridge->activeGizmoAxis();
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    for (const auto& h : handles) {
+        const QPointF c = toWidget(h.screenX, h.screenY);
+        const double r = h.screenRadius * std::min(scaleX, scaleY);
+        const QColor color = axisColor(h.axis);
+        const bool   isActive = dragActive
+                             && activeKind == h.kind
+                             && activeAxis == h.axis;
+        const QColor strokeC = isActive ? QColor(255, 255, 255) : color;
+        QPen stroke(strokeC);
+        stroke.setWidthF(isActive ? 2.5 : 1.5);
+
+        using K = ViewportBridge::GizmoKind;
+        switch (h.kind) {
+        case K::AxisArrow:
+        case K::AxisScaleHandle: {
+            QColor fill = color;
+            fill.setAlphaF(0.85);
+            p.setBrush(fill);
+            p.setPen(stroke);
+            p.drawEllipse(c, r, r);
+            break;
+        }
+        case K::AxisPlane: {
+            const double s = r * 1.4;
+            QColor fill = color;
+            fill.setAlphaF(0.40);
+            p.setBrush(fill);
+            p.setPen(stroke);
+            p.drawRect(QRectF(c.x() - s, c.y() - s, 2 * s, 2 * s));
+            break;
+        }
+        case K::ScreenCenter:
+        case K::UniformScaleCube: {
+            QColor fill = color;
+            fill.setAlphaF(0.30);
+            p.setBrush(fill);
+            p.setPen(stroke);
+            p.drawEllipse(c, r, r);
+            break;
+        }
+        case K::AxisRing:
+        case K::ScreenRing: {
+            p.setBrush(Qt::NoBrush);
+            QColor ringC = strokeC;
+            ringC.setAlphaF(isActive ? 1.0 : 0.8);
+            QPen ringPen(ringC);
+            ringPen.setWidthF(isActive ? 3.0 : 2.0);
+            p.setPen(ringPen);
+            p.drawEllipse(c, r, r);
+            break;
+        }
+        }
+    }
 }
 
 QPointF ViewportWidget::surfacePoint(const QPointF& pos) const

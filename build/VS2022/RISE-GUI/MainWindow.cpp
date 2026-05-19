@@ -704,6 +704,16 @@ void MainWindow::onStateChanged(int newState)
     if (m_viewportTimeline) m_viewportTimeline->setEnabled(interacting);
     if (m_viewportProps)    m_viewportProps->setEnabled(interacting);
 
+    // Gizmo overlay gate — narrower than `interacting` (which also
+    // hides during `.loading` / `.cancelling` transitions).  Only
+    // suppress the overlay while the production rasterizer is
+    // actually running, so the user keeps the widgets between
+    // renders and during brief state-machine transitions.  Mirrors
+    // macOS `isProductionRendering`.
+    if (m_viewportWidget) {
+        m_viewportWidget->setProductionRendering(state == RenderEngine::Rendering);
+    }
+
     // Disable Open Recent during active operations
     m_recentFilesMenu->setEnabled(interacting);
 
@@ -793,6 +803,7 @@ void MainWindow::rebuildViewportForLoadedScene()
     m_viewportBridge = new ViewportBridge(m_engine, this);
 
     m_viewportToolbar  = new ViewportToolbar();
+    m_viewportToolbar->setBridge(m_viewportBridge);
     m_viewportWidget   = new ViewportWidget(m_viewportBridge);
     m_viewportTimeline = new ViewportTimeline();
     m_viewportProps    = new ViewportProperties(m_viewportBridge);

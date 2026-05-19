@@ -54,6 +54,7 @@
 #include "../Interfaces/IFilm.h"
 #include "../RISE_API.h"			// for RISE_API_CreateFilm (preview-scale Film swap)
 #include "../Cameras/CameraCommon.h"
+#include "../Cameras/PinholeCamera.h"
 #include "../Interfaces/IEnumCallback.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IRayCaster.h"
@@ -242,45 +243,54 @@ inline bool ParsePropertyBool( const String& valueStr, bool& out )
 // --- Gizmo math ------------------------------------------------------
 //
 // World→screen projection through the camera's `mxTrans` matrix (the
-// same matrix `GenerateRay` uses to map screen → world).  Derivation:
+// same matrix `GenerateRay` uses to map screen → world).  Returns
+// `(sx, sy)` in TARGET-pixel WIDGET-Y-DOWN space — the stable full-
+// res image space that platform overlays and pointer events both
+// align with.  Rescaling matters during fast drags: the controller
+// swaps the scene's Film to a subsampled size for the duration of
+// each in-flight render pass (see `DoOneRenderPass`'s preview-scale
+// path), which rebuilds `mxTrans` against the CURRENT subsampled
+// dims.  The projection therefore lands in current-pixel space; we
+// must rescale to target-pixel space so the handles stay locked to
+// the object on screen during the drag's low-res frames.
 //
-//   `mxTrans` maps screen point S=(sx,sy,0) → world point T.  The
-//   ray fired through screen point S has origin O and direction
-//   (O - T) (see `PinholeCamera::GenerateRay`'s use of
-//   `Vector3Ops::mkVector3(origin, transP) = origin - transP` — the
-//   screen plane sits BEHIND the pinhole at sensor-plane distance 1).
-//   Ray equation: P = O + t·(O - T) for t > 0 in-front-of-camera.
+// Derivation (intermediate values in mxTrans's source space —
+// current-pixel-Y-UP per `PixelBasedPelRasterizer.cpp:614`'s
+// `Point2(x, height - y)` feed of `GenerateRay`):
 //
-//   Solving for T gives T = O - (P - O)/t.  Apply `invMxTrans`
-//   (affine: translation acts on points, linear part on vectors).
-//   Let A = invM·P and B = invM·O.  Difference (A - B) is the image
-//   of vector (P - O) under invM's linear part.  Then:
-//       (sx, sy, 0) = B - (1/t)·(A - B) = B + (1/t)·(B - A)
+//   `mxTrans` maps screen point S=(sx,sy_image,0) → world point T.
+//   The ray fired through S has origin O and direction (O - T) (see
+//   `PinholeCamera::GenerateRay`'s use of `mkVector3(origin, transP)`
+//   = origin - transP — the screen plane sits BEHIND the pinhole at
+//   sensor-plane distance 1).  Ray equation: P = O + t·(O - T) for
+//   t > 0 in-front-of-camera.
 //
-//   From the z-component (must equal 0 because the screen sits at
-//   z=0 in mxTrans's source space):
-//       1/t = B.z / (A.z - B.z)
+//   Solving for T gives T = O - (P - O)/t.  Apply `invMxTrans`.  Let
+//   A = invM·P and B = invM·O.  Then (sx, sy_image, 0) = B + (1/t)·
+//   (B - A), and the z-component constraint gives 1/t = B.z / (A.z -
+//   B.z).  For the standard pinhole construction in
+//   `CameraCommon::Recompute`, B.z == 1.  In-front check is `A.z > B.z`.
 //
-//   The point is in front of the camera iff 1/t > 0.  For the
-//   pinhole construction in `CameraCommon::Recompute`, B.z == 1 (the
-//   origin maps to screen-space `(W/2, H/2, 1)` — at z=+1 because the
-//   screen plane sits at z=-1 after m1's pre-translate).  Other
-//   camera types that follow the same `m3 · m2 · m1` chain inherit
-//   this.  In-front check is then `A.z > B.z`.
-//
-// Works for any camera whose `GetMatrix()` follows the standard
-// translate / FOV-stretch / basis-rotate chain.  Returns false for
-// behind-camera points, points AT the eye, and degenerate (det == 0)
-// matrices.
+// Rescale (current → target): `sx_target = sx_current · (targetW /
+// currentW)`, `sy_target_image = sy_current · (targetH / currentH)`.
+// Then flip Y around target height: `sy_widget = targetH -
+// sy_target_image`.  Returns false for behind-camera points, points
+// AT the eye, degenerate matrices, or non-positive dims.
 inline bool ProjectWorldToScreen_(
 	const Matrix4& mxTrans,
 	const Point3&  origin,
 	const Point3&  worldPos,
+	double         currentWidth,
+	double         currentHeight,
+	double         targetWidth,
+	double         targetHeight,
 	double&        outSx,
 	double&        outSy )
 {
 	const Scalar det = Matrix4Ops::Determinant( mxTrans );
 	if( det == 0.0 ) return false;
+	if( !( currentWidth > 0.0 ) || !( currentHeight > 0.0 ) ) return false;
+	if( !( targetWidth  > 0.0 ) || !( targetHeight  > 0.0 ) ) return false;
 	const Matrix4 inv = Matrix4Ops::Inverse( mxTrans );
 	const Point3 A = Point3Ops::Transform( inv, worldPos );
 	const Point3 B = Point3Ops::Transform( inv, origin );
@@ -288,8 +298,11 @@ inline bool ProjectWorldToScreen_(
 	if( denom == 0.0 ) return false;
 	const Scalar invT = B.z / denom;
 	if( !( invT > 0.0 ) ) return false;               // behind camera or AT eye
-	const double sx = static_cast<double>( B.x + invT * ( B.x - A.x ) );
-	const double sy = static_cast<double>( B.y + invT * ( B.y - A.y ) );
+	const double sx_current       = static_cast<double>( B.x + invT * ( B.x - A.x ) );
+	const double sy_image_current = static_cast<double>( B.y + invT * ( B.y - A.y ) );
+	const double sx               = sx_current * ( targetWidth  / currentWidth  );
+	const double sy_image_target  = sy_image_current * ( targetHeight / currentHeight );
+	const double sy               = targetHeight - sy_image_target;   // → widget-Y-DOWN
 	if( !std::isfinite( sx ) || !std::isfinite( sy ) ) return false;
 	outSx = sx;
 	outSy = sy;
@@ -310,6 +323,22 @@ constexpr double kAxisHitRadiusPx   = 14.0;   // hit-test radius for axis arrows
 constexpr double kPlaneHitRadiusPx  = 18.0;   // hit-test radius for plane / ring tangent
 constexpr double kRingHitRadiusPx   = 10.0;   // tolerance around the projected ring circumference
 
+// `ProjectWorldToScreen_` is derived for the standard pinhole `m3 ·
+// m2 · m1` matrix chain in `CameraCommon::Recompute` (translate to
+// screen origin, FOV-based stretch, basis transform) and the
+// perspective ray semantics `mkVector3(origin, transP)` in
+// `PinholeCamera::GenerateRay`.  Other camera types — orthographic
+// (parallel rays, separate inverse math in `CameraUtilities.cpp`),
+// thin-lens (`mxTrans = frame * ComputeScaleFromAR()`; no `m1` shift),
+// fisheye (non-linear projection) — don't satisfy that derivation,
+// so the gizmo would silently misalign or disappear off-screen.  We
+// gate strictly on PinholeCamera until proper per-type projections
+// land.  Returns true iff `cam` is a usable PinholeCamera.
+inline bool IsGizmoSupportedCamera_( const ICamera* cam )
+{
+	return dynamic_cast<const Implementation::PinholeCamera*>( cam ) != 0;
+}
+
 // Probe the world axes at the pivot to capture their screen-space
 // directions (pixels per world unit).  `outAxisDir[a][0]` is the
 // x-component of world axis `a` projected at the pivot, etc.
@@ -319,6 +348,10 @@ inline void ProbeAxesAtPivot_(
 	const Matrix4& mxTrans,
 	const Point3&  origin,
 	const Point3&  pivotWorld,
+	double         currentWidth,
+	double         currentHeight,
+	double         targetWidth,
+	double         targetHeight,
 	double         cx,
 	double         cy,
 	double         outAxisDirX[3],
@@ -335,7 +368,9 @@ inline void ProbeAxesAtPivot_(
 		const Point3 axisWorld(
 			pivotWorld.x + v.x, pivotWorld.y + v.y, pivotWorld.z + v.z );
 		double ax = 0, ay = 0;
-		const bool ok = ProjectWorldToScreen_( mxTrans, origin, axisWorld, ax, ay );
+		const bool ok = ProjectWorldToScreen_(
+			mxTrans, origin, axisWorld,
+			currentWidth, currentHeight, targetWidth, targetHeight, ax, ay );
 		if( !ok ) { outAxisOk[a] = false; continue; }
 		const double dx = ax - cx;
 		const double dy = ay - cy;
@@ -344,7 +379,7 @@ inline void ProbeAxesAtPivot_(
 			outAxisOk[a] = false;
 			continue;
 		}
-		outAxisDirX[a] = dx;       // pixels per world unit along x
+		outAxisDirX[a] = dx;       // target-pixels per world unit along x (widget-Y-DOWN)
 		outAxisDirY[a] = dy;
 		outAxisOk[a]   = true;
 	}
@@ -363,6 +398,10 @@ inline void BuildGizmoHandles_(
 	const Matrix4&                                  mxTrans,
 	const Point3&                                   origin,
 	const Point3&                                   pivotWorld,
+	double                                          currentWidth,
+	double                                          currentHeight,
+	double                                          targetWidth,
+	double                                          targetHeight,
 	std::vector<SceneEditController::GizmoHandle>&  outHandles )
 {
 	using Kind = SceneEditController::GizmoHandle::Kind;
@@ -370,7 +409,8 @@ inline void BuildGizmoHandles_(
 	outHandles.clear();
 
 	double cx = 0, cy = 0;
-	if( !ProjectWorldToScreen_( mxTrans, origin, pivotWorld, cx, cy ) ) return;
+	if( !ProjectWorldToScreen_( mxTrans, origin, pivotWorld,
+		currentWidth, currentHeight, targetWidth, targetHeight, cx, cy ) ) return;
 
 	// Probe each world axis with a fixed world-space delta so we can
 	// derive the screen-space direction of that axis at the pivot.
@@ -390,7 +430,8 @@ inline void BuildGizmoHandles_(
 		const Point3 axisWorld(
 			pivotWorld.x + v.x, pivotWorld.y + v.y, pivotWorld.z + v.z );
 		double ax = 0, ay = 0;
-		if( !ProjectWorldToScreen_( mxTrans, origin, axisWorld, ax, ay ) ) continue;
+		if( !ProjectWorldToScreen_( mxTrans, origin, axisWorld,
+			currentWidth, currentHeight, targetWidth, targetHeight, ax, ay ) ) continue;
 		double dx = ax - cx;
 		double dy = ay - cy;
 		const double mag = std::sqrt( dx*dx + dy*dy );
@@ -640,9 +681,33 @@ void SceneEditController::RefreshGizmoHandles()
 
 	const ICamera* cam = scene->GetCamera();
 	if( !cam ) return;
+	// Gizmo projection is derived for the standard PinholeCamera
+	// matrix chain; other camera types are skipped (see
+	// `IsGizmoSupportedCamera_` for the rationale).
+	if( !IsGizmoSupportedCamera_( cam ) ) return;
+
+	// Stable full-res target dims — what the platform overlay uses
+	// as `surface` size and what pointer events normalize through.
+	unsigned int stableW = 0, stableH = 0;
+	if( !GetCameraDimensions( stableW, stableH ) || stableW == 0 || stableH == 0 ) return;
+
+	// CURRENT camera frame dims — what `mxTrans` projects into.
+	// During an in-flight render pass these are subsampled (preview-
+	// scale swap in `DoOneRenderPass`); between passes they equal
+	// the stable dims.  `CameraCommon::GetWidth/Height` are
+	// non-virtual getters on the concrete camera (note that ICamera
+	// itself doesn't expose dims since the 2026-05 Film refactor).
+	const Implementation::CameraCommon* camC =
+		dynamic_cast<const Implementation::CameraCommon*>( cam );
+	const unsigned int curW = camC ? camC->GetWidth()  : stableW;
+	const unsigned int curH = camC ? camC->GetHeight() : stableH;
+	if( curW == 0 || curH == 0 ) return;
 
 	BuildGizmoHandles_( mTool, cam->GetMatrix(), cam->GetLocation(),
-	                    pivotWorld, mGizmoHandles );
+	                    pivotWorld,
+	                    static_cast<double>( curW ),    static_cast<double>( curH ),
+	                    static_cast<double>( stableW ), static_cast<double>( stableH ),
+	                    mGizmoHandles );
 }
 
 unsigned int SceneEditController::GizmoHandleCount() const
@@ -687,9 +752,19 @@ bool SceneEditController::ForTest_ProjectWorldToScreen(
 	const IScene* scene = mJob.GetScene();
 	const ICamera* cam = scene ? scene->GetCamera() : 0;
 	if( !cam ) return false;
+	if( !IsGizmoSupportedCamera_( cam ) ) return false;
+	unsigned int stableW = 0, stableH = 0;
+	if( !GetCameraDimensions( stableW, stableH ) || stableW == 0 || stableH == 0 ) return false;
+	const Implementation::CameraCommon* camC =
+		dynamic_cast<const Implementation::CameraCommon*>( cam );
+	const unsigned int curW = camC ? camC->GetWidth()  : stableW;
+	const unsigned int curH = camC ? camC->GetHeight() : stableH;
+	if( curW == 0 || curH == 0 ) return false;
 	return ProjectWorldToScreen_(
 		cam->GetMatrix(), cam->GetLocation(),
 		Point3( Scalar( wx ), Scalar( wy ), Scalar( wz ) ),
+		static_cast<double>( curW ),    static_cast<double>( curH ),
+		static_cast<double>( stableW ), static_cast<double>( stableH ),
 		outSx, outSy );
 }
 
@@ -813,33 +888,74 @@ void SceneEditController::OnPointerDown( const Point2& px )
 				const GizmoHandle& h = mGizmoHandles[ hit ];
 				mGizmoDrag.kind = h.kind;
 				mGizmoDrag.axis = h.axis;
+				mGizmoDrag.anchorPxX = static_cast<double>( px.x );
+				mGizmoDrag.anchorPxY = static_cast<double>( px.y );
 
 				// Capture pivot (world) + projection.
 				double wx = 0, wy = 0, wz = 0;
 				if( ForTest_GetSelectionPivotWorld( wx, wy, wz ) ) {
 					mGizmoDrag.pivotWorld = Point3( wx, wy, wz );
 
+					// Capture the object's drag-start transform matrix
+					// as the anchor for `ScaleObjectFromAnchor` (and
+					// available to any other anchor-based op).  Apply
+					// composes the per-frame factor on TOP of this
+					// matrix via `ClearAllTransforms` +
+					// `PushTopTransStack(anchor)` +
+					// `PushTopTransStack(Stretch(factor))`, so the
+					// final composition is `anchor · Stretch(factor)`.
+					// This is what makes scale drag correct on objects
+					// with non-trivial transform stacks (matrix imports
+					// from glTF, prior SetObjectScale, etc.) —
+					// decomposing column magnitudes and writing them
+					// back as `SetObjectStretch` would double-apply.
+					const IScene* sceneForObj = mJob.GetScene();
+					const IObjectManager* objs = sceneForObj ? sceneForObj->GetObjects() : 0;
+					IObjectPriv* obj = objs ? objs->GetItem( mSelectionName.c_str() ) : 0;
+					if( obj ) {
+						mGizmoDrag.dragStartMatrix = obj->GetFinalTransformMatrix();
+					} else {
+						mGizmoDrag.dragStartMatrix = Matrix4Ops::Identity();
+					}
+
 					const IScene* scene = mJob.GetScene();
 					const ICamera* cam = scene ? scene->GetCamera() : 0;
-					if( cam ) {
-						double cx = 0, cy = 0;
-						if( ProjectWorldToScreen_(
-							cam->GetMatrix(), cam->GetLocation(),
-							mGizmoDrag.pivotWorld, cx, cy ) )
-						{
-							mGizmoDrag.pivotScreenX = cx;
-							mGizmoDrag.pivotScreenY = cy;
-							ProbeAxesAtPivot_(
+					unsigned int stableW = 0, stableH = 0;
+					const bool stableOk = GetCameraDimensions( stableW, stableH )
+					                    && stableW > 0 && stableH > 0;
+					if( cam && stableOk && IsGizmoSupportedCamera_( cam ) ) {
+						const Implementation::CameraCommon* camC =
+							dynamic_cast<const Implementation::CameraCommon*>( cam );
+						const unsigned int curW = camC ? camC->GetWidth()  : stableW;
+						const unsigned int curH = camC ? camC->GetHeight() : stableH;
+						if( curW > 0 && curH > 0 ) {
+							const double curWd    = static_cast<double>( curW );
+							const double curHd    = static_cast<double>( curH );
+							const double stableWd = static_cast<double>( stableW );
+							const double stableHd = static_cast<double>( stableH );
+							double cx = 0, cy = 0;
+							if( ProjectWorldToScreen_(
 								cam->GetMatrix(), cam->GetLocation(),
-								mGizmoDrag.pivotWorld, cx, cy,
-								mGizmoDrag.axisDirX, mGizmoDrag.axisDirY,
-								mGizmoDrag.axisOk );
-							// For ring drags, record the pointer-down angle so
-							// per-frame deltas come from `atan2(now) - atan2(last)`.
-							mGizmoDrag.prevAngle = std::atan2(
-								static_cast<double>( px.y ) - cy,
-								static_cast<double>( px.x ) - cx );
-							mGizmoDrag.active = true;
+								mGizmoDrag.pivotWorld,
+								curWd, curHd, stableWd, stableHd, cx, cy ) )
+							{
+								mGizmoDrag.pivotScreenX = cx;
+								mGizmoDrag.pivotScreenY = cy;
+								ProbeAxesAtPivot_(
+									cam->GetMatrix(), cam->GetLocation(),
+									mGizmoDrag.pivotWorld,
+									curWd, curHd, stableWd, stableHd, cx, cy,
+									mGizmoDrag.axisDirX, mGizmoDrag.axisDirY,
+									mGizmoDrag.axisOk );
+								// For ring drags, record the pointer-down angle
+								// so per-frame deltas come from `atan2(now) -
+								// atan2(last)`.  All Y values are widget-Y-DOWN
+								// to match the pointer-event convention.
+								mGizmoDrag.prevAngle = std::atan2(
+									static_cast<double>( px.y ) - cy,
+									static_cast<double>( px.x ) - cx );
+								mGizmoDrag.active = true;
+							}
 						}
 					}
 				}
@@ -1072,18 +1188,66 @@ void SceneEditController::OnPointerMove( const Point2& px )
 	case Tool::ScaleObject:
 		if( !haveObject ) return;
 		edit.objectName = mSelectionName;
-		// Scale dispatch through the gizmo handle is intentionally a
-		// thin wrapper on the legacy placeholder for B3 — RISE's
-		// `SetObjectStretch` is absolute (no incremental-stretch op
-		// + no public stretch-getter on ITransformable), so a clean
-		// "drag accumulates a stretch factor" requires either a new
-		// SceneEdit op or a non-trivial matrix-decomposition path.
-		// Both are out of scope here.  Once that infrastructure lands,
-		// the per-axis (AxisScaleHandle, axis = a) and uniform
-		// (UniformScaleCube, axis = -1) branches will use the at-
-		// drag-start stretch + per-frame factor pattern that Translate
-		// already follows.
-		{
+		if( mGizmoDrag.active ) {
+			using K = GizmoHandle::Kind;
+			// Drag math is unchanged: per-frame the controller
+			// computes a per-axis FACTOR (relative to drag-start)
+			// from cumulative pointer travel along the axis's
+			// screen-space direction, with the factor mapped
+			// exponentially — `factor = 2^(travel / 80px)` — so
+			// dragging 80 px along an axis doubles its scale,
+			// -80 px halves.  Strictly positive (no flip-inside-
+			// out at zero).
+			//
+			// What changed (P1 fix): instead of writing back an
+			// ABSOLUTE `SetObjectStretch` derived from the object's
+			// initial column magnitudes (which double-applied any
+			// existing transform-stack scale on glTF / quaternion /
+			// matrix-imported objects), we emit
+			// `ScaleObjectFromAnchor` carrying the factor in `v3a`
+			// and the anchor matrix in `prevTransform`.  Apply
+			// composes those as `anchor · Stretch(factor)`,
+			// preserving whatever drag-start state the object had
+			// no matter how it was authored.
+			const double anchorDx = static_cast<double>( px.x ) - mGizmoDrag.anchorPxX;
+			const double anchorDy = static_cast<double>( px.y ) - mGizmoDrag.anchorPxY;
+			const double kRefPx = 80.0;
+			const double kLog2  = 0.6931471805599453;
+			Vector3 factor( 1, 1, 1 );
+			if( mGizmoDrag.kind == static_cast<int>( K::AxisScaleHandle ) ) {
+				const int a = mGizmoDrag.axis;
+				if( a < 0 || a > 2 || !mGizmoDrag.axisOk[a] ) return;
+				const double adx = mGizmoDrag.axisDirX[a];
+				const double ady = mGizmoDrag.axisDirY[a];
+				const double mag = std::sqrt( adx*adx + ady*ady );
+				if( !( mag > 0 ) ) return;
+				const double pxAlong = ( anchorDx * adx + anchorDy * ady ) / mag;
+				const Scalar f = Scalar( std::exp( pxAlong / kRefPx * kLog2 ) );
+				if( a == 0 ) factor.x = f;
+				else if( a == 1 ) factor.y = f;
+				else factor.z = f;
+			}
+			else if( mGizmoDrag.kind == static_cast<int>( K::UniformScaleCube ) ) {
+				const Scalar f = Scalar( std::exp( anchorDx / kRefPx * kLog2 ) );
+				factor.x = f;
+				factor.y = f;
+				factor.z = f;
+			}
+			else {
+				return;
+			}
+			edit.op = SceneEdit::ScaleObjectFromAnchor;
+			edit.v3a = factor;
+			// Pre-populate prevTransform with the captured anchor
+			// matrix.  `SceneEditor::Apply` skips its usual
+			// re-capture for this op so the anchor stays stable
+			// across every frame of the drag.
+			edit.prevTransform = mGizmoDrag.dragStartMatrix;
+		} else {
+			// Legacy free-drag (no handle hit): per-frame absolute
+			// reset — broken for accumulation but kept for non-gizmo
+			// drag back-compat.  Gizmo overlay landed B5+ surfaces
+			// the handles so users shouldn't normally hit this path.
 			edit.op = SceneEdit::SetObjectStretch;
 			const Scalar f = 1.0 + delta.y * 0.005;
 			edit.v3a = Vector3( f, f, f );
@@ -1113,8 +1277,50 @@ void SceneEditController::OnPointerMove( const Point2& px )
 		return;
 	}
 
-	if( mEditor.Apply( edit ) )
-	{
+	// Object-transform edits mutate scene geometry (transform matrix
+	// → world bounding box → top-level BVH leaf pointers), so they
+	// MUST land while no render is in flight — otherwise a worker
+	// thread mid-traversal sees a freed BVH leaf entry on the next
+	// lazy rebuild and crashes with a stale `IObjectPriv*` deref
+	// inside `RayElementIntersection`.  Camera ops are exempt
+	// because they only mutate camera state (read at GenerateRay
+	// time, not during traversal) and don't invalidate the BVH.
+	//
+	// Pattern matches Undo / Redo / SetProperty: take the mutex,
+	// request cancel if a pass is running, wait until the render
+	// thread flips `mRendering` to false, then mutate.
+	if( IsObjectMotionTool( mTool ) ) {
+		// Inline park-and-apply: cancel any in-flight render and wait
+		// for it to drain before mutating scene geometry — object
+		// transforms invalidate the top-level BVH which a worker
+		// mid-traversal can be reading.  Mirrors the pattern Undo /
+		// Redo / SetProperty use.
+		//
+		// Stamps `mLastEditTimeMs` and clears `mPolishState` in
+		// addition to bumping `mEditPending` so the render loop's
+		// idle-refinement gate sees a fresh edit timestamp (without
+		// this it can decide the user has been idle since pointer-
+		// down and walk the preview scale back toward full-res mid-
+		// drag, freezing the viewport for ~seconds before the next
+		// pass at scale=1 starts).  Clearing `mPolishState` also
+		// cancels any polish pass queued by the previous gesture's
+		// pointer-up — symmetric with `KickRender()` (line 2331).
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mRendering.load( std::memory_order_acquire ) ) {
+			mCancelProgress.RequestCancel();
+			mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+		const bool ok = mEditor.Apply( edit );
+		if( ok ) {
+			mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+			mPolishState.store( static_cast<int>( PolishState::None ),
+			                    std::memory_order_release );
+			mEditPending.store( true, std::memory_order_release );
+			lk.unlock();
+			mCV.notify_one();
+		}
+	} else if( mEditor.Apply( edit ) ) {
 		KickRender();
 	}
 }

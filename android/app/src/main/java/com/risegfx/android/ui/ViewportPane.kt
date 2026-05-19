@@ -2,6 +2,7 @@ package com.risegfx.android.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,7 +29,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.ui.platform.LocalDensity
 import com.risegfx.android.nativebridge.RiseNative
 
@@ -47,15 +51,24 @@ private val ViewportImagePadding = 8.dp
  * to the macOS/Windows implementations.  Numeric values pass straight
  * through to nativeViewportSetTool().
  *
- * Object Translate / Rotate / Scale and the standalone Scrub tool are
- * intentionally omitted from [visibleInToolbar] — object editing is
- * too much complexity for the current state of the app, and timeline
- * scrubbing is driven directly by the bottom timeline bar.
+ * The toolbar uses the Photoshop-style category-slot layout: three
+ * slots (Select / Camera / ObjectTransform) backed by [ToolCategory],
+ * each multi-tool slot opens a DropdownMenu on long-press to switch
+ * sub-tool.  Scrub lives in the bottom timeline bar.
  */
 enum class ViewportTool(val rawValue: Int, val label: String, val tooltip: String) {
     Select(0,
         "Select",
         "Select — click an object in the viewport to make it the target of the next edit"),
+    TranslateObject(1,
+        "Translate",
+        "Translate — drag the selected object to move it through the scene"),
+    RotateObject(2,
+        "Rotate",
+        "Rotate — drag to rotate the selected object around its origin"),
+    ScaleObject(3,
+        "Scale",
+        "Scale — drag up/down to scale the selected object"),
     OrbitCamera(4,
         "Orbit",
         "Orbit Camera — drag to rotate the camera around the scene"),
@@ -69,10 +82,72 @@ enum class ViewportTool(val rawValue: Int, val label: String, val tooltip: Strin
         "Roll",
         "Roll Camera — drag horizontally to roll the camera around the (camera→look-at) axis");
 
-    companion object {
-        /** Tools surfaced in the toolbar UI. */
-        val visibleInToolbar: List<ViewportTool> = values().toList()
-    }
+    /** Photoshop-style toolbar slot membership. */
+    val category: ToolCategory
+        get() = when (this) {
+            Select          -> ToolCategory.Select
+            TranslateObject -> ToolCategory.ObjectTransform
+            RotateObject    -> ToolCategory.ObjectTransform
+            ScaleObject     -> ToolCategory.ObjectTransform
+            OrbitCamera     -> ToolCategory.Camera
+            PanCamera       -> ToolCategory.Camera
+            ZoomCamera      -> ToolCategory.Camera
+            RollCamera      -> ToolCategory.Camera
+        }
+}
+
+/**
+ * Photoshop-style toolbar category — the "slot" a tool sits in.
+ * Mirrors `RISE::SceneEditController::ToolCategory` /
+ * `RISEViewportToolCategory`.  Numeric values are part of the C-API
+ * contract.
+ */
+enum class ToolCategory(val rawValue: Int, val tooltip: String) {
+    Select(0,
+        "Select — click an object in the viewport to make it the next edit's target"),
+    Camera(1,
+        "Camera — orbit, pan, zoom, or roll the camera (long-press to switch sub-tool)"),
+    ObjectTransform(2,
+        "Transform — translate, rotate, or scale the selected object via the gizmo (long-press to switch sub-tool)");
+
+    /** Sub-tools shown in this slot's flyout, top-to-bottom. */
+    val subTools: List<ViewportTool>
+        get() = when (this) {
+            Select          -> listOf(ViewportTool.Select)
+            Camera          -> listOf(
+                ViewportTool.OrbitCamera, ViewportTool.PanCamera,
+                ViewportTool.ZoomCamera,  ViewportTool.RollCamera,
+            )
+            ObjectTransform -> listOf(
+                ViewportTool.TranslateObject, ViewportTool.RotateObject,
+                ViewportTool.ScaleObject,
+            )
+        }
+
+    /** Default sub-tool the slot shows before any user interaction. */
+    val defaultSubTool: ViewportTool
+        get() = subTools.first()
+}
+
+/** One screen-space gizmo handle from the controller's layout.
+ *  Mirrors `RISEViewportGizmoHandle` / `ViewportBridge::GizmoHandle`. */
+private data class GizmoHandle(
+    val kind: Int,
+    val axis: Int,
+    val screenX: Double,
+    val screenY: Double,
+    val screenRadius: Double,
+)
+
+/** Kind constants from RISE::SceneEditController::GizmoHandle::Kind. */
+private object GizmoKind {
+    const val AxisArrow        = 0
+    const val AxisPlane        = 1
+    const val ScreenCenter     = 2
+    const val AxisRing         = 3
+    const val ScreenRing       = 4
+    const val AxisScaleHandle  = 5
+    const val UniformScaleCube = 6
 }
 
 /** Quick-pick preset attached to a property row.  Mirrors
@@ -317,6 +392,9 @@ fun ViewportPane(
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         frame = frame,
                         enabled = interactionEnabled,
+                        selectedTool = selectedTool,
+                        isProductionRendering = (state is RenderState.Rendering),
+                        refreshTrigger = refreshTrigger,
                     )
                     if (hasAnimation) {
                         Spacer(Modifier.height(8.dp))
@@ -434,15 +512,14 @@ private fun ViewportToolbar(
     enabled: Boolean,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        ViewportTool.visibleInToolbar.forEach { tool ->
-            val selected = (tool == selectedTool)
-            FilterChip(
-                selected = selected,
+        ToolCategory.values().forEach { cat ->
+            CategorySlot(
+                category = cat,
+                selectedTool = selectedTool,
+                onToolSelected = onToolSelected,
                 enabled = enabled,
-                onClick = { onToolSelected(tool) },
-                label = { Text(tool.label, style = MaterialTheme.typography.labelSmall) },
-                modifier = Modifier.padding(end = 4.dp),
             )
+            Spacer(Modifier.width(4.dp))
         }
         Spacer(Modifier.weight(1f))
         // ArrowBack/ArrowForward are guaranteed to exist in Icons.Default
@@ -453,6 +530,204 @@ private fun ViewportToolbar(
         }
         IconButton(onClick = onRedo, enabled = enabled) {
             Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Redo")
+        }
+    }
+}
+
+/**
+ * One Photoshop-style toolbar slot.  Tap activates the slot's
+ * currently-shown sub-tool (or, if the slot's category is active,
+ * its own tool).  Long-press opens a DropdownMenu of the category's
+ * sub-tools.  Visually highlighted when its category matches the
+ * active tool — mirrors the macOS SlotIcon's accent-coloured
+ * background and the Windows QToolButton:checked stylesheet.
+ *
+ * Single-tool slots (Select) skip the long-press flyout entirely —
+ * there are no alternatives to switch between.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun CategorySlot(
+    category: ToolCategory,
+    selectedTool: ViewportTool,
+    onToolSelected: (ViewportTool) -> Unit,
+    enabled: Boolean,
+) {
+    val hasFlyout = category.subTools.size > 1
+    // Slot icon = active sub-tool if the slot's category matches,
+    // otherwise per-category last-used from the bridge (falls back to
+    // the category default when the bridge has no memory yet).
+    val shownTool: ViewportTool = remember(selectedTool, category) {
+        if (selectedTool.category == category) {
+            selectedTool
+        } else {
+            val raw = RiseNative.nativeViewportGetLastSubToolForCategory(category.rawValue)
+            ViewportTool.values().firstOrNull { it.rawValue == raw }
+                ?: category.defaultSubTool
+        }
+    }
+    val isSelected = (selectedTool.category == category)
+    var menuOpen by remember { mutableStateOf(false) }
+
+    // Custom Box-based slot rather than `FilterChip` because Material's
+    // FilterChip wraps its content in an INTERNAL `Modifier.clickable`
+    // that consumes tap-down events at the inner layer — any
+    // `combinedClickable` we attach via the outer `modifier` parameter
+    // never receives the gesture, so long-press to open the flyout
+    // would silently no-op.  Building the chip-like visual ourselves
+    // gives us a single combinedClickable that owns BOTH tap (activate
+    // the shown sub-tool) and long-press (open the sub-tool flyout).
+    val bg = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent
+    val fg = if (isSelected) MaterialTheme.colorScheme.onPrimary
+             else MaterialTheme.colorScheme.onSurface
+    val border = if (isSelected) MaterialTheme.colorScheme.primary
+                 else MaterialTheme.colorScheme.outline
+    Box {
+        Box(
+            modifier = Modifier
+                .background(bg, RoundedCornerShape(8.dp))
+                .border(1.dp, border, RoundedCornerShape(8.dp))
+                .combinedClickable(
+                    enabled = enabled,
+                    onClick = { onToolSelected(shownTool) },
+                    onLongClick = { if (hasFlyout) menuOpen = true },
+                )
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                shownTool.label,
+                color = fg,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        if (hasFlyout) {
+            DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false },
+            ) {
+                for (sub in category.subTools) {
+                    DropdownMenuItem(
+                        text = { Text(sub.label) },
+                        onClick = {
+                            menuOpen = false
+                            onToolSelected(sub)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Transparent overlay drawn over the rendered frame when an Object-
+ * transform tool is active.  Reads handle positions from the native
+ * controller (already in widget-Y-DOWN, stable-pixel space — the
+ * C++ side rescales for the subsampled preview), maps via the same
+ * aspect-fit math the [Image] uses, and draws axis-coloured discs,
+ * plane squares, rotation rings, and centre / uniform glyphs.
+ *
+ * Hidden during production renders (`isProductionRendering = true`)
+ * because the cached handles can be stale relative to the production
+ * rasterizer's camera state.  Mirrors macOS [ViewportGizmoOverlay].
+ */
+@Composable
+private fun GizmoOverlay(
+    modifier: Modifier,
+    frame: ImageBitmap?,
+    refreshTrigger: Int,
+    paddingPx: Int,
+) {
+    if (frame == null) return
+    var handles by remember { mutableStateOf(emptyList<GizmoHandle>()) }
+    var dragActive by remember { mutableStateOf(false) }
+    var activeKind by remember { mutableStateOf(-1) }
+    var activeAxis by remember { mutableStateOf(-1) }
+
+    LaunchedEffect(refreshTrigger) {
+        RiseNative.nativeViewportRefreshGizmoHandles()
+        val n = RiseNative.nativeViewportGizmoHandleCount()
+        handles = (0 until n).mapNotNull { i ->
+            val a = RiseNative.nativeViewportGizmoHandle(i)
+            if (a.size != 5) null
+            else GizmoHandle(
+                kind = a[0].toInt(),
+                axis = a[1].toInt(),
+                screenX = a[2],
+                screenY = a[3],
+                screenRadius = a[4],
+            )
+        }
+        dragActive = RiseNative.nativeViewportIsGizmoDragActive()
+        activeKind = RiseNative.nativeViewportActiveGizmoKind()
+        activeAxis = RiseNative.nativeViewportActiveGizmoAxis()
+    }
+
+    Canvas(modifier = modifier) {
+        if (handles.isEmpty()) return@Canvas
+        // Pull the camera's stable surface dims, packed (w in hi 32,
+        // h in lo 32) by [nativeViewportCameraDimensions].
+        val packed = RiseNative.nativeViewportCameraDimensions()
+        val surfW = (packed ushr 32).toInt().toFloat()
+        val surfH = (packed and 0xFFFFFFFFL).toInt().toFloat()
+        if (surfW <= 0f || surfH <= 0f) return@Canvas
+        val effW = size.width  - 2 * paddingPx
+        val effH = size.height - 2 * paddingPx
+        if (effW <= 0f || effH <= 0f) return@Canvas
+        val scale = minOf(effW / surfW, effH / surfH)
+        val drawW = surfW * scale
+        val drawH = surfH * scale
+        val ox = paddingPx + (effW - drawW) / 2f
+        val oy = paddingPx + (effH - drawH) / 2f
+
+        fun axisColor(axis: Int): Color = when (axis) {
+            0    -> Color(0xFFDC3C3C)  // X red
+            1    -> Color(0xFF50C850)  // Y green
+            2    -> Color(0xFF5078E6)  // Z blue
+            else -> Color(0xFFE6C83C)  // screen-aligned yellow
+        }
+
+        for (h in handles) {
+            val cx = ox + h.screenX.toFloat() * scale
+            val cy = oy + h.screenY.toFloat() * scale
+            val r  = (h.screenRadius.toFloat() * scale).coerceAtLeast(2f)
+            val col = axisColor(h.axis)
+            val isActive = dragActive && activeKind == h.kind && activeAxis == h.axis
+            val strokeC = if (isActive) Color.White else col
+            val strokeW = if (isActive) 2.5f else 1.5f
+            when (h.kind) {
+                GizmoKind.AxisArrow, GizmoKind.AxisScaleHandle -> {
+                    drawCircle(color = col.copy(alpha = 0.85f),
+                               radius = r, center = androidx.compose.ui.geometry.Offset(cx, cy))
+                    drawCircle(color = strokeC, radius = r,
+                               center = androidx.compose.ui.geometry.Offset(cx, cy),
+                               style = androidx.compose.ui.graphics.drawscope.Stroke(width = strokeW))
+                }
+                GizmoKind.AxisPlane -> {
+                    val s = r * 1.4f
+                    drawRect(color = col.copy(alpha = 0.40f),
+                             topLeft = androidx.compose.ui.geometry.Offset(cx - s, cy - s),
+                             size = androidx.compose.ui.geometry.Size(2 * s, 2 * s))
+                    drawRect(color = strokeC,
+                             topLeft = androidx.compose.ui.geometry.Offset(cx - s, cy - s),
+                             size = androidx.compose.ui.geometry.Size(2 * s, 2 * s),
+                             style = androidx.compose.ui.graphics.drawscope.Stroke(width = strokeW))
+                }
+                GizmoKind.ScreenCenter, GizmoKind.UniformScaleCube -> {
+                    drawCircle(color = col.copy(alpha = 0.30f),
+                               radius = r, center = androidx.compose.ui.geometry.Offset(cx, cy))
+                    drawCircle(color = strokeC, radius = r,
+                               center = androidx.compose.ui.geometry.Offset(cx, cy),
+                               style = androidx.compose.ui.graphics.drawscope.Stroke(width = strokeW))
+                }
+                GizmoKind.AxisRing, GizmoKind.ScreenRing -> {
+                    drawCircle(color = strokeC.copy(alpha = if (isActive) 1.0f else 0.8f),
+                               radius = r, center = androidx.compose.ui.geometry.Offset(cx, cy),
+                               style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                   width = if (isActive) 3.0f else 2.0f))
+                }
+            }
         }
     }
 }
@@ -525,6 +800,9 @@ private fun ViewportCanvas(
     modifier: Modifier,
     frame: ImageBitmap?,
     enabled: Boolean,
+    selectedTool: ViewportTool = ViewportTool.Select,
+    isProductionRendering: Boolean = false,
+    refreshTrigger: Int = 0,
 ) {
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
 
@@ -548,6 +826,38 @@ private fun ViewportCanvas(
         modifier
             .background(Color(0xFF101114), RoundedCornerShape(12.dp))
             .onSizeChanged { boxSize = it }
+            .pointerInput(enabled) {
+                // Tap-only gesture detector — for the Select tool's
+                // pick path (controller's `OnPointerDown` runs
+                // `PickAt(px)` which casts a ray and sets the Object
+                // selection on hit).  `detectDragGestures` BELOW only
+                // fires after the user crosses the touch-slop
+                // threshold, so a clean tap (down → up without moving
+                // past slop) NEVER reaches the controller without
+                // this detector.  Tap is implemented as a fused
+                // PointerDown + PointerUp at the same image-pixel
+                // coordinate so the Select tool's down-handler runs
+                // exactly the same way a real touch-and-release does.
+                //
+                // Compose's gesture coordination keeps tap and drag
+                // mutually exclusive: a real drag (move > slop)
+                // cancels the tap, and a real tap (no move within the
+                // timeout) doesn't trigger drag.  So adding this
+                // parallel detector is safe — neither path fires when
+                // the other should.
+                if (!enabled) return@pointerInput
+                detectTapGestures(
+                    onTap = { o ->
+                        val surfaceDims = RiseNative.nativeViewportCameraDimensions()
+                        val img = mapToImagePixel(
+                            o, boxSizeState.value, frameState.value, surfaceDims,
+                            paddingPxState.value,
+                        ) ?: return@detectTapGestures
+                        RiseNative.nativeViewportPointerDown(img.x.toDouble(), img.y.toDouble())
+                        RiseNative.nativeViewportPointerUp(img.x.toDouble(), img.y.toDouble())
+                    },
+                )
+            }
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 detectDragGestures(
@@ -594,6 +904,24 @@ private fun ViewportCanvas(
                 modifier = Modifier.fillMaxSize().padding(ViewportImagePadding),
                 contentScale = ContentScale.Fit,
             )
+            // Gizmo overlay — drawn on top of the rendered frame
+            // when an Object-transform tool is active AND we're not
+            // in the middle of a production render.  Mirrors macOS
+            // ViewportGizmoOverlay's gating logic.  The Canvas
+            // doesn't consume pointer events so the underlying
+            // drag-detection on the Box continues to drive the
+            // controller; the controller's own hit-test against
+            // the cached handles routes drags to the right gizmo
+            // handler.
+            if (selectedTool.category == ToolCategory.ObjectTransform
+                && !isProductionRendering) {
+                GizmoOverlay(
+                    modifier = Modifier.fillMaxSize(),
+                    frame = frame,
+                    refreshTrigger = refreshTrigger,
+                    paddingPx = paddingPx,
+                )
+            }
         } else {
             Text(
                 "Render to see the scene",

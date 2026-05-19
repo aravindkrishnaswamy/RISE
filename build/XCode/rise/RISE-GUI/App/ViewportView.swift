@@ -28,6 +28,14 @@ struct ViewportView: View {
     /// out and the canvas ignores pointer events so the production
     /// rasterizer doesn't race with edits.
     var interactionEnabled: Bool = true
+    /// True while the production rasterizer is actively running.
+    /// Narrower than `!interactionEnabled` (which also covers
+    /// `.loading` and `.cancelling` transitions) — used to hide the
+    /// gizmo overlay specifically during production renders, so
+    /// staleness between the interactive-thread's cached handles
+    /// and the production rasterizer's output doesn't surface as
+    /// "partial widget overlay on a finished image".
+    var isProductionRendering: Bool = false
     /// Called whenever the active tool changes or a pointer-down
     /// event fires (which may have updated picking).  ContentView
     /// uses this to bump the property-panel refresh trigger so the
@@ -89,12 +97,18 @@ struct ViewportView: View {
                 )
 
                 // Gizmo overlay — drawn on top of the rendered frame
-                // when an Object-transform tool is active.  Hit
-                // testing is OFF for the overlay so pointer events
-                // continue to flow through to ViewportCanvas; the
-                // controller's `OnPointerDown` is what consults the
-                // handle array via hit-test.
-                if selectedTool.category == .objectTransform {
+                // when an Object-transform tool is active AND the
+                // production rasterizer is NOT in flight.  Hidden
+                // during production renders because the cached
+                // handles were computed against the interactive
+                // thread's last camera state, which may not match
+                // the production rasterizer's frame state — drawing
+                // them would surface as a partial / misaligned
+                // overlay on the finished image.  Hit testing is
+                // OFF so pointer events continue to flow through to
+                // ViewportCanvas; the controller's `OnPointerDown`
+                // is what consults the handle array via hit-test.
+                if selectedTool.category == .objectTransform && !isProductionRendering {
                     ViewportGizmoOverlay(
                         bridge: bridge,
                         refreshTrigger: gizmoRefreshTrigger,

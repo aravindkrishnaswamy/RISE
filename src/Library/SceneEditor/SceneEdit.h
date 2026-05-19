@@ -116,6 +116,26 @@ namespace RISE
 			SetObjectOrientation,   ///< v3a = euler XYZ
 			SetObjectScale,         ///< s   = uniform scale
 			SetObjectStretch,       ///< v3a = per-axis stretch
+			//! Anchor-based scale used by the gizmo drag.  Carries the
+			//! per-axis FACTOR in `v3a` and the object's final transform
+			//! matrix at drag-start in `prevTransform` — Apply restores
+			//! the drag-start matrix, then pushes a stretch-by-factor on
+			//! top so the result is `prevTransform · Stretch(v3a)`.
+			//! Unlike `SetObjectStretch` (which overwrites just the
+			//! stretch component of the transform stack), this op
+			//! composes the factor with whatever drag-start state the
+			//! object actually had — including any baked-in scale from
+			//! `AddObjectMatrix` (glTF / quaternion / imported objects)
+			//! or earlier `SetObjectScale` calls.  Without it, a tiny
+			//! scale drag on a 10×-imported glTF reads its column
+			//! magnitudes back as a fresh stretch of 10× and then
+			//! ALSO leaves the original 10× matrix on the stack →
+			//! object jumps toward 100×.  Unlike the other transform
+			//! ops, the controller pre-populates `prevTransform` at
+			//! drag-start and Apply does NOT overwrite it (every
+			//! per-frame Apply needs the SAME anchor, not the
+			//! previous frame's already-scaled state).
+			ScaleObjectFromAnchor,
 			SetObjectMaterial,      ///< propertyValue = material name; prev captured for undo
 			SetObjectShader,        ///< propertyValue = shader name
 			SetObjectShadowFlags,   ///< s as int: bit0=castsShadows, bit1=receivesShadows
@@ -318,6 +338,7 @@ namespace RISE
 			    || op == SetObjectOrientation
 			    || op == SetObjectScale
 			    || op == SetObjectStretch
+			    || op == ScaleObjectFromAnchor
 			    || op == SetObjectMaterial
 			    || op == SetObjectShader
 			    || op == SetObjectShadowFlags

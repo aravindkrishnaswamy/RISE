@@ -100,6 +100,7 @@ namespace
 		case SceneEdit::SetObjectOrientation:   return "Set Orientation";
 		case SceneEdit::SetObjectScale:         return "Set Scale";
 		case SceneEdit::SetObjectStretch:       return "Set Stretch";
+		case SceneEdit::ScaleObjectFromAnchor:  return "Scale";
 		case SceneEdit::SetObjectMaterial:      return "Set Material";
 		case SceneEdit::SetObjectShader:        return "Set Shader";
 		case SceneEdit::SetObjectShadowFlags:   return "Set Shadow Flags";

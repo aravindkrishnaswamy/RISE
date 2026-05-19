@@ -649,11 +649,18 @@ namespace RISE
 			Point3  pivotWorld;       ///< pivot at drag-start
 			double  pivotScreenX;     ///< pivot's screen projection at drag-start
 			double  pivotScreenY;
+			double  anchorPxX;        ///< pointer position at drag-start (for cumulative drags)
+			double  anchorPxY;
 			double  axisDirX[3];      ///< pixels per world unit, x component
 			double  axisDirY[3];      ///< pixels per world unit, y component
 			bool    axisOk[3];        ///< false if axis colinear with view at drag-start
 			Vector3 prevOrient;       ///< object Euler at drag-start (for Rotate)
-			Vector3 prevStretch;      ///< object stretch at drag-start (for Scale)
+			Matrix4 dragStartMatrix;  ///< object's `GetFinalTransformMatrix()` at drag-start.
+			                          ///< Used as the anchor for `ScaleObjectFromAnchor` —
+			                          ///< Apply restores this then pushes a Stretch on top,
+			                          ///< so the factor composes correctly with whatever
+			                          ///< transform-stack state the object had (matrix
+			                          ///< import / quaternion / earlier SetObjectScale).
 			double  prevAngle;        ///< pointer angle around pivot (for Ring drags)
 		};
 		GizmoDragState              mGizmoDrag;

@@ -128,6 +128,7 @@ struct ContentView: View {
                             // scrub to t=0.
                             timelineMax: vb.animationTimeEnd > 0 ? vb.animationTimeEnd : 5.0,
                             interactionEnabled: interacting,
+                            isProductionRendering: (viewModel.renderState == .rendering),
                             onSelectionMayHaveChanged: { propertyRefresh += 1 },
                             productionEDRRenderer:  viewModel.productionEDRRenderer,
                             interactiveEDRRenderer: viewModel.interactiveEDRRenderer,
