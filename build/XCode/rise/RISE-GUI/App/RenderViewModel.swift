@@ -130,6 +130,13 @@ final class RenderViewModel: ObservableObject {
     @Published var progressTitle: String = ""
     @Published var renderedImage: NSImage? = nil
     @Published var loadedFilePath: String? = nil
+    /// Phase 6.5: true iff there's at least one in-memory edit since
+    /// the last load / save that the SaveEngine would actually write
+    /// to disk.  Drives the PropertiesPanel's "Save Scene" button
+    /// enable state.  Mirrors the C++ controller's
+    /// `HasUnsavedChanges()` via the bridge's `setDirtyChangedBlock`,
+    /// updated only on transitions (clean→dirty / dirty→clean).
+    @Published var sceneEditsDirty: Bool = false
     @Published var versionString: String = ""
     @Published var elapsedTime: TimeInterval = 0
     // nil while the ETA is still warming up or otherwise unavailable.
@@ -631,6 +638,18 @@ final class RenderViewModel: ObservableObject {
                     vb?.setImageBlock { [weak self] (image: NSImage) in
                         guard let self = self else { return }
                         self.renderedImage = image
+                    }
+                    // Phase 6.5: track dirty edits so the Properties-
+                    // panel's Save button can enable/disable.  The
+                    // bridge always marshals the block onto the main
+                    // queue (see -_fireDirtyChangedFromBackground:),
+                    // so a direct @Published assignment is safe.
+                    // Reset to false on fresh scene load — even if a
+                    // previous scene was dirty, this scene starts clean.
+                    self.sceneEditsDirty = false
+                    vb?.setDirtyChangedBlock { [weak self] (hasUnsaved: Bool) in
+                        guard let self = self else { return }
+                        self.sceneEditsDirty = hasUnsaved
                     }
                     // Override the scene's authored Film with a screen-
                     // appropriate size for the INTERACTIVE preview.  The

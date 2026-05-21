@@ -29,6 +29,7 @@
 #include "EditHistory.h"
 #include "DirtyTracker.h"
 #include "../Interfaces/IScenePriv.h"
+#include <functional>
 #include <unordered_set>
 
 namespace RISE
@@ -149,7 +150,41 @@ namespace RISE
 		//! as `matrix` overrides (pinned 2.8) even when their
 		//! current transform happens to be decomposable.
 		const std::unordered_set<std::string>& ScaleFromAnchorSet() const { return mScaleFromAnchorSet; }
-		void ClearDirtyState() { mDirtyTracker.Clear(); mScaleFromAnchorSet.clear(); }
+		void ClearDirtyState()
+		{
+			mDirtyTracker.Clear();
+			mScaleFromAnchorSet.clear();
+			FireDirtyChangedIfTransitioned();
+		}
+
+		//! True iff any edit since the last load / save would produce
+		//! a non-NoOp SaveEngine pass.  Drives the GUI's "Save" button
+		//! enable state on both platform shells.  Cheap O(1).
+		bool HasUnsavedChanges() const
+		{
+			return mDirtyTracker.Count() > 0
+			    || !mScaleFromAnchorSet.empty();
+		}
+
+		//! Notification channel for the platform GUI to update its
+		//! Save-button enable state.  Fires only on TRANSITIONS of
+		//! `HasUnsavedChanges()` (clean→dirty or dirty→clean), so
+		//! a stream of N edits that all leave the scene dirty
+		//! produces ONE callback.  Fired from Apply / Undo / Redo /
+		//! ClearDirtyState.  Listener runs on the calling thread
+		//! (typically the UI thread); bridges should marshal to
+		//! their UI dispatch queue if needed.
+		//!
+		//! Set once before the editor starts receiving edits;
+		//! re-setting clears the previous listener.  Pass `nullptr`
+		//! to detach.
+		using DirtyChangedFn = std::function<void(bool hasUnsavedChanges)>;
+		void SetDirtyChangedListener( DirtyChangedFn fn )
+		{
+			mDirtyChangedListener = std::move( fn );
+			// Don't fire on attach — the bridge already knows the
+			// initial state (it can call HasUnsavedChanges()).
+		}
 
 	private:
 		IScenePriv&  mScene;
@@ -185,6 +220,27 @@ namespace RISE
 		// of whether `TryDecompose(Mfinal).ok` succeeds.
 		std::unordered_set<std::string> mScaleFromAnchorSet;
 
+		//! Phase 6.5 UI hook: GUI-installed listener fired on
+		//! `HasUnsavedChanges()` TRANSITIONS only.  Empty by default
+		//! (no callbacks fire until SetDirtyChangedListener is called).
+		DirtyChangedFn mDirtyChangedListener;
+
+		//! Memoized last-fired value of `HasUnsavedChanges()` so the
+		//! listener only fires on transitions.  Starts at false
+		//! (matches the initial clean state on construction).
+		bool mPrevHasUnsavedChanges = false;
+
+	public:
+		//! Re-evaluate `HasUnsavedChanges()` and fire the listener iff
+		//! the value changed since the last fire.  Called from every
+		//! mutation entry point (Apply success, Undo, Redo,
+		//! ClearDirtyState).  No-op when no listener is installed.
+		//! `public` because a file-scope RAII helper in SceneEditor.cpp
+		//! invokes it from Apply / Undo / Redo's scope-exit; no
+		//! preconditions — safe to call from anywhere.
+		void FireDirtyChangedIfTransitioned();
+
+	private:
 		//! Look up an object by name on the live ObjectManager and
 		//! return its IObjectPriv*.  Returns null if the object is
 		//! not found or does not implement IObjectPriv (which would

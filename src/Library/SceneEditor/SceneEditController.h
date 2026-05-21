@@ -493,6 +493,30 @@ namespace RISE
 		//! all platform shells).
 		std::string LastSaveError() const;
 
+		//! Phase 6.5 UI hook: true iff there's at least one edit
+		//! since the last load / save that the SaveEngine would
+		//! write to disk (i.e., not just NoOp).  Drives the GUI's
+		//! "Save Scene" button enable state on both platform shells.
+		//! Cheap O(1) — just checks the SceneEditor's dirty trackers.
+		bool HasUnsavedChanges() const { return mEditor.HasUnsavedChanges(); }
+
+		//! Phase 6.5 UI hook: install a listener that fires when
+		//! `HasUnsavedChanges()` flips (clean→dirty or dirty→clean).
+		//! The listener runs on the thread that drove the transition
+		//! (typically the UI thread for Apply/Undo/Redo edits, or
+		//! the calling thread for RequestSave on the clean→ transition
+		//! after a successful save).  Platform bridges should marshal
+		//! into their UI dispatch queue inside the listener body if
+		//! they need main-thread semantics.  Fires ONCE per transition
+		//! — a stream of N edits that all leave the scene dirty
+		//! produces one callback, not N.  Pass an empty/null `std::function`
+		//! to detach.
+		using DirtyChangedFn = SceneEditor::DirtyChangedFn;
+		void SetDirtyChangedListener( DirtyChangedFn fn )
+		{
+			mEditor.SetDirtyChangedListener( std::move( fn ) );
+		}
+
 		//! Lets the platform's preview sink check whether the current
 		//! pass was cancelled mid-render before dispatching to the UI.
 		//! End-of-pass FlushToOutputs fires unconditionally inside the

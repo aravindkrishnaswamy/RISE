@@ -90,6 +90,13 @@ struct PropertiesPanel: View {
     let bridge: RISEViewportBridge
     @Binding var refreshTrigger: Int          // increment to force a snapshot reload
 
+    // Phase 6.5: the panel's Save / Save-As buttons read these two
+    // properties off the shared RenderViewModel — `sceneEditsDirty`
+    // (gates the buttons' enable state) and `loadedFilePath` (the
+    // default target for in-place Save).  Both are @Published, so
+    // SwiftUI re-evaluates the header HStack on every transition.
+    @EnvironmentObject var viewModel: RenderViewModel
+
     @State private var rows: [PropertyRow] = []   // primary-section rows; kept for the header / panel-wide refresh trigger
     @State private var rowsByCategory: [Int: [PropertyRow]] = [:]   // Phase 4b: per-section property rows
     @State private var selectionByCategory: [Int: String] = [:]      // Phase 4b: per-section picked entity
@@ -115,12 +122,39 @@ struct PropertiesPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 8) {
                 Text(header.isEmpty ? "Scene" : header)
                     .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundColor(.secondary)
                 Spacer()
+
+                // Phase 6.5: Save Scene to the originally-loaded path.
+                // Disabled when there's nothing to write OR no path
+                // was loaded (which would force Save-As anyway).
+                Button {
+                    performSceneSave(useLoadedPath: true)
+                } label: {
+                    Image(systemName: "tray.and.arrow.down")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!viewModel.sceneEditsDirty
+                          || viewModel.loadedFilePath == nil)
+                .help(saveButtonHelpText(forSaveAs: false))
+
+                // Save As… — opens NSSavePanel so the user can fork
+                // the in-memory edits to a different file.  Enabled
+                // whenever there are edits; the destination doesn't
+                // have to be the originally-loaded path.
+                Button {
+                    performSceneSave(useLoadedPath: false)
+                } label: {
+                    Image(systemName: "square.and.arrow.down.on.square")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!viewModel.sceneEditsDirty)
+                .help(saveButtonHelpText(forSaveAs: true))
+
                 Button {
                     reload()
                 } label: {
@@ -213,6 +247,89 @@ struct PropertiesPanel: View {
     /// name.  Default proposal is "<active>_copy".  On first
     /// successful add per session, also surfaces a caveat alert that
     /// the new camera lives in memory only (the SceneEditor's
+    // ----------------------------------------------------------------
+    // Phase 6.5: scene-file save action.  Both header buttons route
+    // here.  `useLoadedPath == true` writes to the originally-loaded
+    // .RISEscene; `false` opens an NSSavePanel so the user can fork.
+    // Status codes mirror SaveResult::Status:
+    //   0 = Saved   — silent success (button greys out via the dirty-
+    //                 changed callback's clean→dirty=false transition)
+    //   1 = NoOp    — silent (nothing to write).  Shouldn't normally
+    //                 fire from a button that's disabled-when-clean,
+    //                 but it's safe to ignore.
+    //   2 = Refused — engine declined (cross-file target, barrier-
+    //                 conflict, external modification).  Modal alert.
+    //   3 = Failed  — IO error or file-not-found.  Modal alert.
+    private func saveButtonHelpText(forSaveAs: Bool) -> String {
+        if !viewModel.sceneEditsDirty {
+            return "No changes to save"
+        }
+        if forSaveAs {
+            return "Save scene to a chosen path…"
+        }
+        if let p = viewModel.loadedFilePath {
+            return "Save scene to \(p)"
+        }
+        return "Use Save As… (no loaded path)"
+    }
+
+    private func performSceneSave(useLoadedPath: Bool) {
+        // Resolve target path.  If the caller asked for in-place save
+        // but no path is known (rare — usually a synthetic scene), fall
+        // through to the Save-As panel.
+        var target: String? = nil
+        if useLoadedPath, let p = viewModel.loadedFilePath {
+            target = p
+        } else {
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = []  // accept any extension
+            panel.nameFieldStringValue = (viewModel.loadedFilePath as NSString?)?.lastPathComponent
+                ?? "untitled.RISEscene"
+            if let lp = viewModel.loadedFilePath {
+                panel.directoryURL =
+                    URL(fileURLWithPath: lp).deletingLastPathComponent()
+            }
+            panel.title = "Save Scene As"
+            panel.message = "Choose a destination for the .RISEscene file."
+            if panel.runModal() != .OK { return }
+            target = panel.url?.path
+        }
+        guard let path = target, !path.isEmpty else { return }
+
+        var errMsg: NSString? = nil
+        let status = bridge.saveScene(to: path, errorMessage: &errMsg)
+        switch status {
+        case 0, 1:
+            // Saved or NoOp — silent success.  The dirty-changed
+            // callback (on the Saved transition) flips the button
+            // back to disabled.
+            break
+        case 2:
+            showSaveAlert(
+                title: "Save Refused",
+                message: (errMsg as String?)
+                    ?? "The save engine declined to write this file.")
+        case 3:
+            showSaveAlert(
+                title: "Save Failed",
+                message: (errMsg as String?)
+                    ?? "An I/O error occurred while saving the file.")
+        default:
+            showSaveAlert(
+                title: "Save Failed",
+                message: "Unexpected save result (status \(status)).")
+        }
+    }
+
+    private func showSaveAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     /// scene-text round-trip is not yet implemented; reloading the
     /// .RISEscene file would drop it).
     private func promptForNewCameraName(activeName: String) {

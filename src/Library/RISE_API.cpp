@@ -6397,6 +6397,56 @@ namespace RISE
 		return true;
 	}
 
+	// ---- Phase 6.5 scene-file save ----------------------------------
+
+	bool RISE_API_SceneEditController_HasUnsavedChanges( SceneEditController* p )
+	{
+		if( !p ) return false;
+		return p->HasUnsavedChanges();
+	}
+
+	int RISE_API_SceneEditController_RequestSave(
+		SceneEditController* p,
+		const char* filePath,
+		char* errOut,
+		unsigned int errOutCap )
+	{
+		if( !p || !filePath ) return -1;
+		const SaveResult r = p->RequestSave( std::string( filePath ) );
+		if( errOut && errOutCap > 0 ) {
+			errOut[0] = '\0';
+			const std::string& msg = r.errorMessage;
+			if( !msg.empty() ) {
+				const unsigned int n =
+					( msg.size() + 1 < errOutCap ) ? (unsigned int)msg.size()
+					                               : ( errOutCap - 1 );
+				std::memcpy( errOut, msg.data(), n );
+				errOut[n] = '\0';
+			}
+		}
+		return static_cast<int>( r.status );
+	}
+
+	bool RISE_API_SceneEditController_SetDirtyChangedCallback(
+		SceneEditController* p,
+		RISE_API_DirtyChangedFn cb,
+		void* userData )
+	{
+		if( !p ) return false;
+		if( cb ) {
+			// Capture by value: cb + userData live as long as the
+			// std::function; controller owns the function, so the
+			// closure outlives the C shim's stack frame.
+			p->SetDirtyChangedListener(
+				[cb, userData]( bool hasUnsaved ) {
+					cb( userData, hasUnsaved ? 1 : 0 );
+				} );
+		} else {
+			p->SetDirtyChangedListener( SceneEditController::DirtyChangedFn() );
+		}
+		return true;
+	}
+
 	bool RISE_API_SceneEditController_LastSceneTime( SceneEditController* p, double* out )
 	{
 		if( !p || !out ) return false;

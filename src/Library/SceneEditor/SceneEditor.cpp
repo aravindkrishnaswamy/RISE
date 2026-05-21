@@ -715,8 +715,36 @@ void SceneEditor::RunObjectInvariantChain( IObjectPriv& obj )
 	}
 }
 
+void SceneEditor::FireDirtyChangedIfTransitioned()
+{
+	// Cheap O(1) check whether the dirty state's emptiness has
+	// flipped since the last time we fired.  Listener installed by
+	// the GUI bridge layer; tests that don't install one pay
+	// only the bool comparison.
+	const bool now = HasUnsavedChanges();
+	if( now == mPrevHasUnsavedChanges ) return;
+	mPrevHasUnsavedChanges = now;
+	if( mDirtyChangedListener ) mDirtyChangedListener( now );
+}
+
+namespace {
+// RAII guard: any return path out of Apply / Undo / Redo /
+// ClearDirtyState fires the dirty-changed listener once.  The
+// transition check inside `FireDirtyChangedIfTransitioned` makes
+// it a no-op when nothing actually changed.  Local scope-exit
+// avoids instrumenting every one of the 27+ return statements
+// in Apply / 13+ in Redo by hand.
+struct DirtyChangeNotifier
+{
+	RISE::SceneEditor* self;
+	explicit DirtyChangeNotifier( RISE::SceneEditor* s ) : self( s ) {}
+	~DirtyChangeNotifier() { self->FireDirtyChangedIfTransitioned(); }
+};
+}
+
 bool SceneEditor::Apply( const SceneEdit& editIn )
 {
+	DirtyChangeNotifier _notifier( this );
 	SceneEdit edit = editIn;
 
 	// Composite markers: just push, no mutation, no scope change.
@@ -1138,6 +1166,7 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 
 bool SceneEditor::Undo()
 {
+	DirtyChangeNotifier _notifier( this );
 	SceneEdit edit;
 	if( !mHistory.PopForUndo( edit ) ) return false;
 
@@ -1501,6 +1530,7 @@ bool SceneEditor::Undo()
 
 bool SceneEditor::Redo()
 {
+	DirtyChangeNotifier _notifier( this );
 	SceneEdit edit;
 	if( !mHistory.PopForRedo( edit ) ) return false;
 

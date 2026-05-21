@@ -33,6 +33,14 @@
 
 using namespace RISE;
 
+// Class extension: private dirty-changed trampoline target on
+// RISEViewportBridge.  The C trampoline can't message a method that
+// isn't visible to the compiler, so we hoist this selector into
+// scope here.
+@interface RISEViewportBridge ()
+- (void)_fireDirtyChangedFromBackground:(BOOL)hasUnsavedChanges;
+@end
+
 // Class extension: private initializer for RISEViewportProperty.
 @interface RISEViewportProperty ()
 - (instancetype)initWithName:(NSString *)name
@@ -310,6 +318,13 @@ private:
                                            // (one bounce of glossy / refl / refr)
     IRasterizer*         _interactiveRasterizer;
     ViewportPreviewSink* _previewSink;
+
+    // Phase 6.5: GUI-supplied callback fired on dirty-state
+    // TRANSITIONS only.  Strong-held so the C trampoline can copy-
+    // capture our `self` ptr and invoke it.  Cleared (and the
+    // controller's listener detached) before _controller destruction
+    // in -shutdown so a stale fire after dealloc is impossible.
+    RISEViewportDirtyChangedBlock _dirtyChangedBlock;
 }
 
 - (nullable instancetype)initWithHostBridge:(RISEBridge *)host {
@@ -414,9 +429,16 @@ private:
 
 - (void)shutdown {
     if (_controller) {
+        // Detach the dirty-changed listener BEFORE destroying the
+        // controller so its captured `self` pointer can't fire into
+        // a half-dealloc'd instance.  Pair-balances with the
+        // setDirtyChangedBlock attach in `[setDirtyChangedBlock:]`.
+        RISE_API_SceneEditController_SetDirtyChangedCallback(
+            _controller, nullptr, nullptr);
         RISE_API_DestroySceneEditController(_controller);
         _controller = nullptr;
     }
+    _dirtyChangedBlock = nil;
     [self releaseLivePreview];
 }
 
@@ -616,6 +638,71 @@ private:
 - (void)redo {
     if (!_controller) return;
     RISE_API_SceneEditController_Redo(_controller);
+}
+
+#pragma mark - Scene-file save (Phase 6.5)
+
+- (BOOL)hasUnsavedSceneChanges {
+    if (!_controller) return NO;
+    return RISE_API_SceneEditController_HasUnsavedChanges(_controller) ? YES : NO;
+}
+
+- (NSInteger)saveSceneTo:(NSString *)path
+            errorMessage:(NSString * _Nullable * _Nullable)outErrorMessage {
+    if (!_controller || !path) {
+        if (outErrorMessage) *outErrorMessage = @"no scene loaded";
+        return 3;  // Failed
+    }
+    char errBuf[1024] = {0};
+    const int status = RISE_API_SceneEditController_RequestSave(
+        _controller,
+        [path UTF8String],
+        errBuf,
+        sizeof(errBuf));
+    if (outErrorMessage) {
+        *outErrorMessage = (errBuf[0] != '\0')
+            ? [NSString stringWithUTF8String:errBuf]
+            : nil;
+    }
+    return (NSInteger)status;
+}
+
+// C trampoline used by the controller's std::function listener.
+// userData is the (__bridge) RISEViewportBridge* — we don't retain
+// it here (the bridge outlives the controller, see -shutdown ordering),
+// so a __bridge cast that's lifetime-loose is correct.
+static void RISE_API_DirtyChangedTrampoline(void* userData,
+                                            int hasUnsavedChanges) {
+    if (!userData) return;
+    RISEViewportBridge* bridge = (__bridge RISEViewportBridge*)userData;
+    [bridge _fireDirtyChangedFromBackground:(hasUnsavedChanges != 0)];
+}
+
+- (void)_fireDirtyChangedFromBackground:(BOOL)hasUnsavedChanges {
+    // The listener runs on whatever thread drove the edit — for
+    // Apply/Undo/Redo it's the UI thread (Swift drives the controller
+    // from the main actor), but RequestSave's success path fires
+    // from inside RequestSave which can be called off-main in tests.
+    // Hop to main so SwiftUI consumers don't have to.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->_dirtyChangedBlock) {
+            self->_dirtyChangedBlock(hasUnsavedChanges);
+        }
+    });
+}
+
+- (void)setDirtyChangedBlock:(RISEViewportDirtyChangedBlock)block {
+    _dirtyChangedBlock = [block copy];
+    if (!_controller) return;
+    if (block) {
+        RISE_API_SceneEditController_SetDirtyChangedCallback(
+            _controller,
+            &RISE_API_DirtyChangedTrampoline,
+            (__bridge void*)self);
+    } else {
+        RISE_API_SceneEditController_SetDirtyChangedCallback(
+            _controller, nullptr, nullptr);
+    }
 }
 
 - (double)lastSceneTime {

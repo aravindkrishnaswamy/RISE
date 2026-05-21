@@ -157,6 +157,101 @@ static void TestRequestSaveFailedSetsLastSaveError()
     std::remove( path.c_str() );
 }
 
+static void TestHasUnsavedChangesTracksEditAndSave()
+{
+    gCurrentTest = "TestHasUnsavedChangesTracksEditAndSave";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // GUI-facing dirty-state query: false on load, true after any
+    // Apply that marks dirty, back to false after a successful save.
+    const std::string path = WriteScene( kScene, "hasunsaved" );
+    IJobPriv* pJob = nullptr;
+    RISE_CreateJobPriv( &pJob );
+    pJob->LoadAsciiScene( path.c_str() );
+    SceneEditController ctrl( *pJob, nullptr );
+
+    Check( !ctrl.HasUnsavedChanges(),
+           "fresh load: HasUnsavedChanges == false" );
+
+    SceneEdit e;
+    e.op = SceneEdit::SetObjectPosition;
+    e.objectName = "a";
+    e.v3a = Vector3( 7, 0, 0 );
+    ctrl.Editor().Apply( e );
+    Check( ctrl.HasUnsavedChanges(),
+           "after dirty edit: HasUnsavedChanges == true" );
+
+    SaveResult r = ctrl.RequestSave( path );
+    Check( r.status == SaveResult::Status::Saved, "saved" );
+    Check( !ctrl.HasUnsavedChanges(),
+           "after successful save: HasUnsavedChanges == false" );
+
+    safe_release( pJob );
+    std::remove( path.c_str() );
+}
+
+static void TestDirtyChangedListenerFiresOnTransitionsOnly()
+{
+    gCurrentTest = "TestDirtyChangedListenerFiresOnTransitionsOnly";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // The listener fires ONCE on each emptiness-flip:
+    //   load → false (no fire — install AFTER load)
+    //   first edit → true (fire #1)
+    //   second edit (still dirty) → no fire
+    //   save → false (fire #2)
+    //   no-edit save → no fire
+    const std::string path = WriteScene( kScene, "listener" );
+    IJobPriv* pJob = nullptr;
+    RISE_CreateJobPriv( &pJob );
+    pJob->LoadAsciiScene( path.c_str() );
+    SceneEditController ctrl( *pJob, nullptr );
+
+    struct {
+        int fireCount = 0;
+        bool lastValue = false;
+    } state;
+
+    ctrl.SetDirtyChangedListener(
+        [&state]( bool hasUnsaved ) {
+            state.fireCount++;
+            state.lastValue = hasUnsaved;
+        } );
+
+    Check( state.fireCount == 0, "listener attach does NOT fire" );
+
+    // Edit 1: clean → dirty (one fire, value=true).
+    SceneEdit e1;
+    e1.op = SceneEdit::SetObjectPosition;
+    e1.objectName = "a";
+    e1.v3a = Vector3( 1, 0, 0 );
+    ctrl.Editor().Apply( e1 );
+    Check( state.fireCount == 1, "first edit: one listener fire" );
+    Check( state.lastValue == true, "first edit: listener received true" );
+
+    // Edit 2: still dirty (no fire).
+    SceneEdit e2;
+    e2.op = SceneEdit::SetObjectPosition;
+    e2.objectName = "a";
+    e2.v3a = Vector3( 2, 0, 0 );
+    ctrl.Editor().Apply( e2 );
+    Check( state.fireCount == 1,
+           "second dirty edit: no additional fire (steady-state)" );
+
+    // Save: dirty → clean (one fire, value=false).
+    SaveResult r = ctrl.RequestSave( path );
+    Check( r.status == SaveResult::Status::Saved, "saved" );
+    Check( state.fireCount == 2, "successful save: one fire" );
+    Check( state.lastValue == false, "save: listener received false" );
+
+    // No-edit save: no fire (still clean).
+    SaveResult r2 = ctrl.RequestSave( path );
+    Check( r2.status == SaveResult::Status::NoOp, "second save: NoOp" );
+    Check( state.fireCount == 2,
+           "no-op save: no additional fire (no transition)" );
+
+    safe_release( pJob );
+    std::remove( path.c_str() );
+}
+
 // --------------------------------------------------------------------
 
 int main()
@@ -165,6 +260,8 @@ int main()
     TestRequestSaveSucceedsOnDirtyEdit();
     TestRequestSaveNoOpOnNoEdits();
     TestRequestSaveFailedSetsLastSaveError();
+    TestHasUnsavedChangesTracksEditAndSave();
+    TestDirtyChangedListenerFiresOnTransitionsOnly();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
     return failCount == 0 ? 0 : 1;
 }

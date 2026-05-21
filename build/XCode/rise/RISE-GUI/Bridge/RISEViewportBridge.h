@@ -192,6 +192,44 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 - (void)undo;
 - (void)redo;
 
+#pragma mark - Scene-file save (Phase 6.5)
+//
+// Persist transform edits + retained overrides back to a `.RISEscene`
+// file via the SaveEngine round-trip pipeline.  The button driving
+// these is gated on `hasUnsavedSceneChanges`; the dirty-changed
+// block lets SwiftUI track the bool from the C++ edit pipeline
+// without polling.
+
+/// True iff at least one edit since the last load / save would
+/// produce a non-NoOp save.  Drives the Save-button enable state.
+/// Cheap O(1) (asks the controller's dirty trackers).
+- (BOOL)hasUnsavedSceneChanges;
+
+/// Save the in-memory edits to `path`.  Routes through
+/// `SceneEditController::RequestSave` — caller is freed of the
+/// cancel-and-park dance.  Returns status code:
+///   0 = Saved          (bytes written)
+///   1 = NoOp           (no edits to write; file untouched)
+///   2 = Refused        (engine declined; original file untouched)
+///   3 = Failed         (IO error; original file untouched)
+/// `outErrorMessage` is populated on Refused or Failed with the
+/// engine's diagnostic; empty otherwise.  Numeric mirror of
+/// `SaveResult::Status`.
+- (NSInteger)saveSceneTo:(NSString *)path
+              errorMessage:(NSString * _Nullable * _Nullable)outErrorMessage
+    NS_SWIFT_NAME(saveScene(to:errorMessage:));
+
+typedef void (^RISEViewportDirtyChangedBlock)(BOOL hasUnsavedChanges);
+
+/// Install a callback fired once per `hasUnsavedSceneChanges`
+/// TRANSITION (clean→dirty or dirty→clean).  Edits that leave the
+/// scene already-dirty do NOT fire it (steady-state edits are
+/// folded).  Callback runs on the thread that drove the edit
+/// (typically the main thread, which is where Swift drives the
+/// controller from); SwiftUI listeners should still `Task { @MainActor }`
+/// inside if they need to guarantee it.  Pass nil to detach.
+- (void)setDirtyChangedBlock:(nullable RISEViewportDirtyChangedBlock)block;
+
 /// Canonical scene time owned by the underlying SceneEditController.
 /// Updated by every time-scrub AND by Undo / Redo of a SetSceneTime
 /// edit; that's why callers should query this just before kicking

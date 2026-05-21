@@ -3210,6 +3210,38 @@ bool RISE_API_CreateFinalGatherShaderOp(
 	bool RISE_API_SceneEditController_Undo( SceneEditController* p );
 	bool RISE_API_SceneEditController_Redo( SceneEditController* p );
 
+	// ---- Phase 6.5 scene-file save ----------------------------------
+	// Round-trip-save bindings.  See docs/ROUND_TRIP_SAVE_PLAN.md §9.9
+	// + SceneEditController.h "Phase 6.5".
+
+	//! Drives the GUI's "Save Scene" button enable state.
+	bool RISE_API_SceneEditController_HasUnsavedChanges( SceneEditController* p );
+
+	//! Save the in-memory edits to `filePath`.  Returns the engine's
+	//! SaveResult.status numerically (0=Saved, 1=NoOp, 2=Refused,
+	//! 3=Failed).  On Refused / Failed, `errOut` is filled with the
+	//! engine's diagnostic — caller passes a buffer of at least
+	//! `errOutCap` bytes; the function null-terminates and truncates
+	//! if needed.  On success, `errOut` is set to "".
+	//! Returns -1 on null controller / null filePath.
+	int RISE_API_SceneEditController_RequestSave(
+		SceneEditController* p,
+		const char* filePath,
+		char* errOut,
+		unsigned int errOutCap );
+
+	//! Install a C-callback fired on each `HasUnsavedChanges()`
+	//! TRANSITION (clean→dirty or dirty→clean).  `userData` is passed
+	//! verbatim to every invocation.  Pass `cb = nullptr` to detach.
+	//! Caller is responsible for `userData` lifetime — typical pattern
+	//! is __bridge_retained / CFBridgingRelease around an Obj-C block
+	//! or an objc_storeWeak slot.
+	typedef void (*RISE_API_DirtyChangedFn)( void* userData, int hasUnsavedChanges );
+	bool RISE_API_SceneEditController_SetDirtyChangedCallback(
+		SceneEditController* p,
+		RISE_API_DirtyChangedFn cb,
+		void* userData );
+
 	//! Canonical scene time tracked by the controller's edit history.
 	//! Updated by OnTimeScrub AND by Undo/Redo of a SetSceneTime edit
 	//! — i.e. the scrubber widget's local copy goes stale after an

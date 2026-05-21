@@ -25,6 +25,8 @@
 #include <QPolygonF>
 #include <QToolButton>
 #include <QMenu>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QInputDialog>
 #include <QMessageBox>
 
@@ -235,14 +237,50 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    m_headerLabel = new QLabel(tr("Scene"), this);
-    m_headerLabel->setStyleSheet("padding: 4px 8px; font-weight: bold;");
-    root->addWidget(m_headerLabel);
+    // Phase 6.5: header row with Save / Save As… buttons on the right.
+    // Mirrors the macOS PropertiesPanel.swift header HStack.  The
+    // buttons are stored as members so the dirtyChanged slot can
+    // re-evaluate their enable state.
+    auto* headerRow = new QWidget(this);
+    auto* headerLayout = new QHBoxLayout(headerRow);
+    headerLayout->setContentsMargins(8, 4, 8, 4);
+    headerLayout->setSpacing(4);
+
+    m_headerLabel = new QLabel(tr("Scene"), headerRow);
+    m_headerLabel->setStyleSheet("font-weight: bold;");
+    headerLayout->addWidget(m_headerLabel);
+    headerLayout->addStretch(1);
+
+    m_saveButton = new QToolButton(headerRow);
+    m_saveButton->setText(tr("Save"));
+    m_saveButton->setEnabled(false);   // updated by onDirtyChanged
+    m_saveButton->setToolTip(tr("No changes to save"));
+    connect(m_saveButton, &QToolButton::clicked,
+            this, [this]() { performSceneSave(/*useLoadedPath=*/true); });
+    headerLayout->addWidget(m_saveButton);
+
+    m_saveAsButton = new QToolButton(headerRow);
+    m_saveAsButton->setText(tr("Save As…"));
+    m_saveAsButton->setEnabled(false);
+    m_saveAsButton->setToolTip(tr("No changes to save"));
+    connect(m_saveAsButton, &QToolButton::clicked,
+            this, [this]() { performSceneSave(/*useLoadedPath=*/false); });
+    headerLayout->addWidget(m_saveAsButton);
+
+    root->addWidget(headerRow);
 
     auto* sep = new QFrame(this);
     sep->setFrameShape(QFrame::HLine);
     sep->setFrameShadow(QFrame::Sunken);
     root->addWidget(sep);
+
+    // The dirtyChanged signal is emitted via QueuedConnection from
+    // the bridge's C-trampoline (see ViewportBridge ctor), so a
+    // direct Qt::AutoConnection here delivers on the GUI thread.
+    if (m_bridge) {
+        connect(m_bridge, &ViewportBridge::dirtyChanged,
+                this, &ViewportProperties::onDirtyChanged);
+    }
 
     m_scroll = new QScrollArea(this);
     m_scroll->setWidgetResizable(true);
@@ -371,6 +409,96 @@ ViewportProperties::ViewportProperties(ViewportBridge* bridge, QWidget* parent)
 
     // Initial pull so the panel renders immediately.
     refresh();
+}
+
+// ============================================================
+// Phase 6.5: scene-file save.  Header buttons drive these.
+// ============================================================
+
+void ViewportProperties::onDirtyChanged(bool hasUnsavedChanges)
+{
+    if (!m_saveButton || !m_saveAsButton || !m_bridge) return;
+    const QString loaded = m_bridge->loadedFilePath();
+    // In-place Save needs both: edits AND a known target path
+    // (otherwise the click would have to fall through to a
+    // dialog anyway — we let the user explicitly pick Save As…
+    // in that case to surface the intent).
+    m_saveButton->setEnabled(hasUnsavedChanges && !loaded.isEmpty());
+    m_saveAsButton->setEnabled(hasUnsavedChanges);
+
+    if (!hasUnsavedChanges) {
+        m_saveButton->setToolTip(tr("No changes to save"));
+        m_saveAsButton->setToolTip(tr("No changes to save"));
+    } else {
+        m_saveButton->setToolTip(loaded.isEmpty()
+            ? tr("Use Save As… (no loaded path)")
+            : tr("Save scene to %1").arg(loaded));
+        m_saveAsButton->setToolTip(tr("Save scene to a chosen path…"));
+    }
+}
+
+void ViewportProperties::performSceneSave(bool useLoadedPath)
+{
+    if (!m_bridge) return;
+
+    QString target;
+    if (useLoadedPath) {
+        target = m_bridge->loadedFilePath();
+    }
+    if (target.isEmpty()) {
+        // Either the caller explicitly asked for Save As… or the
+        // in-place save fell through because no path was known.
+        const QString loaded = m_bridge->loadedFilePath();
+        QString dir;
+        QString suggestedName = QStringLiteral("untitled.RISEscene");
+        if (!loaded.isEmpty()) {
+            QFileInfo fi(loaded);
+            dir = fi.absolutePath();
+            suggestedName = fi.fileName();
+        }
+        const QString picked = QFileDialog::getSaveFileName(
+            this,
+            tr("Save Scene As"),
+            dir.isEmpty()
+                ? suggestedName
+                : (dir + QLatin1Char('/') + suggestedName),
+            tr("RISE Scene Files (*.RISEscene);;All Files (*)"));
+        if (picked.isEmpty()) return;   // user cancelled
+        target = picked;
+    }
+
+    QString errMsg;
+    const ViewportBridge::SaveStatus status =
+        m_bridge->saveSceneTo(target, errMsg);
+    switch (status) {
+    case ViewportBridge::SaveStatus::Saved:
+    case ViewportBridge::SaveStatus::NoOp:
+        // Silent success.  The dirtyChanged(false) emission on the
+        // Saved transition flips the buttons back to disabled.
+        break;
+    case ViewportBridge::SaveStatus::Refused:
+        QMessageBox::warning(
+            this,
+            tr("Save Refused"),
+            errMsg.isEmpty()
+                ? tr("The save engine declined to write this file.")
+                : errMsg);
+        break;
+    case ViewportBridge::SaveStatus::Failed:
+        QMessageBox::warning(
+            this,
+            tr("Save Failed"),
+            errMsg.isEmpty()
+                ? tr("An I/O error occurred while saving the file.")
+                : errMsg);
+        break;
+    case ViewportBridge::SaveStatus::Error:
+        QMessageBox::warning(
+            this,
+            tr("Save Failed"),
+            tr("Unexpected save state (%1).").arg(errMsg));
+        break;
+    }
 }
 
 void ViewportProperties::clearPropertyRows()

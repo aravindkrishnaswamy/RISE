@@ -148,6 +148,31 @@ ViewportBridge::ViewportBridge(RenderEngine* engine, QObject* parent)
         m_previewSink->SetController(m_controller);
         RISE_API_SceneEditController_SetPreviewSink(m_controller, m_previewSink);
     }
+
+    // Phase 6.5: hook up the C dirty-changed callback.  userData
+    // is a __raw pointer to this; the controller's listener
+    // outlives the trampoline (we detach in the destructor before
+    // releasing the controller), so a stale-fire window is closed.
+    // We marshal onto Qt's UI thread via QueuedConnection on the
+    // `dirtyChanged` signal — Qt's metacall dispatches into the
+    // QObject's thread, which is always the GUI thread for the
+    // ViewportBridge constructed in MainWindow.
+    RISE_API_SceneEditController_SetDirtyChangedCallback(
+        m_controller,
+        +[](void* userData, int hasUnsavedChanges) {
+            auto* self = static_cast<ViewportBridge*>(userData);
+            if (!self) return;
+            // QMetaObject::invokeMethod with QueuedConnection lets
+            // the trampoline fire from any thread without violating
+            // Qt's "signal emission stays on the owning thread"
+            // contract.  Receivers can connect with AutoConnection.
+            QMetaObject::invokeMethod(
+                self,
+                "dirtyChanged",
+                Qt::QueuedConnection,
+                Q_ARG(bool, hasUnsavedChanges != 0));
+        },
+        this);
 }
 
 void ViewportBridge::scaleFilmToFit(int surfaceW, int surfaceH, int maxLongEdge)
@@ -167,6 +192,13 @@ ViewportBridge::~ViewportBridge()
 {
     stop();
     if (m_controller) {
+        // Phase 6.5: detach the dirty-changed C callback BEFORE the
+        // controller (and its std::function listener) goes away so
+        // the trampoline's captured `this` can't fire into a
+        // half-deconstructed QObject.  Pair-balances the attach in
+        // the constructor.
+        RISE_API_SceneEditController_SetDirtyChangedCallback(
+            m_controller, nullptr, nullptr);
         RISE_API_DestroySceneEditController(m_controller);
         m_controller = nullptr;
     }
@@ -335,6 +367,42 @@ void ViewportBridge::endPropertyScrub()   { if (m_controller) RISE_API_SceneEdit
 
 void ViewportBridge::undo() { if (m_controller) RISE_API_SceneEditController_Undo(m_controller); }
 void ViewportBridge::redo() { if (m_controller) RISE_API_SceneEditController_Redo(m_controller); }
+
+// ---- Phase 6.5 scene-file save -------------------------------------
+
+bool ViewportBridge::hasUnsavedSceneChanges() const
+{
+    if (!m_controller) return false;
+    return RISE_API_SceneEditController_HasUnsavedChanges(m_controller);
+}
+
+QString ViewportBridge::loadedFilePath() const
+{
+    return m_engine ? m_engine->loadedFilePath() : QString();
+}
+
+ViewportBridge::SaveStatus ViewportBridge::saveSceneTo(
+    const QString& path,
+    QString& outError)
+{
+    outError.clear();
+    if (!m_controller || path.isEmpty()) {
+        outError = QStringLiteral("no scene loaded");
+        return SaveStatus::Error;
+    }
+    // QByteArray keeps the UTF-8 alive across the C-call.
+    const QByteArray utf8 = path.toUtf8();
+    char errBuf[1024] = {0};
+    const int status = RISE_API_SceneEditController_RequestSave(
+        m_controller,
+        utf8.constData(),
+        errBuf,
+        sizeof(errBuf));
+    if (errBuf[0] != '\0') {
+        outError = QString::fromUtf8(errBuf);
+    }
+    return static_cast<SaveStatus>(status);
+}
 
 double ViewportBridge::lastSceneTime() const
 {

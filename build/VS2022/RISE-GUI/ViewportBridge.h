@@ -206,6 +206,39 @@ public:
     void undo();
     void redo();
 
+    // ---- Phase 6.5 scene-file save ----------------------------------
+    // Round-trip-save bindings.  Mirrors the macOS RISEViewportBridge
+    // `hasUnsavedSceneChanges` / `saveSceneTo:errorMessage:` /
+    // `setDirtyChangedBlock:` triplet.
+
+    /// True iff there's at least one in-memory edit since the last
+    /// load / save that the SaveEngine would write to disk.  Drives
+    /// the ViewportProperties panel's "Save Scene" button enable
+    /// state.  Cheap O(1).
+    bool hasUnsavedSceneChanges() const;
+
+    /// Outcome of `saveSceneTo`.  Mirrors RISE::SaveResult::Status.
+    enum class SaveStatus : int {
+        Saved   = 0,
+        NoOp    = 1,
+        Refused = 2,
+        Failed  = 3,
+        Error   = -1   ///< null controller or null path; caller mistake
+    };
+
+    /// Save the in-memory edits to `path`.  Routes through
+    /// SceneEditController::RequestSave (cancel-and-park dance
+    /// handled controller-side).  On Refused / Failed, `outError`
+    /// receives the engine's diagnostic; empty otherwise.
+    SaveStatus saveSceneTo(const QString& path, QString& outError);
+
+    /// The path of the currently-loaded .RISEscene file, or an
+    /// empty string when no scene has been loaded.  Delegates to
+    /// the owning RenderEngine so the ViewportProperties header
+    /// can resolve the default Save target without learning about
+    /// the engine directly.
+    QString loadedFilePath() const;
+
     /// Canonical scene time owned by the underlying SceneEditController.
     /// Updated by every time-scrub AND by Undo / Redo of a SetSceneTime
     /// edit; that's why MainWindow::onRender queries this just before
@@ -323,6 +356,14 @@ signals:
     /// Emitted on the UI thread with each completed preview frame.
     /// The QImage owns its own data (deep copy from C++ buffer).
     void imageUpdated(const QImage& image);
+
+    /// Phase 6.5: emitted on each `hasUnsavedSceneChanges()` TRANSITION
+    /// (clean→dirty or dirty→clean).  Edits that leave the scene
+    /// already-dirty do NOT re-fire it.  Connected by the
+    /// ViewportProperties header to gate the Save button's enable
+    /// state.  Emitted via QueuedConnection (see ctor) so we don't
+    /// re-enter Qt from the C trampoline's thread.
+    void dirtyChanged(bool hasUnsavedChanges);
 
 private:
     void buildLivePreview();

@@ -53,7 +53,18 @@ public slots:
 private slots:
     void onLineEditFinished();
 
+    /// Phase 6.5: react to the bridge's dirty-state transition by
+    /// flipping the Save / Save As… buttons' enable state and
+    /// tooltip text.  Connected via Qt::AutoConnection (the bridge
+    /// already marshals onto the GUI thread via QueuedConnection).
+    void onDirtyChanged(bool hasUnsavedChanges);
+
 private:
+    /// Phase 6.5: drive a Save (`useLoadedPath=true`) or Save As…
+    /// (`useLoadedPath=false`) dialog flow.  Branches on the bridge's
+    /// SaveStatus and pops a QMessageBox on Refused / Failed.
+    void performSceneSave(bool useLoadedPath);
+
     void clearPropertyRows();
 
     /// Re-pull each section's entity list from the bridge.  Called
@@ -88,6 +99,8 @@ private:
 
     ViewportBridge*                 m_bridge = nullptr;
     QLabel*                         m_headerLabel = nullptr;
+    QToolButton*                    m_saveButton = nullptr;   ///< Phase 6.5: in-place save (to loadedFilePath)
+    QToolButton*                    m_saveAsButton = nullptr; ///< Phase 6.5: Save-As… (QFileDialog)
     QVBoxLayout*                    m_listLayout = nullptr;
     QScrollArea*                    m_scroll = nullptr;
     QHash<int, SectionWidgets>      m_sections;     // keyed by Category int
