@@ -653,21 +653,28 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     SaveResult result;
     result.filePath = filePath;
 
-    // ---- Step 0: external-modification guard (R-final P1 #3 / §11.6) ----
-    // SourceSpanIndex stores byte offsets captured at LOAD time.  If
-    // the user edited filePath externally between load and save, those
-    // offsets point at unrelated bytes; applying them via Mode A
-    // splice would corrupt the file.  Stat the current state and
-    // compare against the captured FileIdentity.
-    //
-    // Only applied when the loaded scene is being saved back to its
-    // original path AND we captured an identity (recursive `> load`
-    // children skip the capture, and a Save-As to a NEW path is
-    // creating a fresh file — neither uses the original identity).
+    // SourceSpanIndex stores byte offsets captured at LOAD time
+    // against the bytes of the ORIGINALLY-LOADED file (`loadIdent.filePath`).
+    // For an in-place save, source path == target path; for a Save-As,
+    // they differ.  Either way the engine ALWAYS reads from the
+    // captured source path and writes to the target path (`filePath`).
+    // Reading from the target path on a Save-As would either fail (new
+    // file) or worse, splice load-time offsets into an unrelated file.
     const FileIdentity& loadIdent = mSpans.GetFileIdentity();
-    if( loadIdent.captured && loadIdent.filePath == filePath ) {
+    const std::string sourcePath =
+        loadIdent.captured ? loadIdent.filePath : filePath;
+    const bool isSaveAs =
+        loadIdent.captured && ( sourcePath != filePath );
+
+    // ---- Step 0: external-modification guard (R-final P1 #3 / §11.6) ----
+    // Validate that the SOURCE file's on-disk state still matches the
+    // identity captured at load time.  This protects both in-place
+    // saves and Save-As: if the source was edited externally between
+    // load and save, byte offsets stored in SourceSpanIndex no longer
+    // describe the bytes we're about to read.
+    if( loadIdent.captured ) {
         struct ::stat current_stat = {};
-        if( ::stat( filePath.c_str(), &current_stat ) == 0 ) {
+        if( ::stat( sourcePath.c_str(), &current_stat ) == 0 ) {
             const long long curSize  = static_cast<long long>( current_stat.st_size );
             const long long curMtime = static_cast<long long>( current_stat.st_mtime );
             long long curMtimeNsec = 0;
@@ -681,7 +688,7 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                 || curMtimeNsec != loadIdent.mtimeNsec ) {
                 result.status = SaveResult::Status::Refused;
                 result.errorMessage =
-                    "scene file '" + filePath + "' was modified externally "
+                    "scene file '" + sourcePath + "' was modified externally "
                     "between load and save (mtime/size mismatch).  Applying "
                     "load-time byte offsets to the current file would "
                     "corrupt unrelated content.  Reload the file before "
@@ -695,10 +702,13 @@ SaveResult SaveEngine::Save( const std::string& filePath )
         // that case.
     }
 
-    // ---- Step 1: read file bytes ------------------------------------
+    // ---- Step 1: read file bytes from the SOURCE path ---------------
+    // Save-As reads from sourcePath (captured at load time), NOT from
+    // the user-chosen target — load-time byte offsets are only valid
+    // against the source bytes.
     std::string bytes;
     std::string readError;
-    if( !ReadFile( filePath, bytes, readError ) ) {
+    if( !ReadFile( sourcePath, bytes, readError ) ) {
         result.status = SaveResult::Status::Failed;
         result.errorMessage = readError;
         return result;
@@ -751,13 +761,17 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     const std::vector<std::string> dirtyNames = mDirty.Snapshot();
     for( const std::string& name : dirtyNames ) {
         // --- Cross-file refusal (R7 §1 / pinned 2.25) ---
+        // "Cross-file" means the entity was defined in a `> load`-ed
+        // child file, not in the top-level scene we're saving.  The
+        // top-level scene is the SOURCE file (the bytes we just read),
+        // not the target path (which on Save-As is a different file).
         const std::string& creationFile = mSpans.GetCreationFilePath( name );
-        if( !creationFile.empty() && creationFile != filePath ) {
+        if( !creationFile.empty() && creationFile != sourcePath ) {
             result.status = SaveResult::Status::Refused;
             result.errorMessage =
                 "managed override for '" + name + "' cannot be saved: its "
                 "source chunk lives in '" + creationFile + "', not in the "
-                "top-level file '" + filePath + "'.  V1 does not support "
+                "top-level file '" + sourcePath + "'.  V1 does not support "
                 "cross-file managed overrides; editing an object defined "
                 "by `> load` or `> run` is out of scope.";
             return result;
@@ -906,10 +920,12 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     std::vector<std::string> targetNames;
     for( const auto& kv : accumulator ) targetNames.push_back( kv.first );
 
-    // Retained-managed cross-file refusal (R7 §1).
+    // Retained-managed cross-file refusal (R7 §1).  Compare against
+    // the SOURCE path (the file whose bytes we read) — see the matching
+    // comment on the dirty-loop cross-file check above.
     for( const std::string& name : targetNames ) {
         const std::string& cf = mSpans.GetCreationFilePath( name );
-        if( !cf.empty() && cf != filePath ) {
+        if( !cf.empty() && cf != sourcePath ) {
             result.status = SaveResult::Status::Refused;
             result.errorMessage =
                 "managed override for '" + name + "' (retained from a "
@@ -1227,15 +1243,24 @@ SaveResult SaveEngine::Save( const std::string& filePath )
         }
     }
 
-    // R-final P1 #3 follow-on: refresh the stored FileIdentity to
-    // the freshly-written file's stat data so a subsequent save
-    // doesn't refuse on its own write.  Best-effort — if stat fails
-    // here, the next save will fail-open (ReadFile will succeed or
-    // surface a clearer error).
-    if( loadIdent.captured && loadIdent.filePath == filePath ) {
+    // R-final P1 #3 + Save-As re-anchor (2026-05-21 review P2):
+    // Refresh the stored FileIdentity to the freshly-written file's
+    // identity so subsequent saves see the right baseline:
+    //   - In-place save: filePath == sourcePath, stat the file we
+    //     just wrote, update mtime/size (filePath unchanged).
+    //   - Save-As:       filePath != sourcePath, stat the new target,
+    //     RE-ANCHOR FileIdentity.filePath to the target path and
+    //     update mtime/size.  The next in-place save now reads /
+    //     validates against the target, not the original source.
+    // Without the Save-As branch the next save would either refuse
+    // on identity-mismatch or read the wrong file entirely.
+    // Best-effort — if stat fails here, the next save will fail-open
+    // (ReadFile will succeed or surface a clearer error).
+    if( loadIdent.captured ) {
         struct ::stat post_stat = {};
         if( ::stat( filePath.c_str(), &post_stat ) == 0 ) {
             FileIdentity updated = loadIdent;
+            updated.filePath  = filePath;   // re-anchor (no-op on in-place save)
             updated.mtimeSec  = static_cast<long long>( post_stat.st_mtime );
 #if defined(__APPLE__)
             updated.mtimeNsec = static_cast<long long>( post_stat.st_mtimespec.tv_nsec );
@@ -1250,6 +1275,20 @@ SaveResult SaveEngine::Save( const std::string& filePath )
             // IJobPriv anyway.
             const_cast<SourceSpanIndex&>( mSpans ).SetFileIdentity( updated );
         }
+    }
+
+    // Save-As only: remap per-entity filePath fields in both span
+    // indices from the old source path to the new target path.  The
+    // unmanaged override chunks and standard_object source spans
+    // physically live in the target file now (we wrote them there);
+    // their `filePath` metadata must agree so the next save's
+    // cross-file refusal compares them against `sourcePath` (which
+    // for that next save will equal `filePath`) and they pass.
+    if( isSaveAs ) {
+        const_cast<SourceSpanIndex&>( mSpans ).RemapFilePath(
+            sourcePath, filePath );
+        const_cast<OverrideSpanIndex&>( mOverrideSpans ).RemapFilePath(
+            sourcePath, filePath );
     }
 
     mDirty.Clear();

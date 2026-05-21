@@ -173,6 +173,17 @@ namespace RISE
         /// replacement.size().  All offsets `>= begin` shift.
         void ApplyOffsetDeltas( const std::vector<OffsetDelta>& deltas );
 
+        /// Phase 6.5 Save-As re-anchor: walk every SourceSpan and
+        /// every CreationLocation entry; wherever the recorded
+        /// filePath matches `oldPath`, rewrite it to `newPath`.
+        /// Entries whose filePath came from a different file (e.g.
+        /// `> load`-ed children) are left alone.  Called by the
+        /// save engine after a successful Save-As write so the next
+        /// save-to-the-new-target lands in-place against the new
+        /// file's identity / cross-file checks.
+        void RemapFilePath( const std::string& oldPath,
+                            const std::string& newPath );
+
         // Test/diagnostic helpers.
         const std::unordered_map<std::string, SourceSpan>& Entries() const { return mEntries; }
 

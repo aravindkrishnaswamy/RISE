@@ -53,6 +53,12 @@ public:
 
     State state() const { return m_state; }
     QString loadedFilePath() const { return m_loadedFilePath; }
+    /// Phase 6.5: re-anchor the loaded-path after a successful
+    /// Save-As.  No I/O — the file at `path` is assumed to already
+    /// have been written by the save engine.  ViewportBridge calls
+    /// this from saveSceneTo() when the engine reports Saved with
+    /// a target distinct from the current loaded path.
+    void setLoadedFilePath(const QString& path) { m_loadedFilePath = path; }
     bool hasAnimation() const { return m_hasAnimation; }
     QString versionString() const;
 

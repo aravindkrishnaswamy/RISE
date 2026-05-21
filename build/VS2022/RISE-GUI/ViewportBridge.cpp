@@ -401,7 +401,18 @@ ViewportBridge::SaveStatus ViewportBridge::saveSceneTo(
     if (errBuf[0] != '\0') {
         outError = QString::fromUtf8(errBuf);
     }
-    return static_cast<SaveStatus>(status);
+    const SaveStatus rs = static_cast<SaveStatus>(status);
+
+    // Phase 6.5: on Saved with a Save-As target (path != current
+    // loadedFilePath), re-anchor the engine's record so subsequent
+    // in-place saves target the file we just wrote.  Matches the
+    // library's FileIdentity re-anchor inside SaveEngine.
+    if (rs == SaveStatus::Saved && m_engine) {
+        if (m_engine->loadedFilePath() != path) {
+            m_engine->setLoadedFilePath(path);
+        }
+    }
+    return rs;
 }
 
 double ViewportBridge::lastSceneTime() const

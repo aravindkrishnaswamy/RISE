@@ -146,6 +146,16 @@ namespace RISE
         /// plus the new ones it's about to add.
         void RemoveAllManaged();
 
+        /// Phase 6.5 Save-As re-anchor: rewrite every record whose
+        /// filePath matches `oldPath` to `newPath`.  Both managed
+        /// and unmanaged records are remapped, because Save-As
+        /// copies the source's bytes (including unmanaged overrides)
+        /// into the target — so the unmanaged chunks now physically
+        /// live in the target file.  Records from a different file
+        /// (`> load` chains) are left alone.
+        void RemapFilePath( const std::string& oldPath,
+                            const std::string& newPath );
+
         // Direct access for tests / save engine iteration.
         const std::vector<OverrideRecord>& Entries() const { return mEntries; }
 

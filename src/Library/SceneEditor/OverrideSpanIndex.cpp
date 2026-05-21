@@ -118,6 +118,17 @@ namespace RISE
         }
     }
 
+    void OverrideSpanIndex::RemapFilePath( const std::string& oldPath,
+                                           const std::string& newPath )
+    {
+        if( oldPath.empty() || oldPath == newPath ) return;
+        for( OverrideRecord& r : mEntries ) {
+            if( r.filePath == oldPath ) {
+                r.filePath = newPath;
+            }
+        }
+    }
+
     void OverrideSpanIndex::RemoveAllManaged()
     {
         // Compact in place: copy unmanaged records to a fresh vector,

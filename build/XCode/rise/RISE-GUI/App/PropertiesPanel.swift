@@ -299,10 +299,20 @@ struct PropertiesPanel: View {
         var errMsg: NSString? = nil
         let status = bridge.saveScene(to: path, errorMessage: &errMsg)
         switch status {
-        case 0, 1:
-            // Saved or NoOp — silent success.  The dirty-changed
-            // callback (on the Saved transition) flips the button
-            // back to disabled.
+        case 0:
+            // Saved.  Re-anchor `loadedFilePath` so subsequent
+            // in-place Save targets the file we just wrote — matches
+            // the library's FileIdentity re-anchor (SaveEngine.cpp
+            // post-write block).  Without this, the GUI would still
+            // show the ORIGINAL load path as the in-place save
+            // target, even though the C++ session is now anchored
+            // to the new file.
+            if path != viewModel.loadedFilePath {
+                viewModel.loadedFilePath = path
+            }
+        case 1:
+            // NoOp — silent success.  The file is unchanged on
+            // disk; no re-anchor needed.
             break
         case 2:
             showSaveAlert(

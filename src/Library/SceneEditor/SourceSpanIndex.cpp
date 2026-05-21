@@ -135,4 +135,23 @@ namespace RISE
             kv.second.chunkEndOffset = adjust( kv.second.chunkEndOffset );
         }
     }
+
+    void SourceSpanIndex::RemapFilePath( const std::string& oldPath,
+                                        const std::string& newPath )
+    {
+        if( oldPath.empty() || oldPath == newPath ) return;
+        for( auto& kv : mEntries ) {
+            if( kv.second.filePath == oldPath ) {
+                kv.second.filePath = newPath;
+            }
+        }
+        for( auto& kv : mCreationLocation ) {
+            if( kv.second.filePath == oldPath ) {
+                kv.second.filePath = newPath;
+            }
+        }
+        // The FileIdentity's filePath is intentionally NOT touched
+        // here — the save engine updates it explicitly to the
+        // newly-written target file's identity (path + fresh stat).
+    }
 }

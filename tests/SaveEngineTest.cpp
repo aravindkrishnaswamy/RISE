@@ -342,13 +342,25 @@ static void TestFailedOnNonexistentPath()
 {
     gCurrentTest = "TestFailedOnNonexistentPath";
     std::cout << gCurrentTest << "..." << std::endl;
-    // Save targeting a path that doesn't exist (the engine reads
-    // the file first) → Failed.
+    // Save targeting a path whose parent DIRECTORY doesn't exist →
+    // Failed (AtomicWrite can't create the tmp file there).  Must
+    // apply at least one dirty edit first, otherwise the engine
+    // short-circuits to NoOp before attempting the write (post-
+    // 2026-05-21 Save-As refactor reads from the SOURCE path, not
+    // the target — so an edit-less save to a bad target is a NoOp
+    // not a write failure).
     const std::string path = WriteSceneFile( kSceneSimple, "fail_nopath" );
     IJobPriv* pJob = LoadSceneFromPath( path );
     Check( pJob != nullptr, "loaded" );
     if( !pJob ) { std::remove(path.c_str()); return; }
     SceneEditor editor( *pJob->GetScene() );
+
+    SceneEdit e;
+    e.op = SceneEdit::SetObjectPosition;
+    e.objectName = "alpha";
+    e.v3a = Vector3( 1, 0, 0 );
+    editor.Apply( e );
+
     std::unordered_set<std::string> sfa;
     SaveEngine engine = MakeEngine( *pJob, editor, sfa );
     SaveResult r = engine.Save( "/tmp/does_not_exist/save_engine_no.RISEscene" );
@@ -956,6 +968,226 @@ static void TestSecondSaveAfterModeBSameSessionNoReload()
     std::remove( path.c_str() );
 }
 
+// --------------------------------------------------------------------
+// Phase 6.5 Save-As regressions (P1 + P2 from 2026-05-21 review).
+// --------------------------------------------------------------------
+
+static std::string AltScenePath( const char* suffix )
+{
+    char path[512];
+    std::snprintf( path, sizeof(path),
+        "/tmp/save_engine_test_%s_%d.RISEscene", suffix, (int)::getpid() );
+    return std::string( path );
+}
+
+static void TestSaveAsToNewPath()
+{
+    gCurrentTest = "TestSaveAsToNewPath";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // P1: RequestSave to a NEW destination path (file doesn't exist
+    // yet) should write a forked .RISEscene with the source's bytes
+    // plus the in-memory edits applied.  The original source file
+    // must remain unchanged.
+    const std::string source = WriteSceneFile( kSceneSimple, "saveas_new_src" );
+    const std::string target = AltScenePath( "saveas_new_tgt" );
+    std::remove( target.c_str() );   // ensure target doesn't exist
+
+    const std::string sourceBefore = ReadFile( source );
+
+    IJobPriv* pJob = LoadSceneFromPath( source );
+    Check( pJob != nullptr, "loaded source" );
+    if( !pJob ) { std::remove(source.c_str()); return; }
+
+    SceneEditor editor( *pJob->GetScene() );
+    SceneEdit e;
+    e.op = SceneEdit::SetObjectPosition;
+    e.objectName = "alpha";
+    e.v3a = Vector3( 5, 0, 0 );
+    editor.Apply( e );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( target );
+    Check( r.status == SaveResult::Status::Saved,
+           "Save-As to new path: Saved" );
+
+    // Target now exists with the edited content.
+    const std::string targetAfter = ReadFile( target );
+    Check( !targetAfter.empty(), "target file written" );
+    Check( targetAfter.find("position 5 0 0") != std::string::npos
+        || targetAfter.find("position 5.0") != std::string::npos
+        || targetAfter.find("position 5 ") != std::string::npos,
+           "target contains the edited position" );
+
+    // Source file is byte-identical to its load-time bytes.
+    const std::string sourceAfter = ReadFile( source );
+    Check( sourceAfter == sourceBefore,
+           "source file unchanged after Save-As" );
+
+    safe_release( pJob );
+    std::remove( source.c_str() );
+    std::remove( target.c_str() );
+}
+
+static void TestSaveAsOverUnrelatedFileOverwritesItWithSourceContent()
+{
+    gCurrentTest = "TestSaveAsOverUnrelatedFileOverwritesItWithSourceContent";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // P1: Save-As to an EXISTING-BUT-UNRELATED path.  The engine must
+    // splice the loaded source's bytes (not the unrelated target's
+    // bytes) — otherwise byte offsets captured at load time would
+    // corrupt content in the target file.  The resulting target
+    // must contain the SOURCE's content with the edit applied, NOT
+    // the original unrelated target content.
+    const std::string source = WriteSceneFile( kSceneSimple, "saveas_over_src" );
+    const std::string target = AltScenePath( "saveas_over_tgt" );
+
+    // Write a completely unrelated body to target — different length,
+    // different chunks.  If the engine read FROM target by mistake,
+    // it would apply load-time source offsets to these bytes and
+    // either fail to parse on reload or corrupt arbitrarily.
+    {
+        std::ofstream ofs( target.c_str() );
+        ofs <<
+            "RISE ASCII SCENE 6\n"
+            "# THIS IS UNRELATED CONTENT THE ENGINE MUST OVERWRITE\n"
+            "sphere_geometry\n{\n    name unrelated_sphere\n    radius 9.0\n}\n"
+            "standard_object\n{\n    name unrelated_obj\n"
+            "    geometry unrelated_sphere\n    position 99 99 99\n}\n"
+            "# trailing comment that doesn't exist in the source either\n";
+    }
+    const std::string sourceBefore = ReadFile( source );
+
+    IJobPriv* pJob = LoadSceneFromPath( source );
+    Check( pJob != nullptr, "loaded source" );
+    if( !pJob ) { std::remove(source.c_str()); std::remove(target.c_str()); return; }
+    SceneEditor editor( *pJob->GetScene() );
+
+    SceneEdit e;
+    e.op = SceneEdit::SetObjectPosition;
+    e.objectName = "alpha";
+    e.v3a = Vector3( 3, 0, 0 );
+    editor.Apply( e );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( target );
+    Check( r.status == SaveResult::Status::Saved,
+           "Save-As over unrelated file: Saved" );
+
+    // Target now reflects SOURCE content (plus edit), not the
+    // original unrelated content.  This is the corruption test:
+    // pre-fix, the engine read from `target`, which still contained
+    // `unrelated_obj` and `unrelated_sphere`; the load-time source
+    // offsets (pointing into `obj` / `sph`) would have spliced into
+    // a wholly different area, producing parse-broken garbage.
+    const std::string targetAfter = ReadFile( target );
+    Check( targetAfter.find("unrelated_obj") == std::string::npos,
+           "target no longer contains pre-existing unrelated_obj" );
+    Check( targetAfter.find("unrelated_sphere") == std::string::npos,
+           "target no longer contains pre-existing unrelated_sphere" );
+    Check( targetAfter.find("name alpha") != std::string::npos
+        || targetAfter.find("name  alpha") != std::string::npos,
+           "target now contains source's alpha entity" );
+    Check( targetAfter.find("THIS IS UNRELATED CONTENT") == std::string::npos,
+           "target's unrelated trailing comment was overwritten" );
+
+    // Source unchanged.
+    Check( ReadFile(source) == sourceBefore,
+           "source file unchanged after Save-As over target" );
+
+    // Sanity: target should reload as a valid RISE scene.
+    safe_release( pJob );
+    IJobPriv* pJob2 = LoadSceneFromPath( target );
+    Check( pJob2 != nullptr, "saved-as target is a parseable .RISEscene" );
+    if( pJob2 ) {
+        IObjectPriv* obj = pJob2->GetObjects()->GetItem( "alpha" );
+        Check( obj != nullptr, "target contains alpha entity" );
+        if( obj ) {
+            const Matrix4 m = obj->GetFinalTransformMatrix();
+            Check( std::fabs(m._30 - 3.0) < 1e-4,
+                   "target's alpha has the edited position x=3" );
+        }
+        safe_release( pJob2 );
+    }
+    std::remove( source.c_str() );
+    std::remove( target.c_str() );
+}
+
+static void TestInPlaceSaveAfterSaveAsTargetsTheNewPath()
+{
+    gCurrentTest = "TestInPlaceSaveAfterSaveAsTargetsTheNewPath";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // P2: After a successful Save-As, the SaveEngine's internal
+    // session state (FileIdentity, per-entity creationLocation,
+    // SourceSpan filePath fields) must re-anchor to the new target
+    // path.  Otherwise a subsequent in-place save TO THE SAME
+    // TARGET would either:
+    //   (a) refuse with the external-modification guard (captured
+    //       FileIdentity still points at the old source; the
+    //       newly-written target file's stat doesn't match it), or
+    //   (b) refuse with the cross-file message (creationLocation
+    //       still points at the old source, which differs from the
+    //       in-place save path).
+    const std::string source = WriteSceneFile( kSceneSimple, "rean_src" );
+    const std::string target = AltScenePath( "rean_tgt" );
+    std::remove( target.c_str() );
+
+    IJobPriv* pJob = LoadSceneFromPath( source );
+    Check( pJob != nullptr, "loaded source" );
+    if( !pJob ) { std::remove(source.c_str()); return; }
+    SceneEditor editor( *pJob->GetScene() );
+
+    // First edit + Save-As to target.
+    SceneEdit e1;
+    e1.op = SceneEdit::SetObjectPosition;
+    e1.objectName = "alpha";
+    e1.v3a = Vector3( 2, 0, 0 );
+    editor.Apply( e1 );
+    std::unordered_set<std::string> sfa1;
+    SaveEngine engine1 = MakeEngine( *pJob, editor, sfa1 );
+    Check( engine1.Save( target ).status == SaveResult::Status::Saved,
+           "Save-As produced target" );
+
+    // Mtime needs to tick so the post-Save-As FileIdentity's mtime
+    // is distinct from the next save's pre-stat (so the guard
+    // detects no external modification).
+    std::this_thread::sleep_for( std::chrono::milliseconds( 1100 ) );
+
+    // Second edit, in-place save to TARGET (same path as Save-As).
+    // Pre-fix this would Refuse because the captured FileIdentity
+    // still pointed at `source` while the in-place save targeted
+    // `target` — the guard would skip silently (path mismatch) but
+    // the cross-file creationLocation check would refuse the edit.
+    SceneEdit e2;
+    e2.op = SceneEdit::SetObjectPosition;
+    e2.objectName = "alpha";
+    e2.v3a = Vector3( 4, 0, 0 );
+    editor.Apply( e2 );
+    std::unordered_set<std::string> sfa2;
+    SaveEngine engine2 = MakeEngine( *pJob, editor, sfa2 );
+    SaveResult r2 = engine2.Save( target );
+    Check( r2.status == SaveResult::Status::Saved,
+           "in-place save to the Save-As target re-anchors correctly" );
+
+    // Verify content reflects e2.
+    safe_release( pJob );
+    IJobPriv* pJob2 = LoadSceneFromPath( target );
+    Check( pJob2 != nullptr, "reloaded re-anchored target" );
+    if( pJob2 ) {
+        IObjectPriv* obj = pJob2->GetObjects()->GetItem( "alpha" );
+        if( obj ) {
+            const Matrix4 m = obj->GetFinalTransformMatrix();
+            Check( std::fabs(m._30 - 4.0) < 1e-4,
+                   "target's alpha reflects the second (in-place) edit" );
+        }
+        safe_release( pJob2 );
+    }
+
+    std::remove( source.c_str() );
+    std::remove( target.c_str() );
+}
+
 static void TestSaveClearsDirtyTracker()
 {
     gCurrentTest = "TestSaveClearsDirtyTracker";
@@ -1002,6 +1234,9 @@ int main()
     TestSubstringCommentDoesNotFlipManagedFlag();
     TestSecondSaveAfterLongerModeAValueWithoutReload();
     TestSecondSaveAfterModeBSameSessionNoReload();
+    TestSaveAsToNewPath();
+    TestSaveAsOverUnrelatedFileOverwritesItWithSourceContent();
+    TestInPlaceSaveAfterSaveAsTargetsTheNewPath();
     TestSaveClearsDirtyTracker();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
     return failCount == 0 ? 0 : 1;
