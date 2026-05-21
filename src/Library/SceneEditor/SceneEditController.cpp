@@ -137,6 +137,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mRunning( false )
 , mEditPending( false )
 , mRendering( false )
+, mSaving( false )
 , mCancelCount( 0 )
 , mRenderCount( 0 )
 , mFullResW( 0 )
@@ -2409,6 +2410,83 @@ void SceneEditController::KickRender()
 	mCV.notify_one();
 }
 
+// Phase 6.5 (docs/ROUND_TRIP_SAVE_PLAN.md §9.9): write dirty edits to
+// disk using SaveEngine.  Three-step cancel-and-park dance:
+//   1. Park the render thread (cancel in-flight + wait for
+//      mRendering=false), set mSaving=true.
+//   2. Run SaveEngine outside the lock (file IO is slow).
+//   3. Reacquire lock, clear mSaving, capture any error, notify the
+//      render loop.
+//
+// V1 has no `mScaleFromAnchorSet` reference exposed on the live
+// SceneEditor (it's const-accessed via ScaleFromAnchorSet()) — the
+// SaveEngine takes a non-const reference to clear post-save.  We
+// copy into a local, pass it to the engine, then mirror its clear
+// back onto the editor's state via ClearDirtyState() on success.
+// Phase B can wire the live reference once the SaveEngine is plumbed
+// into the cancel-and-park path more thoroughly.
+SaveResult SceneEditController::RequestSave( const std::string& filePath )
+{
+	// ---- Step 1: park render thread + mark save in flight -----------
+	{
+		std::unique_lock<std::mutex> lk( mMutex );
+		if( mRendering.load() ) {
+			mCancelProgress.RequestCancel();
+		}
+		mCV.wait( lk, [&]{ return !mRendering.load(); } );
+		mSaving.store( true );
+	}
+
+	// ---- Step 2: run SaveEngine WITHOUT the lock --------------------
+	// File IO can take a few ms; holding mMutex across that would
+	// stall any other UI-state transition that needs the lock.
+	std::unordered_set<std::string> sfaCopy = mEditor.ScaleFromAnchorSet();
+	SaveEngine engine(
+		mJob,
+		*mJob.GetSourceSpanIndex(),
+		*mJob.GetOverrideSpanIndex(),
+		*mJob.GetBaseTransformSnapshot(),
+		*mJob.GetLoadedTransformSnapshot(),
+		mEditor.Dirty(),
+		sfaCopy );
+	SaveResult result = engine.Save( filePath );
+
+	// ---- Step 3: publish results + release render loop --------------
+	// notify_one runs INSIDE the lock_guard scope (P2.3 review fix):
+	// without that, the render thread could enter cv.wait between our
+	// lock-release and the notify, having last observed mSaving=true,
+	// and miss the wakeup until kRefineWakeMs timeout fires.  Holding
+	// the mutex around the wakeup matches the pattern used in Stop()
+	// and OnTimeScrub.
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		mSaving.store( false );
+		if( Succeeded( result.status ) ) {
+			// Engine cleared mEditor.Dirty() already (it holds a non-
+			// const ref).  Clear the SFA set on the editor side too,
+			// since the engine cleared its local copy.
+			mEditor.ClearDirtyState();
+			mLastSaveError.clear();
+		} else {
+			mLastSaveError = result.errorMessage;
+		}
+		mCV.notify_one();
+	}
+
+	return result;
+}
+
+std::string SceneEditController::LastSaveError() const
+{
+	// Snapshot under the lock for the diagnostic-logger thread-safety
+	// concern (P2.2 review fix): a reader holding the result by
+	// reference across a subsequent RequestSave would see a torn
+	// std::string mid-mutation.  Returning by value (after a locked
+	// copy) eliminates that.
+	std::lock_guard<std::mutex> lk( mMutex );
+	return mLastSaveError;
+}
+
 void SceneEditController::RenderLoop()
 {
 	// Initial render so the user sees something on Start.
@@ -2433,8 +2511,14 @@ void SceneEditController::RenderLoop()
 			const bool refineMode =
 				gestureActive
 			 && mPreviewScale.load( std::memory_order_acquire ) > kPreviewScaleMin;
+			// Phase 6.5: mSaving gates the render loop closed.  When
+			// a save is in flight, we don't start a new render pass
+			// (file IO + render-thread frame reads would race).  The
+			// save wraps up quickly (ms for typical scene files);
+			// loop-resume is automatic via the post-save cv.notify_one.
 			auto pred = [&]{
-				return mEditPending.load( std::memory_order_acquire )
+				return ( mEditPending.load( std::memory_order_acquire )
+				      && !mSaving.load( std::memory_order_acquire ) )
 				    || !mRunning.load( std::memory_order_acquire );
 			};
 			if( refineMode )

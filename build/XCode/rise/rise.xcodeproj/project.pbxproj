@@ -446,6 +446,8 @@
 		F24B73412F52A632008304C4 /* AsciiScriptParser.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0955069C42900069C9E5 /* AsciiScriptParser.h */; };
 		F24B73422F52A632008304C4 /* MathExpressionEvaluator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */; };
 		F24B73432F52A632008304C4 /* MathExpressionEvaluator.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */; };
+		FECC0001000000000000F003 /* RawTokenCapture.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0001000000000000F001 /* RawTokenCapture.cpp */; };
+		FECC0001000000000000F004 /* RawTokenCapture.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0001000000000000F002 /* RawTokenCapture.h */; };
 		F24B73442F52A632008304C4 /* StdOutProgress.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0958069C42900069C9E5 /* StdOutProgress.h */; };
 		F24B73452F52A632008304C4 /* pch.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0959069C42900069C9E5 /* pch.cpp */; };
 		F24B73462F52A632008304C4 /* pch.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F095A069C42900069C9E5 /* pch.h */; };
@@ -1149,6 +1151,8 @@
 		F27F0BB8069C42910069C9E5 /* AsciiScriptParser.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0955069C42900069C9E5 /* AsciiScriptParser.h */; };
 		F27F0BB9069C42910069C9E5 /* MathExpressionEvaluator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */; };
 		F27F0BBA069C42910069C9E5 /* MathExpressionEvaluator.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */; };
+		FECC0001000000000000F005 /* RawTokenCapture.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0001000000000000F001 /* RawTokenCapture.cpp */; };
+		FECC0001000000000000F006 /* RawTokenCapture.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0001000000000000F002 /* RawTokenCapture.h */; };
 		F27F0BBB069C42910069C9E5 /* StdOutProgress.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0958069C42900069C9E5 /* StdOutProgress.h */; };
 		F27F0BBC069C42910069C9E5 /* pch.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0959069C42900069C9E5 /* pch.cpp */; };
 		F27F0BBD069C42910069C9E5 /* pch.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F095A069C42900069C9E5 /* pch.h */; };
@@ -1681,6 +1685,26 @@
 		F2EE002000000000000000C1 /* ChunkDescriptorRegistry.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE002000000000000000A1 /* ChunkDescriptorRegistry.h */; };
 		F2EE002100000000000000B1 /* ChunkDescriptorRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */; };
 		F2EE002100000000000000C1 /* ChunkDescriptorRegistry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */; };
+		FECC0002000000000000F103 /* SourceSpanIndex.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F101 /* SourceSpanIndex.h */; };
+		FECC0002000000000000F104 /* SourceSpanIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F102 /* SourceSpanIndex.cpp */; };
+		FECC0002000000000000F105 /* SourceSpanIndex.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F101 /* SourceSpanIndex.h */; };
+		FECC0002000000000000F106 /* SourceSpanIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F102 /* SourceSpanIndex.cpp */; };
+		FECC0002000000000000F203 /* TransformSnapshot.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F201 /* TransformSnapshot.h */; };
+		FECC0002000000000000F204 /* TransformSnapshot.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F202 /* TransformSnapshot.cpp */; };
+		FECC0002000000000000F205 /* TransformSnapshot.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F201 /* TransformSnapshot.h */; };
+		FECC0002000000000000F206 /* TransformSnapshot.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0002000000000000F202 /* TransformSnapshot.cpp */; };
+		FECC0003000000000000F303 /* OverrideSpanIndex.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0003000000000000F301 /* OverrideSpanIndex.h */; };
+		FECC0003000000000000F304 /* OverrideSpanIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0003000000000000F302 /* OverrideSpanIndex.cpp */; };
+		FECC0003000000000000F305 /* OverrideSpanIndex.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0003000000000000F301 /* OverrideSpanIndex.h */; };
+		FECC0003000000000000F306 /* OverrideSpanIndex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0003000000000000F302 /* OverrideSpanIndex.cpp */; };
+		FECC0004000000000000F403 /* DirtyTracker.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0004000000000000F401 /* DirtyTracker.h */; };
+		FECC0004000000000000F404 /* DirtyTracker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0004000000000000F402 /* DirtyTracker.cpp */; };
+		FECC0004000000000000F405 /* DirtyTracker.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0004000000000000F401 /* DirtyTracker.h */; };
+		FECC0004000000000000F406 /* DirtyTracker.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0004000000000000F402 /* DirtyTracker.cpp */; };
+		FECC0005000000000000F503 /* SaveEngine.h in Sources */ = {isa = PBXBuildFile; fileRef = FECC0005000000000000F501 /* SaveEngine.h */; };
+		FECC0005000000000000F504 /* SaveEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0005000000000000F502 /* SaveEngine.cpp */; };
+		FECC0005000000000000F505 /* SaveEngine.h in Headers */ = {isa = PBXBuildFile; fileRef = FECC0005000000000000F501 /* SaveEngine.h */; };
+		FECC0005000000000000F506 /* SaveEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FECC0005000000000000F502 /* SaveEngine.cpp */; };
 		F2EE002200000000000000B1 /* FilmIntrospection.h in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002200000000000000A1 /* FilmIntrospection.h */; };
 		F2EE002200000000000000C1 /* FilmIntrospection.h in Headers */ = {isa = PBXBuildFile; fileRef = F2EE002200000000000000A1 /* FilmIntrospection.h */; };
 		F2EE002300000000000000B1 /* FilmIntrospection.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2EE002300000000000000A1 /* FilmIntrospection.cpp */; };
@@ -2267,6 +2291,8 @@
 		F27F0955069C42900069C9E5 /* AsciiScriptParser.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AsciiScriptParser.h; sourceTree = "<group>"; };
 		F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = MathExpressionEvaluator.cpp; sourceTree = "<group>"; };
 		F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MathExpressionEvaluator.h; sourceTree = "<group>"; };
+		FECC0001000000000000F001 /* RawTokenCapture.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RawTokenCapture.cpp; sourceTree = "<group>"; };
+		FECC0001000000000000F002 /* RawTokenCapture.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RawTokenCapture.h; sourceTree = "<group>"; };
 		F27F0958069C42900069C9E5 /* StdOutProgress.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = StdOutProgress.h; sourceTree = "<group>"; };
 		F27F0959069C42900069C9E5 /* pch.cpp */ = {isa = PBXFileReference; explicitFileType = sourcecode.cpp.cpp; fileEncoding = 30; path = pch.cpp; sourceTree = "<group>"; };
 		F27F095A069C42900069C9E5 /* pch.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = pch.h; sourceTree = "<group>"; };
@@ -2692,6 +2718,16 @@
 		F2EE001900000000000000A1 /* RasterizerIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RasterizerIntrospection.cpp; sourceTree = "<group>"; };
 		F2EE002000000000000000A1 /* ChunkDescriptorRegistry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ChunkDescriptorRegistry.h; sourceTree = "<group>"; };
 		F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ChunkDescriptorRegistry.cpp; sourceTree = "<group>"; };
+		FECC0002000000000000F101 /* SourceSpanIndex.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SourceSpanIndex.h; sourceTree = "<group>"; };
+		FECC0002000000000000F102 /* SourceSpanIndex.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SourceSpanIndex.cpp; sourceTree = "<group>"; };
+		FECC0002000000000000F201 /* TransformSnapshot.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TransformSnapshot.h; sourceTree = "<group>"; };
+		FECC0002000000000000F202 /* TransformSnapshot.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = TransformSnapshot.cpp; sourceTree = "<group>"; };
+		FECC0003000000000000F301 /* OverrideSpanIndex.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = OverrideSpanIndex.h; sourceTree = "<group>"; };
+		FECC0003000000000000F302 /* OverrideSpanIndex.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = OverrideSpanIndex.cpp; sourceTree = "<group>"; };
+		FECC0004000000000000F401 /* DirtyTracker.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DirtyTracker.h; sourceTree = "<group>"; };
+		FECC0004000000000000F402 /* DirtyTracker.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DirtyTracker.cpp; sourceTree = "<group>"; };
+		FECC0005000000000000F501 /* SaveEngine.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SaveEngine.h; sourceTree = "<group>"; };
+		FECC0005000000000000F502 /* SaveEngine.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SaveEngine.cpp; sourceTree = "<group>"; };
 		F2EE002200000000000000A1 /* FilmIntrospection.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = FilmIntrospection.h; sourceTree = "<group>"; };
 		F2EE002300000000000000A1 /* FilmIntrospection.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = FilmIntrospection.cpp; sourceTree = "<group>"; };
 		F2EE003000000000000000A1 /* DisplayTransform.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DisplayTransform.h; sourceTree = "<group>"; };
@@ -3461,6 +3497,8 @@
 				F27F0955069C42900069C9E5 /* AsciiScriptParser.h */,
 				F27F0956069C42900069C9E5 /* MathExpressionEvaluator.cpp */,
 				F27F0957069C42900069C9E5 /* MathExpressionEvaluator.h */,
+				FECC0001000000000000F001 /* RawTokenCapture.cpp */,
+				FECC0001000000000000F002 /* RawTokenCapture.h */,
 				F27F0958069C42900069C9E5 /* StdOutProgress.h */,
 				F2CD000100000000000000A1 /* ChunkDescriptor.h */,
 				F2CD000200000000000000A1 /* ChunkParserRegistry.h */,
@@ -4047,6 +4085,16 @@
 				F2EE001900000000000000A1 /* RasterizerIntrospection.cpp */,
 				F2EE002000000000000000A1 /* ChunkDescriptorRegistry.h */,
 				F2EE002100000000000000A1 /* ChunkDescriptorRegistry.cpp */,
+				FECC0002000000000000F101 /* SourceSpanIndex.h */,
+				FECC0002000000000000F102 /* SourceSpanIndex.cpp */,
+				FECC0002000000000000F201 /* TransformSnapshot.h */,
+				FECC0002000000000000F202 /* TransformSnapshot.cpp */,
+				FECC0003000000000000F301 /* OverrideSpanIndex.h */,
+				FECC0003000000000000F302 /* OverrideSpanIndex.cpp */,
+				FECC0004000000000000F401 /* DirtyTracker.h */,
+				FECC0004000000000000F402 /* DirtyTracker.cpp */,
+				FECC0005000000000000F501 /* SaveEngine.h */,
+				FECC0005000000000000F502 /* SaveEngine.cpp */,
 				F2EE002200000000000000A1 /* FilmIntrospection.h */,
 				F2EE002300000000000000A1 /* FilmIntrospection.cpp */,
 				F2EE006000000000000000A1 /* MaterialIntrospection.h */,
@@ -4389,6 +4437,7 @@
 				F27F0BB6069C42910069C9E5 /* AsciiSceneParser.h in Headers */,
 				F27F0BB8069C42910069C9E5 /* AsciiScriptParser.h in Headers */,
 				F27F0BBA069C42910069C9E5 /* MathExpressionEvaluator.h in Headers */,
+				FECC0001000000000000F006 /* RawTokenCapture.h in Headers */,
 				F27F0BBB069C42910069C9E5 /* StdOutProgress.h in Headers */,
 				F2CD000100000000000000C1 /* ChunkDescriptor.h in Headers */,
 				F2CD000200000000000000C1 /* ChunkParserRegistry.h in Headers */,
@@ -4407,6 +4456,11 @@
 				F2EE001600000000000000C1 /* LightIntrospection.h in Headers */,
 				F2EE001800000000000000C1 /* RasterizerIntrospection.h in Headers */,
 				F2EE002000000000000000C1 /* ChunkDescriptorRegistry.h in Headers */,
+				FECC0002000000000000F105 /* SourceSpanIndex.h in Headers */,
+				FECC0002000000000000F205 /* TransformSnapshot.h in Headers */,
+				FECC0003000000000000F305 /* OverrideSpanIndex.h in Headers */,
+				FECC0004000000000000F405 /* DirtyTracker.h in Headers */,
+				FECC0005000000000000F505 /* SaveEngine.h in Headers */,
 				F2EE002200000000000000C1 /* FilmIntrospection.h in Headers */,
 				F2EE006000000000000000C1 /* MaterialIntrospection.h in Headers */,
 				F2EE006200000000000000C1 /* MediaIntrospection.h in Headers */,
@@ -4931,6 +4985,7 @@
 				F27F0BB5069C42910069C9E5 /* AsciiSceneParser.cpp in Sources */,
 				F27F0BB7069C42910069C9E5 /* AsciiScriptParser.cpp in Sources */,
 				F27F0BB9069C42910069C9E5 /* MathExpressionEvaluator.cpp in Sources */,
+				FECC0001000000000000F005 /* RawTokenCapture.cpp in Sources */,
 				F2E0000200000000000000C1 /* SceneGrammar.cpp in Sources */,
 				F2E0000400000000000000C1 /* CompletionContext.cpp in Sources */,
 				F2E0000600000000000000C1 /* NameIndex.cpp in Sources */,
@@ -4944,6 +4999,11 @@
 				F2EE001700000000000000C1 /* LightIntrospection.cpp in Sources */,
 				F2EE001900000000000000C1 /* RasterizerIntrospection.cpp in Sources */,
 				F2EE002100000000000000C1 /* ChunkDescriptorRegistry.cpp in Sources */,
+				FECC0002000000000000F106 /* SourceSpanIndex.cpp in Sources */,
+				FECC0002000000000000F206 /* TransformSnapshot.cpp in Sources */,
+				FECC0003000000000000F306 /* OverrideSpanIndex.cpp in Sources */,
+				FECC0004000000000000F406 /* DirtyTracker.cpp in Sources */,
+				FECC0005000000000000F506 /* SaveEngine.cpp in Sources */,
 				F2EE002300000000000000C1 /* FilmIntrospection.cpp in Sources */,
 				F2EE006100000000000000C1 /* MaterialIntrospection.cpp in Sources */,
 				F2EE006300000000000000C1 /* MediaIntrospection.cpp in Sources */,
@@ -5541,6 +5601,8 @@
 				F24B73412F52A632008304C4 /* AsciiScriptParser.h in Sources */,
 				F24B73422F52A632008304C4 /* MathExpressionEvaluator.cpp in Sources */,
 				F24B73432F52A632008304C4 /* MathExpressionEvaluator.h in Sources */,
+				FECC0001000000000000F003 /* RawTokenCapture.cpp in Sources */,
+				FECC0001000000000000F004 /* RawTokenCapture.h in Sources */,
 				F24B73442F52A632008304C4 /* StdOutProgress.h in Sources */,
 				F2CD000100000000000000B1 /* ChunkDescriptor.h in Sources */,
 				F2CD000200000000000000B1 /* ChunkParserRegistry.h in Sources */,
@@ -5572,6 +5634,16 @@
 				F2EE001900000000000000B1 /* RasterizerIntrospection.cpp in Sources */,
 				F2EE002000000000000000B1 /* ChunkDescriptorRegistry.h in Sources */,
 				F2EE002100000000000000B1 /* ChunkDescriptorRegistry.cpp in Sources */,
+				FECC0002000000000000F103 /* SourceSpanIndex.h in Sources */,
+				FECC0002000000000000F104 /* SourceSpanIndex.cpp in Sources */,
+				FECC0002000000000000F203 /* TransformSnapshot.h in Sources */,
+				FECC0002000000000000F204 /* TransformSnapshot.cpp in Sources */,
+				FECC0003000000000000F303 /* OverrideSpanIndex.h in Sources */,
+				FECC0003000000000000F304 /* OverrideSpanIndex.cpp in Sources */,
+				FECC0004000000000000F403 /* DirtyTracker.h in Sources */,
+				FECC0004000000000000F404 /* DirtyTracker.cpp in Sources */,
+				FECC0005000000000000F503 /* SaveEngine.h in Sources */,
+				FECC0005000000000000F504 /* SaveEngine.cpp in Sources */,
 				F2EE002200000000000000B1 /* FilmIntrospection.h in Sources */,
 				F2EE002300000000000000B1 /* FilmIntrospection.cpp in Sources */,
 				F2EE006000000000000000B1 /* MaterialIntrospection.h in Sources */,

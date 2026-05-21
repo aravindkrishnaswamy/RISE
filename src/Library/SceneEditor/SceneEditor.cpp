@@ -824,6 +824,15 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		 || edit.op == SceneEdit::ScaleObjectFromAnchor;
 		if( isTransformOp ) {
 			RunObjectInvariantChain( *obj );
+			// Phase 6.3 (§7.2): every transform-shaped op marks the
+			// target dirty.  Property ops (material / shader / etc.)
+			// are V1-out-of-scope for round-trip save and do NOT
+			// touch the tracker.
+			mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
+			if( edit.op == SceneEdit::ScaleObjectFromAnchor ) {
+				// Pinned 2.8 / R2 §7: always-matrix policy.
+				mScaleFromAnchorSet.insert( std::string( edit.objectName.c_str() ) );
+			}
 		}
 		mHistory.Push( edit );
 		mLastScope = Dirty_ObjectTransform;
@@ -1185,6 +1194,11 @@ bool SceneEditor::Undo()
 					default:
 						RestoreObjectTransform( *obj, inner.prevTransform );
 						RunObjectInvariantChain( *obj );
+						// Phase 6.3 (§7.3): composite-undo marks dirty.
+						mDirtyTracker.MarkDirty( std::string( inner.objectName.c_str() ) );
+						if( inner.op == SceneEdit::ScaleObjectFromAnchor ) {
+							mScaleFromAnchorSet.insert( std::string( inner.objectName.c_str() ) );
+						}
 						break;
 					}
 				}
@@ -1327,6 +1341,22 @@ bool SceneEditor::Undo()
 			// Transform op.
 			RestoreObjectTransform( *obj, edit.prevTransform );
 			RunObjectInvariantChain( *obj );
+			// Phase 6.3 (§7.3): undo of a transform op still marks
+			// dirty.  The save engine's matrix-equality compare
+			// (§9.4) resolves the no-op case: drag → undo → save is
+			// idempotent because Mfinal == Mloaded.
+			mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
+			if( edit.op == SceneEdit::ScaleObjectFromAnchor ) {
+				// Pinned 2.8: SFA-touched objects stay flagged across
+				// undo (matrix-form save policy is sticky once the
+				// op has been seen during the session).  Doesn't
+				// cause incorrect saves: if the user fully undoes
+				// all SFA ops on an object, the §9.2 Mfinal ==
+				// Mloaded no-op check fires before forceMatrixOverride
+				// is consulted, so the entry is dropped from the
+				// managed block regardless of SFA-set membership.
+				mScaleFromAnchorSet.insert( std::string( edit.objectName.c_str() ) );
+			}
 			break;
 		}
 		mLastScope = Dirty_ObjectTransform;
@@ -1503,7 +1533,14 @@ bool SceneEditor::Redo()
 					 || inner.op == SceneEdit::SetObjectScale
 					 || inner.op == SceneEdit::SetObjectStretch
 					 || inner.op == SceneEdit::ScaleObjectFromAnchor;
-					if( isTransformOp ) RunObjectInvariantChain( *obj );
+					if( isTransformOp ) {
+						RunObjectInvariantChain( *obj );
+						// Phase 6.3 (§7.3): redo marks dirty.
+						mDirtyTracker.MarkDirty( std::string( inner.objectName.c_str() ) );
+						if( inner.op == SceneEdit::ScaleObjectFromAnchor ) {
+							mScaleFromAnchorSet.insert( std::string( inner.objectName.c_str() ) );
+						}
+					}
 				}
 				sawObjectOp = true;
 			}
@@ -1603,7 +1640,14 @@ bool SceneEditor::Redo()
 		 || edit.op == SceneEdit::SetObjectScale
 		 || edit.op == SceneEdit::SetObjectStretch
 		 || edit.op == SceneEdit::ScaleObjectFromAnchor;
-		if( isTransformOp ) RunObjectInvariantChain( *obj );
+		if( isTransformOp ) {
+			RunObjectInvariantChain( *obj );
+			// Phase 6.3 (§7.3): single-op redo marks dirty.
+			mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
+			if( edit.op == SceneEdit::ScaleObjectFromAnchor ) {
+				mScaleFromAnchorSet.insert( std::string( edit.objectName.c_str() ) );
+			}
+		}
 		mLastScope = Dirty_ObjectTransform;
 		return true;
 	}

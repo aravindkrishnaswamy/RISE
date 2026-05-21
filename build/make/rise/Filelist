@@ -387,6 +387,7 @@ SRCLIBPARSERS =\
 	$(PATHLIBRARY)Parsers/AsciiSceneParser.cpp					\
 	$(PATHLIBRARY)Parsers/AsciiScriptParser.cpp					\
 	$(PATHLIBRARY)Parsers/MathExpressionEvaluator.cpp			\
+	$(PATHLIBRARY)Parsers/RawTokenCapture.cpp					\
 	$(PATHLIBRARY)Options.cpp
 
 # Scene-editor suggestion engine
@@ -409,7 +410,12 @@ SRCLIBSCENEEDITOR =\
 	$(PATHLIBRARY)SceneEditor/FilmIntrospection.cpp					\
 	$(PATHLIBRARY)SceneEditor/MaterialIntrospection.cpp				\
 	$(PATHLIBRARY)SceneEditor/MediaIntrospection.cpp				\
-	$(PATHLIBRARY)SceneEditor/ChunkDescriptorRegistry.cpp
+	$(PATHLIBRARY)SceneEditor/ChunkDescriptorRegistry.cpp			\
+	$(PATHLIBRARY)SceneEditor/SourceSpanIndex.cpp					\
+	$(PATHLIBRARY)SceneEditor/TransformSnapshot.cpp					\
+	$(PATHLIBRARY)SceneEditor/OverrideSpanIndex.cpp					\
+	$(PATHLIBRARY)SceneEditor/DirtyTracker.cpp						\
+	$(PATHLIBRARY)SceneEditor/SaveEngine.cpp
 
 # Miscellaneous stuff
 SRCLIBMISC =\

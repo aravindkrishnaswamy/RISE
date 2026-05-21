@@ -36,6 +36,9 @@
 #include "Interfaces/IFunction1DManager.h"
 #include "Interfaces/IFunction2DManager.h"
 #include "Interfaces/IMedium.h"
+#include "SceneEditor/OverrideSpanIndex.h"
+#include "SceneEditor/SourceSpanIndex.h"
+#include "SceneEditor/TransformSnapshot.h"
 #include "Utilities/Reference.h"
 #include "Utilities/RString.h"
 #include "Utilities/ProgressiveConfig.h"
@@ -48,6 +51,7 @@
 #include "Utilities/StabilityConfig.h"
 #include "Utilities/OidnConfig.h"
 #include <map>
+#include <memory>
 #include <set>
 #include <vector>
 
@@ -100,6 +104,20 @@ namespace RISE
 		// didn't ask to be created.  CLI keeps the default (false) so
 		// command-line behaviour is byte-identical to legacy.
 		bool										m_suppressFileRasterizerOutputs = false;
+
+		// Phase 6.1 (docs/ROUND_TRIP_SAVE_PLAN.md §6.3 + §7.4).
+		// Per-entity source-file metadata + two transform snapshots
+		// captured at scene-load time, owned by Job for its lifetime.
+		// Populated by AsciiSceneParser; consumed by the save engine
+		// (Phase 6.4).  Held by unique_ptr so they're cheap to swap
+		// out on rescene if/when we add that path; raw pointers
+		// returned by the IJobPriv getters remain stable across the
+		// scene's lifetime.
+		std::unique_ptr<SourceSpanIndex>			pSourceSpanIndex;
+		std::unique_ptr<TransformSnapshot>			pBaseTransforms;
+		std::unique_ptr<TransformSnapshot>			pLoadedTransforms;
+		// Phase 6.2 (§6.8): per-`override_object` chunk catalog.
+		std::unique_ptr<OverrideSpanIndex>			pOverrideSpans;
 
 		// L6b — canonical FrameStore allocated at the active camera's
 		// dims and threaded into every rasterizer factory.  Per
@@ -295,6 +313,22 @@ namespace RISE
 		IObjectManager*				GetObjects()		{ return pObjectManager; };
 		ILightManager*				GetLights()			{ return pLightManager; };
 		IRasterizer*				GetRasterizer()		{ return pRasterizer; };
+
+		// Phase 6.1 getters.  Mutable versions return non-const pointers
+		// for AsciiSceneParser's population pass; const versions are
+		// what the save engine consumes.  Pointers stable across the
+		// Job's lifetime (the unique_ptr's are populated in
+		// InitializeContainers and never reseated).  Inline like the
+		// other manager getters; matches Job's no-`override` convention
+		// (see SetSuppressFileRasterizerOutputs comment).
+		SourceSpanIndex*			GetSourceSpanIndexMutable()			{ return pSourceSpanIndex.get(); }
+		const SourceSpanIndex*		GetSourceSpanIndex() const			{ return pSourceSpanIndex.get(); }
+		TransformSnapshot*			GetBaseTransformSnapshotMutable()	{ return pBaseTransforms.get(); }
+		const TransformSnapshot*	GetBaseTransformSnapshot() const	{ return pBaseTransforms.get(); }
+		TransformSnapshot*			GetLoadedTransformSnapshotMutable()	{ return pLoadedTransforms.get(); }
+		const TransformSnapshot*	GetLoadedTransformSnapshot() const	{ return pLoadedTransforms.get(); }
+		OverrideSpanIndex*			GetOverrideSpanIndexMutable()		{ return pOverrideSpans.get(); }
+		const OverrideSpanIndex*	GetOverrideSpanIndex() const		{ return pOverrideSpans.get(); }
 
 		// L5d — suppress file_rasterizeroutput at parse time.
 		// See member-variable comment for rationale.

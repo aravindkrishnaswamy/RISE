@@ -340,6 +340,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Parsers/AsciiSceneParser.cpp"
     "${RISE_LIB}/Parsers/AsciiScriptParser.cpp"
     "${RISE_LIB}/Parsers/MathExpressionEvaluator.cpp"
+    "${RISE_LIB}/Parsers/RawTokenCapture.cpp"
     "${RISE_LIB}/Options.cpp"
 
     # SRCLIBSCENEEDITORSUGGESTIONS
@@ -361,6 +362,11 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/SceneEditor/MaterialIntrospection.cpp"
     "${RISE_LIB}/SceneEditor/MediaIntrospection.cpp"
     "${RISE_LIB}/SceneEditor/ChunkDescriptorRegistry.cpp"
+    "${RISE_LIB}/SceneEditor/SourceSpanIndex.cpp"
+    "${RISE_LIB}/SceneEditor/TransformSnapshot.cpp"
+    "${RISE_LIB}/SceneEditor/OverrideSpanIndex.cpp"
+    "${RISE_LIB}/SceneEditor/DirtyTracker.cpp"
+    "${RISE_LIB}/SceneEditor/SaveEngine.cpp"
 
     # SRCLIBMISC
     "${RISE_LIB}/DetectorSpheres/DetectorSphere.cpp"

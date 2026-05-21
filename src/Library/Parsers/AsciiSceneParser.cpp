@@ -100,6 +100,8 @@
 #include <string>
 #include <sstream>
 #include <algorithm>
+#include <cstring>   // Phase 6.2: strstr for sentinel detection
+#include <cstdio>    // Phase 6.2: sscanf in OnOverrideObjectFinalized
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "AsciiSceneParser.h"
@@ -120,6 +122,14 @@
 #include "../Interfaces/IFunction1DManager.h"
 #include "../Interfaces/IFunction2DManager.h"
 #include "../Painters/RGBScalarPainter.h"		// for ScalarTriple::IsUniform et al
+// Phase 6.1: SourceSpanIndex + TransformSnapshot live behind IJobPriv
+// (forward-declared in IJobPriv.h), full defs needed for population calls.
+#include "../Interfaces/IJobPriv.h"
+#include "../Interfaces/IObjectManager.h"
+#include "../Interfaces/IObjectPriv.h"
+#include "../SceneEditor/SourceSpanIndex.h"
+#include "../SceneEditor/TransformSnapshot.h"
+#include "../SceneEditor/OverrideSpanIndex.h"
 
 #ifdef WIN32
 #include <malloc.h>
@@ -330,6 +340,55 @@ inline bool evaluate_expressions_in_tokens( String* tokens, const unsigned int n
 	}
 
 	return true;
+}
+
+// Phase 6.2 helper (docs/ROUND_TRIP_SAVE_PLAN.md §8.10): compose a
+// column-major 4×4 from translation, glTF-style quaternion (xyzw),
+// and per-axis stretch.  Extracted from the inline body of
+// StandardObjectAsciiChunkParser::Finalize (originally line 5534) so
+// the new OverrideObjectAsciiChunkParser can call it.  Behaviour-
+// preserving refactor: the math is identical.
+inline void ComposeTRS_QuaternionGltf(
+	const double pos[3], const double q[4], const double scale[3],
+	double outM[16] )
+{
+	// Quaternion → 3×3 rotation, then assemble column-major M = T·R·S.
+	const double xx = q[0]*q[0], yy = q[1]*q[1], zz = q[2]*q[2];
+	const double xy = q[0]*q[1], xz = q[0]*q[2], yz = q[1]*q[2];
+	const double wx = q[3]*q[0], wy = q[3]*q[1], wz = q[3]*q[2];
+	const double r00 = 1.0 - 2.0*(yy+zz);
+	const double r01 = 2.0*(xy - wz);
+	const double r02 = 2.0*(xz + wy);
+	const double r10 = 2.0*(xy + wz);
+	const double r11 = 1.0 - 2.0*(xx+zz);
+	const double r12 = 2.0*(yz - wx);
+	const double r20 = 2.0*(xz - wy);
+	const double r21 = 2.0*(yz + wx);
+	const double r22 = 1.0 - 2.0*(xx+yy);
+
+	// Column 0: scale[0] * R column 0
+	outM[ 0] = scale[0] * r00;  outM[ 1] = scale[0] * r10;  outM[ 2] = scale[0] * r20;  outM[ 3] = 0;
+	// Column 1: scale[1] * R column 1
+	outM[ 4] = scale[1] * r01;  outM[ 5] = scale[1] * r11;  outM[ 6] = scale[1] * r21;  outM[ 7] = 0;
+	// Column 2: scale[2] * R column 2
+	outM[ 8] = scale[2] * r02;  outM[ 9] = scale[2] * r12;  outM[10] = scale[2] * r22;  outM[11] = 0;
+	// Column 3: translation, w=1
+	outM[12] = pos[0];          outM[13] = pos[1];          outM[14] = pos[2];          outM[15] = 1;
+}
+
+// Phase 6.2 helper: build a RISE Matrix4 from a column-major 16-double
+// array — the same layout as glTF and as the existing
+// `Job::AddObjectMatrix` consumer (Job.cpp:5103-5107).  Inline here so
+// `OverrideObjectAsciiChunkParser` doesn't need to introduce a new
+// public Matrix4 constructor.
+inline Matrix4 BuildMatrix4FromColumnMajor( const double m[16] )
+{
+	Matrix4 out;
+	out._00 = m[ 0]; out._01 = m[ 1]; out._02 = m[ 2]; out._03 = m[ 3];
+	out._10 = m[ 4]; out._11 = m[ 5]; out._12 = m[ 6]; out._13 = m[ 7];
+	out._20 = m[ 8]; out._21 = m[ 9]; out._22 = m[10]; out._23 = m[11];
+	out._30 = m[12]; out._31 = m[13]; out._32 = m[14]; out._33 = m[15];
+	return out;
 }
 
 //////////////////////////////////////////////////
@@ -5522,7 +5581,9 @@ namespace RISE
 						// Compose translation, quaternion rotation, and per-axis scale into a
 						// single column-major 4x4, then call AddObjectMatrix.  Using
 						// AddObject with Euler-from-quaternion would re-introduce the
-						// gimbal-lock loss this parameter exists to avoid.
+						// gimbal-lock loss this parameter exists to avoid.  Math is shared
+						// with OverrideObjectAsciiChunkParser (Phase 6.2) via
+						// ComposeTRS_QuaternionGltf (§8.10).
 						double pos[3]   = {0,0,0};
 						double q[4]     = {0,0,0,1};	// xyzw, glTF convention
 						double scale[3] = {1,1,1};
@@ -5530,29 +5591,8 @@ namespace RISE
 						bag.GetVec4( "quaternion", q );
 						bag.GetVec3( "scale",      scale );
 
-						// Quaternion → 3x3 rotation, then assemble column-major M = T * R * S.
-						const double xx = q[0]*q[0], yy = q[1]*q[1], zz = q[2]*q[2];
-						const double xy = q[0]*q[1], xz = q[0]*q[2], yz = q[1]*q[2];
-						const double wx = q[3]*q[0], wy = q[3]*q[1], wz = q[3]*q[2];
-						const double r00 = 1.0 - 2.0*(yy+zz);
-						const double r01 = 2.0*(xy - wz);
-						const double r02 = 2.0*(xz + wy);
-						const double r10 = 2.0*(xy + wz);
-						const double r11 = 1.0 - 2.0*(xx+zz);
-						const double r12 = 2.0*(yz - wx);
-						const double r20 = 2.0*(xz - wy);
-						const double r21 = 2.0*(yz + wx);
-						const double r22 = 1.0 - 2.0*(xx+yy);
-
 						double M[16];
-						// Column 0: scale[0] * R column 0
-						M[ 0] = scale[0] * r00;  M[ 1] = scale[0] * r10;  M[ 2] = scale[0] * r20;  M[ 3] = 0;
-						// Column 1: scale[1] * R column 1
-						M[ 4] = scale[1] * r01;  M[ 5] = scale[1] * r11;  M[ 6] = scale[1] * r21;  M[ 7] = 0;
-						// Column 2: scale[2] * R column 2
-						M[ 8] = scale[2] * r02;  M[ 9] = scale[2] * r12;  M[10] = scale[2] * r22;  M[11] = 0;
-						// Column 3: translation, w=1
-						M[12] = pos[0];          M[13] = pos[1];          M[14] = pos[2];          M[15] = 1;
+						ComposeTRS_QuaternionGltf( pos, q, scale, M );
 
 						bRet = pJob.AddObjectMatrix(
 							name.c_str(), geometry.c_str(),
@@ -5613,6 +5653,164 @@ namespace RISE
 						{ auto& p = P(); p.name = "radiance_scale";   p.kind = ValueKind::Double;    p.description = "Radiance-map scale"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "radiance_orient";  p.kind = ValueKind::DoubleVec3;p.description = "Radiance-map orientation (degrees)"; p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "interior_medium";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Medium}; p.description = "Interior participating medium"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			// Phase 6.2 (docs/ROUND_TRIP_SAVE_PLAN.md §8.9): applies
+			// transform overrides to an already-declared object.  The
+			// chunk MUST appear AFTER the target's standard_object;
+			// missing target is a hard parse error.  Precedence
+			// matrix > quaternion > orientation mirrors the
+			// standard_object path.
+			struct OverrideObjectAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					const std::string name = bag.GetString( "name", std::string() );
+					if( name.empty() ) {
+						GlobalLog()->PrintEasyError(
+							"override_object: missing `name` field." );
+						return false;
+					}
+					IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );
+					if( !priv ) {
+						GlobalLog()->PrintEasyError(
+							"override_object: IJob does not expose IObjectManager (mock?)" );
+						return false;
+					}
+					IObjectManager* objs = priv->GetObjects();
+					if( !objs ) return false;
+					IObjectPriv* obj = objs->GetItem( name.c_str() );
+					if( !obj ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"override_object: target `%s` not found in scene.  "
+							"Possible causes: (a) the override_object chunk appears "
+							"BEFORE the chunk that creates the target — chunks are "
+							"order-sensitive (§8.5); (b) the file was edited between "
+							"save and reload and the standard_object/csg_object was "
+							"deleted; (c) the target name has a typo or was renamed "
+							"after the override was authored.",
+							name.c_str() );
+						return false;
+					}
+
+					// Precedence: matrix > quaternion > orientation
+					// (mirrors StandardObjectAsciiChunkParser).
+					const bool hasMatrix     = bag.Has( "matrix" );
+					const bool hasQuaternion = bag.Has( "quaternion" );
+
+					bool any = false;
+					if( hasMatrix ) {
+						double m[16];
+						bag.GetMat4( "matrix", m );
+						obj->ClearAllTransforms();
+						obj->PushTopTransStack( BuildMatrix4FromColumnMajor( m ) );
+						any = true;
+					} else if( hasQuaternion ) {
+						double pos[3]={0,0,0}, q[4]={0,0,0,1}, s[3]={1,1,1};
+						bag.GetVec3( "position",   pos );
+						bag.GetVec4( "quaternion", q );
+						bag.GetVec3( "scale",      s );
+						double M[16];
+						ComposeTRS_QuaternionGltf( pos, q, s, M );
+						obj->ClearAllTransforms();
+						obj->PushTopTransStack( BuildMatrix4FromColumnMajor( M ) );
+						any = true;
+					} else {
+						// Per-field path.  Each Set* is independent;
+						// missing fields leave the corresponding
+						// component untouched (allows partial overrides
+						// like `override_object { name X  position 1 2 3 }`
+						// to update X's translation without disturbing
+						// its orientation/scale).
+						//
+						// COMPOSITIONAL CAVEAT (review-noted, V1 documented
+						// limitation): per-field SetPosition/Orientation/
+						// Stretch update P/O/Stretch components only — they
+						// do NOT clear the underlying transform STACK.  When
+						// the source `standard_object` was matrix-authored
+						// (Job::AddObjectMatrix pushed the matrix onto the
+						// stack), a per-field override of that target
+						// COMPOSES with the existing stack matrix rather
+						// than replacing it.  V1's save engine never emits
+						// per-field overrides for matrix-authored objects
+						// (pinned 2.13: matrix author-mode forces matrix-
+						// form override), so the round-trip path is safe.
+						// Hand-written overrides targeting matrix-authored
+						// sources should use the matrix or quaternion
+						// branch to replace cleanly.
+						double v[3];
+						if( bag.GetVec3( "position", v ) ) {
+							obj->SetPosition( Point3( v[0], v[1], v[2] ) );
+							any = true;
+						}
+						if( bag.GetVec3( "orientation", v ) ) {
+							// orientation is DEGREES per scene convention
+							// (matches standard_object).
+							obj->SetOrientation( Vector3(
+								v[0]*DEG_TO_RAD, v[1]*DEG_TO_RAD, v[2]*DEG_TO_RAD ) );
+							any = true;
+						}
+						double scl[3];
+						if( bag.GetVec3( "scale", scl ) ) {
+							// R2 fix (pinned 2.7): ALWAYS use
+							// SetStretch — `scale` Vec3 routes to
+							// SetStretch in standard_object too
+							// (AsciiSceneParser.cpp:5574 → AddObject
+							// → IObjectPriv::SetStretch).
+							obj->SetStretch( Vector3( scl[0], scl[1], scl[2] ) );
+							any = true;
+						}
+					}
+
+					if( !any ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"override_object `%s`: no override parameters present "
+							"(empty block — likely a bug in the writer).",
+							name.c_str() );
+						return true;	// not a fatal error; just a no-op.
+					}
+
+					obj->FinalizeTransformations();
+					objs->InvalidateSpatialStructure();
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override
+				{
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword     = "override_object";
+						cd.category    = ChunkCategory::Object;
+						cd.description = "Apply transform overrides to an already-declared "
+							"object.  Used by the interactive editor's round-trip save for "
+							"objects that have no direct source-line representation (FOR-"
+							"generated entities, or objects whose authored value used a "
+							"macro / expression).  Order in the scene file matters — this "
+							"chunk must appear AFTER the chunk that created the target.";
+						auto P = [&cd]() -> ParameterDescriptor& {
+							cd.parameters.emplace_back();
+							return cd.parameters.back();
+						};
+						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.required = true;
+						  p.description = "Name of the existing object to override."; }
+						{ auto& p = P(); p.name = "position";    p.kind = ValueKind::DoubleVec3; p.required = false;
+						  p.description = "World-space position; matches standard_object semantics."; }
+						{ auto& p = P(); p.name = "orientation"; p.kind = ValueKind::DoubleVec3; p.required = false;
+						  p.description = "Euler orientation in DEGREES; matches standard_object semantics."; }
+						{ auto& p = P(); p.name = "quaternion";  p.kind = ValueKind::DoubleVec4; p.required = false;
+						  p.description = "Rotation quaternion (xyzw, glTF); matches standard_object semantics."; }
+						{ auto& p = P(); p.name = "matrix";      p.kind = ValueKind::DoubleMat4; p.required = false;
+						  p.description = "Full 4x4 world transform, column-major; overrides "
+						                  "position/orientation/quaternion/scale.  Used by the save "
+						                  "engine for objects whose runtime transform is not "
+						                  "decomposable into pos+orient+scale (e.g. after "
+						                  "ScaleObjectFromAnchor or for matrix-imported objects)."; }
+						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.required = false;
+						  p.description = "Per-axis scale; matches standard_object semantics."; }
 						return cd;
 					}();
 					return d;
@@ -8603,6 +8801,7 @@ namespace RISE
 
 		// Objects
 		add( "standard_object",                       new StandardObjectAsciiChunkParser() );
+		add( "override_object",                       new OverrideObjectAsciiChunkParser() );
 		add( "csg_object",                            new CSGObjectAsciiChunkParser() );
 
 		// Shader ops
@@ -8720,9 +8919,379 @@ AsciiSceneParser::~AsciiSceneParser( )
 
 using namespace RISE::Implementation::ChunkParsers;
 
+namespace
+{
+	// Phase 6.1: depth counter for nested ParseAndLoadScene calls.
+	// `> load child.RISEscene` and `> run script.RISEscript` invoke
+	// `pJob.LoadAsciiScene(filename)` mid-parse of the outer scene,
+	// which constructs a fresh AsciiSceneParser and runs its own
+	// ParseAndLoadScene.  The Job-owned SourceSpanIndex /
+	// TransformSnapshot containers are SHARED across both parses, so
+	// the inner parse must NOT clear them — that would blow away the
+	// outer scene's already-recorded entries.
+	//
+	// Tracked via a process-wide static because the inner parser is a
+	// different AsciiSceneParser instance from the outer one; a per-
+	// instance flag wouldn't propagate.  Thread-safety: RISE parses
+	// are single-threaded (one scene-load drives one render); a future
+	// concurrent-parse architecture would need TLS or a per-Job
+	// counter.  The guard is RAII so any return path correctly
+	// decrements.
+	int gParseDepth = 0;
+
+	struct ParseDepthGuard
+	{
+		bool isTopLevel;
+		ParseDepthGuard() : isTopLevel( gParseDepth == 0 ) { ++gParseDepth; }
+		~ParseDepthGuard() { --gParseDepth; }
+	};
+
+	// Phase 6.1 helper: extract the runtime name from a standard_object
+	// chunk's parameter list.  Each entry in `chunkparams` is a
+	// space-joined token sequence after macro substitution — the entry
+	// for the name field looks like `name "sphere_0"` (quoted form) or
+	// `name sphere_0` (bare-identifier form).  Returns the value
+	// verbatim — quotes are PRESERVED to match what
+	// `StandardObjectAsciiChunkParser::Finalize` reads via
+	// `bag.GetString("name", ...)` and passes to `pJob.AddObject*`.
+	// The IObjectManager uses the SAME quoted-or-not form as its map
+	// key; stripping here would mis-key the BaseTransformSnapshot
+	// lookup that follows.
+	//
+	// Returns the LAST `name ...` entry to match the descriptor-driven
+	// dispatch's `bag.SetSingle("name", ...)` semantics — on a
+	// malformed chunk with two name lines, bag.GetString returns the
+	// last write.  Matching that ensures our IObjectManager lookup
+	// uses the same key that AddObject was called with.
+	std::string ExtractObjectName( const std::vector<String>& chunkparams )
+	{
+		std::string found = "noname";
+		for( std::vector<String>::const_iterator it = chunkparams.begin();
+		     it != chunkparams.end(); ++it ) {
+			const String& s = *it;
+			// First token of the line followed by a space, then the value.
+			// Looking for: leading "name " (5 chars).
+			if( s.size() < 6 ) continue;
+			if( s[0] == 'n' && s[1] == 'a' && s[2] == 'm' && s[3] == 'e' && s[4] == ' ' ) {
+				found = std::string( s.c_str() + 5 );
+				// keep scanning — bag.SetSingle overwrites on dupes
+			}
+		}
+		return found;
+	}
+
+	// Phase 6.1 helper: convert a body line's RawLine into a
+	// ParameterSpan, or return false if the line is not a parameter
+	// (blank / `#` comment-only / `}` / nested `>` command).
+	bool BuildParameterSpan( const RISE::Implementation::RawLine& ln,
+	                         std::string& outParamName,
+	                         RISE::ParameterSpan& outSpan )
+	{
+		if( ln.tokens.empty() ) return false;
+		const RISE::Implementation::RawToken& head = ln.tokens[0];
+		if( head.text.empty() ) return false;
+		const char c = head.text[0];
+		if( c == '{' || c == '}' || c == '>' || c == '#' ) return false;
+		// First token is the parameter name; remaining tokens (if any)
+		// are values.  A parameter with zero value tokens is unusual
+		// (e.g., a boolean shorthand) — still record the span with
+		// valueBegin == valueEnd == byteEnd of the name token, so
+		// Mode A can splice "after the keyword" if needed.  No
+		// production scene uses that pattern; the safe-default keeps
+		// us from emitting weird zero-length ranges.
+		outParamName = head.text;
+		outSpan.lineBeginOffset = ln.lineBeginOffset;
+		outSpan.lineEndOffset   = ln.lineEndOffset;
+		outSpan.commentBegin    = ln.comment.present ? ln.comment.byteBegin : ln.lineEndOffset;
+		if( ln.tokens.size() >= 2 ) {
+			outSpan.valueBegin = ln.tokens[1].byteBegin;
+			outSpan.valueEnd   = ln.tokens.back().byteEnd;
+			outSpan.isSymbolic = false;
+			for( std::size_t k = 1; k < ln.tokens.size(); ++k ) {
+				if( ln.tokens[k].isSymbolic ) {
+					outSpan.isSymbolic = true;
+					break;
+				}
+			}
+		} else {
+			outSpan.valueBegin = head.byteEnd;
+			outSpan.valueEnd   = head.byteEnd;
+			outSpan.isSymbolic = false;
+		}
+		return true;
+	}
+}
+
+void AsciiSceneParser::OnStandardObjectFinalized(
+	IJob& pJob,
+	const std::vector<String>& chunkparams,
+	std::size_t chunkHeaderIdx,
+	std::size_t openBraceIdx,
+	std::size_t closeBraceIdx )
+{
+	using namespace RISE::Implementation;
+
+	// Need IJobPriv to reach the Phase 6.1 storage.  Existing parser
+	// code already uses dynamic_cast<IJobPriv*>(&pJob) (see line ~399).
+	IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+	if( !pPriv ) return;
+	SourceSpanIndex* pSpans = pPriv->GetSourceSpanIndexMutable();
+	TransformSnapshot* pBase = pPriv->GetBaseTransformSnapshotMutable();
+	if( !pSpans || !pBase ) return;
+
+	const std::vector<RawLine>& lines = mRawTokens.AllLines();
+	if( chunkHeaderIdx >= lines.size() ||
+	    openBraceIdx   >= lines.size() ||
+	    closeBraceIdx  >= lines.size() ) {
+		// Defensive: something is out of sync — bail without crashing.
+		return;
+	}
+
+	const RawLine& headerLine = lines[chunkHeaderIdx];
+	const RawLine& closeLine  = lines[closeBraceIdx];
+	if( headerLine.tokens.empty() ) return;
+
+	// chunkBeginOffset is the byte offset of the chunk-keyword token
+	// on the header line (the "standard_object" word itself).
+	const std::size_t chunkBeginOffset = headerLine.tokens[0].byteBegin;
+	// chunkEndOffset is one past the end of the closing `}` line's
+	// content bytes.  Save-time placement logic treats this as the
+	// boundary after which the next chunk/command starts.
+	const std::size_t chunkEndOffset = closeLine.lineEndOffset;
+
+	// Extract the runtime name from the post-substitution params.
+	const std::string runtimeName = ExtractObjectName( chunkparams );
+
+	// Always record creation location — used by the save engine's
+	// placement loop for FOR-body 2..N entities (which don't get
+	// their own SourceSpan).  R5 §1 / R7 §1.
+	pSpans->RecordCreationLocation( runtimeName, std::string(szFilename), chunkEndOffset );
+
+	// Capture base transform: query the just-added object's runtime
+	// matrix BEFORE any subsequent override_object chunk has had a
+	// chance to mutate it.  This is the §7.4 "Mbase" baseline.
+	IObjectManager* pObjMgr = pPriv->GetObjects();
+	if( pObjMgr ) {
+		IObjectPriv* pObj = pObjMgr->GetItem( runtimeName.c_str() );
+		if( pObj ) {
+			pBase->Add( runtimeName, pObj->GetFinalTransformMatrix() );
+		}
+	}
+
+	// FOR-revisit detection: if we've seen this chunk-header offset
+	// before, the parser is iterating a FOR body and the prior runtime
+	// entity owns the SourceSpan.  Flip chunkRevisited on that span
+	// and skip building a new one.  This is the §6.4 revisit hook.
+	std::map<std::size_t, std::string>::iterator it =
+		mChunkHeaderOffsetToFirstName.find( chunkBeginOffset );
+	if( it != mChunkHeaderOffsetToFirstName.end() ) {
+		SourceSpan* firstSpan = pSpans->FindMutable( it->second );
+		if( firstSpan ) {
+			firstSpan->chunkRevisited = true;
+		}
+		return;
+	}
+
+	// First visit: build a fresh SourceSpan.
+	SourceSpan span;
+	span.filePath             = szFilename;
+	span.chunkBeginOffset     = chunkBeginOffset;
+	span.chunkEndOffset       = chunkEndOffset;
+	span.bodyCloseBraceLineBegin = closeLine.lineBeginOffset;
+	span.chunkRevisited       = false;
+
+	// Open-brace offset: locate the `{` token on the open-brace line.
+	// It may share that line with the chunk-keyword (`standard_object {`)
+	// or live on its own line — search both possibilities.
+	{
+		const RawLine& openLine = lines[openBraceIdx];
+		for( std::size_t k = 0; k < openLine.tokens.size(); ++k ) {
+			if( openLine.tokens[k].text == "{" ) {
+				span.bodyOpenBraceOffset = openLine.tokens[k].byteBegin;
+				break;
+			}
+		}
+		// Some scenes put `{` on the same line as the chunk keyword;
+		// fall back to the header line in that case.
+		if( span.bodyOpenBraceOffset == 0 ) {
+			for( std::size_t k = 0; k < headerLine.tokens.size(); ++k ) {
+				if( headerLine.tokens[k].text == "{" ) {
+					span.bodyOpenBraceOffset = headerLine.tokens[k].byteBegin;
+					break;
+				}
+			}
+		}
+	}
+
+	// Close-brace offset: locate the `}` token on the close-brace line.
+	for( std::size_t k = 0; k < closeLine.tokens.size(); ++k ) {
+		if( closeLine.tokens[k].text == "}" ) {
+			span.bodyCloseBraceOffset = closeLine.tokens[k].byteBegin;
+			break;
+		}
+	}
+
+	// Build per-parameter spans from body lines.  Body range is
+	// (openBraceIdx, closeBraceIdx) — exclusive on both ends since
+	// those carry `{` / `}` themselves.
+	for( std::size_t i = openBraceIdx + 1; i < closeBraceIdx; ++i ) {
+		std::string paramName;
+		ParameterSpan ps;
+		if( BuildParameterSpan( lines[i], paramName, ps ) ) {
+			span.parameterSpans[paramName] = ps;
+		}
+	}
+
+	// Author-mode: matrix > quaternion > euler precedence, matching
+	// the parser's runtime decision (§6.3).
+	if( span.parameterSpans.find("matrix") != span.parameterSpans.end() ) {
+		span.authorMode = AuthorMode::Matrix;
+	} else if( span.parameterSpans.find("quaternion") != span.parameterSpans.end() ) {
+		span.authorMode = AuthorMode::Quaternion;
+	} else {
+		span.authorMode = AuthorMode::Euler;
+	}
+
+	pSpans->Add( runtimeName, std::move(span) );
+	mChunkHeaderOffsetToFirstName[chunkBeginOffset] = runtimeName;
+}
+
+void AsciiSceneParser::OnOverrideObjectFinalized(
+	IJob& pJob,
+	const std::vector<String>& chunkparams,
+	std::size_t chunkHeaderIdx,
+	std::size_t /*openBraceIdx*/,
+	std::size_t closeBraceIdx )
+{
+	using namespace RISE::Implementation;
+	IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+	if( !pPriv ) return;
+	OverrideSpanIndex* pIdx = pPriv->GetOverrideSpanIndexMutable();
+	if( !pIdx ) return;
+
+	const std::vector<RawLine>& lines = mRawTokens.AllLines();
+	if( chunkHeaderIdx >= lines.size() || closeBraceIdx >= lines.size() ) {
+		return;
+	}
+	const RawLine& headerLine = lines[chunkHeaderIdx];
+	const RawLine& closeLine  = lines[closeBraceIdx];
+	if( headerLine.tokens.empty() ) return;
+
+	OverrideRecord rec;
+	rec.targetName        = ExtractObjectName( chunkparams );
+	rec.filePath          = std::string( szFilename );
+	rec.chunkBeginOffset  = headerLine.tokens[0].byteBegin;
+	rec.chunkEndOffset    = closeLine.lineEndOffset;
+	rec.managed           = mInsideManagedOverrideBlock;
+
+	// Scan chunkparams to record which fields were present + their
+	// applied values.  The descriptor-driven dispatch has already
+	// validated that field names are legal for the override_object
+	// chunk; we just re-read for our own bookkeeping.  Values are
+	// already macro-substituted and expression-evaluated by the time
+	// chunkparams was built.
+	for( std::vector<String>::const_iterator it = chunkparams.begin();
+	     it != chunkparams.end(); ++it ) {
+		String key, value;
+		if( !string_split( *it, key, value, ' ' ) ) continue;
+		const std::string k( key.c_str() );
+
+		if( k == "position" ) {
+			double v[3] = {0,0,0};
+			std::sscanf( value.c_str(), "%lf %lf %lf", &v[0], &v[1], &v[2] );
+			rec.hasPosition = true;
+			rec.position = Vector3( v[0], v[1], v[2] );
+		} else if( k == "orientation" ) {
+			double v[3] = {0,0,0};
+			std::sscanf( value.c_str(), "%lf %lf %lf", &v[0], &v[1], &v[2] );
+			rec.hasOrientation = true;
+			rec.orientation = Vector3( v[0], v[1], v[2] );
+		} else if( k == "quaternion" ) {
+			double v[4] = {0,0,0,1};
+			std::sscanf( value.c_str(), "%lf %lf %lf %lf", &v[0], &v[1], &v[2], &v[3] );
+			rec.hasQuaternion = true;
+			rec.quaternion[0] = v[0];
+			rec.quaternion[1] = v[1];
+			rec.quaternion[2] = v[2];
+			rec.quaternion[3] = v[3];
+		} else if( k == "scale" ) {
+			double v[3] = {1,1,1};
+			std::sscanf( value.c_str(), "%lf %lf %lf", &v[0], &v[1], &v[2] );
+			rec.hasScale = true;
+			rec.scale = Vector3( v[0], v[1], v[2] );
+		} else if( k == "matrix" ) {
+			double m[16];
+			std::sscanf( value.c_str(),
+				"%lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf %lf",
+				&m[0],&m[1],&m[2],&m[3], &m[4],&m[5],&m[6],&m[7],
+				&m[8],&m[9],&m[10],&m[11], &m[12],&m[13],&m[14],&m[15] );
+			rec.hasMatrix = true;
+			rec.matrix = BuildMatrix4FromColumnMajor( m );
+		}
+	}
+
+	pIdx->Add( std::move(rec) );
+}
+
+void AsciiSceneParser::PopulateLoadedTransformSnapshot( IJob& pJob )
+{
+	IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+	if( !pPriv ) return;
+	TransformSnapshot* pBase   = pPriv->GetBaseTransformSnapshotMutable();
+	TransformSnapshot* pLoaded = pPriv->GetLoadedTransformSnapshotMutable();
+	IObjectManager*    pObjMgr = pPriv->GetObjects();
+	if( !pBase || !pLoaded || !pObjMgr ) return;
+
+	// LoadedTransformSnapshot mirrors BaseTransformSnapshot's name set
+	// (V1: override_object only modifies existing objects, never adds
+	// new ones).  Iterate the base names and snapshot each object's
+	// CURRENT transform — which reflects any override_object chunks
+	// that ran during parse.  §7.4.
+	std::vector<std::string> names = pBase->Names();
+	for( std::size_t i = 0; i < names.size(); ++i ) {
+		IObjectPriv* pObj = pObjMgr->GetItem( names[i].c_str() );
+		if( pObj ) {
+			pLoaded->Add( names[i], pObj->GetFinalTransformMatrix() );
+		}
+	}
+}
+
 bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 {
 	Implementation::ChunkParsers::ClearParseState();
+
+	// Phase 6.1: detect whether THIS is a top-level scene-load or a
+	// recursive one (triggered by `> load file.RISEscene` or
+	// `> run script.RISEscript` mid-parse of an outer scene).
+	// Top-level: clear the Job-owned per-entity metadata so repeated
+	// LoadAsciiScene calls start fresh.  Recursive: skip the clear so
+	// the outer parse's already-recorded entries survive while we
+	// append the child file's entries beneath them.  Each entry's
+	// `filePath` (set in OnStandardObjectFinalized) distinguishes
+	// outer- vs inner-file owners — the save engine's R7 §1 / pinned
+	// 2.25 cross-file-refusal check relies on that.
+	ParseDepthGuard depthGuard;
+
+	// Phase 0 (docs/ROUND_TRIP_SAVE_PLAN.md §6.2): begin recording raw
+	// per-line byte spans + tokens.  Parser-local state — always
+	// reset, even on a recursive parse (the inner parser has its own
+	// instance with its own mRawTokens).
+	mRawTokens.BeginScene();
+	mChunkHeaderOffsetToFirstName.clear();
+	mInsideManagedOverrideBlock = false;  // Phase 6.2 sentinel state
+
+	if( depthGuard.isTopLevel ) {
+		// Phase 6.1 + 6.2: reset Job-owned metadata containers on the
+		// outermost parse only.  Containers themselves live for the
+		// Job's lifetime; only their CONTENTS reset here.
+		IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+		if( pPriv ) {
+			if( SourceSpanIndex* p = pPriv->GetSourceSpanIndexMutable() )   p->Clear();
+			if( TransformSnapshot* p = pPriv->GetBaseTransformSnapshotMutable() )   p->Clear();
+			if( TransformSnapshot* p = pPriv->GetLoadedTransformSnapshotMutable() ) p->Clear();
+			if( OverrideSpanIndex* p = pPriv->GetOverrideSpanIndexMutable() )   p->Clear();
+		}
+	}
 
 	// Build the dispatch map from the canonical parser registry.  The
 	// parser_entries vector owns each chunk parser via unique_ptr for
@@ -8738,6 +9307,37 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	struct stat file_stats = {0};
 	stat( szFilename, &file_stats );
 	unsigned int nSize = static_cast<unsigned int>(file_stats.st_size);
+
+	// R-final P1 #3: capture the top-level file's identity (path +
+	// mtime + size) so the save engine can refuse on external
+	// modification (§11.6).  Only the top-level (depth-0) parse
+	// records identity — recursive `> load`/`> run` parses target
+	// child files, but the save engine writes to the TOP-LEVEL file.
+	// `depthGuard.isTopLevel` is established a few lines down; we
+	// pre-compute the identity here and apply it only when top-level.
+	FileIdentity loadIdentity;
+	loadIdentity.filePath  = szFilename;
+	loadIdentity.mtimeSec  = static_cast<long long>(file_stats.st_mtime);
+#if defined(__APPLE__)
+	loadIdentity.mtimeNsec = static_cast<long long>(file_stats.st_mtimespec.tv_nsec);
+#elif defined(__linux__) || defined(__unix__)
+	loadIdentity.mtimeNsec = static_cast<long long>(file_stats.st_mtim.tv_nsec);
+#else
+	loadIdentity.mtimeNsec = 0;
+#endif
+	loadIdentity.sizeBytes = static_cast<long long>(file_stats.st_size);
+	loadIdentity.captured  = true;
+	// Only the top-level parse populates FileIdentity — the save
+	// engine writes to the TOP-LEVEL file, so recursive child-file
+	// parses do not contribute to the identity check.
+	if( depthGuard.isTopLevel ) {
+		IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+		if( pPriv ) {
+			if( SourceSpanIndex* p = pPriv->GetSourceSpanIndexMutable() ) {
+				p->SetFileIdentity( loadIdentity );
+			}
+		}
+	}
 
 	// I realize this is ugly, but it is necessary for proper
 	// clean up after breaking part way
@@ -8766,8 +9366,12 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 		char				line[MAX_CHARS_PER_LINE] = {0};		// <sigh>....
 
 		// Verify version number
+		const std::streampos versionLineBeginPos = in.tellg();
 		in.getline( line, MAX_CHARS_PER_LINE );
 		linenum++;
+		if( versionLineBeginPos != static_cast<std::streampos>(-1) ) {
+			mRawTokens.RecordLine( static_cast<std::size_t>(versionLineBeginPos), line );
+		}
 
 		// First check the first few characters to see if it contains our marker
 		static const char* id = "RISE ASCII SCENE";
@@ -8817,12 +9421,27 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	bool bInCommentBlock = false;
 	for(;;) {
 		char				line[MAX_CHARS_PER_LINE] = {0};		// <sigh>....
+		const std::streampos lineBeginPos = in.tellg();
 		in.getline( line, MAX_CHARS_PER_LINE );
 
 		linenum++;
 
 		if( in.fail() || in.eof() ) {
 			break;
+		}
+
+		// Phase 0 (§6.2): record this line's raw tokens + byte offsets.
+		// `lineBeginPos` is the offset where the next getline call would
+		// have started reading — i.e., the first byte of this line in
+		// the source buffer.  Skipped on tellg failure (rare; only on a
+		// stream error which the in.fail check above also catches).
+		// Phase 6.1: `outerLineIdx` is the index in mRawTokens.AllLines()
+		// where THIS line lands — captured BEFORE RecordLine appends.
+		// When this line turns out to be a chunk-name line, we'll pass
+		// outerLineIdx as `chunkHeaderIdx` to OnStandardObjectFinalized.
+		const std::size_t outerLineIdx = mRawTokens.AllLines().size();
+		if( lineBeginPos != static_cast<std::streampos>(-1) ) {
+			mRawTokens.RecordLine( static_cast<std::size_t>(lineBeginPos), line );
 		}
 
 		// Tokenize the string to get rid of comments etc
@@ -8842,7 +9461,39 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 		}
 
 		if( tokens[0][0] == '#' ) {
-			// Comment
+			// Comment.  Phase 6.2 (§9.6 sentinel block): detect the
+			// managed override block markers so OnOverrideObjectFinalized
+			// can classify subsequent chunks as managed-or-unmanaged.
+			//
+			// R-final P2 fix: match the canonical sentinel strings
+			// EXACTLY (after stripping leading whitespace + trailing
+			// CR) instead of substring-matching.  A user-written
+			// comment like `# TODO: RISE editor overrides go here`
+			// would otherwise wrongly flip the in-block flag, causing
+			// downstream `override_object` chunks to be classified
+			// `managed = true` even though the LocateManagedBlock
+			// pass in SaveEngine (which uses the same exact-line
+			// match) sees no managed block.  That divergence would
+			// cause the save engine to drop or normalise hand-written
+			// overrides.  Both sides now share the constants in
+			// OverrideSpanIndex.h.
+			//
+			// Build a stripped view of `line`: trim leading spaces /
+			// tabs and a trailing `\r` (CRLF source files leave the
+			// CR behind after `getline` strips only `\n`).
+			std::size_t bIdx = 0;
+			while( line[bIdx] == ' ' || line[bIdx] == '\t' ) ++bIdx;
+			std::size_t eIdx = std::strlen( line );
+			while( eIdx > bIdx && ( line[eIdx-1] == '\r' || line[eIdx-1] == ' ' || line[eIdx-1] == '\t' ) ) --eIdx;
+			const std::size_t lineLen = eIdx - bIdx;
+			const char* stripped = line + bIdx;
+			if( lineLen == std::strlen( RISE::kManagedBlockSentinelOpen )
+			    && std::memcmp( stripped, RISE::kManagedBlockSentinelOpen, lineLen ) == 0 ) {
+				mInsideManagedOverrideBlock = true;
+			} else if( lineLen == std::strlen( RISE::kManagedBlockSentinelClose )
+			    && std::memcmp( stripped, RISE::kManagedBlockSentinelClose, lineLen ) == 0 ) {
+				mInsideManagedOverrideBlock = false;
+			}
 			continue;
 		}
 
@@ -8990,11 +9641,21 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 
 		// Parse the '{'
 		{
+			const std::streampos braceLineBeginPos = in.tellg();
 			in.getline( line, MAX_CHARS_PER_LINE );
 			linenum++;
 			if( in.fail() ) {
 				GlobalLog()->PrintEasyError( "AsciiSceneParser::ParseScene:: Failed reading looking for '{' for chunk" );
 				break;
+			}
+
+			// Phase 0: record the `{` line AFTER the fail-check so a
+			// truncated read doesn't push phantom bytes into mRawTokens.
+			// Phase 6.1: `openBraceIdx` is the index of THIS line in
+			// mRawTokens.AllLines(); captured BEFORE RecordLine appends.
+			const std::size_t openBraceIdx = mRawTokens.AllLines().size();
+			if( braceLineBeginPos != static_cast<std::streampos>(-1) ) {
+				mRawTokens.RecordLine( static_cast<std::size_t>(braceLineBeginPos), line );
 			}
 
 			String			toks[8];
@@ -9011,13 +9672,26 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 
 			// Keep reading the parameters for the chunk until we encounter the closing '}'
 			IAsciiChunkParser::ParamsList chunkparams;
+			// Phase 6.1: only call OnStandardObjectFinalized if we
+			// actually saw the closing `}` — a `getline` failure
+			// mid-chunk would leave the last-recorded line pointing
+			// at a body line (not `}`), and computing chunk byte
+			// offsets from it would produce wrong splice targets.
+			bool sawCloseBrace = false;
 			for(;;) {
+				const std::streampos bodyLineBeginPos = in.tellg();
 				in.getline( line, MAX_CHARS_PER_LINE );
 
 				linenum++;
 				if( in.fail() ) {
 					GlobalLog()->PrintEasyError( "AsciiSceneParser::ParseScene:: Failed reading while reading chunk" );
 					break;
+				}
+
+				// Phase 0: record every body line (including blanks,
+				// comment-only lines, and the closing `}` line).
+				if( bodyLineBeginPos != static_cast<std::streampos>(-1) ) {
+					mRawTokens.RecordLine( static_cast<std::size_t>(bodyLineBeginPos), line );
 				}
 
 				// Don't bother reading comments or commands
@@ -9039,6 +9713,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 
 				if( tokens[0][0] == '}' ) {
 					// End of chunk, so break out
+					sawCloseBrace = true;
 					break;
 				}
 
@@ -9056,16 +9731,56 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 				chunkparams.push_back( s );
 			}
 
-			// Finished reading a chunk so parse it
+			// Finished reading a chunk so parse it.
 			if( !pChunkParser->ParseChunk( chunkparams, pJob ) ) {
 				GlobalLog()->PrintEx( eLog_Error, "AsciiSceneParser: Failed to load chunk \'%s\' on line %u", tokens[0].c_str(), linenum );
 				return false;
+			}
+
+			// Phase 6.1: standard_object chunks populate SourceSpanIndex
+			// + BaseTransformSnapshot + CreationLocation.  Other chunks
+			// don't contribute (V1 save engine only round-trips object
+			// transforms).  Gated on sawCloseBrace so a truncated chunk
+			// that somehow ParseChunk-succeeded doesn't drive
+			// OnStandardObjectFinalized with a stale closeBraceIdx.
+			if( sawCloseBrace && tokens[0] == "standard_object"
+			    && !mRawTokens.AllLines().empty() ) {
+				const std::size_t closeBraceIdx = mRawTokens.AllLines().size() - 1;
+				OnStandardObjectFinalized(
+					pJob, chunkparams,
+					outerLineIdx, openBraceIdx, closeBraceIdx );
+			}
+
+			// Phase 6.2: override_object chunks populate OverrideSpanIndex
+			// with their byte range + the field set + managed/unmanaged
+			// classification (tracked via mInsideManagedOverrideBlock,
+			// flipped by sentinel comment detection in the outer loop).
+			if( sawCloseBrace && tokens[0] == "override_object"
+			    && !mRawTokens.AllLines().empty() ) {
+				const std::size_t closeBraceIdx = mRawTokens.AllLines().size() - 1;
+				OnOverrideObjectFinalized(
+					pJob, chunkparams,
+					outerLineIdx, openBraceIdx, closeBraceIdx );
 			}
 		}
 	}
 
 	safe_release( parser );
 	GlobalLog()->PrintEx( eLog_Info, "AsciiSceneParser: Successfully loaded \'%s\'", szFilename );
+
+	// Phase 6.1 (§7.4): snapshot every object's CURRENT runtime
+	// transform.  These are the "loaded" values — what the user
+	// starts editing from.  Differs from BaseTransformSnapshot iff
+	// an override_object chunk (Phase 6.2) ran during parse.
+	//
+	// Top-level only: the inner parse (via `> load`/`> run`) hasn't
+	// seen the outer parse's remaining chunks yet — those may include
+	// override_object lines that mutate the just-loaded child objects.
+	// Snapshotting at the OUTER parse's end captures the fully-
+	// composed state.
+	if( depthGuard.isTopLevel ) {
+		PopulateLoadedTransformSnapshot( pJob );
+	}
 
 	// parser_entries unique_ptrs destroy the parsers when they go out of scope
 	return true;

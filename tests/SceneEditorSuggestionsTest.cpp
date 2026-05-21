@@ -39,7 +39,7 @@ void TestGrammarCoverage()
 	// caustic Newton-convergence study.  Bump this count when adding
 	// new chunks; the alphabetised registration in CreateAllChunkParsers()
 	// is the source of truth.
-	EXPECT( kws.size() == 143 );	// 2026-05 Camera/Film/Output split: + `film`; 2026-05 painters: + composite_function2d_painter + polynomial_function2d_painter; 2026-05 IScalarPainter refactor: + scalar_painter
+	EXPECT( kws.size() == 144 );	// 2026-05 Camera/Film/Output split: + `film`; 2026-05 painters: + composite_function2d_painter + polynomial_function2d_painter; 2026-05 IScalarPainter refactor: + scalar_painter; Phase 6.2 round-trip save: + override_object
 
 	// Every chunk must have a non-empty descriptor (Phase 1c invariant:
 	// Describe() is pure-virtual, so every registered parser has its own
@@ -161,7 +161,7 @@ void TestSuggestChunkKeywordsAtRoot()
 	SuggestionEngine engine;
 	const std::string buf = "RISE ASCII SCENE 6\n\n";
 	auto sugs = engine.GetSuggestions( buf, buf.size(), SuggestionMode::ContextMenu );
-	EXPECT( sugs.size() == 143 );	// 2026-05 Camera/Film/Output split: + `film`; 2026-05 painters: + composite_function2d_painter + polynomial_function2d_painter; 2026-05 IScalarPainter refactor: + scalar_painter
+	EXPECT( sugs.size() == 144 );	// 2026-05 Camera/Film/Output split: + `film`; 2026-05 painters: + composite_function2d_painter + polynomial_function2d_painter; 2026-05 IScalarPainter refactor: + scalar_painter; Phase 6.2 round-trip save: + override_object
 	bool found_ambient = false;
 	for( const Suggestion& s : sugs ) {
 		if( s.insertText == "ambient_light" ) { found_ambient = true; break; }

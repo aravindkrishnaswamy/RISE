@@ -25,6 +25,7 @@
 #define RISE_SCENEEDITCONTROLLER_
 
 #include "SceneEditor.h"
+#include "SaveEngine.h"
 #include "CancellableProgressCallback.h"
 #include "CameraIntrospection.h"
 #include "../Interfaces/IJobPriv.h"
@@ -457,6 +458,41 @@ namespace RISE
 		const SceneEditor& Editor() const { return mEditor; }
 		SceneEditor&       Editor()       { return mEditor; }
 
+		// Phase 6.5 (docs/ROUND_TRIP_SAVE_PLAN.md §9.9): save the
+		// dirty edits + retained overrides back to a `.RISEscene`
+		// file using the two-mode round-trip-save engine.  Follows
+		// the lock-free disk-IO sequence:
+		//   1. Acquire mMutex, cancel in-flight render, wait for
+		//      mRendering=false, set mSaving=true, release mMutex.
+		//   2. Run SaveEngine::Save outside the lock (file IO is slow).
+		//   3. Reacquire mMutex, clear mSaving, surface any error,
+		//      notify the render loop.
+		// `filePath` is the target .RISEscene to write — typically
+		// the originally-loaded path, but the caller can redirect for
+		// Save-As.  Returns the SaveResult so the UI can show the
+		// outcome (status + counters + error / warning messages).
+		SaveResult RequestSave( const std::string& filePath );
+
+		//! True iff a save is currently in flight on disk.  The render
+		//! loop's wake condition consults this so a new render pass
+		//! doesn't start mid-save (we don't want concurrent file
+		//! access AND we want the save's frame-store reads to see a
+		//! stable state).  Mirrors mRendering but in the opposite
+		//! direction.
+		bool IsSaving() const { return mSaving.load(); }
+
+		//! Diagnostic message from the most recent save attempt.
+		//! Empty after a successful Saved or NoOp; populated on
+		//! Refused or Failed with the engine's errorMessage.  Returned
+		//! BY VALUE so a diagnostic logger that caches the string
+		//! across a subsequent RequestSave (which mutates
+		//! mLastSaveError) doesn't get a torn read of the underlying
+		//! std::string buffer.  The write-under-lock + read-by-value
+		//! pattern relies on the caller invoking LastSaveError from
+		//! the same thread that calls RequestSave (the UI thread in
+		//! all platform shells).
+		std::string LastSaveError() const;
+
 		//! Lets the platform's preview sink check whether the current
 		//! pass was cancelled mid-render before dispatching to the UI.
 		//! End-of-pass FlushToOutputs fires unconditionally inside the
@@ -751,6 +787,12 @@ namespace RISE
 		std::atomic<bool>           mRunning;
 		std::atomic<bool>           mEditPending;
 		std::atomic<bool>           mRendering;
+		// Phase 6.5: signals the render loop NOT to start a new pass
+		// while a save is in flight (mirror of mRendering for the
+		// "saving" direction).  Set inside the locked section of
+		// RequestSave; cleared after the engine returns.
+		std::atomic<bool>           mSaving;
+		std::string                 mLastSaveError;
 		std::atomic<unsigned int>   mCancelCount;
 		std::atomic<unsigned int>   mRenderCount;
 

@@ -27,7 +27,9 @@
 
 #include "SceneEdit.h"
 #include "EditHistory.h"
+#include "DirtyTracker.h"
 #include "../Interfaces/IScenePriv.h"
+#include <unordered_set>
 
 namespace RISE
 {
@@ -131,6 +133,24 @@ namespace RISE
 		const EditHistory& History() const { return mHistory; }
 		EditHistory&       History()       { return mHistory; }
 
+		//! Phase 6.3 (docs/ROUND_TRIP_SAVE_PLAN.md §7.1): per-object
+		//! dirty-since-load set.  Populated by Apply / Undo / Redo
+		//! whenever a transform-shaped SceneEdit touches an object;
+		//! read by the save engine (Phase 6.4) to decide which
+		//! objects to compare against the loaded snapshot.  V1 only
+		//! tracks OBJECT transform ops (material / shader / etc. do
+		//! not mark dirty — out of V1 scope per §7.6).
+		const DirtyTracker& Dirty() const { return mDirtyTracker; }
+		DirtyTracker&       Dirty()       { return mDirtyTracker; }
+
+		//! Object names that received a `ScaleObjectFromAnchor` op
+		//! since the last load.  Phase 6.4 §9.2 forceMatrixOverride
+		//! gate consults this — SFA-touched objects always serialize
+		//! as `matrix` overrides (pinned 2.8) even when their
+		//! current transform happens to be decomposable.
+		const std::unordered_set<std::string>& ScaleFromAnchorSet() const { return mScaleFromAnchorSet; }
+		void ClearDirtyState() { mDirtyTracker.Clear(); mScaleFromAnchorSet.clear(); }
+
 	private:
 		IScenePriv&  mScene;
 		class IMaterialManager*       mMaterialManager;       // borrowed; nullable
@@ -151,6 +171,19 @@ namespace RISE
 		// because `SceneScale` is `const`-qualified so camera-op
 		// code can call it from forward / inverse paths.
 		mutable Scalar mSceneScale;
+
+		// Phase 6.3: tracks which OBJECTS have been mutated by
+		// transform-shaped ops since the last load / save.  Read by
+		// the save engine to decide which objects to compare.  Cleared
+		// by ClearDirtyState() after a successful save.
+		DirtyTracker  mDirtyTracker;
+
+		// Phase 6.3 (pinned 2.8 / R2 §7): names that have received any
+		// ScaleObjectFromAnchor op since the last load.  Save engine's
+		// forceMatrixOverride gate (§9.2) consults this — SFA-touched
+		// objects always serialize as matrix-form overrides regardless
+		// of whether `TryDecompose(Mfinal).ok` succeeds.
+		std::unordered_set<std::string> mScaleFromAnchorSet;
 
 		//! Look up an object by name on the live ObjectManager and
 		//! return its IObjectPriv*.  Returns null if the object is

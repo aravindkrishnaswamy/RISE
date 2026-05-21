@@ -252,6 +252,15 @@ void Job::InitializeContainers()
 	pGlobalProgress = 0;
 	lightSampleRRThreshold = 0;
 
+	// Phase 6.1: allocate the round-trip-save metadata containers up
+	// front so IJobPriv::GetSourceSpanIndex etc. return stable pointers
+	// for the Job's lifetime.  AsciiSceneParser clears + repopulates
+	// them on each ParseAndLoadScene call.
+	pSourceSpanIndex.reset(  new SourceSpanIndex() );
+	pBaseTransforms.reset(   new TransformSnapshot() );
+	pLoadedTransforms.reset( new TransformSnapshot() );
+	pOverrideSpans.reset(    new OverrideSpanIndex() );
+
 	RISE_API_CreateScene( &pScene );
 	RISE_API_CreateGeometryManager( &pGeomManager );
 	RISE_API_CreateMaterialManager( &pMatManager );

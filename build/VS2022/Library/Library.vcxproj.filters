@@ -759,6 +759,21 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.cpp">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\SourceSpanIndex.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\TransformSnapshot.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\OverrideSpanIndex.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\DirtyTracker.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\SaveEngine.cpp">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp">
       <Filter>Rendering</Filter>
     </ClCompile>
@@ -964,6 +979,9 @@
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Parsers\RawTokenCapture.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp">
@@ -1940,6 +1958,21 @@
     <ClInclude Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.h">
       <Filter>Scene Editor (3D Viewport)</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\SourceSpanIndex.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\TransformSnapshot.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\OverrideSpanIndex.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\DirtyTracker.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\SaveEngine.h">
+      <Filter>Scene Editor (3D Viewport)</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h">
       <Filter>Rendering</Filter>
     </ClInclude>
@@ -2466,6 +2499,9 @@
       <Filter>Parser</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Parsers\RawTokenCapture.h">
       <Filter>Parser</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Parsers\StdOutProgress.h">

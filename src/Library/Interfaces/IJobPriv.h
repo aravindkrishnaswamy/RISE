@@ -32,6 +32,14 @@
 
 namespace RISE
 {
+	// Phase 6.1 + 6.2 forward declarations — these types live in
+	// `src/Library/SceneEditor/` so we keep the include light.  The
+	// getters return raw pointers so this header doesn't have to
+	// pull in unordered_map / Matrix4 / etc.
+	class SourceSpanIndex;
+	class TransformSnapshot;
+	class OverrideSpanIndex;
+
 	//! IJobPriv - Priviledged interface with getters
 	class IJobPriv : public virtual IJob
 	{
@@ -58,6 +66,26 @@ namespace RISE
 		virtual IRasterizer*				GetRasterizer() = 0;
 		virtual IShaderManager*				GetShaders() = 0;
 		virtual IShaderOpManager*			GetShaderOps() = 0;
+
+		// Phase 6.1 (docs/ROUND_TRIP_SAVE_PLAN.md §6.3 + §7.4).
+		// Per-entity source-file metadata + transform snapshots captured
+		// at scene-load time.  Read-only after parse completes; mutable
+		// access is only via AsciiSceneParser during the load pass.
+		// Returns non-null for any Job constructed via the standard
+		// factories (all three are owned by Job and live for its lifetime);
+		// null is reserved for future "lightweight" job types.
+		virtual SourceSpanIndex*			GetSourceSpanIndexMutable() = 0;
+		virtual const SourceSpanIndex*		GetSourceSpanIndex() const = 0;
+		virtual TransformSnapshot*			GetBaseTransformSnapshotMutable() = 0;
+		virtual const TransformSnapshot*	GetBaseTransformSnapshot() const = 0;
+		virtual TransformSnapshot*			GetLoadedTransformSnapshotMutable() = 0;
+		virtual const TransformSnapshot*	GetLoadedTransformSnapshot() const = 0;
+
+		// Phase 6.2 (docs/ROUND_TRIP_SAVE_PLAN.md §6.8 + pinned 2.16).
+		// Catalog of every `override_object` chunk parsed from the
+		// scene file, with managed/unmanaged classification.
+		virtual OverrideSpanIndex*			GetOverrideSpanIndexMutable() = 0;
+		virtual const OverrideSpanIndex*	GetOverrideSpanIndex() const = 0;
 	};
 
 

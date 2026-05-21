@@ -56,6 +56,10 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
+      <!-- R-final P1 #2: SaveEngine.cpp uses <filesystem> (C++17).
+           MSVC defaults to /std:c++14; pin to C++17 explicitly so
+           std::filesystem and std::scoped_lock compile cleanly. -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
@@ -90,6 +94,9 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
+      <!-- R-final P1 #2: pin Debug to C++17 too so <filesystem>
+           compiles identically to Release. -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
       <Optimization>Disabled</Optimization>
       <AdditionalIncludeDirectories>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\OpenEXR;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\include\Imath;$(SolutionDir)..\..\extlib\oidn\install\include;C:\Dev\openpgl-install\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_DEBUG;WIN32;_WINDOWS;_CRT_SECURE_NO_DEPRECATE;COLORS_RGB;MERSENNE53;USE_PRECOMPILED_HEADER_;NO_TIFF_SUPPORT;INLINE_TEMPLATE_SPECIALIZATIONS;NOMINMAX;IMATH_HALF_NO_LOOKUP_TABLE;RISE_ENABLE_OIDN;RISE_ENABLE_OPENPGL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -282,6 +289,7 @@
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiSceneParser.cpp" />
     <ClCompile Include="..\..\..\src\Library\Parsers\AsciiScriptParser.cpp" />
     <ClCompile Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Parsers\RawTokenCapture.cpp" />
     <ClCompile Include="..\..\..\src\Library\pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
@@ -384,6 +392,11 @@
     <ClCompile Include="..\..\..\src\Library\SceneEditor\MaterialIntrospection.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\MediaIntrospection.cpp" />
     <ClCompile Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\SourceSpanIndex.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\TransformSnapshot.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\OverrideSpanIndex.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\DirtyTracker.cpp" />
+    <ClCompile Include="..\..\..\src\Library\SceneEditor\SaveEngine.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AdvancedShader.cpp" />
     <ClCompile Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.cpp" />
@@ -758,6 +771,7 @@
     <ClInclude Include="..\..\..\src\Library\Parsers\ChunkParserRegistry.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\IAsciiChunkParser.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\MathExpressionEvaluator.h" />
+    <ClInclude Include="..\..\..\src\Library\Parsers\RawTokenCapture.h" />
     <ClInclude Include="..\..\..\src\Library\Parsers\StdOutProgress.h" />
     <ClInclude Include="..\..\..\src\Library\pch.h" />
     <ClInclude Include="..\..\..\src\Library\PhotonMapping\CausticPelPhotonMap.h" />
@@ -860,6 +874,11 @@
     <ClInclude Include="..\..\..\src\Library\SceneEditor\MaterialIntrospection.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\MediaIntrospection.h" />
     <ClInclude Include="..\..\..\src\Library\SceneEditor\ChunkDescriptorRegistry.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\SourceSpanIndex.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\TransformSnapshot.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\OverrideSpanIndex.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\DirtyTracker.h" />
+    <ClInclude Include="..\..\..\src\Library\SceneEditor\SaveEngine.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\InteractivePelRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AdvancedShader.h" />
     <ClInclude Include="..\..\..\src\Library\Shaders\AmbientOcclusionShaderOp.h" />
