@@ -1188,6 +1188,104 @@ static void TestInPlaceSaveAfterSaveAsTargetsTheNewPath()
     std::remove( target.c_str() );
 }
 
+static void TestSaveAsWritesEvenWhenBytesNetToSource()
+{
+    gCurrentTest = "TestSaveAsWritesEvenWhenBytesNetToSource";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // P1 (2026-05-21 review #2): a drag-then-undo leaves DirtyTracker
+    // non-empty even though Mfinal == Mloaded, so the Save-As button
+    // is enabled.  When the user picks a Save-As target, the engine
+    // must still write the target file even though the computed
+    // output bytes are byte-identical to the source — the user
+    // explicitly asked for a copy at a new path.  Pre-fix the
+    // engine short-circuited to NoOp and silently skipped
+    // AtomicWrite; the target file never existed and the UI
+    // reported success.
+    const std::string source = WriteSceneFile( kSceneSimple, "saveas_netzero_src" );
+    const std::string target = AltScenePath( "saveas_netzero_tgt" );
+    std::remove( target.c_str() );
+    const std::string sourceBefore = ReadFile( source );
+
+    IJobPriv* pJob = LoadSceneFromPath( source );
+    Check( pJob != nullptr, "loaded source" );
+    if( !pJob ) { std::remove(source.c_str()); return; }
+    SceneEditor editor( *pJob->GetScene() );
+
+    // Drag (marks dirty) then undo (Mfinal returns to Mloaded,
+    // but DirtyTracker retains the name — matches
+    // TestDragUndoSaveIsNoOp's coverage of the in-place case).
+    SceneEdit drag;
+    drag.op = SceneEdit::SetObjectPosition;
+    drag.objectName = "alpha";
+    drag.v3a = Vector3( 10, 0, 0 );
+    editor.Apply( drag );
+    Check( editor.Undo(), "drag undone" );
+    Check( editor.Dirty().Count() > 0,
+           "dirty tracker still flags alpha after drag/undo" );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( target );
+    // Crucial: Save-As must report Saved (not NoOp) so the GUI's
+    // re-anchor branch fires and the file is actually created.
+    Check( r.status == SaveResult::Status::Saved,
+           "Save-As to a new path is Saved even when output == source bytes" );
+
+    // Target file exists and equals the source content (no edits
+    // were emitted because they all netted to the load-time state).
+    const std::string targetAfter = ReadFile( target );
+    Check( !targetAfter.empty(),
+           "Save-As wrote the target file (no silent skip)" );
+    Check( targetAfter == sourceBefore,
+           "target is byte-identical to source (drag-then-undo produced no edits)" );
+
+    // Source is unchanged.
+    Check( ReadFile(source) == sourceBefore,
+           "source file unchanged" );
+
+    safe_release( pJob );
+    std::remove( source.c_str() );
+    std::remove( target.c_str() );
+}
+
+static void TestInPlaceSaveStillNoOpsOnDragUndo()
+{
+    gCurrentTest = "TestInPlaceSaveStillNoOpsOnDragUndo";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Companion to the previous test: confirm the NoOp short-circuit
+    // is still in place for IN-PLACE saves.  The user expects no IO
+    // on a drag-then-undo-then-Save sequence; we mustn't regress the
+    // R6 §7 / pinned 2.22 "NoOp means no IO" contract while fixing
+    // the Save-As case.  TestDragUndoSaveIsNoOp covers the same
+    // surface but predates the Save-As split — re-asserting it here
+    // protects the in-place lane explicitly.
+    const std::string path = WriteSceneFile( kSceneSimple, "noop_inplace_dragundo" );
+    const std::string before = ReadFile( path );
+
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "loaded" );
+    if( !pJob ) { std::remove(path.c_str()); return; }
+    SceneEditor editor( *pJob->GetScene() );
+
+    SceneEdit drag;
+    drag.op = SceneEdit::SetObjectPosition;
+    drag.objectName = "alpha";
+    drag.v3a = Vector3( 7, 0, 0 );
+    editor.Apply( drag );
+    editor.Undo();
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( path );
+    Check( r.status == SaveResult::Status::NoOp,
+           "in-place drag/undo/save: still NoOp (no IO)" );
+    Check( ReadFile(path) == before,
+           "in-place save was byte-identical (no write)" );
+
+    safe_release( pJob );
+    std::remove( path.c_str() );
+}
+
 static void TestSaveClearsDirtyTracker()
 {
     gCurrentTest = "TestSaveClearsDirtyTracker";
@@ -1237,6 +1335,8 @@ int main()
     TestSaveAsToNewPath();
     TestSaveAsOverUnrelatedFileOverwritesItWithSourceContent();
     TestInPlaceSaveAfterSaveAsTargetsTheNewPath();
+    TestSaveAsWritesEvenWhenBytesNetToSource();
+    TestInPlaceSaveStillNoOpsOnDragUndo();
     TestSaveClearsDirtyTracker();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
     return failCount == 0 ? 0 : 1;

@@ -1126,7 +1126,23 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     }
 
     // ---- Step 8: WRITE or NoOp short-circuit ------------------------
-    if( editScript.empty() || bytes == originalBytes ) {
+    // The NoOp short-circuit applies ONLY to in-place saves: a drag-
+    // then-undo leaves DirtyTracker non-empty but Mfinal == Mloaded,
+    // so the EditScript ends up empty or splices back the same bytes.
+    // For in-place save that's a real no-op (file already matches the
+    // would-be output) — honour the R6 §7 / pinned 2.22 "NoOp means
+    // no IO" contract.
+    //
+    // For SAVE-AS the user explicitly asked for a copy at a NEW path.
+    // Even when the computed output is byte-identical to the source,
+    // we MUST still AtomicWrite the target — otherwise the target
+    // file is never created and the GUI silently reports success
+    // (2026-05-21 review finding).  The post-write re-anchor below
+    // then takes the Save-As path: FileIdentity → target,
+    // RemapFilePath(source → target).
+    const bool noEditsToWrite =
+        editScript.empty() || bytes == originalBytes;
+    if( noEditsToWrite && !isSaveAs ) {
         result.status = SaveResult::Status::NoOp;
         mDirty.Clear();
         mScaleFromAnchorSet.clear();
