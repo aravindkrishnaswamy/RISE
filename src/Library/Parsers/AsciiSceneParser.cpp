@@ -9433,7 +9433,10 @@ void AsciiSceneParser::PopulateLoadedPropertySnapshot( IJob& pJob )
 		case EntityCategory::Camera: {
 			const ICameraManager* m = scene->GetCameras();
 			const ICamera* cam = m ? m->GetItem( name.c_str() ) : 0;
-			if( cam ) storeInto( span, CameraIntrospection::Inspect( *cam ) );
+			// includeRollOrientation = true: the loaded snapshot must
+			// carry the `orientation` row so the save engine can diff a
+			// roll edit against it (the panel hides the row).
+			if( cam ) storeInto( span, CameraIntrospection::Inspect( *cam, true ) );
 			break;
 		}
 		case EntityCategory::Light: {

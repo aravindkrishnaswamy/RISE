@@ -478,12 +478,21 @@ namespace
 	//     user expects from the Roll tool.  Scene-file authors who
 	//     need to set orientation can still do so via the text
 	//     editor; programmatic / animator paths are unaffected.
-	bool IsRedundantParameter( const std::string& name )
+	//
+	//   `keepOrientation` — the SAVE path passes true so the Vec3
+	//   `orientation` row survives (the Roll tool mutates it, and a
+	//   roll edit can only be diffed/round-tripped if the row is
+	//   present).  The pitch/yaw/roll scalar shadows stay filtered
+	//   regardless: they are mis-ordered (see above) and we only ever
+	//   emit the canonical Vec3 form.  `target_orientation` also stays
+	//   filtered — theta/phi already cover it, and surfacing both
+	//   would double-write the same stored data on save.
+	bool IsRedundantParameter( const std::string& name, bool keepOrientation )
 	{
+		if( name == "orientation" ) return !keepOrientation;
 		return name == "pitch"
 		    || name == "roll"
 		    || name == "yaw"
-		    || name == "orientation"
 		    || name == "target_orientation";
 	}
 
@@ -528,7 +537,8 @@ namespace
 	}
 }
 
-std::vector<CameraProperty> CameraIntrospection::Inspect( const ICamera& camera )
+std::vector<CameraProperty> CameraIntrospection::Inspect( const ICamera& camera,
+                                                          bool includeRollOrientation )
 {
 	std::vector<CameraProperty> out;
 
@@ -546,7 +556,7 @@ std::vector<CameraProperty> CameraIntrospection::Inspect( const ICamera& camera 
 	{
 		// Skip scalar shadows of multi-component parameters — see
 		// IsRedundantParameter for the rationale.
-		if( IsRedundantParameter( p.name ) ) continue;
+		if( IsRedundantParameter( p.name, includeRollOrientation ) ) continue;
 
 		CameraProperty cp;
 		ReadCameraProperty( *cam, String( p.name.c_str() ), cp );

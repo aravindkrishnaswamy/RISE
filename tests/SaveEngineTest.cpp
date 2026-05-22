@@ -1309,7 +1309,10 @@ static std::string CameraParamValue( IJobPriv* job, const char* camName,
     if( !m ) return std::string();
     const ICamera* cam = m->GetItem( camName );
     if( !cam ) return std::string();
-    std::vector<CameraProperty> props = CameraIntrospection::Inspect( *cam );
+    // includeRollOrientation = true so the `orientation` row is
+    // readable here (roll tests inspect it); harmless for other params.
+    std::vector<CameraProperty> props =
+        CameraIntrospection::Inspect( *cam, true );
     for( std::size_t i = 0; i < props.size(); ++i ) {
         if( std::string( props[i].name.c_str() ) == param ) {
             return std::string( props[i].value.c_str() );
@@ -1936,6 +1939,97 @@ static void TestAddCameraThenOrbitSaveRoundTrips()
     std::remove( path.c_str() );
 }
 
+// Read the roll component (.z, degrees) of a camera's `orientation`.
+static double CameraRollDegrees( IJobPriv* job, const char* camName )
+{
+    const std::string v = CameraParamValue( job, camName, "orientation" );
+    double x = 0, y = 0, z = 0;
+    std::sscanf( v.c_str(), "%lf %lf %lf", &x, &y, &z );
+    return z;
+}
+
+static void TestCameraRollSaveRoundTrips()
+{
+    gCurrentTest = "TestCameraRollSaveRoundTrips";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // The Roll tool mutates `orientation.z`.  The properties panel
+    // hides the `orientation` Vec3 row, but the save path inspects
+    // with includeRollOrientation = true so the edit is diffable.
+    // kSceneOneCamera authors no `orientation` line, so the property
+    // pass INSERTS one before the close brace.  Verify the roll
+    // survives save → reload.
+    const std::string path = WriteSceneFile( kSceneOneCamera, "roll" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "loaded" );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+    SceneEditor editor( *pJob->GetScene() );
+
+    SceneEdit e;
+    e.op = SceneEdit::RollCamera;
+    e.s  = 50.0;   // pixel delta → ~24.9° roll (0.0087 rad/px)
+    Check( editor.Apply( e ), "RollCamera applied" );
+    Check( editor.HasUnsavedChanges(), "roll marks the scene dirty" );
+
+    const double rollAfter = CameraRollDegrees( pJob, "cam0" );
+    Check( std::fabs( rollAfter ) > 1e-3, "roll changed orientation.z" );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( path );
+    Check( r.status == SaveResult::Status::Saved, "camera roll save: Saved" );
+
+    safe_release( pJob );
+    IJobPriv* pJob2 = LoadSceneFromPath( path );
+    Check( pJob2 != nullptr, "reload" );
+    if( pJob2 ) {
+        const double rollReloaded = CameraRollDegrees( pJob2, "cam0" );
+        Check( std::fabs( rollReloaded - rollAfter ) < 1e-2,
+               "camera roll round-tripped through save → reload" );
+        safe_release( pJob2 );
+    }
+    std::remove( path.c_str() );
+}
+
+static void TestCameraRollWithScalarShadowsIsRefused()
+{
+    gCurrentTest = "TestCameraRollWithScalarShadowsIsRefused";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // The parser lets `pitch`/`roll`/`yaw` scalar lines override
+    // components of the `orientation` Vec3.  If the source authored a
+    // scalar shadow, splicing the Vec3 alone would leave the override
+    // in force — the save engine refuses rather than corrupt.
+    static const char* kSceneScalarRoll =
+        "RISE ASCII SCENE 6\n"
+        "pinhole_camera\n{\n"
+        "    name cam0\n"
+        "    location 0 0 20\n"
+        "    lookat 0 0 0\n"
+        "    up 0 1 0\n"
+        "    fov 30.0\n"
+        "    roll 5\n"
+        "}\n";
+    const std::string path = WriteSceneFile( kSceneScalarRoll, "rollscalar" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "loaded" );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+    SceneEditor editor( *pJob->GetScene() );
+
+    SceneEdit e;
+    e.op = SceneEdit::RollCamera;
+    e.s  = 50.0;
+    Check( editor.Apply( e ), "RollCamera applied" );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( path );
+    Check( r.status == SaveResult::Status::Refused,
+           "roll save with pitch/roll/yaw scalar shadows: Refused" );
+    Check( !r.errorMessage.empty(), "refusal carries a diagnostic" );
+
+    safe_release( pJob );
+    std::remove( path.c_str() );
+}
+
 static void TestManagedBlockCameraSurvivesReloadAndResave()
 {
     gCurrentTest = "TestManagedBlockCameraSurvivesReloadAndResave";
@@ -2078,6 +2172,8 @@ int main()
     TestLightColorEditIsRefused();
     TestCameraOrbitSaveRoundTrips();
     TestAddCameraThenOrbitSaveRoundTrips();
+    TestCameraRollSaveRoundTrips();
+    TestCameraRollWithScalarShadowsIsRefused();
     TestManagedBlockCameraSurvivesReloadAndResave();
     TestSaveClearsDirtyTracker();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;

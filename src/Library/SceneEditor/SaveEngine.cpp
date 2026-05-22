@@ -562,13 +562,16 @@ std::string RenderCreatedCameraChunk( const ICamera& cam,
     out += name;
     out += eol;
 
-    // CameraIntrospection::Inspect already filters the redundant
-    // orientation forms (`orientation` / `target_orientation` /
-    // `pitch` / `roll` / `yaw` — see `IsRedundantParameter` there),
-    // so the editable rows are the canonical non-redundant set:
-    // `location` / `lookat` / `up` / `theta` / `phi` / `fov` / lens
-    // params.  Emitting all of them faithfully reproduces the camera.
-    const std::vector<CameraProperty> props = CameraIntrospection::Inspect( cam );
+    // CameraIntrospection::Inspect filters the redundant scalar
+    // shadows (`pitch` / `roll` / `yaw`) and the `target_orientation`
+    // Vec3 (theta/phi cover it), so the editable rows are the
+    // canonical set: `location` / `lookat` / `up` / `orientation` /
+    // `theta` / `phi` / `fov` / lens params.  `includeRollOrientation
+    // = true` keeps the `orientation` row so an orbited-AND-rolled
+    // clone reproduces faithfully.  Emitting all of them faithfully
+    // reproduces the camera.
+    const std::vector<CameraProperty> props =
+        CameraIntrospection::Inspect( cam, /*includeRollOrientation=*/true );
     for( const CameraProperty& p : props ) {
         if( !p.editable ) continue;          // read-only / synthetic row
         const std::string key = std::string( p.name.c_str() );
@@ -597,7 +600,9 @@ std::vector<CameraProperty> InspectEntity( IJobPriv& job,
     case EntityCategory::Camera: {
         const ICameraManager* m = scene ? scene->GetCameras() : 0;
         const ICamera* c = m ? m->GetItem( name.c_str() ) : 0;
-        if( c ) return CameraIntrospection::Inspect( *c );
+        // includeRollOrientation = true: the property pass must see
+        // the `orientation` row to diff/round-trip a Roll-tool edit.
+        if( c ) return CameraIntrospection::Inspect( *c, true );
         break;
     }
     case EntityCategory::Light: {
@@ -1183,12 +1188,36 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                 }
 
                 // Camera transform parameters (`location`/`lookat`/
-                // `up`/`theta`/`phi`) splice like any other parameter:
-                // CameraIntrospection already filters the redundant
-                // orientation forms, the canonical rows it reports are
-                // mutually independent, and their units match the
-                // chunk parser (the parser converts `theta`/`phi` from
-                // degrees, which is what introspection emits).
+                // `up`/`orientation`/`theta`/`phi`) splice like any
+                // other parameter: introspection reports the canonical
+                // rows in units that match the chunk parser (the parser
+                // converts `orientation` and `theta`/`phi` from degrees,
+                // which is what introspection emits).
+                //
+                // One exception — the parser lets the `pitch`/`roll`/
+                // `yaw` scalar lines OVERRIDE individual components of
+                // the `orientation` Vec3 (AsciiSceneParser pinhole
+                // Finalize).  If the source authored any of those
+                // scalars, splicing the Vec3 alone would leave the
+                // scalar override in force and reload to the wrong
+                // orientation.  Refuse rather than corrupt — the author
+                // can collapse the scalars into one `orientation` line
+                // by hand.
+                if( cat == EntityCategory::Camera && key == "orientation"
+                    && ( espan->parameterSpans.count( "pitch" )
+                      || espan->parameterSpans.count( "roll" )
+                      || espan->parameterSpans.count( "yaw" ) ) ) {
+                    result.status = SaveResult::Status::Refused;
+                    result.errorMessage = std::string( "property edit on camera '" )
+                        + name + "': the source chunk sets the camera tilt "
+                        "with `pitch`/`roll`/`yaw` scalar lines, which the "
+                        "parser applies ON TOP OF the `orientation` vector — "
+                        "V1 cannot safely round-trip a Roll edit through "
+                        "that.  Replace the pitch/roll/yaw lines with a "
+                        "single `orientation` line in the text editor first.";
+                    return result;
+                }
+
                 std::unordered_map<std::string,ParameterSpan>::const_iterator pit =
                     espan->parameterSpans.find( key );
                 if( pit == espan->parameterSpans.end() ) {

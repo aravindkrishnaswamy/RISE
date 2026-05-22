@@ -64,7 +64,16 @@ namespace RISE
 		//! adding a parameter to the parser automatically surfaces it
 		//! here.  Returns empty vector if the camera type isn't
 		//! recognised.
-		static std::vector<CameraProperty> Inspect( const ICamera& camera );
+		//!
+		//! `includeRollOrientation` — the properties panel hides the
+		//! `orientation` (pitch/yaw/roll) Vec3 row as UI clutter; the
+		//! Roll tool mutates it directly.  The SAVE path must still see
+		//! it so a roll edit can be diffed and round-tripped — it passes
+		//! `true`.  The pitch/yaw/roll scalar shadows and the
+		//! `target_orientation` Vec3 (theta/phi cover it) stay filtered
+		//! either way.
+		static std::vector<CameraProperty> Inspect( const ICamera& camera,
+		                                            bool includeRollOrientation = false );
 
 		//! Parse `value` according to the descriptor kind and apply to
 		//! the camera.  Calls RegenerateData() on success.  Returns
