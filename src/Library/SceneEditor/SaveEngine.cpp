@@ -19,6 +19,16 @@
 #include "../Interfaces/IObjectPriv.h"
 #include "../Utilities/Log/Log.h"
 #include "../Utilities/Math3D/Math3D.h"
+// Phase B: property-pass introspection + manager lookups.
+#include "CameraIntrospection.h"
+#include "LightIntrospection.h"
+#include "MaterialIntrospection.h"
+#include "MediaIntrospection.h"
+#include "ObjectIntrospection.h"
+#include "../Interfaces/ICameraManager.h"
+#include "../Interfaces/ILightManager.h"
+#include "../Interfaces/ILightPriv.h"
+#include "../Interfaces/IMaterialManager.h"
 
 #include <algorithm>
 #include <cmath>
@@ -913,6 +923,157 @@ SaveResult SaveEngine::Save( const std::string& filePath )
 
         if( accEntry.Empty() ) {
             accumulator.erase( name );
+        }
+    }
+
+    // ---- Phase B: PROPERTY PASS -------------------------------------
+    // Camera / light / material / medium property edits + object
+    // material / shader / shadow / interior-medium binding edits.
+    // For each property-dirty entity, diff CURRENT descriptor
+    // introspection against the parse-time loaded snapshot
+    // (SourceSpan::loadedPropertyValues) and Mode-A-splice every
+    // parameter line whose value changed.  Unlike object transforms
+    // there is no Mode B for these — a chunk that can't be spliced in
+    // place (FOR-generated, cross-file, or symbolic source value) is
+    // a refusal.  The resulting EditOps join `modeAQueue` and flow
+    // through the same step 6/7 assembly + apply as transform splices.
+    {
+        const std::vector<DirtyEntity> dirtyEntities = mDirty.EntitySnapshot();
+        const IScene* scene = mJob.GetScene();
+
+        // Object transform keywords are owned by the transform pass
+        // above — the property pass must never also splice them.
+        auto isObjectTransformKeyword = []( const std::string& k ) {
+            return k == "position" || k == "orientation"
+                || k == "quaternion" || k == "scale" || k == "matrix";
+        };
+
+        for( const DirtyEntity& de : dirtyEntities ) {
+            const EntityCategory cat  = de.first;
+            const std::string&   name = de.second;
+
+            const SourceSpan* espan =
+                ( cat == EntityCategory::Object )
+                    ? mSpans.Find( name )
+                    : mSpans.FindEntity( cat, name );
+
+            const char* kindWord =
+                  cat == EntityCategory::Camera   ? "camera"
+                : cat == EntityCategory::Light    ? "light"
+                : cat == EntityCategory::Material ? "material"
+                : cat == EntityCategory::Medium   ? "medium"
+                :                                   "object";
+
+            if( !espan ) {
+                result.status = SaveResult::Status::Refused;
+                result.errorMessage = std::string( "property edit on " )
+                    + kindWord + " '" + name + "' cannot be saved: no "
+                    "editable source chunk (FOR-generated entity, or its "
+                    "chunk lives in a `> load`-ed file).";
+                return result;
+            }
+            if( espan->chunkRevisited ) {
+                result.status = SaveResult::Status::Refused;
+                result.errorMessage = std::string( "property edit on " )
+                    + kindWord + " '" + name + "' cannot be saved: its "
+                    "chunk is FOR-generated (the parser re-entered it).";
+                return result;
+            }
+            if( !espan->filePath.empty() && espan->filePath != sourcePath ) {
+                result.status = SaveResult::Status::Refused;
+                result.errorMessage = std::string( "property edit on " )
+                    + kindWord + " '" + name + "' cannot be saved: its "
+                    "chunk lives in '" + espan->filePath + "', not the "
+                    "saved file '" + sourcePath + "'.";
+                return result;
+            }
+
+            // CURRENT descriptor introspection — same code path the
+            // properties panel uses to display values.
+            std::vector<CameraProperty> cur;
+            switch( cat ) {
+            case EntityCategory::Camera: {
+                const ICameraManager* m = scene ? scene->GetCameras() : 0;
+                const ICamera* c = m ? m->GetItem( name.c_str() ) : 0;
+                if( c ) cur = CameraIntrospection::Inspect( *c );
+                break;
+            }
+            case EntityCategory::Light: {
+                const ILightManager* m = scene ? scene->GetLights() : 0;
+                const ILightPriv* l = m ? m->GetItem( name.c_str() ) : 0;
+                if( l ) cur = LightIntrospection::Inspect( String( name.c_str() ), *l );
+                break;
+            }
+            case EntityCategory::Material: {
+                IMaterialManager* m = mJob.GetMaterials();
+                const IMaterial* mat = m ? m->GetItem( name.c_str() ) : 0;
+                if( mat ) cur = MaterialIntrospection::Inspect(
+                    String( name.c_str() ), *mat,
+                    mJob.GetPainters(), mJob.GetScalarPainters(), &mJob );
+                break;
+            }
+            case EntityCategory::Medium: {
+                const IMedium* med = mJob.GetMedium( name.c_str() );
+                if( med ) cur = MediaIntrospection::Inspect( String( name.c_str() ), *med );
+                break;
+            }
+            case EntityCategory::Object: {
+                IObjectManager* m = mJob.GetObjects();
+                const IObject* o = m ? m->GetItem( name.c_str() ) : 0;
+                if( o ) cur = ObjectIntrospection::Inspect(
+                    String( name.c_str() ), *o,
+                    mJob.GetMaterials(), mJob.GetShaders(), &mJob );
+                break;
+            }
+            }
+
+            for( const CameraProperty& p : cur ) {
+                if( !p.editable ) continue;   // read-only / synthetic row
+                const std::string key    = std::string( p.name.c_str() );
+                const std::string curVal = std::string( p.value.c_str() );
+
+                // Objects: transform params belong to the transform pass.
+                if( cat == EntityCategory::Object
+                    && isObjectTransformKeyword( key ) ) {
+                    continue;
+                }
+
+                // Diff against the parse-time loaded value.
+                std::unordered_map<std::string,std::string>::const_iterator lit =
+                    espan->loadedPropertyValues.find( key );
+                if( lit == espan->loadedPropertyValues.end() ) continue; // not snapshotted
+                if( lit->second == curVal ) continue;                    // unchanged
+
+                std::unordered_map<std::string,ParameterSpan>::const_iterator pit =
+                    espan->parameterSpans.find( key );
+                if( pit == espan->parameterSpans.end() ) {
+                    // Parameter line absent in source — the user changed
+                    // a parameter that was at its default (and so was
+                    // omitted from the chunk).  Insert a fresh line just
+                    // before the chunk's close brace.
+                    EditOp op;
+                    op.begin = espan->bodyCloseBraceLineBegin;
+                    op.end   = espan->bodyCloseBraceLineBegin;
+                    op.replacement = std::string( "    " ) + key + " " + curVal + eol;
+                    modeAQueue.push_back( op );
+                    result.directRewriteCount++;
+                } else if( pit->second.isSymbolic ) {
+                    result.status = SaveResult::Status::Refused;
+                    result.errorMessage = std::string( "property edit on " )
+                        + kindWord + " '" + name + "': parameter '" + key
+                        + "' has a `$(...)` expression value in the source — "
+                        "V1 cannot overwrite a symbolic value.";
+                    return result;
+                } else {
+                    // Mode A in-place splice of the value range.
+                    EditOp op;
+                    op.begin = pit->second.valueBegin;
+                    op.end   = pit->second.valueEnd;
+                    op.replacement = curVal;
+                    modeAQueue.push_back( op );
+                    result.directRewriteCount++;
+                }
+            }
         }
     }
 

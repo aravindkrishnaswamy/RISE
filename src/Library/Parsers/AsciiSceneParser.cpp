@@ -130,6 +130,16 @@
 #include "../SceneEditor/SourceSpanIndex.h"
 #include "../SceneEditor/TransformSnapshot.h"
 #include "../SceneEditor/OverrideSpanIndex.h"
+// Phase B: descriptor-driven introspection used by
+// PopulateLoadedPropertySnapshot to capture loaded parameter values.
+#include "../SceneEditor/CameraIntrospection.h"
+#include "../SceneEditor/LightIntrospection.h"
+#include "../SceneEditor/MaterialIntrospection.h"
+#include "../SceneEditor/MediaIntrospection.h"
+#include "../SceneEditor/ObjectIntrospection.h"
+#include "../Interfaces/ICameraManager.h"
+#include "../Interfaces/ILightManager.h"
+#include "../Interfaces/IMaterialManager.h"
 
 #ifdef WIN32
 #include <malloc.h>
@@ -9156,6 +9166,111 @@ void AsciiSceneParser::OnStandardObjectFinalized(
 	mChunkHeaderOffsetToFirstName[chunkBeginOffset] = runtimeName;
 }
 
+void AsciiSceneParser::OnEntityChunkFinalized(
+	IJob& pJob,
+	EntityCategory category,
+	const std::vector<String>& chunkparams,
+	std::size_t chunkHeaderIdx,
+	std::size_t openBraceIdx,
+	std::size_t closeBraceIdx )
+{
+	using namespace RISE::Implementation;
+
+	// Phase B: build a SourceSpan for a camera / light / material /
+	// medium chunk.  Same byte-range + per-parameter-span machinery
+	// as OnStandardObjectFinalized; the object-transform-only bits
+	// (BaseTransformSnapshot, CreationLocation, authorMode) are
+	// deliberately omitted — the property save path diffs introspected
+	// values, not transform matrices.
+	IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+	if( !pPriv ) return;
+	SourceSpanIndex* pSpans = pPriv->GetSourceSpanIndexMutable();
+	if( !pSpans ) return;
+
+	const std::vector<RawLine>& lines = mRawTokens.AllLines();
+	if( chunkHeaderIdx >= lines.size() ||
+	    openBraceIdx   >= lines.size() ||
+	    closeBraceIdx  >= lines.size() ) {
+		return;
+	}
+
+	const RawLine& headerLine = lines[chunkHeaderIdx];
+	const RawLine& closeLine  = lines[closeBraceIdx];
+	if( headerLine.tokens.empty() ) return;
+
+	const std::size_t chunkBeginOffset = headerLine.tokens[0].byteBegin;
+	const std::size_t chunkEndOffset   = closeLine.lineEndOffset;
+
+	// Every camera / light / material / medium chunk carries a `name`
+	// parameter — same extraction as objects.
+	const std::string runtimeName = ExtractObjectName( chunkparams );
+
+	// FOR-revisit detection: a chunk byte offset seen before means the
+	// parser is iterating a FOR body.  Flip chunkRevisited on the
+	// first entity's span and SKIP — the save engine refuses to splice
+	// FOR-generated chunks (same policy as objects).
+	std::map<std::size_t, DirtyEntity>::iterator it =
+		mEntityChunkHeaderOffsetToFirst.find( chunkBeginOffset );
+	if( it != mEntityChunkHeaderOffsetToFirst.end() ) {
+		SourceSpan* firstSpan =
+			pSpans->FindEntityMutable( it->second.first, it->second.second );
+		if( firstSpan ) {
+			firstSpan->chunkRevisited = true;
+		}
+		return;
+	}
+
+	SourceSpan span;
+	span.filePath                = szFilename;
+	span.chunkBeginOffset        = chunkBeginOffset;
+	span.chunkEndOffset          = chunkEndOffset;
+	span.bodyCloseBraceLineBegin = closeLine.lineBeginOffset;
+	span.chunkRevisited          = false;
+
+	// Open-brace offset: the `{` may share the header line with the
+	// chunk keyword or live on its own line — check both.
+	{
+		const RawLine& openLine = lines[openBraceIdx];
+		for( std::size_t k = 0; k < openLine.tokens.size(); ++k ) {
+			if( openLine.tokens[k].text == "{" ) {
+				span.bodyOpenBraceOffset = openLine.tokens[k].byteBegin;
+				break;
+			}
+		}
+		if( span.bodyOpenBraceOffset == 0 ) {
+			for( std::size_t k = 0; k < headerLine.tokens.size(); ++k ) {
+				if( headerLine.tokens[k].text == "{" ) {
+					span.bodyOpenBraceOffset = headerLine.tokens[k].byteBegin;
+					break;
+				}
+			}
+		}
+	}
+
+	// Close-brace offset.
+	for( std::size_t k = 0; k < closeLine.tokens.size(); ++k ) {
+		if( closeLine.tokens[k].text == "}" ) {
+			span.bodyCloseBraceOffset = closeLine.tokens[k].byteBegin;
+			break;
+		}
+	}
+
+	// Per-parameter spans from body lines (exclusive of the `{`/`}`).
+	for( std::size_t i = openBraceIdx + 1; i < closeBraceIdx; ++i ) {
+		std::string paramName;
+		ParameterSpan ps;
+		if( BuildParameterSpan( lines[i], paramName, ps ) ) {
+			span.parameterSpans[paramName] = ps;
+		}
+	}
+	// authorMode stays at AuthorMode::Euler (object-only field; unused
+	// for non-object entities).
+
+	pSpans->AddEntity( category, runtimeName, std::move(span) );
+	mEntityChunkHeaderOffsetToFirst[chunkBeginOffset] =
+		std::make_pair( category, runtimeName );
+}
+
 void AsciiSceneParser::OnOverrideObjectFinalized(
 	IJob& pJob,
 	const std::vector<String>& chunkparams,
@@ -9252,6 +9367,94 @@ void AsciiSceneParser::PopulateLoadedTransformSnapshot( IJob& pJob )
 		IObjectPriv* pObj = pObjMgr->GetItem( names[i].c_str() );
 		if( pObj ) {
 			pLoaded->Add( names[i], pObj->GetFinalTransformMatrix() );
+		}
+	}
+}
+
+void AsciiSceneParser::PopulateLoadedPropertySnapshot( IJob& pJob )
+{
+	// Phase B: capture each editable entity's loaded parameter values
+	// (descriptor-introspected, as strings) into its SourceSpan.  Runs
+	// at the END of the top-level parse — after every chunk AND every
+	// `>` command — so it reflects true loaded state.  The save
+	// engine's property pass diffs current introspection against this.
+	IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+	if( !pPriv ) return;
+	SourceSpanIndex* pSpans = pPriv->GetSourceSpanIndexMutable();
+	if( !pSpans ) return;
+	const IScene* scene = pPriv->GetScene();
+	if( !scene ) return;
+
+	auto storeInto = [&]( SourceSpan* span,
+	                      const std::vector<CameraProperty>& props ) {
+		if( !span ) return;
+		span->loadedPropertyValues.clear();
+		for( std::size_t i = 0; i < props.size(); ++i ) {
+			span->loadedPropertyValues[ std::string( props[i].name.c_str() ) ] =
+				std::string( props[i].value.c_str() );
+		}
+	};
+
+	// Objects — for material / shader / shadow / interior-medium edits.
+	// (Transform edits use the matrix snapshots, not this map.)
+	IObjectManager* objs = pPriv->GetObjects();
+	if( objs ) {
+		// Copy the key set first: storeInto mutates span values but
+		// not the map structure, so iterating Entries() directly is
+		// safe — still, take names to keep the lookup uniform.
+		std::vector<std::string> objNames;
+		objNames.reserve( pSpans->Entries().size() );
+		for( const auto& kv : pSpans->Entries() ) objNames.push_back( kv.first );
+		for( const std::string& nm : objNames ) {
+			const IObject* obj = objs->GetItem( nm.c_str() );
+			if( !obj ) continue;
+			storeInto( pSpans->FindMutable( nm ),
+				ObjectIntrospection::Inspect(
+					String( nm.c_str() ), *obj,
+					pPriv->GetMaterials(), pPriv->GetShaders(), &pJob ) );
+		}
+	}
+
+	// Camera / light / material / medium entity spans.
+	std::vector<DirtyEntity> entityKeys;
+	entityKeys.reserve( pSpans->EntityEntries().size() );
+	for( const auto& kv : pSpans->EntityEntries() ) entityKeys.push_back( kv.first );
+	for( const DirtyEntity& key : entityKeys ) {
+		const EntityCategory cat  = key.first;
+		const std::string&   name = key.second;
+		SourceSpan* span = pSpans->FindEntityMutable( cat, name );
+		if( !span ) continue;
+		switch( cat ) {
+		case EntityCategory::Camera: {
+			const ICameraManager* m = scene->GetCameras();
+			const ICamera* cam = m ? m->GetItem( name.c_str() ) : 0;
+			if( cam ) storeInto( span, CameraIntrospection::Inspect( *cam ) );
+			break;
+		}
+		case EntityCategory::Light: {
+			const ILightManager* m = scene->GetLights();
+			const ILight* lt = m ? m->GetItem( name.c_str() ) : 0;
+			if( lt ) storeInto( span,
+				LightIntrospection::Inspect( String( name.c_str() ), *lt ) );
+			break;
+		}
+		case EntityCategory::Material: {
+			IMaterialManager* m = pPriv->GetMaterials();
+			const IMaterial* mat = m ? m->GetItem( name.c_str() ) : 0;
+			if( mat ) storeInto( span,
+				MaterialIntrospection::Inspect( String( name.c_str() ), *mat,
+					pPriv->GetPainters(), pPriv->GetScalarPainters(), &pJob ) );
+			break;
+		}
+		case EntityCategory::Medium: {
+			const IMedium* med = pJob.GetMedium( name.c_str() );
+			if( med ) storeInto( span,
+				MediaIntrospection::Inspect( String( name.c_str() ), *med ) );
+			break;
+		}
+		case EntityCategory::Object:
+		default:
+			break;
 		}
 	}
 }
@@ -9762,6 +9965,36 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 					pJob, chunkparams,
 					outerLineIdx, openBraceIdx, closeBraceIdx );
 			}
+
+			// Phase B: camera / light / material / medium chunks populate
+			// the SourceSpanIndex's entity map so the save engine's
+			// property pass can splice their parameter lines.  Category
+			// comes from the chunk parser's own descriptor — the same
+			// descriptor that drove parsing — so this never drifts from
+			// the registered chunk set.
+			if( sawCloseBrace && pChunkParser
+			    && !mRawTokens.AllLines().empty() ) {
+				EntityCategory ec = EntityCategory::Object;
+				bool savableEntity = false;
+				switch( pChunkParser->Describe().category ) {
+					case ChunkCategory::Camera:
+						ec = EntityCategory::Camera;   savableEntity = true; break;
+					case ChunkCategory::Light:
+						ec = EntityCategory::Light;    savableEntity = true; break;
+					case ChunkCategory::Material:
+						ec = EntityCategory::Material; savableEntity = true; break;
+					case ChunkCategory::Medium:
+						ec = EntityCategory::Medium;   savableEntity = true; break;
+					default:
+						break;
+				}
+				if( savableEntity ) {
+					const std::size_t closeBraceIdx = mRawTokens.AllLines().size() - 1;
+					OnEntityChunkFinalized(
+						pJob, ec, chunkparams,
+						outerLineIdx, openBraceIdx, closeBraceIdx );
+				}
+			}
 		}
 	}
 
@@ -9780,6 +10013,9 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	// composed state.
 	if( depthGuard.isTopLevel ) {
 		PopulateLoadedTransformSnapshot( pJob );
+		// Phase B: capture loaded camera/light/material/medium/object
+		// property values for the save engine's property-pass diff.
+		PopulateLoadedPropertySnapshot( pJob );
 	}
 
 	// parser_entries unique_ptrs destroy the parsers when they go out of scope

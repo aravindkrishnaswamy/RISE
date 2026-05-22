@@ -19,7 +19,9 @@
 #ifndef SourceSpanIndex_
 #define SourceSpanIndex_
 
+#include "DirtyTracker.h"   // for EntityCategory / DirtyEntity
 #include <cstddef>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -95,6 +97,17 @@ namespace RISE
         bool        chunkRevisited = false;      // set TRUE when the parser re-enters
                                                   // this chunk's byte range (FOR-body iteration)
         std::unordered_map<std::string, ParameterSpan> parameterSpans;
+
+        // Phase B: loaded-time descriptor-introspected parameter
+        // values (keyword -> value-as-string), captured at the END of
+        // the parse (after all chunks AND `>` commands) so it reflects
+        // true loaded state.  The save engine's property pass diffs
+        // CURRENT introspection against this map to find which
+        // parameters the user actually changed — the property-edit
+        // analogue of Phase 6's Mfinal-vs-Mloaded matrix compare.
+        // Empty for FOR-generated 2..N spans (they never get a span)
+        // and harmless-but-unused on objects edited only via transform.
+        std::unordered_map<std::string, std::string> loadedPropertyValues;
     };
 
     /// Per-entity source data registry.  See §6.3 and §6.4 for
@@ -129,6 +142,25 @@ namespace RISE
         /// `chunkRevisited` when FOR loops re-enter a chunk.
         /// Returns null for unknown names.
         SourceSpan* FindMutable(const std::string& name);
+
+        // ---- Phase B: non-object entity spans -----------------------
+        // Camera / light / material / medium chunks get their own
+        // (category,name)-keyed map.  Object spans stay in the
+        // name-keyed map above (Phase 6, untouched) — objects are
+        // looked up by bare name there, and entity names are unique
+        // only WITHIN a manager so the property pass must disambiguate
+        // a camera "glass" from a material "glass".  The SourceSpan
+        // struct itself is reused verbatim; `authorMode` and the
+        // creation-location machinery are object-only and simply
+        // stay at their defaults for non-object entities.
+
+        void AddEntity( EntityCategory category, const std::string& name,
+                        SourceSpan&& span );
+        const SourceSpan* FindEntity( EntityCategory category,
+                                      const std::string& name ) const;
+        SourceSpan* FindEntityMutable( EntityCategory category,
+                                       const std::string& name );
+        std::size_t EntityCount() const;
 
         // R5 §1 / pinned 2.20: every successful runtime-entity creation
         // records its enclosing chunk's source-file path + end offset
@@ -186,6 +218,7 @@ namespace RISE
 
         // Test/diagnostic helpers.
         const std::unordered_map<std::string, SourceSpan>& Entries() const { return mEntries; }
+        const std::map<DirtyEntity, SourceSpan>& EntityEntries() const { return mEntityEntries; }
 
     private:
         struct CreationLocation
@@ -193,7 +226,8 @@ namespace RISE
             std::string filePath;
             std::size_t chunkEndOffset = 0;
         };
-        std::unordered_map<std::string, SourceSpan>      mEntries;
+        std::unordered_map<std::string, SourceSpan>      mEntries;          // objects (Phase 6)
+        std::map<DirtyEntity, SourceSpan>                mEntityEntries;    // camera/light/material/medium (Phase B)
         std::unordered_map<std::string, CreationLocation> mCreationLocation;
         std::string                                       mEmptyPath;  // for GetCreationFilePath fallback
         FileIdentity                                      mFileIdentity;

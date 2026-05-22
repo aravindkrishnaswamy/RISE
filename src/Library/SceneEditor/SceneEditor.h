@@ -160,9 +160,12 @@ namespace RISE
 		//! True iff any edit since the last load / save would produce
 		//! a non-NoOp SaveEngine pass.  Drives the GUI's "Save" button
 		//! enable state on both platform shells.  Cheap O(1).
+		//! Consults BOTH dirty channels — object transforms (Phase 6)
+		//! AND property-shaped edits on objects / cameras / lights /
+		//! materials / media (Phase B).
 		bool HasUnsavedChanges() const
 		{
-			return mDirtyTracker.Count() > 0
+			return mDirtyTracker.HasAnyDirty()
 			    || !mScaleFromAnchorSet.empty();
 		}
 
@@ -258,6 +261,17 @@ namespace RISE
 		//! Run the post-mutation invariant chain on a single object
 		//! and on the manager.
 		void RunObjectInvariantChain( IObjectPriv& obj );
+
+		//! Phase B: route a property-shaped edit (camera / light /
+		//! material / medium property, or object material / shader /
+		//! shadow / interior-medium binding) into the DirtyTracker's
+		//! per-category channel.  Called from Apply / Undo / Redo.
+		//! Transform ops are NOT handled here — they mark the object-
+		//! transform channel inline.  Over-marking is harmless: the
+		//! save engine's property pass diffs current-vs-loaded
+		//! introspection, so a marked-but-unchanged entity contributes
+		//! nothing (it nets to a NoOp).
+		void MarkEditEntityDirty( const SceneEdit& edit );
 
 		//! Compute whether the loaded scene has any populated photon map.
 		bool ComputeScenePhotonsExist() const;

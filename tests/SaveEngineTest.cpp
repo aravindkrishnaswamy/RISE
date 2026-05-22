@@ -44,6 +44,13 @@
 #include "../src/Library/SceneEditor/SourceSpanIndex.h"
 #include "../src/Library/SceneEditor/TransformSnapshot.h"
 #include "../src/Library/SceneEditor/OverrideSpanIndex.h"
+#include "../src/Library/SceneEditor/CameraIntrospection.h"
+#include "../src/Library/SceneEditor/MediaIntrospection.h"
+#include "../src/Library/SceneEditor/LightIntrospection.h"
+#include "../src/Library/Interfaces/ICameraManager.h"
+#include "../src/Library/Interfaces/ILightManager.h"
+#include "../src/Library/Interfaces/ILightPriv.h"
+#include "../src/Library/Interfaces/IScene.h"
 #include "../src/Library/Utilities/Reference.h"
 
 using namespace RISE;
@@ -1286,6 +1293,285 @@ static void TestInPlaceSaveStillNoOpsOnDragUndo()
     std::remove( path.c_str() );
 }
 
+// --------------------------------------------------------------------
+// Phase B: property round-trip save (camera / light / material /
+// medium property edits, in addition to Phase 6's object transforms).
+// --------------------------------------------------------------------
+
+// Introspect a single camera parameter's current value-as-string.
+static std::string CameraParamValue( IJobPriv* job, const char* camName,
+                                     const char* param )
+{
+    if( !job ) return std::string();
+    const IScene* scene = job->GetScene();
+    if( !scene ) return std::string();
+    const ICameraManager* m = scene->GetCameras();
+    if( !m ) return std::string();
+    const ICamera* cam = m->GetItem( camName );
+    if( !cam ) return std::string();
+    std::vector<CameraProperty> props = CameraIntrospection::Inspect( *cam );
+    for( std::size_t i = 0; i < props.size(); ++i ) {
+        if( std::string( props[i].name.c_str() ) == param ) {
+            return std::string( props[i].value.c_str() );
+        }
+    }
+    return std::string();
+}
+
+// Introspect a single medium parameter's current value-as-string.
+static std::string MediumParamValue( IJobPriv* job, const char* medName,
+                                     const char* param )
+{
+    if( !job ) return std::string();
+    const IMedium* med = job->GetMedium( medName );
+    if( !med ) return std::string();
+    std::vector<CameraProperty> props =
+        MediaIntrospection::Inspect( String( medName ), *med );
+    for( std::size_t i = 0; i < props.size(); ++i ) {
+        if( std::string( props[i].name.c_str() ) == param ) {
+            return std::string( props[i].value.c_str() );
+        }
+    }
+    return std::string();
+}
+
+static void TestCameraPropertySaveRoundTrips()
+{
+    gCurrentTest = "TestCameraPropertySaveRoundTrips";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Phase B: a camera FOV edit marks the camera dirty (per-category
+    // channel) and the save engine's property pass Mode-A-splices the
+    // `fov` line.  Verify the edit round-trips through save → reload.
+    const std::string body =
+        "RISE ASCII SCENE 6\n"
+        "pinhole_camera\n{\n"
+        "    name cam0\n"
+        "    location 0 0 20\n"
+        "    lookat 0 0 0\n"
+        "    up 0 1 0\n"
+        "    fov 30.0\n"
+        "}\n";
+    const std::string path = WriteSceneFile( body, "camprop" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "loaded camera scene" );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+
+    SceneEditor editor( *pJob->GetScene() );
+    Check( !editor.HasUnsavedChanges(), "fresh load: no unsaved changes" );
+
+    const std::string fovLoaded = CameraParamValue( pJob, "cam0", "fov" );
+
+    // SetCameraProperty: objectName carries the PROPERTY name; the
+    // edit targets the active camera.
+    SceneEdit e;
+    e.op            = SceneEdit::SetCameraProperty;
+    e.objectName    = "fov";
+    e.propertyValue = "45";
+    Check( editor.Apply( e ), "fov edit applied" );
+    Check( editor.HasUnsavedChanges(),
+           "camera property edit marks the scene dirty" );
+
+    const std::string fovAfterEdit = CameraParamValue( pJob, "cam0", "fov" );
+    Check( fovAfterEdit != fovLoaded, "fov introspection reflects the edit" );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( path );
+    Check( r.status == SaveResult::Status::Saved,
+           "camera property save: Saved" );
+    Check( r.directRewriteCount >= 1, "one Mode A property splice" );
+
+    safe_release( pJob );
+    IJobPriv* pJob2 = LoadSceneFromPath( path );
+    Check( pJob2 != nullptr, "reloaded saved camera scene" );
+    if( pJob2 ) {
+        const std::string fovReloaded = CameraParamValue( pJob2, "cam0", "fov" );
+        Check( fovReloaded == fovAfterEdit,
+               "camera fov round-tripped through save → reload" );
+        Check( fovReloaded != fovLoaded,
+               "reloaded fov differs from the original loaded value" );
+        safe_release( pJob2 );
+    }
+    std::remove( path.c_str() );
+}
+
+static void TestCameraPropertySecondSaveIsNoOp()
+{
+    gCurrentTest = "TestCameraPropertySecondSaveIsNoOp";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // After a property save, a second save with no further edits is a
+    // NoOp — the dirty channels were cleared and nothing re-marks them.
+    const std::string body =
+        "RISE ASCII SCENE 6\n"
+        "pinhole_camera\n{\n"
+        "    name cam0\n"
+        "    location 0 0 20\n"
+        "    lookat 0 0 0\n"
+        "    up 0 1 0\n"
+        "    fov 30.0\n"
+        "}\n";
+    const std::string path = WriteSceneFile( body, "campropnoop" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+    SceneEditor editor( *pJob->GetScene() );
+
+    SceneEdit e;
+    e.op            = SceneEdit::SetCameraProperty;
+    e.objectName    = "fov";
+    e.propertyValue = "55";
+    editor.Apply( e );
+    std::unordered_set<std::string> sfa1;
+    SaveEngine engine1 = MakeEngine( *pJob, editor, sfa1 );
+    Check( engine1.Save( path ).status == SaveResult::Status::Saved,
+           "first property save: Saved" );
+    Check( !editor.HasUnsavedChanges(),
+           "dirty channels cleared after save" );
+
+    const std::string afterFirst = ReadFile( path );
+    std::unordered_set<std::string> sfa2;
+    SaveEngine engine2 = MakeEngine( *pJob, editor, sfa2 );
+    SaveResult r2 = engine2.Save( path );
+    Check( r2.status == SaveResult::Status::NoOp,
+           "second save, no edits: NoOp" );
+    Check( ReadFile( path ) == afterFirst,
+           "file byte-identical after no-op second save" );
+
+    safe_release( pJob );
+    std::remove( path.c_str() );
+}
+
+static void TestMediumPropertySaveRoundTrips()
+{
+    gCurrentTest = "TestMediumPropertySaveRoundTrips";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Phase B: a medium absorption edit marks the medium dirty and the
+    // property pass splices the `absorption` line.
+    const std::string body =
+        "RISE ASCII SCENE 6\n"
+        "homogeneous_medium\n{\n"
+        "    name fog\n"
+        "    absorption 0.1 0.1 0.1\n"
+        "    scattering 0.02 0.02 0.02\n"
+        "    phase hg 0.5\n"
+        "}\n";
+    const std::string path = WriteSceneFile( body, "medprop" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "loaded medium scene" );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+
+    SceneEditor editor( *pJob->GetScene() );
+    // SetMediumProperty's Apply handler resolves the medium via
+    // IJob::GetMedium — the editor needs the job wired in.
+    editor.SetJob( pJob );
+    const std::string absLoaded = MediumParamValue( pJob, "fog", "absorption" );
+
+    SceneEdit e;
+    e.op            = SceneEdit::SetMediumProperty;
+    e.objectName    = "fog";
+    e.propertyName  = "absorption";
+    e.propertyValue = "0.5 0.5 0.5";
+    Check( editor.Apply( e ), "medium absorption edit applied" );
+    Check( editor.HasUnsavedChanges(),
+           "medium property edit marks the scene dirty" );
+
+    const std::string absAfterEdit = MediumParamValue( pJob, "fog", "absorption" );
+    Check( absAfterEdit != absLoaded, "absorption introspection reflects the edit" );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( path );
+    Check( r.status == SaveResult::Status::Saved,
+           "medium property save: Saved" );
+
+    safe_release( pJob );
+    IJobPriv* pJob2 = LoadSceneFromPath( path );
+    Check( pJob2 != nullptr, "reloaded saved medium scene" );
+    if( pJob2 ) {
+        const std::string absReloaded = MediumParamValue( pJob2, "fog", "absorption" );
+        Check( absReloaded == absAfterEdit,
+               "medium absorption round-tripped through save → reload" );
+        Check( absReloaded != absLoaded,
+               "reloaded absorption differs from the original loaded value" );
+        safe_release( pJob2 );
+    }
+    std::remove( path.c_str() );
+}
+
+// Introspect a single light parameter's current value-as-string.
+static std::string LightParamValue( IJobPriv* job, const char* lightName,
+                                     const char* param )
+{
+    if( !job ) return std::string();
+    const IScene* scene = job->GetScene();
+    if( !scene ) return std::string();
+    const ILightManager* m = scene->GetLights();
+    if( !m ) return std::string();
+    const ILightPriv* lt = m->GetItem( lightName );
+    if( !lt ) return std::string();
+    std::vector<CameraProperty> props =
+        LightIntrospection::Inspect( String( lightName ), *lt );
+    for( std::size_t i = 0; i < props.size(); ++i ) {
+        if( std::string( props[i].name.c_str() ) == param ) {
+            return std::string( props[i].value.c_str() );
+        }
+    }
+    return std::string();
+}
+
+static void TestLightPropertySaveRoundTrips()
+{
+    gCurrentTest = "TestLightPropertySaveRoundTrips";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Phase B: a light power edit marks the light dirty and the
+    // property pass splices the `power` line.
+    const std::string body =
+        "RISE ASCII SCENE 6\n"
+        "omni_light\n{\n"
+        "    name lightA\n"
+        "    power 3.14159\n"
+        "    color 1.0 1.0 1.0\n"
+        "    position 0.0 0.0 0.0\n"
+        "}\n";
+    const std::string path = WriteSceneFile( body, "lightprop" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "loaded light scene" );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+
+    SceneEditor editor( *pJob->GetScene() );
+    const std::string powerLoaded = LightParamValue( pJob, "lightA", "power" );
+
+    SceneEdit e;
+    e.op            = SceneEdit::SetLightProperty;
+    e.objectName    = "lightA";
+    e.propertyName  = "power";
+    e.propertyValue = "6.5";
+    Check( editor.Apply( e ), "light power edit applied" );
+    Check( editor.HasUnsavedChanges(),
+           "light property edit marks the scene dirty" );
+
+    const std::string powerAfterEdit = LightParamValue( pJob, "lightA", "power" );
+    Check( powerAfterEdit != powerLoaded, "power introspection reflects the edit" );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( path );
+    Check( r.status == SaveResult::Status::Saved,
+           "light property save: Saved" );
+
+    safe_release( pJob );
+    IJobPriv* pJob2 = LoadSceneFromPath( path );
+    Check( pJob2 != nullptr, "reloaded saved light scene" );
+    if( pJob2 ) {
+        const std::string powerReloaded = LightParamValue( pJob2, "lightA", "power" );
+        Check( powerReloaded == powerAfterEdit,
+               "light power round-tripped through save → reload" );
+        Check( powerReloaded != powerLoaded,
+               "reloaded power differs from the original loaded value" );
+        safe_release( pJob2 );
+    }
+    std::remove( path.c_str() );
+}
+
 static void TestSaveClearsDirtyTracker()
 {
     gCurrentTest = "TestSaveClearsDirtyTracker";
@@ -1337,6 +1623,10 @@ int main()
     TestInPlaceSaveAfterSaveAsTargetsTheNewPath();
     TestSaveAsWritesEvenWhenBytesNetToSource();
     TestInPlaceSaveStillNoOpsOnDragUndo();
+    TestCameraPropertySaveRoundTrips();
+    TestCameraPropertySecondSaveIsNoOp();
+    TestMediumPropertySaveRoundTrips();
+    TestLightPropertySaveRoundTrips();
     TestSaveClearsDirtyTracker();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
     return failCount == 0 ? 0 : 1;

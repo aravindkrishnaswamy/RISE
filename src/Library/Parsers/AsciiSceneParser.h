@@ -22,6 +22,7 @@
 #include "../Utilities/RString.h"
 #include "../Utilities/Math3D/Math3D.h"
 #include "RawTokenCapture.h"
+#include "../SceneEditor/DirtyTracker.h"   // for EntityCategory / DirtyEntity
 #include <istream>
 #include <map>
 #include <vector>
@@ -63,6 +64,13 @@ namespace RISE
 			// SourceSpan for the 2..N entity.
 			std::map<std::size_t, std::string> mChunkHeaderOffsetToFirstName;
 
+			// Phase B: same FOR-revisit detection for non-object entity
+			// chunks (camera / light / material / medium).  Keyed by
+			// chunk-header byte offset (globally unique across all
+			// chunk types); value is the (category,name) of the first
+			// entity that came out of that chunk.
+			std::map<std::size_t, DirtyEntity> mEntityChunkHeaderOffsetToFirst;
+
 			// Phase 6.1 helpers.  See impl in AsciiSceneParser.cpp.
 			void OnStandardObjectFinalized(
 				IJob& pJob,
@@ -71,6 +79,21 @@ namespace RISE
 				std::size_t openBraceIdx,
 				std::size_t closeBraceIdx );
 			void PopulateLoadedTransformSnapshot( IJob& pJob );
+
+			// Phase B: build a SourceSpan for a camera / light /
+			// material / medium chunk and register it in the
+			// SourceSpanIndex's entity map.  Same byte-range +
+			// per-parameter-span machinery as OnStandardObjectFinalized,
+			// minus the object-transform-only bits (BaseTransformSnapshot,
+			// CreationLocation, authorMode).
+			void OnEntityChunkFinalized(
+				IJob& pJob,
+				EntityCategory category,
+				const std::vector<String>& chunkparams,
+				std::size_t chunkHeaderIdx,
+				std::size_t openBraceIdx,
+				std::size_t closeBraceIdx );
+			void PopulateLoadedPropertySnapshot( IJob& pJob );
 
 			// Phase 6.2: detection state for the managed override
 			// sentinel block.  Flipped TRUE when the parser sees the

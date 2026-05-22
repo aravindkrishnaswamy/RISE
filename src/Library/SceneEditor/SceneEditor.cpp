@@ -715,6 +715,56 @@ void SceneEditor::RunObjectInvariantChain( IObjectPriv& obj )
 	}
 }
 
+void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
+{
+	// Phase B: route a property-shaped edit into the per-category
+	// dirty channel.  Transform ops are deliberately omitted — they
+	// mark the object-transform channel (mDirtyTracker.MarkDirty)
+	// inline.  AddCamera (new entity, no source span) and SetSceneTime
+	// (transient) are intentionally NOT persisted by Phase B.
+	switch( edit.op )
+	{
+	case SceneEdit::SetObjectMaterial:
+	case SceneEdit::SetObjectShader:
+	case SceneEdit::SetObjectShadowFlags:
+	case SceneEdit::SetObjectInteriorMedium:
+		mDirtyTracker.MarkEntityDirty( EntityCategory::Object,
+			std::string( edit.objectName.c_str() ) );
+		break;
+	case SceneEdit::SetCameraTransform:
+	case SceneEdit::OrbitCamera:
+	case SceneEdit::PanCamera:
+	case SceneEdit::ZoomCamera:
+	case SceneEdit::RollCamera:
+	case SceneEdit::SetCameraProperty:
+	{
+		// Camera ops target the ACTIVE camera (the op carries no
+		// camera name — SetCameraProperty's objectName is the
+		// PROPERTY name).
+		const String camName = mScene.GetActiveCameraName();
+		if( camName.size() > 0 ) {
+			mDirtyTracker.MarkEntityDirty( EntityCategory::Camera,
+				std::string( camName.c_str() ) );
+		}
+		break;
+	}
+	case SceneEdit::SetLightProperty:
+		mDirtyTracker.MarkEntityDirty( EntityCategory::Light,
+			std::string( edit.objectName.c_str() ) );
+		break;
+	case SceneEdit::SetMaterialProperty:
+		mDirtyTracker.MarkEntityDirty( EntityCategory::Material,
+			std::string( edit.objectName.c_str() ) );
+		break;
+	case SceneEdit::SetMediumProperty:
+		mDirtyTracker.MarkEntityDirty( EntityCategory::Medium,
+			std::string( edit.objectName.c_str() ) );
+		break;
+	default:
+		break;
+	}
+}
+
 void SceneEditor::FireDirtyChangedIfTransitioned()
 {
 	// Cheap O(1) check whether the dirty state's emptiness has
@@ -746,6 +796,14 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 {
 	DirtyChangeNotifier _notifier( this );
 	SceneEdit edit = editIn;
+
+	// Phase B: route property-shaped edits into the per-category
+	// dirty channel up front.  Safe to mark before dispatch — the
+	// save engine's property pass diffs current-vs-loaded values, so
+	// an edit that later fails or nets to no change just produces a
+	// NoOp for that entity.  Transform ops + composite markers are
+	// skipped by the helper.
+	MarkEditEntityDirty( edit );
 
 	// Composite markers: just push, no mutation, no scope change.
 	if( edit.op == SceneEdit::CompositeBegin )
@@ -1170,6 +1228,11 @@ bool SceneEditor::Undo()
 	SceneEdit edit;
 	if( !mHistory.PopForUndo( edit ) ) return false;
 
+	// Phase B: re-mark the (single-edit) entity dirty — undo after a
+	// save must put the touched entity back into the dirty set.
+	// Composite inner edits are marked inside the walk-back loop.
+	MarkEditEntityDirty( edit );
+
 	// Walk back through composite groups: if the popped entry is a
 	// CompositeEnd marker, repeatedly undo until and including the
 	// matching CompositeBegin.
@@ -1188,6 +1251,10 @@ bool SceneEditor::Undo()
 			SceneEdit inner;
 			if( !mHistory.PopForUndo( inner ) ) break;
 			if( inner.op == SceneEdit::CompositeBegin ) break;
+			// Phase B: a save may have cleared the dirty channels;
+			// undoing a property edit re-mutates the entity, so
+			// re-mark it (mirrors the transform channel's undo mark).
+			MarkEditEntityDirty( inner );
 			// Undo the inner edit.
 			if( SceneEdit::IsObjectOp( inner.op ) )
 			{
@@ -1534,6 +1601,10 @@ bool SceneEditor::Redo()
 	SceneEdit edit;
 	if( !mHistory.PopForRedo( edit ) ) return false;
 
+	// Phase B: re-mark the (single-edit) entity dirty on redo.
+	// Composite inner edits are marked inside the replay loop.
+	MarkEditEntityDirty( edit );
+
 	if( edit.op == SceneEdit::CompositeBegin )
 	{
 		// Re-apply the composite group: pop forwards through
@@ -1545,6 +1616,8 @@ bool SceneEditor::Redo()
 			SceneEdit inner;
 			if( !mHistory.PopForRedo( inner ) ) break;
 			if( inner.op == SceneEdit::CompositeEnd ) break;
+			// Phase B: re-mark the property entity dirty on redo.
+			MarkEditEntityDirty( inner );
 			if( SceneEdit::IsObjectOp( inner.op ) )
 			{
 				IObjectPriv* obj = FindObject( inner.objectName );

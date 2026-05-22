@@ -42,6 +42,34 @@ namespace RISE
         return mEntries.size();
     }
 
+    void SourceSpanIndex::AddEntity( EntityCategory category,
+                                     const std::string& name,
+                                     SourceSpan&& span )
+    {
+        mEntityEntries[ std::make_pair( category, name ) ] = std::move( span );
+    }
+
+    const SourceSpan* SourceSpanIndex::FindEntity( EntityCategory category,
+                                                   const std::string& name ) const
+    {
+        auto it = mEntityEntries.find( std::make_pair( category, name ) );
+        if( it == mEntityEntries.end() ) return nullptr;
+        return &it->second;
+    }
+
+    SourceSpan* SourceSpanIndex::FindEntityMutable( EntityCategory category,
+                                                    const std::string& name )
+    {
+        auto it = mEntityEntries.find( std::make_pair( category, name ) );
+        if( it == mEntityEntries.end() ) return nullptr;
+        return &it->second;
+    }
+
+    std::size_t SourceSpanIndex::EntityCount() const
+    {
+        return mEntityEntries.size();
+    }
+
     void SourceSpanIndex::RecordCreationLocation(const std::string& name,
                                                  std::string filePath,
                                                  std::size_t chunkEndOffset)
@@ -74,6 +102,7 @@ namespace RISE
     void SourceSpanIndex::Clear()
     {
         mEntries.clear();
+        mEntityEntries.clear();
         mCreationLocation.clear();
         mFileIdentity = FileIdentity{};
     }
@@ -111,13 +140,11 @@ namespace RISE
             return signedSum < 0 ? 0 : static_cast<std::size_t>( signedSum );
         };
 
-        // Walk every SourceSpan + its per-parameter spans.
-        for( auto& kv : mEntries ) {
-            SourceSpan& s = kv.second;
-            s.chunkBeginOffset       = adjust( s.chunkBeginOffset );
-            s.chunkEndOffset         = adjust( s.chunkEndOffset );
-            s.bodyOpenBraceOffset    = adjust( s.bodyOpenBraceOffset );
-            s.bodyCloseBraceOffset   = adjust( s.bodyCloseBraceOffset );
+        auto adjustSpan = [&]( SourceSpan& s ) {
+            s.chunkBeginOffset        = adjust( s.chunkBeginOffset );
+            s.chunkEndOffset          = adjust( s.chunkEndOffset );
+            s.bodyOpenBraceOffset     = adjust( s.bodyOpenBraceOffset );
+            s.bodyCloseBraceOffset    = adjust( s.bodyCloseBraceOffset );
             s.bodyCloseBraceLineBegin = adjust( s.bodyCloseBraceLineBegin );
             for( auto& pkv : s.parameterSpans ) {
                 ParameterSpan& p = pkv.second;
@@ -127,7 +154,12 @@ namespace RISE
                 p.valueEnd        = adjust( p.valueEnd );
                 p.commentBegin    = adjust( p.commentBegin );
             }
-        }
+        };
+
+        // Walk every object SourceSpan (Phase 6) + every non-object
+        // entity SourceSpan (Phase B) + its per-parameter spans.
+        for( auto& kv : mEntries )       adjustSpan( kv.second );
+        for( auto& kv : mEntityEntries ) adjustSpan( kv.second );
 
         // Walk every CreationLocation chunkEndOffset (used by save
         // engine's placement loop for FOR 2..N entities).
@@ -141,6 +173,11 @@ namespace RISE
     {
         if( oldPath.empty() || oldPath == newPath ) return;
         for( auto& kv : mEntries ) {
+            if( kv.second.filePath == oldPath ) {
+                kv.second.filePath = newPath;
+            }
+        }
+        for( auto& kv : mEntityEntries ) {
             if( kv.second.filePath == oldPath ) {
                 kv.second.filePath = newPath;
             }
