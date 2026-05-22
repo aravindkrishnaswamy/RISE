@@ -32,6 +32,7 @@
 #include "../src/Library/Interfaces/IMedium.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
+#include "../src/Library/SceneEditor/MediaIntrospection.h"
 #include "../src/Library/Materials/HomogeneousMedium.h"
 
 using namespace RISE;
@@ -130,6 +131,32 @@ static void TestHomogeneousFullMatrix()
 	Check( std::abs( static_cast<double>( hom->GetEmission().r - e0.r ) ) < 1e-9,
 	       "hom emission.r restored" );
 	Check( c.Editor().Redo(), "hom emission redo" );
+
+	// -- emission is NOT panel-editable: the `homogeneous_medium`
+	//    chunk has no `emission` parameter, so a panel edit could not
+	//    be saved back to the .RISEscene file (the save engine would
+	//    insert an `emission` line the descriptor-driven parser then
+	//    rejects on reload).  absorption / scattering stay editable —
+	//    the chunk authors both. --
+	{
+		const std::vector<CameraProperty> rows =
+			MediaIntrospection::Inspect( String( "fog" ), *hom );
+		bool sawEmission = false, sawAbsorption = false;
+		for( const CameraProperty& r : rows ) {
+			const std::string n( r.name.c_str() );
+			if( n == "emission" ) {
+				sawEmission = true;
+				Check( !r.editable,
+				       "hom emission row is read-only (not chunk-authorable)" );
+			}
+			if( n == "absorption" ) {
+				sawAbsorption = true;
+				Check( r.editable, "hom absorption row stays editable" );
+			}
+		}
+		Check( sawEmission && sawAbsorption,
+		       "hom introspection surfaces emission + absorption rows" );
+	}
 
 	// -- invalid vec3 rejected for each editable slot --
 	Check( !c.SetProperty( String( "absorption" ), String( "garbage" ) ),

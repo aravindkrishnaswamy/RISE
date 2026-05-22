@@ -88,8 +88,11 @@ std::vector<CameraProperty> MediaIntrospection::Inspect(
 			true ) );
 		rows.push_back( MakeVec3Row( "emission", hom->GetEmission(),
 			"Volumetric emission per channel.  Contributes radiance independent of σ_t — "
-			"usually zero unless modelling a glowing volume.",
-			true ) );
+			"usually zero unless modelling a glowing volume.  Read-only from the panel: "
+			"the `homogeneous_medium` scene chunk has no `emission` parameter, so an edit "
+			"could not be saved back to the .RISEscene file (use `heterogeneous_medium`, "
+			"which does author emission, if you need a glowing volume).",
+			false ) );
 		rows.push_back( MakeReadOnlyRow(
 			"phase", String( "(set at construction)" ),
 			"Phase function (Isotropic or Henyey-Greenstein with g).  Rebinding the phase "
