@@ -129,15 +129,20 @@ struct PropertiesPanel: View {
                     .foregroundColor(.secondary)
                 Spacer()
 
-                // Phase 6.5: Save Scene to the originally-loaded path.
+                // Phase 6.5: text-labeled buttons (matches Windows
+                // ViewportProperties + standard desktop affordance).
+                // SF-Symbol-only buttons disappear visually when
+                // .disabled in a .borderless style — text + .bordered
+                // stays discoverable even when greyed out.
+                //
+                // Save: in-place write to the originally-loaded path.
                 // Disabled when there's nothing to write OR no path
                 // was loaded (which would force Save-As anyway).
-                Button {
+                Button("Save") {
                     performSceneSave(useLoadedPath: true)
-                } label: {
-                    Image(systemName: "tray.and.arrow.down")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .disabled(!viewModel.sceneEditsDirty
                           || viewModel.loadedFilePath == nil)
                 .help(saveButtonHelpText(forSaveAs: false))
@@ -146,12 +151,11 @@ struct PropertiesPanel: View {
                 // the in-memory edits to a different file.  Enabled
                 // whenever there are edits; the destination doesn't
                 // have to be the originally-loaded path.
-                Button {
+                Button("Save As…") {
                     performSceneSave(useLoadedPath: false)
-                } label: {
-                    Image(systemName: "square.and.arrow.down.on.square")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
                 .disabled(!viewModel.sceneEditsDirty)
                 .help(saveButtonHelpText(forSaveAs: true))
 
