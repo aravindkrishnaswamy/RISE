@@ -872,6 +872,24 @@ void MainWindow::rebuildViewportForLoadedScene()
     connect(m_viewportBridge, &ViewportBridge::imageUpdated,
             m_viewportProps,  &ViewportProperties::refresh);
 
+    // Round-trip save success: re-anchor the engine's loaded-file
+    // path (so subsequent in-place saves target the file we just
+    // wrote \u2014 matches the C++ session's FileIdentity re-anchor) and
+    // pull the just-written bytes into the SceneEditor text pane so
+    // it reflects the saved edits.  Skip the text refresh when the
+    // user also has unsaved text-editor edits \u2014 re-reading the file
+    // would silently discard them; they can manually revert or use
+    // the text editor's own Save.
+    connect(m_viewportProps, &ViewportProperties::sceneSavedToPath,
+            this, [this](const QString& path) {
+                if (m_engine && path != m_engine->loadedFilePath()) {
+                    m_engine->setLoadedFilePath(path);
+                }
+                if (m_sceneEditor && !m_sceneEditor->isDirty()) {
+                    m_sceneEditor->loadFile(path);
+                }
+            });
+
     // Production-render frames from the engine \u2192 also flow to the
     // viewport widget so clicking "Render" updates the live view.
     connect(m_engine, &RenderEngine::imageUpdated,

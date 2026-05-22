@@ -472,9 +472,15 @@ void ViewportProperties::performSceneSave(bool useLoadedPath)
         m_bridge->saveSceneTo(target, errMsg);
     switch (status) {
     case ViewportBridge::SaveStatus::Saved:
+        // Re-anchor + refresh the scene-editor text pane via
+        // MainWindow (only it owns RenderEngine + SceneEditor).
+        // dirtyChanged(false) already flipped the Save buttons back
+        // to disabled on the C++ side.
+        emit sceneSavedToPath(target);
+        break;
     case ViewportBridge::SaveStatus::NoOp:
-        // Silent success.  The dirtyChanged(false) emission on the
-        // Saved transition flips the buttons back to disabled.
+        // Silent success — file unchanged on disk; no re-anchor or
+        // refresh needed.
         break;
     case ViewportBridge::SaveStatus::Refused:
         QMessageBox::warning(

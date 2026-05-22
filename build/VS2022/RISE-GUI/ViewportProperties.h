@@ -50,6 +50,15 @@ public slots:
     /// selection change (panel mode may have just flipped).
     void refresh();
 
+signals:
+    /// Fired after a successful in-place / Save-As round-trip save.
+    /// MainWindow connects to re-anchor `RenderEngine::loadedFilePath`
+    /// (so subsequent in-place saves target the just-written file —
+    /// matches the C++ session's FileIdentity re-anchor) and to
+    /// refresh the SceneEditor text pane from the new bytes.  Not
+    /// emitted on NoOp (the file is unchanged on disk).
+    void sceneSavedToPath(const QString& path);
+
 private slots:
     void onLineEditFinished();
 

@@ -314,6 +314,15 @@ struct PropertiesPanel: View {
             if path != viewModel.loadedFilePath {
                 viewModel.loadedFilePath = path
             }
+            // Pull the just-written bytes back into the scene-editor
+            // pane so it reflects the round-tripped edits (camera
+            // moves, property changes, created chunks).  Skip when the
+            // user also has unsaved text-editor edits — refreshing
+            // would silently discard them; they can manually revert
+            // or use the text editor's own Save.
+            if !viewModel.isEditorDirty {
+                viewModel.refreshEditorContents()
+            }
         case 1:
             // NoOp — silent success.  The file is unchanged on
             // disk; no re-anchor needed.
