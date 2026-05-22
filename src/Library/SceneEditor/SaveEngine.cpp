@@ -539,37 +539,6 @@ std::string RenderManagedBlock(
     return out;
 }
 
-// Round-3 review P1: a camera carries SEVERAL redundant orientation
-// representations — `location`/`lookat`/`up`, the Euler `orientation`,
-// `target_orientation`, and the `theta`/`phi` scalars.  A single orbit
-// changes most of them at once, and descriptor introspection reports
-// some in degrees while the chunk parser reads `theta`/`phi` raw as
-// radians.  Splicing each changed row independently would write
-// mutually-inconsistent (and double-applied) orientation lines.
-// Camera TRANSFORM round-trip is deferred (docs/ROUND_TRIP_SAVE_PLAN
-// §3.4 — Phase 6.5); Phase B handles camera LENS properties only.
-//
-// `IsCameraTransformParam` — the property pass REFUSES an edit to any
-// of these on an existing camera (orbit/pan/zoom/move).
-bool IsCameraTransformParam( const std::string& key )
-{
-    return key == "location" || key == "lookat" || key == "up"
-        || key == "orientation" || key == "target_orientation"
-        || key == "theta" || key == "phi";
-}
-
-// `IsCameraRedundantOrientationParam` — when emitting a FRESH camera
-// chunk (AddCamera clone), `location`/`lookat`/`up` are essential and
-// fully determine the view (introspection reports them post-orbit),
-// but `orientation`/`target_orientation`/`theta`/`phi` are redundant
-// with that frame — emitting them too would double-apply the orbit
-// on reload.  Skip exactly those.
-bool IsCameraRedundantOrientationParam( const std::string& key )
-{
-    return key == "orientation" || key == "target_orientation"
-        || key == "theta" || key == "phi";
-}
-
 // Phase C: render a fresh scene-file chunk for a newly-created camera
 // from its descriptor introspection.  Returns "" if the camera type
 // has no known chunk keyword (an out-of-tree camera subclass).  The
@@ -593,14 +562,17 @@ std::string RenderCreatedCameraChunk( const ICamera& cam,
     out += name;
     out += eol;
 
+    // CameraIntrospection::Inspect already filters the redundant
+    // orientation forms (`orientation` / `target_orientation` /
+    // `pitch` / `roll` / `yaw` — see `IsRedundantParameter` there),
+    // so the editable rows are the canonical non-redundant set:
+    // `location` / `lookat` / `up` / `theta` / `phi` / `fov` / lens
+    // params.  Emitting all of them faithfully reproduces the camera.
     const std::vector<CameraProperty> props = CameraIntrospection::Inspect( cam );
     for( const CameraProperty& p : props ) {
         if( !p.editable ) continue;          // read-only / synthetic row
         const std::string key = std::string( p.name.c_str() );
         if( key == "name" ) continue;        // already emitted above
-        // Skip the redundant orientation views — `location`/`lookat`/
-        // `up` (kept) already determine the camera's frame.
-        if( IsCameraRedundantOrientationParam( key ) ) continue;
         out += "  ";
         out += key;
         out += " ";
@@ -1210,24 +1182,13 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                     return result;
                 }
 
-                // Round-3 review P1: camera TRANSFORM / orientation
-                // parameters are not round-tripped in V1 — a camera
-                // carries several redundant orientation representations
-                // and an orbit changes them together; splicing them
-                // line-by-line would write inconsistent state.  Refuse
-                // rather than corrupt.  Camera LENS properties (fov,
-                // exposure, iso, …) fall through and save normally.
-                if( cat == EntityCategory::Camera
-                    && IsCameraTransformParam( key ) ) {
-                    result.status = SaveResult::Status::Refused;
-                    result.errorMessage = std::string( "property edit on camera '" )
-                        + name + "': camera transform / orientation "
-                        "parameter '" + key + "' is not round-tripped in "
-                        "V1 (deferred to a later phase).  Camera lens "
-                        "properties — fov, exposure, etc. — do save.";
-                    return result;
-                }
-
+                // Camera transform parameters (`location`/`lookat`/
+                // `up`/`theta`/`phi`) splice like any other parameter:
+                // CameraIntrospection already filters the redundant
+                // orientation forms, the canonical rows it reports are
+                // mutually independent, and their units match the
+                // chunk parser (the parser converts `theta`/`phi` from
+                // degrees, which is what introspection emits).
                 std::unordered_map<std::string,ParameterSpan>::const_iterator pit =
                     espan->parameterSpans.find( key );
                 if( pit == espan->parameterSpans.end() ) {
@@ -1313,6 +1274,11 @@ SaveResult SaveEngine::Save( const std::string& filePath )
         for( const std::string& camName : ownedCameras ) {
             const ICamera* cam = cams ? cams->GetItem( camName.c_str() ) : 0;
             if( !cam ) continue;   // created then undone — nothing to emit
+
+            // `RenderCreatedCameraChunk` emits the full canonical
+            // introspected set — `location`/`lookat`/`up`/`theta`/
+            // `phi`/`fov`/lens params — so an orbited clone's orbit
+            // (`theta`/`phi`) round-trips along with the rest frame.
             const std::string text =
                 RenderCreatedCameraChunk( *cam, camName, eol );
             if( !text.empty() ) {

@@ -1836,19 +1836,16 @@ static void TestLightColorEditIsRefused()
     std::remove( path.c_str() );
 }
 
-static void TestCameraOrbitSaveIsRefused()
+static void TestCameraOrbitSaveRoundTrips()
 {
-    gCurrentTest = "TestCameraOrbitSaveIsRefused";
+    gCurrentTest = "TestCameraOrbitSaveRoundTrips";
     std::cout << gCurrentTest << "..." << std::endl;
-    // Round-3 P1: a camera carries several redundant orientation
-    // representations (location/lookat/up, orientation,
-    // target_orientation, theta/phi) and an orbit changes them
-    // together — splicing each independently would write
-    // inconsistent, double-applied state.  Camera TRANSFORM
-    // round-trip is deferred (ROUND_TRIP_SAVE_PLAN §3.4 / Phase
-    // 6.5); the property pass refuses it rather than corrupt the
-    // file.  Camera LENS properties (fov, …) still save — see
-    // TestCameraPropertySaveRoundTrips.
+    // Camera-transform round-trip: orbiting a camera changes
+    // `theta`/`phi` (the canonical, non-redundant rows descriptor
+    // introspection surfaces — `orientation`/`target_orientation`
+    // are filtered).  The property pass splices/inserts them like
+    // any parameter; units already match the parser.  Verify the
+    // orbit survives save → reload.
     const std::string path = WriteSceneFile( kSceneOneCamera, "orbit" );
     IJobPriv* pJob = LoadSceneFromPath( path );
     Check( pJob != nullptr, "loaded" );
@@ -1861,14 +1858,81 @@ static void TestCameraOrbitSaveIsRefused()
     Check( editor.Apply( e ), "OrbitCamera applied" );
     Check( editor.HasUnsavedChanges(), "orbit marks the scene dirty" );
 
+    const double thetaAfter =
+        std::strtod( CameraParamValue( pJob, "cam0", "theta" ).c_str(), 0 );
+    const double phiAfter =
+        std::strtod( CameraParamValue( pJob, "cam0", "phi" ).c_str(), 0 );
+    Check( std::fabs( thetaAfter ) > 1e-6 || std::fabs( phiAfter ) > 1e-6,
+           "orbit changed theta/phi" );
+
     std::unordered_set<std::string> sfa;
     SaveEngine engine = MakeEngine( *pJob, editor, sfa );
     SaveResult r = engine.Save( path );
-    Check( r.status == SaveResult::Status::Refused,
-           "camera orbit save: Refused (transform round-trip deferred)" );
-    Check( !r.errorMessage.empty(), "refusal carries a diagnostic" );
+    Check( r.status == SaveResult::Status::Saved,
+           "camera orbit save: Saved" );
 
     safe_release( pJob );
+    IJobPriv* pJob2 = LoadSceneFromPath( path );
+    Check( pJob2 != nullptr, "reload" );
+    if( pJob2 ) {
+        const double thetaReloaded =
+            std::strtod( CameraParamValue( pJob2, "cam0", "theta" ).c_str(), 0 );
+        const double phiReloaded =
+            std::strtod( CameraParamValue( pJob2, "cam0", "phi" ).c_str(), 0 );
+        Check( std::fabs( thetaReloaded - thetaAfter ) < 1e-2,
+               "camera orbit theta round-tripped through save → reload" );
+        Check( std::fabs( phiReloaded - phiAfter ) < 1e-2,
+               "camera orbit phi round-tripped through save → reload" );
+        safe_release( pJob2 );
+    }
+    std::remove( path.c_str() );
+}
+
+static void TestAddCameraThenOrbitSaveRoundTrips()
+{
+    gCurrentTest = "TestAddCameraThenOrbitSaveRoundTrips";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // A cloned camera that is then orbited: the created-entity pass
+    // emits the clone's whole chunk from current introspection —
+    // including the orbited `theta`/`phi` — so the orbit survives.
+    const std::string path = WriteSceneFile( kSceneOneCamera, "addorbit" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+    SceneEditor editor( *pJob->GetScene() );
+    editor.SetJob( pJob );
+
+    SceneEdit add;
+    Check( MakeAddCameraEdit( pJob, "cam0", "cam_clone", add ), "edit built" );
+    Check( editor.Apply( add ), "AddCamera applied (clone is now active)" );
+
+    // Orbit the active camera — the freshly-created clone.
+    SceneEdit orbit;
+    orbit.op  = SceneEdit::OrbitCamera;
+    orbit.v3a = Vector3( 0.3, 0.2, 0.0 );
+    Check( editor.Apply( orbit ), "OrbitCamera applied to the clone" );
+    const double thetaAfter =
+        std::strtod( CameraParamValue( pJob, "cam_clone", "theta" ).c_str(), 0 );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( path );
+    Check( r.status == SaveResult::Status::Saved,
+           "orbited new camera: Saved" );
+
+    safe_release( pJob );
+    IJobPriv* pJob2 = LoadSceneFromPath( path );
+    Check( pJob2 != nullptr, "reload" );
+    if( pJob2 ) {
+        const IScene* scene = pJob2->GetScene();
+        const ICameraManager* m = scene ? scene->GetCameras() : 0;
+        Check( m && m->GetItem( "cam_clone" ) != 0,
+               "cloned camera persisted" );
+        const double thetaReloaded =
+            std::strtod( CameraParamValue( pJob2, "cam_clone", "theta" ).c_str(), 0 );
+        Check( std::fabs( thetaReloaded - thetaAfter ) < 1e-2,
+               "orbited clone's orbit round-tripped" );
+        safe_release( pJob2 );
+    }
     std::remove( path.c_str() );
 }
 
@@ -2012,7 +2076,8 @@ int main()
     TestAddCameraThenUndoSaveOmitsCamera();
     TestPropertyEditThenRevertAcrossSavesPersists();
     TestLightColorEditIsRefused();
-    TestCameraOrbitSaveIsRefused();
+    TestCameraOrbitSaveRoundTrips();
+    TestAddCameraThenOrbitSaveRoundTrips();
     TestManagedBlockCameraSurvivesReloadAndResave();
     TestSaveClearsDirtyTracker();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
