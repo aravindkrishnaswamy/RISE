@@ -9226,6 +9226,11 @@ void AsciiSceneParser::OnEntityChunkFinalized(
 	span.chunkEndOffset          = chunkEndOffset;
 	span.bodyCloseBraceLineBegin = closeLine.lineBeginOffset;
 	span.chunkRevisited          = false;
+	// Phase C (round-2 review): a camera/light/material/medium chunk
+	// parsed INSIDE the sentinel block is one the editor emitted in a
+	// previous session.  Flag it so the save engine re-emits it
+	// wholesale (rather than letting the block lifecycle erase it).
+	span.insideManagedBlock      = mInsideManagedOverrideBlock;
 
 	// Open-brace offset: the `{` may share the header line with the
 	// chunk keyword or live on its own line — check both.

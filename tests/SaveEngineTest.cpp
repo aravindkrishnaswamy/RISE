@@ -1836,6 +1836,86 @@ static void TestLightColorEditIsRefused()
     std::remove( path.c_str() );
 }
 
+static void TestManagedBlockCameraSurvivesReloadAndResave()
+{
+    gCurrentTest = "TestManagedBlockCameraSurvivesReloadAndResave";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Round-2 review P1: a camera emitted into the managed block in
+    // one session must NOT be erased by the NEXT session's save.
+    // After reload the clone is a normal parsed `pinhole_camera`
+    // inside the sentinel block; the engine must recognise it as
+    // engine-owned (SourceSpan::insideManagedBlock) and re-emit it,
+    // rather than seeing an "empty" managed block and erasing it.
+    // Also exercises editing a managed-block camera: the property
+    // pass skips it and the created-entity pass re-emits the whole
+    // chunk from current introspection.
+    const std::string path = WriteSceneFile( kSceneOneCamera, "mgdblk" );
+
+    // Session 1: clone cam0 → save.
+    {
+        IJobPriv* pJob = LoadSceneFromPath( path );
+        Check( pJob != nullptr, "session 1: loaded" );
+        if( !pJob ) { std::remove( path.c_str() ); return; }
+        SceneEditor editor( *pJob->GetScene() );
+        editor.SetJob( pJob );
+        SceneEdit add;
+        Check( MakeAddCameraEdit( pJob, "cam0", "cam_clone", add ),
+               "AddCamera edit built" );
+        editor.Apply( add );
+        std::unordered_set<std::string> sfa;
+        SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+        Check( engine.Save( path ).status == SaveResult::Status::Saved,
+               "session 1: AddCamera save Saved" );
+        safe_release( pJob );
+    }
+
+    // Session 2: reload, edit the clone (it is the active camera —
+    // the managed block is the last camera chunk parsed), save.
+    {
+        IJobPriv* pJob = LoadSceneFromPath( path );
+        Check( pJob != nullptr, "session 2: reloaded" );
+        if( !pJob ) { std::remove( path.c_str() ); return; }
+        const IScene* scene = pJob->GetScene();
+        const ICameraManager* m = scene ? scene->GetCameras() : 0;
+        Check( m && m->GetItem( "cam_clone" ) != 0,
+               "session 2: clone survived session 1" );
+
+        SceneEditor editor( *pJob->GetScene() );
+        editor.SetJob( pJob );
+        SceneEdit e;
+        e.op = SceneEdit::SetCameraProperty;
+        e.objectName = "fov";
+        e.propertyValue = "50";
+        Check( editor.Apply( e ), "session 2: clone fov edit applied" );
+        std::unordered_set<std::string> sfa;
+        SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+        Check( engine.Save( path ).status == SaveResult::Status::Saved,
+               "session 2: re-save Saved" );
+        safe_release( pJob );
+    }
+
+    // Session 3: reload — the clone must STILL exist (not erased by
+    // session 2's save), the original must still exist, and the
+    // clone's fov edit must have round-tripped.
+    {
+        IJobPriv* pJob = LoadSceneFromPath( path );
+        Check( pJob != nullptr, "session 3: reloaded" );
+        if( pJob ) {
+            const IScene* scene = pJob->GetScene();
+            const ICameraManager* m = scene ? scene->GetCameras() : 0;
+            Check( m && m->GetItem( "cam_clone" ) != 0,
+                   "clone survived the second session's save (not erased)" );
+            Check( m && m->GetItem( "cam0" ) != 0,
+                   "original camera still present" );
+            const std::string fov = CameraParamValue( pJob, "cam_clone", "fov" );
+            Check( !fov.empty() && fov != "30" && fov != "30.0",
+                   "managed-block camera's property edit round-tripped" );
+            safe_release( pJob );
+        }
+    }
+    std::remove( path.c_str() );
+}
+
 static void TestSaveClearsDirtyTracker()
 {
     gCurrentTest = "TestSaveClearsDirtyTracker";
@@ -1896,6 +1976,7 @@ int main()
     TestAddCameraThenUndoSaveOmitsCamera();
     TestPropertyEditThenRevertAcrossSavesPersists();
     TestLightColorEditIsRefused();
+    TestManagedBlockCameraSurvivesReloadAndResave();
     TestSaveClearsDirtyTracker();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
     return failCount == 0 ? 0 : 1;

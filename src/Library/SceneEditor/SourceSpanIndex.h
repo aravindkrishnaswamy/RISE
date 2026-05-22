@@ -96,6 +96,17 @@ namespace RISE
         AuthorMode  authorMode = AuthorMode::Euler;
         bool        chunkRevisited = false;      // set TRUE when the parser re-enters
                                                   // this chunk's byte range (FOR-body iteration)
+
+        // Phase C (round-2 review): TRUE when this chunk was parsed
+        // from INSIDE the sentinel-bracketed managed block — i.e. a
+        // camera the editor emitted in a previous session.  The save
+        // engine treats such entities as engine-owned: it re-emits
+        // their whole chunk in the managed block every save (so a
+        // reload-then-save can't erase them) and the property pass
+        // skips them (their edits fold into the whole-chunk re-emit
+        // — splicing into the wholesale-re-rendered block would
+        // overlap the block-replace EditOp).
+        bool        insideManagedBlock = false;
         std::unordered_map<std::string, ParameterSpan> parameterSpans;
 
         // Phase B: loaded-time descriptor-introspected parameter

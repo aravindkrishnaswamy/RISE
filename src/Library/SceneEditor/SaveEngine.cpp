@@ -1075,6 +1075,13 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                     "chunk lives in a `> load`-ed file).";
                 return result;
             }
+            // Phase C (round-2 review): an entity whose chunk lives
+            // INSIDE the managed block is engine-owned — the created-
+            // entity pass below re-emits its whole chunk from current
+            // introspection (which already reflects this edit).  Skip
+            // it here: a value splice into the wholesale-re-rendered
+            // block would overlap the Case-(c) block-replace EditOp.
+            if( espan->insideManagedBlock ) continue;
             if( espan->chunkRevisited ) {
                 result.status = SaveResult::Status::Refused;
                 result.errorMessage = std::string( "property edit on " )
@@ -1180,22 +1187,45 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     }
 
     // ---- Phase C: CREATED-ENTITY PASS -------------------------------
-    // Entities the editor created this session (AddCamera clones) have
-    // no source span — emit a fresh chunk for each, to live inside the
-    // managed block.  Re-emitted on EVERY save (the block is rendered
-    // wholesale); a session-created entity that was undone / no longer
-    // exists is simply skipped.  V1: only cameras are creatable.
+    // Emit a fresh chunk for every ENGINE-OWNED camera, to live inside
+    // the managed block.  Engine-owned = either:
+    //   (a) session-created this run (AddCamera clone — no source
+    //       span at all), OR
+    //   (b) parsed from INSIDE the managed block in a PREVIOUS session
+    //       (SourceSpan::insideManagedBlock) — a camera the editor
+    //       emitted before.  Without (b), a reload-then-save would see
+    //       an empty `mSessionCreated`, decide the block has no managed
+    //       content, and erase it — silently deleting the camera
+    //       (round-2 review P1).
+    // Re-emitted on EVERY save (the block is rendered wholesale); a
+    // session-created camera that was undone / no longer exists is
+    // simply skipped.  V1: only cameras are creatable.
     std::vector<std::string> createdChunks;
     {
-        const std::vector<DirtyEntity> created = mDirty.SessionCreatedSnapshot();
         const IScene* scene = mJob.GetScene();
+        const ICameraManager* cams = scene ? scene->GetCameras() : 0;
+
+        // Union the two sources, deduped + name-sorted for a
+        // deterministic block layout.
+        std::set<std::string> ownedCameras;
+        const std::vector<DirtyEntity> created = mDirty.SessionCreatedSnapshot();
         for( const DirtyEntity& ce : created ) {
-            if( ce.first != EntityCategory::Camera ) continue;
-            const ICameraManager* m = scene ? scene->GetCameras() : 0;
-            const ICamera* cam = m ? m->GetItem( ce.second.c_str() ) : 0;
+            if( ce.first == EntityCategory::Camera ) {
+                ownedCameras.insert( ce.second );
+            }
+        }
+        for( const auto& kv : mSpans.EntityEntries() ) {
+            if( kv.first.first == EntityCategory::Camera
+                && kv.second.insideManagedBlock ) {
+                ownedCameras.insert( kv.first.second );
+            }
+        }
+
+        for( const std::string& camName : ownedCameras ) {
+            const ICamera* cam = cams ? cams->GetItem( camName.c_str() ) : 0;
             if( !cam ) continue;   // created then undone — nothing to emit
             const std::string text =
-                RenderCreatedCameraChunk( *cam, ce.second, eol );
+                RenderCreatedCameraChunk( *cam, camName, eol );
             if( !text.empty() ) {
                 createdChunks.push_back( text );
                 result.overrideRewriteCount++;
