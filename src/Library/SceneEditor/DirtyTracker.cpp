@@ -18,8 +18,12 @@ namespace RISE
 
     void DirtyTracker::Clear()
     {
+        // Transient channels only — `mSessionCreated` persists so the
+        // managed block keeps re-emitting created-entity chunks on
+        // every subsequent same-session save.
         mNames.clear();
         mEntityDirty.clear();
+        mCreatedPending.clear();
     }
 
     bool DirtyTracker::Contains( const std::string& objectName ) const
@@ -51,5 +55,20 @@ namespace RISE
         // sorted order; copy straight out.
         return std::vector<DirtyEntity>( mEntityDirty.begin(),
                                          mEntityDirty.end() );
+    }
+
+    void DirtyTracker::MarkEntityCreated( EntityCategory category,
+                                          const std::string& name )
+    {
+        if( name.empty() ) return;
+        const DirtyEntity e = std::make_pair( category, name );
+        mCreatedPending.insert( e );
+        mSessionCreated.insert( e );
+    }
+
+    std::vector<DirtyEntity> DirtyTracker::SessionCreatedSnapshot() const
+    {
+        return std::vector<DirtyEntity>( mSessionCreated.begin(),
+                                         mSessionCreated.end() );
     }
 }

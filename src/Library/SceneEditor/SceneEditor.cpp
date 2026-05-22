@@ -760,6 +760,13 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 		mDirtyTracker.MarkEntityDirty( EntityCategory::Medium,
 			std::string( edit.objectName.c_str() ) );
 		break;
+	case SceneEdit::AddCamera:
+		// Phase C: a newly-created entity has no source span — the
+		// save engine emits a fresh chunk for it.  objectName carries
+		// the new camera's name.
+		mDirtyTracker.MarkEntityCreated( EntityCategory::Camera,
+			std::string( edit.objectName.c_str() ) );
+		break;
 	default:
 		break;
 	}

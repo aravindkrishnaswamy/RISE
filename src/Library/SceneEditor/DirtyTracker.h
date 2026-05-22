@@ -83,21 +83,66 @@ namespace RISE
 
         std::size_t EntityCount() const { return mEntityDirty.size(); }
 
-        // ---- Aggregate ----------------------------------------------
+        // ---- Created-entity channel (Phase C) -----------------------
+        // Entities the editor CREATED this session (e.g. an AddCamera
+        // clone).  These have no source span — the save engine emits
+        // a fresh chunk for them inside the managed block.
+        //
+        // Two sub-channels because the two consumers have opposite
+        // lifetimes:
+        //   - `mCreatedPending`  — "created since the last save".
+        //     Transient: cleared by Clear() so the Save button greys
+        //     after a save.  Feeds HasAnyDirty().
+        //   - `mSessionCreated`  — "created at any point this session".
+        //     PERSISTENT across Clear(): the emitted chunk lives in
+        //     the wholesale-re-rendered managed block, so every
+        //     subsequent save must re-emit it.  Reset only when the
+        //     whole tracker is reconstructed (new scene → new editor).
 
-        /// True iff EITHER channel has anything — drives the GUI's
-        /// "unsaved changes" / Save-button enable state.
-        bool HasAnyDirty() const
+        /// Mark an entity as newly created.  Writes BOTH sub-channels.
+        void MarkEntityCreated( EntityCategory category, const std::string& name );
+
+        /// Sorted (category,name) list of entities created this
+        /// SESSION — the save engine re-emits a fresh chunk for each.
+        std::vector<DirtyEntity> SessionCreatedSnapshot() const;
+
+        std::size_t SessionCreatedCount() const { return mSessionCreated.size(); }
+
+        /// True iff (category,name) was created this session.  The
+        /// save engine's property pass consults this: a property edit
+        /// on a session-created entity is NOT a refusal (no source
+        /// span) — the created-entity pass re-emits the whole chunk.
+        bool IsSessionCreated( EntityCategory category,
+                               const std::string& name ) const
         {
-            return !mNames.empty() || !mEntityDirty.empty();
+            return mSessionCreated.find( std::make_pair( category, name ) )
+                != mSessionCreated.end();
         }
 
-        /// Clear BOTH channels.  Called after a successful save.
+        // ---- Aggregate ----------------------------------------------
+
+        /// True iff there is anything to save SINCE THE LAST SAVE —
+        /// drives the GUI's "unsaved changes" / Save-button state.
+        /// Deliberately excludes `mSessionCreated` (persistent): a
+        /// session-created entity that was already saved is not an
+        /// unsaved change.
+        bool HasAnyDirty() const
+        {
+            return !mNames.empty()
+                || !mEntityDirty.empty()
+                || !mCreatedPending.empty();
+        }
+
+        /// Clear the TRANSIENT channels (object transform, property,
+        /// created-pending).  Called after a successful save.  The
+        /// persistent `mSessionCreated` channel is intentionally kept.
         void Clear();
 
     private:
-        std::unordered_set<std::string> mNames;        ///< object transform dirty
-        std::set<DirtyEntity>           mEntityDirty;  ///< property-shaped dirty (sorted)
+        std::unordered_set<std::string> mNames;          ///< object transform dirty (transient)
+        std::set<DirtyEntity>           mEntityDirty;    ///< property-shaped dirty (transient)
+        std::set<DirtyEntity>           mCreatedPending; ///< created since last save (transient)
+        std::set<DirtyEntity>           mSessionCreated; ///< created this session (persistent)
     };
 }
 

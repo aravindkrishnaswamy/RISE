@@ -1572,6 +1572,170 @@ static void TestLightPropertySaveRoundTrips()
     std::remove( path.c_str() );
 }
 
+// --------------------------------------------------------------------
+// Phase C: newly-created entities (AddCamera) round-trip through save
+// as freshly-emitted chunks in the managed block.
+// --------------------------------------------------------------------
+
+static const char* kSceneOneCamera =
+    "RISE ASCII SCENE 6\n"
+    "pinhole_camera\n{\n"
+    "    name cam0\n"
+    "    location 0 0 20\n"
+    "    lookat 0 0 0\n"
+    "    up 0 1 0\n"
+    "    fov 30.0\n"
+    "}\n";
+
+// Build an AddCamera edit cloning the named source camera.
+static bool MakeAddCameraEdit( IJobPriv* job, const char* sourceCam,
+                               const char* newName, SceneEdit& outEdit )
+{
+    if( !job ) return false;
+    const IScene* scene = job->GetScene();
+    if( !scene ) return false;
+    const ICameraManager* m = scene->GetCameras();
+    if( !m ) return false;
+    const ICamera* src = m->GetItem( sourceCam );
+    if( !src ) return false;
+    CameraSnapshot snap;
+    if( !CameraIntrospection::CaptureCameraSnapshot( *src, snap ) ) return false;
+    outEdit.op             = SceneEdit::AddCamera;
+    outEdit.objectName     = newName;
+    outEdit.cameraSnapshot = snap;
+    outEdit.prevPropertyValue = sourceCam;
+    return true;
+}
+
+static void TestAddCameraSaveRoundTrips()
+{
+    gCurrentTest = "TestAddCameraSaveRoundTrips";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Phase C: cloning a camera (AddCamera) marks the scene dirty via
+    // the created-entity channel, and the save engine emits a fresh
+    // `pinhole_camera` chunk inside the managed block.
+    const std::string path = WriteSceneFile( kSceneOneCamera, "addcam" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "loaded one-camera scene" );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+
+    SceneEditor editor( *pJob->GetScene() );
+    editor.SetJob( pJob );
+    Check( !editor.HasUnsavedChanges(), "fresh load: no unsaved changes" );
+
+    SceneEdit add;
+    Check( MakeAddCameraEdit( pJob, "cam0", "cam_clone", add ),
+           "AddCamera edit built from cam0 snapshot" );
+    Check( editor.Apply( add ), "AddCamera applied" );
+    Check( editor.HasUnsavedChanges(),
+           "AddCamera marks the scene dirty (created channel)" );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( path );
+    Check( r.status == SaveResult::Status::Saved,
+           "AddCamera save: Saved" );
+
+    const std::string saved = ReadFile( path );
+    Check( saved.find( "RISE editor overrides" ) != std::string::npos,
+           "managed block emitted" );
+    Check( saved.find( "pinhole_camera" ) != std::string::npos
+        && saved.find( "cam_clone" ) != std::string::npos,
+           "fresh pinhole_camera chunk for the clone is in the file" );
+
+    safe_release( pJob );
+    IJobPriv* pJob2 = LoadSceneFromPath( path );
+    Check( pJob2 != nullptr, "reloaded saved scene" );
+    if( pJob2 ) {
+        const IScene* scene = pJob2->GetScene();
+        const ICameraManager* m = scene ? scene->GetCameras() : 0;
+        const ICamera* clone = m ? m->GetItem( "cam_clone" ) : 0;
+        Check( clone != nullptr,
+               "cloned camera persisted through save → reload" );
+        const ICamera* orig = m ? m->GetItem( "cam0" ) : 0;
+        Check( orig != nullptr, "original camera still present" );
+        safe_release( pJob2 );
+    }
+    std::remove( path.c_str() );
+}
+
+static void TestAddCameraSecondSaveIsNoOp()
+{
+    gCurrentTest = "TestAddCameraSecondSaveIsNoOp";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // The created-entity chunk lives in the wholesale-re-rendered
+    // managed block.  A second same-session save with no further
+    // edits must re-emit an IDENTICAL block → byte-identical → NoOp
+    // (it must NOT drop the camera).
+    const std::string path = WriteSceneFile( kSceneOneCamera, "addcamnoop" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+    SceneEditor editor( *pJob->GetScene() );
+    editor.SetJob( pJob );
+
+    SceneEdit add;
+    Check( MakeAddCameraEdit( pJob, "cam0", "cam_clone", add ), "edit built" );
+    editor.Apply( add );
+    std::unordered_set<std::string> sfa1;
+    SaveEngine engine1 = MakeEngine( *pJob, editor, sfa1 );
+    Check( engine1.Save( path ).status == SaveResult::Status::Saved,
+           "first AddCamera save: Saved" );
+    Check( !editor.HasUnsavedChanges(),
+           "transient dirty channels cleared after save" );
+
+    const std::string afterFirst = ReadFile( path );
+
+    // Second save, NO further edits — must keep the camera chunk.
+    std::unordered_set<std::string> sfa2;
+    SaveEngine engine2 = MakeEngine( *pJob, editor, sfa2 );
+    SaveResult r2 = engine2.Save( path );
+    Check( r2.status == SaveResult::Status::NoOp,
+           "second save, no edits: NoOp" );
+    const std::string afterSecond = ReadFile( path );
+    Check( afterSecond == afterFirst,
+           "file byte-identical after no-op second save (camera kept)" );
+    Check( afterSecond.find( "cam_clone" ) != std::string::npos,
+           "cloned camera STILL present after second save" );
+
+    safe_release( pJob );
+    std::remove( path.c_str() );
+}
+
+static void TestAddCameraThenUndoSaveOmitsCamera()
+{
+    gCurrentTest = "TestAddCameraThenUndoSaveOmitsCamera";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // AddCamera then Undo removes the camera.  The save engine emits
+    // a created-entity chunk only for cameras that still exist — an
+    // add-then-undo nets to no managed block.
+    const std::string path = WriteSceneFile( kSceneOneCamera, "addcamundo" );
+    const std::string before = ReadFile( path );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+    SceneEditor editor( *pJob->GetScene() );
+    editor.SetJob( pJob );
+
+    SceneEdit add;
+    Check( MakeAddCameraEdit( pJob, "cam0", "cam_clone", add ), "edit built" );
+    editor.Apply( add );
+    Check( editor.Undo(), "AddCamera undone" );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( path );
+    // Nothing real to write — add-then-undo nets to a NoOp.
+    Check( r.status == SaveResult::Status::NoOp,
+           "add → undo → save: NoOp" );
+    const std::string after = ReadFile( path );
+    Check( after == before,
+           "file unchanged after add → undo → save" );
+    Check( after.find( "cam_clone" ) == std::string::npos,
+           "undone camera was NOT emitted into the file" );
+
+    safe_release( pJob );
+    std::remove( path.c_str() );
+}
+
 static void TestSaveClearsDirtyTracker()
 {
     gCurrentTest = "TestSaveClearsDirtyTracker";
@@ -1627,6 +1791,9 @@ int main()
     TestCameraPropertySecondSaveIsNoOp();
     TestMediumPropertySaveRoundTrips();
     TestLightPropertySaveRoundTrips();
+    TestAddCameraSaveRoundTrips();
+    TestAddCameraSecondSaveIsNoOp();
+    TestAddCameraThenUndoSaveOmitsCamera();
     TestSaveClearsDirtyTracker();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
     return failCount == 0 ? 0 : 1;

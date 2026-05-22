@@ -457,14 +457,25 @@ void ScanCommands( const std::string& bytes,
 // Build the canonical managed-block text.  §9.6 rules 1-4.  Names are
 // alphabetised; within a chunk, parameter order is canonical;
 // formatting is normalised regardless of input layout.
+//
+// Phase C: the block now also carries `createdChunks` — fully-rendered
+// chunk texts for entities the editor created this session (e.g.
+// AddCamera clones).  They're emitted FIRST, before the override
+// entries: a fresh `pinhole_camera { ... }` is independent of any
+// override and reads cleanly at the top of the managed region.
 std::string RenderManagedBlock(
     const std::map<std::string, OverrideEntry>& accumulator,
+    const std::vector<std::string>& createdChunks,
     const std::string& eol )
 {
-    if( accumulator.empty() ) return std::string();
+    if( accumulator.empty() && createdChunks.empty() ) return std::string();
     std::string out;
     out += kSentinelOpen;
     out += eol;
+    for( const std::string& chunk : createdChunks ) {
+        // Each entry is a complete, eol-terminated chunk text.
+        out += chunk;
+    }
     for( const auto& kv : accumulator ) {
         const std::string& name = kv.first;
         const OverrideEntry& e = kv.second;
@@ -514,6 +525,45 @@ std::string RenderManagedBlock(
         out += eol;
     }
     out += kSentinelClose;
+    out += eol;
+    return out;
+}
+
+// Phase C: render a fresh scene-file chunk for a newly-created camera
+// from its descriptor introspection.  Returns "" if the camera type
+// has no known chunk keyword (an out-of-tree camera subclass).  The
+// chunk text is eol-terminated and ready to drop into the managed
+// block.  Indented 2 spaces to match the override_object entries.
+std::string RenderCreatedCameraChunk( const ICamera& cam,
+                                      const std::string& name,
+                                      const std::string& eol )
+{
+    const String keyword = CameraIntrospection::GetDescriptorKeyword( cam );
+    if( keyword.size() == 0 ) return std::string();
+
+    std::string out;
+    out += std::string( keyword.c_str() );
+    out += eol;
+    out += "{";
+    out += eol;
+    // Emit `name` first so the chunk is human-scannable; the
+    // introspection list's own `name` row (if any) is then skipped.
+    out += "  name ";
+    out += name;
+    out += eol;
+
+    const std::vector<CameraProperty> props = CameraIntrospection::Inspect( cam );
+    for( const CameraProperty& p : props ) {
+        if( !p.editable ) continue;          // read-only / synthetic row
+        const std::string key = std::string( p.name.c_str() );
+        if( key == "name" ) continue;        // already emitted above
+        out += "  ";
+        out += key;
+        out += " ";
+        out += std::string( p.value.c_str() );
+        out += eol;
+    }
+    out += "}";
     out += eol;
     return out;
 }
@@ -965,6 +1015,13 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                 :                                   "object";
 
             if( !espan ) {
+                // Phase C: a session-created entity (AddCamera clone)
+                // legitimately has no source span — the created-entity
+                // pass below re-emits its whole chunk from current
+                // introspection, which already reflects this property
+                // edit.  Skip it here rather than refusing.
+                if( mDirty.IsSessionCreated( cat, name ) ) continue;
+
                 result.status = SaveResult::Status::Refused;
                 result.errorMessage = std::string( "property edit on " )
                     + kindWord + " '" + name + "' cannot be saved: no "
@@ -1077,6 +1134,30 @@ SaveResult SaveEngine::Save( const std::string& filePath )
         }
     }
 
+    // ---- Phase C: CREATED-ENTITY PASS -------------------------------
+    // Entities the editor created this session (AddCamera clones) have
+    // no source span — emit a fresh chunk for each, to live inside the
+    // managed block.  Re-emitted on EVERY save (the block is rendered
+    // wholesale); a session-created entity that was undone / no longer
+    // exists is simply skipped.  V1: only cameras are creatable.
+    std::vector<std::string> createdChunks;
+    {
+        const std::vector<DirtyEntity> created = mDirty.SessionCreatedSnapshot();
+        const IScene* scene = mJob.GetScene();
+        for( const DirtyEntity& ce : created ) {
+            if( ce.first != EntityCategory::Camera ) continue;
+            const ICameraManager* m = scene ? scene->GetCameras() : 0;
+            const ICamera* cam = m ? m->GetItem( ce.second.c_str() ) : 0;
+            if( !cam ) continue;   // created then undone — nothing to emit
+            const std::string text =
+                RenderCreatedCameraChunk( *cam, ce.second, eol );
+            if( !text.empty() ) {
+                createdChunks.push_back( text );
+                result.overrideRewriteCount++;
+            }
+        }
+    }
+
     // ---- Step 5: PLACEMENT PASS -------------------------------------
     std::vector<std::string> targetNames;
     for( const auto& kv : accumulator ) targetNames.push_back( kv.first );
@@ -1128,9 +1209,14 @@ SaveResult SaveEngine::Save( const std::string& filePath )
         }
     }
 
-    // Compute blockInsertOffset.
+    // Compute blockInsertOffset.  The managed block needs placement
+    // whenever it has ANY content — override targets OR Phase C
+    // created-entity chunks.  With created chunks but no targets the
+    // lowerBound / refusal loops below simply don't iterate (empty
+    // targetNames), leaving lowerBound = 0 → the block lands before
+    // the first BARRIER `>` command, same as a target-only block.
     std::size_t blockInsertOffset = bytes.size();   // default: EOF
-    if( !targetNames.empty() ) {
+    if( !targetNames.empty() || !createdChunks.empty() ) {
         // lowerBound: AFTER every target chunk AND every unmanaged
         // shadow of any target.
         std::size_t lowerBound = 0;
@@ -1206,9 +1292,14 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     // ---- Step 6: EDITSCRIPT ASSEMBLY --------------------------------
     std::vector<EditOp> editScript = modeAQueue;
 
-    const std::string newBlockText = RenderManagedBlock( accumulator, eol );
+    const std::string newBlockText =
+        RenderManagedBlock( accumulator, createdChunks, eol );
+    // The managed block exists iff it has EITHER override entries OR
+    // created-entity chunks.
+    const bool haveManagedContent =
+        !accumulator.empty() || !createdChunks.empty();
 
-    if( !accumulator.empty() ) {
+    if( haveManagedContent ) {
         // Build the block-emission edit(s).  newBlockText already
         // ends with a newline (RenderManagedBlock terminates each line
         // with `eol`); no leading newline needed because the
@@ -1242,7 +1333,8 @@ SaveResult SaveEngine::Save( const std::string& filePath )
             }
         }
     } else if( existingBlock.found ) {
-        // Case (b): accumulator empty, but old block exists — erase it.
+        // Case (b): no managed content (no overrides AND no created
+        // entities), but an old block exists — erase it.
         EditOp er;
         er.begin = existingBlock.start;
         er.end   = existingBlock.end;

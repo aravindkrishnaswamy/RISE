@@ -103,9 +103,11 @@ namespace RISE
 		                                   const String& newName,
 		                                   const CameraSnapshot& snapshot );
 
-	private:
-		// Returns "pinhole_camera" / "thinlens_camera" / etc., or
-		// empty if the camera isn't a known type.
+		//! Returns the scene-file chunk keyword for this camera —
+		//! "pinhole_camera" / "thinlens_camera" / "fisheye_camera" /
+		//! "orthographic_camera" — or empty for an out-of-tree type.
+		//! Phase C: the save engine needs this to emit a fresh chunk
+		//! for a newly-created (cloned) camera.
 		static String GetDescriptorKeyword( const ICamera& camera );
 	};
 }
