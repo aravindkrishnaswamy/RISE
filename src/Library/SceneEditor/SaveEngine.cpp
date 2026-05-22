@@ -568,6 +568,53 @@ std::string RenderCreatedCameraChunk( const ICamera& cam,
     return out;
 }
 
+// Phase B: descriptor-introspect one editable entity → its current
+// {name, value, editable, …} rows.  Same code path the properties
+// panel uses.  Returns empty for a missing entity.  Used by the
+// property pass AND the post-save loaded-snapshot refresh.
+std::vector<CameraProperty> InspectEntity( IJobPriv& job,
+                                           EntityCategory cat,
+                                           const std::string& name )
+{
+    const IScene* scene = job.GetScene();
+    switch( cat ) {
+    case EntityCategory::Camera: {
+        const ICameraManager* m = scene ? scene->GetCameras() : 0;
+        const ICamera* c = m ? m->GetItem( name.c_str() ) : 0;
+        if( c ) return CameraIntrospection::Inspect( *c );
+        break;
+    }
+    case EntityCategory::Light: {
+        const ILightManager* m = scene ? scene->GetLights() : 0;
+        const ILightPriv* l = m ? m->GetItem( name.c_str() ) : 0;
+        if( l ) return LightIntrospection::Inspect( String( name.c_str() ), *l );
+        break;
+    }
+    case EntityCategory::Material: {
+        IMaterialManager* m = job.GetMaterials();
+        const IMaterial* mat = m ? m->GetItem( name.c_str() ) : 0;
+        if( mat ) return MaterialIntrospection::Inspect(
+            String( name.c_str() ), *mat,
+            job.GetPainters(), job.GetScalarPainters(), &job );
+        break;
+    }
+    case EntityCategory::Medium: {
+        const IMedium* med = job.GetMedium( name.c_str() );
+        if( med ) return MediaIntrospection::Inspect( String( name.c_str() ), *med );
+        break;
+    }
+    case EntityCategory::Object: {
+        IObjectManager* m = job.GetObjects();
+        const IObject* o = m ? m->GetItem( name.c_str() ) : 0;
+        if( o ) return ObjectIntrospection::Inspect(
+            String( name.c_str() ), *o,
+            job.GetMaterials(), job.GetShaders(), &job );
+        break;
+    }
+    }
+    return std::vector<CameraProperty>();
+}
+
 // Field comparison: equal within format-tolerance, since the saved
 // scalar will be 6-sig-digit truncated on disk.  Component-wise.
 bool ScalarEq( double a, double b )
@@ -989,7 +1036,6 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     // through the same step 6/7 assembly + apply as transform splices.
     {
         const std::vector<DirtyEntity> dirtyEntities = mDirty.EntitySnapshot();
-        const IScene* scene = mJob.GetScene();
 
         // Object transform keywords are owned by the transform pass
         // above — the property pass must never also splice them.
@@ -1047,42 +1093,8 @@ SaveResult SaveEngine::Save( const std::string& filePath )
 
             // CURRENT descriptor introspection — same code path the
             // properties panel uses to display values.
-            std::vector<CameraProperty> cur;
-            switch( cat ) {
-            case EntityCategory::Camera: {
-                const ICameraManager* m = scene ? scene->GetCameras() : 0;
-                const ICamera* c = m ? m->GetItem( name.c_str() ) : 0;
-                if( c ) cur = CameraIntrospection::Inspect( *c );
-                break;
-            }
-            case EntityCategory::Light: {
-                const ILightManager* m = scene ? scene->GetLights() : 0;
-                const ILightPriv* l = m ? m->GetItem( name.c_str() ) : 0;
-                if( l ) cur = LightIntrospection::Inspect( String( name.c_str() ), *l );
-                break;
-            }
-            case EntityCategory::Material: {
-                IMaterialManager* m = mJob.GetMaterials();
-                const IMaterial* mat = m ? m->GetItem( name.c_str() ) : 0;
-                if( mat ) cur = MaterialIntrospection::Inspect(
-                    String( name.c_str() ), *mat,
-                    mJob.GetPainters(), mJob.GetScalarPainters(), &mJob );
-                break;
-            }
-            case EntityCategory::Medium: {
-                const IMedium* med = mJob.GetMedium( name.c_str() );
-                if( med ) cur = MediaIntrospection::Inspect( String( name.c_str() ), *med );
-                break;
-            }
-            case EntityCategory::Object: {
-                IObjectManager* m = mJob.GetObjects();
-                const IObject* o = m ? m->GetItem( name.c_str() ) : 0;
-                if( o ) cur = ObjectIntrospection::Inspect(
-                    String( name.c_str() ), *o,
-                    mJob.GetMaterials(), mJob.GetShaders(), &mJob );
-                break;
-            }
-            }
+            const std::vector<CameraProperty> cur =
+                InspectEntity( mJob, cat, name );
 
             for( const CameraProperty& p : cur ) {
                 if( !p.editable ) continue;   // read-only / synthetic row
@@ -1098,8 +1110,41 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                 // Diff against the parse-time loaded value.
                 std::unordered_map<std::string,std::string>::const_iterator lit =
                     espan->loadedPropertyValues.find( key );
-                if( lit == espan->loadedPropertyValues.end() ) continue; // not snapshotted
+                if( lit == espan->loadedPropertyValues.end() ) {
+                    // Round-1 review P2: the key is in current
+                    // introspection but was NOT captured in the
+                    // parse-time snapshot (descriptor row sets can be
+                    // value-conditional — e.g. MaterialIntrospection
+                    // gates rows on the bound painter resolving).  We
+                    // can't diff what we never snapshotted; refuse
+                    // rather than silently drop the edit.
+                    result.status = SaveResult::Status::Refused;
+                    result.errorMessage = std::string( "property edit on " )
+                        + kindWord + " '" + name + "': parameter '" + key
+                        + "' was not captured at scene-load time and "
+                        "cannot be safely diffed — reload the scene "
+                        "before editing it.";
+                    return result;
+                }
                 if( lit->second == curVal ) continue;                    // unchanged
+
+                // Round-1 review P1: a light `color` round-trips
+                // through TWO colour spaces — the scene file stores
+                // sRGB, the engine works in linear ROMM, and the
+                // descriptor introspection reports the linear value.
+                // Splicing that linear value back would shift the
+                // colour on reload.  Refuse rather than persist a
+                // wrong colour.  (`power`, `position`, angles, etc.
+                // carry no colour-space and save fine.)
+                if( cat == EntityCategory::Light && key == "color" ) {
+                    result.status = SaveResult::Status::Refused;
+                    result.errorMessage = std::string( "property edit on light '" )
+                        + name + "': the `color` parameter cannot be round-"
+                        "tripped in V1 — the scene file stores it in a "
+                        "non-linear colour space the editor does not yet "
+                        "convert back to.  Other light properties save fine.";
+                    return result;
+                }
 
                 std::unordered_map<std::string,ParameterSpan>::const_iterator pit =
                     espan->parameterSpans.find( key );
@@ -1508,6 +1553,33 @@ SaveResult SaveEngine::Save( const std::string& filePath )
             const bool isModeB = accumulator.find( name ) != accumulator.end();
             if( !isModeB ) {
                 pBaseMut->Add( name, mNow );
+            }
+        }
+    }
+
+    // Round-1 review P1: refresh `loadedPropertyValues` for every
+    // property-dirty entity to mirror what was just written.  The
+    // property pass diffs CURRENT introspection against this snapshot;
+    // without the refresh the snapshot stays frozen at scene-load
+    // state, so an edit-then-revert in a later same-session save
+    // diffs equal-to-load and the revert is silently dropped (the
+    // property-pass analogue of the transform-snapshot refresh
+    // above).  Re-introspect now (post-write the entity's runtime
+    // state IS the saved state) and overwrite the map.
+    {
+        SourceSpanIndex& spansMut = const_cast<SourceSpanIndex&>( mSpans );
+        const std::vector<DirtyEntity> propDirty = mDirty.EntitySnapshot();
+        for( const DirtyEntity& de : propDirty ) {
+            SourceSpan* sp = ( de.first == EntityCategory::Object )
+                ? spansMut.FindMutable( de.second )
+                : spansMut.FindEntityMutable( de.first, de.second );
+            if( !sp ) continue;
+            const std::vector<CameraProperty> now =
+                InspectEntity( mJob, de.first, de.second );
+            sp->loadedPropertyValues.clear();
+            for( std::size_t i = 0; i < now.size(); ++i ) {
+                sp->loadedPropertyValues[ std::string( now[i].name.c_str() ) ] =
+                    std::string( now[i].value.c_str() );
             }
         }
     }

@@ -1736,6 +1736,106 @@ static void TestAddCameraThenUndoSaveOmitsCamera()
     std::remove( path.c_str() );
 }
 
+// --------------------------------------------------------------------
+// Phase B/C adversarial-review round-1 regression coverage.
+// --------------------------------------------------------------------
+
+static void TestPropertyEditThenRevertAcrossSavesPersists()
+{
+    gCurrentTest = "TestPropertyEditThenRevertAcrossSavesPersists";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Round-1 P1: edit fov, save; revert fov to its original value,
+    // save again.  The revert must be written.  Pre-fix the loaded
+    // property snapshot was frozen at scene-load state, so the
+    // second save diffed the reverted value as "unchanged" and
+    // silently dropped it (file kept the first edit).
+    const std::string path = WriteSceneFile( kSceneOneCamera, "revert" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "loaded" );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+    SceneEditor editor( *pJob->GetScene() );
+
+    const std::string fovOrig = CameraParamValue( pJob, "cam0", "fov" );
+
+    SceneEdit e1;
+    e1.op = SceneEdit::SetCameraProperty;
+    e1.objectName = "fov";
+    e1.propertyValue = "45";
+    editor.Apply( e1 );
+    std::unordered_set<std::string> sfa1;
+    SaveEngine engine1 = MakeEngine( *pJob, editor, sfa1 );
+    Check( engine1.Save( path ).status == SaveResult::Status::Saved,
+           "first save (fov→45): Saved" );
+
+    // Mtime must tick so the external-modification guard accepts the
+    // second save.
+    std::this_thread::sleep_for( std::chrono::milliseconds( 1100 ) );
+
+    // Revert fov to its original value.
+    SceneEdit e2;
+    e2.op = SceneEdit::SetCameraProperty;
+    e2.objectName = "fov";
+    e2.propertyValue = "30";
+    editor.Apply( e2 );
+    const std::string fovReverted = CameraParamValue( pJob, "cam0", "fov" );
+    Check( fovReverted == fovOrig, "fov introspection reverted to original" );
+
+    std::unordered_set<std::string> sfa2;
+    SaveEngine engine2 = MakeEngine( *pJob, editor, sfa2 );
+    SaveResult r2 = engine2.Save( path );
+    Check( r2.status == SaveResult::Status::Saved,
+           "second save (fov→30 revert): Saved (not a dropped edit)" );
+
+    safe_release( pJob );
+    IJobPriv* pJob2 = LoadSceneFromPath( path );
+    Check( pJob2 != nullptr, "reload" );
+    if( pJob2 ) {
+        const std::string fovReloaded = CameraParamValue( pJob2, "cam0", "fov" );
+        Check( fovReloaded == fovReverted,
+               "reverted fov persisted — the revert was NOT dropped" );
+        safe_release( pJob2 );
+    }
+    std::remove( path.c_str() );
+}
+
+static void TestLightColorEditIsRefused()
+{
+    gCurrentTest = "TestLightColorEditIsRefused";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Round-1 P1: a light `color` edit cannot round-trip (scene-file
+    // sRGB vs engine-linear colour space).  The engine refuses
+    // rather than persist a colour-shifted value.
+    const std::string body =
+        "RISE ASCII SCENE 6\n"
+        "omni_light\n{\n"
+        "    name lightA\n"
+        "    power 3.14159\n"
+        "    color 1.0 1.0 1.0\n"
+        "    position 0.0 0.0 0.0\n"
+        "}\n";
+    const std::string path = WriteSceneFile( body, "lightcolor" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+    SceneEditor editor( *pJob->GetScene() );
+
+    SceneEdit e;
+    e.op = SceneEdit::SetLightProperty;
+    e.objectName = "lightA";
+    e.propertyName = "color";
+    e.propertyValue = "0.5 0.2 0.8";
+    Check( editor.Apply( e ), "light color edit applied in-memory" );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( path );
+    Check( r.status == SaveResult::Status::Refused,
+           "light color save: Refused (colour-space round-trip unsafe)" );
+    Check( !r.errorMessage.empty(), "refusal carries a diagnostic" );
+
+    safe_release( pJob );
+    std::remove( path.c_str() );
+}
+
 static void TestSaveClearsDirtyTracker()
 {
     gCurrentTest = "TestSaveClearsDirtyTracker";
@@ -1794,6 +1894,8 @@ int main()
     TestAddCameraSaveRoundTrips();
     TestAddCameraSecondSaveIsNoOp();
     TestAddCameraThenUndoSaveOmitsCamera();
+    TestPropertyEditThenRevertAcrossSavesPersists();
+    TestLightColorEditIsRefused();
     TestSaveClearsDirtyTracker();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
     return failCount == 0 ? 0 : 1;

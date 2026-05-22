@@ -9481,6 +9481,7 @@ bool AsciiSceneParser::ParseAndLoadScene( IJob& pJob )
 	// instance with its own mRawTokens).
 	mRawTokens.BeginScene();
 	mChunkHeaderOffsetToFirstName.clear();
+	mEntityChunkHeaderOffsetToFirst.clear();  // Phase B FOR-revisit map
 	mInsideManagedOverrideBlock = false;  // Phase 6.2 sentinel state
 
 	if( depthGuard.isTopLevel ) {
