@@ -1801,13 +1801,15 @@ static void TestPropertyEditThenRevertAcrossSavesPersists()
     std::remove( path.c_str() );
 }
 
-static void TestLightColorEditIsRefused()
+static void TestLightColorEditRoundTrips()
 {
-    gCurrentTest = "TestLightColorEditIsRefused";
+    gCurrentTest = "TestLightColorEditRoundTrips";
     std::cout << gCurrentTest << "..." << std::endl;
-    // Round-1 P1: a light `color` edit cannot round-trip (scene-file
-    // sRGB vs engine-linear colour space).  The engine refuses
-    // rather than persist a colour-shifted value.
+    // A light `color` edit round-trips: the scene file authors colour
+    // in sRGB (every Add*Light wraps it in sRGBPel) while the engine
+    // stores — and introspection reports — linearized ROMM.  The save
+    // engine converts ROMM → sRGB on the way out (LightColorRommToSRGB)
+    // so the parser reproduces the same colour on reload.
     const std::string body =
         "RISE ASCII SCENE 6\n"
         "omni_light\n{\n"
@@ -1818,6 +1820,7 @@ static void TestLightColorEditIsRefused()
         "}\n";
     const std::string path = WriteSceneFile( body, "lightcolor" );
     IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "loaded light scene" );
     if( !pJob ) { std::remove( path.c_str() ); return; }
     SceneEditor editor( *pJob->GetScene() );
 
@@ -1827,15 +1830,30 @@ static void TestLightColorEditIsRefused()
     e.propertyName = "color";
     e.propertyValue = "0.5 0.2 0.8";
     Check( editor.Apply( e ), "light color edit applied in-memory" );
+    Check( editor.HasUnsavedChanges(), "color edit marks the scene dirty" );
+
+    double rA = 0, gA = 0, bA = 0;
+    std::sscanf( LightParamValue( pJob, "lightA", "color" ).c_str(),
+                 "%lf %lf %lf", &rA, &gA, &bA );
+    Check( std::fabs( rA - 0.5 ) < 1e-3, "introspection (ROMM) reflects the edit" );
 
     std::unordered_set<std::string> sfa;
     SaveEngine engine = MakeEngine( *pJob, editor, sfa );
     SaveResult r = engine.Save( path );
-    Check( r.status == SaveResult::Status::Refused,
-           "light color save: Refused (colour-space round-trip unsafe)" );
-    Check( !r.errorMessage.empty(), "refusal carries a diagnostic" );
+    Check( r.status == SaveResult::Status::Saved, "light color save: Saved" );
 
     safe_release( pJob );
+    IJobPriv* pJob2 = LoadSceneFromPath( path );
+    Check( pJob2 != nullptr, "reload" );
+    if( pJob2 ) {
+        double rR = 0, gR = 0, bR = 0;
+        std::sscanf( LightParamValue( pJob2, "lightA", "color" ).c_str(),
+                     "%lf %lf %lf", &rR, &gR, &bR );
+        Check( std::fabs( rR - rA ) < 1e-3 && std::fabs( gR - gA ) < 1e-3
+            && std::fabs( bR - bA ) < 1e-3,
+               "light color (ROMM) round-tripped through save → reload" );
+        safe_release( pJob2 );
+    }
     std::remove( path.c_str() );
 }
 
@@ -2169,7 +2187,7 @@ int main()
     TestAddCameraSecondSaveIsNoOp();
     TestAddCameraThenUndoSaveOmitsCamera();
     TestPropertyEditThenRevertAcrossSavesPersists();
-    TestLightColorEditIsRefused();
+    TestLightColorEditRoundTrips();
     TestCameraOrbitSaveRoundTrips();
     TestAddCameraThenOrbitSaveRoundTrips();
     TestCameraRollSaveRoundTrips();

@@ -29,6 +29,7 @@
 #include "../Interfaces/ILightManager.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Interfaces/IMaterialManager.h"
+#include "../Utilities/Color/Color.h"
 
 #include <algorithm>
 #include <cmath>
@@ -585,6 +586,34 @@ std::string RenderCreatedCameraChunk( const ICamera& cam,
     out += "}";
     out += eol;
     return out;
+}
+
+// A light's `color` is authored in the scene file as sRGB — every
+// `Job::Add*Light` wraps the parsed triple in `sRGBPel(...)` before
+// constructing the light — while the engine stores, and descriptor
+// introspection reports, the linearized ROMM `RISEPel`.  To splice a
+// colour edit back into the file the save engine must invert that.
+// The forward path is `sRGBtoROMMRGB = Rec709RGBtoROMMRGB ∘
+// Linearize_sRGB`; the inverse is `sRGBNonLinearization ∘
+// ROMMRGBtoRec709RGB` — a pure matrix plus a monotone transfer curve,
+// so the round-trip is exact within `%g` precision.  Out-of-sRGB-gamut
+// ROMM colours yield sRGB components outside [0,1]; that is fine — the
+// transfer function has no NaN branch for finite input and the parser
+// re-linearizes them losslessly on reload.
+std::string LightColorRommToSRGB( const std::string& rommValue )
+{
+    double r = 0, g = 0, b = 0;
+    if( std::sscanf( rommValue.c_str(), "%lf %lf %lf", &r, &g, &b ) != 3 ) {
+        return rommValue;   // unreachable: introspection always emits 3
+    }
+    const sRGBPel srgb = ColorUtils::sRGBNonLinearization(
+        ColorUtils::ROMMRGBtoRec709RGB( ROMMRGBPel( r, g, b ) ) );
+    char buf[128];
+    std::snprintf( buf, sizeof(buf), "%g %g %g",
+        static_cast<double>( srgb.r ),
+        static_cast<double>( srgb.g ),
+        static_cast<double>( srgb.b ) );
+    return std::string( buf );
 }
 
 // Phase B: descriptor-introspect one editable entity → its current
@@ -1169,22 +1198,17 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                 }
                 if( lit->second == curVal ) continue;                    // unchanged
 
-                // Round-1 review P1: a light `color` round-trips
-                // through TWO colour spaces — the scene file stores
-                // sRGB, the engine works in linear ROMM, and the
-                // descriptor introspection reports the linear value.
-                // Splicing that linear value back would shift the
-                // colour on reload.  Refuse rather than persist a
-                // wrong colour.  (`power`, `position`, angles, etc.
-                // carry no colour-space and save fine.)
+                // The value actually spliced into the file.  Equal to
+                // the introspected `curVal` for every parameter EXCEPT
+                // a light `color`: the file authors that in sRGB while
+                // introspection reports linearized ROMM, so it is
+                // converted back (see LightColorRommToSRGB).  The diff
+                // above stays in ROMM space — both the loaded snapshot
+                // and current introspection are ROMM — so a no-op
+                // colour edit is still detected as a no-op.
+                std::string spliceVal = curVal;
                 if( cat == EntityCategory::Light && key == "color" ) {
-                    result.status = SaveResult::Status::Refused;
-                    result.errorMessage = std::string( "property edit on light '" )
-                        + name + "': the `color` parameter cannot be round-"
-                        "tripped in V1 — the scene file stores it in a "
-                        "non-linear colour space the editor does not yet "
-                        "convert back to.  Other light properties save fine.";
-                    return result;
+                    spliceVal = LightColorRommToSRGB( curVal );
                 }
 
                 // Camera transform parameters (`location`/`lookat`/
@@ -1228,7 +1252,7 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                     EditOp op;
                     op.begin = espan->bodyCloseBraceLineBegin;
                     op.end   = espan->bodyCloseBraceLineBegin;
-                    op.replacement = std::string( "    " ) + key + " " + curVal + eol;
+                    op.replacement = std::string( "    " ) + key + " " + spliceVal + eol;
                     modeAQueue.push_back( op );
                     result.directRewriteCount++;
                 } else if( pit->second.isSymbolic ) {
@@ -1243,7 +1267,7 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                     EditOp op;
                     op.begin = pit->second.valueBegin;
                     op.end   = pit->second.valueEnd;
-                    op.replacement = curVal;
+                    op.replacement = spliceVal;
                     modeAQueue.push_back( op );
                     result.directRewriteCount++;
                 }
