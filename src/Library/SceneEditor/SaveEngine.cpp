@@ -338,7 +338,12 @@ const char* DetectEol( const std::string& bytes )
 // byte range covering the open sentinel line through the close
 // sentinel line (inclusive of trailing newline).  Returns {0,0} if
 // not found.
-struct BlockRange { std::size_t start = 0; std::size_t end = 0; bool found = false; };
+struct BlockRange {
+    std::size_t start = 0;
+    std::size_t end   = 0;
+    bool found     = false;
+    bool malformed = false;   // open sentinel with no matching close
+};
 
 BlockRange LocateManagedBlock( const std::string& bytes )
 {
@@ -382,7 +387,12 @@ BlockRange LocateManagedBlock( const std::string& bytes )
                 }
                 closePos = closeEnd + 1;
             }
-            // Opening sentinel without close — treat as missing.
+            // Opening sentinel without close — the managed block is
+            // malformed (a hand-edit deleted the close sentinel).
+            // Flag it so the engine refuses the save: proceeding
+            // would leave the parser's "inside managed block" state
+            // stuck and corrupt the file (round-3 review P2).
+            r.malformed = true;
             return r;
         }
         pos = lineEnd + 1;
@@ -529,6 +539,37 @@ std::string RenderManagedBlock(
     return out;
 }
 
+// Round-3 review P1: a camera carries SEVERAL redundant orientation
+// representations — `location`/`lookat`/`up`, the Euler `orientation`,
+// `target_orientation`, and the `theta`/`phi` scalars.  A single orbit
+// changes most of them at once, and descriptor introspection reports
+// some in degrees while the chunk parser reads `theta`/`phi` raw as
+// radians.  Splicing each changed row independently would write
+// mutually-inconsistent (and double-applied) orientation lines.
+// Camera TRANSFORM round-trip is deferred (docs/ROUND_TRIP_SAVE_PLAN
+// §3.4 — Phase 6.5); Phase B handles camera LENS properties only.
+//
+// `IsCameraTransformParam` — the property pass REFUSES an edit to any
+// of these on an existing camera (orbit/pan/zoom/move).
+bool IsCameraTransformParam( const std::string& key )
+{
+    return key == "location" || key == "lookat" || key == "up"
+        || key == "orientation" || key == "target_orientation"
+        || key == "theta" || key == "phi";
+}
+
+// `IsCameraRedundantOrientationParam` — when emitting a FRESH camera
+// chunk (AddCamera clone), `location`/`lookat`/`up` are essential and
+// fully determine the view (introspection reports them post-orbit),
+// but `orientation`/`target_orientation`/`theta`/`phi` are redundant
+// with that frame — emitting them too would double-apply the orbit
+// on reload.  Skip exactly those.
+bool IsCameraRedundantOrientationParam( const std::string& key )
+{
+    return key == "orientation" || key == "target_orientation"
+        || key == "theta" || key == "phi";
+}
+
 // Phase C: render a fresh scene-file chunk for a newly-created camera
 // from its descriptor introspection.  Returns "" if the camera type
 // has no known chunk keyword (an out-of-tree camera subclass).  The
@@ -557,6 +598,9 @@ std::string RenderCreatedCameraChunk( const ICamera& cam,
         if( !p.editable ) continue;          // read-only / synthetic row
         const std::string key = std::string( p.name.c_str() );
         if( key == "name" ) continue;        // already emitted above
+        // Skip the redundant orientation views — `location`/`lookat`/
+        // `up` (kept) already determine the camera's frame.
+        if( IsCameraRedundantOrientationParam( key ) ) continue;
         out += "  ";
         out += key;
         out += " ";
@@ -829,6 +873,19 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     std::vector<CmdRecord> destructiveCmds;
     ScanCommands( bytes, barrierCmds, destructiveCmds );
     BlockRange existingBlock = LocateManagedBlock( bytes );
+
+    // Round-3 review P2: refuse on a malformed managed block (an
+    // opening sentinel with no matching close).  Re-rendering or
+    // erasing a block whose extent is unknown would corrupt the
+    // file; the user must repair the sentinels first.
+    if( existingBlock.malformed ) {
+        result.status = SaveResult::Status::Refused;
+        result.errorMessage =
+            "the managed override block is malformed — its opening "
+            "sentinel ('" + std::string( kSentinelOpen ) + "') has no "
+            "matching close.  Repair or remove the block before saving.";
+        return result;
+    }
 
     // ---- Step 4: CLASSIFICATION PASS --------------------------------
     // Seed accumulator from managed records only (R4 §1).
@@ -1153,6 +1210,24 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                     return result;
                 }
 
+                // Round-3 review P1: camera TRANSFORM / orientation
+                // parameters are not round-tripped in V1 — a camera
+                // carries several redundant orientation representations
+                // and an orbit changes them together; splicing them
+                // line-by-line would write inconsistent state.  Refuse
+                // rather than corrupt.  Camera LENS properties (fov,
+                // exposure, iso, …) fall through and save normally.
+                if( cat == EntityCategory::Camera
+                    && IsCameraTransformParam( key ) ) {
+                    result.status = SaveResult::Status::Refused;
+                    result.errorMessage = std::string( "property edit on camera '" )
+                        + name + "': camera transform / orientation "
+                        "parameter '" + key + "' is not round-tripped in "
+                        "V1 (deferred to a later phase).  Camera lens "
+                        "properties — fov, exposure, etc. — do save.";
+                    return result;
+                }
+
                 std::unordered_map<std::string,ParameterSpan>::const_iterator pit =
                     espan->parameterSpans.find( key );
                 if( pit == espan->parameterSpans.end() ) {
@@ -1215,10 +1290,24 @@ SaveResult SaveEngine::Save( const std::string& filePath )
             }
         }
         for( const auto& kv : mSpans.EntityEntries() ) {
-            if( kv.first.first == EntityCategory::Camera
-                && kv.second.insideManagedBlock ) {
-                ownedCameras.insert( kv.first.second );
+            if( !kv.second.insideManagedBlock ) continue;
+            // Round-3 review P1: V1 only ever emits CAMERAS into the
+            // managed block.  A non-camera chunk inside the sentinels
+            // was hand-pasted; the property pass skips it and this
+            // pass can't re-emit it, so a block re-render would delete
+            // it.  Refuse rather than silently drop it.
+            if( kv.first.first != EntityCategory::Camera ) {
+                result.status = SaveResult::Status::Refused;
+                result.errorMessage =
+                    "the managed override block contains a hand-edited "
+                    "non-camera chunk ('" + kv.first.second + "') that V1 "
+                    "cannot round-trip — move it out of the block "
+                    "(outside the `" + std::string( kSentinelOpen ) +
+                    "` / `" + std::string( kSentinelClose ) + "` sentinels) "
+                    "before saving.";
+                return result;
             }
+            ownedCameras.insert( kv.first.second );
         }
 
         for( const std::string& camName : ownedCameras ) {
@@ -1449,6 +1538,29 @@ SaveResult SaveEngine::Save( const std::string& filePath )
         []( const EditOp& a, const EditOp& b ) {
             return a.begin > b.begin;
         } );
+
+    // Round-3 review P3: descending-order apply is only correct when
+    // the edit ranges are mutually DISJOINT — an overlap silently
+    // corrupts the file.  Every pass is designed to keep them
+    // disjoint (transform/property splices target distinct parameter
+    // value ranges; the managed block lands in its own placement
+    // window; inserts are zero-width).  This is a load-bearing
+    // invariant with no single owner, so verify it here: if it ever
+    // breaks, refuse the save rather than write garbage.  Ops are
+    // sorted by descending `begin`; disjoint ⇒ each op's `end` is
+    // ≤ the previous (higher-offset) op's `begin`.  Zero-width
+    // inserts sharing an offset are not overlaps.
+    for( std::size_t i = 1; i < editScript.size(); ++i ) {
+        if( editScript[i].end > editScript[i-1].begin ) {
+            result.status = SaveResult::Status::Refused;
+            result.errorMessage =
+                "internal consistency check failed: overlapping edits "
+                "detected — the save was aborted to avoid corrupting "
+                "the file.  Please report this scene.";
+            return result;
+        }
+    }
+
     for( const EditOp& op : editScript ) {
         bytes.replace( op.begin, op.end - op.begin, op.replacement );
     }

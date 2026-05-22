@@ -1836,6 +1836,42 @@ static void TestLightColorEditIsRefused()
     std::remove( path.c_str() );
 }
 
+static void TestCameraOrbitSaveIsRefused()
+{
+    gCurrentTest = "TestCameraOrbitSaveIsRefused";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Round-3 P1: a camera carries several redundant orientation
+    // representations (location/lookat/up, orientation,
+    // target_orientation, theta/phi) and an orbit changes them
+    // together — splicing each independently would write
+    // inconsistent, double-applied state.  Camera TRANSFORM
+    // round-trip is deferred (ROUND_TRIP_SAVE_PLAN §3.4 / Phase
+    // 6.5); the property pass refuses it rather than corrupt the
+    // file.  Camera LENS properties (fov, …) still save — see
+    // TestCameraPropertySaveRoundTrips.
+    const std::string path = WriteSceneFile( kSceneOneCamera, "orbit" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "loaded" );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+    SceneEditor editor( *pJob->GetScene() );
+
+    SceneEdit e;
+    e.op  = SceneEdit::OrbitCamera;
+    e.v3a = Vector3( 0.3, 0.2, 0.0 );   // phi delta, theta delta
+    Check( editor.Apply( e ), "OrbitCamera applied" );
+    Check( editor.HasUnsavedChanges(), "orbit marks the scene dirty" );
+
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r = engine.Save( path );
+    Check( r.status == SaveResult::Status::Refused,
+           "camera orbit save: Refused (transform round-trip deferred)" );
+    Check( !r.errorMessage.empty(), "refusal carries a diagnostic" );
+
+    safe_release( pJob );
+    std::remove( path.c_str() );
+}
+
 static void TestManagedBlockCameraSurvivesReloadAndResave()
 {
     gCurrentTest = "TestManagedBlockCameraSurvivesReloadAndResave";
@@ -1976,6 +2012,7 @@ int main()
     TestAddCameraThenUndoSaveOmitsCamera();
     TestPropertyEditThenRevertAcrossSavesPersists();
     TestLightColorEditIsRefused();
+    TestCameraOrbitSaveIsRefused();
     TestManagedBlockCameraSurvivesReloadAndResave();
     TestSaveClearsDirtyTracker();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
