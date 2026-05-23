@@ -93,6 +93,29 @@ static std::string ReadFile( const std::string& path )
     return ss.str();
 }
 
+// Count occurrences of a line whose first non-space token matches `keyword`,
+// inside the file's bytes.  Used to assert "exactly one orientation line"
+// after multiple same-session saves that all hit the insert path.
+static std::size_t CountParameterLines( const std::string& path,
+                                        const char* keyword )
+{
+    std::ifstream f( path.c_str() );
+    if( !f.is_open() ) return 0;
+    std::string line;
+    std::size_t count = 0;
+    while( std::getline( f, line ) ) {
+        std::size_t i = 0;
+        while( i < line.size() && ( line[i] == ' ' || line[i] == '\t' ) ) ++i;
+        const std::string kw = keyword;
+        if( line.compare( i, kw.size(), kw ) == 0
+            && i + kw.size() < line.size()
+            && ( line[i + kw.size()] == ' ' || line[i + kw.size()] == '\t' ) ) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 static IJobPriv* LoadSceneFromPath( const std::string& path )
 {
     IJobPriv* pJob = nullptr;
@@ -563,6 +586,60 @@ static void TestModeAInsertNewLine()
         }
         safe_release( pJob2 );
     }
+    std::remove( path.c_str() );
+}
+
+static void TestObjectOrientationSaveResaveSameSession()
+{
+    gCurrentTest = "TestObjectOrientationSaveResaveSameSession";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Adversarial-review round 2 P3: the transform pass's insert branch
+    // (a sibling site of the property pass's insert branch) was extended
+    // in round 1 to populate the shared `propertyInsertGroups` map and
+    // get a post-AOD ParameterSpan seeded.  Without that seeding the
+    // second same-session orientation edit on an object whose source
+    // chunk lacked an orientation line would re-take the insert branch
+    // and write a DUPLICATE orientation line on every save.  Cover the
+    // OBJECT path with the same shape as TestCameraRollSaveResaveSameSession.
+    const std::string body =
+        "RISE ASCII SCENE 6\n"
+        "sphere_geometry\n{\n    name sph\n    radius 1.0\n}\n"
+        "standard_object\n{\n"
+        "    name obj0\n"
+        "    geometry sph\n"
+        "    position 0 0 0\n"
+        "}\n";
+    const std::string path = WriteSceneFile( body, "objresave" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "scene loaded" );
+    if( !pJob ) { std::remove(path.c_str()); return; }
+    SceneEditor editor( *pJob->GetScene() );
+
+    SceneEdit e1;
+    e1.op = SceneEdit::SetObjectOrientation;
+    e1.objectName = "obj0";
+    e1.v3a = Vector3( 0, 30.0 * 3.14159265358979 / 180.0, 0 );
+    Check( editor.Apply( e1 ), "first SetObjectOrientation applied" );
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r1 = engine.Save( path );
+    Check( r1.status == SaveResult::Status::Saved, "first save: Saved" );
+    Check( CountParameterLines( path, "orientation" ) == 1,
+           "after first save: one orientation line" );
+
+    // Second orientation edit on the SAME object, save AGAIN.
+    SceneEdit e2;
+    e2.op = SceneEdit::SetObjectOrientation;
+    e2.objectName = "obj0";
+    e2.v3a = Vector3( 0, 60.0 * 3.14159265358979 / 180.0, 0 );
+    Check( editor.Apply( e2 ), "second SetObjectOrientation applied" );
+    SaveResult r2 = engine.Save( path );
+    Check( r2.status == SaveResult::Status::Saved, "second save: Saved" );
+    Check( CountParameterLines( path, "orientation" ) == 1,
+           "after SECOND same-session save: still one orientation line "
+           "(transform-pass insert sibling site also seeds parameterSpans)" );
+
+    safe_release( pJob );
     std::remove( path.c_str() );
 }
 
@@ -2048,29 +2125,6 @@ static void TestCameraRollWithScalarShadowsIsRefused()
     std::remove( path.c_str() );
 }
 
-// Count occurrences of a line whose first non-space token matches `keyword`,
-// inside the file's bytes.  Used to assert "exactly one orientation line"
-// after multiple same-session saves that all hit the insert path.
-static std::size_t CountParameterLines( const std::string& path,
-                                        const char* keyword )
-{
-    std::ifstream f( path.c_str() );
-    if( !f.is_open() ) return 0;
-    std::string line;
-    std::size_t count = 0;
-    while( std::getline( f, line ) ) {
-        std::size_t i = 0;
-        while( i < line.size() && ( line[i] == ' ' || line[i] == '\t' ) ) ++i;
-        const std::string kw = keyword;
-        if( line.compare( i, kw.size(), kw ) == 0
-            && i + kw.size() < line.size()
-            && ( line[i + kw.size()] == ' ' || line[i + kw.size()] == '\t' ) ) {
-            ++count;
-        }
-    }
-    return count;
-}
-
 static void TestCameraRollSaveResaveSameSession()
 {
     gCurrentTest = "TestCameraRollSaveResaveSameSession";
@@ -2284,6 +2338,7 @@ int main()
     TestMatrixAuthoredForcesMatrixOverride();
     TestScaleFromAnchorForcesMatrixOverride();
     TestModeAInsertNewLine();
+    TestObjectOrientationSaveResaveSameSession();
     TestMultiFieldModeAValueLengthDelta();
     TestManagedBlockWithQuaternionRoundTrips();
     TestExternalModificationGuardRefuses();

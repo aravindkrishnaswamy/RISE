@@ -1218,6 +1218,15 @@ final class RenderViewModel: ObservableObject {
     }
 
     /// Reload editor contents from the current loadedFilePath.
+    ///
+    /// On failure: if the pane has never loaded content (editorText is
+    /// empty — initial-toggle case), drop a placeholder string so the
+    /// pane isn't a blank canvas with no diagnostic.  If the pane
+    /// ALREADY has content (post-round-trip-save refresh case), keep
+    /// it intact and surface a one-shot alert — wiping content the
+    /// user can still see and copy is more destructive than the rare
+    /// IO failure justifies (matches the Windows SceneEditor::loadFile
+    /// pattern; adversarial-review round 2 P3).
     func refreshEditorContents() {
         guard let path = loadedFilePath else { return }
         do {
@@ -1225,8 +1234,17 @@ final class RenderViewModel: ObservableObject {
             editorText = content
             editorOriginalText = content
         } catch {
-            editorText = "// Failed to load file: \(error.localizedDescription)"
-            editorOriginalText = editorText
+            if editorText.isEmpty {
+                editorText = "// Failed to load file: \(error.localizedDescription)"
+                editorOriginalText = editorText
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "Failed to reload scene file"
+                alert.informativeText = error.localizedDescription
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
         }
     }
 
