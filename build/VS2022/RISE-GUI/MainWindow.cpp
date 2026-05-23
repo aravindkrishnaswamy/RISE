@@ -872,21 +872,37 @@ void MainWindow::rebuildViewportForLoadedScene()
     connect(m_viewportBridge, &ViewportBridge::imageUpdated,
             m_viewportProps,  &ViewportProperties::refresh);
 
-    // Round-trip save success: re-anchor the engine's loaded-file
-    // path (so subsequent in-place saves target the file we just
-    // wrote \u2014 matches the C++ session's FileIdentity re-anchor) and
-    // pull the just-written bytes into the SceneEditor text pane so
-    // it reflects the saved edits.  Skip the text refresh when the
-    // user also has unsaved text-editor edits \u2014 re-reading the file
-    // would silently discard them; they can manually revert or use
-    // the text editor's own Save.
+    // Round-trip save success: pull the just-written bytes into the
+    // SceneEditor text pane so it reflects the saved edits, refresh
+    // the window title (Save-As may have re-anchored loadedFilePath
+    // inside ViewportBridge::saveSceneTo already, but title update is
+    // a GUI concern this lambda owns), and surface a warning if the
+    // user also has unsaved text-editor edits (clicking the editor's
+    // own Save would otherwise overwrite the just-saved interactive
+    // changes \u2014 adversarial-review round 1 P1).
+    //
+    // The Save-As path re-anchor of `m_engine->m_loadedFilePath` is
+    // owned by ViewportBridge::saveSceneTo (Phase 6.5); we do NOT
+    // re-anchor here to avoid a duplicate write \u2014 adversarial-review
+    // round 1 P2.
     connect(m_viewportProps, &ViewportProperties::sceneSavedToPath,
             this, [this](const QString& path) {
-                if (m_engine && path != m_engine->loadedFilePath()) {
-                    m_engine->setLoadedFilePath(path);
-                }
-                if (m_sceneEditor && !m_sceneEditor->isDirty()) {
+                updateWindowTitle();
+                if (!m_sceneEditor) return;
+                if (!m_sceneEditor->isDirty()) {
                     m_sceneEditor->loadFile(path);
+                } else {
+                    QMessageBox::warning(
+                        this,
+                        tr("Scene editor has unsaved text changes"),
+                        tr("Your interactive edits were saved to %1.  "
+                           "The scene editor pane still shows the "
+                           "pre-save text plus your unsaved edits.  "
+                           "Clicking Save in the scene editor will "
+                           "overwrite the just-saved interactive "
+                           "changes \u2014 use Revert in the scene editor "
+                           "to discard your text edits and pull the "
+                           "new file content.").arg(path));
                 }
             });
 

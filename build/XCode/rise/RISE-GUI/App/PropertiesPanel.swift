@@ -316,12 +316,28 @@ struct PropertiesPanel: View {
             }
             // Pull the just-written bytes back into the scene-editor
             // pane so it reflects the round-tripped edits (camera
-            // moves, property changes, created chunks).  Skip when the
-            // user also has unsaved text-editor edits — refreshing
-            // would silently discard them; they can manually revert
-            // or use the text editor's own Save.
+            // moves, property changes, created chunks).  When the user
+            // ALSO has unsaved text-editor edits, refreshing would
+            // silently discard them — but leaving them unsurfaced has
+            // its own hazard (clicking the editor's own Save would
+            // overwrite our just-written bytes).  Surface the conflict
+            // with a one-shot alert so the user can decide; adversarial
+            // -review round 1 P1.
             if !viewModel.isEditorDirty {
                 viewModel.refreshEditorContents()
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "Scene editor has unsaved text changes"
+                alert.informativeText =
+                    "Your interactive edits were saved to \(path).  " +
+                    "The scene editor pane still shows the pre-save text " +
+                    "plus your unsaved edits.  Clicking Save in the scene " +
+                    "editor will overwrite the just-saved interactive " +
+                    "changes — use Revert in the scene editor to discard " +
+                    "your text edits and pull the new file content."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
             }
         case 1:
             // NoOp — silent success.  The file is unchanged on

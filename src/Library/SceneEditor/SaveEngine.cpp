@@ -921,6 +921,29 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     // Mode A edits — queued, not yet emitted.  Emitted in step 6.
     std::vector<EditOp> modeAQueue;
 
+    // Per-entity buffer for PROPERTY-pass inserts (parameters absent
+    // from the source chunk that need a fresh line).  Coalesces all
+    // inserts for one entity into a single EditOp at that entity's
+    // `bodyCloseBraceLineBegin`, then — after the EditScript applies
+    // and `ApplyOffsetDeltas` shifts existing offsets — seeds a
+    // `ParameterSpan` for each inserted line so a same-session second
+    // edit of the same key splices into the inserted line instead of
+    // re-inserting a duplicate (adversarial-review round 1 P2).
+    struct InsertedLineInfo {
+        std::string key;
+        std::size_t offsetInBlock;
+        std::size_t lineLen;       // includes EOL
+    };
+    struct PropertyInsertGroup {
+        EntityCategory             cat = EntityCategory::Object;
+        std::string                entityName;
+        std::string                coalescedText;
+        std::vector<InsertedLineInfo> linesInfo;
+        std::size_t                opBegin = 0;
+        bool                       inited  = false;
+    };
+    std::map<std::pair<int,std::string>, PropertyInsertGroup> propertyInsertGroups;
+
     IObjectManager* objs = mJob.GetObjects();
     if( !objs ) {
         result.status = SaveResult::Status::Failed;
@@ -1027,8 +1050,15 @@ SaveResult SaveEngine::Save( const std::string& filePath )
         }
 
         // --- Per-field routing.  Three cases per pinned 2.5/2.15. ---
-        // Coalesce missing-field inserts per chunk (R6 §6).
-        std::map<std::size_t, std::vector<std::string>> perChunkInserts;
+        // Missing-field inserts are buffered into the shared
+        // `propertyInsertGroups` map so the post-AOD seeding loop can
+        // create ParameterSpans for them — without that, a same-
+        // session second transform edit on a parameter that was
+        // ABSENT in the source (e.g. an object with only `position`
+        // gets its `orientation` set, saved, then set again) re-takes
+        // the insert branch and accumulates duplicate lines on every
+        // save (adversarial-review round 1 P2, sibling-site audit
+        // extension).
         OverrideEntry& accEntry = accumulator[name];
 
         auto routeField = [&]( const char* fieldName,
@@ -1040,14 +1070,20 @@ SaveResult SaveEngine::Save( const std::string& filePath )
             if( Vec3Eq( newVal, loadedVal ) ) return;
             auto pit = span->parameterSpans.find( fieldName );
             if( pit == span->parameterSpans.end() ) {
-                // Insert-new-line case — gather for coalescing.
-                std::string line;
-                line += "    ";
-                line += fieldName;
-                line += " ";
-                line += FormatVec3( newVal );
-                line += eol;
-                perChunkInserts[span->bodyCloseBraceLineBegin].push_back( line );
+                // Insert-new-line case — buffer into the shared group.
+                auto& grp =
+                    propertyInsertGroups[{ (int)EntityCategory::Object, name }];
+                if( !grp.inited ) {
+                    grp.cat        = EntityCategory::Object;
+                    grp.entityName = name;
+                    grp.opBegin    = span->bodyCloseBraceLineBegin;
+                    grp.inited     = true;
+                }
+                const std::string line =
+                    std::string( "    " ) + fieldName + " "
+                    + FormatVec3( newVal ) + eol;
+                grp.linesInfo.push_back( { fieldName, grp.coalescedText.size(), line.size() } );
+                grp.coalescedText += line;
                 result.directRewriteCount++;
                 accHasFlag = false;
             } else if( !pit->second.isSymbolic ) {
@@ -1070,16 +1106,9 @@ SaveResult SaveEngine::Save( const std::string& filePath )
         routeField( "orientation", decomp.orientationDeg, decompLoaded.orientationDeg, accEntry.hasOrientation, accEntry.orientationDeg );
         routeField( "scale",       decomp.scale,          decompLoaded.scale,          accEntry.hasScale,       accEntry.scale );
 
-        // Emit ONE EditOp per chunk for missing-field inserts (R6 §6).
-        for( const auto& kv : perChunkInserts ) {
-            std::string coalesced;
-            for( const std::string& s : kv.second ) coalesced += s;
-            EditOp op;
-            op.begin = kv.first;
-            op.end   = kv.first;
-            op.replacement = coalesced;
-            modeAQueue.push_back( op );
-        }
+        // EditOps for these inserts are emitted after BOTH the
+        // transform pass and the property pass have populated
+        // `propertyInsertGroups` — see the shared emit loop below.
 
         if( accEntry.Empty() ) {
             accumulator.erase( name );
@@ -1247,13 +1276,29 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                 if( pit == espan->parameterSpans.end() ) {
                     // Parameter line absent in source — the user changed
                     // a parameter that was at its default (and so was
-                    // omitted from the chunk).  Insert a fresh line just
-                    // before the chunk's close brace.
-                    EditOp op;
-                    op.begin = espan->bodyCloseBraceLineBegin;
-                    op.end   = espan->bodyCloseBraceLineBegin;
-                    op.replacement = std::string( "    " ) + key + " " + spliceVal + eol;
-                    modeAQueue.push_back( op );
+                    // omitted from the chunk).  Buffer the line into the
+                    // per-entity insert group so a chunk that gets
+                    // multiple new lines emits them as ONE coalesced
+                    // EditOp (matches the transform pass at §1073), and
+                    // so the post-AOD seeding loop can compute each
+                    // line's byte range from one block-start offset.
+                    // Without this coalescing + post-save span seeding,
+                    // a same-session second edit of the SAME key would
+                    // re-take this branch (parameterSpans still lacks
+                    // the key) and insert a DUPLICATE line on every
+                    // save — adversarial-review round 1 P2.
+                    auto& grp =
+                        propertyInsertGroups[{ (int)cat, name }];
+                    if( !grp.inited ) {
+                        grp.cat        = cat;
+                        grp.entityName = name;
+                        grp.opBegin    = espan->bodyCloseBraceLineBegin;
+                        grp.inited     = true;
+                    }
+                    const std::string line =
+                        std::string( "    " ) + key + " " + spliceVal + eol;
+                    grp.linesInfo.push_back( { key, grp.coalescedText.size(), line.size() } );
+                    grp.coalescedText += line;
                     result.directRewriteCount++;
                 } else if( pit->second.isSymbolic ) {
                     result.status = SaveResult::Status::Refused;
@@ -1272,6 +1317,19 @@ SaveResult SaveEngine::Save( const std::string& filePath )
                     result.directRewriteCount++;
                 }
             }
+        }
+
+        // Emit one coalesced EditOp per entity for the property-pass
+        // inserts buffered above.  One EditOp per entity (not per
+        // line) is what makes the post-AOD span-seeding loop's offset
+        // arithmetic deterministic — see `propertyInsertGroups`
+        // declaration for the rationale.
+        for( const auto& gp : propertyInsertGroups ) {
+            EditOp op;
+            op.begin       = gp.second.opBegin;
+            op.end         = gp.second.opBegin;
+            op.replacement = gp.second.coalescedText;
+            modeAQueue.push_back( op );
         }
     }
 
@@ -1620,6 +1678,42 @@ SaveResult SaveEngine::Save( const std::string& filePath )
     // editor session splice at correct (post-write) byte positions.
     if( !offsetDeltas.empty() ) {
         const_cast<SourceSpanIndex&>( mSpans ).ApplyOffsetDeltas( offsetDeltas );
+    }
+
+    // Adversarial-review round 1 P2: seed `parameterSpans` for every
+    // property-pass insert we just wrote.  Without this, a same-session
+    // second edit of the same parameter on the same entity would
+    // re-take the insert branch (since `parameterSpans.find(key)`
+    // would still miss) and write a DUPLICATE line on every save.
+    // The coalesced EditOp per entity (above) lands its bytes at
+    // [postBodyCloseBraceLineBegin - coalescedLen, postBodyCloseBraceLineBegin)
+    // in the final file; AOD has already shifted bodyCloseBraceLineBegin
+    // by the coalesced length plus any external deltas, so we anchor
+    // off the post-AOD value to be robust to those externals too.
+    {
+        const std::size_t indentLen = 4;        // "    " — matches insert formatter
+        const std::size_t eolLen    = eol.size();
+        for( const auto& gp : propertyInsertGroups ) {
+            const PropertyInsertGroup& g = gp.second;
+            SourceSpan* ss =
+                ( g.cat == EntityCategory::Object )
+                    ? const_cast<SourceSpanIndex&>( mSpans ).FindMutable( g.entityName )
+                    : const_cast<SourceSpanIndex&>( mSpans ).FindEntityMutable( g.cat, g.entityName );
+            if( !ss ) continue;
+            const std::size_t blockStart =
+                ss->bodyCloseBraceLineBegin - g.coalescedText.size();
+            for( const InsertedLineInfo& li : g.linesInfo ) {
+                const std::size_t lineBegin = blockStart + li.offsetInBlock;
+                ParameterSpan ps;
+                ps.lineBeginOffset = lineBegin;
+                ps.lineEndOffset   = lineBegin + li.lineLen - eolLen;
+                ps.valueBegin      = lineBegin + indentLen + li.key.size() + 1;
+                ps.valueEnd        = lineBegin + li.lineLen - eolLen;
+                ps.commentBegin    = ps.lineEndOffset;
+                ps.isSymbolic      = false;
+                ss->parameterSpans[ li.key ] = ps;
+            }
+        }
     }
 
     // R-final-3 P1: rebuild OverrideSpanIndex to mirror what's now

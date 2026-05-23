@@ -2048,6 +2048,122 @@ static void TestCameraRollWithScalarShadowsIsRefused()
     std::remove( path.c_str() );
 }
 
+// Count occurrences of a line whose first non-space token matches `keyword`,
+// inside the file's bytes.  Used to assert "exactly one orientation line"
+// after multiple same-session saves that all hit the insert path.
+static std::size_t CountParameterLines( const std::string& path,
+                                        const char* keyword )
+{
+    std::ifstream f( path.c_str() );
+    if( !f.is_open() ) return 0;
+    std::string line;
+    std::size_t count = 0;
+    while( std::getline( f, line ) ) {
+        std::size_t i = 0;
+        while( i < line.size() && ( line[i] == ' ' || line[i] == '\t' ) ) ++i;
+        const std::string kw = keyword;
+        if( line.compare( i, kw.size(), kw ) == 0
+            && i + kw.size() < line.size()
+            && ( line[i + kw.size()] == ' ' || line[i + kw.size()] == '\t' ) ) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+static void TestCameraRollSaveResaveSameSession()
+{
+    gCurrentTest = "TestCameraRollSaveResaveSameSession";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Adversarial-review round 1 P2: when a parameter line is absent
+    // in the source and the property pass inserts it, the new line's
+    // ParameterSpan must be seeded into the in-memory SourceSpanIndex
+    // so a SECOND same-session edit of the same key splices into the
+    // inserted line instead of inserting a duplicate.  Without the
+    // fix, the saved file accumulates one extra `orientation` line
+    // per roll-then-save cycle.
+    const std::string path = WriteSceneFile( kSceneOneCamera, "rollresave" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "loaded" );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+    SceneEditor editor( *pJob->GetScene() );
+
+    // First roll + save.
+    SceneEdit e1;
+    e1.op = SceneEdit::RollCamera;
+    e1.s  = 50.0;
+    Check( editor.Apply( e1 ), "first RollCamera applied" );
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r1 = engine.Save( path );
+    Check( r1.status == SaveResult::Status::Saved, "first save: Saved" );
+    Check( CountParameterLines( path, "orientation" ) == 1,
+           "after first save: exactly one orientation line" );
+
+    // Second roll on the SAME session, save AGAIN.
+    SceneEdit e2;
+    e2.op = SceneEdit::RollCamera;
+    e2.s  = 30.0;
+    Check( editor.Apply( e2 ), "second RollCamera applied" );
+    SaveResult r2 = engine.Save( path );
+    Check( r2.status == SaveResult::Status::Saved, "second save: Saved" );
+    Check( CountParameterLines( path, "orientation" ) == 1,
+           "after SECOND same-session save: still exactly one orientation line "
+           "(no duplicate from re-taking the insert branch)" );
+
+    // The reloaded camera should reflect the cumulative roll.
+    const double rollAfter = CameraRollDegrees( pJob, "cam0" );
+    safe_release( pJob );
+    IJobPriv* pJob2 = LoadSceneFromPath( path );
+    Check( pJob2 != nullptr, "reload" );
+    if( pJob2 ) {
+        const double rollReloaded = CameraRollDegrees( pJob2, "cam0" );
+        Check( std::fabs( rollReloaded - rollAfter ) < 1e-2,
+               "cumulative roll round-tripped through two same-session saves" );
+        safe_release( pJob2 );
+    }
+    std::remove( path.c_str() );
+}
+
+static void TestCameraOrbitSaveResaveSameSession()
+{
+    gCurrentTest = "TestCameraOrbitSaveResaveSameSession";
+    std::cout << gCurrentTest << "..." << std::endl;
+    // Same as TestCameraRollSaveResaveSameSession but the property
+    // pass inserts TWO lines per save (theta + phi) — exercises the
+    // multi-line coalesced insert path.
+    const std::string path = WriteSceneFile( kSceneOneCamera, "orbitresave" );
+    IJobPriv* pJob = LoadSceneFromPath( path );
+    Check( pJob != nullptr, "loaded" );
+    if( !pJob ) { std::remove( path.c_str() ); return; }
+    SceneEditor editor( *pJob->GetScene() );
+
+    SceneEdit e1;
+    e1.op  = SceneEdit::OrbitCamera;
+    e1.v3a = Vector3( 0.3, 0.2, 0.0 );
+    Check( editor.Apply( e1 ), "first OrbitCamera applied" );
+    std::unordered_set<std::string> sfa;
+    SaveEngine engine = MakeEngine( *pJob, editor, sfa );
+    SaveResult r1 = engine.Save( path );
+    Check( r1.status == SaveResult::Status::Saved, "first save: Saved" );
+    Check( CountParameterLines( path, "theta" ) == 1, "first save: one theta line" );
+    Check( CountParameterLines( path, "phi" )   == 1, "first save: one phi line" );
+
+    SceneEdit e2;
+    e2.op  = SceneEdit::OrbitCamera;
+    e2.v3a = Vector3( 0.1, -0.15, 0.0 );
+    Check( editor.Apply( e2 ), "second OrbitCamera applied" );
+    SaveResult r2 = engine.Save( path );
+    Check( r2.status == SaveResult::Status::Saved, "second save: Saved" );
+    Check( CountParameterLines( path, "theta" ) == 1,
+           "after SECOND save: still exactly one theta line" );
+    Check( CountParameterLines( path, "phi" )   == 1,
+           "after SECOND save: still exactly one phi line" );
+
+    safe_release( pJob );
+    std::remove( path.c_str() );
+}
+
 static void TestManagedBlockCameraSurvivesReloadAndResave()
 {
     gCurrentTest = "TestManagedBlockCameraSurvivesReloadAndResave";
@@ -2192,6 +2308,8 @@ int main()
     TestAddCameraThenOrbitSaveRoundTrips();
     TestCameraRollSaveRoundTrips();
     TestCameraRollWithScalarShadowsIsRefused();
+    TestCameraRollSaveResaveSameSession();
+    TestCameraOrbitSaveResaveSameSession();
     TestManagedBlockCameraSurvivesReloadAndResave();
     TestSaveClearsDirtyTracker();
     std::cout << "passed " << passCount << ", failed " << failCount << std::endl;
