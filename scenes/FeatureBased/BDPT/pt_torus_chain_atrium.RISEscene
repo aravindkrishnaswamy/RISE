@@ -95,9 +95,20 @@ pinhole_camera
 	fov					50.0
 }
 
+pinhole_camera
+{
+  name close up
+  fov 50
+  location 0.0718487 3.65307 10.1536
+  lookat 0.0718487 2.84425 4.08743
+  up 0 1 0
+}
+
+
 ##################################################
 # Painters
 ##################################################
+
 > run scenes/colors.RISEscript
 
 # Atrium surfaces

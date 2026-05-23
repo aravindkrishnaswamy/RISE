@@ -64,6 +64,24 @@ pinhole_camera
 	theta				60
 }
 
+# === RISE editor overrides (managed by interactive editor) ===
+pinhole_camera
+{
+  name Side view
+  fov 45
+  location 0 0 123.822
+  lookat 0 0 0
+  up 0 1 0
+  exposure 0
+  scanning_rate 0
+  pixel_rate 0
+  orientation 0 0 0
+  theta 30.4283
+  phi -56.106
+  iso 0
+  fstop 0
+}
+# === end RISE editor overrides ===
 > run scenes/colors.RISEscript
 
 png_painter
