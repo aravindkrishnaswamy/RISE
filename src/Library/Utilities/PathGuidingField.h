@@ -98,16 +98,26 @@ namespace RISE
 #ifdef RISE_ENABLE_OPENPGL
 
 // openpgl ships headers that trip -Wdocumentation (empty @brief) and
-// -Wshorten-64-to-32 (size_t→int) under our project warning level.
-// Silence them at the include site so our build stays warning-clean.
+// -Wshorten-64-to-32 / C4267 (size_t→int in PGLVMMFactoryArguments)
+// under our project warning level.  Silence them at the include site
+// so our build stays warning-clean.  Upstream issue: openpgl
+// config.h:55-57 assigns `size_t maxSamplesPerLeaf / N` to `int`
+// fields without an explicit cast.
 #if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdocumentation"
 #pragma clang diagnostic ignored "-Wshorten-64-to-32"
 #endif
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4267)
+#endif
 #include <openpgl/openpgl.h>
 #if defined(__clang__)
 #pragma clang diagnostic pop
+#endif
+#if defined(_MSC_VER)
+#pragma warning(pop)
 #endif
 #include "../Interfaces/IReference.h"
 #include "../Utilities/Reference.h"

@@ -39,9 +39,8 @@
 //
 #ifdef _WIN32
 #include "../Library/Rendering/Win32WindowRasterizerOutput.h"
-#define WIN32_LEAN_AND_MEAN		// Exclude rarely-used stuff from Windows headers
-#define _WIN32_WINNT 0x0400		// require NT4 or greater for TryEnterCriticalSection
-#include <windows.h>
+// Win32WindowRasterizerOutput.h already brings in <windows.h>; the
+// SDK / WindowsTargetPlatformVersion picks the _WIN32_WINNT baseline.
 #endif
 
 using namespace RISE;
