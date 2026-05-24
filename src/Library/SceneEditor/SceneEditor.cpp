@@ -83,6 +83,23 @@ namespace {
 // Used by SceneEditor::SceneScale() to derive a "characteristic
 // length" for the loaded scene that the camera-control rates can be
 // scaled by.
+//
+// Skip objects whose bbox uses the RISE_INFINITY sentinel:
+// `InfinitePlaneGeometry` and a few sky-dome shapes return
+// `BoundingBox()`, whose default ctor sets `ll = -RISE_INFINITY`,
+// `ur = +RISE_INFINITY` (which is `DBL_MAX`, not IEEE +inf — so a
+// plain `isfinite` check passes them through).  Unioning such a box
+// into the scene bbox makes `ur - ll = 2·DBL_MAX`, which DOES
+// overflow to IEEE +inf in `SceneScale()`'s extent computation; the
+// resulting `sceneScale = +inf` blows pan/zoom drag speeds, throws
+// the camera to z = ±inf on the first drag event, and makes
+// subsequent zooms appear to do nothing.  (Pan/Zoom's NaN guard
+// doesn't catch ±inf.)  Filtering here preserves "characteristic
+// length of the finite scene content" and falls back to the 1.0
+// floor in SceneScale() only when literally every object is
+// unbounded.  Use half RISE_INFINITY as the threshold so individual
+// finite scenes — even very large ones — never get spuriously
+// classified as unbounded.
 class BoundingBoxAccumulator : public IEnumCallback<IObject>
 {
 public:
@@ -93,6 +110,15 @@ public:
 
 	bool operator()( const IObject& obj ) override {
 		const BoundingBox b = obj.getBoundingBox();
+		const Scalar      kUnboundedThreshold = RISE_INFINITY * Scalar( 0.5 );
+		if( std::fabs( b.ll.x ) > kUnboundedThreshold
+		 || std::fabs( b.ll.y ) > kUnboundedThreshold
+		 || std::fabs( b.ll.z ) > kUnboundedThreshold
+		 || std::fabs( b.ur.x ) > kUnboundedThreshold
+		 || std::fabs( b.ur.y ) > kUnboundedThreshold
+		 || std::fabs( b.ur.z ) > kUnboundedThreshold ) {
+			return true;   // skip unbounded objects (infinite planes, sky domes)
+		}
 		if( !hasAny ) {
 			bbox = b;
 			hasAny = true;
