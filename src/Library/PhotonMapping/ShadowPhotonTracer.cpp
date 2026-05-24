@@ -24,7 +24,7 @@ ShadowPhotonTracer::ShadowPhotonTracer(
 	const unsigned int temporal_samples,
 	const bool regenerate
 	) : 
-  PhotonTracer<ShadowPhotonMap>( false, false, 1.0, temporal_samples, regenerate )
+  PhotonTracer<ShadowPhotonMap>( false, 1.0, temporal_samples, regenerate )
 {
 }
 
