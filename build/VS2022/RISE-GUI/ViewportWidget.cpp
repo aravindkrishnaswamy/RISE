@@ -178,7 +178,7 @@ void ViewportWidget::paintGizmoOverlay(QPainter& p, const QRect& drawRect,
         case K::AxisArrow:
         case K::AxisScaleHandle: {
             QColor fill = color;
-            fill.setAlphaF(0.85);
+            fill.setAlphaF(0.85f);
             p.setBrush(fill);
             p.setPen(stroke);
             p.drawEllipse(c, r, r);
@@ -187,7 +187,7 @@ void ViewportWidget::paintGizmoOverlay(QPainter& p, const QRect& drawRect,
         case K::AxisPlane: {
             const double s = r * 1.4;
             QColor fill = color;
-            fill.setAlphaF(0.40);
+            fill.setAlphaF(0.40f);
             p.setBrush(fill);
             p.setPen(stroke);
             p.drawRect(QRectF(c.x() - s, c.y() - s, 2 * s, 2 * s));
@@ -196,7 +196,7 @@ void ViewportWidget::paintGizmoOverlay(QPainter& p, const QRect& drawRect,
         case K::ScreenCenter:
         case K::UniformScaleCube: {
             QColor fill = color;
-            fill.setAlphaF(0.30);
+            fill.setAlphaF(0.30f);
             p.setBrush(fill);
             p.setPen(stroke);
             p.drawEllipse(c, r, r);
@@ -206,7 +206,7 @@ void ViewportWidget::paintGizmoOverlay(QPainter& p, const QRect& drawRect,
         case K::ScreenRing: {
             p.setBrush(Qt::NoBrush);
             QColor ringC = strokeC;
-            ringC.setAlphaF(isActive ? 1.0 : 0.8);
+            ringC.setAlphaF(isActive ? 1.0f : 0.8f);
             QPen ringPen(ringC);
             ringPen.setWidthF(isActive ? 3.0 : 2.0);
             p.setPen(ringPen);

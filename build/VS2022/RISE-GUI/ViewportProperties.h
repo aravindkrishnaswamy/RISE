@@ -69,6 +69,9 @@ private slots:
     void onDirtyChanged(bool hasUnsavedChanges);
 
 private:
+    using Category = ViewportBridge::Category;
+    using SectionWidgets = ViewportPropertiesInternal::AccordionSectionWidgets;
+
     /// Phase 6.5: drive a Save (`useLoadedPath=true`) or Save As…
     /// (`useLoadedPath=false`) dialog flow.  Branches on the bridge's
     /// SaveStatus and pops a QMessageBox on Refused / Failed.
@@ -96,9 +99,6 @@ private:
     /// edits target the right entity even when multiple sections
     /// are expanded (e.g. Object + auto-synced Material).
     void rebuildPropertyRowsFor(Category sectionCat, SectionWidgets& section);
-
-    using Category = ViewportBridge::Category;
-    using SectionWidgets = ViewportPropertiesInternal::AccordionSectionWidgets;
 
     /// Show the "Add Camera" modal and, on OK, route through the
     /// bridge.  Shows a one-shot caveat alert on first successful add

@@ -138,9 +138,11 @@ namespace RISE
 		//!      check.
 		//!   3. Bit-pattern check via memcpy as backup for cases like
 		//!      "1e1000" that overflow to +Inf during strtod.
-		//! Implementation in KeyframableHelper.cpp so callers can't
-		//! inline-fold the body.
-		bool ParseStrictScalar( const String& s, Scalar& out );
+		//! Marked `inline` because on Windows
+		//! `INLINE_TEMPLATE_SPECIALIZATIONS` re-includes the .cpp into
+		//! every TU; the volatile/memcpy/textual layers above defeat
+		//! `-ffast-math` from inside the body regardless of inlining.
+		inline bool ParseStrictScalar( const String& s, Scalar& out );
 
 		//! Strict 3-vector parse — tokenises on whitespace, requires
 		//! exactly three components, each routed through
@@ -151,7 +153,7 @@ namespace RISE
 		//! resulting non-finite values into light/transform state.
 		//! Returns false (and leaves `out` untouched) on any parse
 		//! failure or non-finite component.
-		bool ParseStrictVec3( const String& s, double out[3] );
+		inline bool ParseStrictVec3( const String& s, double out[3] );
 	}
 }
 

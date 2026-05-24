@@ -21,6 +21,9 @@ namespace RISE
 	{
 		// Whitespace test that handles all four ASCII whitespace
 		// characters strtod's leading-whitespace skip recognises.
+		// `static` keeps each TU's copy file-local — required because
+		// on Windows INLINE_TEMPLATE_SPECIALIZATIONS pulls this file
+		// into every TU via the header.
 		static inline bool IsWhitespace( char ch )
 		{
 			return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
@@ -51,7 +54,7 @@ namespace RISE
 		// Also requires the entire input to parse — trailing non-
 		// whitespace (e.g. "1abc", "1 2") is rejected since a scalar
 		// field should be one number, not a prefix of a number.
-		bool ParseStrictScalar( const String& s, Scalar& out )
+		inline bool ParseStrictScalar( const String& s, Scalar& out )
 		{
 			const char* c = s.c_str();
 
@@ -98,7 +101,7 @@ namespace RISE
 		// (color, direction, target, position, orientation, scale)
 		// that previously accepted "nan nan nan" via `sscanf("%lf
 		// %lf %lf")`.
-		bool ParseStrictVec3( const String& s, double out[3] )
+		inline bool ParseStrictVec3( const String& s, double out[3] )
 		{
 			const char* c = s.c_str();
 			for( int i = 0; i < 3; i++ ) {
