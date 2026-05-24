@@ -54,7 +54,7 @@ namespace RISE
 		// Also requires the entire input to parse — trailing non-
 		// whitespace (e.g. "1abc", "1 2") is rejected since a scalar
 		// field should be one number, not a prefix of a number.
-		inline bool ParseStrictScalar( const String& s, Scalar& out )
+		bool ParseStrictScalar( const String& s, Scalar& out )
 		{
 			const char* c = s.c_str();
 
@@ -101,7 +101,7 @@ namespace RISE
 		// (color, direction, target, position, orientation, scale)
 		// that previously accepted "nan nan nan" via `sscanf("%lf
 		// %lf %lf")`.
-		inline bool ParseStrictVec3( const String& s, double out[3] )
+		bool ParseStrictVec3( const String& s, double out[3] )
 		{
 			const char* c = s.c_str();
 			for( int i = 0; i < 3; i++ ) {
