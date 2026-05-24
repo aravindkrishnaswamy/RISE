@@ -1814,13 +1814,21 @@ def _density_grid_name(volume_data, state: _ExportState, object_name: str) -> st
 
 def _walk_world_for_environment(output_node):
     """Walk the world shader graph from `output_node.Surface`, returning
-    ``(env_node, background, is_camera_visible)`` for the first
-    Environment Texture found.
+    ``(env_node, background, is_camera_visible, uniform_fallback)``.
 
-    Tracks whether the Environment Texture is reachable from camera
-    rays (so we know whether to mark the radiance map as a visible
-    background or as IBL-only).  Handles the very common Cycles
-    pattern:
+    `env_node` is the first Environment Texture reached and the
+    surrounding `background` Background node.  `is_camera_visible`
+    records whether the Env Tex is reachable from camera rays.
+
+    `uniform_fallback` is `(color_rgb, strength, camera_visible)` when
+    no Environment Texture is found but a Background node with an
+    UNLINKED Color was reachable — this is the default Blender scene
+    case (plain grey world), where Cycles still integrates the
+    Background's solid colour as a uniform hemispherical IBL.  We
+    surface that so the caller can install it as a uniform-colour
+    radiance map.  `None` when no such background exists either.
+
+    Handles the very common Cycles pattern:
 
         World Output ← Mix Shader (Factor=Light Path.Is Camera Ray)
                           ├── Shader 0  (used when factor=0,
@@ -1831,8 +1839,6 @@ def _walk_world_for_environment(output_node):
     plus plain ``Background → Environment Texture`` chains and a few
     pass-through nodes (RGB Curves, Hue/Saturation, Bright/Contrast,
     Gamma) that artists drop between the HDRI and the Background.
-    Returns ``(None, None, True)`` when no Environment Texture is
-    reachable.
     """
 
     PASS_THROUGH = {
@@ -1845,7 +1851,7 @@ def _walk_world_for_environment(output_node):
 
     surface = _node_input(output_node, "Surface")
     if surface is None or not surface.is_linked:
-        return None, None, True
+        return None, None, True, None
 
     # BFS over the shader graph, tagging each visited node with whether
     # it's reachable from camera rays / from indirect rays.  Start at
@@ -1857,6 +1863,7 @@ def _walk_world_for_environment(output_node):
     env_found = None
     env_camera_visible = False
     env_background = None
+    uniform_fallback = None   # (rgb, strength, camera_visible)
 
     while queue:
         node, cam, ind, last_background = queue.pop(0)
@@ -1913,6 +1920,28 @@ def _walk_world_for_environment(output_node):
             color_in = _node_input(node, "Color")
             if color_in is not None and color_in.is_linked:
                 queue.append((color_in.links[0].from_node, cam, ind, node))
+            else:
+                # Unlinked Color → uniform-colour world.  Capture it
+                # as a fallback in case we don't find an Env Tex
+                # anywhere else in the graph.  This is the default
+                # Blender scene (Background with a plain grey RGB),
+                # which Cycles integrates as hemispherical IBL.
+                if uniform_fallback is None or (not uniform_fallback[2] and cam):
+                    rgb_default = (0.05, 0.05, 0.05)
+                    if color_in is not None:
+                        try:
+                            value = color_in.default_value
+                            rgb_default = (float(value[0]), float(value[1]), float(value[2]))
+                        except (TypeError, IndexError):
+                            pass
+                    strength_default = 1.0
+                    strength_in = _node_input(node, "Strength")
+                    if strength_in is not None and not strength_in.is_linked:
+                        try:
+                            strength_default = float(strength_in.default_value)
+                        except TypeError:
+                            pass
+                    uniform_fallback = (rgb_default, strength_default, cam)
             continue
 
         if bl in PASS_THROUGH:
@@ -1928,7 +1957,7 @@ def _walk_world_for_environment(output_node):
             if inp.is_linked and inp.type in {"RGBA", "SHADER", "VECTOR", "VALUE"}:
                 queue.append((inp.links[0].from_node, cam, ind, last_background))
 
-    return env_found, env_background, env_camera_visible
+    return env_found, env_background, env_camera_visible, uniform_fallback
 
 
 def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, tuple[float, float, float], bool]:
@@ -1951,9 +1980,22 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
     if output_node is None:
         return None, 1.0, (0.0, 0.0, 0.0), True
 
-    env_node, background_node, is_camera_visible = _walk_world_for_environment(output_node)
+    env_node, background_node, is_camera_visible, uniform_fallback = _walk_world_for_environment(output_node)
+
     if env_node is None:
-        _warn_once(state, "RISE could not find an Environment Texture in the world shader graph; falling back to ambient approximation.")
+        # No HDRI in the graph — install the Background's uniform
+        # colour as a hemispherical IBL.  Matches Cycles' default
+        # behaviour for a plain RGB Background (e.g. the default
+        # Blender scene's grey world).
+        if uniform_fallback is not None:
+            rgb, strength, camera_visible = uniform_fallback
+            painter_name = _add_uniform_painter(
+                state,
+                "world_radiance_uniform",
+                (rgb[0], rgb[1], rgb[2]),
+            )
+            return painter_name, float(strength), (0.0, 0.0, 0.0), bool(camera_visible)
+        _warn_once(state, "RISE could not find a usable World shader graph; falling back to ambient approximation.")
         return None, 1.0, (0.0, 0.0, 0.0), True
 
     # Background strength scales the HDRI.  When the HDRI sits in the
