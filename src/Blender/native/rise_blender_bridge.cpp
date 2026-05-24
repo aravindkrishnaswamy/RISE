@@ -69,6 +69,35 @@ namespace
 		);
 	}
 
+	// sRGB OETF (encode): linear → sRGB-display values.
+	// Required because Job::AddPointOmniLight / AddPointSpotLight /
+	// AddDirectionalLight / AddAmbientLight wrap the input in
+	// sRGBPel(srgb[3]) and rely on the implicit sRGBPel→ROMMRGBPel
+	// conversion, which calls ColorUtils::sRGBtoROMMRGB (=
+	// Linearize_sRGB followed by Rec709→ROMM matrix).  Blender's
+	// `light.color` is already linear Rec.709 — without this encode,
+	// the renderer's gamma decode would dim mid-greys by ~57 % and
+	// nonlinearly desaturate colours.
+	double linear_to_srgb_channel( const float value )
+	{
+		// Operate on negative-clamped magnitude.  Blender colour
+		// pickers occasionally emit slightly negative tristimulus
+		// values; the standard sRGB curve mirrors around 0 in
+		// practice, so we just clamp.
+		const double v = std::max( 0.0, double( value ) );
+		if( v <= 0.0031308 ) {
+			return v * 12.92;
+		}
+		return 1.055 * std::pow( v, 1.0 / 2.4 ) - 0.055;
+	}
+
+	void linear_rgb_to_srgb( const float linear[3], double srgb[3] )
+	{
+		srgb[0] = linear_to_srgb_channel( linear[0] );
+		srgb[1] = linear_to_srgb_channel( linear[1] );
+		srgb[2] = linear_to_srgb_channel( linear[2] );
+	}
+
 	void normalize3( double value[3] )
 	{
 		const double magnitude = std::sqrt( value[0]*value[0] + value[1]*value[1] + value[2]*value[2] );
@@ -986,12 +1015,11 @@ namespace
 			return false;
 		}
 
-		// Blender's light.color is already in linear (Rec.709)
-		// primaries; pass it straight through to RISE rather than
-		// running it through the sRGB OETF (which would gamma-encode
-		// the value, then RISE — expecting linear input — would
-		// brighten mid-greys by ~47 %).
-		double color[3] = { light.color[0], light.color[1], light.color[2] };
+		// Blender's light.color is linear Rec.709.  Job::Add*Light
+		// expects sRGB-encoded values (see sRGBPel(srgb)→ROMMRGBPel
+		// conversion in Job.cpp:4772), so we gamma-encode here.
+		double color[3];
+		linear_rgb_to_srgb( light.color, color );
 
 		switch( light.type )
 		{
