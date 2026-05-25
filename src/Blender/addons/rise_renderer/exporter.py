@@ -20,6 +20,7 @@ PAINTER_TEXTURE_EXR = 2
 PAINTER_TEXTURE_HDR = 3
 PAINTER_TEXTURE_TIFF = 4
 PAINTER_BLEND = 5
+PAINTER_TEXTURE_JPEG = 6
 
 COLOR_SPACE_LINEAR = 0
 COLOR_SPACE_SRGB = 1
@@ -49,6 +50,8 @@ SUPPORTED_IMAGE_KINDS = {
     ".hdr": PAINTER_TEXTURE_HDR,
     ".tif": PAINTER_TEXTURE_TIFF,
     ".tiff": PAINTER_TEXTURE_TIFF,
+    ".jpg": PAINTER_TEXTURE_JPEG,
+    ".jpeg": PAINTER_TEXTURE_JPEG,
 }
 
 
@@ -510,7 +513,7 @@ def _validate_texture_wrapper(texture_wrapper, state: _ExportState, context_name
     extension = os.path.splitext(filepath)[1].lower()
     painter_kind = SUPPORTED_IMAGE_KINDS.get(extension)
     if painter_kind is None:
-        _warn_once(state, f"RISE supports PNG, EXR, HDR, and TIFF textures for {context_name}.")
+        _warn_once(state, f"RISE supports PNG, JPG, EXR, HDR, and TIFF textures for {context_name}.")
         return None
 
     return filepath, _texture_color_space(texture_wrapper, image)
@@ -1886,7 +1889,8 @@ def _walk_world_for_environment(output_node):
     env_found = None
     env_camera_visible = False
     env_background = None
-    uniform_fallback = None   # (rgb, strength, camera_visible)
+    uniform_fallback = None       # (rgb, strength, camera_visible) — unlinked-Color Background
+    procedural_fallback = None    # (background_node, strength, camera_visible) — linked-Color Background that doesn't reach an Env Tex (Sky Texture, Noise, etc.)
 
     while queue:
         node, cam, ind, last_background = queue.pop(0)
@@ -1941,7 +1945,22 @@ def _walk_world_for_environment(output_node):
 
         if bl == "ShaderNodeBackground":
             color_in = _node_input(node, "Color")
+            # Strength is the same in both branches — capture it now.
+            strength_val = 1.0
+            strength_in = _node_input(node, "Strength")
+            if strength_in is not None and not strength_in.is_linked:
+                try:
+                    strength_val = float(strength_in.default_value)
+                except TypeError:
+                    pass
             if color_in is not None and color_in.is_linked:
+                # Linked Color → procedural chain.  Even if we keep
+                # walking and find an Env Tex downstream, capture this
+                # as a fallback in case we don't.  This catches Sky
+                # Texture / Noise / Voronoi / etc. — anything the
+                # walker can't trace to a baked image.
+                if procedural_fallback is None or (not procedural_fallback[2] and cam):
+                    procedural_fallback = (node, strength_val, cam)
                 queue.append((color_in.links[0].from_node, cam, ind, node))
             else:
                 # Unlinked Color → uniform-colour world.  Capture it
@@ -1957,14 +1976,7 @@ def _walk_world_for_environment(output_node):
                             rgb_default = (float(value[0]), float(value[1]), float(value[2]))
                         except (TypeError, IndexError):
                             pass
-                    strength_default = 1.0
-                    strength_in = _node_input(node, "Strength")
-                    if strength_in is not None and not strength_in.is_linked:
-                        try:
-                            strength_default = float(strength_in.default_value)
-                        except TypeError:
-                            pass
-                    uniform_fallback = (rgb_default, strength_default, cam)
+                    uniform_fallback = (rgb_default, strength_val, cam)
             continue
 
         if bl in PASS_THROUGH:
@@ -1980,7 +1992,7 @@ def _walk_world_for_environment(output_node):
             if inp.is_linked and inp.type in {"RGBA", "SHADER", "VECTOR", "VALUE"}:
                 queue.append((inp.links[0].from_node, cam, ind, last_background))
 
-    return env_found, env_background, env_camera_visible, uniform_fallback
+    return env_found, env_background, env_camera_visible, uniform_fallback, procedural_fallback
 
 
 def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, tuple[float, float, float], bool]:
@@ -2003,13 +2015,38 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
     if output_node is None:
         return None, 1.0, (0.0, 0.0, 0.0), True
 
-    env_node, background_node, is_camera_visible, uniform_fallback = _walk_world_for_environment(output_node)
+    env_node, background_node, is_camera_visible, uniform_fallback, procedural_fallback = _walk_world_for_environment(output_node)
 
     if env_node is None:
-        # No HDRI in the graph — install the Background's uniform
-        # colour as a hemispherical IBL.  Matches Cycles' default
-        # behaviour for a plain RGB Background (e.g. the default
-        # Blender scene's grey world).
+        # No HDRI in the graph.  Two fallback paths in priority order:
+        # 1. Procedural shader chain (Sky Texture, Noise, etc.) →
+        #    warn the user and use a neutral grey IBL as a placeholder
+        #    so the scene at least lights up.  Pre-baking the world
+        #    to an Environment Texture from inside our `render()`
+        #    callback would require calling `bpy.ops.render.render()`
+        #    recursively, which Blender ignores the engine override on
+        #    and re-enters our engine — infinite recursion, stack
+        #    overflow, crash.  The robust path (subprocess-based bake
+        #    or a user-driven "Bake World" button) is a future round.
+        # 2. Plain uniform Background → register a uniform-colour
+        #    painter (cheapest path, no bake needed).
+        if procedural_fallback is not None:
+            _bg_node, strength, camera_visible = procedural_fallback
+            _warn_once(
+                state,
+                "RISE: World contains a procedural shader (Sky Texture, Noise, etc.) "
+                "which RISE can't evaluate directly.  Using a neutral-grey IBL fallback "
+                "so the scene lights up — to get the real sky, bake your World shader to "
+                "an HDR Environment Texture (File → External Data → Bake World to HDR, "
+                "or render the world with Cycles to an EXR and plug that EXR into a "
+                "Background → Environment Texture chain)."
+            )
+            painter_name = _add_uniform_painter(
+                state,
+                "world_radiance_procedural_fallback",
+                (0.5, 0.5, 0.5),
+            )
+            return painter_name, float(strength), (0.0, 0.0, 0.0), bool(camera_visible)
         if uniform_fallback is not None:
             rgb, strength, camera_visible = uniform_fallback
             painter_name = _add_uniform_painter(
@@ -2048,7 +2085,7 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
     extension = os.path.splitext(filepath)[1].lower()
     kind = SUPPORTED_IMAGE_KINDS.get(extension)
     if kind is None:
-        _warn_once(state, "RISE supports HDR / EXR / PNG / TIFF Environment Textures.")
+        _warn_once(state, "RISE supports HDR / EXR / PNG / JPG / TIFF Environment Textures.")
         return None, 1.0, (0.0, 0.0, 0.0), True
 
     # The Environment Texture's Vector input optionally feeds through

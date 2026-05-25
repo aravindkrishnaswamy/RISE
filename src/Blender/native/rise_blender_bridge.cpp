@@ -743,6 +743,13 @@ namespace
 				return false;
 			}
 			return true;
+
+		case RISE_BLENDER_PAINTER_TEXTURE_JPEG:
+			if( !painter.path || !job.AddJPEGTexturePainter( painter.name, painter.path, color_space, filter_type, painter.lowmemory != 0, scale, shift ) ) {
+				write_error( error_message, error_message_size, "Failed to create a JPEG texture painter" );
+				return false;
+			}
+			return true;
 		}
 
 		write_error( error_message, error_message_size, "Encountered an unsupported painter type" );
@@ -1533,8 +1540,15 @@ namespace
 		if( !scene.world_radiance_painter_name || !scene.world_radiance_painter_name[0] ) {
 			return;
 		}
+		// Honour Background.Strength=0 (user explicitly disabled the
+		// world).  A zero scale produces a zero-radiance IBL, which
+		// matches Cycles' "world off" semantics.  The earlier
+		// `scale > 0 ? scale : 1.0` fallback silently turned the IBL
+		// back on at full strength, masking real "no geometry hit"
+		// bugs and producing a grey-everywhere render when the user
+		// expected pitch black.
 		radiance_map_config.name = RISE::String( scene.world_radiance_painter_name );
-		radiance_map_config.scale = scene.world_radiance_scale > 0.0f ? scene.world_radiance_scale : 1.0;
+		radiance_map_config.scale = std::max( 0.0f, scene.world_radiance_scale );
 		radiance_map_config.orientation[0] = scene.world_radiance_orientation[0];
 		radiance_map_config.orientation[1] = scene.world_radiance_orientation[1];
 		radiance_map_config.orientation[2] = scene.world_radiance_orientation[2];
@@ -1702,7 +1716,19 @@ extern "C" int rise_blender_render_scene(
 	VolumeCacheGuard volume_cache_guard;
 
 	job->SetProgress( &progress );
-	job->SetPrimaryAcceleration( true, false, 100, 8 );
+	// Top-level BVH for the scene's objects.  CLAUDE.md documents the
+	// production default as (leaf=4, depth=32) — same as
+	// `InitializeContainers` installs; we re-call to be explicit and to
+	// keep this on the documented path.  The previous (leaf=100,
+	// depth=8) silently overflowed for any scene with > 25k objects:
+	// 2^8 leaves × 100 objects/leaf = 25,600 max-addressable objects.
+	// Real Blender scenes (Geometry-Nodes scatters, packed grass,
+	// foliage instancing) routinely exceed 80k objects; the overflow
+	// collapsed traversal so that primary rays never found a hit, and
+	// the whole frame rendered as just the world IBL.  See the
+	// lone-monk scene (≈ 87,800 objects) which failed silently under
+	// the old caps.
+	job->SetPrimaryAcceleration( true, false, 4, 32 );
 
 	if( !configure_camera( *job, *scene->camera, error_message, error_message_size ) ) {
 		RISE::safe_release( job );
