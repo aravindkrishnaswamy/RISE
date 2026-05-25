@@ -138,10 +138,12 @@ namespace RISE
 		//!      check.
 		//!   3. Bit-pattern check via memcpy as backup for cases like
 		//!      "1e1000" that overflow to +Inf during strtod.
-		//! Marked `inline` because on Windows
-		//! `INLINE_TEMPLATE_SPECIALIZATIONS` re-includes the .cpp into
-		//! every TU; the volatile/memcpy/textual layers above defeat
-		//! `-ffast-math` from inside the body regardless of inlining.
+		//! Non-`inline` external linkage: the symbol must survive in
+		//! `librise.a` for out-of-tree consumers (e.g. the Blender
+		//! bridge dylib) — `inline` let LTO elide it.  See commit
+		//! 11575d8.  The body's volatile/memcpy/textual layers above
+		//! defeat `-ffast-math` from inside the function, regardless
+		//! of whether the optimiser decides to inline-fold a callsite.
 		bool ParseStrictScalar( const String& s, Scalar& out );
 
 		//! Strict 3-vector parse — tokenises on whitespace, requires

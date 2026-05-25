@@ -130,6 +130,7 @@
     <ClCompile Include="..\..\..\src\Library\Animation\KeyframableHelper.cpp">
       <ExcludedFromBuild>true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Animation\KeyframableStrictParse.cpp" />
     <ClCompile Include="..\..\..\src\Library\Animation\Timeline.cpp" />
     <ClCompile Include="..\..\..\src\Library\Cameras\CameraCommon.cpp" />
     <ClCompile Include="..\..\..\src\Library\Cameras\CameraUtilities.cpp" />

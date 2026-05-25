@@ -379,6 +379,7 @@ SRCLIBANIMATION =\
 	$(PATHLIBRARY)Animation/Animator.cpp						\
 	$(PATHLIBRARY)Animation/ElementTimeline.cpp					\
 	$(PATHLIBRARY)Animation/KeyframableHelper.cpp					\
+	$(PATHLIBRARY)Animation/KeyframableStrictParse.cpp				\
 	$(PATHLIBRARY)Animation/Timeline.cpp
 
 # Parsers

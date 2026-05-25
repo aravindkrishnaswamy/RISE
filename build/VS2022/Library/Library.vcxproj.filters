@@ -1059,6 +1059,9 @@
     <ClCompile Include="..\..\..\src\Library\Animation\ElementTimeline.cpp">
       <Filter>Animation</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Animation\KeyframableStrictParse.cpp">
+      <Filter>Animation</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Animation\Timeline.cpp">
       <Filter>Animation</Filter>
     </ClCompile>

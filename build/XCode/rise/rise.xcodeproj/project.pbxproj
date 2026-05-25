@@ -108,6 +108,7 @@
 		F24B71EB2F52A632008304C4 /* ElementTimeline.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F07EF069C428F0069C9E5 /* ElementTimeline.h */; };
 		F24B71EC2F52A632008304C4 /* KeyframableHelper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F0069C428F0069C9E5 /* KeyframableHelper.cpp */; };
 		F24B71ED2F52A632008304C4 /* KeyframableHelper.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F1069C428F0069C9E5 /* KeyframableHelper.h */; };
+		F2C5A1D000000000F1057202 /* KeyframableStrictParse.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5A1D000000000F1057201 /* KeyframableStrictParse.cpp */; };
 		F24B71EE2F52A632008304C4 /* Keyframe.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F2069C428F0069C9E5 /* Keyframe.h */; };
 		F24B71EF2F52A632008304C4 /* Timeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F3069C428F0069C9E5 /* Timeline.cpp */; };
 		F24B71F02F52A632008304C4 /* Timeline.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F4069C428F0069C9E5 /* Timeline.h */; };
@@ -818,6 +819,7 @@
 		F27F0A5F069C42910069C9E5 /* ElementTimeline.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F07EF069C428F0069C9E5 /* ElementTimeline.h */; };
 		F27F0A60069C42910069C9E5 /* KeyframableHelper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F0069C428F0069C9E5 /* KeyframableHelper.cpp */; };
 		F27F0A61069C42910069C9E5 /* KeyframableHelper.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F07F1069C428F0069C9E5 /* KeyframableHelper.h */; };
+		F2C5A1D000000000F1057203 /* KeyframableStrictParse.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2C5A1D000000000F1057201 /* KeyframableStrictParse.cpp */; };
 		F27F0A62069C42910069C9E5 /* Keyframe.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F07F2069C428F0069C9E5 /* Keyframe.h */; };
 		F27F0A63069C42910069C9E5 /* Timeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F07F3069C428F0069C9E5 /* Timeline.cpp */; };
 		F27F0A64069C42910069C9E5 /* Timeline.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F07F4069C428F0069C9E5 /* Timeline.h */; };
@@ -1958,6 +1960,7 @@
 		F27F07EF069C428F0069C9E5 /* ElementTimeline.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ElementTimeline.h; sourceTree = "<group>"; };
 		F27F07F0069C428F0069C9E5 /* KeyframableHelper.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = KeyframableHelper.cpp; sourceTree = "<group>"; };
 		F27F07F1069C428F0069C9E5 /* KeyframableHelper.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = KeyframableHelper.h; sourceTree = "<group>"; };
+		F2C5A1D000000000F1057201 /* KeyframableStrictParse.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = KeyframableStrictParse.cpp; sourceTree = "<group>"; };
 		F27F07F2069C428F0069C9E5 /* Keyframe.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Keyframe.h; sourceTree = "<group>"; };
 		F27F07F3069C428F0069C9E5 /* Timeline.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Timeline.cpp; sourceTree = "<group>"; };
 		F27F07F4069C428F0069C9E5 /* Timeline.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Timeline.h; sourceTree = "<group>"; };
@@ -2961,6 +2964,7 @@
 				F27F07EF069C428F0069C9E5 /* ElementTimeline.h */,
 				F27F07F0069C428F0069C9E5 /* KeyframableHelper.cpp */,
 				F27F07F1069C428F0069C9E5 /* KeyframableHelper.h */,
+				F2C5A1D000000000F1057201 /* KeyframableStrictParse.cpp */,
 				F27F07F2069C428F0069C9E5 /* Keyframe.h */,
 				F27F07F3069C428F0069C9E5 /* Timeline.cpp */,
 				F27F07F4069C428F0069C9E5 /* Timeline.h */,
@@ -4830,6 +4834,7 @@
 				F27F0A5C069C42910069C9E5 /* Animator.cpp in Sources */,
 				F27F0A5E069C42910069C9E5 /* ElementTimeline.cpp in Sources */,
 				F27F0A60069C42910069C9E5 /* KeyframableHelper.cpp in Sources */,
+				F2C5A1D000000000F1057203 /* KeyframableStrictParse.cpp in Sources */,
 				F27F0A63069C42910069C9E5 /* Timeline.cpp in Sources */,
 				F27F0A67069C42910069C9E5 /* CameraCommon.cpp in Sources */,
 				F27F0A6A069C42910069C9E5 /* FisheyeCamera.cpp in Sources */,
@@ -5189,6 +5194,7 @@
 				F24B71EB2F52A632008304C4 /* ElementTimeline.h in Sources */,
 				F24B71EC2F52A632008304C4 /* KeyframableHelper.cpp in Sources */,
 				F24B71ED2F52A632008304C4 /* KeyframableHelper.h in Sources */,
+				F2C5A1D000000000F1057202 /* KeyframableStrictParse.cpp in Sources */,
 				F24B71EE2F52A632008304C4 /* Keyframe.h in Sources */,
 				F24B71EF2F52A632008304C4 /* Timeline.cpp in Sources */,
 				F24B71F02F52A632008304C4 /* Timeline.h in Sources */,

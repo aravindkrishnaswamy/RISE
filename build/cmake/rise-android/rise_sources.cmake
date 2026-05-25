@@ -333,6 +333,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Animation/Animator.cpp"
     "${RISE_LIB}/Animation/ElementTimeline.cpp"
     "${RISE_LIB}/Animation/KeyframableHelper.cpp"
+    "${RISE_LIB}/Animation/KeyframableStrictParse.cpp"
     "${RISE_LIB}/Animation/Timeline.cpp"
 
     # SRCLIBPARSERS
