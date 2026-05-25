@@ -45,6 +45,7 @@ class RISE_RENDER_PT_settings(_RISEPanel):
         layout.prop(settings, "choose_one_light")
         layout.prop(settings, "show_lights")
         layout.prop(settings, "use_zsobol")
+        layout.prop(settings, "skip_collections_pattern")
 
 
 class RISE_RENDER_PT_path_tracing(_RISEPanel):

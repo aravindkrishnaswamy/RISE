@@ -300,6 +300,11 @@ namespace
 			const unsigned int rc_right
 		) override
 		{
+			// Legacy 16-bit path.  RISE now drives the HDR float path
+			// via `WantsFloat32` + `OutputImageRGBA32F` below, so this
+			// callback shouldn't fire in production renders — kept for
+			// the pure-virtual contract and as a safety fallback for
+			// any RISE build that predates the float32 plumbing.
 			if( !pImageData ) {
 				return;
 			}
@@ -333,6 +338,89 @@ namespace
 					const unsigned short* src = pImageData + ( ( ( rc_top + y ) * width + rc_left ) * 4 );
 					unsigned short* dst = &region_rgba[y * region_width * 4];
 					std::memcpy( dst, src, sizeof( unsigned short ) * region_width * 4 );
+				}
+
+				image_callback_(
+					user_data_,
+					&region_rgba[0],
+					region_width,
+					region_height,
+					width,
+					height,
+					rc_top,
+					rc_left
+				);
+			}
+		}
+
+		bool WantsFloat32() override
+		{
+			// HDR path: Blender's render pass consumes linear-float
+			// RGBA and applies its own view transform (Filmic) +
+			// exposure compensation downstream.  Without this opt-in
+			// the 16-bit Integerize step clamps every linear value
+			// > 1.0 to 1.0, leaving no HDR headroom for Filmic.
+			// Verified against the Cycles reference: pre-fix RISE
+			// peaked at linear value 1.10; Cycles delivers up to ~223
+			// for sun-disc pixels on the same scene.
+			return true;
+		}
+
+		void OutputImageRGBA32F(
+			const float* pImageData,
+			const unsigned int width,
+			const unsigned int height,
+			const unsigned int rc_top,
+			const unsigned int rc_left,
+			const unsigned int rc_bottom,
+			const unsigned int rc_right
+		) override
+		{
+			if( !pImageData ) {
+				return;
+			}
+
+			{
+				std::lock_guard<std::mutex> guard( buffer_mutex_ );
+
+				if( width_ != width || height_ != height || rgba_.empty() ) {
+					width_ = width;
+					height_ = height;
+					rgba_.assign( width_ * height_ * 4, 0.0f );
+				}
+
+				for( unsigned int y = rc_top; y <= rc_bottom; ++y ) {
+					for( unsigned int x = rc_left; x <= rc_right; ++x ) {
+						const unsigned int offset = ( y * width_ + x ) * 4;
+						rgba_[offset+0] = pImageData[offset+0];
+						rgba_[offset+1] = pImageData[offset+1];
+						rgba_[offset+2] = pImageData[offset+2];
+						rgba_[offset+3] = pImageData[offset+3];
+					}
+				}
+			}
+
+			// Preview callback still ships uint16 (the addon's preview
+			// loop unpacks 16-bit via `array.array("H")`).  Quantize
+			// here, clamping HDR > 1.0 to display-max — this is just
+			// the preview, not the final image; HDR is preserved in
+			// `rgba_` for the final `_set_pass_rect` delivery.
+			if( image_callback_ ) {
+				const unsigned int region_width = rc_right - rc_left + 1;
+				const unsigned int region_height = rc_bottom - rc_top + 1;
+				std::vector<unsigned short> region_rgba( region_width * region_height * 4, 0 );
+
+				for( unsigned int y = 0; y < region_height; ++y ) {
+					for( unsigned int x = 0; x < region_width; ++x ) {
+						const unsigned int src = ( ( rc_top + y ) * width + ( rc_left + x ) ) * 4;
+						const unsigned int dst = ( y * region_width + x ) * 4;
+						for( int c = 0; c < 4; ++c ) {
+							float v = pImageData[src + c];
+							if( v < 0.0f ) v = 0.0f;
+							if( v > 1.0f ) v = 1.0f;
+							region_rgba[dst + c] = static_cast<unsigned short>( v * 65535.0f + 0.5f );
+						}
+					}
 				}
 
 				image_callback_(

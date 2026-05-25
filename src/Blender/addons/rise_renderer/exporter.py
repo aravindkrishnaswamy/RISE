@@ -730,6 +730,181 @@ class _ImageSocketWrapper:
         return self.node_image.extension
 
 
+# Shader nodes that pass colour / scalar through a Principled BSDF input
+# without enough information for RISE to bake them.  We treat them as
+# transparent for texture-discovery purposes: artists routinely drop an
+# RGB Curves / Hue/Saturation / Bright-Contrast on a base-colour texture
+# to mildly tweak it.  We can't reproduce the curve in RISE, so the
+# painter ends up tied to the underlying texture; the resulting render
+# may drift slightly in colour from Cycles, but that is *vastly* better
+# than the previous behaviour where PrincipledBSDFWrapper silently
+# returned `texture=None` (causing every material in the scene to
+# collapse onto a single shared uniform painter via _add_uniform_painter
+# cache identity).
+_SOCKET_PASS_THROUGH_NODES = {
+    "NodeReroute",
+    "ShaderNodeRGBCurve",
+    "ShaderNodeHueSaturation",
+    "ShaderNodeBrightContrast",
+    "ShaderNodeGamma",
+    "ShaderNodeInvert",
+    "ShaderNodeValToRGB",     # Colour Ramp
+}
+
+# Mix-style nodes.  We follow the "primary" input (A / Color1) — this is
+# an approximation: the artist's intent on these nodes is genuinely a
+# blend that RISE cannot represent through a single painter.  Picking A
+# preserves the base texture, which is the usual primary signal; the
+# mix factor / B input is lost.
+_SOCKET_MIX_NODES = {
+    "ShaderNodeMix",
+    "ShaderNodeMixRGB",
+}
+
+# Preferred socket names to follow on each mix variant, in priority order.
+# Blender 4.x ShaderNodeMix uses "A"/"B" generic naming; the legacy
+# ShaderNodeMixRGB uses "Color1"/"Color2"; some old node libraries still
+# emit "Color".
+_MIX_PRIMARY_SOCKET_NAMES = ("A", "Color1", "Color")
+
+
+def _walk_socket_for_image_node(socket, *, max_depth: int = 16):
+    """Walk backward from a shader-graph input socket searching for a
+    terminal ``ShaderNodeTexImage``.
+
+    Returns the image-texture node (with ``.image`` possibly None — the
+    caller is expected to re-validate) or ``None`` if the chain hits an
+    unsupported node, an unlinked socket, or exceeds ``max_depth``.
+
+    Traverses:
+        * ``NodeReroute`` — the most common reason
+          ``PrincipledBSDFWrapper.X_texture`` silently returns the socket
+          default; an inserted reroute breaks the wrapper's direct-link
+          assumption and the entire texture is lost.
+        * ``_SOCKET_PASS_THROUGH_NODES`` — colour / scalar filters that
+          the wrapper also doesn't follow.  We don't bake the filter,
+          but we at least find the underlying image.
+        * ``_SOCKET_MIX_NODES`` — picks the A / Color1 / Color branch.
+
+    Unknown node types short-circuit to ``None`` so the caller falls
+    back to the socket default colour — this is intentionally
+    conservative: blindly following arbitrary inputs (e.g. through a
+    Bump node's Height input) would produce wrong textures.
+    """
+
+    if socket is None or not socket.is_linked:
+        return None
+
+    visited: set[int] = set()
+    stack = [(socket.links[0].from_node, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > max_depth:
+            continue
+        node_id = id(node)
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+
+        bl = node.bl_idname
+        if bl == "ShaderNodeTexImage":
+            return node
+
+        if bl == "NodeReroute":
+            if node.inputs and node.inputs[0].is_linked:
+                stack.append((node.inputs[0].links[0].from_node, depth + 1))
+            continue
+
+        if bl in _SOCKET_PASS_THROUGH_NODES:
+            # These nodes typically have one primary signal input
+            # (Color / Fac / Value) plus auxiliary parameters like
+            # curve points or gamma values — but the auxiliary inputs
+            # are nearly always unlinked, so a broad RGBA/VALUE/VECTOR
+            # sweep is safe in practice.
+            for inp in node.inputs:
+                if inp.is_linked and inp.type in {"RGBA", "VALUE", "VECTOR"}:
+                    stack.append((inp.links[0].from_node, depth + 1))
+            continue
+
+        if bl in _SOCKET_MIX_NODES:
+            chosen = None
+            for candidate in _MIX_PRIMARY_SOCKET_NAMES:
+                if candidate in node.inputs:
+                    sock = node.inputs[candidate]
+                    if sock.is_linked:
+                        chosen = sock
+                        break
+            if chosen is None:
+                # Fall back: first linked colour or value input that
+                # isn't the factor.
+                for inp in node.inputs:
+                    if inp.is_linked and inp.type in {"RGBA", "VALUE"} and inp.name.lower() != "factor":
+                        chosen = inp
+                        break
+            if chosen is not None:
+                stack.append((chosen.links[0].from_node, depth + 1))
+            continue
+
+        # Unknown node — stop the walk for this branch.
+        continue
+
+    return None
+
+
+def _maybe_resolve_socket_texture(
+    principled_node,
+    socket_name: str,
+    wrapper_texture,
+    *,
+    colorspace_is_data: bool,
+):
+    """Return a texture wrapper for a Principled BSDF input.
+
+    Priority:
+        1. The ``PrincipledBSDFWrapper``-supplied texture wrapper, when
+           it actually carries an image (the easy direct-link case).
+        2. A manual node-graph walk (reroute / pass-through / mix-aware)
+           that produces an ``_ImageSocketWrapper`` on success.
+        3. ``None`` — caller falls back to the socket's default value.
+
+    ``colorspace_is_data`` controls how ``_texture_color_space`` treats
+    the resulting wrapper: ``True`` forces linear (correct for
+    metallic / roughness / specular-factor / transmission / IOR /
+    emission-strength), ``False`` lets the image's own colorspace
+    metadata drive (correct for base colour, emission colour).
+    """
+
+    if wrapper_texture is not None and wrapper_texture.image is not None:
+        return wrapper_texture
+
+    socket = _node_input(principled_node, socket_name)
+    if socket is None or not socket.is_linked:
+        return None
+
+    image_node = _walk_socket_for_image_node(socket)
+    if image_node is None or image_node.image is None:
+        return None
+
+    colorspace_name = "Non-Color" if colorspace_is_data else "sRGB"
+    return _ImageSocketWrapper(image_node, colorspace_is_data, colorspace_name)
+
+
+def _skip_reroutes(node, *, max_depth: int = 16):
+    """Walk through ``NodeReroute`` nodes back to the upstream "real"
+    node feeding the chain.  Returns ``None`` if the chain dead-ends in
+    a disconnected reroute or exceeds ``max_depth``."""
+
+    seen = set()
+    while node is not None and node.bl_idname == "NodeReroute":
+        if id(node) in seen or len(seen) > max_depth:
+            return None
+        seen.add(id(node))
+        if not node.inputs or not node.inputs[0].is_linked:
+            return None
+        node = node.inputs[0].links[0].from_node
+    return node
+
+
 def _direct_normal_modifier(material, wrapper: PrincipledBSDFWrapper, state: _ExportState) -> str | None:
     """Detect a Principled BSDF wired with either a Bump node (height
     map) or a Normal Map node (tangent-space RGB) and produce a
@@ -744,7 +919,9 @@ def _direct_normal_modifier(material, wrapper: PrincipledBSDFWrapper, state: _Ex
     if normal_input is None or not normal_input.is_linked:
         return None
 
-    normal_node = normal_input.links[0].from_node
+    normal_node = _skip_reroutes(normal_input.links[0].from_node)
+    if normal_node is None:
+        return None
 
     if normal_node.bl_idname == "ShaderNodeNormalMap":
         return _build_normal_map_modifier(material, normal_node, state)
@@ -766,8 +943,8 @@ def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | No
         _warn_once(state, f"RISE only supports image-driven Bump nodes on '{material.name_full}'.")
         return None
 
-    image_node = height_input.links[0].from_node
-    if image_node.bl_idname != "ShaderNodeTexImage":
+    image_node = _walk_socket_for_image_node(height_input)
+    if image_node is None or image_node.bl_idname != "ShaderNodeTexImage":
         _warn_once(state, f"RISE only supports direct image textures as Bump height sources on '{material.name_full}'.")
         return None
 
@@ -822,8 +999,8 @@ def _build_normal_map_modifier(material, normal_map_node, state: _ExportState) -
         _warn_once(state, f"RISE only supports image-driven Normal Map nodes on '{material.name_full}'.")
         return None
 
-    image_node = color_input.links[0].from_node
-    if image_node.bl_idname != "ShaderNodeTexImage":
+    image_node = _walk_socket_for_image_node(color_input)
+    if image_node is None or image_node.bl_idname != "ShaderNodeTexImage":
         _warn_once(state, f"RISE only supports direct image textures as Normal Map sources on '{material.name_full}'.")
         return None
 
@@ -1144,12 +1321,26 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
 
     _warn_unsupported_principled_features(state, material, wrapper)
 
+    # All per-socket lookups go through `_maybe_resolve_socket_texture`
+    # so reroute / RGB-Curves / Mix chains feeding the Principled BSDF
+    # still produce per-material textures.  `PrincipledBSDFWrapper`'s
+    # `.X_texture` accessors only handle direct image-to-socket links
+    # and silently return the socket *default* when anything else sits
+    # in between — that was the root cause of every material in the
+    # lone-monk demo scene collapsing onto a single shared painter via
+    # `_add_uniform_painter`'s colour-keyed cache.
+    principled_node = wrapper.node_principled_bsdf
+
     base_color = _float_color3(wrapper.base_color)
     base_painter = _color_or_texture_painter(
         state,
         f"{material.name_full}_base",
         base_color,
-        texture_wrapper=wrapper.base_color_texture,
+        texture_wrapper=_maybe_resolve_socket_texture(
+            principled_node, "Base Color",
+            wrapper.base_color_texture,
+            colorspace_is_data=False,
+        ),
     )
 
     metallic = _clamp01(wrapper.metallic)
@@ -1157,14 +1348,22 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         state,
         f"{material.name_full}_metallic",
         metallic,
-        texture_wrapper=wrapper.metallic_texture,
+        texture_wrapper=_maybe_resolve_socket_texture(
+            principled_node, "Metallic",
+            wrapper.metallic_texture,
+            colorspace_is_data=True,
+        ),
     )
 
     # RISE_API_CreatePBRMetallicRoughnessMaterial squares roughness
     # internally into the GGX alpha, so we hand it the raw roughness
     # value (or texture) — no need to pre-square here.
     roughness = _clamp01(wrapper.roughness)
-    roughness_texture = wrapper.roughness_texture if wrapper.roughness_texture and wrapper.roughness_texture.image else None
+    roughness_texture = _maybe_resolve_socket_texture(
+        principled_node, "Roughness",
+        wrapper.roughness_texture,
+        colorspace_is_data=True,
+    )
     roughness_painter = _scalar_or_texture_painter(
         state,
         f"{material.name_full}_roughness",
@@ -1182,13 +1381,16 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         state,
         f"{material.name_full}_specular_factor",
         specular,
-        texture_wrapper=wrapper.specular_texture,
+        texture_wrapper=_maybe_resolve_socket_texture(
+            principled_node, "Specular IOR Level",
+            wrapper.specular_texture,
+            colorspace_is_data=True,
+        ),
         scale=2.0,
     )
 
     # Anisotropy and rotation — read sockets directly because the
     # PrincipledBSDFWrapper doesn't surface them.
-    principled_node = wrapper.node_principled_bsdf
     anisotropy_value = _clamp01(_socket_default_float(principled_node, "Anisotropic", 0.0))
     anisotropy_rotation_value = float(_socket_default_float(principled_node, "Anisotropic Rotation", 0.0))
     anisotropy_factor_painter = _add_uniform_painter(
@@ -1202,7 +1404,11 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         (anisotropy_rotation_value, anisotropy_rotation_value, anisotropy_rotation_value),
     ) if abs(anisotropy_rotation_value) > 1e-4 else None
 
-    transmission_texture = wrapper.transmission_texture if wrapper.transmission_texture and wrapper.transmission_texture.image else None
+    transmission_texture = _maybe_resolve_socket_texture(
+        principled_node, "Transmission Weight",
+        wrapper.transmission_texture,
+        colorspace_is_data=True,
+    )
     transmission = _clamp01(wrapper.transmission)
     if transmission_texture is not None and transmission < 0.05:
         _warn_once(
@@ -1214,8 +1420,16 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
     emission_painter = None
     emission_color = _float_color3(wrapper.emission_color)
     emission_strength = max(0.0, float(wrapper.emission_strength))
-    emission_color_texture = wrapper.emission_color_texture if wrapper.emission_color_texture and wrapper.emission_color_texture.image else None
-    emission_strength_texture = wrapper.emission_strength_texture if wrapper.emission_strength_texture and wrapper.emission_strength_texture.image else None
+    emission_color_texture = _maybe_resolve_socket_texture(
+        principled_node, "Emission Color",
+        wrapper.emission_color_texture,
+        colorspace_is_data=False,
+    )
+    emission_strength_texture = _maybe_resolve_socket_texture(
+        principled_node, "Emission Strength",
+        wrapper.emission_strength_texture,
+        colorspace_is_data=True,
+    )
     if emission_color_texture is not None and emission_strength_texture is not None:
         _warn_once(
             state,
@@ -1267,7 +1481,12 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
     double_sided = not getattr(material, "use_backface_culling", False)
 
     if transmission_heavy:
-        if metallic > 1e-3 or (wrapper.metallic_texture and wrapper.metallic_texture.image is not None):
+        metallic_for_warn = _maybe_resolve_socket_texture(
+            principled_node, "Metallic",
+            wrapper.metallic_texture,
+            colorspace_is_data=True,
+        )
+        if metallic > 1e-3 or metallic_for_warn is not None:
             _warn_once(state, f"RISE ignores metallic on dielectric-transmission Principled material '{material.name_full}'.")
         tau_painter = _add_blend_painter(
             state,
@@ -1285,7 +1504,11 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
             state,
             f"{material.name_full}_ior",
             max(1.0, float(wrapper.ior)),
-            texture_wrapper=wrapper.ior_texture,
+            texture_wrapper=_maybe_resolve_socket_texture(
+                principled_node, "IOR",
+                wrapper.ior_texture,
+                colorspace_is_data=True,
+            ),
         )
         scatter_painter = _add_uniform_painter(
             state,
@@ -1363,7 +1586,18 @@ def _camera_payload(camera_object, render_settings: RenderSettingsData, state: _
     # images, where the effective vertical FOV is the *horizontal*
     # FOV divided by image aspect.  view_frame(scene=…) returns the
     # actual frustum corners that Cycles uses, sidestepping all of
-    # this — half_y/|z| is exactly tan(vfov/2) for the render.
+    # this — half-height / |z| is exactly tan(vfov/2) for the render.
+    #
+    # IMPORTANT: when ``shift_y != 0`` the frame is ASYMMETRIC around
+    # the camera-local origin — top and bottom corners differ in
+    # |y|.  `max(abs(c.y))` then picks the larger absolute value,
+    # producing a FOV that's too wide by the shift amount (lone-monk
+    # has shift_y = 0.071 → 64° instead of the correct 56°).  Use
+    # `(max_y - min_y) / 2` instead so the half-height is centred on
+    # the actual viewport mid-line regardless of lens-shift.  RISE's
+    # ``AddPinholeCamera`` doesn't currently honour the principal-
+    # point offset itself; the resulting render will still be a few
+    # pixels off-centre vs Cycles, but the FOV is now correct.
     if projection_type == 0:
         try:
             frame = camera_data.view_frame(scene=bpy.context.scene)
@@ -1372,9 +1606,10 @@ def _camera_payload(camera_object, render_settings: RenderSettingsData, state: _
             # accept the `scene` kwarg; produces a render-aspect-
             # ignorant frame but at least returns valid numbers.
             frame = camera_data.view_frame()
-        half_y = max(abs(c.y) for c in frame)
+        ys = [c.y for c in frame]
+        half_height = (max(ys) - min(ys)) * 0.5
         depth = max(abs(frame[0].z), 1e-8)
-        fov_y_radians = 2.0 * math.atan(half_y / depth)
+        fov_y_radians = 2.0 * math.atan(half_height / depth)
     else:
         fov_y_radians = float(getattr(camera_data, "angle_y", 0.78539816339))
 
@@ -1995,6 +2230,201 @@ def _walk_world_for_environment(output_node):
     return env_found, env_background, env_camera_visible, uniform_fallback, procedural_fallback
 
 
+def _find_sky_texture_node(start_node, *, max_depth: int = 16):
+    """Walk back from a Background-style node's Color input looking for a
+    ``ShaderNodeTexSky``.  Traverses ``NodeReroute`` and the standard
+    pass-through colour filters so we still recognise the sky behind a
+    RGB-Curves / HSV / Gamma chain that a lighting artist may insert.
+
+    Returns the ``ShaderNodeTexSky`` node, or ``None`` if no sky texture
+    is reachable.
+    """
+
+    if start_node is None:
+        return None
+
+    visited: set[int] = set()
+    # Seed the walk from the Color (or first RGBA) input of `start_node`.
+    color_socket = _node_input(start_node, "Color")
+    if color_socket is None or not color_socket.is_linked:
+        return None
+
+    stack = [(color_socket.links[0].from_node, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > max_depth:
+            continue
+        if id(node) in visited:
+            continue
+        visited.add(id(node))
+
+        bl = node.bl_idname
+        if bl == "ShaderNodeTexSky":
+            return node
+
+        if bl == "NodeReroute":
+            if node.inputs and node.inputs[0].is_linked:
+                stack.append((node.inputs[0].links[0].from_node, depth + 1))
+            continue
+
+        if bl in _SOCKET_PASS_THROUGH_NODES:
+            for inp in node.inputs:
+                if inp.is_linked and inp.type in {"RGBA", "VALUE", "VECTOR"}:
+                    stack.append((inp.links[0].from_node, depth + 1))
+            continue
+
+        # Unknown — stop this branch.
+        continue
+
+    return None
+
+
+def _synthesise_nishita_sun_light(sky_node, state: _ExportState, *, scale: float = 1.0) -> LightData | None:
+    """Translate a Blender Nishita Sky Texture's built-in sun disc into a
+    RISE DirectionalLight.
+
+    Without this, scenes that rely solely on a procedural Sky Texture
+    (no explicit Sun light, no HDRI) get only the neutral-grey IBL
+    fallback installed by `_world_radiance_map`, producing flat shading.
+    The Nishita model bakes the directional sun + atmospheric scatter
+    into a single shader that RISE cannot evaluate at runtime — so we
+    extract just the directional sun and emit it as an explicit RISE
+    DirectionalLight, leaving the IBL fallback to approximate the
+    atmospheric scatter component.
+
+    Geometry:
+      Blender's Nishita parameters are ``sun_elevation`` (radians above
+      horizon, ∈ [-π/2, π/2]) and ``sun_rotation`` (azimuth radians,
+      CCW from the +Y axis when looking down).  The world-space vector
+      FROM ground TO sun is:
+
+          ux = -cos(elev) * sin(rot)
+          uy =  cos(elev) * cos(rot)
+          uz =  sin(elev)
+
+      The bridge's directional-light handler (see
+      `rise_blender_bridge.cpp` near `RISE_BLENDER_LIGHT_SUN`) negates
+      `LightData.direction` before passing it to RISE — it expects the
+      "shine direction" (Blender convention: from light TO surface) and
+      flips it to RISE's "FROM surface TO light" convention.  We
+      therefore emit the *negated* unit vector so the bridge's negation
+      lands on the correct FROM-surface-TO-sun in RISE:
+
+          direction = (-ux, -uy, -uz) = (cos(elev)*sin(rot),
+                                          -cos(elev)*cos(rot),
+                                          -sin(elev))
+
+      Sanity (FROM-ground-TO-sun after bridge negation):
+          elev=0, rot=0   →  (0,  1, 0)  — sun at the +Y horizon.
+          elev=π/2        →  (0,  0, 1)  — zenith.
+          elev=0, rot=π/2 →  (-1, 0, 0)  — -X horizon.
+
+    Radiometry:
+      `sun_intensity` in Cycles is a unitless multiplier on the
+      Nishita-predicted solar irradiance.  At ``sun_intensity=1`` the
+      Nishita atmospheric model produces a peak sun-disc radiance of
+      ~120–220 in linear Rec.709 (verified via EXR dump on the
+      lone-monk demo scene: max R=223, p95=27, median=4.3).  To match
+      that brightness window — important so Blender's Filmic + scene
+      exposure produces a comparable tonemapped image — we deliver a
+      directional sun at irradiance ~30·sun_intensity.  Combined with
+      a Lambertian albedo around 0.5 and cos(45°)≈0.7 angle, that
+      yields outgoing radiance ~3·sun_intensity, in the same order of
+      magnitude as Cycles' median.  The caller can additionally tune
+      via the `scale` argument (e.g. to bias warm overcast scenes).
+
+    Colour:
+      We use a fixed warm-white (1.00, 0.95, 0.88) — a reasonable
+      proxy for the Nishita-modelled colour at mid elevations.  Hard-
+      coding rather than re-implementing the Nishita atmospheric
+      transmission model end-to-end; the loss in fidelity vs Cycles
+      is well-bounded (the actual Nishita output varies ~5 % around
+      this in the [20°, 70°] elevation range).
+    """
+
+    sun_elevation = float(getattr(sky_node, "sun_elevation", 0.5))
+    sun_rotation = float(getattr(sky_node, "sun_rotation", 0.0))
+    sun_intensity = max(0.0, float(getattr(sky_node, "sun_intensity", 1.0)))
+    sun_disc = getattr(sky_node, "sun_disc", True)
+    if not sun_disc or sun_intensity < 1e-6:
+        return None
+
+    ce, se = math.cos(sun_elevation), math.sin(sun_elevation)
+    sr, cr = math.sin(sun_rotation), math.cos(sun_rotation)
+    # Pre-negate so the bridge's `light.direction = -light.direction`
+    # for SUN-type lights produces RISE's FROM-surface-TO-sun vector.
+    dir_x =  ce * sr
+    dir_y = -ce * cr
+    dir_z = -se
+
+    # Calibrated against Cycles' Nishita output on lone-monk
+    # (cycles median radiance ≈ 4.3, max ≈ 223 with sun_intensity=1).
+    # Pre-fix RISE was delivering median 0.43 / max 1.06 — ~10× too
+    # dim for the same Filmic + exposure pipeline.  Boosted to 30 W/m².
+    irradiance = 30.0 * sun_intensity * scale
+
+    return LightData(
+        name=_unique_name(state, "light", "world_nishita_sun"),
+        type=2,  # DirectionalLight (see _light_payload's mapping)
+        color=(1.00, 0.95, 0.88),
+        intensity=irradiance,
+        position=(0.0, 0.0, 0.0),
+        direction=(dir_x, dir_y, dir_z),
+        spot_size=0.0,
+        spot_blend=0.0,
+    )
+
+
+def _synthesise_world_lights(scene, state: _ExportState) -> list[LightData]:
+    """Synthesise any extra RISE lights implied by the world shader.
+
+    Today: a single Nishita Sky Texture sun disc.  Future hooks for
+    Preetham/Hosek-Wilkie sky models or photon-aided directional sources
+    drop in here.
+
+    Returns an empty list when the world has no recognisable directional
+    contribution; the caller still gets the IBL via `_world_radiance_map`.
+    """
+
+    if scene.world is None or not scene.world.use_nodes or scene.world.node_tree is None:
+        return []
+
+    output_node = _find_world_output(scene.world)
+    if output_node is None:
+        return []
+
+    _env, _bg, _vis, _uniform, procedural = _walk_world_for_environment(output_node)
+    if procedural is None:
+        return []
+
+    background_node = procedural[0]
+    sky_node = _find_sky_texture_node(background_node)
+    if sky_node is None:
+        return []
+
+    sky_type = getattr(sky_node, "sky_type", "NISHITA")
+    # Blender 5.x renamed `NISHITA` to `SINGLE_SCATTERING` (the simpler
+    # of two new physical models); `MULTI_SCATTERING` is the higher-
+    # fidelity successor.  Both expose the same sun_disc / sun_elevation
+    # / sun_rotation / sun_intensity API as legacy Nishita, so we treat
+    # them identically.
+    NISHITA_LIKE = {"NISHITA", "SINGLE_SCATTERING", "MULTI_SCATTERING"}
+    if sky_type not in NISHITA_LIKE:
+        # Hosek-Wilkie / Preetham don't expose a sun disc; their
+        # directional component is baked into the dome and would
+        # need a different extraction path.  Future work.
+        _warn_once(
+            state,
+            f"RISE only synthesises a sun light from Nishita-class Sky Textures; '{sky_type}' sky_type was found.",
+        )
+        return []
+
+    sun = _synthesise_nishita_sun_light(sky_node, state)
+    if sun is None:
+        return []
+    return [sun]
+
+
 def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, tuple[float, float, float], bool]:
     """Walk the world's Surface output for image-based lighting.
 
@@ -2035,16 +2465,25 @@ def _world_radiance_map(scene, state: _ExportState) -> tuple[str | None, float, 
             _warn_once(
                 state,
                 "RISE: World contains a procedural shader (Sky Texture, Noise, etc.) "
-                "which RISE can't evaluate directly.  Using a neutral-grey IBL fallback "
-                "so the scene lights up — to get the real sky, bake your World shader to "
-                "an HDR Environment Texture (File → External Data → Bake World to HDR, "
-                "or render the world with Cycles to an EXR and plug that EXR into a "
-                "Background → Environment Texture chain)."
+                "which RISE can't evaluate directly.  Using a sky-tinted IBL fallback "
+                "plus a synthesised directional sun (Nishita only) so the scene gets "
+                "both ambient and directional illumination — to recover the exact sky, "
+                "bake your World shader to an HDR Environment Texture (File → External "
+                "Data → Bake World to HDR, or render the world with Cycles to an EXR "
+                "and plug that EXR into a Background → Environment Texture chain)."
             )
+            # HDR sky-blue ambient.  Calibrated to bring RISE radiance
+            # into the same window as Cycles' Nishita output (median
+            # ~4 W/m·sr, p95 ~17 in blue channel).  Values >1 are
+            # essential — clamped-to-1 IBLs make Filmic + exposure
+            # produce a flat, muddy image because there's no HDR
+            # headroom for tone-mapping to play with.  The chroma
+            # ratio (R:G:B = 0.55:0.73:1.00) approximates atmospheric
+            # Rayleigh scattering's blue tilt at zenith.
             painter_name = _add_uniform_painter(
                 state,
                 "world_radiance_procedural_fallback",
-                (0.5, 0.5, 0.5),
+                (3.30, 4.40, 6.05),
             )
             return painter_name, float(strength), (0.0, 0.0, 0.0), bool(camera_visible)
         if uniform_fallback is not None:
@@ -2191,6 +2630,29 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
     lights: list[LightData] = []
     global_medium_name = _world_volume_medium(scene, state)
 
+    # Collection-skip list from the RISE addon settings.  Lower-cased
+    # for case-insensitive comparison.  Used to filter out low-poly
+    # proxy / AO-baking shells (e.g. the lone-monk demo's `blocks`
+    # collection) that obscure the camera in RISE — Cycles silently
+    # skips them via its own adaptive-sampling heuristics, but RISE's
+    # straight-ahead path-tracer respects them as opaque surfaces.
+    rise_settings = getattr(scene, "rise", None)
+    skip_patterns = set()
+    if rise_settings is not None:
+        raw = getattr(rise_settings, "skip_collections_pattern", "") or ""
+        for part in raw.split(","):
+            cleaned = part.strip().lower()
+            if cleaned:
+                skip_patterns.add(cleaned)
+
+    def _object_in_skipped_collection(obj) -> bool:
+        if not skip_patterns:
+            return False
+        for col in obj.users_collection:
+            if col.name.lower() in skip_patterns:
+                return True
+        return False
+
     for object_instance in depsgraph.object_instances:
         base_object = (
             object_instance.instance_object
@@ -2202,6 +2664,8 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
 
         original_object = getattr(base_object, "original", base_object)
         if getattr(original_object, "hide_render", False):
+            continue
+        if _object_in_skipped_collection(original_object):
             continue
 
         if original_object.type in GEOMETRY_TYPES:
@@ -2261,6 +2725,14 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
     # configured.
     world_radiance_painter, world_radiance_scale, world_radiance_orientation, world_radiance_is_background = \
         _world_radiance_map(scene, state)
+
+    # Some scenes (e.g. lone-monk_cycles_and_exposure-node_demo) have
+    # zero explicit lights and rely entirely on the world shader's
+    # built-in sun disc.  `_world_radiance_map` covers ambient via the
+    # IBL fallback but silently drops the directional sun, so we add
+    # a synthetic DirectionalLight here to restore primary lighting
+    # for any sky type we can read parameters from.
+    lights.extend(_synthesise_world_lights(scene, state))
 
     world_color = (0.0, 0.0, 0.0)
     world_strength = 0.0

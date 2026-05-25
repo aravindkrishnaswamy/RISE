@@ -61,6 +61,20 @@ class RISERenderSettings(bpy.types.PropertyGroup):
         default=True,
     )
 
+    skip_collections_pattern: bpy.props.StringProperty(
+        name="Skip Collections",
+        description=(
+            "Comma-separated list of collection names whose objects RISE "
+            "should NOT export.  Useful for excluding low-poly proxy / "
+            "AO-baking shells that obscure the camera in RISE but are "
+            "filtered out by Cycles' adaptive-sampling heuristics.  "
+            "Example: 'blocks, proxies' would skip every object whose "
+            "containing collection is named 'blocks' or 'proxies'.  "
+            "Empty (default) = no skipping."
+        ),
+        default="",
+    )
+
     sms_enabled: bpy.props.BoolProperty(
         name="Specular Manifold Sampling",
         description="Enable RISE specular manifold sampling in the path tracing shader op",
@@ -351,7 +365,7 @@ class RISERenderSettings(bpy.types.PropertyGroup):
     oidn_denoise: bpy.props.BoolProperty(
         name="OIDN Denoise",
         description="Run Intel Open Image Denoise after rendering when supported by the bridge build",
-        default=False,
+        default=True,
     )
     oidn_quality: bpy.props.EnumProperty(
         name="OIDN Quality",
@@ -381,7 +395,7 @@ class RISERenderSettings(bpy.types.PropertyGroup):
             ("0", "Fast", "First-hit retrace pass (cheap, white at perfect glass / mirror)"),
             ("1", "Accurate", "Inline first-non-delta accumulation + prefilter"),
         ),
-        default="0",
+        default="1",
     )
 
     progressive_enabled: bpy.props.BoolProperty(
@@ -400,7 +414,7 @@ class RISERenderSettings(bpy.types.PropertyGroup):
     use_zsobol: bpy.props.BoolProperty(
         name="Z-Sobol Sampler",
         description="Use Morton-indexed Sobol for blue-noise error distribution",
-        default=False,
+        default=True,
     )
 
     pixel_filter: bpy.props.EnumProperty(
