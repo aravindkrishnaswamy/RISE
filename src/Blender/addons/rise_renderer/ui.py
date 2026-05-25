@@ -37,15 +37,37 @@ class RISE_RENDER_PT_settings(_RISEPanel):
         layout.use_property_decorate = False
 
         settings = context.scene.rise
+        layout.prop(settings, "rasterizer_type")
         layout.prop(settings, "pixel_samples")
         layout.prop(settings, "light_samples")
         layout.prop(settings, "max_recursion")
-        layout.prop(settings, "use_path_tracing")
         layout.prop(settings, "use_world_ambient")
         layout.prop(settings, "choose_one_light")
         layout.prop(settings, "show_lights")
         layout.prop(settings, "use_zsobol")
         layout.prop(settings, "skip_collections_pattern")
+
+        rk = settings.rasterizer_type
+        # BDPT / VCM / MLT subpath knobs — collapsible "Advanced"
+        # row that only shows for the integrators that consume them.
+        if rk in ("3", "4", "5", "6", "7", "8"):
+            sub = layout.box()
+            sub.label(text="Bidirectional / MLT", icon="LIGHT_DATA")
+            sub.prop(settings, "bidir_max_eye_depth")
+            sub.prop(settings, "bidir_max_light_depth")
+        if rk in ("5", "6"):
+            sub = layout.box()
+            sub.label(text="VCM", icon="OUTLINER_OB_LIGHTPROBE")
+            sub.prop(settings, "vcm_merge_radius")
+            sub.prop(settings, "vcm_enable_vc")
+            sub.prop(settings, "vcm_enable_vm")
+        if rk in ("7", "8"):
+            sub = layout.box()
+            sub.label(text="MLT", icon="GROUP_VERTEX")
+            sub.prop(settings, "mlt_bootstrap")
+            sub.prop(settings, "mlt_chains")
+            sub.prop(settings, "mlt_mutations_per_pixel")
+            sub.prop(settings, "mlt_large_step_prob")
 
 
 class RISE_RENDER_PT_path_tracing(_RISEPanel):

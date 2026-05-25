@@ -32,6 +32,7 @@
 #include <Utilities/PathGuidingField.h>
 #include <Utilities/ProgressiveConfig.h>
 #include <Utilities/SMSConfig.h>
+#include <Utilities/SpectralConfig.h>
 #include <Utilities/StabilityConfig.h>
 
 #ifdef RISE_BLENDER_ENABLE_OPENVDB
@@ -1681,61 +1682,200 @@ namespace
 		RISE::RadianceMapConfig radiance_map_config;
 		build_radiance_map_config( scene, radiance_map_config );
 
-		if( settings.use_path_tracing ) {
-			// Pure path tracing — bypasses the shader-op chain and
-			// owns SMS, NEE, MIS, and direct/indirect integration in
-			// one integrator.  This is the modern path; mirrors the
-			// scene-language `pathtracing_pel_rasterizer` chunk.
-			if( !job.SetPathTracingPelRasterizer(
-				std::max<uint32_t>( settings.pixel_samples, 1u ),
-				kShaderName,
-				radiance_map_config,
-				pixel_filter_config,
-				settings.show_lights != 0,
-				sms_config,
+		const uint32_t pixel_samples = std::max<uint32_t>( settings.pixel_samples, 1u );
+		const uint32_t light_samples = std::max<uint32_t>( settings.light_samples, 1u );
+		const uint32_t max_recursion = std::max<uint32_t>( settings.max_recursion, 1u );
+		// Subpath depth fallbacks for BDPT / VCM / MLT: when the
+		// caller leaves bidir_max_*_depth at 0, default to the
+		// shared `max_recursion` knob (already exposed in the UI).
+		const uint32_t bidir_eye   = settings.bidir_max_eye_depth   > 0u ? settings.bidir_max_eye_depth   : max_recursion;
+		const uint32_t bidir_light = settings.bidir_max_light_depth > 0u ? settings.bidir_max_light_depth : max_recursion;
+
+		// Resolve the rasterizer kind.  ABI v4 callers populate
+		// `use_path_tracing` and leave `rasterizer_kind = 0`; that
+		// combination means "use PT-pel if use_path_tracing else
+		// legacy pixelpel" — preserving the v4 behaviour.  ABI v5
+		// callers set `rasterizer_kind` directly and we ignore
+		// `use_path_tracing`.
+		uint32_t kind = settings.rasterizer_kind;
+		if( kind == RISE_BLENDER_RASTERIZER_PIXELPEL ) {
+			kind = settings.use_path_tracing
+				? RISE_BLENDER_RASTERIZER_PT_PEL
+				: RISE_BLENDER_RASTERIZER_PIXELPEL;
+		}
+
+		// Spectral integrators all share a default SpectralConfig:
+		// 380–780 nm visible range, 10 bins, 1 stochastic spectral
+		// sample/pixel.  Future improvement: expose nm range / bin
+		// count / HWSS toggle in the addon UI.
+		RISE::SpectralConfig spectral_config;
+
+		switch( kind )
+		{
+		case RISE_BLENDER_RASTERIZER_PIXELPEL:
+			// Legacy non-PT path — drives the recursive shader-op
+			// stack (`DefaultDirectLighting` etc.).  SMS unavailable
+			// here because SMS lives in the PT integrator only.
+			if( !job.SetPixelBasedPelRasterizer(
+				pixel_samples, light_samples, max_recursion,
+				kShaderName, radiance_map_config, 0, 0.0,
+				pixel_filter_config, settings.show_lights != 0,
 				settings.oidn_denoise != 0,
-				oidn_quality,
-				oidn_device,
-				oidn_prefilter,
-				guiding_config,
-				adaptive_config,
-				stability_config,
-				progressive_config ) )
+				oidn_quality, oidn_device, oidn_prefilter,
+				guiding_config, adaptive_config, stability_config, progressive_config ) )
 			{
-				write_error( error_message, error_message_size, "Failed to create the path tracing rasterizer" );
+				write_error( error_message, error_message_size, "Failed to create the pixel rasterizer" );
 				return false;
 			}
+			return true;
 
+		case RISE_BLENDER_RASTERIZER_PT_PEL:
+			if( !job.SetPathTracingPelRasterizer(
+				pixel_samples, kShaderName, radiance_map_config,
+				pixel_filter_config, settings.show_lights != 0,
+				sms_config, settings.oidn_denoise != 0,
+				oidn_quality, oidn_device, oidn_prefilter,
+				guiding_config, adaptive_config, stability_config, progressive_config ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create the PT-pel rasterizer" );
+				return false;
+			}
+			return true;
+
+		case RISE_BLENDER_RASTERIZER_PT_SPECTRAL:
+			if( !job.SetPathTracingSpectralRasterizer(
+				pixel_samples, kShaderName, radiance_map_config,
+				pixel_filter_config, settings.show_lights != 0,
+				spectral_config, sms_config,
+				settings.oidn_denoise != 0,
+				oidn_quality, oidn_device, oidn_prefilter,
+				adaptive_config, stability_config, progressive_config ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create the PT-spectral rasterizer" );
+				return false;
+			}
+			return true;
+
+		case RISE_BLENDER_RASTERIZER_BDPT_PEL:
+			if( !job.SetBDPTPelRasterizer(
+				pixel_samples, bidir_eye, bidir_light,
+				kShaderName, radiance_map_config, pixel_filter_config,
+				settings.show_lights != 0,
+				settings.oidn_denoise != 0,
+				oidn_quality, oidn_device, oidn_prefilter,
+				guiding_config, adaptive_config, stability_config, progressive_config ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create the BDPT-pel rasterizer" );
+				return false;
+			}
+			return true;
+
+		case RISE_BLENDER_RASTERIZER_BDPT_SPECTRAL:
+			if( !job.SetBDPTSpectralRasterizer(
+				pixel_samples, bidir_eye, bidir_light,
+				kShaderName, radiance_map_config, pixel_filter_config,
+				settings.show_lights != 0,
+				spectral_config,
+				settings.oidn_denoise != 0,
+				oidn_quality, oidn_device, oidn_prefilter,
+				guiding_config, adaptive_config, stability_config, progressive_config ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create the BDPT-spectral rasterizer" );
+				return false;
+			}
+			return true;
+
+		case RISE_BLENDER_RASTERIZER_VCM_PEL:
+		{
+			// enable_vc / enable_vm default to true when both come
+			// in as 0 — otherwise users would have to toggle two
+			// extra knobs just to get default VCM behaviour.
+			const bool enable_vc = settings.vcm_enable_vc != 0 || ( settings.vcm_enable_vc == 0 && settings.vcm_enable_vm == 0 );
+			const bool enable_vm = settings.vcm_enable_vm != 0 || ( settings.vcm_enable_vc == 0 && settings.vcm_enable_vm == 0 );
+			if( !job.SetVCMPelRasterizer(
+				pixel_samples, bidir_eye, bidir_light,
+				kShaderName, radiance_map_config, pixel_filter_config,
+				settings.show_lights != 0,
+				settings.vcm_merge_radius,
+				enable_vc, enable_vm,
+				settings.oidn_denoise != 0,
+				oidn_quality, oidn_device, oidn_prefilter,
+				guiding_config, adaptive_config, stability_config, progressive_config ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create the VCM-pel rasterizer" );
+				return false;
+			}
 			return true;
 		}
 
-		// Legacy non-PT path — drives the recursive shader-op stack
-		// (`DefaultDirectLighting` etc.).  SMS is unavailable here
-		// because SMS lives in the path-tracing integrator only.
-		if( !job.SetPixelBasedPelRasterizer(
-			std::max<uint32_t>( settings.pixel_samples, 1u ),
-			std::max<uint32_t>( settings.light_samples, 1u ),
-			std::max<uint32_t>( settings.max_recursion, 1u ),
-			kShaderName,
-			radiance_map_config,
-			0,
-			0.0,
-			pixel_filter_config,
-			settings.show_lights != 0,
-			settings.oidn_denoise != 0,
-			oidn_quality,
-			oidn_device,
-			oidn_prefilter,
-			guiding_config,
-			adaptive_config,
-			stability_config,
-			progressive_config ) )
+		case RISE_BLENDER_RASTERIZER_VCM_SPECTRAL:
 		{
-			write_error( error_message, error_message_size, "Failed to create the pixel rasterizer" );
-			return false;
+			const bool enable_vc = settings.vcm_enable_vc != 0 || ( settings.vcm_enable_vc == 0 && settings.vcm_enable_vm == 0 );
+			const bool enable_vm = settings.vcm_enable_vm != 0 || ( settings.vcm_enable_vc == 0 && settings.vcm_enable_vm == 0 );
+			if( !job.SetVCMSpectralRasterizer(
+				pixel_samples, bidir_eye, bidir_light,
+				kShaderName, radiance_map_config, pixel_filter_config,
+				settings.show_lights != 0,
+				spectral_config,
+				settings.vcm_merge_radius,
+				enable_vc, enable_vm,
+				settings.oidn_denoise != 0,
+				oidn_quality, oidn_device, oidn_prefilter,
+				guiding_config, adaptive_config, stability_config, progressive_config ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create the VCM-spectral rasterizer" );
+				return false;
+			}
+			return true;
 		}
 
-		return true;
+		case RISE_BLENDER_RASTERIZER_MLT_PEL:
+		{
+			// PSSMLT defaults — tuned for the same quality envelope
+			// as production MLT scenes in scenes/FeatureBased.
+			const uint32_t n_bootstrap = settings.mlt_bootstrap > 0 ? settings.mlt_bootstrap : 10000u;
+			const uint32_t n_chains    = settings.mlt_chains    > 0 ? settings.mlt_chains    : 8u;
+			const uint32_t mutations   = settings.mlt_mutations_per_pixel > 0 ? settings.mlt_mutations_per_pixel : pixel_samples;
+			const double   large_step  = settings.mlt_large_step_prob > 0.0f ? double( settings.mlt_large_step_prob ) : 0.3;
+			if( !job.SetMLTRasterizer(
+				bidir_eye, bidir_light,
+				n_bootstrap, n_chains, mutations, large_step,
+				kShaderName, settings.show_lights != 0,
+				settings.oidn_denoise != 0,
+				oidn_quality, oidn_device, oidn_prefilter,
+				pixel_filter_config, stability_config ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create the MLT-pel rasterizer" );
+				return false;
+			}
+			return true;
+		}
+
+		case RISE_BLENDER_RASTERIZER_MLT_SPECTRAL:
+		{
+			const uint32_t n_bootstrap = settings.mlt_bootstrap > 0 ? settings.mlt_bootstrap : 10000u;
+			const uint32_t n_chains    = settings.mlt_chains    > 0 ? settings.mlt_chains    : 8u;
+			const uint32_t mutations   = settings.mlt_mutations_per_pixel > 0 ? settings.mlt_mutations_per_pixel : pixel_samples;
+			const double   large_step  = settings.mlt_large_step_prob > 0.0f ? double( settings.mlt_large_step_prob ) : 0.3;
+			if( !job.SetMLTSpectralRasterizer(
+				bidir_eye, bidir_light,
+				n_bootstrap, n_chains, mutations, large_step,
+				kShaderName, settings.show_lights != 0,
+				spectral_config,
+				settings.oidn_denoise != 0,
+				oidn_quality, oidn_device, oidn_prefilter,
+				pixel_filter_config, stability_config ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create the MLT-spectral rasterizer" );
+				return false;
+			}
+			return true;
+		}
+
+		default:
+			write_error( error_message, error_message_size, "Unknown rasterizer kind" );
+			return false;
+		}
 	}
 }
 

@@ -121,6 +121,19 @@ class RenderSettingsData:
     pixel_filter_param_a: float
     pixel_filter_param_b: float
     temporary_directory: str
+    # ABI v5 — rasterizer selection + per-rasterizer config.  Default
+    # 0 makes the bridge fall back to the legacy use_path_tracing
+    # boolean so older addons keep working.
+    rasterizer_kind: int = 0
+    bidir_max_eye_depth: int = 0
+    bidir_max_light_depth: int = 0
+    vcm_merge_radius: float = 0.0
+    vcm_enable_vc: bool = True
+    vcm_enable_vm: bool = True
+    mlt_bootstrap: int = 0
+    mlt_chains: int = 0
+    mlt_mutations_per_pixel: int = 0
+    mlt_large_step_prob: float = 0.0
 
 
 @dataclass
@@ -2150,6 +2163,18 @@ def build_render_settings(scene) -> RenderSettingsData:
         pixel_filter_param_a=float(rise.pixel_filter_param_a),
         pixel_filter_param_b=float(rise.pixel_filter_param_b),
         temporary_directory=str(temporary_directory),
+        # Rasterizer EnumProperty stores the int as a string — convert
+        # back here.  Default "1" = PT_PEL.
+        rasterizer_kind=int(getattr(rise, "rasterizer_type", "1") or "1"),
+        bidir_max_eye_depth=int(getattr(rise, "bidir_max_eye_depth", 0)),
+        bidir_max_light_depth=int(getattr(rise, "bidir_max_light_depth", 0)),
+        vcm_merge_radius=float(getattr(rise, "vcm_merge_radius", 0.0)),
+        vcm_enable_vc=bool(getattr(rise, "vcm_enable_vc", True)),
+        vcm_enable_vm=bool(getattr(rise, "vcm_enable_vm", True)),
+        mlt_bootstrap=int(getattr(rise, "mlt_bootstrap", 0)),
+        mlt_chains=int(getattr(rise, "mlt_chains", 0)),
+        mlt_mutations_per_pixel=int(getattr(rise, "mlt_mutations_per_pixel", 0)),
+        mlt_large_step_prob=float(getattr(rise, "mlt_large_step_prob", 0.0)),
     )
 
 

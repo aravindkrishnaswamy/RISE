@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 
 
-_EXPECTED_API_VERSION = 4
+_EXPECTED_API_VERSION = 5
 
 
 class BridgeError(RuntimeError):
@@ -222,6 +222,17 @@ class _RenderSettings(ctypes.Structure):
         ("pixel_filter_param_a", ctypes.c_float),
         ("pixel_filter_param_b", ctypes.c_float),
         ("temporary_directory", ctypes.c_char_p),
+        # ABI v5 — rasterizer-type selector + per-rasterizer config.
+        ("rasterizer_kind", ctypes.c_uint32),
+        ("bidir_max_eye_depth", ctypes.c_uint32),
+        ("bidir_max_light_depth", ctypes.c_uint32),
+        ("vcm_merge_radius", ctypes.c_float),
+        ("vcm_enable_vc", ctypes.c_int),
+        ("vcm_enable_vm", ctypes.c_int),
+        ("mlt_bootstrap", ctypes.c_uint32),
+        ("mlt_chains", ctypes.c_uint32),
+        ("mlt_mutations_per_pixel", ctypes.c_uint32),
+        ("mlt_large_step_prob", ctypes.c_float),
     ]
 
 
@@ -659,6 +670,17 @@ class _SceneHandle:
         payload.pixel_filter_param_a = float(settings.pixel_filter_param_a)
         payload.pixel_filter_param_b = float(settings.pixel_filter_param_b)
         payload.temporary_directory = self._cstring(settings.temporary_directory)
+        # ABI v5 rasterizer-type selector + per-rasterizer config.
+        payload.rasterizer_kind = int(getattr(settings, "rasterizer_kind", 0))
+        payload.bidir_max_eye_depth = int(getattr(settings, "bidir_max_eye_depth", 0))
+        payload.bidir_max_light_depth = int(getattr(settings, "bidir_max_light_depth", 0))
+        payload.vcm_merge_radius = float(getattr(settings, "vcm_merge_radius", 0.0))
+        payload.vcm_enable_vc = int(getattr(settings, "vcm_enable_vc", 0))
+        payload.vcm_enable_vm = int(getattr(settings, "vcm_enable_vm", 0))
+        payload.mlt_bootstrap = int(getattr(settings, "mlt_bootstrap", 0))
+        payload.mlt_chains = int(getattr(settings, "mlt_chains", 0))
+        payload.mlt_mutations_per_pixel = int(getattr(settings, "mlt_mutations_per_pixel", 0))
+        payload.mlt_large_step_prob = float(getattr(settings, "mlt_large_step_prob", 0.0))
         return payload
 
 

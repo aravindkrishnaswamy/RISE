@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 4
+#define RISE_BLENDER_API_VERSION 5
 
 #ifdef __cplusplus
 extern "C" {
@@ -107,6 +107,46 @@ enum rise_blender_sms_seeding {
 enum rise_blender_path_guiding_sampling {
 	RISE_BLENDER_PG_ONE_SAMPLE_MIS = 0,
 	RISE_BLENDER_PG_RIS = 1
+};
+
+// Rasterizer / integrator selection.  Matches the Mac/Windows GUI
+// dropdown; the legacy bridge `use_path_tracing` boolean is now
+// derived from this enum for back-compat (kept for v4 ABI parity
+// — v5 callers should set `rasterizer_kind` directly).
+//
+//  PIXELPEL     — Legacy IRasterizer with shader-op chain (no PT).
+//                 Cheapest direct-only rasterizer; no SMS, no MIS,
+//                 no bidirectional connections.  Useful for fast
+//                 viewport-quality previews.
+//  PT_PEL       — Pure path tracing (RGB).  Default since the bridge
+//                 first shipped.  Owns NEE / MIS / SMS / direct +
+//                 indirect in one integrator.
+//  PT_SPECTRAL  — Spectral path tracing (Hero Wavelength Sampling).
+//                 Use for dispersion / wavelength-dependent IORs.
+//  BDPT_PEL     — Bidirectional path tracing (RGB).  Beats PT on
+//                 indirect lighting through small openings (church
+//                 windows, glass-block corridors).
+//  BDPT_SPECTRAL— Spectral BDPT.
+//  VCM_PEL      — Vertex Connection & Merging (RGB).  Adds photon
+//                 merging on top of BDPT — handles caustics and
+//                 "through glass" cases (water-with-pebbles, glass
+//                 spheres) that BDPT can't connect.
+//  VCM_SPECTRAL — Spectral VCM.
+//  MLT_PEL      — Metropolis Light Transport / PSSMLT (RGB).
+//                 Best on scenes with very small light sources or
+//                 hard-to-find caustics; mutates entire paths via
+//                 Markov chains.
+//  MLT_SPECTRAL — Spectral MLT.
+enum rise_blender_rasterizer_kind {
+	RISE_BLENDER_RASTERIZER_PIXELPEL      = 0,
+	RISE_BLENDER_RASTERIZER_PT_PEL        = 1,
+	RISE_BLENDER_RASTERIZER_PT_SPECTRAL   = 2,
+	RISE_BLENDER_RASTERIZER_BDPT_PEL      = 3,
+	RISE_BLENDER_RASTERIZER_BDPT_SPECTRAL = 4,
+	RISE_BLENDER_RASTERIZER_VCM_PEL       = 5,
+	RISE_BLENDER_RASTERIZER_VCM_SPECTRAL  = 6,
+	RISE_BLENDER_RASTERIZER_MLT_PEL       = 7,
+	RISE_BLENDER_RASTERIZER_MLT_SPECTRAL  = 8
 };
 
 typedef struct rise_blender_camera {
@@ -305,6 +345,33 @@ typedef struct rise_blender_render_settings {
 	float pixel_filter_param_b;        // mitchell: C; otherwise 0
 
 	const char* temporary_directory;
+
+	// Rasterizer / integrator selection (ABI v5).  See
+	// `rise_blender_rasterizer_kind`.  When set to anything other
+	// than the legacy PIXELPEL / PT_PEL values, the bridge ignores
+	// the `use_path_tracing` boolean above.
+	uint32_t rasterizer_kind;          // rise_blender_rasterizer_kind
+
+	// BDPT / VCM / MLT — maximum subpath depths.  Default of 0
+	// instructs the bridge to fall back to `max_recursion`.
+	uint32_t bidir_max_eye_depth;
+	uint32_t bidir_max_light_depth;
+
+	// VCM — photon merging radius (0 = scene-auto fallback) and
+	// strategy toggles.  enable_vc + enable_vm both 0 disables VCM
+	// entirely; use one to get pure BDPT or pure SPPM behaviour.
+	float vcm_merge_radius;
+	int vcm_enable_vc;
+	int vcm_enable_vm;
+
+	// MLT / PSSMLT — bootstrap / chain / mutation budget.  Defaults
+	// (0) get rewritten to sensible production values inside the
+	// bridge (n_bootstrap=10000, n_chains=8, mutations_per_pixel=
+	// pixel_samples, large_step_prob=0.3).
+	uint32_t mlt_bootstrap;
+	uint32_t mlt_chains;
+	uint32_t mlt_mutations_per_pixel;
+	float mlt_large_step_prob;
 } rise_blender_render_settings;
 
 typedef struct rise_blender_scene {

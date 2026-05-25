@@ -42,8 +42,90 @@ class RISERenderSettings(bpy.types.PropertyGroup):
     )
     use_path_tracing: bpy.props.BoolProperty(
         name="Path Tracing",
-        description="Use the RISE path tracing shader op for indirect lighting",
+        description="Use the RISE path tracing shader op for indirect lighting (back-compat — use `Rasterizer` enum for v5+)",
         default=True,
+    )
+    rasterizer_type: bpy.props.EnumProperty(
+        name="Rasterizer",
+        description=(
+            "Which RISE integrator to use.  Pel = RGB radiance, "
+            "Spectral = wavelength-resolved (slower but correct for "
+            "dispersion / wavelength-dependent IOR).  PT is the most "
+            "robust general-purpose default.  BDPT improves indirect "
+            "lighting through small openings.  VCM adds photon "
+            "merging on top of BDPT — handles caustics and through-"
+            "glass cases (water-with-pebbles, glass spheres) that "
+            "PT/BDPT can't connect.  MLT mutates entire paths via "
+            "Markov chains and excels with very hard-to-find light "
+            "sources / caustics, at the cost of correlated noise."
+        ),
+        items=(
+            ("1", "Path Tracing (Pel)",      "Pure path tracing, RGB radiance — default"),
+            ("2", "Path Tracing (Spectral)", "Pure path tracing, spectral (HWSS)"),
+            ("3", "BDPT (Pel)",              "Bidirectional path tracing, RGB"),
+            ("4", "BDPT (Spectral)",         "Bidirectional path tracing, spectral"),
+            ("5", "VCM (Pel)",               "Vertex Connection & Merging, RGB — recovers caustics"),
+            ("6", "VCM (Spectral)",          "Vertex Connection & Merging, spectral"),
+            ("7", "MLT (Pel)",               "Metropolis Light Transport / PSSMLT, RGB"),
+            ("8", "MLT (Spectral)",          "Metropolis Light Transport / PSSMLT, spectral"),
+            ("0", "Pixel Rasterizer",        "Legacy shader-op stack, no PT — fastest preview"),
+        ),
+        default="1",
+    )
+
+    # Bidirectional / MLT subpath depth.  Default 0 = "fall back to
+    # `max_recursion`" — exposed as separate knobs in case the user
+    # wants to disable light-subpath connections (set max_light=0).
+    bidir_max_eye_depth: bpy.props.IntProperty(
+        name="Bidir Max Eye Depth",
+        description="Maximum eye-subpath length for BDPT / VCM / MLT (0 = fall back to Max Recursion)",
+        default=0, min=0, max=64,
+    )
+    bidir_max_light_depth: bpy.props.IntProperty(
+        name="Bidir Max Light Depth",
+        description="Maximum light-subpath length for BDPT / VCM / MLT (0 = fall back to Max Recursion)",
+        default=0, min=0, max=64,
+    )
+
+    # VCM-specific knobs.
+    vcm_merge_radius: bpy.props.FloatProperty(
+        name="VCM Merge Radius",
+        description="Photon merge radius in world units (0 = auto from scene bounds)",
+        default=0.0, min=0.0, max=10.0,
+    )
+    vcm_enable_vc: bpy.props.BoolProperty(
+        name="VCM Vertex Connection",
+        description="Enable BDPT-style vertex connection strategies",
+        default=True,
+    )
+    vcm_enable_vm: bpy.props.BoolProperty(
+        name="VCM Vertex Merging",
+        description="Enable photon-map merging strategies (caustic recovery)",
+        default=True,
+    )
+
+    # MLT / PSSMLT knobs.  Defaults of 0 are sentinels that the
+    # bridge rewrites to production-tuned values (10000 bootstrap,
+    # 8 chains, mutations = pixel_samples, large step 0.3).
+    mlt_bootstrap: bpy.props.IntProperty(
+        name="MLT Bootstrap",
+        description="MLT bootstrap sample count (0 = bridge default 10000)",
+        default=0, min=0, max=1000000,
+    )
+    mlt_chains: bpy.props.IntProperty(
+        name="MLT Chains",
+        description="MLT Markov-chain count (0 = bridge default 8)",
+        default=0, min=0, max=256,
+    )
+    mlt_mutations_per_pixel: bpy.props.IntProperty(
+        name="MLT Mutations / Pixel",
+        description="MLT mutations per pixel (0 = use Pixel Samples)",
+        default=0, min=0, max=65536,
+    )
+    mlt_large_step_prob: bpy.props.FloatProperty(
+        name="MLT Large-Step Prob",
+        description="MLT large-step probability (0 = bridge default 0.3)",
+        default=0.0, min=0.0, max=1.0,
     )
     use_world_ambient: bpy.props.BoolProperty(
         name="Approximate World",
