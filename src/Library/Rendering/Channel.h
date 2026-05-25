@@ -48,9 +48,9 @@ namespace RISE
 		//! FrameStore::Spec::aovChannels.
 		enum class ChannelId : uint32_t
 		{
-			Beauty       = 0,  ///< RISEPel (ROMM RGB linear), full HDR radiance
+			Beauty       = 0,  ///< RISEPel (Rec.709 Linear D65 post Stage B colour-space migration), full HDR radiance
 			Alpha        = 1,  ///< float, [0, 1]
-			Albedo       = 2,  ///< RISEPel, ROMM RGB linear (denoiser AOV / export)
+			Albedo       = 2,  ///< RISEPel, Rec.709 Linear (denoiser AOV / export)
 			Normal       = 3,  ///< Vector3 world-space, unit length
 			Depth        = 4,  ///< float, camera-space distance
 			ObjectId     = 5,  ///< uint32_t, object index from the scene's ObjectManager

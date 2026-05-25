@@ -292,9 +292,10 @@ RISEPel HosekWilkieSkyModel::IntegrateRGB( const Vector3& dir ) const
 	xyz.X = (x / y) * Y;
 	xyz.Z = ((Scalar(1) - x - y) / y) * Y;
 
-	// XYZ(D65) → ROMM(D50) via the codebase's Color matrices.  Use
-	// the Bradford transform.  Conservative: the Preetham sky's
-	// chromaticities are referenced to CIE D-illuminants (continuous
-	// daylight); D65 is a defensible reference.
-	return ColorUtils::XYZtoROMMRGB( xyz );
+	// XYZ(D65) → RISEPel via the implicit RISEPel(XYZPel) constructor.
+	// Post Stage-B colour-space migration, RISEPel = Rec709RGBPel; the
+	// implicit conversion runs `ColorUtils::XYZtoRec709RGB` (no Bradford
+	// adapt — Preetham/HW chromaticities are D65-referred, Rec.709 is
+	// D65, the matrix is straight XYZ→Rec.709).
+	return RISEPel( xyz );
 }

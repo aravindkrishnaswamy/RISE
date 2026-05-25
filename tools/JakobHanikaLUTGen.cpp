@@ -3,22 +3,31 @@
 //  JakobHanikaLUTGen.cpp - Offline tool to generate the Jakob-Hanika
 //    2019 sigmoid-uplift LUT for Landing 3 (RGB → spectrum upsampling).
 //
-//    Solves, per cell of a 64×64×64 RGB grid:
-//      Find (c0, c1, c2) such that
-//        sigmoid(c0·λ² + c1·λ + c2) integrated against the CIE 1931
-//        2° observer and converted XYZ → ROMM RGB returns the cell's
-//        target RGB.
+//    Solves, per cell of a 64×64×64 RGB grid (for each of 3 max-
+//    channel sub-tables):
 //
-//    Algorithm: Gauss-Newton iteration on the 3-coefficient residual
-//    with finite-difference Jacobian (Jakob & Hanika 2019 §3).
+//      Find (c0, c1, c2) such that integrating
+//        sigmoid(c0·λ̃² + c1·λ̃ + c2)·CMF(λ) / k_y_E
+//      then chromatic-adapting to the target whitepoint and
+//      matrix-converting to the target RGB space reproduces the
+//      cell's RGB triple.
 //
-//    Output: binary .coeff file at extlib/jakob-hanika-luts/romm.coeff
-//    consumed by RISE's RGBToSpectrumTable runtime loader.
+//    Algorithm: Gauss-Newton with finite-difference Jacobian and
+//    Levenberg-Marquardt damping, line-search backtracking on
+//    rejected steps.  Jakob & Hanika 2019 §3.
 //
-//    The output LUT is for ROMM RGB (RISE's internal linear RGB
-//    space, D50 whitepoint), not sRGB.  All RISE painters return
-//    RISEPel = ROMMRGBPel, so the uplift must operate in that
-//    space natively.
+//    --target <rec709|romm|acescg> selects:
+//      * the target RGB space's XYZ→RGB matrix (in the target's
+//        whitepoint reference frame);
+//      * the Bradford chromatic adapt from CIE 1931 (D65 reference)
+//        to the target's whitepoint.
+//      For D65 targets (rec709), the Bradford step is identity.
+//      For D50 targets (romm), it's the D65→D50 Bradford.
+//      For D60-ish targets (acescg AP1), it's the D65→D60 Bradford.
+//
+//    --output is the binary `.coeff` path.  Companion script
+//    tools/GenerateSpectrumLUTHeader.py bakes the binary into the
+//    source tree as RGBToSpectrumTable_LUTData.cpp.
 //
 //    Build (from project root):
 //      c++ -O3 -std=c++17 -o bin/tools/JakobHanikaLUTGen \
@@ -26,12 +35,13 @@
 //    On Windows the VS2022 project file builds the same source.
 //
 //    Run:
-//      bin/tools/JakobHanikaLUTGen.exe \
-//        --output extlib/jakob-hanika-luts/romm.coeff \
+//      bin/tools/JakobHanikaLUTGen \
+//        --target rec709 \
+//        --output extlib/jakob-hanika-luts/rec709.coeff \
 //        --resolution 64
 //
 //    Author: Aravind Krishnaswamy
-//    Date: 2026-05-08
+//    Date: 2026-05-08 (parameterized 2026-05-24)
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -88,54 +98,121 @@ static const double kCIE_z[ kNLambda ] = {
 	0.0000
 };
 
-// XYZ(D50) → ROMM RGB(D50).  Copied from src/Library/Utilities/Color/Color.cpp's
-// `mxXYZD50toROMM`.  The LUT generator targets ROMM RGB so its output is
-// directly consumable by RISE painters which return ROMMRGBPel.
+// ─────────────────────────────────────────────────────────────────
+// Per-target colourspace tables.  Each Target supplies:
+//   * mxXYZtoRGB[3][3]   — XYZ→RGB matrix in the target's whitepoint
+//                          reference frame (e.g. XYZ(D65)→Rec709(D65),
+//                          XYZ(D50)→ROMM(D50)).
+//   * mxXYZD65toTW[3][3] — Bradford chromatic adapt from CIE D65
+//                          (the CMF integration reference) to the
+//                          target's whitepoint.  Identity for D65
+//                          targets; D65→D50 Bradford for ROMM;
+//                          D65→D60-ish Bradford for ACES AP1.
 //
-// Why ROMM and not sRGB: RISE's RISEPel typedef = ROMMRGBPel
-// (Color.h:45).  Texture loading converts source-space (sRGB / Rec709 /
-// ROMM) to ROMM linear at decode time; painters operate in ROMM.  An
-// sRGB-targeted LUT couldn't represent saturated values that fit in the
-// wider ROMM gamut.
-static const double kXYZtoROMM[3][3] = {
-	{  1.3460, -0.2556, -0.0511 },
-	{ -0.5446,  1.5082,  0.0205 },
-	{  0.0,     0.0,     1.2123 }
+// Adding a new target = add one entry to TargetTables[] with the
+// published constants + a unique --target name string.
+// ─────────────────────────────────────────────────────────────────
+
+struct TargetSpec {
+	const char* name;
+	const char* description;
+	double      mxXYZtoRGB[3][3];      // in target whitepoint reference frame
+	double      mxXYZD65toTW[3][3];    // Bradford D65 → target whitepoint
 };
 
-// Bradford D65 → D50 chromatic adaptation, copied from
-// `mxXYZD65toXYZD50` in src/Library/Utilities/Color/Color.cpp.  The
-// runtime XYZtoROMMRGB pipeline applies this BEFORE kXYZtoROMM
-// because the standard CIE 1931 observer XYZ values are commonly
-// referred to a D65 whitepoint, while ROMM's whitepoint is D50.
-// Keep this matrix in sync with Color.cpp's mxXYZD65toXYZD50 (any
-// drift would re-introduce the BioSpec-vs-JH conflict that this
-// generator was reworked to resolve).
-static const double kXYZD65toD50[3][3] = {
+// Bradford D65 → D50 chromatic adaptation.  Copied from
+// `mxXYZD65toXYZD50` in src/Library/Utilities/Color/Color.cpp.
+static const double kBradford_D65_to_D50[3][3] = {
 	{  1.0479, 0.0229, -0.0502 },
 	{  0.0296, 0.9904, -0.0171 },
 	{ -0.0092, 0.0151,  0.7519 }
 };
 
-// CIE Standard Illuminant D50 SPD at 5nm spacing, 380-780nm.
-// Used as the reference illuminant for albedo upsampling: when we
-// integrate S(λ) against the observer, we multiply by D50 first
-// because the input RGB triple represents reflectance under D50
-// illumination (ROMM's whitepoint).
-//
-// Source: CIE 015:2018 Table A.5 — published reference.  Sampled at
-// 5nm; values normalized so D50(560nm) = 100.
-static const double kD50[ kNLambda ] = {
-	 23.94,  25.45,  26.96,  25.72,  24.49,  27.18,  29.87,  39.59,  49.31,  52.91,
-	 56.51,  58.27,  60.03,  58.93,  57.82,  66.32,  74.82,  81.04,  87.25,  88.93,
-	 90.61,  90.99,  91.37,  93.24,  95.11,  93.54,  91.96,  93.84,  95.72,  96.17,
-	 96.61,  96.87,  97.13,  99.61, 102.10, 101.43, 100.75, 101.54, 102.32, 101.16,
-	100.00,  98.87,  97.74,  98.33,  98.92,  96.21,  93.50,  95.59,  97.69, 98.48,
-	 99.27, 99.155, 99.04,  97.38,  95.72,  97.29,  98.86,  97.26,  95.67,  96.93,
-	 98.19, 100.60, 103.00, 101.07,  99.13,  93.26,  87.38,  89.49,  91.60,  92.25,
-	 92.89,  84.87,  76.85,  81.68,  86.51,  89.55,  92.58,  85.40,  78.23,  67.96,
-	 57.69
+// Bradford D65 → ACES D60-ish (xy = 0.32168, 0.33767).  Derived from
+// the canonical Bradford-cone-response matrix and the ACES Reference
+// Whitepoint chromaticities — verification recipe:
+//   D65 white  XYZ = (0.95047, 1.00000, 1.08883)
+//   ACES white XYZ = (0.95265, 1.00000, 1.00883)  [from (0.32168, 0.33767)]
+//   M_adapt = M_Bradford^-1 · diag(rho_dst / rho_src) · M_Bradford
+//   where rho_* = M_Bradford · white_*
+// Round-trip M_adapt · D65_XYZ == ACES_XYZ verified.  See ACES TB-2014-004
+// + Lindbloom Bradford reference.  An earlier value (commit pre-fix) had
+// the wrong sign convention and was caught by the Stage A adversarial
+// review.
+static const double kBradford_D65_to_ACES[3][3] = {
+	{  1.0129910965,  0.0060845191, -0.0149298715 },
+	{  0.0076709636,  0.9981726261, -0.0050179063 },
+	{ -0.0028339778,  0.0046733535,  0.9247039866 }
 };
+
+// Rec.709 / sRGB Linear (D65).  XYZ(D65)→Rec709(D65).  Copied from
+// `mxXYZtoRec709` in src/Library/Utilities/Color/Color.cpp.
+static const TargetSpec kTarget_Rec709 = {
+	"rec709",
+	"Rec.709 / sRGB Linear (D65).  Primaries inside the spectral locus; "
+	"~96% LUT convergence (residual failures only at deep-blue corner where "
+	"the JH sigmoid form is intrinsically expressively-limited); matches "
+	"modern PBR pipelines.",
+	{
+		{  3.240479, -1.537150, -0.498535 },
+		{ -0.969256,  1.875992,  0.041556 },
+		{  0.055648, -0.204043,  1.057311 }
+	},
+	{
+		// Identity: target and CMF reference share D65.
+		{ 1.0, 0.0, 0.0 },
+		{ 0.0, 1.0, 0.0 },
+		{ 0.0, 0.0, 1.0 }
+	}
+};
+
+// ROMM RGB Linear (D50).  XYZ(D50)→ROMM(D50).  Copied from
+// `mxXYZD50toROMM` in src/Library/Utilities/Color/Color.cpp.
+// Legacy default pre-2026-05; primaries OUTSIDE the spectral locus →
+// ~22 % gamut-corner failures.  Retained for back-compat.
+static const TargetSpec kTarget_ROMM = {
+	"romm",
+	"ROMM RGB Linear / ProPhoto (D50).  Wide gamut but G & B primaries "
+	"are outside the spectral locus — ~22 % LUT cells unconverged at the "
+	"gamut corners (see docs/JH_LUT_GAMUT.md).  Legacy.",
+	{
+		{  1.3460, -0.2556, -0.0511 },
+		{ -0.5446,  1.5082,  0.0205 },
+		{  0.0,     0.0,     1.2123 }
+	},
+	{
+		{  1.0479, 0.0229, -0.0502 },
+		{  0.0296, 0.9904, -0.0171 },
+		{ -0.0092, 0.0151,  0.7519 }
+	}
+};
+
+// ACES AP1 (a.k.a. ACEScg).  XYZ(D60-ish)→AP1(D60-ish).  Source:
+// AMPAS S-2014-004 (ACES Reference Image Capture Specification).
+// Pre-staged so a future migration to AP1 is `--target acescg`.
+static const TargetSpec kTarget_ACEScg = {
+	"acescg",
+	"ACES AP1 / ACEScg (D60-ish).  Wide gamut, primaries inside the "
+	"spectral locus; industry VFX standard.",
+	{
+		{  1.6410233797, -0.3248032942, -0.2364246952 },
+		{ -0.6636628587,  1.6153315917,  0.0167563477 },
+		{  0.0117218943, -0.0082844420,  0.9883948585 }
+	},
+	{
+		{  1.0129910965,  0.0060845191, -0.0149298715 },
+		{  0.0076709636,  0.9981726261, -0.0050179063 },
+		{ -0.0028339778,  0.0046733535,  0.9247039866 }
+	}
+};
+
+static const TargetSpec* const kAllTargets[] = {
+	&kTarget_Rec709, &kTarget_ROMM, &kTarget_ACEScg
+};
+static const int kNumTargets = int( sizeof(kAllTargets) / sizeof(kAllTargets[0]) );
+
+// The currently active target.  Set by main() based on --target.
+static const TargetSpec* gTarget = nullptr;
 
 // Stable sigmoid form (PBRT-v4): avoids overflow for large |x|.
 //   sigmoid(x) = 0.5 + x / (2*sqrt(1 + x²))
@@ -167,12 +244,11 @@ static inline double EvalSigmoid( const double c[3], double lambda ) {
 	return Sigmoid( c[0] * t * t + c[1] * t + c[2] );
 }
 
-// Integrate S(c, λ) · CIE_obs(λ) over the visible range under a FLAT
-// illuminant and convert XYZ → ROMM RGB via the same XYZ→ROMM
-// pipeline the runtime uses (`ColorUtils::XYZtoROMMRGB`): D65 → D50
-// Bradford adapt followed by `kXYZtoROMM` matrix.  This is the
-// forward model whose inverse we solve.  Returns 3-vector in ROMM
-// RGB space.
+// Integrate S(c, λ) · CIE_obs(λ) under a FLAT illuminant, chromatic-
+// adapt CIE-1931-D65 → target whitepoint via Bradford, then matrix-
+// multiply by the target XYZ→RGB matrix.  Mirrors the runtime resolve
+// pipeline (see Color.cpp ColorUtils::XYZto{Rec709,ROMM}RGB), so the
+// LUT trained here is consumed by the standard runtime pipeline.
 //
 // Why flat illuminant and not D65:
 //   The runtime spectral integrator computes `∫ S · L · CIE dλ` where
@@ -180,23 +256,8 @@ static inline double EvalSigmoid( const double c[3], double lambda ) {
 //   no fixed reference illuminant baked into the integrator itself.
 //   Inverting that forward model would require the LUT to know L at
 //   training time.  We instead train under L=1 (flat) and rely on
-//   the runtime to multiply by L per sample; the resulting LUT round-
-//   trips ROMM→sigmoid→XYZ→ROMM exactly when L=1, and stays close
-//   for natural-daylight L (which most scenes use).
-//
-// Why D65 → D50 adapt now (vs the matrix-only convention this file
-// used through 2026-04):
-//   The matrix-only convention required the runtime to also use a
-//   matrix-only conversion — `IntegratorXYZtoROMMRGB` — at film
-//   resolve, which works for JH-uplifted spectra but is WRONG for
-//   physically-grounded spectra (BioSpec skin under blackbody@6500K
-//   integrated D65-reference XYZ that, matrix-multiplied without
-//   adapt, produces lavender skin).  The fix is to align the
-//   generator with the runtime's standard XYZtoROMMRGB pipeline
-//   (adapt + matrix) and let both JH and physical spectra resolve
-//   through the same path.  See the user-facing chat session
-//   "Option B" discussion for the full derivation.
-static void IntegrateToROMM( const double c[3], double romm[3] )
+//   the runtime to multiply by L per sample.
+static void IntegrateToTarget( const double c[3], double rgb[3] )
 {
 	double X = 0.0, Y = 0.0, Z = 0.0;
 	double Y_norm = 0.0;
@@ -217,20 +278,18 @@ static void IntegrateToROMM( const double c[3], double romm[3] )
 	Y *= inv;
 	Z *= inv;
 
-	// Bradford D65 → D50 chromatic adaptation.  Matches the
-	// `mxXYZD65toXYZD50` step in `ColorUtils::XYZtoROMMRGB` so the
-	// LUT trained here is consumed by the standard runtime pipeline.
-	const double Xd = kXYZD65toD50[0][0]*X + kXYZD65toD50[0][1]*Y + kXYZD65toD50[0][2]*Z;
-	const double Yd = kXYZD65toD50[1][0]*X + kXYZD65toD50[1][1]*Y + kXYZD65toD50[1][2]*Z;
-	const double Zd = kXYZD65toD50[2][0]*X + kXYZD65toD50[2][1]*Y + kXYZD65toD50[2][2]*Z;
+	// Bradford D65 → target whitepoint (identity for D65 targets).
+	const double Xa = gTarget->mxXYZD65toTW[0][0]*X + gTarget->mxXYZD65toTW[0][1]*Y + gTarget->mxXYZD65toTW[0][2]*Z;
+	const double Ya = gTarget->mxXYZD65toTW[1][0]*X + gTarget->mxXYZD65toTW[1][1]*Y + gTarget->mxXYZD65toTW[1][2]*Z;
+	const double Za = gTarget->mxXYZD65toTW[2][0]*X + gTarget->mxXYZD65toTW[2][1]*Y + gTarget->mxXYZD65toTW[2][2]*Z;
 
-	// XYZ (D50 reference) → ROMM RGB via kXYZtoROMM matrix.
-	romm[0] = kXYZtoROMM[0][0] * Xd + kXYZtoROMM[0][1] * Yd + kXYZtoROMM[0][2] * Zd;
-	romm[1] = kXYZtoROMM[1][0] * Xd + kXYZtoROMM[1][1] * Yd + kXYZtoROMM[1][2] * Zd;
-	romm[2] = kXYZtoROMM[2][0] * Xd + kXYZtoROMM[2][1] * Yd + kXYZtoROMM[2][2] * Zd;
+	// XYZ (target whitepoint) → target RGB via per-target matrix.
+	rgb[0] = gTarget->mxXYZtoRGB[0][0] * Xa + gTarget->mxXYZtoRGB[0][1] * Ya + gTarget->mxXYZtoRGB[0][2] * Za;
+	rgb[1] = gTarget->mxXYZtoRGB[1][0] * Xa + gTarget->mxXYZtoRGB[1][1] * Ya + gTarget->mxXYZtoRGB[1][2] * Za;
+	rgb[2] = gTarget->mxXYZtoRGB[2][0] * Xa + gTarget->mxXYZtoRGB[2][1] * Ya + gTarget->mxXYZtoRGB[2][2] * Za;
 }
 
-// Solve for sigmoid coefficients matching `target` (ROMM RGB).
+// Solve for sigmoid coefficients matching `target` (in target RGB).
 // Returns true if final residual < kAcceptTol; final coefficients
 // (best-so-far) written to c[3].  Returns false if the solver could
 // not improve from the seed at all.
@@ -241,7 +300,7 @@ static void IntegrateToROMM( const double c[3], double romm[3] )
 // rejected steps.  See Jakob & Hanika 2019 §3 for the derivation.
 static bool SolveCoefficients( const double target[3], double c[3], double* outResNorm = nullptr )
 {
-	// Acceptance: residual under 1e-4 in ROMM RGB units is well below
+	// Acceptance: residual under 1e-4 in target-RGB units is well below
 	// any visible difference (8-bit display quantum is ~4e-3).  Tight
 	// solver tolerance under that just wastes iterations on cells
 	// that are fundamentally near-singular at the gamut extremes.
@@ -253,23 +312,23 @@ static bool SolveCoefficients( const double target[3], double c[3], double* outR
 	double bestResNorm = std::numeric_limits<double>::infinity();
 
 	{
-		double romm[3];
-		IntegrateToROMM( c, romm );
+		double rgb[3];
+		IntegrateToTarget( c, rgb );
 		const double r[3] = {
-			romm[0] - target[0],
-			romm[1] - target[1],
-			romm[2] - target[2]
+			rgb[0] - target[0],
+			rgb[1] - target[1],
+			rgb[2] - target[2]
 		};
 		bestResNorm = std::sqrt( r[0]*r[0] + r[1]*r[1] + r[2]*r[2] );
 	}
 
 	for( int iter = 0; iter < kMaxIter; ++iter ) {
-		double romm[3];
-		IntegrateToROMM( c, romm );
+		double rgb[3];
+		IntegrateToTarget( c, rgb );
 		const double r[3] = {
-			romm[0] - target[0],
-			romm[1] - target[1],
-			romm[2] - target[2]
+			rgb[0] - target[0],
+			rgb[1] - target[1],
+			rgb[2] - target[2]
 		};
 		const double resNorm = std::sqrt( r[0]*r[0] + r[1]*r[1] + r[2]*r[2] );
 		if( resNorm < bestResNorm ) {
@@ -291,8 +350,8 @@ static bool SolveCoefficients( const double target[3], double c[3], double* outR
 			cm[j] -= kFDStep;
 
 			double rp[3], rm[3];
-			IntegrateToROMM( cp, rp );
-			IntegrateToROMM( cm, rm );
+			IntegrateToTarget( cp, rp );
+			IntegrateToTarget( cm, rm );
 
 			J[0][j] = (rp[0] - rm[0]) / (2.0 * kFDStep);
 			J[1][j] = (rp[1] - rm[1]) / (2.0 * kFDStep);
@@ -350,12 +409,12 @@ static bool SolveCoefficients( const double target[3], double c[3], double* outR
 			newC[0] = c[0] - step * delta[0];
 			newC[1] = c[1] - step * delta[1];
 			newC[2] = c[2] - step * delta[2];
-			double newRomm[3];
-			IntegrateToROMM( newC, newRomm );
+			double newRgb[3];
+			IntegrateToTarget( newC, newRgb );
 			const double nr[3] = {
-				newRomm[0] - target[0],
-				newRomm[1] - target[1],
-				newRomm[2] - target[2]
+				newRgb[0] - target[0],
+				newRgb[1] - target[1],
+				newRgb[2] - target[2]
 			};
 			const double newResNorm = std::sqrt( nr[0]*nr[0] + nr[1]*nr[1] + nr[2]*nr[2] );
 			if( newResNorm < resNorm ) {
@@ -414,7 +473,7 @@ static double GridLin( int i, int res ) {
 	return double(i) / double(res - 1);
 }
 
-// Build the cell's target ROMM RGB triple from (maxChannel, z, x, y).
+// Build the cell's target RGB triple from (maxChannel, z, x, y).
 // max channel = z; the next two channels in canonical (max+1)%3,
 // (max+2)%3 order receive x*z and y*z respectively.
 static void CellToRGB( int maxChannel, double z, double x, double y, double rgb[3] )
@@ -432,8 +491,14 @@ struct CoeffSet {
 
 static void PrintUsage() {
 	std::fprintf( stderr,
-		"Usage: JakobHanikaLUTGen --output <path> [--resolution N]\n"
-		"  --output       output binary path (e.g. extlib/jakob-hanika-luts/romm.coeff)\n"
+		"Usage: JakobHanikaLUTGen --output <path> [--target NAME] [--resolution N]\n"
+		"  --target       target colour space (default 'rec709'). Choices:\n" );
+	for( int i = 0; i < JH::kNumTargets; ++i ) {
+		std::fprintf( stderr, "                   %-8s  %s\n",
+			JH::kAllTargets[i]->name, JH::kAllTargets[i]->description );
+	}
+	std::fprintf( stderr,
+		"  --output       output binary path (e.g. extlib/jakob-hanika-luts/rec709.coeff)\n"
 		"  --resolution   grid resolution per axis (default 64)\n"
 		"  --quick        validate convergence on a small subset (debug)\n" );
 }
@@ -441,6 +506,7 @@ static void PrintUsage() {
 int main( int argc, char** argv )
 {
 	std::string outputPath;
+	std::string targetName = "rec709";	// default after 2026-05 colour-space migration
 	int         resolution = 64;
 	bool        quick      = false;
 
@@ -448,6 +514,8 @@ int main( int argc, char** argv )
 		const std::string a = argv[i];
 		if( a == "--output" && i + 1 < argc ) {
 			outputPath = argv[++i];
+		} else if( a == "--target" && i + 1 < argc ) {
+			targetName = argv[++i];
 		} else if( a == "--resolution" && i + 1 < argc ) {
 			resolution = std::atoi( argv[++i] );
 		} else if( a == "--quick" ) {
@@ -472,13 +540,26 @@ int main( int argc, char** argv )
 		return 1;
 	}
 
+	// Resolve target name → table.
+	for( int i = 0; i < JH::kNumTargets; ++i ) {
+		if( targetName == JH::kAllTargets[i]->name ) {
+			JH::gTarget = JH::kAllTargets[i];
+			break;
+		}
+	}
+	if( !JH::gTarget ) {
+		std::fprintf( stderr, "ERROR: unknown --target '%s'\n", targetName.c_str() );
+		PrintUsage();
+		return 1;
+	}
+
 	const int RES = resolution;
 	const size_t totalCells = size_t( 3 ) * RES * RES * RES;
 	std::vector<JH::CoeffSet> coeffs( totalCells );
 
 	std::printf(
-		"JakobHanikaLUTGen: target=ROMM RGB (D50), resolution=%d, "
-		"cells=%zu\n", RES, totalCells );
+		"JakobHanikaLUTGen: target=%s, resolution=%d, cells=%zu\n",
+		JH::gTarget->name, RES, totalCells );
 
 	// Iteration order: max channel outermost, z next, then x, y.
 	// Convergence is helped by seeding from the previous (i_x-1) cell's

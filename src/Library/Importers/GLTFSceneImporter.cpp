@@ -362,7 +362,10 @@ namespace
 	// based on its semantic role: baseColor / emissive want sRGB
 	// (gamma-decoded for display); normal / metallicRoughness /
 	// occlusion want a verbatim store with no colour conversion --
-	// in today's RISE (RISEPel == ROMMRGB) that's "ROMMRGB_Linear".
+	// post Stage B colour-space migration (RISEPel == Rec709RGBPel)
+	// the verbatim-store tag is "Rec709RGB_Linear" (the historical
+	// "ROMMRGB_Linear" idiom is now a real Rec.709→ROMM matrix and
+	// would warp encoded normal vectors / packed scalar channels).
 	const char* TextureColorSpace( const char* role )
 	{
 		if( std::strcmp( role, "basecolor" ) == 0 ) return "sRGB";
@@ -373,7 +376,7 @@ namespace
 		if( std::strcmp( role, "specular_color" ) == 0 ) return "sRGB";
 		// normal / mr / occlusion / specular / sheen_color / anisotropy --
 		// verbatim store, no matrix conversion.
-		return "ROMMRGB_Linear";
+		return "Rec709RGB_Linear";
 	}
 
 	// Resolve the address-wrap mode for a glTF texture into RISE's char

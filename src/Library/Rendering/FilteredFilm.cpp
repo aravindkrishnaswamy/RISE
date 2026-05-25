@@ -89,20 +89,20 @@ void FilteredFilm::Resolve(
 	IRasterImage& target
 	) const
 {
-	// XYZ -> ROMM RGB conversion happens here, exactly once per pixel.
-	// The implicit `RISEPel(XYZPel)` constructor invokes the standard
-	// `ColorUtils::XYZtoROMMRGB` (Bradford D65 -> D50 chromatic adapt
-	// + gamut clip + matrix).  This matches the JH LUT generator's
-	// post-2026-05 forward model (`tools/JakobHanikaLUTGen.cpp::
-	// IntegrateToROMM`), so JH-uplifted spectra and physical spectra
-	// (BioSpec, blackbody, measured SPDs) both round-trip through the
-	// same conversion.  An earlier interim revision dispatched on a
-	// `bIntegratorMode` flag to a matrix-only `IntegratorXYZtoROMMRGB`,
-	// which broke physically-grounded scenes (BioSpec under blackbody
-	// rendered lavender because the unadapted D65 XYZ shoved blue
-	// through the `mxXYZD50toROMM` matrix's third row).  Removing the
-	// flag and aligning the LUT with the standard pipeline fixes
-	// both classes of scene at once.
+	// XYZ -> RISEPel conversion happens here, exactly once per pixel.
+	// The implicit `RISEPel(XYZPel)` constructor invokes
+	// `ColorUtils::XYZtoRec709RGB` (post Stage-B colour-space migration:
+	// RISEPel = Rec709RGBPel, no Bradford adapt — Rec.709 is D65 and
+	// the integrator's XYZ is D65-referred).  This matches the JH LUT
+	// generator's rec709 target's forward model
+	// (`tools/JakobHanikaLUTGen.cpp::IntegrateToTarget` with the rec709
+	// target), so JH-uplifted spectra and physical spectra (BioSpec,
+	// blackbody, measured SPDs) both round-trip through the same
+	// conversion.  Pre-Stage-B revisions dispatched on a `bIntegratorMode`
+	// flag to a matrix-only `IntegratorXYZtoROMMRGB`, which broke
+	// physically-grounded scenes — that path was eliminated by the
+	// Stage A colour-space migration (`IntegratorXYZto*` no longer
+	// exists).
 	for( unsigned int y=0; y<height; y++ ) {
 		for( unsigned int x=0; x<width; x++ ) {
 			const FilteredPixel& pixel = pixels[y * width + x];
@@ -119,9 +119,9 @@ void FilteredFilm::Unresolve(
 	IRasterImage& target
 	) const
 {
-	// Inverse of Resolve: subtract the standard-XYZ-resolved ROMM RGB
-	// value previously written.  Mirror Resolve's conversion choice
-	// so the round-trip cancels exactly.
+	// Inverse of Resolve: subtract the previously-written XYZ-resolved
+	// RISEPel value.  Mirror Resolve's conversion choice so the round-
+	// trip cancels exactly.
 	for( unsigned int y=0; y<height; y++ ) {
 		for( unsigned int x=0; x<width; x++ ) {
 			const FilteredPixel& pixel = pixels[y * width + x];

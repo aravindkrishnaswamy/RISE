@@ -43,13 +43,12 @@ namespace RISE
 		protected:
 
 			// PBRT-v4 RGBFilm-style storage: accumulator is XYZPel (linear
-			// CIE XYZ), converted to ROMM RGB once at Resolve via the
-			// standard `ColorUtils::XYZtoROMMRGB` (D65->D50 Bradford
-			// adapt + gamut clip + matrix).  Splat takes XYZPel so
-			// spectral integrators feed XYZ directly; RGB integrators
-			// rely on the implicit XYZPel(const ROMMRGBPel&) lossless
-			// conversion at the call site (3x3 matrix + chromatic
-			// adaptation, no clip).
+			// CIE XYZ), converted to RISEPel (Rec709RGBPel post Stage B)
+			// once at Resolve via the standard `ColorUtils::XYZtoRec709RGB`
+			// (D65→D65, matrix-only — no Bradford adapt).  Splat takes
+			// XYZPel so spectral integrators feed XYZ directly; RGB
+			// integrators rely on the implicit XYZPel(const RISEPel&)
+			// lossless conversion at the call site.
 			struct FilteredPixel
 			{
 				XYZPel		colorSum;

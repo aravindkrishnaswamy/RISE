@@ -60,14 +60,14 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 {
 	// Sample the normal map at the hit's primary UV.  The painter is
 	// expected to be backed by an image loaded with NO color-matrix
-	// conversion -- in today's RISE that means `color_space
-	// ROMMRGB_Linear` on the png_painter (RISEPel == ROMMRGBPel, see
-	// Color.h, so ROMMRGB_Linear is a verbatim store).  Picking sRGB
-	// would gamma-decode the bytes and break the [0,1] domain;
-	// picking Rec709RGB_Linear would skip gamma but still apply a
-	// Rec709 -> ROMM matrix that warps the encoded vector.  Either
-	// produces subtly-wrong normals.  See NormalMap.h for the full
-	// rationale.
+	// conversion -- post Stage B colour-space migration that means
+	// `color_space Rec709RGB_Linear` on the png_painter
+	// (RISEPel == Rec709RGBPel, see Color.h, so Rec709RGB_Linear is
+	// the verbatim store).  Picking sRGB would gamma-decode the bytes
+	// and break the [0,1] domain; picking ROMMRGB_Linear would skip
+	// gamma but apply a Rec.709 → ROMM matrix that warps the encoded
+	// vector.  Either produces wrong normals.  See NormalMap.h for
+	// the full rationale.
 	const RISEPel encoded = pNormalMap.GetColor( ri );
 
 	// Decode RGB in [0,1] to a tangent-space normal in [-1,1].  The

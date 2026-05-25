@@ -264,8 +264,8 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 				if( px.alphaSum > 0 ) {
 					// px.colorSum is XYZPel (PBRT-v4 RGBFilm-style
 					// accumulator).  Implicit RISEPel(XYZPel) constructor
-					// invokes ColorUtils::XYZtoROMMRGB once at this
-					// resolve point.
+					// invokes ColorUtils::XYZtoRec709RGB (post Stage B —
+					// D65→D65, matrix-only) once at this resolve point.
 					const XYZPel avgXYZ = px.colorSum * (1.0/px.alphaSum);
 					cret = RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum );
 				}
@@ -434,9 +434,9 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 		}
 
 		if( alphas > 0 ) {
-			// Single XYZ -> ROMM RGB conversion at resolve via implicit
-			// RISEPel(XYZPel) constructor (ColorUtils::XYZtoROMMRGB).
-			// Applies MoveXYZIntoROMMRGBGamut once here, per pixel.
+			// Single XYZ → RISEPel conversion at resolve via implicit
+			// RISEPel(XYZPel) constructor (ColorUtils::XYZtoRec709RGB
+			// post Stage B — D65→D65, matrix-only).
 			const XYZPel avgXYZ = colAccruedXYZ.base * (1.0/alphas);
 			cret = RISEColor( RISEPel( avgXYZ ), alphas/weights );
 		}

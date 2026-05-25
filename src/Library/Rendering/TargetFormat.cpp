@@ -60,9 +60,16 @@ namespace RISE
 				ChannelOrder::RGBA,  FSColorSpace::BT2020_Linear,     TransferFunction::PQ_ST2084,
 				"RGBA16F_BT2020_PQ" },
 
-			// RGBA16F_Linear
+			// RGBA16F_Linear — half-float linear sRGB / BT.709 (the
+			// "linear" half-float archival default).  Post Stage B
+			// colour-space migration this is bit-identical to RISEPel
+			// internal storage (RISEPel = Rec.709 Linear); pre-Stage B
+			// it used FSColorSpace::ROMM_Linear and was bit-identical to
+			// the old ROMM RISEPel.  The format name doesn't promise
+			// either set of primaries explicitly — "Linear" without a
+			// colour-space qualifier conventionally means sRGB-linear.
 			{ 8, 4, true,  true,  true,  false,
-				ChannelOrder::RGBA,  FSColorSpace::ROMM_Linear,       TransferFunction::Linear,
+				ChannelOrder::RGBA,  FSColorSpace::sRGB_Linear,       TransferFunction::Linear,
 				"RGBA16F_Linear" },
 
 			// RGBA32F_Linear (EXR linear save in sRGB primaries —
@@ -77,12 +84,13 @@ namespace RISE
 				ChannelOrder::RGB,   FSColorSpace::sRGB_Linear,       TransferFunction::Linear,
 				"RGB32F_Linear" },
 
-			// RGBA32F_ROMM_Linear — bit-identical scene-referred
-			// archival in RISE's native ROMM primaries.  Pairs with
-			// ViewTransform::Identity() to produce a buffer that
-			// matches FrameStore's beauty channel byte-for-byte
-			// (modulo float-vs-double precision).  Use for
-			// debugging or for EXR output with ROMM-aware viewers.
+			// RGBA32F_ROMM_Linear — wide-gamut archival in ROMM
+			// (ProPhoto) primaries D50.  Applies a Rec.709→ROMM
+			// Bradford+matrix conversion at encode time (post Stage B
+			// colour-space migration: RISEPel = Rec.709 Linear, not
+			// ROMM, so this format does a real conversion).  Use for
+			// EXR / .hdr output with ROMM-aware viewers, or anywhere
+			// a wider archival gamut is needed.
 			{ 16, 4, true, true,  false, false,
 				ChannelOrder::RGBA,  FSColorSpace::ROMM_Linear,       TransferFunction::Linear,
 				"RGBA32F_ROMM_Linear" },

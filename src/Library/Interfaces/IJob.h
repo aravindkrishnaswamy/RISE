@@ -1528,20 +1528,20 @@ namespace RISE
 			) = 0;
 
 		//! Adds a tangent-space normal-map modifier.  The painter must
-		//! be loaded with NO colour-matrix conversion: in today's RISE
-		//! (RISEPel == ROMMRGBPel) that means `color_space
-		//! ROMMRGB_Linear` on the png_painter / jpg_painter / etc.,
-		//! which stores PNG bytes verbatim into the engine working
-		//! space.  sRGB would gamma-decode and break the [0,1] vector
-		//! domain; Rec709RGB_Linear skips gamma but still applies a
-		//! Rec709 -> ROMM colour matrix that warps the encoded normal.
+		//! be loaded with NO colour-matrix conversion: post Stage B
+		//! colour-space migration (RISEPel == Rec709RGBPel) that means
+		//! `color_space Rec709RGB_Linear` on the png_painter /
+		//! jpg_painter / etc., which stores PNG bytes verbatim into
+		//! the engine working space.  sRGB would gamma-decode and
+		//! break the [0,1] vector domain; ROMMRGB_Linear applies a
+		//! Rec.709 → ROMM colour matrix that warps the encoded normal.
 		//! Designed for glTF 2.0 normalTexture but works with any
 		//! linear-RGB normal map.  See Modifiers/NormalMap.h for the
 		//! full rationale.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddNormalMapModifier(
 			const char* name,										///< [in] Name of the modifier
-			const char* painter,									///< [in] Normal-map painter, loaded with no colour-matrix conversion (ROMMRGB_Linear in today's build)
+			const char* painter,									///< [in] Normal-map painter, loaded with no colour-matrix conversion (Rec709RGB_Linear post Stage B)
 			const double scale										///< [in] glTF normalTexture.scale (xy multiplier; default 1.0)
 			) = 0;
 

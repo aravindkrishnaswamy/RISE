@@ -1,9 +1,25 @@
 # RISE Internal Colour Space — Migration Brief
 
-**Date:** 2026-05-09
-**Status:** Forward-planning brief. No code change attached. Sized as a separate workstream.
+**Date:** 2026-05-09 (Stage A landed 2026-05-24)
+**Status:** **Stage A done — LUT retrained for Rec.709 + parameterized toolchain.  Stage B in progress.**
 **Triggered by:** Landing 3 v2 spectral pipeline correctness work (commit `a763141`) surfaced two structural costs of the current ROMM-RGB-as-`RISEPel` choice that a different working space would resolve cleanly.
 **Related:** [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md), [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md), [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
+
+---
+
+## Stage A — Landed 2026-05-24
+
+- The JH LUT generator (`tools/JakobHanikaLUTGen.cpp`) takes `--target {rec709|romm|acescg}` selecting the target colour space + per-target Bradford adapt at training time.  ACEScg is pre-staged for future migration with verified XYZ↔AP1 + Bradford D65→D60 constants.
+- The bake script (`tools/GenerateSpectrumLUTHeader.py`, renamed from `GenerateROMMSpectrumLUTHeader.py`) parameterized by `--target`; refuses anything other than `rec709` until the runtime boundary-conversion type matches.
+- Baked source files renamed `RGBToSpectrumTable_ROMMData.{h,cpp}` → `RGBToSpectrumTable_LUTData.{h,cpp}` with target-agnostic symbol names (`kSpectrumLUTFloats`, `kSpectrumLUTResolution`, `kSpectrumLUTNumFloats`).  Build files updated in 5 places.
+- `RGBToSpectrumTable::ROMM()` accessor renamed `Get()`.
+- Added typed `RGBToSpectrumTable::operator()(const Rec709RGBPel&)` overload that skips the boundary conversion — used by `RGBUnboundedSpectrum::FromRGB` / `RGBIlluminantSpectrum::FromRGB` to compute their scale + normalize in the LUT-target space (fixes a wide-gamut HDR-painter chromatic shift surfaced by the Stage A adversarial review).
+- `RISEPel`-taking overload converts → Rec.709 at the call boundary.  When `RISEPel == ROMMRGBPel` (Stage A transition) this is one matrix multiply; when `RISEPel == Rec709RGBPel` (post-Stage-B) it collapses to identity.
+- New `rec709.coeff` LUT: **3.9 % failure rate vs the ROMM LUT's 22 %**, mean residual 1.2 × 10⁻³ (well below 8-bit display quantum 4 × 10⁻³).  See [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md).
+- Old `extlib/jakob-hanika-luts/romm.coeff` deleted.
+- `tests/JakobHanikaRoundTripTest.cpp` rewritten with the Rec.709 forward model; passes 8/8 with mean L2 error 0.0001 on the in-gamut interior sweep.
+
+Net effect: the LUT-quality issue documented in [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md) is largely resolved; spectral pipeline routes through the new LUT correctly; `RISEPel` is still `ROMMRGBPel` so no rendered output changes visibly.  Stage B follows immediately.
 
 ---
 

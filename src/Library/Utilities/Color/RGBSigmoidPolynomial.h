@@ -22,7 +22,9 @@
 //    Used by:
 //     - RGBAlbedoSpectrum (bounded reflectance ∈ [0, 1])
 //     - RGBUnboundedSpectrum (radiance / illuminant; sigmoid · scale)
-//     - RGBIlluminantSpectrum (illuminant; sigmoid · scale · D50)
+//     - RGBIlluminantSpectrum (illuminant; sigmoid · scale · refSPD,
+//       where refSPD matches the LUT target's whitepoint — D65 for
+//       Rec.709 post 2026-05, D50 for the historical ROMM LUT)
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4

@@ -1149,7 +1149,7 @@ namespace RISE
 	//! Creates a painter that paints a uniform color.  The optional
 	//! `kind` selects the spectral-uplift role: Albedo (default; rgb
 	//! ∈ [0,1] reflectance) / Unbounded (rgb ≥ 0; for HDR / emissive)
-	//! / Illuminant (D50-pre-multiplied; for light SPDs).
+	//! / Illuminant (reference-SPD-pre-multiplied; D65 post Stage B colour-space migration, for light SPDs).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateUniformColorPainter(
 								IPainter** ppi,					///< [out] Pointer to recieve the painter

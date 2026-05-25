@@ -50,11 +50,60 @@ static const Matrix3 mxXYZD65toXYZD50 = Matrix3(
 // Conversion matrix for XYZ(D50) to XYZ(D65) using the Bradford Transform
 static const Matrix3 mxXYZD50toXYZD65 = Matrix3Ops::Inverse( mxXYZD65toXYZD50 );
 
-// Conversion matrix for Rec709RGB with its D65 whitepoint to ROMMRGB with its D50 whitepoint
-static const Matrix3 mxRec709toROMM = mxRec709toXYZ * mxXYZD65toXYZD50 * mxXYZD50toROMM;
+// Conversion matrix for Rec709RGB with its D65 whitepoint to ROMMRGB with its D50 whitepoint.
+//
+// MULTIPLICATION ORDER: the RGB-to-RGB matrix multiplier in this
+// file (`RGBtoRGBMatrixMultiply`) applies `out = M · in` with `in` as
+// a COLUMN vector — so the matrix that is applied FIRST must appear
+// RIGHTMOST in the composite product.  Order here is:
+//   1. mxRec709toXYZ          (Rec.709 → XYZ D65)
+//   2. mxXYZD65toXYZD50       (XYZ D65 → XYZ D50 Bradford)
+//   3. mxXYZD50toROMM         (XYZ D50 → ROMM D50)
+// So the composite is `M3 · M2 · M1`.  Pre-Stage-B (RISEPel = ROMM)
+// these matrices were assembled in the wrong order — the bug was
+// latent because no production code path was actually exercising
+// Rec709↔ROMM (every render emitted RISEPel = ROMM directly).
+// Stage B activated the path (FrameStoreColorSpace::ROMM_Linear now
+// goes through `ColorUtils::Rec709RGBtoROMMRGB`) and the bug surfaced
+// as ROMM-tagged archival output being chromatically wrong (white
+// not preserved: Rec.709 (1,1,1) was landing at ~(0.951, 0.994, 1.009)
+// instead of ROMM (1,1,1)).
+static const Matrix3 mxRec709toROMM = mxXYZD50toROMM * mxXYZD65toXYZD50 * mxRec709toXYZ;
 
-// Conversion matrix for ROMMRGB with its D50 whitepoint to Rec709RGB with its D65 whitepoint
-static const Matrix3 mxROMMtoRec709 = mxROMMtoXYZD50 * mxXYZD50toXYZD65 * mxXYZtoRec709;
+// Conversion matrix for ROMMRGB with its D50 whitepoint to Rec709RGB with its D65 whitepoint.
+// Inverse direction; same M3 · M2 · M1 convention.
+static const Matrix3 mxROMMtoRec709 = mxXYZtoRec709 * mxXYZD50toXYZD65 * mxROMMtoXYZD50;
+
+// ACES AP1 / ACEScg matrices.  AP1 whitepoint is the ACES D60-ish
+// chromaticity (0.32168, 0.33767).  XYZ(D60)↔AP1(D60) derived from
+// the published AP1 primaries; round-trip M_AP1toXYZ · (1,1,1) =
+// ACES_D60_white_XYZ verified to numerical precision.
+// (Same matrices the Stage A LUT generator pre-staged in
+// tools/JakobHanikaLUTGen.cpp:kTarget_ACEScg.)
+static const Matrix3 mxXYZD60toAP1 = Matrix3(
+	 1.6410233797, -0.3248032942, -0.2364246952,
+	-0.6636628587,  1.6153315917,  0.0167563477,
+	 0.0117218943, -0.0082844420,  0.9883948585 );
+static const Matrix3 mxAP1toXYZD60 = Matrix3Ops::Inverse( mxXYZD60toAP1 );
+
+// Bradford D65 → D60 (ACES whitepoint).  Independently recomputed
+// from the canonical Bradford CRF + D65/ACES-D60 whitepoint XYZ via
+// M_adapt = M_Bradford^-1 · diag(rho_dst/rho_src) · M_Bradford.
+// Round-trip M_adapt · D65_XYZ ≈ ACES_D60_XYZ verified.
+static const Matrix3 mxXYZD65toXYZD60 = Matrix3(
+	 1.0129910965,  0.0060845191, -0.0149298715,
+	 0.0076709636,  0.9981726261, -0.0050179063,
+	-0.0028339778,  0.0046733535,  0.9247039866 );
+static const Matrix3 mxXYZD60toXYZD65 = Matrix3Ops::Inverse( mxXYZD65toXYZD60 );
+
+// Composite matrices Rec.709(D65) ↔ AP1(D60-ish) and ROMM(D50) ↔
+// AP1(D60-ish) via Bradford adapt at the XYZ stage.  Same M_n · ... · M_1
+// column-vector composition convention as mxRec709toROMM above (apply
+// rightmost first).
+static const Matrix3 mxRec709toAP1  = mxXYZD60toAP1 * mxXYZD65toXYZD60 * mxRec709toXYZ;
+static const Matrix3 mxAP1toRec709  = mxXYZtoRec709 * mxXYZD60toXYZD65 * mxAP1toXYZD60;
+static const Matrix3 mxROMMtoAP1    = mxXYZD60toAP1 * mxXYZD65toXYZD60 * mxXYZD50toXYZD65 * mxROMMtoXYZD50;
+static const Matrix3 mxAP1toROMM    = mxXYZD50toROMM * mxXYZD65toXYZD50 * mxXYZD60toXYZD65 * mxAP1toXYZD60;
 
 //
 // Helper stuff
@@ -192,16 +241,6 @@ ROMMRGBPel ColorUtils::XYZtoROMMRGB( const XYZPel& xyz )
 	return XYZtoRGBMatrixMultiply<ROMMRGBPel>( xyzD50, mxXYZD50toROMM );
 }
 
-ROMMRGBPel ColorUtils::IntegratorXYZtoROMMRGB( const XYZPel& xyz )
-{
-	// Matrix-only XYZ -> ROMM RGB matching the JH LUT generator's
-	// convention exactly: just `mxXYZD50toROMM × xyz` with no chromatic
-	// adaptation and no gamut clip.  See ColorUtils.h for the rationale
-	// — the standard XYZtoROMMRGB above adds a D65->D50 step that the
-	// LUT generator never applied, breaking the JH round-trip.
-	return XYZtoRGBMatrixMultiply<ROMMRGBPel>( xyz, mxXYZD50toROMM );
-}
-
 ROMMRGBPel ColorUtils::ProPhotoRGB_Linearization( const ProPhotoRGBPel& rgb )
 {
 	ROMMRGBPel ret;
@@ -242,4 +281,43 @@ Rec709RGBPel ColorUtils::ProPhotoRGBtoRec709RGB( const ProPhotoRGBPel& rgb )
 ROMMRGBPel ColorUtils::sRGBtoROMMRGB( const sRGBPel& rgb )
 {
 	return Rec709RGBtoROMMRGB( Linearize_sRGB(rgb) );
+}
+
+//
+// ACES AP1 (ACEScg) conversions
+//
+
+XYZPel ColorUtils::AP1RGBtoXYZ( const AP1RGBPel& p )
+{
+	// AP1 → XYZ(D60) → XYZ(D65), so XYZPel callers see a D65-
+	// referred XYZ consistent with every other RGBtoXYZ in this file.
+	XYZPel xyzD60 = RGBtoXYZMatrixMultiply<AP1RGBPel>( p, mxAP1toXYZD60 );
+	return XYZMatrixMultiply( xyzD60, mxXYZD60toXYZD65 );
+}
+
+AP1RGBPel ColorUtils::XYZtoAP1RGB( const XYZPel& xyz )
+{
+	// XYZ (D65) → XYZ (D60) → AP1.
+	XYZPel xyzD60 = XYZMatrixMultiply( xyz, mxXYZD65toXYZD60 );
+	return XYZtoRGBMatrixMultiply<AP1RGBPel>( xyzD60, mxXYZD60toAP1 );
+}
+
+AP1RGBPel ColorUtils::Rec709RGBtoAP1RGB( const Rec709RGBPel& rgb )
+{
+	return RGBtoRGBMatrixMultiply<Rec709RGBPel,AP1RGBPel>( rgb, mxRec709toAP1 );
+}
+
+Rec709RGBPel ColorUtils::AP1RGBtoRec709RGB( const AP1RGBPel& rgb )
+{
+	return RGBtoRGBMatrixMultiply<AP1RGBPel,Rec709RGBPel>( rgb, mxAP1toRec709 );
+}
+
+AP1RGBPel ColorUtils::ROMMRGBtoAP1RGB( const ROMMRGBPel& rgb )
+{
+	return RGBtoRGBMatrixMultiply<ROMMRGBPel,AP1RGBPel>( rgb, mxROMMtoAP1 );
+}
+
+ROMMRGBPel ColorUtils::AP1RGBtoROMMRGB( const AP1RGBPel& rgb )
+{
+	return RGBtoRGBMatrixMultiply<AP1RGBPel,ROMMRGBPel>( rgb, mxAP1toROMM );
 }

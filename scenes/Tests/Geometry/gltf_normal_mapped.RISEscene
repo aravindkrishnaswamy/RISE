@@ -84,17 +84,17 @@ uniformcolor_painter
 # vector components in [-1,+1] mapped to [0,1] linearly.  The right
 # "color_space" choice is therefore the one that performs ZERO matrix
 # conversion at load time -- i.e. the one whose name matches RISE's
-# internal RISEPel space.  Today RISEPel is ROMMRGBPel (see
-# Color.h), so `color_space ROMMRGB_Linear` is a pure store-as-is
-# load: PNG bytes -> [0,1] floats -> RISEPel.  Picking sRGB or
-# Rec709RGB_Linear would warp the encoded vector via the colour
-# matrix and break normal-map decoding (especially the +Y/+X regions
-# where r != g != b).
+# internal RISEPel space.  Post Stage B colour-space migration
+# RISEPel is Rec709RGBPel (see Color.h), so `color_space
+# Rec709RGB_Linear` is the pure store-as-is load: PNG bytes ->
+# [0,1] floats -> RISEPel.  Picking sRGB or ROMMRGB_Linear would
+# warp the encoded vector via the colour matrix and break normal-
+# map decoding (especially the +Y/+X regions where r != g != b).
 png_painter
 {
 	name				pnt_normal
 	file				scenes/Tests/Geometry/assets/NormalTangentMirrorTest_normal.png
-	color_space			ROMMRGB_Linear
+	color_space			Rec709RGB_Linear
 	filter_type			Bilinear
 	lowmemory			FALSE
 }

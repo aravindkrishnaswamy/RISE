@@ -7,7 +7,7 @@
 #include "pch.h"
 #define _USE_MATH_DEFINES
 #include "RGBToSpectrumTable.h"
-#include "RGBToSpectrumTable_ROMMData.h"
+#include "RGBToSpectrumTable_LUTData.h"
 #include "ColorMath.h"
 #include "../../Interfaces/ILog.h"
 
@@ -23,7 +23,7 @@
 
 using namespace RISE;
 
-const RGBToSpectrumTable& RGBToSpectrumTable::ROMM()
+const RGBToSpectrumTable& RGBToSpectrumTable::Get()
 {
 	// Lazy singleton.  std::call_once guarantees LoadFromMemory()
 	// runs once and completes before any other thread observes
@@ -33,9 +33,9 @@ const RGBToSpectrumTable& RGBToSpectrumTable::ROMM()
 	// const data vector + flag are the only state read by operator()).
 	//
 	// The LUT data is baked into the binary via
-	// RGBToSpectrumTable_ROMMData.cpp (auto-generated from
-	// extlib/jakob-hanika-luts/romm.coeff by
-	// tools/GenerateROMMSpectrumLUTHeader.py).  Earlier revisions
+	// RGBToSpectrumTable_LUTData.cpp (auto-generated from
+	// extlib/jakob-hanika-luts/<target>.coeff by
+	// tools/GenerateSpectrumLUTHeader.py).  Earlier revisions
 	// fopen()'d the .coeff file at first access; that broke the
 	// Windows GUI launched from Explorer (no RISE_MEDIA_PATH, cwd =
 	// bin/, MediaPathLocator could not resolve the relative path,
@@ -48,9 +48,9 @@ const RGBToSpectrumTable& RGBToSpectrumTable::ROMM()
 	static std::once_flag     loadOnce;
 	std::call_once( loadOnce, [](){
 		instance.LoadFromMemory(
-			kROMMDataResolution,
-			kROMMDataFloats,
-			kROMMDataNumFloats );
+			kSpectrumLUTResolution,
+			kSpectrumLUTFloats,
+			kSpectrumLUTNumFloats );
 	} );
 	return instance;
 }
@@ -74,7 +74,7 @@ bool RGBToSpectrumTable::LoadFromMemory(
 	}
 
 	// The body is laid out as 3 * res^3 cells, each cell `(c0, c1, c2)`
-	// triples — `kROMMDataNumFloats` should equal 3 * res^3 * 3.
+	// triples — `kSpectrumLUTNumFloats` should equal 3 * res^3 * 3.
 	const size_t totalCells   = size_t( 3 ) * res * res * res;
 	const size_t expectedFloats = totalCells * 3;
 	if( size_t( numFloats ) != expectedFloats ) {
@@ -95,7 +95,7 @@ bool RGBToSpectrumTable::LoadFromMemory(
 	resolution = int( res );
 	loaded     = true;
 	GlobalLog()->PrintEx( eLog_Info,
-		"RGBToSpectrumTable: loaded baked-in ROMM LUT (resolution=%d, %zu cells).",
+		"RGBToSpectrumTable: loaded baked-in LUT (resolution=%d, %zu cells).",
 		resolution, totalCells );
 	return true;
 }
@@ -173,7 +173,7 @@ RGBToSpectrumTable::CoeffSet RGBToSpectrumTable::InterpolateTetra(
 	return out;
 }
 
-RGBSigmoidPolynomial RGBToSpectrumTable::operator()( const RISEPel& rgb_in ) const
+RGBSigmoidPolynomial RGBToSpectrumTable::operator()( const LUTTargetPel& rgb_target ) const
 {
 	if( !loaded ) {
 		// LUT failed to load — return a constant-0.5 spectrum so the
@@ -186,9 +186,12 @@ RGBSigmoidPolynomial RGBToSpectrumTable::operator()( const RISEPel& rgb_in ) con
 	// only when a caller forgot to wrap an HDR / unbounded source in
 	// RGBUnboundedSpectrum (which scales by max(R,G,B) before lookup).
 	// Clamp keeps the table valid; the caller's bug is its own.
-	Scalar r = std::max( Scalar(0), std::min( Scalar(1), rgb_in.r ) );
-	Scalar g = std::max( Scalar(0), std::min( Scalar(1), rgb_in.g ) );
-	Scalar b = std::max( Scalar(0), std::min( Scalar(1), rgb_in.b ) );
+	// (Out-of-Rec.709-gamut inputs from a wide-gamut source may also
+	// land slightly < 0 or > 1; clamping desaturates to the gamut
+	// boundary, which is the physically-correct fallback.)
+	Scalar r = std::max( Scalar(0), std::min( Scalar(1), rgb_target.r ) );
+	Scalar g = std::max( Scalar(0), std::min( Scalar(1), rgb_target.g ) );
+	Scalar b = std::max( Scalar(0), std::min( Scalar(1), rgb_target.b ) );
 
 	// Identify max channel and the canonical (max, mid, min) ordering
 	// matching tools/JakobHanikaLUTGen.cpp's CellToRGB.  The max gives

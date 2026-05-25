@@ -14,12 +14,12 @@
 //
 //  Pipeline this header serves (see docs/FRAMESTORE_DESIGN.md §3.3):
 //
-//      ROMM linear in
-//        → exposure (multiply by 2^EV)         [ViewTransform stage 1]
-//        → 3x3 matrix (ROMM → target primaries) [this header: matrices]
-//        → tone curve (iff target is LDR fixed) [ViewTransform stage 3]
-//        → output transfer (sRGB / PQ / etc.)   [this header: ApplyTransfer]
-//        → quantise into target pixel layout    [TargetFormat]
+//      RISEPel linear in (Rec.709 Linear post Stage B colour-space migration)
+//        → exposure (multiply by 2^EV)            [ViewTransform stage 1]
+//        → 3x3 matrix (RISEPel → target primaries) [this header: matrices]
+//        → tone curve (iff target is LDR fixed)   [ViewTransform stage 3]
+//        → output transfer (sRGB / PQ / etc.)     [this header: ApplyTransfer]
+//        → quantise into target pixel layout      [TargetFormat]
 //
 //  Author: design landing L0
 //  License: see LICENSE.TXT
@@ -41,8 +41,8 @@ namespace RISE
 		//! NOT a transfer function — that is a separate axis (TransferFunction).
 		enum class FSColorSpace : uint32_t
 		{
-			ROMM_Linear        = 0,  ///< ProPhoto / ROMM RGB primaries, D50, linear (RISEPel native)
-			sRGB_Linear        = 1,  ///< BT.709 primaries, D65, linear
+			ROMM_Linear        = 0,  ///< ProPhoto / ROMM RGB primaries, D50, linear
+			sRGB_Linear        = 1,  ///< BT.709 / sRGB primaries, D65, linear (RISEPel native post Stage B colour-space migration)
 			DisplayP3_Linear   = 2,  ///< DCI-P3 primaries, D65, linear (Apple Display P3)
 			BT2020_Linear      = 3   ///< BT.2020 primaries, D65, linear
 		};
@@ -114,14 +114,14 @@ namespace RISE
 		// ─────────────────────────────────────────────────────────────
 
 		//! Returns a row-major 3x3 matrix M for the SECOND stage of the
-		//! ROMM → target conversion (sRGB linear → target primaries).
-		//! For sRGB and ROMM targets this is the identity; for P3 and
-		//! BT.2020 it is the published industry M_sRGB→target matrix.
-		//! The full ROMM → target chain runs ROMM → sRGB linear via
-		//! ColorUtils::ROMMRGBtoRec709RGB first; ConvertROMMToTargetPrimaries()
-		//! does the chain in one call.  Pointer is to a static array;
-		//! do not free.
-		const double* GetROMMToTargetMatrix( FSColorSpace target );
+		//! Pel → target conversion (sRGB linear → target primaries).
+		//! For sRGB / sRGB-aliased targets this is the identity; for P3
+		//! and BT.2020 it is the published industry M_sRGB→target matrix.
+		//! The full RISEPel → target chain is wired in
+		//! ConvertPelToTargetPrimaries; this returns just the second-
+		//! stage matrix (post-RISEPel-as-sRGB-linear).  Pointer is to a
+		//! static array; do not free.
+		const double* GetPelToTargetMatrix( FSColorSpace target );
 
 		//! Apply a 3x3 matrix (row-major) to an RGB triple.  Out is
 		//! aliased-safe with in.
@@ -130,11 +130,15 @@ namespace RISE
 			double inR, double inG, double inB,
 			double& outR, double& outG, double& outB );
 
-		//! Convenience: apply ROMM-linear → target color space's linear
-		//! primaries.  No transfer function applied.
-		void ConvertROMMToTargetPrimaries(
+		//! Convenience: apply RISEPel-linear → target colour space's linear
+		//! primaries.  No transfer function applied.  Input is RISEPel
+		//! (post Stage B colour-space migration: Rec.709 Linear D65).
+		//! Output is whatever primaries `target` selects (sRGB == identity
+		//! since RISEPel IS sRGB-linear; ROMM does a real Rec.709→ROMM
+		//! matrix; P3 / BT.2020 do Rec.709 → target).
+		void ConvertPelToTargetPrimaries(
 			FSColorSpace target,
-			double rommR, double rommG, double rommB,
+			double pelR, double pelG, double pelB,
 			double& outR, double& outG, double& outB );
 
 		// ─────────────────────────────────────────────────────────────

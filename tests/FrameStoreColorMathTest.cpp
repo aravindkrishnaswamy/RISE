@@ -225,18 +225,16 @@ namespace
 		}
 	}
 
-	// ─── Section 3: ROMM → sRGB primaries ─────────────────────────
+	// ─── Section 3: RISEPel → target primaries ─────────────────────
 	void TestPrimariesConversion()
 	{
-		// PARITY INVARIANT: ConvertROMMToTargetPrimaries(sRGB_Linear,
-		// ...) must produce byte-identical output to the existing
-		// ColorUtils::ROMMRGBtoRec709RGB.  This is the single source
-		// of truth for ROMM→sRGB-linear in the codebase; any drift
-		// here would silently change L2/L3 PNG output.  Note: ROMM
-		// (1, 1, 1) is D50 white through ROMM primaries; after the
-		// embedded D50→D65 Bradford CAT it does NOT map to (1, 1, 1)
-		// in Rec709.  This test asserts only equality with the
-		// existing infrastructure, not any closed-form invariant.
+		// Post-Stage-B colour-space migration: RISEPel = Rec709RGBPel
+		// (sRGB / BT.709 Linear D65).  ConvertPelToTargetPrimaries
+		// takes RISEPel-linear input and emits the requested target
+		// colour space's primaries.
+
+		// IDENTITY: sRGB_Linear target is identity (RISEPel IS sRGB-
+		// linear post Stage B).
 		const struct { double r, g, b; } samples[] = {
 			{ 0.0, 0.0, 0.0 },
 			{ 1.0, 1.0, 1.0 },
@@ -248,50 +246,126 @@ namespace
 			{ 2.5, 0.1, 4.0 },     // HDR-style sample
 		};
 		for ( const auto& s : samples ) {
-			ROMMRGBPel rommPel; rommPel.r = s.r; rommPel.g = s.g; rommPel.b = s.b;
-			const Rec709RGBPel ref = ColorUtils::ROMMRGBtoRec709RGB( rommPel );
 			double r, g, b;
-			ConvertROMMToTargetPrimaries( FSColorSpace::sRGB_Linear,
+			ConvertPelToTargetPrimaries( FSColorSpace::sRGB_Linear,
 				s.r, s.g, s.b, r, g, b );
 			std::ostringstream os;
-			os << "ROMM(" << s.r << "," << s.g << "," << s.b
-			   << ") → sRGB linear matches ColorUtils";
+			os << "RISEPel(" << s.r << "," << s.g << "," << s.b
+			   << ") → sRGB linear is identity";
+			Check( r == s.r && g == s.g && b == s.b, os.str() );
+		}
+
+		// ROMM_Linear PARITY: ConvertPelToTargetPrimaries must match
+		// ColorUtils::Rec709RGBtoROMMRGB byte-identically.  This is the
+		// single source of truth for Rec.709→ROMM (Bradford D65→D50 +
+		// matrix); any drift here would silently change L2/L3 PNG
+		// output for ROMM-targeted archival formats.
+		for ( const auto& s : samples ) {
+			Rec709RGBPel rec709Pel; rec709Pel.r = s.r; rec709Pel.g = s.g; rec709Pel.b = s.b;
+			const ROMMRGBPel ref = ColorUtils::Rec709RGBtoROMMRGB( rec709Pel );
+			double r, g, b;
+			ConvertPelToTargetPrimaries( FSColorSpace::ROMM_Linear,
+				s.r, s.g, s.b, r, g, b );
+			std::ostringstream os;
+			os << "RISEPel(" << s.r << "," << s.g << "," << s.b
+			   << ") → ROMM linear matches ColorUtils";
 			Check( r == ref.r && g == ref.g && b == ref.b, os.str() );
+		}
+
+		// COLORIMETRIC INVARIANTS — independent of `ColorUtils` parity
+		// so a self-consistent-but-wrong composite (e.g. multiplication
+		// order reversed on both forward and inverse) is still caught.
+		//
+		// (i) White preservation: Rec.709 (1,1,1) is D65 white; ROMM
+		// (1,1,1) is D50 white.  Under a Bradford chromatic adapt the
+		// two map to each other.  The composite Rec709→ROMM must take
+		// (1,1,1) to (1,1,1) — ANY non-trivial cross-channel mixing of
+		// the white axis indicates the matrices were composed in the
+		// wrong order or one of the source matrices is inverted.
+		{
+			Rec709RGBPel white709( 1.0, 1.0, 1.0 );
+			const ROMMRGBPel whiteROMM = ColorUtils::Rec709RGBtoROMMRGB( white709 );
+			Check( ApproxEq( whiteROMM.r, 1.0, 5e-3 ) &&
+			       ApproxEq( whiteROMM.g, 1.0, 5e-3 ) &&
+			       ApproxEq( whiteROMM.b, 1.0, 5e-3 ),
+				"Rec.709 D65 white maps to ROMM D50 white (Bradford-adapt invariant)" );
+		}
+		{
+			ROMMRGBPel whiteROMM( 1.0, 1.0, 1.0 );
+			const Rec709RGBPel white709 = ColorUtils::ROMMRGBtoRec709RGB( whiteROMM );
+			Check( ApproxEq( white709.r, 1.0, 5e-3 ) &&
+			       ApproxEq( white709.g, 1.0, 5e-3 ) &&
+			       ApproxEq( white709.b, 1.0, 5e-3 ),
+				"ROMM D50 white maps to Rec.709 D65 white (Bradford-adapt invariant)" );
+		}
+
+		// (ii) Reference: known Rec.709 primary against the sequential
+		// XYZ + Bradford path.  Rec.709 pure red (1, 0, 0) has XYZ
+		// (0.4124, 0.2126, 0.0193) at D65.  Bradford to D50:
+		// (0.4361, 0.2225, 0.0139).  Matrix D50→ROMM gives:
+		//   r =  1.3460*0.4361 - 0.2556*0.2225 - 0.0511*0.0139 = 0.5293
+		//   g = -0.5446*0.4361 + 1.5082*0.2225 + 0.0205*0.0139 = 0.0984
+		//   b =  0.0   *0.4361 + 0.0   *0.2225 + 1.2123*0.0139 = 0.0169
+		// These are the canonical ROMM-D50 coordinates of Rec.709 D65
+		// pure red; tolerance accommodates the 4-decimal published
+		// Bradford constants.
+		{
+			Rec709RGBPel red709( 1.0, 0.0, 0.0 );
+			const ROMMRGBPel redROMM = ColorUtils::Rec709RGBtoROMMRGB( red709 );
+			Check( ApproxEq( redROMM.r, 0.5293, 5e-3 ) &&
+			       ApproxEq( redROMM.g, 0.0984, 5e-3 ) &&
+			       ApproxEq( redROMM.b, 0.0169, 5e-3 ),
+				"Rec.709 pure red → known ROMM coordinates (canonical reference)" );
+		}
+
+		// (iii) Round-trip: Rec.709 → ROMM → Rec.709 must reproduce
+		// the input (within float noise).  Catches direction
+		// confusions that white-preservation alone might miss.
+		{
+			const struct { double r, g, b; } rt[] = {
+				{ 0.7, 0.2, 0.4 },
+				{ 0.1, 0.6, 0.3 },
+				{ 0.95, 0.05, 0.5 },
+			};
+			for ( const auto& s : rt ) {
+				Rec709RGBPel in( s.r, s.g, s.b );
+				const ROMMRGBPel mid = ColorUtils::Rec709RGBtoROMMRGB( in );
+				const Rec709RGBPel out = ColorUtils::ROMMRGBtoRec709RGB( mid );
+				std::ostringstream os;
+				os << "Rec.709 → ROMM → Rec.709 round-trip preserves ("
+				   << s.r << ", " << s.g << ", " << s.b << ")";
+				Check( ApproxEq( out.r, s.r, 1e-3 ) &&
+				       ApproxEq( out.g, s.g, 1e-3 ) &&
+				       ApproxEq( out.b, s.b, 1e-3 ),
+					os.str() );
+			}
 		}
 
 		// Black is preserved exactly through every target.
 		double r, g, b;
-		ConvertROMMToTargetPrimaries( FSColorSpace::DisplayP3_Linear,
+		ConvertPelToTargetPrimaries( FSColorSpace::DisplayP3_Linear,
 			0.0, 0.0, 0.0, r, g, b );
 		Check( r == 0.0 && g == 0.0 && b == 0.0,
-			"ROMM black → P3 black exact" );
-		ConvertROMMToTargetPrimaries( FSColorSpace::BT2020_Linear,
+			"RISEPel black → P3 black exact" );
+		ConvertPelToTargetPrimaries( FSColorSpace::BT2020_Linear,
 			0.0, 0.0, 0.0, r, g, b );
 		Check( r == 0.0 && g == 0.0 && b == 0.0,
-			"ROMM black → BT.2020 black exact" );
-
-		// ROMM → ROMM is identity (no-op fast path).
-		ConvertROMMToTargetPrimaries( FSColorSpace::ROMM_Linear,
-			0.123, 0.456, 0.789, r, g, b );
-		Check( r == 0.123 && g == 0.456 && b == 0.789,
-			"ROMM → ROMM identity" );
+			"RISEPel black → BT.2020 black exact" );
 
 		// Sanity check: P3 chain produces values close to the sRGB
-		// chain since both share D65 — i.e. P3 should not produce
-		// wildly different magnitudes from sRGB for the same ROMM
-		// input.  (The actual ratio depends on gamut difference but
-		// is bounded by ~30% in any channel.)
-		ConvertROMMToTargetPrimaries( FSColorSpace::DisplayP3_Linear,
+		// chain since both share D65.  RISEPel(0.5,0.5,0.5) is neutral
+		// in sRGB; in P3 it remains close to neutral.
+		ConvertPelToTargetPrimaries( FSColorSpace::DisplayP3_Linear,
 			0.5, 0.5, 0.5, r, g, b );
 		double sr, sg, sb;
-		ConvertROMMToTargetPrimaries( FSColorSpace::sRGB_Linear,
+		ConvertPelToTargetPrimaries( FSColorSpace::sRGB_Linear,
 			0.5, 0.5, 0.5, sr, sg, sb );
 		Check( std::fabs( r - sr ) < 0.5 * std::fabs( sr ) + 1e-6,
-			"ROMM(.5) → P3 R within 50% of sRGB R" );
+			"RISEPel(.5) → P3 R within 50% of sRGB R" );
 
 		// Pure sRGB-red through M_sRGB→P3 has R near 0.82, near-zero G/B.
 		double pR, pG, pB;
-		const double* m = GetROMMToTargetMatrix( FSColorSpace::DisplayP3_Linear );
+		const double* m = GetPelToTargetMatrix( FSColorSpace::DisplayP3_Linear );
 		ApplyMatrix3x3( m, 1.0, 0.0, 0.0, pR, pG, pB );
 		Check( pR > 0.8 && pR < 1.0,    "sRGB red → P3 R near 0.82" );
 		Check( pG > 0.0 && pG < 0.05,   "sRGB red → P3 G small positive" );
@@ -312,7 +386,7 @@ namespace
 			"M_sRGB→P3 row 2 sums to 1 (white-point invariant)" );
 
 		// Same for BT.2020 (BT.2087 published values).
-		const double* m2 = GetROMMToTargetMatrix( FSColorSpace::BT2020_Linear );
+		const double* m2 = GetPelToTargetMatrix( FSColorSpace::BT2020_Linear );
 		const double r0 = m2[0] + m2[1] + m2[2];
 		const double r1 = m2[3] + m2[4] + m2[5];
 		const double r2 = m2[6] + m2[7] + m2[8];
@@ -399,17 +473,23 @@ namespace
 	// ─── Section 5: ViewTransform pipeline ────────────────────────
 	void TestViewTransformPipeline()
 	{
+		// Post Stage-B colour-space migration: RISEPel = Rec709RGBPel,
+		// so `FSColorSpace::sRGB_Linear` is the "identity to RISEPel"
+		// target (the previous Stage-A test used `ROMM_Linear` which
+		// was the legacy identity; that enum value now does a real
+		// Rec.709→ROMM conversion).
+
 		// Identity: pass through with no scaling.
 		ViewTransform xf = ViewTransform::Identity();
 		double r, g, b;
-		ApplyViewTransformLinear( xf, FSColorSpace::ROMM_Linear, false,
+		ApplyViewTransformLinear( xf, FSColorSpace::sRGB_Linear, false,
 			0.5, 0.25, 0.125, r, g, b );
 		Check( r == 0.5 && g == 0.25 && b == 0.125,
-			"Identity ViewTransform on ROMM → unchanged" );
+			"Identity ViewTransform on RISEPel → unchanged" );
 
 		// Exposure +1 EV doubles linear values.
 		xf = ViewTransform::ForLDRDisplay( 1.0f, eDisplayTransform_None );
-		ApplyViewTransformLinear( xf, FSColorSpace::ROMM_Linear, false,
+		ApplyViewTransformLinear( xf, FSColorSpace::sRGB_Linear, false,
 			0.5, 0.25, 0.125, r, g, b );
 		Check( ApproxEq( r, 1.0, 1e-15 ) &&
 		       ApproxEq( g, 0.5, 1e-15 ) &&
@@ -418,7 +498,7 @@ namespace
 
 		// Exposure -1 EV halves.
 		xf = ViewTransform::ForLDRDisplay( -1.0f, eDisplayTransform_None );
-		ApplyViewTransformLinear( xf, FSColorSpace::ROMM_Linear, false,
+		ApplyViewTransformLinear( xf, FSColorSpace::sRGB_Linear, false,
 			0.5, 0.25, 0.125, r, g, b );
 		Check( ApproxEq( r, 0.25, 1e-15 ) &&
 		       ApproxEq( g, 0.125, 1e-15 ) &&
@@ -438,13 +518,13 @@ namespace
 		// Tone curve gated by applyToneCurve flag: when false,
 		// LDR preset still passes through linearly.
 		xf = ViewTransform::ForLDRDisplay( 0.0f, eDisplayTransform_ACES );
-		ApplyViewTransformLinear( xf, FSColorSpace::ROMM_Linear, false,
+		ApplyViewTransformLinear( xf, FSColorSpace::sRGB_Linear, false,
 			10.0, 10.0, 10.0, r, g, b );
 		Check( ApproxEq( r, 10.0, 1e-12 ),
 			"applyToneCurve=false skips ACES even when curve set" );
 
 		// With applyToneCurve=true, ACES compresses 10.0 to ≤ 1.
-		ApplyViewTransformLinear( xf, FSColorSpace::ROMM_Linear, true,
+		ApplyViewTransformLinear( xf, FSColorSpace::sRGB_Linear, true,
 			10.0, 10.0, 10.0, r, g, b );
 		Check( r > 0.0 && r <= 1.0,
 			"applyToneCurve=true with ACES compresses 10.0 to ≤ 1" );

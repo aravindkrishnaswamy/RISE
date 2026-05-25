@@ -8,11 +8,11 @@
 //    materials at one scalar regardless of wavelength).
 //
 //    The test:
-//      For each of N random in-gamut ROMM RGB triples:
+//      For each of N random in-gamut RISEPel (Rec.709 Linear) triples:
 //        1. Construct a UniformColorPainter with that RGB.
 //        2. Sample GetColorNM at every 5nm bin from 380-780nm.
-//        3. Integrate the sampled spectrum against CIE 1931 + D50.
-//        4. Convert XYZ → ROMM RGB.
+//        3. Integrate the sampled spectrum against CIE 1931.
+//        4. Convert XYZ(D65) → Rec.709(D65).
 //        5. Assert the round-trip matches the original RGB within
 //           tolerance.
 //
@@ -57,9 +57,9 @@ namespace
 	}
 
 	// Integrate painter.GetColorNM samples against CIE under a flat
-	// illuminant (matching the LUT generator's forward model and the
-	// spectral rasterizer's runtime integration).
-	RISEPel IntegratePainterToROMM( const IPainter& painter, const RayIntersectionGeometric& ri )
+	// illuminant (matching the LUT generator's rec709 target forward
+	// model and the spectral rasterizer's runtime integration).
+	RISEPel IntegratePainterToRec709( const IPainter& painter, const RayIntersectionGeometric& ri )
 	{
 		double X = 0, Y = 0, Z = 0, normY = 0;
 		for( int i = 0; i < 81; ++i ) {
@@ -75,18 +75,14 @@ namespace
 		const double inv = 1.0 / normY;
 		X *= inv; Y *= inv; Z *= inv;
 
-		// Match the LUT generator's forward model exactly: Bradford
-		// D65 → D50 chromatic adaptation followed by the D50→ROMM
-		// matrix.  Both matrices inlined from
-		// src/Library/Utilities/Color/Color.cpp (mxXYZD65toXYZD50 /
-		// mxXYZD50toROMM) — keep in sync if those are retuned.
-		const double Xd =  1.0479 * X + 0.0229 * Y - 0.0502 * Z;
-		const double Yd =  0.0296 * X + 0.9904 * Y - 0.0171 * Z;
-		const double Zd = -0.0092 * X + 0.0151 * Y + 0.7519 * Z;
+		// XYZ(D65) → Rec.709(D65) — matches the LUT generator's rec709
+		// target forward model (no Bradford adapt; both spaces D65).
+		// Matrix inlined from src/Library/Utilities/Color/Color.cpp
+		// (mxXYZtoRec709).
 		RISEPel out;
-		out.r = Scalar(  1.3460 * Xd - 0.2556 * Yd - 0.0511 * Zd );
-		out.g = Scalar( -0.5446 * Xd + 1.5082 * Yd + 0.0205 * Zd );
-		out.b = Scalar(  0.0    * Xd + 0.0    * Yd + 1.2123 * Zd );
+		out.r = Scalar(  3.240479 * X - 1.537150 * Y - 0.498535 * Z );
+		out.g = Scalar( -0.969256 * X + 1.875992 * Y + 0.041556 * Z );
+		out.b = Scalar(  0.055648 * X - 0.204043 * Y + 1.057311 * Z );
 		return out;
 	}
 
@@ -152,7 +148,7 @@ int main()
 		const RISEPel rgb( uni(rng), uni(rng), uni(rng) );
 		IPainter* p = nullptr;
 		RISE_API_CreateUniformColorPainter( &p, rgb );
-		const RISEPel rt = IntegratePainterToROMM( *p, ri );
+		const RISEPel rt = IntegratePainterToRec709( *p, ri );
 		p->release();
 
 		const double err = std::sqrt(

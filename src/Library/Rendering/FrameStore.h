@@ -387,7 +387,7 @@ namespace RISE
 			//! `dst` is `bytesPerPixel` bytes (per fmt).  Used by
 			//! Render() in its inner loop.
 			void EncodePixel(
-				const RISEPel&   linearROMM,
+				const RISEPel&   linearPel,
 				double           alpha,
 				void*            dst,
 				FrameStoreOutput::TargetFormat fmt,

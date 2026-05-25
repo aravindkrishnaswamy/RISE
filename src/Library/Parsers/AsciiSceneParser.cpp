@@ -5306,14 +5306,14 @@ namespace RISE
 							"nor valid derivatives are available.  Designed for glTF 2.0 "
 							"normalTexture but works with any linear-RGB normal map.  IMPORTANT: "
 							"the referenced painter MUST be loaded with NO colour-matrix conversion "
-							"-- in today's RISE (RISEPel == ROMMRGBPel) that means `color_space "
-							"ROMMRGB_Linear`, which stores PNG bytes verbatim in the engine "
-							"working space.  Rec709RGB_Linear would skip the gamma decode but "
-							"still apply a Rec709 -> ROMM colour matrix that warps the encoded "
-							"vector; sRGB would gamma-decode and break the [0,1] vector domain.";
+							"-- post Stage B colour-space migration (RISEPel == Rec709RGBPel) that "
+							"means `color_space Rec709RGB_Linear`, which stores PNG bytes verbatim "
+							"in the engine working space.  ROMMRGB_Linear would apply a Rec.709 → "
+							"ROMM colour matrix that warps the encoded vector; sRGB would gamma-"
+							"decode and break the [0,1] vector domain.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "normal_map"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Normal-map painter (load with `color_space ROMMRGB_Linear` for verbatim store; see chunk description)"; }
+						{ auto& p = P(); p.name = "normal_map"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Normal-map painter (load with `color_space Rec709RGB_Linear` for verbatim store; see chunk description)"; }
 						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "glTF normalTexture.scale (xy multiplier)"; p.defaultValueHint = "1.0"; }
 						return cd;
 					}();

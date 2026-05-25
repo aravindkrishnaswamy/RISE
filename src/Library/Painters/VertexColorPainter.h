@@ -63,7 +63,7 @@ namespace RISE
 					// pattern TexturePainter uses (see TexturePainter.cpp's
 					// GetColorNM for the design rationale).
 					const RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB(
-						ri.vColor, RGBToSpectrumTable::ROMM() );
+						ri.vColor, RGBToSpectrumTable::Get() );
 					return s.Eval( nm );
 				}
 				return fallbackSpec.Eval( nm );
@@ -84,7 +84,7 @@ namespace RISE
 
 				if( ri.bHasVertexColor ) {
 					const RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB(
-						ri.vColor, RGBToSpectrumTable::ROMM() );
+						ri.vColor, RGBToSpectrumTable::Get() );
 					for( unsigned int i = 0; i < nbins; ++i ) {
 						sp.SetAtIndex( i, s.Eval( lambda_begin + Scalar(i) * delta ) );
 					}

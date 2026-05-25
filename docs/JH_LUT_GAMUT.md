@@ -1,18 +1,28 @@
 # Jakob-Hanika LUT — Gamut Failures & Why Better Solver ≠ Better LUT
 
-**Date:** 2026-05-09
-**Status:** known-limitation, current LUT shipped at commit `a763141` (Landing 3 v2)
-**Related:** [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md) (the spectral-uplift work the LUT supports), [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) (the proper long-term fix)
+**Date:** 2026-05-09 (Stage A update: 2026-05-24)
+**Status:** known-limitation greatly mitigated by Stage A migration; current LUT shipped is `extlib/jakob-hanika-luts/rec709.coeff`
+**Related:** [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md) (the spectral-uplift work the LUT supports), [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) (Stage A done, Stage B in progress)
 
 ---
 
-## TL;DR
+## TL;DR (Stage A update)
 
-The current `extlib/jakob-hanika-luts/romm.coeff` ships with **22 % of cells unconverged** (mean residual 1.6 × 10⁻², max 0.39 in ROMM RGB units). Visible quality on real test scenes (avocado, helmet, skin, chromaticity test) is unaffected because the failures cluster at **gamut corners that real textures essentially never hit**.
+**Stage A migration (2026-05-24)** retrained the LUT against Rec.709 Linear (D65). The current LUT (`extlib/jakob-hanika-luts/rec709.coeff`, baked into `src/Library/Utilities/Color/RGBToSpectrumTable_LUTData.cpp`) ships with **3.9 % of cells unconverged** (mean residual 1.2 × 10⁻³, max 9.5 × 10⁻²). A **5–6× quality improvement** over the prior ROMM LUT.
 
-The 22 % is **not a solver budget problem**. It is a **structural mismatch between ROMM's RGB gamut and the spectral locus of human vision**: ROMM's green and blue primaries lie OUTSIDE the visible spectral locus, so the corner cells of ROMM gamut correspond to colours no physical (reflectance × illuminant) can produce. The Gauss-Newton solver has nothing to converge to.
+The residual ~4% failures are at the deep-blue gamut corner where the JH sigmoid model itself has limited expressive power — not at primaries-outside-locus cells (Rec.709 primaries are all inside the locus). Tightening this further would require a richer spectral model (more coefficients) rather than colour-space gymnastics.
 
-The right fix is **not** a smarter solver, more iterations, or a different training illuminant. The right fix is **a different LUT target colour space** — see [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) for that workstream.
+The historical 22 % failure rate below applies to the **pre-Stage-A ROMM LUT** (`romm.coeff`, no longer shipped). It is preserved below for diagnostic context.
+
+---
+
+## Pre-Stage-A history (ROMM LUT, 22 % failure rate)
+
+The pre-Stage-A `romm.coeff` shipped with **22 % of cells unconverged** (mean residual 1.6 × 10⁻², max 0.39 in ROMM RGB units). Visible quality on real test scenes (avocado, helmet, skin, chromaticity test) was unaffected because the failures clustered at **gamut corners that real textures essentially never hit**.
+
+The 22 % was **not a solver budget problem**. It was a **structural mismatch between ROMM's RGB gamut and the spectral locus of human vision**: ROMM's green and blue primaries lay OUTSIDE the visible spectral locus, so the corner cells of ROMM gamut corresponded to colours no physical (reflectance × illuminant) could produce. The Gauss-Newton solver had nothing to converge to.
+
+The right fix was **not** a smarter solver, more iterations, or a different training illuminant. The right fix was **a different LUT target colour space** — done in Stage A (2026-05-24). See [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) for that workstream.
 
 ---
 
@@ -114,20 +124,23 @@ make -C build/make/rise tools
 "$msbuild" build\VS2022\Tools\JakobHanikaLUTGen.vcxproj /p:Configuration=Release /p:Platform=x64
 
 # 2. Regenerate the binary LUT (~30-60 sec on modern hardware for the
-#    default 64-resolution grid).  Output: extlib/jakob-hanika-luts/romm.coeff
-./bin/tools/JakobHanikaLUTGen --output extlib/jakob-hanika-luts/romm.coeff
-#    On Windows: ./build/bin/tools/JakobHanikaLUTGen.exe --output extlib/jakob-hanika-luts/romm.coeff
+#    default 64-resolution grid).  Default target is rec709 since 2026-05.
+#    Output: extlib/jakob-hanika-luts/rec709.coeff
+./bin/tools/JakobHanikaLUTGen --target rec709 \
+    --output extlib/jakob-hanika-luts/rec709.coeff
+#    On Windows: ./build/bin/tools/JakobHanikaLUTGen.exe ...
 
 # 3. Bake the binary into the source tree.  Output:
-#    src/Library/Utilities/Color/RGBToSpectrumTable_ROMMData.cpp (~32 MB)
-python tools/GenerateROMMSpectrumLUTHeader.py
+#    src/Library/Utilities/Color/RGBToSpectrumTable_LUTData.cpp (~32 MB)
+python3 tools/GenerateSpectrumLUTHeader.py --target rec709
 
 # 4. Rebuild Library — every platform's build system already knows about
-#    RGBToSpectrumTable_ROMMData.{h,cpp} via the standard 5-build-system
-#    update done in commit a763141.  No build-file changes needed.
+#    RGBToSpectrumTable_LUTData.{h,cpp} via the 5-build-system update.
+#    No build-file changes needed.
 make -C build/make/rise -j8 all                 # Mac / Linux
 # OR Xcode: build the Library scheme in build/XCode/rise/rise.xcodeproj
 # OR VS2022: rebuild Library.vcxproj
 ```
 
-The bake step's `--residuals` flag (added during diagnostics, reverted before the production commit — re-add if needed) writes a CSV of every cell's residual + converged flag for offline failure-pattern analysis.  See git log of `tools/JakobHanikaLUTGen.cpp` for the previous diagnostic-mode patch.
+`tools/JakobHanikaLUTGen.cpp` accepts `--target {rec709|romm|acescg}` so a future migration to ACES AP1 is a one-line change at LUT bake time.  The runtime
+`RGBToSpectrumTable::operator()` hardcodes the boundary conversion into Rec.709 — switching targets in the LUT alone without extending the runtime's conversion type is a silent footgun, so the bake script refuses anything other than `rec709` until that runtime extension lands (see comment in `tools/GenerateSpectrumLUTHeader.py`).

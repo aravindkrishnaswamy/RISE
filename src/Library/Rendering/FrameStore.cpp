@@ -767,7 +767,7 @@ namespace RISE
 		// the shared pipeline; this function adds Stage 5 (transfer)
 		// + Stage 6 (quantise into target layout).
 		void FrameStore::EncodePixel(
-			const RISEPel& linearROMM,
+			const RISEPel& linearPel,
 			double alpha,
 			void* dst,
 			TargetFormat fmt,
@@ -780,7 +780,7 @@ namespace RISE
 			double r, g, b;
 			ApplyViewTransformLinear( xform, info.colorSpace,
 			                          info.isLDRFixed,
-			                          linearROMM.r, linearROMM.g, linearROMM.b,
+			                          linearPel.r, linearPel.g, linearPel.b,
 			                          r, g, b );
 
 			// Stage 5: transfer function.

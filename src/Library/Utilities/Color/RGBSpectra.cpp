@@ -1,7 +1,17 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  RGBSpectra.cpp - D50 illuminant data table for
+//  RGBSpectra.cpp - Reference illuminant SPD for
 //    RGBIlluminantSpectrum.  See RGBSpectra.h.
+//
+//  Since 2026-05 the reference illuminant is D65 (matching the new
+//  Rec.709 Linear LUT target's D65 whitepoint).  Pre-2026-05 RISE
+//  used D50 (matching ROMM's whitepoint).  The illuminant must
+//  match the LUT's training whitepoint so a pure-white RGB input
+//  authored under "neutral" light returns an SPD whose CIE round-
+//  trip lands back on the input chromaticity.  Mixing D50 SPD with
+//  a D65-trained sigmoid produces a small but measurable chromatic
+//  shift (~2-4% per channel across the visible) on every RGB-
+//  authored illuminant / emissive painter.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -14,46 +24,56 @@ using namespace RISE;
 
 namespace
 {
-	// CIE Standard Illuminant D50 SPD at 5nm spacing, 380-780nm
-	// (81 entries).  Source: CIE 015:2018 Table A.5.  Values
-	// normalized so D50(560nm) = 100.  Same table the LUT generator
-	// (tools/JakobHanikaLUTGen.cpp) uses — keep in sync.
+	// CIE Standard Illuminant D65 SPD at 5nm spacing, 380-780nm
+	// (81 entries).  Source: CIE 015:2018 Table A.1.  Values
+	// normalized so D65(560nm) = 100.
+	//
+	// Why D65, not D50: matches the Rec.709 Linear LUT target's
+	// whitepoint.  The LUT generator's forward model
+	// (tools/JakobHanikaLUTGen.cpp::IntegrateToTarget for the rec709
+	// target) integrates sigmoid × CIE 1931 under a flat illuminant
+	// and matrix-converts XYZ(D65) → Rec709(D65) with NO Bradford
+	// adapt.  The runtime, when materializing an RGB-authored
+	// illuminant, multiplies that sigmoid by THIS SPD per-wavelength.
+	// For the round-trip identity to hold (white RGB → spectrum
+	// integrates to white) the SPD must reference the same
+	// whitepoint as the LUT — D65.
 	const int    kLambdaMin  = 380;
 	const int    kLambdaMax  = 780;
 	const int    kLambdaStep = 5;
 	const int    kNLambda    = (kLambdaMax - kLambdaMin) / kLambdaStep + 1;
 
-	const double kD50[ kNLambda ] = {
-		 23.94,  25.45,  26.96,  25.72,  24.49,  27.18,  29.87,  39.59,  49.31,  52.91,
-		 56.51,  58.27,  60.03,  58.93,  57.82,  66.32,  74.82,  81.04,  87.25,  88.93,
-		 90.61,  90.99,  91.37,  93.24,  95.11,  93.54,  91.96,  93.84,  95.72,  96.17,
-		 96.61,  96.87,  97.13,  99.61, 102.10, 101.43, 100.75, 101.54, 102.32, 101.16,
-		100.00,  98.87,  97.74,  98.33,  98.92,  96.21,  93.50,  95.59,  97.69, 98.48,
-		 99.27, 99.155, 99.04,  97.38,  95.72,  97.29,  98.86,  97.26,  95.67,  96.93,
-		 98.19, 100.60, 103.00, 101.07,  99.13,  93.26,  87.38,  89.49,  91.60,  92.25,
-		 92.89,  84.87,  76.85,  81.68,  86.51,  89.55,  92.58,  85.40,  78.23,  67.96,
-		 57.69
+	const double kD65[ kNLambda ] = {
+		 49.9755,  52.3118,  54.6482,  68.7015,  82.7549,  87.1204,  91.4860,  92.4589,  93.4318,  90.0570,
+		 86.6823,  95.7736, 104.8650, 110.9360, 117.0080, 117.4100, 117.8120, 116.3360, 114.8610, 115.3920,
+		115.9230, 112.3670, 108.8110, 109.0820, 109.3540, 108.5780, 107.8020, 106.2960, 104.7900, 106.2390,
+		107.6890, 106.0470, 104.4050, 104.2250, 104.0460, 102.0230, 100.0000,  98.1671,  96.3342,  96.0611,
+		 95.7880,  92.2368,  88.6856,  89.3459,  90.0062,  89.8026,  89.5991,  88.6489,  87.6987,  85.4936,
+		 83.2886,  83.4939,  83.6992,  81.8630,  80.0268,  80.1207,  80.2146,  81.2462,  82.2778,  80.2810,
+		 78.2842,  74.0027,  69.7213,  70.6652,  71.6091,  72.9790,  74.3490,  67.9765,  61.6040,  65.7448,
+		 69.8856,  72.4863,  75.0870,  69.3398,  63.5927,  55.0054,  46.4182,  56.6118,  66.8054,  65.0941,
+		 63.3828
 	};
 
-	inline double LookupD50( double lambda_nm )
+	inline double LookupD65( double lambda_nm )
 	{
 		if( lambda_nm < kLambdaMin || lambda_nm > kLambdaMax ) return 0.0;
 		const double f = ( lambda_nm - kLambdaMin ) / double(kLambdaStep);
 		const int    i0 = std::min( int( std::floor( f ) ), kNLambda - 1 );
 		const int    i1 = std::min( i0 + 1, kNLambda - 1 );
 		const double t  = f - double(i0);
-		return kD50[i0] * (1.0 - t) + kD50[i1] * t;
+		return kD65[i0] * (1.0 - t) + kD65[i1] * t;
 	}
 
-	// Normalization factor: D50 reference flux at the 555 nm peak
-	// of human photopic response.  Dividing by this gives a
-	// "spectrum normalized to D50" with peak ~1.0 at midband.
-	const double kD50Peak = 103.00;	// D50(555nm) from kD50 table
+	// Normalization factor: D65 SPD reference at 560 nm (= 100 by
+	// the standard's normalization convention).  Dividing by this
+	// gives a "spectrum normalized to D65" with peak ~1.0 at midband.
+	const double kD65Peak = 100.0;
 }
 
 Scalar RGBIlluminantSpectrum::Eval( Scalar lambda_nm ) const
 {
 	const Scalar sig    = poly.Eval( lambda_nm );
-	const Scalar d50val = Scalar( LookupD50( double( lambda_nm ) ) / kD50Peak );
-	return scale * sig * d50val;
+	const Scalar d65val = Scalar( LookupD65( double( lambda_nm ) ) / kD65Peak );
+	return scale * sig * d65val;
 }

@@ -113,11 +113,11 @@ namespace RISE
 		// ─────────────────────────────────────────────────────────────
 
 		//! Apply Stages 1–4 of the pipeline (everything ViewTransform
-		//! "owns") to one ROMM-linear pixel, returning the result in
-		//! the target color space's primaries (still LINEAR — Stage 5
+		//! "owns") to one RISEPel-linear pixel, returning the result in
+		//! the target colour space's primaries (still LINEAR — Stage 5
 		//! transfer is applied separately).  This split lets bulk
-		//! encoders cache the matrix and Stage-2 fast-path bit
-		//! across many pixels.
+		//! encoders cache the matrix and Stage-2 fast-path bit across
+		//! many pixels.
 		//!
 		//! `applyToneCurve` should be set per the TargetFormat — i.e.
 		//! TargetFormatInfo.isLDRFixed.  The function does NOT consult
@@ -126,9 +126,9 @@ namespace RISE
 			const ViewTransform&     xf,
 			FSColorSpace             targetSpace,
 			bool                     applyToneCurve,
-			double                   linearROMM_R,
-			double                   linearROMM_G,
-			double                   linearROMM_B,
+			double                   linearPel_R,
+			double                   linearPel_G,
+			double                   linearPel_B,
 			double&                  outR,
 			double&                  outG,
 			double&                  outB );

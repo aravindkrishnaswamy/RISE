@@ -31,7 +31,7 @@ namespace RISE
 	{
 		eSpectrumKind_Albedo      = 0,	///< rgb ∈ [0, 1]; baseColor / sheen / transmission_color etc.
 		eSpectrumKind_Unbounded   = 1,	///< rgb ≥ 0 with components possibly > 1; emissive / HDR sources
-		eSpectrumKind_Illuminant  = 2	///< rgb ≥ 0; pre-multiplied by D50 reference SPD
+		eSpectrumKind_Illuminant  = 2	///< rgb ≥ 0; pre-multiplied by the reference SPD matching the LUT target's whitepoint (D65 post Stage B colour-space migration, D50 historically)
 	};
 
 	//! A painter determines the spectral properties of a material.  It takes

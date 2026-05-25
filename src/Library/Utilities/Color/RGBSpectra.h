@@ -44,7 +44,7 @@ namespace RISE
 		RGBAlbedoSpectrum() {}
 
 		static RGBAlbedoSpectrum FromRGB( const RISEPel& rgb,
-		                                   const RGBToSpectrumTable& table = RGBToSpectrumTable::ROMM() )
+		                                   const RGBToSpectrumTable& table = RGBToSpectrumTable::Get() )
 		{
 			RGBAlbedoSpectrum s;
 			s.poly = table( rgb );
@@ -64,18 +64,31 @@ namespace RISE
 	// peak channel; non-peak channels round-trip through the same
 	// sigmoid · scale (slight chromaticity shift at hot pixels — same
 	// as PBRT-v4).
+	//
+	// IMPORTANT: scale + normalize MUST run in the LUT's target colour
+	// space.  Doing the math on the raw RISEPel and passing through
+	// the RISEPel-taking table overload would have the matrix-converted
+	// normalized triple clamped to [0, 1] inside operator(), which
+	// silently desaturates any wide-gamut colour and breaks the round-
+	// trip.  We convert to Rec.709 FIRST, normalize there, and call the
+	// typed table overload that skips the boundary conversion.  When
+	// RISEPel == Rec709RGBPel (post Stage B) the conversion is identity.
 	class RGBUnboundedSpectrum
 	{
 	public:
 		RGBUnboundedSpectrum() : scale( Scalar(1) ) {}
 
 		static RGBUnboundedSpectrum FromRGB( const RISEPel& rgb,
-		                                      const RGBToSpectrumTable& table = RGBToSpectrumTable::ROMM() )
+		                                      const RGBToSpectrumTable& table = RGBToSpectrumTable::Get() )
 		{
 			RGBUnboundedSpectrum s;
-			s.scale = ColorMath::MaxValue( rgb );
+			const LUTTargetPel rgb_target( rgb );
+			s.scale = ColorMath::MaxValue( rgb_target );
 			if( s.scale > Scalar(1e-9) ) {
-				const RISEPel norm( rgb.r / s.scale, rgb.g / s.scale, rgb.b / s.scale );
+				const LUTTargetPel norm(
+					rgb_target.r / s.scale,
+					rgb_target.g / s.scale,
+					rgb_target.b / s.scale );
 				s.poly = table( norm );
 			} else {
 				s.poly = RGBSigmoidPolynomial( 0, 0, 0 );
@@ -92,30 +105,38 @@ namespace RISE
 		Scalar               scale;
 	};
 
-	// Illuminant: an unbounded spectrum pre-multiplied by a
-	// reference illuminant SPD.  For RISE we use D50 (matching ROMM
-	// RGB's whitepoint) so a pure-white RGB input authored under
-	// "neutral" light returns the actual D50 SPD rather than a flat
-	// spectrum.  Used for `directional_light` SPDs authored as RGB
-	// (e.g. converting a Hosek-Wilkie integrated solar XYZ → RGB
+	// Illuminant: an unbounded spectrum pre-multiplied by a reference
+	// illuminant SPD.  RISE uses the reference illuminant matching the
+	// LUT's target whitepoint (D65 for Rec.709 post 2026-05 migration;
+	// D50 historically for ROMM).  A pure-white RGB input authored
+	// under "neutral" light returns the reference SPD rather than a
+	// flat spectrum.  Used for `directional_light` SPDs authored as
+	// RGB (e.g. converting a Hosek-Wilkie integrated solar XYZ → RGB
 	// back to a usable SPD).
 	//
-	// Eval(λ) = scale · sigmoid(λ) · D50(λ_normalized)
+	// Eval(λ) = scale · sigmoid(λ) · refSPD(λ_normalized)
 	//
-	// D50 SPD is sampled at the same 5-nm spacing 380-780 nm as the
-	// CIE_DATA used elsewhere in RISE; data table lives in the .cpp.
+	// Reference SPD is sampled at the same 5-nm spacing 380-780 nm as
+	// the CIE_DATA used elsewhere in RISE; data table lives in the .cpp.
+	//
+	// Same in-LUT-target-space scale/normalize discipline as
+	// RGBUnboundedSpectrum (see comment above).
 	class RGBIlluminantSpectrum
 	{
 	public:
 		RGBIlluminantSpectrum() : scale( Scalar(1) ) {}
 
 		static RGBIlluminantSpectrum FromRGB( const RISEPel& rgb,
-		                                       const RGBToSpectrumTable& table = RGBToSpectrumTable::ROMM() )
+		                                       const RGBToSpectrumTable& table = RGBToSpectrumTable::Get() )
 		{
 			RGBIlluminantSpectrum s;
-			s.scale = ColorMath::MaxValue( rgb );
+			const LUTTargetPel rgb_target( rgb );
+			s.scale = ColorMath::MaxValue( rgb_target );
 			if( s.scale > Scalar(1e-9) ) {
-				const RISEPel norm( rgb.r / s.scale, rgb.g / s.scale, rgb.b / s.scale );
+				const LUTTargetPel norm(
+					rgb_target.r / s.scale,
+					rgb_target.g / s.scale,
+					rgb_target.b / s.scale );
 				s.poly = table( norm );
 			} else {
 				s.poly = RGBSigmoidPolynomial( 0, 0, 0 );
@@ -124,7 +145,7 @@ namespace RISE
 		}
 
 		// Evaluate at λ in nm.  Multiplies the sigmoid by the
-		// linearly-interpolated D50 SPD value at that wavelength.
+		// linearly-interpolated reference SPD value at that wavelength.
 		Scalar Eval( Scalar lambda_nm ) const;
 		Scalar operator()( Scalar lambda_nm ) const { return Eval( lambda_nm ); }
 

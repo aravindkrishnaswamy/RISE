@@ -428,7 +428,7 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\Color.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\ColorUtils.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable_ROMMData.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable_LUTData.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBSpectra.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\HosekWilkieSkyModel.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\HosekWilkieSpectralRadianceMap.cpp" />
@@ -917,7 +917,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ColorUtils.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBSigmoidPolynomial.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable_ROMMData.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable_LUTData.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBSpectra.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\SpectralValueTraits.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\HosekWilkieSkyModel.h" />
@@ -927,6 +927,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ProPhotoRGB.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\Rec709RGB.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ROMMRGB.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\AP1RGB.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ScaleColorOperator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ShiftColorOperator.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\SmartColor.h" />

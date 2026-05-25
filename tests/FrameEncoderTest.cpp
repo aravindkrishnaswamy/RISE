@@ -780,7 +780,7 @@ namespace
 // Note: full byte-identity test against an external HDR10 PNG
 // reference encoder isn't included here — the L5c primitive's
 // correctness is bounded by the existing `ApplyPQTransfer` +
-// `ConvertROMMToTargetPrimaries` unit tests in FrameStoreColorMathTest.
+// `ConvertPelToTargetPrimaries` unit tests in FrameStoreColorMathTest.
 // This test verifies the HDR10 PNG envelope (PNG magic + cICP chunk
 // + valid IHDR with 16-bit RGB) is structurally well-formed.
 void TestHDR10PNGEncoder_L5c()

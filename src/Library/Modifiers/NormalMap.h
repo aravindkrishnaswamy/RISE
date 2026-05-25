@@ -10,14 +10,16 @@
 //  components in [-1,1]) is what every modern exporter emits.  The
 //  caller is responsible for setting up the normal-map painter with a
 //  color space that does NOT apply a gamma decode AND does NOT apply
-//  a Rec709 -> ROMM color-matrix conversion -- both would warp the
-//  encoded vector.  In RISE's current build (RISEPel = ROMMRGBPel,
-//  see Color.h) that means `color_space ROMMRGB_Linear` on the
+//  any colour-matrix conversion -- both would warp the encoded vector.
+//  Post Stage B colour-space migration (RISEPel = Rec709RGBPel, see
+//  Color.h) that means `color_space Rec709RGB_Linear` on the
 //  png_painter / jpg_painter / etc. -- this loads the bytes verbatim
 //  into the engine's working space with zero matrix conversion.
-//  `Rec709RGB_Linear` would skip the gamma but still apply the
-//  Rec709 -> ROMM matrix and produce subtly wrong normals.  The
-//  visual-regression scene gltf_normal_mapped.RISEscene captures the
+//  `ROMMRGB_Linear` would now apply a Rec.709 -> ROMM Bradford+matrix
+//  conversion and produce wildly wrong normals.  Pre Stage B the
+//  recommendation was inverted (RISEPel was ROMM); migrate legacy
+//  scenes with `tools/migrate_scenes_color_space_b.py`.  The visual-
+//  regression scene gltf_normal_mapped.RISEscene captures the
 //  recommended setup.
 //
 //  Author: Aravind Krishnaswamy

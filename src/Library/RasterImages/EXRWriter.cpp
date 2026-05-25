@@ -146,7 +146,6 @@ void EXRWriter::BeginWrite( const unsigned int width, const unsigned int height 
 		Imath::V2f red, green, blue, white;
 		switch( color_space )
 		{
-			default:
 			case eColorSpace_ROMMRGB_Linear:
 			case eColorSpace_ProPhotoRGB:
 				// ROMM / ProPhoto primaries (ISO 22028-2), D50 white
@@ -155,9 +154,15 @@ void EXRWriter::BeginWrite( const unsigned int width, const unsigned int height 
 				blue  = Imath::V2f( 0.0366f, 0.0001f );
 				white = Imath::V2f( 0.3457f, 0.3585f );
 				break;
+			default:
 			case eColorSpace_Rec709RGB_Linear:
 			case eColorSpace_sRGB:
-				// Rec.709 / sRGB primaries, D65 white
+				// Rec.709 / sRGB primaries, D65 white.  Default branch
+				// matches WriteColor's default (which serialises as
+				// sRGB pixel-class), so an unrecognised color_space
+				// produces self-consistent chromaticities ↔ bytes
+				// instead of the historical mismatch (WriteColor → sRGB
+				// bytes, chromaticities → ROMM tag).
 				red   = Imath::V2f( 0.6400f, 0.3300f );
 				green = Imath::V2f( 0.3000f, 0.6000f );
 				blue  = Imath::V2f( 0.1500f, 0.0600f );

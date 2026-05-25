@@ -22,7 +22,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/Color/Color.cpp"
     "${RISE_LIB}/Utilities/Color/ColorUtils.cpp"
     "${RISE_LIB}/Utilities/Color/RGBToSpectrumTable.cpp"
-    "${RISE_LIB}/Utilities/Color/RGBToSpectrumTable_ROMMData.cpp"
+    "${RISE_LIB}/Utilities/Color/RGBToSpectrumTable_LUTData.cpp"
     "${RISE_LIB}/Utilities/Color/RGBSpectra.cpp"
     "${RISE_LIB}/Utilities/HosekWilkieSkyModel.cpp"
     "${RISE_LIB}/Rendering/HosekWilkieSpectralRadianceMap.cpp"

@@ -4,10 +4,11 @@
 //
 //  Sequencing (Stages 3, 5, 6 are TargetFormat's responsibility):
 //
-//    in (linear ROMM)
+//    in (linear RISEPel — Rec.709 Linear D65 post Stage B
+//                          colour-space migration)
 //      → multiply by 2^exposureEV                  [Stage 1]
 //      → matrix3 multiply by whiteBalance          [Stage 2 — identity fast-path]
-//      → apply ROMM→target primaries matrix        [Stage 3]
+//      → apply RISEPel→target primaries matrix     [Stage 3]
 //      → apply tone curve (iff applyToneCurve)     [Stage 4]
 //      → out (linear, in target primaries)
 //
@@ -80,9 +81,9 @@ namespace RISE
 			const ViewTransform& xf,
 			FSColorSpace         targetSpace,
 			bool                 applyToneCurve,
-			double               linearROMM_R,
-			double               linearROMM_G,
-			double               linearROMM_B,
+			double               linearPel_R,
+			double               linearPel_G,
+			double               linearPel_B,
 			double&              outR,
 			double&              outG,
 			double&              outB )
@@ -93,9 +94,9 @@ namespace RISE
 			// for the exponent — we want the fractional part too, so
 			// we use std::pow(2.0, EV) instead.  std::pow(2.0, ...)
 			// is special-cased by glibc / msvc to a fast path.
-			double r = linearROMM_R;
-			double g = linearROMM_G;
-			double b = linearROMM_B;
+			double r = linearPel_R;
+			double g = linearPel_G;
+			double b = linearPel_B;
 
 			if ( xf.exposureEV != 0.0f ) {
 				const double scale = std::pow( 2.0, static_cast<double>( xf.exposureEV ) );
@@ -104,7 +105,7 @@ namespace RISE
 				b *= scale;
 			}
 
-			// Stage 2: white balance (in ROMM space).  Skip the multiply
+			// Stage 2: white balance (per-channel, RISEPel-space).  Skip
 			// when the matrix is exactly identity.
 			if ( !IsIdentityWB( xf.whiteBalance ) ) {
 				const Matrix3& m = xf.whiteBalance;
@@ -114,22 +115,27 @@ namespace RISE
 				r = rr; g = gg; b = bb;
 			}
 
-			// Stage 3: ROMM linear → target color space's linear primaries.
-			ConvertROMMToTargetPrimaries( targetSpace, r, g, b, r, g, b );
+			// Stage 3: RISEPel linear → target colour space's linear primaries.
+			ConvertPelToTargetPrimaries( targetSpace, r, g, b, r, g, b );
 
 			// Stage 4: tone curve (LDR fixed targets only).
 			if ( applyToneCurve && xf.toneCurve != eDisplayTransform_None )
 			{
-				// Apply per channel.  RISEPel container is just a
-				// triple of doubles; we re-pack into ROMMRGBPel because
-				// DisplayTransforms::Apply takes that type for its
-				// switch.  The values inside are now in target-space
-				// linear, NOT ROMM linear — but DisplayTransforms only
-				// looks at the .r/.g/.b doubles so the type rebrand
-				// is purely cosmetic; the curve operates per channel.
-				ROMMRGBPel pel;
+				// Apply per channel.  RISEPel is just a triple of
+				// doubles and DisplayTransforms::Apply takes RISEPel
+				// natively — the curve is colour-space agnostic.
+				// IMPORTANT: do NOT re-pack into ROMMRGBPel here.  Pre
+				// Stage B `RISEPel = ROMMRGBPel`, so the pack+unpack was
+				// a free no-op.  Post Stage B `RISEPel = Rec709RGBPel`,
+				// and a `ROMMRGBPel` → `RISEPel` conversion at the call
+				// fires `ColorUtils::ROMMRGBtoRec709RGB` (Bradford D50→
+				// D65 + matrix), then the return-value conversion fires
+				// the inverse — net effect ~25 % per-channel error on
+				// non-grey colours, breaking every LDR-fixed tone-curved
+				// output (RGBA8_sRGB, RGB8_sRGB, BGRA8_sRGB, etc.).
+				RISEPel pel;
 				pel.r = r; pel.g = g; pel.b = b;
-				const ROMMRGBPel curved = DisplayTransforms::Apply( xf.toneCurve, pel );
+				const RISEPel curved = DisplayTransforms::Apply( xf.toneCurve, pel );
 
 				if ( xf.toneCurveStrength >= 1.0f ) {
 					r = curved.r; g = curved.g; b = curved.b;

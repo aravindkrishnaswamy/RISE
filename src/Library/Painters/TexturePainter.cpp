@@ -223,7 +223,7 @@ Scalar TexturePainter::GetColorNM( const RayIntersectionGeometric& ri, const Sca
 	// Cached LUT singleton (loaded once per process).  The lookup is
 	// thread-safe because it never mutates the LUT data after first
 	// load.
-	const RGBToSpectrumTable& table = RGBToSpectrumTable::ROMM();
+	const RGBToSpectrumTable& table = RGBToSpectrumTable::Get();
 
 	if( spectrumKind == eSpectrumKind_Unbounded ) {
 		const RGBUnboundedSpectrum s = RGBUnboundedSpectrum::FromRGB( rgb, table );
@@ -251,7 +251,7 @@ SpectralPacket TexturePainter::GetSpectrum( const RayIntersectionGeometric& ri )
 	if( !pRIA ) return sp;
 
 	const RISEPel rgb = SampleTextured( ri ).base;
-	const RGBToSpectrumTable& table = RGBToSpectrumTable::ROMM();
+	const RGBToSpectrumTable& table = RGBToSpectrumTable::Get();
 	const Scalar delta = (lambda_end - lambda_begin) / Scalar(nbins);
 
 	if( spectrumKind == eSpectrumKind_Unbounded ) {

@@ -306,7 +306,7 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable.cpp">
       <Filter>Utilities\Color</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable_ROMMData.cpp">
+    <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable_LUTData.cpp">
       <Filter>Utilities\Color</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\Color\RGBSpectra.cpp">
@@ -1308,7 +1308,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable.h">
       <Filter>Utilities\Color</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable_ROMMData.h">
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBToSpectrumTable_LUTData.h">
       <Filter>Utilities\Color</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\RGBSpectra.h">
@@ -1330,6 +1330,9 @@
       <Filter>Utilities\Color</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ROMMRGB.h">
+      <Filter>Utilities\Color</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Color\AP1RGB.h">
       <Filter>Utilities\Color</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\Color\ScaleColorOperator.h">

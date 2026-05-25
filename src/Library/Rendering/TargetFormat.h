@@ -57,11 +57,11 @@ namespace RISE
 			// 32-bit float (archival, debug).  Note the distinction
 			// between *_Linear (sRGB / BT.709 D65 primaries with
 			// linear transfer — the industry default for EXR /
-			// .hdr archival, since most viewers expect Rec709) and
-			// *_ROMM_Linear (RISE's native ROMM RGB primaries with
-			// linear transfer — bit-identical to internal storage,
-			// for callers that want to round-trip without losing
-			// the chromatic-adaptation step).
+			// .hdr archival, AND bit-identical to RISEPel internal
+			// storage post Stage B colour-space migration) and
+			// *_ROMM_Linear (real ROMM RGB primaries D50 — for
+			// callers that want a wide-gamut archival format; a
+			// Rec.709→ROMM Bradford+matrix conversion is applied).
 			RGBA32F_Linear              = 8, ///< EXR linear (sRGB primaries)
 			RGB32F_Linear               = 9, ///< .hdr file (Radiance), 3-channel (sRGB primaries)
 			RGBA32F_ROMM_Linear         = 10,///< Bit-identical archival in ROMM primaries

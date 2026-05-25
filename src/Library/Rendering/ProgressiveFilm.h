@@ -105,16 +105,15 @@ namespace RISE
 
 			/// Resolve the current progressive state into a display image.
 			/// Writes colorSum/weightSum as the running average for each pixel.
-			/// XYZ -> ROMM RGB conversion (standard `ColorUtils::XYZtoROMMRGB`
-			/// = Bradford D65->D50 adapt + chromaticity gamut clip + matrix)
-			/// happens here, exactly once per pixel.  The implicit
-			/// RISEPel(XYZPel) constructor in RISEColor's argument list is
-			/// the dispatch point.  An earlier interim revision dispatched
-			/// to a matrix-only `IntegratorXYZtoROMMRGB` for spectral
-			/// rasterizers; that broke physical-spectrum scenes (BioSpec
-			/// under blackbody rendered lavender) and is no longer needed
-			/// now that the JH LUT generator applies the same standard
-			/// adapt+matrix as its forward model.
+			/// XYZ -> RISEPel conversion (standard `ColorUtils::XYZtoRec709RGB`
+			/// post Stage-B colour-space migration: D65→D65, matrix-only, no
+			/// Bradford adapt) happens here, exactly once per pixel.  The
+			/// implicit RISEPel(XYZPel) constructor in RISEColor's argument
+			/// list is the dispatch point.  Earlier ROMM-era revisions
+			/// dispatched to a matrix-only `IntegratorXYZtoROMMRGB` for
+			/// spectral rasterizers; that path was eliminated by
+			/// Stage A of the colour-space migration (`IntegratorXYZto*`
+			/// no longer exists).
 			void Resolve( IRasterImage& target ) const
 			{
 				for( unsigned int y = 0; y < height; y++ ) {

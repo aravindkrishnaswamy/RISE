@@ -7,18 +7,18 @@
 //  See FrameStoreColorSpace.h for the design context and pipeline
 //  ordering.
 //
-//  Color-space chain rationale: rather than precomputing composite
-//  ROMM→{P3, BT.2020} matrices (which would duplicate the existing
-//  mxROMMtoRec709 numerics and risk drift), we chain at runtime:
+//  Colour-space chain rationale: rather than precomputing composite
+//  Pel→{P3, BT.2020, ROMM} matrices (which would duplicate numerics
+//  already maintained in Color.cpp and risk drift), we chain at runtime:
 //
-//      ROMM linear  →  ColorUtils::ROMMRGBtoRec709RGB  →  sRGB linear
-//      sRGB linear  →  M_sRGB→target (published constants)  →  target
+//      RISEPel (Rec.709 Linear post Stage B)
+//        → ColorUtils::Rec709RGBtoROMMRGB           [for ROMM_Linear target]
+//        OR identity                                [for sRGB_Linear target]
+//        OR M_sRGB→{P3,BT2020} matrix multiply      [for P3 / BT2020 targets]
 //
-//  Cost: two 3x3 multiplies instead of one for non-sRGB targets.
 //  Per-pixel overhead is negligible compared to the transfer-function
-//  cost; in exchange we keep ROMM→sRGB as the single source of truth.
-//  The M_sRGB→target matrices below are well-known published industry
-//  constants, NOT derived from RISE internals.
+//  cost.  The M_sRGB→target matrices below are well-known published
+//  industry constants, NOT derived from RISE internals.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -79,23 +79,19 @@ namespace RISE
 			0.0, 0.0, 1.0
 		};
 
-		const double* GetROMMToTargetMatrix( FSColorSpace target )
+		const double* GetPelToTargetMatrix( FSColorSpace target )
 		{
-			// Note: this returns the SECOND-stage matrix (sRGB →
-			// target).  For non-ROMM targets, callers must first
-			// convert ROMM → sRGB linear (via ColorUtils or via this
-			// header's ConvertROMMToTargetPrimaries chain).
-			//
-			// The "ROMMToTarget" name is preserved for API stability
-			// but the function body documents the actual semantics.
-			// Direct ROMM→target matrices would duplicate the
-			// mxROMMtoRec709 numerics maintained in
-			// src/Library/Utilities/Color/Color.cpp; the chained
-			// approach keeps a single source of truth.
+			// Returns the matrix that takes RISEPel (=sRGB / BT.709
+			// Linear post Stage B) → the target colour space's primaries
+			// (no transfer function applied).  For sRGB targets this is
+			// the identity (RISEPel is already sRGB-linear).  For
+			// ROMM_Linear targets, callers must use the chained
+			// ConvertPelToTargetPrimaries path (this function returns
+			// identity for ROMM since the ROMM matrix lives in Color.cpp).
 			switch( target )
 			{
-				case FSColorSpace::ROMM_Linear:      return kIdentity3x3;
-				case FSColorSpace::sRGB_Linear:      return kIdentity3x3; // chain in ConvertROMMToTargetPrimaries
+				case FSColorSpace::sRGB_Linear:      return kIdentity3x3; // RISEPel IS sRGB linear (post Stage B)
+				case FSColorSpace::ROMM_Linear:      return kIdentity3x3; // real conversion done in ConvertPelToTargetPrimaries
 				case FSColorSpace::DisplayP3_Linear: return kSRGBtoDisplayP3;
 				case FSColorSpace::BT2020_Linear:    return kSRGBtoBT2020;
 			}
@@ -117,39 +113,43 @@ namespace RISE
 			outB = mat[6] * r + mat[7] * g + mat[8] * b;
 		}
 
-		void ConvertROMMToTargetPrimaries(
+		void ConvertPelToTargetPrimaries(
 			FSColorSpace target,
-			double rommR, double rommG, double rommB,
+			double pelR, double pelG, double pelB,
 			double& outR, double& outG, double& outB )
 		{
-			if ( target == FSColorSpace::ROMM_Linear )
-			{
-				// No-op: caller wants ROMM out.
-				outR = rommR;
-				outG = rommG;
-				outB = rommB;
-				return;
-			}
-
-			// Stage 1: ROMM linear → sRGB / BT.709 linear.
-			// Goes through the existing single source of truth.
-			ROMMRGBPel rommPel;
-			rommPel.r = rommR;
-			rommPel.g = rommG;
-			rommPel.b = rommB;
-			const Rec709RGBPel rec709 = ColorUtils::ROMMRGBtoRec709RGB( rommPel );
-
+			// Input is RISEPel = Rec.709 / sRGB Linear (post Stage B).
 			if ( target == FSColorSpace::sRGB_Linear )
 			{
-				outR = rec709.r;
-				outG = rec709.g;
-				outB = rec709.b;
+				// Identity — RISEPel IS sRGB linear post Stage B.
+				outR = pelR;
+				outG = pelG;
+				outB = pelB;
 				return;
 			}
 
-			// Stage 2: sRGB linear → target primaries via published matrix.
-			ApplyMatrix3x3( GetROMMToTargetMatrix( target ),
-			                rec709.r, rec709.g, rec709.b,
+			if ( target == FSColorSpace::ROMM_Linear )
+			{
+				// Rec.709 → ROMM via the codebase's single-source-of-
+				// truth `mxRec709toROMM` (Bradford D65→D50 + matrix).
+				// Goes through ColorUtils so the matrix definition
+				// stays maintained in one place.
+				Rec709RGBPel rec709Pel;
+				rec709Pel.r = pelR;
+				rec709Pel.g = pelG;
+				rec709Pel.b = pelB;
+				const ROMMRGBPel romm = ColorUtils::Rec709RGBtoROMMRGB( rec709Pel );
+				outR = romm.r;
+				outG = romm.g;
+				outB = romm.b;
+				return;
+			}
+
+			// Stage 2 targets (DisplayP3, BT.2020): RISEPel is already
+			// sRGB-linear, so apply the published sRGB→target matrix
+			// directly — no first-stage conversion needed.
+			ApplyMatrix3x3( GetPelToTargetMatrix( target ),
+			                pelR, pelG, pelB,
 			                outR, outG, outB );
 		}
 

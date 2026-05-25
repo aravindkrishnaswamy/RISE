@@ -723,69 +723,110 @@ namespace
 
 		ViewTransform xf = ViewTransform::Identity();
 
-		// ─ Test ROMM-native archival ─
-		// Identity through RGBA32F_ROMM_Linear must produce
-		// EXACT bit-identical floats (modulo double→float cast).
-		// Rect signature is (top, left, bottom, right) — for a
-		// 4-wide × 1-tall image we want top=0, left=0, bottom=1, right=4.
+		// ─ Test ROMM archival ─
+		// Post Stage B colour-space migration, RGBA32F_ROMM_Linear
+		// applies a REAL Rec.709→ROMM Bradford+matrix conversion (it
+		// no longer aliases RISEPel which is now Rec.709 not ROMM).
+		// The archival invariants still hold — the matrix is bounded
+		// (~5-7 % off-diagonals), preserves the white axis, and does
+		// NOT sanitize negatives / NaN / Inf — but exact bit-identity
+		// only holds for the sRGB-aliased path RGBA32F_Linear below.
 		float rommBuf[ 4 * 4 ] = { 0 };
 		store->Render( rommBuf, 4 * 4 * sizeof(float),
 			Rect( 0, 0, 1, 4 ),
 			TargetFormat::RGBA32F_ROMM_Linear, xf );
 
-		// Pixel 0: ordinary HDR survives intact.
-		Check( rommBuf[ 0 * 4 + 0 ] == 2.5f, "ROMM archival pixel 0 R = 2.5" );
-		Check( rommBuf[ 0 * 4 + 1 ] == 1.0f, "ROMM archival pixel 0 G = 1.0" );
-		Check( rommBuf[ 0 * 4 + 2 ] == 0.5f, "ROMM archival pixel 0 B = 0.5" );
+		// Pixel 0: ordinary HDR survives finite and roughly in range.
+		// The Rec.709→ROMM matrix mixes channels (~±10 %); we only
+		// assert finite-and-bounded, not bit-identity.  Use a bit-
+		// pattern check because under -ffast-math std::isfinite may be
+		// constant-folded by the compiler (kIsFinite = exponent != all-
+		// ones AND value is normal/zero, ignoring sign).
+		auto isFiniteBits = []( float f ) -> bool {
+			uint32_t bits;
+			std::memcpy( &bits, &f, sizeof(bits) );
+			return ( ( bits & 0x7F800000u ) != 0x7F800000u );  // exp != 0xFF (not Inf/NaN)
+		};
+		Check( isFiniteBits( rommBuf[ 0 * 4 + 0 ] ) && rommBuf[ 0 * 4 + 0 ] > 0.0f,
+			"ROMM archival pixel 0 R finite positive" );
+		Check( isFiniteBits( rommBuf[ 0 * 4 + 1 ] ) && rommBuf[ 0 * 4 + 1 ] > 0.0f,
+			"ROMM archival pixel 0 G finite positive" );
+		Check( isFiniteBits( rommBuf[ 0 * 4 + 2 ] ) && rommBuf[ 0 * 4 + 2 ] > 0.0f,
+			"ROMM archival pixel 0 B finite positive" );
 
-		// Pixel 1: negative R PRESERVED (key archival invariant).
-		Check( rommBuf[ 1 * 4 + 0 ] == -0.3f,
-			"ROMM archival preserves negative R (no Sanitise clamp)" );
+		// Pixel 1: matrix doesn't apply a Sanitise floor (NaN / negative
+		// pathologicals can still emit non-zero output rather than be
+		// silently zeroed).  We don't assert a specific output value
+		// because the Rec.709→ROMM matrix has all-positive coefficients
+		// in its top row, so a small negative R in mixed with positive
+		// G+B can still produce all-positive output (it's the matrix's
+		// behaviour, not a Sanitise step).  The next stanza below
+		// tests the cleaner "negative survives the matrix" invariant
+		// against `RGBA32F_Linear` (identity target) where the
+		// invariant holds tautologically post Stage B.
 
-		// Pixel 2: NaN G PRESERVED.  Verify via bit pattern (under
-		// -ffast-math, isnan() may constant-fold to false).
-		uint32_t nanGBits;
-		std::memcpy( &nanGBits, &rommBuf[ 2 * 4 + 1 ], sizeof(nanGBits) );
-		const bool gIsNaN = ( ( nanGBits & 0x7F800000u ) == 0x7F800000u )
-		                 && ( ( nanGBits & 0x007FFFFFu ) != 0u );
-		Check( gIsNaN, "ROMM archival preserves NaN G (bit-pattern check)" );
+		// Pixel 2 / 3: NaN/Inf preservation through the matrix multiply
+		// is NOT a reliable invariant under -ffast-math (the compiler
+		// is told no non-finite inputs exist, so `Inf - Inf = NaN`
+		// branches may be folded away or special-cased differently
+		// across compilers).  Bit-identical NaN/Inf preservation is
+		// tested below against `RGBA32F_Linear`, which IS identity to
+		// RISEPel and therefore round-trips bit-exactly.
 
-		// Pixel 3: +Inf B PRESERVED.
-		uint32_t infBBits;
-		std::memcpy( &infBBits, &rommBuf[ 3 * 4 + 2 ], sizeof(infBBits) );
-		const bool bIsPosInf = ( infBBits == 0x7F800000u );
-		Check( bIsPosInf, "ROMM archival preserves +Inf B (bit-pattern check)" );
-
-		// ─ Test sRGB-primaries archival (industry-default EXR) ─
-		// RGBA32F_Linear converts ROMM → sRGB linear (matrix
-		// multiply) but applies NO transfer-function clamp.  That
-		// means: positive HDR survives intact, negatives PASS THROUGH
-		// (filter ringing preserved), NaN/Inf can be perturbed by
-		// the matrix (3x3 multiply) but the matrix is bounded so
-		// finite inputs produce finite outputs and pathological
-		// inputs propagate.
+		// ─ Test bit-exact archival via the RGBA32F_Linear path ─
+		// Post Stage B, `RGBA32F_Linear` uses `FSColorSpace::sRGB_Linear`
+		// which is identity to RISEPel = Rec.709.  No matrix multiply
+		// is applied at the colour-space stage, no transfer function
+		// is applied (Linear), so the float bytes are bit-identical
+		// to RISEPel internal storage modulo the double→float cast.
+		// Negatives, NaN, and Inf MUST pass through unchanged — this
+		// is the strict archival contract.
 		float srgbBuf[ 4 * 4 ] = { 0 };
 		store->Render( srgbBuf, 4 * 4 * sizeof(float),
 			Rect( 0, 0, 1, 4 ),
 			TargetFormat::RGBA32F_Linear, xf );
 
-		// Pixel 0 ordinary positive: should be roughly 2.5 with
-		// some rebalancing across channels (matrix is white-point
-		// preserving but not channel-identity).  All three should
-		// be positive finite.
+		// Pixel 0: ordinary HDR survives bit-identically.
+		Check( srgbBuf[ 0 * 4 + 0 ] == 2.5f, "RGBA32F_Linear archival pixel 0 R = 2.5" );
+		Check( srgbBuf[ 0 * 4 + 1 ] == 1.0f, "RGBA32F_Linear archival pixel 0 G = 1.0" );
+		Check( srgbBuf[ 0 * 4 + 2 ] == 0.5f, "RGBA32F_Linear archival pixel 0 B = 0.5" );
+
+		// Pixel 1: negative R PRESERVED (key archival invariant —
+		// identity target = no Sanitise floor possible).
+		Check( srgbBuf[ 1 * 4 + 0 ] == -0.3f,
+			"RGBA32F_Linear archival preserves negative R (no Sanitise clamp)" );
+
+		// Pixel 2: NaN G PRESERVED.  Verify via bit pattern (under
+		// -ffast-math, isnan() may constant-fold to false).
+		uint32_t nanGBits;
+		std::memcpy( &nanGBits, &srgbBuf[ 2 * 4 + 1 ], sizeof(nanGBits) );
+		const bool gIsNaN = ( ( nanGBits & 0x7F800000u ) == 0x7F800000u )
+		                 && ( ( nanGBits & 0x007FFFFFu ) != 0u );
+		Check( gIsNaN, "RGBA32F_Linear archival preserves NaN G (bit-pattern check)" );
+
+		// Pixel 3: +Inf B PRESERVED.
+		uint32_t infBBits;
+		std::memcpy( &infBBits, &srgbBuf[ 3 * 4 + 2 ], sizeof(infBBits) );
+		const bool bIsPosInf = ( infBBits == 0x7F800000u );
+		Check( bIsPosInf, "RGBA32F_Linear archival preserves +Inf B (bit-pattern check)" );
+
+		// Pixel 0 ordinary positive: bit-identical positive (asserted
+		// strictly above; this is the loose-bound finite-positive
+		// version that survives an eventual identity-vs-matrix-target
+		// distinction).
 		Check( srgbBuf[ 0 * 4 + 0 ] > 0.0f && srgbBuf[ 0 * 4 + 0 ] < 10.0f,
 			"sRGB archival pixel 0 R finite positive" );
 
-		// Pixel 1 negative R — after ROMM→sRGB matrix, the negative
-		// can spread across all 3 sRGB channels but at least one
-		// must be negative (the matrix doesn't zero negatives).
-		// Crucially, no ZERO floor was applied.
+		// Pixel 1 negative R — RGBA32F_Linear is identity to RISEPel
+		// post Stage B (no matrix multiply at the colour-space stage),
+		// so the input negative passes through unchanged.  Crucially,
+		// no ZERO floor was applied.
 		const bool anySRGBNegative =
 			   srgbBuf[ 1 * 4 + 0 ] < 0.0f
 			|| srgbBuf[ 1 * 4 + 1 ] < 0.0f
 			|| srgbBuf[ 1 * 4 + 2 ] < 0.0f;
 		Check( anySRGBNegative,
-			"sRGB archival preserves negative through matrix (no Sanitise floor)" );
+			"sRGB archival preserves negative (no Sanitise floor)" );
 
 		// Alpha is 1.0 (default) for all pixels and should pass
 		// through bit-identically on float targets per our gated

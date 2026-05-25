@@ -565,14 +565,13 @@ MLTRasterizer::MLTSample MLTSpectralRasterizer::EvaluateSampleSpectral(
 			continue;
 		}
 
-		// Convert XYZ → ROMM RGB (the internal working color space)
-		// so that the SplatFilm accumulates in the correct color space.
-		// Using the ROMMRGBPel(XYZPel) constructor which calls
-		// ColorUtils::XYZtoROMMRGB.
-		ROMMRGBPel rommRGB( scaled );
-
+		// Convert XYZ → RISEPel (the internal working colour space)
+		// so the SplatFilm accumulates in the correct space.  Using
+		// the implicit RISEPel(XYZPel) constructor — post Stage B this
+		// is XYZtoRec709RGB (D65→D65, matrix-only); pre-Stage B was
+		// XYZtoROMMRGB (Bradford D65→D50 + matrix).
 		MLTStrategySplat splat;
-		splat.color = rommRGB;
+		splat.color = RISEPel( scaled );
 		splat.rasterPos = sxyz.rasterPos;
 
 		result.splats.push_back( splat );

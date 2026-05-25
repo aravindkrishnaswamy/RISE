@@ -196,9 +196,10 @@ Scalar BDPTSpectralRasterizer::IntegratePixelNM(
 					thisXYZ = thisXYZ * weighted;
 					const Scalar fx = cr.rasterPos.x;
 					const Scalar fy = static_cast<Scalar>( filmH ) - cr.rasterPos.y;
-					// Proper XYZ -> ROMM RGB via implicit RISEPel(XYZPel).
+					// Proper XYZ → RISEPel via implicit RISEPel(XYZPel).
 					// Replaces the channel-relabel "RISEPel(X, Y, Z)" hack
-					// which bypassed ColorUtils::XYZtoROMMRGB entirely.
+					// which bypassed the colour-space matrix entirely
+					// (post Stage B: XYZtoRec709RGB, D65→D65, matrix-only).
 					// Splat path: don't apply mYNormalization here — the
 					// splat film's own Resolve normalizes by sample count
 					// (see SplatFilm.Resolve), and the per-sample value

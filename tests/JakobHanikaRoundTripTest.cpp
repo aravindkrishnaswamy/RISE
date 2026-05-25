@@ -1,26 +1,26 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  JakobHanikaRoundTripTest.cpp - Validates the spectral upsampling
-//    LUT (extlib/jakob-hanika-luts/romm.coeff) and the runtime types
-//    that consume it.
+//    LUT (extlib/jakob-hanika-luts/<target>.coeff, baked into
+//    src/Library/Utilities/Color/RGBToSpectrumTable_LUTData.cpp) and
+//    the runtime types that consume it.
 //
-//    For each of N random in-gamut ROMM RGB triples:
-//      1. Construct an RGBAlbedoSpectrum from the rgb.
+//    For each of N random in-gamut Rec.709 RGB triples:
+//      1. Construct an RGBAlbedoSpectrum from the rgb (the lookup
+//         goes through the runtime RISEPel→Rec.709 boundary).
 //      2. Integrate the spectrum against the CIE 1931 2° observer
-//         under the D50 illuminant and convert XYZ → ROMM RGB.
+//         under a flat illuminant and convert XYZ → Rec.709 RGB
+//         (no Bradford adapt — D65 throughout).
 //      3. Assert the round-trip matches the input within tolerance.
 //
-//    "In-gamut" here means "rgb that came from converting a real
-//    sRGB triple to ROMM" — those triples land inside the spectral
-//    locus and are solvable by the LUT.  Inputs at ROMM gamut
-//    extremes (outside the locus) are intentionally excluded; no
-//    spectrum can represent them and the LUT carries best-fit
-//    approximations there.
+//    "In-gamut" here means rgb that lands inside the Rec.709 gamut
+//    interior (away from the saturated corners that the JH sigmoid
+//    model cannot perfectly reproduce — see docs/JH_LUT_GAMUT.md).
 //
 //    Acceptance threshold: per-channel max delta < 0.02.  Loose
 //    enough to tolerate the LUT quantisation (~1/63 ≈ 0.016 between
-//    cells) plus the natural inversion limits at the edges of the
-//    spectral locus.
+//    cells) plus the natural inversion limits of the JH sigmoid at
+//    saturated colours.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -63,12 +63,13 @@ namespace
 		}
 	}
 
-	// Integrate a spectrum against CIE 1931 + D50 to get XYZ, then
-	// convert to ROMM RGB.  Mirror of the integration done by the
-	// LUT generator in tools/JakobHanikaLUTGen.cpp::IntegrateToROMM
-	// — keep in sync.
+	// Integrate a spectrum against CIE 1931 to get XYZ, then convert
+	// to Rec.709 RGB.  Mirror of the LUT generator's forward model in
+	// tools/JakobHanikaLUTGen.cpp::IntegrateToTarget for the rec709
+	// target — keep in sync.  No Bradford adapt (Rec.709 is D65, CIE
+	// is D65-referred).
 	template< typename Spectrum >
-	void IntegrateToROMM( const Spectrum& s, RISEPel& romm )
+	void IntegrateToRec709( const Spectrum& s, Rec709RGBPel& rec709 )
 	{
 		// CIE 1931 2° observer at 5nm spacing, 380-780nm.  Same data
 		// RISE uses elsewhere via ColorUtils::XYZFromNM, sampled here
@@ -100,17 +101,13 @@ namespace
 		const double inv = 1.0 / normY;
 		X *= inv; Y *= inv; Z *= inv;
 
-		// Match the LUT generator's forward model exactly: Bradford
-		// D65 → D50 chromatic adaptation followed by the D50→ROMM
-		// matrix.  Both matrices inlined from
-		// src/Library/Utilities/Color/Color.cpp (mxXYZD65toXYZD50 /
-		// mxXYZD50toROMM) — keep in sync if those are retuned.
-		const double Xd =  1.0479 * X + 0.0229 * Y - 0.0502 * Z;
-		const double Yd =  0.0296 * X + 0.9904 * Y - 0.0171 * Z;
-		const double Zd = -0.0092 * X + 0.0151 * Y + 0.7519 * Z;
-		romm.r = Scalar(  1.3460 * Xd - 0.2556 * Yd - 0.0511 * Zd );
-		romm.g = Scalar( -0.5446 * Xd + 1.5082 * Yd + 0.0205 * Zd );
-		romm.b = Scalar(  0.0    * Xd + 0.0    * Yd + 1.2123 * Zd );
+		// XYZ(D65) → Rec.709(D65) via the codebase's mxXYZtoRec709
+		// matrix.  No chromatic adapt — both source and target share
+		// D65.  Keep in sync with src/Library/Utilities/Color/Color.cpp
+		// (mxXYZtoRec709).
+		rec709.r = Scalar(  3.240479 * X - 1.537150 * Y - 0.498535 * Z );
+		rec709.g = Scalar( -0.969256 * X + 1.875992 * Y + 0.041556 * Z );
+		rec709.b = Scalar(  0.055648 * X - 0.204043 * Y + 1.057311 * Z );
 	}
 }
 
@@ -119,15 +116,18 @@ int main()
 	std::cout << "JakobHanikaRoundTripTest -- spectral uplift round-trip\n";
 
 	// Make sure the LUT is locatable.  The test harness sets working
-	// directory to the project root by convention.
+	// directory to the project root by convention.  (The LUT is baked
+	// into the binary post-2026-05, but the locator paths are kept for
+	// resilience.)
 	GlobalMediaPathLocator().AddPath( "." );
 	GlobalMediaPathLocator().AddPath( "../" );
 	GlobalMediaPathLocator().AddPath( "../../" );
 
-	const RGBToSpectrumTable& table = RGBToSpectrumTable::ROMM();
+	const RGBToSpectrumTable& table = RGBToSpectrumTable::Get();
 	if( !table.IsLoaded() ) {
-		std::cout << "  FAIL: LUT not loaded.  Run JakobHanikaLUTGen.exe to generate "
-		             "extlib/jakob-hanika-luts/romm.coeff first.\n";
+		std::cout << "  FAIL: LUT not loaded.  Run JakobHanikaLUTGen to "
+		             "regenerate extlib/jakob-hanika-luts/rec709.coeff and "
+		             "tools/GenerateSpectrumLUTHeader.py.\n";
 		return 1;
 	}
 	std::cout << "  LUT resolution: " << table.Resolution() << "\n";
@@ -136,15 +136,16 @@ int main()
 	std::cout << "\n[1/3] Centre + corner sanity\n";
 	{
 		// Pure grey (0.5, 0.5, 0.5).  c = (0,0,0) by construction
-		// of the LUT — sigmoid(0) = 0.5, integrated against D50 gives
-		// neutral grey under D50 = (0.5, 0.5, 0.5) in ROMM.
+		// of the LUT — sigmoid(0) = 0.5, integrated against flat E
+		// gives Y = 0.5 → neutral grey in Rec.709.
+		const Rec709RGBPel input( 0.5, 0.5, 0.5 );
 		RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB(
-			RISEPel( 0.5, 0.5, 0.5 ), table );
-		RISEPel rt;
-		IntegrateToROMM( s, rt );
-		Check( Close( rt.r, 0.5, 0.05 ) &&
-		       Close( rt.g, 0.5, 0.05 ) &&
-		       Close( rt.b, 0.5, 0.05 ),
+			RISEPel( input ), table );
+		Rec709RGBPel rt;
+		IntegrateToRec709( s, rt );
+		Check( Close( rt.r, input.r, 0.05 ) &&
+		       Close( rt.g, input.g, 0.05 ) &&
+		       Close( rt.b, input.b, 0.05 ),
 		       "grey (0.5, 0.5, 0.5) round-trips within 0.05" );
 	}
 	{
@@ -153,26 +154,28 @@ int main()
 		// match has the polynomial coefficients pushed to large
 		// positive c2.  Tolerance 0.10 accommodates this; same regime
 		// PBRT-v4 / Mitsuba 3 ship with.
+		const Rec709RGBPel input( 0.95, 0.95, 0.95 );
 		RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB(
-			RISEPel( 0.95, 0.95, 0.95 ), table );
-		RISEPel rt;
-		IntegrateToROMM( s, rt );
-		Check( Close( rt.r, 0.95, 0.10 ) &&
-		       Close( rt.g, 0.95, 0.10 ) &&
-		       Close( rt.b, 0.95, 0.10 ),
+			RISEPel( input ), table );
+		Rec709RGBPel rt;
+		IntegrateToRec709( s, rt );
+		Check( Close( rt.r, input.r, 0.10 ) &&
+		       Close( rt.g, input.g, 0.10 ) &&
+		       Close( rt.b, input.b, 0.10 ),
 		       "near-white (0.95, 0.95, 0.95) round-trips within 0.10" );
 	}
 	{
-		// Saturated red, but bounded at 0.8 so we stay inside the
-		// spectral locus (ROMM (1, 0, 0) is outside).
+		// Saturated red, bounded at 0.8 to stay in the well-
+		// conditioned interior of the gamut.
+		const Rec709RGBPel input( 0.8, 0.2, 0.2 );
 		RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB(
-			RISEPel( 0.8, 0.2, 0.2 ), table );
-		RISEPel rt;
-		IntegrateToROMM( s, rt );
+			RISEPel( input ), table );
+		Rec709RGBPel rt;
+		IntegrateToRec709( s, rt );
 		const double err = std::sqrt(
-			(rt.r - 0.8) * (rt.r - 0.8) +
-			(rt.g - 0.2) * (rt.g - 0.2) +
-			(rt.b - 0.2) * (rt.b - 0.2) );
+			(rt.r - input.r) * (rt.r - input.r) +
+			(rt.g - input.g) * (rt.g - input.g) +
+			(rt.b - input.b) * (rt.b - input.b) );
 		Check( err < 0.05,
 		       "saturated red (0.8, 0.2, 0.2) round-trips L2 < 0.05" );
 		if( err >= 0.05 ) {
@@ -191,17 +194,16 @@ int main()
 	double sumErr = 0;
 	int withinLoose = 0;
 	for( int i = 0; i < kSamples; ++i ) {
-		// Sample inside the well-conditioned interior of the gamut
-		// (away from the extreme edges where ROMM exceeds the
-		// spectral locus).
-		const RISEPel rgb( uni(rng), uni(rng), uni(rng) );
-		RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB( rgb, table );
-		RISEPel rt;
-		IntegrateToROMM( s, rt );
+		// Sample inside the well-conditioned interior of the gamut.
+		const Rec709RGBPel input( uni(rng), uni(rng), uni(rng) );
+		RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB(
+			RISEPel( input ), table );
+		Rec709RGBPel rt;
+		IntegrateToRec709( s, rt );
 		const double err = std::sqrt(
-			(rt.r - rgb.r) * (rt.r - rgb.r) +
-			(rt.g - rgb.g) * (rt.g - rgb.g) +
-			(rt.b - rgb.b) * (rt.b - rgb.b) );
+			(rt.r - input.r) * (rt.r - input.r) +
+			(rt.g - input.g) * (rt.g - input.g) +
+			(rt.b - input.b) * (rt.b - input.b) );
 		sumErr += err;
 		if( err > worstErr ) {
 			worstErr = err;
@@ -222,20 +224,40 @@ int main()
 	// Test 3: unbounded / illuminant types are wired.
 	std::cout << "\n[3/3] Unbounded + Illuminant flavors\n";
 	{
+		// Scale() is computed on the LUT-target-space (Rec.709)
+		// converted RISEPel.  Rec709→ROMM→Rec709 round-trip preserves
+		// the white axis but with small per-channel rounding from the
+		// published-constant Bradford + XYZ↔RGB matrices.  A few-percent
+		// tolerance accommodates that.
 		RGBUnboundedSpectrum s = RGBUnboundedSpectrum::FromRGB(
-			RISEPel( 5.0, 5.0, 5.0 ), table );
-		Check( Close( s.Scale(), 5.0, 1e-6 ),
-		       "unbounded scale = max(R,G,B)" );
+			RISEPel( Rec709RGBPel( 5.0, 5.0, 5.0 ) ), table );
+		Check( Close( s.Scale(), 5.0, 0.1 ),
+		       "unbounded scale ≈ max(R,G,B) on neutral white" );
 		const Scalar peak = s.Eval( 555.0 );
 		Check( peak > Scalar(0) && peak < Scalar(10),
 		       "unbounded eval at 555nm in plausible range" );
 	}
 	{
+		// Wide-gamut HDR triple — regression guard for the Stage A
+		// fix where scale + normalize used to happen in RISEPel space
+		// (ROMM), passing through the boundary conversion + clamp in
+		// operator(), which silently desaturated wide-gamut colours.
+		// Post-fix: scale + normalize happen in LUT-target space
+		// (Rec.709), so Scale() should equal max(Rec.709 triple).
+		const Rec709RGBPel hdrInput( 2.0, 0.4, 0.1 );
+		RGBUnboundedSpectrum s = RGBUnboundedSpectrum::FromRGB(
+			RISEPel( hdrInput ), table );
+		Check( Close( s.Scale(), 2.0, 0.05 ),
+		       "wide-gamut HDR scale matches max(Rec.709 triple) (regression guard for "
+		       "scale-in-RISEPel-space bug)" );
+	}
+	{
 		RGBIlluminantSpectrum s = RGBIlluminantSpectrum::FromRGB(
-			RISEPel( 1.0, 1.0, 1.0 ), table );
+			RISEPel( Rec709RGBPel( 1.0, 1.0, 1.0 ) ), table );
 		const Scalar e500 = s.Eval( 500.0 );
 		const Scalar e600 = s.Eval( 600.0 );
-		// Both should be positive — the D50 SPD is non-zero
+		// Both should be positive — the reference illuminant SPD
+		// (D65 post-migration, D50 pre-migration) is non-zero
 		// throughout the visible.
 		Check( e500 > Scalar(0) && e600 > Scalar(0),
 		       "illuminant eval > 0 at 500 and 600 nm" );

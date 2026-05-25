@@ -81,25 +81,6 @@ namespace RISE
 			const Scalar nm							///< [in] Wavelength to convert
 			);
 
-		//! XYZ -> ROMM RGB conversion that matches the JH LUT
-		//! generator's convention exactly (matrix-only — NO chromatic
-		//! adaptation, NO gamut clip).
-		//!
-		//! Background: tools/JakobHanikaLUTGen.cpp::IntegrateToROMM
-		//! integrates `sigmoid × CMF / k_y_E` and applies
-		//! `mxXYZD50toROMM` directly to that result — no D65->D50
-		//! step, no gamut clip.  The standard `XYZtoROMMRGB` adds a
-		//! D65->D50 chromatic adaptation that the LUT generator never
-		//! accounted for; using it on integrator-output XYZ adds an
-		//! extra warm-shift + B-suppression that breaks the JH
-		//! round-trip — surfaces lose ~30% B and shift ~5% R, with
-		//! the visible result of warm/brown bias on every spectral
-		//! render.  Use this function instead at the per-pixel resolve
-		//! point in any spectral-output pipeline.
-		ROMMRGBPel IntegratorXYZtoROMMRGB(
-			const XYZPel& xyz						///< [in] Integrated XYZ from spectral integration
-			);
-
 		//! Returns ∫Ȳ(λ)dλ over [lambda_begin, lambda_end] using the
 		//! CIE 1931 2° standard observer.  Used by spectral rasterizers
 		//! to normalize the MC luminance estimator so a perfect-white
