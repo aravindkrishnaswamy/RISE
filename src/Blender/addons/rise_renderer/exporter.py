@@ -1635,7 +1635,27 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         ior_value = max(1.0, float(wrapper.ior))
         ior_inline = f"{ior_value:.6f}"
 
-        scatter_value = max(roughness, 1e-4)
+        # Convert Blender's Principled BSDF Roughness (0 = sharp, 1 =
+        # diffuse) to RISE's dielectric `scattering` parameter, which
+        # is the Phong-cone exponent for the refraction lobe:
+        #   alpha = acos( random^(1/(scat+1)) )
+        # Sharp glass needs `scat → ∞` (acos(1) = 0 → no deviation).
+        # Diffuse / milky glass needs `scat → 0` (acos(rand) → uniform
+        # [0, π/2]).  Production RISE scenes (pt_jewel_vault) use
+        # 100000 for sharp glass, matching that convention here.
+        #
+        # The prior naive mapping `scat = max(roughness, 1e-4)` made
+        # water (roughness = 0) export as scat = 0.0001 — uniform
+        # random refraction, which scrambled every camera ray and
+        # produced a dark "ripples" surface where Cycles cleanly
+        # showed the pebbles below.
+        if roughness < 1.0e-4:
+            scatter_value = 1.0e6   # essentially delta (sharp glass)
+        else:
+            # GGX-to-Phong-ish conversion: n = 1/α² - 1 with α = roughness.
+            # Caps at 1.0e6 to match the production-scene convention
+            # and avoid overflow / under-precision in the acos branch.
+            scatter_value = max(1.0, min(1.0e6, 1.0 / (roughness * roughness) - 1.0))
         scatter_inline = f"{scatter_value:.6f}"
 
         payload = MaterialData(
