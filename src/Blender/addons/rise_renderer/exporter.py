@@ -1350,7 +1350,30 @@ def _camera_payload(camera_object, render_settings: RenderSettingsData, state: _
     up = matrix_world.col[1].to_3d().normalized()
 
     projection_type = 1 if camera_data.type == "ORTHO" else 0
-    fov_y_radians = float(getattr(camera_data, "angle_y", getattr(camera_data, "angle", 0.78539816339)))
+
+    # Derive the vertical FOV from Blender's actual view-frame.
+    # `camera_data.angle_y` only describes the *sensor*-based vertical
+    # FOV (= 2·atan(sensor_h/(2·lens))) and ignores sensor_fit / aspect
+    # ratio interactions, so passing it directly gave wrong projections
+    # for the default `sensor_fit = AUTO` case: Cycles' AUTO resolves
+    # to HORIZONTAL fit on default-sensor (36×24) landscape / square
+    # images, where the effective vertical FOV is the *horizontal*
+    # FOV divided by image aspect.  view_frame(scene=…) returns the
+    # actual frustum corners that Cycles uses, sidestepping all of
+    # this — half_y/|z| is exactly tan(vfov/2) for the render.
+    if projection_type == 0:
+        try:
+            frame = camera_data.view_frame(scene=bpy.context.scene)
+        except TypeError:
+            # Defensive fallback for older Blender APIs that don't
+            # accept the `scene` kwarg; produces a render-aspect-
+            # ignorant frame but at least returns valid numbers.
+            frame = camera_data.view_frame()
+        half_y = max(abs(c.y) for c in frame)
+        depth = max(abs(frame[0].z), 1e-8)
+        fov_y_radians = 2.0 * math.atan(half_y / depth)
+    else:
+        fov_y_radians = float(getattr(camera_data, "angle_y", 0.78539816339))
 
     return CameraData(
         projection_type=projection_type,
