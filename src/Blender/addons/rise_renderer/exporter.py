@@ -851,6 +851,93 @@ def _walk_socket_for_image_node(socket, *, max_depth: int = 16):
     return None
 
 
+class _FallbackPrincipledWrapper:
+    """Stand-in for ``PrincipledBSDFWrapper`` used when the official
+    walker can't trace the Material Output Surface back to a single
+    Principled BSDF — i.e. when artists wire a Mix Shader / Add
+    Shader between the Principled and the output (as in
+    `ripple_dreams_fields`'s `worn_wooden_box`, which mixes two
+    Principled BSDFs).
+
+    Reads each socket's `.default_value` directly off whichever
+    Principled BSDF the caller hands us (the first one found in the
+    graph by ``_find_any_principled_bsdf``).  Texture accessors all
+    return ``None`` — the caller's ``_maybe_resolve_socket_texture``
+    fall-through uses the manual node-graph walker against the
+    Principled BSDF's inputs, so reroute / pass-through / Mix chains
+    on those slots still resolve correctly.
+
+    This is a best-effort approximation: the mix factor between two
+    Principled BSDFs is lost, and the second BSDF is silently
+    discarded.  It is still vastly better than the prior fallback,
+    which used `material.diffuse_color` (typically the viewport
+    flat-grey 0.8) — that produced a `chrome` material as plain
+    grey, a `wooden_box` as off-white, etc.
+    """
+
+    def __init__(self, node):
+        self.node_principled_bsdf = node
+
+    @property
+    def base_color(self):
+        return _socket_default_color(self.node_principled_bsdf, "Base Color", (0.8, 0.8, 0.8))
+
+    @property
+    def metallic(self):
+        return _socket_default_float(self.node_principled_bsdf, "Metallic", 0.0)
+
+    @property
+    def roughness(self):
+        return _socket_default_float(self.node_principled_bsdf, "Roughness", 0.5)
+
+    @property
+    def specular(self):
+        return _socket_default_float(self.node_principled_bsdf, "Specular IOR Level", 0.5)
+
+    @property
+    def transmission(self):
+        return _socket_default_float(self.node_principled_bsdf, "Transmission Weight", 0.0)
+
+    @property
+    def emission_color(self):
+        return _socket_default_color(self.node_principled_bsdf, "Emission Color", (0.0, 0.0, 0.0))
+
+    @property
+    def emission_strength(self):
+        return _socket_default_float(self.node_principled_bsdf, "Emission Strength", 0.0)
+
+    @property
+    def ior(self):
+        return _socket_default_float(self.node_principled_bsdf, "IOR", 1.45)
+
+    # All texture wrapper accessors return None — the caller routes
+    # texture extraction through `_maybe_resolve_socket_texture`,
+    # which falls back to the manual graph walker against the
+    # Principled BSDF input sockets.
+    base_color_texture = None
+    metallic_texture = None
+    roughness_texture = None
+    specular_texture = None
+    transmission_texture = None
+    emission_color_texture = None
+    emission_strength_texture = None
+    ior_texture = None
+
+
+def _find_any_principled_bsdf(material):
+    """Search a material's node graph for the FIRST Principled BSDF.
+    Use when PrincipledBSDFWrapper can't trace one (Mix Shader / Add
+    Shader chains hide the connection).  Returns the node, or None
+    if the material has no Principled BSDF at all."""
+
+    if not material.use_nodes or material.node_tree is None:
+        return None
+    for node in material.node_tree.nodes:
+        if node.bl_idname == "ShaderNodeBsdfPrincipled":
+            return node
+    return None
+
+
 def _maybe_resolve_socket_texture(
     principled_node,
     socket_name: str,
@@ -1296,28 +1383,42 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         return binding
 
     wrapper = PrincipledBSDFWrapper(material, is_readonly=True)
-    has_principled = wrapper.node_principled_bsdf is not None
-    if not has_principled:
-        _warn_once(
-            state,
-            f"RISE falls back to viewport material values when '{material.name_full}' does not use a Principled BSDF output chain.",
-        )
-        base = _add_uniform_painter(state, f"{material.name_full}_base", _float_color3(material.diffuse_color))
-        payload = MaterialData(
-            name=_unique_name(state, "mat", material.name_full),
-            model=MATERIAL_LAMBERT,
-            diffuse_painter_name=base,
-            double_sided=not getattr(material, "use_backface_culling", False),
-        )
-        state.materials.append(payload)
-        binding = _MaterialBinding(
-            surface_material_name=payload.name,
-            modifier_name=None,
-            interior_medium_name=None,
-            double_sided=payload.double_sided,
-        )
-        state.material_map[key] = binding
-        return binding
+    if wrapper.node_principled_bsdf is None:
+        # PrincipledBSDFWrapper couldn't trace from Material Output
+        # Surface back to a single Principled BSDF — usually because
+        # the Material Output is fed by a Mix Shader / Add Shader
+        # combining multiple BSDFs.  Fall back to the FIRST Principled
+        # BSDF anywhere in the graph; lossy (we drop the mix factor)
+        # but produces sensible per-material results, vs. the prior
+        # behaviour of using the viewport-grey `material.diffuse_color`.
+        any_principled = _find_any_principled_bsdf(material)
+        if any_principled is not None:
+            _warn_once(
+                state,
+                f"RISE approximated the Mix-Shader chain on '{material.name_full}' with its first Principled BSDF.",
+            )
+            wrapper = _FallbackPrincipledWrapper(any_principled)
+        else:
+            _warn_once(
+                state,
+                f"RISE falls back to viewport material values when '{material.name_full}' does not use a Principled BSDF output chain.",
+            )
+            base = _add_uniform_painter(state, f"{material.name_full}_base", _float_color3(material.diffuse_color))
+            payload = MaterialData(
+                name=_unique_name(state, "mat", material.name_full),
+                model=MATERIAL_LAMBERT,
+                diffuse_painter_name=base,
+                double_sided=not getattr(material, "use_backface_culling", False),
+            )
+            state.materials.append(payload)
+            binding = _MaterialBinding(
+                surface_material_name=payload.name,
+                modifier_name=None,
+                interior_medium_name=None,
+                double_sided=payload.double_sided,
+            )
+            state.material_map[key] = binding
+            return binding
 
     _warn_unsupported_principled_features(state, material, wrapper)
 
@@ -1488,39 +1589,48 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         )
         if metallic > 1e-3 or metallic_for_warn is not None:
             _warn_once(state, f"RISE ignores metallic on dielectric-transmission Principled material '{material.name_full}'.")
-        tau_painter = _add_blend_painter(
-            state,
-            f"{material.name_full}_tau",
-            base_painter,
-            _black_painter(state),
-            _scalar_or_texture_painter(
-                state,
-                f"{material.name_full}_transmission",
-                transmission,
-                texture_wrapper=transmission_texture,
-            ),
+
+        # Dielectric `tau`, `ior`, `scattering` slots are physical
+        # scalars (IScalarPainter) since the ISCALARPAINTER refactor
+        # — see docs/ISCALARPAINTER_REFACTOR.md.  Job.cpp's
+        # `ResolveScalarPainterArg` parses inline numeric strings
+        # ("v" → UniformScalarPainter, "r g b" → RGBScalarPainter)
+        # so we pass numerics-as-strings here rather than registering
+        # IPainter chunks (which the library will reject with
+        # "this slot now requires a scalar_painter").
+        #
+        # Texture-driven scalars (e.g. IOR map, scattering map,
+        # textured transmission tint) are NOT supported on this path
+        # yet — they would need a dedicated AddUniformScalarPainter /
+        # AddTextureScalarPainter API in the bridge.  We warn and
+        # fall back to the uniform value for now.
+        transmission_value = transmission
+        if transmission_texture is not None:
+            _warn_once(state, f"RISE currently ignores textured Transmission on '{material.name_full}'; using the uniform value.")
+        tau_r = base_color[0] * transmission_value
+        tau_g = base_color[1] * transmission_value
+        tau_b = base_color[2] * transmission_value
+        tau_inline = f"{tau_r:.6f} {tau_g:.6f} {tau_b:.6f}"
+
+        ior_texture_check = _maybe_resolve_socket_texture(
+            principled_node, "IOR",
+            wrapper.ior_texture,
+            colorspace_is_data=True,
         )
-        ior_painter = _scalar_or_texture_painter(
-            state,
-            f"{material.name_full}_ior",
-            max(1.0, float(wrapper.ior)),
-            texture_wrapper=_maybe_resolve_socket_texture(
-                principled_node, "IOR",
-                wrapper.ior_texture,
-                colorspace_is_data=True,
-            ),
-        )
-        scatter_painter = _add_uniform_painter(
-            state,
-            f"{material.name_full}_scatter",
-            (max(roughness, 1e-4), max(roughness, 1e-4), max(roughness, 1e-4)),
-        )
+        if ior_texture_check is not None:
+            _warn_once(state, f"RISE currently ignores textured IOR on '{material.name_full}'; using the uniform value.")
+        ior_value = max(1.0, float(wrapper.ior))
+        ior_inline = f"{ior_value:.6f}"
+
+        scatter_value = max(roughness, 1e-4)
+        scatter_inline = f"{scatter_value:.6f}"
+
         payload = MaterialData(
             name=_unique_name(state, "mat", material.name_full),
             model=MATERIAL_DIELECTRIC,
-            tau_painter_name=tau_painter,
-            ior_painter_name=ior_painter,
-            scatter_painter_name=scatter_painter,
+            tau_painter_name=tau_inline,
+            ior_painter_name=ior_inline,
+            scatter_painter_name=scatter_inline,
             emission_painter_name=emission_painter,
             double_sided=double_sided,
         )
@@ -2654,17 +2764,35 @@ def export_scene(depsgraph) -> tuple[SceneData, RenderSettingsData]:
         return False
 
     for object_instance in depsgraph.object_instances:
+        is_instance = getattr(object_instance, "is_instance", False) and getattr(object_instance, "instance_object", None) is not None
         base_object = (
             object_instance.instance_object
-            if getattr(object_instance, "is_instance", False) and getattr(object_instance, "instance_object", None)
+            if is_instance
             else object_instance.object
         )
         if base_object is None:
             continue
 
         original_object = getattr(base_object, "original", base_object)
-        if getattr(original_object, "hide_render", False):
+        # Skip hidden-from-render originals — BUT only for non-instance
+        # objects.  For GeoNodes / particle instances, the source mesh
+        # is intentionally hidden (it's a template that exists only to
+        # be instanced); its `hide_render=True` means "don't render the
+        # source", NOT "don't render the instances".  Cycles handles
+        # this by-design; we have to mirror it explicitly here.
+        # Motivating scene: ripple_dreams_fields — `instance_cube`,
+        # `instance_sphere_1/2` and `material_placeholder` are all
+        # hide_render=True templates feeding `geonodes_bubbles` /
+        # `geonodes_pebbles` / `geonodes_floating`.  Previously every
+        # GeoNodes-instanced bubble / pebble / gemstone was dropped.
+        if not is_instance and getattr(original_object, "hide_render", False):
             continue
+        # For instance generators (objects with a GeoNodes / particle
+        # modifier that EMIT instances), the depsgraph emits the
+        # generator itself as an instance with is_instance=False —
+        # don't skip it if it has its own renderable geometry, but DO
+        # skip if the artist hid the generator and Cycles wouldn't
+        # render its own mesh either.
         if _object_in_skipped_collection(original_object):
             continue
 
