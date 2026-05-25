@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 
 
-_EXPECTED_API_VERSION = 5
+_EXPECTED_API_VERSION = 6
 
 
 class BridgeError(RuntimeError):
@@ -58,6 +58,12 @@ class _Painter(ctypes.Structure):
         ("painter_a_name", ctypes.c_char_p),
         ("painter_b_name", ctypes.c_char_p),
         ("mask_painter_name", ctypes.c_char_p),
+        # ABI v6 — UV-transform painter fields.  See bridge .h.
+        ("uv_offset_u", ctypes.c_float),
+        ("uv_offset_v", ctypes.c_float),
+        ("uv_rotation", ctypes.c_float),
+        ("uv_scale_u", ctypes.c_float),
+        ("uv_scale_v", ctypes.c_float),
     ]
 
 
@@ -514,6 +520,11 @@ class _SceneHandle:
         payload.painter_a_name = self._cstring(painter.painter_a_name)
         payload.painter_b_name = self._cstring(painter.painter_b_name)
         payload.mask_painter_name = self._cstring(painter.mask_painter_name)
+        payload.uv_offset_u = float(getattr(painter, "uv_offset_u", 0.0))
+        payload.uv_offset_v = float(getattr(painter, "uv_offset_v", 0.0))
+        payload.uv_rotation = float(getattr(painter, "uv_rotation", 0.0))
+        payload.uv_scale_u = float(getattr(painter, "uv_scale_u", 1.0))
+        payload.uv_scale_v = float(getattr(painter, "uv_scale_v", 1.0))
         return payload
 
     def _marshal_modifier(self, modifier):

@@ -839,6 +839,28 @@ namespace
 				return false;
 			}
 			return true;
+
+		case RISE_BLENDER_PAINTER_UV_TRANSFORM:
+			// Wraps a source painter (named by `painter_a_name`) in a
+			// UV-space affine transform.  Used for Blender Mapping
+			// nodes (vector_type=POINT) between a Texture Coordinate
+			// and an Image Texture node; the {offset_u, offset_v,
+			// rotation, scale_u, scale_v} tuple comes from the
+			// Mapping node's Location.xy / Rotation.z / Scale.xy.
+			if( !painter.painter_a_name ||
+				!job.AddUVTransformPainter(
+					painter.name,
+					painter.painter_a_name,
+					painter.uv_offset_u,
+					painter.uv_offset_v,
+					painter.uv_rotation,
+					painter.uv_scale_u,
+					painter.uv_scale_v ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create a UV transform painter" );
+				return false;
+			}
+			return true;
 		}
 
 		write_error( error_message, error_message_size, "Encountered an unsupported painter type" );

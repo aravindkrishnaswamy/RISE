@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 5
+#define RISE_BLENDER_API_VERSION 6
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,7 +36,15 @@ enum rise_blender_painter_kind {
 	RISE_BLENDER_PAINTER_TEXTURE_HDR = 3,
 	RISE_BLENDER_PAINTER_TEXTURE_TIFF = 4,
 	RISE_BLENDER_PAINTER_BLEND = 5,
-	RISE_BLENDER_PAINTER_TEXTURE_JPEG = 6
+	RISE_BLENDER_PAINTER_TEXTURE_JPEG = 6,
+	// UV-transform wrapper.  `painter_a_name` is the source painter
+	// (typically a texture painter); `uv_offset_*`, `uv_rotation`,
+	// `uv_scale_*` are the affine transform applied to (u, v) before
+	// the source is sampled.  Matches the KHR_texture_transform
+	// convention RISE's UVTransformPainter implements.  Used by the
+	// exporter to honour Blender's Mapping node (vector_type=POINT)
+	// between a Texture Coordinate and an Image Texture node.
+	RISE_BLENDER_PAINTER_UV_TRANSFORM = 7
 };
 
 enum rise_blender_color_space {
@@ -176,6 +184,19 @@ typedef struct rise_blender_painter {
 	const char* painter_a_name;
 	const char* painter_b_name;
 	const char* mask_painter_name;
+	// UV-transform painter (kind = RISE_BLENDER_PAINTER_UV_TRANSFORM):
+	// the source painter is `painter_a_name`; sampling happens at
+	//   u' =  cos(rot) * scale_u * u + sin(rot) * scale_v * v + ofs_u
+	//   v' = -sin(rot) * scale_u * u + cos(rot) * scale_v * v + ofs_v
+	// (matches RISE's UVTransformPainter, which itself follows the
+	// KHR_texture_transform sign convention — positive rotation
+	// rotates the IMAGE clockwise).  Unused / left zero by every
+	// other painter kind.
+	float uv_offset_u;
+	float uv_offset_v;
+	float uv_rotation;
+	float uv_scale_u;
+	float uv_scale_v;
 } rise_blender_painter;
 
 typedef struct rise_blender_modifier {

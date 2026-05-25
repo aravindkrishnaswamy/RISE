@@ -21,6 +21,7 @@ PAINTER_TEXTURE_HDR = 3
 PAINTER_TEXTURE_TIFF = 4
 PAINTER_BLEND = 5
 PAINTER_TEXTURE_JPEG = 6
+PAINTER_UV_TRANSFORM = 7
 
 COLOR_SPACE_LINEAR = 0
 COLOR_SPACE_SRGB = 1
@@ -165,6 +166,13 @@ class PainterData:
     painter_a_name: str | None = None
     painter_b_name: str | None = None
     mask_painter_name: str | None = None
+    # UV-transform painter (kind=PAINTER_UV_TRANSFORM).  `painter_a_name`
+    # is the source painter; these five carry the affine transform.
+    uv_offset_u: float = 0.0
+    uv_offset_v: float = 0.0
+    uv_rotation: float = 0.0
+    uv_scale_u: float = 1.0
+    uv_scale_v: float = 1.0
 
 
 @dataclass
@@ -497,6 +505,129 @@ def _resolve_image_for_bridge(image, state: _ExportState | None) -> str | None:
     return direct  # may be a missing-path string for downstream warning
 
 
+_MAPPING_VECTOR_TYPE_SUPPORTED = {"POINT", "TEXTURE"}
+
+
+def _extract_mapping_transform(image_node, state: _ExportState | None, context_name: str):
+    """Inspect the chain feeding `image_node.Vector` for a
+    ShaderNodeMapping → ShaderNodeTexCoord (UV) pair, and return the
+    affine UV transform tuple `(offset_u, offset_v, rotation_z,
+    scale_u, scale_v)` ready to feed RISE's UVTransformPainter.
+
+    Returns:
+        - the transform tuple when an unlinked Mapping node sits
+          between the Image and a Texture Coordinate → UV chain
+        - ``None`` when there's no Mapping node (caller skips the
+          UV-wrap step entirely)
+        - ``"reject"`` when the chain is present but unsupported
+          (linked socket values, non-POINT/TEXTURE vector_type,
+          non-UV source) — caller should fall back to no-texture
+    """
+
+    vector_input = image_node.inputs.get("Vector") if "Vector" in image_node.inputs else None
+    if vector_input is None or not vector_input.is_linked:
+        return None
+
+    src = vector_input.links[0].from_node
+    if src.bl_idname != "ShaderNodeMapping":
+        # Direct Texture Coordinate or similar — texcoords check
+        # downstream handles UV-vs-other.  No transform to extract.
+        return None
+
+    mapping = src
+    vec_type = getattr(mapping, "vector_type", "POINT")
+    if vec_type not in _MAPPING_VECTOR_TYPE_SUPPORTED:
+        _warn_once(state, f"RISE supports only POINT / TEXTURE Mapping nodes for {context_name} (got '{vec_type}').")
+        return "reject"
+
+    # Mapping's own Vector input should come from Texture Coordinate.UV
+    # for the standard UV-transform workflow.  Anything else (Generated
+    # / Object / Window / Reflection / Normal / Camera) is out of scope.
+    map_vec_in = mapping.inputs.get("Vector")
+    if map_vec_in is not None and map_vec_in.is_linked:
+        upstream = map_vec_in.links[0]
+        if upstream.from_node.bl_idname == "ShaderNodeTexCoord":
+            if upstream.from_socket.name != "UV":
+                _warn_once(state, f"RISE only supports UV-mapped textures for {context_name} (Mapping reads from '{upstream.from_socket.name}').")
+                return "reject"
+        # Other upstream node types (NodeReroute, Mix, etc.) — accept
+        # optimistically; if the chain ultimately produces non-UV
+        # coords the texture footprint will be wrong but renderable.
+
+    # Each transform socket must be unlinked so we can read its
+    # constant default_value.  Linked sockets imply per-point /
+    # procedural transforms RISE can't bake.
+    def _socket_vec3(name: str, fallback: tuple[float, float, float]):
+        sock = mapping.inputs.get(name)
+        if sock is None or sock.is_linked:
+            if sock is not None and sock.is_linked:
+                _warn_once(state, f"RISE only supports constant Mapping {name} on {context_name}; reading the linked socket's default.")
+            return fallback
+        v = sock.default_value
+        return (float(v[0]), float(v[1]), float(v[2]))
+
+    location = _socket_vec3("Location", (0.0, 0.0, 0.0))
+    rotation = _socket_vec3("Rotation", (0.0, 0.0, 0.0))
+    scale    = _socket_vec3("Scale",    (1.0, 1.0, 1.0))
+
+    if abs(rotation[0]) > 1e-6 or abs(rotation[1]) > 1e-6:
+        _warn_once(state, f"RISE supports only Z-axis rotation in Mapping nodes for {context_name}; X/Y components ignored.")
+    if abs(location[2]) > 1e-6 or abs(scale[2] - 1.0) > 1e-6:
+        # Z components only matter for 3D texture spaces.  For 2D
+        # image textures (the only kind RISE consumes) they're a
+        # no-op; silently drop them.
+        pass
+
+    return (location[0], location[1], rotation[2], scale[0], scale[1])
+
+
+def _is_identity_uv_transform(t: tuple[float, float, float, float, float]) -> bool:
+    """Skip the UV-transform wrapper when the Mapping node's defaults
+    are the canonical identity (0, 0, 0, 1, 1).  Matches the early-
+    out inside `UVTransformPainter::ApplyTransform`."""
+    ofs_u, ofs_v, rot, scale_u, scale_v = t
+    return (
+        abs(ofs_u) < 1e-9 and abs(ofs_v) < 1e-9
+        and abs(rot) < 1e-9
+        and abs(scale_u - 1.0) < 1e-9 and abs(scale_v - 1.0) < 1e-9
+    )
+
+
+def _add_uv_transform_painter(
+    state: _ExportState,
+    label: str,
+    source_painter_name: str,
+    transform: tuple[float, float, float, float, float],
+) -> str:
+    """Register a UV-transform painter wrapping `source_painter_name`.
+    Caches by (source, transform-tuple)."""
+    ofs_u, ofs_v, rot, scale_u, scale_v = transform
+    key = (
+        "uv_transform",
+        source_painter_name,
+        round(ofs_u, 6), round(ofs_v, 6),
+        round(rot, 6),
+        round(scale_u, 6), round(scale_v, 6),
+    )
+    if key in state.painter_cache:
+        return state.painter_cache[key]
+
+    name = _unique_name(state, "pnt", label)
+    payload = PainterData(
+        name=name,
+        kind=PAINTER_UV_TRANSFORM,
+        painter_a_name=source_painter_name,
+        uv_offset_u=ofs_u,
+        uv_offset_v=ofs_v,
+        uv_rotation=rot,
+        uv_scale_u=scale_u,
+        uv_scale_v=scale_v,
+    )
+    state.painters.append(payload)
+    state.painter_cache[key] = name
+    return name
+
+
 def _validate_texture_wrapper(texture_wrapper, state: _ExportState, context_name: str) -> tuple[str, int] | None:
     if texture_wrapper is None or texture_wrapper.image is None:
         return None
@@ -505,10 +636,16 @@ def _validate_texture_wrapper(texture_wrapper, state: _ExportState, context_name
     if image.source not in ("FILE", "GENERATED"):
         _warn_once(state, f"RISE only supports file-backed or packed textures for {context_name}.")
         return None
-    if getattr(texture_wrapper, "has_mapping_node", None) and texture_wrapper.has_mapping_node():
-        _warn_once(state, f"RISE currently ignores Mapping nodes for {context_name}.")
-        return None
-    if getattr(texture_wrapper, "texcoords", "UV") != "UV":
+    # NOTE: Mapping-node detection used to reject the wrapper outright
+    # here.  RISE now has a UVTransformPainter that the exporter wraps
+    # around the texture painter (see `_color_or_texture_painter`),
+    # so we accept Mapping nodes and defer the affine extraction to
+    # the caller.  The `texcoords` check below covers the rejection
+    # path for non-UV source coords (Generated / Object / etc.).
+    if getattr(texture_wrapper, "texcoords", "UV") not in ("UV", "Vector"):
+        # "Vector" is the from-socket name on ShaderNodeMapping's
+        # output — accept it; the upstream UV check happens inside
+        # `_extract_mapping_transform`.
         _warn_once(state, f"RISE currently supports only UV-mapped textures for {context_name}.")
         return None
     if getattr(texture_wrapper, "projection", "FLAT") != "FLAT":
@@ -608,6 +745,42 @@ def _add_blend_painter(
     return name
 
 
+def _maybe_wrap_with_uv_transform(
+    state: _ExportState,
+    label: str,
+    base_painter_name: str,
+    texture_wrapper,
+) -> str:
+    """If the `texture_wrapper` (`_ImageSocketWrapper` or
+    PrincipledBSDFWrapper-supplied `ShaderImageTextureWrapper`) has a
+    Mapping node feeding its `Vector` socket, extract the transform
+    and wrap `base_painter_name` in a UVTransformPainter.  Otherwise
+    return the base painter name unchanged.
+
+    A `"reject"` from `_extract_mapping_transform` means the chain is
+    present but unsupported — we return the base painter (image
+    sampled at unmodified UV) plus the diagnostic the extractor
+    already emitted."""
+
+    node_image = getattr(texture_wrapper, "node_image", None)
+    if node_image is None:
+        # PrincipledBSDFWrapper's native ShaderImageTextureWrapper
+        # exposes the actual node via `tex_image_node` rather than
+        # `node_image` — try that too so the wrapper's own walker
+        # path also benefits.
+        node_image = getattr(texture_wrapper, "tex_image_node", None)
+    if node_image is None:
+        return base_painter_name
+
+    transform = _extract_mapping_transform(node_image, state, label)
+    if transform is None or transform == "reject":
+        return base_painter_name
+    if _is_identity_uv_transform(transform):
+        return base_painter_name
+
+    return _add_uv_transform_painter(state, f"{label}_uvxf", base_painter_name, transform)
+
+
 def _color_or_texture_painter(
     state: _ExportState,
     label: str,
@@ -620,7 +793,8 @@ def _color_or_texture_painter(
     if validated:
         filepath, color_space = validated
         kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
-        return _add_texture_painter(state, label, filepath, kind, color_space, scale=scale, shift=shift)
+        base = _add_texture_painter(state, label, filepath, kind, color_space, scale=scale, shift=shift)
+        return _maybe_wrap_with_uv_transform(state, label, base, texture_wrapper)
     scaled = (
         color[0] * scale[0] + shift[0],
         color[1] * scale[1] + shift[1],
@@ -641,7 +815,7 @@ def _scalar_or_texture_painter(
     if validated:
         filepath, color_space = validated
         kind = SUPPORTED_IMAGE_KINDS[os.path.splitext(filepath)[1].lower()]
-        return _add_texture_painter(
+        base = _add_texture_painter(
             state,
             label,
             filepath,
@@ -650,6 +824,7 @@ def _scalar_or_texture_painter(
             scale=(scale, scale, scale),
             shift=(shift, shift, shift),
         )
+        return _maybe_wrap_with_uv_transform(state, label, base, texture_wrapper)
     scalar = value * scale + shift
     return _add_uniform_painter(state, label, (scalar, scalar, scalar))
 
@@ -1062,6 +1237,8 @@ def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | No
         kind,
         color_space,
     )
+    painter_name = _maybe_wrap_with_uv_transform(
+        state, f"{material.name_full}_bump_height", painter_name, texture_wrapper)
     strength = _socket_default_float(normal_node, "Strength", 1.0)
     distance = _socket_default_float(normal_node, "Distance", 1.0)
     modifier_key = ("bump", painter_name, round(strength * distance, 6))
@@ -1122,6 +1299,8 @@ def _build_normal_map_modifier(material, normal_map_node, state: _ExportState) -
         kind,
         COLOR_SPACE_ROMM_LINEAR,
     )
+    painter_name = _maybe_wrap_with_uv_transform(
+        state, f"{material.name_full}_normal", painter_name, texture_wrapper)
     strength = _socket_default_float(normal_map_node, "Strength", 1.0)
     modifier_key = ("normal_map", painter_name, round(strength, 6))
     if modifier_key in state.modifier_cache:
