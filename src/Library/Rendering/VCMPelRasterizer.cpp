@@ -146,13 +146,24 @@ void VCMPelRasterizer::IntegratePixel(
 	// rendering, per-sample t=1 splats, and the splat film normalization
 	// all accumulate across passes identically to BDPT.
 
+	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
+	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
+
+	// Mirror BDPT's adaptive + ZSobol seed computation.
+	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
+	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
+
 	// Progressive rendering: if this pixel has already converged, return
-	// the stored value unchanged.
+	// the stored value unchanged (or the heatmap when show_adaptive_map
+	// is on — see PixelBasedRasterizerHelper.h GetAdaptiveShowMap docs).
 	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
 		if( px.converged ) {
-			if( px.alphaSum > 0 ) {
+			if( adaptive && adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0 ) {
+				const Scalar t = Scalar( px.sampleIndex ) / Scalar( adaptiveConfig.maxSamples );
+				cret = RISEColor( RISEPel( t, t, t ), 1.0 );
+			} else if( px.alphaSum > 0 ) {
 				cret = RISEColor(
 					px.colorSum * ( Scalar( 1 ) / px.alphaSum ),
 					px.alphaSum / px.weightSum );
@@ -160,13 +171,6 @@ void VCMPelRasterizer::IntegratePixel(
 			return;
 		}
 	}
-
-	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
-	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
-
-	// Mirror BDPT's adaptive + ZSobol seed computation.
-	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
-	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 	uint32_t pixelSeed;
 	uint32_t mortonIndex = 0;

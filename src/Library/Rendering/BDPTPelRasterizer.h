@@ -54,6 +54,13 @@ namespace RISE
 			/// Override to use this BDPT rasterizer's adaptive sampling config.
 			unsigned int GetProgressiveTotalSPP() const;
 
+			/// Adaptive-sample-map intent for ProgressiveFilm::Resolve.
+			/// See PixelBasedRasterizerHelper.h docs and the
+			/// "show_adaptive_map ineffective in progressive mode" fix
+			/// landed 2026-05-24.
+			bool GetAdaptiveShowMap() const { return adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0; }
+			unsigned int GetAdaptiveTargetSamples() const { return adaptiveConfig.maxSamples; }
+
 			void IntegratePixel(
 				const RuntimeContext& rc,
 				const unsigned int x,

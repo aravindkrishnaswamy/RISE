@@ -114,12 +114,25 @@ namespace RISE
 			/// spectral rasterizers; that path was eliminated by
 			/// Stage A of the colour-space migration (`IntegratorXYZto*`
 			/// no longer exists).
-			void Resolve( IRasterImage& target ) const
+			///
+			/// When `showMap=true && targetSamples>0`, writes a grayscale
+			/// heatmap of `sampleIndex / targetSamples` in place of beauty.
+			/// This is the **only** place adaptive-sample-map visualisation
+			/// can take effect in progressive-rendering mode — the per-pixel
+			/// `cret` return path in IntegratePixel is overwritten by this
+			/// resolve step, so the heatmap must be re-derived from the
+			/// progressive-film state here.
+			void Resolve( IRasterImage& target, bool showMap = false, unsigned int targetSamples = 0 ) const
 			{
+				const bool emitMap = showMap && targetSamples > 0;
+				const Scalar invTarget = emitMap ? 1.0 / Scalar( targetSamples ) : 0.0;
 				for( unsigned int y = 0; y < height; y++ ) {
 					for( unsigned int x = 0; x < width; x++ ) {
 						const ProgressivePixel& px = pixels[y * width + x];
-						if( px.weightSum > 0 && px.alphaSum > 0 ) {
+						if( emitMap ) {
+							const Scalar t = Scalar( px.sampleIndex ) * invTarget;
+							target.SetPEL( x, y, RISEColor( RISEPel( t, t, t ), 1.0 ) );
+						} else if( px.weightSum > 0 && px.alphaSum > 0 ) {
 							const XYZPel avgXYZ = px.colorSum * (1.0 / px.alphaSum);
 							target.SetPEL( x, y, RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum ) );
 						}

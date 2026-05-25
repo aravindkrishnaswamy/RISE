@@ -62,6 +62,13 @@ namespace RISE
 
 			unsigned int GetProgressiveTotalSPP() const;
 
+			/// Adaptive-sample-map intent for ProgressiveFilm::Resolve.
+			/// See PixelBasedRasterizerHelper.h docs and the
+			/// "show_adaptive_map ineffective in progressive mode" fix
+			/// landed 2026-05-24.
+			bool GetAdaptiveShowMap() const { return adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0; }
+			unsigned int GetAdaptiveTargetSamples() const { return adaptiveConfig.maxSamples; }
+
 #ifdef RISE_ENABLE_OPENPGL
 			mutable PathGuidingField*	pGuidingField;
 			mutable Scalar				guidingAlphaScale;

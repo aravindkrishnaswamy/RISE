@@ -252,19 +252,28 @@ void BDPTPelRasterizer::IntegratePixel(
 		return;
 	}
 
+	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
+	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
+	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
+	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
+
 	// Progressive rendering: check if this pixel has already converged
 	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
 		if( px.converged ) {
-			if( px.alphaSum > 0 ) {
+			if( adaptive && adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0 ) {
+				// Heatmap mode: a converged pixel's sample count is
+				// authoritative — render its position on the
+				// max-samples ramp rather than the beauty estimate.
+				const Scalar t = Scalar( px.sampleIndex ) / Scalar( adaptiveConfig.maxSamples );
+				cret = RISEColor( RISEPel( t, t, t ), 1.0 );
+			} else if( px.alphaSum > 0 ) {
 				cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
 			}
 			return;
 		}
 	}
-
-	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
 
 	// Derive a per-pixel seed for Owen scrambling.
 	// ZSobol (blue-noise): seed from Morton index for spatially
@@ -272,10 +281,6 @@ void BDPTPelRasterizer::IntegratePixel(
 	uint32_t pixelSeed;
 	uint32_t mortonIndex = 0;
 	uint32_t log2SPP = 0;
-
-	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
-	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
-	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 	// For ZSobol, compute log2SPP from the full progressive SPP budget
 	const unsigned int zSobolSPP = rc.totalProgressiveSPP > 0 ? rc.totalProgressiveSPP : maxSamples;

@@ -1152,7 +1152,7 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 					// state.  Exception-safe: if Resolve throws, the
 					// destructor still releases every tile lock.
 					FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-					progFilm.Resolve( *pImage );
+					progFilm.Resolve( *pImage, GetAdaptiveShowMap(), GetAdaptiveTargetSamples() );
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
@@ -1202,7 +1202,13 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// trained on raw MC noise and works poorly on filter-reconstructed
 	// images (negative lobes / ringing confuse the denoiser).  The
 	// inline box-filtered estimate provides the clean input OIDN needs.
-	if( pFilteredFilm ) {
+	// When `GetAdaptiveShowMap()` is on, the progressive-resolve step
+	// has already written the authoritative heatmap to *pImage;
+	// FilteredFilm carries beauty XYZ which would overwrite the
+	// heatmap.  Skip the resolve so the heatmap survives to the
+	// outputs.  See PixelBasedRasterizerHelper.h GetAdaptiveShowMap
+	// docs for the broader contract.
+	if( pFilteredFilm && !GetAdaptiveShowMap() ) {
 		// L6e-1.1 — bracket the full-image filter resolve via RAII.
 		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
 #ifdef RISE_ENABLE_OIDN
@@ -1236,7 +1242,10 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// cancel point.  See ShouldDenoise() and docs/OIDN.md decision
 	// log (2026-04-29).
 	(void)mainPassCompleted;
-	const bool bWillDenoise = ( pAOVBuffers && ShouldDenoise() );
+	// Skip OIDN entirely when show_adaptive_map is on — the
+	// authoritative output is the heatmap from the progressive
+	// resolve, denoising it would mangle the grayscale ramp.
+	const bool bWillDenoise = ( pAOVBuffers && ShouldDenoise() && !GetAdaptiveShowMap() );
 #else
 	const bool bWillDenoise = false;
 #endif
@@ -1608,7 +1617,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 				{
 					// L6e-1.1 — bracket via RAII.
 					FrameStoreBulkBracket bracket( mFrameStore, image );
-					progFilm.Resolve( image );
+					progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples() );
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( image );
@@ -1625,7 +1634,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		{
 			// L6e-1.1 — bracket via RAII.
 			FrameStoreBulkBracket bracket( mFrameStore, image );
-			progFilm.Resolve( image );
+			progFilm.Resolve( image, GetAdaptiveShowMap(), GetAdaptiveTargetSamples() );
 		}
 
 #ifdef RISE_ENABLE_OIDN
@@ -1675,7 +1684,10 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		// L6e-1.1 — bracket the full-image filter resolve via RAII.
 		// pFilteredFilm->Clear() resets the FILM, not `image`, so it
 		// stays outside the bracket scope.
-		{
+		// Skip the resolve when show_adaptive_map is on — the
+		// progressive resolve has already written the authoritative
+		// heatmap to `image`; FilteredFilm carries beauty XYZ.
+		if( !GetAdaptiveShowMap() ) {
 			FrameStoreBulkBracket bracket( mFrameStore, image );
 #ifdef RISE_ENABLE_OIDN
 			if( !bDenoisingEnabled ) {
@@ -1908,7 +1920,9 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 		// log (2026-04-29 animation denoise).
 		const unsigned int frameIdx = specificFrame?*specificFrame:i;
 #ifdef RISE_ENABLE_OIDN
-		if( bDenoisingEnabled && pAOVBuffers && ShouldDenoise() ) {
+		// Skip denoise pass entirely when show_adaptive_map is on —
+		// see RasterizeScene's matching gate for the rationale.
+		if( bDenoisingEnabled && pAOVBuffers && ShouldDenoise() && !GetAdaptiveShowMap() ) {
 			FlushPreDenoisedToOutputs( *pImage, pRect, frameIdx );
 			if( !pAOVBuffers->HasData() ) {
 				OIDNDenoiser::CollectFirstHitAOVs(

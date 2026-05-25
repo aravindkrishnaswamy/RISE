@@ -27,6 +27,7 @@
 
 #include "BDPTRasterizerBase.h"
 #include "PixelBasedSpectralIntegratingRasterizer.h"
+#include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/Color/CIE_XYZ.h"
 #include <stdint.h>
 
@@ -52,6 +53,16 @@ namespace RISE
 			/// Override to use BDPTRasterizerBase::stabilityConfig instead of
 			/// the default from PixelBasedRasterizerHelper.
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;
+
+			/// Override to use this BDPT rasterizer's adaptive sampling config.
+			unsigned int GetProgressiveTotalSPP() const;
+
+			/// Adaptive-sample-map intent for ProgressiveFilm::Resolve.
+			/// See PixelBasedRasterizerHelper.h docs and the
+			/// "show_adaptive_map ineffective in progressive mode" fix
+			/// landed 2026-05-24.
+			bool GetAdaptiveShowMap() const { return adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0; }
+			unsigned int GetAdaptiveTargetSamples() const { return adaptiveConfig.maxSamples; }
 
 			Scalar GetSplatSampleScale() const { return bUseHWSS ? static_cast<Scalar>( nSpectralSamples * SampledWavelengths::N ) : static_cast<Scalar>( nSpectralSamples ); }
 
@@ -101,6 +112,8 @@ namespace RISE
 				PixelAOV* pAOV
 				) const;
 
+			AdaptiveSamplingConfig		adaptiveConfig;
+
 		public:
 			BDPTSpectralRasterizer(
 				IRayCaster* pCaster_,
@@ -111,6 +124,7 @@ namespace RISE
 				const unsigned int num_wavelengths,
 				const unsigned int spectralSamples,
 				const PathGuidingConfig& guidingConfig,
+				const AdaptiveSamplingConfig& adaptiveConfig,
 				const StabilityConfig& stabilityConfig,
 				bool useZSobol_,
 				bool useHWSS_,

@@ -987,7 +987,7 @@ void BDPTRasterizerBase::RasterizeScene(
 					// the post-Resolve image, not a torn half-resolved
 					// one.
 					FrameStoreBulkBracket bracket( mFrameStore, *pImage );
-					progFilm.Resolve( *pImage );
+					progFilm.Resolve( *pImage, GetAdaptiveShowMap(), GetAdaptiveTargetSamples() );
 				}
 
 				IRasterImage& outputImage = GetIntermediateOutputImage( *pImage );
@@ -1115,7 +1115,10 @@ void BDPTRasterizerBase::RasterizeScene(
 	RISE_PROFILE_REPORT(GlobalLog());
 
 #ifdef RISE_ENABLE_OIDN
-	const bool bWillDenoise = ( pAOVBuffers && bDenoisingEnabled );
+	// Skip denoise entirely when show_adaptive_map is on — the
+	// authoritative output is the heatmap from the progressive
+	// resolve.  See PixelBasedRasterizerHelper.h GetAdaptiveShowMap.
+	const bool bWillDenoise = ( pAOVBuffers && bDenoisingEnabled && !GetAdaptiveShowMap() );
 #else
 	const bool bWillDenoise = false;
 #endif
@@ -1135,7 +1138,12 @@ void BDPTRasterizerBase::RasterizeScene(
 	// path we keep the inline box-filtered pImage for OIDN input;
 	// the pre-denoised output below also uses inline + splat so the
 	// user can compare fairly against the denoised result.
-	if( pFilteredFilm && !bWillDenoise ) {
+	// Skip the filtered-film resolve when show_adaptive_map is on —
+	// the progressive resolve has already committed the authoritative
+	// heatmap to *pImage; FilteredFilm carries beauty XYZ that would
+	// overwrite it.  See PixelBasedRasterizerHelper.h GetAdaptiveShowMap
+	// docs.
+	if( pFilteredFilm && !bWillDenoise && !GetAdaptiveShowMap() ) {
 		// L6e-1.1 — bracket the full-image filter resolve via RAII.
 		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
 		pFilteredFilm->Resolve( *pImage );
@@ -1199,7 +1207,10 @@ void BDPTRasterizerBase::RasterizeScene(
 	// by the total number of pixel samples to get the correct
 	// per-pixel average.  Splats are added AFTER denoising because
 	// their splatted accumulation pattern is incompatible with OIDN.
-	{
+	// Skipped in show_adaptive_map mode — the heatmap from the
+	// progressive resolve is the final output; overlaying splats
+	// would corrupt the grayscale ramp.
+	if( !GetAdaptiveShowMap() ) {
 		// L6e-1.1 — bracket the full-image splat resolve via RAII.
 		FrameStoreBulkBracket bracket( mFrameStore, *pImage );
 		pSplatFilm->Resolve( *pImage, GetEffectiveSplatSPP( width, height ) );

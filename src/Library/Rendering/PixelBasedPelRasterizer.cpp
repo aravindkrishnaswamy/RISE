@@ -514,13 +514,25 @@ void PixelBasedPelRasterizer::IntegratePixel(
 {
 	RasterizerState rast = {x,y};
 
-	// Progressive rendering: check if this pixel has already converged
+	// Progressive rendering: check if this pixel has already converged.
+	// In show_adaptive_map mode the heatmap (sampleIndex / maxSamples) is
+	// the authoritative output even for converged pixels — otherwise the
+	// progressive-film Resolve step would overwrite cret here, and a
+	// converged pixel would never reach the per-pixel heatmap write
+	// further down.  See PixelBasedRasterizerHelper.h GetAdaptiveShowMap
+	// docs.
+	const bool bAdaptiveActive = adaptiveConfig.maxSamples > 0
+		&& pSampling && rc.UsesPixelSampling()
+		&& rc.AllowsAdaptiveSampling();
 	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
 		if( px.converged ) {
-			// Return cached result
-			if( px.alphaSum > 0 ) {
+			if( bAdaptiveActive && adaptiveConfig.showMap ) {
+				const Scalar t = Scalar( px.sampleIndex ) / Scalar( adaptiveConfig.maxSamples );
+				cret = RISEColor( RISEPel( t, t, t ), 1.0 );
+			} else if( px.alphaSum > 0 ) {
+				// Return cached result
 				cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
 			}
 			return;

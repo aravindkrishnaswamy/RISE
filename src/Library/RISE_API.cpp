@@ -5284,9 +5284,9 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates a spectral BDPT rasterizer
+	//! Creates a spectral BDPT rasterizer with adaptive sampling support.
 	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateBDPTSpectralRasterizer(
+	bool RISE_API_CreateBDPTSpectralRasterizerAdaptive(
 								IRasterizer** ppi,
 								IRayCaster* caster,
 								ISampling2D* pSamples,
@@ -5302,6 +5302,7 @@ namespace RISE
 							const OidnDevice oidnDevice,
 							const OidnPrefilter oidnPrefilter,
 								const PathGuidingConfig& guidingConfig,
+								const AdaptiveSamplingConfig& adaptiveConfig,
 								const StabilityConfig& stabilityConfig,
 								const bool useZSobol,
 								const bool useHWSS,
@@ -5314,7 +5315,8 @@ namespace RISE
 
 		BDPTSpectralRasterizer* pRasterizer = new BDPTSpectralRasterizer(
 			caster, maxEyeDepth, maxLightDepth,
-			lambda_begin, lambda_end, num_wavelengths, spectral_samples, guidingConfig, stabilityConfig, useZSobol, useHWSS, frameStore);
+			lambda_begin, lambda_end, num_wavelengths, spectral_samples,
+			guidingConfig, adaptiveConfig, stabilityConfig, useZSobol, useHWSS, frameStore);
 
 		if( pSamples && pFilter ) {
 			pRasterizer->SubSampleRays( pSamples, pFilter );
@@ -5337,6 +5339,42 @@ namespace RISE
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "BDPT Spectral rasterizer" );
 		return true;
+	}
+
+	//! Creates a spectral BDPT rasterizer (legacy — no adaptive sampling).
+	/// Thin wrapper delegating to RISE_API_CreateBDPTSpectralRasterizerAdaptive
+	/// with a default-constructed AdaptiveSamplingConfig.  Kept for ABI
+	/// compatibility with callers that predate adaptive-sampling support.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBDPTSpectralRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const unsigned int maxEyeDepth,
+								const unsigned int maxLightDepth,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int num_wavelengths,
+								const unsigned int spectral_samples,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+							const OidnDevice oidnDevice,
+							const OidnPrefilter oidnPrefilter,
+								const PathGuidingConfig& guidingConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								const bool useHWSS,
+								Implementation::FrameStore* frameStore
+								)
+	{
+		return RISE_API_CreateBDPTSpectralRasterizerAdaptive(
+			ppi, caster, pSamples, pFilter,
+			maxEyeDepth, maxLightDepth,
+			lambda_begin, lambda_end, num_wavelengths, spectral_samples,
+			oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
+			guidingConfig, AdaptiveSamplingConfig(),
+			stabilityConfig, useZSobol, useHWSS, frameStore );
 	}
 
 	//! Creates a Pel (RGB) Vertex Connection and Merging rasterizer

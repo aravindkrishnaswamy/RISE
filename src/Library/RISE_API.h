@@ -2624,7 +2624,11 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
 								);
 
-	//! Creates a spectral BDPT rasterizer
+	//! Creates a spectral BDPT rasterizer (legacy — no adaptive sampling).
+	/// Kept for ABI compatibility.  New callers should prefer
+	/// RISE_API_CreateBDPTSpectralRasterizerAdaptive.  This thin wrapper
+	/// delegates with a default-constructed AdaptiveSamplingConfig
+	/// (adaptive disabled).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBDPTSpectralRasterizer(
 								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
@@ -2642,6 +2646,37 @@ bool RISE_API_CreateFinalGatherShaderOp(
 							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
 								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								);
+
+	//! Creates a spectral BDPT rasterizer with adaptive sampling support.
+	/// Spectral counterpart of RISE_API_CreateBDPTPelRasterizer's
+	/// `adaptiveConfig` parameter.  Convergence is driven by the
+	/// Welford-tracked Y channel of the XYZ accumulator (CIE photometric
+	/// luminance).  Pass AdaptiveSamplingConfig() (maxSamples == 0) to
+	/// disable adaptive termination — that's exactly what the legacy
+	/// overload above does internally.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBDPTSpectralRasterizerAdaptive(
+								IRasterizer** ppi,					///< [out] Pointer to recieve the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const unsigned int maxEyeDepth,		///< [in] Maximum eye subpath depth
+								const unsigned int maxLightDepth,	///< [in] Maximum light subpath depth
+								const Scalar lambda_begin,			///< [in] Start wavelength (nm)
+								const Scalar lambda_end,			///< [in] End wavelength (nm)
+								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
+								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+							const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+							const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling

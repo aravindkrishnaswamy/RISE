@@ -394,6 +394,24 @@ namespace RISE
 			/// adaptive sampling override this to use their adaptive max.
 			virtual unsigned int GetProgressiveTotalSPP() const;
 
+			/// Whether the adaptive-sample-map heatmap should be emitted in
+			/// place of beauty when ProgressiveFilm::Resolve runs.  Default
+			/// FALSE; rasterizers that carry an `adaptiveConfig` override to
+			/// return `adaptiveConfig.showMap && adaptive-is-active`.
+			///
+			/// Why this exists: the per-pixel `cret` heatmap write in each
+			/// rasterizer's IntegratePixel is silently overwritten in
+			/// progressive mode by the ProgressiveFilm resolve step, so the
+			/// resolve also needs to know to emit the heatmap.  See the
+			/// audit "show_adaptive_map ineffective in progressive mode"
+			/// fix landed 2026-05-24.
+			virtual bool GetAdaptiveShowMap() const { return false; }
+
+			/// Target sample count used as the denominator for the
+			/// adaptive-sample-map heatmap.  Default 0; rasterizers with
+			/// adaptive sampling return `adaptiveConfig.maxSamples`.
+			virtual unsigned int GetAdaptiveTargetSamples() const { return 0; }
+
 		/// Pointer to the IRasterImage produced by the most recent
 		/// RasterizeScene call (or nullptr if no render has run yet).
 		/// Refcount is held by this rasterizer; callers must NOT

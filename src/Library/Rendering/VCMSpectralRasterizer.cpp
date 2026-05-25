@@ -134,19 +134,6 @@ void VCMSpectralRasterizer::IntegratePixel(
 		return;
 	}
 
-	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
-	if( pProgFilm ) {
-		ProgressivePixel& px = pProgFilm->Get( x, y );
-		if( px.converged ) {
-			if( px.alphaSum > 0 ) {
-				// px.colorSum is XYZPel; defer XYZ->ROMM RGB to here.
-				const XYZPel avgXYZ = px.colorSum * ( Scalar( 1 ) / px.alphaSum );
-				cret = RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum );
-			}
-			return;
-		}
-	}
-
 	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
 	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
 
@@ -159,6 +146,22 @@ void VCMSpectralRasterizer::IntegratePixel(
 	// VCMPelRasterizer / BDPTPelRasterizer.
 	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
 	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
+
+	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
+	if( pProgFilm ) {
+		ProgressivePixel& px = pProgFilm->Get( x, y );
+		if( px.converged ) {
+			if( adaptive && adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0 ) {
+				const Scalar t = Scalar( px.sampleIndex ) / Scalar( adaptiveConfig.maxSamples );
+				cret = RISEColor( RISEPel( t, t, t ), 1.0 );
+			} else if( px.alphaSum > 0 ) {
+				// px.colorSum is XYZPel; defer XYZ->ROMM RGB to here.
+				const XYZPel avgXYZ = px.colorSum * ( Scalar( 1 ) / px.alphaSum );
+				cret = RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum );
+			}
+			return;
+		}
+	}
 
 	BDPTIntegrator* pGen = pIntegrator ? pIntegrator->GetGenerator() : 0;
 	if( !pGen ) {

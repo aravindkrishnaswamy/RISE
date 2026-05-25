@@ -879,8 +879,11 @@ void VCMRasterizerBase::FlushToOutputs( const IRasterImage& img, const Rect* rcR
 	// declaration — the underlying buffer is the rasterizer's mutable
 	// canonical state.
 	IRasterImage& target = const_cast<IRasterImage&>( img );
-	const Scalar splatSpp = GetEffectiveSplatSPP( target.GetWidth(), target.GetHeight() );
-	{
+	// Skip splat overlay when show_adaptive_map is on — the
+	// authoritative output is the heatmap from the progressive
+	// resolve.  See PixelBasedRasterizerHelper.h GetAdaptiveShowMap.
+	if( !GetAdaptiveShowMap() ) {
+		const Scalar splatSpp = GetEffectiveSplatSPP( target.GetWidth(), target.GetHeight() );
 		FrameStoreBulkBracket bracket( mFrameStore, target );
 		pSplatFilm->Resolve( target, splatSpp );
 	}
@@ -916,8 +919,12 @@ void VCMRasterizerBase::FlushDenoisedToOutputs( const IRasterImage& img, const R
 	// `mFrameStore` to the denoised eye-subpath; we now overlay
 	// VCM's t==1 splats ON TOP of the denoised content.
 	IRasterImage& target = const_cast<IRasterImage&>( img );
-	const Scalar splatSpp = GetEffectiveSplatSPP( target.GetWidth(), target.GetHeight() );
-	{
+	// Defensive: this branch is unreachable when show_adaptive_map is
+	// on (the denoise gate above us short-circuits to FlushToOutputs),
+	// but guard anyway to keep the contract symmetric with the other
+	// two flush methods.
+	if( !GetAdaptiveShowMap() ) {
+		const Scalar splatSpp = GetEffectiveSplatSPP( target.GetWidth(), target.GetHeight() );
 		FrameStoreBulkBracket bracket( mFrameStore, target );
 		pSplatFilm->Resolve( target, splatSpp );
 	}

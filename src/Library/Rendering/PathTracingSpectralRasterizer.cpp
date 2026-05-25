@@ -233,11 +233,18 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 
 	if( bMultiSample )
 	{
+		const bool adaptive = adaptiveConfig.maxSamples > 0 && rc.AllowsAdaptiveSampling();
+		const unsigned int batchSize = pSampling->GetNumSamples();
+		const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
+
 		ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 		if( pProgFilm ) {
 			ProgressivePixel& px = pProgFilm->Get( x, y );
 			if( px.converged ) {
-				if( px.alphaSum > 0 ) {
+				if( adaptive && adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0 ) {
+					const Scalar t = Scalar( px.sampleIndex ) / Scalar( adaptiveConfig.maxSamples );
+					cret = RISEColor( RISEPel( t, t, t ), 1.0 );
+				} else if( px.alphaSum > 0 ) {
 					// px.colorSum is XYZPel; defer XYZ->ROMM RGB to
 					// here via implicit RISEPel(XYZPel) constructor.
 					const XYZPel avgXYZ = px.colorSum * (1.0/px.alphaSum);
@@ -247,9 +254,6 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 			}
 		}
 
-		const bool adaptive = adaptiveConfig.maxSamples > 0 && rc.AllowsAdaptiveSampling();
-		const unsigned int batchSize = pSampling->GetNumSamples();
-		const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 		const unsigned int zSobolSPP = rc.totalProgressiveSPP > 0 ? rc.totalProgressiveSPP : maxSamples;
 
 		if( useZSobol &&

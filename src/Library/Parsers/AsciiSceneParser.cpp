@@ -7300,6 +7300,15 @@ namespace RISE
 					if( bag.Has("pathguiding_complete_path_strategy_selection") )   guidingConfig.completePathStrategySelection = bag.GetBool("pathguiding_complete_path_strategy_selection");
 					if( bag.Has("pathguiding_complete_path_strategy_samples") )     guidingConfig.completePathStrategySamples   = bag.GetUInt("pathguiding_complete_path_strategy_samples");
 
+					// Adaptive sampling wired here 2026-05-24 (audit §2.8 / §6.1
+					// last remaining quick win).  Welford convergence is driven
+					// by the XYZ.Y luminance signal — see BDPTSpectralRasterizer
+					// ::IntegratePixel for the mirrored Pel-side pattern.
+					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
 					StabilityConfig stabilityConfig;
 					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
 					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
@@ -7330,7 +7339,7 @@ namespace RISE
 						pixelFilterConfig,
 						showLuminaires,
 						spectralConfig,
-						oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, stabilityConfig, progressiveConfig );
+						oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -7357,6 +7366,9 @@ namespace RISE
 						// the descriptor / Finalize hand-rolled a subset
 						// that silently dropped 3 fields.
 						AddPathGuidingParams( P );
+						// Adaptive sampling wired 2026-05-24 (audit §2.8 /
+						// §6.1 last remaining quick win).
+						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
 						// Intentionally NO AddOptimalMISParams: see Finalize
 						// note and SPECTRAL_PARITY_AUDIT.md §2.10.

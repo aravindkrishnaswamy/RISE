@@ -54,6 +54,7 @@ BDPTSpectralRasterizer::BDPTSpectralRasterizer(
 	const unsigned int num_wavelengths_,
 	const unsigned int spectralSamples,
 	const PathGuidingConfig& guidingConfig,
+	const AdaptiveSamplingConfig& adaptiveCfg,
 	const StabilityConfig& stabilityConfig,
 	bool useZSobol_,
 	bool useHWSS_,
@@ -62,13 +63,23 @@ BDPTSpectralRasterizer::BDPTSpectralRasterizer(
   Rasterizer( frameStore ),
   PixelBasedRasterizerHelper( pCaster_ , frameStore),
   BDPTRasterizerBase( pCaster_, maxEyeDepth, maxLightDepth, guidingConfig, stabilityConfig , frameStore),
-  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, StabilityConfig(), false, useHWSS_ , frameStore)
+  PixelBasedSpectralIntegratingRasterizer( pCaster_, lambda_begin_, lambda_end_, num_wavelengths_, spectralSamples, StabilityConfig(), false, useHWSS_ , frameStore),
+  adaptiveConfig( adaptiveCfg )
 {
 	useZSobol = useZSobol_;
 }
 
 BDPTSpectralRasterizer::~BDPTSpectralRasterizer()
 {
+}
+
+unsigned int BDPTSpectralRasterizer::GetProgressiveTotalSPP() const
+{
+	if( adaptiveConfig.maxSamples > 0 ) {
+		return adaptiveConfig.maxSamples;
+	}
+
+	return PixelBasedRasterizerHelper::GetProgressiveTotalSPP();
 }
 
 void BDPTSpectralRasterizer::PrepareRuntimeContext( RuntimeContext& rc ) const
@@ -525,14 +536,21 @@ void BDPTSpectralRasterizer::IntegratePixel(
 
 	// Determine how many samples to take
 	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
+	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
 	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
-	const unsigned int maxSamples = batchSize;
+	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
 		if( px.converged ) {
-			if( px.alphaSum > 0 ) {
+			if( adaptive && adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0 ) {
+				// Heatmap mode: a converged pixel's sample count is
+				// authoritative — render its position on the
+				// max-samples ramp rather than the beauty estimate.
+				const Scalar t = Scalar( px.sampleIndex ) / Scalar( adaptiveConfig.maxSamples );
+				cret = RISEColor( RISEPel( t, t, t ), 1.0 );
+			} else if( px.alphaSum > 0 ) {
 				// px.colorSum is XYZPel; defer XYZ->ROMM RGB to here.
 				const XYZPel avgXYZ = px.colorSum * (1.0/px.alphaSum);
 				cret = RISEColor( RISEPel( avgXYZ ), px.alphaSum / px.weightSum );
@@ -600,6 +618,7 @@ void BDPTSpectralRasterizer::IntegratePixel(
 		pixelSampleIndex = px.sampleIndex;
 	}
 
+	const uint32_t passStartSampleIndex = pixelSampleIndex;
 	const uint32_t targetSamples = pProgFilm && rc.totalProgressiveSPP > 0
 		? rc.totalProgressiveSPP
 		: maxSamples;
@@ -673,8 +692,14 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			colAccrued = colAccrued + sampleXYZ * weight;
 			alphas += weight;
 
-			if( pProgFilm ) {
-				// XYZ.Y is the CIE photometric luminance.
+			// Welford update on CIE photometric luminance (XYZ.Y) of the
+			// non-splat contribution.  Gated on `adaptive` only — see
+			// BDPTPelRasterizer::IntegratePixel for the rationale: in
+			// progressive multi-pass mode WITHOUT adaptive, firing
+			// convergence-based termination on 32-sample empirical
+			// variance freezes "lucky-low" realizations while firefly
+			// pixels regress to truth, biasing the image dark.
+			if( adaptive ) {
 				const Scalar lum = sampleXYZ.Y;
 				wN++;
 				const Scalar delta = lum - wMean;
@@ -684,7 +709,8 @@ void BDPTSpectralRasterizer::IntegratePixel(
 			}
 		}
 
-		if( pProgFilm && wN >= 32 )
+		// Check convergence after enough cumulative samples
+		if( adaptive && wN >= 32 )
 		{
 			const Scalar variance = wM2 / Scalar(wN - 1);
 			const Scalar stdError = sqrt( variance / Scalar(wN) );
@@ -692,12 +718,20 @@ void BDPTSpectralRasterizer::IntegratePixel(
 
 			if( meanAbs > NEARZERO ) {
 				const Scalar confidence = 1.0 - 4.0 / Scalar(wN);
-				if( stdError / meanAbs < 0.01 * confidence ) {
+				const Scalar threshold = adaptiveConfig.maxSamples > 0
+					? adaptiveConfig.threshold
+					: 0.01;
+				if( stdError / meanAbs < threshold * confidence ) {
 					converged = true;
 				}
 			} else if( wM2 < NEARZERO && wN >= 64 ) {
 				converged = true;
 			}
+		}
+
+		// For non-adaptive single-pass, the single batch covers everything
+		if( !bMultiSample && !pProgFilm ) {
+			break;
 		}
 	}
 
@@ -719,7 +753,17 @@ void BDPTSpectralRasterizer::IntegratePixel(
 		px.converged = converged;
 	}
 
-	if( alphas > 0 ) {
+	// Track total adaptive samples for splat film normalization.
+	// Use the delta (samples rendered THIS pass) to avoid double-counting
+	// across progressive passes.  See BDPTPelRasterizer::IntegratePixel.
+	if( adaptive ) {
+		AddAdaptiveSamples( pixelSampleIndex - passStartSampleIndex );
+	}
+
+	if( adaptive && adaptiveConfig.showMap ) {
+		const Scalar t = Scalar(pixelSampleIndex) / Scalar(targetSamples);
+		cret = RISEColor( RISEPel(t, t, t), 1.0 );
+	} else if( alphas > 0 ) {
 		// Single XYZ -> ROMM RGB conversion at resolve.
 		const XYZPel avgXYZ = colAccrued * (1.0 / alphas);
 		cret = RISEColor( RISEPel( avgXYZ ), alphas / weights );

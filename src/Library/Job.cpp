@@ -6581,6 +6581,7 @@ bool Job::SetBDPTSpectralRasterizer(
 	const OidnDevice oidnDevice,
 	const OidnPrefilter oidnPrefilter,
 	const PathGuidingConfig& guidingConfig,
+	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
 	const ProgressiveConfig& progressiveConfig
 	)
@@ -6629,9 +6630,9 @@ bool Job::SetBDPTSpectralRasterizer(
 
 	IRasterizer* pRaster = 0;
 	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
-	RISE_API_CreateBDPTSpectralRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
+	RISE_API_CreateBDPTSpectralRasterizerAdaptive( &pRaster, pCaster, pPixelSampler, pPixelFilter, maxEyeDepth, maxLightDepth,
 		spectralConfig.nmBegin, spectralConfig.nmEnd, spectralConfig.numWavelengths, spectralConfig.spectralSamples,
-		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS, _jobFs);
+		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, pixelFilterConfig.blueNoiseSampler, spectralConfig.useHWSS, _jobFs);
 
 	// Always propagate the parsed progressiveConfig — including
 	// `enabled=false`, otherwise `progressive_rendering FALSE` in a
@@ -7483,6 +7484,44 @@ namespace RISE {
 					rc.top = pRegion->top;
 					rc.right = pRegion->right;
 					rc.bottom = pRegion->bottom;
+				}
+
+				// HDR-aware fast path: outputs that opt into 32-bit
+				// float receive the raw linear `RISEColor.base` values
+				// directly, skipping the Integerize quantize-to-uint16
+				// step (which would clamp any value > 1.0).  Required
+				// for the Blender bridge so Filmic + exposure can
+				// tonemap real HDR data instead of seeing a [0, 1]
+				// clipped image.  Falls through to the legacy 16-bit
+				// path for every existing consumer that doesn't
+				// override `WantsFloat32`.
+				if( pObj.WantsFloat32() ) {
+					std::vector<float> fbuf( static_cast<size_t>( width ) * height * 4, 0.0f );
+					for( unsigned int y=rc.top; y<=rc.bottom; y++ ) {
+						for( unsigned int x=rc.left; x<= rc.right; x++ ) {
+							const RISEColor c = pImage.GetPEL( x, y );
+							const size_t idx = ( static_cast<size_t>( y ) * width + x ) * 4;
+							// RISEPel == Rec709RGBPel since Stage B of
+							// the colour-space migration.  Members are
+							// `.base.r/g/b` (Chel = double), `.a`.
+							// We deliver them verbatim — the consumer
+							// (Blender bridge) declares colour space
+							// via GetColorSpace and applies any further
+							// transform downstream.
+							fbuf[idx+0] = static_cast<float>( c.base.r );
+							fbuf[idx+1] = static_cast<float>( c.base.g );
+							fbuf[idx+2] = static_cast<float>( c.base.b );
+							fbuf[idx+3] = static_cast<float>( c.a );
+							if( bPremultipliedAlpha ) {
+								const float aa = fbuf[idx+3];
+								fbuf[idx+0] *= aa;
+								fbuf[idx+1] *= aa;
+								fbuf[idx+2] *= aa;
+							}
+						}
+					}
+					pObj.OutputImageRGBA32F( fbuf.data(), width, height, rc.top, rc.left, rc.bottom, rc.right );
+					return;
 				}
 
 				for( unsigned int y=rc.top; y<=rc.bottom; y++ ) {
@@ -8993,7 +9032,7 @@ bool RebuildRasterizer( Job& job, const std::string& name, const Job::Rasterizer
 			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
 			p.spectral,
 			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
-			p.pathGuiding, p.stability, p.progressive );
+			p.pathGuiding, p.adaptive, p.stability, p.progressive );
 	}
 	if( name == "vcm_pel_rasterizer" ) {
 		return job.SetVCMPelRasterizer(
@@ -9251,7 +9290,7 @@ bool Job::InstantiateRasterizerWithDefaults( const std::string& name )
 			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
 			spectralConfig,
 			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
-			guidingConfig, stabilityConfig, progressiveConfig );
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
 	}
 	if( name == "vcm_pel_rasterizer" ) {
 		VCMPelDefaults d;

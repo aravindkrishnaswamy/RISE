@@ -110,7 +110,7 @@ The ten rasterizer chunks, grouped by algorithm.
 | Chunk | Pipeline | Notes |
 |---|---|---|
 | `bdpt_pel_rasterizer` | pure integrator | RGB. Generates eye + light subpaths, connects all (s,t) strategy pairs, MIS-weights via the **power heuristic (β=2)** — see [MIS_HEURISTICS.md](MIS_HEURISTICS.md). Strong on glossy interreflection and indirect specular. |
-| `bdpt_spectral_rasterizer` | pure integrator | Spectral analogue.  Wires the full path-guiding parameter set (parser switched from a hand-rolled subset to `AddPathGuidingParams` on 2026-05-07; see [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §2.7). |
+| `bdpt_spectral_rasterizer` | pure integrator | Spectral analogue.  Wires the full path-guiding parameter set (parser switched from a hand-rolled subset to `AddPathGuidingParams` on 2026-05-07; see [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §2.7).  Adaptive sampling wired on 2026-05-24 via `AddAdaptiveSamplingParams` — `adaptive_max_samples`, `adaptive_threshold`, `show_adaptive_map` (audit §2.8); Welford signal is XYZ.Y (CIE photometric luminance). |
 
 ### VCM (vertex connection and merging)
 
@@ -155,7 +155,7 @@ wired, partial = subset.
 | `pathtracing_pel_rasterizer` | ✓ | ✓ | ✓ | ✓ | ✓ (full filtered-film bypass) |
 | `pathtracing_spectral_rasterizer` | ✗ | ✓ | ✓ | ✗ | (limited) |
 | `bdpt_pel_rasterizer` | ✓ | ✓ | ✗ | ✗ | ✓ |
-| `bdpt_spectral_rasterizer` | ✓ | ✗ | ✗ | ✗ | (limited) |
+| `bdpt_spectral_rasterizer` | ✓ | ✓ | ✗ | ✗ | (limited) |
 | `vcm_pel_rasterizer` | ✗ | ✓ | ✗ | ✗ | ✓ |
 | `vcm_spectral_rasterizer` ² | ✗ | ✓ | ✗ | ✗ | (limited) |
 | `mlt_rasterizer` | ✗ | ✗ | ✗ | ✗ | ✗ (default off — splat film) |

@@ -176,12 +176,18 @@ void PathTracingPelRasterizer::IntegratePixel(
 	const IRadianceMap* pRadianceMap = pScene.GetGlobalRadianceMap();
 
 	const bool bMultiSample = pSampling && rc.UsesPixelSampling();
+	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
+	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
+	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 
 	ProgressiveFilm* pProgFilm = rc.pProgressiveFilm;
 	if( pProgFilm ) {
 		ProgressivePixel& px = pProgFilm->Get( x, y );
 		if( px.converged ) {
-			if( px.alphaSum > 0 ) {
+			if( adaptive && adaptiveConfig.showMap && adaptiveConfig.maxSamples > 0 ) {
+				const Scalar t = Scalar( px.sampleIndex ) / Scalar( adaptiveConfig.maxSamples );
+				cret = RISEColor( RISEPel( t, t, t ), 1.0 );
+			} else if( px.alphaSum > 0 ) {
 				cret = RISEColor( px.colorSum * (1.0/px.alphaSum), px.alphaSum / px.weightSum );
 			}
 			return;
@@ -192,10 +198,6 @@ void PathTracingPelRasterizer::IntegratePixel(
 	uint32_t pixelSeed;
 	uint32_t mortonIndex = 0;
 	uint32_t log2SPP = 0;
-
-	const bool adaptive = adaptiveConfig.maxSamples > 0 && bMultiSample && rc.AllowsAdaptiveSampling();
-	const unsigned int batchSize = bMultiSample ? pSampling->GetNumSamples() : 1;
-	const unsigned int maxSamples = adaptive ? adaptiveConfig.maxSamples : batchSize;
 	const unsigned int zSobolSPP = rc.totalProgressiveSPP > 0 ? rc.totalProgressiveSPP : maxSamples;
 
 	if( useZSobol &&
