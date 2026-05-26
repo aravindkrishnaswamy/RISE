@@ -441,10 +441,39 @@ namespace RISE
 				const IMedium* pStartMedium
 				) const;
 
+			/// Ray+distance overload — needed by env NEE so the walk
+			/// can extend to RISE_INFINITY (matching PT) without
+			/// constructing a "point at infinity" that overflows the
+			/// p2 - p1 distance calculation.  When `maxDist` is
+			/// RISE_INFINITY, the global-medium fast path and the
+			/// final "remaining" segment evaluate transmittance over
+			/// the full ray to infinity, which converges correctly
+			/// for any extinction > 0 (Beer-Lambert exp(-σ·∞) → 0)
+			/// and harmlessly returns 1 for vacuum (σ = 0).
+			RISEPel EvalConnectionTransmittance(
+				const Ray& connectionRay,
+				const Scalar maxDist,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const IObject* pStartMediumObject,
+				const IMedium* pStartMedium
+				) const;
+
 			/// Spectral variant of EvalConnectionTransmittance
 			Scalar EvalConnectionTransmittanceNM(
 				const Point3& p1,
 				const Point3& p2,
+				const IScene& scene,
+				const IRayCaster& caster,
+				const Scalar nm,
+				const IObject* pStartMediumObject,
+				const IMedium* pStartMedium
+				) const;
+
+			/// Ray+distance NM overload — see RGB twin.
+			Scalar EvalConnectionTransmittanceNM(
+				const Ray& connectionRay,
+				const Scalar maxDist,
 				const IScene& scene,
 				const IRayCaster& caster,
 				const Scalar nm,

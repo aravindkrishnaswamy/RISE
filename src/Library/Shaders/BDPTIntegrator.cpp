@@ -1006,16 +1006,34 @@ RISEPel BDPTIntegrator::EvalConnectionTransmittance(
 	const IMedium* pStartMedium
 	) const
 {
-	const IMedium* pGlobalMedium = scene.GetGlobalMedium();
-
 	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
 	const Scalar maxDist = Vector3Ops::Magnitude( d );
 	if( maxDist < BDPT_RAY_EPSILON ) {
 		return RISEPel( 1, 1, 1 );
 	}
-
 	d = d * (1.0 / maxDist);
 	const Ray connectionRay( p1, d );
+	return EvalConnectionTransmittance(
+		connectionRay, maxDist, scene, caster,
+		pStartMediumObject, pStartMedium );
+}
+
+RISEPel BDPTIntegrator::EvalConnectionTransmittance(
+	const Ray& connectionRay,
+	const Scalar maxDist,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const IObject* pStartMediumObject,
+	const IMedium* pStartMedium
+	) const
+{
+	const IMedium* pGlobalMedium = scene.GetGlobalMedium();
+
+	if( maxDist < BDPT_RAY_EPSILON ) {
+		return RISEPel( 1, 1, 1 );
+	}
+
+	const Vector3 d = connectionRay.Dir();
 
 	const IObjectManager* pObjects = scene.GetObjects();
 	if( !pGlobalMedium && !pObjects && !pStartMedium ) {
@@ -1154,16 +1172,35 @@ Scalar BDPTIntegrator::EvalConnectionTransmittanceNM(
 	const IMedium* pStartMedium
 	) const
 {
-	const IMedium* pGlobalMedium = scene.GetGlobalMedium();
-
 	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
 	const Scalar maxDist = Vector3Ops::Magnitude( d );
 	if( maxDist < BDPT_RAY_EPSILON ) {
 		return 1.0;
 	}
-
 	d = d * (1.0 / maxDist);
 	const Ray connectionRay( p1, d );
+	return EvalConnectionTransmittanceNM(
+		connectionRay, maxDist, scene, caster, nm,
+		pStartMediumObject, pStartMedium );
+}
+
+Scalar BDPTIntegrator::EvalConnectionTransmittanceNM(
+	const Ray& connectionRay,
+	const Scalar maxDist,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const Scalar nm,
+	const IObject* pStartMediumObject,
+	const IMedium* pStartMedium
+	) const
+{
+	const IMedium* pGlobalMedium = scene.GetGlobalMedium();
+
+	if( maxDist < BDPT_RAY_EPSILON ) {
+		return 1.0;
+	}
+
+	const Vector3 d = connectionRay.Dir();
 
 	const IObjectManager* pObjects = scene.GetObjects();
 	if( !pGlobalMedium && !pObjects && !pStartMedium ) {
@@ -1369,6 +1406,12 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		v.pObject = 0;
 		v.pLight = ls.pLight;
 		v.pLuminary = ls.pLuminary;
+		// Env-light vertex 0 has pLight == pLuminary == NULL; the
+		// downstream MIS dispatch sites recognise the env-vertex via
+		// pEnvLight != NULL and recover Le via GetRadiance(skyProbe).
+		// Without this, env-IBL scenes lose every BDPT connection
+		// strategy that touches a light vertex.
+		v.pEnvLight = ls.pEnvLight;
 		v.isDelta = ls.isDelta;
 		v.isConnectible = !ls.isDelta;
 
@@ -2607,6 +2650,112 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 		}
 
 		if( !ri.geometric.bHit ) {
+			// Path B: eye-subpath escape to environment.  Without this
+			// branch, BDPT misses the s=0 contribution of camera rays
+			// that escape the scene through env-IBL — every env-only
+			// scene renders with a ~95% deficit vs PT (regression test:
+			// EnvLightBalanceTest).  Push a synthetic env-light vertex
+			// at the escape point so the standard s=0 strategy in
+			// ConnectBDPT (which detects pEnvLight != NULL and routes
+			// to env-radiance lookup) can credit the env contribution.
+			//
+			// On the FIRST iteration (camera ray miss) we still honour
+			// the rasterizer's `radiance_background` flag — when off,
+			// the rasterizer's caller-side accumulator already discards
+			// background pixels, but for the BDPT s=0 path we must
+			// also gate here so the synthetic env vertex doesn't drive
+			// indirect-MIS strategies on a backdrop the user wanted
+			// suppressed.  Indirect bounces (depth > 0) always credit
+			// env (matches PT IntegrateFromHit behaviour at line ~2641).
+			const IRadianceMap* pEnvForEscape = scene.GetGlobalRadianceMap();
+			const bool bIsFirstBounce = ( depth == 0 );
+			// Place the synthetic env vertex at the ray-sphere exit
+			// point along currentRay.  Previous code used
+			//   position = sceneCentre + ray.Dir * sceneRadius
+			// which is on the scene-center line in the ray.Dir
+			// direction — only matches the actual ray when the ray
+			// origin lies at the scene center.  Downstream s=0
+			// dispatcher then computes
+			//   wiSky = (eyeEnd.position - eyePred.position).norm
+			// which derives the WRONG direction for off-center
+			// predecessors (adversarial review P1b).  Fix: place the
+			// vertex on the ray (`ray.origin + ray.Dir * tExit`) so
+			// `(eyeEnd.position - eyePred.position).norm` recovers
+			// the actual ray direction whenever the predecessor lies
+			// on the same ray (always true here, since eyePred is the
+			// vertex the ray was scattered from).  The s=0 dispatcher
+			// additionally reads `-eyeEnd.geomNormal` as the canonical
+			// stored ray direction.
+			//
+			// tExit solves |origin + tExit*d - sceneCentre|² = r²,
+			// taking the far root:
+			//   b = d · (origin - sceneCentre)
+			//   c = |origin - sceneCentre|² - r²
+			//   tExit = -b + sqrt(b² - c)
+			// For a ray escaping the scene the discriminant is always
+			// positive and tExit > 0.
+			const Scalar sceneRadius = pLightSampler ?
+				pLightSampler->GetCachedSceneRadius() : Scalar( 0 );
+			if( pEnvForEscape && sceneRadius > 0 &&
+				( !bIsFirstBounce ||
+				  caster.IsRadianceMapVisibleAsBackground() ) ) {
+				BDPTVertex vEnv;
+				vEnv.type = BDPTVertex::LIGHT;
+				const Point3 sceneCentre =
+					pLightSampler->GetCachedSceneCenter();
+				// Ray-sphere intersection.  Let e = origin - center;
+				// solve |e + t*d|² = r² for the far root:
+				//   t² + 2 t (d·e) + (|e|² - r²) = 0
+				//   t = -(d·e) + sqrt((d·e)² - |e|² + r²)
+				// Earlier code computed `mkVector3(sceneCentre, origin)`
+				// which returns `center - origin = -e`, then used the
+				// far-root formula with -b — yielding `+(d·e) + sqrt`,
+				// which OVERSHOOTS the far exit on off-center origins
+				// (the synthetic env vertex landed past the bounding
+				// sphere, contaminating distSq and breaking the
+				// MIS-bookkeeping numerics).  Adversarial review P2,
+				// 2026-05-25.  Fix: build e = origin - center directly.
+				const Vector3 e = Vector3Ops::mkVector3(
+					currentRay.origin, sceneCentre );
+				const Vector3 rayD = currentRay.Dir();
+				const Scalar b = Vector3Ops::Dot( rayD, e );
+				const Scalar cSq = Vector3Ops::SquaredModulus( e );
+				const Scalar disc = b * b - ( cSq - sceneRadius * sceneRadius );
+				// Clamp to non-negative — origin-inside-sphere guarantees
+				// real root, but guard against FP noise on degenerate
+				// scenes where the ray origin sits exactly on the sphere.
+				const Scalar tExit = -b + std::sqrt( std::max( Scalar( 0 ), disc ) );
+				vEnv.position = Point3(
+					currentRay.origin.x + rayD.x * tExit,
+					currentRay.origin.y + rayD.y * tExit,
+					currentRay.origin.z + rayD.z * tExit );
+				// Store the actual ray direction in geomNormal (negated
+				// so geomNormal points back into the scene, matching
+				// the disc convention SampleEnvLightEmission uses).
+				// Downstream s=0 dispatcher reads `-eyeEnd.geomNormal`
+				// as the canonical sky direction.
+				vEnv.normal = Vector3( -rayD.x, -rayD.y, -rayD.z );
+				vEnv.geomNormal = vEnv.normal;
+				vEnv.onb.CreateFromW( vEnv.normal );
+				vEnv.pMaterial = 0;
+				vEnv.pObject = 0;
+				vEnv.pLight = 0;
+				vEnv.pLuminary = 0;
+				vEnv.pEnvLight = pEnvForEscape;
+				vEnv.isDelta = false;
+				vEnv.isConnectible = true;
+				// Eye-side pdfFwd at env vertex: pdfFwdPrev (SA on
+				// previous vertex) converted to area at env.  cosAtEnv
+				// = 1 by construction (geomNormal = -rayD, incoming =
+				// rayD).  distSq uses the actual eye→exit distance.
+				const Scalar distSqToExit = tExit * tExit;
+				vEnv.pdfFwd = BDPTUtilities::SolidAngleToArea(
+					pdfFwdPrev, Scalar( 1.0 ), distSqToExit );
+				vEnv.throughput = beta;
+				vEnv.pdfRev = 0;
+				vEnv.cosAtGen = 1.0;
+				vertices.push_back( vEnv );
+			}
 			break;
 		}
 
@@ -3219,6 +3368,129 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 	{
 		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
 
+		// Env-light escape vertex (Path B).  Pushed by
+		// GenerateEyeSubpath at the !ri.bHit termination so the s=0
+		// strategy can credit the env contribution.  Bypass the
+		// SURFACE / pMaterial / GetEmitter chain — env vertices have
+		// no material and live "at infinity".
+		if( eyeEnd.type == BDPTVertex::LIGHT && eyeEnd.pEnvLight ) {
+			if( t < 2 ) {
+				// t == 1 would mean the camera itself is the env,
+				// which doesn't make sense.  Guard against pathological
+				// camera-only subpaths that managed to push an env
+				// vertex.
+				return result;
+			}
+			const BDPTVertex& eyePred = eyeVerts[t - 2];
+			// Recover the ORIGINAL escape ray direction from the
+			// stored geomNormal (Path B sets geomNormal = -ray.Dir).
+			// Computing wiSky from (eyeEnd.position - eyePred.position)
+			// would give the wrong direction whenever eyePred is not
+			// the immediate scatter origin of the escape ray (e.g.
+			// after a refraction → eyePred is on the far side of a
+			// glass surface but the escape ray came from a different
+			// in-medium offset) — adversarial review P1b.  The disc
+			// position is bookkeeping for MIS dist²; the direction
+			// for env lookup must be the original ray direction.
+			const Vector3 wiSky(
+				-eyeEnd.geomNormal.x,
+				-eyeEnd.geomNormal.y,
+				-eyeEnd.geomNormal.z );
+
+			RasterizerState nullRast = {0};
+			Ray skyProbe( eyePred.position, wiSky );
+			const RISEPel Le = eyeEnd.pEnvLight->GetRadiance( skyProbe, nullRast );
+			if( ColorMath::MaxValue( Le ) <= 0 ) {
+				return result;
+			}
+
+			// s=0 contribution: throughput accumulated to the escape
+			// point times the env radiance in the escape direction.
+			// (Throughput at the env vertex already reflects all
+			//  eye-subpath BSDF factors and cosines up to the miss.)
+			result.contribution = eyeEnd.throughput * Le;
+			result.needsSplat = false;
+			result.valid = true;
+			result.guidingLocalContribution = Le;
+			result.guidingEyeVertexIndex = t - 1;
+			result.guidingUseDirectContribution = true;
+			result.guidingValid = true;
+
+			// MIS weight: install pdfRev on eyeEnd as "the probability
+			// the s=1 NEE alternative would have sampled this env
+			// vertex" — in area-measure on the disc:
+			//   pdfRev_area = envSelectProb * pdfPosition_disc
+			//               = envSelectProb / (π · r_scene²)
+			// envSelectProb is 1 when env is the only light (alias
+			// table empty); 0 when explicit lights crowd env out of
+			// the table.  In the latter case s=1 NEE can't actually
+			// generate this env vertex (SampleLight always picks an
+			// explicit luminary) — pdfRev = 0 makes MIS correctly
+			// give s=0 weight 1.  Without this, MIS uses whatever
+			// stale value pdfRev held (0 by ctor).  Setting it
+			// correctly delivers balanced MIS in both regimes.
+			// Restored after MIS call to preserve const-correctness
+			// for other (s,t) evaluations of the same path.
+			const Scalar savedEyeEndPdfRev = eyeEnd.pdfRev;
+			const Scalar savedEyePredPdfRev = eyePred.pdfRev;
+			if( pLightSampler ) {
+				const Scalar envSelectProb =
+					pLightSampler->EnvSelectProbability();
+				const Scalar sceneRadius =
+					pLightSampler->GetCachedSceneRadius();
+				const Scalar discArea =
+					( sceneRadius > 0 ) ?
+					( PI * sceneRadius * sceneRadius ) : Scalar( 0 );
+				const Scalar pdfPositionDisc =
+					( discArea > 0 ) ? ( Scalar( 1 ) / discArea ) : Scalar( 0 );
+				const Scalar pdfRevReal =
+					envSelectProb * pdfPositionDisc;
+				// MISWeight's remap0 line (~4754) converts pdfRev=0
+				// to 1.0 (intended for delta vertices).  Sentinel
+				// epsilon signals "truly zero" without tripping remap.
+				const Scalar kEnvZeroSentinel = Scalar( 1e-30 );
+				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+					( pdfRevReal > 0 ) ? pdfRevReal : kEnvZeroSentinel;
+			}
+			if( pLightSampler && pLightSampler->GetEnvironmentSampler() ) {
+				// Gate the env-emission directional pdf on
+				// envSelectProb: when env isn't selectable via the
+				// alias table, the s=1 NEE alternative can't actually
+				// generate this path — eyePred.pdfRev must reflect
+				// that, otherwise MIS underweights s=0.
+				const Scalar envSelectProb =
+					pLightSampler->EnvSelectProbability();
+				const Scalar pdfSA = envSelectProb *
+					pLightSampler->GetEnvironmentSampler()->Pdf( wiSky );
+				const Vector3 dToPred = Vector3Ops::mkVector3(
+					eyePred.position, eyeEnd.position );
+				const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+				Scalar predPdfRev = 0;
+				if( eyePred.type == BDPTVertex::CAMERA ) {
+					predPdfRev = BDPTUtilities::SolidAngleToArea(
+						pdfSA, Scalar( 1.0 ), distPredSq );
+				} else if( eyePred.type == BDPTVertex::MEDIUM ) {
+					// Volume-scatter vertex: use the medium area-
+					// Jacobian with sigma_t (matches s=1 NEE branch
+					// and the eye-subpath gen for symmetry).
+					predPdfRev = BDPTUtilities::SolidAngleToAreaMedium(
+						pdfSA, eyePred.sigma_t_scalar, distPredSq );
+				} else {
+					const Scalar absCosAtPred = fabs( Vector3Ops::Dot(
+						eyePred.geomNormal, Vector3Ops::Normalize( dToPred ) ) );
+					predPdfRev = BDPTUtilities::SolidAngleToArea(
+						pdfSA, absCosAtPred, distPredSq );
+				}
+				const Scalar kEnvZeroSentinel = Scalar( 1e-30 );
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					( predPdfRev > 0 ) ? predPdfRev : kEnvZeroSentinel;
+			}
+			result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
+			const_cast<BDPTVertex&>( eyePred ).pdfRev = savedEyePredPdfRev;
+			return result;
+		}
+
 		if( eyeEnd.type != BDPTVertex::SURFACE ) {
 			return result;
 		}
@@ -3494,7 +3766,9 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 
 		const bool eyeIsMedium_s1 = (eyeEnd.type == BDPTVertex::MEDIUM);
 
-		// Direction from eye vertex to light
+		// Direction from eye vertex to light vertex (disc point for env).
+		// Used for visibility on explicit lights and for the
+		// MIS-bookkeeping geometric term throughout.
 		Vector3 dirToLight = Vector3Ops::mkVector3( lightStart.position, eyeEnd.position );
 		const Scalar dist = Vector3Ops::Magnitude( dirToLight );
 		if( dist < BDPT_RAY_EPSILON ) {
@@ -3502,9 +3776,38 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		}
 		dirToLight = dirToLight * (1.0 / dist);
 
-		// Check visibility
-		if( !IsVisible( caster, eyeEnd.position, lightStart.position ) ) {
-			return result;
+		// For env-light, the SAMPLED sky direction is wi, stored as
+		// `-lightStart.geomNormal` (LightSampler::SampleEnvLightEmission
+		// sets `sample.normal = -wi`).  The disc-position-derived
+		// `dirToLight` only approximates wi (off by the disc-offset
+		// geometry) — using dirToLight for env lookup / BSDF eval /
+		// PDF / visibility produces systematic wrong-color and
+		// wrong-energy on non-uniform HDRIs (adversarial review P1a,
+		// 2026-05-25).  Switch every env-evaluation to wi.
+		Vector3 wiForLight = dirToLight;
+		const bool envCase_s1 = ( lightStart.pEnvLight != 0 );
+		if( envCase_s1 ) {
+			wiForLight = Vector3(
+				-lightStart.geomNormal.x,
+				-lightStart.geomNormal.y,
+				-lightStart.geomNormal.z );
+		}
+
+		// Visibility: for explicit lights, segment to the light surface.
+		// For env, infinite ray in wi from eye — synthesised as a far-
+		// distance point to reuse the existing IsVisible(p,q) overload.
+		{
+			Point3 visTarget = lightStart.position;
+			if( envCase_s1 ) {
+				const Scalar kVisFar = Scalar( 1.0e6 );
+				visTarget = Point3(
+					eyeEnd.position.x + wiForLight.x * kVisFar,
+					eyeEnd.position.y + wiForLight.y * kVisFar,
+					eyeEnd.position.z + wiForLight.z * kVisFar );
+			}
+			if( !IsVisible( caster, eyeEnd.position, visTarget ) ) {
+				return result;
+			}
 		}
 
 		// Evaluate emitted radiance from the light toward the eye vertex
@@ -3524,6 +3827,14 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 					-dirToLight,
 					lightStart.geomNormal );
 			}
+		} else if( envCase_s1 ) {
+			// Env-light s=1 NEE: lookup env radiance in the actually-
+			// sampled sky direction wi (not the disc-point-derived
+			// dirToLight).  IRadianceMap::GetRadiance ignores the ray
+			// origin and only reads the direction.
+			RasterizerState nullRast = {0};
+			Ray skyProbe( eyeEnd.position, wiForLight );
+			Le = lightStart.pEnvLight->GetRadiance( skyProbe, nullRast );
 		}
 
 		if( ColorMath::MaxValue( Le ) <= 0 ) {
@@ -3540,7 +3851,9 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			return result;
 		}
 
-		const RISEPel fEye = EvalBSDFAtVertex( eyeEnd, dirToLight, woAtEye );
+		// BSDF eval in the actually-sampled direction (wi for env,
+		// dirToLight for explicit lights).
+		const RISEPel fEye = EvalBSDFAtVertex( eyeEnd, wiForLight, woAtEye );
 
 		if( ColorMath::MaxValue( fEye ) <= 0 ) {
 			return result;
@@ -3569,10 +3882,31 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			}
 		}
 
-		// Connection transmittance through participating media
-		const RISEPel Tr_conn_s1 = EvalConnectionTransmittance(
-			eyeEnd.position, lightStart.position, scene, caster,
-			eyeEnd.pMediumObject, eyeEnd.pMediumVol );
+		// Connection transmittance through participating media.
+		// For env-light: evaluate along the SAMPLED wi from eye to
+		// RISE_INFINITY via the Ray+maxDist overload, matching PT's
+		// env-NEE convention (LightSampler::EvaluateDirectLighting
+		// at LightSampler.cpp ~line 1662).  Using the Point3+Point3
+		// API with a constructed "far" endpoint would either (a)
+		// overflow Magnitude() if the endpoint is at RISE_INFINITY,
+		// or (b) under-attenuate ultra-thin media if a finite distance
+		// like 1e10 is used (a medium with σ_t = 1e-12 still gives
+		// non-trivial transmittance change at infinity that 1e10 caps
+		// off).  The Ray+maxDist overload accepts RISE_INFINITY
+		// directly and the medium walk handles it correctly
+		// (Beer-Lambert exp(-σ·∞) → 0 for any σ > 0; vacuum → 1).
+		// Adversarial review round 5, P2.
+		RISEPel Tr_conn_s1;
+		if( envCase_s1 ) {
+			Ray envRay( eyeEnd.position, wiForLight );
+			Tr_conn_s1 = EvalConnectionTransmittance(
+				envRay, RISE_INFINITY, scene, caster,
+				eyeEnd.pMediumObject, eyeEnd.pMediumVol );
+		} else {
+			Tr_conn_s1 = EvalConnectionTransmittance(
+				eyeEnd.position, lightStart.position, scene, caster,
+				eyeEnd.pMediumObject, eyeEnd.pMediumVol );
+		}
 
 		// Contribution: eyeThroughput * fEye * G * Le / pdfLight
 		// lightStart.throughput already has Le / (pdfSelect * pdfPosition)
@@ -3584,28 +3918,90 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// We just need fEye * G * lightThroughput * eyeThroughput
 		// But Le from light depends on the connection direction, which differs
 		// from the sampled direction.  Re-evaluate:
-		const Scalar pdfLight = lightStart.pdfFwd;
+		Scalar pdfLight = lightStart.pdfFwd;
 		if( pdfLight <= 0 ) {
 			return result;
 		}
 
-		result.contribution = eyeEnd.throughput * fEye * Le * Tr_conn_s1 * (G / pdfLight);
-		result.needsSplat = false;
-		result.valid = true;
-		result.guidingLocalContribution = fEye * Le * Tr_conn_s1 * (G / pdfLight);
-		result.guidingEyeVertexIndex = t - 1;
-		result.guidingValid = true;
+		// Env-light: bypass the disc-based G + pdfLight formula
+		// entirely and use the standard PT env-NEE formula directly
+		// with the SAMPLED wi.  Algebraic equivalent of the old
+		// `pdfLight = pdfSA / dist²` override under cos_light ≈ 1,
+		// but with three improvements over the previous code:
+		//   1. Le, fEye, cos_eye, and pdfSA all evaluated at wi
+		//      (not the approximate dirToLight), so HDRIs sample
+		//      the correct env region — fixes the off-center /
+		//      non-uniform-env wrong-color bug (adversarial P1a).
+		//   2. cos_eye uses |dot(geomNormal, wi)| — same direction
+		//      as the BSDF eval, so the cosine factor is consistent
+		//      with the radiance estimate.
+		//   3. Skips the G computation, dist²-cancel dance, and
+		//      avoids the unnecessary dist-based numerical wobble
+		//      on disc placements far from the eye.
+		// MIS weight bookkeeping still uses the disc-area pdfs
+		// (slightly suboptimal variance, documented in
+		// docs/IMPROVEMENTS.md #12 as the PBRT-v4 SA-MIS follow-up).
+		if( envCase_s1 ) {
+			// Env-light path: bypass disc-based G/pdfLight, use the
+			// standard PT env-NEE formula with the SAMPLED wi.  See
+			// the BSDF-eval site above for the P1a rationale.
+			// MIS weight: still computed via MISWeight() below using
+			// the disc-area pdfRev/pdfFwd bookkeeping — a PT-style
+			// power-2 override here was tested broken on spectral
+			// BDPT (the override doesn't compose cleanly with the
+			// remaining s>=2 strategies that still use disc-area
+			// weights; RGB ended at 85% but NM collapsed to 31% of
+			// PT).  The disc-area MIS leaves a documented ~15-22%
+			// bias (docs/IMPROVEMENTS.md #12) but stays internally
+			// consistent across all (s, t) strategies and both
+			// integrators.
+			const EnvironmentSampler* pEnvSamp =
+				pLightSampler ? pLightSampler->GetEnvironmentSampler() : 0;
+			if( !pEnvSamp ) {
+				return result;
+			}
+			const Scalar pdfSA = pEnvSamp->Pdf( wiForLight );
+			if( pdfSA <= 0 ) {
+				return result;
+			}
+			const Scalar cosEyeWi = eyeIsMedium_s1 ? Scalar( 1.0 )
+				: fabs( Vector3Ops::Dot( eyeEnd.geomNormal, wiForLight ) );
+			const RISEPel contribEnv =
+				eyeEnd.throughput * fEye * Le * Tr_conn_s1 * (cosEyeWi / pdfSA);
+			result.contribution = contribEnv;
+			result.needsSplat = false;
+			result.valid = true;
+			result.guidingLocalContribution = fEye * Le * Tr_conn_s1 * (cosEyeWi / pdfSA);
+			result.guidingEyeVertexIndex = t - 1;
+			result.guidingValid = true;
+		} else {
+			result.contribution = eyeEnd.throughput * fEye * Le * Tr_conn_s1 * (G / pdfLight);
+			result.needsSplat = false;
+			result.valid = true;
+			result.guidingLocalContribution = fEye * Le * Tr_conn_s1 * (G / pdfLight);
+			result.guidingEyeVertexIndex = t - 1;
+			result.guidingValid = true;
+		}
 
 		// --- Update pdfRev at connection vertices for correct MIS ---
 		const Scalar distSq_conn = dist * dist;
 		const Scalar savedLightPdfRev = lightStart.pdfRev;
 		const Scalar savedEyePdfRev = eyeEnd.pdfRev;
 
+		// MIS bookkeeping direction: for env-light, use the SAMPLED
+		// wi for pdfRev computations too — the contribution was
+		// already redirected to wi (P1a fix).  Mixing dirToLight
+		// for MIS denominators with wi for the numerator means the
+		// MIS weight is computed for a slightly different path than
+		// the contribution, biasing the result on non-uniform HDRIs
+		// (adversarial review round 2, P1).
+		const Vector3 dirForMIS_s1 = envCase_s1 ? wiForLight : dirToLight;
+
 		// lightStart.pdfRev: PDF that eye-side process would "find" the light
 		// For delta-position lights (point/spot), leave at 0 (eye can't hit a point)
 		if( !lightStart.isDelta ) {
-			const Scalar pdfRevSA = EvalPdfAtVertex( eyeEnd, woAtEye, dirToLight );
-			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.geomNormal, dirToLight ) );
+			const Scalar pdfRevSA = EvalPdfAtVertex( eyeEnd, woAtEye, dirForMIS_s1 );
+			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.geomNormal, dirForMIS_s1 ) );
 			const_cast<BDPTVertex&>( lightStart ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
 		}
@@ -3620,13 +4016,22 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				emissionPdfDir = (cosAtLight > 0) ? (cosAtLight * INV_PI) : 0;
 			} else if( lightStart.pLight ) {
 				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
+			} else if( envCase_s1 ) {
+				// Env-light: emission direction from disc = -wi.
+				// Query env sampler at wiForLight (= -geomNormal) —
+				// matches the wi used everywhere else for env.
+				const EnvironmentSampler* pEnvSamp =
+					pLightSampler ? pLightSampler->GetEnvironmentSampler() : 0;
+				if( pEnvSamp ) {
+					emissionPdfDir = pEnvSamp->Pdf( wiForLight );
+				}
 			}
 			// Medium vertices: sigma_t/dist^2 replaces |cos|/dist^2
 			if( eyeIsMedium_s1 ) {
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( emissionPdfDir, eyeEnd.sigma_t_scalar, distSq_conn );
 			} else {
-				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dirToLight ) );
+				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dirForMIS_s1 ) );
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
 			}
@@ -3644,7 +4049,12 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Vector3 dirToPred = Vector3Ops::Normalize( dToPred );
-			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, dirToLight, dirToPred );
+			// For env-light, the incoming direction at eyeEnd that the
+			// light strategy would scatter back from was sampled wi
+			// (not the disc-derived dirToLight) — use dirForMIS_s1
+			// to keep the predecessor pdf consistent with the
+			// contribution direction.
+			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, dirForMIS_s1, dirToPred );
 			// Camera vertex: use 1.0; Medium vertex: sigma_t/dist^2
 			if( eyePred.type == BDPTVertex::CAMERA ) {
 				const_cast<BDPTVertex&>( eyePred ).pdfRev =
@@ -3747,6 +4157,24 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 					PathVertexEval::PopulateRIGFromVertex( lightEnd, rig );
 					fLight = pEmitter->emittedRadiance( rig, dirToCam, lightEnd.geomNormal );
 				}
+			} else {
+				// Env-light vertex 0 (pLight == pLuminary == NULL,
+				// pEnvLight != NULL).  The disc is a degenerate
+				// parallel-ray emitter: it emits ONLY in direction
+				// -wi (= disc normal).  Connecting a disc point
+				// directly to a camera that's not aligned with -wi
+				// produces an undefined emission — there's no
+				// principled way to evaluate "Le in dirToCam" from a
+				// disc point that's only authorised to emit in -wi.
+				// PBRT-v3/v4 also drop this BDPT strategy for
+				// infinite-area lights for the same reason.  The
+				// legitimate env contributions reach the camera via
+				// (a) eye-subpath escape — Path B handles this — and
+				// (b) s=1 NEE — handled at the s=1 t>=2 site above.
+				// Without this early-return, `fLight` would inherit
+				// the default `(1, 1, 1)` from line ~3753 and splat
+				// a white firefly (adversarial review #3, 2026-05-25).
+				return result;
 			}
 
 			// For s=1, contribution = Le(dirToCam) * We * G / pdfLight
@@ -4684,6 +5112,9 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 	// Convert Le from RISEPel to scalar at wavelength nm
 	// For mesh luminaries, re-evaluate using emittedRadianceNM
 	// For non-mesh lights, approximate from the RGB value
+	// For env-light samples (pEnvLight != NULL), query the radiance
+	// map's NM channel directly — the env map carries true spectral
+	// energy and shouldn't be luminance-collapsed.
 	Scalar LeNM = 0;
 	if( ls.pLuminary && ls.pLuminary->GetMaterial() ) {
 		const IEmitter* pEmitter = ls.pLuminary->GetMaterial()->GetEmitter();
@@ -4705,6 +5136,17 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		// Non-mesh light: approximate spectral radiance from RGB
 		// Use luminance-like weighting: 0.2126*R + 0.7152*G + 0.0722*B
 		LeNM = 0.2126 * ls.Le[0] + 0.7152 * ls.Le[1] + 0.0722 * ls.Le[2];
+	} else if( ls.pEnvLight ) {
+		// Env-map emission (IBL-only scene).  Re-evaluate the env map
+		// in the sampled-sky direction (-ls.direction = -(-wi) = wi)
+		// at this wavelength.  Without this branch, spectral BDPT on
+		// HDRI-only scenes would render fully black (LeNM stayed 0
+		// because both pLuminary and pLight are NULL).  Adversarial
+		// review #2 / #3 flagged the gap.
+		RasterizerState nullRast = {0};
+		const Vector3 toSky( -ls.direction.x, -ls.direction.y, -ls.direction.z );
+		Ray skyProbe( ls.position, toSky );
+		LeNM = ls.pEnvLight->GetRadianceNM( skyProbe, nullRast, nm );
 	}
 
 	//
@@ -4725,6 +5167,13 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		v.pObject = 0;
 		v.pLight = ls.pLight;
 		v.pLuminary = ls.pLuminary;
+		// Env-light vertex 0 carries pLight == pLuminary == NULL; the
+		// NM s=1 MIS dispatch sites recognise the env-vertex via
+		// pEnvLight != NULL and recover wavelength-resolved Le via
+		// pEnvLight->GetRadianceNM(skyProbe, nullRast, nm).  Without
+		// this, spectral BDPT on env-IBL scenes loses every connection
+		// strategy that touches a light vertex.
+		v.pEnvLight = ls.pEnvLight;
 		v.isDelta = ls.isDelta;
 		v.isConnectible = !ls.isDelta;
 
@@ -4798,6 +5247,16 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 				}
 			} else if( ls.pLight ) {
 				LeW = 0.2126 * ls.Le[0] + 0.7152 * ls.Le[1] + 0.0722 * ls.Le[2];
+			} else if( ls.pEnvLight ) {
+				// Env-IBL HWSS companion wavelength: re-evaluate the
+				// env map at lambda[w] in the sampled-sky direction
+				// (-ls.direction = wi).  Without this, companion
+				// wavelengths on HWSS env-IBL BDPT renders would all
+				// collapse to 0 even though hero (w==0) carries energy.
+				RasterizerState nullRastW = {0};
+				const Vector3 toSkyW( -ls.direction.x, -ls.direction.y, -ls.direction.z );
+				Ray skyProbeW( ls.position, toSkyW );
+				LeW = ls.pEnvLight->GetRadianceNM( skyProbeW, nullRastW, pSwlHWSS->lambda[w] );
 			}
 			if( pdfEmit > 0 ) {
 				hwssBetaNM[w] = LeW * cosAtLight / pdfEmit;
@@ -5855,6 +6314,64 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 		}
 
 		if( !ri.geometric.bHit ) {
+			// Path B (spectral): eye-subpath escape to env IBL.  Mirror
+			// of the RGB site at line ~2615; see there for rationale.
+			// The synthetic env vertex carries throughputNM (eye-side
+			// spectral throughput) and is consumed by the spectral
+			// s=0 dispatcher (which queries pEnvLight->GetRadianceNM).
+			const IRadianceMap* pEnvForEscape = scene.GetGlobalRadianceMap();
+			const bool bIsFirstBounce = ( depth == 0 );
+			// Place env vertex at ray-sphere exit point — see RGB
+			// twin (~line 2615) for the full P1b derivation.  Storing
+			// the original ray direction in geomNormal means the s=0
+			// dispatcher can recover the correct sky direction
+			// regardless of where eyePred sits.
+			const Scalar sceneRadius = pLightSampler ?
+				pLightSampler->GetCachedSceneRadius() : Scalar( 0 );
+			if( pEnvForEscape && sceneRadius > 0 &&
+				( !bIsFirstBounce ||
+				  caster.IsRadianceMapVisibleAsBackground() ) ) {
+				BDPTVertex vEnv;
+				vEnv.type = BDPTVertex::LIGHT;
+				const Point3 sceneCentre =
+					pLightSampler->GetCachedSceneCenter();
+				// Ray-sphere intersection (far root).  e = origin - center.
+				// See RGB twin (~line 2681) for the full derivation —
+				// adversarial review round 3, P1 (NM ray-sphere fix
+				// missed-twin bug).  The old code computed
+				// `mkVector3(sceneCentre, origin)` = center - origin
+				// and applied -b + sqrt with that, putting the env
+				// vertex past the far sphere exit on off-center origins.
+				const Vector3 e = Vector3Ops::mkVector3(
+					currentRay.origin, sceneCentre );
+				const Vector3 rayD = currentRay.Dir();
+				const Scalar b = Vector3Ops::Dot( rayD, e );
+				const Scalar cSq = Vector3Ops::SquaredModulus( e );
+				const Scalar disc = b * b - ( cSq - sceneRadius * sceneRadius );
+				const Scalar tExit = -b + std::sqrt( std::max( Scalar( 0 ), disc ) );
+				vEnv.position = Point3(
+					currentRay.origin.x + rayD.x * tExit,
+					currentRay.origin.y + rayD.y * tExit,
+					currentRay.origin.z + rayD.z * tExit );
+				vEnv.normal = Vector3( -rayD.x, -rayD.y, -rayD.z );
+				vEnv.geomNormal = vEnv.normal;
+				vEnv.onb.CreateFromW( vEnv.normal );
+				vEnv.pMaterial = 0;
+				vEnv.pObject = 0;
+				vEnv.pLight = 0;
+				vEnv.pLuminary = 0;
+				vEnv.pEnvLight = pEnvForEscape;
+				vEnv.isDelta = false;
+				vEnv.isConnectible = true;
+				const Scalar distSqToExit = tExit * tExit;
+				vEnv.pdfFwd = BDPTUtilities::SolidAngleToArea(
+					pdfFwdPrev, Scalar( 1.0 ), distSqToExit );
+				vEnv.throughputNM = betaNM;
+				vEnv.throughput = RISEPel( betaNM, betaNM, betaNM );
+				vEnv.pdfRev = 0;
+				vEnv.cosAtGen = 1.0;
+				vertices.push_back( vEnv );
+			}
 			break;
 		}
 
@@ -6467,6 +6984,84 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 	{
 		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
 
+		// Env-light escape vertex (Path B, spectral).  See RGB twin
+		// at ~line 3224 for the full derivation.  Bypasses the
+		// SURFACE/pMaterial chain — env vertices have no material.
+		if( eyeEnd.type == BDPTVertex::LIGHT && eyeEnd.pEnvLight ) {
+			if( t < 2 ) {
+				return result;
+			}
+			const BDPTVertex& eyePred = eyeVerts[t - 2];
+			// Recover the original escape ray direction from the
+			// stored geomNormal — see RGB twin (~line 3251) for the
+			// P1b rationale.
+			const Vector3 wiSky(
+				-eyeEnd.geomNormal.x,
+				-eyeEnd.geomNormal.y,
+				-eyeEnd.geomNormal.z );
+
+			RasterizerState nullRast = {0};
+			Ray skyProbe( eyePred.position, wiSky );
+			const Scalar LeNM = eyeEnd.pEnvLight->GetRadianceNM(
+				skyProbe, nullRast, nm );
+			if( LeNM <= 0 ) {
+				return result;
+			}
+
+			result.contribution = eyeEnd.throughputNM * LeNM;
+			result.needsSplat = false;
+			result.valid = true;
+
+			// MIS pdfRev assignment — mirror of RGB twin at ~line 3370.
+			const Scalar savedEyeEndPdfRev = eyeEnd.pdfRev;
+			const Scalar savedEyePredPdfRev = eyePred.pdfRev;
+			if( pLightSampler ) {
+				const Scalar envSelectProb =
+					pLightSampler->EnvSelectProbability();
+				const Scalar sceneRadius =
+					pLightSampler->GetCachedSceneRadius();
+				const Scalar discArea =
+					( sceneRadius > 0 ) ?
+					( PI * sceneRadius * sceneRadius ) : Scalar( 0 );
+				const Scalar pdfPositionDisc =
+					( discArea > 0 ) ? ( Scalar( 1 ) / discArea ) : Scalar( 0 );
+				const Scalar pdfRevReal =
+					envSelectProb * pdfPositionDisc;
+				const Scalar kEnvZeroSentinel = Scalar( 1e-30 );
+				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
+					( pdfRevReal > 0 ) ? pdfRevReal : kEnvZeroSentinel;
+			}
+			if( pLightSampler && pLightSampler->GetEnvironmentSampler() ) {
+				const Scalar envSelectProb =
+					pLightSampler->EnvSelectProbability();
+				const Scalar pdfSA = envSelectProb *
+					pLightSampler->GetEnvironmentSampler()->Pdf( wiSky );
+				const Vector3 dToPred = Vector3Ops::mkVector3(
+					eyePred.position, eyeEnd.position );
+				const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+				Scalar predPdfRev = 0;
+				if( eyePred.type == BDPTVertex::CAMERA ) {
+					predPdfRev = BDPTUtilities::SolidAngleToArea(
+						pdfSA, Scalar( 1.0 ), distPredSq );
+				} else if( eyePred.type == BDPTVertex::MEDIUM ) {
+					predPdfRev = BDPTUtilities::SolidAngleToAreaMedium(
+						pdfSA, eyePred.sigma_t_scalar, distPredSq );
+				} else {
+					const Scalar absCosAtPred = fabs( Vector3Ops::Dot(
+						eyePred.geomNormal, Vector3Ops::Normalize( dToPred ) ) );
+					predPdfRev = BDPTUtilities::SolidAngleToArea(
+						pdfSA, absCosAtPred, distPredSq );
+				}
+				const Scalar kEnvZeroSentinel = Scalar( 1e-30 );
+				const_cast<BDPTVertex&>( eyePred ).pdfRev =
+					( predPdfRev > 0 ) ? predPdfRev : kEnvZeroSentinel;
+			}
+			result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
+			const_cast<BDPTVertex&>( eyePred ).pdfRev = savedEyePredPdfRev;
+			return result;
+		}
+
 		if( eyeEnd.type != BDPTVertex::SURFACE || !eyeEnd.pMaterial ) {
 			return result;
 		}
@@ -6674,8 +7269,30 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		}
 		dirToLight = dirToLight * (1.0 / dist);
 
-		if( !IsVisible( caster, eyeEnd.position, lightStart.position ) ) {
-			return result;
+		// Env-light: use the actually-sampled wi (= -lightStart.geomNormal)
+		// for env lookup / BSDF eval / pdf / visibility — see RGB twin
+		// (~line 3716) for the full P1a derivation.
+		Vector3 wiForLightNM = dirToLight;
+		const bool envCaseNM_s1 = ( lightStart.pEnvLight != 0 );
+		if( envCaseNM_s1 ) {
+			wiForLightNM = Vector3(
+				-lightStart.geomNormal.x,
+				-lightStart.geomNormal.y,
+				-lightStart.geomNormal.z );
+		}
+
+		{
+			Point3 visTarget = lightStart.position;
+			if( envCaseNM_s1 ) {
+				const Scalar kVisFar = Scalar( 1.0e6 );
+				visTarget = Point3(
+					eyeEnd.position.x + wiForLightNM.x * kVisFar,
+					eyeEnd.position.y + wiForLightNM.y * kVisFar,
+					eyeEnd.position.z + wiForLightNM.z * kVisFar );
+			}
+			if( !IsVisible( caster, eyeEnd.position, visTarget ) ) {
+				return result;
+			}
 		}
 
 		// Evaluate Le at this wavelength
@@ -6691,6 +7308,12 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 		} else if( lightStart.pLight ) {
 			const RISEPel Le = lightStart.pLight->emittedRadiance( -dirToLight );
 			LeNM = 0.2126 * Le[0] + 0.7152 * Le[1] + 0.0722 * Le[2];
+		} else if( envCaseNM_s1 ) {
+			// Env-light s=1 NEE (spectral): query at the actually-
+			// sampled wi (not the disc-derived approximation).
+			RasterizerState nullRast = {0};
+			Ray skyProbe( eyeEnd.position, wiForLightNM );
+			LeNM = lightStart.pEnvLight->GetRadianceNM( skyProbe, nullRast, nm );
 		}
 
 		if( LeNM <= 0 ) {
@@ -6705,7 +7328,8 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			return result;
 		}
 
-		const Scalar fEyeNM = EvalBSDFAtVertexNM( eyeEnd, dirToLight, woAtEye, nm );
+		// BSDF eval in sampled wi (env) or dirToLight (explicit).
+		const Scalar fEyeNM = EvalBSDFAtVertexNM( eyeEnd, wiForLightNM, woAtEye, nm );
 		if( fEyeNM <= 0 ) {
 			return result;
 		}
@@ -6728,28 +7352,67 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			}
 		}
 
-		// Connection transmittance (NM)
-		const Scalar Tr_connNM_s1 = EvalConnectionTransmittanceNM(
-			eyeEnd.position, lightStart.position, scene, caster, nm,
-			eyeEnd.pMediumObject, eyeEnd.pMediumVol );
+		// Connection transmittance (NM) — for env, evaluate along the
+		// SAMPLED wi to RISE_INFINITY via the Ray+maxDist overload,
+		// matching PT.  See RGB twin (~line 3859) for rationale
+		// (adversarial review round 5, P2).
+		Scalar Tr_connNM_s1;
+		if( envCaseNM_s1 ) {
+			Ray envRayNM( eyeEnd.position, wiForLightNM );
+			Tr_connNM_s1 = EvalConnectionTransmittanceNM(
+				envRayNM, RISE_INFINITY, scene, caster, nm,
+				eyeEnd.pMediumObject, eyeEnd.pMediumVol );
+		} else {
+			Tr_connNM_s1 = EvalConnectionTransmittanceNM(
+				eyeEnd.position, lightStart.position, scene, caster, nm,
+				eyeEnd.pMediumObject, eyeEnd.pMediumVol );
+		}
 
-		const Scalar pdfLight = lightStart.pdfFwd;
+		Scalar pdfLight = lightStart.pdfFwd;
 		if( pdfLight <= 0 ) {
 			return result;
 		}
 
-		result.contribution = eyeEnd.throughputNM * fEyeNM * LeNM * Tr_connNM_s1 * G / pdfLight;
-		result.needsSplat = false;
-		result.valid = true;
+		// Env-light: bypass disc-based G/pdfLight, use standard PT
+		// env-NEE formula at the sampled wi.  See RGB twin (~line 3826)
+		// for the full P1a rationale.
+		if( envCaseNM_s1 ) {
+			const EnvironmentSampler* pEnvSamp =
+				pLightSampler ? pLightSampler->GetEnvironmentSampler() : 0;
+			if( !pEnvSamp ) {
+				return result;
+			}
+			const Scalar pdfSA = pEnvSamp->Pdf( wiForLightNM );
+			if( pdfSA <= 0 ) {
+				return result;
+			}
+			const Scalar cosEyeWi = eyeIsMediumNM_s1 ? Scalar( 1.0 )
+				: fabs( Vector3Ops::Dot( eyeEnd.geomNormal, wiForLightNM ) );
+			result.contribution = eyeEnd.throughputNM * fEyeNM * LeNM *
+				Tr_connNM_s1 * (cosEyeWi / pdfSA);
+			result.needsSplat = false;
+			result.valid = true;
+			// MIS weight: fall through to MISWeight() below — see RGB
+			// twin (~line 3917) for the explanation of why we don't
+			// override here.
+		} else {
+			result.contribution = eyeEnd.throughputNM * fEyeNM * LeNM * Tr_connNM_s1 * G / pdfLight;
+			result.needsSplat = false;
+			result.valid = true;
+		}
 
 		// --- Update pdfRev at connection vertices for correct MIS ---
 		const Scalar distSq_conn = dist * dist;
 		const Scalar savedLightPdfRev = lightStart.pdfRev;
 		const Scalar savedEyePdfRev = eyeEnd.pdfRev;
 
+		// MIS bookkeeping direction: for env-light, use the SAMPLED wi
+		// — see RGB twin (~line 3933) for the P1 rationale.
+		const Vector3 dirForMIS_NM_s1 = envCaseNM_s1 ? wiForLightNM : dirToLight;
+
 		if( !lightStart.isDelta ) {
-			const Scalar pdfRevSA = EvalPdfAtVertexNM( eyeEnd, woAtEye, dirToLight, nm );
-			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.geomNormal, dirToLight ) );
+			const Scalar pdfRevSA = EvalPdfAtVertexNM( eyeEnd, woAtEye, dirForMIS_NM_s1, nm );
+			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.geomNormal, dirForMIS_NM_s1 ) );
 			const_cast<BDPTVertex&>( lightStart ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
 		}
@@ -6761,12 +7424,20 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 				emissionPdfDir = (cosAtLight > 0) ? (cosAtLight * INV_PI) : 0;
 			} else if( lightStart.pLight ) {
 				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
+			} else if( envCaseNM_s1 ) {
+				// Env-light NM s=1 NEE: use sampled wi for env pdf to
+				// match the wi used in Le/BSDF/contribution above.
+				const EnvironmentSampler* pEnvSamp =
+					pLightSampler ? pLightSampler->GetEnvironmentSampler() : 0;
+				if( pEnvSamp ) {
+					emissionPdfDir = pEnvSamp->Pdf( wiForLightNM );
+				}
 			}
 			if( eyeIsMediumNM_s1 ) {
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( emissionPdfDir, eyeEnd.sigma_t_scalar, distSq_conn );
 			} else {
-				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dirToLight ) );
+				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dirForMIS_NM_s1 ) );
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
 			}
@@ -6783,7 +7454,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			const Vector3 dirToPred = Vector3Ops::Normalize( dToPred );
-			const Scalar pdfPredSA = EvalPdfAtVertexNM( eyeEnd, dirToLight, dirToPred, nm );
+			const Scalar pdfPredSA = EvalPdfAtVertexNM( eyeEnd, dirForMIS_NM_s1, dirToPred, nm );
 			if( eyePred.type == BDPTVertex::CAMERA ) {
 				const_cast<BDPTVertex&>( eyePred ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( pdfPredSA, Scalar(1.0), distPredSq );
@@ -6858,6 +7529,15 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			}
 		} else if( lightEnd.type == BDPTVertex::LIGHT ) {
 			// s == 1: light directly connects to camera
+			// Env-light vertex 0 has pLight == pLuminary == NULL and the
+			// disc is a parallel-ray emitter authorised only in direction
+			// -wi — connecting it directly to a camera in any other
+			// direction is degenerate.  See the RGB twin for the full
+			// rationale; matches PBRT-v3/v4 behaviour.
+			if( lightEnd.pEnvLight ) {
+				return result;
+			}
+
 			Scalar LeNM = 0;
 			if( lightEnd.pLuminary && lightEnd.pLuminary->GetMaterial() ) {
 				const IEmitter* pEmitter = lightEnd.pLuminary->GetMaterial()->GetEmitter();

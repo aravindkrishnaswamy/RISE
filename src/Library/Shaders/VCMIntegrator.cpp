@@ -211,6 +211,32 @@ namespace
 		return RISEPelToNMProxy( light.emittedRadiance( dir ) );
 	}
 
+	/// IRadianceMap::GetRadiance dispatcher (env-IBL).  Used when a
+	/// light vertex carries `pEnvLight != NULL` (sampled via
+	/// LightSampler::SampleEnvLightEmission).  Pel route is direct;
+	/// NM route uses the wavelength-aware GetRadianceNM virtual.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type
+	EvalEnvRadiance(
+		const IRadianceMap& env, const Ray& probe,
+		const RasterizerState& rast, const Tag& tag );
+
+	template<>
+	inline RISEPel EvalEnvRadiance<PelTag>(
+		const IRadianceMap& env, const Ray& probe,
+		const RasterizerState& rast, const PelTag& )
+	{
+		return env.GetRadiance( probe, rast );
+	}
+
+	template<>
+	inline Scalar EvalEnvRadiance<NMTag>(
+		const IRadianceMap& env, const Ray& probe,
+		const RasterizerState& rast, const NMTag& tag )
+	{
+		return env.GetRadianceNM( probe, rast, tag.nm );
+	}
+
 	/// Signed magnitude summary used by the "skip if contribution is
 	/// non-positive" gates inside the templated evaluator bodies.
 	/// Matches the pre-refactor gate semantics exactly:
@@ -753,6 +779,82 @@ namespace
 		for( std::size_t i = 1; i < eyeVerts.size(); i++ )
 		{
 			const BDPTVertex& v = eyeVerts[i];
+
+			// Env-light escape vertex (Path B, VCM side).  Shares
+			// BDPT's GenerateEyeSubpath so the synthetic env vertex
+			// pushed at !ri.bHit reaches us automatically.  Uses
+			// SmallVCM-style MIS that mirrors the explicit-emitter
+			// case at lines ~847-853 — so the weight composes
+			// correctly with EvaluateNEE's env branch (which uses
+			// the same wLight/wCamera structure).  Without matching
+			// MIS structure, env-only scenes double-count by ~30%.
+			if( v.type == BDPTVertex::LIGHT && v.pEnvLight ) {
+				// Outer loop starts at i = 1, so i - 1 >= 0 always.
+				const BDPTVertex& prevEnv = eyeVerts[i - 1];
+				// Recover the original escape ray direction from the
+				// stored geomNormal (Path B sets geomNormal = -ray.Dir).
+				// Computing wiSkyEnv from positions gives the wrong
+				// direction when prevEnv is not the immediate scatter
+				// origin (adversarial review P1b).
+				const Vector3 wiSkyEnv(
+					-v.geomNormal.x,
+					-v.geomNormal.y,
+					-v.geomNormal.z );
+
+				RasterizerState nullRastEnv = {0};
+				Ray skyProbeEnv( prevEnv.position, wiSkyEnv );
+				const typename Traits::value_type LeEnv =
+					EvalEnvRadiance<Tag>( *v.pEnvLight, skyProbeEnv,
+						nullRastEnv, tag );
+				if( PositiveMagnitude( LeEnv ) <= 0 ) {
+					continue;
+				}
+
+				// SmallVCM-style MIS weight for env-escape.  Mirrors
+				// the explicit-emitter weight formula at the bottom
+				// of this loop (lines ~847-853):
+				//   directPdfA  = envSelProb / discArea     [area on disc]
+				//   emissionPdfW = directPdfA * pdf_env_sa  [joint joint]
+				//   wCamera     = directPdfA * dVCM
+				//               + emissionPdfW * dVC
+				//   weight      = 1 / (VCMMis(1) + VCMMis(wCamera))
+				// When envSelProb = 0 (env not in alias table) both
+				// directPdfA and emissionPdfW are 0 → wCamera = 0 →
+				// weight = 1.  When envSelProb > 0 (env-only scene)
+				// the formula reduces to the same balance against
+				// NEE that EvaluateNEE applies on the other side, so
+				// the two strategies sum to ~1 unbiased.
+				// SmallVCM-style MIS weight for env-escape — mirrors
+				// the explicit-emitter formula at the bottom of this
+				// loop.  Keeping the SmallVCM weight family is
+				// necessary for composition with the rest of VCM's
+				// MIS strategies; a PT-style power-2 override was
+				// tested broken on spectral BDPT.
+				//   directPdfA  = envSelProb / discArea     [area on disc]
+				//   emissionPdfW = directPdfA * pdf_env_sa  [joint]
+				//   wCamera     = directPdfA * dVCM + emissionPdfW * dVC
+				//   weight      = 1 / (VCMMis(1) + VCMMis(wCamera))
+				Scalar weightEnv = Scalar( 1 );
+				{
+					const Scalar envSelProb = pLS->EnvSelectProbability();
+					const Scalar sceneRadius = pLS->GetCachedSceneRadius();
+					const Scalar discArea = ( sceneRadius > 0 ) ?
+						( PI * sceneRadius * sceneRadius ) : Scalar( 0 );
+					const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
+					const Scalar pdfEnvSA = ( pES ) ? pES->Pdf( wiSkyEnv ) : Scalar( 0 );
+					const Scalar directPdfA = ( discArea > 0 ) ?
+						( envSelProb / discArea ) : Scalar( 0 );
+					const Scalar emissionPdfW = directPdfA * pdfEnvSA;
+					const Scalar wCameraEnv =
+						directPdfA * eyeMis[i].dVCM +
+						emissionPdfW * eyeMis[i].dVC;
+					weightEnv = Scalar( 1 ) /
+						( VCMMis( Scalar( 1 ) ) + VCMMis( wCameraEnv ) );
+				}
+				total = total + ( VertexThroughput<Tag>( v, tag ) * LeEnv * weightEnv );
+				continue;
+			}
+
 			if( v.type != BDPTVertex::SURFACE || !v.pMaterial || !v.pObject ) {
 				continue;
 			}
@@ -933,8 +1035,24 @@ namespace
 			dirToLight = dirToLight * ( Scalar( 1 ) / dist );
 			const Scalar distSq = dist * dist;
 
-			if( !VCMIsVisible( caster, v.position, ls.position ) ) {
-				continue;
+			// Visibility: for env-light, infinite ray in actually-
+			// sampled wi (= -ls.normal); for explicit lights, segment
+			// to the light surface.  Synthesised far-distance target
+			// reuses the existing IsVisible(p,q) overload.
+			{
+				Point3 visTargetVCM = ls.position;
+				if( ls.pEnvLight ) {
+					const Vector3 wiVis(
+						-ls.normal.x, -ls.normal.y, -ls.normal.z );
+					const Scalar kVisFar = Scalar( 1.0e6 );
+					visTargetVCM = Point3(
+						v.position.x + wiVis.x * kVisFar,
+						v.position.y + wiVis.y * kVisFar,
+						v.position.z + wiVis.z * kVisFar );
+				}
+				if( !VCMIsVisible( caster, v.position, visTargetVCM ) ) {
+					continue;
+				}
 			}
 
 			const BDPTVertex& prev = eyeVerts[i - 1];
@@ -949,6 +1067,21 @@ namespace
 			// (delta lights) use the Pel-only API with luminance
 			// projection for the NM path; mesh luminaries route
 			// through IEmitter which has a proper NM virtual.
+			// For env-light, the actually-sampled sky direction wi is
+			// stored as `-ls.normal` (SampleEnvLightEmission sets
+			// `sample.normal = -wi`).  The disc-position-derived
+			// dirToLight only approximates wi (off by the disc-offset
+			// geometry) — using dirToLight for env lookup / BSDF /
+			// pdf / visibility produces systematic wrong-color and
+			// wrong-energy on non-uniform HDRIs (adversarial review
+			// P1a, 2026-05-25).  Switch every env-evaluation to wi.
+			const bool envCaseVCM = ( ls.pEnvLight != 0 );
+			Vector3 wiForLight_vcm = dirToLight;
+			if( envCaseVCM ) {
+				wiForLight_vcm = Vector3(
+					-ls.normal.x, -ls.normal.y, -ls.normal.z );
+			}
+
 			typename Traits::value_type Le = Traits::zero();
 			if( ls.pLight ) {
 				Le = EvalLightRadiance<Tag>( *ls.pLight, -dirToLight, tag );
@@ -964,21 +1097,36 @@ namespace
 					rig.vGeomNormal = ls.normal;
 					Le = EvalEmitterRadiance<Tag>( *pEmitter, rig, -dirToLight, ls.normal, tag );
 				}
+			} else if( envCaseVCM ) {
+				// Env-light NEE: look up radiance at the actually-
+				// sampled sky direction wi (not the disc-derived
+				// approximation).  GetRadiance{,NM} ignores the origin.
+				RasterizerState nullRast = {0};
+				Ray skyProbe( v.position, wiForLight_vcm );
+				Le = EvalEnvRadiance<Tag>( *ls.pEnvLight, skyProbe, nullRast, tag );
 			}
 			if( PositiveMagnitude( Le ) <= 0 ) {
 				continue;
 			}
 
+			// BSDF eval in sampled wi (env) or dirToLight (explicit).
 			const typename Traits::value_type fEye =
-				RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, dirToLight, woAtEye, tag );
+				RISE::PathValueOps::EvalBSDFAtVertex<Tag>( v, wiForLight_vcm, woAtEye, tag );
 			if( PositiveMagnitude( fEye ) <= 0 ) {
 				continue;
 			}
 
+			// MIS bookkeeping direction: for env-light, use the SAMPLED
+			// wi so wLight, wCamera, bsdf{Dir,Rev}PdfW, cos terms are
+			// all consistent with the contribution direction.  Mixing
+			// dirToLight here with wi above biases the SmallVCM weight
+			// on non-uniform HDRIs (adversarial review round 2, P1).
+			const Vector3 dirForMIS_vcm = wiForLight_vcm;
+
 			const Scalar bsdfDirPdfW =
-				RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, woAtEye, dirToLight, tag );
+				RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, woAtEye, dirForMIS_vcm, tag );
 			const Scalar bsdfRevPdfW =
-				RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, dirToLight, woAtEye, tag );
+				RISE::PathValueOps::EvalPdfAtVertex<Tag>( v, dirForMIS_vcm, woAtEye, tag );
 
 			// Geometry-term cosines use the GEOMETRIC normal — the
 			// solid-angle <-> area Jacobian depends on actual face
@@ -986,14 +1134,14 @@ namespace
 			// is supplied by LightSampler::UniformRandomPoint, which
 			// already returns the geometric face normal, so it is used
 			// as-is on the light side.
-			const Scalar cosAtEye = fabs( Vector3Ops::Dot( v.geomNormal, dirToLight ) );
+			const Scalar cosAtEye = fabs( Vector3Ops::Dot( v.geomNormal, dirForMIS_vcm ) );
 			Scalar cosAtLight = 0;
 			Scalar G = 0;
 			if( ls.isDelta ) {
 				cosAtLight = 1;
 				G = cosAtEye / distSq;
 			} else {
-				cosAtLight = fabs( Vector3Ops::Dot( ls.normal, -dirToLight ) );
+				cosAtLight = fabs( Vector3Ops::Dot( ls.normal, -dirForMIS_vcm ) );
 				G = ( cosAtEye * cosAtLight ) / distSq;
 			}
 			if( cosAtEye <= 0 || G <= 0 ) {
@@ -1010,6 +1158,13 @@ namespace
 				emissionDirPdfSA = ( c > 0 ) ? ( c * INV_PI ) : Scalar( 0 );
 			} else if( ls.pLight ) {
 				emissionDirPdfSA = ls.pLight->pdfDirection( -dirToLight );
+			} else if( envCaseVCM ) {
+				// Env emission: query at the actually-sampled wi to
+				// match the wi used for Le and BSDF eval above.
+				const EnvironmentSampler* pEnvSamp = pLS->GetEnvironmentSampler();
+				if( pEnvSamp ) {
+					emissionDirPdfSA = pEnvSamp->Pdf( wiForLight_vcm );
+				}
 			}
 			const Scalar emissionPdfW = ls.pdfSelect * ls.pdfPosition * emissionDirPdfSA;
 
@@ -1048,8 +1203,40 @@ namespace
 			}
 			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
 
-			const Scalar invLightPdfArea = ls.pdfSelect * ls.pdfPosition;
+			Scalar invLightPdfArea = ls.pdfSelect * ls.pdfPosition;
 			if( invLightPdfArea <= 0 ) {
+				continue;
+			}
+
+			// Env-light: bypass disc-based G/invLightPdfArea, use the
+			// standard PT env-NEE formula at the SAMPLED wi.  Keeps
+			// the SmallVCM (wLight + 1 + wCamera) MIS weight since
+			// substituting a PT-style power-2 here breaks the
+			// composition with the s>=2 / VM strategies that still
+			// use the SmallVCM weight family (tested broken on
+			// spectral BDPT: dropped to 31% of PT).
+			//
+			// MEDIUM LIMITATION (intentional, inherited): VCM's NEE
+			// does NOT apply connection transmittance for any light
+			// (env or explicit) — the existing VCMIsVisible test is
+			// binary occlusion only, not media-aware shadow.  BDPT's
+			// env-NEE was fixed to evaluate transmittance along wi
+			// to RISE_INFINITY in round 5 P2; VCM stays consistent
+			// with its broader medium-shadow limitation rather than
+			// adding env-only special-casing.  Tracked separately
+			// from the env-IBL task — VCM media support is a
+			// general gap, not env-specific.
+			if( envCaseVCM ) {
+				const EnvironmentSampler* pEnvSamp = pLS->GetEnvironmentSampler();
+				if( !pEnvSamp ) continue;
+				const Scalar pdfSA = pEnvSamp->Pdf( wiForLight_vcm );
+				if( pdfSA <= 0 ) continue;
+				const Scalar cosEyeWi =
+					fabs( Vector3Ops::Dot( v.geomNormal, wiForLight_vcm ) );
+				const typename Traits::value_type contribution =
+					VertexThroughput<Tag>( v, tag ) * fEye * Le *
+					( cosEyeWi / pdfSA ) * weight;
+				total = total + contribution;
 				continue;
 			}
 

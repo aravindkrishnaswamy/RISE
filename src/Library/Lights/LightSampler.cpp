@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "LightSampler.h"
+#include <cmath>
 #include "../Utilities/ISampler.h"
 #include "../Interfaces/ILightPriv.h"
 #include "../Interfaces/IMaterial.h"
@@ -455,6 +456,8 @@ LightSampler::LightSampler() :
   bUseLightBVH( false ),
   pEnvSampler( 0 ),
   pEnvironmentMap( 0 ),
+  cachedSceneCenter( 0, 0, 0 ),
+  cachedSceneRadius( 0 ),
   pOptimalMIS( 0 )
 {
 }
@@ -464,6 +467,17 @@ LightSampler::~LightSampler()
 	if( pEnvSampler ) {
 		pEnvSampler->release();
 		pEnvSampler = 0;
+	}
+	// Pre-2026-05 the raw `pEnvironmentMap` was never addref'd,
+	// so the destructor only had to nullify the pointer.  Reviewer
+	// #2 flagged a real dangling-pointer risk: `Scene::SetGlobalRadianceMap`
+	// releases the old map, so a mid-render env-map swap would
+	// invalidate `pEnvironmentMap` while workers might still be
+	// inside `SampleEnvLightEmission` calling `GetRadiance(...)`.
+	// `SetEnvironmentSampler` now addrefs the map; release here.
+	if( pEnvironmentMap ) {
+		pEnvironmentMap->release();
+		pEnvironmentMap = 0;
 	}
 	delete pLightBVH;
 	pLightBVH = 0;
@@ -498,7 +512,19 @@ void LightSampler::SetEnvironmentSampler(
 	if( pEnvSampler ) {
 		pEnvSampler->release();
 	}
+	// Addref `pEnvironmentMap` so it can't go away from under us via
+	// `Scene::SetGlobalRadianceMap` swapping the scene-level pointer
+	// mid-render (which `release()`s its old map).  Workers inside
+	// `SampleEnvLightEmission` call `pEnvironmentMap->GetRadiance(...)`;
+	// without the addref a concurrent swap dangles the pointer and
+	// crashes.  Same shape as the existing `pEnvSampler` ownership.
+	if( pEnvironmentMap ) {
+		pEnvironmentMap->release();
+	}
 	pEnvironmentMap = pEnvMap;
+	if( pEnvironmentMap ) {
+		pEnvironmentMap->addref();
+	}
 	pEnvSampler = pSampler;
 	if( pEnvSampler ) {
 		pEnvSampler->addref();
@@ -656,6 +682,100 @@ void LightSampler::Prepare(
 		scene.GetObjects()->EnumerateObjects( scan );
 		bSceneHasObjectMedia = scan.found;
 	}
+
+	// Compute scene bounding sphere from visible objects' world AABBs.
+	// Used by `SampleEnvLightEmission` to place the env-light emission
+	// disc outside the scene.  Cheap one-time enumeration here is the
+	// right surface — re-computing per sample would be wasteful.
+	//
+	// Threading: `Prepare()` runs once during `RayCaster::AttachScene`
+	// before any worker thread enters render mode, so cachedSceneCenter
+	// / cachedSceneRadius are written from a single thread and then
+	// read read-only by `SampleEnvLightEmission`.
+	{
+		struct SceneBBoxScan : public IEnumCallback<IObject>
+		{
+			BoundingBox bbox;
+			bool seen;
+			SceneBBoxScan() :
+				bbox( Point3( RISE_INFINITY, RISE_INFINITY, RISE_INFINITY ),
+					  Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY ) ),
+				seen( false )
+			{}
+			bool operator()( const IObject& obj )
+			{
+				if( obj.IsWorldVisible() ) {
+					const BoundingBox b = obj.getBoundingBox();
+					bbox.Include( b.ll );
+					bbox.Include( b.ur );
+					seen = true;
+				}
+				return true;
+			}
+		};
+		SceneBBoxScan scan;
+		scene.GetObjects()->EnumerateObjects( scan );
+		if( scan.seen ) {
+			cachedSceneCenter = scan.bbox.GetCenter();
+			const Vector3 extents = scan.bbox.GetExtents();
+			// Radius of the *enclosing* sphere = half the AABB diagonal
+			// length.  The disc emitter sits at distance `radius` along
+			// the sampled sky direction; making the disc this large
+			// guarantees every emission ray that points back toward the
+			// scene will physically cross the bounding sphere and have
+			// a chance to hit geometry — a smaller radius would clip
+			// some valid grazing-angle rays.
+			//
+			// Reviewer #2 flagged: scenes with `infinite_plane_geometry`
+			// can produce `±RISE_INFINITY` AABB corners → the magnitude
+			// here becomes `inf`, which then propagates through the
+			// disc-position math into NaN ray origins, and finally into
+			// `IObjectManager::IntersectRay` which is not defined on
+			// non-finite origins (RISE_BVH's float-precision slab test
+			// happily accepts NaN comparisons that always return false,
+			// dropping all hits silently).  Clamp to a generous but
+			// finite cap (1e6 world units = 1000 km if metres) so
+			// pathological scenes degrade to "env-NEE works through PT
+			// but BDPT/VCM emission may be slightly under-sampled" rather
+			// than to NaN-corrupted renders.
+			const Scalar rawRadius = Scalar( 0.5 ) * Vector3Ops::Magnitude( extents );
+			const Scalar kRadiusCap = Scalar( 1.0e6 );
+			cachedSceneRadius =
+				( !std::isfinite( rawRadius ) || rawRadius > kRadiusCap )
+					? kRadiusCap
+					: rawRadius;
+			// Also defend the centre: an infinite-extent object can
+			// land ll = -INF and ur = +INF, whose midpoint is NaN.
+			if( !std::isfinite( cachedSceneCenter.x ) ||
+				!std::isfinite( cachedSceneCenter.y ) ||
+				!std::isfinite( cachedSceneCenter.z ) )
+			{
+				cachedSceneCenter = Point3( 0, 0, 0 );
+			}
+		} else {
+			cachedSceneCenter = Point3( 0, 0, 0 );
+			cachedSceneRadius = Scalar( 0 );
+		}
+	}
+
+	// NOTE: Adding env as an alias-table entry was attempted in the
+	// 2026-05-26 adversarial review round 3 P2 effort but caused a
+	// severe spectral-BDPT regression (env-only delivery 76% → 20%
+	// of PT).  Suspected cause: the extra sampler.Get1D() consumed
+	// by the alias-table selection shifts the per-wavelength Sobol
+	// stratification in spectral integrators, misaligning dimension
+	// assignments downstream.  Until that's understood + worked
+	// around, env stays as the fallback-only path: SampleLight()
+	// returns env when the alias table is empty (env-only scenes),
+	// and mixed env+explicit scenes credit env solely through
+	// eye-subpath escape (Path B).  This caps mixed-scene env-NEE
+	// delivery at the documented ~15% deficit but doesn't break
+	// spectral env-only.  Tracked as a follow-up in
+	// docs/IMPROVEMENTS.md #12 alongside the SA-MIS refactor; the
+	// scaffolding (LightEntry::isEnv, EnvironmentSampler::
+	// GetTotalLuminance) added during the failed attempt was
+	// removed in adversarial review round 4, P3 — re-add when the
+	// proper fix lands.
 }
 
 //
@@ -780,6 +900,7 @@ bool LightSampler::SampleLight(
 	// Initialize the sample
 	sample.pLight = 0;
 	sample.pLuminary = 0;
+	sample.pEnvLight = 0;
 	sample.isDelta = false;
 	sample.Le = RISEPel( 0, 0, 0 );
 	sample.pdfPosition = 0;
@@ -788,6 +909,18 @@ bool LightSampler::SampleLight(
 
 	if( !aliasTable.IsValid() )
 	{
+		// IBL-only scenes (no explicit luminaries, world has an HDRI
+		// Environment Texture) reach here.  Without this fallback,
+		// BDPT/VCM/MLT light subpaths return zero vertices and the
+		// resulting render is fully black.  Sample emission from the
+		// env map's importance distribution; see
+		// `SampleEnvLightEmission` for the disc / cosAtLight / PDF
+		// semantics.  Returns false (= no light vertex) when there's
+		// neither explicit nor env light, OR scene has no geometry
+		// (cachedSceneRadius == 0 from `Prepare`).
+		if( pEnvSampler && pEnvSampler->IsValid() && cachedSceneRadius > 0 ) {
+			return SampleEnvLightEmission( sampler, sample );
+		}
 		return false;
 	}
 
@@ -874,6 +1007,149 @@ bool LightSampler::SampleLight(
 
 		sample.Le = pEmitter->emittedRadiance( rig, sample.direction, sample.normal );
 	}
+
+	return true;
+}
+
+//
+// SampleEnvLightEmission
+//
+// PBRT-style infinite-area-light emission sampling for IBL-only scenes
+// (no explicit luminaries; only world Environment Texture).  Lets
+// BDPT/VCM/MLT generate light subpaths from the HDRI; without it,
+// `SampleLight` returns false and the rasterizer produces fully-black
+// renders on env-only scenes.
+//
+// Coordinate convention used here:
+//
+//   `wi` is the world-space direction FROM the scene TOWARD the sky
+//   (i.e. what `EnvironmentSampler::Sample` returns — "looking at the
+//   env map from inside the scene").
+//
+//   The light emission direction is the inverse: emission flows FROM
+//   the sky INTO the scene, so `sample.direction = -wi`.
+//
+//   The emission "disc" sits on the scene's bounding sphere on the
+//   `+wi` side (between the scene and the sky in that direction), with
+//   its normal pointing back into the scene (= -wi).  This gives
+//   `cosAtLight = |dot(direction, normal)| = |dot(-wi, -wi)| = 1`,
+//   simplifying BDPT's `Le * cosAtLight / pdfEmit` accumulation.
+//
+// PDF derivations:
+//
+//   pdfDirection = pEnvSampler->Pdf(wi)              [solid-angle, sr⁻¹]
+//   pdfPosition  = 1 / (π * r²)                      [area density on disc]
+//   pdfSelect    = 1                                 [env is the only light]
+//
+// Throughput sanity-check:
+//
+//   For a uniform-radiance env map L_env, a disc emitter of area πr²
+//   emits total power Φ = L_env · π · (4π) = 4π² · L_env · r²····
+//   approximately, modulo cosine factors at the receiving surface.
+//   The PT estimate of irradiance at a point inside the scene tends
+//   to L_env · π (Lambertian-receiver normalisation), and the s>=2
+//   BDPT estimate via this emission sampling integrates to the same
+//   value — verified at low spp by comparing PT-only vs BDPT renders
+//   of a single Lambertian sphere under a uniform-radiance env map.
+//
+// Returns false when the env sampler is missing / invalid or the
+// scene has no geometry to bound (cachedSceneRadius == 0).  Caller
+// (`SampleLight`) then returns false too and the rasterizer skips
+// this light subpath.
+bool LightSampler::SampleEnvLightEmission(
+	ISampler& sampler,
+	LightSample& sample
+	) const
+{
+	if( !pEnvSampler || !pEnvironmentMap || cachedSceneRadius <= 0 ) {
+		return false;
+	}
+
+	// 1. Importance-sample a sky direction from the env map.
+	const Scalar u1 = sampler.Get1D();
+	const Scalar u2 = sampler.Get1D();
+	Vector3 wi;
+	Scalar pdfDir = 0;
+	pEnvSampler->Sample( u1, u2, wi, pdfDir );
+
+	if( pdfDir <= 0 ) {
+		return false;
+	}
+
+	// `wi` is unit (the env sampler guarantees this).  Re-normalise
+	// as a safety net against any future env-sampler regression
+	// (cheap, one sqrt).
+	wi = Vector3Ops::Normalize( wi );
+
+	// 2. Build an orthonormal basis around wi for disc sampling.
+	OrthonormalBasis3D onb;
+	onb.CreateFromW( wi );
+
+	// 3. Sample uniform point on a disc of radius cachedSceneRadius
+	//    perpendicular to wi, then offset the disc centre by
+	//    `+cachedSceneRadius * wi` so the disc sits on the *sky-side*
+	//    of the bounding sphere (the side that `wi` points toward
+	//    from the scene centre).  Combined with the emission
+	//    direction `-wi`, rays travel from the sky-side disc back
+	//    through the scene — opposite of "PBRT's far-side disc"
+	//    convention some references use, but consistent with
+	//    `wi` here being "the direction FROM the scene TOWARD the
+	//    sky" (matches `EnvironmentSampler::Sample`'s output).
+	//    Adversarial review #1 misread the convention — we keep
+	//    `+wi` here; empirically a `-wi` flip puts the disc on the
+	//    opposite side of the scene and emission rays travel away
+	//    from geometry, producing all-black renders.
+	const Scalar diskU = sampler.Get1D();
+	const Scalar diskV = sampler.Get1D();
+	const Scalar r = cachedSceneRadius * std::sqrt( diskU );
+	const Scalar phi = TWO_PI * diskV;
+	const Vector3 discOffset =
+		onb.u() * ( r * std::cos( phi ) ) +
+		onb.v() * ( r * std::sin( phi ) );
+	const Point3 discCentre(
+		cachedSceneCenter.x + wi.x * cachedSceneRadius,
+		cachedSceneCenter.y + wi.y * cachedSceneRadius,
+		cachedSceneCenter.z + wi.z * cachedSceneRadius );
+	sample.position = Point3(
+		discCentre.x + discOffset.x,
+		discCentre.y + discOffset.y,
+		discCentre.z + discOffset.z );
+
+	// 4. Disc emits in direction -wi (back into the scene).  Disc
+	//    normal also points into the scene (= -wi).
+	sample.normal = Vector3( -wi.x, -wi.y, -wi.z );
+	sample.direction = sample.normal;  // same vector, by construction
+
+	// 5. Sample emitted radiance from the env map in direction wi.
+	//    `IRadianceMap::GetRadiance` takes a Ray; we build a synthetic
+	//    one pointing into the sky from `sample.position`.  The
+	//    rasterizer state isn't needed for env-map lookups (no LOD /
+	//    differentials).
+	RasterizerState nullRast = {0};
+	Ray skyProbe( sample.position, wi );
+	sample.Le = pEnvironmentMap->GetRadiance( skyProbe, nullRast );
+
+	// 6. PDFs (see method-header comment).
+	const Scalar discArea = PI * cachedSceneRadius * cachedSceneRadius;
+	sample.pdfPosition = ( discArea > 0 ) ? ( Scalar( 1 ) / discArea ) : Scalar( 0 );
+	sample.pdfDirection = pdfDir;
+	sample.pdfSelect = 1.0;
+
+	// 7. Vertex-typing: env-light has no IObject / ILight backing.
+	//    BDPT connection strategies that branch on `pLight` /
+	//    `pLuminary` (see BDPTIntegrator.cpp s>=1 connect-to-light
+	//    code) fall through and contribute zero — that's acceptable
+	//    here because direct env-NEE on eye vertices still flows
+	//    through the standard env-sampler path, so the dropped s>=1
+	//    contribution doesn't cause a NEE blind spot; it just means
+	//    the s>=1 light-subpath strategy is under-represented in MIS
+	//    weights for env-light paths.  The s>=2 strategies (which
+	//    don't touch pLight / pLuminary) work fully and are what
+	//    unblocks the IBL-only render from showing as fully black.
+	sample.pLight = 0;
+	sample.pLuminary = 0;
+	sample.pEnvLight = pEnvironmentMap;  // marks this as env-emission for the NM path
+	sample.isDelta = false;
 
 	return true;
 }

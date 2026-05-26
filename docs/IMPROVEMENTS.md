@@ -909,6 +909,249 @@ At shading time, evaluate S(lambda) = sigmoid(c0 * lambda^2 + c1 * lambda + c2) 
 
 ---
 
+## 12. Solid-Angle MIS For Infinite-Area Light Vertices (BDPT/VCM Env-IBL)
+
+### Status
+
+**Deferred** — first-pass fix landed 2026-05-25 (Path A + Path B in
+[BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) and
+[VCMIntegrator.cpp](../src/Library/Shaders/VCMIntegrator.cpp)) closes most
+of the gap but leaves a systematic 15-22% mean underestimate vs PT on
+env-IBL scenes.  This item is the principled refactor that closes the
+remaining gap.
+
+### Background
+
+BDPT and VCM use **area-measure** path PDFs throughout: every vertex stores
+a `pdfFwd` interpreted as a probability density per square metre on the
+vertex's surface.  The MIS weight walks the path comparing strategies via
+ratios of these area densities.  This works cleanly for finite emitters
+(mesh luminaries, point lights) because they have a well-defined surface
+area or position.
+
+**Environment lights don't have a finite surface — they live "at
+infinity".**  To make env lights fit the area-measure framework, RISE
+uses the canonical PBRT-v3 disc parameterization: project the env onto a
+large disc of radius `cachedSceneRadius` placed perpendicular to the
+sampled sky direction `wi`, sample uniform area on the disc, and emit
+perpendicular to it.  Stored PDFs:
+
+```
+pdfPosition_disc = 1 / (π · r_scene²)     ← uniform area on disc
+pdfDirection     = pdf_env_sa(wi)         ← solid-angle on sphere
+joint            = pdfPos × pdfDir = pdf_env_sa / (π · r_scene²)
+```
+
+The `pdfPosition` factor isn't the marginal area density of placing a
+vertex on the disc — it's the **conditional density given the chosen
+direction `wi`**.  Each disc point has multiple pre-image `(wi, offset)`
+pairs (any sky direction whose disc passes through that point), so the
+true marginal area density would be an integral.  The BDPT factorization
+`area × direction` doesn't decompose cleanly here.
+
+The 2026-05-25 first-pass fix (see commit history) works around the
+mismatch:
+
+- **Path A** (s=1 NEE) overrides `pdfLight` to give the unbiased PT-style
+  contribution `T · fEye · Le · cos_eye / pdf_env_sa`.  The MIS weight is
+  still computed in the disc-area convention.
+- **Path B** (s=0 escape) pushes a synthetic env-light vertex with disc
+  position and gates `pdfRev` via `envSelectProbability` to keep MIS from
+  over-weighting the s=1 alt strategy when env isn't in the alias table.
+- **`kEnvZeroSentinel = 1e-30`** is used to signal "this pdf is truly
+  zero, don't trip `MISWeight`'s `remap0` line" — that line maps
+  `pdfRev == 0` to `1.0` for delta-vertex handling, which would
+  otherwise destroy the gate.
+
+Measured impact (`tests/EnvLightBalanceTest.cpp`, 32×32 / 64 spp,
+uniform env Le=1.0, Lambertian quad albedo 0.5):
+
+| Topology | PT mean | BDPT mean (pre-fix) | BDPT mean (post-fix) | VCM (pre) | VCM (post) |
+|----------|---------|---------------------|----------------------|-----------|------------|
+| env-only Lambertian | 0.589 | ~0 | 0.457 | 0.026 | 0.562 |
+| env + omni light    | 0.601 | 0.012 | 0.512 | 0.012 | 0.512 |
+| env + mesh emitter  | 0.608 | 0.029 | 0.520 | 0.029 | 0.520 |
+
+Delivery went from 0-5% of PT to 78-95% of PT.  The residual 15-22% gap
+is the disc-area-vs-true-SA mismatch this item closes.
+
+### Why the gap remains
+
+The MIS weights are still computed assuming both `pdfFwd` and `pdfRev` on
+the env vertex are area densities on the disc.  For env-only Lambertian
+the disc-area `pdfPosition_disc = 1/(πr²)` doesn't capture the env's
+importance-sampling density, so the MIS-walk's pdf-ratio comparison
+between s=0 (eye escape) and s=1 (NEE) is mismatched, leaving variance
+on the table.  Path B's override only covers the *contribution*; the
+*weights* themselves still distribute energy sub-optimally.
+
+For env+omni and env+mesh the gap is dominated by light-subpath
+strategies (s≥2) that traverse the env-vertex's pdfFwd/pdfRev to
+compute MIS for paths the light subpath generates.  Those strategies
+inherit the disc-area pdf mismatch.
+
+### What PBRT-v4 does
+
+PBRT-v4 treats infinite-area lights as a **first-class distinct vertex
+type** in BDPT.  The key changes:
+
+1. **`Vertex::IsInfiniteLight()`** flag on each vertex (RISE already has
+   the equivalent: `pEnvLight != NULL`).  Env vertex's `position` is
+   treated as a direction, not a point in space.
+
+2. **Measure-aware `Vertex::PDF` and `Vertex::PDFLight`** — when the
+   *next* vertex is an infinite light, these return the **solid-angle
+   density** directly, skipping the `cos / r²` area conversion:
+
+   ```cpp
+   // PBRT-v4 vertex.h ConvertDensity (paraphrased)
+   if (next.IsInfiniteLight()) return pdf;        // SA, no conversion
+   else return pdf * absDot(w, next.ng) / dist²;  // area conversion
+   ```
+
+3. **`Vertex::PdfLightOrigin`** for an env vertex returns just the env
+   importance-sampling pdf (no disc-area factor) — this is what the MIS
+   walk uses to compare s=1 NEE against s=0 escape.
+
+4. **The MIS walk in `MISWeight`** propagates the right measure through
+   the env vertex automatically because the conversion helpers do the
+   right thing.
+
+5. **`Vertex::Le()`** for an env vertex queries the infinite light's
+   `Le(ray)` in the direction toward the eye — no disc geometry involved.
+
+Net effect: every strategy that touches an env vertex evaluates its pdf
+in **solid-angle measure** at that vertex, while all surface vertices
+stay in area measure.  The MIS ratios compare like-to-like and the
+weights sum to 1 unbiased — closing the 15-22% gap.
+
+### What the refactor would touch in RISE
+
+- **`BDPTVertex.h`**: `pEnvLight != NULL` already marks env vertices.
+  Document the new semantics: `position` is a **point on the unit
+  sphere at infinity** (the sky direction), `normal` is meaningless,
+  `pdfFwd` is solid-angle measure.
+
+- **`BDPTUtilities::SolidAngleToArea`** / `GeometricTerm`: add overloads
+  that check the destination vertex's env flag and return the SA pdf
+  unmodified when true.  For env destination, `G` reduces to `cos_eye`
+  (no `cos_light / r²`).
+
+- **`MISWeight`** ([BDPTIntegrator.cpp:4677](../src/Library/Shaders/BDPTIntegrator.cpp)):
+  the walk currently uses stored `pdfFwd` / `pdfRev` ratios in area
+  measure.  For paths terminating in an env vertex, the boundary at the
+  env vertex needs to skip the area conversion.  This is the most
+  invasive change — `MISWeight` is the core MIS routine used by every
+  connection strategy.
+
+- **`SampleEnvLightEmission`** ([LightSampler.cpp:1040](../src/Library/Lights/LightSampler.cpp)):
+  store `pdfPosition = pdf_env_sa(wi)` directly (no `1/(πr²)` factor),
+  `pdfDirection = 1.0` (deterministic given wi).  Joint becomes
+  `pdfSelect · pdf_env_sa`, matching the PBRT-v4 convention.
+
+- **`GenerateLightSubpath`** vertex-0 setup: throughput becomes
+  `Le / (pdfSelect · pdf_env_sa)` (no πr² factor).  Conversion to
+  vertex 1 area pdf becomes `pdf_env_sa · cos_v1 / r²_{v0,v1}` — same
+  algebra, different bookkeeping.
+
+- **Drop the Path A / Path B workarounds**:
+  - `pdfLight = pdfSA / dist²` override at the four s=1 NEE sites
+    becomes unnecessary — the natural `T · fEye · Le · G / pdfFwd`
+    formula reduces to the correct PT formula when `pdfFwd` is in SA.
+  - `kEnvZeroSentinel = 1e-30` workaround for `remap0` line becomes
+    unnecessary — once env vertices use SA throughout, zero pdf on
+    NEE-unreachable cases is a natural consequence.
+  - Path B's `EnvSelectProbability()`-gating of `eyePred.pdfRev`
+    becomes unnecessary for the same reason.
+
+- **VCM**: `dVC` / `dVCM` / `dVM` running quantities ([VCMRecurrence.h](../src/Library/Shaders/VCMRecurrence.h))
+  currently assume area-measure throughout.  The Georgiev 2012 recurrence
+  has an env-vertex special case that's exactly the SA-measure analog —
+  parallel handling required there too.
+
+- **Tests**: tighten `EnvLightBalanceTest` tolerances back to the strict
+  `0.10 / 0.30 / 1.00` family (matching `BDPTStrategyBalanceTest`); the
+  renderers should match PT within MC noise after the refactor.  The
+  current tolerances `0.35 / 0.35 / 2.00` accept the 22% residual
+  bias — they should fail after the refactor lands.
+
+### Risk
+
+- **MIS regressions are subtle.**  RISE has hit MIS weight bugs before
+  that produced bright outlier pixels in specific path configurations
+  (see [docs/skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)).
+  The disc-area convention is currently *working* for all paths that
+  don't terminate in env vertices; touching `MISWeight`'s core risks
+  breaking those.  Tier-1 risk: re-run the full BDPT/VCM regression
+  suite (`BDPTStrategyBalanceTest`, `VCMStrategyBalanceTest`,
+  `VCMRecurrenceTest`, `VCMSpectralRecurrenceTest`, the spectral
+  scenes) and visual regression on the canonical sponza / veach-MIS
+  scenes before declaring done.
+
+- **Surface area.**  Touches `MISWeight`, `BDPTUtilities`,
+  `SampleEnvLightEmission`, both RGB and NM code paths in BDPT, plus
+  VCM's recurrence.  ~10 files, ~300 lines of changes if cleanly
+  refactored.
+
+### Validation criteria
+
+- `EnvLightBalanceTest` passes with strict `0.10 / 0.30 / 1.00`
+  tolerances on all six topologies (env-only RGB / spectral, env+omni,
+  env+mesh, non-uniform off-center RGB / spectral).
+- No regression on any of the 116 existing tests.
+- Visual: render `scenes/FeatureBased/ripple_dreams_fields.RISEscene`
+  with PT, BDPT, VCM (each at matched samples).  All three should
+  produce visually indistinguishable images.
+- HDRVarianceTest comparison (master vs branch) on the same env-IBL
+  scenes: BDPT/VCM RMSE vs PT-reference should drop by ≥15% (the
+  residual gap closed).
+
+### Companion limitation — VCM connection transmittance
+
+VCM's NEE (and other connection strategies) do not currently apply
+connection transmittance at all — `VCMIsVisible` is a binary
+occlusion test, not a media-aware shadow walk like BDPT's
+`EvalConnectionTransmittance`.  The 2026-05-26 round 4 fix that
+extended env-NEE transmittance from `2 × cachedSceneRadius` to
+`RISE_INFINITY` applies to BDPT only; VCM env-NEE still has Tr = 1
+in any global / per-object medium.  This is a general VCM gap, not
+env-specific — fix as part of broader VCM media support work, not
+folded into this env-IBL task.
+
+### Companion limitation — env not in alias table for mixed-light scenes
+
+Independently of the SA-MIS refactor, env-NEE is currently restricted
+to env-only scenes (`LightSampler::EnvSelectProbability()` returns 0
+whenever the alias table contains any explicit light).  In mixed
+env+explicit scenes, env contributes solely via eye-subpath escape
+(BDPT Path B), capping mixed-scene env-NEE delivery at the documented
+~15% deficit.  A 2026-05-26 attempt to fix this by appending env as
+a synthetic alias-table entry caused a severe spectral-BDPT
+regression (env-only delivery 76 % → 20 % of PT), suspected to be
+caused by the extra `sampler.Get1D()` consumed by alias-table
+selection misaligning Sobol dimensions in the spectral integrator's
+per-wavelength sampling.  Fixing this properly requires either (a)
+keeping the env's alias-table draw on a dedicated low-discrepancy
+dimension that doesn't interleave with wavelength sampling, or (b)
+performing the SA-MIS refactor above and removing the
+disc-parameterization entirely.  The two follow-ups are best done
+together.
+
+### References
+
+- PBRT-v4 [`src/pbrt/bdpt.h`](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/bdpt.h) —
+  `Vertex` struct, `IsInfiniteLight()`, `ConvertDensity` measure-aware logic.
+- PBRT-v4 [`src/pbrt/bdpt.cpp`](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/bdpt.cpp) —
+  `MISWeight` walk with env-vertex handling.
+- Georgiev et al. 2012 "Light Transport Simulation with Vertex Connection
+  and Merging" — Appendix A on the dVC/dVCM recurrence in the presence of
+  infinite lights.
+- SmallVCM `vertexcm.hxx` `GetLightRadiance()` — handles infinite-area
+  light as a special path-length=1 case that doesn't fit the area-measure
+  framework.
+
+---
+
 ## Explicit Non-Goals
 
 These are interesting but should not displace the ranked items above:

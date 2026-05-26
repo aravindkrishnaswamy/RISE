@@ -114,6 +114,15 @@ namespace RISE
 			bool			isDelta;		///< True for point/spot lights (delta position)
 			const ILight*	pLight;			///< Non-null for non-mesh lights
 			const IObject*	pLuminary;		///< Non-null for mesh lights
+			/// Non-null when this sample comes from
+			/// `SampleEnvLightEmission` (environment-map emission).
+			/// The spectral integrators (`GenerateLightSubpathNM`,
+			/// NM s=1 NEE / connect) use this to recover wavelength-
+			/// resolved emission via `pEnvLight->GetRadianceNM(...)`,
+			/// since `Le` only carries RGB.  NULL for explicit lights
+			/// and mesh luminaries — they use their own pLight /
+			/// pLuminary emitter for NM.
+			const IRadianceMap*	pEnvLight;
 		};
 
 		/// Unified light sampling utility shared by PT and BDPT.
@@ -159,6 +168,17 @@ namespace RISE
 			/// Environment map importance sampler (null when no env map)
 			const EnvironmentSampler*	pEnvSampler;
 			const IRadianceMap*			pEnvironmentMap;
+
+			/// Scene bounding sphere — cached during `Prepare()` by
+			/// enumerating every visible object's AABB.  Used by env-
+			/// light emission sampling (PBRT-style infinite-area-light
+			/// disk emission) so BDPT / VCM / MLT light subpaths can
+			/// originate from the environment map on IBL-only scenes
+			/// (no explicit luminaries).  Radius 0 means "no geometry
+			/// or Prepare() not yet called"; env emission falls back
+			/// to false-return from `SampleLight`.
+			Point3						cachedSceneCenter;
+			Scalar						cachedSceneRadius;
 
 			/// Optimal MIS accumulator — set by the rasterizer before
 			/// rendering.  When non-null and solved, EvaluateDirectLighting
@@ -309,6 +329,43 @@ namespace RISE
 			/// \return The environment importance sampler, or NULL
 			const EnvironmentSampler* GetEnvironmentSampler() const { return pEnvSampler; }
 
+			/// \return The cached scene bounding-sphere centre (set by
+			/// Prepare()).  Used by BDPT Path B (eye-subpath escape) to
+			/// place the synthetic env-light vertex on the disc that
+			/// SampleEnvLightEmission would have produced — keeps the
+			/// vertex's distance and pdfFwd numerically consistent with
+			/// the area-measure conventions the BDPT MIS walk expects.
+			const Point3& GetCachedSceneCenter() const { return cachedSceneCenter; }
+
+			/// \return The cached scene bounding-sphere radius.  Zero
+			/// before Prepare() completes or on degenerate scenes (no
+			/// visible geometry).  Callers should treat zero as "env
+			/// vertex placement infeasible" and skip the synthetic
+			/// vertex push.
+			Scalar GetCachedSceneRadius() const { return cachedSceneRadius; }
+
+			/// \return Probability that `SampleLight()` produces an
+			/// env-light sample (i.e., one with `pEnvLight != NULL`)
+			/// on the next call.  Currently SampleEnvLightEmission is
+			/// only invoked as a FALLBACK when the alias table is
+			/// empty — explicit lights crowd it out entirely.  So:
+			///   - returns 1.0 when env exists and alias table empty
+			///     (env is the only-light, NEE always picks it)
+			///   - returns 0.0 when alias table has any explicit light
+			///     (NEE never picks env; env contributes only via
+			///     eye-subpath escape — BDPT Path B)
+			/// Used by BDPT MIS at the Path B s=0 site to set the
+			/// env-vertex's pdfRev to "probability NEE would have
+			/// produced this env vertex".  The mixed-scene 0.0 path
+			/// is a documented limitation tracked in
+			/// docs/IMPROVEMENTS.md #12.
+			Scalar EnvSelectProbability() const
+			{
+				return ( pEnvSampler && pEnvironmentMap &&
+					cachedSceneRadius > 0 &&
+					!aliasTable.IsValid() ) ? Scalar( 1 ) : Scalar( 0 );
+			}
+
 			/// \return Number of positional (point/spot) lights suitable for equiangular sampling
 			unsigned int GetPositionalLightCount() const { return (unsigned int)positionalLightIndices.size(); }
 
@@ -369,6 +426,44 @@ namespace RISE
 			/// \return Index into lightEntries, or -1 if not found
 			int FindLuminaryIndex(
 				const IObject* pLuminary							///< [in] The luminary to search for
+				) const;
+
+			/// PBRT-style infinite-area-light emission sampling for
+			/// scenes whose only light source is the environment map.
+			///
+			/// Geometry: importance-sample a sky direction `wi` from
+			/// the env map; place the emission vertex on a disk of
+			/// radius `cachedSceneRadius` perpendicular to `wi`,
+			/// pushed `cachedSceneRadius` along `wi` away from the
+			/// scene centre so the disk lies entirely outside the
+			/// scene bounding sphere.  The disk normal points back
+			/// INTO the scene (= -wi), so `cosAtLight = 1.0`
+			/// uniformly and the disk emits parallel rays in the
+			/// direction `-wi` (= sky → scene).
+			///
+			/// PDFs:
+			///   pdfPosition  = 1 / (π · r²)           — uniform on disk
+			///   pdfDirection = pEnvSampler->Pdf(wi)   — solid angle
+			///   pdfSelect    = 1.0                   — env is the only light
+			///
+			/// Caveats: the resulting `LightSample.pLight` and
+			/// `.pLuminary` are both NULL.  BDPT connection strategies
+			/// (s=1 NEE from eye to light vertex 0) currently fall
+			/// through their `if (pLight) ... else if (pLuminary) ...`
+			/// chains and contribute 0 for env-light vertex 0 — direct
+			/// env-NEE on eye vertices still flows through the standard
+			/// env-sampler path so there is no double-loss.  s>=2
+			/// strategies (light-subpath bounces from the env-light into
+			/// the scene and connects to the eye via geometry vertices)
+			/// work fully and are what unblocks the IBL-only render
+			/// from showing as fully-black.
+			///
+			/// \return True on success (env sampler must be valid +
+			/// scene radius > 0).  False when env or scene info is
+			/// missing — caller's `SampleLight` returns false too.
+			bool SampleEnvLightEmission(
+				ISampler& sampler,									///< [in] Low-discrepancy sampler
+				LightSample& sample									///< [out] Populated env-light emission sample
 				) const;
 		};
 	}

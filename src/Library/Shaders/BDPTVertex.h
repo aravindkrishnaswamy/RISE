@@ -44,6 +44,7 @@ namespace RISE
 	class IPhaseFunction;
 	class IObject;
 	class ILight;
+	class IRadianceMap;
 
 	struct BDPTVertex
 	{
@@ -158,6 +159,17 @@ namespace RISE
 		// Light endpoint data (non-null only for type == LIGHT)
 		const ILight*			pLight;
 		const IObject*			pLuminary;
+		/// Non-null only when this light vertex was sampled from the
+		/// environment map (LightSampler::SampleEnvLightEmission).
+		/// pLight and pLuminary are both NULL in that case; the four
+		/// BDPT MIS dispatch sites (s=1 NEE Le, s=1 NEE emPdfDir,
+		/// s=1 t=1 Le, s=1 t=1 emPdfDir) plus the spectral NM twins
+		/// take an `else if (pEnvLight)` branch that recovers Le via
+		/// pEnvLight->GetRadiance{,NM}(skyProbe, nullRast[, nm]) and
+		/// emPdfDir via the light sampler's env-direction PDF.  Without
+		/// this branch env-IBL scenes lose the BDPT s=1 connection
+		/// strategies entirely (regression test: EnvLightBalanceTest).
+		const IRadianceMap*		pEnvLight;
 
 		// Camera endpoint data (valid only for type == CAMERA)
 		Point2					screenPos;
@@ -203,6 +215,7 @@ namespace RISE
 		sigma_t_scalar( 0 ),
 		pLight( 0 ),
 		pLuminary( 0 ),
+		pEnvLight( 0 ),
 		screenPos( Point2( 0, 0 ) ),
 		guidingDirectionOut( 0, 0, 0 ),
 		guidingDirectionIn( 0, 0, 0 ),
