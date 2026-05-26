@@ -1,13 +1,15 @@
 # Cameras — Research & Roadmap
 
-**Status:** PARTIALLY EXECUTED. The Phase-1 cluster has shipped:
+**Status:** PARTIALLY EXECUTED. The Phase-1 cluster + cross-cutting cameras infrastructure has shipped:
 - **Phase 0** (reserve `realistic_camera` keyword) — done.
 - **Phase 1.0** (thin-lens photographic param overhaul: `sensor_size` / `focal_length` / `fstop` / `focus_distance`, polygonal aperture, anamorphic squeeze) — landed (commit `1ec8ef9`).
 - **Phase 1.1** (tilt-shift, scene-level `camera_defaults`, sensor-format UI presets) — landed.
 - **Phase 1.2** (mm-input lens specs, `scene_options` chunk for `scene_unit`) — landed (commit `39a03fd`).
-- **Multi-camera infrastructure** (not in the original phase list) — landed 2026-05-01 (commit `e9e1f3b`): scenes can declare many named cameras with one designated active. Camera-management ABI changed: `ICameraManager` mirrors the painter/light managers; `IJob::AddXxxCamera(name, ...)` replaces `SetXxxCamera(...)`; `SetActiveCamera(name)` / `RemoveCamera(name)` round out the surface; the `name` parameter on every camera chunk is optional with a "last-added wins" + auto-suffix collision rule. See commit message for the full ABI surface.
+- **Phase 1.3 — Multi-camera support** — landed 2026-05-01 (commit `e9e1f3bc`): scenes can declare many named cameras with one designated active. `ICameraManager` mirrors the painter/light managers; `IJob::AddXxxCamera(name, ...)` replaces the old `SetXxxCamera(...)` setters; `SetActiveCamera(name)` / `RemoveCamera(name)` round out the surface; the `name` parameter on every camera chunk is optional with a "last-added wins" + auto-suffix collision rule. Downstream: glTF importer auto-imports every camera-bearing node (commit `6d4e281c`); GUI accordion shows the active camera in the dropdown on first load (`b5ff0a55`); interactive-editor materials-and-multi-camera UX (`2cdb6087`).
+- **Phase 1.4 — Camera / Film / Output split** — landed 2026-05-10 (commits `45aa2178` + `62a66e5c`): camera chunks lose `width` / `height` / `pixelAR`; a new top-level `film` chunk is the sole authoring surface for the pixel grid; scene format bumped **v5 → v6** with a hard-fail parser migration message. `IFilm` / `Implementation::Film` is a Scene-owned peer of `ICamera`; rasterizers query Film for dims. New CLI flags `--width` / `--height` / `--pixel-ar` on `RISE-CLI`. Default `qHD (960×540)` Film auto-installed for chunk-less scenes. New tests: `FilmCameraResyncTest`, `FilmIntrospectionTest`, `JobScaleFilmToFitTest`, `MultipleCamerasTest`.
+- **Phase 1.5 — Physical exposure (Landing 5 of [PHYSICALLY_BASED_PIPELINE_PLAN](PHYSICALLY_BASED_PIPELINE_PLAN.md))** — landed in the Group A bundle: `iso` parameter on `pinhole_camera` and `thinlens_camera` (default 0 = disabled, preserves pre-L5 renders); `fstop` parameter added to `pinhole_camera` (thinlens already had it for DOF). Camera computes `evComp = −log2(1.2) − log2(N²·100 / (ISO·T))` per the UE5 / Filament saturation-based formula (ISO 12232). New virtual `ICamera::GetExposureCompensationEV()`, propagated through `IRasterizerOutput::SetCameraExposureCompensationEV(ev)` to `FileRasterizerOutput`, which sums camera-EV with the static `exposure_compensation` parameter and applies the total only on LDR outputs (HDR archival outputs zero camera-EV to preserve "linear radiance ground truth"). This is the minimum viable slice of the original "Phase 7 — Sensor / shutter model" — see Phase 7 below for what remains.
 
-The Phase-2-and-up work (output-format cameras, ODS, multi-element lens, polynomial-optics acceleration, diffraction & flare, sensor/shutter, neural lenses) has **not** started — those sections of this doc remain forward-looking. Sections marked *(LANDED)* in §5 below are accurate; everything past Phase 1.2 is a plan, not a status report.
+The Phase-2-and-up work (output-format cameras, ODS, multi-element lens, polynomial-optics acceleration, diffraction & flare, full sensor/shutter, neural lenses) has **not** started — those sections of this doc remain forward-looking. Sections marked *(LANDED)* in §5 below are accurate; everything past Phase 1.5 is a plan, not a status report.
 
 **Scope:** Survey the production / research state-of-the-art for camera models
 beyond the four RISE ships today (pinhole, orthographic, fisheye, thin-lens),
@@ -28,27 +30,30 @@ Source files in [src/Library/Cameras/](../src/Library/Cameras/):
 
 | Camera                | File                                     | Parser keyword          | Notes |
 |-----------------------|------------------------------------------|-------------------------|-------|
-| Pinhole (FOV)         | [PinholeCamera.h](../src/Library/Cameras/PinholeCamera.h) | `pinhole_camera`        | Plain perspective. |
+| Pinhole (FOV)         | [PinholeCamera.h](../src/Library/Cameras/PinholeCamera.h) | `pinhole_camera`        | Plain perspective. Phase 1.5 added `iso` / `fstop` for EV. |
 | Pinhole (ONB)         | (same)                                   | `onb_pinhole_camera`    | Basis-built variant for explicit axes. |
 | Orthographic          | [OrthographicCamera.h](../src/Library/Cameras/OrthographicCamera.h) | `orthographic_camera`   | Parallel projection. |
 | Fisheye               | [FisheyeCamera.h](../src/Library/Cameras/FisheyeCamera.h) | `fisheye_camera`        | Equidistant projection (180° field). |
-| Thin-lens             | [ThinLensCamera.h](../src/Library/Cameras/ThinLensCamera.h) | `thinlens_camera`       | Disk aperture + focus distance. |
-| Photographer thin-lens | (same impl)                             | **`realistic_camera`**  | Stub — re-parameterised thin-lens (film size + f-stop), delegates to `SetThinlensCamera`. Used by exactly one test scene (`scenes/Tests/Cameras/realistic.RISEscene`); no production scenes. **Keyword is free to repurpose for Phase 4.** |
+| Thin-lens             | [ThinLensCamera.h](../src/Library/Cameras/ThinLensCamera.h) | `thinlens_camera`       | Photographic quartet (sensor / focal / fstop / focus), polygonal aperture, anamorphic, tilt-shift, mm-input + `scene_options { scene_unit }`, ISO/EV. |
+| *(reserved)*          | —                                        | `realistic_camera`      | **Keyword reserved for Phase 4 (multi-element lens).** Currently unregistered — using it in a scene fails parse loudly. |
 
 Cross-cutting infrastructure already in place:
 
 - **`CameraCommon`** ([CameraCommon.h](../src/Library/Cameras/CameraCommon.h)) factors location/lookat/up, exposure, scanning rate, pixel rate, orientation, ONB/frame, and the editor mutation surface. Every new camera should derive from it.
+- **Camera / Film / Output split** (Phase 1.4, 2026-05). The pixel grid lives on a separate `IFilm` (Scene-owned, peer of `ICamera`). Cameras are pure optics; `width` / `height` / `pixelAR` are authored in the top-level `film` chunk only. Rasterizers read dims from Film. New CLI flags `--width` / `--height` / `--pixel-ar`. Scene format **v6**.
+- **Multi-camera support** (Phase 1.3, 2026-05). `ICameraManager` mirrors the painter/light managers; scenes hold many named cameras with one designated active. `IJob::AddXxxCamera(name, ...)` is the construction surface; `SetActiveCamera(name)` switches at runtime. glTF importer auto-imports every camera-bearing node.
+- **Photographic EV compensation** (Phase 1.5 / Landing 5). `iso` / `fstop` / `exposure` on pinhole + thinlens give ISO-12232 EV that propagates to `FileRasterizerOutput`. LDR outputs apply it; HDR outputs preserve linear radiance.
 - **Time-resolved sensor scaffolding.** `exposureTime` / `scanningRate` / `pixelRate` are wired through `ICamera` already — the rolling-shutter and motion-blur weighting plumbing partially exists but isn't a first-class shutter model yet.
-- **Lens-sample injection for MLT.** `ThinLensCamera::GenerateRayWithLensSample` takes a primary `Point2` lens sample directly so PSSMLT's small-step mutations on the aperture coordinate stay continuous. The handle is **non-virtual** by design (`MLTRasterizer` `dynamic_cast`s; `ICamera` vtable is frozen — see [ICamera.h](../src/Library/Interfaces/ICamera.h) lines 68–79). Any new lens camera must follow this pattern, not extend the vtable.
+- **Lens-sample injection for MLT.** `ThinLensCamera::GenerateRayWithLensSample` takes a primary `Point2` lens sample directly so PSSMLT's small-step mutations on the aperture coordinate stay continuous. The handle is **non-virtual** by design (`MLTRasterizer` `dynamic_cast`s; `ICamera` vtable preservation is load-bearing for out-of-tree implementors — see [ICamera.h](../src/Library/Interfaces/ICamera.h)). Any new lens camera must follow this pattern, not extend the vtable.
 - **Descriptor-driven chunk parsing.** Each camera = one `IAsciiChunkParser` subclass with `Describe()` + `Finalize()` ([AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) §"Cameras"). Adding a camera is one new struct + one register call.
 
 What is conspicuously **absent**:
 
-- No multi-element lens system simulation (no glass surfaces, no per-wavelength refraction, no exit-pupil sampling).
-- No tilt-shift / Scheimpflug. No anamorphic squeeze. No polygonal aperture.
-- No equirectangular / cubemap / dome / ODS output cameras.
-- No proper sensor model (spectral SPD, Bayer, read noise, non-rectangular shutter). Only the integration-time scalars are exposed.
-- No camera-importance `We()` plumbing distinct from primary-ray generation; BDPT/VCM connections through a thin lens are correct but a multi-element lens needs an explicit importance evaluator.
+- No multi-element lens system simulation (no glass surfaces, no per-wavelength refraction, no exit-pupil sampling). **Phase 4 plan exists** in §5 below; no code yet.
+- No equirectangular / cubemap / dome / ODS output cameras. (Phase 2, 3 — not started.)
+- No camera-importance `We()` plumbing distinct from primary-ray generation; BDPT/VCM connections through a thin lens are correct but a multi-element lens needs an explicit importance evaluator. (Phase 4.4.)
+- No spectral sensor SPD / Bayer / read-noise / non-rectangular-shutter sensor model. The EV-compensation slice is shipped; the rest of Phase 7 sits behind Phase 4.
+- No aperture diffraction / lens flare / sensor ghost paths (Phase 6).
 
 ---
 
@@ -175,17 +180,13 @@ Read before any phase below. These are RISE-specific landmines.
 
 Phases are ordered by ROI under the constraints above. Each phase is independently shippable: you can stop after any one and still have something useful.
 
-### Phase 0 — Reclaim the `realistic_camera` keyword
+### Phase 0 — Reclaim the `realistic_camera` keyword *(LANDED)*
 
-**Status:** No code action needed today. The keyword is effectively free.
+**Status:** Done. The stub parser registration was removed as part of Phase 1.0. The keyword is unregistered today — authoring `realistic_camera` in a scene now fails parse loudly ("unknown chunk keyword"), which is the desired state: it stays out of the namespace until Phase 4 reclaims it for the real multi-element camera.
 
-**Discovery.** [AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) §`RealisticCameraAsciiChunkParser` registers `realistic_camera` and delegates to `SetThinlensCamera`. Only **one** in-tree scene uses it — [scenes/Tests/Cameras/realistic.RISEscene](../scenes/Tests/Cameras/realistic.RISEscene), a demo showing the photographer-friendly parameter form. No production scenes, no user-facing API contract. The keyword is ours to redefine.
+**What changed.** The old `RealisticCameraAsciiChunkParser` shim (which delegated to `SetThinlensCamera`) was deleted; the lone test scene [scenes/Tests/Cameras/realistic.RISEscene](../scenes/Tests/Cameras/realistic.RISEscene) was migrated to `thinlens_camera` with the photographic-quartet parameter set.
 
-**Plan.** Repurpose `realistic_camera` for the **real** multi-element lens camera in Phase 4. Until Phase 4 ships, the existing stub stays as-is (no point thrashing it). When Phase 4 lands:
-
-1. `realistic_camera` becomes the multi-element lens chunk, parameterised by `lens_file` plus residual photographic params that still make physical sense for a real lens (`film_size` → sensor diagonal, `fstop` → working aperture, `focus_distance` → focus, `focal_length` is *no longer* an input — it's a property of the lens prescription and is rejected with a clear error if specified).
-2. The lone test scene migrates to `thinlens_camera` (trivial — same parameters, just translated).
-3. If we later want to keep the photographer-friendly thin-lens *as its own thing*, add a separate `photographic_camera` chunk. That's optional; today's `thinlens_camera` already covers the use case.
+**When Phase 4 lands** the keyword re-registers as the multi-element-lens chunk per the Phase 4 plan in §5 below. If we later want to keep a photographer-friendly thin-lens as its own thing, add a separate `photographic_camera` chunk; today's `thinlens_camera` already covers the use case.
 
 **Acceptance.** No work this phase beyond noting the decision. Track this section in Phase 4's checklist as the migration step that gates `realistic_camera`'s new semantics.
 
@@ -326,6 +327,64 @@ The mapping is C0 across blade seams (proven algebraically; verified numerically
 - Both GUI panels surface the new params automatically (descriptor-driven). Sensor-size presets render as a Menu/QToolButton next to the line edit; `tilt_x`/`tilt_y` get the angular scrub-rate. Preset bridge buffers sized to 256 bytes (was 64/128) so future longer labels won't truncate; Mac bridge defensively skips entries whose UTF-8 round-trip yields nil.
 - Build: `make -C build/make/rise -j8 all` and `xcodebuild -scheme RISE-GUI` clean rebuilds, zero warnings. Tests: 71/72 pass; the one failure is a pre-existing `GLTFLoaderTest` flake on master (filed separately).
 - Adversarial review (3 reviewers, parallel, orthogonal concerns): zero CRITICAL findings; three MAJORs addressed in this round (shift sign convention, tilt validation, preset buffer hardening). Pre-existing items flagged for future work: nested `> load` wipes parser state mid-parse (affects `s_painterColors` too — not Phase-1.1-specific); `mProperties` snapshot vs render-thread race (pre-existing, applies to all properties).
+
+---
+
+### Phase 1.3 — Multi-camera support *(LANDED)*
+
+**Goal.** Replace the single `ICamera*` Scene slot with a manager of many named cameras and a designated active one. Mirrors how painters, lights, and materials are already keyed by name; unlocks glTF asset reels, multi-shot scene files, and the interactive editor's camera switcher.
+
+**Shipped (2026-05-01, commit `e9e1f3bc`):**
+- **`ICameraManager`** ([src/Library/Interfaces/ICameraManager.h](../src/Library/Interfaces/ICameraManager.h)) mirroring `IPainterManager` / `ILightManager` patterns.
+- **`IScenePriv`**: `SetCamera(ICamera*)` replaced by `AddCamera(name, cam)` + `RemoveCamera(name)` + `SetActiveCamera(name)` + `SetCameraManager(mgr)`. `GetCameras()` / `GetActiveCameraName()` expose the manager + current active for read. `GetCamera()` / `GetCameraMutable()` retained as the active-camera accessor so the ~50 render-path call sites need no rename.
+- **`IJob`**: `Set{Pinhole,PinholeONB,Thinlens,Fisheye,Orthographic}Camera` replaced by `Add*` equivalents that take a `name` + auto-mark active ("last-added wins"); plus `SetActiveCamera(name)` / `RemoveCamera(name)`.
+- **`RISE_API`**: new `RISE_API_CreateCameraManager` factory.
+- **Parser**: `name` parameter optional on every camera chunk (`pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera`). Default `"default"`; collisions auto-suffix (`"default"`, `"default_1"`, …) so unnamed-camera scenes always work. Two cameras explicitly named `"default"` still collide loudly.
+- **Downstream consumers** that lit up immediately:
+  - glTF importer (commit `6d4e281c`, 2026-05-01) — every camera-bearing node imports as `<prefix>.cam.<sanitizedNodeName>`; runtime `SetActiveCamera` switches hero shots without re-importing.
+  - GUI accordion (commit `b5ff0a55`, 2026-05-06) — active-camera dropdown initialised on first load.
+  - Interactive editor (commit `2cdb6087`, 2026-05-16) — multi-camera + property unlocks bundled with the Materials category.
+
+**Acceptance.**
+- `MultipleCamerasTest` covers add / remove / set-active / collision-and-suffix.
+- [scenes/Tests/Cameras/multiple_cameras.RISEscene](../scenes/Tests/Cameras/multiple_cameras.RISEscene) — three named cameras of different types sharing one scene, top-down is the default-active.
+- ABI break was approved up front; all in-tree callers migrated in the same CL.
+
+---
+
+### Phase 1.4 — Camera / Film / Output split *(LANDED)*
+
+**Goal.** Separate raster-grid dimensions from camera optics so a single camera can drive multiple resolutions (CLI override, GUI preview-scale, batch sweeps) without re-authoring the scene. Mirrors the Blender / PBRT / Mitsuba convention.
+
+**Shipped (2026-05-10, commits `45aa2178` "Phase A" + `62a66e5c` "Phase B2"):**
+- **New `IFilm` / `Implementation::Film`** ([src/Library/Interfaces/IFilm.h](../src/Library/Interfaces/IFilm.h), [src/Library/Rendering/Film.{h,cpp}](../src/Library/Rendering/)). Owns `width`, `height`, `pixelAR`. Scene holds exactly one active Film; rasterizers query Film (not the camera) for dims.
+- **New `film` scene-language chunk.** Sole authoring surface for the pixel grid; descriptor-driven so the GUI properties panel auto-shows it. Defaults to qHD (960×540, square pixels) so chunk-less scenes still render. Multiple `film` chunks: last-declared wins, each one walks the camera manager and resyncs every previously-added camera in lock-step.
+- **Scene format bump: `RISE ASCII SCENE 5` → `RISE ASCII SCENE 6`.** Parser hard-fails on v5 with a one-line migration recipe. Every in-tree scene migrated.
+- **`AddCameraCommonParams` + the 5 camera chunk descriptors lose `width` / `height` / `pixelAR`.** Authoring those inside a camera chunk now fails parse with "parameter not declared in descriptor".
+- **`IJob::Add*Camera` signatures drop the `(xres, yres, pixelAR)` trio.** `Job::Add*Camera` reads dims from the active Film via the new `ReadFilmDims` helper at construction; `Job::SetFilm` walks the camera manager and resyncs every camera's projection.
+- **New CLI flags `--width` / `--height` / `--pixel-ar`** on `RISE-CLI` with `strtol`/`strtod` validation and partial-override fallback. Documented in [AGENTS.md](../AGENTS.md) as the canonical way to render test scenes at low resolution.
+- **Editor introspection**: new [src/Library/SceneEditor/FilmIntrospection.{h,cpp}](../src/Library/SceneEditor/) lets the properties panel surface Film like any other top-level chunk.
+- **New tests**: `FilmCameraResyncTest`, `FilmIntrospectionTest`, `JobScaleFilmToFitTest`. [scenes/Tests/Cameras/film_chunk.RISEscene](../scenes/Tests/Cameras/film_chunk.RISEscene) exercises the parser end-to-end.
+
+**Migration.** All in-tree scenes were converted automatically (`tools/migrate_scenes_v5_to_v6.py`). Out-of-tree scenes get a one-line parser error pointing at the migration tool.
+
+---
+
+### Phase 1.5 — Physical-exposure parameters on existing cameras *(LANDED — minimal slice of original Phase 7)*
+
+**Goal.** Make scene radiance and sensor signal unit-correct without introducing a new camera type. The "minimum viable" piece of the original Phase 7 sensor/shutter agenda.
+
+**Shipped (part of the "Group A bundle" in [docs/PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md) Landing 5):**
+- **`iso` parameter on `pinhole_camera` and `thinlens_camera`.** Default 0 = physical exposure DISABLED — every pre-L5 scene renders bit-identically.
+- **`fstop` parameter added to `pinhole_camera`** (thinlens already had it for DOF; reused for EV when iso > 0). `exposure` (shutter time, already present for motion blur) is the third leg.
+- **EV computation** per the UE5 / Filament saturation-based formula (ISO 12232): `evCompensation = −log2(1.2) − log2(N² × 100 / (ISO × T))`.
+- **New virtual `ICamera::GetExposureCompensationEV()`** (default returns 0; ABI-additive at the end of the existing vtable).
+- **New virtual `IRasterizerOutput::SetCameraExposureCompensationEV(ev)`** (default no-op). PixelBased rasterizer propagates camera EV to every output once at frame start (in both `RasterizeScene` and `RenderFrameOfAnimation` entry points).
+- **`FileRasterizerOutput`** sums camera-EV with its static `exposure_compensation` parameter to produce the total EV applied to LDR outputs (PNG / JPEG / PPM). HDR archival outputs (EXR / RGBE) zero the camera-EV in the setter to preserve "linear radiance ground truth" from Landing 1.
+
+**Verified.** `scenes/Tests/Camera/physical_exposure.RISEscene` — toggling iso/fstop/exposure dims the rendered sphere by exactly the predicted factor on the PNG; EXR is bit-identical across settings. Sponza + Cornell + shapes all render pixel-identical to pre-L5 (the non-physical default path).
+
+**What's still in Phase 7 (the non-minimal sensor/shutter work):** SPD-driven sensor response curves, Bayer pattern, read noise, rolling shutter, motion blur as a first-class shutter model (vs. the partial scaffolding already on `CameraCommon`), non-rectangular shutter shapes. See Phase 7 below — the EV-compensation slice is done; the rest is untouched.
 
 ---
 
@@ -574,20 +633,23 @@ Profile before optimizing: `xcrun xctrace` (macOS) or `perf record` (Linux) agai
 
 ---
 
-### Phase 7 — Sensor / shutter model (parallel track)
+### Phase 7 — Sensor / shutter model (parallel track) *(PARTIAL — Landing 5 EV slice shipped, see Phase 1.5)*
 
 **Goal.** Real exposure pipeline: spectral sensor SPD, Bayer mosaic, read noise, dark current, non-rectangular shutter weighting. Pairs with Phase 4 to *match* a reference photograph rather than just resemble one.
 
-This is its own subsystem and should get its own roadmap doc once Phase 4 is in flight; flagged here so we don't conflate it with lens work. Parts of the scaffolding are already in `CameraCommon` (`exposureTime` / `scanningRate` / `pixelRate`), and the existing `Frame` class is the natural place to grow a sensor model.
+**What's already done** (Phase 1.5 above, Landing 5 of [docs/PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md)):
+- `iso` / `fstop` / `exposure` on pinhole + thinlens cameras give correct ISO-12232 EV compensation today.
+- LDR outputs (PNG / JPEG / PPM) apply the EV; HDR outputs (EXR / RGBE) preserve linear radiance.
+- This covers the "I want to author with real luminance units and the render auto-exposes" use case without needing the full sensor pipeline below.
 
-**Scope sketch (not committed yet).**
-- Camera-RGB SPDs (CIE sensitivity functions or per-camera measured) replace the post-spectral colour-matching matrix.
+**What's still in scope (not committed yet).**
+- Camera-RGB SPDs (CIE sensitivity functions or per-camera measured) replace the post-spectral colour-matching matrix. **Spectral path tracer is the right place to land this** — currently uses XYZ-matched colour-matching at integration time; per-camera SPDs would slot in at the same API boundary.
 - Bayer pattern + demosaic option for synthetic-data workflows.
-- Rolling shutter pose-per-scanline sampling. (`scanningRate` is the input.)
+- Rolling shutter pose-per-scanline sampling. `scanningRate` / `pixelRate` are already on `CameraCommon` and propagated through `ICamera`; need to wire them into the camera-ray generation path (currently no consumer).
 - Read noise + dark current additive at the sensor stage.
-- Shutter-shape weighting (rectangular default; Cosine, exit-only, mechanical-curtain shapes).
+- Shutter-shape weighting (rectangular default — what Landing 5 implicitly assumes; future: Cosine, exit-only, mechanical-curtain shapes).
 
-**Defer until:** Phase 4 lands. The realistic lens is the dominant visual factor; sensor effects sit on top of it.
+**Defer until:** Phase 4 lands. The realistic lens is the dominant visual factor; remaining sensor effects sit on top of it. The Landing 5 EV slice shipped early because it's tightly coupled to the HDR output pipeline (Landing 1) and didn't need lens work.
 
 ---
 
@@ -620,11 +682,16 @@ For *every* phase:
 
 ## 7. Open questions
 
-- **Per-wavelength primary rays — sample-and-hold or per-sample re-trace?** A spectral renderer typically picks one λ per primary sample and uses it through the path. The lens trace happens once per primary sample, so per-λ is "free." But MLT mutations might want to mutate λ separately from `lensSample` — needs to be checked against `MLTRasterizer`'s mutator state.
-- **Exit-pupil cache key — image-plane radius or full (x,y)?** PBRT keys on radius (assumes radial symmetry). Anamorphic / squeezed lenses break that assumption. Decide at Phase 4.2.
-- **Lens-prescription format compatibility.** PBRT's format is the obvious choice (largest available lens corpus). Zemax `.zmx` is the industrial standard but proprietary. Start PBRT-only; revisit if a user supplies a real Zemax file we want to import.
-- **Polynomial-optics fit time — at scene-load or pre-baked?** Hanika '14 fits in seconds; either works. Pre-baked is reproducible; load-time is less infrastructure. Decide at Phase 5.
-- **Should we keep a `photographic_camera` chunk?** Once Phase 4 reclaims `realistic_camera` for the multi-element camera, the photographer-friendly thin-lens parameterisation (film_size + fstop + focal_length + focus_distance, no lens prescription) loses its keyword. `thinlens_camera` already covers it via aperture/focal/focus, but those parameters are less DP-friendly. Optional Phase-1 add-on.
+Most of the original §7 set has been resolved by the Phase 4 plan added to §5 (architectural decisions table). The remaining open ones:
+
+- **Polynomial-optics fit time — at scene-load or pre-baked?** Hanika '14 fits in seconds; either works. Pre-baked is reproducible; load-time is less infrastructure. **Decide at Phase 5, gated on the Phase 4.4 measurement** that determines whether Phase 5 fires at all (see Phase 4 plan §"Performance baseline plan").
+- **Should we keep a `photographic_camera` chunk?** `thinlens_camera` already covers the photographer-friendly parameterisation (sensor / focal / fstop / focus / iso). A separate `photographic_camera` keyword would just be an alias. Lean: don't bother unless a user explicitly asks.
+- **Zemax `.zmx` lens-prescription support.** PBRT format is the choice for Phase 4 (decision 1 of the Phase 4 plan). Zemax `.zmx` is the industrial standard but proprietary; revisit only if a user supplies a real `.zmx` file we want to import.
+
+Resolved in the Phase 4 plan (see §5 → Phase 4 → "Architectural decisions"):
+- Per-wavelength primary rays → re-trace per λ inside the spectral loop (decision 8), with HWSS hero-sharing fallback measured during 4.3.
+- Exit-pupil cache key → radial only first, escalation to (radius, λ) if 4.3 measures > 30% rejection at extreme wavelengths (decision 6).
+- Lens-prescription format → PBRT-strict `.dat` + RISE sidecar `.glass` files for dispersion (decisions 1, 2, 3).
 
 ---
 
