@@ -440,10 +440,10 @@ static const char* kRasterizerVCM =
 // comparison stays apples-to-apples; spectral integrators use the
 // same Le from `pnt_env` (uniformcolor at L=1) per-wavelength via
 // GetRadianceNM, so the reference outgoing radiance is unchanged
-// (0.5 = albedo·Le on the Lambertian quad).  HWSS off and a single
-// spectral_sample per pixel to keep render time close to the Pel
-// variant; samples bumped to 128 to compensate for the higher
-// variance of single-wavelength evaluation.
+// (0.5 = albedo·Le on the Lambertian quad).  Both HWSS on and HWSS off
+// configurations are executed dynamically per spectral test to exercise
+// both hero-wavelength and single-wavelength loops; samples bumped to
+// 128 to compensate for the higher variance.
 static const char* kRasterizerPTSpectral =
 	"standard_shader\n"
 	"{\n"
@@ -489,7 +489,7 @@ static const char* kRasterizerBDPTSpectral =
 	"\tnmend 720\n"
 	"\tnum_wavelengths 8\n"
 	"\tspectral_samples 1\n"
-	"\thwss true\n"
+	"\thwss false\n"
 	"\tpixel_filter box\n"
 	"\tradiance_map pnt_env\n"
 	"\tradiance_scale 1.0\n"
@@ -864,6 +864,25 @@ static void TestEnvNonUniformOffCenter()
 		kEnvNonUniformTolerances );
 }
 
+static std::string EnableHWSSInRasterizer( const std::string& config, bool enable )
+{
+	std::string res = config;
+	std::size_t pos = res.find( "hwss true" );
+	if( pos != std::string::npos ) {
+		if( !enable ) {
+			res.replace( pos, 9, "hwss false" );
+		}
+	} else {
+		pos = res.find( "hwss false" );
+		if( pos != std::string::npos ) {
+			if( enable ) {
+				res.replace( pos, 10, "hwss true" );
+			}
+		}
+	}
+	return res;
+}
+
 //////////////////////////////////////////////////////////////////////
 // Topology I: Non-uniform env + off-center quad, SPECTRAL.
 //
@@ -876,12 +895,15 @@ static void TestEnvNonUniformOffCenter()
 // checker env amplifies any direction-mismatch into visible per-
 // pixel bias.
 //////////////////////////////////////////////////////////////////////
-static void TestEnvNonUniformOffCenterSpectral()
+static void TestEnvNonUniformOffCenterSpectral( bool hwss )
 {
+	const std::string name = std::string( "non-uniform env + off-center quad (spectral, hwss=" ) + ( hwss ? "true" : "false" ) + ")";
 	RunEnvTopologyTestWithRasterizers(
-		"non-uniform env + off-center quad (spectral)",
+		name.c_str(),
 		std::string( kSceneOffCenterGeometry ) + kEnvCheckerPainter,
-		kRasterizerPTSpectral, kRasterizerBDPTSpectral, kRasterizerVCMSpectral,
+		EnableHWSSInRasterizer( kRasterizerPTSpectral, hwss ).c_str(),
+		EnableHWSSInRasterizer( kRasterizerBDPTSpectral, hwss ).c_str(),
+		EnableHWSSInRasterizer( kRasterizerVCMSpectral, hwss ).c_str(),
 		kEnvNonUniformTolerances );
 }
 
@@ -900,12 +922,15 @@ static void TestEnvNonUniformOffCenterSpectral()
 // variance than the Pel variant (single-wavelength evaluation) so
 // samples are bumped to 128 instead of 64.
 //////////////////////////////////////////////////////////////////////
-static void TestEnvOnlySpectral()
+static void TestEnvOnlySpectral( bool hwss )
 {
+	const std::string name = std::string( "env-only Lambertian (spectral, hwss=" ) + ( hwss ? "true" : "false" ) + ")";
 	RunEnvTopologyTestWithRasterizers(
-		"env-only Lambertian (spectral)",
+		name.c_str(),
 		std::string( kSceneCommonGeometry ) + kEnvPainter,
-		kRasterizerPTSpectral, kRasterizerBDPTSpectral, kRasterizerVCMSpectral );
+		EnableHWSSInRasterizer( kRasterizerPTSpectral, hwss ).c_str(),
+		EnableHWSSInRasterizer( kRasterizerBDPTSpectral, hwss ).c_str(),
+		EnableHWSSInRasterizer( kRasterizerVCMSpectral, hwss ).c_str() );
 }
 
 int main( int /*argc*/, char* /*argv*/[] )
@@ -915,9 +940,11 @@ int main( int /*argc*/, char* /*argv*/[] )
 	TestEnvOnly();
 	TestEnvPlusOmni();
 	TestEnvPlusMesh();
-	TestEnvOnlySpectral();
+	TestEnvOnlySpectral( false );
+	TestEnvOnlySpectral( true );
 	TestEnvNonUniformOffCenter();
-	TestEnvNonUniformOffCenterSpectral();
+	TestEnvNonUniformOffCenterSpectral( false );
+	TestEnvNonUniformOffCenterSpectral( true );
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

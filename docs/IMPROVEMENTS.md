@@ -1096,8 +1096,7 @@ weights sum to 1 unbiased — closing the 15-22% gap.
 ### Validation criteria
 
 - `EnvLightBalanceTest` passes with strict `0.10 / 0.30 / 1.00`
-  tolerances on all six topologies (env-only RGB / spectral, env+omni,
-  env+mesh, non-uniform off-center RGB / spectral).
+  tolerances on all topologies and configurations (RGB and spectral variants under both HWSS modes).
 - No regression on any of the 116 existing tests.
 - Visual: render `scenes/FeatureBased/ripple_dreams_fields.RISEscene`
   with PT, BDPT, VCM (each at matched samples).  All three should

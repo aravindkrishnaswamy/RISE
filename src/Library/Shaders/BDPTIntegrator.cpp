@@ -5049,6 +5049,17 @@ Scalar BDPTIntegrator::EvalEmitterRadianceNM(
 	const Scalar nm
 	) const
 {
+	if( vertex.pEnvLight ) {
+		RasterizerState nullRast = {0};
+		Ray skyProbe( vertex.position, -outDir );
+		return vertex.pEnvLight->GetRadianceNM( skyProbe, nullRast, nm );
+	}
+
+	if( vertex.pLight ) {
+		const RISEPel Le = vertex.pLight->emittedRadiance( outDir );
+		return 0.2126 * Le[0] + 0.7152 * Le[1] + 0.0722 * Le[2];
+	}
+
 	if( !vertex.pMaterial ) {
 		return 0;
 	}
