@@ -150,6 +150,23 @@ class CameraData:
     pixel_aspect: float
     shift_x: float
     shift_y: float
+    # ABI v7 — realistic camera fields.  When ``use_dof`` is non-zero the
+    # bridge dispatches to AddThinlensCamera with full optical model;
+    # otherwise the pinhole path is taken (preserving v6 behaviour bit-
+    # identically when these fields are zero).  Distances in scene units;
+    # ``scene_unit_meters`` is Blender's ``unit_settings.scale_length``.
+    focal_length_mm: float = 50.0
+    sensor_width_mm: float = 36.0
+    sensor_height_mm: float = 24.0
+    sensor_fit_vertical: int = 0
+    use_dof: int = 0
+    fstop: float = 0.0
+    focus_distance: float = 0.0
+    aperture_blades: int = 0
+    aperture_rotation_radians: float = 0.0
+    aperture_ratio: float = 1.0
+    iso: float = 0.0
+    scene_unit_meters: float = 1.0
 
 
 @dataclass
@@ -1935,6 +1952,133 @@ def _camera_payload(camera_object, render_settings: RenderSettingsData, state: _
     else:
         fov_y_radians = float(getattr(camera_data, "angle_y", 0.78539816339))
 
+    # Realistic-camera fields (ABI v7).  ``dof`` is an optional sub-
+    # struct on the camera data — guard against API absence in older
+    # / stub Blender contexts (some headless test rigs synthesise
+    # cameras without it).  When DOF is OFF, ``use_dof = 0`` and the
+    # bridge takes the pinhole path; when ON, the bridge routes
+    # through AddThinlensCamera with the photographic optical model.
+    dof = getattr(camera_data, "dof", None)
+    use_dof = 1 if (dof is not None and bool(getattr(dof, "use_dof", False))) else 0
+    fstop = float(getattr(dof, "aperture_fstop", 0.0)) if dof is not None else 0.0
+    aperture_blades = int(getattr(dof, "aperture_blades", 0)) if dof is not None else 0
+    aperture_rotation = float(getattr(dof, "aperture_rotation", 0.0)) if dof is not None else 0.0
+    aperture_ratio = float(getattr(dof, "aperture_ratio", 1.0)) if dof is not None else 1.0
+
+    # Focus distance.  Per Blender's `BKE_camera_object_dof_distance`
+    # (source/blender/blenkernel/intern/camera.cc):
+    #
+    #     if (cam->dof.focus_object) {
+    #         // ... compute dot of (target - camera) with view_dir
+    #         return max_ff(fabsf(dot), 1e-5f);
+    #     }
+    #     return cam->dof.focus_distance;
+    #
+    # Critically: once `focus_object` is set, Blender ALWAYS uses the
+    # camera-axis-projected distance (clamped to 1e-5 minimum) and
+    # NEVER falls back to the numeric `dof.focus_distance` field.  A
+    # focus target sitting in the camera's plane (projection ≈ 0)
+    # gives Blender's near-focus 1e-5 clamp, not the stale numeric
+    # value (adversarial review round 11, P2).
+    #
+    # Fallback to `dof.focus_distance` happens ONLY when:
+    #   - `focus_object` is None (no override set), or
+    #   - the focus-object world matrix is unreachable (API error /
+    #     stub object) — defensive guard, not Blender behaviour.
+    #
+    # `focus_subtarget` on armature focus objects resolves the bone's
+    # live posed head position.
+    focus_distance = 0.0
+    resolved_from_focus_object = False
+    if dof is not None:
+        focus_object = getattr(dof, "focus_object", None)
+        if focus_object is not None:
+            try:
+                # Resolve target world position, honouring
+                # focus_subtarget on armature focus objects.
+                target_world = None
+                subtarget = str(getattr(dof, "focus_subtarget", "") or "")
+                if (
+                    subtarget
+                    and getattr(focus_object, "type", None) == "ARMATURE"
+                ):
+                    pose = getattr(focus_object, "pose", None)
+                    bone = (
+                        pose.bones.get(subtarget) if pose is not None else None
+                    )
+                    if bone is not None:
+                        # `bone.head` is local to the armature; the
+                        # armature object's matrix_world brings it to
+                        # world space.  `bone.head_local` is in armature
+                        # rest space — we want the live posed location.
+                        target_world = focus_object.matrix_world @ bone.head
+                if target_world is None:
+                    target_world = focus_object.matrix_world.translation
+
+                cam_pos = camera_object.matrix_world.translation
+                # Camera-axis depth = |dot(forward, target - camera)|,
+                # clamped to 1e-5.  Matches BKE_camera_object_dof_distance.
+                dxv = float(target_world.x) - float(cam_pos.x)
+                dyv = float(target_world.y) - float(cam_pos.y)
+                dzv = float(target_world.z) - float(cam_pos.z)
+                projected = (
+                    forward[0] * dxv
+                    + forward[1] * dyv
+                    + forward[2] * dzv
+                )
+                focus_distance = max(abs(projected), 1e-5)
+                resolved_from_focus_object = True
+            except (AttributeError, TypeError):
+                # API hiccup (stub object without matrix_world, etc.):
+                # leave resolved_from_focus_object False so we fall
+                # back to focus_distance below.
+                pass
+        if not resolved_from_focus_object:
+            focus_distance = float(getattr(dof, "focus_distance", 0.0))
+
+    # Resolve Blender's `sensor_fit` into a definitive HORIZONTAL /
+    # VERTICAL flag so the bridge doesn't have to redo Cycles' AUTO
+    # rule.  Per Blender's `BKE_camera_sensor_fit(sensor_fit, sizex,
+    # sizey)` (source/blender/blenkernel/intern/camera.cc), AUTO is
+    # decided by the RENDER GATE aspect — NOT the physical sensor
+    # aspect.  The function is called with the rendered image's pixel-
+    # aspect-aware extents:
+    #
+    #     sizex = render_w * pixel_aspect_x
+    #     sizey = render_h * pixel_aspect_y
+    #
+    # then picks HORIZONTAL when sizex >= sizey, else VERTICAL.  Our
+    # earlier image_aspect-vs-sensor_aspect rule was wrong: on a 4:3
+    # or 1:1 render with the default 36×24 sensor it would have
+    # picked VERTICAL fit (because 1.33 < 1.5 and 1.0 < 1.5) when
+    # Blender actually picks HORIZONTAL (because 4:3 and 1:1 render
+    # gates are still "wider-or-equal" by gate-aspect rule).
+    sensor_fit_str = str(getattr(camera_data, "sensor_fit", "AUTO"))
+    if sensor_fit_str == "VERTICAL":
+        sensor_fit_vertical = 1
+    elif sensor_fit_str == "HORIZONTAL":
+        sensor_fit_vertical = 0
+    else:
+        gate_x = render_settings.width * float(getattr(render_settings, "pixel_aspect", 1.0))
+        gate_y = render_settings.height
+        sensor_fit_vertical = 0 if gate_x >= gate_y else 1
+
+    # ISO: Cycles has no native concept, but RISE's photographic model
+    # uses it for EV computation.  We surface it as an add-on property
+    # on the RISE camera settings (registered alongside the rasterizer
+    # selector) — fall back to 0 (= disabled) when the property doesn't
+    # exist yet (older add-on installs).
+    rise_camera_settings = getattr(camera_data, "rise_camera", None)
+    iso = float(getattr(rise_camera_settings, "iso", 0.0)) if rise_camera_settings is not None else 0.0
+
+    scene_unit_meters = 1.0
+    try:
+        scene_unit_meters = float(bpy.context.scene.unit_settings.scale_length)
+    except (AttributeError, TypeError):
+        pass
+    if scene_unit_meters <= 0.0:
+        scene_unit_meters = 1.0
+
     return CameraData(
         projection_type=projection_type,
         location=(float(location.x), float(location.y), float(location.z)),
@@ -1947,6 +2091,18 @@ def _camera_payload(camera_object, render_settings: RenderSettingsData, state: _
         pixel_aspect=render_settings.pixel_aspect,
         shift_x=float(getattr(camera_data, "shift_x", 0.0)),
         shift_y=float(getattr(camera_data, "shift_y", 0.0)),
+        focal_length_mm=float(getattr(camera_data, "lens", 50.0)),
+        sensor_width_mm=float(getattr(camera_data, "sensor_width", 36.0)),
+        sensor_height_mm=float(getattr(camera_data, "sensor_height", 24.0)),
+        sensor_fit_vertical=sensor_fit_vertical,
+        use_dof=use_dof,
+        fstop=fstop,
+        focus_distance=focus_distance,
+        aperture_blades=aperture_blades,
+        aperture_rotation_radians=aperture_rotation,
+        aperture_ratio=aperture_ratio,
+        iso=iso,
+        scene_unit_meters=scene_unit_meters,
     )
 
 

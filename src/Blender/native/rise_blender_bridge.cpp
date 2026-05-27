@@ -740,6 +740,119 @@ namespace
 			return true;
 		}
 
+		// Realistic-camera dispatch (ABI v7): when Blender's DOF is
+		// enabled on the camera data, route through AddThinlensCamera
+		// so focal length / sensor size / fstop / focus distance /
+		// aperture blades / anamorphic squeeze / tilt-shift all apply.
+		// Otherwise the pinhole path preserves the v6 behaviour bit-
+		// identically — fov_y already encodes (focal, sensor) for
+		// the simple optical model.
+		//
+		// ISO / fstop / shift can ALSO drive the pinhole path: when
+		// iso > 0 we forward iso + fstop into AddPinholeCamera for
+		// the EV-compensation pipeline (Landing 5), so users who
+		// want physical exposure without DOF still get it.  The
+		// shift_x/shift_y mm-conversion uses sensor_width as the
+		// reference dimension (Blender stores shift as a fraction
+		// of the sensor dimension, regardless of sensor_fit).
+		const bool use_thinlens = ( camera.use_dof != 0 );
+		const double scene_unit_meters =
+			( camera.scene_unit_meters > 0.0f )
+				? double( camera.scene_unit_meters )
+				: 1.0;
+
+		if( use_thinlens ) {
+			// RISE's AddThinlensCamera convention is "sensor_size is
+			// the horizontal extent and the image is fit horizontally"
+			// (see ThinLensCamera.cpp ~line 153).  Cycles supports
+			// three fit modes; we translate each to the equivalent
+			// horizontal sensor extent so RISE's renderer reproduces
+			// Cycles' framing 1:1.
+			//
+			//   HORIZONTAL fit: pass sensor_width directly.
+			//   VERTICAL   fit: pass sensor_height * display_aspect so
+			//                   the image's horizontal extent ends up
+			//                   = sensor_height * display_aspect and
+			//                   vertical = sensor_height. ✓
+			//   AUTO       fit: Blender's `BKE_camera_sensor_fit` picks
+			//                   by RENDER GATE aspect (pixel-aspect-
+			//                   aware), not physical sensor aspect.
+			//                   The Python exporter resolves AUTO to
+			//                   HORIZONTAL/VERTICAL via that rule
+			//                   before sending us the answer.
+			//
+			// The "display aspect" used here MUST include pixel_aspect
+			// because RISE's camera transform later pre-stretches X
+			// by pixelAR via ComputeScaleFromAR — see ThinLensCamera
+			// imageAspect derivation for the matching consumer side.
+			const double image_w = ( camera.width > 0 ) ? double( camera.width ) : 1.0;
+			const double image_h = ( camera.height > 0 ) ? double( camera.height ) : 1.0;
+			const double pixel_ar = ( camera.pixel_aspect > 0.0f )
+				? double( camera.pixel_aspect ) : 1.0;
+			const double display_aspect = ( image_w * pixel_ar ) / image_h;
+			const double sensor_w_mm = double( camera.sensor_width_mm );
+			const double sensor_h_mm = double( camera.sensor_height_mm );
+			const double sensor_size_mm =
+				( camera.sensor_fit_vertical != 0 )
+					? ( sensor_h_mm * display_aspect )
+					: sensor_w_mm;
+
+			// Blender / Cycles store lens shift as a fraction of the
+			// FITTED sensor dimension, applied to BOTH X and Y — not
+			// against separate physical sensor axes.  See Blender's
+			// `view_plane_compute` (source/blender/blenkernel/intern/
+			// camera.cc): `dx = sensor_size_fit * cam->shiftx; dy =
+			// sensor_size_fit * cam->shifty;`  Earlier code used
+			// sensor_w for shift_x and sensor_h for shift_y, which
+			// under-shifted Y on horizontal fit and over-shifted X on
+			// vertical fit — adversarial review round 8, P1.
+			const double sensor_size_fit_mm = ( camera.sensor_fit_vertical != 0 )
+				? sensor_h_mm
+				: sensor_w_mm;
+			const double shift_x_mm =
+				double( camera.shift_x ) * sensor_size_fit_mm;
+			const double shift_y_mm =
+				double( camera.shift_y ) * sensor_size_fit_mm;
+			const double aperture_ratio =
+				( camera.aperture_ratio > 0.0f )
+					? double( camera.aperture_ratio )
+					: 1.0;
+
+			if( !job.AddThinlensCamera(
+				"default",
+				location,
+				lookat,
+				up,
+				sensor_size_mm,
+				double( camera.focal_length_mm ),
+				double( camera.fstop ),
+				double( camera.focus_distance ),
+				scene_unit_meters,
+				0.0,	// exposure (Cycles has no native shutter time → 0)
+				0.0,	// scanningRate
+				0.0,	// pixelRate
+				orientation,
+				target_orientation,
+				static_cast<unsigned int>( camera.aperture_blades < 0 ? 0 : camera.aperture_blades ),
+				double( camera.aperture_rotation_radians ),
+				aperture_ratio,
+				0.0,	// tiltX — Blender's camera has no native tilt
+				0.0,	// tiltY
+				shift_x_mm,
+				shift_y_mm,
+				double( camera.iso ) ) )
+			{
+				write_error( error_message, error_message_size,
+					"Failed to configure the thin-lens (DOF) camera" );
+				return false;
+			}
+
+			return true;
+		}
+
+		// Pinhole fallback — forward iso / fstop so the EV pipeline
+		// still applies when the user wants physical exposure without
+		// aperture-disc DOF.
 		if( !job.AddPinholeCamera(
 			"default",
 			location,
@@ -750,7 +863,9 @@ namespace
 			0.0,
 			0.0,
 			orientation,
-			target_orientation ) )
+			target_orientation,
+			double( camera.iso ),
+			double( camera.fstop ) ) )
 		{
 			write_error( error_message, error_message_size, "Failed to configure the perspective camera" );
 			return false;

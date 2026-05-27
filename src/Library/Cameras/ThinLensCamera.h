@@ -97,6 +97,17 @@ namespace RISE
 			// of truth (editor reads them in mm directly).
 			Scalar		shiftX_sceneUnits;
 			Scalar		shiftY_sceneUnits;
+			// Cached 1/pixelAR for the aperture-sample X compensation.
+			// `mxTrans` includes a Stretch(pixelAR, 1, 1) — see
+			// ComputeScaleFromAR.  The image-plane math already
+			// accounts for that (sy → fov via display_aspect, shiftX
+			// pre-divided), but the per-ray aperture sample x in
+			// SampleAperture/GenerateRay is in raw scene units and
+			// would get stretched too, making the aperture disc 2×
+			// wider in X for anamorphic 2:1 pixelAR.  Pre-dividing
+			// ptOnLens.x by pixelAR keeps the lens axisymmetric in
+			// world space.  Cached once in Recompute; default 1.
+			Scalar		pixelARInv;
 			// Focus-plane equation cache: n · P = kFocus, where P is a
 			// world-space point on the focal plane (in camera-local
 			// coords).  For tilt = (0,0) this collapses to n = (0,0,1)

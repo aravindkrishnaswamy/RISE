@@ -271,6 +271,69 @@ class RISE_RENDER_PT_bridge(_RISEPanel):
         )
 
 
+class RISE_CAMERA_PT_photographic(bpy.types.Panel):
+    """Properties → Camera tab: RISE-specific photographic settings.
+
+    Surfaces ISO (Cycles-incompatible) on the active camera so users
+    can drive RISE's EV-compensation pipeline without leaving the
+    camera-data panel.  Focal length, sensor size, f-stop, focus
+    distance, aperture blades / rotation / ratio, and lens shift are
+    all read directly from Blender's stock camera-data fields — the
+    existing Cycles UI panels remain the authoring surface for them.
+    """
+
+    bl_space_type = "PROPERTIES"
+    bl_region_type = "WINDOW"
+    bl_context = "data"
+    bl_label = "RISE Photographic"
+    bl_options = {"DEFAULT_CLOSED"}
+    COMPAT_ENGINES = {RISEBlenderRenderEngine.bl_idname}
+
+    @classmethod
+    def poll(cls, context):
+        if context.engine not in cls.COMPAT_ENGINES:
+            return False
+        if context.camera is None:
+            return False
+        return True
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+
+        camera_data = context.camera
+        rise_settings = getattr(camera_data, "rise_camera", None)
+        if rise_settings is None:
+            layout.label(text="rise_camera property not registered", icon="ERROR")
+            return
+
+        layout.label(
+            text=(
+                "ISO drives RISE's EV-compensation pipeline.  "
+                "Other photographic settings are read from the "
+                "standard Camera and DOF panels."
+            ),
+            icon="INFO",
+        )
+        layout.prop(rise_settings, "iso")
+
+        # Surface a read-only hint about which photographic params
+        # are currently wired up (helps users spot when ISO is set
+        # but f-stop is at default zero, which disables EV).
+        dof = getattr(camera_data, "dof", None)
+        info = layout.box()
+        info.label(text="Current photographic state:", icon="CAMERA_DATA")
+        info.label(text=f"Focal length: {getattr(camera_data, 'lens', 50.0):.2f} mm")
+        info.label(text=f"Sensor: {getattr(camera_data, 'sensor_width', 36.0):.1f} × {getattr(camera_data, 'sensor_height', 24.0):.1f} mm  ({getattr(camera_data, 'sensor_fit', 'AUTO')})")
+        if dof is not None:
+            info.label(text=f"DOF enabled: {bool(getattr(dof, 'use_dof', False))}")
+            info.label(text=f"f-stop: {getattr(dof, 'aperture_fstop', 0.0):.2f}")
+            info.label(text=f"Focus distance: {getattr(dof, 'focus_distance', 0.0):.3f} m")
+        else:
+            info.label(text="DOF: (no dof sub-struct)")
+
+
 CUSTOM_PANELS = (
     RISE_RENDER_PT_settings,
     RISE_RENDER_PT_path_tracing,
@@ -279,6 +342,7 @@ CUSTOM_PANELS = (
     RISE_RENDER_PT_stability,
     RISE_RENDER_PT_output,
     RISE_RENDER_PT_bridge,
+    RISE_CAMERA_PT_photographic,
 )
 
 

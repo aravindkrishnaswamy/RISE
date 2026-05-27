@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 6
+#define RISE_BLENDER_API_VERSION 7
 
 #ifdef __cplusplus
 extern "C" {
@@ -169,6 +169,31 @@ typedef struct rise_blender_camera {
 	float pixel_aspect;
 	float shift_x;
 	float shift_y;
+	// ABI v7 — realistic-camera fields, mirroring Blender's
+	// `camera.data` Cycles surface.  When `use_dof` is non-zero the
+	// bridge dispatches to AddThinlensCamera with the full optical
+	// model; when zero (and `iso` is also zero) the existing pinhole
+	// path is taken bit-identically to v6.  Setting `iso > 0` enables
+	// the photographic-EV pipeline (Landing 5 of the cameras
+	// roadmap) on the pinhole path too — `fstop` is then used for
+	// the EV computation but no aperture-disc DOF is simulated.
+	//
+	// All distances are in Blender's scene units; `scene_unit_meters`
+	// is the global "Unit Scale" from the Blender scene's unit
+	// settings (e.g. 1.0 for metres, 0.001 for millimetres) so RISE
+	// can convert focal/sensor (mm) to scene-units consistently.
+	float focal_length_mm;	// camera.data.lens
+	float sensor_width_mm;	// camera.data.sensor_width
+	float sensor_height_mm;	// camera.data.sensor_height (only used when sensor_fit_vertical != 0)
+	int   sensor_fit_vertical;	// 0 = AUTO/HORIZONTAL→use sensor_width; 1 = VERTICAL→use sensor_height.  Mirrors Blender's `camera.data.sensor_fit`.
+	int   use_dof;			// camera.data.dof.use_dof — 0 = pinhole, non-zero = thinlens
+	float fstop;			// camera.data.dof.aperture_fstop
+	float focus_distance;	// camera.data.dof.focus_distance (scene units)
+	int   aperture_blades;	// camera.data.dof.aperture_blades — 0 = circular disc, >=3 = polygon
+	float aperture_rotation_radians;	// camera.data.dof.aperture_rotation
+	float aperture_ratio;	// camera.data.dof.aperture_ratio (1.0 = circular, anamorphic squeeze)
+	float iso;			// RISE-specific photographic ISO; 0 = disabled (default).  When > 0, requires `fstop > 0` and an exposure > 0; computes ISO-12232 EV that stacks into LDR outputs.  Cycles has no native ISO concept — exposed via an add-on property.
+	float scene_unit_meters;	// bpy.context.scene.unit_settings.scale_length — metres per scene unit
 } rise_blender_camera;
 
 typedef struct rise_blender_painter {

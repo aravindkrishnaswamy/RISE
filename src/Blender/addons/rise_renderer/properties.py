@@ -540,9 +540,44 @@ class RISERenderSettings(bpy.types.PropertyGroup):
     )
 
 
+class RISECameraSettings(bpy.types.PropertyGroup):
+    """Per-camera RISE-specific properties.
+
+    Surfaces ISO as a first-class authoring control on each camera so
+    the bridge's photographic-EV pipeline (Landing 5 in
+    docs/CAMERAS_ROADMAP.md) has somewhere to read from.  Cycles has
+    no native ISO concept — it uses ``Color Management > Exposure`` in
+    EV — so we keep it scoped to the RISE add-on rather than monkey-
+    patching ``camera.data``.  Default 0 = photographic-EV disabled,
+    preserving pre-Landing-5 behaviour bit-identically.
+
+    All the other photographic camera parameters (focal length,
+    sensor size, f-stop, focus distance, aperture blades / rotation /
+    ratio, shift) are read directly from Blender's stock
+    ``camera.data`` / ``camera.data.dof`` so the existing Cycles UI
+    on the Properties → Camera panel stays the authoring surface.
+    """
+
+    iso: bpy.props.FloatProperty(
+        name="ISO",
+        description=(
+            "Photographic ISO sensitivity for RISE's EV-compensation "
+            "pipeline.  When > 0, requires the camera's f-stop > 0 "
+            "(set under Depth of Field) and computes ISO-12232 EV "
+            "that stacks into LDR outputs.  Cycles has no native ISO; "
+            "leave at 0 (default) to disable physical exposure."
+        ),
+        default=0.0,
+        min=0.0,
+        max=409600.0,
+        soft_max=51200.0,
+    )
+
+
 CLASSES = (
     RISEAddonPreferences,
     RISERenderSettings,
+    RISECameraSettings,
 )
 
 
@@ -562,8 +597,15 @@ def register():
         type=RISERenderSettings,
     )
 
+    bpy.types.Camera.rise_camera = bpy.props.PointerProperty(
+        name="RISE Camera",
+        description="RISE-specific photographic settings (ISO)",
+        type=RISECameraSettings,
+    )
+
 
 def unregister():
+    del bpy.types.Camera.rise_camera
     del bpy.types.Scene.rise
 
     for cls in reversed(CLASSES):

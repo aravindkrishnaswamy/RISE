@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 
 
-_EXPECTED_API_VERSION = 6
+_EXPECTED_API_VERSION = 7
 
 
 class BridgeError(RuntimeError):
@@ -41,6 +41,19 @@ class _Camera(ctypes.Structure):
         ("pixel_aspect", ctypes.c_float),
         ("shift_x", ctypes.c_float),
         ("shift_y", ctypes.c_float),
+        # ABI v7 — realistic camera fields.  See bridge .h.
+        ("focal_length_mm", ctypes.c_float),
+        ("sensor_width_mm", ctypes.c_float),
+        ("sensor_height_mm", ctypes.c_float),
+        ("sensor_fit_vertical", ctypes.c_int),
+        ("use_dof", ctypes.c_int),
+        ("fstop", ctypes.c_float),
+        ("focus_distance", ctypes.c_float),
+        ("aperture_blades", ctypes.c_int),
+        ("aperture_rotation_radians", ctypes.c_float),
+        ("aperture_ratio", ctypes.c_float),
+        ("iso", ctypes.c_float),
+        ("scene_unit_meters", ctypes.c_float),
     ]
 
 
@@ -504,6 +517,23 @@ class _SceneHandle:
         payload.pixel_aspect = float(camera.pixel_aspect)
         payload.shift_x = float(camera.shift_x)
         payload.shift_y = float(camera.shift_y)
+        # ABI v7 — realistic camera fields.  ``getattr`` with defaults
+        # tolerates older CameraData instances that pre-date the bridge
+        # upgrade so the marshalling stays robust under live add-on
+        # reloads.  Defaults match the bridge ABI: zero / circular / no
+        # DOF / scene_unit_meters=1.0.
+        payload.focal_length_mm = float(getattr(camera, "focal_length_mm", 50.0))
+        payload.sensor_width_mm = float(getattr(camera, "sensor_width_mm", 36.0))
+        payload.sensor_height_mm = float(getattr(camera, "sensor_height_mm", 24.0))
+        payload.sensor_fit_vertical = int(getattr(camera, "sensor_fit_vertical", 0))
+        payload.use_dof = int(getattr(camera, "use_dof", 0))
+        payload.fstop = float(getattr(camera, "fstop", 0.0))
+        payload.focus_distance = float(getattr(camera, "focus_distance", 0.0))
+        payload.aperture_blades = int(getattr(camera, "aperture_blades", 0))
+        payload.aperture_rotation_radians = float(getattr(camera, "aperture_rotation_radians", 0.0))
+        payload.aperture_ratio = float(getattr(camera, "aperture_ratio", 1.0))
+        payload.iso = float(getattr(camera, "iso", 0.0))
+        payload.scene_unit_meters = float(getattr(camera, "scene_unit_meters", 1.0))
         return payload
 
     def _marshal_painter(self, painter):

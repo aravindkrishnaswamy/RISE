@@ -150,11 +150,50 @@ void ThinLensCamera::Recompute( const unsigned int width, const unsigned int hei
 	const Scalar shiftX_scene = shiftX      * mm_to_scene;
 	const Scalar shiftY_scene = shiftY      * mm_to_scene;
 
-	// Derive horizontal field of view from sensor + focal.  The ratio
-	// is unit-free (sensor and focal cancel), so this matches the old
-	// formula whether we passed in mm or scene units — included here
-	// for clarity.
-	fov = 2.0 * atan( sensor_scene / (2.0 * focal_scene) );
+	// Derive the field of view from sensor + focal.
+	//
+	// Convention (matches Cycles `sensor_fit = HORIZONTAL` and the
+	// Cycles `sensor_fit = AUTO` resolution when the image's aspect
+	// ratio is wider than the sensor's): `sensorSize` is the sensor's
+	// HORIZONTAL extent in millimetres.  The image is fit horizontally
+	// — i.e. the rendered image's full width shows the entire sensor
+	// width, and the vertical extent shows a proportionally scaled
+	// slice of the sensor.
+	//
+	// `fov` is stored as the VERTICAL field of view so the `sy =
+	// 2·filmDist·tan(fov/2)/height` formula below is dimensionally
+	// correct: tan(vfov/2)·filmDist gives the half-height of the
+	// sensor at the focal plane, dividing by `height` pixels gives the
+	// per-pixel vertical step in scene units.  `sx = -sy` keeps pixels
+	// square in the sensor; non-square pixel aspect is folded in via
+	// `ComputeScaleFromAR` which pre-stretches the camera's X axis by
+	// `pixelAR` (so `pixelAR=1` for square pixels is a no-op).
+	//
+	// Pre-fix (before 2026-05-26 adversarial review on the
+	// sine_tadpoles scene), `fov` was computed as the HORIZONTAL FOV
+	// directly from `sensor_scene / focal_scene` and then used as if
+	// it were vertical in the sy formula.  For non-square images this
+	// inflated the apparent horizontal FOV by `width/height·sensor_v/
+	// sensor_h` — a 1920×1080 / 36×24 / 50mm setup that should match
+	// Cycles' 39.6° hFOV rendered at 65° hFOV in RISE (1.64× wider).
+	// Subject size shrank correspondingly, making DOF look weaker too
+	// (same aperture diameter, smaller blur disc on screen).
+	//
+	// `ComputeScaleFromAR` later pre-stretches the camera's X axis by
+	// `pixelAR`, so the DISPLAY-space horizontal extent is
+	// `width * sx * pixelAR`.  For the sensor's horizontal extent to
+	// equal `sensor_scene` after that stretch, the image aspect used
+	// here must include `pixelAR`: `imageAspect = width * pixelAR /
+	// height`.  Without this factor, non-square-pixel renders (NTSC
+	// pixel_aspect ≈ 0.91, anamorphic 2:1, etc.) get a corresponding
+	// FOV error — adversarial review round 8, P2.
+	const Scalar imageAspect = ( height > 0 )
+		? ( Scalar( width ) * pixelAR / Scalar( height ) )
+		: Scalar( 1.0 );
+	const Scalar effective_sensor_v = ( imageAspect > 0 )
+		? ( sensor_scene / imageAspect )
+		: sensor_scene;
+	fov = 2.0 * atan( effective_sensor_v / (2.0 * focal_scene) );
 
 	// Derive physical aperture from f-stop, in scene units.
 	//   f-number = focal / aperture_diameter
@@ -167,10 +206,9 @@ void ThinLensCamera::Recompute( const unsigned int width, const unsigned int hei
 
 	// Lens equation: image plane is at -filmDistance along the optical
 	// axis (sensor behind the lens, lens at origin).  Per-pixel sx/sy
-	// converts pixel coordinates into image-plane scene units.  Pixel
-	// aspect is folded into the camera transform (ComputeScaleFromAR),
-	// so sx/sy use the geometric mean of the two image dimensions
-	// implicitly via fov-vertical.
+	// converts pixel coordinates into image-plane scene units, with
+	// `sx = -sy` for square sensor pixels (non-square pixel aspect
+	// goes through ComputeScaleFromAR).
 	filmDistance = focusDistance * focal_scene / (focusDistance - focal_scene);
 	sy = -2.0 * filmDistance * tan( fov / 2.0 ) / Scalar(height);
 	sx = -sy;
@@ -180,8 +218,19 @@ void ThinLensCamera::Recompute( const unsigned int width, const unsigned int hei
 	// member variables override the mm-named `shiftX`/`shiftY` for the
 	// generation hot path; the mm values stay as the user-facing
 	// source-of-truth (used by the editor and keyframe handling).
-	shiftX_sceneUnits = shiftX_scene;
+	//
+	// X shift is pre-divided by `pixelAR` so the subsequent
+	// `ComputeScaleFromAR` stretch (which multiplies camera-space X by
+	// `pixelAR` — see line ~420) reproduces the user's intended
+	// physical shift in display space.  Without the division an
+	// anamorphic 2:1 pixelAR would double the apparent horizontal
+	// shift (adversarial review round 9, P2).  pixelAR = 1 (square
+	// pixels) is a no-op.  Y shift doesn't need this treatment —
+	// ComputeScaleFromAR leaves Y alone.
+	const Scalar pixelAR_safe = ( pixelAR > 0 ) ? pixelAR : Scalar( 1 );
+	shiftX_sceneUnits = shiftX_scene / pixelAR_safe;
 	shiftY_sceneUnits = shiftY_scene;
+	pixelARInv        = Scalar( 1 ) / pixelAR_safe;
 
 	// Focal-plane equation cache for tilt-shift (Phase 1.1).  The
 	// focal plane passes through the on-axis focus point
@@ -313,7 +362,8 @@ bool ThinLensCamera::GenerateRay( const RuntimeContext& rc, Ray& r, const Point2
 	const Point2 uv( rc.random.CanonicalRandom(), rc.random.CanonicalRandom() );
 	const Point2 xy = SampleAperture( halfAperture, apertureBlades, apertureRotation, anamorphicSqueeze, uv );
 
-	const Point3		ptOnLens( xy.x, xy.y, 0.0 );
+	// Pre-divide aperture X by pixelAR — see header `pixelARInv` doc.
+	const Point3		ptOnLens( xy.x * pixelARInv, xy.y, 0.0 );
 
 	// Image-plane sample (with optional shift, Phase 1.1).  Sensor
 	// sits at z = -filmDistance in camera-local coords; sx/sy
@@ -362,7 +412,9 @@ bool ThinLensCamera::GenerateRayWithLensSample(
 	// primary sample) and thin-lens MLT could not converge for DOF.
 	const Point2 xy = SampleAperture( halfAperture, apertureBlades, apertureRotation, anamorphicSqueeze, lensSample );
 
-	const Point3		ptOnLens( xy.x, xy.y, 0.0 );
+	// Pre-divide aperture X by pixelAR — see header `pixelARInv` doc
+	// and GenerateRay above.
+	const Point3		ptOnLens( xy.x * pixelARInv, xy.y, 0.0 );
 
 	const Scalar x_pix = ptOnScreen.x + dx;
 	const Scalar y_pix = ptOnScreen.y + dy;
