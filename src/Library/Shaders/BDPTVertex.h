@@ -21,6 +21,21 @@
 //    weight computation can skip strategies that cannot generate
 //    this vertex through explicit connections.
 //
+//  Env (infinite-area) light vertices
+//  ----------------------------------
+//  A LIGHT vertex with `pEnvLight != 0` represents the
+//  environment / IBL "at infinity".  See IsInfiniteLight().  For
+//  these vertices, `position` stores the disc-projection on the
+//  bounding sphere (bookkeeping for distance computations to
+//  neighbour vertices), `geomNormal` stores the inward-facing
+//  emission normal `-wi`, and **`pdfFwd` / `pdfRev` are in
+//  solid-angle measure (sr^-1) at the env vertex itself** — the
+//  area-Jacobian (cos / dist^2) is skipped when an env vertex is
+//  the destination of a measure conversion (PBRT-v4 §15.5.2
+//  `ConvertDensity` convention).  See `BDPTUtilities::ConvertDensity`
+//  for the canonical helper.  All NON-env vertices remain in area
+//  measure as before.
+//
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: March 20, 2026
 //  Tabs: 4
@@ -187,6 +202,13 @@ namespace RISE
 		Scalar					guidingRoughness;
 		bool					guidingHasSegment;
 		bool					guidingHasDirectionIn;
+
+		/// True iff this vertex is an environment / infinite-area
+		/// light endpoint.  When true, pdfFwd / pdfRev are in
+		/// solid-angle measure (sr^-1); the area-Jacobian is skipped
+		/// at the env-vertex boundary by `BDPTUtilities::ConvertDensity`.
+		/// All other vertex types store area-measure pdfs as before.
+		bool IsInfiniteLight() const { return pEnvLight != 0; }
 
 		BDPTVertex() :
 		type( SURFACE ),

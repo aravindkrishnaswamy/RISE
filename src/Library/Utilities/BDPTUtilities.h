@@ -26,11 +26,58 @@
 #define BDPT_UTILITIES_
 
 #include "Math3D/Math3D.h"
+#include "../Shaders/BDPTVertex.h"
 
 namespace RISE
 {
 	namespace BDPTUtilities
 	{
+		//! Convert a solid-angle PDF at `from` to the canonical
+		//! measure stored at `to`.
+		//!
+		//! For ordinary surface / medium / camera destinations this
+		//! is the standard SA -> area Jacobian (cos / dist^2 for
+		//! surface, sigma_t / dist^2 for medium, 1/dist^2 for
+		//! camera).  For infinite-area / environment-light
+		//! destinations the conversion is the IDENTITY — the env
+		//! vertex's pdfFwd / pdfRev are stored in solid-angle
+		//! measure (sr^-1) directly, matching PBRT-v4 §15.5.2
+		//! `ConvertDensity`.  This is what closes the disc-area
+		//! MIS gap on env-IBL paths (see IMPROVEMENTS.md #12 and
+		//! BDPTVertex.h's env-vertex semantics block).
+		/// \return PDF in the destination's canonical measure.
+		inline Scalar ConvertDensity(
+			const Scalar pdfSolidAngle,				///< [in] PDF in SA measure at `from` [1/sr]
+			const BDPTVertex& from,					///< [in] Source vertex (where pdfSolidAngle is parameterised)
+			const BDPTVertex& to					///< [in] Destination vertex (whose measure we convert TO)
+			)
+		{
+			if( to.IsInfiniteLight() ) {
+				// Env vertex stores SA-measure pdfs directly — skip
+				// the area-Jacobian to match PBRT-v4's first-class
+				// infinite-light vertex treatment.
+				return pdfSolidAngle;
+			}
+			const Vector3 d = Vector3Ops::mkVector3( to.position, from.position );
+			const Scalar distSq = Vector3Ops::SquaredModulus( d );
+			if( distSq < 1e-20 ) {
+				return 0;
+			}
+			if( to.type == BDPTVertex::MEDIUM ) {
+				// Medium destination: sigma_t replaces |cos|.
+				return pdfSolidAngle * to.sigma_t_scalar / distSq;
+			}
+			if( to.type == BDPTVertex::CAMERA ) {
+				// Camera destination: implicit cos=1 (camera-pinhole
+				// directional reparameterisation handled upstream).
+				return pdfSolidAngle / distSq;
+			}
+			const Scalar invDist = Scalar( 1 ) / sqrt( distSq );
+			const Vector3 dHat = d * invDist;
+			const Scalar absCos = fabs( Vector3Ops::Dot( to.geomNormal, dHat ) );
+			return pdfSolidAngle * absCos / distSq;
+		}
+
 		//! Computes the geometric term G(x <-> y) between two surface points.
 		//! G = |cos(theta_x)| * |cos(theta_y)| / ||x - y||^2
 		//! where theta_x is the angle between normal at x and the direction toward y,
