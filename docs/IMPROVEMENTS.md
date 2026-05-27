@@ -913,12 +913,40 @@ At shading time, evaluate S(lambda) = sigmoid(c0 * lambda^2 + c1 * lambda + c2) 
 
 ### Status
 
-**Deferred** — first-pass fix landed 2026-05-25 (Path A + Path B in
-[BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) and
-[VCMIntegrator.cpp](../src/Library/Shaders/VCMIntegrator.cpp)) closes most
-of the gap but leaves a systematic 15-22% mean underestimate vs PT on
-env-IBL scenes.  This item is the principled refactor that closes the
-remaining gap.
+**Phase 1.A landed (additive foundation); Phases 1.B–1.E BLOCKED on
+second-order correctness.**  Timeline:
+
+- **2026-05-25**: first-pass Path A + Path B disc-area fix landed in
+  [BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) and
+  [VCMIntegrator.cpp](../src/Library/Shaders/VCMIntegrator.cpp) —
+  closed most of the gap (BDPT/VCM rose from 0–5% of PT to 78–95% of
+  PT on env-IBL scenes).  Documented 15–22% residual at the disc-area
+  vs SA-measure boundary.
+- **2026-05-27 (a4a24b85)**: Piece 1.A landed — purely additive
+  `BDPTVertex::IsInfiniteLight()` accessor + `BDPTUtilities::ConvertDensity`
+  helper.  No call sites migrate; behaviour-preserving foundation for
+  the full SA-MIS migration.
+- **2026-05-27 (PM, reverted)**: Piece 1.B–1.E attempted per the
+  per-file spec in [docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md).
+  Catastrophic regression on the EnvLightBalanceTest LAX tolerances
+  (11 failures vs 0 on master, including BDPT collapse to 6–9% of PT
+  on env+omni / env+mesh and BDPT/VCM collapse to ~36% of PT on
+  env-only spectral HWSS=true).  Per the spec's own stopping rule
+  ("you discover the spec's algebra is wrong in some second-order
+  detail — HWSS companion-wavelength, mixed-scene
+  env-NEE-in-alias-table interaction"), reverted Phases 1.B–1.E.
+  Full diagnosis hypotheses and recommended next-session approach
+  in [docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) §"Session 2
+  outcome".
+
+This item remains **OPEN** with the 15–22% env-IBL residual.  The
+Piece-1.A `ConvertDensity` helper is available as a foundation for a
+future re-attempt — but a successful migration will require a more
+rigorous algebraic audit of the MISWeight walk's behaviour at the
+SA/area boundary (especially across NEE-in-alias-table and HWSS
+companion-wavelength paths) than the hand-derived sketch in the spec
+provides.  See PRE_PHASE1_STATUS.md "Diagnosis hypotheses" for the
+specific second-order interactions that need to be audited next.
 
 ### Background
 
