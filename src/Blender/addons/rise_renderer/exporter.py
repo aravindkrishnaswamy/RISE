@@ -1591,6 +1591,104 @@ def _material_payload(material, state: _ExportState) -> _MaterialBinding:
         state.material_map[key] = binding
         return binding
 
+    # Bake-on-export consumer.  When the user has run "Bake
+    # Procedural Materials for RISE" (or the equivalent operator),
+    # complex materials carry ID properties pointing at PNG bakes of
+    # their Diffuse / Roughness / Normal channels.  See
+    # ``material_bake.py`` and docs/BLENDER_MATERIAL_TRANSLATION.md.
+    #
+    # When those PNGs exist, we skip the node-graph walker entirely
+    # and build a synthetic Principled-like material from the bakes.
+    # The bake captures the FULL graph output (Mix Shaders, AO,
+    # procedural noise, everything) — recombining via the wrapper
+    # would double-apply effects.  Other Principled features
+    # (metallic, transmission, sheen) are intentionally dropped:
+    # they're already folded into the baked diffuse / roughness.
+    try:
+        from . import material_bake as _material_bake
+        baked = _material_bake.baked_paths(material)
+    except ImportError:
+        baked = None
+    if baked is not None and "diffuse" in baked:
+        diffuse_painter = _add_texture_painter(
+            state,
+            f"{material.name_full}_baked_diffuse",
+            baked["diffuse"],
+            PAINTER_TEXTURE_PNG,
+            COLOR_SPACE_SRGB,
+        )
+        # Roughness — optional baked channel.  When absent, the
+        # synthesised Principled uses the constant 0.5 default so the
+        # baked diffuse isn't paired with a too-mirror-like surface.
+        if "roughness" in baked:
+            roughness_painter = _add_texture_painter(
+                state,
+                f"{material.name_full}_baked_roughness",
+                baked["roughness"],
+                PAINTER_TEXTURE_PNG,
+                COLOR_SPACE_LINEAR,
+            )
+        else:
+            roughness_painter = _add_uniform_painter(
+                state, f"{material.name_full}_baked_rough_const", (0.5, 0.5, 0.5))
+        # Normal map — when absent, no normal-map modifier is wired.
+        modifier_name: str | None = None
+        if "normal" in baked:
+            normal_painter = _add_texture_painter(
+                state,
+                f"{material.name_full}_baked_normal",
+                baked["normal"],
+                PAINTER_TEXTURE_PNG,
+                COLOR_SPACE_ROMM_LINEAR,
+            )
+            modifier_name = _unique_name(state, "mod", f"{material.name_full}_normalmap")
+            state.modifiers.append(
+                ModifierData(
+                    name=modifier_name,
+                    kind=MODIFIER_NORMAL_MAP,
+                    source_painter_name=normal_painter,
+                    scale=1.0,
+                    window=0.0,
+                )
+            )
+
+        # Metallic — the C++ bridge's `add_pbr_metallic_roughness_material`
+        # rejects a payload with `metallic_painter_name == NULL`.  Baked
+        # diffuse already absorbs whatever conductor F0 the original
+        # shader had (the bake captures the visual result), so treat
+        # the baked material as a pure dielectric (metallic=0) and let
+        # the diffuse PNG carry the colour.  Authoring a metallic
+        # version would need a separate `EMIT` bake of the metallic
+        # channel via Emit-from-metallic-input — out of scope for the
+        # first pass, see docs/BLENDER_MATERIAL_TRANSLATION.md
+        # "Capabilities to extend later".
+        metallic_painter = _add_uniform_painter(
+            state, f"{material.name_full}_baked_metallic_const", (0.0, 0.0, 0.0))
+
+        payload = MaterialData(
+            name=_unique_name(state, "mat", material.name_full),
+            model=MATERIAL_PBR_METALLIC_ROUGHNESS,
+            base_color_painter_name=diffuse_painter,
+            metallic_painter_name=metallic_painter,
+            roughness_painter_name=roughness_painter,
+            double_sided=not getattr(material, "use_backface_culling", False),
+        )
+        state.materials.append(payload)
+        binding = _MaterialBinding(
+            surface_material_name=payload.name,
+            modifier_name=modifier_name,
+            interior_medium_name=None,
+            double_sided=payload.double_sided,
+        )
+        state.material_map[key] = binding
+        _warn_once(
+            state,
+            f"RISE: '{material.name_full}' using baked PBR textures "
+            f"({', '.join(sorted(baked.keys()))}) — re-run the "
+            f"Bake operator after material edits.",
+        )
+        return binding
+
     wrapper = PrincipledBSDFWrapper(material, is_readonly=True)
     if wrapper.node_principled_bsdf is None:
         # PrincipledBSDFWrapper couldn't trace from Material Output

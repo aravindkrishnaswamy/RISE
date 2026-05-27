@@ -1,6 +1,6 @@
 import bpy
 
-from . import bridge
+from . import bridge, material_bake
 from .engine import RISEBlenderRenderEngine
 from .properties import addon_preferences
 
@@ -271,6 +271,209 @@ class RISE_RENDER_PT_bridge(_RISEPanel):
         )
 
 
+class RISE_OT_bake_materials(bpy.types.Operator):
+    """Bake complex Cycles material node graphs (procedural noise,
+    AO masks, Mix Shaders, etc.) to PNG image textures so RISE can
+    render them with full fidelity.
+
+    For each material in the scene that the classifier deems
+    "complex" (see ``docs/BLENDER_MATERIAL_TRANSLATION.md``), this
+    operator:
+      1. Selects an arbitrary object using that material
+      2. Switches the scene render engine to Cycles
+      3. Bakes Diffuse / Roughness / Normal to PNGs under
+         ``<tmp>/rise_baked/<material_name>_*.png``
+      4. Stores the resulting paths as ID properties on the material
+         so subsequent RISE renders consume them automatically
+      5. Restores the previous render engine
+
+    Re-run this after editing a complex material's node graph; the
+    new bake replaces the previous file.  "Simple" materials are
+    skipped (the exporter translates their node graphs directly into
+    RISE painters).
+    """
+
+    bl_idname = "rise.bake_materials"
+    bl_label = "Bake Procedural Materials for RISE"
+    bl_description = (
+        "Bake complex Cycles material graphs (AO, Mix Shader, "
+        "procedural noise) to PNG textures.  Run once after material "
+        "edits.  Simple graphs are translated directly without baking."
+    )
+    bl_options = {"REGISTER"}
+
+    bake_resolution: bpy.props.IntProperty(
+        name="Bake Resolution",
+        description="Square texture resolution (per channel) of the baked PNGs",
+        default=1024,
+        min=128,
+        max=8192,
+    )
+    only_unbaked: bpy.props.BoolProperty(
+        name="Skip Already-Baked Materials",
+        description=(
+            "When enabled, materials that already carry a "
+            "rise_baked_diffuse_path are skipped — useful for "
+            "incremental re-bakes after editing one material in a "
+            "scene with many"
+        ),
+        default=False,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene is not None
+
+    def execute(self, context):
+        scene = context.scene
+        prev_engine = scene.render.engine
+        scene.render.engine = "CYCLES"
+        try:
+            count = material_bake.bake_complex_materials_in_scene(
+                scene,
+                resolution=int(self.bake_resolution),
+                only_unbaked=bool(self.only_unbaked),
+                report=lambda msg: self.report({"INFO"}, msg),
+            )
+        finally:
+            scene.render.engine = prev_engine
+
+        if count == 0:
+            self.report(
+                {"INFO"},
+                "RISE: No complex materials needed baking (or all already baked)",
+            )
+        else:
+            self.report({"INFO"}, f"RISE: Baked {count} complex material(s)")
+        return {"FINISHED"}
+
+
+class RISE_OT_clear_baked_materials(bpy.types.Operator):
+    """Clear the rise_baked_* ID properties on all materials so the
+    next RISE render falls back to direct procedural translation (or
+    forces a re-bake of materials with `only_unbaked=False`).
+
+    Useful when:
+      - The user edits a Cycles material and wants to drop the stale
+        bake without re-running the bake immediately
+      - Investigating differences between the bake path and the
+        direct-translation path on a simple material
+    """
+
+    bl_idname = "rise.clear_baked_materials"
+    bl_label = "Clear RISE Bake Cache"
+    bl_description = "Remove rise_baked_* ID properties from all materials"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        count = 0
+        for mat in bpy.data.materials:
+            if material_bake.baked_paths(mat) is not None or material_bake.BAKED_DIFFUSE_KEY in mat:
+                material_bake.clear_baked_metadata(mat)
+                count += 1
+        self.report({"INFO"}, f"RISE: Cleared bake cache on {count} material(s)")
+        return {"FINISHED"}
+
+
+class RISE_RENDER_PT_materials(_RISEPanel):
+    """Render-properties panel: the Bake button + cache diagnostics.
+
+    Workflow (see docs/BLENDER_MATERIAL_TRANSLATION.md "Two paths"):
+
+      1. User authors a Cycles material with a complex node graph
+         (Mix Shader, AO, procedural noise / Voronoi / ColorRamp …).
+      2. User clicks **Bake Procedural Materials** once.  RISE swaps
+         to Cycles, bakes Diffuse / Roughness / Normal to PNGs under
+         ``<tmp>/rise_baked/<material>_*.png``, stores the paths as
+         ID properties, and swaps back.
+      3. User clicks Render.  RISE consumes the cached PNGs.
+      4. When a node graph is edited, the cache's content-hash flips
+         to "stale" — the next Render will abort with a message
+         asking the user to re-bake.
+
+    This panel is the place users come to (a) trigger the bake and
+    (b) confirm what's in the cache.
+    """
+
+    bl_label = "RISE Material Baking"
+
+    def draw(self, context):
+        layout = self.layout
+
+        # `needs_bake_attempt` is the single source of truth that
+        # `engine.render()`'s gate also uses — panel CTA and render
+        # gate stay aligned.
+        scene = context.scene
+        needs_bake = [
+            mat.name
+            for mat in bpy.data.materials
+            if material_bake.needs_bake_attempt(scene, mat)
+        ]
+        already_baked: list[tuple[str, str, bool]] = []
+        for mat in bpy.data.materials:
+            paths = material_bake.baked_paths(mat)
+            if paths is not None:
+                channels = ", ".join(sorted(paths.keys()))
+                stale = material_bake.baked_cache_is_stale(mat)
+                already_baked.append((mat.name, channels, stale))
+
+        if needs_bake:
+            box = layout.box()
+            names = ", ".join(needs_bake[:3])
+            if len(needs_bake) > 3:
+                names += f", … +{len(needs_bake) - 3} more"
+            box.label(
+                text=f"{len(needs_bake)} material(s) need baking: {names}",
+                icon="ERROR",
+            )
+            box.label(
+                text="Click Bake below before rendering — render will abort otherwise.",
+                icon="BLANK1",
+            )
+
+        # Primary CTA — make the Bake button big and obvious.
+        col = layout.column(align=True)
+        col.scale_y = 1.6
+        col.operator(
+            "rise.bake_materials",
+            text="Bake Procedural Materials",
+            icon="RENDER_STILL",
+        )
+
+        layout.separator()
+        layout.label(
+            text=(
+                "RISE renders simple materials (Image Texture, "
+                "Mapping, single Principled BSDF) directly."
+            ),
+            icon="INFO",
+        )
+        layout.label(
+            text=(
+                "Complex graphs (Mix Shader, AO, procedural noise) "
+                "are baked once to PNG and reused on every render."
+            ),
+            icon="BLANK1",
+        )
+        layout.label(
+            text="Re-bake after editing a material's node graph.",
+            icon="BLANK1",
+        )
+
+        # Diagnostic: cache state — useful for confirming a bake
+        # landed and for spotting stale-cache materials before render.
+        box = layout.box()
+        box.label(text="Bake cache:", icon="MATERIAL")
+        if not already_baked:
+            box.label(text="  (no baked materials yet)")
+        else:
+            for name, channels, stale in already_baked:
+                stale_tag = " — STALE, re-bake before render" if stale else ""
+                box.label(text=f"  {name}: {channels}{stale_tag}")
+
+        layout.operator("rise.clear_baked_materials", icon="X")
+
+
 class RISE_CAMERA_PT_photographic(bpy.types.Panel):
     """Properties → Camera tab: RISE-specific photographic settings.
 
@@ -335,6 +538,8 @@ class RISE_CAMERA_PT_photographic(bpy.types.Panel):
 
 
 CUSTOM_PANELS = (
+    RISE_OT_bake_materials,
+    RISE_OT_clear_baked_materials,
     RISE_RENDER_PT_settings,
     RISE_RENDER_PT_path_tracing,
     RISE_RENDER_PT_adaptive,
@@ -342,6 +547,7 @@ CUSTOM_PANELS = (
     RISE_RENDER_PT_stability,
     RISE_RENDER_PT_output,
     RISE_RENDER_PT_bridge,
+    RISE_RENDER_PT_materials,
     RISE_CAMERA_PT_photographic,
 )
 

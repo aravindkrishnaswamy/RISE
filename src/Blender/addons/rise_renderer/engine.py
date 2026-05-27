@@ -4,7 +4,7 @@ import math
 import threading
 import time
 
-from . import bridge, exporter
+from . import bridge, exporter, material_bake
 from .properties import addon_preferences
 
 
@@ -100,6 +100,52 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
         bridge_path = preferences.bridge_library_path if preferences else None
 
         try:
+            # Material-bake gate: detect complex Cycles material graphs
+            # that haven't been baked to PNGs yet (or are stale) and
+            # abort with a clear, actionable message pointing at the
+            # `rise.bake_materials` operator.
+            #
+            # Rationale for the two-click UX over auto-bake-on-render:
+            # `bpy.ops.object.bake` was designed to run from a user
+            # click in a 3D View, not from inside a render callback.
+            # We tried wiring an auto-bake into the `render_init`
+            # handler with full `bpy.context.temp_override`, and hit
+            # four cascading Blender-API failure modes — engine-swap
+            # vtable corruption, restricted-context AttributeError on
+            # `selected_objects`, `hide_render`-blocked instanced
+            # objects, and finally a libc malloc double-free on the
+            # bake-target image teardown.  Each fix unlocked the next;
+            # the auto-bake-on-render architecture is fundamentally
+            # fighting the bake operator's preconditions.  The
+            # industry-standard workflow (LuxCore, Octane, Renderman
+            # Blender add-ons) uses an explicit "Convert Materials"
+            # button for the same reason.
+            scene = depsgraph.scene
+            # `needs_bake_attempt` is the single source of truth that
+            # `RISE_RENDER_PT_materials` also uses — they stay aligned
+            # in lockstep.  Returns True iff the user should run the
+            # bake operator before rendering (never-tried OR graph
+            # edited since last attempt).  Materials with a tried
+            # attempt that failed are NOT flagged — they fall through
+            # to the exporter's flat-colour fallback.
+            missing = [
+                mat.name
+                for mat in bpy.data.materials
+                if material_bake.needs_bake_attempt(scene, mat)
+            ]
+            if missing:
+                names = ", ".join(missing[:3])
+                if len(missing) > 3:
+                    names += f", … +{len(missing) - 3} more"
+                msg = (
+                    f"RISE: {len(missing)} procedural material(s) need baking "
+                    f"({names}). Click Properties → Render → RISE Material "
+                    f"Baking → Bake Procedural Materials, then re-render."
+                )
+                self.report({"ERROR"}, msg)
+                self.error_set(msg)
+                return
+
             self.update_stats("RISE", "Exporting scene")
             scene_data, render_settings = exporter.export_scene(depsgraph)
 
