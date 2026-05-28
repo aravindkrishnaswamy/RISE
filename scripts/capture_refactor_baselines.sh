@@ -63,24 +63,31 @@ for scene_rel in "${SCENES[@]}"; do
     base_name="$(basename "${scene_rel}" .RISEscene)"
     echo "=== Rendering ${base_name} ==="
 
+    # `rise` exits non-zero on the interactive `quit` command even after
+    # a successful render writes its PNG, so we cannot use its exit code
+    # as a render-success signal.  Instead, pre-delete any stale PNG
+    # from a previous run so the post-render presence check is
+    # unambiguous, then run rise without gating on exit code, then check
+    # whether the expected PNG was produced.
+    candidate_png="${RENDERED_DIR}/${base_name}.png"
+    rm -f "${candidate_png}"
+
     start_time=$(date +%s)
-    printf "render\nquit\n" | "${BIN}" "${scene_abs}" > /tmp/rise_capture_$$.log 2>&1 || {
-        echo "  FAIL rendering ${base_name}"
-        tail -10 /tmp/rise_capture_$$.log
-        continue
-    }
+    if printf "render\nquit\n" | "${BIN}" "${scene_abs}" > /tmp/rise_capture_$$.log 2>&1; then
+        rise_exit=0
+    else
+        rise_exit=$?
+    fi
     end_time=$(date +%s)
     elapsed=$((end_time - start_time))
 
-    # Copy the rendered PNG to the baseline dir.  Each scene's pattern
-    # puts it at rendered/<basename>.png or a similar path.
-    candidate_png="${RENDERED_DIR}/${base_name}.png"
     if [ -f "${candidate_png}" ]; then
         cp "${candidate_png}" "${BASELINE_DIR}/${base_name}.png"
         size=$(wc -c < "${BASELINE_DIR}/${base_name}.png")
         echo "  captured ${base_name}.png (${size} bytes, ${elapsed}s)"
     else
-        echo "  WARN: expected output ${candidate_png} not found"
+        echo "  FAIL: ${candidate_png} not produced (rise exit ${rise_exit})"
+        tail -10 /tmp/rise_capture_$$.log
         ls "${RENDERED_DIR}/${base_name}"* 2>/dev/null || true
     fi
     rm -f /tmp/rise_capture_$$.log
