@@ -599,6 +599,8 @@ Implement Kulla and Fajardo (EGSR 2012) equiangular sampling: distribute samples
 **Modified interfaces:** `IMedium.h` (DistanceSample, SampleDistanceWithPdf, EvalDistancePdf, GetBoundingBox), `ILight.h` (IsPositionalLight)
 **Test scenes:** `pt_equiangular_fog`, `pt_equiangular_hetero`, `pt_chromatic_fog`, `pt_thick_fog_corridor`
 
+**Eye-walk escape segment Tr — FIXED (2026-05-31, coordinated PT + BDPT + VCM).**  Previously, in all 3 RISE PT integrator variants (RGB / NM / HWSS), both at the first-bounce entry (`IntegrateRay*`) and inside the iterative loop (`IntegrateFromHit*`), when the eye ray escaped the scene through a participating medium (no surface hit, no volume scatter event), the environment radiance was multiplied into the path throughput WITHOUT first applying the medium transmittance along the escape segment.  PBRT-v4's `VolPathIntegrator::Li()` applies `T_maj` to `beta` before reading `beta * Le` at `if (!si)`; RISE skipped this step.  BDPT's `GenerateEyeSubpath` + `GenerateEyeSubpathNM` shared the same gap (`vEnv.throughput = beta` at the synthetic env-light vertex push); VCM inherited it via the shared eye-subpath generator.  **The fix applies the escape-segment Tr at all 9 PT sub-sites + 2 BDPT sites (using `maxDist = 1e10` to match PT's existing escape constant, so a global medium evaporates `exp(-σ_t·∞) → 0` and a bounded AABB medium clips to a finite Tr); VCM's s=0 env-escape inherits it transitively with no VCM code change.**  Validated by a new **bounded-medium** regression fixture ([scenes/Tests/Volumes/env_bounded_fog_{pt,bdpt,vcm}.RISEscene](../scenes/Tests/Volumes/) — a diffuse sphere in an AABB-clipped global medium under uniform env-IBL), on which PT / BDPT / VCM agree to within ±5 % (VCM +0.1 % of PT, BDPT +4.5 %) — the cross-integrator-consistency property the global-medium scenes (which evaporate to 0) could not test.  On the global `*_env_through_fog` scenes, PT now gives ~0.0002 (effectively black) vs the pre-fix over-bright ~0.38.  Tr is applied to throughput only (MIS-orthogonal); the fix also removes a pre-existing PT MIS *mismatch* (env-NEE already applied shadow-segment Tr while env-BSDF did not).  Full site enumeration, gate table, adversarial-review ledger in [docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) "Coordinated escape-Tr fix (PT + BDPT + VCM)".  **Residual (separate workstream, NOT the escape-Tr fix):** with in-scattering (σ_s > 0) on env-IBL bounded fog, VCM under-counts single-scatter of env light at medium vertices (~31 % vs PT) — a VCM volumetric-MIS issue in the §12 SA-MIS / medium-vertex-connection domain; the pure-absorption fixture isolates and validates the escape-Tr fix independently of it.
+
 ---
 
 ## 8. Optimal MIS Weights — **DONE** (8A complete; 8B and 8C deferred)
@@ -1011,6 +1013,29 @@ Full investigation evidence and refined attack plan for a supervisor
 agent to stage the migration:
 **[docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)**.
 
+**2026-05-31 update (coordinated escape-Tr fix — media-aware env-IBL
+now consistent across PT / BDPT / VCM).**  Pre-Phase-1 Piece 2 ported
+BDPT's media-aware *connection* transmittance (NEE / interior / splat)
+into VCM, but the companion piece — transmittance along the eye-walk
+*escape* segment when a camera/eye ray exits the scene through a
+medium to env-IBL — was missing in all three integrators (PT, BDPT,
+and VCM-via-shared-generator credited un-attenuated env radiance on
+escape).  That **escape-Tr gap is now closed** (see §7 "Eye-walk escape
+segment Tr — FIXED" and [docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md)
+"Coordinated escape-Tr fix").  With it, **VCM connection-Tr + escape-Tr
+are both media-aware and consistent with PT/BDPT**, and a new
+bounded-medium env-IBL fixture establishes a *cross-integrator
+agreement* property: on `env_bounded_fog_{pt,bdpt,vcm}` (pure
+absorption) PT ≈ BDPT ≈ VCM to within ±5 % (VCM +0.1 % of PT).  This
+is orthogonal to the SA-MIS partition work above (Tr is a throughput
+multiplier, not a pdf).  **Note** a *distinct* residual the fixture
+surfaced: with in-scattering (σ_s > 0), VCM under-counts single-scatter
+of env light at medium vertices (~31 % vs PT) — a VCM volumetric-MIS
+gap in this same env-S0 ↔ env-NEE / medium-vertex-connection family,
+to be folded into the SA-MIS migration scope (it is *not* part of the
+escape-Tr fix, which the pure-absorption fixture validates
+independently).
+
 ### Background
 
 BDPT and VCM use **area-measure** path PDFs throughout: every vertex stores
@@ -1196,8 +1221,9 @@ weights sum to 1 unbiased — closing the 15-22% gap.
   scenes: BDPT/VCM RMSE vs PT-reference should drop by ≥15% (the
   residual gap closed).
 
-### Companion limitation — VCM connection transmittance
+### Companion limitation — VCM connection transmittance — MECHANICAL FIX IN WORKING TREE 2026-05-31; SUPERVISOR DECISION PENDING
 
+**Pre-fix state (still documented here as the diagnosis of record):**
 VCM's NEE (and other connection strategies) do not currently apply
 connection transmittance at all — `VCMIsVisible` is a binary
 occlusion test, not a media-aware shadow walk like BDPT's
@@ -1207,6 +1233,28 @@ extended env-NEE transmittance from `2 × cachedSceneRadius` to
 in any global / per-object medium.  This is a general VCM gap, not
 env-specific — fix as part of broader VCM media support work, not
 folded into this env-IBL task.
+
+**Pre-Phase-1 Piece 2 (2026-05-31) — mechanical port landed in working tree, NOT YET COMMITTED, awaits supervisor decision:**
+A mechanical port of BDPT's `EvalConnectionTransmittance{,NM}` to
+the three VCM connection-strategy sites (NEE / interior / splat-
+to-camera) is in the working tree.  All 116 binary tests pass.
+Vacuum non-regression is bit-clean (< 0.05 % per-channel diff).
+However, K-trial variance on the new env-IBL-through-fog regression
+scenes ([scenes/Tests/Volumes/vcm_env_through_fog.RISEscene](../scenes/Tests/Volumes/vcm_env_through_fog.RISEscene),
+[scenes/Tests/Volumes/pt_env_through_fog.RISEscene](../scenes/Tests/Volumes/pt_env_through_fog.RISEscene))
+revealed that pre-fix VCM is DARKER (not brighter) than PT in
+fog, and the mechanical fix widens the gap rather than closing
+it.  Root cause is a VCM SmallVCM-MIS partition interaction
+between the s=0 eye-escape strategy (un-attenuated by Tr per PT
+& BDPT convention) and the s=1 env-NEE strategy (Tr → 0 along
+RISE_INFINITY in any global medium) — both compete in VCM's MIS
+denominator regardless of whether either delivers non-zero
+contribution.  Diagnosis, per-scene empirical numbers, and three
+recommendation options (land as-is / revert / narrow scope) in
+[docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) under
+"Pre-Phase-1 Piece 2 outcome".  This entry will be updated to
+CLOSED only after the supervisor / user picks an option and the
+chosen change is committed.
 
 ### Companion limitation — env not in alias table for mixed-light scenes — CLOSED 2026-05-29
 
