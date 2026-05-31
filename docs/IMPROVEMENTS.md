@@ -913,8 +913,11 @@ At shading time, evaluate S(lambda) = sigmoid(c0 * lambda^2 + c1 * lambda + c2) 
 
 ### Status
 
-**Phase 1.A landed (additive foundation); Phases 1.B–1.E BLOCKED on
-second-order correctness.**  Timeline:
+**Phase 1.A foundation landed; mixed-scene env-NEE companion limitation
+CLOSED by the continuous-PMF architectural fix (2026-05-29, Session 9);
+SA-MIS migration itself DEFERRED — the architectural fix obviates most
+of its catastrophe modes, so the remaining 5–10% residual is now in
+"acceptable, optional follow-up" status.**  Timeline:
 
 - **2026-05-25**: first-pass Path A + Path B disc-area fix landed in
   [BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) and
@@ -925,28 +928,88 @@ second-order correctness.**  Timeline:
 - **2026-05-27 (a4a24b85)**: Piece 1.A landed — purely additive
   `BDPTVertex::IsInfiniteLight()` accessor + `BDPTUtilities::ConvertDensity`
   helper.  No call sites migrate; behaviour-preserving foundation for
-  the full SA-MIS migration.
-- **2026-05-27 (PM, reverted)**: Piece 1.B–1.E attempted per the
-  per-file spec in [docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md).
-  Catastrophic regression on the EnvLightBalanceTest LAX tolerances
-  (11 failures vs 0 on master, including BDPT collapse to 6–9% of PT
-  on env+omni / env+mesh and BDPT/VCM collapse to ~36% of PT on
-  env-only spectral HWSS=true).  Per the spec's own stopping rule
-  ("you discover the spec's algebra is wrong in some second-order
-  detail — HWSS companion-wavelength, mixed-scene
-  env-NEE-in-alias-table interaction"), reverted Phases 1.B–1.E.
-  Full diagnosis hypotheses and recommended next-session approach
-  in [docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) §"Session 2
-  outcome".
+  a future SA-MIS migration.
+- **2026-05-27 (PM, reverted)**: Piece 1.B–1.E SA-MIS migration
+  attempt — catastrophic regression on EnvLightBalanceTest (11
+  sub-checks fail at lax, including BDPT collapse to 6–9% of PT on
+  env+omni / env+mesh and BDPT/VCM collapse to ~36% on env-only
+  spectral HWSS=true).  Reverted.
+- **2026-05-27 / 2026-05-28 (Sessions 2-8)**: design-driven re-attempts
+  per [docs/PRE_PHASE1_OPTION_C_DESIGN.md](PRE_PHASE1_OPTION_C_DESIGN.md)
+  — group decomposition (s=0 group, light-subpath group, VCM group)
+  with delta-aware `remap0` precondition.  Sessions 5+7+8 landed the
+  s=0 group partially.  Empirically the §0.4 magnitude prediction
+  failed (env-only Lambertian over-counted to 139% vs predicted 95-
+  110%).  Three rounds of adversarial review converged on a root cause
+  *upstream of the SA-MIS work*: RISE's binary `EnvSelectProbability()`
+  (returns 0-or-1) was the architectural mismatch driving the
+  catastrophes, not the disc-area-vs-SA convention per se.
+- **2026-05-29 (Session 9, continuous-PMF landing)**: implemented the
+  continuous-PMF architectural fix recommended by the adversarial-
+  review round 1 §A.5 finding.  `EnvSelectProbability()` now returns
+  env's share of total selection power (env totalLuminance × disc area
+  vs alias-table total weight) — fractional in mixed scenes, 1.0 in
+  env-only.  Plumbed via wrapper in `LightSampler::SampleLight()` that
+  consumes a single Get1D() at the top, re-maps it into either the
+  env-direction sub-interval or the alias-table-selection sub-interval
+  — net Sobol/QMC dimension consumption per call is IDENTICAL to the
+  prior binary-PMF flow, avoiding the 2026-05-26 dimension-shift
+  regression.  Result: env+omni 85% → 109%, env+mesh 86% → 92%, all
+  topologies pass at lax `{0.35, 0.35, 2.00}` and the strict
+  `{0.10, 0.30, 1.00}` failure count drops from 11 (Session 8) to 3
+  (Session 9 — residual disc-area-vs-SA discrepancies on VCM env+mesh
+  +28% over and BDPT spectral env-only ±7-9%).  Reverted Sessions
+  5/7/8 BDPTIntegrator.cpp changes back to pristine master before
+  landing the continuous-PMF fix in isolation.  Implementation in
+  [src/Library/Lights/LightSampler.cpp](../src/Library/Lights/LightSampler.cpp)
+  (`RecomputeEnvSelectProbability` + `SampleLight` env-vs-alias roll)
+  + [src/Library/Lights/LightSampler.h](../src/Library/Lights/LightSampler.h)
+  + [src/Library/Rendering/EnvironmentSampler.h](../src/Library/Rendering/EnvironmentSampler.h)
+  `TotalLuminance()` accessor.
 
-This item remains **OPEN** with the 15–22% env-IBL residual.  The
-Piece-1.A `ConvertDensity` helper is available as a foundation for a
-future re-attempt — but a successful migration will require a more
-rigorous algebraic audit of the MISWeight walk's behaviour at the
-SA/area boundary (especially across NEE-in-alias-table and HWSS
-companion-wavelength paths) than the hand-derived sketch in the spec
-provides.  See PRE_PHASE1_STATUS.md "Diagnosis hypotheses" for the
-specific second-order interactions that need to be audited next.
+This item is **substantively closed** at lax tolerances.  The Piece-1.A
+`ConvertDensity` helper remains in place as foundation for a future
+strict-tolerance closure (would require SA-measure pdfFwd/pdfRev at
+env vertices to remove the ±5-30% residual visible at strict 10/30/1
+tolerances).  See PRE_PHASE1_STATUS.md Session 9 outcome for the
+per-topology delta table and recommended next-session paths if a
+production team wants to push for strict closure.
+
+**2026-05-30 update (Session 11)** — The strict-tolerance residual was
+characterised in detail.  The VCM env+mesh 22 % over and env-only
+Lambertian 9 % over both have a single source: a **partition-of-unity
+violation between the env-S0 strategy and the env-NEE strategy**
+(empirically pinned by exhaustive A/B disable bisect: disabling both
+drops baseline by 0.738; disabling each alone drops by only 0.193 and
+0.228 — single-disable sum = 0.421 ≠ both-disable drop = 0.738, a 1.75×
+linear-MIS violation).  None of the Session 10 micro-changes (BDPTVertex
+pdfSelect field, InitLight dVC × pdfSelect, the 3 wCamera consumer-site
+divides, env-NEE invLightSelect rescale) are the over-count source; each
+tests as no-op or < 0.001 linR in env-dominant scenes.  Mesh-side
+strategies, splats, and interior connections are all empirically
+innocent (≤ 0.005 linR contribution each).  The fix is the monolithic
+SA-MIS migration originally specced in
+[docs/PRE_PHASE1_OPTION_C_DESIGN.md](PRE_PHASE1_OPTION_C_DESIGN.md), but
+now with significantly reduced scope and risk per the Session-9
+continuous-PMF fix:
+
+- **VCM-side scope**: 2 functions (env-branch of `EvaluateS0Impl` and
+  `EvaluateNEEImpl`) — mesh-side strategies don't need migration.
+- **BDPT-side scope**: 6 sites per the v2 design's "Group 2" rows,
+  using the Phase-1.A `IsInfiniteLight()` + `ConvertDensity` helpers.
+- **OpenPGL guiding**: env-pdf consumers in `src/Library/Guiding/`.
+- **Catastrophe modes defused**: prior v2 attempts catastrophically
+  collapsed BDPT to 6–36 % of PT because the binary `envSelectProb`
+  interacted with partial SA landings.  Session 9's continuous-PMF
+  fix removes that interaction, so partial SA landings should now be
+  testable incrementally (one BDPT row at a time, measure on
+  EnvLightBalanceTest).
+- **Estimated budget**: ~1 week of focused work (was 3 weeks pre-
+  Session-9 + pre-Session-11).
+
+Full investigation evidence and refined attack plan for a supervisor
+agent to stage the migration:
+**[docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)**.
 
 ### Background
 
@@ -1145,24 +1208,33 @@ in any global / per-object medium.  This is a general VCM gap, not
 env-specific — fix as part of broader VCM media support work, not
 folded into this env-IBL task.
 
-### Companion limitation — env not in alias table for mixed-light scenes
+### Companion limitation — env not in alias table for mixed-light scenes — CLOSED 2026-05-29
 
-Independently of the SA-MIS refactor, env-NEE is currently restricted
-to env-only scenes (`LightSampler::EnvSelectProbability()` returns 0
-whenever the alias table contains any explicit light).  In mixed
-env+explicit scenes, env contributes solely via eye-subpath escape
-(BDPT Path B), capping mixed-scene env-NEE delivery at the documented
-~15% deficit.  A 2026-05-26 attempt to fix this by appending env as
-a synthetic alias-table entry caused a severe spectral-BDPT
-regression (env-only delivery 76 % → 20 % of PT), suspected to be
-caused by the extra `sampler.Get1D()` consumed by alias-table
-selection misaligning Sobol dimensions in the spectral integrator's
-per-wavelength sampling.  Fixing this properly requires either (a)
-keeping the env's alias-table draw on a dedicated low-discrepancy
-dimension that doesn't interleave with wavelength sampling, or (b)
-performing the SA-MIS refactor above and removing the
-disc-parameterization entirely.  The two follow-ups are best done
-together.
+**Previously**: env-NEE was restricted to env-only scenes because
+`LightSampler::EnvSelectProbability()` returned 0 whenever the alias
+table contained any explicit light.  In mixed env+explicit scenes,
+env contributed solely via eye-subpath escape (BDPT Path B), capping
+mixed-scene env-NEE delivery at the documented ~15% deficit.  A
+2026-05-26 attempt to fix this by appending env as a synthetic alias-
+table entry caused a severe spectral-BDPT regression (env-only
+delivery 76 % → 20 % of PT) suspected to be Sobol-dimension misalignment
+in the spectral integrator's per-wavelength sampling.
+
+**Resolved (Session 9, 2026-05-29)** by the continuous-PMF
+architectural fix described in the Status block above.  Env now
+participates in `SampleLight()` via an env-vs-alias roll that re-maps
+a single `sampler.Get1D()` into either the env-direction's u1 or the
+alias-table's selection u — net Get1D() consumption per call is
+IDENTICAL to the prior binary-PMF flow, sidestepping the 2026-05-26
+dimension-shift trap.  `EnvSelectProbability()` is now a continuous
+fraction = env totalLuminance × disc-area ÷ (env weight + alias-table
+total weight), matching PBRT-v4's `LightSampler::PMF(env)` semantics.
+EnvLightBalanceTest mixed-scene topologies recover from 85% to 109%
+(env+omni) / 92% (env+mesh) without any regression on env-only or
+non-uniform-env topologies, and the prior spectral env-only Sobol
+catastrophe does NOT recur.  See
+[docs/PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) Session 9 outcome
+for the per-topology delta and implementation citations.
 
 ### References
 

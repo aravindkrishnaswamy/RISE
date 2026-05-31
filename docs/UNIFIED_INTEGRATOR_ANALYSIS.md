@@ -1,15 +1,25 @@
 # Unified Integrator Analysis Plan
 
 **Status:** Plan of analysis — no implementation decisions yet.
+**First written:** 2026-05-07.
+**Revised:** 2026-05-27 — folds in the spectral parity audit outcomes
+(2026-05-07 / 2026-05-24), the env-IBL Path A+B fix (2026-05-25), the
+Rec.709/D65 colour-space migration (2026-05-24), and the BDPT HWSS
+companion-wavelength zeroing fix.  Several "gaps" the prior revision
+listed were either matrix errors or have shipped; the candidate
+inventory and end-state evaluation are updated accordingly.
 **Goal:** Determine whether RISE can converge on a single integrator (or
 near-single integrator) that produces low-variance images quickly across
 the widest practical range of scenes, while staying physically based.
-**Read first:** [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md),
+**Read first:** [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md)
+(matrix corrected 2026-05-07),
+[SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md),
 [MIS_HEURISTICS.md](MIS_HEURISTICS.md),
 [MLT_POSTMORTEM.md](MLT_POSTMORTEM.md),
 [INTEGRATOR_REFACTOR_PLAN.md](INTEGRATOR_REFACTOR_PLAN.md),
 [SMS_FUTURE_DIRECTIONS.md](SMS_FUTURE_DIRECTIONS.md),
-[VCM.md](VCM.md).
+[VCM.md](VCM.md), and [IMPROVEMENTS.md](IMPROVEMENTS.md) §12 (the
+env-IBL SA-MIS refactor).
 
 This document defines **what we will measure and analyze** before
 deciding what to build. It is deliberately not an implementation plan;
@@ -35,524 +45,538 @@ where PT/BDPT cannot reach the transport).
 
 | Constraint | Implication |
 |---|---|
-| **Physical basis preferred** | Strictly unbiased > consistent (asymptotically unbiased) > bias-bounded. VCM's finite-radius merging is consistent but biased; this is now a first-class consideration, not a footnote. |
-| **Spectral parity required** | Any candidate must have a credible spectral path. The current spectral feature gaps ([RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §4) are addressed in parallel via [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) (spawned subtask). |
-| **Refactor latitude granted** | Phases 2b and 2c of the integrator refactor ([INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md)) and broader reorganization are in scope where they reduce duplication or unblock new features. |
-| **Research-territory work permitted** | We can pursue directions that are not yet baked in production renderers (ReSTIR-PT for offline, optimal MIS for VCM, etc.) provided we measure rigorously and accept the risk profile. |
-| **Stay within RISE's core architectural assumptions** | CPU-tile-based rendering, scene immutability, named managers, deterministic Owen-Sobol where possible. We are not pivoting to wavefront/GPU. |
-
-### Non-goals
-
-- ERPT (Cline 2005) — confirmed not worth doing per prior turn.
-- MLT overhaul (RJMCMC, delayed rejection, MMLT/PathMLT revival) — already deprioritized per [MLT_POSTMORTEM.md](MLT_POSTMORTEM.md) and [IMPROVEMENTS.md](IMPROVEMENTS.md) non-goals.
-- Neural BSDFs / NIS — out of scope per [IMPROVEMENTS.md](IMPROVEMENTS.md).
-- GPU pivot — out of scope per [IMPROVEMENTS.md](IMPROVEMENTS.md).
-- Real-time / interactive optimization — separate workstream.
-
----
-
-## 2. Bias-class taxonomy
-
-The bias preference forces us to track this explicitly per candidate.
-Every candidate technique below is classified as one of:
-
-| Class | Definition | Examples in RISE today |
-|---|---|---|
-| **Strictly unbiased** | E[estimator] = exact integral at any finite N | PT, BDPT, MIS-weighted estimators on either, SMS in unbiased mode, ReSTIR/RIS |
-| **Consistent** | E[estimator] → exact integral as N → ∞ at the prescribed schedule; biased at any finite N | VCM (radius shrinks per SPPM), MLT (transient chain bias), SMS in biased mode |
-| **Bias-bounded** | Bias is an output-stage transform we can quantify | OIDN denoising (post-process, not an integrator) |
-
-**Decision rule for this analysis**: any candidate that places the
-*default* render in the consistent or bias-bounded class needs an
-explicit unbiased-mode toggle and must be defensible against the
-strictly-unbiased alternatives at equal wall clock. VCM-as-default does
-not pass that test today; whether VCM-with-guiding-and-optimal-MIS
-passes it is part of what Phase 2 of this analysis will determine.
-
----
-
-## 3. Current-state recap
-
-Captured here for quick reference; the source of truth is the linked
-docs.
-
-### 3.1 Integrators shipped
-
-| Integrator | Bias class | Algorithmic strengths | Algorithmic weaknesses |
-|---|---|---|---|
-| PT | Unbiased | Diffuse interreflection, well-importance-sampled scenes, full optional-feature stack | SDS, hard caustics, small/occluded lights |
-| PT+SMS | Unbiased (snell+unbiased mode); biased (biased mode) | PT regime + smooth dielectric refraction caustics | Heavily-displaced caustics, k≥3 chains, reflection-only specular chains |
-| BDPT | Unbiased | Area-source indirect, glossy interreflection, partial portals | Caustics; pure diffuse (overhead); spectral path-guiding partial |
-| VCM | **Consistent** | Strictly subsumes BDPT (every (s,t) connection); SDS via merging; caustics | No path guiding; no optimal MIS; no SMS; spectral merge uses luminance proxy; biased at finite N |
-| MLT (PSSMLT) | Unbiased asymptotically (transient chain bias) | Sparse paths in narrow regimes; vanishingly few real cases | Per-pixel convergence; opt-out of feature matrix; no proven win on RISE corpus |
-| `pixelpel` (legacy) | Unbiased (PT-shader-op) | Custom shader-op chains | Throughput; new authoring should use modern variants |
-
-### 3.2 Optional-feature matrix — gaps that matter for this analysis
-
-From [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §4. Reproduced
-here with focus on the gaps:
-
-| Feature | Where wired today | Where missing | Notes |
-|---|---|---|---|
-| Path guiding (OpenPGL) | PT, BDPT (partial spectral) | VCM (Pel + spectral), MLT, spectral PT (limited) | Biggest single feature gap; closes the most variance on hard indirect. |
-| Optimal MIS | PT, BDPT | VCM, MLT | Power-vs-balance debate moot once locally-learned weights are available. |
-| SMS | PT, MLT (Pel) | VCM, BDPT (excised 2026-05) | VCM doesn't need SMS (handles caustics via merging); BDPT-SMS reintegration is design-open. |
-| Adaptive sampling | PT, BDPT (Pel), VCM (Pel) | BDPT spectral, MLT, possibly others | Independent variance lever; not algorithm-blocking. |
-| OIDN | PT, BDPT, VCM (Pel full bypass; spectral limited) | MLT, spectral integrators (limited) | Post-process; treated as bias-bounded output stage. |
-
-### 3.3 Recently-completed transport infrastructure
-
-From [IMPROVEMENTS.md](IMPROVEMENTS.md) "Current RISE Baseline":
-
-- Light BVH for many-light sampling (Apr 2026) — 4.78× variance reduction on 100-light corridor.
-- Null-scattering volumes (Apr 2026) — unbiased delta tracking with arbitrary majorant.
-- Random-walk SSS (Apr 2026) — fully unbiased BSSRDF transport.
-- Optimal MIS in PT (Kondapaneni 2019) — locally learned alpha.
-- Light-subpath guiding in BDPT (Apr 2026).
-- HWSS, Owen-scrambled Sobol, ZSobol blue-noise sampling.
-- VCM with progressive radius shrinkage (consistent estimator).
-
-This infrastructure is **the substrate** for the analysis. We do not
-replace it; we ask which integrator best leverages it.
-
----
-
-## 4. Phase 1 — Empirical scene→integrator mapping
-
-**Purpose:** stop guessing about which integrator is "best" on which
-scene category. Measure it. The rest of the analysis is far less
-useful without this baseline.
-
-### 4.1 Test corpus selection
-
-Curate a representative subset (~20-30 scenes) covering the full
-transport-difficulty space:
-
-- **Diffuse-dominated** (Cornell, architectural): expect PT to dominate.
-- **Glossy interreflection**: expect BDPT to dominate.
-- **Refractive caustics, smooth dielectric** (Veach egg, glass sphere): SMS regime.
-- **Refractive caustics, heavily displaced**: VCM-only regime today.
-- **Reflective caustics / mirror chains**: VCM regime.
-- **SDS chains**: VCM and SMS regime.
-- **Many-light scenes** (corridor, lights array): light-BVH stress.
-- **Volumetric** (homogeneous + heterogeneous): null-scattering stress.
-- **Spectral / dispersive** (prism, dispersion caustic): HWSS + spectral parity.
-- **Mixed transport** (hard one scene to characterize): the hardest cases.
-
-The selection criteria, scene paths, and reference-render protocol
-go in `docs/UNIFIED_INTEGRATOR_BASELINES.md` (a *measurement* document
-produced as Phase 1 output, separate from this *plan* document).
-
-### 4.2 Metrics
-
-For each (scene, integrator) pair at multiple wall-clock budgets:
-
-| Metric | What it tells us | Tool |
-|---|---|---|
-| RMSE vs reference | Convergence quality | `bin/tools/HDRVarianceTest.exe` per [docs/skills/variance-measurement.md](skills/variance-measurement.md) |
-| Pure variance (K-trial stddev) | Noise floor at fixed budget | Same |
-| Mean luminance bias | Bias detection (essential for VCM) | Same |
-| 99th-percentile pixel error | Firefly / outlier sensitivity | Custom; uses K trials |
-| Wall-clock per equivalent SPP | Throughput parity baseline | RISE log |
-| Memory peak | Photon stores, kdtree, training data | RSS sampling |
-
-**Bias measurement protocol for VCM specifically:** render the same scene at multiple radii (e.g., 0.5×, 1×, 2× of auto) and at multiple sample counts (1×, 4×, 16× the budget) to track convergence as both shrinkage and N grow. Compare the limit value against PT/BDPT reference where reachable. Document the bias magnitude per scene type. *This is the empirical answer to "how much bias does VCM actually carry on RISE's scenes."*
-
-### 4.3 Output of Phase 1
-
-A scene-by-integrator quality matrix with three dimensions:
-
-- **Scene class → best unbiased integrator at fixed wall-clock**
-- **Scene class → best consistent integrator at fixed wall-clock**
-- **Per-class delta** between best-unbiased and best-consistent (the "bias premium" for each scene class)
-
-This map IS the prior on which directions to pursue. If the
-bias-premium is small everywhere, pursue the unbiased path. If it's
-large on caustic-class scenes specifically and small everywhere else,
-the answer is a hybrid (unbiased default + consistent caustic strategy).
-
-### 4.4 Phase 1 budget
-
-Estimate: 2–3 weeks elapsed. Most time is render time, not engineering.
-A handful of small instrumentation additions (per-strategy contribution
-splatting, bias accumulator) may be needed.
-
----
-
-## 5. Phase 2 — Candidate inventory & literature deep-dive
-
-**Purpose:** rigorous taxonomy of techniques that could move us toward
-the goal, with bias class, scope, risk, and dependence on the Phase 1
-findings made explicit.
-
-The full literature catalog lives in subsections below. Each candidate
-gets a structured entry: bias class, what it solves, what it costs, and
-what RISE infrastructure it depends on or replaces.
-
-### 5.1 Path-guiding extensions
-
-#### 5.1.1 Path guiding in VCM (eye + light, with merge-skip during training)
-
-- **Bias class:** preserves VCM's consistent class (does not introduce additional bias).
-- **What it solves:** VCM's biggest practical weakness. Closes ~80% of the variance gap with PT-with-guiding on diffuse-dominated scenes.
-- **Dependencies:** Phase 2a templatization (✓ shipped); Phase 2c BDPT refactor would let us share the eye-guiding code outright.
-- **Open question:** whether merging-pass samples corrupt OpenPGL training (correlated; same problem MMLT documented). Likely needs a "training samples come from connection strategies only" gate.
-- **Effort estimate:** 3–6 weeks if training-corruption hypothesis holds; could balloon if it doesn't.
-- **Reference precedent:** none directly (Mitsuba's VCM doesn't have OpenPGL guiding either). Engineering-research territory.
-
-#### 5.1.2 Manifold Path Guiding (Fan et al. 2023)
-
-- **Bias class:** unbiased.
-- **What it solves:** k≥3 specular chain robustness; the regime where vanilla SMS fails.
-- **Dependencies:** sits on SMS infrastructure; would replace `caustic_caster` enumeration.
-- **Effort:** 4–8 weeks (per [SMS_FUTURE_DIRECTIONS.md](SMS_FUTURE_DIRECTIONS.md)).
-- **Reference precedent:** [paper code](https://github.com/mollnn/manifold-path-guiding); reproducible.
-
-#### 5.1.3 Online Photon Guiding with 3D Gaussians (Xu et al. 2024)
-
-- Mentioned for completeness; orthogonal to integrator choice. Defer to a later candidate-evaluation pass.
-
-### 5.2 MIS extensions
-
-#### 5.2.1 Variance-aware MIS for BDPT (Grittmann et al. 2019)
-
-- **Bias class:** unbiased (MIS reweighting is invariance-preserving).
-- **What it solves:** BDPT's power-heuristic variance can be improved per-pixel with second-moment-aware weights.
-- **Dependencies:** RISE's `OptimalMISAccumulator` + `MISWeights::OptimalMIS2Weight` machinery is the foundation; Grittmann extends it to N>2 strategies.
-- **Effort:** 8–12 weeks. Published with explanation; reference implementation available in Mitsuba 0.6 fork.
-- **Risk:** medium. The N-strategy generalization complicates the BDPT walk; we already have a clean walk to extend.
-
-#### 5.2.2 Correlation-aware MIS for BDPT (Grittmann et al. 2021)
-
-- **Bias class:** unbiased.
-- **What it solves:** strategy correlations within BDPT walks; the failure mode where two strategies sample nearly the same path.
-- **Dependencies:** builds on 5.2.1.
-- **Effort:** +4–6 weeks on top of 5.2.1.
-
-#### 5.2.3 Optimal MIS for VCM
-
-- **Bias class:** preserves VCM's consistent class.
-- **What it solves:** the algorithmic asymmetry between BDPT (power) and VCM (balance); locally-learned alphas eliminate the dichotomy.
-- **Dependencies:** open research. The Georgiev 2012 dVCM/dVC/dVM running-quantities recurrence may not factor cleanly under variance-aware weights. Needs a focused literature survey before scoping.
-- **Effort:** 12–20 weeks if tractable, possibly unbounded if it isn't.
-- **Risk:** high. This is the "open research" direction acknowledged in [MIS_HEURISTICS.md](MIS_HEURISTICS.md).
-
-### 5.3 Specular / manifold methods
-
-#### 5.3.1 Specular Polynomials (Mo et al. 2024) — **next SMS target**
-
-- **Bias class:** unbiased.
-- **What it solves:** Newton-fragility on heavily-displaced meshes. Returns *all* admissible paths via deterministic root-finding. Limited to k≤3.
-- **Dependencies:** sits beside SMS Newton solver as a parallel solver (`sms_solver "newton"|"polynomial"`).
-- **Effort:** 6–10 weeks per [SMS_FUTURE_DIRECTIONS.md](SMS_FUTURE_DIRECTIONS.md).
-- **Reference precedent:** [paper code](https://github.com/mollnn/spoly).
-
-#### 5.3.2 Bernstein Bounds for Caustics (Schaufler et al. 2025)
-
-- **Bias class:** unbiased.
-- **What it solves:** heavy-vertex-displaced caustics; the regime SMS gives up on. Different machinery (interval analysis) than Newton.
-- **Effort:** 6–8 weeks. Different mathematical foundation.
-- **Why it matters:** if SMS-with-Specular-Polynomials still leaves a displaced-caustic gap, this is the next candidate.
-
-#### 5.3.3 Specular Manifold Bisection Sampling (Jhang & Chang 2022)
-
-- **Bias class:** unbiased.
-- **What it solves:** Newton-divergence rescue (~2× success rate).
-- **Effort:** 1–2 weeks.
-- **Why it's listed:** cheap incremental win; possibly worth doing regardless of which larger direction we pick.
-
-### 5.4 Path-space resampling — the "uniformly great" lever
-
-#### 5.4.1 ReSTIR-PT for offline rendering (Lin et al. 2022)
-
-- **Bias class:** unbiased (RIS is provably unbiased).
-- **What it solves:** the *uniformity* problem. Reservoirs reuse good paths spatially, so per-pixel quality becomes much less scene-dependent. The most uniform per-scene quality of anything published in the last decade.
-- **Dependencies:** RISE has zero ReSTIR infrastructure today. Spatial reservoir buffers, RIS estimator combination, MIS-with-resampling theory. CPU-tile-based architecture is *unusual* for ReSTIR (which is overwhelmingly GPU literature) — unknown whether the spatial-reuse cost amortizes well on tiles.
-- **Effort:** 16–24 weeks for a credible offline ReSTIR-PT.
-- **Risk:** high. Literature is overwhelmingly real-time / GPU. Offline-quality with no temporal reuse exists in publications but is far less battle-tested. The "ReSTIR-PT for tile-based CPU" execution model is a research question, not just engineering.
-- **Open question:** does the spatial-reuse pass increase per-tile cost enough that the variance-vs-wall-clock trade-off is favorable on RISE's hardware mix?
-
-#### 5.4.2 Generalized RIS for BDPT (Bitterli et al. 2022, Lin/Karis 2022)
-
-- **Bias class:** unbiased.
-- **What it solves:** path-space resampling as a generic sampling primitive on top of BDPT. Subsumes 5.4.1 for the BDPT variant.
-- **Dependencies:** same ReSTIR infrastructure as 5.4.1.
-- **Effort:** if 5.4.1 is built first, +6–8 weeks.
-
-#### 5.4.3 PSMS-ReSTIR (Hong et al. 2025)
-
-- **Bias class:** unbiased.
-- **What it solves:** ReSTIR specifically for SMS — caustic resampling.
-- **Dependencies:** ReSTIR infrastructure + SMS already shipped.
-- **Effort:** if 5.4.1 is built first, +4–6 weeks.
-
-### 5.5 BDPT–SMS reintegration (revisit the 2026-05 excision)
-
-Per [CLAUDE.md](../CLAUDE.md) High-Value Facts, BDPT-SMS was excised
-because the cross-strategy MIS overlap (`ShouldSuppressSMSOverlap`) was
-structural complexity for no measurable variance gain. **However**: that
-analysis was made on the assumption that PT+SMS or VCM is the right
-caustic answer. If the goal is "single integrator", revisiting BDPT-SMS
-becomes interesting again — but **only** with one of:
-
-- **Specular Polynomials as the SMS solver** (deterministic, all-roots, no Newton fragility — much friendlier to BDPT MIS than the previous Newton-plus-Bernoulli formulation).
-- **A path-space MIS framework that handles SMS as a connection strategy** (rather than the `ShouldSuppressSMSOverlap` predicate-based collision avoidance).
-
-This is captured here as a candidate to *re-evaluate after Phase 1*,
-not as a recommendation. The previous excision rationale stands until
-data says otherwise.
-
-### 5.6 Out-of-scope (already decided)
+| **Physical basis preferred** | Strictly unbiased > consistent (asymptotically unbiased) > bias-bounded. VCM's finite-radius merging is consistent but biased; this is a first-class consideration. |
+| **Spectral parity required** | The spectral parity audit landed most quick wins in May; the remaining gaps (VCM-spectral per-wavelength photon store, PT-spectral inline AOV) are now refactor-blocked or research-blocked rather than feature-blocked.  See §3.4 and §7.1. |
+| **Refactor latitude granted** | Phases 2b (PT) and 2c (BDPT) of the integrator refactor remain deferred. The spectral parity audit explicitly flags Phase 2b as a precondition for closing PT-spectral inline AOV without doubling-down on NM/HWSS duplication. |
+| **Research-territory work permitted** | Optimal MIS extensions to BDPT/VCM, ReSTIR-PT for offline, Specular Polynomials. |
+| **CPU-tile-based** | No GPU/wavefront pivot in scope. |
+
+### Non-goals (unchanged)
 
 - ERPT, MMLT, PathMLT, RJMCMC, delayed-rejection MLT.
-- Neural BSDFs, NIS, NeRF/3DGS scene acquisition.
+- Neural BSDFs / NIS / NeRF.
 - Polarization.
 - GPU pivot.
 
 ---
 
-## 6. Phase 3 — Synthesis decision frameworks
+## 2. Bias-class taxonomy
 
-**Purpose:** turn Phase 1 measurements + Phase 2 candidate inventory
-into a small set of viable end-state architectures, each fully specified
-and comparable.
+| Class | Definition | Examples in RISE today |
+|---|---|---|
+| **Strictly unbiased** | E[estimator] = exact integral at any finite N | PT, BDPT, MIS-weighted estimators on either, SMS in unbiased mode |
+| **Consistent** | E[estimator] → exact integral as N → ∞ on the prescribed schedule; biased at any finite N | VCM (radius shrinks per SPPM), MLT (transient chain bias), SMS in biased mode, ReSTIR (resampling bias bounded ∝ 1/M, often negligible) |
+| **Bias-bounded** | Bias is a quantifiable output-stage transform | OIDN denoising, the env-IBL Path A+B workaround (documented 15-22% mean underestimate vs PT) |
 
-We expect 2–4 viable end states, evaluated against the same criteria.
+**Decision rule:** any candidate that places the *default* render in the
+consistent class needs an explicit unbiased-mode toggle and must be
+defensible against strictly-unbiased alternatives at equal wall clock.
+VCM-as-default does not pass that test under the user's preference;
+whether VCM-with-guiding-and-optimal-MIS passes is the question
+Phase 1 measurement will answer.
 
-### 6.1 Candidate end-state architectures (sketches, not commitments)
+**Note added 2026-05-27:** the env-IBL Path A+B workaround
+([IMPROVEMENTS.md](IMPROVEMENTS.md) §12) puts BDPT and VCM in the
+**bias-bounded** class for env-IBL scenes specifically until the SA-MIS
+refactor lands. The bound is well-characterized (~15-22% mean
+underestimate vs PT on env-only scenes; smaller on mixed env+explicit).
+For env-IBL-dominant scenes this is a *current* bias-class downgrade
+even for BDPT — which sharpens the case for prioritizing the SA-MIS
+refactor before broader integrator unification.
+
+---
+
+## 3. Current-state recap (revised 2026-05-27)
+
+### 3.1 Integrators shipped
+
+| Integrator | Bias class | Algorithmic strengths | Algorithmic weaknesses (post-May-2026 updates) |
+|---|---|---|---|
+| PT | Unbiased | Diffuse interreflection, well-importance-sampled scenes, full optional-feature stack on the Pel side | SDS, hard caustics, small/occluded lights |
+| PT+SMS | Unbiased (snell + unbiased mode); biased (biased mode) | PT regime + smooth dielectric refraction caustics | Heavy-displaced caustics, k≥3 chains, reflection-only specular chains |
+| BDPT | Unbiased *except* env-IBL bias-bounded ~15-22% until SA-MIS refactor lands | Area-source indirect, glossy interreflection, partial portals. **Spectral now has full path guiding + adaptive sampling** (was partial / ✗ in prior analysis) | Caustics; pure-diffuse overhead vs PT; env-IBL residual gap; spectral optimal-MIS hard-rejected at parser (open research) |
+| VCM | Consistent + env-IBL bias-bounded + spectral merge correctness gap | Strictly subsumes BDPT connections; SDS via merging; caustics | No path guiding (architectural); no optimal MIS (architectural); no SMS; spectral merge uses luminance proxy on Pel-only photon store; no media-aware connection transmittance (`VCMIsVisible` is binary); biased at finite N |
+| MLT (PSSMLT) | Asymptotically unbiased (transient chain bias) | Sparse paths in narrow regimes | Per-pixel convergence; opts out of feature matrix |
+| `pixelpel` (legacy) | Unbiased (PT-shader-op) | Custom shader-op chains | Throughput |
+
+### 3.2 Optional-feature matrix — as it stands today
+
+From [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §4, corrected
+2026-05-07 against parser source.  The diff vs the May-7 analysis is
+significant — three rows flipped:
+
+| Feature | Pel side wired | Spectral side wired | Notes |
+|---|---|---|---|
+| Path guiding (OpenPGL) | PT ✓, BDPT ✓ | PT ✗, BDPT ✓ (full, 2026-05-07) | PT-spectral was a matrix error; never wired. BDPT-spectral was "partial" (missing 4 params); now full. |
+| Adaptive sampling | PT ✓, BDPT ✓, VCM ✓ | PT ✓, BDPT ✓ (2026-05-24), VCM ✓ | BDPT-spectral closed 2026-05-24 + latent bias bug fix. |
+| Optimal MIS | PT only (`PixelBasedPelRasterizer`, `PathTracingIntegrator`) | None | BDPT-pel was a matrix error (parsed-never-consumed); parser now hard-rejects on BDPT/VCM/PT-spectral. Open research per [MIS_HEURISTICS.md](MIS_HEURISTICS.md). |
+| SMS | PT only | PT only | BDPT-SMS excised 2026-05-07; VCM never wired (merging handles caustics). |
+| OIDN (full inline AOV) | PT ✓, BDPT ✓, VCM ✓ | PT ✗ (Phase 2b), BDPT ✓ (post-2026-05-07 fix), VCM ✓ (post-2026-05-07 fix) | BDPT/VCM-spectral now use `BSDF->albedo(rig)` against helper-populated RIG (matches Pel). PT-spectral still uses retrace fallback. |
+
+The **net** shift since the May-7 revision: BDPT-spectral became
+substantially feature-complete, several "gaps" reduced to matrix
+errors, and the remaining gaps cleanly partition into:
+
+1. **Refactor-blocked**: PT-spectral inline AOV (needs Phase 2b).
+2. **Architecturally blocked / research-territory**: VCM path guiding, VCM optimal MIS, BDPT optimal MIS, pixelintegratingspectral modern features.
+3. **Architectural with a clear plan**: VCM spectral per-wavelength photon store (2-4 weeks, design in [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §3).
+4. **Correctness, in-flight workaround**: env-IBL on BDPT/VCM (Path A+B shipped; principled fix is [IMPROVEMENTS.md](IMPROVEMENTS.md) §12).
+
+### 3.3 Env-IBL convergence — new bias surface
+
+The 2026-05-25 Path A+B fix closes most of the previously-broken
+env-IBL handling on BDPT/VCM. Empirical (from
+[tests/EnvLightBalanceTest.cpp](../tests/EnvLightBalanceTest.cpp), 32×32 /
+64 spp, uniform env Le=1.0, Lambertian quad albedo 0.5):
+
+| Topology | PT mean | BDPT (pre) | BDPT (post) | VCM (pre) | VCM (post) |
+|---|---|---|---|---|---|
+| env-only Lambertian | 0.589 | ~0 | 0.457 | 0.026 | 0.562 |
+| env + omni light | 0.601 | 0.012 | 0.512 | 0.012 | 0.512 |
+| env + mesh emitter | 0.608 | 0.029 | 0.520 | 0.029 | 0.520 |
+
+Delivery went from 0-5% to 78-95% of PT.  The residual 15-22% is the
+disc-area-vs-true-SA mismatch that [IMPROVEMENTS.md](IMPROVEMENTS.md)
+§12 closes via the PBRT-v4 measure-aware infinite-light vertex
+refactor.  Side notes from the same effort:
+
+- VCM env-NEE still has Tr=1 in any participating medium (`VCMIsVisible` is a binary occlusion test, not the media-aware shadow walk BDPT uses).  Documented as a general VCM gap.
+- Env-NEE is currently restricted to env-only scenes.  A 2026-05-26 attempt to generalize via synthetic alias-table entry caused a severe spectral-BDPT regression (env-only delivery 76% → 20%) and was reverted.  Suspected cause: extra `Get1D()` consumed by alias-table selection misaligns Sobol dimensions in the per-wavelength sampling.
+
+These three together — SA-MIS refactor, VCM connection-transmittance,
+mixed-scene env-NEE — are the prerequisites for any "single
+integrator" answer that includes env-IBL scenes.  They are not
+prerequisites for a PT-only answer (PT already handles env-IBL
+correctly), so they preferentially favor BDPT-centric or VCM-centric
+end states (§6).
+
+### 3.4 Spectral parity status — substantially closed
+
+Updated from [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md):
+
+| Item | Status |
+|---|---|
+| Matrix correction (3 rows flipped, several footnotes added) | DONE 2026-05-07 |
+| BDPT-spectral path-guiding subset → full | DONE 2026-05-07 |
+| BDPT-spectral adaptive sampling + latent bias bug | DONE 2026-05-24 |
+| BDPT/VCM-spectral OIDN albedo proxy retired | DONE 2026-05-07 |
+| AOV `RayIntersectionGeometric` helper-populated (5 sites) | DONE 2026-05-07 |
+| Parser hard-rejects silently-ignored optimal-MIS params on BDPT/VCM/PT-spectral | DONE 2026-05-07 |
+| `pixelintegratingspectral_rasterizer` formally soft-deprecated | DONE 2026-05-07 |
+| VCM-spectral per-wavelength photon store (correctness) | OPEN — design in audit §3, 2-4 weeks |
+| PT-spectral inline AOV | OPEN — refactor-blocked on Phase 2b |
+| Cross-cutting question 6: Accurate-prefilter mode in BDPT/VCM AOV walk | OPEN — design decision |
+
+The Rec.709/D65 colour-space migration ([COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md))
+**incidentally tidied** the `RISEPelToNMProxy` luminance projection
+correctness (now computes Rec.709 Y by construction; was applying Rec.709
+weights to ROMM-space values).  The *dispersion-loss* correctness gap on
+VCM-spectral merges is unchanged — that's about per-wavelength throughput
+projection at merge time, not about which luminance basis the scalar is in.
+
+### 3.5 Recently-completed transport infrastructure (May-7 baseline still applies)
+
+- Light BVH (Apr 2026, 4.78× variance reduction on 100-light corridor).
+- Null-scattering volumes (Apr 2026).
+- Random-walk SSS (Apr 2026).
+- Optimal MIS in PT (Kondapaneni 2019).
+- Light-subpath guiding in BDPT (Apr 2026).
+- HWSS, Owen-scrambled Sobol, ZSobol.
+- VCM with progressive radius shrinkage.
+
+---
+
+## 4. Phase 1 — Empirical scene→integrator mapping
+
+The plan here is unchanged from the May-7 revision **with three
+additions** reflecting the new env-IBL state:
+
+### 4.1 Test corpus — additions
+
+Add to the curated subset (~20-30 scenes total):
+
+- **Env-IBL only** (Lambertian + glossy + dielectric receivers): measure the documented 15-22% BDPT/VCM gap on real scenes to confirm `EnvLightBalanceTest`'s 32×32 / 64 spp synthetic result holds at production resolution.
+- **Env-IBL + mesh emitter mixed** (e.g. `scenes/FeatureBased/ripple_dreams_fields.RISEscene`): measure the env-NEE mixed-scene restriction's practical impact.
+- **VCM connection-transmittance stress** (env-IBL through fog): isolate the VCM `VCMIsVisible` binary-occlusion gap.
+
+These are not optional — env-IBL is widespread in production scenes
+and any "uniformly great integrator" claim has to be defensible on it.
+The May-7 revision underweighted env-IBL because the Path A+B fix
+hadn't surfaced the residual yet.
+
+### 4.2 Metrics — unchanged
+
+Per-scene per-integrator, at multiple wall-clock budgets:
+
+- RMSE vs reference
+- Pure variance (K-trial stddev)
+- Mean luminance bias (essential for VCM; now also tracks env-IBL bias-bounded)
+- 99th-percentile pixel error
+- Wall-clock per equivalent SPP
+- Memory peak
+
+### 4.3 Bias measurement protocol (revised)
+
+**For VCM:** unchanged — vary radius (0.5×, 1×, 2× auto) and sample count (1×, 4×, 16×) to track shrinkage + convergence.
+
+**For env-IBL on BDPT/VCM:** new — measure mean-luminance bias vs PT reference at convergence on the env-IBL test set. Cross-reference with `EnvLightBalanceTest` synthetic numbers.
+
+**For VCM-spectral merging:** dispersive caustic scenes (`triplecaustic`, water/glass) measured against per-wavelength PT reference to quantify the luminance-proxy dispersion-loss bias.
+
+### 4.4 Phase 1 budget
+
+Estimate unchanged: **2–3 weeks elapsed**. Most time is render time.
+Need ~1 week of instrumentation work: env-IBL bias-vs-reference
+harness, variance scaffolding script, per-strategy contribution
+splatting on BDPT/VCM.
+
+### 4.5 Phase 1 output
+
+`docs/UNIFIED_INTEGRATOR_BASELINES.md` (to be produced). Contains:
+
+- Scene-by-integrator quality matrix (RMSE, variance, bias, wall-clock).
+- Bias-premium per scene class for VCM-vs-PT-or-BDPT.
+- Env-IBL bias quantification at production resolution.
+- VCM-spectral dispersion bias quantification.
+- Identification of scenes where *every* integrator has high variance (these are the highest-leverage scenes for the chosen direction).
+
+---
+
+## 5. Phase 2 — Candidate inventory (revised 2026-05-27)
+
+### 5.1 Already-closed since May-7
+
+The following candidates from the May-7 revision are no longer "open
+work" — they shipped:
+
+- ~~BDPT-spectral path guiding (partial → full)~~  DONE 2026-05-07
+- ~~BDPT-spectral adaptive sampling~~  DONE 2026-05-24
+- ~~BDPT/VCM-spectral OIDN AOV albedo proxy~~  DONE 2026-05-07
+
+The following candidates have been **reclassified** from "in scope"
+to "hard-blocked" by the audit:
+
+- Optimal MIS on BDPT (Pel + spectral): parser hard-rejects; consumer code never existed. Real fix is open research per [MIS_HEURISTICS.md](MIS_HEURISTICS.md). Bumped to research-territory.
+- Optimal MIS on VCM: architecturally blocked by Georgiev recurrence.
+- Path guiding on VCM: architecturally blocked by merging-vs-training cooperation. Open research.
+- Modern features on `pixelintegratingspectral_rasterizer`: out of scope (soft-deprecated).
+
+### 5.2 New since May-7
+
+#### 5.2.1 Env-IBL SA-MIS refactor ([IMPROVEMENTS.md](IMPROVEMENTS.md) §12)
+
+- **Bias class:** moves BDPT/VCM env-IBL from bias-bounded back to strictly unbiased.
+- **What it solves:** the documented 15-22% mean-luminance gap on env-IBL BDPT/VCM. Closes the disc-area parameterization correctness debt by going PBRT-v4-style (env vertex is direction-on-sphere, pdf in solid-angle measure throughout `MISWeight`).
+- **Dependencies:** touches `MISWeight` core, `BDPTUtilities::SolidAngleToArea` / `GeometricTerm`, `SampleEnvLightEmission`, `GenerateLightSubpath`, both RGB and NM. VCM's `dVCM/dVC/dVM` recurrence has a parallel env-vertex special case per Georgiev 2012 Appendix A.
+- **Effort:** ~10 files, ~300 lines if cleanly refactored.
+- **Risk:** **medium-high.** MIS regressions are subtle (RISE has hit MIS-walk bugs before; see [skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)). Disc-area convention is currently *working* for non-env-terminating paths; touching `MISWeight` risks breaking those.
+- **Validation:** strict `EnvLightBalanceTest` tolerances (`0.10 / 0.30 / 1.00`), no regression on the 116 existing tests, visual parity PT/BDPT/VCM on `ripple_dreams_fields.RISEscene`, ≥15% RMSE drop on env-IBL scenes.
+- **Why this is now top-of-list:** every candidate end state that includes BDPT or VCM gets a free 15-22% mean-luminance correctness uplift from this. It's a Phase-1 prerequisite for any honest empirical comparison.
+
+#### 5.2.2 VCM media-aware connection transmittance
+
+- **Bias class:** preserves VCM's consistent class.
+- **What it solves:** VCM NEE / interior connection / s=0 strategies currently use `VCMIsVisible` (binary occlusion), not a transmittance-aware shadow walk like BDPT's `EvalConnectionTransmittance`. Result: VCM is wrong on env-IBL-through-fog and any participating-medium scene.
+- **Effort:** small-to-medium — extend BDPT's `EvalConnectionTransmittance` to be called from the VCM connection sites; preserve the VCM running-quantity recurrence.
+- **Risk:** low. Existing reference (BDPT).
+- **Coupling:** if 5.2.1 lands, this folds in naturally.
+
+#### 5.2.3 Mixed-scene env-NEE for BDPT-spectral (Sobol-stream issue)
+
+- **Bias class:** would make BDPT/VCM strictly unbiased on env+explicit mixed scenes (currently env contributes via eye-subpath escape only — capping delivery at ~15% deficit).
+- **What it solves:** the 2026-05-26 attempt regressed spectral-BDPT badly; suspected cause is an extra `Get1D()` consumed by alias-table selection misaligning Sobol dimensions per-wavelength.
+- **Effort:** medium — either (a) dedicated low-discrepancy dimension for env's alias-table draw, or (b) the SA-MIS refactor (5.2.1) eliminates the disc parameterization entirely and removes the need.
+- **Recommendation:** sequence after 5.2.1.
+
+### 5.3 Carried over from May-7 revision (status updated)
+
+The literature-track items below are unchanged in scope. Marked
+status updates where they exist.
+
+#### Path-guiding extensions
+
+- **Path guiding in VCM** — confirmed architecturally blocked per audit §2.13. Research-territory.
+- **Manifold Path Guiding (Fan 2023)** — unchanged. Unbiased. 4–8 weeks. Reference code available.
+- **Online Photon Guiding 3DGS (Xu 2024)** — defer.
+
+#### MIS extensions
+
+- **Variance-aware MIS for BDPT (Grittmann 2019)** — unchanged. Unbiased. 8–12 weeks. Reference in Mitsuba 0.6 fork. **Now the only viable path** to optimal-MIS-in-BDPT after the audit hard-rejected the parsed-never-consumed params.
+- **Correlation-aware MIS for BDPT (Grittmann 2021)** — unchanged. Unbiased. +4–6 weeks on top of variance-aware.
+- **Optimal MIS for VCM** — confirmed architecturally blocked. Bumped to research-only.
+
+#### Specular / manifold methods
+
+- **Specular Polynomials (Mo 2024)** — unchanged. Unbiased. 6–10 weeks. Reference code available. Still the next SMS target per [SMS_FUTURE_DIRECTIONS.md](SMS_FUTURE_DIRECTIONS.md).
+- **Bernstein Bounds (Schaufler 2025)** — unchanged. Unbiased. 6–8 weeks. For heavy-displaced caustics if Specular Polynomials leaves a gap.
+- **SMBS (Jhang & Chang 2022)** — unchanged. Cheap (~1–2 weeks). Worth doing regardless of larger direction.
+
+#### Path-space resampling
+
+- **ReSTIR-PT for offline (Lin et al. 2022)** — unchanged. The big "uniformly great" lever. 16–24 weeks. High research risk on the CPU-tile execution model.
+- **Generalized RIS for BDPT (Bitterli 2022)** — unchanged. +6–8 weeks after ReSTIR-PT.
+- **PSMS-ReSTIR (Hong 2025)** — unchanged. +4–6 weeks after ReSTIR-PT.
+
+#### BDPT–SMS reintegration
+
+- Unchanged. Re-evaluate *after* Phase 1 + Specular Polynomials, *if* the "single integrator" direction needs caustics on BDPT.
+
+### 5.4 Out-of-scope (confirmed)
+
+ERPT, MMLT, PathMLT, neural BSDFs, polarization, GPU pivot.
+
+---
+
+## 6. Phase 3 — Synthesis decision frameworks (revised 2026-05-27)
+
+The candidate end states are unchanged in shape, but their relative
+attractiveness has shifted with the spectral parity outcomes and the
+env-IBL state.
+
+### 6.1 Candidate end-state architectures
 
 #### Candidate A — "Strictly unbiased, BDPT-centric"
 
 ```
 BDPT
-  + path guiding (eye + light, already shipped)
+  + env-IBL SA-MIS refactor (5.2.1, makes BDPT strictly unbiased on env-IBL)
+  + VCM-borrowed media-aware connection transmittance (5.2.2)
+  + path guiding (already shipped, pel + spectral)
   + variance-aware MIS (Grittmann 2019)
   + correlation-aware MIS (Grittmann 2021)
-  + SMS reintegrated as a connection strategy via Specular Polynomials
-  + path-space resampling (G-RIS for BDPT, optional Phase 4 add)
-  + spectral parity from spectral-parity-audit subtask
+  + SMS reintegrated as connection strategy via Specular Polynomials
+  + path-space resampling (G-RIS for BDPT, optional Phase 4)
 ```
 
-**Bias class:** strictly unbiased everywhere.
-**Scope:** Phase 1+2 (path guiding/MIS extensions) is ~6 months; Specular Polynomials adds ~2 months; G-RIS adds ~6 months. Full sequence: ~14 months.
-**Strength:** physically defensible at every step; spectral path is clear; subsumes what PT+SMS does today plus what BDPT does today.
-**Weakness:** does not directly address the SDS / merging caustic cases that VCM handles via photons; relies on Specular Polynomials + path-space resampling to close that gap, both of which are research-territory at the implementation extremes.
+**Bias class:** strictly unbiased everywhere (post-SA-MIS).
+**Scope:** SA-MIS (~3 weeks) + Specular Polynomials (~2 months) + variance-aware MIS (~3 months) + correlation-aware MIS (~1.5 months). Full sequence: ~9-10 months. G-RIS add: +6 months.
+**Strength:** physically defensible at every step; **spectral path is now substantially in place** (BDPT-spectral has feature parity post-audit). Subsumes what PT+SMS and BDPT do today.
+**Weakness:** still doesn't natively cover SDS-through-merging caustic regime; relies on Specular Polynomials + path-space resampling to close that gap (both feasible, neither trivial).
+**What's changed since May-7:** the spectral parity audit landed most of the spectral plumbing; the env-IBL gap is now bias-bounded with a known closure. **This is the candidate that gained most.**
 
 #### Candidate B — "VCM-as-default, consistent"
 
 ```
 VCM
-  + path guiding (eye + light, novel implementation)
+  + env-IBL SA-MIS refactor (5.2.1)
+  + media-aware connection transmittance (5.2.2)
+  + per-wavelength photon store (spectral parity audit §3)
+  + path guiding (novel implementation; architecturally hard)
   + optimal MIS for VCM (open research)
-  + spectral merging via per-wavelength photons (replaces luminance proxy)
-  + spectral parity from spectral-parity-audit subtask
 ```
 
-**Bias class:** consistent (VCM's finite-radius bias remains).
-**Scope:** path guiding ~3-6 months; optimal MIS ~3-5 months if tractable; per-wavelength photons ~2 months. Full sequence: ~8-13 months if research lands.
-**Strength:** strictly subsumes BDPT in transport coverage; SDS / merging caustics handled natively; smaller new integrator footprint.
-**Weakness:** *fails the hard constraint on physical basis as default*. Would need an unbiased-mode fallback. The Phase 1 bias measurement on RISE's scenes determines whether the bias is small enough to make this acceptable.
+**Bias class:** consistent (VCM's finite-radius bias) + spectral merge correctness gap until per-wavelength photons land.
+**Scope:** SA-MIS (~3 weeks) + connection transmittance (~2 weeks) + per-wavelength photons (~3 weeks) + path guiding (3-6 months if it works) + optimal MIS for VCM (3-6 months if tractable, possibly unbounded).
+**Strength:** strictly subsumes BDPT in transport coverage; SDS / merging caustics handled natively.
+**Weakness:** **fails the user's hard constraint on physical basis as default.** Three independent gaps to close (env-IBL, transmittance, per-wavelength photons) before VCM is even *correctness-equivalent* to BDPT on non-caustic scenes. Two more (path guiding, optimal MIS) for performance parity. Spectral merge correctness gap is a real correctness debt, not just a feature gap.
+**What's changed since May-7:** **less attractive.** The May-7 revision underweighted the VCM correctness gaps. The audit surfaced (a) the per-wavelength photon store as a real correctness issue documented in [VCM.md](VCM.md):242 not just a v1 limitation, and the env-IBL work surfaced (b) and (c). Three open correctness gaps, plus the path-guiding and optimal-MIS-for-VCM both being confirmed-architecturally-blocked, weakens the case meaningfully.
 
 #### Candidate C — "Hybrid: BDPT default + VCM caustic fallback"
 
 ```
-BDPT default
-  + path guiding (eye + light, already shipped)
-  + variance-aware MIS (Grittmann 2019)
-  + SMS via Specular Polynomials for k≤3 caustics
+BDPT default (with everything in Candidate A above)
   + VCM kept as opt-in for SDS / heavy-displaced caustic regimes only
   + bias clearly disclosed when VCM mode is chosen
+  + per-wavelength photon store if spectral VCM is used
 ```
 
-**Bias class:** strictly unbiased default; consistent only when user opts in.
-**Scope:** smaller than A; VCM stays as-is.
-**Strength:** matches the hard constraint (unbiased default); reduces total integrator count if other rasterizers can be retired (PT? MLT certainly).
+**Bias class:** strictly unbiased default; consistent only when user opts in to VCM.
+**Scope:** Candidate A's scope; VCM stays roughly as-is (plus optional per-wavelength photons for spectral correctness).
+**Strength:** matches the hard constraint; reduces total integrator count if PT can be retired (BDPT-with-Specular-Polynomials covers PT+SMS); MLT can be deprecated per the postmortem.
 **Weakness:** still two integrators; not a "single integrator" answer.
+**What's changed since May-7:** **most attractive overall under the user's constraints.** It's the only candidate that delivers the user's preference set without research-territory bets blocking the critical path. The Candidate-A workstream is the critical path; VCM stays as-is until/unless Phase 1 says merging is wall-clock-necessary on regimes A can't reach.
 
-#### Candidate D — "Path-space resampling-first" (research bet)
+#### Candidate D — "Path-space resampling-first"
 
 ```
 BDPT or PT base
   + path guiding (already shipped on PT/BDPT)
   + ReSTIR-PT spatial resampling pass
-  + Specular Polynomials for caustics
+  + Specular Polynomials
   + variance-aware MIS
+  + env-IBL SA-MIS refactor (still needed)
 ```
 
-**Bias class:** strictly unbiased.
-**Scope:** dominated by ReSTIR-PT-for-CPU-offline (~6 months exploratory). Total: ~12-18 months.
-**Strength:** the *only* candidate that directly attacks the per-scene-uniformity goal at the algorithm level rather than the per-feature-completion level. ReSTIR-PT explicitly amortizes hard-path-finding cost across pixels — the most uniform per-scene quality in the recent literature.
-**Weakness:** highest research risk; CPU-tile execution model unproven for ReSTIR. May produce a great paper and a meh integrator if the cost model doesn't work on RISE's hardware mix.
+**Bias class:** strictly unbiased (RIS is unbiased; bias bound from M is tunable and typically negligible).
+**Scope:** dominated by ReSTIR-PT for CPU-offline (~6 months exploratory). Total: ~14-18 months.
+**Strength:** **the only candidate that directly attacks per-scene uniformity at the algorithm level rather than per-feature completion.** Highest research-payoff direction.
+**Weakness:** highest research risk; CPU-tile execution model unproven for ReSTIR; may produce a great paper and a meh integrator if the cost model doesn't work on RISE's hardware.
+**What's changed since May-7:** unchanged. The user's "research-territory permitted" answer keeps this on the table.
 
-### 6.2 Criteria matrix for choosing among end states
+### 6.2 Criteria matrix (refreshed)
 
 | Criterion | A (BDPT-centric) | B (VCM-default) | C (Hybrid) | D (ReSTIR-PT) |
 |---|---|---|---|---|
 | Strictly unbiased default | ✓ | ✗ | ✓ | ✓ |
 | Single-integrator goal | partially | ✓ | ✗ | ✓ |
-| Spectral parity tractable | ✓ | requires per-λ photons | ✓ | ✓ |
-| Closes SDS gap | via Specular Polynomials + path resampling | ✓ natively | via SMS only (gaps remain) | via Specular Polynomials |
-| Per-scene uniformity | medium | medium-high | medium | **high** |
-| Engineering scope | medium | medium | small | high |
-| Research risk | medium | high (optimal-MIS-VCM) | low-medium | very high |
-| Reuses existing infrastructure | high | medium | very high | low |
+| Spectral parity tractable (post-audit) | **✓ substantially in place** | requires per-λ photons + 2 more gaps | ✓ | ✓ |
+| Closes env-IBL gap | via 5.2.1 | via 5.2.1 | via 5.2.1 | via 5.2.1 |
+| Closes SDS gap | via Specular Polynomials + path resampling | ✓ natively | via SMS only (gaps remain on heavy-displaced if Specular Polynomials saturates) | via Specular Polynomials |
+| Per-scene uniformity | medium-high (with G-RIS add) | medium | medium-high | **high** |
+| Engineering scope | 9-10 months critical path | 9-13 months | 9-10 months (= A's critical path) | 14-18 months |
+| Research risk | medium | high | low-medium | very high |
+| Open correctness debts as of 2026-05-27 | 1 (env-IBL, scoped) | 3 (env-IBL, transmittance, per-λ photons) | 1 | 1 |
 
 ### 6.3 Decision gate
 
-After Phase 1 + Phase 2 are complete, we hold a focused decision
-session that:
+After Phase 1 + Phase 2 are complete, hold a focused session that:
 
 1. Reviews the empirical scene→integrator map from Phase 1.
-2. Evaluates each candidate end-state against the matrix.
-3. Picks **either** a single direction **or** a sequenced approach
-   (e.g., "C now, evaluate D in 12 months when A's MIS work has
-   landed on BDPT").
-4. Produces an *implementation* plan document per the chosen direction.
+2. Reviews bias-premium-per-scene-class — concretely answers "does VCM's finite-N bias meaningfully exceed the env-IBL Path A+B bound on RISE's scenes?"
+3. Evaluates each candidate end-state against the matrix.
+4. Picks either a single direction or a sequenced approach (e.g., "C now, evaluate D in 12 months when A's MIS work has landed on BDPT").
+5. Produces an *implementation* plan document per the chosen direction.
 
-We do not ship a default-choice from this analysis document. The point
-of the analysis is to hold the choice until measurement allows us to
-make it well.
+**Pre-commitment note for the decision gate**: Candidate A's first
+two items (5.2.1 SA-MIS, 5.2.2 VCM transmittance) are valuable
+regardless of which end state we pick. They could reasonably be
+landed *during* Phase 1 measurement, which would let Phase 1 measure
+post-fix BDPT/VCM convergence rather than pre-fix (a much more honest
+baseline for the Phase 3 decision).
 
 ---
 
-## 7. Parallel tracks
+## 7. Parallel tracks (revised 2026-05-27)
 
-These run independently of the main analysis and feed it.
+### 7.1 Spectral parity audit — substantially complete
 
-### 7.1 Spectral parity audit (spawned subtask)
+[SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) is published with
+~7 items DONE.  Two items remain:
 
-See `docs/SPECTRAL_PARITY_AUDIT.md` (produced by the
-spawned task). Output:
+- **VCM-spectral per-wavelength photon store** (§3, correctness): design in audit §3, cross-cutting question 1 awaiting design input (hero-only vs full-chain). 2-4 weeks.
+- **PT-spectral inline AOV**: refactor-blocked on Phase 2b.
 
-- Per-gap inventory of spectral-vs-Pel feature parity issues.
-- Special section on VCM spectral merging (luminance proxy correctness).
-- OIDN "(limited)" decoded per spectral rasterizer.
-- Remediation plan ranked by ROI.
+The audit's other "open" items (PT-spectral path guiding, VCM path guiding, BDPT optimal MIS) are architecturally / research-blocked and re-classified as Phase 2 candidate inventory in §5 above.
 
-This audit feeds Phase 3: the cost of "candidate end-state X" includes
-the cost of bringing X's spectral path to parity, which the audit
-quantifies.
-
-### 7.2 Integrator refactor extensions (Phase 2b/2c)
+### 7.2 Integrator refactor Phase 2b/2c — still deferred
 
 Per [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md),
-Phases 2b (PathTracingIntegrator templatization) and 2c (BDPTIntegrator
-templatization) were deferred. The deferred phases would close ~6,000
-more lines of Pel↔NM duplication.
+Phases 2b (PathTracingIntegrator) and 2c (BDPTIntegrator) have not
+landed.  The spectral parity audit explicitly recommends waiting for
+Phase 2b before closing PT-spectral inline AOV — adding more NM/HWSS
+duplication contradicts the refactor plan.
 
-**Question for the analysis:** should Phase 2b/2c land *before* the
-chosen new feature work, *during*, or *after*?
+**Recommendation strengthened from May-7**: land Phase 2b/2c
+*before* Candidate A's feature work (variance-aware MIS, Specular
+Polynomials), since both of those would otherwise be implemented
+across three NM/HWSS-duplicated code paths in BDPT. The duplication
+tax for each new BDPT feature post-refactor is ~zero; pre-refactor
+it's a 3× implementation burden.
 
-- **Before** lets us write each new feature once across Pel/NM/HWSS — no per-feature Pel↔NM duplication tax. This is the original refactor rationale.
-- **During** merges them into the feature work; risky because each refactor pass has been carefully bounded. Probably wrong.
-- **After** means each new feature lands as Pel/NM pairs initially and gets folded into the templated form during a future refactor pass.
+Sequencing recommendation:
 
-Phase 1 of *this* analysis runs in parallel with Phase 2b/2c if we
-choose to land them. The analysis output (Phase 3 decision) should
-specify the integrator-refactor sequencing for the chosen direction.
+1. (Optional but valuable) Land 5.2.1 (env-IBL SA-MIS) and 5.2.2 (VCM transmittance) — these are correctness fixes that improve any Phase 1 baseline.
+2. Phase 2b (PathTracing templatization) — ~3-4 weeks.
+3. Phase 2c (BDPT templatization) — ~6-8 weeks.
+4. Phase 1 baseline measurement (parallel with Phase 2c).
+5. Phase 3 decision.
+6. Implementation per chosen direction.
 
 ### 7.3 Variance-measurement infrastructure
 
-Phase 1 needs solid measurement scaffolding. The
-[`HDRVarianceTest`](skills/variance-measurement.md) tool exists; we may
-need a wrapper that scripts the K-trial protocol across a scene matrix
-and produces structured CSV output, plus a per-strategy splatting
-instrumentation hook in BDPT/VCM for the bias-decomposition step.
-
-This is small (1–2 weeks) and can be done before Phase 1 starts.
+Unchanged from May-7. Small (1-2 weeks), can be done before Phase 1
+starts.
 
 ---
 
-## 8. Open questions for the user before Phase 1
+## 8. Open questions for the user before Phase 1 starts
 
-These are the genuinely-unanswered things that should be resolved
-before the analysis kicks off, to avoid spending Phase 1 measurement
-budget on the wrong scenes.
+Same four questions as May-7 (§8.1-§8.4); none have been resolved.
+Brief restatement:
 
-### 8.1 What "wide variety of scenes" means concretely
+### 8.1 "Wide variety of scenes" — what's the concrete corpus?
 
-Is the test set:
-
-- **(a) The existing scene corpus** (`scenes/Tests/` + `scenes/FeatureBased/`) interpreted as-is, with whatever distribution it currently has?
-- **(b) A curated subset** of the existing corpus weighted toward what you care most about (production-class showcase scenes vs. regression scenes)?
-- **(c) An expanded set** including scenes you'd *want* to render but haven't authored because the current integrators handle them poorly (this is a real possibility — scenes you've been avoiding)?
-
-The answer changes Phase 1 scope by 2-3×.
+(a) existing corpus as-is; (b) curated production-weighted subset;
+(c) expanded with scenes you've avoided because today's integrators
+fail.
 
 ### 8.2 Bias tolerance threshold
 
-You said "physically based as much as possible" and noted VCM is
-biased. **How much** finite-N bias is acceptable in a non-default
-opt-in mode?
+How much finite-N bias acceptable in opt-in mode? 1% / 0.1% / 0%?
+The env-IBL Path A+B bound (15-22%) is **currently bias-bounded
+default** on BDPT/VCM — if 5.2.1 is sequenced before Phase 1, this
+issue is moot for Phase 1's measurements. Otherwise we should
+explicitly flag env-IBL renders as bias-bounded in any reporting.
 
-- 1% mean luminance bias on the 90th-percentile scene class is invisible to most viewers.
-- 0.1% bias is below detection but constrains radius shrinkage aggressively (slower convergence).
-- 0% bias means no consistent estimators in the toolbox at all (no VCM, no MLT).
+### 8.3 Variance metric: SPP-normalized, wall-clock, or time-to-converge?
 
-This calibrates the bias-class taxonomy in §2.
+Default assumption: wall-clock-normalized.
 
-### 8.3 Wall-clock vs SPP equivalence
+### 8.4 Sequence depth vs breadth
 
-"Low variance fast" can mean:
+Long single-direction commitment, or shorter "win-something-in-3-months"
+cycles? The refreshed Candidate-A scope (~9-10 months critical path)
+is shorter than May-7's estimate because spectral parity work is done;
+this may shift the answer.
 
-- **(a)** Lowest variance at fixed SPP (algorithmic quality per sample).
-- **(b)** Lowest variance at fixed wall-clock (algorithmic quality + per-sample cost).
-- **(c)** Lowest variance to reach a target quality (time-to-converge).
+### 8.5 New question — sequence 5.2.1 / 5.2.2 before Phase 1?
 
-Path guiding wins on (b)/(c), often loses on (a). VCM wins on (b) for
-caustic scenes, loses on (b) for diffuse scenes (photon overhead).
-ReSTIR wins on (b)/(c) for hard scenes, possibly loses on (b) for easy
-scenes.
+The 2026-05-27 audit-and-roadmap update surfaces a sequencing
+question that wasn't visible in May-7:
 
-We default to (b) but should confirm.
+The env-IBL SA-MIS refactor (5.2.1, ~3 weeks) and VCM media-aware
+connection transmittance (5.2.2, ~2 weeks) are correctness fixes
+that would significantly clean up any Phase 1 baseline. Should they
+be sequenced **before** Phase 1 measurement (cost: ~5 weeks slip on
+Phase 1; benefit: empirical comparisons are unbiased) or **after**
+(cost: Phase 1 baselines need re-running once 5.2.1/5.2.2 land;
+benefit: starts measurement immediately)?
 
-### 8.4 Acceptable feature-completion delay
+Recommendation: **sequence before**. The 5-week slip is much smaller
+than the Phase 1 → Phase 3 → implementation total cycle, and the
+re-run-after-fix risk is non-trivial (results could meaningfully
+re-shape the Phase 3 decision).
 
-Some directions have 12+ month sequences. Are you OK with a long
-single-direction commitment, or do you prefer shorter "win something
-in 3 months" cycles even if the final destination is further?
+### 8.6 New question — Phase 2b/2c sequencing relative to Candidate A
 
-This determines whether we sequence *deep* (one direction at a time,
-fully) or *broad* (parallel small wins across directions).
+Strengthened from §7.2: should Phase 2b/2c land before Candidate A's
+feature work (variance-aware MIS, Specular Polynomials)?
+
+Recommendation: **yes** — each of those features would otherwise be
+written 3× (Pel/NM/HWSS), and Phase 2c specifically exists to retire
+that duplication.
 
 ---
 
 ## 9. Anticipated phase outputs
 
-| Phase | Document | Decisions captured |
+| Phase | Document | Status |
 |---|---|---|
-| Phase 1 | `docs/UNIFIED_INTEGRATOR_BASELINES.md` (new) | Empirical scene-by-integrator quality matrix; bias-premium-per-scene-class; reference scene corpus and variance tools used |
-| Phase 2 | This document, §5 (revised) | Candidate inventory with bias-class, scope, dependencies, references — refined per Phase 1 |
-| Phase 3 | `docs/UNIFIED_INTEGRATOR_DECISION.md` (new) | Selected end-state architecture (one of A/B/C/D or a hybrid), sequencing plan, refactor sequencing (Phase 2b/2c position) |
-| Implementation | Per-direction implementation plans | One per workstream once Phase 3 has decided |
+| (Pre-Phase 1) | 5.2.1 env-IBL SA-MIS refactor implementation plan | **Design + survey landed 2026-05-27** in [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md); code execution deferred to follow-up session |
+| (Pre-Phase 1) | Phase 2b/2c integrator refactor execution | Plan exists, status doc exists; deferred until Pieces 1+2 land per [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) |
+| Phase 1 | `docs/UNIFIED_INTEGRATOR_BASELINES.md` (new) | Not yet started; would post-date the pre-Phase-1 fixes if those are sequenced first |
+| Phase 2 | This document, §5 (further revised) | Maintained here |
+| Phase 3 | `docs/UNIFIED_INTEGRATOR_DECISION.md` (new) | Awaits Phase 1 output |
+| Implementation | Per-direction implementation plans | Awaits Phase 3 |
 
-Total elapsed time before the implementation plan is finalized:
-~2 months (Phase 1 measurement + Phase 2 literature + Phase 3
-decision). This is intentional — the worst outcome is a 12-month
-implementation in the wrong direction.
+Total elapsed time before implementation plan is finalized, with
+recommended pre-Phase-1 sequencing: ~3-4 months (5.2.1 + 5.2.2 +
+Phase 2b/2c + Phase 1 + Phase 3). Without pre-Phase-1 fixes: ~2
+months, but Phase 1 baselines may need re-running.
 
 ---
 
-## 10. What we want from the user before Phase 1 starts
+## 10. What we want from the user before kickoff (revised)
 
-1. Answers to the four open questions in §8.
-2. Pointer to scenes currently considered "must render well" — the prioritized subset of the existing corpus.
-3. Confirmation on the Phase 2b/2c integrator-refactor sequencing question (§7.2): land before, during, or after the chosen new-feature direction?
-4. Confirmation that the spectral-parity audit subtask should run in parallel and feed into Phase 3.
-5. Any candidate techniques in §5 worth ruling out up-front (saves literature-review effort).
+1. Answers to questions §8.1-§8.4 (carried from May-7).
+2. New: answer to §8.5 (sequence 5.2.1 / 5.2.2 before Phase 1?).
+3. New: answer to §8.6 (sequence Phase 2b/2c before Candidate A feature work?).
+4. Pointer to "must render well" scenes from the corpus — env-IBL scenes specifically called out.
+5. Any candidate in §5 to rule out up-front.
 
 ---
 
 ## 11. Cross-references
 
-- [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) — selection guide and feature matrix
-- [MIS_HEURISTICS.md](MIS_HEURISTICS.md) — power vs balance, and the principled forward direction
+- [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) — selection guide and feature matrix (corrected 2026-05-07)
+- [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) — spectral parity remediation plan and shipped status
+- [IMPROVEMENTS.md](IMPROVEMENTS.md) — current baseline, ranked roadmap, non-goals, and item #12 (env-IBL SA-MIS)
+- [MIS_HEURISTICS.md](MIS_HEURISTICS.md) — power vs balance per integrator; why optimal-MIS-on-BDPT/VCM is open research
 - [MLT_POSTMORTEM.md](MLT_POSTMORTEM.md) — confirmed-not-worth-doing branch
-- [INTEGRATOR_REFACTOR_PLAN.md](INTEGRATOR_REFACTOR_PLAN.md) — Pel/NM duplication and the templatization path
-- [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md) — what shipped vs deferred
-- [SMS_FUTURE_DIRECTIONS.md](SMS_FUTURE_DIRECTIONS.md) — manifold method candidate inventory
-- [VCM.md](VCM.md) — VCM design + spectral proxy details
-- [IMPROVEMENTS.md](IMPROVEMENTS.md) — current baseline, ranked roadmap, non-goals
-- [skills/variance-measurement.md](skills/variance-measurement.md) — measurement protocol Phase 1 will use
+- [INTEGRATOR_REFACTOR_PLAN.md](INTEGRATOR_REFACTOR_PLAN.md) — Pel/NM duplication and templatization
+- [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md) — Phase 0/1/2a shipped, 2b/2c/3/4 deferred
+- [SMS_FUTURE_DIRECTIONS.md](SMS_FUTURE_DIRECTIONS.md) — manifold method candidates
+- [VCM.md](VCM.md) — VCM design, spectral merge limitation, optimal-MIS-extension research scope
+- [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) — Rec.709/D65 migration that incidentally tidied `RISEPelToNMProxy`
+- [skills/variance-measurement.md](skills/variance-measurement.md) — measurement protocol for Phase 1
 - [skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md) — diagnostic procedure for cross-integrator disagreement
-- [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) — produced by the spawned spectral-parity subtask
