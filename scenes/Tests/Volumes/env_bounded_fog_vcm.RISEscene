@@ -1,0 +1,152 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           env_bounded_fog_vcm.RISEscene                                                           #
+#   Description:    VCM twin of env_bounded_fog_pt.RISEscene -- identical geometry, fog, and                #
+#                   env-IBL; only the rasterizer differs.  VCM's s=0 env-escape inherits the                #
+#                   escape-segment Tr transitively from the shared GenerateEyeSubpath (the                  #
+#                   synthetic env vertex's throughput is now Tr-attenuated), while VCM's                    #
+#                   connection-Tr (NEE / interior / splat, Piece 2) attenuates the other                    #
+#                   strategies.  With the coordinated fix, VCM should agree with PT and BDPT                #
+#                   within MC noise (modulo VCM's small documented consistent-estimator bias).              #
+#                                                                                                           #
+#                   Pure absorption (scattering = 0) -- see env_bounded_fog_pt.RISEscene header            #
+#                   for the bounded-medium + pure-absorption rationale (with sigma_s > 0 this              #
+#                   scene exposes a separate VCM in-scattering MIS gap, out of escape-Tr scope).            #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      May 31, 2026                                                                            #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Painters (declared FIRST so the rasterizer's
+# radiance_map reference resolves at finalize time)
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_env
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_density
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_sphere
+	color				0.6 0.6 0.6
+}
+
+##################################################
+# Renderer -- Vertex Connection and Merging
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+vcm_pel_rasterizer
+{
+	max_eye_depth		6
+	max_light_depth		6
+	samples				128
+	max_volume_bounce	16
+	pixel_filter		box
+	radiance_map		pnt_env
+	radiance_scale		1.0
+	radiance_background	TRUE
+	merge_radius		0.0
+	vc_enabled			TRUE
+	vm_enabled			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/env_bounded_fog_vcm
+	type				EXR
+	bpp					16
+	color_space			Rec709RGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/env_bounded_fog_vcm
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera (inside the fog cube, looking +Z)
+##################################################
+
+film
+{
+	width			128
+	height			128
+}
+
+pinhole_camera
+{
+	location			0 0 -290
+	lookat				0 0 300
+	up					0 1 0
+	fov					45.0
+}
+
+##################################################
+# Bounded participating medium (AABB-clipped)
+##################################################
+
+painter_heterogeneous_medium
+{
+	name			bounded_fog
+	absorption		0.0013 0.0013 0.0013
+	scattering		0.0 0.0 0.0
+	phase			isotropic
+	density_painter	pnt_density
+	resolution		8
+	color_to_scalar	luminance
+	bbox_min		-300 -300 -300
+	bbox_max		300 300 300
+}
+
+> set global_medium bounded_fog
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				spherewhite
+	reflectance			pnt_sphere
+}
+
+##################################################
+# Geometry -- a single diffuse sphere receiver
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				50
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	position			0 0 0
+	material			spherewhite
+}

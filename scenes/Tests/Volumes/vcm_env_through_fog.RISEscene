@@ -1,0 +1,236 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           vcm_env_through_fog.RISEscene                                                           #
+#   Description:    Lambertian-walled box lit by uniform env-IBL only, filled with a homogeneous fog        #
+#                   medium.  Renders with the VCM integrator and exercises ALL THREE volume-aware           #
+#                   connection-strategy sites:                                                              #
+#                     - env-NEE (s=1): eye vertex on a wall connects to a sampled env direction;            #
+#                       the connection traverses fog from the wall outward to infinity.                     #
+#                     - interior connections (s>=2,t>=2): eye and light vertices on walls connect           #
+#                       through fog.                                                                        #
+#                     - splat-to-camera (t=1): light vertices inside fog project onto the camera;           #
+#                       the connection traverses fog from the wall toward the camera.                       #
+#                                                                                                           #
+#   Companion:      pt_env_through_fog.RISEscene  (PT reference — same geometry & fog).                     #
+#                                                                                                           #
+#   Bug it guards:  Pre-Phase-1 Piece 2 (2026-05-31) — before this fix, `VCMIsVisible` was a binary         #
+#                   occlusion test, so all three connection-strategy contributions used Tr=1 even when      #
+#                   the connection ray passed through fog.  VCM rendered systematically brighter than       #
+#                   PT on any participating-medium scene.                                                   #
+#                                                                                                           #
+#   Validation:     PT-vs-VCM mean luminance should agree within ±5% lax / MC noise at 64 spp.              #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      May 31, 2026                                                                            #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Painters (declared FIRST so the rasterizer's
+# radiance_map reference resolves at finalize time)
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_env
+	color				1.0 1.0 1.0
+}
+
+##################################################
+# Renderer -- VCM Pel
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+vcm_pel_rasterizer
+{
+	max_eye_depth		6
+	max_light_depth		6
+	samples				64
+	max_volume_bounce	16
+	pixel_filter		box
+	radiance_map		pnt_env
+	radiance_scale		1.0
+	radiance_background	TRUE
+	merge_radius		0.0
+	vc_enabled			TRUE
+	vm_enabled			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/vcm_env_through_fog
+	type				HDR
+	bpp					16
+	color_space			Rec709RGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/vcm_env_through_fog
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+film
+{
+	width			128
+	height			128
+}
+
+pinhole_camera
+{
+	location			278 273 -600
+	lookat				278 273 280
+	up					0 1 0
+	fov					50.0
+}
+
+##################################################
+# Participating Medium
+#
+# Box is ~556 units along each axis.  We pick scattering/absorption
+# so the optical depth across the box diagonal is ~0.5 — enough
+# that Tr ~ exp(-0.5) ~ 0.6 along a typical connection.  Pre-fix
+# VCM uses Tr=1 instead and renders ~1.6× too bright on contributions
+# whose dominant path crosses the box.
+##################################################
+
+homogeneous_medium
+{
+	name		fog
+	absorption	0.0003 0.0003 0.0003
+	scattering	0.0007 0.0007 0.0007
+	phase		isotropic
+}
+
+> set global_medium fog
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				0.73 0.73 0.73
+}
+
+uniformcolor_painter
+{
+	name				pnt_green
+	color				0.12 0.45 0.15
+}
+
+uniformcolor_painter
+{
+	name				pnt_red
+	color				0.63 0.06 0.04
+}
+
+##################################################
+# Materials -- Lambertian only; no specular chains
+# (keeps the test focused on connection transmittance,
+# not on caustic-merging behaviour).
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_material
+{
+	name				green
+	reflectance			pnt_green
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			pnt_red
+}
+
+##################################################
+# Geometry -- open Cornell box (no ceiling / front)
+# so env-IBL can reach the interior.  Floor + back +
+# left + right walls give us walls to connect through.
+##################################################
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta					556 0 0
+	ptb					0 0 0
+	ptc					0 0 560
+	ptd					556 0 560
+}
+
+clippedplane_geometry
+{
+	name				backwallgeom
+	pta					0 0 560
+	ptb					0 549 560
+	ptc					556 549 560
+	ptd					556 0 560
+}
+
+clippedplane_geometry
+{
+	name				leftwallgeom
+	pta					0 0 560
+	ptb					0 0 0
+	ptc					0 549 0
+	ptd					0 549 560
+}
+
+clippedplane_geometry
+{
+	name				rightwallgeom
+	pta					556 0 0
+	ptb					556 0 560
+	ptc					556 549 560
+	ptd					556 549 0
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				backwall
+	geometry			backwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				leftwall
+	geometry			leftwallgeom
+	material			red
+}
+
+standard_object
+{
+	name				rightwall
+	geometry			rightwallgeom
+	material			green
+}

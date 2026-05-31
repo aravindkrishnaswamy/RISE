@@ -1,0 +1,165 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           env_bounded_fog_pt.RISEscene                                                            #
+#   Description:    PT reference for the coordinated escape-Tr fix (PT + BDPT + VCM).                        #
+#                                                                                                           #
+#                   A diffuse sphere sits inside a BOUNDED participating-medium cube under                  #
+#                   uniform env-IBL.  The medium is a `painter_heterogeneous_medium` with a                 #
+#                   CONSTANT density painter, set as the global medium: it is "current"                     #
+#                   everywhere (so the eye-walk escape branch fires) but its transmittance                  #
+#                   clips to the AABB (density = 0 outside), giving a FINITE optical depth                  #
+#                   along the escape segment.  This is the key oracle the global-medium                     #
+#                   `*_env_through_fog` scenes cannot provide: those evaporate to exp(-s_t*inf)=0,          #
+#                   validating "Tr evaporates" but not "Tr scales correctly with s_t over a                 #
+#                   finite path".                                                                            #
+#                                                                                                           #
+#                   The medium is PURE ABSORPTION (scattering = 0).  This is deliberate: the                #
+#                   escape-Tr fix is responsible for the TRANSMITTANCE (attenuation) along the              #
+#                   escape / surface / connection segments, and pure absorption isolates exactly            #
+#                   that, giving a clean PT == BDPT == VCM cross-integrator agreement oracle.               #
+#                   Adding scattering pulls in single-scatter in-scattering transport, whose MIS            #
+#                   (medium-vertex connection / env-S0 partition) is a SEPARATE VCM volumetric              #
+#                   issue out of this fix's "Tr-only" scope -- with sigma_s > 0 VCM under-counts            #
+#                   in-scattering vs PT by ~31% on this scene; see PRE_PHASE1_STATUS.md.                     #
+#                                                                                                           #
+#                   A background eye ray crosses ~600 units of fog => optical depth ~0.8 => Tr ~            #
+#                   0.45 (visibly attenuated, not black).  Most of the frame is background (escape          #
+#                   through fog to env); the small central sphere exercises surface transport +            #
+#                   env-NEE connection-Tr through the same fog.  PT / BDPT / VCM agree within MC            #
+#                   noise on this scene with the coordinated escape-Tr fix applied.                         #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      May 31, 2026                                                                            #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Painters (declared FIRST so the rasterizer's
+# radiance_map reference resolves at finalize time)
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_env
+	color				1.0 1.0 1.0
+}
+
+# Constant fog density (luminance of white = 1.0; a constant density
+# painter normalizes to its own max, so the absolute value only sets a
+# uniform field).
+uniformcolor_painter
+{
+	name				pnt_density
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_sphere
+	color				0.6 0.6 0.6
+}
+
+##################################################
+# Renderer -- Path Tracing reference
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				256
+	max_volume_bounce	16
+	pixel_filter		box
+	radiance_map		pnt_env
+	radiance_scale		1.0
+	radiance_background	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/env_bounded_fog_pt
+	type				EXR
+	bpp					16
+	color_space			Rec709RGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/env_bounded_fog_pt
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera (inside the fog cube, looking +Z)
+##################################################
+
+film
+{
+	width			128
+	height			128
+}
+
+pinhole_camera
+{
+	location			0 0 -290
+	lookat				0 0 300
+	up					0 1 0
+	fov					45.0
+}
+
+##################################################
+# Bounded participating medium (AABB-clipped)
+##################################################
+
+painter_heterogeneous_medium
+{
+	name			bounded_fog
+	absorption		0.0013 0.0013 0.0013
+	scattering		0.0 0.0 0.0
+	phase			isotropic
+	density_painter	pnt_density
+	resolution		8
+	color_to_scalar	luminance
+	bbox_min		-300 -300 -300
+	bbox_max		300 300 300
+}
+
+> set global_medium bounded_fog
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				spherewhite
+	reflectance			pnt_sphere
+}
+
+##################################################
+# Geometry -- a single diffuse sphere receiver
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				50
+}
+
+standard_object
+{
+	name				sphere
+	geometry			spheregeom
+	position			0 0 0
+	material			spherewhite
+}

@@ -422,6 +422,7 @@ namespace RISE
 				const Scalar nm
 				) const;
 
+		public:
 			/// Helper: evaluate transmittance along a connection edge
 			/// between two points, accounting for participating media.
 			///
@@ -432,6 +433,10 @@ namespace RISE
 			/// This Tr multiplies the connection contribution but is NOT
 			/// included in MIS PDFs (see note on transmittance cancellation
 			/// in the MISWeight documentation).
+			///
+			/// Public so VCMIntegrator can reuse the boundary-walking
+			/// shadow at its NEE / interior-connection / splat-to-camera
+			/// sites without duplicating the medium-stack logic.
 			RISEPel EvalConnectionTransmittance(
 				const Point3& p1,
 				const Point3& p2,
@@ -481,6 +486,7 @@ namespace RISE
 				const IMedium* pStartMedium
 				) const;
 
+		protected:
 			// BSSRDF sampling is provided by the shared utility
 			// BSSRDFSampling::SampleEntryPoint() in
 			// ../Utilities/BSSRDFSampling.h

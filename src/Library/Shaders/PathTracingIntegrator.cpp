@@ -1266,6 +1266,16 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 						currentRay, ri.geometric.range );
 					throughput = throughput * Tr;
 				}
+				else if( !scattered && !bHit )
+				{
+					// Ray escapes the scene through the medium: apply the
+					// residual transmittance along the escape segment before
+					// the env radiance below multiplies into throughput
+					// (PBRT-v4 beta *= T_maj before the `if (!si)` branch).
+					const RISEPel Tr = pCurrentMedium->EvalTransmittance(
+						currentRay, maxDist );
+					throughput = throughput * Tr;
+				}
 			}
 
 			// Miss — environment / radiance map
@@ -2551,6 +2561,13 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 	const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
 		iorStack, &scene, pMediumObject );
 
+	// Residual transmittance along an escape segment.  When the camera
+	// ray escapes the scene through a medium (no scatter, no surface hit)
+	// the env radiance below must be attenuated by the medium it crossed
+	// (PBRT-v4 VolPathIntegrator: beta *= T_maj before the `if (!si)`
+	// infinite-light branch).  Stays 1 (no-op) in vacuum.
+	RISEPel escapeTr( 1, 1, 1 );
+
 	if( pCurrentMedium )
 	{
 		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
@@ -2637,9 +2654,14 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 			scene.GetObjects()->IntersectRay( ri2, true, true, false );
 
 			if( !ri2.geometric.bHit ) {
-				// Environment for volume-scattered ray
+				// Environment for volume-scattered ray.  The scattered ray
+				// continues through the same medium and escapes — attenuate
+				// the env contribution by the transmittance along that
+				// escape segment (PBRT-v4 beta *= T_maj convention).
 				if( scene.GetGlobalRadianceMap() ) {
-					result = result + volThroughput *
+					const RISEPel TrEsc = pCurrentMedium->EvalTransmittance(
+						scatteredRay, Scalar(1e10) );
+					result = result + volThroughput * TrEsc *
 						scene.GetGlobalRadianceMap()->GetRadiance( scatteredRay, rast );
 				}
 				return result;
@@ -2677,6 +2699,14 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 
 			return Tr * hitResult;
 		}
+		else
+		{
+			// !scattered && !ri.geometric.bHit: the camera ray escapes the
+			// scene through the medium.  Capture the residual transmittance
+			// along the escape segment so the env radiance below is
+			// correctly attenuated (PBRT-v4 beta *= T_maj).
+			escapeTr = pCurrentMedium->EvalTransmittance( cameraRay, maxDist );
+		}
 	}
 
 	// No medium, or medium with no scatter and no surface hit
@@ -2703,7 +2733,7 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 		{
 			envResult = scene.GetGlobalRadianceMap()->GetRadiance( cameraRay, rast );
 		}
-		return envResult;
+		return escapeTr * envResult;
 	}
 
 	return IntegrateFromHit( rc, rast, ri, scene, caster,
@@ -3002,6 +3032,15 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 				{
 					const Scalar Tr = pCurrentMedium->EvalTransmittanceNM(
 						currentRay, ri.geometric.range, nm );
+					throughput *= Tr;
+				}
+				else if( !scattered && !bHit )
+				{
+					// Ray escapes the scene through the medium: apply the
+					// residual transmittance before the env radiance below
+					// (PBRT-v4 beta *= T_maj).
+					const Scalar Tr = pCurrentMedium->EvalTransmittanceNM(
+						currentRay, maxDist, nm );
 					throughput *= Tr;
 				}
 			}
@@ -4244,6 +4283,21 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						throughputComp[w] *= Tr;
 					}
 				}
+				else if( !scattered && !bHit )
+				{
+					// Ray escapes the scene through the medium: apply the
+					// per-wavelength residual transmittance before the env
+					// contribution below (PBRT-v4 beta *= T_maj).
+					for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
+					{
+						if( swl.terminated[w] ) {
+							continue;
+						}
+						const Scalar Tr = pCurrentMedium->EvalTransmittanceNM(
+							currentRay, maxDist, swl.lambda[w] );
+						throughputComp[w] *= Tr;
+					}
+				}
 			}
 
 			if( !bHit )
@@ -4739,6 +4793,9 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 	const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
 		iorStack, &scene, pMediumObject );
 
+	// Residual transmittance along an escape segment (see RGB IntegrateRay).
+	Scalar escapeTr = 1;
+
 	if( pCurrentMedium )
 	{
 		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
@@ -4814,7 +4871,9 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 
 			if( !ri2.geometric.bHit ) {
 				if( scene.GetGlobalRadianceMap() ) {
-					resultNM += volThroughput *
+					const Scalar TrEsc = pCurrentMedium->EvalTransmittanceNM(
+						scatteredRay, Scalar(1e10), nm );
+					resultNM += volThroughput * TrEsc *
 						scene.GetGlobalRadianceMap()->GetRadianceNM( scatteredRay, rast, nm );
 				}
 				return resultNM;
@@ -4839,6 +4898,11 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 
 			return Tr * hitResult;
 		}
+		else
+		{
+			// Ray escapes the scene through the medium — see RGB twin.
+			escapeTr = pCurrentMedium->EvalTransmittanceNM( cameraRay, maxDist, nm );
+		}
 	}
 
 	// No medium, or medium with no scatter and no surface hit
@@ -4861,7 +4925,7 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 		{
 			envResult = scene.GetGlobalRadianceMap()->GetRadianceNM( cameraRay, rast, nm );
 		}
-		return envResult;
+		return escapeTr * envResult;
 	}
 
 	return IntegrateFromHitNM( rc, rast, ri, nm, scene, caster,
@@ -4908,6 +4972,13 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	const IObject* pMediumObject = 0;
 	const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
 		iorStack, &scene, pMediumObject );
+
+	// Per-wavelength residual transmittance along an escape segment
+	// (see RGB IntegrateRay).  Stays 1 (no-op) in vacuum.
+	Scalar escapeTr[SampledWavelengths::N];
+	for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+		escapeTr[w] = 1;
+	}
 
 	if( pCurrentMedium )
 	{
@@ -4986,7 +5057,9 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 						{
 							if( scene.GetGlobalRadianceMap() )
 							{
-								result[w] += volThroughput *
+								const Scalar TrEsc = pCurrentMedium->EvalTransmittanceNM(
+									scatteredRay, Scalar(1e10), swl.lambda[w] );
+								result[w] += volThroughput * TrEsc *
 									scene.GetGlobalRadianceMap()->GetRadianceNM(
 										scatteredRay, rast, swl.lambda[w] );
 							}
@@ -5027,6 +5100,17 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 			}
 			return;
 		}
+		else
+		{
+			// Ray escapes the scene through the medium: capture the
+			// per-wavelength residual transmittance along the escape
+			// segment for the env contribution below (PBRT-v4 beta *= T_maj).
+			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+				escapeTr[w] = swl.terminated[w] ? Scalar(0) :
+					pCurrentMedium->EvalTransmittanceNM(
+						cameraRay, maxDist, swl.lambda[w] );
+			}
+		}
 	}
 
 	// No medium, or medium with no scatter and no surface hit
@@ -5046,7 +5130,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		{
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				if( !swl.terminated[w] ) {
-					result[w] = pRadianceMap->GetRadianceNM( cameraRay, rast, swl.lambda[w] );
+					result[w] = escapeTr[w] *
+						pRadianceMap->GetRadianceNM( cameraRay, rast, swl.lambda[w] );
 				}
 			}
 		}
@@ -5054,8 +5139,9 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 		{
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				if( !swl.terminated[w] ) {
-					result[w] = scene.GetGlobalRadianceMap()->GetRadianceNM(
-						cameraRay, rast, swl.lambda[w] );
+					result[w] = escapeTr[w] *
+						scene.GetGlobalRadianceMap()->GetRadianceNM(
+							cameraRay, rast, swl.lambda[w] );
 				}
 			}
 		}

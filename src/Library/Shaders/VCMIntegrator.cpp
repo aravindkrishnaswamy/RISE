@@ -310,6 +310,88 @@ namespace
 		// were RGB channels.
 		return std::make_pair( true, RISEPel( xyz ) );
 	}
+
+	/// Tag-dispatched media-aware connection transmittance.  Borrows
+	/// BDPT's boundary-walking shadow at both Point3+Point3 and
+	/// Ray+maxDist call shapes; the latter is needed by env-NEE to
+	/// extend the walk to RISE_INFINITY along the sampled sky
+	/// direction without overflowing a synthetic far endpoint.
+	///
+	/// Pel returns the per-channel RISEPel; NM returns a single-
+	/// wavelength Scalar at tag.nm.  Both forms are pure throughput
+	/// multipliers — the SmallVCM running-quantity recurrence
+	/// (dVCM/dVC/dVM) is unchanged because Tr cancels in the MIS pdf
+	/// ratio (same Tr appears in both numerator and denominator of
+	/// every alternative-strategy probability).
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type
+	EvalConnectionTr(
+		const BDPTIntegrator& bdpt,
+		const Point3& p1, const Point3& p2,
+		const IScene& scene, const IRayCaster& caster,
+		const IObject* pStartMediumObject, const IMedium* pStartMedium,
+		const Tag& tag );
+
+	template<>
+	inline RISEPel EvalConnectionTr<PelTag>(
+		const BDPTIntegrator& bdpt,
+		const Point3& p1, const Point3& p2,
+		const IScene& scene, const IRayCaster& caster,
+		const IObject* pStartMediumObject, const IMedium* pStartMedium,
+		const PelTag& )
+	{
+		return bdpt.EvalConnectionTransmittance(
+			p1, p2, scene, caster,
+			pStartMediumObject, pStartMedium );
+	}
+
+	template<>
+	inline Scalar EvalConnectionTr<NMTag>(
+		const BDPTIntegrator& bdpt,
+		const Point3& p1, const Point3& p2,
+		const IScene& scene, const IRayCaster& caster,
+		const IObject* pStartMediumObject, const IMedium* pStartMedium,
+		const NMTag& tag )
+	{
+		return bdpt.EvalConnectionTransmittanceNM(
+			p1, p2, scene, caster, tag.nm,
+			pStartMediumObject, pStartMedium );
+	}
+
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type
+	EvalConnectionTrRay(
+		const BDPTIntegrator& bdpt,
+		const Ray& connectionRay, const Scalar maxDist,
+		const IScene& scene, const IRayCaster& caster,
+		const IObject* pStartMediumObject, const IMedium* pStartMedium,
+		const Tag& tag );
+
+	template<>
+	inline RISEPel EvalConnectionTrRay<PelTag>(
+		const BDPTIntegrator& bdpt,
+		const Ray& connectionRay, const Scalar maxDist,
+		const IScene& scene, const IRayCaster& caster,
+		const IObject* pStartMediumObject, const IMedium* pStartMedium,
+		const PelTag& )
+	{
+		return bdpt.EvalConnectionTransmittance(
+			connectionRay, maxDist, scene, caster,
+			pStartMediumObject, pStartMedium );
+	}
+
+	template<>
+	inline Scalar EvalConnectionTrRay<NMTag>(
+		const BDPTIntegrator& bdpt,
+		const Ray& connectionRay, const Scalar maxDist,
+		const IScene& scene, const IRayCaster& caster,
+		const IObject* pStartMediumObject, const IMedium* pStartMedium,
+		const NMTag& tag )
+	{
+		return bdpt.EvalConnectionTransmittanceNM(
+			connectionRay, maxDist, scene, caster, tag.nm,
+			pStartMediumObject, pStartMedium );
+	}
 }
 
 VCMIntegrator::VCMIntegrator(
@@ -1015,6 +1097,7 @@ namespace
 	typename SpectralValueTraits<Tag>::value_type EvaluateNEEImpl(
 		const IScene& scene,
 		const IRayCaster& caster,
+		const BDPTIntegrator& bdpt,
 		ISampler& sampler,
 		const std::vector<BDPTVertex>& eyeVerts,
 		const std::vector<VCMMisQuantities>& eyeMis,
@@ -1259,16 +1342,21 @@ namespace
 			// use the SmallVCM weight family (tested broken on
 			// spectral BDPT: dropped to 31% of PT).
 			//
-			// MEDIUM LIMITATION (intentional, inherited): VCM's NEE
-			// does NOT apply connection transmittance for any light
-			// (env or explicit) — the existing VCMIsVisible test is
-			// binary occlusion only, not media-aware shadow.  BDPT's
-			// env-NEE was fixed to evaluate transmittance along wi
-			// to RISE_INFINITY in round 5 P2; VCM stays consistent
-			// with its broader medium-shadow limitation rather than
-			// adding env-only special-casing.  Tracked separately
-			// from the env-IBL task — VCM media support is a
-			// general gap, not env-specific.
+			// Media-aware connection transmittance — Pre-Phase-1
+			// Piece 2 (2026-05-31): VCM connection strategies now
+			// mirror BDPT's `EvalConnectionTransmittance` boundary
+			// walk.  Pre-fix VCM was binary-shadow only (Tr=1) and
+			// over-counted on any participating-medium scene.
+			// Env-NEE evaluates Tr along the SAMPLED wi to
+			// RISE_INFINITY via the Ray+maxDist overload, matching
+			// BDPT's round-5 P2 fix and PT's env-NEE convention.
+			// Explicit-light NEE uses the Point3+Point3 overload.
+			// Medium-bookkeeping (pMediumObject, pMediumVol) comes
+			// from the eye vertex `v` — the connection ray starts
+			// inside `v`'s medium.  Tr does NOT enter the SmallVCM
+			// dVCM/dVC/dVM recurrence (Georgiev 2012 Appendix A):
+			// the running quantities are pdf-bookkeeping and Tr
+			// cancels in pdf ratios.
 			if( envCaseVCM ) {
 				const EnvironmentSampler* pEnvSamp = pLS->GetEnvironmentSampler();
 				if( !pEnvSamp ) continue;
@@ -1287,15 +1375,26 @@ namespace
 				// scenes by a factor of `cachedEnvSelectProb`.
 				const Scalar invLightSelect = ( ls.pdfSelect > 0 ) ?
 					( Scalar( 1 ) / ls.pdfSelect ) : Scalar( 0 );
+				Ray envRayVCM( v.position, wiForLight_vcm );
+				const typename Traits::value_type Tr_conn_env =
+					EvalConnectionTrRay<Tag>(
+						bdpt, envRayVCM, RISE_INFINITY,
+						scene, caster,
+						v.pMediumObject, v.pMediumVol, tag );
 				const typename Traits::value_type contribution =
-					VertexThroughput<Tag>( v, tag ) * fEye * Le *
+					VertexThroughput<Tag>( v, tag ) * fEye * Le * Tr_conn_env *
 					( cosEyeWi / pdfSA ) * weight * invLightSelect;
 				total = total + contribution;
 				continue;
 			}
 
+			const typename Traits::value_type Tr_conn_nee =
+				EvalConnectionTr<Tag>(
+					bdpt, v.position, ls.position,
+					scene, caster,
+					v.pMediumObject, v.pMediumVol, tag );
 			const typename Traits::value_type contribution =
-				VertexThroughput<Tag>( v, tag ) * fEye * Le * ( G / invLightPdfArea ) * weight;
+				VertexThroughput<Tag>( v, tag ) * fEye * Le * Tr_conn_nee * ( G / invLightPdfArea ) * weight;
 			total = total + contribution;
 		}
 
@@ -1313,7 +1412,7 @@ RISEPel VCMIntegrator::EvaluateNEE(
 	) const
 {
 	return EvaluateNEEImpl<PelTag>(
-		scene, caster, sampler, eyeVerts, eyeMis, norm, PelTag{} );
+		scene, caster, *pGenerator, sampler, eyeVerts, eyeMis, norm, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1354,7 +1453,9 @@ namespace
 	void SplatLightSubpathToCameraImpl(
 		const std::vector<BDPTVertex>& lightVerts,
 		const std::vector<VCMMisQuantities>& lightMis,
+		const IScene& scene,
 		const IRayCaster& caster,
+		const BDPTIntegrator& bdpt,
 		const ICamera& camera,
 		const unsigned int filmWidth,
 		const unsigned int filmHeight,
@@ -1497,7 +1598,18 @@ namespace
 				( norm.mMisVmWeightFactor + lightMis[i].dVCM + lightMis[i].dVC * bsdfRevPdfW );
 			const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) );
 
-			const typename Traits::value_type weighted = contribution * weight;
+			// Media-aware connection transmittance — Pre-Phase-1
+			// Piece 2 (2026-05-31).  Mirrors BDPT's t=1 splat site
+			// at BDPTIntegrator.cpp ~line 4266: medium-bookkeeping
+			// comes from the light vertex `v` because the connection
+			// ray starts there and traverses outward to the camera.
+			const typename Traits::value_type Tr_conn_splat =
+				EvalConnectionTr<Tag>(
+					bdpt, v.position, camPos,
+					scene, caster,
+					v.pMediumObject, v.pMediumVol, tag );
+
+			const typename Traits::value_type weighted = contribution * Tr_conn_splat * weight;
 
 			// Defensive zero-skip: pre-refactor NM path dropped
 			// non-positive contributions before the XYZ conversion.
@@ -1548,7 +1660,8 @@ void VCMIntegrator::SplatLightSubpathToCamera(
 {
 	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<PelTag>(
-		lightVerts, lightMis, caster, camera, pFilm->GetWidth(), pFilm->GetHeight(),
+		lightVerts, lightMis, scene, caster, *pGenerator, camera,
+		pFilm->GetWidth(), pFilm->GetHeight(),
 		splatFilm, norm, pixelFilter, PelTag{} );
 }
 
@@ -1594,7 +1707,9 @@ namespace
 {
 	template<class Tag>
 	typename SpectralValueTraits<Tag>::value_type EvaluateInteriorConnectionsImpl(
+		const IScene& scene,
 		const IRayCaster& caster,
+		const BDPTIntegrator& bdpt,
 		const std::vector<BDPTVertex>& lightVerts,
 		const std::vector<VCMMisQuantities>& lightMis,
 		const std::vector<BDPTVertex>& eyeVerts,
@@ -1704,8 +1819,20 @@ namespace
 					    + eyeMis[j].dVC * cameraBsdfRevPdfW );
 				const Scalar weight = Scalar( 1 ) / ( VCMMis( wLight ) + VCMMis( Scalar( 1 ) ) + VCMMis( wCamera ) );
 
+				// Media-aware connection transmittance — Pre-Phase-1
+				// Piece 2 (2026-05-31).  Mirrors BDPT's s>=2,t>=2
+				// site at BDPTIntegrator.cpp ~line 4445: the medium
+				// state at the eye endpoint `ev` seeds the boundary
+				// walk (the connection ray starts at `ev.position`
+				// and traverses outward toward the light vertex).
+				const typename Traits::value_type Tr_conn_int =
+					EvalConnectionTr<Tag>(
+						bdpt, ev.position, lv.position,
+						scene, caster,
+						ev.pMediumObject, ev.pMediumVol, tag );
+
 				const typename Traits::value_type contrib =
-					VertexThroughput<Tag>( lv, tag ) * fLight * ( G * weight ) * fEye
+					VertexThroughput<Tag>( lv, tag ) * fLight * ( G * weight ) * Tr_conn_int * fEye
 					* VertexThroughput<Tag>( ev, tag );
 				total = total + contrib;
 			}
@@ -1716,7 +1843,7 @@ namespace
 }
 
 RISEPel VCMIntegrator::EvaluateInteriorConnections(
-	const IScene& /*scene*/,
+	const IScene& scene,
 	const IRayCaster& caster,
 	const std::vector<BDPTVertex>& lightVerts,
 	const std::vector<VCMMisQuantities>& lightMis,
@@ -1726,7 +1853,7 @@ RISEPel VCMIntegrator::EvaluateInteriorConnections(
 	) const
 {
 	return EvaluateInteriorConnectionsImpl<PelTag>(
-		caster, lightVerts, lightMis, eyeVerts, eyeMis, norm, PelTag{} );
+		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2078,7 +2205,7 @@ Scalar VCMIntegrator::EvaluateNEENM(
 	) const
 {
 	return EvaluateNEEImpl<NMTag>(
-		scene, caster, sampler, eyeVerts, eyeMis, norm, NMTag( nm ) );
+		scene, caster, *pGenerator, sampler, eyeVerts, eyeMis, norm, NMTag( nm ) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -2100,7 +2227,8 @@ void VCMIntegrator::SplatLightSubpathToCameraNM(
 {
 	const IFilm* pFilm = scene.GetFilm();
 	SplatLightSubpathToCameraImpl<NMTag>(
-		lightVerts, lightMis, caster, camera, pFilm->GetWidth(), pFilm->GetHeight(),
+		lightVerts, lightMis, scene, caster, *pGenerator, camera,
+		pFilm->GetWidth(), pFilm->GetHeight(),
 		splatFilm, norm, pixelFilter, NMTag( nm ) );
 }
 
@@ -2109,7 +2237,7 @@ void VCMIntegrator::SplatLightSubpathToCameraNM(
 // EvaluateInteriorConnectionsImpl with an NMTag context.
 //////////////////////////////////////////////////////////////////////
 Scalar VCMIntegrator::EvaluateInteriorConnectionsNM(
-	const IScene& /*scene*/,
+	const IScene& scene,
 	const IRayCaster& caster,
 	const std::vector<BDPTVertex>& lightVerts,
 	const std::vector<VCMMisQuantities>& lightMis,
@@ -2120,7 +2248,7 @@ Scalar VCMIntegrator::EvaluateInteriorConnectionsNM(
 	) const
 {
 	return EvaluateInteriorConnectionsImpl<NMTag>(
-		caster, lightVerts, lightMis, eyeVerts, eyeMis, norm, NMTag( nm ) );
+		scene, caster, *pGenerator, lightVerts, lightMis, eyeVerts, eyeMis, norm, NMTag( nm ) );
 }
 
 //////////////////////////////////////////////////////////////////////

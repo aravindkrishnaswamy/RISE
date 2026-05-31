@@ -2759,7 +2759,22 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 				const Scalar distSqToExit = tExit * tExit;
 				vEnv.pdfFwd = BDPTUtilities::SolidAngleToArea(
 					pdfFwdPrev, Scalar( 1.0 ), distSqToExit );
-				vEnv.throughput = beta;
+				// Apply the residual medium transmittance along the escape
+				// segment before the synthetic env vertex stores beta —
+				// mirrors the surface-hit branch above (line ~2655) and the
+				// PT escape fix (PBRT-v4 beta *= T_maj before the
+				// infinite-light contribution).  maxDist = 1e10 matches PT
+				// exactly so a global medium evaporates identically across
+				// integrators; a bounded (AABB) medium clips internally to a
+				// finite Tr.  VCM's s=0 env-escape consumes this same
+				// throughput via the shared generator, so this is the single
+				// fix point for PT-reference / BDPT / VCM s=0 consistency.
+				RISEPel betaEsc = beta;
+				if( pMed_eye ) {
+					betaEsc = betaEsc * pMed_eye->EvalTransmittance(
+						currentRay, Scalar( 1e10 ) );
+				}
+				vEnv.throughput = betaEsc;
 				vEnv.pdfRev = 0;
 				vEnv.cosAtGen = 1.0;
 				vertices.push_back( vEnv );
@@ -6406,8 +6421,18 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 				const Scalar distSqToExit = tExit * tExit;
 				vEnv.pdfFwd = BDPTUtilities::SolidAngleToArea(
 					pdfFwdPrev, Scalar( 1.0 ), distSqToExit );
-				vEnv.throughputNM = betaNM;
-				vEnv.throughput = RISEPel( betaNM, betaNM, betaNM );
+				// Apply the residual medium transmittance along the escape
+				// segment before storing throughputNM — spectral twin of the
+				// RGB site (~line 2762).  maxDist = 1e10 matches PT.  VCM's
+				// spectral s=0 env-escape reads throughputNM via the shared
+				// generator, so this is the single fix point for NM.
+				Scalar betaNMEsc = betaNM;
+				if( pMed_nmEye ) {
+					betaNMEsc *= pMed_nmEye->EvalTransmittanceNM(
+						currentRay, Scalar( 1e10 ), nm );
+				}
+				vEnv.throughputNM = betaNMEsc;
+				vEnv.throughput = RISEPel( betaNMEsc, betaNMEsc, betaNMEsc );
 				vEnv.pdfRev = 0;
 				vEnv.cosAtGen = 1.0;
 				vertices.push_back( vEnv );
