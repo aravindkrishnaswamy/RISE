@@ -2047,3 +2047,84 @@ Both P3 nits rejected with reason (harmless / accurate).  No P1/P2 raised → ad
 ### Working tree state
 
 Working tree carries (uncommitted): Piece 2's VCM connection-Tr (`BDPTIntegrator.h` access change + `VCMIntegrator.cpp`) **unchanged** + the PT/BDPT escape-Tr fix + the 3 new bounded fixtures + docs.  Per the user's explicit instruction ("NEVER COMMIT"), no `git add`/`commit`/`stage`/`push` performed.
+
+---
+
+## Pre-Phase-1 Piece 3 outcome (Phase 2b — PathTracingIntegrator templatization)
+
+**Session date**: 2026-05-31.  **Plan**: [INTEGRATOR_REFACTOR_PLAN.md](INTEGRATOR_REFACTOR_PLAN.md) §3.5; **precedent**: [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md) (Phase 2a).
+
+### TL;DR
+
+Phase 2b is a two-method-family integrator (`IntegrateRay*` and `IntegrateFromHit*`, each Pel/NM/HWSS).  This session **templatized the `IntegrateRay` family (Pel+NM) into `IntegrateRayTemplated<Tag>` behind thin forwarders — verified zero-behavior-change and adversarially reviewed clean — and built the full shared PT dispatch-helper layer.**  The larger `IntegrateFromHit` family (~1,570 lines, the bulk of the LoC and the home of the AOV hook) is **deferred to a focused follow-up** on a data-driven call (below).  This mirrors the Phase 2a precedent exactly: *"continuing into the bigger methods in the same session would deliver rushed, under-reviewed work."*
+
+- **Gate 1 — build**: `make -C build/make/rise -j8 all` + `tests` warning-free (0 warnings, clean rebuild).
+- **Gate 2 — tests**: 116/116 (clean env; the lone `FileRasterizerOutputShimTest` "fail" in any run with `RISE_MEDIA_PATH` exported is an env artifact — the test writes to a `/tmp` path that the media-path prefix mangles; it passes 60/60 with `RISE_MEDIA_PATH` unset, which is how `run_all_tests.sh` is meant to run).
+- **Gate 3 — baselines**: mean-luminance deltas vs `pre_phase2b` all within the **0.27 % noise floor** — PT(Pel) **0.001 %**, spectral(NM) **0.034 %**, HWSS(unchanged) **0.001 %**, and BDPT/VCM controls **0.000–0.027 %** (no leak into other integrators).
+- **Gate 6 — perf**: no path added; templated code compiles to the same instruction stream (helpers are `inline` no-op dispatch).  Not separately benchmarked — the transform is an exact-arithmetic refactor of `IntegrateRay` only.
+- **Gate 7 — escape-Tr**: `env_bounded_fog_pt` (the medium Pel path through `IntegrateRayTemplated`) POST **0.19198** vs PRE **0.19189** (**0.045 %**, matches documented ≈0.1920); `EnvLightBalanceTest` (which renders the fixture internally) passes.
+- **Gate 8 — adversarial review**: 3 reviewers (Pel-equivalence / NM-equivalence / if-constexpr+ABI), **0 P1, 0 P2**.
+
+### HWSS tag decision (Step 1) — NO third tag
+
+PT's `IntegrateFromHitHWSS` / `IntegrateRayHWSS` are **genuine hero-driven bundle integrators** (track `throughputComp[SampledWavelengths::N]` over one shared path, per-wavelength `swl.terminated[w]`, companion-only throughput), not value-type swaps of the Pel/NM body — confirmed by reading the HWSS body.  This is the structural-mismatch stop-rule case: HWSS is kept as a standalone method, exactly as [SpectralValueTraits.h](../src/Library/Utilities/Color/SpectralValueTraits.h) (header comment, lines 18-23) and the Phase 2a status doc (§168) both prescribe.  HWSS's SPF-only/SSS/volume-scatter fallbacks call `IntegrateFromHitNM`, which stays a real method this session (will become a forwarder when the `IntegrateFromHit` family is templatized).  **No `HWSSTag` added; no `SpectralValueTraits.h` change.**  The plan's §3.5 `is_hwss_bundle` sketch is therefore superseded by the Phase-0 design that already rejected it.
+
+### What was templatized
+
+| Pre | Post | Note |
+|---|---|---|
+| `IntegrateRay` (RGB, ~230 ln) + `IntegrateRayNM` (~170 ln) | `IntegrateRayTemplated<Tag>` + 2 thin forwarders | Tag = `PelTag`/`NMTag` |
+| — | `IntegrateFromHitForTag<Tag>` (private member) | tag-dispatched delegation to `IntegrateFromHit(NM)` for the medium-scatter continuation + surface hand-off |
+| — | 9 anonymous-namespace dispatch helpers | `PTPositiveMagnitude`, `PTValueOne`, `PTTrReduced`, `PTDivByScalar`, `PTGetMediumScatter`, `PTEvalTransmittance`, `PTSampleMediumDistance`, `PTEvaluateInScattering`, `PTEvalRadianceMap` — shared layer, reused by the deferred `IntegrateFromHit` work |
+
+`if constexpr` branches used: **(a)** `traits::supports_aov` gates the first-hit AOV block (compiles out for NMTag — preserves NM's original no-AOV behavior); **(b)** `traits::is_pel` selects the `volThroughput` form — Pel `medWeight * RISEPel(s,s,s)` vs NM `medWeight * phaseVal / phasePdf` — because the two differ at the ULP level (multiply-then-divide vs divide-then-multiply), so they are kept distinct rather than unified.  Every other Pel↔NM difference reduces to a dispatch helper (the escape-Tr `EvalTransmittance{,NM}` calls from commit 2b58236b survive as a single templated `PTEvalTransmittance<Tag>` site).
+
+### Why `IntegrateFromHit` was deferred (data-driven)
+
+I built all 16 additional dispatch helpers + the `IntegrateFromHitTemplated<Tag>` header decl and began the in-place transform, then reverted to the verified `IntegrateRay` checkpoint on this evidence:
+
+1. **Maximum complexity**: the make build enables **both** `RISE_ENABLE_OPENPGL` and `RISE_ENABLE_OIDN` (Config.OSX:83,86), so `IntegrateFromHit`'s extensive OpenPGL path-guiding code (with Pel→RGB-direct vs NM→luminance-projection divergences), the OIDN AOV hook, BSSRDF/SSS continuations (which carry **genuine Pel/NM behavioral asymmetries** — Pel sets `rs2.sms*` flags, NM instead sets `rs2.bsdfTimesCos` + an optimal-MIS `AccumulateCount`), the SPF-section `considerEmission` divergence, and the SMS struct dispatch are ALL live and must be preserved exactly.
+2. **Under-covered divergent paths**: the cornellbox baselines exercise emission/NEE/BSDF/RR but **not** path-guiding, BSSRDF, SSS, or SMS.  A dispatch bug in those (the most intricate divergences) would ship **silently** — caught only by line-by-line review of a 1,570-line method.  Verifying them safely needs SSS/SMS/guided pre-baselines captured on the *un-edited* binary (a full stash→rebuild→render→pop cycle) plus a much heavier review than the cornellbox set affords.
+3. **All-or-nothing cleanliness**: the 16 helpers `-Wunused`-warn (31 warnings, confirmed) until *both* the Pel and NM increments instantiate them — there is no warning-clean intermediate, so the family must land whole.
+
+Per the stop rules ("clean checkpoints beat half-reviewed scope") and the zero-behavior-change bar, this is a follow-up, not a same-session push.
+
+**Follow-up dispatch-helper list** (built + type-verified this session, then reverted with the `IntegrateFromHit` work; re-add when the family lands so they are used → no `-Wunused`).  Each forwards at compile time to the existing dual-signature API:
+
+- `PTAbsMaxMagnitude` (runaway guard: Pel r_max of 3 fabs / NM fabs) · `PTEvalEmittedRadiance` (`emittedRadiance{,NM}`) · `PTEvaluateDirectLighting` (`EvaluateDirectLighting{,NM}`, nm after pMaterial) · `PTEvalBSDFAtSurface` / `PTEvalPdfAtSurface` (`PathVertexEval::*{,NM}`, guiding) · `PTScatter` (`Scatter`/`ScatterNM`) · `PTRandomlySelect` (`RandomlySelect(xi,false)`/`(xi,true)`) · `PTScatterKray` (`kray`/`krayNM`) · `PTLobeSelectWeight` (`MaxValue(kray)`/`krayNM`) · `PTBssrdfWeight{,Spatial}` (`weight{Spatial}{,NM}`) · `PTCastRay` (`CastRay`/`CastRayNM`) · `PTEvaluateSMS`+`PTSMSResult` (`EvaluateAtShadingPoint{,NM}` → unified `{value contribution, Scalar misWeight, bool valid}`) · `PTBsdfTimesCosState` (Pel `thru*pdf` / NM `fabs(thru)*pdf`) · `PTRayStateBsdfTimesCos` (RGB / `RISEPel(scalar)`).  **Two more are needed for the OpenPGL paths** (not built yet): `PTGuidingPel` (value→RISEPel for `Add*GuidingContribution`/`Set*GuidingDirectContribution`: Pel identity / NM `RISEPel(scalar)`) and `PTGuidingLuminance` (gates + Adam updates: Pel `GuidingTrainingLuminance` / NM `fabs`).
+
+`if constexpr` sites: FF_TRACE blocks accessing `throughput[0..2]`/`result[0..2]` → `is_pel` (Scalar has no `operator[]`; build catches misses); SPF `considerEmission` divergence; BSSRDF/SSS `rs2` asymmetries; AOV under `supports_aov`; SPF multi/single can unify to the NM single block (Pel `×1.0`/`÷1.0` is bit-identical).  **Key follow-up shape**: transform `IntegrateFromHit(Pel)→IntegrateFromHitTemplated<Tag>` in place (~15 section-block edits) → verify Pel baseline + add SSS/SMS/guided coverage → chunk-delete the ~1,300-line `IntegrateFromHitNM` body to a forwarder → verify NM → 3-round review.  (Session working notes were kept as scratch under `/tmp/pt_phase2b_ref/` — ephemeral; the list above is the durable record.)
+
+### PT-spectral inline AOV (deliverable #2) — still deferred (blocked on `IntegrateFromHit`)
+
+The `IntegrateRay` family now has the `if constexpr(traits::supports_aov)` Fast-mode first-hit AOV gate in place (the foundation).  But the **Accurate-mode** first-non-delta AOV hook lives in `IntegrateFromHit`, and the spectral rasterizer's *primary* path is HWSS — so closing the gap needs the `IntegrateFromHit` templatization + `pAOV` plumbing through the NM/HWSS entry points + the spectral rasterizer.  [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §2.6's "refactor-blocked on Phase 2b" assessment stands; §6.2 unchanged (not yet DONE).
+
+### LoC
+
+`PathTracingIntegrator.cpp` **+94** net (+301/−207); `.h` **+60**.  Net-positive because the shared dispatch-helper layer (~150 ln) + the `IntegrateFromHitForTag` scaffold are front-loaded here while only `IntegrateRayNM`'s ~167-line body is deduplicated.  The plan's ~1,900-line Phase-2b savings are realized when `IntegrateFromHit` templatizes and **reuses these helpers** — this session pays the abstraction cost up front.
+
+### Bugs spotted (not fixed — documented per non-scope rule)
+
+- **Pre-existing Pel/NM behavioral asymmetries in `IntegrateFromHit`** (to be *preserved*, not fixed, by the templatization): (i) the SPF/no-BSDF specular section sets `considerEmission=true` for Pel but `(isDelta && bSMS)?false:true` for NM; (ii) BSSRDF + random-walk-SSS continuations set `rs2.smsPassedThroughSpecular/HadNonSpecularShading` on Pel but `rs2.bsdfTimesCos` + an optimal-MIS `AccumulateCount` on NM.  These look like latent inconsistencies but are out of scope — flagged for a separate audit.
+- **`check_refactor_baselines.sh` two bugs**: (1) it gated render-success on `rise`'s exit code, but `rise` exits non-zero on the interactive `quit` even after a successful render — the same bug fixed in `capture_refactor_baselines.sh` (commit 801f1fe9).  **Fixed this session** (necessary to run Gate 3): pre-delete the PNG, run un-gated, detect success via PNG presence.  (2) Still-present `set -e` fragility: a python FAIL-verdict's non-zero exit aborts the loop before printing the FAIL line — *not* fixed (pre-existing, out of scope); the per-scene robust comparison was run manually instead.  Also note the script's `log_rms < 3.0` threshold is mis-calibrated for noisy spectral/VCM scenes (Phase 2a measured the identical-code noise floor at log_rms up to 32) — **mean-luminance delta is the reliable metric**, confirmed by unchanged-code controls (hwss_pt 3.63, bdpt_spectral 5.04, vcm_spectral 5.86 log_rms with ≤0.034 % mean).
+
+### Adversarial review ledger (Gate 8 — 3 reviewers, orthogonal axes)
+
+| Reviewer | Axis | Result |
+|----------|------|--------|
+| R1 | PelTag ≡ original `IntegrateRay` (RGB), line-by-line | **CLEAN** — every PelTag helper reduces to the exact original RGB call; escapeTr, medWeight (reciprocal-multiply), AOV block, all 3 recursive calls, control flow byte-equivalent. |
+| R2 | NMTag ≡ original `IntegrateRayNM`, line-by-line | **CLEAN** — medWeight division (not reciprocal-multiply), volThroughput NM associativity, raw-signed gates, escapeTr-NM, recursive `IntegrateFromHitNM` args all preserved; AOV block compiles out.  P3: a redundant `if(!bHit)` guard inside `else if(bHit)` (preserved verbatim from the Pel original) is dead-but-harmless for both tags. |
+| R3 | if-constexpr / ABI / dispatch soundness | **CLEAN** — private member templates add no vtable slot / layout change; public signatures byte-identical; no name-hiding; `supports_aov`/`is_pel` are `static constexpr`; discarded branches uninstantiated for NMTag; forwarders + helper specializations + script fix all sound; no `-Wunused`. |
+
+0 P1 / 0 P2; the single P3 (dead guard) rejected with reason (behavior-neutral, matches Pel original).  Adversarial-review stop rule satisfied.
+
+### Files
+
+- [src/Library/Shaders/PathTracingIntegrator.cpp](../src/Library/Shaders/PathTracingIntegrator.cpp) — `IntegrateRayTemplated<Tag>` + `IntegrateFromHitForTag<Tag>` + 9 dispatch helpers + 2 forwarders (`IntegrateFromHit*`/HWSS untouched)
+- [src/Library/Shaders/PathTracingIntegrator.h](../src/Library/Shaders/PathTracingIntegrator.h) — 2 private member-template decls (ABI-safe)
+- [scripts/check_refactor_baselines.sh](../scripts/check_refactor_baselines.sh) — exit-code-gate fix
+- This doc + [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md) updated
+
+### Working tree state
+
+Uncommitted; per "NEVER COMMIT", no `git add`/`commit`/`stage`/`push`.

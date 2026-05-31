@@ -38,6 +38,7 @@
 #include "../Utilities/Color/Color.h"
 #include "../Utilities/Color/Color_Template.h"
 #include "../Utilities/Color/SampledWavelengths.h"
+#include "../Utilities/Color/SpectralValueTraits.h"
 #include "../Utilities/IORStack.h"
 #include "../Intersection/RayIntersection.h"
 
@@ -200,6 +201,65 @@ namespace RISE
 			/// Accessors for NM/HWSS code in PathTracingShaderOp
 			bool GetSMSEnabled() const { return bSMSEnabled; }
 			ManifoldSolver* GetSolver() const { return pSolver; }
+
+		private:
+			// ----------------------------------------------------------------
+			// Phase 2b templatization (Pre-Phase-1 Piece 3).  The Pel (RGB)
+			// and NM (single-wavelength) variants of the camera-ray entry
+			// and the iterative core are collapsed into function templates on
+			// a SpectralDispatch tag (PelTag / NMTag).  HWSS is deliberately
+			// NOT a tag — IntegrateRayHWSS / IntegrateFromHitHWSS remain
+			// standalone hero-bundle methods (see SpectralValueTraits.h
+			// header comment).  These are only instantiated inside
+			// PathTracingIntegrator.cpp by the thin public forwarders, so
+			// adding them changes neither the vtable nor the class layout.
+
+			/// Shared body of IntegrateRay / IntegrateRayNM.
+			template<class Tag>
+			typename SpectralDispatch::SpectralValueTraits<Tag>::value_type
+			IntegrateRayTemplated(
+				const RuntimeContext& rc,
+				const RasterizerState& rast,
+				const Ray& cameraRay,
+				const IScene& scene,
+				const IRayCaster& caster,
+				ISampler& sampler,
+				const IRadianceMap* pRadianceMap,
+				PixelAOV* pAOV,
+				const Tag& tag
+				) const;
+
+			/// Tag-dispatched delegation to IntegrateFromHit / IntegrateFromHitNM
+			/// for the medium-scatter continuation and surface hand-off inside
+			/// IntegrateRayTemplated.  The SMS emission-suppression flags are
+			/// always false here (camera-ray entry), matching every original
+			/// IntegrateRay* call site.
+			template<class Tag>
+			typename SpectralDispatch::SpectralValueTraits<Tag>::value_type
+			IntegrateFromHitForTag(
+				const RuntimeContext& rc,
+				const RasterizerState& rast,
+				const RayIntersection& firstHit,
+				const IScene& scene,
+				const IRayCaster& caster,
+				ISampler& sampler,
+				const IRadianceMap* pRadianceMap,
+				unsigned int startDepth,
+				const IORStack& initialIorStack,
+				Scalar bsdfPdf,
+				const typename SpectralDispatch::SpectralValueTraits<Tag>::value_type& bsdfTimesCos,
+				bool considerEmission,
+				Scalar importance,
+				IRayCaster::RAY_STATE::RayType rayType,
+				unsigned int diffuseBounces,
+				unsigned int glossyBounces,
+				unsigned int transmissionBounces,
+				unsigned int translucentBounces,
+				unsigned int volumeBounces,
+				Scalar glossyFilterWidth,
+				PixelAOV* pAOV,
+				const Tag& tag
+				) const;
 		};
 	}
 }

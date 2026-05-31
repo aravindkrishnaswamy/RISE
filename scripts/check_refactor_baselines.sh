@@ -70,15 +70,16 @@ for scene_rel in "${SCENES[@]}"; do
         continue
     fi
 
-    # Fresh render
-    printf "render\nquit\n" | "${BIN}" "${scene_abs}" > /tmp/rise_check_$$.log 2>&1 || {
-        echo "FAIL ${base_name}: render failed"
-        total_fail=$((total_fail + 1))
-        continue
-    }
+    # Fresh render.  `rise` exits non-zero on the interactive `quit`
+    # command even after a successful render writes its PNG, so we cannot
+    # gate on its exit code (same fix as capture_refactor_baselines.sh,
+    # commit 801f1fe9).  Pre-delete the stale PNG, run rise without gating,
+    # then use the post-render PNG presence as the success signal.
+    rm -f "${fresh_png}"
+    printf "render\nquit\n" | "${BIN}" "${scene_abs}" > /tmp/rise_check_$$.log 2>&1 || true
 
     if [ ! -f "${fresh_png}" ]; then
-        echo "FAIL ${base_name}: no output PNG"
+        echo "FAIL ${base_name}: no output PNG (render produced nothing)"
         total_fail=$((total_fail + 1))
         continue
     fi

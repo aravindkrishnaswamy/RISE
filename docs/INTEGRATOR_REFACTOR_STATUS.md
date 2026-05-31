@@ -105,7 +105,13 @@ Round 2 (ABI preservation) returned no findings.
   - `cornellbox_vcm_caustics`: lum_delta 0.02%–0.04%
 - BDPT/PT baselines (untouched by Phase 2a, should be noise-floor): `cornellbox_bdpt` 0.0003%, `cornellbox_pathtracer` 0.0004%, `hwss_cornellbox_pt` 0.006%.  Confirming Phase 2a did not leak into other integrators.
 
-### Phase 2b/2c/2d/3/4 — not started this session
+### Phase 2b — PathTracing templatization (PARTIAL — `IntegrateRay` family done, 2026-05-31)
+
+A later session (2026-05-31) templatized the **`IntegrateRay` / `IntegrateRayNM`** family into `IntegrateRayTemplated<Tag>` behind thin forwarders, plus the shared PT dispatch-helper layer (`PTSampleMediumDistance`, `PTGetMediumScatter`, `PTEvalTransmittance`, `PTEvaluateInScattering`, `PTEvalRadianceMap`, `PTDivByScalar`, `PTTrReduced`, `PTPositiveMagnitude`, `PTValueOne`) and the `IntegrateFromHitForTag<Tag>` delegator.  **HWSS confirmed NOT a tag** (genuine hero-driven bundle — `IntegrateRayHWSS`/`IntegrateFromHitHWSS` stay standalone).  Verified zero-behavior-change: 116/116 tests, baseline means within the 0.27 % noise floor (PT 0.001 %, spectral 0.034 %, HWSS 0.001 %), escape-Tr fixture 0.045 %, 3-reviewer adversarial review clean (0 P1/P2).
+
+The **larger `IntegrateFromHit` family (~1,570 ln)** — the bulk of the LoC and the home of the inline-AOV hook — is **deferred to a focused follow-up**: with OpenPGL+OIDN both enabled its guiding/BSSRDF/SSS/SMS divergent paths are not covered by the cornellbox baselines (silent-bug risk), so it needs SSS/SMS/guided pre-baselines + a heavier review than a same-session push affords.  Full rationale, the complete `IntegrateFromHit` Pel↔NM divergence map, and the verification ledger are in [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) → "Pre-Phase-1 Piece 3 outcome (Phase 2b)".
+
+### Phase 2c/2d/3/4 — not started
 
 Reasons documented in the "Why I stopped here" section below.
 

@@ -49,6 +49,11 @@ using PathTransportUtilities::PowerHeuristic;
 using PathTransportUtilities::ClampContribution;
 using PathTransportUtilities::PropagateBounceLimits;
 
+// Phase 2b templatization: compile-time RGB-vs-spectral dispatch tags.
+using RISE::SpectralDispatch::PelTag;
+using RISE::SpectralDispatch::NMTag;
+using RISE::SpectralDispatch::SpectralValueTraits;
+
 // RR defaults are now in StabilityConfig.  These are kept as
 // documentation of the defaults but not used directly.
 // static const unsigned int PT_RR_MIN_DEPTH = 3;
@@ -900,6 +905,149 @@ namespace
 }
 #endif // RISE_ENABLE_OPENPGL
 
+
+//////////////////////////////////////////////////////////////////////
+// Phase 2b tag-dispatch helpers (Pre-Phase-1 Piece 3)
+//
+// Collapse the Pel (RISEPel) and NM (Scalar + nm) variants of the
+// path-tracing inner loop into templated bodies.  Each helper forwards
+// at compile time to the matching member of the existing dual-signature
+// API (GetCoefficients/GetCoefficientsNM, EvalTransmittance/
+// EvalTransmittanceNM, EvaluateInScattering/EvaluateInScatteringNM,
+// GetRadiance/GetRadianceNM, ...) selected on the tag.  No new logic;
+// mirrors the VCMIntegrator Phase-2a pattern.  HWSS is NOT a tag — it is
+// the hero-driven bundle handled by IntegrateRayHWSS / IntegrateFromHitHWSS
+// (see SpectralValueTraits.h header comment).
+//////////////////////////////////////////////////////////////////////
+namespace
+{
+	// Contribution-gate magnitude.  Pel -> max channel; Scalar -> the
+	// value itself (NO fabs, preserving the signed `<= 0` / `> 0` skip
+	// semantics the NM path relies on).  Mirrors VCM's PositiveMagnitude.
+	inline Scalar PTPositiveMagnitude( const RISEPel& v ) { return ColorMath::MaxValue( v ); }
+	inline Scalar PTPositiveMagnitude( const Scalar  v ) { return v; }
+
+	// Multiplicative identity in the value type (Pel -> (1,1,1); Scalar -> 1).
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTValueOne();
+	template<> inline RISEPel PTValueOne<PelTag>() { return RISEPel( 1, 1, 1 ); }
+	template<> inline Scalar  PTValueOne<NMTag>()  { return Scalar( 1 ); }
+
+	// Reduce a transmittance value to the scalar used in the legacy
+	// max-channel medium-throughput denominator.  Pel -> min channel
+	// (matches the original ColorMath::MinValue(Tr)); Scalar -> itself.
+	inline Scalar PTTrReduced( const RISEPel& Tr ) { return ColorMath::MinValue( Tr ); }
+	inline Scalar PTTrReduced( const Scalar  Tr ) { return Tr; }
+
+	// value_type divided by a scalar, preserving the per-variant
+	// arithmetic exactly: Pel multiplies by the reciprocal (matching the
+	// original `RISEPel * (1.0/d)`); Scalar divides (matching `Scalar/d`).
+	inline RISEPel PTDivByScalar( const RISEPel& v, const Scalar d ) { return v * ( Scalar( 1 ) / d ); }
+	inline Scalar  PTDivByScalar( const Scalar  v, const Scalar d ) { return v / d; }
+
+	// Medium scattering coefficients reduced to what the throughput math
+	// needs: the value_type scattering coefficient sigma_s, plus a scalar
+	// extinction used for the gate + denominator (Pel -> max channel of
+	// sigma_t, matching ColorMath::MaxValue; Scalar -> sigma_t itself).
+	template<class Tag>
+	struct PTMediumScatter
+	{
+		typename SpectralValueTraits<Tag>::value_type sigma_s;
+		Scalar sigmaTReduced;
+	};
+
+	template<class Tag>
+	inline PTMediumScatter<Tag> PTGetMediumScatter(
+		const IMedium* pMedium, const Point3& pt, const Tag& tag );
+
+	template<>
+	inline PTMediumScatter<PelTag> PTGetMediumScatter<PelTag>(
+		const IMedium* pMedium, const Point3& pt, const PelTag& )
+	{
+		const MediumCoefficients c = pMedium->GetCoefficients( pt );
+		return PTMediumScatter<PelTag>{ c.sigma_s, ColorMath::MaxValue( c.sigma_t ) };
+	}
+
+	template<>
+	inline PTMediumScatter<NMTag> PTGetMediumScatter<NMTag>(
+		const IMedium* pMedium, const Point3& pt, const NMTag& tag )
+	{
+		const MediumCoefficientsNM c = pMedium->GetCoefficientsNM( pt, tag.nm );
+		return PTMediumScatter<NMTag>{ c.sigma_s, c.sigma_t };
+	}
+
+	// Beer-Lambert transmittance along a ray segment.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTEvalTransmittance(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist, const Tag& tag );
+
+	template<>
+	inline RISEPel PTEvalTransmittance<PelTag>(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist, const PelTag& )
+	{ return pMedium->EvalTransmittance( ray, dist ); }
+
+	template<>
+	inline Scalar PTEvalTransmittance<NMTag>(
+		const IMedium* pMedium, const Ray& ray, const Scalar dist, const NMTag& tag )
+	{ return pMedium->EvalTransmittanceNM( ray, dist, tag.nm ); }
+
+	// Volume distance sampling with optional equiangular MIS.
+	template<class Tag>
+	inline MediumSampleOutcome PTSampleMediumDistance(
+		const IMedium* pMedium, const Ray& ray, const Scalar maxDist,
+		const Implementation::LightSampler* pLS, ISampler& sampler, const Tag& tag );
+
+	template<>
+	inline MediumSampleOutcome PTSampleMediumDistance<PelTag>(
+		const IMedium* pMedium, const Ray& ray, const Scalar maxDist,
+		const Implementation::LightSampler* pLS, ISampler& sampler, const PelTag& )
+	{ return SampleDistanceWithEquiangularMIS( pMedium, ray, maxDist, pLS, sampler ); }
+
+	template<>
+	inline MediumSampleOutcome PTSampleMediumDistance<NMTag>(
+		const IMedium* pMedium, const Ray& ray, const Scalar maxDist,
+		const Implementation::LightSampler* pLS, ISampler& sampler, const NMTag& tag )
+	{ return SampleDistanceWithEquiangularMIS_NM( pMedium, ray, maxDist, tag.nm, pLS, sampler ); }
+
+	// In-scattered radiance (NEE) at a medium scatter point.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTEvaluateInScattering(
+		const Point3& scatterPoint, const Vector3& wo, const IMedium* pMedium,
+		const IRayCaster& caster, const Implementation::LightSampler* pLS,
+		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
+		const Tag& tag );
+
+	template<>
+	inline RISEPel PTEvaluateInScattering<PelTag>(
+		const Point3& scatterPoint, const Vector3& wo, const IMedium* pMedium,
+		const IRayCaster& caster, const Implementation::LightSampler* pLS,
+		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
+		const PelTag& )
+	{ return MediumTransport::EvaluateInScattering( scatterPoint, wo, pMedium, caster, pLS, sampler, rast, pMediumObject ); }
+
+	template<>
+	inline Scalar PTEvaluateInScattering<NMTag>(
+		const Point3& scatterPoint, const Vector3& wo, const IMedium* pMedium,
+		const IRayCaster& caster, const Implementation::LightSampler* pLS,
+		ISampler& sampler, const RasterizerState& rast, const IObject* pMediumObject,
+		const NMTag& tag )
+	{ return MediumTransport::EvaluateInScatteringNM( scatterPoint, wo, pMedium, tag.nm, caster, pLS, sampler, rast, pMediumObject ); }
+
+	// Radiance-map lookup (per-object or global environment).
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTEvalRadianceMap(
+		const IRadianceMap* pMap, const Ray& ray, const RasterizerState& rast, const Tag& tag );
+
+	template<>
+	inline RISEPel PTEvalRadianceMap<PelTag>(
+		const IRadianceMap* pMap, const Ray& ray, const RasterizerState& rast, const PelTag& )
+	{ return pMap->GetRadiance( ray, rast ); }
+
+	template<>
+	inline Scalar PTEvalRadianceMap<NMTag>(
+		const IRadianceMap* pMap, const Ray& ray, const RasterizerState& rast, const NMTag& tag )
+	{ return pMap->GetRadianceNM( ray, rast, tag.nm ); }
+}
 
 //////////////////////////////////////////////////////////////////////
 // Construction / destruction
@@ -2507,13 +2655,69 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 
 //////////////////////////////////////////////////////////////////////
-// IntegrateRay — RGB path tracer entry point
+// IntegrateFromHitForTag — tag-dispatched delegation to the (non-template)
+// IntegrateFromHit / IntegrateFromHitNM, used by IntegrateRayTemplated for
+// the medium-scatter continuation and the surface hand-off.  The SMS
+// emission-suppression flags are always false (camera-ray entry), matching
+// every original IntegrateRay* call site.
+//////////////////////////////////////////////////////////////////////
+template<class Tag>
+typename SpectralValueTraits<Tag>::value_type
+PathTracingIntegrator::IntegrateFromHitForTag(
+	const RuntimeContext& rc,
+	const RasterizerState& rast,
+	const RayIntersection& firstHit,
+	const IScene& scene,
+	const IRayCaster& caster,
+	ISampler& sampler,
+	const IRadianceMap* pRadianceMap,
+	unsigned int startDepth,
+	const IORStack& initialIorStack,
+	Scalar bsdfPdf,
+	const typename SpectralValueTraits<Tag>::value_type& bsdfTimesCos,
+	bool considerEmission,
+	Scalar importance,
+	IRayCaster::RAY_STATE::RayType rayType,
+	unsigned int diffuseBounces,
+	unsigned int glossyBounces,
+	unsigned int transmissionBounces,
+	unsigned int translucentBounces,
+	unsigned int volumeBounces,
+	Scalar glossyFilterWidth,
+	PixelAOV* pAOV,
+	const Tag& tag
+	) const
+{
+	if constexpr ( SpectralValueTraits<Tag>::is_pel )
+	{
+		return IntegrateFromHit( rc, rast, firstHit, scene, caster, sampler,
+			pRadianceMap, startDepth, initialIorStack, bsdfPdf, bsdfTimesCos,
+			considerEmission, importance, rayType, diffuseBounces, glossyBounces,
+			transmissionBounces, translucentBounces, volumeBounces, glossyFilterWidth,
+			false, false, pAOV );
+	}
+	else
+	{
+		(void)pAOV;
+		return IntegrateFromHitNM( rc, rast, firstHit, tag.nm, scene, caster, sampler,
+			pRadianceMap, startDepth, initialIorStack, bsdfPdf, bsdfTimesCos,
+			considerEmission, importance, rayType, diffuseBounces, glossyBounces,
+			transmissionBounces, translucentBounces, volumeBounces, glossyFilterWidth );
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// IntegrateRayTemplated — shared body of IntegrateRay / IntegrateRayNM.
 //
 // Intersects the camera ray, handles first-bounce medium transport,
-// then delegates to IntegrateFromHit for the iterative path loop.
+// then delegates to IntegrateFromHit(NM) for the iterative path loop.
+// Tag = PelTag (RGB) or NMTag (single wavelength).  HWSS is the separate
+// hero-bundle IntegrateRayHWSS.
 //////////////////////////////////////////////////////////////////////
-
-RISEPel PathTracingIntegrator::IntegrateRay(
+template<class Tag>
+typename SpectralValueTraits<Tag>::value_type
+PathTracingIntegrator::IntegrateRayTemplated(
 	const RuntimeContext& rc,
 	const RasterizerState& rast,
 	const Ray& cameraRay,
@@ -2521,9 +2725,13 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	const Tag& tag
 	) const
 {
+	using Traits = SpectralValueTraits<Tag>;
+	using Value = typename Traits::value_type;
+
 	IORStack iorStack( 1.0 );
 	sampler.StartStream( 16 );
 
@@ -2542,18 +2750,24 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 	// mirror are walked through naturally; rough dielectrics record at
 	// the rough surface or behind it depending on each sample's Fresnel
 	// decision.  See docs/OIDN.md (OIDN-P1-1) for the design.
-#ifdef RISE_ENABLE_OIDN
-	const bool aovUseFirstHit = ( rc.aovPrefilterMode == OidnPrefilter::Fast );
-#else
-	const bool aovUseFirstHit = true;
-#endif
-	if( pAOV && ri.geometric.bHit && aovUseFirstHit )
+	// AOV recording is compiled in only for the AOV-capable tag (Pel).
+	// NMTag has supports_aov == false, so this whole block vanishes for
+	// the spectral path — preserving its original no-AOV behaviour.
+	if constexpr ( Traits::supports_aov )
 	{
-		pAOV->normal = ri.geometric.vNormal;
-		pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-			? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-			: RISEPel( 1, 1, 1 );
-		pAOV->valid = true;
+#ifdef RISE_ENABLE_OIDN
+		const bool aovUseFirstHit = ( rc.aovPrefilterMode == OidnPrefilter::Fast );
+#else
+		const bool aovUseFirstHit = true;
+#endif
+		if( pAOV && ri.geometric.bHit && aovUseFirstHit )
+		{
+			pAOV->normal = ri.geometric.vNormal;
+			pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+				? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+				: RISEPel( 1, 1, 1 );
+			pAOV->valid = true;
+		}
 	}
 
 	// Medium transport for first bounce
@@ -2566,15 +2780,15 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 	// the env radiance below must be attenuated by the medium it crossed
 	// (PBRT-v4 VolPathIntegrator: beta *= T_maj before the `if (!si)`
 	// infinite-light branch).  Stays 1 (no-op) in vacuum.
-	RISEPel escapeTr( 1, 1, 1 );
+	Value escapeTr = PTValueOne<Tag>();
 
 	if( pCurrentMedium )
 	{
 		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
 		const LightSampler* pLS = caster.GetLightSampler();
 		IndependentSampler mediumSampler( rc.random );
-		const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS(
-			pCurrentMedium, cameraRay, maxDist, pLS, mediumSampler );
+		const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
+			pCurrentMedium, cameraRay, maxDist, pLS, mediumSampler, tag );
 		const Scalar t_m = mso.t;
 		const bool scattered = mso.scattered;
 
@@ -2583,7 +2797,7 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 			// Equiangular strategy sampled a zero-density / out-of-bounds
 			// point.  Scatter-measure sample with zero weight — do not
 			// fall through to surface shading.
-			return RISEPel( 0, 0, 0 );
+			return Traits::zero();
 		}
 
 		if( scattered )
@@ -2592,40 +2806,39 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 			// delegate continuation to IntegrateFromHit if we get a hit.
 			const Point3 scatterPt = cameraRay.PointAtLength( t_m );
 			const Vector3 wo = cameraRay.Dir();
-			const MediumCoefficients coeff = pCurrentMedium->GetCoefficients( scatterPt );
-			const RISEPel Tr = pCurrentMedium->EvalTransmittance( cameraRay, t_m );
-			const Scalar sigma_t_max = ColorMath::MaxValue( coeff.sigma_t );
+			const PTMediumScatter<Tag> coeff = PTGetMediumScatter<Tag>( pCurrentMedium, scatterPt, tag );
+			const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, t_m, tag );
 
-			RISEPel medWeight( 0, 0, 0 );
+			Value medWeight = Traits::zero();
 			if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
 			{
 				// Equiangular-MIS throughput: Tr * sigma_s / combinedPdf.
-				medWeight = Tr * coeff.sigma_s * (1.0 / mso.combinedPdf);
+				medWeight = PTDivByScalar( Tr * coeff.sigma_s, mso.combinedPdf );
 			}
-			else if( sigma_t_max > 0 )
+			else if( coeff.sigmaTReduced > 0 )
 			{
-				const Scalar Tr_scalar = ColorMath::MinValue( Tr );
+				const Scalar Tr_scalar = PTTrReduced( Tr );
 				if( Tr_scalar > 0 ) {
-					medWeight = Tr * coeff.sigma_s *
-						(1.0 / (sigma_t_max * Tr_scalar));
+					medWeight = PTDivByScalar( Tr * coeff.sigma_s,
+						coeff.sigmaTReduced * Tr_scalar );
 				}
 			}
 
-			if( ColorMath::MaxValue( medWeight ) <= 0 ) {
-				return RISEPel( 0, 0, 0 );
+			if( PTPositiveMagnitude( medWeight ) <= 0 ) {
+				return Traits::zero();
 			}
 
-			RISEPel result( 0, 0, 0 );
+			Value result = Traits::zero();
 
 			// NEE at scatter point
 			if( pLS )
 			{
-				RISEPel Ld = MediumTransport::EvaluateInScattering(
+				Value Ld = PTEvaluateInScattering<Tag>(
 					scatterPt, wo, pCurrentMedium, caster, pLS,
-					sampler, rast, pMediumObject );
-				if( ColorMath::MaxValue( Ld ) > 0 )
+					sampler, rast, pMediumObject, tag );
+				if( PTPositiveMagnitude( Ld ) > 0 )
 				{
-					RISEPel directContrib = medWeight * Ld;
+					Value directContrib = medWeight * Ld;
 					directContrib = ClampContribution( directContrib,
 						stabilityConfig.directClamp );
 					result = result + directContrib;
@@ -2645,8 +2858,18 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 			}
 
 			const Scalar phaseVal = pPhase->Evaluate( wo, wi );
-			RISEPel volThroughput = medWeight * RISEPel(
-				phaseVal / phasePdf, phaseVal / phasePdf, phaseVal / phasePdf );
+			// Preserve the per-variant arithmetic exactly: the Pel path
+			// builds RISEPel(s,s,s) and multiplies channel-wise; the NM
+			// path evaluates `medWeight * phaseVal / phasePdf` left-to-right
+			// (multiply-then-divide).  These differ at the ULP level, so the
+			// two forms are kept distinct rather than unified.
+			Value volThroughput;
+			if constexpr ( Traits::is_pel ) {
+				volThroughput = medWeight * RISEPel(
+					phaseVal / phasePdf, phaseVal / phasePdf, phaseVal / phasePdf );
+			} else {
+				volThroughput = medWeight * phaseVal / phasePdf;
+			}
 
 			// Intersect the scattered direction
 			const Ray scatteredRay( scatterPt, wi );
@@ -2659,21 +2882,21 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 				// the env contribution by the transmittance along that
 				// escape segment (PBRT-v4 beta *= T_maj convention).
 				if( scene.GetGlobalRadianceMap() ) {
-					const RISEPel TrEsc = pCurrentMedium->EvalTransmittance(
-						scatteredRay, Scalar(1e10) );
+					const Value TrEsc = PTEvalTransmittance<Tag>(
+						pCurrentMedium, scatteredRay, Scalar(1e10), tag );
 					result = result + volThroughput * TrEsc *
-						scene.GetGlobalRadianceMap()->GetRadiance( scatteredRay, rast );
+						PTEvalRadianceMap<Tag>( scene.GetGlobalRadianceMap(), scatteredRay, rast, tag );
 				}
 				return result;
 			}
 
 			// Continue from the volume-scattered hit
-			RISEPel hitResult = IntegrateFromHit( rc, rast, ri2, scene, caster,
+			Value hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri2, scene, caster,
 				sampler, pRadianceMap, 1, iorStack, phasePdf,
-				RISEPel( 0, 0, 0 ), true, 1.0,
+				Traits::zero(), true, 1.0,
 				IRayCaster::RAY_STATE::eRayDiffuse,
 				0, 0, 0, 0, 1, 0,
-				false, false, pAOV );
+				pAOV, tag );
 
 			return result + volThroughput * hitResult;
 		}
@@ -2683,19 +2906,19 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 			// inside IntegrateFromHit on subsequent bounces.  For the
 			// first bounce we need to note it here — but IntegrateFromHit
 			// starts with throughput=1.  We scale the result instead.
-			const RISEPel Tr = pCurrentMedium->EvalTransmittance(
-				cameraRay, ri.geometric.range );
+			const Value Tr = PTEvalTransmittance<Tag>(
+				pCurrentMedium, cameraRay, ri.geometric.range, tag );
 
 			if( !ri.geometric.bHit ) {
-				return RISEPel( 0, 0, 0 );
+				return Traits::zero();
 			}
 
-			RISEPel hitResult = IntegrateFromHit( rc, rast, ri, scene, caster,
+			Value hitResult = IntegrateFromHitForTag<Tag>( rc, rast, ri, scene, caster,
 				sampler, pRadianceMap, 0, iorStack,
-				0, RISEPel( 0, 0, 0 ), true, 1.0,
+				0, Traits::zero(), true, 1.0,
 				IRayCaster::RAY_STATE::eRayView,
 				0, 0, 0, 0, 0, 0,
-				false, false, pAOV );
+				pAOV, tag );
 
 			return Tr * hitResult;
 		}
@@ -2705,7 +2928,7 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 			// scene through the medium.  Capture the residual transmittance
 			// along the escape segment so the env radiance below is
 			// correctly attenuated (PBRT-v4 beta *= T_maj).
-			escapeTr = pCurrentMedium->EvalTransmittance( cameraRay, maxDist );
+			escapeTr = PTEvalTransmittance<Tag>( pCurrentMedium, cameraRay, maxDist, tag );
 		}
 	}
 
@@ -2720,28 +2943,48 @@ RISEPel PathTracingIntegrator::IntegrateRay(
 		// drives indirect bounces but primary rays return black,
 		// matching Cycles' default for that pattern.
 		if( !caster.IsRadianceMapVisibleAsBackground() ) {
-			return RISEPel( 0, 0, 0 );
+			return Traits::zero();
 		}
 
 		// Environment map
-		RISEPel envResult( 0, 0, 0 );
+		Value envResult = Traits::zero();
 		if( pRadianceMap )
 		{
-			envResult = pRadianceMap->GetRadiance( cameraRay, rast );
+			envResult = PTEvalRadianceMap<Tag>( pRadianceMap, cameraRay, rast, tag );
 		}
 		else if( scene.GetGlobalRadianceMap() )
 		{
-			envResult = scene.GetGlobalRadianceMap()->GetRadiance( cameraRay, rast );
+			envResult = PTEvalRadianceMap<Tag>( scene.GetGlobalRadianceMap(), cameraRay, rast, tag );
 		}
 		return escapeTr * envResult;
 	}
 
-	return IntegrateFromHit( rc, rast, ri, scene, caster,
+	return IntegrateFromHitForTag<Tag>( rc, rast, ri, scene, caster,
 		sampler, pRadianceMap, 0, iorStack,
-		0, RISEPel( 0, 0, 0 ), true, 1.0,
+		0, Traits::zero(), true, 1.0,
 		IRayCaster::RAY_STATE::eRayView,
 		0, 0, 0, 0, 0, 0,
-		false, false, pAOV );
+		pAOV, tag );
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// IntegrateRay — RGB path tracer entry point (thin forwarder).
+//////////////////////////////////////////////////////////////////////
+
+RISEPel PathTracingIntegrator::IntegrateRay(
+	const RuntimeContext& rc,
+	const RasterizerState& rast,
+	const Ray& cameraRay,
+	const IScene& scene,
+	const IRayCaster& caster,
+	ISampler& sampler,
+	const IRadianceMap* pRadianceMap,
+	PixelAOV* pAOV
+	) const
+{
+	return IntegrateRayTemplated<PelTag>( rc, rast, cameraRay, scene, caster,
+		sampler, pRadianceMap, pAOV, PelTag{} );
 }
 
 
@@ -4781,157 +5024,8 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 	const IRadianceMap* pRadianceMap
 	) const
 {
-	IORStack iorStack( 1.0 );
-	sampler.StartStream( 16 );
-
-	// Intersect camera ray
-	RayIntersection ri( cameraRay, rast );
-	scene.GetObjects()->IntersectRay( ri, true, true, false );
-
-	// Medium transport for first bounce (spectral)
-	const IObject* pMediumObject = 0;
-	const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
-		iorStack, &scene, pMediumObject );
-
-	// Residual transmittance along an escape segment (see RGB IntegrateRay).
-	Scalar escapeTr = 1;
-
-	if( pCurrentMedium )
-	{
-		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
-		const LightSampler* pLS = caster.GetLightSampler();
-		IndependentSampler mediumSampler( rc.random );
-		const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS_NM(
-			pCurrentMedium, cameraRay, maxDist, nm, pLS, mediumSampler );
-		const Scalar t_m = mso.t;
-		const bool scattered = mso.scattered;
-
-		if( mso.zeroContrib )
-		{
-			return 0;
-		}
-
-		if( scattered )
-		{
-			const Point3 scatterPt = cameraRay.PointAtLength( t_m );
-			const Vector3 wo = cameraRay.Dir();
-			const MediumCoefficientsNM coeff = pCurrentMedium->GetCoefficientsNM( scatterPt, nm );
-			const Scalar Tr = pCurrentMedium->EvalTransmittanceNM( cameraRay, t_m, nm );
-
-			Scalar medWeight = 0;
-			if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
-			{
-				medWeight = Tr * coeff.sigma_s / mso.combinedPdf;
-			}
-			else if( coeff.sigma_t > 0 && Tr > 0 )
-			{
-				medWeight = Tr * coeff.sigma_s / (coeff.sigma_t * Tr);
-			}
-
-			if( medWeight <= 0 ) {
-				return 0;
-			}
-
-			Scalar resultNM = 0;
-
-			// NEE at scatter point
-			if( pLS )
-			{
-				Scalar Ld = MediumTransport::EvaluateInScatteringNM(
-					scatterPt, wo, pCurrentMedium, nm, caster,
-					pLS, sampler, rast, pMediumObject );
-				if( Ld > 0 )
-				{
-					Scalar directContrib = medWeight * Ld;
-					directContrib = ClampContribution( directContrib,
-						stabilityConfig.directClamp );
-					resultNM += directContrib;
-				}
-			}
-
-			// Sample phase function for continuation
-			const IPhaseFunction* pPhase = pCurrentMedium->GetPhaseFunction();
-			if( !pPhase ) {
-				return resultNM;
-			}
-
-			const Vector3 wi = pPhase->Sample( wo, sampler );
-			const Scalar phasePdf = pPhase->Pdf( wo, wi );
-			if( phasePdf <= NEARZERO ) {
-				return resultNM;
-			}
-
-			const Scalar phaseVal = pPhase->Evaluate( wo, wi );
-			Scalar volThroughput = medWeight * phaseVal / phasePdf;
-
-			// Intersect the scattered direction
-			const Ray scatteredRay( scatterPt, wi );
-			RayIntersection ri2( scatteredRay, rast );
-			scene.GetObjects()->IntersectRay( ri2, true, true, false );
-
-			if( !ri2.geometric.bHit ) {
-				if( scene.GetGlobalRadianceMap() ) {
-					const Scalar TrEsc = pCurrentMedium->EvalTransmittanceNM(
-						scatteredRay, Scalar(1e10), nm );
-					resultNM += volThroughput * TrEsc *
-						scene.GetGlobalRadianceMap()->GetRadianceNM( scatteredRay, rast, nm );
-				}
-				return resultNM;
-			}
-
-			Scalar hitResult = IntegrateFromHitNM( rc, rast, ri2, nm, scene, caster,
-				sampler, pRadianceMap, 1, iorStack, phasePdf, 0,
-				true, 1.0, IRayCaster::RAY_STATE::eRayDiffuse,
-				0, 0, 0, 0, 1, 0 );
-
-			return resultNM + volThroughput * hitResult;
-		}
-		else if( ri.geometric.bHit )
-		{
-			const Scalar Tr = pCurrentMedium->EvalTransmittanceNM(
-				cameraRay, ri.geometric.range, nm );
-
-			Scalar hitResult = IntegrateFromHitNM( rc, rast, ri, nm, scene, caster,
-				sampler, pRadianceMap, 0, iorStack,
-				0, 0, true, 1.0, IRayCaster::RAY_STATE::eRayView,
-				0, 0, 0, 0, 0, 0 );
-
-			return Tr * hitResult;
-		}
-		else
-		{
-			// Ray escapes the scene through the medium — see RGB twin.
-			escapeTr = pCurrentMedium->EvalTransmittanceNM( cameraRay, maxDist, nm );
-		}
-	}
-
-	// No medium, or medium with no scatter and no surface hit
-	if( !ri.geometric.bHit )
-	{
-		// See RGB IntegrateRay above for the rationale —
-		// `isBackground = false` returns 0 for primary rays so the
-		// camera-visible background stays black while indirect
-		// bounces still pick up the IBL contribution.
-		if( !caster.IsRadianceMapVisibleAsBackground() ) {
-			return Scalar( 0 );
-		}
-
-		Scalar envResult = 0;
-		if( pRadianceMap )
-		{
-			envResult = pRadianceMap->GetRadianceNM( cameraRay, rast, nm );
-		}
-		else if( scene.GetGlobalRadianceMap() )
-		{
-			envResult = scene.GetGlobalRadianceMap()->GetRadianceNM( cameraRay, rast, nm );
-		}
-		return escapeTr * envResult;
-	}
-
-	return IntegrateFromHitNM( rc, rast, ri, nm, scene, caster,
-		sampler, pRadianceMap, 0, iorStack,
-		0, 0, true, 1.0, IRayCaster::RAY_STATE::eRayView,
-		0, 0, 0, 0, 0, 0 );
+	return IntegrateRayTemplated<NMTag>( rc, rast, cameraRay, scene, caster,
+		sampler, pRadianceMap, /*pAOV*/ 0, NMTag( nm ) );
 }
 
 
