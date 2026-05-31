@@ -157,6 +157,30 @@ namespace RISE
 		/// BDPT itself never reads this field; it only exists to feed the
 		/// VCM integrator.
 		Scalar					cosAtGen;
+
+		/// Per-vertex light-selection probability, separable from the
+		/// joint `pdfFwd` / `emissionPdfW` storage above.  Populated on
+		/// LIGHT endpoint (vertex 0 on a light subpath) with the value
+		/// `LightSampler::SampleLight` returned in `LightSample::pdfSelect`
+		/// — env-rooted subpaths get `cachedEnvSelectProb`, alias-table-
+		/// rooted subpaths get `(1 - cachedEnvSelectProb) × aliasTable.Pdf
+		/// (idx)`.  Defaults to 1.0 elsewhere; preserves SmallVCM
+		/// invariance on non-light vertices and on integrators that don't
+		/// thread selection probability through.
+		///
+		/// Consumed by `VCMIntegrator::ConvertLightSubpath` to extract
+		/// the geometric `emissionPdfW = pdfPos × pdfDir` from the
+		/// joint-storage `v.emissionPdfW = pdfSelect × pdfPos × pdfDir`
+		/// before computing `dVC = cosLight / emissionPdfW_geometric`.
+		/// Without this extraction `dVC` carries an implicit `1/pdfSelect`
+		/// inflation that propagates through `ApplyBsdfSamplingUpdate` and
+		/// over-weights mesh-NEE in VCM's SmallVCM `1/(wLight + 1 +
+		/// wCamera)` MIS formulas — invisible in master (where pdfSelect
+		/// was effectively constant per light-type) but causes env+mesh
+		/// VCM to over-count by ~27 % vs PT post the 2026-05-29
+		/// continuous-PMF fix.  See `VCMRecurrence::InitLight` for the
+		/// algebraic derivation.
+		Scalar					pdfSelect;
 		bool					isDelta;		///< True if the sampled interaction at this vertex is a delta distribution
 		bool					isConnectible;	///< True if material has at least one non-delta BxDF component
 		bool					isBSSRDFEntry;	///< True if this vertex is a BSSRDF re-emission point (Sw vertex)
@@ -226,6 +250,8 @@ namespace RISE
 		pdfRev( 0 ),
 		emissionPdfW( 0 ),
 		cosAtGen( 0 ),
+		pdfSelect( 1.0 ),	///< Default 1.0: SmallVCM-invariance on non-light vertices and master back-compat
+
 		isDelta( false ),
 		isConnectible( true ),
 		isBSSRDFEntry( false ),

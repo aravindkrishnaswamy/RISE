@@ -169,6 +169,23 @@ namespace RISE
 			const EnvironmentSampler*	pEnvSampler;
 			const IRadianceMap*			pEnvironmentMap;
 
+			/// Pre-computed probability that `SampleLight()` selects env
+			/// (vs an alias-table light) on the next call.  Set during
+			/// `Prepare()` and `SetEnvironmentSampler()` from env
+			/// totalLuminance × disc area vs the alias table's total
+			/// weight.  Zero when env doesn't exist or env total
+			/// radiance is zero; 1 when env exists and the alias table
+			/// is empty (env-only scenes); fractional in mixed
+			/// env+other-lights scenes (continuous PMF, matching PBRT-
+			/// v4's `LightSampler::PMF(env)` semantics).
+			Scalar						cachedEnvSelectProb;
+
+			/// Recomputes `cachedEnvSelectProb` from current env +
+			/// alias-table state.  Called from both `Prepare` and
+			/// `SetEnvironmentSampler` so the cache is correct
+			/// regardless of which is invoked first.
+			void RecomputeEnvSelectProbability();
+
 			/// Scene bounding sphere — cached during `Prepare()` by
 			/// enumerating every visible object's AABB.  Used by env-
 			/// light emission sampling (PBRT-style infinite-area-light
@@ -345,25 +362,21 @@ namespace RISE
 			Scalar GetCachedSceneRadius() const { return cachedSceneRadius; }
 
 			/// \return Probability that `SampleLight()` produces an
-			/// env-light sample (i.e., one with `pEnvLight != NULL`)
-			/// on the next call.  Currently SampleEnvLightEmission is
-			/// only invoked as a FALLBACK when the alias table is
-			/// empty — explicit lights crowd it out entirely.  So:
-			///   - returns 1.0 when env exists and alias table empty
-			///     (env is the only-light, NEE always picks it)
-			///   - returns 0.0 when alias table has any explicit light
-			///     (NEE never picks env; env contributes only via
-			///     eye-subpath escape — BDPT Path B)
-			/// Used by BDPT MIS at the Path B s=0 site to set the
-			/// env-vertex's pdfRev to "probability NEE would have
-			/// produced this env vertex".  The mixed-scene 0.0 path
-			/// is a documented limitation tracked in
-			/// docs/IMPROVEMENTS.md #12.
+			/// env-light sample (one with `pEnvLight != NULL`) on the
+			/// next call.  Continuous in (0, 1] when env exists, by
+			/// the env-vs-alias selection roll in `SampleLight()` —
+			/// computed during `Prepare()` from env totalLuminance ×
+			/// disc area vs the alias table's total weight.  Matches
+			/// PBRT-v4's `LightSampler::PMF(env)` semantics so MIS at
+			/// the Path B s=0 site has a non-zero pdfRev in mixed
+			/// scenes (env + other lights), which closes the MIS
+			/// partition-of-unity that the previous binary 0-or-1
+			/// formulation broke — see `docs/IMPROVEMENTS.md` #12 and
+			/// `docs/PRE_PHASE1_STATUS.md` Session 9 for the rationale
+			/// (continuous-PMF refactor 2026-05-29).
 			Scalar EnvSelectProbability() const
 			{
-				return ( pEnvSampler && pEnvironmentMap &&
-					cachedSceneRadius > 0 &&
-					!aliasTable.IsValid() ) ? Scalar( 1 ) : Scalar( 0 );
+				return cachedEnvSelectProb;
 			}
 
 			/// \return Number of positional (point/spot) lights suitable for equiangular sampling
@@ -461,8 +474,23 @@ namespace RISE
 			/// \return True on success (env sampler must be valid +
 			/// scene radius > 0).  False when env or scene info is
 			/// missing — caller's `SampleLight` returns false too.
+			///
+			/// `u1` is the first uniform random for env-direction
+			/// importance sampling (the second one is drawn from
+			/// `sampler` internally).  Passing `u1` externally lets
+			/// `SampleLight` re-use its env-vs-alias selection roll
+			/// as `u1` after re-mapping into `[0, 1)` — keeps the
+			/// total `Get1D()` consumption per `SampleLight` call
+			/// identical to the prior binary-PMF flow (no Sobol /
+			/// QMC dimension shift; see Prepare()'s continuous-PMF
+			/// block for the 2026-05-26 dimension-shift regression
+			/// that motivated this signature).  `pdfSelect` is left
+			/// at its computed env-only value (1.0); callers in
+			/// mixed scenes should overwrite `sample.pdfSelect`
+			/// with the actual env-vs-alias selection probability.
 			bool SampleEnvLightEmission(
-				ISampler& sampler,									///< [in] Low-discrepancy sampler
+				const Scalar u1,									///< [in] First uniform random for direction sampling
+				ISampler& sampler,									///< [in] Low-discrepancy sampler (for remaining randoms)
 				LightSample& sample									///< [out] Populated env-light emission sample
 				) const;
 		};

@@ -456,6 +456,7 @@ LightSampler::LightSampler() :
   bUseLightBVH( false ),
   pEnvSampler( 0 ),
   pEnvironmentMap( 0 ),
+  cachedEnvSelectProb( 0 ),
   cachedSceneCenter( 0, 0, 0 ),
   cachedSceneRadius( 0 ),
   pOptimalMIS( 0 )
@@ -528,6 +529,39 @@ void LightSampler::SetEnvironmentSampler(
 	pEnvSampler = pSampler;
 	if( pEnvSampler ) {
 		pEnvSampler->addref();
+	}
+	RecomputeEnvSelectProbability();
+}
+
+void LightSampler::RecomputeEnvSelectProbability()
+{
+	// Continuous-PMF env selection (2026-05-29 architectural fix —
+	// see docs/PRE_PHASE1_STATUS.md Session 9).  Replaces the prior
+	// binary 0-or-1 `EnvSelectProbability()` that crowded env out of
+	// NEE in mixed scenes — root cause of the documented BDPT/VCM
+	// env-IBL deficit (env+omni / env+mesh at ~85 % of PT because env
+	// never participated in light-subpath emission or s=1 NEE MIS
+	// bookkeeping).  envWeight is the env totalLuminance × scene-disc
+	// area — dimensionally comparable to mesh exitance × area.  In
+	// env-only scenes (alias table empty) this gives 1.0 — identical
+	// to the old binary behaviour.  In env+other-lights scenes it's
+	// fractional and env participates via the env-vs-alias roll in
+	// `SampleLight()`.  Called from both `SetEnvironmentSampler` and
+	// `Prepare` so the cache stays valid regardless of which gets
+	// invoked first (RayCaster::AttachScene calls Prepare first, then
+	// SetEnvironmentSampler — and the order may differ elsewhere).
+	const bool bEnvExists = pEnvSampler && pEnvSampler->IsValid() &&
+		pEnvironmentMap && cachedSceneRadius > 0;
+	if( bEnvExists ) {
+		const Scalar discArea = PI * cachedSceneRadius * cachedSceneRadius;
+		const Scalar envWeight = pEnvSampler->TotalLuminance() * discArea;
+		const Scalar aliasWeight = static_cast<Scalar>(
+			aliasTable.TotalWeight() );
+		const Scalar totalWeight = envWeight + aliasWeight;
+		cachedEnvSelectProb = ( totalWeight > 0 ) ?
+			( envWeight / totalWeight ) : Scalar( 0 );
+	} else {
+		cachedEnvSelectProb = Scalar( 0 );
 	}
 }
 
@@ -758,24 +792,11 @@ void LightSampler::Prepare(
 		}
 	}
 
-	// NOTE: Adding env as an alias-table entry was attempted in the
-	// 2026-05-26 adversarial review round 3 P2 effort but caused a
-	// severe spectral-BDPT regression (env-only delivery 76% → 20%
-	// of PT).  Suspected cause: the extra sampler.Get1D() consumed
-	// by the alias-table selection shifts the per-wavelength Sobol
-	// stratification in spectral integrators, misaligning dimension
-	// assignments downstream.  Until that's understood + worked
-	// around, env stays as the fallback-only path: SampleLight()
-	// returns env when the alias table is empty (env-only scenes),
-	// and mixed env+explicit scenes credit env solely through
-	// eye-subpath escape (Path B).  This caps mixed-scene env-NEE
-	// delivery at the documented ~15% deficit but doesn't break
-	// spectral env-only.  Tracked as a follow-up in
-	// docs/IMPROVEMENTS.md #12 alongside the SA-MIS refactor; the
-	// scaffolding (LightEntry::isEnv, EnvironmentSampler::
-	// GetTotalLuminance) added during the failed attempt was
-	// removed in adversarial review round 4, P3 — re-add when the
-	// proper fix lands.
+	// Continuous-PMF env selection — see `RecomputeEnvSelectProbability`.
+	// Called here at end of Prepare so the cache reflects the freshly-
+	// built alias table; SetEnvironmentSampler also calls it so the
+	// cache is correct regardless of Prepare/SetEnvironmentSampler order.
+	RecomputeEnvSelectProbability();
 }
 
 //
@@ -907,27 +928,63 @@ bool LightSampler::SampleLight(
 	sample.pdfDirection = 0;
 	sample.pdfSelect = 0;
 
-	if( !aliasTable.IsValid() )
-	{
-		// IBL-only scenes (no explicit luminaries, world has an HDRI
-		// Environment Texture) reach here.  Without this fallback,
-		// BDPT/VCM/MLT light subpaths return zero vertices and the
-		// resulting render is fully black.  Sample emission from the
-		// env map's importance distribution; see
-		// `SampleEnvLightEmission` for the disc / cosAtLight / PDF
-		// semantics.  Returns false (= no light vertex) when there's
-		// neither explicit nor env light, OR scene has no geometry
-		// (cachedSceneRadius == 0 from `Prepare`).
-		if( pEnvSampler && pEnvSampler->IsValid() && cachedSceneRadius > 0 ) {
-			return SampleEnvLightEmission( sampler, sample );
-		}
+	const bool bEnvExists = pEnvSampler && pEnvSampler->IsValid() &&
+		pEnvironmentMap && cachedSceneRadius > 0;
+	const bool bAliasValid = aliasTable.IsValid();
+
+	if( !bEnvExists && !bAliasValid ) {
 		return false;
 	}
 
-	// O(1) selection proportional to exitance (no RIS for emission sampling)
-	const unsigned int idx = aliasTable.Sample( sampler.Get1D() );
+	// Single uniform random for env-vs-alias selection (continuous-PMF
+	// architectural fix 2026-05-29 — see Prepare()'s block + docs/
+	// PRE_PHASE1_STATUS.md Session 9).  Re-mapped into either the env-
+	// direction's u1 sub-interval (env path) or the alias-table's u
+	// sub-interval (alias path); net Get1D() consumption per call is
+	// identical to the prior binary-PMF flow, preserving Sobol / QMC
+	// dimension layout (the 2026-05-26 attempt added env as an alias-
+	// table entry and consumed an extra Get1D() — caused a severe
+	// spectral env-only regression that this wrapper avoids).
+	const Scalar u_top = sampler.Get1D();
+
+	const bool bChooseEnv = bEnvExists &&
+		( !bAliasValid || u_top < cachedEnvSelectProb );
+
+	if( bChooseEnv ) {
+		// Re-map u_top into [0, 1) for env-direction's u1.  In env-
+		// only scenes cachedEnvSelectProb == 1.0 and u_env == u_top
+		// (identity, no information loss).  In mixed scenes the
+		// re-map stretches the [0, envSelectProb) sub-interval back
+		// to [0, 1) so the env importance sampler sees a properly-
+		// distributed uniform input.
+		const Scalar denom = ( cachedEnvSelectProb > 0 ) ?
+			cachedEnvSelectProb : Scalar( 1 );
+		const Scalar u_env = u_top / denom;
+		if( !SampleEnvLightEmission( u_env, sampler, sample ) ) {
+			return false;
+		}
+		// Overwrite the env-only-default pdfSelect with the actual
+		// global selection probability (continuous PMF in mixed
+		// scenes; 1.0 in env-only).
+		sample.pdfSelect = cachedEnvSelectProb;
+		return true;
+	}
+
+	// Alias-table path.  Re-map [envSelectProb, 1) -> [0, 1) for the
+	// alias-table selection draw.  In env-not-exists scenes u_top is
+	// the alias draw directly (cachedEnvSelectProb == 0 -> identity).
+	const Scalar aliasSpan = Scalar( 1 ) - cachedEnvSelectProb;
+	const Scalar u_alias = ( aliasSpan > 0 ) ?
+		( ( u_top - cachedEnvSelectProb ) / aliasSpan ) :
+		u_top;
+	const unsigned int idx = aliasTable.Sample( u_alias );
 	const LightEntry& entry = lightEntries[idx];
-	sample.pdfSelect = static_cast<Scalar>( aliasTable.Pdf( idx ) );
+	// pdfSelect is the JOINT probability of (alias path was taken) ×
+	// (alias table selected this entry).  In env-not-exists scenes
+	// the first factor is 1.0; in mixed scenes it's (1 - envSelectProb)
+	// so total selection probability across env + alias-table sums to 1.
+	sample.pdfSelect = aliasSpan *
+		static_cast<Scalar>( aliasTable.Pdf( idx ) );
 
 	if( entry.pLight )
 	{
@@ -1057,6 +1114,7 @@ bool LightSampler::SampleLight(
 // (`SampleLight`) then returns false too and the rasterizer skips
 // this light subpath.
 bool LightSampler::SampleEnvLightEmission(
+	const Scalar u1,
 	ISampler& sampler,
 	LightSample& sample
 	) const
@@ -1066,7 +1124,9 @@ bool LightSampler::SampleEnvLightEmission(
 	}
 
 	// 1. Importance-sample a sky direction from the env map.
-	const Scalar u1 = sampler.Get1D();
+	//    `u1` is externally-supplied (re-mapped from the env-vs-alias
+	//    selection roll in `SampleLight`); `u2` is fresh from sampler.
+	//    Net Get1D() consumption per `SampleLight` is preserved.
 	const Scalar u2 = sampler.Get1D();
 	Vector3 wi;
 	Scalar pdfDir = 0;
@@ -1167,11 +1227,25 @@ Scalar LightSampler::PdfSelectLight(
 	{
 		if( lightEntries[i].pLight == &light )
 		{
+			// Continuous-PMF rescale (2026-05-29 follow-up).
+			// `SampleLight()` returns env with probability
+			// `cachedEnvSelectProb` and otherwise samples the alias
+			// table; for alias-table entries the joint pdfSelect is
+			// `(1 - cachedEnvSelectProb) × aliasTable.Pdf(i)`.  The
+			// query methods MUST mirror that scaling, otherwise MIS
+			// weights that compare "what would the alternative NEE
+			// strategy have produced" against the actual SampleLight
+			// pdf are inconsistent — and VCM env+mesh over-counts at
+			// 128% of PT (Session 9 follow-up bug).  The LightBVH
+			// branch needs the same factor for the same reason.
+			const Scalar aliasShare = Scalar( 1 ) - cachedEnvSelectProb;
 			if( pLightBVH && pLightBVH->IsBuilt() )
 			{
-				return pLightBVH->Pdf( i, shadingPoint, shadingNormal );
+				return aliasShare *
+					pLightBVH->Pdf( i, shadingPoint, shadingNormal );
 			}
-			return static_cast<Scalar>( aliasTable.Pdf( i ) );
+			return aliasShare *
+				static_cast<Scalar>( aliasTable.Pdf( i ) );
 		}
 	}
 
@@ -1198,11 +1272,16 @@ Scalar LightSampler::PdfSelectLuminary(
 		{
 			if( (*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == &luminary )
 			{
+				// Continuous-PMF rescale — see `PdfSelectLight` above
+				// for the full rationale.
+				const Scalar aliasShare = Scalar( 1 ) - cachedEnvSelectProb;
 				if( pLightBVH && pLightBVH->IsBuilt() )
 				{
-					return pLightBVH->Pdf( i, shadingPoint, shadingNormal );
+					return aliasShare *
+						pLightBVH->Pdf( i, shadingPoint, shadingNormal );
 				}
-				return static_cast<Scalar>( aliasTable.Pdf( i ) );
+				return aliasShare *
+					static_cast<Scalar>( aliasTable.Pdf( i ) );
 			}
 		}
 	}
@@ -1248,11 +1327,16 @@ Scalar LightSampler::CachedPdfSelectLuminary(
 		{
 			if( (*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == &luminary )
 			{
+				// Continuous-PMF rescale — see `PdfSelectLight` for the
+				// full rationale.
+				const Scalar aliasShare = Scalar( 1 ) - cachedEnvSelectProb;
 				if( pLightBVH && pLightBVH->IsBuilt() )
 				{
-					return pLightBVH->Pdf( i, shadingPoint, shadingNormal );
+					return aliasShare *
+						pLightBVH->Pdf( i, shadingPoint, shadingNormal );
 				}
-				return static_cast<Scalar>( aliasTable.Pdf( i ) );
+				return aliasShare *
+					static_cast<Scalar>( aliasTable.Pdf( i ) );
 			}
 		}
 	}

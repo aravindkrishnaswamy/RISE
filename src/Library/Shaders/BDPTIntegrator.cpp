@@ -1419,6 +1419,14 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 		// = pdfSelect * pdfPosition
 		v.pdfFwd = ls.pdfSelect * ls.pdfPosition;
 
+		// Store pdfSelect separately so VCM's `ConvertLightSubpath`
+		// can extract the geometric `emissionPdfW = pdfPos × pdfDir`
+		// from the joint `v.emissionPdfW = pdfSelect × pdfPos × pdfDir`
+		// when computing SmallVCM's `dVC = cosLight / emissionPdfW_geom`
+		// — see BDPTVertex.h's `pdfSelect` doc comment for the full
+		// continuous-PMF rationale.
+		v.pdfSelect = ls.pdfSelect;
+
 		// Throughput: Le / (pdfSelect * pdfPosition)
 		// but we also need to account for pdfDirection when we trace
 		if( v.pdfFwd > 0 ) {
@@ -3421,16 +3429,22 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			// vertex" — in area-measure on the disc:
 			//   pdfRev_area = envSelectProb * pdfPosition_disc
 			//               = envSelectProb / (π · r_scene²)
-			// envSelectProb is 1 when env is the only light (alias
-			// table empty); 0 when explicit lights crowd env out of
-			// the table.  In the latter case s=1 NEE can't actually
-			// generate this env vertex (SampleLight always picks an
-			// explicit luminary) — pdfRev = 0 makes MIS correctly
-			// give s=0 weight 1.  Without this, MIS uses whatever
-			// stale value pdfRev held (0 by ctor).  Setting it
-			// correctly delivers balanced MIS in both regimes.
-			// Restored after MIS call to preserve const-correctness
-			// for other (s,t) evaluations of the same path.
+			// Post the 2026-05-29 continuous-PMF fix
+			// (IMPROVEMENTS.md §12, PRE_PHASE1_STATUS.md Session 9),
+			// `EnvSelectProbability()` returns a continuous positive
+			// value whenever env exists — env is now part of the
+			// alias-table selection space via the env-vs-alias roll
+			// in `LightSampler::SampleLight()`.  So `pdfRevReal` is
+			// strictly positive whenever this code is reached (the
+			// reach gate is `eyeEnd.pEnvLight != 0`, which requires
+			// env existed at sample time, which means
+			// `cachedEnvSelectProb > 0` per
+			// `RecomputeEnvSelectProbability`).  The prior
+			// `kEnvZeroSentinel = 1e-30` workaround that paired with
+			// MISWeight's `remap0` line for the binary-PMF mixed-
+			// scene case is therefore dead code — removed in the
+			// follow-up cleanup.  Restored after MIS call to preserve
+			// const-correctness for other (s,t) evaluations.
 			const Scalar savedEyeEndPdfRev = eyeEnd.pdfRev;
 			const Scalar savedEyePredPdfRev = eyePred.pdfRev;
 			if( pLightSampler ) {
@@ -3443,21 +3457,13 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 					( PI * sceneRadius * sceneRadius ) : Scalar( 0 );
 				const Scalar pdfPositionDisc =
 					( discArea > 0 ) ? ( Scalar( 1 ) / discArea ) : Scalar( 0 );
-				const Scalar pdfRevReal =
-					envSelectProb * pdfPositionDisc;
-				// MISWeight's remap0 line (~4754) converts pdfRev=0
-				// to 1.0 (intended for delta vertices).  Sentinel
-				// epsilon signals "truly zero" without tripping remap.
-				const Scalar kEnvZeroSentinel = Scalar( 1e-30 );
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-					( pdfRevReal > 0 ) ? pdfRevReal : kEnvZeroSentinel;
+					envSelectProb * pdfPositionDisc;
 			}
 			if( pLightSampler && pLightSampler->GetEnvironmentSampler() ) {
-				// Gate the env-emission directional pdf on
-				// envSelectProb: when env isn't selectable via the
-				// alias table, the s=1 NEE alternative can't actually
-				// generate this path — eyePred.pdfRev must reflect
-				// that, otherwise MIS underweights s=0.
+				// Same continuous-PMF cleanup as the eyeEnd block
+				// above — sentinel removed.  envSelectProb is now
+				// continuous positive whenever env exists.
 				const Scalar envSelectProb =
 					pLightSampler->EnvSelectProbability();
 				const Scalar pdfSA = envSelectProb *
@@ -3481,9 +3487,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 					predPdfRev = BDPTUtilities::SolidAngleToArea(
 						pdfSA, absCosAtPred, distPredSq );
 				}
-				const Scalar kEnvZeroSentinel = Scalar( 1e-30 );
-				const_cast<BDPTVertex&>( eyePred ).pdfRev =
-					( predPdfRev > 0 ) ? predPdfRev : kEnvZeroSentinel;
+				const_cast<BDPTVertex&>( eyePred ).pdfRev = predPdfRev;
 			}
 			result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
 			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
@@ -3966,12 +3970,33 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			}
 			const Scalar cosEyeWi = eyeIsMedium_s1 ? Scalar( 1.0 )
 				: fabs( Vector3Ops::Dot( eyeEnd.geomNormal, wiForLight ) );
+			// Continuous-PMF env-NEE rescale (2026-05-29 follow-up).
+			// Env-NEE is invoked at rate `EnvSelectProbability()` per
+			// SampleLight call (Session 9 wrapper).  Each successful
+			// env-NEE sample contributes `Le · bsdf · cos /
+			// (pdf_env_sa · pdfSelect)` for the importance-sampled
+			// estimator to be unbiased — the prior `/ pdfSA` formula
+			// assumed pdfSelect = 1 (env-only scenes); in mixed env +
+			// other-light scenes pdfSelect = cachedEnvSelectProb < 1,
+			// and the missing 1/pdfSelect factor caused env-NEE to
+			// under-contribute.  Equivalent to dividing by
+			// `lightStart.pdfFwd × πr²` since
+			// `lightStart.pdfFwd = pdfSelect × pdfPos_disc =
+			// pdfSelect / (πr²)`.  Using EnvSelectProbability()
+			// directly keeps the dependency clear.  Mirrored at the
+			// VCM twin (VCMIntegrator.cpp env-NEE branch).
+			const Scalar envSelP_s1 =
+				pLightSampler->EnvSelectProbability();
+			const Scalar invEnvSel = ( envSelP_s1 > 0 ) ?
+				( Scalar( 1 ) / envSelP_s1 ) : Scalar( 0 );
 			const RISEPel contribEnv =
-				eyeEnd.throughput * fEye * Le * Tr_conn_s1 * (cosEyeWi / pdfSA);
+				eyeEnd.throughput * fEye * Le * Tr_conn_s1 *
+				(cosEyeWi / pdfSA) * invEnvSel;
 			result.contribution = contribEnv;
 			result.needsSplat = false;
 			result.valid = true;
-			result.guidingLocalContribution = fEye * Le * Tr_conn_s1 * (cosEyeWi / pdfSA);
+			result.guidingLocalContribution =
+				fEye * Le * Tr_conn_s1 * (cosEyeWi / pdfSA) * invEnvSel;
 			result.guidingEyeVertexIndex = t - 1;
 			result.guidingValid = true;
 		} else {
@@ -5189,6 +5214,10 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		v.isConnectible = !ls.isDelta;
 
 		v.pdfFwd = ls.pdfSelect * ls.pdfPosition;
+
+		// Store pdfSelect separately for VCM's geometric emissionPdfW
+		// extraction — see RGB twin (~line 1420) for the rationale.
+		v.pdfSelect = ls.pdfSelect;
 
 		if( v.pdfFwd > 0 ) {
 			v.throughputNM = LeNM / v.pdfFwd;
@@ -7023,7 +7052,9 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			result.needsSplat = false;
 			result.valid = true;
 
-			// MIS pdfRev assignment — mirror of RGB twin at ~line 3370.
+			// MIS pdfRev assignment — mirror of RGB twin at ~line 3419.
+			// See there for the continuous-PMF cleanup rationale that
+			// removed the `kEnvZeroSentinel = 1e-30` workaround.
 			const Scalar savedEyeEndPdfRev = eyeEnd.pdfRev;
 			const Scalar savedEyePredPdfRev = eyePred.pdfRev;
 			if( pLightSampler ) {
@@ -7036,11 +7067,8 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 					( PI * sceneRadius * sceneRadius ) : Scalar( 0 );
 				const Scalar pdfPositionDisc =
 					( discArea > 0 ) ? ( Scalar( 1 ) / discArea ) : Scalar( 0 );
-				const Scalar pdfRevReal =
-					envSelectProb * pdfPositionDisc;
-				const Scalar kEnvZeroSentinel = Scalar( 1e-30 );
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-					( pdfRevReal > 0 ) ? pdfRevReal : kEnvZeroSentinel;
+					envSelectProb * pdfPositionDisc;
 			}
 			if( pLightSampler && pLightSampler->GetEnvironmentSampler() ) {
 				const Scalar envSelectProb =
@@ -7063,9 +7091,7 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 					predPdfRev = BDPTUtilities::SolidAngleToArea(
 						pdfSA, absCosAtPred, distPredSq );
 				}
-				const Scalar kEnvZeroSentinel = Scalar( 1e-30 );
-				const_cast<BDPTVertex&>( eyePred ).pdfRev =
-					( predPdfRev > 0 ) ? predPdfRev : kEnvZeroSentinel;
+				const_cast<BDPTVertex&>( eyePred ).pdfRev = predPdfRev;
 			}
 			result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
 			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
@@ -7399,8 +7425,14 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 			}
 			const Scalar cosEyeWi = eyeIsMediumNM_s1 ? Scalar( 1.0 )
 				: fabs( Vector3Ops::Dot( eyeEnd.geomNormal, wiForLightNM ) );
+			// Continuous-PMF env-NEE rescale — see RGB twin at ~line
+			// 3965 for the full rationale.
+			const Scalar envSelP_s1NM =
+				pLightSampler->EnvSelectProbability();
+			const Scalar invEnvSelNM = ( envSelP_s1NM > 0 ) ?
+				( Scalar( 1 ) / envSelP_s1NM ) : Scalar( 0 );
 			result.contribution = eyeEnd.throughputNM * fEyeNM * LeNM *
-				Tr_connNM_s1 * (cosEyeWi / pdfSA);
+				Tr_connNM_s1 * (cosEyeWi / pdfSA) * invEnvSelNM;
 			result.needsSplat = false;
 			result.valid = true;
 			// MIS weight: fall through to MISWeight() below — see RGB

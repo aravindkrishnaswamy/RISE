@@ -599,13 +599,23 @@ struct Tolerances
 // MISWeight to treat env vertices as a distinct type with SA-
 // measure pdfs throughout — tracked in docs/IMPROVEMENTS.md #12.
 //
-// Tolerances accept up to 35% per-channel mean deviation (matches
-// the worst case: spectral BDPT red channel at 32% under), 35%
-// p99 gap, and 2x max-pixel gap (Path A's t=1 white-firefly bug
-// was a ~3.5x max overshoot, so 2x still catches new regressions
-// of that family).  Tightening below 35% mean would require the
-// full SA-MIS refactor.
-static const Tolerances kEnvTolerances{ 0.35, 0.35, 2.00 };
+// Tolerances accept per-channel mean / p99 / max deviation as
+// listed.  Tightened from the original `{ 0.35, 0.35, 2.00 }` to
+// `{ 0.30, 0.35, 1.50 }` after the 2026-05-29 continuous-PMF
+// architectural fix (IMPROVEMENTS.md §12, PRE_PHASE1_STATUS.md
+// Session 9) closed the documented 15–22 % env-IBL deficit at
+// lax tolerances on every topology.  The mean band is now bounded
+// by VCM env+mesh's ~28 % over-count (residual disc-area-vs-SA
+// discrepancy) — every other (BDPT × topology) and (VCM × topology)
+// pair has mean within ≤ 20 % of PT, so 30 % gives ~10 pp of
+// headroom against MC-noise jitter while still catching the
+// catastrophic 6-9 % / 36 % collapse modes from Sessions 2 / 8.
+// Strict `{ 0.10, 0.30, 1.00 }` still flags 3 sub-checks (the
+// VCM env+mesh + two BDPT/VCM spectral env-only residuals);
+// closing them requires the deferred SA-MIS migration tracked in
+// IMPROVEMENTS.md §12.  Max 1.5× retains the Path-A t=1 firefly
+// regression detector (historical ~3.5× overshoot easily caught).
+static const Tolerances kEnvTolerances{ 0.30, 0.35, 1.50 };
 
 static void RunEnvTopologyTestWithRasterizers(
 	const char* topologyName,

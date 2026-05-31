@@ -131,18 +131,36 @@ VCMMisQuantities RISE::Implementation::InitLight(
 	const Scalar cosLight,
 	const bool isFiniteLight,
 	const bool isDelta,
-	const VCMNormalization& norm
+	const VCMNormalization& norm,
+	const Scalar pdfSelect
 	)
 {
 	VCMMisQuantities q;
 
 	if( emissionPdfW > 0 )
 	{
+		// dVCM = directPdfA / emissionPdfW.  In RISE's joint storage
+		// directPdfA = pdfSelect × pdfPos and emissionPdfW =
+		// pdfSelect × pdfPos × pdfDir, so the ratio is 1/pdfDir —
+		// pdfSelect cancels and matches SmallVCM's
+		// `dVCM = pdfPos / (pdfPos × pdfDir) = 1/pdfDir`.  No
+		// adjustment needed.
 		q.dVCM = directPdfA / emissionPdfW;
 		if( !isDelta )
 		{
 			const Scalar usedCosLight = isFiniteLight ? cosLight : Scalar( 1 );
-			q.dVC = usedCosLight / emissionPdfW;
+			// dVC = cosLight / emissionPdfW_geometric where
+			// emissionPdfW_geometric = pdfPos × pdfDir (SmallVCM
+			// convention — no light-selection multiplier).  RISE
+			// stores joint `emissionPdfW = pdfSelect × pdfPos × pdfDir`,
+			// so divide-by-emissionPdfW alone leaves a residual
+			// 1/pdfSelect inflation.  Multiplying the numerator by
+			// pdfSelect extracts the geometric value.  Empirically
+			// no-op in test scenes (max_depth=3, merge_radius=0)
+			// per Δ7 bisect, but algebraically correct per SmallVCM
+			// and load-bearing in deeper paths / active VM.  See
+			// BDPTVertex.h's pdfSelect doc.
+			q.dVC = ( usedCosLight * pdfSelect ) / emissionPdfW;
 		}
 		else
 		{

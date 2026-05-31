@@ -5772,6 +5772,21 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPoint(
 	if( !pLS->SampleLight( scene, luminaries, sampler, lightSample ) )
 		return result;
 
+	// Env-light gate (continuous-PMF follow-up — adversarial-review
+	// round 4 K.1, 2026-05-29).  Pre-fix env was selected by SampleLight
+	// only in env-only scenes (binary EnvSelectProbability returned 0
+	// in mixed scenes), so SMS never had to handle an env light vertex.
+	// Post-fix env is selected at `cachedEnvSelectProb` rate in mixed
+	// scenes, and `lightSample.position` is then a synthetic disc point
+	// on the scene bounding sphere — NOT a real specular-chain target.
+	// Building a Snell-trace seed toward the disc and Newton-solving
+	// against a fictitious chain endpoint produces fireflies / silent
+	// power-loss bias.  Skip here; env IBL specular caustics are out of
+	// SMS scope (VCM / photon mapping handle them via merging).
+	if( lightSample.pEnvLight ) {
+		return result;
+	}
+
 	// Sampler-dimension-drift firewall — see EvaluateAtShadingPointUniform
 	// for the full rationale.  Variable-count internal work (multi-trial
 	// loop, Solve→EstimatePDF) below uses `loopSampler`; the parent
@@ -6741,6 +6756,14 @@ ManifoldSolver::SMSContribution ManifoldSolver::EvaluateAtShadingPointUniform(
 		return result;
 	}
 
+	// Env-light gate — see EvaluateAtShadingPoint (snell-mode RGB) for
+	// the full rationale.  SMS doesn't handle env-disc emission as a
+	// specular-chain target; skip when SampleLight returns an env sample
+	// in mixed scenes (post continuous-PMF fix 2026-05-29).
+	if( lightSample.pEnvLight ) {
+		return result;
+	}
+
 	// Sampler-dimension-drift firewall: variable-count internal work
 	// (M-trial loop, Bernoulli K-loop, Solve→EstimatePDF) below uses
 	// `loopSampler`; the parent sampler advances by a fixed two
@@ -7169,6 +7192,14 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNMUnifor
 		return result;
 	}
 
+	// Env-light gate — see EvaluateAtShadingPoint (snell-mode RGB) for
+	// the full rationale.  SMS doesn't handle env-disc emission as a
+	// specular-chain target; skip when SampleLight returns an env sample
+	// in mixed scenes (post continuous-PMF fix 2026-05-29).
+	if( lightSample.pEnvLight ) {
+		return result;
+	}
+
 	// Sampler-dimension-drift firewall — see EvaluateAtShadingPointUniform
 	// for the full rationale.
 	SMSLoopSampler loopScope( sampler );
@@ -7548,6 +7579,14 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	LightSample lightSample;
 	if( !pLS->SampleLight( scene, luminaries, sampler, lightSample ) )
 		return result;
+
+	// Env-light gate — see EvaluateAtShadingPoint (snell-mode RGB) for
+	// the full rationale.  SMS doesn't handle env-disc emission as a
+	// specular-chain target; skip when SampleLight returns an env sample
+	// in mixed scenes (post continuous-PMF fix 2026-05-29).
+	if( lightSample.pEnvLight ) {
+		return result;
+	}
 
 	// Sampler-dimension-drift firewall — see EvaluateAtShadingPointUniform.
 	SMSLoopSampler loopScope( sampler );
