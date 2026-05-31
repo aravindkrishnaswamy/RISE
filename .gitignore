@@ -104,3 +104,10 @@ __pycache__/
 /build/VS2022/Library/vcpkg_installed
 /build/VS2022/Tools/x64
 /var_test
+
+# Integrator-refactor pre/post verification baselines: transient PNG
+# reference images captured per-session by
+# scripts/capture_refactor_baselines.sh for the zero-behaviour-change
+# diff. Regenerated each session, never committed (the Phase 2a
+# precedent left them untracked too).
+tests/baselines_refactor/
