@@ -1,0 +1,142 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#   File:           sms_through_glass_emitter_pt_sms.RISEscene
+#   Description:    Regression guard for the PT spectral(NM)+SMS through-glass emission bug
+#                   (PT_PEL_NM_ASYMMETRY_AUDIT.md asymmetry #1 + #3).
+#
+#   A small SPF-only glass sphere sits directly between the camera and a large
+#   emissive sphere.  Central camera rays are camera -> glass(delta refract) ->
+#   glass(delta refract) -> light, with NO diffuse/glossy vertex anywhere on the
+#   path, so SMS has no shading point to evaluate that contribution at.  The
+#   direct emission of the light, seen through the glass, MUST therefore survive.
+#
+#   THE BUG (pre-fix): in spectral (NM) mode with SMS enabled the SPF continuation
+#   forced considerEmission=false after the delta scatter, short-circuiting the
+#   PART1 emission gate before its bHadNonSpecularShading guard could keep the
+#   contribution.  The through-glass interior rendered BLACK while the direct ring
+#   of light around the glass stayed bright.  Pel mode was always correct.
+#
+#   THE FIX: NM now matches Pel -- considerEmission stays true at the SPF delta
+#   and the PART1 smsSuppressEmission predicate (bPassedThroughSpecular &&
+#   bHadNonSpecularShading) does the suppression.  The PART3 BSDF continuation now
+#   tracks those flags for both color modes so diffuse->glass->light still
+#   suppresses correctly (no double-count fireflies).
+#
+#   PASS criterion: the through-glass central disc is BRIGHT (matches the direct
+#   ring around the glass), not black.  Rendered with SMS ON; compare against the
+#   _ref (SMS OFF) twin -- the two must agree in the through-glass region.
+#############################################################################################################
+
+> set accelerator B 10 8
+
+pathtracing_shaderop
+{
+	name				mis_pt
+	sms_enabled			TRUE
+	sms_max_iterations	30
+	sms_threshold		1e-4
+	sms_max_chain_depth	10
+	sms_biased			TRUE
+}
+
+standard_shader
+{
+	name		global
+	shaderop	mis_pt
+}
+
+pixelintegratingspectral_rasterizer
+{
+	samples					48
+	lum_samples				1
+	nmbegin					400
+	nmend					700
+	num_wavelengths			12
+	max_recursion			6
+	oidn_denoise			false
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_through_glass_emitter_pt_sms
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sms_through_glass_emitter_pt_sms
+	type				EXR
+	bpp					32
+	color_space			Rec709RGB_Linear
+}
+
+film
+{
+	width			160
+	height			160
+}
+
+pinhole_camera
+{
+	location			0 0 6
+	lookat				0 0 0
+	up					0 1 0
+	fov					40.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_emit
+	color				1.0 0.95 0.85
+}
+
+perfectrefractor_material
+{
+	name				glass_mat
+	refractance			pnt_glass
+	ior					1.5
+}
+
+lambertian_luminaire_material
+{
+	name				emit_mat
+	exitance			pnt_emit
+	scale				10.0
+	material			none
+}
+
+sphere_geometry
+{
+	name				glass_geom
+	radius				0.9
+}
+
+sphere_geometry
+{
+	name				emit_geom
+	radius				6.0
+}
+
+standard_object
+{
+	name				glass_ball
+	geometry			glass_geom
+	position			0 0 2.0
+	material			glass_mat
+}
+
+standard_object
+{
+	name				emitter
+	geometry			emit_geom
+	position			0 0 -6.0
+	material			emit_mat
+}

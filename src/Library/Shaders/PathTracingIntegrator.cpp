@@ -2304,16 +2304,16 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				rs2.importance = importance * PTSurvivalMagnitude( PTScatterKray<Tag>( *pS ) ) / selectProb;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
 				rs2.type = PathTracingRayType( *pS );
-				// SPF/no-BSDF specular continuation: preserved Pel/NM asymmetry
-				// — Pel always re-enables emission at the next vertex; the NM
-				// original suppressed it after a delta scatter when SMS is active
-				// (SMS already covers that path).
-				bool nextConsiderEmissionSPF;
-				if constexpr ( Traits::is_pel ) {
-					nextConsiderEmissionSPF = true;
-				} else {
-					nextConsiderEmissionSPF = ( pS->isDelta && bSMSEnabled ) ? false : true;
-				}
+				// SPF/no-BSDF specular continuation.  Keep emission enabled at the
+				// next vertex for BOTH color modes and let the PART1
+				// `smsSuppressEmission` predicate (gated by bHadNonSpecularShading)
+				// do the suppression.  A camera->glass->light path has no diffuse
+				// anchor for SMS to evaluate at, so its emission MUST survive; the
+				// NM original instead forced considerEmission=false here, which
+				// turned lights seen directly through glass/mirrors black under
+				// spectral rendering with SMS on.  Fixed together with the PART3
+				// flag tracking below -- see PT_PEL_NM_ASYMMETRY_AUDIT.md #1/#3.
+				const bool nextConsiderEmissionSPF = true;
 				rs2.considerEmission = nextConsiderEmissionSPF;
 				if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
 					break;
@@ -2870,16 +2870,19 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			// firefly contribution of hundreds of luminance units per
 			// sample at any pixel whose random BSDF sequence found this
 			// path.
-			// Preserved Pel/NM asymmetry: the NM PART3 BSDF continuation
-			// did NOT update these SMS-suppression flags, so the update
-			// compiles in only for PelTag.
-			if constexpr ( Traits::is_pel ) {
-				if( pS->isDelta ) {
-					bPassedThroughSpecular = true;
-				} else {
-					bPassedThroughSpecular = false;
-					bHadNonSpecularShading = true;
-				}
+			// Tracked for BOTH color modes.  With the SPF section now keeping
+			// emission enabled on camera->glass->light (asymmetry #1 fix), NM
+			// relies on this same flag predicate to suppress the
+			// diffuse->glass->light double-count exactly as Pel does.  Were #1
+			// fixed while these flags stayed Pel-only, bHadNonSpecularShading
+			// would never latch for NM, smsSuppressEmission would stay false,
+			// and the double-count would return as fireflies.  See
+			// PT_PEL_NM_ASYMMETRY_AUDIT.md #1/#3.
+			if( pS->isDelta ) {
+				bPassedThroughSpecular = true;
+			} else {
+				bPassedThroughSpecular = false;
+				bHadNonSpecularShading = true;
 			}
 
 			currentRay = traceRay;
@@ -3687,7 +3690,16 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		const IBSDF* pBRDFCur = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
 
 		// If we hit a material without BSDF mid-path (e.g. entered a
-		// dielectric), fall back to per-wavelength NM for remaining path
+		// dielectric), fall back to per-wavelength NM for remaining path.
+		// SMS double-count guard: this delegation is reached ONLY after the
+		// HWSS loop has processed >= 1 BSDF (non-specular) vertex where SMS
+		// was evaluated -- the first hit has a BSDF (else Fallback 1 returned)
+		// and needsIntersection gates re-intersection, so any prior vertex was
+		// a non-specular SMS anchor.  Pass smsHadNonSpecularShading=true so the
+		// delegated NM body suppresses the BSDF-sampled emission at the light
+		// that the HWSS-side SMS pass already counted.  Without it the SPF
+		// emission fix (asymmetry #1: considerEmission stays true through
+		// glass) would double-count diffuse->glass->light in HWSS mode.
 		if( !pBRDFCur )
 		{
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ )
@@ -3701,7 +3713,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					pRadianceMap, depth, iorStack, bsdfPdf, 0,
 					considerEmission, importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
-					translucentBounces, volumeBounces, glossyFilterWidth );
+					translucentBounces, volumeBounces, glossyFilterWidth,
+					false, true );
 			}
 			break;
 		}
