@@ -113,9 +113,19 @@ Round 2 (ABI preservation) returned no findings.
 
 Verified zero-behavior-change across the divergent paths the cornellbox set does NOT cover (guiding/BSSRDF/SSS/SMS/volume, Pel AND NM): 116/116 tests, all baselines within the 0.27 % noise floor (Pel cornellbox 0.001 %, NM cornellbox_spectral 0.022 %, NM-SSS 0.023 %, NM-SMS 0.012 %, HWSS 0.012 %), escape-Tr fixture preserved, clean warning-free `make` + Xcode RISE-GUI builds, no perf regression.  3-reviewer adversarial review (PelTag / NMTag / if-constexpr+ABI+AOV) found 0 P1 / 0 P2 / 2 P3 — one fixed (a volume-RR reciprocal-multiply that diverged from the NM original at the ULP level), one accepted (the deliberate render-neutral AOV side-channel); round-2 confirmation RESOLVED-CLEAN.  **A third Pel/NM behavioral asymmetry was discovered and preserved** (PART3 BSDF-continuation SMS-flag tracking — Pel sets, NM doesn't), flagged for a separate audit.  Full divergence map, coverage map, and ledger: [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) → "Phase 2b PART 2".
 
-### Phase 2c/2d/3/4 — not started
+### Phase 2c — BDPT templatization (IN PROGRESS — part 1 / 5 done, 2026-06-01)
 
-Reasons documented in the "Why I stopped here" section below.
+BDPT (`BDPTIntegrator.cpp`, ~8,200 ln) is the largest integrator, so 2c is split into ~5 families landed one verified checkpoint at a time. The whole-of-2c decomposition (method-pair map + LoC, family grouping, divergence per family, the PT-asymmetry-pattern audit, landing order, session estimate) is in [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) → "Phase 2c decomposition analysis (Deliverable A)".
+
+- **Asymmetry-pattern audit: CLEAN.** The PT `considerEmission`-vs-flag-predicate latent bug ([PT_PEL_NM_ASYMMETRY_AUDIT.md](PT_PEL_NM_ASYMMETRY_AUDIT.md)) has **no analog in BDPT** — it is structurally absent (BDPT-SMS was excised 2026-05, so no per-bounce emission-suppression flag exists; the s=0 emitter-hit gate is identical Pel/NM, independently verified against source). No latent bug to carry. Two non-bug divergences (s=1 emitter branch order; NM ILight→luminance projection) are flagged for verification when F3 lands.
+
+- **Part 1 / Family 1 — `EvalConnectionTransmittance{,NM}` (DONE).** Lowest-divergence, public/VCM-consumed family. Collapsed both ray/dist bodies into `EvalConnectionTransmittanceImpl<Tag>` (anon-ns free function, VCM `*Impl<Tag>` house pattern) + 3 dispatch helpers + 2 forwarders; **zero `if constexpr`; no `.h` change → ABI untouched**. Net `BDPTIntegrator.cpp` −30. Gates: warning-free `make` + Xcode RISE-GUI; 116/116; all baselines within noise (Pel-media 0.0029%, NM-media 0.0147%, escape-Tr 0.034%, VCM consumers within floor, no-media leak ~0.0005%); 3-reviewer adversarial review **0 P1 / 0 P2 / 1 P3** (value-identical copy-init). Closed an NM-transmittance render-coverage gap by adding `scenes/Tests/Volumes/bdpt_homogeneous_fog_spectral.RISEscene`. Full ledger: [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) → "Phase 2c part 1 outcome".
+
+- **Remaining 2c families** (lowest-divergence-first): **F2** subpath generation — `GenerateEyeSubpath{,NM}` then `GenerateLightSubpath{,NM}` (HWSS-bundle `if constexpr`, env-IBL vertex-0, escape-Tr; ~2 sessions); **F3** connection — `ConnectAndEvaluate{,NM}` then `EvaluateAllStrategies{,NM}` + `EvalEmitterRadianceNM` fold (4 strategy cases, env-IBL continuous-PMF, pdfRev mutation trick, Pel-only guiding; ~1–2 sessions). `MISWeight` is already value-type-agnostic (no work). Every F2/F3 session adds **Gate F (MLT non-regression)** since MLT consumes `ConnectAndEvaluate`/`GenerateEyeSubpath` directly.
+
+### Phase 2d/3/4 — not started
+
+Phase 2d (shared `EvaluatePathConnection<Tag>` primitive extraction across BDPT↔VCM) is the post-2c go/no-go checkpoint. Reasons the broader plan is staged are documented in the "Why I stopped here" section below.
 
 ---
 

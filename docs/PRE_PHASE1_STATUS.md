@@ -2324,3 +2324,126 @@ that drops the SMS suppression flags can double-count once emission is re-enable
 boundaries.
 
 ### Working tree: uncommitted; per "NEVER COMMIT".
+
+---
+
+## Phase 2c decomposition analysis (Deliverable A) — BDPTIntegrator templatization, whole-of-2c plan
+
+**Session date**: 2026-06-01. **Plan**: [INTEGRATOR_REFACTOR_PLAN.md](INTEGRATOR_REFACTOR_PLAN.md) §3.6; **precedent**: Phase 2a (VCM, [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md)) and Phase 2b parts 1+2 (PT, this doc above). This is the up-front scope/decomposition for the entire Phase 2c, produced before touching integrator code, so subsequent family sessions open without re-surveying.
+
+`BDPTIntegrator.cpp` is **8,200 lines** (`.h` 536). The integrator is a non-template class reused by `BDPTRasterizerBase` (pixel BDPT), `BDPTSpectralRasterizer` (HWSS spectral), `MLTRasterizer`/`MLTSpectralRasterizer`, and **VCMIntegrator** (which owns a `BDPTIntegrator` for subpath generation and calls its public `EvalConnectionTransmittance` at VCM connection sites). The class stays non-template; only hot inner methods become `*Impl<Tag>`/`*Templated<Tag>` behind forwarders, matching 2a/2b.
+
+### Method-pair map (with line ranges + LoC, as of this session)
+
+| Pel method (range, LoC) | NM twin (range, LoC) | Family |
+|---|---|---|
+| `EvalConnectionTransmittance` ×2 overloads (1000–1021 pt/pt + 1021–1160 ray/dist, ~160) | `EvalConnectionTransmittanceNM` ×2 (1165–1187 + 1187–1318, ~153) | **F1 transmittance** |
+| `GenerateLightSubpath` (1342–2330, ~988) | `GenerateLightSubpathNM` (5122–6109, ~987) | **F2 subpath-gen** |
+| `GenerateEyeSubpath` (2330–3365, ~1035) | `GenerateEyeSubpathNM` (6109–7024, ~915) | **F2 subpath-gen** |
+| `ConnectAndEvaluate` (3365–4600, ~1235) | `ConnectAndEvaluateNM` (7024–7928, ~904) | **F3 connection** |
+| `EvaluateAllStrategies` (4600–4876, ~276) | `EvaluateAllStrategiesNM` (7928–8063, ~135) | **F3 connection** |
+| `EvalEmitterRadianceNM` (5086–5122, ~36) — NM-only helper; Pel inlines `pEmitter->emittedRadiance(...)` | (folds into F3 as the `EvalEmitterRadiance<Tag>` dispatch helper) | **F3 connection** |
+
+**Shared / not a Pel/NM pair (no templatization needed):**
+- `MISWeight` (4876–5058, ~182) — **verified value-type-agnostic**: PDF-ratio walk over `pdfRev/pdfFwd/isDelta` only; grep finds no RISEPel/throughput/value()-vs-valueNM(); called identically from both Pel (3507/4113/4346/4580) and NM (7121/7461/7661/7909) sites. The pdfRev const_cast save/restore "mutation trick" lives in the *callers* (ConnectAndEvaluate{,NM}), not in MISWeight; it stays caller-local. **No change in 2c.**
+- `IsVisible` (895–1000, ~105) — shared, value-agnostic.
+- `EvalBSDFAtVertex`/`EvalPdfAtVertex` (863–895, ~32) + their `…NM` twins (5058–5086, ~28) — **already trivial 1-line forwarders to `PathVertexEval::*`**, and call sites already dispatch through the Phase-0 `PathValueOps::EvalBSDFAtVertex<Tag>` layer. Not a "family" — at most a Phase-4 cleanup (drop the members, route remaining callers through `PathValueOps`).
+- `RecomputeSubpathThroughputNM` (8063–8156, ~93) — NM/HWSS-only by construction (companion-wavelength rescale); no Pel twin. Stays as-is (it is the HWSS load-bearer VCM also calls).
+- `HasDispersiveDeltaVertex` (8156–8200, ~44) — static, value-agnostic.
+
+### Families, divergence, and recommended landing order (lowest-divergence-first, matching 2b)
+
+**F1 — Connection transmittance** (`EvalConnectionTransmittance{,NM}`, ~313 ln across 4 overloads). **LOWEST divergence; landed THIS session (part 1).** The ray/dist bodies are near-perfect mirrors: the ONLY differences are (a) value type `RISEPel`↔`Scalar`, (b) `IMedium::EvalTransmittance`↔`EvalTransmittanceNM(nm)` (one dispatch helper), (c) identity/zero literals `RISEPel(1,1,1)`/`(0,0,0)`↔`1.0`/`0`, (d) the early-out magnitude test `ColorMath::MaxValue(Tr)`↔`Tr` (unifies cleanly via `SpectralValueTraits<Tag>::max_value`, since NM `Tr ≥ 0`). **Zero genuine algorithmic divergence → zero `if constexpr`.** Self-contained (uses no member state), **public and VCM-consumed** (so it exercises the cross-integrator ABI/forwarder path early), and its body carries **none** of the env-IBL / pdfRev / escape-Tr logic (those live in the subpath generators and `ConnectAndEvaluate`, which *call* this primitive). Best possible first checkpoint.
+
+**F2 — Subpath generation** (`GenerateLightSubpath{,NM}` + `GenerateEyeSubpath{,NM}`, ~3,925 ln). **Medium-high divergence**, dominated by **HWSS bundle handling in the NM bodies**: the `…NM` generators take a `const SampledWavelengths* pSwlHWSS` (no Pel analog) and, when non-null, maintain `hwssBetaNM[SampledWavelengths::N]` and compute Russian-roulette survival from the MAX throughput across non-terminated companion wavelengths. That is a genuine `if constexpr(is_nm)` axis, not a value swap. Other divergences: NM RW-SSS uses `GetRandomWalkSSSParamsNM(nm,…)` (Pel uses the static params); guiding RIS candidate handling is Pel-primary; NM `GenerateLightSubpath` has an explicit HDRI-only env-`Le` fallback (`GetRadianceNM`). Estimated distinct `if constexpr` branches: GenerateLightSubpath ~5, GenerateEyeSubpath ~2. **Carries the escape-Tr fix (commit 2b58236b) — verified present and symmetric in BOTH Pel (eye 2773–2776) and NM (eye 6430–6433): `EvalTransmittance{,NM}` applied before the synthetic env vertex's `throughput = beta`.** Also carries env-IBL vertex-0 setup (`pdfSelect`, continuous-PMF). Recommend splitting into 2 sessions (eye, then light) per the 2b "don't do both big methods in one session" rule.
+
+**F3 — Connection evaluation** (`ConnectAndEvaluate{,NM}` + `EvaluateAllStrategies{,NM}` + `EvalEmitterRadianceNM`, ~2,586 ln). **HIGHEST divergence and risk; land LAST.** `ConnectAndEvaluate` has the four strategy cases (s=0 emitter-hit, s=1 NEE, t=1 camera-splat, interior). Genuine divergences (to preserve via `if constexpr`, NOT fix): (1) **s=1 NEE** — the point-light branch projects RGB→scalar via Rec.709 luminance for NM (because `ILight` has no NM virtual — same pattern as VCM's `EvalLightRadiance<Tag>`), and the env-NEE branch records a guiding local contribution on Pel only (`ConnectionResultNM` has no guiding fields); (2) **t=1 splat** — same ILight luminance projection + the Pel→XYZ/RGB splat conversion (NM uses `XYZFromNM`-style); (3) **interior** — Pel broadcasts the scalar geometric term to `RISEPel(G,G,G)` (cosmetic). Carries **env-IBL continuous-PMF** (s=0 escape + s=1 env-NEE `EnvSelectProbability()`, `SolidAngleToArea`, the now-removed `kEnvZeroSentinel`) and the **pdfRev const_cast mutation trick** (save→set→`MISWeight`→restore; window must stay intact). `EvaluateAllStrategies` is Pel-bigger (~276 vs ~135) almost entirely due to a Pel-only `#ifdef RISE_ENABLE_OPENPGL` strategy-selection + guiding-training block; the core connection loop is symmetric. **MLT consumes `ConnectAndEvaluate`/`GenerateEyeSubpath` directly → every F2/F3 session needs Gate F (MLT non-regression).** Recommend splitting F3 into 2 sessions (`ConnectAndEvaluate`, then `EvaluateAllStrategies`+helper fold + Phase-4 cleanup).
+
+### Asymmetry-pattern audit (the [PT_PEL_NM_ASYMMETRY_AUDIT.md](PT_PEL_NM_ASYMMETRY_AUDIT.md) transferable check) — **VERDICT: CLEAN**
+
+The PT bug was a per-bounce emission-suppression scheme that diverged Pel-vs-NM on camera→specular→light (NM used a `considerEmission` flag set false after delta scatters; Pel used a flag-predicate; the two disagreed and NM rendered through-glass lights black). **This pattern has NO analog in BDPT, and it is structurally absent — not "happens to agree":**
+- **BDPT-SMS was excised in 2026-05**, taking the entire `considerEmission` / `smsPassedThroughSpecular` / `smsSuppressEmission` apparatus with it. A whole-file grep for `considerEmission|smsPassed|smsHad|smsSuppress|bSMS|ShouldSuppress|pSolver|ManifoldSolver` yields **one** hit (line 214, an unrelated OpenPGL training-ray `RAY_STATE` setup, not an emission gate). There is **no per-bounce emission-inclusion flag** in either body for an update-rule to diverge on.
+- **The s=0 "eye path hits an emitter" strategy is the BDPT analog of PT's emission gate, and it is identical Pel vs NM** (independently verified against source this session, resolving a disagreement between the two analysis agents — one had mis-read `ConnectAndEvaluateNM` s=0 as env-only): both bodies have an env-escape branch AND a surface-emitter branch, gated on the same chain `eyeEnd.type==SURFACE → pMaterial → GetEmitter() → t>=2 → Le<=0` (Pel 3513–3552 / NM 7127–7150). NM's surface branch evaluates `EvalEmitterRadianceNM` (5086–5122), which does the same `PopulateRIGFromVertex` rebuild + same `geomNormal` + same one-sided emitter gating as Pel's inline `pEmitter->emittedRadiance(rig, woFromEmitter, eyeEnd.geomNormal)`.
+- **No X→NM delegation drops an emission flag**: `RecomputeSubpathThroughputNM` only rescales already-computed `throughputNM` by a hero/companion spectral ratio; it makes no emission add/suppress decision, and there are no SMS flags to drop.
+
+**De-risking answer: Phase 2c can proceed; no latent emission-suppression bug to preserve or trip over.** Two NON-bug divergences are flagged for verification when F3 lands (they are preserve-via-`if constexpr` items, NOT the emission-suppression class, and were NOT investigated further this session as they are out of the first-family scope): (i) the s=1 emitter-resolution **branch order** differs (Pel checks `pLight` before `pLuminary`; NM checks `pLuminary` first) — benign if a vertex is only ever one light kind, but worth a side-by-side confirmation; (ii) the NM ILight→luminance projection in s=1/t=1 is a known "ILight has no NM virtual" pattern (mirrors VCM), not a bug. Neither is in the considerEmission/flag-predicate class.
+
+### Estimated 2c part count + sessions
+
+| Part | Family | LoC (Pel+NM) | Divergence | Gates beyond standard | Est. sessions |
+|---|---|---|---|---|---|
+| **1 (this)** | F1 transmittance | ~313 | none (pure swap) | + Gate 6 VCM | **done** |
+| 2 | F2a `GenerateEyeSubpath` | ~1,950 | ~2 if-constexpr + HWSS | + Gate F (MLT) | 1 |
+| 3 | F2b `GenerateLightSubpath` | ~1,975 | ~5 if-constexpr + HWSS | + Gate F | 1 |
+| 4 | F3a `ConnectAndEvaluate` | ~2,140 | ~8–12 if-constexpr, env-IBL, pdfRev | + Gate F, Gate 6 | 1–2 |
+| 5 | F3b `EvaluateAllStrategies` + `EvalEmitterRadianceNM` fold + Phase-4 helper cleanup | ~450 | guiding #ifdef | + Gate F | 1 |
+
+**Total: ~5 parts / ~5–6 focused sessions** for the whole of 2c (consistent with the status doc's "8–14 hrs, ~2,700 LoC" estimate under the one-family-per-checkpoint discipline). Phase 2d (shared `EvaluatePathConnection<Tag>` primitive extraction across BDPT↔VCM) remains a separate post-2c effort.
+
+---
+
+## Phase 2c part 1 outcome (Deliverable B) — `EvalConnectionTransmittance{,NM}` templatized
+
+**Session date**: 2026-06-01. First (lowest-divergence) BDPT family of Phase 2c per the decomposition above; pattern follows Phase 2a (VCM) and Phase 2b (PT).
+
+### TL;DR
+The two ray/dist connection-edge transmittance bodies — `RISEPel EvalConnectionTransmittance(ray,maxDist,…)` (~130 ln) and `Scalar EvalConnectionTransmittanceNM(ray,maxDist,…,nm)` (~130 ln) — collapsed into one free-function template `EvalConnectionTransmittanceImpl<Tag>` (anonymous namespace, matching VCMIntegrator's `*Impl<Tag>` house pattern) behind 2 one-line member forwarders, plus 3 trivial dispatch helpers. **Zero `if constexpr`** — the entire Pel/NM divergence reduces to value-type + one medium-eval method swap + identity/zero literals. **No `.h` change → ABI untouched.** The two pt/pt wrapper overloads are byte-unchanged. Net `BDPTIntegrator.cpp` **8200 → 8170 (−30; 216 ins / 246 del)**. Zero behavior change verified on Pel + NM transmittance through media, the escape-Tr fixtures, and the VCM consumer; 3-reviewer adversarial review **0 P1 / 0 P2**.
+
+### Why this family first (per Deliverable A)
+Lowest genuine divergence in the whole integrator (no `if constexpr` needed), **public and VCM-consumed** (so it exercises the cross-integrator ABI/forwarder path — Gate 6 — on a small, well-bounded surface), self-contained (uses no `BDPTIntegrator` member state), and its body carries **none** of the env-IBL / pdfRev / escape-Tr / guiding logic (those live in F2/F3, which only *call* this primitive).
+
+### What changed (the shape)
+- **`EvalConnectionTransmittanceImpl<Tag>`** — the boundary-walk body, value-type-generic, in the existing anon namespace alongside `ConnectionMediumStack`.
+- **3 dispatch helpers** (anon ns, explicit PelTag/NMTag specializations):
+  - `TrOne<Tag>()` → `RISEPel(1,1,1)` / `Scalar(1)` (multiplicative identity; `SpectralValueTraits` has `zero()` but no `one()`).
+  - `EvalMediumTransmittance<Tag>(m,ray,dist,tag)` → `m.EvalTransmittance(ray,dist)` / `m.EvalTransmittanceNM(ray,dist,tag.nm)`.
+  - `TrEarlyOutMagnitude<Tag>(Tr)` → `ColorMath::MaxValue(Tr)` / **bare `Tr`** for the `< 1e-6` early-out. **Deliberately NOT `SpectralValueTraits::max_value`** (which is `fabs` for NM): `Tr` is a product of [0,1] transmittances so it's always ≥ 0 and `fabs` would be a no-op, but reproducing the bare scalar keeps the NM path byte-identical to the original and avoids re-introducing the Phase-2a P2 #2 "fabs-in-a-gate" footgun. Documented in-code.
+- **2 member forwarders** (ray/dist Pel → `Impl<PelTag>` with `PelTag{}`; ray/dist NM → `Impl<NMTag>` with `NMTag( nm )`).
+- **pt/pt overloads (Pel + NM): UNCHANGED** — they still normalize and forward to the ray/dist members, which now forward to the Impl.
+- `+#include "Color/SpectralValueTraits.h"` and 3 file-scope `using RISE::SpectralDispatch::{PelTag,NMTag,SpectralValueTraits}` (mirrors VCMIntegrator.cpp).
+
+The transform was applied via a one-shot count-asserted Python script ([scripts/_apply_f1_phase2c.py](../scripts/_apply_f1_phase2c.py), kept as the audit record) that **extracts the real Pel body and applies fixed mechanical substitutions** rather than transcribing it — eliminating the tab/line-drift transcription risk; dry-run + byte-inspection preceded the real apply.
+
+### Gates
+- **Gate 1 — build**: `make -C build/make/rise -j8 all` + `tests` warning-free (0 warnings; `BDPTIntegrator.cpp` recompiled clean). Xcode `RISE-GUI` Development arm64 **BUILD SUCCEEDED**, **0 compiler warnings on RISE source** (the lone log "warning" is Apple's benign `appintentsmetadataprocessor` "No AppIntents.framework" note, emitted on every macOS GUI build).
+- **Gate 2 — tests**: **116/116** (incl. `BDPTStrategyBalanceTest`, `VCMStrategyBalanceTest`, `VCMRecurrenceTest`, `VCMSpectralRecurrenceTest`, `EnvLightBalanceTest` env-IBL 80/80 oracle, VCM post-pass/vertex-store). Pre-edit baseline was also 116/116.
+- **Gate 3 — zero behavior change** (mean-luminance Δ post-vs-pre; per-scene noise floor from 2 pre-edit trials in parens): Pel-media `bdpt_homogeneous_fog` **0.0029%** (floor 0.0038%); NM-media `bdpt_homogeneous_fog_spectral` **0.0147%** (floor 0.0145%); leak-Pel `cornellbox_bdpt` **0.0007%** (floor 0.0004%); leak-NM `cornellbox_bdpt_spectral` **0.0002%** (floor 0.0053%). The direct-transmittance scenes are at their noise floor → decisive zero-behavior-change for **both** tags.
+- **Gate 4 — escape-Tr preserved**: `env_bounded_fog_bdpt` **0.0340%** (floor 0.1005%) — well within; the commit-`2b58236b` escape-Tr behavior (which *calls* this primitive) is unperturbed.
+- **Gate 6 — VCM consumer unchanged**: `vcm_env_through_fog` **0.2518%** (floor 1.1267%); `env_bounded_fog_vcm` **0.1166%** (2-trial floor 0.0788%, within the documented 0.27% general multi-threaded-MC floor — the 2-trial estimate understates a low-spp VCM render's true variance). VCM reaches the templatized primitive via its NEE/interior/splat wrappers (`VCMIntegrator.cpp` 1380/1392/1607/1829) → behavior unchanged. `VCMIntegrator.cpp` itself is untouched by the diff.
+- **Perf**: no path added; `if constexpr`-free templated body + `inline` no-op dispatch helpers compile to the same instruction stream (all 3 reviewers confirmed codegen-equivalence; no vtable/layout change). Exact-arithmetic refactor — not separately benchmarked.
+- **Gate 7 — adversarial review**: see ledger.
+
+### Divergent-path coverage map (what makes the zero-behavior-change claim credible)
+| Path | scene | floor → post-Δ |
+|---|---|---|
+| **Pel transmittance through media** (per-object + global walk) | `bdpt_homogeneous_fog` (BDPT Pel) | 0.0038% → 0.0029% |
+| **NM transmittance through media** (per-λ walk; `EvalConnectionTransmittanceNM`) | `bdpt_homogeneous_fog_spectral` (BDPT spectral, **NEW fixture**) | 0.0145% → 0.0147% |
+| escape-Tr (env miss through medium) | `env_bounded_fog_bdpt` | 0.1005% → 0.0340% |
+| VCM consumer of the primitive (NEE/interior/splat) | `vcm_env_through_fog`, `env_bounded_fog_vcm` | within floor |
+| no-media identity walk (leak check) | `cornellbox_bdpt`, `cornellbox_bdpt_spectral` | within floor |
+
+Verification artifact: [scripts/bdpt_transmittance_baselines.sh](../scripts/bdpt_transmittance_baselines.sh) (capture/check, per-scene noise floor).
+
+### NM-transmittance coverage gap — found and CLOSED
+`EvalConnectionTransmittanceNM` had **no production render coverage** before this session: the spectral BDPT rasterizer drives `EvaluateAllStrategiesNM → ConnectAndEvaluateNM → EvalConnectionTransmittanceNM`, but no spectral BDPT/VCM scene contained participating media. This is exactly the "uncovered divergent path hides a silent dispatch bug" trap from the Phase 2b part-2 lesson. Rather than just flag it, I closed it by creating [scenes/Tests/Volumes/bdpt_homogeneous_fog_spectral.RISEscene](../scenes/Tests/Volumes/bdpt_homogeneous_fog_spectral.RISEscene) — a spectral twin of `bdpt_homogeneous_fog` (identical medium/geometry/materials; only the rasterizer + output names differ), now a permanent NM-transmittance regression fixture (mirrors how the spectral+SMS session added `sms_through_glass_emitter_pt_sms`).
+
+### Adversarial review ledger (Gate 7 — 3 reviewers, orthogonal axes)
+| Reviewer | Axis | Result |
+|---|---|---|
+| R1 | PelTag ≡ original RGB `EvalConnectionTransmittance`, line-by-line | **CLEAN** — every statement byte-equivalent after PelTag substitution; all 5 `EvalTransmittance` sites, both early-outs, fast path, walk, stack push/pop, global-medium tail match. 1 P3: `V Tr = TrOne<Tag>()` is copy-init vs original direct-init `RISEPel Tr(1,1,1)` — provably value-identical (trivial non-explicit ctor + C++17 copy elision), inherent to the template form. |
+| R2 | NMTag ≡ original `EvalConnectionTransmittanceNM`, line-by-line | **CLEAN** — 0 findings. `nm` threaded via `NMTag(nm)→tag.nm` at all 5 medium-eval sites (none dropped/defaulted); early-out reproduces bare `if(Tr<1e-6)` with **no `fabs` introduced**; `Tr=Tr*x ≡ Tr*=x` bit-identical for `double` ([expr.ass]); pt/pt wrapper + forwarder args exact. |
+| R3 | if-constexpr / ABI / dispatch / VCM-consumer | **CLEAN** — 0 findings. `BDPTIntegrator.h` diff empty → no vtable/layout/signature change; 4 public signatures byte-identical; anon-ns free-function lookup + explicit-specialization ordering sound (same idiom as VCM `EvaluateS0Impl`); VCMIntegrator.cpp untouched and binds to the forwarders (call sites enumerated); no new `-Wunused`; diff scope confined to the transmittance region. |
+
+**0 P1 / 0 P2 / 1 P3** (P3 rejected-with-reason: value-identical copy-init, inherent to templatization). Adversarial-review stop rule satisfied — no fix or re-review round required.
+
+### Files
+- [src/Library/Shaders/BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) — `EvalConnectionTransmittanceImpl<Tag>` + 3 helpers + 2 forwarders + include/usings (−30 net; `.h` untouched).
+- [scenes/Tests/Volumes/bdpt_homogeneous_fog_spectral.RISEscene](../scenes/Tests/Volumes/bdpt_homogeneous_fog_spectral.RISEscene) — new NM-transmittance regression fixture.
+- [scripts/bdpt_transmittance_baselines.sh](../scripts/bdpt_transmittance_baselines.sh) — new family baseline capture/check (sibling of `divergent_baselines.sh`).
+- [scripts/_apply_f1_phase2c.py](../scripts/_apply_f1_phase2c.py) — new; the one-shot count-asserted transform (audit record; safe to delete).
+- This doc (Deliverable A decomposition above + this outcome).
+
+### Next family (per Deliverable A)
+**F2 subpath generation** (`GenerateEyeSubpath{,NM}` then `GenerateLightSubpath{,NM}`) — split across 2 sessions; carries HWSS-bundle `if constexpr`, env-IBL vertex-0 setup, and the escape-Tr fix (verified symmetric Pel/NM). Then **F3 connection** (`ConnectAndEvaluate{,NM}`, then `EvaluateAllStrategies{,NM}` + `EvalEmitterRadianceNM` fold) — highest divergence, carries the pdfRev mutation trick + env-IBL continuous-PMF; every F2/F3 session also needs **Gate F (MLT non-regression)** since MLT consumes `ConnectAndEvaluate`/`GenerateEyeSubpath` directly.
+
+### Working tree: uncommitted; per "NEVER COMMIT".
