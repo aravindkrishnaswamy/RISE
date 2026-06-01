@@ -2185,6 +2185,17 @@ Verification artifact: `scripts/divergent_baselines.sh` (capture/check, per-scen
    chains the way Pel does — a real Pel/NM behavioral difference on SMS scenes with diffuse receivers.
    Preserved verbatim; recommended for the separate asymmetry audit.
 
+> **AUDITED 2026-05-31 → [PT_PEL_NM_ASYMMETRY_AUDIT.md](PT_PEL_NM_ASYMMETRY_AUDIT.md).**  Verdicts:
+> **#1 = LATENT BUG (NM wrong)** — empirically confirmed (spectral+SMS renders a light seen directly
+> through glass as *black*; Pel renders it correctly; origin `ce61ea6d`).  **#2 = NO-OP** — the NM
+> `bsdfTimesCos`/`AccumulateCount` branch is dead because optimal-MIS is Pel-only (`rc.pOptimalMIS` is
+> null for the spectral rasterizer).  **#3 = NO-OP standalone but a REQUIRED co-fix of #1** (fixing #1
+> alone makes NM under-suppress → double-count fireflies; the part-2 "diffuse→glass→light double-count"
+> wording is refined there — `considerEmission` already covers that case today).  **De-risking answer:
+> Phase 2c can proceed** — none blocks BDPT templatization; #1 is a pre-existing, faithfully-preserved
+> PT-only bug for its own fix chip.  Carry the *pattern* into 2c: check BDPT's Pel vs NM/HWSS
+> specular→light emission/MIS for the same `considerEmission`-vs-flag-predicate divergence.
+
 ### Deliverable #2 — PT-spectral inline AOV: integrator foundation landed, rasterizer consumption DEFERRED
 **Landed (the part the spec listed under the integrator):** `SpectralValueTraits<NMTag>::supports_aov`
 flipped false→true; the Accurate-mode first-non-delta AOV hook in `IntegrateFromHitTemplated` now compiles
