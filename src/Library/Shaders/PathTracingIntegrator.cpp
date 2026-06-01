@@ -1047,6 +1047,234 @@ namespace
 	inline Scalar PTEvalRadianceMap<NMTag>(
 		const IRadianceMap* pMap, const Ray& ray, const RasterizerState& rast, const NMTag& tag )
 	{ return pMap->GetRadianceNM( ray, rast, tag.nm ); }
+
+	// ================================================================
+	// Phase 2b part 2: additional IntegrateFromHit dispatch helpers.
+	// Each forwards at compile time to the existing dual-signature API,
+	// reproducing the EXACT per-variant call the original Pel / NM
+	// IntegrateFromHit bodies made.  See PRE_PHASE1_STATUS.md
+	// "Pre-Phase-1 Piece 3 outcome (Phase 2b)".
+	// ================================================================
+
+	// Russian-roulette / importance survival magnitude.  Pel -> SIGNED
+	// max channel (ColorMath::MaxValue, matching every original RR +
+	// rs2.importance site); NM -> fabs.  DISTINCT from PTPositiveMagnitude
+	// (NM raw, no fabs — for `<=0`/`>0` contribution gates) and from
+	// PTAbsMaxMagnitude (Pel abs-max — runaway guard).  Do NOT conflate
+	// the three: MaxValue is a SIGNED max, fabs is unsigned, and the
+	// runaway guard takes the max of per-channel absolute values.
+	inline Scalar PTSurvivalMagnitude( const RISEPel& v ) { return ColorMath::MaxValue( v ); }
+	inline Scalar PTSurvivalMagnitude( const Scalar  v ) { return std::fabs( v ); }
+
+	// Runaway-throughput guard magnitude.  Pel -> max of per-channel fabs
+	// (matches the original r_max(fabs(t[0]),fabs(t[1]),fabs(t[2])), which
+	// catches a path that has swung negative); NM -> fabs.
+	inline Scalar PTAbsMaxMagnitude( const RISEPel& v ) {
+		return r_max( r_max( std::fabs( v[0] ), std::fabs( v[1] ) ), std::fabs( v[2] ) );
+	}
+	inline Scalar PTAbsMaxMagnitude( const Scalar  v ) { return std::fabs( v ); }
+
+	// Wavelength argument for the BSSRDF / random-walk-SSS samplers.
+	// Pel passes 0 (the original RGB call's literal nm); NM passes tag.nm.
+	inline Scalar PTTagNm( const PelTag& ) { return Scalar( 0 ); }
+	inline Scalar PTTagNm( const NMTag& tag ) { return tag.nm; }
+
+	// value_type -> RISEPel projection for guiding-contribution recording.
+	// Pel -> identity; NM -> RISEPel(scalar) broadcast.  Matches the
+	// AddPTIGuiding* / SetPTIGuiding* call sites (which take RISEPel).
+	inline RISEPel PTGuidingPel( const RISEPel& v ) { return v; }
+	inline RISEPel PTGuidingPel( const Scalar  v ) { return RISEPel( v ); }
+
+	// Guiding luminance reduction for the env-background gate + Adam
+	// pending/apply updates.  Pel -> GuidingTrainingLuminance (Rec.709
+	// luma); NM -> fabs.  (The emission guiding gate instead uses
+	// PTSurvivalMagnitude — Pel MaxValue — matching its original.)
+	inline Scalar PTGuidingLuminance( const RISEPel& v ) { return GuidingTrainingLuminance( v ); }
+	inline Scalar PTGuidingLuminance( const Scalar  v ) { return std::fabs( v ); }
+
+	// Emitter radiance dispatch.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTEvalEmittedRadiance(
+		IEmitter* pEmitter, const RayIntersectionGeometric& ri,
+		const Vector3& out, const Vector3& N, const Tag& tag );
+	template<> inline RISEPel PTEvalEmittedRadiance<PelTag>(
+		IEmitter* pEmitter, const RayIntersectionGeometric& ri,
+		const Vector3& out, const Vector3& N, const PelTag& )
+	{ return pEmitter->emittedRadiance( ri, out, N ); }
+	template<> inline Scalar PTEvalEmittedRadiance<NMTag>(
+		IEmitter* pEmitter, const RayIntersectionGeometric& ri,
+		const Vector3& out, const Vector3& N, const NMTag& tag )
+	{ return pEmitter->emittedRadianceNM( ri, out, N, tag.nm ); }
+
+	// Direct-lighting (NEE) dispatch.  Covers PART2 surface NEE and the
+	// BSSRDF / RW-SSS entry-point NEE (which pass an entry-BSDF + entry-
+	// material).  NM inserts nm after pMaterial, matching the original.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTEvaluateDirectLighting(
+		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
+		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
+		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
+		bool isVolumeScatter, const IObject* pMediumObject, const Tag& tag );
+	template<> inline RISEPel PTEvaluateDirectLighting<PelTag>(
+		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
+		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
+		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
+		bool isVolumeScatter, const IObject* pMediumObject, const PelTag& )
+	{ return pLS->EvaluateDirectLighting( ri, brdf, pMaterial, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject ); }
+	template<> inline Scalar PTEvaluateDirectLighting<NMTag>(
+		const Implementation::LightSampler* pLS, const RayIntersectionGeometric& ri,
+		const IBSDF& brdf, const IMaterial* pMaterial, const IRayCaster& caster,
+		ISampler& sampler, const IObject* pShadingObject, const IMedium* pMedium,
+		bool isVolumeScatter, const IObject* pMediumObject, const NMTag& tag )
+	{ return pLS->EvaluateDirectLightingNM( ri, brdf, pMaterial, tag.nm, caster, sampler, pShadingObject, pMedium, isVolumeScatter, pMediumObject ); }
+
+	// BSDF value at a surface (guiding RIS / one-sample MIS).
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTEvalBSDFAtSurface(
+		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const Tag& tag );
+	template<> inline RISEPel PTEvalBSDFAtSurface<PelTag>(
+		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const PelTag& )
+	{ return PathVertexEval::EvalBSDFAtSurface( pBRDF, wi, ri ); }
+	template<> inline Scalar PTEvalBSDFAtSurface<NMTag>(
+		const IBSDF* pBRDF, const Vector3& wi, const RayIntersectionGeometric& ri, const NMTag& tag )
+	{ return PathVertexEval::EvalBSDFAtSurfaceNM( pBRDF, wi, ri, tag.nm ); }
+
+	// Pdf at a surface (always Scalar).  Guiding RIS / one-sample MIS.
+	template<class Tag>
+	inline Scalar PTEvalPdfAtSurface(
+		const ISPF* pSPF, const RayIntersectionGeometric& ri, const Vector3& wi,
+		const IORStack& iorStack, const Tag& tag );
+	template<> inline Scalar PTEvalPdfAtSurface<PelTag>(
+		const ISPF* pSPF, const RayIntersectionGeometric& ri, const Vector3& wi,
+		const IORStack& iorStack, const PelTag& )
+	{ return PathVertexEval::EvalPdfAtSurface( pSPF, ri, wi, iorStack ); }
+	template<> inline Scalar PTEvalPdfAtSurface<NMTag>(
+		const ISPF* pSPF, const RayIntersectionGeometric& ri, const Vector3& wi,
+		const IORStack& iorStack, const NMTag& tag )
+	{ return PathVertexEval::EvalPdfAtSurfaceNM( pSPF, ri, wi, tag.nm, iorStack ); }
+
+	// SPF scatter dispatch.
+	template<class Tag>
+	inline void PTScatter(
+		const ISPF* pSPF, const RayIntersectionGeometric& ri, ISampler& sampler,
+		ScatteredRayContainer& scattered, const IORStack& iorStack, const Tag& tag );
+	template<> inline void PTScatter<PelTag>(
+		const ISPF* pSPF, const RayIntersectionGeometric& ri, ISampler& sampler,
+		ScatteredRayContainer& scattered, const IORStack& iorStack, const PelTag& )
+	{ pSPF->Scatter( ri, sampler, scattered, iorStack ); }
+	template<> inline void PTScatter<NMTag>(
+		const ISPF* pSPF, const RayIntersectionGeometric& ri, ISampler& sampler,
+		ScatteredRayContainer& scattered, const IORStack& iorStack, const NMTag& tag )
+	{ pSPF->ScatterNM( ri, sampler, tag.nm, scattered, iorStack ); }
+
+	// Lobe selection: Pel uses RGB-max weights (bNM=false), NM uses
+	// spectral weights (bNM=true), matching the original RandomlySelect
+	// so the selection distribution matches the selectProb compensation.
+	template<class Tag>
+	inline ScatteredRay* PTRandomlySelect( const ScatteredRayContainer& scattered, Scalar xi );
+	template<> inline ScatteredRay* PTRandomlySelect<PelTag>( const ScatteredRayContainer& scattered, Scalar xi )
+	{ return scattered.RandomlySelect( xi, false ); }
+	template<> inline ScatteredRay* PTRandomlySelect<NMTag>( const ScatteredRayContainer& scattered, Scalar xi )
+	{ return scattered.RandomlySelect( xi, true ); }
+
+	// Scatter-ray kray in the value type (throughput multiply).
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTScatterKray( const ScatteredRay& pS );
+	template<> inline RISEPel PTScatterKray<PelTag>( const ScatteredRay& pS ) { return pS.kray; }
+	template<> inline Scalar  PTScatterKray<NMTag>( const ScatteredRay& pS ) { return pS.krayNM; }
+
+	// Lobe selection weight (selectProb numerator/denominator terms).
+	// Pel -> signed-max channel of kray (ColorMath::MaxValue); NM -> raw
+	// krayNM (matches the CDF inside RandomlySelect with bNM=true).
+	template<class Tag>
+	inline Scalar PTScatterSelectWeight( const ScatteredRay& pS );
+	template<> inline Scalar PTScatterSelectWeight<PelTag>( const ScatteredRay& pS ) { return ColorMath::MaxValue( pS.kray ); }
+	template<> inline Scalar PTScatterSelectWeight<NMTag>( const ScatteredRay& pS ) { return pS.krayNM; }
+
+	// BSSRDF entry weights (diffusion + random-walk).
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTBssrdfWeight( const BSSRDFSampling::SampleResult& b );
+	template<> inline RISEPel PTBssrdfWeight<PelTag>( const BSSRDFSampling::SampleResult& b ) { return b.weight; }
+	template<> inline Scalar  PTBssrdfWeight<NMTag>( const BSSRDFSampling::SampleResult& b ) { return b.weightNM; }
+
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type PTBssrdfWeightSpatial( const BSSRDFSampling::SampleResult& b );
+	template<> inline RISEPel PTBssrdfWeightSpatial<PelTag>( const BSSRDFSampling::SampleResult& b ) { return b.weightSpatial; }
+	template<> inline Scalar  PTBssrdfWeightSpatial<NMTag>( const BSSRDFSampling::SampleResult& b ) { return b.weightSpatialNM; }
+
+	// CastRay continuation (BSSRDF / RW-SSS sub-path), 8-arg form with
+	// IOR stack; distance is always passed null as in both originals.
+	template<class Tag>
+	inline void PTCastRay(
+		const IRayCaster& caster, const RuntimeContext& rc, const RasterizerState& rast,
+		const Ray& ray, typename SpectralValueTraits<Tag>::value_type& out,
+		const IRayCaster::RAY_STATE& rs, const IRadianceMap* pRadianceMap,
+		const IORStack& iorStack, const Tag& tag );
+	template<> inline void PTCastRay<PelTag>(
+		const IRayCaster& caster, const RuntimeContext& rc, const RasterizerState& rast,
+		const Ray& ray, RISEPel& out, const IRayCaster::RAY_STATE& rs,
+		const IRadianceMap* pRadianceMap, const IORStack& iorStack, const PelTag& )
+	{ caster.CastRay( rc, rast, ray, out, rs, 0, pRadianceMap, iorStack ); }
+	template<> inline void PTCastRay<NMTag>(
+		const IRayCaster& caster, const RuntimeContext& rc, const RasterizerState& rast,
+		const Ray& ray, Scalar& out, const IRayCaster::RAY_STATE& rs,
+		const IRadianceMap* pRadianceMap, const IORStack& iorStack, const NMTag& tag )
+	{ caster.CastRayNM( rc, rast, ray, out, rs, tag.nm, 0, pRadianceMap, iorStack ); }
+
+	// SMS evaluation result + dispatch (NM uses per-wavelength IOR for
+	// dispersion).  Unifies SMSContribution / SMSContributionNM.
+	template<class Tag>
+	struct PTSMSResult
+	{
+		typename SpectralValueTraits<Tag>::value_type contribution;
+		Scalar misWeight;
+		bool   valid;
+	};
+	template<class Tag>
+	inline PTSMSResult<Tag> PTEvaluateSMS(
+		ManifoldSolver* pSolver, const Point3& pos, const Vector3& geomNormal,
+		const Vector3& shadingNormal, const OrthonormalBasis3D& onb,
+		const IMaterial* pMaterial, const Vector3& woOutgoing, const IScene& scene,
+		const IRayCaster& caster, ISampler& sampler, const Tag& tag );
+	template<> inline PTSMSResult<PelTag> PTEvaluateSMS<PelTag>(
+		ManifoldSolver* pSolver, const Point3& pos, const Vector3& geomNormal,
+		const Vector3& shadingNormal, const OrthonormalBasis3D& onb,
+		const IMaterial* pMaterial, const Vector3& woOutgoing, const IScene& scene,
+		const IRayCaster& caster, ISampler& sampler, const PelTag& )
+	{
+		ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
+			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing, scene, caster, sampler );
+		return PTSMSResult<PelTag>{ sms.contribution, sms.misWeight, sms.valid };
+	}
+	template<> inline PTSMSResult<NMTag> PTEvaluateSMS<NMTag>(
+		ManifoldSolver* pSolver, const Point3& pos, const Vector3& geomNormal,
+		const Vector3& shadingNormal, const OrthonormalBasis3D& onb,
+		const IMaterial* pMaterial, const Vector3& woOutgoing, const IScene& scene,
+		const IRayCaster& caster, ISampler& sampler, const NMTag& tag )
+	{
+		ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
+			pos, geomNormal, shadingNormal, onb, pMaterial, woOutgoing, scene, caster, sampler, tag.nm );
+		return PTSMSResult<NMTag>{ sms.contribution, sms.misWeight, sms.valid };
+	}
+
+	// PART3 bsdfTimesCos VALUE (carried in the iterative state).  Pel:
+	// scatterThroughput * pdf (RISEPel); NM: fabs(scatterThroughputNM) *
+	// pdf (Scalar) — the NM path stores the unsigned magnitude × pdf, a
+	// genuine pre-existing Pel/NM asymmetry preserved here verbatim.
+	inline RISEPel PTBsdfTimesCos( const RISEPel& scatterThroughput, Scalar pdf ) { return scatterThroughput * pdf; }
+	inline Scalar  PTBsdfTimesCos( const Scalar  scatterThroughput, Scalar pdf ) { return std::fabs( scatterThroughput ) * pdf; }
+
+	// RAY_STATE.bsdfTimesCos field is always RISEPel.  Pel: identity;
+	// NM: RISEPel(scalar) broadcast (matches rs.bsdfTimesCos = RISEPel(nm)).
+	inline RISEPel PTRayStateBsdfTimesCos( const RISEPel& v ) { return v; }
+	inline RISEPel PTRayStateBsdfTimesCos( const Scalar  v ) { return RISEPel( v ); }
+
+	// Guiding scatter-throughput `value * cos / pdf`.  The Pel original
+	// grouped it as `value * (cos/pdf)`; the NM original as `value*cos/pdf`
+	// = `(value*cos)/pdf`.  Those associativities differ at the ULP level,
+	// so each is reproduced exactly rather than unified.
+	inline RISEPel PTMulDiv( const RISEPel& a, const Scalar b, const Scalar c ) { return a * ( b / c ); }
+	inline Scalar  PTMulDiv( const Scalar  a, const Scalar b, const Scalar c ) { return a * b / c; }
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1091,7 +1319,9 @@ PathTracingIntegrator::~PathTracingIntegrator()
 // each iteration for the *next* bounce (the first hit is pre-computed).
 //////////////////////////////////////////////////////////////////////
 
-RISEPel PathTracingIntegrator::IntegrateFromHit(
+template<class Tag>
+typename SpectralValueTraits<Tag>::value_type
+PathTracingIntegrator::IntegrateFromHitTemplated(
 	const RuntimeContext& rc,
 	const RasterizerState& rast,
 	const RayIntersection& firstHit,
@@ -1102,7 +1332,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	unsigned int startDepth,
 	const IORStack& initialIorStack,
 	Scalar bsdfPdf,
-	const RISEPel& bsdfTimesCos_,
+	const typename SpectralValueTraits<Tag>::value_type& bsdfTimesCos_,
 	bool considerEmission,
 	Scalar importance,
 	IRayCaster::RAY_STATE::RayType rayType,
@@ -1114,12 +1344,16 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	Scalar glossyFilterWidth,
 	bool smsPassedThroughSpecular_initial,
 	bool smsHadNonSpecularShading_initial,
-	PixelAOV* pAOV
+	PixelAOV* pAOV,
+	const Tag& tag
 	) const
 {
-	RISEPel result( 0, 0, 0 );
-	RISEPel throughput( 1, 1, 1 );
-	RISEPel bsdfTimesCos = bsdfTimesCos_;
+	using Traits = SpectralValueTraits<Tag>;
+	using Value = typename Traits::value_type;
+
+	Value result = Traits::zero();
+	Value throughput = PTValueOne<Tag>();
+	Value bsdfTimesCos = bsdfTimesCos_;
 
 	RayIntersection ri( firstHit );
 	Ray currentRay = ri.geometric.ray;
@@ -1129,18 +1363,28 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 	// Firefly tracing: assigns a monotonically increasing per-pixel sample
 	// ID so the output log can be grouped by sample.  Only enabled when
 	// env RISE_FFTRACE_X/Y match rast.x/y AND we're at startDepth==0
-	// (top-level camera path).
+	// (top-level camera path).  FF_TRACE_ACTIVE is tag-neutral and only
+	// true under the RISE_FFTRACE_* debug env (never during tests /
+	// production), so the machinery is render-neutral for both tags; the
+	// FF_TRACE *bodies* (which index throughput[0..2]) compile only for
+	// PelTag, preserving the original NM path's complete absence of FF.
 	const bool ff = FF_TRACE_ACTIVE( rast.x, rast.y ) && startDepth == 0;
 	static thread_local unsigned long ffSampleId = 0;
 	const unsigned long ffSample = ff ? (++ffSampleId) : 0;
 	::RISE::FireflyTrace::PathScope ffPathScope( ff );
-	if( ff ) {
-		FF_TRACE( "=== SAMPLE %lu px(%u,%u) startDepth=%u firstHit.bHit=%d ===",
-			ffSample, rast.x, rast.y, startDepth, (int)ri.geometric.bHit );
+	if constexpr ( Traits::is_pel ) {
+		if( ff ) {
+			FF_TRACE( "=== SAMPLE %lu px(%u,%u) startDepth=%u firstHit.bHit=%d ===",
+				ffSample, rast.x, rast.y, startDepth, (int)ri.geometric.bHit );
+		}
 	}
 
 	const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
 	const Scalar rrThreshold = stabilityConfig.rrThreshold;
+	// SMS enablement — declared for both tags so the PART1 emission-
+	// suppression test reads identically to the NM original (the Pel
+	// original spelled the same predicate as `pSolver != 0` inline).
+	const bool bSMSEnabled = ( pSolver != 0 );
 
 	// When SMS is active, track whether the BSDF-sampled path went
 	// through a specular surface.  If it did AND there was a prior
@@ -1191,9 +1435,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		// path (typical caustics peak around 1e1-1e3) but well below
 		// the float32 EXR overflow ceiling (~3.4e38).
 		{
-			const Scalar absMax = r_max( r_max( fabs( throughput[0] ),
-			                                    fabs( throughput[1] ) ),
-			                             fabs( throughput[2] ) );
+			const Scalar absMax = PTAbsMaxMagnitude( throughput );
 			if( !std::isfinite( absMax ) || absMax > Scalar(1e6) ) {
 				break;
 			}
@@ -1222,8 +1464,8 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			{
 				const Scalar maxDist = bHit ? ri.geometric.range : Scalar(1e10);
 				IndependentSampler mediumSampler( rc.random );
-				const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS(
-					pCurrentMedium, currentRay, maxDist, pLS, mediumSampler );
+				const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
+					pCurrentMedium, currentRay, maxDist, pLS, mediumSampler, tag );
 				const Scalar t_m = mso.t;
 				const bool scattered = mso.scattered;
 
@@ -1241,29 +1483,28 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					// Volume scatter event
 					const Point3 scatterPt = currentRay.PointAtLength( t_m );
 					const Vector3 wo = currentRay.Dir();
-					const MediumCoefficients coeff = pCurrentMedium->GetCoefficients( scatterPt );
-					const RISEPel Tr = pCurrentMedium->EvalTransmittance( currentRay, t_m );
-					const Scalar sigma_t_max = ColorMath::MaxValue( coeff.sigma_t );
+					const PTMediumScatter<Tag> coeff = PTGetMediumScatter<Tag>( pCurrentMedium, scatterPt, tag );
+					const Value Tr = PTEvalTransmittance<Tag>( pCurrentMedium, currentRay, t_m, tag );
 
-					RISEPel medWeight( 0, 0, 0 );
+					Value medWeight = Traits::zero();
 					if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
 					{
 						// Equiangular-MIS throughput: Tr * sigma_s / combinedPdf.
-						medWeight = Tr * coeff.sigma_s * (1.0 / mso.combinedPdf);
+						medWeight = PTDivByScalar( Tr * coeff.sigma_s, mso.combinedPdf );
 					}
-					else if( sigma_t_max > 0 )
+					else if( coeff.sigmaTReduced > 0 )
 					{
 						// Legacy max-channel throughput (no positional lights /
 						// outside medium bounds).  Per-channel equivalent:
 						//   sigma_s[c] / sigma_t_max * exp((sigma_t_max - sigma_t[c]) * t)
-						const Scalar Tr_scalar = ColorMath::MinValue( Tr );
+						const Scalar Tr_scalar = PTTrReduced( Tr );
 						if( Tr_scalar > 0 ) {
-							medWeight = Tr * coeff.sigma_s *
-								(1.0 / (sigma_t_max * Tr_scalar));
+							medWeight = PTDivByScalar( Tr * coeff.sigma_s,
+								coeff.sigmaTReduced * Tr_scalar );
 						}
 					}
 
-					if( ColorMath::MaxValue( medWeight ) <= 0 ) {
+					if( PTPositiveMagnitude( medWeight ) <= 0 ) {
 						break;
 					}
 
@@ -1278,17 +1519,17 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					// NEE at scatter point
 					if( pLS )
 					{
-						RISEPel Ld = MediumTransport::EvaluateInScattering(
+						Value Ld = PTEvaluateInScattering<Tag>(
 							scatterPt, wo, pCurrentMedium, caster, pLS,
-							sampler, rast, pMediumObject );
-						if( ColorMath::MaxValue( Ld ) > 0 )
+							sampler, rast, pMediumObject, tag );
+						if( PTPositiveMagnitude( Ld ) > 0 )
 						{
-							RISEPel directContrib = throughput * Ld;
+							Value directContrib = throughput * Ld;
 							directContrib = ClampContribution( directContrib,
 								stabilityConfig.directClamp );
 							result = result + directContrib;
 #ifdef RISE_ENABLE_OPENPGL
-							AddPTIGuidingScatteredContribution( volSegment, Ld );
+							AddPTIGuidingScatteredContribution( volSegment, PTGuidingPel( Ld ) );
 #endif
 						}
 					}
@@ -1359,10 +1600,19 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
 					const Scalar volScatterScalar = phaseVal / effectivePdf;
-					RISEPel volScatterThroughput(
-						volScatterScalar, volScatterScalar, volScatterScalar );
+					// Pel multiplies channel-wise by RISEPel(s,s,s); NM
+					// multiplies by the scalar.  Both reduce throughput by
+					// phaseVal/effectivePdf — kept distinct so each matches
+					// its original arithmetic exactly.
+					Value volScatterThroughput;
+					if constexpr ( Traits::is_pel ) {
+						volScatterThroughput = RISEPel(
+							volScatterScalar, volScatterScalar, volScatterScalar );
+					} else {
+						volScatterThroughput = volScatterScalar;
+					}
 #ifdef RISE_ENABLE_OPENPGL
-					const RISEPel preRRVolScatterThroughput = volScatterThroughput;
+					const Value preRRVolScatterThroughput = volScatterThroughput;
 					Scalar volRrSurvivalProb = 1.0;
 #endif
 					throughput = throughput * volScatterThroughput;
@@ -1373,14 +1623,18 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 							PathTransportUtilities::EvaluateRussianRoulette(
 								depth + volumeBounces,
 								rrMinDepth, rrThreshold,
-								ColorMath::MaxValue( throughput ),
+								PTSurvivalMagnitude( throughput ),
 								importance,
 								sampler.Get1D() );
 						if( rr.terminate ) {
 							break;
 						}
 						if( rr.survivalProb < 1.0 ) {
-							throughput = throughput * (1.0 / rr.survivalProb);
+							// PTDivByScalar preserves the per-variant arithmetic:
+							// Pel `throughput * (1/p)` (orig RGB), NM `throughput / p`
+							// (orig spectral used `/=`).  Inlining `*(1/p)` for both
+							// would change the NM path at the ULP level.
+							throughput = PTDivByScalar( throughput, rr.survivalProb );
 #ifdef RISE_ENABLE_OPENPGL
 							volRrSurvivalProb = rr.survivalProb;
 #endif
@@ -1393,7 +1647,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 							volSegment,
 							wi,
 							effectivePdf,
-							preRRVolScatterThroughput,
+							PTGuidingPel( preRRVolScatterThroughput ),
 							false,
 							volRrSurvivalProb,
 							1.0,
@@ -1410,8 +1664,8 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				else if( !scattered && bHit )
 				{
 					// Surface hit through medium: apply transmittance
-					const RISEPel Tr = pCurrentMedium->EvalTransmittance(
-						currentRay, ri.geometric.range );
+					const Value Tr = PTEvalTransmittance<Tag>(
+						pCurrentMedium, currentRay, ri.geometric.range, tag );
 					throughput = throughput * Tr;
 				}
 				else if( !scattered && !bHit )
@@ -1420,8 +1674,8 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					// residual transmittance along the escape segment before
 					// the env radiance below multiplies into throughput
 					// (PBRT-v4 beta *= T_maj before the `if (!si)` branch).
-					const RISEPel Tr = pCurrentMedium->EvalTransmittance(
-						currentRay, maxDist );
+					const Value Tr = PTEvalTransmittance<Tag>(
+						pCurrentMedium, currentRay, maxDist, tag );
 					throughput = throughput * Tr;
 				}
 			}
@@ -1432,13 +1686,13 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				// Per-object radiance map (via material)
 				if( pRadianceMap )
 				{
-					RISEPel envRadiance = pRadianceMap->GetRadiance( currentRay, rast );
+					Value envRadiance = PTEvalRadianceMap<Tag>( pRadianceMap, currentRay, rast, tag );
 					result = result + throughput * envRadiance;
 				}
 				else if( scene.GetGlobalRadianceMap() )
 				{
-					RISEPel envRadiance = scene.GetGlobalRadianceMap()->GetRadiance(
-						currentRay, rast );
+					Value envRadiance = PTEvalRadianceMap<Tag>(
+						scene.GetGlobalRadianceMap(), currentRay, rast, tag );
 
 					// MIS weight for BSDF-sampled environment hit
 					if( pLS && bsdfPdf > 0 )
@@ -1452,7 +1706,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 								// Optimal MIS training
 								if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
 								{
-									const Scalar fLum = ColorMath::MaxValue( envRadiance * bsdfTimesCos );
+									const Scalar fLum = PTPositiveMagnitude( envRadiance * bsdfTimesCos );
 									const Scalar f2 = fLum * fLum;
 									if( f2 > 0 && bsdfPdf > 0 )
 									{
@@ -1481,9 +1735,9 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 #ifdef RISE_ENABLE_OPENPGL
 					if( guidingRecorder && guidingRecorder->active &&
-						GuidingTrainingLuminance( envRadiance ) > 0 )
+						PTGuidingLuminance( envRadiance ) > 0 )
 					{
-						AddPTIGuidingBackgroundSegment( *guidingRecorder, currentRay, envRadiance );
+						AddPTIGuidingBackgroundSegment( *guidingRecorder, currentRay, PTGuidingPel( envRadiance ) );
 					}
 #endif
 				}
@@ -1517,7 +1771,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		rs.depth = depth + 1;
 		rs.importance = importance;
 		rs.bsdfPdf = bsdfPdf;
-		rs.bsdfTimesCos = bsdfTimesCos;
+		rs.bsdfTimesCos = PTRayStateBsdfTimesCos( bsdfTimesCos );
 		rs.considerEmission = considerEmission;
 		rs.type = rayType;
 		rs.diffuseBounces = diffuseBounces;
@@ -1532,6 +1786,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				BeginPTIGuidingSegment( *guidingRecorder, ri.geometric ) : 0;
 #endif
 
+		if constexpr ( Traits::is_pel ) {
 		if( ff ) {
 			FF_TRACE( "  depth=%u HIT obj=%p mat=%p pos=(%.4f,%.4f,%.4f) n=(%.4f,%.4f,%.4f) thr=(%.4f,%.4f,%.4f) psS=%d nsS=%d",
 				depth, (const void*)ri.pObject, (const void*)ri.pMaterial,
@@ -1540,42 +1795,53 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				throughput[0], throughput[1], throughput[2],
 				(int)bPassedThroughSpecular, (int)bHadNonSpecularShading );
 		}
+		}
 
 		// ============================================================
 		// PART 1: Emission
 		// ============================================================
 		{
 			IEmitter* pEmitter = ri.pMaterial ? ri.pMaterial->GetEmitter() : 0;
+			// When SMS is active, suppress emission from BSDF paths that
+			// passed through specular surfaces, but ONLY if there was a
+			// prior non-specular shading point where SMS was evaluated.
+			// Without that check, camera->glass->light paths (with no
+			// diffuse receiver) would be killed.  bSMSEnabled == (pSolver
+			// != 0); the Pel original spelled this `pSolver && ...` inline,
+			// the NM original as the `smsSuppressEmission` flag used here.
+			const bool smsSuppressEmission = bSMSEnabled
+				&& bPassedThroughSpecular && bHadNonSpecularShading;
 			if( pEmitter && considerEmission )
 			{
-				// When SMS is active, suppress emission from BSDF paths
-				// that passed through specular surfaces, but ONLY if
-				// there was a prior non-specular shading point where SMS
-				// was evaluated.  Without that check, camera->glass->light
-				// paths (with no diffuse receiver) would be killed.
-				if( pSolver && bPassedThroughSpecular && bHadNonSpecularShading )
+				if( smsSuppressEmission )
 				{
-#if SMS_DIAG_ENABLED
-					g_smsDiag_emissionSuppressed.fetch_add( 1, std::memory_order_relaxed );
-					const RISEPel rawE_diag = pEmitter->emittedRadiance(
-						ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal );
-					SMSDiag_AddLum( g_smsDiag_sumSuppLumX,
-						ColorMath::MaxValue( throughput * rawE_diag ) );
-#endif
-					if( ff ) {
-						RISEPel rawE = pEmitter->emittedRadiance(
-							ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal );
-						FF_TRACE( "  depth=%u EMISSION-SUPPRESSED-BY-SMS rawE=(%.3e,%.3e,%.3e) thr=(%.3e,%.3e,%.3e)",
-							depth, rawE[0], rawE[1], rawE[2],
-							throughput[0], throughput[1], throughput[2] );
-					}
 					// Skip emission entirely; SMS handles this contribution.
+					// SMS_DIAG counters + the firefly trace are Pel-only
+					// diagnostics (the NM original had neither), so they
+					// compile out for NMTag.
+					if constexpr ( Traits::is_pel )
+					{
+#if SMS_DIAG_ENABLED
+						g_smsDiag_emissionSuppressed.fetch_add( 1, std::memory_order_relaxed );
+						const RISEPel rawE_diag = pEmitter->emittedRadiance(
+							ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal );
+						SMSDiag_AddLum( g_smsDiag_sumSuppLumX,
+							ColorMath::MaxValue( throughput * rawE_diag ) );
+#endif
+						if( ff ) {
+							RISEPel rawE = pEmitter->emittedRadiance(
+								ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal );
+							FF_TRACE( "  depth=%u EMISSION-SUPPRESSED-BY-SMS rawE=(%.3e,%.3e,%.3e) thr=(%.3e,%.3e,%.3e)",
+								depth, rawE[0], rawE[1], rawE[2],
+								throughput[0], throughput[1], throughput[2] );
+						}
+					}
 				}
 				else
 				{
-				RISEPel emission = pEmitter->emittedRadiance(
-					ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal );
-				const RISEPel rawEmission = emission;
+				Value emission = PTEvalEmittedRadiance<Tag>(
+					pEmitter, ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal, tag );
+				const Value rawEmission = emission;
 				Scalar emissionMiWeight = 1.0;
 
 				if( bsdfPdf > 0 && ri.pObject )
@@ -1595,7 +1861,14 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 							if( pLS && pLS->IsRISActive() )
 							{
 								emissionMiWeight = 0.0;
-								emission = emission * 0.0;
+								// Pel zeroed via `emission * 0.0`; NM via a
+								// hard `0` (they differ only for a non-finite
+								// emission — preserve each variant exactly).
+								if constexpr ( Traits::is_pel ) {
+									emission = emission * Scalar( 0 );
+								} else {
+									emission = Traits::zero();
+								}
 							}
 							else
 							{
@@ -1615,7 +1888,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 								if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
 								{
-									const Scalar fLum = ColorMath::MaxValue( rawEmission * bsdfTimesCos );
+									const Scalar fLum = PTPositiveMagnitude( rawEmission * bsdfTimesCos );
 									const Scalar f2 = fLum * fLum;
 									if( f2 > 0 && bsdfPdf > 0 )
 									{
@@ -1650,20 +1923,22 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 				result = result + throughput * emission;
 
-				if( ff ) {
-					const RISEPel contrib = throughput * emission;
-					FF_TRACE( "  depth=%u EMISSION rawE=(%.3e,%.3e,%.3e) mis=%.4f thr=(%.3e,%.3e,%.3e) contrib=(%.3e,%.3e,%.3e) result=(%.3e,%.3e,%.3e)",
-						depth, rawEmission[0], rawEmission[1], rawEmission[2],
-						emissionMiWeight,
-						throughput[0], throughput[1], throughput[2],
-						contrib[0], contrib[1], contrib[2],
-						result[0], result[1], result[2] );
+				if constexpr ( Traits::is_pel ) {
+					if( ff ) {
+						const RISEPel contrib = throughput * emission;
+						FF_TRACE( "  depth=%u EMISSION rawE=(%.3e,%.3e,%.3e) mis=%.4f thr=(%.3e,%.3e,%.3e) contrib=(%.3e,%.3e,%.3e) result=(%.3e,%.3e,%.3e)",
+							depth, rawEmission[0], rawEmission[1], rawEmission[2],
+							emissionMiWeight,
+							throughput[0], throughput[1], throughput[2],
+							contrib[0], contrib[1], contrib[2],
+							result[0], result[1], result[2] );
+					}
 				}
 
 #ifdef RISE_ENABLE_OPENPGL
 				if( guidingSegment &&
-					ColorMath::MaxValue( rawEmission ) > 0 ) {
-					SetPTIGuidingDirectContribution( guidingSegment, rawEmission, emissionMiWeight );
+					PTSurvivalMagnitude( rawEmission ) > 0 ) {
+					SetPTIGuidingDirectContribution( guidingSegment, PTGuidingPel( rawEmission ), emissionMiWeight );
 				}
 #endif
 			} // else (not suppressed by SMS)
@@ -1710,12 +1985,12 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 						ISampler& bssrdfSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
 
 						BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
-							ri.geometric, ri.pObject, ri.pMaterial, bssrdfSampler, 0 );
+							ri.geometric, ri.pObject, ri.pMaterial, bssrdfSampler, PTTagNm( tag ) );
 
 						if( bssrdf.valid )
 						{
-							const RISEPel bssrdfWeight = bssrdf.weight;
-							const RISEPel bssrdfWeightSpatial = bssrdf.weightSpatial;
+							const Value bssrdfWeight = PTBssrdfWeight<Tag>( bssrdf );
+							const Value bssrdfWeightSpatial = PTBssrdfWeightSpatial<Tag>( bssrdf );
 
 							RayIntersectionGeometric entryRI(
 								Ray( bssrdf.entryPoint, bssrdf.scatteredRay.Dir() ),
@@ -1739,10 +2014,10 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 								// NEE at BSSRDF entry point
 								if( pLS )
 								{
-									RISEPel directSSS = pLS->EvaluateDirectLighting(
-										entryRI, entryBSDF, &entryMaterial, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0 );
-									RISEPel sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
+									Value directSSS = PTEvaluateDirectLighting<Tag>(
+										pLS, entryRI, entryBSDF, &entryMaterial, caster,
+										bssrdfSampler, ri.pObject, 0, false, 0, tag );
+									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
 									result = result + sssDirectContrib;
@@ -1750,27 +2025,27 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 								// BSSRDF continuation via CastRay sub-path
 								{
-									RISEPel sssThroughput = bssrdfWeight;
+									Value sssThroughput = bssrdfWeight;
 
 									const PathTransportUtilities::RussianRouletteResult rr =
 										PathTransportUtilities::EvaluateRussianRoulette(
 											depth, rrMinDepth, rrThreshold,
-											importance * ColorMath::MaxValue( sssThroughput ),
+											importance * PTSurvivalMagnitude( sssThroughput ),
 											importance, bssrdfSampler.Get1D() );
 									if( !rr.terminate )
 									{
 										if( rr.survivalProb < 1.0 ) {
-											sssThroughput = sssThroughput * (1.0 / rr.survivalProb);
+											sssThroughput = PTDivByScalar( sssThroughput, rr.survivalProb );
 										}
 
-										RISEPel cthis( 0, 0, 0 );
+										Value cthis = Traits::zero();
 										Ray continuationRay = bssrdf.scatteredRay;
 										continuationRay.Advance( 1e-8 );
 
 										IRayCaster::RAY_STATE rs2;
 										rs2.depth = depth + 2;
 										rs2.considerEmission = true;
-										rs2.importance = importance * ColorMath::MaxValue( sssThroughput );
+										rs2.importance = importance * PTSurvivalMagnitude( sssThroughput );
 										rs2.bsdfPdf = bssrdf.cosinePdf;
 										rs2.type = IRayCaster::RAY_STATE::eRayDiffuse;
 										rs2.diffuseBounces = diffuseBounces;
@@ -1783,13 +2058,25 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 										// SMS emission-suppression state so an
 										// onwards child ray through glass to a
 										// light doesn't re-enable emission.
-										rs2.smsPassedThroughSpecular = false;
-										rs2.smsHadNonSpecularShading = true;
+										if constexpr ( Traits::is_pel ) {
+											rs2.smsPassedThroughSpecular = false;
+											rs2.smsHadNonSpecularShading = true;
+										} else {
+											// Preserved Pel/NM asymmetry: the NM original recorded
+											// the BSSRDF cosine-sampled bsdfTimesCos for the
+											// continuation's optimal-MIS and counted a BSDF sample,
+											// instead of propagating the SMS suppression flags.
+											rs2.bsdfTimesCos = RISEPel( std::fabs( sssThroughput ) * bssrdf.cosinePdf );
+											if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 ) {
+												const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
+													rast.x, rast.y, kTechniqueBSDF );
+											}
+										}
 
-										caster.CastRay( rc, rast, continuationRay,
-											cthis, rs2, 0, pRadianceMap, iorStack );
+										PTCastRay<Tag>( caster, rc, rast, continuationRay,
+											cthis, rs2, pRadianceMap, iorStack, tag );
 
-										RISEPel indirect = sssThroughput * cthis;
+										Value indirect = sssThroughput * cthis;
 										if( depth > 0 ) {
 											indirect = ClampContribution( indirect,
 												stabilityConfig.indirectClamp );
@@ -1810,6 +2097,17 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		{
 			const RandomWalkSSSParams* pRWParams =
 				ri.pMaterial ? ri.pMaterial->GetRandomWalkSSSParams() : 0;
+
+			// NM-only fallback (preserved asymmetry): when the material
+			// provides per-wavelength random-walk params but no RGB ones,
+			// the NM original synthesised them via GetRandomWalkSSSParamsNM.
+			[[maybe_unused]] RandomWalkSSSParams rwParamsNM;
+			if constexpr ( Traits::is_nm ) {
+				if( !pRWParams && ri.pMaterial &&
+					ri.pMaterial->GetRandomWalkSSSParamsNM( tag.nm, rwParamsNM ) ) {
+					pRWParams = &rwParamsNM;
+				}
+			}
 
 			if( pRWParams && pBRDF )
 			{
@@ -1844,13 +2142,13 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 							ri.geometric, ri.pObject,
 							pRWParams->sigma_a, pRWParams->sigma_s, pRWParams->sigma_t,
 							pRWParams->g, pRWParams->ior, pRWParams->maxBounces,
-							rwSampler, 0, pRWParams->maxDepth );
+							rwSampler, PTTagNm( tag ), pRWParams->maxDepth );
 
 						if( bssrdf.valid )
 						{
 							const Scalar bf = pRWParams->boundaryFilter;
-							const RISEPel bssrdfWeight = bssrdf.weight * Ft * bf;
-							const RISEPel bssrdfWeightSpatial = bssrdf.weightSpatial * Ft * bf;
+							const Value bssrdfWeight = PTBssrdfWeight<Tag>( bssrdf ) * Ft * bf;
+							const Value bssrdfWeightSpatial = PTBssrdfWeightSpatial<Tag>( bssrdf ) * Ft * bf;
 
 							RayIntersectionGeometric entryRI(
 								Ray( bssrdf.entryPoint, bssrdf.scatteredRay.Dir() ),
@@ -1872,10 +2170,10 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 							{
 								if( pLS )
 								{
-									RISEPel directSSS = pLS->EvaluateDirectLighting(
-										entryRI, entryBSDF, &entryMaterial, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0 );
-									RISEPel sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
+									Value directSSS = PTEvaluateDirectLighting<Tag>(
+										pLS, entryRI, entryBSDF, &entryMaterial, caster,
+										bssrdfSampler, ri.pObject, 0, false, 0, tag );
+									Value sssDirectContrib = throughput * bssrdfWeightSpatial * directSSS;
 									sssDirectContrib = ClampContribution( sssDirectContrib,
 										stabilityConfig.directClamp );
 									result = result + sssDirectContrib;
@@ -1883,27 +2181,27 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 								// BSSRDF continuation via CastRay sub-path
 								{
-									RISEPel sssThroughput = bssrdfWeight;
+									Value sssThroughput = bssrdfWeight;
 
 									const PathTransportUtilities::RussianRouletteResult rr =
 										PathTransportUtilities::EvaluateRussianRoulette(
 											depth, rrMinDepth, rrThreshold,
-											importance * ColorMath::MaxValue( sssThroughput ),
+											importance * PTSurvivalMagnitude( sssThroughput ),
 											importance, bssrdfSampler.Get1D() );
 									if( !rr.terminate )
 									{
 										if( rr.survivalProb < 1.0 ) {
-											sssThroughput = sssThroughput * (1.0 / rr.survivalProb);
+											sssThroughput = PTDivByScalar( sssThroughput, rr.survivalProb );
 										}
 
-										RISEPel cthis( 0, 0, 0 );
+										Value cthis = Traits::zero();
 										Ray continuationRay = bssrdf.scatteredRay;
 										continuationRay.Advance( 1e-8 );
 
 										IRayCaster::RAY_STATE rs2;
 										rs2.depth = depth + 2;
 										rs2.considerEmission = true;
-										rs2.importance = importance * ColorMath::MaxValue( sssThroughput );
+										rs2.importance = importance * PTSurvivalMagnitude( sssThroughput );
 										rs2.bsdfPdf = bssrdf.cosinePdf;
 										rs2.type = IRayCaster::RAY_STATE::eRayDiffuse;
 										rs2.diffuseBounces = diffuseBounces;
@@ -1916,13 +2214,25 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 										// SMS emission-suppression state so an
 										// onwards child ray through glass to a
 										// light doesn't re-enable emission.
-										rs2.smsPassedThroughSpecular = false;
-										rs2.smsHadNonSpecularShading = true;
+										if constexpr ( Traits::is_pel ) {
+											rs2.smsPassedThroughSpecular = false;
+											rs2.smsHadNonSpecularShading = true;
+										} else {
+											// Preserved Pel/NM asymmetry: the NM original recorded
+											// the BSSRDF cosine-sampled bsdfTimesCos for the
+											// continuation's optimal-MIS and counted a BSDF sample,
+											// instead of propagating the SMS suppression flags.
+											rs2.bsdfTimesCos = RISEPel( std::fabs( sssThroughput ) * bssrdf.cosinePdf );
+											if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 ) {
+												const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
+													rast.x, rast.y, kTechniqueBSDF );
+											}
+										}
 
-										caster.CastRay( rc, rast, continuationRay,
-											cthis, rs2, 0, pRadianceMap, iorStack );
+										PTCastRay<Tag>( caster, rc, rast, continuationRay,
+											cthis, rs2, pRadianceMap, iorStack, tag );
 
-										RISEPel indirect = sssThroughput * cthis;
+										Value indirect = sssThroughput * cthis;
 										if( depth > 0 ) {
 											indirect = ClampContribution( indirect,
 												stabilityConfig.indirectClamp );
@@ -1951,42 +2261,38 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			{
 				RISE_PROFILE_PHASE(BSDFScatter);
 				RISE_PROFILE_INC(nBSDFScatterCalls);
-				pSPF->Scatter( ri.geometric, sampler, scattered, iorStack );
+				PTScatter<Tag>( pSPF, ri.geometric, sampler, scattered, iorStack, tag );
 			}
 
 			if( scattered.Count() == 0 ) {
 				break;
 			}
 
-			if( scattered.Count() > 1 )
+			// Stochastic single-lobe selection (no path-tree branching at
+			// multi-lobe delta vertices).  Branching was excised in 2026-05;
+			// matches PBRT/Mitsuba/Arnold/Cycles X.  Pel selects with RGB-max
+			// weights (bNM=false), NM with spectral weights (bNM=true) via
+			// PTRandomlySelect / PTScatterSelectWeight, so the selection and
+			// the selectProb compensation stay in the same domain.  The Pel
+			// multi-lobe and single-lobe branches are unified here: for a
+			// single lobe selectProb stays 1.0 and the `* (1/selectProb)`
+			// factor is an exact multiply by 1.0.
 			{
-				// Stochastic single-lobe selection at multi-lobe delta
-				// vertices.  Path-tree branching at Fresnel splits was
-				// excised in 2026-05 (matches PBRT/Mitsuba/Arnold/Cycles X).
-				// Staying inside IntegrateFromHit preserves SMS
-				// emission-suppression flags.
 				const Scalar xi = sampler.Get1D();
-				const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
+				const ScatteredRay* pS = PTRandomlySelect<Tag>( scattered, xi );
 				if( !pS ) {
 					break;
 				}
 
-				// RandomlySelect picks lobe i with prob
-				// max(kray_i)/sum_j max(kray_j).  The unbiased throughput
-				// update is kray_I / selectProb — without the division, PT
-				// systematically dims at every multi-lobe delta vertex and
-				// feeds a shrunken throughput into downstream RR, inflating
-				// the 1/survivalProb amplification factor on rare survivals.
-				// BDPT does this (see BDPTIntegrator.cpp:1782-1794, 2199).
 				Scalar selectProb = 1.0;
-				{
-					Scalar totalKrayMax = 0;
+				if( scattered.Count() > 1 ) {
+					Scalar totalKray = 0;
 					for( unsigned int li = 0; li < scattered.Count(); li++ ) {
-						totalKrayMax += ColorMath::MaxValue( scattered[li].kray );
+						totalKray += PTScatterSelectWeight<Tag>( scattered[li] );
 					}
-					const Scalar pSMax = ColorMath::MaxValue( pS->kray );
-					if( totalKrayMax > NEARZERO && pSMax > NEARZERO ) {
-						selectProb = pSMax / totalKrayMax;
+					const Scalar pSWeight = PTScatterSelectWeight<Tag>( *pS );
+					if( totalKray > NEARZERO && pSWeight > NEARZERO ) {
+						selectProb = pSWeight / totalKray;
 					}
 				}
 				if( selectProb < NEARZERO ) {
@@ -1995,20 +2301,36 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 				IRayCaster::RAY_STATE rs2 = rs;
 				rs2.depth = depth + 1;
-				rs2.importance = importance *
-					ColorMath::MaxValue( pS->kray ) / selectProb;
+				rs2.importance = importance * PTSurvivalMagnitude( PTScatterKray<Tag>( *pS ) ) / selectProb;
 				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
 				rs2.type = PathTracingRayType( *pS );
-				rs2.considerEmission = true;
+				// SPF/no-BSDF specular continuation: preserved Pel/NM asymmetry
+				// — Pel always re-enables emission at the next vertex; the NM
+				// original suppressed it after a delta scatter when SMS is active
+				// (SMS already covers that path).
+				bool nextConsiderEmissionSPF;
+				if constexpr ( Traits::is_pel ) {
+					nextConsiderEmissionSPF = true;
+				} else {
+					nextConsiderEmissionSPF = ( pS->isDelta && bSMSEnabled ) ? false : true;
+				}
+				rs2.considerEmission = nextConsiderEmissionSPF;
 				if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
 					break;
 				}
 
-				throughput = throughput * pS->kray * (1.0 / selectProb);
+				// Pel multiplies (throughput * kray) * (1/selectProb); NM
+				// multiplies throughput * (krayNM * (1/selectProb)).  The two
+				// associativities differ at the ULP level, so preserve each.
+				if constexpr ( Traits::is_pel ) {
+					throughput = throughput * PTScatterKray<Tag>( *pS ) * ( Scalar( 1 ) / selectProb );
+				} else {
+					throughput = throughput * ( PTScatterKray<Tag>( *pS ) * ( Scalar( 1 ) / selectProb ) );
+				}
 				importance = rs2.importance;
 				bsdfPdf = rs2.bsdfPdf;
-				bsdfTimesCos = RISEPel( 0, 0, 0 );
-				considerEmission = true;
+				bsdfTimesCos = Traits::zero();
+				considerEmission = nextConsiderEmissionSPF;
 				rayType = rs2.type;
 				diffuseBounces = rs2.diffuseBounces;
 				glossyBounces = rs2.glossyBounces;
@@ -2022,104 +2344,36 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				} else {
 					bPassedThroughSpecular = false;
 					bHadNonSpecularShading = true;
+					// Accurate prefilter mode: record AOV at the first non-delta
+					// scatter on this path.  See docs/OIDN.md (OIDN-P1-1).  Fast
+					// mode records at first hit in IntegrateRay and skips this
+					// branch.  Gated on the AOV-capable tag (supports_aov): NM
+					// gains the inline hook once its supports_aov flag is set.
+					if constexpr ( Traits::supports_aov ) {
 #ifdef RISE_ENABLE_OIDN
-					// Accurate prefilter mode: record AOV at the first
-					// non-delta scatter on this path.  See docs/OIDN.md
-					// (OIDN-P1-1).  Fast mode records at first hit in
-					// IntegrateRay and skips this branch.
-					if( pAOV && !pAOV->valid &&
-					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
-					{
-						pAOV->normal = ri.geometric.vNormal;
-						pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-							? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-							: RISEPel( 1, 1, 1 );
-						pAOV->valid = true;
-					}
+						if( pAOV && !pAOV->valid &&
+						    rc.aovPrefilterMode == OidnPrefilter::Accurate )
+						{
+							pAOV->normal = ri.geometric.vNormal;
+							pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
+								? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
+								: RISEPel( 1, 1, 1 );
+							pAOV->valid = true;
+						}
 #endif
-				}
-
-				if( ff ) {
-					FF_TRACE( "  depth=%u SCAT-MULTI-SEL isDelta=%d kray=(%.3e,%.3e,%.3e) pdf=%.3e selProb=%.3e dir=(%.4f,%.4f,%.4f) thr->(%.3e,%.3e,%.3e) psS=%d nsS=%d",
-						depth, (int)pS->isDelta,
-						pS->kray[0], pS->kray[1], pS->kray[2],
-						pS->pdf, selectProb,
-						pS->ray.Dir().x, pS->ray.Dir().y, pS->ray.Dir().z,
-						throughput[0], throughput[1], throughput[2],
-						(int)bPassedThroughSpecular, (int)bHadNonSpecularShading );
-				}
-
-				currentRay = pS->ray;
-				currentRay.Advance( 1e-8 );
-
-				if( pS->ior_stack ) {
-					iorStack = *pS->ior_stack;
-				}
-
-				continue;
-			}
-			else
-			{
-				// Single scattered ray: continue iteratively
-				const Scalar xi = sampler.Get1D();
-				const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
-				if( !pS ) {
-					break;
-				}
-
-				IRayCaster::RAY_STATE rs2 = rs;
-				rs2.depth = depth + 1;
-				rs2.importance = importance * ColorMath::MaxValue( pS->kray );
-				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
-				rs2.type = PathTracingRayType( *pS );
-				rs2.considerEmission = true;
-				if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
-					break;
-				}
-
-				throughput = throughput * pS->kray;
-				importance = rs2.importance;
-				bsdfPdf = rs2.bsdfPdf;
-				bsdfTimesCos = RISEPel( 0, 0, 0 );
-				considerEmission = true;
-				rayType = rs2.type;
-				diffuseBounces = rs2.diffuseBounces;
-				glossyBounces = rs2.glossyBounces;
-				transmissionBounces = rs2.transmissionBounces;
-				translucentBounces = rs2.translucentBounces;
-				glossyFilterWidth = rs2.glossyFilterWidth;
-
-				// Track specular transitions for SMS double-counting prevention
-				if( pS->isDelta ) {
-					bPassedThroughSpecular = true;
-				} else {
-					bPassedThroughSpecular = false;
-					bHadNonSpecularShading = true;
-#ifdef RISE_ENABLE_OIDN
-					// Accurate prefilter mode: record AOV at the first
-					// non-delta scatter on this path.  See docs/OIDN.md
-					// (OIDN-P1-1).  Fast mode records at first hit in
-					// IntegrateRay and skips this branch.
-					if( pAOV && !pAOV->valid &&
-					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
-					{
-						pAOV->normal = ri.geometric.vNormal;
-						pAOV->albedo = ( ri.pMaterial && ri.pMaterial->GetBSDF() )
-							? ri.pMaterial->GetBSDF()->albedo( ri.geometric )
-							: RISEPel( 1, 1, 1 );
-						pAOV->valid = true;
 					}
-#endif
 				}
 
-				if( ff ) {
-					FF_TRACE( "  depth=%u SCAT-SINGLE isDelta=%d kray=(%.3e,%.3e,%.3e) pdf=%.3e dir=(%.4f,%.4f,%.4f) thr->(%.3e,%.3e,%.3e) psS=%d nsS=%d",
-						depth, (int)pS->isDelta,
-						pS->kray[0], pS->kray[1], pS->kray[2],
-						pS->pdf,
-						pS->ray.Dir().x, pS->ray.Dir().y, pS->ray.Dir().z,
-						throughput[0], throughput[1], throughput[2],
-						(int)bPassedThroughSpecular, (int)bHadNonSpecularShading );
+				if constexpr ( Traits::is_pel ) {
+					if( ff ) {
+						FF_TRACE( "  depth=%u SCAT-SPF isDelta=%d kray=(%.3e,%.3e,%.3e) pdf=%.3e selProb=%.3e dir=(%.4f,%.4f,%.4f) thr->(%.3e,%.3e,%.3e) psS=%d nsS=%d",
+							depth, (int)pS->isDelta,
+							pS->kray[0], pS->kray[1], pS->kray[2],
+							pS->pdf, selectProb,
+							pS->ray.Dir().x, pS->ray.Dir().y, pS->ray.Dir().z,
+							throughput[0], throughput[1], throughput[2],
+							(int)bPassedThroughSpecular, (int)bHadNonSpecularShading );
+					}
 				}
 
 				currentRay = pS->ray;
@@ -2141,22 +2395,24 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			IndependentSampler fallbackSampler( rc.random );
 			ISampler& neeSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
 
-			RISEPel directAll = pLS->EvaluateDirectLighting(
-				ri.geometric, *pBRDF, ri.pMaterial, caster, neeSampler,
-				ri.pObject, pCurrentMedium, false, pMediumObject );
+			Value directAll = PTEvaluateDirectLighting<Tag>(
+				pLS, ri.geometric, *pBRDF, ri.pMaterial, caster, neeSampler,
+				ri.pObject, pCurrentMedium, false, pMediumObject, tag );
 			directAll = ClampContribution( directAll, stabilityConfig.directClamp );
 			result = result + throughput * directAll;
-			if( ff ) {
-				const RISEPel ct = throughput * directAll;
-				FF_TRACE( "  depth=%u NEE direct=(%.3e,%.3e,%.3e) thr=(%.3e,%.3e,%.3e) contrib=(%.3e,%.3e,%.3e) result=(%.3e,%.3e,%.3e)",
-					depth, directAll[0], directAll[1], directAll[2],
-					throughput[0], throughput[1], throughput[2],
-					ct[0], ct[1], ct[2],
-					result[0], result[1], result[2] );
+			if constexpr ( Traits::is_pel ) {
+				if( ff ) {
+					const RISEPel ct = throughput * directAll;
+					FF_TRACE( "  depth=%u NEE direct=(%.3e,%.3e,%.3e) thr=(%.3e,%.3e,%.3e) contrib=(%.3e,%.3e,%.3e) result=(%.3e,%.3e,%.3e)",
+						depth, directAll[0], directAll[1], directAll[2],
+						throughput[0], throughput[1], throughput[2],
+						ct[0], ct[1], ct[2],
+						result[0], result[1], result[2] );
+				}
 			}
 
 #ifdef RISE_ENABLE_OPENPGL
-			AddPTIGuidingScatteredContribution( guidingSegment, directAll );
+			AddPTIGuidingScatteredContribution( guidingSegment, PTGuidingPel( directAll ) );
 #endif
 		}
 
@@ -2172,12 +2428,16 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			ISampler& smsSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
 
 #if SMS_DIAG_ENABLED
-			g_smsDiag_evals.fetch_add( 1, std::memory_order_relaxed );
+			if constexpr ( Traits::is_pel ) {
+				g_smsDiag_evals.fetch_add( 1, std::memory_order_relaxed );
+			}
 #endif
 			// SMS receiver: pass BOTH geometric and shading normals.
 			// Shading drives BSDF eval and cosine factor (Veach §5.3.6),
 			// geometric drives probe-direction fallback / chain topology.
-			ManifoldSolver::SMSContribution sms = pSolver->EvaluateAtShadingPoint(
+			// NM uses per-wavelength IOR for dispersion (inside PTEvaluateSMS).
+			const PTSMSResult<Tag> sms = PTEvaluateSMS<Tag>(
+				pSolver,
 				ri.geometric.ptIntersection,
 				ri.geometric.vGeomNormal,
 				ri.geometric.vNormal,
@@ -2186,40 +2446,53 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				woOutgoing,
 				scene,
 				caster,
-				smsSampler );
+				smsSampler,
+				tag );
 
 			if( sms.valid )
 			{
 #if SMS_DIAG_ENABLED
-				g_smsDiag_valid.fetch_add( 1, std::memory_order_relaxed );
+				if constexpr ( Traits::is_pel ) {
+					g_smsDiag_valid.fetch_add( 1, std::memory_order_relaxed );
+				}
 #endif
-				RISEPel smsContrib = sms.contribution * sms.misWeight;
+				Value smsContrib = sms.contribution * sms.misWeight;
 #if SMS_DIAG_ENABLED
-				SMSDiag_AddLum( g_smsDiag_sumSmsLumX,
-					ColorMath::MaxValue( throughput * smsContrib ) );
+				if constexpr ( Traits::is_pel ) {
+					SMSDiag_AddLum( g_smsDiag_sumSmsLumX,
+						ColorMath::MaxValue( throughput * smsContrib ) );
+				}
 #endif
-				const RISEPel smsRaw = sms.contribution;
-				const RISEPel smsClampedIn = smsContrib;
+				// Pre-clamp value captured for the Pel firefly trace below
+				// (compiled out for NM, which had no SMS trace).
+				[[maybe_unused]] const Value smsContribPreClamp = smsContrib;
 				smsContrib = ClampContribution( smsContrib, stabilityConfig.directClamp );
 				result = result + throughput * smsContrib;
-				if( ff ) {
-					const RISEPel ct = throughput * smsContrib;
-					FF_TRACE( "  depth=%u SMS raw=(%.3e,%.3e,%.3e) mis=%.4f preClamp=(%.3e,%.3e,%.3e) postClamp=(%.3e,%.3e,%.3e) thr=(%.3e,%.3e,%.3e) contrib=(%.3e,%.3e,%.3e) result=(%.3e,%.3e,%.3e)",
-						depth, smsRaw[0], smsRaw[1], smsRaw[2], sms.misWeight,
-						smsClampedIn[0], smsClampedIn[1], smsClampedIn[2],
-						smsContrib[0], smsContrib[1], smsContrib[2],
-						throughput[0], throughput[1], throughput[2],
-						ct[0], ct[1], ct[2],
-						result[0], result[1], result[2] );
+				if constexpr ( Traits::is_pel ) {
+					if( ff ) {
+						const RISEPel ct = throughput * smsContrib;
+						FF_TRACE( "  depth=%u SMS raw=(%.3e,%.3e,%.3e) mis=%.4f preClamp=(%.3e,%.3e,%.3e) postClamp=(%.3e,%.3e,%.3e) thr=(%.3e,%.3e,%.3e) contrib=(%.3e,%.3e,%.3e) result=(%.3e,%.3e,%.3e)",
+							depth, sms.contribution[0], sms.contribution[1], sms.contribution[2], sms.misWeight,
+							smsContribPreClamp[0], smsContribPreClamp[1], smsContribPreClamp[2],
+							smsContrib[0], smsContrib[1], smsContrib[2],
+							throughput[0], throughput[1], throughput[2],
+							ct[0], ct[1], ct[2],
+							result[0], result[1], result[2] );
+					}
 				}
 
 #ifdef RISE_ENABLE_OPENPGL
-				AddPTIGuidingScatteredContribution( guidingSegment, sms.contribution * sms.misWeight );
+				AddPTIGuidingScatteredContribution( guidingSegment, PTGuidingPel( sms.contribution * sms.misWeight ) );
 #endif
-			} else if( ff ) {
-				FF_TRACE( "  depth=%u SMS invalid (no path)", depth );
 			}
-
+			else
+			{
+				if constexpr ( Traits::is_pel ) {
+					if( ff ) {
+						FF_TRACE( "  depth=%u SMS invalid (no path)", depth );
+					}
+				}
+			}
 		}
 
 		// ============================================================
@@ -2234,7 +2507,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		{
 			RISE_PROFILE_PHASE(BSDFScatter);
 			RISE_PROFILE_INC(nBSDFScatterCalls);
-			pSPF->Scatter( ri.geometric, sampler, scattered, iorStack );
+			PTScatter<Tag>( pSPF, ri.geometric, sampler, scattered, iorStack, tag );
 		}
 
 		if( scattered.Count() == 0 ) {
@@ -2251,7 +2524,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		// estimator is biased low at every multi-lobe vertex.
 		{
 			const Scalar xi = sampler.Get1D();
-			const ScatteredRay* pS = scattered.RandomlySelect( xi, false );
+			const ScatteredRay* pS = PTRandomlySelect<Tag>( scattered, xi );
 			if( !pS ) {
 				break;
 			}
@@ -2260,9 +2533,9 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			if( scattered.Count() > 1 ) {
 				Scalar totalKrayMax = 0;
 				for( unsigned int li = 0; li < scattered.Count(); li++ ) {
-					totalKrayMax += ColorMath::MaxValue( scattered[li].kray );
+					totalKrayMax += PTScatterSelectWeight<Tag>( scattered[li] );
 				}
-				const Scalar pSMax = ColorMath::MaxValue( pS->kray );
+				const Scalar pSMax = PTScatterSelectWeight<Tag>( *pS );
 				if( totalKrayMax > NEARZERO && pSMax > NEARZERO ) {
 					selectProb = pSMax / totalKrayMax;
 				}
@@ -2272,7 +2545,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			}
 
 			Ray traceRay = pS->ray;
-			RISEPel scatterThroughput = pS->kray * (1.0 / selectProb);
+			Value scatterThroughput = PTScatterKray<Tag>( *pS ) * ( Scalar( 1 ) / selectProb );
 			Scalar effectiveBsdfPdf = pS->isDelta ? 0 : pS->pdf;
 			const IORStack* traceIorStack = pS->ior_stack ? pS->ior_stack : &iorStack;
 
@@ -2295,20 +2568,20 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 					if( rc.guidingSamplingType == eGuidingRIS )
 					{
-						PathTransportUtilities::GuidingRISCandidate<RISEPel> candidates[2];
+						PathTransportUtilities::GuidingRISCandidate<Value> candidates[2];
 
 						// Candidate 0: BSDF sample (already drawn)
 						{
-							PathTransportUtilities::GuidingRISCandidate<RISEPel>& c = candidates[0];
+							PathTransportUtilities::GuidingRISCandidate<Value>& c = candidates[0];
 							c.direction = pS->ray.Dir();
-							c.bsdfEval = PathVertexEval::EvalBSDFAtSurface(
-								pBRDF, c.direction, ri.geometric );
+							c.bsdfEval = PTEvalBSDFAtSurface<Tag>(
+								pBRDF, c.direction, ri.geometric, tag );
 							c.bsdfPdf = pS->pdf;
 							c.guidePdf = rc.pGuidingField->Pdf( guideDist, c.direction );
 							c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
 							c.cosTheta = fabs(
 								Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
-							const Scalar avgBsdf = ColorMath::MaxValue( c.bsdfEval );
+							const Scalar avgBsdf = PTSurvivalMagnitude( c.bsdfEval );
 							c.risTarget = PathTransportUtilities::GuidingRISTarget(
 								avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
 							c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
@@ -2322,7 +2595,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 						// Candidate 1: guide sample
 						{
-							PathTransportUtilities::GuidingRISCandidate<RISEPel>& c = candidates[1];
+							PathTransportUtilities::GuidingRISCandidate<Value>& c = candidates[1];
 							Scalar guidePdf = 0;
 							const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
 							c.direction = rc.pGuidingField->Sample( guideDist, xi2d, guidePdf );
@@ -2330,14 +2603,14 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 							if( guidePdf > NEARZERO )
 							{
-								c.bsdfEval = PathVertexEval::EvalBSDFAtSurface(
-									pBRDF, c.direction, ri.geometric );
-								c.bsdfPdf = PathVertexEval::EvalPdfAtSurface(
-									pSPF, ri.geometric, c.direction, iorStack );
+								c.bsdfEval = PTEvalBSDFAtSurface<Tag>(
+									pBRDF, c.direction, ri.geometric, tag );
+								c.bsdfPdf = PTEvalPdfAtSurface<Tag>(
+									pSPF, ri.geometric, c.direction, iorStack, tag );
 								c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
 								c.cosTheta = fabs(
 									Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
-								const Scalar avgBsdf = ColorMath::MaxValue( c.bsdfEval );
+								const Scalar avgBsdf = PTSurvivalMagnitude( c.bsdfEval );
 								c.risTarget = PathTransportUtilities::GuidingRISTarget(
 									avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
 								c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
@@ -2350,7 +2623,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 							}
 							else
 							{
-								c.bsdfEval = RISEPel( 0, 0, 0 );
+								c.bsdfEval = Traits::zero();
 								c.bsdfPdf = 0;
 								c.incomingRadPdf = 0;
 								c.cosTheta = 0;
@@ -2368,15 +2641,14 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 						if( risEffectivePdf > NEARZERO && candidates[sel].valid )
 						{
-							scatterThroughput = candidates[sel].bsdfEval *
-								(candidates[sel].cosTheta / risEffectivePdf);
+							scatterThroughput = PTMulDiv( candidates[sel].bsdfEval, candidates[sel].cosTheta, risEffectivePdf );
 							traceRay = Ray( pS->ray.origin, candidates[sel].direction );
 							effectiveBsdfPdf = risEffectivePdf;
 							traceIorStack = &iorStack;
 						}
 						else
 						{
-							scatterThroughput = RISEPel( 0, 0, 0 );
+							scatterThroughput = Traits::zero();
 						}
 					}
 					else
@@ -2419,10 +2691,10 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 							if( guidePdf > NEARZERO )
 							{
-								const RISEPel fGuided = PathVertexEval::EvalBSDFAtSurface(
-									pBRDF, guidedDir, ri.geometric );
-								const Scalar bsdfPdfGuided = PathVertexEval::EvalPdfAtSurface(
-									pSPF, ri.geometric, guidedDir, iorStack );
+								const Value fGuided = PTEvalBSDFAtSurface<Tag>(
+									pBRDF, guidedDir, ri.geometric, tag );
+								const Scalar bsdfPdfGuided = PTEvalPdfAtSurface<Tag>(
+									pSPF, ri.geometric, guidedDir, iorStack, tag );
 								const Scalar combinedPdf =
 									PathTransportUtilities::GuidingCombinedPdf( effectiveAlpha, guidePdf, bsdfPdfGuided );
 
@@ -2430,7 +2702,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 								{
 									const Scalar cosTheta = fabs(
 										Vector3Ops::Dot( guidedDir, ri.geometric.vNormal ) );
-									scatterThroughput = fGuided * (cosTheta / combinedPdf);
+									scatterThroughput = PTMulDiv( fGuided, cosTheta, combinedPdf );
 									traceRay = Ray( pS->ray.origin, guidedDir );
 									effectiveBsdfPdf = combinedPdf;
 									traceIorStack = &iorStack;
@@ -2440,12 +2712,12 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 								}
 								else
 								{
-									scatterThroughput = RISEPel( 0, 0, 0 );
+									scatterThroughput = Traits::zero();
 								}
 							}
 							else
 							{
-								scatterThroughput = RISEPel( 0, 0, 0 );
+								scatterThroughput = Traits::zero();
 							}
 						}
 						else
@@ -2456,7 +2728,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 
 							if( combinedPdf > NEARZERO )
 							{
-								scatterThroughput = pS->kray * (pS->pdf / combinedPdf);
+								scatterThroughput = PTScatterKray<Tag>( *pS ) * (pS->pdf / combinedPdf);
 								effectiveBsdfPdf = combinedPdf;
 								smplBsdfPdf = pS->pdf;
 								smplGuidePdf = guidePdfForBsdf;
@@ -2478,8 +2750,8 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 							u.bsdfPdf          = smplBsdfPdf;
 							u.guidePdf         = smplGuidePdf;
 							u.combinedPdf      = smplCombinedPdf;
-							u.resultBefore     = GuidingTrainingLuminance( result );
-							u.throughputBefore = GuidingTrainingLuminance( throughput );
+							u.resultBefore     = PTGuidingLuminance( result );
+							u.throughputBefore = PTGuidingLuminance( throughput );
 							GetPTIPendingGuideUpdates().push_back( u );
 						}
 					}
@@ -2489,7 +2761,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			(void)useGuidingPathSegments;  // Used in full guiding implementation
 #endif // RISE_ENABLE_OPENPGL
 
-			bool skipContinuation = ColorMath::MaxValue( scatterThroughput ) <= NEARZERO;
+			bool skipContinuation = PTSurvivalMagnitude( scatterThroughput ) <= NEARZERO;
 
 			// Optimal MIS training
 			if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
@@ -2503,7 +2775,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			// Capture pre-RR throughput so the guiding segment records
 			// scatteringWeight = bsdf*cos/pdf (without RR amplification).
 			// OpenPGL applies RR separately via russianRouletteSurvivalProbability.
-			const RISEPel preRRScatterThroughput = scatterThroughput;
+			const Value preRRScatterThroughput = scatterThroughput;
 			Scalar rrSurvivalProb = 1.0;
 #endif
 
@@ -2513,28 +2785,28 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 				const PathTransportUtilities::RussianRouletteResult rr =
 					PathTransportUtilities::EvaluateRussianRoulette(
 						depth, rrMinDepth, rrThreshold,
-						importance * ColorMath::MaxValue( scatterThroughput ),
+						importance * PTSurvivalMagnitude( scatterThroughput ),
 						importance,
 						sampler.Get1D() );
 				if( rr.terminate ) {
 					skipContinuation = true;
 				} else if( rr.survivalProb < 1.0 ) {
-					scatterThroughput = scatterThroughput * (1.0 / rr.survivalProb);
+					scatterThroughput = PTDivByScalar( scatterThroughput, rr.survivalProb );
 #ifdef RISE_ENABLE_OPENPGL
 					rrSurvivalProb = rr.survivalProb;
 #endif
 				}
 			}
 
-			const RISEPel bsdfTimesCosVal = pS->isDelta ? RISEPel( 0, 0, 0 ) :
-				scatterThroughput * effectiveBsdfPdf;
+			const Value bsdfTimesCosVal = pS->isDelta ? Traits::zero() :
+				PTBsdfTimesCos( scatterThroughput, effectiveBsdfPdf );
 
 			// Per-type bounce limits
 			IRayCaster::RAY_STATE rs2 = rs;
 			rs2.depth = depth + 2;
-			rs2.importance = importance * ColorMath::MaxValue( scatterThroughput );
+			rs2.importance = importance * PTSurvivalMagnitude( scatterThroughput );
 			rs2.bsdfPdf = effectiveBsdfPdf;
-			rs2.bsdfTimesCos = bsdfTimesCosVal;
+			rs2.bsdfTimesCos = PTRayStateBsdfTimesCos( bsdfTimesCosVal );
 			rs2.type = PathTracingRayType( *pS );
 
 			if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
@@ -2562,7 +2834,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 					guidingSegment,
 					traceRay.Dir(),
 					effectiveBsdfPdf,
-					preRRScatterThroughput,
+					PTGuidingPel( preRRScatterThroughput ),
 					pS->isDelta,
 					rrSurvivalProb,
 					segEta,
@@ -2598,11 +2870,16 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 			// firefly contribution of hundreds of luminance units per
 			// sample at any pixel whose random BSDF sequence found this
 			// path.
-			if( pS->isDelta ) {
-				bPassedThroughSpecular = true;
-			} else {
-				bPassedThroughSpecular = false;
-				bHadNonSpecularShading = true;
+			// Preserved Pel/NM asymmetry: the NM PART3 BSDF continuation
+			// did NOT update these SMS-suppression flags, so the update
+			// compiles in only for PelTag.
+			if constexpr ( Traits::is_pel ) {
+				if( pS->isDelta ) {
+					bPassedThroughSpecular = true;
+				} else {
+					bPassedThroughSpecular = false;
+					bHadNonSpecularShading = true;
+				}
 			}
 
 			currentRay = traceRay;
@@ -2619,10 +2896,12 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		}
 	}
 
-	if( ff ) {
-		const Scalar lum = ColorMath::MaxValue( result );
-		FF_TRACE( "=== END SAMPLE %lu result=(%.3e,%.3e,%.3e) maxLum=%.3e ===",
-			ffSample, result[0], result[1], result[2], lum );
+	if constexpr ( Traits::is_pel ) {
+		if( ff ) {
+			const Scalar lum = ColorMath::MaxValue( result );
+			FF_TRACE( "=== END SAMPLE %lu result=(%.3e,%.3e,%.3e) maxLum=%.3e ===",
+				ffSample, result[0], result[1], result[2], lum );
+		}
 	}
 
 #ifdef RISE_ENABLE_OPENPGL
@@ -2634,7 +2913,7 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 		auto& pending = GetPTIPendingGuideUpdates();
 		if( !pending.empty() )
 		{
-			const Scalar resultEndLum = GuidingTrainingLuminance( result );
+			const Scalar resultEndLum = PTGuidingLuminance( result );
 			for( const PTIPendingGuideUpdate& u : pending )
 			{
 				const Scalar deltaResult = resultEndLum - u.resultBefore;
@@ -2651,6 +2930,47 @@ RISEPel PathTracingIntegrator::IntegrateFromHit(
 #endif
 
 	return result;
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// IntegrateFromHit — RGB entry point (thin forwarder to the templated
+// body).  Public; called by PathTracingShaderOp::PerformOperation and by
+// IntegrateRay via IntegrateFromHitForTag<PelTag>.
+//////////////////////////////////////////////////////////////////////
+RISEPel PathTracingIntegrator::IntegrateFromHit(
+	const RuntimeContext& rc,
+	const RasterizerState& rast,
+	const RayIntersection& firstHit,
+	const IScene& scene,
+	const IRayCaster& caster,
+	ISampler& sampler,
+	const IRadianceMap* pRadianceMap,
+	unsigned int startDepth,
+	const IORStack& initialIorStack,
+	Scalar bsdfPdf_,
+	const RISEPel& bsdfTimesCos_,
+	bool considerEmission_,
+	Scalar importance_,
+	IRayCaster::RAY_STATE::RayType rayType_,
+	unsigned int diffuseBounces_,
+	unsigned int glossyBounces_,
+	unsigned int transmissionBounces_,
+	unsigned int translucentBounces_,
+	unsigned int volumeBounces_,
+	Scalar glossyFilterWidth_,
+	bool smsPassedThroughSpecular_,
+	bool smsHadNonSpecularShading_,
+	PixelAOV* pAOV
+	) const
+{
+	return IntegrateFromHitTemplated<PelTag>(
+		rc, rast, firstHit, scene, caster, sampler, pRadianceMap,
+		startDepth, initialIorStack, bsdfPdf_, bsdfTimesCos_,
+		considerEmission_, importance_, rayType_, diffuseBounces_,
+		glossyBounces_, transmissionBounces_, translucentBounces_,
+		volumeBounces_, glossyFilterWidth_, smsPassedThroughSpecular_,
+		smsHadNonSpecularShading_, pAOV, PelTag{} );
 }
 
 
@@ -2698,11 +3018,11 @@ PathTracingIntegrator::IntegrateFromHitForTag(
 	}
 	else
 	{
-		(void)pAOV;
 		return IntegrateFromHitNM( rc, rast, firstHit, tag.nm, scene, caster, sampler,
 			pRadianceMap, startDepth, initialIorStack, bsdfPdf, bsdfTimesCos,
 			considerEmission, importance, rayType, diffuseBounces, glossyBounces,
-			transmissionBounces, translucentBounces, volumeBounces, glossyFilterWidth );
+			transmissionBounces, translucentBounces, volumeBounces, glossyFilterWidth,
+			false, false, pAOV );
 	}
 }
 
@@ -3028,1266 +3348,23 @@ Scalar PathTracingIntegrator::IntegrateFromHitNM(
 	unsigned int volumeBounces,
 	Scalar glossyFilterWidth,
 	bool smsPassedThroughSpecular_initial,
-	bool smsHadNonSpecularShading_initial
+	bool smsHadNonSpecularShading_initial,
+	PixelAOV* pAOV
 	) const
 {
-	Scalar result = 0;
-	Scalar throughput = 1.0;
-
-	RayIntersection ri( firstHit );
-	Ray currentRay = ri.geometric.ray;
-	IORStack iorStack = initialIorStack;
-	bool needsIntersection = false;
-
-	const unsigned int rrMinDepth = stabilityConfig.rrMinDepth;
-	const Scalar rrThreshold = stabilityConfig.rrThreshold;
-
-	const LightSampler* pLS = caster.GetLightSampler();
-
-	// SMS emission-suppression bookkeeping — matches the RGB path.  Without
-	// these flags, spectral (NM / HWSS) rendering would re-enable emission
-	// on BSDF-sampled camera-through-glass-to-light paths that SMS already
-	// handled at the diffuse shading point, producing per-wavelength
-	// fireflies in the emitter hit.  Conversely, with them we must NOT
-	// broadly kill camera-glass-light paths that have no diffuse vertex at
-	// all — the AND check below uses both the "passed specular" and "had
-	// non-specular shading" flags exactly as the RGB path does.
-	const bool bSMSEnabled = ( pSolver != 0 );
-	bool bPassedThroughSpecular = smsPassedThroughSpecular_initial;
-	bool bHadNonSpecularShading = smsHadNonSpecularShading_initial;
-
-#ifdef RISE_ENABLE_OPENPGL
-	// Path guiding uses RGB internally; for NM we still collect
-	// training samples via the scalar→luminance conversion.
-	const bool useGuidingPathSegments = rc.pGuidingField &&
-		rc.pGuidingField->IsCollectingTrainingSamples();
-	PTIGuidingPathRecorder* guidingRecorder = useGuidingPathSegments ?
-		&GetPTIGuidingPathRecorder() : 0;
-	const bool guidingRootRay = guidingRecorder != 0 && startDepth == 0;
-	if( guidingRootRay ) {
-		guidingRecorder->Begin();
-	}
-	PTIGuidingPathScope guidingPathScope( guidingRecorder, rc.pGuidingField, guidingRootRay );
-#endif
-
-	const unsigned int maxDepth = 128;
-
-	for( unsigned int depth = startDepth; depth < maxDepth; depth++ )
-	{
-		// Runaway-throughput guard -- see RGB IntegrateFromHit.  Per-
-		// channel max collapses to fabs() in the NM (per-wavelength)
-		// path.
-		if( !std::isfinite( throughput ) || fabs( throughput ) > Scalar(1e6) ) {
-			break;
-		}
-
-		sampler.StartStream( 16 + depth );
-
-		// ============================================================
-		// Intersection + medium transport (skipped for first iteration)
-		// ============================================================
-		if( needsIntersection )
-		{
-			ri = RayIntersection( currentRay, rast );
-			ri.geometric.glossyFilterWidth = glossyFilterWidth;
-			scene.GetObjects()->IntersectRay( ri, true, true, false );
-
-			bool bHit = ri.geometric.bHit;
-
-			// Medium transport (spectral)
-			const IObject* pMediumObject = 0;
-			const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
-				iorStack, &scene, pMediumObject );
-
-			if( pCurrentMedium )
-			{
-				const Scalar maxDist = bHit ? ri.geometric.range : Scalar(1e10);
-				IndependentSampler mediumSampler( rc.random );
-				const MediumSampleOutcome mso = SampleDistanceWithEquiangularMIS_NM(
-					pCurrentMedium, currentRay, maxDist, nm, pLS, mediumSampler );
-				const Scalar t_m = mso.t;
-				const bool scattered = mso.scattered;
-
-				if( mso.zeroContrib )
-				{
-					break;
-				}
-
-				if( scattered && volumeBounces < stabilityConfig.maxVolumeBounce )
-				{
-					const Point3 scatterPt = currentRay.PointAtLength( t_m );
-					const Vector3 wo = currentRay.Dir();
-					const MediumCoefficientsNM coeff = pCurrentMedium->GetCoefficientsNM( scatterPt, nm );
-					const Scalar Tr = pCurrentMedium->EvalTransmittanceNM( currentRay, t_m, nm );
-
-					Scalar medWeight = 0;
-					if( mso.useExplicitThroughput && mso.combinedPdf > 0 )
-					{
-						medWeight = Tr * coeff.sigma_s / mso.combinedPdf;
-					}
-					else if( coeff.sigma_t > 0 && Tr > 0 )
-					{
-						// Legacy single-channel albedo (sigma_s / sigma_t).
-						medWeight = Tr * coeff.sigma_s / (coeff.sigma_t * Tr);
-					}
-
-					if( medWeight <= 0 ) {
-						break;
-					}
-
-					throughput *= medWeight;
-
-#ifdef RISE_ENABLE_OPENPGL
-					PGLPathSegmentData* volSegment =
-						(guidingRecorder && guidingRecorder->active) ?
-							BeginPTIGuidingVolumeSegment( *guidingRecorder, scatterPt, wo ) : 0;
-#endif
-
-					// NEE at scatter point (spectral)
-					if( pLS )
-					{
-						Scalar Ld = MediumTransport::EvaluateInScatteringNM(
-							scatterPt, wo, pCurrentMedium, nm, caster, pLS,
-							sampler, rast, pMediumObject );
-						if( Ld > 0 )
-						{
-							Scalar directContrib = throughput * Ld;
-							directContrib = ClampContribution( directContrib,
-								stabilityConfig.directClamp );
-							result += directContrib;
-#ifdef RISE_ENABLE_OPENPGL
-							AddPTIGuidingScatteredContribution( volSegment, RISEPel( Ld ) );
-#endif
-						}
-					}
-
-					// Sample phase function for continuation
-					const IPhaseFunction* pPhase = pCurrentMedium->GetPhaseFunction();
-					if( !pPhase ) {
-						break;
-					}
-
-					Vector3 wi = pPhase->Sample( wo, sampler );
-					Scalar phasePdf = pPhase->Pdf( wo, wi );
-					if( phasePdf <= NEARZERO ) {
-						break;
-					}
-					Scalar effectivePdf = phasePdf;
-
-#ifdef RISE_ENABLE_OPENPGL
-					// Volume guiding: one-sample MIS between phase function
-					// and learned volume distribution.
-					if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
-						rc.guidingAlpha > 0 && depth <= rc.maxGuidingDepth )
-					{
-						static thread_local Implementation::GuidingVolumeDistributionHandle volGuideHandleNM;
-						if( rc.pGuidingField->InitVolumeDistribution(
-								volGuideHandleNM, scatterPt, sampler.Get1D() ) )
-						{
-							const Scalar meanCosine = pPhase->GetMeanCosine();
-							if( fabs( meanCosine ) > 1e-6 ) {
-								rc.pGuidingField->ApplyHGProduct(
-									volGuideHandleNM, wo, meanCosine );
-							}
-
-							const Scalar alpha = rc.guidingAlpha;
-							const Scalar xiG = sampler.Get1D();
-							if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xiG ) )
-							{
-								Scalar guidePdf = 0;
-								const Point2 xi2D( sampler.Get1D(), sampler.Get1D() );
-								const Vector3 guidedDir =
-									rc.pGuidingField->SampleVolume( volGuideHandleNM, xi2D, guidePdf );
-								if( guidePdf > 0 )
-								{
-									wi = guidedDir;
-									phasePdf = pPhase->Pdf( wo, wi );
-									effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
-										alpha, guidePdf, phasePdf );
-								}
-							}
-							else
-							{
-								const Scalar guidePdf =
-									rc.pGuidingField->PdfVolume( volGuideHandleNM, wi );
-								if( guidePdf > 0 ) {
-									effectivePdf = PathTransportUtilities::GuidingCombinedPdf(
-										alpha, guidePdf, phasePdf );
-								}
-							}
-						}
-					}
-#endif
-
-					if( effectivePdf <= NEARZERO ) {
-						break;
-					}
-
-					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
-					const Scalar volScatterScalar = phaseVal / effectivePdf;
-#ifdef RISE_ENABLE_OPENPGL
-					const Scalar preRRVolScatterScalar = volScatterScalar;
-					Scalar volRrSurvivalProb = 1.0;
-#endif
-					throughput *= volScatterScalar;
-
-					// Russian roulette on volume scatter
-					{
-						const PathTransportUtilities::RussianRouletteResult rr =
-							PathTransportUtilities::EvaluateRussianRoulette(
-								depth + volumeBounces,
-								rrMinDepth, rrThreshold,
-								fabs( throughput ),
-								importance,
-								sampler.Get1D() );
-						if( rr.terminate ) {
-							break;
-						}
-						if( rr.survivalProb < 1.0 ) {
-							throughput /= rr.survivalProb;
-#ifdef RISE_ENABLE_OPENPGL
-							volRrSurvivalProb = rr.survivalProb;
-#endif
-						}
-					}
-
-#ifdef RISE_ENABLE_OPENPGL
-					if( volSegment ) {
-						SetPTIGuidingContinuation(
-							volSegment,
-							wi,
-							effectivePdf,
-							RISEPel( preRRVolScatterScalar ),
-							false,
-							volRrSurvivalProb,
-							1.0,
-							1.0 );
-					}
-#endif
-
-					currentRay = Ray( scatterPt, wi );
-					bsdfPdf = effectivePdf;
-					considerEmission = true;
-					volumeBounces++;
-					continue;
-				}
-				else if( !scattered && bHit )
-				{
-					const Scalar Tr = pCurrentMedium->EvalTransmittanceNM(
-						currentRay, ri.geometric.range, nm );
-					throughput *= Tr;
-				}
-				else if( !scattered && !bHit )
-				{
-					// Ray escapes the scene through the medium: apply the
-					// residual transmittance before the env radiance below
-					// (PBRT-v4 beta *= T_maj).
-					const Scalar Tr = pCurrentMedium->EvalTransmittanceNM(
-						currentRay, maxDist, nm );
-					throughput *= Tr;
-				}
-			}
-
-			// Miss — environment / radiance map (spectral)
-			if( !bHit )
-			{
-				if( pRadianceMap )
-				{
-					Scalar envRadiance = pRadianceMap->GetRadianceNM( currentRay, rast, nm );
-					result += throughput * envRadiance;
-				}
-				else if( scene.GetGlobalRadianceMap() )
-				{
-					Scalar envRadiance = scene.GetGlobalRadianceMap()->GetRadianceNM(
-						currentRay, rast, nm );
-
-					// MIS weight for BSDF-sampled environment hit
-					if( pLS && bsdfPdf > 0 )
-					{
-						const EnvironmentSampler* pES = pLS->GetEnvironmentSampler();
-						if( pES )
-						{
-							const Scalar envPdf = pES->Pdf( currentRay.Dir() );
-							if( envPdf > 0 )
-							{
-								if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
-								{
-									const Scalar fVal = envRadiance * bsdfTimesCosNM;
-									const Scalar f2 = fVal * fVal;
-									if( f2 > 0 && bsdfPdf > 0 )
-									{
-										const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->Accumulate(
-											rast.x, rast.y,
-											f2, bsdfPdf, kTechniqueBSDF );
-									}
-								}
-
-								Scalar w_bsdf;
-								if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
-								{
-									const Scalar alpha = rc.pOptimalMIS->GetAlpha( rast.x, rast.y );
-									w_bsdf = MISWeights::OptimalMIS2Weight( bsdfPdf, envPdf, alpha );
-								}
-								else
-								{
-									w_bsdf = PowerHeuristic( bsdfPdf, envPdf );
-								}
-								envRadiance *= w_bsdf;
-							}
-						}
-					}
-
-					result += throughput * envRadiance;
-
-#ifdef RISE_ENABLE_OPENPGL
-					if( guidingRecorder && guidingRecorder->active &&
-						fabs( envRadiance ) > 0 )
-					{
-						AddPTIGuidingBackgroundSegment(
-							*guidingRecorder, currentRay, RISEPel( envRadiance ) );
-					}
-#endif
-				}
-				break;
-			}
-		}
-		needsIntersection = true;
-
-		// ============================================================
-		// Surface hit processing (spectral)
-		// ============================================================
-		const IObject* pMediumObject = 0;
-		const IMedium* pCurrentMedium = MediumTracking::GetCurrentMediumWithObject(
-			iorStack, &scene, pMediumObject );
-
-		if( ri.pModifier ) {
-			ri.pModifier->Modify( ri.geometric );
-		}
-
-		iorStack.SetCurrentObject( ri.pObject );
-
-		const IBSDF* pBRDF = ri.pMaterial ? ri.pMaterial->GetBSDF() : 0;
-
-		// Build a RAY_STATE for utility functions
-		IRayCaster::RAY_STATE rs;
-		rs.depth = depth + 1;
-		rs.importance = importance;
-		rs.bsdfPdf = bsdfPdf;
-		rs.bsdfTimesCos = RISEPel( bsdfTimesCosNM );
-		rs.considerEmission = considerEmission;
-		rs.type = rayType;
-		rs.diffuseBounces = diffuseBounces;
-		rs.glossyBounces = glossyBounces;
-		rs.transmissionBounces = transmissionBounces;
-		rs.translucentBounces = translucentBounces;
-		rs.glossyFilterWidth = glossyFilterWidth;
-
-#ifdef RISE_ENABLE_OPENPGL
-		PGLPathSegmentData* guidingSegment =
-			(guidingRecorder && guidingRecorder->active) ?
-				BeginPTIGuidingSegment( *guidingRecorder, ri.geometric ) : 0;
-#endif
-
-		// ============================================================
-		// PART 1: Emission (spectral)
-		// ============================================================
-		{
-			IEmitter* pEmitter = ri.pMaterial ? ri.pMaterial->GetEmitter() : 0;
-			// When SMS is active, suppress emission from BSDF paths that
-			// passed through specular surfaces IF there was a prior
-			// non-specular shading point where SMS was evaluated.
-			// Without the bHadNonSpecularShading clause the camera looking
-			// directly through glass at the light would be killed too (no
-			// diffuse vertex exists for SMS to cover that contribution).
-			// Mirrors the RGB path at the same position.
-			const bool smsSuppressEmission = bSMSEnabled
-				&& bPassedThroughSpecular && bHadNonSpecularShading;
-			if( pEmitter && considerEmission && !smsSuppressEmission )
-			{
-				Scalar emission = pEmitter->emittedRadianceNM(
-					ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal, nm );
-				const Scalar rawEmission = emission;
-				Scalar emissionMiWeight = 1.0;
-
-				if( bsdfPdf > 0 && ri.pObject )
-				{
-					const Scalar area = ri.pObject->GetArea();
-					if( area > 0 )
-					{
-						const Scalar cosLight = fabs( Vector3Ops::Dot(
-							ri.geometric.ray.Dir(), ri.geometric.vGeomNormal ) );
-						if( cosLight > 0 )
-						{
-							const Scalar dist = Vector3Ops::Magnitude(
-								Vector3Ops::mkVector3(
-									ri.geometric.ptIntersection,
-									ri.geometric.ray.origin ) );
-
-							if( pLS && pLS->IsRISActive() )
-							{
-								emission = 0;
-								emissionMiWeight = 0;
-							}
-							else
-							{
-								Scalar pdfSelect = 1.0;
-								if( pLS )
-								{
-									pdfSelect = pLS->CachedPdfSelectLuminary(
-										*ri.pObject,
-										ri.geometric.ray.origin,
-										ri.geometric.ray.Dir() );
-									if( pdfSelect <= 0 ) {
-										pdfSelect = 1.0;
-									}
-								}
-
-								const Scalar p_nee = pdfSelect * (dist * dist) / (area * cosLight);
-
-								if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() )
-								{
-									const Scalar fVal = emission * bsdfTimesCosNM;
-									const Scalar f2 = fVal * fVal;
-									if( f2 > 0 && bsdfPdf > 0 )
-									{
-										const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->Accumulate(
-											rast.x, rast.y,
-											f2, bsdfPdf, kTechniqueBSDF );
-									}
-								}
-
-								Scalar w_bsdf;
-								if( rc.pOptimalMIS && rc.pOptimalMIS->IsReady() )
-								{
-									const Scalar alpha = rc.pOptimalMIS->GetAlpha(
-										rast.x, rast.y );
-									w_bsdf = MISWeights::OptimalMIS2Weight( bsdfPdf, p_nee, alpha );
-								}
-								else
-								{
-									w_bsdf = PowerHeuristic( bsdfPdf, p_nee );
-								}
-								emissionMiWeight = w_bsdf;
-								emission *= w_bsdf;
-							}
-						}
-					}
-				}
-
-				if( depth > 0 ) {
-					emission = ClampContribution( emission, stabilityConfig.directClamp );
-				}
-
-				result += throughput * emission;
-
-#ifdef RISE_ENABLE_OPENPGL
-				if( guidingSegment && fabs( rawEmission ) > 0 ) {
-					SetPTIGuidingDirectContribution(
-						guidingSegment, RISEPel( rawEmission ), emissionMiWeight );
-				}
-#endif
-			}
-		}
-
-		// ============================================================
-		// BSSRDF: Subsurface scattering via diffusion profile (spectral)
-		// ============================================================
-		{
-			ISubSurfaceDiffusionProfile* pProfile =
-				ri.pMaterial ? ri.pMaterial->GetDiffusionProfile() : 0;
-
-			if( pProfile && pBRDF )
-			{
-				// Front-face gate uses GEOMETRIC; Fresnel cosine uses
-				// SHADING.  See the RGB BSSRDF site above.
-				const Vector3 wo = Vector3Ops::Normalize( -ri.geometric.ray.Dir() );
-				const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo );
-				if( cosInGeom > NEARZERO )
-				{
-					// Fresnel cosine clamped via fabs+NEARZERO to a safe
-					// positive value: Sw is symmetric in cos sign and
-					// parameterised against the shading frame.  This
-					// replaces a fallback-to-cosInGeom branch that produced
-					// a discontinuous Ft when shading swung past horizon.
-					const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo );
-					const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
-					const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
-
-					if( Ft > NEARZERO )
-					{
-						IndependentSampler fallbackSampler( rc.random );
-						ISampler& bssrdfSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
-
-						BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
-							ri.geometric, ri.pObject, ri.pMaterial, bssrdfSampler, nm );
-
-						if( bssrdf.valid )
-						{
-							const Scalar bssrdfWeightNM = bssrdf.weightNM;
-							const Scalar bssrdfWeightSpatialNM = bssrdf.weightSpatialNM;
-
-							RayIntersectionGeometric entryRI(
-								Ray( bssrdf.entryPoint, bssrdf.scatteredRay.Dir() ),
-								rast );
-							entryRI.bHit = true;
-							entryRI.ptIntersection = bssrdf.entryPoint;
-							entryRI.vNormal = bssrdf.entryNormal;
-							entryRI.vGeomNormal = bssrdf.entryGeomNormal;
-							entryRI.onb = bssrdf.entryONB;
-
-							const Scalar eta = pProfile->GetIOR( ri.geometric );
-							BSSRDFEntryBSDF entryBSDF( pProfile, eta );
-							BSSRDFEntryMaterial entryMaterial;
-
-							const unsigned int nextTranslucentBounces = translucentBounces + 1;
-							const bool skipSSS =
-								nextTranslucentBounces > stabilityConfig.maxTranslucentBounce;
-
-							if( !skipSSS )
-							{
-								if( pLS )
-								{
-									Scalar directSSSNM = pLS->EvaluateDirectLightingNM(
-										entryRI, entryBSDF, &entryMaterial, nm, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0 );
-									Scalar sssDirectContribNM = throughput * bssrdfWeightSpatialNM * directSSSNM;
-									sssDirectContribNM = ClampContribution( sssDirectContribNM,
-										stabilityConfig.directClamp );
-									result += sssDirectContribNM;
-								}
-
-								// BSSRDF continuation via CastRayNM sub-path
-								{
-									Scalar sssThroughputNM = bssrdfWeightNM;
-
-									const PathTransportUtilities::RussianRouletteResult rr =
-										PathTransportUtilities::EvaluateRussianRoulette(
-											depth, rrMinDepth, rrThreshold,
-											importance * fabs( sssThroughputNM ),
-											importance, bssrdfSampler.Get1D() );
-									if( !rr.terminate )
-									{
-										if( rr.survivalProb < 1.0 ) {
-											sssThroughputNM /= rr.survivalProb;
-										}
-
-										Scalar cthis = 0;
-										Ray continuationRay = bssrdf.scatteredRay;
-										continuationRay.Advance( 1e-8 );
-
-										IRayCaster::RAY_STATE rs2;
-										rs2.depth = depth + 2;
-										rs2.considerEmission = true;
-										rs2.importance = importance * fabs( sssThroughputNM );
-										rs2.bsdfPdf = bssrdf.cosinePdf;
-										rs2.bsdfTimesCos = RISEPel( fabs( sssThroughputNM ) * bssrdf.cosinePdf );
-										rs2.type = IRayCaster::RAY_STATE::eRayDiffuse;
-										rs2.diffuseBounces = diffuseBounces;
-										rs2.glossyBounces = glossyBounces;
-										rs2.transmissionBounces = transmissionBounces;
-										rs2.translucentBounces = nextTranslucentBounces;
-										rs2.glossyFilterWidth = glossyFilterWidth;
-
-										if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 )
-										{
-											const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
-												rast.x, rast.y, kTechniqueBSDF );
-										}
-
-										caster.CastRayNM( rc, rast, continuationRay, cthis,
-											rs2, nm, 0, pRadianceMap, iorStack );
-
-										Scalar indirectNM = sssThroughputNM * cthis;
-										if( depth > 0 ) {
-											indirectNM = ClampContribution( indirectNM,
-												stabilityConfig.indirectClamp );
-										}
-										result += throughput * indirectNM;
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// ============================================================
-		// Random-walk subsurface scattering (spectral)
-		// ============================================================
-		{
-			const RandomWalkSSSParams* pRWParams =
-				ri.pMaterial ? ri.pMaterial->GetRandomWalkSSSParams() : 0;
-
-			RandomWalkSSSParams rwParamsNM;
-			if( !pRWParams && ri.pMaterial &&
-				ri.pMaterial->GetRandomWalkSSSParamsNM( nm, rwParamsNM ) )
-			{
-				pRWParams = &rwParamsNM;
-			}
-
-			if( pRWParams && pBRDF )
-			{
-				// Front-face gate uses GEOMETRIC; Schlick Fresnel cos
-				// uses SHADING.  See BSSRDF site above.
-				const Vector3 wo = Vector3Ops::Normalize( -ri.geometric.ray.Dir() );
-				const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo );
-				if( cosInGeom > NEARZERO )
-				{
-					// Fresnel cosine clamped via fabs+NEARZERO to a safe
-					// positive value: Sw is symmetric in cos sign and
-					// parameterised against the shading frame.  This
-					// replaces a fallback-to-cosInGeom branch that produced
-					// a discontinuous Ft when shading swung past horizon.
-					const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo );
-					const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
-					const Scalar F0 = ((pRWParams->ior - 1.0) / (pRWParams->ior + 1.0)) *
-						((pRWParams->ior - 1.0) / (pRWParams->ior + 1.0));
-					const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
-					const Scalar Ft = 1.0 - F;
-
-					if( Ft > NEARZERO )
-					{
-						IndependentSampler walkSampler( rc.random );
-						IndependentSampler fallbackSampler( rc.random );
-						ISampler& bssrdfSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
-						ISampler& rwSampler = bssrdfSampler.HasFixedDimensionBudget()
-							? static_cast<ISampler&>(walkSampler) : bssrdfSampler;
-
-						BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
-							ri.geometric, ri.pObject,
-							pRWParams->sigma_a, pRWParams->sigma_s, pRWParams->sigma_t,
-							pRWParams->g, pRWParams->ior, pRWParams->maxBounces,
-							rwSampler, nm, pRWParams->maxDepth );
-
-						if( bssrdf.valid )
-						{
-							const Scalar bf = pRWParams->boundaryFilter;
-							const Scalar bssrdfWeightNM = bssrdf.weightNM * Ft * bf;
-							const Scalar bssrdfWeightSpatialNM = bssrdf.weightSpatialNM * Ft * bf;
-
-							RayIntersectionGeometric entryRI(
-								Ray( bssrdf.entryPoint, bssrdf.scatteredRay.Dir() ),
-								rast );
-							entryRI.bHit = true;
-							entryRI.ptIntersection = bssrdf.entryPoint;
-							entryRI.vNormal = bssrdf.entryNormal;
-							entryRI.vGeomNormal = bssrdf.entryGeomNormal;
-							entryRI.onb = bssrdf.entryONB;
-
-							RandomWalkEntryBSDF entryBSDF( pRWParams->ior );
-							BSSRDFEntryMaterial entryMaterial;
-
-							const unsigned int nextTranslucentBounces = translucentBounces + 1;
-							const bool skipSSS =
-								nextTranslucentBounces > stabilityConfig.maxTranslucentBounce;
-
-							if( !skipSSS )
-							{
-								if( pLS )
-								{
-									Scalar directSSSNM = pLS->EvaluateDirectLightingNM(
-										entryRI, entryBSDF, &entryMaterial, nm, caster,
-										bssrdfSampler, ri.pObject, 0, false, 0 );
-									Scalar sssDirectContribNM = throughput * bssrdfWeightSpatialNM * directSSSNM;
-									sssDirectContribNM = ClampContribution( sssDirectContribNM,
-										stabilityConfig.directClamp );
-									result += sssDirectContribNM;
-								}
-
-								// BSSRDF continuation via CastRayNM sub-path
-								{
-									Scalar sssThroughputNM = bssrdfWeightNM;
-
-									const PathTransportUtilities::RussianRouletteResult rr =
-										PathTransportUtilities::EvaluateRussianRoulette(
-											depth, rrMinDepth, rrThreshold,
-											importance * fabs( sssThroughputNM ),
-											importance, bssrdfSampler.Get1D() );
-									if( !rr.terminate )
-									{
-										if( rr.survivalProb < 1.0 ) {
-											sssThroughputNM /= rr.survivalProb;
-										}
-
-										Scalar cthis = 0;
-										Ray continuationRay = bssrdf.scatteredRay;
-										continuationRay.Advance( 1e-8 );
-
-										IRayCaster::RAY_STATE rs2;
-										rs2.depth = depth + 2;
-										rs2.considerEmission = true;
-										rs2.importance = importance * fabs( sssThroughputNM );
-										rs2.bsdfPdf = bssrdf.cosinePdf;
-										rs2.bsdfTimesCos = RISEPel( fabs( sssThroughputNM ) * bssrdf.cosinePdf );
-										rs2.type = IRayCaster::RAY_STATE::eRayDiffuse;
-										rs2.diffuseBounces = diffuseBounces;
-										rs2.glossyBounces = glossyBounces;
-										rs2.transmissionBounces = transmissionBounces;
-										rs2.translucentBounces = nextTranslucentBounces;
-										rs2.glossyFilterWidth = glossyFilterWidth;
-
-										if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 )
-										{
-											const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
-												rast.x, rast.y, kTechniqueBSDF );
-										}
-
-										caster.CastRayNM( rc, rast, continuationRay, cthis,
-											rs2, nm, 0, pRadianceMap, iorStack );
-
-										Scalar indirectNM = sssThroughputNM * cthis;
-										if( depth > 0 ) {
-											indirectNM = ClampContribution( indirectNM,
-												stabilityConfig.indirectClamp );
-										}
-										result += throughput * indirectNM;
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// ============================================================
-		// Specular surfaces (no BSDF — use SPF) (spectral)
-		// ============================================================
-		if( !pBRDF )
-		{
-			const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
-			if( !pSPF ) {
-				break;
-			}
-
-			ScatteredRayContainer scattered;
-			{
-				RISE_PROFILE_PHASE(BSDFScatter);
-				RISE_PROFILE_INC(nBSDFScatterCalls);
-				pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, iorStack );
-			}
-
-			if( scattered.Count() == 0 ) {
-				break;
-			}
-
-			// Stochastic single-lobe selection (no path-tree branching).
-			// Branching was excised in 2026-05; matches PBRT/Mitsuba/
-			// Arnold/Cycles X.
-			{
-				const Scalar xi = sampler.Get1D();
-				// bNM=true: select with spectral krayNM weights so the
-				// selection distribution matches the selectProb
-				// computation below (both in spectral domain).  Using
-				// bNM=false (RGB max) would select from one distribution
-				// and divide by another, biasing the estimator at every
-				// multi-lobe spectral vertex.
-				const ScatteredRay* pS = scattered.RandomlySelect( xi, true );
-				if( !pS ) {
-					break;
-				}
-
-				// Multi-lobe selectProb correction: RandomlySelect with
-				// bNM=true picks lobe i with prob krayNM_i / sum_j
-				// krayNM_j (raw, not fabs — matches the CDF inside
-				// ScatteredRayContainer::RandomlySelect).  Throughput
-				// must divide by selectProb to be unbiased.
-				Scalar selectProb = 1.0;
-				if( scattered.Count() > 1 ) {
-					Scalar totalKrayNM = 0;
-					for( unsigned int li = 0; li < scattered.Count(); li++ ) {
-						totalKrayNM += scattered[li].krayNM;
-					}
-					if( totalKrayNM > NEARZERO && pS->krayNM > NEARZERO ) {
-						selectProb = pS->krayNM / totalKrayNM;
-					}
-				}
-				if( selectProb < NEARZERO ) {
-					break;
-				}
-
-				IRayCaster::RAY_STATE rs2 = rs;
-				rs2.depth = depth + 1;
-				rs2.importance = importance * fabs( pS->krayNM ) / selectProb;
-				rs2.bsdfPdf = pS->isDelta ? 0 : pS->pdf;
-				rs2.type = PathTracingRayType( *pS );
-				// SMS emission-suppression: a delta continuation beyond a
-				// non-specular shading point must not re-enable emission
-				// at the next surface (SMS already covered that path).
-				// Matches the RGB iterative continuation logic.
-				const bool nextConsiderEmissionNM = ( pS->isDelta && bSMSEnabled )
-					? false : true;
-				rs2.considerEmission = nextConsiderEmissionNM;
-				if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
-					break;
-				}
-
-				throughput *= pS->krayNM * (1.0 / selectProb);
-				importance = rs2.importance;
-				bsdfPdf = rs2.bsdfPdf;
-				bsdfTimesCosNM = 0;
-				considerEmission = nextConsiderEmissionNM;
-				rayType = rs2.type;
-				diffuseBounces = rs2.diffuseBounces;
-				glossyBounces = rs2.glossyBounces;
-				transmissionBounces = rs2.transmissionBounces;
-				translucentBounces = rs2.translucentBounces;
-				glossyFilterWidth = rs2.glossyFilterWidth;
-
-				// Track specular transitions for SMS double-counting
-				// prevention.  Same semantic as the RGB path: a delta
-				// scatter sets bPassedThroughSpecular=true; a non-delta
-				// scatter resets that flag and raises
-				// bHadNonSpecularShading so any subsequent specular chain
-				// to the light gets suppressed at the light hit.
-				if( pS->isDelta ) {
-					bPassedThroughSpecular = true;
-				} else {
-					bPassedThroughSpecular = false;
-					bHadNonSpecularShading = true;
-				}
-
-				currentRay = pS->ray;
-				currentRay.Advance( 1e-8 );
-
-				if( pS->ior_stack ) {
-					iorStack = *pS->ior_stack;
-				}
-
-				continue;
-			}
-		}
-
-		// ============================================================
-		// PART 2: NEE + SMS at diffuse/glossy surfaces (spectral)
-		// ============================================================
-		if( pLS )
-		{
-			IndependentSampler fallbackSampler( rc.random );
-			ISampler& neeSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
-
-			Scalar directAllNM = pLS->EvaluateDirectLightingNM(
-				ri.geometric, *pBRDF, ri.pMaterial, nm, caster, neeSampler,
-				ri.pObject, pCurrentMedium, false, pMediumObject );
-			directAllNM = ClampContribution( directAllNM, stabilityConfig.directClamp );
-			result += throughput * directAllNM;
-
-#ifdef RISE_ENABLE_OPENPGL
-			AddPTIGuidingScatteredContribution( guidingSegment, RISEPel( directAllNM ) );
-#endif
-		}
-
-		// SMS for caustics (spectral — per-wavelength IOR for dispersion)
-		if( pSolver )
-		{
-			const Vector3 woOutgoing = Vector3(
-				-ri.geometric.ray.Dir().x,
-				-ri.geometric.ray.Dir().y,
-				-ri.geometric.ray.Dir().z );
-
-			IndependentSampler fallbackSampler( rc.random );
-			ISampler& smsSampler = rc.pSampler ? *rc.pSampler : fallbackSampler;
-
-			// Pass both geometric and shading — see RGB SMS site.
-			ManifoldSolver::SMSContributionNM sms = pSolver->EvaluateAtShadingPointNM(
-				ri.geometric.ptIntersection,
-				ri.geometric.vGeomNormal,
-				ri.geometric.vNormal,
-				ri.geometric.onb,
-				ri.pMaterial,
-				woOutgoing,
-				scene,
-				caster,
-				smsSampler,
-				nm );
-
-			if( sms.valid )
-			{
-				Scalar smsContribNM = sms.contribution * sms.misWeight;
-				smsContribNM = ClampContribution( smsContribNM, stabilityConfig.directClamp );
-				result += throughput * smsContribNM;
-
-#ifdef RISE_ENABLE_OPENPGL
-				AddPTIGuidingScatteredContribution( guidingSegment, RISEPel( smsContribNM ) );
-#endif
-			}
-		}
-
-		// ============================================================
-		// PART 3: BSDF sampling (spectral — iterative continuation)
-		// ============================================================
-		const ISPF* pSPF = ri.pMaterial ? ri.pMaterial->GetSPF() : 0;
-		if( !pSPF ) {
-			break;
-		}
-
-		ScatteredRayContainer scattered;
-		{
-			RISE_PROFILE_PHASE(BSDFScatter);
-			RISE_PROFILE_INC(nBSDFScatterCalls);
-			pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, iorStack );
-		}
-
-		if( scattered.Count() == 0 ) {
-			break;
-		}
-
-		// Stochastic single-lobe selection (no path-tree branching).
-		// Branching was excised in 2026-05; matches PBRT/Mitsuba/
-		// Arnold/Cycles X.
-		//
-		// Multi-lobe correction: select lobe with bNM=true (spectral
-		// weights) so selection and compensation are in the same
-		// domain.  RandomlySelect picks lobe i with prob krayNM_i /
-		// sum_j krayNM_j; throughput divides by selectProb.
-		{
-			const Scalar xi = sampler.Get1D();
-			const ScatteredRay* pS = scattered.RandomlySelect( xi, true );
-			if( !pS ) {
-				break;
-			}
-
-			Scalar selectProb = 1.0;
-			if( scattered.Count() > 1 ) {
-				Scalar totalKrayNM = 0;
-				for( unsigned int li = 0; li < scattered.Count(); li++ ) {
-					totalKrayNM += scattered[li].krayNM;
-				}
-				if( totalKrayNM > NEARZERO && pS->krayNM > NEARZERO ) {
-					selectProb = pS->krayNM / totalKrayNM;
-				}
-			}
-			if( selectProb < NEARZERO ) {
-				break;
-			}
-
-			Ray traceRay = pS->ray;
-			Scalar scatterThroughputNM = pS->krayNM * (1.0 / selectProb);
-			Scalar effectiveBsdfPdf = pS->isDelta ? 0 : pS->pdf;
-			const IORStack* traceIorStack = pS->ior_stack ? pS->ior_stack : &iorStack;
-
-#ifdef RISE_ENABLE_OPENPGL
-			static thread_local GuidingDistributionHandle guideDistNM;
-
-			if( rc.pGuidingField && rc.pGuidingField->IsTrained() &&
-				depth <= rc.maxGuidingDepth && GuidingSupportsSurfaceSampling( *pS ) )
-			{
-				const Scalar alpha = GuidingEffectiveAlpha(
-					rc.guidingAlpha, *pS, rs );
-
-				if( alpha > NEARZERO && rc.pGuidingField->InitDistribution( guideDistNM,
-					ri.geometric.ptIntersection,
-					sampler.Get1D() ) )
-				{
-					if( pS->type == ScatteredRay::eRayDiffuse ) {
-						rc.pGuidingField->ApplyCosineProduct( guideDistNM, GuidingCosineNormal( ri.geometric ) );
-					}
-
-					if( rc.guidingSamplingType == eGuidingRIS )
-					{
-						// RIS-based guiding (spectral)
-						PathTransportUtilities::GuidingRISCandidate<Scalar> candidates[2];
-
-						// Candidate 0: BSDF sample
-						{
-							PathTransportUtilities::GuidingRISCandidate<Scalar>& c = candidates[0];
-							c.direction = pS->ray.Dir();
-							c.bsdfEval = PathVertexEval::EvalBSDFAtSurfaceNM(
-								pBRDF, c.direction, ri.geometric, nm );
-							c.bsdfPdf = pS->pdf;
-							c.guidePdf = rc.pGuidingField->Pdf( guideDistNM, c.direction );
-							c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDistNM, c.direction );
-							c.cosTheta = fabs(
-								Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
-							const Scalar avgBsdf = fabs( c.bsdfEval );
-							c.risTarget = PathTransportUtilities::GuidingRISTarget(
-								avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
-							c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-								c.bsdfPdf, c.guidePdf );
-							c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
-							c.valid = c.bsdfPdf > NEARZERO && c.risPdf > NEARZERO && avgBsdf > 0;
-							if( !c.valid ) {
-								c.risWeight = 0;
-							}
-						}
-
-						// Candidate 1: guide sample
-						{
-							PathTransportUtilities::GuidingRISCandidate<Scalar>& c = candidates[1];
-							Scalar guidePdf = 0;
-							const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-							c.direction = rc.pGuidingField->Sample( guideDistNM, xi2d, guidePdf );
-							c.guidePdf = guidePdf;
-
-							if( guidePdf > NEARZERO )
-							{
-								c.bsdfEval = PathVertexEval::EvalBSDFAtSurfaceNM(
-									pBRDF, c.direction, ri.geometric, nm );
-								c.bsdfPdf = PathVertexEval::EvalPdfAtSurfaceNM(
-									pSPF, ri.geometric, c.direction, nm, iorStack );
-								c.incomingRadPdf = rc.pGuidingField->IncomingRadiancePdf( guideDistNM, c.direction );
-								c.cosTheta = fabs(
-									Vector3Ops::Dot( c.direction, ri.geometric.vNormal ) );
-								const Scalar avgBsdf = fabs( c.bsdfEval );
-								c.risTarget = PathTransportUtilities::GuidingRISTarget(
-									avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
-								c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-									c.bsdfPdf, c.guidePdf );
-								c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
-								c.valid = c.bsdfPdf > NEARZERO && avgBsdf > 0;
-								if( !c.valid ) {
-									c.risWeight = 0;
-								}
-							}
-							else
-							{
-								c.bsdfEval = 0;
-								c.bsdfPdf = 0;
-								c.incomingRadPdf = 0;
-								c.cosTheta = 0;
-								c.risTarget = 0;
-								c.risPdf = 0;
-								c.risWeight = 0;
-								c.valid = false;
-							}
-						}
-
-						Scalar risEffectivePdf = 0;
-						const Scalar xiRIS = sampler.Get1D();
-						const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidate(
-							candidates, 2, xiRIS, risEffectivePdf );
-
-						if( risEffectivePdf > NEARZERO && candidates[sel].valid )
-						{
-							scatterThroughputNM = candidates[sel].bsdfEval *
-								candidates[sel].cosTheta / risEffectivePdf;
-							traceRay = Ray( pS->ray.origin, candidates[sel].direction );
-							effectiveBsdfPdf = risEffectivePdf;
-							traceIorStack = &iorStack;
-						}
-						else
-						{
-							scatterThroughputNM = 0;
-						}
-					}
-					else
-					{
-						// One-sample MIS (spectral) — gated on
-						// rc.guidingLearnedAlpha; see RGB block above.
-						Scalar effectiveAlpha = alpha;
-						if( rc.guidingLearnedAlpha )
-						{
-							const Scalar learnedCellAlpha =
-								rc.pGuidingField->GetCellAlpha( guideDistNM );
-							effectiveAlpha = alpha * 2.0 * learnedCellAlpha;
-							if( effectiveAlpha > 1.0 ) effectiveAlpha = 1.0;
-						}
-						const Scalar xiG = sampler.Get1D();
-
-						Scalar smplBsdfPdf = 0;
-						Scalar smplGuidePdf = 0;
-						Scalar smplCombinedPdf = 0;
-
-						if( PathTransportUtilities::ShouldUseGuidedSample( effectiveAlpha, xiG ) )
-						{
-							Scalar guidePdf = 0;
-							const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-							const Vector3 guidedDir = rc.pGuidingField->Sample( guideDistNM, xi2d, guidePdf );
-
-							if( guidePdf > NEARZERO )
-							{
-								const Scalar fGuided = PathVertexEval::EvalBSDFAtSurfaceNM(
-									pBRDF, guidedDir, ri.geometric, nm );
-								const Scalar bsdfPdfGuided = PathVertexEval::EvalPdfAtSurfaceNM(
-									pSPF, ri.geometric, guidedDir, nm, iorStack );
-								const Scalar combinedPdf =
-									PathTransportUtilities::GuidingCombinedPdf( effectiveAlpha, guidePdf, bsdfPdfGuided );
-
-								if( combinedPdf > NEARZERO )
-								{
-									const Scalar cosTheta = fabs(
-										Vector3Ops::Dot( guidedDir, ri.geometric.vNormal ) );
-									scatterThroughputNM = fGuided * cosTheta / combinedPdf;
-									traceRay = Ray( pS->ray.origin, guidedDir );
-									effectiveBsdfPdf = combinedPdf;
-									traceIorStack = &iorStack;
-									smplBsdfPdf = bsdfPdfGuided;
-									smplGuidePdf = guidePdf;
-									smplCombinedPdf = combinedPdf;
-								}
-								else
-								{
-									scatterThroughputNM = 0;
-								}
-							}
-							else
-							{
-								scatterThroughputNM = 0;
-							}
-						}
-						else
-						{
-							const Scalar guidePdfForBsdf = rc.pGuidingField->Pdf( guideDistNM, pS->ray.Dir() );
-							const Scalar combinedPdf =
-								PathTransportUtilities::GuidingCombinedPdf( effectiveAlpha, guidePdfForBsdf, pS->pdf );
-
-							if( combinedPdf > NEARZERO )
-							{
-								scatterThroughputNM = pS->krayNM * (pS->pdf / combinedPdf);
-								effectiveBsdfPdf = combinedPdf;
-								smplBsdfPdf = pS->pdf;
-								smplGuidePdf = guidePdfForBsdf;
-								smplCombinedPdf = combinedPdf;
-							}
-						}
-
-						if( rc.guidingLearnedAlpha && guidingRootRay &&
-							smplCombinedPdf > NEARZERO )
-						{
-							PTIPendingGuideUpdate u;
-							u.cellId           = rc.pGuidingField->GetCellId( guideDistNM );
-							u.bsdfPdf          = smplBsdfPdf;
-							u.guidePdf         = smplGuidePdf;
-							u.combinedPdf      = smplCombinedPdf;
-							u.resultBefore     = fabs( result );
-							u.throughputBefore = fabs( throughput );
-							GetPTIPendingGuideUpdates().push_back( u );
-						}
-					}
-				}
-			}
-
-#endif // RISE_ENABLE_OPENPGL
-
-			bool skipContinuation = fabs( scatterThroughputNM ) <= NEARZERO;
-
-			// Optimal MIS training
-			if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() &&
-				!pS->isDelta && !skipContinuation )
-			{
-				const_cast<OptimalMISAccumulator*>(rc.pOptimalMIS)->AccumulateCount(
-					rast.x, rast.y, kTechniqueBSDF );
-			}
-
-#ifdef RISE_ENABLE_OPENPGL
-			const Scalar preRRScatterThroughputNM = scatterThroughputNM;
-			Scalar rrSurvivalProb = 1.0;
-#endif
-
-			// Russian roulette
-			if( !skipContinuation )
-			{
-				const PathTransportUtilities::RussianRouletteResult rr =
-					PathTransportUtilities::EvaluateRussianRoulette(
-						depth, rrMinDepth, rrThreshold,
-						importance * fabs( scatterThroughputNM ),
-						importance,
-						sampler.Get1D() );
-				if( rr.terminate ) {
-					skipContinuation = true;
-				} else if( rr.survivalProb < 1.0 ) {
-					scatterThroughputNM /= rr.survivalProb;
-#ifdef RISE_ENABLE_OPENPGL
-					rrSurvivalProb = rr.survivalProb;
-#endif
-				}
-			}
-
-			const Scalar bsdfTimesCosValNM = pS->isDelta ? 0 :
-				fabs( scatterThroughputNM ) * effectiveBsdfPdf;
-
-			// Per-type bounce limits
-			IRayCaster::RAY_STATE rs2 = rs;
-			rs2.depth = depth + 2;
-			rs2.importance = importance * fabs( scatterThroughputNM );
-			rs2.bsdfPdf = effectiveBsdfPdf;
-			rs2.bsdfTimesCos = RISEPel( bsdfTimesCosValNM );
-			rs2.type = PathTracingRayType( *pS );
-
-			if( PropagateBounceLimits( rs, rs2, *pS, &stabilityConfig ) ) {
-				skipContinuation = true;
-			}
-
-			bool nextConsiderEmission = true;
-			if( pS->isDelta && bSMSEnabled ) {
-				nextConsiderEmission = false;
-			}
-
-#ifdef RISE_ENABLE_OPENPGL
-			if( guidingSegment && !skipContinuation )
-			{
-				const Scalar segEta =
-					( pS->ior_stack && pS->ior_stack->top() > NEARZERO ) ?
-						pS->ior_stack->top() :
-						( iorStack.top() > NEARZERO ? iorStack.top() : 1.0 );
-				const Scalar segRoughness = pS->isDelta ?
-					Scalar( 0.0 ) :
-					( pS->type == ScatteredRay::eRayDiffuse ?
-						Scalar( 1.0 ) :
-						Scalar( 0.5 ) );
-				SetPTIGuidingContinuation(
-					guidingSegment,
-					traceRay.Dir(),
-					effectiveBsdfPdf,
-					RISEPel( preRRScatterThroughputNM ),
-					pS->isDelta,
-					rrSurvivalProb,
-					segEta,
-					segRoughness );
-			}
-#endif
-
-			if( skipContinuation ) {
-				break;
-			}
-
-			// Update iterative state
-			throughput *= scatterThroughputNM;
-			importance = rs2.importance;
-			bsdfPdf = effectiveBsdfPdf;
-			bsdfTimesCosNM = bsdfTimesCosValNM;
-			considerEmission = nextConsiderEmission;
-			rayType = rs2.type;
-			diffuseBounces = rs2.diffuseBounces;
-			glossyBounces = rs2.glossyBounces;
-			transmissionBounces = rs2.transmissionBounces;
-			translucentBounces = rs2.translucentBounces;
-			glossyFilterWidth = rs2.glossyFilterWidth;
-
-			currentRay = traceRay;
-			currentRay.Advance( 1e-8 );
-
-			if( traceIorStack != &iorStack ) {
-				iorStack = *traceIorStack;
-			}
-		}
-	}
-
-#ifdef RISE_ENABLE_OPENPGL
-	// Apply pending Adam updates from this NM path's guide samples.
-	if( guidingRootRay && rc.pGuidingField )
-	{
-		auto& pending = GetPTIPendingGuideUpdates();
-		if( !pending.empty() )
-		{
-			const Scalar resultEndLum = fabs( result );
-			for( const PTIPendingGuideUpdate& u : pending )
-			{
-				const Scalar deltaResult = resultEndLum - u.resultBefore;
-				if( u.throughputBefore > NEARZERO && deltaResult > 0 )
-				{
-					const Scalar f = deltaResult * u.combinedPdf / u.throughputBefore;
-					rc.pGuidingField->UpdateCellAlpha(
-						u.cellId, u.bsdfPdf, u.guidePdf, f, u.combinedPdf, 0.01 );
-				}
-			}
-			pending.clear();
-		}
-	}
-#endif
-
-	return result;
+	// Thin forwarder to the shared templated body.  pAOV carries the
+	// denoiser AOV for the spectral (NM) path: NMTag::supports_aov is
+	// true, so IntegrateFromHitTemplated records normal/albedo at the
+	// first non-delta vertex (Accurate mode) exactly as the RGB path.
+	// The spectral rasterizer plumbs a PixelAOV through IntegrateRayNM;
+	// callers that do not denoise (PathTracingShaderOp) pass null.
+	return IntegrateFromHitTemplated<NMTag>(
+		rc, rast, firstHit, scene, caster, sampler, pRadianceMap,
+		startDepth, initialIorStack, bsdfPdf, bsdfTimesCosNM,
+		considerEmission, importance, rayType, diffuseBounces,
+		glossyBounces, transmissionBounces, translucentBounces,
+		volumeBounces, glossyFilterWidth, smsPassedThroughSpecular_initial,
+		smsHadNonSpecularShading_initial, pAOV, NMTag{ nm } );
 }
 
 
@@ -5021,11 +4098,12 @@ Scalar PathTracingIntegrator::IntegrateRayNM(
 	const IScene& scene,
 	const IRayCaster& caster,
 	ISampler& sampler,
-	const IRadianceMap* pRadianceMap
+	const IRadianceMap* pRadianceMap,
+	PixelAOV* pAOV
 	) const
 {
 	return IntegrateRayTemplated<NMTag>( rc, rast, cameraRay, scene, caster,
-		sampler, pRadianceMap, /*pAOV*/ 0, NMTag( nm ) );
+		sampler, pRadianceMap, pAOV, NMTag( nm ) );
 }
 
 

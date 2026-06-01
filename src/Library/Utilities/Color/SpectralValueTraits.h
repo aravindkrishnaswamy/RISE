@@ -131,7 +131,13 @@ namespace RISE
 
 			static constexpr bool is_pel        = false;
 			static constexpr bool is_nm         = true;
-			static constexpr bool supports_aov  = false;
+			// PT-spectral records the denoiser AOV (normal/albedo) inline
+			// at the first non-delta vertex, same as the RGB path — see
+			// SPECTRAL_PARITY_AUDIT.md §2.6.  The AOV is geometry/material
+			// data (wavelength-independent) and does not affect the beauty
+			// pass, so enabling it is render-neutral; the spectral
+			// rasterizer plumbs a PixelAOV through IntegrateRayNM.
+			static constexpr bool supports_aov  = true;
 
 			static inline value_type zero()
 			{

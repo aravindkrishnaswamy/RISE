@@ -144,7 +144,8 @@ namespace RISE
 				unsigned int volumeBounces_,
 				Scalar glossyFilterWidth_,
 				bool smsPassedThroughSpecular_ = false,
-				bool smsHadNonSpecularShading_ = false
+				bool smsHadNonSpecularShading_ = false,
+				PixelAOV* pAOV = 0
 				) const;
 
 			/// Traces a path starting from a pre-computed surface hit (HWSS).
@@ -182,7 +183,8 @@ namespace RISE
 				const IScene& scene,
 				const IRayCaster& caster,
 				ISampler& sampler,
-				const IRadianceMap* pRadianceMap
+				const IRadianceMap* pRadianceMap,
+				PixelAOV* pAOV = 0
 				) const;
 
 			/// Traces one complete path for a bundle of HWSS wavelengths.
@@ -213,6 +215,42 @@ namespace RISE
 			// header comment).  These are only instantiated inside
 			// PathTracingIntegrator.cpp by the thin public forwarders, so
 			// adding them changes neither the vtable nor the class layout.
+
+			/// Shared body of IntegrateFromHit / IntegrateFromHitNM.  The
+			/// iterative path-tracing core; HWSS stays standalone.  The
+			/// SMS emission-suppression flags and pAOV are carried through;
+			/// the AOV first-non-delta hook compiles in only for the
+			/// AOV-capable tag (supports_aov).  Only instantiated inside
+			/// PathTracingIntegrator.cpp by the thin public forwarders, so
+			/// adding it changes neither the vtable nor the class layout.
+			template<class Tag>
+			typename SpectralDispatch::SpectralValueTraits<Tag>::value_type
+			IntegrateFromHitTemplated(
+				const RuntimeContext& rc,
+				const RasterizerState& rast,
+				const RayIntersection& firstHit,
+				const IScene& scene,
+				const IRayCaster& caster,
+				ISampler& sampler,
+				const IRadianceMap* pRadianceMap,
+				unsigned int startDepth,
+				const IORStack& initialIorStack,
+				Scalar bsdfPdf_,
+				const typename SpectralDispatch::SpectralValueTraits<Tag>::value_type& bsdfTimesCos_,
+				bool considerEmission_,
+				Scalar importance_,
+				IRayCaster::RAY_STATE::RayType rayType_,
+				unsigned int diffuseBounces_,
+				unsigned int glossyBounces_,
+				unsigned int transmissionBounces_,
+				unsigned int translucentBounces_,
+				unsigned int volumeBounces_,
+				Scalar glossyFilterWidth_,
+				bool smsPassedThroughSpecular_,
+				bool smsHadNonSpecularShading_,
+				PixelAOV* pAOV,
+				const Tag& tag
+				) const;
 
 			/// Shared body of IntegrateRay / IntegrateRayNM.
 			template<class Tag>

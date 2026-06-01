@@ -59,7 +59,10 @@ static void TestTypeRelationships()
 	static_assert( SpectralValueTraits<NMTag>::is_nm,    "NMTag::is_nm" );
 
 	static_assert( SpectralValueTraits<PelTag>::supports_aov,  "Pel supports AOV" );
-	static_assert( !SpectralValueTraits<NMTag>::supports_aov, "NM does not support AOV" );
+	// NM gained inline-AOV support in Phase 2b part 2 (SPECTRAL_PARITY_AUDIT
+	// §2.6): the spectral integrator records the denoiser AOV at the first
+	// non-delta vertex, same as the RGB path, gated on this flag.
+	static_assert( SpectralValueTraits<NMTag>::supports_aov, "NM supports AOV (Phase 2b part 2)" );
 
 	std::cout << "  PASS" << std::endl;
 }
