@@ -84,6 +84,7 @@
 #include "../Interfaces/IPhaseFunction.h"
 #include "../Utilities/IndependentSampler.h"
 #include "../Utilities/Color/SpectralValueTraits.h"
+#include "../Utilities/PathValueOps.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -2297,6 +2298,1330 @@ unsigned int BDPTIntegrator::GenerateLightSubpath(
 // cameras this is 1/cos^3(theta) * focaldist^2 (Veach eq. 8.10).
 //////////////////////////////////////////////////////////////////////
 
+namespace {
+
+	//////////////////////////////////////////////////////////////////
+	// Tag-dispatched helpers for the templated eye-subpath generator
+	// (GenerateEyeSubpathImpl below).  Phase 2c family F2a -- the
+	// camera-side half of subpath generation.  Each forwards at compile
+	// time to the existing Pel or NM path, so the single templated body
+	// expands to the same machine code the hand-written
+	// GenerateEyeSubpath{,NM} bodies produced.  Reuses the F1
+	// TrOne / EvalMediumTransmittance helpers above (same anon ns).
+	//////////////////////////////////////////////////////////////////
+
+	/// Store path throughput into the tag's vertex field: RISEPel
+	/// `throughput` for Pel, Scalar `throughputNM` for NM.
+	template<class Tag>
+	inline void StoreThroughput(
+		BDPTVertex& v, const typename SpectralValueTraits<Tag>::value_type& beta );
+	template<> inline void StoreThroughput<PelTag>( BDPTVertex& v, const RISEPel& beta ) { v.throughput = beta; }
+	template<> inline void StoreThroughput<NMTag>( BDPTVertex& v, const Scalar& beta ) { v.throughputNM = beta; }
+
+	/// Read the tag's throughput field off a vertex (RR previous-throughput
+	/// magnitude).
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type VertexThroughput( const BDPTVertex& v );
+	template<> inline RISEPel VertexThroughput<PelTag>( const BDPTVertex& v ) { return v.throughput; }
+	template<> inline Scalar  VertexThroughput<NMTag>( const BDPTVertex& v ) { return v.throughputNM; }
+
+	/// Read the tag's per-lobe scatter weight off a ScatteredRay: RISEPel
+	/// `kray` for Pel, Scalar `krayNM` for NM.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type KrayValue( const ScatteredRay& s );
+	template<> inline RISEPel KrayValue<PelTag>( const ScatteredRay& s ) { return s.kray; }
+	template<> inline Scalar  KrayValue<NMTag>( const ScatteredRay& s ) { return s.krayNM; }
+
+	/// Contribution-gate magnitude (`<= 0` / `> NEARZERO` skips).  Pel: max
+	/// channel.  NM: the BARE scalar -- deliberately NOT
+	/// SpectralValueTraits::max_value (which is fabs for NM): the
+	/// pre-refactor NM gates tested the signed value directly, and a fabs
+	/// here would admit negative spectral values the originals dropped (the
+	/// Phase 2a P2 #2 footgun).  Use SpectralValueTraits::max_value (fabs
+	/// for NM) for the *absolute* magnitude needed by Russian roulette.
+	template<class Tag>
+	inline Scalar PositiveMagnitude( const typename SpectralValueTraits<Tag>::value_type& v );
+	template<> inline Scalar PositiveMagnitude<PelTag>( const RISEPel& v ) { return ColorMath::MaxValue( v ); }
+	template<> inline Scalar PositiveMagnitude<NMTag>( const Scalar& v ) { return v; }
+
+	/// SPF scatter dispatch: Scatter (Pel) / ScatterNM(nm) (NM).
+	template<class Tag>
+	inline void ScatterSPF(
+		const ISPF& spf, const RayIntersectionGeometric& rig, ISampler& sampler,
+		ScatteredRayContainer& scattered, IORStack& iorStack, const Tag& tag );
+	template<> inline void ScatterSPF<PelTag>(
+		const ISPF& spf, const RayIntersectionGeometric& rig, ISampler& sampler,
+		ScatteredRayContainer& scattered, IORStack& iorStack, const PelTag& )
+	{ spf.Scatter( rig, sampler, scattered, iorStack ); }
+	template<> inline void ScatterSPF<NMTag>(
+		const ISPF& spf, const RayIntersectionGeometric& rig, ISampler& sampler,
+		ScatteredRayContainer& scattered, IORStack& iorStack, const NMTag& tag )
+	{ spf.ScatterNM( rig, sampler, tag.nm, scattered, iorStack ); }
+
+	/// Wavelength argument for BSSRDFSampling::SampleEntryPoint /
+	/// RandomWalkSSS::SampleExit: 0 for Pel, tag.nm for NM.
+	template<class Tag> inline Scalar NmOrZero( const Tag& tag );
+	template<> inline Scalar NmOrZero<PelTag>( const PelTag& ) { return Scalar( 0 ); }
+	template<> inline Scalar NmOrZero<NMTag>( const NMTag& tag ) { return tag.nm; }
+
+	/// Medium free-flight distance sample dispatch: SampleDistance (Pel) /
+	/// SampleDistanceNM(nm) (NM).
+	template<class Tag>
+	inline Scalar SampleMediumDistance(
+		const IMedium& medium, const Ray& ray, const Scalar maxDist,
+		ISampler& sampler, bool& scattered, const Tag& tag );
+	template<> inline Scalar SampleMediumDistance<PelTag>(
+		const IMedium& medium, const Ray& ray, const Scalar maxDist,
+		ISampler& sampler, bool& scattered, const PelTag& )
+	{ return medium.SampleDistance( ray, maxDist, sampler, scattered ); }
+	template<> inline Scalar SampleMediumDistance<NMTag>(
+		const IMedium& medium, const Ray& ray, const Scalar maxDist,
+		ISampler& sampler, bool& scattered, const NMTag& tag )
+	{ return medium.SampleDistanceNM( ray, maxDist, tag.nm, sampler, scattered ); }
+
+	/// Medium free-flight scatter throughput weight + the scalar sigma_t
+	/// stored on the medium vertex.  Pel uses the delta-tracking weight
+	///   Tr * sigma_s / (max(sigma_t) * min(Tr))   (chromatic, RISEPel);
+	/// NM the single-wavelength single-scattering albedo  sigma_s/sigma_t
+	/// (equal for one wavelength, where Tr cancels).
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type
+	ComputeMediumScatterWeight(
+		const IMedium& medium, const Point3& scatterPt, const Ray& ray,
+		const Scalar t_m, const Tag& tag, Scalar& outSigmaTScalar );
+	template<>
+	inline RISEPel ComputeMediumScatterWeight<PelTag>(
+		const IMedium& medium, const Point3& scatterPt, const Ray& ray,
+		const Scalar t_m, const PelTag&, Scalar& outSigmaTScalar )
+	{
+		const MediumCoefficients coeff = medium.GetCoefficients( scatterPt );
+		const RISEPel Tr = medium.EvalTransmittance( ray, t_m );
+		const Scalar sigma_t_max = ColorMath::MaxValue( coeff.sigma_t );
+		outSigmaTScalar = sigma_t_max;
+		RISEPel medWeight( 0, 0, 0 );
+		if( sigma_t_max > 0 ) {
+			const Scalar Tr_scalar = ColorMath::MinValue( Tr );
+			if( Tr_scalar > 0 ) {
+				medWeight = Tr * coeff.sigma_s * (1.0 / (sigma_t_max * Tr_scalar));
+			}
+		}
+		return medWeight;
+	}
+	template<>
+	inline Scalar ComputeMediumScatterWeight<NMTag>(
+		const IMedium& medium, const Point3& scatterPt, const Ray& ray,
+		const Scalar t_m, const NMTag& tag, Scalar& outSigmaTScalar )
+	{
+		const MediumCoefficientsNM coeff = medium.GetCoefficientsNM( scatterPt, tag.nm );
+		const Scalar TrNM = medium.EvalTransmittanceNM( ray, t_m, tag.nm );
+		const Scalar sigma_t_nm = coeff.sigma_t;
+		outSigmaTScalar = sigma_t_nm;
+		Scalar medWeightNM = 0;
+		if( sigma_t_nm > 0 && TrNM > 0 ) {
+			medWeightNM = coeff.sigma_s / sigma_t_nm;
+		}
+		return medWeightNM;
+	}
+
+	template<class Tag>
+	unsigned int GenerateEyeSubpathImpl(
+		unsigned int maxEyeDepth,
+		const StabilityConfig& stabilityConfig,
+		const LightSampler* pLightSampler,
+	#ifdef RISE_ENABLE_OPENPGL
+		PathGuidingField* pGuidingField,
+		unsigned int maxGuidingDepth,
+		Scalar guidingAlpha,
+		GuidingSamplingType guidingSamplingType,
+	#endif
+		const RuntimeContext& rc,
+		const Ray& cameraRay,
+		const Point2& screenPos,
+		const IScene& scene,
+		const IRayCaster& caster,
+		ISampler& sampler,
+		std::vector<BDPTVertex>& vertices,
+		std::vector<uint32_t>& subpathStarts,
+		const Tag& tag,
+		const SampledWavelengths* pSwlHWSS )
+	{
+		typedef SpectralValueTraits<Tag> Traits;
+		typedef typename Traits::value_type V;
+		(void)rc;
+
+		vertices.clear();
+		vertices.reserve( maxEyeDepth + 1 );
+		subpathStarts.clear();
+		subpathStarts.push_back( 0 );
+
+		// Snapshot once at entry so vertex 0 and the pdfCamDir below see
+		// the same camera.  Structural changes serialize against
+		// rendering per the IScenePriv.h contract.
+		const ICamera* pCamera = scene.GetCamera();
+
+		//
+		// Vertex 0: the camera
+		//
+		{
+			BDPTVertex v;
+			v.type = BDPTVertex::CAMERA;
+
+			if( pCamera ) {
+				v.position = pCamera->GetLocation();
+			}
+
+			v.normal = cameraRay.Dir();
+			v.onb.CreateFromW( cameraRay.Dir() );
+			v.pMaterial = 0;
+			v.pObject = 0;
+			v.pLight = 0;
+			v.pLuminary = 0;
+			v.screenPos = screenPos;
+			v.isDelta = false;
+
+			// pdfFwd = 1 for a specific pixel
+			v.pdfFwd = 1.0;
+			v.pdfRev = 0;
+			StoreThroughput<Tag>( v, TrOne<Tag>() );
+
+			vertices.push_back( v );
+		}
+
+		// Trace the camera ray
+		Ray currentRay = cameraRay;
+		V beta = TrOne<Tag>();
+
+		// The camera pdf for generating this direction.  Reuses the
+		// pCamera cached at the top of GenerateEyeSubpath.
+		Scalar pdfCamDir = 1.0;
+		if( pCamera ) {
+			pdfCamDir = BDPTCameraUtilities::PdfDirection( *pCamera, cameraRay );
+		}
+
+		// VCM post-pass inputs on the camera endpoint: the
+		// directional importance PDF in solid-angle measure (used by
+		// InitCamera), plus a cosine sentinel of 1.0.  BDPT itself
+		// does not read these.
+		vertices[0].emissionPdfW = pdfCamDir;
+		vertices[0].cosAtGen = 1.0;
+
+		Scalar pdfFwdPrev = pdfCamDir;
+		IORStack iorStack( 1.0 );
+		// Seed from the camera position: if the camera sits inside a
+		// dielectric (submerged camera, camera inside a medium volume),
+		// the first scatter needs the stack to reflect that containment.
+		// For cameras in free space this is a no-op — the probe finds no
+		// enclosing objects and leaves the stack as-is.
+		if( pCamera ) {
+			IORStackSeeding::SeedFromPoint( iorStack, pCamera->GetLocation(), scene );
+		}
+
+	#ifdef RISE_ENABLE_OPENPGL
+		static thread_local GuidingDistributionHandle guideDist;
+	#endif
+
+		// Per-type bounce counters for StabilityConfig limits
+		unsigned int eyeDiffuseBounces = 0;
+		unsigned int eyeGlossyBounces = 0;
+		unsigned int eyeTransmissionBounces = 0;
+		unsigned int eyeTranslucentBounces = 0;
+		unsigned int eyeVolumeBounces = 0;
+		// NM-only: the spectral eye subpath caps SURFACE vertices at
+		// maxEyeDepth explicitly (the Pel path relies on the loop bound
+		// only) -- a preserved Pel/NM asymmetry, NOT fixed here.
+		[[maybe_unused]] unsigned int eyeSurfaceBounces = 0;
+
+		// HWSS per-wavelength throughput tracking (NM bundle only).  When
+		// pSwlHWSS is non-null the RR site below uses max over active
+		// wavelengths of the post-scatter throughput, preventing hero-driven
+		// RR from amplifying companion wavelengths on rare survivors (see the
+		// PathTracingIntegrator HWSS RR comment for full rationale).  Index 0
+		// is hero; kept in sync with beta.  [[maybe_unused]] because the Pel
+		// instantiation discards every use below.
+		[[maybe_unused]] Scalar hwssBetaNM[SampledWavelengths::N] = {};
+		if constexpr( Traits::is_nm ) {
+			if( pSwlHWSS ) {
+				for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+					hwssBetaNM[w] = Scalar( 1 );
+				}
+			}
+		}
+
+		// Loop limit accounts for both surface and volume bounces.
+		// Saturating addition: if a scene sets max_volume_bounce to
+		// UINT_MAX (documented as "unlimited" for other bounce types), the
+		// raw sum wraps to a small number, silently aborting the walk.
+		// Cap at 1024 which is well above any realistic depth.  Also guard
+		// `maxEyeDepth >= 1024` directly so the subtraction in the first
+		// half of the ternary doesn't underflow.
+		const unsigned int maxEyeTotalDepth =
+			( maxEyeDepth >= 1024u ||
+			  stabilityConfig.maxVolumeBounce > 1024u - maxEyeDepth ) ?
+				1024u :
+				maxEyeDepth + stabilityConfig.maxVolumeBounce;
+
+		for( unsigned int depth = 0; depth < maxEyeTotalDepth; depth++ )
+		{
+			// Per-bounce stream offset on the eye subpath.  Streams
+			// [16, 16+maxEyeTotalDepth) are reserved for the eye walk;
+			// light walk uses [1, ...).
+			sampler.StartStream( 16u + depth );
+
+			// Intersect the scene
+			RayIntersection ri( currentRay, nullRasterizerState );
+			scene.GetObjects()->IntersectRay( ri, true, true, false );
+
+			// ----------------------------------------------------------------
+			// Participating media: free-flight distance sampling.
+			//
+			// Before creating a surface vertex, check if the current ray
+			// travels through a participating medium.  If a scatter event
+			// occurs before reaching the surface, create a MEDIUM vertex
+			// and sample the phase function for the continuation direction.
+			// If no scatter occurs, apply transmittance to the path
+			// throughput and fall through to normal surface vertex creation.
+			// ----------------------------------------------------------------
+			// Declared outside the medium block so surface vertices can
+			// inherit the enclosing medium info for connection transmittance.
+			const IObject* pMedObj_eye = 0;
+			const IMedium* pMed_eye = 0;
+			{
+				const IObject* pMedObj = 0;
+				const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
+					iorStack, &scene, pMedObj );
+				pMedObj_eye = pMedObj;
+				pMed_eye = pMed;
+
+				if( pMed )
+				{
+					const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
+					bool scattered = false;
+					const Scalar t_m = SampleMediumDistance<Tag>(
+						*pMed, currentRay, maxDist, sampler, scattered, tag );
+
+					if( scattered && eyeVolumeBounces < stabilityConfig.maxVolumeBounce )
+					{
+						// Medium scatter event before surface hit.
+						//
+						// Throughput weight for delta-tracking scatter event:
+						//   Sampling PDF:   p(t) = sigma_t_maj * exp(-sigma_t_maj * t)
+						//   Transmittance:  Tr(t) = exp(-sigma_t * t)  per channel
+						//   Weight:         Tr * sigma_s / (sigma_t_maj * Tr_scalar)
+						//
+						// For homogeneous media this simplifies to sigma_s / sigma_t_maj
+						// (single-scattering albedo times a correction for multi-channel
+						// media).  Tr_scalar = MinValue(Tr) is the scalar tracking
+						// transmittance from the delta-tracking majorant channel.
+						const Point3 scatterPt = currentRay.PointAtLength( t_m );
+						const Vector3 wo = currentRay.Dir();
+						// Medium free-flight scatter throughput weight + the scalar
+						// sigma_t stored on the vertex (delta-tracking RISEPel weight
+						// for Pel; single-scattering albedo for NM -- equal for one
+						// wavelength, where Tr cancels).
+						Scalar sigmaTScalar = 0;
+						const V medWeight = ComputeMediumScatterWeight<Tag>(
+							*pMed, scatterPt, currentRay, t_m, tag, sigmaTScalar );
+
+						if( PositiveMagnitude<Tag>( medWeight ) <= 0 ) {
+							break;
+						}
+
+						beta = beta * medWeight;
+
+						// Create MEDIUM vertex
+						BDPTVertex mv;
+						mv.type = BDPTVertex::MEDIUM;
+						mv.position = scatterPt;
+						mv.normal = -wo;	// incoming direction (for guiding orientation)
+						mv.onb.CreateFromW( -wo );
+						mv.pMaterial = 0;
+						mv.pObject = 0;
+						mv.pMediumVol = pMed;
+						mv.pPhaseFunc = pMed->GetPhaseFunction();
+						mv.pMediumObject = pMedObj;
+						mv.sigma_t_scalar = sigmaTScalar;
+						mv.isDelta = false;
+
+						// Medium vertices enclosed by a specular (delta) boundary
+						// are not connectible: connection rays are blocked by the
+						// specular surface.  Propagate from previous vertex.
+						// Exception: vertices in the GLOBAL medium (pMedObj == NULL)
+						// are always connectable — they are not enclosed by any
+						// specular boundary, even if the previous vertex was a
+						// specular surface (e.g., reflected off glass into open fog).
+						{
+							bool connectible = true;
+							if( pMedObj == 0 ) {
+								// Global medium: always connectable
+								connectible = true;
+							} else if( !vertices.empty() ) {
+								const BDPTVertex& prev = vertices.back();
+								if( prev.type == BDPTVertex::SURFACE && prev.isDelta ) {
+									connectible = false;
+								} else if( prev.type == BDPTVertex::MEDIUM && !prev.isConnectible ) {
+									connectible = false;
+								}
+							}
+							mv.isConnectible = connectible;
+						}
+						StoreThroughput<Tag>( mv, beta );
+
+						// PDF in generalized area measure for a medium scatter vertex.
+						// For surface vertices: pdfArea = pdfDir * |cos(theta)| / dist^2
+						//   (Veach thesis eq. 8.8)
+						// For medium vertices: pdfArea = pdfDir * sigma_t / dist^2
+						//   (Veach thesis Chapter 11; PBRT v4 Section 16.3)
+						// sigma_t at the scatter point replaces |cos| because the
+						// free-flight sampling probability density is proportional
+						// to sigma_t, while surface "acceptance" is proportional to
+						// the projected area (|cos|/dist^2).
+						const Scalar distSqMed = t_m * t_m;
+						mv.pdfFwd = BDPTUtilities::SolidAngleToAreaMedium(
+							pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
+						mv.pdfRev = 0;
+
+						// VCM post-pass uses sigma_t_scalar for the
+						// area-to-solid-angle inversion at medium vertices.
+						mv.cosAtGen = 0;
+
+	#ifdef RISE_ENABLE_OPENPGL
+						if constexpr( Traits::is_pel ) {
+							mv.guidingHasSegment = true;
+							mv.guidingDirectionOut = -wo;
+							mv.guidingNormal = -wo;
+							mv.guidingEta = 1.0;
+						}
+	#endif
+
+						vertices.push_back( mv );
+
+						// Sample the phase function for continuation direction
+						const IPhaseFunction* pPhase = pMed->GetPhaseFunction();
+						if( !pPhase ) {
+							break;
+						}
+
+						const Vector3 wi = pPhase->Sample( wo, sampler );
+						const Scalar phasePdf = pPhase->Pdf( wo, wi );
+						if( phasePdf <= NEARZERO ) {
+							break;
+						}
+
+						// Phase function throughput: value / pdf.
+						// For isotropic: p = 1/(4pi), pdf = 1/(4pi), so weight = 1.
+						// For HG: value and pdf are identical (self-normalized), weight = 1.
+						const Scalar phaseVal = pPhase->Evaluate( wo, wi );
+						beta = beta * (phaseVal / phasePdf);
+
+						// Russian roulette for volume scattering
+						const PathTransportUtilities::RussianRouletteResult rr =
+							PathTransportUtilities::EvaluateRussianRoulette(
+								depth + eyeVolumeBounces,
+								stabilityConfig.rrMinDepth,
+								stabilityConfig.rrThreshold,
+								Traits::max_value( beta ),
+								Traits::max_value( VertexThroughput<Tag>( mv ) ),
+								sampler.Get1D() );
+						if( rr.terminate ) {
+							break;
+						}
+						if( rr.survivalProb < 1.0 ) {
+							beta = beta * (1.0 / rr.survivalProb);
+						}
+
+	#ifdef RISE_ENABLE_OPENPGL
+						if constexpr( Traits::is_pel ) {
+							vertices.back().guidingHasDirectionIn = true;
+							vertices.back().guidingDirectionIn = wi;
+							vertices.back().guidingPdfDirectionIn = phasePdf;
+							vertices.back().guidingScatteringWeight =
+								RISEPel( phaseVal / phasePdf, phaseVal / phasePdf,
+									phaseVal / phasePdf );
+							vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
+							vertices.back().guidingRoughness = 1.0;
+						}
+	#endif
+
+						// Update pdfRev on the previous vertex.
+						// Phase functions are symmetric: Pdf(wo, wi) == Pdf(wi, wo),
+						// so reverse pdf == forward pdf.
+						if( vertices.size() >= 2 ) {
+							BDPTVertex& prev = vertices[ vertices.size() - 2 ];
+							const Scalar revPdfSA = phasePdf;
+
+							if( prev.type == BDPTVertex::MEDIUM ) {
+								prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium(
+									revPdfSA, prev.sigma_t_scalar, distSqMed );
+							} else if( prev.type == BDPTVertex::CAMERA ) {
+								prev.pdfRev = BDPTUtilities::SolidAngleToArea(
+									revPdfSA, Scalar(1.0), distSqMed );
+							} else {
+								const Scalar absCosAtPrev = fabs( Vector3Ops::Dot(
+									prev.geomNormal, currentRay.Dir() ) );
+								prev.pdfRev = BDPTUtilities::SolidAngleToArea(
+									revPdfSA, absCosAtPrev, distSqMed );
+							}
+						}
+
+						// Store forward pdf for the next vertex
+						pdfFwdPrev = phasePdf;
+
+						// Advance ray
+						currentRay = Ray( scatterPt, wi );
+						currentRay.Advance( BDPT_RAY_EPSILON );
+
+						eyeVolumeBounces++;
+						continue;
+					}
+					else if( ri.geometric.bHit )
+					{
+						// No scatter event: apply transmittance to throughput.
+						// The ray passes through the medium to the surface.
+						const V Tr = EvalMediumTransmittance<Tag>( *pMed, currentRay, ri.geometric.range, tag );
+						beta = beta * Tr;
+					}
+				}
+			}
+
+			if( !ri.geometric.bHit ) {
+				// Path B: eye-subpath escape to environment.  Without this
+				// branch, BDPT misses the s=0 contribution of camera rays
+				// that escape the scene through env-IBL — every env-only
+				// scene renders with a ~95% deficit vs PT (regression test:
+				// EnvLightBalanceTest).  Push a synthetic env-light vertex
+				// at the escape point so the standard s=0 strategy in
+				// ConnectBDPT (which detects pEnvLight != NULL and routes
+				// to env-radiance lookup) can credit the env contribution.
+				//
+				// On the FIRST iteration (camera ray miss) we still honour
+				// the rasterizer's `radiance_background` flag — when off,
+				// the rasterizer's caller-side accumulator already discards
+				// background pixels, but for the BDPT s=0 path we must
+				// also gate here so the synthetic env vertex doesn't drive
+				// indirect-MIS strategies on a backdrop the user wanted
+				// suppressed.  Indirect bounces (depth > 0) always credit
+				// env (matches PT IntegrateFromHit behaviour at line ~2641).
+				const IRadianceMap* pEnvForEscape = scene.GetGlobalRadianceMap();
+				const bool bIsFirstBounce = ( depth == 0 );
+				// Place the synthetic env vertex at the ray-sphere exit
+				// point along currentRay.  Previous code used
+				//   position = sceneCentre + ray.Dir * sceneRadius
+				// which is on the scene-center line in the ray.Dir
+				// direction — only matches the actual ray when the ray
+				// origin lies at the scene center.  Downstream s=0
+				// dispatcher then computes
+				//   wiSky = (eyeEnd.position - eyePred.position).norm
+				// which derives the WRONG direction for off-center
+				// predecessors (adversarial review P1b).  Fix: place the
+				// vertex on the ray (`ray.origin + ray.Dir * tExit`) so
+				// `(eyeEnd.position - eyePred.position).norm` recovers
+				// the actual ray direction whenever the predecessor lies
+				// on the same ray (always true here, since eyePred is the
+				// vertex the ray was scattered from).  The s=0 dispatcher
+				// additionally reads `-eyeEnd.geomNormal` as the canonical
+				// stored ray direction.
+				//
+				// tExit solves |origin + tExit*d - sceneCentre|² = r²,
+				// taking the far root:
+				//   b = d · (origin - sceneCentre)
+				//   c = |origin - sceneCentre|² - r²
+				//   tExit = -b + sqrt(b² - c)
+				// For a ray escaping the scene the discriminant is always
+				// positive and tExit > 0.
+				const Scalar sceneRadius = pLightSampler ?
+					pLightSampler->GetCachedSceneRadius() : Scalar( 0 );
+				if( pEnvForEscape && sceneRadius > 0 &&
+					( !bIsFirstBounce ||
+					  caster.IsRadianceMapVisibleAsBackground() ) ) {
+					BDPTVertex vEnv;
+					vEnv.type = BDPTVertex::LIGHT;
+					const Point3 sceneCentre =
+						pLightSampler->GetCachedSceneCenter();
+					// Ray-sphere intersection.  Let e = origin - center;
+					// solve |e + t*d|² = r² for the far root:
+					//   t² + 2 t (d·e) + (|e|² - r²) = 0
+					//   t = -(d·e) + sqrt((d·e)² - |e|² + r²)
+					// Earlier code computed `mkVector3(sceneCentre, origin)`
+					// which returns `center - origin = -e`, then used the
+					// far-root formula with -b — yielding `+(d·e) + sqrt`,
+					// which OVERSHOOTS the far exit on off-center origins
+					// (the synthetic env vertex landed past the bounding
+					// sphere, contaminating distSq and breaking the
+					// MIS-bookkeeping numerics).  Adversarial review P2,
+					// 2026-05-25.  Fix: build e = origin - center directly.
+					const Vector3 e = Vector3Ops::mkVector3(
+						currentRay.origin, sceneCentre );
+					const Vector3 rayD = currentRay.Dir();
+					const Scalar b = Vector3Ops::Dot( rayD, e );
+					const Scalar cSq = Vector3Ops::SquaredModulus( e );
+					const Scalar disc = b * b - ( cSq - sceneRadius * sceneRadius );
+					// Clamp to non-negative — origin-inside-sphere guarantees
+					// real root, but guard against FP noise on degenerate
+					// scenes where the ray origin sits exactly on the sphere.
+					const Scalar tExit = -b + std::sqrt( std::max( Scalar( 0 ), disc ) );
+					vEnv.position = Point3(
+						currentRay.origin.x + rayD.x * tExit,
+						currentRay.origin.y + rayD.y * tExit,
+						currentRay.origin.z + rayD.z * tExit );
+					// Store the actual ray direction in geomNormal (negated
+					// so geomNormal points back into the scene, matching
+					// the disc convention SampleEnvLightEmission uses).
+					// Downstream s=0 dispatcher reads `-eyeEnd.geomNormal`
+					// as the canonical sky direction.
+					vEnv.normal = Vector3( -rayD.x, -rayD.y, -rayD.z );
+					vEnv.geomNormal = vEnv.normal;
+					vEnv.onb.CreateFromW( vEnv.normal );
+					vEnv.pMaterial = 0;
+					vEnv.pObject = 0;
+					vEnv.pLight = 0;
+					vEnv.pLuminary = 0;
+					vEnv.pEnvLight = pEnvForEscape;
+					vEnv.isDelta = false;
+					vEnv.isConnectible = true;
+					// Eye-side pdfFwd at env vertex: pdfFwdPrev (SA on
+					// previous vertex) converted to area at env.  cosAtEnv
+					// = 1 by construction (geomNormal = -rayD, incoming =
+					// rayD).  distSq uses the actual eye→exit distance.
+					const Scalar distSqToExit = tExit * tExit;
+					vEnv.pdfFwd = BDPTUtilities::SolidAngleToArea(
+						pdfFwdPrev, Scalar( 1.0 ), distSqToExit );
+					// Apply the residual medium transmittance along the escape
+					// segment before the synthetic env vertex stores beta —
+					// mirrors the surface-hit branch above (line ~2655) and the
+					// PT escape fix (PBRT-v4 beta *= T_maj before the
+					// infinite-light contribution).  maxDist = 1e10 matches PT
+					// exactly so a global medium evaporates identically across
+					// integrators; a bounded (AABB) medium clips internally to a
+					// finite Tr.  VCM's s=0 env-escape consumes this same
+					// throughput via the shared generator, so this is the single
+					// fix point for PT-reference / BDPT / VCM s=0 consistency.
+					V betaEsc = beta;
+					if( pMed_eye ) {
+						betaEsc = betaEsc * EvalMediumTransmittance<Tag>( *pMed_eye, currentRay, Scalar( 1e10 ), tag );
+					}
+					StoreThroughput<Tag>( vEnv, betaEsc );
+					if constexpr( Traits::is_nm ) {
+						// The spectral env vertex ALSO broadcasts throughputNM into
+						// the RGB throughput field (the NM original does this; the
+						// Pel original does not).  Preserved Pel/NM asymmetry.
+						vEnv.throughput = RISEPel( betaEsc, betaEsc, betaEsc );
+					}
+					vEnv.pdfRev = 0;
+					vEnv.cosAtGen = 1.0;
+					vertices.push_back( vEnv );
+				}
+				break;
+			}
+
+			// NM-only surface-bounce cap: the spectral eye subpath bounds SURFACE
+			// vertices to maxEyeDepth (Pel relies on the loop bound only).
+			// Preserved Pel/NM asymmetry, NOT fixed here.
+			if constexpr( Traits::is_nm ) {
+				if( eyeSurfaceBounces >= maxEyeDepth ) {
+					break;
+				}
+				eyeSurfaceBounces++;
+			}
+
+			// Apply intersection modifier if present
+			if( ri.pModifier ) {
+				ri.pModifier->Modify( ri.geometric );
+			}
+
+			// Create a new surface vertex
+			BDPTVertex v;
+			v.type = BDPTVertex::SURFACE;
+			v.position = ri.geometric.ptIntersection;
+			v.normal = ri.geometric.vNormal;
+			v.geomNormal = ri.geometric.vGeomNormal;
+			v.onb = ri.geometric.onb;
+			v.ptCoord = ri.geometric.ptCoord;
+			v.ptCoord1 = ri.geometric.ptCoord1;
+			v.bHasTexCoord1 = ri.geometric.bHasTexCoord1;
+			v.ptObjIntersec = ri.geometric.ptObjIntersec;
+			// Per-vertex colour is geometry-interpolated surface state — the
+			// coloured-mesh intersection path sets ri.geometric.vColor on the
+			// RGB AND the spectral render alike — and PopulateRIGFromVertex
+			// replays it into the reconstructed RayIntersectionGeometric at
+			// connection time so VertexColorPainter::GetColorNM sees the true
+			// per-vertex colour on the NM path too, not the white fallback.
+			// Unconditional for both Pel and NM, mirroring GenerateLightSubpath
+			// {,NM}.  (Pel-only through Phase 2c F2a — that gate was a latent
+			// spectral-BDPT / VCM-spectral vertex-colour bug; see
+			// docs/PRE_PHASE1_STATUS.md "Phase 2c F2a outcome".)
+			v.vColor = ri.geometric.vColor;
+			v.bHasVertexColor = ri.geometric.bHasVertexColor;
+			v.pMaterial = ri.pMaterial;
+			v.pObject = ri.pObject;
+			v.pLight = 0;
+			v.pLuminary = 0;
+			// Store enclosing medium so connection transmittance can
+			// seed its boundary walk from the correct starting medium.
+			v.pMediumObject = pMedObj_eye;
+			v.pMediumVol = pMed_eye;
+			if( ri.pObject ) {
+				iorStack.SetCurrentObject( ri.pObject );
+				v.mediumIOR = iorStack.top();
+				v.insideObject = iorStack.containsCurrent();
+			}
+
+			// Convert pdfFwdPrev from solid angle to area measure
+			const Scalar distSq = ri.geometric.range * ri.geometric.range;
+			// Solid-angle <-> area Jacobian uses the GEOMETRIC normal —
+			// the area-element parameterisation depends on the actual face
+			// orientation, not the Phong-perturbed shading normal
+			// (Veach 1997 §8.2.2 / PBRT 4e §13.6.4).  Using shading here
+			// biases every interior path-pdf factor and therefore the MIS
+			// balance heuristic.
+			const Scalar absCosIn = fabs( Vector3Ops::Dot(
+				ri.geometric.vGeomNormal,
+				-currentRay.Dir() ) );
+
+			v.pdfFwd = BDPTUtilities::SolidAngleToArea( pdfFwdPrev, absCosIn, distSq );
+			StoreThroughput<Tag>( v, beta );
+			v.pdfRev = 0;
+			v.isDelta = false;
+
+			// VCM post-pass input: the receiving-side cosine used to
+			// invert the area-measure pdfFwd back to solid angle at
+			// merge/connection time.
+			v.cosAtGen = absCosIn;
+	#ifdef RISE_ENABLE_OPENPGL
+			if constexpr( Traits::is_pel ) {
+				v.guidingHasSegment = true;
+				v.guidingDirectionOut = -currentRay.Dir();
+				v.guidingNormal = GuidingCosineNormal( v.normal, currentRay.Dir() );
+				v.guidingEta = v.mediumIOR > NEARZERO ? v.mediumIOR : 1.0;
+			}
+	#endif
+
+			if( !ri.pMaterial ) {
+				vertices.push_back( v );
+				break;
+			}
+
+			const ISPF* pSPF = ri.pMaterial->GetSPF();
+			if( !pSPF ) {
+				vertices.push_back( v );
+				break;
+			}
+
+			vertices.push_back( v );
+
+			//
+			// Sample the SPF for the next direction
+			//
+			ScatteredRayContainer scattered;
+			ScatterSPF<Tag>( *pSPF, ri.geometric, sampler, scattered, iorStack, tag );
+
+			if( scattered.Count() == 0 ) {
+				break;
+			}
+
+			// Stochastic single-lobe selection (no path-tree branching).
+			// Consume one sampler dimension for Sobol alignment.
+			const Scalar lobeSelectXi = sampler.Get1D();
+			const ScatteredRay* pScat;
+			Scalar selectProb = 1.0;
+
+			{
+				pScat = scattered.RandomlySelect( lobeSelectXi, Traits::is_nm );
+				if( !pScat ) {
+					break;
+				}
+				if( scattered.Count() > 1 ) {
+					Scalar totalKray = 0;
+					for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+						totalKray += Traits::max_value( KrayValue<Tag>( scattered[i] ) );
+					}
+					const Scalar selectedKray = Traits::max_value( KrayValue<Tag>( *pScat ) );
+					if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
+						selectProb = selectedKray / totalKray;
+					}
+				}
+			}
+
+			// Determine connectibility: true if any scattered lobe is non-delta
+			{
+				bool hasNonDelta = false;
+				for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+					if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
+				}
+				if( !ri.pMaterial->GetBSDF() ) {
+					hasNonDelta = false;
+				}
+				vertices.back().isConnectible = hasNonDelta;
+			}
+
+			// Mark the current vertex as delta
+			vertices.back().isDelta = pScat->isDelta;
+
+
+
+			// --- BSSRDF sampling for materials with diffusion profiles ---
+			Scalar bssrdfReflectCompensation = 1.0;
+			if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
+			{
+				// Front-face gate uses GEOMETRIC; Fresnel cosine uses SHADING.
+				// PBRT 4e §10.1.1 (front/back is geometric); §11.4.2 (BSSRDF
+				// Fresnel angular dependence is shading-frame).
+				const Vector3 wo_bss = -currentRay.Dir();
+				const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
+				// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
+				// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
+				const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
+				const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
+				if( cosInGeom > NEARZERO )
+				{
+					ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
+					const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
+					const Scalar R = 1.0 - Ft;
+
+					if( Ft > NEARZERO && sampler.Get1D() < Ft )
+					{
+						BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
+							ri.geometric, ri.pObject, ri.pMaterial, sampler, NmOrZero<Tag>( tag ) );
+
+						if( bssrdf.valid )
+						{
+							vertices.back().isDelta = true;
+							V betaSpatial;
+							if constexpr( Traits::is_pel ) {
+								betaSpatial = beta * bssrdf.weightSpatial * (1.0 / Ft);
+								beta = beta * bssrdf.weight * (1.0 / Ft);
+							} else {
+								betaSpatial = beta * bssrdf.weightSpatialNM / Ft;
+								beta = beta * bssrdf.weightNM / Ft;
+							}
+
+							BDPTVertex entryV;
+							entryV.type = BDPTVertex::SURFACE;
+							entryV.position = bssrdf.entryPoint;
+							entryV.normal = bssrdf.entryNormal;
+							entryV.geomNormal = bssrdf.entryGeomNormal;
+							entryV.onb = bssrdf.entryONB;
+							entryV.pMaterial = ri.pMaterial;
+							entryV.pObject = ri.pObject;
+							entryV.pMediumObject = pMedObj_eye;
+							entryV.pMediumVol = pMed_eye;
+							entryV.isDelta = false;
+							entryV.isConnectible = true;
+							entryV.isBSSRDFEntry = true;
+							StoreThroughput<Tag>( entryV, betaSpatial );
+							entryV.pdfFwd = bssrdf.pdfSurface;
+							entryV.pdfRev = 0;
+	#ifdef RISE_ENABLE_OPENPGL
+							if constexpr( Traits::is_pel ) {
+								entryV.guidingHasSegment = true;
+								entryV.guidingDirectionOut = -bssrdf.scatteredRay.Dir();
+								entryV.guidingNormal = entryV.normal;
+								entryV.guidingEta = 1.0;
+							}
+	#endif
+							vertices.push_back( entryV );
+
+							pdfFwdPrev = bssrdf.cosinePdf;
+							currentRay = bssrdf.scatteredRay;
+							continue;
+						}
+						break;
+					}
+					if( R > NEARZERO ) {
+						bssrdfReflectCompensation = 1.0 / R;
+					}
+				}
+			}
+			// --- Random-walk SSS (eye subpath) ---
+			else if( ri.pMaterial )
+			{
+				// Param resolution + front-face cosine differ Pel/NM and are
+				// preserved exactly: Pel gates on the static params with a
+				// geometric front-face check + clamped shading Fresnel cosine;
+				// NM resolves static-or-spectral params and uses the raw
+				// shading cosine.
+				const RandomWalkSSSParams* pRW = nullptr;
+				[[maybe_unused]] RandomWalkSSSParams rwParamsNM;
+				Scalar cosIn = 0;
+				bool rwGate = false;
+				if constexpr( Traits::is_pel ) {
+					if( ri.pMaterial->GetRandomWalkSSSParams() ) {
+						const Vector3 wo_bss = -currentRay.Dir();
+						const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
+						// Fresnel cosine clamped via fabs+NEARZERO -- see PT site.
+						const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
+						cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
+						if( cosInGeom > NEARZERO ) {
+							pRW = ri.pMaterial->GetRandomWalkSSSParams();
+							rwGate = true;
+						}
+					}
+				} else {
+					pRW = ri.pMaterial->GetRandomWalkSSSParams();
+					if( !pRW && ri.pMaterial->GetRandomWalkSSSParamsNM( tag.nm, rwParamsNM ) ) {
+						pRW = &rwParamsNM;
+					}
+					cosIn = pRW ? Vector3Ops::Dot(
+						ri.geometric.vNormal, -currentRay.Dir() ) : 0;
+					if( pRW && cosIn > NEARZERO ) {
+						rwGate = true;
+					}
+				}
+				if( rwGate )
+				{
+					const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
+						((pRW->ior - 1.0) / (pRW->ior + 1.0));
+					const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
+					const Scalar Ft = 1.0 - F;
+					const Scalar R = F;
+
+					if( Ft > NEARZERO && sampler.Get1D() < Ft )
+					{
+						// See RGB light subpath comment for rationale.
+						IndependentSampler walkSampler( rc.random );
+						ISampler& rwSampler = sampler.HasFixedDimensionBudget()
+							? static_cast<ISampler&>(walkSampler) : sampler;
+
+						BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
+							ri.geometric, ri.pObject,
+							pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
+							pRW->g, pRW->ior, pRW->maxBounces, rwSampler, NmOrZero<Tag>( tag ), pRW->maxDepth );
+
+						if( bssrdf.valid )
+						{
+							vertices.back().isDelta = true;
+
+							// SampleExit does NOT include Ft(entry).
+							// Coin flip: weight * Ft / Ft = weight.
+							// Apply boundary filter (e.g. melanin double-pass).
+							const Scalar bf = pRW->boundaryFilter;
+							V betaSpatial;
+							if constexpr( Traits::is_pel ) {
+								betaSpatial = beta * bssrdf.weightSpatial * bf;
+								beta = beta * bssrdf.weight * bf;
+							} else {
+								betaSpatial = beta * bssrdf.weightSpatialNM * bf;
+								beta = beta * bssrdf.weightNM * bf;
+							}
+
+							BDPTVertex entryV;
+							entryV.type = BDPTVertex::SURFACE;
+							entryV.position = bssrdf.entryPoint;
+							entryV.normal = bssrdf.entryNormal;
+							entryV.geomNormal = bssrdf.entryGeomNormal;
+							entryV.onb = bssrdf.entryONB;
+							entryV.pMaterial = ri.pMaterial;
+							entryV.pObject = ri.pObject;
+							entryV.pMediumObject = pMedObj_eye;
+							entryV.pMediumVol = pMed_eye;
+
+							// See RGB light subpath block for rationale.
+							entryV.isDelta = true;
+							entryV.isConnectible = false;
+							entryV.isBSSRDFEntry = true;
+							StoreThroughput<Tag>( entryV, betaSpatial );
+							entryV.pdfFwd = 0;
+							entryV.pdfRev = 0;
+	#ifdef RISE_ENABLE_OPENPGL
+							if constexpr( Traits::is_pel ) {
+								entryV.guidingHasSegment = true;
+								entryV.guidingDirectionOut = -bssrdf.scatteredRay.Dir();
+								entryV.guidingNormal = entryV.normal;
+								entryV.guidingEta = 1.0;
+							}
+	#endif
+							vertices.push_back( entryV );
+
+							pdfFwdPrev = bssrdf.cosinePdf;
+							currentRay = bssrdf.scatteredRay;
+							continue;
+						}
+						break;
+					}
+					if( R > NEARZERO ) {
+						bssrdfReflectCompensation = 1.0 / R;
+					}
+				}
+			}
+			// --- End BSSRDF sampling ---
+
+	#ifdef RISE_ENABLE_OPENPGL
+			// --- Path guiding (eye subpath) ---
+			bool usedGuidedDirection = false;
+			V guidedF = Traits::zero();
+			Vector3 guidedDir;
+			Scalar guidedEffectivePdf = 0;
+			Scalar bsdfCombinedPdf = 0;
+
+			if( pGuidingField && pGuidingField->IsTrained() &&
+				depth < maxGuidingDepth && GuidingSupportsSurfaceSampling( *pScat ) &&
+				vertices.back().isConnectible )
+			{
+				if( pGuidingField->InitDistribution( guideDist, v.position, sampler.Get1D() ) )
+				{
+					if( pScat->type == ScatteredRay::eRayDiffuse ) {
+						pGuidingField->ApplyCosineProduct(
+							guideDist,
+							GuidingCosineNormal( v.normal, currentRay.Dir() ) );
+					}
+
+					const Scalar alpha = guidingAlpha;
+
+					if( guidingSamplingType == eGuidingRIS )
+					{
+						// RIS-based guiding (BDPT eye subpath)
+						PathTransportUtilities::GuidingRISCandidate<V> candidates[2];
+
+						// Candidate 0: BSDF sample
+						{
+							PathTransportUtilities::GuidingRISCandidate<V>& c = candidates[0];
+							c.direction = pScat->ray.Dir();
+							c.bsdfEval = PathValueOps::EvalBSDFAtVertex<Tag>(
+								vertices.back(), c.direction, -currentRay.Dir(), tag );
+							c.bsdfPdf = pScat->pdf;
+							c.guidePdf = pGuidingField->Pdf( guideDist, c.direction );
+							c.incomingRadPdf = pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
+							c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
+							const Scalar avgBsdf = Traits::max_value( c.bsdfEval );
+							c.risTarget = PathTransportUtilities::GuidingRISTarget(
+								avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+							c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+								c.bsdfPdf, c.guidePdf );
+							c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+							c.valid = c.bsdfPdf > NEARZERO && c.risPdf > NEARZERO && avgBsdf > 0;
+							if( !c.valid ) {
+								c.risWeight = 0;
+							}
+						}
+
+						// Candidate 1: guide sample
+						{
+							PathTransportUtilities::GuidingRISCandidate<V>& c = candidates[1];
+							Scalar gPdf = 0;
+							const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+							c.direction = pGuidingField->Sample( guideDist, xi2d, gPdf );
+							c.guidePdf = gPdf;
+
+							if( gPdf > NEARZERO )
+							{
+								c.bsdfEval = PathValueOps::EvalBSDFAtVertex<Tag>(
+									vertices.back(), c.direction, -currentRay.Dir(), tag );
+								c.bsdfPdf = PathValueOps::EvalPdfAtVertex<Tag>(
+									vertices.back(), c.direction, -currentRay.Dir(), tag );
+								c.incomingRadPdf = pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
+								c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
+								const Scalar avgBsdf = Traits::max_value( c.bsdfEval );
+								c.risTarget = PathTransportUtilities::GuidingRISTarget(
+									avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
+								c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
+									c.bsdfPdf, c.guidePdf );
+								c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
+								c.valid = c.bsdfPdf > NEARZERO && avgBsdf > 0;
+								if( !c.valid ) {
+									c.risWeight = 0;
+								}
+							}
+							else
+							{
+								c.bsdfEval = Traits::zero();
+								c.bsdfPdf = 0;
+								c.incomingRadPdf = 0;
+								c.cosTheta = 0;
+								c.risTarget = 0;
+								c.risPdf = 0;
+								c.risWeight = 0;
+								c.valid = false;
+							}
+						}
+
+						Scalar risEffectivePdf = 0;
+						const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidate(
+							candidates, 2, sampler.Get1D(), risEffectivePdf );
+
+						if( risEffectivePdf > NEARZERO && candidates[sel].valid )
+						{
+							usedGuidedDirection = true;
+							guidedDir = candidates[sel].direction;
+							guidedF = candidates[sel].bsdfEval;
+							guidedEffectivePdf = risEffectivePdf;
+						}
+					}
+					else
+					{
+						// One-sample MIS (BDPT eye subpath)
+						const Scalar xi = sampler.Get1D();
+
+						if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
+						{
+							Scalar guidePdf = 0;
+							const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
+							const Vector3 gDir = pGuidingField->Sample( guideDist, xi2d, guidePdf );
+
+							if( guidePdf > NEARZERO )
+							{
+								guidedF = PathValueOps::EvalBSDFAtVertex<Tag>(
+									vertices.back(), gDir, -currentRay.Dir(), tag );
+								const Scalar bsdfPdf = PathValueOps::EvalPdfAtVertex<Tag>(
+									vertices.back(), gDir, -currentRay.Dir(), tag );
+
+								const Scalar combinedPdf =
+									PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );
+
+								if( combinedPdf > NEARZERO &&
+									PositiveMagnitude<Tag>( guidedF ) > NEARZERO )
+								{
+									usedGuidedDirection = true;
+									guidedDir = gDir;
+									guidedEffectivePdf = combinedPdf;
+								}
+							}
+						}
+
+						if( !usedGuidedDirection )
+						{
+							const Scalar guidePdfForBsdfDir =
+								pGuidingField->Pdf( guideDist, pScat->ray.Dir() );
+							bsdfCombinedPdf =
+								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdfDir, pScat->pdf );
+						}
+					}
+				}
+			}
+			if constexpr( Traits::is_nm ) {
+				// NM-only inline guiding-training sample.  The Pel path trains
+				// from connection results in a post-pass instead -- preserved
+				// Pel/NM asymmetry.
+				const Scalar trainingEffectivePdf =
+					usedGuidedDirection ? guidedEffectivePdf :
+					(bsdfCombinedPdf > NEARZERO ? bsdfCombinedPdf : pScat->pdf);
+				const Scalar trainingPdf = selectProb * trainingEffectivePdf;
+				if( pGuidingField && pGuidingField->IsCollectingTrainingSamples() &&
+					GuidingSupportsSurfaceSampling( *pScat ) && trainingPdf > NEARZERO )
+				{
+					const Ray trainingRay = usedGuidedDirection ?
+						Ray( pScat->ray.origin, guidedDir ) : pScat->ray;
+					const IORStack& trainingIorStack = usedGuidedDirection ?
+						iorStack :
+						(pScat->ior_stack ? *pScat->ior_stack : iorStack);
+					RecordGuidingTrainingSampleNM(
+						pGuidingField,
+						rc,
+						caster,
+						ri,
+						trainingRay,
+						trainingPdf,
+						depth + 2,
+						tag.nm,
+						trainingIorStack );
+				}
+			}
+	#endif
+			// --- End path guiding ---
+
+			// Compute effective scatter direction and PDF
+			Vector3 scatDir = pScat->ray.Dir();
+			Scalar effectivePdf = pScat->pdf;
+
+	#ifdef RISE_ENABLE_OPENPGL
+			if( usedGuidedDirection ) {
+				scatDir = guidedDir;
+				effectivePdf = guidedEffectivePdf;
+			} else if( bsdfCombinedPdf > NEARZERO ) {
+				effectivePdf = bsdfCombinedPdf;
+			}
+	#endif
+
+			if( effectivePdf <= 0 ) {
+				break;
+			}
+
+			// Per-type bounce limits
+			if( PathTransportUtilities::ExceedsBounceLimitForType(
+					pScat->type, eyeDiffuseBounces, eyeGlossyBounces,
+					eyeTransmissionBounces, eyeTranslucentBounces, stabilityConfig ) ) {
+				break;
+			}
+
+			const Scalar scatterPdf = selectProb * effectivePdf;
+
+			// HWSS per-wavelength pre-scatter throughput snapshot (NM bundle
+			// only) so the RR below can take max(pre)/max(post) over active
+			// wavelengths.
+			[[maybe_unused]] Scalar hwssBetaNMPre[SampledWavelengths::N] = {};
+			if constexpr( Traits::is_nm ) {
+				if( pSwlHWSS ) {
+					for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+						hwssBetaNMPre[w] = hwssBetaNM[w];
+					}
+				}
+			}
+
+			// Throughput update.  localScatteringWeight is retained for the
+			// Pel path-guiding storage below (NM trains via samples instead).
+			V localScatteringWeight = Traits::zero();
+			if( pScat->isDelta ) {
+				localScatteringWeight =
+					KrayValue<Tag>( *pScat ) * (bssrdfReflectCompensation / selectProb);
+				beta = beta * localScatteringWeight;
+				if constexpr( Traits::is_nm ) {
+					if( pSwlHWSS ) {
+						const Scalar deltaScale = pScat->krayNM * bssrdfReflectCompensation / selectProb;
+						hwssBetaNM[0] = beta;
+						for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+							if( pSwlHWSS->terminated[w] ) continue;
+							hwssBetaNM[w] = hwssBetaNM[w] * deltaScale;
+						}
+					}
+				}
+			} else {
+				V f;
+	#ifdef RISE_ENABLE_OPENPGL
+				f = usedGuidedDirection ? guidedF :
+					PathValueOps::EvalBSDFAtVertex<Tag>( vertices.back(), scatDir, -currentRay.Dir(), tag );
+	#else
+				f = PathValueOps::EvalBSDFAtVertex<Tag>( vertices.back(), scatDir, -currentRay.Dir(), tag );
+	#endif
+				const Scalar cosTheta = fabs( Vector3Ops::Dot(
+					scatDir, ri.geometric.vNormal ) );
+
+				if( PositiveMagnitude<Tag>( f ) <= 0 ) {
+					break;
+				}
+				const Scalar invScale = bssrdfReflectCompensation * cosTheta / scatterPdf;
+				localScatteringWeight = f * invScale;
+				beta = beta * localScatteringWeight;
+				if constexpr( Traits::is_nm ) {
+					if( pSwlHWSS ) {
+						hwssBetaNM[0] = beta;
+						for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+							if( pSwlHWSS->terminated[w] ) continue;
+							const Scalar fw = PathVertexEval::EvalBSDFAtVertexNM(
+								vertices.back(), scatDir, -currentRay.Dir(), pSwlHWSS->lambda[w] );
+							hwssBetaNM[w] = hwssBetaNM[w] * fw * invScale;
+						}
+					}
+				}
+			}
+
+			// Russian Roulette after a few bounces -- depth threshold and
+			// throughput floor are configurable.  HWSS uses MAX throughput
+			// over active wavelengths (prevents hero-driven RR from amplifying
+			// companions on rare survival).
+			Scalar rrCurrMax = Traits::max_value( beta );
+			Scalar rrPrevMax = Traits::max_value( VertexThroughput<Tag>( vertices.back() ) );
+			if constexpr( Traits::is_nm ) {
+				if( pSwlHWSS ) {
+					for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
+						if( pSwlHWSS->terminated[w] ) continue;
+						const Scalar p = fabs( hwssBetaNMPre[w] );
+						if( p > rrPrevMax ) rrPrevMax = p;
+						const Scalar c = fabs( hwssBetaNM[w] );
+						if( c > rrCurrMax ) rrCurrMax = c;
+					}
+				}
+			}
+			const PathTransportUtilities::RussianRouletteResult rr =
+				PathTransportUtilities::EvaluateRussianRoulette(
+					depth, stabilityConfig.rrMinDepth, stabilityConfig.rrThreshold,
+					rrCurrMax, rrPrevMax,
+					sampler.Get1D() );
+			if( rr.terminate ) {
+				break;
+			}
+			if( rr.survivalProb < 1.0 ) {
+				const Scalar rrScale = Scalar( 1 ) / rr.survivalProb;
+				beta = beta * rrScale;
+				if constexpr( Traits::is_nm ) {
+					if( pSwlHWSS ) {
+						for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
+							hwssBetaNM[w] = hwssBetaNM[w] * rrScale;
+						}
+					}
+				}
+			}
+
+	#ifdef RISE_ENABLE_OPENPGL
+			if constexpr( Traits::is_pel ) {
+				vertices.back().guidingHasDirectionIn = true;
+				vertices.back().guidingDirectionIn = scatDir;
+				vertices.back().guidingPdfDirectionIn = scatterPdf;
+				vertices.back().guidingScatteringWeight = localScatteringWeight;
+				vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
+				vertices.back().guidingEta =
+					(pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
+						pScat->ior_stack->top() :
+						(vertices.back().mediumIOR > NEARZERO ? vertices.back().mediumIOR : 1.0);
+				vertices.back().guidingRoughness = pScat->isDelta ?
+					Scalar( 0.0 ) :
+					(pScat->type == ScatteredRay::eRayDiffuse ? Scalar( 1.0 ) : Scalar( 0.5 ));
+			}
+	#endif
+
+			// Store the forward pdf for the next vertex,
+			// accounting for lobe selection probability.
+			pdfFwdPrev = scatterPdf;
+
+			// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
+			if( pScat->isDelta ) {
+				pdfFwdPrev = 0;
+			}
+
+			// Update previous vertex's pdfRev
+			if( vertices.size() >= 2 ) {
+				const BDPTVertex& curr = vertices.back();
+				BDPTVertex& prev = vertices[ vertices.size() - 2 ];
+
+				// Reverse PDF: returns 0 for delta interactions, handled by remap0 in MISWeight.
+				const Scalar revPdfSA = PathValueOps::EvalPdfAtVertex<Tag>(
+					curr,
+					scatDir,
+					-currentRay.Dir(),
+					tag );
+
+				// Convert to area measure at prev.  The geometric cosine is
+				// only meaningful for SURFACE/LIGHT predecessors -- CAMERA
+				// gets the sentinel 1.0 and MEDIUM bypasses cos entirely
+				// (Veach SS11 medium area-pdf uses sigma_t).  Reading
+				// prev.geomNormal on a medium vertex would consume zero-
+				// init data; gate the dot product behind the type check.
+				if( prev.type == BDPTVertex::MEDIUM ) {
+					prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium( revPdfSA, prev.sigma_t_scalar, distSq );
+				} else {
+					const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA)
+						? Scalar(1.0)
+						: fabs( Vector3Ops::Dot( prev.geomNormal, currentRay.Dir() ) );
+					prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
+				}
+				if( pScat->isDelta ) { prev.pdfRev = 0; }
+			}
+
+			// Advance to next ray
+	#ifdef RISE_ENABLE_OPENPGL
+			if( usedGuidedDirection ) {
+				currentRay = Ray( pScat->ray.origin, guidedDir );
+			} else {
+				currentRay = pScat->ray;
+			}
+	#else
+			currentRay = pScat->ray;
+	#endif
+			currentRay.Advance( BDPT_RAY_EPSILON );
+		#ifdef RISE_ENABLE_OPENPGL
+			if( !usedGuidedDirection && pScat->ior_stack ) {
+		#else
+			if( pScat->ior_stack ) {
+		#endif
+				iorStack = *pScat->ior_stack;
+			}
+		}
+
+		// Record subpath boundary (single contiguous range now that
+		// path-tree branching has been excised).
+		subpathStarts.push_back( static_cast<uint32_t>( vertices.size() ) );
+
+		return static_cast<unsigned int>( vertices.size() );
+	}
+} // anonymous namespace (GenerateEyeSubpath F2a)
+
 unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	const RuntimeContext& rc,
 	const Ray& cameraRay,
@@ -2308,1010 +3633,13 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 	std::vector<uint32_t>& subpathStarts
 	) const
 {
-	(void)rc;
-
-	vertices.clear();
-	vertices.reserve( maxEyeDepth + 1 );
-	subpathStarts.clear();
-	subpathStarts.push_back( 0 );
-
-	// Snapshot once at entry so vertex 0 and the pdfCamDir below see
-	// the same camera.  Structural changes serialize against
-	// rendering per the IScenePriv.h contract.
-	const ICamera* pCamera = scene.GetCamera();
-
-	//
-	// Vertex 0: the camera
-	//
-	{
-		BDPTVertex v;
-		v.type = BDPTVertex::CAMERA;
-
-		if( pCamera ) {
-			v.position = pCamera->GetLocation();
-		}
-
-		v.normal = cameraRay.Dir();
-		v.onb.CreateFromW( cameraRay.Dir() );
-		v.pMaterial = 0;
-		v.pObject = 0;
-		v.pLight = 0;
-		v.pLuminary = 0;
-		v.screenPos = screenPos;
-		v.isDelta = false;
-
-		// pdfFwd = 1 for a specific pixel
-		v.pdfFwd = 1.0;
-		v.pdfRev = 0;
-		v.throughput = RISEPel( 1, 1, 1 );
-
-		vertices.push_back( v );
-	}
-
-	// Trace the camera ray
-	Ray currentRay = cameraRay;
-	RISEPel beta( 1, 1, 1 );
-
-	// The camera pdf for generating this direction.  Reuses the
-	// pCamera cached at the top of GenerateEyeSubpath.
-	Scalar pdfCamDir = 1.0;
-	if( pCamera ) {
-		pdfCamDir = BDPTCameraUtilities::PdfDirection( *pCamera, cameraRay );
-	}
-
-	// VCM post-pass inputs on the camera endpoint: the
-	// directional importance PDF in solid-angle measure (used by
-	// InitCamera), plus a cosine sentinel of 1.0.  BDPT itself
-	// does not read these.
-	vertices[0].emissionPdfW = pdfCamDir;
-	vertices[0].cosAtGen = 1.0;
-
-	Scalar pdfFwdPrev = pdfCamDir;
-	IORStack iorStack( 1.0 );
-	// Seed from the camera position: if the camera sits inside a
-	// dielectric (submerged camera, camera inside a medium volume),
-	// the first scatter needs the stack to reflect that containment.
-	// For cameras in free space this is a no-op — the probe finds no
-	// enclosing objects and leaves the stack as-is.
-	if( pCamera ) {
-		IORStackSeeding::SeedFromPoint( iorStack, pCamera->GetLocation(), scene );
-	}
-
+	return GenerateEyeSubpathImpl<PelTag>(
+		maxEyeDepth, stabilityConfig, pLightSampler,
 #ifdef RISE_ENABLE_OPENPGL
-	static thread_local GuidingDistributionHandle guideDist;
+		pGuidingField, maxGuidingDepth, guidingAlpha, guidingSamplingType,
 #endif
-
-	// Per-type bounce counters for StabilityConfig limits
-	unsigned int eyeDiffuseBounces = 0;
-	unsigned int eyeGlossyBounces = 0;
-	unsigned int eyeTransmissionBounces = 0;
-	unsigned int eyeTranslucentBounces = 0;
-	unsigned int eyeVolumeBounces = 0;
-
-	// Loop limit accounts for both surface and volume bounces.
-	// Saturating addition: if a scene sets max_volume_bounce to
-	// UINT_MAX (documented as "unlimited" for other bounce types), the
-	// raw sum wraps to a small number, silently aborting the walk.
-	// Cap at 1024 which is well above any realistic depth.  Also guard
-	// `maxEyeDepth >= 1024` directly so the subtraction in the first
-	// half of the ternary doesn't underflow.
-	const unsigned int maxEyeTotalDepth =
-		( maxEyeDepth >= 1024u ||
-		  stabilityConfig.maxVolumeBounce > 1024u - maxEyeDepth ) ?
-			1024u :
-			maxEyeDepth + stabilityConfig.maxVolumeBounce;
-
-	for( unsigned int depth = 0; depth < maxEyeTotalDepth; depth++ )
-	{
-		// Per-bounce stream offset on the eye subpath.  Streams
-		// [16, 16+maxEyeTotalDepth) are reserved for the eye walk;
-		// light walk uses [1, ...).
-		sampler.StartStream( 16u + depth );
-
-		// Intersect the scene
-		RayIntersection ri( currentRay, nullRasterizerState );
-		scene.GetObjects()->IntersectRay( ri, true, true, false );
-
-		// ----------------------------------------------------------------
-		// Participating media: free-flight distance sampling.
-		//
-		// Before creating a surface vertex, check if the current ray
-		// travels through a participating medium.  If a scatter event
-		// occurs before reaching the surface, create a MEDIUM vertex
-		// and sample the phase function for the continuation direction.
-		// If no scatter occurs, apply transmittance to the path
-		// throughput and fall through to normal surface vertex creation.
-		// ----------------------------------------------------------------
-		// Declared outside the medium block so surface vertices can
-		// inherit the enclosing medium info for connection transmittance.
-		const IObject* pMedObj_eye = 0;
-		const IMedium* pMed_eye = 0;
-		{
-			const IObject* pMedObj = 0;
-			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
-				iorStack, &scene, pMedObj );
-			pMedObj_eye = pMedObj;
-			pMed_eye = pMed;
-
-			if( pMed )
-			{
-				const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
-				bool scattered = false;
-				const Scalar t_m = pMed->SampleDistance(
-					currentRay, maxDist, sampler, scattered );
-
-				if( scattered && eyeVolumeBounces < stabilityConfig.maxVolumeBounce )
-				{
-					// Medium scatter event before surface hit.
-					//
-					// Throughput weight for delta-tracking scatter event:
-					//   Sampling PDF:   p(t) = sigma_t_maj * exp(-sigma_t_maj * t)
-					//   Transmittance:  Tr(t) = exp(-sigma_t * t)  per channel
-					//   Weight:         Tr * sigma_s / (sigma_t_maj * Tr_scalar)
-					//
-					// For homogeneous media this simplifies to sigma_s / sigma_t_maj
-					// (single-scattering albedo times a correction for multi-channel
-					// media).  Tr_scalar = MinValue(Tr) is the scalar tracking
-					// transmittance from the delta-tracking majorant channel.
-					const Point3 scatterPt = currentRay.PointAtLength( t_m );
-					const Vector3 wo = currentRay.Dir();
-					const MediumCoefficients coeff = pMed->GetCoefficients( scatterPt );
-					const RISEPel Tr = pMed->EvalTransmittance( currentRay, t_m );
-					const Scalar sigma_t_max = ColorMath::MaxValue( coeff.sigma_t );
-
-					RISEPel medWeight( 0, 0, 0 );
-					if( sigma_t_max > 0 ) {
-						const Scalar Tr_scalar = ColorMath::MinValue( Tr );
-						if( Tr_scalar > 0 ) {
-							medWeight = Tr * coeff.sigma_s *
-								(1.0 / (sigma_t_max * Tr_scalar));
-						}
-					}
-
-					if( ColorMath::MaxValue( medWeight ) <= 0 ) {
-						break;
-					}
-
-					beta = beta * medWeight;
-
-					// Create MEDIUM vertex
-					BDPTVertex mv;
-					mv.type = BDPTVertex::MEDIUM;
-					mv.position = scatterPt;
-					mv.normal = -wo;	// incoming direction (for guiding orientation)
-					mv.onb.CreateFromW( -wo );
-					mv.pMaterial = 0;
-					mv.pObject = 0;
-					mv.pMediumVol = pMed;
-					mv.pPhaseFunc = pMed->GetPhaseFunction();
-					mv.pMediumObject = pMedObj;
-					mv.sigma_t_scalar = sigma_t_max;
-					mv.isDelta = false;
-
-					// Medium vertices enclosed by a specular (delta) boundary
-					// are not connectible: connection rays are blocked by the
-					// specular surface.  Propagate from previous vertex.
-					// Exception: vertices in the GLOBAL medium (pMedObj == NULL)
-					// are always connectable — they are not enclosed by any
-					// specular boundary, even if the previous vertex was a
-					// specular surface (e.g., reflected off glass into open fog).
-					{
-						bool connectible = true;
-						if( pMedObj == 0 ) {
-							// Global medium: always connectable
-							connectible = true;
-						} else if( !vertices.empty() ) {
-							const BDPTVertex& prev = vertices.back();
-							if( prev.type == BDPTVertex::SURFACE && prev.isDelta ) {
-								connectible = false;
-							} else if( prev.type == BDPTVertex::MEDIUM && !prev.isConnectible ) {
-								connectible = false;
-							}
-						}
-						mv.isConnectible = connectible;
-					}
-					mv.throughput = beta;
-
-					// PDF in generalized area measure for a medium scatter vertex.
-					// For surface vertices: pdfArea = pdfDir * |cos(theta)| / dist^2
-					//   (Veach thesis eq. 8.8)
-					// For medium vertices: pdfArea = pdfDir * sigma_t / dist^2
-					//   (Veach thesis Chapter 11; PBRT v4 Section 16.3)
-					// sigma_t at the scatter point replaces |cos| because the
-					// free-flight sampling probability density is proportional
-					// to sigma_t, while surface "acceptance" is proportional to
-					// the projected area (|cos|/dist^2).
-					const Scalar distSqMed = t_m * t_m;
-					mv.pdfFwd = BDPTUtilities::SolidAngleToAreaMedium(
-						pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
-					mv.pdfRev = 0;
-
-					// VCM post-pass uses sigma_t_scalar for the
-					// area-to-solid-angle inversion at medium vertices.
-					mv.cosAtGen = 0;
-
-#ifdef RISE_ENABLE_OPENPGL
-					mv.guidingHasSegment = true;
-					mv.guidingDirectionOut = -wo;
-					mv.guidingNormal = -wo;
-					mv.guidingEta = 1.0;
-#endif
-
-					vertices.push_back( mv );
-
-					// Sample the phase function for continuation direction
-					const IPhaseFunction* pPhase = pMed->GetPhaseFunction();
-					if( !pPhase ) {
-						break;
-					}
-
-					const Vector3 wi = pPhase->Sample( wo, sampler );
-					const Scalar phasePdf = pPhase->Pdf( wo, wi );
-					if( phasePdf <= NEARZERO ) {
-						break;
-					}
-
-					// Phase function throughput: value / pdf.
-					// For isotropic: p = 1/(4pi), pdf = 1/(4pi), so weight = 1.
-					// For HG: value and pdf are identical (self-normalized), weight = 1.
-					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
-					beta = beta * RISEPel( phaseVal / phasePdf, phaseVal / phasePdf,
-						phaseVal / phasePdf );
-
-					// Russian roulette for volume scattering
-					const PathTransportUtilities::RussianRouletteResult rr =
-						PathTransportUtilities::EvaluateRussianRoulette(
-							depth + eyeVolumeBounces,
-							stabilityConfig.rrMinDepth,
-							stabilityConfig.rrThreshold,
-							ColorMath::MaxValue( beta ),
-							ColorMath::MaxValue( mv.throughput ),
-							sampler.Get1D() );
-					if( rr.terminate ) {
-						break;
-					}
-					if( rr.survivalProb < 1.0 ) {
-						beta = beta * (1.0 / rr.survivalProb);
-					}
-
-#ifdef RISE_ENABLE_OPENPGL
-					vertices.back().guidingHasDirectionIn = true;
-					vertices.back().guidingDirectionIn = wi;
-					vertices.back().guidingPdfDirectionIn = phasePdf;
-					vertices.back().guidingScatteringWeight =
-						RISEPel( phaseVal / phasePdf, phaseVal / phasePdf,
-							phaseVal / phasePdf );
-					vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
-					vertices.back().guidingRoughness = 1.0;
-#endif
-
-					// Update pdfRev on the previous vertex.
-					// Phase functions are symmetric: Pdf(wo, wi) == Pdf(wi, wo),
-					// so reverse pdf == forward pdf.
-					if( vertices.size() >= 2 ) {
-						BDPTVertex& prev = vertices[ vertices.size() - 2 ];
-						const Scalar revPdfSA = phasePdf;
-
-						if( prev.type == BDPTVertex::MEDIUM ) {
-							prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium(
-								revPdfSA, prev.sigma_t_scalar, distSqMed );
-						} else if( prev.type == BDPTVertex::CAMERA ) {
-							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
-								revPdfSA, Scalar(1.0), distSqMed );
-						} else {
-							const Scalar absCosAtPrev = fabs( Vector3Ops::Dot(
-								prev.geomNormal, currentRay.Dir() ) );
-							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
-								revPdfSA, absCosAtPrev, distSqMed );
-						}
-					}
-
-					// Store forward pdf for the next vertex
-					pdfFwdPrev = phasePdf;
-
-					// Advance ray
-					currentRay = Ray( scatterPt, wi );
-					currentRay.Advance( BDPT_RAY_EPSILON );
-
-					eyeVolumeBounces++;
-					continue;
-				}
-				else if( ri.geometric.bHit )
-				{
-					// No scatter event: apply transmittance to throughput.
-					// The ray passes through the medium to the surface.
-					const RISEPel Tr = pMed->EvalTransmittance(
-						currentRay, ri.geometric.range );
-					beta = beta * Tr;
-				}
-			}
-		}
-
-		if( !ri.geometric.bHit ) {
-			// Path B: eye-subpath escape to environment.  Without this
-			// branch, BDPT misses the s=0 contribution of camera rays
-			// that escape the scene through env-IBL — every env-only
-			// scene renders with a ~95% deficit vs PT (regression test:
-			// EnvLightBalanceTest).  Push a synthetic env-light vertex
-			// at the escape point so the standard s=0 strategy in
-			// ConnectBDPT (which detects pEnvLight != NULL and routes
-			// to env-radiance lookup) can credit the env contribution.
-			//
-			// On the FIRST iteration (camera ray miss) we still honour
-			// the rasterizer's `radiance_background` flag — when off,
-			// the rasterizer's caller-side accumulator already discards
-			// background pixels, but for the BDPT s=0 path we must
-			// also gate here so the synthetic env vertex doesn't drive
-			// indirect-MIS strategies on a backdrop the user wanted
-			// suppressed.  Indirect bounces (depth > 0) always credit
-			// env (matches PT IntegrateFromHit behaviour at line ~2641).
-			const IRadianceMap* pEnvForEscape = scene.GetGlobalRadianceMap();
-			const bool bIsFirstBounce = ( depth == 0 );
-			// Place the synthetic env vertex at the ray-sphere exit
-			// point along currentRay.  Previous code used
-			//   position = sceneCentre + ray.Dir * sceneRadius
-			// which is on the scene-center line in the ray.Dir
-			// direction — only matches the actual ray when the ray
-			// origin lies at the scene center.  Downstream s=0
-			// dispatcher then computes
-			//   wiSky = (eyeEnd.position - eyePred.position).norm
-			// which derives the WRONG direction for off-center
-			// predecessors (adversarial review P1b).  Fix: place the
-			// vertex on the ray (`ray.origin + ray.Dir * tExit`) so
-			// `(eyeEnd.position - eyePred.position).norm` recovers
-			// the actual ray direction whenever the predecessor lies
-			// on the same ray (always true here, since eyePred is the
-			// vertex the ray was scattered from).  The s=0 dispatcher
-			// additionally reads `-eyeEnd.geomNormal` as the canonical
-			// stored ray direction.
-			//
-			// tExit solves |origin + tExit*d - sceneCentre|² = r²,
-			// taking the far root:
-			//   b = d · (origin - sceneCentre)
-			//   c = |origin - sceneCentre|² - r²
-			//   tExit = -b + sqrt(b² - c)
-			// For a ray escaping the scene the discriminant is always
-			// positive and tExit > 0.
-			const Scalar sceneRadius = pLightSampler ?
-				pLightSampler->GetCachedSceneRadius() : Scalar( 0 );
-			if( pEnvForEscape && sceneRadius > 0 &&
-				( !bIsFirstBounce ||
-				  caster.IsRadianceMapVisibleAsBackground() ) ) {
-				BDPTVertex vEnv;
-				vEnv.type = BDPTVertex::LIGHT;
-				const Point3 sceneCentre =
-					pLightSampler->GetCachedSceneCenter();
-				// Ray-sphere intersection.  Let e = origin - center;
-				// solve |e + t*d|² = r² for the far root:
-				//   t² + 2 t (d·e) + (|e|² - r²) = 0
-				//   t = -(d·e) + sqrt((d·e)² - |e|² + r²)
-				// Earlier code computed `mkVector3(sceneCentre, origin)`
-				// which returns `center - origin = -e`, then used the
-				// far-root formula with -b — yielding `+(d·e) + sqrt`,
-				// which OVERSHOOTS the far exit on off-center origins
-				// (the synthetic env vertex landed past the bounding
-				// sphere, contaminating distSq and breaking the
-				// MIS-bookkeeping numerics).  Adversarial review P2,
-				// 2026-05-25.  Fix: build e = origin - center directly.
-				const Vector3 e = Vector3Ops::mkVector3(
-					currentRay.origin, sceneCentre );
-				const Vector3 rayD = currentRay.Dir();
-				const Scalar b = Vector3Ops::Dot( rayD, e );
-				const Scalar cSq = Vector3Ops::SquaredModulus( e );
-				const Scalar disc = b * b - ( cSq - sceneRadius * sceneRadius );
-				// Clamp to non-negative — origin-inside-sphere guarantees
-				// real root, but guard against FP noise on degenerate
-				// scenes where the ray origin sits exactly on the sphere.
-				const Scalar tExit = -b + std::sqrt( std::max( Scalar( 0 ), disc ) );
-				vEnv.position = Point3(
-					currentRay.origin.x + rayD.x * tExit,
-					currentRay.origin.y + rayD.y * tExit,
-					currentRay.origin.z + rayD.z * tExit );
-				// Store the actual ray direction in geomNormal (negated
-				// so geomNormal points back into the scene, matching
-				// the disc convention SampleEnvLightEmission uses).
-				// Downstream s=0 dispatcher reads `-eyeEnd.geomNormal`
-				// as the canonical sky direction.
-				vEnv.normal = Vector3( -rayD.x, -rayD.y, -rayD.z );
-				vEnv.geomNormal = vEnv.normal;
-				vEnv.onb.CreateFromW( vEnv.normal );
-				vEnv.pMaterial = 0;
-				vEnv.pObject = 0;
-				vEnv.pLight = 0;
-				vEnv.pLuminary = 0;
-				vEnv.pEnvLight = pEnvForEscape;
-				vEnv.isDelta = false;
-				vEnv.isConnectible = true;
-				// Eye-side pdfFwd at env vertex: pdfFwdPrev (SA on
-				// previous vertex) converted to area at env.  cosAtEnv
-				// = 1 by construction (geomNormal = -rayD, incoming =
-				// rayD).  distSq uses the actual eye→exit distance.
-				const Scalar distSqToExit = tExit * tExit;
-				vEnv.pdfFwd = BDPTUtilities::SolidAngleToArea(
-					pdfFwdPrev, Scalar( 1.0 ), distSqToExit );
-				// Apply the residual medium transmittance along the escape
-				// segment before the synthetic env vertex stores beta —
-				// mirrors the surface-hit branch above (line ~2655) and the
-				// PT escape fix (PBRT-v4 beta *= T_maj before the
-				// infinite-light contribution).  maxDist = 1e10 matches PT
-				// exactly so a global medium evaporates identically across
-				// integrators; a bounded (AABB) medium clips internally to a
-				// finite Tr.  VCM's s=0 env-escape consumes this same
-				// throughput via the shared generator, so this is the single
-				// fix point for PT-reference / BDPT / VCM s=0 consistency.
-				RISEPel betaEsc = beta;
-				if( pMed_eye ) {
-					betaEsc = betaEsc * pMed_eye->EvalTransmittance(
-						currentRay, Scalar( 1e10 ) );
-				}
-				vEnv.throughput = betaEsc;
-				vEnv.pdfRev = 0;
-				vEnv.cosAtGen = 1.0;
-				vertices.push_back( vEnv );
-			}
-			break;
-		}
-
-		// Apply intersection modifier if present
-		if( ri.pModifier ) {
-			ri.pModifier->Modify( ri.geometric );
-		}
-
-		// Create a new surface vertex
-		BDPTVertex v;
-		v.type = BDPTVertex::SURFACE;
-		v.position = ri.geometric.ptIntersection;
-		v.normal = ri.geometric.vNormal;
-		v.geomNormal = ri.geometric.vGeomNormal;
-		v.onb = ri.geometric.onb;
-		v.ptCoord = ri.geometric.ptCoord;
-		v.ptCoord1 = ri.geometric.ptCoord1;
-		v.bHasTexCoord1 = ri.geometric.bHasTexCoord1;
-		v.ptObjIntersec = ri.geometric.ptObjIntersec;
-		v.vColor = ri.geometric.vColor;
-		v.bHasVertexColor = ri.geometric.bHasVertexColor;
-		v.pMaterial = ri.pMaterial;
-		v.pObject = ri.pObject;
-		v.pLight = 0;
-		v.pLuminary = 0;
-		// Store enclosing medium so connection transmittance can
-		// seed its boundary walk from the correct starting medium.
-		v.pMediumObject = pMedObj_eye;
-		v.pMediumVol = pMed_eye;
-		if( ri.pObject ) {
-			iorStack.SetCurrentObject( ri.pObject );
-			v.mediumIOR = iorStack.top();
-			v.insideObject = iorStack.containsCurrent();
-		}
-
-		// Convert pdfFwdPrev from solid angle to area measure
-		const Scalar distSq = ri.geometric.range * ri.geometric.range;
-		// Solid-angle <-> area Jacobian uses the GEOMETRIC normal —
-		// the area-element parameterisation depends on the actual face
-		// orientation, not the Phong-perturbed shading normal
-		// (Veach 1997 §8.2.2 / PBRT 4e §13.6.4).  Using shading here
-		// biases every interior path-pdf factor and therefore the MIS
-		// balance heuristic.
-		const Scalar absCosIn = fabs( Vector3Ops::Dot(
-			ri.geometric.vGeomNormal,
-			-currentRay.Dir() ) );
-
-		v.pdfFwd = BDPTUtilities::SolidAngleToArea( pdfFwdPrev, absCosIn, distSq );
-		v.throughput = beta;
-		v.pdfRev = 0;
-		v.isDelta = false;
-
-		// VCM post-pass input: the receiving-side cosine used to
-		// invert the area-measure pdfFwd back to solid angle at
-		// merge/connection time.
-		v.cosAtGen = absCosIn;
-#ifdef RISE_ENABLE_OPENPGL
-		v.guidingHasSegment = true;
-		v.guidingDirectionOut = -currentRay.Dir();
-		v.guidingNormal = GuidingCosineNormal( v.normal, currentRay.Dir() );
-		v.guidingEta = v.mediumIOR > NEARZERO ? v.mediumIOR : 1.0;
-#endif
-
-		if( !ri.pMaterial ) {
-			vertices.push_back( v );
-			break;
-		}
-
-		const ISPF* pSPF = ri.pMaterial->GetSPF();
-		if( !pSPF ) {
-			vertices.push_back( v );
-			break;
-		}
-
-		vertices.push_back( v );
-
-		//
-		// Sample the SPF for the next direction
-		//
-		ScatteredRayContainer scattered;
-		pSPF->Scatter( ri.geometric, sampler, scattered, iorStack );
-
-		if( scattered.Count() == 0 ) {
-			break;
-		}
-
-		// Stochastic single-lobe selection (no path-tree branching).
-		// Consume one sampler dimension for Sobol alignment.
-		const Scalar lobeSelectXi = sampler.Get1D();
-		const ScatteredRay* pScat;
-		Scalar selectProb = 1.0;
-
-		{
-			pScat = scattered.RandomlySelect( lobeSelectXi, false );
-			if( !pScat ) {
-				break;
-			}
-			if( scattered.Count() > 1 ) {
-				Scalar totalKray = 0;
-				for( unsigned int i = 0; i < scattered.Count(); i++ ) {
-					totalKray += ColorMath::MaxValue( scattered[i].kray );
-				}
-				const Scalar selectedKray = ColorMath::MaxValue( pScat->kray );
-				if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
-					selectProb = selectedKray / totalKray;
-				}
-			}
-		}
-
-		// Determine connectibility: true if any scattered lobe is non-delta
-		{
-			bool hasNonDelta = false;
-			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
-				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
-			}
-			if( !ri.pMaterial->GetBSDF() ) {
-				hasNonDelta = false;
-			}
-			vertices.back().isConnectible = hasNonDelta;
-		}
-
-		// Mark the current vertex as delta
-		vertices.back().isDelta = pScat->isDelta;
-
-
-
-		// --- BSSRDF sampling for materials with diffusion profiles ---
-		Scalar bssrdfReflectCompensation = 1.0;
-		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
-		{
-			// Front-face gate uses GEOMETRIC; Fresnel cosine uses SHADING.
-			// PBRT 4e §10.1.1 (front/back is geometric); §11.4.2 (BSSRDF
-			// Fresnel angular dependence is shading-frame).
-			const Vector3 wo_bss = -currentRay.Dir();
-			const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
-			// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
-			// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
-			const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
-			const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
-			if( cosInGeom > NEARZERO )
-			{
-				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
-				const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
-				const Scalar R = 1.0 - Ft;
-
-				if( Ft > NEARZERO && sampler.Get1D() < Ft )
-				{
-					BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
-						ri.geometric, ri.pObject, ri.pMaterial, sampler, 0 );
-
-					if( bssrdf.valid )
-					{
-						vertices.back().isDelta = true;
-						const RISEPel betaSpatial = beta * bssrdf.weightSpatial * (1.0 / Ft);
-						beta = beta * bssrdf.weight * (1.0 / Ft);
-
-						BDPTVertex entryV;
-						entryV.type = BDPTVertex::SURFACE;
-						entryV.position = bssrdf.entryPoint;
-						entryV.normal = bssrdf.entryNormal;
-						entryV.geomNormal = bssrdf.entryGeomNormal;
-						entryV.onb = bssrdf.entryONB;
-						entryV.pMaterial = ri.pMaterial;
-						entryV.pObject = ri.pObject;
-						entryV.pMediumObject = pMedObj_eye;
-						entryV.pMediumVol = pMed_eye;
-						entryV.isDelta = false;
-						entryV.isConnectible = true;
-						entryV.isBSSRDFEntry = true;
-						entryV.throughput = betaSpatial;
-						entryV.pdfFwd = bssrdf.pdfSurface;
-						entryV.pdfRev = 0;
-#ifdef RISE_ENABLE_OPENPGL
-						entryV.guidingHasSegment = true;
-						entryV.guidingDirectionOut = -bssrdf.scatteredRay.Dir();
-						entryV.guidingNormal = entryV.normal;
-						entryV.guidingEta = 1.0;
-#endif
-						vertices.push_back( entryV );
-
-						pdfFwdPrev = bssrdf.cosinePdf;
-						currentRay = bssrdf.scatteredRay;
-						continue;
-					}
-					break;
-				}
-				if( R > NEARZERO ) {
-					bssrdfReflectCompensation = 1.0 / R;
-				}
-			}
-		}
-		// --- Random-walk SSS (RGB eye subpath) ---
-		else if( ri.pMaterial && ri.pMaterial->GetRandomWalkSSSParams() )
-		{
-			// Front-face gate uses GEOMETRIC; Fresnel cosine uses SHADING.
-			// PBRT 4e §10.1.1 (front/back is geometric); §11.4.2 (BSSRDF
-			// Fresnel angular dependence is shading-frame).
-			const Vector3 wo_bss = -currentRay.Dir();
-			const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
-			// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
-			// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
-			const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
-			const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
-			if( cosInGeom > NEARZERO )
-			{
-				const RandomWalkSSSParams* pRW = ri.pMaterial->GetRandomWalkSSSParams();
-				const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
-					((pRW->ior - 1.0) / (pRW->ior + 1.0));
-				const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
-				const Scalar Ft = 1.0 - F;
-				const Scalar R = F;
-
-				if( Ft > NEARZERO && sampler.Get1D() < Ft )
-				{
-					// See RGB light subpath comment for rationale.
-					IndependentSampler walkSampler( rc.random );
-					ISampler& rwSampler = sampler.HasFixedDimensionBudget()
-						? static_cast<ISampler&>(walkSampler) : sampler;
-
-					BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
-						ri.geometric, ri.pObject,
-						pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
-						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, 0, pRW->maxDepth );
-
-					if( bssrdf.valid )
-					{
-						vertices.back().isDelta = true;
-
-						// SampleExit does NOT include Ft(entry).
-						// Coin flip: weight * Ft / Ft = weight.
-						// Apply boundary filter (e.g. melanin double-pass).
-						const Scalar bf = pRW->boundaryFilter;
-						const RISEPel betaSpatial = beta * bssrdf.weightSpatial * bf;
-						beta = beta * bssrdf.weight * bf;
-
-						BDPTVertex entryV;
-						entryV.type = BDPTVertex::SURFACE;
-						entryV.position = bssrdf.entryPoint;
-						entryV.normal = bssrdf.entryNormal;
-						entryV.geomNormal = bssrdf.entryGeomNormal;
-						entryV.onb = bssrdf.entryONB;
-						entryV.pMaterial = ri.pMaterial;
-						entryV.pObject = ri.pObject;
-						entryV.pMediumObject = pMedObj_eye;
-						entryV.pMediumVol = pMed_eye;
-
-						// See RGB light subpath block for rationale.
-						entryV.isDelta = true;
-						entryV.isConnectible = false;
-						entryV.isBSSRDFEntry = true;
-						entryV.throughput = betaSpatial;
-						entryV.pdfFwd = 0;
-						entryV.pdfRev = 0;
-#ifdef RISE_ENABLE_OPENPGL
-						entryV.guidingHasSegment = true;
-						entryV.guidingDirectionOut = -bssrdf.scatteredRay.Dir();
-						entryV.guidingNormal = entryV.normal;
-						entryV.guidingEta = 1.0;
-#endif
-						vertices.push_back( entryV );
-
-						pdfFwdPrev = bssrdf.cosinePdf;
-						currentRay = bssrdf.scatteredRay;
-						continue;
-					}
-					break;
-				}
-				if( R > NEARZERO ) {
-					bssrdfReflectCompensation = 1.0 / R;
-				}
-			}
-		}
-		// --- End BSSRDF sampling ---
-
-#ifdef RISE_ENABLE_OPENPGL
-		// --- Path guiding (eye subpath) ---
-		bool usedGuidedDirection = false;
-		RISEPel guidedF( 0, 0, 0 );
-		Vector3 guidedDir;
-		Scalar guidedEffectivePdf = 0;
-		Scalar bsdfCombinedPdf = 0;
-
-		if( pGuidingField && pGuidingField->IsTrained() &&
-			depth < maxGuidingDepth && GuidingSupportsSurfaceSampling( *pScat ) &&
-			vertices.back().isConnectible )
-		{
-			if( pGuidingField->InitDistribution( guideDist, v.position, sampler.Get1D() ) )
-			{
-				if( pScat->type == ScatteredRay::eRayDiffuse ) {
-					pGuidingField->ApplyCosineProduct(
-						guideDist,
-						GuidingCosineNormal( v.normal, currentRay.Dir() ) );
-				}
-
-				const Scalar alpha = guidingAlpha;
-
-				if( guidingSamplingType == eGuidingRIS )
-				{
-					// RIS-based guiding (BDPT eye subpath)
-					PathTransportUtilities::GuidingRISCandidate<RISEPel> candidates[2];
-
-					// Candidate 0: BSDF sample
-					{
-						PathTransportUtilities::GuidingRISCandidate<RISEPel>& c = candidates[0];
-						c.direction = pScat->ray.Dir();
-						c.bsdfEval = EvalBSDFAtVertex(
-							vertices.back(), c.direction, -currentRay.Dir() );
-						c.bsdfPdf = pScat->pdf;
-						c.guidePdf = pGuidingField->Pdf( guideDist, c.direction );
-						c.incomingRadPdf = pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
-						c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
-						const Scalar avgBsdf = ColorMath::MaxValue( c.bsdfEval );
-						c.risTarget = PathTransportUtilities::GuidingRISTarget(
-							avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
-						c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-							c.bsdfPdf, c.guidePdf );
-						c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
-						c.valid = c.bsdfPdf > NEARZERO && c.risPdf > NEARZERO && avgBsdf > 0;
-						if( !c.valid ) {
-							c.risWeight = 0;
-						}
-					}
-
-					// Candidate 1: guide sample
-					{
-						PathTransportUtilities::GuidingRISCandidate<RISEPel>& c = candidates[1];
-						Scalar gPdf = 0;
-						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-						c.direction = pGuidingField->Sample( guideDist, xi2d, gPdf );
-						c.guidePdf = gPdf;
-
-						if( gPdf > NEARZERO )
-						{
-							c.bsdfEval = EvalBSDFAtVertex(
-								vertices.back(), c.direction, -currentRay.Dir() );
-							c.bsdfPdf = EvalPdfAtVertex(
-								vertices.back(), c.direction, -currentRay.Dir() );
-							c.incomingRadPdf = pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
-							c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
-							const Scalar avgBsdf = ColorMath::MaxValue( c.bsdfEval );
-							c.risTarget = PathTransportUtilities::GuidingRISTarget(
-								avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
-							c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-								c.bsdfPdf, c.guidePdf );
-							c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
-							c.valid = c.bsdfPdf > NEARZERO && avgBsdf > 0;
-							if( !c.valid ) {
-								c.risWeight = 0;
-							}
-						}
-						else
-						{
-							c.bsdfEval = RISEPel( 0, 0, 0 );
-							c.bsdfPdf = 0;
-							c.incomingRadPdf = 0;
-							c.cosTheta = 0;
-							c.risTarget = 0;
-							c.risPdf = 0;
-							c.risWeight = 0;
-							c.valid = false;
-						}
-					}
-
-					Scalar risEffectivePdf = 0;
-					const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidate(
-						candidates, 2, sampler.Get1D(), risEffectivePdf );
-
-					if( risEffectivePdf > NEARZERO && candidates[sel].valid )
-					{
-						usedGuidedDirection = true;
-						guidedDir = candidates[sel].direction;
-						guidedF = candidates[sel].bsdfEval;
-						guidedEffectivePdf = risEffectivePdf;
-					}
-				}
-				else
-				{
-					// One-sample MIS (BDPT eye subpath)
-					const Scalar xi = sampler.Get1D();
-
-					if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
-					{
-						Scalar guidePdf = 0;
-						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-						const Vector3 gDir = pGuidingField->Sample( guideDist, xi2d, guidePdf );
-
-						if( guidePdf > NEARZERO )
-						{
-							guidedF = EvalBSDFAtVertex(
-								vertices.back(), gDir, -currentRay.Dir() );
-							const Scalar bsdfPdf = EvalPdfAtVertex(
-								vertices.back(), gDir, -currentRay.Dir() );
-
-							const Scalar combinedPdf =
-								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );
-
-							if( combinedPdf > NEARZERO &&
-								ColorMath::MaxValue( guidedF ) > NEARZERO )
-							{
-								usedGuidedDirection = true;
-								guidedDir = gDir;
-								guidedEffectivePdf = combinedPdf;
-							}
-						}
-					}
-
-					if( !usedGuidedDirection )
-					{
-						const Scalar guidePdfForBsdfDir =
-							pGuidingField->Pdf( guideDist, pScat->ray.Dir() );
-						bsdfCombinedPdf =
-							PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdfDir, pScat->pdf );
-					}
-				}
-			}
-		}
-#endif
-		// --- End path guiding ---
-
-		// Compute effective scatter direction and PDF
-		Vector3 scatDir = pScat->ray.Dir();
-		Scalar effectivePdf = pScat->pdf;
-
-#ifdef RISE_ENABLE_OPENPGL
-		if( usedGuidedDirection ) {
-			scatDir = guidedDir;
-			effectivePdf = guidedEffectivePdf;
-		} else if( bsdfCombinedPdf > NEARZERO ) {
-			effectivePdf = bsdfCombinedPdf;
-		}
-#endif
-
-		if( effectivePdf <= 0 ) {
-			break;
-		}
-
-		// Per-type bounce limits
-		if( PathTransportUtilities::ExceedsBounceLimitForType(
-				pScat->type, eyeDiffuseBounces, eyeGlossyBounces,
-				eyeTransmissionBounces, eyeTranslucentBounces, stabilityConfig ) ) {
-			break;
-		}
-
-		const Scalar scatterPdf = selectProb * effectivePdf;
-		RISEPel localScatteringWeight( 0, 0, 0 );
-
-		// Compute throughput update
-		if( pScat->isDelta ) {
-			localScatteringWeight =
-				pScat->kray * (bssrdfReflectCompensation / selectProb);
-			beta = beta * localScatteringWeight;
-		} else {
-			RISEPel f;
-#ifdef RISE_ENABLE_OPENPGL
-			f = usedGuidedDirection ? guidedF :
-				EvalBSDFAtVertex( vertices.back(), scatDir, -currentRay.Dir() );
-#else
-			f = EvalBSDFAtVertex( vertices.back(), scatDir, -currentRay.Dir() );
-#endif
-			const Scalar cosTheta = fabs( Vector3Ops::Dot(
-				scatDir, ri.geometric.vNormal ) );
-
-			if( ColorMath::MaxValue( f ) <= 0 ) {
-				break;
-			}
-			localScatteringWeight =
-				f * (bssrdfReflectCompensation * cosTheta / scatterPdf);
-			beta = beta * localScatteringWeight;
-		}
-
-		// Russian Roulette after a few bounces — depth threshold
-		// and throughput floor are configurable via StabilityConfig.
-		const PathTransportUtilities::RussianRouletteResult rr =
-			PathTransportUtilities::EvaluateRussianRoulette(
-				depth, stabilityConfig.rrMinDepth, stabilityConfig.rrThreshold,
-				ColorMath::MaxValue( beta ),
-				ColorMath::MaxValue( vertices.back().throughput ),
-				sampler.Get1D() );
-		if( rr.terminate ) {
-			break;
-		}
-		if( rr.survivalProb < 1.0 ) {
-			beta = beta * (1.0 / rr.survivalProb);
-		}
-
-#ifdef RISE_ENABLE_OPENPGL
-		vertices.back().guidingHasDirectionIn = true;
-		vertices.back().guidingDirectionIn = scatDir;
-		vertices.back().guidingPdfDirectionIn = scatterPdf;
-		vertices.back().guidingScatteringWeight = localScatteringWeight;
-		vertices.back().guidingRussianRouletteSurvivalProbability = rr.survivalProb;
-		vertices.back().guidingEta =
-			(pScat->ior_stack && pScat->ior_stack->top() > NEARZERO) ?
-				pScat->ior_stack->top() :
-				(vertices.back().mediumIOR > NEARZERO ? vertices.back().mediumIOR : 1.0);
-		vertices.back().guidingRoughness = pScat->isDelta ?
-			Scalar( 0.0 ) :
-			(pScat->type == ScatteredRay::eRayDiffuse ? Scalar( 1.0 ) : Scalar( 0.5 ));
-#endif
-
-		// Store the forward pdf for the next vertex,
-		// accounting for lobe selection probability.
-		pdfFwdPrev = scatterPdf;
-
-		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
-		if( pScat->isDelta ) {
-			pdfFwdPrev = 0;
-		}
-
-		// Update previous vertex's pdfRev
-		if( vertices.size() >= 2 ) {
-			const BDPTVertex& curr = vertices.back();
-			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
-
-			// Reverse PDF: returns 0 for delta interactions, handled by remap0 in MISWeight.
-			const Scalar revPdfSA = EvalPdfAtVertex(
-				curr,
-				scatDir,
-				-currentRay.Dir()
-				);
-
-			// Convert to area measure at prev.  The geometric cosine is
-			// only meaningful for SURFACE/LIGHT predecessors — CAMERA
-			// gets the sentinel 1.0 and MEDIUM bypasses cos entirely
-			// (Veach §11 medium area-pdf uses sigma_t).  Reading
-			// prev.geomNormal on a medium vertex would consume zero-
-			// init data; gate the dot product behind the type check.
-			if( prev.type == BDPTVertex::MEDIUM ) {
-				prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium( revPdfSA, prev.sigma_t_scalar, distSq );
-			} else {
-				const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA)
-					? Scalar(1.0)
-					: fabs( Vector3Ops::Dot( prev.geomNormal, currentRay.Dir() ) );
-				prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
-			}
-			if( pScat->isDelta ) { prev.pdfRev = 0; }
-		}
-
-		// Advance to next ray
-#ifdef RISE_ENABLE_OPENPGL
-		if( usedGuidedDirection ) {
-			currentRay = Ray( pScat->ray.origin, guidedDir );
-		} else {
-			currentRay = pScat->ray;
-		}
-#else
-		currentRay = pScat->ray;
-#endif
-		currentRay.Advance( BDPT_RAY_EPSILON );
-	#ifdef RISE_ENABLE_OPENPGL
-		if( !usedGuidedDirection && pScat->ior_stack ) {
-	#else
-		if( pScat->ior_stack ) {
-	#endif
-			iorStack = *pScat->ior_stack;
-		}
-	}
-
-	// Record subpath boundary (single contiguous range now that
-	// path-tree branching has been excised).
-	subpathStarts.push_back( static_cast<uint32_t>( vertices.size() ) );
-
-	return static_cast<unsigned int>( vertices.size() );
+		rc, cameraRay, screenPos, scene, caster, sampler,
+		vertices, subpathStarts, PelTag{}, 0 );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -5492,6 +5820,13 @@ unsigned int BDPTIntegrator::GenerateLightSubpathNM(
 		v.ptCoord1 = ri.geometric.ptCoord1;
 		v.bHasTexCoord1 = ri.geometric.bHasTexCoord1;
 		v.ptObjIntersec = ri.geometric.ptObjIntersec;
+		// Mirror per-vertex colour exactly as the RGB light subpath and the
+		// (templatized) eye subpath do, so connection-time
+		// VertexColorPainter::GetColorNM — fed through PopulateRIGFromVertex
+		// — sees the true colour on spectral / HWSS BDPT and VCM renders
+		// instead of the painter's fallback.
+		v.vColor = ri.geometric.vColor;
+		v.bHasVertexColor = ri.geometric.bHasVertexColor;
 		v.pMaterial = ri.pMaterial;
 		v.pObject = ri.pObject;
 		v.pLight = 0;
@@ -6089,902 +6424,13 @@ unsigned int BDPTIntegrator::GenerateEyeSubpathNM(
 	const SampledWavelengths* pSwlHWSS
 	) const
 {
-	vertices.clear();
-	vertices.reserve( maxEyeDepth + 1 );
-	subpathStarts.clear();
-	subpathStarts.push_back( 0 );
-
-	// Snapshot once — see parallel comment in GenerateEyeSubpath.
-	const ICamera* pCamera = scene.GetCamera();
-
-	// Vertex 0: the camera
-	{
-		BDPTVertex v;
-		v.type = BDPTVertex::CAMERA;
-
-		if( pCamera ) {
-			v.position = pCamera->GetLocation();
-		}
-
-		v.normal = cameraRay.Dir();
-		v.onb.CreateFromW( cameraRay.Dir() );
-		v.pMaterial = 0;
-		v.pObject = 0;
-		v.pLight = 0;
-		v.pLuminary = 0;
-		v.screenPos = screenPos;
-		v.isDelta = false;
-		v.pdfFwd = 1.0;
-		v.pdfRev = 0;
-		v.throughputNM = 1.0;
-
-		vertices.push_back( v );
-	}
-
-	Ray currentRay = cameraRay;
-	Scalar betaNM = 1.0;
-
-	Scalar pdfCamDir = 1.0;
-	if( pCamera ) {
-		pdfCamDir = BDPTCameraUtilities::PdfDirection( *pCamera, cameraRay );
-	}
-
-	// VCM post-pass inputs on the camera endpoint (spectral).
-	vertices[0].emissionPdfW = pdfCamDir;
-	vertices[0].cosAtGen = 1.0;
-
-	Scalar pdfFwdPrev = pdfCamDir;
-	IORStack iorStack( 1.0 );
-	// Seed from the camera position — see the RGB eye subpath for
-	// why this matters and why it's a no-op for cameras in free space.
-	if( pCamera ) {
-		IORStackSeeding::SeedFromPoint( iorStack, pCamera->GetLocation(), scene );
-	}
-
+	return GenerateEyeSubpathImpl<NMTag>(
+		maxEyeDepth, stabilityConfig, pLightSampler,
 #ifdef RISE_ENABLE_OPENPGL
-	static thread_local GuidingDistributionHandle guideDist;
+		pGuidingField, maxGuidingDepth, guidingAlpha, guidingSamplingType,
 #endif
-
-	// Per-type bounce counters for StabilityConfig limits
-	unsigned int nmEyeDiffuseBounces = 0;
-	unsigned int nmEyeGlossyBounces = 0;
-	unsigned int nmEyeTransmissionBounces = 0;
-	unsigned int nmEyeTranslucentBounces = 0;
-	unsigned int nmEyeVolumeBounces = 0;
-	unsigned int nmEyeSurfaceBounces = 0;
-
-	// HWSS per-wavelength throughput tracking.  When pSwlHWSS is non-null
-	// the RR site below uses max over active wavelengths of the post-
-	// scatter throughput, preventing hero-driven RR from amplifying
-	// companion wavelengths on rare survivors (see PathTracingIntegrator
-	// HWSS RR comment for full rationale).  Kept in sync with betaNM
-	// (index 0 is hero; initialized 1.0 for camera start).
-	Scalar hwssBetaNM[SampledWavelengths::N];
-	if( pSwlHWSS ) {
-		for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-			hwssBetaNM[w] = Scalar( 1 );
-		}
-	}
-
-
-	// Saturating add; see matching comment in GenerateEyeSubpath.
-	// Guard maxEyeDepth >= 1024 so the subtraction doesn't underflow.
-	const unsigned int nmMaxEyeTotalDepth =
-		( maxEyeDepth >= 1024u ||
-		  stabilityConfig.maxVolumeBounce > 1024u - maxEyeDepth ) ?
-			1024u :
-			maxEyeDepth + stabilityConfig.maxVolumeBounce;
-
-	for( unsigned int depth = 0; depth < nmMaxEyeTotalDepth; depth++ )
-	{
-		// Per-bounce stream offset on the NM eye subpath.  Streams
-		// [16, ...) are reserved for the eye walk; light walk uses
-		// [1, ...).
-		sampler.StartStream( 16u + depth );
-
-		RayIntersection ri( currentRay, nullRasterizerState );
-		scene.GetObjects()->IntersectRay( ri, true, true, false );
-
-		// ----------------------------------------------------------------
-		// Participating media: free-flight distance sampling (NM eye subpath).
-		// Same algorithm as the RGB variant — see GenerateEyeSubpath.
-		// Uses spectral SampleDistanceNM / GetCoefficientsNM so that
-		// chromatic media are sampled at the correct wavelength.
-		// ----------------------------------------------------------------
-		const IObject* pMedObj_nmEye = 0;
-		const IMedium* pMed_nmEye = 0;
-		{
-			const IObject* pMedObj = 0;
-			const IMedium* pMed = MediumTracking::GetCurrentMediumWithObject(
-				iorStack, &scene, pMedObj );
-			pMedObj_nmEye = pMedObj;
-			pMed_nmEye = pMed;
-
-			if( pMed )
-			{
-				const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
-				bool scattered = false;
-				const Scalar t_m = pMed->SampleDistanceNM(
-					currentRay, maxDist, nm, sampler, scattered );
-
-				if( scattered && nmEyeVolumeBounces < stabilityConfig.maxVolumeBounce )
-				{
-					const Point3 scatterPt = currentRay.PointAtLength( t_m );
-					const Vector3 wo = currentRay.Dir();
-					const MediumCoefficientsNM coeff = pMed->GetCoefficientsNM( scatterPt, nm );
-					const Scalar TrNM = pMed->EvalTransmittanceNM( currentRay, t_m, nm );
-					const Scalar sigma_t_nm = coeff.sigma_t;
-
-					// NM throughput weight: sigma_s / sigma_t (single-scattering albedo)
-					Scalar medWeightNM = 0;
-					if( sigma_t_nm > 0 && TrNM > 0 ) {
-						medWeightNM = coeff.sigma_s / sigma_t_nm;
-					}
-
-					if( medWeightNM <= 0 ) {
-						break;
-					}
-
-					betaNM *= medWeightNM;
-
-					BDPTVertex mv;
-					mv.type = BDPTVertex::MEDIUM;
-					mv.position = scatterPt;
-					mv.normal = -wo;
-					mv.onb.CreateFromW( -wo );
-					mv.pMaterial = 0;
-					mv.pObject = 0;
-					mv.pMediumVol = pMed;
-					mv.pPhaseFunc = pMed->GetPhaseFunction();
-					mv.pMediumObject = pMedObj;
-					mv.sigma_t_scalar = sigma_t_nm;
-					mv.isDelta = false;
-
-					// Medium vertices enclosed by a specular (delta) boundary
-					// are not connectible: connection rays are blocked by the
-					// specular surface.  Propagate from previous vertex.
-					// Exception: vertices in the GLOBAL medium (pMedObj == NULL)
-					// are always connectable.
-					{
-						bool connectible = true;
-						if( pMedObj == 0 ) {
-							connectible = true;
-						} else if( !vertices.empty() ) {
-							const BDPTVertex& prev = vertices.back();
-							if( prev.type == BDPTVertex::SURFACE && prev.isDelta ) {
-								connectible = false;
-							} else if( prev.type == BDPTVertex::MEDIUM && !prev.isConnectible ) {
-								connectible = false;
-							}
-						}
-						mv.isConnectible = connectible;
-					}
-					mv.throughputNM = betaNM;
-
-					const Scalar distSqMed = t_m * t_m;
-					mv.pdfFwd = BDPTUtilities::SolidAngleToAreaMedium(
-						pdfFwdPrev, mv.sigma_t_scalar, distSqMed );
-					mv.pdfRev = 0;
-
-					// VCM uses sigma_t_scalar for medium vertices.
-					mv.cosAtGen = 0;
-
-					vertices.push_back( mv );
-
-					// Sample phase function continuation
-					const IPhaseFunction* pPhase = pMed->GetPhaseFunction();
-					if( !pPhase ) {
-						break;
-					}
-
-					const Vector3 wi = pPhase->Sample( wo, sampler );
-					const Scalar phasePdf = pPhase->Pdf( wo, wi );
-					if( phasePdf <= NEARZERO ) {
-						break;
-					}
-
-					const Scalar phaseVal = pPhase->Evaluate( wo, wi );
-					betaNM *= phaseVal / phasePdf;
-
-					// Russian roulette
-					{
-						const PathTransportUtilities::RussianRouletteResult rr =
-							PathTransportUtilities::EvaluateRussianRoulette(
-								depth + nmEyeVolumeBounces,
-								stabilityConfig.rrMinDepth,
-								stabilityConfig.rrThreshold,
-								fabs( betaNM ),
-								fabs( mv.throughputNM ),
-								sampler.Get1D() );
-						if( rr.terminate ) {
-							break;
-						}
-						if( rr.survivalProb < 1.0 ) {
-							betaNM /= rr.survivalProb;
-						}
-					}
-
-					// Update pdfRev on previous vertex
-					if( vertices.size() >= 2 ) {
-						BDPTVertex& prev = vertices[ vertices.size() - 2 ];
-						const Scalar revPdfSA = phasePdf;
-
-						if( prev.type == BDPTVertex::MEDIUM ) {
-							prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium(
-								revPdfSA, prev.sigma_t_scalar, distSqMed );
-						} else {
-							const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA) ?
-								Scalar(1.0) :
-								fabs( Vector3Ops::Dot( prev.geomNormal, currentRay.Dir() ) );
-							prev.pdfRev = BDPTUtilities::SolidAngleToArea(
-								revPdfSA, absCosAtPrev, distSqMed );
-						}
-					}
-
-					pdfFwdPrev = phasePdf;
-
-					currentRay = Ray( scatterPt, wi );
-					currentRay.Advance( BDPT_RAY_EPSILON );
-
-					nmEyeVolumeBounces++;
-					continue;
-				}
-				else if( ri.geometric.bHit )
-				{
-					const Scalar TrNM = pMed->EvalTransmittanceNM(
-						currentRay, ri.geometric.range, nm );
-					betaNM *= TrNM;
-				}
-			}
-		}
-
-		if( !ri.geometric.bHit ) {
-			// Path B (spectral): eye-subpath escape to env IBL.  Mirror
-			// of the RGB site at line ~2615; see there for rationale.
-			// The synthetic env vertex carries throughputNM (eye-side
-			// spectral throughput) and is consumed by the spectral
-			// s=0 dispatcher (which queries pEnvLight->GetRadianceNM).
-			const IRadianceMap* pEnvForEscape = scene.GetGlobalRadianceMap();
-			const bool bIsFirstBounce = ( depth == 0 );
-			// Place env vertex at ray-sphere exit point — see RGB
-			// twin (~line 2615) for the full P1b derivation.  Storing
-			// the original ray direction in geomNormal means the s=0
-			// dispatcher can recover the correct sky direction
-			// regardless of where eyePred sits.
-			const Scalar sceneRadius = pLightSampler ?
-				pLightSampler->GetCachedSceneRadius() : Scalar( 0 );
-			if( pEnvForEscape && sceneRadius > 0 &&
-				( !bIsFirstBounce ||
-				  caster.IsRadianceMapVisibleAsBackground() ) ) {
-				BDPTVertex vEnv;
-				vEnv.type = BDPTVertex::LIGHT;
-				const Point3 sceneCentre =
-					pLightSampler->GetCachedSceneCenter();
-				// Ray-sphere intersection (far root).  e = origin - center.
-				// See RGB twin (~line 2681) for the full derivation —
-				// adversarial review round 3, P1 (NM ray-sphere fix
-				// missed-twin bug).  The old code computed
-				// `mkVector3(sceneCentre, origin)` = center - origin
-				// and applied -b + sqrt with that, putting the env
-				// vertex past the far sphere exit on off-center origins.
-				const Vector3 e = Vector3Ops::mkVector3(
-					currentRay.origin, sceneCentre );
-				const Vector3 rayD = currentRay.Dir();
-				const Scalar b = Vector3Ops::Dot( rayD, e );
-				const Scalar cSq = Vector3Ops::SquaredModulus( e );
-				const Scalar disc = b * b - ( cSq - sceneRadius * sceneRadius );
-				const Scalar tExit = -b + std::sqrt( std::max( Scalar( 0 ), disc ) );
-				vEnv.position = Point3(
-					currentRay.origin.x + rayD.x * tExit,
-					currentRay.origin.y + rayD.y * tExit,
-					currentRay.origin.z + rayD.z * tExit );
-				vEnv.normal = Vector3( -rayD.x, -rayD.y, -rayD.z );
-				vEnv.geomNormal = vEnv.normal;
-				vEnv.onb.CreateFromW( vEnv.normal );
-				vEnv.pMaterial = 0;
-				vEnv.pObject = 0;
-				vEnv.pLight = 0;
-				vEnv.pLuminary = 0;
-				vEnv.pEnvLight = pEnvForEscape;
-				vEnv.isDelta = false;
-				vEnv.isConnectible = true;
-				const Scalar distSqToExit = tExit * tExit;
-				vEnv.pdfFwd = BDPTUtilities::SolidAngleToArea(
-					pdfFwdPrev, Scalar( 1.0 ), distSqToExit );
-				// Apply the residual medium transmittance along the escape
-				// segment before storing throughputNM — spectral twin of the
-				// RGB site (~line 2762).  maxDist = 1e10 matches PT.  VCM's
-				// spectral s=0 env-escape reads throughputNM via the shared
-				// generator, so this is the single fix point for NM.
-				Scalar betaNMEsc = betaNM;
-				if( pMed_nmEye ) {
-					betaNMEsc *= pMed_nmEye->EvalTransmittanceNM(
-						currentRay, Scalar( 1e10 ), nm );
-				}
-				vEnv.throughputNM = betaNMEsc;
-				vEnv.throughput = RISEPel( betaNMEsc, betaNMEsc, betaNMEsc );
-				vEnv.pdfRev = 0;
-				vEnv.cosAtGen = 1.0;
-				vertices.push_back( vEnv );
-			}
-			break;
-		}
-
-		if( nmEyeSurfaceBounces >= maxEyeDepth ) {
-			break;
-		}
-		nmEyeSurfaceBounces++;
-
-		if( ri.pModifier ) {
-			ri.pModifier->Modify( ri.geometric );
-		}
-
-		BDPTVertex v;
-		v.type = BDPTVertex::SURFACE;
-		v.position = ri.geometric.ptIntersection;
-		v.normal = ri.geometric.vNormal;
-		v.geomNormal = ri.geometric.vGeomNormal;
-		v.onb = ri.geometric.onb;
-		v.ptCoord = ri.geometric.ptCoord;
-		v.ptCoord1 = ri.geometric.ptCoord1;
-		v.bHasTexCoord1 = ri.geometric.bHasTexCoord1;
-		v.ptObjIntersec = ri.geometric.ptObjIntersec;
-		v.pMaterial = ri.pMaterial;
-		v.pObject = ri.pObject;
-		v.pLight = 0;
-		v.pLuminary = 0;
-		v.pMediumObject = pMedObj_nmEye;
-		v.pMediumVol = pMed_nmEye;
-		if( ri.pObject ) {
-			iorStack.SetCurrentObject( ri.pObject );
-			v.mediumIOR = iorStack.top();
-			v.insideObject = iorStack.containsCurrent();
-		}
-
-		const Scalar distSq = ri.geometric.range * ri.geometric.range;
-		// Solid-angle <-> area Jacobian uses the GEOMETRIC normal —
-		// area-element parameterisation depends on the actual face
-		// orientation (Veach 1997 §8.2.2 / PBRT 4e §13.6.4).
-		const Scalar absCosIn = fabs( Vector3Ops::Dot(
-			ri.geometric.vGeomNormal, -currentRay.Dir() ) );
-
-		v.pdfFwd = BDPTUtilities::SolidAngleToArea( pdfFwdPrev, absCosIn, distSq );
-		v.throughputNM = betaNM;
-		v.pdfRev = 0;
-		v.isDelta = false;
-
-		// VCM post-pass input (spectral).
-		v.cosAtGen = absCosIn;
-
-		if( !ri.pMaterial ) {
-			vertices.push_back( v );
-			break;
-		}
-
-		const ISPF* pSPF = ri.pMaterial->GetSPF();
-		if( !pSPF ) {
-			vertices.push_back( v );
-			break;
-		}
-
-		vertices.push_back( v );
-
-		// Sample the SPF at this wavelength
-		ScatteredRayContainer scattered;
-		pSPF->ScatterNM( ri.geometric, sampler, nm, scattered, iorStack );
-
-		if( scattered.Count() == 0 ) {
-			break;
-		}
-
-		// Stochastic single-lobe selection (no path-tree branching).
-		// Consume one sampler dimension for Sobol alignment.
-		const Scalar lobeSelectXi = sampler.Get1D();
-		const ScatteredRay* pScat;
-		Scalar selectProb = 1.0;
-
-		{
-			pScat = scattered.RandomlySelect( lobeSelectXi, true );
-			if( !pScat ) {
-				break;
-			}
-			// Compute lobe selection probability using spectral krayNM weights
-			if( scattered.Count() > 1 ) {
-				Scalar totalKray = 0;
-				for( unsigned int i = 0; i < scattered.Count(); i++ ) {
-					totalKray += fabs( scattered[i].krayNM );
-				}
-				const Scalar selectedKray = fabs( pScat->krayNM );
-				if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
-					selectProb = selectedKray / totalKray;
-				}
-			}
-		}
-
-		// Determine connectibility: true if any scattered lobe is non-delta
-		{
-			bool hasNonDelta = false;
-			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
-				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
-			}
-			if( !ri.pMaterial->GetBSDF() ) {
-				hasNonDelta = false;
-			}
-			vertices.back().isConnectible = hasNonDelta;
-		}
-
-		vertices.back().isDelta = pScat->isDelta;
-
-
-
-		// --- BSSRDF sampling (NM eye subpath) ---
-		Scalar bssrdfReflectCompensation = 1.0;
-		if( ri.pMaterial && ri.pMaterial->GetDiffusionProfile() )
-		{
-			// Front-face gate uses GEOMETRIC; Fresnel cosine uses SHADING.
-			// PBRT 4e §10.1.1 (front/back is geometric); §11.4.2 (BSSRDF
-			// Fresnel angular dependence is shading-frame).
-			const Vector3 wo_bss = -currentRay.Dir();
-			const Scalar cosInGeom = Vector3Ops::Dot( ri.geometric.vGeomNormal, wo_bss );
-			// Fresnel cosine clamped via fabs+NEARZERO — see PT site for
-			// rationale.  Replaces fallback-to-cosInGeom (discontinuous Ft).
-			const Scalar cosInShade = Vector3Ops::Dot( ri.geometric.vNormal, wo_bss );
-			const Scalar cosIn = r_max( fabs( cosInShade ), Scalar( NEARZERO ) );
-			if( cosInGeom > NEARZERO )
-			{
-				ISubSurfaceDiffusionProfile* pProfile = ri.pMaterial->GetDiffusionProfile();
-			const Scalar Ft = pProfile->FresnelTransmission( cosIn, ri.geometric );
-			const Scalar R = 1.0 - Ft;
-
-			if( Ft > NEARZERO && sampler.Get1D() < Ft )
-			{
-				BSSRDFSampling::SampleResult bssrdf = BSSRDFSampling::SampleEntryPoint(
-					ri.geometric, ri.pObject, ri.pMaterial, sampler, nm );
-
-				if( bssrdf.valid )
-				{
-					vertices.back().isDelta = true;
-					const Scalar betaSpatialNM = betaNM * bssrdf.weightSpatialNM / Ft;
-					betaNM = betaNM * bssrdf.weightNM / Ft;
-
-					BDPTVertex entryV;
-					entryV.type = BDPTVertex::SURFACE;
-					entryV.position = bssrdf.entryPoint;
-					entryV.normal = bssrdf.entryNormal;
-					entryV.geomNormal = bssrdf.entryGeomNormal;
-					entryV.onb = bssrdf.entryONB;
-					entryV.pMaterial = ri.pMaterial;
-					entryV.pObject = ri.pObject;
-					entryV.pMediumObject = pMedObj_nmEye;
-					entryV.pMediumVol = pMed_nmEye;
-					entryV.isDelta = false;
-					entryV.isConnectible = true;
-					entryV.isBSSRDFEntry = true;
-					entryV.throughputNM = betaSpatialNM;
-					entryV.pdfFwd = bssrdf.pdfSurface;
-					entryV.pdfRev = 0;
-					vertices.push_back( entryV );
-
-					pdfFwdPrev = bssrdf.cosinePdf;
-					currentRay = bssrdf.scatteredRay;
-					continue;
-				}
-				break;
-			}
-			if( R > NEARZERO ) {
-				bssrdfReflectCompensation = 1.0 / R;
-			}
-			}
-		}
-		// --- Random-walk SSS (NM eye subpath) ---
-		else if( ri.pMaterial )
-		{
-			const RandomWalkSSSParams* pRW = ri.pMaterial->GetRandomWalkSSSParams();
-			RandomWalkSSSParams rwParamsNM;
-			if( !pRW && ri.pMaterial->GetRandomWalkSSSParamsNM( nm, rwParamsNM ) ) {
-				pRW = &rwParamsNM;
-			}
-			const Scalar cosIn = pRW ? Vector3Ops::Dot(
-				ri.geometric.vNormal, -currentRay.Dir() ) : 0;
-			if( pRW && cosIn > NEARZERO )
-			{
-				const Scalar F0 = ((pRW->ior - 1.0) / (pRW->ior + 1.0)) *
-					((pRW->ior - 1.0) / (pRW->ior + 1.0));
-				const Scalar F = F0 + (1.0 - F0) * pow( 1.0 - cosIn, 5.0 );
-				const Scalar Ft = 1.0 - F;
-				const Scalar R = F;
-
-				if( Ft > NEARZERO && sampler.Get1D() < Ft )
-				{
-					// See RGB light subpath comment for rationale.
-					IndependentSampler walkSampler( rc.random );
-					ISampler& rwSampler = sampler.HasFixedDimensionBudget()
-						? static_cast<ISampler&>(walkSampler) : sampler;
-
-					BSSRDFSampling::SampleResult bssrdf = RandomWalkSSS::SampleExit(
-						ri.geometric, ri.pObject,
-						pRW->sigma_a, pRW->sigma_s, pRW->sigma_t,
-						pRW->g, pRW->ior, pRW->maxBounces, rwSampler, nm, pRW->maxDepth );
-
-					if( bssrdf.valid )
-					{
-						vertices.back().isDelta = true;
-
-						// SampleExit does NOT include Ft(entry).
-						// Coin flip: weight * Ft / Ft = weight.
-						// Apply boundary filter (e.g. melanin double-pass).
-						const Scalar bf = pRW->boundaryFilter;
-						const Scalar betaSpatialNM = betaNM * bssrdf.weightSpatialNM * bf;
-						betaNM = betaNM * bssrdf.weightNM * bf;
-
-						BDPTVertex entryV;
-						entryV.type = BDPTVertex::SURFACE;
-						entryV.position = bssrdf.entryPoint;
-						entryV.normal = bssrdf.entryNormal;
-						entryV.geomNormal = bssrdf.entryGeomNormal;
-						entryV.onb = bssrdf.entryONB;
-						entryV.pMaterial = ri.pMaterial;
-						entryV.pObject = ri.pObject;
-						entryV.pMediumObject = pMedObj_nmEye;
-						entryV.pMediumVol = pMed_nmEye;
-
-						// See RGB light subpath block for rationale.
-						entryV.isDelta = true;
-						entryV.isConnectible = false;
-						entryV.isBSSRDFEntry = true;
-						entryV.throughputNM = betaSpatialNM;
-						entryV.pdfFwd = 0;
-						entryV.pdfRev = 0;
-						vertices.push_back( entryV );
-
-						pdfFwdPrev = bssrdf.cosinePdf;
-						currentRay = bssrdf.scatteredRay;
-						continue;
-					}
-					break;
-				}
-				if( R > NEARZERO ) {
-					bssrdfReflectCompensation = 1.0 / R;
-				}
-			}
-		}
-		// --- End BSSRDF sampling ---
-
-#ifdef RISE_ENABLE_OPENPGL
-		// --- Path guiding (NM eye subpath) ---
-		bool usedGuidedDirection = false;
-		Vector3 guidedDir;
-		Scalar guidedFNM = 0;
-		Scalar guidedEffectivePdf = 0;
-		Scalar bsdfCombinedPdf = 0;
-
-		if( pGuidingField && pGuidingField->IsTrained() &&
-			depth < maxGuidingDepth && GuidingSupportsSurfaceSampling( *pScat ) &&
-			vertices.back().isConnectible )
-		{
-			if( pGuidingField->InitDistribution( guideDist, v.position, sampler.Get1D() ) )
-			{
-				if( pScat->type == ScatteredRay::eRayDiffuse ) {
-					pGuidingField->ApplyCosineProduct(
-						guideDist,
-						GuidingCosineNormal( v.normal, currentRay.Dir() ) );
-				}
-
-				const Scalar alpha = guidingAlpha;
-
-				if( guidingSamplingType == eGuidingRIS )
-				{
-					// RIS-based guiding (BDPT NM eye subpath)
-					PathTransportUtilities::GuidingRISCandidate<Scalar> candidates[2];
-
-					// Candidate 0: BSDF sample
-					{
-						PathTransportUtilities::GuidingRISCandidate<Scalar>& c = candidates[0];
-						c.direction = pScat->ray.Dir();
-						c.bsdfEval = EvalBSDFAtVertexNM(
-							vertices.back(), c.direction, -currentRay.Dir(), nm );
-						c.bsdfPdf = pScat->pdf;
-						c.guidePdf = pGuidingField->Pdf( guideDist, c.direction );
-						c.incomingRadPdf = pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
-						c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
-						const Scalar avgBsdf = fabs( c.bsdfEval );
-						c.risTarget = PathTransportUtilities::GuidingRISTarget(
-							avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
-						c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-							c.bsdfPdf, c.guidePdf );
-						c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
-						c.valid = c.bsdfPdf > NEARZERO && c.risPdf > NEARZERO && avgBsdf > 0;
-						if( !c.valid ) {
-							c.risWeight = 0;
-						}
-					}
-
-					// Candidate 1: guide sample
-					{
-						PathTransportUtilities::GuidingRISCandidate<Scalar>& c = candidates[1];
-						Scalar gPdf = 0;
-						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-						c.direction = pGuidingField->Sample( guideDist, xi2d, gPdf );
-						c.guidePdf = gPdf;
-
-						if( gPdf > NEARZERO )
-						{
-							c.bsdfEval = EvalBSDFAtVertexNM(
-								vertices.back(), c.direction, -currentRay.Dir(), nm );
-							c.bsdfPdf = EvalPdfAtVertexNM(
-								vertices.back(), c.direction, -currentRay.Dir(), nm );
-							c.incomingRadPdf = pGuidingField->IncomingRadiancePdf( guideDist, c.direction );
-							c.cosTheta = fabs( Vector3Ops::Dot( c.direction, v.normal ) );
-							const Scalar avgBsdf = fabs( c.bsdfEval );
-							c.risTarget = PathTransportUtilities::GuidingRISTarget(
-								avgBsdf, c.cosTheta, c.incomingRadPdf, alpha );
-							c.risPdf = PathTransportUtilities::GuidingRISProposalPdf(
-								c.bsdfPdf, c.guidePdf );
-							c.risWeight = c.risPdf > NEARZERO ? c.risTarget / c.risPdf : 0;
-							c.valid = c.bsdfPdf > NEARZERO && avgBsdf > 0;
-							if( !c.valid ) {
-								c.risWeight = 0;
-							}
-						}
-						else
-						{
-							c.bsdfEval = 0;
-							c.bsdfPdf = 0;
-							c.incomingRadPdf = 0;
-							c.cosTheta = 0;
-							c.risTarget = 0;
-							c.risPdf = 0;
-							c.risWeight = 0;
-							c.valid = false;
-						}
-					}
-
-					Scalar risEffectivePdf = 0;
-					const unsigned int sel = PathTransportUtilities::GuidingRISSelectCandidate(
-						candidates, 2, sampler.Get1D(), risEffectivePdf );
-
-					if( risEffectivePdf > NEARZERO && candidates[sel].valid )
-					{
-						usedGuidedDirection = true;
-						guidedDir = candidates[sel].direction;
-						guidedFNM = candidates[sel].bsdfEval;
-						guidedEffectivePdf = risEffectivePdf;
-					}
-				}
-				else
-				{
-					// One-sample MIS (BDPT NM eye subpath)
-					const Scalar xi = sampler.Get1D();
-
-					if( PathTransportUtilities::ShouldUseGuidedSample( alpha, xi ) )
-					{
-						Scalar guidePdf = 0;
-						const Point2 xi2d( sampler.Get1D(), sampler.Get1D() );
-						const Vector3 gDir = pGuidingField->Sample( guideDist, xi2d, guidePdf );
-
-						if( guidePdf > NEARZERO )
-						{
-							guidedFNM = EvalBSDFAtVertexNM(
-								vertices.back(), gDir, -currentRay.Dir(), nm );
-							const Scalar bsdfPdf = EvalPdfAtVertexNM(
-								vertices.back(), gDir, -currentRay.Dir(), nm );
-
-							const Scalar combinedPdf =
-								PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdf, bsdfPdf );
-
-							if( combinedPdf > NEARZERO && guidedFNM > NEARZERO )
-							{
-								usedGuidedDirection = true;
-								guidedDir = gDir;
-								guidedEffectivePdf = combinedPdf;
-							}
-						}
-					}
-
-					if( !usedGuidedDirection )
-					{
-						const Scalar guidePdfForBsdfDir =
-							pGuidingField->Pdf( guideDist, pScat->ray.Dir() );
-						bsdfCombinedPdf =
-							PathTransportUtilities::GuidingCombinedPdf( alpha, guidePdfForBsdfDir, pScat->pdf );
-					}
-				}
-			}
-		}
-
-		const Scalar trainingEffectivePdf =
-			usedGuidedDirection ? guidedEffectivePdf :
-			(bsdfCombinedPdf > NEARZERO ? bsdfCombinedPdf : pScat->pdf);
-		const Scalar trainingPdf = selectProb * trainingEffectivePdf;
-		if( pGuidingField && pGuidingField->IsCollectingTrainingSamples() &&
-			GuidingSupportsSurfaceSampling( *pScat ) && trainingPdf > NEARZERO )
-		{
-			const Ray trainingRay = usedGuidedDirection ?
-				Ray( pScat->ray.origin, guidedDir ) : pScat->ray;
-			const IORStack& trainingIorStack = usedGuidedDirection ?
-				iorStack :
-				(pScat->ior_stack ? *pScat->ior_stack : iorStack);
-			RecordGuidingTrainingSampleNM(
-				pGuidingField,
-				rc,
-				caster,
-				ri,
-				trainingRay,
-				trainingPdf,
-				depth + 2,
-				nm,
-				trainingIorStack );
-		}
-#endif
-		// --- End path guiding ---
-
-		// Compute effective scatter direction and PDF
-		Vector3 scatDir = pScat->ray.Dir();
-		Scalar effectivePdf = pScat->pdf;
-
-#ifdef RISE_ENABLE_OPENPGL
-		if( usedGuidedDirection ) {
-			scatDir = guidedDir;
-			effectivePdf = guidedEffectivePdf;
-		} else if( bsdfCombinedPdf > NEARZERO ) {
-			effectivePdf = bsdfCombinedPdf;
-		}
-#endif
-
-		if( effectivePdf <= 0 ) {
-			break;
-		}
-
-		// Per-type bounce limits
-		if( PathTransportUtilities::ExceedsBounceLimitForType(
-				pScat->type, nmEyeDiffuseBounces, nmEyeGlossyBounces,
-				nmEyeTransmissionBounces, nmEyeTranslucentBounces, stabilityConfig ) ) {
-			break;
-		}
-
-		// Snapshot pre-scatter HWSS throughput so the RR below can
-		// compare max(pre) vs max(post) over active wavelengths without
-		// floating-point gymnastics.
-		Scalar hwssBetaNMPre[SampledWavelengths::N];
-		if( pSwlHWSS ) {
-			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-				hwssBetaNMPre[w] = hwssBetaNM[w];
-			}
-		}
-
-		// Throughput update using valueNM.  When HWSS is active, update
-		// hwssBetaNM[w] in parallel — delta scatter scales all
-		// wavelengths by the same krayNM (non-dispersive; dispersive
-		// already terminated); non-delta scatter evaluates BSDF at
-		// each companion wavelength along the hero-sampled direction.
-		if( pScat->isDelta ) {
-			betaNM = betaNM * pScat->krayNM * bssrdfReflectCompensation / selectProb;
-			if( pSwlHWSS ) {
-				const Scalar deltaScale = pScat->krayNM * bssrdfReflectCompensation / selectProb;
-				hwssBetaNM[0] = betaNM;
-				for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
-					if( pSwlHWSS->terminated[w] ) continue;
-					hwssBetaNM[w] = hwssBetaNM[w] * deltaScale;
-				}
-			}
-		} else {
-			Scalar fNM;
-#ifdef RISE_ENABLE_OPENPGL
-			fNM = usedGuidedDirection ? guidedFNM :
-				EvalBSDFAtVertexNM( vertices.back(), scatDir, -currentRay.Dir(), nm );
-#else
-			fNM = EvalBSDFAtVertexNM( vertices.back(), scatDir, -currentRay.Dir(), nm );
-#endif
-			const Scalar cosTheta = fabs( Vector3Ops::Dot(
-				scatDir, ri.geometric.vNormal ) );
-
-			if( fNM <= 0 ) {
-				break;
-			}
-			betaNM = betaNM * fNM * bssrdfReflectCompensation * cosTheta / (selectProb * effectivePdf);
-			if( pSwlHWSS ) {
-				const Scalar invScale = bssrdfReflectCompensation * cosTheta / ( selectProb * effectivePdf );
-				hwssBetaNM[0] = betaNM;
-				for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
-					if( pSwlHWSS->terminated[w] ) continue;
-					const Scalar fw = EvalBSDFAtVertexNM(
-						vertices.back(), scatDir, -currentRay.Dir(), pSwlHWSS->lambda[w] );
-					hwssBetaNM[w] = hwssBetaNM[w] * fw * invScale;
-				}
-			}
-		}
-
-		// Russian Roulette — configurable depth and throughput floor.
-		// In HWSS mode the survival probability uses the MAX throughput
-		// across all active wavelengths so hero-low / companion-high
-		// configurations don't get nearly terminated + amplified on
-		// rare survival.  Mirrors the PT HWSS RR fix.
-		{
-			Scalar rrPrevMax = fabs( vertices.back().throughputNM );
-			Scalar rrCurrMax = fabs( betaNM );
-			if( pSwlHWSS ) {
-				for( unsigned int w = 1; w < SampledWavelengths::N; w++ ) {
-					if( pSwlHWSS->terminated[w] ) continue;
-					const Scalar p = fabs( hwssBetaNMPre[w] );
-					if( p > rrPrevMax ) rrPrevMax = p;
-					const Scalar c = fabs( hwssBetaNM[w] );
-					if( c > rrCurrMax ) rrCurrMax = c;
-				}
-			}
-			const PathTransportUtilities::RussianRouletteResult rr =
-				PathTransportUtilities::EvaluateRussianRoulette(
-					depth, stabilityConfig.rrMinDepth, stabilityConfig.rrThreshold,
-					rrCurrMax, rrPrevMax,
-					sampler.Get1D() );
-			if( rr.terminate ) {
-				break;
-			}
-			if( rr.survivalProb < 1.0 ) {
-				const Scalar rrScale = Scalar( 1 ) / rr.survivalProb;
-				betaNM *= rrScale;
-				if( pSwlHWSS ) {
-					for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
-						hwssBetaNM[w] *= rrScale;
-					}
-				}
-			}
-		}
-
-		pdfFwdPrev = selectProb * effectivePdf;
-
-		// In Veach's formulation, delta vertices should be "transparent" in the MIS walk
-		if( pScat->isDelta ) {
-			pdfFwdPrev = 0;
-		}
-
-		if( vertices.size() >= 2 ) {
-			const BDPTVertex& curr = vertices.back();
-			BDPTVertex& prev = vertices[ vertices.size() - 2 ];
-
-			// Reverse PDF: returns 0 for delta, handled by remap0 in MISWeight.
-			const Scalar revPdfSA = EvalPdfAtVertexNM(
-				curr, scatDir, -currentRay.Dir(), nm );
-
-			// Gate the geometric-cosine read behind the type checks —
-			// CAMERA gets the sentinel 1.0, MEDIUM bypasses cos via
-			// sigma_t.  Reading prev.geomNormal on a medium vertex
-			// would consume zero-init data.  Mirrors the RGB fix at
-			// line ~3486.
-			if( prev.type == BDPTVertex::MEDIUM ) {
-				prev.pdfRev = BDPTUtilities::SolidAngleToAreaMedium( revPdfSA, prev.sigma_t_scalar, distSq );
-			} else {
-				const Scalar absCosAtPrev = (prev.type == BDPTVertex::CAMERA)
-					? Scalar(1.0)
-					: fabs( Vector3Ops::Dot( prev.geomNormal, currentRay.Dir() ) );
-				prev.pdfRev = BDPTUtilities::SolidAngleToArea( revPdfSA, absCosAtPrev, distSq );
-			}
-			if( pScat->isDelta ) { prev.pdfRev = 0; }
-		}
-
-#ifdef RISE_ENABLE_OPENPGL
-		if( usedGuidedDirection ) {
-			currentRay = Ray( pScat->ray.origin, guidedDir );
-		} else {
-			currentRay = pScat->ray;
-		}
-#else
-		currentRay = pScat->ray;
-#endif
-		currentRay.Advance( BDPT_RAY_EPSILON );
-	#ifdef RISE_ENABLE_OPENPGL
-		if( !usedGuidedDirection && pScat->ior_stack ) {
-	#else
-		if( pScat->ior_stack ) {
-	#endif
-			iorStack = *pScat->ior_stack;
-		}
-	}
-
-	// Record subpath boundary (single contiguous range now that
-	// path-tree branching has been excised).
-	subpathStarts.push_back( static_cast<uint32_t>( vertices.size() ) );
-
-	return static_cast<unsigned int>( vertices.size() );
+		rc, cameraRay, screenPos, scene, caster, sampler,
+		vertices, subpathStarts, NMTag( nm ), pSwlHWSS );
 }
 
 //////////////////////////////////////////////////////////////////////

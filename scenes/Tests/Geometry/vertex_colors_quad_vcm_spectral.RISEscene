@@ -1,0 +1,89 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           vertex_colors_quad_vcm_spectral.RISEscene                                               #
+#   Description:    Spectral (NM) VCM companion to vertex_colors_quad_vcm.RISEscene.  VCM-spectral reuses  #
+#                   BDPT's GenerateLightSubpathNM / GenerateEyeSubpathNM generators and threads the eye-    #
+#                   side vColor into its LightVertex (kLVF_HasVertexColor / lv.vColor), so it inherited    #
+#                   the same spectral vColor omission as BDPT.  Guards the transitive fix.                  #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-06-01                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultPathTracing
+}
+
+vcm_spectral_rasterizer
+{
+	max_eye_depth		3
+	max_light_depth		3
+	samples				16
+	merge_radius		0.0
+	vc_enabled			true
+	vm_enabled			true
+	pixel_filter        box
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/vertex_colors_quad_vcm_spectral
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			128
+	height			128
+}
+
+pinhole_camera
+{
+	location			0 0 3.5
+	lookat				0 0 0
+	up					0 1 0
+	fov					30.0
+}
+
+vertex_color_painter
+{
+	name				pnt_vcolor
+	fallback			1.0 1.0 1.0
+	colorspace			sRGB
+}
+
+lambertian_material
+{
+	name				vcolor_lambert
+	reflectance			pnt_vcolor
+}
+
+plymesh_geometry
+{
+	name				vcolor_quad_geom
+	file				scenes/Tests/Geometry/vertex_colors_quad.ply
+	double_sided		TRUE
+}
+
+standard_object
+{
+	name				vcolor_quad
+	geometry			vcolor_quad_geom
+	material			vcolor_lambert
+	receives_shadows	FALSE
+	casts_shadows		FALSE
+}
+
+omni_light
+{
+	name				key
+	power				4.0
+	color				1.0 1.0 1.0
+	position			0.0 0.0 5.0
+}

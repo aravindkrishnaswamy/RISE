@@ -488,7 +488,14 @@ static void TestIntegrationGuard()
 	if( !AuditSampleExitCalls( ptPath, "PathTracingIntegrator.cpp", 1 ) )
 		allPassed = false;
 
-	if( !AuditSampleExitCalls( bdptPath, "BDPTIntegrator.cpp", 4 ) )
+	// Expected rwSampler SampleExit call sites in BDPTIntegrator.cpp: 3.
+	// Was 4 (eye Pel + eye NM + light Pel + light NM) before Phase 2c F2a
+	// templatized GenerateEyeSubpath{,NM} -> GenerateEyeSubpathImpl<Tag>,
+	// merging the two eye-subpath RW-SSS SampleExit calls into one shared
+	// templated call.  The safety property the guard enforces is unchanged:
+	// every SampleExit still uses rwSampler and zero use the raw Sobol
+	// sampler.  (Drops to 2 once F2b merges the light-subpath pair.)
+	if( !AuditSampleExitCalls( bdptPath, "BDPTIntegrator.cpp", 3 ) )
 		allPassed = false;
 
 	// Verify IndependentSampler.h is included in both files
