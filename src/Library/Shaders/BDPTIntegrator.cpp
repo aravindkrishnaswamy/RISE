@@ -83,9 +83,13 @@
 #include "../Interfaces/IMedium.h"
 #include "../Interfaces/IPhaseFunction.h"
 #include "../Utilities/IndependentSampler.h"
+#include "../Utilities/Color/SpectralValueTraits.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+using RISE::SpectralDispatch::PelTag;
+using RISE::SpectralDispatch::NMTag;
+using RISE::SpectralDispatch::SpectralValueTraits;
 
 //
 // Small epsilon for ray offsets to avoid self-intersection
@@ -995,6 +999,217 @@ namespace {
 			return count > 0 ? entries[count - 1].pMedium : 0;
 		}
 	};
+
+	//////////////////////////////////////////////////////////////////
+	// Tag-dispatched helpers for the templated connection-transmittance
+	// walk (EvalConnectionTransmittanceImpl below).  Each forwards at
+	// compile time to the existing Pel or NM path, so the single
+	// templated body expands to the same machine code the hand-written
+	// EvalConnectionTransmittance{,NM} bodies produced.  Phase 2c part 1
+	// (lowest-divergence BDPT family).
+	//////////////////////////////////////////////////////////////////
+
+	/// Multiplicative identity transmittance of the tag value type:
+	/// RISEPel(1,1,1) for Pel, 1.0 for NM.  (SpectralValueTraits has
+	/// zero() but no one(); the walk needs the multiplicative identity.)
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type TrOne();
+
+	template<> inline RISEPel TrOne<PelTag>() { return RISEPel( 1, 1, 1 ); }
+	template<> inline Scalar  TrOne<NMTag>()  { return Scalar( 1 ); }
+
+	/// Per-segment medium transmittance dispatch.  IMedium exposes both
+	/// EvalTransmittance (RISEPel) and EvalTransmittanceNM (Scalar, nm),
+	/// so this is a direct compile-time pick.
+	template<class Tag>
+	inline typename SpectralValueTraits<Tag>::value_type
+	EvalMediumTransmittance(
+		const IMedium& medium, const Ray& ray, const Scalar dist, const Tag& tag );
+
+	template<>
+	inline RISEPel EvalMediumTransmittance<PelTag>(
+		const IMedium& medium, const Ray& ray, const Scalar dist, const PelTag& )
+	{
+		return medium.EvalTransmittance( ray, dist );
+	}
+
+	template<>
+	inline Scalar EvalMediumTransmittance<NMTag>(
+		const IMedium& medium, const Ray& ray, const Scalar dist, const NMTag& tag )
+	{
+		return medium.EvalTransmittanceNM( ray, dist, tag.nm );
+	}
+
+	/// Scalar magnitude for the "transmittance effectively zero" early
+	/// out (< 1e-6).  Pel: max channel (ColorMath::MaxValue, the RGB
+	/// original).  NM: the bare scalar (the NM original tested Tr < 1e-6
+	/// directly).  Deliberately NOT SpectralValueTraits::max_value, which
+	/// is fabs() for NM: Tr is a product of [0,1] transmittances so it is
+	/// always >= 0 and fabs would be a no-op, but reproducing the bare
+	/// scalar keeps this byte-identical to the pre-refactor NM body and
+	/// avoids re-introducing a fabs-in-a-gate (the Phase 2a P2 #2 footgun).
+	template<class Tag>
+	inline Scalar TrEarlyOutMagnitude(
+		const typename SpectralValueTraits<Tag>::value_type& Tr );
+
+	template<> inline Scalar TrEarlyOutMagnitude<PelTag>( const RISEPel& Tr )
+	{ return ColorMath::MaxValue( Tr ); }
+	template<> inline Scalar TrEarlyOutMagnitude<NMTag>( const Scalar& Tr )
+	{ return Tr; }
+
+	/// Templated connection-edge transmittance walk shared by
+	/// EvalConnectionTransmittance (Pel) and EvalConnectionTransmittanceNM.
+	/// Boundary-walks [0, maxDist] along connectionRay, accumulating
+	/// per-object + global medium transmittance.  Uses no BDPTIntegrator
+	/// member state, so it lives as a free function here (matching
+	/// VCMIntegrator's *Impl<Tag> house pattern); the public member
+	/// overloads are one-line forwarders.  `caster` is unused (kept for
+	/// signature symmetry with the member overloads, as in the originals).
+	template<class Tag>
+	typename SpectralValueTraits<Tag>::value_type
+	EvalConnectionTransmittanceImpl(
+		const Ray& connectionRay,
+		const Scalar maxDist,
+		const IScene& scene,
+		const IRayCaster& caster,
+		const Tag& tag,
+		const IObject* pStartMediumObject,
+		const IMedium* pStartMedium )
+	{
+		typedef SpectralValueTraits<Tag> Traits;
+		typedef typename Traits::value_type V;
+
+		const IMedium* pGlobalMedium = scene.GetGlobalMedium();
+
+		if( maxDist < BDPT_RAY_EPSILON ) {
+			return TrOne<Tag>();
+		}
+
+		const Vector3 d = connectionRay.Dir();
+
+		const IObjectManager* pObjects = scene.GetObjects();
+		if( !pGlobalMedium && !pObjects && !pStartMedium ) {
+			return TrOne<Tag>();
+		}
+
+		// Fast path: no per-object media, just global medium
+		if( !pObjects && !pStartMedium ) {
+			if( pGlobalMedium ) {
+				return EvalMediumTransmittance<Tag>( *pGlobalMedium, connectionRay, maxDist, tag );
+			}
+			return TrOne<Tag>();
+		}
+
+		static const Scalar WALK_EPSILON = 1e-5;
+		static const int MAX_WALK_STEPS = 16;
+
+		V Tr = TrOne<Tag>();
+		ConnectionMediumStack stack;
+
+		// Pre-seed the medium stack if p1 is inside a per-object medium.
+		// Without this, the first segment [p1, first_boundary] would have
+		// no active medium, causing per-object media to be invisible in
+		// BDPT connections from/to interior medium vertices.
+		if( pStartMediumObject && pStartMedium ) {
+			stack.push( pStartMediumObject, pStartMedium );
+		}
+
+		Scalar segStart = 0;
+		Scalar objectCoveredDist = 0;
+
+		for( int step = 0; step < MAX_WALK_STEPS && segStart < maxDist; step++ )
+		{
+			const Scalar castStart = segStart + WALK_EPSILON;
+			if( castStart >= maxDist ) {
+				break;
+			}
+
+			const Point3 castOrigin = connectionRay.PointAtLength( castStart );
+			const Ray castRay( castOrigin, d );
+			const Scalar castMax = maxDist - castStart;
+
+			RasterizerState nullRast = {0};
+			RayIntersection ri( castRay, nullRast );
+			pObjects->IntersectRay( ri, true, true, false );
+
+			if( !ri.geometric.bHit || ri.geometric.range >= castMax ) {
+				// No more boundaries before p2
+				const Scalar remaining = maxDist - segStart;
+				if( remaining > 0 ) {
+					const IMedium* pActive = stack.top();
+					if( pActive ) {
+						const Ray segRay( connectionRay.PointAtLength( segStart ), d );
+						Tr = Tr * EvalMediumTransmittance<Tag>( *pActive, segRay, remaining, tag );
+						objectCoveredDist += remaining;
+					}
+				}
+				segStart = maxDist;
+				break;
+			}
+
+			const IObject* pHitObj = ri.pObject;
+			if( !pHitObj ) {
+				break;
+			}
+
+			const Scalar boundaryDist = castStart + ri.geometric.range;
+
+			// Apply active medium for [segStart, boundaryDist]
+			const Scalar segLen = boundaryDist - segStart;
+			if( segLen > 0 ) {
+				const IMedium* pActive = stack.top();
+				if( pActive ) {
+					const Ray segRay( connectionRay.PointAtLength( segStart ), d );
+					Tr = Tr * EvalMediumTransmittance<Tag>( *pActive, segRay, segLen, tag );
+					objectCoveredDist += segLen;
+				}
+			}
+
+			// Update stack based on boundary crossing
+			const IMedium* pObjMedium = pHitObj->GetInteriorMedium();
+			if( pObjMedium ) {
+				// Medium boundary push/pop: GEOMETRIC normal — entering vs
+				// exiting a closed solid is a topology question (PBRT 4e
+				// §11.3.4).  Using shading on bumpy dielectrics mis-orders
+				// the medium stack on connection rays.
+				const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vGeomNormal, d );
+				if( ndotd < 0 ) {
+					stack.push( pHitObj, pObjMedium );
+				} else {
+					stack.remove( pHitObj );
+				}
+			}
+
+			segStart = boundaryDist;
+
+			if( TrEarlyOutMagnitude<Tag>( Tr ) < 1e-6 ) {
+				return Traits::zero();
+			}
+		}
+
+		// Handle remaining distance
+		if( segStart < maxDist ) {
+			const Scalar remaining = maxDist - segStart;
+			if( remaining > 0 ) {
+				const IMedium* pActive = stack.top();
+				if( pActive ) {
+					const Ray segRay( connectionRay.PointAtLength( segStart ), d );
+					Tr = Tr * EvalMediumTransmittance<Tag>( *pActive, segRay, remaining, tag );
+					objectCoveredDist += remaining;
+				}
+			}
+		}
+
+		// Apply global medium for segments where no per-object medium was active
+		if( pGlobalMedium ) {
+			const Scalar globalDist = maxDist - objectCoveredDist;
+			if( globalDist > WALK_EPSILON ) {
+				Tr = Tr * EvalMediumTransmittance<Tag>( *pGlobalMedium, connectionRay, globalDist, tag );
+			}
+		}
+
+		return Tr;
+	}
 }
 
 RISEPel BDPTIntegrator::EvalConnectionTransmittance(
@@ -1027,136 +1242,9 @@ RISEPel BDPTIntegrator::EvalConnectionTransmittance(
 	const IMedium* pStartMedium
 	) const
 {
-	const IMedium* pGlobalMedium = scene.GetGlobalMedium();
-
-	if( maxDist < BDPT_RAY_EPSILON ) {
-		return RISEPel( 1, 1, 1 );
-	}
-
-	const Vector3 d = connectionRay.Dir();
-
-	const IObjectManager* pObjects = scene.GetObjects();
-	if( !pGlobalMedium && !pObjects && !pStartMedium ) {
-		return RISEPel( 1, 1, 1 );
-	}
-
-	// Fast path: no per-object media, just global medium
-	if( !pObjects && !pStartMedium ) {
-		if( pGlobalMedium ) {
-			return pGlobalMedium->EvalTransmittance( connectionRay, maxDist );
-		}
-		return RISEPel( 1, 1, 1 );
-	}
-
-	static const Scalar WALK_EPSILON = 1e-5;
-	static const int MAX_WALK_STEPS = 16;
-
-	RISEPel Tr( 1, 1, 1 );
-	ConnectionMediumStack stack;
-
-	// Pre-seed the medium stack if p1 is inside a per-object medium.
-	// Without this, the first segment [p1, first_boundary] would have
-	// no active medium, causing per-object media to be invisible in
-	// BDPT connections from/to interior medium vertices.
-	if( pStartMediumObject && pStartMedium ) {
-		stack.push( pStartMediumObject, pStartMedium );
-	}
-
-	Scalar segStart = 0;
-	Scalar objectCoveredDist = 0;
-
-	for( int step = 0; step < MAX_WALK_STEPS && segStart < maxDist; step++ )
-	{
-		const Scalar castStart = segStart + WALK_EPSILON;
-		if( castStart >= maxDist ) {
-			break;
-		}
-
-		const Point3 castOrigin = connectionRay.PointAtLength( castStart );
-		const Ray castRay( castOrigin, d );
-		const Scalar castMax = maxDist - castStart;
-
-		RasterizerState nullRast = {0};
-		RayIntersection ri( castRay, nullRast );
-		pObjects->IntersectRay( ri, true, true, false );
-
-		if( !ri.geometric.bHit || ri.geometric.range >= castMax ) {
-			// No more boundaries before p2
-			const Scalar remaining = maxDist - segStart;
-			if( remaining > 0 ) {
-				const IMedium* pActive = stack.top();
-				if( pActive ) {
-					const Ray segRay( connectionRay.PointAtLength( segStart ), d );
-					Tr = Tr * pActive->EvalTransmittance( segRay, remaining );
-					objectCoveredDist += remaining;
-				}
-			}
-			segStart = maxDist;
-			break;
-		}
-
-		const IObject* pHitObj = ri.pObject;
-		if( !pHitObj ) {
-			break;
-		}
-
-		const Scalar boundaryDist = castStart + ri.geometric.range;
-
-		// Apply active medium for [segStart, boundaryDist]
-		const Scalar segLen = boundaryDist - segStart;
-		if( segLen > 0 ) {
-			const IMedium* pActive = stack.top();
-			if( pActive ) {
-				const Ray segRay( connectionRay.PointAtLength( segStart ), d );
-				Tr = Tr * pActive->EvalTransmittance( segRay, segLen );
-				objectCoveredDist += segLen;
-			}
-		}
-
-		// Update stack based on boundary crossing
-		const IMedium* pObjMedium = pHitObj->GetInteriorMedium();
-		if( pObjMedium ) {
-			// Medium boundary push/pop: GEOMETRIC normal — entering vs
-			// exiting a closed solid is a topology question (PBRT 4e
-			// §11.3.4).  Using shading on bumpy dielectrics mis-orders
-			// the medium stack on connection rays.
-			const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vGeomNormal, d );
-			if( ndotd < 0 ) {
-				stack.push( pHitObj, pObjMedium );
-			} else {
-				stack.remove( pHitObj );
-			}
-		}
-
-		segStart = boundaryDist;
-
-		if( ColorMath::MaxValue( Tr ) < 1e-6 ) {
-			return RISEPel( 0, 0, 0 );
-		}
-	}
-
-	// Handle remaining distance
-	if( segStart < maxDist ) {
-		const Scalar remaining = maxDist - segStart;
-		if( remaining > 0 ) {
-			const IMedium* pActive = stack.top();
-			if( pActive ) {
-				const Ray segRay( connectionRay.PointAtLength( segStart ), d );
-				Tr = Tr * pActive->EvalTransmittance( segRay, remaining );
-				objectCoveredDist += remaining;
-			}
-		}
-	}
-
-	// Apply global medium for segments where no per-object medium was active
-	if( pGlobalMedium ) {
-		const Scalar globalDist = maxDist - objectCoveredDist;
-		if( globalDist > WALK_EPSILON ) {
-			Tr = Tr * pGlobalMedium->EvalTransmittance( connectionRay, globalDist );
-		}
-	}
-
-	return Tr;
+	return EvalConnectionTransmittanceImpl<PelTag>(
+		connectionRay, maxDist, scene, caster, PelTag{},
+		pStartMediumObject, pStartMedium );
 }
 
 /// Spectral variant of EvalConnectionTransmittance.
@@ -1194,127 +1282,9 @@ Scalar BDPTIntegrator::EvalConnectionTransmittanceNM(
 	const IMedium* pStartMedium
 	) const
 {
-	const IMedium* pGlobalMedium = scene.GetGlobalMedium();
-
-	if( maxDist < BDPT_RAY_EPSILON ) {
-		return 1.0;
-	}
-
-	const Vector3 d = connectionRay.Dir();
-
-	const IObjectManager* pObjects = scene.GetObjects();
-	if( !pGlobalMedium && !pObjects && !pStartMedium ) {
-		return 1.0;
-	}
-
-	if( !pObjects && !pStartMedium ) {
-		if( pGlobalMedium ) {
-			return pGlobalMedium->EvalTransmittanceNM( connectionRay, maxDist, nm );
-		}
-		return 1.0;
-	}
-
-	static const Scalar WALK_EPSILON = 1e-5;
-	static const int MAX_WALK_STEPS = 16;
-
-	Scalar Tr = 1.0;
-	ConnectionMediumStack stack;
-
-	// Pre-seed the medium stack if p1 is inside a per-object medium
-	if( pStartMediumObject && pStartMedium ) {
-		stack.push( pStartMediumObject, pStartMedium );
-	}
-
-	Scalar segStart = 0;
-	Scalar objectCoveredDist = 0;
-
-	for( int step = 0; step < MAX_WALK_STEPS && segStart < maxDist; step++ )
-	{
-		const Scalar castStart = segStart + WALK_EPSILON;
-		if( castStart >= maxDist ) {
-			break;
-		}
-
-		const Point3 castOrigin = connectionRay.PointAtLength( castStart );
-		const Ray castRay( castOrigin, d );
-		const Scalar castMax = maxDist - castStart;
-
-		RasterizerState nullRast = {0};
-		RayIntersection ri( castRay, nullRast );
-		pObjects->IntersectRay( ri, true, true, false );
-
-		if( !ri.geometric.bHit || ri.geometric.range >= castMax ) {
-			const Scalar remaining = maxDist - segStart;
-			if( remaining > 0 ) {
-				const IMedium* pActive = stack.top();
-				if( pActive ) {
-					const Ray segRay( connectionRay.PointAtLength( segStart ), d );
-					Tr *= pActive->EvalTransmittanceNM( segRay, remaining, nm );
-					objectCoveredDist += remaining;
-				}
-			}
-			segStart = maxDist;
-			break;
-		}
-
-		const IObject* pHitObj = ri.pObject;
-		if( !pHitObj ) {
-			break;
-		}
-
-		const Scalar boundaryDist = castStart + ri.geometric.range;
-
-		const Scalar segLen = boundaryDist - segStart;
-		if( segLen > 0 ) {
-			const IMedium* pActive = stack.top();
-			if( pActive ) {
-				const Ray segRay( connectionRay.PointAtLength( segStart ), d );
-				Tr *= pActive->EvalTransmittanceNM( segRay, segLen, nm );
-				objectCoveredDist += segLen;
-			}
-		}
-
-		const IMedium* pObjMedium = pHitObj->GetInteriorMedium();
-		if( pObjMedium ) {
-			// Medium boundary push/pop: GEOMETRIC normal — entering vs
-			// exiting a closed solid is a topology question (PBRT 4e
-			// §11.3.4).  Using shading on bumpy dielectrics mis-orders
-			// the medium stack on connection rays.
-			const Scalar ndotd = Vector3Ops::Dot( ri.geometric.vGeomNormal, d );
-			if( ndotd < 0 ) {
-				stack.push( pHitObj, pObjMedium );
-			} else {
-				stack.remove( pHitObj );
-			}
-		}
-
-		segStart = boundaryDist;
-
-		if( Tr < 1e-6 ) {
-			return 0;
-		}
-	}
-
-	if( segStart < maxDist ) {
-		const Scalar remaining = maxDist - segStart;
-		if( remaining > 0 ) {
-			const IMedium* pActive = stack.top();
-			if( pActive ) {
-				const Ray segRay( connectionRay.PointAtLength( segStart ), d );
-				Tr *= pActive->EvalTransmittanceNM( segRay, remaining, nm );
-				objectCoveredDist += remaining;
-			}
-		}
-	}
-
-	if( pGlobalMedium ) {
-		const Scalar globalDist = maxDist - objectCoveredDist;
-		if( globalDist > WALK_EPSILON ) {
-			Tr *= pGlobalMedium->EvalTransmittanceNM( connectionRay, globalDist, nm );
-		}
-	}
-
-	return Tr;
+	return EvalConnectionTransmittanceImpl<NMTag>(
+		connectionRay, maxDist, scene, caster, NMTag( nm ),
+		pStartMediumObject, pStartMedium );
 }
 
 // SampleBSSRDFEntryPoint has been extracted to BSSRDFSampling.h.
