@@ -2128,3 +2128,109 @@ The `IntegrateRay` family now has the `if constexpr(traits::supports_aov)` Fast-
 ### Working tree state
 
 Uncommitted; per "NEVER COMMIT", no `git add`/`commit`/`stage`/`push`.
+
+---
+
+## Pre-Phase-1 Piece 3 outcome — Phase 2b PART 2 (IntegrateFromHit templatization)
+
+**Session date**: 2026-05-31 (follow-up to part 1).  Completes Phase 2b: the
+`IntegrateFromHit` family is now templatized; deliverable #2 (PT-spectral inline AOV)
+landed its integrator-side foundation, rasterizer-side consumption deferred with cause.
+
+### TL;DR
+The Pel `IntegrateFromHit` (1561 ln) and NM `IntegrateFromHitNM` (1284 ln) collapsed into
+`IntegrateFromHitTemplated<Tag>` (Tag = PelTag/NMTag) behind 2 thin forwarders, reusing the
+part-1 dispatch-helper layer + ~20 new helpers + `if constexpr` gates.  HWSS stays standalone;
+its SPF-only/SSS/volume fallbacks call `IntegrateFromHitNM` which is now a forwarder →
+`IntegrateFromHitTemplated<NMTag>` (verified: hwss_cornellbox_pt 0.012%).  Zero-behavior-change
+verified on the divergent paths the cornellbox set does NOT cover (guiding/SSS/SMS/volume,
+Pel AND NM); 3-reviewer adversarial review found 0 P1 / 0 P2 / 2 P3 (one fixed: a volume-RR
+reciprocal-multiply that diverged from the NM original at the ULP level; one accepted: the
+deliberate AOV side-channel) — round-2 RESOLVED-CLEAN.
+
+### Gates
+- **Gate 1 build**: clean warning-free `make clean && make -j8 all`; `-Wunused` clears (both
+  tags instantiate every helper, the "all-or-nothing" signal part 1 predicted).  Xcode RISE-GUI
+  (Development): warning-free (recompiles the changed TUs; same clang/flags as make).
+- **Gate 2 tests**: 116/116 (incl. SpectralValueTraitsTest updated for the NMTag supports_aov flip).
+- **Gate 3 baselines** (mean-luminance Δ vs pre_phase2b_p2; noise floor 0.27%):
+  Pel cornellbox 0.001%; NM cornellbox_spectral 0.022%; NM SSS spectral_skin_fast 0.023%;
+  NM SMS spectral_dispersive 0.012%; HWSS 0.012%; BDPT/VCM controls 0.001–0.043% (no leak).
+- **Gate 4 escape-Tr**: env_bounded_fog_pt within noise (Pel path through the templated medium section).
+- **Gate 6 perf**: no regression — cornellbox_pathtracer 50s post = 50s pre; pt_sss_wax_sphere 7s
+  post vs ~9s pre; env_bounded_fog_pt 1s = 1s (all within render-time variance).  `if constexpr`
+  compiles to compile-time branches; helpers are inline no-op dispatch (reviewers A/C confirmed
+  codegen-equivalence, no vtable change).
+- **Gate 7 review**: see ledger.
+
+### Divergent-path coverage map (what makes the zero-behavior-change claim credible)
+| Path | Pel scene (a-vs-b floor → post-Δ) | NM scene (floor → post-Δ) |
+|---|---|---|
+| surface guiding (OpenPGL) | pt_guiding_stress_guided (0.16% → noise) | **unreachable in production** — no spectral PT rasterizer wires `pathguiding` (only pixelpel/bdpt-pel/bdpt-spectral/pathtracing-pel do); the NM guiding code is preserved mechanically and cannot affect any render |
+| BSSRDF diffusion | pt_sss_wax_sphere (0.02% → 0.02%) | spectral_skin_fast (0.10% → 0.023%) |
+| random-walk SSS | rwsss_thin_slab (0.002% → 0.005%) | (spectral_skin covers the rs2 asymmetry; the RW-SSS-NM `GetRandomWalkSSSParamsNM` fallback is preserved + reviewer-verified) |
+| SMS | sms_k1_refract, sms_k2_glasssphere (0.01% → 0.01%) | spectral_dispersive_caustic_pt_sms (0.02% → 0.012%) |
+| volume (absorption / escape-Tr) | env_bounded_fog_pt (0.008%, Gate 4) | shared medium helpers (already NM-verified in IntegrateRayTemplated part 1) |
+| emission / NEE / BSDF | cornellbox_pathtracer (0.001%) | cornellbox_spectral (0.022%) |
+| HWSS (→ NM forwarder fallback) | hwss_cornellbox_pt (0.012%) | — |
+
+Verification artifact: `scripts/divergent_baselines.sh` (capture/check, per-scene noise-floor measurement).
+
+### Preserved asymmetries (reproduced via `if constexpr`, NOT fixed — flagged for separate audit)
+1. SPF/no-BSDF specular `considerEmission`: Pel `true`; NM `(isDelta && bSMS) ? false : true`.
+2. BSSRDF + RW-SSS continuation rs2: Pel sets `rs2.smsPassedThroughSpecular=false; smsHadNonSpecularShading=true`;
+   NM sets `rs2.bsdfTimesCos = RISEPel(fabs(sssThru)*cosinePdf)` + an optimal-MIS `AccumulateCount`.
+3. **PART3 BSDF-continuation SMS-flag tracking: Pel sets bPassed/bHad; NM does NOT.**  NEWLY DISCOVERED this
+   session (part 1 flagged only #1/#2).  Consequence: NM does not suppress emission on diffuse→glass→light
+   chains the way Pel does — a real Pel/NM behavioral difference on SMS scenes with diffuse receivers.
+   Preserved verbatim; recommended for the separate asymmetry audit.
+
+### Deliverable #2 — PT-spectral inline AOV: integrator foundation landed, rasterizer consumption DEFERRED
+**Landed (the part the spec listed under the integrator):** `SpectralValueTraits<NMTag>::supports_aov`
+flipped false→true; the Accurate-mode first-non-delta AOV hook in `IntegrateFromHitTemplated` now compiles
+in for NMTag; `pAOV` plumbed through `IntegrateRayNM` / `IntegrateFromHitNM` / `IntegrateFromHitForTag`
+(trailing default-0 params — ABI-safe).  Render-neutral: with no caller passing a non-null pAOV to the NM
+path, the AOV blocks are inert; cornellbox_spectral beauty unchanged (0.013%).  Reviewer C confirmed neutrality.
+
+**Deferred (the blocker, discovered this session):** the spec assumed the spectral rasterizer's primary path
+was HWSS and that wiring pAOV through it would close the gap.  Reality: (a) ALL 20 spectral PT test scenes use
+`pixelintegratingspectral_rasterizer` → `PathTracingShaderOp::PerformOperationNM` → `IntegrateFromHitNM`
+(a SHADER-OP path whose interface does not carry pAOV), NOT `PathTracingSpectralRasterizer`; (b) the spectral
+rasterizers do **not allocate AOV buffers** at all — they denoise via the "OIDN auto" path **without** aux
+albedo/normal, so the `CollectFirstHitAOVs` retrace fallback never even fires (empirically confirmed: a temp
+diagnostic at the retrace site never tripped on a denoised spectral render).  Closing the gap therefore needs
+spectral-rasterizer AOV-buffer **allocation** + AOV-guided OIDN + a shader-op interface change to carry pAOV —
+a cross-cutting rasterizer change well beyond the templatization.  Per the spec's stop rule ("land NM AOV,
+document the rest with the reason"), the rasterizer-side AOV consumption is the documented follow-up; the
+integrator is now AOV-ready.  SPECTRAL_PARITY_AUDIT §2.6: integrator-foundation DONE, rasterizer wiring
+TODO-with-findings.
+
+### LoC
+PathTracingIntegrator.cpp **5249 → 4327 = −922 net** (745 insertions, 1623 deletions); .h +38; SpectralValueTraits.h +6.
+The IntegrateFromHit family (Pel 1561 + NM 1284 = 2845 ln) → templated body ~1610 + 2 forwarders (~70) + ~20
+new helpers (~230).  Combined with part 1's IntegrateRay (+94, which front-loaded the shared helper layer), the
+Phase-2b .cpp net is ≈ −828.  The plan's ~−1900 projection was optimistic: the preserved-asymmetry branches
+(both Pel and NM kept under `if constexpr`), the per-site ULP-preserving helpers, and the explanatory comments
+add real lines back vs a naive collapse — the cost of the zero-behavior-change bar.
+
+### Adversarial review ledger (Gate 7)
+| Round | Reviewer | Axis | Result |
+|---|---|---|---|
+| 1 | A | PelTag ≡ original RGB IntegrateFromHit, line-by-line | CLEAN |
+| 1 | B | NMTag ≡ original IntegrateFromHitNM, line-by-line (incl. preserved asymmetries) | 0 P1/0 P2; 2 P3 |
+| 1 | C | if constexpr / ABI / AOV soundness | CLEAN |
+| 2 | B(follow-up) | confirm volume-RR fix + full division bijection | RESOLVED-CLEAN |
+
+P3 #1 (FIXED): volume-scatter RR `throughput * (1.0/survivalProb)` (reciprocal-multiply) diverged from the NM
+original `throughput /= survivalProb` at the ULP level → routed through `PTDivByScalar` (Pel `*(1/d)` / NM `/d`).
+P3 #2 (ACCEPTED): NMTag supports_aov writes the denoiser AOV side-channel — deliberate, documented, render-neutral
+(never feeds `result`).  0 P1 / 0 P2; stop-rule satisfied (round 2 no new findings).
+
+### Files
+- src/Library/Shaders/PathTracingIntegrator.cpp — IntegrateFromHitTemplated<Tag> + ~20 helpers + 2 forwarders
+- src/Library/Shaders/PathTracingIntegrator.h — IntegrateFromHitTemplated decl + pAOV on NM entry points
+- src/Library/Utilities/Color/SpectralValueTraits.h — NMTag::supports_aov true
+- tests/SpectralValueTraitsTest.cpp — supports_aov assertion updated for NMTag
+- scripts/divergent_baselines.sh — divergent-path capture/check (new)
+
+### Working tree: uncommitted; per "NEVER COMMIT".

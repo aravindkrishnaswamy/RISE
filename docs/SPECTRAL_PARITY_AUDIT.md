@@ -14,7 +14,7 @@
 Of the 13 ✗ / partial / "(limited)" cells in the matrix:
 
 - **3 are quick wins** (1–5 days each): BDPT-spectral path guiding subset, BDPT-spectral adaptive sampling, BDPT/VCM-spectral OIDN albedo proxy.
-- **2 are refactor-blocked** (need Phase 2b/2c to land): PT-spectral inline AOV, BDPT-spectral inline AOV.
+- **PT-spectral inline AOV**: integrator hook DONE (Phase 2b part 2, 2026-05-31 — `IntegrateFromHitTemplated<NMTag>` records it, render-neutral); remaining work is rasterizer-side AOV-buffer wiring (§2.6/§6.2), no longer refactor-blocked.  **BDPT-spectral inline AOV** is still Phase-2c-blocked.
 - **1 is architectural** (2–3 weeks, design + implementation): per-wavelength photon stores for VCM-spectral merging.
 - **2 are deliberately out of scope** (MLT × 2): chain-based mutation has no useful interaction with the optional features.
 - **2 are matrix errors** (no work — fix the doc): pixelintegratingspectral_rasterizer's ✓ for adaptive sampling and optimal MIS are wrong; BDPT's ✓ for SMS is post-2026-05-excision stale.
@@ -104,9 +104,10 @@ For each ✗ / partial / (limited) cell, this section names the feature, locates
 
 - **Pel side wired at:** `PathTracingPelRasterizer::IntegratePixel` passes `&aov` to the integrator ([PathTracingPelRasterizer.cpp:304-310](../src/Library/Rendering/PathTracingPelRasterizer.cpp#L304)). The integrator records inline at first hit (Fast mode) or first non-delta scatter (Accurate mode).
 - **Spectral side:** [PathTracingSpectralRasterizer.cpp:151-152](../src/Library/Rendering/PathTracingSpectralRasterizer.cpp#L151) (`IntegrateRayHWSS`) and [:178-179](../src/Library/Rendering/PathTracingSpectralRasterizer.cpp#L178) (`IntegrateRayNM`) take **no `PixelAOV*` argument**. The HWSS / NM integrator entry points listed in [PathTracingIntegrator.h:142-189](../src/Library/Shaders/PathTracingIntegrator.h#L142) lack the parameter. Spectral PT therefore depends entirely on the post-render retrace.
-- **Diagnosis:** **deferred plumbing — refactor-blocked.** This is the textbook Phase-2b case from [docs/INTEGRATOR_REFACTOR_PLAN.md](INTEGRATOR_REFACTOR_PLAN.md) §3.5: the AOV hook is in `IntegrateFromHit`, which has Pel/NM/HWSS triplicates. Phase 2b collapses them into a `IntegrateFromHitTemplated<ValueT>` with `if constexpr (traits::supports_aov)` gating ([INTEGRATOR_REFACTOR_PLAN.md:233](INTEGRATOR_REFACTOR_PLAN.md) lists this explicitly). Adding AOV plumbing to NM/HWSS without the templatization means duplicating the recording logic in two more 1,200-line methods — exactly the duplication Phase 2b exists to retire.
-- **Effort:** if Phase 2b ships → 1 day to flip `supports_aov = true` on `NMTag` / `HWSSTag` and verify. If we skip Phase 2b → 2–3 days of careful copy-paste, but it directly contradicts the refactor plan and inflates the eventual templatization work.
-- **Refactor dependency:** **Phase 2b strongly preferred.** Don't add AOV duplication on top of the existing NM/HWSS duplication.
+- **Diagnosis:** **integrator-side DONE (Phase 2b part 2, 2026-05-31); rasterizer-side wiring now unblocked, remaining.** Phase 2b collapsed `IntegrateFromHit`/`IntegrateFromHitNM` into `IntegrateFromHitTemplated<Tag>` with the Accurate-mode first-non-delta AOV hook gated `if constexpr (traits::supports_aov)`.  `NMTag::supports_aov` is now `true` and `pAOV` is plumbed through the NM entry points (`IntegrateRayNM` / `IntegrateFromHitNM` / `IntegrateFromHitForTag`, trailing default-0 params).  So the integrator records the inline AOV for the NM path **whenever a caller passes a non-null `pAOV`** — the duplication this section warned about is gone.
+- **What remains (rasterizer-side, the real blocker uncovered while landing 2b):** the spectral rasterizers do **not allocate `pAOVBuffers` at all** — they denoise via the "OIDN auto" path **without** aux albedo/normal, so the `CollectFirstHitAOVs` retrace fallback never even fires (a temp diagnostic at the retrace site never tripped on a denoised spectral render).  Closing the visible gap therefore needs: (1) the spectral rasterizer to allocate AOV buffers + accumulate the inline `PixelAOV` per camera-ray sample (mirror of `PathTracingPelRasterizer.cpp:304-318` + the `Normalize` at frame end); (2) AOV-guided OIDN for the spectral path; and — for the common `pixelintegratingspectral_rasterizer` used by all ~20 spectral PT test scenes — (3) the shader-op `PathTracingShaderOp::PerformOperationNM` interface to carry `pAOV` (`PathTracingSpectralRasterizer` is wired by **no** test scene).  HWSS (`IntegrateFromHitHWSS`) is standalone and needs its own AOV hook.
+- **Effort:** ~1–2 days of *rasterizer* work (buffer allocation + accumulation + OIDN AOV + the shader-op interface), no longer integrator-blocked.  The integrator hook is ready and verified render-neutral.
+- **Refactor dependency:** **none anymore** — Phase 2b landed the integrator hook.  This is now a self-contained rasterizer task.
 
 ### 2.7 `bdpt_spectral_rasterizer` — Path guiding ✓ (DONE 2026-05-07)
 
@@ -323,7 +324,7 @@ Per-gap HWSS implications:
 
 | Item | Effort if Phase 2b lands | Effort without | Recommendation |
 |---|---|---|---|
-| **PT-spectral inline AOV (§2.6).** Templatized integrator's `IntegrateFromHitTemplated<ValueT>` exposes the AOV hook for NM/HWSS. | 1 day (flip a trait) | 2–3 days of NM/HWSS duplication | **Wait for Phase 2b.** The duplication-then-deduplication round trip is wasteful. Document as known-limited until then. |
+| ~~**PT-spectral inline AOV (§2.6).**~~ **INTEGRATOR HOOK DONE — Phase 2b part 2, 2026-05-31.** `IntegrateFromHitTemplated<NMTag>` now records the AOV (supports_aov=true + the first-non-delta hook + `pAOV` plumbed through the NM entry points), render-neutral + verified. **Remaining = rasterizer-side only** (see §2.6): spectral rasterizers must allocate AOV buffers + accumulate the inline `PixelAOV` + use AOV-guided OIDN, and the common `pixelintegratingspectral` shader-op (`PerformOperationNM`) must carry `pAOV`. | done | – | **No longer refactor-blocked — a self-contained ~1–2 day rasterizer task.** |
 | **(future) BDPT/VCM-spectral inline AOV improvements** if Accurate-mode equivalents are wanted. | Folded into Phase 2c. | – | **Not currently a documented gap; skip.** |
 
 ### 6.3 Architectural — design + multi-week implementation
