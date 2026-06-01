@@ -19,13 +19,22 @@ independently-validated commits.
 
 ---
 
+> **STATUS 2026-05-31: asymmetries #1 and #3 are FIXED** (working tree, pending commit) — see
+> [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) §"Session outcome (2026-05-31)". Both `if constexpr`
+> divergences were collapsed so NM matches Pel; a third site (HWSS no-BSDF mid-path delegation,
+> `IntegrateFromHitTemplated`-adjacent) needed a co-fix (`smsHad=true`) the #1 change exposed.
+> Through-glass NM-SMS: **0.0 → 247** (Pel 248); diffuse→glass→light double-count counterfactual
+> confirmed and closed (p99.9 floor tail: #1-only 19.45 → #1+#3 15.44 ≈ Pel 13.85). Regression
+> fixture: `scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms.RISEscene`. #2 remains NO-OP /
+> untouched.
+
 ## TL;DR verdicts
 
 | # | Asymmetry | Verdict | Blocks Phase 2c? | Recommended action |
 |---|-----------|---------|------------------|--------------------|
-| 1 | SPF/no-BSDF `considerEmission`: Pel `true`, NM `(isDelta && bSMS)?false:true` | **LATENT BUG (NM wrong)** — empirically confirmed | **No** | Isolated fix chip: port NM SPF+PART3 to Pel's flag-based scheme (fix **#1 and #3 together**), K-trial/visual validation. |
-| 2 | BSSRDF/RW-SSS `rs2`: Pel sets `sms*` flags, NM sets `bsdfTimesCos` + `AccumulateCount` | **NO-OP (dead for the spectral renderer)** | **No** | None now. Revisit only if optimal-MIS is wired for spectral, **or** a SMS+SSS+specular-to-light scene is authored (then it becomes a coordinated integrator+shader-op fix). |
-| 3 | PART3 BSDF-continuation flag tracking: Pel sets `bPassed/bHad`, NM does not | **NO-OP standalone, but a REQUIRED co-fix of #1** | **No** | Do not touch alone. Fix together with #1 (else NM under-suppresses → double-count fireflies). |
+| 1 | SPF/no-BSDF `considerEmission`: Pel `true`, NM `(isDelta && bSMS)?false:true` | **LATENT BUG (NM wrong)** — empirically confirmed — **✅ FIXED 2026-05-31** | **No** | ~~Isolated fix chip~~ DONE: NM SPF `considerEmission`→`true` for both tags + #3 co-fix + HWSS delegation co-fix. Validated (Gates 2–8). |
+| 2 | BSSRDF/RW-SSS `rs2`: Pel sets `sms*` flags, NM sets `bsdfTimesCos` + `AccumulateCount` | **NO-OP (dead for the spectral renderer)** — **untouched** | **No** | None now. Revisit only if optimal-MIS is wired for spectral, **or** a SMS+SSS+specular-to-light scene is authored (then it becomes a coordinated integrator+shader-op fix). |
+| 3 | PART3 BSDF-continuation flag tracking: Pel sets `bPassed/bHad`, NM does not | **NO-OP standalone, REQUIRED co-fix of #1** — **✅ FIXED 2026-05-31** | **No** | ~~Do not touch alone~~ DONE: un-gated the PART3 flag update so NM latches `bPassed/bHad`; landed with #1 (counterfactual confirmed it prevents the double-count). |
 
 **De-risking answer:** **Phase 2c can proceed.** None of the three blocks BDPT
 templatization. #2/#3 have no standalone observable effect; #1 is a real but **pre-existing,
@@ -201,7 +210,12 @@ to NM-SMS-off.
 This is decisive: enabling SMS must only **add** caustics; it darkened a direct refracted view
 of a light only on the NM path.
 
-### VERDICT — **LATENT BUG (NM wrong)**
+### VERDICT — **LATENT BUG (NM wrong)** — ✅ FIXED 2026-05-31
+> **Fixed**: NM SPF `nextConsiderEmissionSPF` is now unconditional `true` (both tags); the `if constexpr`
+> collapsed. Landed with #3 + the HWSS delegation co-fix. Before/after on the regression fixture:
+> through-glass disc 0.0 → 247 (Pel 248). See [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) §"Session
+> outcome (2026-05-31)".
+
 NM over-suppresses BSDF-sampled emission on **camera→SPF-specular(delta)→light** paths (no
 intervening diffuse/glossy vertex) whenever SMS is enabled. Symptom: energy loss — lights
 seen *directly through/in* glass or mirrors go black under spectral rendering with SMS on.
@@ -367,7 +381,13 @@ had the PART3 flag update; the templatization preserved that absence
 Not separately rendered: no standalone observable effect (the contrived medium case is not in
 the suite and is ambiguous). #3's behavioral relevance is entirely as the **co-fix** of #1.
 
-### VERDICT — **NO-OP standalone; REQUIRED co-fix of #1**
+### VERDICT — **NO-OP standalone; REQUIRED co-fix of #1** — ✅ FIXED 2026-05-31
+> **Fixed**: the `if constexpr(Traits::is_pel)` wrapper around the PART3 flag update was removed so NM
+> latches `bPassedThroughSpecular`/`bHadNonSpecularShading` like Pel. Landed with #1. Counterfactual
+> (#1-only build, #3 reverted) confirmed the predicted double-count fireflies (diffuse→glass→light
+> floor p99.9 19.45 vs 15.44 with #3) — the co-fix closes it. See
+> [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) §"Session outcome (2026-05-31)".
+
 Today (with #1's `considerEmission=false` present) #3 changes no production pixel. But it is
 **not** safe to "tidy" in isolation, and it is **mandatory** to fix alongside #1: if #1 is
 fixed (NM SPF `considerEmission=true`) without also un-gating the PART3 flag update, NM's

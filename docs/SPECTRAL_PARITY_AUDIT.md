@@ -80,6 +80,7 @@ For each ✗ / partial / (limited) cell, this section names the feature, locates
 ### 2.3 `pixelintegratingspectral_rasterizer` — SMS (via shader-op)
 
 - **Diagnosis:** correct as documented. SMS in the shader-dispatch pipeline lives in `SMSShaderOp` and `ManifoldSolverShaderOp`, attached to the `defaultshader` chain. No remediation needed.
+- **Correctness fix 2026-05-31** (separate from the wiring/parity question above): within this wired SMS path the spectral (NM) emission-suppression logic had a latent **through-glass black** bug — a light seen directly through glass rendered black under NM+SMS while Pel was correct (asymmetry #1) — plus a coupled diffuse→glass→light double-count risk (#3) and an HWSS-mode double-count exposed by the #1 fix. All three are now FIXED in `PathTracingIntegrator.cpp`. See [PT_PEL_NM_ASYMMETRY_AUDIT.md](PT_PEL_NM_ASYMMETRY_AUDIT.md) (#1/#3 marked FIXED) and [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) §"Session outcome (2026-05-31)". Regression fixture: `scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms.RISEscene`.
 
 ### 2.4 `pixelintegratingspectral_rasterizer` — Optimal MIS ✗ (matrix corrected)
 

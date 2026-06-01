@@ -2245,3 +2245,82 @@ P3 #2 (ACCEPTED): NMTag supports_aov writes the denoiser AOV side-channel — de
 - scripts/divergent_baselines.sh — divergent-path capture/check (new)
 
 ### Working tree: uncommitted; per "NEVER COMMIT".
+
+---
+
+## Session outcome (2026-05-31) — PT spectral+SMS through-glass emission bug FIXED (asymmetry #1 + #3, + HWSS co-fix)
+
+Closed the confirmed latent bug from [PT_PEL_NM_ASYMMETRY_AUDIT.md](PT_PEL_NM_ASYMMETRY_AUDIT.md):
+in spectral (NM) mode with SMS enabled a luminaire seen directly through glass rendered **black**
+(Pel correct). Fixed asymmetries **#1 and #3 together** (the audit proved fixing #1 alone
+reintroduces double-count fireflies via #3), plus a **HWSS delegation co-fix** that the #1 change
+exposed. All in `src/Library/Shaders/PathTracingIntegrator.cpp`; no other source files touched.
+
+### The fix (three sites, one file)
+1. **#1 — SPF/no-BSDF `considerEmission`** (~:2316): collapsed the `if constexpr(Traits::is_pel)`
+   divergence to `const bool nextConsiderEmissionSPF = true;` for **both** tags. NM no longer forces
+   `considerEmission=false` at the glass delta; it relies on the PART1 `smsSuppressEmission` predicate
+   (with its load-bearing `bHadNonSpecularShading` guard) exactly as Pel always did.
+2. **#3 — PART3 BSDF-continuation flag tracking** (~:2881): removed the `if constexpr(Traits::is_pel)`
+   wrapper so **both** tags latch `bPassedThroughSpecular`/`bHadNonSpecularShading`. Required co-fix:
+   without it NM's `bHadNonSpecularShading` never latches → `smsSuppressEmission` stays false →
+   diffuse→glass→light double-counts.
+3. **HWSS delegation** (~:3707, no-BSDF mid-path `IntegrateFromHitNM` call): now passes
+   `smsHadNonSpecularShading=true`. The HWSS-native loop only reaches this delegation **after** a
+   non-specular BSDF vertex where SMS was evaluated (first hit has a BSDF else Fallback 1 returned),
+   so the remaining camera→…→diffuse→glass→light path already has its SMS anchor. Without it, the #1
+   change (considerEmission now true through glass) would double-count diffuse→glass→light **in HWSS
+   mode only**. SSS mid-path delegation (~:3735) deliberately left untouched (asymmetry-#2-adjacent;
+   SMS does not traverse SSS, so `smsHad=true` there could over-suppress).
+
+Both `if constexpr` collapses *reduce* the Pel/NM asymmetry count (NM now does exactly what Pel does),
+which is the correct outcome and simplifies the templated body. PelTag codegen is unchanged (its
+`if constexpr` true-branches were already the kept behavior).
+
+### Validation (all gates pass)
+- **Gate 2 — bug closed (headline).** New permanent regression fixture
+  `scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms.RISEscene` (glass sphere between camera and
+  a large emissive sphere; through-glass path has NO diffuse vertex). Stash-verified **before/after on
+  the same scene**: through-glass disc **0.0 (black, pre-fix) → 247 (bright, post-fix)**; direct ring
+  unchanged at 248.4 both. Confirms the scene reproduces the bug AND the fix closes it.
+- **Gate 3 — no #3 double-count (counterfactual proof).** Diffuse-receiver caustic (floor+glass+light),
+  HDR EXR floor bright-tail p99.9: Pel **13.85** | full #1+#3 **15.44** | **#1-only (no #3) 19.45** ←
+  the predicted double-count fireflies. The #3 co-fix lands NM back on Pel. Mean: Pel 0.814 /
+  #1+#3 0.820 / #1-only 0.831.
+- **Gate 4 — Pel unchanged.** Renderer is non-deterministic (wall-clock-seeded adaptive sampler:
+  same-binary two runs of cornellbox differ max 107 / mean 0.79). PRE(master)-vs-POST(fixed) Pel diff
+  **equals the noise floor** (cornellbox mean 0.79 == 0.79; sms_k2_glasssphere PRE/POST mean 0.308 ≤
+  noise 0.320) → no detectable Pel change. Corroborates the airtight PelTag-invariance proof.
+- **Gate 5 — Pel ≈ NM agreement.** Through-glass: NM 247.1 ≈ Pel 248.3 ≈ HWSS 248.1. Caustic: NM 0.820
+  ≈ Pel 0.814.
+- **Gate 6 — 116/116 binary tests pass** (re-run on the final #1+#3+HWSS binary).
+- **Gate 7 — no regression.** Canonical Pel SMS scenes unchanged within noise (Gate 4); NM spectral
+  caustic (`spectral_dispersive_caustic_pt_sms`) renders sensibly (mean 110, structured, no fireflies).
+- **HWSS — fixed (transitive + co-fix).** Through-glass HWSS 248.1 bright (transitively via the NM
+  fallback). The diffuse→glass→light HWSS double-count the #1 change exposed (caustic 0.841, p99.9
+  17.25) is resolved by the delegation co-fix → **0.827 / 15.11** (matches pure-NM 0.820/15.44). User
+  approved keeping the HWSS co-fix in this chip.
+- **Clean warning-free build** (main + tests, 0 warnings, clean rebuilds).
+
+### Adversarial review (3 reviewers, all PASS)
+| Reviewer | Axis | Verdict |
+|---|---|---|
+| A | Trace camera→glass→light + diffuse→glass→light (5 paths) for both tags | PASS — NM≡Pel decision at every light vertex; matches all 3 empirical numbers |
+| B | PART1 `smsSuppressEmission` predicate correct for NM (latching, over-suppression, SMS-off gating, value-type) | PASS — predicate suppresses exactly what SMS covers; no new over-suppression |
+| C | Zero-behavior-change everywhere except the intended path (Pel invariance, scope leak, asymmetry #2 preserved, HWSS) | PASS — `if constexpr(is_pel)` count 20→18, only the 2 sites; #2 intact |
+
+All three independently flagged the HWSS-native loop as the sibling to check — which led to finding,
+diagnosing, and fixing the HWSS delegation double-count (above).
+
+### Files
+- src/Library/Shaders/PathTracingIntegrator.cpp — #1 (~:2316), #3 (~:2881), HWSS delegation (~:3707)
+- scenes/Tests/Spectral/sms_through_glass_emitter_pt_sms.RISEscene — new permanent regression fixture
+
+### Carry into Phase 2c (BDPT templatization)
+The audit's transferable pattern holds: NM/HWSS `considerEmission`-scheme vs Pel flag-predicate-scheme
+divergence on camera→specular→light. When BDPT is templatized, audit its Pel vs NM/HWSS delta-to-light
+emission/MIS for the same class. Also note the HWSS lesson: any HWSS→NM (or shader-op→NM) delegation
+that drops the SMS suppression flags can double-count once emission is re-enabled — check those
+boundaries.
+
+### Working tree: uncommitted; per "NEVER COMMIT".
