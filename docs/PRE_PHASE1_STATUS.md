@@ -2447,3 +2447,125 @@ Verification artifact: [scripts/bdpt_transmittance_baselines.sh](../scripts/bdpt
 **F2 subpath generation** (`GenerateEyeSubpath{,NM}` then `GenerateLightSubpath{,NM}`) — split across 2 sessions; carries HWSS-bundle `if constexpr`, env-IBL vertex-0 setup, and the escape-Tr fix (verified symmetric Pel/NM). Then **F3 connection** (`ConnectAndEvaluate{,NM}`, then `EvaluateAllStrategies{,NM}` + `EvalEmitterRadianceNM` fold) — highest divergence, carries the pdfRev mutation trick + env-IBL continuous-PMF; every F2/F3 session also needs **Gate F (MLT non-regression)** since MLT consumes `ConnectAndEvaluate`/`GenerateEyeSubpath` directly.
 
 ### Working tree: uncommitted; per "NEVER COMMIT".
+
+---
+
+## Phase 2c F2a outcome — `GenerateEyeSubpath{,NM}` templatized
+
+**Session date**: 2026-06-01. Second BDPT family of Phase 2c (the **eye half** of the F2 subpath-generation family). `GenerateLightSubpath{,NM}` is the F2b follow-up — deliberately NOT touched this session (the "don't do both big methods in one session" rule, held for the 5th time).
+
+### TL;DR
+`GenerateEyeSubpath` (RGB, ~1,034 ln) + `GenerateEyeSubpathNM` (spectral, ~914 ln) collapsed into one free-function template **`GenerateEyeSubpathImpl<Tag>`** in the file's anonymous namespace, behind two thin member forwarders. **8 dispatch helpers** + **reuse of F1's `TrOne`/`EvalMediumTransmittance`** + **`PathValueOps::EvalBSDFAtVertex/EvalPdfAtVertex<Tag>`** carry the value-type swaps; **~10 `if constexpr` axes** carry the genuine Pel/NM divergences (HWSS bundle, NM surface-bounce cap, env-escape RGB-broadcast, RW-SSS NM param resolution, NM inline guiding-training, and the Pel-only on-vertex guiding stores + `vColor`). **No `BDPTIntegrator.h` change → ABI preserved** (VCM/MLT/BDPT-spectral rasterizers consume both methods; signatures byte-identical). Net `BDPTIntegrator.cpp` **8,170 → 7,601 (−569)**. Zero behaviour change across all 11 divergent-path baselines + 116/116 tests; 3-reviewer adversarial review **0 P1 / 0 P2**.
+
+### What changed (the shape — mirrors F1/2a/2b)
+- **`GenerateEyeSubpathImpl<Tag>`** — the full camera-side walk, value-type-generic, in the anon namespace alongside the F1 transmittance helpers. It is a **free function taking the needed `BDPTIntegrator` state as parameters** (`maxEyeDepth`, `stabilityConfig`, `pLightSampler`, and — under `#ifdef RISE_ENABLE_OPENPGL` — `pGuidingField`, `maxGuidingDepth`, `guidingAlpha`, `guidingSamplingType`), plus `tag` and `pSwlHWSS`. This is what keeps the **`.h` untouched**: a free function can't read `protected` members, so the member forwarders pass them in, and the protected `EvalBSDFAtVertex{,NM}` member calls are replaced by the equivalent `PathValueOps::EvalBSDFAtVertex<Tag>` (verified byte-identical — both forward to `PathVertexEval::*`). A private member template would have worked too (the PT-2b precedent) but would have required a `.h` declaration; the free-function form hits the stated "no `.h` change" target.
+- **8 new dispatch helpers** (anon ns, explicit PelTag/NMTag specializations): `StoreThroughput` (throughput/throughputNM setter), `VertexThroughput` (reader), `KrayValue` (kray/krayNM), `PositiveMagnitude` (**contribution-gate** magnitude — Pel `MaxValue`, NM **bare scalar, NO fabs**; the Phase-2a P2 #2 footgun, documented in-code), `ScatterSPF` (Scatter/ScatterNM), `NmOrZero` (0/nm for BSSRDF/RW-SSS sampling), `SampleMediumDistance` (SampleDistance/SampleDistanceNM), `ComputeMediumScatterWeight` (delta-tracking RISEPel weight vs single-scattering-albedo scalar + the per-vertex sigma_t).
+- **Magnitude discipline**: contribution gates (`medWeight<=0`, `f<=0`, `guidedF>NEARZERO`) use `PositiveMagnitude<Tag>` (NM bare); RR/kray-select/avgBsdf use `SpectralValueTraits<Tag>::max_value` (NM `fabs`). All sites audited by reviewer R3.
+- **2 member forwarders** (Pel → `Impl<PelTag>(…, PelTag{}, nullptr)`; NM → `Impl<NMTag>(…, NMTag(nm), pSwlHWSS)`).
+- `+#include "../Utilities/PathValueOps.h"`.
+- Applied via two count-asserted one-shot Python transforms ([scripts/_apply_f2a_phase2c.py](../scripts/_apply_f2a_phase2c.py) = Pel→Impl + helpers + forwarder; [scripts/_apply_f2a_nm_collapse.py](../scripts/_apply_f2a_nm_collapse.py) = NM body→forwarder). **Both are disposable audit artifacts — safe to delete.** The transform extracts the real Pel body and substitutes (no transcription), mirroring F1.
+
+### Gates
+- **Gate 1 — build**: clean from-scratch recompile of `BDPTIntegrator.cpp` (`.o` deleted) + `make all` + `make tests`: **0 warnings, 0 errors**. (Intermediate Pel-only checkpoint had the 8 expected `-Wunused-function` on the NMTag helper specializations — they resolve once the NM forwarder instantiates `Impl<NMTag>`, exactly as the 2b note anticipated.) Xcode `RISE-GUI` Development arm64: **BUILD SUCCEEDED, 0 source-file warnings** (the only two `warning:` lines are Apple toolchain notes — xcodebuild's multiple-destinations note and the benign `appintentsmetadataprocessor` "No AppIntents.framework" note F1 also saw).
+- **Gate 2 — tests**: **116/116** (incl. `BDPTStrategyBalanceTest`, `VCMStrategyBalanceTest`, `VCMRecurrenceTest`, `VCMSpectralRecurrenceTest`, `EnvLightBalanceTest` 80/80 env-IBL oracle — which renders the spectral BDPT rasterizer with HWSS **on and off**, exercising `Impl<NMTag>`'s env-escape Path-B in both modes). One test required a structural update: **`SobolDimensionBudgetTest`** counts `RandomWalkSSS::SampleExit(…, rwSampler, …)` call sites in `BDPTIntegrator.cpp` and expected ≥4; F2a merged the two eye-subpath calls (Pel + NM) into one templated call → now 3. Updated the guard's threshold 4→3 with rationale; the safety property it enforces (every SampleExit uses `rwSampler`, zero use the raw Sobol sampler) is unchanged. (Drops to 2 after F2b merges the light pair.)
+- **Gate 3 — zero behaviour change** (post-Δ vs pre_f2a baselines; per-scene 2-trial noise floor in parens; harness [scripts/bdpt_eye_subpath_baselines.sh](../scripts/bdpt_eye_subpath_baselines.sh), 11-scene eye-subpath manifest):
+
+| Path | Scene | post-Δ (floor) |
+|---|---|---|
+| std Pel surface walk | `cornellbox_bdpt` | 0.0001–0.0033% (0.0019%) |
+| glossy interreflection Pel | `cornellbox_bdpt_glossy` | 0.0056% (0.0010%) |
+| in-medium scatter Pel (eye-walk) | `bdpt_homogeneous_fog` | 0.0021–0.0025% (0.0008%) |
+| **env-IBL eye-escape + escape-Tr (Pel, Path B)** | `env_bounded_fog_bdpt` | 0.0493–0.1455% (0.0500%) |
+| **NM std walk (non-HWSS, pSwlHWSS=NULL)** | `cornellbox_bdpt_spectral` | 0.0376% (0.0413%) |
+| **NM in-medium scatter (eye-walk)** | `bdpt_homogeneous_fog_spectral` | 0.0505% (0.0021%) |
+| **NM HWSS bundle (pSwlHWSS=&swl)** | `hwss_cornellbox_bdpt` | 0.0150% (0.0016%) |
+| MLT consumer (Gate F) | `mlt_veach_egg_bdpt` | 0.0100% (0.0179%) |
+| VCM Pel consumer (Gate 6) | `cornellbox_vcm_simple` | 0.0275% (0.0254%) |
+| VCM NM consumer (Gate 6) | `cornellbox_vcm_spectral` | 0.0007% (0.0067%) |
+| VCM env-escape (Gate 6) | `env_bounded_fog_vcm` | 0.0176% (0.0979%) |
+
+  Every delta is well under the documented 0.27% multi-threaded-MC noise floor. `cornellbox_bdpt` at 0.0001% (near-deterministic) is the decisive evidence the **Pel codegen is byte-identical** (the only Pel reassociation is `RISEPel*Scalar` ≡ `RISEPel*RISEPel(s,s,s)` on the phase-function throughput — provably value-identical, blessed by R1). The higher env deltas are scene noise (the 2-trial floor under-estimates a low-spp env render's variance; env-IBL *correctness* is independently pinned by the `EnvLightBalanceTest` oracle).
+- **Gate 4 — recent work preserved**: `env_bounded_fog_bdpt` (escape-Tr, commit `2b58236b`) within floor; `EnvLightBalanceTest` (env-IBL continuous-PMF, commit `bb5ecc6a`) 80/80. The escape-Tr (`betaEsc = beta * EvalTransmittance{,NM}` before the synthetic env vertex's throughput) and env-IBL Path-B (ray-sphere far-root exit) are now single templated sites; both reviewers confirmed Pel/NM equivalence.
+- **Gate 5 — perf**: no path added; `if constexpr` compiles to compile-time branches, `inline` helpers to the same instruction stream. Exact-arithmetic refactor — not separately benchmarked.
+- **Gate 6 — VCM unchanged** (cross-integrator ABI): `cornellbox_vcm_simple`/`_spectral`/`env_bounded_fog_vcm` within floor; VCM unit oracles pass. VCM owns a `BDPTIntegrator` and calls `GenerateEyeSubpath{,NM}` directly (`VCMPelRasterizer.cpp:333`, `VCMSpectralRasterizer.cpp:354`) → forwarders preserve behaviour.
+- **Gate F — MLT non-regression**: `mlt_veach_egg_bdpt` 0.0100% (MLTRasterizer → `GenerateEyeSubpath`).
+- **Gate 7 — adversarial review**: see ledger.
+
+### Divergent-path coverage map (what makes the zero-behaviour-change claim credible)
+The eye subpath drives both NM modes — single-wavelength (`pSwlHWSS=NULL`, the BDPT/MLT spectral rasterizers' non-HWSS path) and HWSS bundle (`pSwlHWSS=&swl`). Coverage: `cornellbox_bdpt_spectral` (NM non-HWSS) + `hwss_cornellbox_bdpt` (NM HWSS) + `bdpt_homogeneous_fog_spectral` (NM media) + `EnvLightBalanceTest` spectral variants (NM env-escape Path-B, **HWSS on AND off** per the test's dynamic loop). The Pel env-escape Path-B is `env_bounded_fog_bdpt` + `EnvLightBalanceTest` Pel topologies. No divergent eye-subpath path is uncovered.
+
+### Preserved Pel/NM asymmetries (reproduced via `if constexpr`, NOT fixed — flagged for a separate audit chip)
+Per the audit-before-fix rule, every genuine behavioural asymmetry found while reading the two methods was **preserved exactly** and is flagged here:
+1. **Surface-vertex vertex-colour (NEW finding) — ✅ FIXED 2026-06-01** (own outcome block below). The **Pel** eye subpath copied `ri.geometric.vColor` / `bHasVertexColor` onto the `SURFACE` `BDPTVertex`; the **NM** eye subpath did **not** (gated by `if constexpr(is_pel)`), and `GenerateLightSubpathNM` omitted the writes entirely. This was a genuine latent bug, **not** an intended asymmetry: at connection time `ConnectAndEvaluateNM` → `EvalBSDFAtVertexNM` → `PopulateRIGFromVertex` → `pBSDF->valueNM` → `pReflectance->GetColorNM` reads `ri.bHasVertexColor`/`ri.vColor`, so spectral/HWSS BDPT (and VCM-spectral, which reuses these NM generators) silently shaded vertex-coloured surfaces with the painter's *fallback* colour. Fixed by making the eye-gen writes unconditional and adding them to `GenerateLightSubpathNM`. Did not surface earlier because no test scene rendered vertex-coloured geometry under spectral BDPT — now covered by `vertex_colors_quad_bdpt_spectral.RISEscene`.
+2. **NM surface-bounce cap** — NM caps `SURFACE` vertices at `maxEyeDepth` (`eyeSurfaceBounces` counter + early break before the modifier); Pel relies on the loop bound (`maxEyeDepth + maxVolumeBounce`) only. `if constexpr(is_nm)`.
+3. **NM env-escape RGB-broadcast** — the NM synthetic env vertex sets BOTH `throughputNM` and a broadcast `throughput = RISEPel(betaEsc,…)`; Pel sets only `throughput`. `if constexpr(is_nm)`.
+4. **Guiding architecture** — Pel writes on-vertex guiding data (`guidingHasSegment`/`guidingDirectionIn`/`guidingScatteringWeight`/… on medium, surface, and BSSRDF/RW-SSS entry vertices); NM records training inline via `RecordGuidingTrainingSampleNM` and writes **no** on-vertex guiding data. Reproduced via `if constexpr(is_pel)` (vertex stores) + `if constexpr(is_nm)` (inline training). This is a known, intended split (Pel trains from connection results in a post-pass), not a bug.
+5. **RW-SSS front-face cosine** — Pel uses a geometric front-face gate + clamped shading Fresnel cosine `max(fabs(cosInShade),NEARZERO)`; NM uses the raw shading cosine and a static-or-spectral param resolution (`GetRandomWalkSSSParamsNM`). `if constexpr` split. (Pre-existing; both branches reproduced verbatim.)
+6. **BSSRDF Fresnel division** — Pel `* (1.0/Ft)`, NM `/ Ft` (a ULP-level difference, preserved exactly via `if constexpr`).
+
+Asymmetry **#1 (vColor)** was the one worth a follow-up — it has since been **fixed** (see the dedicated outcome block below); #2–#6 are intended/structural and remain preserved.
+
+### Adversarial review ledger (Gate 7 — 3 reviewers, orthogonal axes)
+| Reviewer | Axis | Result |
+|---|---|---|
+| R1 | `Impl<PelTag>` ≡ original `GenerateEyeSubpath`, line-by-line (escape-Tr, env-IBL Path-B, medium, BSSRDF/RW-SSS, guiding, throughput, RR, pdfRev, recursion) | **CLEAN 0 P1 / 0 P2.** Every region byte-equivalent; only reassociation is the value-identical `RISEPel*Scalar`. 1 P3: HWSS arrays uninitialised in the PelTag instantiation (gated reads, no UB) → **fixed** with `= {}`. |
+| R2 | `Impl<NMTag>` ≡ original `GenerateEyeSubpathNM`, line-by-line (HWSS bundle, surface cap, env broadcast, RW-SSS-NM, inline training, per-λ IOR, magnitude discipline) | **CLEAN 0 P1 / 0 P2.** All NM-only behaviours reproduced; medium block correctly touches no HWSS state; bare-scalar gates vs `fabs` RR magnitudes correct. 2 P3: within-noise FP reassociation in hero throughput (delta + non-delta; companion/`deltaScale` paths bit-identical). |
+| R3 | if-constexpr / ABI / forwarder / VCM-MLT consumers | **CLEAN 0 P1 / 0 P2.** `.h` diff empty; 19 `if constexpr` all correctly tagged (none inverted); `PositiveMagnitude`-vs-`max_value` footgun correctly navigated at every site; 4× `[[maybe_unused]]` present; all 8 consumer call sites bind to the unchanged signatures; `SobolDimensionBudgetTest` 4→3 update correct. |
+
+**0 P1 / 0 P2 / 3 P3** (1 fixed via `= {}`; 2 are within-noise reassociations inherent to the refactor). Adversarial-review stop rule satisfied.
+
+### Files
+- [src/Library/Shaders/BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) — `GenerateEyeSubpathImpl<Tag>` + 8 helpers + 2 forwarders + include (−569 net; `.h` untouched).
+- [tests/SobolDimensionBudgetTest.cpp](../tests/SobolDimensionBudgetTest.cpp) — SampleExit count guard 4→3 (eye Pel+NM merged), with rationale.
+- [scripts/bdpt_eye_subpath_baselines.sh](../scripts/bdpt_eye_subpath_baselines.sh) — **keeper**: 11-scene eye-subpath baseline harness (reused by F2b/F3).
+- [scripts/_apply_f2a_phase2c.py](../scripts/_apply_f2a_phase2c.py), [scripts/_apply_f2a_nm_collapse.py](../scripts/_apply_f2a_nm_collapse.py) — disposable one-shot transforms (safe to delete).
+- `tests/baselines_refactor/pre_f2a_bdpteye/` — pre-edit baseline PNGs (untracked; regenerable).
+- This doc + [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md).
+
+### Next family (per Deliverable A)
+**F2b `GenerateLightSubpath{,NM}`** — the light half of F2 (~1,975 ln, ~5 `if constexpr` + HWSS; reuse the F2a helpers + `bdpt_eye_subpath_baselines.sh`). Then **F3** connection (`ConnectAndEvaluate{,NM}`, then `EvaluateAllStrategies{,NM}` + `EvalEmitterRadianceNM` fold). The **vColor NM asymmetry (#1 above)** has been **fixed** ahead of F2b (outcome block below); the eye-side write is already unconditional, so F2b's `GenerateLightSubpathNM` templatization should fold the now-present vColor writes into the shared template (both RGB and NM sides set them identically — a clean collapse with no `if constexpr` needed for this field).
+
+### Working tree: uncommitted; per "NEVER COMMIT".
+
+## vColor NM asymmetry — FIXED (2026-06-01)
+
+**Follow-up to Phase 2c F2a Preserved-asymmetry #1.** The audit-before-fix rule kept the F2a refactor zero-behaviour-change; this is the separate fix chip that #1 explicitly called for. Investigated, confirmed a real latent bug, fixed, and verified.
+
+### Root cause (confirmed, not assumed)
+The eye/light SURFACE `BDPTVertex` mirrors `RayIntersectionGeometric` surface state so that connection/merge can rebuild an `ri` for BSDF evaluation (the `PathVertexEval::PopulateRIGFromVertex` contract). On the spectral (NM) path two of those fields — `vColor` / `bHasVertexColor` — were never written:
+- `GenerateEyeSubpathImpl<Tag>` gated them behind `if constexpr( Traits::is_pel )` (F2a made the pre-existing omission explicit).
+- `GenerateLightSubpathNM` (still hand-written; F2b pending) omitted them outright.
+
+The consumer chain proves it is value-carrying, not cosmetic:
+`ConnectAndEvaluateNM` → `EvalBSDFAtVertexNM(eyeEnd/lightEnd, …)` → `PopulateRIGFromVertex` (copies `vColor`/`bHasVertexColor` into `ri`) → `pBSDF->valueNM` → e.g. `LambertianBRDF::valueNM` / `OrenNayarBRDF::valueNM` → `pReflectance->GetColorNM(ri,nm)`. For a `vertex_color_painter`, `VertexColorPainter::GetColorNM` returns `ri.bHasVertexColor ? uplift(ri.vColor) : fallbackSpec` — so with the field unset it silently returned the painter's **fallback** colour on every spectral/HWSS connection at a vertex-coloured surface. **PT-spectral is unaffected** (it shades through the live `ri.geometric`, where the coloured-mesh intersection path always populates vColor) and is the ground-truth reference. **RGB BDPT is unaffected** (it writes vColor on both subpaths). **VCM-spectral was affected**: `VCMSpectralRasterizer` reuses `GenerateLightSubpathNM`/`GenerateEyeSubpathNM` and threads `v.vColor → lv.vColor` (VCMIntegrator.cpp:724), so it inherited the gap and is fixed transitively.
+
+### Fix
+Two writes made to match the RGB subpaths and the contract in `PathVertexEval.h`:
+- `BDPTIntegrator.cpp` `GenerateEyeSubpathImpl<Tag>`: dropped the `if constexpr( Traits::is_pel )` gate around `v.vColor` / `v.bHasVertexColor` → unconditional for both tags.
+- `BDPTIntegrator.cpp` `GenerateLightSubpathNM`: added the two writes to the SURFACE-vertex block (between `ptObjIntersec` and `pMaterial`).
+
+`vColor` is geometry-interpolated surface state set at intersection regardless of spectral mode, so `ri.geometric.vColor` is valid on the NM path; the painter does the RGB→spectral JH uplift at sample time. No `.h`/ABI change.
+
+### Sibling audit (audit-by-bug-pattern)
+Pattern: *"an NM SURFACE-vertex generator omits a `PopulateRIGFromVertex`-mirrored field that the connection-time BSDF reads."* Enumerated every site:
+- Eye NM, Light NM — **both fixed**.
+- Eye RGB (`Impl<PelTag>`), Light RGB (`GenerateLightSubpath`) — already correct.
+- VCM-spectral — fixed transitively (reuses the NM generators).
+- MEDIUM / CAMERA / LIGHT / env-escape vertices — correctly carry no vColor (`bHasVertexColor=false`).
+- Other `if constexpr(is_pel)` writes in the eye generator — all OpenPGL guiding (intentionally Pel-only) or throughput math with a proper NM `else`; **vColor was the only gated surface-state field**.
+
+### Verification
+- **Build**: `make -C build/make/rise -j8 all && make tests` — clean, zero warnings on the recompiled `BDPTIntegrator.cpp`.
+- **Tests**: 116/116 pass (`BDPTStrategyBalanceTest`, `BDPTVertexRIGRebuildTest`, `EnvLightBalanceTest`, `VCMSpectralRecurrenceTest`, `VertexColorRoundtripTest`, `SobolDimensionBudgetTest`, …). (`FileRasterizerOutputShimTest` reports failures only when `RISE_MEDIA_PATH` is exported into the suite — it prepends the media path to the test's absolute `/tmp` output paths; run standalone it is 60/0. Don't set `RISE_MEDIA_PATH` for `run_all_tests.sh`.)
+- **Render (before/after, new fixture `scenes/Tests/Geometry/vertex_colors_quad_bdpt_spectral.RISEscene`, 128², BDPT-spectral 16 spp)** vs PT-spectral reference (`vertex_colors_quad_pt_spectral.RISEscene`, 64 spp). The quad's PLY corners are red/green/blue/white; painter fallback is white.
+  - **Before**: every corner ≈ R56 G52 B48 — uniform warm-grey = white fallback (vertex colour ignored).
+  - **After**: BL R47 G2 B10 (red), BR R14 G37 B11 (green), TR R10 G2 B43 (blue), TL ≈ white — dominant channel matches the PT reference at every coloured corner, values within MC noise (PT: R50 G1 B10 / R11 G39 B11 / R10 G1 B47).
+- **VCM-spectral cross-check** (`vertex_colors_quad_vcm_spectral.RISEscene`, 16 spp, VC+VM): BL R48 G2 B10 (red), BR R14 G36 B12 (green), TR R9 G2 B41 (blue), TL ≈ white — confirms the transitive fix through the shared NM generators empirically, not just by code reading.
+
+### Files
+- [src/Library/Shaders/BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) — eye-gen vColor ungated; NM light-gen vColor added (both with rationale comments).
+- [scenes/Tests/Geometry/vertex_colors_quad_bdpt_spectral.RISEscene](../scenes/Tests/Geometry/vertex_colors_quad_bdpt_spectral.RISEscene) — **new** spectral-BDPT regression fixture (guards this exact bug).
+- [scenes/Tests/Geometry/vertex_colors_quad_pt_spectral.RISEscene](../scenes/Tests/Geometry/vertex_colors_quad_pt_spectral.RISEscene) — **new** spectral-PT ground-truth companion.
+- [scenes/Tests/Geometry/vertex_colors_quad_vcm_spectral.RISEscene](../scenes/Tests/Geometry/vertex_colors_quad_vcm_spectral.RISEscene) — **new** spectral-VCM fixture (guards the transitive fix through the shared NM generators).
+
+### Working tree: uncommitted; per "NEVER COMMIT".
