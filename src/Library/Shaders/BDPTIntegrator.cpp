@@ -894,32 +894,6 @@ Scalar BDPTIntegrator::EvalPdfAtVertex(
 }
 
 //////////////////////////////////////////////////////////////////////
-// Helper: visibility test between two points
-//////////////////////////////////////////////////////////////////////
-
-bool BDPTIntegrator::IsVisible(
-	const IRayCaster& caster,
-	const Point3& p1,
-	const Point3& p2
-	) const
-{
-	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
-	const Scalar dist = Vector3Ops::Magnitude( d );
-
-	if( dist < BDPT_RAY_EPSILON ) {
-		return true;
-	}
-
-	d = d * (1.0 / dist);
-
-	Ray shadowRay( p1, d );
-	shadowRay.Advance( BDPT_RAY_EPSILON );
-
-	// CastShadowRay returns TRUE if something is hit (i.e. NOT visible)
-	return !caster.CastShadowRay( shadowRay, dist - 2.0 * BDPT_RAY_EPSILON );
-}
-
-//////////////////////////////////////////////////////////////////////
 // Helper: evaluate transmittance along a connection edge.
 //
 // For now this only handles the global medium (scene-level fog).
@@ -2731,17 +2705,196 @@ unsigned int BDPTIntegrator::GenerateEyeSubpath(
 // the specular direction.
 //////////////////////////////////////////////////////////////////////
 
-BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
+//////////////////////////////////////////////////////////////////////
+// ConnectAndEvaluateImpl<Tag> -- Phase 2c family F3a.
+//
+// The per-(s,t)-strategy connection evaluator, templatized over
+// PelTag/NMTag.  Free function (not a member template) taking the
+// BDPTIntegrator (for the public MISWeight / EvalConnectionTransmittance
+// members) + pLightSampler as parameters, so BDPTIntegrator.h is
+// untouched and the public ConnectAndEvaluate{,NM} members stay
+// byte-identical one-line forwarders.  Reuses the F1/F2a anon-namespace
+// helpers (VertexThroughput / PositiveMagnitude / TrOne) and
+// PathValueOps::Eval{BSDF,Pdf}AtVertex<Tag>.
+//////////////////////////////////////////////////////////////////////
+
+namespace {
+
+// Return-type mapping: ConnectionResult (Pel) / ConnectionResultNM (NM).
+template<class Tag> struct ConnectionResultFor;
+template<> struct ConnectionResultFor<PelTag> { typedef BDPTIntegrator::ConnectionResult   type; };
+template<> struct ConnectionResultFor<NMTag>  { typedef BDPTIntegrator::ConnectionResultNM type; };
+
+// Visibility test for connection edges -- F3a routes all four
+// connection-site visibility queries through this free function.
+inline bool ConnectionIsVisible( const IRayCaster& caster, const Point3& p1, const Point3& p2 )
+{
+	Vector3 d = Vector3Ops::mkVector3( p2, p1 );
+	const Scalar dist = Vector3Ops::Magnitude( d );
+	if( dist < BDPT_RAY_EPSILON ) {
+		return true;
+	}
+	d = d * (1.0 / dist);
+	Ray shadowRay( p1, d );
+	shadowRay.Advance( BDPT_RAY_EPSILON );
+	return !caster.CastShadowRay( shadowRay, dist - 2.0 * BDPT_RAY_EPSILON );
+}
+
+// Connection-edge transmittance dispatch -> the public (F1-templatized)
+// member overloads.  pt/pt and ray/maxDist forms.
+template<class Tag>
+typename SpectralValueTraits<Tag>::value_type
+EvalConnTr( const BDPTIntegrator& self, const Point3& p1, const Point3& p2,
+	const IScene& scene, const IRayCaster& caster,
+	const IObject* pStartMediumObject, const IMedium* pStartMedium, Tag tag )
+{
+	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
+		(void)tag;
+		return self.EvalConnectionTransmittance( p1, p2, scene, caster, pStartMediumObject, pStartMedium );
+	} else {
+		return self.EvalConnectionTransmittanceNM( p1, p2, scene, caster, tag.nm, pStartMediumObject, pStartMedium );
+	}
+}
+template<class Tag>
+typename SpectralValueTraits<Tag>::value_type
+EvalConnTr( const BDPTIntegrator& self, const Ray& connectionRay, const Scalar maxDist,
+	const IScene& scene, const IRayCaster& caster,
+	const IObject* pStartMediumObject, const IMedium* pStartMedium, Tag tag )
+{
+	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
+		(void)tag;
+		return self.EvalConnectionTransmittance( connectionRay, maxDist, scene, caster, pStartMediumObject, pStartMedium );
+	} else {
+		return self.EvalConnectionTransmittanceNM( connectionRay, maxDist, scene, caster, tag.nm, pStartMediumObject, pStartMedium );
+	}
+}
+
+// Env-map radiance lookup: GetRadiance (Pel) / GetRadianceNM(nm) (NM).
+// nullRast is constructed internally (matches the originals' local {0}).
+template<class Tag>
+typename SpectralValueTraits<Tag>::value_type
+EnvRadiance( const IRadianceMap* pEnvLight, const Ray& skyProbe, Tag tag )
+{
+	RasterizerState nullRast = {0};
+	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
+		(void)tag;
+		return pEnvLight->GetRadiance( skyProbe, nullRast );
+	} else {
+		return pEnvLight->GetRadianceNM( skyProbe, nullRast, tag.nm );
+	}
+}
+
+// Mesh-luminary emitted radiance toward `dir`: rebuilds the RIG then
+// dispatches emittedRadiance (Pel) / emittedRadianceNM(nm) (NM).  Returns
+// zero when the luminary carries no emitter (matches the originals' guard).
+// Caller has already checked vertex.pLuminary && pLuminary->GetMaterial().
+template<class Tag>
+typename SpectralValueTraits<Tag>::value_type
+LuminaryRadiance( const BDPTVertex& vertex, const Vector3& dir, Tag tag )
+{
+	const IEmitter* pEmitter = vertex.pLuminary->GetMaterial()->GetEmitter();
+	if( !pEmitter ) {
+		return SpectralValueTraits<Tag>::zero();
+	}
+	RayIntersectionGeometric rig( Ray( vertex.position, dir ), nullRasterizerState );
+	PathVertexEval::PopulateRIGFromVertex( vertex, rig );
+	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
+		(void)tag;
+		return pEmitter->emittedRadiance( rig, dir, vertex.geomNormal );
+	} else {
+		return pEmitter->emittedRadianceNM( rig, dir, vertex.geomNormal, tag.nm );
+	}
+}
+
+// ILight (point/spot/...) radiance toward `dir`.  ILight has no NM virtual,
+// so the NM path projects RGB->scalar via Rec.709 luminance -- the same
+// pattern as VCM's EvalLightRadiance<Tag> and the original
+// ConnectAndEvaluateNM s=1 / t=1 branches.
+template<class Tag>
+typename SpectralValueTraits<Tag>::value_type
+LightRadiance( const ILight* pLight, const Vector3& dir, Tag tag )
+{
+	(void)tag;
+	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
+		return pLight->emittedRadiance( dir );
+	} else {
+		const RISEPel Le = pLight->emittedRadiance( dir );
+		return 0.2126 * Le[0] + 0.7152 * Le[1] + 0.0722 * Le[2];
+	}
+}
+
+// s=0 surface-emitter radiance.  Pel inlines RIG+emittedRadiance; NM mirrors
+// the protected EvalEmitterRadianceNM member VERBATIM (that member stays --
+// it is still consumed by EvaluateAllStrategiesNM; F3b folds the two into a
+// single EvalEmitterRadiance<Tag> dispatch).  `pEmitter` is the caller's
+// already-resolved surface emitter (used by Pel; NM re-resolves, faithful to
+// the member's structure).
+template<class Tag>
+typename SpectralValueTraits<Tag>::value_type
+SurfaceEmitterRadiance( const BDPTVertex& eyeEnd, const Vector3& woFromEmitter,
+	const IEmitter* pEmitter, Tag tag )
+{
+	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
+		(void)tag;
+		RayIntersectionGeometric rig( Ray( eyeEnd.position, woFromEmitter ), nullRasterizerState );
+		PathVertexEval::PopulateRIGFromVertex( eyeEnd, rig );
+		return pEmitter->emittedRadiance( rig, woFromEmitter, eyeEnd.geomNormal );
+	} else {
+		(void)pEmitter;
+		if( eyeEnd.pEnvLight ) {
+			RasterizerState nullRast = {0};
+			Ray skyProbe( eyeEnd.position, -woFromEmitter );
+			return eyeEnd.pEnvLight->GetRadianceNM( skyProbe, nullRast, tag.nm );
+		}
+		if( eyeEnd.pLight ) {
+			const RISEPel Le = eyeEnd.pLight->emittedRadiance( woFromEmitter );
+			return 0.2126 * Le[0] + 0.7152 * Le[1] + 0.0722 * Le[2];
+		}
+		if( !eyeEnd.pMaterial ) {
+			return 0;
+		}
+		const IEmitter* pEm = eyeEnd.pMaterial->GetEmitter();
+		if( !pEm ) {
+			return 0;
+		}
+		RayIntersectionGeometric rig( Ray( eyeEnd.position, woFromEmitter ), nullRasterizerState );
+		PathVertexEval::PopulateRIGFromVertex( eyeEnd, rig );
+		return pEm->emittedRadianceNM( rig, woFromEmitter, eyeEnd.geomNormal, tag.nm );
+	}
+}
+
+// Broadcast a scalar geometric term to the value type (interior contribution).
+template<class Tag>
+typename SpectralValueTraits<Tag>::value_type
+BroadcastScalar( const Scalar g )
+{
+	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
+		return RISEPel( g, g, g );
+	} else {
+		return g;
+	}
+}
+
+template<class Tag>
+typename ConnectionResultFor<Tag>::type
+ConnectAndEvaluateImpl(
+	const BDPTIntegrator& self,
+	const LightSampler* pLightSampler,
 	const std::vector<BDPTVertex>& lightVerts,
 	const std::vector<BDPTVertex>& eyeVerts,
 	unsigned int s,
 	unsigned int t,
 	const IScene& scene,
 	const IRayCaster& caster,
-	const ICamera& camera
-	) const
+	const ICamera& camera,
+	Tag tag )
 {
-	ConnectionResult result;
+	typedef SpectralValueTraits<Tag> Traits;
+	typedef typename Traits::value_type V;
+	typename ConnectionResultFor<Tag>::type result;
+	if constexpr( Traits::is_nm ) {
+		result.s = s;
+	}
 
 	// Validate: s <= lightVerts.size(), t <= eyeVerts.size(), s+t >= 2
 	if( s > lightVerts.size() || t > eyeVerts.size() ) {
@@ -2789,10 +2942,9 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				-eyeEnd.geomNormal.y,
 				-eyeEnd.geomNormal.z );
 
-			RasterizerState nullRast = {0};
 			Ray skyProbe( eyePred.position, wiSky );
-			const RISEPel Le = eyeEnd.pEnvLight->GetRadiance( skyProbe, nullRast );
-			if( ColorMath::MaxValue( Le ) <= 0 ) {
+			const V Le = EnvRadiance<Tag>( eyeEnd.pEnvLight, skyProbe, tag );
+			if( PositiveMagnitude<Tag>( Le ) <= 0 ) {
 				return result;
 			}
 
@@ -2800,13 +2952,15 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			// point times the env radiance in the escape direction.
 			// (Throughput at the env vertex already reflects all
 			//  eye-subpath BSDF factors and cosines up to the miss.)
-			result.contribution = eyeEnd.throughput * Le;
+			result.contribution = VertexThroughput<Tag>( eyeEnd ) * Le;
 			result.needsSplat = false;
 			result.valid = true;
+			if constexpr( Traits::is_pel ) {
 			result.guidingLocalContribution = Le;
 			result.guidingEyeVertexIndex = t - 1;
 			result.guidingUseDirectContribution = true;
 			result.guidingValid = true;
+			}
 
 			// MIS weight: install pdfRev on eyeEnd as "the probability
 			// the s=1 NEE alternative would have sampled this env
@@ -2873,7 +3027,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				}
 				const_cast<BDPTVertex&>( eyePred ).pdfRev = predPdfRev;
 			}
-			result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+			result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
 			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
 			const_cast<BDPTVertex&>( eyePred ).pdfRev = savedEyePredPdfRev;
 			return result;
@@ -2911,22 +3065,21 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// silently sample at (0,0) on the (s=0) emitter strategy because
 		// the manual rebuild left ptCoord / ptCoord1 / bHasTexCoord1
 		// default-constructed.
-		RayIntersectionGeometric rig( Ray( eyeEnd.position, woFromEmitter ), nullRasterizerState );
-		PathVertexEval::PopulateRIGFromVertex( eyeEnd, rig );
+		const V Le = SurfaceEmitterRadiance<Tag>( eyeEnd, woFromEmitter, pEmitter, tag );
 
-		const RISEPel Le = pEmitter->emittedRadiance( rig, woFromEmitter, eyeEnd.geomNormal );
-
-		if( ColorMath::MaxValue( Le ) <= 0 ) {
+		if( PositiveMagnitude<Tag>( Le ) <= 0 ) {
 			return result;
 		}
 
-		result.contribution = eyeEnd.throughput * Le;
+		result.contribution = VertexThroughput<Tag>( eyeEnd ) * Le;
 		result.needsSplat = false;
 		result.valid = true;
+		if constexpr( Traits::is_pel ) {
 		result.guidingLocalContribution = Le;
 		result.guidingEyeVertexIndex = t - 1;
 		result.guidingUseDirectContribution = true;
 		result.guidingValid = true;
+		}
 
 		// --- Update pdfRev at emitter vertex for correct MIS ---
 		// eyeEnd.pdfRev should be the PDF that the light sampling process
@@ -2991,7 +3144,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			}
 		}
 
-		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
 
 		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
 		if( hasEyePred ) {
@@ -3010,6 +3163,13 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 	//
 	if( t == 0 )
 	{
+		// Legacy path-to-camera case -- DEAD CODE: EvaluateAllStrategies{,NM}
+		// both enumerate t starting at 1, so t==0 is never reached.  The Pel
+		// and NM originals carry minor (unreachable) divergences -- Pel is
+		// medium-aware (lightIsMedium fLight + medium pdfRev sub-cases) while
+		// NM is surface-only and gates the predecessor on `&& pMaterial`.
+		// Preserved verbatim per tag; behaviourally inert.
+		if constexpr( Traits::is_pel ) {
 		// Light path endpoint connects directly to camera sensor
 		const BDPTVertex& lightEnd = lightVerts[s - 1];
 
@@ -3025,7 +3185,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 
 		// Check visibility from camera to light vertex using standard shadow ray.
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisible( caster, camPos, lightEnd.position ) ) {
+		if( !ConnectionIsVisible( caster, camPos, lightEnd.position ) ) {
 			return result;
 		}
 
@@ -3046,7 +3206,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 
 		// Evaluate BSDF (or phase function) at the light endpoint for the direction toward camera
 		const bool lightIsMedium_t0 = (lightEnd.type == BDPTVertex::MEDIUM);
-		RISEPel fLight( 1, 1, 1 );
+		V fLight = TrOne<Tag>();
 		if( (lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial) || lightIsMedium_t0 ) {
 			Vector3 wiAtLight;
 			if( s >= 2 ) {
@@ -3058,7 +3218,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			}
 
 			if( s >= 2 ) {
-				fLight = EvalBSDFAtVertex( lightEnd, wiAtLight, dirToCam );
+				fLight = PathValueOps::EvalBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
 			}
 		}
 
@@ -3071,7 +3231,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) ));
 		const Scalar G = absCosLight / distSq;
 
-		result.contribution = lightEnd.throughput * fLight * (G * We);
+		result.contribution = VertexThroughput<Tag>( lightEnd ) * fLight * (G * We);
 		result.rasterPos = rasterPos;
 		result.needsSplat = true;
 		result.valid = true;
@@ -3107,7 +3267,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
 			}
 
-			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, wiAtLightEnd );
+			const Scalar pdfPredSA = PathValueOps::EvalPdfAtVertex<Tag>( lightEnd, dirToCam, wiAtLightEnd, tag );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			if( lightPred.type == BDPTVertex::MEDIUM ) {
@@ -3121,7 +3281,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			}
 		}
 
-		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
 
 		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
 		if( hasLightPred_t0 ) {
@@ -3129,6 +3289,89 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		}
 
 		return result;
+		} else {
+		const BDPTVertex& lightEnd = lightVerts[s - 1];
+		if( !lightEnd.isConnectible ) {
+			return result;
+		}
+
+		Point2 rasterPos;
+		if( !BDPTCameraUtilities::Rasterize( camera, lightEnd.position, rasterPos ) ) {
+			return result;
+		}
+
+		const Point3 camPos = camera.GetLocation();
+		if( !ConnectionIsVisible( caster, camPos, lightEnd.position ) ) {
+			return result;
+		}
+
+		Vector3 dirToCam = Vector3Ops::mkVector3( camPos, lightEnd.position );
+		const Scalar dist = Vector3Ops::Magnitude( dirToCam );
+		if( dist < BDPT_RAY_EPSILON ) {
+			return result;
+		}
+		dirToCam = dirToCam * (1.0 / dist);
+
+		Ray camRay( camPos, -dirToCam );
+		const Scalar We = BDPTCameraUtilities::Importance( camera, camRay );
+		if( We <= 0 ) {
+			return result;
+		}
+
+		Scalar fLightNM = 1.0;
+		if( lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial && s >= 2 ) {
+			Vector3 wiAtLight = Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position );
+			wiAtLight = Vector3Ops::Normalize( wiAtLight );
+			fLightNM = PathValueOps::EvalBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
+		}
+
+		const Scalar distSq = dist * dist;
+		const Scalar absCosLight = lightEnd.isDelta ?
+			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
+		const Scalar G = absCosLight / distSq;
+
+		result.contribution = VertexThroughput<Tag>( lightEnd ) * fLightNM * G * We;
+		result.rasterPos = rasterPos;
+		result.needsSplat = true;
+		result.valid = true;
+
+		// --- Update pdfRev at light endpoint for correct MIS ---
+		const Scalar savedLightPdfRev = lightEnd.pdfRev;
+		{
+			Ray camRayToLight( camPos, -dirToCam );
+			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
+			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
+		}
+
+		// --- Update predecessor pdfRev (lightVerts[s-2]) ---
+		Scalar savedLightPredPdfRevNM_t0 = 0;
+		const bool hasLightPredNM_t0 = (s >= 2 && lightEnd.pMaterial);
+		if( hasLightPredNM_t0 )
+		{
+			const BDPTVertex& lightPred = lightVerts[s - 2];
+			savedLightPredPdfRevNM_t0 = lightPred.pdfRev;
+
+			Vector3 wiAtLightEnd = Vector3Ops::mkVector3(
+				lightVerts[s - 2].position, lightEnd.position );
+			wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
+
+			const Scalar pdfPredSA = PathValueOps::EvalPdfAtVertex<Tag>( lightEnd, dirToCam, wiAtLightEnd, tag );
+			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
+			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
+			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.geomNormal,
+				Vector3Ops::Normalize( dToPred ) ) );
+			const_cast<BDPTVertex&>( lightPred ).pdfRev =
+				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
+		}
+
+		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
+		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
+		if( hasLightPredNM_t0 ) {
+			const_cast<BDPTVertex&>( lightVerts[s - 2] ).pdfRev = savedLightPredPdfRevNM_t0;
+		}
+		return result;
+		}
 	}
 
 	//
@@ -3183,7 +3426,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 
 		// Visibility: for explicit lights, segment to the light surface.
 		// For env, infinite ray in wi from eye — synthesised as a far-
-		// distance point to reuse the existing IsVisible(p,q) overload.
+		// distance point to reuse the ConnectionIsVisible(p,q) helper.
 		{
 			Point3 visTarget = lightStart.position;
 			if( envCase_s1 ) {
@@ -3193,39 +3436,38 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 					eyeEnd.position.y + wiForLight.y * kVisFar,
 					eyeEnd.position.z + wiForLight.z * kVisFar );
 			}
-			if( !IsVisible( caster, eyeEnd.position, visTarget ) ) {
+			if( !ConnectionIsVisible( caster, eyeEnd.position, visTarget ) ) {
 				return result;
 			}
 		}
 
 		// Evaluate emitted radiance from the light toward the eye vertex
-		RISEPel Le( 0, 0, 0 );
-		if( lightStart.pLight ) {
-			Le = lightStart.pLight->emittedRadiance( -dirToLight );
-		} else if( lightStart.pLuminary && lightStart.pLuminary->GetMaterial() ) {
-			const IEmitter* pEmitter = lightStart.pLuminary->GetMaterial()->GetEmitter();
-			if( pEmitter ) {
-				RayIntersectionGeometric rig(
-					Ray( lightStart.position, -dirToLight ),
-					nullRasterizerState );
-				PathVertexEval::PopulateRIGFromVertex( lightStart, rig );
-
-				Le = pEmitter->emittedRadiance(
-					rig,
-					-dirToLight,
-					lightStart.geomNormal );
+		V Le = Traits::zero();
+		if constexpr( Traits::is_pel ) {
+			// PEL emitter-resolution order: pLight -> pLuminary -> env.
+			if( lightStart.pLight ) {
+				Le = LightRadiance<Tag>( lightStart.pLight, -dirToLight, tag );
+			} else if( lightStart.pLuminary && lightStart.pLuminary->GetMaterial() ) {
+				Le = LuminaryRadiance<Tag>( lightStart, -dirToLight, tag );
+			} else if( envCase_s1 ) {
+				Ray skyProbe( eyeEnd.position, wiForLight );
+				Le = EnvRadiance<Tag>( lightStart.pEnvLight, skyProbe, tag );
 			}
-		} else if( envCase_s1 ) {
-			// Env-light s=1 NEE: lookup env radiance in the actually-
-			// sampled sky direction wi (not the disc-point-derived
-			// dirToLight).  IRadianceMap::GetRadiance ignores the ray
-			// origin and only reads the direction.
-			RasterizerState nullRast = {0};
-			Ray skyProbe( eyeEnd.position, wiForLight );
-			Le = lightStart.pEnvLight->GetRadiance( skyProbe, nullRast );
+		} else {
+			// NM emitter-resolution order: pLuminary -> pLight(luminance) -> env
+			// (preserved DIVERGENCE vs Pel branch order; ILight has no NM virtual,
+			// so pLight projects via Rec.709 luminance inside LightRadiance<NMTag>).
+			if( lightStart.pLuminary && lightStart.pLuminary->GetMaterial() ) {
+				Le = LuminaryRadiance<Tag>( lightStart, -dirToLight, tag );
+			} else if( lightStart.pLight ) {
+				Le = LightRadiance<Tag>( lightStart.pLight, -dirToLight, tag );
+			} else if( envCase_s1 ) {
+				Ray skyProbe( eyeEnd.position, wiForLight );
+				Le = EnvRadiance<Tag>( lightStart.pEnvLight, skyProbe, tag );
+			}
 		}
 
-		if( ColorMath::MaxValue( Le ) <= 0 ) {
+		if( PositiveMagnitude<Tag>( Le ) <= 0 ) {
 			return result;
 		}
 
@@ -3241,9 +3483,9 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 
 		// BSDF eval in the actually-sampled direction (wi for env,
 		// dirToLight for explicit lights).
-		const RISEPel fEye = EvalBSDFAtVertex( eyeEnd, wiForLight, woAtEye );
+		const V fEye = PathValueOps::EvalBSDFAtVertex<Tag>( eyeEnd, wiForLight, woAtEye, tag );
 
-		if( ColorMath::MaxValue( fEye ) <= 0 ) {
+		if( PositiveMagnitude<Tag>( fEye ) <= 0 ) {
 			return result;
 		}
 
@@ -3284,20 +3526,18 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// directly and the medium walk handles it correctly
 		// (Beer-Lambert exp(-σ·∞) → 0 for any σ > 0; vacuum → 1).
 		// Adversarial review round 5, P2.
-		RISEPel Tr_conn_s1;
+		V Tr_conn_s1;
 		if( envCase_s1 ) {
 			Ray envRay( eyeEnd.position, wiForLight );
-			Tr_conn_s1 = EvalConnectionTransmittance(
-				envRay, RISE_INFINITY, scene, caster,
-				eyeEnd.pMediumObject, eyeEnd.pMediumVol );
+			Tr_conn_s1 = EvalConnTr<Tag>( self, envRay, RISE_INFINITY, scene, caster,
+				eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag );
 		} else {
-			Tr_conn_s1 = EvalConnectionTransmittance(
-				eyeEnd.position, lightStart.position, scene, caster,
-				eyeEnd.pMediumObject, eyeEnd.pMediumVol );
+			Tr_conn_s1 = EvalConnTr<Tag>( self, eyeEnd.position, lightStart.position, scene, caster,
+				eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag );
 		}
 
 		// Contribution: eyeThroughput * fEye * G * Le / pdfLight
-		// lightStart.throughput already has Le / (pdfSelect * pdfPosition)
+		// VertexThroughput<Tag>( lightStart ) already has Le / (pdfSelect * pdfPosition)
 		// but we need to re-evaluate since the direction changed
 		// For s=1, we use: lightVerts[0].throughput * fEye * G
 		// where lightVerts[0].throughput = Le / (pdfSelect * pdfPosition)
@@ -3373,23 +3613,27 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				pLightSampler->EnvSelectProbability();
 			const Scalar invEnvSel = ( envSelP_s1 > 0 ) ?
 				( Scalar( 1 ) / envSelP_s1 ) : Scalar( 0 );
-			const RISEPel contribEnv =
-				eyeEnd.throughput * fEye * Le * Tr_conn_s1 *
+			const V contribEnv =
+				VertexThroughput<Tag>( eyeEnd ) * fEye * Le * Tr_conn_s1 *
 				(cosEyeWi / pdfSA) * invEnvSel;
 			result.contribution = contribEnv;
 			result.needsSplat = false;
 			result.valid = true;
+			if constexpr( Traits::is_pel ) {
 			result.guidingLocalContribution =
 				fEye * Le * Tr_conn_s1 * (cosEyeWi / pdfSA) * invEnvSel;
 			result.guidingEyeVertexIndex = t - 1;
 			result.guidingValid = true;
+			}
 		} else {
-			result.contribution = eyeEnd.throughput * fEye * Le * Tr_conn_s1 * (G / pdfLight);
+			result.contribution = VertexThroughput<Tag>( eyeEnd ) * fEye * Le * Tr_conn_s1 * (G / pdfLight);
 			result.needsSplat = false;
 			result.valid = true;
+			if constexpr( Traits::is_pel ) {
 			result.guidingLocalContribution = fEye * Le * Tr_conn_s1 * (G / pdfLight);
 			result.guidingEyeVertexIndex = t - 1;
 			result.guidingValid = true;
+			}
 		}
 
 		// --- Update pdfRev at connection vertices for correct MIS ---
@@ -3409,7 +3653,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// lightStart.pdfRev: PDF that eye-side process would "find" the light
 		// For delta-position lights (point/spot), leave at 0 (eye can't hit a point)
 		if( !lightStart.isDelta ) {
-			const Scalar pdfRevSA = EvalPdfAtVertex( eyeEnd, woAtEye, dirForMIS_s1 );
+			const Scalar pdfRevSA = PathValueOps::EvalPdfAtVertex<Tag>( eyeEnd, woAtEye, dirForMIS_s1, tag );
 			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.geomNormal, dirForMIS_s1 ) );
 			const_cast<BDPTVertex&>( lightStart ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
@@ -3463,7 +3707,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			// (not the disc-derived dirToLight) — use dirForMIS_s1
 			// to keep the predecessor pdf consistent with the
 			// contribution direction.
-			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, dirForMIS_s1, dirToPred );
+			const Scalar pdfPredSA = PathValueOps::EvalPdfAtVertex<Tag>( eyeEnd, dirForMIS_s1, dirToPred, tag );
 			// Camera vertex: use 1.0; Medium vertex: sigma_t/dist^2
 			if( eyePred.type == BDPTVertex::CAMERA ) {
 				const_cast<BDPTVertex&>( eyePred ).pdfRev =
@@ -3479,7 +3723,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			}
 		}
 
-		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
 
 		const_cast<BDPTVertex&>( lightStart ).pdfRev = savedLightPdfRev;
 		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyePdfRev;
@@ -3518,7 +3762,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// vertices; treating them as transparent here produces invalid
 		// splats and severe caustic fireflies.
 		const Point3 camPos = camera.GetLocation();
-		if( !IsVisible( caster, lightEnd.position, camPos ) ) {
+		if( !ConnectionIsVisible( caster, lightEnd.position, camPos ) ) {
 			return result;
 		}
 
@@ -3539,7 +3783,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 
 		// Evaluate BSDF (or phase function) at the light endpoint for connection to camera
 		const bool lightIsMedium_t1 = (lightEnd.type == BDPTVertex::MEDIUM);
-		RISEPel fLight( 1, 1, 1 );
+		V fLight = TrOne<Tag>();
 		if( (lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial) || lightIsMedium_t1 ) {
 			Vector3 wiAtLight;
 			if( s >= 2 ) {
@@ -3548,45 +3792,44 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			}
 
 			if( s >= 2 ) {
-				fLight = EvalBSDFAtVertex( lightEnd, wiAtLight, dirToCam );
+				fLight = PathValueOps::EvalBSDFAtVertex<Tag>( lightEnd, wiAtLight, dirToCam, tag );
 			}
 		} else if( lightEnd.type == BDPTVertex::LIGHT ) {
-			// s == 1: the light source directly connects to camera
-			// Contribution is Le in the direction toward camera
-			if( lightEnd.pLight ) {
-				fLight = lightEnd.pLight->emittedRadiance( dirToCam );
-				// Re-scale: throughput already has Le/pdf, but Le was for the sampled direction
-				// So we want Le(dirToCam) / Le(sampled) * throughput contribution
-				// Simplify: just use throughput which is Le/pdf, direction-dependent Le re-evaluated
-			} else if( lightEnd.pLuminary && lightEnd.pLuminary->GetMaterial() ) {
-				const IEmitter* pEmitter = lightEnd.pLuminary->GetMaterial()->GetEmitter();
-				if( pEmitter ) {
-					RayIntersectionGeometric rig(
-						Ray( lightEnd.position, dirToCam ), nullRasterizerState );
-					PathVertexEval::PopulateRIGFromVertex( lightEnd, rig );
-					fLight = pEmitter->emittedRadiance( rig, dirToCam, lightEnd.geomNormal );
+			// s == 1: the light source directly connects to the camera.
+			// Radiance toward camera.  DIVERGENCE (preserved): Pel resolves
+			// pLight -> pLuminary and treats the degenerate env disc via the
+			// trailing else-return; NM checks pEnvLight first, then
+			// pLuminary -> pLight(luminance).  Each light kind is mutually
+			// exclusive so the order is inert; reproduced per tag.  Env-disc
+			// is degenerate (parallel-ray emitter authorised only in -wi);
+			// matches PBRT-v3/v4 dropping this BDPT strategy for infinite lights.
+			V LeToCam = Traits::zero();
+			if constexpr( Traits::is_pel ) {
+				if( lightEnd.pLight ) {
+					LeToCam = LightRadiance<Tag>( lightEnd.pLight, dirToCam, tag );
+				} else if( lightEnd.pLuminary && lightEnd.pLuminary->GetMaterial() ) {
+					// Original Pel splats fLight's (1,1,1) init when a LIGHT-vertex
+					// luminary carries no emitter -- an unreachable corner (a sampled
+					// mesh-luminary vertex always has an emitter).  Preserved for
+					// byte-identity with the Pel original, keeping the pre-existing
+					// Pel(white)/NM(black) emitter-null fallback asymmetry intact (a
+					// latent white-firefly the user may address separately; see F3a outcome).
+					const IEmitter* pLumEmitter = lightEnd.pLuminary->GetMaterial()->GetEmitter();
+					LeToCam = pLumEmitter ? LuminaryRadiance<Tag>( lightEnd, dirToCam, tag ) : TrOne<Tag>();
+				} else {
+					return result;
 				}
 			} else {
-				// Env-light vertex 0 (pLight == pLuminary == NULL,
-				// pEnvLight != NULL).  The disc is a degenerate
-				// parallel-ray emitter: it emits ONLY in direction
-				// -wi (= disc normal).  Connecting a disc point
-				// directly to a camera that's not aligned with -wi
-				// produces an undefined emission — there's no
-				// principled way to evaluate "Le in dirToCam" from a
-				// disc point that's only authorised to emit in -wi.
-				// PBRT-v3/v4 also drop this BDPT strategy for
-				// infinite-area lights for the same reason.  The
-				// legitimate env contributions reach the camera via
-				// (a) eye-subpath escape — Path B handles this — and
-				// (b) s=1 NEE — handled at the s=1 t>=2 site above.
-				// Without this early-return, `fLight` would inherit
-				// the default `(1, 1, 1)` from line ~3753 and splat
-				// a white firefly (adversarial review #3, 2026-05-25).
-				return result;
+				if( lightEnd.pEnvLight ) {
+					return result;
+				}
+				if( lightEnd.pLuminary && lightEnd.pLuminary->GetMaterial() ) {
+					LeToCam = LuminaryRadiance<Tag>( lightEnd, dirToCam, tag );
+				} else if( lightEnd.pLight ) {
+					LeToCam = LightRadiance<Tag>( lightEnd.pLight, dirToCam, tag );
+				}
 			}
 
-			// For s=1, contribution = Le(dirToCam) * We * G / pdfLight
 			const Scalar pdfLight = lightEnd.pdfFwd;
 			if( pdfLight <= 0 ) {
 				return result;
@@ -3597,7 +3840,13 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
 			const Scalar G = absCosLight / distSq;
 
-			result.contribution = fLight * (G * We / pdfLight);
+			// Contribution association preserved per tag (Pel parenthesises the
+			// G*We/pdf factor; NM chains it left-to-right) -- value-identical.
+			if constexpr( Traits::is_pel ) {
+				result.contribution = LeToCam * (G * We / pdfLight);
+			} else {
+				result.contribution = LeToCam * G * We / pdfLight;
+			}
 			result.rasterPos = rasterPos;
 			result.needsSplat = true;
 			result.valid = true;
@@ -3606,19 +3855,15 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			const Scalar savedLightPdfRev = lightEnd.pdfRev;
 			const Scalar savedEyePdfRev = eyeVerts[0].pdfRev;
 
-			// lightEnd.pdfRev: camera's directional PDF at lightEnd
 			{
 				Ray camRayToLight( camPos, -dirToCam );
 				const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
 				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
 			}
-
-			// eyeVerts[0].pdfRev: emission directional PDF toward camera
 			{
 				Scalar emPdfDir = 0;
 				if( lightEnd.pLuminary ) {
-					// One-sided emission PDF
 					const Scalar cosEmit = Vector3Ops::Dot( lightEnd.geomNormal, dirToCam );
 					emPdfDir = (cosEmit > 0) ? (cosEmit * INV_PI) : 0;
 				} else if( lightEnd.pLight ) {
@@ -3628,13 +3873,13 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 					BDPTUtilities::SolidAngleToArea( emPdfDir, Scalar(1.0), distSq );
 			}
 
-			result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+			result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
 			const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
 			const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev = savedEyePdfRev;
 			return result;
 		}
 
-		if( ColorMath::MaxValue( fLight ) <= 0 ) {
+		if( PositiveMagnitude<Tag>( fLight ) <= 0 ) {
 			return result;
 		}
 
@@ -3647,11 +3892,10 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		const Scalar G = absCosLight / distSq;
 
 		// Connection transmittance through participating media
-		const RISEPel Tr_conn_t1 = EvalConnectionTransmittance(
-			lightEnd.position, camPos, scene, caster,
-			lightEnd.pMediumObject, lightEnd.pMediumVol );
+		const V Tr_conn_t1 = EvalConnTr<Tag>( self, lightEnd.position, camPos, scene, caster,
+			lightEnd.pMediumObject, lightEnd.pMediumVol, tag );
 
-		result.contribution = lightEnd.throughput * fLight * Tr_conn_t1 * (G * We);
+		result.contribution = VertexThroughput<Tag>( lightEnd ) * fLight * Tr_conn_t1 * (G * We);
 		result.rasterPos = rasterPos;
 		result.needsSplat = true;
 		result.valid = true;
@@ -3679,7 +3923,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			Vector3 wiAtLightMIS = Vector3Ops::mkVector3(
 				lightVerts[s - 2].position, lightEnd.position );
 			wiAtLightMIS = Vector3Ops::Normalize( wiAtLightMIS );
-			const Scalar pdfRevSA = EvalPdfAtVertex( lightEnd, wiAtLightMIS, dirToCam );
+			const Scalar pdfRevSA = PathValueOps::EvalPdfAtVertex<Tag>( lightEnd, wiAtLightMIS, dirToCam, tag );
 			const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev =
 				BDPTUtilities::SolidAngleToArea( pdfRevSA, Scalar(1.0), distSq );
 		}
@@ -3697,7 +3941,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 				lightVerts[s - 2].position, lightEnd.position );
 			wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
 
-			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, dirToCam, wiAtLightEnd );
+			const Scalar pdfPredSA = PathValueOps::EvalPdfAtVertex<Tag>( lightEnd, dirToCam, wiAtLightEnd, tag );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			// Medium predecessor: sigma_t/dist^2
@@ -3712,7 +3956,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			}
 		}
 
-		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
 
 		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
 		const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev = savedEyePdfRev;
@@ -3760,7 +4004,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		dConnect = dConnect * (1.0 / dist);
 
 		// Check visibility
-		if( !IsVisible( caster, eyeEnd.position, lightEnd.position ) ) {
+		if( !ConnectionIsVisible( caster, eyeEnd.position, lightEnd.position ) ) {
 			return result;
 		}
 
@@ -3773,9 +4017,9 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// wo at lightEnd = direction toward eye vertex (connection)
 		const Vector3 woAtLight = -dConnect;
 
-		const RISEPel fLight = EvalBSDFAtVertex( lightEnd, wiAtLight, woAtLight );
+		const V fLight = PathValueOps::EvalBSDFAtVertex<Tag>( lightEnd, wiAtLight, woAtLight, tag );
 
-		if( ColorMath::MaxValue( fLight ) <= 0 ) {
+		if( PositiveMagnitude<Tag>( fLight ) <= 0 ) {
 			return result;
 		}
 
@@ -3788,9 +4032,9 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// wi at eyeEnd = connection direction (from light side)
 		const Vector3 wiAtEye = dConnect;
 
-		const RISEPel fEye = EvalBSDFAtVertex( eyeEnd, wiAtEye, woAtEye );
+		const V fEye = PathValueOps::EvalBSDFAtVertex<Tag>( eyeEnd, wiAtEye, woAtEye, tag );
 
-		if( ColorMath::MaxValue( fEye ) <= 0 ) {
+		if( PositiveMagnitude<Tag>( fEye ) <= 0 ) {
 			return result;
 		}
 
@@ -3826,19 +4070,20 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// This Tr multiplies the connection contribution but is NOT
 		// included in MIS PDFs (see note on transmittance cancellation
 		// in the MISWeight documentation).
-		const RISEPel Tr_conn = EvalConnectionTransmittance(
-			eyeEnd.position, lightEnd.position, scene, caster,
-			eyeEnd.pMediumObject, eyeEnd.pMediumVol );
+		const V Tr_conn = EvalConnTr<Tag>( self, eyeEnd.position, lightEnd.position, scene, caster,
+			eyeEnd.pMediumObject, eyeEnd.pMediumVol, tag );
 
 		// Full path contribution
-			result.contribution = lightEnd.throughput * fLight *
-				RISEPel( G, G, G ) * Tr_conn * fEye * eyeEnd.throughput;
+			result.contribution = VertexThroughput<Tag>( lightEnd ) * fLight *
+				BroadcastScalar<Tag>( G ) * Tr_conn * fEye * VertexThroughput<Tag>( eyeEnd );
 			result.needsSplat = false;
 			result.valid = true;
+			if constexpr( Traits::is_pel ) {
 			result.guidingLocalContribution =
-				lightEnd.throughput * fLight * RISEPel( G, G, G ) * Tr_conn * fEye;
+				VertexThroughput<Tag>( lightEnd ) * fLight * BroadcastScalar<Tag>( G ) * Tr_conn * fEye;
 			result.guidingEyeVertexIndex = t - 1;
 			result.guidingValid = true;
+			}
 
 			// --- Update pdfRev at connection vertices for correct MIS ---
 		// The connection introduces a new edge between lightEnd and eyeEnd.
@@ -3864,7 +4109,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// = PDF at eyeEnd of scattering toward lightEnd, converted to area at lightEnd
 		// For medium vertices: sigma_t/dist^2 replaces |cos|/dist^2
 		{
-			const Scalar pdfRevSA = EvalPdfAtVertex( eyeEnd, woAtEye, dConnect );
+			const Scalar pdfRevSA = PathValueOps::EvalPdfAtVertex<Tag>( eyeEnd, woAtEye, dConnect, tag );
 			if( lightIsMedium ) {
 				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfRevSA, lightEnd.sigma_t_scalar, distSq_conn );
@@ -3878,7 +4123,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 		// eyeEnd.pdfRev: PDF that light-side process would generate eyeEnd
 		// = PDF at lightEnd of scattering toward eyeEnd, converted to area at eyeEnd
 		{
-			const Scalar pdfRevSA = EvalPdfAtVertex( lightEnd, wiAtLight, -dConnect );
+			const Scalar pdfRevSA = PathValueOps::EvalPdfAtVertex<Tag>( lightEnd, wiAtLight, -dConnect, tag );
 			if( eyeIsMedium ) {
 				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
 					BDPTUtilities::SolidAngleToAreaMedium( pdfRevSA, eyeEnd.sigma_t_scalar, distSq_conn );
@@ -3901,7 +4146,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			savedLightPredPdfRev = lightPred.pdfRev;
 
 			// woAtLight already points toward the eye side; wiAtLight points toward the predecessor.
-			const Scalar pdfPredSA = EvalPdfAtVertex( lightEnd, woAtLight, wiAtLight );
+			const Scalar pdfPredSA = PathValueOps::EvalPdfAtVertex<Tag>( lightEnd, woAtLight, wiAtLight, tag );
 			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			if( lightPred.type == BDPTVertex::MEDIUM ) {
@@ -3927,7 +4172,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			savedEyePredPdfRev = eyePred.pdfRev;
 
 			// wiAtEye = dConnect (from light side), woAtEye = toward pred (away from vertex)
-			const Scalar pdfPredSA = EvalPdfAtVertex( eyeEnd, wiAtEye, woAtEye );
+			const Scalar pdfPredSA = PathValueOps::EvalPdfAtVertex<Tag>( eyeEnd, wiAtEye, woAtEye, tag );
 			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
 			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
 			// Camera vertex has no meaningful surface normal; use 1.0
@@ -3946,7 +4191,7 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 			}
 		}
 
-		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
+		result.misWeight = self.MISWeight( lightVerts, eyeVerts, s, t );
 
 		// Restore original values
 		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
@@ -3960,6 +4205,22 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 
 		return result;
 	}
+}
+
+}  // anonymous namespace (ConnectAndEvaluate F3a)
+
+BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
+	const std::vector<BDPTVertex>& lightVerts,
+	const std::vector<BDPTVertex>& eyeVerts,
+	unsigned int s,
+	unsigned int t,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const ICamera& camera
+	) const
+{
+	return ConnectAndEvaluateImpl<PelTag>(
+		*this, pLightSampler, lightVerts, eyeVerts, s, t, scene, caster, camera, PelTag{} );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -5731,893 +5992,8 @@ BDPTIntegrator::ConnectionResultNM BDPTIntegrator::ConnectAndEvaluateNM(
 	const Scalar nm
 	) const
 {
-	ConnectionResultNM result;
-	result.s = s;
-
-	if( s > lightVerts.size() || t > eyeVerts.size() ) {
-		return result;
-	}
-	if( s + t < 2 ) {
-		return result;
-	}
-
-	//
-	// Case: s == 0 -- eye path hits emitter directly
-	//
-	if( s == 0 )
-	{
-		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
-
-		// Env-light escape vertex (Path B, spectral).  See RGB twin
-		// at ~line 3224 for the full derivation.  Bypasses the
-		// SURFACE/pMaterial chain — env vertices have no material.
-		if( eyeEnd.type == BDPTVertex::LIGHT && eyeEnd.pEnvLight ) {
-			if( t < 2 ) {
-				return result;
-			}
-			const BDPTVertex& eyePred = eyeVerts[t - 2];
-			// Recover the original escape ray direction from the
-			// stored geomNormal — see RGB twin (~line 3251) for the
-			// P1b rationale.
-			const Vector3 wiSky(
-				-eyeEnd.geomNormal.x,
-				-eyeEnd.geomNormal.y,
-				-eyeEnd.geomNormal.z );
-
-			RasterizerState nullRast = {0};
-			Ray skyProbe( eyePred.position, wiSky );
-			const Scalar LeNM = eyeEnd.pEnvLight->GetRadianceNM(
-				skyProbe, nullRast, nm );
-			if( LeNM <= 0 ) {
-				return result;
-			}
-
-			result.contribution = eyeEnd.throughputNM * LeNM;
-			result.needsSplat = false;
-			result.valid = true;
-
-			// MIS pdfRev assignment — mirror of RGB twin at ~line 3419.
-			// See there for the continuous-PMF cleanup rationale that
-			// removed the `kEnvZeroSentinel = 1e-30` workaround.
-			const Scalar savedEyeEndPdfRev = eyeEnd.pdfRev;
-			const Scalar savedEyePredPdfRev = eyePred.pdfRev;
-			if( pLightSampler ) {
-				const Scalar envSelectProb =
-					pLightSampler->EnvSelectProbability();
-				const Scalar sceneRadius =
-					pLightSampler->GetCachedSceneRadius();
-				const Scalar discArea =
-					( sceneRadius > 0 ) ?
-					( PI * sceneRadius * sceneRadius ) : Scalar( 0 );
-				const Scalar pdfPositionDisc =
-					( discArea > 0 ) ? ( Scalar( 1 ) / discArea ) : Scalar( 0 );
-				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-					envSelectProb * pdfPositionDisc;
-			}
-			if( pLightSampler && pLightSampler->GetEnvironmentSampler() ) {
-				const Scalar envSelectProb =
-					pLightSampler->EnvSelectProbability();
-				const Scalar pdfSA = envSelectProb *
-					pLightSampler->GetEnvironmentSampler()->Pdf( wiSky );
-				const Vector3 dToPred = Vector3Ops::mkVector3(
-					eyePred.position, eyeEnd.position );
-				const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-				Scalar predPdfRev = 0;
-				if( eyePred.type == BDPTVertex::CAMERA ) {
-					predPdfRev = BDPTUtilities::SolidAngleToArea(
-						pdfSA, Scalar( 1.0 ), distPredSq );
-				} else if( eyePred.type == BDPTVertex::MEDIUM ) {
-					predPdfRev = BDPTUtilities::SolidAngleToAreaMedium(
-						pdfSA, eyePred.sigma_t_scalar, distPredSq );
-				} else {
-					const Scalar absCosAtPred = fabs( Vector3Ops::Dot(
-						eyePred.geomNormal, Vector3Ops::Normalize( dToPred ) ) );
-					predPdfRev = BDPTUtilities::SolidAngleToArea(
-						pdfSA, absCosAtPred, distPredSq );
-				}
-				const_cast<BDPTVertex&>( eyePred ).pdfRev = predPdfRev;
-			}
-			result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
-			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
-			const_cast<BDPTVertex&>( eyePred ).pdfRev = savedEyePredPdfRev;
-			return result;
-		}
-
-		if( eyeEnd.type != BDPTVertex::SURFACE || !eyeEnd.pMaterial ) {
-			return result;
-		}
-
-		if( !eyeEnd.pMaterial->GetEmitter() ) {
-			return result;
-		}
-
-		Vector3 woFromEmitter;
-		if( t >= 2 ) {
-			woFromEmitter = Vector3Ops::mkVector3( eyeVerts[t - 2].position, eyeEnd.position );
-			woFromEmitter = Vector3Ops::Normalize( woFromEmitter );
-		} else {
-			return result;
-		}
-
-		const Scalar LeNM = EvalEmitterRadianceNM( eyeEnd, woFromEmitter, nm );
-		if( LeNM <= 0 ) {
-			return result;
-		}
-
-		result.contribution = eyeEnd.throughputNM * LeNM;
-		result.needsSplat = false;
-		result.valid = true;
-
-		// --- Update pdfRev at emitter vertex for correct MIS ---
-		const Scalar savedEyeEndPdfRev = eyeEnd.pdfRev;
-
-		if( pLightSampler && eyeEnd.pObject )
-		{
-			const ILuminaryManager* pLumMgr = caster.GetLuminaries();
-			const LuminaryManager* pLumManager = dynamic_cast<const LuminaryManager*>( pLumMgr );
-			LuminaryManager::LuminariesList emptyList;
-			const LuminaryManager::LuminariesList& luminaries = pLumManager ?
-				const_cast<LuminaryManager*>( pLumManager )->getLuminaries() : emptyList;
-
-			// For BVH PDF, the shading point is the predecessor vertex
-			const BDPTVertex& predVert_s0_NM = eyeVerts[t - 2];
-			const Scalar pdfSelect = pLightSampler->PdfSelectLuminary(
-				scene, luminaries, *eyeEnd.pObject,
-				predVert_s0_NM.position, predVert_s0_NM.normal );
-			const Scalar area = eyeEnd.pObject->GetArea();
-			const Scalar pdfPosition = (area > 0) ? (Scalar(1.0) / area) : 0;
-			const_cast<BDPTVertex&>( eyeEnd ).pdfRev = pdfSelect * pdfPosition;
-		}
-
-		// --- Update predecessor pdfRev (eyeVerts[t-2]) ---
-		Scalar savedEyePredPdfRevNM_s0 = 0;
-		const bool hasEyePredNM_s0 = (t >= 2);
-		if( hasEyePredNM_s0 )
-		{
-			const BDPTVertex& eyePred = eyeVerts[t - 2];
-			savedEyePredPdfRevNM_s0 = eyePred.pdfRev;
-
-			Scalar emPdfDir = 0;
-			if( eyeEnd.pMaterial ) {
-				const IEmitter* pEm = eyeEnd.pMaterial->GetEmitter();
-				if( pEm ) {
-					// One-sided emission PDF
-					const Scalar cosAtEmitter = Vector3Ops::Dot( eyeEnd.geomNormal, woFromEmitter );
-					emPdfDir = (cosAtEmitter > 0) ? (cosAtEmitter * INV_PI) : 0;
-				}
-			}
-
-			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
-			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			// Camera: 1.0; Medium: sigma_t/dist^2
-			if( eyePred.type == BDPTVertex::CAMERA ) {
-				const_cast<BDPTVertex&>( eyePred ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( emPdfDir, Scalar(1.0), distPredSq );
-			} else if( eyePred.type == BDPTVertex::MEDIUM ) {
-				const_cast<BDPTVertex&>( eyePred ).pdfRev =
-					BDPTUtilities::SolidAngleToAreaMedium( emPdfDir, eyePred.sigma_t_scalar, distPredSq );
-			} else {
-				const Scalar absCosAtPred =
-					fabs( Vector3Ops::Dot( eyePred.geomNormal,
-						Vector3Ops::Normalize( dToPred ) ) );
-				const_cast<BDPTVertex&>( eyePred ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( emPdfDir, absCosAtPred, distPredSq );
-			}
-		}
-
-		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
-		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyeEndPdfRev;
-		if( hasEyePredNM_s0 ) {
-			const_cast<BDPTVertex&>( eyeVerts[t - 2] ).pdfRev = savedEyePredPdfRevNM_s0;
-		}
-		return result;
-	}
-
-	//
-	// Legacy t == 0 path-to-camera case (NM).
-	// Same as RGB: legacy path kept for compatibility.
-	//
-	if( t == 0 )
-	{
-		const BDPTVertex& lightEnd = lightVerts[s - 1];
-		if( !lightEnd.isConnectible ) {
-			return result;
-		}
-
-		Point2 rasterPos;
-		if( !BDPTCameraUtilities::Rasterize( camera, lightEnd.position, rasterPos ) ) {
-			return result;
-		}
-
-		const Point3 camPos = camera.GetLocation();
-		if( !IsVisible( caster, camPos, lightEnd.position ) ) {
-			return result;
-		}
-
-		Vector3 dirToCam = Vector3Ops::mkVector3( camPos, lightEnd.position );
-		const Scalar dist = Vector3Ops::Magnitude( dirToCam );
-		if( dist < BDPT_RAY_EPSILON ) {
-			return result;
-		}
-		dirToCam = dirToCam * (1.0 / dist);
-
-		Ray camRay( camPos, -dirToCam );
-		const Scalar We = BDPTCameraUtilities::Importance( camera, camRay );
-		if( We <= 0 ) {
-			return result;
-		}
-
-		Scalar fLightNM = 1.0;
-		if( lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial && s >= 2 ) {
-			Vector3 wiAtLight = Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position );
-			wiAtLight = Vector3Ops::Normalize( wiAtLight );
-			fLightNM = EvalBSDFAtVertexNM( lightEnd, wiAtLight, dirToCam, nm );
-		}
-
-		const Scalar distSq = dist * dist;
-		const Scalar absCosLight = lightEnd.isDelta ?
-			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
-		const Scalar G = absCosLight / distSq;
-
-		result.contribution = lightEnd.throughputNM * fLightNM * G * We;
-		result.rasterPos = rasterPos;
-		result.needsSplat = true;
-		result.valid = true;
-
-		// --- Update pdfRev at light endpoint for correct MIS ---
-		const Scalar savedLightPdfRev = lightEnd.pdfRev;
-		{
-			Ray camRayToLight( camPos, -dirToCam );
-			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
-			const_cast<BDPTVertex&>( lightEnd ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
-		}
-
-		// --- Update predecessor pdfRev (lightVerts[s-2]) ---
-		Scalar savedLightPredPdfRevNM_t0 = 0;
-		const bool hasLightPredNM_t0 = (s >= 2 && lightEnd.pMaterial);
-		if( hasLightPredNM_t0 )
-		{
-			const BDPTVertex& lightPred = lightVerts[s - 2];
-			savedLightPredPdfRevNM_t0 = lightPred.pdfRev;
-
-			Vector3 wiAtLightEnd = Vector3Ops::mkVector3(
-				lightVerts[s - 2].position, lightEnd.position );
-			wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
-
-			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, dirToCam, wiAtLightEnd, nm );
-			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
-			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.geomNormal,
-				Vector3Ops::Normalize( dToPred ) ) );
-			const_cast<BDPTVertex&>( lightPred ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
-		}
-
-		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
-		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
-		if( hasLightPredNM_t0 ) {
-			const_cast<BDPTVertex&>( lightVerts[s - 2] ).pdfRev = savedLightPredPdfRevNM_t0;
-		}
-		return result;
-	}
-
-	//
-	// Case: s == 1 -- connect eye endpoint to light vertex
-	//
-	if( s == 1 )
-	{
-		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
-		const BDPTVertex& lightStart = lightVerts[0];
-
-		// Eye endpoint: surface or medium
-		if( eyeEnd.type != BDPTVertex::SURFACE && eyeEnd.type != BDPTVertex::MEDIUM ) {
-			return result;
-		}
-		if( eyeEnd.type == BDPTVertex::SURFACE && !eyeEnd.pMaterial ) {
-			return result;
-		}
-		if( !eyeEnd.isConnectible ) {
-			return result;
-		}
-
-		const bool eyeIsMediumNM_s1 = (eyeEnd.type == BDPTVertex::MEDIUM);
-
-		Vector3 dirToLight = Vector3Ops::mkVector3( lightStart.position, eyeEnd.position );
-		const Scalar dist = Vector3Ops::Magnitude( dirToLight );
-		if( dist < BDPT_RAY_EPSILON ) {
-			return result;
-		}
-		dirToLight = dirToLight * (1.0 / dist);
-
-		// Env-light: use the actually-sampled wi (= -lightStart.geomNormal)
-		// for env lookup / BSDF eval / pdf / visibility — see RGB twin
-		// (~line 3716) for the full P1a derivation.
-		Vector3 wiForLightNM = dirToLight;
-		const bool envCaseNM_s1 = ( lightStart.pEnvLight != 0 );
-		if( envCaseNM_s1 ) {
-			wiForLightNM = Vector3(
-				-lightStart.geomNormal.x,
-				-lightStart.geomNormal.y,
-				-lightStart.geomNormal.z );
-		}
-
-		{
-			Point3 visTarget = lightStart.position;
-			if( envCaseNM_s1 ) {
-				const Scalar kVisFar = Scalar( 1.0e6 );
-				visTarget = Point3(
-					eyeEnd.position.x + wiForLightNM.x * kVisFar,
-					eyeEnd.position.y + wiForLightNM.y * kVisFar,
-					eyeEnd.position.z + wiForLightNM.z * kVisFar );
-			}
-			if( !IsVisible( caster, eyeEnd.position, visTarget ) ) {
-				return result;
-			}
-		}
-
-		// Evaluate Le at this wavelength
-		Scalar LeNM = 0;
-		if( lightStart.pLuminary && lightStart.pLuminary->GetMaterial() ) {
-			const IEmitter* pEmitter = lightStart.pLuminary->GetMaterial()->GetEmitter();
-			if( pEmitter ) {
-				RayIntersectionGeometric rig(
-					Ray( lightStart.position, -dirToLight ), nullRasterizerState );
-				PathVertexEval::PopulateRIGFromVertex( lightStart, rig );
-				LeNM = pEmitter->emittedRadianceNM( rig, -dirToLight, lightStart.geomNormal, nm );
-			}
-		} else if( lightStart.pLight ) {
-			const RISEPel Le = lightStart.pLight->emittedRadiance( -dirToLight );
-			LeNM = 0.2126 * Le[0] + 0.7152 * Le[1] + 0.0722 * Le[2];
-		} else if( envCaseNM_s1 ) {
-			// Env-light s=1 NEE (spectral): query at the actually-
-			// sampled wi (not the disc-derived approximation).
-			RasterizerState nullRast = {0};
-			Ray skyProbe( eyeEnd.position, wiForLightNM );
-			LeNM = lightStart.pEnvLight->GetRadianceNM( skyProbe, nullRast, nm );
-		}
-
-		if( LeNM <= 0 ) {
-			return result;
-		}
-
-		Vector3 woAtEye;
-		if( t >= 2 ) {
-			woAtEye = Vector3Ops::mkVector3( eyeVerts[t - 2].position, eyeEnd.position );
-			woAtEye = Vector3Ops::Normalize( woAtEye );
-		} else {
-			return result;
-		}
-
-		// BSDF eval in sampled wi (env) or dirToLight (explicit).
-		const Scalar fEyeNM = EvalBSDFAtVertexNM( eyeEnd, wiForLightNM, woAtEye, nm );
-		if( fEyeNM <= 0 ) {
-			return result;
-		}
-
-		// Medium-aware geometric term
-		Scalar G;
-		if( lightStart.isDelta ) {
-			const Scalar dist2 = dist * dist;
-			if( eyeIsMediumNM_s1 ) {
-				G = 1.0 / dist2;
-			} else {
-				const Scalar absCosEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dirToLight ) );
-				G = absCosEye / dist2;
-			}
-		} else {
-			if( eyeIsMediumNM_s1 ) {
-				G = BDPTUtilities::GeometricTermSurfaceMedium( lightStart.position, lightStart.geomNormal, eyeEnd.position );
-			} else {
-				G = BDPTUtilities::GeometricTerm( lightStart.position, lightStart.geomNormal, eyeEnd.position, eyeEnd.geomNormal );
-			}
-		}
-
-		// Connection transmittance (NM) — for env, evaluate along the
-		// SAMPLED wi to RISE_INFINITY via the Ray+maxDist overload,
-		// matching PT.  See RGB twin (~line 3859) for rationale
-		// (adversarial review round 5, P2).
-		Scalar Tr_connNM_s1;
-		if( envCaseNM_s1 ) {
-			Ray envRayNM( eyeEnd.position, wiForLightNM );
-			Tr_connNM_s1 = EvalConnectionTransmittanceNM(
-				envRayNM, RISE_INFINITY, scene, caster, nm,
-				eyeEnd.pMediumObject, eyeEnd.pMediumVol );
-		} else {
-			Tr_connNM_s1 = EvalConnectionTransmittanceNM(
-				eyeEnd.position, lightStart.position, scene, caster, nm,
-				eyeEnd.pMediumObject, eyeEnd.pMediumVol );
-		}
-
-		Scalar pdfLight = lightStart.pdfFwd;
-		if( pdfLight <= 0 ) {
-			return result;
-		}
-
-		// Env-light: bypass disc-based G/pdfLight, use standard PT
-		// env-NEE formula at the sampled wi.  See RGB twin (~line 3826)
-		// for the full P1a rationale.
-		if( envCaseNM_s1 ) {
-			const EnvironmentSampler* pEnvSamp =
-				pLightSampler ? pLightSampler->GetEnvironmentSampler() : 0;
-			if( !pEnvSamp ) {
-				return result;
-			}
-			const Scalar pdfSA = pEnvSamp->Pdf( wiForLightNM );
-			if( pdfSA <= 0 ) {
-				return result;
-			}
-			const Scalar cosEyeWi = eyeIsMediumNM_s1 ? Scalar( 1.0 )
-				: fabs( Vector3Ops::Dot( eyeEnd.geomNormal, wiForLightNM ) );
-			// Continuous-PMF env-NEE rescale — see RGB twin at ~line
-			// 3965 for the full rationale.
-			const Scalar envSelP_s1NM =
-				pLightSampler->EnvSelectProbability();
-			const Scalar invEnvSelNM = ( envSelP_s1NM > 0 ) ?
-				( Scalar( 1 ) / envSelP_s1NM ) : Scalar( 0 );
-			result.contribution = eyeEnd.throughputNM * fEyeNM * LeNM *
-				Tr_connNM_s1 * (cosEyeWi / pdfSA) * invEnvSelNM;
-			result.needsSplat = false;
-			result.valid = true;
-			// MIS weight: fall through to MISWeight() below — see RGB
-			// twin (~line 3917) for the explanation of why we don't
-			// override here.
-		} else {
-			result.contribution = eyeEnd.throughputNM * fEyeNM * LeNM * Tr_connNM_s1 * G / pdfLight;
-			result.needsSplat = false;
-			result.valid = true;
-		}
-
-		// --- Update pdfRev at connection vertices for correct MIS ---
-		const Scalar distSq_conn = dist * dist;
-		const Scalar savedLightPdfRev = lightStart.pdfRev;
-		const Scalar savedEyePdfRev = eyeEnd.pdfRev;
-
-		// MIS bookkeeping direction: for env-light, use the SAMPLED wi
-		// — see RGB twin (~line 3933) for the P1 rationale.
-		const Vector3 dirForMIS_NM_s1 = envCaseNM_s1 ? wiForLightNM : dirToLight;
-
-		if( !lightStart.isDelta ) {
-			const Scalar pdfRevSA = EvalPdfAtVertexNM( eyeEnd, woAtEye, dirForMIS_NM_s1, nm );
-			const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightStart.geomNormal, dirForMIS_NM_s1 ) );
-			const_cast<BDPTVertex&>( lightStart ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
-		}
-
-		{
-			Scalar emissionPdfDir = 0;
-			if( lightStart.pLuminary ) {
-				const Scalar cosAtLight = Vector3Ops::Dot( lightStart.geomNormal, -dirToLight );
-				emissionPdfDir = (cosAtLight > 0) ? (cosAtLight * INV_PI) : 0;
-			} else if( lightStart.pLight ) {
-				emissionPdfDir = lightStart.pLight->pdfDirection( -dirToLight );
-			} else if( envCaseNM_s1 ) {
-				// Env-light NM s=1 NEE: use sampled wi for env pdf to
-				// match the wi used in Le/BSDF/contribution above.
-				const EnvironmentSampler* pEnvSamp =
-					pLightSampler ? pLightSampler->GetEnvironmentSampler() : 0;
-				if( pEnvSamp ) {
-					emissionPdfDir = pEnvSamp->Pdf( wiForLightNM );
-				}
-			}
-			if( eyeIsMediumNM_s1 ) {
-				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-					BDPTUtilities::SolidAngleToAreaMedium( emissionPdfDir, eyeEnd.sigma_t_scalar, distSq_conn );
-			} else {
-				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dirForMIS_NM_s1 ) );
-				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( emissionPdfDir, absCosAtEye, distSq_conn );
-			}
-		}
-
-		// --- Update predecessor pdfRev (eyeVerts[t-2]) ---
-		Scalar savedEyePredPdfRevNM_s1 = 0;
-		const bool hasEyePredNM_s1 = (t >= 2);
-		if( hasEyePredNM_s1 )
-		{
-			const BDPTVertex& eyePred = eyeVerts[t - 2];
-			savedEyePredPdfRevNM_s1 = eyePred.pdfRev;
-
-			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
-			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			const Vector3 dirToPred = Vector3Ops::Normalize( dToPred );
-			const Scalar pdfPredSA = EvalPdfAtVertexNM( eyeEnd, dirForMIS_NM_s1, dirToPred, nm );
-			if( eyePred.type == BDPTVertex::CAMERA ) {
-				const_cast<BDPTVertex&>( eyePred ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( pdfPredSA, Scalar(1.0), distPredSq );
-			} else if( eyePred.type == BDPTVertex::MEDIUM ) {
-				const_cast<BDPTVertex&>( eyePred ).pdfRev =
-					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, eyePred.sigma_t_scalar, distPredSq );
-			} else {
-				const Scalar absCosAtPred =
-					fabs( Vector3Ops::Dot( eyePred.geomNormal, dirToPred ) );
-				const_cast<BDPTVertex&>( eyePred ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
-			}
-		}
-
-		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
-		const_cast<BDPTVertex&>( lightStart ).pdfRev = savedLightPdfRev;
-		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyePdfRev;
-		if( hasEyePredNM_s1 ) {
-			const_cast<BDPTVertex&>( eyeVerts[t - 2] ).pdfRev = savedEyePredPdfRevNM_s1;
-		}
-		return result;
-	}
-
-	//
-	// Case: t == 1 -- connect light endpoint to camera
-	//
-	if( t == 1 )
-	{
-		const BDPTVertex& lightEnd = lightVerts[s - 1];
-		if( !lightEnd.isConnectible ) {
-			return result;
-		}
-
-		// Surface or medium vertices can connect to camera
-		if( s >= 2 && lightEnd.type != BDPTVertex::SURFACE && lightEnd.type != BDPTVertex::MEDIUM ) {
-			return result;
-		}
-
-		const bool lightIsMediumNM_t1 = (lightEnd.type == BDPTVertex::MEDIUM);
-
-		Point2 rasterPos;
-		if( !BDPTCameraUtilities::Rasterize( camera, lightEnd.position, rasterPos ) ) {
-			return result;
-		}
-
-		// Same validity rule as the RGB path above: t == 1 only handles a
-		// direct camera connection, not a refracted one through glass.
-		const Point3 camPos = camera.GetLocation();
-		if( !IsVisible( caster, lightEnd.position, camPos ) ) {
-			return result;
-		}
-
-		Vector3 dirToCam = Vector3Ops::mkVector3( camPos, lightEnd.position );
-		const Scalar dist = Vector3Ops::Magnitude( dirToCam );
-		if( dist < BDPT_RAY_EPSILON ) {
-			return result;
-		}
-		dirToCam = dirToCam * (1.0 / dist);
-
-		Ray camRay( camPos, -dirToCam );
-		const Scalar We = BDPTCameraUtilities::Importance( camera, camRay );
-		if( We <= 0 ) {
-			return result;
-		}
-
-		Scalar fLightNM = 1.0;
-		if( (lightEnd.type == BDPTVertex::SURFACE && lightEnd.pMaterial) || lightIsMediumNM_t1 ) {
-			if( s >= 2 ) {
-				Vector3 wiAtLight = Vector3Ops::mkVector3( lightVerts[s - 2].position, lightEnd.position );
-				wiAtLight = Vector3Ops::Normalize( wiAtLight );
-				fLightNM = EvalBSDFAtVertexNM( lightEnd, wiAtLight, dirToCam, nm );
-			}
-		} else if( lightEnd.type == BDPTVertex::LIGHT ) {
-			// s == 1: light directly connects to camera
-			// Env-light vertex 0 has pLight == pLuminary == NULL and the
-			// disc is a parallel-ray emitter authorised only in direction
-			// -wi — connecting it directly to a camera in any other
-			// direction is degenerate.  See the RGB twin for the full
-			// rationale; matches PBRT-v3/v4 behaviour.
-			if( lightEnd.pEnvLight ) {
-				return result;
-			}
-
-			Scalar LeNM = 0;
-			if( lightEnd.pLuminary && lightEnd.pLuminary->GetMaterial() ) {
-				const IEmitter* pEmitter = lightEnd.pLuminary->GetMaterial()->GetEmitter();
-				if( pEmitter ) {
-					RayIntersectionGeometric rig(
-						Ray( lightEnd.position, dirToCam ), nullRasterizerState );
-					PathVertexEval::PopulateRIGFromVertex( lightEnd, rig );
-					LeNM = pEmitter->emittedRadianceNM( rig, dirToCam, lightEnd.geomNormal, nm );
-				}
-			} else if( lightEnd.pLight ) {
-				const RISEPel Le = lightEnd.pLight->emittedRadiance( dirToCam );
-				LeNM = 0.2126 * Le[0] + 0.7152 * Le[1] + 0.0722 * Le[2];
-			}
-
-			const Scalar pdfLight = lightEnd.pdfFwd;
-			if( pdfLight <= 0 ) {
-				return result;
-			}
-
-			const Scalar distSq = dist * dist;
-			const Scalar absCosLight = lightEnd.isDelta ?
-				Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
-			const Scalar G = absCosLight / distSq;
-
-			result.contribution = LeNM * G * We / pdfLight;
-			result.rasterPos = rasterPos;
-			result.needsSplat = true;
-			result.valid = true;
-
-			// --- Update pdfRev at connection vertices for correct MIS ---
-			const Scalar savedLightPdfRevNM = lightEnd.pdfRev;
-			const Scalar savedEyePdfRevNM = eyeVerts[0].pdfRev;
-
-			{
-				Ray camRayToLight( camPos, -dirToCam );
-				const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
-				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
-			}
-			{
-				Scalar emPdfDir = 0;
-				if( lightEnd.pLuminary ) {
-					// One-sided emission PDF
-					const Scalar cosEmit = Vector3Ops::Dot( lightEnd.geomNormal, dirToCam );
-					emPdfDir = (cosEmit > 0) ? (cosEmit * INV_PI) : 0;
-				} else if( lightEnd.pLight ) {
-					emPdfDir = lightEnd.pLight->pdfDirection( dirToCam );
-				}
-				const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( emPdfDir, Scalar(1.0), distSq );
-			}
-
-			result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
-			const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRevNM;
-			const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev = savedEyePdfRevNM;
-			return result;
-		}
-
-		if( fLightNM <= 0 ) {
-			return result;
-		}
-
-		// Medium-aware geometric term (camera has no surface normal)
-		const Scalar distSq = dist * dist;
-		const Scalar absCosLight = lightIsMediumNM_t1 ?
-			Scalar(1.0) : fabs( Vector3Ops::Dot( lightEnd.geomNormal, dirToCam ) );
-		const Scalar G = absCosLight / distSq;
-
-		// Connection transmittance (NM)
-		const Scalar Tr_connNM_t1 = EvalConnectionTransmittanceNM(
-			lightEnd.position, camPos, scene, caster, nm,
-			lightEnd.pMediumObject, lightEnd.pMediumVol );
-
-		result.contribution = lightEnd.throughputNM * fLightNM * Tr_connNM_t1 * G * We;
-		result.rasterPos = rasterPos;
-		result.needsSplat = true;
-		result.valid = true;
-
-		// --- Update pdfRev at connection vertices for correct MIS ---
-		const Scalar savedLightPdfRevNM2 = lightEnd.pdfRev;
-		const Scalar savedEyePdfRevNM2 = eyeVerts[0].pdfRev;
-
-		{
-			Ray camRayToLight( camPos, -dirToCam );
-			const Scalar camPdfDir = BDPTCameraUtilities::PdfDirection( camera, camRayToLight );
-			if( lightIsMediumNM_t1 ) {
-				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
-					BDPTUtilities::SolidAngleToAreaMedium( camPdfDir, lightEnd.sigma_t_scalar, distSq );
-			} else {
-				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( camPdfDir, absCosLight, distSq );
-			}
-		}
-
-		if( s >= 2 && (lightEnd.pMaterial || lightIsMediumNM_t1) ) {
-			Vector3 wiAtLightMIS = Vector3Ops::mkVector3(
-				lightVerts[s - 2].position, lightEnd.position );
-			wiAtLightMIS = Vector3Ops::Normalize( wiAtLightMIS );
-			const Scalar pdfRevSA = EvalPdfAtVertexNM( lightEnd, wiAtLightMIS, dirToCam, nm );
-			const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev =
-				BDPTUtilities::SolidAngleToArea( pdfRevSA, Scalar(1.0), distSq );
-		}
-
-		// --- Update predecessor pdfRev (lightVerts[s-2]) ---
-		Scalar savedLightPredPdfRevNM_t1 = 0;
-		const bool hasLightPredNM_t1 = (s >= 2 && (lightEnd.pMaterial || lightIsMediumNM_t1));
-		if( hasLightPredNM_t1 )
-		{
-			const BDPTVertex& lightPred = lightVerts[s - 2];
-			savedLightPredPdfRevNM_t1 = lightPred.pdfRev;
-
-			Vector3 wiAtLightEnd = Vector3Ops::mkVector3(
-				lightVerts[s - 2].position, lightEnd.position );
-			wiAtLightEnd = Vector3Ops::Normalize( wiAtLightEnd );
-
-			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, dirToCam, wiAtLightEnd, nm );
-			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
-			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			if( lightPred.type == BDPTVertex::MEDIUM ) {
-				const_cast<BDPTVertex&>( lightPred ).pdfRev =
-					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
-			} else {
-				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.geomNormal,
-					Vector3Ops::Normalize( dToPred ) ) );
-				const_cast<BDPTVertex&>( lightPred ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
-			}
-		}
-
-		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
-		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRevNM2;
-		const_cast<BDPTVertex&>( eyeVerts[0] ).pdfRev = savedEyePdfRevNM2;
-		if( hasLightPredNM_t1 ) {
-			const_cast<BDPTVertex&>( lightVerts[s - 2] ).pdfRev = savedLightPredPdfRevNM_t1;
-		}
-		return result;
-	}
-
-	//
-	// General case: s > 1, t > 1
-	//
-	{
-		const BDPTVertex& lightEnd = lightVerts[s - 1];
-		const BDPTVertex& eyeEnd = eyeVerts[t - 1];
-
-		if( !lightEnd.isConnectible || !eyeEnd.isConnectible ) {
-			return result;
-		}
-
-		// Both endpoints must be connectable surface or medium vertices
-		if( lightEnd.type != BDPTVertex::SURFACE && lightEnd.type != BDPTVertex::MEDIUM ) {
-			return result;
-		}
-		if( eyeEnd.type != BDPTVertex::SURFACE && eyeEnd.type != BDPTVertex::MEDIUM ) {
-			return result;
-		}
-		if( lightEnd.type == BDPTVertex::SURFACE && !lightEnd.pMaterial ) {
-			return result;
-		}
-		if( eyeEnd.type == BDPTVertex::SURFACE && !eyeEnd.pMaterial ) {
-			return result;
-		}
-
-		const bool lightIsMediumNM = (lightEnd.type == BDPTVertex::MEDIUM);
-		const bool eyeIsMediumNM = (eyeEnd.type == BDPTVertex::MEDIUM);
-
-		Vector3 dConnect = Vector3Ops::mkVector3( lightEnd.position, eyeEnd.position );
-		const Scalar dist = Vector3Ops::Magnitude( dConnect );
-		if( dist < BDPT_RAY_EPSILON ) {
-			return result;
-		}
-		dConnect = dConnect * (1.0 / dist);
-
-		if( !IsVisible( caster, eyeEnd.position, lightEnd.position ) ) {
-			return result;
-		}
-
-		Vector3 wiAtLight = Vector3Ops::mkVector3(
-			lightVerts[s - 2].position, lightEnd.position );
-		wiAtLight = Vector3Ops::Normalize( wiAtLight );
-		const Vector3 woAtLight = -dConnect;
-
-		const Scalar fLightNM = EvalBSDFAtVertexNM( lightEnd, wiAtLight, woAtLight, nm );
-		if( fLightNM <= 0 ) {
-			return result;
-		}
-
-		Vector3 woAtEye = Vector3Ops::mkVector3(
-			eyeVerts[t - 2].position, eyeEnd.position );
-		woAtEye = Vector3Ops::Normalize( woAtEye );
-		const Vector3 wiAtEye = dConnect;
-
-		const Scalar fEyeNM = EvalBSDFAtVertexNM( eyeEnd, wiAtEye, woAtEye, nm );
-		if( fEyeNM <= 0 ) {
-			return result;
-		}
-
-		// Medium-aware geometric term
-		Scalar G;
-		if( lightIsMediumNM && eyeIsMediumNM ) {
-			G = BDPTUtilities::GeometricTermMediumMedium(
-				lightEnd.position, eyeEnd.position );
-		} else if( lightIsMediumNM ) {
-			G = BDPTUtilities::GeometricTermSurfaceMedium( eyeEnd.position, eyeEnd.geomNormal, lightEnd.position );
-		} else if( eyeIsMediumNM ) {
-			G = BDPTUtilities::GeometricTermSurfaceMedium( lightEnd.position, lightEnd.geomNormal, eyeEnd.position );
-		} else {
-			G = BDPTUtilities::GeometricTerm( lightEnd.position, lightEnd.geomNormal, eyeEnd.position, eyeEnd.geomNormal );
-		}
-
-		if( G <= 0 ) {
-			return result;
-		}
-
-		// Connection transmittance (NM)
-		const Scalar Tr_connNM = EvalConnectionTransmittanceNM(
-			eyeEnd.position, lightEnd.position, scene, caster, nm,
-			eyeEnd.pMediumObject, eyeEnd.pMediumVol );
-
-		result.contribution = lightEnd.throughputNM * fLightNM * G * Tr_connNM * fEyeNM * eyeEnd.throughputNM;
-		result.needsSplat = false;
-		result.valid = true;
-
-		// --- Update pdfRev at connection vertices for correct MIS ---
-		const Scalar distSq_conn = dist * dist;
-
-		const Scalar savedLightPdfRev = lightEnd.pdfRev;
-		const Scalar savedEyePdfRev = eyeEnd.pdfRev;
-
-		{
-			const Scalar pdfRevSA = EvalPdfAtVertexNM( eyeEnd, woAtEye, dConnect, nm );
-			if( lightIsMediumNM ) {
-				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
-					BDPTUtilities::SolidAngleToAreaMedium( pdfRevSA, lightEnd.sigma_t_scalar, distSq_conn );
-			} else {
-				const Scalar absCosAtLight = fabs( Vector3Ops::Dot( lightEnd.geomNormal, dConnect ) );
-				const_cast<BDPTVertex&>( lightEnd ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtLight, distSq_conn );
-			}
-		}
-
-		{
-			const Scalar pdfRevSA = EvalPdfAtVertexNM( lightEnd, wiAtLight, -dConnect, nm );
-			if( eyeIsMediumNM ) {
-				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-					BDPTUtilities::SolidAngleToAreaMedium( pdfRevSA, eyeEnd.sigma_t_scalar, distSq_conn );
-			} else {
-				const Scalar absCosAtEye = fabs( Vector3Ops::Dot( eyeEnd.geomNormal, dConnect ) );
-				const_cast<BDPTVertex&>( eyeEnd ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( pdfRevSA, absCosAtEye, distSq_conn );
-			}
-		}
-
-		// --- Update predecessor pdfRev at lightVerts[s-2] ---
-		Scalar savedLightPredPdfRevNM = 0;
-		const bool hasLightPredNM = (s >= 2);
-		if( hasLightPredNM )
-		{
-			const BDPTVertex& lightPred = lightVerts[s - 2];
-			savedLightPredPdfRevNM = lightPred.pdfRev;
-
-			const Scalar pdfPredSA = EvalPdfAtVertexNM( lightEnd, woAtLight, wiAtLight, nm );
-			const Vector3 dToPred = Vector3Ops::mkVector3( lightPred.position, lightEnd.position );
-			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			if( lightPred.type == BDPTVertex::MEDIUM ) {
-				const_cast<BDPTVertex&>( lightPred ).pdfRev =
-					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, lightPred.sigma_t_scalar, distPredSq );
-			} else {
-				const Scalar absCosAtPred = fabs( Vector3Ops::Dot( lightPred.geomNormal,
-					Vector3Ops::Normalize( dToPred ) ) );
-				const_cast<BDPTVertex&>( lightPred ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
-			}
-		}
-
-		// --- Update predecessor pdfRev at eyeVerts[t-2] ---
-		Scalar savedEyePredPdfRevNM = 0;
-		const bool hasEyePredNM = (t >= 2);
-		if( hasEyePredNM )
-		{
-			const BDPTVertex& eyePred = eyeVerts[t - 2];
-			savedEyePredPdfRevNM = eyePred.pdfRev;
-
-			const Scalar pdfPredSA = EvalPdfAtVertexNM( eyeEnd, wiAtEye, woAtEye, nm );
-			const Vector3 dToPred = Vector3Ops::mkVector3( eyePred.position, eyeEnd.position );
-			const Scalar distPredSq = Vector3Ops::SquaredModulus( dToPred );
-			if( eyePred.type == BDPTVertex::CAMERA ) {
-				const_cast<BDPTVertex&>( eyePred ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( pdfPredSA, Scalar(1.0), distPredSq );
-			} else if( eyePred.type == BDPTVertex::MEDIUM ) {
-				const_cast<BDPTVertex&>( eyePred ).pdfRev =
-					BDPTUtilities::SolidAngleToAreaMedium( pdfPredSA, eyePred.sigma_t_scalar, distPredSq );
-			} else {
-				const Scalar absCosAtPred =
-					fabs( Vector3Ops::Dot( eyePred.geomNormal, Vector3Ops::Normalize( dToPred ) ) );
-				const_cast<BDPTVertex&>( eyePred ).pdfRev =
-					BDPTUtilities::SolidAngleToArea( pdfPredSA, absCosAtPred, distPredSq );
-			}
-		}
-
-		result.misWeight = MISWeight( lightVerts, eyeVerts, s, t );
-
-		const_cast<BDPTVertex&>( lightEnd ).pdfRev = savedLightPdfRev;
-		const_cast<BDPTVertex&>( eyeEnd ).pdfRev = savedEyePdfRev;
-		if( hasLightPredNM ) {
-			const_cast<BDPTVertex&>( lightVerts[s - 2] ).pdfRev = savedLightPredPdfRevNM;
-		}
-		if( hasEyePredNM ) {
-			const_cast<BDPTVertex&>( eyeVerts[t - 2] ).pdfRev = savedEyePredPdfRevNM;
-		}
-
-		return result;
-	}
+	return ConnectAndEvaluateImpl<NMTag>(
+		*this, pLightSampler, lightVerts, eyeVerts, s, t, scene, caster, camera, NMTag( nm ) );
 }
 
 //////////////////////////////////////////////////////////////////////

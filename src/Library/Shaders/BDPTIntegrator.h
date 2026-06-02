@@ -392,13 +392,6 @@ namespace RISE
 				const Vector3& wo
 				) const;
 
-			/// Helper: checks if a connection between two points is unoccluded.
-			bool IsVisible(
-				const IRayCaster& caster,
-				const Point3& p1,
-				const Point3& p2
-				) const;
-
 			/// NM helper: evaluates the BSDF at a surface vertex for a single wavelength
 			Scalar EvalBSDFAtVertexNM(
 				const BDPTVertex& vertex,
