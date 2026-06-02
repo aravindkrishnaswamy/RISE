@@ -3808,14 +3808,14 @@ ConnectAndEvaluateImpl(
 				if( lightEnd.pLight ) {
 					LeToCam = LightRadiance<Tag>( lightEnd.pLight, dirToCam, tag );
 				} else if( lightEnd.pLuminary && lightEnd.pLuminary->GetMaterial() ) {
-					// Original Pel splats fLight's (1,1,1) init when a LIGHT-vertex
-					// luminary carries no emitter -- an unreachable corner (a sampled
-					// mesh-luminary vertex always has an emitter).  Preserved for
-					// byte-identity with the Pel original, keeping the pre-existing
-					// Pel(white)/NM(black) emitter-null fallback asymmetry intact (a
-					// latent white-firefly the user may address separately; see F3a outcome).
-					const IEmitter* pLumEmitter = lightEnd.pLuminary->GetMaterial()->GetEmitter();
-					LeToCam = pLumEmitter ? LuminaryRadiance<Tag>( lightEnd, dirToCam, tag ) : TrOne<Tag>();
+					// An emitterless luminary contributes no radiance, so LuminaryRadiance
+					// returns zero (black) here -- matching the NM side below.  This was a
+					// latent white-firefly: the Pel original left fLight at its (1,1,1) init
+					// when a LIGHT-vertex luminary carried no emitter, splatting white where
+					// zero is correct.  Unreachable today (a sampled mesh-luminary vertex
+					// always carries an emitter) -- defensive zero for any future
+					// emitterless luminary type.
+					LeToCam = LuminaryRadiance<Tag>( lightEnd, dirToCam, tag );
 				} else {
 					return result;
 				}
