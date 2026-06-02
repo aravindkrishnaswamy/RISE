@@ -2737,3 +2737,46 @@ The R3 reviewer (a `general-purpose` sub-agent, which carries `spawn_task` acces
 **F3b** — `EvaluateAllStrategies{,NM}` (+ the `EvalEmitterRadianceNM` → `EvalEmitterRadiance<Tag>` fold that F3a seeded via `SurfaceEmitterRadiance`) + the Phase-4 `IsVisible`/`EvalBSDFAtVertex`/`EvalPdfAtVertex` dead-member cleanup. With F3b, Phase 2c is complete; Phase 2d (shared `EvaluatePathConnection<Tag>` primitive across BDPT↔VCM) is the separate post-2c effort.
 
 ### Working tree: uncommitted; per "NEVER COMMIT".
+
+## Latent white-firefly — FIXED (Phase 2c F3a follow-up)
+
+**Session date**: 2026-06-02. Defensive one-site fix of the pre-existing Pel/NM asymmetry flagged in the F3a outcome (divergence #1 above): the t=1 LIGHT emitter-null fallback in `ConnectAndEvaluateImpl<Tag>` splatted **white `(1,1,1)`** on the Pel path and **black (zero)** on the NM path. White is wrong — an emitterless luminary emits no radiance — so the fix makes the Pel path return zero too. **Behaviourally inert on every current scene** (the branch is unreachable; see Reachability), so this is a latent-firefly removal, not a visible change.
+
+### The site & the change
+[BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) `ConnectAndEvaluateImpl<Tag>`, the **t=1 LIGHT branch** (light vertex → camera splat), Pel emitterless-luminary sub-case (`lightEnd.pLight == NULL && lightEnd.pLuminary && GetMaterial()`):
+
+| | before | after |
+|---|---|---|
+| **Pel** | `pLumEmitter = GetEmitter(); LeToCam = pLumEmitter ? LuminaryRadiance<Tag>(…) : TrOne<Tag>()` → **white `(1,1,1)`** when emitterless | `LeToCam = LuminaryRadiance<Tag>( lightEnd, dirToCam, tag )` → **zero** when emitterless |
+| **NM** | `LeToCam = LuminaryRadiance<Tag>(…)` → **zero** when emitterless | (unchanged) |
+
+`LuminaryRadiance<Tag>` (BDPTIntegrator.cpp:2793-2807) has an internal null-emitter guard returning `SpectralValueTraits<Tag>::zero()` (Pel `RISEPel(0,0,0)`, NM `0`), so the new Pel call returns black exactly where the old ternary returned white. The now-dead `pLumEmitter` local is removed (no `-Wunused-variable`). **Net: 8 ins / 8 del, one hunk, `.h` untouched.** The surrounding `if constexpr(Traits::is_pel)` is **kept** — it still carries the *separate* intentional branch-order/env-disc divergence (F3a divergence #3: Pel `pLight→pLuminary→else-return`; NM `pEnvLight-first→pLuminary→pLight`), out of scope for this firefly fix. Both tags' luminary sub-case now evaluate the identical `LeToCam = LuminaryRadiance<Tag>( lightEnd, dirToCam, tag )` (Pel 3818 ≡ NM 3827).
+
+### Code-read correctness argument
+The path is unreachable, so the render evidence proves only "no regression"; correctness is established by reading:
+- **(a) NM already returned zero.** The NM branch calls `LuminaryRadiance<NMTag>`, whose null-emitter guard returns `0` (BDPTIntegrator.cpp:2795-2798). The NM light-subpath `Le`-init at 4833-4845 independently guards `LeNM = 0` on a null emitter — the same convention.
+- **(b) Pel now returns zero too.** `LuminaryRadiance<PelTag>` returns `RISEPel(0,0,0)` via the same guard. Old white came from `TrOne<PelTag>() = RISEPel(1,1,1)` (BDPTIntegrator.cpp:993).
+- **(c) Zero is physically correct.** A luminary with no emitter contributes no radiance; the old `(1,1,1)` was a meaningless bright constant — a textbook firefly (a bright value where zero is correct; cf. [sms-firefly-diagnosis.md](skills/sms-firefly-diagnosis.md) Example C).
+
+### Reachability — unreachable via any constructible scene
+The emitterless sub-case **cannot** be reached: `LightSampler::Prepare` ([LightSampler.cpp:620-646](../src/Library/Lights/LightSampler.cpp)) adds a mesh luminary to the sampling alias table **only if** `GetMaterial()->GetEmitter()` is non-null (**line 623**) **and** `exitance > 0` (line 628). Every sampled `ls.pLuminary` (LightSampler.cpp:1021) therefore carries a non-null emitter, and BDPT light-vertex-0 copies it verbatim (`v.pLuminary = ls.pLuminary`, BDPTIntegrator.cpp:4874). So in the t=1 LIGHT branch `lightEnd.pLuminary->GetMaterial()->GetEmitter()` is **always non-null** — the `? : TrOne` else-arm never executed. The scene language has no way to express a *sampleable* emitterless luminary. → The fix is a guaranteed no-op today; it is defensive for any future luminary type that could be sampled without an emitter.
+
+### Why it's a bit-level no-op (not merely "within noise")
+In the reachable case (emitter present), old `pLumEmitter ? LuminaryRadiance<Tag>(…) : TrOne<Tag>()` and new `LuminaryRadiance<Tag>(…)` execute the **identical** function call with identical args; the removed `pLumEmitter = GetEmitter()` is a pointer fetch with no FP effect (and `LuminaryRadiance` re-resolves `GetEmitter()` internally regardless). Any residual per-pixel delta is RISE's threaded film-accumulation-order MC noise, not a consequence of the change.
+
+### Gates
+- **Gate 1 — build**: clean from-scratch recompile of `BDPTIntegrator.cpp` (`.o` + `.d` deleted) + `make -C build/make/rise -j8 all` + `make tests`: **0 warnings, 0 errors**. Xcode **RISE-GUI** (arm64, Development) **BUILD SUCCEEDED**, `BDPTIntegrator.cpp` recompiled, **0 compiler warnings** (the 2 `warning:` lines in the log are Apple tooling notices — xcodebuild destination selection + AppIntents metadata — not code).
+- **Gate 2 — tests**: **116/116** ([run_all_tests.sh](../run_all_tests.sh)), incl. `BDPTStrategyBalanceTest`, `EnvLightBalanceTest` (env-IBL oracle), `VCMStrategyBalanceTest`, `VCMRecurrenceTest`, `VCMSpectralRecurrenceTest`, `SobolDimensionBudgetTest`.
+- **Gate 3 — no-op on current scenes** (post-fix vs pre-fix, [scripts/bdpt_connection_baselines.sh](../scripts/bdpt_connection_baselines.sh), 16-scene manifest). The Pel-only change can only touch the 5 Pel-BDPT scenes; all sit at ≤ 0.0272 % post-Δ (4 of 5 ≤ 0.0034 %), the largest (`env_bounded_fog_bdpt` 0.0272 %) *under* its own 2-trial floor (0.0509 %). The 9 **provably-unaffected** scenes (5 NM-BDPT — the change is discarded in the `<NMTag>` instantiation — + 4 VCM no-touch) show post-Δ up to **0.6869 %**, exceeding their 2-trial floors by up to 6.7× — pure MC noise *by construction* (byte-identical executed code pre/post), which establishes the real noise band and re-confirms the F3a finding that the 2-trial floor under-estimates variance. **3-trial confirmation** on `cornellbox_bdpt` (the canonical area-light scene exercising the changed t=1 LIGHT branch): pre-mean 153.731904 vs post-mean 153.730759 → **mean delta 0.0007 %, *smaller* than the post binary's own run-to-run spread 0.0013 %** — pre and post statistically indistinguishable.
+- **Gate 4 — code-read** (above): NM was already zero; Pel now zero; zero is physically correct.
+- **Gate 5 — independent review** (read-only Explore agent): **PASS 5/5 + scope** — confirmed the single-hunk diff (3808-3821, 8 ins/8 del, only this file), Pel(3818)≡NM(3827) `LuminaryRadiance<Tag>` call with the branch-order divergence intentionally preserved, the `LuminaryRadiance` null-emitter `zero()` guard for both tags (2795-2797), `TrOne<PelTag>()=RISEPel(1,1,1)` (993), the LightSampler emitter filter (line 623) making the branch unreachable, and zero residual `pLumEmitter` references (no warning).
+
+### Reachable via a constructible scene?
+**No.** The scene language cannot create a *sampleable* luminary without an emitter (LightSampler filters them at registration), so no white→black image could be produced to demonstrate the fix directly — the correctness argument is the code-read above. The fix is purely defensive; it resolves F3a divergence #1.
+
+### Files
+- [src/Library/Shaders/BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) — one hunk in `ConnectAndEvaluateImpl<Tag>` t=1 LIGHT branch (Pel emitterless fallback white→black); `.h` untouched.
+- `scripts/_apply_f3firefly.py` — disposable count-asserted one-shot apply (audit record; **deleted** post-writeup — the fix now lives in the `.cpp`).
+- `tests/baselines_refactor/pre_f3firefly_bdptconn/` — pre-edit baseline PNGs + 3-trial confirmation renders (untracked; regenerable).
+
+### Working tree: uncommitted; per "NEVER COMMIT". F3a divergence #1 is now resolved; F3b is unchanged and remains the next family.
