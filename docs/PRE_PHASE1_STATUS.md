@@ -2780,3 +2780,101 @@ In the reachable case (emitter present), old `pLumEmitter ? LuminaryRadiance<Tag
 - `tests/baselines_refactor/pre_f3firefly_bdptconn/` — pre-edit baseline PNGs + 3-trial confirmation renders (untracked; regenerable).
 
 ### Working tree: uncommitted; per "NEVER COMMIT". F3a divergence #1 is now resolved; F3b is unchanged and remains the next family.
+
+## Phase 2c F3b outcome — `EvaluateAllStrategies{,NM}` templatized + `EvalEmitterRadiance<Tag>` fold complete → **Phase 2c COMPLETE** (2026-06-02)
+
+**Session date**: 2026-06-02. Fifth and FINAL BDPT family of Phase 2c — the **second half of F3 (connection)**: the (s,t) strategy-enumeration driver + the emitter-radiance fold F3a seeded. With F3b, **Phase 2c is complete and the entire integrator refactor (Phases 0/1/2a/2b/2c) is complete** — PT, VCM, BDPT are all single-source-of-truth across Pel/NM.
+
+### TL;DR
+`EvaluateAllStrategies` (Pel, ~243 ln) + `EvaluateAllStrategiesNM` (~103 ln) collapsed into one free-function template **`EvaluateAllStrategiesImpl<Tag>`** (anonymous namespace) behind two thin member forwarders, plus **1 new dispatch helper** (`DispatchConnectAndEvaluate<Tag>` → the public `ConnectAndEvaluate{,NM}` members, which own `pLightSampler`). The **`EvalEmitterRadianceNM` → `EvalEmitterRadiance<Tag>` fold** that F3a seeded is now complete: F3a's `SurfaceEmitterRadiance<Tag>` was renamed `EvalEmitterRadiance<Tag>` (single source), the protected `EvalEmitterRadianceNM` **member was removed** (its only 2 callers — both in `RecomputeSubpathThroughputNM`'s HWSS light-emission ratio — rerouted to `EvalEmitterRadiance<NMTag>`), and its `.h` declaration deleted. **6 `if constexpr`** carry the genuine divergences (all Pel-only: the OpenPGL complete-path strategy-selection prologue, the `useComplete` init, loop-B's `cr.s`/`cr.t` post-set, the zero-exitance value-type split, the 2 Pel-only training records). The guiding state the free function can't reach (`protected` members `pCompletePathGuide`, the 3 strategy-selection atomics, `pGuidingField`, `guidingTrainingStats`/`Mutex`, `pLightGuidingField`, `maxLightGuidingDepth`) is threaded as parameters under `#ifdef RISE_ENABLE_OPENPGL` (the F2b pattern). **`BDPTIntegrator.h` reduced by 7 lines** (the dead `EvalEmitterRadianceNM` decl — protected non-virtual, zero external callers → ABI-safe). Net `BDPTIntegrator.cpp` **6,275 → 6,266 (−9)** (the small net reflects the Pel `if constexpr` expansion + threaded OpenPGL signature offsetting the NM collapse + member removal; the win is single-source-of-truth, not LoC). Zero behaviour change across all 16 connection baselines + 116/116 tests; 3-reviewer adversarial review (read-only **Explore** agents, no `spawn_task`) **0 P1 / 0 P2**.
+
+### The shape (mirrors F1/F2a/F2b/F3a)
+- **`EvaluateAllStrategiesImpl<Tag>`** — free function taking `const BDPTIntegrator& self` (to reach the PUBLIC `ConnectAndEvaluate{,NM}` members via the `DispatchConnectAndEvaluate<Tag>` helper — they resolve `pLightSampler` themselves, so it is NOT threaded) + the 5 original args + `ISampler* pSampler` + (under `#ifdef RISE_ENABLE_OPENPGL`) the 11 guiding-state params + `Tag`. Free-function form keeps the `.h` untouched apart from the sanctioned member removal.
+- **Return type via `ConnectionResultFor<Tag>::type`** (the F3a trait, reused). `CR` typedef. NM's `ConnectAndEvaluateNM` sets `cr.s=s` at entry and `ConnectionResultNM` has no `t`; Pel's aggregator sets `cr.s`/`cr.t` post-call → `if constexpr( Traits::is_pel ){ cr.s=s; cr.t=t; }`.
+- **The Pel-only OpenPGL complete-path strategy-selection block** (`pCompletePathGuide->QueryStrategyWeight` RIS over candidates, the dedicated Sobol stream 47, `techniqueSamples` loop) is wrapped in `if constexpr( Traits::is_pel )`. The original Pel `#ifdef OPENPGL if(useComplete){A} else #endif {B}` was restructured to `#ifdef OPENPGL if constexpr(is_pel){ if(useComplete){A} } #endif  if(!useComplete){B}` — logically equivalent for Pel (A/B mutually exclusive on `useComplete`), and for NM `useComplete` is always `false` so only loop B runs (matching the NM original, which had no complete-path selection). The 3 strategy-selection atomics became pointer params (`pStrategySelectionPathCount->fetch_add` etc.); the forwarders pass `&strategySelectionPathCount` etc. (the `mutable std::atomic` members).
+- **`EvalEmitterRadiance<Tag>`** (renamed from F3a's `SurfaceEmitterRadiance<Tag>`) — the single emitter-radiance dispatch. **Per-tag input contract differs (intentional, pre-existing, documented in-code):** Pel takes the caller's already-resolved surface emitter and calls it directly (env/pLight resolved by the s=0 caller); NM ignores `pEmitter` and re-resolves env/pLight/surface from the vertex (used by BOTH the s=0 connection site AND the HWSS `RecomputeSubpathThroughputNM` light-emission ratio). The NMTag branch is byte-faithful to the removed `EvalEmitterRadianceNM` member.
+- **2 member forwarders** (Pel → `Impl<PelTag>(*this, …, pSampler, <guiding members>, PelTag{})`; NM → `Impl<NMTag>(*this, …, nullptr, <guiding members>, NMTag(nm))`).
+- Applied via two count-asserted one-shot Python transforms ([scripts/_apply_f3b_phase2c.py](../scripts/_apply_f3b_phase2c.py) Pel+fold, [scripts/_apply_f3b_phase2c_nm.py](../scripts/_apply_f3b_phase2c_nm.py) NM-forwarder — **disposable, deleted post-writeup**) that EXTRACT the real Pel body (tabs preserved) + apply 9 anchored substitutions; dry-run + in-memory unified-diff inspection preceded each apply. Pel verified + locked before the NM collapse.
+
+### Genuine Pel/NM divergences carried by `if constexpr` (preserved, NOT fixed)
+All 6 are **Pel-only** (the NM `EvaluateAllStrategiesNM` was the strict subset — no complete-path selection):
+1. **`useCompletePathStrategySelection` init** — Pel reads `pCompletePathGuide`/`pSampler`/config; NM stays `false`.
+2. **OpenPGL complete-path strategy-selection prologue (A-block)** — Pel RIS-samples (s,t) techniques; NM has no analog.
+3. **Loop-B `cr.s`/`cr.t` post-set** — Pel aggregator sets both; NM's `ConnectAndEvaluateNM` sets `cr.s` internally and has no `t`.
+4. **Zero-exitance directional/ambient block value-type** — Pel `RISEPel amount` + `ComputeDirectLighting` + `eyeEnd.throughput`; NM `Scalar leNM` + `ComputeDirectLightingNM(…, tag.nm)` + `eyeEnd.throughputNM` (Pel sets `cr.t`, NM doesn't). Otherwise structurally identical (same light loop, eyeEnd checks, `bReceivesShadows`).
+5/6. **Training-record epilogue** — Pel runs `RecordCompletePathSamples` + `RecordGuidingTrainingPath` (both consume Pel-typed `results`, so under `if constexpr(is_pel)`); the shared `RecordGuidingTrainingLightPath` runs for both tags (matching both originals).
+
+### The emitter-radiance fold (the F3a follow-up, now complete)
+- `EvalEmitterRadianceNM` (protected member, BDPTIntegrator.cpp + `.h`) had **zero external callers** — only 2 internal sites in `RecomputeSubpathThroughputNM` (HWSS companion-wavelength light-vertex emission ratio). Verified by repo-wide grep (the abi-preserving-api-evolution discipline: protected non-virtual, no derived-class refs, no vtable impact → ABI-safe to remove).
+- Rerouted both to `EvalEmitterRadiance<NMTag>( v, outDir, nullptr, NMTag( heroNM/companionNM ) )` — byte-identical (the NM branch ignores the `nullptr` `pEmitter`; `v`→`eyeEnd`, `outDir`→`woFromEmitter`, `heroNM`→`tag.nm`). Removed the member def + the `.h` decl. This is the one sanctioned `.h` reduction (the chip's "reduced if a dead member was removed").
+
+### Gates
+- **Gate 1 — build**: clean from-scratch recompile of `BDPTIntegrator.cpp` (`.o`+`.d` deleted) at BOTH the Pel-locked checkpoint and after the NM collapse + `make all` + `make tests`: **0 warnings, 0 errors** (both `Impl<PelTag>` and `Impl<NMTag>` instantiate in-TU → dual-instantiation proves the discarded `if constexpr` branches are well-formed; the OpenPGL/`pSampler` params are referenced lexically inside `if constexpr(is_pel)` → no `-Wunused-parameter`). Xcode **RISE-GUI arm64** **BUILD SUCCEEDED**, `BDPTIntegrator.cpp` recompiled, **0 source warnings** (the 1 `warning:` line is Apple's `appintentsmetadataprocessor` AppIntents notice — not code).
+- **Gate 2 — tests**: **116/116** ([run_all_tests.sh](../run_all_tests.sh): 115 pass under `RISE_MEDIA_PATH` + `FileRasterizerOutputShimTest` bare **60/0** — the known `RISE_MEDIA_PATH` path-prepend artifact, unrelated). `BDPTStrategyBalanceTest` 18/0, `EnvLightBalanceTest` 80/0 lax, `VCMStrategyBalanceTest`/`VCMRecurrenceTest`/`VCMSpectralRecurrenceTest`, `VertexColorRoundtripTest`, **`SobolDimensionBudgetTest` unchanged** (F3b touches no `SampleExit` call).
+- **Gate 3 — zero behaviour change** (post-Δ vs `pre_f3b`, [scripts/bdpt_connection_baselines.sh](../scripts/bdpt_connection_baselines.sh) 16-scene manifest; final post-NM values):
+
+  | Path | Scene | post-Δ (floor) | verdict |
+  |---|---|---|---|
+  | **all (s,t) Pel + area light** | `cornellbox_bdpt` | **0.0023% (0.0015%)** | **bit-identical Pel codegen** (0.0000% at the Pel-locked checkpoint) |
+  | glossy interior Pel | `cornellbox_bdpt_glossy` | 0.0010% (0.0012%) | under floor |
+  | pLight Pel (s1/t1) | `cornellbox_bdpt_pointlight` | 0.0007% (0.0009%) | under floor |
+  | connection-Tr Pel | `bdpt_homogeneous_fog` | 0.0011% (0.0006%) | ≈ floor |
+  | env-escape+NEE+escTr Pel | `env_bounded_fog_bdpt` | 0.0146% (0.0755%) | **under floor** |
+  | all (s,t) NM + area light | `cornellbox_bdpt_spectral` | 0.0164% (0.0215%) | under floor |
+  | pLight NM lum-proj (s1/t1) | `cornellbox_bdpt_pointlight_spectral` | 0.0173% (0.0062%) | multi-trial noise |
+  | connection-Tr NM | `bdpt_homogeneous_fog_spectral` | 0.0125% (0.0222%) | under floor |
+  | NM HWSS connection (+ fold reroute) | `hwss_cornellbox_bdpt` | 0.0177% (0.0149%) | multi-trial noise |
+  | MLT consumer (Gate F) | `mlt_veach_egg_bdpt` | 0.0092% (0.0061%) | multi-trial noise |
+  | VCM Pel / NM / env / merge (Gate 6) | `cornellbox_vcm_{simple,spectral,caustics}`, `env_bounded_fog_vcm` | 0.0047–0.0146% | within noise (no-touch) |
+  | NM connection-time vColor (Gate 4) | `vertex_colors_quad_bdpt_spectral` | 0.5614% (0.1391%) | **multi-trial CONFIRMED noise** (binary's own 3-render max pairwise spread **0.5779%** > 0.5614%) |
+  | NM vColor transitive | `vertex_colors_quad_vcm_spectral` | 0.1519% (0.1129%) | noisy spectral-VCM |
+
+  `cornellbox_bdpt` measured **0.0000%** at the Pel-locked checkpoint (decisive Pel byte-identity). The two above-0.27% scenes are the documented noisy single-λ spectral fixtures — `vertex_colors_quad_bdpt_spectral`'s 0.5614% is **inside the post-NM binary's own run-to-run spread** (3 fresh renders: pairwise 0.2765%/0.3030%/**0.5779%**), i.e. the 2-trial floor drastically under-estimates this scene's variance.
+- **Gate 4 — recent work preserved**: `EnvLightBalanceTest` 80/0 lax (env-IBL continuous-PMF intact); `ConnectAndEvaluateImpl<Tag>` (F3a) + the latent-white-firefly fix are CALLED via `DispatchConnectAndEvaluate` → the public `ConnectAndEvaluate{,NM}` forwarders, **not re-inlined**; the `EvalEmitterRadiance<Tag>` rename preserves the F3a s=0 call. **Strict-tolerance env-MIS oracle**: strict `{0.10,0.30,1.00}` failure count is **run-to-run MC jitter that never exceeds the pre value** — PRE=6, post-Stage-1=6, post-NM across 4 fresh renders = {5,5,6,6}; the single flipping sub-check is `BDPT.mean @ env-only-Lambertian-spectral-hwss=false`, the noisiest spectral topology (where untouched PT itself moves ±5.3% on MC noise). Not worse → stop rule (strict count increases) NOT triggered.
+- **Gate 5 — perf**: no runtime path added; `if constexpr` → compile-time branches, the dispatch helper inlines to the same `ConnectAndEvaluate{,NM}` calls the original made. Exact-arithmetic refactor (same posture as F1/F2a/F2b/F3a).
+- **Gate 6 — VCM unchanged**: VCM does **not** call `EvaluateAllStrategies` (R3 confirmed 0 grep hits in `VCMIntegrator.cpp`); the 4 VCM scenes within noise (no-touch net). VCM unit oracles pass.
+- **Gate F — MLT non-regression** (the live consumer that DRIVES `EvaluateAllStrategies`): MLT **Pel** `mlt_veach_egg_bdpt` 0.0092% (within noise); MLT **NM** `hwss_mlt_spectral_cornellbox` (the `MLTSpectralRasterizer` → `EvaluateAllStrategiesNM` → `Impl<NMTag>` + the HWSS fold) renders sane (meanL 72.1, bootstrap normalization b=22166.9) — the NM MLT consumer + the rerouted HWSS path both work.
+
+### Adversarial review ledger (Gate 7 — 3 reviewers, orthogonal axes, **read-only Explore agents — no `spawn_task`**)
+| Reviewer | Axis | Result |
+|---|---|---|
+| R1 | `Impl<PelTag>` ≡ original `EvaluateAllStrategies` + `EvalEmitterRadiance<PelTag>` ≡ original Pel emitter-radiance, line-by-line (A/else/B restructure equivalence, the 3 atomics→pointers, loop-B dispatch, zero-exitance Pel, all 3 training records, the rename) | **VERIFIED BEHAVIORALLY IDENTICAL — 0 P1 / 0 P2 / 0 P3.** |
+| R2 | `Impl<NMTag>` ≡ original `EvaluateAllStrategiesNM` + `EvalEmitterRadianceNM` member, line-by-line (no A-block / `useComplete` false, no redundant `cr.s`/`cr.t`, zero-exitance NM byte-identical, only `RecordGuidingTrainingLightPath`, the emitter fold + the 2 HWSS reroute sites byte-faithful incl. the harmless `nullptr` `pEmitter`) | **PROVABLY IDENTICAL — 0 P1 / 0 P2** (P3 = reassociation-only). |
+| R3 | if-constexpr tagging / ABI / forwarder / OpenPGL pointer threading / emitter-fold soundness / VCM-no-touch + MLT-consumer / `-Wunused` | **REFACTOR IS SOUND — 0 P1 / 0 P2.** `.h` diff = only the protected-member removal (ABI-safe); all ~8 `if constexpr` correctly tagged + discarded-branch well-formed; forwarders bind the unchanged public signatures; `RecordGuidingTrainingPath` pointer-args ≡ the original `&member` args; VCM 0 calls; MLT consumers unchanged. |
+
+**0 P1 / 0 P2 final** (and 0 P2-to-fix this round — unlike F2b/F3a, the Pel-was-locked-before-NM sequencing + the lower divergence meant no reviewer found a behavioural defect). Adversarial-review stop rule satisfied.
+
+### Divergent-path coverage map
+`EvaluateAllStrategies` drives every (s,t) connection strategy for BDPT + MLT: the simple double-loop (`cornellbox_bdpt` Pel + `_spectral` NM), the OpenPGL complete-path RIS prologue (Pel-only, exercised when a `pCompletePathGuide` is trained — the test scenes lack one, so it's covered by code-read + the clean build), the zero-exitance directional/ambient deterministic block (both tags), the training-record epilogue, and the cross-integrator consumers — MLT **Pel** (`mlt_veach_egg_bdpt`) and MLT **NM** (`hwss_mlt_spectral_cornellbox`). VCM is the no-touch safety net. The emitter fold's NM branch is covered by the HWSS scenes (`hwss_cornellbox_bdpt`, `hwss_mlt_spectral_cornellbox`) + the s=0 connection scenes.
+
+### Files
+- [src/Library/Shaders/BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) — `EvaluateAllStrategiesImpl<Tag>` + `DispatchConnectAndEvaluate<Tag>` + 2 forwarders; both NM/Pel bodies collapsed; `SurfaceEmitterRadiance`→`EvalEmitterRadiance` rename; `EvalEmitterRadianceNM` member removed + 2 HWSS sites rerouted. Net **−9**.
+- [src/Library/Shaders/BDPTIntegrator.h](../src/Library/Shaders/BDPTIntegrator.h) — removed the dead `EvalEmitterRadianceNM` decl (**−7**, the sole `.h` change; ABI-safe).
+- `scripts/_apply_f3b_phase2c.py` + `scripts/_apply_f3b_phase2c_nm.py` — disposable count-asserted one-shot transforms (audit record; **deleted** post-writeup — the result lives in the `.cpp`).
+- [scripts/bdpt_connection_baselines.sh](../scripts/bdpt_connection_baselines.sh) — **keeper** (the F3a 16-scene harness, reused unchanged).
+- `tests/baselines_refactor/pre_f3b_bdptconn/` — pre-edit baseline PNGs (untracked; regenerable).
+
+### Preserved Pel/NM asymmetry / deferred items (flagged for the user — NOT fixed)
+- **No new asymmetry introduced.** The one carried forward is the `EvalEmitterRadiance<Tag>` per-tag input contract (Pel = pre-resolved surface emitter; NM = re-resolves) — intentional and pre-existing (F3a established it); documented in the helper's comment.
+- **Phase-4 dead-member cleanup still pending** (each needs a `.h` change, out of F3b's minimal scope; F3b removed only the fold's `EvalEmitterRadianceNM`): the dead `IsVisible` member (F3a replaced all callers with the `ConnectionIsVisible` free replica) and the now-unused `EvalBSDFAtVertex`/`EvalPdfAtVertex` Pel members (all call sites go through `PathValueOps::Eval*AtVertex<Tag>`). These are safe ABI reductions (protected non-virtual, no external callers) whenever a `.h`-touching cleanup pass is in scope.
+
+---
+
+## Phase 2c COMPLETE / Integrator refactor (Phases 0/1/2a/2b/2c) COMPLETE (2026-06-02)
+
+With F3b landed, **every BDPT method that had parallel Pel + NM bodies is now a single `*Impl<Tag>` template behind thin forwarders** — joining PT (Phase 2b) and VCM (Phase 2a). The three integrators are single-source-of-truth across Pel/NM; a spectral/RGB divergence can no longer arise from one body drifting from its twin.
+
+**Phase 2c (BDPT) families, all landed + verified (0 P1 / 0 P2 each):**
+- F1 — `EvalConnectionTransmittance{,NM}` (−30)
+- F2a — `GenerateEyeSubpath{,NM}` (−569) · F2b — `GenerateLightSubpath{,NM}` (−717) [F2 complete]
+- F3a — `ConnectAndEvaluate{,NM}` (−597) · F3b — `EvaluateAllStrategies{,NM}` + `EvalEmitterRadiance<Tag>` fold (−9) [F3 complete]
+
+**Cumulative LoC**: `BDPTIntegrator.cpp` **~8,200 → 6,266 (≈ −1,934 across Phase 2c)**; `.h` net −7 (the F3b ABI-safe member removal; F1/F2a/F2b/F3a were all `.h`-neutral). Per-phase PT/VCM reductions are in [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md) (Phase 2a VCM 2,063→1,707; Phase 2b PT in that doc).
+
+**Deferred / next-workstream items (none block "refactor complete"):**
+- **Phase-4 dead-member cleanup**: `IsVisible`, `EvalBSDFAtVertex`, `EvalPdfAtVertex` Pel members (dead; need a `.h`-touching pass).
+- **PT-spectral-rasterizer AOV-buffer follow-up** (Phase 2b deferred — see the 2b PART 2 outcome).
+- **The deferred SA-MIS migration** (env-IBL strict-tolerance: VCM env-S0 ↔ env-NEE partition — IMPROVEMENTS.md §12; scope reduced to ~1 week post the continuous-PMF fix).
+- **Phase 2d** — shared `EvaluatePathConnection<Tag>` primitive across BDPT↔VCM (the post-2c effort, separate).
+
+### Working tree: uncommitted; per "NEVER COMMIT". Phase 2c + the integrator refactor are code-complete and fully gated; awaiting user review.
