@@ -2569,3 +2569,88 @@ Pattern: *"an NM SURFACE-vertex generator omits a `PopulateRIGFromVertex`-mirror
 - [scenes/Tests/Geometry/vertex_colors_quad_vcm_spectral.RISEscene](../scenes/Tests/Geometry/vertex_colors_quad_vcm_spectral.RISEscene) — **new** spectral-VCM fixture (guards the transitive fix through the shared NM generators).
 
 ### Working tree: uncommitted; per "NEVER COMMIT".
+
+## Phase 2c F2b outcome — `GenerateLightSubpath{,NM}` templatized (2026-06-01)
+
+**Session date**: 2026-06-01. Third BDPT family of Phase 2c — the **light half** of the F2 subpath-generation family, the twin of F2a (eye subpath). With F2b done, **F2 is complete**; F3 (connection) remains.
+
+### TL;DR
+`GenerateLightSubpath` (RGB, ~975 ln) + `GenerateLightSubpathNM` (spectral, ~989 ln) collapsed into one free-function template **`GenerateLightSubpathImpl<Tag>`** (anonymous namespace) behind two thin member forwarders. **Zero new dispatch helpers** — it fully reuses F2a's 8 helpers (`StoreThroughput`/`VertexThroughput`/`KrayValue`/`PositiveMagnitude`/`ScatterSPF`/`NmOrZero`/`SampleMediumDistance`/`ComputeMediumScatterWeight`) + F1's `TrOne`/`EvalMediumTransmittance` + `PathValueOps::Eval{BSDF,Pdf}AtVertex<Tag>`, a clean validation of the F2a helper layer's reusability. **13 `if constexpr` axes** (7 `is_nm` + 6 `is_pel`) carry the genuine divergences. **No `BDPTIntegrator.h` change → ABI preserved** (VCM/MLT/BDPT-spectral consume both methods; signatures byte-identical, `.h` diff empty). Net `BDPTIntegrator.cpp` **7,616 → 6,899 (−717)**. Zero behaviour change across all 14 divergent-path baselines (multi-trial-noise-confirmed for every above-2-trial-floor scene) + 116/116 tests; 3-reviewer adversarial review **0 P1 / 0 P2** after one P2 fix.
+
+### What changed (the shape — mirrors F1/F2a)
+- **`GenerateLightSubpathImpl<Tag>`** — the full light-side walk, value-type-generic, in a new anon namespace just before `GenerateLightSubpathNM`. A **free function taking the needed `BDPTIntegrator` state as parameters** (`maxLightDepth`, `stabilityConfig`, `pLightSampler`, `random`, and — under `#ifdef RISE_ENABLE_OPENPGL` — `pLightGuidingField`, `maxLightGuidingDepth`, `guidingAlpha`, `guidingSamplingType`) + `tag` + `pSwlHWSS`. Free function (can't read `protected` members) → the member forwarders pass them in → `.h` untouched.
+- **Structural note (differs from F2a):** the Pel `GenerateLightSubpath` sits at line 1313 — *before* the F2a helper definitions (~1375). To reuse those helpers the Impl must be defined *after* them, so the Pel forwarder is preceded by a **forward declaration** of `GenerateLightSubpathImpl<Tag>` (anon ns); implicit instantiation is deferred to end-of-TU where the later definition is in scope. The Impl + NM forwarder live where the NM body was. (F2a needed no forward-decl because the eye Pel method was already after the helpers.)
+- **No new helpers.** F2b is the first family to add **zero** dispatch helpers — the F2a set covers the light subpath completely.
+- **2 member forwarders** (Pel → `Impl<PelTag>(…, PelTag{}, nullptr)`; NM → `Impl<NMTag>(…, NMTag( nm ), pSwlHWSS)`).
+- Applied via a count-asserted one-shot Python transform ([scripts/_apply_f2b_phase2c.py](../scripts/_apply_f2b_phase2c.py), **disposable — safe to delete**) that extracts the real Pel body and applies fixed mechanical substitutions + `if constexpr` block insertions (stage1 = Pel→Impl+forwarder+fwd-decl; stage2 = NM body→forwarder), mirroring F1/F2a. Verified Pel before touching NM.
+
+### Genuine Pel/NM divergences carried by `if constexpr` (the F2b axes)
+1. **Le-conversion preamble** (NM-only): Pel takes `ls.Le` (RISEPel); NM computes a scalar `LeNM` at `tag.nm` — mesh luminaires via `emittedRadianceNM`, non-mesh via Rec.709 luminance projection, env-IBL via `GetRadianceNM(skyProbe)`. `if constexpr(is_pel){Le=ls.Le}else{…}`.
+2. **HWSS bundle** (NM-only, the dominant axis): `hwssBetaNM[]` init from companion-λ `Le`, the pre-scatter `hwssBetaNMPre[]` snapshot, per-λ delta/non-delta throughput updates, and MAX-over-active-wavelengths Russian roulette. No Pel analog (`pSwlHWSS=nullptr` for Pel).
+3. **Vertex-0 + surface-vertex throughput broadcast** (NM-only): NM sets `throughputNM` *and* broadcasts `v.throughput = RISEPel(scalar,…)` so light-subpath guiding training (which stores RISEPel weights on **both** tags) recovers `Le`. Pel sets only `throughput`.
+4. **Non-delta throughput split**: Pel folds `localScatteringWeight` into `beta`; NM computes `beta` directly and stores the broadcast weight separately. `if constexpr(is_pel){}else{}`.
+5. **BSSRDF Fresnel division**: Pel `* (1.0/Ft)`, NM `/ Ft` (ULP-level; preserved exactly). `weight`/`weightSpatial` (Pel) vs `weightNM`/`weightSpatialNM` (NM).
+6. **RW-SSS param resolution / front-face cosine**: Pel gates on static params + geometric front-face + clamped shading Fresnel cosine; NM resolves static-or-spectral params (`GetRandomWalkSSSParamsNM`) + raw shading cosine.
+7. **Guiding block C reverse-scattering-weight**: Pel `f * (…)` (RISEPel); NM scalar `revWeight` → `RISEPel(revWeight,…)` broadcast.
+
+**Magnitude discipline** (the Phase-2a footgun): contribution gates that test `<= 0` — `Le`, `medWeight`, `f` — use `PositiveMagnitude<Tag>` (NM = **bare** scalar, matching the NM originals' bare `<= 0`); RR / kray-selection / avgBsdf magnitudes use `Traits::max_value` (NM = `fabs`). **The one acceptance gate that tests `> NEARZERO` uses `Traits::max_value` (NM = `fabs`)** — see the preserved-asymmetry note below.
+
+### Gates
+- **Gate 1 — build**: clean from-scratch recompile of `BDPTIntegrator.cpp` + `make all` + `make tests`: **0 warnings, 0 errors** (both tags instantiate every reused helper → no `-Wunused`). Xcode `RISE-GUI` Development **arm64** **BUILD SUCCEEDED, 0 source warnings** (the only line is xcodebuild's benign "multiple matching destinations" note; the homebrew x86_64 `ld` arch-mismatch warnings are an environment artifact of an x86_64 destination and absent on the arm64 link).
+- **Gate 2 — tests**: **116/116** (incl. `BDPTStrategyBalanceTest`, `VCMStrategyBalanceTest`, `VCMRecurrenceTest`, `VCMSpectralRecurrenceTest`, `VCMLightVertexStoreTest`, `VCMLightPostPassTest`, `EnvLightBalanceTest` 80/80 spectral HWSS on+off, `VertexColorRoundtripTest`). **`SobolDimensionBudgetTest`** SampleExit-count guard updated **3→2** (F2b merged the two light-subpath RW-SSS calls into one templated call — exactly as the F2a note predicted; the safety property "every SampleExit uses `rwSampler`, zero use the raw Sobol sampler" is unchanged, now across two templated call sites, one eye + one light).
+- **Gate 3 — zero behaviour change** (post-Δ vs pre_f2b; per-scene 2-trial noise floor in parens; harness [scripts/bdpt_light_subpath_baselines.sh](../scripts/bdpt_light_subpath_baselines.sh), 14-scene manifest):
+
+| Path | Scene | post-Δ (2-trial floor) | verdict |
+|---|---|---|---|
+| std Pel light walk + area-light v0 | `cornellbox_bdpt` | 0.0008% (0.0013%) | **at floor — Pel codegen bit-identical** |
+| glossy interreflection Pel | `cornellbox_bdpt_glossy` | 0.0003% (0.0010%) | at floor |
+| in-medium scatter Pel (light-walk) | `bdpt_homogeneous_fog` | 0.0003% (0.0010%) | at floor |
+| **env-IBL light EMISSION v0 + escape-Tr (Pel)** | `env_bounded_fog_bdpt` | 0.0518% (0.0022%) | noise (multi-trial σ to 0.094%) |
+| **std NM + Le-conv mesh (non-HWSS)** | `cornellbox_bdpt_spectral` | 0.0222% (0.0145%) | noise (multi-trial pairwise 0.040%) |
+| **in-medium scatter NM (light-walk)** | `bdpt_homogeneous_fog_spectral` | 0.0573% (0.0057%) | noise (multi-trial pairwise 0.020%) |
+| **NM HWSS companion-Le bundle** | `hwss_cornellbox_bdpt` | 0.0020% (0.0122%) | **under floor** |
+| MLT consumer (Gate F) | `mlt_veach_egg_bdpt` | 0.0022% (0.0117%) | under floor |
+| VCM Pel light-store (Gate 6) | `cornellbox_vcm_simple` | 0.0283% (0.0194%) | noise (multi-trial pairwise 0.067%) |
+| VCM NM light-store (Gate 6) | `cornellbox_vcm_spectral` | 0.0261% (0.0110%) | noise (vs-pre ≈ 2-trial floor) |
+| VCM env-escape (Gate 6) | `env_bounded_fog_vcm` | 0.0255% (0.0088%) | noise (multi-trial pairwise 0.056%) |
+| **VCM MERGE light-store (Gate 6)** | `cornellbox_vcm_caustics` | 0.0002% (0.0011%) | **at floor — merge path bit-close** |
+| vColor fold (Gate 4) | `vertex_colors_quad_bdpt_spectral` | 0.2159% (0.2589%) | under floor |
+| vColor fold transitive (Gate 4) | `vertex_colors_quad_vcm_spectral` | 0.1719% (0.1652%) | ≈ floor |
+
+  **Every scene whose post-Δ exceeded its 2-trial floor was independently confirmed pure MC-noise by a multi-trial study**: rendering the EDITED binary 3× and comparing the edited-pairwise spread to edited-vs-pre_a. In every case the pre-edit baseline sat *inside* the edited cluster's own run-to-run spread (`edited-vs-pre_a ≤ edited-pairwise`), i.e. statistically indistinguishable from a fresh edited render — no edit-induced shift. The 2-trial floor simply under-estimates these noisy env/VCM/spectral scenes' variance (the documented Phase-2a caveat). `cornellbox_bdpt` at 0.0008% is the decisive Pel-bit-identical evidence; `cornellbox_vcm_caustics` (the VCM merge/photon path, F2b's highest-risk consumer) at 0.0002% is the decisive cross-integrator evidence.
+- **Gate 4 — recent work preserved**: `EnvLightBalanceTest` 80/80 (env-IBL continuous-PMF, incl. the light-subpath **`pdfSelect`** vertex-0 field which F2b preserves verbatim); the `vertex_colors_quad_{bdpt,vcm}_spectral` fixtures within noise (the **vColor fold** — the F2a-era NM vColor writes folded into the shared template with no `if constexpr`, both tags set them identically — is preserved).
+- **Gate 5 — perf**: no runtime path added; `if constexpr` compiles to compile-time branches, `inline` helpers to the same instruction stream. Exact-arithmetic refactor — not separately benchmarked (same posture as F1/F2a).
+- **Gate 6 — VCM unchanged** (cross-integrator ABI, F2b's highest risk — VCM's *entire* light-vertex store derives from this method): `cornellbox_vcm_simple`/`_spectral`/`env_bounded_fog_vcm`/`cornellbox_vcm_caustics` all within noise (the **merge** scene at floor); VCM unit oracles (`VCMLightVertexStoreTest`, `VCMLightPostPassTest`, `VCMSpectralRecurrenceTest`) pass. All 9 consumer call sites (BDPT Pel/Spectral, MLT Pel/Spectral, VCM Pel/Base/Spectral) bind to the unchanged 6-arg Pel / 8-arg NM signatures.
+- **Gate F — MLT non-regression**: `mlt_veach_egg_bdpt` 0.0022% (MLTRasterizer → `GenerateLightSubpath`).
+- **Gate 7 — adversarial review**: see ledger.
+
+### Preserved Pel/NM asymmetry — the eye/light guided-direction acceptance gate (reproduced via `Traits::max_value`, NOT fixed; a genuine pre-existing difference, behaviourally inert)
+While reviewing, R2 caught that the one-sample-MIS **guided-direction acceptance gate** was originally written *differently* in the two light-subpath methods vs the two eye-subpath methods:
+- **light** subpath: Pel `ColorMath::MaxValue(guidedF) > NEARZERO`, NM **`fabs(guidedFNM)` `> NEARZERO`** — both *magnitude* functions.
+- **eye** subpath: Pel `ColorMath::MaxValue(guidedF) > NEARZERO`, NM **bare `guidedFNM > NEARZERO`** (no `fabs`).
+
+So the correct unification differs by family: the **eye** Impl (F2a) correctly uses `PositiveMagnitude<Tag>` (Pel MaxValue + NM bare); the **light** Impl (F2b) must use **`Traits::max_value`** (Pel MaxValue + NM `fabs`). My initial transform mistakenly used `PositiveMagnitude<Tag>` for the light gate (which coincides for Pel — hence the Pel baselines and R1 were clean — but drops the `fabs` on the NM side). The fix (`PositiveMagnitude<Tag>` → `Traits::max_value`, with a guarding comment) is byte-faithful to **both** light originals, leaves PelTag codegen unchanged, and restores the NM `fabs`. It is **behaviourally inert** regardless (the gated value is a BSDF/phase/Sw evaluation, always ≥ 0, so `bare > NEARZERO ⟺ fabs > NEARZERO`) and the scene that would exercise it needs a trained guiding field, which the test scenes lack — confirmed by re-render + 3-trial noise. **The eye/light difference is a genuine pre-existing asymmetry in the hand-written code, now faithfully preserved on both sides; no out-of-scope F2a issue** (the eye Impl's `PositiveMagnitude` is correct because the eye NM original was bare).
+
+### Adversarial review ledger (Gate 7 — 3 reviewers, orthogonal axes)
+| Reviewer | Axis | Result |
+|---|---|---|
+| R1 | `Impl<PelTag>` ≡ original `GenerateLightSubpath`, line-by-line (vertex-0 `pdfSelect`/`emissionPdfW`, medium, BSSRDF/RW-SSS, guiding RIS reversed-arg convention, throughput/RR, guiding-C, pdfRev, tail, sampler sequence) | **CLEAN 0 P1 / 0 P2.** Exhaustive walk; every region bit-identical after PelTag resolution. 3 P3 (value-identical: `beta*(phaseVal/phasePdf)` vs RISEPel broadcast, the RW-SSS `else if(ri.pMaterial)` gate proven no-op-equivalent, named intermediates/`Scalar(1)`). |
+| R2 | `Impl<NMTag>` ≡ original `GenerateLightSubpathNM`, line-by-line (Le preamble, HWSS bundle, throughput broadcasts, RW-SSS NM params, `/ Ft`, guiding-C broadcast, LIGHT-arg-order HWSS BSDF eval) | **0 P1 / 1 P2** → **fixed.** P2 = the guided-direction gate `fabs` drop above; corrected to `Traits::max_value`. All other ~1100 lines byte-identical modulo 4 documented within-noise reassociations + 1 cosmetic decl-order swap. |
+| R3 | if-constexpr / magnitude-discipline / ABI / forwarder / VCM-MLT consumers | **CLEAN 0 P1 / 0 P2.** All 13 `if constexpr` correctly tagged (none inverted, explicit table); all 11 gate-vs-magnitude sites correct; `.h` diff empty; forward-decl/Impl/forwarder signatures byte-identical; all 9 consumer sites bind unchanged; `[[maybe_unused]]` present on `hwssBetaNM`/`hwssBetaNMPre`/`rwParamsNM`; helper reuse sound (both tag specializations declared earlier in TU). |
+
+**0 P1 / 0 P2 final** (1 P2 found and fixed; 5 P3 within-noise/cosmetic). Adversarial-review stop rule satisfied — the fix is a provably-correct one-token change R2 itself recommended; no re-review round needed.
+
+### Divergent-path coverage map
+The light subpath drives: the light-EMISSION vertex 0 across light kinds (mesh-area `cornellbox_bdpt`, env-IBL `env_bounded_fog_bdpt` + `EnvLightBalanceTest`), the surface/medium walk (`bdpt_homogeneous_fog{,_spectral}`), glossy (`cornellbox_bdpt_glossy`), both NM modes — single-λ (`cornellbox_bdpt_spectral`, `pSwlHWSS=NULL`) and HWSS bundle (`hwss_cornellbox_bdpt`, `pSwlHWSS=&swl`) — the Le-conversion preamble (mesh `emittedRadianceNM` + env `GetRadianceNM`), and **the cross-integrator consumers whose light-vertex store derives entirely from this method**: VCM connection (`cornellbox_vcm_simple/_spectral`), VCM **merge** (`cornellbox_vcm_caustics`, the F2b-specific addition vs the F2a manifest), VCM env-escape (`env_bounded_fog_vcm`), and MLT (`mlt_veach_egg_bdpt`). No divergent light-subpath path is uncovered.
+
+### Files
+- [src/Library/Shaders/BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) — `GenerateLightSubpathImpl<Tag>` + forward-decl + 2 forwarders; `GenerateLightSubpathNM` collapsed to a forwarder; reuses F2a/F1 helpers (zero new). `.h` untouched. Net **−717**.
+- [tests/SobolDimensionBudgetTest.cpp](../tests/SobolDimensionBudgetTest.cpp) — SampleExit-count guard 3→2 (light Pel+NM merged), with full F2a+F2b rationale.
+- [scripts/bdpt_light_subpath_baselines.sh](../scripts/bdpt_light_subpath_baselines.sh) — **keeper**: 14-scene light-subpath baseline harness (adds the VCM-merge `cornellbox_vcm_caustics` + the two vColor-spectral fixtures vs the F2a eye manifest).
+- [scripts/_apply_f2b_phase2c.py](../scripts/_apply_f2b_phase2c.py) — disposable one-shot transform (audit record; **safe to delete**).
+- `tests/baselines_refactor/pre_f2b_bdptlight/` — pre-edit baseline PNGs (untracked; regenerable).
+
+### Next family (per Deliverable A)
+**F3 connection** — `ConnectAndEvaluate{,NM}` (then `EvaluateAllStrategies{,NM}` + `EvalEmitterRadianceNM` fold) — the highest-divergence family: 4 strategy cases (s=0 emitter-hit, s=1 NEE, t=1 splat, interior), env-IBL continuous-PMF (s=0 escape + s=1 env-NEE), the `pdfRev` const_cast mutation trick, Pel-only guiding `#ifdef`. The two F3 non-bug divergences flagged in Deliverable A (s=1 emitter branch order; NM ILight→luminance projection) get their side-by-side confirmation there. `MISWeight` is already value-agnostic (no work). Recommend splitting F3 across ~1–2 sessions; every F3 session keeps **Gate F (MLT)** + **Gate 6 (VCM)**.
+
+### Working tree: uncommitted; per "NEVER COMMIT".
