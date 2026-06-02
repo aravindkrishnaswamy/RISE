@@ -408,13 +408,6 @@ namespace RISE
 				const Scalar nm
 				) const;
 
-			/// NM helper: evaluates emitter radiance for a specific wavelength
-			Scalar EvalEmitterRadianceNM(
-				const BDPTVertex& vertex,
-				const Vector3& outDir,
-				const Scalar nm
-				) const;
-
 		public:
 			/// Helper: evaluate transmittance along a connection edge
 			/// between two points, accounting for participating media.

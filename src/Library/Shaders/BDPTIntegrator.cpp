@@ -2823,15 +2823,18 @@ LightRadiance( const ILight* pLight, const Vector3& dir, Tag tag )
 	}
 }
 
-// s=0 surface-emitter radiance.  Pel inlines RIG+emittedRadiance; NM mirrors
-// the protected EvalEmitterRadianceNM member VERBATIM (that member stays --
-// it is still consumed by EvaluateAllStrategiesNM; F3b folds the two into a
-// single EvalEmitterRadiance<Tag> dispatch).  `pEmitter` is the caller's
-// already-resolved surface emitter (used by Pel; NM re-resolves, faithful to
-// the member's structure).
+// Emitter radiance toward a direction (the single EvalEmitterRadiance<Tag>
+// dispatch -- F3b folded the former protected EvalEmitterRadianceNM member
+// into this).  PER-TAG INPUT CONTRACT differs (intentional, pre-existing):
+//   Pel: `pEmitter` is the caller's already-resolved SURFACE emitter; the
+//        helper calls it directly (env / pLight are resolved by the s=0
+//        caller before reaching here).
+//   NM : `pEmitter` is ignored; the helper re-resolves env / pLight / surface
+//        from the vertex (used by the s=0 connection site AND the HWSS
+//        RecomputeSubpathThroughputNM light-vertex emission ratio).
 template<class Tag>
 typename SpectralValueTraits<Tag>::value_type
-SurfaceEmitterRadiance( const BDPTVertex& eyeEnd, const Vector3& woFromEmitter,
+EvalEmitterRadiance( const BDPTVertex& eyeEnd, const Vector3& woFromEmitter,
 	const IEmitter* pEmitter, Tag tag )
 {
 	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
@@ -3065,7 +3068,7 @@ ConnectAndEvaluateImpl(
 		// silently sample at (0,0) on the (s=0) emitter strategy because
 		// the manual rebuild left ptCoord / ptCoord1 / bHasTexCoord1
 		// default-constructed.
-		const V Le = SurfaceEmitterRadiance<Tag>( eyeEnd, woFromEmitter, pEmitter, tag );
+		const V Le = EvalEmitterRadiance<Tag>( eyeEnd, woFromEmitter, pEmitter, tag );
 
 		if( PositiveMagnitude<Tag>( Le ) <= 0 ) {
 			return result;
@@ -4224,36 +4227,91 @@ BDPTIntegrator::ConnectionResult BDPTIntegrator::ConnectAndEvaluate(
 }
 
 //////////////////////////////////////////////////////////////////////
-// EvaluateAllStrategies
+// EvaluateAllStrategiesImpl<Tag> -- Phase 2c family F3b.
+//
+// The (s,t) strategy-enumeration driver, templatized over PelTag/NMTag.
+// Free function (not a member template) taking the BDPTIntegrator guiding
+// state as parameters so BDPTIntegrator.h is untouched and the public
+// EvaluateAllStrategies{,NM} members (consumed by BDPT/MLT rasterizers)
+// stay byte-identical.  Per-(s,t) work dispatches to the public
+// ConnectAndEvaluate{,NM} members via `self` (they resolve pLightSampler);
+// the Pel-only OpenPGL complete-path strategy selection + the two Pel-only
+// training records sit behind `if constexpr( Traits::is_pel )`.
 //////////////////////////////////////////////////////////////////////
 
-std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrategies(
+namespace {
+
+// Per-(s,t) connection dispatch to the public member forwarders (which own
+// pLightSampler).  Pel -> ConnectAndEvaluate; NM -> ConnectAndEvaluateNM.
+template<class Tag>
+typename ConnectionResultFor<Tag>::type
+DispatchConnectAndEvaluate(
+	const BDPTIntegrator& self,
+	const std::vector<BDPTVertex>& lightVerts,
+	const std::vector<BDPTVertex>& eyeVerts,
+	unsigned int s,
+	unsigned int t,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const ICamera& camera,
+	Tag tag )
+{
+	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
+		(void)tag;
+		return self.ConnectAndEvaluate( lightVerts, eyeVerts, s, t, scene, caster, camera );
+	} else {
+		return self.ConnectAndEvaluateNM( lightVerts, eyeVerts, s, t, scene, caster, camera, tag.nm );
+	}
+}
+
+template<class Tag>
+std::vector<typename ConnectionResultFor<Tag>::type>
+EvaluateAllStrategiesImpl(
+	const BDPTIntegrator& self,
 	const std::vector<BDPTVertex>& lightVerts,
 	const std::vector<BDPTVertex>& eyeVerts,
 	const IScene& scene,
 	const IRayCaster& caster,
 	const ICamera& camera,
-	ISampler* pSampler
-	) const
+	ISampler* pSampler,
+#ifdef RISE_ENABLE_OPENPGL
+	CompletePathGuide* pCompletePathGuide,
+	bool completePathStrategySelectionEnabled,
+	unsigned int completePathStrategySampleCount,
+	std::atomic<unsigned long long>* pStrategySelectionPathCount,
+	std::atomic<unsigned long long>* pStrategySelectionCandidateCount,
+	std::atomic<unsigned long long>* pStrategySelectionEvaluatedCount,
+	PathGuidingField* pGuidingField,
+	BDPTIntegrator::GuidingTrainingStats* pGuidingTrainingStats,
+	std::mutex* pGuidingTrainingStatsMutex,
+	PathGuidingField* pLightGuidingField,
+	unsigned int maxLightGuidingDepth,
+#endif
+	Tag tag )
 {
+	typedef SpectralValueTraits<Tag> Traits;
+	typedef typename ConnectionResultFor<Tag>::type CR;
 	const unsigned int nLight = static_cast<unsigned int>( lightVerts.size() );
 	const unsigned int nEye = static_cast<unsigned int>( eyeVerts.size() );
 
-	std::vector<ConnectionResult> results;
+	std::vector<CR> results;
 	results.reserve( (nLight + 1) * (nEye + 1) );
 
-	const bool useCompletePathStrategySelection =
+	bool useCompletePathStrategySelection = false;
 #ifdef RISE_ENABLE_OPENPGL
-		pCompletePathGuide &&
-		completePathStrategySelectionEnabled &&
-		!pCompletePathGuide->IsCollectingTrainingSamples() &&
-		pSampler &&
-		completePathStrategySampleCount > 0;
-#else
-		false;
+	if constexpr( Traits::is_pel ) {
+		useCompletePathStrategySelection =
+			pCompletePathGuide &&
+			completePathStrategySelectionEnabled &&
+			!pCompletePathGuide->IsCollectingTrainingSamples() &&
+			pSampler &&
+			completePathStrategySampleCount > 0;
+	}
 #endif
 
 #ifdef RISE_ENABLE_OPENPGL
+	if constexpr( Traits::is_pel )
+	{
 	if( useCompletePathStrategySelection )
 	{
 		static thread_local StrategySelectionScratch scratch;
@@ -4323,10 +4381,10 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 			const unsigned int techniqueSamples =
 				r_max( static_cast<unsigned int>( 1 ), completePathStrategySampleCount );
 
-			strategySelectionPathCount.fetch_add( 1 );
-			strategySelectionCandidateCount.fetch_add(
+			pStrategySelectionPathCount->fetch_add( 1 );
+			pStrategySelectionCandidateCount->fetch_add(
 				static_cast<unsigned long long>( candidateCount ) );
-			strategySelectionEvaluatedCount.fetch_add(
+			pStrategySelectionEvaluatedCount->fetch_add(
 				static_cast<unsigned long long>( techniqueSamples ) );
 
 			// Dedicated stream for (s,t) strategy choices so Sobol dimensions
@@ -4346,7 +4404,7 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 				const StrategySelectionCandidate& candidate =
 					scratch.candidates[candidateIndex];
 
-				ConnectionResult cr = ConnectAndEvaluate(
+				CR cr = self.ConnectAndEvaluate(
 					lightVerts,
 					eyeVerts,
 					candidate.s,
@@ -4367,8 +4425,9 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 			}
 		}
 	}
-	else
+	}
 #endif
+	if( !useCompletePathStrategySelection )
 	{
 		// Iterate over all valid (s,t) combinations where s + t >= 2.
 		for( unsigned int t = 1; t <= nEye; t++ )
@@ -4379,10 +4438,12 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 					continue;
 				}
 
-				ConnectionResult cr = ConnectAndEvaluate(
-					lightVerts, eyeVerts, s, t, scene, caster, camera );
-				cr.s = s;
-				cr.t = t;
+				CR cr = DispatchConnectAndEvaluate<Tag>(
+					self, lightVerts, eyeVerts, s, t, scene, caster, camera, tag );
+				if constexpr( Traits::is_pel ) {
+					cr.s = s;
+					cr.t = t;
+				}
 
 				if( cr.valid ) {
 					results.push_back( cr );
@@ -4435,13 +4496,14 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 					const bool bReceivesShadows = eyeEnd.pObject
 						? eyeEnd.pObject->DoesReceiveShadows() : true;
 
+					if constexpr( Traits::is_pel ) {
 					RISEPel amount( 0, 0, 0 );
 					l->ComputeDirectLighting( ri, caster, *pBSDF,
 						bReceivesShadows, amount );
 
 					if( ColorMath::MaxValue( amount ) > 0 )
 					{
-						ConnectionResult cr;
+						CR cr;
 						cr.contribution = eyeEnd.throughput * amount;
 						cr.misWeight = 1.0;
 						cr.needsSplat = false;
@@ -4450,18 +4512,40 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 						cr.t = t;
 						results.push_back( cr );
 					}
+					} else {
+						// Per-NM direct lighting evaluation -- see
+						// LightSampler::EvaluateDirectLightingNM site 1
+						// for the rationale.  The previous flat-luminance
+						// projection collapsed the surface's spectral
+						// character; the per-NM virtual queries brdf.valueNM
+						// at the connecting wavelength.
+						const Scalar leNM = l->ComputeDirectLightingNM(
+							ri, caster, *pBSDF, bReceivesShadows, tag.nm );
+						if( leNM > 0 )
+						{
+							CR cr;
+							cr.contribution = eyeEnd.throughputNM * leNM;
+							cr.misWeight = 1.0;
+							cr.needsSplat = false;
+							cr.valid = true;
+							cr.s = 1;
+							results.push_back( cr );
+						}
+					}
 				}
 			}
 		}
 	}
 
 #ifdef RISE_ENABLE_OPENPGL
-	if( pCompletePathGuide && pCompletePathGuide->IsCollectingTrainingSamples() ) {
-		RecordCompletePathSamples( pCompletePathGuide, lightVerts, eyeVerts, results );
-	}
+	if constexpr( Traits::is_pel ) {
+		if( pCompletePathGuide && pCompletePathGuide->IsCollectingTrainingSamples() ) {
+			RecordCompletePathSamples( pCompletePathGuide, lightVerts, eyeVerts, results );
+		}
 
-	if( pGuidingField && pGuidingField->IsCollectingTrainingSamples() ) {
-		RecordGuidingTrainingPath( pGuidingField, &guidingTrainingStats, &guidingTrainingStatsMutex, eyeVerts, results );
+		if( pGuidingField && pGuidingField->IsCollectingTrainingSamples() ) {
+			RecordGuidingTrainingPath( pGuidingField, pGuidingTrainingStats, pGuidingTrainingStatsMutex, eyeVerts, results );
+		}
 	}
 	if( pLightGuidingField && pLightGuidingField->IsCollectingTrainingSamples() ) {
 		RecordGuidingTrainingLightPath( pLightGuidingField, lightVerts, maxLightGuidingDepth );
@@ -4470,6 +4554,33 @@ std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrateg
 
 	return results;
 }
+
+}  // anonymous namespace (EvaluateAllStrategies F3b)
+
+//////////////////////////////////////////////////////////////////////
+// EvaluateAllStrategies (Pel) -- thin forwarder to EvaluateAllStrategiesImpl<PelTag>.
+//////////////////////////////////////////////////////////////////////
+
+std::vector<BDPTIntegrator::ConnectionResult> BDPTIntegrator::EvaluateAllStrategies(
+	const std::vector<BDPTVertex>& lightVerts,
+	const std::vector<BDPTVertex>& eyeVerts,
+	const IScene& scene,
+	const IRayCaster& caster,
+	const ICamera& camera,
+	ISampler* pSampler
+	) const
+{
+	return EvaluateAllStrategiesImpl<PelTag>(
+		*this, lightVerts, eyeVerts, scene, caster, camera, pSampler,
+#ifdef RISE_ENABLE_OPENPGL
+		pCompletePathGuide, completePathStrategySelectionEnabled, completePathStrategySampleCount,
+		&strategySelectionPathCount, &strategySelectionCandidateCount, &strategySelectionEvaluatedCount,
+		pGuidingField, &guidingTrainingStats, &guidingTrainingStatsMutex,
+		pLightGuidingField, maxLightGuidingDepth,
+#endif
+		PelTag{} );
+}
+
 
 //////////////////////////////////////////////////////////////////////
 // MISWeight - power heuristic (exponent = 2)
@@ -4707,42 +4818,6 @@ Scalar BDPTIntegrator::EvalPdfAtVertexNM(
 	) const
 {
 	return PathVertexEval::EvalPdfAtVertexNM( vertex, wi, wo, nm );
-}
-
-//////////////////////////////////////////////////////////////////////
-// NM Helper: evaluate emitter radiance at a vertex
-//////////////////////////////////////////////////////////////////////
-
-Scalar BDPTIntegrator::EvalEmitterRadianceNM(
-	const BDPTVertex& vertex,
-	const Vector3& outDir,
-	const Scalar nm
-	) const
-{
-	if( vertex.pEnvLight ) {
-		RasterizerState nullRast = {0};
-		Ray skyProbe( vertex.position, -outDir );
-		return vertex.pEnvLight->GetRadianceNM( skyProbe, nullRast, nm );
-	}
-
-	if( vertex.pLight ) {
-		const RISEPel Le = vertex.pLight->emittedRadiance( outDir );
-		return 0.2126 * Le[0] + 0.7152 * Le[1] + 0.0722 * Le[2];
-	}
-
-	if( !vertex.pMaterial ) {
-		return 0;
-	}
-
-	const IEmitter* pEmitter = vertex.pMaterial->GetEmitter();
-	if( !pEmitter ) {
-		return 0;
-	}
-
-	RayIntersectionGeometric rig( Ray( vertex.position, outDir ), nullRasterizerState );
-	PathVertexEval::PopulateRIGFromVertex( vertex, rig );
-
-	return pEmitter->emittedRadianceNM( rig, outDir, vertex.geomNormal, nm );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -6009,99 +6084,15 @@ std::vector<BDPTIntegrator::ConnectionResultNM> BDPTIntegrator::EvaluateAllStrat
 	const Scalar nm
 	) const
 {
-	const unsigned int nLight = static_cast<unsigned int>( lightVerts.size() );
-	const unsigned int nEye = static_cast<unsigned int>( eyeVerts.size() );
-
-	std::vector<ConnectionResultNM> results;
-	results.reserve( (nLight + 1) * (nEye + 1) );
-
-	for( unsigned int t = 1; t <= nEye; t++ )
-	{
-		for( unsigned int s = 0; s <= nLight; s++ )
-		{
-			if( s + t < 2 ) {
-				continue;
-			}
-
-			ConnectionResultNM cr = ConnectAndEvaluateNM(
-				lightVerts, eyeVerts, s, t, scene, caster, camera, nm );
-
-			if( cr.valid ) {
-				results.push_back( cr );
-			}
-		}
-	}
-
-	// ----------------------------------------------------------------
-	// Deterministic evaluation of zero-exitance lights (spectral).
-	// Same logic as the RGB path; converts RISEPel to scalar via
-	// luminance, matching LightSampler::EvaluateDirectLightingNM.
-	// ----------------------------------------------------------------
-	{
-		const ILightManager* pLightMgr = scene.GetLights();
-		if( pLightMgr )
-		{
-			const ILightManager::LightsList& lights = pLightMgr->getLights();
-			for( ILightManager::LightsList::const_iterator m = lights.begin(),
-				n = lights.end(); m != n; m++ )
-			{
-				const ILightPriv* l = *m;
-				if( ColorMath::MaxValue( l->radiantExitance() ) > 0 ) {
-					continue;
-				}
-
-				for( unsigned int t = 2; t <= nEye; t++ )
-				{
-					const BDPTVertex& eyeEnd = eyeVerts[t - 1];
-
-					if( eyeEnd.type != BDPTVertex::SURFACE ) continue;
-					if( !eyeEnd.isConnectible ) continue;
-					if( !eyeEnd.pMaterial ) continue;
-
-					const IBSDF* pBSDF = eyeEnd.pMaterial->GetBSDF();
-					if( !pBSDF ) continue;
-
-					Vector3 wo = Vector3Ops::mkVector3(
-						eyeVerts[t - 2].position, eyeEnd.position );
-					wo = Vector3Ops::Normalize( wo );
-
-					Ray evalRay( eyeEnd.position, -wo );
-					RayIntersectionGeometric ri( evalRay, nullRasterizerState );
-					PathVertexEval::PopulateRIGFromVertex( eyeEnd, ri );
-
-					const bool bReceivesShadows = eyeEnd.pObject
-						? eyeEnd.pObject->DoesReceiveShadows() : true;
-
-					// Per-NM direct lighting evaluation — see
-					// LightSampler::EvaluateDirectLightingNM site 1
-					// for the rationale.  The previous flat-luminance
-					// projection collapsed the surface's spectral
-					// character; the per-NM virtual queries brdf.valueNM
-					// at the connecting wavelength.
-					const Scalar leNM = l->ComputeDirectLightingNM(
-						ri, caster, *pBSDF, bReceivesShadows, nm );
-					if( leNM > 0 )
-					{
-						ConnectionResultNM cr;
-						cr.contribution = eyeEnd.throughputNM * leNM;
-						cr.misWeight = 1.0;
-						cr.needsSplat = false;
-						cr.valid = true;
-						cr.s = 1;
-						results.push_back( cr );
-					}
-				}
-			}
-		}
-	}
-
+	return EvaluateAllStrategiesImpl<NMTag>(
+		*this, lightVerts, eyeVerts, scene, caster, camera, nullptr,
 #ifdef RISE_ENABLE_OPENPGL
-	if( pLightGuidingField && pLightGuidingField->IsCollectingTrainingSamples() ) {
-		RecordGuidingTrainingLightPath( pLightGuidingField, lightVerts, maxLightGuidingDepth );
-	}
+		pCompletePathGuide, completePathStrategySelectionEnabled, completePathStrategySampleCount,
+		&strategySelectionPathCount, &strategySelectionCandidateCount, &strategySelectionEvaluatedCount,
+		pGuidingField, &guidingTrainingStats, &guidingTrainingStatsMutex,
+		pLightGuidingField, maxLightGuidingDepth,
 #endif
-
-	return results;
+		NMTag( nm ) );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -6163,8 +6154,8 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 			{
 				const Vector3 outDir = Vector3Ops::Normalize(
 					Vector3Ops::mkVector3( verts[1].position, v.position ) );
-				const Scalar heroLe = EvalEmitterRadianceNM( v, outDir, heroNM );
-				const Scalar compLe = EvalEmitterRadianceNM( v, outDir, companionNM );
+				const Scalar heroLe = EvalEmitterRadiance<NMTag>( v, outDir, nullptr, NMTag( heroNM ) );
+				const Scalar compLe = EvalEmitterRadiance<NMTag>( v, outDir, nullptr, NMTag( companionNM ) );
 				if( heroLe > NEARZERO ) {
 					cumulativeRatio *= compLe / heroLe;
 				} else {
