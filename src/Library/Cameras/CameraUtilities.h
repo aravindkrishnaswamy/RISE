@@ -43,6 +43,21 @@ namespace RISE
 			const ICamera& cam,					///< [in] Camera
 			const Ray& ray							///< [in] Ray from the camera
 			);
+
+		/// True if the camera's importance is a Dirac delta in DIRECTION
+		/// (all rays parallel — orthographic).  Such a camera is the
+		/// importance-side analogue of a directional light: the t==1
+		/// light-tracing strategy (a non-specular light vertex scattering
+		/// into the camera) has zero density, so BDPT/VCM must SKIP that
+		/// strategy and exclude it from the MIS denominator — exactly the
+		/// delta-direction-light treatment, applied on the camera side.
+		/// Pinhole / thin-lens / fisheye are delta-POSITION (or finite)
+		/// but finite-direction, so the t==1 connection is valid for them
+		/// and this returns false.
+		/// \return TRUE for orthographic cameras, FALSE otherwise
+		bool IsDeltaDirection(
+			const ICamera& cam						///< [in] Camera
+			);
 	}
 }
 

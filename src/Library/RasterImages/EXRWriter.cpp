@@ -41,13 +41,16 @@ EXRWriter::EXRWriter(
 	IWriteBuffer&         buffer_,
 	const COLOR_SPACE     color_space_,
 	const EXR_COMPRESSION compression_,
-	const bool            with_alpha_ ) :
+	const bool            with_alpha_,
+	const bool            write_float_ ) :
   out( buffer_ ),
   exrout( 0 ),
+  exrout_float( 0 ),
   buffer( buffer_ ),
   color_space( color_space_ ),
   compression( compression_ ),
   with_alpha( with_alpha_ ),
+  write_float( write_float_ ),
   horzpixels( 0 ),
   scanlines( 0 )
 {
@@ -58,11 +61,13 @@ EXRWriter::EXRWriter(
 	IWriteBuffer&         buffer_,
 	const COLOR_SPACE     color_space_,
 	const EXR_COMPRESSION compression_,
-	const bool            with_alpha_ ) :
+	const bool            with_alpha_,
+	const bool            write_float_ ) :
   buffer( buffer_ ),
   color_space( color_space_ ),
   compression( compression_ ),
   with_alpha( with_alpha_ ),
+  write_float( write_float_ ),
   horzpixels( 0 ),
   scanlines( 0 )
 {
@@ -71,6 +76,10 @@ EXRWriter::EXRWriter(
 
 EXRWriter::~EXRWriter( )
 {
+#ifndef NO_EXR_SUPPORT
+	delete exrout_float;
+	exrout_float = 0;
+#endif
 	buffer.release();
 }
 
@@ -180,17 +189,35 @@ void EXRWriter::BeginWrite( const unsigned int width, const unsigned int height 
 	// use this to scale HDR display output appropriately.
 	header.insert( "whiteLuminance", Imf::FloatAttribute( 1.0f ) );
 
-	// with_alpha controls the channel set: WRITE_RGBA writes RGBA,
-	// WRITE_RGB writes RGB only (smaller files; appropriate for
-	// outputs where alpha carries no meaningful information).
-	const Imf::RgbaChannels channels = with_alpha ? Imf::WRITE_RGBA : Imf::WRITE_RGB;
-
-	exrout = new Imf::RgbaOutputFile( out, header, channels );
+	// with_alpha controls the channel set: RGBA vs RGB only (smaller
+	// files; appropriate for outputs where alpha carries no meaningful
+	// information).
 	horzpixels = width;
 	scanlines = height;
 
-	// Note this is flipped around becase of an oddity in the EXR Array class...
-	exrbuffer.resizeErase( height, width );
+	if( write_float ) {
+		// 32-bit FLOAT path.  `Imf::Rgba` is half-only (FP16, max 65504),
+		// which silently clamps legitimate bright HDR pixels to +Inf on
+		// write.  When the caller requests it (bpp >= 32), emit explicit
+		// FLOAT channels via the general OutputFile API so the full
+		// linear-radiance range survives round-trip.
+		header.channels().insert( "R", Imf::Channel( Imf::FLOAT ) );
+		header.channels().insert( "G", Imf::Channel( Imf::FLOAT ) );
+		header.channels().insert( "B", Imf::Channel( Imf::FLOAT ) );
+		if( with_alpha ) {
+			header.channels().insert( "A", Imf::Channel( Imf::FLOAT ) );
+		}
+		exrout_float = new Imf::OutputFile( out, header );
+		// Interleaved R,G,B,A regardless of with_alpha so WriteColor's
+		// indexing is uniform; the A channel is simply not serialised
+		// (no Slice inserted) when with_alpha is false.
+		floatbuffer.assign( static_cast<std::size_t>( width ) * height * 4u, 0.0f );
+	} else {
+		const Imf::RgbaChannels channels = with_alpha ? Imf::WRITE_RGBA : Imf::WRITE_RGB;
+		exrout = new Imf::RgbaOutputFile( out, header, channels );
+		// Note this is flipped around becase of an oddity in the EXR Array class...
+		exrbuffer.resizeErase( height, width );
+	}
 #endif
 }
 
@@ -224,8 +251,30 @@ void EXRWriter::EndWrite( )
 {
 #ifndef NO_EXR_SUPPORT
 	// Write out the data to the memory buffer.  Skip when BeginWrite
-	// rejected a zero-size image (exrout left null) or when the
-	// caller never called BeginWrite at all.
+	// rejected a zero-size image (both output files left null) or when
+	// the caller never called BeginWrite at all.
+	if( write_float ) {
+		if( !exrout_float ) {
+			return;
+		}
+		Imf::FrameBuffer fb;
+		char* const base = reinterpret_cast<char*>( floatbuffer.data() );
+		const std::size_t xstride = 4u * sizeof( float );
+		const std::size_t ystride =
+			static_cast<std::size_t>( horzpixels ) * 4u * sizeof( float );
+		fb.insert( "R", Imf::Slice( Imf::FLOAT, base + 0u * sizeof( float ), xstride, ystride ) );
+		fb.insert( "G", Imf::Slice( Imf::FLOAT, base + 1u * sizeof( float ), xstride, ystride ) );
+		fb.insert( "B", Imf::Slice( Imf::FLOAT, base + 2u * sizeof( float ), xstride, ystride ) );
+		if( with_alpha ) {
+			fb.insert( "A", Imf::Slice( Imf::FLOAT, base + 3u * sizeof( float ), xstride, ystride ) );
+		}
+		exrout_float->setFrameBuffer( fb );
+		exrout_float->writePixels( scanlines );
+		delete exrout_float;
+		exrout_float = 0;
+		return;
+	}
+
 	if( !exrout ) {
 		return;
 	}

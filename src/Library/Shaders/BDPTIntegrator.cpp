@@ -1483,7 +1483,20 @@ namespace {
 			v.pLight = 0;
 			v.pLuminary = 0;
 			v.screenPos = screenPos;
-			v.isDelta = false;
+			// A delta-DIRECTION camera (orthographic: all rays parallel)
+			// is the importance-side analogue of a directional light.  The
+			// t==1 light-tracing strategy cannot scatter a non-specular
+			// light vertex into the camera's single delta direction, so it
+			// has zero density and must be excluded from the MIS
+			// denominator.  Marking the camera vertex delta makes
+			// MISWeight's eye-side walk skip the t==1 term (the
+			// `eyeVerts[j-1].isDelta` gate at j==1), giving the eye-path
+			// strategies (NEE / interior) their full weight.  The matching
+			// ConnectToCamera sites skip the (now phantom) splat.  Pinhole /
+			// thin-lens / fisheye are finite-direction → isDelta stays
+			// false → t==1 remains a valid strategy for them.
+			v.isDelta = pCamera ?
+				BDPTCameraUtilities::IsDeltaDirection( *pCamera ) : false;
 
 			// pdfFwd = 1 for a specific pixel
 			v.pdfFwd = 1.0;
@@ -3709,6 +3722,19 @@ ConnectAndEvaluateImpl(
 	//
 	if( t == 1 )
 	{
+		// Delta-DIRECTION camera (orthographic): the light-tracing
+		// strategy cannot scatter a non-specular light vertex into the
+		// camera's single parallel direction (zero density), so skip it.
+		// The camera vertex is marked isDelta in GenerateEyeSubpath so
+		// MISWeight's eye-side walk excludes this (phantom) strategy from
+		// every other strategy's denominator — keeping the partition of
+		// unity consistent.  Without this skip the orthographic t==1
+		// splat both misdirects energy and steals ~all the MIS weight from
+		// the eye-path NEE / interior strategies (BDPT renders near-black).
+		if( BDPTCameraUtilities::IsDeltaDirection( camera ) ) {
+			return result;
+		}
+
 		const BDPTVertex& lightEnd = lightVerts[s - 1];
 
 		if( !lightEnd.isConnectible ) {

@@ -662,3 +662,14 @@ Scalar BDPTCameraUtilities::PdfDirection(
 
 	return 0.0;
 }
+
+bool BDPTCameraUtilities::IsDeltaDirection(
+	const ICamera& cam )
+{
+	// Orthographic cameras emit a single parallel direction per pixel —
+	// a Dirac delta in solid angle.  All other supported cameras
+	// (pinhole, thin lens, fisheye) map each pixel to a distinct,
+	// non-delta direction, so the light-tracing (t==1) connection is a
+	// legitimate sampling strategy for them.
+	return dynamic_cast<const OrthographicCamera*>( &cam ) != 0;
+}

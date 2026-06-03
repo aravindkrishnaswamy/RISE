@@ -4459,6 +4459,24 @@ namespace RISE
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "EXR writer" );
 		return true;
 	}
+
+	bool RISE_API_CreateEXRWriter(
+								IRasterImageWriter** ppi,
+								IWriteBuffer& buffer,
+								const COLOR_SPACE color_space,
+								const EXR_COMPRESSION compression,
+								const bool with_alpha,
+								const bool write_float
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new EXRWriter( buffer, color_space, compression, with_alpha, write_float );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "EXR writer" );
+		return true;
+	}
 }
 
 //////////////////////////////////////////////////////////

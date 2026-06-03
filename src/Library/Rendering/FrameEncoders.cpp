@@ -123,8 +123,14 @@ namespace RISE
 			IWriteBuffer& dst, const EncodeOpts& opts ) const
 		{
 			IRasterImageWriter* w = nullptr;
+			// bpp >= 32 selects 32-bit FLOAT EXR channels; lower (the
+			// default 8 / the common 16) keep the historical half/FP16
+			// output byte-for-byte.  Half caps at 65504, which clamps
+			// legitimate bright HDR pixels (caustic / specular fireflies)
+			// to +Inf on write — float preserves the full linear range.
+			const bool write_float = ( opts.bpp >= 32 );
 			RISE_API_CreateEXRWriter( &w, dst,
-				opts.colorSpace, opts.exrCompression, opts.exrWithAlpha );
+				opts.colorSpace, opts.exrCompression, opts.exrWithAlpha, write_float );
 			return w;
 		}
 

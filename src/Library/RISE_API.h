@@ -2283,6 +2283,21 @@ bool RISE_API_CreateIrradianceCache(
 								const bool with_alpha				///< [in] Write alpha channel (true default)
 								);
 
+	//! Creates a EXR writer, choosing the channel pixel type.
+	//! Overload of the 5-arg form (which stays half/FP16 for ABI
+	//! stability).  `write_float == true` emits 32-bit FLOAT channels so
+	//! bright HDR pixels above the FP16 max (65504) survive instead of
+	//! being clamped to +Inf on write.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateEXRWriter(
+								IRasterImageWriter** ppi,			///< [out] Pointer to recieve the raster image writer
+								IWriteBuffer& buffer,				///< [in] Buffer to write to
+								const COLOR_SPACE color_space,		///< [in] Color space to apply
+								const EXR_COMPRESSION compression,	///< [in] EXR compression mode (PIZ default)
+								const bool with_alpha,				///< [in] Write alpha channel (true default)
+								const bool write_float				///< [in] true => 32-bit FLOAT channels; false => half (FP16)
+								);
+
 
 	//////////////////////////////////////////////////////////
 	// Shader Ops

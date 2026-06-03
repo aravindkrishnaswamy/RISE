@@ -24,8 +24,12 @@
 #ifndef NO_EXR_SUPPORT
 	// OpenEXR includes
 	#include <ImfRgbaFile.h>
+	#include <ImfOutputFile.h>
+	#include <ImfChannelList.h>
+	#include <ImfFrameBuffer.h>
 	#include <ImfIO.h>
 	#include <ImfArray.h>
+	#include <vector>
 #endif
 
 namespace RISE
@@ -67,14 +71,17 @@ namespace RISE
 
 		#ifndef NO_EXR_SUPPORT
 			OStreamWrapper			out;
-			Imf::RgbaOutputFile*	exrout;
-			Imf::Array2D<Imf::Rgba>	exrbuffer;
+			Imf::RgbaOutputFile*	exrout;			///< half (FP16) path; NULL when write_float
+			Imf::OutputFile*		exrout_float;	///< 32-bit FLOAT path; NULL unless write_float
+			Imf::Array2D<Imf::Rgba>	exrbuffer;		///< half scanline buffer
+			std::vector<float>		floatbuffer;	///< interleaved R,G,B,A float scanline buffer (write_float)
 		#endif
 
 			IWriteBuffer&			buffer;
 			COLOR_SPACE				color_space;
 			EXR_COMPRESSION			compression;
 			bool					with_alpha;
+			bool					write_float;	///< true => 32-bit FLOAT channels (no FP16 65504 clamp); false => half
 			unsigned int			horzpixels;
 			unsigned int			scanlines;
 
@@ -82,12 +89,23 @@ namespace RISE
 			template< typename T >
 			void WriteColorToEXRBuffer( const T& c, const unsigned int x, const unsigned int y )
 			{
-				// Convert from our scalar format to the half format
-				// Note that OpenEXR is defined as a premultiplied alpha for transparency
-				exrbuffer[y][x].r = half( static_cast<float>( c.base.r*c.a ) );
-				exrbuffer[y][x].g = half( static_cast<float>( c.base.g*c.a ) );
-				exrbuffer[y][x].b = half( static_cast<float>( c.base.b*c.a ) );
-				exrbuffer[y][x].a = half( static_cast<float>( c.a ) );
+				// OpenEXR is defined as premultiplied alpha for transparency.
+				if( write_float ) {
+					// 32-bit FLOAT path: stores the full linear-radiance range.
+					// half (FP16) caps at 65504, which silently turns legitimate
+					// bright HDR pixels (caustic / specular fireflies) into +Inf.
+					const std::size_t idx =
+						( static_cast<std::size_t>( y ) * horzpixels + x ) * 4u;
+					floatbuffer[idx + 0u] = static_cast<float>( c.base.r * c.a );
+					floatbuffer[idx + 1u] = static_cast<float>( c.base.g * c.a );
+					floatbuffer[idx + 2u] = static_cast<float>( c.base.b * c.a );
+					floatbuffer[idx + 3u] = static_cast<float>( c.a );
+				} else {
+					exrbuffer[y][x].r = half( static_cast<float>( c.base.r*c.a ) );
+					exrbuffer[y][x].g = half( static_cast<float>( c.base.g*c.a ) );
+					exrbuffer[y][x].b = half( static_cast<float>( c.base.b*c.a ) );
+					exrbuffer[y][x].a = half( static_cast<float>( c.a ) );
+				}
 			}
 		#endif
 
@@ -96,7 +114,8 @@ namespace RISE
 				IWriteBuffer&         buffer,
 				const COLOR_SPACE     color_space_,
 				const EXR_COMPRESSION compression_ = eExrCompression_Piz,
-				const bool            with_alpha_  = true );
+				const bool            with_alpha_  = true,
+				const bool            write_float_ = false );
 
 			virtual ~EXRWriter();
 
