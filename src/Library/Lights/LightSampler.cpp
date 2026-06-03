@@ -1327,16 +1327,26 @@ Scalar LightSampler::CachedPdfSelectLuminary(
 		{
 			if( (*pPreparedLuminaries)[lightEntries[i].lumIndex].pLum == &luminary )
 			{
-				// Continuous-PMF rescale — see `PdfSelectLight` for the
-				// full rationale.
-				const Scalar aliasShare = Scalar( 1 ) - cachedEnvSelectProb;
+				// ALIAS-ONLY selection pdf — do NOT apply the
+				// (1 - cachedEnvSelectProb) continuous-PMF factor here.
+				// This is PT's BSDF-hit MIS competitor for a MESH-emitter
+				// hit, and PT direct lighting samples mesh emitters from the
+				// alias table INDEPENDENTLY (EvaluateDirectLighting: pdfAlias
+				// = aliasTable.Pdf / pLightBVH->Pdf, alias-only) with the
+				// environment handled by a SEPARATE env-NEE strategy.  The
+				// matching NEE-side weight (`p_light` at the mesh-luminary
+				// site below) uses that same alias-only pdfAlias, so the
+				// BSDF-hit `p_nee` (PathTracingIntegrator) must too.  The joint
+				// env-vs-alias factor belongs ONLY to SampleLight()'s single
+				// selection roll consumed by BDPT/VCM (PdfSelectLight) —
+				// applying it here made the two PT MIS techniques disagree by
+				// (1-envSelectProb), overweighting mesh-emitter hits whenever
+				// an HDRI coexists with mesh emitters.  Codex review Finding 3.
 				if( pLightBVH && pLightBVH->IsBuilt() )
 				{
-					return aliasShare *
-						pLightBVH->Pdf( i, shadingPoint, shadingNormal );
+					return pLightBVH->Pdf( i, shadingPoint, shadingNormal );
 				}
-				return aliasShare *
-					static_cast<Scalar>( aliasTable.Pdf( i ) );
+				return static_cast<Scalar>( aliasTable.Pdf( i ) );
 			}
 		}
 	}
