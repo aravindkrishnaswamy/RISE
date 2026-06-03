@@ -171,7 +171,8 @@ namespace RISE
 				unsigned int translucentBounces_,
 				unsigned int volumeBounces_,
 				Scalar glossyFilterWidth_,
-				Scalar result[SampledWavelengths::N]
+				Scalar result[SampledWavelengths::N],
+				PixelAOV* pAOV = 0
 				) const;
 
 			/// Traces one complete path for a single wavelength.
@@ -197,7 +198,8 @@ namespace RISE
 				const IRayCaster& caster,
 				ISampler& sampler,
 				const IRadianceMap* pRadianceMap,
-				Scalar result[SampledWavelengths::N]
+				Scalar result[SampledWavelengths::N],
+				PixelAOV* pAOV = 0
 				) const;
 
 			/// Accessors for NM/HWSS code in PathTracingShaderOp

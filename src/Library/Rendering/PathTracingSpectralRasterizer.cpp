@@ -125,7 +125,8 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 	const Point2& ptOnScreen,
 	const IScene& pScene,
 	ISampler& sampler,
-	const IRadianceMap* pRadianceMap
+	const IRadianceMap* pRadianceMap,
+	PixelAOV* pAOV
 	) const
 {
 	const ICamera* pCamera = pScene.GetCamera();
@@ -151,7 +152,7 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 
 			Scalar result[SampledWavelengths::N] = {0};
 			pIntegrator->IntegrateRayHWSS(
-				rc, rast, cameraRay, swl, pScene, *pCaster, sampler, pRadianceMap, result );
+				rc, rast, cameraRay, swl, pScene, *pCaster, sampler, pRadianceMap, result, pAOV );
 
 			for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
 				if( !swl.terminated[i] ) {
@@ -183,7 +184,7 @@ XYZPel PathTracingSpectralRasterizer::IntegratePixelSpectral(
 			(lambda_begin + rc.random.CanonicalRandom() * lambda_diff);
 
 		const Scalar nmvalue = pIntegrator->IntegrateRayNM(
-			rc, rast, cameraRay, nm, pScene, *pCaster, sampler, pRadianceMap );
+			rc, rast, cameraRay, nm, pScene, *pCaster, sampler, pRadianceMap, pAOV );
 
 		if( nmvalue > 0 ) {
 			XYZPel thisNM( 0, 0, 0 );
@@ -348,8 +349,19 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 
 				rc.pSampler = &sampler;
 
+#ifdef RISE_ENABLE_OIDN
+				PixelAOV aov;
+				const XYZPel sampleXYZ = IntegratePixelSpectral(
+					rc, rast, ptOnScreen, pScene, sampler, pRadianceMap,
+					pAOVBuffers ? &aov : 0 );
+				if( pAOVBuffers && aov.valid ) {
+					pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+					pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+				}
+#else
 				const XYZPel sampleXYZ = IntegratePixelSpectral(
 					rc, rast, ptOnScreen, pScene, sampler, pRadianceMap );
+#endif
 				// Defer XYZ -> ROMM RGB to per-pixel resolve.  FilteredFilm
 				// now accumulates XYZ; no per-sample chromaticity clip.
 
@@ -409,6 +421,15 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 			px.converged = converged;
 		}
 
+#ifdef RISE_ENABLE_OIDN
+		// Normalize accumulated AOVs by total weight (non-progressive only;
+		// the progressive path normalizes in PixelBasedRasterizerHelper after
+		// the final pass).  Mirrors PathTracingPelRasterizer.
+		if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
+			pAOVBuffers->Normalize( x, y, 1.0 / alphas );
+		}
+#endif
+
 		if( adaptive && adaptiveConfig.showMap ) {
 			const Scalar t = Scalar(sampleIndex) / Scalar(targetSamples);
 			cret = RISEColor( RISEPel(t, t, t), 1.0 );
@@ -436,8 +457,20 @@ void PathTracingSpectralRasterizer::IntegratePixel(
 
 		rc.pSampler = &sampler;
 
+#ifdef RISE_ENABLE_OIDN
+		PixelAOV aov;
+		const XYZPel sampleXYZ = IntegratePixelSpectral(
+			rc, rast, Point2(x, height-y), pScene, sampler, pRadianceMap,
+			pAOVBuffers ? &aov : 0 );
+		if( pAOVBuffers && aov.valid ) {
+			pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, 1.0 );
+			pAOVBuffers->AccumulateNormal( x, y, aov.normal, 1.0 );
+			pAOVBuffers->Normalize( x, y, 1.0 );
+		}
+#else
 		const XYZPel sampleXYZ = IntegratePixelSpectral(
 			rc, rast, Point2(x, height-y), pScene, sampler, pRadianceMap );
+#endif
 
 		// Proper XYZ -> ROMM RGB via implicit RISEPel(XYZPel).
 		cret = RISEColor( RISEPel( sampleXYZ ), 1.0 );

@@ -37,6 +37,8 @@ namespace RISE { namespace Implementation { class PathGuidingField; } }
 
 namespace RISE
 {
+	struct PixelAOV;	// First-hit albedo/normal AOV side-data (AOVBuffers.h)
+
 	// Per-thread rendering state, allocated and owned by each rasterizer thread.
 	// Not part of the shared scene graph — mutable fields here are correct because
 	// each thread has its own RuntimeContext instance.
@@ -138,6 +140,19 @@ namespace RISE
 		/// for the splat-film exclusion rationale.
 		OidnPrefilter											aovPrefilterMode;
 
+		/// Per-pixel-sample inline AOV sink for the SHADER-DISPATCH spectral
+		/// path (pixelintegratingspectral_rasterizer).  That path reaches the
+		/// integrator through CastRayNM/CastRayHWSS -> the shader chain ->
+		/// PathTracingShaderOp::PerformOperationNM/HWSS, whose signatures carry
+		/// no PixelAOV*.  Rather than widen the IShaderOp virtual (≈25
+		/// implementers), the rasterizer parks the sample's PixelAOV here
+		/// before the cast and the shader op forwards it into
+		/// IntegrateFromHitNM/HWSS — exactly the per-thread-state idiom that
+		/// pSampler already uses.  NULL outside that path (the pure-integrator
+		/// PathTracingSpectralRasterizer and the Pel rasterizer pass PixelAOV*
+		/// explicitly), so it never perturbs them.
+		mutable PixelAOV*										pAOV;
+
 #ifdef RISE_ENABLE_OPENPGL
 		/// Path guiding field for guided directional sampling.
 		/// Set by the rasterizer before rendering.  NULL when guiding
@@ -182,7 +197,8 @@ namespace RISE
 		  pOptimalMIS( 0 ),
 		  pProgressiveFilm( 0 ),
 		  totalProgressiveSPP( 0 ),
-		  aovPrefilterMode( OidnPrefilter::Fast )
+		  aovPrefilterMode( OidnPrefilter::Fast ),
+		  pAOV( 0 )
 #ifdef RISE_ENABLE_OPENPGL
 		  ,pGuidingField( 0 )
 		  ,guidingAlpha( 0 )

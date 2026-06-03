@@ -134,7 +134,10 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 		// twin previously dropped them (relied on the false/false
 		// defaults), double-counting spectral SMS+SSS+glass+emitter
 		// paths.  Codex review Finding 2.
-		rs.smsPassedThroughSpecular, rs.smsHadNonSpecularShading );
+		rs.smsPassedThroughSpecular, rs.smsHadNonSpecularShading,
+		// Inline OIDN AOV sink parked on rc by the shader-dispatch spectral
+		// rasterizer (PixelBasedSpectralIntegratingRasterizer); NULL otherwise.
+		rc.pAOV );
 }
 
 
@@ -176,5 +179,5 @@ void PathTracingShaderOp::PerformOperationHWSS(
 		rs.importance, rs.type,
 		rs.diffuseBounces, rs.glossyBounces,
 		rs.transmissionBounces, rs.translucentBounces,
-		0, rs.glossyFilterWidth, result );
+		0, rs.glossyFilterWidth, result, rc.pAOV );
 }

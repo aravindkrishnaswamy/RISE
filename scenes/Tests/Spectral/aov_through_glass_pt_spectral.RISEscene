@@ -1,0 +1,158 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#   File:           aov_through_glass_pt_spectral.RISEscene
+#   Description:    OIDN inline-AOV validation for spectral PT (shader-dispatch path,
+#                   pixelintegratingspectral_rasterizer).
+#
+#   The camera looks through a small SPF-only glass sphere at a large RED diffuse
+#   backdrop, lit by an area light off to the side.  Central camera rays are
+#   camera -> glass(delta refract) -> glass(delta refract) -> red backdrop(diffuse
+#   = first NON-delta scatter).
+#
+#   PURPOSE:  exercise the inline first-non-delta albedo/normal AOV recording on the
+#   spectral PT path.  With `oidn_prefilter accurate`, the through-glass albedo AOV
+#   must be the RED backdrop reflectance, NOT the white glass front face that the
+#   post-render first-hit retrace fallback would record.  The denoised result then
+#   preserves the through-glass signal instead of treating it as noise.
+#
+#   This scene is the shader-dispatch twin; aov_through_glass_pt_spectral_pure uses
+#   the pure-integrator pathtracing_spectral_rasterizer.
+#############################################################################################################
+
+pathtracing_shaderop
+{
+	name		pt
+}
+
+standard_shader
+{
+	name		global
+	shaderop	pt
+}
+
+pixelintegratingspectral_rasterizer
+{
+	samples					64
+	lum_samples				1
+	nmbegin					400
+	nmend					700
+	num_wavelengths			12
+	max_recursion			8
+	oidn_denoise			true
+	oidn_prefilter			accurate
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/aov_through_glass_pt_spectral
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			256
+	height			256
+}
+
+pinhole_camera
+{
+	location			0 0 6
+	lookat				0 0 0
+	up					0 1 0
+	fov					45.0
+}
+
+##################################################
+# Painters
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_back
+	color				0.85 0.12 0.12
+}
+
+uniformcolor_painter
+{
+	name				pnt_glass
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 0.98 0.94
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name				backmat
+	reflectance			pnt_back
+}
+
+perfectrefractor_material
+{
+	name				glassmat
+	refractance			pnt_glass
+	ior					1.5
+}
+
+lambertian_luminaire_material
+{
+	name				lightmat
+	exitance			pnt_light
+	scale				40.0
+	material			none
+}
+
+##################################################
+# Geometry + objects
+##################################################
+
+sphere_geometry
+{
+	name				backgeom
+	radius				5.0
+}
+
+sphere_geometry
+{
+	name				glassgeom
+	radius				0.9
+}
+
+sphere_geometry
+{
+	name				lightgeom
+	radius				1.2
+}
+
+standard_object
+{
+	name				backdrop
+	geometry			backgeom
+	position			0 0 -7.0
+	material			backmat
+}
+
+standard_object
+{
+	name				glassball
+	geometry			glassgeom
+	position			0 0 2.0
+	material			glassmat
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	position			3.2 3.2 1.5
+	material			lightmat
+}

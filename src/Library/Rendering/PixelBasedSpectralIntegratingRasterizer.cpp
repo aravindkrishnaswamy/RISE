@@ -369,7 +369,21 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 
 				Ray ray;
 				if( pScene.GetCamera()->GenerateRay( rc, ray, ptOnScreen ) ) {
+#ifdef RISE_ENABLE_OIDN
+					// Inline OIDN AOV: park a per-sample sink on rc so the shader
+					// chain's PathTracingShaderOp can record albedo/normal at the
+					// first non-delta scatter (accurate prefilter); see rc.pAOV.
+					PixelAOV aov;
+					rc.pAOV = pAOVBuffers ? &aov : 0;
+#endif
 					TakeSingleSample( rc, rast, ray, c );
+#ifdef RISE_ENABLE_OIDN
+					rc.pAOV = 0;
+					if( pAOVBuffers && aov.valid ) {
+						pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, weight );
+						pAOVBuffers->AccumulateNormal( x, y, aov.normal, weight );
+					}
+#endif
 					// XYZ-only path: accumulate XYZ in both FilteredFilm
 					// and the local colAccruedXYZ.  No per-sample XYZ->
 					// ROMM conversion (deferred to per-pixel resolve).
@@ -433,6 +447,14 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 			px.converged = converged;
 		}
 
+#ifdef RISE_ENABLE_OIDN
+		// Normalize accumulated AOVs by total weight (non-progressive only;
+		// the progressive path normalizes in PixelBasedRasterizerHelper).
+		if( pAOVBuffers && alphas > 0 && !pProgFilm ) {
+			pAOVBuffers->Normalize( x, y, 1.0 / alphas );
+		}
+#endif
+
 		if( alphas > 0 ) {
 			// Single XYZ → RISEPel conversion at resolve via implicit
 			// RISEPel(XYZPel) constructor (ColorUtils::XYZtoRec709RGB
@@ -459,7 +481,19 @@ void PixelBasedSpectralIntegratingRasterizer::IntegratePixel(
 		Ray ray;
 		if( pScene.GetCamera()->GenerateRay( rc, ray, Point2(x, height-y) ) ) {
 			ColorXYZ	c;
+#ifdef RISE_ENABLE_OIDN
+			PixelAOV aov;
+			rc.pAOV = pAOVBuffers ? &aov : 0;
+#endif
 			TakeSingleSample( rc, rast, ray, c );
+#ifdef RISE_ENABLE_OIDN
+			rc.pAOV = 0;
+			if( pAOVBuffers && aov.valid ) {
+				pAOVBuffers->AccumulateAlbedo( x, y, aov.albedo, 1.0 );
+				pAOVBuffers->AccumulateNormal( x, y, aov.normal, 1.0 );
+				pAOVBuffers->Normalize( x, y, 1.0 );
+			}
+#endif
 			cret = RISEColor( c.base, c.a );
 		}
 

@@ -65,7 +65,8 @@ namespace RISE
 				const Point2& ptOnScreen,
 				const IScene& pScene,
 				ISampler& sampler,
-				const IRadianceMap* pRadianceMap
+				const IRadianceMap* pRadianceMap,
+				PixelAOV* pAOV = 0
 				) const;
 
 			unsigned int GetProgressiveTotalSPP() const;

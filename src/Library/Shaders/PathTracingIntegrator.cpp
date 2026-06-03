@@ -2885,6 +2885,25 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 			} else {
 				bPassedThroughSpecular = false;
 				bHadNonSpecularShading = true;
+#ifdef RISE_ENABLE_OIDN
+				// Accurate-mode inline AOV: first non-delta BSDF scatter.  Sibling
+				// of the SPF-only hook above (the !pBRDF block) and the HWSS hook in
+				// IntegrateFromHitHWSS.  Without this, a camera looking through glass
+				// at a DIFFUSE (BSDF) surface recorded NO inline AOV and fell back to
+				// the first-hit retrace (glass-coloured aux) — the exact case
+				// docs/SPECTRAL_PARITY_AUDIT.md §2.6 describes.  Render-neutral
+				// (writes only pAOV side-data); gated on the AOV-capable tag.
+				if constexpr ( Traits::supports_aov ) {
+					if( pAOV && !pAOV->valid &&
+					    rc.aovPrefilterMode == OidnPrefilter::Accurate )
+					{
+						pAOV->normal = ri.geometric.vNormal;
+						pAOV->albedo = pBRDF ? pBRDF->albedo( ri.geometric )
+						                     : RISEPel( 1, 1, 1 );
+						pAOV->valid = true;
+					}
+				}
+#endif
 			}
 
 			currentRay = traceRay;
@@ -3404,13 +3423,31 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 	unsigned int translucentBounces,
 	unsigned int volumeBounces,
 	Scalar glossyFilterWidth,
-	Scalar hwssResult[SampledWavelengths::N]
+	Scalar hwssResult[SampledWavelengths::N],
+	PixelAOV* pAOV
 	) const
 {
 	// Initialize results
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
 		hwssResult[i] = 0;
 	}
+
+#ifdef RISE_ENABLE_OIDN
+	// Fast-mode inline AOV (OIDN aux): record the camera ray's first hit.
+	// Matches the post-render first-hit retrace fallback's semantics but
+	// inline, so no extra retrace pass is needed.  Accurate mode skips this
+	// and records at the first non-delta scatter below (through glass / mirror).
+	// albedo/normal are wavelength-independent, so the hero-bundle records once.
+	if( pAOV && !pAOV->valid && firstHit.geometric.bHit &&
+	    rc.aovPrefilterMode == OidnPrefilter::Fast )
+	{
+		pAOV->normal = firstHit.geometric.vNormal;
+		pAOV->albedo = ( firstHit.pMaterial && firstHit.pMaterial->GetBSDF() )
+			? firstHit.pMaterial->GetBSDF()->albedo( firstHit.geometric )
+			: RISEPel( 1, 1, 1 );
+		pAOV->valid = true;
+	}
+#endif
 
 	// Check material at first hit to determine path strategy
 	const IBSDF* pBRDF = firstHit.pMaterial ? firstHit.pMaterial->GetBSDF() : 0;
@@ -3429,7 +3466,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					startDepth, initialIorStack, bsdfPdf, 0,
 					considerEmission, importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
-					translucentBounces, volumeBounces, glossyFilterWidth );
+					translucentBounces, volumeBounces, glossyFilterWidth,
+						false, false, pAOV );
 			}
 		}
 		return;
@@ -3460,7 +3498,8 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						startDepth, initialIorStack, bsdfPdf, 0,
 						considerEmission, importance, rayType,
 						diffuseBounces, glossyBounces, transmissionBounces,
-						translucentBounces, volumeBounces, glossyFilterWidth );
+						translucentBounces, volumeBounces, glossyFilterWidth,
+						false, false, pAOV );
 				}
 			}
 			return;
@@ -3716,7 +3755,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 					considerEmission, importance, rayType,
 					diffuseBounces, glossyBounces, transmissionBounces,
 					translucentBounces, volumeBounces, glossyFilterWidth,
-					false, true );
+					false, true, pAOV );
 			}
 			break;
 		}
@@ -3752,7 +3791,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						// emission the HWSS-side SMS pass already counted.  Previously
 						// dropped (defaulted false/false), double-counting HWSS
 						// SMS+SSS+glass+emitter paths — the HWSS sibling of Codex Finding 2.
-						false, true );
+						false, true, pAOV );
 				}
 				break;
 			}
@@ -3945,6 +3984,23 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 		if( selectProb < NEARZERO ) {
 			break;
 		}
+
+#ifdef RISE_ENABLE_OIDN
+		// Accurate-mode inline AOV (OIDN aux): record at the first non-delta
+		// scatter on the HWSS path — glass / mirror delta vertices are walked
+		// through, so a camera looking through the glass records the surface
+		// BEHIND it, not the glass front face.  Hero drives; albedo/normal are
+		// wavelength-independent.  Mirrors the NM/Pel hook in
+		// IntegrateFromHitTemplated.
+		if( pAOV && !pAOV->valid && !pS->isDelta &&
+		    rc.aovPrefilterMode == OidnPrefilter::Accurate )
+		{
+			pAOV->normal = ri.geometric.vNormal;
+			pAOV->albedo = pBRDFCur ? pBRDFCur->albedo( ri.geometric )
+			                        : RISEPel( 1, 1, 1 );
+			pAOV->valid = true;
+		}
+#endif
 
 		// Dispersive specular termination
 		if( pS->isDelta && !swl.SecondaryTerminated() )
@@ -4146,7 +4202,8 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	const IRayCaster& caster,
 	ISampler& sampler,
 	const IRadianceMap* pRadianceMap,
-	Scalar result[SampledWavelengths::N]
+	Scalar result[SampledWavelengths::N],
+	PixelAOV* pAOV
 	) const
 {
 	for( unsigned int i = 0; i < SampledWavelengths::N; i++ ) {
@@ -4288,7 +4345,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 			IntegrateFromHitHWSS( rc, rast, ri, swl, scene, caster,
 				sampler, pRadianceMap, 0, iorStack,
 				0, true, 1.0, IRayCaster::RAY_STATE::eRayView,
-				0, 0, 0, 0, 0, 0, result );
+				0, 0, 0, 0, 0, 0, result, pAOV );
 
 			for( unsigned int w = 0; w < SampledWavelengths::N; w++ ) {
 				result[w] *= Tr[w];
@@ -4346,5 +4403,5 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 	IntegrateFromHitHWSS( rc, rast, ri, swl, scene, caster,
 		sampler, pRadianceMap, 0, iorStack,
 		0, true, 1.0, IRayCaster::RAY_STATE::eRayView,
-		0, 0, 0, 0, 0, 0, result );
+		0, 0, 0, 0, 0, 0, result, pAOV );
 }
