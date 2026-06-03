@@ -126,7 +126,6 @@ static int RunVarianceMode( int argc, char** argv )
 	// Per-pixel sample mean & unbiased variance, reduced to image
 	// aggregates as we go (no need to keep per-pixel arrays).
 	double sumVar = 0.0;          // Σ_pixels Σ_channels σ²(x,y,c)
-	double sumMeanSq = 0.0;       // Σ μ²(x,y,c) — for SNR-ish metric
 	double sumMean = 0.0;         // Σ μ(x,y,c)
 	double maxPixVar = 0.0;       // peak per-pixel variance (max over channels)
 	std::vector<double> perPixVar; perPixVar.reserve( N );
@@ -160,7 +159,6 @@ static int RunVarianceMode( int argc, char** argv )
 		perPixVar.push_back( pixVarMax );
 
 		sumMean += mean[0] + mean[1] + mean[2];
-		sumMeanSq += mean[0]*mean[0] + mean[1]*mean[1] + mean[2]*mean[2];
 
 		channelMean[0] += mean[0];
 		channelMean[1] += mean[1];

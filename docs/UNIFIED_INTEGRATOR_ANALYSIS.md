@@ -232,13 +232,27 @@ splatting on BDPT/VCM.
 
 ### 4.5 Phase 1 output
 
-`docs/UNIFIED_INTEGRATOR_BASELINES.md` (to be produced). Contains:
+**→ Produced 2026-06-03: [UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md)**
+(18 scenes × {PT,BDPT,VCM}, K=16 EXR trials, wall-clock-normalized σ²·T +
+RMSE-vs-truth). Contains:
 
 - Scene-by-integrator quality matrix (RMSE, variance, bias, wall-clock).
 - Bias-premium per scene class for VCM-vs-PT-or-BDPT.
 - Env-IBL bias quantification at production resolution.
 - VCM-spectral dispersion bias quantification.
 - Identification of scenes where *every* integrator has high variance (these are the highest-leverage scenes for the chosen direction).
+
+**Headline result for the §6.3 decision gate:** the wall-clock metric
+contraindicates VCM-as-default (Candidate B) — VCM loses σ²·T on every class
+where integrators converge (3–40×) and carries **−63% to +76% env/volume
+luminance bias** at production resolution (far larger than the synthetic 22%).
+The data favors a **hybrid (Candidate C)**: PT default, BDPT for
+strong-indirect/glossy (`gi_spheres` 56× efficiency over PT), VCM reserved for
+caustic/refractive transport where PT/BDPT miss 44–78% of the energy. Highest-
+leverage (every-integrator-noisy) scenes are all caustic/SDS/spectral-caustic.
+Two by-product bugs flagged (not fixed, measurement-only scope): a degenerate-pdf
+`Inf` firefly in VCM/BDPT caustic connections (`glass_pavilion`) and a BDPT
+delta-light near-black failure (`sculptors_studio`).
 
 ---
 
@@ -544,7 +558,7 @@ that duplication.
 |---|---|---|
 | (Pre-Phase 1) | 5.2.1 env-IBL SA-MIS refactor implementation plan | **Design + survey landed 2026-05-27** in [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md); code execution deferred to follow-up session |
 | (Pre-Phase 1) | Phase 2b/2c integrator refactor execution | Plan exists, status doc exists; deferred until Pieces 1+2 land per [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) |
-| Phase 1 | `docs/UNIFIED_INTEGRATOR_BASELINES.md` (new) | Not yet started; would post-date the pre-Phase-1 fixes if those are sequenced first |
+| Phase 1 | [`docs/UNIFIED_INTEGRATOR_BASELINES.md`](UNIFIED_INTEGRATOR_BASELINES.md) | **DONE 2026-06-03** — 18 scenes × {PT,BDPT,VCM}, K=16, wall-clock σ²·T + RMSE. Measured on the pre-fix (disc-area) baseline; the env/volume VCM bias it quantifies (−63%…+76%) is exactly what the deferred 5.2.1/5.2.2 fixes would close, so a re-run after those land would sharpen the VCM rows. |
 | Phase 2 | This document, §5 (further revised) | Maintained here |
 | Phase 3 | `docs/UNIFIED_INTEGRATOR_DECISION.md` (new) | Awaits Phase 1 output |
 | Implementation | Per-direction implementation plans | Awaits Phase 3 |

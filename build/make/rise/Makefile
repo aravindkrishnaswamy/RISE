@@ -115,6 +115,17 @@ imageconverter : $(OBJLIB) $(PATHSRCS)imageconverter.o
 	@echo Linking $(PATHDEST)imageconverter
 	@$(CXX) $(CPPFLAGS) -o $(PATHDEST)imageconverter $(PATHSRCS)imageconverter.o $(OBJLIB) $(LDLIBS) 
 
+
+# HDRVarianceTest -- standalone variance-measurement tool (K-trial EXR
+# per-pixel variance + RMSE-vs-reference; source tools/HDRVarianceTest.cpp).
+# Mirrors the imageconverter link pattern but lands in bin/tools/.  Needs
+# OpenEXR at link time, which $(LDLIBS) already carries via $(LDLIBS_EXR)
+# (Config.OSX).  Dedicated target so variance work does not depend on the
+# other tools/ sources compiling -- unlike the catch-all `tools` target.
+HDRVarianceTest : $(OBJLIB) $(PATHTOOLS)HDRVarianceTest.o
+	@mkdir -p $(PATHTOOLDEST)
+	@echo Linking $(PATHTOOLDEST)HDRVarianceTest
+	@$(CXX) $(CPPFLAGS) -o $(PATHTOOLDEST)HDRVarianceTest $(PATHTOOLS)HDRVarianceTest.o $(OBJLIB) $(LDLIBS)
 drise_server : $(OBJLIB) $(OBJDRISE) $(PATHSRCSDRISE)drise_server.o
 	@echo Linking $(PATHDEST)drise_server
 	@$(CXX) $(CPPFLAGS) -o $(PATHDEST)drise_server $(PATHSRCSDRISE)drise_server.o $(OBJLIB) $(OBJDRISE) $(LDLIBS) 
