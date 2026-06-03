@@ -2058,14 +2058,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// SMS emission-suppression state so an
 										// onwards child ray through glass to a
 										// light doesn't re-enable emission.
-										if constexpr ( Traits::is_pel ) {
-											rs2.smsPassedThroughSpecular = false;
-											rs2.smsHadNonSpecularShading = true;
-										} else {
-											// Preserved Pel/NM asymmetry: the NM original recorded
-											// the BSSRDF cosine-sampled bsdfTimesCos for the
-											// continuation's optimal-MIS and counted a BSDF sample,
-											// instead of propagating the SMS suppression flags.
+										rs2.smsPassedThroughSpecular = false;
+										rs2.smsHadNonSpecularShading = true;
+										if constexpr ( Traits::is_nm ) {
+											// Preserved Pel/NM asymmetry: the NM original ALSO recorded the
+											// BSSRDF cosine-sampled bsdfTimesCos for the continuation's
+											// optimal-MIS and counted a BSDF sample.  Optimal-MIS is Pel-only
+											// at runtime (rc.pOptimalMIS is null in spectral renders), so this
+											// is a structural no-op kept for parity.  The SMS suppression flags
+											// above are now set for BOTH tags (Codex review Finding 2).
 											rs2.bsdfTimesCos = RISEPel( std::fabs( sssThroughput ) * bssrdf.cosinePdf );
 											if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 ) {
 												const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
@@ -2214,14 +2215,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 										// SMS emission-suppression state so an
 										// onwards child ray through glass to a
 										// light doesn't re-enable emission.
-										if constexpr ( Traits::is_pel ) {
-											rs2.smsPassedThroughSpecular = false;
-											rs2.smsHadNonSpecularShading = true;
-										} else {
-											// Preserved Pel/NM asymmetry: the NM original recorded
-											// the BSSRDF cosine-sampled bsdfTimesCos for the
-											// continuation's optimal-MIS and counted a BSDF sample,
-											// instead of propagating the SMS suppression flags.
+										rs2.smsPassedThroughSpecular = false;
+										rs2.smsHadNonSpecularShading = true;
+										if constexpr ( Traits::is_nm ) {
+											// Preserved Pel/NM asymmetry: the NM original ALSO recorded the
+											// BSSRDF cosine-sampled bsdfTimesCos for the continuation's
+											// optimal-MIS and counted a BSDF sample.  Optimal-MIS is Pel-only
+											// at runtime (rc.pOptimalMIS is null in spectral renders), so this
+											// is a structural no-op kept for parity.  The SMS suppression flags
+											// above are now set for BOTH tags (Codex review Finding 2).
 											rs2.bsdfTimesCos = RISEPel( std::fabs( sssThroughput ) * bssrdf.cosinePdf );
 											if( rc.pOptimalMIS && !rc.pOptimalMIS->IsReady() && bssrdf.cosinePdf > 0 ) {
 												const_cast<OptimalMISAccumulator*>( rc.pOptimalMIS )->AccumulateCount(
@@ -3742,7 +3744,15 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						pRadianceMap, depth, iorStack, bsdfPdf, 0,
 						considerEmission, importance, rayType,
 						diffuseBounces, glossyBounces, transmissionBounces,
-						translucentBounces, volumeBounces, glossyFilterWidth );
+						translucentBounces, volumeBounces, glossyFilterWidth,
+						// SMS double-count guard — identical reasoning to the no-BSDF
+						// (glass) delegation above: this SSS mid-path fallback is reached
+						// only after >=1 non-specular SMS anchor, so pass
+						// smsHadNonSpecularShading=true to suppress the BSDF-sampled
+						// emission the HWSS-side SMS pass already counted.  Previously
+						// dropped (defaulted false/false), double-counting HWSS
+						// SMS+SSS+glass+emitter paths — the HWSS sibling of Codex Finding 2.
+						false, true );
 				}
 				break;
 			}

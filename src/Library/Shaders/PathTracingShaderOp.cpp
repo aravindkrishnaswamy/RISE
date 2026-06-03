@@ -126,7 +126,15 @@ Scalar PathTracingShaderOp::PerformOperationNM(
 		rs.importance, rs.type,
 		rs.diffuseBounces, rs.glossyBounces,
 		rs.transmissionBounces, rs.translucentBounces,
-		0, rs.glossyFilterWidth );
+		0, rs.glossyFilterWidth,
+		// Forward the SMS emission-suppression flags so a path that
+		// re-enters shading across the SSS recursion boundary (the
+		// integrator's BSSRDF continuation) keeps its suppression state.
+		// The RGB PerformOperation above already forwards these; the NM
+		// twin previously dropped them (relied on the false/false
+		// defaults), double-counting spectral SMS+SSS+glass+emitter
+		// paths.  Codex review Finding 2.
+		rs.smsPassedThroughSpecular, rs.smsHadNonSpecularShading );
 }
 
 
