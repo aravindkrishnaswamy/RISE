@@ -535,3 +535,134 @@ investigation refines:
 - [skills/adversarial-code-review.md](skills/adversarial-code-review.md) — multi-reviewer pattern (used twice this session)
 - [src/Library/Shaders/VCMRecurrence.h](../src/Library/Shaders/VCMRecurrence.h) — InitLight contract, SmallVCM recurrence formulas
 - [src/Library/Lights/LightSampler.cpp](../src/Library/Lights/LightSampler.cpp) — continuous-PMF `SampleLight` wrapper (Session 9 fix)
+
+
+---
+
+## Session 12 outcome (2026-06-03) — minimal SA-measure fix FALSIFIED; phantom s=2 light-tracing MIS term + ~5% contribution residual identified
+
+**Status**: investigation complete; **NO code change landed** (working tree
+reverted to pristine baseline; `EnvLightBalanceTest` 80/80 lax, 116/116 binary
+tests). The §6 minimal-scope prescription (env-S0 + env-NEE SA-measure
+migration in VCM) was implemented exactly, **empirically falsified by the
+oracle**, and reverted per the stop rules. This section corrects the §4/§6
+root-cause model on two specific points.
+
+### TL;DR
+1. The §6.3 minimal VCM fix (SA-measure env density at the env-S0 and env-NEE
+   sites, matching SmallVCM line-for-line) **regresses** `EnvLightBalanceTest`
+   from 80/80 to **78/80** lax — it over-corrects uniform-env VCM from ~+6%
+   over to ~-18% under and craters hwss=true to 0.45. This is the v1/v2
+   regression signature.
+2. Direct-render isolation shows **the MIS partition is NOT the dominant
+   problem**. The over-correction is a **phantom s=2 light-tracing term in the
+   MIS denominator**: RISE's env light-subpath connection contributes ~0
+   (Session-11 Δ11: splat ≤ 0.002), yet the SmallVCM denominator
+   (`emissionPdfW·dVC` in env-S0, the `wCamera` term in env-NEE) assumes it
+   contributes — suppressing `w_s0 + w_s1` below 1. The disc-area measure was
+   *accidentally compensating* for it.
+3. A **separate ~5% contribution-level under-estimate** remains (independent of
+   MIS), with a likely test-setup confounder (PT vs VCM use different pixel
+   filters in `EnvLightBalanceTest`).
+4. **Neither variant is landable.** SA-alone regresses; SA + s2-term-exclusion
+   is a non-principled hack that would break VM/caustic env scenes.
+
+### What was implemented (then reverted)
+SA-measure construction in the env branch of `EvaluateS0Impl` and
+`EvaluateNEEImpl`, matching SmallVCM `BackgroundLight::GetRadiance` /
+`Illuminate` + `VertexCM::GetLightRadiance` / `DirectIllumination`:
+- env-S0: `directPdfA = envSelProb · pdf_env_sa` (solid-angle), `emissionPdfW =
+  directPdfA / discArea`; dropped the Session-10 `/envSelProb` divide (subsumed).
+  (was disc-area `directPdfA = envSelProb / discArea`.)
+- env-NEE: `directPdfW = pdf_env_sa` (solid-angle, directly). (was disc-derived
+  `pdfPosition · distSq / cosAtLight`.)
+Verified the construction matches SmallVCM line-for-line; the env-NEE
+*contribution* (PT-style `cosEyeWi/pdfSA · invLightSelect`) was already
+SA-correct and unchanged.
+
+### Result — REGRESSION (oracle: EnvLightBalanceTest, freshly-relinked binary)
+| Topology (VCM/PT mean R) | baseline | SA-measure | SA + s2-excl |
+|---|---|---|---|
+| env-only Lambertian | 1.057 | 0.819 | 0.894 |
+| env + omni | 1.056 | 0.824 | 0.898 |
+| env + mesh | 1.282 | 0.792 | 0.817 |
+| env-only spec hwss=F | 1.038 | 0.795 | 0.877 |
+| env-only spec hwss=T | 0.822 | **0.453** | **0.492 (LAX FAIL)** |
+| non-uniform x3 | ~0.888 | ~0.93 | ~0.947 |
+
+- **SA-measure alone**: lax 80/80 → **78/80** (hwss=true VCM mean + p99 fail).
+- **SA + s2-term exclusion** (also oracle-measured): improves the uniform
+  topologies (0.819 → 0.894 env-only), confirming the phantom-s2 finding — **but
+  is STILL 78/80** (hwss=true 0.492 lax-fails) and still ~10-18% under on uniform.
+  **No SA-measure variant even passes lax.**
+
+Decisive takeaway: the disc-area baseline (80/80) is empirically CLOSER to PT
+than any SA-measure variant, *despite* being "theoretically wrong" — its measure
+errors compensate for deeper under-counting (phantom-s2 term + ~5-10%
+contribution residual + a severe HWSS-specific breakage where the SA migration
+roughly HALVES hwss=true, 0.82 → 0.45-0.49). All variants reverted.
+
+### Root cause — direct-render isolation (env-only Lambertian, `bin/rise`)
+- my-PT = 0.6643; my-VCM (SA + s2-term excluded) = 0.6293 → **0.947 (5% under)**.
+- Isolation (MIS weight forced to 1 per strategy):
+  - env-S0 only = 0.6292
+  - env-NEE only = 0.6296
+  - both with MIS = 0.6293  — **all equal.**
+- Interpretation: each env strategy ALONE is a *complete* unbiased estimator
+  (= 0.629); MIS combines two equal estimators correctly. The 18%-under of the
+  SA fix is the phantom s=2 denominator term suppressing `w_s0 + w_s1` below 1.
+  Excluding it recovers env-only from 0.819 → 0.947.
+
+### Two corrections to the §4 / §6 root-cause model
+1. **"Splats / interior connections are innocent" (§5) is true for the
+   CONTRIBUTION but FALSE for the MIS DENOMINATOR TERM.** Δ11's disable-bisect
+   removed *contributions*, never *denominator terms*. The phantom denominator
+   term (`emissionPdfW·dVC`, `wCamera`) IS the dominant over-suppressor once the
+   disc-area measure (which masked it) is corrected to SA.
+2. **"Pure SA-measure migration closes the partition" (§4, §6.2) is FALSE.**
+   SA-measure alone over-corrects (lax fail) by exposing the phantom term.
+
+### Residual ~5% (separate from MIS — needs its own investigation)
+Even with the s2 term excluded and weights forced to 1, each VCM env strategy
+is ~5% under PT — a contribution-level under-estimate, common to both
+strategies, independent of MIS. **Confounder (likely minor)**:
+`EnvLightBalanceTest` renders PT with the default (Mitchell) pixel filter but
+VCM with `pixel_filter box` — not apples-to-apples at the filter level. However,
+**BDPT also uses `box`** and tracks PT within ~3% (env-only BDPT/PT = 1.09,
+env+mesh 0.97), so the filter mismatch accounts for at most ~3%; most of the VCM
+5-10% residual is likely VCM-specific. Matched-filter re-measurement should be
+the first step to isolate the genuinely-VCM portion before treating it as a bug.
+
+### Why neither variant is a landable fix
+- SA-measure alone: lax regression. NO.
+- SA + s2-term exclusion: non-principled hack. The crude implementation zeroes
+  the whole `wCamera` for env-NEE, which also removes the **VM merge**
+  alternative (`mMisVmWeightFactor`) — would double-count merges in VM-enabled
+  env caustic scenes (over-bright). A principled version must drop ONLY the env
+  light-tracing CONNECTION terms while keeping the merge term, and be validated
+  on VM/caustic scenes — beyond a gated single-step session.
+
+### Recommended next steps (for a properly-scoped follow-up)
+1. **Resolve the filter confounder**: make `EnvLightBalanceTest` use the SAME
+   pixel filter for PT and VCM, then re-measure the residual. Part of the
+   "VCM under/over PT" signal may be a test artifact.
+2. **Decide the principled treatment of RISE's near-zero env light-tracing
+   connection**: either (a) make it contribute its proper share (so the MIS
+   denominator term is balanced — a larger change to env light-subpath
+   connection handling), or (b) surgically exclude ONLY the env light-tracing
+   CONNECTION MIS terms (keep the VM merge term), validated on VM/caustic scenes.
+3. Resolve any remaining contribution-level residual after (1).
+4. Re-run the SA-measure migration on that corrected foundation (it is correct
+   for the s0↔s1 ratio; it just needs the phantom-term + residual fixed first).
+
+### Process note (important for the next session)
+`make all` rebuilds the library + `bin/rise` but does **NOT** relink test
+binaries — `make tests` is required. Mid-investigation measurements that ran
+`./bin/tests/EnvLightBalanceTest` after only `make all` used a STALE binary and
+gave misleading results; this temporarily masked the phantom-s2 finding until
+caught. Always `make all && make tests` before running the test; `bin/rise` is
+fresh after `make all` alone (used for the direct-render isolation above).
+
+### Working-tree state
+Pristine baseline (Session-10 micro-changes remain in-tree, unchanged, as they
+were committed). No instrumentation, no SA changes, no commits.

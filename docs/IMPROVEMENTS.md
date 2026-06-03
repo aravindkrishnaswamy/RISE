@@ -1036,6 +1036,32 @@ to be folded into the SA-MIS migration scope (it is *not* part of the
 escape-Tr fix, which the pure-absorption fixture validates
 independently).
 
+**2026-06-03 update (Session 12) — minimal SA-measure fix FALSIFIED; item
+remains OPEN with a corrected root-cause model.**  The Session-11 §6.3
+minimal-scope prescription (SA-measure env density in the env branch of VCM's
+`EvaluateS0Impl` + `EvaluateNEEImpl`) was implemented exactly (verified
+line-for-line against SmallVCM) and **regressed** `EnvLightBalanceTest` from
+80/80 to 78/80 lax — it over-corrects uniform-env VCM from ~+6 % over to ~-18 %
+under and roughly halves hwss=true (0.82 → 0.45).  Reverted per the stop rules.
+Two corrections to the Session-11 model, both backed by direct-render isolation:
+(1) the env light-subpath connection (splat/interior) is innocent as a
+*contribution* (Δ11) but its **MIS denominator term is not** — it is a phantom
+term (`emissionPdfW·dVC` / `wCamera`) that suppresses `w_s0+w_s1` below 1 once
+the disc-area measure that masked it is corrected to SA; (2) "pure SA-measure
+closes the partition" is **false** — no SA variant tested even passes lax (SA +
+phantom-term exclusion still gives 0.894 env-only / 0.49 hwss=true, 78/80).  The
+disc-area baseline (80/80) is empirically closer to PT *despite* being
+"theoretically wrong."  A residual ~5-10 % contribution-level under-estimate
+(possibly partly a test-filter confounder: the test renders PT with Mitchell but
+VCM with `box`) and a severe HWSS-specific breakage remain unexplained.
+**No code landed; working tree at pristine baseline.**  Full evidence, the
+two model corrections, and re-scoped next steps in
+[docs/VCM_ENV_MIS_PARTITION_INVESTIGATION.md](VCM_ENV_MIS_PARTITION_INVESTIGATION.md)
+"Session 12 outcome".  Net: the env-IBL strict residual is **not** closable by
+the prescribed minimal VCM weight change; a principled fix needs the env
+light-tracing contribution/MIS-term consistency resolved first (a larger,
+VM/caustic-validated effort) — not a 2-function edit.
+
 ### Background
 
 BDPT and VCM use **area-measure** path PDFs throughout: every vertex stores
