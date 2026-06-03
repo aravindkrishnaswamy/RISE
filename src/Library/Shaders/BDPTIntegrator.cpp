@@ -855,45 +855,6 @@ void BDPTIntegrator::GetStrategySelectionStats(
 #endif
 
 //////////////////////////////////////////////////////////////////////
-// Helper: evaluate BSDF at a vertex for given in/out directions.
-//
-// Adapts the RISE BSDF convention where value(vLightIn, ri) expects
-// the incoming viewer ray stored in ri.ray.Dir() (toward-surface)
-// and vLightIn pointing away from surface toward the light.
-//
-// Callers pass wi and wo both as "away from surface" directions,
-// so we negate wo to construct the ri.ray toward-surface direction.
-//////////////////////////////////////////////////////////////////////
-
-RISEPel BDPTIntegrator::EvalBSDFAtVertex(
-	const BDPTVertex& vertex,
-	const Vector3& wi,
-	const Vector3& wo
-	) const
-{
-	return PathVertexEval::EvalBSDFAtVertex( vertex, wi, wo );
-}
-
-//////////////////////////////////////////////////////////////////////
-// Helper: evaluate SPF PDF at a vertex.
-//
-// SPF::Pdf(ri, wo) expects ri.ray.Dir() as the incoming direction
-// (toward surface) and wo as the outgoing direction (away from
-// surface).  Since callers pass wi as the "incoming" side and wo as
-// the "outgoing" side (both away-from-surface), we negate wi to
-// build ri.ray.Dir().
-//////////////////////////////////////////////////////////////////////
-
-Scalar BDPTIntegrator::EvalPdfAtVertex(
-	const BDPTVertex& vertex,
-	const Vector3& wi,
-	const Vector3& wo
-	) const
-{
-	return PathVertexEval::EvalPdfAtVertex( vertex, wi, wo );
-}
-
-//////////////////////////////////////////////////////////////////////
 // Helper: evaluate transmittance along a connection edge.
 //
 // For now this only handles the global medium (scene-level fog).
@@ -4787,45 +4748,6 @@ Scalar BDPTIntegrator::MISWeight(
 }
 
 //////////////////////////////////////////////////////////////////////
-//
-// SPECTRAL (NM) VARIANTS
-//
-// These methods mirror the RGB versions above but work with scalar
-// throughput at a single wavelength.  They use IBSDF::valueNM(),
-// ISPF::ScatterNM(), ISPF::PdfNM(), and IEmitter::emittedRadianceNM()
-// to evaluate the path contribution for a specific wavelength.
-//
-//////////////////////////////////////////////////////////////////////
-
-//////////////////////////////////////////////////////////////////////
-// NM Helper: evaluate BSDF at a vertex for a single wavelength
-//////////////////////////////////////////////////////////////////////
-
-Scalar BDPTIntegrator::EvalBSDFAtVertexNM(
-	const BDPTVertex& vertex,
-	const Vector3& wi,
-	const Vector3& wo,
-	const Scalar nm
-	) const
-{
-	return PathVertexEval::EvalBSDFAtVertexNM( vertex, wi, wo, nm );
-}
-
-//////////////////////////////////////////////////////////////////////
-// NM Helper: evaluate SPF PDF at a vertex for a single wavelength
-//////////////////////////////////////////////////////////////////////
-
-Scalar BDPTIntegrator::EvalPdfAtVertexNM(
-	const BDPTVertex& vertex,
-	const Vector3& wi,
-	const Vector3& wo,
-	const Scalar nm
-	) const
-{
-	return PathVertexEval::EvalPdfAtVertexNM( vertex, wi, wo, nm );
-}
-
-//////////////////////////////////////////////////////////////////////
 // GenerateLightSubpathImpl<Tag> -- Phase 2c family F2b.
 //
 // The light-side half of subpath generation, templatized over PelTag/NMTag.
@@ -6197,8 +6119,8 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 				wo = dirFromPrev;
 			}
 
-			const Scalar heroF = EvalBSDFAtVertexNM( v, wi, wo, heroNM );
-			const Scalar compF = EvalBSDFAtVertexNM( v, wi, wo, companionNM );
+			const Scalar heroF = PathValueOps::EvalBSDFAtVertex<NMTag>( v, wi, wo, NMTag( heroNM ) );
+			const Scalar compF = PathValueOps::EvalBSDFAtVertex<NMTag>( v, wi, wo, NMTag( companionNM ) );
 
 			if( heroF > NEARZERO ) {
 				cumulativeRatio *= compF / heroF;

@@ -376,38 +376,6 @@ namespace RISE
 				const Scalar nm
 				) const;
 
-		protected:
-			/// Helper: evaluates the BSDF at a surface vertex for given
-			/// incoming and outgoing directions.
-			RISEPel EvalBSDFAtVertex(
-				const BDPTVertex& vertex,
-				const Vector3& wi,
-				const Vector3& wo
-				) const;
-
-			/// Helper: evaluates the SPF PDF at a surface vertex
-			Scalar EvalPdfAtVertex(
-				const BDPTVertex& vertex,
-				const Vector3& wi,
-				const Vector3& wo
-				) const;
-
-			/// NM helper: evaluates the BSDF at a surface vertex for a single wavelength
-			Scalar EvalBSDFAtVertexNM(
-				const BDPTVertex& vertex,
-				const Vector3& wi,
-				const Vector3& wo,
-				const Scalar nm
-				) const;
-
-			/// NM helper: evaluates the SPF PDF at a vertex for a single wavelength
-			Scalar EvalPdfAtVertexNM(
-				const BDPTVertex& vertex,
-				const Vector3& wi,
-				const Vector3& wo,
-				const Scalar nm
-				) const;
-
 		public:
 			/// Helper: evaluate transmittance along a connection edge
 			/// between two points, accounting for participating media.

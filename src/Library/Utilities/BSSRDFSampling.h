@@ -95,7 +95,7 @@ namespace RISE
 		///
 		///   Sw(wi) = Ft(cos_theta_i) / (c * PI)
 		///
-		/// Used by BDPTIntegrator::EvalBSDFAtVertex for BSSRDF entry
+		/// Used by PathVertexEval::EvalBSDFAtVertex for BSSRDF entry
 		/// connections and by BSSRDFEntryBSDF in the unidirectional PT.
 		///
 		/// \return Sw value (scalar, achromatic)
