@@ -137,11 +137,47 @@ BDPT (`BDPTIntegrator.cpp`, ~8,200 ln) is the largest integrator, so 2c is split
 
 The core integrator refactor (Phases 0/1/2a/2b/2c — templatize every PT/VCM/BDPT Pel/NM method pair into one `*Impl<Tag>`) **finished with Phase 2c on 2026-06-02**. The remaining items are separate, optional workstreams, none of which the refactor depends on:
 - **Phase 2d** — shared `EvaluatePathConnection<Tag>` primitive extraction across BDPT↔VCM (the post-2c go/no-go checkpoint; the connection math is now templatized on both sides, so a shared primitive is the natural next consolidation).
-- **Phase-4 dead-member cleanup** — drop the BDPT `IsVisible` / `EvalBSDFAtVertex` / `EvalPdfAtVertex` members (all dead post-refactor; each needs a `.h`-touching pass). F3b already removed the fold's `EvalEmitterRadianceNM`.
+- **Phase-4 dead-member cleanup — DONE (2026-06-02).** The 4 dead BDPT `EvalBSDFAtVertex{,NM}` / `EvalPdfAtVertex{,NM}` members are removed and the 2 live HWSS callers migrated to `PathValueOps::EvalBSDFAtVertex<NMTag>`; `IsVisible` (F3a) and `EvalEmitterRadianceNM` (F3b) were already gone. The BDPT Phase-4 dead-member cleanup is complete — see the "Phase-4 dead-member cleanup — outcome" section below.
 - **PT-spectral-rasterizer AOV-buffer follow-up** (deferred from Phase 2b PART 2).
 - **The deferred SA-MIS migration** (env-IBL strict-tolerance VCM env-S0 ↔ env-NEE partition — IMPROVEMENTS.md §12; scope reduced to ~1 week after the Session-9 continuous-PMF fix).
 
 Reasons the broader plan was staged are documented in the "Why I stopped here" section below.
+
+### Phase-4 dead-member cleanup — outcome (2026-06-02)
+
+The 4 dead `BDPTIntegrator::Eval*AtVertex{,NM}` **member** functions — pre-refactor duplicates that the Phase-0 `PathValueOps::Eval*<Tag>` dispatch + the `PathVertexEval::Eval*AtVertex{,NM}` free functions superseded — are removed. Pure dead-code removal; zero behavior change is the bar.
+
+**Per-member call-site census** (whole `src/` + `tests/`, excluding the `PathValueOps::` / `PathVertexEval::` namespace keep-targets and each member's own decl/def lines):
+
+| Member | Access | Live callers | Disposition |
+|---|---|---|---|
+| `EvalBSDFAtVertex` (Pel) | protected | 0 | removed |
+| `EvalBSDFAtVertexNM` | protected | 2 — `RecomputeSubpathThroughputNM` (cpp:6200-6201) | migrated → removed |
+| `EvalPdfAtVertex` (Pel) | protected | 0 | removed |
+| `EvalPdfAtVertexNM` | protected | 0 | removed |
+
+All 4 were thin forwarders (e.g. the NM member body was verbatim `return PathVertexEval::EvalBSDFAtVertexNM( vertex, wi, wo, nm );`). `tests/PathValueOpsTest.cpp` references only the namespace keep-targets — no member callers. The live direct `PathVertexEval::EvalBSDFAtVertexNM` calls in the NM connection code (now cpp:2508, 5766) are keep-targets and were preserved.
+
+**Migration (the only live callers).** The 2 HWSS-companion callers in `RecomputeSubpathThroughputNM` went from `EvalBSDFAtVertexNM( v, wi, wo, heroNM/companionNM )` → `PathValueOps::EvalBSDFAtVertex<NMTag>( v, wi, wo, NMTag( heroNM/companionNM ) )`, matching the immediately-adjacent `EvalEmitterRadiance<NMTag>( …, NMTag( heroNM ) )` idiom (cpp:6084-6085).
+
+**Behavior-identical confirmation.** The removed member `EvalBSDFAtVertexNM` did nothing but `return PathVertexEval::EvalBSDFAtVertexNM( vertex, wi, wo, nm )`. `PathValueOps::EvalBSDFAtVertex<NMTag>(v,wi,wo,NMTag(nm))` forwards to the *identical* `PathVertexEval::EvalBSDFAtVertexNM( vertex, wi, wo, nm )` — same target, same args, byte-identical. No member did extra work → no stop-rule discrepancy was triggered.
+
+**Comment decisions.**
+- **KEPT** `BDPTIntegrator.h:42-43` (DIRECTION CONVENTIONS — "EvalBSDFAtVertex adapts to this by negating wo / EvalPdfAtVertex negates wi"): it documents the *live* `PathVertexEval::Eval*AtVertex` semantics (the removed members merely forwarded; the negate-wo/negate-wi logic lives in `PathVertexEval`), so per the chip's "documents the live function → keep" rule it stays.
+- **KEPT** the operation-describing comment refs at cpp:509 and cpp:5876 — they describe the `EvalPdfAtVertex` *operation*, now performed by the adjacent `PathValueOps::EvalPdfAtVertex<Tag>` call, not the removed member.
+- **REMOVED** the "SPECTRAL (NM) VARIANTS" banner (cpp) — it exclusively headed the 2 dead NM member defs; leaving it would mis-attribute "mirror the RGB versions / scalar-throughput NM variant" semantics to the unrelated `GenerateLightSubpathImpl<Tag>` template that now follows.
+- **RETARGETED** the dangling `BSSRDFSampling.h:98` doc-ref `BDPTIntegrator::EvalBSDFAtVertex` → `PathVertexEval::EvalBSDFAtVertex` (the live function that calls `EvaluateSwWithFresnel`).
+
+**LoC / `.h` delta.** `BDPTIntegrator.cpp` 6271 → 6193 (**−78**); `BDPTIntegrator.h` 522 → 490 (**−32**, including the now-empty `protected:` section label — 4 protected sections → 3; EvaluateAllStrategiesNM now flows into the EvalConnectionTransmittance `public:` block); `BSSRDFSampling.h` ±0 (1 comment retarget). No file add/remove → no Filelist / vcxproj / vcxproj.filters / pbxproj / rise_sources.cmake sync needed.
+
+**ABI.** All 4 removed members are `protected` non-virtual → no vtable slot and no object-layout change; zero out-of-tree callers (integrator-internal; MLT / VCM / BDPT-spectral consume only the public API). None of the three abi-preserving-api-evolution failure modes (exported-signature, virtual-vtable, derived-name-hiding) apply.
+
+**Gates.**
+- `make -C build/make/rise -j8 all` + `make tests`: **0 warnings / 0 errors, exit 0** (the dead-code proof — a lingering caller would fail to compile/link).
+- `./run_all_tests.sh`: **116/116 passed, 0 failed, 0 skipped.** HWSS-companion path (where the migrated callers live) green: `EnvLightBalanceTest` spectral-HWSS PASS (9s), `VCMSpectralRecurrenceTest`, `BDPTStrategyBalanceTest`, `SpectralValueTraitsTest` all PASS.
+- Xcode `RISE-GUI` arm64 **clean** build: **BUILD SUCCEEDED**, 0 source warnings (the only `warning:` line is the benign `appintentsmetadataprocessor` "No AppIntents.framework dependency found" toolchain notice — present on every RISE-GUI build, unrelated to any touched file).
+
+With `IsVisible` (F3a) and `EvalEmitterRadianceNM` (F3b) already gone, the **BDPT Phase-4 dead-member cleanup is COMPLETE.** Working tree left dirty for review — no commits made.
 
 ---
 
