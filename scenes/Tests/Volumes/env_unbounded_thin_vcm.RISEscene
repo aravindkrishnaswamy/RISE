@@ -1,0 +1,148 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           env_unbounded_thin_vcm.RISEscene                                                         #
+#   Description:    VCM oracle for the escape-Tr "infinity not 1e10" fix (Codex review Finding 1).            #
+#                                                                                                           #
+#                   An UNBOUNDED (global, no bounding shape) HOMOGENEOUS medium with a TINY pure-           #
+#                   absorption coefficient (sigma_a = 1e-12, sigma_s = 0) fills all of space under          #
+#                   uniform white env-IBL.  A small self-emissive sphere sits at the origin as a            #
+#                   non-black visual anchor (the eye ray reaches it over a SHORT path, Tr ~ 1, so it        #
+#                   is visible regardless of the fix).                                                       #
+#                                                                                                           #
+#                   The diagnostic pixels are the BACKGROUND (most of the frame): the eye ray misses        #
+#                   the sphere and escapes to the env through INFINITELY MUCH absorbing medium.  The        #
+#                   physically-correct answer is ZERO -- any sigma_a > 0 integrated over an infinite        #
+#                   path gives optical depth infinity => exp(-inf) = 0.                                      #
+#                                                                                                           #
+#                     - BUGGED (maxDist capped at 1e10): exp(-1e-12 * 1e10) = exp(-0.01) ~ 0.99, so the    #
+#                       env LEAKS through at ~98% brightness -- the background reads ~0.98 (BRIGHT).         #
+#                     - FIXED (maxDist = RISE_INFINITY): the free-flight distance sampler captures the      #
+#                       absorption at a finite t (~1/sigma_a), the path is absorbed, and the background     #
+#                       reads ~0 (BLACK).                                                                    #
+#                                                                                                           #
+#                   The existing env_bounded_fog_* fixtures CANNOT catch this: their sigma_a*path is        #
+#                   O(1) so exp(-sigma_a*1e10) is already ~0 -- the 1e10 cap never bound there.  This       #
+#                   scene is the missing UNBOUNDED-thin oracle.                                              #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      June 2, 2026                                                                            #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Painters (declared FIRST so the rasterizer's
+# radiance_map reference resolves at finalize time)
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_env
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 1.0 1.0
+}
+
+##################################################
+# Renderer -- Vertex Connection and Merging
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+vcm_pel_rasterizer
+{
+	max_eye_depth		6
+	max_light_depth		6
+	samples				64
+	max_volume_bounce	16
+	pixel_filter		box
+	radiance_map		pnt_env
+	radiance_scale		1.0
+	radiance_background	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/env_unbounded_thin_vcm
+	type				EXR
+	bpp					16
+	color_space			Rec709RGB_Linear
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/env_unbounded_thin_vcm
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Camera (looking +Z at the central emitter)
+##################################################
+
+film
+{
+	width			128
+	height			128
+}
+
+pinhole_camera
+{
+	location			0 0 -290
+	lookat				0 0 300
+	up					0 1 0
+	fov					45.0
+}
+
+##################################################
+# Unbounded (global) homogeneous medium.
+# Pure absorption, vanishingly small sigma_a.
+##################################################
+
+homogeneous_medium
+{
+	name		thin_vacuum_fog
+	absorption	0.000000000001 0.000000000001 0.000000000001
+	scattering	0.0 0.0 0.0
+	phase		isotropic
+}
+
+> set global_medium thin_vacuum_fog
+
+##################################################
+# Self-emissive sphere (non-black anchor)
+##################################################
+
+lambertian_luminaire_material
+{
+	name				emit_mat
+	exitance			pnt_light
+	scale				10.0
+	material			none
+}
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				40
+}
+
+standard_object
+{
+	name				emitter
+	geometry			spheregeom
+	position			0 0 0
+	material			emit_mat
+}

@@ -1639,7 +1639,7 @@ namespace {
 
 				if( pMed )
 				{
-					const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
+					const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
 					bool scattered = false;
 					const Scalar t_m = SampleMediumDistance<Tag>(
 						*pMed, currentRay, maxDist, sampler, scattered, tag );
@@ -1934,15 +1934,20 @@ namespace {
 					// segment before the synthetic env vertex stores beta —
 					// mirrors the surface-hit branch above (line ~2655) and the
 					// PT escape fix (PBRT-v4 beta *= T_maj before the
-					// infinite-light contribution).  maxDist = 1e10 matches PT
-					// exactly so a global medium evaporates identically across
-					// integrators; a bounded (AABB) medium clips internally to a
-					// finite Tr.  VCM's s=0 env-escape consumes this same
-					// throughput via the shared generator, so this is the single
-					// fix point for PT-reference / BDPT / VCM s=0 consistency.
+					// infinite-light contribution).  maxDist = RISE_INFINITY
+					// matches PT and the env-NEE convention (see ConnectAndEvaluate
+					// s=1 comment ~line 3520) exactly so a global medium evaporates
+					// identically across integrators: for an UNBOUNDED medium with
+					// tiny σ_t a finite cap like 1e10 leaves exp(-σ_t·1e10) ≈ 1
+					// (env leaks through where it must be fully attenuated), whereas
+					// exp(-σ_t·∞) → 0 for any σ_t > 0.  A bounded (AABB) medium
+					// clips internally to a finite Tr regardless of the cap.  VCM's
+					// s=0 env-escape consumes this same throughput via the shared
+					// generator, so this is the single fix point for PT-reference /
+					// BDPT / VCM s=0 consistency.
 					V betaEsc = beta;
 					if( pMed_eye ) {
-						betaEsc = betaEsc * EvalMediumTransmittance<Tag>( *pMed_eye, currentRay, Scalar( 1e10 ), tag );
+						betaEsc = betaEsc * EvalMediumTransmittance<Tag>( *pMed_eye, currentRay, RISE_INFINITY, tag );
 					}
 					StoreThroughput<Tag>( vEnv, betaEsc );
 					if constexpr( Traits::is_nm ) {
@@ -5110,7 +5115,7 @@ unsigned int GenerateLightSubpathImpl(
 
 			if( pMed )
 			{
-				const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
+				const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
 				bool scattered = false;
 				const Scalar t_m = SampleMediumDistance<Tag>(
 					*pMed, currentRay, maxDist, sampler, scattered, tag );

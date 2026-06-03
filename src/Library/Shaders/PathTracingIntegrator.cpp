@@ -1462,7 +1462,7 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 
 			if( pCurrentMedium )
 			{
-				const Scalar maxDist = bHit ? ri.geometric.range : Scalar(1e10);
+				const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
 				IndependentSampler mediumSampler( rc.random );
 				const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
 					pCurrentMedium, currentRay, maxDist, pLS, mediumSampler, tag );
@@ -3107,7 +3107,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 
 	if( pCurrentMedium )
 	{
-		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
+		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
 		const LightSampler* pLS = caster.GetLightSampler();
 		IndependentSampler mediumSampler( rc.random );
 		const MediumSampleOutcome mso = PTSampleMediumDistance<Tag>(
@@ -3206,7 +3206,7 @@ PathTracingIntegrator::IntegrateRayTemplated(
 				// escape segment (PBRT-v4 beta *= T_maj convention).
 				if( scene.GetGlobalRadianceMap() ) {
 					const Value TrEsc = PTEvalTransmittance<Tag>(
-						pCurrentMedium, scatteredRay, Scalar(1e10), tag );
+						pCurrentMedium, scatteredRay, RISE_INFINITY, tag );
 					result = result + volThroughput * TrEsc *
 						PTEvalRadianceMap<Tag>( scene.GetGlobalRadianceMap(), scatteredRay, rast, tag );
 				}
@@ -3531,7 +3531,7 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 
 			if( pCurrentMedium )
 			{
-				const Scalar maxDist = bHit ? ri.geometric.range : Scalar(1e10);
+				const Scalar maxDist = bHit ? ri.geometric.range : RISE_INFINITY;
 				IndependentSampler mediumSampler( rc.random );
 				// Hero wavelength drives free-flight sampling; the MIS
 				// combinedPdf is in distance measure (wavelength-independent
@@ -4167,7 +4167,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 
 	if( pCurrentMedium )
 	{
-		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : Scalar(1e10);
+		const Scalar maxDist = ri.geometric.bHit ? ri.geometric.range : RISE_INFINITY;
 		const LightSampler* pLS = caster.GetLightSampler();
 		IndependentSampler mediumSampler( rc.random );
 		// Hero wavelength drives free-flight sampling; MIS combinedPdf
@@ -4243,7 +4243,7 @@ void PathTracingIntegrator::IntegrateRayHWSS(
 							if( scene.GetGlobalRadianceMap() )
 							{
 								const Scalar TrEsc = pCurrentMedium->EvalTransmittanceNM(
-									scatteredRay, Scalar(1e10), swl.lambda[w] );
+									scatteredRay, RISE_INFINITY, swl.lambda[w] );
 								result[w] += volThroughput * TrEsc *
 									scene.GetGlobalRadianceMap()->GetRadianceNM(
 										scatteredRay, rast, swl.lambda[w] );
