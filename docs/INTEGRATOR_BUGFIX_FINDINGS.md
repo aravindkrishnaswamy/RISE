@@ -5,17 +5,22 @@
 Phase-1 measurement ([UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md)
 §6/§7/§9): `glass_pavilion` Inf fireflies (Bug 1), `sculptors_studio` BDPT
 near-black (Bug 2), `prism_dispersion` spectral-BDPT −36 % (Bug 3).
-**Status:** Bug 1 PARTIAL — BDPT was an FP16 EXR-write overflow, FIXED at the
-writer layer (working tree, pending commit); a K=16 re-measure (2026-06-03)
-found VCM also has a **GENUINE degenerate-pdf Inf firefly — a real integrator
-bug, still OPEN** (§1 "Note for the matrix"). Bug 2 FIXED (working tree, pending
-commit). Bug 3 — see §3.
+**Status:** Bug 1 FIXED (both halves at the EXR layer; integrators are correct).
+BDPT was an FP16 EXR-*write* overflow, FIXED at the writer. The VCM "Inf"
+(claimed a "GENUINE integrator bug" in an intermediate note) was **re-diagnosed
+2026-06-03 as the read-side twin: `EXRReader` read FLOAT EXRs via `Imf::Rgba`
+(FP16), overflowing finite fireflies > 65504 to `+Inf` on READ** — NOT an
+integrator defect. FIXED at the reader (`EXRReader` now reads FLOAT). See §1's
+final "CORRECTED AGAIN" note for the evidence (pyOpenEXR shows the EXRs are
+finite; synthetic `R=100000` reads `inf` via `EXRReader`, finite via pyOpenEXR;
+deterministic sweep 8/16 "inf" → 0/16 after the fix). Bug 2 FIXED (working tree,
+pending commit). Bug 3 — see §3.
 **Discipline:** every claim below is from instrumented renders, not intuition.
 All changes are uncommitted for review.
 
 ---
 
-## Bug 1 — `glass_pavilion` "Inf firefly" — **SPLIT: BDPT was an FP16 EXR-write overflow (FIXED at writer); VCM is a GENUINE degenerate-pdf Inf (real bug, OPEN — see "Note for the matrix").**
+## Bug 1 — `glass_pavilion` "Inf firefly" — **BOTH halves are FP16 EXR artifacts (integrators correct): write-side overflow (FIXED at `EXRWriter`) + read-side overflow (FIXED at `EXRReader`). The "GENUINE VCM integrator Inf" verdict was a misdiagnosis — see the final "CORRECTED AGAIN" note in this section.**
 
 ### Confirmed real?
 Yes — but **not** the hypothesized degenerate-pdf 1/0 in a caustic connection,
@@ -97,6 +102,84 @@ diagnosis above holds for **BDPT** but is **WRONG for VCM**:
   **OPEN — a real fix (apply `docs/skills/sms-firefly-diagnosis.md` +
   `precision-fix-the-formulation.md`); do NOT just clamp the symptom.** The
   earlier "8 renders → inf=0" claim was a sampling fluke, not a clean bill.
+
+### Note for the matrix — CORRECTED AGAIN 2026-06-03 (read-side FP16): the VCM "Inf" is an **EXRReader artifact, NOT an integrator bug** — FIXED at the reader
+
+The "GENUINE integrator Inf" verdict immediately above is **WRONG**. It trusted
+`HDRVarianceTest`'s `inf` report — but `HDRVarianceTest` reads the EXR through
+**RISE's own `EXRReader`, which was still reading via `Imf::RgbaInputFile`
+(half / FP16)**. Reading a 32-bit FLOAT EXR through the half path makes OpenEXR
+convert every channel to `half` on read, so any value **> 65504 overflows to
+`+Inf` on READ** — regardless of the (now-fixed) FLOAT *writer*. So the writer
+fix alone did NOT close the round-trip: the reader re-clipped it.
+
+**The integrator is correct. It produces FINITE caustic fireflies** (heavy but
+bounded MC variance on this pathological dielectric scene — the matrix records
+PT σ/μ = 6099 % here). Decisive evidence:
+
+- **Direct EXR inspection (pyOpenEXR, independent of RISE):** every
+  `glass_pavilion` VCM render that `HDRVarianceTest` flagged `inf` has **0
+  non-finite pixels**; the red channel maxes at a finite **40 700 – 485 496**
+  across 16 renders. A finite mean of those (≈ 6.6–13.9) is impossible to be Inf.
+- **The red-only signature is explained:** the warm-light caustic makes red the
+  largest channel, so red is the one that crosses 65504 first; G,B stay < 65504
+  and read back finite. It was never a per-channel integrator term — it is the
+  reader's per-channel half overflow.
+- **Synthetic isolation (no integrator involved):** a hand-written FLOAT EXR with
+  one pixel `R = 100000` reads back as `100000` in pyOpenEXR but as **`inf`** via
+  RISE's `EXRReader`. After the fix it reads `100000`.
+- **The flag A/B "same rate (6/10 vs 8/10)" corroborates this:** the flag toggles
+  integrator `isfinite` guards, which are irrelevant to the *reader's* half
+  overflow — so of course the rate is unchanged. It is not an unguarded
+  integrator contribution; it is a read-side conversion.
+
+**Root cause:** [`EXRReader.cpp`](../src/Library/RasterImages/EXRReader.cpp) used
+`Imf::RgbaInputFile` + `Imf::Array2D<Imf::Rgba>` (FP16). This is the **read-side
+twin** of the write-side FP16 bug the prior chip fixed in `EXRWriter`.
+
+**Fix (right layer = the reader; NO clamp, NO integrator change):** read via the
+general `Imf::InputFile` + a FLOAT `Imf::FrameBuffer` (interleaved R,G,B,A float
+slices, missing-channel fill 0/1), mirroring the committed `EXRWriter` FLOAT
+path. Half-stored EXRs convert half→float losslessly; FLOAT EXRs read at full
+range. `EXRReader.{h,cpp}` only — `git diff` touches nothing else, so **every
+integrator/render path is byte-identical to HEAD and energy is preserved by
+construction** (the caustic firefly is finite and intact; nothing was clamped).
+This also closes a **latent production bug**: an EXR HDRI with a value > 65504
+(e.g. a bright sun) previously read as `Inf`, corrupting env lighting.
+
+**Verification:** deterministic block-seed sweep (single-thread, seeds 1–16) went
+from **8/16 `HDRVarianceTest` "inf" → 0/16** with the fix; the same renders that
+read `inf` now read finite means (6.6–13.9) with finite red maxima up to 485 496
+(all 0 non-finite in pyOpenEXR). Synthetic `R=100000` EXR: `inf → 1563.48`.
+seed-1 capture: `inf → 10.15`. Sole EXR-read path (`EXRReader`) → fix is global;
+`FrameEncoderTest` (writer byte-identity) unaffected; `HDRRoundTripTest`
+(half-written values ≤ 2000) reads identically half→float.
+**Full gate (clean warning-free rebuild of `make all` + `make tests`):
+`./run_all_tests.sh` → 116 passed / 0 failed / 0 skipped; `EnvLightBalanceTest`
+standalone → Passed 80 / Failed 0 (lax 80/80); `VCMStrategyBalanceTest` → PASS;
+the three EXR-file tests (`HDRRoundTripTest`, `FileRasterizerOutputShimTest`,
+`FrameEncoderTest`) → PASS.** No-regression on rendering is by construction:
+`git diff` is `EXRReader.{h,cpp}` ONLY, so every integrator / rasterizer path is
+byte-identical to HEAD — no scene's radiance can shift; the reader change only
+affects how an EXR is read back (now correct for values > 65504).
+**Real-scene (full-res 800×600, VCM+EXR copy of `glass_pavilion`), 16 renders →
+0/16 `HDRVarianceTest` "inf"**, finite red maxima up to **10 757 707** (10.7 M),
+all 0 non-finite — pre-fix every one (all > 65504) read as `inf`. The real scene
+ships with a `pixelpel_rasterizer` + PNG bpp 8 output (tonemapped, so the Inf is
+not observable there); the VCM+EXR config that exhibits it is exactly the
+`var_test/scenes/glass_pavilion_vcm.RISEscene` template. **No-regression VCM
+scenes** (`pool_caustics`, `diamond_teapot`, `torus_chain`, `spectral_caustic`,
+`gi_spheres`, `cloister`) re-rendered: all finite, sensible means, 0 non-finite
+(integrator byte-identical → unchanged). The mean-R variance across renders is
+the scene's documented heavy caustic firefly noise (PT σ/μ = 6099 %), now read
+correctly instead of overflowing to Inf — it is **not** clamped away, confirming
+energy preservation.
+
+**Meta-lesson:** do not trust a measurement tool's `inf`/`nan` verdict when that
+tool reads through the component under suspicion. Cross-check with an independent
+reader (pyOpenEXR here). Two sessions chased a non-existent VCM degenerate-pdf
+Inf because both trusted `HDRVarianceTest`, which routed through the buggy
+`EXRReader`.
 
 ---
 

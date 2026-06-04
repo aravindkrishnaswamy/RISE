@@ -23,8 +23,12 @@
 #ifndef NO_EXR_SUPPORT
 	// OpenEXR includes
 	#include <ImfRgbaFile.h>
+	#include <ImfInputFile.h>
+	#include <ImfChannelList.h>
+	#include <ImfFrameBuffer.h>
 	#include <ImfIO.h>
 	#include <ImfArray.h>
+	#include <vector>
 #endif
 
 namespace RISE
@@ -64,7 +68,16 @@ namespace RISE
 		protected:
 
 		#ifndef NO_EXR_SUPPORT
-			Imf::Array2D<Imf::Rgba>	exrbuffer;
+			// Interleaved R,G,B,A float scanline buffer.  Read through
+			// Imf::InputFile with FLOAT framebuffer slices so 32-bit
+			// FLOAT EXRs round-trip at full range; half-stored EXRs are
+			// converted half->float losslessly by OpenEXR.  (The former
+			// Imf::RgbaInputFile path stored Imf::Rgba (FP16), turning
+			// any channel > 65504 into +Inf on read — read-side twin of
+			// the EXRWriter 32-bit FLOAT fix.)
+			std::vector<float>		floatbuffer;
+			unsigned int			img_width;
+			unsigned int			img_height;
 		#endif
 
 			IReadBuffer&		pReadBuffer;
