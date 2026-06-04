@@ -67,6 +67,68 @@ architecture (a wrapper IRasterizer is idiomatic).
   combination — that's a separate research effort (Candidate D bucket), explicitly
   out of scope for v1.
 
+### 3.1 Phase-1 architecture decision (2026-06-04 — implemented)
+
+**Chosen:** `AutoRasterizer` (`src/Library/Rendering/AutoRasterizer.{h,cpp}`)
+derives from `Implementation::Rasterizer` (the same base every concrete
+PT/BDPT/VCM rasterizer uses) and **resolves its delegate lazily at the first
+render-time entry** (`RasterizeScene` / `PredictTimeToRasterizeScene` /
+`RasterizeSceneAnimation`), guarded by `std::call_once`. It stores every input
+needed to build *any* of the three delegates, runs `SelectIntegrator(scene)`
+once, builds exactly one concrete rasterizer via `BuildDelegate`, and forwards
+all `IRasterizer` calls to it.
+
+Why this shape (vs. a parse-time switch inside `Job::SetAutoRasterizer`):
+
+- **It hosts the Phase-4 probe by construction.** The probe needs the
+  *assembled* scene + a cheap pre-render; that scene first exists at
+  `RasterizeScene(scene, …)`. The wrapper defers the choice to exactly that
+  point, so Phase 4 is a body change to `SelectIntegrator(scene)` (plus building
+  candidate delegates through the existing `BuildDelegate`) — not a
+  re-architecture. A parse-time-only dispatch can't see the scene and would have
+  to be torn out, which is why it is explicitly insufficient as the foundation.
+- **Deriving from `Rasterizer`** means (a) `Job::PushJobFrameStoreToRasterizers`
+  (which `dynamic_cast`s registry instances to `Rasterizer*` and calls
+  `SetFrameStore`) keeps working unchanged, and (b) the base already buffers the
+  output sinks (`outs`), the progress callback, and the FrameStore — precisely
+  the state that is attached *before* the delegate exists. At resolution the
+  wrapper **replays** those onto the freshly-built delegate.
+- **The delegate is built via the same `RISE_API_Create*Rasterizer` factories**
+  the concrete chunks call, with the same shared caster / sampler / filter and
+  the canonical per-integrator defaults. So `auto_rasterizer integrator pt` is
+  *identical construction* to `pathtracing_pel_rasterizer`, not a parallel
+  re-implementation — that is what makes the equivalence verification meaningful.
+- **`mutable mDelegate` + `std::once_flag`:** `RasterizeScene` is `const` per the
+  `IRasterizer` contract, yet it is the genuine render-time hook (`AttachToScene`
+  is **not** called by the Job render path). The base already uses `mutable` for
+  OIDN state reached from these same const methods, so this matches precedent
+  rather than introducing a new pattern.
+
+**Lifecycle wrinkle (handled, not a redesign):** outputs / progress / FrameStore
+are added before the delegate exists. Outputs + progress ride the base's existing
+buffering and are replayed at resolution; the FrameStore (which can be pushed
+late, or change on a viewport resize) is re-synced to the delegate at each
+render-time entry via `SyncDelegateFrameStore()`.
+
+**Stop-rule check (design doc §"Stop rule"):** PASSED — no change to the
+rasterizer lifecycle was needed. `IRasterizer`'s single-owner / const-render
+semantics compose cleanly with a thin buffering wrapper; the only non-obvious
+point is the pre-delegate output buffering, which the base already provides.
+
+**Parameter population:** option (i) (§4). The chunk carries the base rasterizer
+params + the `integrator` pin; per-integrator specifics (BDPT depths, VCM merge
+radius / VC / VM, PT-SMS) come from `BDPTPelDefaults` / `VCMPelDefaults` /
+`SMSConfig` at delegate-build time — one source of truth, shared with the
+concrete chunk parsers.
+
+**Spectral sibling deferred to Phase-1b:** `auto_spectral_rasterizer` meaningfully
+expands scope (a second config bundle: the spectral-core params + `useHWSS`, *no*
+path-guiding, *no* optimal-MIS, and a parallel set of `*_spectral_` factories), so
+per the design contract the Pel path ships fully here and the spectral sibling is
+the immediate follow-up. The `SelectIntegrator` / `BuildDelegate` split is the
+seam: 1b adds a spectral `BuildDelegate` (or a parallel `AutoSpectralRasterizer`)
+plus its parser + Job setter.
+
 ---
 
 ## 4. OPEN QUESTION — how to populate the auto-rasterizer's parameters
@@ -91,6 +153,13 @@ photon count; + common: spectral params, film, output). How does the
 (ii) nested overrides** as the power-user path. **This is the design item to settle
 before building the shell (Phase 1).**
 
+**✅ Settled + shipped (Phase 1, 2026-06-04): option (i).** The `auto_rasterizer`
+chunk carries the base rasterizer params + the `integrator` pin only; per-integrator
+specifics are sourced from `BDPTPelDefaults` / `VCMPelDefaults` / `SMSConfig` at
+delegate-build time. Putting an unsupported per-integrator knob (e.g. `merge_radius`,
+`sms_enabled`) on the chunk is a parse error by design — option (ii) nested blocks
+are the documented later add for power users.
+
 ---
 
 ## 5. Phased plan (build order)
@@ -98,10 +167,16 @@ before building the shell (Phase 1).**
 - **Phase 0 — Author hints in project .md** *(this commit)*: routing rules into
   RENDERING_INTEGRATORS.md §2 + a CLAUDE.md High-Value Fact. Tier 0 + the spec for
   Tier 1.
-- **Phase 1 — Thin-shell `auto_rasterizer` skeleton + parameter population.** Build
-  the wrapper IRasterizer + chunk parser; resolve §4 (param population); selection
-  is trivial at first (PT, or author pin) — just delegation. Establishes the
-  architecture + round-trip + UI hook.
+- **Phase 1 — Thin-shell `auto_rasterizer` skeleton + parameter population.**
+  ✅ **DONE (2026-06-04).** Built the wrapper IRasterizer (`AutoRasterizer`,
+  render-time lazy delegate resolution — see §3.1), the descriptor-driven
+  `auto_rasterizer` chunk parser, `RISE_API_CreateAutoRasterizer` + `Job::SetAutoRasterizer`,
+  the five build projects, and `tests/AutoRasterizerTest.cpp` (delegation verified
+  two ways: `ResolvedIntegrator()` exact-match + radiance ≡ the concrete rasterizer).
+  Param population = option (i). Selection is Tier-0 only (pin, else PT) — NO
+  detection. Spectral sibling (`auto_spectral_rasterizer`) deferred to **Phase 1b**
+  (§3.1). Round-trip persists the pin in the rasterizer snapshot; the UI "Auto"
+  selector + introspection is Phase 7.
 - **Phase 2 — Tier-1 static best-guess.** Implement the heuristic selection in the
   shell; validate its picks against the matrix's known per-scene verdicts.
 - **Phase 3 — Probe-cost EXPERIMENT (the GATE).** Before building the probe:

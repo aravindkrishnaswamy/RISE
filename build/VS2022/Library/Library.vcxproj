@@ -346,6 +346,7 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\MLTRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\MLTSpectralRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\OIDNDenoiser.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Rendering\AutoRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PathTracingPelRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PathTracingSpectralRasterizer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Rendering\PixelBasedPelRasterizer.cpp" />
@@ -1084,6 +1085,7 @@
     <ClInclude Include="..\..\..\src\Library\Rendering\MLTSpectralRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\MortonRasterizeSequence.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\OIDNDenoiser.h" />
+    <ClInclude Include="..\..\..\src\Library\Rendering\AutoRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\PathTracingPelRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\PathTracingSpectralRasterizer.h" />
     <ClInclude Include="..\..\..\src\Library\Rendering\PixelBasedSpectralIntegratingRasterizerRGB.h" />

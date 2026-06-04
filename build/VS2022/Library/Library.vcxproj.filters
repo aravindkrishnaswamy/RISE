@@ -1087,6 +1087,9 @@
     <ClCompile Include="..\..\..\src\Library\Rendering\BidirectionalRasterizerBase.cpp">
       <Filter>Rendering\Rasterizers</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Rendering\AutoRasterizer.cpp">
+      <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Rendering\VCMPelRasterizer.cpp">
       <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
     </ClCompile>
@@ -2886,6 +2889,9 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\OIDNDenoiser.h">
       <Filter>Rendering</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Rendering\AutoRasterizer.h">
+      <Filter>Rendering\Rasterizers\Pixel Pel</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Rendering\PathTracingPelRasterizer.h">
       <Filter>Rendering\Rasterizers\Pixel Pel</Filter>

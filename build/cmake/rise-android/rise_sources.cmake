@@ -250,6 +250,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Rendering/BidirectionalRasterizerBase.cpp"
     "${RISE_LIB}/Rendering/BDPTRasterizerBase.cpp"
     "${RISE_LIB}/Rendering/PathTracingPelRasterizer.cpp"
+    "${RISE_LIB}/Rendering/AutoRasterizer.cpp"
     "${RISE_LIB}/Rendering/PathTracingSpectralRasterizer.cpp"
     "${RISE_LIB}/Rendering/BDPTPelRasterizer.cpp"
     "${RISE_LIB}/Rendering/BDPTSpectralRasterizer.cpp"

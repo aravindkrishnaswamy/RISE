@@ -1533,6 +1533,9 @@
 		F2D9B0872F899DBE0077A171 /* PathTracingPelRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0812F899DBE0077A171 /* PathTracingPelRasterizer.h */; };
 		F2D9B0882F899DBE0077A171 /* PathTracingSpectralRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B0832F899DBE0077A171 /* PathTracingSpectralRasterizer.h */; };
 		F2D9B0892F899DBE0077A171 /* PathTracingPelRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0822F899DBE0077A171 /* PathTracingPelRasterizer.cpp */; };
+		AA0000040000000000000004 /* AutoRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0000020000000000000002 /* AutoRasterizer.cpp */; };
+		AA0000030000000000000003 /* AutoRasterizer.h in Headers */ = {isa = PBXBuildFile; fileRef = AA0000010000000000000001 /* AutoRasterizer.h */; };
+		AA0000050000000000000005 /* AutoRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0000020000000000000002 /* AutoRasterizer.cpp */; };
 		F2D9B08A2F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B0842F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp */; };
 		F2D9B08D2F899DCE0077A171 /* PathTracingIntegrator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2D9B08C2F899DCE0077A171 /* PathTracingIntegrator.cpp */; };
 		F2D9B08E2F899DCE0077A171 /* PathTracingIntegrator.h in Headers */ = {isa = PBXBuildFile; fileRef = F2D9B08B2F899DCE0077A171 /* PathTracingIntegrator.h */; };
@@ -2625,6 +2628,8 @@
 		F2D9B07D2F896BFA0077A171 /* FilteredFilm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = FilteredFilm.cpp; sourceTree = "<group>"; };
 		F2D9B0812F899DBE0077A171 /* PathTracingPelRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTracingPelRasterizer.h; sourceTree = "<group>"; };
 		F2D9B0822F899DBE0077A171 /* PathTracingPelRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathTracingPelRasterizer.cpp; sourceTree = "<group>"; };
+		AA0000010000000000000001 /* AutoRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AutoRasterizer.h; sourceTree = "<group>"; };
+		AA0000020000000000000002 /* AutoRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AutoRasterizer.cpp; sourceTree = "<group>"; };
 		F2D9B0832F899DBE0077A171 /* PathTracingSpectralRasterizer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTracingSpectralRasterizer.h; sourceTree = "<group>"; };
 		F2D9B0842F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = PathTracingSpectralRasterizer.cpp; sourceTree = "<group>"; };
 		F2D9B08B2F899DCE0077A171 /* PathTracingIntegrator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PathTracingIntegrator.h; sourceTree = "<group>"; };
@@ -3611,6 +3616,8 @@
 				F2D9B1372F8FA5C40077A171 /* VCMSpectralRasterizer.cpp */,
 				F2D9B0812F899DBE0077A171 /* PathTracingPelRasterizer.h */,
 				F2D9B0822F899DBE0077A171 /* PathTracingPelRasterizer.cpp */,
+				AA0000010000000000000001 /* AutoRasterizer.h */,
+				AA0000020000000000000002 /* AutoRasterizer.cpp */,
 				F2D9B0832F899DBE0077A171 /* PathTracingSpectralRasterizer.h */,
 				F2D9B0842F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp */,
 				F2D9B07C2F896BFA0077A171 /* FilteredFilm.h */,
@@ -4706,6 +4713,7 @@
 				F277345507ECCEDC00C0B600 /* DataDrivenBSDF.h in Headers */,
 				F277345607ECCEDC00C0B600 /* DataDrivenMaterial.h in Headers */,
 				F2D9B0872F899DBE0077A171 /* PathTracingPelRasterizer.h in Headers */,
+				AA0000030000000000000003 /* AutoRasterizer.h in Headers */,
 				F2D9B0882F899DBE0077A171 /* PathTracingSpectralRasterizer.h in Headers */,
 				F277345807ECCEDC00C0B600 /* TranslucentBSDF.h in Headers */,
 				F27734A107ECD64300C0B600 /* MediaPathLocator.h in Headers */,
@@ -5128,6 +5136,7 @@
 				F277342E07ECCC2F00C0B600 /* AdaptiveDetectorSphere.cpp in Sources */,
 				F277343007ECCC2F00C0B600 /* CircularDiskDetector.cpp in Sources */,
 				F2D9B0892F899DBE0077A171 /* PathTracingPelRasterizer.cpp in Sources */,
+				AA0000040000000000000004 /* AutoRasterizer.cpp in Sources */,
 				F2D9B08A2F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp in Sources */,
 				F277343207ECCC2F00C0B600 /* DetectorSphere.cpp in Sources */,
 				F277343407ECCC2F00C0B600 /* IsotropicRGBDetectorSphere.cpp in Sources */,
@@ -5808,6 +5817,7 @@
 				F24B73B42F52A632008304C4 /* RandomSampling2D.h in Sources */,
 				F24B73B52F52A632008304C4 /* Sampling1D.h in Sources */,
 				F2D9B0852F899DBE0077A171 /* PathTracingPelRasterizer.cpp in Sources */,
+				AA0000050000000000000005 /* AutoRasterizer.cpp in Sources */,
 				F2D9B0862F899DBE0077A171 /* PathTracingSpectralRasterizer.cpp in Sources */,
 				F24B73B62F52A632008304C4 /* Sampling2D.h in Sources */,
 				F24B73B72F52A632008304C4 /* SincPixelFilter.cpp in Sources */,

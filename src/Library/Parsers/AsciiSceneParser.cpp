@@ -703,6 +703,15 @@ namespace RISE
 			static inline std::string to_hint( SMSSeedingMode v ) {
 				return v == SMSSeedingMode::Uniform ? "uniform" : "snell";
 			}
+			static inline std::string to_hint( AutoIntegratorChoice v ) {
+				switch( v ) {
+					case AutoIntegratorChoice::PT:   return "pt";
+					case AutoIntegratorChoice::BDPT: return "bdpt";
+					case AutoIntegratorChoice::VCM:  return "vcm";
+					case AutoIntegratorChoice::Auto:
+					default:                         return "auto";
+				}
+			}
 
 			// Optional rasterizer params accepted only by a subset.  Hints
 			// derive from StabilityConfig defaults so this helper has one
@@ -7589,6 +7598,135 @@ namespace RISE
 				}
 			};
 
+			struct AutoRasterizerAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					AutoRasterizerDefaults dflt;
+					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+					OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+
+					// Integrator pin (Tier 0).  Unknown / omitted -> auto, which
+					// the dispatcher resolves to PT in Phase 1.  Accept the quoted
+					// form too (`integrator "vcm"`) for consistency with sms_seeding.
+					AutoIntegratorChoice integrator = dflt.integrator;
+					if( bag.Has("integrator") ) {
+						std::string iv = StripSurroundingQuotes( bag.GetString("integrator") );
+						std::transform( iv.begin(), iv.end(), iv.begin(),
+							[]( unsigned char c ){ return std::tolower( c ); } );
+						if( iv == "pt" || iv == "pathtracing" || iv == "path_tracing" ) integrator = AutoIntegratorChoice::PT;
+						else if( iv == "bdpt" )                                         integrator = AutoIntegratorChoice::BDPT;
+						else if( iv == "vcm" )                                          integrator = AutoIntegratorChoice::VCM;
+						else if( iv == "auto" )                                         integrator = AutoIntegratorChoice::Auto;
+						else {
+							GlobalLog()->PrintEx( eLog_Warning,
+								"Parser: unknown auto_rasterizer integrator \"%s\"; defaulting to auto", iv.c_str() );
+							integrator = AutoIntegratorChoice::Auto;
+						}
+					}
+
+					RadianceMapConfig radianceMapConfig;
+					if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+					if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+					if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+					if( bag.Has("radiance_orient") ) {
+						bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+						radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+						radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+					}
+
+					PixelFilterConfig pixelFilterConfig;
+					if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+					if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+					if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+					if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+					if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+					if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+					if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+					if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
+					PathGuidingConfig guidingConfig;
+					if( bag.Has("pathguiding") )                                    guidingConfig.enabled              = bag.GetBool("pathguiding");
+					if( bag.Has("pathguiding_iterations") )                         guidingConfig.trainingIterations   = bag.GetUInt("pathguiding_iterations");
+					if( bag.Has("pathguiding_spp") )                                guidingConfig.trainingSPP          = bag.GetUInt("pathguiding_spp");
+					if( bag.Has("pathguiding_combine_training") )                   guidingConfig.combineTrainingIterations = bag.GetBool("pathguiding_combine_training");
+					if( bag.Has("pathguiding_online") )                             guidingConfig.online               = bag.GetBool("pathguiding_online");
+					if( bag.Has("pathguiding_warmup_iterations") )                  guidingConfig.warmupIterations     = bag.GetUInt("pathguiding_warmup_iterations");
+					if( bag.Has("pathguiding_alpha") )                              guidingConfig.alpha                = bag.GetDouble("pathguiding_alpha");
+					if( bag.Has("pathguiding_learned_alpha") )                      guidingConfig.learnedAlpha         = bag.GetBool("pathguiding_learned_alpha");
+					if( bag.Has("pathguiding_max_depth") )                          guidingConfig.maxGuidingDepth      = bag.GetUInt("pathguiding_max_depth");
+					if( bag.Has("pathguiding_light_max_depth") )                    guidingConfig.maxLightGuidingDepth = bag.GetUInt("pathguiding_light_max_depth");
+					if( bag.Has("pathguiding_sampling_type") ) {
+						const std::string st = bag.GetString("pathguiding_sampling_type");
+						guidingConfig.samplingType = ( st == "ris" || st == "RIS" ) ? eGuidingRIS : eGuidingOneSampleMIS;
+					}
+					if( bag.Has("pathguiding_ris_candidates") )                     guidingConfig.risCandidates                 = std::max( 2u, bag.GetUInt("pathguiding_ris_candidates") );
+					if( bag.Has("pathguiding_complete_paths") )                     guidingConfig.completePathGuiding           = bag.GetBool("pathguiding_complete_paths");
+					if( bag.Has("pathguiding_complete_path_strategy_selection") )   guidingConfig.completePathStrategySelection = bag.GetBool("pathguiding_complete_path_strategy_selection");
+					if( bag.Has("pathguiding_complete_path_strategy_samples") )     guidingConfig.completePathStrategySamples   = bag.GetUInt("pathguiding_complete_path_strategy_samples");
+
+					AdaptiveSamplingConfig adaptiveConfig;
+					if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+					if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+					if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
+					StabilityConfig stabilityConfig;
+					if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+					if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+					if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+					if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+					if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+					if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+					if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
+					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
+					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+
+					ProgressiveConfig progressiveConfig;
+					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+					if( bag.Has("progressive_samples_per_pass") ) {
+						const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+						progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
+					}
+
+					return pJob.SetAutoRasterizer( integrator, numSamples,
+						defaultshader.c_str(), radianceMapConfig,
+						pixelFilterConfig,
+						showLuminaires,
+						oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						AutoRasterizerDefaults dflt;
+						ChunkDescriptor cd;
+						cd.keyword = "auto_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+						cd.description = "Auto-routing integrator dispatcher: delegates to PT/BDPT/VCM (Phase 1: author pin via `integrator`, else PT).";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						AddBaseRasterizerParams( P, dflt );
+						{ auto& p = P(); p.name = "integrator"; p.kind = ValueKind::Enum; p.enumValues = {"auto","pt","bdpt","vcm"}; p.description = "Integrator selection: auto (Phase 1 -> PT) or an explicit pin (pt/bdpt/vcm)"; p.defaultValueHint = to_hint(dflt.integrator); }
+						AddPixelFilterParams( P );
+						AddRadianceMapParams( P );
+						AddPathGuidingParams( P );
+						AddAdaptiveSamplingParams( P );
+						AddStabilityConfigParams( P );
+						AddOptimalMISParams( P );
+						AddProgressiveParams( P );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct PathTracingPelRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -8856,6 +8994,7 @@ namespace RISE
 		add( "vcm_spectral_rasterizer",               new VCMSpectralRasterizerAsciiChunkParser() );
 		add( "pathtracing_pel_rasterizer",            new PathTracingPelRasterizerAsciiChunkParser() );
 		add( "pathtracing_spectral_rasterizer",       new PathTracingSpectralRasterizerAsciiChunkParser() );
+		add( "auto_rasterizer",                       new AutoRasterizerAsciiChunkParser() );
 		add( "mlt_rasterizer",                        new MLTRasterizerAsciiChunkParser() );
 		add( "mlt_spectral_rasterizer",               new MLTSpectralRasterizerAsciiChunkParser() );
 

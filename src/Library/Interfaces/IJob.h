@@ -35,6 +35,7 @@
 #include "../Utilities/SpectralConfig.h"
 #include "../Utilities/RadianceMapConfig.h"
 #include "../Utilities/OidnConfig.h"
+#include "../Utilities/RasterizerDefaults.h"   // AutoIntegratorChoice (auto_rasterizer dispatcher)
 
 namespace RISE
 {
@@ -2004,6 +2005,29 @@ namespace RISE
 			const bool enableVC,									///< [in] Enable vertex connection strategies
 			const bool enableVM,									///< [in] Enable vertex merging strategy
 			const bool oidnDenoise,									///< [in] Enable OIDN denoising
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
+			) = 0;
+
+		//! Sets the rasterizer to the auto-routing integrator dispatcher
+		//! (`auto_rasterizer`).  Builds the shared caster / sampler / filter
+		//! once and hands them to a wrapper that lazily delegates to a
+		//! concrete PT / BDPT / VCM rasterizer.  Per-integrator specifics use
+		//! canonical defaults (param-population option (i)); the chunk only
+		//! carries the universally-meaningful params + the `integrator` pin.
+		virtual bool SetAutoRasterizer(
+			const AutoIntegratorChoice integrator,					///< [in] Author pin (Auto = dispatcher decides -> PT in Phase 1)
+			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
+			const char* shader,										///< [in] The default shader
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
 			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
 			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
 			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)

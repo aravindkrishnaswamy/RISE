@@ -65,6 +65,28 @@
 namespace RISE
 {
 	//
+	// Auto-rasterizer integrator selection (Phase-3 Candidate C: a
+	// PT-default auto-routed hybrid; see docs/AUTO_RASTERIZER_DESIGN.md).
+	// The `auto_rasterizer` chunk's `integrator` field carries one of
+	// these.  `Auto` means "let the dispatcher decide" — in Phase 1 that
+	// resolves to PT (Tier 0 author-hint only); Phases 2-4 add static
+	// analysis + a render-time probe behind the same `Auto` value.  PT /
+	// BDPT / VCM are explicit author pins that skip detection.
+	//
+	// This enum is the single vocabulary shared across the API boundary
+	// (RISE_API_CreateAutoRasterizer), the scene parser, IJob, and the
+	// AutoRasterizer wrapper — it lives here, next to the rasterizer
+	// defaults, so no layer has to redefine it.
+	//
+	enum class AutoIntegratorChoice
+	{
+		Auto = 0,   ///< Dispatcher decides (Phase 1 -> PT).
+		PT,         ///< Author pin: unidirectional path tracing.
+		BDPT,       ///< Author pin: bidirectional path tracing.
+		VCM         ///< Author pin: vertex connection and merging.
+	};
+
+	//
 	// Common base — every production rasterizer accepts these.  The
 	// values here are the universal canonical defaults; per-rasterizer
 	// structs override individual fields where their behaviour
@@ -139,6 +161,20 @@ namespace RISE
 		bool           enableVM      = true;
 	};
 	struct VCMSpectralDefaults : VCMPelDefaults {};
+
+	//
+	// `auto_rasterizer` — the thin-shell integrator dispatcher.  It only
+	// surfaces the universally-meaningful params (the base set + the
+	// `integrator` pin); per-integrator specifics (BDPT depth, VCM merge
+	// radius, PT/SMS knobs) are NOT author-facing on this chunk in Phase
+	// 1 — the dispatcher builds the chosen delegate with the canonical
+	// per-integrator defaults above (BDPTPelDefaults / VCMPelDefaults /
+	// SMSConfig).  Param-population option (i) from the design doc §4.
+	//
+	struct AutoRasterizerDefaults : BaseRasterizerDefaults
+	{
+		AutoIntegratorChoice integrator = AutoIntegratorChoice::Auto;
+	};
 
 	//
 	// MLT canonical — production values matching what scene authors

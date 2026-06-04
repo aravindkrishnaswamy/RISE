@@ -5249,6 +5249,7 @@ namespace RISE
 #include "Rendering/PathTracingSpectralRasterizer.h"
 #include "Rendering/MLTRasterizer.h"
 #include "Rendering/MLTSpectralRasterizer.h"
+#include "Rendering/AutoRasterizer.h"
 #include "Utilities/ManifoldSolver.h"
 
 namespace RISE
@@ -5603,6 +5604,46 @@ namespace RISE
 
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "PathTracing Pel rasterizer" );
+		return true;
+	}
+
+	//! Creates the auto-routing integrator dispatcher (auto_rasterizer)
+	bool RISE_API_CreateAutoRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const AutoIntegratorChoice integrator,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+								const OidnDevice oidnDevice,
+								const OidnPrefilter oidnPrefilter,
+								const PathGuidingConfig& guidingConfig,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								const ProgressiveConfig& progressiveConfig,
+								Implementation::FrameStore* frameStore
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// The dispatcher stores these inputs and builds the chosen concrete
+		// delegate lazily at the first render-time entry (so a future probe
+		// can see the assembled scene).  OIDN / progressive are NOT applied
+		// to the wrapper here — they ride into the delegate's factory call
+		// (BuildDelegate) and the post-build progressive wiring inside the
+		// wrapper, because the wrapper itself renders nothing.
+		AutoRasterizer* pRasterizer = new AutoRasterizer(
+			caster, pSamples, pFilter, integrator,
+			oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig,
+			useZSobol, progressiveConfig, frameStore );
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Auto rasterizer" );
 		return true;
 	}
 

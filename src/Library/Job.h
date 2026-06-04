@@ -205,6 +205,10 @@ namespace RISE
 			unsigned int        nMutationsPerPixel = 32;
 			double              largeStepProb      = 0.3;
 
+			// auto_rasterizer-specific: the author's integrator pin so the
+			// snapshot round-trips the dispatcher faithfully (Auto = decide).
+			AutoIntegratorChoice autoIntegrator    = AutoIntegratorChoice::Auto;
+
 			// Configs (default-constructed = struct in-class initializers)
 			RadianceMapConfig      radianceMap;
 			PixelFilterConfig      pixelFilter;
@@ -2065,6 +2069,27 @@ namespace RISE
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
 			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
+			);
+
+		// Auto-routing integrator dispatcher (auto_rasterizer).  No
+		// `override` keyword: Job declares ~150 IJob overrides without it
+		// and adding it here would wake -Winconsistent-missing-override
+		// (see feedback_override_keyword_in_job memory).
+		bool SetAutoRasterizer(
+			const AutoIntegratorChoice integrator,
+			const unsigned int numPixelSamples,
+			const char* shader,
+			const RadianceMapConfig& radianceMapConfig,
+			const PixelFilterConfig& pixelFilterConfig,
+			const bool bShowLuminaires,
+			const bool oidnDenoise,
+			const OidnQuality oidnQuality,
+			const OidnDevice oidnDevice,
+			const OidnPrefilter oidnPrefilter,
+			const PathGuidingConfig& guidingConfig,
+			const AdaptiveSamplingConfig& adaptiveConfig,
+			const StabilityConfig& stabilityConfig,
+			const ProgressiveConfig& progressiveConfig
 			);
 
 		bool SetPathTracingPelRasterizer(

@@ -6917,6 +6917,106 @@ bool Job::SetVCMSpectralRasterizer(
 	return true;
 }
 
+bool Job::SetAutoRasterizer(
+	const AutoIntegratorChoice integrator,
+	const unsigned int numPixelSamples,
+	const char* shader,
+	const RadianceMapConfig& radianceMapConfig,
+	const PixelFilterConfig& pixelFilterConfig,
+	const bool bShowLuminaires,
+	const bool oidnDenoise,
+	const OidnQuality oidnQuality,
+	const OidnDevice oidnDevice,
+	const OidnPrefilter oidnPrefilter,
+	const PathGuidingConfig& guidingConfig,
+	const AdaptiveSamplingConfig& adaptiveConfig,
+	const StabilityConfig& stabilityConfig,
+	const ProgressiveConfig& progressiveConfig
+	)
+{
+	// The shared setup (sampler/filter, shader, caster, radiance map, RR
+	// threshold, light BVH) is integrator-agnostic and IDENTICAL to the
+	// PT/BDPT/VCM setters — the dispatcher delegates to a rasterizer built
+	// from exactly these inputs, so pinning `auto` to `pt` produces the
+	// same image as a bare pathtracing_pel_rasterizer.
+	ISampling2D* pPixelSampler = 0;
+	ISampling2D* pLumSampler = 0;
+	IPixelFilter* pPixelFilter = 0;
+
+	if( !GetSamplingAndFilterElements( &pPixelSampler, &pLumSampler, &pPixelFilter, numPixelSamples, 1,
+		0, 0, pixelFilterConfig ) )
+	{
+		return false;
+	}
+
+	IShader* pShader = pShaderManager->GetItem( shader );
+	if( !pShader ) {
+		GlobalLog()->PrintEasyError( "Job::SetAutoRasterizer:: Default shader not found" );
+		return false;
+	}
+
+	IRayCaster* pCaster = 0;
+	RISE_API_CreateRayCaster( &pCaster, radianceMapConfig.isBackground, 10, *pShader, bShowLuminaires );
+
+	if( !( radianceMapConfig.name == "none" ) ) {
+		IPainter* p = pPntManager->GetItem( radianceMapConfig.name.c_str() );
+
+		if( p ) {
+			IRadianceMap* pRm = 0;
+			RISE_API_CreateRadianceMap( &pRm, *p, radianceMapConfig.scale );
+			pRm->SetOrientation( Vector3( radianceMapConfig.orientation ) );
+
+			pScene->SetGlobalRadianceMap( pRm );
+			safe_release( pRm );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning, "Job::SetAutoRasterizer:: Global Radiance Map painter not found \'%s\'", p );
+		}
+	}
+
+	if( lightSampleRRThreshold > 0 ) {
+		pCaster->SetLightSampleRRThreshold( lightSampleRRThreshold );
+	}
+
+	if( stabilityConfig.useLightBVH ) {
+		pCaster->SetUseLightBVH( true );
+	}
+
+	IRasterizer* pRaster = 0;
+	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
+	RISE_API_CreateAutoRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, integrator,
+		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig,
+		pixelFilterConfig.blueNoiseSampler, progressiveConfig, _jobFs );
+
+	// NOTE: the wrapper applies progressiveConfig to its delegate itself
+	// (RISE_API_SetRasterizerProgressiveRendering down-casts to
+	// PixelBasedRasterizerHelper, which the wrapper is not) — so we do NOT
+	// call it on pRaster here the way the concrete setters do.
+
+	safe_release( pPixelSampler );
+	safe_release( pLumSampler );
+	safe_release( pPixelFilter );
+	safe_release( pCaster );
+
+	RasterizerParams snap;
+	snap.autoIntegrator  = integrator;
+	snap.numPixelSamples = numPixelSamples;
+	snap.shader          = shader ? shader : "";
+	snap.showLuminaires  = bShowLuminaires;
+	snap.oidnDenoise     = oidnDenoise;
+	snap.oidnQuality     = oidnQuality;
+	snap.oidnDevice      = oidnDevice;
+	snap.oidnPrefilter   = oidnPrefilter;
+	snap.radianceMap     = radianceMapConfig;
+	snap.pixelFilter     = pixelFilterConfig;
+	snap.pathGuiding     = guidingConfig;
+	snap.adaptive        = adaptiveConfig;
+	snap.stability       = stabilityConfig;
+	snap.progressive     = progressiveConfig;
+	RegisterAndActivateRasterizer( "auto_rasterizer", pRaster, snap );
+
+	return true;
+}
+
 bool Job::SetPathTracingPelRasterizer(
 	const unsigned int numPixelSamples,
 	const char* shader,

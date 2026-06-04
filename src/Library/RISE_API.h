@@ -71,6 +71,8 @@
 #include "Rendering/DisplayTransform.h"
 #include "RasterImages/EXRCompression.h"
 #include "Utilities/SMSConfig.h"
+#include "Utilities/RasterizerDefaults.h"     // AutoIntegratorChoice (auto_rasterizer dispatcher)
+#include "Utilities/ProgressiveConfig.h"      // ProgressiveConfig (auto_rasterizer factory takes it directly)
 
 namespace RISE
 {
@@ -2777,6 +2779,31 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								Implementation::FrameStore* frameStore = nullptr    ///< [in] L6a-2 — canonical FrameStore (default null until L6b)
+								);
+
+	//! Creates an auto-routing integrator dispatcher (the `auto_rasterizer`
+	//! shell — Phase 1 of docs/AUTO_RASTERIZER_DESIGN.md).  It owns the
+	//! shared build inputs and, at the first render-time entry, selects one
+	//! of PT / BDPT / VCM and delegates to a concrete rasterizer built with
+	//! that integrator's canonical defaults.  No integrator algorithm of its
+	//! own.  Phase-1 selection is Tier-0 only (author pin, else PT).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateAutoRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to receive the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const AutoIntegratorChoice integrator,	///< [in] Author pin (Auto = dispatcher decides -> PT in Phase 1)
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process (forwarded to the delegate)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+								const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode (Fast = retrace/first-hit, Accurate = inline first-non-delta + prefilter)
+								const PathGuidingConfig& guidingConfig,	///< [in] Path guiding configuration
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const ProgressiveConfig& progressiveConfig,	///< [in] Progressive multi-pass configuration (applied to the delegate)
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] Canonical FrameStore (default null until Job pushes one)
 								);
 
 	//! Creates a pure path tracing spectral rasterizer (bypasses shader ops)
