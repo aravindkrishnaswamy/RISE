@@ -182,10 +182,23 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	std::vector<double> ch[3];
 	for( int c = 0; c < 3; c++ ) ch[c].reserve( cap.pixels.size() );
 
+	// Compare the COMPOSITED-OVER-BLACK radiance (base * coverage-alpha) --
+	// the per-pixel radiance the sensor actually integrates -- NOT the
+	// unpremultiplied surface RGB.  PixelBasedPelRasterizer (PT) and
+	// BDPTPelRasterizer resolve partial-coverage silhouette-edge pixels with
+	// DIFFERENT alpha conventions: PT keeps unpremultiplied RGB and puts
+	// coverage in alpha (alphaSum = hit-count); BDPT bakes coverage into RGB
+	// and reports alpha = 1 (alphaSum = all-samples).  Comparing base RGB then
+	// shows a spurious deficit at silhouettes (PT reports the full surface
+	// radiance L, BDPT reports coverage*L) even though base*alpha = coverage*L
+	// -- the image the sensor measures -- agrees to <0.2%.  Multiplying by
+	// alpha makes the comparison convention-independent and is a no-op for
+	// full-coverage pixels (alpha == 1).  See docs/INTEGRATOR_BUGFIX_FINDINGS.md Bug 2.
 	for( const RISEColor& c : cap.pixels ) {
-		ch[0].push_back( c.base.r );
-		ch[1].push_back( c.base.g );
-		ch[2].push_back( c.base.b );
+		const double cov = c.a;
+		ch[0].push_back( c.base.r * cov );
+		ch[1].push_back( c.base.g * cov );
+		ch[2].push_back( c.base.b * cov );
 	}
 
 	for( int c = 0; c < 3; c++ ) {
@@ -694,15 +707,17 @@ static void TestMixedLights()
 //////////////////////////////////////////////////////////////////////
 static void TestOrthographicCamera()
 {
-	// meanTol 0.20 (vs 8% for pinhole): a delta-DIRECTION camera leaves a
-	// small residual BDPT-vs-PT MEAN deficit (~10% in-harness, concentrated
-	// in dim pixels) -- a separate, smaller OPEN item.  p99/max are kept
-	// strict and DO match PT, confirming the bright transport is correct.
-	// 0.20 still catches the near-black regression (pre-fix BDPT was ~1.2%
-	// of PT) with a >10x margin -- that catastrophic bug is what this guards.
-	const Tolerances orthoTol{ 0.20, 0.25, 1.00 };
+	// Strict tolerances (same as the pinhole topologies).  The ortho scene is
+	// the first in this suite with a visible quad SILHOUETTE (the 2x2 quad
+	// sits inside a 2.5x2.5 viewport), so it has partial-coverage edge pixels.
+	// PT and BDPT use different alpha conventions there (see ComputeStats),
+	// which made a raw base-RGB mean comparison show a ~10% deficit; comparing
+	// the COMPOSITED radiance (base*alpha, what the sensor measures) the two
+	// agree to <0.2%, so strict 8% holds.  Still catches the near-black
+	// regression the IsDeltaDirection fix resolved (pre-fix BDPT was ~1.2% of
+	// PT) with a >10x margin.  Root cause: docs/INTEGRATOR_BUGFIX_FINDINGS.md Bug 2.
 	RunTopologyTest( "orthographic delta-direction camera + mesh emitter",
-		std::string( kSceneCommonOrtho ) + kLightMesh, orthoTol );
+		std::string( kSceneCommonOrtho ) + kLightMesh, kStrictTolerances );
 }
 
 int main()

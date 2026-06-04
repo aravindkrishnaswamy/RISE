@@ -250,26 +250,81 @@ the t=1 light-tracing strategy + MIS."
 - Orthographic is the only delta-direction camera and the only scene using it in
   the corpus, so blast radius is minimal.
 
-### Regression test ADDED 2026-06-03 (and it surfaced a residual)
-`TestOrthographicCamera()` was added to `tests/BDPTStrategyBalanceTest.cpp`
-(orthographic camera + mesh emitter, PT-vs-BDPT). It confirms the fix — BDPT is
-no longer near-black — but exposes a **residual ~10% BDPT-vs-PT MEAN deficit on
-the orthographic camera** (in-harness, 32×32/32 spp): PT mean 0.0407 vs BDPT
-0.0367 (−9.6%). The deficit is **concentrated in dim pixels** — the **median
-agrees to −1% and p99/max to <0.5%**, so the bright transport is correct; only
-the dim-pixel mean is low. (A standalone reproduction gave a different sign at 4×
-the brightness, i.e. it did not faithfully reproduce the harness scene, so the
-in-harness −9.6% is the number of record; the standalone discrepancy is itself
-unexplained.)
+### Regression test ADDED 2026-06-03; residual RESOLVED 2026-06-04 — it was an alpha-convention MEASUREMENT artifact, not a transport bias, and not ortho-specific
+`TestOrthographicCamera()` (orthographic camera + mesh emitter, PT-vs-BDPT) was
+added to `tests/BDPTStrategyBalanceTest.cpp`. It confirmed the near-black fix but
+surfaced a **~10% BDPT-vs-PT MEAN deficit** (in-harness, 32×32/32 spp): raw RGB
+mean PT 0.0407 vs BDPT 0.0367 (−9.6%), with median/p99/max agreeing — flagged
+OPEN as a possible delta-direction-camera MIS imperfection.
 
-This is a **separate, much smaller open item** than the near-black bug (pre-fix
-BDPT was ~1.2% of PT). The test's `meanTol` is set to 0.20 for the ortho case
-(catches the near-black regression with >10× margin) while p99/max stay strict
-and pass. **OPEN: characterize/close the residual ortho-BDPT mean deficit** —
-likely a partition-of-unity imperfection in the delta-direction camera MIS, or a
-dim-pixel effect of the emitter sitting behind the orthographic image plane;
-needs a dedicated look (it does NOT reach the near-black severity the fix
-resolved).
+**Root cause (2026-06-04, instrumented — NOT an MIS/transport bug, NOT
+ortho-specific): a film-resolve ALPHA-CONVENTION difference between the two
+rasterizers, surfaced by comparing UNPREMULTIPLIED RGB on the first test scene
+that has a visible silhouette.** Decisive evidence (per-pixel in-harness
+diagnostic, box filter on BOTH integrators to remove the gaussian-vs-box
+confounder — which is itself only ~0.06%):
+
+| quantity (BDPT/PT, box filter) | ORTHO | PINHOLE fov45 (same silhouette, NON-delta camera) |
+|---|---|---|
+| raw RGB-sum (`base`, what the test compared) | **0.905** | **0.927** |
+| composited radiance `base × alpha` (over black) | **0.9997** | **0.9985** |
+| alpha-sum (1024 px) | PT 656 (=0.64·1024, coverage), BDPT 1024 (all α=1) | PT 487, BDPT 1024 |
+
+Reading the table:
+1. **The composited radiance — the per-pixel value the sensor integrates and the
+   beauty shows — agrees to <0.2%.** The transport (MIS, per-(s,t) strategies) is
+   correct; interior full-coverage pixels match to <1% everywhere (the spatial
+   diff is a clean `>0.97`-ratio block with a thin `<0.5`-ratio silhouette ring).
+2. **The deficit lives entirely in the unpremultiplied-RGB convention at
+   partial-coverage silhouette pixels.** `PixelBasedPelRasterizer` (PT)
+   increments `alphaSum` on a surface HIT only ([PixelBasedPelRasterizer.cpp](../src/Library/Rendering/PixelBasedPelRasterizer.cpp) ~662)
+   and `weightSum` on every sample, so [`ProgressiveFilm::Resolve`](../src/Library/Rendering/ProgressiveFilm.h) (~136) yields
+   RGB = `colorSum/alphaSum` = the *unpremultiplied* surface radiance L and
+   alpha = `alphaSum/weightSum` = coverage c. `BDPTPelRasterizer`
+   ([BDPTPelRasterizer.cpp](../src/Library/Rendering/BDPTPelRasterizer.cpp) ~415) increments `alphaSum` on EVERY sample, so
+   it yields RGB = c·L (coverage baked in) and alpha = 1. Compositing over the
+   black background (`base × alpha`) gives c·L for BOTH (L·c vs c·L·1) — the
+   rendered image is identical; only the straight-alpha vs baked-alpha
+   intermediate differs.
+3. **It is NOT delta-direction-camera-specific.** A pinhole camera framed so the
+   2×2 quad does NOT fill the frame (fov 45) shows the SAME deficit (0.927). The
+   ortho scene merely exposed it first: the three pre-existing topologies put the
+   quad OUTSIDE the frame on all sides (quad fills the view → every pixel is
+   full-coverage → alpha = 1 → `base × alpha = base`), so they never had a
+   partial-coverage pixel to diverge on.
+4. **It is bias-shaped, not variance** (4× spp 32→128 leaves it at 0.904→0.908) —
+   exactly because it is a deterministic convention difference, not noise.
+
+**Fix (right layer = the test's COMPARISON, not the integrator): compare the
+convention-independent composited radiance `base × alpha`** — the radiance the
+sensor measures — instead of the unpremultiplied surface RGB. `ComputeStats` now
+multiplies each channel by the coverage alpha before mean/median/p99/max. This is
+a **no-op for the three full-coverage topologies** (alpha = 1 there; their
+numbers are unchanged within MC noise) and makes the ortho comparison measure
+what the two integrators must actually agree on. **No integrator code changed —
+`git diff` touches only [`tests/BDPTStrategyBalanceTest.cpp`](../tests/BDPTStrategyBalanceTest.cpp) + this doc; every
+`src/**` path is byte-identical to HEAD, so no scene's radiance can shift.**
+
+**Tolerance change:** `TestOrthographicCamera` now uses the **strict**
+`{meanTol 0.08, p99 0.25, max 1.00}` (was the near-black-guard `0.20`). The
+near-black regression the `IsDeltaDirection` fix resolved (pre-fix BDPT 1.2% of
+PT) is still caught with a >10× margin (composited near-black is still near-black).
+
+**Verification (composited comparison, in-harness):** ortho PT mean 0.03681 vs
+BDPT 0.03675 (−0.2%), median/p99/max agree; **all four topologies pass at strict
+0.08 (24/24 checks)**. The three pre-existing topologies are unchanged within MC
+noise. Full suite 116/116; EnvLightBalanceTest 80/80 lax; warning-free clean
+rebuild.
+
+**Flagged separate (minor, NOT a transport bug):** BDPT reports `alpha = 1` for
+partial-coverage pixels (it loses the coverage matte) where PT reports the true
+coverage. This only matters for compositing a BDPT render over a NON-black
+background or exporting a matte — the over-black beauty is correct. Aligning
+BDPT's alpha to PT's coverage convention would mean threading a hit/coverage
+signal out of `BDPTPelRasterizer::IntegratePixelRGB`, handling splat-only pixels
+(eye-miss + light-tracing splat), the denoiser AOV alpha, and the shared VCM
+path — a broader rasterizer-film change than this residual warrants. Left for a
+future matte-correctness pass.
 
 ---
 
@@ -378,4 +433,4 @@ intersection math) stays open; candidate fixes that avoid the BVH cost:
 IEEE-bit checks that `-ffinite-math-only` cannot DCE (re-arms the guards at ~0 %
 perf; does not remove the optimizer's finiteness assumption); or (b) a
 **targeted per-TU** flag (uncertain — the intersection TUs that need it are also
-the costly ones). Left for a user decision.
+the costly ones). **DECISION 2026-06-04: leave as-is (documented).** The glass_pavilion "Inf" was root-caused to the EXRReader FP16 read bug, not an integrator Inf, so the concrete motivation to re-arm the guards evaporated; the debt is latent with no confirmed production harm. Revisit only if a real integrator Inf/NaN ever surfaces (instrument with finite-threshold checks, not isfinite, per the note above).
