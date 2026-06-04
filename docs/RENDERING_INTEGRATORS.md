@@ -72,6 +72,15 @@ GUI bridges (macOS / Windows / Android) — see
 
 ## 2. Quick decision tree
 
+**Matrix-backed routing (2026-06-04 — [UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md) + [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md)).** The Phase-1 wall-clock-normalized variance (σ²·T) measurement gives a default-and-route rule — **the policy the planned [`auto_rasterizer`](AUTO_RASTERIZER_DESIGN.md) will encode; until it ships, pick by hand per this map:**
+
+- **Default → PT** (`pathtracing_pel_rasterizer`) — wins σ²·T on 10/13 converged classes (diffuse, glossy-metal, mixed, many-light, most env); **3–7× cheaper per sample** than BDPT, which outweighs BDPT/VCM's lower *raw* variance on the bulk.
+- **Strong-indirect / glossy interreflection → BDPT** (`bdpt_pel_rasterizer`) — the only regime where BDPT's connections beat its 3–7× per-sample penalty: gi_spheres-class (**56× σ²·T** over PT), alchemists, env+mesh. Signal: indirect dominates direct; glossy bounces; enclosed geometry.
+- **Caustic / refractive / dispersive → VCM** (`vcm_pel_rasterizer`) — the *only* integrator reaching SDS / dielectric-caustic transport (PT/BDPT miss **44–78%** of the energy). Accept its finite-radius bias + photon cost **here only**; contraindicated as a default (loses σ²·T 3–40× off-caustics; ±63–76% env/volume bias).
+- **Spectral / dispersion** → the `*_spectral_` variant of the above (BDPT-spectral is HWSS-correct since the 2026-06-04 Bug-3 fix).
+
+**Do NOT default to BDPT or VCM** — the data is decisive that PT is the efficient default on the bulk. The longer-form flowchart:
+
 ```
 Need real-time interactive viewport?            → InteractivePelRasterizer (automatic; not a chunk)
 

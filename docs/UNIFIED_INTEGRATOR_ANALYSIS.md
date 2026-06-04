@@ -433,6 +433,8 @@ BDPT or PT base
 
 ### 6.3 Decision gate
 
+**→ Executed 2026-06-04: [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md)** — the clean Phase-1 matrix contraindicates VCM-as-default (loses sigma^2*T 3-40x on every converged class; -63%..+76% env/volume bias) and favors the hybrid; recommendation is **C now + D sequenced**. The gate steps below were the framework for that doc.
+
 After Phase 1 + Phase 2 are complete, hold a focused session that:
 
 1. Reviews the empirical scene→integrator map from Phase 1.
@@ -560,7 +562,7 @@ that duplication.
 | (Pre-Phase 1) | Phase 2b/2c integrator refactor execution | Plan exists, status doc exists; deferred until Pieces 1+2 land per [PRE_PHASE1_STATUS.md](PRE_PHASE1_STATUS.md) |
 | Phase 1 | [`docs/UNIFIED_INTEGRATOR_BASELINES.md`](UNIFIED_INTEGRATOR_BASELINES.md) | **DONE 2026-06-03** — 18 scenes × {PT,BDPT,VCM}, K=16, wall-clock σ²·T + RMSE. Measured on the pre-fix (disc-area) baseline; the env/volume VCM bias it quantifies (−63%…+76%) is exactly what the deferred 5.2.1/5.2.2 fixes would close, so a re-run after those land would sharpen the VCM rows. |
 | Phase 2 | This document, §5 (further revised) | Maintained here |
-| Phase 3 | `docs/UNIFIED_INTEGRATOR_DECISION.md` (new) | Awaits Phase 1 output |
+| Phase 3 | [`docs/UNIFIED_INTEGRATOR_DECISION.md`](UNIFIED_INTEGRATOR_DECISION.md) | **DONE 2026-06-04** — recommends Candidate **C** (PT-default auto-routed hybrid — PT baseline / BDPT strong-indirect-glossy / VCM caustic; BDPT is the enhancement-investment target) now, **D** (ReSTIR-PT) sequenced as a research overlay; awaits user ratification |
 | Implementation | Per-direction implementation plans | Awaits Phase 3 |
 
 Total elapsed time before implementation plan is finalized, with
