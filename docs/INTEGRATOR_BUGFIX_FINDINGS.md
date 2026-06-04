@@ -5,14 +5,17 @@
 Phase-1 measurement ([UNIFIED_INTEGRATOR_BASELINES.md](UNIFIED_INTEGRATOR_BASELINES.md)
 §6/§7/§9): `glass_pavilion` Inf fireflies (Bug 1), `sculptors_studio` BDPT
 near-black (Bug 2), `prism_dispersion` spectral-BDPT −36 % (Bug 3).
-**Status:** Bug 1 FIXED (working tree, pending commit). Bug 2 FIXED (working
-tree, pending commit). Bug 3 — see §3.
+**Status:** Bug 1 PARTIAL — BDPT was an FP16 EXR-write overflow, FIXED at the
+writer layer (working tree, pending commit); a K=16 re-measure (2026-06-03)
+found VCM also has a **GENUINE degenerate-pdf Inf firefly — a real integrator
+bug, still OPEN** (§1 "Note for the matrix"). Bug 2 FIXED (working tree, pending
+commit). Bug 3 — see §3.
 **Discipline:** every claim below is from instrumented renders, not intuition.
 All changes are uncommitted for review.
 
 ---
 
-## Bug 1 — `glass_pavilion` "Inf firefly" — **MISDIAGNOSED; it is an FP16 EXR-write overflow, not an integrator 1/0. FIXED at the writer layer.**
+## Bug 1 — `glass_pavilion` "Inf firefly" — **SPLIT: BDPT was an FP16 EXR-write overflow (FIXED at writer); VCM is a GENUINE degenerate-pdf Inf (real bug, OPEN — see "Note for the matrix").**
 
 ### Confirmed real?
 Yes — but **not** the hypothesized degenerate-pdf 1/0 in a caustic connection,
@@ -73,12 +76,27 @@ is global. The harness's `prism_dispersion`/`spectral_caustic` EXRs share the
 same path and equally benefit. No integrator twins to audit (not an integrator
 bug).
 
-### Note for the matrix
-The `glass_pavilion` BDPT/VCM `Inf⚠` cells are a **measurement artifact** of the
-FP16 EXR + a genuinely noisy scene, not an integrator defect. With this fix a
-re-measure yields large-but-finite variance (the scene IS pathologically noisy
-for all three integrators — a legitimate §7 "highest-leverage" target for a new
-technique, but not a correctness bug).
+### Note for the matrix — CORRECTED 2026-06-03 (independent K=16 re-measure)
+
+A re-measure with the FLOAT-EXR writer splits `glass_pavilion` `Inf⚠` into **two
+distinct phenomena**. The single-cause "FP16 artifact, not an integrator defect"
+diagnosis above holds for **BDPT** but is **WRONG for VCM**:
+
+- **BDPT — FP16 artifact, FIXED.** Re-measure is finite (`mean_var` 1.10e3,
+  `lum` 1.096), no Inf across 16 renders. The half-float-overflow diagnosis was
+  correct here.
+- **VCM — a GENUINE Inf firefly; a real integrator bug, NOT an FP16 artifact.**
+  The FLOAT EXR (max ~3.4e38) still records an actual red-channel `Inf` in **9 of
+  16** re-measure renders. This is exactly the "degenerate-pdf firefly in a VCM
+  caustic connection" hypothesis — REAL for VCM, **missed by the 8-render
+  spot-check above**, which happened to sample only finite-big fireflies (max
+  624997). It is **not** a dead-guard symptom: an A/B of flag-off (guards DCE'd)
+  vs flag-on (`-fno-finite-math-only`, guards live) shows the Inf at the same
+  rate (6/10 vs 8/10), so it is an *unguarded* unbounded contribution that needs
+  a degenerate-pdf guard/clamp at its source in the VCM connection/merge code.
+  **OPEN — a real fix (apply `docs/skills/sms-firefly-diagnosis.md` +
+  `precision-fix-the-formulation.md`); do NOT just clamp the symptom.** The
+  earlier "8 renders → inf=0" claim was a sampling fluke, not a clean bill.
 
 ---
 
@@ -149,9 +167,26 @@ the t=1 light-tracing strategy + MIS."
 - Orthographic is the only delta-direction camera and the only scene using it in
   the corpus, so blast radius is minimal.
 
-### Suggested regression (not yet added)
-A `BDPTStrategyBalanceTest` topology with an orthographic camera would lock this
-invariant; deferred to keep this change minimal — noted for follow-up.
+### Regression test ADDED 2026-06-03 (and it surfaced a residual)
+`TestOrthographicCamera()` was added to `tests/BDPTStrategyBalanceTest.cpp`
+(orthographic camera + mesh emitter, PT-vs-BDPT). It confirms the fix — BDPT is
+no longer near-black — but exposes a **residual ~10% BDPT-vs-PT MEAN deficit on
+the orthographic camera** (in-harness, 32×32/32 spp): PT mean 0.0407 vs BDPT
+0.0367 (−9.6%). The deficit is **concentrated in dim pixels** — the **median
+agrees to −1% and p99/max to <0.5%**, so the bright transport is correct; only
+the dim-pixel mean is low. (A standalone reproduction gave a different sign at 4×
+the brightness, i.e. it did not faithfully reproduce the harness scene, so the
+in-harness −9.6% is the number of record; the standalone discrepancy is itself
+unexplained.)
+
+This is a **separate, much smaller open item** than the near-black bug (pre-fix
+BDPT was ~1.2% of PT). The test's `meanTol` is set to 0.20 for the ortho case
+(catches the near-black regression with >10× margin) while p99/max stay strict
+and pass. **OPEN: characterize/close the residual ortho-BDPT mean deficit** —
+likely a partition-of-unity imperfection in the delta-direction camera MIS, or a
+dim-pixel effect of the emitter sitting behind the orthographic image plane;
+needs a dedicated look (it does NOT reach the near-black severity the fix
+resolved).
 
 ---
 
@@ -239,5 +274,25 @@ and dead-code-eliminated on macOS** (the Android build pointedly adds
 math"; the make build does not). Inf/NaN-detecting instrumentation or guards on
 macOS must launder the value through `volatile` (or compare against a finite
 threshold), or `std::isfinite` silently returns `true`. This cost real time
-during Bug 1 diagnosis and is worth a follow-up (add `-fno-finite-math-only` to
-Config.OSX to re-enable the existing guards) — flagged, not fixed here.
+during Bug 1 diagnosis.
+
+**Investigated 2026-06-03 (measured, NOT applied).** A global
+`-fno-finite-math-only` (the Android approach) was measured with a
+drift-controlled **interleaved A/B** — rebuild both binaries, alternate them
+sample-by-sample so each pair sees identical machine conditions (necessary:
+sequential baseline-vs-after showed ±8 % session drift that swamped the signal):
+
+| workload | scene | paired Δ (flag-on vs flag-off) |
+|---|---|---|
+| BVH-traversal-heavy | aphrodite mesh @ 700 spp | **+3.23 %** (±1.36 SE, ~2.4σ — real) |
+| shading-heavy | irradiance_cache_torture | +0.90 % (±0.70 SE, ~1.3σ — not significant) |
+
+The ~3 % BVH cost is the NaN-aware ray-box / ray-tri min/max the flag re-enables.
+Per the no-perf-regression constraint the flag was **reverted, not committed**.
+The correctness debt (dead guards + the optimizer assuming finiteness in
+intersection math) stays open; candidate fixes that avoid the BVH cost:
+(a) **bit-pattern guards** — rewrite the ~48 `isfinite` / `isnan` sites as integer
+IEEE-bit checks that `-ffinite-math-only` cannot DCE (re-arms the guards at ~0 %
+perf; does not remove the optimizer's finiteness assumption); or (b) a
+**targeted per-TU** flag (uncertain — the intersection TUs that need it are also
+the costly ones). Left for a user decision.

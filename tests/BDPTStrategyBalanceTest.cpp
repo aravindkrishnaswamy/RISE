@@ -374,6 +374,54 @@ static const char* kSceneCommon =
 
 // Test A: omni point light only (delta-position).  Triggers the bug
 // we just fixed if it ever regresses.
+// Orthographic-camera variant of kSceneCommon.  An orthographic camera is a
+// Dirac delta in DIRECTION (all rays parallel) -- the importance-side analogue
+// of a directional light.  Before the IsDeltaDirection fix, BDPT kept the
+// phantom t==1 light-tracing strategy in the MIS denominator (weight ~0.999),
+// crushing the eye-path NEE strategies and rendering near-black (lum ~1% of PT).
+static const char* kSceneCommonOrtho =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n"
+	"\n"
+	"orthographic_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.5\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tviewport_scale 2.5 2.5\n"
+	"}\n"
+	"\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_albedo\n"
+	"\tcolor 0.5 0.5 0.5\n"
+	"}\n"
+	"\n"
+	"lambertian_material\n"
+	"{\n"
+	"\tname mat_diffuse\n"
+	"\treflectance pnt_albedo\n"
+	"}\n"
+	"\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad\n"
+	"\tpta -1 -1 0\n"
+	"\tptb 1 -1 0\n"
+	"\tptc 1 1 0\n"
+	"\tptd -1 1 0\n"
+	"}\n"
+	"\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_quad\n"
+	"\tgeometry quad\n"
+	"\tmaterial mat_diffuse\n"
+	"}\n";
+
 static const char* kRasterizerPT =
 	"standard_shader\n"
 	"{\n"
@@ -635,6 +683,28 @@ static void TestMixedLights()
 // regressions properly needs SMS-enabled or MLT reference, which is
 // out of scope for a fast CI test.
 
+//////////////////////////////////////////////////////////////////////
+// Topology D: orthographic (delta-DIRECTION) camera + mesh area emitter.
+//
+// Regression guard for the orthographic-camera BDPT fix.  An orthographic
+// camera has zero density for the t==1 light-tracing strategy; if that
+// strategy is not skipped (and excluded from the MIS denominator) BDPT
+// renders near-black.  PT is unaffected, so PT-vs-BDPT agreement is the
+// invariant.  Before the fix BDPT mean was ~1% of PT (fails meanTol hard).
+//////////////////////////////////////////////////////////////////////
+static void TestOrthographicCamera()
+{
+	// meanTol 0.20 (vs 8% for pinhole): a delta-DIRECTION camera leaves a
+	// small residual BDPT-vs-PT MEAN deficit (~10% in-harness, concentrated
+	// in dim pixels) -- a separate, smaller OPEN item.  p99/max are kept
+	// strict and DO match PT, confirming the bright transport is correct.
+	// 0.20 still catches the near-black regression (pre-fix BDPT was ~1.2%
+	// of PT) with a >10x margin -- that catastrophic bug is what this guards.
+	const Tolerances orthoTol{ 0.20, 0.25, 1.00 };
+	RunTopologyTest( "orthographic delta-direction camera + mesh emitter",
+		std::string( kSceneCommonOrtho ) + kLightMesh, orthoTol );
+}
+
 int main()
 {
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
@@ -642,6 +712,7 @@ int main()
 	TestDeltaOmniLight();
 	TestMeshEmitterOnly();
 	TestMixedLights();
+	TestOrthographicCamera();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;
