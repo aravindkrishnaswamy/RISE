@@ -399,10 +399,16 @@ XYZPel BDPTSpectralRasterizer::IntegratePixelSpectral(
 			for( unsigned int w = 1; w < SampledWavelengths::N; w++ )
 			{
 				if( swl.terminated[w] ) {
-					// Still count terminated wavelengths with zero contribution
-					XYZPel compXYZ( 0, 0, 0 );
-					if( ColorUtils::XYZFromNM( compXYZ, swl.lambda[w] ) )
-						totalActive++;
+					// Dispersive-terminated companion: it cannot follow the
+					// hero's refraction geometry, so it contributes nothing and
+					// is EXCLUDED from the sample-count denominator -- matching
+					// PixelBasedSpectralIntegratingRasterizer::TakeSingleSampleHWSS
+					// (the PT reference, which guards both the sum and the count
+					// with `if(!swl.terminated[i])`).  Counting a terminated
+					// companion as a zero-contribution sample divided the bundle
+					// mean by N instead of by the surviving count, biasing
+					// through-glass pixels toward 0 -- the dispersion-specific
+					// HWSS-BDPT deficit.
 					continue;
 				}
 

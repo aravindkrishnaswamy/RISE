@@ -2832,10 +2832,21 @@ EvalEmitterRadiance( const BDPTVertex& eyeEnd, const Vector3& woFromEmitter,
 			const RISEPel Le = eyeEnd.pLight->emittedRadiance( woFromEmitter );
 			return 0.2126 * Le[0] + 0.7152 * Le[1] + 0.0722 * Le[2];
 		}
-		if( !eyeEnd.pMaterial ) {
+		// Surface / mesh emitter.  Prefer pMaterial (set on an EYE vertex
+		// that hit the emitter -- the s=0 strategy); fall back to pLuminary
+		// (a light-SUBPATH endpoint sampled by the light sampler stores the
+		// emissive material on pLuminary with pMaterial == 0 -- see
+		// GenerateLightSubpath vertex 0).  Without the fallback the
+		// RecomputeSubpathThroughputNM Phase-1 emission ratio re-evaluates
+		// Le == 0 on every mesh-emitter light subpath, zeroing that
+		// subpath's companion-wavelength throughput.
+		const IMaterial* pEmMat = eyeEnd.pMaterial
+			? eyeEnd.pMaterial
+			: ( eyeEnd.pLuminary ? eyeEnd.pLuminary->GetMaterial() : 0 );
+		if( !pEmMat ) {
 			return 0;
 		}
-		const IEmitter* pEm = eyeEnd.pMaterial->GetEmitter();
+		const IEmitter* pEm = pEmMat->GetEmitter();
 		if( !pEm ) {
 			return 0;
 		}
@@ -6129,8 +6140,14 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 			v.type == BDPTVertex::SURFACE && !v.isDelta &&
 			v.pMaterial && v.pMaterial->GetBSDF() )
 		{
-			const Vector3 dirFromPrev = Vector3Ops::Normalize(
-				Vector3Ops::mkVector3( v.position, verts[i-1].position ) );
+			// EvalBSDFAtVertex expects wi and wo BOTH pointing AWAY from the
+			// surface (wi toward light, wo toward viewer); it negates wo
+			// internally to build the incoming ray (see BDPTIntegrator.h
+			// DIRECTION CONVENTIONS).  Both directions must therefore point
+			// FROM v TOWARD the neighbour, matching how GenerateEye/LightSubpath
+			// pass (scatDir, -currentRay.Dir()).  dirToPrev = prev - v.
+			const Vector3 dirToPrev = Vector3Ops::Normalize(
+				Vector3Ops::mkVector3( verts[i-1].position, v.position ) );
 			const Vector3 dirToNext = Vector3Ops::Normalize(
 				Vector3Ops::mkVector3( verts[i+1].position, v.position ) );
 
@@ -6138,11 +6155,11 @@ void BDPTIntegrator::RecomputeSubpathThroughputNM(
 			// Eye subpath:   wi = toward light (next), wo = toward eye (prev)
 			Vector3 wi, wo;
 			if( isLightPath ) {
-				wi = dirFromPrev;
+				wi = dirToPrev;
 				wo = dirToNext;
 			} else {
 				wi = dirToNext;
-				wo = dirFromPrev;
+				wo = dirToPrev;
 			}
 
 			const Scalar heroF = PathValueOps::EvalBSDFAtVertex<NMTag>( v, wi, wo, NMTag( heroNM ) );

@@ -937,10 +937,28 @@ static void TestEnvNonUniformOffCenterSpectral( bool hwss )
 static void TestEnvOnlySpectral( bool hwss )
 {
 	const std::string name = std::string( "env-only Lambertian (spectral, hwss=" ) + ( hwss ? "true" : "false" ) + ")";
+	// PT REFERENCE IS ALWAYS hwss=false (the converged, unbiased ground
+	// truth).  HWSS is a variance-reduction bundling of the SAME estimator,
+	// so the converged answer is hwss-independent and PT-hwss=false IS the
+	// reference for both rows.  On this uniform-env scene PT's own HWSS path
+	// (PathTracingIntegrator::IntegrateFromHitHWSS) carries a documented
+	// spectral-bundle bias — PT-hwss=true renders ~20% under PT-hwss=false
+	// here — so comparing the spectral integrators' hwss=true output against
+	// PT-hwss=TRUE would assert agreement with a biased reference (a separate
+	// PT env-IBL workstream; see docs/INTEGRATOR_BUGFIX_FINDINGS.md §3).
+	// Before the 2026-06-04 RecomputeSubpathThroughputNM companion-direction
+	// fix, BDPT/VCM carried their OWN (larger) HWSS companion bias that
+	// landed near PT's, so this row passed against PT-hwss=true only by
+	// coincidence (all three biased low together: master BDPT −30%, VCM −35%
+	// vs their own hwss=false).  With the companion fix BDPT/VCM are now
+	// hwss-invariant (correct); asserting them against the unbiased
+	// PT-hwss=false both restores a meaningful comparison AND would have
+	// caught the pre-fix companion bug (master BDPT/VCM hwss=true were
+	// 25–40% under PT-hwss=false).
 	RunEnvTopologyTestWithRasterizers(
 		name.c_str(),
 		std::string( kSceneCommonGeometry ) + kEnvPainter,
-		EnableHWSSInRasterizer( kRasterizerPTSpectral, hwss ).c_str(),
+		EnableHWSSInRasterizer( kRasterizerPTSpectral, false ).c_str(),
 		EnableHWSSInRasterizer( kRasterizerBDPTSpectral, hwss ).c_str(),
 		EnableHWSSInRasterizer( kRasterizerVCMSpectral, hwss ).c_str() );
 }

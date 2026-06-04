@@ -14,7 +14,12 @@ integrator defect. FIXED at the reader (`EXRReader` now reads FLOAT). See §1's
 final "CORRECTED AGAIN" note for the evidence (pyOpenEXR shows the EXRs are
 finite; synthetic `R=100000` reads `inf` via `EXRReader`, finite via pyOpenEXR;
 deterministic sweep 8/16 "inf" → 0/16 after the fix). Bug 2 FIXED (working tree,
-pending commit). Bug 3 — see §3.
+pending commit). **Bug 3 FIXED 2026-06-04** — three root causes in the SHARED
+spectral-HWSS companion path (`RecomputeSubpathThroughputNM` direction flip +
+`EvalEmitterRadiance<NMTag>` missing `pLuminary` fallback + `totalActive`
+terminated-companion over-count); restores the BDPT **and** VCM HWSS bundle
+invariant (uniform + dispersive) and also closes the documented HWSS env-IBL
+deficit; one separate **PT** HWSS env bias remains open (out of scope). See §3.
 **Discipline:** every claim below is from instrumented renders, not intuition.
 All changes are uncommitted for review.
 
@@ -328,63 +333,124 @@ future matte-correctness pass.
 
 ---
 
-## Bug 3 — `prism_dispersion` spectral-BDPT −36 % — **REAL, and it is the deep HWSS spectral-bundle bias. DOCUMENTED & DEFERRED (multi-week).**
+## Bug 3 — `prism_dispersion` spectral-BDPT −36 % — **REAL HWSS-companion bug. FIXED 2026-06-04 (3 root causes, all in the SHARED spectral-HWSS companion path). NOT the feared multi-week per-wavelength path-split.**
 
 ### Confirmed real?
-Yes. Reproduced: spectral-PT lum **1.24401**, spectral-BDPT lum **0.79641**
-(64.0 % of PT, **−36.0 %**), matching the matrix.
+Yes. Reproduced: dispersive spectral-PT lum **~1.243**, spectral-BDPT lum
+**~0.796** (64 % of PT, −36 %), matching the matrix. The deficit is **entirely
+HWSS-specific and BDPT-specific** with two additive components (general +
+dispersion), confirmed by the hwss / dispersion discriminators below.
 
-### Root cause (instrumented via the hwss / dispersion discriminators)
-The deficit is **entirely HWSS-specific and BDPT-specific**, and it has two
-additive components:
+### Diagnosis (instrumented bisection, not intuition)
+The discriminator that localised the bug: in HWSS the **hero** is uniform over
+[λ_lo, λ_hi], so a **hero-only** estimator (skip companions, normalise by hero
+count) is itself unbiased and must equal hwss=false. An env-gated hero-only build
+gave **1.196 ≈ hwss=false 1.187** → the hero is correct, **the entire deficit is
+in the COMPANIONS**. A second bisection (evaluate companions at the HERO
+wavelength, so the throughput-recompute is mathematically identity) gave **1.018,
+NOT 1.196** — i.e. *calling* `RecomputeSubpathThroughputNM` lost ~19 % **even
+when it should be a no-op**. Direct instrumentation showed it was driving
+`cumulativeRatio → 0` (zeroing throughput) at heroNM==companionNM, which is
+impossible unless a re-evaluated BSDF / emitter returns ~0 and trips the
+`heroF/heroLe ≤ NEARZERO` guard.
 
-| variant | PT-spectral lum | BDPT-spectral lum | BDPT / PT |
-|---|---|---|---|
-| dispersive (`ior 1.3 1.5 2`), **hwss=true** | 1.24401 | 0.79641 | **64 %** |
-| dispersive, **hwss=false** | 1.21949 | 1.23157 | **101 %** ✓ |
-| non-dispersive (`ior 1.5 1.5 1.5`), hwss=true | 1.24526 | 1.03217 | **83 %** |
+### Root causes (three, all in the shared HWSS-companion machinery used by BDPT **and** VCM spectral)
 
-Reading the table:
-1. **hwss=false closes the gap entirely** — BDPT matches PT within 1 %. So the
-   bug is in the **hero-wavelength bundle machinery**, not in BDPT's spectral
-   transport per se.
-2. **PT is ~hwss-invariant** (1.244 vs 1.219). HWSS *sampling* is sound; the
-   defect is in **BDPT's HWSS bundle handling**.
-3. **Two components.** A general BDPT-HWSS bias (~17 % under even with a uniform
-   IOR — no dispersion) **plus** a dispersion-specific loss (a further ~19 %,
-   83 %→64 %, when bundle wavelengths refract at different angles through the
-   dispersive dielectric).
+1. **`RecomputeSubpathThroughputNM` companion-direction flip** — the dominant
+   share of the general component.
+   [BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp) Phase-3
+   reconstructed `dirFromPrev = mkVector3(v.position, verts[i-1].position)` =
+   `v − prev` (the *travel* direction, pointing toward the surface) and passed it
+   as `wo` (eye subpath) / `wi` (light subpath). But `EvalBSDFAtVertex` wants both
+   `wi` and `wo` pointing **away from the surface** (it negates `wo` internally to
+   build the incoming ray — see the BDPTIntegrator.h DIRECTION CONVENTIONS block),
+   exactly as `GenerateEye/LightSubpath` pass them (`scatDir, −currentRay.Dir()`).
+   The flipped `wo`/`wi` made the Lambertian BSDF evaluate the wrong hemisphere
+   → exactly `0` → the `heroF ≤ NEARZERO` guard zeroed the companion throughput
+   from that vertex downstream. **Fix:** `dirToPrev = mkVector3(verts[i-1].position,
+   v.position)` = `prev − v`, matching generation and every connection-site
+   reconstruction (which were already correct — this function was the lone outlier).
 
-The dispersion-specific component is mechanistically intuitive: an HWSS bundle
-carries a hero + companion wavelengths along **one** shared path. At a dispersive
-refraction each wavelength bends differently, so companions cannot follow the
-hero's geometric path — BDPT's bundle generation / connection drops (or
-mis-weights) that companion energy. The general component is the same
-spectral-bundle bias CLAUDE.md already records for HWSS env-IBL ("hwss=true
-env-only ~8–18 % under PT… a separate spectral-bundle workstream").
+2. **`EvalEmitterRadiance<NMTag>` missing `pLuminary` fallback** — the remaining
+   general residual (mesh-emitter light subpaths).
+   A light-**subpath endpoint** vertex (sampled by the light sampler) stores its
+   emissive material on `pLuminary` with `pMaterial == 0`; the NM emitter re-eval
+   only handled `pEnvLight` / `pLight` / `pMaterial->GetEmitter()` and hit
+   `if(!pMaterial) return 0`, so the Phase-1 emission ratio re-evaluated `Le == 0`
+   and zeroed the **whole** light subpath's companion throughput on every
+   mesh-emitter scene. **Fix:** fall back to `pLuminary->GetMaterial()` (mirrors
+   `GenerateLightSubpath`'s own seed and the s=0 eye-hit path). Env lights are
+   untouched (handled by the earlier `pEnvLight` branch); the s=0 eye-hit path is
+   untouched (`pMaterial` is set there) → no Pel / non-HWSS change.
 
-### Suspected code region (not a confirmed line-level fix)
-The BDPT HWSS per-wavelength throughput is tracked in `hwssBetaNM[]` through
-subpath generation ([BDPTIntegrator.cpp ~2475-2515](../src/Library/Shaders/BDPTIntegrator.cpp)
-scatter update; ~4987 emission seed) and combined at the HWSS connection. A
-principled fix needs the bundle's companion-wavelength throughput to survive a
-dispersive (per-wavelength-direction) vertex and be MIS-weighted consistently
-with PT's per-wavelength estimator.
+3. **`totalActive` counted dispersive-terminated companions** — the
+   dispersion-specific component (NOT a per-wavelength-geometry problem).
+   [BDPTSpectralRasterizer.cpp](../src/Library/Rendering/BDPTSpectralRasterizer.cpp)
+   (+ sibling [VCMSpectralRasterizer.cpp](../src/Library/Rendering/VCMSpectralRasterizer.cpp))
+   incremented `totalActive` for a companion terminated at a dispersive interface
+   even though it contributes 0, dividing the bundle mean by `N` instead of by the
+   surviving count → biasing through-glass pixels toward 0. The PT reference
+   (`PixelBasedSpectralIntegratingRasterizer::TakeSingleSampleHWSS`) excludes
+   terminated wavelengths from both the sum **and** the count. **Fix:** match PT —
+   don't count a terminated companion. **No multi-week change was needed:** the
+   hero (uniform over λ) unbiasedly represents the bundle for terminated cases;
+   the only defect was the denominator over-count. (Companions that *can* follow
+   the hero's path — uniform IOR — were already handled correctly once root causes
+   1 & 2 were fixed.)
 
-### Decision: DOCUMENT & STOP
-This is the deep HWSS spectral-bundle bias the task flagged as a multi-week
-workstream, and CLAUDE.md independently records as "a separate spectral-bundle
-workstream that must precede any SA migration." Per the task's stop rule, no
-integrator code was changed for Bug 3 — a rushed bundle edit here risks biasing
-every HWSS render. A crisp root-cause characterization (HWSS-specific +
-BDPT-specific + general/dispersion split, with the discriminator data above) is
-the deliverable.
+### Verification (64 spp, lum = mean(R,G,B)/3; box filter off → default; EXR FLOAT)
+
+**The bundle invariant restored (the load-bearing property: hwss=true must equal hwss=false):**
+
+| BDPT hwss=T / hwss=F | master | fixed |
+|---|---|---|
+| uniform IOR (general) | **0.861** | **1.009** ✓ |
+| dispersive IOR | **0.674** | **1.008** ✓ |
+
+| BDPT-hwss=T / PT | master | fixed |
+|---|---|---|
+| uniform | 0.821 | 0.961 |
+| dispersive | 0.642 | 0.965 |
+
+The residual ~4 % BDPT/PT is **present in hwss=false too** (0.953–0.957) → a
+pre-existing BDPT-spectral-vs-PT difference (the committed PT repro uses
+`pixelintegratingspectral_rasterizer` + default filter), **not** an HWSS bug.
+
+**Sibling (VCM) bundle invariant** (same shared fixes + the `totalActive` sibling):
+uniform **1.012**, dispersive **1.000** ✓.
+
+**HWSS env-IBL deficit — ALSO CLOSED (the bonus CLAUDE.md hoped for).** This is
+the same `RecomputeSubpathThroughputNM` companion bug. Master env-only Lambertian
+spectral **hwss=true**: BDPT mean ~0.39–0.47 (**−30 %** vs its own hwss=false
+~0.61–0.64), VCM ~0.35–0.41 (**−35 %**); **post-fix** BDPT ~0.54–0.65, VCM
+~0.51–0.61 → hwss-invariant, matching the hwss=false ground truth ~0.57–0.64.
+
+**No regression:** `./run_all_tests.sh` → **116/116**; `EnvLightBalanceTest`
+**80/80 lax**; warning-free clean `make all`+`make tests` rebuild; PT integrator
+**byte-identical** (no `PathTracingIntegrator` change); Pel and non-HWSS NM paths
+**byte-identical** (the three fixes live only in the HWSS-companion code).
+
+### Open remainder (out of scope, documented) — a SEPARATE pre-existing **PT** HWSS env-IBL bias
+On the uniform env-only Lambertian scene **PT itself violates the bundle
+invariant**: PT-hwss=true renders ~20 % under PT-hwss=false (PT's forward
+`PathTracingIntegrator::IntegrateFromHitHWSS`, a *different* mechanism from the
+shared `RecomputeSubpathThroughputNM`). This is the "separate spectral-bundle
+workstream" CLAUDE.md already flags; **this fix does not touch PT.** Because the
+old `EnvLightBalanceTest` compared spectral integrators against PT at the *same*
+hwss, master "passed" the env-only hwss=true row only by coincidence — BDPT/VCM's
+own (larger) companion bias landed near PT's bias (all three biased low together).
+With the companion fix BDPT/VCM are now correct and diverge from the still-biased
+PT-hwss=true. The test was corrected to reference the **unbiased PT-hwss=false**
+ground truth for the env-only spectral row (a one-line change in
+[tests/EnvLightBalanceTest.cpp](../tests/EnvLightBalanceTest.cpp) `TestEnvOnlySpectral`,
+no tolerance loosened — and the new comparison *would have caught* the master
+companion bug the old one missed). Fixing PT's own HWSS env-IBL bias remains the
+documented separate workstream.
 
 ### Sibling note
-VCM-spectral merging uses a luminance proxy (`RISEPelToNMProxy`), a *separate*
-documented HWSS correctness gap ([SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
-§3) — not the same mechanism, but in the same HWSS-bundle family and worth
-fixing alongside.
+VCM-spectral **merging** still uses a luminance proxy (`RISEPelToNMProxy`), a
+*separate* documented HWSS correctness gap ([SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
+§3) — a different mechanism from the three fixes above, still open.
 
 ---
 
