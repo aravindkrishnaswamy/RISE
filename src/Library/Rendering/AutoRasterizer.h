@@ -55,6 +55,7 @@
 #include "../Utilities/StabilityConfig.h"
 #include "../Utilities/ProgressiveConfig.h"
 #include <mutex>
+#include <string>
 
 namespace RISE
 {
@@ -128,10 +129,20 @@ namespace RISE
 			AutoIntegratorChoice ResolvedIntegrator() const { return mResolved; }
 
 		private:
-			//! Phase-1 selection (Tier 0 only): honour the pin, else PT.
-			//! Phase 4 replaces this body with the render-time probe over
-			//! `scene` (kept in the signature precisely so that drop-in is
-			//! a body change, not a surgery on the call sites).
+			//! Integrator selection.  Tier 0: an explicit author pin always
+			//! wins.  Tier 1 (Phase 2): a cheap, conservative static analysis
+			//! of the assembled `scene` — route VCM where refractive caustics
+			//! are plausible (a transmissive/dielectric surface AND a
+			//! positional point/spot source to concentrate the energy), and
+			//! default everything else to PT.  The strong-indirect / BDPT
+			//! regime is intentionally NOT routed here: it is not statically
+			//! separable from the PT-efficient glossy/diffuse bulk via cheap
+			//! IScene signals (see AUTO_RASTERIZER_DESIGN.md §5) and is left
+			//! to the Phase-4 probe.  Phase 4 replaces this body with the
+			//! render-time probe over `scene` (kept in the signature precisely
+			//! so that drop-in is a body change, not a surgery on call sites).
+			//! Sets `mResolveReason` to the one-line explanation logged at
+			//! resolution.
 			AutoIntegratorChoice SelectIntegrator( const IScene* scene ) const;
 
 			//! Build the concrete delegate for `choice` using the stored
@@ -177,6 +188,12 @@ namespace RISE
 			mutable IRasterizer*			mDelegate;
 			mutable AutoIntegratorChoice	mResolved;
 			mutable std::once_flag			mResolveOnce;
+
+			// One-line, human-readable reason for the resolved choice
+			// (e.g. "dielectric + positional light"), set by
+			// SelectIntegrator and surfaced in the resolution log line for
+			// diagnostics + the future UI "Auto -> VCM: <reason>" display.
+			mutable std::string				mResolveReason;
 		};
 	}
 }

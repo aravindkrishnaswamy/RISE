@@ -16,6 +16,13 @@
 #include "../RISE_API.h"
 #include "../Interfaces/IRayCaster.h"
 #include "../Interfaces/IPixelFilter.h"
+#include "../Interfaces/IScene.h"
+#include "../Interfaces/IObjectManager.h"
+#include "../Interfaces/IObject.h"
+#include "../Interfaces/IMaterial.h"
+#include "../Interfaces/ILightManager.h"
+#include "../Interfaces/ILightPriv.h"
+#include "../Interfaces/IEnumCallback.h"
 #include "../Utilities/SMSConfig.h"
 
 using namespace RISE;
@@ -34,6 +41,63 @@ namespace
 			case AutoIntegratorChoice::Auto:
 			default:                         return "auto";
 		}
+	}
+
+	//! Tier-1 signal: does any visible object carry a transmissive /
+	//! dielectric material (`IMaterial::CouldLightPassThrough()`)?  That
+	//! is the surface kind — glass, water, gems — that bends light into
+	//! refractive caustics.  One early-out object enumeration (stops at
+	//! the first match).  Mirrors the `MediaScan` idiom in
+	//! LightSampler::Prepare (return false = stop, true = continue).
+	bool SceneHasTransmissiveMaterial( const IScene& scene )
+	{
+		struct TransmissiveScan : public IEnumCallback<IObject>
+		{
+			bool found;
+			TransmissiveScan() : found( false ) {}
+			bool operator()( const IObject& obj )
+			{
+				const IMaterial* mat = obj.GetMaterial();
+				if( mat && mat->CouldLightPassThrough() ) {
+					found = true;
+					return false;   // one is enough — stop enumeration
+				}
+				return true;        // keep scanning
+			}
+		};
+
+		const IObjectManager* objs = scene.GetObjects();
+		if( !objs ) {
+			return false;
+		}
+		TransmissiveScan scan;
+		objs->EnumerateObjects( scan );
+		return scan.found;
+	}
+
+	//! Tier-1 signal: does the scene have at least one positional
+	//! (point / spot / omni) delta light?  These are the small / point
+	//! sources able to concentrate refracted energy into a sharp caustic;
+	//! `IsPositionalLight()` returns false for directional and ambient
+	//! lights (and there is no entry for area / mesh emitters or env-IBL
+	//! in the hack-light list at all — those are objects-with-emitter and
+	//! the global radiance map respectively, deliberately NOT counted as
+	//! caustic-prone here, which is what keeps area-lit dielectric scenes
+	//! on PT/BDPT instead of over-routing them to VCM).
+	bool SceneHasPositionalLight( const IScene& scene )
+	{
+		const ILightManager* lights = scene.GetLights();
+		if( !lights ) {
+			return false;
+		}
+		const ILightManager::LightsList& list = lights->getLights();
+		for( ILightManager::LightsList::const_iterator it = list.begin(); it != list.end(); ++it ) {
+			const ILightPriv* l = *it;
+			if( l && l->IsPositionalLight() ) {
+				return true;
+			}
+		}
+		return false;
 	}
 }
 
@@ -90,21 +154,63 @@ AutoRasterizer::~AutoRasterizer()
 	safe_release( mFilter );
 }
 
-AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* /*scene*/ ) const
+AutoIntegratorChoice AutoRasterizer::SelectIntegrator( const IScene* scene ) const
 {
-	// Phase 1 — Tier 0 only: honour an explicit author pin; everything
-	// else (Auto / unset) falls back to PT, the matrix's default and
-	// converged-bulk winner.  Phases 2-4 replace this body with static
-	// scene analysis + a render-time probe over the assembled `scene`
-	// (which is why `scene` is already threaded into the signature and
-	// resolution runs at the first render-time entry, not construction).
+	// Tier 0 — an explicit author pin always wins and skips static
+	// analysis entirely (and Phase 4's probe).
 	switch( mPinned ) {
-		case AutoIntegratorChoice::PT:   return AutoIntegratorChoice::PT;
-		case AutoIntegratorChoice::BDPT: return AutoIntegratorChoice::BDPT;
-		case AutoIntegratorChoice::VCM:  return AutoIntegratorChoice::VCM;
+		case AutoIntegratorChoice::PT:   mResolveReason = "author pin"; return AutoIntegratorChoice::PT;
+		case AutoIntegratorChoice::BDPT: mResolveReason = "author pin"; return AutoIntegratorChoice::BDPT;
+		case AutoIntegratorChoice::VCM:  mResolveReason = "author pin"; return AutoIntegratorChoice::VCM;
 		case AutoIntegratorChoice::Auto:
-		default:                         return AutoIntegratorChoice::PT;
+		default:                         break;   // -> Tier-1 static analysis
 	}
+
+	// Tier 1 — cheap, conservative static best-guess over the assembled
+	// scene (docs/AUTO_RASTERIZER_DESIGN.md §5).  Two early-out scans give
+	// the only two signals the routing keys on; everything else defaults
+	// to PT, the matrix's converged-bulk winner.  `scene` is the assembled
+	// scene because resolution runs at the first render-time entry (not at
+	// construction); Phase 4 replaces this body with the probe.
+	if( !scene ) {
+		// Defensive: the render path always passes a real scene, but a
+		// null here must not crash the dispatcher — fall back to PT.
+		mResolveReason = "no scene (defaulted)";
+		return AutoIntegratorChoice::PT;
+	}
+
+	const bool hasTransmissive = SceneHasTransmissiveMaterial( *scene );
+	const bool hasPositional   = SceneHasPositionalLight( *scene );
+
+	// VCM — only where refractive caustics are plausible: a transmissive /
+	// dielectric surface (glass / water / gem) AND a positional point/spot
+	// source to concentrate the refracted energy.  This is deliberately
+	// COARSE (a dielectric scene without strong caustics will still lean
+	// VCM here; the Phase-4 probe is what refines it back off VCM).  The
+	// positional-light requirement is what spares the dielectric-but-
+	// area-lit diffuse/indirect scenes — jewel_vault, cloister, alchemists,
+	// env_only, prism all carry glass yet have NO point light, so they
+	// correctly stay off VCM.  Validated against the Phase-1 matrix: this
+	// hits all four point/spot-lit dielectric-caustic scenes (pool_caustics,
+	// glass_pavilion, diamond_teapot, torus_chain) with no false positives.
+	if( hasTransmissive && hasPositional ) {
+		mResolveReason = "dielectric + positional light";
+		return AutoIntegratorChoice::VCM;
+	}
+
+	// Everything else -> PT.  Note in particular that the strong-indirect /
+	// BDPT regime is NOT routed here.  It is not statically separable from
+	// the PT-efficient glossy/diffuse bulk via cheap IScene signals: the
+	// BDPT-winning gi_spheres is byte-identical in every reachable signal
+	// to the PT-winning ggx_showcase (both enclosed, single area light, no
+	// point/env/glass/fog — they differ only in diffuse-vs-glossy
+	// reflectance, which IScene exposes no accessor for).  Routing on that
+	// would mis-send the converged glossy bulk to BDPT, the expensive
+	// mistake.  So BDPT detection is deferred to the Phase-4 σ²·T probe;
+	// the static tier conservatively defaults to PT.  (Full analysis +
+	// matrix hit/miss table in AUTO_RASTERIZER_DESIGN.md §5.)
+	mResolveReason = "no caustic/strong-indirect signal";
+	return AutoIntegratorChoice::PT;
 }
 
 IRasterizer* AutoRasterizer::BuildDelegate( AutoIntegratorChoice choice ) const
@@ -191,8 +297,9 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 			mDelegate, mProgressive.enabled, mProgressive.samplesPerPass );
 
 		GlobalLog()->PrintEx( eLog_Event,
-			"AutoRasterizer:: integrator pin '%s' -> delegating to '%s' rasterizer",
-			IntegratorName( mPinned ), IntegratorName( choice ) );
+			"AutoRasterizer:: integrator '%s' -> delegating to '%s' (%s)",
+			IntegratorName( mPinned ), IntegratorName( choice ),
+			mResolveReason.empty() ? "default" : mResolveReason.c_str() );
 	} );
 }
 

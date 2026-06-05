@@ -309,6 +309,109 @@ static const char* kAutoAuto =
 static const char* kAutoUnset =
 	"auto_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 
+// --------------------------------------------------------------------
+// Phase-2 fixtures.  Raw-string scene fragments (real tabs / newlines)
+// composed into bodies below to toggle the two routing signals the
+// static tier reads: "transmissive material present" and "positional
+// (point/spot/omni) light present".
+// --------------------------------------------------------------------
+
+// A clear glass sphere -> a transmissive (CouldLightPassThrough) material.
+// Append to a body to add the "dielectric present" signal.
+static const char* kGlassSphere = R"SCENE(
+uniformcolor_painter
+{
+	name pnt_glasstau
+	color 1.0 1.0 1.0
+}
+dielectric_material
+{
+	name mat_glass
+	tau 0.9999
+	ior 1.5
+}
+sphere_geometry
+{
+	name glassball
+	radius 0.4
+}
+standard_object
+{
+	name obj_glass
+	geometry glassball
+	position 0.0 0.0 0.5
+	material mat_glass
+}
+)SCENE";
+
+// Same diffuse receiver + mesh AREA emitter as kSceneCommon, but with NO
+// omni light -> lit purely by the area emitter (no positional delta
+// light).  A complete renderable body on its own.
+static const char* kSceneAreaLitOnly = R"SCENE(
+film
+{
+	width 32
+	height 32
+}
+pinhole_camera
+{
+	location 0 0 3.5
+	lookat 0 0 0
+	up 0 1 0
+	fov 30.0
+}
+uniformcolor_painter
+{
+	name pnt_albedo
+	color 0.5 0.5 0.5
+}
+lambertian_material
+{
+	name mat_diffuse
+	reflectance pnt_albedo
+}
+clippedplane_geometry
+{
+	name quad
+	pta -1 -1 0
+	ptb 1 -1 0
+	ptc 1 1 0
+	ptd -1 1 0
+}
+standard_object
+{
+	name obj_quad
+	geometry quad
+	material mat_diffuse
+}
+uniformcolor_painter
+{
+	name pnt_emit
+	color 1.0 1.0 1.0
+}
+lambertian_luminaire_material
+{
+	name mat_emit
+	exitance pnt_emit
+	scale 20.0
+	material none
+}
+clippedplane_geometry
+{
+	name quad_emit
+	pta -0.5 0.5 4.0
+	ptb 0.5 0.5 4.0
+	ptc 0.5 -0.5 4.0
+	ptd -0.5 -0.5 4.0
+}
+standard_object
+{
+	name obj_emit
+	geometry quad_emit
+	material mat_emit
+}
+)SCENE";
+
 static const double kMeanTol  = 0.08;
 static const double kP99Tol   = 0.30;
 static const double kMaxTol   = 1.50;
@@ -384,6 +487,43 @@ static void CheckDelegation(
 		+ std::to_string(int(kMaxTol*100)) + "x of ref: " + label );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Phase-2 static-routing harness: render `body` under an auto_rasterizer
+// (integrator auto/unset) and assert the dispatcher RESOLVED to the
+// expected integrator.  Asserts the routing decision, not pixels — the
+// static tier's job is the choice (PT/BDPT/VCM all converge to the same
+// image, so a radiance check could not tell a mis-route apart).
+//////////////////////////////////////////////////////////////////////
+static ImageStats RenderSceneBody( const char* rasterChunk, const std::string& body, const char* tag )
+{
+	const std::string scene = std::string("RISE ASCII SCENE 6\n") + kShader + rasterChunk + body;
+	const std::string p = WriteSceneToTempFile( scene.c_str(), tag );
+	if( p.empty() ) {
+		ImageStats s{}; return s;
+	}
+	const ImageStats s = RenderAndComputeStats( p.c_str() );
+	std::remove( p.c_str() );
+	return s;
+}
+
+static void CheckStaticRoute(
+	const char* label,
+	const char* autoChunk,
+	const std::string& body,
+	const char* tag,
+	AutoIntegratorChoice expected )
+{
+	std::cout << "Testing auto_rasterizer static routing: " << label << std::endl;
+	const ImageStats a = RenderSceneBody( autoChunk, body, tag );
+	PrintStats( "auto", a );
+	Check( a.valid, std::string("render produced output: ") + label );
+	if( !a.valid ) return;
+	Check( a.wasAuto, std::string("active rasterizer is an AutoRasterizer: ") + label );
+	const bool ok = ( a.resolved == expected );
+	Check( ok, std::string("resolved to '") + ChoiceName(expected)
+		+ "' (got '" + ChoiceName(a.resolved) + "'): " + label );
+}
+
 int main()
 {
 	std::cout << "=== AutoRasterizerTest ===" << std::endl;
@@ -397,6 +537,40 @@ int main()
 	// in Phase 1 (Tier-0 selection), so both must match pathtracing_pel.
 	CheckDelegation( "integrator auto  -> PT", kAutoAuto,  "auto_auto",  kRefPT, "ref_pt2", AutoIntegratorChoice::PT );
 	CheckDelegation( "integrator unset -> PT", kAutoUnset, "auto_unset", kRefPT, "ref_pt3", AutoIntegratorChoice::PT );
+
+	// --- Phase 2: Tier-1 static best-guess (integrator auto, no pin) ---
+	// The dispatcher introspects the assembled scene: a transmissive
+	// material + a positional point/spot light -> VCM (caustic-prone);
+	// everything else -> PT (the conservative default).  See
+	// docs/AUTO_RASTERIZER_DESIGN.md §5.
+	std::cout << std::endl;
+	std::cout << "--- Phase 2: static best-guess routing ---" << std::endl;
+
+	// (a) Plain diffuse (point + area lit, no dielectric) -> PT.
+	CheckStaticRoute( "diffuse + point light -> PT",
+		kAutoAuto, kSceneCommon, "p2_diffuse", AutoIntegratorChoice::PT );
+
+	// (b) Dielectric ball + positional point light -> caustic-prone -> VCM.
+	CheckStaticRoute( "dielectric + point light -> VCM",
+		kAutoAuto, std::string(kSceneCommon) + kGlassSphere, "p2_vcm", AutoIntegratorChoice::VCM );
+
+	// (c) Dielectric but lit only by an area emitter (no positional light)
+	//     -> PT.  Guards that the positional-light requirement spares
+	//     glass-but-not-caustic scenes (the jewel_vault / cloister /
+	//     alchemists class, which carry glass yet have no point light)
+	//     from VCM's cost.
+	CheckStaticRoute( "dielectric, area-lit only -> PT",
+		kAutoAuto, std::string(kSceneAreaLitOnly) + kGlassSphere, "p2_diel_nopos", AutoIntegratorChoice::PT );
+
+	// (d) Strong-indirect, purely area-lit (a gi_spheres analog) -> PT in
+	//     the static tier.  BDPT is NOT statically separable from the
+	//     PT-efficient glossy/diffuse bulk (design §5: gi_spheres is
+	//     byte-identical in cheap signals to the PT-winning ggx_showcase);
+	//     the Phase-4 probe is what would pick BDPT.  Asserting PT
+	//     locks the conservative behavior.  (BDPT via an explicit pin is
+	//     covered by the delegation test above.)
+	CheckStaticRoute( "strong-indirect area-lit -> PT (probe picks BDPT)",
+		kAutoAuto, kSceneAreaLitOnly, "p2_strongind", AutoIntegratorChoice::PT );
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

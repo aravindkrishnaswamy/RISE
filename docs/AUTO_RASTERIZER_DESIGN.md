@@ -177,8 +177,11 @@ are the documented later add for power users.
   detection. Spectral sibling (`auto_spectral_rasterizer`) deferred to **Phase 1b**
   (§3.1). Round-trip persists the pin in the rasterizer snapshot; the UI "Auto"
   selector + introspection is Phase 7.
-- **Phase 2 — Tier-1 static best-guess.** Implement the heuristic selection in the
-  shell; validate its picks against the matrix's known per-scene verdicts.
+- **Phase 2 — Tier-1 static best-guess.** ✅ **DONE (2026-06-04).** Implemented
+  the heuristic in `AutoRasterizer::SelectIntegrator(const IScene*)` and validated
+  its picks against the matrix's per-scene verdicts. Full outcome — the
+  introspection signals used, the one-paragraph rule, why BDPT is *not* routed
+  statically, and the 18-scene hit/miss table — in **§5.1** below.
 - **Phase 3 — Probe-cost EXPERIMENT (the GATE).** Before building the probe:
   measure a low-spp sparse-tile probe's cost across a *variety* of scenes
   (diffuse/glossy/caustic/volume/spectral) as a fraction of the full render
@@ -189,6 +192,97 @@ are the documented later add for power users.
   to the shell as the backup/override to the static guess.
 
 ---
+
+### 5.1 Phase-2 outcome — Tier-1 static best-guess (2026-06-04, implemented)
+
+**Status:** ✅ implemented in `AutoRasterizer::SelectIntegrator(const IScene*)`
+([src/Library/Rendering/AutoRasterizer.cpp](../src/Library/Rendering/AutoRasterizer.cpp));
+tested in [tests/AutoRasterizerTest.cpp](../tests/AutoRasterizerTest.cpp). Pel path
+only (the `auto_spectral_rasterizer` sibling is still Phase-1b).
+
+**Introspection signals — what the assembled `IScene` cheaply exposes.** Selection
+runs at the first render-time entry given a `const IScene*`. One early-out object
+enumeration plus a light-list walk yield everything the rule reads:
+
+| signal | source | cost |
+|---|---|---|
+| transmissive / dielectric material present | `IMaterial::CouldLightPassThrough()` over `GetObjects()->EnumerateObjects` (early-out) | O(objects), stops at first hit |
+| positional (point/spot/omni) light present | `ILight::IsPositionalLight()` over `GetLights()->getLights()` | O(lights), tiny |
+| _(reachable, not yet routed on)_ area/mesh emitter | object `IMaterial::GetEmitter() != null` | O(objects) |
+| _(reachable, not yet routed on)_ env-IBL | `IScene::GetGlobalRadianceMap() != null` | O(1) |
+| _(reachable, not yet routed on)_ participating media | `GetGlobalMedium()` / per-object `GetInteriorMedium()` | O(1) / O(objects) |
+
+**NOT cheaply reachable** (documented for the Phase-4 probe): glossy / roughness
+coverage — there is **no accessor** on `IMaterial` or `IBSDF`, so it would need a
+brittle `dynamic_cast` chain over concrete material classes — and a robust
+enclosed-vs-open geometry test. Per the §"Stop rule", these are left to the probe.
+
+**The rule (one paragraph).** Tier-0 author pin wins and skips analysis. Otherwise
+route **VCM** iff a transmissive/dielectric surface **and** a positional point/spot
+light are *both* present — the physical precondition for a concentrated refractive
+caustic. This is deliberately coarse (a dielectric scene with no real caustic still
+leans VCM here; the Phase-4 probe refines it back off). **Everything else → PT**,
+the matrix's converged-bulk winner. The requirement for a *positional* light is what
+does the discriminating work: it spares the dielectric-but-area-lit scenes
+(`jewel_vault`, `cloister`, `alchemists`, `env_only`, `prism_dispersion` — all carry
+glass yet have no point light) from ever paying VCM's cost.
+
+**Why BDPT is not routed statically.** The BDPT-vs-PT boundary is a wall-clock
+efficiency (σ²·T) / indirect-transport-ratio question, not a structural one — and
+the two decisive matrix scenes prove static analysis cannot see it. `gi_spheres`
+(BDPT wins 56×) and `ggx_showcase` (PT wins) are **byte-identical in every
+cheaply-reachable signal**: both an enclosed Cornell-style box lit by a single area
+emitter, with no point/env/glass/fog. They differ *only* in surface reflectance —
+`gi_spheres` is diffuse interreflection, `ggx_showcase` is glossy metal — which
+`IScene` exposes no accessor for, and the relationship is **inverted from
+intuition** (the diffuse scene wins BDPT; the glossy scene wins PT). Any static
+signal that sent `gi_spheres`→BDPT would also send `ggx_showcase`→BDPT, mis-routing
+the converged glossy bulk to BDPT's 3–7× per-sample cost — the expensive mistake the
+chip names. So BDPT detection is deferred to the Phase-4 σ²·T probe; the static tier
+conservatively defaults the regime to PT (which always converges). This is the
+§"Stop rule" applied as written, and was confirmed as the chosen policy.
+
+**Matrix accuracy — heuristic pick vs the Phase-1 §5 winner (all 18 scenes).**
+Signals read directly from the scene files.
+
+| scene | transmissive? | positional light? | heuristic | matrix winner | result |
+|---|---|---|---|---|---|
+| `jewel_vault` | yes | no | **PT** | PT | ✅ hit |
+| `cloister` | yes | no | **PT** | PT | ✅ hit |
+| `ggx_showcase` | no | no | **PT** | PT | ✅ hit |
+| `showroom` | no | yes (omni+dir) | **PT** | PT | ✅ hit |
+| `corridor_100lights` | no | yes (100 omni) | **PT** | PT | ✅ hit |
+| `homogeneous_fog` | no | no | **PT** | PT (σ²·T) | ✅ hit |
+| `env_fog` | no | no | **PT** | PT | ✅ hit |
+| `env_only` | yes | no | **PT** | PT | ✅ hit — glass, but no point light → correctly *not* VCM |
+| `prism_dispersion` | yes | no | **PT** | PT | ✅ hit — glass, but no point light → correctly *not* VCM |
+| `pool_caustics` | yes | yes (2 spot) | **VCM** | VCM | ✅ hit |
+| `glass_pavilion` | yes | yes (2 omni) | **VCM** | VCM (intent) | ✅ hit |
+| `diamond_teapot` | yes | yes (5 spot) | **VCM** | VCM | ✅ hit |
+| `torus_chain` | yes | yes (1 spot) | **VCM** | VCM (RMSE) | ✅ hit |
+| `gi_spheres` | no | no | **PT** | BDPT | ⚠ miss → probe (held on safe PT) |
+| `alchemists` | yes | no | **PT** | BDPT | ⚠ miss → probe (held on safe PT) |
+| `env_mesh` | no | no | **PT** | BDPT (σ²·T) / PT (RMSE) | ◑ PT is the RMSE winner & only 4× off — safe env call (§9) |
+| `sculptors_studio` | no | yes (omni+spot) | **PT** | VCM (σ²·T) | ◑ PT is the converged reference; the VCM σ²·T "win" is an artifact of a since-fixed PT camera-firefly bug (baselines §7) |
+| `spectral_caustic` | yes | no | **PT** | VCM | ⚠ miss → probe + spectral sibling (area-lit dielectric caustic, no point light; also spectral) |
+
+**13/18 exact hits, and 0 false routes to BDPT/VCM.** Every one of the chip's "clear
+cases" is correct: diffuse / glossy-metal / many-light → PT (`jewel_vault`,
+`cloister`, `ggx_showcase`, `showroom`, `corridor_100lights`) and the dielectric-
+caustic trio → VCM (`glass_pavilion`, `pool_caustics`, `diamond_teapot`). All five
+non-hits fail in the **safe direction** — a scene that *could* have used BDPT/VCM is
+held on PT (which always converges), never the expensive over-route. Two are BDPT
+(not statically separable → probe), one is an area-lit/spectral dielectric caustic
+(→ probe + spectral sibling), and two (`env_mesh`, `sculptors_studio`) are
+σ²·T-marginal where PT is the converged / RMSE-safe choice anyway.
+
+**What the Phase-4 probe must cover (the static tier provably can't):** (1) the
+BDPT-vs-PT σ²·T call *within* the converged bulk (the `gi_spheres` / `alchemists` /
+`env_mesh` class, indistinguishable from PT-efficient glossy/diffuse scenes
+statically); (2) refining "dielectric + point light → VCM" back off VCM when the
+dielectric carries no significant caustic energy; (3) the area-lit / spectral
+dielectric-caustic case (`spectral_caustic`) that has no positional light to trip
+the static VCM signal.
 
 ## 6. Probe-cost experiment design (Phase 3 — the gate)
 
