@@ -172,6 +172,22 @@ namespace
 		return ( n & 1 ) ? v[n / 2] : 0.5 * ( v[n / 2 - 1] + v[n / 2] );
 	}
 
+	//! Mean of the finite luminance samples — the total-energy proxy behind
+	//! the caustic transport-reach gate (the mean-lum VCM/PT ratio).  A real
+	//! refractive caustic is energy PT structurally cannot reach, so VCM's
+	//! mean far exceeds PT's; a converging dielectric scene (jewel_vault) has
+	//! VCM-mean ≈ PT-mean.  Skips non-finite samples (same convention as the
+	//! median).
+	double MeanLuminance( const std::vector<double>& lum )
+	{
+		double accum = 0.0;
+		size_t counted = 0;
+		for( double x : lum ) {
+			if( std::isfinite( x ) ) { accum += x; ++counted; }
+		}
+		return counted ? accum / double( counted ) : 0.0;
+	}
+
 	//! Mean per-pixel sample variance across K probe sub-renders
 	//! (unbiased, ddof=1) — the σ² in σ²·T.  `frames` are the
 	//! per-render luminance vectors (all the same length).  Non-finite
@@ -368,6 +384,11 @@ AutoRasterizer::ProbeConfig AutoRasterizer::ReadProbeConfig() const
 	// ample pixels for a stable median / per-pixel σ².
 	cfg.scale           = static_cast<unsigned int>( std::max( 1, opt.ReadInt( "auto_probe_scale", 4 ) ) );
 	cfg.tauCaustic      = opt.ReadDouble( "auto_probe_tau_caustic", 1.30 );
+	// tau_reach is the transport-reach (mean-lum VCM/PT) gate that rejects the
+	// jewel_vault over-fire; default 1.50 sits in the measured 1.12|1.88 gap
+	// between the converging-dielectric class and the real refractive caustics
+	// (AUTO_RASTERIZER_DESIGN.md §6.2).
+	cfg.tauReach        = opt.ReadDouble( "auto_probe_tau_reach", 1.50 );
 	cfg.tauBdpt         = opt.ReadDouble( "auto_probe_tau_bdpt", 1.35 );
 	cfg.varianceRenders = static_cast<unsigned int>( std::max( 2, opt.ReadInt( "auto_probe_variance_renders", 2 ) ) );
 	cfg.activationSpp   = static_cast<unsigned int>( std::max( 1, opt.ReadInt( "auto_probe_activation_spp", 256 ) ) );
@@ -381,6 +402,7 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 	ProbeResult out;
 	out.valid = false;
 	out.medianLum = 0.0;
+	out.meanLum = 0.0;
 	out.meanVar = 0.0;
 	out.rasSeconds = 0.0;
 
@@ -473,6 +495,7 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 	if( anyValid ) {
 		out.valid      = true;
 		out.medianLum  = MedianLuminance( frames.front() );
+		out.meanLum    = MeanLuminance( frames.front() );
 		out.meanVar    = MeanPerPixelVariance( frames );
 		out.rasSeconds = totalSeconds;
 	}
@@ -505,20 +528,59 @@ AutoIntegratorChoice AutoRasterizer::RunProbe(
 	// luminance via the documented +63..76% env-bias, indistinguishable from
 	// caustic gain to a luminance probe, so the env gate is the only clean
 	// discriminator (a τ can't separate env_only 1.67× from
-	// spectral_caustic 1.81×).  Signal is MEDIAN luminance (PT/BDPT
-	// fireflies wreck the mean — median is firefly-robust). ---
+	// spectral_caustic 1.81×).  Primary signal is MEDIAN luminance (PT/BDPT
+	// fireflies wreck the mean — median is firefly-robust); a second MEAN-
+	// luminance transport-reach gate then rejects the jewel_vault over-fire
+	// (§6.2 — see the two-gate comment below). ---
 	if( dielectric && !envIbl ) {
 		const ProbeResult pt  = ProbeCandidate( scene, AutoIntegratorChoice::PT,  cfg, /*needVariance*/ false );
 		const ProbeResult vcm = ProbeCandidate( scene, AutoIntegratorChoice::VCM, cfg, /*needVariance*/ false );
 		account( pt, false );
 		account( vcm, false );
 		if( pt.valid && vcm.valid && pt.medianLum > 0.0 ) {
-			const double ratio = vcm.medianLum / pt.medianLum;
-			if( ratio > cfg.tauCaustic ) {
+			// Two-gate caustic test (AUTO_RASTERIZER_DESIGN.md §6.2 — the
+			// jewel_vault over-fire fix).  BOTH must hold to route VCM:
+			//  (1) MEDIAN-ratio gate (firefly-robust) — VCM's TYPICAL pixel is
+			//      brighter than PT's.  This is the original trigger, but at probe
+			//      spp it ALSO fires on a dielectric-but-CONVERGING scene
+			//      (jewel_vault): PT's hard 3+-bounce indirect is transiently
+			//      under-converged so its MEDIAN pixel reads dark — even though PT
+			//      reaches the SAME total energy VCM does.  Median alone cannot
+			//      tell that apart from a real caustic (jewel_vault 2.5-3.1x vs
+			//      glass_pavilion 2.0-2.3x — no tau separates them).
+			//  (2) MEAN-ratio (transport-reach) gate — the discriminator.  A REAL
+			//      refractive caustic is energy PT structurally CANNOT reach, so
+			//      VCM's MEAN luminance (= total energy) far exceeds PT's; a
+			//      converging scene already has PT-mean ~= VCM-mean (ratio ~1).
+			//      Measured at the real probe config (scale 4, spp 4, 3 trials):
+			//      over-fire {jewel_vault 0.96-1.12, crystal_garden 0.67-0.69,
+			//      cloister 0.88-0.99} vs real-caustic {diamond_teapot 1.88-1.95,
+			//      glass_pavilion 20-32} — a clean 1.12|1.88 gap, tau_reach=1.50.
+			//      meanLum is read from the SAME single render the median gate
+			//      already uses, so this gate adds NO probe render (cost
+			//      unchanged).  (NB the Phase-3-guessed "PT dark-and-flailing ->
+			//      high PT variance/sigma2T" signal is INVERTED at probe spp:
+			//      jewel_vault is the NOISIEST PT there, not the quietest, so PT
+			//      sigma2T does NOT separate — the energy-reach mean ratio does.)
+			const double medRatio  = vcm.medianLum / pt.medianLum;
+			const double meanRatio = ( pt.meanLum > 0.0 ) ? ( vcm.meanLum / pt.meanLum ) : 0.0;
+			if( medRatio > cfg.tauCaustic && meanRatio > cfg.tauReach ) {
 				std::snprintf( reason, sizeof(reason),
-					"probe -> vcm: median ratio %.2fx > %.2f", ratio, cfg.tauCaustic );
+					"probe -> vcm: median %.2fx > %.2f and reach %.2fx > %.2f",
+					medRatio, cfg.tauCaustic, meanRatio, cfg.tauReach );
 				mResolveReason = reason;
 				return finish( AutoIntegratorChoice::VCM );
+			}
+			if( medRatio > cfg.tauCaustic ) {
+				// Median fired but PT reaches the same total energy as VCM -> this
+				// is NOT a real caustic (the jewel_vault class), just a slow-to-
+				// converge dielectric scene.  Don't over-route VCM; fall through
+				// to the general BDPT-vs-PT check below (which correctly keeps
+				// jewel_vault on PT via its sigma2T win).
+				GlobalLog()->PrintEx( eLog_Event,
+					"AutoRasterizer:: caustic median %.2fx fired but reach %.2fx <= %.2f"
+					" (PT reaches the energy) -> not a caustic, fall through to BDPT check",
+					medRatio, meanRatio, cfg.tauReach );
 			}
 		}
 	}

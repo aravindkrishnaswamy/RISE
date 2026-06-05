@@ -710,6 +710,7 @@ int main()
 		    << "auto_probe_spp 4\n"
 		    << "auto_probe_scale 4\n"          // §6.2 default (quarter-res)
 		    << "auto_probe_tau_caustic 1.30\n"
+		    << "auto_probe_tau_reach 1.50\n"   // §6.2 transport-reach gate (jewel_vault over-fire fix)
 		    << "auto_probe_tau_bdpt 1.35\n"
 		    << "auto_probe_variance_renders 2\n";
 		ofs.close();
@@ -774,7 +775,9 @@ int main()
 	// real in-process probe (see docs/AUTO_RASTERIZER_DESIGN.md §6.2):
 	//   gi_spheres     -> BDPT  (σ²·T ~480× @128px — the diffuse-GI blind spot)
 	//   ggx_showcase   -> PT    (σ²·T ~0.26× — the glossy blind-spot partner)
-	//   glass_pavilion -> VCM   (median-lum ~2.3× — a real refractive caustic)
+	//   glass_pavilion -> VCM   (median-lum ~2.3× AND reach ~20-32× — a real refractive caustic)
+	//   jewel_vault    -> PT    (median-lum ~2.6-3.1× fires, but reach ~1.0× < 1.50 -> NOT a
+	//                            caustic; the over-fire fixed by the transport-reach gate, §6.2)
 	//   env_only       -> PT    (env-IBL gate kills the +63% VCM env-bias confound)
 	//   corridor       -> PT    (non-dielectric many-light -> BDPT check -> PT)
 	std::cout << std::endl;
@@ -784,8 +787,15 @@ int main()
 		"scenes/FeatureBased/Combined/gi_spheres.RISEscene", "p4_gi", AutoIntegratorChoice::BDPT );
 	CheckProbeRoute( "ggx_showcase -> PT (glossy blind-spot partner)",
 		"scenes/FeatureBased/Materials/ggx_showcase.RISEscene", "p4_ggx", AutoIntegratorChoice::PT );
-	CheckProbeRoute( "glass_pavilion -> VCM (refractive caustic, median-lum)",
+	CheckProbeRoute( "glass_pavilion -> VCM (refractive caustic: median AND reach gates)",
 		"scenes/FeatureBased/Combined/glass_pavilion.RISEscene", "p4_glass", AutoIntegratorChoice::VCM );
+	// Regression lock for the §6.2 jewel_vault over-fire: a dielectric + area-lit
+	// scene whose caustic MEDIAN gate fires at probe spp (PT's hard indirect is
+	// transiently under-converged) but whose transport-reach (mean-lum) gate does
+	// NOT — PT reaches the same energy VCM does, so it is NOT a real caustic and
+	// must route PT (its σ²·T winner), not VCM.  Pre-fix this resolved to VCM.
+	CheckProbeRoute( "jewel_vault -> PT (over-fire rejected by transport-reach gate)",
+		"scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene", "p4_jewel", AutoIntegratorChoice::PT );
 	CheckProbeRoute( "env_only -> PT (env-IBL gate rejects VCM env-bias)",
 		"scenes/Tests/UnifiedLighting/envmap_nee_test_pt.RISEscene", "p4_env", AutoIntegratorChoice::PT );
 	CheckProbeRoute( "corridor_100lights -> PT (non-dielectric many-light)",

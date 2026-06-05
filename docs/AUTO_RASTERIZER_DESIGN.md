@@ -449,14 +449,15 @@ renders at its own spp), so the same trials give both halves of the gate.
 | ggx_showcase | bdpt | pt | **pt pt pt** ✅ | 0.66 / 0.16 / 0.05 | 6.2 / 1.3 / 0.4 | 0.3 |
 | glass_pavilion | caustic | vcm | **vcm vcm vcm** ✅ | 0.46 / 0.12 / 0.04 | 0.5 / 0.1 / 0.0 | 0.0 |
 | env_only | caustic | pt | **pt pt pt** ✅ (env-gate) | 0.11 / 0.03 / 0.01 | 4.5 / 1.1 / 0.3 | 0.3 |
-| jewel_vault | caustic | pt | **vcm vcm vcm** ⚠ over-fire | 0.70 / 0.18 / 0.06 | 0.6 / 0.2 / 0.0 | 0.0 |
+| jewel_vault | caustic | pt | **vcm vcm vcm** ⚠ over-fire → **now pt** (§6.2.1) | 0.70 / 0.18 / 0.06 | 0.6 / 0.2 / 0.0 | 0.0 |
 | homogeneous_fog | bdpt | pt | **pt pt pt** ✅ | 8.0 / 2.0 / 0.5 | 31.7 / 7.9 / 1.9 | 0.5 |
 
 (All cells K=3 trials; "decision" is the modal pick — **no cell flipped across
 trials at any scale**. Probe seconds = summed candidate-render wall time the probe
 logs. cost% = probe-s / extrapolated full-render-s at that spp.)
 
-**Headline:** **5/6 correct** (the 6th is the `jewel_vault` over-fire below),
+**Headline:** **5/6 correct as first shipped** (the 6th, the `jewel_vault`
+over-fire, is now **fixed** by the transport-reach gate in §6.2.1 → **6/6**),
 **zero flips at any scale**, and the real in-process cost is **far below the
 emulation**. gi_spheres is **2.4 %@256 half-res vs the emulation's 3 %** (which
 already assumed half-res); more decisively, the emulation's *worst case*
@@ -502,7 +503,7 @@ output), no rasterizer-lifecycle surgery, and the candidate renders provably do
 
 #### Two findings the Phase-3 emulation could not surface
 
-1. **`jewel_vault` over-fire (new residual).** The emulation hand-classified
+1. **`jewel_vault` over-fire — now FIXED (§6.2.1).** The emulation hand-classified
    `jewel_vault` as non-dielectric and never rendered VCM for it. The real probe
    sees it *is* dielectric (glass gems) + area-lit + no env, so the caustic check
    fires and **routes it to VCM (median ~2.3–2.9×)** — but its matrix winner is PT.
@@ -511,16 +512,88 @@ output), no rasterizer-lifecycle surgery, and the candidate renders provably do
    VCM reads brighter — indistinguishable by median alone from a true caustic
    (`jewel_vault` 2.9× actually *exceeds* `spectral_caustic` 1.8×, so no τ separates
    them). It is a **performance** mis-route, not a correctness bug (VCM is unbiased
-   here, just slower than PT-optimal); mitigation is an author PT pin. Dropping the
-   caustic check's "no positional light" reach would re-introduce the
-   `spectral_caustic` blind spot, so the gate is kept as designed and the residual
-   documented.
+   here, just slower than PT-optimal). **Closed 2026-06-05 by a second
+   transport-reach gate (§6.2.1)** — no author pin needed; the Phase-4 sweep is now
+   6/6.
 2. **Spectral caustics need the Phase-1b spectral sibling.** `auto_rasterizer` is
    Pel-only; the real probe routes `spectral_caustic` → **PT**, because its
    *dispersive* caustic is spectral-only and its RGB projection carries no strong
    caustic (so PT is in fact correct for the Pel domain). The area-lit-caustic→VCM
    capability is validated on the RGB `glass_pavilion` instead; closing
    `spectral_caustic` is the `auto_spectral_rasterizer` follow-up (§3.1).
+
+---
+
+### 6.2.1 jewel_vault over-fire FIXED — the transport-reach gate (2026-06-05)
+
+**Status:** ✅ the §6.2 over-fire is closed; the Phase-4 sweep is now **6/6**. The
+caustic branch gains one cheap second gate. Integrators + concrete rasterizers
+remain **byte-identical** to HEAD — this is pure dispatcher-decision logic (only
+`src/Library/Rendering/AutoRasterizer.{h,cpp}` + the test changed). Repro harness:
+`var_test/jewel_discriminator.py` (gitignored).
+
+**The first-guess discriminator was REFUTED by measurement.** The natural
+hypothesis — "a real caustic leaves PT dark-and-*flailing*, so gate the VCM route
+on high PT per-pixel variance / σ²·T" — is **INVERTED at the probe config**.
+Measured in-process at scale 4 / spp 4 (3 trials each):
+
+| scene | role | medRatio (gate 1) | **meanRatio (gate 2)** | PT σ²·T | PT σ/μ |
+|---|---|---|---|---|---|
+| `jewel_vault` | PT (over-fire) | 2.5–3.1 ✓fires | **0.96–1.12** | 6–8 | ~330% |
+| `crystal_garden` | PT (non-caustic) | 1.5–1.6 ✓fires | **0.67–0.69** | 0.05 | ~155% |
+| `cloister` | PT (non-caustic) | ~1.1 (no fire) | 0.88–0.99 | 0.005 | ~88% |
+| `diamond_teapot` | VCM (caustic) | 4.6–4.8 ✓fires | **1.88–1.95** | 0.004 | ~84% |
+| `glass_pavilion` | VCM (caustic) | 2.0–2.3 ✓fires | **20–32** | 0.0015 | ~96% |
+| `pool_caustics` | VCM (caustic) | <1.30 (no fire) | — | — | — |
+
+At probe spp `jewel_vault` is the **NOISIEST** PT in the set (σ²·T 6–8, σ/μ 330%),
+not the quietest: its bright, hard 3+-bounce indirect is wildly under-converged at
+4 spp, while real-caustic PT renders quietly **dark** (it *misses* the energy
+rather than fireflying). The matrix's production-spp intuition (glass PT σ/μ 3675%
+vs jewel 31%) does **not** transfer to the probe's low-spp/low-res regime — so PT
+variance/σ²·T **cannot** separate the over-fire from a real caustic.
+
+**The discriminator that works: the MEAN-luminance (transport-reach) ratio
+`meanVCM / meanPT`.** It realizes the *correct concept* ("a real caustic is energy
+PT cannot reach") via the quantity that actually carries the signal at probe
+config: a real refractive caustic makes VCM's MEAN luminance (= total energy) far
+exceed PT's, while a converging dielectric scene already has PT-mean ≈ VCM-mean.
+The over-fire class {jewel 0.96–1.12, crystal 0.67–0.69, cloister 0.88–0.99} and
+the real caustics {diamond 1.88–1.95, glass 20–32} separate with a clean
+**1.12 | 1.88** gap → **τ_reach = 1.50** (1.35× reject margin on jewel, 1.25×
+accept margin on the tightest real caustic, diamond; **zero flips** across 3
+trials). `meanLum` is read from the **same single render the median gate already
+does**, so the gate is **FREE** — no extra probe render; the caustic-branch cost
+is unchanged.
+
+**The fix.** Route VCM iff **both** gates hold: `medRatio > τ_caustic` (gate 1,
+the firefly-robust median trigger, unchanged) **AND** `meanRatio > τ_reach`
+(gate 2, the new transport-reach test). When the median fires but reach fails (the
+`jewel_vault` class — PT reaches the same total energy), fall through to the
+general BDPT-vs-PT check, which correctly keeps `jewel_vault` on PT via its σ²·T
+win (verified end-to-end: `caustic median 2.95x fired but reach 0.66x <= 1.50 →
+fall through → sigma2T 0.21x <= 1.35 → pt`). New knob `auto_probe_tau_reach`
+(default 1.50, GlobalOptions-overridable).
+
+**Re-validated routing (probe config, post-fix, zero flips across 3 trials):**
+
+| scene | gate 1 (median) | gate 2 (reach) | route | verdict |
+|---|---|---|---|---|
+| `jewel_vault` | fires 2.5–3.1× | **fails ≈1.0×** | **PT** | ✅ fixed (was VCM) |
+| `glass_pavilion` | fires 2.0–2.3× | passes 20–32× | VCM | ✅ unbroken |
+| `diamond_teapot` | fires 4.6–4.8× | passes 1.9× | VCM | ✅ unbroken |
+| `crystal_garden` | fires 1.5–1.6× | fails 0.7× | PT | ✅ (bonus: was VCM) |
+| `pool_caustics` | no fire <1.30× | — | PT | ⚠ pre-existing residual* |
+| `cloister` / `env_only` / `gi_spheres` / `ggx_showcase` / `homogeneous_fog` | unchanged | | PT / PT / BDPT / PT / PT | ✅ all unaffected |
+
+*`pool_caustics` is a **separate, pre-existing** probe limitation, **not**
+introduced by this fix: its caustic is localized, so PT's MEDIAN pixel (the
+diffusely-lit pool) matches VCM's → the median gate never fires → it routes PT in
+**both** the baseline and the fix (byte-identical decision for pool). Catching a
+localized caustic whose PT goes *dark* would need an independent energy-reach
+trigger (the mean-ratio firing **without** the median gate) — a riskier change
+that discards the median gate's firefly-robustness; deferred as out of scope for
+the `jewel_vault` fix and documented here.
 
 ---
 

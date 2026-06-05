@@ -147,7 +147,8 @@ namespace RISE
 			{
 				unsigned int spp;				///< probe samples-per-pixel (default 4)
 				unsigned int scale;				///< resolution divisor: 2=half, 4=quarter, 8=eighth (default 4 — §6.2)
-				double       tauCaustic;		///< median-lum VCM/PT ratio -> VCM (default 1.30)
+				double       tauCaustic;		///< median-lum VCM/PT ratio gate 1/2 -> caustic candidate (default 1.30)
+				double       tauReach;			///< mean-lum VCM/PT (transport-reach) gate 2/2 -> VCM (default 1.50; rejects the jewel_vault over-fire)
 				double       tauBdpt;			///< σ²·T PT/BDPT ratio -> BDPT (default 1.35)
 				unsigned int varianceRenders;	///< sub-renders for the per-pixel σ² estimate (default 2)
 				unsigned int activationSpp;		///< production spp at/above which the probe runs (default from §6.2 sweep)
@@ -162,6 +163,7 @@ namespace RISE
 			{
 				bool   valid;
 				double medianLum;
+				double meanLum;		///< mean per-pixel luminance (the μ in σ/μ; brightness-normalizer for the PT-struggling discriminator)
 				double meanVar;
 				double rasSeconds;
 			};
@@ -182,11 +184,15 @@ namespace RISE
 			//! Read the probe tunables from GlobalOptions (Phase-3 defaults).
 			ProbeConfig ReadProbeConfig() const;
 
-			//! Tier-2 decision tree (AUTO_RASTERIZER_DESIGN.md §6.1).  Caustic
+			//! Tier-2 decision tree (AUTO_RASTERIZER_DESIGN.md §6.1/§6.2).  Caustic
 			//! check FIRST, short-circuited: only when (dielectric ∧ ¬env-IBL)
-			//! probe PT+VCM and route VCM iff median-lum(VCM)/median-lum(PT) >
-			//! τ_caustic.  Else the BDPT check: probe PT+BDPT and route BDPT
-			//! iff σ²·T(PT)/σ²·T(BDPT) > τ_bdpt, else PT.  Sets mResolveReason.
+			//! probe PT+VCM and route VCM iff BOTH the median gate
+			//! median-lum(VCM)/median-lum(PT) > τ_caustic AND the transport-reach
+			//! gate mean-lum(VCM)/mean-lum(PT) > τ_reach hold — the reach gate
+			//! rejects the jewel_vault over-fire (median fires on a converging
+			//! dielectric scene, but PT reaches the same total energy → not a real
+			//! caustic).  Else the BDPT check: probe PT+BDPT and route BDPT iff
+			//! σ²·T(PT)/σ²·T(BDPT) > τ_bdpt, else PT.  Sets mResolveReason.
 			AutoIntegratorChoice RunProbe(
 				const IScene* scene, const ProbeConfig& cfg,
 				bool dielectric, bool envIbl ) const;
