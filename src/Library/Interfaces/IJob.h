@@ -2034,7 +2034,8 @@ namespace RISE
 			const PathGuidingConfig& guidingConfig,					///< [in] Path guiding configuration
 			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
 			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
-			const ProgressiveConfig& progressiveConfig				///< [in] Progressive multi-pass rendering configuration
+			const ProgressiveConfig& progressiveConfig,				///< [in] Progressive multi-pass rendering configuration
+			const bool probeEnabled									///< [in] Enable the Tier-2 render-time probe (Phase 4; gated on activation-spp)
 			) = 0;
 
 		//! Sets the rasterizer to pure path tracing (Pel, bypasses shader ops)

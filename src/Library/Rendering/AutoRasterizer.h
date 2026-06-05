@@ -87,6 +87,7 @@ namespace RISE
 				const StabilityConfig& stabilityConfig,			///< [in] Production stability controls
 				const bool useZSobol,							///< [in] Z-order Sobol sampler toggle
 				const ProgressiveConfig& progressiveConfig,		///< [in] Progressive multi-pass configuration
+				const bool probeEnabled,						///< [in] Enable the Tier-2 render-time probe (Phase 4; gated on activation-spp)
 				FrameStore* frameStore							///< [in] Canonical FrameStore (may be null until Job pushes one)
 				);
 
@@ -128,27 +129,99 @@ namespace RISE
 			//! UI "Auto -> VCM" surfacing.
 			AutoIntegratorChoice ResolvedIntegrator() const { return mResolved; }
 
+			//! Total wall-clock seconds the Tier-2 probe spent rendering
+			//! candidate integrators (0 if the probe didn't run).  Exposed
+			//! so the §6.2 resolution/cost sweep can read the REAL in-process
+			//! probe cost directly instead of log-scraping.  Valid after the
+			//! first render-time entry.
+			double LastProbeSeconds() const { return mLastProbeSeconds; }
+			//! Number of candidate renders the probe issued (0 if it didn't run).
+			unsigned int LastProbeRenders() const { return mLastProbeRenders; }
+
 		private:
+			//! Render-time probe tunables.  Read from `GlobalOptions` at
+			//! selection time (so the Phase-4 resolution/cost sweep can
+			//! vary them without recompiling) with the Phase-3 experiment
+			//! values as defaults.  See AUTO_RASTERIZER_DESIGN.md §6.1.
+			struct ProbeConfig
+			{
+				unsigned int spp;				///< probe samples-per-pixel (default 4)
+				unsigned int scale;				///< resolution divisor: 2=half, 4=quarter, 8=eighth (default 4 — §6.2)
+				double       tauCaustic;		///< median-lum VCM/PT ratio -> VCM (default 1.30)
+				double       tauBdpt;			///< σ²·T PT/BDPT ratio -> BDPT (default 1.35)
+				unsigned int varianceRenders;	///< sub-renders for the per-pixel σ² estimate (default 2)
+				unsigned int activationSpp;		///< production spp at/above which the probe runs (default from §6.2 sweep)
+			};
+
+			//! One candidate's probe outcome.  `medianLum` is the
+			//! firefly-robust caustic signal (single render); `meanVar`
+			//! is the mean per-pixel cross-sub-render variance (needs
+			//! `varianceRenders >= 2`); `rasSeconds` is the summed
+			//! probe-render wall time (the T in σ²·T).
+			struct ProbeResult
+			{
+				bool   valid;
+				double medianLum;
+				double meanVar;
+				double rasSeconds;
+			};
+
 			//! Integrator selection.  Tier 0: an explicit author pin always
-			//! wins.  Tier 1 (Phase 2): a cheap, conservative static analysis
-			//! of the assembled `scene` — route VCM where refractive caustics
-			//! are plausible (a transmissive/dielectric surface AND a
-			//! positional point/spot source to concentrate the energy), and
-			//! default everything else to PT.  The strong-indirect / BDPT
-			//! regime is intentionally NOT routed here: it is not statically
-			//! separable from the PT-efficient glossy/diffuse bulk via cheap
-			//! IScene signals (see AUTO_RASTERIZER_DESIGN.md §5) and is left
-			//! to the Phase-4 probe.  Phase 4 replaces this body with the
-			//! render-time probe over `scene` (kept in the signature precisely
-			//! so that drop-in is a body change, not a surgery on call sites).
-			//! Sets `mResolveReason` to the one-line explanation logged at
-			//! resolution.
+			//! wins.  Tier 2 (Phase 4): when the probe is enabled and the
+			//! production sample count clears the activation-spp gate, run
+			//! the gated/short-circuited render-time probe over the
+			//! assembled `scene` (RunProbe) and take its verdict.  Tier 1
+			//! (Phase 2, the fallback when the probe is inactive): a cheap,
+			//! conservative static analysis — route VCM where refractive
+			//! caustics are plausible (a transmissive/dielectric surface AND
+			//! a positional point/spot source), default everything else to
+			//! PT.  Sets `mResolveReason` to the one-line explanation logged
+			//! at resolution.
 			AutoIntegratorChoice SelectIntegrator( const IScene* scene ) const;
 
+			//! Read the probe tunables from GlobalOptions (Phase-3 defaults).
+			ProbeConfig ReadProbeConfig() const;
+
+			//! Tier-2 decision tree (AUTO_RASTERIZER_DESIGN.md §6.1).  Caustic
+			//! check FIRST, short-circuited: only when (dielectric ∧ ¬env-IBL)
+			//! probe PT+VCM and route VCM iff median-lum(VCM)/median-lum(PT) >
+			//! τ_caustic.  Else the BDPT check: probe PT+BDPT and route BDPT
+			//! iff σ²·T(PT)/σ²·T(BDPT) > τ_bdpt, else PT.  Sets mResolveReason.
+			AutoIntegratorChoice RunProbe(
+				const IScene* scene, const ProbeConfig& cfg,
+				bool dielectric, bool envIbl ) const;
+
+			//! Probe one candidate integrator.  Renders it `1` time
+			//! (median-lum only, `needVariance=false`) or `cfg.varianceRenders`
+			//! times (for the per-pixel σ² estimate) at probe resolution +
+			//! probe spp, into a scratch (non-canonical) target, and folds the
+			//! read-back pixels into a ProbeResult.  Does NOT touch the real
+			//! FrameStore or the real delegate.
+			ProbeResult ProbeCandidate(
+				const IScene* scene, AutoIntegratorChoice choice,
+				const ProbeConfig& cfg, bool needVariance ) const;
+
 			//! Build the concrete delegate for `choice` using the stored
-			//! inputs + canonical per-integrator defaults.  Returns a
-			//! refcount-1 IRasterizer (caller owns), or null on failure.
+			//! inputs + canonical per-integrator defaults, with the canonical
+			//! sampler (`mSamples`) and FrameStore (`GetFrameStore()`).
+			//! Returns a refcount-1 IRasterizer (caller owns), or null.
 			IRasterizer* BuildDelegate( AutoIntegratorChoice choice ) const;
+
+			//! Build the concrete delegate for `choice` with explicit
+			//! sampler / FrameStore / denoise / guiding / adaptive overrides
+			//! — the probe passes a low-spp cloned sampler, a null FrameStore
+			//! (so a candidate render lands in the delegate's own internal
+			//! image, read back via a capturing output, and never disturbs
+			//! the canonical store), denoise OFF (the σ² signal lives in the
+			//! raw per-pixel noise that a denoiser would erase), and OFF
+			//! guiding/adaptive configs (no expensive training pass; uniform
+			//! spp so the probe cost + variance are well-defined).
+			IRasterizer* BuildDelegate(
+				AutoIntegratorChoice choice,
+				ISampling2D* samples, FrameStore* fs,
+				bool oidnDenoise,
+				const PathGuidingConfig& guiding,
+				const AdaptiveSamplingConfig& adaptive ) const;
 
 			//! Resolve + wire the delegate exactly once, at the first
 			//! render-time entry.  Replays the buffered output sinks /
@@ -180,6 +253,11 @@ namespace RISE
 			bool						mUseZSobol;
 			ProgressiveConfig			mProgressive;
 
+			// Tier-2 probe master enable (Phase 4).  The probe additionally
+			// requires the production sample count to clear the activation-spp
+			// gate; see ReadProbeConfig / SelectIntegrator.
+			bool						mProbeEnabled;
+
 			// Lazily-resolved delegate.  `mutable` because RasterizeScene
 			// (and its siblings) are `const` per the IRasterizer contract
 			// but are the genuine render-time entry where resolution must
@@ -188,6 +266,11 @@ namespace RISE
 			mutable IRasterizer*			mDelegate;
 			mutable AutoIntegratorChoice	mResolved;
 			mutable std::once_flag			mResolveOnce;
+
+			// Cost instrumentation for the §6.2 sweep (set by RunProbe; 0
+			// when the probe is inactive).
+			mutable double					mLastProbeSeconds;
+			mutable unsigned int			mLastProbeRenders;
 
 			// One-line, human-readable reason for the resolved choice
 			// (e.g. "dielectric + positional light"), set by

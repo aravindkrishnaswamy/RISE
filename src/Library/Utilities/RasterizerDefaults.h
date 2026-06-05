@@ -174,6 +174,16 @@ namespace RISE
 	struct AutoRasterizerDefaults : BaseRasterizerDefaults
 	{
 		AutoIntegratorChoice integrator = AutoIntegratorChoice::Auto;
+
+		//! Tier-2 render-time probe (Phase 4).  OFF by default: the
+		//! probe is a final-render tool (the Phase-3 gate found it
+		//! cheap only at production spp >= ~256), and shipping it
+		//! opt-in keeps the cheap preview / lower-tier paths free of
+		//! the probe tax.  When TRUE, the probe still only fires once
+		//! the production sample count clears the activation-spp gate
+		//! (GlobalOptions `auto_probe_activation_spp`); below it the
+		//! dispatcher falls back to the Tier-1 static best-guess.
+		bool probeEnabled = false;
 	};
 
 	//

@@ -7606,6 +7606,7 @@ namespace RISE
 					std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
 					unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
 					bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+					bool probeEnabled           = bag.GetBool(   "probe",          dflt.probeEnabled );
 					bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
 					OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
 					OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
@@ -7702,7 +7703,8 @@ namespace RISE
 						defaultshader.c_str(), radianceMapConfig,
 						pixelFilterConfig,
 						showLuminaires,
-						oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig );
+						oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig,
+						probeEnabled );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -7713,7 +7715,8 @@ namespace RISE
 						cd.description = "Auto-routing integrator dispatcher: delegates to PT/BDPT/VCM (Phase 1: author pin via `integrator`, else PT).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						AddBaseRasterizerParams( P, dflt );
-						{ auto& p = P(); p.name = "integrator"; p.kind = ValueKind::Enum; p.enumValues = {"auto","pt","bdpt","vcm"}; p.description = "Integrator selection: auto (Phase 1 -> PT) or an explicit pin (pt/bdpt/vcm)"; p.defaultValueHint = to_hint(dflt.integrator); }
+						{ auto& p = P(); p.name = "integrator"; p.kind = ValueKind::Enum; p.enumValues = {"auto","pt","bdpt","vcm"}; p.description = "Integrator selection: auto (dispatcher decides) or an explicit pin (pt/bdpt/vcm)"; p.defaultValueHint = to_hint(dflt.integrator); }
+						{ auto& p = P(); p.name = "probe"; p.kind = ValueKind::Bool; p.description = "Enable the Tier-2 render-time probe (Phase 4): a cheap reduced-res/low-spp pre-render of candidate integrators that picks per-scene (caustic median-lum -> VCM; strong-indirect σ²·T -> BDPT; else PT).  Only fires once production `samples` clears the activation-spp gate (GlobalOptions auto_probe_activation_spp); below it the dispatcher uses the Tier-1 static best-guess.  Default off — the probe is a final-render tool."; p.defaultValueHint = dflt.probeEnabled ? "TRUE" : "FALSE"; }
 						AddPixelFilterParams( P );
 						AddRadianceMapParams( P );
 						AddPathGuidingParams( P );

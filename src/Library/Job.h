@@ -208,6 +208,8 @@ namespace RISE
 			// auto_rasterizer-specific: the author's integrator pin so the
 			// snapshot round-trips the dispatcher faithfully (Auto = decide).
 			AutoIntegratorChoice autoIntegrator    = AutoIntegratorChoice::Auto;
+			// auto_rasterizer-specific: the Tier-2 probe master enable.
+			bool                 autoProbeEnabled  = false;
 
 			// Configs (default-constructed = struct in-class initializers)
 			RadianceMapConfig      radianceMap;
@@ -2089,7 +2091,8 @@ namespace RISE
 			const PathGuidingConfig& guidingConfig,
 			const AdaptiveSamplingConfig& adaptiveConfig,
 			const StabilityConfig& stabilityConfig,
-			const ProgressiveConfig& progressiveConfig
+			const ProgressiveConfig& progressiveConfig,
+			const bool probeEnabled
 			);
 
 		bool SetPathTracingPelRasterizer(

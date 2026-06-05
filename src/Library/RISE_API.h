@@ -2803,6 +2803,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
 								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
 								const ProgressiveConfig& progressiveConfig,	///< [in] Progressive multi-pass configuration (applied to the delegate)
+								const bool probeEnabled = false,	///< [in] Enable the Tier-2 render-time probe (Phase 4; gated on activation-spp)
 								Implementation::FrameStore* frameStore = nullptr    ///< [in] Canonical FrameStore (default null until Job pushes one)
 								);
 

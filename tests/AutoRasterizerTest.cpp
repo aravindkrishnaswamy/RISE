@@ -39,8 +39,10 @@
 #include <cstdlib>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <vector>
 #include <cmath>
+#include <cctype>
 #include <string>
 #include <algorithm>
 #ifdef _WIN32
@@ -524,8 +526,200 @@ static void CheckStaticRoute(
 		+ "' (got '" + ChoiceName(a.resolved) + "'): " + label );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Phase-4 probe routing harness.  The Tier-2 render-time probe must be
+// exercised on REAL transport (the static blind spots gi_spheres /
+// ggx_showcase are byte-identical in cheap static signals — only a probe
+// render can tell them apart; a synthetic Cornell box is too weak to make
+// BDPT win σ²·T).  So these tests take a real corpus scene, swap its
+// rasterizer chunk for `auto_rasterizer { probe true }`, shrink the film
+// for speed (σ²·T + median-lum are per-pixel statistics, so the routing
+// decision survives downscaling — verified gi_spheres BDPT 44× @320px →
+// 483× @128px), and assert the resolved integrator.
+//
+// The probe is gated on production spp >= auto_probe_activation_spp; the
+// test lowers that to 1 (and sets probe spp/scale low) via a temp options
+// file in main().  Phase-1/2 scenes carry no `probe` line (default off),
+// so they are untouched by the lowered activation gate.
+//////////////////////////////////////////////////////////////////////
+
+static std::string ReadFileToString( const char* path )
+{
+	std::ifstream ifs( path, std::ios::binary );
+	if( !ifs.is_open() ) {
+		return std::string();
+	}
+	std::ostringstream ss;
+	ss << ifs.rdbuf();
+	return ss.str();
+}
+
+static std::string Trimmed( const std::string& s )
+{
+	size_t a = 0, b = s.size();
+	while( a < b && std::isspace( static_cast<unsigned char>( s[a] ) ) ) ++a;
+	while( b > a && std::isspace( static_cast<unsigned char>( s[b-1] ) ) ) --b;
+	return s.substr( a, b - a );
+}
+
+// Split into lines (without trailing '\n'); remembers whether each ended
+// with a newline is irrelevant — we re-join with '\n'.
+static std::vector<std::string> SplitLines( const std::string& text )
+{
+	std::vector<std::string> lines;
+	std::string cur;
+	for( char c : text ) {
+		if( c == '\n' ) { lines.push_back( cur ); cur.clear(); }
+		else if( c != '\r' ) { cur.push_back( c ); }
+	}
+	lines.push_back( cur );
+	return lines;
+}
+
+// Find the chunk whose header line (trimmed) satisfies `match`, returning
+// [headerIdx, closeBraceIdx].  RISE ascii chunks don't nest and braces sit
+// on their own lines (CLAUDE.md), so we find the header, the next '{' line,
+// then brace-count to the matching '}'.  Returns false if not found.
+static bool FindChunk( const std::vector<std::string>& lines,
+	bool (*match)( const std::string& ), size_t& outStart, size_t& outEnd )
+{
+	for( size_t i = 0; i < lines.size(); ++i ) {
+		if( !match( Trimmed( lines[i] ) ) ) continue;
+		// find the opening brace on a subsequent line
+		size_t j = i + 1;
+		while( j < lines.size() && Trimmed( lines[j] ) != "{" ) {
+			// only blanks / comments may precede the brace
+			const std::string t = Trimmed( lines[j] );
+			if( !t.empty() && t[0] != '#' ) { j = lines.size(); break; }
+			++j;
+		}
+		if( j >= lines.size() ) continue;
+		int depth = 0;
+		for( size_t k = j; k < lines.size(); ++k ) {
+			const std::string t = Trimmed( lines[k] );
+			if( t == "{" ) ++depth;
+			else if( t == "}" ) { if( --depth == 0 ) { outStart = i; outEnd = k; return true; } }
+		}
+	}
+	return false;
+}
+
+static bool IsRasterizerHeader( const std::string& t )
+{
+	// A bare chunk header that is exactly a *_rasterizer token.
+	if( t.size() < 11 ) return false;
+	if( t.find( ' ' ) != std::string::npos || t.find( '\t' ) != std::string::npos ) return false;
+	const std::string suffix = "_rasterizer";
+	return t.size() >= suffix.size() &&
+	       t.compare( t.size() - suffix.size(), suffix.size(), suffix ) == 0;
+}
+
+static bool IsFilmHeader( const std::string& t ) { return t == "film"; }
+
+// Read a corpus scene and return a variant whose rasterizer chunk is an
+// `auto_rasterizer { probe true }` and whose film is `dim x dim`.  Empty
+// string on failure (scene missing / no rasterizer chunk).
+static std::string MakeAutoProbeScene( const char* corpusPath, unsigned int samples, unsigned int dim )
+{
+	const std::string text = ReadFileToString( corpusPath );
+	if( text.empty() ) {
+		return std::string();
+	}
+	std::vector<std::string> lines = SplitLines( text );
+
+	size_t rs, re;
+	if( !FindChunk( lines, IsRasterizerHeader, rs, re ) ) {
+		return std::string();
+	}
+
+	char autoChunk[256];
+	std::snprintf( autoChunk, sizeof(autoChunk),
+		"auto_rasterizer\n{\n\tintegrator auto\n\tprobe true\n\tsamples %u\n\tpixel_filter box\n\toidn_denoise false\n}",
+		samples );
+
+	// Replace the rasterizer chunk lines [rs, re] with the auto chunk.
+	std::vector<std::string> out;
+	for( size_t i = 0; i < lines.size(); ++i ) {
+		if( i == rs ) { out.push_back( autoChunk ); i = re; continue; }
+		out.push_back( lines[i] );
+	}
+
+	// Shrink the film chunk (if present) to dim x dim for probe + render speed.
+	size_t fs, fe;
+	if( FindChunk( out, IsFilmHeader, fs, fe ) ) {
+		char filmChunk[128];
+		std::snprintf( filmChunk, sizeof(filmChunk),
+			"film\n{\n\twidth %u\n\theight %u\n}", dim, dim );
+		std::vector<std::string> out2;
+		for( size_t i = 0; i < out.size(); ++i ) {
+			if( i == fs ) { out2.push_back( filmChunk ); i = fe; continue; }
+			out2.push_back( out[i] );
+		}
+		out.swap( out2 );
+	}
+
+	std::string joined;
+	for( size_t i = 0; i < out.size(); ++i ) { joined += out[i]; joined.push_back( '\n' ); }
+	return joined;
+}
+
+// Render `corpusPath` through the probe and assert it resolves to `expected`.
+static void CheckProbeRoute(
+	const char* label, const char* corpusPath, const char* tag,
+	AutoIntegratorChoice expected )
+{
+	std::cout << "Testing auto_rasterizer probe routing: " << label << std::endl;
+	// samples >= 2: Job::GetSamplingAndFilterElements only creates a pixel
+	// sampler when numPixelSamples > 1, and the probe needs a non-null
+	// sampler to clone at probe spp.  (Production samples don't affect the
+	// probe decision — the probe renders at its own auto_probe_spp.)
+	const std::string scene = MakeAutoProbeScene( corpusPath, /*samples*/ 4, /*dim*/ 128 );
+	if( scene.empty() ) {
+		Check( false, std::string("corpus scene readable + has a rasterizer chunk: ") + label
+			+ " (" + corpusPath + ")" );
+		return;
+	}
+	const std::string p = WriteSceneToTempFile( scene.c_str(), tag );
+	if( p.empty() ) { Check( false, std::string("temp scene written: ") + label ); return; }
+	const ImageStats a = RenderAndComputeStats( p.c_str() );
+	std::remove( p.c_str() );
+
+	PrintStats( "probe", a );
+	Check( a.valid,   std::string("probe render produced output: ") + label );
+	if( !a.valid ) return;
+	Check( a.wasAuto, std::string("active rasterizer is an AutoRasterizer: ") + label );
+	const bool ok = ( a.resolved == expected );
+	Check( ok, std::string("probe resolved to '") + ChoiceName(expected)
+		+ "' (got '" + ChoiceName(a.resolved) + "'): " + label );
+}
+
 int main()
 {
+	// Phase-4: enable the Tier-2 probe at low spp for the routing tests by
+	// pointing GlobalOptions at a temp file that drops the activation gate
+	// to 1 and sets a cheap probe (spp 4, half-res).  MUST be set before any
+	// GlobalOptions() access (it is a lazy singleton read once) — i.e. before
+	// the first render.  Phase-1/2 scenes carry no `probe` line, so the
+	// lowered activation gate never reaches them (probe defaults off).
+	{
+		char optPath[256];
+		std::snprintf( optPath, sizeof(optPath),
+			"/tmp/auto_probe_test_opts_%d.txt", static_cast<int>(::getpid()) );
+		std::ofstream ofs( optPath );
+		ofs << "auto_probe_activation_spp 1\n"
+		    << "auto_probe_spp 4\n"
+		    << "auto_probe_scale 4\n"          // §6.2 default (quarter-res)
+		    << "auto_probe_tau_caustic 1.30\n"
+		    << "auto_probe_tau_bdpt 1.35\n"
+		    << "auto_probe_variance_renders 2\n";
+		ofs.close();
+#ifdef _WIN32
+		_putenv_s( "RISE_OPTIONS_FILE", optPath );
+#else
+		setenv( "RISE_OPTIONS_FILE", optPath, 1 );
+#endif
+	}
+
 	std::cout << "=== AutoRasterizerTest ===" << std::endl;
 
 	// Pinned delegations: auto(X) must resolve to X and match X_pel_rasterizer.
@@ -571,6 +765,31 @@ int main()
 	//     covered by the delegation test above.)
 	CheckStaticRoute( "strong-indirect area-lit -> PT (probe picks BDPT)",
 		kAutoAuto, kSceneAreaLitOnly, "p2_strongind", AutoIntegratorChoice::PT );
+
+	// --- Phase 4: Tier-2 render-time probe (active) on REAL scenes ---
+	// The probe corrects the static tier on the cases it provably can't see.
+	// Each scene's rasterizer chunk is swapped for `auto_rasterizer{probe
+	// true}` at a shrunk film; the probe (spp 4, half-res) renders candidate
+	// integrators in-process and routes per-scene.  Decisions verified by the
+	// real in-process probe (see docs/AUTO_RASTERIZER_DESIGN.md §6.2):
+	//   gi_spheres     -> BDPT  (σ²·T ~480× @128px — the diffuse-GI blind spot)
+	//   ggx_showcase   -> PT    (σ²·T ~0.26× — the glossy blind-spot partner)
+	//   glass_pavilion -> VCM   (median-lum ~2.3× — a real refractive caustic)
+	//   env_only       -> PT    (env-IBL gate kills the +63% VCM env-bias confound)
+	//   corridor       -> PT    (non-dielectric many-light -> BDPT check -> PT)
+	std::cout << std::endl;
+	std::cout << "--- Phase 4: render-time probe routing (real scenes) ---" << std::endl;
+
+	CheckProbeRoute( "gi_spheres -> BDPT (diffuse-GI blind spot)",
+		"scenes/FeatureBased/Combined/gi_spheres.RISEscene", "p4_gi", AutoIntegratorChoice::BDPT );
+	CheckProbeRoute( "ggx_showcase -> PT (glossy blind-spot partner)",
+		"scenes/FeatureBased/Materials/ggx_showcase.RISEscene", "p4_ggx", AutoIntegratorChoice::PT );
+	CheckProbeRoute( "glass_pavilion -> VCM (refractive caustic, median-lum)",
+		"scenes/FeatureBased/Combined/glass_pavilion.RISEscene", "p4_glass", AutoIntegratorChoice::VCM );
+	CheckProbeRoute( "env_only -> PT (env-IBL gate rejects VCM env-bias)",
+		"scenes/Tests/UnifiedLighting/envmap_nee_test_pt.RISEscene", "p4_env", AutoIntegratorChoice::PT );
+	CheckProbeRoute( "corridor_100lights -> PT (non-dielectric many-light)",
+		"scenes/Tests/LightBVH/corridor_100lights_bvh.RISEscene", "p4_corridor", AutoIntegratorChoice::PT );
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

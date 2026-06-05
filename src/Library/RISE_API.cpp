@@ -5623,6 +5623,7 @@ namespace RISE
 								const StabilityConfig& stabilityConfig,
 								const bool useZSobol,
 								const ProgressiveConfig& progressiveConfig,
+								const bool probeEnabled,
 								Implementation::FrameStore* frameStore
 								)
 	{
@@ -5631,16 +5632,16 @@ namespace RISE
 		}
 
 		// The dispatcher stores these inputs and builds the chosen concrete
-		// delegate lazily at the first render-time entry (so a future probe
-		// can see the assembled scene).  OIDN / progressive are NOT applied
-		// to the wrapper here — they ride into the delegate's factory call
+		// delegate lazily at the first render-time entry (so the probe can
+		// see the assembled scene).  OIDN / progressive are NOT applied to
+		// the wrapper here — they ride into the delegate's factory call
 		// (BuildDelegate) and the post-build progressive wiring inside the
 		// wrapper, because the wrapper itself renders nothing.
 		AutoRasterizer* pRasterizer = new AutoRasterizer(
 			caster, pSamples, pFilter, integrator,
 			oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
 			guidingConfig, adaptiveConfig, stabilityConfig,
-			useZSobol, progressiveConfig, frameStore );
+			useZSobol, progressiveConfig, probeEnabled, frameStore );
 
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Auto rasterizer" );

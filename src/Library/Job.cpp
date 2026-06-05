@@ -6931,7 +6931,8 @@ bool Job::SetAutoRasterizer(
 	const PathGuidingConfig& guidingConfig,
 	const AdaptiveSamplingConfig& adaptiveConfig,
 	const StabilityConfig& stabilityConfig,
-	const ProgressiveConfig& progressiveConfig
+	const ProgressiveConfig& progressiveConfig,
+	const bool probeEnabled
 	)
 {
 	// The shared setup (sampler/filter, shader, caster, radiance map, RR
@@ -6985,7 +6986,7 @@ bool Job::SetAutoRasterizer(
 	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
 	RISE_API_CreateAutoRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter, integrator,
 		oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, guidingConfig, adaptiveConfig, stabilityConfig,
-		pixelFilterConfig.blueNoiseSampler, progressiveConfig, _jobFs );
+		pixelFilterConfig.blueNoiseSampler, progressiveConfig, probeEnabled, _jobFs );
 
 	// NOTE: the wrapper applies progressiveConfig to its delegate itself
 	// (RISE_API_SetRasterizerProgressiveRendering down-casts to
@@ -6999,6 +7000,7 @@ bool Job::SetAutoRasterizer(
 
 	RasterizerParams snap;
 	snap.autoIntegrator  = integrator;
+	snap.autoProbeEnabled = probeEnabled;
 	snap.numPixelSamples = numPixelSamples;
 	snap.shader          = shader ? shader : "";
 	snap.showLuminaires  = bShowLuminaires;

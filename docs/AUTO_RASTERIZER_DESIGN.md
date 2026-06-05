@@ -298,6 +298,230 @@ the static VCM signal.
   (static pre-filter can skip the VCM probe when there are no dielectrics).
 - **Outcome:** a go/no-go on Tier 2 + the chosen probe parameters.
 
+### 6.1 Phase-3 experiment OUTCOME — **QUALIFIED GO** (2026-06-04)
+
+Ran the experiment over a 10-scene regime spread (both static blind spots
+included): 512 probe renders (M=8 trials × {PT,BDPT,VCM} × spp{1,2,4}), all
+EXR float32 (FP16-clip-free, cross-checked with an independent Python OpenEXR
+reader ≡ HDRVarianceTest to < 3e-5). Full data + tables + repro:
+[var_test/PHASE3_PROBE_EXPERIMENT.md](../var_test/PHASE3_PROBE_EXPERIMENT.md);
+scripts `var_test/phase3_{probe,analyze,cost}.py`.
+
+**Headline:** a refined probe picks the matrix winner **10/10, incl. 4/4 blind
+spots** — but it is "cheap" (single-digit %) only at high production spp, and the
+BDPT half splits into a cheap high-stakes case and an un-cheap marginal case. So:
+**build the Phase-4 probe, but gate its activation on production spp and adopt the
+caustic-first / scope-reduced design below.**
+
+The four gate dimensions:
+
+1. **ACCURACY — PASS (10/10, blind 4/4).** Two refinements were *required* and are
+   non-obvious: (a) the caustic signal must be **median** luminance, not mean —
+   PT/BDPT fireflies inflate the *mean* on caustic scenes, so mean-lum *misses*
+   the area-lit `spectral_caustic` blind spot (0.81×) and *false-positives*
+   `env_only` (1.53×); median fixes the miss (1.81×). (b) the caustic probe must
+   be **gated on (dielectric ∧ ¬env-IBL)** — `env_only`'s high VCM luminance
+   (median 1.67×, right next to spectral_caustic's 1.81× → no threshold separates
+   them) is the documented **+63% VCM env-bias**, not caustic energy. The
+   env-IBL gate (`GetGlobalRadianceMap()`-cheap) is the only clean discriminator;
+   it correctly suppresses VCM on `env_only`/`alchemists` and is exactly the
+   chip's "guard against the VCM env/volume bias confound." (A per-pixel
+   "VCM-rescues-PT-dark-pixels" signal was tried and *fails* — env-bias lifts
+   shadows uniformly.)
+
+2. **RELIABILITY — caustic PASS, BDPT split.** Caustic half is bulletproof
+   (median-lum is a stable single-image stat: 100% at n_probe=1, spp≥2). BDPT half
+   needs spp≥2 by construction (variance needs ≥2 samples/pixel; spp=1 reads σ²≈0
+   and fails). Big-margin BDPT (`gi_spheres`, σ²·T 90–134×) is 100% stable at
+   spp2; **marginal BDPT (`alchemists`, ~1.5× win) is not** — at probe spp it
+   collapses to 1.12× vs near-tie PT `homogeneous_fog` at 1.08× (no separating
+   threshold) and needs spp4 + n_probe4 (≈trial spp) to stabilise. This is the
+   chip's stop-rule NO-GO **for the marginal sub-case only**; mis-routing it costs
+   ~1.5× (vs the 90× at stake on gi_spheres, which *is* caught cheaply).
+
+3. **COST — conditional on production spp.** Decision tree is gated +
+   short-circuited → the probe renders **2 integrators** in every corpus case
+   (PT+VCM for caustics, else PT+BDPT). Probe absolute cost is ~constant in spp
+   (per-render *setup* dominates), so its *fraction* of budget shrinks with render
+   quality: **median 7.3 % at 256 spp (range 2–39 %), ~1–10 % at 1024 spp; under
+   5 % only once production spp exceeds ~110–2000 (median ~377).** At
+   preview/interactive spp it is 30–1000 %+ overhead. Worst case is the
+   **cheap-PT-winner that must probe an expensive candidate to rule it out**
+   (`homogeneous_fog`: 2.5 s BDPT-on-a-volume probe to confirm a near-tie PT win →
+   39 % even at 256 spp). **Two cost mitigations:** (a) *measured* — probe at **half
+   resolution** cuts the dominant BDPT/VCM probe ~3.5–4× (they're pixel-proportional)
+   with **no change in pick** (gi_spheres σ²·T 90×→209×, glass median 2.75×→2.40×),
+   so the cost table is ~2–4× pessimistic and the single-digit-% crossover drops
+   accordingly; (b) *unmeasured* — render the probe *progressively* so the winner's
+   probe samples fold into the final image, leaving only the losing candidate as overhead.
+
+4. **SWEEP / threshold.** τ_caustic = **1.30 on median luminance**; τ_bdpt =
+   **1.35** (between near-tie PT ≈1.1× and the smallest detectable BDPT win — the
+   residual marginal band is 1.1–1.6×). Probe spp = **4** (spp1 structurally too
+   low; spp2 fine for caustics + big-margin BDPT; cost ~flat in spp). Probe at
+   **half resolution** (the chip's tile knob — measured 3.5–4× cheaper on the
+   expensive candidates, decision-preserving).
+
+**Recommended Phase-4 config:** static pre-filter (dielectric? env-IBL?) →
+**activation gate: production spp ≥ ~256** (else stay Tier-1 static + pins) →
+caustic check first *(if dielectric ∧ ¬env-IBL: render PT+VCM at spp≈4, **half
+resolution**; median-lum ratio > 1.30 → VCM, short-circuit)* → else BDPT check
+*(render PT+BDPT at spp≈4, half-res, internal per-pixel σ²; σ²·T ratio > 1.35 →
+BDPT, else PT)*. Use the renderer's internal per-pixel variance from **one**
+render (the experiment's n_probe>1 was an inter-run proxy).
+**Residuals left to pins/Tier-1:** marginal BDPT wins (~1.5×, low stakes) and
+env-lit real caustics (suppressed by the env gate; VCM carries env-bias there
+anyway). Open Q#2 (probe-cost threshold) is answered: **single-digit % ⇔
+production spp ≳ 256**, so the probe is a *final-render* tool, not an interactive one.
+
+---
+
+### 6.2 Phase-4 probe — SHIPPED + REAL in-process cost/resolution sweep (2026-06-05)
+
+**Status:** ✅ the Tier-2 probe is implemented in
+`AutoRasterizer::SelectIntegrator` → `RunProbe` / `ProbeCandidate`
+([src/Library/Rendering/AutoRasterizer.cpp](../src/Library/Rendering/AutoRasterizer.cpp));
+the decision tree is the §6.1 design verbatim. It is **pure dispatcher logic** —
+integrators + concrete rasterizers are byte-identical to HEAD; the probe only
+*composes* them via `BuildDelegate`. Tested in
+[tests/AutoRasterizerTest.cpp](../tests/AutoRasterizerTest.cpp) (Phase-4 section);
+the sweep harness is `var_test/phase4_sweep.py` (gitignored output
+`var_test/phase4_sweep.json`).
+
+#### The machinery (how the in-process probe renders a candidate)
+
+`ProbeCandidate(scene, choice, cfg, needVariance)` renders a candidate integrator
+against the **already-assembled** scene and reads its image back, *without* a
+re-parse, BVH rebuild, or any touch to the real output:
+
+1. **Resolution** is shrunk via `IScenePriv::ResizeFilm(W/scale, H/scale, AR)`
+   (the only resolution knob — the rasterizer reads render dims from
+   `IScene::GetFilm()`, not the camera or FrameStore). The original dims are
+   restored on every exit path. Safe because the probe runs single-threaded
+   inside the `std::call_once` selection, strictly *before* the real render's
+   workers spawn — exactly `ResizeFilm`'s concurrency contract.
+2. **spp** is set on a `mSamples->Clone()` (never the shared canonical sampler)
+   via `SetNumSamples(cfg.spp)`.
+3. The candidate is built with `BuildDelegate(choice, probeSampler, /*fs*/null,
+   /*denoise*/false, OFF-guiding, OFF-adaptive)` — a **null FrameStore** so the
+   render lands in the delegate's own internal image and never disturbs the
+   canonical store; **denoise off** because the σ² signal lives in the raw
+   per-pixel noise a denoiser would erase; **guiding/adaptive off** so there is no
+   training pass and spp is uniform (well-defined cost + variance).
+4. A `ProbeCaptureOutput` (an `IRasterizerOutput` that stores per-pixel luminance
+   = mean RGB, matching Phase-3's EXR-RGB signal) reads the image back via the
+   universal `OutputImage` flush — no EXR round-trip.
+5. **median luminance** (caustic signal) is a single-render statistic;
+   **mean per-pixel σ²** (BDPT signal) is the cross-render variance over
+   `cfg.varianceRenders` renders.
+
+**The cost lever holds — no rebuild across candidates.** `ObjectManager::
+PrepareForRendering` is idempotent (`!pBVH` guard), the top-level BVH + per-mesh
+BVHs live on the *shared* scene's ObjectManager, and `RayCaster::AttachScene`
+early-returns on a re-attach of the same scene (the luminary manager / light
+sampler / env sampler are built once, by whichever render hits the scene first).
+So every probe render after the first pays only ray-tracing cost (+ VCM's
+auto-radius pre-pass, a genuine per-render setup it would pay in production too).
+**This is why the real in-process cost is far below the Phase-3 *emulation*'s
+fresh-process numbers** — the emulation re-parsed + rebuilt per candidate.
+
+**σ² is the Phase-3 inter-run proxy, in-process.** RISE's QMC stream is seeded
+deterministically (`SobolSequence::HashCombine(x,y)`), so the per-pixel variance
+across two renders comes *entirely* from multi-threaded run-to-run
+non-determinism (the per-worker fallback RNG order + splat FP-accumulation order)
+— the same mechanism the Phase-3 cross-process pool measured. The probe therefore
+**must render multi-threaded** (a single-threaded probe would read σ²≈0). Reading
+the renderer's *internal* Welford variance (ProgressiveFilm) was rejected: it
+would require an accessor on `PixelBasedRasterizerHelper`, i.e. touching
+rasterizer code, violating the byte-identical constraint.
+
+#### Real cost + resolution sweep (`phase4_sweep.py`)
+
+6 regime-spanning scenes (uniform 256² film, benchmark thread mode, oidn/adaptive
+off, K=3 trials at spp 32 + a low-spp point for the `full=a+b·spp` fit so cost% is
+extrapolated to 256/1024 without paying a 256-spp render per cell). **Probe
+spp 4, variance_renders 2.** Decision + flip-rate are spp-independent (the probe
+renders at its own spp), so the same trials give both halves of the gate.
+
+| scene | half | matrix | decision @ 1/2,1/4,1/8 | probe s @ 1/2,1/4,1/8 | cost%@256 @ 1/2,1/4,1/8 | cost%@1024 (1/4) |
+|---|---|---|---|---|---|---|
+| gi_spheres | bdpt | bdpt | **bdpt bdpt bdpt** ✅ | 1.71 / 1.23 / 1.09 | 2.4 / 1.7 / 1.4 | 0.4 |
+| ggx_showcase | bdpt | pt | **pt pt pt** ✅ | 0.66 / 0.16 / 0.05 | 6.2 / 1.3 / 0.4 | 0.3 |
+| glass_pavilion | caustic | vcm | **vcm vcm vcm** ✅ | 0.46 / 0.12 / 0.04 | 0.5 / 0.1 / 0.0 | 0.0 |
+| env_only | caustic | pt | **pt pt pt** ✅ (env-gate) | 0.11 / 0.03 / 0.01 | 4.5 / 1.1 / 0.3 | 0.3 |
+| jewel_vault | caustic | pt | **vcm vcm vcm** ⚠ over-fire | 0.70 / 0.18 / 0.06 | 0.6 / 0.2 / 0.0 | 0.0 |
+| homogeneous_fog | bdpt | pt | **pt pt pt** ✅ | 8.0 / 2.0 / 0.5 | 31.7 / 7.9 / 1.9 | 0.5 |
+
+(All cells K=3 trials; "decision" is the modal pick — **no cell flipped across
+trials at any scale**. Probe seconds = summed candidate-render wall time the probe
+logs. cost% = probe-s / extrapolated full-render-s at that spp.)
+
+**Headline:** **5/6 correct** (the 6th is the `jewel_vault` over-fire below),
+**zero flips at any scale**, and the real in-process cost is **far below the
+emulation**. gi_spheres is **2.4 %@256 half-res vs the emulation's 3 %** (which
+already assumed half-res); more decisively, the emulation's *worst case*
+(homogeneous_fog **39 %@256**) is here **7.9 %@256 at quarter-res** — the fixed
+per-render setup the emulation re-paid every candidate is now paid once on the
+shared assembled scene, exactly the predicted win.
+
+**Cost is dominated by the BDPT-on-a-volume probe ruling out a cheap PT winner.**
+`homogeneous_fog` is the only scene above single-digit %@256 at half-res (31.7 %)
+because a volume makes BDPT ~37× costlier per sample (CLAUDE.md), so the probe
+spends most of its time on the candidate it ends up *rejecting*. Quartering the
+probe resolution cuts it to 7.9 %, and 1/8 to 1.9 % — and the PT decision never
+wavers. Every other scene is ≤ 6.2 %@256 even at half-res.
+
+#### Per-half reliability + the res floor
+
+- **Caustic half (median-lum):** rock-stable — a single-image statistic.
+  glass_pavilion (→VCM), env_only (→PT via the env-IBL gate), and even the
+  jewel_vault over-fire (→VCM) are **identical at 1/2, 1/4, and 1/8** with zero
+  flips. Floor: **1/8 is safe on margin**, **1/4 recommended** for pixel headroom
+  on small/thin caustics.
+- **BDPT half (σ²·T):** the big-margin win (gi_spheres, σ²·T ~40–480×) and the
+  clear PT scenes (ggx_showcase σ²·T 0.2–0.3×; homogeneous_fog) **all hold to 1/8
+  with zero flips** — the σ²·T margins are nowhere near τ_bdpt=1.35. Floor: **1/4
+  recommended** (the σ² estimator wants more pixels than the median; 4096 px at
+  1/4 of 256² — and far more at real ≥1080p finals). As §6.1 warned, the
+  **marginal** ~1.5× BDPT win is *not* in any corpus and stays a pin/Tier-1
+  residual at every probe resolution.
+
+**Recommended defaults (shipped):** **`auto_probe_scale 4`** (quarter-res — the
+measured sweet spot: every decision holds *and* even the worst-case volume probe
+is single-digit %@256; half-res leaves homogeneous_fog at ~32 %). `auto_probe_spp
+4`, `auto_probe_variance_renders 2`, `τ_caustic 1.30`, `τ_bdpt 1.35`.
+**Activation-spp:** the real cost is single-digit-% from ~256 spp at 1/4 (median
+1.2 %, worst 7.9 %), so the shipped default `auto_probe_activation_spp 256` is the
+measured crossover — *not* baked a priori; below it the dispatcher uses the Tier-1
+static guess. All GlobalOptions-overridable (the §6.2 sweep varied them via
+per-scale option files). **Stop-rule check: PASSED** — the in-process scratch
+render needed only a thin addition (ResizeFilm + a cloned sampler + a capturing
+output), no rasterizer-lifecycle surgery, and the candidate renders provably do
+**not** rebuild the scene/acceleration structure (idempotent `PrepareForRendering`
++ same-scene `AttachScene` early-return), so the cost dropped as hoped.
+
+#### Two findings the Phase-3 emulation could not surface
+
+1. **`jewel_vault` over-fire (new residual).** The emulation hand-classified
+   `jewel_vault` as non-dielectric and never rendered VCM for it. The real probe
+   sees it *is* dielectric (glass gems) + area-lit + no env, so the caustic check
+   fires and **routes it to VCM (median ~2.3–2.9×)** — but its matrix winner is PT.
+   This is a genuine **low-spp artifact of the median-lum signal**: at probe spp the
+   gems' refractive energy that PT *would* converge is missing from PT's median, so
+   VCM reads brighter — indistinguishable by median alone from a true caustic
+   (`jewel_vault` 2.9× actually *exceeds* `spectral_caustic` 1.8×, so no τ separates
+   them). It is a **performance** mis-route, not a correctness bug (VCM is unbiased
+   here, just slower than PT-optimal); mitigation is an author PT pin. Dropping the
+   caustic check's "no positional light" reach would re-introduce the
+   `spectral_caustic` blind spot, so the gate is kept as designed and the residual
+   documented.
+2. **Spectral caustics need the Phase-1b spectral sibling.** `auto_rasterizer` is
+   Pel-only; the real probe routes `spectral_caustic` → **PT**, because its
+   *dispersive* caustic is spectral-only and its RGB projection carries no strong
+   caustic (so PT is in fact correct for the Pel domain). The area-lit-caustic→VCM
+   capability is validated on the RGB `glass_pavilion` instead; closing
+   `spectral_caustic` is the `auto_spectral_rasterizer` follow-up (§3.1).
+
 ---
 
 ## 7. UI integration (to design with the GUI bridges)
@@ -316,8 +540,10 @@ the static VCM signal.
 
 1. **Parameter population (§4)** — confirm (i) common+defaults for v1, with (ii)
    nested overrides later? Or prefer (ii)/(iv) from the start?
-2. **Probe-cost gate threshold (§6)** — what fraction of budget is "acceptable"
-   for the probe?
+2. ~~**Probe-cost gate threshold (§6)** — what fraction of budget is "acceptable"
+   for the probe?~~ **ANSWERED (§6.1, Phase-3 experiment):** the probe is
+   single-digit % only when production spp ≳ 256 (median 7.3 % @256, ~1–10 %
+   @1024); gate probe activation on production spp and keep it a final-render tool.
 3. **Granularity** — whole-scene v1 confirmed; per-region deferred to D-research?
 4. **Selection caching** — re-run detection every render, or cache the choice
    (and invalidate on scene edit)?
