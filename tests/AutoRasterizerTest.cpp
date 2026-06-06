@@ -311,6 +311,36 @@ static const char* kAutoAuto =
 static const char* kAutoUnset =
 	"auto_rasterizer\n{\n\tsamples 16\n\tpixel_filter box\n\toidn_denoise false\n}\n";
 
+// --- Phase-1b spectral fixtures.  Same shared body (kSceneCommon, RGB
+// painters JH-uplifted to spectra); only the rasterizer-chunk family changes
+// to *_spectral_ / auto_spectral_rasterizer.  Both sides of each pair use the
+// SAME spectral params so the auto-pinned delegate is the same estimator as the
+// bare *_spectral_ ref (delegation correctness is proven exactly by the Pel-VCM
+// pair, which matches to +0.05% at 16 spp — no chromatic noise on a grey scene).
+// The spectral equivalence pairs use samples 64 / spectral_samples 4 (16x
+// effective) rather than 16 / 1: hero-wavelength chromatic noise on the grey
+// scene gave flaky ~10% (VCM) / ~8% (BDPT) per-channel auto-vs-ref deltas at
+// 16 / 1 — two independent stochastic renders of the same spectral integrator.
+// Converging that noise below the 8% mean gate keeps the tolerance honest
+// instead of widening it; the cost is trivial on the 32x32 fixture.  PT is the
+// least noisy and passed at 16 / 1, but is bumped too for a uniform spectral
+// block.  kAutoSpecAuto stays at 16 / 1 — it drives a static-routing CHOICE
+// assertion, not a pixel-equivalence check.
+static const char* kRefPTSpec =
+	"pathtracing_spectral_rasterizer\n{\n\tsamples 64\n\tnum_wavelengths 8\n\tspectral_samples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+static const char* kRefBDPTSpec =
+	"bdpt_spectral_rasterizer\n{\n\tsamples 64\n\tnum_wavelengths 8\n\tspectral_samples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+static const char* kRefVCMSpec =
+	"vcm_spectral_rasterizer\n{\n\tsamples 64\n\tnum_wavelengths 8\n\tspectral_samples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+static const char* kAutoSpecPT =
+	"auto_spectral_rasterizer\n{\n\tintegrator pt\n\tsamples 64\n\tnum_wavelengths 8\n\tspectral_samples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+static const char* kAutoSpecBDPT =
+	"auto_spectral_rasterizer\n{\n\tintegrator bdpt\n\tsamples 64\n\tnum_wavelengths 8\n\tspectral_samples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+static const char* kAutoSpecVCM =
+	"auto_spectral_rasterizer\n{\n\tintegrator vcm\n\tsamples 64\n\tnum_wavelengths 8\n\tspectral_samples 4\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+static const char* kAutoSpecAuto =
+	"auto_spectral_rasterizer\n{\n\tintegrator auto\n\tsamples 16\n\tnum_wavelengths 8\n\tspectral_samples 1\n\tpixel_filter box\n\toidn_denoise false\n}\n";
+
 // --------------------------------------------------------------------
 // Phase-2 fixtures.  Raw-string scene fragments (real tabs / newlines)
 // composed into bodies below to toggle the two routing signals the
@@ -693,6 +723,96 @@ static void CheckProbeRoute(
 		+ "' (got '" + ChoiceName(a.resolved) + "'): " + label );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Phase-1b spectral probe harness.  Spectral sibling of MakeAutoProbeScene:
+// swap the rasterizer chunk for an `auto_spectral_rasterizer { probe true }`
+// carrying the scene's spectral-core params, strip the legacy caustic
+// photon-map chunks (the pure spectral integrators the dispatcher delegates
+// to bypass the shader-op chain, so the photon map is dead weight + 30x probe
+// cost), and shrink the film.
+//////////////////////////////////////////////////////////////////////
+static bool IsPhotonMapChunk( const std::string& t )
+{
+	return t == "caustic_spectral_photonmap" || t == "caustic_spectral_gather"
+	    || t == "caustic_pel_photonmap"      || t == "caustic_pel_gather";
+}
+
+static std::string MakeAutoSpectralProbeScene(
+	const char* corpusPath, const char* specParams, unsigned int samples, unsigned int dim )
+{
+	const std::string text = ReadFileToString( corpusPath );
+	if( text.empty() ) {
+		return std::string();
+	}
+	std::vector<std::string> lines = SplitLines( text );
+
+	size_t rs, re;
+	if( !FindChunk( lines, IsRasterizerHeader, rs, re ) ) {
+		return std::string();
+	}
+
+	char autoChunk[512];
+	std::snprintf( autoChunk, sizeof(autoChunk),
+		"auto_spectral_rasterizer\n{\n\tintegrator auto\n\tprobe true\n\tsamples %u\n%s\tpixel_filter box\n\toidn_denoise false\n}",
+		samples, specParams );
+
+	std::vector<std::string> out;
+	for( size_t i = 0; i < lines.size(); ++i ) {
+		if( i == rs ) { out.push_back( autoChunk ); i = re; continue; }
+		out.push_back( lines[i] );
+	}
+
+	// Strip the legacy photon-map chunks (re-find after each erase since
+	// indices shift).  The pure spectral integrators never consume them.
+	{
+		size_t ps, pe;
+		while( FindChunk( out, IsPhotonMapChunk, ps, pe ) ) {
+			out.erase( out.begin() + ps, out.begin() + pe + 1 );
+		}
+	}
+
+	size_t fs, fe;
+	if( FindChunk( out, IsFilmHeader, fs, fe ) ) {
+		char filmChunk[128];
+		std::snprintf( filmChunk, sizeof(filmChunk),
+			"film\n{\n\twidth %u\n\theight %u\n}", dim, dim );
+		std::vector<std::string> out2;
+		for( size_t i = 0; i < out.size(); ++i ) {
+			if( i == fs ) { out2.push_back( filmChunk ); i = fe; continue; }
+			out2.push_back( out[i] );
+		}
+		out.swap( out2 );
+	}
+
+	std::string joined;
+	for( size_t i = 0; i < out.size(); ++i ) { joined += out[i]; joined.push_back( '\n' ); }
+	return joined;
+}
+
+static void CheckSpectralProbeRoute(
+	const char* label, const char* corpusPath, const char* specParams,
+	const char* tag, AutoIntegratorChoice expected )
+{
+	std::cout << "Testing auto_spectral_rasterizer probe routing: " << label << std::endl;
+	const std::string scene = MakeAutoSpectralProbeScene( corpusPath, specParams, /*samples*/ 4, /*dim*/ 96 );
+	if( scene.empty() ) {
+		Check( false, std::string("corpus scene readable + has a rasterizer chunk: ") + label );
+		return;
+	}
+	const std::string p = WriteSceneToTempFile( scene.c_str(), tag );
+	if( p.empty() ) { Check( false, std::string("temp scene written: ") + label ); return; }
+	const ImageStats a = RenderAndComputeStats( p.c_str() );
+	std::remove( p.c_str() );
+
+	PrintStats( "probe", a );
+	Check( a.valid,   std::string("probe render produced output: ") + label );
+	if( !a.valid ) return;
+	Check( a.wasAuto, std::string("active rasterizer is an AutoRasterizer: ") + label );
+	const bool ok = ( a.resolved == expected );
+	Check( ok, std::string("probe resolved to '") + ChoiceName(expected)
+		+ "' (got '" + ChoiceName(a.resolved) + "'): " + label );
+}
+
 int main()
 {
 	// Phase-4: enable the Tier-2 probe at low spp for the routing tests by
@@ -800,6 +920,40 @@ int main()
 		"scenes/Tests/UnifiedLighting/envmap_nee_test_pt.RISEscene", "p4_env", AutoIntegratorChoice::PT );
 	CheckProbeRoute( "corridor_100lights -> PT (non-dielectric many-light)",
 		"scenes/Tests/LightBVH/corridor_100lights_bvh.RISEscene", "p4_corridor", AutoIntegratorChoice::PT );
+
+	// --- Phase 1b: spectral sibling (auto_spectral_rasterizer) ---
+	// Same dispatcher class via the domain flag; the decision logic is shared
+	// verbatim with the Pel path.  Pins prove delegation to the *_spectral_
+	// concrete rasterizers; the static routes prove the spectral VCM delegate
+	// is reachable; the probe locks the documented spectral_caustic limitation.
+	std::cout << std::endl;
+	std::cout << "--- Phase 1b: auto_spectral_rasterizer ---" << std::endl;
+
+	// Pin equivalence: auto_spectral(X) resolves to X and matches X_spectral_rasterizer.
+	CheckDelegation( "spectral pin pt   -> pathtracing_spectral", kAutoSpecPT,   "as_pt",   kRefPTSpec,   "rs_pt",   AutoIntegratorChoice::PT );
+	CheckDelegation( "spectral pin bdpt -> bdpt_spectral",        kAutoSpecBDPT, "as_bdpt", kRefBDPTSpec, "rs_bdpt", AutoIntegratorChoice::BDPT );
+	CheckDelegation( "spectral pin vcm  -> vcm_spectral",         kAutoSpecVCM,  "as_vcm",  kRefVCMSpec,  "rs_vcm",  AutoIntegratorChoice::VCM );
+
+	// Static routing (probe off): same two signals as Pel, in the spectral domain.
+	CheckStaticRoute( "spectral diffuse + point light -> PT",
+		kAutoSpecAuto, kSceneCommon, "as_diffuse", AutoIntegratorChoice::PT );
+	// dielectric + positional -> VCM proves the spectral VCM delegate is reachable
+	// (the probe can't select it for spectral_caustic; this static route can).
+	CheckStaticRoute( "spectral dielectric + point light -> VCM",
+		kAutoSpecAuto, std::string(kSceneCommon) + kGlassSphere, "as_vcm_static", AutoIntegratorChoice::VCM );
+	CheckStaticRoute( "spectral dielectric, area-lit only -> PT",
+		kAutoSpecAuto, std::string(kSceneAreaLitOnly) + kGlassSphere, "as_diel_nopos", AutoIntegratorChoice::PT );
+
+	// Probe routing (probe on): the spectral dispersive caustic.  DOCUMENTED
+	// LIMITATION (design doc §6.2.2): the median gate fires (~2.9x) but the
+	// transport-reach gate FAILS (~0.7x) because VCM-spectral's luminance-proxy
+	// merge loses dispersion energy (SPECTRAL_PARITY_AUDIT §3), so VCM's
+	// RGB-projected mean does NOT exceed PT's -> the SAME two-gate decision the
+	// Pel path uses routes PT here.  This LOCKS that behavior (a regression
+	// guard); closing it to VCM needs per-wavelength VCM photons (out of scope).
+	CheckSpectralProbeRoute( "spectral_caustic -> PT (reach gate defeated by VCM-spectral merge; documented)",
+		"scenes/Tests/Spectral/spectral_dispersive_caustic.RISEscene",
+		"\tnmbegin 405\n\tnmend 705\n\tnum_wavelengths 8\n", "as_probe_caustic", AutoIntegratorChoice::PT );
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

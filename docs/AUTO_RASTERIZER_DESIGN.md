@@ -121,13 +121,25 @@ radius / VC / VM, PT-SMS) come from `BDPTPelDefaults` / `VCMPelDefaults` /
 `SMSConfig` at delegate-build time — one source of truth, shared with the
 concrete chunk parsers.
 
-**Spectral sibling deferred to Phase-1b:** `auto_spectral_rasterizer` meaningfully
-expands scope (a second config bundle: the spectral-core params + `useHWSS`, *no*
-path-guiding, *no* optimal-MIS, and a parallel set of `*_spectral_` factories), so
-per the design contract the Pel path ships fully here and the spectral sibling is
-the immediate follow-up. The `SelectIntegrator` / `BuildDelegate` split is the
-seam: 1b adds a spectral `BuildDelegate` (or a parallel `AutoSpectralRasterizer`)
-plus its parser + Job setter.
+**Spectral sibling — ✅ implemented as a DOMAIN FLAG (Phase 1b, 2026-06-05).**
+`auto_spectral_rasterizer` reuses the SAME `AutoRasterizer` class via an `mSpectral`
+domain flag rather than a parallel class. `BuildDelegate` switches on `mSpectral` to
+call the `*_spectral_` factories (`RISE_API_CreatePathTracingSpectralRasterizer`,
+`RISE_API_CreateBDPTSpectralRasterizerAdaptive`, `RISE_API_CreateVCMSpectralRasterizer`)
+with the spectral-core param bundle (`nmbegin` / `nmend` / `num_wavelengths` /
+`spectral_samples` / `hwss`) the wrapper now carries as a `SpectralConfig`. The chunk
+exposes *no* path-guiding and *no* optimal-MIS (matching the concrete `*_spectral_`
+chunks — the disabled `PathGuidingConfig` the BDPT/VCM-spectral factories still take is
+supplied internally). **The entire decision tree — `SelectIntegrator`, `RunProbe`,
+`ProbeCandidate`, the static scans, and the median/mean/σ² helpers — is shared
+verbatim; the domain flag touches ONLY `BuildDelegate` + the carried `SpectralConfig`.**
+This was chosen over a parallel class precisely to keep a single source of truth for
+routing: a sibling class would have duplicated ~400 lines of dispatcher/decision code
+(the §"Stop rule" anti-pattern), and future tuning would have to be applied twice.
+New surfaces: `RISE_API_CreateAutoSpectralRasterizer` + `Job::SetAutoSpectralRasterizer`
++ the descriptor-driven `auto_spectral_rasterizer` parser; **NO new source file**, so
+the five build projects are untouched. The spectral routing validation + its one
+documented limitation (`spectral_caustic` → PT, not VCM) are in §6.2.2.
 
 ---
 
@@ -177,6 +189,14 @@ are the documented later add for power users.
   detection. Spectral sibling (`auto_spectral_rasterizer`) deferred to **Phase 1b**
   (§3.1). Round-trip persists the pin in the rasterizer snapshot; the UI "Auto"
   selector + introspection is Phase 7.
+- **Phase 1b — Spectral sibling `auto_spectral_rasterizer`.** ✅ **DONE (2026-06-05).**
+  A domain flag on the existing `AutoRasterizer` (§3.1) delegating to the `*_spectral_`
+  rasterizers and **reusing the Pel decision logic verbatim** (single source of truth).
+  Adds the `auto_spectral_rasterizer` parser, `RISE_API_CreateAutoSpectralRasterizer`,
+  and `Job::SetAutoSpectralRasterizer`; tests in `tests/AutoRasterizerTest.cpp` (pin
+  equivalence to the `*_spectral_` rasterizers, spectral static routing incl. the
+  reachable VCM route, and the spectral-caustic probe regression). Routing validation
+  + the one documented limitation are in **§6.2.2**.
 - **Phase 2 — Tier-1 static best-guess.** ✅ **DONE (2026-06-04).** Implemented
   the heuristic in `AutoRasterizer::SelectIntegrator(const IScene*)` and validated
   its picks against the matrix's per-scene verdicts. Full outcome — the
@@ -519,8 +539,11 @@ output), no rasterizer-lifecycle surgery, and the candidate renders provably do
    Pel-only; the real probe routes `spectral_caustic` → **PT**, because its
    *dispersive* caustic is spectral-only and its RGB projection carries no strong
    caustic (so PT is in fact correct for the Pel domain). The area-lit-caustic→VCM
-   capability is validated on the RGB `glass_pavilion` instead; closing
-   `spectral_caustic` is the `auto_spectral_rasterizer` follow-up (§3.1).
+   capability is validated on the RGB `glass_pavilion` instead. The
+   `auto_spectral_rasterizer` follow-up shipped (§3.1), but **even the spectral probe
+   routes `spectral_caustic` → PT** — the RGB-projected mean-reach gate is defeated by
+   the VCM-spectral luminance-proxy merge energy loss, a documented out-of-scope gap.
+   Full analysis + the kept-identical-gate decision: **§6.2.2**.
 
 ---
 
@@ -594,6 +617,66 @@ localized caustic whose PT goes *dark* would need an independent energy-reach
 trigger (the mean-ratio firing **without** the median gate) — a riskier change
 that discards the median gate's firefly-robustness; deferred as out of scope for
 the `jewel_vault` fix and documented here.
+
+---
+
+### 6.2.2 Phase-1b spectral sibling — routing validation + the `spectral_caustic` limitation (2026-06-05)
+
+**Status:** ✅ `auto_spectral_rasterizer` ships as a domain flag on `AutoRasterizer`
+(§3.1). Integrators + concrete **Pel AND spectral** rasterizers are **byte-identical**
+to HEAD — pure dispatcher logic. The Tier-0 pin / Tier-1 static / Tier-2 probe decision
+tree is shared verbatim with the Pel path; only `BuildDelegate` (factory switch) and the
+carried `SpectralConfig` differ.
+
+**What routes correctly** (measured in-process at the shipped probe config — scale 4,
+spp 4, τ_caustic 1.30, τ_reach 1.50, τ_bdpt 1.35; `tests/AutoRasterizerTest.cpp`):
+
+| spectral scene | tier | route | how |
+|---|---|---|---|
+| pin pt / bdpt / vcm | Tier-0 | PT / BDPT / VCM | delegates to the matching `*_spectral_` rasterizer (radiance ≡ verified) |
+| diffuse + point light | Tier-1 static | PT | no dielectric → PT |
+| dielectric + point light | Tier-1 static | **VCM** | transmissive ∧ positional → VCM (**proves the spectral VCM delegate is reachable**) |
+| dielectric, area-lit only | Tier-1 static | PT | no positional light → PT |
+| `spectral_caustic` (dispersive) | Tier-2 probe | **PT** ⚠ | median gate fires, reach gate fails — see below |
+
+**The `spectral_caustic` → PT limitation (the gate is deliberately kept identical to
+the Pel path).** Phase-1b's goal was to close `spectral_caustic` → VCM (the Pel auto
+routes it PT because its dispersive caustic is spectral-only — §6.2 finding #2). The
+spectral probe runs correctly — it renders spectral PT+VCM candidates and evaluates the
+same two-gate caustic test — but routes **PT**, measured in-process (zero flips):
+
+- **Gate 1 (median-lum) FIRES:** VCM/PT median ≈ **2.9×** (> τ_caustic 1.30). VCM
+  genuinely spreads the dispersive caustic across more pixels than PT, so the caustic
+  *is* detected by the firefly-robust median.
+- **Gate 2 (mean-reach) FAILS:** VCM/PT mean ≈ **0.7×** (< τ_reach 1.50). The
+  transport-reach gate (§6.2.1) encodes "a real caustic is energy PT can't reach, so
+  VCM-mean ≫ PT-mean." That is **inverted in the spectral domain** by the documented
+  **VCM-spectral luminance-proxy merge** (`RISEPelToNMProxy`, SPECTRAL_PARITY_AUDIT §3):
+  the merge loses dispersion energy, so VCM-spectral's RGB-projected MEAN sits *below*
+  PT-spectral's (whose sparse caustic-hitting samples become mean-inflating fireflies —
+  the same firefly inflation that made mean-lum a broken *primary* caustic signal in
+  Phase 3). The reach gate is therefore not discriminating on spectral caustics — it is
+  *always-failing*, so it would reject every spectral caustic, real or not.
+
+**Decision (2026-06-05): keep the gate identical; route `spectral_caustic` → PT.** Three
+options were weighed: (1) skip gate 2 for spectral (route VCM on the median alone),
+(2) keep the gate identical and route PT, (3) make gate 2 firefly-robust for both
+domains. **(2) was chosen.** Rationale: the shared two-gate decision stays a *single
+source of truth with zero per-domain divergence* (the chip's strongest constraint, and
+the whole point of the domain-flag architecture), and PT is a *safe* route — unbiased,
+always converges, just noisier than VCM-optimal on this scene per the matrix. Option (1)
+would fork the routing policy and rely on the unmeasured assumption that no spectral
+analogue of the `jewel_vault` over-fire exists; option (3) changes the validated shared
+gate and would require re-validating the full Pel probe corpus, and might still not fire
+if VCM's total spectral energy is genuinely below PT's. **Properly** closing
+`spectral_caustic` → VCM requires fixing the VCM-spectral merge energy loss
+(per-wavelength VCM photons — SPECTRAL_PARITY_AUDIT §3 / BASELINES §"VCM-spectral
+dispersion-loss"), a multi-week integrator effort explicitly out of scope for the
+dispatcher. The spectral VCM *delegate* is proven reachable (the `vcm` pin + the static
+dielectric+point route); only the *probe's automatic selection* of it for a dispersive
+caustic is gated by that merge fix. `tests/AutoRasterizerTest.cpp` locks
+`spectral_caustic` → PT as a regression guard — it will flip to VCM the moment the
+merge energy-loss is closed.
 
 ---
 

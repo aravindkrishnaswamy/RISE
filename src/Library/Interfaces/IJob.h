@@ -2038,6 +2038,29 @@ namespace RISE
 			const bool probeEnabled									///< [in] Enable the Tier-2 render-time probe (Phase 4; gated on activation-spp)
 			) = 0;
 
+		//! Sets the rasterizer to the SPECTRAL auto-routing dispatcher
+		//! (`auto_spectral_rasterizer`, Phase 1b).  Same dispatcher as
+		//! SetAutoRasterizer (shared Tier-0/1/2 decision logic) but the resolved
+		//! delegate is a `*_spectral_` rasterizer; carries the spectral-core
+		//! params instead of path-guiding (the spectral domain has none).
+		virtual bool SetAutoSpectralRasterizer(
+			const AutoIntegratorChoice integrator,					///< [in] Author pin (Auto = dispatcher decides)
+			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel
+			const char* shader,										///< [in] The default shader
+			const RadianceMapConfig& radianceMapConfig,				///< [in] Global radiance map (IBL) configuration
+			const PixelFilterConfig& pixelFilterConfig,				///< [in] Pixel reconstruction filter
+			const bool bShowLuminaires,								///< [in] Should we be able to see the luminaires?
+			const SpectralConfig& spectralConfig,					///< [in] Spectral wavelength range, bins, and sampling strategy
+			const bool oidnDenoise,									///< [in] Enable OIDN denoising post-process
+			const OidnQuality oidnQuality,							///< [in] OIDN quality preset (Auto = render-time heuristic)
+			const OidnDevice oidnDevice,							///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+			const OidnPrefilter oidnPrefilter,						///< [in] OIDN aux source mode
+			const AdaptiveSamplingConfig& adaptiveConfig,			///< [in] Adaptive sampling configuration
+			const StabilityConfig& stabilityConfig,					///< [in] Production stability controls
+			const ProgressiveConfig& progressiveConfig,				///< [in] Progressive multi-pass rendering configuration
+			const bool probeEnabled									///< [in] Enable the Tier-2 render-time probe (Phase 4; gated on activation-spp)
+			) = 0;
+
 		//! Sets the rasterizer to pure path tracing (Pel, bypasses shader ops)
 		virtual bool SetPathTracingPelRasterizer(
 			const unsigned int numPixelSamples,						///< [in] Number of samples / pixel

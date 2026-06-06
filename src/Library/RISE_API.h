@@ -2806,6 +2806,39 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const bool probeEnabled = false,	///< [in] Enable the Tier-2 render-time probe (Phase 4; gated on activation-spp)
 								Implementation::FrameStore* frameStore = nullptr    ///< [in] Canonical FrameStore (default null until Job pushes one)
 								);
+	//! Creates the SPECTRAL auto-routing integrator dispatcher
+	//! (`auto_spectral_rasterizer` - Phase 1b of docs/AUTO_RASTERIZER_DESIGN.md).
+	//! Identical dispatcher to RISE_API_CreateAutoRasterizer (same AutoRasterizer
+	//! class, same Tier-0 pin / Tier-1 static / Tier-2 probe decision logic via
+	//! its domain flag), but the resolved delegate is one of the `*_spectral_`
+	//! rasterizers, built with the spectral-core params below.  No path-guiding
+	//! / optimal-MIS on the spectral domain (matching the concrete `*_spectral_`
+	//! chunks); the disabled PathGuidingConfig the BDPT/VCM spectral factories
+	//! still take is supplied internally.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateAutoSpectralRasterizer(
+								IRasterizer** ppi,					///< [out] Pointer to receive the rasterizer
+								IRayCaster* caster,					///< [in] Ray caster to use for rays
+								ISampling2D* pSamples,				///< [in] Sampler for subsamples
+								IPixelFilter* pFilter,				///< [in] Pixel Filter for samples
+								const AutoIntegratorChoice integrator,	///< [in] Author pin (Auto = dispatcher decides)
+								const Scalar lambda_begin,			///< [in] Start wavelength (nm)
+								const Scalar lambda_end,			///< [in] End wavelength (nm)
+								const unsigned int num_wavelengths,	///< [in] Number of wavelength bins
+								const unsigned int spectral_samples,///< [in] Spectral samples per pixel
+								const bool useHWSS,					///< [in] Use Hero Wavelength Spectral Sampling
+								const bool oidnDenoise,				///< [in] Enable OIDN denoising post-process (forwarded to the delegate)
+								const OidnQuality oidnQuality,		///< [in] OIDN quality preset (Auto = render-time heuristic)
+								const OidnDevice oidnDevice,		///< [in] OIDN device backend (Auto = prefer GPU, fall back to CPU)
+								const OidnPrefilter oidnPrefilter,	///< [in] OIDN aux source mode
+								const AdaptiveSamplingConfig& adaptiveConfig,	///< [in] Adaptive sampling configuration
+								const StabilityConfig& stabilityConfig,	///< [in] Production stability controls
+								const bool useZSobol,				///< [in] Use Morton-indexed Sobol (blue-noise error distribution)
+								const ProgressiveConfig& progressiveConfig,	///< [in] Progressive multi-pass configuration (applied to the delegate)
+								const bool probeEnabled = false,	///< [in] Enable the Tier-2 render-time probe (Phase 4; gated on activation-spp)
+								Implementation::FrameStore* frameStore = nullptr    ///< [in] Canonical FrameStore (default null until Job pushes one)
+								);
+
 
 	//! Creates a pure path tracing spectral rasterizer (bypasses shader ops)
 	/// \return TRUE if successful, FALSE otherwise

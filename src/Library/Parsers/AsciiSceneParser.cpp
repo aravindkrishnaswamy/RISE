@@ -7730,6 +7730,127 @@ namespace RISE
 				}
 			};
 
+				struct AutoSpectralRasterizerAsciiChunkParser : public IAsciiChunkParser
+				{
+					bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+					{
+						AutoRasterizerDefaults dflt;
+						std::string defaultshader   = bag.GetString( "defaultshader",  dflt.defaultShader );
+						unsigned int numSamples     = bag.GetUInt(   "samples",        dflt.numPixelSamples );
+						bool showLuminaires         = bag.GetBool(   "show_luminaires", dflt.showLuminaires );
+						bool probeEnabled           = bag.GetBool(   "probe",          dflt.probeEnabled );
+						bool oidnDenoise            = bag.GetBool(   "oidn_denoise",    dflt.oidnDenoise );
+						OidnQuality oidnQuality     = ParseOidnQuality(   bag.GetString( "oidn_quality",   to_hint(dflt.oidnQuality) ) );
+						OidnDevice  oidnDevice      = ParseOidnDevice(    bag.GetString( "oidn_device",    to_hint(dflt.oidnDevice) ) );
+						OidnPrefilter oidnPrefilter = ParseOidnPrefilter( bag.GetString( "oidn_prefilter", to_hint(dflt.oidnPrefilter) ) );
+
+						// Integrator pin (Tier 0) — identical vocabulary to auto_rasterizer.
+						AutoIntegratorChoice integrator = dflt.integrator;
+						if( bag.Has("integrator") ) {
+							std::string iv = StripSurroundingQuotes( bag.GetString("integrator") );
+							std::transform( iv.begin(), iv.end(), iv.begin(),
+								[]( unsigned char c ){ return std::tolower( c ); } );
+							if( iv == "pt" || iv == "pathtracing" || iv == "path_tracing" ) integrator = AutoIntegratorChoice::PT;
+							else if( iv == "bdpt" )                                         integrator = AutoIntegratorChoice::BDPT;
+							else if( iv == "vcm" )                                          integrator = AutoIntegratorChoice::VCM;
+							else if( iv == "auto" )                                         integrator = AutoIntegratorChoice::Auto;
+							else {
+								GlobalLog()->PrintEx( eLog_Warning,
+									"Parser: unknown auto_spectral_rasterizer integrator \"%s\"; defaulting to auto", iv.c_str() );
+								integrator = AutoIntegratorChoice::Auto;
+							}
+						}
+
+						RadianceMapConfig radianceMapConfig;
+						if( bag.Has("radiance_map") )        radianceMapConfig.name         = String(bag.GetString("radiance_map").c_str());
+						if( bag.Has("radiance_scale") )      radianceMapConfig.scale        = bag.GetDouble("radiance_scale");
+						if( bag.Has("radiance_background") ) radianceMapConfig.isBackground = bag.GetBool("radiance_background");
+						if( bag.Has("radiance_orient") ) {
+							bag.GetVec3( "radiance_orient", radianceMapConfig.orientation );
+							radianceMapConfig.orientation[0] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[1] *= DEG_TO_RAD;
+							radianceMapConfig.orientation[2] *= DEG_TO_RAD;
+						}
+
+						PixelFilterConfig pixelFilterConfig;
+						if( bag.Has("blue_noise_sampler") )  pixelFilterConfig.blueNoiseSampler = bag.GetBool("blue_noise_sampler");
+						if( bag.Has("pixel_sampler") )       pixelFilterConfig.pixelSampler     = String(bag.GetString("pixel_sampler").c_str());
+						if( bag.Has("pixel_sampler_param") ) pixelFilterConfig.pixelSamplerParam= bag.GetDouble("pixel_sampler_param");
+						if( bag.Has("pixel_filter") )        pixelFilterConfig.filter           = String(bag.GetString("pixel_filter").c_str());
+						if( bag.Has("pixel_filter_width") )  pixelFilterConfig.width            = bag.GetDouble("pixel_filter_width");
+						if( bag.Has("pixel_filter_height") ) pixelFilterConfig.height           = bag.GetDouble("pixel_filter_height");
+						if( bag.Has("pixel_filter_paramA") ) pixelFilterConfig.paramA           = bag.GetDouble("pixel_filter_paramA");
+						if( bag.Has("pixel_filter_paramB") ) pixelFilterConfig.paramB           = bag.GetDouble("pixel_filter_paramB");
+
+						// Spectral-core params replace path-guiding on this chunk (the
+						// spectral domain has no guiding); accept both `hwss` and the legacy
+						// `use_hwss` spelling, matching pathtracing_spectral_rasterizer.
+						SpectralConfig spectralConfig;
+						if( bag.Has("spectral_samples") ) spectralConfig.spectralSamples = bag.GetUInt("spectral_samples");
+						if( bag.Has("num_wavelengths") )  spectralConfig.numWavelengths  = bag.GetUInt("num_wavelengths");
+						if( bag.Has("nmbegin") )          spectralConfig.nmBegin         = bag.GetDouble("nmbegin");
+						if( bag.Has("nmend") )            spectralConfig.nmEnd           = bag.GetDouble("nmend");
+						if( bag.Has("hwss") )             spectralConfig.useHWSS         = bag.GetBool("hwss");
+						if( bag.Has("use_hwss") )         spectralConfig.useHWSS         = bag.GetBool("use_hwss");
+
+						AdaptiveSamplingConfig adaptiveConfig;
+						if( bag.Has("adaptive_max_samples") ) adaptiveConfig.maxSamples = bag.GetUInt("adaptive_max_samples");
+						if( bag.Has("adaptive_threshold") )   adaptiveConfig.threshold  = bag.GetDouble("adaptive_threshold");
+						if( bag.Has("show_adaptive_map") )    adaptiveConfig.showMap    = bag.GetBool("show_adaptive_map");
+
+						// Stability config minus optimal-MIS: the spectral integrators do not
+						// allocate the optimal-MIS accumulator (SPECTRAL_PARITY_AUDIT §1), so
+						// the descriptor below omits AddOptimalMISParams too.
+						StabilityConfig stabilityConfig;
+						if( bag.Has("direct_clamp") )                    stabilityConfig.directClamp                  = bag.GetDouble("direct_clamp");
+						if( bag.Has("indirect_clamp") )                  stabilityConfig.indirectClamp                = bag.GetDouble("indirect_clamp");
+						if( bag.Has("rr_min_depth") )                    stabilityConfig.rrMinDepth                   = bag.GetUInt("rr_min_depth");
+						if( bag.Has("rr_threshold") )                    stabilityConfig.rrThreshold                  = bag.GetDouble("rr_threshold");
+						if( bag.Has("max_diffuse_bounce") )              stabilityConfig.maxDiffuseBounce             = bag.GetUInt("max_diffuse_bounce");
+						if( bag.Has("max_glossy_bounce") )               stabilityConfig.maxGlossyBounce              = bag.GetUInt("max_glossy_bounce");
+						if( bag.Has("max_transmission_bounce") )         stabilityConfig.maxTransmissionBounce        = bag.GetUInt("max_transmission_bounce");
+						if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
+						if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
+						if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+
+						ProgressiveConfig progressiveConfig;
+						if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
+						if( bag.Has("progressive_samples_per_pass") ) {
+							const unsigned int spp = bag.GetUInt("progressive_samples_per_pass");
+							progressiveConfig.samplesPerPass = spp > 0 ? spp : 1;
+						}
+
+						return pJob.SetAutoSpectralRasterizer( integrator, numSamples,
+							defaultshader.c_str(), radianceMapConfig,
+							pixelFilterConfig,
+							showLuminaires,
+							spectralConfig,
+							oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter, adaptiveConfig, stabilityConfig, progressiveConfig,
+							probeEnabled );
+					}
+
+					const ChunkDescriptor& Describe() const override {
+						static const ChunkDescriptor d = []{
+							AutoRasterizerDefaults dflt;
+							ChunkDescriptor cd;
+							cd.keyword = "auto_spectral_rasterizer"; cd.category = ChunkCategory::Rasterizer;
+							cd.description = "Spectral auto-routing integrator dispatcher: delegates to PT/BDPT/VCM spectral (Phase 1b: author pin via `integrator`, else PT; `probe` enables the Tier-2 render-time probe).";
+							auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+							AddBaseRasterizerParams( P, dflt );
+							{ auto& p = P(); p.name = "integrator"; p.kind = ValueKind::Enum; p.enumValues = {"auto","pt","bdpt","vcm"}; p.description = "Integrator selection: auto (dispatcher decides) or an explicit pin (pt/bdpt/vcm)"; p.defaultValueHint = to_hint(dflt.integrator); }
+							{ auto& p = P(); p.name = "probe"; p.kind = ValueKind::Bool; p.description = "Enable the Tier-2 render-time probe (Phase 4): a cheap reduced-res/low-spp pre-render of candidate spectral integrators that picks per-scene (caustic median+reach -> VCM; strong-indirect sigma2T -> BDPT; else PT).  Only fires once production `samples` clears the activation-spp gate; below it the dispatcher uses the Tier-1 static best-guess.  Default off."; p.defaultValueHint = dflt.probeEnabled ? "TRUE" : "FALSE"; }
+							AddPixelFilterParams( P );
+							AddRadianceMapParams( P );
+							AddSpectralCoreParams( P );
+							AddAdaptiveSamplingParams( P );
+							AddStabilityConfigParams( P );
+							AddProgressiveParams( P );
+							return cd;
+						}();
+						return d;
+					}
+				};
+
 			struct PathTracingPelRasterizerAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -8998,6 +9119,7 @@ namespace RISE
 		add( "pathtracing_pel_rasterizer",            new PathTracingPelRasterizerAsciiChunkParser() );
 		add( "pathtracing_spectral_rasterizer",       new PathTracingSpectralRasterizerAsciiChunkParser() );
 		add( "auto_rasterizer",                       new AutoRasterizerAsciiChunkParser() );
+		add( "auto_spectral_rasterizer",              new AutoSpectralRasterizerAsciiChunkParser() );
 		add( "mlt_rasterizer",                        new MLTRasterizerAsciiChunkParser() );
 		add( "mlt_spectral_rasterizer",               new MLTSpectralRasterizerAsciiChunkParser() );
 

@@ -242,6 +242,8 @@ AutoRasterizer::AutoRasterizer(
 	const bool useZSobol,
 	const ProgressiveConfig& progressiveConfig,
 	const bool probeEnabled,
+	const bool spectral,
+	const SpectralConfig& spectralConfig,
 	FrameStore* frameStore
 	) :
 	Rasterizer( frameStore )
@@ -259,6 +261,8 @@ AutoRasterizer::AutoRasterizer(
 	,mUseZSobol( useZSobol )
 	,mProgressive( progressiveConfig )
 	,mProbeEnabled( probeEnabled )
+	,mSpectral( spectral )
+	,mSpectralConfig( spectralConfig )
 	,mDelegate( 0 )
 	,mResolved( AutoIntegratorChoice::Auto )
 	,mLastProbeSeconds( 0.0 )
@@ -651,6 +655,67 @@ IRasterizer* AutoRasterizer::BuildDelegate(
 {
 	IRasterizer* d = 0;
 
+	// SPECTRAL DOMAIN — delegate to the *_spectral_ factories.  This `if`
+	// is the ONLY domain-specific code in the wrapper; the integrator choice,
+	// the canonical per-integrator depth/merge defaults, and the
+	// caster/sampler/filter/stability/FrameStore plumbing are identical to the
+	// Pel branch.  The decision logic that PICKED `choice` (SelectIntegrator /
+	// RunProbe / ProbeCandidate) is shared verbatim across both domains.
+	if( mSpectral )
+	{
+		const SpectralConfig& sc = mSpectralConfig;
+		switch( choice )
+		{
+		case AutoIntegratorChoice::BDPT:
+			{
+				// BDPTSpectralDefaults == BDPTPelDefaults depths; mirror
+				// Job::SetBDPTSpectralRasterizer, which builds the *Adaptive
+				// factory (the legacy non-adaptive overload is ABI-only).
+				BDPTSpectralDefaults bd;
+				RISE_API_CreateBDPTSpectralRasterizerAdaptive( &d, mCaster, samples, mFilter,
+					bd.maxEyeDepth, bd.maxLightDepth,
+					sc.nmBegin, sc.nmEnd, sc.numWavelengths, sc.spectralSamples,
+					oidnDenoise, mOidnQuality, mOidnDevice, mOidnPrefilter,
+					guiding, adaptive, mStability, mUseZSobol, sc.useHWSS, fs );
+			}
+			break;
+
+		case AutoIntegratorChoice::VCM:
+			{
+				VCMSpectralDefaults vd;
+				RISE_API_CreateVCMSpectralRasterizer( &d, mCaster, samples, mFilter,
+					vd.maxEyeDepth, vd.maxLightDepth,
+					sc.nmBegin, sc.nmEnd, sc.numWavelengths, sc.spectralSamples,
+					vd.mergeRadius, vd.enableVC, vd.enableVM,
+					oidnDenoise, mOidnQuality, mOidnDevice, mOidnPrefilter,
+					guiding, adaptive, mStability, mUseZSobol, sc.useHWSS, fs );
+			}
+			break;
+
+		case AutoIntegratorChoice::PT:
+		case AutoIntegratorChoice::Auto:
+		default:
+			{
+				// Spectral PT takes NO path-guiding arg (the spectral PT
+				// factory has none — see SPECTRAL_PARITY_AUDIT §1) so `guiding`
+				// is intentionally not forwarded here; it still rides the
+				// BDPT/VCM spectral cases above.  Matches
+				// Job::SetPathTracingSpectralRasterizer's argument set.
+				SMSConfig sms;
+				RISE_API_CreatePathTracingSpectralRasterizer( &d, mCaster, samples, mFilter,
+					sc.nmBegin, sc.nmEnd, sc.numWavelengths, sc.spectralSamples,
+					sms.enabled, sms.maxIterations, sms.threshold, sms.maxChainDepth, sms.biased,
+					sms.bernoulliTrials, sms.multiTrials, sms.photonCount, sms.twoStage,
+					sms.useLevenbergMarquardt, sms.seedingMode, sms.targetBounces,
+					oidnDenoise, mOidnQuality, mOidnDevice, mOidnPrefilter,
+					adaptive, mStability, mUseZSobol, sc.useHWSS, fs );
+			}
+			break;
+		}
+		return d;
+	}
+
+	// --- Pel (RGB) domain (the original Phase-1 path) ---
 	switch( choice )
 	{
 	case AutoIntegratorChoice::BDPT:
@@ -730,8 +795,8 @@ void AutoRasterizer::EnsureResolved( const IScene* scene ) const
 			mDelegate, mProgressive.enabled, mProgressive.samplesPerPass );
 
 		GlobalLog()->PrintEx( eLog_Event,
-			"AutoRasterizer:: integrator '%s' -> delegating to '%s' (%s)",
-			IntegratorName( mPinned ), IntegratorName( choice ),
+			"AutoRasterizer:: [%s] integrator '%s' -> delegating to '%s' (%s)",
+			mSpectral ? "spectral" : "pel", IntegratorName( mPinned ), IntegratorName( choice ),
 			mResolveReason.empty() ? "default" : mResolveReason.c_str() );
 	} );
 }

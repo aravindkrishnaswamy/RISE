@@ -30,11 +30,13 @@
 //    they are added before the delegate exists, so the dispatcher
 //    REPLAYS them onto the freshly-built delegate at resolution time.
 //
-//    Spectral sibling (`auto_spectral_rasterizer`) is the immediate
-//    Phase-1b follow-up — it delegates to the `*_spectral_` variants and
-//    carries the spectral-core params; see the design doc §3.  Adding it
-//    is a parallel class (or a domain flag) plus a BuildDelegate switch
-//    over the spectral factories.
+//    Spectral sibling (`auto_spectral_rasterizer`) is implemented as a
+//    DOMAIN FLAG on this same class (Phase 1b, 2026-06-05): `mSpectral`
+//    switches `BuildDelegate` to the `*_spectral_` factories and the
+//    wrapper carries a `SpectralConfig` (range/bins/samples/HWSS) in place
+//    of path-guiding / optimal-MIS.  The decision logic (SelectIntegrator
+//    / RunProbe / ProbeCandidate) is shared verbatim, so there is ONE
+//    source of truth for routing across both domains; see design doc §3.1.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: June 4, 2026
@@ -54,6 +56,7 @@
 #include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/StabilityConfig.h"
 #include "../Utilities/ProgressiveConfig.h"
+#include "../Utilities/SpectralConfig.h"        // SpectralConfig (auto_spectral domain)
 #include <mutex>
 #include <string>
 
@@ -88,6 +91,8 @@ namespace RISE
 				const bool useZSobol,							///< [in] Z-order Sobol sampler toggle
 				const ProgressiveConfig& progressiveConfig,		///< [in] Progressive multi-pass configuration
 				const bool probeEnabled,						///< [in] Enable the Tier-2 render-time probe (Phase 4; gated on activation-spp)
+				const bool spectral,							///< [in] Domain: false = Pel (RGB), true = spectral (delegate to *_spectral_)
+				const SpectralConfig& spectralConfig,			///< [in] Spectral-core params (range/bins/samples/HWSS); used only when spectral==true
 				FrameStore* frameStore							///< [in] Canonical FrameStore (may be null until Job pushes one)
 				);
 
@@ -263,6 +268,15 @@ namespace RISE
 			// requires the production sample count to clear the activation-spp
 			// gate; see ReadProbeConfig / SelectIntegrator.
 			bool						mProbeEnabled;
+
+			// Domain selector (Phase 1b).  false = Pel (RGB) factories; true =
+			// spectral factories.  The ONLY axis on which the two siblings
+			// differ — the SelectIntegrator/RunProbe decision logic is shared.
+			bool						mSpectral;
+			// Spectral-core params (range / bins / samples / HWSS).  Carried
+			// only for the spectral domain; default-constructed (unused) for
+			// Pel.  BuildDelegate unpacks it into the *_spectral_ factory args.
+			SpectralConfig				mSpectralConfig;
 
 			// Lazily-resolved delegate.  `mutable` because RasterizeScene
 			// (and its siblings) are `const` per the IRasterizer contract

@@ -5641,10 +5641,69 @@ namespace RISE
 			caster, pSamples, pFilter, integrator,
 			oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
 			guidingConfig, adaptiveConfig, stabilityConfig,
-			useZSobol, progressiveConfig, probeEnabled, frameStore );
+			useZSobol, progressiveConfig, probeEnabled,
+			/*spectral*/ false, SpectralConfig(), frameStore );
 
 		(*ppi) = pRasterizer;
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Auto rasterizer" );
+		return true;
+	}
+
+	//! Creates the SPECTRAL auto-routing integrator dispatcher (auto_spectral_rasterizer)
+	bool RISE_API_CreateAutoSpectralRasterizer(
+								IRasterizer** ppi,
+								IRayCaster* caster,
+								ISampling2D* pSamples,
+								IPixelFilter* pFilter,
+								const AutoIntegratorChoice integrator,
+								const Scalar lambda_begin,
+								const Scalar lambda_end,
+								const unsigned int num_wavelengths,
+								const unsigned int spectral_samples,
+								const bool useHWSS,
+								const bool oidnDenoise,
+								const OidnQuality oidnQuality,
+								const OidnDevice oidnDevice,
+								const OidnPrefilter oidnPrefilter,
+								const AdaptiveSamplingConfig& adaptiveConfig,
+								const StabilityConfig& stabilityConfig,
+								const bool useZSobol,
+								const ProgressiveConfig& progressiveConfig,
+								const bool probeEnabled,
+								Implementation::FrameStore* frameStore
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Bundle the spectral-core params the wrapper carries for the
+		// *_spectral_ delegate factories (BuildDelegate unpacks them).
+		SpectralConfig spectralConfig;
+		spectralConfig.nmBegin         = lambda_begin;
+		spectralConfig.nmEnd           = lambda_end;
+		spectralConfig.numWavelengths  = num_wavelengths;
+		spectralConfig.spectralSamples = spectral_samples;
+		spectralConfig.useHWSS         = useHWSS;
+
+		// The spectral domain exposes NO path-guiding (the spectral PT factory
+		// has no guiding arg; the BDPT/VCM spectral factories take a disabled
+		// one).  Supply the disabled default so the shared AutoRasterizer ctor
+		// signature is satisfied without a guiding knob on the spectral chunk.
+		const PathGuidingConfig guidingConfig;   // default = disabled
+
+		// Same dispatcher class as the Pel factory; the `true` domain flag is
+		// the only difference, switching BuildDelegate to the *_spectral_
+		// factories.  The Tier-0/1/2 decision logic is shared verbatim.
+		AutoRasterizer* pRasterizer = new AutoRasterizer(
+			caster, pSamples, pFilter, integrator,
+			oidnDenoise, oidnQuality, oidnDevice, oidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig,
+			useZSobol, progressiveConfig, probeEnabled,
+			/*spectral*/ true, spectralConfig, frameStore );
+
+		(*ppi) = pRasterizer;
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "Auto spectral rasterizer" );
 		return true;
 	}
 

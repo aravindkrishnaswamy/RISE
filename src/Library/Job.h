@@ -2095,6 +2095,27 @@ namespace RISE
 			const bool probeEnabled
 			);
 
+		// Spectral sibling of SetAutoRasterizer (auto_spectral_rasterizer).
+		// No `override` keyword for the same reason (see above / the
+		// feedback_override_keyword_in_job memory).
+		bool SetAutoSpectralRasterizer(
+			const AutoIntegratorChoice integrator,
+			const unsigned int numPixelSamples,
+			const char* shader,
+			const RadianceMapConfig& radianceMapConfig,
+			const PixelFilterConfig& pixelFilterConfig,
+			const bool bShowLuminaires,
+			const SpectralConfig& spectralConfig,
+			const bool oidnDenoise,
+			const OidnQuality oidnQuality,
+			const OidnDevice oidnDevice,
+			const OidnPrefilter oidnPrefilter,
+			const AdaptiveSamplingConfig& adaptiveConfig,
+			const StabilityConfig& stabilityConfig,
+			const ProgressiveConfig& progressiveConfig,
+			const bool probeEnabled
+			);
+
 		bool SetPathTracingPelRasterizer(
 			const unsigned int numPixelSamples,
 			const char* shader,
