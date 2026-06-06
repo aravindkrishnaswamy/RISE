@@ -139,6 +139,11 @@ final class RenderViewModel: ObservableObject {
     @Published var sceneEditsDirty: Bool = false
     @Published var versionString: String = ""
     @Published var elapsedTime: TimeInterval = 0
+    /// When the active rasterizer is the auto-dispatcher, the concrete
+    /// integrator it resolved to ("pt"/"bdpt"/"vcm") and the one-line reason —
+    /// surfaced as "Auto -> X" after a render.  nil for a normal rasterizer.
+    @Published var resolvedIntegrator: String? = nil
+    @Published var resolveReason: String? = nil
     // nil while the ETA is still warming up or otherwise unavailable.
     @Published var remainingTime: TimeInterval? = nil
     @Published var sceneSize: CGSize? = nil
@@ -859,10 +864,17 @@ final class RenderViewModel: ObservableObject {
                 self.remainingTime = nil
 
                 if cancelRef.value {
+                    self.resolvedIntegrator = nil
+                    self.resolveReason = nil
                     self.renderState = .cancelled
                 } else if success {
+                    // Auto-dispatcher resolved at render time; surface its pick.
+                    self.resolvedIntegrator = self.bridge.autoResolvedIntegrator()
+                    self.resolveReason = self.bridge.autoResolveReason()
                     self.renderState = .completed
                 } else {
+                    self.resolvedIntegrator = nil
+                    self.resolveReason = nil
                     self.renderState = .error("Rasterization failed")
                 }
 

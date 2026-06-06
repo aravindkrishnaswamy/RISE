@@ -134,6 +134,14 @@ namespace RISE
 			//! UI "Auto -> VCM" surfacing.
 			AutoIntegratorChoice ResolvedIntegrator() const { return mResolved; }
 
+			//! IRasterizer auto-dispatcher introspection (the cross-UI query
+			//! surface): IsAutoDispatcher()==true; the resolved concrete integrator
+			//! name ("pt"/"bdpt"/"vcm", or "auto" before the first render) and the
+			//! one-line reason, both valid after the first render-time resolution.
+			virtual bool IsAutoDispatcher() const { return true; }
+			virtual const char* ResolvedIntegratorName() const;
+			virtual const char* ResolveReason() const { return mResolveReason.c_str(); }
+
 			//! Total wall-clock seconds the Tier-2 probe spent rendering
 			//! candidate integrators (0 if the probe didn't run).  Exposed
 			//! so the §6.2 resolution/cost sweep can read the REAL in-process

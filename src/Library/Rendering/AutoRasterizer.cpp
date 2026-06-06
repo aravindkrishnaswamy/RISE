@@ -262,6 +262,13 @@ namespace
 	}
 }
 
+// Resolved concrete integrator name ("pt"/"bdpt"/"vcm", or "auto" pre-resolve)
+// — the string form of ResolvedIntegrator() for the IRasterizer query surface.
+const char* AutoRasterizer::ResolvedIntegratorName() const
+{
+	return IntegratorName( mResolved );
+}
+
 AutoRasterizer::AutoRasterizer(
 	IRayCaster* caster,
 	ISampling2D* samples,

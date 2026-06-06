@@ -377,6 +377,7 @@ struct ContentView: View {
             Text(statusText)
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .help(viewModel.resolveReason ?? "")
 
             Spacer()
 
@@ -495,6 +496,9 @@ struct ContentView: View {
         case .cancelling:
             return "Cancelling — waiting for active block to finish…"
         case .completed:
+            if let integ = viewModel.resolvedIntegrator {
+                return "Render complete · Auto → \(integ.uppercased())"
+            }
             return "Render complete"
         case .cancelled:
             return "Render cancelled"

@@ -142,6 +142,16 @@ typedef void (^RISELogBlock)(RISELogLevel level, NSString *message);
 /// Returns the height of the loaded scene's camera, or 0 if no scene is loaded.
 - (uint32_t)cameraHeight;
 
+/// The active rasterizer's resolved concrete integrator ("pt"/"bdpt"/"vcm"),
+/// IF it is the auto_rasterizer dispatcher; nil for a normal rasterizer or
+/// before the first render (the dispatcher resolves lazily at render time).
+/// Drives the "Auto -> X" status surfacing after a render.
+- (nullable NSString *)autoResolvedIntegrator;
+
+/// The one-line reason the auto-dispatcher chose its integrator (nil if the
+/// active rasterizer is not the auto-dispatcher).
+- (nullable NSString *)autoResolveReason;
+
 /// Sets the scene time the next `rasterize` call should render at.
 /// Internally invokes `IScene::SetSceneTime(t)` immediately, which:
 ///   - Advances the animator (camera, transforms, materials at time t).

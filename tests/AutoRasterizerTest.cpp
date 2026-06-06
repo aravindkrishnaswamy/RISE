@@ -126,6 +126,8 @@ struct ImageStats
 	bool   valid;
 	AutoIntegratorChoice resolved;   // valid only when the rasterizer was an AutoRasterizer
 	bool   wasAuto;                  // true if GetRasterizer() down-cast to AutoRasterizer
+	std::string resolvedName;        // ResolvedIntegratorName() — the cross-UI string API
+	bool   queryApiOK;               // IsAutoDispatcher() && ResolveReason() non-empty
 };
 
 static double Percentile( std::vector<double>& v, double p )
@@ -233,6 +235,8 @@ static ImageStats RenderAndComputeStats( const char* scenePath )
 	if( pAuto ) {
 		result.wasAuto = true;
 		result.resolved = pAuto->ResolvedIntegrator();
+		result.resolvedName = pAuto->ResolvedIntegratorName();
+		result.queryApiOK = pAuto->IsAutoDispatcher() && pAuto->ResolveReason()[0] != '\0';
 	}
 
 	safe_release( pCap );
@@ -498,6 +502,8 @@ static void CheckDelegation(
 
 	// (a) STRONG: the dispatcher resolved to the right delegate.
 	Check( a.wasAuto, std::string("active rasterizer is an AutoRasterizer: ") + label );
+	Check( a.queryApiOK && a.resolvedName == ChoiceName(expected),
+		std::string("query API (name+reason) consistent: ") + label );
 	const bool resolvedOK = ( a.resolved == expected );
 	Check( resolvedOK, std::string("resolved to '") + ChoiceName(expected)
 		+ "' (got '" + ChoiceName(a.resolved) + "'): " + label );
@@ -551,6 +557,8 @@ static void CheckStaticRoute(
 	Check( a.valid, std::string("render produced output: ") + label );
 	if( !a.valid ) return;
 	Check( a.wasAuto, std::string("active rasterizer is an AutoRasterizer: ") + label );
+	Check( a.queryApiOK && a.resolvedName == ChoiceName(expected),
+		std::string("query API (name+reason) consistent: ") + label );
 	const bool ok = ( a.resolved == expected );
 	Check( ok, std::string("resolved to '") + ChoiceName(expected)
 		+ "' (got '" + ChoiceName(a.resolved) + "'): " + label );
@@ -718,6 +726,8 @@ static void CheckProbeRoute(
 	Check( a.valid,   std::string("probe render produced output: ") + label );
 	if( !a.valid ) return;
 	Check( a.wasAuto, std::string("active rasterizer is an AutoRasterizer: ") + label );
+	Check( a.queryApiOK && a.resolvedName == ChoiceName(expected),
+		std::string("query API (name+reason) consistent: ") + label );
 	const bool ok = ( a.resolved == expected );
 	Check( ok, std::string("probe resolved to '") + ChoiceName(expected)
 		+ "' (got '" + ChoiceName(a.resolved) + "'): " + label );
@@ -808,6 +818,8 @@ static void CheckSpectralProbeRoute(
 	Check( a.valid,   std::string("probe render produced output: ") + label );
 	if( !a.valid ) return;
 	Check( a.wasAuto, std::string("active rasterizer is an AutoRasterizer: ") + label );
+	Check( a.queryApiOK && a.resolvedName == ChoiceName(expected),
+		std::string("query API (name+reason) consistent: ") + label );
 	const bool ok = ( a.resolved == expected );
 	Check( ok, std::string("probe resolved to '") + ChoiceName(expected)
 		+ "' (got '" + ChoiceName(a.resolved) + "'): " + label );

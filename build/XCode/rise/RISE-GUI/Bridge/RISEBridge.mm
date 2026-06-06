@@ -1050,6 +1050,25 @@ public:
     return _job->AreThereAnyKeyframedObjects() ? YES : NO;
 }
 
+- (NSString *)autoResolvedIntegrator {
+    // The active rasterizer's resolved concrete integrator, IF it is the
+    // auto-dispatcher.  nil for a normal rasterizer (or before any render —
+    // the dispatcher resolves lazily at the first render-time entry).
+    if (!_job) return nil;
+    IRasterizer* r = _job->GetRasterizer();
+    if (!r || !r->IsAutoDispatcher()) return nil;
+    const char* name = r->ResolvedIntegratorName();
+    return (name && name[0]) ? [NSString stringWithUTF8String:name] : nil;
+}
+
+- (NSString *)autoResolveReason {
+    if (!_job) return nil;
+    IRasterizer* r = _job->GetRasterizer();
+    if (!r || !r->IsAutoDispatcher()) return nil;
+    const char* reason = r->ResolveReason();
+    return (reason && reason[0]) ? [NSString stringWithUTF8String:reason] : nil;
+}
+
 - (uint32_t)cameraWidth {
     // Post-master-merge — camera dims live on the scene-level Film
     // (origin/master's camera-Film split, commit 45aa217).

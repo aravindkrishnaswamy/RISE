@@ -118,6 +118,15 @@ namespace RISE
 		//! when handing the FrameStore to a thread that may outlive
 		//! the rasterizer.
 		virtual Implementation::FrameStore* GetFrameStore() const { return nullptr; }
+
+		//! Auto-dispatcher introspection — for the auto_rasterizer + the "Auto"
+		//! UI surfacing.  A plain rasterizer is not a dispatcher; AutoRasterizer
+		//! overrides these to report the concrete integrator it resolved to
+		//! (valid after the first render) and the one-line reason.  The cross-UI
+		//! query surface: every C++ bridge reaches it via IJobPriv::GetRasterizer().
+		virtual bool IsAutoDispatcher() const { return false; }
+		virtual const char* ResolvedIntegratorName() const { return ""; }
+		virtual const char* ResolveReason() const { return ""; }
 	};
 }
 
