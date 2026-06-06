@@ -180,6 +180,7 @@ fun ViewportPane(
     progress: Float,
     elapsedMs: Long,
     remainingMs: Long?,
+    resolvedIntegrator: String,
     onRender: () -> Unit,
     onCancel: () -> Unit,
     /// L5d — invoked when the user picks a format from the Save
@@ -315,6 +316,7 @@ fun ViewportPane(
                 progress = progress,
                 elapsedMs = elapsedMs,
                 remainingMs = remainingMs,
+                resolvedIntegrator = resolvedIntegrator,
                 interactionEnabled = interactionEnabled,
                 onRender = onRender,
                 onCancel = onCancel,
@@ -431,6 +433,7 @@ private fun ViewportStateStrip(
     progress: Float,
     elapsedMs: Long,
     remainingMs: Long?,
+    resolvedIntegrator: String,
     interactionEnabled: Boolean,
     onRender: () -> Unit,
     onCancel: () -> Unit,
@@ -445,7 +448,7 @@ private fun ViewportStateStrip(
                 is RenderState.Loading     -> "Loading${'…'}"
                 is RenderState.Rendering   -> "Rendering ${state.width}${'×'}${state.height} ${'·'} ${(progress * 100).toInt()}%"
                 is RenderState.Cancelling  -> "Cancelling${'…'}"
-                is RenderState.Done        -> "Done ${'·'} Elapsed ${formatDurationMs(elapsedMs)}"
+                is RenderState.Done        -> if (resolvedIntegrator.isNotEmpty()) "Done \u00b7 Elapsed ${formatDurationMs(elapsedMs)} \u00b7 Auto \u2192 ${resolvedIntegrator.uppercase()}" else "Done \u00b7 Elapsed ${formatDurationMs(elapsedMs)}"
                 is RenderState.Cancelled   -> "Cancelled"
                 is RenderState.Error       -> "Error: ${state.message}"
             }

@@ -143,6 +143,7 @@ fun RenderScreen(
                         elapsedMs = elapsedMs,
                         remainingMs = remainingMs,
                         onRender = { viewModel.startRender() },
+                        resolvedIntegrator = resolvedIntegrator,
                         onCancel = viewModel::cancel,
                         viewExposureEV = viewExposureEV,
                         onExposureChange = { viewModel.setViewExposureEV(it) },
@@ -167,7 +168,6 @@ fun RenderScreen(
                     )
                 } else {
                     RenderCanvas(
-                        resolvedIntegrator = resolvedIntegrator,
                         modifier = Modifier.fillMaxWidth().fillMaxHeight(),
                         frame = frame,
                         state = state,
@@ -271,7 +271,6 @@ private fun RenderCanvas(
     progress: Float,
     elapsedMs: Long,
     remainingMs: Long?,
-    resolvedIntegrator: String,
     onCancel: () -> Unit,
 ) {
     Card(modifier, shape = RoundedCornerShape(16.dp)) {
@@ -279,14 +278,6 @@ private fun RenderCanvas(
             StateStrip(state = state, progress = progress, onCancel = onCancel)
             Spacer(Modifier.height(4.dp))
             TimeReadout(state = state, elapsedMs = elapsedMs, remainingMs = remainingMs)
-            if (state is RenderState.Done && resolvedIntegrator.isNotEmpty()) {
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    "Auto \u2192 ${resolvedIntegrator.uppercase()}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
             Spacer(Modifier.height(12.dp))
             Box(
                 Modifier
