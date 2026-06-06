@@ -9116,10 +9116,13 @@ bool Job::SetActiveRasterizer( const char* name )
 
 const std::vector<std::string>& Job::StandardRasterizerTypes()
 {
-	// Display order: PT before BDPT before VCM before MLT, with Pel
+	// Display order: Auto (the recommended auto-routing dispatcher) leads,
+	// then PT before BDPT before VCM before MLT, with Pel
 	// before Spectral within each family.  Matches the conventional
 	// "simple → complex" reading the user expects in the accordion.
 	static const std::vector<std::string> kTypes = {
+		"auto_rasterizer",
+		"auto_spectral_rasterizer",
 		"pathtracing_pel_rasterizer",
 		"pathtracing_spectral_rasterizer",
 		"bdpt_pel_rasterizer",
@@ -9437,6 +9440,31 @@ bool Job::InstantiateRasterizerWithDefaults( const std::string& name )
 	StabilityConfig       stabilityConfig;
 	ProgressiveConfig     progressiveConfig;
 
+	if( name == "auto_rasterizer" ) {
+		// Interactive "Auto" selection -> the full smart dispatcher with the
+		// Tier-2 probe ENABLED (it self-gates on auto_probe_activation_spp, so
+		// previews/low-spp stay on the Tier-1 static best-guess; only final
+		// renders pay the probe).  This differs from the scene-file chunk
+		// default (probe opt-in) on purpose: picking Auto in a UI means "route
+		// me to the best integrator", which needs the probe.
+		AutoRasterizerDefaults d;
+		return SetAutoRasterizer(
+			d.integrator, d.numPixelSamples,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			guidingConfig, adaptiveConfig, stabilityConfig, progressiveConfig,
+			/*probeEnabled*/ true );
+	}
+	if( name == "auto_spectral_rasterizer" ) {
+		AutoRasterizerDefaults d;
+		return SetAutoSpectralRasterizer(
+			d.integrator, d.numPixelSamples,
+			shader.c_str(), radianceMapConfig, pixelFilterConfig, d.showLuminaires,
+			spectralConfig,
+			d.oidnDenoise, d.oidnQuality, d.oidnDevice, d.oidnPrefilter,
+			adaptiveConfig, stabilityConfig, progressiveConfig,
+			/*probeEnabled*/ true );
+	}
 	if( name == "pixelpel_rasterizer" ) {
 		PixelPelDefaults d;
 		const char* lumSampler = ( d.luminarySampler == "none" ) ? 0 : d.luminarySampler.c_str();

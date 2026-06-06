@@ -72,7 +72,7 @@ class RISERenderSettings(bpy.types.PropertyGroup):
             ("10", "Auto (Spectral)",        "Auto-routing dispatcher, spectral"),
             ("0", "Pixel Rasterizer",        "Legacy shader-op stack, no PT — fastest preview"),
         ),
-        default="1",
+        default="9",  # Auto (Pel) — the smart auto-routing dispatcher
     )
 
     # Bidirectional / MLT subpath depth.  Default 0 = "fall back to

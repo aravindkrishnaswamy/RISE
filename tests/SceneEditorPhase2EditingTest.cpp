@@ -274,9 +274,10 @@ static void TestLazyRasterizerInstantiation()
 	Job* pJob = MakeJobAndSeed();   // adds a "global" shader
 
 	// At first, no rasterizer is registered.  But the type list still
-	// surfaces all 8 standard types.
-	Check( pJob->GetRasterizerTypeCount() >= 8,
-	       "Type list includes 8 standard types even when registry is empty" );
+	// surfaces all 10 standard types (incl. auto_rasterizer +
+	// auto_spectral_rasterizer).
+	Check( pJob->GetRasterizerTypeCount() >= 10,
+	       "Type list includes 10 standard types even when registry is empty" );
 
 	std::set<std::string> seen;
 	for( unsigned int i = 0; i < pJob->GetRasterizerTypeCount(); ++i ) {
@@ -286,6 +287,8 @@ static void TestLazyRasterizerInstantiation()
 	Check( seen.count( "bdpt_pel_rasterizer" )         == 1, "BDPT-pel listed" );
 	Check( seen.count( "vcm_pel_rasterizer" )          == 1, "VCM-pel listed" );
 	Check( seen.count( "mlt_rasterizer" )              == 1, "MLT listed" );
+	Check( seen.count( "auto_rasterizer" )             == 1, "auto_rasterizer listed" );
+	Check( seen.count( "auto_spectral_rasterizer" )    == 1, "auto_spectral_rasterizer listed" );
 
 	// Switch to BDPT-pel — should lazy-build and activate.
 	const bool ok = pJob->SetActiveRasterizer( "bdpt_pel_rasterizer" );
@@ -300,6 +303,15 @@ static void TestLazyRasterizerInstantiation()
 	Check( okPT, "Switch to PT-pel succeeds" );
 	Check( pJob->GetActiveRasterizerName() == "pathtracing_pel_rasterizer",
 	       "Active rasterizer switched to PT-pel" );
+
+	// Switch to auto_rasterizer — the dispatcher lazy-builds + activates;
+	// the GUI rasterizer dropdown reaches it through exactly this path.
+	const bool okAuto = pJob->SetActiveRasterizer( "auto_rasterizer" );
+	Check( okAuto, "Lazy-build of auto_rasterizer succeeds" );
+	Check( pJob->GetActiveRasterizerName() == "auto_rasterizer",
+	       "Active rasterizer is auto_rasterizer" );
+	Check( pJob->GetRasterizer() != nullptr && pJob->GetRasterizer()->IsAutoDispatcher(),
+	       "lazy-built auto_rasterizer reports IsAutoDispatcher()" );
 
 	// Switch back to BDPT — should be cached, not re-built.
 	const bool okBack = pJob->SetActiveRasterizer( "bdpt_pel_rasterizer" );

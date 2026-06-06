@@ -217,7 +217,7 @@ static void TestCategoryEnumeration()
 	Check( c.CategoryEntityCount( Cat::Object ) == 0, "Object count = 0" );
 	Check( c.CategoryEntityCount( Cat::Light )  == 0, "Light count = 0" );
 	// Rasterizer count: always >= 8 in Phase 2 because Job's
-	// `GetRasterizerTypeCount` surfaces the standard 8-type catalogue
+	// `GetRasterizerTypeCount` surfaces the standard 10-type catalogue
 	// (PT/BDPT/VCM/MLT × Pel/Spectral) regardless of whether any have
 	// been instantiated.  Selecting an unbuilt type triggers
 	// lazy-instantiation with defaults inside SetActiveRasterizer.
