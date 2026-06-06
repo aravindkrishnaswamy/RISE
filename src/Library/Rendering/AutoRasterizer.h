@@ -128,6 +128,22 @@ namespace RISE
 				IRasterizeSequence* pRasterSequence
 				) const;
 
+			//
+			// State-mutators the base `Rasterizer` DOES provide, re-declared
+			// so the wrapper forwards them to the resolved delegate.  Without
+			// these the base impl mutates ONLY the wrapper's own pProgressFunc
+			// / outs and the delegate -- the object that actually renders --
+			// keeps whatever it was seeded with at the one-time resolve.  That
+			// desync is a use-after-free: the macOS GUI deletes + recreates
+			// its progress callback on a Merge-load, so the delegate's frozen
+			// pProgressFunc dangles and the next render's SetTitle() jumps
+			// through a zeroed vtable slot (PC=0).  Forwarding keeps the
+			// delegate in lock-step with the wrapper every render.
+			//
+			virtual void SetProgressCallback( IProgressCallback* pFunc );
+			virtual void AddRasterizerOutput( IRasterizerOutput* ro );
+			virtual void FreeRasterizerOutputs();
+
 			//! The integrator the dispatcher resolved to.  `Auto` until
 			//! the first render-time entry runs selection; the concrete
 			//! pick (PT/BDPT/VCM) thereafter.  For diagnostics / a future

@@ -890,6 +890,50 @@ void AutoRasterizer::DetachFromScene( const IScene* pScene )
 	}
 }
 
+//
+// State-mutator forwarding (the use-after-free fix).  The base
+// `Rasterizer` impls mutate the wrapper's OWN pProgressFunc / outs; we
+// additionally push the change onto the resolved delegate so the object
+// that actually renders stays in lock-step.  Before this, the delegate
+// kept whatever it was seeded with at the one-time `EnsureResolved`
+// replay -- a use-after-free once the host swapped that state.  The
+// macOS GUI repro: render `auto` (a PT delegate freezes the then-current
+// progress callback), Merge-load a new scene (the bridge deletes +
+// recreates its progress callback), render `auto` again -- the delegate
+// still pointed at the freed callback, so `pProgressFunc->SetTitle()` in
+// PixelBasedRasterizerHelper::RasterizeScene jumped through a zeroed
+// vtable slot (PC=0).  Forwarding makes every per-render
+// SetProgressCallback / FreeRasterizerOutputs / AddRasterizerOutput from
+// Job::Rasterize + the host bridge reach the delegate.
+//
+// The base call stays FIRST so the wrapper's own copy remains
+// authoritative: a not-yet-resolved delegate is seeded from the
+// wrapper's outs / pProgressFunc when `EnsureResolved` finally builds it.
+//
+void AutoRasterizer::SetProgressCallback( IProgressCallback* pFunc )
+{
+	Rasterizer::SetProgressCallback( pFunc );
+	if( mDelegate ) {
+		mDelegate->SetProgressCallback( pFunc );
+	}
+}
+
+void AutoRasterizer::AddRasterizerOutput( IRasterizerOutput* ro )
+{
+	Rasterizer::AddRasterizerOutput( ro );
+	if( mDelegate ) {
+		mDelegate->AddRasterizerOutput( ro );
+	}
+}
+
+void AutoRasterizer::FreeRasterizerOutputs()
+{
+	Rasterizer::FreeRasterizerOutputs();
+	if( mDelegate ) {
+		mDelegate->FreeRasterizerOutputs();
+	}
+}
+
 unsigned int AutoRasterizer::PredictTimeToRasterizeScene(
 	const IScene& pScene,
 	const ISampling2D& pSampling,

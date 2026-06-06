@@ -56,6 +56,7 @@
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IRasterizer.h"
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
+#include "../src/Library/Interfaces/IProgressCallback.h"
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
@@ -825,6 +826,115 @@ static void CheckSpectralProbeRoute(
 		+ "' (got '" + ChoiceName(a.resolved) + "'): " + label );
 }
 
+//////////////////////////////////////////////////////////////////////
+// CountingProgressCallback -- records which progress callback the
+// delegate actually drove.  The macOS GUI crash was a dangling
+// pProgressFunc whose SetTitle() jumped through a zeroed vtable slot.
+//////////////////////////////////////////////////////////////////////
+class CountingProgressCallback : public virtual IProgressCallback
+{
+public:
+	int titleCalls;
+	int progressCalls;
+	CountingProgressCallback() : titleCalls(0), progressCalls(0) {}
+	virtual bool Progress( const double, const double ) override { progressCalls++; return true; }
+	virtual void SetTitle( const char* ) override { titleCalls++; }
+};
+
+//////////////////////////////////////////////////////////////////////
+// TestDelegateStateForwarding -- the AutoRasterizer is a delegating
+// wrapper; the host (Job::Rasterize + the GUI bridge) re-sets the
+// progress callback and swaps output sinks on EVERY render, so those
+// mutators must reach the resolved DELEGATE, not just the wrapper.
+// Pre-fix the delegate froze whatever it was seeded with at the
+// one-time resolve; on a GUI Merge-load (no clearAll) the bridge
+// deleted + recreated its progress callback, leaving the delegate's
+// pointer dangling -> the next render crashed in
+// PixelBasedRasterizerHelper::RasterizeScene at
+// pProgressFunc->SetTitle("Rasterizing Scene: ") (PC=0).
+//
+// Render once (resolving + seeding the delegate with O1/P1), then swap
+// in O2/P2 exactly as the host does and render again.  With the fix the
+// delegate drives O2/P2 and drops O1/P1; pre-fix it kept driving O1/P1.
+//////////////////////////////////////////////////////////////////////
+static void TestDelegateStateForwarding()
+{
+	const std::string label = "delegate state forwarding survives a post-resolve swap";
+	std::cout << "Testing " << label << std::endl;
+
+	const std::string scene =
+		std::string("RISE ASCII SCENE 6\n") + kShader + kAutoPT + kSceneCommon;
+	const std::string p = WriteSceneToTempFile( scene.c_str(), "fwd" );
+	if( p.empty() ) { Check( false, "temp scene written: " + label ); return; }
+
+	IJobPriv* pJob = nullptr;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) {
+		Check( false, "job created: " + label );
+		std::remove( p.c_str() );
+		return;
+	}
+	if( !pJob->LoadAsciiScene( p.c_str() ) ) {
+		Check( false, "scene loaded: " + label );
+		safe_release( pJob );
+		std::remove( p.c_str() );
+		return;
+	}
+
+	IRasterizer* pRast = pJob->GetRasterizer();
+	Check( dynamic_cast<AutoRasterizer*>( pRast ) != nullptr,
+		"active rasterizer is the auto dispatcher: " + label );
+
+	// First render: seed O1 + P1.  This is the one-time resolve that
+	// wires the delegate.  We hold our OWN ref on O1 so we can inspect it
+	// after the (forwarded) FreeRasterizerOutputs drops the wrapper's +
+	// delegate's refs.
+	pJob->RemoveRasterizerOutputs();
+	CapturingRasterizerOutput* O1 = new CapturingRasterizerOutput();
+	O1->addref();
+	pRast->AddRasterizerOutput( O1 );
+	CountingProgressCallback P1;
+	pJob->SetProgress( &P1 );
+	pJob->Rasterize();
+
+	Check( O1->width > 0 && P1.titleCalls > 0,
+		"first render wired the initial sink + callback (delegate resolved): " + label );
+
+	// Swap render state AFTER resolution -- exactly what the host bridge
+	// does every render (the path the GUI crash came from).
+	pRast->FreeRasterizerOutputs();
+	CapturingRasterizerOutput* O2 = new CapturingRasterizerOutput();
+	O2->addref();
+	pRast->AddRasterizerOutput( O2 );
+	CountingProgressCallback P2;
+	pJob->SetProgress( &P2 );
+
+	// Clear O1 so a stale delegate write to it is detectable (P1 is a
+	// stack object -- always safe to inspect).
+	O1->width = 0;
+	O1->height = 0;
+	O1->pixels.clear();
+	P1.titleCalls = 0;
+	P1.progressCalls = 0;
+
+	pJob->Rasterize();
+
+	// With the forwarding fix the delegate tracks the wrapper's new state:
+	Check( O2->width > 0,
+		"post-swap render reached the NEW output sink: " + label );
+	Check( P2.titleCalls > 0,
+		"post-swap render drove the NEW progress callback (no dangling pointer): " + label );
+	// ...and no longer touches the superseded (would-be-freed) state:
+	Check( O1->width == 0,
+		"post-swap render did NOT write the superseded output sink: " + label );
+	Check( P1.titleCalls == 0,
+		"post-swap render did NOT drive the superseded progress callback: " + label );
+
+	safe_release( O1 );
+	safe_release( O2 );
+	safe_release( pJob );
+	std::remove( p.c_str() );
+}
+
 int main()
 {
 	// Phase-4: enable the Tier-2 probe at low spp for the routing tests by
@@ -865,6 +975,15 @@ int main()
 	// in Phase 1 (Tier-0 selection), so both must match pathtracing_pel.
 	CheckDelegation( "integrator auto  -> PT", kAutoAuto,  "auto_auto",  kRefPT, "ref_pt2", AutoIntegratorChoice::PT );
 	CheckDelegation( "integrator unset -> PT", kAutoUnset, "auto_unset", kRefPT, "ref_pt3", AutoIntegratorChoice::PT );
+
+	// --- Lifecycle regression: delegate state forwarding (the macOS GUI
+	//     Merge-load crash, 2026-06-06).  The wrapper MUST forward a
+	//     post-resolution SetProgressCallback / FreeRasterizerOutputs /
+	//     AddRasterizerOutput to its delegate, else the delegate keeps a
+	//     frozen (soon-dangling) progress callback / output set -> PC=0.
+	std::cout << std::endl;
+	std::cout << "--- Lifecycle: delegate state forwarding ---" << std::endl;
+	TestDelegateStateForwarding();
 
 	// --- Phase 2: Tier-1 static best-guess (integrator auto, no pin) ---
 	// The dispatcher introspects the assembled scene: a transmissive
