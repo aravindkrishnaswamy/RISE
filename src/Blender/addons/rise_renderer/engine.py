@@ -8,6 +8,18 @@ from . import bridge, exporter, material_bake
 from .properties import addon_preferences
 
 
+# Phase 7b — the auto-dispatcher's most recent resolution, surfaced in the
+# Properties > Render panel (ui.py).  Process-wide + transient (not per-scene,
+# not saved); set after each render in RISEBlenderRenderEngine.render().
+_LAST_AUTO_RESOLUTION = {"is_auto": False, "integrator": "", "reason": ""}
+
+
+def get_last_auto_resolution():
+    """The {is_auto, integrator, reason} of the most recent render's auto
+    dispatcher, for the UI panel.  is_auto is False for a non-auto rasterizer."""
+    return dict(_LAST_AUTO_RESOLUTION)
+
+
 class RISEBlenderRenderEngine(bpy.types.RenderEngine):
     bl_idname = "RISE_RENDER"
     bl_label = "RISE"
@@ -270,7 +282,23 @@ class RISEBlenderRenderEngine(bpy.types.RenderEngine):
         self.end_result(result)
 
         self.update_progress(1.0)
-        self.update_stats("RISE", f"{image.width} x {image.height}")
+
+        # Phase 7b — surface the auto-dispatcher's resolution: the render stats
+        # line + an INFO report (Blender info bar / console), and stash it for
+        # the Properties panel (ui.py reads get_last_auto_resolution()).
+        global _LAST_AUTO_RESOLUTION
+        if getattr(image, "is_auto", False) and image.resolved_integrator:
+            summary = f"Auto \u2192 {image.resolved_integrator.upper()}"
+            _LAST_AUTO_RESOLUTION = {
+                "is_auto": True,
+                "integrator": image.resolved_integrator,
+                "reason": image.resolve_reason,
+            }
+            self.update_stats("RISE", f"{image.width} x {image.height}  \u00b7  {summary}")
+            self.report({"INFO"}, f"RISE: {summary} ({image.resolve_reason})")
+        else:
+            _LAST_AUTO_RESOLUTION = {"is_auto": False, "integrator": "", "reason": ""}
+            self.update_stats("RISE", f"{image.width} x {image.height}")
 
 
 def register():

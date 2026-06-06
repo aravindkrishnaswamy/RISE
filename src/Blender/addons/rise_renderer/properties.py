@@ -68,6 +68,8 @@ class RISERenderSettings(bpy.types.PropertyGroup):
             ("6", "VCM (Spectral)",          "Vertex Connection & Merging, spectral"),
             ("7", "MLT (Pel)",               "Metropolis Light Transport / PSSMLT, RGB"),
             ("8", "MLT (Spectral)",          "Metropolis Light Transport / PSSMLT, spectral"),
+            ("9", "Auto (Pel)",              "Auto-routing dispatcher (RGB) - picks PT / BDPT / VCM per scene"),
+            ("10", "Auto (Spectral)",        "Auto-routing dispatcher, spectral"),
             ("0", "Pixel Rasterizer",        "Legacy shader-op stack, no PT — fastest preview"),
         ),
         default="1",

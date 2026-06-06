@@ -18,6 +18,7 @@
 #include <Interfaces/IFunction2DManager.h>
 #include <Interfaces/ILog.h>
 #include <Interfaces/IJobPriv.h>
+#include <Interfaces/IRasterizer.h>
 #include <Interfaces/IJobRasterizerOutput.h>
 #include <Interfaces/ILightManager.h>
 #include <Interfaces/IMaterialManager.h>
@@ -2009,6 +2010,37 @@ namespace
 			return true;
 		}
 
+		case RISE_BLENDER_RASTERIZER_AUTO_PEL:
+			if( !job.SetAutoRasterizer(
+				RISE::AutoIntegratorChoice::Auto,
+				pixel_samples, kShaderName, radiance_map_config,
+				pixel_filter_config, settings.show_lights != 0,
+				settings.oidn_denoise != 0,
+				oidn_quality, oidn_device, oidn_prefilter,
+				guiding_config, adaptive_config, stability_config, progressive_config,
+				/*probeEnabled*/ true ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create the auto rasterizer" );
+				return false;
+			}
+			return true;
+
+		case RISE_BLENDER_RASTERIZER_AUTO_SPECTRAL:
+			if( !job.SetAutoSpectralRasterizer(
+				RISE::AutoIntegratorChoice::Auto,
+				pixel_samples, kShaderName, radiance_map_config,
+				pixel_filter_config, settings.show_lights != 0,
+				spectral_config,
+				settings.oidn_denoise != 0,
+				oidn_quality, oidn_device, oidn_prefilter,
+				adaptive_config, stability_config, progressive_config,
+				/*probeEnabled*/ true ) )
+			{
+				write_error( error_message, error_message_size, "Failed to create the auto-spectral rasterizer" );
+				return false;
+			}
+			return true;
+
 		default:
 			write_error( error_message, error_message_size, "Unknown rasterizer kind" );
 			return false;
@@ -2192,6 +2224,24 @@ extern "C" int rise_blender_render_scene(
 		write_error( error_message, error_message_size, "RISE did not produce an image buffer" );
 		RISE::safe_release( job );
 		return 0;
+	}
+
+	// Auto-dispatcher resolution (ABI v8): if the active rasterizer is the
+	// auto_rasterizer, report the concrete integrator it resolved to + the reason
+	// for the Blender UI's "Auto -> X" surfacing.  Queried while the rasterizer is
+	// still alive (before the job is released).
+	result->is_auto = 0;
+	result->resolved_integrator[0] = '\0';
+	result->resolve_reason[0] = '\0';
+	{
+		RISE::IRasterizer* active = job->GetRasterizer();
+		if( active && active->IsAutoDispatcher() ) {
+			result->is_auto = 1;
+			std::snprintf( result->resolved_integrator, sizeof( result->resolved_integrator ),
+				"%s", active->ResolvedIntegratorName() );
+			std::snprintf( result->resolve_reason, sizeof( result->resolve_reason ),
+				"%s", active->ResolveReason() );
+		}
 	}
 
 	RISE::safe_release( job );

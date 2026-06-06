@@ -1,7 +1,7 @@
 import bpy
 
 from . import bridge, material_bake
-from .engine import RISEBlenderRenderEngine
+from .engine import RISEBlenderRenderEngine, get_last_auto_resolution
 from .properties import addon_preferences
 
 
@@ -38,6 +38,20 @@ class RISE_RENDER_PT_settings(_RISEPanel):
 
         settings = context.scene.rise
         layout.prop(settings, "rasterizer_type")
+
+        # Phase 7b — when Auto is selected, surface what the dispatcher
+        # resolved to on the most recent render (set by engine.py).  The
+        # dispatcher uses canonical per-integrator defaults, so the BDPT /
+        # VCM / MLT knobs below are intentionally NOT shown for Auto.
+        if settings.rasterizer_type in ("9", "10"):
+            res = get_last_auto_resolution()
+            box = layout.box()
+            if res.get("is_auto") and res.get("integrator"):
+                box.label(text="Auto \u2192 " + res["integrator"].upper(), icon="CHECKMARK")
+                if res.get("reason"):
+                    box.label(text=res["reason"], icon="INFO")
+            else:
+                box.label(text="Auto - render to resolve the integrator", icon="INFO")
         layout.prop(settings, "pixel_samples")
         layout.prop(settings, "light_samples")
         layout.prop(settings, "max_recursion")

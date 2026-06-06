@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 7
+#define RISE_BLENDER_API_VERSION 8
 
 #ifdef __cplusplus
 extern "C" {
@@ -154,7 +154,9 @@ enum rise_blender_rasterizer_kind {
 	RISE_BLENDER_RASTERIZER_VCM_PEL       = 5,
 	RISE_BLENDER_RASTERIZER_VCM_SPECTRAL  = 6,
 	RISE_BLENDER_RASTERIZER_MLT_PEL       = 7,
-	RISE_BLENDER_RASTERIZER_MLT_SPECTRAL  = 8
+	RISE_BLENDER_RASTERIZER_MLT_SPECTRAL  = 8,
+	RISE_BLENDER_RASTERIZER_AUTO_PEL       = 9,
+	RISE_BLENDER_RASTERIZER_AUTO_SPECTRAL  = 10
 };
 
 typedef struct rise_blender_camera {
@@ -462,6 +464,13 @@ typedef struct rise_blender_render_result {
 	float* rgba;
 	uint32_t width;
 	uint32_t height;
+	// Auto-dispatcher resolution (ABI v8): when the active rasterizer is the
+	// auto_rasterizer, is_auto=1 and these report the concrete integrator it
+	// resolved to ("pt"/"bdpt"/"vcm") + the one-line reason.  Empty / 0 for a
+	// normal rasterizer.
+	int is_auto;
+	char resolved_integrator[16];
+	char resolve_reason[256];
 } rise_blender_render_result;
 
 typedef int (*rise_blender_progress_callback)(void* user_data, float progress, const char* title);

@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 
 
-_EXPECTED_API_VERSION = 7
+_EXPECTED_API_VERSION = 8
 
 
 class BridgeError(RuntimeError):
@@ -26,6 +26,12 @@ class RenderImage:
     width: int
     height: int
     rgba: list[float]
+    # Auto-dispatcher resolution (ABI v8): set when the active rasterizer is
+    # the auto_rasterizer.  resolved_integrator is "pt"/"bdpt"/"vcm"; reason is
+    # the one-line dispatcher explanation.  Empty for a normal rasterizer.
+    is_auto: bool = False
+    resolved_integrator: str = ""
+    resolve_reason: str = ""
 
 
 class _Camera(ctypes.Structure):
@@ -297,6 +303,10 @@ class _RenderResult(ctypes.Structure):
         ("rgba", ctypes.POINTER(ctypes.c_float)),
         ("width", ctypes.c_uint32),
         ("height", ctypes.c_uint32),
+        # ABI v8 — auto-dispatcher resolution (must match rise_blender_render_result)
+        ("is_auto", ctypes.c_int),
+        ("resolved_integrator", ctypes.c_char * 16),
+        ("resolve_reason", ctypes.c_char * 256),
     ]
 
 
@@ -782,7 +792,12 @@ def render_scene(scene, settings, bridge_path: str | None = None, progress=None,
 
         array_type = ctypes.c_float * value_count
         rgba = list(ctypes.cast(result.rgba, ctypes.POINTER(array_type)).contents)
-        return RenderImage(width=int(result.width), height=int(result.height), rgba=rgba)
+        return RenderImage(
+            width=int(result.width), height=int(result.height), rgba=rgba,
+            is_auto=bool(result.is_auto),
+            resolved_integrator=result.resolved_integrator.decode("utf-8", "replace"),
+            resolve_reason=result.resolve_reason.decode("utf-8", "replace"),
+        )
     finally:
         library.rise_blender_free_render_result(ctypes.byref(result))
 
