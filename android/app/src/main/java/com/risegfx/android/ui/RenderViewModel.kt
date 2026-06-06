@@ -61,6 +61,13 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
     private val _remainingMs = MutableStateFlow<Long?>(null)
     val remainingMs: StateFlow<Long?> = _remainingMs.asStateFlow()
 
+    // Phase 7c — the auto-dispatcher's resolution after the most recent render
+    // ("" if the active rasterizer isn't the auto dispatcher).
+    private val _resolvedIntegrator = MutableStateFlow("")
+    val resolvedIntegrator: StateFlow<String> = _resolvedIntegrator.asStateFlow()
+    private val _resolveReason = MutableStateFlow("")
+    val resolveReason: StateFlow<String> = _resolveReason.asStateFlow()
+
     private val _hasAnimation = MutableStateFlow(false)
     val hasAnimation: StateFlow<Boolean> = _hasAnimation.asStateFlow()
 
@@ -341,6 +348,16 @@ class RenderViewModel(app: Application) : AndroidViewModel(app), RiseCallback {
         }
 
         val ok = withContext(Dispatchers.IO) { RiseNative.nativeRasterize() }
+
+        // Phase 7c — surface the auto-dispatcher's resolution once the render
+        // finishes (empty if the active rasterizer isn't the auto dispatcher).
+        if (ok) {
+            _resolvedIntegrator.value = RiseNative.nativeAutoResolvedIntegrator()
+            _resolveReason.value = RiseNative.nativeAutoResolveReason()
+        } else {
+            _resolvedIntegrator.value = ""
+            _resolveReason.value = ""
+        }
 
         drainDirtyAndRepublish()
 

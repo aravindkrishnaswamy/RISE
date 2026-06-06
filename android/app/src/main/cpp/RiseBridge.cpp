@@ -284,6 +284,22 @@ bool RiseBridge::rasterize() {
     return ok;
 }
 
+std::string RiseBridge::autoResolvedIntegrator() const {
+    if (!m_job) return std::string();
+    RISE::IRasterizer* r = m_job->GetRasterizer();
+    if (!r || !r->IsAutoDispatcher()) return std::string();
+    const char* name = r->ResolvedIntegratorName();
+    return (name && name[0]) ? std::string(name) : std::string();
+}
+
+std::string RiseBridge::autoResolveReason() const {
+    if (!m_job) return std::string();
+    RISE::IRasterizer* r = m_job->GetRasterizer();
+    if (!r || !r->IsAutoDispatcher()) return std::string();
+    const char* reason = r->ResolveReason();
+    return (reason && reason[0]) ? std::string(reason) : std::string();
+}
+
 void RiseBridge::requestCancel() {
     m_cancel.store(true);
 }

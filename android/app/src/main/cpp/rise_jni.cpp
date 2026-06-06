@@ -98,6 +98,14 @@ JNIF(jboolean, nativeRasterize)(JNIEnv* /*env*/, jobject /*thiz*/) {
     return getBridge().rasterize() ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIF(jstring, nativeAutoResolvedIntegrator)(JNIEnv* env, jobject /*thiz*/) {
+    return env->NewStringUTF(getBridge().autoResolvedIntegrator().c_str());
+}
+
+JNIF(jstring, nativeAutoResolveReason)(JNIEnv* env, jobject /*thiz*/) {
+    return env->NewStringUTF(getBridge().autoResolveReason().c_str());
+}
+
 JNIF(void, nativeCancel)(JNIEnv* /*env*/, jobject /*thiz*/) {
     getBridge().requestCancel();
 }

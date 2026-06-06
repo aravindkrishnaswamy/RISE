@@ -788,6 +788,15 @@ void MainWindow::updateStatusBar()
     case RenderEngine::Error:      stateText = "Error"; break;
     }
 
+    // Phase 7c -- when the active rasterizer is the auto-dispatcher, surface the
+    // concrete integrator it resolved to (mirrors the macOS status bar).
+    if (m_engine->state() == RenderEngine::Completed) {
+        const QString integ = m_engine->autoResolvedIntegrator();
+        if (!integ.isEmpty()) {
+            stateText += QString(" \u00b7 Auto \u2192 %1").arg(integ.toUpper());
+        }
+    }
+
     statusBar()->showMessage(QString("RISE %1 \u2014 %2")
         .arg(m_engine->versionString(), stateText));
 }

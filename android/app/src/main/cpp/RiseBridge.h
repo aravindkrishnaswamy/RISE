@@ -75,6 +75,13 @@ public:
     // into m_framebuffer while calling back into Kotlin.
     bool rasterize();
 
+    // The active rasterizer's resolved concrete integrator ("pt"/"bdpt"/"vcm")
+    // when it is the auto_rasterizer dispatcher; empty otherwise.  Valid after a
+    // render (the dispatcher resolves lazily at render time).  Queried via
+    // GetRasterizer()->IsAutoDispatcher() etc. -- the shared cross-UI surface.
+    std::string autoResolvedIntegrator() const;
+    std::string autoResolveReason() const;
+
     // Advance the in-memory scene to time `t` AND regenerate every
     // populated photon map.  Called by RenderViewModel before
     // nativeRasterize so post-scrub renders pick up caustics

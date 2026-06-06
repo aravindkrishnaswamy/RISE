@@ -62,6 +62,16 @@ public:
     bool hasAnimation() const { return m_hasAnimation; }
     QString versionString() const;
 
+    /// The active rasterizer's resolved concrete integrator ("pt"/"bdpt"/"vcm")
+    /// when it is the auto_rasterizer dispatcher; empty otherwise (or before the
+    /// first render -- the dispatcher resolves lazily at render time).  Drives the
+    /// "Auto -> X" status-bar surfacing.  Safe on the main thread after a render
+    /// completes (m_job + rasterizer stay alive until the dtor).
+    QString autoResolvedIntegrator() const;
+    /// The one-line reason the auto-dispatcher chose its integrator (empty if the
+    /// active rasterizer is not the dispatcher).
+    QString autoResolveReason() const;
+
     /// Opaque handle to the underlying IJobPriv* — consumed by
     /// ViewportBridge so the interactive editor and the loader bridge
     /// share the same in-memory scene.  The handle is owned by this

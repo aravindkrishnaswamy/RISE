@@ -283,6 +283,24 @@ QString RenderEngine::versionString() const
         .arg(debug ? " (DEBUG)" : "");
 }
 
+QString RenderEngine::autoResolvedIntegrator() const
+{
+    if (!m_job) return QString();
+    auto* r = m_job->GetRasterizer();
+    if (!r || !r->IsAutoDispatcher()) return QString();
+    const char* name = r->ResolvedIntegratorName();
+    return (name && name[0]) ? QString::fromUtf8(name) : QString();
+}
+
+QString RenderEngine::autoResolveReason() const
+{
+    if (!m_job) return QString();
+    auto* r = m_job->GetRasterizer();
+    if (!r || !r->IsAutoDispatcher()) return QString();
+    const char* reason = r->ResolveReason();
+    return (reason && reason[0]) ? QString::fromUtf8(reason) : QString();
+}
+
 void* RenderEngine::opaqueJobHandle() const
 {
     // The ViewportBridge takes IJobPriv* via a void* to avoid leaking

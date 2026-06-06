@@ -76,6 +76,11 @@ object RiseNative {
      */
     external fun nativeRasterize(): Boolean
 
+    // The auto-dispatcher's resolved concrete integrator ("pt"/"bdpt"/"vcm")
+    // after a render; "" if the active rasterizer isn't the auto dispatcher.
+    external fun nativeAutoResolvedIntegrator(): String
+    external fun nativeAutoResolveReason(): String
+
     /** Request cooperative cancellation of an in-flight render. */
     external fun nativeCancel()
 
