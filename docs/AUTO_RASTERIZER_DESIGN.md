@@ -680,6 +680,50 @@ merge energy-loss is closed.
 
 ---
 
+### 6.2.3 Firefly-robust transport-reach — the reach gate's VCM-firefly flake (2026-06-05)
+
+**Status:** ✅ the §6.2.1 reach gate is now firefly-robust; `jewel_vault` and
+`spectral_caustic` route deterministically (30/30 probe runs, zero flips).
+
+The §6.2.1 transport-reach gate originally used the **raw** mean VCM/PT luminance
+ratio. That raw mean is **firefly-sensitive**: at the cheap probe config (scale 4,
+spp 4) VCM's sparse merge fireflies occasionally spike the VCM mean, pushing
+`jewel_vault`'s reach past τ_reach=1.50 ~2.6% of the time → a flaky false VCM route
+(`AutoRasterizerTest` caught it at ~1/38). `jewel_vault`'s *true* reach is ~0.6–0.9
+(PT reaches the energy); the spikes are noise, not reachable energy.
+
+**Fix — winsorize the VCM numerator only (asymmetric).** The reach is now
+`WinsorizedMeanLuminance(vcm, p99) / MeanLuminance(pt)`: the VCM mean clamps each
+pixel to its 99th percentile (clipping the sparse firefly tail) while the PT mean
+stays raw. The asymmetry is principled:
+- **VCM merging is the known mean-inflating pathology** — winsorizing removes its
+  spurious fireflies but leaves a *broad* real caustic essentially intact (a broad
+  caustic's energy is spread over ≫1% of pixels, so the p99 cap barely touches it).
+- **PT has no analogous pathology** — capping PT's tail would *wrongly* inflate the
+  ratio on scenes where PT legitimately reaches noisy-but-real bright energy that the
+  energy-deficient VCM-spectral merge cannot. `spectral_caustic` is exactly that case:
+  a *symmetric* winsorize (capping PT's noisy dispersive caustic) spiked its reach
+  past 1.50 → false VCM route; the asymmetric form keeps PT whole → stable PT.
+
+**Re-validated (winsorized reach, 30/30 runs, zero flips):**
+
+| scene | robust reach (gate) | route | margin to τ=1.50 |
+|---|---|---|---|
+| `jewel_vault` | max **0.90** | PT | 0.60 |
+| `spectral_caustic` | max **0.91** | PT (documented merge limit) | 0.59 |
+| `glass_pavilion` | min **24.7×** | VCM | 23× |
+
+The gate at 1.50 now sits in a `[0.91, 24.7]` gap — far wider than the raw `[1.12,
+1.88]` gap §6.2.1 reported, and it no longer straddles `jewel_vault`'s firefly tail.
+`diamond_teapot` (real caustic, raw reach ~1.9×) is **unaffected**: the asymmetric
+winsorize never caps PT and never removes VCM's *real broad* caustic energy, so its
+reach stays ~1.9× > 1.50 → VCM. New knob `auto_probe_reach_winsor_pct` (default 0.99,
+GlobalOptions-overridable). Implementation: `WinsorizedMeanLuminance` +
+`ProbeResult::robustMeanLum` in `AutoRasterizer.cpp`; the gate at `RunProbe`'s
+two-gate caustic test.
+
+---
+
 ## 7. UI integration (to design with the GUI bridges)
 
 - An **"Auto" mode** as the default in the integrator selector; manual override to

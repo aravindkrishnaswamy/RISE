@@ -831,6 +831,7 @@ int main()
 		    << "auto_probe_scale 4\n"          // §6.2 default (quarter-res)
 		    << "auto_probe_tau_caustic 1.30\n"
 		    << "auto_probe_tau_reach 1.50\n"   // §6.2 transport-reach gate (jewel_vault over-fire fix)
+		    << "auto_probe_reach_winsor_pct 0.99\n" // §6.2 firefly-robust reach: winsorize VCM mean (jewel_vault flake fix)
 		    << "auto_probe_tau_bdpt 1.35\n"
 		    << "auto_probe_variance_renders 2\n";
 		ofs.close();
@@ -914,6 +915,12 @@ int main()
 	// transiently under-converged) but whose transport-reach (mean-lum) gate does
 	// NOT — PT reaches the same energy VCM does, so it is NOT a real caustic and
 	// must route PT (its σ²·T winner), not VCM.  Pre-fix this resolved to VCM.
+	// The reach uses a firefly-ROBUST VCM mean (upper-tail winsorized, p99): at
+	// the cheap probe spp VCM's sparse merge fireflies spiked the raw VCM mean
+	// past 1.50 ~2.6% of the time -> a flaky false VCM route.  Winsorizing the
+	// VCM numerator (PT denominator stays raw) drops jewel_vault's reach to a
+	// stable ~0.6-0.9 (30/30 runs < 1.50) while glass_pavilion's BROAD caustic
+	// survives at ~25x — see AutoRasterizer.cpp WinsorizedMeanLuminance.
 	CheckProbeRoute( "jewel_vault -> PT (over-fire rejected by transport-reach gate)",
 		"scenes/FeatureBased/PathTracing/pt_jewel_vault.RISEscene", "p4_jewel", AutoIntegratorChoice::PT );
 	CheckProbeRoute( "env_only -> PT (env-IBL gate rejects VCM env-bias)",

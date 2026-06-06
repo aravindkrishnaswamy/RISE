@@ -154,6 +154,7 @@ namespace RISE
 				unsigned int scale;				///< resolution divisor: 2=half, 4=quarter, 8=eighth (default 4 — §6.2)
 				double       tauCaustic;		///< median-lum VCM/PT ratio gate 1/2 -> caustic candidate (default 1.30)
 				double       tauReach;			///< mean-lum VCM/PT (transport-reach) gate 2/2 -> VCM (default 1.50; rejects the jewel_vault over-fire)
+				double       reachWinsorPct;	///< upper-tail winsorize pct for the reach mean (default 0.99; clips VCM merge fireflies so the gate sees broad caustic energy, not sparse spikes)
 				double       tauBdpt;			///< σ²·T PT/BDPT ratio -> BDPT (default 1.35)
 				unsigned int varianceRenders;	///< sub-renders for the per-pixel σ² estimate (default 2)
 				unsigned int activationSpp;		///< production spp at/above which the probe runs (default from §6.2 sweep)
@@ -169,6 +170,7 @@ namespace RISE
 				bool   valid;
 				double medianLum;
 				double meanLum;		///< mean per-pixel luminance (the μ in σ/μ; brightness-normalizer for the PT-struggling discriminator)
+				double robustMeanLum;	///< firefly-robust (upper-tail-winsorized) mean luminance — the transport-reach statistic (the raw mean is spiked by VCM merge fireflies at probe spp)
 				double meanVar;
 				double rasSeconds;
 			};

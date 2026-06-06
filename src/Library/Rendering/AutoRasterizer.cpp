@@ -188,6 +188,41 @@ namespace
 		return counted ? accum / double( counted ) : 0.0;
 	}
 
+	//! Upper-tail-winsorized mean luminance — the firefly-robust transport-reach
+	//! statistic.  The raw mean (MeanLuminance) is spiked by VCM's sparse merge
+	//! fireflies at cheap probe spp, which inflates the VCM/PT reach ratio and
+	//! over-fires the caustic route on non-caustic dielectric scenes (jewel_vault:
+	//! true reach ~0.94, but a few fireflies push the raw-mean ratio past tau_reach
+	//! ~2.6% of the time).  A REAL caustic's energy is BROAD (glass_pavilion reach
+	//! 20-32x), so clamping each pixel to the p-th percentile leaves it essentially
+	//! unchanged while clipping the sparse-spike tail.  Winsorize (clamp to the cap)
+	//! rather than trim (drop) so broad real-caustic energy in the top bin still
+	//! counts at the cap.  Skips non-finite samples (same convention as the others).
+	double WinsorizedMeanLuminance( const std::vector<double>& lum, double pct )
+	{
+		std::vector<double> v;
+		v.reserve( lum.size() );
+		for( double x : lum ) {
+			if( std::isfinite( x ) ) { v.push_back( x ); }
+		}
+		if( v.empty() ) {
+			return 0.0;
+		}
+		std::sort( v.begin(), v.end() );
+		const size_t n = v.size();
+		double p = pct;
+		if( p < 0.0 ) { p = 0.0; }
+		if( p > 1.0 ) { p = 1.0; }
+		size_t capIdx = static_cast<size_t>( p * double( n ) );
+		if( capIdx >= n ) { capIdx = n - 1; }
+		const double cap = v[capIdx];
+		double accum = 0.0;
+		for( double x : v ) {
+			accum += ( x > cap ) ? cap : x;
+		}
+		return accum / double( n );
+	}
+
 	//! Mean per-pixel sample variance across K probe sub-renders
 	//! (unbiased, ddof=1) — the σ² in σ²·T.  `frames` are the
 	//! per-render luminance vectors (all the same length).  Non-finite
@@ -393,6 +428,7 @@ AutoRasterizer::ProbeConfig AutoRasterizer::ReadProbeConfig() const
 	// between the converging-dielectric class and the real refractive caustics
 	// (AUTO_RASTERIZER_DESIGN.md §6.2).
 	cfg.tauReach        = opt.ReadDouble( "auto_probe_tau_reach", 1.50 );
+	cfg.reachWinsorPct  = opt.ReadDouble( "auto_probe_reach_winsor_pct", 0.99 );
 	cfg.tauBdpt         = opt.ReadDouble( "auto_probe_tau_bdpt", 1.35 );
 	cfg.varianceRenders = static_cast<unsigned int>( std::max( 2, opt.ReadInt( "auto_probe_variance_renders", 2 ) ) );
 	cfg.activationSpp   = static_cast<unsigned int>( std::max( 1, opt.ReadInt( "auto_probe_activation_spp", 256 ) ) );
@@ -407,6 +443,7 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 	out.valid = false;
 	out.medianLum = 0.0;
 	out.meanLum = 0.0;
+	out.robustMeanLum = 0.0;
 	out.meanVar = 0.0;
 	out.rasSeconds = 0.0;
 
@@ -500,6 +537,7 @@ AutoRasterizer::ProbeResult AutoRasterizer::ProbeCandidate(
 		out.valid      = true;
 		out.medianLum  = MedianLuminance( frames.front() );
 		out.meanLum    = MeanLuminance( frames.front() );
+		out.robustMeanLum = WinsorizedMeanLuminance( frames.front(), cfg.reachWinsorPct );
 		out.meanVar    = MeanPerPixelVariance( frames );
 		out.rasSeconds = totalSeconds;
 	}
@@ -566,12 +604,20 @@ AutoIntegratorChoice AutoRasterizer::RunProbe(
 			//      high PT variance/sigma2T" signal is INVERTED at probe spp:
 			//      jewel_vault is the NOISIEST PT there, not the quietest, so PT
 			//      sigma2T does NOT separate — the energy-reach mean ratio does.)
+			// Reach numerator is VCM's WINSORIZED mean (vcm.robustMeanLum): VCM merging
+			// produces sparse fireflies that inflate its raw mean and over-fire the route
+			// on non-caustic dielectric scenes (jewel_vault).  The denominator is PT's RAW
+			// mean (pt.meanLum) — PT has no analogous mean-inflating pathology, and capping
+			// PT's tail would WRONGLY inflate the ratio on scenes where PT legitimately
+			// reaches noisy-but-real bright energy the (energy-deficient) VCM merge cannot
+			// (spectral_caustic: PT's dispersive caustic is noisy yet real -> keep it whole).
 			const double medRatio  = vcm.medianLum / pt.medianLum;
-			const double meanRatio = ( pt.meanLum > 0.0 ) ? ( vcm.meanLum / pt.meanLum ) : 0.0;
+			const double meanRatio = ( pt.meanLum > 0.0 ) ? ( vcm.robustMeanLum / pt.meanLum ) : 0.0;
+			const double rawReachR = ( pt.meanLum > 0.0 ) ? ( vcm.meanLum / pt.meanLum ) : 0.0;
 			if( medRatio > cfg.tauCaustic && meanRatio > cfg.tauReach ) {
 				std::snprintf( reason, sizeof(reason),
-					"probe -> vcm: median %.2fx > %.2f and reach %.2fx > %.2f",
-					medRatio, cfg.tauCaustic, meanRatio, cfg.tauReach );
+					"probe -> vcm: median %.2fx > %.2f and reach %.2fx > %.2f (raw %.2fx)",
+					medRatio, cfg.tauCaustic, meanRatio, cfg.tauReach, rawReachR );
 				mResolveReason = reason;
 				return finish( AutoIntegratorChoice::VCM );
 			}
@@ -582,9 +628,9 @@ AutoIntegratorChoice AutoRasterizer::RunProbe(
 				// to the general BDPT-vs-PT check below (which correctly keeps
 				// jewel_vault on PT via its sigma2T win).
 				GlobalLog()->PrintEx( eLog_Event,
-					"AutoRasterizer:: caustic median %.2fx fired but reach %.2fx <= %.2f"
+					"AutoRasterizer:: caustic median %.2fx fired but reach %.2fx <= %.2f (raw %.2fx)"
 					" (PT reaches the energy) -> not a caustic, fall through to BDPT check",
-					medRatio, meanRatio, cfg.tauReach );
+					medRatio, meanRatio, cfg.tauReach, rawReachR );
 			}
 		}
 	}
