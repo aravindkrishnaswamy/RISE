@@ -1,6 +1,6 @@
 # Thin-Film Interference for Heat-Colored Metals — Design Doc
 
-**Status:** DESIGN (no code landed yet) · **Created:** 2026-06-07 · **Owner:** master-controller session
+**Status:** Phase 1 COMPLETE — reference oracle + optical-constants data + validation gate landed on `feature/thin-film-interference` (commits `2d8fbc89`, `42a4b516`, `953c4eb7`, `92ace6fa`); Phase 2 not started · **Created:** 2026-06-07 · **Owner:** master-controller session
 **Goal artifact:** a rendered guilloché titanium watch dial — engraved rose-engine pattern,
 torch-gradient oxide coloring, physically-based iridescence — plus a general thin-film
 BRDF that also covers steel, tantalum, and niobium heat-tint/anodize colors.
@@ -348,6 +348,31 @@ Each lettered item is a candidate worker unit. Dependencies noted.
 - **Exit:** turntable shows correct angle-dependent hue shift; dial reads as physically plausible.
 
 ---
+
+## Phase 1 outcome (2026-06-07) — COMPLETE
+
+All three Phase-1 pieces landed on `feature/thin-film-interference` (workers implemented +
+adversarially reviewed; controller verified + committed; nothing pushed):
+
+- **P1-A reference** — `tests/thinfilm/{TmmReference,AiryReference,ThinFilmStack}.h` +
+  `tests/ThinFilmTMMTest.cpp` (commit `2d8fbc89`). N-layer TMM + single-film Airy; **6086
+  assertions, 0 failures**. Airy≡TMM to 1.3e-15; quarter-wave AR exact; bare-limit ≡
+  `Optics::CalculateConductorReflectance`; energy R∈[0,1]; TIR/evanescent + Hecht closed form.
+  This cross-check **caught the §5 sign-convention bug** (fixed in `953c4eb7`); §5 above is now
+  the validated convention.
+- **P1-B data** — `colors/thinfilm/` (commit `42a4b516`). Real, cited n,k for Ti/Steel/Ta/Nb +
+  TiO₂/Fe₃O₄/Ta₂O₅/Nb₂O₅; provenance + 9 caveats in the README.
+- **P1-C swatch + gate** — `tests/thinfilm/{OpticalConstants,AnodizeSwatch}.h` +
+  `tests/ThinFilmAnodizeSwatchTest.cpp` (commit `92ace6fa`). **24 assertions, 0 failures**,
+  warning-free. Ti ladder reproduces the anodization sequence; D65 white point spot-on
+  (X=0.9504 Y=1.0 Z=1.0885); Airy≡TMM and bare≡Optics re-confirmed in-gate; swatch grid
+  (`rendered/thinfilm_anodize_swatches.png`) shows Ti/Ta/Nb vivid, steel dull/brown.
+  Adversarial review fixed a `-ffast-math`-defeated finiteness check, a tautological
+  desaturation assertion, and a Windows-build-breaking POSIX `mkdir`/`realpath`.
+
+**Validated for Phase 2:** the spectral path is exact (per-hero-wavelength Airy — no Belcour
+spectral AA needed); the swatch integrator is the RGB-LUT generator; the §5 convention (and
+P1-A's `AiryReference.h`) is what lifts into `src/Library/Utilities/ThinFilm.h`.
 
 ## 13. Locked decisions (2026-06-07)
 
