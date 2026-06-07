@@ -630,7 +630,7 @@ Fresnel **surface reflection**, the caustic photon map **under-counts ~2×**, an
 the pool BDPT/PT references **cannot reach the delta caustic through the
 surface**. **The routing (caustic → VCM) and the brightness VCM produces are both
 correct; no merge fix is warranted and no probe gate needs re-tuning.** Full
-corrected analysis in [POOL_CAUSTICS_VCM_OVERCOUNT.md](POOL_CAUSTICS_VCM_OVERCOUNT.md) §11.
+corrected analysis in [CAUSTIC_PHOTONMAP_NORMALIZATION.md](CAUSTIC_PHOTONMAP_NORMALIZATION.md) §11.
 
 (The probe-routing limitation in the paragraph above — `pool_caustics` routes PT
 because its caustic is localized and the median gate doesn't fire — is a separate,

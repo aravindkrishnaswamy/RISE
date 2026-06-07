@@ -1,4 +1,4 @@
-# VCM over-counts the pool caustic — diagnosis (2026-06-06)
+# Caustic photon-map normalization fix — and why VCM was *not* over-counting (2026-06-06)
 
 > ⚠️ **SUPERSEDED / WITHDRAWN — read [§11](#11-resolution-2026-06-06-gated-fix-session--there-is-no-vcm-over-count-the-entire-diagnosis-was-a-chain-of-measurement-artifacts-vcm-matches-unbiased-references-to-3-) FIRST.**
 > §1–§10 below conclude VCM's merge over-counts refractive caustics. **That

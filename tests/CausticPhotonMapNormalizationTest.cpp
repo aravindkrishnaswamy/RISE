@@ -15,7 +15,7 @@
 //      normalization.  That filter's DISK AVERAGE is ~0.531, not 1, so
 //      before the 2026-06-06 fix the estimate was biased LOW by ~1.88x —
 //      refractive caustics rendered at ~0.50x the unbiased BDPT value
-//      (docs/POOL_CAUSTICS_VCM_OVERCOUNT.md sec 11.5).  The fix divides
+//      (docs/CAUSTIC_PHOTONMAP_NORMALIZATION.md sec 11.5).  The fix divides
 //      the estimate by the filter's analytic disk integral so the filter
 //      only reshapes the kernel, never rescales its energy.  If that
 //      normalization is dropped or the filter constants change without
