@@ -69,6 +69,8 @@
 #include <cmath>
 
 #include "Math3D/Math3D.h"		// RISE Scalar (double)
+#include "Color/Color.h"		// RISEPel / XYZPel (RGB-path albedo basis)
+#include "Color/ColorUtils.h"	// ColorUtils::XYZFromNM (renderer CMFs)
 
 namespace RISE
 {
@@ -366,6 +368,156 @@ namespace RISE
 			if( R < Scalar(0) ) R = Scalar(0);
 			if( R > Scalar(1) ) R = Scalar(1);
 			return R;
+		}
+
+		//======================================================================
+		//  RGB-path albedo-basis integration (PREVIEW — see §8)
+		//======================================================================
+		//
+		//  The RGB rendering path has no wavelength, so the spectral
+		//  interference reflectance R(λ) of the air/oxide/metal stack is
+		//  pre-integrated against the renderer's CIE colour-matching
+		//  functions in the ALBEDO BASIS (docs/THIN_FILM_INTERFERENCE.md §8,
+		//  second bullet):
+		//
+		//      XYZ = Σ R(λ)·cmf(λ)·Δλ  /  Σ ȳ(λ)·Δλ
+		//
+		//  This is WHITE-NORMALIZED and ILLUMINANT-INDEPENDENT: a perfect
+		//  reflector R(λ) ≡ 1 maps to XYZ = (white point of the equal-energy
+		//  illuminant), and after XYZ→Rec.709 to neutral RGB (1,1,1) — NOT a
+		//  D65-tinted colour.  It is deliberately DIFFERENT from the Phase-1
+		//  swatch's D65 preview (§8, first bullet), which weights by S_D65(λ)
+		//  to predict "what the surface looks like under a daylight viewer".
+		//  Here the renderer multiplies this reflectance by the incident RGB
+		//  radiance, so the normaliser must be illuminant-free.
+		//
+		//  The result is a linear Rec.709 reflectance (RISEPel).  It is
+		//  PREVIEW-GRADE: three RGB point-samples cannot represent an
+		//  interference integral, which is exactly why this offline
+		//  pre-integration replaces a naive per-channel evaluation.  The
+		//  SPECTRAL path (ReflectanceConductor per hero wavelength) carries
+		//  no such approximation and is the authoritative result.
+		//
+		//  WHITE NORMALIZATION (the §8 subtlety that bites colour-space
+		//  work).  The renderer's working space (RISEPel == Rec.709) has a
+		//  D65 whitepoint, so "R(λ)≡1 → neutral RGB(1,1,1)" requires the
+		//  flat reflector to integrate to the D65 white point — NOT the
+		//  equal-energy point E that a bare Σ R·cmf / Σ ȳ would give (E maps
+		//  to a BLUISH-TINTED Rec.709 triple, the bug an illuminant-naive
+		//  normaliser introduces).  We therefore (1) form the equal-energy
+		//  relative tristimulus Σ R·cmf / Σ cmf per channel (so R≡1 → E),
+		//  then (2) von-Kries scale E → the matrix's exact D65 white
+		//  Rec709RGBtoXYZ(1,1,1) (so R≡1 → D65 white → neutral RGB).  The
+		//  scene illuminant never enters — the basis is reflectance, the
+		//  renderer multiplies incident RGB radiance afterwards.
+		//
+		//  Per the locked design (§7/§13) this integral is the GENERATOR for
+		//  a per-material (cosθ × thickness) 2D LUT; the LUT itself is a
+		//  documented follow-up (it requires the substrate/film complex
+		//  indices to be CONSTANT across the material, which cannot be
+		//  guaranteed at the GGX layer because they arrive as possibly
+		//  spatially-varying IScalarPainters).  Calling this per shade is
+		//  always correct regardless of spatial variation.
+
+		//! Number of wavelength strata for the RGB albedo-basis integral.
+		//! 32 uniform samples across the visible band: above the Nyquist
+		//! limit of the interference fringes for the shipped oxide thickness
+		//! range (a 250 nm, n≈2.5 film has fringe spacing ~tens of nm), and
+		//! a fixed compile-time count keeps the hot loop allocation-free.
+		static const int kRGBIntegrationSamples = 32;
+
+		//! RGB albedo-basis reflectance of an ambient / single-film /
+		//! substrate stack at one half-vector cosine (the §8 preview
+		//! integration).  See the block comment above for the convention.
+		//!
+		//! \param cosThetaI    cosine of the angle between the incident
+		//!                     direction and the microfacet half-vector,
+		//!                     in [0,1] (NOT the geometric-normal cosine) —
+		//!                     identical to ReflectanceConductor.
+		//! \param n0,k0        ambient complex index (air = 1+0i).
+		//! \param n1,k1        film (oxide) complex index.
+		//! \param thickness_nm physical film thickness, nm.
+		//! \param n2,k2        substrate (metal) complex index.
+		//! \return             linear Rec.709 reflectance (RISEPel); a
+		//!                     perfect reflector → neutral (1,1,1).
+		//!
+		//! Allocation-free; kRGBIntegrationSamples Airy evaluations + CMF
+		//! lookups.  Only ever called on the RGB preview path of a thin-film
+		//! GGX material, so it adds zero cost to existing render paths.
+		inline RISEPel ReflectanceConductorRGB(
+			Scalar cosThetaI,
+			Scalar n0, Scalar k0,
+			Scalar n1, Scalar k1,
+			Scalar thickness_nm,
+			Scalar n2, Scalar k2 )
+		{
+			// Integration band matches the renderer's CIE table support.
+			const Scalar loNm = Scalar( 380 );
+			const Scalar hiNm = Scalar( 780 );
+			const Scalar step = ( hiNm - loNm ) / Scalar( kRGBIntegrationSamples );
+
+			const Complex N0 = detail::MakeIndex( n0, k0 );
+			const Complex N1 = detail::MakeIndex( n1, k1 );
+			const Complex Ns = detail::MakeIndex( n2, k2 );
+			const Complex sinInv = detail::SnellInvariant( N0, cosThetaI );
+
+			// Numerator Σ R·cmf·Δλ and the PER-CHANNEL equal-energy basis
+			// sums Σ cmf·Δλ.  Sharing the SAME midpoint quadrature for both
+			// means a flat reflector R≡1 lands EXACTLY on the equal-energy
+			// white E (Xn/Xe = Yn/Ye = Zn/Ze = 1) to quadrature error, with
+			// no normaliser mismatch.
+			Scalar Xn = Scalar( 0 ), Yn = Scalar( 0 ), Zn = Scalar( 0 );
+			Scalar Xe = Scalar( 0 ), Ye = Scalar( 0 ), Ze = Scalar( 0 );
+
+			for( int s = 0; s < kRGBIntegrationSamples; ++s ) {
+				const Scalar nm = loNm + ( Scalar( s ) + Scalar( 0.5 ) ) * step;
+
+				XYZPel cmf;
+				if( !ColorUtils::XYZFromNM( cmf, nm ) ) {
+					continue;
+				}
+
+				const Scalar Rs = detail::AiryReflectanceForPol(
+					N0, N1, Ns, thickness_nm, nm, sinInv, ePolS );
+				const Scalar Rp = detail::AiryReflectanceForPol(
+					N0, N1, Ns, thickness_nm, nm, sinInv, ePolP );
+				Scalar R = Scalar( 0.5 ) * ( Rs + Rp );
+				if( R < Scalar( 0 ) ) R = Scalar( 0 );
+				if( R > Scalar( 1 ) ) R = Scalar( 1 );
+
+				Xn += R * cmf.X * step;  Yn += R * cmf.Y * step;  Zn += R * cmf.Z * step;
+				Xe += cmf.X * step;      Ye += cmf.Y * step;      Ze += cmf.Z * step;
+			}
+
+			// Equal-energy relative tristimulus: R≡1 → (1,1,1) (white E).
+			const Scalar relX = ( Xe > Scalar( 0 ) ) ? Xn / Xe : Scalar( 0 );
+			const Scalar relY = ( Ye > Scalar( 0 ) ) ? Yn / Ye : Scalar( 0 );
+			const Scalar relZ = ( Ze > Scalar( 0 ) ) ? Zn / Ze : Scalar( 0 );
+
+			// von-Kries scale E → the matrix's exact D65 white so that R≡1
+			// maps to neutral Rec.709.  whiteXYZ = Rec709RGBtoXYZ(1,1,1) is
+			// the D65 whitepoint baked into the conversion matrix, so the
+			// neutrality holds to the matrix's own precision (not an
+			// approximate literal).
+			const Rec709RGBPel whiteRGB( Scalar( 1 ), Scalar( 1 ), Scalar( 1 ) );
+			const XYZPel whiteXYZ = ColorUtils::Rec709RGBtoXYZ( whiteRGB );
+
+			XYZPel xyz;
+			xyz.X = relX * whiteXYZ.X;
+			xyz.Y = relY * whiteXYZ.Y;
+			xyz.Z = relZ * whiteXYZ.Z;
+
+			// XYZ → linear Rec.709 (RISEPel).  XYZtoRec709RGB gamut-maps,
+			// keeping the preview displayable; a passive R(λ)∈[0,1] stack
+			// stays inside or near the gamut so the clip is negligible.
+			RISEPel rgb = ColorUtils::XYZtoRec709RGB( xyz );
+
+			// Defend against a hair of negative from gamut mapping / FP;
+			// reflectance is physically non-negative.
+			if( rgb.r < Scalar( 0 ) ) rgb.r = Scalar( 0 );
+			if( rgb.g < Scalar( 0 ) ) rgb.g = Scalar( 0 );
+			if( rgb.b < Scalar( 0 ) ) rgb.b = Scalar( 0 );
+			return rgb;
 		}
 	}
 }

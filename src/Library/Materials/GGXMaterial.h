@@ -49,13 +49,16 @@ namespace RISE
 				const IScalarPainter& ior,
 				const IScalarPainter& ext,
 				const FresnelMode fresnel_mode = eFresnelConductor,
-				const IPainter* tangent_rotation = nullptr	///< Landing 8 / KHR_materials_anisotropy.  See GGXBRDF.h for semantics.
+				const IPainter* tangent_rotation = nullptr,	///< Landing 8 / KHR_materials_anisotropy.  See GGXBRDF.h for semantics.
+				const IScalarPainter* film_ior = nullptr,		///< Thin-film FILM slots (eFresnelThinFilmConductor).  See GGXBRDF.h.
+				const IScalarPainter* film_extinction = nullptr,
+				const IScalarPainter* film_thickness = nullptr
 				) : pEmitter( 0 )
 			{
-				pBRDF = new GGXBRDF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation );
+				pBRDF = new GGXBRDF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
-				pSPF = new GGXSPF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation );
+				pSPF = new GGXSPF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 			}
 
@@ -76,13 +79,16 @@ namespace RISE
 				const IPainter* emissive,
 				const Scalar    emissiveScale,
 				const FresnelMode fresnel_mode = eFresnelConductor,
-				const IPainter* tangent_rotation = nullptr	///< Landing 8 / KHR_materials_anisotropy.
+				const IPainter* tangent_rotation = nullptr,	///< Landing 8 / KHR_materials_anisotropy.
+				const IScalarPainter* film_ior = nullptr,		///< Thin-film FILM slots (eFresnelThinFilmConductor).  See GGXBRDF.h.
+				const IScalarPainter* film_extinction = nullptr,
+				const IScalarPainter* film_thickness = nullptr
 				) : pEmitter( 0 )
 			{
-				pBRDF = new GGXBRDF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation );
+				pBRDF = new GGXBRDF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
-				pSPF = new GGXSPF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation );
+				pSPF = new GGXSPF( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
 				GlobalLog()->PrintNew( pSPF, __FILE__, __LINE__, "SPF" );
 
 				if( emissive ) {

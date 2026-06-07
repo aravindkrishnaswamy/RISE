@@ -52,6 +52,14 @@ namespace RISE
 			//! KHR_materials_anisotropy.  See GGXBRDF.h for details;
 			//! same semantics, mirrored here for the SPF path.
 			const IPainter* pTangentRotation;
+			//! Thin-film (eFresnelThinFilmConductor) FILM slots; see
+			//! GGXBRDF.h for the full contract — film n, film k, film
+			//! thickness (nm) of the oxide layer.  nullptr for every
+			//! other Fresnel mode; only read inside the thin-film
+			//! branch.  Substrate n,k reuse pIOR / pExtinction.
+			const IScalarPainter*	pFilmIOR;
+			const IScalarPainter*	pFilmExtinction;
+			const IScalarPainter*	pFilmThickness;
 
 		public:
 			GGXSPF(
@@ -62,7 +70,10 @@ namespace RISE
 				const IScalarPainter& ior,
 				const IScalarPainter& ext,
 				const FresnelMode fresnel_mode = eFresnelConductor,
-				const IPainter* tangent_rotation = nullptr
+				const IPainter* tangent_rotation = nullptr,
+				const IScalarPainter* film_ior = nullptr,
+				const IScalarPainter* film_extinction = nullptr,
+				const IScalarPainter* film_thickness = nullptr
 				);
 
 			void	Scatter(

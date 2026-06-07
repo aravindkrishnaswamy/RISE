@@ -29,6 +29,7 @@
 #include "../Utilities/Optics.h"
 #include "../Utilities/MicrofacetUtils.h"
 #include "../Utilities/MicrofacetEnergyLUT.h"
+#include "../Utilities/ThinFilm.h"
 #include "../Interfaces/ILog.h"
 
 using namespace RISE;
@@ -42,7 +43,10 @@ GGXSPF::GGXSPF(
 	const IScalarPainter& ior,
 	const IScalarPainter& ext,
 	const FresnelMode fresnel_mode,
-	const IPainter* tangent_rotation
+	const IPainter* tangent_rotation,
+	const IScalarPainter* film_ior,
+	const IScalarPainter* film_extinction,
+	const IScalarPainter* film_thickness
 	) :
   pDiffuse( &diffuse ),
   pSpecular( &specular ),
@@ -51,7 +55,10 @@ GGXSPF::GGXSPF(
   pIOR( &ior ),
   pExtinction( &ext ),
   fresnelMode( fresnel_mode ),
-  pTangentRotation( tangent_rotation )
+  pTangentRotation( tangent_rotation ),
+  pFilmIOR( film_ior ),
+  pFilmExtinction( film_extinction ),
+  pFilmThickness( film_thickness )
 {
 	pDiffuse->addref();
 	pSpecular->addref();
@@ -60,6 +67,9 @@ GGXSPF::GGXSPF(
 	pIOR->addref();
 	pExtinction->addref();
 	if( pTangentRotation ) pTangentRotation->addref();
+	if( pFilmIOR )        pFilmIOR->addref();
+	if( pFilmExtinction ) pFilmExtinction->addref();
+	if( pFilmThickness )  pFilmThickness->addref();
 }
 
 namespace
@@ -95,6 +105,9 @@ GGXSPF::~GGXSPF()
 	safe_release( pIOR );
 	safe_release( pExtinction );
 	if( pTangentRotation ) pTangentRotation->release();
+	if( pFilmIOR )        pFilmIOR->release();
+	if( pFilmExtinction ) pFilmExtinction->release();
+	if( pFilmThickness )  pFilmThickness->release();
 }
 
 void GGXSPF::SetDiffuse( const IPainter& v )         { v.addref(); safe_release( pDiffuse );    pDiffuse    = &v; }
@@ -215,6 +228,24 @@ void GGXSPF::Scatter(
 						{
 							const Scalar cosWoH = r_max( Scalar(0), wiDotM );	// reflection: wi·m == wo·m
 							F = Optics::CalculateFresnelReflectanceSchlick<RISEPel>( specColor, cosWoH );
+						}
+						else if( fresnelMode == eFresnelThinFilmConductor )
+						{
+							// Thin-film RGB preview (albedo basis, §8); the
+							// authoritative path is spectral (ScatterNM).
+							// cosThetaI = half-vector cosine wiDotM (positive).
+							const ScalarTriple iorT  = pIOR->GetValuesAt(ri);
+							const ScalarTriple extT  = pExtinction->GetValuesAt(ri);
+							const ScalarTriple fIorT = pFilmIOR->GetValuesAt(ri);
+							const ScalarTriple fExtT = pFilmExtinction->GetValuesAt(ri);
+							const ScalarTriple fThkT = pFilmThickness->GetValuesAt(ri);
+							const RISEPel Rfilm = ThinFilm::ReflectanceConductorRGB(
+								wiDotM,
+								1.0, 0.0,
+								fIorT.v[0], fExtT.v[0],
+								fThkT.v[0],
+								iorT.v[0], extT.v[0] );
+							F = specColor * Rfilm;
 						}
 						else
 						{
@@ -421,6 +452,24 @@ void GGXSPF::ScatterNM(
 						{
 							const Scalar cosWoH = r_max( Scalar(0), wiDotM );
 							F = Optics::CalculateFresnelReflectanceSchlick<Scalar>( specColor, cosWoH );
+						}
+						else if( fresnelMode == eFresnelThinFilmConductor )
+						{
+							// Thin-film interference: air / oxide-film / metal
+							// stack evaluated EXACTLY at the hero wavelength
+							// (docs/THIN_FILM_INTERFERENCE.md §7).  cosThetaI is
+							// the half-vector cosine |wi·m| (== wiDotM, already
+							// positive here).  Substrate n,k = pIOR/pExtinction;
+							// film n,k,thickness = the dedicated slots; ambient
+							// = air (1+0i).  MUST stay identical to
+							// GGXBRDF::valueNM (the HWSS companion path).
+							const Scalar Rfilm = ThinFilm::ReflectanceConductor(
+								wiDotM, nm,
+								1.0, 0.0,
+								pFilmIOR->GetValueAtNM(ri,nm), pFilmExtinction->GetValueAtNM(ri,nm),
+								pFilmThickness->GetValueAtNM(ri,nm),
+								pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
+							F = specColor * Rfilm;
 						}
 						else
 						{

@@ -57,6 +57,17 @@ namespace RISE
 			//! the painter is sampled per-shading-point so a
 			//! texture or procedural can drive the rotation.
 			const IPainter* pTangentRotation;
+			//! Thin-film (eFresnelThinFilmConductor) FILM slots — the
+			//! oxide layer of the air/oxide/metal stack.  Physical
+			//! scalars (no JH uplift): film n, film k, film thickness
+			//! (nm, may be spatially varying).  nullptr for every other
+			//! Fresnel mode (the conductor/Schlick branches never read
+			//! them); only dereferenced inside the thin-film branch,
+			//! which the parser/factory guarantee supplies all three.
+			//! The SUBSTRATE n,k reuse pIOR / pExtinction.
+			const IScalarPainter*	pFilmIOR;
+			const IScalarPainter*	pFilmExtinction;
+			const IScalarPainter*	pFilmThickness;
 
 		public:
 			GGXBRDF(
@@ -67,7 +78,10 @@ namespace RISE
 				const IScalarPainter& ior,
 				const IScalarPainter& ext,
 				const FresnelMode fresnel_mode = eFresnelConductor,
-				const IPainter* tangent_rotation = nullptr
+				const IPainter* tangent_rotation = nullptr,
+				const IScalarPainter* film_ior = nullptr,
+				const IScalarPainter* film_extinction = nullptr,
+				const IScalarPainter* film_thickness = nullptr
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
