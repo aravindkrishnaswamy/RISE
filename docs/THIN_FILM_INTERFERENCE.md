@@ -376,7 +376,7 @@ P1-A's `AiryReference.h`) is what lifts into `src/Library/Utilities/ThinFilm.h`.
 
 ## 13. Locked decisions (2026-06-07)
 
-1. **RGB path = precomputed per-material 2D LUT** (cosθ×thickness, albedo basis, box-filtered).
+1. **RGB path = albedo-basis spectral integral** (white-normalized so R≡1 → neutral). **Shipped in P2-B as a per-shade 32-λ integral (von-Kries E→D65), NOT the originally-specified 2D LUT** — the LUT needs spatially-constant stack indices, but they arrive as possibly-varying `IScalarPainter`s with no construction-time hit point (a correctness hazard); the per-shade integral is always correct, the constant-stack LUT deferred as an optimization.
    Spectral-path correctness is the priority; RGB is preview-grade. *(Confirmed by owner.)*
 2. **Cook-Torrance: reject `fresnel_mode thinfilm` with a diagnostic** (not wired now). *(Confirmed.)*
 3. **Single-film material now; N-layer kept in the math as a documented extension point**
