@@ -681,7 +681,7 @@ caustic_pel_photonmap
 	num					1000000
 	max_recursion		10
 	min_importance		0.001
-	power_scale			5.0
+	power_scale			2.656
 	branch				TRUE
 	reflect				TRUE
 	refract				TRUE

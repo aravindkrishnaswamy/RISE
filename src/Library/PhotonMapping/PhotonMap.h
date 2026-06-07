@@ -662,7 +662,20 @@ namespace RISE
 					const Scalar farthest_away = heap[0].distance;
 					const Scalar alpha = 0.918;
 					const Scalar beta = 1.953;
-					const Scalar invArea = 1.0 / (PI * farthest_away);
+					// Jensen's Gaussian gather filter (RISURPM 2001, eq. 7.7) reshapes the
+					// per-photon weight but must preserve energy: its DISK AVERAGE has to be
+					// 1, i.e. (1/(PI r^2)) * INT_0^r wpg(d) 2 PI d dd == 1.  With alpha=0.918,
+					// beta=1.953 that integral is only ~0.531 (Jensen normalizes his CONE
+					// filter by the analogous 1-2/(3k) factor; the Gaussian needs its own),
+					// so dividing by PI r^2 alone biased the radiance LOW by ~1.88x — the
+					// caustic map rendered refractive caustics at ~0.50x an unbiased BDPT
+					// reference.  Divide by the closed-form disk integral (substitute
+					// t = d^2/(2 r^2)) so the filter only shapes the kernel, never rescales
+					// its energy:  N = 2 alpha [ (1-1/D)/2 + (1-e^(-beta/2))/(beta D) ],
+					// D = 1 - e^(-beta)  (evaluates to ~0.5311).
+					const Scalar gaussD = 1.0 - exp(-beta);
+					const Scalar gaussNorm = 2.0*alpha*( 0.5*(1.0 - 1.0/gaussD) + (1.0 - exp(-beta*0.5))/(beta*gaussD) );
+					const Scalar invArea = 1.0 / (PI * farthest_away * gaussNorm);
 					const Scalar maxNDist = farthest_away * this->dEllipseRatio;
 
 					// Sum irradiance from all photons

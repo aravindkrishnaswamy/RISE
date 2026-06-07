@@ -164,7 +164,7 @@ caustic_pel_photonmap
 	branch				TRUE
 	reflect				FALSE
 	refract				TRUE
-	power_scale			40.0	
+	power_scale			21.24	
 }
 
 caustic_pel_gather

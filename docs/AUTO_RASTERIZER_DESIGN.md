@@ -618,6 +618,25 @@ trigger (the mean-ratio firing **without** the median gate) — a riskier change
 that discards the median gate's firefly-robustness; deferred as out of scope for
 the `jewel_vault` fix and documented here.
 
+**Update (2026-06-06, WITHDRAWN):** an interim note here claimed VCM
+"over-counts the caustic" on `pool_caustics` (~1.6× / ~3.3×, ≈π constant). **That
+claim is withdrawn — it was a measurement-artifact cascade, not a VM bug.** When
+the caustic is measured with an *unbiased* reference that can actually reach it
+(camera placed under the water so BDPT's light-tracing splat is valid), the
+shipped VCM matches BDPT to **0.1 % on the displaced-water (pool-regime)
+caustic** and to ≤3 % on flat controls. The "over-count" came from three
+references all biased *low*: the controlled flat-dielectric scene measured the
+Fresnel **surface reflection**, the caustic photon map **under-counts ~2×**, and
+the pool BDPT/PT references **cannot reach the delta caustic through the
+surface**. **The routing (caustic → VCM) and the brightness VCM produces are both
+correct; no merge fix is warranted and no probe gate needs re-tuning.** Full
+corrected analysis in [POOL_CAUSTICS_VCM_OVERCOUNT.md](POOL_CAUSTICS_VCM_OVERCOUNT.md) §11.
+
+(The probe-routing limitation in the paragraph above — `pool_caustics` routes PT
+because its caustic is localized and the median gate doesn't fire — is a separate,
+still-accurate observation about the *router*, unrelated to the now-withdrawn
+over-count claim about the *integrator*.)
+
 ---
 
 ### 6.2.2 Phase-1b spectral sibling — routing validation + the `spectral_caustic` limitation (2026-06-05)
