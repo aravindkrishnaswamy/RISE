@@ -991,10 +991,13 @@ namespace RISE
 			const char* specular,										///< [in] Specular reflectance / F0
 			const char* alphaX,											///< [in] Roughness in tangent u direction
 			const char* alphaY,											///< [in] Roughness in tangent v direction
-			const char* ior,											///< [in] Index of refraction (ignored in schlick_f0 mode)
-			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 mode)
-			const char* fresnel_mode = "conductor",						///< [in] "conductor" or "schlick_f0"
-			const char* tangent_rotation = "none"						///< [in] Landing 8 / KHR_materials_anisotropy: tangent-frame rotation painter (radians) or scalar string.  "none" = no rotation (default; bit-identical to pre-L8).  When set, the GGX BSDF samples the painter at each shading point and rotates the (u, v) basis around w by the painter-evaluated angle before applying αx / αy.
+			const char* ior,											///< [in] Index of refraction (ignored in schlick_f0 mode; SUBSTRATE n in thinfilm mode)
+			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 mode; SUBSTRATE k in thinfilm mode)
+			const char* fresnel_mode = "conductor",						///< [in] "conductor", "schlick_f0", or "thinfilm"
+			const char* tangent_rotation = "none",						///< [in] Landing 8 / KHR_materials_anisotropy: tangent-frame rotation painter (radians) or scalar string.  "none" = no rotation (default; bit-identical to pre-L8).  When set, the GGX BSDF samples the painter at each shading point and rotates the (u, v) basis around w by the painter-evaluated angle before applying αx / αy.
+			const char* film_ior = "none",								///< [in] Thin-film FILM (oxide) n scalar_painter; eFresnelThinFilmConductor only.  "none" = no film painter.  REQUIRED in thinfilm mode.
+			const char* film_extinction = "none",						///< [in] Thin-film FILM (oxide) k scalar_painter; eFresnelThinFilmConductor only.  "none" = transparent film (k = 0).
+			const char* film_thickness = "none"							///< [in] Thin-film FILM (oxide) thickness in nm (scalar_painter, may be spatially varying); eFresnelThinFilmConductor only.  REQUIRED in thinfilm mode.
 			) = 0;
 
 		//! Adds GGX material with optional emissive (LambertianEmitter)
@@ -1013,8 +1016,11 @@ namespace RISE
 			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 mode)
 			const char* emissive,										///< [in] Optional emissive painter; "none" / NULL = no emitter
 			const double emissive_scale,								///< [in] Multiplier on emissive radiance
-			const char* fresnel_mode = "conductor",						///< [in] "conductor" or "schlick_f0"
-			const char* tangent_rotation = "none"						///< [in] Landing 8 / KHR_materials_anisotropy.  See AddGGXMaterial.
+			const char* fresnel_mode = "conductor",						///< [in] "conductor", "schlick_f0", or "thinfilm"
+			const char* tangent_rotation = "none",						///< [in] Landing 8 / KHR_materials_anisotropy.  See AddGGXMaterial.
+			const char* film_ior = "none",								///< [in] Thin-film FILM (oxide) n scalar_painter; thinfilm mode only.  See AddGGXMaterial.
+			const char* film_extinction = "none",						///< [in] Thin-film FILM (oxide) k scalar_painter; thinfilm mode only.  See AddGGXMaterial.
+			const char* film_thickness = "none"							///< [in] Thin-film FILM (oxide) thickness nm scalar_painter; thinfilm mode only.  See AddGGXMaterial.
 			) = 0;
 
 		//! Adds a glTF-spec pbrMetallicRoughness material.  Composes a

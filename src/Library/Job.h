@@ -1191,7 +1191,10 @@ namespace RISE
 			const char* emissive,
 			const double emissive_scale,
 			const char* fresnel_mode = "conductor",
-			const char* tangent_rotation = "none"			///< Landing 8 / KHR_materials_anisotropy
+			const char* tangent_rotation = "none",			///< Landing 8 / KHR_materials_anisotropy
+			const char* film_ior = "none",					///< Thin-film FILM (oxide) n; thinfilm mode only
+			const char* film_extinction = "none",			///< Thin-film FILM (oxide) k; thinfilm mode only
+			const char* film_thickness = "none"				///< Thin-film FILM (oxide) thickness nm; thinfilm mode only
 			);
 
 		bool AddPBRMetallicRoughnessMaterial(
@@ -1217,7 +1220,10 @@ namespace RISE
 			const char* ior,											///< [in] Index of refraction
 			const char* ext,											///< [in] Extinction coefficient
 			const char* fresnel_mode = "conductor",
-			const char* tangent_rotation = "none"						///< Landing 8 / KHR_materials_anisotropy
+			const char* tangent_rotation = "none",						///< Landing 8 / KHR_materials_anisotropy
+			const char* film_ior = "none",								///< Thin-film FILM (oxide) n; thinfilm mode only
+			const char* film_extinction = "none",						///< Thin-film FILM (oxide) k; thinfilm mode only
+			const char* film_thickness = "none"							///< Thin-film FILM (oxide) thickness nm; thinfilm mode only
 			);
 
 		bool AddSheenMaterial(

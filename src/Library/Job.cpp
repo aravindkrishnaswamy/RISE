@@ -3406,11 +3406,12 @@ static FresnelMode ResolveFresnelMode( const char* mode )
 	if( !mode || !mode[0] ) return eFresnelConductor;
 	if( strcmp( mode, "conductor"  ) == 0 ) return eFresnelConductor;
 	if( strcmp( mode, "schlick_f0" ) == 0 ) return eFresnelSchlickF0;
+	if( strcmp( mode, "thinfilm"   ) == 0 ) return eFresnelThinFilmConductor;
 
 	static std::set<std::string> seen;
 	if( seen.insert( std::string(mode) ).second ) {
 		GlobalLog()->PrintEx( eLog_Warning,
-			"Unknown fresnel_mode `%s`; falling back to conductor.  Valid: conductor, schlick_f0", mode );
+			"Unknown fresnel_mode `%s`; falling back to conductor.  Valid: conductor, schlick_f0, thinfilm", mode );
 	}
 	return eFresnelConductor;
 }
@@ -3424,7 +3425,10 @@ bool Job::AddGGXMaterial(
 	const char* ior,
 	const char* ext,
 	const char* fresnel_mode,
-	const char* tangent_rotation
+	const char* tangent_rotation,
+	const char* film_ior,
+	const char* film_extinction,
+	const char* film_thickness
 	)
 {
 	IPainter* pRd = pPntManager->GetItem(diffuse);
@@ -3451,6 +3455,59 @@ bool Job::AddGGXMaterial(
 		return false;
 	}
 
+	// Thin-film FILM slots (eFresnelThinFilmConductor).  These are physical
+	// scalars (oxide n / k / thickness-nm) and MUST resolve as IScalarPainter
+	// (no JH spectral uplift), exactly like ior / ext above.  "none" => no
+	// film painter (nullptr passed through).  Resolved unconditionally so a
+	// stray film_* on a non-thinfilm material still gets a real diagnostic if
+	// it names a bad painter; the thinfilm-mode presence contract is enforced
+	// below.
+	const FresnelMode resolvedFresnel = ResolveFresnelMode( fresnel_mode );
+
+	IScalarPainter* pFilmIOR = 0;
+	IScalarPainter* pFilmExt = 0;
+	IScalarPainter* pFilmThk = 0;
+	const bool wantFilmIOR = ( film_ior        && std::string( film_ior )        != "none" );
+	const bool wantFilmExt = ( film_extinction && std::string( film_extinction ) != "none" );
+	const bool wantFilmThk = ( film_thickness  && std::string( film_thickness )  != "none" );
+
+	if( wantFilmIOR ) {
+		pFilmIOR = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_material", name, "film_ior", film_ior );
+	}
+	if( wantFilmExt ) {
+		pFilmExt = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_material", name, "film_extinction", film_extinction );
+	}
+	if( wantFilmThk ) {
+		pFilmThk = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_material", name, "film_thickness", film_thickness );
+	}
+
+	// If a film_* slot was requested but failed to resolve, that is a hard
+	// error (the painter name was bad) regardless of fresnel_mode.
+	if( ( wantFilmIOR && !pFilmIOR ) || ( wantFilmExt && !pFilmExt ) || ( wantFilmThk && !pFilmThk ) ) {
+		safe_release( pAlphaX ); safe_release( pAlphaY );
+		safe_release( pIOR ); safe_release( pExt );
+		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		return false;
+	}
+
+	// thinfilm-mode presence contract: the P2-B BSDF dereferences the film
+	// painters whenever eFresnelThinFilmConductor is active, so film_ior and
+	// film_thickness MUST be present (film_extinction defaults to a transparent
+	// k = 0 film and is optional).  Reject at parse time with a clear message
+	// rather than letting the renderer null-deref.
+	if( resolvedFresnel == eFresnelThinFilmConductor && ( !pFilmIOR || !pFilmThk ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"ggx_material `%s`: fresnel_mode `thinfilm` requires both `film_ior` and `film_thickness` (oxide n + thickness-nm scalar_painters); `film_extinction` is optional (default transparent k = 0).  See docs/THIN_FILM_INTERFERENCE.md §7.",
+			name ? name : "noname" );
+		safe_release( pAlphaX ); safe_release( pAlphaY );
+		safe_release( pIOR ); safe_release( pExt );
+		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		return false;
+	}
+
 	// Landing 8: tangent_rotation is "none" (no rotation, default) OR
 	// a painter / scalar string (rotation in radians).  Resolved here
 	// to a temporarily-addref'd IPainter*; the GGX{BRDF,SPF} hold their
@@ -3467,8 +3524,8 @@ bool Job::AddGGXMaterial(
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateGGXMaterial( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt,
-		ResolveFresnelMode( fresnel_mode ), pTangentRotation );
+	RISE_API_CreateGGXMaterialThinFilm( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt,
+		resolvedFresnel, pTangentRotation, pFilmIOR, pFilmExt, pFilmThk );
 
 	pMatManager->AddItem( pMaterial, name );
 
@@ -3478,6 +3535,9 @@ bool Job::AddGGXMaterial(
 	safe_release( pIOR );
 	safe_release( pExt );
 	safe_release( pTangentRotation );
+	safe_release( pFilmIOR );
+	safe_release( pFilmExt );
+	safe_release( pFilmThk );
 
 	return true;
 }
@@ -3500,7 +3560,10 @@ bool Job::AddGGXEmissiveMaterial(
 	const char* emissive,
 	const double emissive_scale,
 	const char* fresnel_mode,
-	const char* tangent_rotation
+	const char* tangent_rotation,
+	const char* film_ior,
+	const char* film_extinction,
+	const char* film_thickness
 	)
 {
 	IPainter* pRd = pPntManager->GetItem(diffuse);
@@ -3543,6 +3606,48 @@ bool Job::AddGGXEmissiveMaterial(
 		}
 	}
 
+	// Thin-film FILM slots (eFresnelThinFilmConductor) — same resolve +
+	// presence-contract logic as AddGGXMaterial above.  IScalarPainter
+	// (no JH uplift); "none" => nullptr.
+	const FresnelMode resolvedFresnel = ResolveFresnelMode( fresnel_mode );
+
+	IScalarPainter* pFilmIOR = 0;
+	IScalarPainter* pFilmExt = 0;
+	IScalarPainter* pFilmThk = 0;
+	const bool wantFilmIOR = ( film_ior        && std::string( film_ior )        != "none" );
+	const bool wantFilmExt = ( film_extinction && std::string( film_extinction ) != "none" );
+	const bool wantFilmThk = ( film_thickness  && std::string( film_thickness )  != "none" );
+
+	if( wantFilmIOR ) {
+		pFilmIOR = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_emissive_material", name, "film_ior", film_ior );
+	}
+	if( wantFilmExt ) {
+		pFilmExt = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_emissive_material", name, "film_extinction", film_extinction );
+	}
+	if( wantFilmThk ) {
+		pFilmThk = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_emissive_material", name, "film_thickness", film_thickness );
+	}
+
+	if( ( wantFilmIOR && !pFilmIOR ) || ( wantFilmExt && !pFilmExt ) || ( wantFilmThk && !pFilmThk ) ) {
+		safe_release( pAlphaX ); safe_release( pAlphaY );
+		safe_release( pIOR ); safe_release( pExt );
+		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		return false;
+	}
+
+	if( resolvedFresnel == eFresnelThinFilmConductor && ( !pFilmIOR || !pFilmThk ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"ggx_material `%s`: fresnel_mode `thinfilm` requires both `film_ior` and `film_thickness` (oxide n + thickness-nm scalar_painters); `film_extinction` is optional (default transparent k = 0).  See docs/THIN_FILM_INTERFERENCE.md §7.",
+			name ? name : "noname" );
+		safe_release( pAlphaX ); safe_release( pAlphaY );
+		safe_release( pIOR ); safe_release( pExt );
+		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		return false;
+	}
+
 	// Landing 8: optional tangent_rotation painter (radians).  Same
 	// resolve logic as AddGGXMaterial above.
 	IPainter* pTangentRotation = 0;
@@ -3557,9 +3662,9 @@ bool Job::AddGGXEmissiveMaterial(
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateGGXEmissiveMaterial(
+	RISE_API_CreateGGXEmissiveMaterialThinFilm(
 		&pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt, pEmissive, emissive_scale,
-		ResolveFresnelMode( fresnel_mode ), pTangentRotation );
+		resolvedFresnel, pTangentRotation, pFilmIOR, pFilmExt, pFilmThk );
 
 	const bool added = pMatManager->AddItem( pMaterial, name );
 	// Only mark as composed when AddItem actually registered the
@@ -3577,6 +3682,9 @@ bool Job::AddGGXEmissiveMaterial(
 	safe_release( pIOR );
 	safe_release( pExt );
 	safe_release( pTangentRotation );
+	safe_release( pFilmIOR );
+	safe_release( pFilmExt );
+	safe_release( pFilmThk );
 
 	return added;
 }

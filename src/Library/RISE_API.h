@@ -711,6 +711,33 @@ namespace RISE
 								const IPainter* tangent_rotation = nullptr			///< [in] Landing 8 / KHR_materials_anisotropy: optional painter giving tangent-frame rotation in radians.  NULL = no rotation (default; bit-identical to pre-L8).
 								);
 
+	//! Creates a GGX anisotropic microfacet material WITH the thin-film
+	//! interference slots (eFresnelThinFilmConductor).  This is the
+	//! ABI-preserving evolution of RISE_API_CreateGGXMaterial: that older
+	//! exported symbol is kept byte-for-byte (it now delegates here with
+	//! NULL film painters) so out-of-tree callers compiled against the old
+	//! header keep linking.  New callers that want thin-film use THIS
+	//! function.  The three film slots are IScalarPainter (physical scalar,
+	//! NO JH spectral uplift — see docs/ISCALARPAINTER_REFACTOR.md) and carry
+	//! the oxide FILM (the substrate metal stays on `ior`/`ext`).  They MUST
+	//! be non-NULL when `fresnel_mode == eFresnelThinFilmConductor`; the
+	//! parser/Job layer enforces presence before reaching here.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXMaterialThinFilm(
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance / F0 / thin-film tint
+								const IScalarPainter& alphaX,		///< [in] Roughness in tangent u direction (physical scalar)
+								const IScalarPainter& alphaY,		///< [in] Roughness in tangent v direction (physical scalar)
+								const IScalarPainter& ior,			///< [in] Substrate IOR (physical scalar)
+								const IScalarPainter& ext,			///< [in] Substrate extinction (physical scalar)
+								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation = nullptr,			///< [in] Landing 8 / KHR_materials_anisotropy
+								const IScalarPainter* film_ior = nullptr,			///< [in] Thin-film oxide n (physical scalar); NULL = no film
+								const IScalarPainter* film_extinction = nullptr,	///< [in] Thin-film oxide k (physical scalar); NULL = transparent film
+								const IScalarPainter* film_thickness = nullptr		///< [in] Thin-film oxide thickness in nm (physical scalar; may be spatially varying)
+								);
+
 	//! Creates a GGX material with an optional emissive painter.  Pass
 	//! emissive=NULL to skip the emitter (equivalent to RISE_API_CreateGGXMaterial).
 	//! Same scalar-slot conventions as RISE_API_CreateGGXMaterial.
@@ -727,6 +754,28 @@ namespace RISE
 								const Scalar    emissive_scale,
 								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
 								const IPainter* tangent_rotation = nullptr			///< [in] Landing 8 / KHR_materials_anisotropy.  See RISE_API_CreateGGXMaterial.
+								);
+
+	//! Thin-film-aware sibling of RISE_API_CreateGGXEmissiveMaterial (the
+	//! emissive + thin-film combination).  ABI-preserving: the old symbol is
+	//! retained and delegates here with NULL film painters.  See
+	//! RISE_API_CreateGGXMaterialThinFilm for the film-slot conventions.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXEmissiveMaterialThinFilm(
+								IMaterial** ppi,
+								const IPainter& diffuse,
+								const IPainter& specular,
+								const IScalarPainter& alphaX,
+								const IScalarPainter& alphaY,
+								const IScalarPainter& ior,
+								const IScalarPainter& ext,
+								const IPainter* emissive,		///< [in] Optional; NULL = no emitter
+								const Scalar    emissive_scale,
+								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation = nullptr,			///< [in] Landing 8 / KHR_materials_anisotropy
+								const IScalarPainter* film_ior = nullptr,			///< [in] Thin-film oxide n; NULL = no film
+								const IScalarPainter* film_extinction = nullptr,	///< [in] Thin-film oxide k; NULL = transparent film
+								const IScalarPainter* film_thickness = nullptr		///< [in] Thin-film oxide thickness in nm
 								);
 
 	//! Creates a glTF-spec pbrMetallicRoughness material.  Composes the

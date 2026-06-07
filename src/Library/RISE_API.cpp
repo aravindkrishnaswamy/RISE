@@ -1206,6 +1206,26 @@ namespace RISE
 		return true;
 	}
 
+	// Forward declarations for the thin-film factories defined just below:
+	// RISE_API.cpp includes its own header at the BOTTOM of the file, so the
+	// ABI-preserving wrappers (which delegate to these) cannot see the header
+	// declarations yet at this point.  Signatures must match RISE_API.h exactly.
+	bool RISE_API_CreateGGXMaterialThinFilm(
+								IMaterial** ppi, const IPainter& diffuse, const IPainter& specular,
+								const IScalarPainter& alphaX, const IScalarPainter& alphaY,
+								const IScalarPainter& ior, const IScalarPainter& ext,
+								const FresnelMode fresnel_mode, const IPainter* tangent_rotation,
+								const IScalarPainter* film_ior, const IScalarPainter* film_extinction,
+								const IScalarPainter* film_thickness );
+	bool RISE_API_CreateGGXEmissiveMaterialThinFilm(
+								IMaterial** ppi, const IPainter& diffuse, const IPainter& specular,
+								const IScalarPainter& alphaX, const IScalarPainter& alphaY,
+								const IScalarPainter& ior, const IScalarPainter& ext,
+								const IPainter* emissive, const Scalar emissive_scale,
+								const FresnelMode fresnel_mode, const IPainter* tangent_rotation,
+								const IScalarPainter* film_ior, const IScalarPainter* film_extinction,
+								const IScalarPainter* film_thickness );
+
 	//! Creates a GGX anisotropic microfacet material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateGGXMaterial(
@@ -1220,11 +1240,37 @@ namespace RISE
 								const IPainter* tangent_rotation	///< [in] Landing 8 / KHR_materials_anisotropy
 								)
 	{
+		// ABI-preserving wrapper: this symbol's signature is frozen for
+		// out-of-tree callers; the thin-film evolution lives in the new
+		// *ThinFilm overload, which this delegates to with NULL film slots
+		// (NULL film painters == the exact pre-thin-film behaviour).
+		return RISE_API_CreateGGXMaterialThinFilm(
+			ppi, diffuse, specular, alphaX, alphaY, ior, ext,
+			fresnel_mode, tangent_rotation, nullptr, nullptr, nullptr );
+	}
+
+	//! Creates a GGX anisotropic microfacet material with thin-film slots.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXMaterialThinFilm(
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance / F0 / thin-film tint
+								const IScalarPainter& alphaX,		///< [in] Roughness in tangent u direction (physical scalar)
+								const IScalarPainter& alphaY,		///< [in] Roughness in tangent v direction (physical scalar)
+								const IScalarPainter& ior,			///< [in] Substrate IOR (physical scalar)
+								const IScalarPainter& ext,			///< [in] Substrate extinction (physical scalar)
+								const FresnelMode fresnel_mode,		///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation,	///< [in] Landing 8 / KHR_materials_anisotropy
+								const IScalarPainter* film_ior,		///< [in] Thin-film oxide n; NULL = no film
+								const IScalarPainter* film_extinction,	///< [in] Thin-film oxide k; NULL = transparent film
+								const IScalarPainter* film_thickness	///< [in] Thin-film oxide thickness in nm
+								)
+	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation );
+		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx material" );
 		return true;
 	}
@@ -1245,11 +1291,36 @@ namespace RISE
 								const IPainter* tangent_rotation	///< [in] Landing 8 / KHR_materials_anisotropy
 								)
 	{
+		// ABI-preserving wrapper — see RISE_API_CreateGGXMaterial above.
+		return RISE_API_CreateGGXEmissiveMaterialThinFilm(
+			ppi, diffuse, specular, alphaX, alphaY, ior, ext, emissive, emissive_scale,
+			fresnel_mode, tangent_rotation, nullptr, nullptr, nullptr );
+	}
+
+	//! Thin-film-aware GGX-emissive factory.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXEmissiveMaterialThinFilm(
+								IMaterial** ppi,
+								const IPainter& diffuse,
+								const IPainter& specular,
+								const IScalarPainter& alphaX,
+								const IScalarPainter& alphaY,
+								const IScalarPainter& ior,
+								const IScalarPainter& ext,
+								const IPainter* emissive,
+								const Scalar    emissive_scale,
+								const FresnelMode fresnel_mode,
+								const IPainter* tangent_rotation,	///< [in] Landing 8 / KHR_materials_anisotropy
+								const IScalarPainter* film_ior,		///< [in] Thin-film oxide n; NULL = no film
+								const IScalarPainter* film_extinction,	///< [in] Thin-film oxide k; NULL = transparent film
+								const IScalarPainter* film_thickness	///< [in] Thin-film oxide thickness in nm
+								)
+	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, emissive, emissive_scale, fresnel_mode, tangent_rotation );
+		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, emissive, emissive_scale, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx emissive material" );
 		return true;
 	}

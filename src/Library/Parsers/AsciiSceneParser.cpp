@@ -3628,15 +3628,24 @@ namespace RISE
 					std::string emissive   = bag.GetString( "emissive",        "none" );
 					double emissive_scale  = bag.GetDouble( "emissive_scale",  1.0 );
 					std::string fresnelMode = bag.GetString( "fresnel_mode",   "conductor" );
+					// Thin-film FILM slots (eFresnelThinFilmConductor).  Default
+					// "none" => no film painter; Job::AddGGXMaterial enforces that
+					// thinfilm mode supplies film_ior + film_thickness (the P2-B
+					// BSDF contract dereferences them when the mode is selected).
+					std::string filmIor       = bag.GetString( "film_ior",        "none" );
+					std::string filmExtinction= bag.GetString( "film_extinction", "none" );
+					std::string filmThickness = bag.GetString( "film_thickness",  "none" );
 
 					if( emissive == "none" ) {
 						return pJob.AddGGXMaterial( name.c_str(), rd.c_str(), rs.c_str(),
 							alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str(),
-							fresnelMode.c_str() );
+							fresnelMode.c_str(), "none",
+							filmIor.c_str(), filmExtinction.c_str(), filmThickness.c_str() );
 					}
 					return pJob.AddGGXEmissiveMaterial( name.c_str(), rd.c_str(), rs.c_str(),
 						alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str(),
-						emissive.c_str(), emissive_scale, fresnelMode.c_str() );
+						emissive.c_str(), emissive_scale, fresnelMode.c_str(), "none",
+						filmIor.c_str(), filmExtinction.c_str(), filmThickness.c_str() );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3652,7 +3661,11 @@ namespace RISE
 							"a tint; `schlick_f0` uses Schlick's F0-shaped approximation, treating "
 							"`rs` as F0 directly and ignoring ior + extinction (required by glTF "
 							"metallicRoughness PBR mapping; pbr_metallic_roughness_material picks "
-							"this automatically).";
+							"this automatically); `thinfilm` evaluates thin-film interference "
+							"(heat-tint / anodization color) on an air / oxide-film / metal stack — "
+							"`ior` + `extinction` carry the SUBSTRATE (metal) complex index and the "
+							"three `film_*` slots carry the oxide film (docs/THIN_FILM_INTERFERENCE.md).  "
+							"`thinfilm` REQUIRES `film_ior` and `film_thickness` (`film_extinction` optional).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "rd";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
@@ -3663,7 +3676,10 @@ namespace RISE
 						{ auto& p = P(); p.name = "extinction";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (ignored in schlick_f0 mode)"; }
 						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter (LambertianEmitter folded in when present)"; }
 						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "fresnel_mode";   p.kind = ValueKind::String;    p.description = "Fresnel model: conductor | schlick_f0"; p.defaultValueHint = "conductor"; }
+						{ auto& p = P(); p.name = "fresnel_mode";   p.kind = ValueKind::String;    p.description = "Fresnel model: conductor | schlick_f0 | thinfilm"; p.defaultValueHint = "conductor"; }
+						{ auto& p = P(); p.name = "film_ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Thin-film oxide n (scalar_painter; eFresnelThinFilmConductor only)"; }
+						{ auto& p = P(); p.name = "film_extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide k (scalar_painter; eFresnelThinFilmConductor only; default 0/none = transparent film)"; }
+						{ auto& p = P(); p.name = "film_thickness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide thickness in nm (scalar_painter, may be spatially varying; eFresnelThinFilmConductor only)"; }
 						return cd;
 					}();
 					return d;
@@ -3744,6 +3760,22 @@ namespace RISE
 					std::string facets     = bag.GetString( "facets",     "0.15" );
 					std::string ior        = bag.GetString( "ior",        "2.45" );
 					std::string extinction = bag.GetString( "extinction", "1" );
+					// Thin-film interference is intentionally GGX-only; reject it
+					// here with a clear, specific diagnostic rather than silently
+					// ignoring the mode (the CT BSDF has no thin-film Fresnel path).
+					std::string fresnelMode = bag.GetString( "fresnel_mode", "conductor" );
+					if( fresnelMode == "thinfilm" ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"cooktorrance_material `%s`: fresnel_mode `thinfilm` is not supported on Cook-Torrance (thin-film interference is GGX-only).  Use a ggx_material with fresnel_mode thinfilm + film_ior / film_extinction / film_thickness instead (docs/THIN_FILM_INTERFERENCE.md §7).",
+							name.c_str() );
+						return false;
+					}
+					if( fresnelMode != "conductor" ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"cooktorrance_material `%s`: unknown fresnel_mode `%s`.  Cook-Torrance supports only `conductor`.",
+							name.c_str(), fresnelMode.c_str() );
+						return false;
+					}
 
 					return pJob.AddCookTorranceMaterial( name.c_str(), rd.c_str(), rs.c_str(), facets.c_str(), ior.c_str(), extinction.c_str() );
 				}
@@ -3752,7 +3784,8 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "cooktorrance_material"; cd.category = ChunkCategory::Material;
-						cd.description = "Cook-Torrance microfacet BRDF.";
+						cd.description = "Cook-Torrance microfacet BRDF.  Only `fresnel_mode conductor` is supported; "
+							"`thinfilm` is GGX-only and rejected with a diagnostic.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "rd";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
@@ -3760,6 +3793,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "facets";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Microfacet slope distribution (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Fresnel IOR (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "fresnel_mode"; p.kind = ValueKind::String; p.description = "Fresnel model: conductor (only).  `thinfilm` is GGX-only and rejected here."; p.defaultValueHint = "conductor"; }
 						return cd;
 					}();
 					return d;
