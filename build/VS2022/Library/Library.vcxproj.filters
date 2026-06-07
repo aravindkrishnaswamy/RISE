@@ -3028,6 +3028,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\MicrofacetUtils.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ThinFilm.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\MortonCode.h">
       <Filter>Utilities</Filter>
     </ClInclude>

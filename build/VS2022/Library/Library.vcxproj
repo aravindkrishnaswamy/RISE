@@ -1132,6 +1132,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\MediumTransport.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MicrofacetEnergyLUT.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MicrofacetUtils.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\ThinFilm.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MortonCode.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\NullScatteringTracker.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\OidnConfig.h" />
