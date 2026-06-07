@@ -112,7 +112,7 @@ The ten rasterizer chunks, grouped by algorithm.
 | `pixelpel_rasterizer` | shader-dispatch | RGB. Runs the `defaultshader` chain (PT shader-op + others) at every hit. The classic configuration. Use when composability matters more than raw PT throughput. |
 | `pixelintegratingspectral_rasterizer` | shader-dispatch | Spectral analogue of `pixelpel_rasterizer`. RGB→SPD conversion happens in the painter pipeline.  **Soft-deprecated** — modern features (path guiding, adaptive sampling, optimal MIS, full inline OIDN AOV) are not wired here; new scenes should prefer `pathtracing_spectral_rasterizer`.  Retained for custom spectral shader-op chains; no removal date.  See [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §2.1–§2.5. |
 | `pathtracing_pel_rasterizer` | pure integrator | RGB. Calls `PathTracingIntegrator` directly. Bypasses shader-op chain. **Default modern PT.** Wires OIDN with the filtered-film resolve correctly skipped (raw MC noise feeds OIDN). |
-| `pathtracing_spectral_rasterizer` | pure integrator | Spectral. NM and HWSS modes both available. |
+| `pathtracing_spectral_rasterizer` | pure integrator | Spectral. NM and HWSS modes both available.  Inline OIDN AOV wired 2026-06-02 (audit §2.6) — both the pure-integrator path and the shader-dispatch `pixelintegratingspectral_rasterizer` allocate AOV buffers and accumulate Albedo/Normal per camera sample; the `CollectFirstHitAOVs` retrace fallback is now bypassed when inline data is present.  Through-glass scenes (the canonical retrace-misnames-glass-as-white case) now record the through-glass surface albedo. |
 
 ### BDPT (bidirectional path tracing)
 
@@ -162,7 +162,7 @@ wired, partial = subset.
 | `pixelpel_rasterizer` | ✓ | ✓ | (via shader-op) | ✓ | ✓ |
 | `pixelintegratingspectral_rasterizer` ¹ | ✗ | ✗ | (via shader-op) | ✗ | (limited) |
 | `pathtracing_pel_rasterizer` | ✓ | ✓ | ✓ | ✓ | ✓ (full filtered-film bypass) |
-| `pathtracing_spectral_rasterizer` | ✗ | ✓ | ✓ | ✗ | (limited) |
+| `pathtracing_spectral_rasterizer` | ✗ | ✓ | ✓ | ✗ | ✓ |
 | `bdpt_pel_rasterizer` | ✓ | ✓ | ✗ | ✗ | ✓ |
 | `bdpt_spectral_rasterizer` | ✓ | ✓ | ✗ | ✗ | (limited) |
 | `vcm_pel_rasterizer` | ✗ | ✓ | ✗ | ✗ | ✓ |

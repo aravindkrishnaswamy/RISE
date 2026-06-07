@@ -1,7 +1,7 @@
 # Spectral-vs-Pel Feature Parity Audit & Remediation Plan
 
 **Date:** 2026-05-07
-**Last verified:** 2026-05-24 — all DONE items re-checked against source; all OPEN items still open; no regressions; two unrelated landings (colour-space Stage A/B, IScalarPainter refactor) brushed the spectral path without moving the matrix.
+**Last verified:** 2026-06-07 — design-review round 1 on §3 v2 (per-photon-hero) **refuted 3-of-3** by an orthogonal adversarial panel; v2 is now retired and v3 chain-storage is the only path (see §3.6).  Design review also surfaced a **new sibling correctness gap** in the NM lobe-selection probability (Finding 13.2; affects PT-spectral / BDPT-spectral / MLT-spectral / VCM-spectral) — captured as §3.7.  Previous re-verifications: 2026-06-06 (§2.6 PT-spectral inline AOV landed; Phase 2b/2c shipped; §2.8 BDPT-spectral adaptive sampling landed); 2026-05-24 (post Stage-B colour-space + IScalarPainter; no regressions, no new gaps).
 **Scope:** Every ✗, partial, and "(limited)" cell in the optional-feature support matrix in [docs/RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §4, decoded against the parser ([src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/AsciiSceneParser.cpp) `CreateAllChunkParsers()`) and the rasterizer / integrator source.
 **Out of audit scope:** algorithmic changes, anything that requires open research, anything in MLT (deliberately empty per [MLT_POSTMORTEM.md](MLT_POSTMORTEM.md)).
 
@@ -11,14 +11,18 @@
 
 ## TL;DR
 
-Of the 13 ✗ / partial / "(limited)" cells in the matrix:
+**Current state as of 2026-06-07:** all shippable quick wins have landed; both refactor-blocked items (PT-spectral inline AOV, BDPT-spectral inline AOV) unblocked by Phase 2b/2c completion and the PT-spectral case is wired.  The **architectural §3 VCM-spectral per-wavelength photon store remains open**: a first design pass (per-photon-hero v2) was refuted 3-of-3 in adversarial review (§3.6) and the only viable path is now the chain-storing v3 (4–6 weeks, sketched in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §14, not yet design-reviewed).  A **new sibling correctness gap** was also surfaced — the NM lobe-selection wavelength divergence (§3.7) — which affects every NM rasterizer, not just merging.
 
-- **3 are quick wins** (1–5 days each): BDPT-spectral path guiding subset, BDPT-spectral adaptive sampling, BDPT/VCM-spectral OIDN albedo proxy.
-- **PT-spectral inline AOV**: ✓ **DONE 2026-06-02** — both `pathtracing_spectral_rasterizer` and `pixelintegratingspectral_rasterizer` allocate/accumulate the inline `PixelAOV` and feed AOV-guided OIDN in accurate mode (§2.6 OUTCOME, §6.2).  The shader-dispatch path uses a new `RuntimeContext::pAOV` bridge (no `IShaderOp` interface change); the Phase-2b Accurate hook was completed with its missing BSDF-section sibling (was inert for diffuse-behind-glass on Pel too).  The §4 / RENDERING_INTEGRATORS.md "(limited)" annotation for PT-spectral OIDN now means "fast-mode (default) still retraces; accurate mode does inline first-non-delta".  **BDPT-spectral inline AOV** is still Phase-2c-blocked.
-- **1 is architectural** (2–3 weeks, design + implementation): per-wavelength photon stores for VCM-spectral merging.
-- **2 are deliberately out of scope** (MLT × 2): chain-based mutation has no useful interaction with the optional features.
-- **2 are matrix errors** (no work — fix the doc): pixelintegratingspectral_rasterizer's ✓ for adaptive sampling and optimal MIS are wrong; BDPT's ✓ for SMS is post-2026-05-excision stale.
-- **3 are architecture- or research-blocked** (no path forward without a separate design): VCM-anything path guiding, BDPT/VCM optimal MIS, pixelintegratingspectral path guiding.
+Historical scorecard for the 13 original ✗ / partial / "(limited)" cells:
+
+- **All 3 quick wins LANDED**: BDPT-spectral path guiding subset (2026-05-07), BDPT/VCM-spectral OIDN albedo proxy (2026-05-07), BDPT-spectral adaptive sampling (2026-05-24).
+- **PT-spectral inline AOV LANDED 2026-06-02** — both `pathtracing_spectral_rasterizer` and `pixelintegratingspectral_rasterizer` allocate/accumulate the inline `PixelAOV` and feed AOV-guided OIDN in accurate mode (§2.6 OUTCOME, §6.2).  The shader-dispatch path uses a new `RuntimeContext::pAOV` bridge (no `IShaderOp` interface change); the Phase-2b Accurate hook was completed with its missing BSDF-section sibling (was inert for diffuse-behind-glass on Pel too).
+- **Phases 2b/2c LANDED 2026-05-31 / 2026-06-02** — the integrator refactor that PT-spectral and BDPT-spectral inline AOV blocked on is now complete; templatized PT, VCM, BDPT are all single-source-of-truth across Pel/NM (see [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md)).
+- **BDPT-spectral inline AOV** is structurally unblocked but not the listed gap — see §2.12.
+- **1 architectural item REMAINS OPEN** (2–4 weeks, design + implementation): **per-wavelength photon stores for VCM-spectral merging (§3)** — the single correctness issue.  Source still uses `LightVertexThroughput<NMTag>` → `RISEPelToNMProxy(lv.throughput)`; the declared-but-unused `LightVertexNM` struct in [VCMLightVertex.h:110](../src/Library/Shaders/VCMLightVertex.h#L110) is the intended storage destination.
+- **2 deliberately out of scope** (MLT × 2): chain-based mutation has no useful interaction with the optional features.
+- **2 matrix errors** (no work — fixed in doc): pixelintegratingspectral_rasterizer's ✓ for adaptive sampling and optimal MIS were wrong; BDPT's ✓ for SMS was post-2026-05-excision stale.
+- **3 architecture- or research-blocked** (no path forward without a separate design): VCM-anything path guiding, BDPT/VCM optimal MIS, pixelintegratingspectral path guiding.
 
 The single **correctness** issue (vs feature gap) is **VCM-spectral merging via the `RISEPelToNMProxy` luminance projection** — see §3.
 
@@ -33,7 +37,7 @@ The [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §4 matrix has been cor
 | `pixelpel_rasterizer` | ✓ | ✓ | (via shader-op) | ✓ | ✓ |
 | `pixelintegratingspectral_rasterizer` ¹ | ✗ | ✗ | (via shader-op) | ✗ | (limited) |
 | `pathtracing_pel_rasterizer` | ✓ | ✓ | ✓ | ✓ | ✓ (full filtered-film bypass) |
-| `pathtracing_spectral_rasterizer` | ✗ | ✓ | ✓ | ✗ | (limited) |
+| `pathtracing_spectral_rasterizer` | ✗ | ✓ | ✓ | ✗ | ✓ |
 | `bdpt_pel_rasterizer` | ✓ | ✓ | ✗ | ✗ | ✓ |
 | `bdpt_spectral_rasterizer` | ✓ | ✓ | ✗ | ✗ | (limited) |
 | `vcm_pel_rasterizer` | ✗ | ✓ | ✗ | ✗ | ✓ |
@@ -263,10 +267,55 @@ The struct is **declared but unused** — `grep -rn LightVertexNM src/Library/` 
 
 ### 3.4 Effort
 
-- **Per-photon hero only:** ~2 weeks. Templatize the store on `LightVertex`/`LightVertexNM`, populate `throughputNM` + `nm` in the spectral light pass, swap the merge read path. No chain storage; companion mismatch falls back to current proxy with a warning. Captures most of the win on hero-matched merges.
-- **Full chain storage + per-companion re-evaluation:** ~3–4 weeks plus careful memory measurement. Better correctness on heavy-dispersion scenes; pays a 10× memory tax on long subpaths.
+- ~~**Per-photon hero only:** ~2 weeks. Templatize the store on `LightVertex`/`LightVertexNM`, populate `throughputNM` + `nm` in the spectral light pass, swap the merge read path. No chain storage; companion mismatch falls back to current proxy with a warning. Captures most of the win on hero-matched merges.~~ **— REFUTED 2026-06-07 in design-review round 1.  See §3.6.**
+- **Full chain storage + per-companion re-evaluation:** ~~~3–4 weeks~~ → revised **4–6 weeks** post-design-review.  Better correctness on heavy-dispersion scenes; pays a 4–7× memory tax (per design doc §14.1).  The original 3–4 week estimate omitted the §3.1 ILight `Le` migration dependency (which v3 cannot defer — see §3.6 finding 13.4) and the newly-discovered lobe-selection wavelength-divergence sibling (see §3.7).
 
-Both are architectural, not refactor-blocked. Phase 2a's VCM templatization established the pattern (`LightVertexThroughput<Tag>` is already the dispatch point); the change is essentially "swap the NM specialization to read `lv.throughputNM` instead of projecting via proxy".
+Both are architectural, not refactor-blocked. Phase 2a's VCM templatization established the pattern (`LightVertexThroughput<Tag>` is already the dispatch point); the change is essentially "swap the NM specialization to read `lv.throughputNM` instead of projecting via proxy" — **but with full per-companion chain replay**, not the per-photon-hero shortcut.
+
+### 3.6 Design-review round 1 (2026-06-07): per-photon-hero (v2) REFUTED
+
+A first attempt to land §3 as the per-photon-hero variant (the §3.3 "(b)" option above and the §7-Q1 recommendation) reached the design-doc stage and was refuted 3-of-3 by an orthogonal adversarial-review panel (numerical correctness, threading, HWSS bundle interaction).  Full review catalogue in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §13.  Eight confirmed problems with v2, of which three are individually fatal:
+
+| # | Finding | Why it kills v2 |
+|---|---|---|
+| 13.1 | The "stratified-hero" `E[product] = product[truth]` framing is mathematically false on dispersive / absorbing scenes.  Dye-glass band-average **over-counts 450 nm by ~900×** and under-counts 700 nm by ~2× (concrete: `α(450)=8, α(700)=0.5, d=1`). | v2 is **worse than the proxy** on the very absorption-class scenes that motivate §3. |
+| 13.6 | **Dispersive-photon contamination.**  Photons whose light-side geometry was traced at η(λ_p) are used at λ_eye ≠ λ_p.  The geometry is wrong-path — photon positions / normals / refraction angles were *fixed* by λ_p; at λ_eye those vertices would not have existed in those locations.  The proxy at least had magnitude-only error; v2 has geometrically-wrong-path error. | v2 is a **correctness regression** vs the proxy on the audit's own §3.5 motivating scenes (triplecaustic, pool dispersion, prism). |
+| 13.7 | The audit's "HWSS variance recovery" framing is wrong.  Inside one HWSS bundle of 4 wavelengths, both the proxy AND v2 produce the same scalar `lv.throughput*` constant across the bundle.  v2 is a population-asymptotic **bias fix**, not a per-bundle variance fix. | The headline benefit the audit promised from v2 (HWSS variance recovery on merge-dominated regions) does not exist.  v3 chain-replay is required for that. |
+
+Five additional non-fatal but corroborating findings (sodium-vapour + dye glass disappears, Sobol stream collision, Beer–Lambert mismatch, ...) listed in the design doc.
+
+**Implication for §7-Q1.**  The audit's "v2 default; v3 only if regression scenes show residual error" recommendation rested on the load-bearing assumption that v2 is at worst neutral on dispersive scenes.  Findings 13.1, 13.6, 13.7, 13.8 demolish that.  **v3 is now the only path to closing §3 properly.**
+
+**Status of §3 going forward:** OPEN.  The v3 chain-storing design is sketched in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §14 but is **NOT design-reviewed** — that's a separate effort the user has deferred to a future focused session.  The current proxy (`RISEPelToNMProxy(lv.throughput)`) remains in tree as the known-wrong-but-stable behaviour.
+
+### 3.7 NEW finding from design review — NM lobe-selection wavelength divergence (Finding 13.2)
+
+Outside the §3 photon-store scope, the design review surfaced a **separate** Pel-vs-NM correctness divergence in the templatized integrator at [BDPTIntegrator.cpp:2049-2065](../src/Library/Shaders/BDPTIntegrator.cpp#L2049):
+
+```cpp
+const ScatteredRay* pScat = scattered.RandomlySelect( lobeSelectXi, Traits::is_nm );
+if( scattered.Count() > 1 ) {
+    Scalar totalKray = 0;
+    for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+        totalKray += Traits::max_value( KrayValue<Tag>( scattered[i] ) );
+    }
+    const Scalar selectedKray = Traits::max_value( KrayValue<Tag>( *pScat ) );
+    if( totalKray > NEARZERO && selectedKray > NEARZERO ) {
+        selectProb = selectedKray / totalKray;
+    }
+}
+```
+
+The lobe-selection probability uses `KrayValue<Tag>`, which is `kray` (RGB) for Pel and `krayNM` (scalar at hero λ) for NM.  Both run through `Traits::max_value`, which yields `MaxValue(RGB)` for Pel and the bare scalar for NM.
+
+- **Pel**: `selectProb = max(R,G,B)_lobe / Σ max(R,G,B)` — effectively wavelength-invariant.
+- **NM**: `selectProb = krayNM(λ_hero)_lobe / Σ krayNM(λ_hero)` — varies with the photon's hero wavelength.
+
+For Fresnel-blended dielectric lobes (coated glass, the canonical caustic generators), this means **`pdfFwd` differs Pel-vs-NM** for every multi-lobe vertex, and downstream `lv.mis` / `dVC` / `dVM` bookkeeping inherits that divergence.
+
+**Scope of the bug.**  This is **not** a VCM-merging-only issue.  Any NM render path that goes through `BDPTIntegrator`'s stochastic lobe selection — **PT-spectral, BDPT-spectral, MLT-spectral, VCM-spectral** — has this divergence today.  Coloured-glass scenes already render at slightly-wrong intensity in BDPT-spectral / PT-spectral for a reason the original §2 parity audit didn't catch.
+
+**Status:** open as a new audit item — does NOT block §3 v3 specifically but should be sized and reviewed as its own design effort.  Likely options: (a) make NM lobe selection match Pel's wavelength-invariant `MaxValue(kray)` semantics; (b) migrate Pel to NM's per-wavelength selection with MIS reweighting; (c) accept the divergence and document it as a known stratification.  Each has bias / variance trade-offs that need empirical measurement.
 
 ### 3.5 Test coverage
 
@@ -347,7 +396,8 @@ Per-gap HWSS implications:
 
 | Item | Effort | Risk | Notes |
 |---|---|---|---|
-| **VCM-spectral per-wavelength photon store (§3).** Templatize `VCMLightVertexStore` on `LightVertex`/`LightVertexNM`, populate `throughputNM` + `nm` in spectral light pass, swap merge read path. | 2 weeks (per-photon-hero only) to 3–4 weeks (full chain storage). | High — touches threading, KD-tree determinism, HWSS bundle interaction. Phase 2a's `LightVertexThroughput<Tag>` is the right plug-in point. | Cross-cutting question for §7. |
+| **VCM-spectral per-wavelength photon store (§3).** Templatize `VCMLightVertexStore` on `LightVertex`/`LightVertexNM`, populate `throughputNM` + `nm` in spectral light pass, swap merge read path. | ~~2 weeks (per-photon-hero only) to 3–4 weeks (full chain storage)~~ → **4–6 weeks (full chain only; per-photon-hero refuted 2026-06-07, see §3.6).** | High — touches threading, KD-tree determinism, HWSS bundle interaction. Phase 2a's `LightVertexThroughput<Tag>` is the right plug-in point.  Now also coupled to audit §3.1 `ILight::emittedRadianceNM` migration (cannot be deferred — see §3.6 finding 13.4). | v3 design sketched in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §14, not yet design-reviewed; deferred to a future focused session. |
+| **NM lobe-selection wavelength divergence (§3.7).** Separate, newly-discovered Pel-vs-NM correctness gap in `BDPTIntegrator` stochastic lobe selection.  Affects every NM rasterizer (PT-spectral, BDPT-spectral, MLT-spectral, VCM-spectral), not just merging. | TBD — needs sizing + design review of its own. | Medium — Pel-side semantics intentional and stable; NM-side semantics are likely the bug.  Likely fixes: (a) match Pel's `MaxValue(kray)` in NM; (b) Pel migrates to per-λ selection with MIS reweighting; (c) document as accepted stratification.  Empirical measurement needed to choose. | Not in §3 scope; flagged as its own item. |
 
 ### 6.4 Out of scope (matrix correction only, no implementation)
 
@@ -363,10 +413,10 @@ Per-gap HWSS implications:
 
 These came up during the audit and need a decision before the corresponding remediation can proceed.
 
-1. **VCM per-wavelength photon storage: hero-only or full chain?**
-   - Hero-only (~2 weeks, ~88 B/photon): each photon stores `(throughput, throughputNM, nm)`; companion-wavelength merges either fall back to the existing proxy (with a warning) or apply a "stratified hero" approximation that treats the photon population's hero distribution as natural variance reduction.
-   - Full chain (~3–4 weeks, ~88 B + 80 B/bounce): each photon retains its bounce list; companion mismatches re-walk via `RecomputeSubpathThroughputNM`. Memory grows up to ~10× on long subpaths.
-   - **Recommendation request:** per-photon-hero is the right v2 default for HWSS scenes; full chain is a v3 follow-up if dispersion-heavy regression scenes show residual error.
+1. **VCM per-wavelength photon storage: hero-only or full chain? RESOLVED 2026-06-07 — full chain only.**
+   - ~~Hero-only (~2 weeks, ~88 B/photon)~~: **REFUTED in design-review round 1; see §3.6.**  Three independently-fatal failure modes were uncovered, the most serious being dispersive-photon contamination (Finding 13.6): photons traced at η(λ_p) are geometrically wrong-path for λ_eye ≠ λ_p, making v2 a correctness regression vs the proxy on dispersive scenes.  The "stratified-hero" framing this Q1 originally recommended was mathematically false on dispersive / absorbing scenes.
+   - **Full chain (~~~3–4 weeks~~ → 4–6 weeks revised, ~570–970 B/photon)**: each photon retains its bounce-prefix chain; companion mismatches re-walk via `RecomputeSubpathThroughputNM`.  Memory grows 4–7× on typical caustic chains.  Also couples in the audit §3.1 `ILight::emittedRadianceNM` migration (cannot be deferred — Finding 13.4) and surfaces the §3.7 NM lobe-selection sibling that needs its own design.
+   - **Resolution:** the v2 shortcut is rejected; v3 chain-storage is the only path that closes §3 correctly.  Sketched in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §14, not yet design-reviewed; deferred to a future focused session.
 
 2. **BDPT-spectral adaptive sampling: per-pixel luminance signal source?**
    - Y-channel of the XYZ accumulator (cheapest, matches what the Pel rasterizer effectively does after RGB→Y).
