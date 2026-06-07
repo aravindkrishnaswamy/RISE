@@ -116,17 +116,23 @@ single-film sum, and assert they agree. The two-implementation cross-check is th
 catches the classic p-polarization sign-convention bugs a single implementation can't.
 
 Conventions: complex index `N = n + i·k`, `k ≥ 0` (absorbing); time convention so absorbing
-media decay. Pick the `cosθ` branch with `Im(N·cosθ) ≥ 0`.
+media decay (`e^{−iωt}`; Born & Wolf / Macleod). Take the **forward-travelling** `cosθ` root —
+`Re(N·cosθ) > 0`, tie-broken by `Im(N·cosθ) > 0` — which keeps `cosθ = +1` at normal incidence
+even for an absorbing medium. **The cosθ-branch, the matrix off-diagonal sign, and the Airy
+round-trip exponent below must be mutually consistent**: pairing a forward-root branch with the
+opposite-convention `+i sinδ` matrix / `e^{−2iδ}` Airy factor produces a *growing* wave and
+`R ≫ 1` for absorbing films — exactly what the TMM↔Airy cross-check (and §9's energy invariant)
+is built to catch. (Verified by the P1-A reference; see `tests/thinfilm/TmmReference.h`.)
 
 ```
 Media: 0 = ambient (air, N₀=1), 1..M = films, s = substrate (semi-infinite conductor).
-Snell:        N₀ sinθ₀ = Nⱼ sinθⱼ ;  cosθⱼ = sqrt(1 − (N₀ sinθ₀/Nⱼ)²), branch Im(Nⱼcosθⱼ)≥0
+Snell:        N₀ sinθ₀ = Nⱼ sinθⱼ ;  cosθⱼ = sqrt(1 − (N₀ sinθ₀/Nⱼ)²), forward root Re(Nⱼcosθⱼ)>0 (tie Im>0)
 Admittance:   ηⱼ(s) = Nⱼ cosθⱼ ;   ηⱼ(p) = Nⱼ / cosθⱼ        (per-polarization)
 Phase:        δⱼ = (2π/λ) Nⱼ dⱼ cosθⱼ                        (complex if film absorbs)
 
-TMM (per pol):  Mⱼ = [[cosδⱼ, i sinδⱼ/ηⱼ], [i ηⱼ sinδⱼ, cosδⱼ]] ;  M = Π Mⱼ
+TMM (per pol):  Mⱼ = [[cosδⱼ, −i sinδⱼ/ηⱼ], [−i ηⱼ sinδⱼ, cosδⱼ]] ;  M = Π Mⱼ
                 [B;C] = M·[1; η_s] ;  Y = C/B ;  r = (η₀ − Y)/(η₀ + Y) ;  R = |r|²
-Airy (1 film):  r = (r₀₁ + r₁s e^{−2iδ₁}) / (1 + r₀₁ r₁s e^{−2iδ₁}) ;  R = |r|²
+Airy (1 film):  r = (r₀₁ + r₁s e^{+2iδ₁}) / (1 + r₀₁ r₁s e^{+2iδ₁}) ;  R = |r|²
                 with r_{ab} = (η_a − η_b)/(η_a + η_b)  (per-pol admittances)
 Unpolarized:    R = ½(R_s + R_p)
 ```
