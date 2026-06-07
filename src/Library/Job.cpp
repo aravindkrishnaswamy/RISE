@@ -9273,6 +9273,23 @@ bool RebuildRasterizer( Job& job, const std::string& name, const Job::Rasterizer
 			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
 			p.pixelFilter, p.stability );
 	}
+	if( name == "auto_rasterizer" ) {
+		return job.SetAutoRasterizer(
+			p.autoIntegrator, p.numPixelSamples,
+			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.pathGuiding, p.adaptive, p.stability, p.progressive,
+			p.autoProbeEnabled );
+	}
+	if( name == "auto_spectral_rasterizer" ) {
+		return job.SetAutoSpectralRasterizer(
+			p.autoIntegrator, p.numPixelSamples,
+			p.shader.c_str(), p.radianceMap, p.pixelFilter, p.showLuminaires,
+			p.spectral,
+			p.oidnDenoise, p.oidnQuality, p.oidnDevice, p.oidnPrefilter,
+			p.adaptive, p.stability, p.progressive,
+			p.autoProbeEnabled );
+	}
 	return false;
 }
 
@@ -9319,6 +9336,14 @@ std::string FormatRasterizerParam( const Job::RasterizerParams& p, const std::st
 	if( paramName == "large_step_prob" || paramName == "largeStepProb" ) {
 		std::snprintf( buf, sizeof(buf), "%g", p.largeStepProb );
 		return buf;
+	}
+	if( paramName == "integrator" ) {
+		switch( p.autoIntegrator ) {
+			case AutoIntegratorChoice::PT:   return "pt";
+			case AutoIntegratorChoice::BDPT: return "bdpt";
+			case AutoIntegratorChoice::VCM:  return "vcm";
+			default:                         return "auto";
+		}
 	}
 	return std::string();
 }
@@ -9381,6 +9406,17 @@ bool ApplyRasterizerParam( Job::RasterizerParams& p, const std::string& paramNam
 		return ParseRasterizerUInt( valueStr, p.nMutationsPerPixel );
 	if( paramName == "large_step_prob" || paramName == "largeStepProb" )
 		return ParseRasterizerDouble( valueStr, p.largeStepProb );
+	if( paramName == "integrator" ) {
+		// auto_rasterizer / auto_spectral_rasterizer integrator pin (Tier 0).
+		// Same vocabulary as the chunk parser; unknown -> fail (leave unchanged).
+		std::string iv( valueStr );
+		for( char& ch : iv ) if( ch >= 'A' && ch <= 'Z' ) ch = (char)( ch + 32 );
+		if( iv == "pt" || iv == "pathtracing" || iv == "path_tracing" ) { p.autoIntegrator = AutoIntegratorChoice::PT;   return true; }
+		if( iv == "bdpt" ) { p.autoIntegrator = AutoIntegratorChoice::BDPT; return true; }
+		if( iv == "vcm" )  { p.autoIntegrator = AutoIntegratorChoice::VCM;  return true; }
+		if( iv == "auto" ) { p.autoIntegrator = AutoIntegratorChoice::Auto; return true; }
+		return false;
+	}
 	return false;
 }
 

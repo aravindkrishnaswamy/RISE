@@ -935,6 +935,68 @@ static void TestDelegateStateForwarding()
 	std::remove( p.c_str() );
 }
 
+//////////////////////////////////////////////////////////////////////
+// TestAutoParamPassThrough -- UI parameter edits on the auto dispatcher
+// must reach the (rebuilt) rasterizer + its delegate.  Before the fix,
+// RebuildRasterizer had no auto_rasterizer case (every edit returned false
+// and was silently dropped) and ApplyRasterizerParam/FormatRasterizerParam
+// didn't map the `integrator` pin.  Drives SetRasterizerParameter /
+// GetRasterizerParameter exactly as the GUI param panel does.
+//////////////////////////////////////////////////////////////////////
+static void TestAutoParamPassThrough()
+{
+	const std::string label = "auto-rasterizer UI param edits pass through";
+	std::cout << "Testing " << label << std::endl;
+
+	const std::string scene =
+		std::string("RISE ASCII SCENE 6\n") + kShader + kAutoAuto + kSceneCommon;
+	const std::string p = WriteSceneToTempFile( scene.c_str(), "autoparam" );
+	if( p.empty() ) { Check( false, "temp scene written: " + label ); return; }
+
+	IJobPriv* pJob = nullptr;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) {
+		Check( false, "job created: " + label );
+		std::remove( p.c_str() );
+		return;
+	}
+	if( !pJob->LoadAsciiScene( p.c_str() ) ) {
+		Check( false, "scene loaded: " + label );
+		safe_release( pJob );
+		std::remove( p.c_str() );
+		return;
+	}
+
+	// (1) A common param (samples) must apply + round-trip.  Pre-fix
+	//     RebuildRasterizer returned false for auto -> the edit was dropped.
+	const bool setSamples = pJob->SetRasterizerParameter( "auto_rasterizer", "samples", "7" );
+	Check( setSamples, "SetRasterizerParameter(samples=7) succeeds on auto: " + label );
+	Check( pJob->GetRasterizerParameter( "auto_rasterizer", "samples" ) == "7",
+		"samples round-trips through Get/SetRasterizerParameter: " + label );
+
+	// (2) The auto-specific integrator pin must apply + round-trip.  Pre-fix
+	//     ApplyRasterizerParam / FormatRasterizerParam didn't map "integrator".
+	const bool setInt = pJob->SetRasterizerParameter( "auto_rasterizer", "integrator", "vcm" );
+	Check( setInt, "SetRasterizerParameter(integrator=vcm) succeeds on auto: " + label );
+	Check( pJob->GetRasterizerParameter( "auto_rasterizer", "integrator" ) == "vcm",
+		"integrator pin round-trips through Get/SetRasterizerParameter: " + label );
+
+	// End-to-end: the rebuilt dispatcher must actually resolve to the pinned
+	// integrator at render time (proving the edit reached the live rasterizer).
+	pJob->RemoveRasterizerOutputs();
+	CapturingRasterizerOutput* cap = new CapturingRasterizerOutput();
+	cap->addref();
+	pJob->GetRasterizer()->AddRasterizerOutput( cap );
+	IRasterizer* pRast = pJob->GetRasterizer();
+	pJob->Rasterize();
+	AutoRasterizer* pAuto = dynamic_cast<AutoRasterizer*>( pRast );
+	Check( pAuto && pAuto->ResolvedIntegrator() == AutoIntegratorChoice::VCM,
+		"the pinned integrator edit reached the live dispatcher (resolved VCM): " + label );
+
+	safe_release( cap );
+	safe_release( pJob );
+	std::remove( p.c_str() );
+}
+
 int main()
 {
 	// Phase-4: enable the Tier-2 probe at low spp for the routing tests by
@@ -984,6 +1046,10 @@ int main()
 	std::cout << std::endl;
 	std::cout << "--- Lifecycle: delegate state forwarding ---" << std::endl;
 	TestDelegateStateForwarding();
+
+	std::cout << std::endl;
+	std::cout << "--- Lifecycle: auto-rasterizer UI param pass-through ---" << std::endl;
+	TestAutoParamPassThrough();
 
 	// --- Phase 2: Tier-1 static best-guess (integrator auto, no pin) ---
 	// The dispatcher introspects the assembled scene: a transmissive
