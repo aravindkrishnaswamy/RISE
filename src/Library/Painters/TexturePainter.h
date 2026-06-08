@@ -62,6 +62,15 @@ namespace RISE
 			TexturePainter( IRasterImageAccessor* pRIA_,
 			                SpectrumKind kind_ = eSpectrumKind_Albedo );
 
+			//! Exposes the backing raster accessor so a spatially-varying
+			//! *scalar* painter (TextureScalarPainter) can sample the same
+			//! image directly — by raster channel, with NO Jakob-Hanika
+			//! uplift / colourspace conversion.  Returns the accessor
+			//! WITHOUT adding a reference; the caller addref's if it wants
+			//! to outlive this painter.  Concrete-class method (not on the
+			//! abstract IPainter) so the public IPainter vtable is unchanged.
+			IRasterImageAccessor* GetRasterImageAccessor() const { return pRIA; }
+
 			RISEPel			GetColor( const RayIntersectionGeometric& ri  ) const;
 			Scalar			GetAlpha( const RayIntersectionGeometric& ri  ) const;
 

@@ -1699,6 +1699,23 @@ namespace RISE
 								unsigned int channel			///< [in] 0=R, 1=G, 2=B
 								);
 
+	//! Texture-driven scalar painter with an affine remap of the
+	//! sampled channel: `out = bias + scale * rawTexel` (rawTexel in
+	//! [0,1]).  Lets a [0,1] greyscale map drive a physical quantity
+	//! in real units (e.g. an oxide-thickness map `scale 220 bias 30`
+	//! -> 30..250 nm) without a separate scaling painter in the chain.
+	//! Like the un-remapped variant: NO JH-uplift, NO colourspace
+	//! conversion.  Distinct symbol from
+	//! RISE_API_CreateTextureScalarPainter so the frozen 3-arg ABI is
+	//! preserved for out-of-tree callers.
+	bool RISE_API_CreateTextureScalarPainterAffine(
+								IScalarPainter** ppi,
+								IRasterImageAccessor* pRIA,		///< [in] Texture accessor (addref'd)
+								unsigned int channel,			///< [in] 0=R, 1=G, 2=B
+								Scalar scale,					///< [in] multiplier on the raw texel
+								Scalar bias						///< [in] additive offset
+								);
+
 	//! Composition: child scalar painter × constant.
 	bool RISE_API_CreateScaledScalarPainter(
 								IScalarPainter** ppi,

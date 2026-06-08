@@ -3187,6 +3187,24 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateTextureScalarPainterAffine(
+		IScalarPainter** ppi,
+		IRasterImageAccessor* pRIA,
+		unsigned int channel,
+		Scalar scale,
+		Scalar bias
+		)
+	{
+		if( !ppi ) return false;
+		const TextureScalarPainter::Channel ch =
+			channel == 1 ? TextureScalarPainter::Channel_G :
+			channel == 2 ? TextureScalarPainter::Channel_B :
+			               TextureScalarPainter::Channel_R;
+		*ppi = new TextureScalarPainter( pRIA, ch, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "affine texture scalar painter" );
+		return true;
+	}
+
 	bool RISE_API_CreateScaledScalarPainter(
 		IScalarPainter** ppi,
 		IScalarPainter* pChild,

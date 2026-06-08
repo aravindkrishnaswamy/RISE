@@ -47,6 +47,16 @@ namespace RISE
 		protected:
 			IRasterImageAccessor* const pRIA;
 			const Channel               channel;
+			// Affine remap of the raw texel channel value:
+			//   out = bias + scale * rawTexel   (rawTexel in [0,1]).
+			// Defaults (scale = 1, bias = 0) make the painter return the
+			// raw texel verbatim, so the no-affine constructor below
+			// behaves exactly as before.  This lets a [0,1] greyscale map
+			// drive a physical quantity in real units (e.g. an oxide
+			// thickness map: `scale 220 bias 30` → 30..250 nm) without a
+			// separate scaling painter in the chain.
+			const Scalar                scale;
+			const Scalar                bias;
 			virtual ~TextureScalarPainter()
 			{
 				if( pRIA ) pRIA->release();
@@ -54,7 +64,14 @@ namespace RISE
 
 		public:
 			TextureScalarPainter( IRasterImageAccessor* pRIA_, Channel ch )
-				: pRIA( pRIA_ ), channel( ch )
+				: pRIA( pRIA_ ), channel( ch ), scale( 1 ), bias( 0 )
+			{
+				if( pRIA ) pRIA->addref();
+			}
+
+			TextureScalarPainter( IRasterImageAccessor* pRIA_, Channel ch,
+			                      Scalar scale_, Scalar bias_ )
+				: pRIA( pRIA_ ), channel( ch ), scale( scale_ ), bias( bias_ )
 			{
 				if( pRIA ) pRIA->addref();
 			}
@@ -66,10 +83,11 @@ namespace RISE
 				if( !pRIA ) return ScalarTriple();
 				RISEColor c;
 				pRIA->GetPEL( ri.ptCoord.y, ri.ptCoord.x, c );
-				const Scalar v =
+				const Scalar raw =
 					channel == Channel_R ? c.base.r :
 					channel == Channel_G ? c.base.g :
 					                       c.base.b;
+				const Scalar v = bias + scale * raw;
 				// Replicate to three slots.  A `TextureScalarPainter`
 				// represents a single scalar per UV — the user picked
 				// which channel of the texture sources that scalar.

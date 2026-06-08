@@ -122,6 +122,7 @@
 #include "../Interfaces/IFunction1DManager.h"
 #include "../Interfaces/IFunction2DManager.h"
 #include "../Painters/RGBScalarPainter.h"		// for ScalarTriple::IsUniform et al
+#include "../Painters/TexturePainter.h"		// for resolving a named image painter -> raster accessor (scalar_painter texture form)
 // Phase 6.1: SourceSpanIndex + TransformSnapshot live behind IJobPriv
 // (forward-declared in IJobPriv.h), full defs needed for population calls.
 #include "../Interfaces/IJobPriv.h"
@@ -1172,9 +1173,13 @@ namespace RISE
 			//   function2d <name>                      → Function2DScalarPainter wrapping a named IFunction2D
 			//   base <name> [scale <s>]                → ScaledScalarPainter (default scale = 1.0)
 			//   multiply <a> <b>                       → MultiplyScalarPainter
+			//   texture <name> [channel R|G|B] [scale <s>] [bias <b>]
+			//                                          → TextureScalarPainter (image map
+			//                                            sampled at surface UV; out = bias +
+			//                                            scale * rawTexel; no JH-uplift)
 			//
 			// At most one of {value, values, file, sellmeier, polynomial,
-			// function1d, function2d, base, multiply} may be present.
+			// function1d, function2d, base, multiply, texture} may be present.
 			// Mutually exclusive — the parser raises an error otherwise.
 			//////////////////////////////////////////
 			struct ScalarPainterAsciiChunkParser : public IAsciiChunkParser
@@ -1193,13 +1198,14 @@ namespace RISE
 					const bool hasFunction2d  = bag.Has( "function2d" );
 					const bool hasBase        = bag.Has( "base" );
 					const bool hasMultiply    = bag.Has( "multiply" );
+					const bool hasTexture     = bag.Has( "texture" );
 
 					const int formCount = (int)hasValue + (int)hasValues + (int)hasFile +
 						(int)hasSellmeier + (int)hasPolynomial + (int)hasFunction1d +
-						(int)hasFunction2d + (int)hasBase + (int)hasMultiply;
+						(int)hasFunction2d + (int)hasBase + (int)hasMultiply + (int)hasTexture;
 					if( formCount == 0 ) {
 						GlobalLog()->PrintEx( eLog_Error,
-							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply)",
+							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply, texture)",
 							name.c_str() );
 						return false;
 					}
@@ -1358,6 +1364,59 @@ namespace RISE
 						}
 						RISE_API_CreateMultiplyScalarPainter( &painter, a, b );
 					}
+					else if( hasTexture ) {
+						// Spatially-varying physical scalar driven by a 2D image
+						// map sampled at the surface UV.  We resolve a previously
+						// declared image painter (png_painter / jpg_painter / ...),
+						// pull its raster accessor, and sample the chosen channel
+						// DIRECTLY (no Jakob-Hanika uplift, no colourspace
+						// conversion) via TextureScalarPainter.  This is the
+						// physical-scalar analogue of binding a png_painter to a
+						// colour slot, and is the supported way to map an
+						// IScalarPainter slot (e.g. thin-film film_thickness) from
+						// an image.  out = bias + scale * rawTexel, rawTexel in [0,1].
+						const std::string ref = bag.GetString( "texture" );
+						IPainter* imgPainter = pPriv->GetPainters()->GetItem( ref.c_str() );
+						if( !imgPainter ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: texture `%s` not found (declare a png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter with that name first)",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						Implementation::TexturePainter* tex =
+							dynamic_cast<Implementation::TexturePainter*>( imgPainter );
+						if( !tex ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: texture `%s` is not an image painter (only raster-backed painters such as png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter can be sampled spatially)",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						IRasterImageAccessor* pRIA = tex->GetRasterImageAccessor();
+						if( !pRIA ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: texture `%s` has no raster accessor",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						// channel select: R (default) / G / B.
+						unsigned int channel = 0;
+						if( bag.Has( "channel" ) ) {
+							const std::string chs = bag.GetString( "channel" );
+							if(      chs == "R" ) channel = 0;
+							else if( chs == "G" ) channel = 1;
+							else if( chs == "B" ) channel = 2;
+							else {
+								GlobalLog()->PrintEx( eLog_Error,
+									"scalar_painter `%s`: unknown channel `%s` (expected R, G, or B)",
+									name.c_str(), chs.c_str() );
+								return false;
+							}
+						}
+						const double scale = bag.GetDouble( "scale", 1.0 );
+						const double bias  = bag.GetDouble( "bias",  0.0 );
+						RISE_API_CreateTextureScalarPainterAffine(
+							&painter, pRIA, channel, Scalar( scale ), Scalar( bias ) );
+					}
 
 					if( !painter ) {
 						GlobalLog()->PrintEx( eLog_Error,
@@ -1385,8 +1444,11 @@ namespace RISE
 						{ auto& p = P(); p.name = "function1d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction1D to wrap (form 6: Function1DScalarPainter)"; }
 						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction2D to wrap (form 7: Function2DScalarPainter)"; }
 						{ auto& p = P(); p.name = "base";       p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Base scalar_painter for ScaledScalarPainter (form 8)"; }
-						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;     p.description = "Scale factor (companion to `base`)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;     p.description = "Scale factor (companion to `base` and `texture`)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "multiply";   p.kind = ValueKind::String;     p.description = "Two scalar_painter names `a b` (form 9: MultiplyScalarPainter)"; }
+						{ auto& p = P(); p.name = "texture";    p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named raster image painter (png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter) to sample spatially at the surface UV (form 10: TextureScalarPainter; no JH-uplift / colourspace conversion)"; }
+						{ auto& p = P(); p.name = "channel";    p.kind = ValueKind::Enum;       p.enumValues = {"R","G","B"}; p.description = "Which texture channel sources the scalar (companion to `texture`)"; p.defaultValueHint = "R"; }
+						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;     p.description = "Additive offset for the `texture` form: out = bias + scale * rawTexel (rawTexel in [0,1])"; p.defaultValueHint = "0.0"; }
 						return cd;
 					}();
 					return d;
