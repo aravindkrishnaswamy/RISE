@@ -99,12 +99,32 @@ namespace RISE
 			inline const IScalarPainter& GetAlphaY()     const { return *pAlphaY; }
 			inline const IScalarPainter& GetIOR()        const { return *pIOR; }
 			inline const IScalarPainter& GetExtinction() const { return *pExtinction; }
+			//! Thin-film FILM slots — POINTER-returning because they are
+			//! NULLABLE (only the thin-film Fresnel mode binds them; every
+			//! other mode leaves them null).  Callers MUST null-check
+			//! before dereferencing — unlike GetIOR which returns a
+			//! required reference.  GetFresnelMode lets the introspection
+			//! layer gate the film rows on the active Fresnel mode.
+			inline const IScalarPainter* GetFilmIOR()        const { return pFilmIOR; }
+			inline const IScalarPainter* GetFilmExtinction() const { return pFilmExtinction; }
+			inline const IScalarPainter* GetFilmThickness()  const { return pFilmThickness; }
+			inline FresnelMode           GetFresnelMode()    const { return fresnelMode; }
 			void SetDiffuse( const IPainter& v );
 			void SetSpecular( const IPainter& v );
 			void SetAlphaX( const IScalarPainter& v );
 			void SetAlphaY( const IScalarPainter& v );
 			void SetIOR( const IScalarPainter& v );
 			void SetExtinction( const IScalarPainter& v );
+			//! Rebind a thin-film FILM slot.  Same release-old / addref-new
+			//! discipline as SetIOR.  Material's forwarder hits BOTH the
+			//! BRDF and the SPF in lockstep so the shaded value and the
+			//! sampling distribution never drift.  Takes a reference (the
+			//! editor only ever rebinds to a registered painter, never to
+			//! null) — to CLEAR a film slot you would reconstruct the
+			//! material, matching how the other nullable slots behave.
+			void SetFilmIOR( const IScalarPainter& v );
+			void SetFilmExtinction( const IScalarPainter& v );
+			void SetFilmThickness( const IScalarPainter& v );
 		};
 	}
 }

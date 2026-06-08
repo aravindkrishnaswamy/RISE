@@ -119,12 +119,27 @@ namespace RISE
 			inline const IScalarPainter& GetAlphaY()     const { return pBRDF->GetAlphaY(); }
 			inline const IScalarPainter& GetIOR()        const { return pBRDF->GetIOR(); }
 			inline const IScalarPainter& GetExtinction() const { return pBRDF->GetExtinction(); }
+			//! Thin-film FILM slots + the active Fresnel mode.  The film
+			//! getters delegate to the BRDF and return POINTERS because the
+			//! slots are NULLABLE (bound only in eFresnelThinFilmConductor);
+			//! callers MUST null-check.  GetFresnelMode lets the property
+			//! panel surface the film rows only for a thin-film material.
+			inline const IScalarPainter* GetFilmIOR()        const { return pBRDF->GetFilmIOR(); }
+			inline const IScalarPainter* GetFilmExtinction() const { return pBRDF->GetFilmExtinction(); }
+			inline const IScalarPainter* GetFilmThickness()  const { return pBRDF->GetFilmThickness(); }
+			inline FresnelMode           GetFresnelMode()    const { return pBRDF->GetFresnelMode(); }
 			inline void SetDiffuse( const IPainter& v )         { pBRDF->SetDiffuse( v );    pSPF->SetDiffuse( v ); }
 			inline void SetSpecular( const IPainter& v )        { pBRDF->SetSpecular( v );   pSPF->SetSpecular( v ); }
 			inline void SetAlphaX( const IScalarPainter& v )    { pBRDF->SetAlphaX( v );     pSPF->SetAlphaX( v ); }
 			inline void SetAlphaY( const IScalarPainter& v )    { pBRDF->SetAlphaY( v );     pSPF->SetAlphaY( v ); }
 			inline void SetIOR( const IScalarPainter& v )       { pBRDF->SetIOR( v );        pSPF->SetIOR( v ); }
 			inline void SetExtinction( const IScalarPainter& v ){ pBRDF->SetExtinction( v ); pSPF->SetExtinction( v ); }
+			//! Thin-film FILM-slot rebind — hits BOTH the BRDF and the SPF
+			//! in lockstep (exactly like SetIOR) so the shaded value and the
+			//! sampled distribution never diverge.
+			inline void SetFilmIOR( const IScalarPainter& v )        { pBRDF->SetFilmIOR( v );        pSPF->SetFilmIOR( v ); }
+			inline void SetFilmExtinction( const IScalarPainter& v ) { pBRDF->SetFilmExtinction( v ); pSPF->SetFilmExtinction( v ); }
+			inline void SetFilmThickness( const IScalarPainter& v )  { pBRDF->SetFilmThickness( v );  pSPF->SetFilmThickness( v ); }
 		};
 	}
 }

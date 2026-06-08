@@ -117,6 +117,13 @@ void GGXSPF::SetAlphaY( const IScalarPainter& v )    { v.addref(); safe_release(
 void GGXSPF::SetIOR( const IScalarPainter& v )       { v.addref(); safe_release( pIOR );        pIOR        = &v; }
 void GGXSPF::SetExtinction( const IScalarPainter& v ){ v.addref(); safe_release( pExtinction ); pExtinction = &v; }
 
+// Thin-film FILM slots — mirror of GGXBRDF.cpp.  safe_release is
+// null-safe (handles the previously-null film_extinction), addref
+// precedes release to survive a self-rebind.
+void GGXSPF::SetFilmIOR( const IScalarPainter& v )        { v.addref(); safe_release( pFilmIOR );        pFilmIOR        = &v; }
+void GGXSPF::SetFilmExtinction( const IScalarPainter& v ) { v.addref(); safe_release( pFilmExtinction ); pFilmExtinction = &v; }
+void GGXSPF::SetFilmThickness( const IScalarPainter& v )  { v.addref(); safe_release( pFilmThickness );  pFilmThickness  = &v; }
+
 void GGXSPF::Scatter(
 	const RayIntersectionGeometric& ri,
 	ISampler& sampler,

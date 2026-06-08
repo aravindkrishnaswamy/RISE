@@ -371,6 +371,55 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 		rows.push_back( BuildScalarPainterSlot( "extinction",      ggx->GetExtinction(),
 			scalarPainters, composed,
 			"Extinction coefficient (Fresnel conductor mode only)." ) );
+		// fresnel_mode is an enum, not a painter -- surface it READ-ONLY
+		// (no enum-editor row type in this panel yet) so the user can
+		// SEE which Fresnel model is active.  The three thin-film FILM
+		// rows below are only present in thinfilm mode, so their
+		// presence already implies the mode; this row makes it explicit
+		// and also distinguishes conductor vs schlick_f0.
+		{
+			const FresnelMode fm = ggx->GetFresnelMode();
+			const char* fmName =
+				( fm == eFresnelSchlickF0 )         ? "schlick_f0" :
+				( fm == eFresnelThinFilmConductor ) ? "thinfilm"   :
+				                                      "conductor";
+			rows.push_back( MakeReadOnlyRow(
+				"fresnel_mode", String( fmName ),
+				"Which Fresnel model the specular lobe evaluates: conductor "
+				"(ior/extinction complex index), schlick_f0 (rs is F0, glTF "
+				"metallic-roughness), or thinfilm (air/oxide-film/metal "
+				"interference; adds the film_* slots).  Read-only -- set at "
+				"construction via the chunk's `fresnel_mode` parameter." ) );
+			// Thin-film FILM slots -- the oxide layer of the
+			// air/oxide/metal stack.  Surface them ONLY in thinfilm
+			// mode; in every other mode the pointers are null and the
+			// rows are meaningless.  film_ior and film_thickness are
+			// guaranteed non-null in thinfilm mode (the parser/factory
+			// enforce all three at construction), so deref via the
+			// null-check below; film_extinction is NULLABLE (null =
+			// transparent oxide, k=0) -- its row is skipped when omitted.
+			if( fm == eFresnelThinFilmConductor ) {
+				if( const IScalarPainter* filmIor = ggx->GetFilmIOR() ) {
+					rows.push_back( BuildScalarPainterSlot( "film_ior", *filmIor,
+						scalarPainters, composed,
+						"Thin-film (oxide) refractive index n -- physical scalar.  "
+						"The interference layer's real index in the air/film/metal stack." ) );
+				}
+				if( const IScalarPainter* filmExt = ggx->GetFilmExtinction() ) {
+					rows.push_back( BuildScalarPainterSlot( "film_extinction", *filmExt,
+						scalarPainters, composed,
+						"Thin-film (oxide) extinction coefficient k -- physical scalar.  "
+						"Optional; omitted = transparent oxide (k=0)." ) );
+				}
+				if( const IScalarPainter* filmThk = ggx->GetFilmThickness() ) {
+					rows.push_back( BuildScalarPainterSlot( "film_thickness", *filmThk,
+						scalarPainters, composed,
+						"Thin-film thickness in nanometres -- physical scalar (may be "
+						"spatially varying).  The defining parameter of the iridescent "
+						"tint: drives the interference phase." ) );
+				}
+			}
+		}
 	}
 	else if( const IsotropicPhongMaterial* iph = dynamic_cast<const IsotropicPhongMaterial*>( &material ) ) {
 		rows.push_back( BuildPainterSlot( "rd", iph->GetRd(),
@@ -640,6 +689,13 @@ MaterialSlotRef MaterialIntrospection::GetSlot(
 		if( slotName == String( "alphay" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetAlphaY();     return out; }
 		if( slotName == String( "ior" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetIOR();        return out; }
 		if( slotName == String( "extinction" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &ggx->GetExtinction(); return out; }
+		// Thin-film FILM slots (NULLABLE pointers).  Only resolve the
+		// ref when the slot is actually bound -- a null pointer with
+		// kind=ScalarPainter would be a malformed ref; leaving kind=None
+		// (the fall-through) correctly reports "unknown slot".
+		if( slotName == String( "film_ior" ) )        { if( const IScalarPainter* p = ggx->GetFilmIOR() )        { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = p; } return out; }
+		if( slotName == String( "film_extinction" ) ) { if( const IScalarPainter* p = ggx->GetFilmExtinction() ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = p; } return out; }
+		if( slotName == String( "film_thickness" ) )  { if( const IScalarPainter* p = ggx->GetFilmThickness() )  { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = p; } return out; }
 	}
 	else if( const IsotropicPhongMaterial* iph = dynamic_cast<const IsotropicPhongMaterial*>( &material ) ) {
 		if( slotName == String( "rd" ) )       { out.kind = MaterialSlotRef::Painter;       out.painter       = &iph->GetRd();       return out; }
@@ -794,6 +850,13 @@ bool MaterialIntrospection::SetSlot(
 		if( slotName == String( "alphay" ) )   { if( !scalarPainter ) return false; ggx->SetAlphaY( *scalarPainter );     return true; }
 		if( slotName == String( "ior" ) )      { if( !scalarPainter ) return false; ggx->SetIOR( *scalarPainter );        return true; }
 		if( slotName == String( "extinction" ) )      { if( !scalarPainter ) return false; ggx->SetExtinction( *scalarPainter ); return true; }
+		// Thin-film FILM slots.  SetFilm* rebinds BOTH the BRDF and the
+		// SPF in lockstep (GGXMaterial forwards to both) so the shaded
+		// value and the sampled distribution never diverge.  Reject a
+		// null / wrong-pipe binding like every other scalar slot.
+		if( slotName == String( "film_ior" ) )        { if( !scalarPainter ) return false; ggx->SetFilmIOR( *scalarPainter );        return true; }
+		if( slotName == String( "film_extinction" ) ) { if( !scalarPainter ) return false; ggx->SetFilmExtinction( *scalarPainter ); return true; }
+		if( slotName == String( "film_thickness" ) )  { if( !scalarPainter ) return false; ggx->SetFilmThickness( *scalarPainter );  return true; }
 		return false;
 	}
 	if( IsotropicPhongMaterial* iph = dynamic_cast<IsotropicPhongMaterial*>( &material ) ) {

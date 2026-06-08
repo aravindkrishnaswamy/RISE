@@ -104,6 +104,17 @@ namespace RISE
 				const IORStack& ior_stack
 				) const;
 
+			//! Read-back of the thin-film FILM slots — POINTER-returning
+			//! (NULLABLE; only bound in the thin-film Fresnel mode).
+			//! GetFresnelMode lets the introspection layer gate the film
+			//! rows.  Mirror of GGXBRDF.h; the Material reads back from the
+			//! BRDF, so these exist primarily for symmetry / direct unit
+			//! tests against the SPF.
+			inline const IScalarPainter* GetFilmIOR()        const { return pFilmIOR; }
+			inline const IScalarPainter* GetFilmExtinction() const { return pFilmExtinction; }
+			inline const IScalarPainter* GetFilmThickness()  const { return pFilmThickness; }
+			inline FresnelMode           GetFresnelMode()    const { return fresnelMode; }
+
 			//! Read-back + rebind for the interactive editor.  See
 			//! GGXBRDF.h — every Set* call here is paired with the
 			//! BRDF's matching Set* by Material's forwarder.
@@ -113,6 +124,14 @@ namespace RISE
 			void SetAlphaY( const IScalarPainter& v );
 			void SetIOR( const IScalarPainter& v );
 			void SetExtinction( const IScalarPainter& v );
+			//! Thin-film FILM-slot rebind — paired with the BRDF's matching
+			//! Set* by Material's forwarder so the value and sampling paths
+			//! stay in lockstep.  Same release-old / addref-new discipline
+			//! as SetIOR (null-safe via safe_release for the previously-null
+			//! film_extinction case).
+			void SetFilmIOR( const IScalarPainter& v );
+			void SetFilmExtinction( const IScalarPainter& v );
+			void SetFilmThickness( const IScalarPainter& v );
 		};
 	}
 }

@@ -101,6 +101,15 @@ void GGXBRDF::SetAlphaY( const IScalarPainter& v )  { v.addref(); safe_release( 
 void GGXBRDF::SetIOR( const IScalarPainter& v )     { v.addref(); safe_release( pIOR );        pIOR        = &v; }
 void GGXBRDF::SetExtinction( const IScalarPainter& v ) { v.addref(); safe_release( pExtinction ); pExtinction = &v; }
 
+// Thin-film FILM slots.  Same release-old / addref-new discipline as
+// SetIOR; safe_release is null-safe so it correctly handles the
+// pre-edit state where film_extinction may have been null (transparent
+// k=0 default).  addref BEFORE the release so a self-rebind (v aliasing
+// the current binding) never drops the last reference mid-swap.
+void GGXBRDF::SetFilmIOR( const IScalarPainter& v )        { v.addref(); safe_release( pFilmIOR );        pFilmIOR        = &v; }
+void GGXBRDF::SetFilmExtinction( const IScalarPainter& v ) { v.addref(); safe_release( pFilmExtinction ); pFilmExtinction = &v; }
+void GGXBRDF::SetFilmThickness( const IScalarPainter& v )  { v.addref(); safe_release( pFilmThickness );  pFilmThickness  = &v; }
+
 namespace
 {
 	// Landing 8: resolve the per-shading-point tangent ONB.  When the
