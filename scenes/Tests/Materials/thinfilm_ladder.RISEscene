@@ -1,0 +1,322 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#   File:           thinfilm_ladder.RISEscene
+#   Description:    In-renderer titanium anodization ladder.  Five Ti / TiO2 thin-film GGX spheres at
+#                   increasing oxide thickness (40..220 nm), rendered SPECTRALLY (per-hero-wavelength
+#                   thin-film Airy reflectance).  The colour progression must match the Phase-1
+#                   ground-truth swatch (tests/ThinFilmAnodizeSwatchTest -> rendered/thinfilm_anodize
+#                   _swatches.png): gold -> purple -> blue -> cyan/teal -> green/gold as thickness grows,
+#                   with each sphere also showing the angle-dependent hue shift (centre vs rim) that is
+#                   the signature of thin-film interference.  Deterministic regression scene for Phase-2
+#                   piece E (docs/THIN_FILM_INTERFERENCE.md sec 10).
+#   Author:         Aravind Krishnaswamy
+#############################################################################################################
+
+##################################################
+# Renderer (spectral / HWSS)
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_spectral_rasterizer
+{
+	samples				32
+	nmbegin				380
+	nmend				720
+	num_wavelengths			24
+	spectral_samples		1
+	oidn_denoise			true
+	oidn_prefilter			accurate
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/thinfilm_ladder
+	type				PNG
+	bpp				8
+	color_space			sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+film
+{
+	width			640
+	height			320
+}
+
+pinhole_camera
+{
+	location			280 273 -760
+	lookat				280 240 200
+	up				0 1 0
+	fov				40.0
+}
+
+##################################################
+# Painters
+##################################################
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_light
+	color				1.0 1.0 1.0
+}
+
+##################################################
+# Thin-film optical constants (Phase-1 data, colors/thinfilm/)
+##################################################
+
+scalar_painter
+{
+	name				Ti_n
+	file				colors/thinfilm/substrates/Ti.n
+}
+
+scalar_painter
+{
+	name				Ti_k
+	file				colors/thinfilm/substrates/Ti.k
+}
+
+scalar_painter
+{
+	name				TiO2_n
+	file				colors/thinfilm/oxides/TiO2.n
+}
+
+scalar_painter
+{
+	name				TiO2_k
+	file				colors/thinfilm/oxides/TiO2.k
+}
+
+##################################################
+# Thin-film Ti / TiO2 materials at increasing oxide thickness (nm)
+##################################################
+
+ggx_material
+{
+	name				tf_040
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.045
+	alphay				0.045
+	fresnel_mode			thinfilm
+	ior				Ti_n
+	extinction			Ti_k
+	film_ior			TiO2_n
+	film_extinction			TiO2_k
+	film_thickness			40
+}
+
+ggx_material
+{
+	name				tf_080
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.045
+	alphay				0.045
+	fresnel_mode			thinfilm
+	ior				Ti_n
+	extinction			Ti_k
+	film_ior			TiO2_n
+	film_extinction			TiO2_k
+	film_thickness			80
+}
+
+ggx_material
+{
+	name				tf_120
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.045
+	alphay				0.045
+	fresnel_mode			thinfilm
+	ior				Ti_n
+	extinction			Ti_k
+	film_ior			TiO2_n
+	film_extinction			TiO2_k
+	film_thickness			120
+}
+
+ggx_material
+{
+	name				tf_170
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.045
+	alphay				0.045
+	fresnel_mode			thinfilm
+	ior				Ti_n
+	extinction			Ti_k
+	film_ior			TiO2_n
+	film_extinction			TiO2_k
+	film_thickness			170
+}
+
+ggx_material
+{
+	name				tf_220
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.045
+	alphay				0.045
+	fresnel_mode			thinfilm
+	ior				Ti_n
+	extinction			Ti_k
+	film_ior			TiO2_n
+	film_extinction			TiO2_k
+	film_thickness			220
+}
+
+##################################################
+# Neutral enclosure (white) + area light
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_light
+	scale				55.0
+	material			none
+}
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta				552.8 0 0
+	ptb				0 0 0
+	ptc				0 0 559.2
+	ptd				549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta				556.0 548.8 0.0
+	ptb				556.0 548.8 559.2
+	ptc				0 548.8 559.2
+	ptd				0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta				549.6 0 559.2
+	ptb				0 0 559.2
+	ptc				0 548.8 559.2
+	ptd				556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta				413.0 548.7999 157.0
+	ptb				413.0 548.7999 402.0
+	ptc				143.0 548.7999 402.0
+	ptd				143.0 548.7999 157.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+##################################################
+# The ladder: five spheres, thickness 40..220 nm left -> right
+##################################################
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				48.0
+}
+
+standard_object
+{
+	name				s_040
+	geometry			spheregeom
+	position			90 250 300
+	material			tf_040
+}
+
+standard_object
+{
+	name				s_080
+	geometry			spheregeom
+	position			200 250 300
+	material			tf_080
+}
+
+standard_object
+{
+	name				s_120
+	geometry			spheregeom
+	position			310 250 300
+	material			tf_120
+}
+
+standard_object
+{
+	name				s_170
+	geometry			spheregeom
+	position			420 250 300
+	material			tf_170
+}
+
+standard_object
+{
+	name				s_220
+	geometry			spheregeom
+	position			530 250 300
+	material			tf_220
+}
