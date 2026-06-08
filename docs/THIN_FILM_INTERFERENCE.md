@@ -411,7 +411,7 @@ around) + a rose-engine normal map with anisotropic cut-aligned roughness.
 ## Adversarial review outcome (2026-06-07)
 
 Full multi-reviewer adversarial CORRECTNESS review of the whole branch before merge (per
-[adversarial-code-review](skills/adversarial-code-review.md)): 2 rounds, 7 reviewers across
+[adversarial-code-review](skills/adversarial-code-review.md)): 3 rounds, 9 reviewers across
 orthogonal axes (optics math, BSDF/spectral integration, API/ABI/lifecycle, blast-radius/tests/data,
 thread-safety, post-fix re-review, "what's left").
 
@@ -431,6 +431,12 @@ thread-safety, post-fix re-review, "what's left").
   ABI preservation, thread-safety/reentrancy (the RGB integral uses load-init CMF tables, not a lazy
   singleton), MIS lobe classification (`isDelta=false`, glossy), parser diagnostics, n/k data, and
   the 5-build-project registration.
+
+**Round 3** (post-fix guard re-review + a final "what's left" sweep covering HWSS companion-termination,
+`ComputeFms` numerics as `F_avg→1`, the `albedo()` AOV cosine, and path-guiding/auto-rasterizer
+interaction) returned **no new P1/P2** — the stop rule (every finding fixed or rejected-with-reason,
+plus a post-fix round with no new P1/P2) is satisfied. The thin-film branch is correctness-clean; the
+sole open item is the deferred GUI-introspection completeness gap (above).
 
 ## 13. Locked decisions (2026-06-07)
 
