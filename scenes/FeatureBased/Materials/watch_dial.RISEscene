@@ -1,0 +1,545 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#   File:           watch_dial.RISEscene
+#   Description:    Guilloche titanium watch dial (thin-film heat-tint).  Phase 3 of the thin-film feature.
+#                   MILESTONE 1 (this revision): bare dial COLOUR validation -- a flat circular dial with the
+#                   thin-film GGX material, oxide thickness driven by the baked radial heat-tint map
+#                   (tools/thermal_oxide_sim.py -> textures/dial/oxide_thickness.png), lit by an HDRI
+#                   environment so the specular thin-film reflectance gradient (gold centre -> blue rim)
+#                   is visible.  Relief (guilloche bump), cut-aligned anisotropy, the watch case, and the
+#                   final dark hero lighting + turntable land in later milestones.  Generic -- no brand mark.
+#   Author:         Aravind Krishnaswamy
+#############################################################################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultPathTracing
+}
+
+hdr_painter
+{
+	name				pnt_env
+	file				lightprobes/uffizi_probe.hdr
+}
+
+pathtracing_spectral_rasterizer
+{
+	samples				48
+	nmbegin				380
+	nmend				720
+	num_wavelengths			16
+	spectral_samples		1
+	oidn_denoise			true
+	oidn_prefilter			accurate
+	radiance_map			pnt_env
+	radiance_scale			1.4
+	radiance_background		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/watch_dial
+	type				PNG
+	bpp				8
+	color_space			sRGB
+}
+
+film
+{
+	width				500
+	height				500
+}
+
+pinhole_camera
+{
+	location			46 29 50
+	lookat				-1 -2 -1
+	up				0 1 0
+	fov				46.0
+}
+
+##################################################
+# Painters
+##################################################
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				1.0 1.0 1.0
+}
+
+scalar_painter
+{
+	name				Ti_n
+	file				colors/thinfilm/substrates/Ti.n
+}
+
+scalar_painter
+{
+	name				Ti_k
+	file				colors/thinfilm/substrates/Ti.k
+}
+
+scalar_painter
+{
+	name				TiO2_n
+	file				colors/thinfilm/oxides/TiO2.n
+}
+
+scalar_painter
+{
+	name				TiO2_k
+	file				colors/thinfilm/oxides/TiO2.k
+}
+
+# Baked oxide-thickness map (normalized 0..1) -> nm via scale/bias (scene-tunable colour range).
+# scale 13 + bias 20 => 20 nm (gold, centre) .. 33 nm (blue, rim), calibrated to the Phase-1 Ti swatch.
+png_painter
+{
+	name				oxide_png
+	file				textures/dial/oxide_thickness.png
+	color_space			Rec709RGB_Linear
+}
+
+scalar_painter
+{
+	name				oxide_thk
+	texture				oxide_png
+	channel				R
+	scale				13.0
+	bias				20.0
+}
+
+# Guilloche relief (engraved spiral rosette) as a bump map.  Height map is verbatim-linear
+# grayscale; bumpmap_modifier finite-differences it to perturb the shading normal.
+png_painter
+{
+	name				guilloche_height_png
+	file				textures/dial/guilloche_height.png
+	color_space			Rec709RGB_Linear
+}
+
+bumpmap_modifier
+{
+	name				dial_bump
+	function			guilloche_height_png
+	scale				0.6
+	windowsize			0.0025
+}
+
+##################################################
+# Thin-film dial material
+##################################################
+ggx_material
+{
+	name				tf_dial
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.07
+	alphay				0.07
+	fresnel_mode			thinfilm
+	ior				Ti_n
+	extinction			Ti_k
+	film_ior			TiO2_n
+	film_extinction			TiO2_k
+	film_thickness			oxide_thk
+}
+
+##################################################
+# Watch-head support painters + materials
+##################################################
+# Blued-steel hand tint (deep polished blue), bright index/silver, crystal tint
+uniformcolor_painter
+{
+	name				pnt_blue
+	color				0.08 0.18 0.65
+}
+
+uniformcolor_painter
+{
+	name				pnt_silver
+	color				0.92 0.93 0.95
+}
+
+# Polished titanium (case, bezel, crown, lugs) -- reuse the dial's Ti n/k curves,
+# very low roughness for a near-mirror brushed-then-polished finish.
+ggx_material
+{
+	name				ti_polished
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.03
+	alphay				0.03
+	fresnel_mode			conductor
+	ior				Ti_n
+	extinction			Ti_k
+}
+
+# Blued steel hands -- conductor with a strong blue specular tint, glossy.
+ggx_material
+{
+	name				blued_steel
+	rd				pnt_black
+	rs				pnt_blue
+	alphax				0.04
+	alphay				0.04
+	fresnel_mode			conductor
+	ior				Ti_n
+	extinction			Ti_k
+}
+
+# Applied indices / hour markers -- bright polished silver metal.
+ggx_material
+{
+	name				index_metal
+	rd				pnt_black
+	rs				pnt_silver
+	alphax				0.025
+	alphay				0.025
+	fresnel_mode			conductor
+	ior				Ti_n
+	extinction			Ti_k
+}
+
+# Domed sapphire crystal -- clear dielectric, ior 1.77.  High `scattering`
+# value == long mean free path == effectively clear (matches jewel_vault glass).
+dielectric_material
+{
+	name				sapphire_crystal
+	tau				0.985 0.99 1.0
+	ior				1.77
+	scattering			100000.0
+}
+
+##################################################
+# Key softbox: large bright panel behind/above the camera, facing the watch
+# (-Z), for a dramatic raking highlight on the crystal/case + to reveal the
+# guilloche relief.  The dial (normal +Z) reflects it; camera (z=50) sits in
+# front of it (z=56) so it does not block the view.
+##################################################
+lambertian_luminaire_material
+{
+	name				key_lum
+	exitance			pnt_white
+	scale				24.0
+	material			none
+}
+
+clippedplane_geometry
+{
+	name				keygeom
+	pta				75 25 56
+	ptb				-35 25 56
+	ptc				-35 95 56
+	ptd				75 95 56
+}
+
+standard_object
+{
+	name				keylight
+	geometry			keygeom
+	material				key_lum
+}
+
+##################################################
+# The dial: flat disc, normal +Z, facing the camera.
+# Recessed to z = -1 so it sits below the case top rim.
+##################################################
+circulardisk_geometry
+{
+	name				dialgeom
+	radius				20.0
+	axis				z
+}
+
+standard_object
+{
+	name				dial
+	geometry			dialgeom
+	material			tf_dial
+	modifier			dial_bump
+	position			0 0 -1.0
+}
+
+##################################################
+# Case body: polished titanium cylinder, axis z.
+# radius 24, height 9 -> spans z = -8 .. +1 (centre z = -3.5),
+# so the dial at z = -1 is recessed ~2 below the top rim.
+##################################################
+cylinder_geometry
+{
+	name				casegeom
+	axis				z
+	radius				24.0
+	height				9.0
+}
+
+standard_object
+{
+	name				casebody
+	geometry			casegeom
+	material			ti_polished
+	position			0 0 -3.5
+}
+
+# Solid caseback disc to close the bottom of the cylinder (no see-through).
+circulardisk_geometry
+{
+	name				casebackgeom
+	radius				24.0
+	axis				z
+}
+
+standard_object
+{
+	name				caseback
+	geometry			casebackgeom
+	material			ti_polished
+	position			0 0 -8.0
+}
+
+##################################################
+# Bezel: thin polished-titanium ring framing the crystal at the top rim.
+##################################################
+torus_geometry
+{
+	name				bezelgeom
+	majorradius			22.0
+	minorratio			0.055
+}
+
+standard_object
+{
+	name				bezel
+	geometry			bezelgeom
+	material			ti_polished
+	position			0 0 1.0
+	orientation			90 0 0
+}
+
+##################################################
+# Domed sapphire crystal over the dial.  Flattened ellipsoid (22,22,4)
+# centred just below the rim so a gentle dome rises over the dial.
+##################################################
+ellipsoid_geometry
+{
+	name				crystalgeom
+	radii				21.5 21.5 2.2
+}
+
+standard_object
+{
+	name				crystal
+	geometry			crystalgeom
+	material			sapphire_crystal
+	position			0 0 -1.0
+}
+
+##################################################
+# Hands (blued steel), pointing to ~10:10.
+# Long thin boxes in the XY plane, just above the dial (z = -0.4),
+# rolled about Z to the clock angle.  Box long axis = X (width).
+##################################################
+box_geometry
+{
+	name				hourhandgeom
+	width				11.0
+	height				0.9
+	depth				0.25
+}
+
+standard_object
+{
+	name				hourhand
+	geometry			hourhandgeom
+	material			blued_steel
+	position			-3.03 1.75 -0.4
+	orientation			0 0 150
+}
+
+box_geometry
+{
+	name				minutehandgeom
+	width				17.0
+	height				0.7
+	depth				0.25
+}
+
+standard_object
+{
+	name				minutehand
+	geometry			minutehandgeom
+	material			blued_steel
+	position			5.63 3.25 -0.3
+	orientation			0 0 30
+}
+
+# Small central hub cap over the hand pivot.
+sphere_geometry
+{
+	name				hubgeom
+	radius				1.1
+}
+
+standard_object
+{
+	name				hub
+	geometry			hubgeom
+	material			blued_steel
+	position			0 0 -0.2
+}
+
+##################################################
+# Applied hour markers (polished silver batons) just inside the rim.
+# 3/6/9 batons + a wider twin-baton at 12.  Marker radius ~16, z = -0.6.
+# Baton long axis is radial; for 3 & 9 (along X) long axis = X, for
+# 6 (along Y) long axis = Y via a 90 roll.
+##################################################
+# 3 o'clock (+X)
+box_geometry
+{
+	name				idx_radialX
+	width				2.6
+	height				0.7
+	depth				0.4
+}
+
+standard_object
+{
+	name				idx3
+	geometry			idx_radialX
+	material			index_metal
+	position			16.0 0 -0.6
+}
+
+# 9 o'clock (-X)
+standard_object
+{
+	name				idx9
+	geometry			idx_radialX
+	material			index_metal
+	position			-16.0 0 -0.6
+}
+
+# 6 o'clock (-Y) -- reuse radialX rolled 90 so it points radially.
+standard_object
+{
+	name				idx6
+	geometry			idx_radialX
+	material			index_metal
+	position			0 -16.0 -0.6
+	orientation			0 0 90
+}
+
+# 12 o'clock distinctive twin marker (+Y): two short batons side by side.
+box_geometry
+{
+	name				idx12geom
+	width				0.7
+	height				2.4
+	depth				0.4
+}
+
+standard_object
+{
+	name				idx12a
+	geometry			idx12geom
+	material			index_metal
+	position			-1.1 16.0 -0.6
+}
+
+standard_object
+{
+	name				idx12b
+	geometry			idx12geom
+	material			index_metal
+	position			1.1 16.0 -0.6
+}
+
+##################################################
+# Crown at 3 o'clock: knurled-look polished-Ti cylinder, axis x,
+# protruding from the caseband.
+##################################################
+cylinder_geometry
+{
+	name				crowngeom
+	axis				x
+	radius				3.0
+	height				4.0
+}
+
+standard_object
+{
+	name				crown
+	geometry			crowngeom
+	material			ti_polished
+	position			26.0 0 -3.5
+}
+
+# Crown stem / shoulder: a short narrower cylinder bridging case to crown.
+cylinder_geometry
+{
+	name				crownstemgeom
+	axis				x
+	radius				1.4
+	height				2.5
+}
+
+standard_object
+{
+	name				crownstem
+	geometry			crownstemgeom
+	material			ti_polished
+	position			23.5 0 -3.5
+}
+
+##################################################
+# 4 lugs (2 pairs) at the 12 and 6 o'clock band, where a strap attaches.
+# Short angular polished-Ti nubs protruding radially from the caseband.
+# Top pair near +Y, bottom pair near -Y; each pair split in X.
+##################################################
+box_geometry
+{
+	name				luggeom
+	width				3.0
+	height				6.0
+	depth				7.0
+}
+
+standard_object
+{
+	name				lug_tl
+	geometry			luggeom
+	material			ti_polished
+	position			-7.0 23.5 -3.5
+}
+
+standard_object
+{
+	name				lug_tr
+	geometry			luggeom
+	material			ti_polished
+	position			7.0 23.5 -3.5
+}
+
+standard_object
+{
+	name				lug_bl
+	geometry			luggeom
+	material			ti_polished
+	position			-7.0 -23.5 -3.5
+}
+
+standard_object
+{
+	name				lug_br
+	geometry			luggeom
+	material			ti_polished
+	position			7.0 -23.5 -3.5
+}
