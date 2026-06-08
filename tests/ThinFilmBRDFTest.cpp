@@ -13,21 +13,31 @@
 //    METHODOLOGY NOTE — the production build is -O3 -ffast-math -flto, so
 //    a hand-reconstruction of the FULL BRDF (single-scatter × specFactor +
 //    Kulla-Conty multiscatter) drifts from the library's compiled value by
-//    FP-reassociation noise that swamps a tight tolerance.  The tests
-//    therefore use formulations where the fast-math-sensitive geometric
-//    factors (specFactor, the multiscatter tail M) CANCEL exactly, leaving
-//    only the thin-film reflectance under test:
+//    FP-reassociation noise.  The single-scatter reflectance R is therefore
+//    pinned EXACTLY (to ~1e-9 / ~1e-16) by Test B, where a geometric weight
+//    cancels in a ratio; Test A validates the FULL single+multi model at the
+//    looser ~1e-3 reconstruction tolerance:
 //
-//      * Test A drives the SAME geometry at FOUR film thicknesses and
-//        compares (val(d1)-val(d2))/(val(d3)-val(d4)) to the oracle
-//        (R(d1)-R(d2))/(R(d3)-R(d4)).  specFactor and M are identical
-//        across thickness ⇒ they cancel, isolating R — match to ~1e-13.
+//      * Test A drives the SAME geometry at FOUR film thicknesses.  Per
+//        (λ, geometry) cell the thin-film valueNM is exactly
+//        valueNM(d) = A·R(d) + B·F_ms(d) with A = specColor·specFactor and
+//        B = specColor·f_ms BOTH thickness-independent, R(d) the
+//        single-scatter reflectance and F_ms(d) the Kulla-Conty tail built
+//        from the THIN-FILM hemispherical F_avg (P2-D).  The test solves
+//        (A,B) from the best-conditioned thickness pair (R and F_avg are not
+//        collinear — the film shifts the average reflectance differently
+//        from the single-scatter one, so the [R F_ms] 2×2 is non-singular),
+//        then PREDICTS the other two valueNMs.  This FAILS if the tail still
+//        used the substrate F_avg, so it validates the P2-D wiring — match
+//        to ~1e-3 (the -ffast-math reconstruction limit).
 //      * Test B drives ScatterNM in thin-film AND conductor mode with the
 //        SAME scripted sampler (⇒ identical half-vector, G2, G1, pSelect)
 //        and compares the kray ratio to the oracle R_film/R_cond — the
-//        geometric weight cancels, isolating R — match to ~1e-16.  Since
-//        Test A pins valueNM's R to the same oracle, this transitively
-//        proves ScatterNM ≡ valueNM (the HWSS-companion twin).
+//        geometric weight cancels, isolating the SINGLE-SCATTER R — match to
+//        ~1e-16.  ScatterNM's reflection ray is a pure single-scatter lobe,
+//        so this is the exact-R pin; valueNM (which SUMS single+multi) routes
+//        the SAME single-scatter term, so the two agree there (the
+//        HWSS-companion twin).
 //      * Test D's additive invariant compares conductor mode to thin-film
 //        mode with film index == air: the thin-film Airy then reduces
 //        ALGEBRAICALLY to the bare air→substrate Fresnel, so both modes
@@ -37,14 +47,18 @@
 //        vanishes.
 //
 //    Assertions:
-//      A. SPECTRAL EXACTNESS — valueNM's thickness-difference ratio equals
-//         the ThinFilm::ReflectanceConductor thickness-difference ratio
-//         (exact per hero wavelength; proves correct cosine/λ/stack/thickness
-//         argument passing).
-//      B. TWIN CONSISTENCY — ScatterNM's thin-film/conductor kray ratio
-//         equals the oracle R_film/R_cond (== valueNM's, via Test A).
-//         GGXSPF does NOT override EvaluateKrayNM, so HWSS companions route
-//         through valueNM — the two MUST agree (audit-by-bug-pattern.md).
+//      A. FULL SINGLE+MULTI MODEL — per (λ, geometry) cell, valueNM(d) ==
+//         A·R(d) + B·F_ms(d) (A,B thickness-independent; F_ms from the
+//         THIN-FILM F_avg, P2-D): solve A,B from a well-conditioned
+//         thickness pair, predict the rest (~1e-3).  Validates the
+//         multiscatter tail uses the thin-film hemispherical average AND
+//         correct cosine/λ/stack/thickness argument passing.
+//      B. TWIN CONSISTENCY (exact single-scatter R) — ScatterNM's
+//         thin-film/conductor kray ratio equals the oracle R_film/R_cond to
+//         ~1e-16 (the reflection ray is a pure single-scatter lobe, so this
+//         is the exact-R pin).  GGXSPF does NOT override EvaluateKrayNM, so
+//         HWSS companions route through valueNM's single-scatter term — the
+//         two MUST agree (audit-by-bug-pattern.md).
 //      C. RECIPROCITY — valueNM(wi→wo) ≈ valueNM(wo→wi) for the thin-film
 //         lobe (symmetric NDF + height-correlated G2 + half-vector Fresnel).
 //      D. ADDITIVE INVARIANT — conductor mode ≡ thin-film(film=air) mode to
@@ -70,6 +84,7 @@
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 #include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Utilities/ThinFilm.h"
+#include "../src/Library/Utilities/MicrofacetEnergyLUT.h"
 #include "../src/Library/Utilities/Ray.h"
 #include "../src/Library/Utilities/OrthonormalBasis3D.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
@@ -217,30 +232,63 @@ namespace
 }
 
 // ============================================================
-//  Test A: spectral exactness via the thickness-difference ratio
-//          (specFactor + multiscatter cancel; isolates R).
+//  Test A: full single+multi model  valueNM(d) = A*R(d) + B*F_ms(d)
+//          (A,B thickness-independent; F_ms uses the THIN-FILM F_avg;
+//          solve A,B from a well-conditioned pair, predict the rest).
 // ============================================================
 static bool TestSpectralExactness()
 {
-	std::cout << "--- Test A: spectral exactness (valueNM thickness-diff ratio ≡ oracle) ---\n";
+	std::cout << "--- Test A: full single+multi model (valueNM = A*R(d) + B*F_ms(d)) ---\n";
 	const bool startFail = s_fail;
 
-	const Scalar alpha = 0.10;
-	const Scalar d1 = 120.0, d2 = 200.0, d3 = 60.0, d4 = 300.0;
-	Stack s1( alpha, kFilmN, kFilmK, d1 );
-	Stack s2( alpha, kFilmN, kFilmK, d2 );
-	Stack s3( alpha, kFilmN, kFilmK, d3 );
-	Stack s4( alpha, kFilmN, kFilmK, d4 );
-	GGXBRDF* b1 = s1.MakeThinFilmBRDF();
-	GGXBRDF* b2 = s2.MakeThinFilmBRDF();
-	GGXBRDF* b3 = s3.MakeThinFilmBRDF();
-	GGXBRDF* b4 = s4.MakeThinFilmBRDF();
+	// The thin-film GGX valueNM is, per hero wavelength and FIXED geometry,
+	//   valueNM(d) = A * R(d)  +  B * F_ms(d)
+	// where A = specColor*specFactor and B = specColor*f_ms are BOTH
+	// thickness-INDEPENDENT (same alpha, same half-vector across thickness),
+	// R(d)  = ThinFilm::ReflectanceConductor (the single-scatter lobe), and
+	// F_ms(d) = ComputeFms( ThinFilm::FresnelAvgConductor(d), Eavg ) is the
+	// Kulla-Conty multiscatter tail evaluated with the THIN-FILM hemispherical
+	// F_avg (P2-D).  With 4 thicknesses we have 4 equations in the 2 unknowns
+	// (A,B): per cell we solve A,B from the BEST-CONDITIONED thickness pair
+	// (the [R F_ms] 2x2 must be non-singular -- R and F_avg are not collinear
+	// because the film shifts the average reflectance differently from the
+	// single-scatter reflectance), then PREDICT the remaining valueNMs and
+	// compare to the library.  Because the multiscatter term carries the
+	// thin-film F_avg, this prediction would FAIL if the renderer still used
+	// the substrate F_avg in the tail -- so it validates the P2-D wiring, not
+	// just argument passing.  Tolerance ~1e-3 is the -ffast-math
+	// reconstruction limit (header methodology note).
+	//
+	// Single-scatter R EXACTNESS (the old ratio's job) is now pinned to 1e-9
+	// by Test B (ScatterNM's reflection ray is a pure single-scatter lobe).
+
+	// Roughness 0.50: the multiscatter tail (which carries the thin-film
+	// F_avg) is a HIGH-roughness correction, so the tail must carry real
+	// weight for this test to discriminate thin-film F_avg from substrate
+	// F_avg.  At alpha=0.50 a substrate-F_avg regression shows up as a ~13%
+	// prediction error (vs the ~1e-3 fast-math reconstruction floor); at
+	// alpha=0.10 the tail is too small and the signal collapses to the floor.
+	const Scalar alpha = 0.50;
+	const Scalar ds[4] = { 60.0, 160.0, 250.0, 310.0 };	// well-conditioned quartet
+	Stack s0( alpha, kFilmN, kFilmK, ds[0] );
+	Stack s1( alpha, kFilmN, kFilmK, ds[1] );
+	Stack s2( alpha, kFilmN, kFilmK, ds[2] );
+	Stack s3( alpha, kFilmN, kFilmK, ds[3] );
+	GGXBRDF* b[4] = { s0.MakeThinFilmBRDF(), s1.MakeThinFilmBRDF(), s2.MakeThinFilmBRDF(), s3.MakeThinFilmBRDF() };
+
+	// Eavg for the isotropic LUT (alphaEff = sqrt(alphaX*alphaY) = alpha here),
+	// matching GGXBRDF::valueNM's multiscatter tail exactly.
+	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
 
 	const Scalar wavelengths[] = { 430.0, 500.0, 560.0, 620.0, 670.0 };
 	const Scalar thetaIs[] = { 0.0, 0.4, 0.8 };
 
 	double maxRel = 0.0;
 	int compared = 0;
+	int skippedIllCond = 0;
+	double bestCondSeen = 0.0;
+	const double kCondFloor = 0.05;	// require |det|/scale above this to solve
+
 	for( int wq = 0; wq < 5; ++wq )
 	{
 		const Scalar nm = wavelengths[wq];
@@ -251,36 +299,55 @@ static bool TestSpectralExactness()
 			const Vector3 r( sin( to ) * cos( 1.0 ), sin( to ) * sin( 1.0 ), cos( to ) );	// view dir
 			RayIntersectionGeometric ri = MakeRI( -r );
 
-			const Scalar v1 = b1->valueNM( v, ri, nm );
-			const Scalar v2 = b2->valueNM( v, ri, nm );
-			const Scalar v3 = b3->valueNM( v, ri, nm );
-			const Scalar v4 = b4->valueNM( v, ri, nm );
-
 			const Vector3 h = Vector3Ops::Normalize( v + r );
 			const Scalar cosWoH = r_max( Scalar( 0 ), Vector3Ops::Dot( r, h ) );
-			const Scalar R1 = ThinFilm::ReflectanceConductor( cosWoH, nm, 1.0, 0.0, kFilmN, kFilmK, d1, kSubN, kSubK );
-			const Scalar R2 = ThinFilm::ReflectanceConductor( cosWoH, nm, 1.0, 0.0, kFilmN, kFilmK, d2, kSubN, kSubK );
-			const Scalar R3 = ThinFilm::ReflectanceConductor( cosWoH, nm, 1.0, 0.0, kFilmN, kFilmK, d3, kSubN, kSubK );
-			const Scalar R4 = ThinFilm::ReflectanceConductor( cosWoH, nm, 1.0, 0.0, kFilmN, kFilmK, d4, kSubN, kSubK );
 
-			const double den = v3 - v4;
-			const double Rden = R3 - R4;
-			if( std::fabs( den ) < 1e-9 || std::fabs( Rden ) < 1e-9 ) continue;
+			double val[4], R[4], Fms[4];
+			for( int k = 0; k < 4; ++k ) {
+				val[k] = b[k]->valueNM( v, ri, nm );
+				R[k]   = ThinFilm::ReflectanceConductor( cosWoH, nm, 1.0, 0.0, kFilmN, kFilmK, ds[k], kSubN, kSubK );
+				const Scalar Favg = ThinFilm::FresnelAvgConductor( nm, 1.0, 0.0, kFilmN, kFilmK, ds[k], kSubN, kSubK );
+				Fms[k] = MicrofacetEnergyLUT::ComputeFms<Scalar>( Favg, Eavg );
+			}
 
-			const double got = ( v1 - v2 ) / den;
-			const double expv = ( R1 - R2 ) / Rden;
-			const double rel = std::fabs( got - expv ) / r_max( std::fabs( expv ), Scalar( 1e-9 ) );
-			if( rel > maxRel ) maxRel = rel;
-			++compared;
+			// Pick the best-conditioned [R F_ms] 2x2 among the 4 thicknesses.
+			int si = -1, sj = -1;
+			double bestCond = 0.0;
+			for( int i = 0; i < 4; ++i )
+			for( int j = i + 1; j < 4; ++j ) {
+				const double det = R[i] * Fms[j] - R[j] * Fms[i];
+				const double scale = ( std::fabs( R[i] ) + std::fabs( R[j] ) ) * ( std::fabs( Fms[i] ) + std::fabs( Fms[j] ) );
+				const double cond = ( scale > 0.0 ) ? std::fabs( det ) / scale : 0.0;
+				if( cond > bestCond ) { bestCond = cond; si = i; sj = j; }
+			}
+			if( bestCond > bestCondSeen ) bestCondSeen = bestCond;
+			if( si < 0 || bestCond < kCondFloor ) { ++skippedIllCond; continue; }
+
+			// Solve [R_si F_si; R_sj F_sj] [A;B] = [val_si; val_sj] (Cramer).
+			const double det = R[si] * Fms[sj] - R[sj] * Fms[si];
+			const double A = ( val[si] * Fms[sj] - val[sj] * Fms[si] ) / det;
+			const double B = ( R[si] * val[sj] - R[sj] * val[si] ) / det;
+
+			// Predict the OTHER two thicknesses and compare to the library.
+			for( int k = 0; k < 4; ++k ) {
+				if( k == si || k == sj ) continue;
+				const double predict = A * R[k] + B * Fms[k];
+				const double rel = std::fabs( predict - val[k] ) / r_max( std::fabs( val[k] ), Scalar( 1e-9 ) );
+				if( rel > maxRel ) maxRel = rel;
+				++compared;
+			}
 		}
 	}
 
-	std::cout << "  compared=" << compared << " maxRelErr = "
-			  << std::scientific << std::setprecision( 3 ) << maxRel << "\n";
-	Check( compared >= 10, "spectral-exactness exercised ≥10 (λ, geometry) cells" );
-	Check( maxRel < 1e-9, "valueNM thickness-diff ratio ≡ ThinFilm::ReflectanceConductor (exact per λ)" );
+	std::cout << "  compared=" << compared << " skippedIllCond=" << skippedIllCond
+			  << " bestCond=" << std::fixed << std::setprecision( 3 ) << bestCondSeen
+			  << " maxRelErr = " << std::scientific << std::setprecision( 3 ) << maxRel << "\n";
+	Check( compared >= 10, "full-model prediction exercised >=10 (lambda, geometry) cells" );
+	Check( bestCondSeen > 0.10, "the [R F_ms] solve was well-conditioned (R, F_avg not collinear)" );
+	Check( maxRel < 1e-3,
+		"valueNM(d) == A*R(d) + B*F_ms(d) with THIN-FILM F_avg in the tail (predict-2-from-2)" );
 
-	b1->release(); b2->release(); b3->release(); b4->release();
+	for( int k = 0; k < 4; ++k ) b[k]->release();
 	return s_fail == startFail;
 }
 

@@ -237,11 +237,27 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
 			specular = specular + F_ms * f_ms;
 		}
+		else if( fresnelMode == eFresnelThinFilmConductor )
+		{
+			// Thin-film multiscatter tail: the Kulla-Conty F_avg is the THIN-FILM
+			// hemispherical average, not the substrate's -- the film shifts the
+			// average reflectance by up to ~0.5 (~13% rough-surface albedo error
+			// otherwise; tests/ThinFilmFurnaceTest.cpp, design doc section 7 P2-D).
+			const ScalarTriple iorT  = pIOR->GetValuesAt(ri);
+			const ScalarTriple extT  = pExtinction->GetValuesAt(ri);
+			const ScalarTriple fIorT = pFilmIOR->GetValuesAt(ri);
+			const ScalarTriple fExtT = pFilmExtinction->GetValuesAt(ri);
+			const ScalarTriple fThkT = pFilmThickness->GetValuesAt(ri);
+			const RISEPel F_avg = ThinFilm::FresnelAvgConductorRGB(
+				1.0, 0.0, fIorT.v[0], fExtT.v[0], fThkT.v[0], iorT.v[0], extT.v[0] );
+			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
+			specular = specular + specColor * F_ms * f_ms;
+		}
 		else
 		{
-			// Conductor AND thin-film: bare-SUBSTRATE hemispherical Fresnel
-			// average for the Kulla-Conty multiscatter tail (the §7 P2-D
-			// starting point; see GGXBRDF::valueNM for the rationale).
+			// Conductor mode: bare-SUBSTRATE hemispherical Fresnel average
+			// for the Kulla-Conty multiscatter tail (the thin-film mode is
+			// handled by the branch above, which uses a thin-film F_avg).
 			const ScalarTriple iorT = pIOR->GetValuesAt(ri);
 			const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 			const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
@@ -367,16 +383,25 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
 			specular = specular + F_ms * f_ms;
 		}
+		else if( fresnelMode == eFresnelThinFilmConductor )
+		{
+			// Thin-film multiscatter tail at the hero wavelength -- the thin-film
+			// hemispherical F_avg (not the substrate's).  Identical term to
+			// GGXSPF::ScatterNM (the RGB/NM twin); see the RGB path above.
+			const Scalar F_avg = ThinFilm::FresnelAvgConductor(
+				nm, 1.0, 0.0,
+				pFilmIOR->GetValueAtNM(ri,nm), pFilmExtinction->GetValueAtNM(ri,nm),
+				pFilmThickness->GetValueAtNM(ri,nm),
+				pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
+			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
+			specular = specular + specColor * F_ms * f_ms;
+		}
 		else
 		{
-			// Conductor AND thin-film share this multiscatter tail: the
-			// Kulla-Conty energy-compensation term uses the bare-SUBSTRATE
-			// hemispherical Fresnel average.  For thin-film this is the
-			// documented P2-D starting point (§7 "measure the white-furnace
-			// error of reusing the bare-substrate F_avg first; if material,
-			// add a thin-film-aware F_avg") — the interference modifies the
-			// single-scatter Fresnel above, while the multiscatter tail (a
-			// small high-roughness correction) keeps the substrate average.
+			// Conductor mode: the Kulla-Conty energy-compensation term uses
+			// the bare-SUBSTRATE hemispherical Fresnel average.  (The thin-film
+			// mode is handled by the branch above, which feeds a thin-film
+			// hemispherical F_avg into the same multiscatter tail.)
 			const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 			const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
 			const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );

@@ -71,6 +71,7 @@
 #include "Math3D/Math3D.h"		// RISE Scalar (double)
 #include "Color/Color.h"		// RISEPel / XYZPel (RGB-path albedo basis)
 #include "Color/ColorUtils.h"	// ColorUtils::XYZFromNM (renderer CMFs)
+#include "MicrofacetEnergyLUT.h"	// GL_N / GL_nodes / GL_weights (shared Kulla-Conty F_avg quadrature)
 
 namespace RISE
 {
@@ -518,6 +519,58 @@ namespace RISE
 			if( rgb.g < Scalar( 0 ) ) rgb.g = Scalar( 0 );
 			if( rgb.b < Scalar( 0 ) ) rgb.b = Scalar( 0 );
 			return rgb;
+		}
+		
+		//! Hemispherical Fresnel average  F_avg = 2 * integral_0^1 R(mu) mu d_mu
+		//! of the air/film/substrate stack at one wavelength.  Feeds the
+		//! Kulla-Conty multiscatter tail of the thin-film GGX mode: the film
+		//! shifts the average reflectance by up to ~0.5 vs the bare substrate
+		//! (tests/ThinFilmFurnaceTest.cpp), so the substrate average is unusable
+		//! there.  Uses the SAME 21-point Gauss-Legendre rule as the conductor's
+		//! MicrofacetEnergyLUT::ComputeFresnelAvg (same GL_nodes / GL_weights /
+		//! 2*mu*w weighting), so at film==air this average is byte-identical to
+		//! the conductor's — the additive invariant (ThinFilmBRDFTest Test D)
+		//! holds in the multiscatter tail, not just the single-scatter lobe.
+		//! Gauss-Legendre is also more accurate than the old midpoint rule
+		//! (matches the 256-pt reference in ThinFilmFurnaceTest Gate 2 to
+		//! < 2e-3).  A per-material (nm x thickness) LUT is the deferred
+		//! optimisation for spatially-constant stacks; this per-shade quadrature
+		//! is always correct.  docs/THIN_FILM_INTERFERENCE.md section 7.
+		inline Scalar FresnelAvgConductor(
+			Scalar wavelength_nm,
+			Scalar n0, Scalar k0,
+			Scalar n1, Scalar k1,
+			Scalar thickness_nm,
+			Scalar n2, Scalar k2 )
+		{
+			Scalar sum = Scalar( 0 );
+			for( int i = 0; i < MicrofacetEnergyLUT::GL_N; ++i ) {
+				const Scalar mu = MicrofacetEnergyLUT::GL_nodes[i];
+				sum += ReflectanceConductor( mu, wavelength_nm, n0, k0, n1, k1, thickness_nm, n2, k2 )
+					* ( Scalar( 2 ) * mu * MicrofacetEnergyLUT::GL_weights[i] );
+			}
+			return sum;
+		}
+		
+		//! RGB (no-wavelength) hemispherical Fresnel average for the thin-film
+		//! multiscatter tail.  PREVIEW-grade and the costliest thin-film call
+		//! (GL_N angles x the internal kRGBIntegrationSamples-lambda CMF
+		//! integral); the K-C tail is a high-roughness-only correction.  Uses
+		//! the SAME 21-point Gauss-Legendre rule as the spectral
+		//! FresnelAvgConductor above (and the conductor ComputeFresnelAvg).
+		inline RISEPel FresnelAvgConductorRGB(
+			Scalar n0, Scalar k0,
+			Scalar n1, Scalar k1,
+			Scalar thickness_nm,
+			Scalar n2, Scalar k2 )
+		{
+			RISEPel sum( Scalar( 0 ), Scalar( 0 ), Scalar( 0 ) );
+			for( int i = 0; i < MicrofacetEnergyLUT::GL_N; ++i ) {
+				const Scalar mu = MicrofacetEnergyLUT::GL_nodes[i];
+				sum = sum + ReflectanceConductorRGB( mu, n0, k0, n1, k1, thickness_nm, n2, k2 )
+					* ( Scalar( 2 ) * mu * MicrofacetEnergyLUT::GL_weights[i] );
+			}
+			return sum;
 		}
 	}
 }

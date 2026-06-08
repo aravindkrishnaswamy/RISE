@@ -322,6 +322,21 @@ void GGXSPF::Scatter(
 					const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
 					kray = F_ms * ((1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect));
 				}
+				else if( fresnelMode == eFresnelThinFilmConductor )
+				{
+					// Thin-film multiscatter tail (thin-film hemispherical F_avg, not the
+					// substrate's; tests/ThinFilmFurnaceTest.cpp).  Twin of GGXBRDF::value.
+					const ScalarTriple iorT  = pIOR->GetValuesAt(ri);
+					const ScalarTriple extT  = pExtinction->GetValuesAt(ri);
+					const ScalarTriple fIorT = pFilmIOR->GetValuesAt(ri);
+					const ScalarTriple fExtT = pFilmExtinction->GetValuesAt(ri);
+					const ScalarTriple fThkT = pFilmThickness->GetValuesAt(ri);
+					const RISEPel F_avg = ThinFilm::FresnelAvgConductorRGB(
+						1.0, 0.0, fIorT.v[0], fExtT.v[0], fThkT.v[0], iorT.v[0], extT.v[0] );
+					const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
+					kray = specColor * F_ms *
+						((1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect));
+				}
 				else
 				{
 					const ScalarTriple iorT = pIOR->GetValuesAt(ri);
@@ -540,6 +555,19 @@ void GGXSPF::ScatterNM(
 					const Scalar F_avg = SchlickFresnelAvg<Scalar>( F0 );
 					const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
 					krayNM = F_ms * (1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect);
+				}
+				else if( fresnelMode == eFresnelThinFilmConductor )
+				{
+					// Thin-film multiscatter tail at the hero wavelength (thin-film
+					// hemispherical F_avg).  Twin of GGXBRDF::valueNM.
+					const Scalar F_avg = ThinFilm::FresnelAvgConductor(
+						nm, 1.0, 0.0,
+						pFilmIOR->GetValueAtNM(ri,nm), pFilmExtinction->GetValueAtNM(ri,nm),
+						pFilmThickness->GetValueAtNM(ri,nm),
+						pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
+					const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
+					krayNM = pSpecular->GetColorNM(ri,nm) * F_ms *
+						(1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect);
 				}
 				else
 				{
