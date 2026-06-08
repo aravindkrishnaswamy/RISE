@@ -203,17 +203,22 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 			// sampled per-channel-agnostic (the substrate/film n,k use .v[0],
 			// matching the spectral path's single-scalar reads).
 			const Scalar cosWoH = r_max( Scalar(0), Vector3Ops::Dot( r, h ) );
-			const ScalarTriple iorT  = pIOR->GetValuesAt(ri);
-			const ScalarTriple extT  = pExtinction->GetValuesAt(ri);
-			const ScalarTriple fIorT = pFilmIOR->GetValuesAt(ri);
-			const ScalarTriple fExtT = ( pFilmExtinction ? pFilmExtinction->GetValuesAt(ri) : ScalarTriple() );
-			const ScalarTriple fThkT = pFilmThickness->GetValuesAt(ri);
-			const RISEPel Rfilm = ThinFilm::ReflectanceConductorRGB(
-				cosWoH,
-				1.0, 0.0,
-				fIorT.v[0], fExtT.v[0],
-				fThkT.v[0],
-				iorT.v[0], extT.v[0] );
+			// Dispersion-correct RGB preview: the air/film/substrate complex
+			// indices are sampled per integration wavelength via GetValueAtNM (a
+			// file-based Ti/TiO2 stack varies n,k across the band; reading only the
+			// .v[0] 555 nm representative dropped that dispersion).  thickness is
+			// wavelength-independent (one representative read).  ThinFilm.h stays
+			// painter-free -- this functor is the template boundary.
+			const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
+			auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
+				n0 = Scalar(1); k0 = Scalar(0);
+				n1 = pFilmIOR->GetValueAtNM( ri, nm );
+				k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
+				n2 = pIOR->GetValueAtNM( ri, nm );
+				k2 = pExtinction->GetValueAtNM( ri, nm );
+			};
+			const RISEPel Rfilm = ThinFilm::ReflectanceConductorRGBSpectral(
+				cosWoH, thickness, stackAt );
 			specular = specColor * Rfilm * specFactor;
 		}
 		else
@@ -252,13 +257,17 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 			// hemispherical average, not the substrate's -- the film shifts the
 			// average reflectance by up to ~0.5 (~13% rough-surface albedo error
 			// otherwise; tests/ThinFilmFurnaceTest.cpp, design doc section 7 P2-D).
-			const ScalarTriple iorT  = pIOR->GetValuesAt(ri);
-			const ScalarTriple extT  = pExtinction->GetValuesAt(ri);
-			const ScalarTriple fIorT = pFilmIOR->GetValuesAt(ri);
-			const ScalarTriple fExtT = ( pFilmExtinction ? pFilmExtinction->GetValuesAt(ri) : ScalarTriple() );
-			const ScalarTriple fThkT = pFilmThickness->GetValuesAt(ri);
-			const RISEPel F_avg = ThinFilm::FresnelAvgConductorRGB(
-				1.0, 0.0, fIorT.v[0], fExtT.v[0], fThkT.v[0], iorT.v[0], extT.v[0] );
+			// Dispersion-correct per-lambda stack (twin of the single-scatter
+			// site): film/substrate n,k sampled at each integration wavelength.
+			const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
+			auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
+				n0 = Scalar(1); k0 = Scalar(0);
+				n1 = pFilmIOR->GetValueAtNM( ri, nm );
+				k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
+				n2 = pIOR->GetValueAtNM( ri, nm );
+				k2 = pExtinction->GetValueAtNM( ri, nm );
+			};
+			const RISEPel F_avg = ThinFilm::FresnelAvgConductorRGBSpectral( thickness, stackAt );
 			// specColor is INSIDE the average: the per-bounce reflectance of the
 			// tinted lobe is specColor*F_avg and the tint compounds across bounces,
 			// so the nonlinear Fms must see the tinted average (matches the
@@ -473,19 +482,21 @@ RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 		// a cheap per-hit guide, not a shading evaluation), matching the
 		// conductor branch which feeds CalculateConductorReflectance the
 		// dot(ray.Dir(), n) cosine.
+		// Dispersion-correct OIDN albedo: per-lambda film/substrate n,k so the
+		// denoiser guide carries the true iridescent tint for a file-based
+		// (dispersive) Ti/TiO2 stack; thickness is wavelength-independent.
 		const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
 		const Scalar cosThetaO = r_max( Scalar(0), Vector3Ops::Dot( wo, n ) );
-		const ScalarTriple iorT  = pIOR->GetValuesAt( ri );
-		const ScalarTriple extT  = pExtinction->GetValuesAt( ri );
-		const ScalarTriple fIorT = pFilmIOR->GetValuesAt( ri );
-		const ScalarTriple fExtT = ( pFilmExtinction ? pFilmExtinction->GetValuesAt( ri ) : ScalarTriple() );
-		const ScalarTriple fThkT = pFilmThickness->GetValuesAt( ri );
-		const RISEPel Rfilm = ThinFilm::ReflectanceConductorRGB(
-			cosThetaO,
-			1.0, 0.0,
-			fIorT.v[0], fExtT.v[0],
-			fThkT.v[0],
-			iorT.v[0], extT.v[0] );
+		const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
+		auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
+			n0 = Scalar(1); k0 = Scalar(0);
+			n1 = pFilmIOR->GetValueAtNM( ri, nm );
+			k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
+			n2 = pIOR->GetValueAtNM( ri, nm );
+			k2 = pExtinction->GetValueAtNM( ri, nm );
+		};
+		const RISEPel Rfilm = ThinFilm::ReflectanceConductorRGBSpectral(
+			cosThetaO, thickness, stackAt );
 		return diffColor + specColor * Rfilm;
 	}
 	else

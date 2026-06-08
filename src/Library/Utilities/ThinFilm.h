@@ -438,35 +438,49 @@ namespace RISE
 		//!                     direction and the microfacet half-vector,
 		//!                     in [0,1] (NOT the geometric-normal cosine) —
 		//!                     identical to ReflectanceConductor.
-		//! \param n0           ambient real index (air = 1+0i).
-		//! \param k0           ambient extinction.
-		//! \param n1           film (oxide) real index.
-		//! \param k1           film (oxide) extinction.
-		//! \param thickness_nm physical film thickness, nm.
-		//! \param n2           substrate (metal) real index.
-		//! \param k2           substrate (metal) extinction.
+		//! \param thickness_nm physical film thickness, nm (λ-independent).
+		//! \param stackAt      per-λ optical-constant functor (see below).
 		//! \return             linear Rec.709 reflectance (RISEPel); a
 		//!                     perfect reflector → neutral (1,1,1).
 		//!
 		//! Allocation-free; kRGBIntegrationSamples Airy evaluations + CMF
 		//! lookups.  Only ever called on the RGB preview path of a thin-film
 		//! GGX material, so it adds zero cost to existing render paths.
-		inline RISEPel ReflectanceConductorRGB(
+		//!
+		//! Per-wavelength generalisation of ReflectanceConductorRGB: the
+		//! ambient / film / substrate complex indices are REBUILT INSIDE the
+		//! λ loop from the caller's `stackAt` functor, so a wavelength-VARYING
+		//! (file-based, e.g. Ti / TiO2) optical-constant set is honoured at
+		//! EACH integration wavelength — the dispersion-correct RGB preview.
+		//!
+		//! `stackAt` has signature
+		//!   void(Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1,
+		//!        Scalar& n2, Scalar& k2)
+		//! and writes the air(n0,k0) / film(n1,k1) / substrate(n2,k2) real
+		//! index + extinction at the given wavelength.  Thickness is
+		//! λ-independent and passed directly.
+		//!
+		//! ThinFilm.h stays optics-only: the functor (which closes over the
+		//! IScalarPainters on the BSDF side) is the template boundary, so no
+		//! painter type ever enters this header.
+		//!
+		//! Everything except the per-λ index construction (band, step, CMF
+		//! lookup, von-Kries white normalisation, gamut clamp) is identical to
+		//! ReflectanceConductorRGB; for a CONSTANT stack (stackAt returns the
+		//! same n,k every wavelength) the result is BIT-IDENTICAL to the
+		//! former constant-index implementation — the only change is that the
+		//! loop-invariant N0/N1/Ns/sinInv are now rebuilt (to identical
+		//! values) inside the loop.
+		template<class StackFn>
+		inline RISEPel ReflectanceConductorRGBSpectral(
 			Scalar cosThetaI,
-			Scalar n0, Scalar k0,
-			Scalar n1, Scalar k1,
 			Scalar thickness_nm,
-			Scalar n2, Scalar k2 )
+			const StackFn& stackAt )
 		{
 			// Integration band matches the renderer's CIE table support.
 			const Scalar loNm = Scalar( 380 );
 			const Scalar hiNm = Scalar( 780 );
 			const Scalar step = ( hiNm - loNm ) / Scalar( kRGBIntegrationSamples );
-
-			const Complex N0 = detail::MakeIndex( n0, k0 );
-			const Complex N1 = detail::MakeIndex( n1, k1 );
-			const Complex Ns = detail::MakeIndex( n2, k2 );
-			const Complex sinInv = detail::SnellInvariant( N0, cosThetaI );
 
 			// Numerator Σ R·cmf·Δλ and the PER-CHANNEL equal-energy basis
 			// sums Σ cmf·Δλ.  Sharing the SAME midpoint quadrature for both
@@ -483,6 +497,18 @@ namespace RISE
 				if( !ColorUtils::XYZFromNM( cmf, nm ) ) {
 					continue;
 				}
+
+				// Per-λ optical constants (the dispersion-correct step): for a
+				// constant stack these are the same every iteration, so the
+				// indices and Snell invariant below are bit-identical to the
+				// old loop-invariant construction.
+				Scalar n0, k0, n1, k1, n2, k2;
+				stackAt( nm, n0, k0, n1, k1, n2, k2 );
+
+				const Complex N0 = detail::MakeIndex( n0, k0 );
+				const Complex N1 = detail::MakeIndex( n1, k1 );
+				const Complex Ns = detail::MakeIndex( n2, k2 );
+				const Complex sinInv = detail::SnellInvariant( N0, cosThetaI );
 
 				const Scalar Rs = detail::AiryReflectanceForPol(
 					N0, N1, Ns, thickness_nm, nm, sinInv, ePolS );
@@ -526,6 +552,28 @@ namespace RISE
 			if( rgb.b < Scalar( 0 ) ) rgb.b = Scalar( 0 );
 			return rgb;
 		}
+
+		//! Constant-stack RGB albedo-basis reflectance.  THIN WRAPPER over
+		//! ReflectanceConductorRGBSpectral with a constant-returning functor —
+		//! bit-identical to the former standalone implementation (the indices
+		//! are simply rebuilt to the same values inside the λ loop).  Kept as
+		//! the convenience entry point for callers with constant n,k and for
+		//! the bit-identity regression (ThinFilmRGBSpectralTest test c).
+		inline RISEPel ReflectanceConductorRGB(
+			Scalar cosThetaI,
+			Scalar n0, Scalar k0,
+			Scalar n1, Scalar k1,
+			Scalar thickness_nm,
+			Scalar n2, Scalar k2 )
+		{
+			return ReflectanceConductorRGBSpectral(
+				cosThetaI, thickness_nm,
+				[&]( Scalar /*nm*/, Scalar& on0, Scalar& ok0, Scalar& on1, Scalar& ok1, Scalar& on2, Scalar& ok2 ) {
+					on0 = n0; ok0 = k0;
+					on1 = n1; ok1 = k1;
+					on2 = n2; ok2 = k2;
+				} );
+		}
 		
 		//! Hemispherical Fresnel average  F_avg = 2 * integral_0^1 R(mu) mu d_mu
 		//! of the air/film/substrate stack at one wavelength.  Feeds the
@@ -564,19 +612,43 @@ namespace RISE
 		//! integral); the K-C tail is a high-roughness-only correction.  Uses
 		//! the SAME 21-point Gauss-Legendre rule as the spectral
 		//! FresnelAvgConductor above (and the conductor ComputeFresnelAvg).
+		//! Per-wavelength generalisation of FresnelAvgConductorRGB: the GL-angle
+		//! hemispherical average whose inner RGB reflectance is the
+		//! dispersion-correct ReflectanceConductorRGBSpectral (per-λ indices
+		//! from `stackAt`).  Same 21-point Gauss-Legendre rule / `2*mu*weight`
+		//! weighting as the constant variant.  For a constant stack this is
+		//! BIT-IDENTICAL to FresnelAvgConductorRGB (the inner reflectance is
+		//! bit-identical at every node).  Thickness is λ-independent.
+		template<class StackFn>
+		inline RISEPel FresnelAvgConductorRGBSpectral(
+			Scalar thickness_nm,
+			const StackFn& stackAt )
+		{
+			RISEPel sum( Scalar( 0 ), Scalar( 0 ), Scalar( 0 ) );
+			for( int i = 0; i < MicrofacetEnergyLUT::GL_N; ++i ) {
+				const Scalar mu = MicrofacetEnergyLUT::GL_nodes[i];
+				sum = sum + ReflectanceConductorRGBSpectral( mu, thickness_nm, stackAt )
+					* ( Scalar( 2 ) * mu * MicrofacetEnergyLUT::GL_weights[i] );
+			}
+			return sum;
+		}
+
+		//! Constant-stack RGB hemispherical Fresnel average.  THIN WRAPPER over
+		//! FresnelAvgConductorRGBSpectral with a constant-returning functor —
+		//! bit-identical to the former standalone implementation.
 		inline RISEPel FresnelAvgConductorRGB(
 			Scalar n0, Scalar k0,
 			Scalar n1, Scalar k1,
 			Scalar thickness_nm,
 			Scalar n2, Scalar k2 )
 		{
-			RISEPel sum( Scalar( 0 ), Scalar( 0 ), Scalar( 0 ) );
-			for( int i = 0; i < MicrofacetEnergyLUT::GL_N; ++i ) {
-				const Scalar mu = MicrofacetEnergyLUT::GL_nodes[i];
-				sum = sum + ReflectanceConductorRGB( mu, n0, k0, n1, k1, thickness_nm, n2, k2 )
-					* ( Scalar( 2 ) * mu * MicrofacetEnergyLUT::GL_weights[i] );
-			}
-			return sum;
+			return FresnelAvgConductorRGBSpectral(
+				thickness_nm,
+				[&]( Scalar /*nm*/, Scalar& on0, Scalar& ok0, Scalar& on1, Scalar& ok1, Scalar& on2, Scalar& ok2 ) {
+					on0 = n0; ok0 = k0;
+					on1 = n1; ok1 = k1;
+					on2 = n2; ok2 = k2;
+				} );
 		}
 	}
 }
