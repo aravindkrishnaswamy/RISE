@@ -1,6 +1,6 @@
 # Thin-Film Interference for Heat-Colored Metals — Design Doc
 
-**Status:** Phase 1 COMPLETE — reference oracle + optical-constants data + validation gate landed on `feature/thin-film-interference` (commits `2d8fbc89`, `42a4b516`, `953c4eb7`, `92ace6fa`); Phase 2 not started · **Created:** 2026-06-07 · **Owner:** master-controller session
+**Status:** Phase 2 COMPLETE — full renderer integration (thin-film GGX `fresnel_mode thinfilm`, exact spectral path, energy-conserved multiscatter, scene language + ABI, canonical scenes) landed on `feature/thin-film-interference`; Phase 3 (the guilloché dial) not started · **Created:** 2026-06-07 · **Owner:** master-controller session
 **Goal artifact:** a rendered guilloché titanium watch dial — engraved rose-engine pattern,
 torch-gradient oxide coloring, physically-based iridescence — plus a general thin-film
 BRDF that also covers steel, tantalum, and niobium heat-tint/anodize colors.
@@ -373,6 +373,40 @@ adversarially reviewed; controller verified + committed; nothing pushed):
 **Validated for Phase 2:** the spectral path is exact (per-hero-wavelength Airy — no Belcour
 spectral AA needed); the swatch integrator is the RGB-LUT generator; the §5 convention (and
 P1-A's `AiryReference.h`) is what lifts into `src/Library/Utilities/ThinFilm.h`.
+
+## Phase 2 outcome (2026-06-07) — COMPLETE
+
+Full renderer integration landed on `feature/thin-film-interference` (controller-committed after
+independent verification; workers adversarially reviewed; nothing pushed):
+
+- **P2-A** `src/Library/Utilities/ThinFilm.h` (`b75f69fd`) — production Airy evaluator
+  (`ReflectanceConductor{,RGB}`, N-layer-capable), registered in the header-tracking build projects
+  (VS + Xcode; `plutil` clean). Production ≡ Phase-1 oracle to 3.3e-16 (3271 asserts). A grazing
+  `cosθ=0` NaN was caught + fixed (input clamp).
+- **P2-B** GGX `eFresnelThinFilmConductor` + `film_*` slots (`fab1d8e8`) — **exact** spectral path
+  (`ScatterNM`/`valueNM`; HWSS companions route through `valueNM`); RGB albedo-basis integral
+  (von-Kries E→D65; the 2D LUT was **deferred** — §13.1). Conductor/Schlick paths byte-identical
+  (3.1e-16). Caught + fixed an illuminant-tinted RGB basis.
+- **P2-C** scene language + ABI (`de7337e8`) — `fresnel_mode thinfilm` + `film_ior/film_extinction/
+  film_thickness`; new `RISE_API_CreateGGXMaterialThinFilm` overload (old symbol preserved).
+  Diagnostics: thinfilm-needs-film-params; Cook-Torrance rejects thinfilm.
+- **P2-D** thin-film Kulla-Conty `F_avg` (`7371e2d7`) — `ThinFilm::FresnelAvgConductor{,RGB}` (shared
+  21-pt GL rule) routed into the four GGX multiscatter sites. **Measured** the substrate average was
+  off by up to 0.50 / ~13% rough-surface albedo (`tests/ThinFilmFurnaceTest.cpp`) → implemented, not
+  accepted. Energy conserved; the change invalidated 2 P2-B assertions, repurposed honestly (one
+  adversarially proven to catch a substrate-`F_avg` regression at 88%).
+- **P2-E** canonical scenes (`e3451b18`) — `scenes/Tests/Materials/thinfilm_ladder.RISEscene` (Ti
+  ladder) + `scenes/FeatureBased/Materials/thinfilm_heattint_showcase.RISEscene` (Ti ladder +
+  Ti/Steel/Ta/Nb row). Spectral renders confirm iridescence (angle-dependent hue) + the absorbing-
+  steel-vs-vivid-Ti/Ta/Nb generality predicted by the Phase-1 swatch grid.
+
+**State:** the material ships as a GGX `fresnel_mode thinfilm` (= glTF `KHR_materials_iridescence`),
+substrate/oxide data-driven. Spectral exact; energy-conserved; ABI-preserving. All thin-film + GGX
+suites green, warning-free `make`. **Deferred (documented):** RGB 2D LUT (per-shade integral ships,
+§13.1); automated in-renderer image-compare gate (qualitative render + 1e-16 unit tests stand in);
+clean Xcode-GUI rebuild check; Cook-Torrance thin-film. **Next — Phase 3:** the guilloché dial,
+driving `film_thickness` with a spatially-varying oxide map (the spatial hook this material was built
+around) + a rose-engine normal map with anisotropic cut-aligned roughness.
 
 ## 13. Locked decisions (2026-06-07)
 
