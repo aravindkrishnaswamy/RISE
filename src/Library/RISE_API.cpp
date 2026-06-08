@@ -1270,6 +1270,15 @@ namespace RISE
 			return false;
 		}
 
+		// Thin-film mode REQUIRES the oxide n (film_ior) and thickness; both are
+		// dereferenced unconditionally by the BSDF and have no sensible default
+		// (unlike film_extinction, which defaults to k=0).  Reject the invalid
+		// combination here rather than crash on the first shade -- the scene path
+		// is guarded by Job's presence contract; this guards the direct-API path.
+		if( fresnel_mode == eFresnelThinFilmConductor && ( film_ior == nullptr || film_thickness == nullptr ) ) {
+			return false;
+		}
+		
 		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx material" );
 		return true;
@@ -1320,6 +1329,15 @@ namespace RISE
 			return false;
 		}
 
+		// Thin-film mode REQUIRES the oxide n (film_ior) and thickness; both are
+		// dereferenced unconditionally by the BSDF and have no sensible default
+		// (unlike film_extinction, which defaults to k=0).  Reject the invalid
+		// combination here rather than crash on the first shade -- the scene path
+		// is guarded by Job's presence contract; this guards the direct-API path.
+		if( fresnel_mode == eFresnelThinFilmConductor && ( film_ior == nullptr || film_thickness == nullptr ) ) {
+			return false;
+		}
+		
 		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, emissive, emissive_scale, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx emissive material" );
 		return true;

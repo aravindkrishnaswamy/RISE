@@ -404,9 +404,33 @@ independent verification; workers adversarially reviewed; nothing pushed):
 substrate/oxide data-driven. Spectral exact; energy-conserved; ABI-preserving. All thin-film + GGX
 suites green, warning-free `make`. **Deferred (documented):** RGB 2D LUT (per-shade integral ships,
 §13.1); automated in-renderer image-compare gate (qualitative render + 1e-16 unit tests stand in);
-clean Xcode-GUI rebuild check; Cook-Torrance thin-film. **Next — Phase 3:** the guilloché dial,
+clean Xcode-GUI rebuild check; GUI-editor introspection of the film slots (`MaterialIntrospection` / the property panels don't yet surface `film_ior`/`film_extinction`/`film_thickness`/`fresnel_mode` — scene-file round-trip IS preserved by the span-based `SaveEngine`; surfacing them needs `GGXMaterial` film getters + introspection rows; review P2); Cook-Torrance thin-film. **Next — Phase 3:** the guilloché dial,
 driving `film_thickness` with a spatially-varying oxide map (the spatial hook this material was built
 around) + a rose-engine normal map with anisotropic cut-aligned roughness.
+
+## Adversarial review outcome (2026-06-07)
+
+Full multi-reviewer adversarial CORRECTNESS review of the whole branch before merge (per
+[adversarial-code-review](skills/adversarial-code-review.md)): 2 rounds, 7 reviewers across
+orthogonal axes (optics math, BSDF/spectral integration, API/ABI/lifecycle, blast-radius/tests/data,
+thread-safety, post-fix re-review, "what's left").
+
+- **P1 — fixed (`59dd62b8`).** The GGX BSDF dereferenced `pFilmExtinction` unconditionally at 9
+  sites, so a documented-supported scene (omit the *optional* `film_extinction`) segfaulted on the
+  first shade. Guarded null→k=0 (the documented transparent default) at every site; Test F added.
+- **P2 — fixed (review commit).** The sibling (audit-by-bug-pattern): `RISE_API_CreateGGXMaterialThinFilm`
+  / its emissive twin (the direct-API path) didn't reject thinfilm + null `film_ior`/`film_thickness`
+  (which have no sensible default and are dereferenced unconditionally) → the same crash class. Both
+  ThinFilm factories now reject the invalid combination; Test G added.
+- **P2 — deferred (documented above).** `MaterialIntrospection` doesn't surface the `film_*` slots,
+  so the GUI/Blender property panels can't view or edit them. A completeness gap, not a render/data
+  correctness bug — scene-file round-trip is preserved.
+- **Cleared with no findings:** the §5 optics convention + numerics (incl. the principled-fix audit
+  of the grazing-`cosθ` clamp — it has a derivable bound), spectral `ScatterNM`≡`valueNM` twins +
+  HWSS companions + BDPT/VCM/MLT safety, energy conservation, reference-counting of the new slots,
+  ABI preservation, thread-safety/reentrancy (the RGB integral uses load-init CMF tables, not a lazy
+  singleton), MIS lobe classification (`isDelta=false`, glossy), parser diagnostics, n/k data, and
+  the 5-build-project registration.
 
 ## 13. Locked decisions (2026-06-07)
 

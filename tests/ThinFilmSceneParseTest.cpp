@@ -354,6 +354,52 @@ static void TestApiFactoryPlumbsFilmSlots()
 	filmN->release(); filmK->release(); filmT1->release(); filmT2->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+//  Test G: the thin-film API factory REJECTS thinfilm mode with a null
+//  film_ior or film_thickness (no sensible default; the BSDF derefs both
+//  unconditionally), and ACCEPTS a null film_extinction (k=0 default).
+//  Regression for review round-2 P2: the scene path is guarded by Job's
+//  presence contract, but RISE_API_CreateGGXMaterialThinFilm (the direct-
+//  API path) was not -> the identical null-deref crash class.
+//////////////////////////////////////////////////////////////////////
+static void TestApiRejectsNullFilm()
+{
+	std::cout << "\n[4] RISE_API thin-film factory rejects null film_ior/film_thickness\n";
+	
+	UniformColorPainter*  rd    = new UniformColorPainter( RISEPel( 0.0, 0.0, 0.0 ) ); rd->addref();
+	UniformColorPainter*  rs    = new UniformColorPainter( RISEPel( 1.0, 1.0, 1.0 ) ); rs->addref();
+	UniformScalarPainter* rough = new UniformScalarPainter( 0.1 ); rough->addref();
+	UniformScalarPainter* subN  = new UniformScalarPainter( 2.7 ); subN->addref();
+	UniformScalarPainter* subK  = new UniformScalarPainter( 3.0 ); subK->addref();
+	UniformScalarPainter* filmN = new UniformScalarPainter( 2.5 ); filmN->addref();
+	UniformScalarPainter* filmT = new UniformScalarPainter( 90.0 ); filmT->addref();
+	
+	// (a) thinfilm + null film_ior -> reject (false, no material, no crash).
+	IMaterial* m1 = 0;
+	const bool ok1 = RISE_API_CreateGGXMaterialThinFilm(
+		&m1, *rd, *rs, *rough, *rough, *subN, *subK,
+		eFresnelThinFilmConductor, nullptr, /*film_ior=*/nullptr, nullptr, filmT );
+	Check( !ok1 && m1 == 0, "thinfilm + null film_ior rejected (false, no material, no crash)" );
+	
+	// (b) thinfilm + null film_thickness -> reject.
+	IMaterial* m2 = 0;
+	const bool ok2 = RISE_API_CreateGGXMaterialThinFilm(
+		&m2, *rd, *rs, *rough, *rough, *subN, *subK,
+		eFresnelThinFilmConductor, nullptr, filmN, nullptr, /*film_thickness=*/nullptr );
+	Check( !ok2 && m2 == 0, "thinfilm + null film_thickness rejected (false, no material, no crash)" );
+	
+	// (c) thinfilm + null film_extinction (k=0 default) -> ACCEPTED.
+	IMaterial* m3 = 0;
+	const bool ok3 = RISE_API_CreateGGXMaterialThinFilm(
+		&m3, *rd, *rs, *rough, *rough, *subN, *subK,
+		eFresnelThinFilmConductor, nullptr, filmN, /*film_extinction=*/nullptr, filmT );
+	Check( ok3 && m3 != 0, "thinfilm + null film_extinction (k=0 default) accepted" );
+	
+	if( m3 ) m3->release();
+	rd->release(); rs->release(); rough->release();
+	subN->release(); subK->release(); filmN->release(); filmT->release();
+}
+
 int main()
 {
 	std::cout << "=== ThinFilmSceneParseTest -- scene-language + API plumbing ===\n";
@@ -363,6 +409,7 @@ int main()
 	TestCookTorranceThinFilmRejected();
 	TestThinFilmMissingThicknessRejected();
 	TestApiFactoryPlumbsFilmSlots();
+	TestApiRejectsNullFilm();
 
 	std::cout << "\nResults: " << s_pass << " passed, " << s_fail << " failed.\n";
 	return ( s_fail == 0 ) ? 0 : 1;
