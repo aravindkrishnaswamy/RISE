@@ -25,7 +25,7 @@ hdr_painter
 
 pathtracing_spectral_rasterizer
 {
-	samples				48
+	samples				96
 	nmbegin				380
 	nmend				720
 	num_wavelengths			16
@@ -33,7 +33,7 @@ pathtracing_spectral_rasterizer
 	oidn_denoise			true
 	oidn_prefilter			accurate
 	radiance_map			pnt_env
-	radiance_scale			1.4
+	radiance_scale			0.6
 	radiance_background		FALSE
 }
 
@@ -47,16 +47,16 @@ file_rasterizeroutput
 
 film
 {
-	width				500
-	height				500
+	width				800
+	height				800
 }
 
 pinhole_camera
 {
-	location			46 29 50
+	location			35 22 38
 	lookat				-1 -2 -1
 	up				0 1 0
-	fov				46.0
+	fov				42.0
 }
 
 ##################################################
@@ -98,8 +98,22 @@ scalar_painter
 	file				colors/thinfilm/oxides/TiO2.k
 }
 
+# Steel (Fe) optical constants for the 316L stainless case (the real 37.06 case is steel).
+scalar_painter
+{
+	name				Steel_n
+	file				colors/thinfilm/substrates/Steel.n
+}
+
+scalar_painter
+{
+	name				Steel_k
+	file				colors/thinfilm/substrates/Steel.k
+}
+
 # Baked oxide-thickness map (normalized 0..1) -> nm via scale/bias (scene-tunable colour range).
-# scale 13 + bias 20 => 20 nm (gold, centre) .. 33 nm (blue, rim), calibrated to the Phase-1 Ti swatch.
+# scale 16 + bias 22 => 22 nm (warm gold, centre) .. 38 nm (deep blue, rim), first-order Ti temper
+# sweep gold -> magenta -> blue (hero-still tuned; calibration anchor was scale 13 / bias 20).
 png_painter
 {
 	name				oxide_png
@@ -112,25 +126,17 @@ scalar_painter
 	name				oxide_thk
 	texture				oxide_png
 	channel				R
-	scale				13.0
-	bias				20.0
+	scale				16.0
+	bias				22.0
 }
 
-# Guilloche relief (engraved spiral rosette) as a bump map.  Height map is verbatim-linear
-# grayscale; bumpmap_modifier finite-differences it to perturb the shading normal.
+# Guilloche relief height map (engraved spiral rosette), verbatim-linear grayscale --
+# the displacement source for the displaced-geometry dial (REAL engraving, not a bump).
 png_painter
 {
 	name				guilloche_height_png
 	file				textures/dial/guilloche_height.png
 	color_space			Rec709RGB_Linear
-}
-
-bumpmap_modifier
-{
-	name				dial_bump
-	function			guilloche_height_png
-	scale				0.6
-	windowsize			0.0025
 }
 
 ##################################################
@@ -141,8 +147,8 @@ ggx_material
 	name				tf_dial
 	rd				pnt_black
 	rs				pnt_white
-	alphax				0.07
-	alphay				0.07
+	alphax				0.16
+	alphay				0.16
 	fresnel_mode			thinfilm
 	ior				Ti_n
 	extinction			Ti_k
@@ -167,8 +173,8 @@ uniformcolor_painter
 	color				0.92 0.93 0.95
 }
 
-# Polished titanium (case, bezel, crown, lugs) -- reuse the dial's Ti n/k curves,
-# very low roughness for a near-mirror brushed-then-polished finish.
+# Polished 316L stainless steel (case, bezel, crown, lugs) -- the real 37.06 case is
+# steel, not titanium; Fe (Johnson-Christy) n/k.  Near-mirror polished finish.
 ggx_material
 {
 	name				ti_polished
@@ -177,8 +183,8 @@ ggx_material
 	alphax				0.03
 	alphay				0.03
 	fresnel_mode			conductor
-	ior				Ti_n
-	extinction			Ti_k
+	ior				Steel_n
+	extinction			Steel_k
 }
 
 # Blued steel hands -- conductor with a strong blue specular tint, glossy.
@@ -207,37 +213,48 @@ ggx_material
 	extinction			Ti_k
 }
 
-# Domed sapphire crystal -- clear dielectric, ior 1.77.  High `scattering`
-# value == long mean free path == effectively clear (matches jewel_vault glass).
+# Sapphire (Al2O3 / corundum) dispersion -- Malitson 1962 ordinary-ray Sellmeier
+# coefficients (B1 B2 B3 C1 C2 C3, C in um^2; the painter converts nm->um internally).
+# n(589nm) ~= 1.768; low dispersion (Abbe ~72), so a subtle but physical chromatic edge.
+scalar_painter
+{
+	name				sapphire_ior
+	sellmeier			1.4313493 0.65054713 5.3414021 0.0052799 0.0142383 325.0178
+}
+
+# Domed sapphire crystal -- clear dielectric with the real spectral (dispersive) sapphire
+# index above.  High `scattering` == long mean free path == effectively clear.
 dielectric_material
 {
 	name				sapphire_crystal
 	tau				0.985 0.99 1.0
-	ior				1.77
+	ior				sapphire_ior
 	scattering			100000.0
 }
 
 ##################################################
-# Key softbox: large bright panel behind/above the camera, facing the watch
-# (-Z), for a dramatic raking highlight on the crystal/case + to reveal the
-# guilloche relief.  The dial (normal +Z) reflects it; camera (z=50) sits in
-# front of it (z=56) so it does not block the view.
+# Key softbox: large bright panel in front of the watch (z=56, on the camera
+# side), positioned lower-left + tall so its specular reflection off the +Z
+# dial face reaches the camera -- this lights the dial face (revealing the
+# guilloche swirl + thin-film colour) and sweeps a soft gradient highlight up
+# across the domed crystal.  Camera (z=38) sits in front of it so it does not
+# block the view.
 ##################################################
 lambertian_luminaire_material
 {
 	name				key_lum
 	exitance			pnt_white
-	scale				24.0
+	scale				16.0
 	material			none
 }
 
 clippedplane_geometry
 {
 	name				keygeom
-	pta				75 25 56
-	ptb				-35 25 56
-	ptc				-35 95 56
-	ptd				75 95 56
+	pta				25 -45 56
+	ptb				-65 -45 56
+	ptc				-65 75 56
+	ptd				25 75 56
 }
 
 standard_object
@@ -248,22 +265,62 @@ standard_object
 }
 
 ##################################################
+# Rim / edge light: a bright panel BEHIND the watch (-Z), offset to the
+# right and elevated, emitting toward +Z to graze the case/bezel edge and
+# pop the silhouette against the dark background.
+##################################################
+lambertian_luminaire_material
+{
+	name				rim_lum
+	exitance			pnt_white
+	scale				150.0
+	material			none
+}
+
+clippedplane_geometry
+{
+	name				rimgeom
+	pta				48 -20 8
+	ptb				48 55 8
+	ptc				48 55 -30
+	ptd				48 -20 -30
+}
+
+standard_object
+{
+	name				rimlight
+	geometry			rimgeom
+	material				rim_lum
+}
+
+##################################################
 # The dial: flat disc, normal +Z, facing the camera.
 # Recessed to z = -1 so it sits below the case top rim.
 ##################################################
 circulardisk_geometry
 {
-	name				dialgeom
+	name				dialbase
 	radius				20.0
 	axis				z
+}
+
+# REAL engraved guilloche relief via tessellated vertex displacement (not a bump map):
+# the spiral-rosette height map displaces the disc along its normal.  The disc's polar UV
+# (u=angle, v=radius) matches the height map's polar layout, so the spiral aligns.
+displaced_geometry
+{
+	name				dialdisp
+	base_geometry			dialbase
+	detail				288
+	displacement			guilloche_height_png
+	disp_scale			0.12
 }
 
 standard_object
 {
 	name				dial
-	geometry			dialgeom
+	geometry			dialdisp
 	material			tf_dial
-	modifier			dial_bump
 	position			0 0 -1.0
 }
 
@@ -330,7 +387,7 @@ standard_object
 ellipsoid_geometry
 {
 	name				crystalgeom
-	radii				21.5 21.5 2.2
+	radii				21.5 21.5 4.0
 }
 
 standard_object
@@ -384,7 +441,7 @@ standard_object
 sphere_geometry
 {
 	name				hubgeom
-	radius				1.1
+	radius				2.0
 }
 
 standard_object
