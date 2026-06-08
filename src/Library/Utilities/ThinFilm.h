@@ -284,10 +284,13 @@ namespace RISE
 		//!                     direction and the microfacet half-vector,
 		//!                     in [0,1] (NOT the geometric-normal cosine).
 		//! \param wavelength_nm hero wavelength, nm.
-		//! \param n0,k0        ambient complex index N0 = n0 + i k0 (air = 1+0i).
-		//! \param n1,k1        film  complex index N1 = n1 + i k1 (the oxide; k1>0 absorbing).
+		//! \param n0           ambient real index (N0 = n0 + i k0; air = 1+0i).
+		//! \param k0           ambient extinction.
+		//! \param n1           film real index (N1 = n1 + i k1; the oxide).
+		//! \param k1           film extinction (k1>0 absorbing).
 		//! \param thickness_nm physical film thickness, nm.
-		//! \param n2,k2        substrate complex index Ns = n2 + i k2 (the metal).
+		//! \param n2           substrate real index (Ns = n2 + i k2; the metal).
+		//! \param k2           substrate extinction.
 		//! \return             unpolarized reflectance R in [0,1].
 		//!
 		//! No heap allocation; one complex exp on the hot path.
@@ -435,10 +438,13 @@ namespace RISE
 		//!                     direction and the microfacet half-vector,
 		//!                     in [0,1] (NOT the geometric-normal cosine) —
 		//!                     identical to ReflectanceConductor.
-		//! \param n0,k0        ambient complex index (air = 1+0i).
-		//! \param n1,k1        film (oxide) complex index.
+		//! \param n0           ambient real index (air = 1+0i).
+		//! \param k0           ambient extinction.
+		//! \param n1           film (oxide) real index.
+		//! \param k1           film (oxide) extinction.
 		//! \param thickness_nm physical film thickness, nm.
-		//! \param n2,k2        substrate (metal) complex index.
+		//! \param n2           substrate (metal) real index.
+		//! \param k2           substrate (metal) extinction.
 		//! \return             linear Rec.709 reflectance (RISEPel); a
 		//!                     perfect reflector → neutral (1,1,1).
 		//!

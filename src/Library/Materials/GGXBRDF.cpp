@@ -259,8 +259,13 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 			const ScalarTriple fThkT = pFilmThickness->GetValuesAt(ri);
 			const RISEPel F_avg = ThinFilm::FresnelAvgConductorRGB(
 				1.0, 0.0, fIorT.v[0], fExtT.v[0], fThkT.v[0], iorT.v[0], extT.v[0] );
-			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
-			specular = specular + specColor * F_ms * f_ms;
+			// specColor is INSIDE the average: the per-bounce reflectance of the
+			// tinted lobe is specColor*F_avg and the tint compounds across bounces,
+			// so the nonlinear Fms must see the tinted average (matches the
+			// single-scatter lobe specColor*Rfilm).  Pulling specColor outside
+			// over-brightens tinted (specColor<1) rough metals.
+			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor * F_avg, Eavg );
+			specular = specular + F_ms * f_ms;
 		}
 		else
 		{
@@ -272,8 +277,11 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 			const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 			const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 			const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
-			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
-			specular = specular + specColor * F_ms * f_ms;
+			// specColor INSIDE the average (tinted per-bounce reflectance
+			// specColor*F_avg compounds across bounces; matches the single-scatter
+			// lobe specColor*fresnel).  See the thin-film branch above.
+			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor * F_avg, Eavg );
+			specular = specular + F_ms * f_ms;
 		}
 	}
 
@@ -402,8 +410,10 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 				pFilmIOR->GetValueAtNM(ri,nm), ( pFilmExtinction ? pFilmExtinction->GetValueAtNM(ri,nm) : Scalar(0) ),
 				pFilmThickness->GetValueAtNM(ri,nm),
 				pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
-			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
-			specular = specular + specColor * F_ms * f_ms;
+			// specColor INSIDE the average (per-bounce reflectance specColor*F_avg
+			// compounds across bounces; matches single-scatter specColor*Rfilm).
+			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
+			specular = specular + F_ms * f_ms;
 		}
 		else
 		{
@@ -414,8 +424,10 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 			const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 			const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
 			const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
-			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
-			specular = specular + specColor * F_ms * f_ms;
+			// specColor INSIDE the average (tinted per-bounce reflectance
+			// specColor*F_avg compounds; matches single-scatter specColor*fresnel).
+			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
+			specular = specular + F_ms * f_ms;
 		}
 	}
 

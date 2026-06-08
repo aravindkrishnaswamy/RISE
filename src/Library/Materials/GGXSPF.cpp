@@ -340,8 +340,11 @@ void GGXSPF::Scatter(
 					const ScalarTriple fThkT = pFilmThickness->GetValuesAt(ri);
 					const RISEPel F_avg = ThinFilm::FresnelAvgConductorRGB(
 						1.0, 0.0, fIorT.v[0], fExtT.v[0], fThkT.v[0], iorT.v[0], extT.v[0] );
-					const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
-					kray = specColor * F_ms *
+					// specColor INSIDE the average: tinted per-bounce reflectance
+					// specColor*F_avg compounds across bounces (matches single-scatter
+					// specColor*Rfilm).  Pulling it outside over-brightens tinted metals.
+					const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor * F_avg, Eavg );
+					kray = F_ms *
 						((1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect));
 				}
 				else
@@ -351,8 +354,10 @@ void GGXSPF::Scatter(
 					const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 					const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 					const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
-					const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
-					kray = specColor * F_ms *
+					// specColor INSIDE the average (tinted per-bounce reflectance
+					// specColor*F_avg compounds; matches single-scatter specColor*fresnel).
+					const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor * F_avg, Eavg );
+					kray = F_ms *
 						((1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect));
 				}
 
@@ -572,8 +577,12 @@ void GGXSPF::ScatterNM(
 						pFilmIOR->GetValueAtNM(ri,nm), ( pFilmExtinction ? pFilmExtinction->GetValueAtNM(ri,nm) : Scalar(0) ),
 						pFilmThickness->GetValueAtNM(ri,nm),
 						pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
-					const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
-					krayNM = pSpecular->GetColorNM(ri,nm) * F_ms *
+					// specColor INSIDE the average: the tinted per-bounce reflectance
+					// specColor*F_avg compounds across bounces (matches single-scatter
+					// specColor*Rfilm).  Pulling it outside over-brightens tinted metals.
+					const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+					const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
+					krayNM = F_ms *
 						(1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect);
 				}
 				else
@@ -581,8 +590,11 @@ void GGXSPF::ScatterNM(
 					const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 					const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
 					const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
-					const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
-					krayNM = pSpecular->GetColorNM(ri,nm) * F_ms *
+					// specColor INSIDE the average (tinted per-bounce reflectance
+					// specColor*F_avg compounds; matches single-scatter specColor*fresnel).
+					const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+					const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
+					krayNM = F_ms *
 						(1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect);
 				}
 

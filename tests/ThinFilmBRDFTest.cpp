@@ -21,15 +21,23 @@
 //      * Test A drives the SAME geometry at FOUR film thicknesses.  Per
 //        (λ, geometry) cell the thin-film valueNM is exactly
 //        valueNM(d) = A·R(d) + B·F_ms(d) with A = specColor·specFactor and
-//        B = specColor·f_ms BOTH thickness-independent, R(d) the
-//        single-scatter reflectance and F_ms(d) the Kulla-Conty tail built
-//        from the THIN-FILM hemispherical F_avg (P2-D).  The test solves
-//        (A,B) from the best-conditioned thickness pair (R and F_avg are not
-//        collinear — the film shifts the average reflectance differently
-//        from the single-scatter one, so the [R F_ms] 2×2 is non-singular),
-//        then PREDICTS the other two valueNMs.  This FAILS if the tail still
-//        used the substrate F_avg, so it validates the P2-D wiring — match
-//        to ~1e-3 (the -ffast-math reconstruction limit).
+//        B = f_ms BOTH thickness-independent, R(d) the single-scatter
+//        reflectance and F_ms(d) = ComputeFms(specColor·F_avg(d), Eavg) the
+//        Kulla-Conty tail built from the TINTED THIN-FILM hemispherical
+//        average specColor·F_avg (P2-D + the 2026-06 energy-compensation
+//        fix: specColor is INSIDE the nonlinear Fms because the tinted
+//        per-bounce reflectance specColor·F_avg compounds across bounces,
+//        matching the single-scatter lobe specColor·R; ComputeFms is
+//        nonlinear so specColor·ComputeFms(F_avg) ≠ ComputeFms(specColor·
+//        F_avg)).  The test solves (A,B) from the best-conditioned thickness
+//        pair (R and the tinted F_avg are not collinear — the film shifts the
+//        average reflectance differently from the single-scatter one, so the
+//        [R F_ms] 2×2 is non-singular), then PREDICTS the other two valueNMs.
+//        This FAILS if the tail still used the substrate F_avg OR pulled
+//        specColor outside the nonlinear Fms, so it validates the P2-D wiring
+//        AND the tinted-average correction — match to ~1e-3 (the -ffast-math
+//        reconstruction limit).  A dedicated specColor-varied subtest below
+//        pins the tinted-average direction adversarially (new < old).
 //      * Test B drives ScatterNM in thin-film AND conductor mode with the
 //        SAME scripted sampler (⇒ identical half-vector, G2, G1, pSelect)
 //        and compares the kray ratio to the oracle R_film/R_cond — the
@@ -69,6 +77,16 @@
 //         to a NEUTRAL RGB (R≡const → R·(1,1,1)), NOT an illuminant-tinted
 //         colour (the §8 white-normalisation), while a real interference
 //         stack is chromatically tinted.
+//      F. NULL FILM_EXTINCTION — the documented transparent default (k=0)
+//         must not crash and must equal an explicit k=0 painter (own banner
+//         above TestNullFilmExtinction).
+//      G. TINTED MULTISCATTER ENERGY FIX (2026-06) — the Kulla-Conty tail
+//         uses ComputeFms(specColor·F_avg), NOT specColor·ComputeFms(F_avg);
+//         since ComputeFms is nonlinear the two differ for specColor<1 and
+//         the correct (smaller) form prevents over-bright tinted rough
+//         metals.  Adversarial: matches the tinted form, rejects the old
+//         form by >5%, and is byte-identical at specColor==1 (own banner
+//         above TestSpecColorInsideMultiscatter).
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -85,6 +103,7 @@
 #include "../src/Library/Utilities/Optics.h"
 #include "../src/Library/Utilities/ThinFilm.h"
 #include "../src/Library/Utilities/MicrofacetEnergyLUT.h"
+#include "../src/Library/Utilities/MicrofacetUtils.h"
 #include "../src/Library/Utilities/Ray.h"
 #include "../src/Library/Utilities/OrthonormalBasis3D.h"
 #include "../src/Library/Utilities/RandomNumbers.h"
@@ -243,21 +262,23 @@ static bool TestSpectralExactness()
 
 	// The thin-film GGX valueNM is, per hero wavelength and FIXED geometry,
 	//   valueNM(d) = A * R(d)  +  B * F_ms(d)
-	// where A = specColor*specFactor and B = specColor*f_ms are BOTH
-	// thickness-INDEPENDENT (same alpha, same half-vector across thickness),
+	// where A = specColor*specFactor and B = f_ms are BOTH thickness-
+	// INDEPENDENT (same alpha, same half-vector across thickness),
 	// R(d)  = ThinFilm::ReflectanceConductor (the single-scatter lobe), and
-	// F_ms(d) = ComputeFms( ThinFilm::FresnelAvgConductor(d), Eavg ) is the
-	// Kulla-Conty multiscatter tail evaluated with the THIN-FILM hemispherical
-	// F_avg (P2-D).  With 4 thicknesses we have 4 equations in the 2 unknowns
-	// (A,B): per cell we solve A,B from the BEST-CONDITIONED thickness pair
-	// (the [R F_ms] 2x2 must be non-singular -- R and F_avg are not collinear
-	// because the film shifts the average reflectance differently from the
-	// single-scatter reflectance), then PREDICT the remaining valueNMs and
-	// compare to the library.  Because the multiscatter term carries the
-	// thin-film F_avg, this prediction would FAIL if the renderer still used
-	// the substrate F_avg in the tail -- so it validates the P2-D wiring, not
-	// just argument passing.  Tolerance ~1e-3 is the -ffast-math
-	// reconstruction limit (header methodology note).
+	// F_ms(d) = ComputeFms( specColor * ThinFilm::FresnelAvgConductor(d), Eavg )
+	// is the Kulla-Conty multiscatter tail evaluated with the TINTED THIN-FILM
+	// hemispherical average specColor*F_avg (P2-D + the 2026-06 energy fix:
+	// specColor lives INSIDE the nonlinear Fms; see the header note).  With 4
+	// thicknesses we have 4 equations in the 2 unknowns (A,B): per cell we
+	// solve A,B from the BEST-CONDITIONED thickness pair (the [R F_ms] 2x2
+	// must be non-singular -- R and the tinted F_avg are not collinear because
+	// the film shifts the average reflectance differently from the single-
+	// scatter reflectance), then PREDICT the remaining valueNMs and compare to
+	// the library.  Because the multiscatter term carries the tinted thin-film
+	// F_avg, this prediction would FAIL if the renderer still used the
+	// substrate F_avg in the tail OR pulled specColor outside the nonlinear
+	// Fms -- so it validates the P2-D wiring AND the tinted-average correction.
+	// Tolerance ~1e-3 is the -ffast-math reconstruction limit (header note).
 	//
 	// Single-scatter R EXACTNESS (the old ratio's job) is now pinned to 1e-9
 	// by Test B (ScatterNM's reflection ray is a pure single-scatter lobe).
@@ -302,12 +323,19 @@ static bool TestSpectralExactness()
 			const Vector3 h = Vector3Ops::Normalize( v + r );
 			const Scalar cosWoH = r_max( Scalar( 0 ), Vector3Ops::Dot( r, h ) );
 
+			// The NM path multiplies the lobe by specColor = GetColorNM (the
+			// JH-uplifted spectral tint at nm), NOT kSpec — and the multiscatter
+			// Fms is NONLINEAR in it, so the tail basis must use this exact value.
+			const Scalar specColor = s0.specular->GetColorNM( ri, nm );
+
 			double val[4], R[4], Fms[4];
 			for( int k = 0; k < 4; ++k ) {
 				val[k] = b[k]->valueNM( v, ri, nm );
 				R[k]   = ThinFilm::ReflectanceConductor( cosWoH, nm, 1.0, 0.0, kFilmN, kFilmK, ds[k], kSubN, kSubK );
 				const Scalar Favg = ThinFilm::FresnelAvgConductor( nm, 1.0, 0.0, kFilmN, kFilmK, ds[k], kSubN, kSubK );
-				Fms[k] = MicrofacetEnergyLUT::ComputeFms<Scalar>( Favg, Eavg );
+				// Tinted average: specColor INSIDE the nonlinear Fms (2026-06 fix).
+				// The solved B then comes out as f_ms (specColor no longer in B).
+				Fms[k] = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * Favg, Eavg );
 			}
 
 			// Pick the best-conditioned [R F_ms] 2x2 among the 4 thicknesses.
@@ -722,6 +750,185 @@ static bool TestNullFilmExtinction()
 	return s_fail == startFail;
 }
 
+// ============================================================
+//  Test G: specColor-INSIDE the Kulla-Conty multiscatter Fms
+//          (the 2026-06 tinted energy-compensation fix).
+// ============================================================
+//  The multiscatter tail models a geometric series of bounces, each
+//  attenuated by the per-bounce reflectance.  For a TINTED lobe that
+//  reflectance is specColor*F_avg (the tint compounds across bounces),
+//  and ComputeFms is NONLINEAR in its argument, so the tail must be
+//      ComputeFms(specColor*F_avg, Eavg) * f_ms          (NEW, correct)
+//  NOT
+//      specColor * ComputeFms(F_avg, Eavg) * f_ms        (OLD, over-bright)
+//  These are EQUAL only at specColor==1 (ComputeFms(1*F)==1*ComputeFms(F)),
+//  and the OLD form is strictly LARGER for specColor<1 (tinted) because
+//  Fms(s*F) = (s*F)^2*Eavg/(1-s*F*(1-Eavg)) is sub-linear in s.
+//
+//  Isolation: at a FIXED geometry, valueNM = singleScatter + multiScatter,
+//  where singleScatter = specColor*R*specFactor (R the EXACT thin-film
+//  single-scatter reflectance, pinned by Test B; specFactor = D*G2/(4 nv nr)
+//  recomputed through the SAME onb the library uses).  Subtract the
+//  reconstructed single-scatter from the library valueNM to recover the
+//  multiscatter term, then compare to NEW vs OLD.  Run base tint rs in
+//  {0.25,0.5,1.0} at one rough alpha + one thickness.  IMPORTANT: the NM
+//  shading path multiplies by specColor = pSpecular->GetColorNM (the
+//  JH-uplifted spectral value of the RGB tint, NONLINEAR in rs), so the
+//  test queries that exact specColor and uses it in BOTH the single-scatter
+//  reconstruction and the NEW/OLD formulas.  Assert (a) multi ≈ NEW tightly
+//  for every rs, (b) multi ≠ OLD for rs<1 (the test has TEETH — it would
+//  catch the pre-fix code), (c) NEW ≈ OLD ≈ measured for rs≈1 (untinted is
+//  unchanged), and (d) the physics direction NEW < OLD for rs<1 (tinted
+//  multiscatter DECREASES).
+static bool TestSpecColorInsideMultiscatter()
+{
+	std::cout << "\n--- Test G: specColor INSIDE Kulla-Conty Fms (tinted energy fix) ---\n";
+	const bool startFail = s_fail;
+
+	const Scalar alpha = 0.50;	// rough — the multiscatter tail carries real weight
+	const Scalar thk   = 180.0;
+	const Scalar nm    = 560.0;
+	const Scalar Eavg  = MicrofacetEnergyLUT::LookupEavg( alpha );
+
+	// Fixed geometry (same family as Test A: a small-angle view, moderate wi).
+	const Vector3 v( sin( Scalar( 0.4 ) ), 0, cos( Scalar( 0.4 ) ) );	// wi (light)
+	const Scalar to = 0.15;
+	const Vector3 r( sin( to ) * cos( 1.0 ), sin( to ) * sin( 1.0 ), cos( to ) );	// view dir
+	RayIntersectionGeometric ri = MakeRI( -r );
+
+	// Recompute specFactor EXACTLY as valueNM does, projecting through the
+	// SAME onb (ri.onb was CreateFromW(+Z); no anisotropy rotation here so
+	// effOnb == ri.onb).  alpha is isotropic so alphaX==alphaY==alpha.
+	const OrthonormalBasis3D& onb = ri.onb;
+	const Vector3 n = onb.w();
+	const Scalar nr = Vector3Ops::Dot( n, r );
+	const Scalar nv = Vector3Ops::Dot( n, v );
+	const Vector3 h = Vector3Ops::Normalize( v + r );
+	const Vector3 h_local( Vector3Ops::Dot( h, onb.u() ), Vector3Ops::Dot( h, onb.v() ), Vector3Ops::Dot( h, onb.w() ) );
+	const Vector3 wi_local( Vector3Ops::Dot( v, onb.u() ), Vector3Ops::Dot( v, onb.v() ), Vector3Ops::Dot( v, onb.w() ) );
+	const Vector3 wo_local( Vector3Ops::Dot( r, onb.u() ), Vector3Ops::Dot( r, onb.v() ), Vector3Ops::Dot( r, onb.w() ) );
+	const Scalar D  = MicrofacetUtils::GGX_D_Aniso<Scalar>( alpha, alpha, h_local );
+	const Scalar G2 = MicrofacetUtils::GGX_G2_Aniso( alpha, alpha, wi_local, wo_local );
+	const Scalar specFactor = D * G2 / ( 4.0 * nv * nr );
+
+	// Single-scatter reflectance (exact thin-film Airy; cosWoH = dot(r,h)).
+	const Scalar cosWoH = r_max( Scalar( 0 ), Vector3Ops::Dot( r, h ) );
+	const Scalar Rfilm  = ThinFilm::ReflectanceConductor( cosWoH, nm, 1.0, 0.0, kFilmN, kFilmK, thk, kSubN, kSubK );
+
+	// Thin-film hemispherical F_avg feeding the multiscatter tail.
+	const Scalar Favg = ThinFilm::FresnelAvgConductor( nm, 1.0, 0.0, kFilmN, kFilmK, thk, kSubN, kSubK );
+
+	// f_ms = (1-Ess_o)(1-Ess_i)/(PI(1-Eavg)); valueNM ADDS F_ms * f_ms.
+	const Scalar Ess_o = MicrofacetEnergyLUT::LookupEss( nr, alpha );
+	const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( nv, alpha );
+	const Scalar f_ms  = ( 1.0 - Ess_o ) * ( 1.0 - Ess_i ) / ( PI * ( 1.0 - Eavg ) );
+
+	const Scalar rsList[] = { 0.25, 0.5, 1.0 };
+	double maxRelNew = 0.0;	// worst FULL-model rel err (full vs single+NEW multi)
+	int    teethCount = 0;	// rs<1 cells whose measured multi is FAR from OLD
+	int    rsLt1Count = 0;	// total rs<1 cells
+	bool   identityRs1 = false;	// at rs≈1, NEW ≈ OLD ≈ measured
+	bool   directionOk = true;	// NEW < OLD for rs<1
+
+	for( int q = 0; q < 3; ++q )
+	{
+		const Scalar rs = rsList[q];
+
+		// Build a thin-film GGXBRDF with this base specular tint (rs) — uniform
+		// stack.  NOTE: the NM shading path reads pSpecular->GetColorNM, which
+		// is the JH-uplifted spectral value of the RGB tint at nm, NOT rs
+		// itself (and it is NONLINEAR in rs — uplift(0.25·white) ≠ 0.25·uplift
+		// (white)).  We must therefore drive BOTH the single-scatter
+		// reconstruction AND the NEW/OLD formulas with the SAME specColor the
+		// library sees (queried below), or the reconstruction is inconsistent.
+		UniformColorPainter*  diffuse  = new UniformColorPainter( RISEPel( 0, 0, 0 ) ); diffuse->addref();
+		UniformColorPainter*  specular = new UniformColorPainter( RISEPel( rs, rs, rs ) ); specular->addref();
+		UniformScalarPainter* aX = new UniformScalarPainter( alpha ); aX->addref();
+		UniformScalarPainter* aY = new UniformScalarPainter( alpha ); aY->addref();
+		UniformScalarPainter* ior = new UniformScalarPainter( kSubN ); ior->addref();
+		UniformScalarPainter* ext = new UniformScalarPainter( kSubK ); ext->addref();
+		UniformScalarPainter* fIor = new UniformScalarPainter( kFilmN ); fIor->addref();
+		UniformScalarPainter* fExt = new UniformScalarPainter( kFilmK ); fExt->addref();
+		UniformScalarPainter* fThk = new UniformScalarPainter( thk ); fThk->addref();
+		GGXBRDF* brdf = new GGXBRDF( *diffuse, *specular, *aX, *aY, *ior, *ext,
+			eFresnelThinFilmConductor, nullptr, fIor, fExt, fThk );
+		brdf->addref();
+
+		// The EXACT per-λ specColor the library multiplies into the lobe.
+		const Scalar specColor = specular->GetColorNM( ri, nm );
+
+		const Scalar full = brdf->valueNM( v, ri, nm );
+
+		// Isolate the multiscatter term: subtract the reconstructed
+		// single-scatter lobe specColor*Rfilm*specFactor (specColor == the
+		// uplifted value, matching the library's single-scatter exactly).
+		const Scalar singleScatter = specColor * Rfilm * specFactor;
+		const Scalar multi = full - singleScatter;
+
+		// NEW (correct): specColor INSIDE the nonlinear Fms.
+		const Scalar fmsNew = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * Favg, Eavg );
+		const Scalar multiNew = fmsNew * f_ms;
+		// OLD (buggy): specColor pulled OUTSIDE the nonlinear Fms.
+		const Scalar fmsOld = MicrofacetEnergyLUT::ComputeFms<Scalar>( Favg, Eavg );
+		const Scalar multiOld = specColor * fmsOld * f_ms;
+
+		// (1) STRONG correctness pin, measured on the FULL valueNM (so the
+		//     single-scatter subtraction does NOT amplify fast-math noise):
+		//     full == singleScatter + multiNew to the fast-math floor.
+		const Scalar predFullNew = singleScatter + multiNew;
+		const double relFullNew  = std::fabs( full - predFullNew ) / r_max( std::fabs( full ), Scalar( 1e-12 ) );
+		if( relFullNew > maxRelNew ) maxRelNew = relFullNew;
+
+		// (2) TEETH, measured on the ISOLATED multiscatter term (single-scatter
+		//     subtracted): how far the measured tail sits from the OLD formula.
+		const double relMultiNew = std::fabs( multi - multiNew ) / r_max( std::fabs( multiNew ), Scalar( 1e-12 ) );
+		const double relMultiOld = std::fabs( multi - multiOld ) / r_max( std::fabs( multiOld ), Scalar( 1e-12 ) );
+
+		std::cout << "  rs=" << std::fixed << std::setprecision( 2 ) << rs
+				  << " specColor(560nm)=" << std::setprecision( 4 ) << specColor
+				  << "  full=" << std::scientific << std::setprecision( 4 ) << full
+				  << " (relFullNew " << relFullNew << ")"
+				  << "  multi=" << multi << "  NEW=" << multiNew << " (rel " << relMultiNew << ")"
+				  << "  OLD=" << multiOld << " (rel " << relMultiOld << ")\n";
+
+		if( rs < 0.999 ) {
+			++rsLt1Count;
+			// Teeth: the measured (isolated) multiscatter must be FAR from the
+			// OLD formula (the test would have FAILED against the pre-fix
+			// renderer).  The OLD/NEW gap grows as specColor shrinks — require
+			// the measured tail to sit >5% away from OLD AND much closer to NEW.
+			if( relMultiOld > 0.05 && relMultiNew < relMultiOld * 0.25 ) ++teethCount;
+			// Physics direction: tinted multiscatter DECREASES (NEW < OLD).
+			if( !( multiNew < multiOld ) ) directionOk = false;
+		} else {
+			// (Near-)untinted: ComputeFms(s*F) -> s*ComputeFms(F) as s->1, so
+			// NEW and OLD converge; assert they agree (specColor≈1) — this is
+			// the "rs=1 unchanged" guarantee that the fix is byte-identical on
+			// white materials.
+			const double relNewOld = std::fabs( multiNew - multiOld ) / r_max( std::fabs( multiNew ), Scalar( 1e-12 ) );
+			identityRs1 = ( relNewOld < 1e-2 ) && ( relMultiNew < 1.5e-2 );
+		}
+
+		brdf->release();
+		diffuse->release(); specular->release(); aX->release(); aY->release();
+		ior->release(); ext->release(); fIor->release(); fExt->release(); fThk->release();
+	}
+
+	// The STRONG correctness pin is measured on the FULL valueNM (single +
+	// NEW multi), where the single-scatter is NOT subtracted, so it holds to
+	// the ~1e-3 -ffast-math reconstruction floor (header methodology note).
+	Check( maxRelNew < 3e-3,
+		"valueNM == singleScatter + ComputeFms(specColor*F_avg)*f_ms for all rs (full-model fast-math floor)" );
+	Check( teethCount == rsLt1Count && rsLt1Count >= 2,
+		"the subtest has TEETH: isolated multiscatter is >5% from OLD specColor*ComputeFms(F_avg) and >=4x closer to NEW, for every rs<1" );
+	Check( directionOk,
+		"physics direction: tinted multiscatter DECREASES (NEW < OLD) for rs<1" );
+	Check( identityRs1,
+		"(near-)untinted (rs≈1) multiscatter unchanged: NEW ≈ OLD ≈ measured" );
+
+	return s_fail == startFail;
+}
+
 int main()
 {
 	std::cout << "=== Thin-Film GGX BRDF/SPF Test ===\n";
@@ -733,6 +940,7 @@ int main()
 	TestAdditiveInvariant();
 	TestRGBAlbedoBasis();
 	TestNullFilmExtinction();
+	TestSpecColorInsideMultiscatter();
 
 	std::cout << "\n=== ThinFilmBRDFTest: " << s_pass << " passed, " << s_fail << " failed ===\n";
 	return s_fail == 0 ? 0 : 1;
