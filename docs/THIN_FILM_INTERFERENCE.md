@@ -404,7 +404,7 @@ independent verification; workers adversarially reviewed; nothing pushed):
 substrate/oxide data-driven. Spectral exact; energy-conserved; ABI-preserving. All thin-film + GGX
 suites green, warning-free `make`. **Deferred (documented):** RGB 2D LUT (per-shade integral ships,
 §13.1); automated in-renderer image-compare gate (qualitative render + 1e-16 unit tests stand in);
-clean Xcode-GUI rebuild check; GUI-editor introspection of the film slots (`MaterialIntrospection` / the property panels don't yet surface `film_ior`/`film_extinction`/`film_thickness`/`fresnel_mode` — scene-file round-trip IS preserved by the span-based `SaveEngine`; surfacing them needs `GGXMaterial` film getters + introspection rows; review P2); Cook-Torrance thin-film. **Next — Phase 3:** the guilloché dial,
+clean Xcode-GUI rebuild check; Cook-Torrance thin-film. **Next — Phase 3:** the guilloché dial,
 driving `film_thickness` with a spatially-varying oxide map (the spatial hook this material was built
 around) + a rose-engine normal map with anisotropic cut-aligned roughness.
 
@@ -422,9 +422,10 @@ thread-safety, post-fix re-review, "what's left").
   / its emissive twin (the direct-API path) didn't reject thinfilm + null `film_ior`/`film_thickness`
   (which have no sensible default and are dereferenced unconditionally) → the same crash class. Both
   ThinFilm factories now reject the invalid combination; Test G added.
-- **P2 — deferred (documented above).** `MaterialIntrospection` doesn't surface the `film_*` slots,
-  so the GUI/Blender property panels can't view or edit them. A completeness gap, not a render/data
-  correctness bug — scene-file round-trip is preserved.
+- **P2 — fixed (`48d99f04`).** `MaterialIntrospection` now surfaces the `film_*` slots (`film_thickness`
+  live-editable) + a read-only `fresnel_mode` row, via `GGXMaterial`/`GGXBRDF`/`GGXSPF` film
+  getters/setters; `tests/ThinFilmIntrospectionTest.cpp` (29 asserts). The GUI/Blender property panels
+  can now view + edit a thin-film material's defining parameters.
 - **Cleared with no findings:** the §5 optics convention + numerics (incl. the principled-fix audit
   of the grazing-`cosθ` clamp — it has a derivable bound), spectral `ScatterNM`≡`valueNM` twins +
   HWSS companions + BDPT/VCM/MLT safety, energy conservation, reference-counting of the new slots,
@@ -435,8 +436,9 @@ thread-safety, post-fix re-review, "what's left").
 **Round 3** (post-fix guard re-review + a final "what's left" sweep covering HWSS companion-termination,
 `ComputeFms` numerics as `F_avg→1`, the `albedo()` AOV cosine, and path-guiding/auto-rasterizer
 interaction) returned **no new P1/P2** — the stop rule (every finding fixed or rejected-with-reason,
-plus a post-fix round with no new P1/P2) is satisfied. The thin-film branch is correctness-clean; the
-sole open item is the deferred GUI-introspection completeness gap (above).
+plus a post-fix round with no new P1/P2) is satisfied. The two real bugs (a P1 crash + its P2 API
+sibling) were fixed, and the deferred GUI-introspection P2 was subsequently implemented (`48d99f04`),
+so ALL review findings are resolved. The thin-film branch is correctness-clean AND editor-complete.
 
 ## 13. Locked decisions (2026-06-07)
 
