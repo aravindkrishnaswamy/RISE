@@ -237,7 +237,7 @@ void GGXSPF::Scatter(
 							const ScalarTriple iorT  = pIOR->GetValuesAt(ri);
 							const ScalarTriple extT  = pExtinction->GetValuesAt(ri);
 							const ScalarTriple fIorT = pFilmIOR->GetValuesAt(ri);
-							const ScalarTriple fExtT = pFilmExtinction->GetValuesAt(ri);
+							const ScalarTriple fExtT = ( pFilmExtinction ? pFilmExtinction->GetValuesAt(ri) : ScalarTriple() );
 							const ScalarTriple fThkT = pFilmThickness->GetValuesAt(ri);
 							const RISEPel Rfilm = ThinFilm::ReflectanceConductorRGB(
 								wiDotM,
@@ -329,7 +329,7 @@ void GGXSPF::Scatter(
 					const ScalarTriple iorT  = pIOR->GetValuesAt(ri);
 					const ScalarTriple extT  = pExtinction->GetValuesAt(ri);
 					const ScalarTriple fIorT = pFilmIOR->GetValuesAt(ri);
-					const ScalarTriple fExtT = pFilmExtinction->GetValuesAt(ri);
+					const ScalarTriple fExtT = ( pFilmExtinction ? pFilmExtinction->GetValuesAt(ri) : ScalarTriple() );
 					const ScalarTriple fThkT = pFilmThickness->GetValuesAt(ri);
 					const RISEPel F_avg = ThinFilm::FresnelAvgConductorRGB(
 						1.0, 0.0, fIorT.v[0], fExtT.v[0], fThkT.v[0], iorT.v[0], extT.v[0] );
@@ -481,7 +481,7 @@ void GGXSPF::ScatterNM(
 							const Scalar Rfilm = ThinFilm::ReflectanceConductor(
 								wiDotM, nm,
 								1.0, 0.0,
-								pFilmIOR->GetValueAtNM(ri,nm), pFilmExtinction->GetValueAtNM(ri,nm),
+								pFilmIOR->GetValueAtNM(ri,nm), ( pFilmExtinction ? pFilmExtinction->GetValueAtNM(ri,nm) : Scalar(0) ),
 								pFilmThickness->GetValueAtNM(ri,nm),
 								pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
 							F = specColor * Rfilm;
@@ -562,7 +562,7 @@ void GGXSPF::ScatterNM(
 					// hemispherical F_avg).  Twin of GGXBRDF::valueNM.
 					const Scalar F_avg = ThinFilm::FresnelAvgConductor(
 						nm, 1.0, 0.0,
-						pFilmIOR->GetValueAtNM(ri,nm), pFilmExtinction->GetValueAtNM(ri,nm),
+						pFilmIOR->GetValueAtNM(ri,nm), ( pFilmExtinction ? pFilmExtinction->GetValueAtNM(ri,nm) : Scalar(0) ),
 						pFilmThickness->GetValueAtNM(ri,nm),
 						pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
 					const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );

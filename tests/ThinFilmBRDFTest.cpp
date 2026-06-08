@@ -649,6 +649,79 @@ static bool TestRGBAlbedoBasis()
 // ============================================================
 //  Main
 // ============================================================
+//////////////////////////////////////////////////////////////////////
+//  Test F: null film_extinction is the documented transparent default
+//  (k = 0) and MUST NOT crash.  Regression for the round-1 adversarial P1:
+//  the BSDF dereferenced pFilmExtinction unconditionally at 9 sites, so
+//  omitting film_extinction (parser-/API-supported, IJob.h doc) segfaulted
+//  on the first shade.  A null-film_extinction thin-film BRDF/SPF must (a)
+//  evaluate FINITE on value()/valueNM()/albedo()/Scatter()/ScatterNM()
+//  without crashing, and (b) equal an explicit k=0 painter on value/valueNM.
+//////////////////////////////////////////////////////////////////////
+static bool TestNullFilmExtinction()
+{
+	std::cout << "--- Test F: null film_extinction == explicit k=0, no crash ---\n";
+	const int startFail = s_fail;
+	
+	Stack s( 0.20, kFilmN, /*filmK=*/Scalar( 0 ), Scalar( 150 ) );   // explicit-0 reference
+	GGXBRDF* bRef = s.MakeThinFilmBRDF();   // film_extinction = UniformScalarPainter(0)
+	// Null-film_extinction twins (the omitted-slot case):
+	GGXBRDF* bNull = new GGXBRDF( *s.diffuse, *s.specular, *s.alphaX, *s.alphaY, *s.ior, *s.ext,
+		eFresnelThinFilmConductor, nullptr, s.filmIor, /*film_extinction=*/nullptr, s.filmThk );
+	bNull->addref();
+	GGXSPF* spfNull = new GGXSPF( *s.diffuse, *s.specular, *s.alphaX, *s.alphaY, *s.ior, *s.ext,
+		eFresnelThinFilmConductor, nullptr, s.filmIor, /*film_extinction=*/nullptr, s.filmThk );
+	spfNull->addref();
+	
+	const Vector3 v( std::sin( Scalar( 0.5 ) ), Scalar( 0 ), std::cos( Scalar( 0.5 ) ) );
+	const Scalar to = Scalar( 0.2 );
+	const Vector3 r( std::sin( to ) * std::cos( Scalar( 1 ) ), std::sin( to ) * std::sin( Scalar( 1 ) ), std::cos( to ) );
+	RayIntersectionGeometric ri = MakeRI( -r );
+	
+	// (a) NM path (GGXBRDF sites 352/393): finite + null == explicit-0.
+	double maxRelNM = 0.0;
+	const Scalar nms[] = { Scalar( 450 ), Scalar( 550 ), Scalar( 650 ) };
+	for( int i = 0; i < 3; ++i ) {
+		const Scalar a = bRef->valueNM( v, ri, nms[i] );
+		const Scalar b = bNull->valueNM( v, ri, nms[i] );   // MUST NOT crash
+		Check( std::isfinite( b ), "null-ext valueNM finite" );
+		maxRelNM = std::max( maxRelNM, std::fabs( a - b ) / r_max( std::fabs( a ), Scalar( 1e-12 ) ) );
+	}
+	Check( maxRelNM < 1e-12, "null film_extinction valueNM == explicit k=0 (NM single+multi)" );
+	
+	// (b) RGB value() (GGXBRDF sites 200/249): finite + null == explicit-0.
+	const RISEPel ca = bRef->value( v, ri );
+	const RISEPel cb = bNull->value( v, ri );   // MUST NOT crash
+	Check( std::isfinite( cb.r ) && std::isfinite( cb.g ) && std::isfinite( cb.b ), "null-ext value() finite" );
+	double maxRelRGB = std::fabs( ca.r - cb.r ) / r_max( std::fabs( ca.r ), Scalar( 1e-12 ) );
+	maxRelRGB = std::max( maxRelRGB, std::fabs( ca.g - cb.g ) / r_max( std::fabs( ca.g ), Scalar( 1e-12 ) ) );
+	maxRelRGB = std::max( maxRelRGB, std::fabs( ca.b - cb.b ) / r_max( std::fabs( ca.b ), Scalar( 1e-12 ) ) );
+	Check( maxRelRGB < 1e-9, "null film_extinction value() == explicit k=0 (RGB single+multi)" );
+	
+	// (c) albedo() AOV (GGXBRDF site 460): finite, no crash.
+	const RISEPel alb = bNull->albedo( ri );
+	Check( std::isfinite( alb.r ) && std::isfinite( alb.g ) && std::isfinite( alb.b ), "null-ext albedo() finite" );
+	
+	// (d) SPF Scatter()/ScatterNM() (GGXSPF sites 240/332/484/565): no crash.
+	const Scalar script[] = { Scalar( 0.4 ), Scalar( 0.6 ), Scalar( 0.4 ), Scalar( 0.6 ), Scalar( 0.4 ), Scalar( 0.6 ) };
+	{
+		ScriptedSampler smp( script, 6, Scalar( 0.5 ) );
+		ScatteredRayContainer sc;
+		IORStack ist( Scalar( 1 ) );
+		spfNull->ScatterNM( ri, smp, Scalar( 550 ), sc, ist );   // MUST NOT crash
+	}
+	{
+		ScriptedSampler smp( script, 6, Scalar( 0.5 ) );
+		ScatteredRayContainer sc;
+		IORStack ist( Scalar( 1 ) );
+		spfNull->Scatter( ri, smp, sc, ist );   // MUST NOT crash
+	}
+	Check( true, "null-ext Scatter/ScatterNM did not crash" );
+	
+	bRef->release(); bNull->release(); spfNull->release();
+	return s_fail == startFail;
+}
+
 int main()
 {
 	std::cout << "=== Thin-Film GGX BRDF/SPF Test ===\n";
@@ -659,6 +732,7 @@ int main()
 	TestReciprocity();
 	TestAdditiveInvariant();
 	TestRGBAlbedoBasis();
+	TestNullFilmExtinction();
 
 	std::cout << "\n=== ThinFilmBRDFTest: " << s_pass << " passed, " << s_fail << " failed ===\n";
 	return s_fail == 0 ? 0 : 1;
