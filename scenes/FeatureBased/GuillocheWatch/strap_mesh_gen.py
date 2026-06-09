@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate a curved leather watch-strap as a RAW2 swept-band mesh for the RISE
 watch hero.  The strap leaves the lug (z ~ -4), curves down to the polished
-tabletop (z=-10.30) and lays flat, extending outward (the MING b_hero pose).
+tabletop (z=-10.30) and lays flat, extending outward (a hero-shot pose).
 
 It models ONE half (the +Y / 12-o'clock side); the scene places it twice (the
 -Y / 6-o'clock side is the same mesh rotated 180 deg about Z).  Output is a

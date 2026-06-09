@@ -2,8 +2,8 @@
 """Procedural RADIAL-PETAL + WOVEN-GRID guilloché generator for the RISE
 thin-film watch dial (Phase 3 of docs/THIN_FILM_INTERFERENCE.md).
 
-It synthesizes a generic engine-turned "flame-anodized titanium" dial in the
-style of the MING 37.06 "Lightning" dial.  The DOMINANT feature is a fine
+It synthesizes a generic engine-turned "flame-anodized titanium" dial with a
+radial lightning-zigzag motif.  The DOMINANT feature is a fine
 WOVEN MESH of distinct raised cells ("blocks"); the cells are organized into
 N near-radial lobes separated by sharp, jagged "lightning" seams:
 

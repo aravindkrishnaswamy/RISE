@@ -1,6 +1,6 @@
 # Thin-Film Interference for Heat-Colored Metals — Design Doc
 
-**Status:** Phase 3 COMPLETE — the guilloché watch dial (MING-37.06 "Lightning") ships on `feature/thin-film-interference`: a Cartesian-grid relief mesh (kills the polar-singularity centre wash), scene-tunable heat-tint, dark-hero 2-softbox lighting, dispersive sapphire + a NEW data-based MgF₂ AR coating on `dielectric_material`, and a turntable.  Phases 1+2 (optics + material) complete; full suite 130/130, `make` + Xcode-arm64 warning-free · **Created:** 2026-06-07 · **Updated:** 2026-06-08 · **Owner:** master-controller session
+**Status:** Phase 3 COMPLETE — the guilloché watch dial ships on `feature/thin-film-interference`: a Cartesian-grid relief mesh (kills the polar-singularity centre wash), scene-tunable heat-tint, dark-hero 2-softbox lighting, dispersive sapphire + a NEW data-based MgF₂ AR coating on `dielectric_material`, and a turntable.  Phases 1+2 (optics + material) complete; full suite 130/130, `make` + Xcode-arm64 warning-free · **Created:** 2026-06-07 · **Updated:** 2026-06-08 · **Owner:** master-controller session
 **Goal artifact:** a rendered guilloché titanium watch dial — engraved rose-engine pattern,
 torch-gradient oxide coloring, physically-based iridescence — plus a general thin-film
 BRDF that also covers steel, tantalum, and niobium heat-tint/anodize colors.
@@ -442,7 +442,7 @@ so ALL review findings are resolved. The thin-film branch is correctness-clean A
 
 ## Phase 3 outcome (2026-06-08) — guilloché watch dial COMPLETE
 
-The MING-37.06 "Lightning" watch landed on `feature/thin-film-interference`
+The guilloché thin-film watch landed on `feature/thin-film-interference`
 (`scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene`; commits `b2dbbb0b` (AR feature) +
 `72e85c6f` (watch scene + tools); nothing pushed). The implementation **diverged from the §12
 P3-A/B/C plan** in one load-bearing way — the Cartesian rebuild below.

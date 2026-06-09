@@ -1,7 +1,7 @@
 # Guilloché Thin-Film Watch — RISE showcase scene
 
-A physically-based hero render of a guilloché-dial titanium watch (inspired by
-the MING × J.N. Shapiro 37.06 "Lightning") showcasing RISE's **thin-film
+A physically-based hero render of an original guilloché-dial titanium watch
+design, showcasing RISE's **thin-film
 interference** material. The anodized-titanium dial's gold → magenta → blue
 iridescence is *real* thin-film (TiO₂-on-Ti) Fresnel — not a painted texture; an
 oxide-thickness map drives the film thickness per-pixel across the woven
@@ -112,8 +112,8 @@ into `oxide_cart.png` — re-bake with `dial_mesh_gen.py --oxide-falloff
 
 Beyond the uniform radial sweep, the dial ships oxide maps that emulate the
 artist holding the torch **non-uniformly** — dwelling along the lightning zigzag
-so it stands out in a different interference colour (as on the real MING
-Lightning). All three share the dial's Cartesian UV and the `oxide_thk`
+so it stands out in a different interference colour (a deliberate, hand-torched
+look). All three share the dial's Cartesian UV and the `oxide_thk`
 scale/bias → nm, so they are drop-in:
 
 | map | scalar_painter | look |

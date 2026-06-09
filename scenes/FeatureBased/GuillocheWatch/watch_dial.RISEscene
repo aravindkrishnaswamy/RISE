@@ -24,10 +24,10 @@ RISE ASCII SCENE 6
 
 ##################################################
 # Scene unit normalization (physically-accurate sizing).  The case cylinder
-# is radius 24 -> 48 units across; the real MING 37.06 case is 38 mm, so
+# is radius 24 -> 48 units across; the watch case here is 38 mm, so
 # 1 scene unit = 38/48 mm.  scene_unit is METRES per scene unit, and the
 # thinlens_camera reconciles its mm focal_length/sensor_size against it.
-# (Real MING 37.06: 38mm dia, 10.9mm thick, 44.5mm lug-to-lug, domed sapphire
+# (Design target: 38mm dia, 10.9mm thick, 44.5mm lug-to-lug, domed sapphire
 #  + double-sided AR -> matches our dielectric AR coating.)
 ##################################################
 scene_options
@@ -283,7 +283,7 @@ scalar_painter
 	file				colors/thinfilm/oxides/TiO2.k
 }
 
-# Steel (Fe) optical constants for the 316L stainless case (the real 37.06 case is steel).
+# Steel (Fe) optical constants for the 316L stainless case.
 scalar_painter
 {
 	name				Steel_n
@@ -422,7 +422,7 @@ uniformcolor_painter
 	color				0.92 0.93 0.95
 }
 
-# Polished 316L stainless steel (case, bezel, crown, lugs) -- the real 37.06 case is
+# Polished 316L stainless steel (case, bezel, crown, lugs); the case is
 # steel, not titanium; Fe (Johnson-Christy) n/k.  Near-mirror polished finish.
 ggx_material
 {
@@ -492,7 +492,7 @@ dielectric_material
 # Key lighting: a TOP + BOTTOM softbox PAIR (watch-photography style), both
 # camera-side at z=50 (behind the camera, so out of frame) and facing the dial
 # (-Z).  A dark GAP in y=[-14,14] separates them, so the domed crystal reflects
-# two soft gradient bands instead of one harsh panel (the MING-style clean
+# two soft gradient bands instead of one harsh panel (a studio-clean
 # crystal), and the guilloche relief is raked from above AND below -> the woven
 # blocks read with more contrast across the whole face.  Split intensity so the
 # total key is similar to the old single softbox.
@@ -851,7 +851,7 @@ standard_object
 
 ##################################################
 # Polished display surface (dark 'black-glass' tabletop) the watch rests on,
-# MING-hero style: a glossy dielectric (schlick_f0, F0 0.04) -> dark face-on,
+# Hero style: a glossy dielectric (schlick_f0, F0 0.04) -> dark face-on,
 # brighter Fresnel reflection at grazing, soft glossy reflection of the watch +
 # a lighting gradient that fades to black at the edges.  Sits at the caseback
 # plane (z=-10.30, just below the -10.27 caseback) so the watch rests on it.
@@ -884,7 +884,7 @@ standard_object
 }
 
 ##################################################
-# Blue suede leather strap (real MING 37.06 wears a leather strap).  A swept
+# Blue suede leather strap.  A swept
 # curved band (scenes/FeatureBased/GuillocheWatch/strap_mesh_gen.py) from each lug, curving down to the
 # tabletop and laying flat (the b_hero pose).  Matte suede = high-roughness
 # schlick_f0 dielectric.  The -Y (6 o'clock) half is the same mesh rotated
