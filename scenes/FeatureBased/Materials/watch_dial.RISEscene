@@ -57,7 +57,7 @@ pathtracing_spectral_rasterizer
 	oidn_denoise			true
 	oidn_prefilter			accurate
 	radiance_map			pnt_env
-	radiance_scale			0.75
+	radiance_scale			0.35
 	radiance_background		FALSE
 }
 
@@ -71,8 +71,8 @@ file_rasterizeroutput
 
 film
 {
-	width				700
-	height				700
+	width				800
+	height				800
 }
 
 ##################################################
@@ -152,11 +152,11 @@ thinlens_camera
 	sensor_size			36
 	focal_length			100
 	fstop				16
-	focus_distance		380.0
+	focus_distance		260.0
 	aperture_blades		9
-	location			236.74 148.96 256.26
+	location			160.80 89.13 182.85
 	lookat				0 0 -1
-	up				0 1 0
+	up				0 0 1
 }
 
 ##################################################
@@ -273,6 +273,12 @@ ggx_material
 # Blued-steel hand tint (deep polished blue), bright index/silver, crystal tint
 uniformcolor_painter
 {
+	name				pnt_surf_f0
+	color				0.05 0.05 0.05
+}
+
+uniformcolor_painter
+{
 	name				pnt_blue
 	color				0.08 0.18 0.65
 }
@@ -362,17 +368,17 @@ lambertian_luminaire_material
 {
 	name				soft_top_lum
 	exitance			pnt_white
-	scale				105.0
+	scale				135.0
 	material			none
 }
 
 clippedplane_geometry
 {
 	name				soft_top_geom
-	pta				-83.28 24.26 94.91
-	ptb				-126.51 24.26 10.32
-	ptc				-96.72 85.74 -4.91
-	ptd				-53.49 85.74 79.68
+	pta				-10.80 -145.15 58.02
+	ptb				-145.15 -10.80 58.02
+	ptc				-49.20 85.15 121.98
+	ptd				85.15 -49.20 121.98
 }
 
 standard_object
@@ -386,17 +392,17 @@ lambertian_luminaire_material
 {
 	name				soft_bot_lum
 	exitance			pnt_white
-	scale				52.0
+	scale				40.0
 	material			none
 }
 
 clippedplane_geometry
 {
 	name				soft_bot_geom
-	pta				87.43 -81.63 0.25
-	ptb				45.06 -81.63 73.93
-	ptc				72.57 -28.37 89.75
-	ptd				114.94 -28.37 16.07
+	pta				79.50 114.83 -4.44
+	ptb				129.48 52.36 -4.44
+	ptc				120.50 45.17 54.44
+	ptd				70.52 107.64 54.44
 }
 
 standard_object
@@ -407,34 +413,6 @@ standard_object
 }
 
 ##################################################
-# Rim / edge light: a bright panel BEHIND the watch (-Z), offset to the
-# right and elevated, emitting toward +Z to graze the case/bezel edge and
-# pop the silhouette against the dark background.
-##################################################
-lambertian_luminaire_material
-{
-	name				rim_lum
-	exitance			pnt_white
-	scale				0.0
-	material			none
-}
-
-clippedplane_geometry
-{
-	name				rimgeom
-	pta				48 -20 8
-	ptb				48 55 8
-	ptc				48 55 -30
-	ptd				48 -20 -30
-}
-
-standard_object
-{
-	name				rimlight
-	geometry			rimgeom
-	material				rim_lum
-}
-
 ##################################################
 # The dial: CARTESIAN guilloche relief baked into a circular triangle MESH
 # (tools/dial_mesh_gen.py -> textures/dial/dial.raw2).  Real engraved relief
@@ -736,4 +714,38 @@ standard_object
 	geometry			luggeom
 	material			ti_polished
 	position			7.0 -25.1 -4.635
+}
+
+##################################################
+# Polished display surface (dark 'black-glass' tabletop) the watch rests on,
+# MING-hero style: a glossy dielectric (schlick_f0, F0 0.04) -> dark face-on,
+# brighter Fresnel reflection at grazing, soft glossy reflection of the watch +
+# a lighting gradient that fades to black at the edges.  Sits at the caseback
+# plane (z=-10.30, just below the -10.27 caseback) so the watch rests on it.
+##################################################
+ggx_material
+{
+	name				surface_dark
+	rd				pnt_black
+	rs				pnt_surf_f0
+	alphax				0.16
+	alphay				0.16
+	fresnel_mode			schlick_f0
+}
+
+clippedplane_geometry
+{
+	name				surfacegeom
+	pta				-3000 -3000 -10.30
+	ptb				3000 -3000 -10.30
+	ptc				3000 3000 -10.30
+	ptd				-3000 3000 -10.30
+	doublesided			TRUE
+}
+
+standard_object
+{
+	name				surface
+	geometry			surfacegeom
+	material			surface_dark
 }
