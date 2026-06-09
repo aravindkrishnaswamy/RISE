@@ -579,6 +579,23 @@ _DWELL_TIME_S = 30.0           # s         (torch dwell)
 _T_MIN_K = 700.0               # K  centre temperature (~427 C, light straw)
 _T_MAX_K = 900.0               # K  rim temperature   (~627 C, blue regime)
 
+# Per-metal parabolic-oxidation activation energy Ea (J/mol).  Ea sets the radial
+# dose->thickness SHAPE (curvature): higher Ea => growth concentrates at the hot
+# rim (larger thin/gold centre, sharper rim transition); lower Ea => more gradual.
+# REPRESENTATIVE literature values (parabolic regime; real oxidation kinetics are
+# temperature/regime dependent, so these are calibration-grade, not metrology):
+#   Ti  ~155-171 kJ/mol (TiO2 parabolic growth; ScienceDirect / Dergipark)
+#   Fe  ~164 kJ/mol     (Young, High-Temp Oxidation, 700-1000 C; via npj Mat.Deg.)
+#   Nb  ~134-174 kJ/mol (Nb redox-bracketed; UCR J.Appl.Phys.)
+#   Ta  ~65 kJ/mol      (thin-oxide Deal-Grove; UCR J.Appl.Phys. -- lowest, so the
+#                        most gradual radial profile of the four)
+METAL_KINETICS = {             # J/mol
+    "Ti":    160.0e3,
+    "Nb":    135.0e3,
+    "Ta":     80.0e3,
+    "Steel": 165.0e3,
+}
+
 
 def _falloff(rho, mode):
     """Map normalised radius rho in [0,1] -> normalised heat dose in [0,1].
@@ -596,13 +613,18 @@ def _falloff(rho, mode):
     raise ValueError("unknown falloff %r" % mode)
 
 
-def _parabolic_oxide_nm(T_K):
-    """Parabolic-law oxide thickness d = sqrt(k(T) t), Arrhenius k(T)."""
-    k = _ARRHENIUS_A * np.exp(-_ACTIVATION_EA / (_GAS_CONSTANT * T_K))
+def _parabolic_oxide_nm(T_K, Ea=_ACTIVATION_EA):
+    """Parabolic-law oxide thickness d = sqrt(k(T) t), Arrhenius k(T).
+
+    Ea (J/mol) is the parabolic-oxidation activation energy and sets the radial
+    curve SHAPE (see METAL_KINETICS).  The pre-exponential cancels in the
+    normalised profile, so Ea alone drives the per-metal shape difference.
+    """
+    k = _ARRHENIUS_A * np.exp(-Ea / (_GAS_CONSTANT * T_K))
     return np.sqrt(np.maximum(k * _DWELL_TIME_S, 0.0))
 
 
-def build_thickness_profile(n_rows, falloff, d_center, d_rim, raw_growth=False):
+def build_thickness_profile(n_rows, falloff, d_center, d_rim, raw_growth=False, Ea=_ACTIVATION_EA):
     """Per-row (radius) absolute thickness profile in nm.
 
     The physical Arrhenius+parabolic law sets the curve SHAPE across radius;
@@ -612,7 +634,7 @@ def build_thickness_profile(n_rows, falloff, d_center, d_rim, raw_growth=False):
     rho = np.linspace(0.0, 1.0, n_rows)            # row0=centre .. last=rim
     heat = _falloff(rho, falloff)                  # [0,1] dose
     T = _T_MIN_K + heat * (_T_MAX_K - _T_MIN_K)    # absolute K
-    d_phys = _parabolic_oxide_nm(T)                # physical nm (curve shape)
+    d_phys = _parabolic_oxide_nm(T, Ea)            # physical nm (curve shape; Ea-driven)
 
     if raw_growth:
         return d_phys, T, d_phys.copy()

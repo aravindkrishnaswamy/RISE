@@ -372,6 +372,30 @@ png_painter
 	color_space			Rec709RGB_Linear
 }
 
+# Per-base-metal oxide SHAPE maps (per-metal activation energy -> different radial
+# curvature; baked by dial_mesh_gen.py --oxide-only).  Wired into oxide_thk_<metal>.
+png_painter
+{
+	name				oxide_png_nb
+	file				scenes/FeatureBased/GuillocheWatch/oxide_nb.png
+	color_space			Rec709RGB_Linear
+}
+
+png_painter
+{
+	name				oxide_png_ta
+	file				scenes/FeatureBased/GuillocheWatch/oxide_ta.png
+	color_space			Rec709RGB_Linear
+}
+
+png_painter
+{
+	name				oxide_png_steel
+	file				scenes/FeatureBased/GuillocheWatch/oxide_steel.png
+	color_space			Rec709RGB_Linear
+}
+
+
 ##################################################
 # >>> HEAT-TINT TORCH CONTROL <<<  (tune these two numbers per render)
 #
@@ -405,7 +429,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_nb
-	texture			oxide_png
+	texture			oxide_png_nb
 	channel			R
 	scale				25.0
 	bias				30.0
@@ -414,7 +438,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_ta
-	texture			oxide_png
+	texture			oxide_png_ta
 	channel			R
 	scale				26.0
 	bias				26.0
@@ -423,7 +447,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_steel
-	texture			oxide_png
+	texture			oxide_png_steel
 	channel			R
 	scale				28.0
 	bias				28.0

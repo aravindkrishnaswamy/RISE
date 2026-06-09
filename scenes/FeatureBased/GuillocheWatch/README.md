@@ -84,6 +84,7 @@ python3 scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py --cell 1.35 --disp 0
 #   -> oxide_cart.png            (UNIFORM radial heat-tint SHAPE map)
 #   -> oxide_lightning_hot.png   (torch held LONGER on the zigzag -> bluer)
 #   -> oxide_lightning_cool.png  (torch held LESS  on the zigzag -> golder)
+#   -> oxide_{nb,ta,steel}.png   (per-base-metal radial shapes; Ea-driven curvature)
 #   (--oxide-only re-bakes just the maps, no 28 MB mesh; tune the zigzag
 #    contrast with --lightning-hot / --lightning-cool)
 python3 scenes/FeatureBased/GuillocheWatch/strap_mesh_gen.py
@@ -137,12 +138,12 @@ metal has its own substrate n,k, its own oxide (TiO₂ / Nb₂O₅ / Ta₂O₅ /
 different nm on each metal because the oxide indices differ. The windows are
 computed by the Airy/CIE oracle from the curated n,k (not reused from Ti):
 
-| material | substrate | oxide | nm window | temper sweep |
+| material | substrate · oxide | Q (kJ/mol) | nm window | temper sweep |
 |---|---|---|---|---|
-| `tf_dial` | Ti | TiO₂ | 22–38 | gold → blue (default) |
-| `tf_dial_nb` | Nb | Nb₂O₅ | 30–55 | gold/orange → blue |
-| `tf_dial_ta` | Ta | Ta₂O₅ | 26–52 | bronze → gold → purple (no clean blue) |
-| `tf_dial_steel` | steel | Fe₃O₄ | 28–56 | gold → purple → blue (classic temper) |
+| `tf_dial` | Ti · TiO₂ | 160 | 22–38 | gold → blue (default) |
+| `tf_dial_nb` | Nb · Nb₂O₅ | 135 | 30–55 | gold/orange → blue |
+| `tf_dial_ta` | Ta · Ta₂O₅ | 80 | 26–52 | bronze → gold → purple (no clean blue) |
+| `tf_dial_steel` | steel · Fe₃O₄ | 165 | 28–56 | gold → purple → blue (classic temper) |
 
 **Switch in the GUI:** select the dial object (`dialmesh`) and set its
 `material` (a rebindable reference — `ObjectIntrospection`) to one of the four.
@@ -153,11 +154,15 @@ substrate + oxide n,k at its thickness.
 ```sh
 python3 scenes/FeatureBased/GuillocheWatch/thermal_oxide_sim.py --metal-ladders
 ```
-prints each metal's thickness→colour ladder + its temper window. The torch dose
-*shape* (`oxide_png`) is shared (same technique); the per-metal physics is the
-substrate/oxide n,k + the nm window — Ti's 22–38 nm is **not** reused elsewhere.
-(A different growth *curvature* per metal would need per-metal oxidation
-kinetics; provide them and `thermal_oxide_sim` can parameterise the shape too.)
+prints each metal's thickness→colour ladder + its temper window. **Even the dose
+*shape* is per-metal:** each metal's parabolic-oxidation activation energy `Q`
+(`thermal_oxide_sim.METAL_KINETICS`, representative literature values) bends the
+radial curvature — higher `Q` concentrates growth at the hot rim (bigger
+thin/gold centre, sharper rim), lowest for Ta. The per-metal shape maps
+`oxide_<metal>.png` are baked by `dial_mesh_gen.py --oxide-only`. So **substrate
+n,k + oxide n,k + nm window + radial shape ALL differ per metal** — nothing is
+reused from Ti. (Q is regime-dependent; values are documented + editable in
+`METAL_KINETICS`.)
 
 See [docs/THIN_FILM_INTERFERENCE.md](../../../docs/THIN_FILM_INTERFERENCE.md) for
 the full feature writeup (TMM/Airy reference, n,k data, GGX `fresnel_mode

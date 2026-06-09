@@ -144,18 +144,20 @@ def height_field(X, Y, R, p):
 # --------------------------------------------------------------------------
 # Cartesian radial oxide-thickness map (centre gold → rim blue).
 # --------------------------------------------------------------------------
-def build_oxide_cart(size, R, falloff="quadratic"):
+def build_oxide_cart(size, R, falloff="quadratic", Ea=None):
     """Normalized radial heat SHAPE t(ρ) ∈ [0,1] (0 = centre, 1 = rim): the
     Arrhenius/parabolic oxide-growth curvature under the chosen radial torch
     falloff, INDEPENDENT of absolute nanometres.  The dial's `oxide_thk`
     scalar_painter `scale`/`bias` in the SCENE set the torch start/end thickness
     (bias = centre nm, bias+scale = rim nm), so the whole heat-tint colour sweep
-    is tunable per render WITHOUT re-baking this map.  Only the radial FALLOFF
-    (how fast the torch heats outward) is baked here.  Pure radial →
+    is tunable per render WITHOUT re-baking this map.  The radial FALLOFF and the
+    per-metal activation energy `Ea` (J/mol; see tox.METAL_KINETICS) shape the
+    curvature -- higher Ea concentrates growth at the hot rim.  Pure radial →
     orientation/flip-invariant."""
     # d_center=0, d_rim=1 makes build_thickness_profile return the normalized
     # curve t directly (shaped = 0 + t·(1-0) = t).
-    t_prof, _, _ = tox.build_thickness_profile(2048, falloff, 0.0, 1.0)
+    t_prof, _, _ = tox.build_thickness_profile(
+        2048, falloff, 0.0, 1.0, Ea=(Ea if Ea is not None else tox._ACTIVATION_EA))
     rho_tab = np.linspace(0.0, 1.0, t_prof.size)
     ii = (np.arange(size) + 0.5) / size                   # pixel centres in [0,1]
     U, V = np.meshgrid(ii, ii)
@@ -377,7 +379,8 @@ def main(argv=None):
     # --- oxide SHAPE maps: uniform radial base + lightning-zigzag torch variants.
     # All share the dial's Cartesian UV and the scene's oxide_thk scale/bias -> nm,
     # so they are drop-in swappable for the tf_dial film_thickness painter.
-    oxide = build_oxide_cart(args.oxide_size, args.radius, args.oxide_falloff)
+    oxide = build_oxide_cart(args.oxide_size, args.radius, args.oxide_falloff,
+                             Ea=tox.METAL_KINETICS["Ti"])  # Ti shape (Ea-driven curvature)
     petal = lightning_mask(args.oxide_size, p)
 
     def _save_oxide(field, name, note):
@@ -395,6 +398,15 @@ def main(argv=None):
     _save_oxide(tox.apply_torch_pattern(oxide, petal, -args.lightning_cool),
                 "oxide_lightning_cool.png",
                 "torch held LESS on the lightning zigzag (-%.2f -> golder zigzag)" % args.lightning_cool)
+
+    # Per-base-metal oxide SHAPE maps: same torch dose, but each metal's
+    # parabolic-oxidation activation energy (tox.METAL_KINETICS) bends the radial
+    # curvature differently -- the dose SHAPE itself is now per-metal-physical.
+    for metal in ("Nb", "Ta", "Steel"):
+        ea = tox.METAL_KINETICS[metal]
+        fld = build_oxide_cart(args.oxide_size, args.radius, args.oxide_falloff, Ea=ea)
+        _save_oxide(fld, "oxide_%s.png" % metal.lower(),
+                    "%s base-metal SHAPE (Ea=%.0f kJ/mol)" % (metal, ea / 1e3))
 
     if not args.oxide_only:
         pv = os.path.join(out_dir, "dial_preview.png")
