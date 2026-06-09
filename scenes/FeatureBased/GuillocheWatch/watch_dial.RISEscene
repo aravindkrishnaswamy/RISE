@@ -64,6 +64,7 @@ pathtracing_spectral_rasterizer
 file_rasterizeroutput
 {
 	pattern				rendered/watch_dial
+	multiple			TRUE
 	type				PNG
 	bpp				8
 	color_space			sRGB
@@ -107,14 +108,6 @@ pinhole_camera
 	fov				50.0
 }
 
-pinhole_camera
-{
-	name				cam_high34
-	location			27.26 -38.94 70.47
-	lookat				0 0 -2
-	up				0 0 1
-	fov				42.0
-}
 
 pinhole_camera
 {
@@ -160,7 +153,9 @@ thinlens_camera
 # cam_photo: the photographer's hero rig -- 100mm macro on full-frame (36mm) at
 # f/16 (deep DOF; RISE has no diffraction penalty so small f reads like a focus
 # stack).  psi=315 deg, ~45deg elevation: 12 o'clock to NE, crown to the right.
-# location + focus_distance are SCENE UNITS.  Active camera (last defined).
+# location + focus_distance are SCENE UNITS.  The hero STILL (select it in
+# the GUI / render_watch_views.py); cam_high34 is now last = active, so a bare
+# `render` and `renderanimation` use the animated cam_high34.
 ##################################################
 thinlens_camera
 {
@@ -174,6 +169,80 @@ thinlens_camera
 	lookat				0 0 -1
 	up				0 0 1
 }
+
+##################################################
+# cam_high34 -- ACTIVE (last) camera.  Base pose = the animation MIDPOINT (a high
+# 3/4, ~56deg elevation, psi=305).  A bare `render` shows this still; the
+# timelines below drive it during `renderanimation`.
+##################################################
+pinhole_camera
+{
+	name				cam_high34
+	location			27.26 -38.94 70.47
+	lookat				0 0 -2
+	up				0 0 1
+	fov				42.0
+}
+
+##################################################
+# ANIMATION (native timeline) -- a subtle IRIDESCENCE REVEAL on cam_high34:
+#   * 45deg TURNTABLE: the camera orbits +-22.5deg about the watch's +Z axis
+#     (keyframed `location` arc, smoothstep-eased via keyframe spacing). Lights
+#     stay fixed, so the specular highlight sweeps the guilloche -> the TiO2/Ti
+#     thin-film colours shimmer (the whole point).
+#   * subtle L->R DOLLY: camera + look-at truck ~4 units laterally (parallax).
+# The look-at re-centres on the dial so it stays framed through the orbit.
+# Render:  renderanimation 0 1 48      (48 frames over t=0..1; or omit args to
+# use animation_options).  Frames -> rendered/watch_dial<NNN>.png.
+# cam_high34 must be the ACTIVE (last) camera for renderanimation to drive it.
+##################################################
+animation_options
+{
+	time_start			0.0
+	time_end			1.0
+	num_frames			48
+}
+
+timeline
+{
+	element_type	camera
+	element			cam_high34
+	param			location
+	interpolator	hermite
+
+	time		0.00
+	value		8.6448 -47.5548 70.4700
+
+	time		0.25
+	value		14.7603 -45.5886 70.4700
+
+	time		0.50
+	value		27.2600 -38.9400 70.4700
+
+	time		0.75
+	value		37.7847 -29.4703 70.4700
+
+	time		1.00
+	value		41.7251 -24.3969 70.4700
+}
+
+timeline
+{
+	element_type	camera
+	element			cam_high34
+	param			lookat
+	interpolator	hermite
+
+	time		0.00
+	value		-1.6384 -1.1470 -2.0000
+
+	time		0.50
+	value		0.0000 0.0000 -2.0000
+
+	time		1.00
+	value		1.6384 1.1470 -2.0000
+}
+
 
 ##################################################
 # Painters

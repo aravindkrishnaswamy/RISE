@@ -29,6 +29,10 @@ TMPDIR = "/tmp/watch_views"
 
 
 CAMERA_CHUNKS = ("pinhole_camera", "thinlens_camera")
+# timeline/animation_options target the scene's animated camera; strip them for a
+# single still (a timeline whose target camera was stripped fails to load, which
+# aborts the parse and leaves the scene with no camera).
+DROP_CHUNKS = ("timeline", "animation_options")
 
 
 def extract_cameras(text):
@@ -42,7 +46,8 @@ def extract_cameras(text):
     body, cams = [], []
     i = 0
     while i < len(lines):
-        if lines[i].strip() in CAMERA_CHUNKS:
+        kw = lines[i].strip()
+        if kw in CAMERA_CHUNKS or kw in DROP_CHUNKS:
             block = [lines[i]]
             depth, opened, j = 0, False, i + 1
             while j < len(lines):
@@ -56,9 +61,11 @@ def extract_cameras(text):
                     if opened and depth == 0:
                         break
                 j += 1
-            blocktext = "\n".join(block)
-            m = re.search(r"^\s*name\s+(\S+)", blocktext, re.M)
-            cams.append((m.group(1) if m else "default", blocktext))
+            if kw in CAMERA_CHUNKS:
+                blocktext = "\n".join(block)
+                m = re.search(r"^\s*name\s+(\S+)", blocktext, re.M)
+                cams.append((m.group(1) if m else "default", blocktext))
+            # DROP_CHUNKS (timeline / animation_options) are consumed and discarded
             i = j + 1
         else:
             body.append(lines[i])
@@ -99,6 +106,9 @@ def main():
         scene = body
         outname = "watch_%s%s" % (name, args.suffix)
         scene = re.sub(r"(pattern\s+)\S+", r"\1rendered/%s" % outname, scene, count=1)
+        # the scene sets `multiple TRUE` for renderanimation frame-numbering; force it
+        # off here so single-camera stills stay un-numbered (rendered/watch_<cam>.png).
+        scene = re.sub(r"(?m)^(\s*multiple\s+)\w+", r"\g<1>FALSE", scene)
         scene = re.sub(r"(?m)^(\s*samples\s+)\d+", r"\g<1>%d" % args.samples, scene, count=1)
         scene = re.sub(r"(?m)^(\s*width\s+)\d+", r"\g<1>%s" % W, scene, count=1)
         scene = re.sub(r"(?m)^(\s*height\s+)\d+", r"\g<1>%s" % H, scene, count=1)

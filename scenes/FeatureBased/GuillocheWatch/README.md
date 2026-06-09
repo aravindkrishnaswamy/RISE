@@ -17,28 +17,59 @@ are repo-root-relative (resolved via `RISE_MEDIA_PATH`), e.g.
 ```sh
 export RISE_MEDIA_PATH="$(pwd)/"          # repo root
 printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene
-# -> rendered/watch_dial.png (+ _denoised)
+# active camera = cam_high34 (the animation base) -> rendered/watch_dial0000.png
 ```
 
-The scene defines **7 cameras**; `cam_photo` (the hero) is active by default.
-Render every angle, or a subset:
+The scene defines **7 cameras**. **`cam_high34` is the ACTIVE camera** (last
+defined) — it is the animation base, so a bare `render` and `renderanimation`
+use it. `cam_photo` is the hero STILL; render it (or any angle) with the views
+tool, which writes clean un-numbered PNGs:
 
 ```sh
-python3 scenes/FeatureBased/GuillocheWatch/render_watch_views.py                 # all 7
-python3 scenes/FeatureBased/GuillocheWatch/render_watch_views.py --cam cam_macro cam_profile
+python3 scenes/FeatureBased/GuillocheWatch/render_watch_views.py                  # all 7 stills
+python3 scenes/FeatureBased/GuillocheWatch/render_watch_views.py --cam cam_photo  # the hero still
 # one PNG per angle -> rendered/watch_<name>.png
-python3 scenes/FeatureBased/GuillocheWatch/render_watch_turntable.py             # +Z-orbit GIF
 ```
 
 | Camera | Angle | Purpose |
 |---|---|---|
-| `cam_photo` | 3/4 (ψ=315°) | **HERO** — 100 mm macro f/16; 12 o'clock to NE, crown right |
+| `cam_high34` | high 3/4 | **ACTIVE** + animation base; rakes the relief from above |
+| `cam_photo` | 3/4 (ψ=315°) | hero STILL (selectable) — 100 mm f/16; 12 to NE, crown right |
 | `cam_macro` | low, crown-side | 100 mm f/8 punch-in, shallow DOF (bokeh strap) |
 | `cam_topdown` | straight down | flat-lay, whole dial + strap |
-| `cam_high34` | high 3/4 | rakes the guilloché relief from above |
 | `cam_graze` | low ~12° | dramatic grazing rake |
 | `cam_profile` | side | case slab, domed crystal, crown, lugs, strap |
 | `cam_low34` | low 3/4 | sharp (no-DOF) alt beauty |
+
+## Animation (native timeline)
+
+A subtle **iridescence reveal** is authored directly in the scene as native
+`timeline` keyframes on `cam_high34` (no external script):
+
+- a **45° turntable** — the camera orbits ±22.5° about the watch's +Z axis
+  (keyframed `location` arc, smoothstep-eased), look-at re-centred so the dial
+  stays framed;
+- a **subtle left→right dolly** — camera + look-at truck ~4 units laterally.
+
+Lights stay fixed, so the specular highlight sweeps the guilloché and the
+thin-film colours shimmer. Render the frame sequence (`multiple TRUE` in the
+output chunk numbers the frames):
+
+```sh
+printf "renderanimation 0 1 48\nquit\n" | ./bin/rise scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene
+# -> rendered/watch_dial0000.png .. watch_dial0047.png (+ _denoised)
+```
+
+`renderanimation <t0> <t1> <frames>` overrides `animation_options`. Assemble a
+movie from the denoised frames with ffmpeg:
+
+```sh
+ffmpeg -framerate 24 -i rendered/watch_dial_denoised%04d.png -vf format=yuv420p rendered/watch_anim.mp4
+```
+
+Tune the move by editing the `timeline` keyframe values in the scene (`location`
+= orbit + dolly arc, `lookat` = dolly truck). `cam_high34` must stay the
+**active (last)** camera for `renderanimation` to drive it.
 
 ## Asset pipeline (regenerate)
 

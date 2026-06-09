@@ -41,7 +41,17 @@ screen_up    = cross(screen_right, forward)
 
 **⚠ CALIBRATION LESSON (cost ~an hour this session):** to locate a small feature (the crown) in a render, **crop the polished feature and look** — do **NOT** make it emissive as a marker. An emissive crown *spills* light onto neighboring surfaces, so the bright blob you see is the spill, on the *opposite* side from the crown. Use `PIL` to crop `rendered/..._denoised.png` around the case; thumbnails are too small to place the crown.
 
-The 7 cameras are a product set (see README table). `cam_photo` (thinlens hero) must stay **last** in the file (RISE activates the last-defined camera).
+The 7 cameras are a product set (see README table). **`cam_high34` is the ACTIVE camera** — it must stay **last** in the file (RISE activates the last-defined camera, and `renderanimation` drives the active camera). `cam_photo` is the hero STILL (render via `render_watch_views.py --cam cam_photo`).
+
+## Animation (native timeline — NOT a Python script)
+
+The subtle iridescence-reveal animation lives in the scene as native `timeline` keyframes on `cam_high34` + an `animation_options` chunk. Render with `renderanimation <t0> <t1> <frames>` (e.g. `renderanimation 0 1 48`).
+
+- **Why cam_high34 is last/active:** `renderanimation` renders the ACTIVE (last-defined) camera and applies timelines to whatever element they name — so the animated camera MUST be active. That's why cam_high34 was moved last (displacing cam_photo as the bare-`render` default).
+- **Orbit = keyframed `location` (5 pts) + `lookat` (3 pts), hermite — NOT `target_orientation`.** Both `location` and `lookat` are keyframeable (`CameraCommon::KeyframeFromParameters`). Explicit world positions were used (45° arc about +Z + ~4u lateral dolly truck, smoothstep-eased into the keyframe spacing) because it's fully predictable. `target_orientation` (Vector2 theta,phi) ALSO orbits — `AdjustCameraForThetaPhi` rotates the cam→target vector by `Rotation(up, phi)`, so **phi (the .y) is azimuth about world-up** (the `translucent_bunny` example uses this) — but composing it with a dolly is fiddlier than explicit location/lookat keyframes.
+- **Frame numbering needs `multiple TRUE`** on `file_rasterizeroutput` — without it every frame overwrites one file. With it, output is `<pattern>NNNN.png` (+ `<pattern>_denoisedNNNN.png`, 4-digit); a single `render` also gets a `0000` suffix, so `render_watch_views.py` overrides `multiple FALSE` to keep stills clean.
+- **⚠ Camera-stripping tools must ALSO strip `timeline` + `animation_options`.** `render_watch_views.py` removes all camera chunks to make exactly one active; if it leaves a `timeline` whose target (`cam_high34`) was stripped, that chunk fails to load and the whole parse aborts (→ "Scene contains no camera"). Its `DROP_CHUNKS` set handles this — replicate it in any new scene-rewriting tool.
+- **Tune the move:** edit the `timeline` keyframe values (the `location` timeline = orbit + dolly arc; the `lookat` timeline = dolly truck). Full-360 turntable = make the `location` keyframes a full circle (or `target_orientation` phi 0→360). RISE writes PNG frames, not a movie — assemble with ffmpeg (see README).
 
 ## Lighting — the specular-dial vs diffuse-strap dynamic-range tension
 
@@ -102,4 +112,5 @@ saturate the blue), not the lights. Deep royal blue = `(0.04, 0.08, 0.22)`.
 - **Strap shape** → `strap_mesh_gen.py` centreline `ctrl` points, then regen.
 - **Strap colour** → `pnt_strap_blue` (keep it deep + saturated + blue-dominant; matte F0=0).
 - **Table reflection sharpness** → `surface_dark` `alphax/alphay` (0.10 = soft; lower = mirror-like).
-- **New camera angle** → add a `pinhole_camera`/`thinlens_camera` chunk BEFORE `cam_photo` (which must stay last), `up 0 0 1` unless top-down; `render_watch_views.py` auto-discovers it.
+- **New camera angle** → add a `pinhole_camera`/`thinlens_camera` chunk BEFORE `cam_high34` (which must stay last = active), `up 0 0 1` unless top-down; `render_watch_views.py` auto-discovers it.
+- **Re-time / re-shape the animation** → edit the `timeline` keyframes (see the Animation section); `renderanimation 0 1 <frames>`.
