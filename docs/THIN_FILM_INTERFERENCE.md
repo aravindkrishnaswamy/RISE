@@ -1,6 +1,6 @@
 # Thin-Film Interference for Heat-Colored Metals — Design Doc
 
-**Status:** Phase 3 COMPLETE — the guilloché watch dial ships on `feature/thin-film-interference`: a Cartesian-grid relief mesh (kills the polar-singularity centre wash), scene-tunable heat-tint, dark-hero 2-softbox lighting, dispersive sapphire + a NEW data-based MgF₂ AR coating on `dielectric_material`, and a turntable.  Phases 1+2 (optics + material) complete; full suite 130/130, `make` + Xcode-arm64 warning-free · **Created:** 2026-06-07 · **Updated:** 2026-06-08 · **Owner:** master-controller session
+**Status:** Phase 3 COMPLETE (+ extensions) — the guilloché watch dial ships on `feature/thin-film-interference`: a Cartesian-grid relief mesh (kills the polar-singularity centre wash), scene-tunable heat-tint, dark-hero 2-softbox lighting, dispersive sapphire + data-based MgF₂ AR coating, a blue-leather-strap hero on a polished surface, **GUI-switchable base metal (Ti/Nb/Ta/steel — per-metal n,k + oxide + nm window + dose shape), torch-pattern + colour-palette oxide variants, and a native-timeline turntable+dolly animation (with new keyframeable camera azimuth/phi)**.  Phases 1+2 (optics + material) complete; full suite 130/130, `make` + Xcode-arm64 warning-free · **Created:** 2026-06-07 · **Updated:** 2026-06-09 · **Owner:** master-controller session
 **Goal artifact:** a rendered guilloché titanium watch dial — engraved rose-engine pattern,
 torch-gradient oxide coloring, physically-based iridescence — plus a general thin-film
 BRDF that also covers steel, tantalum, and niobium heat-tint/anodize colors.
@@ -446,6 +446,12 @@ The guilloché thin-film watch landed on `feature/thin-film-interference`
 (`scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene`; commits `b2dbbb0b` (AR feature) +
 `72e85c6f` (watch scene + tools); nothing pushed). The implementation **diverged from the §12
 P3-A/B/C plan** in one load-bearing way — the Cartesian rebuild below.
+
+**Phase 3 extensions (later sessions; all in `scenes/FeatureBased/GuillocheWatch/`, see its README + AGENTS).**
+- **Switchable base metal** Ti/Nb/Ta/steel — each `tf_dial_<metal>` carries the metal's substrate n,k + its oxide (TiO₂/Nb₂O₅/Ta₂O₅/Fe₃O₄) + a per-metal oxide-thickness nm window (Airy/CIE oracle, `ThinFilmSwatchOracle(substrate, oxide)`) + a per-metal radial dose SHAPE (each metal's parabolic-oxidation activation energy, `thermal_oxide_sim.METAL_KINETICS`).  Switch via the dial object's `material`.
+- **Torch-pattern + colour-palette oxide variants** — uniform / lightning-zigzag (`apply_torch_pattern` + petal `lightning_mask`) and temper-window palettes (warm/vivid/cool/wide); switch via the material's `film_thickness` scalar-painter reference.
+- **Native-timeline animation** — 45° turntable + subtle dolly on cam_high34 (`timeline` keyframes); added keyframeable camera `azimuth`/`phi` (+`theta`/`elevation`) orbit params to `CameraCommon`.
+- **Brand references scrubbed** — the design is original.
 
 - **P3-A/B generators.** `scenes/FeatureBased/GuillocheWatch/thermal_oxide_sim.py` (torch heat → Arrhenius/parabolic
   oxide-growth → radial thickness profile, gold centre → blue rim, calibrated against the

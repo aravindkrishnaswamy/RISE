@@ -12,6 +12,25 @@ generators, and the generated meshes/textures. Asset `file` paths in the scene
 are repo-root-relative (resolved via `RISE_MEDIA_PATH`), e.g.
 `scenes/FeatureBased/GuillocheWatch/dial.raw2`.
 
+## At a glance — what's switchable
+
+A thin-film playground: every look below is **physically derived** (real n,k +
+the in-renderer Airy/TMM evaluator), and most axes switch live in the GUI.
+
+- **Base metal** — Ti / Nb / Ta / steel, via the dial object's `material`. Each
+  differs in substrate n,k, oxide (TiO₂/Nb₂O₅/Ta₂O₅/Fe₃O₄), the oxide-thickness
+  nm window, **and** the radial dose shape (per-metal oxidation kinetics).
+- **Torch pattern** — uniform vs lightning-zigzag emphasis, via the dial
+  material's `film_thickness` painter.
+- **Colour palette** — different temper windows = different iridescent sweeps
+  (warm gold→violet, vivid gold→blue, cool violet→blue, full multicolour), via
+  the `film_thickness` painter.
+- **Heat-tint** — fine torch start/end nm, via `oxide_thk` scale/bias.
+- **Animation** — a native-timeline 45° turntable + subtle dolly on `cam_high34`.
+- **Cameras** — 7 product angles (hero, macro punch-in, profile, flat-lay, …).
+
+Per-topic sections follow; agent implementation notes are in [AGENTS.md](AGENTS.md).
+
 ## Render
 
 ```sh
