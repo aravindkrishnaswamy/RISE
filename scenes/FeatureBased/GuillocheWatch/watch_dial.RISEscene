@@ -482,7 +482,93 @@ scalar_painter
 	channel			R
 	scale				28.0
 	bias				28.0
-}  # Steel: 28..56 nm  gold->purple->blue (classic temper)
+}
+
+# --- Per-base-metal COLOUR PALETTES (each metal's own temper windows) ---
+# Wider expression of every metal's range; same per-metal dose shape, different
+# nm WINDOW.  Switch via that metal's material film_thickness slot.  (Ti uses the
+# unprefixed oxide_thk / oxide_thk_warm|cool|wide above.)
+scalar_painter
+{
+	name				oxide_thk_nb_warm
+	texture			oxide_png_nb
+	channel			R
+	scale				16.0
+	bias				26.0
+}  # nb warm: 26..42 nm  yellow-gold -> blue onset
+
+scalar_painter
+{
+	name				oxide_thk_nb_cool
+	texture			oxide_png_nb
+	channel			R
+	scale				22.0
+	bias				44.0
+}  # nb cool: 44..66 nm  blue -> blue/cyan
+
+scalar_painter
+{
+	name				oxide_thk_nb_wide
+	texture			oxide_png_nb
+	channel			R
+	scale				44.0
+	bias				22.0
+}  # nb wide: 22..66 nm  yellow-green -> gold -> blue -> cyan
+
+scalar_painter
+{
+	name				oxide_thk_ta_warm
+	texture			oxide_png_ta
+	channel			R
+	scale				18.0
+	bias				22.0
+}  # ta warm: 22..40 nm  bronze -> gold -> red
+
+scalar_painter
+{
+	name				oxide_thk_ta_cool
+	texture			oxide_png_ta
+	channel			R
+	scale				20.0
+	bias				40.0
+}  # ta cool: 40..60 nm  red -> purple (no blue)
+
+scalar_painter
+{
+	name				oxide_thk_ta_wide
+	texture			oxide_png_ta
+	channel			R
+	scale				44.0
+	bias				18.0
+}  # ta wide: 18..62 nm  bronze -> gold -> red -> purple
+
+scalar_painter
+{
+	name				oxide_thk_steel_warm
+	texture			oxide_png_steel
+	channel			R
+	scale				16.0
+	bias				26.0
+}  # steel warm: 26..42 nm  gold -> purple
+
+scalar_painter
+{
+	name				oxide_thk_steel_cool
+	texture			oxide_png_steel
+	channel			R
+	scale				22.0
+	bias				44.0
+}  # steel cool: 44..66 nm  purple -> blue
+
+scalar_painter
+{
+	name				oxide_thk_steel_wide
+	texture			oxide_png_steel
+	channel			R
+	scale				58.0
+	bias				22.0
+}  # steel wide: 22..80 nm  gold -> purple -> blue -> cyan
+  # Steel: 28..56 nm  gold->purple->blue (classic temper)
 
 
 ##################################################

@@ -163,8 +163,13 @@ differ only in the nm window; switch via `tf_dial`'s `film_thickness` painter:
 | `oxide_thk_cool` | 28–44 | violet → blue → cyan (deep) |
 | `oxide_thk_wide` | 14–46 | full straw → gold → purple → blue → cyan |
 
-(Ti windows; each base metal has its own — see below. Fine-tune any palette via
-the painter's `scale`/`bias`, or add another.)
+**Every base metal has the same palette set with its OWN windows** (the colour
+sequence differs per metal, so the nm windows do too): `oxide_thk_<metal>_warm`
+/ `_cool` / `_wide`, with the metal's default `oxide_thk_<metal>` as its *vivid*
+— e.g. `oxide_thk_nb_warm`, `oxide_thk_ta_cool`, `oxide_thk_steel_wide`. Switch via
+that metal's material `film_thickness` slot. That's **4 metals × 4 palettes = 16
+example looks** (Ti's are the unprefixed `oxide_thk` / `oxide_thk_warm|cool|wide`).
+Fine-tune any window via the painter's `scale`/`bias`, or add another.
 
 ## Base-metal variants (Ti / Nb / Ta / steel)
 
