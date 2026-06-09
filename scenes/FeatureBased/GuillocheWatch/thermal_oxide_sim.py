@@ -307,9 +307,12 @@ def _airy_reflectance_normal(N_film, d_nm, N_sub, lambda_nm):
 class ThinFilmSwatchOracle:
     """Reproduces the Phase-1 Ti/TiO2 thickness->colour ladder in Python."""
 
-    def __init__(self):
-        self.ti = _MaterialNK(_data_path("colors", "thinfilm", "substrates", "Ti"))
-        self.tio2 = _MaterialNK(_data_path("colors", "thinfilm", "oxides", "TiO2"))
+    def __init__(self, substrate="Ti", oxide="TiO2"):
+        # substrate/oxide name the colors/thinfilm/{substrates,oxides}/<name>.{n,k}
+        # tables; defaults reproduce the Ti/TiO2 ladder.  self.ti/self.tio2 +
+        # self._N_ti/_N_tio2 keep their names (internal) but hold the chosen pair.
+        self.ti = _MaterialNK(_data_path("colors", "thinfilm", "substrates", substrate))
+        self.tio2 = _MaterialNK(_data_path("colors", "thinfilm", "oxides", oxide))
         # Integration grid: 1 nm over [380,780] - matches ComputeSwatch defaults.
         self._grid = np.arange(380.0, 780.0 + 1e-9, 1.0)
         cie_nm = np.array(
@@ -866,6 +869,38 @@ def report_color_bands(profile_nm, oracle, n_rows):
 
 
 # ===========================================================================
+#  Per-base-metal temper data (the data behind the tf_dial_<metal> materials).
+# ===========================================================================
+
+# Each metal's oxide reaches a DIFFERENT nm window for a comparable temper sweep,
+# because the oxide n,k differ.  These windows are the scale/bias on the scene's
+# oxide_thk_<metal> painters; the colours are computed rigorously in-renderer
+# from each metal's substrate + oxide n,k.  Run with --metal-ladders to inspect.
+METAL_LADDERS = [
+    ("Ti",    "TiO2",  (22, 38), "gold -> blue"),
+    ("Nb",    "Nb2O5", (30, 55), "gold/orange -> blue (Nb2O5 lower index => thicker)"),
+    ("Ta",    "Ta2O5", (26, 52), "bronze -> gold -> purple (Ta2O5 has no clean blue)"),
+    ("Steel", "Fe3O4", (28, 56), "gold -> purple -> blue (classic steel temper)"),
+]
+
+
+def print_metal_ladders():
+    """Print each base metal's thickness->colour ladder + its temper window.
+
+    This is the rigorous physics behind the scene's per-metal materials: the
+    Airy single-film reflectance (each metal's substrate + oxide n,k) integrated
+    against CIE/D65.  The recommended window is the scale/bias on oxide_thk_<m>.
+    """
+    for sub, ox, (lo, hi), note in METAL_LADDERS:
+        orc = ThinFilmSwatchOracle(sub, ox)
+        print("\n=== %-5s / %-5s   window %d..%d nm   (%s) ===" % (sub, ox, lo, hi, note))
+        for d in range(10, 131, 6):
+            sw = orc.swatch(float(d))
+            tag = "  <-- centre" if abs(d - lo) <= 3 else ("  <-- rim" if abs(d - hi) <= 3 else "")
+            print("    d=%3d nm   %-28s dom=%6.1f%s" % (d, sw["family"], sw["dominant_nm"], tag))
+
+
+# ===========================================================================
 #  Main.
 # ===========================================================================
 
@@ -907,7 +942,14 @@ def main():
     ap.add_argument("--raw-growth", action="store_true",
                     help="emit the unscaled physical Arrhenius+parabolic thickness "
                          "(skip the endpoint affine rescale to the colour anchors).")
+    ap.add_argument("--metal-ladders", action="store_true",
+                    help="print each base metal's thickness->colour ladder + temper window, then "
+                         "exit (the physics behind the scene's tf_dial_<metal> materials).")
     args = ap.parse_args()
+
+    if args.metal_ladders:
+        print_metal_ladders()
+        return 0
 
     if args.resolution < 8:
         ap.error("--resolution must be >= 8")

@@ -129,6 +129,36 @@ is `thermal_oxide_sim.apply_torch_pattern(base, pattern, amount)`; the lightning
 colour zigzag lines up with the relief). Add new looks by feeding a different
 mask to `apply_torch_pattern`.
 
+## Base-metal variants (Ti / Nb / Ta / steel)
+
+The dial's **base metal is switchable**, and it is *not* a simple recolour: each
+metal has its own substrate n,k, its own oxide (TiO₂ / Nb₂O₅ / Ta₂O₅ / Fe₃O₄),
+**and its own oxide-thickness window** — the same temper sweep lands at a
+different nm on each metal because the oxide indices differ. The windows are
+computed by the Airy/CIE oracle from the curated n,k (not reused from Ti):
+
+| material | substrate | oxide | nm window | temper sweep |
+|---|---|---|---|---|
+| `tf_dial` | Ti | TiO₂ | 22–38 | gold → blue (default) |
+| `tf_dial_nb` | Nb | Nb₂O₅ | 30–55 | gold/orange → blue |
+| `tf_dial_ta` | Ta | Ta₂O₅ | 26–52 | bronze → gold → purple (no clean blue) |
+| `tf_dial_steel` | steel | Fe₃O₄ | 28–56 | gold → purple → blue (classic temper) |
+
+**Switch in the GUI:** select the dial object (`dialmesh`) and set its
+`material` (a rebindable reference — `ObjectIntrospection`) to one of the four.
+The interference colour is then computed rigorously in-renderer from that metal's
+substrate + oxide n,k at its thickness.
+
+**Regenerate / inspect the data:**
+```sh
+python3 scenes/FeatureBased/GuillocheWatch/thermal_oxide_sim.py --metal-ladders
+```
+prints each metal's thickness→colour ladder + its temper window. The torch dose
+*shape* (`oxide_png`) is shared (same technique); the per-metal physics is the
+substrate/oxide n,k + the nm window — Ti's 22–38 nm is **not** reused elsewhere.
+(A different growth *curvature* per metal would need per-metal oxidation
+kinetics; provide them and `thermal_oxide_sim` can parameterise the shape too.)
+
 See [docs/THIN_FILM_INTERFERENCE.md](../../../docs/THIN_FILM_INTERFERENCE.md) for
 the full feature writeup (TMM/Airy reference, n,k data, GGX `fresnel_mode
 thinfilm`, the spectral path).

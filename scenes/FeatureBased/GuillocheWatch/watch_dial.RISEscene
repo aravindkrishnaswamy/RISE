@@ -296,6 +296,70 @@ scalar_painter
 	file				colors/thinfilm/substrates/Steel.k
 }
 
+# --- Alternative base metals (Nb, Ta) + oxides (Nb2O5, Ta2O5, Fe3O4=steel) ---
+# Same curated colors/thinfilm/ tables as Ti; used by the tf_dial_<metal>
+# materials below to switch the dial's base metal in the GUI.
+scalar_painter
+{
+	name				Nb_n
+	file				colors/thinfilm/substrates/Nb.n
+}
+
+scalar_painter
+{
+	name				Nb_k
+	file				colors/thinfilm/substrates/Nb.k
+}
+
+scalar_painter
+{
+	name				Ta_n
+	file				colors/thinfilm/substrates/Ta.n
+}
+
+scalar_painter
+{
+	name				Ta_k
+	file				colors/thinfilm/substrates/Ta.k
+}
+
+scalar_painter
+{
+	name				Nb2O5_n
+	file				colors/thinfilm/oxides/Nb2O5.n
+}
+
+scalar_painter
+{
+	name				Nb2O5_k
+	file				colors/thinfilm/oxides/Nb2O5.k
+}
+
+scalar_painter
+{
+	name				Ta2O5_n
+	file				colors/thinfilm/oxides/Ta2O5.n
+}
+
+scalar_painter
+{
+	name				Ta2O5_k
+	file				colors/thinfilm/oxides/Ta2O5.k
+}
+
+scalar_painter
+{
+	name				Fe3O4_n
+	file				colors/thinfilm/oxides/Fe3O4.n
+}
+
+scalar_painter
+{
+	name				Fe3O4_k
+	file				colors/thinfilm/oxides/Fe3O4.k
+}
+
+
 # Oxide-thickness SHAPE map: scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py bakes only the NORMALISED
 # radial heat profile (0 at the centre, 1 at the rim; the Arrhenius/parabolic
 # torch-dwell curvature).  The ABSOLUTE nanometres -- i.e. the TORCH START/END --
@@ -333,6 +397,38 @@ scalar_painter
 	scale				16.0
 	bias				22.0
 }
+
+# --- Per-base-metal oxide THICKNESS windows (nm) ---
+# Same torch dose SHAPE (oxide_png), but each metal's oxide grows to a DIFFERENT nm
+# window for its temper-colour sweep -- from thermal_oxide_sim's Airy/CIE oracle per
+# metal (run: thermal_oxide_sim.py --metal-ladders).  NOT reusing Ti's 22..38 nm.
+scalar_painter
+{
+	name				oxide_thk_nb
+	texture			oxide_png
+	channel			R
+	scale				25.0
+	bias				30.0
+}  # Nb: 30..55 nm  gold/orange->blue
+
+scalar_painter
+{
+	name				oxide_thk_ta
+	texture			oxide_png
+	channel			R
+	scale				26.0
+	bias				26.0
+}  # Ta: 26..52 nm  bronze->gold->purple (Ta2O5 no clean blue)
+
+scalar_painter
+{
+	name				oxide_thk_steel
+	texture			oxide_png
+	channel			R
+	scale				28.0
+	bias				28.0
+}  # Steel: 28..56 nm  gold->purple->blue (classic temper)
+
 
 ##################################################
 # >>> TORCH PATTERN VARIANTS <<<  (non-uniform torch along the lightning zigzag)
@@ -393,6 +489,57 @@ ggx_material
 	film_extinction			TiO2_k
 	film_thickness			oxide_thk
 }
+
+# --- Base-metal variants of the dial material (SWITCH IN THE GUI) ---
+# Select the dial object (dialmesh), set its `material` to one of these
+# (ObjectIntrospection exposes `material` as a rebindable reference).  Each
+# carries the metal's substrate n,k + oxide n,k + its own nm window.
+# tf_dial (above) is the titanium default.
+ggx_material
+{
+	name				tf_dial_nb
+	rd				pnt_black
+	rs				pnt_white
+	alphax			0.08
+	alphay			0.08
+	fresnel_mode			thinfilm
+	ior				Nb_n
+	extinction			Nb_k
+	film_ior			Nb2O5_n
+	film_extinction		Nb2O5_k
+	film_thickness		oxide_thk_nb
+}
+
+ggx_material
+{
+	name				tf_dial_ta
+	rd				pnt_black
+	rs				pnt_white
+	alphax			0.08
+	alphay			0.08
+	fresnel_mode			thinfilm
+	ior				Ta_n
+	extinction			Ta_k
+	film_ior			Ta2O5_n
+	film_extinction		Ta2O5_k
+	film_thickness		oxide_thk_ta
+}
+
+ggx_material
+{
+	name				tf_dial_steel
+	rd				pnt_black
+	rs				pnt_white
+	alphax			0.08
+	alphay			0.08
+	fresnel_mode			thinfilm
+	ior				Steel_n
+	extinction			Steel_k
+	film_ior			Fe3O4_n
+	film_extinction		Fe3O4_k
+	film_thickness		oxide_thk_steel
+}
+
 
 ##################################################
 # Watch-head support painters + materials
