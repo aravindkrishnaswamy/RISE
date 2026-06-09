@@ -1,6 +1,6 @@
 # Thin-Film Interference for Heat-Colored Metals — Design Doc
 
-**Status:** Phase 2 COMPLETE — full renderer integration (thin-film GGX `fresnel_mode thinfilm`, exact spectral path, energy-conserved multiscatter, scene language + ABI, canonical scenes) landed on `feature/thin-film-interference`; Phase 3 (the guilloché dial) not started · **Created:** 2026-06-07 · **Owner:** master-controller session
+**Status:** Phase 3 COMPLETE — the guilloché watch dial (MING-37.06 "Lightning") ships on `feature/thin-film-interference`: a Cartesian-grid relief mesh (kills the polar-singularity centre wash), scene-tunable heat-tint, dark-hero 2-softbox lighting, dispersive sapphire + a NEW data-based MgF₂ AR coating on `dielectric_material`, and a turntable.  Phases 1+2 (optics + material) complete; full suite 130/130, `make` + Xcode-arm64 warning-free · **Created:** 2026-06-07 · **Updated:** 2026-06-08 · **Owner:** master-controller session
 **Goal artifact:** a rendered guilloché titanium watch dial — engraved rose-engine pattern,
 torch-gradient oxide coloring, physically-based iridescence — plus a general thin-film
 BRDF that also covers steel, tantalum, and niobium heat-tint/anodize colors.
@@ -439,6 +439,71 @@ interaction) returned **no new P1/P2** — the stop rule (every finding fixed or
 plus a post-fix round with no new P1/P2) is satisfied. The two real bugs (a P1 crash + its P2 API
 sibling) were fixed, and the deferred GUI-introspection P2 was subsequently implemented (`48d99f04`),
 so ALL review findings are resolved. The thin-film branch is correctness-clean AND editor-complete.
+
+## Phase 3 outcome (2026-06-08) — guilloché watch dial COMPLETE
+
+The MING-37.06 "Lightning" watch landed on `feature/thin-film-interference`
+(`scenes/FeatureBased/Materials/watch_dial.RISEscene`; commits `b2dbbb0b` (AR feature) +
+`72e85c6f` (watch scene + tools); nothing pushed). The implementation **diverged from the §12
+P3-A/B/C plan** in one load-bearing way — the Cartesian rebuild below.
+
+- **P3-A/B generators.** `tools/thermal_oxide_sim.py` (torch heat → Arrhenius/parabolic
+  oxide-growth → radial thickness profile, gold centre → blue rim, calibrated against the
+  Phase-1 Ti/TiO₂ swatch oracle). `tools/guilloche_gen.py` (polar rose-engine height/normal/angle
+  maps) — **superseded for the dial** by `tools/dial_mesh_gen.py`, kept as a general polar generator.
+
+- **The Cartesian rebuild — the load-bearing lesson.** The §12 plan assumed a guilloché
+  normal/height map on a `circulardisk` (polar UV: u=angle, v=radius). That **fails structurally**:
+  a guilloché micro-cell spans a fixed slice of ANGLE, so its world width = r·Δangle → collapses to
+  ZERO at the centre. Tessellated + displaced, the inner ~40% of the dial loses all relief → a
+  smooth gold blob **no resolution can fix** (diagnosed with 5 named diagnostic cameras: the blob
+  sat at a FIXED dial-radius in every view ⇒ geometry, not a specular wash). Fix:
+  `tools/dial_mesh_gen.py` bakes the relief into a **Cartesian-grid circular triangle mesh** (RAW2:
+  position + analytic normal + linear UV) — every cell is a fixed world size at the rim and the
+  dead-centre alike. The woven micro-grid is laid in a per-sector-rotated frame so it runs radially
+  and flips tilt at each jagged "lightning" seam but never shrinks; the petals are the swirl=0
+  radial organizer. Mesh is gitignored (27 MB; regenerate with `dial_mesh_gen.py --cell 1.35 --disp 0.46`).
+
+- **Heat-tint is scene-tunable, no re-bake** (the §9 decoupling, realised). `oxide_cart.png` stores
+  ONLY the normalised radial heat SHAPE (0=centre..1=rim); the `oxide_thk` scalar_painter
+  `scale`/`bias` set the absolute torch start/end nm (bias=centre, bias+scale=rim) — 4 presets in
+  the scene's `>>> HEAT-TINT TORCH CONTROL <<<` block. Bake emits a shape, renderer does
+  thickness→colour, scene dials the absolute nm.
+
+- **Dark-hero lighting.** Two top/bottom softboxes with a dark gap (soft gradient reflection bands,
+  not one harsh panel; rakes the relief from two sides) + a dim Uffizi HDRI fill (the even thin-film
+  COLOUR shift per facet is what renders the texture). `tools/render_watch_views.py` (5 named
+  cameras + torch/AR sweep overrides); `tools/render_watch_turntable.py` (+Z-orbit dark-hero GIF →
+  `rendered/turntable.gif`).
+
+- **Crystal — dispersive sapphire + a NEW data-based AR coating.** The dome is a
+  `dielectric_material` with the Malitson 1962 ordinary-ray sapphire Sellmeier (n(589)=1.768, Abbe
+  72.3, verified to <0.001 vs the Fraunhofer lines). Real watch crystals are AR-coated, but RISE's
+  dielectric had no thin-film slot (GGX thin-film is reflection-only), so it reflected bare
+  7.7%/surface. **Added a data-based AR path to the renderer core** (commit `b2dbbb0b`):
+  `DielectricSPF::GenerateScatteredRay` now computes the surface Fresnel via the SAME
+  `ThinFilm::ReflectanceConductor` Airy evaluator (air / AR-film / substrate stack) when
+  `ar_film_ior`/`ar_film_thickness`/`ar_film_extinction` are set — BOTH the spectral `ScatterNM`
+  (per-hero-λ) and RGB `Scatter` (forces per-channel at representative λ {611,549,465}) paths;
+  default 0 = bit-identical bare dielectric. MgF₂ quarter-wave at 550 nm (≈99.6 nm) →
+  **7.70% → 0.53% mean visible (~14×)** with the characteristic AR purple bloom. **Key physics:** the
+  wavelength dependence is from the phase δ=2πnd/λ, so a CONSTANT film index already gives the
+  correct AR spectrum (scalar params, no dispersive n needed). Threaded through
+  `RISE_API_CreateDielectricMaterial` + `Job::AddDielectricMaterial` (3 defaulted scalar params,
+  back-compat; no new `src/Library` files → the five build projects are untouched). The single
+  `ref =` site in `GenerateScatteredRay` is the hook for any future coated-dielectric work.
+
+- **Verification.** `tests/DielectricARTest.cpp` — **18 assertions, 0 failures** (the AR reflectance
+  data + the SPF integration: reflection-weight == AR reflectance with the coating on, == bare
+  air/sapphire Fresnel off, strictly dimmer). **Full suite 130/130, 0 failures** (zero regression
+  from the renderer-core AR change). `make` clean (0 warnings). **Xcode RISE-GUI (arm64) BUILD
+  SUCCEEDED, 0 source warnings** — this **closes the "clean Xcode-GUI rebuild check"** deferred since
+  Phase 2. (The default-config Xcode build fails to *link* on an x86_64/arm64 homebrew-lib mismatch —
+  a pre-existing environment quirk, not the code; `-arch arm64` is the working invocation.)
+
+**Deferred-list update:** "clean Xcode-GUI rebuild check" → **DONE** (this phase). Still deferred:
+RGB 2D LUT (§13.1); automated in-renderer image-compare gate (qualitative renders + the 18-assert AR
+unit test + 1e-16 thin-film tests stand in); Cook-Torrance thin-film.
 
 ## 13. Locked decisions (2026-06-07)
 
