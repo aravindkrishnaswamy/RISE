@@ -80,9 +80,12 @@ scene (this folder) by default:
 
 ```sh
 python3 scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py --cell 1.35 --disp 0.46
-#   -> dial.raw2        (Cartesian guilloché dial mesh)
-#   -> oxide_cart.png   (normalized radial heat-tint SHAPE map; torch start/end
-#                        nm are set IN THE SCENE via the oxide_thk scalar_painter)
+#   -> dial.raw2                 (Cartesian guilloché dial mesh)
+#   -> oxide_cart.png            (UNIFORM radial heat-tint SHAPE map)
+#   -> oxide_lightning_hot.png   (torch held LONGER on the zigzag -> bluer)
+#   -> oxide_lightning_cool.png  (torch held LESS  on the zigzag -> golder)
+#   (--oxide-only re-bakes just the maps, no 28 MB mesh; tune the zigzag
+#    contrast with --lightning-hot / --lightning-cool)
 python3 scenes/FeatureBased/GuillocheWatch/strap_mesh_gen.py
 #   -> strap.raw2       (curved leather strap mesh)
 python3 scenes/FeatureBased/GuillocheWatch/thermal_oxide_sim.py
@@ -104,6 +107,27 @@ in nm (centre = bias, rim = bias + scale). Presets are in comments at the top of
 `watch_dial.RISEscene`. The *radial falloff* (how fast it heats outward) is baked
 into `oxide_cart.png` — re-bake with `dial_mesh_gen.py --oxide-falloff
 {quadratic|smooth|linear}` to change it.
+
+## Torch pattern variants (non-uniform torch)
+
+Beyond the uniform radial sweep, the dial ships oxide maps that emulate the
+artist holding the torch **non-uniformly** — dwelling along the lightning zigzag
+so it stands out in a different interference colour (as on the real MING
+Lightning). All three share the dial's Cartesian UV and the `oxide_thk`
+scale/bias → nm, so they are drop-in:
+
+| map | scalar_painter | look |
+|---|---|---|
+| `oxide_cart.png` | `oxide_thk` | uniform radial gold→blue |
+| `oxide_lightning_hot.png` | `oxide_thk_lightning_hot` | zigzag torched LONGER → bluer lightning |
+| `oxide_lightning_cool.png` | `oxide_thk_lightning_cool` | zigzag torched LESS → golder lightning |
+
+**Switch in the GUI:** select the `tf_dial` material and set its `film_thickness`
+slot (a `scalar_painter` reference dropdown) to one of the three. The torch model
+is `thermal_oxide_sim.apply_torch_pattern(base, pattern, amount)`; the lightning
+`pattern` is `dial_mesh_gen.lightning_mask` (the dial's petal zigzag, so the
+colour zigzag lines up with the relief). Add new looks by feeding a different
+mask to `apply_torch_pattern`.
 
 See [docs/THIN_FILM_INTERFERENCE.md](../../../docs/THIN_FILM_INTERFERENCE.md) for
 the full feature writeup (TMM/Airy reference, n,k data, GGX `fresnel_mode

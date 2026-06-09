@@ -108,6 +108,7 @@ saturate the blue), not the lights. Deep royal blue = `(0.04, 0.08, 0.22)`.
 ## "I want to change X" quick recipes
 
 - **Dial colour/palette** → `oxide_thk` `bias`/`scale` (in-scene, no re-bake); or re-bake falloff with `dial_mesh_gen.py --oxide-falloff …`.
+- **Make the lightning stand out in colour (non-uniform torch)** → bind `tf_dial.film_thickness` to `oxide_thk_lightning_hot` / `_cool` (GUI scalar-painter slot dropdown). The maps are baked by `dial_mesh_gen.py --oxide-only` via `thermal_oxide_sim.apply_torch_pattern(radial, lightning_mask, ±amount)` where `lightning_mask` is the dial's petal zigzag (Cartesian UV, aligned with the relief). New torch patterns = feed a different mask to `apply_torch_pattern`.
 - **Re-pose camera** → compute ψ via the basis above (crown-right ⇒ ψ∈[285,330]); set `cam_photo` location `(R cosψ, R sinψ, Z)` with R≈184, Z≈183; **rotate both softboxes by the same Δψ**; verify by cropping the polished crown.
 - **Strap shape** → `strap_mesh_gen.py` centreline `ctrl` points, then regen.
 - **Strap colour** → `pnt_strap_blue` (keep it deep + saturated + blue-dominant; matte F0=0).

@@ -335,6 +335,48 @@ scalar_painter
 }
 
 ##################################################
+# >>> TORCH PATTERN VARIANTS <<<  (non-uniform torch along the lightning zigzag)
+# Three drop-in oxide SHAPE maps, all sharing the scale/bias above (-> nm).
+# SWITCH IN THE GUI: select the `tf_dial` material and set its `film_thickness`
+# slot (a scalar_painter reference dropdown) to one of:
+#   oxide_thk                 - UNIFORM radial torch (classic gold->blue sweep)
+#   oxide_thk_lightning_hot   - torch held LONGER on the zigzag -> bluer lightning
+#   oxide_thk_lightning_cool  - torch held LESS  on the zigzag -> golder lightning
+# Re-bake all three with: dial_mesh_gen.py --oxide-only  (tune --lightning-hot/-cool).
+##################################################
+png_painter
+{
+	name				oxide_png_lightning_hot
+	file				scenes/FeatureBased/GuillocheWatch/oxide_lightning_hot.png
+	color_space			Rec709RGB_Linear
+}
+
+scalar_painter
+{
+	name				oxide_thk_lightning_hot
+	texture			oxide_png_lightning_hot
+	channel			R
+	scale				16.0
+	bias				22.0
+}
+
+png_painter
+{
+	name				oxide_png_lightning_cool
+	file				scenes/FeatureBased/GuillocheWatch/oxide_lightning_cool.png
+	color_space			Rec709RGB_Linear
+}
+
+scalar_painter
+{
+	name				oxide_thk_lightning_cool
+	texture			oxide_png_lightning_cool
+	channel			R
+	scale				16.0
+	bias				22.0
+}
+
+##################################################
 # Thin-film dial material
 ##################################################
 ggx_material

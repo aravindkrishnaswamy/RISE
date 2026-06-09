@@ -626,6 +626,24 @@ def build_thickness_profile(n_rows, falloff, d_center, d_rim, raw_growth=False):
     return shaped, T, d_phys
 
 
+def apply_torch_pattern(base01, pattern01, amount):
+    """Non-uniform torch: simulate the artist holding the torch LONGER (amount > 0,
+    thicker oxide) or SHORTER (amount < 0) along a spatial PATTERN, on top of a
+    base normalized thickness field.
+
+      base01, pattern01 : float arrays in [0,1], same shape.  pattern01 marks
+                          where the extra/reduced dwell lands (1 = full effect).
+      amount            : signed dwell delta in NORMALIZED thickness units.  The
+                          scene's oxide_thk scale/bias still maps the result to
+                          nm, so e.g. amount=+0.40 with scale=16 shifts the
+                          patterned region ~6.4 nm thicker -> a distinct
+                          interference colour.
+
+    Returns the clipped [0,1] field.
+    """
+    return np.clip(base01 + amount * pattern01, 0.0, 1.0)
+
+
 # ===========================================================================
 #  PART 4 - Polar-UV bake + outputs.
 # ===========================================================================

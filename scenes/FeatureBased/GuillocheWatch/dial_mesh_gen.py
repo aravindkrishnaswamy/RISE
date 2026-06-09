@@ -165,6 +165,28 @@ def build_oxide_cart(size, R, falloff="quadratic"):
 
 
 # --------------------------------------------------------------------------
+# Lightning-zigzag torch mask (the N-arm petal pattern, Cartesian UV).
+# --------------------------------------------------------------------------
+def lightning_mask(size, p):
+    """Bake the dial's N-arm lightning-petal pattern as a [0,1] mask in the SAME
+    Cartesian UV as build_oxide_cart / the dial mesh (u=(X+R)/2R, so pixel
+    (U,V) -> (X/R, Y/R) = (2U-1, 2V-1)).  This is exactly the `petal` term of
+    height_field, so the colour zigzag lines up with the relief zigzag.  Feed it
+    to thermal_oxide_sim.apply_torch_pattern to torch the lightning more (or
+    less) than the surrounding field."""
+    ii = (np.arange(size) + 0.5) / size
+    U, V = np.meshgrid(ii, ii)
+    x = 2.0 * U - 1.0                                      # X/R
+    y = 2.0 * V - 1.0                                      # Y/R
+    rho = np.clip(np.hypot(x, y), 0.0, 1.0)
+    theta = np.arctan2(y, x)
+    jag = p["seam_jag"] * _tri(p["seam_jag_freq"] * rho)
+    psi = theta + p["swirl"] * rho + jag
+    petal = lens(np.cos(p["num_arms"] * psi), p["petal_e0"], p["petal_e1"])
+    return np.clip(np.where(rho <= 1.0, petal, 0.0), 0.0, 1.0)
+
+
+# --------------------------------------------------------------------------
 # Mesh build + RAW2 writer.
 # --------------------------------------------------------------------------
 def build_mesh(p):
@@ -319,6 +341,12 @@ def main(argv=None):
                          "(torch start/end) is set in the SCENE via the oxide_thk "
                          "scale/bias, NOT here. Default quadratic.")
     ap.add_argument("--out-dir", default=_THIS_DIR)  # write mesh/maps next to the scene
+    ap.add_argument("--oxide-only", action="store_true",
+                    help="bake only the oxide SHAPE maps (radial + lightning variants); skip the 28 MB mesh")
+    ap.add_argument("--lightning-hot", type=float, default=0.40,
+                    help="extra normalized oxide along the lightning zigzag (torch held LONGER -> bluer). Default 0.40.")
+    ap.add_argument("--lightning-cool", type=float, default=0.40,
+                    help="reduced normalized oxide along the lightning zigzag (torch held LESS -> golder). Default 0.40.")
     args = ap.parse_args(argv)
 
     p = dict(radius=args.radius, mesh_n=args.mesh_n, disp=args.disp,
@@ -336,27 +364,49 @@ def main(argv=None):
     print("Cartesian dial mesh — radius=%.2f mesh_n=%d disp=%.3f arms=%d swirl=%.2f cell=%.2f"
           % (args.radius, args.mesh_n, args.disp, args.num_arms, args.swirl, args.cell))
 
-    verts, tris, h, z = build_mesh(p)
-    raw2 = os.path.join(out_dir, "dial.raw2")
-    write_raw2(raw2, verts, tris)
-    print("  mesh: %d verts, %d tris  z∈[%.4f, %.4f] (p2p %.4f world)"
-          % (verts.shape[0], tris.shape[0], z.min(), z.max(), z.max() - z.min()))
+    written = []
 
+    if not args.oxide_only:
+        verts, tris, h, z = build_mesh(p)
+        raw2 = os.path.join(out_dir, "dial.raw2")
+        write_raw2(raw2, verts, tris)
+        written.append(raw2)
+        print("  mesh: %d verts, %d tris  z∈[%.4f, %.4f] (p2p %.4f world)"
+              % (verts.shape[0], tris.shape[0], z.min(), z.max(), z.max() - z.min()))
+
+    # --- oxide SHAPE maps: uniform radial base + lightning-zigzag torch variants.
+    # All share the dial's Cartesian UV and the scene's oxide_thk scale/bias -> nm,
+    # so they are drop-in swappable for the tf_dial film_thickness painter.
     oxide = build_oxide_cart(args.oxide_size, args.radius, args.oxide_falloff)
-    ox_path = os.path.join(out_dir, "oxide_cart.png")
-    ox8 = (np.clip(oxide, 0, 1) * 255 + 0.5).astype(np.uint8)
-    Image.fromarray(np.stack([ox8] * 3, -1), "RGB").save(ox_path)
-    print("  oxide: %s  (normalized radial heat SHAPE 0=centre..1=rim, falloff=%s, 8-bit RGB;"
-          " torch start/end nm set in-scene via oxide_thk scale/bias)"
-          % (ox_path, args.oxide_falloff))
+    petal = lightning_mask(args.oxide_size, p)
 
-    pv = os.path.join(out_dir, "dial_preview.png")
-    save_preview(pv, h, oxide, args.radius)
+    def _save_oxide(field, name, note):
+        path = os.path.join(out_dir, name)
+        u8 = (np.clip(field, 0, 1) * 255 + 0.5).astype(np.uint8)
+        Image.fromarray(np.stack([u8] * 3, -1), "RGB").save(path)
+        written.append(path)
+        print("  oxide: %s  (%s)" % (os.path.basename(path), note))
+
+    _save_oxide(oxide, "oxide_cart.png",
+                "UNIFORM radial heat SHAPE 0=centre..1=rim, falloff=%s" % args.oxide_falloff)
+    _save_oxide(tox.apply_torch_pattern(oxide, petal, +args.lightning_hot),
+                "oxide_lightning_hot.png",
+                "torch held LONGER on the lightning zigzag (+%.2f -> bluer zigzag)" % args.lightning_hot)
+    _save_oxide(tox.apply_torch_pattern(oxide, petal, -args.lightning_cool),
+                "oxide_lightning_cool.png",
+                "torch held LESS on the lightning zigzag (-%.2f -> golder zigzag)" % args.lightning_cool)
+
+    if not args.oxide_only:
+        pv = os.path.join(out_dir, "dial_preview.png")
+        save_preview(pv, h, oxide, args.radius)
+        written.append(pv)
 
     print("\n=== FILES WRITTEN ===")
-    for f in (raw2, ox_path, pv):
+    for f in written:
         print("  %s" % os.path.abspath(f))
 
+    if args.oxide_only:
+        return 0
     return 0 if self_checks(verts, tris, h, z, p) else 1
 
 
