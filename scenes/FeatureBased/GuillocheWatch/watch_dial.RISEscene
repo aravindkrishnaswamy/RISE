@@ -422,6 +422,37 @@ scalar_painter
 	bias				22.0
 }
 
+# --- COLOUR PALETTES (Ti temper windows; swap via the dial's film_thickness) ---
+# Same dose SHAPE (oxide_png), different nm WINDOW -> a different iridescent sweep.
+# Switch in the GUI: set tf_dial.film_thickness to one of these (or oxide_thk).
+scalar_painter
+{
+	name				oxide_thk_warm
+	texture			oxide_png
+	channel			R
+	scale				14.0
+	bias				16.0
+}  # warm: 16..30 nm  gold -> magenta/violet (warm centre)
+
+scalar_painter
+{
+	name				oxide_thk_cool
+	texture			oxide_png
+	channel			R
+	scale				16.0
+	bias				28.0
+}  # cool: 28..44 nm  violet -> blue -> cyan (deep)
+
+scalar_painter
+{
+	name				oxide_thk_wide
+	texture			oxide_png
+	channel			R
+	scale				32.0
+	bias				14.0
+}  # wide: 14..46 nm  straw -> gold -> purple -> blue -> cyan (full)
+
+
 # --- Per-base-metal oxide THICKNESS windows (nm) ---
 # Same torch dose SHAPE (oxide_png), but each metal's oxide grows to a DIFFERENT nm
 # window for its temper-colour sweep -- from thermal_oxide_sim's Airy/CIE oracle per

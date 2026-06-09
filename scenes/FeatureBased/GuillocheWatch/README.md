@@ -149,6 +149,23 @@ is `thermal_oxide_sim.apply_torch_pattern(base, pattern, amount)`; the lightning
 colour zigzag lines up with the relief). Add new looks by feeding a different
 mask to `apply_torch_pattern`.
 
+## Colour palettes (temper windows)
+
+The same Ti dial reads as a *different iridescent palette* depending on which
+slice of the temper sequence the oxide spans — emulating the dial variety of
+flame-anodized guilloché watches. These share the dose shape (`oxide_png`) and
+differ only in the nm window; switch via `tf_dial`'s `film_thickness` painter:
+
+| painter | window (nm) | look |
+|---|---|---|
+| `oxide_thk` | 22–38 | **vivid** gold → purple → blue (default) |
+| `oxide_thk_warm` | 16–30 | gold/straw centre → magenta/violet |
+| `oxide_thk_cool` | 28–44 | violet → blue → cyan (deep) |
+| `oxide_thk_wide` | 14–46 | full straw → gold → purple → blue → cyan |
+
+(Ti windows; each base metal has its own — see below. Fine-tune any palette via
+the painter's `scale`/`bias`, or add another.)
+
 ## Base-metal variants (Ti / Nb / Ta / steel)
 
 The dial's **base metal is switchable**, and it is *not* a simple recolour: each
