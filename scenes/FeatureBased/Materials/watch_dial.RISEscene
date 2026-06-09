@@ -471,7 +471,7 @@ cylinder_geometry
 	name				casegeom
 	axis				z
 	radius				24.0
-	height				9.0
+	height				11.27
 }
 
 standard_object
@@ -479,7 +479,7 @@ standard_object
 	name				casebody
 	geometry			casegeom
 	material			ti_polished
-	position			0 0 -3.5
+	position			0 0 -4.635
 }
 
 # Solid caseback disc to close the bottom of the cylinder (no see-through).
@@ -495,7 +495,7 @@ standard_object
 	name				caseback
 	geometry			casebackgeom
 	material			ti_polished
-	position			0 0 -8.0
+	position			0 0 -10.27
 }
 
 ##################################################
@@ -524,7 +524,7 @@ standard_object
 ellipsoid_geometry
 {
 	name				crystalgeom
-	radii				21.5 21.5 2
+	radii				21.5 21.5 4.5
 }
 
 standard_object
@@ -673,7 +673,7 @@ standard_object
 	name				crown
 	geometry			crowngeom
 	material			ti_polished
-	position			26.0 0 -3.5
+	position			26.0 0 -4.635
 }
 
 # Crown stem / shoulder: a short narrower cylinder bridging case to crown.
@@ -690,7 +690,7 @@ standard_object
 	name				crownstem
 	geometry			crownstemgeom
 	material			ti_polished
-	position			23.5 0 -3.5
+	position			23.5 0 -4.635
 }
 
 ##################################################
@@ -711,7 +711,7 @@ standard_object
 	name				lug_tl
 	geometry			luggeom
 	material			ti_polished
-	position			-7.0 23.5 -3.5
+	position			-7.0 25.1 -4.635
 }
 
 standard_object
@@ -719,7 +719,7 @@ standard_object
 	name				lug_tr
 	geometry			luggeom
 	material			ti_polished
-	position			7.0 23.5 -3.5
+	position			7.0 25.1 -4.635
 }
 
 standard_object
@@ -727,7 +727,7 @@ standard_object
 	name				lug_bl
 	geometry			luggeom
 	material			ti_polished
-	position			-7.0 -23.5 -3.5
+	position			-7.0 -25.1 -4.635
 }
 
 standard_object
@@ -735,5 +735,5 @@ standard_object
 	name				lug_br
 	geometry			luggeom
 	material			ti_polished
-	position			7.0 -23.5 -3.5
+	position			7.0 -25.1 -4.635
 }
