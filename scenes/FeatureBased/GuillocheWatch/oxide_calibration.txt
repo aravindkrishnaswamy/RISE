@@ -16,7 +16,7 @@
 # SCENE RECIPE - recover nanometres from the normalised texture with a
 # tunable affine map (colour range dialable WITHOUT re-baking):
 #
-#   scalar_painter { texture "textures/dial/oxide_thickness.png" scale 13.0000 bias 20.0000 }
+#   scalar_painter { texture "scenes/FeatureBased/GuillocheWatch/oxide_thickness.png" scale 13.0000 bias 20.0000 }
 #
 # i.e.  thickness_nm = pixel01 * scale + bias
 #   scale = d_max - d_min = 13.0000

@@ -25,7 +25,7 @@ THE FIX — define the relief in CARTESIAN space and bake it straight into a mes
     UV is linear ( (x,y) → [0,1]² ) so the radial oxide-thickness map samples
     uniformly.
 
-OUTPUTS (into --out-dir, default textures/dial/):
+OUTPUTS (into --out-dir, default scenes/FeatureBased/GuillocheWatch/):
   * dial.raw2            — the dial mesh (RAW2: `v x y z nx ny nz u v` + `t a b c`,
                            consumed by `rawmesh2_geometry { file ... }`).
   * oxide_cart.png       — 8-bit RGB radial oxide-thickness map in CARTESIAN
@@ -51,7 +51,7 @@ except ImportError:
     raise
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_REPO_ROOT = os.path.dirname(_THIS_DIR)
+_REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", "..", ".."))  # repo root
 sys.path.insert(0, _THIS_DIR)
 import thermal_oxide_sim as tox  # noqa: E402  (radial nm profile reuse)
 
@@ -318,7 +318,7 @@ def main(argv=None):
                          "(quadratic = dwell concentrates at the rim). The absolute nm "
                          "(torch start/end) is set in the SCENE via the oxide_thk "
                          "scale/bias, NOT here. Default quadratic.")
-    ap.add_argument("--out-dir", default=os.path.join("textures", "dial"))
+    ap.add_argument("--out-dir", default=_THIS_DIR)  # write mesh/maps next to the scene
     args = ap.parse_args(argv)
 
     p = dict(radius=args.radius, mesh_n=args.mesh_n, disp=args.disp,
@@ -330,7 +330,7 @@ def main(argv=None):
              base=args.base, land_level=args.land_level,
              relief_depth=args.relief_depth, center_radius=args.center_radius)
 
-    out_dir = args.out_dir if os.path.isabs(args.out_dir) else os.path.join(_REPO_ROOT, args.out_dir)
+    out_dir = args.out_dir if os.path.isabs(args.out_dir) else os.path.join(_THIS_DIR, args.out_dir)
     os.makedirs(out_dir, exist_ok=True)
 
     print("Cartesian dial mesh — radius=%.2f mesh_n=%d disp=%.3f arms=%d swirl=%.2f cell=%.2f"

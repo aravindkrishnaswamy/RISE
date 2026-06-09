@@ -106,7 +106,7 @@ pixel-for-pixel aligned.  Because a future non-radial profile may be desired,
 the FULL 2D field is baked even though today it is a pure function of the row
 (radius).
 
-Files written (into --out-dir, default textures/dial/):
+Files written (into --out-dir, default scenes/FeatureBased/GuillocheWatch/):
   * oxide_thickness.png  - 16-bit grayscale, NORMALISED [0,1] thickness:
         0 -> d_min,  1 -> d_max  (d_min/d_max default to d_center/d_rim).
     The RISE scene recovers nanometres with a tunable affine map:
@@ -145,10 +145,10 @@ except ImportError:  # pragma: no cover - environment guard
 
 
 # ---------------------------------------------------------------------------
-#  Repo-relative data paths (this file lives in <repo>/tools/).
+#  Repo-relative data paths (this file lives in <repo>/scenes/FeatureBased/GuillocheWatch/).
 # ---------------------------------------------------------------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_REPO_ROOT = os.path.dirname(_THIS_DIR)
+_REPO_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", "..", ".."))  # repo root (shared colors/ data)
 
 
 def _data_path(*parts):
@@ -715,7 +715,7 @@ def write_calibration_txt(out_path, d_center, d_rim, d_min, d_max, scale, bias,
     lines.append("# SCENE RECIPE - recover nanometres from the normalised texture with a")
     lines.append("# tunable affine map (colour range dialable WITHOUT re-baking):")
     lines.append("#")
-    lines.append("#   scalar_painter { texture \"textures/dial/oxide_thickness.png\" scale %.4f bias %.4f }"
+    lines.append("#   scalar_painter { texture \"scenes/FeatureBased/GuillocheWatch/oxide_thickness.png\" scale %.4f bias %.4f }"
                  % (scale, bias))
     lines.append("#")
     lines.append("# i.e.  thickness_nm = pixel01 * scale + bias")
@@ -874,8 +874,8 @@ def main():
                          "the guilloche generator's WxH/2 polar-UV layout. Set equal "
                          "to the guilloche height map's row count so the two maps "
                          "sample pixel-for-pixel.")
-    ap.add_argument("--out-dir", default=os.path.join("textures", "dial"),
-                    help="output directory (default: textures/dial/).")
+    ap.add_argument("--out-dir", default=_THIS_DIR,
+                    help="output directory (default: scenes/FeatureBased/GuillocheWatch/).")
     ap.add_argument("--height-map", default=None,
                     help="optional guilloche height map (same polar-UV layout); "
                          "enables ridge->thickness coupling.")
@@ -940,7 +940,7 @@ def main():
     if args.height_map:
         hm_path = args.height_map
         if not os.path.isabs(hm_path):
-            hm_path = os.path.join(_REPO_ROOT, hm_path)
+            hm_path = os.path.join(_THIS_DIR, hm_path)
         if not os.path.exists(hm_path):
             ap.error("height map not found: %s" % hm_path)
         height_field = _load_height_map(hm_path, width, height)
@@ -955,7 +955,7 @@ def main():
     # --- Write outputs -----------------------------------------------------
     out_dir = args.out_dir
     if not os.path.isabs(out_dir):
-        out_dir = os.path.join(_REPO_ROOT, out_dir)
+        out_dir = os.path.join(_THIS_DIR, out_dir)
     os.makedirs(out_dir, exist_ok=True)
     png_path = os.path.join(out_dir, "oxide_thickness.png")
     txt_path = os.path.join(out_dir, "oxide_calibration.txt")
@@ -984,7 +984,7 @@ def main():
 
     # --- Recipe echo -------------------------------------------------------
     print("\n[scene] RISE material recipe (paste into the dial's ggx_material):")
-    print("   scalar_painter { texture \"textures/dial/oxide_thickness.png\" "
+    print("   scalar_painter { texture \"scenes/FeatureBased/GuillocheWatch/oxide_thickness.png\" "
           "scale %.4f bias %.4f }" % (scale, bias))
     print("   -> thickness_nm = pixel01 * %.4f + %.4f  (d_min=%.1f, d_max=%.1f nm)"
           % (scale, bias, d_min, d_max))

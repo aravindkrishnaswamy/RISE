@@ -68,7 +68,7 @@ angular detail near the rim; a 2:1 (angle:radius) aspect keeps angular
 Nyquist headroom.  Override the radius rows with --radius-resolution.
 
 ================================================================
-OUTPUTS  (PNG, into --out-dir, default textures/dial/)
+OUTPUTS  (PNG, into --out-dir, default scenes/FeatureBased/GuillocheWatch/)
 ================================================================
 1. guilloche_height.png  — HEIGHT field h(ρ,θ) ∈ [0,1], 8-bit RGB with
    R=G=B=height.  *** This is the map the scene uses *** (loaded
@@ -822,8 +822,8 @@ def main(argv=None):
     p.add_argument("--bit-depth", type=int, choices=[8, 16], default=8,
                    help="Bit depth for the AUX angle-map preview only; the height "
                         "map is ALWAYS 8-bit RGB (RISE loader requirement). Default 8.")
-    p.add_argument("--out-dir", default="textures/dial/",
-                   help="Output directory. Default textures/dial/.")
+    p.add_argument("--out-dir", default=os.path.dirname(os.path.abspath(__file__)),
+                   help="Output directory. Default scenes/FeatureBased/GuillocheWatch/.")
     p.add_argument("--preview-size", type=int, default=512,
                    help="Cartesian reprojection size in the preview. Default 512.")
     args = p.parse_args(argv)

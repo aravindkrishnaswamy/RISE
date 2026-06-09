@@ -21,8 +21,9 @@ import re
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCENE = os.path.join(ROOT, "scenes/FeatureBased/Materials/watch_dial.RISEscene")
+HERE = os.path.dirname(os.path.abspath(__file__))             # the GuillocheWatch scene folder
+ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))  # repo root (for bin/rise + rendered/)
+SCENE = os.path.join(HERE, "watch_dial.RISEscene")
 RISE = os.path.join(ROOT, "bin/rise")
 OUTDIR = os.path.join(ROOT, "rendered", "turntable")
 

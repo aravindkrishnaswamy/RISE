@@ -443,14 +443,14 @@ so ALL review findings are resolved. The thin-film branch is correctness-clean A
 ## Phase 3 outcome (2026-06-08) — guilloché watch dial COMPLETE
 
 The MING-37.06 "Lightning" watch landed on `feature/thin-film-interference`
-(`scenes/FeatureBased/Materials/watch_dial.RISEscene`; commits `b2dbbb0b` (AR feature) +
+(`scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene`; commits `b2dbbb0b` (AR feature) +
 `72e85c6f` (watch scene + tools); nothing pushed). The implementation **diverged from the §12
 P3-A/B/C plan** in one load-bearing way — the Cartesian rebuild below.
 
-- **P3-A/B generators.** `tools/thermal_oxide_sim.py` (torch heat → Arrhenius/parabolic
+- **P3-A/B generators.** `scenes/FeatureBased/GuillocheWatch/thermal_oxide_sim.py` (torch heat → Arrhenius/parabolic
   oxide-growth → radial thickness profile, gold centre → blue rim, calibrated against the
-  Phase-1 Ti/TiO₂ swatch oracle). `tools/guilloche_gen.py` (polar rose-engine height/normal/angle
-  maps) — **superseded for the dial** by `tools/dial_mesh_gen.py`, kept as a general polar generator.
+  Phase-1 Ti/TiO₂ swatch oracle). `scenes/FeatureBased/GuillocheWatch/guilloche_gen.py` (polar rose-engine height/normal/angle
+  maps) — **superseded for the dial** by `scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py`, kept as a general polar generator.
 
 - **The Cartesian rebuild — the load-bearing lesson.** The §12 plan assumed a guilloché
   normal/height map on a `circulardisk` (polar UV: u=angle, v=radius). That **fails structurally**:
@@ -458,7 +458,7 @@ P3-A/B/C plan** in one load-bearing way — the Cartesian rebuild below.
   ZERO at the centre. Tessellated + displaced, the inner ~40% of the dial loses all relief → a
   smooth gold blob **no resolution can fix** (diagnosed with 5 named diagnostic cameras: the blob
   sat at a FIXED dial-radius in every view ⇒ geometry, not a specular wash). Fix:
-  `tools/dial_mesh_gen.py` bakes the relief into a **Cartesian-grid circular triangle mesh** (RAW2:
+  `scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py` bakes the relief into a **Cartesian-grid circular triangle mesh** (RAW2:
   position + analytic normal + linear UV) — every cell is a fixed world size at the rim and the
   dead-centre alike. The woven micro-grid is laid in a per-sector-rotated frame so it runs radially
   and flips tilt at each jagged "lightning" seam but never shrinks; the petals are the swirl=0
@@ -472,8 +472,8 @@ P3-A/B/C plan** in one load-bearing way — the Cartesian rebuild below.
 
 - **Dark-hero lighting.** Two top/bottom softboxes with a dark gap (soft gradient reflection bands,
   not one harsh panel; rakes the relief from two sides) + a dim Uffizi HDRI fill (the even thin-film
-  COLOUR shift per facet is what renders the texture). `tools/render_watch_views.py` (5 named
-  cameras + torch/AR sweep overrides); `tools/render_watch_turntable.py` (+Z-orbit dark-hero GIF →
+  COLOUR shift per facet is what renders the texture). `scenes/FeatureBased/GuillocheWatch/render_watch_views.py` (5 named
+  cameras + torch/AR sweep overrides); `scenes/FeatureBased/GuillocheWatch/render_watch_turntable.py` (+Z-orbit dark-hero GIF →
   `rendered/turntable.gif`).
 
 - **Crystal — dispersive sapphire + a NEW data-based AR coating.** The dome is a

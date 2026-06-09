@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Render the guilloche watch dial from each named pinhole_camera in
-watch_dial.RISEscene, one PNG per angle.
+"""Render the guilloche watch dial from each named camera (pinhole AND thinlens)
+in watch_dial.RISEscene, one PNG per angle.
 
 Why a helper: RISE's CLI `render` command renders the ACTIVE camera, and the
 active camera is simply the LAST one added (there is no `camera <name>` CLI
@@ -11,7 +11,7 @@ The durable scene keeps ALL cameras for the GUI and for documentation.
 
 Usage:
   python3 tools/render_watch_views.py                       # all cameras
-  python3 tools/render_watch_views.py --cam cam_face cam_graze
+  python3 tools/render_watch_views.py --cam cam_macro cam_profile
   python3 tools/render_watch_views.py --samples 32 --res 700x700
 Outputs: rendered/watch_<camname>.png
 """
@@ -21,19 +21,28 @@ import re
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCENE = os.path.join(ROOT, "scenes/FeatureBased/Materials/watch_dial.RISEscene")
+HERE = os.path.dirname(os.path.abspath(__file__))             # the GuillocheWatch scene folder
+ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))  # repo root (for bin/rise + rendered/)
+SCENE = os.path.join(HERE, "watch_dial.RISEscene")
 RISE = os.path.join(ROOT, "bin/rise")
 TMPDIR = "/tmp/watch_views"
 
 
+CAMERA_CHUNKS = ("pinhole_camera", "thinlens_camera")
+
+
 def extract_cameras(text):
-    """Split scene text into (body_without_cameras, [(name, block_text), ...])."""
+    """Split scene text into (body_without_cameras, [(name, block_text), ...]).
+
+    Matches BOTH pinhole_camera and thinlens_camera so the macro/hero thinlens
+    rigs render too.  All cameras are pulled out of the body; each is appended
+    back individually (hence last -> active) for its own render.
+    """
     lines = text.split("\n")
     body, cams = [], []
     i = 0
     while i < len(lines):
-        if lines[i].strip() == "pinhole_camera":
+        if lines[i].strip() in CAMERA_CHUNKS:
             block = [lines[i]]
             depth, opened, j = 0, False, i + 1
             while j < len(lines):

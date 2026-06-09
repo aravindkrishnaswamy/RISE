@@ -4,7 +4,7 @@ RISE ASCII SCENE 6
 #   Description:    Guilloche titanium watch dial (thin-film heat-tint).  Phase 3 of the thin-film feature.
 #                   MILESTONE 1 (this revision): bare dial COLOUR validation -- a flat circular dial with the
 #                   thin-film GGX material, oxide thickness driven by the baked radial heat-tint map
-#                   (tools/thermal_oxide_sim.py -> textures/dial/oxide_thickness.png), lit by an HDRI
+#                   (scenes/FeatureBased/GuillocheWatch/thermal_oxide_sim.py -> scenes/FeatureBased/GuillocheWatch/oxide_thickness.png), lit by an HDRI
 #                   environment so the specular thin-film reflectance gradient (gold centre -> blue rim)
 #                   is visible.  Relief (guilloche bump), cut-aligned anisotropy, the watch case, and the
 #                   final dark hero lighting + turntable land in later milestones.  Generic -- no brand mark.
@@ -14,11 +14,11 @@ RISE ASCII SCENE 6
 # ============================================================================
 # BEFORE RENDERING: generate the dial mesh + oxide map (they are gitignored --
 # the mesh is 27 MB).  From the repo root:
-#     python3 tools/dial_mesh_gen.py --cell 1.35 --disp 0.46
-# -> writes textures/dial/dial.raw2 (the Cartesian guilloche dial) and
-#    textures/dial/oxide_cart.png (the radial heat-tint SHAPE map).
-# Render specific cameras with tools/render_watch_views.py, a turntable with
-# tools/render_watch_turntable.py.  Tune the heat-tint via the oxide_thk
+#     python3 scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py --cell 1.35 --disp 0.46
+# -> writes scenes/FeatureBased/GuillocheWatch/dial.raw2 (the Cartesian guilloche dial) and
+#    scenes/FeatureBased/GuillocheWatch/oxide_cart.png (the radial heat-tint SHAPE map).
+# Render specific cameras with scenes/FeatureBased/GuillocheWatch/render_watch_views.py, a turntable with
+# scenes/FeatureBased/GuillocheWatch/render_watch_turntable.py.  Tune the heat-tint via the oxide_thk
 # scale/bias (see the >>> HEAT-TINT TORCH CONTROL <<< block below).
 # ============================================================================
 
@@ -57,7 +57,7 @@ pathtracing_spectral_rasterizer
 	oidn_denoise			true
 	oidn_prefilter			accurate
 	radiance_map			pnt_env
-	radiance_scale			0.35
+	radiance_scale			0.18
 	radiance_background		FALSE
 }
 
@@ -76,75 +76,91 @@ film
 }
 
 ##################################################
-# Cameras -- multiple named viewpoints for diagnosing the dial lighting.
+# Cameras -- a product-shoot set for the watch on its polished surface.
 # The ACTIVE camera is the LAST one defined (RISE activates the most recently
-# added camera), so cam_hero is last -> a plain `render` / the GUI default is
-# the beauty shot.  Render a SPECIFIC angle from the CLI with:
-#     python3 tools/render_watch_views.py            (all cameras)
-#     python3 tools/render_watch_views.py --cam cam_face cam_graze
-# which emits one temp scene per camera (each to rendered/watch_<name>.png).
-# In the GUI, switch with the camera selector (Job::SetActiveCamera).
+# added camera), so cam_photo (the hero) is last -> a plain `render` / the GUI
+# default is the beauty shot.  Render EVERY angle from the CLI with:
+#     python3 scenes/FeatureBased/GuillocheWatch/render_watch_views.py                 (all, incl. thinlens)
+#     python3 scenes/FeatureBased/GuillocheWatch/render_watch_views.py --cam cam_macro cam_profile
+# one PNG per angle -> rendered/watch_<name>.png.  In the GUI switch with the
+# camera selector (Job::SetActiveCamera).  All non-top-down cameras use
+# up=(0,0,1) so the +Z tabletop reads as the ground and the watch reflects in it.
+# The watch sits crown-on-+X, 12-o'clock-on-+Y; azimuths ~300-333 deg put the
+# crown on the right and 12 toward the upper corner (the natural pose).
 #
-#   cam_face   straight down the +Z axis (normal incidence) -- the centre
-#              wash-out test: if the grid is GONE here it is near-normal specular.
-#   cam_top    steep ~65deg look-down, rakes the guilloche relief from above.
-#   cam_graze  low ~8deg grazing rake across the dial -- if the centre grid
-#              REAPPEARS here, the wash-out is angle-dependent (specular), not geometry.
-#   cam_side   pure profile: case band, domed crystal, crown, lugs silhouette.
-#   cam_hero   balanced 3/4 beauty (default active).
+#   cam_topdown  straight-down flat-lay: whole dial + strap laid out, 12 up.
+#   cam_high34   high 3/4 (~56deg), rakes the guilloche relief from above.
+#   cam_graze    low ~12deg grazing rake -- dramatic, catches the dome + sheen.
+#   cam_profile  pure side profile from 6 o'clock: case slab, domed crystal,
+#                crown nub, lugs, strap curving down to the table.
+#   cam_low34    low 3/4 beauty (~24deg), sharp (no DOF) -- crisp alt to cam_photo.
+#   cam_macro    100mm macro PUNCH-IN at f/8: closer + lower + toward the crown,
+#                shallow DOF so the strap melts to bokeh (thinlens).
+#   cam_photo    HERO: 100mm macro at f/16, balanced 3/4 (psi=315), active/last.
 ##################################################
 pinhole_camera
 {
-	name				cam_face
-	location			0 0 60
-	lookat				0 0 -1
+	name				cam_topdown
+	location			0.00 0.00 95.00
+	lookat				0 0 -2
 	up				0 1 0
-	fov				46.0
-}
-
-pinhole_camera
-{
-	name				cam_top
-	location			14 14 46
-	lookat				0 0 -1
-	up				0 1 0
-	fov				44.0
-}
-
-pinhole_camera
-{
-	name				cam_graze
-	location			10 -50 6
-	lookat				0 0 -1
-	up				0 0 1
 	fov				50.0
 }
 
 pinhole_camera
 {
-	name				cam_side
-	location			6 -60 6
+	name				cam_high34
+	location			27.26 -38.94 70.47
 	lookat				0 0 -2
 	up				0 0 1
-	fov				44.0
+	fov				42.0
 }
 
 pinhole_camera
 {
-	name				cam_hero
-	location			35 22 38
-	lookat				-1 -2 -1
-	up				0 1 0
+	name				cam_graze
+	location			54.20 -69.37 18.71
+	lookat				0 0 -1
+	up				0 0 1
+	fov				40.0
+}
+
+pinhole_camera
+{
+	name				cam_profile
+	location			3.29 -94.23 11.58
+	lookat				0 0 -2
+	up				0 0 1
 	fov				42.0
 }
 
+pinhole_camera
+{
+	name				cam_low34
+	location			66.48 -55.79 38.64
+	lookat				0 0 -2
+	up				0 0 1
+	fov				36.0
+}
+
+thinlens_camera
+{
+	name				cam_macro
+	sensor_size			36
+	focal_length			100
+	fstop				8
+	focus_distance		176.0
+	aperture_blades		9
+	location			140.15 -71.41 76.71
+	lookat				0 0 -2
+	up				0 0 1
+}
 
 ##################################################
-# cam_photo: the photographer's rig -- 100mm macro on a full-frame (36mm)
-# sensor at f/16 (deep DOF for the whole watch; RISE has no diffraction
-# penalty so a small aperture reads like a focus-stack).  9 aperture blades.
-# focus_distance + location are in SCENE UNITS; the dial sits at the focus
-# plane.  This is the active camera (last defined).
+# cam_photo: the photographer's hero rig -- 100mm macro on full-frame (36mm) at
+# f/16 (deep DOF; RISE has no diffraction penalty so small f reads like a focus
+# stack).  psi=315 deg, ~45deg elevation: 12 o'clock to NE, crown to the right.
+# location + focus_distance are SCENE UNITS.  Active camera (last defined).
 ##################################################
 thinlens_camera
 {
@@ -154,7 +170,7 @@ thinlens_camera
 	fstop				16
 	focus_distance		260.0
 	aperture_blades		9
-	location			160.80 89.13 182.85
+	location			130.00 -130.00 182.85
 	lookat				0 0 -1
 	up				0 0 1
 }
@@ -211,7 +227,7 @@ scalar_painter
 	file				colors/thinfilm/substrates/Steel.k
 }
 
-# Oxide-thickness SHAPE map: tools/dial_mesh_gen.py bakes only the NORMALISED
+# Oxide-thickness SHAPE map: scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py bakes only the NORMALISED
 # radial heat profile (0 at the centre, 1 at the rim; the Arrhenius/parabolic
 # torch-dwell curvature).  The ABSOLUTE nanometres -- i.e. the TORCH START/END --
 # are set below on the oxide_thk painter, so the whole heat-tint is tunable per
@@ -219,7 +235,7 @@ scalar_painter
 png_painter
 {
 	name				oxide_png
-	file				textures/dial/oxide_cart.png
+	file				scenes/FeatureBased/GuillocheWatch/oxide_cart.png
 	color_space			Rec709RGB_Linear
 }
 
@@ -238,7 +254,7 @@ png_painter
 #     straw -> magenta (short torch)  : bias 18  scale 12   (18..30 nm)
 #     magenta -> cyan  (long torch)   : bias 30  scale 12   (30..42 nm)
 # (The RADIAL falloff -- how fast it heats outward -- is baked into oxide_cart.png;
-#  re-bake with tools/dial_mesh_gen.py --oxide-falloff {quadratic|smooth|linear}.)
+#  re-bake with scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py --oxide-falloff {quadratic|smooth|linear}.)
 ##################################################
 scalar_painter
 {
@@ -271,6 +287,12 @@ ggx_material
 # Watch-head support painters + materials
 ##################################################
 # Blued-steel hand tint (deep polished blue), bright index/silver, crystal tint
+uniformcolor_painter
+{
+	name				pnt_strap_blue
+	color				0.04 0.08 0.22
+}
+
 uniformcolor_painter
 {
 	name				pnt_surf_f0
@@ -368,17 +390,17 @@ lambertian_luminaire_material
 {
 	name				soft_top_lum
 	exitance			pnt_white
-	scale				135.0
+	scale				45.0
 	material			none
 }
 
 clippedplane_geometry
 {
 	name				soft_top_geom
-	pta				-10.80 -145.15 58.02
-	ptb				-145.15 -10.80 58.02
-	ptc				-49.20 85.15 121.98
-	ptd				85.15 -49.20 121.98
+	pta				-88.62 -5.19 74.65
+	ptb				-42.56 77.90 74.65
+	ptc				14.40 46.33 105.35
+	ptd				-31.65 -36.76 105.35
 }
 
 standard_object
@@ -392,17 +414,17 @@ lambertian_luminaire_material
 {
 	name				soft_bot_lum
 	exitance			pnt_white
-	scale				40.0
+	scale				8.0
 	material			none
 }
 
 clippedplane_geometry
 {
 	name				soft_bot_geom
-	pta				79.50 114.83 -4.44
-	ptb				129.48 52.36 -4.44
-	ptc				120.50 45.17 54.44
-	ptd				70.52 107.64 54.44
+	pta				125.41 -52.15 2.43
+	ptb				90.71 -101.09 2.43
+	ptc				83.52 -96.00 47.57
+	ptd				118.22 -47.05 47.57
 }
 
 standard_object
@@ -415,7 +437,7 @@ standard_object
 ##################################################
 ##################################################
 # The dial: CARTESIAN guilloche relief baked into a circular triangle MESH
-# (tools/dial_mesh_gen.py -> textures/dial/dial.raw2).  Real engraved relief
+# (scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py -> scenes/FeatureBased/GuillocheWatch/dial.raw2).  Real engraved relief
 # with analytic normals + linear UV.  This REPLACES the old circulardisk +
 # displaced_geometry dial, whose POLAR UV (u=angle, v=radius) collapsed the
 # woven cells to zero world-size at the centre -> a smooth gold blob over the
@@ -426,7 +448,7 @@ standard_object
 rawmesh2_geometry
 {
 	name				dialmesh
-	file				textures/dial/dial.raw2
+	file				scenes/FeatureBased/GuillocheWatch/dial.raw2
 	double_sided			FALSE
 	face_normals			FALSE
 }
@@ -679,8 +701,8 @@ standard_object
 box_geometry
 {
 	name				luggeom
-	width				3.0
-	height				6.0
+	width				2.5
+	height				8.5
 	depth				7.0
 }
 
@@ -689,7 +711,7 @@ standard_object
 	name				lug_tl
 	geometry			luggeom
 	material			ti_polished
-	position			-7.0 25.1 -4.635
+	position			-13.88 23.85 -4.635
 }
 
 standard_object
@@ -697,7 +719,7 @@ standard_object
 	name				lug_tr
 	geometry			luggeom
 	material			ti_polished
-	position			7.0 25.1 -4.635
+	position			13.88 23.85 -4.635
 }
 
 standard_object
@@ -705,7 +727,7 @@ standard_object
 	name				lug_bl
 	geometry			luggeom
 	material			ti_polished
-	position			-7.0 -25.1 -4.635
+	position			-13.88 -23.85 -4.635
 }
 
 standard_object
@@ -713,7 +735,7 @@ standard_object
 	name				lug_br
 	geometry			luggeom
 	material			ti_polished
-	position			7.0 -25.1 -4.635
+	position			13.88 -23.85 -4.635
 }
 
 ##################################################
@@ -728,8 +750,8 @@ ggx_material
 	name				surface_dark
 	rd				pnt_black
 	rs				pnt_surf_f0
-	alphax				0.16
-	alphay				0.16
+	alphax				0.10
+	alphay				0.10
 	fresnel_mode			schlick_f0
 }
 
@@ -748,4 +770,44 @@ standard_object
 	name				surface
 	geometry			surfacegeom
 	material			surface_dark
+}
+
+##################################################
+# Blue suede leather strap (real MING 37.06 wears a leather strap).  A swept
+# curved band (scenes/FeatureBased/GuillocheWatch/strap_mesh_gen.py) from each lug, curving down to the
+# tabletop and laying flat (the b_hero pose).  Matte suede = high-roughness
+# schlick_f0 dielectric.  The -Y (6 o'clock) half is the same mesh rotated
+# 180deg about Z.
+##################################################
+ggx_material
+{
+	name				strap_leather
+	rd				pnt_strap_blue
+	rs				pnt_black
+	alphax				0.5
+	alphay				0.5
+	fresnel_mode			schlick_f0
+}
+
+rawmesh2_geometry
+{
+	name				strapgeom
+	file				scenes/FeatureBased/GuillocheWatch/strap.raw2
+	double_sided			TRUE
+	face_normals			FALSE
+}
+
+standard_object
+{
+	name				strap_12
+	geometry			strapgeom
+	material			strap_leather
+}
+
+standard_object
+{
+	name				strap_6
+	geometry			strapgeom
+	material			strap_leather
+	orientation			0 0 180
 }
