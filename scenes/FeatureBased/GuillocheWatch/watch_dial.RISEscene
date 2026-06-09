@@ -187,7 +187,7 @@ pinhole_camera
 ##################################################
 # ANIMATION (native timeline) -- a subtle IRIDESCENCE REVEAL on cam_high34:
 #   * 45deg TURNTABLE: the camera orbits +-22.5deg about the watch's +Z axis
-#     (keyframed `location` arc, smoothstep-eased via keyframe spacing). Lights
+#     (keyframed `azimuth` orbit angle, smoothstep-eased). Lights
 #     stay fixed, so the specular highlight sweeps the guilloche -> the TiO2/Ti
 #     thin-film colours shimmer (the whole point).
 #   * subtle L->R DOLLY: camera + look-at truck ~4 units laterally (parallax).
@@ -207,23 +207,23 @@ timeline
 {
 	element_type	camera
 	element			cam_high34
-	param			location
+	param			azimuth
 	interpolator	hermite
 
 	time		0.00
-	value		8.6448 -47.5548 70.4700
+	value		-22.5
 
 	time		0.25
-	value		14.7603 -45.5886 70.4700
+	value		-15.47
 
 	time		0.50
-	value		27.2600 -38.9400 70.4700
+	value		0.0
 
 	time		0.75
-	value		37.7847 -29.4703 70.4700
+	value		15.47
 
 	time		1.00
-	value		41.7251 -24.3969 70.4700
+	value		22.5
 }
 
 timeline

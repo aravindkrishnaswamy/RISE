@@ -47,8 +47,8 @@ A subtle **iridescence reveal** is authored directly in the scene as native
 `timeline` keyframes on `cam_high34` (no external script):
 
 - a **45° turntable** — the camera orbits ±22.5° about the watch's +Z axis
-  (keyframed `location` arc, smoothstep-eased), look-at re-centred so the dial
-  stays framed;
+  (keyframed `azimuth` orbit angle, smoothstep-eased), look-at re-centred so
+  the dial stays framed;
 - a **subtle left→right dolly** — camera + look-at truck ~4 units laterally.
 
 Lights stay fixed, so the specular highlight sweeps the guilloché and the
@@ -67,9 +67,11 @@ movie from the denoised frames with ffmpeg:
 ffmpeg -framerate 24 -i rendered/watch_dial_denoised%04d.png -vf format=yuv420p rendered/watch_anim.mp4
 ```
 
-Tune the move by editing the `timeline` keyframe values in the scene (`location`
-= orbit + dolly arc, `lookat` = dolly truck). `cam_high34` must stay the
-**active (last)** camera for `renderanimation` to drive it.
+Tune the move by editing the `timeline` keyframe values (`azimuth` = orbit angle
+about +Z, `lookat` = dolly truck). The camera accepts keyframeable orbit angles
+in **degrees**: `azimuth`/`phi` (spin about world-up) and `theta`/`elevation`
+(pitch about screen-right). `cam_high34` must stay the **active (last)** camera
+for `renderanimation` to drive it.
 
 ## Asset pipeline (regenerate)
 

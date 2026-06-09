@@ -67,6 +67,8 @@ static const unsigned int TARGET_ORIENTATION_ID = 2004;
 static const unsigned int EXPOSURE_ID = 2005;
 static const unsigned int WIDTH_ID = 2006;
 static const unsigned int HEIGHT_ID = 2007;
+static const unsigned int THETA_ID = 2008;   // target_orientation.x (elevation, about screen-right)
+static const unsigned int PHI_ID   = 2009;   // target_orientation.y (azimuth, about world-up)
 
 IKeyframeParameter* CameraCommon::KeyframeFromParameters( const String& name, const String& value )
 {
@@ -103,6 +105,12 @@ IKeyframeParameter* CameraCommon::KeyframeFromParameters( const String& name, co
 			v.y *= DEG_TO_RAD;
 			p = new Parameter<Vector2>( v, TARGET_ORIENTATION_ID );
 		}
+	} else if( name == "theta" || name == "elevation" ) {
+		// Elevation orbit angle about screen-right (target_orientation.x); deg -> rad.
+		p = new Parameter<Scalar>( value.toDouble() * DEG_TO_RAD, THETA_ID );
+	} else if( name == "phi" || name == "azimuth" ) {
+		// Azimuth orbit angle about world-up (target_orientation.y); deg -> rad.
+		p = new Parameter<Scalar>( value.toDouble() * DEG_TO_RAD, PHI_ID );
 	} else if( name == "exposure" ) {
 		p = new Parameter<Scalar>( value.toDouble(), EXPOSURE_ID );
 	} else if( name == "width" ) {
@@ -144,6 +152,16 @@ void CameraCommon::SetIntermediateValue( const IKeyframeParameter& val )
 	case TARGET_ORIENTATION_ID:
 		{
 			target_orientation = *(Vector2*)val.getValue();
+		}
+		break;
+	case THETA_ID:
+		{
+			target_orientation.x = *(Scalar*)val.getValue();
+		}
+		break;
+	case PHI_ID:
+		{
+			target_orientation.y = *(Scalar*)val.getValue();
 		}
 		break;
 	case EXPOSURE_ID:
