@@ -57,7 +57,7 @@ pathtracing_spectral_rasterizer
 	oidn_denoise			true
 	oidn_prefilter			accurate
 	radiance_map			pnt_env
-	radiance_scale			0.5
+	radiance_scale			0.75
 	radiance_background		FALSE
 }
 
@@ -362,7 +362,7 @@ lambertian_luminaire_material
 {
 	name				soft_top_lum
 	exitance			pnt_white
-	scale				60.0
+	scale				105.0
 	material			none
 }
 
@@ -386,7 +386,7 @@ lambertian_luminaire_material
 {
 	name				soft_bot_lum
 	exitance			pnt_white
-	scale				42.0
+	scale				52.0
 	material			none
 }
 
