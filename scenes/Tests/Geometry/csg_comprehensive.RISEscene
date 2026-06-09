@@ -287,7 +287,7 @@ torus_geometry
 ellipsoid_geometry
 {
 	name				geom_ellipsoid
-	radii				0.45 0.3 0.35
+	radii				0.225 0.15 0.175
 }
 
 ##################################################

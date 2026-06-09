@@ -104,7 +104,7 @@ lambertian_material
 ellipsoid_geometry
 {
 	name				ellipsoidgeom
-	radii				1.2 0.3 0.6
+	radii				0.6 0.15 0.3
 }
 
 box_geometry

@@ -339,7 +339,7 @@ standard_object
 ellipsoid_geometry
 {
 	name				vasegeom
-	radii				0.5 1.0 0.5
+	radii				0.25 0.5 0.25
 }
 
 standard_object

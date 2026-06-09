@@ -433,7 +433,7 @@ sphere_geometry
 ellipsoid_geometry
 {
 	name				amber_egg_geom
-	radii				0.65 1.0 0.65
+	radii				0.325 0.5 0.325
 }
 
 torus_geometry
@@ -446,7 +446,7 @@ torus_geometry
 ellipsoid_geometry
 {
 	name				emerald_lens_geom
-	radii				0.8 0.3 0.8
+	radii				0.4 0.15 0.4
 }
 
 cylinder_geometry

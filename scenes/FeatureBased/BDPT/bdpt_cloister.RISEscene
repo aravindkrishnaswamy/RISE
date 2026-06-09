@@ -361,7 +361,7 @@ sphere_geometry
 ellipsoid_geometry
 {
 	name				lensgeom
-	radii				0.38 0.18 0.38
+	radii				0.19 0.09 0.19
 }
 
 torus_geometry
@@ -553,8 +553,8 @@ FOR I -@DROPLET_COUNT @DROPLET_COUNT 1
 	DEFINE GZ $(0.70+0.16*cos(@I*0.9))
 	DEFINE GY $(3.15+0.20*sin(@I*0.8))
 	DEFINE GABS $(sqrt(@I*@I))
-	DEFINE GRX $(0.20+0.02*(@DROPLET_COUNT-@GABS))
-	DEFINE GRY $(0.40+0.04*cos(@I*0.7))
+	DEFINE GRX $(0.5*(0.20+0.02*(@DROPLET_COUNT-@GABS)))
+	DEFINE GRY $(0.5*(0.40+0.04*cos(@I*0.7)))
 	DEFINE GC_R $(0.82+0.12*sin(@I*0.8))
 	DEFINE GC_G $(0.58+0.18*cos(@I*0.9))
 	DEFINE GC_B $(0.78+0.16*sin(@I*0.5))

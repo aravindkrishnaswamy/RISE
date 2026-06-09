@@ -234,13 +234,13 @@ standard_object
 ellipsoid_geometry
 {
 	name				egg_outer_geom
-	radii				140 190 140
+	radii				70 95 70
 }
 
 ellipsoid_geometry
 {
 	name				egg_inner_geom
-	radii				112 158 112
+	radii				56 79 56
 }
 
 standard_object

@@ -229,13 +229,13 @@ static Point3 SphereTessParamToPos( Scalar r, Scalar u, Scalar v )
 	return Point3( -r * sP * cT, r * cP, r * sP * sT );
 }
 
-static Point3 EllipsoidTessParamToPos( const Vector3& diam, Scalar u, Scalar v )
+static Point3 EllipsoidTessParamToPos( const Vector3& radii, Scalar u, Scalar v )
 {
 	// EllipsoidGeometry::TessellateToMesh:
 	//   pos = (a*-sin(phi)*cos(theta), b*cos(phi), c*sin(phi)*sin(theta))
-	const Scalar a = diam.x * 0.5;
-	const Scalar b = diam.y * 0.5;
-	const Scalar c = diam.z * 0.5;
+	const Scalar a = radii.x;  // m_vRadius is the semi-axis
+	const Scalar b = radii.y;
+	const Scalar c = radii.z;
 	const Scalar phi   = v * PI;
 	const Scalar theta = u * TWO_PI;
 	const Scalar sP = std::sin( phi );
@@ -552,9 +552,9 @@ static void TestEllipsoidOne( const Vector3& diameters, const char* label )
 		const Point3 prand( rng.next01(), rng.next01(), rng.next01() );
 		g->UniformRandomPoint( &p, &n, &uv, prand );
 
-		const Scalar a = diameters.x * 0.5;
-		const Scalar b = diameters.y * 0.5;
-		const Scalar c = diameters.z * 0.5;
+		const Scalar a = diameters.x;  // radii ARE the semi-axes now
+		const Scalar b = diameters.y;
+		const Scalar c = diameters.z;
 		const Scalar implicit =
 			(p.x * p.x) / (a * a) +
 			(p.y * p.y) / (b * b) +

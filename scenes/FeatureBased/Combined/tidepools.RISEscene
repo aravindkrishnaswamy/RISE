@@ -313,7 +313,7 @@ standard_object
 ellipsoid_geometry
 {
 	name				watergeom
-	radii				2.5 0.08 2.5
+	radii				1.25 0.04 1.25
 }
 
 standard_object
@@ -328,19 +328,19 @@ standard_object
 ellipsoid_geometry
 {
 	name				pebble1geom
-	radii				0.2 0.1 0.15
+	radii				0.1 0.05 0.075
 }
 
 ellipsoid_geometry
 {
 	name				pebble2geom
-	radii				0.15 0.08 0.18
+	radii				0.075 0.04 0.09
 }
 
 ellipsoid_geometry
 {
 	name				pebble3geom
-	radii				0.25 0.12 0.2
+	radii				0.125 0.06 0.1
 }
 
 standard_object

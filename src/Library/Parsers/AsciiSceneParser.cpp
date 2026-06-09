@@ -4724,7 +4724,7 @@ namespace RISE
 						cd.description = "Implicit ellipsoid (per-axis radii).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "radii"; p.kind = ValueKind::DoubleVec3; p.description = "Per-axis radii"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "radii"; p.kind = ValueKind::DoubleVec3; p.description = "Per-axis radii (semi-axes, like sphere_geometry radius)"; p.defaultValueHint = "1 1 1"; }
 						return cd;
 					}();
 					return d;

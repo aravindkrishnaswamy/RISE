@@ -422,7 +422,7 @@ cylinder_geometry
 ellipsoid_geometry
 {
 	name				obj_ellipsoid
-	radii				0.80 0.28 0.55
+	radii				0.4 0.14 0.275
 }
 
 box_geometry

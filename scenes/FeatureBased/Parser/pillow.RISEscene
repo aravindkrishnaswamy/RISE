@@ -242,7 +242,7 @@ torus_geometry
 ellipsoid_geometry
 {
 	name				moongeom
-	radii				1.85 2.65 0.34
+	radii				0.925 1.325 0.17
 }
 
 box_geometry

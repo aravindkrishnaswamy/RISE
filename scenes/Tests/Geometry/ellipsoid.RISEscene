@@ -85,7 +85,7 @@ lambertian_material
 ellipsoid_geometry
 {
 	name				ellipsoidgeom
-	radii				0.15 0.25 0.15
+	radii				0.075 0.125 0.075
 }
 
 sphere_geometry

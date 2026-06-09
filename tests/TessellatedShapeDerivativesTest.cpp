@@ -451,12 +451,12 @@ int main()
 	}
 
 	{
-		// EllipsoidGeometry's m_vRadius stores diameters, so semi-axes
-		// are vRadius/2.  Bounding sphere radius = 0.5 * |vRadius|.
-		const Vector3 diam( 2.0, 3.0, 1.6 );
-		EllipsoidGeometry* g = new EllipsoidGeometry( diam );
-		const Scalar bboxR = 0.5 * std::sqrt( diam.x*diam.x + diam.y*diam.y + diam.z*diam.z );
-		const bool ok = RunShape( "Ellipsoid (diam=2.0x3.0x1.6)", g, bboxR );
+		// EllipsoidGeometry's m_vRadius stores the per-axis radii (semi-axes);
+		// the enclosing ray-shoot radius is |radii|.
+		const Vector3 radii( 2.0, 3.0, 1.6 );
+		EllipsoidGeometry* g = new EllipsoidGeometry( radii );
+		const Scalar bboxR = std::sqrt( radii.x*radii.x + radii.y*radii.y + radii.z*radii.z );
+		const bool ok = RunShape( "Ellipsoid (radii=2.0x3.0x1.6)", g, bboxR );
 		allPass &= ok; if( !ok ) ++failCount;
 		g->release();
 	}
