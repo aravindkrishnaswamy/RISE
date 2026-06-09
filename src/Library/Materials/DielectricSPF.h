@@ -44,6 +44,18 @@ namespace RISE
 			const IScalarPainter*		pScat;			// Scattering function (Phong cone width or HG asymmetry)
 			const bool					bHG;			// Use Henyey-Greenstein phase function scattering
 
+			// Optional anti-reflective thin-film COATING (data-based).  When
+			// arThickness > 0 the bare air<->medium Fresnel reflectance is
+			// replaced by the single-film Airy reflectance of an (ambient /
+			// AR-film / substrate) stack via ThinFilm::ReflectanceConductor:
+			// e.g. a MgF2 (n~1.38) quarter-wave (~100 nm) coating drops a
+			// sapphire crystal's 7.7%/surface glare to ~0.5% with the
+			// characteristic purple bloom.  Default 0 => NO coating =>
+			// bit-identical bare-Fresnel dielectric (back-compat).
+			const Scalar				arN;			// AR film real index (0 = none)
+			const Scalar				arK;			// AR film extinction (~0)
+			const Scalar				arThickness;	// AR film thickness nm (0 = none)
+
 			Scalar GenerateScatteredRay(
 				ScatteredRay& dielectric,									///< [out] Scattered dielectric ray
 				ScatteredRay& fresnel,										///< [out] Scattered fresnel or reflected ray
@@ -54,6 +66,7 @@ namespace RISE
 				const Point2& random,										///< [in] Two canonical random numbers
 				const Scalar scatfunc,
 				const Scalar rIndex,
+				const Scalar nm,
 				const IORStack& ior_stack								///< [in/out] Index of refraction stack
 				) const;
 
@@ -65,7 +78,8 @@ namespace RISE
 				const int oneofthree,
 				const Scalar newIOR,
 				const Scalar scattering,
-				const Scalar cosine
+				const Scalar cosine,
+				const Scalar nm
 				) const;
 
 		public:
@@ -73,7 +87,8 @@ namespace RISE
 				const IScalarPainter& tau_,
 				const IScalarPainter& ri,
 				const IScalarPainter& s,
-				const bool hg
+				const bool hg,
+				Scalar arN_ = 0, Scalar arK_ = 0, Scalar arThickness_ = 0
 				);
 
 			//! Read-back + rebind for the interactive editor.

@@ -1506,6 +1506,61 @@ namespace RISE
 				{ cd.parameters.emplace_back(); ParameterDescriptor& p = cd.parameters.back(); p.name = "wrap_t"; p.kind = ValueKind::Enum; p.enumValues = {"clamp","repeat","mirrored_repeat"}; p.description = "Address-wrap mode for the V axis (T in glTF terminology); see wrap_s for semantics."; p.defaultValueHint = "clamp"; }
 			}
 
+			// Shared helper: parse a filter_type chunk parameter into RISE's
+			// char encoding for RasterImageAccessorFromChar (0 = nearest-
+			// neighbour, 1 = bilinear, 2 = Catmull-Rom bicubic, 3 = uniform
+			// B-spline bicubic) -- the four filter modes the runtime actually
+			// implements.  The user-facing names are the lowercase forms the
+			// matching ChunkDescriptor advertises; the PascalCase forms (NNB /
+			// Bilinear / CatmullRom / UniformBSpline) are kept as backward-
+			// compatible aliases because they were the ONLY strings the pre-
+			// reconciliation Finalize accepted, so every pre-existing scene
+			// that successfully set filter_type uses them.
+			//
+			// Returns 1 (bilinear) when the parameter is absent so scenes that
+			// don't specify a filter render byte-identically to the historical
+			// default.  Logs and returns false on an unrecognised string so
+			// authors see the typo instead of a silent fallback.  Used by all 5
+			// texture-painter chunks (png / jpg / hdr / exr / tiff) so the
+			// surface stays consistent and descriptor/Finalize cannot drift.
+			static inline bool ParseFilterTypeParam(
+				const ParseStateBag& bag,
+				char&                outFilter )
+			{
+				outFilter = 1;	// bilinear (historical default)
+				if( !bag.Has( "filter_type" ) ) return true;
+				std::string ft = bag.GetString( "filter_type" );
+				if(      ft == "nearest"       || ft == "NNB" )            outFilter = 0;
+				else if( ft == "bilinear"      || ft == "Bilinear" )       outFilter = 1;
+				else if( ft == "catmull-rom"   || ft == "CatmullRom" )     outFilter = 2;
+				else if( ft == "cubic-bspline" || ft == "UniformBSpline" ) outFilter = 3;
+				else {
+					GlobalLog()->PrintEx( eLog_Error,
+						"ChunkParser:: Unknown filter type `%s` "
+						"(expected one of: nearest, bilinear, catmull-rom, cubic-bspline)",
+						ft.c_str() );
+					return false;
+				}
+				return true;
+			}
+
+			// Adds the filter_type parameter descriptor to a ChunkDescriptor so
+			// every image-painter chunk advertises the same names + accepted
+			// values.  Only the four filter modes RasterImageAccessorFromChar
+			// actually implements are advertised -- the earlier {box, gaussian}
+			// entries had no backing accessor and hard-failed in Finalize,
+			// making them un-authorable.  Mirror of AddWrapModeParams.
+			static inline void AddFilterTypeParam( ChunkDescriptor& cd )
+			{
+				cd.parameters.emplace_back();
+				ParameterDescriptor& p = cd.parameters.back();
+				p.name = "filter_type";
+				p.kind = ValueKind::Enum;
+				p.enumValues = {"nearest","bilinear","catmull-rom","cubic-bspline"};
+				p.description = "Texture filter";
+				p.defaultValueHint = "bilinear";
+			}
+
 			struct PngPainterAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -1532,17 +1587,7 @@ namespace RISE
 					}
 
 					char filter_type = 1;
-					if( bag.Has( "filter_type" ) ) {
-						std::string ft = bag.GetString( "filter_type" );
-						if(      ft == "NNB" )            filter_type = 0;
-						else if( ft == "Bilinear" )       filter_type = 1;
-						else if( ft == "CatmullRom" )     filter_type = 2;
-						else if( ft == "UniformBSpline" ) filter_type = 3;
-						else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
-							return false;
-						}
-					}
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
 
 					char wrap_s = 0, wrap_t = 0;
 					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
@@ -1560,7 +1605,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "PNG file path"; }
 						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "sRGB"; }
-						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						AddFilterTypeParam( cd );
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint (8-bit in-core)"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale multipliers"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B additive shift"; p.defaultValueHint = "0 0 0"; }
@@ -1597,17 +1642,7 @@ namespace RISE
 					}
 
 					char filter_type = 1;
-					if( bag.Has( "filter_type" ) ) {
-						std::string ft = bag.GetString( "filter_type" );
-						if(      ft == "NNB" )            filter_type = 0;
-						else if( ft == "Bilinear" )       filter_type = 1;
-						else if( ft == "CatmullRom" )     filter_type = 2;
-						else if( ft == "UniformBSpline" ) filter_type = 3;
-						else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
-							return false;
-						}
-					}
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
 
 					char wrap_s = 0, wrap_t = 0;
 					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
@@ -1625,7 +1660,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "JPEG file path"; }
 						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "sRGB"; }
-						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						AddFilterTypeParam( cd );
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint (8-bit in-core)"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale multipliers"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B additive shift"; p.defaultValueHint = "0 0 0"; }
@@ -1649,17 +1684,7 @@ namespace RISE
 					bag.GetVec3( "shift", shift );
 
 					char filter_type = 1;
-					if( bag.Has( "filter_type" ) ) {
-						std::string ft = bag.GetString( "filter_type" );
-						if(      ft == "NNB" )            filter_type = 0;
-						else if( ft == "Bilinear" )       filter_type = 1;
-						else if( ft == "CatmullRom" )     filter_type = 2;
-						else if( ft == "UniformBSpline" ) filter_type = 3;
-						else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
-							return false;
-						}
-					}
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
 
 					char wrap_s = 0, wrap_t = 0;
 					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
@@ -1676,7 +1701,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "HDR file path"; }
-						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						AddFilterTypeParam( cd );
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
@@ -1713,17 +1738,7 @@ namespace RISE
 					}
 
 					char filter_type = 1;
-					if( bag.Has( "filter_type" ) ) {
-						std::string ft = bag.GetString( "filter_type" );
-						if(      ft == "NNB" )            filter_type = 0;
-						else if( ft == "Bilinear" )       filter_type = 1;
-						else if( ft == "CatmullRom" )     filter_type = 2;
-						else if( ft == "UniformBSpline" ) filter_type = 3;
-						else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
-							return false;
-						}
-					}
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
 
 					char wrap_s = 0, wrap_t = 0;
 					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
@@ -1741,7 +1756,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "EXR file path"; }
 						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "Rec709RGB_Linear"; }
-						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						AddFilterTypeParam( cd );
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
@@ -1778,17 +1793,7 @@ namespace RISE
 					}
 
 					char filter_type = 1;
-					if( bag.Has( "filter_type" ) ) {
-						std::string ft = bag.GetString( "filter_type" );
-						if(      ft == "NNB" )            filter_type = 0;
-						else if( ft == "Bilinear" )       filter_type = 1;
-						else if( ft == "CatmullRom" )     filter_type = 2;
-						else if( ft == "UniformBSpline" ) filter_type = 3;
-						else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
-							return false;
-						}
-					}
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
 
 					char wrap_s = 0, wrap_t = 0;
 					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
@@ -1806,7 +1811,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "TIFF file path"; }
 						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "sRGB"; }
-						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						AddFilterTypeParam( cd );
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
@@ -3148,7 +3153,10 @@ namespace RISE
 					std::string scat = bag.GetString( "scattering", "10000" );
 					bool hg          = bag.GetBool(   "henyey-greenstein", false );
 
-					return pJob.AddDielectricMaterial( name.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg );
+					const double ar_ior   = bag.GetDouble( "ar_film_ior",        0.0 );
+					const double ar_thick = bag.GetDouble( "ar_film_thickness",  0.0 );
+					const double ar_ext   = bag.GetDouble( "ar_film_extinction", 0.0 );
+					return pJob.AddDielectricMaterial( name.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg, ar_ior, ar_ext, ar_thick );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3161,6 +3169,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "10000"; }
+						{ auto& p = P(); p.name = "ar_film_ior";        p.kind = ValueKind::Double; p.description = "Anti-reflective coating film index (e.g. MgF2 1.38). 0 = no coating (bare Fresnel)."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "ar_film_thickness";  p.kind = ValueKind::Double; p.description = "AR coating physical thickness, nm (e.g. MgF2 quarter-wave ~99.6 at 550nm). 0 = no coating."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "ar_film_extinction"; p.kind = ValueKind::Double; p.description = "AR coating film extinction k (~0 for a transparent AR dielectric)."; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();

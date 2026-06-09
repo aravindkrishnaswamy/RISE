@@ -16,6 +16,7 @@
 #include "../Utilities/GeometricUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Optics.h"
+#include "../Utilities/ThinFilm.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -24,12 +25,14 @@ DielectricSPF::DielectricSPF(
 	const IScalarPainter& tau_,
 	const IScalarPainter& ri,
 	const IScalarPainter& s,
-	const bool hg
+	const bool hg,
+	Scalar arN_, Scalar arK_, Scalar arThickness_
 	) :
   pTau( &tau_ ),
   pRIndex( &ri ),
   pScat( &s ),
-  bHG( hg )
+  bHG( hg ),
+  arN( arN_ ), arK( arK_ ), arThickness( arThickness_ )
 {
 	pTau->addref();
 	pRIndex->addref();
@@ -75,6 +78,7 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	const Point2& random,										///< [in] Two canonical random numbers
 	const Scalar scatfunc,
 	const Scalar rIndex,
+	const Scalar nm,
 	const IORStack& ior_stack								///< [in/out] Index of refraction stack
 	) const
 {
@@ -103,7 +107,13 @@ Scalar DielectricSPF::GenerateScatteredRay(
 			dielectric.ior_stack = new IORStack( ior_stack );
 			dielectric.ior_stack->pop();
 			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, -ri.onb.w(), rIndex, exitIOR );
+			if( arThickness > 0.0 ) {
+				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
+				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;
+				ref = ThinFilm::ReflectanceConductor( cosI, lam, rIndex, 0.0, arN, arK, arThickness, exitIOR, 0.0 );
+			} else {
+				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, -ri.onb.w(), rIndex, exitIOR );
+			}
 		} else {
 			// Total internal reflection
 			ref = 1.0;
@@ -112,7 +122,13 @@ Scalar DielectricSPF::GenerateScatteredRay(
 	else
 	{
 		if( Optics::CalculateRefractedRay( ri.onb.w(), ior_stack.top(), rIndex, refracted ) ) {
-			ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), ior_stack.top(), rIndex );
+			if( arThickness > 0.0 ) {
+				const Scalar cosI = fabs( Vector3Ops::Dot( ri.onb.w(), ri.ray.Dir() ) );
+				const Scalar lam = ( nm > 0.0 ) ? nm : 550.0;
+				ref = ThinFilm::ReflectanceConductor( cosI, lam, ior_stack.top(), 0.0, arN, arK, arThickness, rIndex, 0.0 );
+			} else {
+				ref = Optics::CalculateDielectricReflectance( ri.ray.Dir(), refracted, ri.onb.w(), ior_stack.top(), rIndex );
+			}
 			dielectric.ior_stack = new IORStack( ior_stack );
 			dielectric.ior_stack->push( rIndex );
 			GlobalLog()->PrintNew( dielectric.ior_stack, __FILE__, __LINE__, "ior stack" );
@@ -178,7 +194,8 @@ void DielectricSPF::DoSingleRGBComponent(
 	 const int oneofthree,
 	 const Scalar newIOR,
 	 const Scalar scattering,
-	 const Scalar cosine
+	 const Scalar cosine,
+	  const Scalar nm
 	 ) const
 {
 	ScatteredRay dielectric;
@@ -214,7 +231,7 @@ void DielectricSPF::DoSingleRGBComponent(
 	}
 
 	bool bDielectric, bFresnel;
-	Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, random, scattering, newIOR, ior_stack );
+	Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, random, scattering, newIOR, nm, ior_stack );
 
 	if( bDielectric && ref < 1.0 ) {
 		if( oneofthree ) {
@@ -257,16 +274,20 @@ void DielectricSPF::Scatter(
 	const ScalarTriple scatVals = pScat->GetValuesAt( ri );
 	const bool disperse =
 		pRIndex->HasPerChannelVariation() ||
-		pScat->HasPerChannelVariation();
+		pScat->HasPerChannelVariation() ||
+		( arThickness > 0.0 );
 
 	if( !disperse ) {
 		// No dispersion
-		DoSingleRGBComponent( ri, Point2(sampler.Get1D(),sampler.Get1D()), scattered, ior_stack, false, iorVals.v[0], scatVals.v[0], cosine );
+		DoSingleRGBComponent( ri, Point2(sampler.Get1D(),sampler.Get1D()), scattered, ior_stack, false, iorVals.v[0], scatVals.v[0], cosine, -1.0 );
 	} else {
 		// We have dispersion, so we must process each component seperately
+		// Representative per-channel wavelengths for the AR-coating reflectance
+		// on the RGB preview path (sRGB primary dominant wavelengths, nm).
+		static const Scalar kARChannelNM[3] = { 611.0, 549.0, 465.0 };
 		Point2 ptrand( sampler.Get1D(), sampler.Get1D() );
 		for( int i=0; i<3; i++ ) {
-			DoSingleRGBComponent( ri, ptrand, scattered, ior_stack, i+1, iorVals.v[i], scatVals.v[i], cosine );
+			DoSingleRGBComponent( ri, ptrand, scattered, ior_stack, i+1, iorVals.v[i], scatVals.v[i], cosine, kARChannelNM[i] );
 		}
 	}
 }
@@ -297,7 +318,7 @@ void DielectricSPF::ScatterNM(
 	}
 
 	bool bDielectric, bFresnel;
-	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2(sampler.Get1D(),sampler.Get1D()), pScat->GetValueAtNM( ri, nm ), pRIndex->GetValueAtNM( ri, nm ), ior_stack );
+	const Scalar ref = GenerateScatteredRay( dielectric, fresnel, bDielectric, bFresnel, bFromInside, ri, Point2(sampler.Get1D(),sampler.Get1D()), pScat->GetValueAtNM( ri, nm ), pRIndex->GetValueAtNM( ri, nm ), nm, ior_stack );
 	
 	if( bDielectric && ref < 1.0 ) {
 		dielectric.krayNM = dielectric.krayNM * (1.0-ref);

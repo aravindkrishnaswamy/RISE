@@ -1019,7 +1019,10 @@ namespace RISE
 									const char* tau,				///< [in] Transmittance painter
 									const char* rIndex,				///< [in] Index of refraction
 									const char* scat,				///< [in] Scattering function (either Phong or HG)
-									const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
+									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+									const Scalar arN,
+									const Scalar arK,
+									const Scalar arThickness
 									);
 
 		//! Creates a SubSurface Scattering material

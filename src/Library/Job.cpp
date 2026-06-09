@@ -2779,7 +2779,10 @@ bool Job::AddDielectricMaterial(
 							const char* tau,				///< [in] Transmittance painter
 							const char* rIndex,				///< [in] Index of refraction
 							const char* scat,				///< [in] Scattering function (either Phong or HG)
-							const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
+							const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+							const Scalar arN,
+							const Scalar arK,
+							const Scalar arThickness
 							)
 {
 	// tau/ior/scattering are all physical scalars carried by
@@ -2800,7 +2803,7 @@ bool Job::AddDielectricMaterial(
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateDielectricMaterial( &pMaterial, *pTau, *pIor, *pScat, hg );
+	RISE_API_CreateDielectricMaterial( &pMaterial, *pTau, *pIor, *pScat, hg, arN, arK, arThickness );
 
 	pMatManager->AddItem( pMaterial, name );
 

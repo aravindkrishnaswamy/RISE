@@ -519,7 +519,10 @@ namespace RISE
 								const IScalarPainter& tau,		///< [in] Transmittance (per-channel + spectral)
 								const IScalarPainter& rIndex,	///< [in] Index of refraction
 								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG)
-								const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
+								const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+								const Scalar arN = 0,			///< [in] AR coating film real index (0 = no coating)
+								const Scalar arK = 0,			///< [in] AR coating film extinction (~0)
+								const Scalar arThickness = 0	///< [in] AR coating thickness, nm (0 = no coating)
 								);
 
 	//! Creates a SubSurface Scattering material.  ior / absorption /
