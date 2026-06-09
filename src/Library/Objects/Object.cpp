@@ -110,6 +110,22 @@ bool Object::AssignMaterial( const IMaterial& pMat )
 	return false;
 }
 
+bool Object::AssignGeometry( const IGeometry& pGeom )
+{
+	// Runtime geometry swap (interactive editor via SceneEdit::
+	// SetObjectGeometry).  Mirrors AssignMaterial: release the prior
+	// reference and retain the new one.  The bounding box is derived
+	// on demand from pGeometry (getBoundingBox), so the caller
+	// (SceneEditor::RunObjectInvariantChain) invalidates the top-level
+	// acceleration afterward and the next render rebuilds the TLAS.
+	safe_release( pGeometry );
+
+	pGeometry = &pGeom;
+	pGeometry->addref();
+
+	return true;
+}
+
 bool Object::AssignModifier( const IRayIntersectionModifier& pMod )
 {
 	safe_release( pModifier );

@@ -3227,6 +3227,13 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 			edit.op = SceneEdit::SetObjectMaterial;
 			edit.propertyValue = valueStr;
 		}
+		else if( name == String( "geometry" ) ) {
+			// Runtime geometry swap (mirrors material).  The cancel-and-
+			// park below covers it: AssignGeometry safe_releases the old
+			// geometry pointer that render workers read per-intersection.
+			edit.op = SceneEdit::SetObjectGeometry;
+			edit.propertyValue = valueStr;
+		}
 		else if( name == String( "shader" ) ) {
 			edit.op = SceneEdit::SetObjectShader;
 			edit.propertyValue = valueStr;

@@ -139,6 +139,7 @@ namespace RISE
 			SetObjectMaterial,      ///< propertyValue = material name; prev captured for undo
 			SetObjectShader,        ///< propertyValue = shader name
 			SetObjectShadowFlags,   ///< s as int: bit0=castsShadows, bit1=receivesShadows
+			SetObjectGeometry,      ///< propertyValue = geometry name; prev captured for undo (runtime geometry swap)
 			//! Swap (or clear) an object's interior participating medium
 			//! by name.  Non-empty propertyValue is a medium name that
 			//! must resolve through IJob::GetMedium; empty propertyValue
@@ -342,7 +343,26 @@ namespace RISE
 			    || op == SetObjectMaterial
 			    || op == SetObjectShader
 			    || op == SetObjectShadowFlags
+			    || op == SetObjectGeometry
 			    || op == SetObjectInteriorMedium;
+		}
+
+		//! Returns true if this edit op changes the object's bounding
+		//! box and therefore needs a top-level-acceleration (TLAS)
+		//! rebuild on the next render.  All transform ops qualify; so
+		//! does SetObjectGeometry (a runtime geometry swap changes the
+		//! object's extents).  Property-only ops (material / shader /
+		//! shadow flags / interior medium) leave the bbox unchanged.
+		static bool OpNeedsSpatialRebuild( Op op )
+		{
+			return op == TranslateObject
+			    || op == RotateObjectArb
+			    || op == SetObjectPosition
+			    || op == SetObjectOrientation
+			    || op == SetObjectScale
+			    || op == SetObjectStretch
+			    || op == ScaleObjectFromAnchor
+			    || op == SetObjectGeometry;
 		}
 
 		//! Returns true if this edit op mutates the camera.

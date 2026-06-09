@@ -11,14 +11,17 @@
 //    GetShader, GetFinalTransformMatrix, DoesCastShadows,
 //    DoesReceiveShadows).  Write-back routes through SceneEdit ops
 //    (SetObjectPosition / Orientation / Stretch / Scale /
-//    SetObjectMaterial / SetObjectShader / SetObjectShadowFlags),
+//    SetObjectMaterial / SetObjectShader / SetObjectGeometry /
+//    SetObjectShadowFlags),
 //    all going through SceneEditor::Apply for undo/redo.
 //
-//    A small subset of construction-time-only chunk params (geometry,
-//    modifier, quaternion, matrix, interior_medium, radiance_*) are
-//    surfaced read-only — the panel still lists them for at-a-glance
-//    inspection but doesn't accept edits.  Phase 5 will add runtime
-//    setters for those that have meaningful runtime mutation paths.
+//    Material, shader, interior_medium, and geometry are live-
+//    editable references (a geometry swap rebuilds the top-level
+//    acceleration on the next render — see
+//    SceneEdit::OpNeedsSpatialRebuild).  The remaining construction-
+//    time-only chunk params (modifier, quaternion, matrix,
+//    radiance_*) are surfaced read-only — the panel lists them for
+//    at-a-glance inspection but doesn't accept edits.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -165,9 +168,55 @@ String FindMediumName( const IJob* job, const IMedium* target )
 	return cb.found;
 }
 
+// Collect geometry presets via IJob::EnumerateGeometryNames for the
+// `geometry` reference dropdown (runtime geometry swap).  No synthetic
+// "(none)" entry — every object requires a geometry binding.
+std::vector<ParameterPreset> CollectGeometryPresets( const IJob* job )
+{
+	std::vector<ParameterPreset> out;
+	if( !job ) return out;
+	struct Cb : public IEnumCallback<const char*> {
+		std::vector<ParameterPreset>* out;
+		bool operator()( const char* const& name ) override {
+			if( name ) {
+				ParameterPreset p;
+				p.label = std::string( name );
+				p.value = std::string( name );
+				out->push_back( p );
+			}
+			return true;
+		}
+	};
+	Cb cb;
+	cb.out = &out;
+	job->EnumerateGeometryNames( cb );
+	return out;
+}
+
+// Reverse-lookup a geometry pointer to its registered name (mirror of
+// FindMediumName; runtime geometry swap).
+String FindGeometryName( const IJob* job, const IGeometry* target )
+{
+	if( !job || !target ) return String();
+	struct Cb : public IEnumCallback<const char*> {
+		const IJob*      job;
+		const IGeometry* target;
+		String           found;
+		bool operator()( const char* const& name ) override {
+			if( job->GetGeometry( name ) == target ) { found = String( name ); return false; }
+			return true;
+		}
+	};
+	Cb cb;
+	cb.job    = job;
+	cb.target = target;
+	job->EnumerateGeometryNames( cb );
+	return cb.found;
+}
+
 // Read a descriptor parameter's current value as a parser-formatted
 // string.  Returns empty for params we don't yet have a runtime
-// reader for (geometry name, modifier name, quaternion / matrix
+// reader for (modifier name, quaternion / matrix
 // decomposition, radiance_*) — the panel surfaces those read-only
 // with the descriptor's default-hint.  `interior_medium` reads back
 // through the optional IJob* (reverse-lookup) when provided.
@@ -200,6 +249,11 @@ String ReadObjectParam( const String& paramName, const IObject& obj,
 			static_cast<double>( ly ),
 			static_cast<double>( lz ) );
 		return String( buf );
+	}
+	if( paramName == String( "geometry" ) ) {
+		const IGeometry* geom = obj.GetGeometry();
+		const String found = FindGeometryName( job, geom );
+		return found.size() > 1 ? found : String();
 	}
 	if( paramName == String( "material" ) ) {
 		const IMaterial* mat = obj.GetMaterial();
@@ -245,6 +299,7 @@ bool IsRuntimeEditable( const std::string& paramName )
 	if( paramName == "casts_shadows" )    return true;
 	if( paramName == "receives_shadows" ) return true;
 	if( paramName == "interior_medium" )  return true;
+	if( paramName == "geometry" )         return true;
 	return false;
 }
 
@@ -288,6 +343,7 @@ std::vector<CameraProperty> ObjectIntrospection::Inspect( const String& name, co
 		if( p.name == "material" )            cp.presets = CollectManagerPresets( materials );
 		else if( p.name == "shader" )         cp.presets = CollectManagerPresets( shaders );
 		else if( p.name == "interior_medium" ) cp.presets = CollectMediumPresets( job );
+		else if( p.name == "geometry" )       cp.presets = CollectGeometryPresets( job );
 		else cp.presets = p.presets;
 
 		const String currentValue = ReadObjectParam( cp.name, obj, materials, shaders, job );
@@ -299,6 +355,7 @@ std::vector<CameraProperty> ObjectIntrospection::Inspect( const String& name, co
 			if( p.name == "material" && !materials ) cp.editable = false;
 			if( p.name == "shader"   && !shaders   ) cp.editable = false;
 			if( p.name == "interior_medium" && !job ) cp.editable = false;
+			if( p.name == "geometry" && !job ) cp.editable = false;
 		} else {
 			cp.value    = currentValue.size() > 1
 				? currentValue

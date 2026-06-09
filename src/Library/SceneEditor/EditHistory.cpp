@@ -102,6 +102,7 @@ namespace
 		case SceneEdit::SetObjectStretch:       return "Set Stretch";
 		case SceneEdit::ScaleObjectFromAnchor:  return "Scale";
 		case SceneEdit::SetObjectMaterial:      return "Set Material";
+		case SceneEdit::SetObjectGeometry:      return "Set Geometry";
 		case SceneEdit::SetObjectShader:        return "Set Shader";
 		case SceneEdit::SetObjectShadowFlags:   return "Set Shadow Flags";
 		case SceneEdit::SetObjectInteriorMedium:return "Set Interior Medium";

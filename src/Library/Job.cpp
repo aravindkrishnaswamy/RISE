@@ -5463,6 +5463,18 @@ void Job::EnumerateMediumNames( IEnumCallback<const char*>& cb ) const
 	}
 }
 
+const IGeometry* Job::GetGeometry( const char* name ) const
+{
+	if( !name || !pGeomManager ) return 0;
+	return pGeomManager->GetItem( name );
+}
+
+void Job::EnumerateGeometryNames( IEnumCallback<const char*>& cb ) const
+{
+	if( !pGeomManager ) return;
+	pGeomManager->EnumerateItemNames( cb );
+}
+
 bool Job::IsMaterialComposed( const char* name ) const
 {
 	if( !name ) return false;

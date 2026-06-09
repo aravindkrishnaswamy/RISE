@@ -1611,6 +1611,16 @@ namespace RISE
 			IEnumCallback<const char*>& cb
 			) const;
 
+		//! Return a registered geometry by name; see IJob.h.
+		const IGeometry* GetGeometry(
+			const char* name
+			) const;
+
+		//! Enumerate registered geometry names; see IJob.h.
+		void EnumerateGeometryNames(
+			IEnumCallback<const char*>& cb
+			) const;
+
 		//! True if the named material was registered via a composing
 		//! factory; see IJob.h.
 		bool IsMaterialComposed(

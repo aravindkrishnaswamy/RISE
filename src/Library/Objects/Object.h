@@ -70,6 +70,7 @@ namespace RISE
 			virtual IObjectPriv* CloneGeometric() override;
 
 			virtual bool AssignMaterial( const IMaterial& pMat ) override;
+			virtual bool AssignGeometry( const IGeometry& pGeom ) override;
 			virtual bool AssignModifier( const IRayIntersectionModifier& pMod ) override;
 			virtual bool AssignShader( const IShader& pShader ) override;
 			virtual bool AssignRadianceMap( const IRadianceMap& pRadianceMap ) override;

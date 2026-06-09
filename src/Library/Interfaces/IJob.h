@@ -47,6 +47,7 @@ namespace RISE
 	// Forward declaration so `GetMedium` can return a pointer without
 	// pulling IMedium.h's full dependency chain into this header.
 	class IMedium;
+	class IGeometry;
 
 	//! One entry in a parallel-decode batch passed to
 	//! IJob::AddTexturePaintersBatch.  Either filePath xor (bytes,numBytes)
@@ -1515,6 +1516,22 @@ namespace RISE
 		//! preset dropdown.  Iteration order is unspecified.
 		virtual void EnumerateMediumNames(
 			IEnumCallback<const char*>& cb							///< [in] Functor called once per registered medium name
+			) const = 0;
+
+		//! Returns the registered IGeometry with the given name, or null
+		//! if no geometry with that name is registered.  Used by the
+		//! interactive editor to validate `geometry` edits (runtime
+		//! geometry swap) and to recover the prior geometry's name for
+		//! undo via reverse-lookup against `IObject::GetGeometry()`.
+		virtual const IGeometry* GetGeometry(
+			const char* name										///< [in] Name of the requested geometry
+			) const = 0;
+
+		//! Enumerates registered geometry names.  Used by the interactive
+		//! editor's properties panel to populate the `geometry` preset
+		//! dropdown (runtime geometry swap).  Iteration order is unspecified.
+		virtual void EnumerateGeometryNames(
+			IEnumCallback<const char*>& cb							///< [in] Functor called once per registered geometry name
 			) const = 0;
 
 		// `IsMaterialComposed` lives in the appended-default-impl

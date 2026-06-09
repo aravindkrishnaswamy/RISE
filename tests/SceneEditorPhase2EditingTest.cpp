@@ -29,6 +29,7 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Interfaces/ICamera.h"
 #include "../src/Library/Interfaces/IObject.h"
+#include "../src/Library/Interfaces/IGeometry.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/ILight.h"
 #include "../src/Library/Interfaces/ILightPriv.h"
@@ -345,6 +346,113 @@ static void TestLazyRasterizerNoShader()
 }
 
 //////////////////////////////////////////////////////////////////////
+//
+// Test 6: SetProperty(geometry) swaps the object's geometry at runtime
+//   and rebuilds its bounding box (IObjectPriv::AssignGeometry +
+//   SceneEdit::SetObjectGeometry + OpNeedsSpatialRebuild + undo/redo).
+//
+//////////////////////////////////////////////////////////////////////
+
+static void TestObjectGeometrySwap()
+{
+	std::cout << "Test 6: SetProperty(geometry) swaps geometry + rebuilds bbox" << std::endl;
+
+	Job* pJob = MakeJobAndSeed();
+	pJob->AddSphereGeometry( "small_geom", 1.0 );
+	pJob->AddSphereGeometry( "big_geom",   3.0 );
+	const double zero3[3] = { 0, 0, 0 };
+	const double one3[3]  = { 1, 1, 1 };
+	RadianceMapConfig nilRMap;
+	pJob->AddObject(
+		"shape", "small_geom",
+		/*material*/ nullptr,
+		/*modifier*/ nullptr,
+		/*shader*/   nullptr,
+		nilRMap, zero3, zero3, one3, true, true );
+
+	IObjectManager* objs = pJob->GetObjects();
+	const IObject* obj = objs ? objs->GetItem( "shape" ) : nullptr;
+	Check( obj != nullptr, "shape object registered" );
+	if( !obj ) { pJob->release(); return; }
+
+	const IGeometry* small = pJob->GetGeometry( "small_geom" );
+	const IGeometry* big   = pJob->GetGeometry( "big_geom" );
+	Check( small && big, "both geometries resolvable via IJob::GetGeometry" );
+	Check( obj->GetGeometry() == small, "object initially bound to small_geom" );
+
+	// ObjectIntrospection: `geometry` is an editable reference when a
+	// job is supplied, reads the current binding, and lists every
+	// registered geometry as a preset (the GUI dropdown source).
+	{
+		std::vector<CameraProperty> rows = ObjectIntrospection::Inspect(
+			String( "shape" ), *obj,
+			pJob->GetMaterials(), pJob->GetShaders(), pJob );
+		bool foundGeom = false, hasSmall = false, hasBig = false;
+		for( const CameraProperty& cp : rows ) {
+			if( cp.name == String( "geometry" ) ) {
+				foundGeom = true;
+				Check( cp.editable, "geometry row editable when job present" );
+				Check( cp.value == String( "small_geom" ), "geometry row reads current binding" );
+				for( const ParameterPreset& pr : cp.presets ) {
+					if( pr.value == std::string( "small_geom" ) ) hasSmall = true;
+					if( pr.value == std::string( "big_geom" ) )   hasBig   = true;
+				}
+			}
+		}
+		Check( foundGeom, "geometry row present" );
+		Check( hasSmall && hasBig, "geometry presets list both registered geometries" );
+	}
+
+	// Degrades to read-only without a job (no validation/preset source).
+	{
+		std::vector<CameraProperty> rows = ObjectIntrospection::Inspect( String( "shape" ), *obj );
+		for( const CameraProperty& cp : rows )
+			if( cp.name == String( "geometry" ) )
+				Check( !cp.editable, "geometry row read-only without a job" );
+	}
+
+	// Initial bbox of the small sphere: ur.x == radius == 1.
+	{
+		const BoundingBox bb = obj->getBoundingBox();
+		Check( std::abs( static_cast<double>( bb.ur.x ) - 1.0 ) < 1e-6, "initial bbox ur.x == 1" );
+	}
+
+	{
+	SceneEditController c( *pJob, /*interactiveRasterizer*/0 );
+	using Cat = SceneEditController::Category;
+	c.ForTest_SetSelection( Cat::Object, String( "shape" ) );
+
+	// Swap small_geom -> big_geom.
+	const bool ok = c.SetProperty( String( "geometry" ), String( "big_geom" ) );
+	Check( ok, "SetProperty(geometry) returns true" );
+	Check( obj->GetGeometry() == big, "object rebound to big_geom" );
+	{
+		const BoundingBox bb = obj->getBoundingBox();
+		Check( std::abs( static_cast<double>( bb.ur.x ) - 3.0 ) < 1e-6,
+			"bbox grew to ur.x == 3 after swap (TLAS extents updated)" );
+	}
+
+	// An unregistered name must be rejected (no poison-undo no-op).
+	const bool okBad = c.SetProperty( String( "geometry" ), String( "nope_geom" ) );
+	Check( !okBad, "SetProperty(geometry) rejects an unregistered name" );
+	Check( obj->GetGeometry() == big, "object unchanged after a rejected swap" );
+
+	// Undo restores the prior geometry AND its bbox.
+	c.Undo();
+	Check( obj->GetGeometry() == small, "undo restored small_geom" );
+	{
+		const BoundingBox bb = obj->getBoundingBox();
+		Check( std::abs( static_cast<double>( bb.ur.x ) - 1.0 ) < 1e-6, "undo restored bbox ur.x == 1" );
+	}
+
+	// Redo re-applies the swap.
+	c.Redo();
+	Check( obj->GetGeometry() == big, "redo re-applied big_geom" );
+	}
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
 
 int main()
 {
@@ -356,6 +464,7 @@ int main()
 	TestLightEditing();
 	TestLazyRasterizerInstantiation();
 	TestLazyRasterizerNoShader();
+	TestObjectGeometrySwap();
 
 	std::cout << std::endl;
 	std::cout << "Results: " << passCount << " passed, "
