@@ -1,25 +1,33 @@
 #!/usr/bin/env python3
-"""Procedural CURVED-PETAL ROSETTE + per-petal ORTHOGONAL-GRID guilloché
-generator for the RISE thin-film watch dial (Phase 3 of
-docs/THIN_FILM_INTERFERENCE.md).
+"""Procedural RADIAL-PETAL + WOVEN-GRID guilloché generator for the RISE
+thin-film watch dial (Phase 3 of docs/THIN_FILM_INTERFERENCE.md).
 
 It synthesizes a generic engine-turned "flame-anodized titanium" dial in the
-style of the MING 37.06 "Lightning" dial:
+style of the MING 37.06 "Lightning" dial.  The DOMINANT feature is a fine
+WOVEN MESH of distinct raised cells ("blocks"); the cells are organized into
+N near-radial lobes separated by sharp, jagged "lightning" seams:
 
-    MACRO = a flower / pinwheel ROSETTE of N broad, GENTLY-CURVED leaf /
-            lens-shaped PETALS radiating from a small bright centre to the
-            rim.  The petals sweep with a slight PINWHEEL twist (smooth
-            spiral arcs), NOT sharp jagged bolts.
-    MICRO = each petal is filled with a fine ORTHOGONAL GRID — two
-            perpendicular sets of grooves (radial "rungs" + angular "bars")
-            forming a woven mesh of small ~square cells.  The grid is
-            oriented to each petal's LOCAL frame (one set along the petal,
-            one across).
-    SEAMS = because the angular grid is mirror-FOLDED at every petal
-            boundary, adjacent petals' grids meet at an angle → the petal
-            edges become jagged, zig-zag, woven SEAMS.  THAT seam
-            jaggedness is the "lightning" quality (NOT jagged lightning
-            rays); the petal interiors stay a clean curved grid.
+    GRID  = the DOMINANT relief.  A fine WOVEN BASKET of small ~square raised
+            CELLS — two crisp groove families (concentric radial "rungs" +
+            uniform angular "bars") combined into a PRODUCT of pillows, with a
+            half-cell brick offset on alternate rows = the woven interlock.
+            High relief contrast (deep narrow grooves, proud flat-topped
+            cells) so the blocks survive displacement + rendering.
+    LOBES = N near-RADIAL petal sectors (only a SLIGHT swirl lean — the
+            pattern reads as distinct radial lobes, NOT a smooth spiral).  A
+            gentle broad-petal tonal envelope organizes the woven field into
+            sectors but is kept BELOW the grid amplitude so it never smothers
+            the cells.
+    SEAMS = sharp, JAGGED, zig-zag "lightning" boundaries between lobes.  A
+            triangle-wave angular warp in radius (common to all petals) kinks
+            the iso-petal lines into angular bolts; ACROSS each seam the woven
+            cells' tilt flips (the angular coordinate mirror-reflects), so
+            adjacent lobes' weaves meet at opposing tilts = the woven seam
+            interlock.  THAT zig-zag is the "lightning" quality.
+    CENTRE= a FLUSH / slightly-RECESSED convergence point where the hands
+            mount.  The relief tapers DOWN to the BASE (field MINIMUM) at the
+            very centre — there is NO raised hub/boss; the woven texture
+            spirals tightly in and sinks to the lowest level at the pole.
 
 NO brand mark is reproduced.
 
@@ -117,55 +125,62 @@ PATTERN MATH  (height field — engine-turned plateaus/grooves)
 ================================================================
 ρ = r/R ∈ [0,1] (rows), θ ∈ [0,2π) (cols).
 
-(1) PINWHEEL SWIRL — the petal generator.  A SMOOTH swirl rotates the
-    angle progressively with radius, so iso-angle lines curve into gentle
-    spiral arcs (the petals sweep like fan blades):
+(1) SWIRL + JAGGED LIGHTNING WARP — the lobe/seam generator.  A SMALL swirl
+    leans the lobes; on top of it a zig-zag TRIANGLE wave in ρ kinks the
+    iso-petal lines into sharp angular bolts:
 
-        psi = θ + swirl · ρ                         (radians, smooth)
+        jag = seam_jag · tri(seam_jag_freq · ρ)     (angular zig-zag, rad)
+        psi = θ + swirl · ρ + jag                   (radians)
         P   = N · psi                               (petal phase, 2π/petal)
 
-    swirl ∈ ~[0.3, 1.2] rad sets how much the petals curl (0 = straight
-    radial petals; larger = more pinwheel).  Linear-in-ρ keeps it a clean
-    spiral and keeps EXACT N-fold symmetry (θ→θ+2π/N shifts P by 2π).
+    swirl is kept SMALL (~0.1-0.2; 0 = straight radial) so the pattern reads
+    as distinct RADIAL lobes, NOT a smooth spiral.  The jag warp (common to
+    all petals, a function of ρ ONLY) supplies the "lightning" jaggedness.
+    Both terms are functions of ρ added to θ → EXACT N-fold symmetry holds
+    (θ→θ+2π/N shifts P by exactly 2π).
 
-(2) N CURVED PETALS.  A broad raised-plateau ("lens") profile of cos(P):
+(2) N RADIAL PETAL ENVELOPE.  A broad raised-plateau ("lens") of cos(P):
 
-        petal = lens(cos(P))      ∈ [0,1]
+        petal = lens(cos(P)) = smoothstep(e0,e1,|cos P|)   ∈ [0,1]
 
-    lens(c) = smoothstep(e0,e1,|c|) raises a wide plateau over the petal
-    body and drops to a land along the seam.  Broad (low e0) → the gentle
-    leaf/lens petals of the reference, not thin rays.
+    a gentle tonal envelope that organizes the woven field into N sectors;
+    weighted by petal_amp BELOW grid_amp so it never smothers the cells.
 
-(3) PER-PETAL ORTHOGONAL GRID.  Two perpendicular groove families, woven
-    by min-combine into a mesh of small ~square cells:
+(3) WOVEN BASKET-WEAVE GRID — the DOMINANT relief.  Two crisp groove families
+    combined into a PRODUCT of raised pillows, with a brick offset:
 
-        rungs = stripe(grid_freq · ρ)               (radial rungs, smooth
-                                                     concentric arcs)
-        fold  = |2·frac(P/2π) − 1|                  (triangle, 1 at seam,
-                                                     0 at petal centre)
-        bars  = stripe(grid_ang · fold)             (angular bars, MIRROR-
-                                                     folded at each seam)
-        grid  = min(rungs, bars)                    ∈ [0,1] woven mesh
+        beta       = frac(P/2π)                     (0..1 within a petal)
+        tri_signed = 2·beta − 1                     (-1→+1, JUMPS at seam)
+        rad_coord  = grid_freq · ρ + seam_shear · tri_signed   (sheared rungs)
+        ang_coord  = grid_ang · tri_signed          (UNIFORM angular cells,
+                                                     mirror-reflect at seam)
+        ang_coord += 0.25 · (⌊2·rad_coord⌋ mod 2)   (half-cell brick offset)
+        rungs = stripe(rad_coord);  bars = stripe(ang_coord)
+        grid  = rungs · bars                        ∈ [0,1] woven pillows
 
-    grid_ang (bars per petal half) is tied to grid_freq so cells are ~square
-    in the mid-band.  The FOLD is the seam generator: the angular bars on
-    the two sides of a petal boundary are mirror images, so where two
-    petals' grids meet the bars approach from opposite tilts → a jagged,
-    zig-zag, woven SEAM, while each petal interior stays a clean grid.
+    Driving the angular stripe by the LINEAR tri_signed (not |tri|) gives
+    UNIFORM-size cells across each lobe; the -1→+1 JUMP at every seam mirror-
+    reflects the cell pattern so adjacent lobes' weaves meet at opposing tilt
+    (reinforced by seam_shear, which also flips on the jump) → the woven,
+    zig-zag SEAM.  The PRODUCT (not min) makes each cell a rounded raised
+    pillow that drops to a deep groove on all four sides.  grid_ang is auto-
+    tied to grid_freq/N for ~square mid-band cells.
 
 (4) COMPOSE (sharp plateau profiles, NOT smooth sines):
 
         h = base + petal_amp · petal + grid_amp · grid
     then normalize to [0,1], apply a gamma `land_level` bias and squeeze into
     the requested shallow `relief_depth` around mid=0.5.  The innermost rows
-    are blended to a flat land so ρ→0 is a small recessed hub, not a boss.
+    are then blended DOWN to the field MINIMUM so ρ→0 is a flush / slightly-
+    recessed convergence point — NO raised hub/boss.
 
-EXACT N-FOLD SYMMETRY: every angular dependence enters only through
-functions of P = N·(θ + swirl·ρ): cos(P), frac(P/2π), and the grid bars on
-the fold of P/2π.  Replacing θ → θ + 2π/N shifts P by exactly 2π, leaving
-cos(P) and frac(P/2π) (hence fold and bars) unchanged → h(θ) ≡ h(θ + 2π/N).
-Verified spectrally (all angular energy on k%N==0) and by a direct ring
-roll/compare in the self-checks.
+EXACT N-FOLD SYMMETRY: every angular dependence enters only through functions
+of P = N·(θ + swirl·ρ + jag(ρ)): cos(P), frac(P/2π), tri_signed, and the
+brick parity ⌊2·rad_coord⌋ (rad_coord = grid_freq·ρ + seam_shear·tri_signed
+is itself a function of P and ρ).  Replacing θ → θ + 2π/N shifts P by exactly
+2π, leaving all of them unchanged → h(θ) ≡ h(θ + 2π/N).  Verified spectrally
+(all angular energy on k%N==0) and by a direct ring roll/compare in the
+self-checks.
 
 Only numpy + Pillow are required.
 """
@@ -232,7 +247,8 @@ def build_grids(angle_cols, radius_rows):
 
 
 def build_height(THETA, RHO, *, num_arms, swirl, grid_freq, grid_ang,
-                 seam_shear, petal_edge0, petal_edge1, grid_edge0, grid_edge1,
+                 seam_shear, seam_jag, seam_jag_freq,
+                 petal_edge0, petal_edge1, grid_edge0, grid_edge1,
                  petal_amp, grid_amp, base_level, land_level, relief_depth,
                  center_radius):
     """Compose the curved-petal rosette + per-petal woven-grid height field
@@ -242,34 +258,73 @@ def build_height(THETA, RHO, *, num_arms, swirl, grid_freq, grid_ang,
     Centre row (RHO==0): psi = θ (swirl·0 = 0); all carriers finite; the
     innermost rows are then blended to a flat land.
     """
-    # ---- (1) pinwheel swirl: the petal generator -------------------------
-    # Smooth linear-in-ρ swirl curls each petal into a gentle spiral arc.
-    psi = THETA + swirl * RHO
+    # ---- (1) swirl + JAGGED lightning warp: the petal generator ----------
+    # A SMALL linear-in-ρ swirl gives the lobes a slight lean (near-radial,
+    # NOT a smooth spiral pinwheel — keep swirl ~0.1-0.2 or 0).  On top of it a
+    # zig-zag TRIANGLE wave in ρ angularly displaces the whole field so the
+    # iso-petal lines (and therefore the petal SEAMS) kink into sharp angular
+    # "lightning" bolts instead of smooth arcs.  Because the warp is a function
+    # of ρ ONLY (added to the common θ→ψ map, the same for every petal) it
+    # preserves EXACT N-fold symmetry: θ→θ+2π/N still shifts P by exactly 2π.
+    #
+    #   tri(x) = 2·|frac(x) − 0.5|·2 − 1  ∈ [-1,1]  zig-zag (sharp teeth)
+    # seam_jag scales the angular kick (radians); seam_jag_freq sets the number
+    # of zig-zag teeth from centre→rim.
+    def _tri(x):
+        f = x - np.floor(x)
+        return 2.0 * np.abs(2.0 * f - 1.0) - 1.0          # [-1,1] triangle
+    jag = seam_jag * _tri(seam_jag_freq * RHO)            # angular zig-zag (rad)
+    psi = THETA + swirl * RHO + jag
     P = num_arms * psi                         # petal phase, 2π per petal
 
-    # ---- (2) N curved petals (broad lens plateaus) ----------------------
+    # ---- (2) N radial petals (lens plateaus, now zig-zagged) ------------
     petal = lens(np.cos(P), petal_edge0, petal_edge1)                   # [0,1]
 
-    # ---- (3) per-petal orthogonal grid ----------------------------------
-    # Within-petal coordinates from the petal phase:
-    #   tri_signed ∈ [-1,+1)  sawtooth — signed position across the petal,
-    #               JUMPS at the seam (used to tilt the rungs oppositely on
-    #               the two sides of a seam → chevron).
-    #   fold ∈ [0,1]          triangle — 1 at the seam, 0 at the petal centre
-    #               (mirror-reflects the angular bars about the seam).
+    # ---- (3) per-petal WOVEN basket-weave grid (the DOMINANT relief) -----
+    # The reference dial is a fine WOVEN MESH of distinct little raised cells
+    # ("blocks") laid out in concentric rows that fold direction at each petal
+    # seam.  We build it from two crisp groove families combined into discrete
+    # raised pillows, with a brick/basket-weave half-cell offset:
+    #
+    #   beta ∈ [0,1) per petal (frac of the petal phase); tri_signed is the
+    #   signed within-petal coordinate (-1 at one seam, +1 at the next), which
+    #   JUMPS at the seam so any odd function of it FLIPS sign across the seam
+    #   → the woven "chevron/lightning" interlock at the boundary.
     beta = P / (2.0 * math.pi)
     frac = beta - np.floor(beta)
     tri_signed = 2.0 * frac - 1.0              # -1..+1 sawtooth, jumps at seam
-    fold = np.abs(tri_signed)                  # 0 at petal centre, 1 at seam
-    # Radial rungs, SHEARED by the signed within-petal position so the local
-    # square lattice TILTS into a diamond/rhombus mesh; because tri_signed
-    # flips sign across the seam the tilt flips → a clean chevron seam (the
-    # woven "lightning" interlock).  seam_shear=0 → upright concentric rungs.
-    rungs = stripe(grid_freq * RHO + seam_shear * tri_signed, grid_edge0, grid_edge1)
-    # Angular bars MIRROR-FOLDED at each petal boundary so adjacent petals'
-    # bars meet at opposite tilts → reinforces the woven seam.
-    bars = stripe(grid_ang * fold, grid_edge0, grid_edge1)
-    grid = np.minimum(rungs, bars)             # [0,1] woven mesh of cells
+    #
+    # ANGULAR cells: a UNIFORM number of cells across each petal.  tri_signed
+    # is LINEAR (-1→+1) across the petal, so grid_ang·tri_signed lays evenly
+    # spaced angular grooves the whole width of the lobe (NOT bunched at the
+    # seam).  tri_signed JUMPS -1→+1 at each seam, so the angular cell pattern
+    # is mirror-reflected there → adjacent lobes' cells meet at opposite tilt =
+    # the woven interlock.  (2·grid_ang counts cells per petal: grid_ang is the
+    # per-half count.)
+    ang_coord = grid_ang * tri_signed
+    #
+    # RADIAL rungs: concentric arcs at grid_freq cuts centre→rim.  A small
+    # seam_shear tilts the lattice (sheared by the signed within-petal coord so
+    # the tilt flips across the seam — reinforces the weave); keep it gentle so
+    # the cells stay block-shaped, not diagonal dashes.
+    rad_coord = grid_freq * RHO + seam_shear * tri_signed
+    #
+    # BASKET-WEAVE brick offset: shift the angular grooves by HALF a cell on
+    # alternating radial rows (a checkerboard parity of the rung index), the
+    # classic woven-basket interlock that breaks the cells into offset rows of
+    # discrete pillows rather than a plain square mesh.
+    # stripe()'s land-to-land cell spacing is 0.5 in its argument (|cos| has
+    # period 0.5), so a HALF-cell brick offset is 0.25.  Parity from the radial
+    # land index = floor(2·rad_coord).
+    row_parity = np.floor(2.0 * rad_coord)     # which radial cell row
+    ang_coord = ang_coord + 0.25 * (np.mod(row_parity, 2.0))
+    #
+    # Crisp groove families, then a PRODUCT (not min) so each cell becomes a
+    # rounded raised PILLOW that drops to a deep groove on all four sides —
+    # this is what reads as distinct woven blocks under displacement.
+    rungs = stripe(rad_coord, grid_edge0, grid_edge1)
+    bars = stripe(ang_coord, grid_edge0, grid_edge1)
+    grid = rungs * bars                        # [0,1] woven mesh of pillows
 
     # ---- (4) compose -----------------------------------------------------
     h = base_level + petal_amp * petal + grid_amp * grid
@@ -294,16 +349,16 @@ def build_height(THETA, RHO, *, num_arms, swirl, grid_freq, grid_ang,
     mid = 0.5
     h = mid + (h - 0.5) * relief_depth
 
-    # Centre = SMALL bright convergence point (hands hub covers it):
-    # the petals + grid sweep TIGHTLY in and converge to a small point, as on
-    # the reference dial — NOT a big flat pale/recessed disc.  Blend only the
-    # innermost `center_radius` fraction of rows toward a finite hub value, with
-    # a steep exponent so the flat land is a tiny dot and the converging texture
-    # carries almost all the way in.  Anchor the hub a touch ABOVE the global
-    # mean (a small bright point) and keep it finite (no divide-by-zero / boss).
+    # Centre = FLUSH / slightly-RECESSED convergence point (hands hub mounts
+    # here).  The real dial has NO raised boss at the centre — the relief must
+    # taper DOWN to the BASE (lowest) level at ρ→0, so the centre is a small
+    # flush or slightly-recessed point, never a bump.  Blend the innermost
+    # `center_radius` fraction of rows toward the GLOBAL MINIMUM (the base/land
+    # level), with a steep exponent so only a tiny dot is fully flattened and
+    # the woven texture carries almost all the way in.  Anchoring at h.min()
+    # (not the mean) is what reverses the old +30% boss → a flush/recessed hub.
     nblend = max(2, int(round(center_radius * h.shape[0])))
-    gmean = float(h.mean())
-    hub_level = gmean + 0.30 * (float(h.max()) - gmean)   # small bright point, finite
+    hub_level = float(h.min())                # flush with the field minimum (base)
     for i in range(nblend):
         w = (i / nblend) ** 3.0                       # steep: 0 at centre row → 1 at edge of blend
         h[i] = (1.0 - w) * hub_level + w * h[i]
@@ -418,7 +473,7 @@ def reproject_to_cartesian(h, size):
 # --------------------------------------------------------------------------
 
 def run_self_checks(h, ang, nrm, THETA, RHO, *, num_arms, angle_cols, radius_rows,
-                    swirl, grid_freq, grid_ang):
+                    swirl, seam_jag, seam_jag_freq, grid_freq, grid_ang):
     """Verify the invariants the prompt requires; return all_ok."""
     results = []
 
@@ -479,30 +534,31 @@ def run_self_checks(h, ang, nrm, THETA, RHO, *, num_arms, angle_cols, radius_row
                     f"centre value={centre_val:.4f} bounded within "
                     f"field [{h.min():.4f},{h.max():.4f}]={centre_bounded}"))
 
-    # (d) petals are CURVED (pinwheel sweep), NOT jagged bolts.  The fine grid
-    #     dominates the FULL height field, so tracking h's per-row argmax (or
-    #     even its k=N DFT phase) just follows grid cells — both the petal lobe
-    #     AND the seam-folded grid live on k%N==0 bins.  Instead reconstruct the
-    #     PETAL-ONLY envelope analytically, lens(cos(N·(θ+swirl·ρ))), and track
-    #     ITS crest column vs radius.  By construction the crest sits at
-    #     θ_crest(ρ) = −swirl·ρ + 2πj/N (linear in ρ) → a clean spiral that
-    #     drifts MONOTONICALLY; a jagged bolt would reverse.  This both proves
-    #     the macro is a smooth swept rosette and guards against a future edit
-    #     reintroducing a zig-zag.
-    # |cos(N·psi)| has 2N equal crests per ring (one per petal flank), so a
-    # GLOBAL argmax hops between petals.  Follow ONE crest by continuity: start
-    # at the brightest column of the inner row, then at each outward row step to
-    # the nearest local crest.  For a smooth swirl this single crest drifts
-    # monotonically; a zig-zag bolt would reverse.
+    # (d) petals are near-RADIAL with JAGGED 'lightning' seams — NOT a smooth
+    #     spiral.  The fine grid dominates the FULL height field, so we track
+    #     the analytic PETAL-ONLY envelope |cos(N·ψ)| with the SAME ψ warp the
+    #     height field uses (small swirl + the zig-zag seam_jag triangle):
+    #         ψ(ρ,θ) = θ + swirl·ρ + seam_jag·tri(seam_jag_freq·ρ)
+    #     and follow one crest column outward by continuity.  Two properties
+    #     must hold for the owner's "less spiral, more lightning" intent:
+    #       (i)  near-RADIAL: the NET column drift over the full radius is a
+    #            SMALL fraction of a full petal cell — the crest returns close
+    #            to where it started, i.e. it is not a big sweeping spiral.
+    #       (ii) JAGGED: when seam_jag>0 the crest must REVERSE direction
+    #            (zig-zag) — a smooth spiral never reverses.  The expected
+    #            reversal count is ≈ 2·seam_jag_freq (one per triangle flank).
+    def _tri(x):
+        f = x - np.floor(x)
+        return 2.0 * np.abs(2.0 * f - 1.0) - 1.0
     lo = int(0.1 * radius_rows)
-    petal_only = np.abs(np.cos(num_arms * (THETA[lo:] + swirl * RHO[lo:])))
+    psi_chk = (THETA[lo:] + swirl * RHO[lo:]
+               + seam_jag * _tri(seam_jag_freq * RHO[lo:]))
+    petal_only = np.abs(np.cos(num_arms * psi_chk))
     nr = petal_only.shape[0]
     track = np.empty(nr, dtype=np.float64)
     track[0] = float(np.argmax(petal_only[0]))
     crest_spacing = angle_cols / (2.0 * num_arms)   # cols between adjacent crests
     for i in range(1, nr):
-        # candidate crests this row = local maxima; cheap proxy: search a window
-        # around the previous column for this row's max.
         win = int(max(2, crest_spacing * 0.6))
         prev = int(round(track[i - 1]))
         idx = (np.arange(prev - win, prev + win + 1)) % angle_cols
@@ -513,31 +569,42 @@ def run_self_checks(h, ang, nrm, THETA, RHO, *, num_arms, angle_cols, radius_row
     sign = np.sign(d)
     sign = sign[np.abs(d) > 1e-9]
     reversals = int(np.sum(sign[1:] != sign[:-1])) if sign.size > 1 else 0
-    total_drift = float(abs(np.sum(d)))
-    # Expected drift in columns: |swirl|·0.9·(angle_cols/2π) over the span.
-    expected_px = abs(swirl) * 0.9 * angle_cols / (2.0 * math.pi)
-    if swirl > 1e-6:
-        ok = (total_drift > 0.4 * expected_px) and (reversals <= 2)
-        results.append(("petals are CURVED (petal-lobe crest sweeps smoothly, not jagged)", ok,
-                        f"tracked petal crest column-drift={total_drift:.0f}px "
-                        f"(expect≈{expected_px:.0f}, need>{0.4*expected_px:.0f}), "
-                        f"drift reversals={reversals} (<=2 → smooth spiral, not a "
-                        f"bolt); swirl={swirl}"))
+    net_drift = float(abs(np.sum(d)))                       # net column travel
+    # near-radial budget: allow up to ~1.5 petal-half cells of net drift over
+    # the whole radius (a true spiral at the OLD swirl=0.5 drifted ~3× this).
+    radial_budget = 1.5 * (angle_cols / (2.0 * num_arms))
+    near_radial = net_drift < radial_budget
+    if seam_jag > 1e-6:
+        # lightning: expect zig-zag reversals (≈2 per triangle period); require
+        # at least most of them so we KNOW the seams jag and don't read smooth.
+        need_rev = max(1, int(round(2.0 * seam_jag_freq)) - 1)
+        jagged = reversals >= need_rev
+        ok = near_radial and jagged
+        results.append(("petals near-RADIAL with JAGGED lightning seams (not a spiral)", ok,
+                        f"net crest drift={net_drift:.0f}px (<{radial_budget:.0f} "
+                        f"→ near-radial, not a sweeping spiral); zig-zag "
+                        f"reversals={reversals} (need≥{need_rev} for "
+                        f"seam_jag_freq={seam_jag_freq:g} → lightning, not smooth); "
+                        f"swirl={swirl}"))
     else:
-        results.append(("petals curved", True, "swirl disabled → straight radial petals (by request)"))
+        ok = near_radial
+        results.append(("petals near-RADIAL (low swirl, no jag requested)", ok,
+                        f"net crest drift={net_drift:.0f}px (<{radial_budget:.0f}); "
+                        f"reversals={reversals}; swirl={swirl} seam_jag=0"))
 
     # (e) Nyquist: cap the finest cuts near the rim against the resolution.
-    #     stripe()'s measured harmonic energy is ~99% within the first 2
-    #     harmonics radially / >99.9% within 5 harmonics angularly.  Radial:
-    #     fundamental 2*grid_freq cyc; budget the 2nd harmonic → top=4*grid_freq;
-    #     need rows >= 2*top = 8*grid_freq.
+    #     Radial: stripe() fundamental 2*grid_freq cyc; ~99% energy in the
+    #     first 2 harmonics → budget the 2nd: top=4*grid_freq; need rows >=
+    #     2*top = 8*grid_freq.
     radial_top = 4.0 * grid_freq
     radial_nyq_ok = radius_rows >= 2.0 * radial_top      # rows >= 8*grid_freq
-    #     Angular: the folded angular bars give grid_ang cuts per petal HALF →
-    #     2·grid_ang per petal → N·2·grid_ang cuts/circle; budget the 5th
-    #     harmonic → top = 5·N·2·grid_ang; need cols >= 2*top = 20·N·grid_ang.
-    ang_fund = num_arms * 2.0 * grid_ang
-    ang_top = 5.0 * ang_fund
+    #     Angular: the woven cells run at 4·grid_ang per petal → 4·N·grid_ang
+    #     cells/circle (tri_signed sweeps -1→+1 across a petal → 4·grid_ang
+    #     |cos|-grooves); >99% energy in the first 3 harmonics → budget the
+    #     3rd: top = 3·4·N·grid_ang = 12·N·grid_ang; need cols >= 2*top =
+    #     24·N·grid_ang.
+    ang_fund = 4.0 * num_arms * grid_ang
+    ang_top = 3.0 * ang_fund
     ang_nyq_ok = angle_cols >= 2.0 * ang_top
     ok = radial_nyq_ok and ang_nyq_ok
     results.append(("Nyquist (finest cuts resolvable near rim)", ok,
@@ -677,28 +744,46 @@ def main(argv=None):
                     "thin-film dial (polar-UV: col=angle, row=radius).")
     p.add_argument("--num-arms", type=int, default=8,
                    help="N curved petals radiating from centre. Default 8.")
-    p.add_argument("--swirl", type=float, default=0.5,
+    p.add_argument("--swirl", type=float, default=0.15,
                    help="Pinwheel swirl amount (radians of angular twist over "
-                        "centre→rim). 0=straight radial petals; ~0.3-1.2 curls "
-                        "them into spiral arcs. Default 0.5.")
-    p.add_argument("--grid-freq", type=float, default=64.0,
-                   help="Concentric radial cuts (rungs) centre→rim. Sets cell "
-                        "size. Default 64. Auto-capped to radius_rows/8.")
+                        "centre→rim). 0=straight radial petals; keep SMALL "
+                        "(~0.1-0.2) so the lobes read as near-radial, NOT a "
+                        "smooth spiral. The lightning kink comes from --seam-jag, "
+                        "not from swirl. Default 0.15.")
+    p.add_argument("--seam-jag", type=float, default=0.16,
+                   help="Amplitude (radians) of the zig-zag angular warp that "
+                        "kinks the petals/seams into sharp 'lightning' bolts "
+                        "(triangle wave in radius, common to all petals → keeps "
+                        "N-fold symmetry). 0=smooth radial lobes. Default 0.16.")
+    p.add_argument("--seam-jag-freq", type=float, default=3.0,
+                   help="Number of zig-zag teeth from centre→rim for the "
+                        "lightning seam warp. Higher = more, finer kinks. "
+                        "Default 3.")
+    p.add_argument("--grid-freq", type=float, default=40.0,
+                   help="Concentric radial cuts (rungs) centre→rim. Sets the "
+                        "woven cell size (finer = more, smaller cells). Default "
+                        "40. Auto-capped to radius_rows/8.")
     p.add_argument("--grid-ang", type=float, default=None,
                    help="Angular grid bars per petal HALF (mirror-folded at "
                         "seams). Default: auto-tied to grid-freq for ~square "
                         "mid-band cells. Auto-capped against angular Nyquist.")
-    p.add_argument("--seam-shear", type=float, default=1.8,
-                   help="Tilt of the woven grid lattice into a diamond mesh; the "
-                        "tilt flips sign across each petal seam → the chevron "
-                        "'lightning' interlock. 0=upright cells. Default 1.8.")
+    p.add_argument("--seam-shear", type=float, default=0.9,
+                   help="Tilt of the woven grid lattice; the tilt FLIPS sign "
+                        "across each petal seam → the woven chevron interlock "
+                        "that makes adjacent lobes' cells meet at opposing tilts. "
+                        "Keep moderate (~0.6-1.0) so cells stay block-shaped, not "
+                        "diagonal dashes. 0=upright cells. Default 0.9.")
     p.add_argument("--relief-depth", type=float, default=0.8,
                    help="Total height span (engine-turned shallow), 0..1. Default 0.8.")
-    p.add_argument("--petal-amp", type=float, default=0.25,
-                   help="Weight of the curved-petal macro (broad tonal lobes; "
-                        "the grid + seams carry most of the look). Default 0.25.")
-    p.add_argument("--grid-amp", type=float, default=0.68,
-                   help="Weight of the woven-grid micro (dominant). Default 0.68.")
+    p.add_argument("--petal-amp", type=float, default=0.22,
+                   help="Weight of the broad-petal macro (gentle tonal lobes "
+                        "that organize the woven field into N radial sectors). "
+                        "Kept BELOW grid-amp so the broad lobe does not smother "
+                        "the woven cells — the grid stays the dominant relief. "
+                        "Default 0.22.")
+    p.add_argument("--grid-amp", type=float, default=0.85,
+                   help="Weight of the woven-grid micro — the DOMINANT relief "
+                        "(crisp deep cells). Default 0.85.")
     p.add_argument("--base-level", type=float, default=0.15,
                    help="Constant base added before normalization. Default 0.15.")
     p.add_argument("--petal-edge0", type=float, default=0.0,
@@ -708,11 +793,15 @@ def main(argv=None):
                    help="Petal plateau outer shoulder (|cos| where it reaches "
                         "the seam land). Lower = broader, fatter petals that "
                         "nearly touch their neighbours. Default 0.82.")
-    p.add_argument("--grid-edge0", type=float, default=0.32,
-                   help="Grid-cell inner shoulder. Lower = thicker grid lines. "
-                        "Default 0.32.")
-    p.add_argument("--grid-edge1", type=float, default=0.85,
-                   help="Grid-cell outer shoulder. Default 0.85.")
+    p.add_argument("--grid-edge0", type=float, default=0.12,
+                   help="Grid-cell inner shoulder (|cos| where the cell starts "
+                        "to rise from the groove). LOW → wide flat-topped raised "
+                        "cells with narrow deep grooves between them (crisp, "
+                        "high-contrast blocks). Default 0.12.")
+    p.add_argument("--grid-edge1", type=float, default=0.5,
+                   help="Grid-cell outer shoulder (|cos| where the cell reaches "
+                        "full height). Tight gap to edge0 → steep groove walls = "
+                        "deep crisp blocks. Default 0.5.")
     p.add_argument("--land-level", type=float, default=0.45,
                    help="Median land height before relief normalization (gamma "
                         "bias). Default 0.45.")
@@ -762,31 +851,33 @@ def main(argv=None):
         capped_radial = True
 
     # ---- auto-tie grid_ang to grid_freq for ~square mid-band cells ------
-    # A radial rung spacing is 1/grid_freq in ρ → physical R/grid_freq.  An
-    # angular bar (folded) makes grid_ang stripes per petal-half → 2·grid_ang
-    # per petal → arc spacing at radius ρ is (2π·ρ·R)/(N·2·grid_ang).  Match
-    # at ρ≈0.6 (mid-band): R/grid_freq = (2π·0.6·R)/(N·2·grid_ang) →
-    # grid_ang = grid_freq·π·0.6/N.
+    # The woven grid lays UNIFORM cells: radial cells span radius_rows/(2·
+    # grid_freq) rows; angular cells span (angle_cols/N)/(4·grid_ang) cols
+    # (the angular stripe is driven by tri_signed which sweeps -1→+1 across a
+    # petal → 4·grid_ang |cos|-grooves per petal → that many cells).  Square
+    # mid-band cells (with radius_rows = angle_cols/2):
+    #   (angle_cols/2)/(2·grid_freq) = (angle_cols/N)/(4·grid_ang)
+    #   ⇒ grid_ang = grid_freq / N.
     if args.grid_ang is not None:
         grid_ang = float(args.grid_ang)
     else:
-        grid_ang = round(grid_freq * math.pi * 0.6 / max(args.num_arms, 1))
+        grid_ang = round(grid_freq / max(args.num_arms, 1))
         grid_ang = max(grid_ang, 1.0)
 
     # ---- Nyquist cap on grid_ang (angular cuts) ------------------------
-    # Folded angular bars give 2·grid_ang stripes per petal → N·2·grid_ang
-    # cuts/circle.  Measured harmonic energy of stripe(): >99.9% is in the
-    # first FIVE harmonics (h1≈0.90, h2≈0.07, h3..h5 carry the rest; h6+≈0).
-    # Budget the 5th harmonic: top ≈ 5·N·2·grid_ang; need angle_cols >=
-    # 2·top, i.e. grid_ang <= angle_cols/(20·N).
-    ang_cap = math.floor(angle_cols / (20.0 * max(args.num_arms, 1)))
+    # The angular cell fundamental is 4·N·grid_ang cycles/circle (4·grid_ang
+    # cells per petal × N petals).  The tri_signed carrier adds harmonics;
+    # measured energy of the stripe is >99% within the first 3 harmonics, so
+    # budget the 3rd: top ≈ 3·4·N·grid_ang = 12·N·grid_ang; need angle_cols >=
+    # 2·top = 24·N·grid_ang, i.e. grid_ang <= angle_cols/(24·N).
+    ang_cap = math.floor(angle_cols / (24.0 * max(args.num_arms, 1)))
     capped_ang = False
     if grid_ang > ang_cap:
         sys.stderr.write(
             f"WARNING: grid-ang {grid_ang:g} exceeds angular Nyquist "
-            f"(angle_cols/(20*num_arms)={ang_cap:g}; budgeting the stripe's 5th "
-            f"harmonic at >99.9% energy); capping to {ang_cap:g} to avoid "
-            f"aliasing.  Raise --resolution for more angular bars.\n")
+            f"(angle_cols/(24*num_arms)={ang_cap:g}; budgeting the woven cell's "
+            f"3rd harmonic at >99% energy); capping to {ang_cap:g} to avoid "
+            f"aliasing.  Raise --resolution for more angular cells.\n")
         grid_ang = float(ang_cap)
         capped_ang = True
 
@@ -811,6 +902,8 @@ def main(argv=None):
         grid_freq=grid_freq,
         grid_ang=grid_ang,
         seam_shear=args.seam_shear,
+        seam_jag=args.seam_jag,
+        seam_jag_freq=args.seam_jag_freq,
         petal_edge0=args.petal_edge0,
         petal_edge1=args.petal_edge1,
         grid_edge0=args.grid_edge0,
@@ -863,17 +956,17 @@ def main(argv=None):
     for f in (hp, np_, ap, pv):
         print(f"  {os.path.abspath(f)}")
     print("\nThe preview montage SHOULD show (left→right, top row): the polar")
-    print("HEIGHT map (petal bands that lean smoothly with row = the swirl,")
-    print("filled with a fine orthogonal grid that mirror-flips at petal")
-    print("boundaries), the ANGLE map, and the NORMAL map.  The bottom row is")
-    print(f"the Cartesian 'as-on-dial' reprojection: a {args.num_arms}-petal")
-    print("curved pinwheel rosette of grid-filled petals with jagged woven")
-    print("seams between petals, a small bright/recessed hub at centre.")
+    print("HEIGHT map (a fine WOVEN GRID of distinct cells that mirror-flips")
+    print("tilt at each petal seam), the ANGLE map, and the NORMAL map.  The")
+    print(f"bottom row is the Cartesian 'as-on-dial' reprojection: {args.num_arms} near-")
+    print("radial lobes of woven blocks separated by jagged 'lightning' seams,")
+    print("converging to a FLUSH / recessed point at centre (no raised hub).")
 
     # ---- adversarial self-checks ---------------------------------------
     all_ok = run_self_checks(h, ang, nrm, THETA, RHO,
                              num_arms=args.num_arms, angle_cols=angle_cols,
                              radius_rows=radius_rows, swirl=args.swirl,
+                             seam_jag=args.seam_jag, seam_jag_freq=args.seam_jag_freq,
                              grid_freq=grid_freq, grid_ang=grid_ang)
     return 0 if all_ok else 1
 

@@ -111,3 +111,6 @@ __pycache__/
 # diff. Regenerated each session, never committed (the Phase 2a
 # precedent left them untracked too).
 tests/baselines_refactor/
+
+# Generated watch-dial mesh (27MB; regenerate with tools/dial_mesh_gen.py)
+/textures/dial/dial.raw2

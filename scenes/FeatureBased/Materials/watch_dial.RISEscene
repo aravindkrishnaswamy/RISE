@@ -11,6 +11,17 @@ RISE ASCII SCENE 6
 #   Author:         Aravind Krishnaswamy
 #############################################################################################################
 
+# ============================================================================
+# BEFORE RENDERING: generate the dial mesh + oxide map (they are gitignored --
+# the mesh is 27 MB).  From the repo root:
+#     python3 tools/dial_mesh_gen.py --cell 1.35 --disp 0.46
+# -> writes textures/dial/dial.raw2 (the Cartesian guilloche dial) and
+#    textures/dial/oxide_cart.png (the radial heat-tint SHAPE map).
+# Render specific cameras with tools/render_watch_views.py, a turntable with
+# tools/render_watch_turntable.py.  Tune the heat-tint via the oxide_thk
+# scale/bias (see the >>> HEAT-TINT TORCH CONTROL <<< block below).
+# ============================================================================
+
 standard_shader
 {
 	name				global
@@ -25,7 +36,7 @@ hdr_painter
 
 pathtracing_spectral_rasterizer
 {
-	samples				96
+	samples				32
 	nmbegin				380
 	nmend				720
 	num_wavelengths			16
@@ -33,7 +44,7 @@ pathtracing_spectral_rasterizer
 	oidn_denoise			true
 	oidn_prefilter			accurate
 	radiance_map			pnt_env
-	radiance_scale			0.6
+	radiance_scale			0.85
 	radiance_background		FALSE
 }
 
@@ -47,12 +58,67 @@ file_rasterizeroutput
 
 film
 {
-	width				800
-	height				800
+	width				700
+	height				700
+}
+
+##################################################
+# Cameras -- multiple named viewpoints for diagnosing the dial lighting.
+# The ACTIVE camera is the LAST one defined (RISE activates the most recently
+# added camera), so cam_hero is last -> a plain `render` / the GUI default is
+# the beauty shot.  Render a SPECIFIC angle from the CLI with:
+#     python3 tools/render_watch_views.py            (all cameras)
+#     python3 tools/render_watch_views.py --cam cam_face cam_graze
+# which emits one temp scene per camera (each to rendered/watch_<name>.png).
+# In the GUI, switch with the camera selector (Job::SetActiveCamera).
+#
+#   cam_face   straight down the +Z axis (normal incidence) -- the centre
+#              wash-out test: if the grid is GONE here it is near-normal specular.
+#   cam_top    steep ~65deg look-down, rakes the guilloche relief from above.
+#   cam_graze  low ~8deg grazing rake across the dial -- if the centre grid
+#              REAPPEARS here, the wash-out is angle-dependent (specular), not geometry.
+#   cam_side   pure profile: case band, domed crystal, crown, lugs silhouette.
+#   cam_hero   balanced 3/4 beauty (default active).
+##################################################
+pinhole_camera
+{
+	name				cam_face
+	location			0 0 60
+	lookat				0 0 -1
+	up				0 1 0
+	fov				46.0
 }
 
 pinhole_camera
 {
+	name				cam_top
+	location			14 14 46
+	lookat				0 0 -1
+	up				0 1 0
+	fov				44.0
+}
+
+pinhole_camera
+{
+	name				cam_graze
+	location			10 -50 6
+	lookat				0 0 -1
+	up				0 0 1
+	fov				50.0
+}
+
+pinhole_camera
+{
+	name				cam_side
+	location			6 -60 6
+	lookat				0 0 -2
+	up				0 0 1
+	fov				44.0
+}
+
+pinhole_camera
+{
+	name				cam_hero
 	location			35 22 38
 	lookat				-1 -2 -1
 	up				0 1 0
@@ -111,16 +177,35 @@ scalar_painter
 	file				colors/thinfilm/substrates/Steel.k
 }
 
-# Baked oxide-thickness map (normalized 0..1) -> nm via scale/bias (scene-tunable colour range).
-# scale 16 + bias 22 => 22 nm (warm gold, centre) .. 38 nm (deep blue, rim), first-order Ti temper
-# sweep gold -> magenta -> blue (hero-still tuned; calibration anchor was scale 13 / bias 20).
+# Oxide-thickness SHAPE map: tools/dial_mesh_gen.py bakes only the NORMALISED
+# radial heat profile (0 at the centre, 1 at the rim; the Arrhenius/parabolic
+# torch-dwell curvature).  The ABSOLUTE nanometres -- i.e. the TORCH START/END --
+# are set below on the oxide_thk painter, so the whole heat-tint is tunable per
+# render WITHOUT re-baking.
 png_painter
 {
 	name				oxide_png
-	file				textures/dial/oxide_thickness.png
+	file				textures/dial/oxide_cart.png
 	color_space			Rec709RGB_Linear
 }
 
+##################################################
+# >>> HEAT-TINT TORCH CONTROL <<<  (tune these two numbers per render)
+#
+# thickness_nm = pixel(0..1) * scale + bias
+#   bias         = CENTRE oxide thickness (nm)  = where the torch effect STARTS
+#   bias + scale = RIM    oxide thickness (nm)  = where the torch effect ENDS
+#   scale        = the SPAN (how much hotter / longer-torched the rim ran)
+#
+# Titanium temper ladder (1st order): ~18 straw, ~22 gold, ~30 magenta/purple,
+#   ~33 blue, ~40 cyan, then it repeats (2nd order).  Pick a window on it:
+#     gold -> blue   (vivid, default) : bias 22  scale 16   (22..38 nm)
+#     gold -> blue   (restrained)     : bias 22  scale 11   (22..33 nm)
+#     straw -> magenta (short torch)  : bias 18  scale 12   (18..30 nm)
+#     magenta -> cyan  (long torch)   : bias 30  scale 12   (30..42 nm)
+# (The RADIAL falloff -- how fast it heats outward -- is baked into oxide_cart.png;
+#  re-bake with tools/dial_mesh_gen.py --oxide-falloff {quadratic|smooth|linear}.)
+##################################################
 scalar_painter
 {
 	name				oxide_thk
@@ -128,15 +213,6 @@ scalar_painter
 	channel				R
 	scale				16.0
 	bias				22.0
-}
-
-# Guilloche relief height map (engraved spiral rosette), verbatim-linear grayscale --
-# the displacement source for the displaced-geometry dial (REAL engraving, not a bump).
-png_painter
-{
-	name				guilloche_height_png
-	file				textures/dial/guilloche_height.png
-	color_space			Rec709RGB_Linear
 }
 
 ##################################################
@@ -147,8 +223,8 @@ ggx_material
 	name				tf_dial
 	rd				pnt_black
 	rs				pnt_white
-	alphax				0.16
-	alphay				0.16
+	alphax				0.08
+	alphay				0.08
 	fresnel_mode			thinfilm
 	ior				Ti_n
 	extinction			Ti_k
@@ -230,38 +306,70 @@ dielectric_material
 	tau				0.985 0.99 1.0
 	ior				sapphire_ior
 	scattering			100000.0
+	# Data-based AR coating: MgF2 (n 1.38) quarter-wave at 550nm (~99.6 nm).
+	# Drops the bare sapphire surface glare 7.7%->~0.5% (14x) with the
+	# characteristic AR purple bloom; computed via the Phase-1/2 Airy
+	# evaluator (ThinFilm::ReflectanceConductor) in DielectricSPF.
+	ar_film_ior			1.38
+	ar_film_thickness		99.6
+	ar_film_extinction		0.0
 }
 
 ##################################################
-# Key softbox: large bright panel in front of the watch (z=56, on the camera
-# side), positioned lower-left + tall so its specular reflection off the +Z
-# dial face reaches the camera -- this lights the dial face (revealing the
-# guilloche swirl + thin-film colour) and sweeps a soft gradient highlight up
-# across the domed crystal.  Camera (z=38) sits in front of it so it does not
-# block the view.
+# Key lighting: a TOP + BOTTOM softbox PAIR (watch-photography style), both
+# camera-side at z=50 (behind the camera, so out of frame) and facing the dial
+# (-Z).  A dark GAP in y=[-14,14] separates them, so the domed crystal reflects
+# two soft gradient bands instead of one harsh panel (the MING-style clean
+# crystal), and the guilloche relief is raked from above AND below -> the woven
+# blocks read with more contrast across the whole face.  Split intensity so the
+# total key is similar to the old single softbox.
 ##################################################
 lambertian_luminaire_material
 {
-	name				key_lum
+	name				soft_top_lum
 	exitance			pnt_white
-	scale				16.0
+	scale				11.0
 	material			none
 }
 
 clippedplane_geometry
 {
-	name				keygeom
-	pta				25 -45 56
-	ptb				-65 -45 56
-	ptc				-65 75 56
-	ptd				25 75 56
+	name				soft_top_geom
+	pta				55 24 50
+	ptb				-55 24 50
+	ptc				-55 62 50
+	ptd				55 62 50
 }
 
 standard_object
 {
-	name				keylight
-	geometry			keygeom
-	material				key_lum
+	name				soft_top
+	geometry			soft_top_geom
+	material			soft_top_lum
+}
+
+lambertian_luminaire_material
+{
+	name				soft_bot_lum
+	exitance			pnt_white
+	scale				10.0
+	material			none
+}
+
+clippedplane_geometry
+{
+	name				soft_bot_geom
+	pta				55 -62 50
+	ptb				-55 -62 50
+	ptc				-55 -24 50
+	ptd				55 -24 50
+}
+
+standard_object
+{
+	name				soft_bot
+	geometry			soft_bot_geom
+	material			soft_bot_lum
 }
 
 ##################################################
@@ -294,32 +402,27 @@ standard_object
 }
 
 ##################################################
-# The dial: flat disc, normal +Z, facing the camera.
+# The dial: CARTESIAN guilloche relief baked into a circular triangle MESH
+# (tools/dial_mesh_gen.py -> textures/dial/dial.raw2).  Real engraved relief
+# with analytic normals + linear UV.  This REPLACES the old circulardisk +
+# displaced_geometry dial, whose POLAR UV (u=angle, v=radius) collapsed the
+# woven cells to zero world-size at the centre -> a smooth gold blob over the
+# inner ~40%.  A Cartesian-grid mesh keeps every cell the SAME world size, so
+# the guilloche blocks read uniformly to the dead-centre (no polar singularity).
 # Recessed to z = -1 so it sits below the case top rim.
 ##################################################
-circulardisk_geometry
+rawmesh2_geometry
 {
-	name				dialbase
-	radius				20.0
-	axis				z
-}
-
-# REAL engraved guilloche relief via tessellated vertex displacement (not a bump map):
-# the spiral-rosette height map displaces the disc along its normal.  The disc's polar UV
-# (u=angle, v=radius) matches the height map's polar layout, so the spiral aligns.
-displaced_geometry
-{
-	name				dialdisp
-	base_geometry			dialbase
-	detail				288
-	displacement			guilloche_height_png
-	disp_scale			0.12
+	name				dialmesh
+	file				textures/dial/dial.raw2
+	double_sided			FALSE
+	face_normals			FALSE
 }
 
 standard_object
 {
 	name				dial
-	geometry			dialdisp
+	geometry			dialmesh
 	material			tf_dial
 	position			0 0 -1.0
 }
