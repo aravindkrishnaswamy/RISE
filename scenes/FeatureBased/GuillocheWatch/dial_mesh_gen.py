@@ -191,14 +191,17 @@ def lightning_mask(size, p):
 # --------------------------------------------------------------------------
 # Mesh build + RAW2 writer.
 # --------------------------------------------------------------------------
-def build_mesh(p):
+def build_mesh(p, height_fn=None):
+    # height_fn(X, Y, R, p) -> [0,1] field; defaults to the stock height_field.
+    # Variant generators (dial_variants_gen.py) pass their own to reuse this
+    # mesh/UV/triangulation machinery unchanged.
     R = p["radius"]
     N = p["mesh_n"]
     xs = np.linspace(-R, R, N)
     ys = np.linspace(-R, R, N)
     X, Y = np.meshgrid(xs, ys)                             # X[j,i]=xs[i]
 
-    h = height_field(X, Y, R, p)
+    h = (height_fn or height_field)(X, Y, R, p)
     z = (h - float(h.mean())) * p["disp"]
 
     # Analytic normals from the baked height gradient (np.gradient: axis0=y).

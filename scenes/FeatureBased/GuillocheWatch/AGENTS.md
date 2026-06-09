@@ -118,3 +118,31 @@ saturate the blue), not the lights. Deep royal blue = `(0.04, 0.08, 0.22)`.
 - **Table reflection sharpness** → `surface_dark` `alphax/alphay` (0.10 = soft; lower = mirror-like).
 - **New camera angle** → add a `pinhole_camera`/`thinlens_camera` chunk BEFORE `cam_high34` (which must stay last = active), `up 0 0 1` unless top-down; `render_watch_views.py` auto-discovers it.
 - **Re-time / re-shape the animation** → edit the `timeline` keyframes (see the Animation section); `renderanimation 0 1 <frames>`.
+
+## Dial-geometry experiments (dial_variants_gen.py)
+
+Flexible alternate-geometry generator (stock `dial_mesh_gen.py` unchanged). Reuses
+its primitives + `build_mesh(p, height_fn=...)` (refactored to accept a height fn)
++ writer, with composable height FIELDS:
+- `field_uniform` — the stock single-cell-size dial (A/B baseline).
+- `field_lightning_cell` — lightning zigzag at a DIFFERENT guilloché cell width
+  than the field, so it stands out in relief. Knobs: `--lightning-cell-scale`
+  (<1 finer / >1 coarser bolt; shipped alternate = 1.8, coarser), `--cell-mode`
+  (`freqblend` smooth local frequency / `select` crisp two-pitch), `--lightning-lo/-hi`
+  (bolt band via the petal mask), `--lightning-relief` (raise/recess the bolt).
+  Add an experiment = write `field_<name>(X,Y,R,p)` and register it in `FIELDS`.
+- Same Cartesian UV as the stock dial → all oxide maps/palettes/metals apply.
+- Output `dial_*.raw2` is gitignored (`/scenes/FeatureBased/GuillocheWatch/dial*.raw2`)
+  — regenerate, never commit (big mesh).
+- **Swap in the scene:** `rawmesh2_geometry dialmesh_lightning` exists; set the
+  `dial` object's `geometry` to it + reload. `geometry` is CONSTRUCTION-TIME
+  (ObjectIntrospection) — NOT a live GUI rebind like `material`.
+
+## Contact sheet (render_contact_sheet.py)
+
+Renders the metal × palette grid → `rendered/grid_<metal>_<range>.png` + assembles
+a ~4K labelled PNG (`rendered/metal_palette_contactsheet.png`). 960 px/cell × 4
+cols = 3840 (4K width), native; big PNGs gitignored (the script is the recipe).
+Per cell: dial `material` → `tf_dial_<metal>`, that material's `film_thickness` →
+`oxide_thk[_<metal>][_<range>]`, `multiple FALSE`, timelines stripped (static
+cam_high34). `--ranges warm vivid cool wide` for 4×4; `--res/--samples` for speed.

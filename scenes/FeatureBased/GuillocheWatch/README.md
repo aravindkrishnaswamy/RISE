@@ -92,6 +92,27 @@ in **degrees**: `azimuth`/`phi` (spin about world-up) and `theta`/`elevation`
 (pitch about screen-right). `cam_high34` must stay the **active (last)** camera
 for `renderanimation` to drive it.
 
+## Alternate dial geometry (variable guilloché cell size)
+
+The stock dial has a uniform woven-cell size everywhere. `dial_variants_gen.py`
+is a flexible generator for ALTERNATE reliefs; the shipped one makes the lightning
+zigzag a **coarser** guilloché cell than the surrounding field, so the bolts
+stand out in *relief* (not just colour):
+
+```sh
+python3 scenes/FeatureBased/GuillocheWatch/dial_variants_gen.py \
+  --field lightning_cell --cell-mode select --lightning-cell-scale 1.8 \
+  --lightning-lo 0.25 --lightning-hi 0.65 --out dial_lightning.raw2
+```
+
+(`--lightning-cell-scale` <1 = finer bolt, >1 = coarser; `--cell-mode`
+freqblend|select; `--preview` for a relief montage; add a `field_<name>` to the
+generator for new experiments.) The scene carries it as `rawmesh2_geometry
+dialmesh_lightning` — to use it, set the `dial` object's `geometry` to
+`dialmesh_lightning` and reload (geometry is construction-time, **not** a live GUI
+swap like `material`). Same Cartesian UV, so every oxide palette / metal applies.
+`dial_lightning.raw2` is gitignored (regenerate it; the generator is the source).
+
 ## Asset pipeline (regenerate)
 
 The scene consumes three generated assets. The generators write next to the
@@ -113,6 +134,8 @@ python3 scenes/FeatureBased/GuillocheWatch/thermal_oxide_sim.py
 python3 scenes/FeatureBased/GuillocheWatch/guilloche_gen.py
 #   -> guilloche_{height,normal,angle}.png  (earlier POLAR rose-engine generator;
 #      superseded for the production dial by dial_mesh_gen.py, kept for reference)
+python3 scenes/FeatureBased/GuillocheWatch/dial_variants_gen.py    # ALTERNATE reliefs (variable cell size); -> dial_*.raw2
+python3 scenes/FeatureBased/GuillocheWatch/render_contact_sheet.py  # metal x palette ~4K contact sheet (not committed)
 ```
 
 **`dial.raw2` (~28 MB) is gitignored** — regenerate it with `dial_mesh_gen.py`

@@ -852,6 +852,24 @@ rawmesh2_geometry
 	face_normals			FALSE
 }
 
+##################################################
+# ALTERNATE dial geometry: the lightning bolts carry a COARSER guilloché cell
+# than the surrounding field, so the zigzag stands out in the relief (made by
+# dial_variants_gen.py --field lightning_cell --cell-mode select).  To USE it,
+# set the `dial` object's `geometry` below to `dialmesh_lightning` and reload
+# (geometry is construction-time, not a live GUI rebind -- unlike `material`).
+# Regenerate / tune (finer vs coarser bolt, band width, mode) with
+# dial_variants_gen.py.  Same Cartesian UV as the stock dial, so every oxide
+# map / palette / metal applies unchanged.
+##################################################
+rawmesh2_geometry
+{
+	name				dialmesh_lightning
+	file				scenes/FeatureBased/GuillocheWatch/dial_lightning.raw2
+	double_sided			FALSE
+	face_normals			FALSE
+}
+
 standard_object
 {
 	name				dial
