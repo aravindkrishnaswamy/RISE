@@ -114,3 +114,4 @@ tests/baselines_refactor/
 
 # Generated watch-dial mesh (27MB; regenerate with tools/dial_mesh_gen.py)
 /scenes/FeatureBased/GuillocheWatch/dial*.raw2
+/scenes/FeatureBased/GuillocheWatch/*_preview.png

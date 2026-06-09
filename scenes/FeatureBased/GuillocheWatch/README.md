@@ -92,26 +92,34 @@ in **degrees**: `azimuth`/`phi` (spin about world-up) and `theta`/`elevation`
 (pitch about screen-right). `cam_high34` must stay the **active (last)** camera
 for `renderanimation` to drive it.
 
-## Alternate dial geometry (variable guilloché cell size)
+## Alternate dial geometry — a pattern library
 
 The stock dial has a uniform woven-cell size everywhere. `dial_variants_gen.py`
-is a flexible generator for ALTERNATE reliefs; the shipped one makes the lightning
-zigzag a **coarser** guilloché cell than the surrounding field, so the bolts
-stand out in *relief* (not just colour):
+is a flexible generator (composable height `field_*` functions; add one + register
+it in `FIELDS`), and the watch ships a small **library of dial patterns** — all on
+the stock Cartesian UV, so every oxide palette / metal applies to each (a pattern
+only changes the RELIEF). Each is carried in the scene as `rawmesh2_geometry
+dialmesh_<name>`:
 
-```sh
-python3 scenes/FeatureBased/GuillocheWatch/dial_variants_gen.py \
-  --field lightning_cell --cell-mode select --lightning-cell-scale 1.8 \
-  --lightning-lo 0.25 --lightning-hi 0.65 --out dial_lightning.raw2
-```
+| `--field` / `dialmesh_<name>` | what it is |
+|---|---|
+| `lightning` | **MING-style hero** — 11 zigzag lightning bolts of a tight cube on a uniform rung-block ground |
+| `radial`    | earlier swirled-petal lightning at a coarser bolt cell |
+| `iris`      | 007 camera aperture — 8 blade leading-edges spiralling around a central hole, cube-filled blades |
+| `swirl`     | log-spiral guilloché |
+| `varwidth`  | alternating fine/coarse sunburst sectors |
+| `uniform`   | the stock single-cell dial (A/B baseline) |
 
-(`--lightning-cell-scale` <1 = finer bolt, >1 = coarser; `--cell-mode`
-freqblend|select; `--preview` for a relief montage; add a `field_<name>` to the
-generator for new experiments.) The scene carries it as `rawmesh2_geometry
-dialmesh_lightning` — to use it, set the `dial` object's `geometry` to
-`dialmesh_lightning` and reload (geometry is construction-time, **not** a live GUI
-swap like `material`). Same Cartesian UV, so every oxide palette / metal applies.
-`dial_lightning.raw2` is gitignored (regenerate it; the generator is the source).
+**Regenerate every mesh** with `./gen_dials.sh` — the `dial*.raw2` meshes are big
+and gitignored, so that script is the source of truth for each pattern\'s exact
+parameters. Author a new pattern = write a `field_<name>(X,Y,R,p)` returning a
+[0,1] height field, register it in `FIELDS`, add a `gen_dials.sh` line + a
+`dialmesh_<name>` scene chunk.
+
+**Switch dials live in the GUI:** set the `dial` object\'s `geometry` to any
+`dialmesh_<name>` — `geometry` is a **live rebindable reference** (like `material`:
+the mesh swaps and the top-level BVH rebuilds on the next render, no reload —
+`SceneEdit::SetObjectGeometry`).
 
 ## Asset pipeline (regenerate)
 
@@ -213,6 +221,10 @@ computed by the Airy/CIE oracle from the curated n,k (not reused from Ti):
 `material` (a rebindable reference — `ObjectIntrospection`) to one of the four.
 The interference colour is then computed rigorously in-renderer from that metal's
 substrate + oxide n,k at its thickness.
+
+The dial **geometry** is a live rebindable reference too now — swap the dial mesh
+(`dialmesh` ↔ `dialmesh_radial` ↔ `dialmesh_lightning`) from the same panel; the
+top-level BVH rebuilds on the next render (`SceneEdit::SetObjectGeometry`).
 
 **Regenerate / inspect the data:**
 ```sh

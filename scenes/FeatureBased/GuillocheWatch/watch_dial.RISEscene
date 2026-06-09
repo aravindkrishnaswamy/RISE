@@ -853,15 +853,17 @@ rawmesh2_geometry
 }
 
 ##################################################
-# ALTERNATE dial geometry: the lightning bolts carry a COARSER guilloché cell
-# than the surrounding field, so the zigzag stands out in the relief (made by
-# dial_variants_gen.py --field lightning_cell --cell-mode select).  To USE it,
-# set the `dial` object's `geometry` below to `dialmesh_lightning` and reload
-# (geometry is construction-time, not a live GUI rebind -- unlike `material`).
-# Regenerate / tune (finer vs coarser bolt, band width, mode) with
-# dial_variants_gen.py.  Same Cartesian UV as the stock dial, so every oxide
-# map / palette / metal applies unchanged.
+# ALTERNATE dial geometries -- a small pattern LIBRARY, all on the stock
+# Cartesian UV so every oxide map / palette / metal applies to each (a
+# pattern changes only the RELIEF).  Switch the `dial` object's `geometry`
+# (below) to any of these -- it is a LIVE GUI rebind
+# (SceneEdit::SetObjectGeometry), no reload.  The dial*.raw2 meshes are
+# gitignored; regenerate every one with ./gen_dials.sh (the source of
+# truth for each pattern's parameters).
 ##################################################
+
+# lightning -- MING-style hero: 11 zigzag lightning bolts of a tight cube
+# on a uniform rung-block ground.
 rawmesh2_geometry
 {
 	name				dialmesh_lightning
@@ -869,6 +871,45 @@ rawmesh2_geometry
 	double_sided			FALSE
 	face_normals			FALSE
 }
+
+# radial -- earlier swirled-petal lightning at a coarser bolt cell.
+rawmesh2_geometry
+{
+	name				dialmesh_radial
+	file				scenes/FeatureBased/GuillocheWatch/dial_radial.raw2
+	double_sided			FALSE
+	face_normals			FALSE
+}
+
+# iris -- 007 camera aperture: 8 blade leading-edges spiralling around a
+# central hole, cube-filled blades.
+rawmesh2_geometry
+{
+	name				dialmesh_iris
+	file				scenes/FeatureBased/GuillocheWatch/dial_iris.raw2
+	double_sided			FALSE
+	face_normals			FALSE
+}
+
+# swirl -- log-spiral guilloche.
+rawmesh2_geometry
+{
+	name				dialmesh_swirl
+	file				scenes/FeatureBased/GuillocheWatch/dial_swirl.raw2
+	double_sided			FALSE
+	face_normals			FALSE
+}
+
+# varwidth -- alternating fine/coarse sunburst sectors.
+rawmesh2_geometry
+{
+	name				dialmesh_varwidth
+	file				scenes/FeatureBased/GuillocheWatch/dial_varwidth.raw2
+	double_sided			FALSE
+	face_normals			FALSE
+}
+
+
 
 standard_object
 {

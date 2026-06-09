@@ -119,24 +119,38 @@ saturate the blue), not the lights. Deep royal blue = `(0.04, 0.08, 0.22)`.
 - **New camera angle** → add a `pinhole_camera`/`thinlens_camera` chunk BEFORE `cam_high34` (which must stay last = active), `up 0 0 1` unless top-down; `render_watch_views.py` auto-discovers it.
 - **Re-time / re-shape the animation** → edit the `timeline` keyframes (see the Animation section); `renderanimation 0 1 <frames>`.
 
-## Dial-geometry experiments (dial_variants_gen.py)
+## Dial-geometry experiments (dial_variants_gen.py + gen_dials.sh)
 
 Flexible alternate-geometry generator (stock `dial_mesh_gen.py` unchanged). Reuses
-its primitives + `build_mesh(p, height_fn=...)` (refactored to accept a height fn)
-+ writer, with composable height FIELDS:
-- `field_uniform` — the stock single-cell-size dial (A/B baseline).
-- `field_lightning_cell` — lightning zigzag at a DIFFERENT guilloché cell width
-  than the field, so it stands out in relief. Knobs: `--lightning-cell-scale`
-  (<1 finer / >1 coarser bolt; shipped alternate = 1.8, coarser), `--cell-mode`
-  (`freqblend` smooth local frequency / `select` crisp two-pitch), `--lightning-lo/-hi`
-  (bolt band via the petal mask), `--lightning-relief` (raise/recess the bolt).
-  Add an experiment = write `field_<name>(X,Y,R,p)` and register it in `FIELDS`.
-- Same Cartesian UV as the stock dial → all oxide maps/palettes/metals apply.
-- Output `dial_*.raw2` is gitignored (`/scenes/FeatureBased/GuillocheWatch/dial*.raw2`)
-  — regenerate, never commit (big mesh).
-- **Swap in the scene:** `rawmesh2_geometry dialmesh_lightning` exists; set the
-  `dial` object's `geometry` to it + reload. `geometry` is CONSTRUCTION-TIME
-  (ObjectIntrospection) — NOT a live GUI rebind like `material`.
+its primitives + `build_mesh(p, height_fn=...)` + writer, composable height FIELDS.
+Shipped library (`--field` / `dialmesh_<name>`):
+- `lightning` — **MING-style hero.** 11 zigzag bolts of a tight CUBE (the raised
+  broad zigzag arms) on a uniform RUNG-block ground (the channels between).
+  angle-only `cos(N*theta)` ray mask + mask-only triangle-wave zigzag (weave stays
+  radial → reads as bolts, not a pinwheel); `select` mode = fine `_cube` inside the
+  arms, fixed-size `rung` grid between. Knobs: `--num-arms`, `--lightning-lo/-hi`
+  (arm width), `--zigzag-amp/-freq`, `--field-cell` (arm cube), `--bolt-style
+  {rung,cube,woven}` + `--rung-len/-width` (channel blocks), `--field-frame`.
+- `radial` — earlier swirled-petal lightning, coarser bolt cell (the former
+  `lightning_cell`). `--lightning-cell-scale`, `--lightning-lo/-hi`, `--cell-mode`.
+- `iris` — 007 camera aperture: N blade edges (lines tangent to a central circle,
+  rotated) pinwheeling around a hole; cube-filled blades. `--num-arms` (blades),
+  `--iris-aperture`, `--iris-swirl`, `--iris-edge`.
+- `swirl` — log-spiral guilloché. `--num-arms`, `--swirl-turns`.
+- `varwidth` — alternating fine/coarse sunburst sectors. `--num-arms`, `--lightning-cell-scale`.
+- `uniform` — stock single-cell baseline.
+
+- **Regenerate every mesh:** `./gen_dials.sh` — the `dial*.raw2` are gitignored;
+  that script is the source of truth for each pattern's params (never commit a mesh).
+  Add an experiment = `field_<name>` + register in `FIELDS` + a `gen_dials.sh` line +
+  a `dialmesh_<name>` scene chunk.
+- Same Cartesian UV as the stock dial → all oxide maps / palettes / metals apply.
+- **Swap live (scene/GUI):** set the `dial` object's `geometry` to any
+  `dialmesh_<name>`. `geometry` is a LIVE rebind (ObjectIntrospection editable
+  Reference → `SceneEdit::SetObjectGeometry`): mesh swaps, top-level BVH rebuilds
+  next render, no reload.
+- **NAMING (2026-06):** today's `lightning` is the former `lightning_radial`; the
+  former `lightning_cell` is now `radial`.
 
 ## Contact sheet (render_contact_sheet.py)
 

@@ -21,9 +21,9 @@ variant only changes the RELIEF.
   `--field <name>` selects it; everything else (mesh, UV, oxide) is unchanged.
 
 Usage:
-  # lightning at a finer weave than the field (default experiment):
+  # the MING-style lightning hero (gen_dials.sh has every pattern's params):
   python3 scenes/FeatureBased/GuillocheWatch/dial_variants_gen.py \
-      --field lightning_cell --lightning-cell-scale 0.6 --out dial_lightning.raw2
+      --field lightning --num-arms 11 --bolt-style rung --out dial_lightning.raw2
   # fast iteration (coarse mesh), then a clean preview:
   python3 ... --mesh-n 280 --preview
   # the stock uniform field, for an A/B baseline:
@@ -73,6 +73,15 @@ def _woven(xr, yr, freq, p):
     return dm.stripe(ax, p["grid_e0"], p["grid_e1"]) * dm.stripe(ay, p["grid_e0"], p["grid_e1"])
 
 
+def _cube(u, v, freq, p):
+    """Tight ALIGNED square-cell grid (no brick offset) -> reads as small cubes
+    / a checkerboard, not a woven herringbone.  Used for the calm, fine field
+    between the lightning bolts."""
+    ax = freq * u
+    ay = freq * v
+    return dm.stripe(ax, p["grid_e0"], p["grid_e1"]) * dm.stripe(ay, p["grid_e0"], p["grid_e1"])
+
+
 def _finish(h, r, R, p):
     """Normalise -> land-gamma -> relief squeeze -> flush hub (same as stock)."""
     h = h - h.min()
@@ -98,7 +107,7 @@ def field_uniform(X, Y, R, p):
     return _finish(p["base"] + p["petal_amp"] * petal + p["grid_amp"] * grid, r, R, p)
 
 
-def field_lightning_cell(X, Y, R, p):
+def field_radial(X, Y, R, p):
     """Lightning zigzag at a DIFFERENT cell width than the field.
 
     `lightning_cell_scale` < 1 => finer weave on the bolts, > 1 => coarser.
@@ -125,12 +134,159 @@ def field_lightning_cell(X, Y, R, p):
     return _finish(h, r, R, p)
 
 
-FIELDS = {"uniform": field_uniform, "lightning_cell": field_lightning_cell}
+def field_lightning(X, Y, R, p):
+    """MING-style BOLD radial lightning: broad rays of a COARSER weave running
+    rim -> centre in a STRAIGHT line (no swirl / no seam-jag), separated by the
+    finer field, with a relief step so the rays stand proud.  This is the
+    closest match to the reference dial.
+
+    Knobs:
+      num_arms             ray count (broad rays: 6-10).
+      lightning_lo / _hi   ray width — LOWER lo = wider ray (more coverage).
+      lightning_cell_scale bolt cell / field cell; >1 = coarser bolt weave.
+      lightning_relief     raises (+) the ray band so it reads in 3D.
+      cell_mode            'select' (crisp two-pitch) or 'freqblend' (organic).
+    swirl / seam_jag are deliberately IGNORED here so the rays stay straight."""
+    r = np.hypot(X, Y)
+    rho = np.clip(r / R, 0.0, 1.0)
+    theta = np.arctan2(Y, X)
+    N = p["num_arms"]
+
+    # ZIGZAG the rays as they travel rim -> centre: a triangle wave in radius
+    # kinks the ray angle back and forth (lightning), with NO monotonic swirl
+    # term -- so the bolt jags, it does NOT spiral.  zigzag_amp 0 => straight.
+    zig = p["zigzag_amp"] * dm._tri(p["zigzag_freq"] * rho)
+    theta_z = theta + zig
+
+    # N broad lobes of cos(N*theta_z): the coarse-cell rays follow the zigzag.
+    rayc = 0.5 + 0.5 * np.cos(N * theta_z)
+    mask = dm.smoothstep(p["lightning_lo"], p["lightning_hi"], rayc)
+
+    # Frame stays RADIAL (use theta, not theta_z): only the coarse-ray REGION
+    # zigzags, while the woven pillows run straight rim->centre.  Keeping the
+    # weave radial anchors the "no spiral" read while the bolt jags in its lane.
+    two_pi_over_N = 2.0 * math.pi / N
+    sector = np.round(theta / two_pi_over_N)
+    theta_c = sector * two_pi_over_N
+    cc, ss = np.cos(theta_c), np.sin(theta_c)
+    xr = cc * X + ss * Y           # along the ray
+    yr = -ss * X + cc * Y          # across the ray
+
+    f_bolt = 0.5 / (p["cell"] * p["lightning_cell_scale"])    # coarse bolt cell
+    if p["cell_mode"] == "freqblend":
+        f_field = 0.5 / p["cell"]
+        freq = f_field * (1.0 - mask) + f_bolt * mask
+        grid = _woven(xr, yr, freq, p)
+    elif p["cell_mode"] == "select":
+        # Two distinct textures chosen per region by `mask` (mask=1 INSIDE the
+        # raised zigzag arms, mask=0 in the area BETWEEN them):
+        #   INSIDE  the arms -> a TIGHT fine cube (`--field-cell`).
+        #   BETWEEN the arms -> the big rectangular RUNGS (`--bolt-style` /
+        #                       `--lightning-cell-scale` pitch).
+        # (The arg names are historical -- bolt_style/lightning_cell_scale name
+        #  the BETWEEN texture; field_cell names the INSIDE cube.)
+        f_inside = 0.5 / p["field_cell"]
+        uu, vv = (xr, yr) if p["field_frame"] == "radial" else (X, Y)
+        inside_grid = _cube(uu, vv, f_inside, p)
+        if p["bolt_style"] == "woven":
+            between_grid = _woven(xr, yr, f_bolt, p)
+        elif p["bolt_style"] == "cube":
+            between_grid = _cube(xr, yr, f_bolt, p)
+        else:   # 'rung': a regular grid of FIXED-size rectangular blocks in the
+                # radial frame (xr along the channel, yr across), clipped to the
+                # channel by `mask`.  Fixed WORLD pitches -> every interior block
+                # has the SAME area; only blocks touching a channel wall clip.
+                # rung_width (across) ~ rung_len (along) -> ladder-rung blocks;
+                # keep rung_width <= the narrowest channel to minimise clipping.
+            between_grid = (dm.stripe((0.5 / p["rung_len"]) * xr, p["grid_e0"], p["grid_e1"])
+                            * dm.stripe((0.5 / p["rung_width"]) * yr, p["grid_e0"], p["grid_e1"]))
+        grid = between_grid * (1.0 - mask) + inside_grid * mask
+    else:
+        raise ValueError("unknown cell_mode %r" % p["cell_mode"])
+
+    # The ray reads as a feature three ways: a broad petal envelope, the
+    # coarser weave on top, and a relief step lifting the whole band.
+    h = (p["base"]
+         + p["petal_amp"] * mask
+         + p["grid_amp"] * grid
+         + p["lightning_relief"] * mask)
+    return _finish(h, r, R, p)
+
+
+def field_iris(X, Y, R, p):
+    """007 camera-iris / aperture: N straight blade leading-edges, each a line
+    tangent to a central aperture circle and rotated, overlapping into a
+    pinwheel around a central N-gon hole.  The leading edges are grooves; each
+    blade is filled with a per-blade aligned cube so the guilloche follows the
+    blade.  iris_aperture = hole size, iris_swirl curves the blades, iris_edge =
+    groove softness, num_arms = blade count."""
+    r = np.hypot(X, Y)
+    rho = np.clip(r / R, 0.0, 1.0)
+    N = p["num_arms"]
+    a = p["iris_aperture"] * R
+    edge_d = np.full_like(r, 1e9)
+    smax = np.full_like(r, -1e9)
+    own_tx = np.zeros_like(r); own_ty = np.zeros_like(r)   # along-edge tangent
+    own_nx = np.zeros_like(r); own_ny = np.zeros_like(r)   # edge normal
+    for k in range(N):
+        tk = 2.0 * math.pi * k / N + p["iris_swirl"] * rho   # array (blades curve with r)
+        ck, sk = np.cos(tk), np.sin(tk)
+        d = (X * ck + Y * sk) - a                          # signed dist to blade k edge
+        edge_d = np.minimum(edge_d, np.abs(d))
+        sel = d > smax
+        smax = np.where(sel, d, smax)
+        own_tx = np.where(sel, -sk, own_tx); own_ty = np.where(sel, ck, own_ty)
+        own_nx = np.where(sel,  ck, own_nx); own_ny = np.where(sel, sk, own_ny)
+    groove = dm.smoothstep(0.0, p["iris_edge"], edge_d)    # 0 on the edge, 1 in the blade
+    along = X * own_tx + Y * own_ty
+    across = X * own_nx + Y * own_ny
+    f = 0.5 / p["cell"]
+    cube = dm.stripe(f * along, p["grid_e0"], p["grid_e1"]) * dm.stripe(f * across, p["grid_e0"], p["grid_e1"])
+    h = p["base"] + p["petal_amp"] * groove + p["grid_amp"] * cube * groove
+    return _finish(h, r, R, p)
+
+
+def field_swirl(X, Y, R, p):
+    """Log-spiral guilloche: the woven cells spiral out as equiangular arms
+    (theta + swirl_turns*log r), crossed by radial bands.  swirl_turns sets the
+    spiral tightness (0 -> straight rosette), num_arms the arm count."""
+    r = np.hypot(X, Y)
+    theta = np.arctan2(Y, X)
+    lr = np.log(np.maximum(r, 1e-3))
+    u = (p["num_arms"] * theta + p["swirl_turns"] * lr) / (2.0 * math.pi)   # spiral arms
+    v = r / p["cell"]                                                       # radial bands
+    grid = dm.stripe(u, p["grid_e0"], p["grid_e1"]) * dm.stripe(v, p["grid_e0"], p["grid_e1"])
+    return _finish(p["base"] + p["grid_amp"] * grid, r, R, p)
+
+
+def field_varwidth(X, Y, R, p):
+    """Alternating-width sunburst: even sectors carry a fine woven cell, odd
+    sectors a COARSE one (lightning_cell_scale), so the guilloche pitch changes
+    sector to sector around the dial.  num_arms = sector pair count."""
+    r = np.hypot(X, Y)
+    theta = np.arctan2(Y, X)
+    N = p["num_arms"]
+    two_pi_over_N = 2.0 * math.pi / N
+    sector = np.round(theta / two_pi_over_N)
+    tc = sector * two_pi_over_N
+    cc, ss = np.cos(tc), np.sin(tc)
+    xr = cc * X + ss * Y
+    yr = -ss * X + cc * Y
+    coarse = (np.mod(sector, 2.0) != 0)
+    cell_local = np.where(coarse, p["cell"] * p["lightning_cell_scale"], p["cell"])
+    fr = 0.5 / cell_local
+    grid = dm.stripe(fr * xr, p["grid_e0"], p["grid_e1"]) * dm.stripe(fr * yr, p["grid_e0"], p["grid_e1"])
+    return _finish(p["base"] + p["grid_amp"] * grid, r, R, p)
+
+
+FIELDS = {"uniform": field_uniform, "radial": field_radial,
+          "lightning": field_lightning, "iris": field_iris,
+          "swirl": field_swirl, "varwidth": field_varwidth}
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--field", choices=sorted(FIELDS), default="lightning_cell")
+    ap.add_argument("--field", choices=sorted(FIELDS), default="lightning")
     ap.add_argument("--out", default="dial_lightning.raw2", help="output RAW2 (in this folder unless absolute)")
     ap.add_argument("--preview", action="store_true", help="also write <out>_preview.png (height|hillshade)")
     # base dial knobs (mirror dial_mesh_gen defaults)
@@ -160,6 +316,24 @@ def main(argv=None):
     ap.add_argument("--lightning-hi", type=float, default=0.72, help="petal-mask upper shoulder. Default 0.72.")
     ap.add_argument("--lightning-relief", type=float, default=0.0,
                     help="raise(+)/recess(-) the bolt region as a relief step (0 = pure cell-size contrast). Default 0.")
+    ap.add_argument("--zigzag-amp", type=float, default=0.16,
+                    help="lightning: angular zigzag amplitude (rad) kinking the rays toward centre; 0 = straight spokes. Default 0.20.")
+    ap.add_argument("--zigzag-freq", type=float, default=3.0,
+                    help="lightning: zigzag periods centre->rim (more = more kinks per bolt). Default 3.0.")
+    ap.add_argument("--field-cell", type=float, default=0.45,
+                    help="lightning: cell size of the TIGHT cube field BETWEEN bolts (smaller = tighter). Default 0.45.")
+    ap.add_argument("--field-frame", choices=["global", "radial"], default="global",
+                    help="lightning: cube-field orientation -- 'global' uniform checkerboard or 'radial' per-sector. Default global.")
+    ap.add_argument("--bolt-style", choices=["rung", "cube", "woven"], default="rung",
+                    help="lightning: texture inside the bolts -- 'rung' = full-width rectangular blocks across the bolt (default), 'cube' = open squares, 'woven' = interlocking pillows.")
+    ap.add_argument("--rung-len", type=float, default=1.2,
+                    help="lightning 'rung' grid: block size ALONG the channel (radial). Default 1.2.")
+    ap.add_argument("--rung-width", type=float, default=1.5,
+                    help="lightning 'rung' grid: block size ACROSS the channel (tangential); keep <= the narrowest channel for uniform blocks. Default 1.5.")
+    ap.add_argument("--iris-aperture", type=float, default=0.13, help="iris: central hole radius as a fraction of R. Default 0.13.")
+    ap.add_argument("--iris-swirl", type=float, default=0.5, help="iris: curve the blades (radians of rotation centre->rim). Default 0.5.")
+    ap.add_argument("--iris-edge", type=float, default=0.6, help="iris: blade-edge groove softness (world units). Default 0.6.")
+    ap.add_argument("--swirl-turns", type=float, default=6.0, help="swirl: log-spiral tightness (0 = straight rosette). Default 6.0.")
     args = ap.parse_args(argv)
 
     p = vars(args).copy()
