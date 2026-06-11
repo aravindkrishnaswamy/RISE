@@ -11,7 +11,12 @@ description: |
   Walks through the PT-vs-X property, isolation tests for individual
   strategies, the recurring "delta-light vs delta-surface" trap, and
   the running-quantity instrumentation pattern that pinpoints which
-  strategy / vertex / pdf is producing the wrong value.
+  strategy / vertex / pdf is producing the wrong value.  Starts with
+  pre-flight checks for the two known NON-MIS causes of the same
+  symptom: output-layer splat loss in the plain file when
+  `oidn_denoise` is on (compare against `_denoised`), and
+  light-surface sampler density bugs (deficit tracks the emitter
+  shape).
 ---
 
 # BDPT / VCM MIS Balance Diagnosis
@@ -48,6 +53,59 @@ description: |
   bias (the bug this skill fixes).
 
 ## Procedure
+
+### 0. Rule out the two known non-MIS causes first
+
+Two failure modes (both found 2026-06-10 on a torus-arealight scene)
+produce exactly the "bidirectional render disagrees with PT" symptom
+while the MIS arithmetic is perfectly healthy.  Both are minutes to
+check; do them before any integrator instrumentation:
+
+1. **Output-layer splat loss — compare the plain file against
+   `_denoised`, or re-render with `oidn_denoise FALSE`.**  With
+   `oidn_denoise` on (the DEFAULT), the plain (non-`_denoised`) file
+   is written by the bound-mode `FileEncoderObserver` reading the
+   canonical FrameStore at `MarkPreDenoiseComplete`.  Energy that
+   reaches the image only via the splat film (the t=1 light-tracing
+   strategy) must be resolved into the canonical around that Mark —
+   `VCMRasterizerBase::FlushPreDenoisedToOutputs` and
+   `BDPTRasterizerBase`'s pre-denoise block do this (Resolve → flush
+   → Unresolve) since 2026-06-10.  Pre-fix, the plain file silently
+   dropped ALL t=1 energy: under VCM's balance heuristic t=1 carries
+   most direct lighting on simple scenes, so a torus-arealight floor
+   measured 0.36× of PT while the image was otherwise CLEAN — no
+   splotches, emitter rendered correctly (s=0 emission is weight-1
+   and never splatted).  BDPT masked the same hole because power-2
+   crushes its t=1 share on PT-convergent scenes.  If plain and
+   `_denoised` disagree beyond noise, the bug is in the output
+   layer, not transport.
+
+2. **Light-surface sampler density — if the deficit tracks the
+   emitter SHAPE, chi-square the geometry's `UniformRandomPoint`.**
+   MIS weights assume the claimed `pdfPosition = 1/GetArea()` is the
+   ACTUAL sampling density.  If the sampler deviates (TorusGeometry's
+   rejection-retry collapsed ~27% of draws onto a single tube circle
+   pre-2026-06-10), every light-sampled strategy carries the same
+   spatial bias — and integrators MIX those biased estimators with
+   different MIS shares (PT ≈65% light-sampled vs VCM ≈90%+ under
+   balance), so they disagree pointwise while each remains
+   internally consistent.  Signature: discrepancy appears with one
+   emitter shape (curved / self-occluding) but vanishes with a flat
+   `clippedplane` quad in the same placement; image-wide means
+   roughly match because the redistribution cancels globally — which
+   makes `*StrategyBalanceTest` mean/median/p99 comparisons
+   structurally blind to it.  A density-histogram regression
+   (`tests/GeometryUVRoundtripTest.cpp`, TestTorus) shows the
+   pattern to copy for other primitives.
+
+A useful invariant for separating these from real MIS bugs: when you
+instrument per-strategy totals (step 3), compare the per-strategy
+SUM across integrators, not the mix — balance vs power-2
+legitimately split the same energy very differently (VCM may carry
+~63% of floor-direct in t=1 splats where BDPT carries ~0%).
+Matching sums + a dim image ⇒ the loss happens AFTER the integrator
+(output layer).  Consistent weight formulas + emitter-shape-dependent
+disagreement ⇒ suspect sampled densities, not weights.
 
 ### 1. Establish the property: BDPT/VCM mean = PT mean
 
@@ -325,6 +383,43 @@ if( currIsSpecularSurface || prevIsSpecularSurface ) {
 Catches if regressed by `VCMStrategyBalanceTest` "delta-position
 omni light" topology — the pre-fix splotches blow out the p99 and
 max comparisons.
+
+### Output layer — OIDN-on plain file dropped the t=1 splat film
+
+(2026-06-10, the step-0 example.)  A torus-arealight floor rendered
+at 0.366× of PT under VCM while BDPT tracked PT at 0.998 — uniform
+dimming, clean image, correct emitter.  Per-strategy totals showed
+VCM's NEE + s=0 + t=1 SUM matched BDPT's within 1%, the t=1 splat
+film held the missing ~63% with the correct resolve divisor, and the
+spatial grid of the splat film matched PT's bright pool — the energy
+was complete and correctly placed but never reached the written
+file.  Root cause: post-L8, CLI file outputs are canonical-FrameStore
+observers; at `MarkPreDenoiseComplete` the canonical was deliberately
+splat-free for OIDN, and the old scratch-composite only fed the
+legacy IRasterizerOutput chain.  Fix: Resolve → flush → Unresolve in
+`VCMRasterizerBase::FlushPreDenoisedToOutputs` and BDPT's pre-denoise
+block (observer dispatch is synchronous, so the temporary resolve
+cannot race the file write).  No integrator code changed.
+
+### Sampler density — TorusGeometry point-mass biased all light-sampled strategies
+
+(2026-06-10, the step-0 example's second layer.)  With the splat
+film correctly composited, VCM still sat at 0.90× of PT with a
+shape: +9% directly under the torus, −10% in the surrounding ring —
+while a flat quad emitter in the same open scene gave 1.0002.  The
+analytic torus's `UniformRandomPoint` rejection-retry multiplied its
+[0,1) float candidates by 2⁻³² (an integer-hash constant), so every
+rejected first draw collapsed to the single tube angle v = 2π·0.618
+— a point-mass holding r/(R+r) ≈ 27% of all samples on one circle.
+All light-sampled estimators divide by the claimed uniform 1/area
+pdf, so all carried the same circle-shaped bias; PT and VCM disagree
+only because they MIX those estimators with different MIS shares.
+Fix: exact CDF inversion (bisection-safeguarded Newton on
+R·v + r·sin v) in `TorusGeometry::UniformRandomPoint`; regression:
+the tube-angle density histogram in
+`tests/GeometryUVRoundtripTest.cpp`.  Note this is invisible to
+`VCMStrategyBalanceTest`-style image-mean checks (the redistribution
+cancels globally) — the sharp regression lives at the sampler layer.
 
 ## Mental model for delta lights and MIS
 

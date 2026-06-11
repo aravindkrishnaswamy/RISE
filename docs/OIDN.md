@@ -36,7 +36,15 @@ Single concrete pipeline in
   (PT/BDPT/VCM pel + spectral, post-accumulation, pre-tone-map)
 - [BDPTRasterizerBase.cpp:1014](../src/Library/Rendering/BDPTRasterizerBase.cpp#L1014)
   (denoise **before** splat-film resolve — splatting breaks OIDN per upstream
-  README, so this ordering is correct and load-bearing)
+  README, so this ordering is correct and load-bearing).  The pre-denoise
+  flush in both BDPT and VCM (`FlushPreDenoisedToOutputs`) resolves the splat
+  film into the canonical FrameStore, dispatches the flush (so the plain
+  non-`_denoised` file written by bound-mode `FileEncoderObserver` at
+  `MarkPreDenoiseComplete` contains the t=1 light-tracing energy), then
+  `SplatFilm::Unresolve`s it so OIDN's input stays splat-free.  Before
+  2026-06-10 the plain file was written from the splat-less canonical —
+  under VCM's balance heuristic that silently dropped most direct lighting
+  on splat-heavy scenes (torus-arealight floor at 0.36× of PT).
 - [MLTRasterizer.cpp:1138](../src/Library/Rendering/MLTRasterizer.cpp#L1138) and
   [MLTSpectralRasterizer.cpp:945](../src/Library/Rendering/MLTSpectralRasterizer.cpp#L945)
   (default off — chunk parser hard-codes `oidn_denoise` default to `false` for

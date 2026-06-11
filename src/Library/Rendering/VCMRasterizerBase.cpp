@@ -824,18 +824,25 @@ void VCMRasterizerBase::OnProgressivePassBegin(
 // they're now correct AND see the same canonical content the
 // FrameStore observers do.
 //
-// Why not in `FlushPreDenoisedToOutputs`: OIDN's denoise pass runs
-// on `mFrameStore` AFTER `FlushPreDenoisedToOutputs` returns and
-// BEFORE `FlushDenoisedToOutputs` is called.  OIDN must NOT see
-// splats (BDPT's docs/OIDN.md decision: splatted accumulation
-// pattern is incompatible with OIDN's per-pixel-independent-noise
-// assumption).  So pre-denoise must keep using the scratch path —
-// it composites splats into a separate RISERasterImage so legacy
-// pre-denoise file outputs still see splatted content while the
-// canonical store stays splat-less for OIDN's input.  Bound-VFS
-// observers receiving `OnPreDenoiseComplete` see splat-less
-// canonical for VCM (acceptable: pre-denoise is intermediate; the
-// final post-denoise + splat fire later catches them up).
+// `FlushPreDenoisedToOutputs` (2026-06-10 revision): OIDN's denoise
+// pass runs on `mFrameStore` AFTER `FlushPreDenoisedToOutputs`
+// returns and BEFORE `FlushDenoisedToOutputs` is called, and OIDN
+// must NOT see splats (BDPT's docs/OIDN.md decision: splatted
+// accumulation is incompatible with OIDN's per-pixel-independent-
+// noise assumption).  The original L6d-2a compromise composited
+// splats into a separate scratch image for the legacy
+// IRasterizerOutput chain and accepted a splat-less canonical for
+// `OnPreDenoiseComplete` observers — but post-L8 the CLI file
+// outputs ARE canonical-FrameStore observers (FileEncoderObserver),
+// so the plain (non-_denoised) file silently lost ALL t=1
+// light-tracing energy whenever denoise was enabled (the default).
+// VCM's balance heuristic routes most direct lighting through t=1
+// on many scenes, so plain outputs came out several times too dim
+// (torus-arealight floor at 0.36x of PT).  The revised flush
+// resolves the splat film into the canonical, dispatches the flush
+// (legacy chain AND Mark observers see the complete image), then
+// `SplatFilm::Unresolve`s the identical per-pixel values so OIDN's
+// subsequent input is splat-free again to ~1 ulp.
 //
 // Mutation safety: `pSplatFilm->Resolve(target, spp)` is ADDITIVE.
 // pSplatFilm is reallocated fresh per render in `PreRenderSetup`
@@ -896,12 +903,33 @@ void VCMRasterizerBase::FlushPreDenoisedToOutputs( const IRasterImage& img, cons
 		PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( img, rcRegion, frame );
 		return;
 	}
-	// L6d-2a — keep the legacy scratch path here.  Mutating `img`
-	// (mFrameStore beauty view in bound mode) would taint OIDN's
-	// next-step denoise input with splats.  See top-of-section
-	// comment for the rationale.
-	IRasterImage& composited = ResolveSplatIntoScratch( img );
-	PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( composited, rcRegion, frame );
+	// Resolve splats into the canonical for the DURATION of the flush,
+	// then subtract them back out so OIDN's denoise input stays
+	// splat-free.  The previous scratch-composite path
+	// (ResolveSplatIntoScratch) fed only the legacy IRasterizerOutput
+	// chain — bound-mode FrameStore observers (FileEncoderObserver,
+	// the post-L8 CLI file outputs) read the CANONICAL at
+	// MarkPreDenoiseComplete and wrote the plain (non-_denoised) file
+	// WITHOUT the t=1 light-tracing strategy's energy.  Under VCM's
+	// balance heuristic that strategy carries most direct lighting
+	// (e.g. ~63% of floor-direct on a torus-arealight scene — plain
+	// file at 0.36x of PT, 2026-06-10).  Observer dispatch is
+	// synchronous (FrameStore::DispatchObservers is an in-thread loop
+	// and FileEncoderObserver::WriteFile encodes inside the callback),
+	// so the Unresolve below cannot race a file write.  Resolve and
+	// Unresolve add/subtract the bitwise-identical per-pixel product,
+	// so the canonical returns to its pre-flush content to ~1 ulp.
+	IRasterImage& target = const_cast<IRasterImage&>( img );
+	const Scalar splatSpp = GetEffectiveSplatSPP( target.GetWidth(), target.GetHeight() );
+	{
+		FrameStoreBulkBracket bracket( mFrameStore, target );
+		pSplatFilm->Resolve( target, splatSpp );
+	}
+	PixelBasedRasterizerHelper::FlushPreDenoisedToOutputs( target, rcRegion, frame );
+	{
+		FrameStoreBulkBracket bracket( mFrameStore, target );
+		pSplatFilm->Unresolve( target, splatSpp );
+	}
 }
 
 void VCMRasterizerBase::FlushDenoisedToOutputs( const IRasterImage& img, const Rect* rcRegion, const unsigned int frame ) const

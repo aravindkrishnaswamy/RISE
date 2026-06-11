@@ -1150,20 +1150,28 @@ void BDPTRasterizerBase::RasterizeScene(
 	}
 
 	if( bWillDenoise ) {
-		// Pre-denoised output = inline box + splats.  Mirrors the
-		// input we're about to feed OIDN (inline box) plus the
-		// splat contributions OIDN can't handle — matches PT's
-		// pre-denoised output convention.
-		IRasterImage* pPreDenoised = new RISERasterImage( width, height, RISEColor( 0, 0, 0, 0 ) );
-		GlobalLog()->PrintNew( pPreDenoised, __FILE__, __LINE__, "pre-denoised image" );
-		for( unsigned int y = 0; y < height; y++ ) {
-			for( unsigned int x = 0; x < width; x++ ) {
-				pPreDenoised->SetPEL( x, y, pImage->GetPEL( x, y ) );
-			}
+		// Pre-denoised output = inline box + splats.  Resolve the splat
+		// film into the canonical image for the duration of the flush,
+		// then subtract it back out so OIDN's denoise input below stays
+		// splat-free.  The previous separate pre-denoised copy reached
+		// only the legacy IRasterizerOutput chain; bound-mode FrameStore
+		// observers (FileEncoderObserver — the post-L8 CLI file outputs)
+		// read the CANONICAL at MarkPreDenoiseComplete and wrote the
+		// plain file without any t=1 splat energy.  See the twin fix at
+		// VCMRasterizerBase::FlushPreDenoisedToOutputs, where VCM's
+		// balance heuristic makes the loss catastrophic; observer
+		// dispatch is synchronous so the Unresolve cannot race a file
+		// write.
+		const Scalar splatSpp = GetEffectiveSplatSPP( width, height );
+		{
+			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+			pSplatFilm->Resolve( *pImage, splatSpp );
 		}
-		pSplatFilm->Resolve( *pPreDenoised, GetEffectiveSplatSPP( width, height ) );
-		FlushPreDenoisedToOutputs( *pPreDenoised, pRect, 0 );
-		safe_release( pPreDenoised );
+		FlushPreDenoisedToOutputs( *pImage, pRect, 0 );
+		{
+			FrameStoreBulkBracket bracket( mFrameStore, *pImage );
+			pSplatFilm->Unresolve( *pImage, splatSpp );
+		}
 	}
 
 #ifdef RISE_ENABLE_OIDN
