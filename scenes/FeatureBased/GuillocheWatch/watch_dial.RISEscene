@@ -406,7 +406,9 @@ png_painter
 #
 # Titanium temper ladder (1st order): ~18 straw, ~22 gold, ~30 magenta/purple,
 #   ~33 blue, ~40 cyan, then it repeats (2nd order).  Pick a window on it:
-#     gold -> blue   (vivid, default) : bias 22  scale 16   (22..38 nm)
+#     gold -> blue   (vivid)          : bias 22  scale 16   (22..38 nm)
+#     MING 37.06     (ACTIVE)        : bias 24.5 scale 13  (24.5..37.5 nm)
+#                                      violet/blue field, warm gold heart
 #     gold -> blue   (restrained)     : bias 22  scale 11   (22..33 nm)
 #     straw -> magenta (short torch)  : bias 18  scale 12   (18..30 nm)
 #     magenta -> cyan  (long torch)   : bias 30  scale 12   (30..42 nm)
@@ -418,8 +420,8 @@ scalar_painter
 	name				oxide_thk
 	texture				oxide_png
 	channel				R
-	scale				16.0
-	bias				22.0
+	scale				13.0
+	bias				24.5
 }
 
 # --- COLOUR PALETTES (Ti temper windows; swap via the dial's film_thickness) ---
@@ -750,6 +752,20 @@ ggx_material
 	extinction			Ti_k
 }
 
+# Floating hour ring -- satin STEEL (brighter than Ti) so it integrates the
+# softbox glow at every angle instead of only mirroring sharp env lines.
+ggx_material
+{
+	name				ring_metal
+	rd				pnt_black
+	rs				pnt_silver
+	alphax				0.07
+	alphay				0.07
+	fresnel_mode			conductor
+	ior				Steel_n
+	extinction			Steel_k
+}
+
 # Sapphire (Al2O3 / corundum) dispersion -- Malitson 1962 ordinary-ray Sellmeier
 # coefficients (B1 B2 B3 C1 C2 C3, C in um^2; the painter converts nm->um internally).
 # n(589nm) ~= 1.768; low dispersion (Abbe ~72), so a subtle but physical chromatic edge.
@@ -968,13 +984,13 @@ sdf_geometry
 sdf_geometry
 {
 	name				handhoursdf
-	part				roundcone union 0  0 0 0  0 0 0  1 1 0.25  0.72 0.13 10  0
+	part				roundcone union 0  0 0 0  0 0 0  1 1 0.144828  1.45 0.48 10  0
 }
 
 sdf_geometry
 {
 	name				handminutesdf
-	part				roundcone union 0  0 0 0  0 0 0  1 1 0.3  0.6 0.1 16  0
+	part				roundcone union 0  0 0 0  0 0 0  1 1 0.172131  1.22 0.4 16  0
 }
 
 standard_object
@@ -1033,86 +1049,73 @@ standard_object
 # Long thin boxes in the XY plane, just above the dial (z = -0.4),
 # rolled about Z to the clock angle.  Box long axis = X (width).
 ##################################################
-# Small central hub cap over the hand pivot.
-sphere_geometry
+# Small FLAT central pin cap (lume white) on TOP of the hand stack: hour hand
+# at z=0.2, minute hand ABOVE it at z=0.7, pin covering the pivot at z~1.0.
+#
+# >>> LUME PLAN <<<  A future night variant renders this scene with the
+# lights set very low and swaps lume_white (pin) -- and white-lume variants of
+# the marker ring + hands -- to lambertian_luminaire_material so they GLOW:
+# SDF geometry is a first-class NEE area light (tessellation-backed
+# UniformRandomPoint/GetArea), so the ring and hands emit correctly.
+sdf_geometry
 {
-	name				hubgeom
-	radius				2.0
+	name				pinsdf
+	part				cylinder union 0  0 0 1.02  90 0 0  1 1 1  0.85 0.16 0  0
+}
+
+uniformcolor_painter
+{
+	name				pnt_lume_white
+	color				0.93 0.93 0.89
+}
+
+# Matte lume white (day look).  Night variant: lambertian_luminaire_material
+# with exitance pnt_lume_white over this same geometry.
+lambertian_material
+{
+	name				lume_white
+	reflectance			pnt_lume_white
 }
 
 standard_object
 {
-	name				hub
-	geometry			hubgeom
-	material			blued_steel
-	position			0 0 -0.2
+	name				pin
+	geometry			pinsdf
+	material			lume_white
+	position			0 0 0
 }
 
 ##################################################
-# Applied hour markers (polished silver batons) just inside the rim.
-# 3/6/9 batons + a wider twin-baton at 12.  Marker radius ~16, z = -0.6.
-# Baton long axis is radial; for 3 & 9 (along X) long axis = X, for
-# 6 (along Y) long axis = Y via a 90 roll.
+# MING-style floating hour ring: a thin polished circle suspended just
+# below the sapphire dome (z=0.55, under the crystal underside at this
+# radius), BROKEN at the 12 hour positions -- the gaps ARE the markers,
+# with a wider gap at 12 o'clock.  Regenerate with sdf_gen.py.
 ##################################################
-# 3 o'clock (+X)
-box_geometry
+sdf_geometry
 {
-	name				idx_radialX
-	width				2.6
-	height				0.7
-	depth				0.4
+	name				markerringsdf
+	part				cylinder union 0  0 0 0.72  90 0 0  1 1 1  18.475 0.11 0  0
+	part				cylinder subtract 0  0 0 0.72  90 0 0  1 1 1  17.525 0.44 0  0
+	part				box subtract 0  0 18 0.72  0 0 90  1 1 1  1.425 2.1 0.44  0
+	part				box subtract 0  9 15.5885 0.72  0 0 60  1 1 1  1.425 1.05 0.44  0
+	part				box subtract 0  15.5885 9 0.72  0 0 30  1 1 1  1.425 1.05 0.44  0
+	part				box subtract 0  18 0 0.72  0 0 0  1 1 1  1.425 1.05 0.44  0
+	part				box subtract 0  15.5885 -9 0.72  0 0 -30  1 1 1  1.425 1.05 0.44  0
+	part				box subtract 0  9 -15.5885 0.72  0 0 -60  1 1 1  1.425 1.05 0.44  0
+	part				box subtract 0  0 -18 0.72  0 0 -90  1 1 1  1.425 1.05 0.44  0
+	part				box subtract 0  -9 -15.5885 0.72  0 0 -120  1 1 1  1.425 1.05 0.44  0
+	part				box subtract 0  -15.5885 -9 0.72  0 0 -150  1 1 1  1.425 1.05 0.44  0
+	part				box subtract 0  -18 0 0.72  0 0 -180  1 1 1  1.425 1.05 0.44  0
+	part				box subtract 0  -15.5885 9 0.72  0 0 -210  1 1 1  1.425 1.05 0.44  0
+	part				box subtract 0  -9 15.5885 0.72  0 0 -240  1 1 1  1.425 1.05 0.44  0
 }
 
 standard_object
 {
-	name				idx3
-	geometry			idx_radialX
-	material			index_metal
-	position			16.0 0 -0.6
-}
-
-# 9 o'clock (-X)
-standard_object
-{
-	name				idx9
-	geometry			idx_radialX
-	material			index_metal
-	position			-16.0 0 -0.6
-}
-
-# 6 o'clock (-Y) -- reuse radialX rolled 90 so it points radially.
-standard_object
-{
-	name				idx6
-	geometry			idx_radialX
-	material			index_metal
-	position			0 -16.0 -0.6
-	orientation			0 0 90
-}
-
-# 12 o'clock distinctive twin marker (+Y): two short batons side by side.
-box_geometry
-{
-	name				idx12geom
-	width				0.7
-	height				2.4
-	depth				0.4
-}
-
-standard_object
-{
-	name				idx12a
-	geometry			idx12geom
-	material			index_metal
-	position			-1.1 16.0 -0.6
-}
-
-standard_object
-{
-	name				idx12b
-	geometry			idx12geom
-	material			index_metal
-	position			1.1 16.0 -0.6
+	name				markerring
+	geometry			markerringsdf
+	material			ring_metal
+	position			0 0 0
 }
 
 ##################################################

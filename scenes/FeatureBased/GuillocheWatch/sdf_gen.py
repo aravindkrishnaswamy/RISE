@@ -17,7 +17,7 @@ a,b,c : per-primitive size (see SDFGeometry.h):
         roundcone a=base-radius b=tip-radius c=height  (axis = local Y, base at y=0)
 euler : applied Rz*Ry*Rx (degrees).  scale : per-axis (non-uniform OK).
 
-  python3 sdf_gen.py                 # print the four watch chunks (paste into watch_dial.RISEscene)
+  python3 sdf_gen.py                 # print the six watch chunks (paste into watch_dial.RISEscene)
   python3 sdf_gen.py --test-sphere   # print a lone r=5 sphere chunk, for validation
 """
 import argparse
@@ -28,7 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def part(type, op, k, pos, euler=(0, 0, 0), scale=(1, 1, 1), a=0.0, b=0.0, c=0.0, round=0.0):
-    g = lambda *v: " ".join("%g" % x for x in v)
+    g = lambda *v: " ".join("%g" % (0.0 if abs(x) < 1e-9 else x) for x in v)
     return "%s %s %s  %s  %s  %s  %s  %s" % (
         type, op, g(k), g(*pos), g(*euler), g(*scale), g(a, b, c), g(round))
 
@@ -96,6 +96,33 @@ def crown(center=(26.0, 0.0, -4.635), r=3.2, halfL=2.0, n_flutes=16, depth=0.72,
     return P
 
 
+def marker_ring(r=18.0, width=0.95, halfh=0.11, z=0.72, gap_half=1.05, gap12_half=2.1):
+    """MING-style floating hour ring: a thin FLAT band (washer, not wire)
+    suspended just below the sapphire dome, BROKEN at the 12 hour positions --
+    the gaps ARE the markers, wider at 12 o'clock.  Flat top catches the
+    softbox pair as a broad annular highlight.  Outer cylinder minus inner
+    cylinder minus 12 radial gap boxes."""
+    P = [part("cylinder", "union", 0, (0, 0, z), (90, 0, 0), a=r + width * 0.5, b=halfh),
+         part("cylinder", "subtract", 0, (0, 0, z), (90, 0, 0), a=r - width * 0.5, b=halfh * 4)]
+    for k in range(12):
+        theta = 90.0 - k * 30.0          # 12 o'clock at +Y, clockwise
+        rad = math.radians(theta)
+        gx, gy = r * math.cos(rad), r * math.sin(rad)
+        half = gap12_half if k == 0 else gap_half
+        # local x = radial (euler Rz(theta)); a cuts through the band radially,
+        # b is the half GAP along the circumference, c cuts it vertically
+        P.append(part("box", "subtract", 0, (gx, gy, z), (0, 0, theta),
+                      a=width * 1.5, b=half, c=halfh * 4))
+    return P
+
+
+def pin(r=0.85, halfh=0.16, z=1.02):
+    """Small FLAT central pin cap (a low z-axis cylinder) sitting ON TOP of the
+    hand stack -- hour at z~0.2, minute above at z~0.7, pin covers the pivot.
+    Rendered in lume white (see the LUME PLAN note in watch_dial.RISEscene)."""
+    return [part("cylinder", "union", 0, (0, 0, z), (90, 0, 0), a=r, b=halfh)]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--test-sphere", action="store_true", help="emit test_sphere.sdf (a lone r=5 sphere)")
@@ -107,10 +134,14 @@ def main(argv=None):
 
     emit_chunk("casebodysdf", case_body())
     emit_chunk("crownsdf", crown())
+    # MING-style hands: fatter at the hub, gentle linear taper, ROUNDED tip
+    # (the round-cone tip radius is the rounding).
     emit_chunk("handhoursdf",
-               hand(length=10.0, r_base=0.72, r_tip=0.13, thickness=0.36))
+               hand(length=10.0, r_base=1.45, r_tip=0.48, thickness=0.42))
     emit_chunk("handminutesdf",
-               hand(length=16.0, r_base=0.60, r_tip=0.10, thickness=0.36))
+               hand(length=16.0, r_base=1.22, r_tip=0.40, thickness=0.42))
+    emit_chunk("pinsdf", pin())
+    emit_chunk("markerringsdf", marker_ring())
     return 0
 
 
