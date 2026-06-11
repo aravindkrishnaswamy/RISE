@@ -1163,19 +1163,19 @@ standard_object
 }
 
 ##################################################
-# Blue suede leather strap.  A swept
+# Blue FKM-rubber strap (MING-style).  A swept
 # curved band (scenes/FeatureBased/GuillocheWatch/strap_mesh_gen.py) from each lug, curving down to the
-# tabletop and laying flat (the b_hero pose).  Matte suede = high-roughness
-# schlick_f0 dielectric.  The -Y (6 o'clock) half is the same mesh rotated
+# tabletop with a subtle residual arc (never dead-flat).  Domed top, rounded
+# edges, 20->16mm taper; soft FKM sheen = schlick_f0 with a low F0.  The -Y (6 o'clock) half is the same mesh rotated
 # 180deg about Z.
 ##################################################
 ggx_material
 {
 	name				strap_leather
 	rd				pnt_strap_blue
-	rs				pnt_black
-	alphax				0.5
-	alphay				0.5
+	rs				pnt_surf_f0
+	alphax				0.34
+	alphay				0.34
 	fresnel_mode			schlick_f0
 }
 
@@ -1199,5 +1199,48 @@ standard_object
 	name				strap_6
 	geometry			strapgeom
 	material			strap_leather
+	orientation			0 0 180
+}
+
+# Saddle stitching: real thread capsules following the drape curve, sitting
+# in the recessed channel pressed into the strap's top profile.  Separate
+# mesh so the thread carries its own material.  Regenerate both meshes with
+# strap_mesh_gen.py (--stitch-pitch/-len/-r/-angle/--groove).
+uniformcolor_painter
+{
+	name				pnt_thread
+	color				0.30 0.36 0.55
+}
+
+ggx_material
+{
+	name				strap_thread
+	rd				pnt_thread
+	rs				pnt_surf_f0
+	alphax				0.42
+	alphay				0.42
+	fresnel_mode			schlick_f0
+}
+
+rawmesh2_geometry
+{
+	name				strapstitchgeom
+	file				scenes/FeatureBased/GuillocheWatch/strap_stitch.raw2
+	double_sided			TRUE
+	face_normals			FALSE
+}
+
+standard_object
+{
+	name				stitch_12
+	geometry			strapstitchgeom
+	material			strap_thread
+}
+
+standard_object
+{
+	name				stitch_6
+	geometry			strapstitchgeom
+	material			strap_thread
 	orientation			0 0 180
 }
