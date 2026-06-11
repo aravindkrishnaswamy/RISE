@@ -417,6 +417,9 @@
     <ClCompile Include="..\..\..\src\Library\Painters\CheckerPainter.cpp">
       <Filter>Painters</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Painters\GuillochePainter.cpp">
+      <Filter>Painters</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Painters\IridescentPainter.cpp">
       <Filter>Painters</Filter>
     </ClCompile>
@@ -1611,6 +1614,12 @@
     <ClInclude Include="..\..\..\src\Library\Painters\Function2DScalarPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\GuillocheField.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\GuillochePainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\ScaledScalarPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
@@ -2125,6 +2134,9 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Job.h">
       <Filter>Job</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ProceduralDescriptors.h">
+      <Filter>Interfaces</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Interfaces\IAnimator.h">
       <Filter>Interfaces</Filter>

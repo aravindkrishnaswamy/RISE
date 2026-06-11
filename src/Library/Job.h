@@ -1486,6 +1486,27 @@ namespace RISE
 					const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for surface sampling
 					);
 
+		//! Creates the procedural guilloché dial mesh (see IJob)
+		bool AddGuillocheDialGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const GuillocheDialDescriptor& desc		///< [in] Pattern + bake parameters
+					);
+
+		//! Creates the guilloché oxide-dose IFunction2D (see IJob)
+		bool AddGuillocheOxideFunction2D(
+					const char* name,						///< [in] Name of the function
+					const GuillocheDialDescriptor& desc,	///< [in] Pattern parameters (mask + radius)
+					const int falloffMode,					///< [in] 0 linear | 1 quadratic | 2 smooth
+					const double activationEa,				///< [in] Parabolic-oxidation Ea (J/mol)
+					const double torchAmount				///< [in] Signed dwell along the torch mask
+					);
+
+		//! Creates the swept-band (strap) mesh or its stitch threads (see IJob)
+		bool AddSweptBandGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const SweptBandDescriptor& desc			///< [in] Path + profile + stitch parameters
+					);
+
 		//! Creates a bilinear patch geometry
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddBilinearPatchGeometry(

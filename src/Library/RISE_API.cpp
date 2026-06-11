@@ -390,6 +390,8 @@ namespace RISE
 #include "Geometry/BilinearPatchGeometry.h"
 #include "Geometry/DisplacedGeometry.h"
 #include "Geometry/SDFGeometry.h"
+#include "Geometry/GeometryUtilities.h"		// MakeIndexedTriangleSameIdx for the procedural mesh factories
+#include "Painters/GuillochePainter.h"		// GuillocheField + oxide painter + descriptor converter
 #include "Geometry/TriangleMeshGeometry.h"
 #include "Geometry/TriangleMeshGeometryIndexed.h"
 #include "Geometry/TriangleMeshLoader3DS.h"
@@ -786,6 +788,505 @@ namespace RISE
 
 		(*ppi) = new SDFGeometry( parts, maxSteps, surfaceEpsilonFraction, samplingDetail );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "sdf geometry" );
+		return true;
+	}
+
+	// Field parameters that DIVIDE somewhere in GuillocheField (cell sizes,
+	// arm counts, radii) hard-fail at construction instead of baking NaN
+	// geometry / painters from plain scene text.  Mirrors the chunk parsers'
+	// hard-fail-on-unknown-enum convention.
+	static bool ValidateGuillocheFieldParams( const GuillocheDialDescriptor& d, const char* who )
+	{
+		const struct { const char* name; bool ok; } checks[] = {
+			{ "radius must be > 0",               d.radius > 0 },
+			{ "num_arms must be in [1, 256] (iris cost is O(num_arms) per sample)", d.numArms >= 1 && d.numArms <= 256 },
+			{ "cell must be > 0",                 d.cell > 0 },
+			{ "field_cell must be > 0",           d.fieldCell > 0 },
+			{ "lightning_cell_scale must be > 0", d.lightningCellScale > 0 },
+			{ "rung_len must be > 0",             d.rungLen > 0 },
+			{ "rung_width must be > 0",           d.rungWidth > 0 },
+		};
+		for( size_t i = 0; i < sizeof(checks)/sizeof(checks[0]); ++i ) {
+			if( !checks[i].ok ) {
+				GlobalLog()->PrintEx( eLog_Error, "%s: %s", who, checks[i].name );
+				return false;
+			}
+		}
+		return true;
+	}
+
+	// C++ twin of dial_mesh_gen.build_mesh (and the dial_variants_gen variants):
+	// bake the guilloché height field on an N x N Cartesian grid over [-R, R]^2,
+	// displace z = (h - mean(h)) * disp (mean over the FULL grid, matching
+	// numpy h.mean()), shade with analytic finite-difference normals
+	// (np.gradient port: central differences interior, one-sided edges),
+	// keep samples with hypot(x, y) <= R, and triangulate the all-inside cells
+	// CCW from +Z.  UV is the dial's linear Cartesian map u=(x+R)/2R.
+	bool RISE_API_CreateGuillocheDialGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const GuillocheDialDescriptor& desc
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		const int N = desc.meshN < 8 ? 8 : ( desc.meshN > 2048 ? 2048 : desc.meshN );
+		if( N != desc.meshN ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreateGuillocheDialGeometry: mesh_n %d clamped to %d", desc.meshN, N );
+		}
+		if( !ValidateGuillocheFieldParams( desc, "RISE_API_CreateGuillocheDialGeometry" ) ) {
+			return false;
+		}
+		const Scalar R = desc.radius;
+
+		const Implementation::GuillocheField field( Implementation::GuillocheParamsFromDescriptor( desc ) );
+
+		// xs = np.linspace(-R, R, N); endpoints pinned EXACTLY like numpy
+		// (accumulated -R + step*(N-1) can land an ulp past R and drop the
+		// on-axis rim vertices from the keep test on odd N).  Grid layout
+		// h[j*N+i] = field(xs[i], xs[j]) (rows j = y, cols i = x, numpy
+		// meshgrid).
+		std::vector<Scalar> xs( N );
+		const Scalar step = Scalar(2) * R / Scalar( N - 1 );
+		for( int i = 0; i < N; i++ ) {
+			xs[i] = -R + step * Scalar(i);
+		}
+		xs[0] = -R;
+		xs[ N - 1 ] = R;
+
+		// Pass 1: the UN-normalised field + its achieved range over the FULL
+		// grid (including the r > R corners) -- then finish against that
+		// range.  This is byte-exact Python `_finish` semantics for every
+		// parameter sign; the analytic RawMin/RawMax shortcut is only valid
+		// when the composed terms decouple (see GuillocheField.h).
+		const size_t cells = size_t(N) * size_t(N);
+		std::vector<Scalar> z( cells );
+		for( int j = 0; j < N; j++ ) {
+			for( int i = 0; i < N; i++ ) {
+				z[ size_t(j) * N + i ] = field.RawHeight( xs[i], xs[j] );
+			}
+		}
+		// Seed the reduce from the first sample, NOT +/-infinity: the build
+		// uses -ffast-math (finite-math-only), where infinity comparisons are
+		// undefined -- LTO really does miscompile an inf-seeded min/max here.
+		Scalar rawMin = z[0], rawMax = z[0];
+		for( size_t k = 1; k < cells; k++ ) {
+			if( z[k] < rawMin ) rawMin = z[k];
+			if( z[k] > rawMax ) rawMax = z[k];
+		}
+		Scalar mean = 0;
+		for( int j = 0; j < N; j++ ) {
+			for( int i = 0; i < N; i++ ) {
+				const size_t k = size_t(j) * N + i;
+				const Scalar h = field.FinishWithBounds( z[k], sqrt( xs[i] * xs[i] + xs[j] * xs[j] ), rawMin, rawMax );
+				z[k] = h;
+				mean += h;
+			}
+		}
+		mean /= Scalar( cells );
+		for( size_t k = 0; k < cells; k++ ) {
+			z[k] = ( z[k] - mean ) * desc.disp;
+		}
+
+		// np.gradient(z, ys, xs): central differences /(2*step) interior,
+		// one-sided /step at the two boundary lines of each axis.
+		std::vector<Scalar> dzdx( cells ), dzdy( cells );
+		const Scalar inv2h = Scalar(1) / ( Scalar(2) * step );
+		const Scalar invh  = Scalar(1) / step;
+		for( int j = 0; j < N; j++ ) {
+			const size_t row = size_t(j) * N;
+			for( int i = 0; i < N; i++ ) {
+				dzdx[ row + i ] =
+					( i == 0 )     ? ( z[ row + 1 ]     - z[ row ] )         * invh :
+					( i == N - 1 ) ? ( z[ row + N - 1 ] - z[ row + N - 2 ] ) * invh :
+					                 ( z[ row + i + 1 ] - z[ row + i - 1 ] ) * inv2h;
+				dzdy[ row + i ] =
+					( j == 0 )     ? ( z[ size_t(1) * N + i ]       - z[ i ] )                   * invh :
+					( j == N - 1 ) ? ( z[ size_t(N-1) * N + i ]     - z[ size_t(N-2) * N + i ] ) * invh :
+					                 ( z[ size_t(j+1) * N + i ]     - z[ size_t(j-1) * N + i ] ) * inv2h;
+			}
+		}
+
+		// keep = hypot(x, y) <= R; indices assigned in row-major scan order
+		// (numpy idx[keep] = arange).
+		std::vector<int> idx( cells, -1 );
+		int vc = 0;
+		for( int j = 0; j < N; j++ ) {
+			for( int i = 0; i < N; i++ ) {
+				if( sqrt( xs[i] * xs[i] + xs[j] * xs[j] ) <= R ) {
+					idx[ size_t(j) * N + i ] = vc++;
+				}
+			}
+		}
+		if( vc < 3 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateGuillocheDialGeometry: degenerate bake (fewer than 3 vertices inside the dial)" );
+			return false;
+		}
+
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( false, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "guilloche dial geometry" );
+		pGeom->BeginIndexedTriangles();
+
+		const Scalar inv2R = Scalar(1) / ( Scalar(2) * R );
+		for( int j = 0; j < N; j++ ) {
+			const size_t row = size_t(j) * N;
+			for( int i = 0; i < N; i++ ) {
+				if( idx[ row + i ] < 0 ) {
+					continue;
+				}
+				pGeom->AddVertex( Vertex( xs[i], xs[j], z[ row + i ] ) );
+				Normal n( -dzdx[ row + i ], -dzdy[ row + i ], Scalar(1) );
+				const Scalar invLen = Scalar(1) / sqrt( n.x * n.x + n.y * n.y + n.z * n.z );
+				pGeom->AddNormal( Normal( n.x * invLen, n.y * invLen, n.z * invLen ) );
+				pGeom->AddTexCoord( TexCoord( ( xs[i] + R ) * inv2R, ( xs[j] + R ) * inv2R ) );
+			}
+		}
+
+		for( int j = 0; j < N - 1; j++ ) {
+			const size_t row = size_t(j) * N;
+			for( int i = 0; i < N - 1; i++ ) {
+				const int a = idx[ row + i ];
+				const int b = idx[ row + i + 1 ];
+				const int c = idx[ row + N + i + 1 ];
+				const int d = idx[ row + N + i ];
+				if( a >= 0 && b >= 0 && c >= 0 && d >= 0 ) {
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, d ) );
+				}
+			}
+		}
+
+		pGeom->DoneIndexedTriangles();
+		*ppi = pGeom;
+		return true;
+	}
+
+	bool RISE_API_CreateGuillocheOxideFunction2D(
+						IFunction2D**        ppi,
+						const GuillocheDialDescriptor& desc,
+						const int            falloffMode,
+						const double         activationEa,
+						const double         torchAmount
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		if( falloffMode < 0 || falloffMode > 2 ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateGuillocheOxideFunction2D: falloff mode %d out of range (0 linear | 1 quadratic | 2 smooth)", falloffMode );
+			return false;
+		}
+		if( !( activationEa > 0 ) || !( activationEa <= 1.0e6 ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateGuillocheOxideFunction2D: activation_ea must be in (0, 1e6] J/mol (METAL_KINETICS values are 80e3..165e3)" );
+			return false;
+		}
+		if( !ValidateGuillocheFieldParams( desc, "RISE_API_CreateGuillocheOxideFunction2D" ) ) {
+			return false;
+		}
+		(*ppi) = new Implementation::GuillocheOxidePainter(
+			Implementation::GuillocheParamsFromDescriptor( desc ),
+			falloffMode, activationEa, torchAmount );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "guilloche oxide function2d" );
+		return true;
+	}
+
+	// C++ twin of strap_mesh_gen.py: Catmull-Rom (y, z) centreline swept with a
+	// superellipse-edged, centre-crowned, stitch-channelled profile.  With
+	// emitStitches the SAME path/profile instead emits the saddle-stitch thread
+	// capsules (one per stitch row, mirrored slant) so the thread mesh stays a
+	// separate geometry with its own material -- exactly the two .raw2 files the
+	// Python wrote.  Solid band = top + bottom + both side edges + far end cap;
+	// double-sided like the rawmesh2 chunks it replaces.
+	bool RISE_API_CreateSweptBandGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const SweptBandDescriptor&     desc
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		if( !desc.pathPoints || desc.numPathPoints < 2 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweptBandGeometry: need at least 2 `point` control points" );
+			return false;
+		}
+		const int nWid = desc.nWid < 2 ? 2 : ( desc.nWid > 256 ? 256 : desc.nWid );
+		const int nLenReq = desc.nLen < 2 ? 2 : ( desc.nLen > 4096 ? 4096 : desc.nLen );
+		if( nWid != desc.nWid || nLenReq != desc.nLen ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreateSweptBandGeometry: n_len/n_wid (%d, %d) clamped to (%d, %d)",
+				desc.nLen, desc.nWid, nLenReq, nWid );
+		}
+		const Scalar T = desc.thickness;
+		if( !( T > 0 ) || !( desc.width > 0 ) || !( desc.endWidth > 0 ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweptBandGeometry: width / end_width / thickness must be > 0" );
+			return false;
+		}
+		if( desc.emitStitches && ( !( desc.stitchR > 0 ) || !( desc.stitchPitch > 0 ) || !( desc.stitchLen > 0 ) ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweptBandGeometry: stitch_r / stitch_pitch / stitch_len must be > 0 when emit_stitches is TRUE" );
+			return false;
+		}
+
+		// --- catmull_rom(ctrl, n): reflective end padding, per-segment
+		//     t = k/per for k in [0, per), then the final control point.
+		struct P2 { Scalar y, z; };
+		const unsigned int nCtrl = desc.numPathPoints;
+		std::vector<P2> ctrl( nCtrl );
+		for( unsigned int i = 0; i < nCtrl; i++ ) {
+			ctrl[i].y = desc.pathPoints[ 2 * i ];
+			ctrl[i].z = desc.pathPoints[ 2 * i + 1 ];
+		}
+		const int segs = int(nCtrl) - 1;
+		const int per = ( nLenReq / segs ) < 2 ? 2 : ( nLenReq / segs );
+		std::vector<P2> path;
+		path.reserve( size_t(segs) * per + 1 );
+		std::vector<P2> pad( nCtrl + 2 );
+		pad[0].y = ctrl[0].y + ( ctrl[0].y - ctrl[1].y );
+		pad[0].z = ctrl[0].z + ( ctrl[0].z - ctrl[1].z );
+		for( unsigned int i = 0; i < nCtrl; i++ ) {
+			pad[ i + 1 ] = ctrl[i];
+		}
+		pad[ nCtrl + 1 ].y = ctrl[ nCtrl - 1 ].y + ( ctrl[ nCtrl - 1 ].y - ctrl[ nCtrl - 2 ].y );
+		pad[ nCtrl + 1 ].z = ctrl[ nCtrl - 1 ].z + ( ctrl[ nCtrl - 1 ].z - ctrl[ nCtrl - 2 ].z );
+		for( int s = 0; s < segs; s++ ) {
+			const P2& p0 = pad[ s ];
+			const P2& p1 = pad[ s + 1 ];
+			const P2& p2 = pad[ s + 2 ];
+			const P2& p3 = pad[ s + 3 ];
+			for( int k = 0; k < per; k++ ) {
+				const Scalar t = Scalar(k) / Scalar(per);
+				const Scalar t2 = t * t;
+				const Scalar t3 = t2 * t;
+				P2 q;
+				q.y = Scalar(0.5) * ( 2 * p1.y + ( -p0.y + p2.y ) * t
+					+ ( 2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y ) * t2
+					+ ( -p0.y + 3 * p1.y - 3 * p2.y + p3.y ) * t3 );
+				q.z = Scalar(0.5) * ( 2 * p1.z + ( -p0.z + p2.z ) * t
+					+ ( 2 * p0.z - 5 * p1.z + 4 * p2.z - p3.z ) * t2
+					+ ( -p0.z + 3 * p1.z - 3 * p2.z + p3.z ) * t3 );
+				path.push_back( q );
+			}
+		}
+		path.push_back( ctrl[ nCtrl - 1 ] );
+		const int n = int( path.size() );
+
+		// --- the shared profile pieces (exactly the Python closures)
+		const Scalar edgePow = desc.edgePow;
+		const Scalar crown = desc.crown;
+		const Scalar groove = desc.groove;
+		const Scalar inset = desc.stitchInset;
+		struct Profile {
+			Scalar T, crown, edgePow, groove, inset;
+			Scalar edge( const Scalar u ) const {
+				const Scalar e = Scalar(1) - pow( fabs( 2 * u - 1 ), edgePow );
+				return sqrt( e < Scalar(1e-3) ? Scalar(1e-3) : e );
+			}
+			Scalar htop( const Scalar u ) const {
+				Scalar h = ( T / 2 + crown * ( Scalar(1) - ( 2 * u - 1 ) * ( 2 * u - 1 ) ) ) * edge( u );
+				const Scalar u0s[2] = { inset, Scalar(1) - inset };
+				for( int g = 0; g < 2; g++ ) {
+					const Scalar d = ( u - u0s[g] ) / Scalar(0.018);
+					h -= groove * exp( -d * d );
+				}
+				return h;
+			}
+		};
+		Profile prof;
+		prof.T = T; prof.crown = crown; prof.edgePow = edgePow; prof.groove = groove; prof.inset = inset;
+
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, desc.emitStitches ? "swept band stitches" : "swept band geometry" );
+		pGeom->BeginIndexedTriangles();
+
+		if( !desc.emitStitches ) {
+			// ---------- the band ----------
+			std::vector<int> idxTop( size_t(n) * nWid ), idxBot( size_t(n) * nWid );
+			int vc = 0;
+			const Scalar du = Scalar(1) / Scalar( nWid - 1 );
+			for( int i = 0; i < n; i++ ) {
+				const P2& a = path[ i > 0 ? i - 1 : 0 ];
+				const P2& b = path[ i < n - 1 ? i + 1 : n - 1 ];
+				Scalar ty = b.y - a.y;
+				Scalar tz = b.z - a.z;
+				const Scalar tl0 = sqrt( ty * ty + tz * tz );
+				const Scalar tl = tl0 > 0 ? tl0 : Scalar(1);
+				ty /= tl; tz /= tl;
+				Scalar ny = -tz, nz = ty;			// top-facing normal in YZ
+				if( nz < 0 ) { ny = -ny; nz = -nz; }
+				const Scalar frac = Scalar(i) / Scalar( n - 1 );
+				const Scalar W = desc.width * ( 1 - frac ) + desc.endWidth * frac;
+				const Scalar cy = path[i].y;
+				const Scalar cz = path[i].z;
+				for( int j = 0; j < nWid; j++ ) {
+					const Scalar u = Scalar(j) / Scalar( nWid - 1 );
+					const Scalar x = ( u - Scalar(0.5) ) * W;
+					const Scalar h = prof.htop( u );
+					const Scalar up = u + du > 1 ? Scalar(1) : u + du;
+					const Scalar um = u - du < 0 ? Scalar(0) : u - du;
+					const Scalar Wsafe = W > Scalar(1e-6) ? W : Scalar(1e-6);
+					const Scalar dh_dx = ( prof.htop( up ) - prof.htop( um ) ) / ( 2 * du ) / Wsafe;
+					const Scalar nlen2 = sqrt( dh_dx * dh_dx + 1 );
+					pGeom->AddVertex( Vertex( x, cy + h * ny, cz + h * nz ) );
+					pGeom->AddNormal( Normal( -dh_dx / nlen2, ny / nlen2, nz / nlen2 ) );
+					pGeom->AddTexCoord( TexCoord( u, frac ) );
+					idxTop[ size_t(i) * nWid + j ] = vc++;
+				}
+				for( int j = 0; j < nWid; j++ ) {
+					const Scalar u = Scalar(j) / Scalar( nWid - 1 );
+					const Scalar x = ( u - Scalar(0.5) ) * W;
+					const Scalar hb = ( T / 2 ) * prof.edge( u );
+					pGeom->AddVertex( Vertex( x, cy - hb * ny, cz - hb * nz ) );
+					pGeom->AddNormal( Normal( 0, -ny, -nz ) );
+					pGeom->AddTexCoord( TexCoord( u, frac ) );
+					idxBot[ size_t(i) * nWid + j ] = vc++;
+				}
+			}
+
+			// quad(a,b,c,d) -> (a,b,c) + (a,c,d), exactly the Python winding.
+			struct QuadEmit {
+				TriangleMeshGeometryIndexed* g;
+				void operator()( int a, int b, int c, int d ) const {
+					g->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+					g->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, d ) );
+				}
+			};
+			QuadEmit quad; quad.g = pGeom;
+			const int w = nWid;
+			for( int i = 0; i < n - 1; i++ ) {
+				for( int j = 0; j < w - 1; j++ ) {
+					quad( idxTop[ size_t(i)*w + j ],   idxTop[ size_t(i+1)*w + j ], idxTop[ size_t(i+1)*w + j+1 ], idxTop[ size_t(i)*w + j+1 ] );
+					quad( idxBot[ size_t(i)*w + j ],   idxBot[ size_t(i)*w + j+1 ], idxBot[ size_t(i+1)*w + j+1 ], idxBot[ size_t(i+1)*w + j ] );
+				}
+				quad( idxTop[ size_t(i)*w ],           idxBot[ size_t(i)*w ],       idxBot[ size_t(i+1)*w ],       idxTop[ size_t(i+1)*w ] );
+				quad( idxTop[ size_t(i)*w + w-1 ],     idxTop[ size_t(i+1)*w + w-1 ], idxBot[ size_t(i+1)*w + w-1 ], idxBot[ size_t(i)*w + w-1 ] );
+			}
+			for( int j = 0; j < w - 1; j++ ) {
+				quad( idxTop[ size_t(n-1)*w + j ], idxTop[ size_t(n-1)*w + j+1 ], idxBot[ size_t(n-1)*w + j+1 ], idxBot[ size_t(n-1)*w + j ] );
+			}
+		} else {
+			// ---------- the stitch thread capsules ----------
+			// Walk the path by arc length; each stitch-pitch drop one 8-sided
+			// capsule per edge row on the top surface, slanted +/-stitch_angle
+			// about the surface normal (mirrored rows = saddle stitch).
+			struct V3 { Scalar x, y, z; };
+			int vc = 0;
+			Scalar arc = 0;
+			Scalar nextAt = desc.stitchPitch * Scalar(0.5);
+			const Scalar slant = desc.stitchAngleDeg * PI / Scalar(180);
+			const Scalar halfLen = desc.stitchLen * Scalar(0.5);
+			const Scalar r = desc.stitchR;
+			for( int i = 1; i < n; i++ ) {
+				const P2& a = path[ i - 1 ];
+				const P2& b = path[ i ];
+				const Scalar seg = sqrt( ( b.y - a.y ) * ( b.y - a.y ) + ( b.z - a.z ) * ( b.z - a.z ) );
+				arc += seg;
+				if( arc < nextAt ) {
+					continue;
+				}
+				nextAt += desc.stitchPitch;
+				const Scalar segSafe = seg > 0 ? seg : Scalar(1);
+				const Scalar ty = ( b.y - a.y ) / segSafe;
+				const Scalar tz = ( b.z - a.z ) / segSafe;
+				Scalar ny = -tz, nz = ty;
+				if( nz < 0 ) { ny = -ny; nz = -nz; }
+				const Scalar frac = Scalar(i) / Scalar( n - 1 );
+				const Scalar W = desc.width * ( 1 - frac ) + desc.endWidth * frac;
+				const Scalar cy = path[i].y;
+				const Scalar cz = path[i].z;
+				for( int row = 0; row < 2; row++ ) {
+					const Scalar u0 = row == 0 ? inset : Scalar(1) - inset;
+					const Scalar mirror = row == 0 ? Scalar(1) : Scalar(-1);
+					const Scalar x = ( u0 - Scalar(0.5) ) * W;
+					// base profile height at the row MINUS the full groove,
+					// thread sitting proud by 0.9 r (the Python formula).
+					const Scalar hh = ( T / 2 + crown * ( Scalar(1) - ( 2 * u0 - 1 ) * ( 2 * u0 - 1 ) ) ) * prof.edge( u0 )
+						- groove + r * Scalar(0.9);
+					V3 center; center.x = x; center.y = cy + hh * ny; center.z = cz + hh * nz;
+					// d_hat = cos(slant) T_hat + sin(slant) mirror X_hat with
+					// T_hat = (0, ty, tz), X_hat = (1, 0, 0); unit by construction.
+					V3 dHat; dHat.x = sin( slant ) * mirror; dHat.y = cos( slant ) * ty; dHat.z = cos( slant ) * tz;
+					const Scalar dLen = sqrt( dHat.x * dHat.x + dHat.y * dHat.y + dHat.z * dHat.z );
+					dHat.x /= dLen; dHat.y /= dLen; dHat.z /= dLen;
+					V3 nHat; nHat.x = 0; nHat.y = ny; nHat.z = nz;
+					// x_hat = normalize(cross(d_hat, n_hat)); y_hat = cross(x_hat, d_hat)
+					V3 xHat;
+					xHat.x = dHat.y * nHat.z - dHat.z * nHat.y;
+					xHat.y = dHat.z * nHat.x - dHat.x * nHat.z;
+					xHat.z = dHat.x * nHat.y - dHat.y * nHat.x;
+					const Scalar xl = sqrt( xHat.x * xHat.x + xHat.y * xHat.y + xHat.z * xHat.z );
+					xHat.x /= xl; xHat.y /= xl; xHat.z /= xl;
+					V3 yHat;
+					yHat.x = xHat.y * dHat.z - xHat.z * dHat.y;
+					yHat.y = xHat.z * dHat.x - xHat.x * dHat.z;
+					yHat.z = xHat.x * dHat.y - xHat.y * dHat.x;
+
+					const int base = vc;
+					const Scalar ringOff[4] = { -halfLen + r * Scalar(0.4), -halfLen + r, halfLen - r, halfLen - r * Scalar(0.4) };
+					const Scalar ringScale[4] = { Scalar(0.75), Scalar(1), Scalar(1), Scalar(0.75) };
+					for( int q = 0; q < 4; q++ ) {
+						for( int k = 0; k < 8; k++ ) {
+							const Scalar ang = 2 * PI * Scalar(k) / Scalar(8);
+							const Scalar rr = r * ringScale[q];
+							V3 rad;
+							rad.x = ( cos( ang ) * xHat.x + sin( ang ) * yHat.x ) * rr;
+							rad.y = ( cos( ang ) * xHat.y + sin( ang ) * yHat.y ) * rr;
+							rad.z = ( cos( ang ) * xHat.z + sin( ang ) * yHat.z ) * rr;
+							pGeom->AddVertex( Vertex( center.x + dHat.x * ringOff[q] + rad.x,
+							                          center.y + dHat.y * ringOff[q] + rad.y,
+							                          center.z + dHat.z * ringOff[q] + rad.z ) );
+							const Scalar rl = sqrt( rad.x * rad.x + rad.y * rad.y + rad.z * rad.z );
+							pGeom->AddNormal( Normal( rad.x / rl, rad.y / rl, rad.z / rl ) );
+							pGeom->AddTexCoord( TexCoord( Scalar(k) / Scalar(8), Scalar(0.5) ) );
+							vc++;
+						}
+					}
+					for( int q = 0; q < 3; q++ ) {
+						for( int k = 0; k < 8; k++ ) {
+							const int k2 = ( k + 1 ) % 8;
+							const int a0 = base + q * 8 + k;
+							const int b0 = base + q * 8 + k2;
+							const int a1 = base + ( q + 1 ) * 8 + k;
+							const int b1 = base + ( q + 1 ) * 8 + k2;
+							pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a0, a1, b1 ) );
+							pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a0, b1, b0 ) );
+						}
+					}
+					for( int tip = 0; tip < 2; tip++ ) {
+						const Scalar off = tip == 0 ? -halfLen : halfLen;
+						const Scalar sgn = tip == 0 ? Scalar(-1) : Scalar(1);
+						pGeom->AddVertex( Vertex( center.x + dHat.x * off, center.y + dHat.y * off, center.z + dHat.z * off ) );
+						pGeom->AddNormal( Normal( dHat.x * sgn, dHat.y * sgn, dHat.z * sgn ) );
+						pGeom->AddTexCoord( TexCoord( Scalar(0.5), Scalar(0.5) ) );
+						const int tipIdx = vc++;
+						const int ring0 = tip == 0 ? base : base + 3 * 8;
+						for( int k = 0; k < 8; k++ ) {
+							const int k2 = ( k + 1 ) % 8;
+							if( tip == 0 ) {
+								pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( tipIdx, ring0 + k2, ring0 + k ) );
+							} else {
+								pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( tipIdx, ring0 + k, ring0 + k2 ) );
+							}
+						}
+					}
+				}
+			}
+			if( vc == 0 ) {
+				// A 0-triangle mesh builds an inverted-bbox BVH and a NaN
+				// bounding sphere downstream -- refuse construction loudly,
+				// like the dial's degenerate-bake check.
+				GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweptBandGeometry: stitch mesh is empty (path shorter than half a stitch_pitch) -- refusing" );
+				pGeom->release();
+				return false;
+			}
+		}
+
+		pGeom->DoneIndexedTriangles();
+		*ppi = pGeom;
 		return true;
 	}
 
@@ -3240,6 +3741,19 @@ namespace RISE
 		if( !ppi ) return false;
 		*ppi = new Function2DScalarPainter( pFunc );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "function2d scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateFunction2DScalarPainterAffine(
+		IScalarPainter** ppi,
+		IFunction2D* pFunc,
+		const double scale,
+		const double bias
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new Function2DScalarPainter( pFunc, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "function2d scalar painter (affine)" );
 		return true;
 	}
 

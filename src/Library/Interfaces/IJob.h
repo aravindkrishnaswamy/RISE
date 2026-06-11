@@ -25,6 +25,7 @@
 #include "IProgressCallback.h"
 #include "IJobRasterizerOutput.h"
 #include "IEnumCallback.h"      // for EnumerateMediumNames callback
+#include "ProceduralDescriptors.h" // guilloché dial / oxide / swept-band parameter blocks
 #include <string>
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
@@ -2987,9 +2988,11 @@ namespace RISE
 		//! the normal authoring path; the scene chunk's repeatable `part`
 		//! parameter) or `szFileName` (external parts file, same
 		//! one-part-per-line grammar; for very large SDFs).
-		//! NB: declared LAST in IJob deliberately -- appending keeps every
-		//! existing virtual at its original vtable slot (ABI-stable for any
-		//! consumer linked against an older IJob).
+		//! NB: part of the append-only TAIL of IJob -- new virtuals are only
+		//! ever added after the existing ones (AddSDFGeometry, then the
+		//! guilloché/swept-band methods below), keeping every existing
+		//! virtual at its original vtable slot (ABI-stable for any consumer
+		//! linked against an older IJob).
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddSDFGeometry(
 			const char* name,						///< [in] Name of the geometry
@@ -2998,6 +3001,39 @@ namespace RISE
 			const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
 			const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
 			const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
+			) = 0;
+
+		//! Creates the procedural guilloché dial mesh (native replacement for
+		//! the dial_mesh_gen.py raw2 bakers): the selected pattern's height
+		//! field baked over the dial circle with analytic normals and linear
+		//! Cartesian UV.  Appended after AddSDFGeometry for the same
+		//! vtable-slot ABI stability reason.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGuillocheDialGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const GuillocheDialDescriptor& desc		///< [in] Pattern + bake parameters
+			) = 0;
+
+		//! Creates the guilloché oxide-dose IFunction2D (native replacement
+		//! for the baked oxide_*.png maps).  Registered as a named function;
+		//! consume through `scalar_painter { function2d <name> scale S bias B }`.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGuillocheOxideFunction2D(
+			const char* name,						///< [in] Name of the function
+			const GuillocheDialDescriptor& desc,	///< [in] Pattern parameters (mask + radius)
+			const int falloffMode,					///< [in] 0 linear | 1 quadratic | 2 smooth radial heat falloff
+			const double activationEa,				///< [in] Parabolic-oxidation activation energy (J/mol)
+			const double torchAmount				///< [in] Signed dwell delta along the pattern's torch mask (0 = uniform radial)
+			) = 0;
+
+		//! Creates the swept-band mesh (native replacement for
+		//! strap_mesh_gen.py): a Catmull-Rom (y, z) centreline swept with a
+		//! superellipse-edged crowned profile -- or, with emitStitches, the
+		//! saddle-stitch thread capsules for the same path as a separate mesh.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddSweptBandGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const SweptBandDescriptor& desc			///< [in] Path + profile + stitch parameters
 			) = 0;
 	};
 

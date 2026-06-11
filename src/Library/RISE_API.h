@@ -73,6 +73,7 @@
 #include "Utilities/SMSConfig.h"
 #include "Utilities/RasterizerDefaults.h"     // AutoIntegratorChoice (auto_rasterizer dispatcher)
 #include "Utilities/ProgressiveConfig.h"      // ProgressiveConfig (auto_rasterizer factory takes it directly)
+#include "Interfaces/ProceduralDescriptors.h"
 
 namespace RISE
 {
@@ -471,6 +472,55 @@ namespace RISE
 						const unsigned int   maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
 						const double         surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
 						const unsigned int   samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
+						);
+
+	//! Creates the procedural guilloché DIAL mesh -- the native replacement for
+	//! the dial_mesh_gen.py / dial_variants_gen.py bakers.  Bakes the selected
+	//! pattern's height field on a Cartesian grid (meshN x meshN over the dial
+	//! circle), with analytic finite-difference normals and linear Cartesian UV
+	//! ((x+R)/2R), exactly as the retired Python did -- but at parse time, no
+	//! sidecar mesh files.  The result is an indexed triangle mesh (own BVH).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGuillocheDialGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const GuillocheDialDescriptor& desc	///< [in] Pattern + bake parameters
+						);
+
+	//! Creates the guilloché OXIDE-DOSE IFunction2D -- the native replacement
+	//! for the baked oxide_*.png maps.  Evaluate(u,v) takes the dial's linear
+	//! Cartesian UV and returns the normalized Arrhenius/parabolic radial dose
+	//! in [0,1] plus the signed torch-pattern term.  Wire it to film_thickness
+	//! via `scalar_painter { function2d <name> scale S bias B }`.
+	//! falloffMode: 0 linear, 1 quadratic, 2 smooth.  activationEa in J/mol.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGuillocheOxideFunction2D(
+						IFunction2D**        ppi,			///< [out] Pointer to receive the function
+						const GuillocheDialDescriptor& desc,///< [in] Pattern parameters (mask + radius)
+						const int            falloffMode,	///< [in] 0 linear | 1 quadratic | 2 smooth
+						const double         activationEa,	///< [in] Parabolic-oxidation Ea (J/mol)
+						const double         torchAmount	///< [in] Signed dwell delta along the torch mask
+						);
+
+	//! Creates the procedural SWEPT-BAND mesh (watch strap) -- the native
+	//! replacement for strap_mesh_gen.py.  A Catmull-Rom path through (y,z)
+	//! control points swept with a superellipse-edged, centre-crowned profile
+	//! (with stitch channels), or -- with emitStitches -- the saddle-stitch
+	//! thread capsules following the same path, as a separate mesh so the
+	//! thread carries its own material.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSweptBandGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const SweptBandDescriptor&     desc	///< [in] Path + profile + stitch parameters
+						);
+
+	//! Function2DScalarPainter with the affine output out = bias + scale * f(u,v)
+	//! (mirrors RISE_API_CreateTextureScalarPainterAffine for procedural sources).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateFunction2DScalarPainterAffine(
+						IScalarPainter**     ppi,			///< [out] Pointer to receive the painter
+						IFunction2D*         pFunc,			///< [in] Source function (addref'd)
+						const double         scale,			///< [in] Output scale
+						const double         bias			///< [in] Output bias
 						);
 
 

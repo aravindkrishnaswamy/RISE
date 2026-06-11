@@ -4352,6 +4352,39 @@ bool Job::AddSDFGeometry( const char* name, const char* szFileName, const char* 
 	return true;
 }
 
+bool Job::AddGuillocheDialGeometry( const char* name, const GuillocheDialDescriptor& desc )
+{
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreateGuillocheDialGeometry( &pGeometry, desc ) ) {
+		return false;   // the factory already logged why
+	}
+	pGeomManager->AddItem( pGeometry, name );
+	safe_release( pGeometry );
+	return true;
+}
+
+bool Job::AddGuillocheOxideFunction2D( const char* name, const GuillocheDialDescriptor& desc, const int falloffMode, const double activationEa, const double torchAmount )
+{
+	IFunction2D* pFunction = 0;
+	if( !RISE_API_CreateGuillocheOxideFunction2D( &pFunction, desc, falloffMode, activationEa, torchAmount ) ) {
+		return false;   // the factory already logged why
+	}
+	pFunc2DManager->AddItem( pFunction, name );
+	safe_release( pFunction );
+	return true;
+}
+
+bool Job::AddSweptBandGeometry( const char* name, const SweptBandDescriptor& desc )
+{
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreateSweptBandGeometry( &pGeometry, desc ) ) {
+		return false;   // the factory already logged why
+	}
+	pGeomManager->AddItem( pGeometry, name );
+	safe_release( pGeometry );
+	return true;
+}
+
 //! Adds a triangle mesh geometry from the pointers passed it
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddIndexedTriangleMeshGeometry(
