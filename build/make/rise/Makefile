@@ -138,31 +138,22 @@ drise_submitter : $(OBJLIB) $(OBJDRISE) $(PATHSRCSDRISE)drise_submitter.o
 	@echo Linking $(PATHDEST)drise_submitter
 	@$(CXX) $(CPPFLAGS) -o $(PATHDEST)drise_submitter $(PATHSRCSDRISE)drise_submitter.o $(OBJLIB) $(OBJDRISE) $(LDLIBS) 
 
-# Build all tests. A broken test must not prevent the others from building, so
-# the loop continues past compile/link failures and reports a per-test tally at
-# the end. The target still exits non-zero if any test failed to build, so CI
-# preserves its "broken build" signal — but every test that *can* build does.
-tests : $(OBJLIB)
-	@mkdir -p $(PATHTESTDEST)
-	@fail_count=0; failed_list=""; \
-	for test_src in $(SRCTESTS); do \
-		test_name=`basename $$test_src .cpp`; \
-		echo Compiling: $$test_src; \
-		if ! $(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $$test_src -o $(PATHTESTS)$$test_name.o; then \
-			fail_count=$$((fail_count + 1)); failed_list="$$failed_list $$test_name(compile)"; \
-			continue; \
-		fi; \
-		echo Linking $(PATHTESTDEST)$$test_name; \
-		if ! $(CXX) $(CPPFLAGS) -o $(PATHTESTDEST)$$test_name $(PATHTESTS)$$test_name.o $(OBJLIB) $(LDLIBS); then \
-			fail_count=$$((fail_count + 1)); failed_list="$$failed_list $$test_name(link)"; \
-		fi; \
-	done; \
-	echo "============================================================"; \
-	if [ $$fail_count -ne 0 ]; then \
-		echo "tests: $$fail_count test(s) failed to build:$$failed_list"; \
-		exit 1; \
-	fi; \
-	echo "tests: all built successfully"
+# Build all tests.  Prerequisite-driven so `make -jN tests` compiles and
+# LINKS tests in parallel: each test binary is its own target via the
+# $(PATHTESTDEST)% pattern rule below, and make schedules them across -j
+# slots.  (The previous version was ONE recipe containing a shell for-loop,
+# which compiled and linked all tests sequentially regardless of -j — after
+# any library change, ~131 serial links against the full $(OBJLIB) took tens
+# of minutes on a single core while looking like "the tests are slow".)
+# A broken test stops a plain `make tests` at that target with make's own
+# diagnostics; use `make -k -jN tests` to keep building past failures (CI
+# still gets a non-zero exit either way).  run_all_tests.sh isolates and
+# logs individual build failures itself.
+TESTBINS = $(addprefix $(PATHTESTDEST),$(notdir $(SRCTESTS:.cpp=)))
+
+tests : $(TESTBINS)
+	@echo "============================================================"
+	@echo "tests: all built successfully"
 
 # Single-test build target. Used by run_all_tests.sh to drive per-test
 # build progress with quiet, formatted output. Real-file target so make
@@ -174,9 +165,16 @@ tests : $(OBJLIB)
 build-test/% : $(PATHTESTDEST)%
 	@:
 
-$(PATHTESTDEST)% : $(PATHTESTS)%.cpp $(OBJLIB)
+# Compile and link split into two rules so a library-only change relinks
+# WITHOUT recompiling every test translation unit (the .d dependency files
+# emitted by $(CXXFLAGS_DEPS) keep the .o rebuilds header-accurate).
+$(PATHTESTS)%.o : $(PATHTESTS)%.cpp
+	@echo Compiling: $<
+	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $@
+
+$(PATHTESTDEST)% : $(PATHTESTS)%.o $(OBJLIB)
 	@mkdir -p $(PATHTESTDEST)
-	@$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CXXARCHFLAGS) $(CXXLIBSETTINGS) $(DEFS) $(CXXFLAGS_DEPS) -c $< -o $(PATHTESTS)$*.o
+	@echo Linking $@
 	@$(CXX) $(CPPFLAGS) -o $@ $(PATHTESTS)$*.o $(OBJLIB) $(LDLIBS)
 
 # Build all tools. Mirrors the `tests` target — same loop-and-continue

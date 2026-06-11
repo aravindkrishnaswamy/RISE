@@ -11,6 +11,12 @@ LIB_DIR="$REPO_ROOT/src/Library"
 # Dropbox, OneDrive) that can tombstone hidden build dirs inside synced
 # locations like ~/Documents. Override with RISE_TEST_LOG_DIR if needed.
 LOG_DIR="${RISE_TEST_LOG_DIR:-${TMPDIR:-/tmp}/rise-tests-logs}"
+# Parallel build jobs for the library and bulk-test build phases.  Without
+# this, a change to a widely-included header (IJob.h, RISE_API.h, ...) meant
+# the library recompiled one file at a time AND all ~131 test binaries
+# relinked one at a time — tens of minutes that looked like "the tests are
+# slow" (the test RUNS are seconds).  Override with RISE_TEST_BUILD_JOBS.
+JOBS="${RISE_TEST_BUILD_JOBS:-$( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || echo 4 )}"
 
 if [ ! -d "$BUILD_DIR" ]; then
 	echo "Missing build directory: $BUILD_DIR"
@@ -123,7 +129,7 @@ lib_log="$LOG_DIR/.library.log"
 printf 'Building library ... '
 lib_start=$(date +%s)
 lib_rc=0
-make -s -C "$BUILD_DIR" --no-print-directory test-objs > "$lib_log" 2>&1 || lib_rc=$?
+make -s -j "$JOBS" -C "$BUILD_DIR" --no-print-directory test-objs > "$lib_log" 2>&1 || lib_rc=$?
 lib_dur=$(( $(date +%s) - lib_start ))
 if [ "$lib_rc" -eq 0 ]; then
 	printf 'done (%ds)\n' "$lib_dur"
@@ -133,6 +139,29 @@ else
 	echo
 	if [ -f "$lib_log" ]; then cat "$lib_log"; fi
 	exit 1
+fi
+echo
+
+# ============================================================
+# Phase 1.5: Bulk-build every test binary IN PARALLEL (the Makefile's
+# `tests` target is prerequisite-driven, so -j fans the links out).
+# -k keeps building past an individual failure; the per-test loop in
+# Phase 2 then short-circuits on everything up to date and re-runs
+# make only for the failures, capturing each one's error in its own
+# log.  Net effect: the heavy lifting happens wide, the diagnostics
+# stay per-test.
+# ============================================================
+bulk_log="$LOG_DIR/.tests-bulk.log"
+printf 'Building tests (-j %s) ... ' "$JOBS"
+bulk_start=$(date +%s)
+bulk_rc=0
+make -s -j "$JOBS" -k -C "$BUILD_DIR" --no-print-directory tests > "$bulk_log" 2>&1 || bulk_rc=$?
+bulk_dur=$(( $(date +%s) - bulk_start ))
+if [ "$bulk_rc" -eq 0 ]; then
+	printf 'done (%ds)\n' "$bulk_dur"
+	rm -f "$bulk_log"
+else
+	printf 'INCOMPLETE (exit=%d, %ds) — failing tests are isolated below\n' "$bulk_rc" "$bulk_dur"
 fi
 echo
 
@@ -163,7 +192,7 @@ for test_src in "$SRC_DIR"/*.cpp; do
 	printf '%s ... ' "$prefix"
 	bs=$(date +%s)
 	rc=0
-	make -s -C "$BUILD_DIR" --no-print-directory "build-test/$name" > "$log" 2>&1 || rc=$?
+	make -s -j "$JOBS" -C "$BUILD_DIR" --no-print-directory "build-test/$name" > "$log" 2>&1 || rc=$?
 	bd=$(( $(date +%s) - bs ))
 
 	if [ "$rc" -eq 0 ]; then
