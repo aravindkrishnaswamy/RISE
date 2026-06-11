@@ -534,6 +534,9 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.cpp">
       <Filter>Geometry</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\SDFGeometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\SphereGeometry.cpp">
       <Filter>Geometry</Filter>
     </ClCompile>
@@ -1686,6 +1689,9 @@
       <Filter>Geometry</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Polygon.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\SDFGeometry.h">
       <Filter>Geometry</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\SphereGeometry.h">

@@ -5287,6 +5287,51 @@ namespace RISE
 				}
 			};
 
+			struct SDFGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string file = bag.GetString( "file", "" );
+					unsigned int maxSteps = bag.GetUInt( "maxsteps", 256 );
+					double eps = bag.GetDouble( "epsilon", 0.0 );
+					unsigned int samplingDetail = bag.GetUInt( "sampling_detail", 64 );
+
+					// Inline `part` lines (repeatable, in authoring order) are
+					// joined into the newline-separated source that
+					// SDFGeometry::ParsePartLines understands.  The lines are
+					// forwarded VERBATIM -- future part-grammar extensions
+					// (new shapes / ops / per-part fields) need no change
+					// here.  Exactly-one-of-{`part` lines, `file`} is
+					// diagnosed by Job::AddSDFGeometry with the chunk name.
+					const std::vector<std::string>& partLines = bag.GetRepeatable( "part" );
+					std::string parts;
+					for( std::size_t i = 0; i < partLines.size(); ++i ) {
+						parts += partLines[i];
+						parts += "\n";
+					}
+
+					return pJob.AddSDFGeometry( name.c_str(), file.c_str(), parts.c_str(), maxSteps, eps, samplingDetail );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "sdf_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Signed-distance-field (implicit) surface: transformed primitives composed with smooth-min / boolean ops, sphere-traced.  For melded / filleted organic shapes (e.g. lugs flowing into a bezel).  Author the parts inline with repeatable `part` lines; use `file` only for very large SDFs.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "part";     p.kind = ValueKind::String;   p.repeatable = true; p.description = "One SDF part (repeatable; parts compose in order): <prim> <op> <k>  <px py pz>  <exDeg eyDeg ezDeg>  <sx sy sz>  <a b c>  <round>.  prim: sphere|box|roundbox|cylinder|torus|capsule|roundcone; op: union|smin|subtract|intersect (k = blend radius, 0 = hard).  Lines are forwarded verbatim to the shared SDF part grammar (SDFGeometry::ParsePartLines), so future shapes / ops extend without chunk changes.  The FIRST part must be union or smin (the field starts empty)"; }
+						{ auto& p = P(); p.name = "file";     p.kind = ValueKind::Filename; p.description = "External SDF parts file (same one-part-per-line grammar; for very large SDFs).  Provide either inline `part` lines or `file`, not both"; }
+						{ auto& p = P(); p.name = "maxsteps"; p.kind = ValueKind::UInt;     p.description = "Sphere-trace step cap"; p.defaultValueHint = "256"; }
+						{ auto& p = P(); p.name = "epsilon";  p.kind = ValueKind::Double;   p.description = "Surface hit epsilon as a fraction of the bbox diagonal (0 = auto)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "sampling_detail"; p.kind = ValueKind::UInt; p.description = "Tessellation cells along the longest bbox axis for area-light / SSS surface sampling (clamped 8..256)"; p.defaultValueHint = "64"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct BilinearPatchGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -9179,6 +9224,7 @@ namespace RISE
 		add( "circulardisk_geometry",                 new CircularDiskGeometryAsciiChunkParser() );
 		add( "bezierpatch_geometry",                  new BezierPatchGeometryAsciiChunkParser() );
 		add( "bilinearpatch_geometry",                new BilinearPatchGeometryAsciiChunkParser() );
+		add( "sdf_geometry",                          new SDFGeometryAsciiChunkParser() );
 		add( "displaced_geometry",                    new DisplacedGeometryAsciiChunkParser() );
 
 		// Modifiers

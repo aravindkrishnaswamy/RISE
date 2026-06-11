@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "EmissionShaderOp.h"
 #include "../Utilities/GeometricUtilities.h"
+#include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): SDF emitters get full BSDF weight
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -58,7 +59,14 @@ void EmissionShaderOp::PerformOperation(
 		// When bsdfPdf > 0, this ray was traced via BSDF importance sampling.
 		// We weight the emission by w_bsdf = p_bsdf² / (p_bsdf² + p_light²).
 		// When bsdfPdf == 0 (view ray or delta), full weight (no MIS).
-		if( rs.bsdfPdf > 0 && ri.pObject )
+		// An emitter on geometry that cannot be uniformly area-sampled (CanBeAreaLight()
+		// false) is NOT in the NEE light set (LuminaryManager skips it), so the
+		// light-sampling strategy's pdf for this BSDF hit is ZERO -> the emission must
+		// take FULL weight.  Skipping the block leaves it unweighted (and un-zeroed under
+		// RIS, so it is not lost).
+		const IGeometry* pEmitGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
+		const bool emitterNeeSampleable = ( !pEmitGeom || pEmitGeom->CanBeAreaLight() );
+		if( rs.bsdfPdf > 0 && ri.pObject && emitterNeeSampleable )
 		{
 			const Scalar area = ri.pObject->GetArea();
 			if( area > 0 )
@@ -108,7 +116,14 @@ Scalar EmissionShaderOp::PerformOperationNM(
 		c = pEmitter->emittedRadianceNM( ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal, nm );
 
 		// MIS weight for BSDF-sampled emission (spectral)
-		if( rs.bsdfPdf > 0 && ri.pObject )
+		// An emitter on geometry that cannot be uniformly area-sampled (CanBeAreaLight()
+		// false) is NOT in the NEE light set (LuminaryManager skips it), so the
+		// light-sampling strategy's pdf for this BSDF hit is ZERO -> the emission must
+		// take FULL weight.  Skipping the block leaves it unweighted (and un-zeroed under
+		// RIS, so it is not lost).
+		const IGeometry* pEmitGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
+		const bool emitterNeeSampleable = ( !pEmitGeom || pEmitGeom->CanBeAreaLight() );
+		if( rs.bsdfPdf > 0 && ri.pObject && emitterNeeSampleable )
 		{
 			const Scalar area = ri.pObject->GetArea();
 			if( area > 0 )

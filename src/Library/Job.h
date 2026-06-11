@@ -1475,6 +1475,17 @@ namespace RISE
 							const bool bCenterObject				///< [in] Recenter all patch control points around the object-space origin
 							);
 
+		//! Creates a signed-distance-field (implicit) geometry from inline part
+		//! lines (the normal path) or an external parts file (for very large SDFs).
+		bool AddSDFGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const char* szFileName,					///< [in] SDF parts file to load ("" / "none" = use szParts)
+					const char* szParts,					///< [in] Inline newline-separated part lines ("" = use szFileName)
+					const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+					const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+					const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for surface sampling
+					);
+
 		//! Creates a bilinear patch geometry
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddBilinearPatchGeometry(

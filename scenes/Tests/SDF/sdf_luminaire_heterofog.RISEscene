@@ -1,0 +1,169 @@
+RISE ASCII SCENE 6
+# SDF media stress #2: the glowing blobby SDF inside a HETEROGENEOUS
+# (perlin-worley painter-driven) fog, with an analytic box occluder so the
+# emitter casts volumetric light shafts through the density variations.
+# Exercises hetero-medium transmittance + distance sampling along rays toward
+# the SDF luminaire's surface samples -- the delta-tracking walk reads density
+# between every volume scatter point and the SDF-sampled light position.
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples		160
+}
+
+file_rasterizeroutput
+{
+	pattern		rendered/sdf_luminaire_heterofog
+	type		PNG
+	bpp			8
+	color_space	sRGB
+}
+
+film
+{
+	width		360
+	height		270
+}
+
+pinhole_camera
+{
+	location	0 4.5 14
+	lookat		0 2.6 0
+	up			0 1 0
+	fov			45.0
+}
+
+uniformcolor_painter
+{
+	name		pnt_dense
+	color		1.0 1.0 1.0
+}
+
+uniformcolor_painter
+{
+	name		pnt_sparse
+	color		0.0 0.0 0.0
+}
+
+perlinworley3d_painter
+{
+	name			pnt_density
+	persistence		0.65
+	octaves			4
+	worley_jitter	1.0
+	blend			0.5
+	colora			pnt_dense
+	colorb			pnt_sparse
+	scale			0.35 0.35 0.35
+	shift			0 0 0
+}
+
+painter_heterogeneous_medium
+{
+	name			cloud_fog
+	absorption		0.010 0.012 0.016
+	scattering		0.10 0.10 0.09
+	phase			isotropic
+	density_painter	pnt_density
+	resolution		64
+	color_to_scalar	luminance
+	bbox_min		-14 0 -14
+	bbox_max		14 12 14
+}
+
+> set global_medium cloud_fog
+
+uniformcolor_painter
+{
+	name		pwhite
+	color		0.70 0.70 0.70
+}
+
+uniformcolor_painter
+{
+	name		pgray
+	color		0.45 0.46 0.50
+}
+
+uniformcolor_painter
+{
+	name		pemit
+	color		1.0 0.88 0.70
+}
+
+lambertian_material
+{
+	name		mwhite
+	reflectance	pwhite
+}
+
+lambertian_material
+{
+	name		mgray
+	reflectance	pgray
+}
+
+lambertian_luminaire_material
+{
+	name		memit
+	exitance	pemit
+	scale		26.0
+	material	none
+}
+
+clippedplane_geometry
+{
+	name		floorgeom
+	pta			-14 0 -14
+	ptb			 14 0 -14
+	ptc			 14 0  14
+	ptd			-14 0  14
+}
+
+box_geometry
+{
+	name		pillargeom
+	width		1.4
+	height		5.0
+	depth		1.4
+}
+
+sdf_geometry
+{
+	name			glowblobgeom
+	part			sphere union 0  -0.75 0 0  0 0 0  1 1 1  1.05 0 0  0
+	part			sphere smin 0.7  0.75 0 0  0 0 0  1 1 1  1.05 0 0  0
+	sampling_detail	64
+}
+
+standard_object
+{
+	name		grnd
+	geometry	floorgeom
+	material	mwhite
+	position	0 0 0
+}
+
+standard_object
+{
+	name		glowblob
+	geometry	glowblobgeom
+	material	memit
+	position	0 5.2 0
+	orientation	0 0 90
+}
+
+standard_object
+{
+	name		pillar
+	geometry	pillargeom
+	material	mgray
+	position	-2.6 2.5 3.2
+	orientation	0 25 0
+}

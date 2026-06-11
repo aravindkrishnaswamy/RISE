@@ -166,6 +166,7 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\Geometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\GeometryUtilities.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Geometry\SDFGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\SphereGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\SphericalUVGenerator.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TorusGeometry.cpp" />
@@ -538,6 +539,7 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\Geometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\GeometryUtilities.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.h" />
+    <ClInclude Include="..\..\..\src\Library\Geometry\SDFGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\SphereGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\SphericalUVGenerator.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TorusGeometry.h" />

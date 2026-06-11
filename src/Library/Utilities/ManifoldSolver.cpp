@@ -15,6 +15,7 @@
 
 #include "pch.h"
 #include "ManifoldSolver.h"
+#include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): SMS surface seeding shares the sampling contract
 #include "SMSPhotonMap.h"
 #include "Optics.h"
 #include "BDPTUtilities.h"
@@ -3593,6 +3594,41 @@ namespace {
 				SpecularInfo specInfo = pMat->GetSpecularInfo( rig, iorStack );
 
 				if( specInfo.isSpecular ) {
+					// SMS caster seeding samples the caster's SURFACE through
+					// UniformRandomPoint (uniform-on-shape mode AND snell
+					// mode's pure-mirror supplemental loop), so an ACCEPTED
+					// caster must honour the same sampling contract as area
+					// lights: the sample structure covers the renderable
+					// surface.  A geometry that withdrew the capability
+					// (CanBeAreaLight() false -- an SDF whose sampling mesh
+					// tessellated to nothing or PROVABLY missed renderable
+					// surface) would seed only the surface it can see,
+					// silently missing caustic basins -- or, in the
+					// empty-mesh case, seed from the degenerate bbox-centre
+					// fallback point.  Refuse it loudly: its caustics are
+					// not SMS-seeded until sampling_detail resolves the
+					// missing surface (2026-06-11 review P3).  The gate
+					// sits AFTER specularity classification so diffuse /
+					// emissive SDFs neither warn for a role they can never
+					// hold nor consult the contract (review round 4).  NB
+					// the kProbes UniformRandomPoint calls above already
+					// build an SDF's sampling structure lazily for
+					// classification -- a pre-existing one-time cost for
+					// every material'd SDF in an SMS-enabled render; if it
+					// ever matters, the lever is a material-level
+					// "can-ever-be-specular" predicate so classification
+					// can skip surface probes entirely (new IMaterial
+					// virtual; deferred).
+					const IGeometry* pGeom = obj.GetGeometry();
+					if( pGeom && !pGeom->CanBeAreaLight() ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"ManifoldSolver:: a specular caster's geometry cannot be uniformly "
+							"surface-sampled (CanBeAreaLight() == false -- empty sampling mesh or "
+							"provably missed surface).  It is refused as an SMS seeding caster: its "
+							"caustics will not be SMS-seeded.  Raise the SDF's sampling_detail to "
+							"restore coverage." );
+						break;   // refused; don't probe further
+					}
 					out.push_back( &obj );
 					break;   // any single-probe positive accepts; don't double-add
 				}

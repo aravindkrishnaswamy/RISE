@@ -30,6 +30,7 @@
 #include "../Utilities/MISWeights.h"
 #include "../Utilities/Profiling.h"
 #include "../Interfaces/ISubSurfaceDiffusionProfile.h"
+#include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): emissive non-area-light geometries (SDF) get full BSDF weight
 #include "../Utilities/MediumTransport.h"
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Intersection/RayIntersection.h"
@@ -1844,7 +1845,15 @@ PathTracingIntegrator::IntegrateFromHitTemplated(
 				const Value rawEmission = emission;
 				Scalar emissionMiWeight = 1.0;
 
-				if( bsdfPdf > 0 && ri.pObject )
+				// An emitter on geometry that cannot be uniformly area-sampled (CanBeAreaLight()
+				// false) is NOT in the NEE light set (LuminaryManager skips it), so the
+				// light-sampling strategy's pdf for this BSDF hit is ZERO -> the emission must
+				// take FULL weight.  Skipping the block leaves it unweighted (and un-zeroed under
+				// RIS, so it is not lost).
+				const IGeometry* pEmitGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
+				const bool emitterNeeSampleable = ( !pEmitGeom || pEmitGeom->CanBeAreaLight() );
+
+				if( bsdfPdf > 0 && ri.pObject && emitterNeeSampleable )
 				{
 					const Scalar area = ri.pObject->GetArea();
 					if( area > 0 )
@@ -3825,7 +3834,14 @@ void PathTracingIntegrator::IntegrateFromHitHWSS(
 						ri.geometric, -ri.geometric.ray.Dir(), ri.geometric.vGeomNormal,
 						swl.lambda[w] );
 
-					if( bsdfPdf > 0 && ri.pObject )
+					// An emitter on geometry that cannot be uniformly area-sampled (CanBeAreaLight()
+					// false) is NOT in the NEE light set (LuminaryManager skips it), so the
+					// light-sampling strategy's pdf for this BSDF hit is ZERO -> the emission must
+					// take FULL weight.  Skipping the block leaves it unweighted (and un-zeroed under
+					// RIS, so it is not lost).
+					const IGeometry* pEmitGeomHW = ri.pObject ? ri.pObject->GetGeometry() : 0;
+					const bool emitterNeeSampleableHW = ( !pEmitGeomHW || pEmitGeomHW->CanBeAreaLight() );
+					if( bsdfPdf > 0 && ri.pObject && emitterNeeSampleableHW )
 					{
 						const Scalar area = ri.pObject->GetArea();
 						if( area > 0 )

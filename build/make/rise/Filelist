@@ -193,6 +193,7 @@ SRCLIBGEOMETRY = \
 	$(PATHLIBRARY)Geometry/GeometryUtilities.cpp				\
 	$(PATHLIBRARY)Geometry/InfinitePlaneGeometry.cpp			\
 	$(PATHLIBRARY)Geometry/SphereGeometry.cpp					\
+	$(PATHLIBRARY)Geometry/SDFGeometry.cpp						\
 	$(PATHLIBRARY)Geometry/SphericalUVGenerator.cpp				\
 	$(PATHLIBRARY)Geometry/TorusGeometry.cpp					\
 	$(PATHLIBRARY)Geometry/TriangleMeshGeometry.cpp				\

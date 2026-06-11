@@ -74,6 +74,9 @@ namespace RISE
 }
 
 #include <string.h>										// for strncpy
+#include <cstdio>										// for the SDF parts-file read in RISE_API_CreateSDFGeometry
+#include <string>										// parts-file buffer in RISE_API_CreateSDFGeometry
+#include <vector>
 
 namespace RISE
 {
@@ -386,6 +389,7 @@ namespace RISE
 #include "Geometry/BezierPatchGeometry.h"
 #include "Geometry/BilinearPatchGeometry.h"
 #include "Geometry/DisplacedGeometry.h"
+#include "Geometry/SDFGeometry.h"
 #include "Geometry/TriangleMeshGeometry.h"
 #include "Geometry/TriangleMeshGeometryIndexed.h"
 #include "Geometry/TriangleMeshLoader3DS.h"
@@ -717,6 +721,71 @@ namespace RISE
 		}
 
 		*ppi = pGeom;
+		return true;
+	}
+
+	bool RISE_API_CreateSDFGeometry(
+						IGeometry**          ppi,
+						const char*          szFileName,
+						const char*          szParts,
+						const unsigned int   maxSteps,
+						const double         surfaceEpsilonFraction,
+						const unsigned int   samplingDetail
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		// Exactly one source.  "none" is the scene-language not-set
+		// convention for filename parameters.
+		const bool hasFile  = ( szFileName && szFileName[0] && strcmp( szFileName, "none" ) != 0 );
+		const bool hasParts = ( szParts && szParts[0] );
+		if( hasFile == hasParts ) {
+			GlobalLog()->Print( eLog_Error, hasFile
+				? "RISE_API_CreateSDFGeometry:: both an inline part list and a parts file were given -- provide exactly one"
+				: "RISE_API_CreateSDFGeometry:: no SDF source -- provide inline part lines or a parts file" );
+			return false;
+		}
+
+		// Both sources route through the ONE grammar --
+		// SDFGeometry::ParsePartLines -- which logs source / line / token
+		// context on failure.
+		std::vector<SDFGeometry::Part> parts;
+		if( hasParts ) {
+			if( !SDFGeometry::ParsePartLines( szParts, "<inline part list>", parts ) ) {
+				return false;
+			}
+		} else {
+			FILE* inputFile = fopen( szFileName, "rb" );
+			if( !inputFile ) {
+				char msg[512];
+				snprintf( msg, sizeof(msg), "RISE_API_CreateSDFGeometry:: cannot open `%s`", szFileName );
+				GlobalLog()->Print( eLog_Error, msg );
+				return false;
+			}
+			std::string source;
+			char buf[4096];
+			size_t got = 0;
+			while( ( got = fread( buf, 1, sizeof(buf), inputFile ) ) > 0 ) {
+				source.append( buf, got );
+			}
+			fclose( inputFile );
+			if( !SDFGeometry::ParsePartLines( source.c_str(), szFileName, parts ) ) {
+				return false;
+			}
+		}
+
+		if( parts.empty() ) {
+			GlobalLog()->Print( eLog_Error, hasParts
+				? "RISE_API_CreateSDFGeometry:: inline part list contains no parts"
+				: "RISE_API_CreateSDFGeometry:: parts file contains no parts" );
+			return false;
+		}
+
+		(*ppi) = new SDFGeometry( parts, maxSteps, surfaceEpsilonFraction, samplingDetail );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "sdf geometry" );
 		return true;
 	}
 

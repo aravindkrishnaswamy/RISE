@@ -1,0 +1,137 @@
+RISE ASCII SCENE 6
+# SDF + refractive-caustic test.  A glass SDF torus sits above a white floor with
+# an overhead area light.  Light passes through the ring's hole AND refracts
+# through the glass band -> a ring caustic focused on the floor.  Photons are
+# traced from the light through the ray-marched dielectric (up to 4 boundary
+# crossings per photon: enter/exit the near band, enter/exit the far band),
+# exercising the sphere-tracer's entry/exit tracking on the LIGHT-transport side
+# as well as the camera side.
+
+advanced_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting		1	100	+
+	shaderop	DefaultRefraction			1	100	+
+	shaderop	DefaultReflection			1	2	+
+	shaderop	DefaultCausticPelPhotonMap	1	100	+
+	shaderop	DefaultEmission				1	100	+
+}
+
+pixelpel_rasterizer
+{
+	samples			1
+	lum_samples		16
+	max_recursion	10
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/sdf_caustic
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+film
+{
+	width			640
+	height			512
+}
+
+pinhole_camera
+{
+	location		0 7.5 -9.5
+	lookat			0 0.6 0
+	up				0 1 0
+	fov				42.0
+}
+
+> run scenes/colors.RISEscript
+
+uniformcolor_painter
+{
+	name		pnt_glass_tau
+	color		0.99 0.99 0.99
+}
+
+lambertian_material
+{
+	name		white
+	reflectance	color_white
+}
+
+lambertian_luminaire_material
+{
+	name		light_mat
+	exitance	color_white
+	scale		220.0
+	material	none
+}
+
+perfectrefractor_material
+{
+	name		glass
+	refractance	pnt_glass_tau
+	ior			1.5
+}
+
+clippedplane_geometry
+{
+	name		floorgeom
+	pta			-7 0 -7
+	ptb			 7 0 -7
+	ptc			 7 0  7
+	ptd			-7 0  7
+}
+
+clippedplane_geometry
+{
+	name		lightgeom
+	pta			-1.4 9 -1.4
+	ptb			 1.4 9 -1.4
+	ptc			 1.4 9  1.4
+	ptd			-1.4 9  1.4
+}
+
+sdf_geometry
+{
+	name		gemgeom
+	part		torus union 0  0 0 0  0 0 0  1 1 1  1.45 0.55 0  0
+}
+
+standard_object
+{
+	name		floor
+	geometry	floorgeom
+	material	white
+}
+
+standard_object
+{
+	name		light
+	geometry	lightgeom
+	material	light_mat
+}
+
+standard_object
+{
+	name		glass_gem
+	geometry	gemgeom
+	position	0 2.0 0
+	material	glass
+}
+
+caustic_pel_photonmap
+{
+	num				500000
+	max_recursion	8
+	min_importance	0.001
+	branch			TRUE
+	reflect			TRUE
+	refract			TRUE
+}
+
+caustic_pel_gather
+{
+	max_photons		300
+}

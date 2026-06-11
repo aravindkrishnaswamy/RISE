@@ -2979,6 +2979,26 @@ namespace RISE
 			const unsigned int maxSurfaceH,							///< [in] Available viewport height in pixels (must be > 0)
 			const unsigned int maxLongEdge							///< [in] Hard cap on the longer of the two output edges (must be > 0)
 			) = 0;
+
+		//! Creates a signed-distance-field (implicit) geometry: transformed
+		//! primitives composed with smooth-min / boolean ops, sphere-traced.
+		//! For melded / filleted organic shapes.  The part list comes from
+		//! exactly ONE of `szParts` (inline, newline-separated part lines --
+		//! the normal authoring path; the scene chunk's repeatable `part`
+		//! parameter) or `szFileName` (external parts file, same
+		//! one-part-per-line grammar; for very large SDFs).
+		//! NB: declared LAST in IJob deliberately -- appending keeps every
+		//! existing virtual at its original vtable slot (ABI-stable for any
+		//! consumer linked against an older IJob).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddSDFGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const char* szFileName,					///< [in] SDF parts file to load ("" / "none" = use szParts)
+			const char* szParts,					///< [in] Inline newline-separated part lines ("" = use szFileName)
+			const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+			const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+			const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
+			) = 0;
 	};
 
 

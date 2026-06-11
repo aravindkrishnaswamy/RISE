@@ -16,6 +16,7 @@
 #include "pch.h"
 #include "SubSurfaceScatteringShaderOp.h"
 #include "../../Utilities/GeometricUtilities.h"
+#include "../../Interfaces/IGeometry.h"		// CanBeAreaLight(): SSS needs real surface sampling
 #include "../../Utilities/stl_utils.h"
 #include "../../Sampling/HaltonPoints.h"
 
@@ -140,6 +141,19 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 		// Once grabbed, check again, just in case someone else made one
 		PointSetMap::iterator again = pointsets.find( ri.pObject );
 		if( again == pointsets.end() ) {
+			// SSS point-set generation uniformly samples the object's SURFACE via
+			// UniformRandomPoint/GetArea.  A geometry that cannot honour that contract
+			// (CanBeAreaLight() false -- e.g. a degenerate zero-area field) would
+			// collapse the samples -> a bogus irradiance cache.  Refuse SSS on such
+			// geometry, with a diagnostic, rather than build a garbage sample set.
+			const IGeometry* pSSSGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
+			if( pSSSGeom && !pSSSGeom->CanBeAreaLight() ) {
+				GlobalLog()->PrintEasyWarning( "SubSurfaceScatteringShaderOp:: object geometry cannot be uniformly surface-sampled (CanBeAreaLight() == false); subsurface scattering is unsupported on it -- skipping (no SSS contribution)." );
+				pointsets[ri.pObject] = 0;	// cache null sentinel: warn once per object, skip the bogus build on every later hit
+				create_mutex.unlock();
+				c = RISEPel( 0.0 );
+				return;
+			}
 			// Pass 1: Generate the irradiance point set for this object.
 			// This happens once per object, lazily on first hit.
 			GlobalLog()->PrintEasyInfo( "SubSurfaceScatteringShaderOp:: Generating point sample set for object" );
@@ -212,6 +226,10 @@ void SubSurfaceScatteringShaderOp::PerformOperation(
 		// There is already a point set, so we can just do our approximation now
 		ps = it->second;
 	}
+
+	// Unsupported geometry was cached as a null sentinel above -> no SSS contribution
+	// (c is already 0 from the top of the function).
+	if( !ps ) return;
 
 	// Pass 2: Evaluate the BSSRDF integral at the shading point.
 	// The octree sums Rd(|xi - xo|) * E(xi) over all sample points,

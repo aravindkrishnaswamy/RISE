@@ -12,6 +12,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "Geometry/SDFGeometry.h"
+#include <cstring>
 #define _USE_MATH_DEFINES
 #include "Job.h"
 #include "RISE_API.h"
@@ -4313,6 +4315,38 @@ bool Job::AddTorusGeometry(
 	IGeometry* pGeometry = 0;
 	RISE_API_CreateTorusGeometry( &pGeometry, majorRad, minorRad );
 
+	pGeomManager->AddItem( pGeometry, name );
+	safe_release( pGeometry );
+	return true;
+}
+
+//! Adds a signed-distance-field (implicit) geometry from inline part lines
+//! (the normal path) or an external parts file (for very large SDFs).
+//! Construction (part-grammar parse + token validation + sphere-trace build)
+//! is delegated to the C-API factory RISE_API_CreateSDFGeometry -- the single
+//! construction boundary -- after applying the media-path search to the file
+//! name (inline parts need no path resolution).  The exactly-one-source rule
+//! is diagnosed HERE with the geometry's name so scene authors get chunk-level
+//! context; the factory re-checks it for direct C-API callers.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddSDFGeometry( const char* name, const char* szFileName, const char* szParts, const unsigned int maxSteps, const double surfaceEpsilonFraction, const unsigned int samplingDetail )
+{
+	const bool hasFile  = ( szFileName && szFileName[0] && strcmp( szFileName, "none" ) != 0 );
+	const bool hasParts = ( szParts && szParts[0] );
+	if( hasFile == hasParts ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddSDFGeometry:: `%s`: provide exactly one SDF source -- either inline `part` lines or a `file`%s",
+			name ? name : "(unnamed)",
+			hasFile ? " (both were given)" : " (neither was given)" );
+		return false;
+	}
+	IGeometry* pGeometry = 0;
+	if( !RISE_API_CreateSDFGeometry( &pGeometry,
+			hasFile ? GlobalMediaPathLocator().Find(szFileName).c_str() : 0,
+			hasParts ? szParts : 0,
+			maxSteps, surfaceEpsilonFraction, samplingDetail ) ) {
+		return false;   // the factory already logged the source / line / token reason
+	}
 	pGeomManager->AddItem( pGeometry, name );
 	safe_release( pGeometry );
 	return true;

@@ -190,6 +190,21 @@ namespace RISE
 			(void)outDndu; (void)outDndv;
 			return false;
 		}
+
+		//! Whether this geometry may serve as an AREA LIGHT (and, more generally,
+		//! whether UniformRandomPoint() / GetArea() honour their EXACT-surface-
+		//! sampling contract).  The light sampler assumes UniformRandomPoint()
+		//! samples the true emitting SURFACE uniformly and GetArea() returns that
+		//! surface's area, using pdfPosition = 1/area for NEE + MIS; the point-set
+		//! SSS shaderops build their irradiance caches on the same contract.  A
+		//! geometry that cannot honour it (e.g. a field that tessellates to zero
+		//! surface area) returns false so those consumers can refuse it -- with a
+		//! diagnostic -- instead of sampling a broken surface.  Default true
+		//! (analytic primitives and meshes sample their surface exactly).
+		//!
+		//! Declared last + defaulted so adding it keeps every existing IGeometry
+		//! vtable slot (ABI-stable) and needs no change to existing geometries.
+		virtual bool CanBeAreaLight() const { return true; }
 	};
 }
 

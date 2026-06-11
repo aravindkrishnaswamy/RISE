@@ -449,6 +449,30 @@ namespace RISE
 						const bool          face_normals		///< [in] Use face normals rather than topologically re-averaged vertex normals
 						);
 
+	//! Creates a signed-distance-field (implicit) geometry: transformed
+	//! primitives (sphere / box / roundbox / cylinder / torus / capsule /
+	//! roundcone) composed with smooth-min / boolean ops, ray-traced by sphere
+	//! tracing.  This is the C-API construction boundary for SDF geometry;
+	//! IJob::AddSDFGeometry and the scene parser both route through here.
+	//! The part list comes from exactly ONE of `szParts` (inline, newline-
+	//! separated part lines -- the normal authoring path) or `szFileName`
+	//! (external parts file, same one-part-per-line grammar; for very large
+	//! SDFs).  szFileName must already be a resolvable path (the scene layer
+	//! applies the media-path search before calling).  Both sources share
+	//! SDFGeometry::ParsePartLines, so the grammar cannot drift.  Fails
+	//! (returns false, logs source / line / token context) on a missing file,
+	//! both-or-neither sources, a malformed part line, or an unknown
+	//! primitive / op token.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSDFGeometry(
+						IGeometry**          ppi,				///< [out] Pointer to receive the geometry
+						const char*          szFileName,		///< [in] Parts file path (already media-path resolved); NULL / "" / "none" when szParts is given
+						const char*          szParts,			///< [in] Inline newline-separated part lines; NULL / "" when szFileName is given
+						const unsigned int   maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+						const double         surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+						const unsigned int   samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
+						);
+
 
 	///////////////////////////////////////////////////////////
 	// UV generators

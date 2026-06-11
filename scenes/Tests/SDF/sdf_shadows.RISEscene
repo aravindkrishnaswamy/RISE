@@ -1,0 +1,166 @@
+RISE ASCII SCENE 6
+# SDF interop test: an SDF melded blob alongside an analytic sphere + box on a
+# ground plane, a directional light -> mutual shadows + correct ground contact.
+# Validates that sphere-traced SDF geometry participates in the same ray /
+# shadow-ray / inter-geometry pipeline as the analytic primitives.
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion	6
+	samples			24
+	lum_samples		1
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/sdf_shadows
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+film
+{
+	width			900
+	height			560
+}
+
+pinhole_camera
+{
+	location		0 9 22
+	lookat			0 2 0
+	up				0 1 0
+	fov				40.0
+}
+
+directional_light
+{
+	name			key
+	power			3.0
+	color			1.0 1.0 1.0
+	direction		0.45 0.8 0.35
+}
+
+ambient_light
+{
+	name			amb
+	color			0.35 0.37 0.42
+	power			0.6
+}
+
+uniformcolor_painter
+{
+	name			pgray
+	color			0.66 0.66 0.68
+}
+
+uniformcolor_painter
+{
+	name			pblue
+	color			0.20 0.35 0.75
+}
+
+uniformcolor_painter
+{
+	name			pred
+	color			0.75 0.25 0.22
+}
+
+uniformcolor_painter
+{
+	name			pgreen
+	color			0.25 0.62 0.30
+}
+
+lambertian_material
+{
+	name			mgray
+	reflectance		pgray
+}
+
+lambertian_material
+{
+	name			mblue
+	reflectance		pblue
+}
+
+lambertian_material
+{
+	name			mred
+	reflectance		pred
+}
+
+lambertian_material
+{
+	name			mgreen
+	reflectance		pgreen
+}
+
+clippedplane_geometry
+{
+	name			groundgeom
+	pta				-40 0 -40
+	ptb				 40 0 -40
+	ptc				 40 0  40
+	ptd				-40 0  40
+}
+
+sphere_geometry
+{
+	name			sphgeom
+	radius			2.2
+}
+
+box_geometry
+{
+	name			boxgeom
+	width			3.4
+	height			3.4
+	depth			3.4
+}
+
+sdf_geometry
+{
+	name			blobgeom
+	part			roundbox union 0  0 2 0  0 0 0  1 1 1  2 2 2  0.5
+	part			sphere smin 1.6  2.6 3.2 0  0 0 0  1 1 1  1.7 0 0  0
+}
+
+standard_object
+{
+	name			ground
+	geometry		groundgeom
+	material		mgray
+	position		0 0 0
+}
+
+standard_object
+{
+	name			blob
+	geometry		blobgeom
+	material		mblue
+	position		-5 0 0
+}
+
+standard_object
+{
+	name			sph
+	geometry		sphgeom
+	material		mred
+	position		1 2.2 1
+}
+
+standard_object
+{
+	name			box
+	geometry		boxgeom
+	material		mgreen
+	position		6 1.7 -1
+	orientation		0 30 0
+}
