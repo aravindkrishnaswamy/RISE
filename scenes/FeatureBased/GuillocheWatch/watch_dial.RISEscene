@@ -1,25 +1,27 @@
 RISE ASCII SCENE 6
 #############################################################################################################
 #   File:           watch_dial.RISEscene
-#   Description:    Guilloche titanium watch dial (thin-film heat-tint).  Phase 3 of the thin-film feature.
-#                   MILESTONE 1 (this revision): bare dial COLOUR validation -- a flat circular dial with the
-#                   thin-film GGX material, oxide thickness driven by the baked radial heat-tint map
-#                   (scenes/FeatureBased/GuillocheWatch/thermal_oxide_sim.py -> scenes/FeatureBased/GuillocheWatch/oxide_thickness.png), lit by an HDRI
-#                   environment so the specular thin-film reflectance gradient (gold centre -> blue rim)
-#                   is visible.  Relief (guilloche bump), cut-aligned anisotropy, the watch case, and the
-#                   final dark hero lighting + turntable land in later milestones.  Generic -- no brand mark.
+#   Description:    Guilloche titanium watch (thin-film heat-tint).  Phase 3 of the thin-film feature.
+#                   FULLY PROCEDURAL: the engraved dial relief is a native guilloche_dial_geometry
+#                   chunk, the radial heat-tint dose a native guilloche_oxide_painter function
+#                   (both C++ ports of the Python bakers in this folder, golden-tested), the strap
+#                   a native swept_band_geometry, and the case/crown/hands/ring melded SDFs --
+#                   no pre-baked meshes or maps.  Thin-film GGX dial under an HDRI environment;
+#                   the specular reflectance sweeps gold centre -> blue rim.  Generic -- no brand mark.
 #   Author:         Aravind Krishnaswamy
 #############################################################################################################
 
 # ============================================================================
-# BEFORE RENDERING: generate the dial mesh + oxide map (they are gitignored --
-# the mesh is 27 MB).  From the repo root:
-#     python3 scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py --cell 1.35 --disp 0.46
-# -> writes scenes/FeatureBased/GuillocheWatch/dial.raw2 (the Cartesian guilloche dial) and
-#    scenes/FeatureBased/GuillocheWatch/oxide_cart.png (the radial heat-tint SHAPE map).
-# Render specific cameras with scenes/FeatureBased/GuillocheWatch/render_watch_views.py, a turntable with
-# scenes/FeatureBased/GuillocheWatch/render_watch_turntable.py.  Tune the heat-tint via the oxide_thk
-# scale/bias (see the >>> HEAT-TINT TORCH CONTROL <<< block below).
+# FULLY PROCEDURAL -- nothing to pre-bake.  The dial meshes are native
+# `guilloche_dial_geometry` chunks (the field is evaluated at parse time) and
+# the oxide heat-tint doses are native `guilloche_oxide_painter` functions
+# consumed through `scalar_painter { function2d ... scale S bias B }`.  The
+# retired Python bakers (dial_mesh_gen.py / dial_variants_gen.py /
+# thermal_oxide_sim.py oxide maps, strap_mesh_gen.py) remain in this folder
+# as the reference implementations the chunks are tested against
+# (tests/GuillocheFieldTest, tests/ProceduralMeshTest).
+# Render specific cameras with scenes/FeatureBased/GuillocheWatch/render_watch_views.py.  Tune the
+# heat-tint via the oxide_thk scale/bias (see the >>> HEAT-TINT TORCH CONTROL <<< block below).
 # ============================================================================
 
 ##################################################
@@ -360,39 +362,40 @@ scalar_painter
 }
 
 
-# Oxide-thickness SHAPE map: scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py bakes only the NORMALISED
-# radial heat profile (0 at the centre, 1 at the rim; the Arrhenius/parabolic
-# torch-dwell curvature).  The ABSOLUTE nanometres -- i.e. the TORCH START/END --
-# are set below on the oxide_thk painter, so the whole heat-tint is tunable per
-# render WITHOUT re-baking.
-png_painter
+# Oxide-thickness SHAPE dose: a NATIVE guilloche_oxide_painter function (the
+# C++ port of thermal_oxide_sim's Arrhenius/parabolic radial heat profile --
+# 0 at the centre, 1 at the rim; goldens in tests/GuillocheFieldTest).  The
+# ABSOLUTE nanometres -- i.e. the TORCH START/END -- are set below on the
+# oxide_thk painter, so the whole heat-tint is tunable per render.  The radial
+# falloff is the `falloff` parameter here (was baked into oxide_cart.png).
+guilloche_oxide_painter
 {
-	name				oxide_png
-	file				scenes/FeatureBased/GuillocheWatch/oxide_cart.png
-	color_space			Rec709RGB_Linear
+	name				oxide_fn
+	metal				ti
+	falloff				quadratic
 }
 
-# Per-base-metal oxide SHAPE maps (per-metal activation energy -> different radial
-# curvature; baked by dial_mesh_gen.py --oxide-only).  Wired into oxide_thk_<metal>.
-png_painter
+# Per-base-metal oxide doses (per-metal activation energy -> different radial
+# curvature).  Wired into oxide_thk_<metal>.
+guilloche_oxide_painter
 {
-	name				oxide_png_nb
-	file				scenes/FeatureBased/GuillocheWatch/oxide_nb.png
-	color_space			Rec709RGB_Linear
+	name				oxide_fn_nb
+	metal				nb
+	falloff				quadratic
 }
 
-png_painter
+guilloche_oxide_painter
 {
-	name				oxide_png_ta
-	file				scenes/FeatureBased/GuillocheWatch/oxide_ta.png
-	color_space			Rec709RGB_Linear
+	name				oxide_fn_ta
+	metal				ta
+	falloff				quadratic
 }
 
-png_painter
+guilloche_oxide_painter
 {
-	name				oxide_png_steel
-	file				scenes/FeatureBased/GuillocheWatch/oxide_steel.png
-	color_space			Rec709RGB_Linear
+	name				oxide_fn_steel
+	metal				steel
+	falloff				quadratic
 }
 
 
@@ -407,31 +410,29 @@ png_painter
 # Titanium temper ladder (1st order): ~18 straw, ~22 gold, ~30 magenta/purple,
 #   ~33 blue, ~40 cyan, then it repeats (2nd order).  Pick a window on it:
 #     gold -> blue   (vivid)          : bias 22  scale 16   (22..38 nm)
-#     MING 37.06     (ACTIVE)        : bias 24.5 scale 13  (24.5..37.5 nm)
+#     violet/blue 37.5 (ACTIVE)      : bias 24.5 scale 13  (24.5..37.5 nm)
 #                                      violet/blue field, warm gold heart
 #     gold -> blue   (restrained)     : bias 22  scale 11   (22..33 nm)
 #     straw -> magenta (short torch)  : bias 18  scale 12   (18..30 nm)
 #     magenta -> cyan  (long torch)   : bias 30  scale 12   (30..42 nm)
-# (The RADIAL falloff -- how fast it heats outward -- is baked into oxide_cart.png;
-#  re-bake with scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py --oxide-falloff {quadratic|smooth|linear}.)
+# (The RADIAL falloff -- how fast it heats outward -- is the `falloff`
+#  parameter on the guilloche_oxide_painter chunks above: quadratic|smooth|linear.)
 ##################################################
 scalar_painter
 {
 	name				oxide_thk
-	texture				oxide_png
-	channel				R
+	function2d			oxide_fn
 	scale				13.0
 	bias				24.5
 }
 
 # --- COLOUR PALETTES (Ti temper windows; swap via the dial's film_thickness) ---
-# Same dose SHAPE (oxide_png), different nm WINDOW -> a different iridescent sweep.
+# Same dose SHAPE (oxide_fn), different nm WINDOW -> a different iridescent sweep.
 # Switch in the GUI: set tf_dial.film_thickness to one of these (or oxide_thk).
 scalar_painter
 {
 	name				oxide_thk_warm
-	texture			oxide_png
-	channel			R
+	function2d			oxide_fn
 	scale				14.0
 	bias				16.0
 }  # warm: 16..30 nm  gold -> magenta/violet (warm centre)
@@ -439,8 +440,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_cool
-	texture			oxide_png
-	channel			R
+	function2d			oxide_fn
 	scale				16.0
 	bias				28.0
 }  # cool: 28..44 nm  violet -> blue -> cyan (deep)
@@ -448,22 +448,20 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_wide
-	texture			oxide_png
-	channel			R
+	function2d			oxide_fn
 	scale				32.0
 	bias				14.0
 }  # wide: 14..46 nm  straw -> gold -> purple -> blue -> cyan (full)
 
 
 # --- Per-base-metal oxide THICKNESS windows (nm) ---
-# Same torch dose SHAPE (oxide_png), but each metal's oxide grows to a DIFFERENT nm
+# Same torch dose SHAPE (per-metal oxide_fn_*), but each metal's oxide grows to a DIFFERENT nm
 # window for its temper-colour sweep -- from thermal_oxide_sim's Airy/CIE oracle per
 # metal (run: thermal_oxide_sim.py --metal-ladders).  NOT reusing Ti's 22..38 nm.
 scalar_painter
 {
 	name				oxide_thk_nb
-	texture			oxide_png_nb
-	channel			R
+	function2d			oxide_fn_nb
 	scale				25.0
 	bias				30.0
 }  # Nb: 30..55 nm  gold/orange->blue
@@ -471,8 +469,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_ta
-	texture			oxide_png_ta
-	channel			R
+	function2d			oxide_fn_ta
 	scale				26.0
 	bias				26.0
 }  # Ta: 26..52 nm  bronze->gold->purple (Ta2O5 no clean blue)
@@ -480,8 +477,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_steel
-	texture			oxide_png_steel
-	channel			R
+	function2d			oxide_fn_steel
 	scale				28.0
 	bias				28.0
 }
@@ -493,8 +489,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_nb_warm
-	texture			oxide_png_nb
-	channel			R
+	function2d			oxide_fn_nb
 	scale				16.0
 	bias				26.0
 }  # nb warm: 26..42 nm  yellow-gold -> blue onset
@@ -502,8 +497,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_nb_cool
-	texture			oxide_png_nb
-	channel			R
+	function2d			oxide_fn_nb
 	scale				22.0
 	bias				44.0
 }  # nb cool: 44..66 nm  blue -> blue/cyan
@@ -511,8 +505,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_nb_wide
-	texture			oxide_png_nb
-	channel			R
+	function2d			oxide_fn_nb
 	scale				44.0
 	bias				22.0
 }  # nb wide: 22..66 nm  yellow-green -> gold -> blue -> cyan
@@ -520,8 +513,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_ta_warm
-	texture			oxide_png_ta
-	channel			R
+	function2d			oxide_fn_ta
 	scale				18.0
 	bias				22.0
 }  # ta warm: 22..40 nm  bronze -> gold -> red
@@ -529,8 +521,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_ta_cool
-	texture			oxide_png_ta
-	channel			R
+	function2d			oxide_fn_ta
 	scale				20.0
 	bias				40.0
 }  # ta cool: 40..60 nm  red -> purple (no blue)
@@ -538,8 +529,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_ta_wide
-	texture			oxide_png_ta
-	channel			R
+	function2d			oxide_fn_ta
 	scale				44.0
 	bias				18.0
 }  # ta wide: 18..62 nm  bronze -> gold -> red -> purple
@@ -547,8 +537,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_steel_warm
-	texture			oxide_png_steel
-	channel			R
+	function2d			oxide_fn_steel
 	scale				16.0
 	bias				26.0
 }  # steel warm: 26..42 nm  gold -> purple
@@ -556,8 +545,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_steel_cool
-	texture			oxide_png_steel
-	channel			R
+	function2d			oxide_fn_steel
 	scale				22.0
 	bias				44.0
 }  # steel cool: 44..66 nm  purple -> blue
@@ -565,8 +553,7 @@ scalar_painter
 scalar_painter
 {
 	name				oxide_thk_steel_wide
-	texture			oxide_png_steel
-	channel			R
+	function2d			oxide_fn_steel
 	scale				58.0
 	bias				22.0
 }  # steel wide: 22..80 nm  gold -> purple -> blue -> cyan
@@ -581,36 +568,38 @@ scalar_painter
 #   oxide_thk                 - UNIFORM radial torch (classic gold->blue sweep)
 #   oxide_thk_lightning_hot   - torch held LONGER on the zigzag -> bluer lightning
 #   oxide_thk_lightning_cool  - torch held LESS  on the zigzag -> golder lightning
-# Re-bake all three with: dial_mesh_gen.py --oxide-only  (tune --lightning-hot/-cool).
+# The torch pattern is the dial's 12-arm petal mask (the default-pattern
+# TorchMask), torched +/-0.40 dose -- exactly the retired oxide_lightning_*.png
+# bakes (dial_mesh_gen --lightning-hot/-cool defaults).
 ##################################################
-png_painter
+guilloche_oxide_painter
 {
-	name				oxide_png_lightning_hot
-	file				scenes/FeatureBased/GuillocheWatch/oxide_lightning_hot.png
-	color_space			Rec709RGB_Linear
+	name				oxide_fn_lightning_hot
+	metal				ti
+	falloff				quadratic
+	torch_amount			0.40
 }
 
 scalar_painter
 {
 	name				oxide_thk_lightning_hot
-	texture			oxide_png_lightning_hot
-	channel			R
+	function2d			oxide_fn_lightning_hot
 	scale				16.0
 	bias				22.0
 }
 
-png_painter
+guilloche_oxide_painter
 {
-	name				oxide_png_lightning_cool
-	file				scenes/FeatureBased/GuillocheWatch/oxide_lightning_cool.png
-	color_space			Rec709RGB_Linear
+	name				oxide_fn_lightning_cool
+	metal				ti
+	falloff				quadratic
+	torch_amount			-0.40
 }
 
 scalar_painter
 {
 	name				oxide_thk_lightning_cool
-	texture			oxide_png_lightning_cool
-	channel			R
+	function2d			oxide_fn_lightning_cool
 	scale				16.0
 	bias				22.0
 }
@@ -634,7 +623,7 @@ ggx_material
 }
 
 # --- Base-metal variants of the dial material (SWITCH IN THE GUI) ---
-# Select the dial object (dialmesh), set its `material` to one of these
+# Select the `dial` object, set its `material` to one of these
 # (ObjectIntrospection exposes `material` as a rebindable reference).  Each
 # carries the metal's substrate n,k + oxide n,k + its own nm window.
 # tf_dial (above) is the titanium default.
@@ -851,8 +840,9 @@ standard_object
 
 ##################################################
 ##################################################
-# The dial: CARTESIAN guilloche relief baked into a circular triangle MESH
-# (scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py -> scenes/FeatureBased/GuillocheWatch/dial.raw2).  Real engraved relief
+# The dial: CARTESIAN guilloche relief evaluated NATIVELY at parse time
+# (guilloche_dial_geometry -- the C++ port of dial_mesh_gen.py, goldens in
+# tests/GuillocheFieldTest + tests/ProceduralMeshTest).  Real engraved relief
 # with analytic normals + linear UV.  This REPLACES the old circulardisk +
 # displaced_geometry dial, whose POLAR UV (u=angle, v=radius) collapsed the
 # woven cells to zero world-size at the centre -> a smooth gold blob over the
@@ -860,12 +850,10 @@ standard_object
 # the guilloche blocks read uniformly to the dead-centre (no polar singularity).
 # Recessed to z = -1 so it sits below the case top rim.
 ##################################################
-rawmesh2_geometry
+guilloche_dial_geometry
 {
 	name				dialmesh
-	file				scenes/FeatureBased/GuillocheWatch/dial.raw2
-	double_sided			FALSE
-	face_normals			FALSE
+	pattern				uniform
 }
 
 ##################################################
@@ -873,56 +861,83 @@ rawmesh2_geometry
 # Cartesian UV so every oxide map / palette / metal applies to each (a
 # pattern changes only the RELIEF).  Switch the `dial` object's `geometry`
 # (below) to any of these -- it is a LIVE GUI rebind
-# (SceneEdit::SetObjectGeometry), no reload.  The dial*.raw2 meshes are
-# gitignored; regenerate every one with ./gen_dials.sh (the source of
-# truth for each pattern's parameters).
+# (SceneEdit::SetObjectGeometry), no reload.  Each pattern is a native
+# guilloche_dial_geometry chunk evaluated at parse time (gen_dials.sh
+# remains as the Python reference the chunks are golden-tested against).
 ##################################################
 
-# lightning -- MING-style hero: 11 zigzag lightning bolts of a tight cube
+# lightning -- the hero pattern: 11 zigzag lightning bolts of a tight cube
 # on a uniform rung-block ground.
-rawmesh2_geometry
+guilloche_dial_geometry
 {
 	name				dialmesh_lightning
-	file				scenes/FeatureBased/GuillocheWatch/dial_lightning.raw2
-	double_sided			FALSE
-	face_normals			FALSE
+	pattern				lightning
+	num_arms			11
+	cell_mode			select
+	lightning_relief		0.6
+	lightning_lo			0.45
+	lightning_hi			0.65
+	center_radius			0.015
+	zigzag_amp			0.16
+	zigzag_freq			3.0
+	bolt_style			rung
+	rung_len			0.65
+	rung_width			0.82
+	field_cell			0.50
+	field_frame			global
+	mesh_n				880
 }
 
 # radial -- earlier swirled-petal lightning at a coarser bolt cell.
-rawmesh2_geometry
+guilloche_dial_geometry
 {
 	name				dialmesh_radial
-	file				scenes/FeatureBased/GuillocheWatch/dial_radial.raw2
-	double_sided			FALSE
-	face_normals			FALSE
+	pattern				radial
+	cell_mode			select
+	lightning_cell_scale		1.8
+	lightning_lo			0.25
+	lightning_hi			0.65
 }
 
 # iris -- 007 camera aperture: 8 blade leading-edges spiralling around a
 # central hole, cube-filled blades.
-rawmesh2_geometry
+guilloche_dial_geometry
 {
 	name				dialmesh_iris
-	file				scenes/FeatureBased/GuillocheWatch/dial_iris.raw2
-	double_sided			FALSE
-	face_normals			FALSE
+	pattern				iris
+	num_arms			8
+	iris_aperture			0.13
+	iris_swirl			0.6
+	cell				0.8
+	grid_amp			0.95
+	center_radius			0.0
+	mesh_n				820
 }
 
 # swirl -- log-spiral guilloche.
-rawmesh2_geometry
+guilloche_dial_geometry
 {
 	name				dialmesh_swirl
-	file				scenes/FeatureBased/GuillocheWatch/dial_swirl.raw2
-	double_sided			FALSE
-	face_normals			FALSE
+	pattern				swirl
+	num_arms			6
+	swirl_turns			7.0
+	cell				0.8
+	grid_amp			0.95
+	center_radius			0.02
+	mesh_n				820
 }
 
 # varwidth -- alternating fine/coarse sunburst sectors.
-rawmesh2_geometry
+guilloche_dial_geometry
 {
 	name				dialmesh_varwidth
-	file				scenes/FeatureBased/GuillocheWatch/dial_varwidth.raw2
-	double_sided			FALSE
-	face_normals			FALSE
+	pattern				varwidth
+	num_arms			8
+	lightning_cell_scale		2.6
+	cell				0.6
+	grid_amp			0.95
+	center_radius			0.02
+	mesh_n				820
 }
 
 
@@ -1086,7 +1101,7 @@ standard_object
 }
 
 ##################################################
-# MING-style floating hour ring: a thin polished circle suspended just
+# Floating hour ring: a thin polished circle suspended just
 # below the sapphire dome (z=0.55, under the crystal underside at this
 # radius), BROKEN at the 12 hour positions -- the gaps ARE the markers,
 # with a wider gap at 12 o'clock.  Regenerate with sdf_gen.py.
@@ -1163,11 +1178,10 @@ standard_object
 }
 
 ##################################################
-# Blue FKM-rubber strap (MING-style).  A swept
-# curved band (scenes/FeatureBased/GuillocheWatch/strap_mesh_gen.py) from each lug, curving down to the
-# tabletop with a subtle residual arc (never dead-flat).  Domed top, rounded
-# edges, 20->16mm taper; soft FKM sheen = schlick_f0 with a low F0.  The -Y (6 o'clock) half is the same mesh rotated
-# 180deg about Z.
+# Blue FKM-rubber strap.  A native swept_band_geometry from each lug,
+# curving down to the tabletop with a subtle residual arc (never dead-flat).
+# Domed top, rounded edges, 20->16mm taper; soft FKM sheen = schlick_f0 with
+# a low F0.  The -Y (6 o'clock) half is the same mesh rotated 180deg about Z.
 ##################################################
 ggx_material
 {
@@ -1179,12 +1193,19 @@ ggx_material
 	fresnel_mode			schlick_f0
 }
 
-rawmesh2_geometry
+# NATIVE swept band (the C++ port of strap_mesh_gen.py; goldens in
+# tests/ProceduralMeshTest).  Catmull-Rom (y, z) drape: lug -> curve down ->
+# subtle residual arc on the tabletop (z = -10.30 + thickness/2 = -8.80).
+swept_band_geometry
 {
 	name				strapgeom
-	file				scenes/FeatureBased/GuillocheWatch/strap.raw2
-	double_sided			TRUE
-	face_normals			FALSE
+	point				24.0 -3.4
+	point				32.0 -4.9
+	point				43.0 -7.3
+	point				56.0 -8.25
+	point				70.0 -8.68
+	point				86.0 -8.50
+	point				104.0 -8.78
 }
 
 standard_object
@@ -1204,8 +1225,8 @@ standard_object
 
 # Saddle stitching: real thread capsules following the drape curve, sitting
 # in the recessed channel pressed into the strap's top profile.  Separate
-# mesh so the thread carries its own material.  Regenerate both meshes with
-# strap_mesh_gen.py (--stitch-pitch/-len/-r/-angle/--groove).
+# mesh (emit_stitches TRUE on the SAME path/profile) so the thread carries
+# its own material.  Tune stitch_pitch/len/r/angle + groove on both chunks.
 uniformcolor_painter
 {
 	name				pnt_thread
@@ -1222,12 +1243,17 @@ ggx_material
 	fresnel_mode			schlick_f0
 }
 
-rawmesh2_geometry
+swept_band_geometry
 {
 	name				strapstitchgeom
-	file				scenes/FeatureBased/GuillocheWatch/strap_stitch.raw2
-	double_sided			TRUE
-	face_normals			FALSE
+	point				24.0 -3.4
+	point				32.0 -4.9
+	point				43.0 -7.3
+	point				56.0 -8.25
+	point				70.0 -8.68
+	point				86.0 -8.50
+	point				104.0 -8.78
+	emit_stitches			TRUE
 }
 
 standard_object

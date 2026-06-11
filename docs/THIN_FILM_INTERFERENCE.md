@@ -468,13 +468,17 @@ P3-A/B/C plan** in one load-bearing way — the Cartesian rebuild below.
   position + analytic normal + linear UV) — every cell is a fixed world size at the rim and the
   dead-centre alike. The woven micro-grid is laid in a per-sector-rotated frame so it runs radially
   and flips tilt at each jagged "lightning" seam but never shrinks; the petals are the swirl=0
-  radial organizer. Mesh is gitignored (27 MB; regenerate with `dial_mesh_gen.py --cell 1.35 --disp 0.46`).
+  radial organizer. **2026-06 update:** the bake is now NATIVE — `guilloche_dial_geometry` chunks
+  evaluate the same field in C++ at scene-parse time (`src/Library/Painters/GuillocheField.h`;
+  golden-tested against the Python in `tests/GuillocheFieldTest.cpp` + `tests/ProceduralMeshTest.cpp`),
+  so there is no mesh file at all; `dial_mesh_gen.py` remains as the reference implementation.
 
-- **Heat-tint is scene-tunable, no re-bake** (the §9 decoupling, realised). `oxide_cart.png` stores
-  ONLY the normalised radial heat SHAPE (0=centre..1=rim); the `oxide_thk` scalar_painter
-  `scale`/`bias` set the absolute torch start/end nm (bias=centre, bias+scale=rim) — 4 presets in
-  the scene's `>>> HEAT-TINT TORCH CONTROL <<<` block. Bake emits a shape, renderer does
-  thickness→colour, scene dials the absolute nm.
+- **Heat-tint is scene-tunable, no re-bake** (the §9 decoupling, realised — and since 2026-06 fully
+  native). The normalised radial heat SHAPE (0=centre..1=rim) is a `guilloche_oxide_painter`
+  IFunction2D (`oxide_fn`; was `oxide_cart.png`); the `oxide_thk` scalar_painter consumes it via the
+  `function2d` form, whose `scale`/`bias` set the absolute torch start/end nm (bias=centre,
+  bias+scale=rim) — presets in the scene's `>>> HEAT-TINT TORCH CONTROL <<<` block. The painter
+  emits a dose, the renderer does thickness→colour, the scene dials the absolute nm.
 
 - **Dark-hero lighting.** Two top/bottom softboxes with a dark gap (soft gradient reflection bands,
   not one harsh panel; rakes the relief from two sides) + a dim Uffizi HDRI fill (the even thin-film

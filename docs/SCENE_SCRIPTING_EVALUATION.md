@@ -1,6 +1,14 @@
 # Scene-Language Scripting: What It Takes to Retire the Python Generators
 
-**Status: evaluation (2026-06-11).  No code changes yet.**
+**Status: B1 + B2 SHIPPED (2026-06-11).**  The texture bakers are now native
+painters (`guilloche_oxide_painter` + the `scalar_painter function2d scale/bias`
+form) and the mesh bakers native chunks (`guilloche_dial_geometry`,
+`swept_band_geometry`) — see `src/Library/Painters/GuillocheField.h`, the
+factories in `src/Library/RISE_API.cpp`, and the golden tests
+`tests/GuillocheFieldTest.cpp` / `tests/ProceduralMeshTest.cpp`.  Chunk names
+differ slightly from the proposals below (kept as authored).  Orchestration
+(C) stays external by decision; `sdf_gen.py` replacement (A-class, needs
+in-chunk `FOR`) is deferred.
 
 The GuillocheWatch scene leans on nine standalone Python/shell files.  This
 document evaluates what it would take to fold that generation into the

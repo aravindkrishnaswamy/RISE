@@ -67,15 +67,16 @@ Two softbox area lights (`clippedplane_geometry` + `lambertian_luminaire_materia
 | Material | Type | Key params | Notes |
 |---|---|---|---|
 | `tf_dial` | `ggx_material` | `fresnel_mode thinfilm`, `ior Ti_n`/`extinction Ti_k` (substrate), `film_ior TiO2_n`/`film_extinction TiO2_k`, `film_thickness oxide_thk`, `rs pnt_white`, `alpha 0.08` | The iridescent dial. n,k from shared `colors/thinfilm/`. |
-| `oxide_thk` | `scalar_painter` | `texture oxide_png` (=`oxide_cart.png`), `scale 16 bias 22` | **Film thickness in nm** = `bias + scale·map`. Centre=22 nm (gold), rim=38 nm (blue). **MUST be `scalar_painter` (IScalarPainter), never a colour painter** — film thickness is a physical scalar; a colour painter would JH-uplift it and mangle the nm. |
+| `oxide_thk` | `scalar_painter` | `function2d oxide_fn` (native `guilloche_oxide_painter`), `scale 13 bias 24.5` | **Film thickness in nm** = `bias + scale·dose`. Centre=24.5 nm (gold heart), rim=37.5 nm (violet/blue). **MUST be `scalar_painter` (IScalarPainter), never a colour painter** — film thickness is a physical scalar; a colour painter would JH-uplift it and mangle the nm. |
 | `strap_leather` | `ggx_material` | `fresnel_mode schlick_f0`, `rd pnt_strap_blue (0.04 0.08 0.22)`, `rs pnt_black` (F0=0 ⇒ pure matte), `alpha 0.5` | Deep royal-blue suede. |
 | `surface_dark` | `ggx_material` | `schlick_f0`, `rd pnt_black`, `rs 0.05`, `alpha 0.10` | Polished tabletop; `alpha 0.10` gives a soft watch reflection. |
 | sapphire crystal | `dielectric` | Sellmeier + `ar_film_ior 1.38 ar_film_thickness 99.6` | Data-based AR coating (low reflection). |
 
-**Heat-tint tuning (no re-bake):** change `oxide_thk` `bias` (torch START nm) and
+**Heat-tint tuning (all in-scene):** change `oxide_thk` `bias` (torch START nm) and
 `scale` (SPAN nm) — presets are in comments above the chunk (e.g. `bias 22 scale 16`
-= gold→blue vivid). The **radial falloff** (how fast it heats outward) is baked into
-`oxide_cart.png`; change it with `dial_mesh_gen.py --oxide-falloff {quadratic|smooth|linear}`.
+= gold→blue vivid; active is `bias 24.5 scale 13`). The **radial falloff** (how fast
+it heats outward) is the `falloff` parameter on the `guilloche_oxide_painter` chunks
+(`quadratic|smooth|linear`).
 
 **⚠ STRAP PALE-BLUE TRAP:** if the strap looks washed-out/pale, it's almost always a
 **too-shallow, desaturated albedo**, NOT over-exposure. Diffuse colour = albedo × light;
@@ -83,14 +84,12 @@ a blue with max channel ~0.4 + non-trivial green reads as periwinkle. **Test:** 
 albedo to pure red `(1,0,0)` — if the strap turns vivid red, albedo drives it (deepen +
 saturate the blue), not the lights. Deep royal blue = `(0.04, 0.08, 0.22)`.
 
-## Mesh / texture pipeline
+## Mesh / texture pipeline (NATIVE since 2026-06)
 
-- **`dial.raw2`** ← `dial_mesh_gen.py --cell 1.35 --disp 0.46`. A **Cartesian-grid** circular mesh + analytic normals. **Do NOT go back to a polar mesh for the dial** — the polar parameterization had a center-wash singularity (the whole reason for the Cartesian rebuild). `guilloche_gen.py` is the earlier *polar* generator, kept for reference but **superseded** for the production dial.
-- **`oxide_cart.png`** ← also `dial_mesh_gen.py`. Normalized radial heat SHAPE (0=centre…1=rim), 8-bit. Torch nm range lives in-scene (see above).
-- **`strap.raw2`** ← `strap_mesh_gen.py`. Catmull-Rom swept band; edit the centreline `ctrl` (y,z) points to change how the strap curves from the lug down to the flat tabletop run.
-- **RAW2 format:** header `<nverts> <ntris>`; then `v x y z nx ny nz u v` per vertex (shared index); then `t a b c` per tri.
-- Generators are **deterministic** (no RNG/time) and write **next to the scene** (this folder) by default.
-- **`dial.raw2` (~28 MB) is gitignored** — regenerate after a fresh clone. `strap.raw2` is tracked.
+- **Nothing is pre-baked.** The dial meshes are `guilloche_dial_geometry` chunks, the oxide doses `guilloche_oxide_painter` functions, the strap + stitches `swept_band_geometry` chunks — all evaluated at scene-parse time in C++ (`src/Library/Painters/GuillocheField.h`, the factories in `src/Library/RISE_API.cpp`).
+- The Python bakers (`dial_mesh_gen.py`, `dial_variants_gen.py`, `thermal_oxide_sim.py`, `strap_mesh_gen.py`) **stay in this folder as the golden reference implementations** — `tests/GuillocheFieldTest.cpp` + `tests/ProceduralMeshTest.cpp` pin the C++ to them (heights, oxide doses, torch masks, mesh vertices/normals/uv/triangles). Change the C++ and the Python together, regenerate goldens from the Python.
+- **Do NOT go back to a polar mesh for the dial** — the polar parameterization had a center-wash singularity (the whole reason for the Cartesian layout). `guilloche_gen.py` is the earlier *polar* generator, kept for reference only.
+- The dial's UV is the linear Cartesian map u=(x+R)/2R — every oxide painter / palette / metal applies to every dial pattern.
 
 ## Paths & scripts
 
@@ -107,13 +106,13 @@ saturate the blue), not the lights. Deep royal blue = `(0.04, 0.08, 0.22)`.
 
 ## "I want to change X" quick recipes
 
-- **Dial colour/palette** → `oxide_thk` `bias`/`scale` (in-scene, no re-bake); or re-bake falloff with `dial_mesh_gen.py --oxide-falloff …`.
-- **Switch the base metal (Ti / Nb / Ta / steel)** → set the dial object's `material` to `tf_dial` / `tf_dial_nb` / `tf_dial_ta` / `tf_dial_steel` (GUI object-material dropdown; `ObjectIntrospection` exposes `material` as a rebindable reference). Each material = the metal's substrate n,k + its oxide n,k (TiO₂/Nb₂O₅/Ta₂O₅/Fe₃O₄) + a per-metal oxide-thickness window (`oxide_thk_<metal>` scale/bias). Windows are computed by `ThinFilmSwatchOracle(substrate, oxide)` (parameterized) — run `thermal_oxide_sim.py --metal-ladders`. PHYSICS: the same temper sweep lands at a DIFFERENT nm per metal (oxide indices differ), so Ti's 22–38 nm is NOT reused. The dose SHAPE is ALSO per-metal: each metal's parabolic-oxidation activation energy (`tox.METAL_KINETICS`, representative literature Q) bends the radial curvature (higher Q => rim-loaded; baked as `oxide_<metal>.png` by `dial_mesh_gen.py --oxide-only`).  So substrate n,k + oxide n,k + nm window + radial shape ALL differ per metal. n,k live in `colors/thinfilm/{substrates,oxides}/`.
-- **Make the lightning stand out in colour (non-uniform torch)** → bind `tf_dial.film_thickness` to `oxide_thk_lightning_hot` / `_cool` (GUI scalar-painter slot dropdown). The maps are baked by `dial_mesh_gen.py --oxide-only` via `thermal_oxide_sim.apply_torch_pattern(radial, lightning_mask, ±amount)` where `lightning_mask` is the dial's petal zigzag (Cartesian UV, aligned with the relief). New torch patterns = feed a different mask to `apply_torch_pattern`.
-- **Switch the colour palette (temper window)** → set `tf_dial.film_thickness` to `oxide_thk` (vivid 22–38), `oxide_thk_warm` (16–30 gold→violet), `oxide_thk_cool` (28–44 violet→cyan), or `oxide_thk_wide` (14–46 full multicolour). Same dose shape (`oxide_png`), different scale/bias = a different slice of the Ti temper sequence. Tune via scale/bias; the colour at each nm follows the oracle / `--metal-ladders` Ti row.
-- **Wider palettes per metal** → every base metal has the same set with PER-METAL windows: `oxide_thk_<metal>_warm` / `_cool` / `_wide` (+ default `oxide_thk_<metal>` = vivid), wrapping that metal's shape map `oxide_png_<metal>`. Switch via that metal's material film_thickness slot (4 metals × 4 palettes = 16 looks). Windows differ per metal because the colour sequence does (Ta has no blue, etc.) -- pick from each metal's `--metal-ladders` row.
+- **Dial colour/palette** → `oxide_thk` `bias`/`scale`; radial falloff = the `falloff` param on the `guilloche_oxide_painter` chunks. All in-scene.
+- **Switch the base metal (Ti / Nb / Ta / steel)** → set the dial object's `material` to `tf_dial` / `tf_dial_nb` / `tf_dial_ta` / `tf_dial_steel` (GUI object-material dropdown; `ObjectIntrospection` exposes `material` as a rebindable reference). Each material = the metal's substrate n,k + its oxide n,k (TiO₂/Nb₂O₅/Ta₂O₅/Fe₃O₄) + a per-metal oxide-thickness window (`oxide_thk_<metal>` scale/bias). Windows are computed by `ThinFilmSwatchOracle(substrate, oxide)` (parameterized) — run `thermal_oxide_sim.py --metal-ladders`. PHYSICS: the same temper sweep lands at a DIFFERENT nm per metal (oxide indices differ), so Ti's 22–38 nm is NOT reused. The dose SHAPE is ALSO per-metal: each metal's parabolic-oxidation activation energy (`tox.METAL_KINETICS`, representative literature Q) bends the radial curvature (higher Q => rim-loaded; the `metal ti|nb|ta|steel` preset on each `oxide_fn_<metal>` `guilloche_oxide_painter` chunk, or explicit `activation_ea`).  So substrate n,k + oxide n,k + nm window + radial shape ALL differ per metal. n,k live in `colors/thinfilm/{substrates,oxides}/`.
+- **Make the lightning stand out in colour (non-uniform torch)** → bind `tf_dial.film_thickness` to `oxide_thk_lightning_hot` / `_cool` (GUI scalar-painter slot dropdown). Those wrap `oxide_fn_lightning_hot/_cool` — `guilloche_oxide_painter` chunks with `torch_amount ±0.40` (the painter's TorchMask is the dial's petal zigzag, aligned with the relief; the model is thermal_oxide_sim.apply_torch_pattern). New torch looks = new painter chunk with a different `torch_amount` / pattern.
+- **Switch the colour palette (temper window)** → set `tf_dial.film_thickness` to `oxide_thk` (vivid 22–38), `oxide_thk_warm` (16–30 gold→violet), `oxide_thk_cool` (28–44 violet→cyan), or `oxide_thk_wide` (14–46 full multicolour). Same dose shape (`oxide_fn`), different scale/bias = a different slice of the Ti temper sequence. Tune via scale/bias; the colour at each nm follows the oracle / `--metal-ladders` Ti row.
+- **Wider palettes per metal** → every base metal has the same set with PER-METAL windows: `oxide_thk_<metal>_warm` / `_cool` / `_wide` (+ default `oxide_thk_<metal>` = vivid), wrapping that metal's dose function `oxide_fn_<metal>`. Switch via that metal's material film_thickness slot (4 metals × 4 palettes = 16 looks). Windows differ per metal because the colour sequence does (Ta has no blue, etc.) -- pick from each metal's `--metal-ladders` row.
 - **Re-pose camera** → compute ψ via the basis above (crown-right ⇒ ψ∈[285,330]); set `cam_photo` location `(R cosψ, R sinψ, Z)` with R≈184, Z≈183; **rotate both softboxes by the same Δψ**; verify by cropping the polished crown.
-- **Strap shape** → `strap_mesh_gen.py` centreline `ctrl` points, then regen.
+- **Strap shape** → the repeatable `point <y> <z>` lines on the two `swept_band_geometry` chunks (band + stitches share the path; keep them identical).
 - **Strap colour** → `pnt_strap_blue` (keep it deep + saturated + blue-dominant; matte F0=0).
 - **Table reflection sharpness** → `surface_dark` `alphax/alphay` (0.10 = soft; lower = mirror-like).
 - **New camera angle** → add a `pinhole_camera`/`thinlens_camera` chunk BEFORE `cam_high34` (which must stay last = active), `up 0 0 1` unless top-down; `render_watch_views.py` auto-discovers it.
@@ -124,7 +123,7 @@ saturate the blue), not the lights. Deep royal blue = `(0.04, 0.08, 0.22)`.
 Flexible alternate-geometry generator (stock `dial_mesh_gen.py` unchanged). Reuses
 its primitives + `build_mesh(p, height_fn=...)` + writer, composable height FIELDS.
 Shipped library (`--field` / `dialmesh_<name>`):
-- `lightning` — **MING-style hero.** 11 zigzag bolts of a tight CUBE (the raised
+- `lightning` — **the hero pattern.** 11 zigzag bolts of a tight CUBE (the raised
   broad zigzag arms) on a uniform RUNG-block ground (the channels between).
   angle-only `cos(N*theta)` ray mask + mask-only triangle-wave zigzag (weave stays
   radial → reads as bolts, not a pinwheel); `select` mode = fine `_cube` inside the

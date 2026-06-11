@@ -16,7 +16,7 @@ cd "$(dirname "$0")"
 echo "[1/6] uniform  — stock single-cell woven dial            -> dial.raw2"
 python3 dial_mesh_gen.py        # also (re)bakes the committed oxide maps (deterministic)
 
-echo "[2/6] lightning — MING hero: 11 zigzag bolts of a tight cube on a uniform rung ground -> dial_lightning.raw2"
+echo "[2/6] lightning — hero: 11 zigzag bolts of a tight cube on a uniform rung ground -> dial_lightning.raw2"
 python3 dial_variants_gen.py --field lightning --num-arms 11 --cell-mode select \
   --lightning-relief 0.6 --lightning-lo 0.45 --lightning-hi 0.65 --center-radius 0.015 \
   --zigzag-amp 0.16 --zigzag-freq 3.0 --bolt-style rung --rung-len 0.65 --rung-width 0.82 \

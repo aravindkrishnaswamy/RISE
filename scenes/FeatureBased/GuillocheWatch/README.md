@@ -94,91 +94,85 @@ for `renderanimation` to drive it.
 
 ## Alternate dial geometry — a pattern library
 
-The stock dial has a uniform woven-cell size everywhere. `dial_variants_gen.py`
-is a flexible generator (composable height `field_*` functions; add one + register
-it in `FIELDS`), and the watch ships a small **library of dial patterns** — all on
-the stock Cartesian UV, so every oxide palette / metal applies to each (a pattern
-only changes the RELIEF). Each is carried in the scene as `rawmesh2_geometry
-dialmesh_<name>`:
+The stock dial has a uniform woven-cell size everywhere.  The watch ships a small
+**library of dial patterns** — all on the stock Cartesian UV, so every oxide
+palette / metal applies to each (a pattern only changes the RELIEF).  Each is a
+native `guilloche_dial_geometry dialmesh_<name>` chunk (the pattern field is
+evaluated in C++ at parse time; `dial_variants_gen.py` remains the composable
+Python REFERENCE the chunks are golden-tested against):
 
 | `--field` / `dialmesh_<name>` | what it is |
 |---|---|
-| `lightning` | **MING-style hero** — 11 zigzag lightning bolts of a tight cube on a uniform rung-block ground |
+| `lightning` | **the hero pattern** — 11 zigzag lightning bolts of a tight cube on a uniform rung-block ground |
 | `radial`    | earlier swirled-petal lightning at a coarser bolt cell |
 | `iris`      | 007 camera aperture — 8 blade leading-edges spiralling around a central hole, cube-filled blades |
 | `swirl`     | log-spiral guilloché |
 | `varwidth`  | alternating fine/coarse sunburst sectors |
 | `uniform`   | the stock single-cell dial (A/B baseline) |
 
-**Regenerate every mesh** with `./gen_dials.sh` — the `dial*.raw2` meshes are big
-and gitignored, so that script is the source of truth for each pattern\'s exact
-parameters. Author a new pattern = write a `field_<name>(X,Y,R,p)` returning a
-[0,1] height field, register it in `FIELDS`, add a `gen_dials.sh` line + a
-`dialmesh_<name>` scene chunk.
+**The blessed parameters live in the scene chunks themselves** (gen_dials.sh
+mirrors them as the Python reference invocation).  Author a new pattern = write a
+`field_<name>(X,Y,R,p)` in `dial_variants_gen.py` (the reference), port it as a
+`Raw<Name>` in `src/Library/Painters/GuillocheField.h`, add golden values to
+`tests/GuillocheFieldTest.cpp`, then a `dialmesh_<name>` chunk.
 
 **Switch dials live in the GUI:** set the `dial` object\'s `geometry` to any
 `dialmesh_<name>` — `geometry` is a **live rebindable reference** (like `material`:
 the mesh swaps and the top-level BVH rebuilds on the next render, no reload —
 `SceneEdit::SetObjectGeometry`).
 
-## Asset pipeline (regenerate)
+## Asset pipeline — fully procedural (2026-06)
 
-The scene consumes three generated assets. The generators write next to the
-scene (this folder) by default:
+**Nothing is pre-baked.**  The dial meshes (`guilloche_dial_geometry`), the oxide
+heat-tint doses (`guilloche_oxide_painter` + `scalar_painter function2d`), and the
+strap + stitching (`swept_band_geometry`) are native scene chunks evaluated at
+parse time — clone and render, no generator step.
+
+The Python bakers stay in this folder as the **golden reference implementations**:
 
 ```sh
-python3 scenes/FeatureBased/GuillocheWatch/dial_mesh_gen.py --cell 1.35 --disp 0.46
-#   -> dial.raw2                 (Cartesian guilloché dial mesh)
-#   -> oxide_cart.png            (UNIFORM radial heat-tint SHAPE map)
-#   -> oxide_lightning_hot.png   (torch held LONGER on the zigzag -> bluer)
-#   -> oxide_lightning_cool.png  (torch held LESS  on the zigzag -> golder)
-#   -> oxide_{nb,ta,steel}.png   (per-base-metal radial shapes; Ea-driven curvature)
-#   (--oxide-only re-bakes just the maps, no 28 MB mesh; tune the zigzag
-#    contrast with --lightning-hot / --lightning-cool)
-python3 scenes/FeatureBased/GuillocheWatch/strap_mesh_gen.py
-#   -> strap.raw2       (curved leather strap mesh)
-python3 scenes/FeatureBased/GuillocheWatch/thermal_oxide_sim.py
-#   -> oxide_thickness.png + oxide_calibration.txt (torch heat -> oxide nm sim)
-python3 scenes/FeatureBased/GuillocheWatch/guilloche_gen.py
-#   -> guilloche_{height,normal,angle}.png  (earlier POLAR rose-engine generator;
-#      superseded for the production dial by dial_mesh_gen.py, kept for reference)
-python3 scenes/FeatureBased/GuillocheWatch/dial_variants_gen.py    # ALTERNATE reliefs (variable cell size); -> dial_*.raw2
-python3 scenes/FeatureBased/GuillocheWatch/render_contact_sheet.py  # metal x palette ~4K contact sheet (not committed)
+dial_mesh_gen.py        # stock dial field + oxide-dose model      (reference)
+dial_variants_gen.py    # the composable pattern library            (reference)
+thermal_oxide_sim.py    # Airy/CIE oracle, temper ladders, kinetics (reference + --metal-ladders)
+strap_mesh_gen.py       # swept-band + saddle-stitch generator      (reference)
+guilloche_gen.py        # earlier POLAR rose-engine generator       (historical)
+render_contact_sheet.py # metal x palette ~4K contact sheet         (still a live tool)
 ```
 
-**`dial.raw2` (~28 MB) is gitignored** — regenerate it with `dial_mesh_gen.py`
-after a fresh clone. `strap.raw2` (small) is tracked, so the watch renders as
-soon as `dial.raw2` is regenerated.
+`tests/GuillocheFieldTest.cpp` + `tests/ProceduralMeshTest.cpp` pin the C++ port
+to these sources (pattern heights, oxide doses, torch masks, mesh vertices /
+normals / UV / triangles).  Change the C++ and the Python together and regenerate
+the golden values from the Python.
 
 ## Heat-tint tuning
 
 The iridescence palette is dialable from the scene without re-baking: the
 `oxide_thk` `scalar_painter` `bias`/`scale` set the torch START / SPAN thickness
 in nm (centre = bias, rim = bias + scale). Presets are in comments at the top of
-`watch_dial.RISEscene`. The *radial falloff* (how fast it heats outward) is baked
-into `oxide_cart.png` — re-bake with `dial_mesh_gen.py --oxide-falloff
-{quadratic|smooth|linear}` to change it.
+`watch_dial.RISEscene`. The *radial falloff* (how fast it heats outward) is the
+`falloff` parameter on the `guilloche_oxide_painter` chunks
+(`quadratic|smooth|linear`).
 
 ## Torch pattern variants (non-uniform torch)
 
-Beyond the uniform radial sweep, the dial ships oxide maps that emulate the
+Beyond the uniform radial sweep, the dial ships oxide painters that emulate the
 artist holding the torch **non-uniformly** — dwelling along the lightning zigzag
 so it stands out in a different interference colour (a deliberate, hand-torched
-look). All three share the dial's Cartesian UV and the `oxide_thk`
-scale/bias → nm, so they are drop-in:
+look). All three share the dial's Cartesian UV and the same scale/bias → nm
+semantics, so they are drop-in:
 
-| map | scalar_painter | look |
+| dose function (`guilloche_oxide_painter`) | scalar_painter | look |
 |---|---|---|
-| `oxide_cart.png` | `oxide_thk` | uniform radial gold→blue |
-| `oxide_lightning_hot.png` | `oxide_thk_lightning_hot` | zigzag torched LONGER → bluer lightning |
-| `oxide_lightning_cool.png` | `oxide_thk_lightning_cool` | zigzag torched LESS → golder lightning |
+| `oxide_fn` (torch_amount 0) | `oxide_thk` | uniform radial gold→blue |
+| `oxide_fn_lightning_hot` (torch_amount +0.40) | `oxide_thk_lightning_hot` | zigzag torched LONGER → bluer lightning |
+| `oxide_fn_lightning_cool` (torch_amount −0.40) | `oxide_thk_lightning_cool` | zigzag torched LESS → golder lightning |
 
 **Switch in the GUI:** select the `tf_dial` material and set its `film_thickness`
 slot (a `scalar_painter` reference dropdown) to one of the three. The torch model
-is `thermal_oxide_sim.apply_torch_pattern(base, pattern, amount)`; the lightning
-`pattern` is `dial_mesh_gen.lightning_mask` (the dial's petal zigzag, so the
-colour zigzag lines up with the relief). Add new looks by feeding a different
-mask to `apply_torch_pattern`.
+is `thermal_oxide_sim.apply_torch_pattern(base, pattern, amount)` (reference); the
+pattern is the painter's TorchMask — the dial's petal zigzag, so the colour zigzag
+lines up with the relief. Add new looks with a new `guilloche_oxide_painter`
+chunk (different `torch_amount`, or a different `pattern`).
 
 ## Colour palettes (temper windows)
 
@@ -234,10 +228,10 @@ prints each metal's thickness→colour ladder + its temper window. **Even the do
 *shape* is per-metal:** each metal's parabolic-oxidation activation energy `Q`
 (`thermal_oxide_sim.METAL_KINETICS`, representative literature values) bends the
 radial curvature — higher `Q` concentrates growth at the hot rim (bigger
-thin/gold centre, sharper rim), lowest for Ta. The per-metal shape maps
-`oxide_<metal>.png` are baked by `dial_mesh_gen.py --oxide-only`. So **substrate
-n,k + oxide n,k + nm window + radial shape ALL differ per metal** — nothing is
-reused from Ti. (Q is regime-dependent; values are documented + editable in
+thin/gold centre, sharper rim), lowest for Ta. The per-metal dose shapes
+are the `metal ti|nb|ta|steel` presets on the `oxide_fn_<metal>` chunks (or an
+explicit `activation_ea`). So **substrate n,k + oxide n,k + nm window + radial
+shape ALL differ per metal** — nothing is reused from Ti. (Q is regime-dependent; values are documented + editable in
 `METAL_KINETICS`.)
 
 See [docs/THIN_FILM_INTERFERENCE.md](../../../docs/THIN_FILM_INTERFERENCE.md) for
