@@ -1391,7 +1391,8 @@ namespace RISE
 							const char*         displacement,		///< [in] Name of registered IFunction2D, or NULL for pure tessellation
 							const Scalar        disp_scale,			///< [in] Displacement scale factor
 							const bool          double_sided,		///< [in] Are the displaced triangles double sided?
-							const bool          face_normals		///< [in] Use face normals instead of topologically re-averaged vertex normals
+							const bool          face_normals,
+			const bool          seam_fold = true		///< [in] Use face normals instead of topologically re-averaged vertex normals
 							) = 0;
 
 
@@ -3067,6 +3068,15 @@ namespace RISE
 			const char* szFunction,					///< [in] Name of the source IFunction2D
 			const double scale,						///< [in] Output scale
 			const double bias						///< [in] Output bias
+			) = 0;
+
+		//! Creates a flat Cartesian-grid circular disk base (see
+		//! RISE_API_CreateCartesianDiskGeometry).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddCartesianDiskGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const double radius,					///< [in] Disk radius (world units)
+			const int meshN							///< [in] Grid samples across the diameter
 			) = 0;
 	};
 

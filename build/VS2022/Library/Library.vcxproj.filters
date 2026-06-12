@@ -1617,6 +1617,12 @@
     <ClInclude Include="..\..\..\src\Library\Painters\Function2DColorPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionEval.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionFunction2DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\GuillocheField.h">
       <Filter>Painters</Filter>
     </ClInclude>

@@ -1533,6 +1533,13 @@ namespace RISE
 					const double bias						///< [in] Output bias
 					);
 
+		//! Creates a flat Cartesian-grid circular disk base (see IJob)
+		bool AddCartesianDiskGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const double radius,					///< [in] Disk radius (world units)
+					const int meshN							///< [in] Grid samples across the diameter
+					);
+
 		//! Creates a bilinear patch geometry
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddBilinearPatchGeometry(
@@ -1551,7 +1558,8 @@ namespace RISE
 							const char*         displacement,
 							const Scalar        disp_scale,
 							const bool          double_sided,
-							const bool          face_normals );
+							const bool          face_normals,
+					const bool          seam_fold = true );
 
 		//
 		// Adds lights

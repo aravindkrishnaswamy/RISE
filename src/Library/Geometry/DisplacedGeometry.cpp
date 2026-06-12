@@ -27,7 +27,8 @@ DisplacedGeometry::DisplacedGeometry(
 	const IFunction2D*  displacement,
 	const Scalar        disp_scale,
 	const bool          bDoubleSided,
-	const bool          bUseFaceNormals
+	const bool          bUseFaceNormals,
+	const bool          bSeamFold
 	) :
   m_pBase( pBase ),
   m_pDisplacement( displacement ),
@@ -35,6 +36,7 @@ DisplacedGeometry::DisplacedGeometry(
   m_detail( detail ),
   m_bDoubleSided( bDoubleSided ),
   m_bUseFaceNormals( bUseFaceNormals ),
+  m_bSeamFold( bSeamFold ),
   m_pMesh( 0 ),
   m_displacementSubscription()
 {
@@ -133,9 +135,14 @@ void DisplacedGeometry::BuildMesh()
 		// a non-monotonic UV triple (tent vertex in the middle), degenerating
 		// the 2×2 Jacobian.  Keep the original coords for the mesh and feed
 		// a tent-remapped COPY into the displacement evaluator only.
-		TexCoordsListType displacementCoords = coords;
-		RemapTextureCoords( displacementCoords );
-		ApplyDisplacementMapToObject( tris, vertices, normals, displacementCoords, *m_pDisplacement, m_dispScale );
+		if( m_bSeamFold ) {
+			TexCoordsListType displacementCoords = coords;
+			RemapTextureCoords( displacementCoords );
+			ApplyDisplacementMapToObject( tris, vertices, normals, displacementCoords, *m_pDisplacement, m_dispScale );
+		} else {
+			// open Cartesian field: raw UV, no tent mirror (see ctor bSeamFold)
+			ApplyDisplacementMapToObject( tris, vertices, normals, coords, *m_pDisplacement, m_dispScale );
+		}
 	}
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
@@ -175,9 +182,14 @@ void DisplacedGeometry::RefreshMeshVertices()
 
 	const bool bVerticesDisplaced = ( m_pDisplacement && m_dispScale != 0.0 );
 	if( bVerticesDisplaced ) {
-		TexCoordsListType displacementCoords = coords;
-		RemapTextureCoords( displacementCoords );
-		ApplyDisplacementMapToObject( tris, vertices, normals, displacementCoords, *m_pDisplacement, m_dispScale );
+		if( m_bSeamFold ) {
+			TexCoordsListType displacementCoords = coords;
+			RemapTextureCoords( displacementCoords );
+			ApplyDisplacementMapToObject( tris, vertices, normals, displacementCoords, *m_pDisplacement, m_dispScale );
+		} else {
+			// open Cartesian field: raw UV, no tent mirror (see ctor bSeamFold)
+			ApplyDisplacementMapToObject( tris, vertices, normals, coords, *m_pDisplacement, m_dispScale );
+		}
 	}
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
@@ -349,8 +361,8 @@ bool DisplacedGeometry::ComputeAnalyticalDerivatives(
 			// receives the tent-folded coords (see DisplacedGeometry::
 			// BuildMesh).  Using raw (u, v) here would describe a
 			// different displacement than the mesh actually has.
-			const Scalar tu = TentFold( at.x );
-			const Scalar tv = TentFold( at.y );
+			const Scalar tu = m_bSeamFold ? TentFold( at.x ) : at.x;
+			const Scalar tv = m_bSeamFold ? TentFold( at.y ) : at.y;
 			f = m_pDisplacement->Evaluate( tu, tv );
 
 			// FD df/du, df/dv on the painter.  Step is in raw-(u, v)
@@ -359,10 +371,10 @@ bool DisplacedGeometry::ComputeAnalyticalDerivatives(
 			// At u = 0.5 exactly there's a sign-flip — acceptable;
 			// SMS chains rarely site on the seam.
 			const Scalar epsP = 1.0e-3;
-			const Scalar f_uplus  = m_pDisplacement->Evaluate( TentFold( at.x + epsP ), tv );
-			const Scalar f_uminus = m_pDisplacement->Evaluate( TentFold( at.x - epsP ), tv );
-			const Scalar f_vplus  = m_pDisplacement->Evaluate( tu, TentFold( at.y + epsP ) );
-			const Scalar f_vminus = m_pDisplacement->Evaluate( tu, TentFold( at.y - epsP ) );
+			const Scalar f_uplus  = m_pDisplacement->Evaluate( m_bSeamFold ? TentFold( at.x + epsP ) : ( at.x + epsP ), tv );
+			const Scalar f_uminus = m_pDisplacement->Evaluate( m_bSeamFold ? TentFold( at.x - epsP ) : ( at.x - epsP ), tv );
+			const Scalar f_vplus  = m_pDisplacement->Evaluate( tu, m_bSeamFold ? TentFold( at.y + epsP ) : ( at.y + epsP ) );
+			const Scalar f_vminus = m_pDisplacement->Evaluate( tu, m_bSeamFold ? TentFold( at.y - epsP ) : ( at.y - epsP ) );
 			const Scalar inv2 = 1.0 / (2.0 * epsP);
 			dfdu = ( f_uplus - f_uminus ) * inv2;
 			dfdv = ( f_vplus - f_vminus ) * inv2;

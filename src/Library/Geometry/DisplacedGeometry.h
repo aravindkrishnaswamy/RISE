@@ -43,6 +43,7 @@ namespace RISE
 			unsigned int                     m_detail;
 			bool                             m_bDoubleSided;
 			bool                             m_bUseFaceNormals;
+			bool                             m_bSeamFold;	//!< tent-fold the UV before evaluating displacement (closed wrap-seam surfaces); FALSE = raw UV (open Cartesian fields)
 			ITriangleMeshGeometryIndexed*    m_pMesh;
 
 			// Subscription to the displacement painter's Observable.  When the
@@ -80,7 +81,8 @@ namespace RISE
 				const IFunction2D*  displacement,
 				const Scalar        disp_scale,
 				const bool          bDoubleSided,
-				const bool          bUseFaceNormals );
+				const bool          bUseFaceNormals,
+				const bool          bSeamFold = true );	//!< FALSE for open Cartesian displacement fields (no UV mirror)
 
 			DisplacedGeometry( const DisplacedGeometry& ) = delete;
 			DisplacedGeometry& operator=( const DisplacedGeometry& ) = delete;

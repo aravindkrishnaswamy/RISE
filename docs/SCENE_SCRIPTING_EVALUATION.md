@@ -151,3 +151,25 @@ philosophy (descriptors as the single source of truth) argues against it.
 Total: roughly 2–2.5 focused weeks, each stage independently shippable with
 its own tests, no scene-format version bump required (all changes additive;
 existing scenes parse unchanged).
+
+---
+
+## 2026-06-12 — in-scene field scripting SHIPPED (`expression_function2d`)
+
+The "patterns can't be authored in the scene, only composed from fixed
+C++ primitives" gap is closed.  `expression_function2d` is a small
+math-expression evaluator (recursive-descent compile to a postfix stack
+machine; `param`/`def`/`expr`; sin/cos/atan2/floor/mod/clamp/smoothstep/
+select/...) over (u, v) — the in-scene analogue of a C++ field painter.
+With general displacement (`displaced_geometry` + the new `uv_seam_fold
+FALSE` opt-out for open Cartesian fields) and `cartesian_disk_geometry`
+(a flat Cartesian-UV base), a guilloché dial is authored ENTIRELY in the
+scene: `cartesian_disk_geometry` + a guilloché `expression_function2d` +
+`displaced_geometry`.  Proven: the uniform guilloché expression
+reproduces `GuillocheField::Height` to 1e-6 (tests/ExpressionFunction2DTest)
+and renders identically to the retired `guilloche_disk_geometry`.  The
+engine is hardened against untrusted scene text (bounded parse recursion,
+compile-time value-stack bound, no per-eval heap, ffast-math-safe finite
+guard).  Remaining future work: an in-chunk `FOR` for repeated geometry
+(the sdf_gen.py case), and migrating the watch's full 6-pattern library +
+excising guilloche_disk_geometry.

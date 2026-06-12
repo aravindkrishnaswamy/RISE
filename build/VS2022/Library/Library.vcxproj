@@ -768,6 +768,8 @@
     <ClInclude Include="..\..\..\src\Library\Painters\Function1DScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Function2DScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Function2DColorPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionEval.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionFunction2DPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ScaledScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\MultiplyScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\VertexColorPainter.h" />

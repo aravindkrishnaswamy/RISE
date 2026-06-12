@@ -421,6 +421,8 @@
 		6A10B003000000000000C0DE /* GuillochePainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A10E002000000000000C0DE /* GuillochePainter.h */; };
 		6A10B005000000000000C0DE /* GuillocheField.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A10E003000000000000C0DE /* GuillocheField.h */; };
 		6A10B009000000000000C0DE /* Function2DColorPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A10E005000000000000C0DE /* Function2DColorPainter.h */; };
+		6A11B001000000000000C0DE /* ExpressionEval.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A11E001000000000000C0DE /* ExpressionEval.h */; };
+		6A11B003000000000000C0DE /* ExpressionFunction2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */; };
 		6A10B007000000000000C0DE /* ProceduralDescriptors.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A10E004000000000000C0DE /* ProceduralDescriptors.h */; };
 		F24B73252F52A632008304C4 /* CheckerPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0938069C42900069C9E5 /* CheckerPainter.h */; };
 		F24B73262F52A632008304C4 /* Function1DSpectralPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */; };
@@ -1132,6 +1134,8 @@
 		6A10B004000000000000C0DE /* GuillochePainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A10E002000000000000C0DE /* GuillochePainter.h */; };
 		6A10B006000000000000C0DE /* GuillocheField.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A10E003000000000000C0DE /* GuillocheField.h */; };
 		6A10B00A000000000000C0DE /* Function2DColorPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A10E005000000000000C0DE /* Function2DColorPainter.h */; };
+		6A11B002000000000000C0DE /* ExpressionEval.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A11E001000000000000C0DE /* ExpressionEval.h */; };
+		6A11B004000000000000C0DE /* ExpressionFunction2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */; };
 		6A10B008000000000000C0DE /* ProceduralDescriptors.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A10E004000000000000C0DE /* ProceduralDescriptors.h */; };
 		F27F0B9C069C42910069C9E5 /* CheckerPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0938069C42900069C9E5 /* CheckerPainter.h */; };
 		F27F0B9D069C42910069C9E5 /* Function1DSpectralPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */; };
@@ -2287,6 +2291,8 @@
 		6A10E002000000000000C0DE /* GuillochePainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GuillochePainter.h; sourceTree = "<group>"; };
 		6A10E003000000000000C0DE /* GuillocheField.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GuillocheField.h; sourceTree = "<group>"; };
 		6A10E005000000000000C0DE /* Function2DColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function2DColorPainter.h; sourceTree = "<group>"; };
+		6A11E001000000000000C0DE /* ExpressionEval.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ExpressionEval.h; sourceTree = "<group>"; };
+		6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ExpressionFunction2DPainter.h; sourceTree = "<group>"; };
 		6A10E004000000000000C0DE /* ProceduralDescriptors.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ProceduralDescriptors.h; sourceTree = "<group>"; };
 		F27F0938069C42900069C9E5 /* CheckerPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CheckerPainter.h; sourceTree = "<group>"; };
 		F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function1DSpectralPainter.h; sourceTree = "<group>"; };
@@ -3479,6 +3485,8 @@
 				6A10E002000000000000C0DE /* GuillochePainter.h */,
 				6A10E003000000000000C0DE /* GuillocheField.h */,
 				6A10E005000000000000C0DE /* Function2DColorPainter.h */,
+				6A11E001000000000000C0DE /* ExpressionEval.h */,
+				6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */,
 				F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */,
 				F27F093A069C42900069C9E5 /* IridescentPainter.cpp */,
 				F27F093B069C42900069C9E5 /* IridescentPainter.h */,
@@ -4452,6 +4460,8 @@
 				6A10B004000000000000C0DE /* GuillochePainter.h in Headers */,
 				6A10B006000000000000C0DE /* GuillocheField.h in Headers */,
 				6A10B00A000000000000C0DE /* Function2DColorPainter.h in Headers */,
+				6A11B002000000000000C0DE /* ExpressionEval.h in Headers */,
+				6A11B004000000000000C0DE /* ExpressionFunction2DPainter.h in Headers */,
 				F27F0B9D069C42910069C9E5 /* Function1DSpectralPainter.h in Headers */,
 				F27F0B9F069C42910069C9E5 /* IridescentPainter.h in Headers */,
 				F27F0BA1069C42910069C9E5 /* LinesPainter.h in Headers */,
@@ -5609,6 +5619,8 @@
 				6A10B003000000000000C0DE /* GuillochePainter.h in Sources */,
 				6A10B005000000000000C0DE /* GuillocheField.h in Sources */,
 				6A10B009000000000000C0DE /* Function2DColorPainter.h in Sources */,
+				6A11B001000000000000C0DE /* ExpressionEval.h in Sources */,
+				6A11B003000000000000C0DE /* ExpressionFunction2DPainter.h in Sources */,
 				F24B73262F52A632008304C4 /* Function1DSpectralPainter.h in Sources */,
 				F24B73272F52A632008304C4 /* IridescentPainter.cpp in Sources */,
 				F24B73282F52A632008304C4 /* IridescentPainter.h in Sources */,

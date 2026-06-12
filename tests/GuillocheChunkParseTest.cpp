@@ -33,6 +33,7 @@
 #include <string>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 
 #include "../src/Library/Job.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -262,6 +263,38 @@ static void TestTemperModes()
 		"function2d_painter missing source rejects" );
 }
 
+static void TestExpressionAndDisplacement()
+{
+	std::cout << "Test 5: expression_function2d + cartesian_disk + displaced(uv_seam_fold FALSE)" << std::endl;
+	Job* job = new Job();
+	job->addref();
+	const char* body =
+		"expression_function2d\n{\nname ripple\nparam k 6.0\ndef rr hypot(2*u-1,2*v-1)\nexpr 0.5+0.5*sin(k*rr)\n}\n"
+		"cartesian_disk_geometry\n{\nname base\nradius 10\nmesh_n 24\n}\n"
+		"displaced_geometry\n{\nname relief\nbase_geometry base\ndisplacement ripple\ndisp_scale 0.5\ndetail 1\nuv_seam_fold FALSE\n}\n";
+	const bool ok = ParseBody( "expr", body, *job );
+	Check( ok, "expression + cartesian disk + displaced parse" );
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+	if( priv ) {
+		Check( priv->GetPainters()->GetItem( "ripple" ) != 0,    "expression painter registered (colour)" );
+		Check( priv->GetFunction2Ds()->GetItem( "ripple" ) != 0, "expression painter registered (function2d)" );
+		Check( priv->GetGeometries()->GetItem( "base" ) != 0,    "cartesian disk registered" );
+		Check( priv->GetGeometries()->GetItem( "relief" ) != 0,  "displaced geometry registered" );
+		IFunction2D* f = priv->GetFunction2Ds()->GetItem( "ripple" );
+		Check( f && std::fabs( f->Evaluate( 0.5, 0.5 ) - 0.5 ) < 1e-9, "expression evaluates at centre" );
+	} else {
+		Check( false, "IJobPriv available" );
+	}
+	job->release();
+
+	// rejection: a bad expression (unknown variable) must fail the parse
+	Check( !ParseBody( "bad_expr", "expression_function2d\n{\nname e\nexpr u + nope\n}\n" ),
+		"unknown variable in expr rejects" );
+	// rejection: missing final expr
+	Check( !ParseBody( "no_expr", "expression_function2d\n{\nname e\nparam k 1\n}\n" ),
+		"missing expr rejects" );
+}
+
 int main( int, char** )
 {
 	std::cout << "GuillocheChunkParseTest -- parse-level plumbing for the procedural chunks" << std::endl << std::endl;
@@ -269,6 +302,7 @@ int main( int, char** )
 	TestClamps();
 	TestRejections();
 	TestTemperModes();
+	TestExpressionAndDisplacement();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

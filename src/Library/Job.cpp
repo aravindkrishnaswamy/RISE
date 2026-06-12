@@ -4385,6 +4385,17 @@ bool Job::AddGuillocheTemperFunction2D( const char* name, const GuillocheDiskDes
 	return true;
 }
 
+bool Job::AddCartesianDiskGeometry( const char* name, const double radius, const int meshN )
+{
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreateCartesianDiskGeometry( &pGeometry, radius, meshN ) ) {
+		return false;   // the factory already logged why
+	}
+	pGeomManager->AddItem( pGeometry, name );
+	safe_release( pGeometry );
+	return true;
+}
+
 bool Job::AddFunction2DColorPainter( const char* name, const char* szFunction, const double scale, const double bias )
 {
 	IFunction2D* pFunc = pFunc2DManager->GetItem( szFunction ? szFunction : "" );
@@ -4944,7 +4955,8 @@ bool Job::AddDisplacedGeometry(
 	const char*         displacement,
 	const Scalar        disp_scale,
 	const bool          double_sided,
-	const bool          face_normals
+	const bool          face_normals,
+	const bool          seam_fold
 	)
 {
 	if( !name || !base_geometry_name ) {
@@ -4970,7 +4982,7 @@ bool Job::AddDisplacedGeometry(
 	IGeometry* pGeometry = 0;
 	const bool bOK = RISE_API_CreateDisplacedGeometry(
 		&pGeometry, pBase, detail, pFunc, disp_scale,
-		double_sided, face_normals );
+		double_sided, face_normals, seam_fold );
 
 	if( !bOK || !pGeometry ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::AddDisplacedGeometry:: failed to create displaced geometry `%s` (base `%s` may not support tessellation)", name, base_geometry_name );

@@ -297,6 +297,25 @@ self-contained, and live-rebind in the GUI like any named geometry.
   temper spall mask pushing `rd`/`rs` toward matte scale).  `scalar_painter
   { function2d }` for physical-scalar slots (roughness, thickness, IOR);
   `function2d_painter` for colour slots and masks.
+- **`expression_function2d`** — a procedural 2D field whose value is a
+  MATH EXPRESSION authored in the scene file (the in-scene-scripted
+  analogue of `perlin2d` / the C++ guilloché field).  Variables `u, v`;
+  declare `param <name> <number>` constants and `def <name> <expr>`
+  named sub-expressions (let-bindings, in order), then the final `expr`.
+  Functions: sin cos atan2 exp log sqrt abs floor frac sign mod min max
+  pow hypot step clamp smoothstep mix select; operators `+ - * / % ^` and
+  comparisons; consts pi tau e.  Usable as a displacement (with
+  `displaced_geometry`), a greyscale colour, or a scalar.  This is how to
+  author a NEW procedural pattern WITHOUT touching C++.
+- **General displacement of any field onto any base.**  `displaced_geometry`
+  takes an arbitrary `base_geometry` + any painter as `displacement`.
+  For an OPEN field on a non-wrapping (Cartesian) UV (a guilloché
+  `expression_function2d`), set `uv_seam_fold FALSE` (default TRUE
+  tent-folds the UV for closed wrap-seam surfaces and would MIRROR an
+  open field).  `cartesian_disk_geometry` is the flat Cartesian-UV disk
+  base for the dial case.  A guilloché dial = `cartesian_disk_geometry` +
+  a guilloché `expression_function2d` + `displaced_geometry uv_seam_fold
+  FALSE`.
 
 ### The authored-data pattern
 

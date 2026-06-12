@@ -5564,6 +5564,31 @@ namespace RISE
 				}
 			};
 
+			struct CartesianDiskGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					const double radius = bag.GetDouble( "radius", 20.6 );
+					const int meshN = (int)bag.GetUInt( "mesh_n", 560 );
+					return pJob.AddCartesianDiskGeometry( name.c_str(), radius, meshN );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "cartesian_disk_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "A FLAT Cartesian-grid circular disk: linear Cartesian UV (u=(x+R)/2R), +Z normals, uniform world-space cell density everywhere (unlike a polar fan).  The general flat base for displacing an arbitrary 2D field -- an expression_function2d, a texture, noise -- onto a disk via displaced_geometry with uv_seam_fold FALSE.  (A guilloché dial = this base + a guilloché expression_function2d displacement.)";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Disk radius (world units)"; p.defaultValueHint = "20.6"; }
+						{ auto& p = P(); p.name = "mesh_n"; p.kind = ValueKind::UInt;   p.description = "Grid samples across the diameter (tessellation density; clamped 2..4096)"; p.defaultValueHint = "560"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct GuillocheOxidePainterAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -5644,6 +5669,86 @@ namespace RISE
 						{ auto& p = P(); p.name = "output";        p.kind = ValueKind::Enum;   p.enumValues = {"dose","thickness_nm","spall_mask"}; p.description = "dose = normalized [0,1] heat-tint (scene scale/bias -> nm).  thickness_nm / spall_mask = ABSOLUTE-temperature temper mode: the metal's thermal model over temp_center_c -> temp_rim_c gives absolute nm (feed film_thickness) or the spall fraction [0,1] (matte-scale blend mask)"; p.defaultValueHint = "dose"; }
 						{ auto& p = P(); p.name = "temp_center_c";  p.kind = ValueKind::Double; p.description = "Absolute centre temperature (deg C) for the temper modes"; p.defaultValueHint = "200.0"; }
 						{ auto& p = P(); p.name = "temp_rim_c";     p.kind = ValueKind::Double; p.description = "Absolute rim temperature (deg C) for the temper modes"; p.defaultValueHint = "1000.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ExpressionFunction2DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string finalExpr = bag.GetString( "expr", "" );
+					if( finalExpr.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: missing `expr` (the final value expression)", name.c_str() );
+						return false;
+					}
+
+					Implementation::ExpressionProgram::Builder builder;
+					// named numeric constants (all params precede all defs)
+					const std::vector<std::string>& params = bag.GetRepeatable( "param" );
+					for( std::size_t i = 0; i < params.size(); ++i ) {
+						char pn[128] = {0}; double pv = 0;
+						if( sscanf( params[i].c_str(), "%127s %lf", pn, &pv ) != 2 ) {
+							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: param %u (`%s`) must be `<name> <number>`", name.c_str(), (unsigned)i, params[i].c_str() );
+							return false;
+						}
+						if( !Implementation::ExpressionProgram::IsFinite( (Scalar)pv ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: param `%s` must be finite (nan/inf rejected)", name.c_str(), pn );
+							return false;
+						}
+						builder.AddParam( pn, (Scalar)pv );
+					}
+					// named sub-expressions (let-bindings), in input order
+					const std::vector<std::string>& defs = bag.GetRepeatable( "def" );
+					for( std::size_t i = 0; i < defs.size(); ++i ) {
+						const std::string& line = defs[i];
+						std::size_t sp = line.find_first_of( " \t" );
+						if( sp == std::string::npos ) {
+							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: def %u (`%s`) must be `<name> <expression>`", name.c_str(), (unsigned)i, line.c_str() );
+							return false;
+						}
+						const std::string dname = line.substr( 0, sp );
+						const std::string dexpr = line.substr( sp + 1 );
+						if( !builder.AddDef( dname, dexpr ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: def `%s`: %s", name.c_str(), dname.c_str(), builder.Error().c_str() );
+							return false;
+						}
+					}
+
+					Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
+					if( !builder.Finalize( finalExpr, prog ) ) {
+						GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: expr: %s", name.c_str(), builder.Error().c_str() );
+						return false;
+					}
+
+					IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+					if( !pPriv ) {
+						GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: IJobPriv unavailable", name.c_str() );
+						return false;
+					}
+					IPainter* painter = 0;
+					if( !RISE_API_CreateExpressionFunction2D( &painter, prog ) ) {
+						return false;
+					}
+					pPriv->GetPainters()->AddItem( painter, name.c_str() );
+					pPriv->GetFunction2Ds()->AddItem( painter, name.c_str() );
+					painter->release();
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "expression_function2d"; cd.category = ChunkCategory::Painter;
+						cd.description = "A procedural 2D field whose value is a MATH EXPRESSION authored in the scene -- the in-scene-scripted analogue of perlin2d / worley.  Usable as a displacement (displaced_geometry), a greyscale colour (a colour slot / blend_painter mask), or a physical scalar (scalar_painter { function2d <name> }).  Variables u, v (the UV); declare `param <name> <number>` constants and `def <name> <expr>` named sub-expressions (let-bindings, in order, referencing u/v/params/earlier-defs), then the final `expr`.  Functions: sin cos tan asin acos atan exp log sqrt abs floor ceil frac sign atan2 mod min max pow hypot step clamp smoothstep mix select; operators + - * / % ^ and comparisons (yield 1/0); constants pi tau e.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "param"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Named numeric constant `<name> <number>` (repeatable); visible to every def and the final expr"; }
+						{ auto& p = P(); p.name = "def";   p.kind = ValueKind::String; p.repeatable = true; p.description = "Named sub-expression `<name> <expr>` (repeatable, in order); a let-binding referencing u, v, params, and earlier defs"; }
+						{ auto& p = P(); p.name = "expr";  p.kind = ValueKind::String; p.description = "The final value expression over u, v, params and defs"; }
 						return cd;
 					}();
 					return d;
@@ -5899,6 +6004,7 @@ namespace RISE
 					double disp_scale         = bag.GetDouble( "disp_scale",    1.0 );
 					bool double_sided         = bag.GetBool(   "double_sided",  false );
 					bool face_normals         = bag.GetBool(   "face_normals",  false );
+					bool seam_fold            = bag.GetBool(   "uv_seam_fold",  true );
 					// Legacy maxpolygons/maxdepth/bsp keys accepted but ignored (Tier A2).
 
 					if( base_geometry.empty() ) {
@@ -5913,7 +6019,8 @@ namespace RISE
 						displacement == "none" ? 0 : displacement.c_str(),
 						disp_scale,
 						double_sided,
-						face_normals );
+						face_normals,
+						seam_fold );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -5929,6 +6036,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "disp_scale";    p.kind = ValueKind::Double;    p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "double_sided";  p.kind = ValueKind::Bool;      p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "face_normals";  p.kind = ValueKind::Bool;      p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "uv_seam_fold";  p.kind = ValueKind::Bool;     p.description = "Tent-fold UV before displacement -- keeps a wrapped field continuous across the u=0/u=1 seam of CLOSED surfaces (sphere/torus/cylinder).  FALSE for an OPEN field on a non-wrapping Cartesian UV (e.g. a guilloché expression on a flat disk)"; p.defaultValueHint = "TRUE"; }
 						// Retired: accepted for backward compat with pre-A2 scene files; ignored.
 						{ auto& p = P(); p.name = "maxpolygons";   p.kind = ValueKind::UInt;      p.description = "Retired (BVH is sole accelerator)"; }
 						{ auto& p = P(); p.name = "maxdepth";      p.kind = ValueKind::UInt;      p.description = "Retired (BVH is sole accelerator)"; }
@@ -9687,6 +9795,7 @@ namespace RISE
 		add( "blackbody_painter",                     new BlackBodyPainterAsciiChunkParser() );
 		add( "blend_painter",                         new BlendPainterAsciiChunkParser() );
 		add( "function2d_painter",                    new Function2DColorPainterAsciiChunkParser() );
+		add( "expression_function2d",                 new ExpressionFunction2DPainterAsciiChunkParser() );
 		add( "channel_painter",                       new ChannelPainterAsciiChunkParser() );
 
 		// Functions
@@ -9755,6 +9864,7 @@ namespace RISE
 		add( "bilinearpatch_geometry",                new BilinearPatchGeometryAsciiChunkParser() );
 		add( "sdf_geometry",                          new SDFGeometryAsciiChunkParser() );
 		add( "guilloche_disk_geometry",               new GuillocheDiskGeometryAsciiChunkParser() );
+		add( "cartesian_disk_geometry",               new CartesianDiskGeometryAsciiChunkParser() );
 		add( "sweep_geometry",                        new SweepGeometryAsciiChunkParser() );
 		add( "path_instances_geometry",               new PathInstancesGeometryAsciiChunkParser() );
 		add( "displaced_geometry",                    new DisplacedGeometryAsciiChunkParser() );

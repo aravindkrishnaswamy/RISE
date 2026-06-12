@@ -74,6 +74,7 @@
 #include "Utilities/RasterizerDefaults.h"     // AutoIntegratorChoice (auto_rasterizer dispatcher)
 #include "Utilities/ProgressiveConfig.h"      // ProgressiveConfig (auto_rasterizer factory takes it directly)
 #include "Interfaces/ProceduralDescriptors.h"
+#include "Painters/ExpressionEval.h"	// Implementation::ExpressionProgram (expression_function2d factory)
 
 namespace RISE
 {
@@ -447,7 +448,8 @@ namespace RISE
 						IFunction2D*        displacement,		///< [in] Displacement function (may be null for pure tessellation)
 						const Scalar        disp_scale,			///< [in] Displacement scale factor
 						const bool          double_sided,		///< [in] Are generated polygons double-sided?
-						const bool          face_normals		///< [in] Use face normals rather than topologically re-averaged vertex normals
+						const bool          face_normals,		///< [in] Use face normals rather than topologically re-averaged vertex normals
+						const bool          seam_fold = true	///< [in] Tent-fold UV before displacement (closed wrap-seam surfaces); FALSE for open Cartesian fields
 						);
 
 	//! Creates a signed-distance-field (implicit) geometry: transformed
@@ -484,6 +486,16 @@ namespace RISE
 	bool RISE_API_CreateGuillocheDiskGeometry(
 						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
 						const GuillocheDiskDescriptor& desc	///< [in] Pattern + bake parameters
+						);
+
+	//! Creates a FLAT Cartesian-grid circular disk (linear Cartesian UV,
+	//! +Z normals) -- the general flat base for displacing an arbitrary 2D
+	//! field onto a disk via displaced_geometry (uv_seam_fold FALSE).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateCartesianDiskGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const double         radius,		///< [in] Disk radius (world units)
+						const int            meshN			///< [in] Grid samples across the diameter
 						);
 
 	//! Creates the guilloché OXIDE-DOSE IFunction2D -- the native replacement
@@ -557,6 +569,15 @@ namespace RISE
 						IFunction2D*         pFunc,			///< [in] Source function (addref'd)
 						const double         scale,			///< [in] Output scale
 						const double         bias			///< [in] Output bias
+						);
+
+	//! Wraps a compiled in-scene math expression as a procedural 2D field
+	//! painter (colour / displacement / scalar).  The program is built by
+	//! the expression_function2d chunk parser (params + defs + final expr).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateExpressionFunction2D(
+						IPainter**           ppi,			///< [out] Pointer to receive the painter
+						const Implementation::ExpressionProgram& prog	///< [in] Compiled expression program
 						);
 
 

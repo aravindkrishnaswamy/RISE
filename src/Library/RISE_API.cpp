@@ -694,7 +694,8 @@ namespace RISE
 						IFunction2D*        displacement,
 						const Scalar        disp_scale,
 						const bool          double_sided,
-						const bool          face_normals
+						const bool          face_normals,
+						const bool          seam_fold
 						)
 	{
 		if( !ppi || !pBase ) {
@@ -709,7 +710,7 @@ namespace RISE
 
 		DisplacedGeometry* pGeom = new DisplacedGeometry(
 			pBase, detail, displacement, disp_scale,
-			double_sided, face_normals );
+			double_sided, face_normals, seam_fold );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "displaced geometry" );
 
 		if( !pGeom->IsValid() ) {
@@ -959,6 +960,73 @@ namespace RISE
 			}
 		}
 
+		pGeom->DoneIndexedTriangles();
+		*ppi = pGeom;
+		return true;
+	}
+
+	// A FLAT Cartesian-grid circular disk with LINEAR Cartesian UV
+	// (u = (x+R)/2R, v = (y+R)/2R) and +Z normals -- the general flat base
+	// for displacing an arbitrary 2D field (an expression_function2d, a
+	// texture, noise) onto a disk via displaced_geometry (uv_seam_fold
+	// FALSE).  Uniform world-space cell density everywhere (unlike a polar
+	// fan), so a Cartesian pattern reads the same at the centre and the rim.
+	bool RISE_API_CreateCartesianDiskGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const double         radius,
+						const int            meshN
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+		const int N = meshN < 2 ? 2 : ( meshN > 4096 ? 4096 : meshN );
+		const Scalar R = radius;
+		if( !( R > 0 ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateCartesianDiskGeometry: radius must be > 0" );
+			return false;
+		}
+		std::vector<Scalar> xs( N );
+		const Scalar step = Scalar(2) * R / Scalar( N - 1 );
+		for( int i = 0; i < N; i++ ) xs[i] = -R + step * Scalar(i);
+		xs[0] = -R; xs[ N - 1 ] = R;
+
+		std::vector<int> idx( size_t(N) * N, -1 );
+		int vc = 0;
+		for( int j = 0; j < N; j++ )
+			for( int i = 0; i < N; i++ )
+				if( sqrt( xs[i]*xs[i] + xs[j]*xs[j] ) <= R )
+					idx[ size_t(j)*N + i ] = vc++;
+		if( vc < 3 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateCartesianDiskGeometry: degenerate (fewer than 3 vertices inside the disk)" );
+			return false;
+		}
+
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( false, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "cartesian disk geometry" );
+		pGeom->BeginIndexedTriangles();
+		const Scalar inv2R = Scalar(1) / ( Scalar(2) * R );
+		for( int j = 0; j < N; j++ ) {
+			const size_t row = size_t(j) * N;
+			for( int i = 0; i < N; i++ ) {
+				if( idx[ row + i ] < 0 ) continue;
+				pGeom->AddVertex( Vertex( xs[i], xs[j], Scalar(0) ) );
+				pGeom->AddNormal( Normal( 0, 0, 1 ) );
+				pGeom->AddTexCoord( TexCoord( ( xs[i] + R ) * inv2R, ( xs[j] + R ) * inv2R ) );
+			}
+		}
+		for( int j = 0; j < N - 1; j++ ) {
+			const size_t row = size_t(j) * N;
+			for( int i = 0; i < N - 1; i++ ) {
+				const int a = idx[ row + i ], b = idx[ row + i + 1 ];
+				const int c = idx[ row + N + i + 1 ], d = idx[ row + N + i ];
+				if( a >= 0 && b >= 0 && c >= 0 && d >= 0 ) {
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, d ) );
+				}
+			}
+		}
 		pGeom->DoneIndexedTriangles();
 		*ppi = pGeom;
 		return true;
@@ -3872,6 +3940,7 @@ namespace RISE
 #include "Painters/Function1DScalarPainter.h"
 #include "Painters/Function2DScalarPainter.h"
 #include "Painters/Function2DColorPainter.h"
+#include "Painters/ExpressionFunction2DPainter.h"
 #include "Painters/TextureScalarPainter.h"
 #include "Painters/ScaledScalarPainter.h"
 #include "Painters/MultiplyScalarPainter.h"
@@ -4080,6 +4149,21 @@ namespace RISE
 		if( !ppi ) return false;
 		*ppi = new Function2DColorPainter( pFunc, scale, bias );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "function2d color painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateExpressionFunction2D(
+		IPainter** ppi,
+		const Implementation::ExpressionProgram& prog
+		)
+	{
+		if( !ppi ) return false;
+		if( !prog.IsValid() ) {
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateExpressionFunction2D: invalid program (%s)", prog.Error().c_str() );
+			return false;
+		}
+		*ppi = new Implementation::ExpressionFunction2DPainter( prog );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "expression function2d painter" );
 		return true;
 	}
 
