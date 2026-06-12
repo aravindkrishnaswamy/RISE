@@ -5413,7 +5413,7 @@ namespace RISE
 			// in these two helpers.  Parameter names match the retired
 			// Python flags (snake_case).
 			//////////////////////////////////////////
-			static bool ReadGuillocheFieldParams( const ParseStateBag& bag, const char* chunkKeyword, const std::string& name, GuillocheDialDescriptor& d )
+			static bool ReadGuillocheFieldParams( const ParseStateBag& bag, const char* chunkKeyword, const std::string& name, GuillocheDiskDescriptor& d )
 			{
 				{
 					const std::string pat = bag.GetString( "pattern", "uniform" );
@@ -5534,25 +5534,25 @@ namespace RISE
 				{ auto& p = P(); p.name = "swirl_turns"; p.kind = ValueKind::Double; p.description = "Log-spiral total turns centre->rim (swirl pattern)"; p.defaultValueHint = "6.0"; }
 			}
 
-			struct GuillocheDialGeometryAsciiChunkParser : public IAsciiChunkParser
+			struct GuillocheDiskGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name = bag.GetString( "name", "noname" );
-					GuillocheDialDescriptor d;
-					if( !ReadGuillocheFieldParams( bag, "guilloche_dial_geometry", name, d ) ) {
+					GuillocheDiskDescriptor d;
+					if( !ReadGuillocheFieldParams( bag, "guilloche_disk_geometry", name, d ) ) {
 						return false;
 					}
 					d.meshN = (int)bag.GetUInt( "mesh_n", (unsigned int)d.meshN );
 					d.disp  = bag.GetDouble( "disp", d.disp );
-					return pJob.AddGuillocheDialGeometry( name.c_str(), d );
+					return pJob.AddGuillocheDiskGeometry( name.c_str(), d );
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
-						cd.keyword = "guilloche_dial_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "Procedural guilloché dial: the selected pattern's height field baked over the dial circle (mesh_n x mesh_n Cartesian grid) with analytic normals and linear Cartesian UV.  Native replacement for the retired dial_mesh_gen.py raw2 bakers; pair with a guilloche_oxide_painter sharing the same pattern parameters.";
+						cd.keyword = "guilloche_disk_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Procedural guilloché DISK: the selected pattern's height field baked over the disk (mesh_n x mesh_n Cartesian grid) with analytic normals and linear Cartesian UV.  Engine-turned rose-engine relief for any disk-shaped part (watch dials, pen caps, jewelry, lighters); pair with a guilloche_oxide_painter sharing the same pattern parameters.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						AppendGuillocheFieldDescriptors( cd );
@@ -5569,7 +5569,7 @@ namespace RISE
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name = bag.GetString( "name", "noname" );
-					GuillocheDialDescriptor d;
+					GuillocheDiskDescriptor d;
 					if( !ReadGuillocheFieldParams( bag, "guilloche_oxide_painter", name, d ) ) {
 						return false;
 					}
@@ -5615,7 +5615,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "guilloche_oxide_painter"; cd.category = ChunkCategory::Function;
-						cd.description = "Guilloché thermal-oxide DOSE as a named IFunction2D over the dial's linear Cartesian UV: normalized Arrhenius/parabolic radial heat profile plus a signed torch-pattern term along the engraved pattern.  Native replacement for the baked oxide_*.png maps.  Consume via scalar_painter { function2d <name> scale S bias B } into film_thickness; share the pattern parameters with the paired guilloche_dial_geometry.";
+						cd.description = "Guilloché thermal-oxide DOSE as a named IFunction2D over the dial's linear Cartesian UV: normalized Arrhenius/parabolic radial heat profile plus a signed torch-pattern term along the engraved pattern.  Native replacement for the baked oxide_*.png maps.  Consume via scalar_painter { function2d <name> scale S bias B } into film_thickness; share the pattern parameters with the paired guilloche_disk_geometry.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						AppendGuillocheFieldDescriptors( cd );
@@ -5629,77 +5629,177 @@ namespace RISE
 				}
 			};
 
-			struct SweptBandGeometryAsciiChunkParser : public IAsciiChunkParser
+			struct SweepGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
 				{
 					std::string name = bag.GetString( "name", "noname" );
 
+					// repeatable 2D profile + 3D path lines
+					const std::vector<std::string>& profLines = bag.GetRepeatable( "profile_point" );
+					if( profLines.size() < 3 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"sweep_geometry `%s`: need at least 3 repeatable `profile_point <x> <h>` entries (a closed polygon; got %u)",
+							name.c_str(), (unsigned int)profLines.size() );
+						return false;
+					}
+					std::vector<double> prof;
+					prof.reserve( profLines.size() * 2 );
+					for( std::size_t i = 0; i < profLines.size(); ++i ) {
+						double x = 0, h = 0;
+						char trailing[8] = {0};
+						if( sscanf( profLines[i].c_str(), "%lf %lf %7s", &x, &h, trailing ) != 2 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: profile_point %u (`%s`) must be exactly two numbers `<x> <h>`",
+								name.c_str(), (unsigned int)i, profLines[i].c_str() );
+							return false;
+						}
+						prof.push_back( x );
+						prof.push_back( h );
+					}
+
 					const std::vector<std::string>& pointLines = bag.GetRepeatable( "point" );
 					if( pointLines.size() < 2 ) {
 						GlobalLog()->PrintEx( eLog_Error,
-							"swept_band_geometry `%s`: need at least 2 repeatable `point <y> <z>` control points (got %u)",
+							"sweep_geometry `%s`: need at least 2 repeatable `point <x> <y> <z>` path control points (got %u)",
 							name.c_str(), (unsigned int)pointLines.size() );
 						return false;
 					}
 					std::vector<double> pts;
-					pts.reserve( pointLines.size() * 2 );
+					pts.reserve( pointLines.size() * 3 );
 					for( std::size_t i = 0; i < pointLines.size(); ++i ) {
-						double y = 0, z = 0;
+						double x = 0, y = 0, z = 0;
 						char trailing[8] = {0};
-						const int matched = sscanf( pointLines[i].c_str(), "%lf %lf %7s", &y, &z, trailing );
-						if( matched != 2 ) {
+						if( sscanf( pointLines[i].c_str(), "%lf %lf %lf %7s", &x, &y, &z, trailing ) != 3 ) {
 							GlobalLog()->PrintEx( eLog_Error,
-								"swept_band_geometry `%s`: point %u (`%s`) must be exactly two numbers `<y> <z>`",
+								"sweep_geometry `%s`: point %u (`%s`) must be exactly three numbers `<x> <y> <z>`",
 								name.c_str(), (unsigned int)i, pointLines[i].c_str() );
 							return false;
 						}
-						pts.push_back( y );
-						pts.push_back( z );
+						pts.push_back( x ); pts.push_back( y ); pts.push_back( z );
 					}
 
-					SweptBandDescriptor d;
-					d.pathPoints     = &pts[0];
-					d.numPathPoints  = (unsigned int)pointLines.size();
-					d.nLen           = (int)bag.GetUInt( "n_len", (unsigned int)d.nLen );
-					d.nWid           = (int)bag.GetUInt( "n_wid", (unsigned int)d.nWid );
-					d.width          = bag.GetDouble( "width",        d.width );
-					d.endWidth       = bag.GetDouble( "end_width",    d.endWidth );
-					d.thickness      = bag.GetDouble( "thickness",    d.thickness );
-					d.crown          = bag.GetDouble( "crown",        d.crown );
-					d.edgePow        = bag.GetDouble( "edge_pow",     d.edgePow );
-					d.groove         = bag.GetDouble( "groove",       d.groove );
-					d.stitchInset    = bag.GetDouble( "stitch_inset", d.stitchInset );
-					d.stitchPitch    = bag.GetDouble( "stitch_pitch", d.stitchPitch );
-					d.stitchLen      = bag.GetDouble( "stitch_len",   d.stitchLen );
-					d.stitchR        = bag.GetDouble( "stitch_r",     d.stitchR );
-					d.stitchAngleDeg = bag.GetDouble( "stitch_angle", d.stitchAngleDeg );
-					d.emitStitches   = bag.GetBool( "emit_stitches",  false );
-					return pJob.AddSweptBandGeometry( name.c_str(), d );
+					SweepDescriptor d;
+					d.profilePoints    = &prof[0];
+					d.numProfilePoints = (unsigned int)profLines.size();
+					d.pathPoints       = &pts[0];
+					d.numPathPoints    = (unsigned int)pointLines.size();
+					d.nLen             = (int)bag.GetUInt( "n_len", (unsigned int)d.nLen );
+					d.endScaleX        = bag.GetDouble( "end_scale_x", d.endScaleX );
+					d.endScaleY        = bag.GetDouble( "end_scale_y", d.endScaleY );
+					d.capStart         = bag.GetBool( "cap_start", d.capStart );
+					d.capEnd           = bag.GetBool( "cap_end",   d.capEnd );
+					{
+						const std::string fh = bag.GetString( "frame_hint", "" );
+						if( !fh.empty() ) {
+							double hx = 0, hy = 0, hz = 0;
+							char trailing[8] = {0};
+							if( sscanf( fh.c_str(), "%lf %lf %lf %7s", &hx, &hy, &hz, trailing ) != 3 ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"sweep_geometry `%s`: frame_hint must be three numbers `<x> <y> <z>`", name.c_str() );
+								return false;
+							}
+							d.frameHintX = hx; d.frameHintY = hy; d.frameHintZ = hz;
+						}
+					}
+					return pJob.AddSweepGeometry( name.c_str(), d );
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
-						cd.keyword = "swept_band_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "Swept band (watch strap): a Catmull-Rom (y, z) centreline swept with a superellipse-edged, centre-crowned profile with recessed stitch channels -- or, with emit_stitches TRUE, the saddle-stitch thread capsules following the same path as a separate mesh (own material).  Native replacement for the retired strap_mesh_gen.py.  x = width axis; declare the path with repeatable `point` lines.";
+						cd.keyword = "sweep_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "General profile sweep: an arbitrary CLOSED 2D profile polygon (repeatable profile_point lines) swept along an arbitrary 3D Catmull-Rom path (repeatable point lines) with rotation-minimizing frames, optional per-axis linear taper (linear in path parameter), and ear-clipped end caps.  Tubes, rails, mouldings, straps, cables.  Profile x maps to the frame binormal, h to the frame normal; UV = (profile arc fraction, path parameter fraction; profile U wraps with no duplicated seam vertex).  OPEN paths only: a loop authored first==last seams (RMF holonomy + open-spline padding) -- use torus_geometry for true rings.  Catmull-Rom rounds sharp path corners; add control points to tighten.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "point";         p.kind = ValueKind::String; p.repeatable = true; p.description = "Centreline control point `<y> <z>` (repeatable, in path order; at least 2).  The band sweeps a Catmull-Rom spline through these"; }
-						{ auto& p = P(); p.name = "n_len";         p.kind = ValueKind::UInt;   p.description = "Requested samples along the path (clamped 2..4096; actual = (points-1)*max(2, n_len/(points-1)) + 1, the Catmull-Rom per-segment rounding)"; p.defaultValueHint = "140"; }
-						{ auto& p = P(); p.name = "n_wid";         p.kind = ValueKind::UInt;   p.description = "Samples across the width (clamped 2..256)"; p.defaultValueHint = "14"; }
-						{ auto& p = P(); p.name = "width";         p.kind = ValueKind::Double; p.description = "Band width at the path start (lug end)"; p.defaultValueHint = "25.26"; }
-						{ auto& p = P(); p.name = "end_width";     p.kind = ValueKind::Double; p.description = "Band width at the free end (taper)"; p.defaultValueHint = "20.2"; }
-						{ auto& p = P(); p.name = "thickness";     p.kind = ValueKind::Double; p.description = "Band thickness"; p.defaultValueHint = "3.0"; }
-						{ auto& p = P(); p.name = "crown";         p.kind = ValueKind::Double; p.description = "Extra centre doming of the top surface"; p.defaultValueHint = "0.55"; }
-						{ auto& p = P(); p.name = "edge_pow";      p.kind = ValueKind::Double; p.description = "Superellipse edge exponent (higher = flatter middle, tighter rounded edges)"; p.defaultValueHint = "8.0"; }
-						{ auto& p = P(); p.name = "groove";        p.kind = ValueKind::Double; p.description = "Stitch channel depth pressed into the top surface"; p.defaultValueHint = "0.16"; }
-						{ auto& p = P(); p.name = "stitch_inset";  p.kind = ValueKind::Double; p.description = "Stitch row inset from each edge (fraction of width)"; p.defaultValueHint = "0.085"; }
-						{ auto& p = P(); p.name = "stitch_pitch";  p.kind = ValueKind::Double; p.description = "Distance between stitches along the band"; p.defaultValueHint = "2.4"; }
-						{ auto& p = P(); p.name = "stitch_len";    p.kind = ValueKind::Double; p.description = "Visible thread length per stitch"; p.defaultValueHint = "1.35"; }
-						{ auto& p = P(); p.name = "stitch_r";      p.kind = ValueKind::Double; p.description = "Thread radius"; p.defaultValueHint = "0.14"; }
-						{ auto& p = P(); p.name = "stitch_angle";  p.kind = ValueKind::Double; p.description = "Saddle-stitch slant in degrees (mirrored per row)"; p.defaultValueHint = "16.0"; }
-						{ auto& p = P(); p.name = "emit_stitches"; p.kind = ValueKind::Bool;   p.description = "FALSE = the band mesh; TRUE = the thread-capsule mesh for the same path (separate geometry, own material)"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "profile_point"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Closed-profile vertex `<x> <h>` in the sweep frame (repeatable, polygon order; at least 3; CCW = outward normals).  Duplicate a point to harden an edge"; }
+						{ auto& p = P(); p.name = "point";         p.kind = ValueKind::String; p.repeatable = true; p.description = "Path control point `<x> <y> <z>` (repeatable, path order; at least 2).  The profile sweeps a Catmull-Rom spline through these"; }
+						{ auto& p = P(); p.name = "n_len";         p.kind = ValueKind::UInt;   p.description = "Requested samples along the path (clamped 2..4096; actual = (points-1)*max(2, n_len/(points-1)) + 1)"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "end_scale_x";   p.kind = ValueKind::Double; p.description = "Profile x scale at the path end (linear taper from 1 at the start)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "end_scale_y";   p.kind = ValueKind::Double; p.description = "Profile h scale at the path end (linear taper from 1 at the start)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "cap_start";     p.kind = ValueKind::Bool;   p.description = "Close the start cross-section (ear-clipped cap)"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "cap_end";       p.kind = ValueKind::Bool;   p.description = "Close the end cross-section (ear-clipped cap)"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "frame_hint";    p.kind = ValueKind::String; p.description = "Initial binormal hint `<x> <y> <z>` for the rotation-minimizing frame (omit = world axis most perpendicular to the start tangent)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PathInstancesGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string tmpl = bag.GetString( "geometry", "" );
+					if( tmpl.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"path_instances_geometry `%s`: missing `geometry` (the named template geometry to instance)", name.c_str() );
+						return false;
+					}
+
+					const std::vector<std::string>& pointLines = bag.GetRepeatable( "point" );
+					if( pointLines.size() < 2 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"path_instances_geometry `%s`: need at least 2 repeatable `point <x> <y> <z>` path control points (got %u)",
+							name.c_str(), (unsigned int)pointLines.size() );
+						return false;
+					}
+					std::vector<double> pts;
+					pts.reserve( pointLines.size() * 3 );
+					for( std::size_t i = 0; i < pointLines.size(); ++i ) {
+						double x = 0, y = 0, z = 0;
+						char trailing[8] = {0};
+						if( sscanf( pointLines[i].c_str(), "%lf %lf %lf %7s", &x, &y, &z, trailing ) != 3 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"path_instances_geometry `%s`: point %u (`%s`) must be exactly three numbers `<x> <y> <z>`",
+								name.c_str(), (unsigned int)i, pointLines[i].c_str() );
+							return false;
+						}
+						pts.push_back( x ); pts.push_back( y ); pts.push_back( z );
+					}
+
+					PathInstancesDescriptor d;
+					d.pathPoints    = &pts[0];
+					d.numPathPoints = (unsigned int)pointLines.size();
+					d.nLen          = (int)bag.GetUInt( "n_len", (unsigned int)d.nLen );
+					d.pitch         = bag.GetDouble( "pitch", d.pitch );
+					d.phase         = bag.GetDouble( "phase", d.phase );
+					d.slantDeg      = bag.GetDouble( "slant", d.slantDeg );
+					d.scale         = bag.GetDouble( "scale", d.scale );
+					d.detail        = bag.GetUInt( "detail", d.detail );
+					{
+						const std::string fh = bag.GetString( "frame_hint", "" );
+						if( !fh.empty() ) {
+							double hx = 0, hy = 0, hz = 0;
+							char trailing[8] = {0};
+							if( sscanf( fh.c_str(), "%lf %lf %lf %7s", &hx, &hy, &hz, trailing ) != 3 ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"path_instances_geometry `%s`: frame_hint must be three numbers `<x> <y> <z>`", name.c_str() );
+								return false;
+							}
+							d.frameHintX = hx; d.frameHintY = hy; d.frameHintZ = hz;
+						}
+					}
+					return pJob.AddPathInstancesGeometry( name.c_str(), tmpl.c_str(), d );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "path_instances_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Along-path instancing: a named TEMPLATE geometry (tessellated once through the universal TessellateToMesh contract -- any first-class geometry works, e.g. an sdf_geometry capsule) stamped along a 3D Catmull-Rom path at arc-length pitch with optional slant and scale.  Fence posts, rivets, beads, stitching, chain links.  Template +Y aligns with the path tangent (positive slant rotates the tangent toward the binormal about the frame normal), +Z with the frame normal, +X with the binormal.  Instances BANK with the path (no world-up mode); steer roll with frame_hint.  Alternating twists (chain links) = two chunks at 2x pitch with offset phase and pre-rotated templates.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "geometry"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.description = "Named template geometry to instance (must support TessellateToMesh -- every first-class RISE geometry does)"; }
+						{ auto& p = P(); p.name = "point";    p.kind = ValueKind::String;    p.repeatable = true; p.description = "Path control point `<x> <y> <z>` (repeatable, path order; at least 2)"; }
+						{ auto& p = P(); p.name = "n_len";    p.kind = ValueKind::UInt;      p.description = "Arc-length walk resolution (path samples; clamped 2..8192)"; p.defaultValueHint = "256"; }
+						{ auto& p = P(); p.name = "pitch";    p.kind = ValueKind::Double;    p.description = "Arc-length distance between instances (> 0)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "phase";    p.kind = ValueKind::Double;    p.description = "Arc-length distance before the first instance (omit = pitch/2, the centred default)"; p.defaultValueHint = "pitch/2"; }
+						{ auto& p = P(); p.name = "slant";    p.kind = ValueKind::Double;    p.description = "Template rotation about the frame normal, degrees (e.g. saddle-stitch slant; sign mirrors)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Uniform template scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "detail";   p.kind = ValueKind::UInt;      p.description = "TessellateToMesh detail for the template (clamped 3..256; cost is O(detail^2) for most templates)"; p.defaultValueHint = "16"; }
+					{ auto& p = P(); p.name = "frame_hint"; p.kind = ValueKind::String;  p.description = "Initial binormal hint `<x> <y> <z>` steering instance roll about the path (omit = world axis most perpendicular to the start tangent)"; }
 						return cd;
 					}();
 					return d;
@@ -9600,8 +9700,9 @@ namespace RISE
 		add( "bezierpatch_geometry",                  new BezierPatchGeometryAsciiChunkParser() );
 		add( "bilinearpatch_geometry",                new BilinearPatchGeometryAsciiChunkParser() );
 		add( "sdf_geometry",                          new SDFGeometryAsciiChunkParser() );
-		add( "guilloche_dial_geometry",               new GuillocheDialGeometryAsciiChunkParser() );
-		add( "swept_band_geometry",                   new SweptBandGeometryAsciiChunkParser() );
+		add( "guilloche_disk_geometry",               new GuillocheDiskGeometryAsciiChunkParser() );
+		add( "sweep_geometry",                        new SweepGeometryAsciiChunkParser() );
+		add( "path_instances_geometry",               new PathInstancesGeometryAsciiChunkParser() );
 		add( "displaced_geometry",                    new DisplacedGeometryAsciiChunkParser() );
 
 		// Modifiers

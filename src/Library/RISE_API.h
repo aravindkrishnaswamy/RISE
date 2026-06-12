@@ -481,9 +481,9 @@ namespace RISE
 	//! ((x+R)/2R), exactly as the retired Python did -- but at parse time, no
 	//! sidecar mesh files.  The result is an indexed triangle mesh (own BVH).
 	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateGuillocheDialGeometry(
+	bool RISE_API_CreateGuillocheDiskGeometry(
 						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
-						const GuillocheDialDescriptor& desc	///< [in] Pattern + bake parameters
+						const GuillocheDiskDescriptor& desc	///< [in] Pattern + bake parameters
 						);
 
 	//! Creates the guilloché OXIDE-DOSE IFunction2D -- the native replacement
@@ -495,22 +495,30 @@ namespace RISE
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateGuillocheOxideFunction2D(
 						IFunction2D**        ppi,			///< [out] Pointer to receive the function
-						const GuillocheDialDescriptor& desc,///< [in] Pattern parameters (mask + radius)
+						const GuillocheDiskDescriptor& desc,///< [in] Pattern parameters (mask + radius)
 						const int            falloffMode,	///< [in] 0 linear | 1 quadratic | 2 smooth
 						const double         activationEa,	///< [in] Parabolic-oxidation Ea (J/mol)
 						const double         torchAmount	///< [in] Signed dwell delta along the torch mask
 						);
 
-	//! Creates the procedural SWEPT-BAND mesh (watch strap) -- the native
-	//! replacement for strap_mesh_gen.py.  A Catmull-Rom path through (y,z)
-	//! control points swept with a superellipse-edged, centre-crowned profile
-	//! (with stitch channels), or -- with emitStitches -- the saddle-stitch
-	//! thread capsules following the same path, as a separate mesh so the
-	//! thread carries its own material.
+	//! Creates a general PROFILE SWEEP: an arbitrary CLOSED 2D profile
+	//! polygon swept along an arbitrary 3D Catmull-Rom path with
+	//! rotation-minimizing frames, optional per-axis linear taper, and
+	//! ear-clipped end caps.  Tubes, rails, mouldings, bands, cables.
 	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateSweptBandGeometry(
+	bool RISE_API_CreateSweepGeometry(
 						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
-						const SweptBandDescriptor&     desc	///< [in] Path + profile + stitch parameters
+						const SweepDescriptor&         desc	///< [in] Profile + path + taper + cap parameters
+						);
+
+	//! Creates ALONG-PATH INSTANCES: a template geometry (tessellated once
+	//! through the universal TessellateToMesh contract) stamped along a 3D
+	//! Catmull-Rom path at arc-length pitch with optional slant and scale.
+	//! Fence posts, rivets, beads, stitching, chain links.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePathInstancesGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const PathInstancesDescriptor& desc	///< [in] Template + path + pitch parameters
 						);
 
 	//! Function2DScalarPainter with the affine output out = bias + scale * f(u,v)

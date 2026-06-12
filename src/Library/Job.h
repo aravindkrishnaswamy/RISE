@@ -1487,24 +1487,31 @@ namespace RISE
 					);
 
 		//! Creates the procedural guilloché dial mesh (see IJob)
-		bool AddGuillocheDialGeometry(
+		bool AddGuillocheDiskGeometry(
 					const char* name,						///< [in] Name of the geometry
-					const GuillocheDialDescriptor& desc		///< [in] Pattern + bake parameters
+					const GuillocheDiskDescriptor& desc		///< [in] Pattern + bake parameters
 					);
 
 		//! Creates the guilloché oxide-dose IFunction2D (see IJob)
 		bool AddGuillocheOxideFunction2D(
 					const char* name,						///< [in] Name of the function
-					const GuillocheDialDescriptor& desc,	///< [in] Pattern parameters (mask + radius)
+					const GuillocheDiskDescriptor& desc,	///< [in] Pattern parameters (mask + radius)
 					const int falloffMode,					///< [in] 0 linear | 1 quadratic | 2 smooth
 					const double activationEa,				///< [in] Parabolic-oxidation Ea (J/mol)
 					const double torchAmount				///< [in] Signed dwell along the torch mask
 					);
 
-		//! Creates the swept-band (strap) mesh or its stitch threads (see IJob)
-		bool AddSweptBandGeometry(
+		//! Creates a general profile sweep (see IJob)
+		bool AddSweepGeometry(
 					const char* name,						///< [in] Name of the geometry
-					const SweptBandDescriptor& desc			///< [in] Path + profile + stitch parameters
+					const SweepDescriptor& desc				///< [in] Profile + path + taper + cap parameters
+					);
+
+		//! Creates along-path instances of a named template geometry (see IJob)
+		bool AddPathInstancesGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const char* szTemplate,					///< [in] Name of the template geometry
+					const PathInstancesDescriptor& desc		///< [in] Path + pitch parameters
 					);
 
 		//! Creates a bilinear patch geometry

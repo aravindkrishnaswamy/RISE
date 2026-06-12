@@ -17,7 +17,7 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		GuillocheParams GuillocheParamsFromDescriptor( const GuillocheDialDescriptor& d )
+		GuillocheParams GuillocheParamsFromDescriptor( const GuillocheDiskDescriptor& d )
 		{
 			GuillocheParams p;
 			switch( d.pattern )

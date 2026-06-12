@@ -1,8 +1,9 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  ProceduralDescriptors.h - Plain public parameter blocks for the
-//  procedural construction factories (guilloché dial / oxide painter,
-//  swept band).  Lives in Interfaces so IJob and RISE_API can share
+//  procedural construction factories (guilloché disk / oxide painter,
+//  profile sweep, along-path instances).  Lives in Interfaces so IJob
+//  and RISE_API can share
 //  the types without touching Implementation headers.
 //
 //  These mirror the retired Python bakers' argparse surfaces; the
@@ -20,6 +21,8 @@
 
 namespace RISE
 {
+	class IGeometry;
+
 	//! Guilloché pattern selector (string names in the scene chunk:
 	//! uniform | lightning | radial | iris | swirl | varwidth).
 	enum GuillochePatternKind
@@ -32,12 +35,12 @@ namespace RISE
 		eGuillochePatternVarwidth  = 5
 	};
 
-	//! Every knob of the guilloché field + the dial bake (mesh_n, disp).
+	//! Every knob of the guilloché field + the disk bake (mesh_n, disp).
 	//! Scene-chunk parameter names match the Python flags (snake_case).
-	struct GuillocheDialDescriptor
+	struct GuillocheDiskDescriptor
 	{
 		int    pattern;					//!< GuillochePatternKind
-		double radius;					//!< dial radius (world units)
+		double radius;					//!< disk radius (world units)
 		int    meshN;					//!< grid samples across the diameter (bake density)
 		double disp;					//!< relief amplitude (world units)
 		int    numArms;
@@ -69,7 +72,7 @@ namespace RISE
 		double irisEdge;
 		double swirlTurns;
 
-		GuillocheDialDescriptor() :
+		GuillocheDiskDescriptor() :
 			pattern( eGuillochePatternUniform ),
 			radius( 20.6 ), meshN( 560 ), disp( 0.42 ),
 			numArms( 12 ), swirl( 0.0 ),
@@ -90,37 +93,63 @@ namespace RISE
 		}
 	};
 
-	//! Swept-band (watch-strap) parameters -- strap_mesh_gen.py's surface.
-	//! The path is a Catmull-Rom spline through (y, z) control points in the
-	//! band's local frame (x = width axis); the scene chunk supplies them as
-	//! repeatable `point <y> <z>` lines.
-	struct SweptBandDescriptor
+	//! General profile-sweep parameters: an arbitrary CLOSED 2D profile
+	//! polygon swept along an arbitrary 3D Catmull-Rom path with
+	//! rotation-minimizing frames.  Tubes, rails, mouldings, bands, cables.
+	//! The scene chunk supplies the profile as repeatable
+	//! `profile_point <x> <h>` lines (x = local binormal/width axis,
+	//! h = local normal/height axis) and the path as repeatable
+	//! `point <x> <y> <z>` lines.
+	struct SweepDescriptor
 	{
-		const double* pathPoints;		//!< y0 z0 y1 z1 ... (pairs)
-		unsigned int  numPathPoints;	//!< number of (y, z) PAIRS
+		const double* profilePoints;	//!< x0 h0 x1 h1 ... (pairs; CLOSED polygon, >= 3)
+		unsigned int  numProfilePoints;	//!< number of (x, h) PAIRS
+		const double* pathPoints;		//!< x0 y0 z0 x1 y1 z1 ... (triples)
+		unsigned int  numPathPoints;	//!< number of (x, y, z) TRIPLES (>= 2)
 		int    nLen;					//!< samples along the path
-		int    nWid;					//!< samples across the width
-		double width;					//!< band width at the start (lug)
-		double endWidth;				//!< band width at the free end (taper)
-		double thickness;
-		double crown;					//!< extra centre doming of the top surface
-		double edgePow;					//!< superellipse edge exponent
-		double groove;					//!< stitch channel depth in the top surface
-		double stitchInset;				//!< stitch row inset from each edge (fraction of width)
-		double stitchPitch;				//!< distance between stitches along the band
-		double stitchLen;				//!< visible thread length per stitch
-		double stitchR;					//!< thread radius
-		double stitchAngleDeg;			//!< saddle slant (mirrored per row)
-		bool   emitStitches;			//!< false = the band mesh, true = the thread mesh
+		double endScaleX;				//!< profile x scale at the path end (linear taper from 1)
+		double endScaleY;				//!< profile h scale at the path end (linear taper from 1)
+		bool   capStart;				//!< triangulate the start cross-section closed
+		bool   capEnd;					//!< triangulate the end cross-section closed
+		double frameHintX, frameHintY, frameHintZ;	//!< initial binormal hint (0,0,0 = auto: world axis most perpendicular to the start tangent)
 
-		SweptBandDescriptor() :
+		SweepDescriptor() :
+			profilePoints( 0 ), numProfilePoints( 0 ),
 			pathPoints( 0 ), numPathPoints( 0 ),
-			nLen( 140 ), nWid( 14 ),
-			width( 25.26 ), endWidth( 20.2 ),
-			thickness( 3.0 ), crown( 0.55 ), edgePow( 8.0 ), groove( 0.16 ),
-			stitchInset( 0.085 ), stitchPitch( 2.4 ), stitchLen( 1.35 ),
-			stitchR( 0.14 ), stitchAngleDeg( 16.0 ),
-			emitStitches( false )
+			nLen( 64 ),
+			endScaleX( 1.0 ), endScaleY( 1.0 ),
+			capStart( true ), capEnd( true ),
+			frameHintX( 0.0 ), frameHintY( 0.0 ), frameHintZ( 0.0 )
+		{
+		}
+	};
+
+	//! General along-path instancing: a named TEMPLATE geometry (tessellated
+	//! once through the universal TessellateToMesh contract) stamped along a
+	//! 3D Catmull-Rom path at arc-length pitch.  Fence posts, rivets, beads,
+	//! stitches, chain links.  The template's local +Y aligns with the path
+	//! tangent (rotated by slant about the frame normal), +Z with the frame
+	//! normal, +X with the binormal.
+	struct PathInstancesDescriptor
+	{
+		const IGeometry* pGeometry;		//!< resolved template geometry (NOT addref'd here; consumed synchronously)
+		const double* pathPoints;		//!< x0 y0 z0 ... (triples, >= 2)
+		unsigned int  numPathPoints;	//!< number of (x, y, z) TRIPLES
+		int    nLen;					//!< arc-length walk resolution (path samples)
+		double pitch;					//!< arc-length distance between instances (> 0)
+		double phase;					//!< arc-length distance before the first instance (< 0 = pitch/2, the centred default)
+		double slantDeg;				//!< rotation of the template about the frame normal (degrees)
+		double scale;					//!< uniform template scale
+		unsigned int detail;			//!< TessellateToMesh detail for the template (clamped 3..256)
+		double frameHintX, frameHintY, frameHintZ;	//!< initial binormal hint (0,0,0 = auto), as in SweepDescriptor
+
+		PathInstancesDescriptor() :
+			pGeometry( 0 ),
+			pathPoints( 0 ), numPathPoints( 0 ),
+			nLen( 256 ),
+			pitch( 1.0 ), phase( -1.0 ), slantDeg( 0.0 ), scale( 1.0 ),
+			detail( 16 ),
+			frameHintX( 0.0 ), frameHintY( 0.0 ), frameHintZ( 0.0 )
 		{
 		}
 	};

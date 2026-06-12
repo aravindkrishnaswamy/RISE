@@ -4,9 +4,10 @@
 //  procedural guilloché chunks (the native replacements for the
 //  Python bakers):
 //
-//    guilloche_dial_geometry   -> Job::AddGuillocheDialGeometry
+//    guilloche_disk_geometry   -> Job::AddGuillocheDiskGeometry
 //    guilloche_oxide_painter   -> Job::AddGuillocheOxideFunction2D
-//    swept_band_geometry       -> Job::AddSweptBandGeometry
+//    sweep_geometry            -> Job::AddSweepGeometry
+//    path_instances_geometry   -> Job::AddPathInstancesGeometry
 //    scalar_painter function2d + scale/bias (the affine form)
 //
 //  The field/mesh MATH is golden-tested elsewhere (GuillocheFieldTest,
@@ -20,8 +21,9 @@
 //       non-numeric tokens (the dispatcher's TEXT-domain numeric
 //       validation -- the build's -ffast-math erases value-domain
 //       inf/NaN guards, so the token layer is the contract), too few
-//       swept-band points, malformed point lines, degenerate stitch
-//       parameters, and a function2d reference to a missing function.
+//       profile/path points, malformed point lines, degenerate pitch,
+//       missing instancer templates, and a function2d reference to a
+//       missing function.
 //    3. Out-of-range mesh_n CLAMPS (parses fine) rather than rejects.
 //
 //////////////////////////////////////////////////////////////////////
@@ -95,7 +97,7 @@ namespace {
 
 	// Small chunks reused across cases (mesh_n tiny so the bake is instant).
 	const char* kDial =
-		"guilloche_dial_geometry\n{\n"
+		"guilloche_disk_geometry\n{\n"
 		"name dialg\n"
 		"pattern lightning\n"
 		"num_arms 11\n"
@@ -117,23 +119,35 @@ namespace {
 		"scale 13.0\n"
 		"bias 24.5\n"
 		"}\n";
-	const char* kBand =
-		"swept_band_geometry\n{\n"
+	const char* kSweep =
+		"sweep_geometry\n{\n"
 		"name bandg\n"
-		"point 24.0 -3.4\n"
-		"point 43.0 -7.3\n"
-		"point 70.0 -8.68\n"
-		"point 104.0 -8.78\n"
+		"profile_point -2.0 0.5\n"
+		"profile_point 2.0 0.5\n"
+		"profile_point 2.0 -0.5\n"
+		"profile_point -2.0 -0.5\n"
+		"point 0 24.0 -3.4\n"
+		"point 0 43.0 -7.3\n"
+		"point 0 70.0 -8.68\n"
+		"point 0 104.0 -8.78\n"
 		"n_len 40\n"
-		"n_wid 8\n"
+		"end_scale_x 0.8\n"
 		"}\n";
-	const char* kStitches =
-		"swept_band_geometry\n{\n"
+	const char* kCapsule =
+		"sdf_geometry\n{\n"
+		"name threadcap\n"
+		"part capsule union 0  0 0 0  0 0 0  1 1 1  0.14 0.535 0  0\n"
+		"}\n";
+	const char* kInstances =
+		"path_instances_geometry\n{\n"
 		"name stitchg\n"
-		"point 24.0 -3.4\n"
-		"point 43.0 -7.3\n"
-		"point 104.0 -8.78\n"
-		"emit_stitches TRUE\n"
+		"geometry threadcap\n"
+		"point -10.5 24.3 -2.0\n"
+		"point -9.8 43.2 -5.9\n"
+		"point -8.4 104.0 -7.3\n"
+		"pitch 2.4\n"
+		"slant 16.0\n"
+		"detail 12\n"
 		"}\n";
 
 }
@@ -144,14 +158,14 @@ static void TestHappyPath()
 	Job* job = new Job();
 	job->addref();
 	const bool ok = ParseBody( "happy",
-		std::string( kDial ) + kOxide + kScalar + kBand + kStitches, *job );
+		std::string( kDial ) + kOxide + kScalar + kSweep + kCapsule + kInstances, *job );
 	Check( ok, "scene parses" );
 	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
 	Check( priv != 0, "IJobPriv available" );
 	if( !priv ) { job->release(); return; }
 	Check( priv->GetGeometries()->GetItem( "dialg" ) != 0,      "dial geometry registered" );
-	Check( priv->GetGeometries()->GetItem( "bandg" ) != 0,      "band geometry registered" );
-	Check( priv->GetGeometries()->GetItem( "stitchg" ) != 0,    "stitch geometry registered" );
+	Check( priv->GetGeometries()->GetItem( "bandg" ) != 0,      "sweep geometry registered" );
+	Check( priv->GetGeometries()->GetItem( "stitchg" ) != 0,    "path-instances geometry registered" );
 	Check( priv->GetFunction2Ds()->GetItem( "oxfn" ) != 0,      "oxide function2d registered" );
 	Check( priv->GetScalarPainters()->GetItem( "oxthk" ) != 0,  "affine function2d scalar painter registered" );
 	// the oxide painter evaluates sanely through the registered function
@@ -167,7 +181,7 @@ static void TestClamps()
 {
 	std::cout << "Test 2: out-of-range mesh_n clamps (parses), never rejects" << std::endl;
 	Check( ParseBody( "clamp_lo",
-		"guilloche_dial_geometry\n{\nname g\nmesh_n 1\n}\n" ), "mesh_n 1 clamps to 8 (floor matches the SDF sampling_detail precedent; a 2x2 grid has every corner outside the dial circle)" );
+		"guilloche_disk_geometry\n{\nname g\nmesh_n 1\n}\n" ), "mesh_n 1 clamps to 8 (floor matches the SDF sampling_detail precedent; a 2x2 grid has every corner outside the dial circle)" );
 }
 
 static void TestRejections()
@@ -175,34 +189,40 @@ static void TestRejections()
 	std::cout << "Test 3: rejection paths" << std::endl;
 	struct Row { const char* tag; const char* body; const char* what; };
 	const Row rows[] = {
-		{ "bad_pattern",  "guilloche_dial_geometry\n{\nname g\npattern zigzag\nmesh_n 16\n}\n",
+		{ "bad_pattern",  "guilloche_disk_geometry\n{\nname g\npattern zigzag\nmesh_n 16\n}\n",
 		  "unknown pattern enum rejects" },
 		{ "bad_metal",    "guilloche_oxide_painter\n{\nname f\nmetal woof\nactivation_ea 160000\n}\n",
 		  "unknown metal rejects even with explicit activation_ea" },
 		{ "bad_falloff",  "guilloche_oxide_painter\n{\nname f\nfalloff sideways\n}\n",
 		  "unknown falloff enum rejects" },
-		{ "arms_zero",    "guilloche_dial_geometry\n{\nname g\nnum_arms 0\nmesh_n 16\n}\n",
+		{ "arms_zero",    "guilloche_disk_geometry\n{\nname g\nnum_arms 0\nmesh_n 16\n}\n",
 		  "num_arms 0 rejects" },
-		{ "arms_huge",    "guilloche_dial_geometry\n{\nname g\nnum_arms 1000\nmesh_n 16\n}\n",
+		{ "arms_huge",    "guilloche_disk_geometry\n{\nname g\nnum_arms 1000\nmesh_n 16\n}\n",
 		  "num_arms 1000 rejects (cap 256)" },
-		{ "cell_zero",    "guilloche_dial_geometry\n{\nname g\ncell 0\nmesh_n 16\n}\n",
+		{ "cell_zero",    "guilloche_disk_geometry\n{\nname g\ncell 0\nmesh_n 16\n}\n",
 		  "cell 0 rejects" },
-		{ "radius_nan",   "guilloche_dial_geometry\n{\nname g\nradius nan\nmesh_n 16\n}\n",
+		{ "radius_nan",   "guilloche_disk_geometry\n{\nname g\nradius nan\nmesh_n 16\n}\n",
 		  "radius nan rejects (text-domain)" },
-		{ "disp_nan",     "guilloche_dial_geometry\n{\nname g\ndisp nan\nmesh_n 16\n}\n",
+		{ "disp_nan",     "guilloche_disk_geometry\n{\nname g\ndisp nan\nmesh_n 16\n}\n",
 		  "disp nan rejects (text-domain; factory has no disp guard)" },
-		{ "disp_inf",     "guilloche_dial_geometry\n{\nname g\ndisp inf\nmesh_n 16\n}\n",
+		{ "disp_inf",     "guilloche_disk_geometry\n{\nname g\ndisp inf\nmesh_n 16\n}\n",
 		  "disp inf rejects (text-domain)" },
-		{ "disp_text",    "guilloche_dial_geometry\n{\nname g\ndisp abc\nmesh_n 16\n}\n",
+		{ "disp_text",    "guilloche_disk_geometry\n{\nname g\ndisp abc\nmesh_n 16\n}\n",
 		  "non-numeric double rejects (text-domain)" },
 		{ "ea_huge",      "guilloche_oxide_painter\n{\nname f\nactivation_ea 5e7\n}\n",
 		  "activation_ea above 1e6 J/mol rejects" },
-		{ "one_point",    "swept_band_geometry\n{\nname b\npoint 24.0 -3.4\n}\n",
-		  "single control point rejects" },
-		{ "bad_point",    "swept_band_geometry\n{\nname b\npoint 24.0 -3.4\npoint 43.0 abc\n}\n",
-		  "malformed point line rejects" },
-		{ "stitch_zero",  "swept_band_geometry\n{\nname b\npoint 24.0 -3.4\npoint 104.0 -8.78\nstitch_r 0\nemit_stitches TRUE\n}\n",
-		  "stitch_r 0 with emit_stitches rejects" },
+		{ "two_prof",     "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "fewer than 3 profile points rejects" },
+		{ "one_point",    "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\n}\n",
+		  "single path point rejects" },
+		{ "bad_point",    "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\npoint 0 43.0 abc\n}\n",
+		  "malformed path point rejects" },
+		{ "bad_scale",    "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\npoint 0 0 10\nend_scale_x 0\n}\n",
+		  "end_scale_x 0 rejects" },
+		{ "no_template",  "path_instances_geometry\n{\nname p\ngeometry nosuchgeom\npoint 0 0 0\npoint 0 0 10\n}\n",
+		  "missing template geometry rejects" },
+		{ "pitch_zero",   "sdf_geometry\n{\nname cap2\npart sphere union 0  0 0 0  0 0 0  1 1 1  0.5 0 0  0\n}\npath_instances_geometry\n{\nname p\ngeometry cap2\npoint 0 0 0\npoint 0 0 10\npitch 0\n}\n",
+		  "pitch 0 rejects" },
 		{ "missing_fn",   "scalar_painter\n{\nname s\nfunction2d nosuch\n}\n",
 		  "function2d reference to missing function rejects" },
 	};

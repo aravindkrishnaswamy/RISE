@@ -97,7 +97,7 @@ for `renderanimation` to drive it.
 The stock dial has a uniform woven-cell size everywhere.  The watch ships a small
 **library of dial patterns** — all on the stock Cartesian UV, so every oxide
 palette / metal applies to each (a pattern only changes the RELIEF).  Each is a
-native `guilloche_dial_geometry dialmesh_<name>` chunk (the pattern field is
+native `guilloche_disk_geometry dialmesh_<name>` chunk (the pattern field is
 evaluated in C++ at parse time; `dial_variants_gen.py` remains the composable
 Python REFERENCE the chunks are golden-tested against):
 
@@ -123,9 +123,9 @@ the mesh swaps and the top-level BVH rebuilds on the next render, no reload —
 
 ## Asset pipeline — fully procedural (2026-06)
 
-**Nothing is pre-baked.**  The dial meshes (`guilloche_dial_geometry`), the oxide
+**Nothing is pre-baked.**  The dial meshes (`guilloche_disk_geometry`), the oxide
 heat-tint doses (`guilloche_oxide_painter` + `scalar_painter function2d`), and the
-strap + stitching (`swept_band_geometry`) are native scene chunks evaluated at
+strap (`sweep_geometry`: a general closed-profile sweep fed the authored FKM cross-section) + stitching (`path_instances_geometry`: a general along-path instancer stamping an SDF thread capsule) are native scene chunks evaluated at
 parse time — clone and render, no generator step.
 
 The Python bakers stay in this folder as the **golden reference implementations**:

@@ -7,7 +7,7 @@
 //
 //  GuillocheOxidePainter::Evaluate(u, v) interprets (u, v) as the
 //  dial's LINEAR CARTESIAN UV in [0,1]^2 (u = (x+R)/2R, v = (y+R)/2R,
-//  the same layout the baked PNGs used and the guilloche_dial_geometry
+//  the same layout the baked PNGs used and the guilloche_disk_geometry
 //  emits), converts to dial-space (x, y), and returns the normalized
 //  oxide DOSE in [0,1]: the Arrhenius/parabolic radial profile of
 //  thermal_oxide_sim.build_thickness_profile plus the signed
@@ -35,7 +35,7 @@ namespace RISE
 	namespace Implementation
 	{
 		//! Maps the public chunk-facing descriptor onto the field params.
-		GuillocheParams GuillocheParamsFromDescriptor( const GuillocheDialDescriptor& d );
+		GuillocheParams GuillocheParamsFromDescriptor( const GuillocheDiskDescriptor& d );
 
 		class GuillocheOxidePainter :
 			public virtual IFunction2D,

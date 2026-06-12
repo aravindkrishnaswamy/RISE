@@ -1,0 +1,241 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           sweep_instances.RISEscene                                                               #
+#   Description:    The general procedural sweep + along-path instancing chunks, exercised on               #
+#                   reuse cases far from the watch strap they were built for:                               #
+#                     - a TUBE: circular profile swept along a 3D S-curve (RMF through torsion)             #
+#                     - a TAPERED HORN: square profile, end_scale taper, capped ends                        #
+#                     - BEADS: spheres instanced along a rising arc at arc-length pitch                     #
+#                     - a RIBBON: thin flat profile with a frame hint                                       #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				4
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sweep_instances
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			512
+	height			512
+}
+
+pinhole_camera
+{
+	location			0 -26 14
+	lookat				0 0 1
+	up					0 0 1
+	fov					42.0
+}
+
+##################################################
+# Painters + materials
+##################################################
+
+uniformcolor_painter
+{
+	name				pnt_red
+	color				0.8 0.25 0.2
+}
+
+uniformcolor_painter
+{
+	name				pnt_blue
+	color				0.2 0.35 0.8
+}
+
+uniformcolor_painter
+{
+	name				pnt_gold
+	color				0.85 0.7 0.3
+}
+
+uniformcolor_painter
+{
+	name				pnt_grey
+	color				0.55 0.55 0.55
+}
+
+lambertian_material
+{
+	name				mat_red
+	reflectance			pnt_red
+}
+
+lambertian_material
+{
+	name				mat_blue
+	reflectance			pnt_blue
+}
+
+lambertian_material
+{
+	name				mat_gold
+	reflectance			pnt_gold
+}
+
+lambertian_material
+{
+	name				mat_grey
+	reflectance			pnt_grey
+}
+
+##################################################
+# A TUBE: 16-gon circular profile swept along a 3D S-curve.
+# The rotation-minimizing frames carry the profile through the
+# out-of-plane bend without spin or pinch.
+##################################################
+sweep_geometry
+{
+	name				tubegeom
+	profile_point			0.700 0.000
+	profile_point			0.647 0.268
+	profile_point			0.495 0.495
+	profile_point			0.268 0.647
+	profile_point			0.000 0.700
+	profile_point			-0.268 0.647
+	profile_point			-0.495 0.495
+	profile_point			-0.647 0.268
+	profile_point			-0.700 0.000
+	profile_point			-0.647 -0.268
+	profile_point			-0.495 -0.495
+	profile_point			-0.268 -0.647
+	profile_point			0.000 -0.700
+	profile_point			0.268 -0.647
+	profile_point			0.495 -0.495
+	profile_point			0.647 -0.268
+	point				-9 -3 0
+	point				-5 3 1
+	point				0 -3 3
+	point				5 3 1
+	point				9 -3 0
+	n_len				96
+}
+
+standard_object
+{
+	name				tube
+	geometry			tubegeom
+	material			mat_red
+	position			0 2 4
+}
+
+##################################################
+# A TAPERED HORN: square profile, 4:1 taper, both ends capped.
+##################################################
+sweep_geometry
+{
+	name				horngeom
+	profile_point			1.6 1.6
+	profile_point			-1.6 1.6
+	profile_point			-1.6 -1.6
+	profile_point			1.6 -1.6
+	point				-7 0 0
+	point				0 0 2.5
+	point				7 0 0
+	n_len				48
+	end_scale_x			0.25
+	end_scale_y			0.25
+}
+
+standard_object
+{
+	name				horn
+	geometry			horngeom
+	material			mat_blue
+	position			0 -4 -1
+}
+
+##################################################
+# BEADS: unit spheres instanced along a rising arc at pitch 2.4.
+##################################################
+sphere_geometry
+{
+	name				beadgeom
+	radius				0.65
+}
+
+path_instances_geometry
+{
+	name				beadsgeom
+	geometry			beadgeom
+	point				-9 0 0
+	point				-4 2 1.5
+	point				2 2 3
+	point				9 0 4.5
+	pitch				2.4
+	detail				24
+}
+
+standard_object
+{
+	name				beads
+	geometry			beadsgeom
+	material			mat_gold
+	position			0 6 -3
+}
+
+##################################################
+# A RIBBON: thin flat profile, frame hint pinning the flat side up.
+##################################################
+sweep_geometry
+{
+	name				ribbongeom
+	profile_point			1.2 0.08
+	profile_point			-1.2 0.08
+	profile_point			-1.2 -0.08
+	profile_point			1.2 -0.08
+	point				-8 0 0
+	point				-3 3 0.5
+	point				3 -3 1.0
+	point				8 0 1.5
+	n_len				72
+	frame_hint			0 0 1
+}
+
+standard_object
+{
+	name				ribbon
+	geometry			ribbongeom
+	material			mat_grey
+	position			0 0 -6
+}
+
+##################################################
+# Light
+##################################################
+omni_light
+{
+	name				keylight
+	power				2800
+	color				1.0 1.0 1.0
+	position			-12 -18 22
+}
+
+omni_light
+{
+	name				filllight
+	power				900
+	color				1.0 1.0 1.0
+	position			14 -10 8
+}

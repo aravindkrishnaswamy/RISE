@@ -4352,10 +4352,10 @@ bool Job::AddSDFGeometry( const char* name, const char* szFileName, const char* 
 	return true;
 }
 
-bool Job::AddGuillocheDialGeometry( const char* name, const GuillocheDialDescriptor& desc )
+bool Job::AddGuillocheDiskGeometry( const char* name, const GuillocheDiskDescriptor& desc )
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	if( !RISE_API_CreateGuillocheDialGeometry( &pGeometry, desc ) ) {
+	if( !RISE_API_CreateGuillocheDiskGeometry( &pGeometry, desc ) ) {
 		return false;   // the factory already logged why
 	}
 	pGeomManager->AddItem( pGeometry, name );
@@ -4363,7 +4363,7 @@ bool Job::AddGuillocheDialGeometry( const char* name, const GuillocheDialDescrip
 	return true;
 }
 
-bool Job::AddGuillocheOxideFunction2D( const char* name, const GuillocheDialDescriptor& desc, const int falloffMode, const double activationEa, const double torchAmount )
+bool Job::AddGuillocheOxideFunction2D( const char* name, const GuillocheDiskDescriptor& desc, const int falloffMode, const double activationEa, const double torchAmount )
 {
 	IFunction2D* pFunction = 0;
 	if( !RISE_API_CreateGuillocheOxideFunction2D( &pFunction, desc, falloffMode, activationEa, torchAmount ) ) {
@@ -4374,10 +4374,30 @@ bool Job::AddGuillocheOxideFunction2D( const char* name, const GuillocheDialDesc
 	return true;
 }
 
-bool Job::AddSweptBandGeometry( const char* name, const SweptBandDescriptor& desc )
+bool Job::AddSweepGeometry( const char* name, const SweepDescriptor& desc )
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	if( !RISE_API_CreateSweptBandGeometry( &pGeometry, desc ) ) {
+	if( !RISE_API_CreateSweepGeometry( &pGeometry, desc ) ) {
+		return false;   // the factory already logged why
+	}
+	pGeomManager->AddItem( pGeometry, name );
+	safe_release( pGeometry );
+	return true;
+}
+
+bool Job::AddPathInstancesGeometry( const char* name, const char* szTemplate, const PathInstancesDescriptor& desc )
+{
+	IGeometry* pTemplate = pGeomManager->GetItem( szTemplate ? szTemplate : "" );
+	if( !pTemplate ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddPathInstancesGeometry:: `%s`: template geometry `%s` not found (declare it first)",
+			name ? name : "(unnamed)", szTemplate ? szTemplate : "(none)" );
+		return false;
+	}
+	PathInstancesDescriptor d = desc;
+	d.pGeometry = pTemplate;
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreatePathInstancesGeometry( &pGeometry, d ) ) {
 		return false;   // the factory already logged why
 	}
 	pGeomManager->AddItem( pGeometry, name );

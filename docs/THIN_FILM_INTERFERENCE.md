@@ -468,7 +468,7 @@ P3-A/B/C plan** in one load-bearing way — the Cartesian rebuild below.
   position + analytic normal + linear UV) — every cell is a fixed world size at the rim and the
   dead-centre alike. The woven micro-grid is laid in a per-sector-rotated frame so it runs radially
   and flips tilt at each jagged "lightning" seam but never shrinks; the petals are the swirl=0
-  radial organizer. **2026-06 update:** the bake is now NATIVE — `guilloche_dial_geometry` chunks
+  radial organizer. **2026-06 update:** the bake is now NATIVE — `guilloche_disk_geometry` chunks
   evaluate the same field in C++ at scene-parse time (`src/Library/Painters/GuillocheField.h`;
   golden-tested against the Python in `tests/GuillocheFieldTest.cpp` + `tests/ProceduralMeshTest.cpp`),
   so there is no mesh file at all; `dial_mesh_gen.py` remains as the reference implementation.

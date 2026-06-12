@@ -2,10 +2,11 @@ RISE ASCII SCENE 6
 #############################################################################################################
 #   File:           watch_dial.RISEscene
 #   Description:    Guilloche titanium watch (thin-film heat-tint).  Phase 3 of the thin-film feature.
-#                   FULLY PROCEDURAL: the engraved dial relief is a native guilloche_dial_geometry
+#                   FULLY PROCEDURAL: the engraved dial relief is a native guilloche_disk_geometry
 #                   chunk, the radial heat-tint dose a native guilloche_oxide_painter function
 #                   (both C++ ports of the Python bakers in this folder, golden-tested), the strap
-#                   a native swept_band_geometry, and the case/crown/hands/ring melded SDFs --
+#                   a general sweep_geometry + path_instances_geometry pair, and the
+#                   case/crown/hands/ring melded SDFs --
 #                   no pre-baked meshes or maps.  Thin-film GGX dial under an HDRI environment;
 #                   the specular reflectance sweeps gold centre -> blue rim.  Generic -- no brand mark.
 #   Author:         Aravind Krishnaswamy
@@ -13,7 +14,7 @@ RISE ASCII SCENE 6
 
 # ============================================================================
 # FULLY PROCEDURAL -- nothing to pre-bake.  The dial meshes are native
-# `guilloche_dial_geometry` chunks (the field is evaluated at parse time) and
+# `guilloche_disk_geometry` chunks (the field is evaluated at parse time) and
 # the oxide heat-tint doses are native `guilloche_oxide_painter` functions
 # consumed through `scalar_painter { function2d ... scale S bias B }`.  The
 # retired Python bakers (dial_mesh_gen.py / dial_variants_gen.py /
@@ -841,7 +842,7 @@ standard_object
 ##################################################
 ##################################################
 # The dial: CARTESIAN guilloche relief evaluated NATIVELY at parse time
-# (guilloche_dial_geometry -- the C++ port of dial_mesh_gen.py, goldens in
+# (guilloche_disk_geometry -- the C++ port of dial_mesh_gen.py, goldens in
 # tests/GuillocheFieldTest + tests/ProceduralMeshTest).  Real engraved relief
 # with analytic normals + linear UV.  This REPLACES the old circulardisk +
 # displaced_geometry dial, whose POLAR UV (u=angle, v=radius) collapsed the
@@ -850,7 +851,7 @@ standard_object
 # the guilloche blocks read uniformly to the dead-centre (no polar singularity).
 # Recessed to z = -1 so it sits below the case top rim.
 ##################################################
-guilloche_dial_geometry
+guilloche_disk_geometry
 {
 	name				dialmesh
 	pattern				uniform
@@ -862,13 +863,13 @@ guilloche_dial_geometry
 # pattern changes only the RELIEF).  Switch the `dial` object's `geometry`
 # (below) to any of these -- it is a LIVE GUI rebind
 # (SceneEdit::SetObjectGeometry), no reload.  Each pattern is a native
-# guilloche_dial_geometry chunk evaluated at parse time (gen_dials.sh
+# guilloche_disk_geometry chunk evaluated at parse time (gen_dials.sh
 # remains as the Python reference the chunks are golden-tested against).
 ##################################################
 
 # lightning -- the hero pattern: 11 zigzag lightning bolts of a tight cube
 # on a uniform rung-block ground.
-guilloche_dial_geometry
+guilloche_disk_geometry
 {
 	name				dialmesh_lightning
 	pattern				lightning
@@ -889,7 +890,7 @@ guilloche_dial_geometry
 }
 
 # radial -- earlier swirled-petal lightning at a coarser bolt cell.
-guilloche_dial_geometry
+guilloche_disk_geometry
 {
 	name				dialmesh_radial
 	pattern				radial
@@ -901,7 +902,7 @@ guilloche_dial_geometry
 
 # iris -- 007 camera aperture: 8 blade leading-edges spiralling around a
 # central hole, cube-filled blades.
-guilloche_dial_geometry
+guilloche_disk_geometry
 {
 	name				dialmesh_iris
 	pattern				iris
@@ -915,7 +916,7 @@ guilloche_dial_geometry
 }
 
 # swirl -- log-spiral guilloche.
-guilloche_dial_geometry
+guilloche_disk_geometry
 {
 	name				dialmesh_swirl
 	pattern				swirl
@@ -928,7 +929,7 @@ guilloche_dial_geometry
 }
 
 # varwidth -- alternating fine/coarse sunburst sectors.
-guilloche_dial_geometry
+guilloche_disk_geometry
 {
 	name				dialmesh_varwidth
 	pattern				varwidth
@@ -1178,7 +1179,7 @@ standard_object
 }
 
 ##################################################
-# Blue FKM-rubber strap.  A native swept_band_geometry from each lug,
+# Blue FKM-rubber strap.  A general sweep_geometry from each lug,
 # curving down to the tabletop with a subtle residual arc (never dead-flat).
 # Domed top, rounded edges, 20->16mm taper; soft FKM sheen = schlick_f0 with
 # a low F0.  The -Y (6 o'clock) half is the same mesh rotated 180deg about Z.
@@ -1193,19 +1194,56 @@ ggx_material
 	fresnel_mode			schlick_f0
 }
 
-# NATIVE swept band (the C++ port of strap_mesh_gen.py; goldens in
-# tests/ProceduralMeshTest).  Catmull-Rom (y, z) drape: lug -> curve down ->
-# subtle residual arc on the tabletop (z = -10.30 + thickness/2 = -8.80).
-swept_band_geometry
+# The strap as a GENERAL sweep_geometry: the FKM cross-section (superellipse
+# rounded rails, centre crown, two recessed stitch channels at 8.5% inset --
+# evaluated from strap_mesh_gen.py's profile formulas at its 14 stations and
+# authored here as data) swept along the Catmull-Rom drape path
+# (lug -> curve down -> subtle residual arc on the tabletop,
+# z = -10.30 + thickness/2 = -8.80).  end_scale_x = 20.2/25.26 is the
+# 20mm -> 16mm width taper; profile h is untapered.  The auto frame hint
+# picks world X (most perpendicular to the start tangent) = the width axis.
+sweep_geometry
 {
 	name				strapgeom
-	point				24.0 -3.4
-	point				32.0 -4.9
-	point				43.0 -7.3
-	point				56.0 -8.25
-	point				70.0 -8.68
-	point				86.0 -8.50
-	point				104.0 -8.78
+	profile_point			-12.63000 0.04743
+	profile_point			-10.68692 1.29123
+	profile_point			-8.74385 1.73862
+	profile_point			-6.80077 1.88384
+	profile_point			-4.85769 1.96817
+	profile_point			-2.91462 2.02070
+	profile_point			-0.97154 2.04675
+	profile_point			0.97154 2.04675
+	profile_point			2.91462 2.02070
+	profile_point			4.85769 1.96817
+	profile_point			6.80077 1.88384
+	profile_point			8.74385 1.73862
+	profile_point			10.68692 1.29123
+	profile_point			12.63000 0.04743
+	profile_point			12.63000 -0.04743
+	profile_point			10.68692 -1.28792
+	profile_point			8.74385 -1.45989
+	profile_point			6.80077 -1.49469
+	profile_point			4.85769 -1.49964
+	profile_point			2.91462 -1.49999
+	profile_point			0.97154 -1.50000
+	profile_point			-0.97154 -1.50000
+	profile_point			-2.91462 -1.49999
+	profile_point			-4.85769 -1.49964
+	profile_point			-6.80077 -1.49469
+	profile_point			-8.74385 -1.45989
+	profile_point			-10.68692 -1.28792
+	profile_point			-12.63000 -0.04743
+	point				0 24.0 -3.4
+	point				0 32.0 -4.9
+	point				0 43.0 -7.3
+	point				0 56.0 -8.25
+	point				0 70.0 -8.68
+	point				0 86.0 -8.50
+	point				0 104.0 -8.78
+	n_len				140
+	end_scale_x			0.799683
+	cap_start			FALSE
+	cap_end				TRUE
 }
 
 standard_object
@@ -1223,10 +1261,13 @@ standard_object
 	orientation			0 0 180
 }
 
-# Saddle stitching: real thread capsules following the drape curve, sitting
-# in the recessed channel pressed into the strap's top profile.  Separate
-# mesh (emit_stitches TRUE on the SAME path/profile) so the thread carries
-# its own material.  Tune stitch_pitch/len/r/angle + groove on both chunks.
+# Saddle stitching: a GENERAL path_instances_geometry stamping an SDF thread
+# capsule along each stitch row at arc-length pitch, slanted +/-16 deg about
+# the surface normal (mirrored rows = the saddle look).  The two row paths
+# are the drape curve offset to the channel positions (x = (0.085-0.5)*W(t),
+# h = channel floor + 0.9*r -- derived from the strap profile; re-derive if
+# the drape or profile changes).  Separate mesh so the thread carries its
+# own material.
 uniformcolor_painter
 {
 	name				pnt_thread
@@ -1243,30 +1284,70 @@ ggx_material
 	fresnel_mode			schlick_f0
 }
 
-swept_band_geometry
+sdf_geometry
+{
+	name				threadcapsule
+	part				capsule union 0  0 0 0  0 0 0  1 1 1  0.14 0.535 0  0
+}
+
+path_instances_geometry
 {
 	name				strapstitchgeom
-	point				24.0 -3.4
-	point				32.0 -4.9
-	point				43.0 -7.3
-	point				56.0 -8.25
-	point				70.0 -8.68
-	point				86.0 -8.50
-	point				104.0 -8.78
-	emit_stitches			TRUE
+	geometry			threadcapsule
+	point				-10.48290 24.26360 -1.98746
+	point				-10.13292 32.29168 -3.49299
+	point				-9.78293 43.20002 -5.87707
+	point				-9.43295 56.07242 -6.81490
+	point				-9.08297 70.01101 -7.24312
+	point				-8.73298 86.00369 -7.06308
+	point				-8.38300 104.02306 -7.34326
+	pitch				2.4
+	slant				16.0
+	detail				24
+}
+
+path_instances_geometry
+{
+	name				strapstitchgeom6
+	geometry			threadcapsule
+	point				10.48290 24.26360 -1.98746
+	point				10.13292 32.29168 -3.49299
+	point				9.78293 43.20002 -5.87707
+	point				9.43295 56.07242 -6.81490
+	point				9.08297 70.01101 -7.24312
+	point				8.73298 86.00369 -7.06308
+	point				8.38300 104.02306 -7.34326
+	pitch				2.4
+	slant				-16.0
+	detail				24
 }
 
 standard_object
 {
-	name				stitch_12
+	name				stitch_12_l
 	geometry			strapstitchgeom
 	material			strap_thread
 }
 
 standard_object
 {
-	name				stitch_6
+	name				stitch_12_r
+	geometry			strapstitchgeom6
+	material			strap_thread
+}
+
+standard_object
+{
+	name				stitch_6_l
 	geometry			strapstitchgeom
+	material			strap_thread
+	orientation			0 0 180
+}
+
+standard_object
+{
+	name				stitch_6_r
+	geometry			strapstitchgeom6
 	material			strap_thread
 	orientation			0 0 180
 }

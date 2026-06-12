@@ -2,8 +2,8 @@
 
 **Status: B1 + B2 SHIPPED (2026-06-11).**  The texture bakers are now native
 painters (`guilloche_oxide_painter` + the `scalar_painter function2d scale/bias`
-form) and the mesh bakers native chunks (`guilloche_dial_geometry`,
-`swept_band_geometry`) — see `src/Library/Painters/GuillocheField.h`, the
+form) and the mesh bakers native chunks (`guilloche_disk_geometry`, and the strap decomposed into the fully
+general `sweep_geometry` + `path_instances_geometry`) — see `src/Library/Painters/GuillocheField.h`, the
 factories in `src/Library/RISE_API.cpp`, and the golden tests
 `tests/GuillocheFieldTest.cpp` / `tests/ProceduralMeshTest.cpp`.  Chunk names
 differ slightly from the proposals below (kept as authored).  Orchestration
@@ -113,7 +113,7 @@ sdf_geometry
 | Item | What | Replaces | Effort |
 |---|---|---|---|
 | B1 | **`guilloche_function2d_painter`** (pattern enum: uniform / lightning / radial / iris / swirl / varwidth + cell/amplitude/bolt params) feeding the existing `displaced_geometry` over a disk, plus a companion oxide-dose painter (radial falloff × pattern-correlated term) consumed by `scalar_painter` (extend it to accept a function2d source — it already learned `texture` this way) | `dial_mesh_gen.py`, `dial_variants_gen.py`, most of `guilloche_gen.py`, `thermal_oxide_sim.py`'s runtime role, `gen_dials.sh`, the gitignored 27–70 MB `dial*.raw2`, and the "regenerate before rendering" gotcha | 3–5 days |
-| B2 | **`swept_band_geometry`** (Catmull-Rom control points + superellipse/crown profile + taper + stitch-row params emitting the thread geometry internally) | `strap_mesh_gen.py`, `strap.raw2`, `strap_stitch.raw2` | 2–3 days |
+| B2 | ~~`swept_band_geometry`~~ — shipped instead as the fully GENERAL `sweep_geometry` (arbitrary closed profile × 3D path, RMF, taper, caps) + `path_instances_geometry` (any template geometry stamped along a path); the strap-specific profile/stitch knowledge became authored scene data | `strap_mesh_gen.py`, `strap.raw2`, `strap_stitch.raw2` | 2–3 days |
 | B3 | **`> set active_camera <name>`** command | `render_watch_views.py` (entirely), simplifies the turntable script | hours |
 
 Both B1 and B2 follow existing, well-trodden extension patterns

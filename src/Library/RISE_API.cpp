@@ -795,7 +795,7 @@ namespace RISE
 	// arm counts, radii) hard-fail at construction instead of baking NaN
 	// geometry / painters from plain scene text.  Mirrors the chunk parsers'
 	// hard-fail-on-unknown-enum convention.
-	static bool ValidateGuillocheFieldParams( const GuillocheDialDescriptor& d, const char* who )
+	static bool ValidateGuillocheFieldParams( const GuillocheDiskDescriptor& d, const char* who )
 	{
 		const struct { const char* name; bool ok; } checks[] = {
 			{ "radius must be > 0",               d.radius > 0 },
@@ -822,9 +822,9 @@ namespace RISE
 	// (np.gradient port: central differences interior, one-sided edges),
 	// keep samples with hypot(x, y) <= R, and triangulate the all-inside cells
 	// CCW from +Z.  UV is the dial's linear Cartesian map u=(x+R)/2R.
-	bool RISE_API_CreateGuillocheDialGeometry(
+	bool RISE_API_CreateGuillocheDiskGeometry(
 						ITriangleMeshGeometryIndexed** ppi,
-						const GuillocheDialDescriptor& desc
+						const GuillocheDiskDescriptor& desc
 						)
 	{
 		if( !ppi ) {
@@ -835,9 +835,9 @@ namespace RISE
 		const int N = desc.meshN < 8 ? 8 : ( desc.meshN > 2048 ? 2048 : desc.meshN );
 		if( N != desc.meshN ) {
 			GlobalLog()->PrintEx( eLog_Warning,
-				"RISE_API_CreateGuillocheDialGeometry: mesh_n %d clamped to %d", desc.meshN, N );
+				"RISE_API_CreateGuillocheDiskGeometry: mesh_n %d clamped to %d", desc.meshN, N );
 		}
-		if( !ValidateGuillocheFieldParams( desc, "RISE_API_CreateGuillocheDialGeometry" ) ) {
+		if( !ValidateGuillocheFieldParams( desc, "RISE_API_CreateGuillocheDiskGeometry" ) ) {
 			return false;
 		}
 		const Scalar R = desc.radius;
@@ -922,7 +922,7 @@ namespace RISE
 			}
 		}
 		if( vc < 3 ) {
-			GlobalLog()->Print( eLog_Error, "RISE_API_CreateGuillocheDialGeometry: degenerate bake (fewer than 3 vertices inside the dial)" );
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateGuillocheDiskGeometry: degenerate bake (fewer than 3 vertices inside the dial)" );
 			return false;
 		}
 
@@ -966,7 +966,7 @@ namespace RISE
 
 	bool RISE_API_CreateGuillocheOxideFunction2D(
 						IFunction2D**        ppi,
-						const GuillocheDialDescriptor& desc,
+						const GuillocheDiskDescriptor& desc,
 						const int            falloffMode,
 						const double         activationEa,
 						const double         torchAmount
@@ -994,16 +994,235 @@ namespace RISE
 		return true;
 	}
 
-	// C++ twin of strap_mesh_gen.py: Catmull-Rom (y, z) centreline swept with a
-	// superellipse-edged, centre-crowned, stitch-channelled profile.  With
-	// emitStitches the SAME path/profile instead emits the saddle-stitch thread
-	// capsules (one per stitch row, mirrored slant) so the thread mesh stays a
-	// separate geometry with its own material -- exactly the two .raw2 files the
-	// Python wrote.  Solid band = top + bottom + both side edges + far end cap;
-	// double-sided like the rawmesh2 chunks it replaces.
-	bool RISE_API_CreateSweptBandGeometry(
+	//////////////////////////////////////////////////////////////////////
+	// General procedural sweep machinery shared by RISE_API_CreateSweepGeometry
+	// and RISE_API_CreatePathInstancesGeometry: a 3D Catmull-Rom path sampler
+	// and rotation-minimizing frame transport (Wang et al. 2008 double
+	// reflection -- no torsion-induced spin, stable through inflections).
+	//////////////////////////////////////////////////////////////////////
+	namespace
+	{
+		struct SweepV3 { Scalar x, y, z; };
+
+		inline SweepV3 svSub( const SweepV3& a, const SweepV3& b ) { SweepV3 r = { a.x-b.x, a.y-b.y, a.z-b.z }; return r; }
+		inline SweepV3 svAdd( const SweepV3& a, const SweepV3& b ) { SweepV3 r = { a.x+b.x, a.y+b.y, a.z+b.z }; return r; }
+		inline SweepV3 svScale( const SweepV3& a, const Scalar s ) { SweepV3 r = { a.x*s, a.y*s, a.z*s }; return r; }
+		inline Scalar  svDot( const SweepV3& a, const SweepV3& b ) { return a.x*b.x + a.y*b.y + a.z*b.z; }
+		inline SweepV3 svCross( const SweepV3& a, const SweepV3& b )
+		{
+			SweepV3 r = { a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x };
+			return r;
+		}
+		inline Scalar svLen( const SweepV3& a ) { return sqrt( svDot( a, a ) ); }
+		inline SweepV3 svNorm( const SweepV3& a )
+		{
+			const Scalar l = svLen( a );
+			return ( l > 0 ) ? svScale( a, Scalar(1) / l ) : a;
+		}
+
+		// Catmull-Rom through 3D control points: reflective end padding,
+		// per-segment t = k/per for k in [0, per), then the final point --
+		// the same sampling scheme every RISE procedural path uses.
+		void SampleCatmullRom3(
+			const double* ctrl, const unsigned int nCtrl, const int nLen,
+			std::vector<SweepV3>& out )
+		{
+			std::vector<SweepV3> pad( nCtrl + 2 );
+			for( unsigned int i = 0; i < nCtrl; i++ ) {
+				pad[ i + 1 ].x = ctrl[ 3*i ]; pad[ i + 1 ].y = ctrl[ 3*i + 1 ]; pad[ i + 1 ].z = ctrl[ 3*i + 2 ];
+			}
+			pad[0]         = svSub( svScale( pad[1], 2 ),       pad[2] );
+			pad[ nCtrl+1 ] = svSub( svScale( pad[ nCtrl ], 2 ), pad[ nCtrl-1 ] );
+			const int segs = int(nCtrl) - 1;
+			const int per = ( nLen / segs ) < 2 ? 2 : ( nLen / segs );
+			out.clear();
+			out.reserve( size_t(segs) * per + 1 );
+			for( int sgi = 0; sgi < segs; sgi++ ) {
+				const SweepV3& p0 = pad[ sgi ];
+				const SweepV3& p1 = pad[ sgi + 1 ];
+				const SweepV3& p2 = pad[ sgi + 2 ];
+				const SweepV3& p3 = pad[ sgi + 3 ];
+				for( int k = 0; k < per; k++ ) {
+					const Scalar t = Scalar(k) / Scalar(per);
+					const Scalar t2 = t * t, t3 = t2 * t;
+					SweepV3 q;
+					q.x = Scalar(0.5) * ( 2*p1.x + (-p0.x+p2.x)*t + (2*p0.x-5*p1.x+4*p2.x-p3.x)*t2 + (-p0.x+3*p1.x-3*p2.x+p3.x)*t3 );
+					q.y = Scalar(0.5) * ( 2*p1.y + (-p0.y+p2.y)*t + (2*p0.y-5*p1.y+4*p2.y-p3.y)*t2 + (-p0.y+3*p1.y-3*p2.y+p3.y)*t3 );
+					q.z = Scalar(0.5) * ( 2*p1.z + (-p0.z+p2.z)*t + (2*p0.z-5*p1.z+4*p2.z-p3.z)*t2 + (-p0.z+3*p1.z-3*p2.z+p3.z)*t3 );
+					out.push_back( q );
+				}
+			}
+			out.push_back( pad[ nCtrl ] );
+		}
+
+		// Per-sample tangents (central differences, one-sided ends) and
+		// rotation-minimizing frames.  B = binormal (profile x axis),
+		// N = B x T (profile h axis).  The initial binormal comes from the
+		// caller's hint, or auto-picks the world axis most perpendicular to
+		// the start tangent (a planar path in YZ therefore gets the fixed
+		// world-X width axis the retired band generator used).
+		void BuildPathFrames(
+			const std::vector<SweepV3>& path,
+			const SweepV3& hint, const bool haveHint,
+			std::vector<SweepV3>& T, std::vector<SweepV3>& B, std::vector<SweepV3>& N )
+		{
+			const size_t n = path.size();
+			T.resize( n ); B.resize( n ); N.resize( n );
+			for( size_t i = 0; i < n; i++ ) {
+				const SweepV3& a = path[ i > 0 ? i - 1 : 0 ];
+				const SweepV3& b = path[ i + 1 < n ? i + 1 : n - 1 ];
+				SweepV3 t = svSub( b, a );
+				const Scalar l = svLen( t );
+				if( l > 0 ) {
+					t = svScale( t, Scalar(1) / l );
+				} else {
+					t = ( i > 0 ) ? T[ i - 1 ] : t;
+				}
+				T[i] = t;
+			}
+			if( svLen( T[0] ) <= 0 ) {
+				GlobalLog()->Print( eLog_Warning,
+					"BuildPathFrames: degenerate start tangent (duplicated first path point?) -- frames may be unreliable" );
+			}
+			SweepV3 b0 = { 0, 0, 0 };
+			const SweepV3 axisPick = [&]() {
+				const Scalar ax = fabs( T[0].x ), ay = fabs( T[0].y ), az = fabs( T[0].z );
+				SweepV3 a = { 0, 0, 0 };
+				if( ax <= ay && ax <= az )      a.x = 1;
+				else if( ay <= ax && ay <= az ) a.y = 1;
+				else                            a.z = 1;
+				return a;
+			}();
+			if( haveHint ) {
+				b0 = svNorm( svSub( hint, svScale( T[0], svDot( hint, T[0] ) ) ) );
+				if( svLen( b0 ) <= 0 ) {
+					GlobalLog()->Print( eLog_Warning,
+						"BuildPathFrames: frame_hint is parallel to the start tangent -- falling back to the auto axis" );
+					b0 = svNorm( svSub( axisPick, svScale( T[0], svDot( axisPick, T[0] ) ) ) );
+				}
+			} else {
+				b0 = svNorm( svSub( axisPick, svScale( T[0], svDot( axisPick, T[0] ) ) ) );
+			}
+			B[0] = b0;
+			N[0] = svCross( B[0], T[0] );
+			for( size_t i = 0; i + 1 < n; i++ ) {
+				// double reflection step
+				const SweepV3 v1 = svSub( path[i+1], path[i] );
+				const Scalar c1 = svDot( v1, v1 );
+				if( c1 <= 0 ) {
+					// duplicated path sample: carry the frame, re-projected
+					// off the (possibly different) next tangent
+					B[i+1] = svNorm( svSub( B[i], svScale( T[i+1], svDot( B[i], T[i+1] ) ) ) );
+					N[i+1] = svCross( B[i+1], T[i+1] );
+					continue;
+				}
+				const SweepV3 bL = svSub( B[i], svScale( v1, ( Scalar(2)/c1 ) * svDot( v1, B[i] ) ) );
+				const SweepV3 tL = svSub( T[i], svScale( v1, ( Scalar(2)/c1 ) * svDot( v1, T[i] ) ) );
+				const SweepV3 v2 = svSub( T[i+1], tL );
+				const Scalar c2 = svDot( v2, v2 );
+				SweepV3 b = ( c2 > 0 ) ? svSub( bL, svScale( v2, ( Scalar(2)/c2 ) * svDot( v2, bL ) ) ) : bL;
+				// re-orthonormalize against accumulated drift
+				b = svNorm( svSub( b, svScale( T[i+1], svDot( b, T[i+1] ) ) ) );
+				B[i+1] = b;
+				N[i+1] = svCross( B[i+1], T[i+1] );
+			}
+		}
+
+		// Ear-clipping triangulation of a simple 2D polygon (indices into the
+		// profile).  Handles non-convex profiles (grooves, mouldings); the
+		// polygon must be simple (non-self-intersecting).  O(n^2), fine for
+		// authored profile sizes.
+		bool EarClipProfile(
+			const std::vector<Scalar>& px, const std::vector<Scalar>& ph,
+			std::vector<unsigned int>& tris )
+		{
+			const size_t n = px.size();
+			if( n < 3 ) {
+				return false;
+			}
+			// signed area -> winding
+			Scalar area2 = 0;
+			for( size_t i = 0; i < n; i++ ) {
+				const size_t j = ( i + 1 ) % n;
+				area2 += px[i] * ph[j] - px[j] * ph[i];
+			}
+			const Scalar wind = ( area2 >= 0 ) ? Scalar(1) : Scalar(-1);
+			// Drop consecutively-coincident points (the documented
+			// duplicate-a-point hard-edge idiom for the SIDE normals) before
+			// clipping: a zero-length edge makes its corner permanently
+			// reflex (cross == 0) and its twin sits ON every candidate ear's
+			// boundary, deadlocking the clip.  The dropped duplicates simply
+			// go unreferenced by the cap triangles.
+			std::vector<unsigned int> idx;
+			idx.reserve( n );
+			for( size_t i = 0; i < n; i++ ) {
+				const size_t prev = ( i + n - 1 ) % n;
+				if( px[i] == px[prev] && ph[i] == ph[prev] ) {
+					continue;
+				}
+				idx.push_back( (unsigned int)i );
+			}
+			if( idx.size() < 3 ) {
+				return false;
+			}
+			tris.clear();
+			tris.reserve( ( n - 2 ) * 3 );
+			size_t guard = n * n + 8;
+			while( idx.size() > 3 && guard-- > 0 ) {
+				bool clipped = false;
+				for( size_t i = 0; i < idx.size(); i++ ) {
+					const unsigned int ia = idx[ ( i + idx.size() - 1 ) % idx.size() ];
+					const unsigned int ib = idx[ i ];
+					const unsigned int ic = idx[ ( i + 1 ) % idx.size() ];
+					const Scalar cross = ( px[ib]-px[ia] ) * ( ph[ic]-ph[ia] ) - ( ph[ib]-ph[ia] ) * ( px[ic]-px[ia] );
+					if( cross * wind <= 0 ) {
+						continue;	// reflex corner, not an ear
+					}
+					// no other active vertex inside the candidate ear
+					bool inside = false;
+					for( size_t k = 0; k < idx.size() && !inside; k++ ) {
+						const unsigned int iq = idx[k];
+						if( iq == ia || iq == ib || iq == ic ) continue;
+						// a probe POSITIONALLY coincident with a corner is the
+						// corner (authored duplicates) -- not an interior point
+						if( ( px[iq] == px[ia] && ph[iq] == ph[ia] ) ||
+							( px[iq] == px[ib] && ph[iq] == ph[ib] ) ||
+							( px[iq] == px[ic] && ph[iq] == ph[ic] ) ) continue;
+						const Scalar d1 = ( ( px[ib]-px[ia] )*( ph[iq]-ph[ia] ) - ( ph[ib]-ph[ia] )*( px[iq]-px[ia] ) ) * wind;
+						const Scalar d2 = ( ( px[ic]-px[ib] )*( ph[iq]-ph[ib] ) - ( ph[ic]-ph[ib] )*( px[iq]-px[ib] ) ) * wind;
+						const Scalar d3 = ( ( px[ia]-px[ic] )*( ph[iq]-ph[ic] ) - ( ph[ia]-ph[ic] )*( px[iq]-px[ic] ) ) * wind;
+						inside = ( d1 >= 0 && d2 >= 0 && d3 >= 0 );
+					}
+					if( inside ) {
+						continue;
+					}
+					tris.push_back( ia ); tris.push_back( ib ); tris.push_back( ic );
+					idx.erase( idx.begin() + i );
+					clipped = true;
+					break;
+				}
+				if( !clipped ) {
+					return false;	// degenerate / self-intersecting profile
+				}
+			}
+			if( idx.size() == 3 ) {
+				tris.push_back( idx[0] ); tris.push_back( idx[1] ); tris.push_back( idx[2] );
+			}
+			return true;
+		}
+	}
+
+	// General profile sweep: an arbitrary CLOSED 2D profile polygon swept
+	// along an arbitrary 3D Catmull-Rom path with rotation-minimizing
+	// frames, optional linear per-axis taper, and ear-clipped end caps.
+	// Profile-space (x, h) maps to  P(i) + x*scaleX(i)*B(i) + h*scaleY(i)*N(i).
+	// Vertex normals come from closed-loop central differences over the
+	// profile polyline (taper-corrected); longitudinal curvature lean is
+	// deliberately ignored (matches mesh-sweep convention; per-vertex
+	// normals carry the shading).
+	bool RISE_API_CreateSweepGeometry(
 						ITriangleMeshGeometryIndexed** ppi,
-						const SweptBandDescriptor&     desc
+						const SweepDescriptor&         desc
 						)
 	{
 		if( !ppi ) {
@@ -1011,277 +1230,191 @@ namespace RISE
 		}
 		*ppi = 0;
 
+		if( !desc.profilePoints || desc.numProfilePoints < 3 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: need at least 3 `profile_point` entries (a closed polygon)" );
+			return false;
+		}
 		if( !desc.pathPoints || desc.numPathPoints < 2 ) {
-			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweptBandGeometry: need at least 2 `point` control points" );
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: need at least 2 `point` path control points" );
 			return false;
 		}
-		const int nWid = desc.nWid < 2 ? 2 : ( desc.nWid > 256 ? 256 : desc.nWid );
-		const int nLenReq = desc.nLen < 2 ? 2 : ( desc.nLen > 4096 ? 4096 : desc.nLen );
-		if( nWid != desc.nWid || nLenReq != desc.nLen ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"RISE_API_CreateSweptBandGeometry: n_len/n_wid (%d, %d) clamped to (%d, %d)",
-				desc.nLen, desc.nWid, nLenReq, nWid );
-		}
-		const Scalar T = desc.thickness;
-		if( !( T > 0 ) || !( desc.width > 0 ) || !( desc.endWidth > 0 ) ) {
-			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweptBandGeometry: width / end_width / thickness must be > 0" );
+		if( !( desc.endScaleX > 0 ) || !( desc.endScaleY > 0 ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: end_scale_x / end_scale_y must be > 0" );
 			return false;
 		}
-		if( desc.emitStitches && ( !( desc.stitchR > 0 ) || !( desc.stitchPitch > 0 ) || !( desc.stitchLen > 0 ) ) ) {
-			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweptBandGeometry: stitch_r / stitch_pitch / stitch_len must be > 0 when emit_stitches is TRUE" );
+		const int nLen = desc.nLen < 2 ? 2 : ( desc.nLen > 4096 ? 4096 : desc.nLen );
+		if( nLen != desc.nLen ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreateSweepGeometry: n_len %d clamped to %d", desc.nLen, nLen );
+		}
+		const unsigned int nProf = desc.numProfilePoints;
+		if( nProf > 4096 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: more than 4096 profile points" );
 			return false;
 		}
 
-		// --- catmull_rom(ctrl, n): reflective end padding, per-segment
-		//     t = k/per for k in [0, per), then the final control point.
-		struct P2 { Scalar y, z; };
-		const unsigned int nCtrl = desc.numPathPoints;
-		std::vector<P2> ctrl( nCtrl );
-		for( unsigned int i = 0; i < nCtrl; i++ ) {
-			ctrl[i].y = desc.pathPoints[ 2 * i ];
-			ctrl[i].z = desc.pathPoints[ 2 * i + 1 ];
+		std::vector<Scalar> px( nProf ), ph( nProf );
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			px[k] = desc.profilePoints[ 2*k ];
+			ph[k] = desc.profilePoints[ 2*k + 1 ];
 		}
-		const int segs = int(nCtrl) - 1;
-		const int per = ( nLenReq / segs ) < 2 ? 2 : ( nLenReq / segs );
-		std::vector<P2> path;
-		path.reserve( size_t(segs) * per + 1 );
-		std::vector<P2> pad( nCtrl + 2 );
-		pad[0].y = ctrl[0].y + ( ctrl[0].y - ctrl[1].y );
-		pad[0].z = ctrl[0].z + ( ctrl[0].z - ctrl[1].z );
-		for( unsigned int i = 0; i < nCtrl; i++ ) {
-			pad[ i + 1 ] = ctrl[i];
-		}
-		pad[ nCtrl + 1 ].y = ctrl[ nCtrl - 1 ].y + ( ctrl[ nCtrl - 1 ].y - ctrl[ nCtrl - 2 ].y );
-		pad[ nCtrl + 1 ].z = ctrl[ nCtrl - 1 ].z + ( ctrl[ nCtrl - 1 ].z - ctrl[ nCtrl - 2 ].z );
-		for( int s = 0; s < segs; s++ ) {
-			const P2& p0 = pad[ s ];
-			const P2& p1 = pad[ s + 1 ];
-			const P2& p2 = pad[ s + 2 ];
-			const P2& p3 = pad[ s + 3 ];
-			for( int k = 0; k < per; k++ ) {
-				const Scalar t = Scalar(k) / Scalar(per);
-				const Scalar t2 = t * t;
-				const Scalar t3 = t2 * t;
-				P2 q;
-				q.y = Scalar(0.5) * ( 2 * p1.y + ( -p0.y + p2.y ) * t
-					+ ( 2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y ) * t2
-					+ ( -p0.y + 3 * p1.y - 3 * p2.y + p3.y ) * t3 );
-				q.z = Scalar(0.5) * ( 2 * p1.z + ( -p0.z + p2.z ) * t
-					+ ( 2 * p0.z - 5 * p1.z + 4 * p2.z - p3.z ) * t2
-					+ ( -p0.z + 3 * p1.z - 3 * p2.z + p3.z ) * t3 );
-				path.push_back( q );
-			}
-		}
-		path.push_back( ctrl[ nCtrl - 1 ] );
-		const int n = int( path.size() );
 
-		// --- the shared profile pieces (exactly the Python closures)
-		const Scalar edgePow = desc.edgePow;
-		const Scalar crown = desc.crown;
-		const Scalar groove = desc.groove;
-		const Scalar inset = desc.stitchInset;
-		struct Profile {
-			Scalar T, crown, edgePow, groove, inset;
-			Scalar edge( const Scalar u ) const {
-				const Scalar e = Scalar(1) - pow( fabs( 2 * u - 1 ), edgePow );
-				return sqrt( e < Scalar(1e-3) ? Scalar(1e-3) : e );
+		// closed-loop central-difference profile normals, oriented OUTWARD
+		// by the polygon winding (positive signed area = CCW -> outward is
+		// the right-hand perpendicular of the running direction).
+		Scalar area2 = 0;
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			const unsigned int j = ( k + 1 ) % nProf;
+			area2 += px[k] * ph[j] - px[j] * ph[k];
+		}
+		const Scalar outward = ( area2 >= 0 ) ? Scalar(1) : Scalar(-1);
+		std::vector<Scalar> pnx( nProf ), pnh( nProf );
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			const unsigned int kp = ( k + nProf - 1 ) % nProf;
+			const unsigned int kn = ( k + 1 ) % nProf;
+			const Scalar dx = px[kn] - px[kp];
+			const Scalar dh = ph[kn] - ph[kp];
+			const Scalar l = sqrt( dx*dx + dh*dh );
+			if( l > 0 ) {
+				pnx[k] =  outward * dh / l;
+				pnh[k] = -outward * dx / l;
+			} else {
+				pnx[k] = 0; pnh[k] = 1;
 			}
-			Scalar htop( const Scalar u ) const {
-				Scalar h = ( T / 2 + crown * ( Scalar(1) - ( 2 * u - 1 ) * ( 2 * u - 1 ) ) ) * edge( u );
-				const Scalar u0s[2] = { inset, Scalar(1) - inset };
-				for( int g = 0; g < 2; g++ ) {
-					const Scalar d = ( u - u0s[g] ) / Scalar(0.018);
-					h -= groove * exp( -d * d );
-				}
-				return h;
-			}
-		};
-		Profile prof;
-		prof.T = T; prof.crown = crown; prof.edgePow = edgePow; prof.groove = groove; prof.inset = inset;
+		}
+
+		// profile arc-length fractions for U
+		std::vector<Scalar> uFrac( nProf + 1 );
+		uFrac[0] = 0;
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			const unsigned int j = ( k + 1 ) % nProf;
+			const Scalar dx = px[j] - px[k], dh = ph[j] - ph[k];
+			uFrac[ k + 1 ] = uFrac[k] + sqrt( dx*dx + dh*dh );
+		}
+		const Scalar uTotal = uFrac[ nProf ] > 0 ? uFrac[ nProf ] : Scalar(1);
+		for( unsigned int k = 0; k <= nProf; k++ ) {
+			uFrac[k] /= uTotal;
+		}
+
+		std::vector<SweepV3> path;
+		SampleCatmullRom3( desc.pathPoints, desc.numPathPoints, nLen, path );
+		const size_t n = path.size();
+
+		const SweepV3 hint = { desc.frameHintX, desc.frameHintY, desc.frameHintZ };
+		const bool haveHint = svLen( hint ) > 0;
+		std::vector<SweepV3> T, B, N;
+		BuildPathFrames( path, hint, haveHint, T, B, N );
 
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
-		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, desc.emitStitches ? "swept band stitches" : "swept band geometry" );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "sweep geometry" );
 		pGeom->BeginIndexedTriangles();
 
-		if( !desc.emitStitches ) {
-			// ---------- the band ----------
-			std::vector<int> idxTop( size_t(n) * nWid ), idxBot( size_t(n) * nWid );
-			int vc = 0;
-			const Scalar du = Scalar(1) / Scalar( nWid - 1 );
-			for( int i = 0; i < n; i++ ) {
-				const P2& a = path[ i > 0 ? i - 1 : 0 ];
-				const P2& b = path[ i < n - 1 ? i + 1 : n - 1 ];
-				Scalar ty = b.y - a.y;
-				Scalar tz = b.z - a.z;
-				const Scalar tl0 = sqrt( ty * ty + tz * tz );
-				const Scalar tl = tl0 > 0 ? tl0 : Scalar(1);
-				ty /= tl; tz /= tl;
-				Scalar ny = -tz, nz = ty;			// top-facing normal in YZ
-				if( nz < 0 ) { ny = -ny; nz = -nz; }
-				const Scalar frac = Scalar(i) / Scalar( n - 1 );
-				const Scalar W = desc.width * ( 1 - frac ) + desc.endWidth * frac;
-				const Scalar cy = path[i].y;
-				const Scalar cz = path[i].z;
-				for( int j = 0; j < nWid; j++ ) {
-					const Scalar u = Scalar(j) / Scalar( nWid - 1 );
-					const Scalar x = ( u - Scalar(0.5) ) * W;
-					const Scalar h = prof.htop( u );
-					const Scalar up = u + du > 1 ? Scalar(1) : u + du;
-					const Scalar um = u - du < 0 ? Scalar(0) : u - du;
-					const Scalar Wsafe = W > Scalar(1e-6) ? W : Scalar(1e-6);
-					const Scalar dh_dx = ( prof.htop( up ) - prof.htop( um ) ) / ( 2 * du ) / Wsafe;
-					const Scalar nlen2 = sqrt( dh_dx * dh_dx + 1 );
-					pGeom->AddVertex( Vertex( x, cy + h * ny, cz + h * nz ) );
-					pGeom->AddNormal( Normal( -dh_dx / nlen2, ny / nlen2, nz / nlen2 ) );
-					pGeom->AddTexCoord( TexCoord( u, frac ) );
-					idxTop[ size_t(i) * nWid + j ] = vc++;
-				}
-				for( int j = 0; j < nWid; j++ ) {
-					const Scalar u = Scalar(j) / Scalar( nWid - 1 );
-					const Scalar x = ( u - Scalar(0.5) ) * W;
-					const Scalar hb = ( T / 2 ) * prof.edge( u );
-					pGeom->AddVertex( Vertex( x, cy - hb * ny, cz - hb * nz ) );
-					pGeom->AddNormal( Normal( 0, -ny, -nz ) );
-					pGeom->AddTexCoord( TexCoord( u, frac ) );
-					idxBot[ size_t(i) * nWid + j ] = vc++;
-				}
+		// rings
+		int vc = 0;
+		for( size_t i = 0; i < n; i++ ) {
+			const Scalar frac = Scalar(i) / Scalar( n - 1 );
+			const Scalar sx = Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac;
+			const Scalar sy = Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac;
+			for( unsigned int k = 0; k < nProf; k++ ) {
+				const Scalar lx = px[k] * sx;
+				const Scalar lh = ph[k] * sy;
+				pGeom->AddVertex( Vertex(
+					path[i].x + lx * B[i].x + lh * N[i].x,
+					path[i].y + lx * B[i].y + lh * N[i].y,
+					path[i].z + lx * B[i].z + lh * N[i].z ) );
+				// taper-corrected profile normal mapped through the frame
+				const Scalar nx = pnx[k] / sx;
+				const Scalar nh = pnh[k] / sy;
+				const Scalar nl = sqrt( nx*nx + nh*nh );
+				const Scalar nxn = ( nl > 0 ) ? nx / nl : 0;
+				const Scalar nhn = ( nl > 0 ) ? nh / nl : 1;
+				pGeom->AddNormal( Normal(
+					nxn * B[i].x + nhn * N[i].x,
+					nxn * B[i].y + nhn * N[i].y,
+					nxn * B[i].z + nhn * N[i].z ) );
+				pGeom->AddTexCoord( TexCoord( uFrac[k], frac ) );
+				vc++;
 			}
+		}
 
-			// quad(a,b,c,d) -> (a,b,c) + (a,c,d), exactly the Python winding.
-			struct QuadEmit {
-				TriangleMeshGeometryIndexed* g;
-				void operator()( int a, int b, int c, int d ) const {
-					g->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
-					g->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, d ) );
+		// side quads between consecutive rings (cyclic over the profile);
+		// winding gives outward-facing triangles for a CCW profile.
+		for( size_t i = 0; i + 1 < n; i++ ) {
+			const int r0 = int(i) * int(nProf);
+			const int r1 = int(i+1) * int(nProf);
+			for( unsigned int k = 0; k < nProf; k++ ) {
+				const unsigned int kn = ( k + 1 ) % nProf;
+				const int a = r0 + int(k);
+				const int b = r1 + int(k);
+				const int c = r1 + int(kn);
+				const int d = r0 + int(kn);
+				if( outward > 0 ) {
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, d ) );
+				} else {
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, d, c ) );
 				}
-			};
-			QuadEmit quad; quad.g = pGeom;
-			const int w = nWid;
-			for( int i = 0; i < n - 1; i++ ) {
-				for( int j = 0; j < w - 1; j++ ) {
-					quad( idxTop[ size_t(i)*w + j ],   idxTop[ size_t(i+1)*w + j ], idxTop[ size_t(i+1)*w + j+1 ], idxTop[ size_t(i)*w + j+1 ] );
-					quad( idxBot[ size_t(i)*w + j ],   idxBot[ size_t(i)*w + j+1 ], idxBot[ size_t(i+1)*w + j+1 ], idxBot[ size_t(i+1)*w + j ] );
-				}
-				quad( idxTop[ size_t(i)*w ],           idxBot[ size_t(i)*w ],       idxBot[ size_t(i+1)*w ],       idxTop[ size_t(i+1)*w ] );
-				quad( idxTop[ size_t(i)*w + w-1 ],     idxTop[ size_t(i+1)*w + w-1 ], idxBot[ size_t(i+1)*w + w-1 ], idxBot[ size_t(i)*w + w-1 ] );
 			}
-			for( int j = 0; j < w - 1; j++ ) {
-				quad( idxTop[ size_t(n-1)*w + j ], idxTop[ size_t(n-1)*w + j+1 ], idxBot[ size_t(n-1)*w + j+1 ], idxBot[ size_t(n-1)*w + j ] );
-			}
-		} else {
-			// ---------- the stitch thread capsules ----------
-			// Walk the path by arc length; each stitch-pitch drop one 8-sided
-			// capsule per edge row on the top surface, slanted +/-stitch_angle
-			// about the surface normal (mirrored rows = saddle stitch).
-			struct V3 { Scalar x, y, z; };
-			int vc = 0;
-			Scalar arc = 0;
-			Scalar nextAt = desc.stitchPitch * Scalar(0.5);
-			const Scalar slant = desc.stitchAngleDeg * PI / Scalar(180);
-			const Scalar halfLen = desc.stitchLen * Scalar(0.5);
-			const Scalar r = desc.stitchR;
-			for( int i = 1; i < n; i++ ) {
-				const P2& a = path[ i - 1 ];
-				const P2& b = path[ i ];
-				const Scalar seg = sqrt( ( b.y - a.y ) * ( b.y - a.y ) + ( b.z - a.z ) * ( b.z - a.z ) );
-				arc += seg;
-				if( arc < nextAt ) {
-					continue;
-				}
-				nextAt += desc.stitchPitch;
-				const Scalar segSafe = seg > 0 ? seg : Scalar(1);
-				const Scalar ty = ( b.y - a.y ) / segSafe;
-				const Scalar tz = ( b.z - a.z ) / segSafe;
-				Scalar ny = -tz, nz = ty;
-				if( nz < 0 ) { ny = -ny; nz = -nz; }
-				const Scalar frac = Scalar(i) / Scalar( n - 1 );
-				const Scalar W = desc.width * ( 1 - frac ) + desc.endWidth * frac;
-				const Scalar cy = path[i].y;
-				const Scalar cz = path[i].z;
-				for( int row = 0; row < 2; row++ ) {
-					const Scalar u0 = row == 0 ? inset : Scalar(1) - inset;
-					const Scalar mirror = row == 0 ? Scalar(1) : Scalar(-1);
-					const Scalar x = ( u0 - Scalar(0.5) ) * W;
-					// base profile height at the row MINUS the full groove,
-					// thread sitting proud by 0.9 r (the Python formula).
-					const Scalar hh = ( T / 2 + crown * ( Scalar(1) - ( 2 * u0 - 1 ) * ( 2 * u0 - 1 ) ) ) * prof.edge( u0 )
-						- groove + r * Scalar(0.9);
-					V3 center; center.x = x; center.y = cy + hh * ny; center.z = cz + hh * nz;
-					// d_hat = cos(slant) T_hat + sin(slant) mirror X_hat with
-					// T_hat = (0, ty, tz), X_hat = (1, 0, 0); unit by construction.
-					V3 dHat; dHat.x = sin( slant ) * mirror; dHat.y = cos( slant ) * ty; dHat.z = cos( slant ) * tz;
-					const Scalar dLen = sqrt( dHat.x * dHat.x + dHat.y * dHat.y + dHat.z * dHat.z );
-					dHat.x /= dLen; dHat.y /= dLen; dHat.z /= dLen;
-					V3 nHat; nHat.x = 0; nHat.y = ny; nHat.z = nz;
-					// x_hat = normalize(cross(d_hat, n_hat)); y_hat = cross(x_hat, d_hat)
-					V3 xHat;
-					xHat.x = dHat.y * nHat.z - dHat.z * nHat.y;
-					xHat.y = dHat.z * nHat.x - dHat.x * nHat.z;
-					xHat.z = dHat.x * nHat.y - dHat.y * nHat.x;
-					const Scalar xl = sqrt( xHat.x * xHat.x + xHat.y * xHat.y + xHat.z * xHat.z );
-					xHat.x /= xl; xHat.y /= xl; xHat.z /= xl;
-					V3 yHat;
-					yHat.x = xHat.y * dHat.z - xHat.z * dHat.y;
-					yHat.y = xHat.z * dHat.x - xHat.x * dHat.z;
-					yHat.z = xHat.x * dHat.y - xHat.y * dHat.x;
+		}
 
-					const int base = vc;
-					const Scalar ringOff[4] = { -halfLen + r * Scalar(0.4), -halfLen + r, halfLen - r, halfLen - r * Scalar(0.4) };
-					const Scalar ringScale[4] = { Scalar(0.75), Scalar(1), Scalar(1), Scalar(0.75) };
-					for( int q = 0; q < 4; q++ ) {
-						for( int k = 0; k < 8; k++ ) {
-							const Scalar ang = 2 * PI * Scalar(k) / Scalar(8);
-							const Scalar rr = r * ringScale[q];
-							V3 rad;
-							rad.x = ( cos( ang ) * xHat.x + sin( ang ) * yHat.x ) * rr;
-							rad.y = ( cos( ang ) * xHat.y + sin( ang ) * yHat.y ) * rr;
-							rad.z = ( cos( ang ) * xHat.z + sin( ang ) * yHat.z ) * rr;
-							pGeom->AddVertex( Vertex( center.x + dHat.x * ringOff[q] + rad.x,
-							                          center.y + dHat.y * ringOff[q] + rad.y,
-							                          center.z + dHat.z * ringOff[q] + rad.z ) );
-							const Scalar rl = sqrt( rad.x * rad.x + rad.y * rad.y + rad.z * rad.z );
-							pGeom->AddNormal( Normal( rad.x / rl, rad.y / rl, rad.z / rl ) );
-							pGeom->AddTexCoord( TexCoord( Scalar(k) / Scalar(8), Scalar(0.5) ) );
-							vc++;
-						}
-					}
-					for( int q = 0; q < 3; q++ ) {
-						for( int k = 0; k < 8; k++ ) {
-							const int k2 = ( k + 1 ) % 8;
-							const int a0 = base + q * 8 + k;
-							const int b0 = base + q * 8 + k2;
-							const int a1 = base + ( q + 1 ) * 8 + k;
-							const int b1 = base + ( q + 1 ) * 8 + k2;
-							pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a0, a1, b1 ) );
-							pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a0, b1, b0 ) );
-						}
-					}
-					for( int tip = 0; tip < 2; tip++ ) {
-						const Scalar off = tip == 0 ? -halfLen : halfLen;
-						const Scalar sgn = tip == 0 ? Scalar(-1) : Scalar(1);
-						pGeom->AddVertex( Vertex( center.x + dHat.x * off, center.y + dHat.y * off, center.z + dHat.z * off ) );
-						pGeom->AddNormal( Normal( dHat.x * sgn, dHat.y * sgn, dHat.z * sgn ) );
-						pGeom->AddTexCoord( TexCoord( Scalar(0.5), Scalar(0.5) ) );
-						const int tipIdx = vc++;
-						const int ring0 = tip == 0 ? base : base + 3 * 8;
-						for( int k = 0; k < 8; k++ ) {
-							const int k2 = ( k + 1 ) % 8;
-							if( tip == 0 ) {
-								pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( tipIdx, ring0 + k2, ring0 + k ) );
-							} else {
-								pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( tipIdx, ring0 + k, ring0 + k2 ) );
-							}
-						}
-					}
-				}
-			}
-			if( vc == 0 ) {
-				// A 0-triangle mesh builds an inverted-bbox BVH and a NaN
-				// bounding sphere downstream -- refuse construction loudly,
-				// like the dial's degenerate-bake check.
-				GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweptBandGeometry: stitch mesh is empty (path shorter than half a stitch_pitch) -- refusing" );
+		// end caps: ear-clipped, duplicated vertices with the flat cap normal
+		if( desc.capStart || desc.capEnd ) {
+			std::vector<unsigned int> capTris;
+			if( !EarClipProfile( px, ph, capTris ) ) {
+				GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: profile triangulation failed (self-intersecting or degenerate polygon)" );
 				pGeom->release();
 				return false;
+			}
+			// profile bbox for cap UV
+			Scalar bx0 = px[0], bx1 = px[0], bh0 = ph[0], bh1 = ph[0];
+			for( unsigned int k = 1; k < nProf; k++ ) {
+				if( px[k] < bx0 ) bx0 = px[k];
+				if( px[k] > bx1 ) bx1 = px[k];
+				if( ph[k] < bh0 ) bh0 = ph[k];
+				if( ph[k] > bh1 ) bh1 = ph[k];
+			}
+			const Scalar bxs = ( bx1 > bx0 ) ? Scalar(1)/( bx1-bx0 ) : Scalar(1);
+			const Scalar bhs = ( bh1 > bh0 ) ? Scalar(1)/( bh1-bh0 ) : Scalar(1);
+			for( int side = 0; side < 2; side++ ) {
+				const bool isStart = ( side == 0 );
+				if( isStart ? !desc.capStart : !desc.capEnd ) {
+					continue;
+				}
+				const size_t i = isStart ? 0 : n - 1;
+				const Scalar frac = Scalar(i) / Scalar( n - 1 );
+				const Scalar sx = Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac;
+				const Scalar sy = Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac;
+				// cap faces along -T at the start, +T at the end
+				const Scalar sgn = isStart ? Scalar(-1) : Scalar(1);
+				const Normal capN( sgn * T[i].x, sgn * T[i].y, sgn * T[i].z );
+				const int base = vc;
+				for( unsigned int k = 0; k < nProf; k++ ) {
+					const Scalar lx = px[k] * sx;
+					const Scalar lh = ph[k] * sy;
+					pGeom->AddVertex( Vertex(
+						path[i].x + lx * B[i].x + lh * N[i].x,
+						path[i].y + lx * B[i].y + lh * N[i].y,
+						path[i].z + lx * B[i].z + lh * N[i].z ) );
+					pGeom->AddNormal( capN );
+					pGeom->AddTexCoord( TexCoord( ( px[k]-bx0 ) * bxs, ( ph[k]-bh0 ) * bhs ) );
+					vc++;
+				}
+				for( size_t t = 0; t + 2 < capTris.size(); t += 3 ) {
+					const int a = base + int(capTris[t]);
+					const int b = base + int(capTris[t+1]);
+					const int c = base + int(capTris[t+2]);
+					// orient the cap triangles along the cap normal.  In the
+					// (B, N) profile basis B x N = -T, so triangles emitted in
+					// profile winding carry geometric normal -T for a CCW
+					// (outward > 0) profile: the END cap (faces +T) must flip
+					// them, the START cap (faces -T) keeps them.
+					const bool flip = isStart ? ( outward < 0 ) : ( outward > 0 );
+					if( flip ) {
+						pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
+					} else {
+						pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+					}
+				}
 			}
 		}
 
@@ -1289,6 +1422,142 @@ namespace RISE
 		*ppi = pGeom;
 		return true;
 	}
+
+	// General along-path instancing: tessellate the named template ONCE via
+	// the universal TessellateToMesh contract, then stamp transformed copies
+	// along the Catmull-Rom path at arc-length pitch.  Template local axes:
+	// +X -> binormal, +Y -> tangent (rotated by slant about the normal),
+	// +Z -> frame normal.  Instances interpolate position AND frame inside
+	// the crossing segment (no sample-snapping).
+	bool RISE_API_CreatePathInstancesGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const PathInstancesDescriptor& desc
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		if( !desc.pGeometry ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: no template geometry" );
+			return false;
+		}
+		if( !desc.pathPoints || desc.numPathPoints < 2 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: need at least 2 `point` path control points" );
+			return false;
+		}
+		if( !( desc.pitch > 0 ) || !( desc.scale > 0 ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: pitch and scale must be > 0" );
+			return false;
+		}
+		const int nLen = desc.nLen < 2 ? 2 : ( desc.nLen > 8192 ? 8192 : desc.nLen );
+		if( nLen != desc.nLen ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreatePathInstancesGeometry: n_len %d clamped to %d", desc.nLen, nLen );
+		}
+		const unsigned int detail = desc.detail < 3 ? 3 : ( desc.detail > 256 ? 256 : desc.detail );
+		if( detail != desc.detail ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreatePathInstancesGeometry: detail %u clamped to %u (template tessellation is O(detail^2))", desc.detail, detail );
+		}
+
+		// tessellate the template once (the same contract area lights and
+		// SSS sampling rely on -- every first-class geometry provides it)
+		IndexTriangleListType tTris;
+		VerticesListType      tVerts;
+		NormalsListType       tNorms;
+		TexCoordsListType     tCoords;
+		if( !desc.pGeometry->TessellateToMesh( tTris, tVerts, tNorms, tCoords, detail ) ||
+			tVerts.empty() || tTris.empty() ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: template geometry does not support TessellateToMesh (or tessellated empty)" );
+			return false;
+		}
+
+		std::vector<SweepV3> path;
+		SampleCatmullRom3( desc.pathPoints, desc.numPathPoints, nLen, path );
+		const size_t n = path.size();
+
+		const SweepV3 hint = { desc.frameHintX, desc.frameHintY, desc.frameHintZ };
+		const bool haveHint = svLen( hint ) > 0;
+		std::vector<SweepV3> T, B, N;
+		BuildPathFrames( path, hint, haveHint, T, B, N );
+
+		const Scalar slant = desc.slantDeg * PI / Scalar(180);
+		const Scalar cs = cos( slant ), sn = sin( slant );
+
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "path instances geometry" );
+		pGeom->BeginIndexedTriangles();
+
+		int vc = 0;
+		unsigned int placed = 0;
+		Scalar arc = 0;
+		Scalar nextAt = ( desc.phase >= 0 ) ? desc.phase : desc.pitch * Scalar(0.5);	// < 0 sentinel = centred pitch/2 default
+		// total-output budget: instances x template verts capped well below
+		// the signed-index ceiling, so a tiny pitch + heavy template degrades
+		// to a warning instead of an OOM / index overflow
+		const unsigned int kMaxTotalVerts = 20000000;
+		const unsigned int kMaxByBudget = kMaxTotalVerts / (unsigned int)tVerts.size();
+		const unsigned int kMaxInstances = ( 100000 < kMaxByBudget ) ? 100000 : kMaxByBudget;
+		for( size_t i = 1; i < n && placed < kMaxInstances; i++ ) {
+			const SweepV3 seg = svSub( path[i], path[i-1] );
+			const Scalar segLen = svLen( seg );
+			Scalar segStart = arc;
+			arc += segLen;
+			while( nextAt <= arc && segLen > 0 && placed < kMaxInstances ) {
+				const Scalar f = ( nextAt - segStart ) / segLen;
+				// interpolate position + frame inside the segment
+				const SweepV3 P = svAdd( path[i-1], svScale( seg, f ) );
+				const SweepV3 Ti = svNorm( svAdd( svScale( T[i-1], Scalar(1)-f ), svScale( T[i], f ) ) );
+				SweepV3 Bi = svAdd( svScale( B[i-1], Scalar(1)-f ), svScale( B[i], f ) );
+				Bi = svNorm( svSub( Bi, svScale( Ti, svDot( Bi, Ti ) ) ) );
+				const SweepV3 Ni = svCross( Bi, Ti );
+				// slant rotates the (B, T) pair about N
+				SweepV3 Bs = svAdd( svScale( Bi, cs ),  svScale( Ti, -sn ) );
+				SweepV3 Ts = svAdd( svScale( Bi, sn ),  svScale( Ti, cs ) );
+				const int base = vc;
+				for( size_t v = 0; v < tVerts.size(); v++ ) {
+					const Scalar lx = tVerts[v].x * desc.scale;
+					const Scalar ly = tVerts[v].y * desc.scale;
+					const Scalar lz = tVerts[v].z * desc.scale;
+					pGeom->AddVertex( Vertex(
+						P.x + lx * Bs.x + ly * Ts.x + lz * Ni.x,
+						P.y + lx * Bs.y + ly * Ts.y + lz * Ni.y,
+						P.z + lx * Bs.z + ly * Ts.z + lz * Ni.z ) );
+					const Vector3 tn = ( v < tNorms.size() ) ? tNorms[v] : Vector3( 0, 0, 1 );
+					pGeom->AddNormal( Normal(
+						tn.x * Bs.x + tn.y * Ts.x + tn.z * Ni.x,
+						tn.x * Bs.y + tn.y * Ts.y + tn.z * Ni.y,
+						tn.x * Bs.z + tn.y * Ts.z + tn.z * Ni.z ) );
+					pGeom->AddTexCoord( v < tCoords.size() ? tCoords[v] : TexCoord( 0.5, 0.5 ) );
+					vc++;
+				}
+				for( size_t t = 0; t < tTris.size(); t++ ) {
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx(
+						base + tTris[t].iVertices[0],
+						base + tTris[t].iVertices[1],
+						base + tTris[t].iVertices[2] ) );
+				}
+				placed++;
+				nextAt += desc.pitch;
+			}
+		}
+
+		if( placed == 0 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: path shorter than the first instance position (phase) -- refusing an empty mesh" );
+			pGeom->release();
+			return false;
+		}
+		if( placed >= kMaxInstances ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreatePathInstancesGeometry: instance cap (%u) reached (vertex budget %u / template %u verts) -- pitch too small for the path length?",
+				kMaxInstances, kMaxTotalVerts, (unsigned int)tVerts.size() );
+		}
+
+		pGeom->DoneIndexedTriangles();
+		*ppi = pGeom;
+		return true;
+	}
+
 
 }
 

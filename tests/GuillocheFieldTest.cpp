@@ -44,13 +44,13 @@ static const Scalar PTS[8][2] = {
 };
 
 // gen_dials.sh blessed configurations expressed through the public descriptor.
-static GuillocheDialDescriptor DescUniform()
+static GuillocheDiskDescriptor DescUniform()
 {
-	return GuillocheDialDescriptor();
+	return GuillocheDiskDescriptor();
 }
-static GuillocheDialDescriptor DescLightning()
+static GuillocheDiskDescriptor DescLightning()
 {
-	GuillocheDialDescriptor d;
+	GuillocheDiskDescriptor d;
 	d.pattern = eGuillochePatternLightning;
 	d.numArms = 11; d.cellMode = 1;
 	d.lightningRelief = 0.6; d.lightningLo = 0.45; d.lightningHi = 0.65;
@@ -59,33 +59,33 @@ static GuillocheDialDescriptor DescLightning()
 	d.fieldCell = 0.50; d.fieldFrame = 0;
 	return d;
 }
-static GuillocheDialDescriptor DescRadial()
+static GuillocheDiskDescriptor DescRadial()
 {
-	GuillocheDialDescriptor d;
+	GuillocheDiskDescriptor d;
 	d.pattern = eGuillochePatternRadial;
 	d.cellMode = 1; d.lightningCellScale = 1.8;
 	d.lightningLo = 0.25; d.lightningHi = 0.65;
 	return d;
 }
-static GuillocheDialDescriptor DescIris()
+static GuillocheDiskDescriptor DescIris()
 {
-	GuillocheDialDescriptor d;
+	GuillocheDiskDescriptor d;
 	d.pattern = eGuillochePatternIris;
 	d.numArms = 8; d.irisAperture = 0.13; d.irisSwirl = 0.6;
 	d.cell = 0.8; d.gridAmp = 0.95; d.lightningRelief = 0.0; d.centerRadius = 0.0;
 	return d;
 }
-static GuillocheDialDescriptor DescSwirl()
+static GuillocheDiskDescriptor DescSwirl()
 {
-	GuillocheDialDescriptor d;
+	GuillocheDiskDescriptor d;
 	d.pattern = eGuillochePatternSwirl;
 	d.numArms = 6; d.swirlTurns = 7.0;
 	d.cell = 0.8; d.gridAmp = 0.95; d.centerRadius = 0.02;
 	return d;
 }
-static GuillocheDialDescriptor DescVarwidth()
+static GuillocheDiskDescriptor DescVarwidth()
 {
-	GuillocheDialDescriptor d;
+	GuillocheDiskDescriptor d;
 	d.pattern = eGuillochePatternVarwidth;
 	d.numArms = 8; d.lightningCellScale = 2.6;
 	d.cell = 0.6; d.gridAmp = 0.95; d.centerRadius = 0.02;
@@ -95,7 +95,7 @@ static GuillocheDialDescriptor DescVarwidth()
 static void TestHeightGoldens()
 {
 	std::cout << "Test 1: Height(x, y) vs Python goldens (6 blessed patterns x 8 points)" << std::endl;
-	struct Row { const char* name; GuillocheDialDescriptor d; Scalar want[8]; };
+	struct Row { const char* name; GuillocheDiskDescriptor d; Scalar want[8]; };
 	const Row rows[] = {
 		{ "uniform", DescUniform(),
 			{ 0.208479771, 0.844576445, 0.919685621, 0.925, 0.255774385, 0.925, 0.675201635, 0.925 } },
@@ -135,7 +135,7 @@ static void TestOxideDoseGoldens()
 		{ "Ti linear",       0, 160.0e3, { 0.0, 0.123133150, 0.439531652, 1.0 } },
 	};
 	const Scalar rhos[4] = { 0.0, 0.35, 0.7, 1.0 };
-	const GuillocheDialDescriptor d;	// defaults; pattern irrelevant at torch 0
+	const GuillocheDiskDescriptor d;	// defaults; pattern irrelevant at torch 0
 	const GuillocheField field( GuillocheParamsFromDescriptor( d ) );
 	char label[128];
 	for( size_t r = 0; r < sizeof(rows)/sizeof(rows[0]); ++r ) {
@@ -191,7 +191,7 @@ static void TestTorchMaskGoldens()
 static void TestOxidePainterUVMapping()
 {
 	std::cout << "Test 4: GuillocheOxidePainter::Evaluate UV == OxideDose(world)" << std::endl;
-	const GuillocheDialDescriptor d = DescUniform();
+	const GuillocheDiskDescriptor d = DescUniform();
 	const GuillocheParams p = GuillocheParamsFromDescriptor( d );
 	const GuillocheField field( p );
 	GuillocheOxidePainter* painter = new GuillocheOxidePainter( p, 1, 160.0e3, 0.40 );
