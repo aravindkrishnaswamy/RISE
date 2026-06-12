@@ -6077,6 +6077,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				COPY_PHASE_STRIP = NO;
 				DEAD_CODE_STRIPPING = YES;
@@ -6094,9 +6095,13 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = "";
+				HEADER_SEARCH_PATHS = /opt/homebrew/include;
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
-				LIBRARY_SEARCH_PATHS = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					/opt/homebrew/lib,
+				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				OPTIMIZATION_CFLAGS = "-O0";
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6109,7 +6114,10 @@
 					"-DRISE_ENABLE_OIDN",
 					"-DRISE_ENABLE_OPENPGL",
 				);
-				OTHER_LDFLAGS = "";
+				OTHER_LDFLAGS = (
+					"-lOpenImageDenoise",
+					"-lopenpgl",
+				);
 				PRODUCT_NAME = rise;
 				WARNING_CFLAGS = (
 					"-Wmost",
@@ -6124,6 +6132,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				COPY_PHASE_STRIP = YES;
 				DEAD_CODE_STRIPPING = YES;
@@ -6139,9 +6148,13 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = "";
+				HEADER_SEARCH_PATHS = /opt/homebrew/include;
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
-				LIBRARY_SEARCH_PATHS = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					/opt/homebrew/lib,
+				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6154,7 +6167,10 @@
 					"-DRISE_ENABLE_OIDN",
 					"-DRISE_ENABLE_OPENPGL",
 				);
-				OTHER_LDFLAGS = "";
+				OTHER_LDFLAGS = (
+					"-lOpenImageDenoise",
+					"-lopenpgl",
+				);
 				PRODUCT_NAME = rise;
 				WARNING_CFLAGS = (
 					"-Wmost",
@@ -6169,6 +6185,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				DEAD_CODE_STRIPPING = YES;
 				DEPLOYMENT_LOCATION = YES;
@@ -6183,9 +6200,13 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = "";
+				HEADER_SEARCH_PATHS = /opt/homebrew/include;
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
-				LIBRARY_SEARCH_PATHS = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					/opt/homebrew/lib,
+				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6198,7 +6219,10 @@
 					"-DRISE_ENABLE_OIDN",
 					"-DRISE_ENABLE_OPENPGL",
 				);
-				OTHER_LDFLAGS = "";
+				OTHER_LDFLAGS = (
+					"-lOpenImageDenoise",
+					"-lopenpgl",
+				);
 				PRODUCT_NAME = rise;
 				WARNING_CFLAGS = (
 					"-Wmost",
