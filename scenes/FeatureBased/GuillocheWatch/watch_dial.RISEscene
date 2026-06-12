@@ -47,10 +47,14 @@ standard_shader
 	shaderop			DefaultPathTracing
 }
 
-hdr_painter
+# STUDIO light-tent fill: a neutral white surround (replaced the uffizi
+# cathedral probe).  The dark black-glass floor below the watch turns this
+# into the classic studio gradient on the polished case (bright above ->
+# dark below); the soft_top/soft_bot area lights are the key highlights.
+uniformcolor_painter
 {
 	name				pnt_env
-	file				lightprobes/uffizi_probe.hdr
+	color				1 1 1
 }
 
 pathtracing_spectral_rasterizer
@@ -63,7 +67,7 @@ pathtracing_spectral_rasterizer
 	oidn_denoise			true
 	oidn_prefilter			accurate
 	radiance_map			pnt_env
-	radiance_scale			0.18
+	radiance_scale			0.30
 	radiance_background		FALSE
 }
 
@@ -192,12 +196,18 @@ pinhole_camera
 
 ##################################################
 # ANIMATION (native timeline) -- a subtle IRIDESCENCE REVEAL on cam_high34:
-#   * 45deg TURNTABLE: the camera orbits +-22.5deg about the watch's +Z axis
-#     (keyframed `azimuth` orbit angle, smoothstep-eased). Lights
-#     stay fixed, so the specular highlight sweeps the guilloche -> the TiO2/Ti
-#     thin-film colours shimmer (the whole point).
-#   * subtle L->R DOLLY: camera + look-at truck ~4 units laterally (parallax).
-# The look-at re-centres on the dial so it stays framed through the orbit.
+#   * INCIDENCE SWEEP (the iridescence driver): a keyframed `elevation` orbit
+#     ping-pongs the camera from a high near-head-on 3/4 (~21deg incidence on
+#     the dial) DOWN to a low grazing rake (~60deg) at the midpoint and back.
+#     Because TiO2 is high-index, the dial reads SATURATED (magenta centre ->
+#     blue rim) near head-on and WARMS/MUTES toward grazing -- so the whole
+#     face pulses saturated -> coppery -> saturated as it tilts (the angle-
+#     dependent thin-film colour, the whole point).
+#   * AZIMUTH RAKE: a `azimuth` ping-pong (+-20deg) simultaneously sweeps the
+#     specular highlight across the guilloche so the relief shimmers, and adds
+#     a swooping arc.  Both peak at t=0.5 (low grazing dome flare) and return,
+#     so start==end -> the clip loops seamlessly.
+# The orbit re-centres on the dial (cam_high34 lookat) so it stays framed.
 # Render:  renderanimation 0 1 48      (48 frames over t=0..1; or omit args to
 # use animation_options).  Frames -> rendered/watch_dial<NNN>.png.
 # cam_high34 must be the ACTIVE (last) camera for renderanimation to drive it.
@@ -213,40 +223,40 @@ timeline
 {
 	element_type	camera
 	element			cam_high34
-	param			azimuth
+	param			elevation
 	interpolator	hermite
 
 	time		0.00
-	value		-22.5
+	value		31.0
 
 	time		0.25
-	value		-15.47
+	value		-4.0
 
 	time		0.50
-	value		0.0
+	value		-35.0
 
 	time		0.75
-	value		15.47
+	value		-4.0
 
 	time		1.00
-	value		22.5
+	value		31.0
 }
 
 timeline
 {
 	element_type	camera
 	element			cam_high34
-	param			lookat
+	param			azimuth
 	interpolator	hermite
 
 	time		0.00
-	value		-1.6384 -1.1470 -2.0000
+	value		-12.0
 
 	time		0.50
-	value		0.0000 0.0000 -2.0000
+	value		12.0
 
 	time		1.00
-	value		1.6384 1.1470 -2.0000
+	value		-12.0
 }
 
 
@@ -726,14 +736,12 @@ ggx_material
 # Blued steel hands -- conductor with a strong blue specular tint, glossy.
 ggx_material
 {
-	name				blued_steel
-	rd				pnt_black
-	rs				pnt_blue
-	alphax				0.04
-	alphay				0.04
-	fresnel_mode			conductor
-	ior				Ti_n
-	extinction			Ti_k
+	name				white_hands
+	rd				pnt_white
+	rs				pnt_surf_f0
+	alphax				0.18
+	alphay				0.18
+	fresnel_mode			schlick_f0
 }
 
 # Applied indices / hour markers -- bright polished silver metal.
@@ -790,29 +798,34 @@ dielectric_material
 }
 
 ##################################################
-# Key lighting: a TOP + BOTTOM softbox PAIR (watch-photography style), both
-# camera-side at z=50 (behind the camera, so out of frame) and facing the dial
-# (-Z).  A dark GAP in y=[-14,14] separates them, so the domed crystal reflects
-# two soft gradient bands instead of one harsh panel (a studio-clean
-# crystal), and the guilloche relief is raked from above AND below -> the woven
-# blocks read with more contrast across the whole face.  Split intensity so the
-# total key is similar to the old single softbox.
+# Studio lighting (watch-photography style), TWO sources:
+#   soft_top -- a LARGE soft overhead-front SCRIM (light-tent fill): big enough
+#               that the domed crystal reflects it as a smooth broad gradient
+#               (no hotspot) while still RAKING the guilloche relief from above
+#               so the woven facets shimmer.  The vivid-but-flare-free key.
+#   soft_bot -- a SMALL bright overhead KEY aimed straight down on the dial
+#               (direct fill so the face reads bright); overhead, so at the
+#               grazing end it reflects up-and-away rather than flaring into
+#               the low camera.
+# The neutral env (dim) + dark black-glass floor give the dark studio surround
+# and the bright-above -> dark-below gradient on the polished case.
 ##################################################
+/*
 lambertian_luminaire_material
 {
 	name				soft_top_lum
 	exitance			pnt_white
-	scale				45.0
+	scale				8.0
 	material			none
 }
 
 clippedplane_geometry
 {
 	name				soft_top_geom
-	pta				-88.62 -5.19 74.65
-	ptb				-42.56 77.90 74.65
-	ptc				14.40 46.33 105.35
-	ptd				-31.65 -36.76 105.35
+	pta				-170 50 230
+	ptb				170 50 230
+	ptc				170 -185 95
+	ptd				-170 -185 95
 }
 
 standard_object
@@ -826,17 +839,17 @@ lambertian_luminaire_material
 {
 	name				soft_bot_lum
 	exitance			pnt_white
-	scale				8.0
+	scale				40.0
 	material			none
 }
 
 clippedplane_geometry
 {
 	name				soft_bot_geom
-	pta				125.41 -52.15 2.43
-	ptb				90.71 -101.09 2.43
-	ptc				83.52 -96.00 47.57
-	ptd				118.22 -47.05 47.57
+	pta				-26 -34 92
+	ptb				-26 16 92
+	ptc				26 16 92
+	ptd				26 -34 92
 }
 
 standard_object
@@ -845,6 +858,65 @@ standard_object
 	geometry			soft_bot_geom
 	material			soft_bot_lum
 }
+*/
+##################################################
+# ALTERNATE LIGHTING (commented out) -- DRAMATIC HIGH-CONTRAST HERO.
+# A dark, moody 'emerging-from-black' look (high-end dark-product style):
+# a single HARD raking KEY (upper-front, +X side) carves the guilloche
+# relief into strong light/shadow, an edge RIM (rear -X, low) catches the
+# case outline so the watch separates from a near-black field.  The soft
+# studio light-tent above is replaced by deep contrast.
+#
+# TO ACTIVATE (and reverse to undo):
+#   1. studio lights above -> scale 0   (soft_top_lum AND soft_bot_lum)
+#   2. rasterizer 'radiance_scale' -> ~0.03   (near-black surround)
+#   3. uncomment every line in this block (strip the leading '# ')
+# Tuning: raise dram_rim_lum 'scale' for a brighter case-edge halo; move
+# dram_key_geom toward the dial for a tighter, harder hotspot; raise
+# radiance_scale a touch (~0.06) if the shadows are too crushed.
+##################################################
+ lambertian_luminaire_material
+ {
+ 	name				dram_key_lum
+ 	exitance			pnt_white
+ 	scale				120.0
+ 	material			none
+ }
+ clippedplane_geometry
+ {
+ 	name				dram_key_geom
+ 	pta				45.52 -82.29 101.95
+ 	ptb				13.71 -50.48 128.05
+ 	ptc				50.48 -13.71 128.05
+ 	ptd				82.29 -45.52 101.95
+ }
+ standard_object
+ {
+ 	name				dram_key
+ 	geometry			dram_key_geom
+ 	material			dram_key_lum
+ }
+ lambertian_luminaire_material
+ {
+ 	name				dram_rim_lum
+ 	exitance			pnt_white
+ 	scale				95.0
+ 	material			none
+ }
+ clippedplane_geometry
+ {
+ 	name				dram_rim_geom
+ 	pta				-72.20 75.68 14.52
+ 	ptb				-45.57 53.09 77.48
+ 	ptc				-59.80 36.32 77.48
+ 	ptd				-86.43 58.91 14.52
+ }
+ standard_object
+ {
+ 	name				dram_rim
+ 	geometry			dram_rim_geom
+ 	material			dram_rim_lum
+ }
 ##################################################
 ##################################################
 # The dial: a FLAT Cartesian disk + a guilloché expression_function2d
@@ -1300,7 +1372,7 @@ standard_object
 #   casebodysdf  - case cylinder + bezel torus + 4 flying-blade lugs + carved
 #                  dial bowl, fused into one smooth-min ti_polished body
 #   crownsdf     - ribbed gear crown at 3 o'clock
-#   hand{hour,minute}sdf - fat-at-hub, tapering-to-tip blued-steel hands
+#   hand{hour,minute}sdf - fat-at-hub, tapering-to-tip white satin hands
 # The inline `part` lists below are generated by
 # `python3 scenes/FeatureBased/GuillocheWatch/sdf_gen.py` (prints these
 # chunks ready to paste).
@@ -1372,7 +1444,7 @@ standard_object
 {
 	name				sdfhour
 	geometry			handhoursdf
-	material			blued_steel
+	material			white_hands
 	position			0 0 0.2
 	orientation		0 0 60
 }
@@ -1381,7 +1453,7 @@ standard_object
 {
 	name				sdfminute
 	geometry			handminutesdf
-	material			blued_steel
+	material			white_hands
 	position			0 0 0.7
 	orientation		0 0 -60
 }
