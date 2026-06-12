@@ -2,8 +2,10 @@ RISE ASCII SCENE 6
 #############################################################################################################
 #   File:           watch_dial.RISEscene
 #   Description:    Guilloche titanium watch (thin-film heat-tint).  Phase 3 of the thin-film feature.
-#                   FULLY PROCEDURAL: the engraved dial relief is a native guilloche_disk_geometry
-#                   chunk, the radial heat-tint dose a native guilloche_oxide_painter function
+#                   FULLY PROCEDURAL + IN-SCENE-SCRIPTED: the engraved dial relief is a guilloché
+#                   expression_function2d (a math expression authored HERE in the scene file)
+#                   displaced onto a flat cartesian_disk_geometry, the radial heat-tint dose a
+#                   native guilloche_oxide_painter function
 #                   (both C++ ports of the Python bakers in this folder, golden-tested), the strap
 #                   a general sweep_geometry + path_instances_geometry pair, and the
 #                   case/crown/hands/ring melded SDFs --
@@ -13,14 +15,15 @@ RISE ASCII SCENE 6
 #############################################################################################################
 
 # ============================================================================
-# FULLY PROCEDURAL -- nothing to pre-bake.  The dial meshes are native
-# `guilloche_disk_geometry` chunks (the field is evaluated at parse time) and
-# the oxide heat-tint doses are native `guilloche_oxide_painter` functions
-# consumed through `scalar_painter { function2d ... scale S bias B }`.  The
-# retired Python bakers (dial_mesh_gen.py / dial_variants_gen.py /
-# thermal_oxide_sim.py oxide maps, strap_mesh_gen.py) remain in this folder
-# as the reference implementations the chunks are tested against
-# (tests/GuillocheFieldTest, tests/ProceduralMeshTest).
+# FULLY PROCEDURAL -- nothing to pre-bake.  The dial relief is authored
+# IN THIS SCENE FILE as `expression_function2d` math expressions (dialfn_*)
+# displaced onto a flat `cartesian_disk_geometry` via `displaced_geometry`
+# (uv_seam_fold FALSE) -- no guilloché-specific C++ geometry.  Each pattern
+# is proven == the original GuillocheField relief to 1e-6 in
+# tests/ExpressionFunction2DTest.  The oxide heat-tint doses are native
+# `guilloche_oxide_painter` functions consumed through
+# `scalar_painter { function2d ... scale S bias B }`.  The retired Python
+# bakers remain in this folder as the historical reference.
 # Render specific cameras with scenes/FeatureBased/GuillocheWatch/render_watch_views.py.  Tune the
 # heat-tint via the oxide_thk scale/bias (see the >>> HEAT-TINT TORCH CONTROL <<< block below).
 # ============================================================================
@@ -373,6 +376,7 @@ guilloche_oxide_painter
 {
 	name				oxide_fn
 	metal				ti
+	radius				20.6
 	falloff				quadratic
 }
 
@@ -382,6 +386,7 @@ guilloche_oxide_painter
 {
 	name				oxide_fn_nb
 	metal				nb
+	radius				20.6
 	falloff				quadratic
 }
 
@@ -389,6 +394,7 @@ guilloche_oxide_painter
 {
 	name				oxide_fn_ta
 	metal				ta
+	radius				20.6
 	falloff				quadratic
 }
 
@@ -396,6 +402,7 @@ guilloche_oxide_painter
 {
 	name				oxide_fn_steel
 	metal				steel
+	radius				20.6
 	falloff				quadratic
 }
 
@@ -838,108 +845,444 @@ standard_object
 	geometry			soft_bot_geom
 	material			soft_bot_lum
 }
-
 ##################################################
 ##################################################
-# The dial: CARTESIAN guilloche relief evaluated NATIVELY at parse time
-# (guilloche_disk_geometry -- the C++ port of dial_mesh_gen.py, goldens in
-# tests/GuillocheFieldTest + tests/ProceduralMeshTest).  Real engraved relief
-# with analytic normals + linear UV.  This REPLACES the old circulardisk +
-# displaced_geometry dial, whose POLAR UV (u=angle, v=radius) collapsed the
-# woven cells to zero world-size at the centre -> a smooth gold blob over the
-# inner ~40%.  A Cartesian-grid mesh keeps every cell the SAME world size, so
-# the guilloche blocks read uniformly to the dead-centre (no polar singularity).
-# Recessed to z = -1 so it sits below the case top rim.
+# The dial: a FLAT Cartesian disk + a guilloché expression_function2d
+# DISPLACED onto it -- fully scripted in-scene, no guilloché-specific C++.
+#   cartesian_disk_geometry  - the flat base (uniform world-cell density,
+#                              linear Cartesian UV u=(x+R)/2R)
+#   dialfn_*                  - the relief field authored as a math
+#                              expression (expression_function2d); each
+#                              pattern is proven == the retired
+#                              GuillocheField::Height in
+#                              tests/ExpressionFunction2DTest
+#   displaced_geometry        - applies the field along the +Z normal;
+#                              uv_seam_fold FALSE = no closed-surface UV
+#                              mirror (the field is an OPEN Cartesian map)
+# The dial sits at z=-1 via the `dial` object position (below the rim).
 ##################################################
-guilloche_disk_geometry
+# NOTE: this `radius` (20.6) must equal every dialfn_* `param R` AND the
+# oxide_fn* `radius` -- the dial-space (x,y)=(2u-1,2v-1)*R mapping is shared
+# by the relief expressions and the heat-tint dose; a mismatch silently
+# scales the relief wrong (no parse error).
+cartesian_disk_geometry
 {
-	name				dialmesh
-	pattern				uniform
+	name			dialdisk
+	radius			20.6
+	mesh_n			880
+}
+
+# uniform -- 12-arm woven rosette (the stock dial)
+expression_function2d
+{
+	name			dialfn_uniform
+	param		R 20.6
+	param		arms 12
+	param		swirl 0
+	param		seamJag 0.16
+	param		seamJagFreq 3
+	param		cell 0.9
+	param		gridAmp 0.85
+	param		petalAmp 0.3
+	param		gridE0 0.12
+	param		gridE1 0.5
+	param		petalE0 0
+	param		petalE1 0.82
+	param		base 0.15
+	param		landLevel 0.45
+	param		reliefDepth 0.85
+	param		centerRadius 0.03
+	def			x (2*u-1)*R
+	def			y (2*v-1)*R
+	def			r hypot(x,y)
+	def			rho clamp(r/R,0,1)
+	def			theta atan2(y,x)
+	def			jag seamJag*(2*abs(2*frac(seamJagFreq*rho)-1)-1)
+	def			psi theta+swirl*rho+jag
+	def			petal smoothstep(petalE0,petalE1,abs(cos(arms*psi)))
+	def			wsec tau/arms
+	def			q psi/wsec
+	def			sector sign(q)*floor(abs(q)+0.5)
+	def			thetaC sector*wsec-swirl*rho-jag
+	def			cc cos(thetaC)
+	def			ss sin(thetaC)
+	def			xr cc*x+ss*y
+	def			yr -ss*x+cc*y
+	def			waxU (0.5/cell)*xr
+	def			way0U (0.5/cell)*yr
+	def			wrpU floor(2*waxU)
+	def			wayU way0U+0.25*mod(wrpU,2)
+	def			wgU smoothstep(gridE0,gridE1,abs(cos(tau*(waxU))))*smoothstep(gridE0,gridE1,abs(cos(tau*(wayU))))
+	def			raw base+petalAmp*petal+gridAmp*wgU
+	def			h0 clamp((raw-(0.14999999999999999))/(1.1499999999999999),0,1)
+	def			h1 pow(h0,log(landLevel)/log(0.5))
+	def			h2 0.5+(h1-0.5)*reliefDepth
+	def			hub 0.5*(1-reliefDepth)
+	def			rin max(centerRadius*R,0.000001)
+	def			whub clamp(r/rin,0,1)
+	def			hfin (1-whub*whub)*hub+whub*whub*h2
+	expr			clamp(hfin,0,1)
+}
+
+# lightning -- 11 zigzag bolts (cube) on a rung ground (hero)
+expression_function2d
+{
+	name			dialfn_lightning
+	param		R 20.6
+	param		arms 11
+	param		cell 0.9
+	param		gridAmp 0.85
+	param		petalAmp 0.3
+	param		gridE0 0.12
+	param		gridE1 0.5
+	param		base 0.15
+	param		landLevel 0.45
+	param		reliefDepth 0.85
+	param		centerRadius 0.015
+	param		lightningLo 0.45
+	param		lightningHi 0.65
+	param		lightningRelief 0.6
+	param		cellScale 0.6
+	param		zigzagAmp 0.16
+	param		zigzagFreq 3
+	param		fieldCell 0.5
+	param		rungLen 0.65
+	param		rungWidth 0.82
+	def			x (2*u-1)*R
+	def			y (2*v-1)*R
+	def			r hypot(x,y)
+	def			rho clamp(r/R,0,1)
+	def			theta atan2(y,x)
+	def			zig zigzagAmp*(2*abs(2*frac(zigzagFreq*rho)-1)-1)
+	def			rayc 0.5+0.5*cos(arms*(theta+zig))
+	def			mask smoothstep(lightningLo,lightningHi,rayc)
+	def			wsec tau/arms
+	def			q theta/wsec
+	def			sector sign(q)*floor(abs(q)+0.5)
+	def			thetaC sector*wsec
+	def			cc cos(thetaC)
+	def			ss sin(thetaC)
+	def			xr cc*x+ss*y
+	def			yr -ss*x+cc*y
+	def			inside smoothstep(gridE0,gridE1,abs(cos(tau*((0.5/fieldCell)*x))))*smoothstep(gridE0,gridE1,abs(cos(tau*((0.5/fieldCell)*y))))
+	def			between smoothstep(gridE0,gridE1,abs(cos(tau*((0.5/rungLen)*xr))))*smoothstep(gridE0,gridE1,abs(cos(tau*((0.5/rungWidth)*yr))))
+	def			grid between*(1-mask)+inside*mask
+	def			raw base+petalAmp*mask+gridAmp*grid+lightningRelief*mask
+	def			h0 clamp((raw-(0.14999999999999999))/(1.75),0,1)
+	def			h1 pow(h0,log(landLevel)/log(0.5))
+	def			h2 0.5+(h1-0.5)*reliefDepth
+	def			hub 0.5*(1-reliefDepth)
+	def			rin max(centerRadius*R,0.000001)
+	def			whub clamp(r/rin,0,1)
+	def			hfin (1-whub*whub)*hub+whub*whub*h2
+	expr			clamp(hfin,0,1)
+}
+
+# radial -- swirled-petal lightning, coarse bolt cell
+expression_function2d
+{
+	name			dialfn_radial
+	param		R 20.6
+	param		arms 12
+	param		swirl 0
+	param		seamJag 0.16
+	param		seamJagFreq 3
+	param		cell 0.9
+	param		gridAmp 0.85
+	param		petalAmp 0.3
+	param		gridE0 0.12
+	param		gridE1 0.5
+	param		petalE0 0
+	param		petalE1 0.82
+	param		base 0.15
+	param		landLevel 0.45
+	param		reliefDepth 0.85
+	param		centerRadius 0.03
+	param		lightningLo 0.25
+	param		lightningHi 0.65
+	param		cellScale 1.8
+	def			x (2*u-1)*R
+	def			y (2*v-1)*R
+	def			r hypot(x,y)
+	def			rho clamp(r/R,0,1)
+	def			theta atan2(y,x)
+	def			jag seamJag*(2*abs(2*frac(seamJagFreq*rho)-1)-1)
+	def			psi theta+swirl*rho+jag
+	def			petal smoothstep(petalE0,petalE1,abs(cos(arms*psi)))
+	def			wsec tau/arms
+	def			q psi/wsec
+	def			sector sign(q)*floor(abs(q)+0.5)
+	def			thetaC sector*wsec-swirl*rho-jag
+	def			cc cos(thetaC)
+	def			ss sin(thetaC)
+	def			xr cc*x+ss*y
+	def			yr -ss*x+cc*y
+	def			mask smoothstep(lightningLo,lightningHi,petal)
+	def			waxF (0.5/cell)*xr
+	def			way0F (0.5/cell)*yr
+	def			wrpF floor(2*waxF)
+	def			wayF way0F+0.25*mod(wrpF,2)
+	def			wgF smoothstep(gridE0,gridE1,abs(cos(tau*(waxF))))*smoothstep(gridE0,gridE1,abs(cos(tau*(wayF))))
+	def			waxB (0.5/(cell*cellScale))*xr
+	def			way0B (0.5/(cell*cellScale))*yr
+	def			wrpB floor(2*waxB)
+	def			wayB way0B+0.25*mod(wrpB,2)
+	def			wgB smoothstep(gridE0,gridE1,abs(cos(tau*(waxB))))*smoothstep(gridE0,gridE1,abs(cos(tau*(wayB))))
+	def			grid wgF*(1-mask)+wgB*mask
+	def			raw base+petalAmp*petal+gridAmp*grid
+	def			h0 clamp((raw-(0.14999999999999999))/(1.1499999999999999),0,1)
+	def			h1 pow(h0,log(landLevel)/log(0.5))
+	def			h2 0.5+(h1-0.5)*reliefDepth
+	def			hub 0.5*(1-reliefDepth)
+	def			rin max(centerRadius*R,0.000001)
+	def			whub clamp(r/rin,0,1)
+	def			hfin (1-whub*whub)*hub+whub*whub*h2
+	expr			clamp(hfin,0,1)
+}
+
+# iris -- 8 aperture blades spiralling a central hole
+expression_function2d
+{
+	name			dialfn_iris
+	param		R 20.6
+	param		arms 8
+	param		cell 0.8
+	param		gridAmp 0.95
+	param		petalAmp 0.3
+	param		gridE0 0.12
+	param		gridE1 0.5
+	param		base 0.15
+	param		landLevel 0.45
+	param		reliefDepth 0.85
+	param		centerRadius 0
+	param		irisAperture 0.13
+	param		irisSwirl 0.6
+	param		irisEdge 0.6
+	def			x (2*u-1)*R
+	def			y (2*v-1)*R
+	def			r hypot(x,y)
+	def			rho clamp(r/R,0,1)
+	def			theta atan2(y,x)
+	def			a irisAperture*R
+	def			tk0 tau*0/8+irisSwirl*rho
+	def			ck0 cos(tk0)
+	def			sk0 sin(tk0)
+	def			d0 (x*ck0+y*sk0)-a
+	def			tk1 tau*1/8+irisSwirl*rho
+	def			ck1 cos(tk1)
+	def			sk1 sin(tk1)
+	def			d1 (x*ck1+y*sk1)-a
+	def			tk2 tau*2/8+irisSwirl*rho
+	def			ck2 cos(tk2)
+	def			sk2 sin(tk2)
+	def			d2 (x*ck2+y*sk2)-a
+	def			tk3 tau*3/8+irisSwirl*rho
+	def			ck3 cos(tk3)
+	def			sk3 sin(tk3)
+	def			d3 (x*ck3+y*sk3)-a
+	def			tk4 tau*4/8+irisSwirl*rho
+	def			ck4 cos(tk4)
+	def			sk4 sin(tk4)
+	def			d4 (x*ck4+y*sk4)-a
+	def			tk5 tau*5/8+irisSwirl*rho
+	def			ck5 cos(tk5)
+	def			sk5 sin(tk5)
+	def			d5 (x*ck5+y*sk5)-a
+	def			tk6 tau*6/8+irisSwirl*rho
+	def			ck6 cos(tk6)
+	def			sk6 sin(tk6)
+	def			d6 (x*ck6+y*sk6)-a
+	def			tk7 tau*7/8+irisSwirl*rho
+	def			ck7 cos(tk7)
+	def			sk7 sin(tk7)
+	def			d7 (x*ck7+y*sk7)-a
+	def			ed0 abs(d0)
+	def			ed1 min(ed0,abs(d1))
+	def			ed2 min(ed1,abs(d2))
+	def			ed3 min(ed2,abs(d3))
+	def			ed4 min(ed3,abs(d4))
+	def			ed5 min(ed4,abs(d5))
+	def			ed6 min(ed5,abs(d6))
+	def			ed7 min(ed6,abs(d7))
+	def			edgeD ed7
+	def			bd0 d0
+	def			bc0 ck0
+	def			bs0 sk0
+	def			bd1 max(bd0,d1)
+	def			bc1 select(d1>bd0,ck1,bc0)
+	def			bs1 select(d1>bd0,sk1,bs0)
+	def			bd2 max(bd1,d2)
+	def			bc2 select(d2>bd1,ck2,bc1)
+	def			bs2 select(d2>bd1,sk2,bs1)
+	def			bd3 max(bd2,d3)
+	def			bc3 select(d3>bd2,ck3,bc2)
+	def			bs3 select(d3>bd2,sk3,bs2)
+	def			bd4 max(bd3,d4)
+	def			bc4 select(d4>bd3,ck4,bc3)
+	def			bs4 select(d4>bd3,sk4,bs3)
+	def			bd5 max(bd4,d5)
+	def			bc5 select(d5>bd4,ck5,bc4)
+	def			bs5 select(d5>bd4,sk5,bs4)
+	def			bd6 max(bd5,d6)
+	def			bc6 select(d6>bd5,ck6,bc5)
+	def			bs6 select(d6>bd5,sk6,bs5)
+	def			bd7 max(bd6,d7)
+	def			bc7 select(d7>bd6,ck7,bc6)
+	def			bs7 select(d7>bd6,sk7,bs6)
+	def			ownck bc7
+	def			ownsk bs7
+	def			groove smoothstep(0,irisEdge,edgeD)
+	def			along x*(-ownsk)+y*ownck
+	def			across x*ownck+y*ownsk
+	def			cube smoothstep(gridE0,gridE1,abs(cos(tau*((0.5/cell)*along))))*smoothstep(gridE0,gridE1,abs(cos(tau*((0.5/cell)*across))))
+	def			raw base+petalAmp*groove+gridAmp*cube*groove
+	def			h0 clamp((raw-(0.14999999999999999))/(1.25),0,1)
+	def			h1 pow(h0,log(landLevel)/log(0.5))
+	def			h2 0.5+(h1-0.5)*reliefDepth
+	def			hub 0.5*(1-reliefDepth)
+	def			rin max(centerRadius*R,0.000001)
+	def			whub clamp(r/rin,0,1)
+	def			hfin (1-whub*whub)*hub+whub*whub*h2
+	expr			clamp(hfin,0,1)
+}
+
+# swirl -- log-spiral guilloche
+expression_function2d
+{
+	name			dialfn_swirl
+	param		R 20.6
+	param		arms 6
+	param		cell 0.8
+	param		gridAmp 0.95
+	param		gridE0 0.12
+	param		gridE1 0.5
+	param		base 0.15
+	param		landLevel 0.45
+	param		reliefDepth 0.85
+	param		centerRadius 0.02
+	param		swirlTurns 7
+	def			x (2*u-1)*R
+	def			y (2*v-1)*R
+	def			r hypot(x,y)
+	def			rho clamp(r/R,0,1)
+	def			theta atan2(y,x)
+	def			lr log(max(r,0.001))
+	def			su (arms*theta+swirlTurns*lr)/tau
+	def			sv r/cell
+	def			grid smoothstep(gridE0,gridE1,abs(cos(tau*(su))))*smoothstep(gridE0,gridE1,abs(cos(tau*(sv))))
+	def			raw base+gridAmp*grid
+	def			h0 clamp((raw-(0.14999999999999999))/(0.94999999999999984),0,1)
+	def			h1 pow(h0,log(landLevel)/log(0.5))
+	def			h2 0.5+(h1-0.5)*reliefDepth
+	def			hub 0.5*(1-reliefDepth)
+	def			rin max(centerRadius*R,0.000001)
+	def			whub clamp(r/rin,0,1)
+	def			hfin (1-whub*whub)*hub+whub*whub*h2
+	expr			clamp(hfin,0,1)
+}
+
+# varwidth -- alternating fine/coarse sunburst sectors
+expression_function2d
+{
+	name			dialfn_varwidth
+	param		R 20.6
+	param		arms 8
+	param		cell 0.6
+	param		gridAmp 0.95
+	param		gridE0 0.12
+	param		gridE1 0.5
+	param		base 0.15
+	param		landLevel 0.45
+	param		reliefDepth 0.85
+	param		centerRadius 0.02
+	param		cellScale 2.6
+	def			x (2*u-1)*R
+	def			y (2*v-1)*R
+	def			r hypot(x,y)
+	def			rho clamp(r/R,0,1)
+	def			theta atan2(y,x)
+	def			wsec tau/arms
+	def			q theta/wsec
+	def			sector sign(q)*floor(abs(q)+0.5)
+	def			tc sector*wsec
+	def			cc cos(tc)
+	def			ss sin(tc)
+	def			xr cc*x+ss*y
+	def			yr -ss*x+cc*y
+	def			cellLocal select(mod(sector,2)>0.5,cell*cellScale,cell)
+	def			fr 0.5/cellLocal
+	def			grid smoothstep(gridE0,gridE1,abs(cos(tau*(fr*xr))))*smoothstep(gridE0,gridE1,abs(cos(tau*(fr*yr))))
+	def			raw base+gridAmp*grid
+	def			h0 clamp((raw-(0.14999999999999999))/(0.94999999999999984),0,1)
+	def			h1 pow(h0,log(landLevel)/log(0.5))
+	def			h2 0.5+(h1-0.5)*reliefDepth
+	def			hub 0.5*(1-reliefDepth)
+	def			rin max(centerRadius*R,0.000001)
+	def			whub clamp(r/rin,0,1)
+	def			hfin (1-whub*whub)*hub+whub*whub*h2
+	expr			clamp(hfin,0,1)
 }
 
 ##################################################
-# ALTERNATE dial geometries -- a small pattern LIBRARY, all on the stock
-# Cartesian UV so every oxide map / palette / metal applies to each (a
-# pattern changes only the RELIEF).  Switch the `dial` object's `geometry`
-# (below) to any of these -- it is a LIVE GUI rebind
-# (SceneEdit::SetObjectGeometry), no reload.  Each pattern is a native
-# guilloche_disk_geometry chunk evaluated at parse time (gen_dials.sh
-# remains as the Python reference the chunks are golden-tested against).
+# The dial geometry LIBRARY: one displaced_geometry per pattern, all on
+# the shared dialdisk base + their dialfn_* field.  `dialmesh` (uniform)
+# is the default; switch the `dial` object's `geometry` to any alternate
+# -- a LIVE GUI rebind (SceneEdit::SetObjectGeometry), no reload.
 ##################################################
-
-# lightning -- the hero pattern: 11 zigzag lightning bolts of a tight cube
-# on a uniform rung-block ground.
-guilloche_disk_geometry
+displaced_geometry
 {
-	name				dialmesh_lightning
-	pattern				lightning
-	num_arms			11
-	cell_mode			select
-	lightning_relief		0.6
-	lightning_lo			0.45
-	lightning_hi			0.65
-	center_radius			0.015
-	zigzag_amp			0.16
-	zigzag_freq			3.0
-	bolt_style			rung
-	rung_len			0.65
-	rung_width			0.82
-	field_cell			0.50
-	field_frame			global
-	mesh_n				880
+	name			dialmesh
+	base_geometry		dialdisk
+	displacement		dialfn_uniform
+	disp_scale		0.42
+	uv_seam_fold		FALSE
 }
 
-# radial -- earlier swirled-petal lightning at a coarser bolt cell.
-guilloche_disk_geometry
+displaced_geometry
 {
-	name				dialmesh_radial
-	pattern				radial
-	cell_mode			select
-	lightning_cell_scale		1.8
-	lightning_lo			0.25
-	lightning_hi			0.65
+	name			dialmesh_lightning
+	base_geometry		dialdisk
+	displacement		dialfn_lightning
+	disp_scale		0.42
+	uv_seam_fold		FALSE
 }
 
-# iris -- 007 camera aperture: 8 blade leading-edges spiralling around a
-# central hole, cube-filled blades.
-guilloche_disk_geometry
+displaced_geometry
 {
-	name				dialmesh_iris
-	pattern				iris
-	num_arms			8
-	iris_aperture			0.13
-	iris_swirl			0.6
-	cell				0.8
-	grid_amp			0.95
-	center_radius			0.0
-	mesh_n				820
+	name			dialmesh_radial
+	base_geometry		dialdisk
+	displacement		dialfn_radial
+	disp_scale		0.42
+	uv_seam_fold		FALSE
 }
 
-# swirl -- log-spiral guilloche.
-guilloche_disk_geometry
+displaced_geometry
 {
-	name				dialmesh_swirl
-	pattern				swirl
-	num_arms			6
-	swirl_turns			7.0
-	cell				0.8
-	grid_amp			0.95
-	center_radius			0.02
-	mesh_n				820
+	name			dialmesh_iris
+	base_geometry		dialdisk
+	displacement		dialfn_iris
+	disp_scale		0.42
+	uv_seam_fold		FALSE
 }
 
-# varwidth -- alternating fine/coarse sunburst sectors.
-guilloche_disk_geometry
+displaced_geometry
 {
-	name				dialmesh_varwidth
-	pattern				varwidth
-	num_arms			8
-	lightning_cell_scale		2.6
-	cell				0.6
-	grid_amp			0.95
-	center_radius			0.02
-	mesh_n				820
+	name			dialmesh_swirl
+	base_geometry		dialdisk
+	displacement		dialfn_swirl
+	disp_scale		0.42
+	uv_seam_fold		FALSE
 }
+
+displaced_geometry
+{
+	name			dialmesh_varwidth
+	base_geometry		dialdisk
+	displacement		dialfn_varwidth
+	disp_scale		0.42
+	uv_seam_fold		FALSE
+}
+
 
 
 

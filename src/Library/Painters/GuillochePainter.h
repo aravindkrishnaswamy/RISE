@@ -2,12 +2,11 @@
 //
 //  GuillochePainter.h - The guilloché oxide-dose IFunction2D painter
 //  (the procedural replacement for the baked oxide_*.png maps) plus
-//  the descriptor -> GuillocheParams converter shared with the dial
-//  geometry factory.
+//  the descriptor -> GuillocheParams converter.
 //
 //  GuillocheOxidePainter::Evaluate(u, v) interprets (u, v) as the
 //  dial's LINEAR CARTESIAN UV in [0,1]^2 (u = (x+R)/2R, v = (y+R)/2R,
-//  the same layout the baked PNGs used and the guilloche_disk_geometry
+//  the same layout the baked PNGs used and a cartesian_disk_geometry
 //  emits), converts to dial-space (x, y), and returns the normalized
 //  oxide DOSE in [0,1]: the Arrhenius/parabolic radial profile of
 //  thermal_oxide_sim.build_thickness_profile plus the signed

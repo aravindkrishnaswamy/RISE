@@ -2,8 +2,6 @@
 //
 //  ProceduralMeshTest.cpp - Tests for the procedural mesh factories:
 //
-//    RISE_API_CreateGuillocheDiskGeometry   vs dial_mesh_gen.build_mesh
-//                                           (Python golden values)
 //    RISE_API_CreateSweepGeometry           vs FIRST PRINCIPLES (a
 //                                           circular profile on a straight
 //                                           path IS a cylinder; taper IS a
@@ -12,12 +10,10 @@
 //    RISE_API_CreatePathInstancesGeometry   vs first principles (N spheres
 //                                           at exact arc positions)
 //
-//  Disk goldens are full-precision doubles from build_mesh at mesh_n=160
-//  (generated 2026-06-11).  Triangle-order note for the disk: build_mesh
-//  emits np.concatenate([triA, triB]) (ALL first-triangles, then ALL
-//  second) while the C++ factory interleaves (A_k, B_k) per cell.  The
-//  sets are identical; positionally Py[k] == C++[2k] and
-//  Py[M+k] == C++[2k+1] for M = ntris/2.
+//  (The guilloché dial relief is no longer a bespoke disk geometry -- it is
+//  authored in-scene as an expression_function2d displaced onto a
+//  cartesian_disk_geometry; its fidelity is proven in
+//  tests/ExpressionFunction2DTest.)
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -45,93 +41,7 @@ struct VertGolden {
 	Scalar px, py, pz, nx, ny, nz, u, v;
 };
 
-static void CheckVert( const TriangleMeshGeometryIndexed* mesh, const VertGolden& g,
-                       Scalar posTol, Scalar nTol, Scalar uvTol, const char* label )
-{
-	char name[128];
-	const Vertex& p = mesh->getVertices()[g.idx];
-	const Normal& n = mesh->getNormals()[g.idx];
-	const TexCoord& c = mesh->getCoords()[g.idx];
-	snprintf( name, sizeof(name), "%s v[%u] pos", label, g.idx );
-	Check( std::fabs(p.x-g.px) <= posTol && std::fabs(p.y-g.py) <= posTol && std::fabs(p.z-g.pz) <= posTol, name );
-	snprintf( name, sizeof(name), "%s v[%u] normal", label, g.idx );
-	Check( std::fabs(n.x-g.nx) <= nTol && std::fabs(n.y-g.ny) <= nTol && std::fabs(n.z-g.nz) <= nTol, name );
-	snprintf( name, sizeof(name), "%s v[%u] uv", label, g.idx );
-	Check( std::fabs(c.x-g.u) <= uvTol && std::fabs(c.y-g.v) <= uvTol, name );
-}
-
-// Compare a face's three vertex POSITIONS against the golden vertex indices
-// (faces store raw Point3* pointers; positions sidestep storage layout).
-static void CheckFace( const TriangleMeshGeometryIndexed* mesh, unsigned int face,
-                       unsigned int ia, unsigned int ib, unsigned int ic, const char* label )
-{
-	char name[128];
-	snprintf( name, sizeof(name), "%s face[%u] = (%u,%u,%u)", label, face, ia, ib, ic );
-	const PointerPolygon_Template<3>& f = mesh->getFaces()[face];
-	const VerticesListType& verts = mesh->getVertices();
-	const unsigned int want[3] = { ia, ib, ic };
-	bool ok = true;
-	for( int k = 0; k < 3; ++k ) {
-		const Point3& got = *f.pVertices[k];
-		const Point3& exp = verts[ want[k] ];
-		ok = ok && std::fabs(got.x-exp.x) <= 1e-12 && std::fabs(got.y-exp.y) <= 1e-12 && std::fabs(got.z-exp.z) <= 1e-12;
-	}
-	Check( ok, name );
-}
-
 //////////////////////////////////////////////////////////////////////
-
-static void TestDialMeshBuilder()
-{
-	std::cout << "Test 1: guilloche dial mesh vs dial_mesh_gen.build_mesh (mesh_n=160, defaults)" << std::endl;
-	GuillocheDiskDescriptor d;
-	d.meshN = 160;
-	ITriangleMeshGeometryIndexed* pi = 0;
-	Check( RISE_API_CreateGuillocheDiskGeometry( &pi, d ), "factory succeeds" );
-	if( !pi ) return;
-	const TriangleMeshGeometryIndexed* mesh = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
-	Check( mesh != 0, "concrete mesh type" );
-	if( !mesh ) { pi->release(); return; }
-
-	Check( mesh->numPoints() == 19856, "vertex count 19856" );
-	Check( mesh->getFaces().size() == 39082, "triangle count 39082" );
-
-	// Python build_mesh full-precision goldens.
-	const VertGolden gold[] = {
-		{ 0,     -3.238993711, -20.340880503,  0.131848819, -0.000000000,  0.210263107, 0.977644836, 0.421383648, 0.006289308 },
-		{ 137,    1.684276730, -19.563522013, -0.198239384, -0.065670371, -0.265682466, 0.961821309, 0.540880503, 0.025157233 },
-		{ 9999,  -1.943396226,   0.129559748,  0.094222472, -0.414400587,  0.433895178, 0.800004455, 0.452830189, 0.503144654 },
-		{ 19855,  3.238993711,  20.340880503,  0.131848819, -0.000000000, -0.210263107, 0.977644836, 0.578616352, 0.993710692 },
-	};
-	for( size_t i = 0; i < sizeof(gold)/sizeof(gold[0]); ++i ) {
-		CheckVert( mesh, gold[i], Scalar(1e-6), Scalar(1e-6), Scalar(1e-6), "dial" );
-	}
-
-	// Triangle goldens with the A/B-block position mapping (M = 19541):
-	//   Py t[0]     = (0, 1, 32)             -> C++ face[0]
-	//   Py t[12345] = (12441, 12442, 12598)  -> C++ face[24690]
-	//   Py t[39081] = (19823, 19855, 19854)  -> C++ face[39081]
-	CheckFace( mesh, 0,     0,     1,     32,    "dial" );
-	CheckFace( mesh, 24690, 12441, 12442, 12598, "dial" );
-	CheckFace( mesh, 39081, 19823, 19855, 19854, "dial" );
-
-	// every normal unit length; every uv inside [0,1]; every vertex inside the dial
-	bool unitN = true, uvIn = true, rIn = true;
-	for( unsigned int i = 0; i < mesh->numPoints(); ++i ) {
-		const Normal& n = mesh->getNormals()[i];
-		const Scalar len = std::sqrt( n.x*n.x + n.y*n.y + n.z*n.z );
-		if( std::fabs( len - 1.0 ) > 1e-9 ) unitN = false;
-		const TexCoord& c = mesh->getCoords()[i];
-		if( c.x < 0 || c.x > 1 || c.y < 0 || c.y > 1 ) uvIn = false;
-		const Vertex& p = mesh->getVertices()[i];
-		if( std::sqrt( p.x*p.x + p.y*p.y ) > d.radius * (1.0 + 1e-12) ) rIn = false;
-	}
-	Check( unitN, "all normals unit length" );
-	Check( uvIn, "all uv in [0,1]" );
-	Check( rIn, "all vertices inside the dial radius" );
-
-	pi->release();
-}
 
 static void TestSweepCylinder()
 {
@@ -388,47 +298,13 @@ static void TestPathInstances()
 	pSphere->release();
 }
 
-// Regression for the review-round-1 P1: with lightning_relief < 0 (the
-// documented "recess" mode) the relief term is GATED by the petal smoothstep,
-// so the analytic RawMin/RawMax over-state the achievable raw range -- the
-// factory must normalise by the ACHIEVED grid range (exact Python `_finish`),
-// not the analytic shortcut.  Goldens from dial_variants_gen
-// --field radial --lightning-relief -0.3 --mesh-n 160.
-static void TestDialNegativeReliefNormalization()
-{
-	std::cout << "Test 4: dial grid normalization at lightning_relief < 0 (recess mode)" << std::endl;
-	GuillocheDiskDescriptor d;
-	d.pattern = eGuillochePatternRadial;
-	d.lightningRelief = -0.3;
-	d.meshN = 160;
-	ITriangleMeshGeometryIndexed* pi = 0;
-	Check( RISE_API_CreateGuillocheDiskGeometry( &pi, d ), "recess factory succeeds" );
-	if( !pi ) return;
-	const TriangleMeshGeometryIndexed* mesh = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
-	if( !mesh ) { Check( false, "recess concrete type" ); pi->release(); return; }
-
-	Check( mesh->numPoints() == 19856, "recess vertex count 19856" );
-	const VertGolden gold[] = {
-		{ 0,     -3.238993711, -20.340880503,  0.111406931,  0.070891112,  0.147809502, 0.986471896, 0.421383648, 0.006289308 },
-		{ 137,    1.684276730, -19.563522013, -0.151068349, -0.409774675, -0.426626803, 0.806271845, 0.540880503, 0.025157233 },
-		{ 9999,  -1.943396226,   0.129559748, -0.207089861, -0.434304004,  0.135130389, 0.890572743, 0.452830189, 0.503144654 },
-		{ 19855,  3.238993711,  20.340880503,  0.111406931, -0.070891112, -0.147809502, 0.986471896, 0.578616352, 0.993710692 },
-	};
-	for( size_t i = 0; i < sizeof(gold)/sizeof(gold[0]); ++i ) {
-		CheckVert( mesh, gold[i], Scalar(1e-6), Scalar(1e-6), Scalar(1e-6), "recess" );
-	}
-	pi->release();
-}
-
 int main( int, char** )
 {
 	std::cout << "ProceduralMeshTest -- procedural mesh factories vs Python baker goldens" << std::endl << std::endl;
-	TestDialMeshBuilder();
 	TestSweepCylinder();
 	TestSweepDuplicatedProfilePoint();
 	TestSweepTaperAndTorus();
 	TestPathInstances();
-	TestDialNegativeReliefNormalization();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

@@ -5534,36 +5534,6 @@ namespace RISE
 				{ auto& p = P(); p.name = "swirl_turns"; p.kind = ValueKind::Double; p.description = "Log-spiral total turns centre->rim (swirl pattern)"; p.defaultValueHint = "6.0"; }
 			}
 
-			struct GuillocheDiskGeometryAsciiChunkParser : public IAsciiChunkParser
-			{
-				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
-				{
-					std::string name = bag.GetString( "name", "noname" );
-					GuillocheDiskDescriptor d;
-					if( !ReadGuillocheFieldParams( bag, "guilloche_disk_geometry", name, d ) ) {
-						return false;
-					}
-					d.meshN = (int)bag.GetUInt( "mesh_n", (unsigned int)d.meshN );
-					d.disp  = bag.GetDouble( "disp", d.disp );
-					return pJob.AddGuillocheDiskGeometry( name.c_str(), d );
-				}
-
-				const ChunkDescriptor& Describe() const override {
-					static const ChunkDescriptor d = []{
-						ChunkDescriptor cd;
-						cd.keyword = "guilloche_disk_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "Procedural guilloché DISK: the selected pattern's height field baked over the disk (mesh_n x mesh_n Cartesian grid) with analytic normals and linear Cartesian UV.  Engine-turned rose-engine relief for any disk-shaped part (watch dials, pen caps, jewelry, lighters); pair with a guilloche_oxide_painter sharing the same pattern parameters.";
-						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						AppendGuillocheFieldDescriptors( cd );
-						{ auto& p = P(); p.name = "mesh_n"; p.kind = ValueKind::UInt;   p.description = "Grid samples across the diameter (bake density; clamped 8..2048)"; p.defaultValueHint = "560"; }
-						{ auto& p = P(); p.name = "disp";   p.kind = ValueKind::Double; p.description = "Relief amplitude (world units); the mean-centred height field scales by this"; p.defaultValueHint = "0.42"; }
-						return cd;
-					}();
-					return d;
-				}
-			};
-
 			struct CartesianDiskGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -5658,7 +5628,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "guilloche_oxide_painter"; cd.category = ChunkCategory::Function;
-						cd.description = "Guilloché thermal-oxide DOSE as a named IFunction2D over the disk's linear Cartesian UV.  `output dose` (default): normalized [0,1] Arrhenius/parabolic radial heat profile + signed torch term -> consume via scalar_painter { function2d <name> scale S bias B } into film_thickness (the hero-watch heat tint).  `output thickness_nm` / `spall_mask`: ABSOLUTE-temperature temper mode -- a real radial ramp temp_center_c -> temp_rim_c drives the `metal`'s calibrated thermal model to absolute oxide nm or the spall fraction [0,1] (matte oxide-scale blend mask above the flaking temperature).  Pairs with guilloche_disk_geometry.";
+						cd.description = "Guilloché thermal-oxide DOSE as a named IFunction2D over the disk's linear Cartesian UV.  `output dose` (default): normalized [0,1] Arrhenius/parabolic radial heat profile + signed torch term -> consume via scalar_painter { function2d <name> scale S bias B } into film_thickness (the hero-watch heat tint).  `output thickness_nm` / `spall_mask`: ABSOLUTE-temperature temper mode -- a real radial ramp temp_center_c -> temp_rim_c drives the `metal`'s calibrated thermal model to absolute oxide nm or the spall fraction [0,1] (matte oxide-scale blend mask above the flaking temperature).  Pairs with a guilloché expression_function2d displaced onto a disk.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						AppendGuillocheFieldDescriptors( cd );
@@ -9863,7 +9833,6 @@ namespace RISE
 		add( "bezierpatch_geometry",                  new BezierPatchGeometryAsciiChunkParser() );
 		add( "bilinearpatch_geometry",                new BilinearPatchGeometryAsciiChunkParser() );
 		add( "sdf_geometry",                          new SDFGeometryAsciiChunkParser() );
-		add( "guilloche_disk_geometry",               new GuillocheDiskGeometryAsciiChunkParser() );
 		add( "cartesian_disk_geometry",               new CartesianDiskGeometryAsciiChunkParser() );
 		add( "sweep_geometry",                        new SweepGeometryAsciiChunkParser() );
 		add( "path_instances_geometry",               new PathInstancesGeometryAsciiChunkParser() );

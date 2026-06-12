@@ -5,17 +5,23 @@
 //
 //    1. Engine correctness: operators, precedence, functions, params,
 //       let-bindings (defs), and the parse-error paths.
-//    2. Proof of generality: the UNIFORM guilloché field authored as a
-//       scene EXPRESSION reproduces GuillocheField::Height (the retired
-//       C++ field) to golden precision -- i.e. the patterning really can
-//       move out of C++ into the scene file.
+//    2. Proof of generality: ALL SIX guilloché dial patterns authored as
+//       scene EXPRESSIONS reproduce GuillocheField::Height (the retired
+//       C++ relief field) to golden precision -- i.e. the entire dial
+//       pattern library moves out of C++ into the scene file.
+//
+//  The six Build* functions below ARE the canonical scene expressions
+//  (the watch's dial library, scenes/FeatureBased/GuillocheWatch).  The
+//  goldens are GuillocheField::Height at eight dial points with the exact
+//  blessed per-pattern parameters from watch_dial.RISEscene.
 //
 //////////////////////////////////////////////////////////////////////
 
 #include <iostream>
 #include <cmath>
+#include <string>
 #include "../src/Library/Painters/ExpressionEval.h"
-#include "../src/Library/Painters/GuillochePainter.h"		// GuillocheField (the reference)
+#include "GuillocheDialExpr.h"		// the six dial patterns (shared with the scene-chunk emitter)
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -58,6 +64,7 @@ static void TestEngine()
 	CheckClose( Compile1( "atan2(1,0)" ).Eval(0,0), std::atan2(1.0,0.0), 1e-12, "atan2" );
 	CheckClose( Compile1( "mod(-1, 3)" ).Eval(0,0), 2, 1e-12, "floor-mod" );
 	CheckClose( Compile1( "clamp(5,0,3)+smoothstep(0,1,0.5)+mix(0,8,0.25)+select(1<2,10,20)" ).Eval(0,0), 3+0.5+2+10, 1e-9, "ternary fns" );
+	CheckClose( Compile1( "select(3>2,10,20)+select(2>=2,1,0)+select(1!=1,5,6)" ).Eval(0,0), 10+1+6, 1e-9, "gt/ge/ne" );
 	CheckClose( Compile1( "hypot(3,4)" ).Eval(0,0), 5, 1e-9, "hypot" );
 	CheckClose( Compile1( "pi" ).Eval(0,0), 3.14159265358979323846, 1e-12, "pi const" );
 
@@ -83,71 +90,80 @@ static void TestEngine()
 	  Check( !b.Finalize( "(1 + 2", p ), "unbalanced paren rejects" ); }
 }
 
-// The uniform guilloché field as an in-scene expression (the same param/def
-// chain authored in scenes), built here to validate it == GuillocheField.
-static ExpressionProgram BuildUniformGuilloche()
+// Compile a templated pattern from GuillocheDialExpr (the SAME code the
+// scene-chunk emitter replays) into an ExpressionProgram.
+typedef std::string (*PatternFn)( ExpressionProgram::Builder& );
+
+static ExpressionProgram CompilePattern( PatternFn fn )
 {
 	ExpressionProgram p = ExpressionProgram::Invalid();
 	ExpressionProgram::Builder b;
-	b.AddParam( "R", 20.6 );          b.AddParam( "arms", 12 );      b.AddParam( "swirl", 0 );
-	b.AddParam( "seamJag", 0.16 );    b.AddParam( "seamJagFreq", 3.0 );
-	b.AddParam( "cell", 0.9 );        b.AddParam( "gridAmp", 0.85 ); b.AddParam( "petalAmp", 0.30 );
-	b.AddParam( "gridE0", 0.12 );     b.AddParam( "gridE1", 0.5 );
-	b.AddParam( "petalE0", 0.0 );     b.AddParam( "petalE1", 0.82 );
-	b.AddParam( "base", 0.15 );       b.AddParam( "landLevel", 0.45 );
-	b.AddParam( "reliefDepth", 0.85 );b.AddParam( "centerRadius", 0.03 );
-	b.AddDef( "x", "(2*u-1)*R" );     b.AddDef( "y", "(2*v-1)*R" );
-	b.AddDef( "r", "hypot(x,y)" );    b.AddDef( "rho", "clamp(r/R,0,1)" );
-	b.AddDef( "theta", "atan2(y,x)" );
-	b.AddDef( "jagf", "frac(seamJagFreq*rho)" );
-	b.AddDef( "jag", "seamJag*(2*abs(2*jagf-1)-1)" );
-	b.AddDef( "psi", "theta+swirl*rho+jag" );
-	b.AddDef( "petalc", "abs(cos(arms*psi))" );
-	b.AddDef( "petal", "smoothstep(petalE0,petalE1,petalc)" );
-	b.AddDef( "wsec", "tau/arms" );   b.AddDef( "q", "psi/wsec" );
-	b.AddDef( "sector", "sign(q)*floor(abs(q)+0.5)" );
-	b.AddDef( "thetaC", "sector*wsec-swirl*rho-jag" );
-	b.AddDef( "cc", "cos(thetaC)" );  b.AddDef( "ss", "sin(thetaC)" );
-	b.AddDef( "xr", "cc*x+ss*y" );    b.AddDef( "yr", "-ss*x+cc*y" );
-	b.AddDef( "freq", "0.5/cell" );
-	b.AddDef( "ax", "freq*xr" );      b.AddDef( "ay0", "freq*yr" );
-	b.AddDef( "rowpar", "floor(2*ax)" );
-	b.AddDef( "ay", "ay0+0.25*mod(rowpar,2)" );
-	b.AddDef( "stripex", "smoothstep(gridE0,gridE1,abs(cos(tau*ax)))" );
-	b.AddDef( "stripey", "smoothstep(gridE0,gridE1,abs(cos(tau*ay)))" );
-	b.AddDef( "grid", "stripex*stripey" );
-	b.AddDef( "raw", "base+petalAmp*petal+gridAmp*grid" );
-	b.AddDef( "h0", "clamp((raw-base)/(petalAmp+gridAmp),0,1)" );
-	b.AddDef( "h1", "pow(h0,log(landLevel)/log(0.5))" );
-	b.AddDef( "h2", "0.5+(h1-0.5)*reliefDepth" );
-	b.AddDef( "hub", "0.5*(1-reliefDepth)" );
-	b.AddDef( "rin", "max(centerRadius*R,0.000001)" );
-	b.AddDef( "whub", "clamp(r/rin,0,1)" );
-	b.AddDef( "hfin", "(1-whub*whub)*hub+whub*whub*h2" );
-	b.Finalize( "clamp(hfin,0,1)", p );
+	const std::string fin = fn( b );
+	b.Finalize( fin, p );
 	return p;
+}
+
+//====================================================================
+//  Validate each scene expression == the retired GuillocheField::Height.
+//
+//  These goldens were captured from GuillocheField::Height (the C++ relief
+//  field, now removed) at eight dial points with the exact blessed
+//  per-pattern parameters from watch_dial.RISEscene.  The scene
+//  expressions above reproduce them to 1e-6 -- the proof that the entire
+//  dial pattern library lives in the scene file, not in C++.  To
+//  regenerate after a deliberate field change, see the dump harness in
+//  the commit that introduced this test.
+//====================================================================
+
+static const Scalar kR = 20.6;
+static const Scalar kPTS[8][2] = {
+	{ 0.31, 0.17 }, { 3.2, 1.1 }, { -5.7, 8.3 }, { 12.4, -3.9 },
+	{ -15.2, -9.8 }, { 0.0, 18.9 }, { 7.07, 7.07 }, { -19.5, 2.0 }
+};
+
+// GuillocheField::Height goldens, one row of 8 per pattern.  Row order
+// follows the ValidatePattern() call order below (uniform, radial,
+// lightning, iris, swirl, varwidth) -- NOT the GuillocheParams::Pattern
+// enum order (which swaps lightning/radial).
+static const Scalar kGold[6][8] = {
+	{ 0.20847977124, 0.84457644488, 0.919685621104, 0.925,
+	  0.255774385448, 0.925, 0.675201634858, 0.925 },
+	{ 0.214067284782, 0.746485235929, 0.761970231601, 0.925,
+	  0.925, 0.255774385448, 0.675201634858, 0.382105955876 },
+	{ 0.792073389645, 0.444937813954, 0.221172453769, 0.444937813954,
+	  0.444937813954, 0.53975985465, 0.925, 0.39180309277 },
+	{ 0.386690741972, 0.257496664918, 0.632657702808, 0.911528472042,
+	  0.427947593856, 0.239217848864, 0.152535667977, 0.80483823114 },
+	{ 0.636197449139, 0.0752886813544, 0.925, 0.075,
+	  0.0780249280251, 0.0852142707664, 0.75298819258, 0.149854333332 },
+	{ 0.700942595909, 0.925, 0.90244896724, 0.075,
+	  0.0937768284557, 0.075, 0.359700879375, 0.075 }
+};
+
+static void ValidatePattern( const char* name, int gi, const ExpressionProgram& prog )
+{
+	char label[96];
+	snprintf( label, sizeof(label), "%s expression compiles", name );
+	Check( prog.IsValid(), label );
+	if( !prog.IsValid() ) return;
+	for( int i = 0; i < 8; ++i ) {
+		const Scalar x = kPTS[i][0], y = kPTS[i][1];
+		const Scalar u = ( x + kR ) / ( 2 * kR );
+		const Scalar v = ( y + kR ) / ( 2 * kR );
+		snprintf( label, sizeof(label), "%s expr==Height pt%d", name, i );
+		CheckClose( prog.Eval( u, v ), kGold[gi][i], Scalar(1e-6), label );
+	}
 }
 
 static void TestGuillocheEquivalence()
 {
-	std::cout << "Test 2: uniform guilloché AS A SCENE EXPRESSION == GuillocheField::Height (goldens)" << std::endl;
-	const ExpressionProgram prog = BuildUniformGuilloche();
-	Check( prog.IsValid(), "uniform guilloché expression compiles" );
-	const GuillocheField field( GuillocheParamsFromDescriptor( GuillocheDiskDescriptor() ) );
-	const Scalar R = 20.6;
-	const Scalar PTS[8][2] = {
-		{ 0.31, 0.17 }, { 3.2, 1.1 }, { -5.7, 8.3 }, { 12.4, -3.9 },
-		{ -15.2, -9.8 }, { 0.0, 18.9 }, { 7.07, 7.07 }, { -19.5, 2.0 }
-	};
-	char label[64];
-	for( int i = 0; i < 8; ++i ) {
-		const Scalar x = PTS[i][0], y = PTS[i][1];
-		const Scalar u = ( x + R ) / ( 2 * R );
-		const Scalar v = ( y + R ) / ( 2 * R );
-		snprintf( label, sizeof(label), "expr == Height pt%d", i );
-		// the scene expression must reproduce the C++ field to tight tolerance
-		CheckClose( prog.Eval( u, v ), field.Height( x, y ), Scalar(1e-6), label );
-	}
+	std::cout << "Test 2: all six guilloché dial patterns AS SCENE EXPRESSIONS == GuillocheField::Height goldens" << std::endl;
+	ValidatePattern( "uniform",  0, CompilePattern( GuillocheDialExpr::BuildUniform  ) );
+	ValidatePattern( "radial",   1, CompilePattern( GuillocheDialExpr::BuildRadial   ) );
+	ValidatePattern( "lightning",2, CompilePattern( GuillocheDialExpr::BuildLightning) );
+	ValidatePattern( "iris",     3, CompilePattern( GuillocheDialExpr::BuildIris     ) );
+	ValidatePattern( "swirl",    4, CompilePattern( GuillocheDialExpr::BuildSwirl    ) );
+	ValidatePattern( "varwidth", 5, CompilePattern( GuillocheDialExpr::BuildVarwidth ) );
 }
 
 int main( int, char** )

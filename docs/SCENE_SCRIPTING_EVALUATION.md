@@ -170,6 +170,14 @@ reproduces `GuillocheField::Height` to 1e-6 (tests/ExpressionFunction2DTest)
 and renders identically to the retired `guilloche_disk_geometry`.  The
 engine is hardened against untrusted scene text (bounded parse recursion,
 compile-time value-stack bound, no per-eval heap, ffast-math-safe finite
-guard).  Remaining future work: an in-chunk `FOR` for repeated geometry
-(the sdf_gen.py case), and migrating the watch's full 6-pattern library +
-excising guilloche_disk_geometry.
+guard).  **2026-06-12 follow-up — migration COMPLETE:** all six watch dial
+patterns (uniform/lightning/radial/iris/swirl/varwidth) are now authored
+as in-scene `expression_function2d` chunks (proven == the original C++
+relief to 1e-6 across a 52k-point sweep), the watch + temper scenes are
+migrated, and `guilloche_disk_geometry` (chunk + factory + IJob/Job + the
+C++ relief math in `GuillocheField`) is EXCISED — `GuillocheField` keeps
+only its oxide/thermal physics, which the heat-tint painter still uses.
+The six patterns live as templated builders in `tests/GuillocheDialExpr.h`,
+the single source the equivalence test and a chunk-text emitter share.
+Remaining future work: an in-chunk `FOR` for repeated geometry (the
+sdf_gen.py case).

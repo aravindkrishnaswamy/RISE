@@ -59,70 +59,9 @@ static GuillocheDiskDescriptor DescLightning()
 	d.fieldCell = 0.50; d.fieldFrame = 0;
 	return d;
 }
-static GuillocheDiskDescriptor DescRadial()
-{
-	GuillocheDiskDescriptor d;
-	d.pattern = eGuillochePatternRadial;
-	d.cellMode = 1; d.lightningCellScale = 1.8;
-	d.lightningLo = 0.25; d.lightningHi = 0.65;
-	return d;
-}
-static GuillocheDiskDescriptor DescIris()
-{
-	GuillocheDiskDescriptor d;
-	d.pattern = eGuillochePatternIris;
-	d.numArms = 8; d.irisAperture = 0.13; d.irisSwirl = 0.6;
-	d.cell = 0.8; d.gridAmp = 0.95; d.lightningRelief = 0.0; d.centerRadius = 0.0;
-	return d;
-}
-static GuillocheDiskDescriptor DescSwirl()
-{
-	GuillocheDiskDescriptor d;
-	d.pattern = eGuillochePatternSwirl;
-	d.numArms = 6; d.swirlTurns = 7.0;
-	d.cell = 0.8; d.gridAmp = 0.95; d.centerRadius = 0.02;
-	return d;
-}
-static GuillocheDiskDescriptor DescVarwidth()
-{
-	GuillocheDiskDescriptor d;
-	d.pattern = eGuillochePatternVarwidth;
-	d.numArms = 8; d.lightningCellScale = 2.6;
-	d.cell = 0.6; d.gridAmp = 0.95; d.centerRadius = 0.02;
-	return d;
-}
-
-static void TestHeightGoldens()
-{
-	std::cout << "Test 1: Height(x, y) vs Python goldens (6 blessed patterns x 8 points)" << std::endl;
-	struct Row { const char* name; GuillocheDiskDescriptor d; Scalar want[8]; };
-	const Row rows[] = {
-		{ "uniform", DescUniform(),
-			{ 0.208479771, 0.844576445, 0.919685621, 0.925, 0.255774385, 0.925, 0.675201635, 0.925 } },
-		{ "lightning", DescLightning(),
-			{ 0.792073390, 0.444937814, 0.221172454, 0.444937814, 0.444937814, 0.539759855, 0.925, 0.391803093 } },
-		{ "radial", DescRadial(),
-			{ 0.214067285, 0.746485236, 0.761970232, 0.925, 0.925, 0.255774385, 0.675201635, 0.382105956 } },
-		{ "iris", DescIris(),
-			{ 0.386690742, 0.257496665, 0.632657703, 0.911528472, 0.427947594, 0.239217849, 0.152535668, 0.804838231 } },
-		{ "swirl", DescSwirl(),
-			{ 0.636197449, 0.075288681, 0.925, 0.075, 0.078024928, 0.085214271, 0.752988193, 0.149854333 } },
-		{ "varwidth", DescVarwidth(),
-			{ 0.700942596, 0.925, 0.902448967, 0.075, 0.093776828, 0.075, 0.359700879, 0.075 } },
-	};
-	char label[128];
-	for( size_t r = 0; r < sizeof(rows)/sizeof(rows[0]); ++r ) {
-		const GuillocheField field( GuillocheParamsFromDescriptor( rows[r].d ) );
-		for( int i = 0; i < 8; ++i ) {
-			snprintf( label, sizeof(label), "%s height pt%d", rows[r].name, i );
-			CheckClose( field.Height( PTS[i][0], PTS[i][1] ), rows[r].want[i], Scalar(1e-6), label );
-		}
-	}
-}
-
 static void TestOxideDoseGoldens()
 {
-	std::cout << "Test 2: OxideDose radial profile vs thermal_oxide_sim (4 metals + 3 falloffs)" << std::endl;
+	std::cout << "Test 1: OxideDose radial profile vs thermal_oxide_sim (4 metals + 3 falloffs)" << std::endl;
 	// dose(rho) at rho in {0, 0.35, 0.7, 1}, torch 0.  Golden values are the
 	// formula-exact doubles (verified == build_thickness_profile to 2.2e-16).
 	struct Row { const char* name; int falloff; Scalar ea; Scalar want[4]; };
@@ -156,7 +95,7 @@ static void TestOxideDoseGoldens()
 
 static void TestTorchMaskGoldens()
 {
-	std::cout << "Test 3: TorchMask vs dial_mesh_gen.lightning_mask (12-arm petal) + lightning zeros" << std::endl;
+	std::cout << "Test 2: TorchMask vs dial_mesh_gen.lightning_mask (12-arm petal) + lightning zeros" << std::endl;
 	// Default (uniform) pattern mask == the production petal mask that bakes
 	// the oxide hot/cool variants.  Goldens from lightning_mask's math.
 	{
@@ -190,7 +129,7 @@ static void TestTorchMaskGoldens()
 
 static void TestOxidePainterUVMapping()
 {
-	std::cout << "Test 4: GuillocheOxidePainter::Evaluate UV == OxideDose(world)" << std::endl;
+	std::cout << "Test 3: GuillocheOxidePainter::Evaluate UV == OxideDose(world)" << std::endl;
 	const GuillocheDiskDescriptor d = DescUniform();
 	const GuillocheParams p = GuillocheParamsFromDescriptor( d );
 	const GuillocheField field( p );
@@ -217,7 +156,7 @@ static void TestOxidePainterUVMapping()
 // MetalThermalModel map (matches the Python de-risk).
 static void TestThermalModelGoldens()
 {
-	std::cout << "Test 5: absolute-temperature thermal model (thickness nm + spall) vs goldens" << std::endl;
+	std::cout << "Test 4: absolute-temperature thermal model (thickness nm + spall) vs goldens" << std::endl;
 	const GuillocheField field( GuillocheParamsFromDescriptor( GuillocheDiskDescriptor() ) );
 	struct Row { char m; const char* name; Scalar T; Scalar d; Scalar spall; };
 	const Row rows[] = {
@@ -251,7 +190,6 @@ static void TestThermalModelGoldens()
 int main( int, char** )
 {
 	std::cout << "GuillocheFieldTest -- C++ field port vs Python baker goldens" << std::endl << std::endl;
-	TestHeightGoldens();
 	TestOxideDoseGoldens();
 	TestTorchMaskGoldens();
 	TestOxidePainterUVMapping();

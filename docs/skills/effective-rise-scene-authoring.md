@@ -273,11 +273,23 @@ self-contained, and live-rebind in the GUI like any named geometry.
   local Y (so a 1.35-long, 0.14-radius thread is `0.14 0.535 0`).
   First part must be `union`/`smin`.  Melded organic shapes (lugs
   flowing into a bezel, crowns, hands).
-- **`guilloche_disk_geometry`** — engine-turned rose-engine relief
-  baked over a disk (six pattern families: uniform / lightning /
-  radial / iris / swirl / varwidth).  Any disk-shaped part: watch
-  dials, pen caps, jewelry, lighters.  UV is the linear Cartesian map
-  `u = (x+R)/2R`, so any 2D map applies independent of pattern.
+- **`expression_function2d` + `cartesian_disk_geometry` + `displaced_geometry`** —
+  the GENERAL way to author engraved relief in-scene (no bespoke C++
+  geometry).  `expression_function2d` is a math-expression field over
+  (u, v) (`param`/`def`/`expr`; sin/cos/atan2/floor/mod/clamp/smoothstep/
+  select/… — the in-scene analogue of `perlin2d`); `cartesian_disk_geometry`
+  is a flat Cartesian-UV disk base (`u=(x+R)/2R`, uniform world-cell
+  density); `displaced_geometry … uv_seam_fold FALSE` applies the field
+  along the +Z normal WITHOUT the closed-surface UV tent-fold (use FALSE
+  for an open Cartesian field on a disk; TRUE only for wrapped seams on
+  sphere/torus/cylinder).  A guilloché watch dial = exactly this trio (see
+  the six `dialfn_*` chunks in `scenes/FeatureBased/GuillocheWatch/
+  watch_dial.RISEscene`; the patterns are proven == the original C++ field
+  to 1e-6 in `tests/ExpressionFunction2DTest`).  **AUTHORING RULE:** the
+  expression's `param R` MUST equal the `cartesian_disk_geometry radius`
+  (and any `guilloche_oxide_painter radius` sharing the dial) — the
+  `(x,y)=(2u-1,2v-1)*R` mapping is shared and a mismatch silently
+  mis-scales the relief with no parse error.
 - **`guilloche_oxide_painter` + `scalar_painter { function2d … }`** —
   the heat-tint pipeline.  The painter is a named IFunction2D giving a
   normalized thermal-oxide DOSE in [0,1] (Arrhenius radial profile,

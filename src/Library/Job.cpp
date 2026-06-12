@@ -4352,17 +4352,6 @@ bool Job::AddSDFGeometry( const char* name, const char* szFileName, const char* 
 	return true;
 }
 
-bool Job::AddGuillocheDiskGeometry( const char* name, const GuillocheDiskDescriptor& desc )
-{
-	ITriangleMeshGeometryIndexed* pGeometry = 0;
-	if( !RISE_API_CreateGuillocheDiskGeometry( &pGeometry, desc ) ) {
-		return false;   // the factory already logged why
-	}
-	pGeomManager->AddItem( pGeometry, name );
-	safe_release( pGeometry );
-	return true;
-}
-
 bool Job::AddGuillocheOxideFunction2D( const char* name, const GuillocheDiskDescriptor& desc, const int falloffMode, const double activationEa, const double torchAmount )
 {
 	IFunction2D* pFunction = 0;

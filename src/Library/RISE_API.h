@@ -476,17 +476,6 @@ namespace RISE
 						const unsigned int   samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
 						);
 
-	//! Creates the procedural guilloché DIAL mesh -- the native replacement for
-	//! the dial_mesh_gen.py / dial_variants_gen.py bakers.  Bakes the selected
-	//! pattern's height field on a Cartesian grid (meshN x meshN over the dial
-	//! circle), with analytic finite-difference normals and linear Cartesian UV
-	//! ((x+R)/2R), exactly as the retired Python did -- but at parse time, no
-	//! sidecar mesh files.  The result is an indexed triangle mesh (own BVH).
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateGuillocheDiskGeometry(
-						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
-						const GuillocheDiskDescriptor& desc	///< [in] Pattern + bake parameters
-						);
 
 	//! Creates a FLAT Cartesian-grid circular disk (linear Cartesian UV,
 	//! +Z normals) -- the general flat base for displacing an arbitrary 2D

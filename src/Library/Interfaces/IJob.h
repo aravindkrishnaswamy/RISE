@@ -3004,16 +3004,6 @@ namespace RISE
 			const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
 			) = 0;
 
-		//! Creates the procedural guilloché disk mesh (native replacement for
-		//! the dial_mesh_gen.py raw2 bakers): the selected pattern's height
-		//! field baked over the dial circle with analytic normals and linear
-		//! Cartesian UV.  Appended after AddSDFGeometry for the same
-		//! vtable-slot ABI stability reason.
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool AddGuillocheDiskGeometry(
-			const char* name,						///< [in] Name of the geometry
-			const GuillocheDiskDescriptor& desc		///< [in] Pattern + bake parameters
-			) = 0;
 
 		//! Creates the guilloché oxide-dose IFunction2D (native replacement
 		//! for the baked oxide_*.png maps).  Registered as a named function;

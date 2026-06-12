@@ -468,10 +468,13 @@ P3-A/B/C plan** in one load-bearing way — the Cartesian rebuild below.
   position + analytic normal + linear UV) — every cell is a fixed world size at the rim and the
   dead-centre alike. The woven micro-grid is laid in a per-sector-rotated frame so it runs radially
   and flips tilt at each jagged "lightning" seam but never shrinks; the petals are the swirl=0
-  radial organizer. **2026-06 update:** the bake is now NATIVE — `guilloche_disk_geometry` chunks
-  evaluate the same field in C++ at scene-parse time (`src/Library/Painters/GuillocheField.h`;
-  golden-tested against the Python in `tests/GuillocheFieldTest.cpp` + `tests/ProceduralMeshTest.cpp`),
-  so there is no mesh file at all; `dial_mesh_gen.py` remains as the reference implementation.
+  radial organizer. **2026-06 update:** the relief is now authored ENTIRELY IN THE SCENE FILE —
+  a `dialfn_*` `expression_function2d` (the field as a math expression over (u,v)) displaced onto a
+  flat `cartesian_disk_geometry` via `displaced_geometry … uv_seam_fold FALSE`, so there is no mesh
+  file AND no guilloché-specific C++ geometry. The six patterns are proven == the original
+  `GuillocheField::Height` relief to 1e-6 in `tests/ExpressionFunction2DTest.cpp` (the C++ relief
+  math has since been retired; `GuillocheField` keeps only its oxide/thermal physics, used by the
+  heat-tint painter). `dial_mesh_gen.py` remains as the historical reference.
 
 - **Heat-tint is scene-tunable, no re-bake** (the §9 decoupling, realised — and since 2026-06 fully
   native). The normalised radial heat SHAPE (0=centre..1=rim) is a `guilloche_oxide_painter`

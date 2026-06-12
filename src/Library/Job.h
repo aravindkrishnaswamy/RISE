@@ -1486,11 +1486,6 @@ namespace RISE
 					const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for surface sampling
 					);
 
-		//! Creates the procedural guilloché dial mesh (see IJob)
-		bool AddGuillocheDiskGeometry(
-					const char* name,						///< [in] Name of the geometry
-					const GuillocheDiskDescriptor& desc		///< [in] Pattern + bake parameters
-					);
 
 		//! Creates the guilloché oxide-dose IFunction2D (see IJob)
 		bool AddGuillocheOxideFunction2D(

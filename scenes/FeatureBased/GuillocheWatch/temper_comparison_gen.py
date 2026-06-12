@@ -31,6 +31,57 @@ ORDER = ["titanium", "niobium", "tantalum", "stainless"]
 NK = "colors/thinfilm/%s/%s.%s"   # (substrates|oxides, name, n|k)
 
 
+DIALFN_UNIFORM = r"""expression_function2d
+{
+	name			dialfn
+	param		R 20.6
+	param		arms 12
+	param		swirl 0
+	param		seamJag 0.16
+	param		seamJagFreq 3
+	param		cell 0.9
+	param		gridAmp 0.85
+	param		petalAmp 0.3
+	param		gridE0 0.12
+	param		gridE1 0.5
+	param		petalE0 0
+	param		petalE1 0.82
+	param		base 0.15
+	param		landLevel 0.45
+	param		reliefDepth 0.85
+	param		centerRadius 0.03
+	def			x (2*u-1)*R
+	def			y (2*v-1)*R
+	def			r hypot(x,y)
+	def			rho clamp(r/R,0,1)
+	def			theta atan2(y,x)
+	def			jag seamJag*(2*abs(2*frac(seamJagFreq*rho)-1)-1)
+	def			psi theta+swirl*rho+jag
+	def			petal smoothstep(petalE0,petalE1,abs(cos(arms*psi)))
+	def			wsec tau/arms
+	def			q psi/wsec
+	def			sector sign(q)*floor(abs(q)+0.5)
+	def			thetaC sector*wsec-swirl*rho-jag
+	def			cc cos(thetaC)
+	def			ss sin(thetaC)
+	def			xr cc*x+ss*y
+	def			yr -ss*x+cc*y
+	def			waxU (0.5/cell)*xr
+	def			way0U (0.5/cell)*yr
+	def			wrpU floor(2*waxU)
+	def			wayU way0U+0.25*mod(wrpU,2)
+	def			wgU smoothstep(gridE0,gridE1,abs(cos(tau*(waxU))))*smoothstep(gridE0,gridE1,abs(cos(tau*(wayU))))
+	def			raw base+petalAmp*petal+gridAmp*wgU
+	def			h0 clamp((raw-(0.14999999999999999))/(1.1499999999999999),0,1)
+	def			h1 pow(h0,log(landLevel)/log(0.5))
+	def			h2 0.5+(h1-0.5)*reliefDepth
+	def			hub 0.5*(1-reliefDepth)
+	def			rin max(centerRadius*R,0.000001)
+	def			whub clamp(r/rin,0,1)
+	def			hfin (1-whub*whub)*hub+whub*whub*h2
+	expr			clamp(hfin,0,1)
+}"""
+
 def build_scene(metal, temp_lo, temp_hi, out_pattern, width, height, samples):
     sub, ox, m0, _, _ = METALS[metal]
     R = 20.6
@@ -85,8 +136,13 @@ def build_scene(metal, temp_lo, temp_hi, out_pattern, width, height, samples):
              "\tfresnel_mode\t\tthinfilm\n\tior\t\t\tsub_n\n\textinction\t\tsub_k\n"
              "\tfilm_ior\t\tfilm_n\n\tfilm_extinction\t\tfilm_k\n\tfilm_thickness\t\tfilm_thk\n}")
 
-    s.append("guilloche_disk_geometry\n{\n\tname\t\t\tdisk\n\tpattern\t\t\tuniform\n\tradius\t\t\t%.4f\n\tdisp\t\t\t0.12\n\tmesh_n\t\t\t460\n}" % R)
-    s.append("standard_object\n{\n\tname\t\t\tdial\n\tgeometry\t\tdisk\n\tmaterial\t\ttf\n\tposition\t\t0 0 0\n}")
+    # flat Cartesian base + the guilloché relief authored IN-SCENE as an
+    # expression_function2d (== GuillocheField uniform to 1e-6;
+    # tests/ExpressionFunction2DTest), displaced with uv_seam_fold FALSE.
+    s.append("cartesian_disk_geometry\n{\n\tname\t\t\tdisk\n\tradius\t\t\t%.4f\n\tmesh_n\t\t\t460\n}" % R)
+    s.append(DIALFN_UNIFORM)
+    s.append("displaced_geometry\n{\n\tname\t\t\tdialdisp\n\tbase_geometry\t\tdisk\n\tdisplacement\t\tdialfn\n\tdisp_scale\t\t0.12\n\tuv_seam_fold\t\tFALSE\n}")
+    s.append("standard_object\n{\n\tname\t\t\tdial\n\tgeometry\t\tdialdisp\n\tmaterial\t\ttf\n\tposition\t\t0 0 0\n}")
     return "\n\n".join(s) + "\n"
 
 

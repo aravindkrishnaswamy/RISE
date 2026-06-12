@@ -4,7 +4,7 @@
 //  procedural guilloché chunks (the native replacements for the
 //  Python bakers):
 //
-//    guilloche_disk_geometry   -> Job::AddGuillocheDiskGeometry
+//    cartesian_disk_geometry   -> Job::AddCartesianDiskGeometry
 //    guilloche_oxide_painter   -> Job::AddGuillocheOxideFunction2D
 //    sweep_geometry            -> Job::AddSweepGeometry
 //    path_instances_geometry   -> Job::AddPathInstancesGeometry
@@ -98,12 +98,9 @@ namespace {
 
 	// Small chunks reused across cases (mesh_n tiny so the bake is instant).
 	const char* kDial =
-		"guilloche_disk_geometry\n{\n"
+		"cartesian_disk_geometry\n{\n"
 		"name dialg\n"
-		"pattern lightning\n"
-		"num_arms 11\n"
-		"cell_mode select\n"
-		"lightning_relief 0.6\n"
+		"radius 20.6\n"
 		"mesh_n 48\n"
 		"}\n";
 	const char* kOxide =
@@ -164,7 +161,7 @@ static void TestHappyPath()
 	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
 	Check( priv != 0, "IJobPriv available" );
 	if( !priv ) { job->release(); return; }
-	Check( priv->GetGeometries()->GetItem( "dialg" ) != 0,      "dial geometry registered" );
+	Check( priv->GetGeometries()->GetItem( "dialg" ) != 0,      "cartesian disk geometry registered" );
 	Check( priv->GetGeometries()->GetItem( "bandg" ) != 0,      "sweep geometry registered" );
 	Check( priv->GetGeometries()->GetItem( "stitchg" ) != 0,    "path-instances geometry registered" );
 	Check( priv->GetFunction2Ds()->GetItem( "oxfn" ) != 0,      "oxide function2d registered" );
@@ -178,11 +175,13 @@ static void TestHappyPath()
 	job->release();
 }
 
-static void TestClamps()
+static void TestCartesianDiskValidation()
 {
-	std::cout << "Test 2: out-of-range mesh_n clamps (parses), never rejects" << std::endl;
-	Check( ParseBody( "clamp_lo",
-		"guilloche_disk_geometry\n{\nname g\nmesh_n 1\n}\n" ), "mesh_n 1 clamps to 8 (floor matches the SDF sampling_detail precedent; a 2x2 grid has every corner outside the dial circle)" );
+	std::cout << "Test 2: cartesian_disk_geometry validation (radius > 0, non-degenerate mesh)" << std::endl;
+	Check( !ParseBody( "radius0",
+		"cartesian_disk_geometry\n{\nname g\nradius 0\nmesh_n 16\n}\n" ), "radius 0 rejects" );
+	Check( !ParseBody( "degenerate",
+		"cartesian_disk_geometry\n{\nname g\nmesh_n 1\n}\n" ), "mesh_n 1 -> 2x2 grid all-outside -> degenerate rejects" );
 }
 
 static void TestRejections()
@@ -190,26 +189,20 @@ static void TestRejections()
 	std::cout << "Test 3: rejection paths" << std::endl;
 	struct Row { const char* tag; const char* body; const char* what; };
 	const Row rows[] = {
-		{ "bad_pattern",  "guilloche_disk_geometry\n{\nname g\npattern zigzag\nmesh_n 16\n}\n",
+		{ "bad_pattern",  "guilloche_oxide_painter\n{\nname f\npattern zigzag\n}\n",
 		  "unknown pattern enum rejects" },
 		{ "bad_metal",    "guilloche_oxide_painter\n{\nname f\nmetal woof\nactivation_ea 160000\n}\n",
 		  "unknown metal rejects even with explicit activation_ea" },
 		{ "bad_falloff",  "guilloche_oxide_painter\n{\nname f\nfalloff sideways\n}\n",
 		  "unknown falloff enum rejects" },
-		{ "arms_zero",    "guilloche_disk_geometry\n{\nname g\nnum_arms 0\nmesh_n 16\n}\n",
+		{ "arms_zero",    "guilloche_oxide_painter\n{\nname f\nnum_arms 0\n}\n",
 		  "num_arms 0 rejects" },
-		{ "arms_huge",    "guilloche_disk_geometry\n{\nname g\nnum_arms 1000\nmesh_n 16\n}\n",
+		{ "arms_huge",    "guilloche_oxide_painter\n{\nname f\nnum_arms 1000\n}\n",
 		  "num_arms 1000 rejects (cap 256)" },
-		{ "cell_zero",    "guilloche_disk_geometry\n{\nname g\ncell 0\nmesh_n 16\n}\n",
+		{ "cell_zero",    "guilloche_oxide_painter\n{\nname f\ncell 0\n}\n",
 		  "cell 0 rejects" },
-		{ "radius_nan",   "guilloche_disk_geometry\n{\nname g\nradius nan\nmesh_n 16\n}\n",
+		{ "radius_nan",   "guilloche_oxide_painter\n{\nname f\nradius nan\n}\n",
 		  "radius nan rejects (text-domain)" },
-		{ "disp_nan",     "guilloche_disk_geometry\n{\nname g\ndisp nan\nmesh_n 16\n}\n",
-		  "disp nan rejects (text-domain; factory has no disp guard)" },
-		{ "disp_inf",     "guilloche_disk_geometry\n{\nname g\ndisp inf\nmesh_n 16\n}\n",
-		  "disp inf rejects (text-domain)" },
-		{ "disp_text",    "guilloche_disk_geometry\n{\nname g\ndisp abc\nmesh_n 16\n}\n",
-		  "non-numeric double rejects (text-domain)" },
 		{ "ea_huge",      "guilloche_oxide_painter\n{\nname f\nactivation_ea 5e7\n}\n",
 		  "activation_ea above 1e6 J/mol rejects" },
 		{ "two_prof",     "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\npoint 0 0 0\npoint 0 0 10\n}\n",
@@ -299,7 +292,7 @@ int main( int, char** )
 {
 	std::cout << "GuillocheChunkParseTest -- parse-level plumbing for the procedural chunks" << std::endl << std::endl;
 	TestHappyPath();
-	TestClamps();
+	TestCartesianDiskValidation();
 	TestRejections();
 	TestTemperModes();
 	TestExpressionAndDisplacement();

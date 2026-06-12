@@ -97,9 +97,12 @@ for `renderanimation` to drive it.
 The stock dial has a uniform woven-cell size everywhere.  The watch ships a small
 **library of dial patterns** — all on the stock Cartesian UV, so every oxide
 palette / metal applies to each (a pattern only changes the RELIEF).  Each is a
-native `guilloche_disk_geometry dialmesh_<name>` chunk (the pattern field is
-evaluated in C++ at parse time; `dial_variants_gen.py` remains the composable
-Python REFERENCE the chunks are golden-tested against):
+`dialfn_<name>` **`expression_function2d`** — the relief authored as a math
+expression over (u,v) directly in the scene file — displaced onto the shared flat
+`cartesian_disk_geometry` base (`dialdisk`) via `displaced_geometry … uv_seam_fold
+FALSE`.  The six patterns are proven == the original C++ relief field to 1e-6 in
+`tests/ExpressionFunction2DTest` (`dial_variants_gen.py` remains the historical
+Python reference):
 
 | `--field` / `dialmesh_<name>` | what it is |
 |---|---|
@@ -110,11 +113,14 @@ Python REFERENCE the chunks are golden-tested against):
 | `varwidth`  | alternating fine/coarse sunburst sectors |
 | `uniform`   | the stock single-cell dial (A/B baseline) |
 
-**The blessed parameters live in the scene chunks themselves** (gen_dials.sh
-mirrors them as the Python reference invocation).  Author a new pattern = write a
-`field_<name>(X,Y,R,p)` in `dial_variants_gen.py` (the reference), port it as a
-`Raw<Name>` in `src/Library/Painters/GuillocheField.h`, add golden values to
-`tests/GuillocheFieldTest.cpp`, then a `dialmesh_<name>` chunk.
+**The blessed parameters live in the scene chunks themselves.**  Author a new
+pattern ENTIRELY IN THE SCENE FILE: write a new `expression_function2d` (any math
+over u,v) + a `displaced_geometry` on the shared `dialdisk` base — no C++, no
+rebuild.  (`param R` must equal the disk `radius`; see the AUTHORING RULE in
+[docs/skills/effective-rise-scene-authoring.md](../../../docs/skills/effective-rise-scene-authoring.md).)
+The six shipped patterns are also captured as templated builders in
+`tests/GuillocheDialExpr.h`, the single source the test and a chunk-text emitter
+share.
 
 **Switch dials live in the GUI:** set the `dial` object\'s `geometry` to any
 `dialmesh_<name>` — `geometry` is a **live rebindable reference** (like `material`:
@@ -123,7 +129,8 @@ the mesh swaps and the top-level BVH rebuilds on the next render, no reload —
 
 ## Asset pipeline — fully procedural (2026-06)
 
-**Nothing is pre-baked.**  The dial meshes (`guilloche_disk_geometry`), the oxide
+**Nothing is pre-baked.**  The dial relief (a `dialfn_*` `expression_function2d`
+displaced onto a `cartesian_disk_geometry`), the oxide
 heat-tint doses (`guilloche_oxide_painter` + `scalar_painter function2d`), and the
 strap (`sweep_geometry`: a general closed-profile sweep fed the authored FKM cross-section) + stitching (`path_instances_geometry`: a general along-path instancer stamping an SDF thread capsule) are native scene chunks evaluated at
 parse time — clone and render, no generator step.

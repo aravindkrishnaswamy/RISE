@@ -41,8 +41,6 @@ namespace RISE
 	{
 		int    pattern;					//!< GuillochePatternKind
 		double radius;					//!< disk radius (world units)
-		int    meshN;					//!< grid samples across the diameter (bake density)
-		double disp;					//!< relief amplitude (world units)
 		int    numArms;
 		double swirl;					//!< angular lean centre->rim (rad)
 		double seamJag;
@@ -74,7 +72,7 @@ namespace RISE
 
 		GuillocheDiskDescriptor() :
 			pattern( eGuillochePatternUniform ),
-			radius( 20.6 ), meshN( 560 ), disp( 0.42 ),
+			radius( 20.6 ),
 			numArms( 12 ), swirl( 0.0 ),
 			seamJag( 0.16 ), seamJagFreq( 3.0 ),
 			cell( 0.9 ), gridAmp( 0.85 ), petalAmp( 0.30 ),
