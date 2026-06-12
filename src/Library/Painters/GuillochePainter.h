@@ -42,15 +42,34 @@ namespace RISE
 			public virtual Reference
 		{
 		public:
-			//! falloffMode: 0 linear, 1 quadratic, 2 smooth (the radial torch
-			//! heat falloff).  activationEa in J/mol (per-metal curvature; see
-			//! GuillocheField::MetalEa / thermal_oxide_sim.METAL_KINETICS).
+			//! Output mode.  eDose = the normalized [0,1] heat-tint dose
+			//! (scene scale/bias -> nm; the hero-watch path).  eThicknessNm
+			//! and eSpallMask are the ABSOLUTE-temperature temper-comparison
+			//! modes: an absolute radial ramp tempCenterC -> tempRimC drives
+			//! the metal's calibrated thickness (nm, consumed directly) or its
+			//! spall fraction [0,1] (the matte-scale blend mask).
+			enum Mode { eDose, eThicknessNm, eSpallMask };
+
+			//! Normalized-dose ctor.  falloffMode: 0 linear, 1 quadratic,
+			//! 2 smooth (the radial heat falloff).  activationEa in J/mol
+			//! (per-metal curvature; see GuillocheField::MetalEa).
 			//! torchAmount: signed extra dwell along the pattern's torch mask
 			//! (0 = uniform radial dose, the oxide_cart.png equivalent).
 			GuillocheOxidePainter( const GuillocheParams& params,
 			                       const int falloffMode,
 			                       const Scalar activationEa,
 			                       const Scalar torchAmount );
+
+			//! Absolute-temperature temper ctor (eThicknessNm / eSpallMask):
+			//! the radial falloff maps the disk onto the absolute ramp
+			//! tempCenterC -> tempRimC and the metal's thermal model yields
+			//! either absolute nm or the spall mask.
+			GuillocheOxidePainter( const GuillocheParams& params,
+			                       const int falloffMode,
+			                       const Mode mode,
+			                       const Scalar tempCenterC,
+			                       const Scalar tempRimC,
+			                       const GuillocheField::MetalThermal& thermal );
 
 			Scalar Evaluate( const Scalar x, const Scalar y ) const;
 
@@ -59,10 +78,14 @@ namespace RISE
 
 			GuillocheField m_field;
 			int            m_falloffMode;
+			Mode           m_mode;
 			Scalar         m_activationEa;
 			Scalar         m_torchAmount;
 			Scalar         m_g0;			//!< ArrheniusG(T0, Ea) -- Ea-only, hoisted from the per-query path
 			Scalar         m_gSpan;			//!< ArrheniusG(T1, Ea) - m_g0
+			Scalar         m_tempCenterC;	//!< absolute-temperature modes: ramp endpoints
+			Scalar         m_tempRimC;
+			GuillocheField::MetalThermal m_thermal;
 		};
 	}
 }

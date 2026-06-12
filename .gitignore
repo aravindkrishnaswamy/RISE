@@ -122,3 +122,4 @@ tests/baselines_refactor/
 /scenes/FeatureBased/GuillocheWatch/guilloche_angle.png
 /scenes/FeatureBased/GuillocheWatch/oxide_thickness.png
 /scenes/FeatureBased/GuillocheWatch/*_preview.png
+/rendered/temper_*.png

@@ -4374,6 +4374,36 @@ bool Job::AddGuillocheOxideFunction2D( const char* name, const GuillocheDiskDesc
 	return true;
 }
 
+bool Job::AddGuillocheTemperFunction2D( const char* name, const GuillocheDiskDescriptor& desc, const int falloffMode, const char metal0, const int outputMode, const double tempCenterC, const double tempRimC )
+{
+	IFunction2D* pFunction = 0;
+	if( !RISE_API_CreateGuillocheTemperFunction2D( &pFunction, desc, falloffMode, metal0, outputMode, tempCenterC, tempRimC ) ) {
+		return false;   // the factory already logged why
+	}
+	pFunc2DManager->AddItem( pFunction, name );
+	safe_release( pFunction );
+	return true;
+}
+
+bool Job::AddFunction2DColorPainter( const char* name, const char* szFunction, const double scale, const double bias )
+{
+	IFunction2D* pFunc = pFunc2DManager->GetItem( szFunction ? szFunction : "" );
+	if( !pFunc ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddFunction2DColorPainter:: `%s`: source function2d `%s` not found (declare it first)",
+			name ? name : "(unnamed)", szFunction ? szFunction : "(none)" );
+		return false;
+	}
+	IPainter* pPainter = 0;
+	if( !RISE_API_CreateFunction2DColorPainter( &pPainter, pFunc, scale, bias ) ) {
+		return false;
+	}
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
 bool Job::AddSweepGeometry( const char* name, const SweepDescriptor& desc )
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;

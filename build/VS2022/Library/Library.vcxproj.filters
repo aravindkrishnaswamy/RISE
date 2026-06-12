@@ -1614,6 +1614,9 @@
     <ClInclude Include="..\..\..\src\Library\Painters\Function2DScalarPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Function2DColorPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\GuillocheField.h">
       <Filter>Painters</Filter>
     </ClInclude>

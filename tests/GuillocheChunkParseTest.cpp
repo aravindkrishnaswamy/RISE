@@ -231,12 +231,44 @@ static void TestRejections()
 	}
 }
 
+static void TestTemperModes()
+{
+	std::cout << "Test 4: absolute-temperature temper modes + function2d_painter" << std::endl;
+	Job* job = new Job();
+	job->addref();
+	const char* body =
+		"guilloche_oxide_painter\n{\nname oxthk\nmetal ti\noutput thickness_nm\ntemp_center_c 200\ntemp_rim_c 1000\nfalloff linear\n}\n"
+		"guilloche_oxide_painter\n{\nname oxspall\nmetal ti\noutput spall_mask\ntemp_center_c 200\ntemp_rim_c 1000\nfalloff linear\n}\n"
+		"function2d_painter\n{\nname spallcol\nfunction2d oxspall\n}\n";
+	const bool ok = ParseBody( "temper", body, *job );
+	Check( ok, "temper thickness + spall + function2d_painter parse" );
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
+	if( priv ) {
+		Check( priv->GetFunction2Ds()->GetItem( "oxthk" ) != 0,    "thickness_nm function2d registered" );
+		Check( priv->GetFunction2Ds()->GetItem( "oxspall" ) != 0,  "spall_mask function2d registered" );
+		Check( priv->GetPainters()->GetItem( "spallcol" ) != 0,    "function2d_painter colour registered" );
+		// thickness must be ABSOLUTE nm (>1 near the rim), not a [0,1] dose
+		IFunction2D* thk = priv->GetFunction2Ds()->GetItem( "oxthk" );
+		Check( thk && thk->Evaluate( 1.0, 0.5 ) > 1.0, "thickness_nm yields absolute nm at the rim" );
+	} else {
+		Check( false, "IJobPriv available" );
+	}
+	job->release();
+
+	// rejections specific to the temper modes
+	Check( !ParseBody( "bad_output", "guilloche_oxide_painter\n{\nname f\noutput sideways\n}\n" ),
+		"unknown output enum rejects" );
+	Check( !ParseBody( "missing_fn2d", "function2d_painter\n{\nname p\nfunction2d nope\n}\n" ),
+		"function2d_painter missing source rejects" );
+}
+
 int main( int, char** )
 {
 	std::cout << "GuillocheChunkParseTest -- parse-level plumbing for the procedural chunks" << std::endl << std::endl;
 	TestHappyPath();
 	TestClamps();
 	TestRejections();
+	TestTemperModes();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

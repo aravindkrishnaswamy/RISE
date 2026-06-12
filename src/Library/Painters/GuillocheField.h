@@ -301,6 +301,98 @@ namespace RISE
 				}
 			}
 
+			//! Per-metal heat-tint THERMAL model for the absolute-temperature
+			//! dose mode (the temper-comparison renders).  Temperature
+			//! breakpoints (DEGREES CELSIUS) + the oxide's interference
+			//! thickness range (nm).
+			//!
+			//! CALIBRATION + HONESTY NOTES (this is a comparison SHOWCASE, not
+			//! metrology):
+			//!  - onsetC / optLoC / optHiC / flakeC and dLo/dHi were chosen
+			//!    with the Airy/CIE swatch oracle (thermal_oxide_sim) for a
+			//!    legible, vivid sweep -- NOT auto-extracted from it.  dHi
+			//!    here (73/88/94/93 nm) is WIDER than the oracle's blessed
+			//!    first-order temper ladder (Ti ~22-38, Nb ~30-55, Ta ~26-52,
+			//!    Steel ~28-56 nm); it runs each oxide to ~late first order so
+			//!    the optimal-window sweep traverses the full straw->blue
+			//!    range rather than the narrower monotone ladder.
+			//!  - The dHi values are ISO-INTERFERENCE-ORDER, not "index
+			//!    tracking": 2*n*dHi (optical path / colour order) is ~const
+			//!    across oxides, so the highest-index oxide (TiO2) gets the
+			//!    THINNEST film for the same colour (n*dHi ~= 193..218, flat
+			//!    to +/-6%).
+			//!  - flakeC means "useful colour ends".  For the valve metals /
+			//!    Ti it is near real breakaway/grey-out.  For STEEL (420 C) it
+			//!    is COLOUR-DEATH (the temper film goes grey) -- literal
+			//!    wuestite spallation is much higher (~570 C); the showcase
+			//!    still renders steel's high-temperature face as matte scale
+			//!    because at the controlled-ramp rim (~1000 C) it genuinely is
+			//!    heavy scale.
+			//!  - Per-metal Arrhenius Ea (MetalEa) belongs to the
+			//!    normalized-dose path and is deliberately UNUSED here; the
+			//!    T->thickness map below is piecewise-LINEAR in temperature
+			//!    (the sqrt-Arrhenius curvature is dropped -- a comparison
+			//!    simplification, see thermal_oxide_sim.py's own disclaimer).
+			struct MetalThermal
+			{
+				Scalar onsetC, optLoC, optHiC, flakeC;
+				Scalar dLoNm, dHiNm;
+			};
+
+			static MetalThermal MetalThermalModel( const char metal0 )
+			{
+				MetalThermal m;
+				switch( metal0 )
+				{
+				case 'N': m.onsetC = 200; m.optLoC = 250; m.optHiC = 520; m.flakeC = 580; m.dLoNm = 12; m.dHiNm = 88; break;	// Nb / Nb2O5
+				case 'a': m.onsetC = 250; m.optLoC = 300; m.optHiC = 560; m.flakeC = 620; m.dLoNm = 10; m.dHiNm = 94; break;	// Ta / Ta2O5
+				case 'S': m.onsetC = 210; m.optLoC = 230; m.optHiC = 350; m.flakeC = 420; m.dLoNm = 11; m.dHiNm = 93; break;	// Steel / Fe3O4 (flakeC = colour-death, not spall)
+				default:
+				case 'T': m.onsetC = 250; m.optLoC = 300; m.optHiC = 580; m.flakeC = 650; m.dLoNm = 10; m.dHiNm = 73; break;	// Ti / TiO2
+				}
+				return m;
+			}
+
+			//! Absolute oxide thickness (nm) at dial (x, y) for an ABSOLUTE
+			//! radial temperature ramp tempCenterC -> tempRimC (mapped by the
+			//! falloff over the radius).  Piecewise-LINEAR in T through the
+			//! metal's temper anchors: 0 below onset, the beautiful sweep
+			//! dLo..dHi across the optimal window, then 2*dHi at the flake
+			//! temperature and growing to a 3.5*dHi cap beyond -- a thick,
+			//! high-order film that DESATURATES (so even where the spall
+			//! blend mask is < 1 the underlying interference reads neutral,
+			//! not a garish 2nd-order colour).  The matte-scale appearance is
+			//! then completed by the spall mask driving rd/rs dark + rough.
+			Scalar AbsoluteThicknessNm( const Scalar x, const Scalar y, const int falloffMode,
+			                            const Scalar tempCenterC, const Scalar tempRimC,
+			                            const MetalThermal& m ) const
+			{
+				const Scalar heat = HeatAt( x, y, falloffMode );
+				const Scalar T = tempCenterC + heat * ( tempRimC - tempCenterC );
+				if( T < m.onsetC )  return Scalar(0);
+				if( T < m.optLoC )  return m.dLoNm * ( T - m.onsetC ) / std::max( Scalar(1), m.optLoC - m.onsetC );
+				if( T <= m.optHiC ) return m.dLoNm + ( m.dHiNm - m.dLoNm ) * ( T - m.optLoC ) / std::max( Scalar(1), m.optHiC - m.optLoC );
+				if( T <= m.flakeC ) return m.dHiNm + m.dHiNm * ( T - m.optHiC ) / std::max( Scalar(1), m.flakeC - m.optHiC );	// dHi -> 2*dHi
+				return std::min( Scalar(2) * m.dHiNm + m.dHiNm * ( T - m.flakeC ) / Scalar(100), Scalar(3.5) * m.dHiNm );
+			}
+
+			//! Spall fraction in [0,1] at dial (x, y): a smoothstep through the
+			//! metal's flake temperature on the same radial ramp.  Drives the
+			//! matte oxide-scale blend (0 = intact thin film, 1 = spalled).
+			//! The +/-22 C half-width reads as "scale forming" -- a soft band
+			//! rather than a hard ring -- and reaches mask~1 well before the
+			//! thickness has climbed into the desaturated high order.
+			Scalar SpallMask( const Scalar x, const Scalar y, const int falloffMode,
+			                  const Scalar tempCenterC, const Scalar tempRimC,
+			                  const MetalThermal& m ) const
+			{
+				using namespace GuillocheMath;
+				const Scalar heat = HeatAt( x, y, falloffMode );
+				const Scalar T = tempCenterC + heat * ( tempRimC - tempCenterC );
+				const Scalar w = Scalar(22);	// transition half-width (deg C)
+				return smoothstepG( m.flakeC - w, m.flakeC + w, T );
+			}
+
 		public:
 			static constexpr Scalar kGasConstant = 8.314;	// J/(mol K)
 			static constexpr Scalar kTMinK = 700.0;			// K, centre (~427 C)

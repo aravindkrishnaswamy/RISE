@@ -515,6 +515,40 @@ P3-A/B/C plan** in one load-bearing way — the Cartesian rebuild below.
 RGB 2D LUT (§13.1); automated in-renderer image-compare gate (qualitative renders + the 18-assert AR
 unit test + 1e-16 thin-film tests stand in); Cook-Torrance thin-film.
 
+## 12b. Temper comparison — absolute-temperature heat-tint (2026-06-11)
+
+A showcase capability layered on the procedural heat-tint pipeline: drive the
+oxide thickness from a REAL radial temperature ramp instead of an
+artist-tuned normalised dose, so different base metals can be compared under
+identical (or each-optimal) thermal treatment.
+
+- **`guilloche_oxide_painter` absolute mode.** `output thickness_nm` |
+  `spall_mask` + `temp_center_c` / `temp_rim_c` (°C).  A per-metal thermal
+  model (`GuillocheField::MetalThermalModel`: onset / optimal window / flake
+  temperatures + the oxide's interference thickness range) maps the radial
+  temperature to absolute oxide nm (fed straight to `film_thickness`, no
+  scene scale/bias) or a spall fraction.  The renderer's Airy BSDF turns the
+  thickness into colour from the real n,k — so "which metal shows the most
+  colour" is an emergent physical result, not authored.
+- **Two render sets** (`temper_comparison_gen.py` + `render_temper_comparison.py`):
+  *controlled* — every metal under the same 200→1000 °C ramp (Ti/Nb sweep
+  broad & vivid, Ta muted, Steel a narrow ring then matte scale); *optimal* —
+  each metal clamped to its own beautiful window (all four fill the face).
+- **Matte oxide-scale** past the flaking temperature: the `spall_mask` →
+  `function2d_painter` (the NEW greyscale colour wrapper of any IFunction2D)
+  → `blend_painter` pushes `rd`/`rs` to a dark warm scale; an affine
+  `scalar_painter { function2d <spall> }` ramps roughness glossy→matte.  The
+  thickness grows into the desaturated high order there so no 2nd-order
+  colour bleeds through.
+- **Honesty (do not overstate).** This is a comparison SHOWCASE, not
+  metrology.  The T→thickness map is piecewise-LINEAR (the sqrt-Arrhenius
+  curvature of the dose path is dropped); the `dHi` thickness anchors are
+  showcase-widened past the project's blessed first-order temper ladder and
+  are iso-interference-order across oxides (2·n·d ≈ const → TiO₂ thinnest for
+  the same colour); and steel's "flake" temperature (420 °C) is **colour-death**,
+  not literal wüstite spallation (~570 °C).  All four caveats are spelled out
+  in the `MetalThermal` doc-comment.  Per-metal numbers are tunable DATA.
+
 ## 13. Locked decisions (2026-06-07)
 
 1. **RGB path = albedo-basis spectral integral** (white-normalized so R≡1 → neutral). **Shipped in P2-B as a per-shade 32-λ integral (von-Kries E→D65), NOT the originally-specified 2D LUT** — the LUT needs spatially-constant stack indices, but they arrive as possibly-varying `IScalarPainter`s with no construction-time hit point (a correctness hazard); the per-shade integral is always correct, the constant-stack LUT deferred as an optimization.

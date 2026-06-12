@@ -994,6 +994,49 @@ namespace RISE
 		return true;
 	}
 
+	// The ABSOLUTE-temperature temper-comparison modes of the oxide painter:
+	// a real radial temperature ramp tempCenterC -> tempRimC drives the
+	// metal's calibrated thermal model to produce either absolute oxide
+	// thickness (outputMode 1, nm, fed straight to film_thickness) or the
+	// spall fraction (outputMode 2, [0,1], the matte-scale blend mask).
+	// metal0: 'T'i 'N'b 'a'=Ta 'S'teel.
+	bool RISE_API_CreateGuillocheTemperFunction2D(
+						IFunction2D**        ppi,
+						const GuillocheDiskDescriptor& desc,
+						const int            falloffMode,
+						const char           metal0,
+						const int            outputMode,	///< 1 thickness_nm | 2 spall_mask
+						const double         tempCenterC,
+						const double         tempRimC
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		if( falloffMode < 0 || falloffMode > 2 ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateGuillocheTemperFunction2D: falloff mode %d out of range (0 linear | 1 quadratic | 2 smooth)", falloffMode );
+			return false;
+		}
+		if( outputMode != 1 && outputMode != 2 ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateGuillocheTemperFunction2D: output mode %d invalid (1 thickness_nm | 2 spall_mask)", outputMode );
+			return false;
+		}
+		if( !ValidateGuillocheFieldParams( desc, "RISE_API_CreateGuillocheTemperFunction2D" ) ) {
+			return false;
+		}
+		const Implementation::GuillocheOxidePainter::Mode mode =
+			( outputMode == 2 ) ? Implementation::GuillocheOxidePainter::eSpallMask
+			                    : Implementation::GuillocheOxidePainter::eThicknessNm;
+		(*ppi) = new Implementation::GuillocheOxidePainter(
+			Implementation::GuillocheParamsFromDescriptor( desc ),
+			falloffMode, mode, tempCenterC, tempRimC,
+			Implementation::GuillocheField::MetalThermalModel( metal0 ) );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "guilloche temper function2d" );
+		return true;
+	}
+
 	//////////////////////////////////////////////////////////////////////
 	// General procedural sweep machinery shared by RISE_API_CreateSweepGeometry
 	// and RISE_API_CreatePathInstancesGeometry: a 3D Catmull-Rom path sampler
@@ -3828,6 +3871,7 @@ namespace RISE
 #include "Painters/PolynomialScalarPainter.h"
 #include "Painters/Function1DScalarPainter.h"
 #include "Painters/Function2DScalarPainter.h"
+#include "Painters/Function2DColorPainter.h"
 #include "Painters/TextureScalarPainter.h"
 #include "Painters/ScaledScalarPainter.h"
 #include "Painters/MultiplyScalarPainter.h"
@@ -4023,6 +4067,19 @@ namespace RISE
 		if( !ppi ) return false;
 		*ppi = new Function2DScalarPainter( pFunc, scale, bias );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "function2d scalar painter (affine)" );
+		return true;
+	}
+
+	bool RISE_API_CreateFunction2DColorPainter(
+		IPainter** ppi,
+		IFunction2D* pFunc,
+		const double scale,
+		const double bias
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new Function2DColorPainter( pFunc, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "function2d color painter" );
 		return true;
 	}
 

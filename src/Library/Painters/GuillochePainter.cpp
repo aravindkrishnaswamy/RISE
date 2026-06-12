@@ -80,10 +80,34 @@ GuillocheOxidePainter::GuillocheOxidePainter(
 	const Scalar torchAmount ) :
 	m_field( params ),
 	m_falloffMode( falloffMode ),
+	m_mode( eDose ),
 	m_activationEa( activationEa ),
 	m_torchAmount( torchAmount ),
 	m_g0( GuillocheField::ArrheniusG( GuillocheField::kTMinK, activationEa ) ),
-	m_gSpan( GuillocheField::ArrheniusG( GuillocheField::kTMaxK, activationEa ) - m_g0 )
+	m_gSpan( GuillocheField::ArrheniusG( GuillocheField::kTMaxK, activationEa ) - m_g0 ),
+	m_tempCenterC( 0 ),
+	m_tempRimC( 0 ),
+	m_thermal()
+{
+}
+
+GuillocheOxidePainter::GuillocheOxidePainter(
+	const GuillocheParams& params,
+	const int falloffMode,
+	const Mode mode,
+	const Scalar tempCenterC,
+	const Scalar tempRimC,
+	const GuillocheField::MetalThermal& thermal ) :
+	m_field( params ),
+	m_falloffMode( falloffMode ),
+	m_mode( mode ),
+	m_activationEa( 0 ),
+	m_torchAmount( 0 ),
+	m_g0( 0 ),
+	m_gSpan( 0 ),
+	m_tempCenterC( tempCenterC ),
+	m_tempRimC( tempRimC ),
+	m_thermal( thermal )
 {
 }
 
@@ -94,11 +118,20 @@ GuillocheOxidePainter::~GuillocheOxidePainter()
 Scalar GuillocheOxidePainter::Evaluate( const Scalar u, const Scalar v ) const
 {
 	// (u, v) = the dial's linear Cartesian UV -> dial-space (x, y).
-	// The Arrhenius endpoint constants are hoisted to the ctor (Ea-only):
-	// 1 exp per query instead of 3 on the render-time film_thickness path.
 	const GuillocheParams& p = m_field.Params();
 	const Scalar x = ( Scalar(2) * u - Scalar(1) ) * p.radius;
 	const Scalar y = ( Scalar(2) * v - Scalar(1) ) * p.radius;
-	const Scalar heat = m_field.HeatAt( x, y, m_falloffMode );
-	return m_field.OxideDoseWithEndpoints( x, y, heat, m_activationEa, m_g0, m_gSpan, m_torchAmount );
+	switch( m_mode )
+	{
+	case eThicknessNm:
+		return m_field.AbsoluteThicknessNm( x, y, m_falloffMode, m_tempCenterC, m_tempRimC, m_thermal );
+	case eSpallMask:
+		return m_field.SpallMask( x, y, m_falloffMode, m_tempCenterC, m_tempRimC, m_thermal );
+	default:
+	case eDose:
+		// The Arrhenius endpoint constants are hoisted to the ctor (Ea-only):
+		// 1 exp per query instead of 3 on the render-time film_thickness path.
+		const Scalar heat = m_field.HeatAt( x, y, m_falloffMode );
+		return m_field.OxideDoseWithEndpoints( x, y, heat, m_activationEa, m_g0, m_gSpan, m_torchAmount );
+	}
 }

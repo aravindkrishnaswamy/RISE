@@ -211,6 +211,43 @@ static void TestOxidePainterUVMapping()
 	painter->release();
 }
 
+// The absolute-temperature temper model (the comparison renders): a flat
+// ramp tempCenter == tempRim == T makes T(rho) constant, so the model
+// evaluates at exactly T regardless of radius.  Goldens from the piecewise
+// MetalThermalModel map (matches the Python de-risk).
+static void TestThermalModelGoldens()
+{
+	std::cout << "Test 5: absolute-temperature thermal model (thickness nm + spall) vs goldens" << std::endl;
+	const GuillocheField field( GuillocheParamsFromDescriptor( GuillocheDiskDescriptor() ) );
+	struct Row { char m; const char* name; Scalar T; Scalar d; Scalar spall; };
+	const Row rows[] = {
+		{ 'T', "Ti",    150, 0.0,        0.0 },
+		{ 'T', "Ti",    300, 10.0,       0.0 },
+		{ 'T', "Ti",    440, 41.5,       0.0 },
+		{ 'T', "Ti",    580, 73.0,       0.0 },
+		{ 'T', "Ti",    650, 146.0,      0.5 },
+		{ 'T', "Ti",    900, 255.5,      1.0 },
+		{ 'N', "Nb",    250, 12.0,       0.0 },
+		{ 'N', "Nb",    580, 176.0,      0.5 },
+		{ 'a', "Ta",    440, 55.230769,  0.0 },
+		{ 'a', "Ta",    650, 216.2,      1.0 },
+		{ 'S', "Steel", 250, 24.666667,  0.0 },
+		{ 'S', "Steel", 440, 204.6,      0.993989 },
+	};
+	char label[80];
+	for( size_t i = 0; i < sizeof(rows)/sizeof(rows[0]); ++i ) {
+		const GuillocheField::MetalThermal mt = GuillocheField::MetalThermalModel( rows[i].m );
+		snprintf( label, sizeof(label), "%s thickness @ %dC", rows[i].name, (int)rows[i].T );
+		CheckClose( field.AbsoluteThicknessNm( 0, 0, 0, rows[i].T, rows[i].T, mt ), rows[i].d, Scalar(1e-4), label );
+		snprintf( label, sizeof(label), "%s spall @ %dC", rows[i].name, (int)rows[i].T );
+		CheckClose( field.SpallMask( 0, 0, 0, rows[i].T, rows[i].T, mt ), rows[i].spall, Scalar(1e-4), label );
+	}
+	// preset spot-checks
+	CheckClose( GuillocheField::MetalThermalModel('T').flakeC, 650, Scalar(1e-9), "Ti flakeC preset" );
+	CheckClose( GuillocheField::MetalThermalModel('S').optHiC, 350, Scalar(1e-9), "Steel optHiC preset" );
+	CheckClose( GuillocheField::MetalThermalModel('a').dHiNm,  94,  Scalar(1e-9), "Ta dHiNm preset" );
+}
+
 int main( int, char** )
 {
 	std::cout << "GuillocheFieldTest -- C++ field port vs Python baker goldens" << std::endl << std::endl;
@@ -218,6 +255,7 @@ int main( int, char** )
 	TestOxideDoseGoldens();
 	TestTorchMaskGoldens();
 	TestOxidePainterUVMapping();
+	TestThermalModelGoldens();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

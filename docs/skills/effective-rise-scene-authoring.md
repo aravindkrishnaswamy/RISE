@@ -285,7 +285,18 @@ self-contained, and live-rebind in the GUI like any named geometry.
   `torch_amount` along the pattern's mask); the scene then maps dose →
   nanometres with `scalar_painter { function2d <name> scale <span_nm>
   bias <centre_nm> }` feeding a thin-film material's `film_thickness`.
-  Tuning the colour sweep = editing two numbers, no rebake.
+  Tuning the colour sweep = editing two numbers, no rebake.  An
+  ABSOLUTE-temperature temper mode (`output thickness_nm` / `spall_mask`
+  + `temp_center_c` / `temp_rim_c`) instead drives real per-metal oxide
+  nm from a temperature ramp, with a matte oxide-scale blend past the
+  flaking temperature (the comparison-render path).
+- **`function2d_painter`** — the greyscale COLOUR wrapper of any named
+  IFunction2D (`out = bias + scale·f(u,v)` on all channels).  The colour
+  dual of `scalar_painter { function2d }`: use it when a procedural 2D
+  field needs to feed a COLOUR slot or a `blend_painter` mask (e.g. the
+  temper spall mask pushing `rd`/`rs` toward matte scale).  `scalar_painter
+  { function2d }` for physical-scalar slots (roughness, thickness, IOR);
+  `function2d_painter` for colour slots and masks.
 
 ### The authored-data pattern
 

@@ -5607,6 +5607,24 @@ namespace RISE
 						ea = Implementation::GuillocheField::MetalEa( metal0 );
 					}
 
+					// ABSOLUTE-temperature temper modes: when `output` is
+					// thickness_nm or spall_mask the painter ignores the
+					// normalized-dose path and runs the metal's thermal model
+					// over the real ramp temp_center_c -> temp_rim_c.
+					const std::string output = bag.GetString( "output", "dose" );
+					if( output == "thickness_nm" || output == "spall_mask" ) {
+						const double tC = bag.GetDouble( "temp_center_c", 200.0 );
+						const double tR = bag.GetDouble( "temp_rim_c",   1000.0 );
+						const int outMode = ( output == "spall_mask" ) ? 2 : 1;
+						return pJob.AddGuillocheTemperFunction2D( name.c_str(), d, falloffMode, metal0, outMode, tC, tR );
+					}
+					else if( output != "dose" ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"guilloche_oxide_painter `%s`: unknown output `%s` (expected dose | thickness_nm | spall_mask)",
+							name.c_str(), output.c_str() );
+						return false;
+					}
+
 					const double torch = bag.GetDouble( "torch_amount", 0.0 );
 					return pJob.AddGuillocheOxideFunction2D( name.c_str(), d, falloffMode, ea, torch );
 				}
@@ -5615,7 +5633,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "guilloche_oxide_painter"; cd.category = ChunkCategory::Function;
-						cd.description = "Guilloché thermal-oxide DOSE as a named IFunction2D over the dial's linear Cartesian UV: normalized Arrhenius/parabolic radial heat profile plus a signed torch-pattern term along the engraved pattern.  Native replacement for the baked oxide_*.png maps.  Consume via scalar_painter { function2d <name> scale S bias B } into film_thickness; share the pattern parameters with the paired guilloche_disk_geometry.";
+						cd.description = "Guilloché thermal-oxide DOSE as a named IFunction2D over the disk's linear Cartesian UV.  `output dose` (default): normalized [0,1] Arrhenius/parabolic radial heat profile + signed torch term -> consume via scalar_painter { function2d <name> scale S bias B } into film_thickness (the hero-watch heat tint).  `output thickness_nm` / `spall_mask`: ABSOLUTE-temperature temper mode -- a real radial ramp temp_center_c -> temp_rim_c drives the `metal`'s calibrated thermal model to absolute oxide nm or the spall fraction [0,1] (matte oxide-scale blend mask above the flaking temperature).  Pairs with guilloche_disk_geometry.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						AppendGuillocheFieldDescriptors( cd );
@@ -5623,6 +5641,41 @@ namespace RISE
 						{ auto& p = P(); p.name = "metal";         p.kind = ValueKind::Enum;   p.enumValues = {"ti","nb","ta","steel"}; p.description = "Metal kinetics preset for the parabolic-oxidation activation energy (Ti 160e3, Nb 135e3, Ta 80e3, Steel 165e3 J/mol)"; p.defaultValueHint = "ti"; }
 						{ auto& p = P(); p.name = "activation_ea"; p.kind = ValueKind::Double; p.description = "Explicit activation energy in J/mol (overrides `metal` when > 0)"; p.defaultValueHint = "0.0"; }
 						{ auto& p = P(); p.name = "torch_amount";  p.kind = ValueKind::Double; p.description = "Signed extra dwell along the pattern's torch mask (0 = uniform radial dose; +hot ridges / -cool ridges)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "output";        p.kind = ValueKind::Enum;   p.enumValues = {"dose","thickness_nm","spall_mask"}; p.description = "dose = normalized [0,1] heat-tint (scene scale/bias -> nm).  thickness_nm / spall_mask = ABSOLUTE-temperature temper mode: the metal's thermal model over temp_center_c -> temp_rim_c gives absolute nm (feed film_thickness) or the spall fraction [0,1] (matte-scale blend mask)"; p.defaultValueHint = "dose"; }
+						{ auto& p = P(); p.name = "temp_center_c";  p.kind = ValueKind::Double; p.description = "Absolute centre temperature (deg C) for the temper modes"; p.defaultValueHint = "200.0"; }
+						{ auto& p = P(); p.name = "temp_rim_c";     p.kind = ValueKind::Double; p.description = "Absolute rim temperature (deg C) for the temper modes"; p.defaultValueHint = "1000.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct Function2DColorPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string func = bag.GetString( "function2d", "" );
+					if( func.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"function2d_painter `%s`: missing `function2d` (the named IFunction2D to wrap)", name.c_str() );
+						return false;
+					}
+					const double scale = bag.GetDouble( "scale", 1.0 );
+					const double bias  = bag.GetDouble( "bias",  0.0 );
+					return pJob.AddFunction2DColorPainter( name.c_str(), func.c_str(), scale, bias );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "function2d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Wraps a named IFunction2D as a greyscale COLOUR painter (out = bias + scale * f(u,v) on all channels).  The colour analogue of scalar_painter { function2d }: lets any procedural 2D field (Perlin, Worley, polynomial, composite, guilloché) feed a colour slot or a blend_painter mask -- e.g. the guilloché spall mask driving the matte oxide-scale blend.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction2D to wrap as greyscale colour"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Output scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;    p.description = "Output bias (out = bias + scale * f)"; p.defaultValueHint = "0.0"; }
 						return cd;
 					}();
 					return d;
@@ -9633,6 +9686,7 @@ namespace RISE
 		add( "iridescent_painter",                    new IridescentPainterAsciiChunkParser() );
 		add( "blackbody_painter",                     new BlackBodyPainterAsciiChunkParser() );
 		add( "blend_painter",                         new BlendPainterAsciiChunkParser() );
+		add( "function2d_painter",                    new Function2DColorPainterAsciiChunkParser() );
 		add( "channel_painter",                       new ChannelPainterAsciiChunkParser() );
 
 		// Functions

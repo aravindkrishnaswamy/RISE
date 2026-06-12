@@ -3044,6 +3044,30 @@ namespace RISE
 			const char* szTemplate,					///< [in] Name of the template geometry to instance
 			const PathInstancesDescriptor& desc		///< [in] Path + pitch parameters (pGeometry filled from szTemplate)
 			) = 0;
+
+		//! Creates the absolute-temperature temper-comparison oxide function
+		//! (see RISE_API_CreateGuillocheTemperFunction2D): thickness_nm or
+		//! spall_mask over a real radial temperature ramp.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddGuillocheTemperFunction2D(
+			const char* name,						///< [in] Name of the function
+			const GuillocheDiskDescriptor& desc,	///< [in] Pattern parameters (radius)
+			const int falloffMode,					///< [in] 0 linear | 1 quadratic | 2 smooth
+			const char metal0,						///< [in] 'T'i | 'N'b | 'a'=Ta | 'S'teel
+			const int outputMode,					///< [in] 1 thickness_nm | 2 spall_mask
+			const double tempCenterC,				///< [in] absolute centre temperature (deg C)
+			const double tempRimC					///< [in] absolute rim temperature (deg C)
+			) = 0;
+
+		//! Wraps a named IFunction2D as a greyscale colour painter
+		//! (see RISE_API_CreateFunction2DColorPainter).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddFunction2DColorPainter(
+			const char* name,						///< [in] Name of the painter
+			const char* szFunction,					///< [in] Name of the source IFunction2D
+			const double scale,						///< [in] Output scale
+			const double bias						///< [in] Output bias
+			) = 0;
 	};
 
 
