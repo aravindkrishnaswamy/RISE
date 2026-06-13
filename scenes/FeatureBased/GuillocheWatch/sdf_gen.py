@@ -33,14 +33,20 @@ def part(type, op, k, pos, euler=(0, 0, 0), scale=(1, 1, 1), a=0.0, b=0.0, c=0.0
         type, op, g(k), g(*pos), g(*euler), g(*scale), g(a, b, c), g(round))
 
 
-def emit_chunk(name, parts):
+def emit_chunk(name, parts, sampling_detail=None):
     """Print one inline `sdf_geometry` chunk (tab-indented, matching the
-    watch_dial.RISEscene authoring style)."""
+    watch_dial.RISEscene authoring style).  `sampling_detail`, when set,
+    emits the optional tessellation-grid resolution line (needed for the
+    emissive lume batons, whose thin features under-resolve at the default
+    64-cell grid over their wide bbox -> the load-time 'PROVABLY missed
+    surface' warning + a withdrawn CanBeAreaLight())."""
     print("sdf_geometry")
     print("{")
     print("\tname\t\t\t\t%s" % name)
     for p in parts:
         print("\tpart\t\t\t\t%s" % p)
+    if sampling_detail is not None:
+        print("\tsampling_detail\t\t%d" % sampling_detail)
     print("}")
     print("")
 
@@ -196,7 +202,7 @@ def main(argv=None):
     # Double-domed sapphire crystal with the hour markers ETCHED into its flat
     # flange underside, and the lume that fills those cavities.
     emit_chunk("crystalsdf", crystal())
-    emit_chunk("markerlumesdf", marker_lume())
+    emit_chunk("markerlumesdf", marker_lume(), sampling_detail=384)
     return 0
 
 

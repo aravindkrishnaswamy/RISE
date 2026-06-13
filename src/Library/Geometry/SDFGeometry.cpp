@@ -328,8 +328,21 @@ void SDFGeometry::ComputeBounds()
 		}
 	}
 
-	// small safety margin (the smin bulge is already folded in per-part above)
-	const Scalar pad = Scalar(1e-3);
+	// Safety-margin pad (the smin bulge is already folded in per-part above).
+	// INVARIANT: pad > surfBand so rays entering the AABB start strictly outside
+	// any surface's eps band -- entering rays must never trip the step-off (that
+	// path is for continuation rays spawned ON a surface).  surfBand = 2*m_eps and
+	// m_eps scales with the box diagonal, so a fixed 1e-3 pad is too small for a
+	// WIDE-but-THIN field (huge diagonal -> band wider than 1e-3): a camera ray
+	// entering through the thin face would land inside the band, the step-off would
+	// march it into the solid, read the wrong side, and skip the entry face.  Size
+	// the pad off the UNPADDED box's eps first, then keep the 1e-3 floor; 3x the
+	// provisional eps clears the 2x band with margin (eps grows negligibly when the
+	// pad enlarges the diagonal, well within that headroom).
+	const Scalar dx0 = mx.x - mn.x, dy0 = mx.y - mn.y, dz0 = mx.z - mn.z;
+	const Scalar diag0 = std::sqrt( dx0*dx0 + dy0*dy0 + dz0*dz0 );
+	const Scalar eps0  = std::max( diag0 * m_epsFrac, Scalar(1e-6) );
+	const Scalar pad   = std::max( Scalar(1e-3), Scalar(3) * eps0 );
 	mn.x -= pad; mn.y -= pad; mn.z -= pad;
 	mx.x += pad; mx.y += pad; mx.z += pad;
 	m_bbox = BoundingBox( mn, mx );

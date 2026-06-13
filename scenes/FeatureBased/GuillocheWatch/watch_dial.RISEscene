@@ -1505,6 +1505,21 @@ lambertian_material
 	reflectance			pnt_lume_white
 }
 
+# DAY lume: real luminous pigment is photoluminescent -- charged by ambient
+# light, it re-emits and reads bright white even in daylight.  A PT-practical
+# necessity too: the lume sits INSIDE the crystal's etched cavities, and NEE
+# shadow rays are blocked by the dielectric shell, so a purely-matte fill is
+# lit only by rare refracted paths (renders near-black).  Gentle emission +
+# the matte base reproduces the real daylight look; the NIGHT variant simply
+# raises this scale (and dims the studio).
+lambertian_luminaire_material
+{
+	name				lume_day
+	exitance			pnt_lume_white
+	scale				4.0
+	material			lume_white
+}
+
 standard_object
 {
 	name				pin
@@ -1535,13 +1550,14 @@ sdf_geometry
 	part				box union 0  -18 0 1.5225  0 0 -180  1 1 1  0.46 1.035 0.2125  0
 	part				box union 0  -15.5885 9 1.5225  0 0 -210  1 1 1  0.46 1.035 0.2125  0
 	part				box union 0  -9 15.5885 1.5225  0 0 -240  1 1 1  0.46 1.035 0.2125  0
+	sampling_detail		384
 }
 
 standard_object
 {
 	name				markerlume
 	geometry			markerlumesdf
-	material			lume_white
+	material			lume_day
 	position			0 0 0
 }
 

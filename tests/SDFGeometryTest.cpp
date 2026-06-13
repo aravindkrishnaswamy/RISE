@@ -247,6 +247,42 @@ static void TestBoundingBoxOpAware()
 	}
 }
 
+// A WIDE-but-THIN field has a HUGE bbox diagonal, so m_eps (= diagonal*epsFrac)
+// and the marcher's surfBand (= 2*m_eps) blow up well past a fixed 1e-3 bbox pad.
+// The old fixed pad then let a camera ray entering through the thin TOP face land
+// INSIDE the surface band: the step-off logic (meant only for continuation rays
+// spawned ON a surface) marched it DOWN into the solid, read side=-1, concluded
+// the ray began inside, and reported the EXIT (bottom) face -- the top face was
+// silently skipped (emissive boxes whose sides glow but tops render dark/holes).
+// The fix sizes the bbox pad to clear the band (pad = max(1e-3, 3*eps)).  Build
+// the field at the SCENE's epsFrac (5e-5) so the band (~5.4e-3) is unambiguously
+// larger than the old 1e-3 pad -- this case fails on the pre-fix engine.
+static void TestWideThinTopFaceEntry()
+{
+	std::cout << "Test 4c: wide-thin SDF -- top-face entry not mis-sided into the exit" << std::endl;
+	std::vector<SDFGeometry::Part> parts;
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimBox, SDFGeometry::eOpUnion, 0,
+		Point3(0,0,1.5), 0,0,0, Vector3(1,1,1), 19.0, 19.0, 0.2, 0 ) );  // half-extents: top z=1.7, bottom z=1.3
+	SDFGeometry* g = new SDFGeometry( parts, 512, Scalar(5e-5) );          // scene epsFrac -> band ~5.4e-3 >> old 1e-3 pad
+
+	// Camera ray straight down through the TOP face: must HIT the TOP (z~=1.7),
+	// NOT tunnel to the bottom (z~=1.3 is what the old mis-siding reported), and
+	// the front-face normal must point +Z.
+	{	RayIntersectionGeometric ri = MkRI( Point3(5,5,50), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit, "wide-thin: top-entry ray hits" );
+		Check( ri.bHit && IsClose( ri.ptIntersection.z, 1.7, 1e-2 ), "wide-thin: hit lands on the TOP face z~=1.7 (not the exit z=1.3)" );
+		Check( ri.bHit && ri.ptIntersection.z > 1.5, "wide-thin: hit is the top half, never the bottom exit" );
+		Check( VClose( ri.vNormal, Vector3(0,0,1) ), "wide-thin: top-face normal points +Z (front side)" ); }
+
+	// Entry through a SIDE face still works (the thin axis is z; +X face at x=19).
+	{	RayIntersectionGeometric ri = MkRI( Point3(50,5,1.5), Vector3(-1,0,0) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose( ri.ptIntersection.x, 19.0, 1e-2 ), "wide-thin: side-face entry hits +X face x~=19" );
+		Check( VClose( ri.vNormal, Vector3(1,0,0) ), "wide-thin: side-face normal points +X" ); }
+	safe_release( g );
+}
+
 static void TestShadowQuery()
 {
 	std::cout << "Test 5: IntersectRay_IntersectionOnly (shadow) hit/miss + dHowFar" << std::endl;
@@ -1000,6 +1036,7 @@ int main()
 	TestSmoothMin();
 	TestBoundingBoxContainsSurface();
 	TestBoundingBoxOpAware();
+	TestWideThinTopFaceEntry();
 	TestShadowQuery();
 	TestMiss();
 	TestInsideStartExits();
