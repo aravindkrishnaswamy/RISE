@@ -1,9 +1,8 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  ProceduralDescriptors.h - Plain public parameter blocks for the
-//  procedural construction factories (guilloché disk / oxide painter,
-//  profile sweep, along-path instances).  Lives in Interfaces so IJob
-//  and RISE_API can share
+//  procedural construction factories (profile sweep, along-path
+//  instances).  Lives in Interfaces so IJob and RISE_API can share
 //  the types without touching Implementation headers.
 //
 //  These mirror the retired Python bakers' argparse surfaces; the
@@ -22,74 +21,6 @@
 namespace RISE
 {
 	class IGeometry;
-
-	//! Guilloché pattern selector (string names in the scene chunk:
-	//! uniform | lightning | radial | iris | swirl | varwidth).
-	enum GuillochePatternKind
-	{
-		eGuillochePatternUniform   = 0,
-		eGuillochePatternLightning = 1,
-		eGuillochePatternRadial    = 2,
-		eGuillochePatternIris      = 3,
-		eGuillochePatternSwirl     = 4,
-		eGuillochePatternVarwidth  = 5
-	};
-
-	//! Every knob of the guilloché field + the disk bake (mesh_n, disp).
-	//! Scene-chunk parameter names match the Python flags (snake_case).
-	struct GuillocheDiskDescriptor
-	{
-		int    pattern;					//!< GuillochePatternKind
-		double radius;					//!< disk radius (world units)
-		int    numArms;
-		double swirl;					//!< angular lean centre->rim (rad)
-		double seamJag;
-		double seamJagFreq;
-		double cell;					//!< woven cell world size (land-to-land)
-		double gridAmp;
-		double petalAmp;
-		double gridE0, gridE1;
-		double petalE0, petalE1;
-		double base;
-		double landLevel;
-		double reliefDepth;
-		double centerRadius;
-		int    cellMode;				//!< 0 freqblend | 1 select
-		double lightningCellScale;
-		double lightningLo, lightningHi;
-		double lightningRelief;
-		double zigzagAmp;
-		double zigzagFreq;
-		double fieldCell;
-		int    fieldFrame;				//!< 0 global | 1 radial
-		int    boltStyle;				//!< 0 rung | 1 cube | 2 woven
-		double rungLen;
-		double rungWidth;
-		double irisAperture;
-		double irisSwirl;
-		double irisEdge;
-		double swirlTurns;
-
-		GuillocheDiskDescriptor() :
-			pattern( eGuillochePatternUniform ),
-			radius( 20.6 ),
-			numArms( 12 ), swirl( 0.0 ),
-			seamJag( 0.16 ), seamJagFreq( 3.0 ),
-			cell( 0.9 ), gridAmp( 0.85 ), petalAmp( 0.30 ),
-			gridE0( 0.12 ), gridE1( 0.5 ),
-			petalE0( 0.0 ), petalE1( 0.82 ),
-			base( 0.15 ), landLevel( 0.45 ), reliefDepth( 0.85 ),
-			centerRadius( 0.03 ),
-			cellMode( 0 ), lightningCellScale( 0.6 ),
-			lightningLo( 0.30 ), lightningHi( 0.72 ), lightningRelief( 0.0 ),
-			zigzagAmp( 0.16 ), zigzagFreq( 3.0 ),
-			fieldCell( 0.45 ), fieldFrame( 0 ), boltStyle( 0 ),
-			rungLen( 1.2 ), rungWidth( 1.5 ),
-			irisAperture( 0.13 ), irisSwirl( 0.5 ), irisEdge( 0.6 ),
-			swirlTurns( 6.0 )
-		{
-		}
-	};
 
 	//! General profile-sweep parameters: an arbitrary CLOSED 2D profile
 	//! polygon swept along an arbitrary 3D Catmull-Rom path with

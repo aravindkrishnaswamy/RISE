@@ -18,13 +18,19 @@ the thickness field into colour from the real substrate/oxide n,k.
 """
 import argparse, os, sys
 
-# metal -> (substrate nk name, oxide nk name, metal0 char, optLoC, optHiC)
-# the optimal window MUST match GuillocheField::MetalThermalModel.
+# metal -> (substrate nk name, oxide nk name, metal0 char, temper anchors).
+# The temper anchors (onsetC, optLoC, optHiC, flakeC, dLoNm, dHiNm) are the
+# per-metal heat-tint model -- they MUST match the values the in-scene
+# thickness/spall expressions below were validated against (the snapshot of
+# the retired GuillocheField::MetalThermalModel; see tests/ThermalOxideExpr.h
+# + tests/ThermalOxideExprTest.cpp).  The `optimal` mode clamps each metal to
+# its own [optLoC, optHiC] window.
+#                  sub      oxide    m0       onsetC optLoC optHiC flakeC dLoNm dHiNm
 METALS = {
-    "titanium":  ("Ti",    "TiO2",  "ti",    300, 580),
-    "niobium":   ("Nb",    "Nb2O5", "nb",    250, 520),
-    "tantalum":  ("Ta",    "Ta2O5", "ta",    300, 560),
-    "stainless": ("Steel", "Fe3O4", "steel", 230, 350),
+    "titanium":  ("Ti",    "TiO2",  "ti",     250,  300,   580,   650,   10,   73),
+    "niobium":   ("Nb",    "Nb2O5", "nb",     200,  250,   520,   580,   12,   88),
+    "tantalum":  ("Ta",    "Ta2O5", "ta",     250,  300,   560,   620,   10,   94),
+    "stainless": ("Steel", "Fe3O4", "steel",  210,  230,   350,   420,   11,   93),
 }
 ORDER = ["titanium", "niobium", "tantalum", "stainless"]
 
@@ -83,7 +89,7 @@ DIALFN_UNIFORM = r"""expression_function2d
 }"""
 
 def build_scene(metal, temp_lo, temp_hi, out_pattern, width, height, samples):
-    sub, ox, m0, _, _ = METALS[metal]
+    sub, ox, m0, onsetC, optLoC, optHiC, flakeC, dLoNm, dHiNm = METALS[metal]
     R = 20.6
     s = []
     s.append("RISE ASCII SCENE 6")
@@ -111,12 +117,46 @@ def build_scene(metal, temp_lo, temp_hi, out_pattern, width, height, samples):
     s.append("scalar_painter\n{\n\tname\t\t\tfilm_k\n\tfile\t\t\t%s\n}" % (NK % ("oxides", ox, "k")))
 
     # absolute-temperature oxide thickness (nm) + spall mask, on a clean
-    # linear radial ramp (cool centre -> hot rim).
-    common = ("\tmetal\t\t\t%s\n\tfalloff\t\t\tlinear\n\tradius\t\t\t%.4f\n"
-              "\ttemp_center_c\t\t%.1f\n\ttemp_rim_c\t\t%.1f\n") % (m0, R, temp_lo, temp_hi)
-    s.append("guilloche_oxide_painter\n{\n\tname\t\t\toxfn_thk\n\toutput\t\t\tthickness_nm\n%s}" % common)
+    # linear radial ramp (cool centre -> hot rim).  Authored IN-SCENE as
+    # expression_function2d (was guilloche_oxide_painter output
+    # thickness_nm / spall_mask) -- the falloff is `linear` so heat = rho.
+    # These two expressions are tests/ThermalOxideExpr.h's
+    # BuildTemperThickness / BuildSpall verbatim (golden-checked ==
+    # the retired GuillocheField physics by tests/ThermalOxideExprTest).
+    s.append((
+        "expression_function2d\n{\n"
+        "\tname\t\t\toxfn_thk\n"
+        "\tparam\t\tR %.4f\n"
+        "\tparam\t\ttC %.1f\n"
+        "\tparam\t\ttR %.1f\n"
+        "\tparam\t\tonsetC %g\n"
+        "\tparam\t\toptLoC %g\n"
+        "\tparam\t\toptHiC %g\n"
+        "\tparam\t\tflakeC %g\n"
+        "\tparam\t\tdLoNm %g\n"
+        "\tparam\t\tdHiNm %g\n"
+        "\tdef\t\t\trho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)\n"
+        "\tdef\t\t\theat rho\n"
+        "\tdef\t\t\tT tC+heat*(tR-tC)\n"
+        "\tdef\t\t\ts1 dLoNm*(T-onsetC)/max(1,optLoC-onsetC)\n"
+        "\tdef\t\t\ts2 dLoNm+(dHiNm-dLoNm)*(T-optLoC)/max(1,optHiC-optLoC)\n"
+        "\tdef\t\t\ts3 dHiNm+dHiNm*(T-optHiC)/max(1,flakeC-optHiC)\n"
+        "\tdef\t\t\ts4 min(2*dHiNm+dHiNm*(T-flakeC)/100,3.5*dHiNm)\n"
+        "\texpr\t\tselect(T<onsetC,0,select(T<optLoC,s1,select(T<=optHiC,s2,select(T<=flakeC,s3,s4))))\n"
+        "}") % (R, temp_lo, temp_hi, onsetC, optLoC, optHiC, flakeC, dLoNm, dHiNm))
     s.append("scalar_painter\n{\n\tname\t\t\tfilm_thk\n\tfunction2d\t\toxfn_thk\n\tscale\t\t\t1.0\n\tbias\t\t\t0.0\n}")
-    s.append("guilloche_oxide_painter\n{\n\tname\t\t\toxfn_spall\n\toutput\t\t\tspall_mask\n%s}" % common)
+    s.append((
+        "expression_function2d\n{\n"
+        "\tname\t\t\toxfn_spall\n"
+        "\tparam\t\tR %.4f\n"
+        "\tparam\t\ttC %.1f\n"
+        "\tparam\t\ttR %.1f\n"
+        "\tparam\t\tflakeC %g\n"
+        "\tdef\t\t\trho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)\n"
+        "\tdef\t\t\theat rho\n"
+        "\tdef\t\t\tT tC+heat*(tR-tC)\n"
+        "\texpr\t\tsmoothstep(flakeC-22,flakeC+22,T)\n"
+        "}") % (R, temp_lo, temp_hi, flakeC))
     # spall mask as a COLOUR painter (for the rd/rs colour blends)...
     s.append("function2d_painter\n{\n\tname\t\t\tspall_col\n\tfunction2d\t\toxfn_spall\n}")
     # ...and as a physical SCALAR ramp for roughness: glossy 0.08 -> matte 0.52
@@ -160,7 +200,8 @@ def main():
     a = ap.parse_args()
 
     if a.mode == "optimal":
-        _, _, _, lo, hi = METALS[a.metal]
+        # clamp to the metal's own optimal window [optLoC, optHiC].
+        lo, hi = METALS[a.metal][4], METALS[a.metal][5]
     else:
         lo, hi = a.temp_lo, a.temp_hi
     out_pattern = a.out_pattern or ("rendered/temper_%s_%s" % (a.metal, a.mode))

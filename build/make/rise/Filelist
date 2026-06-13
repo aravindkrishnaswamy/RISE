@@ -103,7 +103,6 @@ SRCLIBNOISE =\
 SRCLIBPAINTERS =\
 	$(PATHLIBRARY)Painters/BlackBodyPainter.cpp					\
 	$(PATHLIBRARY)Painters/CheckerPainter.cpp					\
-	$(PATHLIBRARY)Painters/GuillochePainter.cpp				\
 	$(PATHLIBRARY)Painters/IridescentPainter.cpp				\
 	$(PATHLIBRARY)Painters/LinesPainter.cpp						\
 	$(PATHLIBRARY)Painters/MandelbrotPainter.cpp				\

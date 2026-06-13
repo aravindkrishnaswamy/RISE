@@ -84,7 +84,6 @@ set(RISE_LIB_SOURCES
     # SRCLIBPAINTERS
     "${RISE_LIB}/Painters/BlackBodyPainter.cpp"
     "${RISE_LIB}/Painters/CheckerPainter.cpp"
-    "${RISE_LIB}/Painters/GuillochePainter.cpp"
     "${RISE_LIB}/Painters/IridescentPainter.cpp"
     "${RISE_LIB}/Painters/LinesPainter.cpp"
     "${RISE_LIB}/Painters/MandelbrotPainter.cpp"

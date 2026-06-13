@@ -487,37 +487,6 @@ namespace RISE
 						const int            meshN			///< [in] Grid samples across the diameter
 						);
 
-	//! Creates the guilloché OXIDE-DOSE IFunction2D -- the native replacement
-	//! for the baked oxide_*.png maps.  Evaluate(u,v) takes the dial's linear
-	//! Cartesian UV and returns the normalized Arrhenius/parabolic radial dose
-	//! in [0,1] plus the signed torch-pattern term.  Wire it to film_thickness
-	//! via `scalar_painter { function2d <name> scale S bias B }`.
-	//! falloffMode: 0 linear, 1 quadratic, 2 smooth.  activationEa in J/mol.
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateGuillocheOxideFunction2D(
-						IFunction2D**        ppi,			///< [out] Pointer to receive the function
-						const GuillocheDiskDescriptor& desc,///< [in] Pattern parameters (mask + radius)
-						const int            falloffMode,	///< [in] 0 linear | 1 quadratic | 2 smooth
-						const double         activationEa,	///< [in] Parabolic-oxidation Ea (J/mol)
-						const double         torchAmount	///< [in] Signed dwell delta along the torch mask
-						);
-
-	//! Creates the ABSOLUTE-temperature temper-comparison oxide function:
-	//! a real radial ramp tempCenterC -> tempRimC drives the metal's
-	//! calibrated thermal model to absolute oxide thickness (outputMode 1,
-	//! nm) or its spall fraction (outputMode 2, [0,1] matte-scale mask).
-	//! metal0: 'T'i 'N'b 'a'=Ta 'S'teel.
-	/// \return TRUE if successful, FALSE otherwise
-	bool RISE_API_CreateGuillocheTemperFunction2D(
-						IFunction2D**        ppi,			///< [out] Pointer to receive the function
-						const GuillocheDiskDescriptor& desc,///< [in] Pattern parameters (radius)
-						const int            falloffMode,	///< [in] 0 linear | 1 quadratic | 2 smooth radial ramp
-						const char           metal0,		///< [in] 'T'i | 'N'b | 'a'=Ta | 'S'teel
-						const int            outputMode,	///< [in] 1 thickness_nm | 2 spall_mask
-						const double         tempCenterC,	///< [in] absolute centre temperature (deg C)
-						const double         tempRimC		///< [in] absolute rim temperature (deg C)
-						);
-
 	//! Creates a general PROFILE SWEEP: an arbitrary CLOSED 2D profile
 	//! polygon swept along an arbitrary 3D Catmull-Rom path with
 	//! rotation-minimizing frames, optional per-axis linear taper, and

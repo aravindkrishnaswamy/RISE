@@ -1487,15 +1487,6 @@ namespace RISE
 					);
 
 
-		//! Creates the guilloché oxide-dose IFunction2D (see IJob)
-		bool AddGuillocheOxideFunction2D(
-					const char* name,						///< [in] Name of the function
-					const GuillocheDiskDescriptor& desc,	///< [in] Pattern parameters (mask + radius)
-					const int falloffMode,					///< [in] 0 linear | 1 quadratic | 2 smooth
-					const double activationEa,				///< [in] Parabolic-oxidation Ea (J/mol)
-					const double torchAmount				///< [in] Signed dwell along the torch mask
-					);
-
 		//! Creates a general profile sweep (see IJob)
 		bool AddSweepGeometry(
 					const char* name,						///< [in] Name of the geometry
@@ -1507,17 +1498,6 @@ namespace RISE
 					const char* name,						///< [in] Name of the geometry
 					const char* szTemplate,					///< [in] Name of the template geometry
 					const PathInstancesDescriptor& desc		///< [in] Path + pitch parameters
-					);
-
-		//! Creates the absolute-temperature temper oxide function (see IJob)
-		bool AddGuillocheTemperFunction2D(
-					const char* name,						///< [in] Name of the function
-					const GuillocheDiskDescriptor& desc,	///< [in] Pattern parameters (radius)
-					const int falloffMode,					///< [in] 0 linear | 1 quadratic | 2 smooth
-					const char metal0,						///< [in] 'T'i | 'N'b | 'a'=Ta | 'S'teel
-					const int outputMode,					///< [in] 1 thickness_nm | 2 spall_mask
-					const double tempCenterC,				///< [in] absolute centre temperature (deg C)
-					const double tempRimC					///< [in] absolute rim temperature (deg C)
 					);
 
 		//! Wraps a named IFunction2D as a greyscale colour painter (see IJob)

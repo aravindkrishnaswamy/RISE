@@ -25,7 +25,7 @@
 #include "IProgressCallback.h"
 #include "IJobRasterizerOutput.h"
 #include "IEnumCallback.h"      // for EnumerateMediumNames callback
-#include "ProceduralDescriptors.h" // guilloché disk / oxide / sweep / path-instances parameter blocks
+#include "ProceduralDescriptors.h" // sweep / path-instances parameter blocks
 #include <string>
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
@@ -3005,18 +3005,6 @@ namespace RISE
 			) = 0;
 
 
-		//! Creates the guilloché oxide-dose IFunction2D (native replacement
-		//! for the baked oxide_*.png maps).  Registered as a named function;
-		//! consume through `scalar_painter { function2d <name> scale S bias B }`.
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool AddGuillocheOxideFunction2D(
-			const char* name,						///< [in] Name of the function
-			const GuillocheDiskDescriptor& desc,	///< [in] Pattern parameters (mask + radius)
-			const int falloffMode,					///< [in] 0 linear | 1 quadratic | 2 smooth radial heat falloff
-			const double activationEa,				///< [in] Parabolic-oxidation activation energy (J/mol)
-			const double torchAmount				///< [in] Signed dwell delta along the pattern's torch mask (0 = uniform radial)
-			) = 0;
-
 		//! Creates a general profile sweep: a closed 2D profile polygon
 		//! swept along a 3D Catmull-Rom path with rotation-minimizing
 		//! frames, per-axis taper, and end caps.
@@ -3034,20 +3022,6 @@ namespace RISE
 			const char* name,						///< [in] Name of the geometry
 			const char* szTemplate,					///< [in] Name of the template geometry to instance
 			const PathInstancesDescriptor& desc		///< [in] Path + pitch parameters (pGeometry filled from szTemplate)
-			) = 0;
-
-		//! Creates the absolute-temperature temper-comparison oxide function
-		//! (see RISE_API_CreateGuillocheTemperFunction2D): thickness_nm or
-		//! spall_mask over a real radial temperature ramp.
-		/// \return TRUE if successful, FALSE otherwise
-		virtual bool AddGuillocheTemperFunction2D(
-			const char* name,						///< [in] Name of the function
-			const GuillocheDiskDescriptor& desc,	///< [in] Pattern parameters (radius)
-			const int falloffMode,					///< [in] 0 linear | 1 quadratic | 2 smooth
-			const char metal0,						///< [in] 'T'i | 'N'b | 'a'=Ta | 'S'teel
-			const int outputMode,					///< [in] 1 thickness_nm | 2 spall_mask
-			const double tempCenterC,				///< [in] absolute centre temperature (deg C)
-			const double tempRimC					///< [in] absolute rim temperature (deg C)
 			) = 0;
 
 		//! Wraps a named IFunction2D as a greyscale colour painter

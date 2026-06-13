@@ -1,29 +1,31 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  GuillocheChunkParseTest.cpp - Parse-level contract test for the
-//  procedural guilloché chunks (the native replacements for the
-//  Python bakers):
+//  procedural chunks (the native replacements for the Python bakers):
 //
 //    cartesian_disk_geometry   -> Job::AddCartesianDiskGeometry
-//    guilloche_oxide_painter   -> Job::AddGuillocheOxideFunction2D
+//    expression_function2d     -> Job::AddExpressionFunction2D (the
+//                                 in-scene math that supplanted the
+//                                 guilloché dial + oxide bakers)
 //    sweep_geometry            -> Job::AddSweepGeometry
 //    path_instances_geometry   -> Job::AddPathInstancesGeometry
 //    scalar_painter function2d + scale/bias (the affine form)
+//    function2d_painter        (greyscale colour wrapper)
 //
-//  The field/mesh MATH is golden-tested elsewhere (GuillocheFieldTest,
-//  ProceduralMeshTest); this test owns the PLUMBING contract:
+//  The expression MATH is golden-tested elsewhere (ExpressionFunction2DTest,
+//  ThermalOxideExprTest, ProceduralMeshTest); this test owns the PLUMBING
+//  contract:
 //
-//    1. A minimal scene using all three chunks + the scalar_painter
-//       function2d affine form PARSES, and the named items land in the
-//       right managers (geometry / function2d / scalar painter).
-//    2. The rejection paths reject (ParseAndLoadScene == FALSE):
-//       unknown enum strings, out-of-range field params, nan/inf and
-//       non-numeric tokens (the dispatcher's TEXT-domain numeric
-//       validation -- the build's -ffast-math erases value-domain
-//       inf/NaN guards, so the token layer is the contract), too few
+//    1. A minimal scene using these chunks + the scalar_painter function2d
+//       affine form PARSES, and the named items land in the right managers
+//       (geometry / function2d / scalar painter).
+//    2. The rejection paths reject (ParseAndLoadScene == FALSE): too few
 //       profile/path points, malformed point lines, degenerate pitch,
-//       missing instancer templates, and a function2d reference to a
-//       missing function.
+//       missing instancer templates, a function2d reference to a missing
+//       function, and malformed/under-specified expressions.  (The
+//       dispatcher's TEXT-domain numeric validation -- the build's
+//       -ffast-math erases value-domain inf/NaN guards, so the token layer
+//       is the contract.)
 //    3. Out-of-range mesh_n CLAMPS (parses fine) rather than rejects.
 //
 //////////////////////////////////////////////////////////////////////
@@ -103,12 +105,14 @@ namespace {
 		"radius 20.6\n"
 		"mesh_n 48\n"
 		"}\n";
-	const char* kOxide =
-		"guilloche_oxide_painter\n{\n"
+	// A radial expression_function2d (the in-scene heat-tint shape that
+	// replaced the guilloché oxide baker): rises centre -> rim, in [0,1].
+	const char* kField =
+		"expression_function2d\n{\n"
 		"name oxfn\n"
-		"metal nb\n"
-		"falloff smooth\n"
-		"torch_amount 0.4\n"
+		"param R 20.6\n"
+		"def rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)\n"
+		"expr rho*rho\n"
 		"}\n";
 	const char* kScalar =
 		"scalar_painter\n{\n"
@@ -152,11 +156,11 @@ namespace {
 
 static void TestHappyPath()
 {
-	std::cout << "Test 1: all three chunks + the function2d affine scalar_painter parse and register" << std::endl;
+	std::cout << "Test 1: the procedural chunks + the function2d affine scalar_painter parse and register" << std::endl;
 	Job* job = new Job();
 	job->addref();
 	const bool ok = ParseBody( "happy",
-		std::string( kDial ) + kOxide + kScalar + kSweep + kCapsule + kInstances, *job );
+		std::string( kDial ) + kField + kScalar + kSweep + kCapsule + kInstances, *job );
 	Check( ok, "scene parses" );
 	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
 	Check( priv != 0, "IJobPriv available" );
@@ -164,14 +168,14 @@ static void TestHappyPath()
 	Check( priv->GetGeometries()->GetItem( "dialg" ) != 0,      "cartesian disk geometry registered" );
 	Check( priv->GetGeometries()->GetItem( "bandg" ) != 0,      "sweep geometry registered" );
 	Check( priv->GetGeometries()->GetItem( "stitchg" ) != 0,    "path-instances geometry registered" );
-	Check( priv->GetFunction2Ds()->GetItem( "oxfn" ) != 0,      "oxide function2d registered" );
+	Check( priv->GetFunction2Ds()->GetItem( "oxfn" ) != 0,      "expression function2d registered" );
 	Check( priv->GetScalarPainters()->GetItem( "oxthk" ) != 0,  "affine function2d scalar painter registered" );
-	// the oxide painter evaluates sanely through the registered function
+	// the field evaluates sanely through the registered function
 	IFunction2D* f = priv->GetFunction2Ds()->GetItem( "oxfn" );
 	const Scalar centre = f->Evaluate( 0.5, 0.5 );
 	const Scalar rim    = f->Evaluate( 1.0, 0.5 );
-	Check( centre >= 0.0 && centre <= 1.0 && rim >= 0.0 && rim <= 1.0, "dose in [0,1]" );
-	Check( rim > centre, "dose increases centre -> rim" );
+	Check( centre >= 0.0 && centre <= 1.0 && rim >= 0.0 && rim <= 1.0, "field in [0,1]" );
+	Check( rim > centre, "field increases centre -> rim" );
 	job->release();
 }
 
@@ -189,22 +193,6 @@ static void TestRejections()
 	std::cout << "Test 3: rejection paths" << std::endl;
 	struct Row { const char* tag; const char* body; const char* what; };
 	const Row rows[] = {
-		{ "bad_pattern",  "guilloche_oxide_painter\n{\nname f\npattern zigzag\n}\n",
-		  "unknown pattern enum rejects" },
-		{ "bad_metal",    "guilloche_oxide_painter\n{\nname f\nmetal woof\nactivation_ea 160000\n}\n",
-		  "unknown metal rejects even with explicit activation_ea" },
-		{ "bad_falloff",  "guilloche_oxide_painter\n{\nname f\nfalloff sideways\n}\n",
-		  "unknown falloff enum rejects" },
-		{ "arms_zero",    "guilloche_oxide_painter\n{\nname f\nnum_arms 0\n}\n",
-		  "num_arms 0 rejects" },
-		{ "arms_huge",    "guilloche_oxide_painter\n{\nname f\nnum_arms 1000\n}\n",
-		  "num_arms 1000 rejects (cap 256)" },
-		{ "cell_zero",    "guilloche_oxide_painter\n{\nname f\ncell 0\n}\n",
-		  "cell 0 rejects" },
-		{ "radius_nan",   "guilloche_oxide_painter\n{\nname f\nradius nan\n}\n",
-		  "radius nan rejects (text-domain)" },
-		{ "ea_huge",      "guilloche_oxide_painter\n{\nname f\nactivation_ea 5e7\n}\n",
-		  "activation_ea above 1e6 J/mol rejects" },
 		{ "two_prof",     "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\npoint 0 0 0\npoint 0 0 10\n}\n",
 		  "fewer than 3 profile points rejects" },
 		{ "one_point",    "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\n}\n",
@@ -225,33 +213,26 @@ static void TestRejections()
 	}
 }
 
-static void TestTemperModes()
+static void TestFunction2DColorPainter()
 {
-	std::cout << "Test 4: absolute-temperature temper modes + function2d_painter" << std::endl;
+	std::cout << "Test 4: function2d_painter (greyscale colour wrapper over an expression field)" << std::endl;
 	Job* job = new Job();
 	job->addref();
 	const char* body =
-		"guilloche_oxide_painter\n{\nname oxthk\nmetal ti\noutput thickness_nm\ntemp_center_c 200\ntemp_rim_c 1000\nfalloff linear\n}\n"
-		"guilloche_oxide_painter\n{\nname oxspall\nmetal ti\noutput spall_mask\ntemp_center_c 200\ntemp_rim_c 1000\nfalloff linear\n}\n"
-		"function2d_painter\n{\nname spallcol\nfunction2d oxspall\n}\n";
-	const bool ok = ParseBody( "temper", body, *job );
-	Check( ok, "temper thickness + spall + function2d_painter parse" );
+		"expression_function2d\n{\nname spallf\nparam R 20.6\ndef rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)\nexpr smoothstep(0.6,0.9,rho)\n}\n"
+		"function2d_painter\n{\nname spallcol\nfunction2d spallf\n}\n";
+	const bool ok = ParseBody( "fn2dcol", body, *job );
+	Check( ok, "expression + function2d_painter parse" );
 	IJobPriv* priv = dynamic_cast<IJobPriv*>( job );
 	if( priv ) {
-		Check( priv->GetFunction2Ds()->GetItem( "oxthk" ) != 0,    "thickness_nm function2d registered" );
-		Check( priv->GetFunction2Ds()->GetItem( "oxspall" ) != 0,  "spall_mask function2d registered" );
+		Check( priv->GetFunction2Ds()->GetItem( "spallf" ) != 0,   "expression function2d registered" );
 		Check( priv->GetPainters()->GetItem( "spallcol" ) != 0,    "function2d_painter colour registered" );
-		// thickness must be ABSOLUTE nm (>1 near the rim), not a [0,1] dose
-		IFunction2D* thk = priv->GetFunction2Ds()->GetItem( "oxthk" );
-		Check( thk && thk->Evaluate( 1.0, 0.5 ) > 1.0, "thickness_nm yields absolute nm at the rim" );
 	} else {
 		Check( false, "IJobPriv available" );
 	}
 	job->release();
 
-	// rejections specific to the temper modes
-	Check( !ParseBody( "bad_output", "guilloche_oxide_painter\n{\nname f\noutput sideways\n}\n" ),
-		"unknown output enum rejects" );
+	// rejection: a function2d_painter referencing a missing source
 	Check( !ParseBody( "missing_fn2d", "function2d_painter\n{\nname p\nfunction2d nope\n}\n" ),
 		"function2d_painter missing source rejects" );
 }
@@ -294,7 +275,7 @@ int main( int, char** )
 	TestHappyPath();
 	TestCartesianDiskValidation();
 	TestRejections();
-	TestTemperModes();
+	TestFunction2DColorPainter();
 	TestExpressionAndDisplacement();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;

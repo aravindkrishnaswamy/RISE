@@ -417,9 +417,6 @@
     <ClCompile Include="..\..\..\src\Library\Painters\CheckerPainter.cpp">
       <Filter>Painters</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Painters\GuillochePainter.cpp">
-      <Filter>Painters</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Painters\IridescentPainter.cpp">
       <Filter>Painters</Filter>
     </ClCompile>
@@ -1621,12 +1618,6 @@
       <Filter>Painters</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\ExpressionFunction2DPainter.h">
-      <Filter>Painters</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Painters\GuillocheField.h">
-      <Filter>Painters</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Painters\GuillochePainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\ScaledScalarPainter.h">

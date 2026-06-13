@@ -123,7 +123,6 @@
 #include "../Interfaces/IFunction2DManager.h"
 #include "../Painters/RGBScalarPainter.h"		// for ScalarTriple::IsUniform et al
 #include "../Painters/TexturePainter.h"		// for resolving a named image painter -> raster accessor (scalar_painter texture form)
-#include "../Painters/GuillocheField.h"		// GuillocheField::MetalEa for the guilloche_oxide_painter metal preset
 // Phase 6.1: SourceSpanIndex + TransformSnapshot live behind IJobPriv
 // (forward-declared in IJobPriv.h), full defs needed for population calls.
 #include "../Interfaces/IJobPriv.h"
@@ -5404,136 +5403,6 @@ namespace RISE
 				}
 			};
 
-			//////////////////////////////////////////
-			// Guilloché procedural chunks -- the native replacements for the
-			// dial_mesh_gen.py / dial_variants_gen.py / thermal_oxide_sim.py
-			// bakers.  Two chunks share the full field-parameter surface
-			// (the engraved pattern must match between the dial mesh and the
-			// oxide-dose map), so the knob reading + descriptor entries live
-			// in these two helpers.  Parameter names match the retired
-			// Python flags (snake_case).
-			//////////////////////////////////////////
-			static bool ReadGuillocheFieldParams( const ParseStateBag& bag, const char* chunkKeyword, const std::string& name, GuillocheDiskDescriptor& d )
-			{
-				{
-					const std::string pat = bag.GetString( "pattern", "uniform" );
-					if(      pat == "uniform" )   d.pattern = eGuillochePatternUniform;
-					else if( pat == "lightning" ) d.pattern = eGuillochePatternLightning;
-					else if( pat == "radial" )    d.pattern = eGuillochePatternRadial;
-					else if( pat == "iris" )      d.pattern = eGuillochePatternIris;
-					else if( pat == "swirl" )     d.pattern = eGuillochePatternSwirl;
-					else if( pat == "varwidth" )  d.pattern = eGuillochePatternVarwidth;
-					else {
-						GlobalLog()->PrintEx( eLog_Error,
-							"%s `%s`: unknown pattern `%s` (expected uniform | lightning | radial | iris | swirl | varwidth)",
-							chunkKeyword, name.c_str(), pat.c_str() );
-						return false;
-					}
-				}
-				{
-					const std::string cm = bag.GetString( "cell_mode", "freqblend" );
-					if(      cm == "freqblend" ) d.cellMode = 0;
-					else if( cm == "select" )    d.cellMode = 1;
-					else {
-						GlobalLog()->PrintEx( eLog_Error,
-							"%s `%s`: unknown cell_mode `%s` (expected freqblend | select)",
-							chunkKeyword, name.c_str(), cm.c_str() );
-						return false;
-					}
-				}
-				{
-					const std::string ff = bag.GetString( "field_frame", "global" );
-					if(      ff == "global" ) d.fieldFrame = 0;
-					else if( ff == "radial" ) d.fieldFrame = 1;
-					else {
-						GlobalLog()->PrintEx( eLog_Error,
-							"%s `%s`: unknown field_frame `%s` (expected global | radial)",
-							chunkKeyword, name.c_str(), ff.c_str() );
-						return false;
-					}
-				}
-				{
-					const std::string bs = bag.GetString( "bolt_style", "rung" );
-					if(      bs == "rung" )  d.boltStyle = 0;
-					else if( bs == "cube" )  d.boltStyle = 1;
-					else if( bs == "woven" ) d.boltStyle = 2;
-					else {
-						GlobalLog()->PrintEx( eLog_Error,
-							"%s `%s`: unknown bolt_style `%s` (expected rung | cube | woven)",
-							chunkKeyword, name.c_str(), bs.c_str() );
-						return false;
-					}
-				}
-				d.radius              = bag.GetDouble( "radius", d.radius );
-				d.swirl               = bag.GetDouble( "swirl", d.swirl );
-				d.seamJag             = bag.GetDouble( "seam_jag", d.seamJag );
-				d.seamJagFreq         = bag.GetDouble( "seam_jag_freq", d.seamJagFreq );
-				d.cell                = bag.GetDouble( "cell", d.cell );
-				d.gridAmp             = bag.GetDouble( "grid_amp", d.gridAmp );
-				d.petalAmp            = bag.GetDouble( "petal_amp", d.petalAmp );
-				d.gridE0              = bag.GetDouble( "grid_e0", d.gridE0 );
-				d.gridE1              = bag.GetDouble( "grid_e1", d.gridE1 );
-				d.petalE0             = bag.GetDouble( "petal_e0", d.petalE0 );
-				d.petalE1             = bag.GetDouble( "petal_e1", d.petalE1 );
-				d.base                = bag.GetDouble( "base", d.base );
-				d.landLevel           = bag.GetDouble( "land_level", d.landLevel );
-				d.reliefDepth         = bag.GetDouble( "relief_depth", d.reliefDepth );
-				d.centerRadius        = bag.GetDouble( "center_radius", d.centerRadius );
-				d.lightningCellScale  = bag.GetDouble( "lightning_cell_scale", d.lightningCellScale );
-				d.lightningLo         = bag.GetDouble( "lightning_lo", d.lightningLo );
-				d.lightningHi         = bag.GetDouble( "lightning_hi", d.lightningHi );
-				d.lightningRelief     = bag.GetDouble( "lightning_relief", d.lightningRelief );
-				d.zigzagAmp           = bag.GetDouble( "zigzag_amp", d.zigzagAmp );
-				d.zigzagFreq          = bag.GetDouble( "zigzag_freq", d.zigzagFreq );
-				d.fieldCell           = bag.GetDouble( "field_cell", d.fieldCell );
-				d.rungLen             = bag.GetDouble( "rung_len", d.rungLen );
-				d.rungWidth           = bag.GetDouble( "rung_width", d.rungWidth );
-				d.irisAperture        = bag.GetDouble( "iris_aperture", d.irisAperture );
-				d.irisSwirl           = bag.GetDouble( "iris_swirl", d.irisSwirl );
-				d.irisEdge            = bag.GetDouble( "iris_edge", d.irisEdge );
-				d.swirlTurns          = bag.GetDouble( "swirl_turns", d.swirlTurns );
-				d.numArms             = (int)bag.GetUInt( "num_arms", (unsigned int)d.numArms );
-				return true;
-			}
-
-			static void AppendGuillocheFieldDescriptors( ChunkDescriptor& cd )
-			{
-				auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-				{ auto& p = P(); p.name = "pattern"; p.kind = ValueKind::Enum; p.enumValues = {"uniform","lightning","radial","iris","swirl","varwidth"}; p.description = "Guilloché pattern family"; p.defaultValueHint = "uniform"; }
-				{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Dial radius (world units); UV is the linear Cartesian map over [-radius, radius]^2"; p.defaultValueHint = "20.6"; }
-				{ auto& p = P(); p.name = "num_arms"; p.kind = ValueKind::UInt; p.description = "Rosette arms / lightning bolts / iris blades / swirl spokes"; p.defaultValueHint = "12"; }
-				{ auto& p = P(); p.name = "swirl"; p.kind = ValueKind::Double; p.description = "Angular lean centre->rim (radians)"; p.defaultValueHint = "0.0"; }
-				{ auto& p = P(); p.name = "seam_jag"; p.kind = ValueKind::Double; p.description = "Sector-seam zigzag amplitude"; p.defaultValueHint = "0.16"; }
-				{ auto& p = P(); p.name = "seam_jag_freq"; p.kind = ValueKind::Double; p.description = "Sector-seam zigzag frequency (cycles per unit radius)"; p.defaultValueHint = "3.0"; }
-				{ auto& p = P(); p.name = "cell"; p.kind = ValueKind::Double; p.description = "Woven-grid cell world size (land-to-land)"; p.defaultValueHint = "0.9"; }
-				{ auto& p = P(); p.name = "grid_amp"; p.kind = ValueKind::Double; p.description = "Woven-grid groove amplitude"; p.defaultValueHint = "0.85"; }
-				{ auto& p = P(); p.name = "petal_amp"; p.kind = ValueKind::Double; p.description = "Rosette petal-lens amplitude"; p.defaultValueHint = "0.30"; }
-				{ auto& p = P(); p.name = "grid_e0"; p.kind = ValueKind::Double; p.description = "Woven-grid stripe smoothstep lower edge"; p.defaultValueHint = "0.12"; }
-				{ auto& p = P(); p.name = "grid_e1"; p.kind = ValueKind::Double; p.description = "Woven-grid stripe smoothstep upper edge"; p.defaultValueHint = "0.5"; }
-				{ auto& p = P(); p.name = "petal_e0"; p.kind = ValueKind::Double; p.description = "Petal-lens smoothstep lower edge"; p.defaultValueHint = "0.0"; }
-				{ auto& p = P(); p.name = "petal_e1"; p.kind = ValueKind::Double; p.description = "Petal-lens smoothstep upper edge"; p.defaultValueHint = "0.82"; }
-				{ auto& p = P(); p.name = "base"; p.kind = ValueKind::Double; p.description = "Field floor before normalization"; p.defaultValueHint = "0.15"; }
-				{ auto& p = P(); p.name = "land_level"; p.kind = ValueKind::Double; p.description = "Target mean land height after normalization (gamma anchor)"; p.defaultValueHint = "0.45"; }
-				{ auto& p = P(); p.name = "relief_depth"; p.kind = ValueKind::Double; p.description = "Post-normalization squeeze toward the land level (0 = flat, 1 = full)"; p.defaultValueHint = "0.85"; }
-				{ auto& p = P(); p.name = "center_radius"; p.kind = ValueKind::Double; p.description = "Flush hub radius as a fraction of the dial radius"; p.defaultValueHint = "0.03"; }
-				{ auto& p = P(); p.name = "cell_mode"; p.kind = ValueKind::Enum; p.enumValues = {"freqblend","select"}; p.description = "Per-sector cell sizing: freqblend = continuous frequency blend, select = quantized cell-size selection"; p.defaultValueHint = "freqblend"; }
-				{ auto& p = P(); p.name = "lightning_cell_scale"; p.kind = ValueKind::Double; p.description = "Lightning-bolt cell scale relative to `cell`"; p.defaultValueHint = "0.6"; }
-				{ auto& p = P(); p.name = "lightning_lo"; p.kind = ValueKind::Double; p.description = "Lightning ray-coordinate smoothstep lower edge"; p.defaultValueHint = "0.30"; }
-				{ auto& p = P(); p.name = "lightning_hi"; p.kind = ValueKind::Double; p.description = "Lightning ray-coordinate smoothstep upper edge"; p.defaultValueHint = "0.72"; }
-				{ auto& p = P(); p.name = "lightning_relief"; p.kind = ValueKind::Double; p.description = "Extra bolt relief height added inside the bolt mask"; p.defaultValueHint = "0.0"; }
-				{ auto& p = P(); p.name = "zigzag_amp"; p.kind = ValueKind::Double; p.description = "Bolt zigzag amplitude (radians of angular wobble)"; p.defaultValueHint = "0.16"; }
-				{ auto& p = P(); p.name = "zigzag_freq"; p.kind = ValueKind::Double; p.description = "Bolt zigzag frequency (cycles per unit radius)"; p.defaultValueHint = "3.0"; }
-				{ auto& p = P(); p.name = "field_cell"; p.kind = ValueKind::Double; p.description = "Background field cell size for the bolt ground (lightning pattern)"; p.defaultValueHint = "0.45"; }
-				{ auto& p = P(); p.name = "field_frame"; p.kind = ValueKind::Enum; p.enumValues = {"global","radial"}; p.description = "Bolt-ground weave frame: global Cartesian or per-sector radial"; p.defaultValueHint = "global"; }
-				{ auto& p = P(); p.name = "bolt_style"; p.kind = ValueKind::Enum; p.enumValues = {"rung","cube","woven"}; p.description = "Lightning bolt fill: rung blocks, tight cube weave, or woven grid"; p.defaultValueHint = "rung"; }
-				{ auto& p = P(); p.name = "rung_len"; p.kind = ValueKind::Double; p.description = "Rung block length along the bolt (rung bolt_style)"; p.defaultValueHint = "1.2"; }
-				{ auto& p = P(); p.name = "rung_width"; p.kind = ValueKind::Double; p.description = "Rung block width across the bolt (rung bolt_style)"; p.defaultValueHint = "1.5"; }
-				{ auto& p = P(); p.name = "iris_aperture"; p.kind = ValueKind::Double; p.description = "Iris central aperture radius as a fraction of the dial radius"; p.defaultValueHint = "0.13"; }
-				{ auto& p = P(); p.name = "iris_swirl"; p.kind = ValueKind::Double; p.description = "Iris blade leading-edge spiral lean"; p.defaultValueHint = "0.5"; }
-				{ auto& p = P(); p.name = "iris_edge"; p.kind = ValueKind::Double; p.description = "Iris blade edge sharpness"; p.defaultValueHint = "0.6"; }
-				{ auto& p = P(); p.name = "swirl_turns"; p.kind = ValueKind::Double; p.description = "Log-spiral total turns centre->rim (swirl pattern)"; p.defaultValueHint = "6.0"; }
-			}
-
 			struct CartesianDiskGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -5553,92 +5422,6 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Disk radius (world units)"; p.defaultValueHint = "20.6"; }
 						{ auto& p = P(); p.name = "mesh_n"; p.kind = ValueKind::UInt;   p.description = "Grid samples across the diameter (tessellation density; clamped 2..4096)"; p.defaultValueHint = "560"; }
-						return cd;
-					}();
-					return d;
-				}
-			};
-
-			struct GuillocheOxidePainterAsciiChunkParser : public IAsciiChunkParser
-			{
-				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
-				{
-					std::string name = bag.GetString( "name", "noname" );
-					GuillocheDiskDescriptor d;
-					if( !ReadGuillocheFieldParams( bag, "guilloche_oxide_painter", name, d ) ) {
-						return false;
-					}
-
-					int falloffMode = 1;
-					{
-						const std::string fo = bag.GetString( "falloff", "quadratic" );
-						if(      fo == "linear" )    falloffMode = 0;
-						else if( fo == "quadratic" ) falloffMode = 1;
-						else if( fo == "smooth" )    falloffMode = 2;
-						else {
-							GlobalLog()->PrintEx( eLog_Error,
-								"guilloche_oxide_painter `%s`: unknown falloff `%s` (expected linear | quadratic | smooth)",
-								name.c_str(), fo.c_str() );
-							return false;
-						}
-					}
-
-					// the metal STRING is validated even when an explicit activation_ea
-					// overrides it -- a typo'd preset should never parse silently
-					const std::string metal = bag.GetString( "metal", "ti" );
-					char metal0 = 0;
-					if(      metal == "ti" )    metal0 = 'T';
-					else if( metal == "nb" )    metal0 = 'N';
-					else if( metal == "ta" )    metal0 = 'a';
-					else if( metal == "steel" ) metal0 = 'S';
-					else {
-						GlobalLog()->PrintEx( eLog_Error,
-							"guilloche_oxide_painter `%s`: unknown metal `%s` (expected ti | nb | ta | steel)",
-							name.c_str(), metal.c_str() );
-						return false;
-					}
-					double ea = bag.GetDouble( "activation_ea", 0.0 );
-					if( ea <= 0.0 ) {
-						ea = Implementation::GuillocheField::MetalEa( metal0 );
-					}
-
-					// ABSOLUTE-temperature temper modes: when `output` is
-					// thickness_nm or spall_mask the painter ignores the
-					// normalized-dose path and runs the metal's thermal model
-					// over the real ramp temp_center_c -> temp_rim_c.
-					const std::string output = bag.GetString( "output", "dose" );
-					if( output == "thickness_nm" || output == "spall_mask" ) {
-						const double tC = bag.GetDouble( "temp_center_c", 200.0 );
-						const double tR = bag.GetDouble( "temp_rim_c",   1000.0 );
-						const int outMode = ( output == "spall_mask" ) ? 2 : 1;
-						return pJob.AddGuillocheTemperFunction2D( name.c_str(), d, falloffMode, metal0, outMode, tC, tR );
-					}
-					else if( output != "dose" ) {
-						GlobalLog()->PrintEx( eLog_Error,
-							"guilloche_oxide_painter `%s`: unknown output `%s` (expected dose | thickness_nm | spall_mask)",
-							name.c_str(), output.c_str() );
-						return false;
-					}
-
-					const double torch = bag.GetDouble( "torch_amount", 0.0 );
-					return pJob.AddGuillocheOxideFunction2D( name.c_str(), d, falloffMode, ea, torch );
-				}
-
-				const ChunkDescriptor& Describe() const override {
-					static const ChunkDescriptor d = []{
-						ChunkDescriptor cd;
-						cd.keyword = "guilloche_oxide_painter"; cd.category = ChunkCategory::Function;
-						cd.description = "Guilloché thermal-oxide DOSE as a named IFunction2D over the disk's linear Cartesian UV.  `output dose` (default): normalized [0,1] Arrhenius/parabolic radial heat profile + signed torch term -> consume via scalar_painter { function2d <name> scale S bias B } into film_thickness (the hero-watch heat tint).  `output thickness_nm` / `spall_mask`: ABSOLUTE-temperature temper mode -- a real radial ramp temp_center_c -> temp_rim_c drives the `metal`'s calibrated thermal model to absolute oxide nm or the spall fraction [0,1] (matte oxide-scale blend mask above the flaking temperature).  Pairs with a guilloché expression_function2d displaced onto a disk.";
-						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						AppendGuillocheFieldDescriptors( cd );
-						{ auto& p = P(); p.name = "falloff";       p.kind = ValueKind::Enum;   p.enumValues = {"linear","quadratic","smooth"}; p.description = "Radial torch heat falloff shape centre->rim"; p.defaultValueHint = "quadratic"; }
-						{ auto& p = P(); p.name = "metal";         p.kind = ValueKind::Enum;   p.enumValues = {"ti","nb","ta","steel"}; p.description = "Metal kinetics preset for the parabolic-oxidation activation energy (Ti 160e3, Nb 135e3, Ta 80e3, Steel 165e3 J/mol)"; p.defaultValueHint = "ti"; }
-						{ auto& p = P(); p.name = "activation_ea"; p.kind = ValueKind::Double; p.description = "Explicit activation energy in J/mol (overrides `metal` when > 0)"; p.defaultValueHint = "0.0"; }
-						{ auto& p = P(); p.name = "torch_amount";  p.kind = ValueKind::Double; p.description = "Signed extra dwell along the pattern's torch mask (0 = uniform radial dose; +hot ridges / -cool ridges)"; p.defaultValueHint = "0.0"; }
-						{ auto& p = P(); p.name = "output";        p.kind = ValueKind::Enum;   p.enumValues = {"dose","thickness_nm","spall_mask"}; p.description = "dose = normalized [0,1] heat-tint (scene scale/bias -> nm).  thickness_nm / spall_mask = ABSOLUTE-temperature temper mode: the metal's thermal model over temp_center_c -> temp_rim_c gives absolute nm (feed film_thickness) or the spall fraction [0,1] (matte-scale blend mask)"; p.defaultValueHint = "dose"; }
-						{ auto& p = P(); p.name = "temp_center_c";  p.kind = ValueKind::Double; p.description = "Absolute centre temperature (deg C) for the temper modes"; p.defaultValueHint = "200.0"; }
-						{ auto& p = P(); p.name = "temp_rim_c";     p.kind = ValueKind::Double; p.description = "Absolute rim temperature (deg C) for the temper modes"; p.defaultValueHint = "1000.0"; }
 						return cd;
 					}();
 					return d;
@@ -9757,7 +9540,6 @@ namespace RISE
 		add( "perlin2d_painter",                      new Perlin2DPainterAsciiChunkParser() );
 		add( "controlled_smoothness2d_painter",       new ControlledSmoothness2DPainterAsciiChunkParser() );
 		add( "polynomial_function2d_painter",         new PolynomialFunction2DPainterAsciiChunkParser() );
-		add( "guilloche_oxide_painter",               new GuillocheOxidePainterAsciiChunkParser() );
 		add( "composite_function2d_painter",          new CompositeFunction2DPainterAsciiChunkParser() );
 		add( "gerstnerwave_painter",                  new GerstnerWavePainterAsciiChunkParser() );
 		add( "perlin3d_painter",                      new Perlin3DPainterAsciiChunkParser() );

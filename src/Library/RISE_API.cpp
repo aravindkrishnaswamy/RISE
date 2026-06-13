@@ -390,8 +390,8 @@ namespace RISE
 #include "Geometry/BilinearPatchGeometry.h"
 #include "Geometry/DisplacedGeometry.h"
 #include "Geometry/SDFGeometry.h"
+#include "Interfaces/ProceduralDescriptors.h"	// SweepDescriptor / PathInstancesDescriptor for the procedural mesh factories
 #include "Geometry/GeometryUtilities.h"		// MakeIndexedTriangleSameIdx for the procedural mesh factories
-#include "Painters/GuillochePainter.h"		// GuillocheField + oxide painter + descriptor converter
 #include "Geometry/TriangleMeshGeometry.h"
 #include "Geometry/TriangleMeshGeometryIndexed.h"
 #include "Geometry/TriangleMeshLoader3DS.h"
@@ -792,29 +792,6 @@ namespace RISE
 		return true;
 	}
 
-	// Field parameters that DIVIDE somewhere in GuillocheField (cell sizes,
-	// arm counts, radii) hard-fail at construction instead of baking NaN
-	// geometry / painters from plain scene text.  Mirrors the chunk parsers'
-	// hard-fail-on-unknown-enum convention.
-	static bool ValidateGuillocheFieldParams( const GuillocheDiskDescriptor& d, const char* who )
-	{
-		const struct { const char* name; bool ok; } checks[] = {
-			{ "radius must be > 0",               d.radius > 0 },
-			{ "num_arms must be in [1, 256] (iris cost is O(num_arms) per sample)", d.numArms >= 1 && d.numArms <= 256 },
-			{ "cell must be > 0",                 d.cell > 0 },
-			{ "field_cell must be > 0",           d.fieldCell > 0 },
-			{ "lightning_cell_scale must be > 0", d.lightningCellScale > 0 },
-			{ "rung_len must be > 0",             d.rungLen > 0 },
-			{ "rung_width must be > 0",           d.rungWidth > 0 },
-		};
-		for( size_t i = 0; i < sizeof(checks)/sizeof(checks[0]); ++i ) {
-			if( !checks[i].ok ) {
-				GlobalLog()->PrintEx( eLog_Error, "%s: %s", who, checks[i].name );
-				return false;
-			}
-		}
-		return true;
-	}
 	// A FLAT Cartesian-grid circular disk with LINEAR Cartesian UV
 	// (u = (x+R)/2R, v = (y+R)/2R) and +Z normals -- the general flat base
 	// for displacing an arbitrary 2D field (an expression_function2d, a
@@ -879,79 +856,6 @@ namespace RISE
 		}
 		pGeom->DoneIndexedTriangles();
 		*ppi = pGeom;
-		return true;
-	}
-
-	bool RISE_API_CreateGuillocheOxideFunction2D(
-						IFunction2D**        ppi,
-						const GuillocheDiskDescriptor& desc,
-						const int            falloffMode,
-						const double         activationEa,
-						const double         torchAmount
-						)
-	{
-		if( !ppi ) {
-			return false;
-		}
-		if( falloffMode < 0 || falloffMode > 2 ) {
-			GlobalLog()->PrintEx( eLog_Error,
-				"RISE_API_CreateGuillocheOxideFunction2D: falloff mode %d out of range (0 linear | 1 quadratic | 2 smooth)", falloffMode );
-			return false;
-		}
-		if( !( activationEa > 0 ) || !( activationEa <= 1.0e6 ) ) {
-			GlobalLog()->Print( eLog_Error, "RISE_API_CreateGuillocheOxideFunction2D: activation_ea must be in (0, 1e6] J/mol (METAL_KINETICS values are 80e3..165e3)" );
-			return false;
-		}
-		if( !ValidateGuillocheFieldParams( desc, "RISE_API_CreateGuillocheOxideFunction2D" ) ) {
-			return false;
-		}
-		(*ppi) = new Implementation::GuillocheOxidePainter(
-			Implementation::GuillocheParamsFromDescriptor( desc ),
-			falloffMode, activationEa, torchAmount );
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "guilloche oxide function2d" );
-		return true;
-	}
-
-	// The ABSOLUTE-temperature temper-comparison modes of the oxide painter:
-	// a real radial temperature ramp tempCenterC -> tempRimC drives the
-	// metal's calibrated thermal model to produce either absolute oxide
-	// thickness (outputMode 1, nm, fed straight to film_thickness) or the
-	// spall fraction (outputMode 2, [0,1], the matte-scale blend mask).
-	// metal0: 'T'i 'N'b 'a'=Ta 'S'teel.
-	bool RISE_API_CreateGuillocheTemperFunction2D(
-						IFunction2D**        ppi,
-						const GuillocheDiskDescriptor& desc,
-						const int            falloffMode,
-						const char           metal0,
-						const int            outputMode,	///< 1 thickness_nm | 2 spall_mask
-						const double         tempCenterC,
-						const double         tempRimC
-						)
-	{
-		if( !ppi ) {
-			return false;
-		}
-		if( falloffMode < 0 || falloffMode > 2 ) {
-			GlobalLog()->PrintEx( eLog_Error,
-				"RISE_API_CreateGuillocheTemperFunction2D: falloff mode %d out of range (0 linear | 1 quadratic | 2 smooth)", falloffMode );
-			return false;
-		}
-		if( outputMode != 1 && outputMode != 2 ) {
-			GlobalLog()->PrintEx( eLog_Error,
-				"RISE_API_CreateGuillocheTemperFunction2D: output mode %d invalid (1 thickness_nm | 2 spall_mask)", outputMode );
-			return false;
-		}
-		if( !ValidateGuillocheFieldParams( desc, "RISE_API_CreateGuillocheTemperFunction2D" ) ) {
-			return false;
-		}
-		const Implementation::GuillocheOxidePainter::Mode mode =
-			( outputMode == 2 ) ? Implementation::GuillocheOxidePainter::eSpallMask
-			                    : Implementation::GuillocheOxidePainter::eThicknessNm;
-		(*ppi) = new Implementation::GuillocheOxidePainter(
-			Implementation::GuillocheParamsFromDescriptor( desc ),
-			falloffMode, mode, tempCenterC, tempRimC,
-			Implementation::GuillocheField::MetalThermalModel( metal0 ) );
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "guilloche temper function2d" );
 		return true;
 	}
 

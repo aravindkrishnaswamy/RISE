@@ -263,7 +263,6 @@
     <ClCompile Include="..\..\..\src\Library\Options.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\BlackBodyPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\CheckerPainter.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Painters\GuillochePainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\IridescentPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\LinesPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\MandelbrotPainter.cpp" />
@@ -740,8 +739,6 @@
     <ClInclude Include="..\..\..\src\Library\Painters\BlackBodyPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\BlendPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\CheckerPainter.h" />
-    <ClInclude Include="..\..\..\src\Library\Painters\GuillocheField.h" />
-    <ClInclude Include="..\..\..\src\Library\Painters\GuillochePainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Function1DSpectralPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\IridescentPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\LinesPainter.h" />

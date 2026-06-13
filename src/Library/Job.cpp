@@ -4353,28 +4353,6 @@ bool Job::AddSDFGeometry( const char* name, const char* szFileName, const char* 
 	return true;
 }
 
-bool Job::AddGuillocheOxideFunction2D( const char* name, const GuillocheDiskDescriptor& desc, const int falloffMode, const double activationEa, const double torchAmount )
-{
-	IFunction2D* pFunction = 0;
-	if( !RISE_API_CreateGuillocheOxideFunction2D( &pFunction, desc, falloffMode, activationEa, torchAmount ) ) {
-		return false;   // the factory already logged why
-	}
-	pFunc2DManager->AddItem( pFunction, name );
-	safe_release( pFunction );
-	return true;
-}
-
-bool Job::AddGuillocheTemperFunction2D( const char* name, const GuillocheDiskDescriptor& desc, const int falloffMode, const char metal0, const int outputMode, const double tempCenterC, const double tempRimC )
-{
-	IFunction2D* pFunction = 0;
-	if( !RISE_API_CreateGuillocheTemperFunction2D( &pFunction, desc, falloffMode, metal0, outputMode, tempCenterC, tempRimC ) ) {
-		return false;   // the factory already logged why
-	}
-	pFunc2DManager->AddItem( pFunction, name );
-	safe_release( pFunction );
-	return true;
-}
-
 bool Job::AddCartesianDiskGeometry( const char* name, const double radius, const int meshN )
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;

@@ -5,7 +5,7 @@ RISE ASCII SCENE 6
 #                   FULLY PROCEDURAL + IN-SCENE-SCRIPTED: the engraved dial relief is a guilloché
 #                   expression_function2d (a math expression authored HERE in the scene file)
 #                   displaced onto a flat cartesian_disk_geometry, the radial heat-tint dose a
-#                   native guilloche_oxide_painter function
+#                   native expression_function2d math
 #                   (both C++ ports of the Python bakers in this folder, golden-tested), the strap
 #                   a general sweep_geometry + path_instances_geometry pair, and the
 #                   case/crown/hands/ring melded SDFs --
@@ -21,7 +21,7 @@ RISE ASCII SCENE 6
 # (uv_seam_fold FALSE) -- no guilloché-specific C++ geometry.  Each pattern
 # is proven == the original GuillocheField relief to 1e-6 in
 # tests/ExpressionFunction2DTest.  The oxide heat-tint doses are native
-# `guilloche_oxide_painter` functions consumed through
+# `expression_function2d` heat-tint doses consumed through
 # `scalar_painter { function2d ... scale S bias B }`.  The retired Python
 # bakers remain in this folder as the historical reference.
 # Render specific cameras with scenes/FeatureBased/GuillocheWatch/render_watch_views.py.  Tune the
@@ -380,44 +380,80 @@ scalar_painter
 }
 
 
-# Oxide-thickness SHAPE dose: a NATIVE guilloche_oxide_painter function (the
+# Oxide-thickness SHAPE dose: an in-scene expression_function2d (the
 # C++ port of thermal_oxide_sim's Arrhenius/parabolic radial heat profile --
 # 0 at the centre, 1 at the rim; goldens in tests/GuillocheFieldTest).  The
 # ABSOLUTE nanometres -- i.e. the TORCH START/END -- are set below on the
 # oxide_thk painter, so the whole heat-tint is tunable per render.  The radial
 # falloff is the `falloff` parameter here (was baked into oxide_cart.png).
-guilloche_oxide_painter
+expression_function2d
 {
 	name				oxide_fn
-	metal				ti
-	radius				20.6
-	falloff				quadratic
+	# Radial thermal-oxide DOSE [0,1] (heat-tint SHAPE) -- Ti activation
+	# energy.  In-scene math (was guilloche_oxide_painter dose mode).  T(K)=
+	# 700+heat*200; dose=(g-g0)/(g1-g0), g=exp(-Ea/2RT).  -> oxide_thk* scale/bias.
+	param				R 20.6
+	param				Ea 160000
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	def					heat rho*rho
+	def					Tk 700+heat*200
+	def					g exp(-Ea/(2*8.314*Tk))
+	def					g0 exp(-Ea/(2*8.314*700))
+	def					g1 exp(-Ea/(2*8.314*900))
+	expr				clamp((g-g0)/(g1-g0),0,1)
 }
 
 # Per-base-metal oxide doses (per-metal activation energy -> different radial
 # curvature).  Wired into oxide_thk_<metal>.
-guilloche_oxide_painter
+expression_function2d
 {
 	name				oxide_fn_nb
-	metal				nb
-	radius				20.6
-	falloff				quadratic
+	# Radial thermal-oxide DOSE [0,1] (heat-tint SHAPE) -- Nb activation
+	# energy.  In-scene math (was guilloche_oxide_painter dose mode).  T(K)=
+	# 700+heat*200; dose=(g-g0)/(g1-g0), g=exp(-Ea/2RT).  -> oxide_thk* scale/bias.
+	param				R 20.6
+	param				Ea 135000
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	def					heat rho*rho
+	def					Tk 700+heat*200
+	def					g exp(-Ea/(2*8.314*Tk))
+	def					g0 exp(-Ea/(2*8.314*700))
+	def					g1 exp(-Ea/(2*8.314*900))
+	expr				clamp((g-g0)/(g1-g0),0,1)
 }
 
-guilloche_oxide_painter
+expression_function2d
 {
 	name				oxide_fn_ta
-	metal				ta
-	radius				20.6
-	falloff				quadratic
+	# Radial thermal-oxide DOSE [0,1] (heat-tint SHAPE) -- Ta activation
+	# energy.  In-scene math (was guilloche_oxide_painter dose mode).  T(K)=
+	# 700+heat*200; dose=(g-g0)/(g1-g0), g=exp(-Ea/2RT).  -> oxide_thk* scale/bias.
+	param				R 20.6
+	param				Ea 80000
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	def					heat rho*rho
+	def					Tk 700+heat*200
+	def					g exp(-Ea/(2*8.314*Tk))
+	def					g0 exp(-Ea/(2*8.314*700))
+	def					g1 exp(-Ea/(2*8.314*900))
+	expr				clamp((g-g0)/(g1-g0),0,1)
 }
 
-guilloche_oxide_painter
+expression_function2d
 {
 	name				oxide_fn_steel
-	metal				steel
-	radius				20.6
-	falloff				quadratic
+	# Radial thermal-oxide DOSE [0,1] (heat-tint SHAPE) -- Steel activation
+	# energy.  In-scene math (was guilloche_oxide_painter dose mode).  T(K)=
+	# 700+heat*200; dose=(g-g0)/(g1-g0), g=exp(-Ea/2RT).  -> oxide_thk* scale/bias.
+	param				R 20.6
+	param				Ea 165000
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	def					heat rho*rho
+	def					Tk 700+heat*200
+	def					g exp(-Ea/(2*8.314*Tk))
+	def					g0 exp(-Ea/(2*8.314*700))
+	def					g1 exp(-Ea/(2*8.314*900))
+	expr				clamp((g-g0)/(g1-g0),0,1)
 }
 
 
@@ -438,7 +474,7 @@ guilloche_oxide_painter
 #     straw -> magenta (short torch)  : bias 18  scale 12   (18..30 nm)
 #     magenta -> cyan  (long torch)   : bias 30  scale 12   (30..42 nm)
 # (The RADIAL falloff -- how fast it heats outward -- is the `falloff`
-#  parameter on the guilloche_oxide_painter chunks above: quadratic|smooth|linear.)
+#  quadratic falloff baked into each oxide_fn* expression above: quadratic|smooth|linear.)
 ##################################################
 scalar_painter
 {
@@ -594,12 +630,33 @@ scalar_painter
 # TorchMask), torched +/-0.40 dose -- exactly the retired oxide_lightning_*.png
 # bakes (dial_mesh_gen --lightning-hot/-cool defaults).
 ##################################################
-guilloche_oxide_painter
+expression_function2d
 {
 	name				oxide_fn_lightning_hot
-	metal				ti
-	falloff				quadratic
-	torch_amount			0.40
+	# Radial DOSE + signed TORCH term (ridges hotter/cooler): clamp(doseRaw +
+	# torch*petal,0,1).  petal = the uniform petal-lens torch mask.  Was
+	# guilloche_oxide_painter torch_amount +0.40.  -> oxide_thk_lightning_*.
+	param				R 20.6
+	param				Ea 160000
+	param				torch 0.4
+	param				arms 12
+	param				swirl 0
+	param				seamJag 0.16
+	param				seamJagFreq 3
+	param				petalE0 0
+	param				petalE1 0.82
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	def					heat rho*rho
+	def					Tk 700+heat*200
+	def					g exp(-Ea/(2*8.314*Tk))
+	def					g0 exp(-Ea/(2*8.314*700))
+	def					g1 exp(-Ea/(2*8.314*900))
+	def					doseRaw (g-g0)/(g1-g0)
+	def					theta atan2((2*v-1)*R,(2*u-1)*R)
+	def					jag seamJag*(2*abs(2*frac(seamJagFreq*rho)-1)-1)
+	def					psi theta+swirl*rho+jag
+	def					petal smoothstep(petalE0,petalE1,abs(cos(arms*psi)))
+	expr				clamp(doseRaw+torch*petal,0,1)
 }
 
 scalar_painter
@@ -610,12 +667,33 @@ scalar_painter
 	bias				22.0
 }
 
-guilloche_oxide_painter
+expression_function2d
 {
 	name				oxide_fn_lightning_cool
-	metal				ti
-	falloff				quadratic
-	torch_amount			-0.40
+	# Radial DOSE + signed TORCH term (ridges hotter/cooler): clamp(doseRaw +
+	# torch*petal,0,1).  petal = the uniform petal-lens torch mask.  Was
+	# guilloche_oxide_painter torch_amount -0.40.  -> oxide_thk_lightning_*.
+	param				R 20.6
+	param				Ea 160000
+	param				torch -0.4
+	param				arms 12
+	param				swirl 0
+	param				seamJag 0.16
+	param				seamJagFreq 3
+	param				petalE0 0
+	param				petalE1 0.82
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	def					heat rho*rho
+	def					Tk 700+heat*200
+	def					g exp(-Ea/(2*8.314*Tk))
+	def					g0 exp(-Ea/(2*8.314*700))
+	def					g1 exp(-Ea/(2*8.314*900))
+	def					doseRaw (g-g0)/(g1-g0)
+	def					theta atan2((2*v-1)*R,(2*u-1)*R)
+	def					jag seamJag*(2*abs(2*frac(seamJagFreq*rho)-1)-1)
+	def					psi theta+swirl*rho+jag
+	def					petal smoothstep(petalE0,petalE1,abs(cos(arms*psi)))
+	expr				clamp(doseRaw+torch*petal,0,1)
 }
 
 scalar_painter
