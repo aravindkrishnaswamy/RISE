@@ -744,33 +744,6 @@ ggx_material
 	fresnel_mode			schlick_f0
 }
 
-# Applied indices / hour markers -- bright polished silver metal.
-ggx_material
-{
-	name				index_metal
-	rd				pnt_black
-	rs				pnt_silver
-	alphax				0.025
-	alphay				0.025
-	fresnel_mode			conductor
-	ior				Ti_n
-	extinction			Ti_k
-}
-
-# Floating hour ring -- satin STEEL (brighter than Ti) so it integrates the
-# softbox glow at every angle instead of only mirroring sharp env lines.
-ggx_material
-{
-	name				ring_metal
-	rd				pnt_black
-	rs				pnt_silver
-	alphax				0.07
-	alphay				0.07
-	fresnel_mode			conductor
-	ior				Steel_n
-	extinction			Steel_k
-}
-
 # Sapphire (Al2O3 / corundum) dispersion -- Malitson 1962 ordinary-ray Sellmeier
 # coefficients (B1 B2 B3 C1 C2 C3, C in um^2; the painter converts nm->um internally).
 # n(589nm) ~= 1.768; low dispersion (Abbe ~72), so a subtle but physical chromatic edge.
@@ -1445,7 +1418,7 @@ standard_object
 	name				sdfhour
 	geometry			handhoursdf
 	material			white_hands
-	position			0 0 0.2
+	position			0 0 0.45
 	orientation		0 0 60
 }
 
@@ -1454,40 +1427,64 @@ standard_object
 	name				sdfminute
 	geometry			handminutesdf
 	material			white_hands
-	position			0 0 0.7
+	position			0 0 0.95
 	orientation		0 0 -60
 }
 ##################################################
-# Domed sapphire crystal over the dial.  Flattened ellipsoid (22,22,4)
-# centred just below the rim so a gentle dome rises over the dial.
+# Double-domed sapphire crystal (sphere-traced SDF shell, authored in the
+# watch's ABSOLUTE world frame; src/Library/Geometry/SDFGeometry.{h,cpp}).
+# The dome is a 1.5-unit-thick (~1.19mm) shell between two CONCENTRIC spherical
+# surfaces, capping a flat underside (seat) plane at z=1.30.  A central inner-
+# sphere subtract carves the concave recess, leaving a SOLID flat-bottomed glass
+# flange (16.16 < r < 21.5) -- and the hour markers are ETCHED into that flange
+# underside as 12 shallow box cavities (lume-filled by markerlumesdf below).
+# So the markers ride on the crystal, nearly coplanar with the hands, floating
+# over the recessed dial (minimal parallax); the dial is viewed through the
+# refracting shell.  Regenerate with sdf_gen.py.
 ##################################################
-ellipsoid_geometry
+sdf_geometry
 {
-	name				crystalgeom
-	radii				21.5 21.5 4.5
+	name				crystalsdf
+	part				sphere union 0  0 0 -62.9857  0 0 0  1 1 1  67.7857 0 0  0
+	part				box intersect 0  0 0 3.65  0 0 0  1 1 1  22 22 2.35  0
+	part				sphere subtract 0  0 0 -62.9857  0 0 0  1 1 1  66.2857 0 0  0
+	part				box subtract 0  0 18 1.3  0 0 90  1 1 1  0.475 2.1 0.45  0
+	part				box subtract 0  9 15.5885 1.3  0 0 60  1 1 1  0.475 1.05 0.45  0
+	part				box subtract 0  15.5885 9 1.3  0 0 30  1 1 1  0.475 1.05 0.45  0
+	part				box subtract 0  18 0 1.3  0 0 0  1 1 1  0.475 1.05 0.45  0
+	part				box subtract 0  15.5885 -9 1.3  0 0 -30  1 1 1  0.475 1.05 0.45  0
+	part				box subtract 0  9 -15.5885 1.3  0 0 -60  1 1 1  0.475 1.05 0.45  0
+	part				box subtract 0  0 -18 1.3  0 0 -90  1 1 1  0.475 1.05 0.45  0
+	part				box subtract 0  -9 -15.5885 1.3  0 0 -120  1 1 1  0.475 1.05 0.45  0
+	part				box subtract 0  -15.5885 -9 1.3  0 0 -150  1 1 1  0.475 1.05 0.45  0
+	part				box subtract 0  -18 0 1.3  0 0 -180  1 1 1  0.475 1.05 0.45  0
+	part				box subtract 0  -15.5885 9 1.3  0 0 -210  1 1 1  0.475 1.05 0.45  0
+	part				box subtract 0  -9 15.5885 1.3  0 0 -240  1 1 1  0.475 1.05 0.45  0
 }
 
 standard_object
 {
 	name				crystal
-	geometry			crystalgeom
+	geometry			crystalsdf
 	material			sapphire_crystal
-	position			0 0 -1.0
+	position			0 0 0
 }
 
 ##################################################
-# Hands (blued steel), pointing to ~10:10.
-# Long thin boxes in the XY plane, just above the dial (z = -0.4),
-# rolled about Z to the clock angle.  Box long axis = X (width).
+# Floating hands (white satin round-cones), pointing to ~10:10.  The hands run
+# JUST BENEATH the crystal so the hands and the etched markers are nearly
+# coplanar ("floating" over the deep dial, minimal parallax): hour at z=0.45,
+# minute ABOVE it at z=0.95, pin covering the pivot at z~1.02 (top 1.18).
 ##################################################
-# Small FLAT central pin cap (lume white) on TOP of the hand stack: hour hand
-# at z=0.2, minute hand ABOVE it at z=0.7, pin covering the pivot at z~1.0.
+# Small FLAT central pin cap (lume white) on TOP of the hand stack, just under
+# the crystal's central inner dome (z=3.30 at centre -- ample clearance).
 #
-# >>> LUME PLAN <<<  A future night variant renders this scene with the
-# lights set very low and swaps lume_white (pin) -- and white-lume variants of
-# the marker ring + hands -- to lambertian_luminaire_material so they GLOW:
-# SDF geometry is a first-class NEE area light (tessellation-backed
-# UniformRandomPoint/GetArea), so the ring and hands emit correctly.
+# >>> LUME PLAN <<<  A future night variant renders this scene with the lights
+# set very low and swaps the markerlume object's lume_white to an emissive lume
+# material (lambertian_luminaire_material) -- plus white-lume variants of the
+# pin + hands -- so the markers and hands GLOW.  SDF geometry is a first-class
+# NEE area light (tessellation-backed UniformRandomPoint/GetArea), so the lume
+# fill and hands emit correctly.
 sdf_geometry
 {
 	name				pinsdf
@@ -1517,35 +1514,34 @@ standard_object
 }
 
 ##################################################
-# Floating hour ring: a thin polished circle suspended just
-# below the sapphire dome (z=0.55, under the crystal underside at this
-# radius), BROKEN at the 12 hour positions -- the gaps ARE the markers,
-# with a wider gap at 12 o'clock.  Regenerate with sdf_gen.py.
+# Lume fill for the 12 etched hour-marker cavities in the crystal flange
+# underside (see the crystal section above).  Twelve small lambertian lume-white
+# boxes, INSET from every cavity wall (no coincident surfaces -> no z-fighting),
+# sitting just below flush -- the visible markers.  Nearly coplanar with the
+# floating hands beneath the crystal.  Regenerate with sdf_gen.py.
 ##################################################
 sdf_geometry
 {
-	name				markerringsdf
-	part				cylinder union 0  0 0 0.72  90 0 0  1 1 1  18.475 0.11 0  0
-	part				cylinder subtract 0  0 0 0.72  90 0 0  1 1 1  17.525 0.44 0  0
-	part				box subtract 0  0 18 0.72  0 0 90  1 1 1  1.425 2.1 0.44  0
-	part				box subtract 0  9 15.5885 0.72  0 0 60  1 1 1  1.425 1.05 0.44  0
-	part				box subtract 0  15.5885 9 0.72  0 0 30  1 1 1  1.425 1.05 0.44  0
-	part				box subtract 0  18 0 0.72  0 0 0  1 1 1  1.425 1.05 0.44  0
-	part				box subtract 0  15.5885 -9 0.72  0 0 -30  1 1 1  1.425 1.05 0.44  0
-	part				box subtract 0  9 -15.5885 0.72  0 0 -60  1 1 1  1.425 1.05 0.44  0
-	part				box subtract 0  0 -18 0.72  0 0 -90  1 1 1  1.425 1.05 0.44  0
-	part				box subtract 0  -9 -15.5885 0.72  0 0 -120  1 1 1  1.425 1.05 0.44  0
-	part				box subtract 0  -15.5885 -9 0.72  0 0 -150  1 1 1  1.425 1.05 0.44  0
-	part				box subtract 0  -18 0 0.72  0 0 -180  1 1 1  1.425 1.05 0.44  0
-	part				box subtract 0  -15.5885 9 0.72  0 0 -210  1 1 1  1.425 1.05 0.44  0
-	part				box subtract 0  -9 15.5885 0.72  0 0 -240  1 1 1  1.425 1.05 0.44  0
+	name				markerlumesdf
+	part				box union 0  0 18 1.5225  0 0 90  1 1 1  0.46 2.085 0.2125  0
+	part				box union 0  9 15.5885 1.5225  0 0 60  1 1 1  0.46 1.035 0.2125  0
+	part				box union 0  15.5885 9 1.5225  0 0 30  1 1 1  0.46 1.035 0.2125  0
+	part				box union 0  18 0 1.5225  0 0 0  1 1 1  0.46 1.035 0.2125  0
+	part				box union 0  15.5885 -9 1.5225  0 0 -30  1 1 1  0.46 1.035 0.2125  0
+	part				box union 0  9 -15.5885 1.5225  0 0 -60  1 1 1  0.46 1.035 0.2125  0
+	part				box union 0  0 -18 1.5225  0 0 -90  1 1 1  0.46 1.035 0.2125  0
+	part				box union 0  -9 -15.5885 1.5225  0 0 -120  1 1 1  0.46 1.035 0.2125  0
+	part				box union 0  -15.5885 -9 1.5225  0 0 -150  1 1 1  0.46 1.035 0.2125  0
+	part				box union 0  -18 0 1.5225  0 0 -180  1 1 1  0.46 1.035 0.2125  0
+	part				box union 0  -15.5885 9 1.5225  0 0 -210  1 1 1  0.46 1.035 0.2125  0
+	part				box union 0  -9 15.5885 1.5225  0 0 -240  1 1 1  0.46 1.035 0.2125  0
 }
 
 standard_object
 {
-	name				markerring
-	geometry			markerringsdf
-	material			ring_metal
+	name				markerlume
+	geometry			markerlumesdf
+	material			lume_white
 	position			0 0 0
 }
 

@@ -43,7 +43,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(_HERE, "strap.raw2"))
     ap.add_argument("--width", type=float, default=25.26, help="strap width at the lug (scene units; 20mm)")
-    ap.add_argument("--end-width", type=float, default=20.2, help="strap width at the free end (MING-style 20->16mm taper)")
+    ap.add_argument("--end-width", type=float, default=20.2, help="strap width at the free end (slim 20->16mm taper)")
     ap.add_argument("--thickness", type=float, default=3.0, help="strap thickness (scene units)")
     ap.add_argument("--crown", type=float, default=0.55, help="extra centre doming of the top surface (scene units)")
     ap.add_argument("--edge-pow", type=float, default=8.0, help="superellipse edge exponent (higher = flatter middle, tighter rounded edges)")
@@ -61,7 +61,7 @@ def main():
     # Centreline path (y, z) for the +Y half: lug -> curve down -> flat on table.
     # Table top is z=-10.30; centreline on the flat run = -10.30 + thickness/2.
     flatz = -10.30 + args.thickness / 2.0
-    # MING-style drape: a gentler, longer descent off the lug, touch-down with a
+    # Drape: a gentler, longer descent off the lug, touch-down with a
     # SUBTLE residual arc (the band relaxes, never dead-flat), tip settling.
     ctrl = [(24.0, -3.4), (32.0, -4.9), (43.0, -7.3), (56.0, flatz + 0.55),
             (70.0, flatz + 0.12), (86.0, flatz + 0.30), (104.0, flatz + 0.02)]

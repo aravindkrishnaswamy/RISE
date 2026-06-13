@@ -17,7 +17,7 @@ a,b,c : per-primitive size (see SDFGeometry.h):
         roundcone a=base-radius b=tip-radius c=height  (axis = local Y, base at y=0)
 euler : applied Rz*Ry*Rx (degrees).  scale : per-axis (non-uniform OK).
 
-  python3 sdf_gen.py                 # print the six watch chunks (paste into watch_dial.RISEscene)
+  python3 sdf_gen.py                 # print the seven watch chunks (paste into watch_dial.RISEscene)
   python3 sdf_gen.py --test-sphere   # print a lone r=5 sphere chunk, for validation
 """
 import argparse
@@ -53,7 +53,7 @@ def case_body():
     # base case: solid cylinder along Z (a local-Y cylinder rolled 90 about X),
     # radius 24, half-height 5.635, centred at z=-4.635 -> spans z in [-10.27, +1.0]
     P.append(part("cylinder", "union", 0, (0, 0, -4.635), (90, 0, 0), a=24.0, b=5.635))
-    # 4 flying-blade lugs (MING-style): a round-cone fat at the case root,
+    # 4 flying-blade lugs: a round-cone fat at the case root,
     # tapering to a blade tip, swept OUT + DOWN toward the wrist, smooth-melded
     # into the case (no seam).  ex tilts the cone's +Y axis out(+/-Y) and down(-Z).
     for (sx, sy) in [(-1, 1), (1, 1), (-1, -1), (1, -1)]:
@@ -77,7 +77,7 @@ def hand(length, r_base, r_tip, thickness):
 
 
 def crown(center=(26.0, 0.0, -4.635), r=3.2, halfL=2.0, n_flutes=16, depth=0.72, width=0.42):
-    """Gear-fluted crown (MING-style): a cylinder along X with N deep flutes cut
+    """Gear-fluted crown: a cylinder along X with N deep flutes cut
     around the circumference, on a narrower stem that melds toward the case."""
     P = []
     # crown body: a local-Y cylinder rolled so its axis points +X
@@ -96,23 +96,75 @@ def crown(center=(26.0, 0.0, -4.635), r=3.2, halfL=2.0, n_flutes=16, depth=0.72,
     return P
 
 
-def marker_ring(r=18.0, width=0.95, halfh=0.11, z=0.72, gap_half=1.05, gap12_half=2.1):
-    """MING-style floating hour ring: a thin FLAT band (washer, not wire)
-    suspended just below the sapphire dome, BROKEN at the 12 hour positions --
-    the gaps ARE the markers, wider at 12 o'clock.  Flat top catches the
-    softbox pair as a broad annular highlight.  Outer cylinder minus inner
-    cylinder minus 12 radial gap boxes."""
-    P = [part("cylinder", "union", 0, (0, 0, z), (90, 0, 0), a=r + width * 0.5, b=halfh),
-         part("cylinder", "subtract", 0, (0, 0, z), (90, 0, 0), a=r - width * 0.5, b=halfh * 4)]
+# Crystal geometry constants (double-domed sapphire).  See watch_dial.RISEscene
+# crystal section + docs: a half-chord a=21.5 cap on two CONCENTRIC spheres
+# (1.5 thick), seated on a flat underside plane at z=1.30, with the hour markers
+# ETCHED into the flat flange and lume-filled.
+CR_A = 21.5            # half-chord (the cap's xy half-width)
+CR_ZFLAT = 1.30        # flat underside (seat) plane z
+CR_H = 3.5             # dome rise above the seat -> apex at z = 1.30 + 3.5 = 4.80
+CR_T = 1.5             # shell thickness
+CR_RO = round((CR_A * CR_A + CR_H * CR_H) / (2.0 * CR_H), 4)   # 67.7857
+CR_ZC = round(CR_ZFLAT + CR_H - CR_RO, 4)                      # -62.9857 (sphere centre)
+CR_RI = round(CR_RO - CR_T, 4)                                 # 66.2857 (inner sphere)
+MK_R = 18.0            # hour-marker ring radius
+
+
+def _marker_angles():
+    """The 12 hour positions on the marker ring, as (gx, gy, theta_deg) tuples --
+    12 o'clock at +Y, going clockwise.  theta = 90 - k*30; reproduces the legacy
+    15.5885 = 18*cos30 coordinates byte-for-byte."""
+    out = []
     for k in range(12):
-        theta = 90.0 - k * 30.0          # 12 o'clock at +Y, clockwise
+        theta = 90.0 - k * 30.0
         rad = math.radians(theta)
-        gx, gy = r * math.cos(rad), r * math.sin(rad)
-        half = gap12_half if k == 0 else gap_half
-        # local x = radial (euler Rz(theta)); a cuts through the band radially,
-        # b is the half GAP along the circumference, c cuts it vertically
-        P.append(part("box", "subtract", 0, (gx, gy, z), (0, 0, theta),
-                      a=width * 1.5, b=half, c=halfh * 4))
+        out.append((MK_R * math.cos(rad), MK_R * math.sin(rad), theta))
+    return out
+
+
+def crystal():
+    """Double-domed sapphire crystal as a sphere-traced shell, authored in the
+    watch's ABSOLUTE world frame (object sits at 0 0 0).  Two CONCENTRIC spheres
+    1.5 apart form the dome shell; a keep-slab box clips the giant sphere to the
+    cap above the flat seat plane (z=1.30); a central inner-sphere subtract carves
+    the concave recess (leaving a solid flat-bottomed flange for r>~16.16); and 12
+    shallow boxes etch the hour-marker cavities into the flange underside.
+
+    Box half-extent slots at the hour positions (euler Rz(theta)): a=RADIAL,
+    b=TANGENTIAL (along the circumference), c=VERTICAL -- confirmed against
+    SDFGeometry::MakePart's column convention (Rz maps local +X onto the radial
+    direction at each on-ring position)."""
+    P = [
+        # 1. outer sphere (the giant additive sphere; only its cap survives)
+        part("sphere", "union", 0, (0, 0, CR_ZC), a=CR_RO),
+        # 2. keep-slab: clip to z in [1.30, 6.00], xy within +-22 (above the seat)
+        part("box", "intersect", 0, (0, 0, 3.65), a=22.0, b=22.0, c=2.35),
+        # 3. inner sphere subtract: carve the concave dome (central recess)
+        part("sphere", "subtract", 0, (0, 0, CR_ZC), a=CR_RI),
+    ]
+    # 4. twelve etched marker CAVITIES in the flat flange underside (ring r=18).
+    # Box centred AT the underside plane (z=1.30) so the cut opens at the surface;
+    # radial 0.475, tangential 1.05 (2.1 at the wider 12 o'clock signature marker),
+    # vertical 0.45 -> etch depth 0.45 into the glass (ceiling at z=1.75).
+    for i, (gx, gy, theta) in enumerate(_marker_angles()):
+        tang = 2.1 if i == 0 else 1.05
+        P.append(part("box", "subtract", 0, (gx, gy, CR_ZFLAT), (0, 0, theta),
+                      a=0.475, b=tang, c=0.45))
+    return P
+
+
+def marker_lume():
+    """Lume FILL for the 12 etched marker cavities: the same 12 segments, INSET
+    from every cavity wall (no coincident surfaces -> no z-fighting; physically
+    the fill meniscus sits just below flush).  Pure union of small boxes ->
+    a tight bbox.  Centre z = 1.5225 -> spans z 1.31..1.735: bottom face 0.01
+    below-flush (the visible face), sides inset 0.015, top 0.015 short of the
+    cavity ceiling (z=1.75)."""
+    P = []
+    for i, (gx, gy, theta) in enumerate(_marker_angles()):
+        tang = 2.085 if i == 0 else 1.035
+        P.append(part("box", "union", 0, (gx, gy, 1.5225), (0, 0, theta),
+                      a=0.46, b=tang, c=0.2125))
     return P
 
 
@@ -134,14 +186,17 @@ def main(argv=None):
 
     emit_chunk("casebodysdf", case_body())
     emit_chunk("crownsdf", crown())
-    # MING-style hands: fatter at the hub, gentle linear taper, ROUNDED tip
-    # (the round-cone tip radius is the rounding).
+    # Fatter at the hub, gentle linear taper, ROUNDED tip (the round-cone tip
+    # radius is the rounding).
     emit_chunk("handhoursdf",
                hand(length=10.0, r_base=1.45, r_tip=0.48, thickness=0.42))
     emit_chunk("handminutesdf",
                hand(length=16.0, r_base=1.22, r_tip=0.40, thickness=0.42))
     emit_chunk("pinsdf", pin())
-    emit_chunk("markerringsdf", marker_ring())
+    # Double-domed sapphire crystal with the hour markers ETCHED into its flat
+    # flange underside, and the lume that fills those cavities.
+    emit_chunk("crystalsdf", crystal())
+    emit_chunk("markerlumesdf", marker_lume())
     return 0
 
 

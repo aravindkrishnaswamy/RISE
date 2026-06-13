@@ -21,7 +21,7 @@ repo-root-relative (resolved via `RISE_MEDIA_PATH`, which must = repo root).
 - **Dial faces +Z (up).** Watch sits on the surface at **z = −10.30**.
 - **Crown at +X (3 o'clock). Straps at ±Y: 12 o'clock = +Y, 6 o'clock = −Y.** 9 o'clock = −X.
 - Real-watch dims baked in: case ⌀38 mm (≈48 u), thickness 10.9 mm, lug-to-lug 44.5 mm (≈56 u), lug width 20 mm.
-- `crystalgeom` is an **ellipsoid, radii `21.5 21.5 4.5`** = a domed sapphire. **Ellipsoid `radii` are TRUE radii (semi-axes), NOT diameters** — fixed in EllipsoidGeometry 2026-06. So 21.5 = 21.5-u semi-axis = 43-u diameter ≈ the 48-u case. If you see "the crystal needs 43 to fit," you're on the pre-fix mental model — don't double it.
+- `crystalsdf` is a **double-domed sapphire SDF shell** (the `sdf_geometry` chunk; `crystalgeom`'s ellipsoid is gone). The dome is the gap between two **concentric spheres, R `67.7857` (outer) / `66.2857` (inner) about `(0,0,-62.9857)`** — a `1.5`-u (≈ 1.19 mm) glass wall — **clipped to a flat seat at z=`1.30`** by an intersect box (half-chord `21.5`, so ≈ 43-u dia ≈ the 48-u case). The inner-sphere subtract carves the concave recess, leaving a solid flat-bottomed flange; the **12 hour markers are laser-etch-style box subtracts in that flange underside** (ring r=`18`, etch depth `0.45`), filled by the **separate inset `markerlumesdf`** (`lume_white`; the night variant swaps it emissive). Regenerate the chunk with `sdf_gen.py`.
 
 ## Camera posing — the big trap of this scene
 
@@ -53,14 +53,29 @@ The subtle iridescence-reveal animation lives in the scene as native `timeline` 
 - **⚠ Camera-stripping tools must ALSO strip `timeline` + `animation_options`.** `render_watch_views.py` removes all camera chunks to make exactly one active; if it leaves a `timeline` whose target (`cam_high34`) was stripped, that chunk fails to load and the whole parse aborts (→ "Scene contains no camera"). Its `DROP_CHUNKS` set handles this — replicate it in any new scene-rewriting tool.
 - **Tune the move:** edit the `timeline` keyframe values (the `azimuth` timeline = orbit angle about +Z; the `lookat` timeline = dolly truck). Full-360 turntable = `azimuth` 0→360 (or ±180). RISE writes PNG frames, not a movie — assemble with ffmpeg (see README).
 
-## Lighting — the specular-dial vs diffuse-strap dynamic-range tension
+## Lighting — STUDIO rig (2026-06; replaced the Uffizi HDRI)
 
-Two softbox area lights (`clippedplane_geometry` + `lambertian_luminaire_material`)
-+ the Uffizi HDRI (`radiance_scale 0.18`, `radiance_background FALSE` = lighting/reflection only, invisible).
+A neutral studio: `uniformcolor_painter pnt_env` (white) as the env
+(`radiance_scale 0.30`, `radiance_background FALSE` = lighting/reflection only,
+invisible) + two area lights + the black-glass floor for the dark surround.
 
-- **key** `soft_top_lum` scale **45**, panel ≈ 95×72 u.   **fill** `soft_bot_lum` scale **8**, panel ≈ 60×46 u.
-- **THE KEY INSIGHT:** the iridescent **specular** dial only needs the panel's *radiance* (it reflects the lobe), but the **diffuse matte strap** integrates the panel's whole *solid angle*. A **large** bright panel over-lights the strap **no matter how much you dim the HDRI**. The fix is to **shrink the panels** (less solid angle ⇒ less diffuse load) while keeping radiance high (dial highlight preserved) — not to dim everything.
-- **Softboxes orbit WITH the camera.** Their centres are rotated by the same azimuth offset as the camera so they stay out of frame at any pose. If you re-pose the camera by Δψ, rotate both softbox centres by Δψ about Z (the helper in `render_watch_*` / the session scripts rebuilds the 4 corners target-facing). A plain camera orbit *without* moving the lights puts a softbox in the lens.
+- **scrim** `soft_top_lum` scale **8**, a LARGE overhead-front panel (~340×270 u):
+  big enough that the domed crystal reflects it as a smooth gradient (NO hotspot
+  at any animation pose) while still raking the guilloché relief so the facets
+  shimmer. **key** `soft_bot_lum` scale **40**, a SMALL panel directly overhead
+  (~52×50 u at z=92) aimed straight down on the dial — direct brightness; being
+  overhead, its reflection exits up-and-away at the grazing poses (no flare).
+- **THE KEY INSIGHT (still true):** the iridescent **specular** dial only needs
+  panel *radiance*, but the **diffuse matte strap** integrates the panel's whole
+  *solid angle* — a big bright panel over-lights the strap no matter how dim the
+  env. Balance panel SIZE vs scale; the big scrim runs dim (8), the small key hot (40).
+- **Lights are FIXED in world space** — the animation orbits the camera
+  (`azimuth`/`elevation` timelines) while the lights stay put, so the highlight
+  deliberately SWEEPS the guilloché across the loop. (The pre-studio helper
+  convention of rotating softboxes with the camera no longer applies.)
+- A commented-out **dramatic high-contrast** alternate (hard raking key + edge
+  rim + near-black env) lives in the scene right after the studio lights, with
+  switch-over instructions in its header.
 
 ## Materials (exact current values)
 

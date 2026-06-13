@@ -242,22 +242,35 @@ SDFGeometry::~SDFGeometry()
 
 void SDFGeometry::ComputeBounds()
 {
-	Scalar maxK = 0;
-	Point3 mn(  RISE_INFINITY,  RISE_INFINITY,  RISE_INFINITY );
-	Point3 mx( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
+	// Order-aware AABB.  Map() folds the field as a strict LEFT FOLD over the
+	// parts -- d = op( d_prev, d_part ) for each part in declaration order -- so
+	// the bound must fold the SAME way on axis-aligned boxes, or it under-bounds
+	// any field whose op order is not "all additive, then all clip".  A bbox built
+	// by class (union the additive boxes, intersect the clip boxes, then combine)
+	// is ORDER-BLIND: a union/smin part appearing AFTER an intersect re-grows the
+	// solid OUTSIDE the clip box, and a class-split bound would miss that lobe
+	// (bbox-gated rays would then skip real surface, and the marching grid would
+	// clip it).  Folding sequentially is conservative and order-correct:
+	//   union     -> running = AABB-union( running, partBox )
+	//   smin      -> running = AABB-union( running, partBox ) then inflate by k
+	//                (a polynomial smin of radius k bulges BOTH the part surface
+	//                 and the running solid by at most k near the blend)
+	//   intersect -> running = AABB-intersection( running, partBox )
+	//   subtract  -> no-op (a carve only ever shrinks the solid)
+	// e.g. for [ unionA1, intersectC, unionA2 ] this yields
+	// ( box(A1) INTERSECT box(C) ) UNION box(A2) -- the second lobe survives.
 
-	for( size_t i = 0; i < m_parts.size(); ++i )
+	// World-space AABB of one part's primitive: 8 local corners -> scale ->
+	// rotate ( R*v = cx*vx + cy*vy + cz*vz ) -> translate.
+	auto worldAABB = []( const Part& pt, Point3& outMn, Point3& outMx )
 	{
-		const Part& pt = m_parts[i];
-		maxK = std::max( maxK, pt.k );
-
 		Point3 lmin, lmax;
 		primLocalAABB( pt, lmin, lmax );
-
-		// 8 local corners -> scale -> rotate (R*v = colX*vx + colY*vy + colZ*vz) -> translate
 		const Scalar xs[2] = { lmin.x, lmax.x };
 		const Scalar ys[2] = { lmin.y, lmax.y };
 		const Scalar zs[2] = { lmin.z, lmax.z };
+		outMn = Point3(  RISE_INFINITY,  RISE_INFINITY,  RISE_INFINITY );
+		outMx = Point3( -RISE_INFINITY, -RISE_INFINITY, -RISE_INFINITY );
 		for( int cxi = 0; cxi < 2; ++cxi )
 		for( int cyi = 0; cyi < 2; ++cyi )
 		for( int czi = 0; czi < 2; ++czi )
@@ -268,16 +281,55 @@ void SDFGeometry::ComputeBounds()
 			const Scalar wx = pt.pos.x + pt.cx.x*vx + pt.cy.x*vy + pt.cz.x*vz;
 			const Scalar wy = pt.pos.y + pt.cx.y*vx + pt.cy.y*vy + pt.cz.y*vz;
 			const Scalar wz = pt.pos.z + pt.cx.z*vx + pt.cy.z*vy + pt.cz.z*vz;
-			mn.x = std::min( mn.x, wx ); mx.x = std::max( mx.x, wx );
-			mn.y = std::min( mn.y, wy ); mx.y = std::max( mx.y, wy );
-			mn.z = std::min( mn.z, wz ); mx.z = std::max( mx.z, wz );
+			outMn.x = std::min( outMn.x, wx ); outMx.x = std::max( outMx.x, wx );
+			outMn.y = std::min( outMn.y, wy ); outMx.y = std::max( outMx.y, wy );
+			outMn.z = std::min( outMn.z, wz ); outMx.z = std::max( outMx.z, wz );
+		}
+	};
+
+	Point3 mn(-1,-1,-1), mx(1,1,1);	// empty-field fallback (no parts)
+	bool   have = false;
+
+	for( size_t i = 0; i < m_parts.size(); ++i )
+	{
+		const Part& pt = m_parts[i];
+		if( pt.op == eOpSubtract ) {
+			continue;	// a carve never extends the solid -> no-op on the bound
+		}
+
+		Point3 pmn, pmx;
+		worldAABB( pt, pmn, pmx );
+
+		if( !have ) {
+			// The parser guarantees the first part is union/smin (see
+			// SDFGeometry::ParsePartLines / SDFGeometryTest TestFirstOpRule), so
+			// the fold seeds from a real additive box, never an intersect/subtract.
+			mn = pmn; mx = pmx;
+			have = true;
+		} else if( pt.op == eOpIntersect ) {
+			// running = running INTERSECT partBox.  A degenerate (empty) overlap
+			// means the running solid and this clip don't meet -> empty field;
+			// keep the running box rather than an inverted one (matches the prior
+			// degenerate-overlap fallback so downstream stays well-formed).
+			Point3 cmn( std::max(mn.x,pmn.x), std::max(mn.y,pmn.y), std::max(mn.z,pmn.z) );
+			Point3 cmx( std::min(mx.x,pmx.x), std::min(mx.y,pmx.y), std::min(mx.z,pmx.z) );
+			if( !( cmn.x > cmx.x || cmn.y > cmx.y || cmn.z > cmx.z ) ) {
+				mn = cmn; mx = cmx;
+			}
+		} else {	// eOpUnion / eOpSmin
+			mn.x = std::min( mn.x, pmn.x ); mx.x = std::max( mx.x, pmx.x );
+			mn.y = std::min( mn.y, pmn.y ); mx.y = std::max( mx.y, pmx.y );
+			mn.z = std::min( mn.z, pmn.z ); mx.z = std::max( mx.z, pmx.z );
+			if( pt.op == eOpSmin && pt.k > 0 ) {
+				// the blend bulges both sides by up to k near the seam
+				mn.x -= pt.k; mn.y -= pt.k; mn.z -= pt.k;
+				mx.x += pt.k; mx.y += pt.k; mx.z += pt.k;
+			}
 		}
 	}
 
-	if( m_parts.empty() ) { mn = Point3(-1,-1,-1); mx = Point3(1,1,1); }
-
-	// pad for the smooth-min bulge + a small safety margin
-	const Scalar pad = maxK + Scalar(1e-3);
+	// small safety margin (the smin bulge is already folded in per-part above)
+	const Scalar pad = Scalar(1e-3);
 	mn.x -= pad; mn.y -= pad; mn.z -= pad;
 	mx.x += pad; mx.y += pad; mx.z += pad;
 	m_bbox = BoundingBox( mn, mx );

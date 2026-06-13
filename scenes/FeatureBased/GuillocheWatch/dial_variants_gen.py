@@ -21,7 +21,7 @@ variant only changes the RELIEF.
   `--field <name>` selects it; everything else (mesh, UV, oxide) is unchanged.
 
 Usage:
-  # the MING-style lightning hero (gen_dials.sh has every pattern's params):
+  # the lightning hero (gen_dials.sh has every pattern's params):
   python3 scenes/FeatureBased/GuillocheWatch/dial_variants_gen.py \
       --field lightning --num-arms 11 --bolt-style rung --out dial_lightning.raw2
   # fast iteration (coarse mesh), then a clean preview:
@@ -135,7 +135,7 @@ def field_radial(X, Y, R, p):
 
 
 def field_lightning(X, Y, R, p):
-    """MING-style BOLD radial lightning: broad rays of a COARSER weave running
+    """BOLD radial lightning: broad rays of a COARSER weave running
     rim -> centre in a STRAIGHT line (no swirl / no seam-jag), separated by the
     finer field, with a relief step so the rays stand proud.  This is the
     closest match to the reference dial.

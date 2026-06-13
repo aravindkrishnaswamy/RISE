@@ -151,6 +151,102 @@ static void TestBoundingBoxContainsSurface()
 	safe_release( g );
 }
 
+// The bbox must be OP-AWARE: an `intersect` part CLIPS the field to within its
+// own box, and a `subtract` part only carves -- neither should inflate the AABB
+// to a giant additive part's full extent.  This mirrors the domed-crystal
+// construction (a sphere of radius ~68 kept only inside a thin cap slab, with
+// marker cavities subtracted): unioning every part's box regardless of op would
+// blow the box to +-68 even though the visible surface is a ~43-wide, ~3.5-tall
+// cap, fattening the TLAS leaf and starving the marching-tet grid.
+static void TestBoundingBoxOpAware()
+{
+	std::cout << "Test 4b: bbox respects intersect (clip) and subtract (no-grow)" << std::endl;
+
+	// (1) giant sphere r=68 at z=-63 (apex ~+5), INTERSECT a keep-slab box
+	// half(22,22,2.35) at z=3.65 -> the surviving solid is the cap in z in
+	// [1.3, 6.0], xy within +-22.  The bbox must clip to the slab, NOT span the
+	// whole sphere (which alone would give z in [-131, +5], xy in [-68, 68]).
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,-63.0), 0,0,0, Vector3(1,1,1), 68.0, 0,0,0 ) );
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimBox, SDFGeometry::eOpIntersect, 0,
+			Point3(0,0,3.65), 0,0,0, Vector3(1,1,1), 22.0, 22.0, 2.35, 0 ) );
+		SDFGeometry* g = MakeGeom( parts );
+		const BoundingBox bb = g->GenerateBoundingBox();
+		// clipped to the slab (allow the small pad/margin on each side)
+		Check( bb.ll.x >= -22.0 - 0.5 && bb.ur.x <= 22.0 + 0.5, "intersect clips X to the slab (not +-68)" );
+		Check( bb.ll.y >= -22.0 - 0.5 && bb.ur.y <= 22.0 + 0.5, "intersect clips Y to the slab (not +-68)" );
+		Check( bb.ll.z >= 1.3 - 0.5 && bb.ur.z <= 6.0 + 0.5,    "intersect clips Z to the slab (not z=-131)" );
+		// but the box must still CONTAIN the surviving cap: a ray angled down at
+		// the axis hits the cap's outer dome inside the slab (z in [1.3, 5]).
+		// (A pure-axis ray would enter the clipped bbox EXACTLY at the sphere's
+		// tangent apex z~=5.001 -- inside the marcher's surface band -- and step
+		// off it, a known grazing-entry edge case unrelated to the clip; come in
+		// at a slight angle so the entry is a clean transverse crossing.)
+		RayIntersectionGeometric ri = MkRI( Point3(2,0,20), Vector3Ops::Normalize( Vector3(-0.05,0,-1) ) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && ri.ptIntersection.z >= 1.3 - 5e-3 && ri.ptIntersection.z <= 5.0 + 5e-3,
+		       "clipped cap is hittable, hit lands on the cap (z in [1.3,5])" );
+		Check( ri.ptIntersection.z <= bb.ur.z + 1e-3 && ri.ptIntersection.z >= bb.ll.z - 1e-3, "cap hit inside clipped bbox" );
+		safe_release( g );
+	}
+
+	// (2) a SUBTRACT part reaching far outside the solid must not grow the box:
+	// box half(3,3,3) at origin, subtract a huge box half(50,50,50) offset so it
+	// pokes far in +X -- the carve shrinks the solid but the AABB stays ~[-3,3].
+	{
+		std::vector<SDFGeometry::Part> base;
+		base.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimBox, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), 3,3,3, 0 ) );
+		SDFGeometry* gBase = MakeGeom( base );
+		const BoundingBox bbBase = gBase->GenerateBoundingBox();
+		safe_release( gBase );
+
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimBox, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), 3,3,3, 0 ) );
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimBox, SDFGeometry::eOpSubtract, 0,
+			Point3(40,0,0), 0,0,0, Vector3(1,1,1), 50,50,50, 0 ) );
+		SDFGeometry* g = MakeGeom( parts );
+		const BoundingBox bb = g->GenerateBoundingBox();
+		Check( IsClose( bb.ur.x, bbBase.ur.x, 1e-6 ) && IsClose( bb.ll.x, bbBase.ll.x, 1e-6 ), "subtract does not grow X" );
+		Check( IsClose( bb.ur.y, bbBase.ur.y, 1e-6 ) && IsClose( bb.ll.y, bbBase.ll.y, 1e-6 ), "subtract does not grow Y" );
+		Check( IsClose( bb.ur.z, bbBase.ur.z, 1e-6 ) && IsClose( bb.ll.z, bbBase.ll.z, 1e-6 ), "subtract does not grow Z" );
+		safe_release( g );
+	}
+
+	// (3) ORDER-AWARENESS: the bbox must fold like Map() (a strict left fold),
+	// NOT split by op-class.  Parts: union box half(1,1,1)@origin, INTERSECT box
+	// half(1,1,1)@origin, then union box half(1,1,1)@(10,0,0).  The true solid is
+	// ( box[-1,1] INTERSECT box[-1,1] ) UNION box[9,11] -> x in [-1,1] U [9,11],
+	// so the AABB x-extent is [-1, 11].  An order-BLIND class split (union the two
+	// additive boxes -> x[-1,11], intersect the clip box -> x[-1,1], combine ->
+	// x[-1,1]) would clip the second lobe entirely and bbox-gate every ray to it.
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimBox, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), 1,1,1, 0 ) );
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimBox, SDFGeometry::eOpIntersect, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), 1,1,1, 0 ) );
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimBox, SDFGeometry::eOpUnion, 0,
+			Point3(10,0,0), 0,0,0, Vector3(1,1,1), 1,1,1, 0 ) );
+		SDFGeometry* g = MakeGeom( parts );
+		const BoundingBox bb = g->GenerateBoundingBox();
+		// the bound must reach the second lobe (>= 11 minus the tiny safety pad)
+		// AND still contain the first lobe (<= -1 plus the pad).
+		Check( bb.ur.x >= 10.9, "order-aware bbox reaches the post-intersect union lobe (x>=~11)" );
+		Check( bb.ll.x <= -0.9, "order-aware bbox still contains the first lobe (x<=~-1)" );
+		// the regression an order-blind bbox would cause: a ray aimed at the second
+		// lobe gets gated out by the (wrongly clipped) box and never hits.  Fire one
+		// straight down onto the top face of the second box (top at z=+1).
+		RayIntersectionGeometric ri = MkRI( Point3(10,0,5), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose( ri.ptIntersection.z, 1.0, 5e-3 ), "second lobe is hittable (top face z=+1)" );
+		safe_release( g );
+	}
+}
+
 static void TestShadowQuery()
 {
 	std::cout << "Test 5: IntersectRay_IntersectionOnly (shadow) hit/miss + dHowFar" << std::endl;
@@ -903,6 +999,7 @@ int main()
 	TestBoxMatchesAnalytic();
 	TestSmoothMin();
 	TestBoundingBoxContainsSurface();
+	TestBoundingBoxOpAware();
 	TestShadowQuery();
 	TestMiss();
 	TestInsideStartExits();
