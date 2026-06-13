@@ -728,8 +728,24 @@ void Scene::QueueShadowGatherParams( Scalar radius, Scalar ellipseRatio, unsigne
 	mShadowGather.maxPhotons = maxPhotons;
 }
 
+namespace {
+	// Diagnostic counter; see Scene::GetPhotonShootCount in Scene.h.  Single-
+	// threaded (BuildPendingPhotonMaps runs at the pre-parallel prepare seam).
+	unsigned int s_photonShootCount = 0;
+}
+
+unsigned int Scene::GetPhotonShootCount() { return s_photonShootCount; }
+void         Scene::ResetPhotonShootCount() { s_photonShootCount = 0; }
+
 bool Scene::BuildPendingPhotonMaps( IProgressCallback* pProgress )
 {
+	// Count this as a real shoot pass iff something is actually pending (the
+	// caller gates the invocation on the rasterizer consuming photon maps).
+	if( mGlobalPelPending.pending || mCausticPelPending.pending || mTranslucentPelPending.pending ||
+	    mCausticSpectralPending.pending || mGlobalSpectralPending.pending || mShadowPending.pending ) {
+		++s_photonShootCount;
+	}
+
 	// Global pel
 	if( mGlobalPelPending.pending ) {
 		const PendingGlobalPelShoot& r = mGlobalPelPending;

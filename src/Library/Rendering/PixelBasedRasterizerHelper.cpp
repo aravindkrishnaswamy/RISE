@@ -1001,8 +1001,12 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// after PrepareForRendering but before any worker thread spawns — matches
 	// the irradiance-cache pre-pass precedent below.  Idempotent: consumed
 	// requests leave pending=false so repeated RasterizeScene calls are no-ops.
-	if( IScenePriv* pScenePriv = dynamic_cast<IScenePriv*>( &const_cast<IScene&>( pScene ) ) ) {
-		pScenePriv->BuildPendingPhotonMaps( pProgressFunc );
+	// Gate the deferred shoot on the active rasterizer actually consuming photon
+	// maps; PT/BDPT/VCM/MLT (own transport) leave the shoots pending (see header).
+	if( ConsumesScenePhotonMaps() ) {
+		if( IScenePriv* pScenePriv = dynamic_cast<IScenePriv*>( &const_cast<IScene&>( pScene ) ) ) {
+			pScenePriv->BuildPendingPhotonMaps( pProgressFunc );
+		}
 	}
 
 	// Pre-render hook (e.g. path guiding training)
@@ -1793,8 +1797,12 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	// idempotent on re-entry.  The per-frame PrepareForRendering /
 	// SetSceneTime calls below handle transform updates; photon maps
 	// themselves aren't rebuilt per frame (that's a separate concern).
-	if( IScenePriv* pScenePriv = dynamic_cast<IScenePriv*>( &const_cast<IScene&>( pScene ) ) ) {
-		pScenePriv->BuildPendingPhotonMaps( pProgressFunc );
+	// Gate the deferred shoot on the active rasterizer actually consuming photon
+	// maps; PT/BDPT/VCM/MLT (own transport) leave the shoots pending (see header).
+	if( ConsumesScenePhotonMaps() ) {
+		if( IScenePriv* pScenePriv = dynamic_cast<IScenePriv*>( &const_cast<IScene&>( pScene ) ) ) {
+			pScenePriv->BuildPendingPhotonMaps( pProgressFunc );
+		}
 	}
 
 	const bool bHasKeyframedObjects = pScene.GetAnimator()->AreThereAnyKeyframedObjects();

@@ -127,6 +127,19 @@ namespace RISE
 		virtual bool IsAutoDispatcher() const { return false; }
 		virtual const char* ResolvedIntegratorName() const { return ""; }
 		virtual const char* ResolveReason() const { return ""; }
+
+		//! Whether this rasterizer's integration path actually READS the scene's
+		//! photon maps (caustic/global/translucent/shadow) — i.e. runs the shaderop
+		//! graph that may contain a photon-map shaderop.  Gates the deferred
+		//! BuildPendingPhotonMaps shoot: an integrator that never consults the maps
+		//! (PT/BDPT/VCM/MLT — own transport) leaves the shoots PENDING, so they cost
+		//! nothing and are still available if the active rasterizer is later switched
+		//! to a photon-mapping one.  Default FALSE; the shaderop-graph rasterizers
+		//! that run an arbitrary material shaderop graph (PixelBasedPelRasterizer +
+		//! the spectral-integrating rasterizers, and subclasses like
+		//! InteractivePelRasterizer) return true; dedicated integrators (PT/BDPT/VCM/
+		//! MLT) stay false.  Defaulted + declared last -> ABI-stable.
+		virtual bool ConsumesScenePhotonMaps() const { return false; }
 	};
 }
 

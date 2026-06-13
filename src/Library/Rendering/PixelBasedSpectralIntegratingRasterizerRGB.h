@@ -80,6 +80,13 @@ namespace RISE
 				) const;
 
 		public:
+			// Deferred photon-map gate (IRasterizer): spectral shader-graph runner
+			// whose shaderop graph may contain spectral photon-map shaderops -> it
+			// consumes the scene's photon maps, so the deferred shoot must fire
+			// (the spectral twin of PixelBasedPelRasterizer).  Dedicated-integrator
+			// subclasses override back to false.
+			bool ConsumesScenePhotonMaps() const { return true; }
+
 			PixelBasedSpectralIntegratingRasterizerRGB( 
 				IRayCaster* pCaster_,
 				const Scalar lambda_begin_,

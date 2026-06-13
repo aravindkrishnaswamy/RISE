@@ -187,6 +187,14 @@ namespace RISE
 
 			bool		BuildPendingPhotonMaps( IProgressCallback* pProgress );
 
+			// Diagnostic: process-wide count of photon-map shoot passes that did real
+			// work (BuildPendingPhotonMaps invoked with >=1 pending shoot).  Proves the
+			// deferred shoot is gated on the active rasterizer consuming photon maps:
+			// a BDPT render leaves it 0; switching to a photon-mapping rasterizer makes
+			// it >0.  Same static-counter pattern as DisplacedGeometry::GetBuildMeshCount.
+			static unsigned int GetPhotonShootCount();
+			static void         ResetPhotonShootCount();
+
 			void		Shutdown();
 		};
 	}

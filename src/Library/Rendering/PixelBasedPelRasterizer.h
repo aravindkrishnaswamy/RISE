@@ -90,6 +90,12 @@ namespace RISE
 
 			void PrepareRuntimeContext( RuntimeContext& rc ) const;
 			void PreRenderSetup( const IScene& pScene, const Rect* pRect ) const;
+
+			// Deferred photon-map gate (IRasterizer): this is the shaderop-graph
+			// runner, whose shader may contain photon-map shaderops that consume the
+			// scene's photon maps, so the deferred shoot must fire.  Integrator
+			// subclasses (BDPTPel/VCMPel/PathTracingPel) override back to false.
+			bool ConsumesScenePhotonMaps() const { return true; }
 			void PostRenderCleanup() const;
 		};
 	}

@@ -74,6 +74,11 @@ namespace RISE
 				) const;
 
 		public:
+			// Deferred photon-map gate (IRasterizer): own light transport, never
+			// reads the scene photon maps -> false (overrides the inherited
+			// PixelBasedPelRasterizer::true).
+			bool ConsumesScenePhotonMaps() const { return false; }
+
 			PathTracingPelRasterizer(
 				IRayCaster* pCaster_,
 				const ManifoldSolverConfig& smsConfig,
