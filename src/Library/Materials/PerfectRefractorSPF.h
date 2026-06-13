@@ -69,6 +69,7 @@ namespace RISE
 				info.ior = pNt->GetValuesAt( ri ).v[0];
 				info.attenuation = pRefractivity->GetColor( ri );
 				info.valid = true;
+				info.clearTransmission = true;
 				return info;
 			}
 
@@ -83,6 +84,7 @@ namespace RISE
 				info.canRefract = true;
 				info.ior = pNt->GetValueAtNM( ri, nm );
 				info.valid = true;
+				info.clearTransmission = true;
 				return info;
 			}
 

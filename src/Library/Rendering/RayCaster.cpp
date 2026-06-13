@@ -25,6 +25,7 @@
 #include "../Utilities/EquiangularSampler.h"
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
+#include "../Utilities/Optics.h"
 
 #define ENABLE_MAX_RECURSION
 
@@ -63,7 +64,8 @@ RayCaster::RayCaster(
   nMaxRecursions( maxR ),
   bShowLuminaires( showLuminaires ),
   dPendingLightRRThreshold( 0 ),
-  bPendingUseLightBVH( false )
+  bPendingUseLightBVH( false ),
+  bTransparentShadows( false )
 {
 	pDefaultShader.addref();
 }
@@ -1342,8 +1344,248 @@ bool RayCaster::CastShadowRay( const Ray& ray, const Scalar dHowFar ) const
 		GlobalLog()->PrintSourceError( "RayCaster::CastRay_IntersectionOnly:: No scene", __FILE__, __LINE__ );
 		return false;
 	}
-	
+
 	return pScene->GetObjects()->IntersectShadowRay( ray, dHowFar, true, true );
+}
+
+// ================================================================
+// CastShadowRayTransmittance — TRANSPARENT (Fresnel-attenuated)
+// shadow ray.
+//
+// Walks the shadow segment hit-by-hit.  At each interface that is a
+// PERFECT-SPECULAR TRANSMISSIVE DIELECTRIC, the ray passes STRAIGHT
+// through (no refractive bend) and the running transmittance is
+// multiplied by the per-interface Fresnel transmittance (1 - F) (and
+// the dielectric's per-channel transmittance tint, which is 1 for
+// clear glass).  Any other hit fully blocks.
+//
+// APPROXIMATION — this is the industry-standard "transparent shadow"
+// shortcut (Arnold / RenderMan / Cycles `transparent` shadow path):
+//   * Propagation is STRAIGHT — refractive bending of the shadow ray
+//     is ignored, so the light's apparent position is not displaced.
+//   * Internal MULTI-BOUNCE (rays that would reflect inside the shell
+//     and re-emerge) is ignored; only the direct (1-F)-per-interface
+//     transmission is accounted for.
+//   * One REPRESENTATIVE eta per interface is used (see below).
+// It trades a small physical inaccuracy for a large NEE-variance
+// reduction when a lit surface sits under a thin transparent shell
+// (e.g. a watch dial under a sapphire crystal).  Used ONLY by the
+// unidirectional PT integrator; BDPT / VCM / MLT keep binary shadows.
+//
+// eta source:
+//   * NM path  (bNM == true):  the hero-wavelength IOR reported by
+//     IMaterial::GetSpecularInfoNM(...).ior — exact per-wavelength
+//     dispersion at the sampled wavelength.
+//   * RGB path (bNM == false): the scalar IOR reported by
+//     IMaterial::GetSpecularInfo(...).ior, which is the v[0] channel
+//     of the material's IOR painter — the same representative scalar a
+//     primary RGB ray uses for its (non-dispersive) Fresnel split.
+//
+// The entering-vs-exiting side is taken from the sign of
+// dot(rayDir, geometricNormal): entering air->medium uses
+// (Ni=outerIOR, Nt=mediumIOR); exiting medium->air uses the swap.
+// A local IOR stack is maintained so NESTED dielectrics (e.g. a
+// double-domed crystal, or glass-in-glass) get the right relative eta
+// at each crossing.  Total internal reflection (no real transmitted
+// direction) blocks that path (transmittance -> 0 -> fully occluded).
+// ================================================================
+bool RayCaster::CastShadowRayTransmittance(
+	const Ray& ray,
+	const Scalar dHowFar,
+	const bool bNM,
+	const Scalar nm,
+	RISEPel& transmittance
+	) const
+{
+	transmittance = RISEPel( 1.0, 1.0, 1.0 );
+
+	if( !pScene ) {
+		GlobalLog()->PrintSourceError( "RayCaster::CastShadowRayTransmittance:: No scene", __FILE__, __LINE__ );
+		// Conservative: treat as occluded so we never leak unshadowed light.
+		return true;
+	}
+
+	// Cap on interface crossings; past this, conservatively report
+	// blocked rather than spend unbounded work on a pathological stack
+	// of nested dielectrics.
+	// (counts interface CROSSINGS, not objects: a meniscus shell is 2,
+	// nested glass-in-glass 4; 32 leaves headroom before the safe-but-
+	// darkening conservative block kicks in.)
+	static const unsigned int kMaxCrossings = 32;
+
+	// Small step-off so the next IntersectRay does not re-hit the
+	// surface we just crossed.  Matches the order of magnitude of the
+	// shadow-ray end epsilon (dist - 0.001) used at the NEE call sites.
+	static const Scalar kStepEps = 1.0e-4;
+
+	const Vector3 dir = ray.Dir();
+
+	// Local IOR stack so nested dielectrics resolve the correct
+	// relative eta per crossing.  Starts in air (1.0); the
+	// GetSpecularInfo IOR-side logic uses containsCurrent() so we keep
+	// the stack's current-object pointer in sync as we cross.
+	IORStack ior_stack( 1.0 );
+
+	Point3 origin = ray.origin;
+	Scalar remaining = dHowFar;
+
+	for( unsigned int crossing = 0; crossing < kMaxCrossings; crossing++ )
+	{
+		Ray segRay( origin, dir );
+		RayIntersection ri( segRay, nullRasterizerState );
+		pScene->GetObjects()->IntersectRay( ri, true, true, false );
+
+		if( !ri.geometric.bHit || ri.geometric.range >= remaining )
+		{
+			// Reached the light with no further occluder along the
+			// remaining segment — the accumulated transmittance is final.
+			return false;
+		}
+
+		// There is a hit strictly before the light.  Decide whether it
+		// is a perfect-specular transmissive dielectric we can pass
+		// through, or an occluder that fully blocks.
+		ior_stack.SetCurrentObject( ri.pObject );
+
+		SpecularInfo info;
+		if( ri.pMaterial )
+		{
+			info = bNM
+				? ri.pMaterial->GetSpecularInfoNM( ri.geometric, ior_stack, nm )
+				: ri.pMaterial->GetSpecularInfo( ri.geometric, ior_stack );
+		}
+
+		// Capability test.  Only a CLEAR transmissive dielectric boundary
+		// (light enters a NON-scattering medium and exits the far side) may
+		// pass a shadow ray straight through.  info.clearTransmission is set
+		// ONLY by DielectricSPF / PerfectRefractorSPF.  It is false for the
+		// default IMaterial/ISPF (valid=false: opaque/diffuse/rough), for
+		// pure mirrors (canRefract=false), for PolishedSPF (a coat over a
+		// substrate that refracted light hits -> must block), and for smooth
+		// SubSurface/SSS materials (isSpecular && canRefract are true for the
+		// boundary, but the volume behind it scatters -> must block, NOT pass
+		// with bare Fresnel).  The clearTransmission gate closes that
+		// SSS/coat false-positive that isSpecular && canRefract alone allowed.
+		const bool bTransmissiveDielectric =
+			info.valid && info.isSpecular && info.canRefract && info.clearTransmission;
+
+		if( !bTransmissiveDielectric )
+		{
+			// Opaque / diffuse / rough / mirror occluder — fully blocks.
+			return true;
+		}
+
+		// --- Per-interface Fresnel transmittance (straight-through) ---
+		//
+		// cosI is measured against the GEOMETRIC normal.  Entering when
+		// the ray travels into the surface (dot < 0), exiting otherwise.
+		const Vector3 geomN = ri.geometric.vGeomNormal;
+		const Scalar cosRaw = Vector3Ops::Dot( dir, geomN );
+		const bool bEntering = ( cosRaw < 0.0 );
+
+		const Scalar mediumIOR = info.ior > NEARZERO ? info.ior : Scalar(1.0);
+
+		// Relative IORs for this crossing.  On entry: outside -> medium;
+		// on exit: medium -> outside (outside taken from the stack just
+		// below the current object, falling back to air).
+		Scalar Ni, Nt;
+		if( bEntering )
+		{
+			Ni = ior_stack.top();		// current outside medium (air, or an enclosing dielectric)
+			Nt = mediumIOR;
+		}
+		else
+		{
+			Ni = mediumIOR;
+			// Outside IOR after we leave this medium: peek the stack with
+			// the current object popped.  Guard the pop on containsCurrent()
+			// so a shadow ray that ORIGINATES inside a dielectric (the
+			// entry face was never crossed by this walk) cleanly reads air
+			// as the outside medium instead of logging a spurious
+			// underflow warning.
+			IORStack peek( ior_stack );
+			if( peek.containsCurrent() ) {
+				peek.pop();
+			}
+			Nt = peek.top();
+		}
+
+		// Straight-through Fresnel: compute the would-be refracted
+		// direction (Snell) purely to obtain cos(theta_t) for the
+		// unpolarized dielectric reflectance.  TIR (no real transmitted
+		// direction) means the light cannot pass straight through this
+		// interface — block it.
+		const Vector3 fresnelNormal = bEntering ? geomN : -geomN;
+		Vector3 vRefr = dir;
+		Scalar F;
+		if( Optics::CalculateRefractedRay( fresnelNormal, Ni, Nt, vRefr ) )
+		{
+			F = Optics::CalculateDielectricReflectance( dir, vRefr, fresnelNormal, Ni, Nt );
+		}
+		else
+		{
+			// Total internal reflection: no transmitted path.
+			transmittance = RISEPel( 0, 0, 0 );
+			return true;
+		}
+
+		const Scalar T = 1.0 - F;
+		if( T <= 0.0 )
+		{
+			transmittance = RISEPel( 0, 0, 0 );
+			return true;
+		}
+
+		// Per-interface Fresnel transmittance T = 1 - F only.  We do NOT
+		// fold the dielectric's tau tint here: the BSDF path applies tau as
+		// Beer-Lambert pow(tau, in-medium-distance), whereas a flat per-
+		// interface tau would be applied twice (entry + exit) with no path-
+		// length term -- wrong for tinted glass and inconsistent between the
+		// RGB and NM paths.  Matching Arnold / RenderMan / Cycles transparent
+		// shadows, attenuate by Fresnel only (exact for clear glass, tau=1);
+		// colored-glass shadow tint is a documented non-goal.  RGB == NM.
+		transmittance = transmittance * T;
+
+		// Early-out once the segment is effectively opaque to avoid
+		// pointless further intersection work.
+		if( ColorMath::MaxValue( transmittance ) <= NEARZERO )
+		{
+			transmittance = RISEPel( 0, 0, 0 );
+			return true;
+		}
+
+		// Maintain the IOR stack across the crossing so the next
+		// interface sees the correct enclosing medium.  The exit pop is
+		// guarded on containsCurrent() for the originates-inside-a-
+		// dielectric case (see the exit-peek note above).
+		if( bEntering ) {
+			ior_stack.push( mediumIOR );
+		} else if( ior_stack.containsCurrent() ) {
+			ior_stack.pop();
+		}
+
+		// Advance past this interface and continue toward the light.
+		// Step the origin to the hit point plus a small epsilon along
+		// the (unchanged) travel direction; shrink the remaining range
+		// accordingly.
+		// Scale-relative step-off max(kStepEps, range*1e-5): stays above
+		// floating-point hit-position error at any scene scale (a fixed
+		// 1e-4 under-steps in very large scenes), while the 1e-4 floor
+		// covers small scenes.  Far below the thinnest real feature.
+		const Scalar relStep = ri.geometric.range * Scalar(1.0e-5);
+		const Scalar advance = ri.geometric.range + ( relStep > kStepEps ? relStep : kStepEps );
+		origin = segRay.PointAtLength( advance );
+		remaining -= advance;
+
+		if( remaining <= 0.0 )
+		{
+			// Stepped at or past the light — nothing more occludes.
+			return false;
+		}
+	}
+
+	// Crossing cap reached — conservatively report blocked.
+	return true;
 }
 
 void RayCaster::SetRISCandidates( const unsigned int M )

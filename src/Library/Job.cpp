@@ -31,6 +31,7 @@
 #include "Shaders/FinalGatherShaderOp.h"
 #include "Rendering/FrameStore.h"
 #include "Rendering/Rasterizer.h"
+#include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
 #include "Utilities/RString.h"
 #include "Utilities/RasterizerDefaults.h"
 #include <stdio.h>
@@ -7421,6 +7422,18 @@ bool Job::SetPathTracingPelRasterizer(
 		pCaster->SetUseLightBVH( true );
 	}
 
+	// Transparent (Fresnel-attenuated) shadow rays — unidirectional PT
+	// opt-in.  Routed through the concrete RayCaster (LightSampler
+	// dynamic_casts to it); off by default.  BDPT/VCM/MLT do NOT wire
+	// this — their NEE stays binary.
+	{
+		RISE::Implementation::RayCaster* pConcreteCaster =
+			dynamic_cast<RISE::Implementation::RayCaster*>( pCaster );
+		if( pConcreteCaster ) {
+			pConcreteCaster->SetTransparentShadows( stabilityConfig.transparentShadows );
+		}
+	}
+
 	IRasterizer* pRaster = 0;
 	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
 	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
@@ -7516,6 +7529,16 @@ bool Job::SetPathTracingSpectralRasterizer(
 
 	if( stabilityConfig.useLightBVH ) {
 		pCaster->SetUseLightBVH( true );
+	}
+
+	// Transparent (Fresnel-attenuated) shadow rays — unidirectional PT
+	// opt-in (spectral path).  See the pel PT factory for rationale.
+	{
+		RISE::Implementation::RayCaster* pConcreteCaster =
+			dynamic_cast<RISE::Implementation::RayCaster*>( pCaster );
+		if( pConcreteCaster ) {
+			pConcreteCaster->SetTransparentShadows( stabilityConfig.transparentShadows );
+		}
 	}
 
 	IRasterizer* pRaster = 0;

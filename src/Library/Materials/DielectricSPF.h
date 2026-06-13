@@ -111,6 +111,7 @@ namespace RISE
 				const ScalarTriple t = pTau->GetValuesAt( ri );
 				info.attenuation = RISEPel( t.v[0], t.v[1], t.v[2] );
 				info.valid = true;
+				info.clearTransmission = true;
 				return info;
 			}
 
@@ -125,6 +126,7 @@ namespace RISE
 				info.canRefract = true;
 				info.ior = pRIndex->GetValueAtNM( ri, nm );
 				info.valid = true;
+				info.clearTransmission = true;
 				return info;
 			}
 

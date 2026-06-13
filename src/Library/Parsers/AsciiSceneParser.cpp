@@ -8701,6 +8701,8 @@ namespace RISE
 					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
 					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
 					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+					// Transparent (Fresnel-attenuated) shadow rays — PT-only opt-in.
+					if( bag.Has("transparent_shadows") )             stabilityConfig.transparentShadows           = bag.GetBool("transparent_shadows");
 
 					ProgressiveConfig progressiveConfig;
 					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
@@ -8731,6 +8733,10 @@ namespace RISE
 						AddPathGuidingParams( P );
 						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
+						// Transparent (Fresnel-attenuated) shadow rays — PT-only
+						// opt-in; not part of the shared StabilityConfig params
+						// because BDPT/VCM/auto don't honour it.
+						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "NEE shadow rays pass through specular dielectrics with Fresnel transmittance (PT only)"; p.defaultValueHint = to_hint(false); }
 						AddOptimalMISParams( P );
 						AddProgressiveParams( P );
 						return cd;
@@ -8822,6 +8828,9 @@ namespace RISE
 					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
 					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
 					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					// Transparent (Fresnel-attenuated) shadow rays — PT-only opt-in.
+					// Honoured on the spectral (NM / HWSS) NEE path too.
+					if( bag.Has("transparent_shadows") )             stabilityConfig.transparentShadows           = bag.GetBool("transparent_shadows");
 					// Optimal MIS not parsed: PathTracingIntegrator's
 					// NM/HWSS branches reference rc.pOptimalMIS, but
 					// PixelBasedSpectralIntegratingRasterizer (the parent)
@@ -8867,6 +8876,9 @@ namespace RISE
 						AddSMSConfigParams( P );
 						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
+						// Transparent (Fresnel-attenuated) shadow rays — PT-only
+						// opt-in; honoured on the spectral NEE path too.
+						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "NEE shadow rays pass through specular dielectrics with Fresnel transmittance (PT only)"; p.defaultValueHint = to_hint(false); }
 						// Intentionally NO AddOptimalMISParams: spectral
 						// parent doesn't allocate the accumulator.  See
 						// Finalize note and SPECTRAL_PARITY_AUDIT.md §2.4.

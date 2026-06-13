@@ -19,6 +19,7 @@
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IEmitter.h"
 #include "../Interfaces/IRayCaster.h"
+#include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Color/ColorMath.h"
 #include "../Utilities/Math3D/Constants.h"
@@ -30,6 +31,64 @@
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+// ----------------------------------------------------------------
+// Transparent (Fresnel-attenuated) shadow-ray helpers.
+//
+// These wrap the NEE occlusion test so a single call decides between
+// the BINARY shadow test (default) and the Fresnel-transmittance walk
+// (when the concrete RayCaster has `transparent_shadows` enabled — a
+// unidirectional-PT-only opt-in; BDPT / VCM / MLT keep binary
+// shadows).
+//
+// Contract (matches CastShadowRay's "true == occluded"):
+//   return true   → light is FULLY occluded; @a transmittance is 0.
+//   return false  → light is reachable; @a transmittance carries the
+//                   accumulated per-interface Fresnel transmittance
+//                   (1,1,1 when the path was clear, or in binary mode).
+//
+// The transparent path activates ONLY when:
+//   (a) the caster is the concrete RayCaster (dynamic_cast succeeds), AND
+//   (b) RayCaster::GetTransparentShadows() is true.
+// Any other IRayCaster implementation, or the flag being off, falls
+// back to the binary test with transmittance = 1 — so default
+// behaviour is byte-identical to before this feature.
+// ----------------------------------------------------------------
+static bool ShadowOccludedRGB(
+	const IRayCaster& caster,
+	const Ray& ray,
+	const Scalar dHowFar,
+	RISEPel& transmittance
+	)
+{
+	const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
+	if( pRC && pRC->GetTransparentShadows() )
+	{
+		return pRC->CastShadowRayTransmittance( ray, dHowFar, false, 0.0, transmittance );
+	}
+	transmittance = RISEPel( 1.0, 1.0, 1.0 );
+	return caster.CastShadowRay( ray, dHowFar );
+}
+
+static bool ShadowOccludedNM(
+	const IRayCaster& caster,
+	const Ray& ray,
+	const Scalar dHowFar,
+	const Scalar nm,
+	Scalar& transmittance
+	)
+{
+	const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
+	if( pRC && pRC->GetTransparentShadows() )
+	{
+		RISEPel t( 1.0, 1.0, 1.0 );
+		const bool occluded = pRC->CastShadowRayTransmittance( ray, dHowFar, true, nm, t );
+		transmittance = t.r;	// NM path fills all 3 channels equally
+		return occluded;
+	}
+	transmittance = 1.0;
+	return caster.CastShadowRay( ray, dHowFar );
+}
 
 // ----------------------------------------------------------------
 // Shadow-ray medium transmittance
@@ -1528,11 +1587,13 @@ RISEPel LightSampler::EvaluateDirectLighting(
 
 			if( !isVolumeScatter && cosSurface <= 0 ) break;
 
-			// Shadow test
+			// Shadow test.  shadowT carries the Fresnel transmittance
+			// when transparent shadows are enabled (else 1,1,1).
+			RISEPel shadowT( 1.0, 1.0, 1.0 );
 			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				if( caster.CastShadowRay( rayToLight, dist - 0.001 ) )
+				if( ShadowOccludedRGB( caster, rayToLight, dist - 0.001, shadowT ) )
 					break;
 			}
 
@@ -1542,8 +1603,9 @@ RISEPel LightSampler::EvaluateDirectLighting(
 			const RISEPel fBSDF = brdf.value( vToLight, ri );
 			const Scalar invDistSq = 1.0 / (dist * dist);
 
-			// Delta-position light: w = 1 (no MIS needed).
-			RISEPel amount = Le * fBSDF * cosSurface * invDistSq;
+			// Delta-position light: w = 1 (no MIS needed).  Fold in the
+			// transparent-shadow Fresnel transmittance (1,1,1 when off).
+			RISEPel amount = Le * fBSDF * cosSurface * invDistSq * shadowT;
 
 			// Apply medium transmittance along shadow ray.
 			// Multi-medium shadow transmittance (origin, per-object,
@@ -1616,12 +1678,14 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					}
 				}
 
-				// Shadow test
+				// Shadow test.  meshShadowT carries the Fresnel transmittance
+				// when transparent shadows are enabled (else 1,1,1).
 				bool shadowed = false;
+				RISEPel meshShadowT( 1.0, 1.0, 1.0 );
 				if( pShadingObject && pShadingObject->DoesReceiveShadows() )
 				{
 					const Ray rayToLight( ri.ptIntersection, vToLight );
-					shadowed = caster.CastShadowRay( rayToLight, dist - 0.001 );
+					shadowed = ShadowOccludedRGB( caster, rayToLight, dist - 0.001, meshShadowT );
 				}
 
 				if( !shadowed )
@@ -1637,7 +1701,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 					const RISEPel Le = pEmitter->emittedRadiance( lumri, -vToLight, lumNormal );
 
 					const Scalar geom = area * cosLight / (dist * dist);
-					RISEPel contrib = Le * cosSurface * geom * brdf.value( vToLight, ri );
+					RISEPel contrib = Le * cosSurface * geom * brdf.value( vToLight, ri ) * meshShadowT;
 
 					// Apply medium transmittance along shadow ray.
 					// Multi-medium shadow transmittance.
@@ -1727,12 +1791,14 @@ RISEPel LightSampler::EvaluateDirectLighting(
 
 		if( (isVolumeScatter || cosEnv > 0) && envPdf > 0 )
 		{
-			// Shadow test: cast ray to infinity
+			// Shadow test: cast ray to infinity.  envShadowT carries the
+			// Fresnel transmittance when transparent shadows are on (else 1,1,1).
 			bool envShadowed = false;
+			RISEPel envShadowT( 1.0, 1.0, 1.0 );
 			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
 			{
 				const Ray rayToEnv( ri.ptIntersection, envDir );
-				envShadowed = caster.CastShadowRay( rayToEnv, RISE_INFINITY );
+				envShadowed = ShadowOccludedRGB( caster, rayToEnv, RISE_INFINITY, envShadowT );
 			}
 
 			if( !envShadowed )
@@ -1740,7 +1806,7 @@ RISEPel LightSampler::EvaluateDirectLighting(
 				const Ray envRay( ri.ptIntersection, envDir );
 				const RISEPel Le = pEnvironmentMap->GetRadiance( envRay, nullRasterizerState );
 				const RISEPel f = brdf.value( envDir, ri );
-				RISEPel envContrib = Le * f * (cosEnv / envPdf);
+				RISEPel envContrib = Le * f * (cosEnv / envPdf) * envShadowT;
 
 				// Apply medium transmittance for environment ray.
 				// Multi-medium shadow transmittance.
@@ -1927,11 +1993,13 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 			if( !isVolumeScatter && cosSurface <= 0 ) break;
 
-			// Shadow test
+			// Shadow test.  shadowTNM carries the Fresnel transmittance
+			// when transparent shadows are enabled (else 1.0).
+			Scalar shadowTNM = 1.0;
 			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
 			{
 				const Ray rayToLight( ri.ptIntersection, vToLight );
-				if( caster.CastShadowRay( rayToLight, dist - 0.001 ) )
+				if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, shadowTNM ) )
 					break;
 			}
 
@@ -1942,8 +2010,9 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			const Scalar invDistSq = 1.0 / (dist * dist);
 			const Scalar fBSDF = brdf.valueNM( vToLight, ri, nm );
 
-			// Delta-position light: w = 1 (no MIS needed).
-			Scalar neeContrib = LeNM * fBSDF * cosSurface * invDistSq
+			// Delta-position light: w = 1 (no MIS needed).  Fold in the
+			// transparent-shadow Fresnel transmittance (1.0 when off).
+			Scalar neeContrib = LeNM * fBSDF * cosSurface * invDistSq * shadowTNM
 				   * (risWeight / pdfAlias);
 
 			// Apply medium transmittance along shadow ray.
@@ -2006,10 +2075,13 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 			}
 		}
 
+		// Shadow test.  meshShadowTNM carries the Fresnel transmittance
+		// when transparent shadows are enabled (else 1.0).
+		Scalar meshShadowTNM = 1.0;
 		if( pShadingObject && pShadingObject->DoesReceiveShadows() )
 		{
 			const Ray rayToLight( ri.ptIntersection, vToLight );
-			if( caster.CastShadowRay( rayToLight, dist - 0.001 ) )
+			if( ShadowOccludedNM( caster, rayToLight, dist - 0.001, nm, meshShadowTNM ) )
 			{
 				break;
 			}
@@ -2025,7 +2097,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 		const Scalar Le = pEmitter->emittedRadianceNM( lumri, -vToLight, lumNormal, nm );
 
 		const Scalar geom = area * cosLight / (dist * dist);
-		Scalar contrib = Le * cosSurface * geom * brdf.valueNM( vToLight, ri, nm );
+		Scalar contrib = Le * cosSurface * geom * brdf.valueNM( vToLight, ri, nm ) * meshShadowTNM;
 
 		// Multi-medium shadow transmittance.
 		{
@@ -2096,11 +2168,14 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 		if( (isVolumeScatter || cosEnv > 0) && envPdf > 0 )
 		{
+			// envShadowTNM carries the Fresnel transmittance when
+			// transparent shadows are enabled (else 1.0).
 			bool envShadowed = false;
+			Scalar envShadowTNM = 1.0;
 			if( pShadingObject && pShadingObject->DoesReceiveShadows() )
 			{
 				const Ray rayToEnv( ri.ptIntersection, envDir );
-				envShadowed = caster.CastShadowRay( rayToEnv, RISE_INFINITY );
+				envShadowed = ShadowOccludedNM( caster, rayToEnv, RISE_INFINITY, nm, envShadowTNM );
 			}
 
 			if( !envShadowed )
@@ -2108,7 +2183,7 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 				const Ray envRay( ri.ptIntersection, envDir );
 				const Scalar Le = pEnvironmentMap->GetRadianceNM( envRay, nullRasterizerState, nm );
 				const Scalar f = brdf.valueNM( envDir, ri, nm );
-				Scalar envContrib = Le * f * cosEnv / envPdf;
+				Scalar envContrib = Le * f * cosEnv / envPdf * envShadowTNM;
 
 				// Apply medium transmittance for environment ray.
 				// Multi-medium shadow transmittance.

@@ -49,6 +49,14 @@ namespace RISE
 			Scalar						dPendingLightRRThreshold;
 			bool						bPendingUseLightBVH;
 
+			//! When true, the unidirectional path tracer's NEE shadow
+			//! tests route through CastShadowRayTransmittance (Fresnel-
+			//! attenuated transparent shadows) instead of the binary
+			//! CastShadowRay.  Default false (binary occlusion).  Set by
+			//! Job::SetPathTracing{Pel,Spectral}Rasterizer from the scene's
+			//! `transparent_shadows` flag.
+			bool						bTransparentShadows;
+
 			virtual ~RayCaster();
 
 			//! Selects the shader used for a surface hit.  The default
@@ -139,9 +147,45 @@ namespace RISE
 			//! This function casts a ray into the scene and only checks to see if it intersects something.
 			//! Very useful for shadow checks
 			/// \return TRUE if the cast ray results in an intersection, FALSE otherwise
-			bool CastShadowRay( 
+			bool CastShadowRay(
 				const Ray& ray,										///< [in] Ray to cast
 				const Scalar dHowFar								///< [in] How far to follow the ray, optimization
+				) const;
+
+			//! TRANSPARENT (Fresnel-attenuated) shadow ray.  Walks the
+			//! shadow segment hit-by-hit (closest-hit IntersectRay); at
+			//! each interface that is a PERFECT-SPECULAR TRANSMISSIVE
+			//! DIELECTRIC (queried via IMaterial::GetSpecularInfo{,NM}:
+			//! valid && isSpecular && canRefract && clearTransmission) the ray
+			//! passes STRAIGHT
+			//! through (no refractive bend) and the running transmittance
+			//! is multiplied by the per-interface Fresnel transmittance
+			//! T = 1 - F(cosTheta, eta).  Any OTHER hit (opaque, diffuse,
+			//! rough, pure mirror) fully blocks (returns true, transmittance
+			//! left at 0).
+			//!
+			//! APPROXIMATION (documented at the implementation): straight-
+			//! through propagation ignores refractive ray bending and
+			//! internal multi-bounce; the per-interface eta is a single
+			//! representative value (see the .cpp for the pel-vs-NM eta
+			//! source).  Used ONLY by the unidirectional PT integrator when
+			//! `transparent_shadows` is enabled; BDPT / VCM / MLT keep the
+			//! binary CastShadowRay.
+			//!
+			//! Caps at 32 interface crossings, then conservatively returns
+			//! blocked (true).
+			//!
+			//! \return TRUE if the light is FULLY occluded (an opaque hit
+			//!         or the crossing cap was reached); FALSE if the ray
+			//!         reached dHowFar, with @a transmittance carrying the
+			//!         accumulated Fresnel transmittance (1.0 when the
+			//!         segment was clear of any geometry).
+			bool CastShadowRayTransmittance(
+				const Ray& ray,										///< [in] Ray to cast (origin = shading point, dir = toward light, normalized)
+				const Scalar dHowFar,								///< [in] How far to follow the ray (distance to the light minus epsilon)
+				const bool bNM,										///< [in] True for the spectral (single-wavelength) path; false for the RGB path
+				const Scalar nm,									///< [in] Wavelength (only used when bNM == true)
+				RISEPel& transmittance								///< [out] Accumulated per-interface Fresnel transmittance product (RGB; all 3 channels equal on the NM path)
 				) const;
 
 			//! To retreive the current scene
@@ -169,6 +213,18 @@ namespace RISE
 
 			/// Enables or disables the light BVH.
 			void SetUseLightBVH( const bool enable );
+
+			/// Enables or disables transparent (Fresnel-attenuated) shadow
+			/// rays for NEE.  When enabled, the unidirectional path
+			/// tracer's shadow tests route through
+			/// CastShadowRayTransmittance.  Default disabled (binary).
+			void SetTransparentShadows( const bool enable ) { bTransparentShadows = enable; }
+
+			/// \return Whether transparent shadow rays are enabled.  Read
+			/// by LightSampler's NEE evaluators (via a dynamic_cast to the
+			/// concrete RayCaster) to decide between the binary and
+			/// Fresnel-attenuated shadow test.
+			bool GetTransparentShadows() const { return bTransparentShadows; }
 
 			/// See IRayCaster::IsRadianceMapVisibleAsBackground.
 			/// (No `override` — RayCaster matches the file's existing
