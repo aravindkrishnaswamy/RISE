@@ -1665,8 +1665,6 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\BezierTesselation.h">
       <Filter>Geometry</Filter>
     </ClInclude>
-      <Filter>Geometry</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\BilinearPatchGeometry.h">
       <Filter>Geometry</Filter>
     </ClInclude>
