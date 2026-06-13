@@ -2623,6 +2623,39 @@ namespace RISE
 			);
 
 		//
+		// `> modify` runtime-mutation surface (see IJob.h).  No `override`
+		// keyword — Job matches the file's existing no-override style (see
+		// CLAUDE.md's note on -Winconsistent-missing-override).
+		//
+
+		//! Reassigns the material bound to an existing scene object.
+		/// \return TRUE if both names resolve, FALSE otherwise
+		bool SetObjectMaterial(
+			const char* objName,							///< [in] Name of the object to retarget
+			const char* materialName						///< [in] Name of the material to bind
+			);
+
+		//! Reassigns the shader bound to an existing scene object.
+		/// \return TRUE if both names resolve, FALSE otherwise
+		bool SetObjectShader(
+			const char* objName,							///< [in] Name of the object to retarget
+			const char* shaderName							///< [in] Name of the shader to bind
+			);
+
+		//! Rescales the emission of a luminaire material.
+		/// \return TRUE if the material exists and is a luminaire, FALSE otherwise
+		bool SetMaterialEmissionScale(
+			const char* materialName,						///< [in] Name of the luminaire material
+			const double scale								///< [in] New emission scale
+			);
+
+		//! Overrides the active rasterizer's environment radiance scale.
+		/// \return TRUE if an active rasterizer with a RayCaster exists, FALSE otherwise
+		bool SetActiveRasterizerRadianceScale(
+			const double scale								///< [in] New environment radiance scale
+			);
+
+		//
 		// Removal of objects
 		//
 

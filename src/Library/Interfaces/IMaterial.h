@@ -205,6 +205,17 @@ namespace RISE
 			const Scalar nm,
 			const IORStack& ior_stack
 			) const;
+
+		//! Rescales this material's emission.  Default is a no-op that
+		//! REJECTS the change (returns false) so non-emissive materials
+		//! safely decline — only luminaire materials (e.g.
+		//! LambertianLuminaireMaterial) override this to rebuild their
+		//! emitter at the new scale.  Backs the
+		//! `> modify material <name> scale <value>` command via
+		//! Job::SetMaterialEmissionScale; runs before a render while the
+		//! scene is still mutable, so no thread-safety concern.
+		/// \return TRUE if the material is a luminaire and applied the scale, FALSE otherwise
+		virtual bool SetEmissionScale( const Scalar scale ) { return false; }
 	};
 }
 

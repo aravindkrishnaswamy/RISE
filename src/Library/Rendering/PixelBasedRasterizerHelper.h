@@ -384,6 +384,15 @@ namespace RISE
 		public:
 			PixelBasedRasterizerHelper( IRayCaster* pCaster_ , RISE::Implementation::FrameStore* frameStore = nullptr);
 
+			/// \return The ray caster this rasterizer drives (borrowed,
+			/// not addref'd).  Used by Job::SetActiveRasterizerRadianceScale
+			/// to reach the concrete RayCaster (via a further dynamic_cast)
+			/// and push a `> modify rasterizer radiance_scale` override.
+			/// Every in-tree pixel-based rasterizer (PT / BDPT / VCM / MLT
+			/// and their spectral variants) routes through this base, so
+			/// the cast from IRasterizer succeeds for all of them.
+			IRayCaster* GetRayCaster() const { return pCaster; }
+
 			/// Called after a RuntimeContext is created, before any rendering
 			/// with it.  Subclasses can override to inject per-context state
 			/// (e.g. path guiding field pointers).  Default installs shared

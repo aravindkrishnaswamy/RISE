@@ -57,6 +57,18 @@ namespace RISE
 			//! `transparent_shadows` flag.
 			bool						bTransparentShadows;
 
+			//! Runtime override for the environment radiance scale,
+			//! backing `> modify rasterizer radiance_scale`.  Negative
+			//! (the construction default) means "no override — use the
+			//! radiance map's own scale" so existing scenes are
+			//! unaffected.  When >= 0, AttachScene builds the environment
+			//! importance sampler at this scale.  Job::SetActiveRasterizer-
+			//! RadianceScale also pushes the same value into the scene's
+			//! radiance map (IRadianceMap::SetScale) so the direct-view /
+			//! ray-miss background stays consistent with NEE.  Set before
+			//! a render (single-threaded); the next AttachScene applies it.
+			Scalar						dRadianceScaleOverride;
+
 			virtual ~RayCaster();
 
 			//! Selects the shader used for a surface hit.  The default
@@ -225,6 +237,17 @@ namespace RISE
 			/// concrete RayCaster) to decide between the binary and
 			/// Fresnel-attenuated shadow test.
 			bool GetTransparentShadows() const { return bTransparentShadows; }
+
+			/// Overrides the environment radiance scale (backs `> modify
+			/// rasterizer radiance_scale`).  A negative value clears the
+			/// override (revert to the radiance map's own scale).  Takes
+			/// effect on the NEXT AttachScene, which rebuilds the
+			/// environment importance sampler.  Set before a render.
+			void SetRadianceScale( const Scalar scale ) { dRadianceScaleOverride = scale; }
+
+			/// \return The current radiance-scale override, or a negative
+			/// value when no override is set.
+			Scalar GetRadianceScale() const { return dRadianceScaleOverride; }
 
 			/// See IRayCaster::IsRadianceMapVisibleAsBackground.
 			/// (No `override` — RayCaster matches the file's existing

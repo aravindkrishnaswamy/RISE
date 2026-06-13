@@ -3042,6 +3042,56 @@ namespace RISE
 			const double radius,					///< [in] Disk radius (world units)
 			const int meshN							///< [in] Grid samples across the diameter
 			) = 0;
+
+		// ----- `> modify` runtime-mutation surface (vtable-stable) -----
+		// These four virtuals back the generalized `> modify` scene
+		// command (AsciiCommandParser::ParseModify) so a scene "mode"
+		// (day / night / dramatic) can be expressed as a self-contained
+		// command block instead of hand-editing chunk bodies.  All run
+		// BEFORE a render while the scene is still mutable; the next
+		// render's RayCaster::AttachScene re-Prepares the light set and
+		// rebuilds the environment sampler, so emissive<->non-emissive
+		// material swaps and radiance-scale changes take effect with no
+		// extra dirty/re-prepare plumbing.  Appended at the END of the
+		// interface so existing vtable slot indices are unchanged.
+
+		//! Reassigns the material bound to an existing scene object,
+		//! mirroring the interactive editor's material-swap path
+		//! (SceneEditor: materialManager->GetItem -> obj.AssignMaterial).
+		//! No acceleration rebuild — a material change cannot move the
+		//! object's bounding box.
+		/// \return TRUE if both the object and the material exist, FALSE otherwise
+		virtual bool SetObjectMaterial(
+			const char* objName,					///< [in] Name of the object to retarget
+			const char* materialName				///< [in] Name of the (already-added) material to bind
+			) = 0;
+
+		//! Reassigns the shader bound to an existing scene object.
+		/// \return TRUE if both the object and the shader exist, FALSE otherwise
+		virtual bool SetObjectShader(
+			const char* objName,					///< [in] Name of the object to retarget
+			const char* shaderName					///< [in] Name of the (already-added) shader to bind
+			) = 0;
+
+		//! Rescales the emission of an existing luminaire material.
+		//! Delegates to IMaterial::SetEmissionScale — non-luminaire
+		//! materials reject the change (return FALSE) via the interface
+		//! default.
+		/// \return TRUE if the material exists AND is a luminaire, FALSE otherwise
+		virtual bool SetMaterialEmissionScale(
+			const char* materialName,				///< [in] Name of the (luminaire) material to rescale
+			const double scale						///< [in] New emission scale (replaces the original)
+			) = 0;
+
+		//! Overrides the radiance (environment / IBL) scale on the
+		//! ACTIVE rasterizer's RayCaster.  The override is applied on the
+		//! next AttachScene to both the environment importance sampler
+		//! and the background radiance map so direct-view and NEE stay
+		//! consistent.
+		/// \return TRUE if an active rasterizer with a RayCaster exists, FALSE otherwise
+		virtual bool SetActiveRasterizerRadianceScale(
+			const double scale						///< [in] New environment radiance scale
+			) = 0;
 	};
 
 

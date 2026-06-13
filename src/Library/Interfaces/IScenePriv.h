@@ -245,6 +245,18 @@ namespace RISE
 
 		//! Shutsdown the scene, forces the deletion and clearing of everything
 		virtual void Shutdown() = 0;
+
+		//! \return Non-const handle to the global radiance (environment)
+		//! map, or NULL if none is set.  Mirrors the GetGlobalRadianceMap()
+		//! const accessor and the GetGlobalPelMapMutable() family above.
+		//! Backs Job::SetActiveRasterizerRadianceScale, which pushes a
+		//! `> modify rasterizer radiance_scale` override into the map via
+		//! IRadianceMap::SetScale so the background/miss radiance stays
+		//! consistent with the environment importance sampler.  Mutated
+		//! only before a render (single-threaded), preserving the
+		//! render-time scene-immutability contract.  Appended at the END
+		//! of the interface (vtable-stable).
+		virtual IRadianceMap* GetGlobalRadianceMapMutable() = 0;
 	};
 }
 

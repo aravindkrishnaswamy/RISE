@@ -106,6 +106,25 @@ namespace RISE
 			/// \return The emission properties for this material.  NULL If there is not an emitter
 			inline IEmitter* GetEmitter() const {	return pEmitter; };
 
+			//! Rescales emissive output (backs `> modify material <name> scale`).
+			//! Non-emissive GGX (pEmitter NULL) rejects; an emissive GGX rebuilds
+			//! its LambertianEmitter at the new scale, mirroring
+			//! LambertianLuminaireMaterial::SetEmissionScale (hold a bridging ref on
+			//! the radiance painter across the old emitter's release).
+			bool SetEmissionScale( const Scalar scale )
+			{
+				if( !pEmitter ) {
+					return false;
+				}
+				const IPainter& radEx = pEmitter->GetRadEx();
+				radEx.addref();
+				safe_release( pEmitter );
+				pEmitter = new LambertianEmitter( radEx, scale );
+				GlobalLog()->PrintNew( pEmitter, __FILE__, __LINE__, "GGX emitter" );
+				radEx.release();
+				return true;
+			}
+
 			//! Read-back + rebind for the interactive editor.  Each
 			//! `Set*` hits BOTH the BRDF and the SPF in lockstep so
 			//! the shaded value and scattering distribution stay in

@@ -32,6 +32,7 @@
 #include "Rendering/FrameStore.h"
 #include "Rendering/Rasterizer.h"
 #include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
+#include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
 #include "Utilities/RString.h"
 #include "Utilities/RasterizerDefaults.h"
 #include <stdio.h>
@@ -8958,6 +8959,147 @@ bool Job::SetObjectIntersectionError(
 	}
 
 	pObj->SetSurfaceIntersecError( error );
+	return true;
+}
+
+//
+// `> modify` runtime-mutation surface.  Each looks an element up by
+// manager name (mirroring SetObjectIntersectionError) and mutates it in
+// place.  All run before a render while the scene is mutable; the next
+// RayCaster::AttachScene re-Prepares the light set and rebuilds the
+// environment sampler, so emissive<->non-emissive material swaps and
+// radiance-scale changes are picked up with no extra dirty plumbing.
+//
+
+bool Job::SetObjectMaterial(
+	const char* objName,							///< [in] Name of the object to retarget
+	const char* materialName						///< [in] Name of the material to bind
+	)
+{
+	if( !objName || !materialName ) {
+		GlobalLog()->PrintEasyError( "Job::SetObjectMaterial:: null object or material name" );
+		return false;
+	}
+
+	IObjectPriv* pObj = pObjectManager->GetItem( objName );
+	if( !pObj ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectMaterial:: object not found `%s`", objName );
+		return false;
+	}
+
+	IMaterial* pMat = pMatManager->GetItem( materialName );
+	if( !pMat ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectMaterial:: material not found `%s`", materialName );
+		return false;
+	}
+
+	// Mirrors the interactive editor's material-swap path
+	// (SceneEditor: materialManager->GetItem -> obj.AssignMaterial).
+	// AssignMaterial releases the prior material and addrefs the new
+	// one.  No acceleration rebuild — a material change cannot move the
+	// object's bounding box.
+	pObj->AssignMaterial( *pMat );
+	return true;
+}
+
+bool Job::SetObjectShader(
+	const char* objName,							///< [in] Name of the object to retarget
+	const char* shaderName							///< [in] Name of the shader to bind
+	)
+{
+	if( !objName || !shaderName ) {
+		GlobalLog()->PrintEasyError( "Job::SetObjectShader:: null object or shader name" );
+		return false;
+	}
+
+	IObjectPriv* pObj = pObjectManager->GetItem( objName );
+	if( !pObj ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectShader:: object not found `%s`", objName );
+		return false;
+	}
+
+	IShader* pShader = pShaderManager->GetItem( shaderName );
+	if( !pShader ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectShader:: shader not found `%s`", shaderName );
+		return false;
+	}
+
+	pObj->AssignShader( *pShader );
+	return true;
+}
+
+bool Job::SetMaterialEmissionScale(
+	const char* materialName,						///< [in] Name of the luminaire material
+	const double scale								///< [in] New emission scale
+	)
+{
+	if( !materialName ) {
+		GlobalLog()->PrintEasyError( "Job::SetMaterialEmissionScale:: null material name" );
+		return false;
+	}
+
+	IMaterial* pMat = pMatManager->GetItem( materialName );
+	if( !pMat ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetMaterialEmissionScale:: material not found `%s`", materialName );
+		return false;
+	}
+
+	// IMaterial::SetEmissionScale defaults to a no-op returning false, so
+	// non-luminaire materials reject the change here.
+	if( !pMat->SetEmissionScale( Scalar( scale ) ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetMaterialEmissionScale:: material `%s` does not support emission-scale modification (not an emissive material, or its emission is not scale-mutable)", materialName );
+		return false;
+	}
+
+	return true;
+}
+
+bool Job::SetActiveRasterizerRadianceScale(
+	const double scale								///< [in] New environment radiance scale
+	)
+{
+	if( scale < 0 ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: radiance scale must be >= 0 (negative is nonphysical)" );
+		return false;
+	}
+
+	if( !pRasterizer ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: no active rasterizer" );
+		return false;
+	}
+
+	// Every in-tree pixel-based rasterizer (PT / BDPT / VCM / MLT and the
+	// spectral variants) derives from PixelBasedRasterizerHelper, which
+	// owns the RayCaster.  Reach the concrete RayCaster through it.
+	RISE::Implementation::PixelBasedRasterizerHelper* pHelper =
+		dynamic_cast<RISE::Implementation::PixelBasedRasterizerHelper*>( pRasterizer );
+	if( !pHelper ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: active rasterizer has no ray caster" );
+		return false;
+	}
+
+	RISE::Implementation::RayCaster* pConcreteCaster =
+		dynamic_cast<RISE::Implementation::RayCaster*>( pHelper->GetRayCaster() );
+	if( !pConcreteCaster ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: active rasterizer has no ray caster" );
+		return false;
+	}
+
+	// Drive the environment importance sampler (NEE) scale: the next
+	// AttachScene rebuilds the EnvironmentSampler from this override.
+	pConcreteCaster->SetRadianceScale( Scalar( scale ) );
+
+	// Keep the direct-view / ray-miss background consistent with NEE by
+	// pushing the same scale into the scene's radiance map.  A scene with
+	// no global radiance map simply has nothing to update (the override
+	// on the caster is still recorded, harmlessly, for symmetry).
+	if( pScene ) {
+		IRadianceMap* pRm = pScene->GetGlobalRadianceMapMutable();
+		if( pRm ) {
+			pRm->SetScale( Scalar( scale ) );
+		}
+	}
+
 	return true;
 }
 

@@ -65,7 +65,8 @@ RayCaster::RayCaster(
   bShowLuminaires( showLuminaires ),
   dPendingLightRRThreshold( 0 ),
   bPendingUseLightBVH( false ),
-  bTransparentShadows( false )
+  bTransparentShadows( false ),
+  dRadianceScaleOverride( -1.0 )		// negative = no override (use the map's own scale)
 {
 	pDefaultShader.addref();
 }
@@ -133,9 +134,21 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 		const IRadianceMap* pEnvMap = pScene->GetGlobalRadianceMap();
 		if( pEnvMap )
 		{
+			// A `> modify rasterizer radiance_scale` override (set via
+			// Job::SetActiveRasterizerRadianceScale -> SetRadianceScale)
+			// takes precedence over the map's own scale.  Negative means
+			// "no override".  The same override is also pushed into the
+			// radiance map (the direct-view background), keeping NEE and the
+			// background in sync; a direct SetRadianceScale() that skips that
+			// dual-write would drive only NEE — but we resolve from the
+			// member to keep this caster the authoritative source for the
+			// NEE (environment-sampler) scale regardless of attach order.
+			const Scalar dEnvScale =
+				( dRadianceScaleOverride >= 0.0 ) ? dRadianceScaleOverride : pEnvMap->GetScale();
+
 			EnvironmentSampler* pEnvSampler = new EnvironmentSampler(
 				pEnvMap->GetPainter(),
-				pEnvMap->GetScale(),
+				dEnvScale,
 				pEnvMap->GetTransform(),
 				64
 				);

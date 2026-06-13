@@ -64,6 +64,17 @@ namespace RISE
 
 		//! Returns the world-to-map transformation matrix
 		virtual const Matrix4& GetTransform() const = 0;
+
+		//! Overrides the radiance scale factor at runtime.  Used by
+		//! Job::SetActiveRasterizerRadianceScale to push a `> modify
+		//! rasterizer radiance_scale` override into the background/miss
+		//! radiance lookup so it stays consistent with the environment
+		//! importance sampler.  Default is a no-op: a map type that
+		//! treats scale as immutable (or has no meaningful runtime scale)
+		//! simply ignores the override.  Appended at the END of the
+		//! interface with a body (not pure) so existing implementers —
+		//! including out-of-tree ones — are not forced to add it.
+		virtual void SetScale( const Scalar scale ) {}
 	};
 }
 
