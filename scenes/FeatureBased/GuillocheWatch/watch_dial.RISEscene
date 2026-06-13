@@ -976,42 +976,10 @@ standard_object
 */
 
 ##################################################
-# ALTERNATE LIGHTING (commented out) -- NIGHT / LUME SHOT.
-# Kill the studio + surround to near-black and let the photoluminescent
-# lume carry the frame: the chapter-ring arcs, the hands, and the centre
-# pin glow their charged blue-green; the guilloche reads only in the soft
-# wash of their own light.  (Night twin of the dramatic block above, and of
-# lume_day's "NIGHT variant" note.)
-#
-# TO ACTIVATE (and reverse to undo):
-#   1. kill the studio key:   soft_top_lum 'scale' 8  -> 0   AND
-#                             soft_bot_lum 'scale' 40 -> 0
-#   2. near-black surround:   rasterizer 'radiance_scale' 0.30 -> 0.02
-#                             (use 0.0 for a pure-black field)
-#   3. make the lume EMIT -- repoint each object's 'material' to lume_glow_night:
-#        markerlume (was lume_day)       sdfhour   (was white_hands)
-#        sdfminute  (was white_hands)    pin       (was lume_white)
-#   4. uncomment this block: delete the '/*' and '*/' lines below.
-# Tuning: lume_glow_night 'scale' = glow brightness; pnt_lume_glow = glow
-# colour (blue-green C3 lume here; warm it toward pnt_lume_white for an aged
-# tritium look).  The lume is now the ONLY light, so the frame is dark +
-# noisier -- raise the rasterizer 'samples' (e.g. 32 -> 256) for a clean hero.
+# NIGHT / LUME SHOT: authored as a self-contained `> modify` command
+# block at the END of this file (the commands must follow the objects
+# they repoint).  Uncomment that block to switch day -> night.
 ##################################################
-/*
-uniformcolor_painter
-{
-	name				pnt_lume_glow
-	color				0.45 0.95 0.70
-}
-
-lambertian_luminaire_material
-{
-	name				lume_glow_night
-	exitance			pnt_lume_glow
-	scale				45.0
-	material			none
-}
-*/
 ##################################################
 ##################################################
 # The dial: a FLAT Cartesian disk + a guilloché expression_function2d
@@ -1919,3 +1887,41 @@ standard_object
 	material			strap_thread
 	orientation			0 0 180
 }
+
+
+##################################################
+# NIGHT / LUME SHOT (alternate mode -- self-contained, NO manual chunk edits).
+# The photoluminescent lume carries the frame: the chapter-ring arcs, the
+# hands, and the centre pin glow blue-green while everything else falls to
+# near black.  `lume_glow_night` is defined but UNUSED in day mode (an unbound
+# material has no render effect); the `>` command block below applies the mode
+# at scene-load time via the generalized `> modify` command.
+#
+# TO ACTIVATE: delete the '/*' and '*/' lines around the command block (and
+# re-add them to return to day).  Tuning: lume_glow_night 'scale' = glow
+# brightness, pnt_lume_glow = glow colour; the lume is then the ONLY light, so
+# raise the rasterizer 'samples' (e.g. 32 -> 256) for a clean night hero.
+##################################################
+uniformcolor_painter
+{
+	name				pnt_lume_glow
+	color				0.45 0.95 0.70
+}
+
+lambertian_luminaire_material
+{
+	name				lume_glow_night
+	exitance			pnt_lume_glow
+	scale				45.0
+	material			none
+}
+
+/*
+> modify rasterizer radiance_scale 0.02
+> modify material soft_top_lum scale 0
+> modify material soft_bot_lum scale 0
+> modify object markerlume material lume_glow_night
+> modify object sdfhour material lume_glow_night
+> modify object sdfminute material lume_glow_night
+> modify object pin material lume_glow_night
+*/
