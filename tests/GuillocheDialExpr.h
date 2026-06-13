@@ -29,10 +29,14 @@
 
 namespace GuillocheDialExpr
 {
-	// A periodic groove/land stripe: smoothstep(gridE0,gridE1,|cos(2pi*arg)|).
+	// A periodic groove/land stripe.  SHARP V-CUT: clamp(|cos(2pi*arg)|/gridE1,0,1)
+	// -- flat land (|cos|>=gridE1), linear-V walls, sharp vertex at the groove
+	// (|cos|=0).  (Was smoothstep(gridE0,gridE1,|cos|); gridE0 now unused by the
+	// grooves -- kept as a param for back-compat.)  petal/mask keep their own
+	// smoothstep envelopes.
 	inline std::string Stripe( const std::string& arg )
 	{
-		return "smoothstep(gridE0,gridE1,abs(cos(tau*(" + arg + "))))";
+		return "clamp(abs(cos(tau*(" + arg + ")))/gridE1,0,1)";
 	}
 
 	// The brick-offset woven grid (GuillocheField::Woven) at frequency
@@ -111,7 +115,7 @@ namespace GuillocheDialExpr
 		b.AddParam( "cell", 0.9 ); b.AddParam( "gridAmp", 0.85 ); b.AddParam( "petalAmp", 0.30 );
 		b.AddParam( "gridE0", 0.12 ); b.AddParam( "gridE1", 0.5 );
 		b.AddParam( "petalE0", 0.0 ); b.AddParam( "petalE1", 0.82 );
-		b.AddParam( "base", 0.15 ); b.AddParam( "landLevel", 0.45 );
+		b.AddParam( "base", 0.15 ); b.AddParam( "landLevel", 0.5 );
 		b.AddParam( "reliefDepth", 0.85 ); b.AddParam( "centerRadius", 0.03 );
 		AddPreamble( b );
 		AddFrameGeneral( b );
@@ -128,7 +132,7 @@ namespace GuillocheDialExpr
 		b.AddParam( "cell", 0.9 ); b.AddParam( "gridAmp", 0.85 ); b.AddParam( "petalAmp", 0.30 );
 		b.AddParam( "gridE0", 0.12 ); b.AddParam( "gridE1", 0.5 );
 		b.AddParam( "petalE0", 0.0 ); b.AddParam( "petalE1", 0.82 );
-		b.AddParam( "base", 0.15 ); b.AddParam( "landLevel", 0.45 );
+		b.AddParam( "base", 0.15 ); b.AddParam( "landLevel", 0.5 );
 		b.AddParam( "reliefDepth", 0.85 ); b.AddParam( "centerRadius", 0.03 );
 		b.AddParam( "lightningLo", 0.25 ); b.AddParam( "lightningHi", 0.65 );
 		b.AddParam( "cellScale", 1.8 );
@@ -148,7 +152,7 @@ namespace GuillocheDialExpr
 		b.AddParam( "R", 20.6 ); b.AddParam( "arms", 11 );
 		b.AddParam( "cell", 0.9 ); b.AddParam( "gridAmp", 0.85 ); b.AddParam( "petalAmp", 0.30 );
 		b.AddParam( "gridE0", 0.12 ); b.AddParam( "gridE1", 0.5 );
-		b.AddParam( "base", 0.15 ); b.AddParam( "landLevel", 0.45 );
+		b.AddParam( "base", 0.15 ); b.AddParam( "landLevel", 0.5 );
 		b.AddParam( "reliefDepth", 0.85 ); b.AddParam( "centerRadius", 0.015 );
 		b.AddParam( "lightningLo", 0.45 ); b.AddParam( "lightningHi", 0.65 );
 		b.AddParam( "lightningRelief", 0.6 ); b.AddParam( "cellScale", 0.6 );
@@ -179,7 +183,7 @@ namespace GuillocheDialExpr
 		b.AddParam( "R", 20.6 ); b.AddParam( "arms", 8 );
 		b.AddParam( "cell", 0.8 ); b.AddParam( "gridAmp", 0.95 ); b.AddParam( "petalAmp", 0.30 );
 		b.AddParam( "gridE0", 0.12 ); b.AddParam( "gridE1", 0.5 );
-		b.AddParam( "base", 0.15 ); b.AddParam( "landLevel", 0.45 );
+		b.AddParam( "base", 0.15 ); b.AddParam( "landLevel", 0.5 );
 		b.AddParam( "reliefDepth", 0.85 ); b.AddParam( "centerRadius", 0.0 );
 		b.AddParam( "irisAperture", 0.13 ); b.AddParam( "irisSwirl", 0.6 ); b.AddParam( "irisEdge", 0.6 );
 		AddPreamble( b );
@@ -219,7 +223,7 @@ namespace GuillocheDialExpr
 		b.AddParam( "R", 20.6 ); b.AddParam( "arms", 6 );
 		b.AddParam( "cell", 0.8 ); b.AddParam( "gridAmp", 0.95 );
 		b.AddParam( "gridE0", 0.12 ); b.AddParam( "gridE1", 0.5 );
-		b.AddParam( "base", 0.15 ); b.AddParam( "landLevel", 0.45 );
+		b.AddParam( "base", 0.15 ); b.AddParam( "landLevel", 0.5 );
 		b.AddParam( "reliefDepth", 0.85 ); b.AddParam( "centerRadius", 0.02 );
 		b.AddParam( "swirlTurns", 7.0 );
 		AddPreamble( b );
@@ -237,7 +241,7 @@ namespace GuillocheDialExpr
 		b.AddParam( "R", 20.6 ); b.AddParam( "arms", 8 );
 		b.AddParam( "cell", 0.6 ); b.AddParam( "gridAmp", 0.95 );
 		b.AddParam( "gridE0", 0.12 ); b.AddParam( "gridE1", 0.5 );
-		b.AddParam( "base", 0.15 ); b.AddParam( "landLevel", 0.45 );
+		b.AddParam( "base", 0.15 ); b.AddParam( "landLevel", 0.5 );
 		b.AddParam( "reliefDepth", 0.85 ); b.AddParam( "centerRadius", 0.02 );
 		b.AddParam( "cellScale", 2.6 );
 		AddPreamble( b );

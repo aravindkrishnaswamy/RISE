@@ -987,7 +987,7 @@ expression_function2d
 	param		gridE0 0.12
 	param		gridE1 0.5
 	param		base 0.15
-	param		landLevel 0.45
+	param		landLevel 0.5
 	param		reliefDepth 0.85
 	param		centerRadius 0.015
 	param		lightningLo 0.45
@@ -1015,8 +1015,8 @@ expression_function2d
 	def			ss sin(thetaC)
 	def			xr cc*x+ss*y
 	def			yr -ss*x+cc*y
-	def			inside smoothstep(gridE0,gridE1,abs(cos(tau*((0.5/fieldCell)*x))))*smoothstep(gridE0,gridE1,abs(cos(tau*((0.5/fieldCell)*y))))
-	def			between smoothstep(gridE0,gridE1,abs(cos(tau*((0.5/rungLen)*xr))))*smoothstep(gridE0,gridE1,abs(cos(tau*((0.5/rungWidth)*yr))))
+	def			inside clamp(abs(cos(tau*((0.5/fieldCell)*x)))/gridE1,0,1)*clamp(abs(cos(tau*((0.5/fieldCell)*y)))/gridE1,0,1)
+	def			between clamp(abs(cos(tau*((0.5/rungLen)*xr)))/gridE1,0,1)*clamp(abs(cos(tau*((0.5/rungWidth)*yr)))/gridE1,0,1)
 	def			grid between*(1-mask)+inside*mask
 	def			raw base+petalAmp*mask+gridAmp*grid+lightningRelief*mask
 	def			h0 clamp((raw-(0.14999999999999999))/(1.75),0,1)
@@ -1046,7 +1046,7 @@ expression_function2d
 	param		petalE0 0
 	param		petalE1 0.82
 	param		base 0.15
-	param		landLevel 0.45
+	param		landLevel 0.5
 	param		reliefDepth 0.85
 	param		centerRadius 0.03
 	param		lightningLo 0.25
@@ -1073,12 +1073,12 @@ expression_function2d
 	def			way0F (0.5/cell)*yr
 	def			wrpF floor(2*waxF)
 	def			wayF way0F+0.25*mod(wrpF,2)
-	def			wgF smoothstep(gridE0,gridE1,abs(cos(tau*(waxF))))*smoothstep(gridE0,gridE1,abs(cos(tau*(wayF))))
+	def			wgF clamp(abs(cos(tau*(waxF)))/gridE1,0,1)*clamp(abs(cos(tau*(wayF)))/gridE1,0,1)
 	def			waxB (0.5/(cell*cellScale))*xr
 	def			way0B (0.5/(cell*cellScale))*yr
 	def			wrpB floor(2*waxB)
 	def			wayB way0B+0.25*mod(wrpB,2)
-	def			wgB smoothstep(gridE0,gridE1,abs(cos(tau*(waxB))))*smoothstep(gridE0,gridE1,abs(cos(tau*(wayB))))
+	def			wgB clamp(abs(cos(tau*(waxB)))/gridE1,0,1)*clamp(abs(cos(tau*(wayB)))/gridE1,0,1)
 	def			grid wgF*(1-mask)+wgB*mask
 	def			raw base+petalAmp*petal+gridAmp*grid
 	def			h0 clamp((raw-(0.14999999999999999))/(1.1499999999999999),0,1)
@@ -1103,7 +1103,7 @@ expression_function2d
 	param		gridE0 0.12
 	param		gridE1 0.5
 	param		base 0.15
-	param		landLevel 0.45
+	param		landLevel 0.5
 	param		reliefDepth 0.85
 	param		centerRadius 0
 	param		irisAperture 0.13
@@ -1185,7 +1185,7 @@ expression_function2d
 	def			groove smoothstep(0,irisEdge,edgeD)
 	def			along x*(-ownsk)+y*ownck
 	def			across x*ownck+y*ownsk
-	def			cube smoothstep(gridE0,gridE1,abs(cos(tau*((0.5/cell)*along))))*smoothstep(gridE0,gridE1,abs(cos(tau*((0.5/cell)*across))))
+	def			cube clamp(abs(cos(tau*((0.5/cell)*along)))/gridE1,0,1)*clamp(abs(cos(tau*((0.5/cell)*across)))/gridE1,0,1)
 	def			raw base+petalAmp*groove+gridAmp*cube*groove
 	def			h0 clamp((raw-(0.14999999999999999))/(1.25),0,1)
 	def			h1 pow(h0,log(landLevel)/log(0.5))
@@ -1208,7 +1208,7 @@ expression_function2d
 	param		gridE0 0.12
 	param		gridE1 0.5
 	param		base 0.15
-	param		landLevel 0.45
+	param		landLevel 0.5
 	param		reliefDepth 0.85
 	param		centerRadius 0.02
 	param		swirlTurns 7
@@ -1220,7 +1220,7 @@ expression_function2d
 	def			lr log(max(r,0.001))
 	def			su (arms*theta+swirlTurns*lr)/tau
 	def			sv r/cell
-	def			grid smoothstep(gridE0,gridE1,abs(cos(tau*(su))))*smoothstep(gridE0,gridE1,abs(cos(tau*(sv))))
+	def			grid clamp(abs(cos(tau*(su)))/gridE1,0,1)*clamp(abs(cos(tau*(sv)))/gridE1,0,1)
 	def			raw base+gridAmp*grid
 	def			h0 clamp((raw-(0.14999999999999999))/(0.94999999999999984),0,1)
 	def			h1 pow(h0,log(landLevel)/log(0.5))
@@ -1243,7 +1243,7 @@ expression_function2d
 	param		gridE0 0.12
 	param		gridE1 0.5
 	param		base 0.15
-	param		landLevel 0.45
+	param		landLevel 0.5
 	param		reliefDepth 0.85
 	param		centerRadius 0.02
 	param		cellScale 2.6
@@ -1262,7 +1262,7 @@ expression_function2d
 	def			yr -ss*x+cc*y
 	def			cellLocal select(mod(sector,2)>0.5,cell*cellScale,cell)
 	def			fr 0.5/cellLocal
-	def			grid smoothstep(gridE0,gridE1,abs(cos(tau*(fr*xr))))*smoothstep(gridE0,gridE1,abs(cos(tau*(fr*yr))))
+	def			grid clamp(abs(cos(tau*(fr*xr)))/gridE1,0,1)*clamp(abs(cos(tau*(fr*yr)))/gridE1,0,1)
 	def			raw base+gridAmp*grid
 	def			h0 clamp((raw-(0.14999999999999999))/(0.94999999999999984),0,1)
 	def			h1 pow(h0,log(landLevel)/log(0.5))
@@ -1297,6 +1297,7 @@ displaced_geometry
 	displacement		dialfn_lightning
 	disp_scale		0.18
 	uv_seam_fold		FALSE
+	face_normals		TRUE
 }
 
 displaced_geometry
@@ -1306,6 +1307,7 @@ displaced_geometry
 	displacement		dialfn_radial
 	disp_scale		0.18
 	uv_seam_fold		FALSE
+	face_normals		TRUE
 }
 
 displaced_geometry
@@ -1315,6 +1317,7 @@ displaced_geometry
 	displacement		dialfn_iris
 	disp_scale		0.18
 	uv_seam_fold		FALSE
+	face_normals		TRUE
 }
 
 displaced_geometry
@@ -1324,6 +1327,7 @@ displaced_geometry
 	displacement		dialfn_swirl
 	disp_scale		0.18
 	uv_seam_fold		FALSE
+	face_normals		TRUE
 }
 
 displaced_geometry
@@ -1333,6 +1337,7 @@ displaced_geometry
 	displacement		dialfn_varwidth
 	disp_scale		0.18
 	uv_seam_fold		FALSE
+	face_normals		TRUE
 }
 
 

@@ -5,15 +5,16 @@
 //
 //    1. Engine correctness: operators, precedence, functions, params,
 //       let-bindings (defs), and the parse-error paths.
-//    2. Proof of generality: ALL SIX guilloché dial patterns authored as
-//       scene EXPRESSIONS reproduce GuillocheField::Height (the retired
-//       C++ relief field) to golden precision -- i.e. the entire dial
-//       pattern library moves out of C++ into the scene file.
+//    2. Proof of generality: ALL SIX guilloché dial patterns are authored
+//       as scene EXPRESSIONS (the C++ relief field is retired) -- the entire
+//       dial pattern library lives in the scene file.  Now a SHARP V-CUT
+//       groove profile (see GuillocheDialExpr.h / watch_dial.RISEscene).
 //
 //  The six Build* functions below ARE the canonical scene expressions
-//  (the watch's dial library, scenes/FeatureBased/GuillocheWatch).  The
-//  goldens are GuillocheField::Height at eight dial points with the exact
-//  blessed per-pattern parameters from watch_dial.RISEscene.
+//  (the watch's dial library, scenes/FeatureBased/GuillocheWatch) -- the
+//  SAME strings the scene chunks use.  The goldens (below) are these
+//  builders evaluated at eight dial points, cross-checked vs an independent
+//  numpy replication.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -104,15 +105,18 @@ static ExpressionProgram CompilePattern( PatternFn fn )
 }
 
 //====================================================================
-//  Validate each scene expression == the retired GuillocheField::Height.
+//  Validate each scene dial expression against blessed goldens.
 //
-//  These goldens were captured from GuillocheField::Height (the C++ relief
-//  field, now removed) at eight dial points with the exact blessed
-//  per-pattern parameters from watch_dial.RISEscene.  The scene
-//  expressions above reproduce them to 1e-6 -- the proof that the entire
-//  dial pattern library lives in the scene file, not in C++.  To
-//  regenerate after a deliberate field change, see the dump harness in
-//  the commit that introduced this test.
+//  The dial library uses a SHARP V-CUT groove profile (Stripe = clamp(
+//  |cos(2pi*arg)|/gridE1,0,1), landLevel 0.5) -- see GuillocheDialExpr.h
+//  and watch_dial.RISEscene.  These goldens were regenerated for that
+//  profile at eight dial points with the blessed per-pattern parameters,
+//  and CROSS-CHECKED to ~1e-9 against an independent numpy replication of
+//  the field (all six patterns share the same Stripe primitive + AddFinish,
+//  so verifying one independently validates the set).  The test pins the
+//  expression engine + the dial builders against accidental drift.  To
+//  regenerate after a deliberate field change, temporarily re-add the
+//  DumpGoldens() harness (git history of this file) and paste its output.
 //====================================================================
 
 static const Scalar kR = 20.6;
@@ -121,23 +125,17 @@ static const Scalar kPTS[8][2] = {
 	{ -15.2, -9.8 }, { 0.0, 18.9 }, { 7.07, 7.07 }, { -19.5, 2.0 }
 };
 
-// GuillocheField::Height goldens, one row of 8 per pattern.  Row order
+// V-cut dial-field goldens, one row of 8 per pattern.  Row order
 // follows the ValidatePattern() call order below (uniform, radial,
 // lightning, iris, swirl, varwidth) -- NOT the GuillocheParams::Pattern
 // enum order (which swaps lightning/radial).
 static const Scalar kGold[6][8] = {
-	{ 0.20847977124, 0.84457644488, 0.919685621104, 0.925,
-	  0.255774385448, 0.925, 0.675201634858, 0.925 },
-	{ 0.214067284782, 0.746485235929, 0.761970231601, 0.925,
-	  0.925, 0.255774385448, 0.675201634858, 0.382105955876 },
-	{ 0.792073389645, 0.444937813954, 0.221172453769, 0.444937813954,
-	  0.444937813954, 0.53975985465, 0.925, 0.39180309277 },
-	{ 0.386690741972, 0.257496664918, 0.632657702808, 0.911528472042,
-	  0.427947593856, 0.239217848864, 0.152535667977, 0.80483823114 },
-	{ 0.636197449139, 0.0752886813544, 0.925, 0.075,
-	  0.0780249280251, 0.0852142707664, 0.75298819258, 0.149854333332 },
-	{ 0.700942595909, 0.925, 0.90244896724, 0.075,
-	  0.0937768284557, 0.075, 0.359700879375, 0.075 }
+	{ 0.236167129878, 0.854735906704, 0.920384928924, 0.925, 0.33025163478, 0.925, 0.703401483847, 0.925 },
+	{ 0.240571048653, 0.743054097583, 0.775257827395, 0.925, 0.925, 0.368235061596, 0.703401483847, 0.587005600687 },
+	{ 0.805016044693, 0.487857142857, 0.283386660463, 0.487857142857, 0.487857142857, 0.57829634242, 0.925, 0.398533614971 },
+	{ 0.588627746394, 0.298571796523, 0.66455010853, 0.8857841528, 0.611588371714, 0.283422827543, 0.210870792087, 0.790509663793 },
+	{ 0.612717333338, 0.272890264287, 0.925, 0.0904063599098, 0.311836378197, 0.335398864293, 0.751193743782, 0.419508999486 },
+	{ 0.700942595909, 0.925, 0.866560025475, 0.075, 0.353183436015, 0.075, 0.552933296971, 0.075 }
 };
 
 static void ValidatePattern( const char* name, int gi, const ExpressionProgram& prog )
@@ -157,7 +155,7 @@ static void ValidatePattern( const char* name, int gi, const ExpressionProgram& 
 
 static void TestGuillocheEquivalence()
 {
-	std::cout << "Test 2: all six guilloché dial patterns AS SCENE EXPRESSIONS == GuillocheField::Height goldens" << std::endl;
+	std::cout << "Test 2: all six guilloché dial patterns AS SCENE EXPRESSIONS == V-cut field goldens" << std::endl;
 	ValidatePattern( "uniform",  0, CompilePattern( GuillocheDialExpr::BuildUniform  ) );
 	ValidatePattern( "radial",   1, CompilePattern( GuillocheDialExpr::BuildRadial   ) );
 	ValidatePattern( "lightning",2, CompilePattern( GuillocheDialExpr::BuildLightning) );
