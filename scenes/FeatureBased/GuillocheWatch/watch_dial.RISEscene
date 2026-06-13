@@ -974,6 +974,44 @@ standard_object
  	material			dram_rim_lum
  }
 */
+
+##################################################
+# ALTERNATE LIGHTING (commented out) -- NIGHT / LUME SHOT.
+# Kill the studio + surround to near-black and let the photoluminescent
+# lume carry the frame: the chapter-ring arcs, the hands, and the centre
+# pin glow their charged blue-green; the guilloche reads only in the soft
+# wash of their own light.  (Night twin of the dramatic block above, and of
+# lume_day's "NIGHT variant" note.)
+#
+# TO ACTIVATE (and reverse to undo):
+#   1. kill the studio key:   soft_top_lum 'scale' 8  -> 0   AND
+#                             soft_bot_lum 'scale' 40 -> 0
+#   2. near-black surround:   rasterizer 'radiance_scale' 0.30 -> 0.02
+#                             (use 0.0 for a pure-black field)
+#   3. make the lume EMIT -- repoint each object's 'material' to lume_glow_night:
+#        markerlume (was lume_day)       sdfhour   (was white_hands)
+#        sdfminute  (was white_hands)    pin       (was lume_white)
+#   4. uncomment this block: delete the '/*' and '*/' lines below.
+# Tuning: lume_glow_night 'scale' = glow brightness; pnt_lume_glow = glow
+# colour (blue-green C3 lume here; warm it toward pnt_lume_white for an aged
+# tritium look).  The lume is now the ONLY light, so the frame is dark +
+# noisier -- raise the rasterizer 'samples' (e.g. 32 -> 256) for a clean hero.
+##################################################
+/*
+uniformcolor_painter
+{
+	name				pnt_lume_glow
+	color				0.45 0.95 0.70
+}
+
+lambertian_luminaire_material
+{
+	name				lume_glow_night
+	exitance			pnt_lume_glow
+	scale				45.0
+	material			none
+}
+*/
 ##################################################
 ##################################################
 # The dial: a FLAT Cartesian disk + a guilloché expression_function2d
