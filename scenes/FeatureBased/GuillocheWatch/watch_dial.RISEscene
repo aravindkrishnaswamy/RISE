@@ -787,7 +787,7 @@ dielectric_material
 # The neutral env (dim) + dark black-glass floor give the dark studio surround
 # and the bright-above -> dark-below gradient on the polished case.
 ##################################################
-/*
+
 lambertian_luminaire_material
 {
 	name				soft_top_lum
@@ -835,7 +835,7 @@ standard_object
 	geometry			soft_bot_geom
 	material			soft_bot_lum
 }
-*/
+
 ##################################################
 # ALTERNATE LIGHTING (commented out) -- DRAMATIC HIGH-CONTRAST HERO.
 # A dark, moody 'emerging-from-black' look (high-end dark-product style):
@@ -852,6 +852,7 @@ standard_object
 # dram_key_geom toward the dial for a tighter, harder hotspot; raise
 # radiance_scale a touch (~0.06) if the shadows are too crushed.
 ##################################################
+/*
  lambertian_luminaire_material
  {
  	name				dram_key_lum
@@ -894,6 +895,7 @@ standard_object
  	geometry			dram_rim_geom
  	material			dram_rim_lum
  }
+*/
 ##################################################
 ##################################################
 # The dial: a FLAT Cartesian disk + a guilloché expression_function2d
@@ -938,7 +940,7 @@ expression_function2d
 	param		petalE0 0
 	param		petalE1 0.82
 	param		base 0.15
-	param		landLevel 0.45
+	param		landLevel 0.5
 	param		reliefDepth 0.85
 	param		centerRadius 0.03
 	def			x (2*u-1)*R
@@ -961,7 +963,7 @@ expression_function2d
 	def			way0U (0.5/cell)*yr
 	def			wrpU floor(2*waxU)
 	def			wayU way0U+0.25*mod(wrpU,2)
-	def			wgU smoothstep(gridE0,gridE1,abs(cos(tau*(waxU))))*smoothstep(gridE0,gridE1,abs(cos(tau*(wayU))))
+	def			wgU clamp(abs(cos(tau*(waxU)))/gridE1,0,1)*clamp(abs(cos(tau*(wayU)))/gridE1,0,1)
 	def			raw base+petalAmp*petal+gridAmp*wgU
 	def			h0 clamp((raw-(0.14999999999999999))/(1.1499999999999999),0,1)
 	def			h1 pow(h0,log(landLevel)/log(0.5))
@@ -1283,8 +1285,9 @@ displaced_geometry
 	name			dialmesh
 	base_geometry		dialdisk
 	displacement		dialfn_uniform
-	disp_scale		0.42
+	disp_scale		0.18
 	uv_seam_fold		FALSE
+	face_normals		TRUE
 }
 
 displaced_geometry
@@ -1292,7 +1295,7 @@ displaced_geometry
 	name			dialmesh_lightning
 	base_geometry		dialdisk
 	displacement		dialfn_lightning
-	disp_scale		0.42
+	disp_scale		0.18
 	uv_seam_fold		FALSE
 }
 
@@ -1301,7 +1304,7 @@ displaced_geometry
 	name			dialmesh_radial
 	base_geometry		dialdisk
 	displacement		dialfn_radial
-	disp_scale		0.42
+	disp_scale		0.18
 	uv_seam_fold		FALSE
 }
 
@@ -1310,7 +1313,7 @@ displaced_geometry
 	name			dialmesh_iris
 	base_geometry		dialdisk
 	displacement		dialfn_iris
-	disp_scale		0.42
+	disp_scale		0.18
 	uv_seam_fold		FALSE
 }
 
@@ -1319,7 +1322,7 @@ displaced_geometry
 	name			dialmesh_swirl
 	base_geometry		dialdisk
 	displacement		dialfn_swirl
-	disp_scale		0.42
+	disp_scale		0.18
 	uv_seam_fold		FALSE
 }
 
@@ -1328,7 +1331,7 @@ displaced_geometry
 	name			dialmesh_varwidth
 	base_geometry		dialdisk
 	displacement		dialfn_varwidth
-	disp_scale		0.42
+	disp_scale		0.18
 	uv_seam_fold		FALSE
 }
 
