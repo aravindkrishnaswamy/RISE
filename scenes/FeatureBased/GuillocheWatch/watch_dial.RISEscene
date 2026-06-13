@@ -66,6 +66,10 @@ pathtracing_spectral_rasterizer
 	spectral_samples		1
 	oidn_denoise			true
 	oidn_prefilter			accurate
+	# NEE shadow rays pass through the sapphire crystal with Fresnel
+	# transmittance (else binary-blocked -> dial lit only by noisy BSDF
+	# refraction -> denoiser smears the guilloche).  PT-only opt-in.
+	transparent_shadows		TRUE
 	radiance_map			pnt_env
 	radiance_scale			0.30
 	radiance_background		FALSE
@@ -1436,9 +1440,13 @@ standard_object
 # The dome is a 1.5-unit-thick (~1.19mm) shell between two CONCENTRIC spherical
 # surfaces, capping a flat underside (seat) plane at z=1.30.  A central inner-
 # sphere subtract carves the concave recess, leaving a SOLID flat-bottomed glass
-# flange (16.16 < r < 21.5) -- and the hour markers are ETCHED into that flange
-# underside as 12 shallow box cavities (lume-filled by markerlumesdf below).
-# So the markers ride on the crystal, nearly coplanar with the hands, floating
+# flange (16.16 < r < 21.5) -- and the hour markers are a BROKEN ETCHED RING in
+# that flange underside: one continuous half-round LASER-ETCH GROOVE (a torus
+# subtract; 0.9 wide opening, rounded ceiling to z=1.75, etch depth 0.45) around
+# the r=18 ring, BROKEN at the 12 hour positions by gap-refill boxes (a WIDER
+# gap at 12 o'clock).  So the markers are the long lume ARCS BETWEEN the hours
+# (each ~7.15 u ~5.7 mm), not batons at them -- lume-filled by markerlumesdf
+# below.  The arcs ride on the crystal, nearly coplanar with the hands, floating
 # over the recessed dial (minimal parallax); the dial is viewed through the
 # refracting shell.  Regenerate with sdf_gen.py.
 ##################################################
@@ -1448,18 +1456,19 @@ sdf_geometry
 	part				sphere union 0  0 0 -62.9857  0 0 0  1 1 1  67.7857 0 0  0
 	part				box intersect 0  0 0 3.65  0 0 0  1 1 1  22 22 2.35  0
 	part				sphere subtract 0  0 0 -62.9857  0 0 0  1 1 1  66.2857 0 0  0
-	part				box subtract 0  0 18 1.3  0 0 90  1 1 1  0.475 2.1 0.45  0
-	part				box subtract 0  9 15.5885 1.3  0 0 60  1 1 1  0.475 1.05 0.45  0
-	part				box subtract 0  15.5885 9 1.3  0 0 30  1 1 1  0.475 1.05 0.45  0
-	part				box subtract 0  18 0 1.3  0 0 0  1 1 1  0.475 1.05 0.45  0
-	part				box subtract 0  15.5885 -9 1.3  0 0 -30  1 1 1  0.475 1.05 0.45  0
-	part				box subtract 0  9 -15.5885 1.3  0 0 -60  1 1 1  0.475 1.05 0.45  0
-	part				box subtract 0  0 -18 1.3  0 0 -90  1 1 1  0.475 1.05 0.45  0
-	part				box subtract 0  -9 -15.5885 1.3  0 0 -120  1 1 1  0.475 1.05 0.45  0
-	part				box subtract 0  -15.5885 -9 1.3  0 0 -150  1 1 1  0.475 1.05 0.45  0
-	part				box subtract 0  -18 0 1.3  0 0 -180  1 1 1  0.475 1.05 0.45  0
-	part				box subtract 0  -15.5885 9 1.3  0 0 -210  1 1 1  0.475 1.05 0.45  0
-	part				box subtract 0  -9 15.5885 1.3  0 0 -240  1 1 1  0.475 1.05 0.45  0
+	part				torus subtract 0  0 0 1.3  90 0 0  1 1 1  18 0.45 0  0
+	part				box union 0  0 18 1.54  0 0 90  1 1 1  1.425 2.1 0.24  0
+	part				box union 0  9 15.5885 1.54  0 0 60  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  15.5885 9 1.54  0 0 30  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  18 0 1.54  0 0 0  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  15.5885 -9 1.54  0 0 -30  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  9 -15.5885 1.54  0 0 -60  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  0 -18 1.54  0 0 -90  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  -9 -15.5885 1.54  0 0 -120  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  -15.5885 -9 1.54  0 0 -150  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  -18 0 1.54  0 0 -180  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  -15.5885 9 1.54  0 0 -210  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  -9 15.5885 1.54  0 0 -240  1 1 1  1.425 1.05 0.24  0
 }
 
 standard_object
@@ -1506,11 +1515,14 @@ lambertian_material
 }
 
 # DAY lume: real luminous pigment is photoluminescent -- charged by ambient
-# light, it re-emits and reads bright white even in daylight.  A PT-practical
-# necessity too: the lume sits INSIDE the crystal's etched cavities, and NEE
-# shadow rays are blocked by the dielectric shell, so a purely-matte fill is
-# lit only by rare refracted paths (renders near-black).  Gentle emission +
-# the matte base reproduces the real daylight look; the NIGHT variant simply
+# light it re-emits and reads bright white even in daylight, so a gentle
+# emission over the matte base reproduces that daylight pop.  (Historically
+# this was also a PT necessity: the lume sits INSIDE the crystal's etched
+# cavities and BINARY NEE shadow rays were blocked by the dielectric shell,
+# leaving a purely-matte fill near-black.  The rasterizer's transparent_shadows
+# TRUE now lights a matte fill through the crystal, so the emission is an
+# aesthetic day-lume choice -- swap the markerlume object to the matte
+# `lume_white` for a subtler, non-glowing marker.)  The NIGHT variant simply
 # raises this scale (and dims the studio).
 lambertian_luminaire_material
 {
@@ -1529,28 +1541,33 @@ standard_object
 }
 
 ##################################################
-# Lume fill for the 12 etched hour-marker cavities in the crystal flange
-# underside (see the crystal section above).  Twelve small lambertian lume-white
-# boxes, INSET from every cavity wall (no coincident surfaces -> no z-fighting),
-# sitting just below flush -- the visible markers.  Nearly coplanar with the
-# floating hands beneath the crystal.  Regenerate with sdf_gen.py.
+# Lume fill for the broken etched groove in the crystal flange underside (see
+# the crystal section above).  A torus arc ring INSET inside the half-round
+# groove (inset 0.015 from every wall -> no coincident surfaces -> no z-fighting),
+# clamped to a FLAT visible face at z=1.31 (recessed 0.01 below the opening
+# plane), then BROKEN at the 12 hour positions -> 12 long lume ARCS between the
+# hours (each ~7.15 u ~5.7 mm; cross-section flat-bottom rounded-top, ~0.87
+# wide), with a wider gap at 12 o'clock.  Nearly coplanar with the floating
+# hands beneath the crystal.  Regenerate with sdf_gen.py.
 ##################################################
 sdf_geometry
 {
 	name				markerlumesdf
-	part				box union 0  0 18 1.5225  0 0 90  1 1 1  0.46 2.085 0.2125  0
-	part				box union 0  9 15.5885 1.5225  0 0 60  1 1 1  0.46 1.035 0.2125  0
-	part				box union 0  15.5885 9 1.5225  0 0 30  1 1 1  0.46 1.035 0.2125  0
-	part				box union 0  18 0 1.5225  0 0 0  1 1 1  0.46 1.035 0.2125  0
-	part				box union 0  15.5885 -9 1.5225  0 0 -30  1 1 1  0.46 1.035 0.2125  0
-	part				box union 0  9 -15.5885 1.5225  0 0 -60  1 1 1  0.46 1.035 0.2125  0
-	part				box union 0  0 -18 1.5225  0 0 -90  1 1 1  0.46 1.035 0.2125  0
-	part				box union 0  -9 -15.5885 1.5225  0 0 -120  1 1 1  0.46 1.035 0.2125  0
-	part				box union 0  -15.5885 -9 1.5225  0 0 -150  1 1 1  0.46 1.035 0.2125  0
-	part				box union 0  -18 0 1.5225  0 0 -180  1 1 1  0.46 1.035 0.2125  0
-	part				box union 0  -15.5885 9 1.5225  0 0 -210  1 1 1  0.46 1.035 0.2125  0
-	part				box union 0  -9 15.5885 1.5225  0 0 -240  1 1 1  0.46 1.035 0.2125  0
-	sampling_detail		384
+	part				torus union 0  0 0 1.3  90 0 0  1 1 1  18 0.435 0  0
+	part				box intersect 0  0 0 1.555  0 0 0  1 1 1  19.5 19.5 0.245  0
+	part				box subtract 0  0 18 1.52  0 0 90  1 1 1  1.5 2.115 0.5  0
+	part				box subtract 0  9 15.5885 1.52  0 0 60  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  15.5885 9 1.52  0 0 30  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  18 0 1.52  0 0 0  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  15.5885 -9 1.52  0 0 -30  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  9 -15.5885 1.52  0 0 -60  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  0 -18 1.52  0 0 -90  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  -9 -15.5885 1.52  0 0 -120  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  -15.5885 -9 1.52  0 0 -150  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  -18 0 1.52  0 0 -180  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  -15.5885 9 1.52  0 0 -210  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  -9 15.5885 1.52  0 0 -240  1 1 1  1.5 1.065 0.5  0
+	sampling_detail		256
 }
 
 standard_object

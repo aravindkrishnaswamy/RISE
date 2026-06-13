@@ -133,13 +133,28 @@ def crystal():
     watch's ABSOLUTE world frame (object sits at 0 0 0).  Two CONCENTRIC spheres
     1.5 apart form the dome shell; a keep-slab box clips the giant sphere to the
     cap above the flat seat plane (z=1.30); a central inner-sphere subtract carves
-    the concave recess (leaving a solid flat-bottomed flange for r>~16.16); and 12
-    shallow boxes etch the hour-marker cavities into the flange underside.
+    the concave recess (leaving a solid flat-bottomed flange for r>~16.16); then a
+    TORUS subtract carves one continuous half-round laser-etch groove around the
+    ring (r=18) into the flange underside, and 12 gap-refill boxes restore solid
+    glass AT the hour positions -- so the etched groove is a BROKEN RING (gaps at
+    the hours, a wider gap at 12 o'clock), the markers being the long lume arcs
+    BETWEEN the hours (each arc ~7.15 u ~5.7 mm).
 
-    Box half-extent slots at the hour positions (euler Rz(theta)): a=RADIAL,
+    Torus orientation (euler 90 0 0): SDFGeometry's torus is a ring in local XZ
+    around local Y, so Rx(90) lays the ring flat in the world XY plane -> a
+    Z-axis ring (same convention as the bezel torus in case_body).  a=major
+    (18), b=tube (0.45): the tube circle of radius 0.45 sits at (r=18, z=1.30);
+    its upper half carves a 0.9-wide opening with a rounded ceiling to z=1.75
+    (etch depth 0.45); its lower half subtracts air below the flange (no-op).
+
+    Gap-refill box half-extents at the hour positions (euler Rz(theta)): a=RADIAL,
     b=TANGENTIAL (along the circumference), c=VERTICAL -- confirmed against
     SDFGeometry::MakePart's column convention (Rz maps local +X onto the radial
-    direction at each on-ring position)."""
+    direction at each on-ring position).  Each refill spans z 1.30..1.78 (bottom
+    coplanar with the underside plane, top pokes 0.03 into solid glass above the
+    groove ceiling -- harmless union) and fully covers the groove cross-section
+    locally (radial 16.575..19.425 >= 17.55..18.45), without reaching the central
+    recess rim (inner radial edge 16.575 > 16.16)."""
     P = [
         # 1. outer sphere (the giant additive sphere; only its cap survives)
         part("sphere", "union", 0, (0, 0, CR_ZC), a=CR_RO),
@@ -147,30 +162,50 @@ def crystal():
         part("box", "intersect", 0, (0, 0, 3.65), a=22.0, b=22.0, c=2.35),
         # 3. inner sphere subtract: carve the concave dome (central recess)
         part("sphere", "subtract", 0, (0, 0, CR_ZC), a=CR_RI),
+        # 4. torus subtract: one continuous half-round groove around the ring,
+        #    opening 0.9 wide at z=1.30, rounded ceiling to z=1.75 (etch 0.45).
+        part("torus", "subtract", 0, (0, 0, CR_ZFLAT), (90, 0, 0),
+             a=MK_R, b=0.45),
     ]
-    # 4. twelve etched marker CAVITIES in the flat flange underside (ring r=18).
-    # Box centred AT the underside plane (z=1.30) so the cut opens at the surface;
-    # radial 0.475, tangential 1.05 (2.1 at the wider 12 o'clock signature marker),
-    # vertical 0.45 -> etch depth 0.45 into the glass (ceiling at z=1.75).
+    # 5. twelve gap-refill boxes AT the hour positions -- restore solid glass
+    # across the groove at each gap, BREAKING the ring (wider refill at 12 o'clock
+    # -> the signature wide gap).  radial 1.425, tangential 1.05 (2.1 at 12),
+    # vertical 0.24 centred z=1.54 -> z 1.30..1.78.
     for i, (gx, gy, theta) in enumerate(_marker_angles()):
         tang = 2.1 if i == 0 else 1.05
-        P.append(part("box", "subtract", 0, (gx, gy, CR_ZFLAT), (0, 0, theta),
-                      a=0.475, b=tang, c=0.45))
+        P.append(part("box", "union", 0, (gx, gy, 1.54), (0, 0, theta),
+                      a=1.425, b=tang, c=0.24))
     return P
 
 
 def marker_lume():
-    """Lume FILL for the 12 etched marker cavities: the same 12 segments, INSET
-    from every cavity wall (no coincident surfaces -> no z-fighting; physically
-    the fill meniscus sits just below flush).  Pure union of small boxes ->
-    a tight bbox.  Centre z = 1.5225 -> spans z 1.31..1.735: bottom face 0.01
-    below-flush (the visible face), sides inset 0.015, top 0.015 short of the
-    cavity ceiling (z=1.75)."""
-    P = []
+    """Lume FILL for the broken etched groove: a torus arc ring INSET inside the
+    crystal's half-round groove, clamped to a flat visible face, then BROKEN at
+    the 12 hour positions -> 12 long lume arcs BETWEEN the hours (each ~7.15 u
+    ~5.7 mm), gaps at the hours and a wider gap at 12 o'clock.  Cross-section:
+    flat bottom z=1.31 (recessed 0.01 below the flange opening plane), rounded
+    top to z=1.735 (0.015 below the groove ceiling), ~0.87 wide.
+
+    1. torus union (euler 90 0 0 -> Z-axis ring, as in crystal()): a=major (18),
+       b=tube (0.435) -- inset 0.015 inside the groove walls/ceiling.
+    2. slab intersect (half 19.5,19.5,0.245 centred z=1.555 -> keep z 1.31..1.80):
+       clamps the torus's round bottom into a FLAT face at z=1.31 (the 0.01 face
+       recess); keeps everything else.
+    3. twelve gap-cut boxes SUBTRACT at the hour positions: radial 1.5,
+       tangential 1.065 (2.115 at 12 -- the wider gap + 0.015 inset each side),
+       vertical 0.5 centred z=1.52 -> cut fully through the arc ends."""
+    P = [
+        # 1. inset torus arc ring inside the groove
+        part("torus", "union", 0, (0, 0, CR_ZFLAT), (90, 0, 0),
+             a=MK_R, b=0.435),
+        # 2. flatten the round bottom to a visible face at z=1.31
+        part("box", "intersect", 0, (0, 0, 1.555), a=19.5, b=19.5, c=0.245),
+    ]
+    # 3. break the ring at the 12 hour positions (gaps at the hours, wider at 12)
     for i, (gx, gy, theta) in enumerate(_marker_angles()):
-        tang = 2.085 if i == 0 else 1.035
-        P.append(part("box", "union", 0, (gx, gy, 1.5225), (0, 0, theta),
-                      a=0.46, b=tang, c=0.2125))
+        tang = 2.115 if i == 0 else 1.065
+        P.append(part("box", "subtract", 0, (gx, gy, 1.52), (0, 0, theta),
+                      a=1.5, b=tang, c=0.5))
     return P
 
 
@@ -202,7 +237,7 @@ def main(argv=None):
     # Double-domed sapphire crystal with the hour markers ETCHED into its flat
     # flange underside, and the lume that fills those cavities.
     emit_chunk("crystalsdf", crystal())
-    emit_chunk("markerlumesdf", marker_lume(), sampling_detail=384)
+    emit_chunk("markerlumesdf", marker_lume(), sampling_detail=256)
     return 0
 
 
