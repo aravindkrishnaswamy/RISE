@@ -42,6 +42,10 @@ namespace RISE
 			BoundingBox GenerateBoundingBox() const;
 			inline bool DoPreHitTest( ) const { return false; };
 
+			// Cannot tessellate an infinite extent (see IGeometry::CanTessellate);
+			// lets DisplacedGeometry refuse an infinite-plane base at parse time.
+			bool CanTessellate() const { return false; }
+
 			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
 			Scalar GetArea( ) const;
 

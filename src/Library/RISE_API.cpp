@@ -714,10 +714,16 @@ namespace RISE
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "displaced geometry" );
 
 		if( !pGeom->IsValid() ) {
-			// Base could not be tessellated (e.g. InfinitePlaneGeometry).  Refuse construction
-			// loudly so the caller's scene-parse layer can surface the error.  The geometry
-			// starts with refcount=1 from its Reference base, so one release destroys it.
-			GlobalLog()->Print( eLog_Error, "RISE_API_CreateDisplacedGeometry: base geometry does not support TessellateToMesh \u2014 refusing." );
+			// Recipe invalid: null base, OR a base that can never be tessellated
+			// (e.g. InfinitePlaneGeometry).  Both are CHEAP recipe checks
+			// (IsValid() = m_pBase != 0 && m_pBase->CanTessellate()), so we refuse
+			// construction at PARSE time, honoring "validate cheaply at parse,
+			// defer only the bake": the expensive tessellate+displace defers to
+			// Realize(), but the "can this base ever tessellate?" capability is
+			// known immediately and surfaced as a parse error here.  The geometry
+			// starts with refcount=1 from its Reference base, so one release
+			// destroys it.
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateDisplacedGeometry: base geometry is null or cannot be tessellated (e.g. InfinitePlaneGeometry) \u2014 refusing." );
 			pGeom->release();
 			*ppi = 0;
 			return false;

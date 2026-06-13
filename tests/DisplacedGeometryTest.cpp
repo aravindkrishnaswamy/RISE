@@ -41,9 +41,15 @@ static DisplacedGeometry* WrapSphere(
 	const Scalar        disp_scale )
 {
 	// Tier A2 cleanup (2026-04-27): max_polys/max_recur/bUseBSP are gone.
-	return new DisplacedGeometry(
+	DisplacedGeometry* pDisp = new DisplacedGeometry(
 		pBase, detail, displacement, disp_scale,
 		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
+	// DEFERRED REALIZATION (2026-06-13): the mesh is no longer baked in the
+	// constructor.  Direct (non-render-pipeline) consumers like this test must
+	// Realize() before querying geometry — the render pipeline does this in
+	// RayCaster::AttachScene.  Single-threaded here, so it is safe.
+	pDisp->Realize();
+	return pDisp;
 }
 
 //-----------------------------------------------------------------------------
@@ -280,8 +286,13 @@ static void TestSeamContinuity()
 }
 
 //-----------------------------------------------------------------------------
-// Case 5: InfinitePlaneGeometry base.  Construction succeeds but IsValid()
-// returns false; IntersectRay returns bHit=false.
+// Case 5: InfinitePlaneGeometry base.  An infinite plane cannot be
+// tessellated (IGeometry::CanTessellate()==false), so DisplacedGeometry
+// REFUSES it as an invalid recipe at construction (IsValid()==false) — the
+// cheap parse-time validation that honors "validate cheaply at parse, defer
+// only the bake".  The production factory (RISE_API_CreateDisplacedGeometry)
+// surfaces this as a parse error.  Even if a caller ignores the refusal and
+// forces Realize() anyway, every query guard-fails safely (no crash, no hit).
 //-----------------------------------------------------------------------------
 static void TestInfinitePlaneFailSafe()
 {
@@ -292,9 +303,13 @@ static void TestInfinitePlaneFailSafe()
 		pPlane, 16, 0, 0.0,
 		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
 
+	// The base reports it cannot tessellate, so the recipe is REFUSED at parse.
+	assert( !pPlane->CanTessellate() );
 	assert( !pDisp->IsValid() );
 
-	// Ray should miss (no crash, no hit)
+	// Defensive: even if a caller ignores IsValid() and forces Realize() + a
+	// ray, it must not crash and must miss (the release-mode guard-and-fail).
+	pDisp->Realize();
 	RayIntersectionGeometric ri = MakeRI( Point3( 0.0, 0.0, 10.0 ), Vector3( 0.0, 0.0, -1.0 ) );
 	pDisp->IntersectRay( ri, true, false, false );
 	assert( !ri.bHit );
@@ -420,6 +435,7 @@ static void TestFaceNormalMeshDisplacesAlongFaceNormal()
 		pMesh, 0, pConst, k,
 		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
 	assert( pDisp->IsValid() );
+	pDisp->Realize();	// deferred bake (see WrapSphere note)
 
 	// Ray from (10, 0, 0) toward -X should hit the displaced quad at x = 1 + k = 1.1.
 	RayIntersectionGeometric ri = MakeRI( Point3( 10.0, 0.0, 0.0 ), Vector3( -1.0, 0.0, 0.0 ) );

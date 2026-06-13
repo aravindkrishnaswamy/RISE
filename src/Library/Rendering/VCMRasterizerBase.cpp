@@ -35,6 +35,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Deferred.h"
 #include "VCMRasterizerBase.h"
 #include "../Interfaces/IOptions.h"
 #include "../Interfaces/IScene.h"
@@ -298,6 +299,9 @@ namespace
 		}
 
 		ThreadPool& pool = GlobalThreadPool();
+		// Freeze guard (Deferred.h): all geometry is realized single-threaded in
+		// RayCaster::AttachScene; assert (DEBUG) if a worker realizes mid-render.
+		RenderParallelScope renderParallelScope;
 		pool.ParallelFor( numWorkers, [&dispatcher]( unsigned int workerIdx ) {
 			dispatcher.RunWorker( workerIdx );
 		} );

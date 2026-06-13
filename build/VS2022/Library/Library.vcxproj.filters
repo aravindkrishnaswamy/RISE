@@ -243,6 +243,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\Deferred.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\DynamicProperties.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
@@ -1141,6 +1144,9 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\Deferred.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\DynamicProperties.h">

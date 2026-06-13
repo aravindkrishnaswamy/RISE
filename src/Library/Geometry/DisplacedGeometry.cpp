@@ -17,9 +17,28 @@
 #include "GeometryUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Observable.h"
+#include <atomic>
+#include <cassert>
+#include "../Utilities/Deferred.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace {
+	// Diagnostic counter: total BuildMesh() invocations process-wide.  See
+	// the GetBuildMeshCount()/ResetBuildMeshCount() doc in the header.
+	std::atomic<unsigned int> s_buildMeshCount( 0 );
+}
+
+unsigned int DisplacedGeometry::GetBuildMeshCount()
+{
+	return s_buildMeshCount.load( std::memory_order_relaxed );
+}
+
+void DisplacedGeometry::ResetBuildMeshCount()
+{
+	s_buildMeshCount.store( 0, std::memory_order_relaxed );
+}
 
 DisplacedGeometry::DisplacedGeometry(
 	IGeometry*          pBase,
@@ -38,6 +57,7 @@ DisplacedGeometry::DisplacedGeometry(
   m_bUseFaceNormals( bUseFaceNormals ),
   m_bSeamFold( bSeamFold ),
   m_pMesh( 0 ),
+  m_bRealized( false ),
   m_displacementSubscription()
 {
 	if( m_pBase ) {
@@ -52,7 +72,12 @@ DisplacedGeometry::DisplacedGeometry(
 		return;
 	}
 
-	BuildMesh();
+	// DEFERRED REALIZATION: the tessellate + displace + mesh-build work is
+	// NOT done here.  It runs in Realize(), called once single-threaded from
+	// the render pipeline (RayCaster::AttachScene) before the parallel
+	// rasterize.  The constructor only validates + stores the recipe.  A
+	// displaced geometry that is never bound to a rendered object is thus
+	// never baked.
 
 	// If the displacement painter exposes the Observable mixin (i.e. it derives
 	// from Painter — true for every in-tree painter), subscribe so we rebuild
@@ -71,7 +96,17 @@ DisplacedGeometry::DisplacedGeometry(
 				// because m_detail is a constructor argument — only
 				// vertex positions and normals change.  See
 				// docs/BVH_ACCELERATION_PLAN.md §4.6 for the full design.
-				RefreshMeshVertices();
+				//
+				// DEFERRED-REALIZATION interaction: if the geometry has not
+				// been realized yet (painter changed during parse / before
+				// the render's realize pass), do NOTHING — baking now would
+				// defeat the deferral and the eventual Realize() will pick up
+				// the painter's current state anyway.  Only refit once a mesh
+				// actually exists.  This callback is always single-threaded
+				// (editor / parse-time keyframe propagation).
+				if( m_bRealized ) {
+					RefreshMeshVertices();
+				}
 			} );
 		}
 	}
@@ -98,11 +133,50 @@ DisplacedGeometry::~DisplacedGeometry()
 	}
 }
 
-void DisplacedGeometry::BuildMesh()
+void DisplacedGeometry::Realize() const
+{
+	// Freeze guard (DEBUG): realization must run single-threaded BEFORE the
+	// parallel rasterize — the scene is immutable during it.  Trips if any
+	// worker thread reaches here mid-render; compiles out in release.
+	assert( g_renderParallelDepth.load( std::memory_order_relaxed ) == 0 &&
+		"DisplacedGeometry::Realize() during the parallel render \u2014 realize in RayCaster::AttachScene before the rasterize pass" );
+
+	// Idempotent: nothing to do once the mesh is baked.
+	if( m_bRealized ) {
+		return;
+	}
+
+	// CASCADE: a displaced base (another DisplacedGeometry) must be realized
+	// before we tessellate it — TessellateToMesh re-emits the base's internal
+	// mesh, which is null until the base is baked.  Realize() is a no-op for
+	// cheap bases (sphere, disk, ...).
+	if( m_pBase ) {
+		m_pBase->Realize();
+	}
+
+	// Force the deferred bake.  Mark realized FIRST so a re-entrant query on
+	// the const hot path (or a painter notification fired by BuildMesh) sees
+	// the in-progress flag rather than recursing; BuildMesh sets m_pMesh.
+	m_bRealized = true;
+	BuildMesh();
+}
+
+void DisplacedGeometry::BuildMesh() const
 {
 	if( !m_pBase ) {
 		return;
 	}
+
+	// CASCADE (defensive): ensure the base is realized before we tessellate
+	// it.  Realize() reaches here via the m_pBase->Realize() it already did,
+	// but the editor rebuild paths (RefreshMeshVertices fallback) call
+	// BuildMesh directly — a displaced base must be baked first or
+	// TessellateToMesh re-emits an empty mesh.  Idempotent / no-op for cheap
+	// bases.
+	m_pBase->Realize();
+
+	// Diagnostic: count this bake (see GetBuildMeshCount in the header).
+	s_buildMeshCount.fetch_add( 1, std::memory_order_relaxed );
 
 	IndexTriangleListType tris;
 	VerticesListType      vertices;
@@ -211,7 +285,7 @@ void DisplacedGeometry::RefreshMeshVertices()
 	}
 }
 
-void DisplacedGeometry::DestroyMesh()
+void DisplacedGeometry::DestroyMesh() const
 {
 	safe_release( m_pMesh );
 	m_pMesh = 0;

@@ -47,6 +47,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/Deferred.h"
 #include "MLTSpectralRasterizer.h"
 #include "../Utilities/Color/ColorUtils.h"
 #include "../RasterImages/RasterImage.h"
@@ -840,6 +841,9 @@ bool MLTSpectralRasterizer::RenderFrameOfMLTSpectral(
 			std::atomic<unsigned int> nextChain( 0 );
 			ThreadPool& pool = GlobalThreadPool();
 
+			// Freeze guard (Deferred.h): all geometry is realized single-threaded in
+			// RayCaster::AttachScene; assert (DEBUG) if a worker realizes mid-render.
+			RenderParallelScope renderParallelScope;
 			pool.ParallelFor( static_cast<unsigned int>( threads ),
 				[&]( unsigned int /*workerIdx*/ ) {
 					for( ;; ) {

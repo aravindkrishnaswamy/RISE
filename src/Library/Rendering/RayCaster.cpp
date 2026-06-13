@@ -26,6 +26,8 @@
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
 #include "../Utilities/Optics.h"
+#include "../Interfaces/IObject.h"
+#include "../Interfaces/IGeometry.h"
 
 #define ENABLE_MAX_RECURSION
 
@@ -87,8 +89,52 @@ RayCaster::~RayCaster( )
 	safe_release( pLuminaryManager );
 }
 
+namespace {
+	// Realize-pass dispatch: calls obj.Realize() on each world-visible
+	// object.  Object::Realize() bakes its (deferred) geometry; CSGObject::
+	// Realize() cascades into its world-invisible, un-enumerated operands.
+	// Realize() is const + idempotent; for cheap geometries it is a no-op,
+	// for a DisplacedGeometry it tessellates + bakes its mesh (and cascades
+	// to its base).  This is the Phase-1 root set — objects -> geometry ->
+	// (cascaded) base.  Runs single-threaded inside AttachScene before the
+	// parallel rasterize, the seam at which the scene becomes immutable.
+	class RealizeGeometryDispatch : public RISE::IEnumCallback<RISE::IObject>
+	{
+	public:
+		bool operator()( const RISE::IObject& obj )
+		{
+			obj.Realize();
+			return true;
+		}
+	};
+}
+
 void RayCaster::AttachScene( const IScene* pScene_ )
 {
+	// ----------------------------------------------------------------
+	// REALIZE PASS (Phase 1, 2026-06-13).  Single-threaded materialize of
+	// every render-reachable geometry's deferred build work BEFORE the
+	// luminary / light-sampler setup, the spatial-structure build, and the
+	// parallel rasterize.  Root set = the object manager's objects -> their
+	// geometry (which cascades to any displaced base).  The scene is
+	// immutable during the parallel pass, so this is the correct (and only
+	// safe) place to bake — NOT lazily on the const ray-intersect hot path.
+	//
+	// This runs on EVERY AttachScene call, INCLUDING the same-scene-pointer
+	// re-attach below that early-returns.  Reason: an interactive editor can
+	// swap a fresh (unrealized) geometry onto an object and re-render the
+	// SAME scene pointer; the early-return would otherwise skip realizing it,
+	// and the subsequent PrepareForRendering() TLAS build would query an
+	// empty bounding box.  Realize() is idempotent — already-baked
+	// geometries no-op — so the repeated walk is cheap.
+	if( pScene_ ) {
+		const IObjectManager* pObjMan = pScene_->GetObjects();
+		if( pObjMan ) {
+			RealizeGeometryDispatch realizeDispatch;
+			pObjMan->EnumerateObjects( realizeDispatch );
+		}
+	}
+
 	if( pScene == pScene_ ) {
 		return;
 	}

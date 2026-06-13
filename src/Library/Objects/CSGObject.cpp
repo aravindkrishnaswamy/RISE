@@ -640,6 +640,22 @@ bool CSGObject::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHow
 	return false;
 }
 
+void CSGObject::Realize() const
+{
+	// Our two operands are registered in the ObjectManager but world-INVISIBLE
+	// (AssignObjects sets SetWorldVisible(false)), so RayCaster's realize pass —
+	// which walks EnumerateObjects, filtering on IsWorldVisible() — never reaches
+	// them.  Cascade explicitly.  Children dispatch virtually: a plain Object
+	// realizes its geometry; a nested CSGObject recurses.  Const + idempotent,
+	// so this is safe to call on every render.
+	if( pObjectA ) {
+		pObjectA->Realize();
+	}
+	if( pObjectB ) {
+		pObjectB->Realize();
+	}
+}
+
 void CSGObject::ResetRuntimeData() const
 {
 	Object::ResetRuntimeData();

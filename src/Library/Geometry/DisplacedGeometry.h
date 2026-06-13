@@ -25,15 +25,25 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		// Wraps any IGeometry (including another DisplacedGeometry), tessellates it at
-		// construction time via the base's TessellateToMesh, and displaces every vertex along
-		// its normal by `displacement(u,v) * disp_scale`.  The resulting mesh is built into an
-		// internal TriangleMeshGeometryIndexed and used for all intersection / sampling queries.
+		// Wraps any IGeometry (including another DisplacedGeometry), tessellates it via the
+		// base's TessellateToMesh, and displaces every vertex along its normal by
+		// `displacement(u,v) * disp_scale`.  The resulting mesh is built into an internal
+		// TriangleMeshGeometryIndexed and used for all intersection / sampling queries.
+		//
+		// DEFERRED REALIZATION (2026-06-13): the tessellate + displace + mesh-build work
+		// (BuildMesh) is NOT done in the constructor.  It is deferred to Realize(), which the
+		// render pipeline calls once, single-threaded, from RayCaster::AttachScene BEFORE the
+		// parallel rasterize.  This means a displaced geometry that is never bound to a
+		// rendered object is never baked (e.g. the GuillocheWatch dial has 6 displaced dials
+		// but only 1 is active — only that 1 bakes).  Direct (non-pipeline) consumers — unit
+		// tests, tools — MUST call Realize() after construction before using the geometry; it
+		// is single-threaded-safe to do so.
 		//
 		// If the base geometry's TessellateToMesh returns false (e.g. InfinitePlaneGeometry),
-		// construction leaves the internal mesh null and IsValid() returns false.  All
-		// IGeometry methods degrade to "miss" / empty behavior in that state — the caller is
-		// expected to check IsValid() and refuse the geometry at scene-parse time.
+		// Realize() logs an error and leaves the internal mesh null; all IGeometry query
+		// methods then degrade to "miss" / empty behavior (the release-mode guard-and-fail).
+		// IsValid() reports RECIPE validity (base non-null), known at construction; whether
+		// the mesh is actually built is IsRealized().
 		class DisplacedGeometry : public Geometry
 		{
 		protected:
@@ -44,7 +54,19 @@ namespace RISE
 			bool                             m_bDoubleSided;
 			bool                             m_bUseFaceNormals;
 			bool                             m_bSeamFold;	//!< tent-fold the UV before evaluating displacement (closed wrap-seam surfaces); FALSE = raw UV (open Cartesian fields)
-			ITriangleMeshGeometryIndexed*    m_pMesh;
+
+			// The baked mesh and the realized flag are the deferred-realization
+			// state.  They are `mutable` because Realize() is a const method
+			// (it materializes a build-time cache that is a pure function of
+			// this geometry's recipe — base + displacement + scale + detail —
+			// and does not change the observable surface; same legitimate
+			// `mutable` lazy-cache pattern as ObjectManager's mutable pBVH).
+			// m_pMesh is the SOLE OWNER of the mesh; the Deferred wrapper holds
+			// only a borrowed copy and never frees it (see Deferred.h ownership
+			// note).  Realization is single-threaded (the freeze guard asserts
+			// this in debug), so the unlocked mutable write is safe.
+			mutable ITriangleMeshGeometryIndexed*    m_pMesh;
+			mutable bool                             m_bRealized;
 
 			// Subscription to the displacement painter's Observable.  When the
 			// painter notifies (e.g. a keyframed `time` parameter changed),
@@ -63,8 +85,12 @@ namespace RISE
 			// Tessellate base + apply displacement + build internal indexed
 			// mesh.  Idempotent: safe to call repeatedly via DestroyMesh()/
 			// BuildMesh() to refresh after the displacement painter changes.
-			void BuildMesh();
-			void DestroyMesh();
+			// `const` (mutates only the mutable mesh members) so it can be
+			// invoked from the const Realize() path.  CASCADES: realizes the
+			// base before tessellating it (a displaced base must be baked
+			// before TessellateToMesh re-emits its mesh).
+			void BuildMesh() const;
+			void DestroyMesh() const;
 
 			// Tier 1 §3 animation refit path: re-tessellate base + re-apply
 			// displacement, then call m_pMesh->UpdateVertices() to swap
@@ -72,6 +98,7 @@ namespace RISE
 			// rebuilding.  Falls back to DestroyMesh+BuildMesh if there
 			// is no current mesh or topology has changed (which is not
 			// currently possible — m_detail is fixed at construction).
+			// Single-threaded editor / observer path only.
 			void RefreshMeshVertices();
 
 		public:
@@ -87,8 +114,37 @@ namespace RISE
 			DisplacedGeometry( const DisplacedGeometry& ) = delete;
 			DisplacedGeometry& operator=( const DisplacedGeometry& ) = delete;
 
-			// True iff the internal mesh was built (base supported tessellation).
-			bool IsValid() const { return m_pMesh != 0; }
+			// True iff the RECIPE is valid (base geometry is non-null), known
+			// at construction.  This is now a cheap recipe check, NOT a
+			// mesh-presence check — the mesh is built lazily by Realize(), so
+			// post-construction (pre-realize) the mesh is null but IsValid()
+			// is already true.  Use IsRealized() to ask whether the mesh has
+			// been baked.  (A base that can NEVER tessellate, e.g.
+			// InfinitePlaneGeometry, makes IsValid() FALSE — refused at parse via
+			// the cheap CanTessellate() capability check, not deferred to bake.)
+			bool IsValid() const { return m_pBase != 0 && m_pBase->CanTessellate(); }
+
+			// IRealizable (IGeometry): deferred-realization entry points.  NOTE:
+			// IsRealized()==true means Realize() has RUN, not that a mesh exists —
+			// a failed bake (base TessellateToMesh false) leaves m_pMesh null with
+			// m_bRealized true; every query then guard-fails.  Null-check the mesh.
+			void Realize() const override;
+			bool IsRealized() const override { return m_bRealized; }
+
+			// A displaced geometry tessellates (re-emits its baked mesh) iff its
+			// base can — nested displaced-of-non-tessellatable is refused at parse.
+			bool CanTessellate() const override { return m_pBase != 0 && m_pBase->CanTessellate(); }
+
+			// Diagnostic: process-wide count of BuildMesh() invocations (every
+			// actual tessellate + bake).  Used by DeferredRealizeTest to prove
+			// the realize pass bakes only render-reachable displaced
+			// geometries (the GuillocheWatch dial: 1 baked, not 6) and skips
+			// the unbound ones.  Atomic so the count is well-defined even if a
+			// future caller realizes off-thread; in practice realization is
+			// single-threaded.  Same lightweight static-counter pattern as
+			// TriangleMeshGeometryIndexed's s_nextGeometryId.
+			static unsigned int GetBuildMeshCount();
+			static void         ResetBuildMeshCount();
 
 			// IGeometry
 			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;

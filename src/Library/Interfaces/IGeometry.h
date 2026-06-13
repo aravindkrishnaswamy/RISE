@@ -82,6 +82,16 @@ namespace RISE
 			return false;
 		}
 
+		//! Cheap, static capability hint: can this geometry produce a triangle
+		//! mesh via TessellateToMesh (after Realize, if deferred)?  Used at SCENE-
+		//! PARSE time so a composite like DisplacedGeometry can REFUSE a
+		//! non-tessellatable base (e.g. InfinitePlaneGeometry) immediately rather
+		//! than failing later at realize-time.  Default TRUE (every concrete RISE
+		//! geometry tessellates except InfinitePlaneGeometry, which overrides); a
+		//! future non-tessellatable geometry that forgets to override merely
+		//! degrades to the graceful realize-time guard-fail, never a false refusal.
+		virtual bool CanTessellate() const { return true; }
+
 		//! This the most important function
 		//! It asks the geometric object to intersect itself
 		//! and return intersection details
@@ -205,6 +215,29 @@ namespace RISE
 		//! Declared last + defaulted so adding it keeps every existing IGeometry
 		//! vtable slot (ABI-stable) and needs no change to existing geometries.
 		virtual bool CanBeAreaLight() const { return true; }
+
+		//! Materialize any deferred (lazily-built) representation this
+		//! geometry needs before rendering.  Called ONCE per render from a
+		//! SINGLE-THREADED point (the realize pass in RayCaster::AttachScene)
+		//! BEFORE the parallel rasterize — RISE's scene is immutable during
+		//! the parallel pass, so expensive build work (e.g. tessellating +
+		//! baking a displaced mesh) cannot happen lazily on the const hot
+		//! path.  Idempotent: a second call is a no-op once IsRealized() is
+		//! true.  Composite geometries (DisplacedGeometry) must CASCADE —
+		//! realize their base(s) first.
+		//!
+		//! `const` because realization materializes a build-time cache that
+		//! is a pure function of the geometry's recipe; the observable
+		//! surface is unchanged (matching the `mutable` lazy-BVH pattern in
+		//! ObjectManager::PrepareForRendering, also const).  Default: cheap
+		//! geometries (sphere, mesh, ...) are always realized — no-op.
+		virtual void Realize() const {}
+
+		//! Whether Realize() has nothing left to do.  Cheap geometries are
+		//! always realized (default true); a deferred composite returns
+		//! false until its mesh is baked.  Declared last + defaulted so
+		//! every existing IGeometry vtable slot stays ABI-stable.
+		virtual bool IsRealized() const { return true; }
 	};
 }
 

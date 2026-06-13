@@ -400,9 +400,14 @@ static DisplacedGeometry* WrapAsTessellation( IGeometry* base )
 	// tessellated-vs-analytical comparison exercises the smooth
 	// shading path rather than flat triangle normals.
 	// Tier A2 cleanup (2026-04-27): max_polys/max_recursion/bUseBSP are gone.
-	return new DisplacedGeometry( base, DETAIL, nullptr, 0.0,
+	DisplacedGeometry* pDisp = new DisplacedGeometry( base, DETAIL, nullptr, 0.0,
 		/*bDoubleSided*/true,
 		/*bUseFaceNormals*/false );
+	// DEFERRED REALIZATION (2026-06-13): the mesh is no longer baked in the
+	// constructor — a direct (non-render-pipeline) consumer must Realize()
+	// before querying geometry.  Single-threaded here, so it is safe.
+	pDisp->Realize();
+	return pDisp;
 }
 
 static bool RunShape( const char* label, IGeometry* analytical, const Scalar bboxR )

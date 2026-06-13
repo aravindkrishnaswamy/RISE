@@ -519,6 +519,13 @@ Scalar Object::GetArea( ) const
 	return pGeometry->GetArea();
 }
 
+void Object::Realize() const
+{
+	if( pGeometry ) {
+		pGeometry->Realize();
+	}
+}
+
 void Object::ResetRuntimeData() const
 {
 	if( pShader ) {

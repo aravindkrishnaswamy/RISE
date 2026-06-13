@@ -93,6 +93,10 @@ namespace RISE
 			virtual const IMaterial* GetMaterial() const override;
 			virtual const IShader*   GetShader() const override { return pShader; }
 			virtual const IGeometry* GetGeometry() const override { return pGeometry; }
+
+			//! Deferred-realization (IObject): realize our geometry's lazy build
+			//! work.  No-op for cheap geometries; bakes a deferred DisplacedGeometry.
+			virtual void Realize() const override;
 			virtual const IMedium* GetInteriorMedium() const override;
 
 			virtual bool ComputeAnalyticalDerivatives(
