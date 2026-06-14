@@ -75,6 +75,14 @@ pathtracing_spectral_rasterizer
 	radiance_background		FALSE
 }
 
+directional_light
+{
+	name				dialkey
+	power				3.14159
+	color				1 1 1
+	direction			0.45 0.35 0.62
+}
+
 file_rasterizeroutput
 {
 	pattern				rendered/watch_dial
@@ -420,7 +428,7 @@ expression_function2d
 	name				oxide_fn_lightning
 	param				R 20.6
 	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
-	expr				clamp((4*smoothstep(0,0.16,rho)+3*smoothstep(0.16,0.82,rho)+5*smoothstep(0.82,1.0,rho))/12,0,1)
+	expr				clamp((9*smoothstep(0,0.16,rho)+5*smoothstep(0.16,0.82,rho)+8*smoothstep(0.82,1.0,rho))/22,0,1)
 }
 
 # Per-base-metal oxide doses (per-metal activation energy -> different radial
@@ -500,8 +508,8 @@ scalar_painter
 {
 	name				oxide_thk
 	function2d			oxide_fn_lightning
-	scale				19.0
-	bias				21.0
+	scale				22.0
+	bias				18.0
 }
 
 # --- COLOUR PALETTES (Ti temper windows; swap via the dial's film_thickness) ---
