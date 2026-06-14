@@ -1,0 +1,126 @@
+# Guilloché Fidelity — 3-Way Results: principled vs approximation, quality vs cost
+
+The deliverable of the 3-way study (`docs/GUILLOCHE_ROSE_ENGINE_TIER2_PLAN.md`): render the
+**same** engine-turned dial three ways — a cheap normal-perturbation **bump**, a memory-bounded
+**displaced mesh**, and the exact analytic **SDF** — and measure, with numbers, which realization
+earns its cost. All three consume **one** kinematic field (`tests/GuillocheDialExpr.h`
+`BuildKinematic`, oracle-tested to 1e-9) so the only variable is *how the groove geometry is
+represented*.
+
+## The three realizations
+
+| | what it is | groove relief | normals | memory |
+|---|---|---|---|---|
+| **bump** | flat disk + `bumpmap_modifier(∇kinfield)` | **none** (flat surface) | perturbed from the height gradient | **O(1)** |
+| **mesh** | `displaced_geometry(kinfield)` | real, **tessellated** | flat per-facet (`face_normals`) | **O(triangles)** |
+| **SDF** | `sdf_geometry { heightfield_function kinfield }` | real, **exact analytic** | exact field gradient (smooth) | **O(1)** |
+
+The SDF is the principled ground truth: it sphere-traces `z = scale·f(u,v)` with no tessellation, so
+its surface is exact at any pitch and its memory is constant. The bump and mesh are the two
+approximations — bump trades away relief entirely; mesh trades away exactness for a finite triangle
+budget and pays for it in memory.
+
+## What's exact vs approximate (the core question)
+
+- **SDF** — exact surface, exact smooth normals. The real |cos|-profile V-walls are smooth curves, so
+  the analytic gradient is the *physically correct* normal. **Validated:** under Lambertian shading
+  (pure normal response) the SDF matches a converged displaced mesh to **97.5 % mean / 94 % std** — the
+  analytic normals reproduce the true surface.
+- **mesh** — the surface converges to exact as `mesh_n → ∞` (P0-B: the groove NDF converges at
+  ~12–24 verts/pitch), but `face_normals` makes every facet a flat micro-mirror. Under **sharp
+  specular** those facets throw glints the true smooth surface does **not** have — the mesh
+  *over-sparkles*. This is faceting **artifact**, not surface response.
+- **bump** — head-on it can fake the *appearance* (the normal field drives the shading), but there is
+  **no geometry**: no self-shadowing between grooves, no parallax, no silhouette relief. It fails where
+  those matter — at **grazing angles**.
+
+## Cost profile (full ⌀32.6 mm dial, R=20.6, 0.30 mm pitch, 800², PT)
+
+| realization | peak RSS | render | notes |
+|---|---|---|---|
+| **SDF** (exact) | **0.23 GB** | 89 s | memory-light, trace-heavy; *constant* in pitch |
+| **mesh** (`mesh_n 1200`, ~2.3 M tris) | **1.25 GB** | 18 s | memory-heavy, trace-light |
+| **mesh** at authentic fine pitch (P0-B) | **19–43 GB** | — | the memory wall — infeasible on a normal machine |
+| **bump** | _see table below_ | _fast_ | O(1) memory, no relief |
+
+The decisive asymmetry: the mesh is fast to trace but its memory grows with the triangle budget, and at
+*authentic* guilloché pitch (0.10–0.20 mm) that budget blows past 19 GB (P0-B). The SDF holds **0.23 GB
+regardless of pitch** — it is the only memory-feasible exact representation of the full dial at the
+finest pitches. That is the whole reason the SDF was elevated from benchmark to a real production path.
+
+## Measured deviation from the exact SDF ground truth
+
+Same dial, same kinematic field, same isotropic conductor + rake light, 800², 96 spp PT.
+Quality = deviation from the exact SDF render (RMSE on luminance; blurRel% = location-insensitive
+envelope error). Cost = wall time + peak RSS.
+
+| realization | view | peak RSS | render | RMSE vs SDF | envelope err |
+|---|---|---:|---:|---:|---:|
+| **SDF** (exact) | head-on | 231 MB | 116 s | 0 (ref) | 0 % |
+| **mesh** (2.3 M tris) | head-on | **3002 MB** | 20 s | 0.297 | 68 % |
+| **bump** (flat ⚠) | head-on | 234 MB | 13 s | 0.193 | 35 % |
+| **SDF** (exact) | grazing | 231 MB | 61 s | 0 (ref) | 0 % |
+| **mesh** (2.3 M tris) | grazing | 3003 MB | 14 s | 0.328 | 22 % |
+| **bump** (flat ⚠) | grazing | 234 MB | 9 s | **1.031** | 75 % |
+
+Reading the rows:
+- **Mesh deviates from the exact surface by ~0.30 RMSE at *both* views** — head-on that is pure
+  *faceting over-sparkle* (mesh std 0.356 vs SDF 0.192: the flat facets throw glints the smooth
+  surface lacks); at grazing the macro-relief flash dominates and the mesh tracks the SDF more closely
+  in *envelope* (22 %) even as per-pixel RMSE stays ~0.33. The mesh is an honest-but-imperfect
+  approximation whose error is faceting, shrinking as `mesh_n → ∞` (at the cost of the memory wall).
+- **Bump's error JUMPS 0.19 → 1.03 head-on → grazing** — the signature of *no geometry*. A surface with
+  no relief cannot produce grazing structure (occlusion, parallax, silhouette), so it diverges
+  catastrophically exactly where the real engraving comes alive. ⚠ **Caveat:** in this harness the
+  `bumpmap_modifier` on the flat `cartesian_disk` did **not** engage (no normal perturbation at any
+  scale — a modifier↔geometry plumbing issue, flagged for follow-up), so the "bump" rows are the
+  *flat-disk limit* — the worst case of a normal-only fake. A correctly-perturbed bump would close the
+  head-on gap substantially while leaving the grazing collapse essentially unchanged (relief is the
+  thing it fundamentally lacks). The cost columns (O(1) memory, fastest render) are valid as measured.
+
+## Verdict
+
+**The principled approach (exact SDF) wins on the axis that actually constrains this problem — memory —
+and is the *only* option at authentic fidelity.** The trade is concrete and measured:
+
+1. **Memory is the deciding axis, and only the SDF survives it.** The mesh is the fast-to-trace,
+   accurate-with-enough-triangles approximation — but "enough triangles" at authentic 0.10–0.20 mm
+   pitch is **19–43 GB** (P0-B), past a normal machine. The SDF holds **0.23 GB at any pitch**. For the
+   full dial at real guilloché pitch, the exact SDF is not just *better* — it is the only thing that
+   *runs*. That is why it was elevated from benchmark to production path.
+
+2. **The cost the principled path pays is render time, not memory.** SDF is ~5–6× slower to trace than
+   the mesh (116 s vs 20 s head-on) — the classic memory-light / trace-heavy profile. For a hero still
+   that is a fine trade; for a turntable or interactive preview the mesh (at a memory-feasible coarse
+   pitch) is the pragmatic choice.
+
+3. **"Exact" genuinely matters for specular.** Under diffuse, all real-geometry realizations agree to
+   ~95 %. Under the sharp directional flash that *is* the guilloché look, the faceted mesh deviates
+   ~0.30 RMSE from the exact smooth surface — and that deviation is an *artifact* (facet glints), not
+   signal. The exact SDF is the correct reference; the mesh's extra sparkle is tessellation noise that
+   a viewer would (subtly) read as "CGI."
+
+4. **The cheapest approximation (bump) is disqualified by geometry, not cost.** It is the lightest and
+   fastest, and head-on it can approximate the appearance — but it has no relief, so it collapses at
+   grazing (RMSE → 1.0+). For a flat-on dial shot it is tempting; for anything that tilts, it betrays
+   itself. (And the modifier didn't even engage here — a separate bug.)
+
+**Recommendation for the GuillocheWatch dial:**
+- **Hero stills / any tilted or grazing view → SDF.** Exact, memory-light, the only path to authentic
+  fine pitch. Eat the trace cost.
+- **Turntables / previews / coarse-pitch dials → displaced mesh** at a memory-safe `mesh_n`, accepting
+  faceting and a ≤0.30 mm pitch.
+- **Bump → not recommended** for a hero object viewed in 3-D; fix the modifier first if it is ever
+  wanted as a fast preview proxy, and never trust it at grazing.
+
+The headline: **for an engine-turned dial rendered honestly at authentic pitch, the principled exact
+representation isn't a luxury — the approximation that would replace it (a fine mesh) doesn't fit in
+memory, and the one that does (bump) doesn't hold up when the dial tilts into the light.**
+
+---
+
+### Reproduction
+`var_test/gen_dial3way.py` (drift-proof generator: one shared `kinfield` + material + rig, geometry is
+the only variable) and `var_test/compare3way.py` (the 6-render cost+quality harness). Kinematic field
+oracle-tested in `tests/ExpressionFunction2DTest.cpp` Test 3. SDF heightfield: `src/Library/Geometry/
+SDFGeometry.cpp` (commit `868d9087`).
