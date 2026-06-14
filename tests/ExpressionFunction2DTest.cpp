@@ -164,11 +164,61 @@ static void TestGuillocheEquivalence()
 	ValidatePattern( "varwidth", 5, CompilePattern( GuillocheDialExpr::BuildVarwidth ) );
 }
 
+//====================================================================
+//  Phase-1 physical kinematic generator: validate the in-scene
+//  expression against an INDEPENDENT C++ reimplementation of the same
+//  rose-engine formula (a true oracle, not a golden snapshot).
+//====================================================================
+static double KinematicRef( double u, double v )
+{
+	const double R=20.6, lobes=12, amp=1.2, pitch=0.379, landHalf=0.30;
+	const double x=(2*u-1)*R, y=(2*v-1)*R;
+	const double r=std::hypot(x,y), theta=std::atan2(y,x);
+	const double g=std::cos(lobes*theta);
+	const double psi=(r-amp*g)/pitch;
+	const double tcell=psi-std::floor(psi);
+	const double dist=0.5-std::fabs(tcell-0.5);
+	double h=dist/landHalf; if(h<0.0)h=0.0; if(h>1.0)h=1.0;
+	return h;
+}
+
+static double KinematicGrooveDirRef( double u, double v )
+{
+	const double R=20.6, lobes=12, amp=1.2;
+	const double x=(2*u-1)*R, y=(2*v-1)*R;
+	const double r=std::hypot(x,y), theta=std::atan2(y,x);
+	const double rsafe = r<0.001 ? 0.001 : r;
+	const double gradT = amp*lobes*std::sin(lobes*theta)/rsafe;
+	const double alpha = std::atan2(gradT,1.0);
+	return theta+alpha+1.5707963267948966;
+}
+
+static void TestKinematicOracle()
+{
+	std::cout << "Test 3: physical kinematic generator (rosette phase field) == independent C++ reference" << std::endl;
+	const ExpressionProgram hp = CompilePattern( GuillocheDialExpr::BuildKinematic );
+	const ExpressionProgram gp = CompilePattern( GuillocheDialExpr::BuildKinematicGrooveDir );
+	Check( hp.IsValid(), "kinematic height expression compiles" );
+	Check( gp.IsValid(), "kinematic groove_dir expression compiles" );
+	if( !hp.IsValid() || !gp.IsValid() ) return;
+	for( int i = 0; i < 8; ++i ) {
+		const Scalar x = kPTS[i][0], y = kPTS[i][1];
+		const Scalar u = ( x + kR ) / ( 2 * kR );
+		const Scalar v = ( y + kR ) / ( 2 * kR );
+		char label[96];
+		snprintf( label, sizeof(label), "kinematic height expr==ref pt%d", i );
+		CheckClose( hp.Eval( u, v ), KinematicRef( u, v ), Scalar(1e-9), label );
+		snprintf( label, sizeof(label), "kinematic groove_dir expr==ref pt%d", i );
+		CheckClose( gp.Eval( u, v ), KinematicGrooveDirRef( u, v ), Scalar(1e-9), label );
+	}
+}
+
 int main( int, char** )
 {
 	std::cout << "ExpressionFunction2DTest -- in-scene math-expression field engine" << std::endl << std::endl;
 	TestEngine();
 	TestGuillocheEquivalence();
+	TestKinematicOracle();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

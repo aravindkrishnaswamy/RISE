@@ -259,6 +259,56 @@ namespace GuillocheDialExpr
 		b.AddDef( "raw", "base+gridAmp*grid" );
 		return AddFinish( b, 0.15, 0.15 + 0.95 );
 	}
+
+	//================================================================
+	//  PHYSICAL rose-engine kinematics (Phase 1, the 3-way study's
+	//  shared field).  A rosette with `lobes` lobes rocks the headstock
+	//  radially by `amp` as the spindle turns -> one wavy closed line per
+	//  revolution; lines are fed inward by `pitch`.  This collapses to a
+	//  rosette-modulated PHASE FIELD psi(r,theta); the groove is a sharp V
+	//  cross-section of the distance to the nearest line.  Unlike the six
+	//  phenomenological patterns above (product of sector-rotated Stripes),
+	//  this IS the engine-turning motion.  Returns height in [0,1]: 0 at a
+	//  groove floor, 1 on the land between grooves.  groove_dir (the line
+	//  tangent, for anisotropy) is a sibling builder, added alongside.
+	//================================================================
+	template<class B>
+	std::string BuildKinematic( B& b )
+	{
+		b.AddParam( "R", 20.6 );        // dial radius (dial-units)
+		b.AddParam( "lobes", 12 );      // rosette lobe count
+		b.AddParam( "amp", 1.2 );       // radial rocking amplitude (dial-units)
+		b.AddParam( "pitch", 0.379 );   // groove spacing (~0.30 mm @ scene_unit 0.00079167)
+		b.AddParam( "landHalf", 0.30 ); // V half-width as a fraction of the cell, in [0,0.5]
+		AddPreamble( b );                // x,y,r,rho,theta
+		b.AddDef( "g", "cos(lobes*theta)" );          // simple sinusoidal rosette cam
+		b.AddDef( "psi", "(r-amp*g)/pitch" );          // rosette-modulated phase
+		b.AddDef( "tcell", "frac(psi)" );              // fractional position in the cell [0,1)
+		b.AddDef( "dist", "0.5-abs(tcell-0.5)" );      // distance to nearest groove line, [0,0.5]
+		return "clamp(dist/landHalf,0,1)";              // sharp V: 0 at floor -> 1 on land
+	}
+
+	//================================================================
+	//  groove_dir for the kinematic field: the GROOVE LINE TANGENT angle
+	//  (world radians), for steering anisotropy via GGX tangent_rotation.
+	//  The grooves are level sets of psi; the across-groove gradient in the
+	//  (r_hat, theta_hat) basis is (1/pitch)*(1, amp*lobes*sin(lobes*theta)/r),
+	//  so the gradient's world angle is theta + atan2(amp*lobes*sin(lobes*theta)/r, 1)
+	//  and the LINE TANGENT is that + pi/2.  Shares BuildKinematic's params.
+	//  (Which of alpha_x/alpha_y aligns to this is a P3/P4 calibration choice.)
+	//================================================================
+	template<class B>
+	std::string BuildKinematicGrooveDir( B& b )
+	{
+		b.AddParam( "R", 20.6 );
+		b.AddParam( "lobes", 12 );
+		b.AddParam( "amp", 1.2 );
+		AddPreamble( b );                              // x,y,r,rho,theta
+		b.AddDef( "rsafe", "max(r,0.001)" );           // guard the dial centre
+		b.AddDef( "gradT", "amp*lobes*sin(lobes*theta)/rsafe" );  // theta_hat / r_hat ratio (pitch cancels)
+		b.AddDef( "alpha", "atan2(gradT,1)" );          // gradient angle off the radial
+		return "theta+alpha+1.5707963267948966";       // + pi/2 -> groove line tangent
+	}
 }
 
 #endif
