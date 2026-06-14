@@ -58,10 +58,15 @@ envelope error). Cost = wall time + peak RSS.
 |---|---|---:|---:|---:|---:|
 | **SDF** (exact) | head-on | 231 MB | 116 s | 0 (ref) | 0 % |
 | **mesh** (2.3 M tris) | head-on | **3002 MB** | 20 s | 0.297 | 68 % |
-| **bump** (flat ⚠) | head-on | 234 MB | 13 s | 0.193 | 35 % |
+| **bump** (engaged) | head-on | 234 MB | 13 s | 0.616 | —† |
 | **SDF** (exact) | grazing | 231 MB | 61 s | 0 (ref) | 0 % |
 | **mesh** (2.3 M tris) | grazing | 3003 MB | 14 s | 0.328 | 22 % |
-| **bump** (flat ⚠) | grazing | 234 MB | 9 s | **1.031** | 75 % |
+| **bump** (engaged) | grazing | 234 MB | 9 s | 0.700 | —† |
+
+† Bump rows **re-measured 2026-06-14** after fixing the modifier (see "Correction" below); RMSE-vs-SDF
+recomputed, envelope% (original blurRel harness) not re-run for these rows.  The earlier numbers
+(head-on 0.193 / grazing 1.031) were the **flat-disk limit** — the modifier was mis-configured, not
+broken (details below), so the dial rendered with no perturbation at all.
 
 Reading the rows:
 - **Mesh deviates from the exact surface by ~0.30 RMSE at *both* views** — head-on that is pure
@@ -69,14 +74,44 @@ Reading the rows:
   surface lacks); at grazing the macro-relief flash dominates and the mesh tracks the SDF more closely
   in *envelope* (22 %) even as per-pixel RMSE stays ~0.33. The mesh is an honest-but-imperfect
   approximation whose error is faceting, shrinking as `mesh_n → ∞` (at the cost of the memory wall).
-- **Bump's error JUMPS 0.19 → 1.03 head-on → grazing** — the signature of *no geometry*. A surface with
-  no relief cannot produce grazing structure (occlusion, parallax, silhouette), so it diverges
-  catastrophically exactly where the real engraving comes alive. ⚠ **Caveat:** in this harness the
-  `bumpmap_modifier` on the flat `cartesian_disk` did **not** engage (no normal perturbation at any
-  scale — a modifier↔geometry plumbing issue, flagged for follow-up), so the "bump" rows are the
-  *flat-disk limit* — the worst case of a normal-only fake. A correctly-perturbed bump would close the
-  head-on gap substantially while leaving the grazing collapse essentially unchanged (relief is the
-  thing it fundamentally lacks). The cost columns (O(1) memory, fastest render) are valid as measured.
+- **Bump (now engaged) reproduces the head-on rosette but cannot fake relief at grazing.** With the
+  modifier working (slope-matched, `normalize_gradient TRUE`), head-on the bump renders the *same*
+  12-lobe guilloché structure as the exact SDF (smooth gradient normals, visually close — far cleaner
+  than the mesh's faceting). Its head-on RMSE-vs-SDF (0.62) is *higher* than the old flat-disk number
+  (0.19) **not** because it's worse but because RMSE rewards the conditional mean: a featureless grey
+  disk ≈ the SDF's average, so it scores low RMSE with *zero* structure, while the working bump carries
+  the real pattern (disk std 0.77 vs SDF 0.30 — comparable order, slightly over-contrasty because a
+  flat disk presents every tilt at normal incidence). Read RMSE *with* the structure metric, never
+  alone. At **grazing** the bump improves on the flat limit (1.03 → 0.70) — the tilts do catch the rake
+  light — but it still has **no geometry**: no self-shadowing between grooves, no parallax, no
+  silhouette relief. That residual 0.70 is the irreducible cost of a normal-only fake, and it is
+  exactly where the real engraving comes alive. The cost columns (O(1) memory, fastest render) hold.
+
+## Correction (2026-06-14): the bump modifier was mis-configured, not broken
+
+The original "bump did not engage at any scale — a modifier↔geometry plumbing issue" was **wrong**.
+Instrumenting `BumpMap::Modify` and re-rendering proved the modifier fires correctly on the flat
+`cartesian_disk`: `Modify` is called per hit, the disk supplies texcoords + a valid ONB
+(`CreateFromW((0,0,1))` → tangents `(-1,0,0),(0,-1,0)`, *not* degenerate), and `GGXSPF` reads the
+perturbed `ri.onb`. The "flat" render was a **unit mismatch**: the harness set the bump `scale` equal
+to the mesh's `disp_scale` (both `0.101`), but they are different units.
+
+- Mesh/SDF relief slope ≈ `surface_scale · (∂f/∂u) / (2R)`
+- Legacy bump normal tilt ≈ `scale · (f(u+w) − f(u−w))` ≈ `scale · 2·windowsize · (∂f/∂u)`
+
+So the legacy bump's amplitude **couples to `windowsize`**: at `windowsize 0.0015` a `scale` of `0.101`
+is ~8× weaker than the equivalent relief, and the dial read flat. The mesh-matched value is
+`scale = surface_scale / (2R) = 0.101/41.2 ≈ 0.00245`.
+
+**Fix (shipped):** a new opt-in `normalize_gradient` flag on `bumpmap_modifier` (default `FALSE`,
+byte-identical to every legacy scene). When `TRUE`, `BumpMap::Modify` divides the central difference by
+`2·windowsize`, so `scale` becomes the **window-independent gradient amplitude** (verified on a smooth
+field: a fixed `scale` over a 4× window change leaves the render essentially unchanged with the flag on
+— disk-std ratio 0.98 — whereas with it off the same `scale` produces a materially different render per
+window). The harness bump scenes now use `normalize_gradient true` at the matched `scale 0.002451`; the
+rows above are that configuration. ABI-safe (Layer-1 `RISE_API_CreateBumpMapModifierEx` + legacy
+wrapper; the `IJob` virtual and the Blender bridge are untouched; the flag routes via the `IJobPriv`
+channel). All 139 unit tests pass; the legacy Veach-egg Perlin bump scene is byte-for-byte unchanged.
 
 ## Verdict
 
@@ -101,17 +136,18 @@ and is the *only* option at authentic fidelity.** The trade is concrete and meas
    a viewer would (subtly) read as "CGI."
 
 4. **The cheapest approximation (bump) is disqualified by geometry, not cost.** It is the lightest and
-   fastest, and head-on it can approximate the appearance — but it has no relief, so it collapses at
-   grazing (RMSE → 1.0+). For a flat-on dial shot it is tempting; for anything that tilts, it betrays
-   itself. (And the modifier didn't even engage here — a separate bug.)
+   fastest, and head-on it now genuinely reproduces the rosette (engaged + slope-matched) — visually
+   close to the exact SDF. But it has no relief, so at grazing it can only partly track the light
+   (RMSE 0.70) and never the occlusion/parallax/silhouette of real grooves. For a flat-on dial shot it
+   is a legitimate, fast proxy; for anything that tilts, it betrays itself.
 
 **Recommendation for the GuillocheWatch dial:**
 - **Hero stills / any tilted or grazing view → SDF.** Exact, memory-light, the only path to authentic
   fine pitch. Eat the trace cost.
 - **Turntables / previews / coarse-pitch dials → displaced mesh** at a memory-safe `mesh_n`, accepting
   faceting and a ≤0.30 mm pitch.
-- **Bump → not recommended** for a hero object viewed in 3-D; fix the modifier first if it is ever
-  wanted as a fast preview proxy, and never trust it at grazing.
+- **Bump → fine as a fast, memory-flat head-on proxy** (now that the modifier engages); not recommended
+  for a hero object viewed in 3-D, and never trust it at grazing (no relief).
 
 The headline: **for an engine-turned dial rendered honestly at authentic pitch, the principled exact
 representation isn't a luxury — the approximation that would replace it (a fine mesh) doesn't fit in

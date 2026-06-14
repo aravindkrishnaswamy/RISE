@@ -4134,6 +4134,26 @@ namespace RISE
 {
 	//! Creates a bump map
 	/// \return TRUE if successful, FALSE otherwise
+	// NOTE: RISE_API.cpp does not include RISE_API.h (see the signature-match
+	// comment elsewhere in this file), so the Ex implementation must precede
+	// the legacy wrapper that calls it.
+	bool RISE_API_CreateBumpMapModifierEx(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const IFunction2D& func,		///< [in] The function to use for the bumps
+								const Scalar scale,				///< [in] Factor to scale values by
+								const Scalar window,			///< [in] Size of the window (finite-difference step)
+								const bool normalizeGradient	///< [in] Divide the difference by 2*window so scale is window-independent
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new BumpMap( func, scale, window, normalizeGradient );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "bumpmap" );
+		return true;
+	}
+
 	bool RISE_API_CreateBumpMapModifier(
 								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
 								const IFunction2D& func,		///< [in] The function to use for the bumps
@@ -4141,13 +4161,9 @@ namespace RISE
 								const Scalar window				///< [in] Size of the window
 								)
 	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new BumpMap( func, scale, window );
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "bumpmap" );
-		return true;
+		// Legacy signature: preserve the original amplitude-couples-to-window
+		// behaviour (normalizeGradient = false) so existing scenes are unchanged.
+		return RISE_API_CreateBumpMapModifierEx( ppi, func, scale, window, false );
 	}
 
 	//! Creates a tangent-space normal-map modifier.

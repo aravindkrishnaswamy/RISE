@@ -121,6 +121,7 @@
 #include "../Interfaces/IScalarPainterManager.h"
 #include "../Interfaces/IFunction1DManager.h"
 #include "../Interfaces/IFunction2DManager.h"
+#include "../Interfaces/IModifierManager.h"	// bumpmap_modifier normalize_gradient path (via IJobPriv::GetModifiers)
 #include "../Painters/RGBScalarPainter.h"		// for ScalarTriple::IsUniform et al
 #include "../Painters/TexturePainter.h"		// for resolving a named image painter -> raster accessor (scalar_painter texture form)
 // Phase 6.1: SourceSpanIndex + TransformSnapshot live behind IJobPriv
@@ -5833,19 +5834,49 @@ namespace RISE
 					std::string function = bag.GetString( "function",   "none" );
 					double scale         = bag.GetDouble( "scale",      1.0 );
 					double window        = bag.GetDouble( "windowsize", 0.01 );
-					return pJob.AddBumpMapModifier( name.c_str(), function.c_str(), scale, window );
+					bool normalize       = bag.GetBool(   "normalize_gradient", false );
+
+					if( !normalize ) {
+						// Default / legacy path, signature-frozen IJob virtual.
+						return pJob.AddBumpMapModifier( name.c_str(), function.c_str(), scale, window );
+					}
+
+					// normalize_gradient TRUE: `scale` becomes the window-independent
+					// gradient multiplier.  The IJob::AddBumpMapModifier virtual is
+					// frozen for ABI (out-of-tree callers + the Blender bridge), so the
+					// flag is carried by RISE_API_CreateBumpMapModifierEx and the
+					// modifier is registered through the privileged IJobPriv channel
+					// (the same pattern expression_function2d uses to self-register).
+					IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+					if( !pPriv ) {
+						GlobalLog()->PrintEx( eLog_Error, "bumpmap_modifier `%s`: IJobPriv unavailable", name.c_str() );
+						return false;
+					}
+					IFunction2D* pFunc = pPriv->GetFunction2Ds()->GetItem( function.c_str() );
+					if( !pFunc ) {
+						GlobalLog()->PrintEx( eLog_Error, "bumpmap_modifier `%s`: function2d `%s` not found", name.c_str(), function.c_str() );
+						return false;
+					}
+					IRayIntersectionModifier* pMod = 0;
+					if( !RISE_API_CreateBumpMapModifierEx( &pMod, *pFunc, scale, window, true ) ) {
+						return false;
+					}
+					pPriv->GetModifiers()->AddItem( pMod, name.c_str() );
+					pMod->release();
+					return true;
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "bumpmap_modifier"; cd.category = ChunkCategory::Modifier;
-						cd.description = "Bump-map modifier perturbing surface normal via a painter.";
+						cd.description = "Bump-map modifier perturbing the surface normal from the gradient of a heightfield function2d, sampled at the hit's TEXCOORD_0 (u,v) by central difference.  Works on any geometry that supplies texcoords + a normal (analytic primitives AND triangle meshes such as cartesian_disk_geometry; the ONB tangents are built from the shading normal).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "function";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter"; }
-						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "windowsize"; p.kind = ValueKind::Double;    p.description = "Finite-difference step"; p.defaultValueHint = "0.01"; }
+						{ auto& p = P(); p.name = "function";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter (an IFunction2D, e.g. expression_function2d / perlin2d_painter)"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Bump amplitude.  With normalize_gradient FALSE (default) the perturbation is scale*(f(+w)-f(-w)), so its magnitude couples to windowsize (~scale*2*windowsize*slope) -- a fine window needs a proportionally larger scale.  With normalize_gradient TRUE, scale is the window-independent slope multiplier."; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "windowsize"; p.kind = ValueKind::Double;    p.description = "Central-difference half-step in (u,v) texture space; smaller = finer detail captured"; p.defaultValueHint = "0.01"; }
+						{ auto& p = P(); p.name = "normalize_gradient"; p.kind = ValueKind::Bool; p.description = "Divide the central difference by 2*windowsize so `scale` is the true, window-INDEPENDENT gradient amplitude (decouples bump strength from the sampling step).  Default FALSE preserves legacy coupled behaviour byte-for-byte."; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;

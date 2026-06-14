@@ -6,7 +6,7 @@
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: January 17, 2002
 //  Tabs: 4
-//  Comments:  
+//  Comments:
 //
 //  License Information: Please see the attached LICENSE.TXT file
 //
@@ -23,7 +23,7 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		class BumpMap : 
+		class BumpMap :
 			public virtual IRayIntersectionModifier,
 			public virtual Reference
 		{
@@ -35,9 +35,15 @@ namespace RISE
 			Scalar				dWindow;		// How far to look for the difference
 												// large windows will result in blocky bump maps
 												// small windows in fine bump maps
-			
+			bool				bNormalizeGradient;	// When true, divide the finite difference by
+												// (2*dWindow) so dScale is the window-INDEPENDENT
+												// gradient multiplier (slope amplitude).  When
+												// false (default / legacy), the perturbation is
+												// dScale*(f(+w)-f(-w)) -- amplitude couples to the
+												// window size.  See docs/skills note in BumpMap.cpp.
+
 		public:
-			BumpMap( const IFunction2D& func, const Scalar dScale_, const Scalar dWindow_ );
+			BumpMap( const IFunction2D& func, const Scalar dScale_, const Scalar dWindow_, const bool bNormalizeGradient_ = false );
 			void Modify( RayIntersectionGeometric& ri ) const;
 		};
 	}

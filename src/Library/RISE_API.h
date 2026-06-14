@@ -1896,6 +1896,19 @@ namespace RISE
 								const Scalar window				///< [in] Size of the window
 								);
 
+	//! Creates a bump map, with control over whether `scale` is the
+	//! window-independent gradient multiplier.  The legacy entry point
+	//! above is a thin wrapper that calls this with normalizeGradient=false
+	//! (preserving its amplitude-couples-to-window behaviour).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBumpMapModifierEx(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const IFunction2D& func,		///< [in] The function to use for the bumps
+								const Scalar scale,				///< [in] Factor to scale values by
+								const Scalar window,			///< [in] Size of the window (finite-difference step)
+								const bool normalizeGradient	///< [in] Divide the difference by 2*window so scale is window-independent
+								);
+
 	//! Creates a tangent-space normal-map modifier.  Painter must be
 	//! linear-RGB (no sRGB decode).  See Modifiers/NormalMap.h.
 	/// \return TRUE if successful, FALSE otherwise
