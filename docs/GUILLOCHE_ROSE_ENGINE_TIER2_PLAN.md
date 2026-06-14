@@ -1,8 +1,15 @@
-# Guilloché / Rose-Engine Fidelity — Tier 2 Plan (+ Tier 3 SDF benchmark)
+# Guilloché / Rose-Engine Fidelity — 3-Way Study (bump vs displaced-mesh vs SDF)
 
-Status: **PLAN (planning only; no feature code yet).** Target branch `feature/thin-film-interference`.
-Decision record for taking the GuillocheWatch dial from a phenomenological displacement
-field to a **physically-grounded, geometry-faithful** engine-turned surface.
+Status: **Phase 0 complete (measured 2026-06-13); 3-way build underway.** Target branch
+`feature/thin-film-interference`. Decision record for taking the GuillocheWatch dial from a
+phenomenological displacement field to a **physically-grounded, geometry-faithful** engine-turned
+surface — and for **objectively measuring** which realization (cheap normal-perturbation bump,
+memory-bounded displaced mesh, or exact SDF ground truth) actually earns its cost.
+
+**Pivot (2026-06-13):** Phase 0 found a full-dial fine-pitch mesh hits a **19–43 GB bake-memory wall**
+(§7). Rather than abandon authentic pitch or pick a path by dogma, the plan now **builds all three
+realizations of the same kinematic field and runs a deep 3-way comparison**, with the SDF as ground
+truth. Bump maps are back in scope — *as a measured candidate*, not an article of faith.
 
 Reference object: the **Ming × J.N. Shapiro 37.06 "Lightning"** — a heat-coloured (anodised)
 engine-turned titanium dial. The heat-colour we already model well (real TiO₂-on-Ti thin-film
@@ -111,13 +118,16 @@ problems (coarse pitch; faceted walls) plus the missing **anisotropic finish**.
 
 ## 4. Design principles for Tier 2
 
-1. **Geometry for what is resolvable; statistical microfacet BRDF for what is not. No bump maps.**
-   Grooves (~0.1–0.3 mm) are resolvable → **real displaced geometry**. The sub-µm cutter finish is
-   below any feasible mesh → **anisotropic roughness** (`tangent_rotation` + `alphax≠alphay`), the
-   principled, energy-conserving microfacet model — *not* a normal-perturbation hack. There is no
-   middle scale, so there is no place for bump/normal mapping: it lies about geometry (no occlusion,
-   no parallax, wrong silhouette, incoherent grazing/shadow behaviour) and is off-brand for a
-   physical spectral path tracer. **Excluded by design.**
+1. **One kinematic field, three realizations, measured against ground truth (revised 2026-06-13).**
+   The Phase-0 memory wall (full-dial fine-pitch mesh = 19–43 GB bake) makes the "real geometry only"
+   stance untenable at authentic pitch. So instead of *excluding* the cheap path by dogma, we **build
+   all three and measure them**: (a) **bump/normal map** — the same height field perturbing the
+   shading normal, O(1) memory, but lies about geometry (no occlusion/parallax, wrong silhouette,
+   incoherent grazing/shadow); (b) **displaced mesh** — real geometry, memory-bounded to a safe pitch;
+   (c) **SDF swept-V** — exact geometry, the ground truth. The honest question — *does the expensive
+   geometry actually matter for this dial, or does the bump map fool the eye?* — is answered by a
+   **number** (§9), not an aesthetic prior. The sub-µm cutter finish is shared by all three:
+   **anisotropic roughness** (`tangent_rotation` + `alphax≠alphay`), the principled microfacet model.
 2. **Physical generation.** Replace the sector-rotated lattices with the actual kinematics:
    rosette-modulated continuous loci, calibrated V cross-section, phase-indexed families.
 3. **Hybrid calibration.** Physically-grounded defaults (pitch/depth/V-angle in µm), exposed as
@@ -128,7 +138,7 @@ problems (coarse pitch; faceted walls) plus the missing **anisotropic finish**.
 
 ---
 
-## 5. Tier 2 architecture (real fine mesh; no bump)
+## 5. Architecture — one kinematic field, three realizations
 
 ### 5.1 The kinematic model (the math we encode in expressions)
 
@@ -262,13 +272,24 @@ which sidesteps the wall. This makes the **SDF benchmark potentially load-bearin
    params; the mesh stores millions of verts+normals+BVH). Trace time is comparable here but a *fine*
    swept-V SDF will be march-heavier — the canonical "memory-light / trace-heavy" profile, the opposite
    of the mesh. This is exactly the trade the Phase-5 benchmark must quantify.
-- **Phase 1 — physical generator.** Evolve `GuillocheDialExpr.h` to emit `height` + `groove_dir` from
-  calibrated rose-engine params; oracle-test the math.
-- **Phase 2 — wire the dial.** Fine displaced mesh + anisotropic GGX (`tangent_rotation`), keep
-  thin-film; re-derive the patterns as physical loci.
-- **Phase 3 — calibration pass + knobs.**
-- **Phase 4 — verification (§9).**
-- **Phase 5 (optional/back-pocket) — Tier 3 SDF benchmark + objective comparison (§10).**
+Restructured 2026-06-13 around the **3-way comparison** (one kinematic field; bump / mesh / SDF):
+
+- **Phase 1 — shared kinematic generator** (feeds ALL three realizations). Evolve
+  `GuillocheDialExpr.h` to emit a physical `height(u,v)` field + `groove_dir(u,v)` from calibrated
+  rose-engine params (rosette-modulated continuous loci, calibrated V cross-section, phase-indexed
+  families); oracle-test the math. **Not blocked by the bump/mesh/SDF fork — all three consume it.**
+- **Phase 2 — anisotropy enabler.** Expose `tangent_rotation` on `ggx_material` (the ~3-line P0-A
+  parser gap) so the shared thin-film material can steer groove-aligned anisotropy; parser test.
+- **Phase 3 — three dial realizations of the same field, each with the shared anisotropic thin-film:**
+  - **3a Bump** — flat disk + normal perturbation from `∇height` (`bumpmap_modifier` / normal-map).
+    O(1) memory; the "does it fool the eye" candidate.
+  - **3b Displaced mesh** — displaced disk at the memory-safe pitch (~0.30 mm, P0-B), `face_normals`.
+  - **3c SDF swept-V** — **new** periodic/swept-V SDF part in `SDFGeometry` + `ParsePartLines`
+    (P0-C found none exists) + the 5 build projects. Exact geometry = the ground truth.
+- **Phase 4 — calibration pass + knobs** (shared µm→scene-unit table across all three).
+- **Phase 5 — the deep 3-way objective comparison (§9).** L_bump vs L_mesh vs L_sdf under identical
+  camera/light/spp; NDF/normal accuracy, flash tilt-series, image distance (RMSE/SSIM/ꟻLIP) with the
+  SDF as ground truth. Output: a number that says which realization earns its cost.
 
 Per phase: build clean (make + Xcode, 0 warnings), suite green, multi-round adversarial review;
 controller commits; **user pushes**.
@@ -291,42 +312,48 @@ controller commits; **user pushes**.
 A **fidelity ladder** rendered under identical camera/light/spp (converged), scripted like the
 variance/HDR harness:
 
-**L0 = current** (isotropic, phenomenological) → **L2 = Tier 2** (fine mesh + groove anisotropy) →
-**L3 = Tier 3 SDF** (exact swept-V geometry — the ground truth, built in Phase 5).
+The 3-way ladder, all sharing the same kinematic field + anisotropic thin-film material:
+**L0 = current** (isotropic, phenomenological — the regression baseline) → **L_bump** (3a: flat disk +
+∇height normal perturbation) → **L_mesh** (3b: displaced mesh at memory-safe pitch) → **L_sdf** (3c:
+exact swept-V SDF — **the ground truth**).
 
-Metrics:
-1. **Normal-field accuracy / NDF** — L2's mesh normals vs a super-fine mesh oracle (and later vs L3):
-   per-pixel normal angular error + slope-distribution histogram. "Is the groove geometry optically
-   resolved?"
+Metrics (each candidate scored *against L_sdf*):
+1. **Normal-field accuracy / NDF** — per-pixel normal angular error + slope-distribution histogram vs
+   the SDF's exact normals. Bump should diverge first (it perturbs a flat normal); mesh should track
+   until its faceting limit. "Is the groove geometry optically resolved — and does the *fake* one lie?"
 2. **Flash behaviour (tilt series)** — sweep light/dial through N angles; per frame measure highlight
-   **streak elongation** (along-groove vs across) and **coherence** (specular-mask autocorrelation).
-   "Does it flash directionally and *sweep* like engine-turning?" L0 should fail; L2 should pass.
-3. **L2-vs-L3 image distance (the decision metric)** — identical render, Tier 2 vs Tier 3: RMSE +
-   SSIM + a perceptual metric (ꟻLIP / ΔE), globally and **at grazing angles** (where the mesh's
-   finite resolution / faceting should diverge from the exact SDF most).
-4. **Reference sanity** — qualitative/ΔE vs a Lightning photo (uncontrolled lighting → sanity check,
-   not a gate).
+   **streak elongation** (along- vs across-groove) and **coherence** (specular-mask autocorrelation).
+   "Does it flash directionally and *sweep* like engine-turning?" L0 fails; the key question is whether
+   **bump's flash sweeps like the real geometry's or betrays itself** (no occlusion/parallax at grazing).
+3. **Image distance vs ground truth (the decision metric)** — L_bump-vs-L_sdf and L_mesh-vs-L_sdf:
+   RMSE + SSIM + a perceptual metric (ꟻLIP / ΔE), globally **and at grazing angles** (where bump's lack
+   of occlusion/parallax and the mesh's faceting should diverge from the exact SDF most).
+4. **Cost** — render time + peak RSS per realization (the Phase-0 numbers, now measured on the real dial).
+5. **Reference sanity** — qualitative/ΔE vs a Lightning photo (uncontrolled lighting → sanity, not a gate).
 
-**Pre-registered Tier-3 decision rule:** after L3 exists, run metrics 1+3 L2-vs-L3. If perceptual
-distance is below a set threshold (especially face-on, the dial's normal viewing), **L2 is declared
-sufficient and Tier 3 is shelved**; if L3 measurably wins, record *by how much* and decide whether a
-hero-only SDF path earns its trace cost. The output is a **number**, not an opinion.
+**Pre-registered decision rule:** rank by metric 3 at face-on (the dial's normal viewing) *and* at
+grazing. If **L_bump** is within a set perceptual threshold of L_sdf face-on, the cheap path wins for
+stills and the memory wall is moot — record *by how much* it diverges at grazing. If only **L_mesh**
+closes the gap, the geometry matters and we ship mesh at the safe pitch. If **only L_sdf** satisfies at
+authentic fine pitch, the SDF is the production path. The output is a **table of numbers**, not an opinion.
 
 ---
 
-## 10. Tier 3 (SDF) — exactness benchmark
+## 10. The SDF realization (ground truth — ELEVATED, built now)
 
 We already ship `sdf_geometry` (sphere-tracer), but **Phase-0 P0-C found it has no periodic/swept
 primitive** — `ParsePartLines` implements only sphere/box/roundbox/cylinder/torus/capsule/roundcone, so
-the first Tier-3 task is a **new swept-V / periodic part** (the dial as **flat base − swept-V cutter
-volume** along the kinematic loci: exact sharp V, arbitrary fine pitch, no tessellation limit).
-Measured profile (P0-C): SDF ~0.30 GB vs the 2.36 M-tri mesh's 4.19 GB and *constant* in surface
-complexity — memory-light, trace-heavy.
+**Phase-3c's first task is a new swept-V / periodic SDF part**: the dial as **flat base − swept-V cutter
+volume** along the kinematic loci (exact sharp V, arbitrary fine pitch, no tessellation limit). It wires
+through `SDFGeometry` + `ParsePartLines` + the 5 build projects, and reuses the analytic-distance
+discipline already proven by the SDF feature (subtract/intersect conservativeness, front/back flags,
+marching-tet mesher for area sampling).
 
-**Reframing (Phase-0):** the §7 memory wall means the SDF is **no longer purely a back-pocket
-benchmark** — it may be the *only* way to reach true 0.10–0.20 mm pitch without a multi-tens-of-GB bake.
-Still scoped as the Phase-5 ground truth for the objective L2-vs-L3 comparison, but promote it to a
-hero-still production path if either §9 metric 3 *or* the memory wall says so.
+Measured profile (P0-C): SDF ~0.30 GB vs the 2.36 M-tri mesh's 4.19 GB and *constant* in surface
+complexity — memory-light, trace-heavy. **Elevated 2026-06-13** from back-pocket benchmark to a
+**first-class realization in the 3-way study** (user direction): it is both the **ground truth** the
+bump and mesh candidates are scored against (§9) *and* the candidate production path for authentic
+0.10–0.20 mm pitch, where the mesh's memory wall (§7) rules the mesh out.
 
 ---
 
@@ -349,14 +376,17 @@ hero-still production path if either §9 metric 3 *or* the memory wall says so.
 ---
 
 ## 12. Decisions captured
-- **Bump/normal mapping excluded** (normal-perturbation hack; off-brand for a physical PT). Geometry
-  for grooves, anisotropic microfacet BRDF for the sub-µm finish.
-- **Tier 2 production geometry = fine displaced triangle mesh.** **Tier 3 SDF = exactness benchmark.**
 - **Hybrid calibration** (physical defaults + knobs).
 - **Doc-first, then Phase 0 measurement bake-off.**
 - **Phase-0 outcome (measured 2026-06-13):** anisotropy authoring is viable end-to-end (one ~3-line
   parser exposure, P0-A); the groove NDF converges at ~12–24 v/pitch (P0-B); but a full-dial fine-pitch
   mesh hits a **~19–43 GB bake-memory wall** (P0-B) and the SDF has **no swept primitive yet** (P0-C).
-  Net: proceed with Tier 2 at a **~0.30 mm production pitch** (memory-safe) while treating the **SDF
-  swept-V benchmark as elevated priority** — it is the candidate path to the finest pitches. No feature
-  code landed in Phase 0 (probe harness in `var_test/`, gitignored).
+- **⟳ PIVOT (2026-06-13, user direction, supersedes the two struck items below):** the memory wall
+  makes "real geometry only" untenable at authentic pitch, so **do a deep 3-way comparison instead of
+  picking a path by dogma.** Build **bump** (reinstated — memory-light, *measured* not assumed),
+  **displaced mesh** (memory-safe ~0.30 mm pitch), and **SDF swept-V** (elevated to *now*; the ground
+  truth). The §9 ladder outputs a *table of numbers* on which realization earns its cost face-on and at
+  grazing. ~~Bump/normal mapping excluded as an off-brand hack~~ — *reversed*: bump is a legitimate
+  candidate to falsify by measurement. ~~Tier 2 production = fine displaced mesh; SDF = back-pocket
+  benchmark~~ — *reversed*: the production winner is whatever the 3-way comparison selects.
+- No feature code landed in Phase 0 (probe harness in `var_test/`, gitignored).
