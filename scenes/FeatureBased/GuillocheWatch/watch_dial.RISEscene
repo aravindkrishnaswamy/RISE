@@ -480,8 +480,8 @@ scalar_painter
 {
 	name				oxide_thk
 	function2d			oxide_fn
-	scale				13.0
-	bias				24.5
+	scale				28.0
+	bias				30.0
 }
 
 # --- COLOUR PALETTES (Ti temper windows; swap via the dial's film_thickness) ---
@@ -1427,10 +1427,18 @@ displaced_geometry
 
 
 
+sdf_geometry
+{
+	name			dial_lightning_sdf
+	heightfield_function	dialfn_lightning
+	heightfield_radius	20.6
+	heightfield_scale	0.18
+}
+
 standard_object
 {
 	name				dial
-	geometry			dialmesh
+	geometry			dial_lightning_sdf
 	material			tf_dial
 	position			0 0 -1.0
 }
