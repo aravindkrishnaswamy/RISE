@@ -82,16 +82,6 @@ namespace RISE
 			return false;
 		}
 
-		//! Cheap, static capability hint: can this geometry produce a triangle
-		//! mesh via TessellateToMesh (after Realize, if deferred)?  Used at SCENE-
-		//! PARSE time so a composite like DisplacedGeometry can REFUSE a
-		//! non-tessellatable base (e.g. InfinitePlaneGeometry) immediately rather
-		//! than failing later at realize-time.  Default TRUE (every concrete RISE
-		//! geometry tessellates except InfinitePlaneGeometry, which overrides); a
-		//! future non-tessellatable geometry that forgets to override merely
-		//! degrades to the graceful realize-time guard-fail, never a false refusal.
-		virtual bool CanTessellate() const { return true; }
-
 		//! This the most important function
 		//! It asks the geometric object to intersect itself
 		//! and return intersection details
@@ -232,6 +222,19 @@ namespace RISE
 		//! ObjectManager::PrepareForRendering, also const).  Default: cheap
 		//! geometries (sphere, mesh, ...) are always realized — no-op.
 		virtual void Realize() const {}
+
+		//! Cheap, static capability hint: can this geometry produce a triangle
+		//! mesh via TessellateToMesh (after Realize, if deferred)?  Used at SCENE-
+		//! PARSE time so a composite like DisplacedGeometry can REFUSE a
+		//! non-tessellatable base (e.g. InfinitePlaneGeometry) immediately rather
+		//! than failing later at realize-time.  Default TRUE (every concrete RISE
+		//! geometry tessellates except InfinitePlaneGeometry, which overrides); a
+		//! future non-tessellatable geometry that forgets to override merely
+		//! degrades to the graceful realize-time guard-fail, never a false refusal.
+		//! Declared last + defaulted so adding it keeps every existing IGeometry
+		//! vtable slot ABI-stable (the mid-vtable insert this replaces would have
+		//! shifted IntersectRay and every later slot for stale implementers).
+		virtual bool CanTessellate() const { return true; }
 	};
 }
 

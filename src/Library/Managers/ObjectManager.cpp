@@ -348,6 +348,20 @@ void ObjectManager::ResetRuntimeData() const
 void ObjectManager::PrepareForRendering() const
 {
 	RISE_PROFILE_PHASE(AccelBuild);
+
+	// Realize any deferred geometry BEFORE building the top-level BVH from
+	// object bounding boxes.  An unrealized DisplacedGeometry reports a ZERO
+	// bbox, and a BVH built from those empty bounds is then KEPT (the `!pBVH`
+	// guard below never rebuilds it) -- so displaced objects would vanish from
+	// the TLAS / be unpickable.  RayCaster::AttachScene runs the realize pass
+	// for the normal render path, but DIRECT callers (the GUI SceneEditController
+	// production-render + picking paths) call PrepareForRendering BEFORE
+	// AttachScene -- and this is the one point every prepare path funnels
+	// through.  Object::Realize() is const + idempotent (a no-op once realized).
+	for( GenericManager<IObjectPriv>::ItemListType::const_iterator i=items.begin(), e=items.end(); i!=e; ++i ) {
+		i->second.first->Realize();
+	}
+
 	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) && !pBVH ) {
 		CreateBVH();
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) && !pOctree ) {

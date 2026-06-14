@@ -1331,6 +1331,14 @@ namespace RISE
 			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreatePathInstancesGeometry: detail %u clamped to %u (template tessellation is O(detail^2))", desc.detail, detail );
 		}
 
+		// Realize the template first: a deferred DisplacedGeometry template
+		// returns false from TessellateToMesh until its mesh is baked, and we
+		// need that mesh NOW to stamp instances.  Realize() is const + idempotent
+		// (single-threaded at parse); a template that is actually instanced IS
+		// used, so baking it here is correct (the deferral skips only UNused
+		// geometry).
+		desc.pGeometry->Realize();
+
 		// tessellate the template once (the same contract area lights and
 		// SSS sampling rely on -- every first-class geometry provides it)
 		IndexTriangleListType tTris;

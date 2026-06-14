@@ -46,6 +46,7 @@
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IScene.h"
 #include "../src/Library/Interfaces/IScenePriv.h"
+#include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/IRasterizer.h"
 #include "../src/Library/Interfaces/IRasterizerOutput.h"
 #include "../src/Library/Interfaces/IRasterImage.h"
@@ -426,11 +427,108 @@ static void TestCSGOperandRealized()
 	safe_release( pJob );
 }
 
+//-----------------------------------------------------------------------------
+// Test D (P1 regression): ObjectManager::PrepareForRendering realizes deferred
+// geometry ON ITS OWN.  The GUI editor's production-render + picking paths call
+// PrepareForRendering DIRECTLY, before RayCaster::AttachScene's realize pass.
+// If PrepareForRendering didn't realize, it would build the top-level BVH from
+// the displaced geometry's ZERO pre-realize bbox and then KEEP it (the `!pBVH`
+// guard never rebuilds) -> displaced objects vanish / become unpickable.
+//-----------------------------------------------------------------------------
+static void TestPrepareForRenderingRealizes()
+{
+	std::cout << "Test D: PrepareForRendering realizes deferred geometry (editor path)...\n";
+
+	const std::string scenePath = WriteSceneToTempFile( kSceneText, "prep" );
+	if( scenePath.empty() ) { Check( false, "scene temp file written" ); return; }
+
+	DisplacedGeometry::ResetBuildMeshCount();
+
+	IJobPriv* pJob = 0;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check( false, "Job created" ); return; }
+	if( !pJob->LoadAsciiScene( scenePath.c_str() ) ) { Check( false, "scene loaded" ); safe_release( pJob ); return; }
+	Check( DisplacedGeometry::GetBuildMeshCount() == 0, "parse bakes nothing" );
+
+	// The editor scenario: build the TLAS DIRECTLY, with no render / AttachScene.
+	pJob->GetObjects()->PrepareForRendering();
+
+	const unsigned int afterPrepare = DisplacedGeometry::GetBuildMeshCount();
+	Check( afterPrepare == 3,
+		( "PrepareForRendering realized the bound displaced geometries (got "
+		  + std::to_string( afterPrepare ) + ", want 3)" ).c_str() );
+
+	safe_release( pJob );
+}
+
+// A path_instances_geometry whose TEMPLATE is a displaced_geometry.  The
+// factory tessellates the template at parse to stamp instances; a deferred
+// DisplacedGeometry returns false from TessellateToMesh until realized, so
+// pre-fix this scene failed at parse.  The factory now Realize()s the template
+// first (a template that is instanced IS used), so it bakes at parse.
+static const char* kPathInstanceSceneText =
+	"RISE ASCII SCENE 6\n"
+	"\n"
+	"film\n{\n\twidth 48\n\theight 48\n}\n\n"
+	"pinhole_camera\n{\n\tlocation 0 0 -8\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 60.0\n}\n\n"
+	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n}\n\n"
+	"directional_light\n{\n\tname sun\n\tpower 3.14159\n\tcolor 1 1 1\n\tdirection 0 0 -1\n}\n\n"
+	"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
+	"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
+	"sphere_geometry\n{\n\tname base_sphere\n\tradius 0.4\n}\n\n"
+	"expression_function2d\n{\n\tname bump\n\texpr 0.1*sin(6.28318*u)*sin(6.28318*v)\n}\n\n"
+	"displaced_geometry\n{\n\tname disp_tmpl\n\tbase_geometry base_sphere\n\tdetail 12\n\tdisplacement bump\n\tdisp_scale 0.1\n}\n\n"
+	"path_instances_geometry\n{\n\tname beads\n\tgeometry disp_tmpl\n\tpoint -2 0 0\n\tpoint 0 1 0\n\tpoint 2 0 0\n\tpitch 1.0\n\tdetail 12\n}\n\n"
+	"standard_object\n{\n\tname obj_beads\n\tgeometry beads\n\tposition 0 0 0\n\tmaterial matte\n}\n";
+
+//-----------------------------------------------------------------------------
+// Test E (P2 regression): a displaced geometry used as a path_instances
+// TEMPLATE.  The factory realizes the template before tessellating it, so the
+// scene parses (pre-fix it failed: TessellateToMesh returns false on an
+// unrealized DisplacedGeometry) and the instanced beads render.
+//-----------------------------------------------------------------------------
+static void TestPathInstanceOfDisplaced()
+{
+	std::cout << "Test E: displaced geometry as a path_instances template...\n";
+
+	const std::string scenePath = WriteSceneToTempFile( kPathInstanceSceneText, "pathinst" );
+	if( scenePath.empty() ) { Check( false, "scene temp file written" ); return; }
+
+	DisplacedGeometry::ResetBuildMeshCount();
+
+	IJobPriv* pJob = 0;
+	if( !RISE_CreateJobPriv( &pJob ) || !pJob ) { Check( false, "Job created" ); return; }
+	const bool loaded = pJob->LoadAsciiScene( scenePath.c_str() );
+	Check( loaded, "scene with displaced path-instance template parses (was a parse failure pre-fix)" );
+	if( !loaded ) { safe_release( pJob ); return; }
+
+	// The factory realized the template AT PARSE to tessellate it (the template
+	// is instanced -> used -> correctly baked, not deferred).
+	const unsigned int afterParse = DisplacedGeometry::GetBuildMeshCount();
+	Check( afterParse == 1,
+		( "path-instances factory realized the displaced template (got "
+		  + std::to_string( afterParse ) + ", want 1)" ).c_str() );
+
+	pJob->RemoveRasterizerOutputs();
+	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
+	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "path-instance test capture" );
+	pCap->addref();
+	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
+	Check( pJob->Rasterize(), "path-instance scene rendered" );
+	Check( pCap->maxLum > 0.0,
+		( "instanced beads render non-black (maxLum=" + std::to_string( pCap->maxLum ) + ")" ).c_str() );
+
+	safe_release( pCap );
+	safe_release( pJob );
+}
+
 int main()
 {
 	TestDeferralAndCascade();
 	TestIdempotentReRender();
 	TestCSGOperandRealized();
+	TestPrepareForRenderingRealizes();
+	TestPathInstanceOfDisplaced();
 
 	if( g_failures == 0 ) {
 		std::cout << "All DeferredRealize tests passed.\n";
