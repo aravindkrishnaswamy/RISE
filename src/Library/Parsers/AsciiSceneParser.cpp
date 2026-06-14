@@ -3779,16 +3779,21 @@ namespace RISE
 					std::string filmIor       = bag.GetString( "film_ior",        "none" );
 					std::string filmExtinction= bag.GetString( "film_extinction", "none" );
 					std::string filmThickness = bag.GetString( "film_thickness",  "none" );
+					// P0-A: tangent-frame rotation (painter OR scalar radians; "none" =
+					// aligned with the geometry tangent).  Job::AddGGXMaterial + the GGX
+					// BRDF already apply it (ResolveTangentONB/RotateTangent) -- this just
+					// stops ggx_material hard-coding "none".  Steers groove-aligned anisotropy.
+					std::string tangentRot    = bag.GetString( "tangent_rotation", "none" );
 
 					if( emissive == "none" ) {
 						return pJob.AddGGXMaterial( name.c_str(), rd.c_str(), rs.c_str(),
 							alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str(),
-							fresnelMode.c_str(), "none",
+							fresnelMode.c_str(), tangentRot.c_str(),
 							filmIor.c_str(), filmExtinction.c_str(), filmThickness.c_str() );
 					}
 					return pJob.AddGGXEmissiveMaterial( name.c_str(), rd.c_str(), rs.c_str(),
 						alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str(),
-						emissive.c_str(), emissive_scale, fresnelMode.c_str(), "none",
+						emissive.c_str(), emissive_scale, fresnelMode.c_str(), tangentRot.c_str(),
 						filmIor.c_str(), filmExtinction.c_str(), filmThickness.c_str() );
 				}
 
@@ -3824,6 +3829,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "film_ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Thin-film oxide n (scalar_painter; eFresnelThinFilmConductor only)"; }
 						{ auto& p = P(); p.name = "film_extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide k (scalar_painter; eFresnelThinFilmConductor only; default 0/none = transparent film)"; }
 						{ auto& p = P(); p.name = "film_thickness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide thickness in nm (scalar_painter, may be spatially varying; eFresnelThinFilmConductor only)"; }
+						{ auto& p = P(); p.name = "tangent_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Anisotropy tangent-frame rotation in RADIANS: a colour-painter reference (an expression_function2d gives a SPATIALLY-VARYING field, e.g. groove direction) OR an inline scalar.  \"none\" = aligned with the geometry tangent.  Resolved in the colour-painter manager, so a scalar_painter does NOT bind here -- use expression_function2d or a scalar.  Steers alphax!=alphay anisotropy."; p.defaultValueHint = "none"; }
 						return cd;
 					}();
 					return d;
