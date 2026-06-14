@@ -425,9 +425,13 @@ Scalar SDFGeometry::Map( const Point3& p ) const
 		const Scalar vv=v<0?Scalar(0):(v>1?Scalar(1):v);
 		const Scalar hgt=m_hfScale*( m_pHeightfield ? m_pHeightfield->Evaluate(uu,vv) : Scalar(0) );
 		Scalar d=(p.z-hgt)/m_hfLip;
-		const Scalar ox=std::fabs(p.x)-R, oy=std::fabs(p.y)-R;
-		if( ox>0 || oy>0 ){ const Scalar hx=ox>0?ox:Scalar(0), hy=oy>0?oy:Scalar(0);
-			const Scalar horiz=std::sqrt(hx*hx+hy*hy); if(horiz>d) d=horiz; }
+		// Clip the heightfield to a CIRCULAR disk of radius R (matching the
+		// cartesian_disk base, so the silhouette matches the mesh/bump dials):
+		// intersect the below-surface half-space with the disk-edge cylinder.
+		// rho>0 outside the disk -> the trace sees the vertical rim, not the
+		// extrapolated field; max() of two valid lower bounds stays conservative.
+		const Scalar rho=std::sqrt(p.x*p.x+p.y*p.y)-R;
+		if( rho>d ) d=rho;
 		return d;
 	}
 
