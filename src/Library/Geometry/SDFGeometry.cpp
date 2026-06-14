@@ -625,6 +625,23 @@ void SDFGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 
 	ri.ptCoord = ( m_isHeightfield ? Point2( (hp.x+m_hfRadius)/(2*m_hfRadius), (hp.y+m_hfRadius)/(2*m_hfRadius) ) : cylUV( hp, m_bbox ) );
 
+	// Heightfield mode shares the cartesian_disk's linear UV
+	// ((x+R)/2R,(y+R)/2R), so it must also share the disk's shading
+	// tangent so a common anisotropic `tangent_rotation` (the groove-
+	// direction flash) aligns on both realizations.  The default ONB
+	// (CreateFromW) derives the u-axis from cross(normal, canonical-Y),
+	// which SWIMS as the per-groove normal tilts -- an incoherent base
+	// frame.  Ask Object::IntersectRay to instead build the u-axis from
+	// world-X projected into the (world-space) shading-normal plane, the
+	// same direction the flat disk's constant-+Z normal yields.  We only
+	// raise the flag here (object-space normal isn't world-space yet);
+	// the projection happens in Object::IntersectRay once vNormal has
+	// been transformed.  Parts/CSG mode leaves the flag at its default
+	// false and is byte-identical.
+	if( m_isHeightfield ) {
+		ri.bShadingTangentFromGeometry = true;
+	}
+
 	if( bComputeExitInfo )
 	{
 		Scalar tEx;
