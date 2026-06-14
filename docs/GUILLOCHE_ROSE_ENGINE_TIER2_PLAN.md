@@ -157,7 +157,7 @@ groove_dir(r,θ) = tangent of the locus  ≈  ⟂∇depth  # radians, for anisot
 |---|---|---|
 | Pattern generation | evolve `tests/GuillocheDialExpr.h` → emit physical `height` + `groove_dir` from calibrated params | evolve |
 | Real groove geometry | `expression_function2d(height)` → `displaced_geometry` on a **fine** `cartesian_disk` (Phase-0-sized `mesh_n`) | exists |
-| Directional sheen | `expression_function2d(groove_dir)` → GGX **`tangent_rotation`** (`Job.cpp:3435,3523`) + anisotropic `alphax≠alphay` | exists |
+| Directional sheen | `expression_function2d(groove_dir)` → GGX **`tangent_rotation`** + anisotropic `alphax≠alphay` | **BRDF+Job done & validated**; one **parser gap** — see §7 Phase 0 findings |
 | Heat colour | existing TiO₂/Ti thin-film + `oxide_thk` | keep |
 
 The whole dial stays **procedural and parametric**; nothing baked to disk.
@@ -191,6 +191,77 @@ family — grounded in engine-turning references + the Lightning. All are builde
   - Confirm `tangent_rotation` painter authoring end-to-end on GGX; confirm TBN/tangent on the
     displaced Cartesian disk is correct so anisotropy aligns to the grooves.
   - Confirm a finely displaced dial round-trips through the deferral path (realize, render, free).
+
+### Phase 0 findings (recorded as measured)
+
+**P0-A — groove-aligned anisotropy is authorable end-to-end, with one precisely-scoped gap (the central de-risk; GREEN).**
+The full chain is *already in-tree and validated*:
+1. `cartesian_disk` emits linear UV ((x,y)/2R), so `TriangleMeshGeometry`
+   (`TriangleMeshGeometry.cpp:523-546`) derives a **coherent** `sd.dpdu` (≈ world-x) across the
+   whole dial — a stable base tangent for anisotropy to rotate from.
+2. `DisplacedGeometry` **preserves UVs** through the bake (`DisplacedGeometry.cpp:247`
+   `m_pMesh->AddTexCoords(coords)`), so the displaced mesh keeps that frame.
+3. The GGX BRDF **rotates** that tangent by a `tangent_rotation` painter
+   (`GGXBRDF.cpp` `ResolveTangentONB`→`RotateTangent`); `Job::AddGGXMaterial` (`Job.cpp:3435`)
+   already resolves a painter/scalar and forwards it to the GGX ctor. This path is exercised and
+   validated by the KHR-anisotropy round-2 fix in `AddPBRMetallicRoughnessMaterial`
+   (`Job.cpp:3850-3857`: `anisotropy_rotation` → `tangent_rotation` → GGX). **The parser Describe
+   comment at `AsciiSceneParser.cpp:3890` ("reads but does not yet APPLY … wired in L12") is STALE**
+   — the rotation *is* applied.
+4. **The only gap:** the dial's chunk, `ggx_material`, hard-codes `tangent_rotation="none"` at its
+   `AddGGXMaterial` call (`AsciiSceneParser.cpp:3784`) and doesn't expose the param. It *does* expose
+   `alphax`/`alphay` directly (3817-3818), so anisotropic α is authorable today but locked to the
+   base tangent (un-steerable). → **Fix is a ~3-line append-only parser exposure** (add a
+   `tangent_rotation` Describe param defaulting `"none"`, read it, pass instead of the literal
+   `"none"`). No BRDF/material/ABI change. Lands in **Phase 2** with the dial wiring; default `"none"`
+   keeps every existing `ggx_material` scene bit-identical.
+
+**P0-D — deferral round-trip: SATISFIED by construction.** The dial geometry is a `DisplacedGeometry`,
+which is exactly the type Phase-1 deferral covers (realize-pass bake; `DeferredRealizeTest` already
+proves displaced realize/render/free). A finer `mesh_n` only changes triangle count, not the path.
+
+**P0-B — mesh-resolution NDF sweep (measured; `var_test/p0_mesh_sweep.py`, single-frequency 0.20 mm-pitch
+V-groove patch, face_normals TRUE, sharp conductor under a grazing across-groove key — the most
+stringent normal-sensitivity test).** Convergence read on a location-free luminance-histogram EMD (the
+NDF signature) vs the moving-firefly per-pixel RMSE:
+
+| verts / pitch | histEMD vs prev | blurred-envelope Δ |
+|---|---|---|
+| 6  | 0.0183 | — |
+| **12** | **0.0024** (7.5× drop — knee) | still refining |
+| 24 | 0.0030 | refining |
+| 36 | 0.0014 | — |
+| 48–97 | 0.0009–0.0013 (MC noise floor) | slowly settling |
+
+→ **The groove normal-distribution converges at ~12 verts/pitch; sharp-highlight *position* keeps
+refining, so ~16–24 v/pitch is the safe production target.** Mapping to the full ⌀ dial (R = 20.6) at the
+**target 0.20 mm pitch**: 16 v/p ⇒ `mesh_n ≈ 2600` (~11 M tris); 24 v/p ⇒ `mesh_n ≈ 3900` (~24 M tris).
+(The *current* coarse dial at 0.71 mm pitch / `mesh_n 880` already sits at ~19 v/p — adequately
+resolved *for its pitch*; the fidelity gap is the pitch being 3–7× too coarse, **not** under-tessellation.)
+
+**P0-B memory wall (the decisive constraint).** Measured peak RSS (`/usr/bin/time -l`): the probe at
+`mesh_n 1536` (2.36 M tris) peaks at **4.19 GB** ⇒ **~1.78 KB / triangle** (bake-time coord/normal copies
+in `DisplacedGeometry::BuildMesh` + per-mesh BVH scratch). Extrapolated, a full-dial 0.20 mm-pitch mesh
+(11–24 M tris) would peak at **~19–43 GB transient bake RSS** — at/over the ceiling of a typical machine.
+Deferral makes it *transient* (only the rendered dial bakes, freed after) but does not lower the peak.
+**Tier-2 at true fine pitch must therefore do one of:** (a) accept a coarser ~0.30 mm pitch (≈ 4.7 M tris
+→ ~8 GB); (b) cut the ~1.78 KB/tri bake overhead (it is bloated — streaming / in-place displacement
+could halve it); (c) region-tessellate only the visible dial annulus; or (d) lean on the SDF (Tier 3),
+which sidesteps the wall. This makes the **SDF benchmark potentially load-bearing, not optional.**
+
+**P0-C — SDF cost-profile probe (measured) + a blocker for the swept-V benchmark.** Two findings:
+1. **No periodic/swept SDF primitive exists today.** `SDFGeometry::ParsePartLines`
+   (`SDFGeometry.cpp:1262`) implements only `sphere|box|roundbox|cylinder|torus|capsule|roundcone`;
+   `gyroid`/`menger` appear in the parser enum but are **not** wired in the part parser. A faithful
+   swept-V groove field is therefore **not authorable with current parts** — building it *is* the Tier-3
+   work (a new swept/periodic primitive), so the apples-to-apples cost comparison belongs to Phase 5,
+   not Phase 0.
+2. **Cost-profile contrast confirmed** (the input to the Tier-3 decision): an existing SDF scene
+   (`sdf_shadows`) renders in 2.2 s at **0.30 GB** peak RSS vs the 2.36 M-tri mesh's 4.1 s at **4.19 GB**
+   — ~14× less memory at this scale, and *constant* in surface complexity (the SDF stores ~a dozen part
+   params; the mesh stores millions of verts+normals+BVH). Trace time is comparable here but a *fine*
+   swept-V SDF will be march-heavier — the canonical "memory-light / trace-heavy" profile, the opposite
+   of the mesh. This is exactly the trade the Phase-5 benchmark must quantify.
 - **Phase 1 — physical generator.** Evolve `GuillocheDialExpr.h` to emit `height` + `groove_dir` from
   calibrated rose-engine params; oracle-test the math.
 - **Phase 2 — wire the dial.** Fine displaced mesh + anisotropic GGX (`tangent_rotation`), keep
@@ -245,20 +316,34 @@ hero-only SDF path earns its trace cost. The output is a **number**, not an opin
 
 ## 10. Tier 3 (SDF) — exactness benchmark
 
-We already ship `sdf_geometry` (sphere-tracer). Tier 3 = dial as **flat base − swept-V cutter volume**
-along the kinematic loci: exact sharp V, arbitrary fine pitch, no tessellation limit; memory-light,
-trace-heavy. Scope it **only as the Phase-4 ground truth** for the objective L2-vs-L3 comparison —
-promoted to a production path only if §9 metric 3 says the exactness measurably matters.
+We already ship `sdf_geometry` (sphere-tracer), but **Phase-0 P0-C found it has no periodic/swept
+primitive** — `ParsePartLines` implements only sphere/box/roundbox/cylinder/torus/capsule/roundcone, so
+the first Tier-3 task is a **new swept-V / periodic part** (the dial as **flat base − swept-V cutter
+volume** along the kinematic loci: exact sharp V, arbitrary fine pitch, no tessellation limit).
+Measured profile (P0-C): SDF ~0.30 GB vs the 2.36 M-tri mesh's 4.19 GB and *constant* in surface
+complexity — memory-light, trace-heavy.
+
+**Reframing (Phase-0):** the §7 memory wall means the SDF is **no longer purely a back-pocket
+benchmark** — it may be the *only* way to reach true 0.10–0.20 mm pitch without a multi-tens-of-GB bake.
+Still scoped as the Phase-5 ground truth for the objective L2-vs-L3 comparison, but promote it to a
+hero-still production path if either §9 metric 3 *or* the memory wall says so.
 
 ---
 
 ## 11. Risks
-- **Triangle budget** of a finely displaced dial (memory/build) — Phase 0 sizes it to the minimum
-  that resolves the cut.
-- **TBN/tangent correctness** on the displaced Cartesian disk — anisotropy must align to grooves
-  (Phase 0).
+- **⚠ Bake memory wall (Phase-0 measured, ESCALATED to top risk).** A full-dial 0.20 mm-pitch mesh is
+  11–24 M tris ⇒ **~19–43 GB transient bake RSS** at the measured ~1.78 KB/tri (§7 P0-B). At/over a
+  typical machine's ceiling. Mitigations in priority order: coarser ~0.30 mm pitch (~8 GB) for the
+  production default; trim the `BuildMesh` per-triangle overhead; region-tessellate the visible annulus;
+  or route hero stills through the SDF (Tier 3). **This is now the gating constraint on how fine Tier 2
+  can go**, and it materially raises the value of the Tier-3 benchmark.
+- **Triangle budget** — Phase-0-sized: NDF converges at ~12 v/pitch, ~16–24 v/pitch for sharp
+  highlights (§7 P0-B). RESOLVED as a *number*; the open question is the memory wall above, not the count.
+- **TBN/tangent correctness** on the displaced Cartesian disk — **RESOLVED (Phase-0 P0-A):** disk linear
+  UV → coherent `dpdu`, preserved through the displaced bake; the one gap is exposing `tangent_rotation`
+  on `ggx_material` (~3-line parser add, lands in P2).
 - **`groove_dir` per family** — analytic tangent differs per pattern (swirl/iris trickier than
-  concentric).
+  concentric). Open; Phase 1 generator work.
 - **V-angle vs render read** — calibrated defaults may need art-direction for the camera/lighting rig.
 
 ---
@@ -269,3 +354,9 @@ promoted to a production path only if §9 metric 3 says the exactness measurably
 - **Tier 2 production geometry = fine displaced triangle mesh.** **Tier 3 SDF = exactness benchmark.**
 - **Hybrid calibration** (physical defaults + knobs).
 - **Doc-first, then Phase 0 measurement bake-off.**
+- **Phase-0 outcome (measured 2026-06-13):** anisotropy authoring is viable end-to-end (one ~3-line
+  parser exposure, P0-A); the groove NDF converges at ~12–24 v/pitch (P0-B); but a full-dial fine-pitch
+  mesh hits a **~19–43 GB bake-memory wall** (P0-B) and the SDF has **no swept primitive yet** (P0-C).
+  Net: proceed with Tier 2 at a **~0.30 mm production pitch** (memory-safe) while treating the **SDF
+  swept-V benchmark as elevated priority** — it is the candidate path to the finest pitches. No feature
+  code landed in Phase 0 (probe harness in `var_test/`, gitignored).
