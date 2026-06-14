@@ -79,6 +79,15 @@ file_rasterizeroutput
 {
 	pattern				rendered/watch_dial
 	multiple			TRUE
+	type				EXR
+	color_space			Rec709RGB_Linear
+}
+
+# LDR quick-look twin of the EXR above (sRGB 8-bit PNG).
+file_rasterizeroutput
+{
+	pattern				rendered/watch_dial_ldr
+	multiple			TRUE
 	type				PNG
 	bpp				8
 	color_space			sRGB
@@ -403,6 +412,17 @@ expression_function2d
 	expr				clamp((g-g0)/(g1-g0),0,1)
 }
 
+# Ming "Lightning" oxide ramp -- non-linear radial smoothstep ladder
+# (centre warm -> rim deep) feeding oxide_thk; ported from the dialed-in
+# standalone (var_test/ming_lightning).  Used ONLY by the lightning dial.
+expression_function2d
+{
+	name				oxide_fn_lightning
+	param				R 20.6
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	expr				clamp((4*smoothstep(0,0.16,rho)+3*smoothstep(0.16,0.82,rho)+5*smoothstep(0.82,1.0,rho))/12,0,1)
+}
+
 # Per-base-metal oxide doses (per-metal activation energy -> different radial
 # curvature).  Wired into oxide_thk_<metal>.
 expression_function2d
@@ -479,9 +499,9 @@ expression_function2d
 scalar_painter
 {
 	name				oxide_thk
-	function2d			oxide_fn
-	scale				28.0
-	bias				30.0
+	function2d			oxide_fn_lightning
+	scale				19.0
+	bias				21.0
 }
 
 # --- COLOUR PALETTES (Ti temper windows; swap via the dial's film_thickness) ---
@@ -1074,13 +1094,15 @@ expression_function2d
 	param		landLevel 0.5
 	param		reliefDepth 0.85
 	param		centerRadius 0.015
-	param		lightningLo 0.45
-	param		lightningHi 0.65
-	param		lightningRelief 0.6
+	param		lightningLo 0.48
+	param		lightningHi 0.60
+	param		lightningRelief 0.72
 	param		cellScale 0.6
 	param		zigzagAmp 0.16
 	param		zigzagFreq 3
 	param		fieldCell 0.5
+	param		lineCell 0.32
+	param		lineTilt 0.55
 	param		rungLen 0.65
 	param		rungWidth 0.82
 	def			x (2*u-1)*R
@@ -1099,7 +1121,9 @@ expression_function2d
 	def			ss sin(thetaC)
 	def			xr cc*x+ss*y
 	def			yr -ss*x+cc*y
-	def			inside clamp(abs(cos(tau*((0.5/fieldCell)*x)))/gridE1,0,1)*clamp(abs(cos(tau*((0.5/fieldCell)*y)))/gridE1,0,1)
+	def			seg sign(2*frac(zigzagFreq*rho)-1)
+	def			perp cos(lineTilt)*yr-seg*sin(lineTilt)*xr
+	def			inside clamp(abs(cos(tau*((0.5/lineCell)*perp)))/gridE1,0,1)
 	def			between clamp(abs(cos(tau*((0.5/rungLen)*xr)))/gridE1,0,1)*clamp(abs(cos(tau*((0.5/rungWidth)*yr)))/gridE1,0,1)
 	def			grid between*(1-mask)+inside*mask
 	def			raw base+petalAmp*mask+gridAmp*grid+lightningRelief*mask
