@@ -222,8 +222,8 @@ namespace RISE
 		//! BEFORE the parallel rasterize — RISE's scene is immutable during
 		//! the parallel pass, so expensive build work (e.g. tessellating +
 		//! baking a displaced mesh) cannot happen lazily on the const hot
-		//! path.  Idempotent: a second call is a no-op once IsRealized() is
-		//! true.  Composite geometries (DisplacedGeometry) must CASCADE —
+		//! path.  Idempotent: a second call is a no-op once realized.
+		//! Composite geometries (DisplacedGeometry) must CASCADE —
 		//! realize their base(s) first.
 		//!
 		//! `const` because realization materializes a build-time cache that
@@ -232,12 +232,6 @@ namespace RISE
 		//! ObjectManager::PrepareForRendering, also const).  Default: cheap
 		//! geometries (sphere, mesh, ...) are always realized — no-op.
 		virtual void Realize() const {}
-
-		//! Whether Realize() has nothing left to do.  Cheap geometries are
-		//! always realized (default true); a deferred composite returns
-		//! false until its mesh is baked.  Declared last + defaulted so
-		//! every existing IGeometry vtable slot stays ABI-stable.
-		virtual bool IsRealized() const { return true; }
 	};
 }
 

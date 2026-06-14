@@ -26,7 +26,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
-#include "../Utilities/Deferred.h"
+#include "../Utilities/RenderParallelScope.h"
 #include "BDPTRasterizerBase.h"
 #include "../Lights/LightSampler.h"
 #include "../RasterImages/RasterImage.h"
@@ -1052,7 +1052,7 @@ void BDPTRasterizerBase::RasterizeScene(
 			RasterizeBlockDispatcher dispatcher( RuntimeContext::PASS_NORMAL, *pImage, pScene, *pRasterSequence, *this, pProgressFunc, 0, 0, 0 );
 
 			ThreadPool& pool = GlobalThreadPool();
-			// Freeze guard (Deferred.h): all geometry is realized single-threaded in
+			// Freeze guard (RenderParallelScope.h): all geometry is realized single-threaded in
 			// RayCaster::AttachScene; assert (DEBUG) if a worker realizes mid-render.
 			RenderParallelScope renderParallelScope;
 			pool.ParallelFor( static_cast<unsigned int>( threads ), [&dispatcher]( unsigned int /*workerIdx*/ ) {

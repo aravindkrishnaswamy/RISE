@@ -443,7 +443,7 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\DiskBuffer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Utilities\Deferred.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\RenderParallelScope.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\DynamicProperties.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\GeometricUtilities.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\BSSRDFSampling.cpp" />
@@ -954,7 +954,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.h" />
-    <ClInclude Include="..\..\..\src\Library\Utilities\Deferred.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\RenderParallelScope.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DynamicProperties.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\GeometricUtilities.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\HermiteInterpolator.h" />

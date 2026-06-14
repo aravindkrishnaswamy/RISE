@@ -243,7 +243,7 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Utilities\Deferred.cpp">
+    <ClCompile Include="..\..\..\src\Library\Utilities\RenderParallelScope.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\DynamicProperties.cpp">
@@ -1146,7 +1146,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.h">
       <Filter>Utilities</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Utilities\Deferred.h">
+    <ClInclude Include="..\..\..\src\Library\Utilities\RenderParallelScope.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\DynamicProperties.h">

@@ -76,7 +76,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
-#include "../Utilities/Deferred.h"
+#include "../Utilities/RenderParallelScope.h"
 #include "MLTRasterizer.h"
 #include "../RasterImages/RasterImage.h"
 #include "../Utilities/Profiling.h"
@@ -1017,7 +1017,7 @@ bool MLTRasterizer::RenderFrameOfMLT(
 			std::atomic<unsigned int> nextChain( 0 );
 			ThreadPool& pool = GlobalThreadPool();
 
-			// Freeze guard (Deferred.h): all geometry is realized single-threaded in
+			// Freeze guard (RenderParallelScope.h): all geometry is realized single-threaded in
 			// RayCaster::AttachScene; assert (DEBUG) if a worker realizes mid-render.
 			RenderParallelScope renderParallelScope;
 			pool.ParallelFor( static_cast<unsigned int>( threads ),

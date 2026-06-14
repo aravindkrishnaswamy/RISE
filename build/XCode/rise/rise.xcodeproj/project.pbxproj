@@ -661,8 +661,8 @@
 		F24B74162F52A632008304C4 /* DiskFileReadBuffer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A06069C42900069C9E5 /* DiskFileReadBuffer.h */; };
 		F24B74172F52A632008304C4 /* DiskFileWriteBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A07069C42900069C9E5 /* DiskFileWriteBuffer.cpp */; };
 		F24B74182F52A632008304C4 /* DiskFileWriteBuffer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A08069C42900069C9E5 /* DiskFileWriteBuffer.h */; };
-		DEFE44ED00000000000000C1 /* Deferred.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F1 /* Deferred.cpp */; };
-		DEFE44ED00000000000000C2 /* Deferred.h in Sources */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F2 /* Deferred.h */; };
+		DEFE44ED00000000000000C1 /* RenderParallelScope.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F1 /* RenderParallelScope.cpp */; };
+		DEFE44ED00000000000000C2 /* RenderParallelScope.h in Sources */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F2 /* RenderParallelScope.h */; };
 		F24B74192F52A632008304C4 /* DynamicProperties.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A09069C42900069C9E5 /* DynamicProperties.cpp */; };
 		F24B741A2F52A632008304C4 /* DynamicProperties.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A0A069C42900069C9E5 /* DynamicProperties.h */; };
 		F24B741B2F52A632008304C4 /* GeometricUtilities.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A0B069C42900069C9E5 /* GeometricUtilities.cpp */; };
@@ -1318,8 +1318,8 @@
 		F27F0C61069C42910069C9E5 /* DiskFileReadBuffer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A06069C42900069C9E5 /* DiskFileReadBuffer.h */; };
 		F27F0C62069C42910069C9E5 /* DiskFileWriteBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A07069C42900069C9E5 /* DiskFileWriteBuffer.cpp */; };
 		F27F0C63069C42910069C9E5 /* DiskFileWriteBuffer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A08069C42900069C9E5 /* DiskFileWriteBuffer.h */; };
-		DEFE44ED00000000000000D1 /* Deferred.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F1 /* Deferred.cpp */; };
-		DEFE44ED00000000000000D2 /* Deferred.h in Headers */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F2 /* Deferred.h */; };
+		DEFE44ED00000000000000D1 /* RenderParallelScope.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F1 /* RenderParallelScope.cpp */; };
+		DEFE44ED00000000000000D2 /* RenderParallelScope.h in Headers */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F2 /* RenderParallelScope.h */; };
 		F27F0C64069C42910069C9E5 /* DynamicProperties.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A09069C42900069C9E5 /* DynamicProperties.cpp */; };
 		F27F0C65069C42910069C9E5 /* DynamicProperties.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A0A069C42900069C9E5 /* DynamicProperties.h */; };
 		F27F0C66069C42910069C9E5 /* GeometricUtilities.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A0B069C42900069C9E5 /* GeometricUtilities.cpp */; };
@@ -2474,8 +2474,8 @@
 		F27F0A06069C42900069C9E5 /* DiskFileReadBuffer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DiskFileReadBuffer.h; sourceTree = "<group>"; };
 		F27F0A07069C42900069C9E5 /* DiskFileWriteBuffer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DiskFileWriteBuffer.cpp; sourceTree = "<group>"; };
 		F27F0A08069C42900069C9E5 /* DiskFileWriteBuffer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DiskFileWriteBuffer.h; sourceTree = "<group>"; };
-		DEFE44ED00000000000000F1 /* Deferred.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Deferred.cpp; sourceTree = "<group>"; };
-		DEFE44ED00000000000000F2 /* Deferred.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Deferred.h; sourceTree = "<group>"; };
+		DEFE44ED00000000000000F1 /* RenderParallelScope.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RenderParallelScope.cpp; sourceTree = "<group>"; };
+		DEFE44ED00000000000000F2 /* RenderParallelScope.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RenderParallelScope.h; sourceTree = "<group>"; };
 		F27F0A09069C42900069C9E5 /* DynamicProperties.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DynamicProperties.cpp; sourceTree = "<group>"; };
 		F27F0A0A069C42900069C9E5 /* DynamicProperties.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DynamicProperties.h; sourceTree = "<group>"; };
 		F27F0A0B069C42900069C9E5 /* GeometricUtilities.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GeometricUtilities.cpp; sourceTree = "<group>"; };
@@ -3894,8 +3894,8 @@
 				F27F0A06069C42900069C9E5 /* DiskFileReadBuffer.h */,
 				F27F0A07069C42900069C9E5 /* DiskFileWriteBuffer.cpp */,
 				F27F0A08069C42900069C9E5 /* DiskFileWriteBuffer.h */,
-				DEFE44ED00000000000000F1 /* Deferred.cpp */,
-				DEFE44ED00000000000000F2 /* Deferred.h */,
+				DEFE44ED00000000000000F1 /* RenderParallelScope.cpp */,
+				DEFE44ED00000000000000F2 /* RenderParallelScope.h */,
 				F27F0A09069C42900069C9E5 /* DynamicProperties.cpp */,
 				F27F0A0A069C42900069C9E5 /* DynamicProperties.h */,
 				F27F0A0B069C42900069C9E5 /* GeometricUtilities.cpp */,
@@ -4666,7 +4666,7 @@
 				F27F0C5F069C42910069C9E5 /* DiskBuffer.h in Headers */,
 				F27F0C61069C42910069C9E5 /* DiskFileReadBuffer.h in Headers */,
 				F27F0C63069C42910069C9E5 /* DiskFileWriteBuffer.h in Headers */,
-				DEFE44ED00000000000000D2 /* Deferred.h in Headers */,
+				DEFE44ED00000000000000D2 /* RenderParallelScope.h in Headers */,
 				F27F0C65069C42910069C9E5 /* DynamicProperties.h in Headers */,
 				F27F0C67069C42910069C9E5 /* GeometricUtilities.h in Headers */,
 				F27F0C68069C42910069C9E5 /* HermiteInterpolator.h in Headers */,
@@ -5142,7 +5142,7 @@
 				F27F0C5E069C42910069C9E5 /* DiskBuffer.cpp in Sources */,
 				F27F0C60069C42910069C9E5 /* DiskFileReadBuffer.cpp in Sources */,
 				F27F0C62069C42910069C9E5 /* DiskFileWriteBuffer.cpp in Sources */,
-				DEFE44ED00000000000000D1 /* Deferred.cpp in Sources */,
+				DEFE44ED00000000000000D1 /* RenderParallelScope.cpp in Sources */,
 				F24C54982F88556A009AF16D /* OptimalMISAccumulator.cpp in Sources */,
 				F27F0C64069C42910069C9E5 /* DynamicProperties.cpp in Sources */,
 				F2C5D5842F6EA5CF00546C97 /* MLTRasterizer.cpp in Sources */,
@@ -5978,8 +5978,8 @@
 				F24B74162F52A632008304C4 /* DiskFileReadBuffer.h in Sources */,
 				F24B74172F52A632008304C4 /* DiskFileWriteBuffer.cpp in Sources */,
 				F24B74182F52A632008304C4 /* DiskFileWriteBuffer.h in Sources */,
-				DEFE44ED00000000000000C1 /* Deferred.cpp in Sources */,
-				DEFE44ED00000000000000C2 /* Deferred.h in Sources */,
+				DEFE44ED00000000000000C1 /* RenderParallelScope.cpp in Sources */,
+				DEFE44ED00000000000000C2 /* RenderParallelScope.h in Sources */,
 				F24B74192F52A632008304C4 /* DynamicProperties.cpp in Sources */,
 				F24B741A2F52A632008304C4 /* DynamicProperties.h in Sources */,
 				F24B741B2F52A632008304C4 /* GeometricUtilities.cpp in Sources */,

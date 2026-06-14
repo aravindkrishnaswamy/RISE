@@ -36,7 +36,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Utilities/DiskBuffer.cpp"
     "${RISE_LIB}/Utilities/DiskFileReadBuffer.cpp"
     "${RISE_LIB}/Utilities/DiskFileWriteBuffer.cpp"
-    "${RISE_LIB}/Utilities/Deferred.cpp"
+    "${RISE_LIB}/Utilities/RenderParallelScope.cpp"
     "${RISE_LIB}/Utilities/DynamicProperties.cpp"
     "${RISE_LIB}/Utilities/GeometricUtilities.cpp"
     "${RISE_LIB}/Utilities/MediaPathLocator.cpp"

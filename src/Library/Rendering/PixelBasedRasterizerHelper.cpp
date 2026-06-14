@@ -31,7 +31,7 @@
 #include "ProgressiveFilm.h"
 #include "../RISE_API.h"
 #include "../Interfaces/IScenePriv.h"
-#include "../Utilities/Deferred.h"
+#include "../Utilities/RenderParallelScope.h"
 
 #include "FrameStore.h"  // L6c — needed unconditionally by AcquireRenderImage
 #ifdef RISE_ENABLE_OIDN
@@ -868,9 +868,9 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 		ThreadPool& pool = GlobalThreadPool();
 		const unsigned int numWorkers = static_cast<unsigned int>( threads );
 
-		// FREEZE GUARD (deferred realization, 2026-06-13): bracket the
-		// parallel pixel loop so Deferred<T>::force() asserts (DEBUG) if any
-		// thread tries to realize scene build-work mid-render.  The scene is
+		// FREEZE GUARD (deferred realization): bracket the parallel pixel
+		// loop so DisplacedGeometry::Realize() asserts (DEBUG) if any thread
+		// tries to realize scene build-work mid-render.  The scene is
 		// immutable here; all geometry must have been Realize()d already in
 		// RayCaster::AttachScene.  RAII so the gauge is released even if a
 		// worker throws.
@@ -1357,7 +1357,7 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 
 		ThreadPool& pool = GlobalThreadPool();
 		const unsigned int numWorkers = static_cast<unsigned int>( threads );
-		// Freeze guard (Deferred.h): all geometry is realized single-threaded in
+		// Freeze guard (RenderParallelScope.h): all geometry is realized single-threaded in
 		// RayCaster::AttachScene; assert (DEBUG) if a worker realizes mid-render.
 		RenderParallelScope renderParallelScope;
 		pool.ParallelFor( numWorkers, [&dispatcher]( unsigned int /*workerIdx*/ ) {

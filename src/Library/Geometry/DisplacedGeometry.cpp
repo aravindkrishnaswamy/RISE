@@ -19,7 +19,7 @@
 #include "../Utilities/Observable.h"
 #include <atomic>
 #include <cassert>
-#include "../Utilities/Deferred.h"
+#include "../Utilities/RenderParallelScope.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;

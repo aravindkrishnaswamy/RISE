@@ -42,8 +42,7 @@ namespace RISE
 		// If the base geometry's TessellateToMesh returns false (e.g. InfinitePlaneGeometry),
 		// Realize() logs an error and leaves the internal mesh null; all IGeometry query
 		// methods then degrade to "miss" / empty behavior (the release-mode guard-and-fail).
-		// IsValid() reports RECIPE validity (base non-null), known at construction; whether
-		// the mesh is actually built is IsRealized().
+		// IsValid() reports RECIPE validity (base non-null), known at construction.
 		class DisplacedGeometry : public Geometry
 		{
 		protected:
@@ -61,9 +60,8 @@ namespace RISE
 			// this geometry's recipe — base + displacement + scale + detail —
 			// and does not change the observable surface; same legitimate
 			// `mutable` lazy-cache pattern as ObjectManager's mutable pBVH).
-			// m_pMesh is the SOLE OWNER of the mesh; the Deferred wrapper holds
-			// only a borrowed copy and never frees it (see Deferred.h ownership
-			// note).  Realization is single-threaded (the freeze guard asserts
+			// m_pMesh is the SOLE OWNER of the mesh (freed in DestroyMesh + the
+			// dtor).  Realization is single-threaded (the freeze guard asserts
 			// this in debug), so the unlocked mutable write is safe.
 			mutable ITriangleMeshGeometryIndexed*    m_pMesh;
 			mutable bool                             m_bRealized;
@@ -118,18 +116,16 @@ namespace RISE
 			// at construction.  This is now a cheap recipe check, NOT a
 			// mesh-presence check — the mesh is built lazily by Realize(), so
 			// post-construction (pre-realize) the mesh is null but IsValid()
-			// is already true.  Use IsRealized() to ask whether the mesh has
-			// been baked.  (A base that can NEVER tessellate, e.g.
+			// is already true.  (A base that can NEVER tessellate, e.g.
 			// InfinitePlaneGeometry, makes IsValid() FALSE — refused at parse via
 			// the cheap CanTessellate() capability check, not deferred to bake.)
 			bool IsValid() const { return m_pBase != 0 && m_pBase->CanTessellate(); }
 
-			// IRealizable (IGeometry): deferred-realization entry points.  NOTE:
-			// IsRealized()==true means Realize() has RUN, not that a mesh exists —
-			// a failed bake (base TessellateToMesh false) leaves m_pMesh null with
-			// m_bRealized true; every query then guard-fails.  Null-check the mesh.
+			// IRealizable (IGeometry): deferred-realization entry point.  Realize()
+			// bakes the mesh once (idempotent via the internal m_bRealized flag).  A
+			// failed bake (base TessellateToMesh false) leaves m_pMesh null and every
+			// query guard-fails to miss/zero, so callers must null-check the mesh.
 			void Realize() const override;
-			bool IsRealized() const override { return m_bRealized; }
 
 			// A displaced geometry tessellates (re-emits its baked mesh) iff its
 			// base can — nested displaced-of-non-tessellatable is refused at parse.

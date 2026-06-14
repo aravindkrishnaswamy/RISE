@@ -52,7 +52,7 @@ SRCLIBUTILITIES =\
 	$(PATHLIBRARY)Utilities/DiskBuffer.cpp						\
 	$(PATHLIBRARY)Utilities/DiskFileReadBuffer.cpp				\
 	$(PATHLIBRARY)Utilities/DiskFileWriteBuffer.cpp				\
-	$(PATHLIBRARY)Utilities/Deferred.cpp						\
+	$(PATHLIBRARY)Utilities/RenderParallelScope.cpp						\
 	$(PATHLIBRARY)Utilities/DynamicProperties.cpp				\
 	$(PATHLIBRARY)Utilities/GeometricUtilities.cpp				\
 	$(PATHLIBRARY)Utilities/MediaPathLocator.cpp				\
