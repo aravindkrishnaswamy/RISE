@@ -41,6 +41,7 @@
 #include <fstream>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -59,6 +60,7 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 static int g_failures = 0;
+static std::vector<std::string> g_tmpScenes;  // removed at end of main
 
 static void Check( bool cond, const char* what )
 {
@@ -122,6 +124,7 @@ static std::string WriteSceneToTempFile( const char* sceneText, const char* tag 
 	}
 	ofs << sceneText;
 	ofs.close();
+	g_tmpScenes.push_back( path );
 	return std::string( path );
 }
 
@@ -294,7 +297,6 @@ static void TestDeferralAndCascade()
 	pJob->RemoveRasterizerOutputs();
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "deferred-realize test capture" );
-	pCap->addref();
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
 	const bool rendered = pJob->Rasterize();
@@ -340,7 +342,6 @@ static void TestIdempotentReRender()
 	pJob->RemoveRasterizerOutputs();
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "deferred-realize test capture B" );
-	pCap->addref();
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
 	pJob->Rasterize();
@@ -409,7 +410,6 @@ static void TestCSGOperandRealized()
 	pJob->RemoveRasterizerOutputs();
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "deferred-realize CSG capture" );
-	pCap->addref();
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 
 	Check( pJob->Rasterize(), "csg scene rendered" );
@@ -512,7 +512,6 @@ static void TestPathInstanceOfDisplaced()
 	pJob->RemoveRasterizerOutputs();
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "path-instance test capture" );
-	pCap->addref();
 	pJob->GetRasterizer()->AddRasterizerOutput( pCap );
 	Check( pJob->Rasterize(), "path-instance scene rendered" );
 	Check( pCap->maxLum > 0.0,
@@ -529,6 +528,8 @@ int main()
 	TestCSGOperandRealized();
 	TestPrepareForRenderingRealizes();
 	TestPathInstanceOfDisplaced();
+
+	for( const std::string& f : g_tmpScenes ) { std::remove( f.c_str() ); }
 
 	if( g_failures == 0 ) {
 		std::cout << "All DeferredRealize tests passed.\n";

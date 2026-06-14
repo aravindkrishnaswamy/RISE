@@ -1,6 +1,9 @@
 #include <iostream>
 #include <cassert>
 #include <cmath>
+#include <thread>
+#include <atomic>
+#include <vector>
 #include "../src/Library/Geometry/DisplacedGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Geometry/InfinitePlaneGeometry.h"
@@ -455,6 +458,50 @@ static void TestFaceNormalMeshDisplacesAlongFaceNormal()
 	pMesh->release();
 }
 
+//-----------------------------------------------------------------------------
+// Concurrency guard (review Finding 1): many threads calling Realize() at once
+// must BuildMesh() the instance EXACTLY once.  Models a GUI viewport render's
+// AttachScene racing a UI-thread PrepareForRendering/picking on the same, not-
+// yet-realized geometry.  Without the realize mutex, several threads pass the
+// !m_bRealized check and double-build (leak / refcount corruption).
+//-----------------------------------------------------------------------------
+static void TestConcurrentRealize()
+{
+	std::cout << "Test: concurrent Realize() bakes exactly once (thread-safety)...\n";
+
+	const Scalar R = 1.0;
+	SphereGeometry*    pSphere = new SphereGeometry( R );
+	ConstFunction2D*   pConst  = new ConstFunction2D( 1.0 );
+	DisplacedGeometry* pDisp   = new DisplacedGeometry(
+		pSphere, 24, pConst, 0.1, /*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
+	// NOT realized yet -- the threads below race the first Realize().
+
+	DisplacedGeometry::ResetBuildMeshCount();
+
+	const int N = 32;
+	std::atomic<int>  ready( 0 );
+	std::atomic<bool> go( false );
+	std::vector<std::thread> threads;
+	for( int i = 0; i < N; ++i ) {
+		threads.emplace_back( [&]{
+			ready.fetch_add( 1 );
+			while( !go.load() ) { }      // spin-barrier: maximise overlap
+			pDisp->Realize();
+		} );
+	}
+	while( ready.load() < N ) { }    // wait until all threads are armed
+	go.store( true );
+	for( std::thread& t : threads ) { t.join(); }
+
+	const unsigned int builds = DisplacedGeometry::GetBuildMeshCount();
+	assert( builds == 1 && "concurrent Realize() must BuildMesh exactly once" );
+	std::cout << "  [ok] " << N << " concurrent Realize() -> " << builds << " build (want 1)\n";
+
+	pDisp->release();
+	pConst->release();
+	pSphere->release();
+}
+
 int main()
 {
 	TestPureTessellationBBox();
@@ -466,6 +513,7 @@ int main()
 	TestUniformRandomPointOnSurface();
 	TestNestedComposition();
 	TestFaceNormalMeshDisplacesAlongFaceNormal();
+	TestConcurrentRealize();
 
 	std::cout << "All DisplacedGeometry tests passed.\n";
 	return 0;

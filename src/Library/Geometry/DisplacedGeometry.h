@@ -20,6 +20,8 @@
 #include "../Interfaces/IFunction2D.h"
 #include "../Interfaces/ITriangleMeshGeometry.h"
 #include "../Utilities/Observable.h"
+#include <atomic>
+#include <mutex>
 
 namespace RISE
 {
@@ -64,7 +66,12 @@ namespace RISE
 			// dtor).  Realization is single-threaded (the freeze guard asserts
 			// this in debug), so the unlocked mutable write is safe.
 			mutable ITriangleMeshGeometryIndexed*    m_pMesh;
-			mutable bool                             m_bRealized;
+			mutable std::atomic<bool>                m_bRealized;
+			// Serializes the actual bake so a GUI viewport render's AttachScene
+			// cannot race a UI-thread PrepareForRendering/picking into a double
+			// BuildMesh() of the same instance.  Uncontended in normal use; the
+			// hot path (IntersectRay) never takes it (reads the post-bake m_pMesh).
+			mutable std::mutex                       m_realizeMutex;
 
 			// Subscription to the displacement painter's Observable.  When the
 			// painter notifies (e.g. a keyframed `time` parameter changed),

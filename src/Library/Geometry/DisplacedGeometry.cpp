@@ -104,7 +104,7 @@ DisplacedGeometry::DisplacedGeometry(
 				// the painter's current state anyway.  Only refit once a mesh
 				// actually exists.  This callback is always single-threaded
 				// (editor / parse-time keyframe propagation).
-				if( m_bRealized ) {
+				if( m_bRealized.load( std::memory_order_acquire ) ) {
 					RefreshMeshVertices();
 				}
 			} );
@@ -135,30 +135,45 @@ DisplacedGeometry::~DisplacedGeometry()
 
 void DisplacedGeometry::Realize() const
 {
-	// Freeze guard (DEBUG): realization must run single-threaded BEFORE the
-	// parallel rasterize — the scene is immutable during it.  Trips if any
-	// worker thread reaches here mid-render; compiles out in release.
-	assert( g_renderParallelDepth.load( std::memory_order_relaxed ) == 0 &&
-		"DisplacedGeometry::Realize() during the parallel render \u2014 realize in RayCaster::AttachScene before the rasterize pass" );
-
-	// Idempotent: nothing to do once the mesh is baked.
-	if( m_bRealized ) {
+	// Fast path: already realized.  Acquire-load so the mesh another thread
+	// built under the lock is fully visible.  No lock for the common idempotent
+	// call (e.g. a UI-thread PrepareForRendering / picking on already-realized
+	// geometry while a viewport render runs on another thread).  The freeze
+	// assert is BELOW this early-return, not above it, so an idempotent no-op
+	// does NOT false-trip merely because a render is active.
+	if( m_bRealized.load( std::memory_order_acquire ) ) {
 		return;
 	}
 
+	// Serialize the actual bake.  RISE realizes single-threaded before the
+	// parallel rasterize, but a GUI can race a viewport render's AttachScene
+	// against a UI-thread PrepareForRendering; without this lock both could
+	// pass the !m_bRealized check and BuildMesh() the same instance (double
+	// alloc / refcount corruption).  Uncontended in normal single-threaded prepare.
+	std::lock_guard<std::mutex> realizeLock( m_realizeMutex );
+	if( m_bRealized.load( std::memory_order_relaxed ) ) {
+		return;
+	}
+
+	// DEBUG freeze guard: the bake itself must run single-threaded BEFORE the
+	// parallel rasterize (the scene is immutable during it).  Compiles out in release.
+	assert( g_renderParallelDepth.load( std::memory_order_seq_cst ) == 0 &&
+		"DisplacedGeometry::Realize() during the parallel render \u2014 realize in RayCaster::AttachScene before the rasterize pass" );
+
 	// CASCADE: a displaced base (another DisplacedGeometry) must be realized
 	// before we tessellate it — TessellateToMesh re-emits the base's internal
-	// mesh, which is null until the base is baked.  Realize() is a no-op for
-	// cheap bases (sphere, disk, ...).
+	// mesh, which is null until the base is baked.  No-op for cheap bases.
 	if( m_pBase ) {
 		m_pBase->Realize();
 	}
 
-	// Force the deferred bake.  Mark realized FIRST so a re-entrant query on
-	// the const hot path (or a painter notification fired by BuildMesh) sees
-	// the in-progress flag rather than recursing; BuildMesh sets m_pMesh.
-	m_bRealized = true;
 	BuildMesh();
+
+	// Mark realized AFTER BuildMesh (release, pairing the fast-path acquire).
+	// Setting it AFTER — not before — means the painter-observer callback's
+	// `if(m_bRealized)` guard sees FALSE during BuildMesh, so a notification
+	// fired mid-bake cannot recurse into RefreshMeshVertices -> BuildMesh.
+	m_bRealized.store( true, std::memory_order_release );
 }
 
 void DisplacedGeometry::BuildMesh() const

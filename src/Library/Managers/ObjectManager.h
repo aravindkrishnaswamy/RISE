@@ -59,6 +59,9 @@ namespace RISE
 			};
 			mutable ShadowCacheSlot* shadowCache;
 
+			// Realize all objects' deferred geometry (idempotent) before any bbox/
+			// TLAS query.  Called from PrepareForRendering AND CreateBVH/CreateOctree.
+			void RealizeAllObjects() const;
 			void CreateBVH() const;
 			void CreateOctree() const;
 

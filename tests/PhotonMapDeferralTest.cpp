@@ -32,6 +32,7 @@
 #include <fstream>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 #include "../src/Library/Interfaces/IJob.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
@@ -48,6 +49,7 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 static int g_failures = 0;
+static std::vector<std::string> g_tmpScenes;  // removed at end of main
 
 static void Check( bool cond, const char* what )
 {
@@ -91,6 +93,7 @@ static std::string WriteSceneToTempFile( const char* sceneText )
 	if( !ofs.is_open() ) return std::string();
 	ofs << sceneText;
 	ofs.close();
+	g_tmpScenes.push_back( path );
 	return std::string( path );
 }
 
@@ -138,7 +141,6 @@ static void TestPhotonShootGatedOnConsumer()
 
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "photon-deferral test capture" );
-	pCap->addref();
 
 	// 1. BDPT: own transport, never reads the maps -> the pending shoot must NOT
 	//    fire, and must remain pending for a later consuming rasterizer.
@@ -208,7 +210,6 @@ static void TestSpectralConsumerShoots()
 
 	CapturingRasterizerOutput* pCap = new CapturingRasterizerOutput();
 	GlobalLog()->PrintNew( pCap, __FILE__, __LINE__, "spectral photon-deferral capture" );
-	pCap->addref();
 
 	// Spectral NON-consumer (BDPT-spectral, own transport) -> no shoot, pending preserved.
 	const bool bdptOk = RenderWith( pJob, "bdpt_spectral_rasterizer", pCap );
@@ -233,6 +234,8 @@ int main()
 {
 	TestPhotonShootGatedOnConsumer();
 	TestSpectralConsumerShoots();
+
+	for( const std::string& f : g_tmpScenes ) { std::remove( f.c_str() ); }
 
 	if( g_failures == 0 ) {
 		std::cout << "All PhotonMapDeferral tests passed.\n";

@@ -43,8 +43,8 @@ namespace RISE
 	class RenderParallelScope
 	{
 	public:
-		RenderParallelScope()  { g_renderParallelDepth.fetch_add( 1, std::memory_order_relaxed ); }
-		~RenderParallelScope() { g_renderParallelDepth.fetch_sub( 1, std::memory_order_relaxed ); }
+		RenderParallelScope()  { g_renderParallelDepth.fetch_add( 1, std::memory_order_seq_cst ); }
+		~RenderParallelScope() { g_renderParallelDepth.fetch_sub( 1, std::memory_order_seq_cst ); }
 
 		RenderParallelScope( const RenderParallelScope& ) = delete;
 		RenderParallelScope& operator=( const RenderParallelScope& ) = delete;
