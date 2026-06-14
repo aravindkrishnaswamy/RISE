@@ -58,10 +58,10 @@ envelope error). Cost = wall time + peak RSS.
 |---|---|---:|---:|---:|---:|
 | **SDF** (exact) | head-on | 231 MB | 116 s | 0 (ref) | 0 % |
 | **mesh** (2.3 M tris) | head-on | **3002 MB** | 20 s | 0.297 | 68 % |
-| **bump** (engaged) | head-on | 234 MB | 13 s | 0.616 | —† |
+| **bump** (engaged) | head-on | 384 MB | 13 s | 0.458 | —† |
 | **SDF** (exact) | grazing | 231 MB | 61 s | 0 (ref) | 0 % |
 | **mesh** (2.3 M tris) | grazing | 3003 MB | 14 s | 0.328 | 22 % |
-| **bump** (engaged) | grazing | 234 MB | 9 s | 0.700 | —† |
+| **bump** (engaged) | grazing | 385 MB | 9 s | 0.862 | —† |
 
 † Bump rows **re-measured 2026-06-14** after fixing the modifier (see "Correction" below); RMSE-vs-SDF
 recomputed, envelope% (original blurRel harness) not re-run for these rows.  The earlier numbers
@@ -77,14 +77,14 @@ Reading the rows:
 - **Bump (now engaged) reproduces the head-on rosette but cannot fake relief at grazing.** With the
   modifier working (slope-matched, `normalize_gradient TRUE`), head-on the bump renders the *same*
   12-lobe guilloché structure as the exact SDF (smooth gradient normals, visually close — far cleaner
-  than the mesh's faceting). Its head-on RMSE-vs-SDF (0.62) is *higher* than the old flat-disk number
+  than the mesh's faceting). Its head-on RMSE-vs-SDF (0.46) is *higher* than the old flat-disk number
   (0.19) **not** because it's worse but because RMSE rewards the conditional mean: a featureless grey
   disk ≈ the SDF's average, so it scores low RMSE with *zero* structure, while the working bump carries
-  the real pattern (disk std 0.77 vs SDF 0.30 — comparable order, slightly over-contrasty because a
+  the real pattern (disk std 0.50 vs SDF 0.19 — comparable order, slightly over-contrasty because a
   flat disk presents every tilt at normal incidence). Read RMSE *with* the structure metric, never
-  alone. At **grazing** the bump improves on the flat limit (1.03 → 0.70) — the tilts do catch the rake
+  alone. At **grazing** the bump improves on the flat limit (1.03 → 0.86) — the tilts do catch the rake
   light — but it still has **no geometry**: no self-shadowing between grooves, no parallax, no
-  silhouette relief. That residual 0.70 is the irreducible cost of a normal-only fake, and it is
+  silhouette relief. That residual 0.86 is the irreducible cost of a normal-only fake, and it is
   exactly where the real engraving comes alive. The cost columns (O(1) memory, fastest render) hold.
 
 ## Correction (2026-06-14): the bump modifier was mis-configured, not broken
@@ -135,23 +135,31 @@ and is the *only* option at authentic fidelity.** The trade is concrete and meas
    signal. The exact SDF is the correct reference; the mesh's extra sparkle is tessellation noise that
    a viewer would (subtly) read as "CGI."
 
-4. **The cheapest approximation (bump) is disqualified by geometry, not cost.** It is the lightest and
-   fastest, and head-on it now genuinely reproduces the rosette (engaged + slope-matched) — visually
-   close to the exact SDF. But it has no relief, so at grazing it can only partly track the light
-   (RMSE 0.70) and never the occlusion/parallax/silhouette of real grooves. For a flat-on dial shot it
-   is a legitimate, fast proxy; for anything that tilts, it betrays itself.
+4. **The cheapest approximation (bump) is a real CONTENDER, bounded by geometry not cost (revised
+   2026-06-14).** It is the lightest (384 MB — O(1) in pitch, ~8× under the mesh) and fastest of the
+   three, and head-on it genuinely reproduces the rosette (engaged + slope-matched), visually close to
+   the exact SDF. Its only real limit is *relief*: with no geometry it can only partly track the rake
+   light at grazing (RMSE 0.86) and never the occlusion / parallax / silhouette of real grooves. So it
+   is a **suitable production choice for the scenes that fit its envelope** — head-on or shallow-tilt
+   views, memory- or throughput-constrained renders, real-time-ish previews, and many-dial scenes where
+   per-instance memory dominates — and only yields to the SDF when the shot tilts into grazing relief.
 
 **Recommendation for the GuillocheWatch dial:**
 - **Hero stills / any tilted or grazing view → SDF.** Exact, memory-light, the only path to authentic
   fine pitch. Eat the trace cost.
 - **Turntables / previews / coarse-pitch dials → displaced mesh** at a memory-safe `mesh_n`, accepting
   faceting and a ≤0.30 mm pitch.
-- **Bump → fine as a fast, memory-flat head-on proxy** (now that the modifier engages); not recommended
-  for a hero object viewed in 3-D, and never trust it at grazing (no relief).
+- **Bump → a suitable, memory-light option for head-on / shallow-tilt / preview / many-dial scenes**
+  (now that the modifier engages + slope-matches): lightest and fastest of the three, the rosette reads
+  correctly face-on. Reach past it to the SDF only when the shot tilts into grazing relief. Note: set
+  the flat base disk's `mesh_n` for a smooth rim — that is silhouette-only tessellation (a flat disk),
+  negligible memory, and unrelated to the bump detail (which is shading-time normal perturbation).
 
 The headline: **for an engine-turned dial rendered honestly at authentic pitch, the principled exact
 representation isn't a luxury — the approximation that would replace it (a fine mesh) doesn't fit in
-memory, and the one that does (bump) doesn't hold up when the dial tilts into the light.**
+memory, and the one that does (bump) doesn't hold up when the dial tilts into the light.  But for
+head-on or shallow-tilt scenes within a memory/throughput budget, bump is now a measured, legitimate
+choice — no longer ruled out, just bounded to where relief doesn't read.**
 
 ---
 
