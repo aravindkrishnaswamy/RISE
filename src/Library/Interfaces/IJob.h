@@ -3004,6 +3004,25 @@ namespace RISE
 			const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
 			) = 0;
 
+		//! Creates a HEIGHTFIELD SDF geometry: the exact analytic surface
+		//! z = scale*field(u,v) over the square [-radius,radius]^2
+		//! (u=(x+R)/2R, v=(y+R)/2R), sphere-traced with O(1) memory -- the
+		//! exact-geometry ground-truth twin of a `displaced_geometry` on a
+		//! `cartesian_disk_geometry` (which tessellates).  `heightfieldFunction`
+		//! names an already-registered IFunction2D (an expression_function2d,
+		//! noise, polynomial, composite, etc.).  Appended after AddSDFGeometry
+		//! per the append-only IJob tail (preserves every prior vtable slot).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddSDFHeightfieldGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const char* heightfieldFunction,		///< [in] Named IFunction2D giving f(u,v) in [0,1]
+			const double radius,					///< [in] Half-extent of the square domain (object units)
+			const double scale,						///< [in] World amplitude (surface z = scale*f(u,v))
+			const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+			const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+			const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
+			) = 0;
+
 
 		//! Creates a general profile sweep: a closed 2D profile polygon
 		//! swept along a 3D Catmull-Rom path with rotation-minimizing

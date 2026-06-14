@@ -798,6 +798,41 @@ namespace RISE
 		return true;
 	}
 
+	// Heightfield SDF: the exact analytic surface z = scale*field(u,v), sphere-
+	// traced.  Allocation mirrors RISE_API_CreateSDFGeometry exactly -- `new`
+	// (the Reference base seeds refcount 1, the caller's owning reference) +
+	// PrintNew; the constructor addref's `field`, so the caller keeps ownership
+	// of its own reference.  No explicit addref here (would leak a reference,
+	// just like the parts path above).
+	bool RISE_API_CreateSDFHeightfieldGeometry(
+						IGeometry**          ppGeometry,
+						const IFunction2D*   field,
+						const double         radius,
+						const double         scale,
+						const unsigned int   maxSteps,
+						const double         surfaceEpsilonFraction,
+						const unsigned int   samplingDetail
+						)
+	{
+		if( !ppGeometry ) {
+			return false;
+		}
+		*ppGeometry = 0;
+
+		if( !field ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSDFHeightfieldGeometry:: null heightfield function" );
+			return false;
+		}
+		if( !( radius > 0 ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSDFHeightfieldGeometry:: radius must be > 0" );
+			return false;
+		}
+
+		(*ppGeometry) = new SDFGeometry( field, Scalar(radius), Scalar(scale), maxSteps, Scalar(surfaceEpsilonFraction), samplingDetail );
+		GlobalLog()->PrintNew( *ppGeometry, __FILE__, __LINE__, "sdf heightfield geometry" );
+		return true;
+	}
+
 	// A FLAT Cartesian-grid circular disk with LINEAR Cartesian UV
 	// (u = (x+R)/2R, v = (y+R)/2R) and +Z normals -- the general flat base
 	// for displacing an arbitrary 2D field (an expression_function2d, a

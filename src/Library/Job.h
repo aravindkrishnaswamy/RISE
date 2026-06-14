@@ -1486,6 +1486,17 @@ namespace RISE
 					const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for surface sampling
 					);
 
+		//! Creates a heightfield SDF geometry from a named IFunction2D (see IJob)
+		bool AddSDFHeightfieldGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const char* heightfieldFunction,		///< [in] Named IFunction2D giving f(u,v)
+					const double radius,					///< [in] Half-extent of the square domain
+					const double scale,						///< [in] World amplitude
+					const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+					const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+					const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for surface sampling
+					);
+
 
 		//! Creates a general profile sweep (see IJob)
 		bool AddSweepGeometry(

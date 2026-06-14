@@ -236,12 +236,76 @@ SDFGeometry::SDFGeometry( const std::vector<Part>& parts, const unsigned int max
 	ComputeBounds();
 }
 
+// Heightfield mode: the analytic exact-surface twin of DisplacedGeometry.
+// Leaves m_parts empty -- Map()/ComputeBounds() take the heightfield branch.
+// The init list is in member-declaration ORDER (the new m_hf* members come
+// LAST in the header, after the sampling members), so -Wreorder stays quiet.
+SDFGeometry::SDFGeometry( const IFunction2D* field, const Scalar radius, const Scalar scale,
+	const unsigned int maxSteps, const Scalar surfaceEpsilonFraction, const unsigned int samplingDetail ) :
+	m_maxSteps( maxSteps > 0 ? maxSteps : 256 ),
+	m_epsFrac( surfaceEpsilonFraction > 0 ? surfaceEpsilonFraction : Scalar(5e-5) ),
+	m_eps( Scalar(1e-4) ),
+	m_diagonal( Scalar(1) ),
+	m_samplingDetail( samplingDetail < 8 ? 8 : ( samplingDetail > 256 ? 256 : samplingDetail ) ),
+	m_surfaceArea( 0 ),
+	m_isHeightfield( true ),
+	m_pHeightfield( field ),
+	m_hfRadius( radius ),
+	m_hfScale( scale ),
+	m_hfLip( 2 )
+{
+	if( m_pHeightfield ) m_pHeightfield->addref();
+	if( m_pHeightfield && m_hfScale != Scalar(0) ) {
+		const Scalar R = m_hfRadius; const int N = 128; const Scalar du = Scalar(1)/N;
+		Scalar maxg = 0;
+		for( int j=1; j<N; ++j ) for( int i=1; i<N; ++i ) {
+			const Scalar u=i*du, v=j*du, cx=u-Scalar(0.5), cy=v-Scalar(0.5);
+			if( cx*cx+cy*cy < Scalar(0.0144) ) continue;          // skip centre (0.12^2)
+			const Scalar f0=m_pHeightfield->Evaluate(u,v);
+			const Scalar fx=m_pHeightfield->Evaluate(std::min(u+du,Scalar(1)),v);
+			const Scalar fy=m_pHeightfield->Evaluate(u,std::min(v+du,Scalar(1)));
+			const Scalar gx=m_hfScale*(fx-f0)/du/(2*R), gy=m_hfScale*(fy-f0)/du/(2*R);
+			const Scalar g=std::sqrt(gx*gx+gy*gy); if(g>maxg) maxg=g;
+		}
+		// 1.5x safety factor: a 128-grid chord forward-difference UNDER-bounds
+		// the true gradient at sharp V-cusps (probe resolution sets the chord,
+		// not the wall slope), so the bare sqrt(1+maxg^2) lets the trace overstep
+		// the groove floors.  Over-bounding L = slightly smaller steps (a few more
+		// iters) but never overshoot.  Ceiling 256 keeps a runaway-step backstop.
+		m_hfLip = Scalar(1.5)*std::sqrt(Scalar(1)+maxg*maxg);
+		if(m_hfLip<Scalar(1)) m_hfLip=Scalar(1);
+		if(m_hfLip>Scalar(256)) m_hfLip=Scalar(256);
+	}
+	ComputeBounds();
+}
+
 SDFGeometry::~SDFGeometry()
 {
+	if( m_pHeightfield ) m_pHeightfield->release();
 }
 
 void SDFGeometry::ComputeBounds()
 {
+	if( m_isHeightfield ) {
+		const Scalar R=m_hfRadius;
+		const Scalar zlo=std::min(Scalar(0),m_hfScale), zhi=std::max(Scalar(0),m_hfScale);
+		Point3 mn(-R,-R,zlo), mx(R,R,zhi);
+		const Scalar dx0=mx.x-mn.x,dy0=mx.y-mn.y,dz0=mx.z-mn.z;
+		const Scalar diag0=std::sqrt(dx0*dx0+dy0*dy0+dz0*dz0);
+		const Scalar eps0=std::max(diag0*m_epsFrac,Scalar(1e-6));
+		const Scalar pad=std::max(Scalar(1e-3),Scalar(3)*eps0);
+		mn.x-=pad;mn.y-=pad;mn.z-=pad;mx.x+=pad;mx.y+=pad;mx.z+=pad;
+		m_bbox=BoundingBox(mn,mx);
+		const Scalar dx=mx.x-mn.x,dy=mx.y-mn.y,dz=mx.z-mn.z;
+		m_diagonal=std::sqrt(dx*dx+dy*dy+dz*dz);
+		// Surface band off the FEATURE size (z-amplitude), NOT the diagonal: the
+		// bbox diagonal is dominated by the 2R lateral extent, so m_diagonal*epsFrac
+		// is a band ~3% of a shallow groove's depth -> bisection smears the cusps and
+		// craters GGX contrast.  Tie it to |m_hfScale| (~0.5% of depth).
+		m_eps=std::max( std::fabs(m_hfScale)*Scalar(0.005), Scalar(1e-6) );
+		return;
+	}
+
 	// Order-aware AABB.  Map() folds the field as a strict LEFT FOLD over the
 	// parts -- d = op( d_prev, d_part ) for each part in declaration order -- so
 	// the bound must fold the SAME way on axis-aligned boxes, or it under-bounds
@@ -354,6 +418,19 @@ void SDFGeometry::ComputeBounds()
 
 Scalar SDFGeometry::Map( const Point3& p ) const
 {
+	if( m_isHeightfield ) {
+		const Scalar R=m_hfRadius;
+		const Scalar u=(p.x+R)/(2*R), v=(p.y+R)/(2*R);
+		const Scalar uu=u<0?Scalar(0):(u>1?Scalar(1):u);
+		const Scalar vv=v<0?Scalar(0):(v>1?Scalar(1):v);
+		const Scalar hgt=m_hfScale*( m_pHeightfield ? m_pHeightfield->Evaluate(uu,vv) : Scalar(0) );
+		Scalar d=(p.z-hgt)/m_hfLip;
+		const Scalar ox=std::fabs(p.x)-R, oy=std::fabs(p.y)-R;
+		if( ox>0 || oy>0 ){ const Scalar hx=ox>0?ox:Scalar(0), hy=oy>0?oy:Scalar(0);
+			const Scalar horiz=std::sqrt(hx*hx+hy*hy); if(horiz>d) d=horiz; }
+		return d;
+	}
+
 	Scalar d = Scalar(1e30);
 	for( size_t i = 0; i < m_parts.size(); ++i )
 	{
@@ -542,7 +619,7 @@ void SDFGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 	ri.vNormal = n;
 	ri.vGeomNormal = n;
 
-	ri.ptCoord = cylUV( hp, m_bbox );
+	ri.ptCoord = ( m_isHeightfield ? Point2( (hp.x+m_hfRadius)/(2*m_hfRadius), (hp.y+m_hfRadius)/(2*m_hfRadius) ) : cylUV( hp, m_bbox ) );
 
 	if( bComputeExitInfo )
 	{
@@ -863,7 +940,7 @@ bool SDFGeometry::TessellateToMesh(
 	for( size_t i = 0; i < verts.size(); ++i ) {
 		vertices.push_back( verts[i] );
 		normals.push_back( GradientNormal( verts[i] ) );
-		coords.push_back( cylUV( verts[i], m_bbox ) );
+		coords.push_back( ( m_isHeightfield ? Point2( (verts[i].x+m_hfRadius)/(2*m_hfRadius), (verts[i].y+m_hfRadius)/(2*m_hfRadius) ) : cylUV( verts[i], m_bbox ) ) );
 	}
 	for( size_t t = 0; t + 2 < idx.size(); t += 3 ) {
 		tris.push_back( MakeIndexedTriangleSameIdx( base + idx[t], base + idx[t+1], base + idx[t+2] ) );
@@ -1133,7 +1210,7 @@ void SDFGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* co
 
 	if( point )  { *point  = pSample; }
 	if( normal ) { *normal = GradientNormal( pSample ); }
-	if( coord )  { *coord  = cylUV( pSample, m_bbox ); }
+	if( coord )  { *coord  = ( m_isHeightfield ? Point2( (pSample.x+m_hfRadius)/(2*m_hfRadius), (pSample.y+m_hfRadius)/(2*m_hfRadius) ) : cylUV( pSample, m_bbox ) ); }
 }
 
 Scalar SDFGeometry::GetArea() const

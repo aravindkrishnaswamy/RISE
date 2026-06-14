@@ -5374,6 +5374,18 @@ namespace RISE
 					double eps = bag.GetDouble( "epsilon", 0.0 );
 					unsigned int samplingDetail = bag.GetUInt( "sampling_detail", 64 );
 
+					// Heightfield mode (analytic exact-surface twin of a displaced
+					// cartesian disk): when a heightfield_function is named, the SDF
+					// IS the surface z = heightfield_scale * f(u,v) over the square
+					// [-R,R]^2 -- sphere-traced, O(1) memory -- and the `part` / `file`
+					// path is bypassed entirely.
+					std::string hfFunction = bag.GetString( "heightfield_function", "none" );
+					double hfRadius = bag.GetDouble( "heightfield_radius", 1.0 );
+					double hfScale  = bag.GetDouble( "heightfield_scale", 0.0 );
+					if( hfFunction != "none" ) {
+						return pJob.AddSDFHeightfieldGeometry( name.c_str(), hfFunction.c_str(), hfRadius, hfScale, maxSteps, eps, samplingDetail );
+					}
+
 					// Inline `part` lines (repeatable, in authoring order) are
 					// joined into the newline-separated source that
 					// SDFGeometry::ParsePartLines understands.  The lines are
@@ -5403,6 +5415,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "maxsteps"; p.kind = ValueKind::UInt;     p.description = "Sphere-trace step cap"; p.defaultValueHint = "256"; }
 						{ auto& p = P(); p.name = "epsilon";  p.kind = ValueKind::Double;   p.description = "Surface hit epsilon as a fraction of the bbox diagonal (0 = auto)"; p.defaultValueHint = "0.0"; }
 						{ auto& p = P(); p.name = "sampling_detail"; p.kind = ValueKind::UInt; p.description = "Tessellation cells along the longest bbox axis for area-light / SSS surface sampling (clamped 8..256)"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "heightfield_function"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "HEIGHTFIELD MODE: a named IFunction2D giving f(u,v) in [0,1].  When set (not `none`), the SDF IS the exact analytic surface z = heightfield_scale*f(u,v) over the square [-heightfield_radius,heightfield_radius]^2 (sphere-traced, O(1) memory -- the exact-geometry twin of a displaced_geometry on a cartesian_disk_geometry); `part` / `file` are ignored"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "heightfield_radius"; p.kind = ValueKind::Double; p.description = "Heightfield mode: half-extent of the square domain (object units; u=(x+R)/2R)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "heightfield_scale"; p.kind = ValueKind::Double; p.description = "Heightfield mode: world amplitude of the field (surface z = heightfield_scale*f(u,v))"; p.defaultValueHint = "0.0"; }
 						return cd;
 					}();
 					return d;

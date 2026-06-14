@@ -29,6 +29,7 @@
 #define SDF_GEOMETRY_
 
 #include "Geometry.h"
+#include "../Interfaces/IFunction2D.h"	// heightfield mode field source (addref'd)
 #include <vector>
 #include <mutex>		// std::once_flag for the lazily-built surface-sampling structure
 
@@ -98,6 +99,14 @@ namespace RISE
 
 			SDFGeometry( const std::vector<Part>& parts, const unsigned int maxSteps, const Scalar surfaceEpsilonFraction, const unsigned int samplingDetail = 64 );
 
+			//! Heightfield mode: the exact analytic surface z = scale*field(u,v) over the
+			//! square [-radius,radius]^2 (u=(x+R)/2R, v=(y+R)/2R), sphere-traced -- no
+			//! tessellation, O(1) memory.  The exact-geometry ground truth twin of
+			//! DisplacedGeometry.
+			SDFGeometry( const IFunction2D* field, const Scalar radius, const Scalar scale,
+			             const unsigned int maxSteps, const Scalar surfaceEpsilonFraction,
+			             const unsigned int samplingDetail = 64 );
+
 		protected:
 			virtual ~SDFGeometry();
 
@@ -147,6 +156,16 @@ namespace RISE
 			mutable std::vector<SampleTri>  m_sampleTris;
 			mutable Scalar                  m_surfaceArea;
 			mutable unsigned int            m_missedFeatureCells = 0;	//!< definite-miss cells found by EnsureSamplingStructure's detector
+
+			// Heightfield mode (the analytic exact-surface twin of DisplacedGeometry).
+			// Declared LAST among data members so the heightfield ctor's init list
+			// (which leaves m_parts empty and sets only these) stays in declaration
+			// order without disturbing the parts-ctor's order above.
+			bool                m_isHeightfield = false;
+			const IFunction2D*  m_pHeightfield  = 0;	//!< height field f(u,v) in [0,1]; addref'd
+			Scalar              m_hfRadius      = 0;	//!< R: half-extent of the square domain (object units)
+			Scalar              m_hfScale       = 0;	//!< world amplitude: surface z = m_hfScale*f(u,v)
+			Scalar              m_hfLip         = 2;	//!< Lipschitz bound sqrt(1+maxslope^2) for safe sphere-tracing
 
 		public:
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;

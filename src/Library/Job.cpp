@@ -4354,6 +4354,29 @@ bool Job::AddSDFGeometry( const char* name, const char* szFileName, const char* 
 	return true;
 }
 
+//! Heightfield SDF geometry: the exact analytic surface z = scale*field(u,v),
+//! sphere-traced.  Resolves the named IFunction2D here (chunk-level context in
+//! the diagnostic), then delegates construction to the C-API factory
+//! RISE_API_CreateSDFHeightfieldGeometry.  Mirrors Job::AddSDFGeometry's
+//! manager-add + release lifetime; the field is addref'd by the geometry.
+bool Job::AddSDFHeightfieldGeometry( const char* name, const char* heightfieldFunction, const double radius, const double scale, const unsigned int maxSteps, const double surfaceEpsilonFraction, const unsigned int samplingDetail )
+{
+	IFunction2D* pField = pFunc2DManager->GetItem( heightfieldFunction ? heightfieldFunction : "" );
+	if( !pField ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddSDFHeightfieldGeometry:: `%s`: heightfield function2d `%s` not found (declare it first)",
+			name ? name : "(unnamed)", heightfieldFunction ? heightfieldFunction : "(none)" );
+		return false;
+	}
+	IGeometry* pGeometry = 0;
+	if( !RISE_API_CreateSDFHeightfieldGeometry( &pGeometry, pField, radius, scale, maxSteps, surfaceEpsilonFraction, samplingDetail ) ) {
+		return false;   // the factory already logged why
+	}
+	pGeomManager->AddItem( pGeometry, name );
+	safe_release( pGeometry );
+	return true;
+}
+
 bool Job::AddCartesianDiskGeometry( const char* name, const double radius, const int meshN )
 {
 	ITriangleMeshGeometryIndexed* pGeometry = 0;
