@@ -1778,12 +1778,12 @@ ggx_material
 # z = -10.30 + thickness/2 = -8.80).  end_scale_x = 20.2/25.26 is the
 # 20mm -> 16mm width taper; profile h is untapered.  The auto frame hint
 # picks world X (most perpendicular to the start tangent) = the width axis.
-# point_width necks the band IN to 0.74x at the case station (sweep START,
-# y=24), stays pinched as it emerges from the lugs, and eases back to 1.0x by
-# the 4th path point (y=56) -- the fitted "integrated" Ming x Shapiro look --
-# then the end_scale_x taper continues to the buckle.  point_width composes
-# multiplicatively with end_scale_x and is Catmull-Rom interpolated along the
-# drape path.
+# The band meets the case as a CONCAVE CRESCENT (the fitted "integrated" Ming x
+# Shapiro look): the sweep START extends ~6 units UNDER the radius-24 case (its
+# first path point is at y=18, inside the case+dial), so they OCCLUDE the flat
+# leading edge and the band emerges along the round case outline -- cupping the
+# case instead of butting a straight edge against it.  Full width at the case;
+# end_scale_x still tapers the band toward the buckle.
 sweep_geometry
 {
 	name				strapgeom
@@ -1815,20 +1815,13 @@ sweep_geometry
 	profile_point			-8.74385 -1.45989
 	profile_point			-10.68692 -1.28792
 	profile_point			-12.63000 -0.04743
-	point				0 24.0 -3.4
+	point				0 18.0 -3.4
 	point				0 32.0 -4.9
 	point				0 43.0 -7.3
 	point				0 56.0 -8.25
 	point				0 70.0 -8.68
 	point				0 86.0 -8.50
 	point				0 104.0 -8.78
-	point_width			0.74
-	point_width			0.80
-	point_width			0.92
-	point_width			1.00
-	point_width			1.00
-	point_width			1.00
-	point_width			1.00
 	n_len				140
 	end_scale_x			0.799683
 	cap_start			FALSE
@@ -1853,7 +1846,7 @@ standard_object
 # Saddle stitching: a GENERAL path_instances_geometry stamping an SDF thread
 # capsule along each stitch row at arc-length pitch, slanted +/-16 deg about
 # the surface normal (mirrored rows = the saddle look).  The two row paths
-# are the drape curve offset to the channel positions (x = (0.085-0.5)*W(t)*point_width(t),
+# are the drape curve offset to the channel positions (x = (0.085-0.5)*W(t),
 # h = channel floor + 0.9*r -- derived from the strap profile; re-derive if
 # the drape or profile changes).  Separate mesh so the thread carries its
 # own material.
@@ -1883,9 +1876,9 @@ path_instances_geometry
 {
 	name				strapstitchgeom
 	geometry			threadcapsule
-	point				-7.75735 24.26360 -1.98746
-	point				-8.10634 32.29168 -3.49299
-	point				-9.00030 43.20002 -5.87707
+	point				-10.48290 24.26360 -1.98746
+	point				-10.13292 32.29168 -3.49299
+	point				-9.78293 43.20002 -5.87707
 	point				-9.43295 56.07242 -6.81490
 	point				-9.08297 70.01101 -7.24312
 	point				-8.73298 86.00369 -7.06308
@@ -1899,9 +1892,9 @@ path_instances_geometry
 {
 	name				strapstitchgeom6
 	geometry			threadcapsule
-	point				7.75735 24.26360 -1.98746
-	point				8.10634 32.29168 -3.49299
-	point				9.00030 43.20002 -5.87707
+	point				10.48290 24.26360 -1.98746
+	point				10.13292 32.29168 -3.49299
+	point				9.78293 43.20002 -5.87707
 	point				9.43295 56.07242 -6.81490
 	point				9.08297 70.01101 -7.24312
 	point				8.73298 86.00369 -7.06308
