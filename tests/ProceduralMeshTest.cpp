@@ -298,12 +298,181 @@ static void TestPathInstances()
 	pSphere->release();
 }
 
+// half-extent of sweep ring `ring` (np profile verts) along world X and world Y
+static void RingExtent( const TriangleMeshGeometryIndexed* m, unsigned int ring,
+		unsigned int np, Scalar& halfX, Scalar& halfY )
+{
+	const Vertex& p0 = m->getVertices()[ ring * np ];
+	Scalar x0 = p0.x, x1 = p0.x, y0 = p0.y, y1 = p0.y;
+	for( unsigned int k = 1; k < np; ++k ) {
+		const Vertex& p = m->getVertices()[ ring * np + k ];
+		if( p.x < x0 ) x0 = p.x;
+		if( p.x > x1 ) x1 = p.x;
+		if( p.y < y0 ) y0 = p.y;
+		if( p.y > y1 ) y1 = p.y;
+	}
+	halfX = ( x1 - x0 ) * Scalar(0.5);
+	halfY = ( y1 - y0 ) * Scalar(0.5);
+}
+
+// Per-station width (point_width) vs FIRST PRINCIPLES.  A circular profile
+// (r=2) swept along a straight +Z path maps profile x -> +X (binormal) and
+// h -> -Y (frame normal), so a ring's world half-extents are (2*sx, 2*sy) with
+// sx = end_scale_x_taper * widthMul, sy = end_scale_y_taper.  point_width scales
+// the WIDTH (x) axis only, Catmull-Rom interpolated onto the path samples and
+// composed MULTIPLICATIVELY with end_scale_x.
+static void TestSweepPerStationWidth()
+{
+	std::cout << "Test 3b: sweep per-station width (point_width) first principles" << std::endl;
+	const unsigned int NP = 16;
+	std::vector<double> prof;
+	for( unsigned int k = 0; k < NP; ++k ) {
+		const double a = 2.0 * 3.14159265358979323846 * k / NP;
+		prof.push_back( 2.0 * std::cos( a ) );   // x in [-2, 2]
+		prof.push_back( 2.0 * std::sin( a ) );   // h in [-2, 2]
+	}
+	// 4 control points on +Z, nLen 12 -> segs 3, per 4, n = 13 stations;
+	// control point j lands at station j*per = {0, 4, 8, 12}.
+	const double pts[] = { 0,0,0,  0,0,4,  0,0,8,  0,0,12 };
+	const unsigned int nRings = 13;
+	const unsigned int cpStation[4] = { 0, 4, 8, 12 };
+
+	// (a)+(b) LINEAR widths 0.6,0.8,1.0,1.2: uniform Catmull-Rom reproduces a
+	// collinear control track EXACTLY, so widthMul at station i == 0.6+0.05*i
+	// (per=4, +0.2 per segment) and halfX(i) == 2*(0.6+0.05*i); halfY stays 2.
+	{
+		const double pw[4] = { 0.6, 0.8, 1.0, 1.2 };
+		SweepDescriptor d;
+		d.profilePoints = &prof[0]; d.numProfilePoints = NP;
+		d.pathPoints = pts; d.numPathPoints = 4;
+		d.nLen = 12;
+		d.capStart = false; d.capEnd = false;
+		d.pointWidths = pw; d.numPointWidths = 4;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateSweepGeometry( &pi, d ), "linear point_width factory succeeds" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			Check( m && m->numPoints() == nRings * NP, "linear width: vertex count = rings (no caps)" );
+			bool linOK = true, hOK = true;
+			if( m ) for( unsigned int i = 0; i < nRings; ++i ) {
+				Scalar hx, hy; RingExtent( m, i, NP, hx, hy );
+				const Scalar expect = 2.0 * ( 0.6 + 0.05 * (double)i );
+				if( std::fabs( hx - expect ) > 1e-9 ) linOK = false;
+				if( std::fabs( hy - 2.0 ) > 1e-9 ) hOK = false;
+			}
+			Check( linOK, "linear width: halfX == 2*(0.6+0.05*station) at EVERY station (linear precision + composition)" );
+			Check( hOK, "linear width: h (Y) axis untouched by width scaling" );
+			pi->release();
+		}
+	}
+
+	// NON-linear neck 0.72,0.9,1.0,1.0: EXACT at control stations (interpolation
+	// passes through the authored widths); neck present; h untouched.
+	{
+		const double pw[4] = { 0.72, 0.9, 1.0, 1.0 };
+		SweepDescriptor d;
+		d.profilePoints = &prof[0]; d.numProfilePoints = NP;
+		d.pathPoints = pts; d.numPathPoints = 4;
+		d.nLen = 12;
+		d.capStart = false; d.capEnd = false;
+		d.pointWidths = pw; d.numPointWidths = 4;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateSweepGeometry( &pi, d ), "neck point_width factory succeeds" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			bool cpOK = true;
+			Scalar hxCase = 0;
+			if( m ) for( unsigned int j = 0; j < 4; ++j ) {
+				Scalar hx, hy; RingExtent( m, cpStation[j], NP, hx, hy );
+				if( std::fabs( hx - 2.0 * pw[j] ) > 1e-9 ) cpOK = false;
+				if( std::fabs( hy - 2.0 ) > 1e-9 ) cpOK = false;
+				if( j == 0 ) hxCase = hx;
+			}
+			Scalar hxFull = 0, dummy = 0;
+			if( m ) RingExtent( m, 8, NP, hxFull, dummy );
+			Check( cpOK, "neck: halfX exactly == 2*point_width at control stations; h untouched" );
+			Check( hxCase < hxFull - 1e-6, "neck: case end (station 0) strictly narrower than full (station 8)" );
+			pi->release();
+		}
+	}
+
+	// (c) COMPOSITION with end_scale_x 0.5: at control station j (frac=j/3),
+	// halfX == 2 * (1+(0.5-1)*frac) * point_width[j].
+	{
+		const double pw[4] = { 0.72, 0.9, 1.0, 1.0 };
+		SweepDescriptor d;
+		d.profilePoints = &prof[0]; d.numProfilePoints = NP;
+		d.pathPoints = pts; d.numPathPoints = 4;
+		d.nLen = 12;
+		d.endScaleX = 0.5;
+		d.capStart = false; d.capEnd = false;
+		d.pointWidths = pw; d.numPointWidths = 4;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateSweepGeometry( &pi, d ), "width x end_scale_x factory succeeds" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			bool compOK = true;
+			if( m ) for( unsigned int j = 0; j < 4; ++j ) {
+				const double frac = (double)cpStation[j] / (double)( nRings - 1 );
+				const double taper = 1.0 + ( 0.5 - 1.0 ) * frac;
+				Scalar hx, hy; RingExtent( m, cpStation[j], NP, hx, hy );
+				if( std::fabs( hx - 2.0 * taper * pw[j] ) > 1e-9 ) compOK = false;
+			}
+			Check( compOK, "composition: halfX == 2*end_scale_taper*point_width (multiplicative)" );
+			pi->release();
+		}
+	}
+
+	// (e) PADDING: 2 widths for 4 path points -> control stations 8,12 pad to 1.0.
+	{
+		const double pw[2] = { 0.7, 0.85 };
+		SweepDescriptor d;
+		d.profilePoints = &prof[0]; d.numProfilePoints = NP;
+		d.pathPoints = pts; d.numPathPoints = 4;
+		d.nLen = 12;
+		d.capStart = false; d.capEnd = false;
+		d.pointWidths = pw; d.numPointWidths = 2;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateSweepGeometry( &pi, d ), "padded point_width factory succeeds" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			Scalar hx2 = 0, hx3 = 0, hy = 0;
+			if( m ) { RingExtent( m, 8, NP, hx2, hy ); RingExtent( m, 12, NP, hx3, hy ); }
+			Check( m && std::fabs( hx2 - 2.0 ) < 1e-9 && std::fabs( hx3 - 2.0 ) < 1e-9,
+				"padding: missing point_width entries pad to 1.0" );
+			pi->release();
+		}
+	}
+
+	// (f) DEFAULT-OFF: zero point widths == uniform full width (byte-identical).
+	{
+		SweepDescriptor d;
+		d.profilePoints = &prof[0]; d.numProfilePoints = NP;
+		d.pathPoints = pts; d.numPathPoints = 4;
+		d.nLen = 12;
+		d.capStart = false; d.capEnd = false;
+		ITriangleMeshGeometryIndexed* pi = 0;
+		Check( RISE_API_CreateSweepGeometry( &pi, d ), "no point_width factory succeeds" );
+		if( pi ) {
+			const TriangleMeshGeometryIndexed* m = dynamic_cast<TriangleMeshGeometryIndexed*>( pi );
+			bool offOK = true;
+			if( m ) for( unsigned int i = 0; i < nRings; ++i ) {
+				Scalar hx, hy; RingExtent( m, i, NP, hx, hy );
+				if( std::fabs( hx - 2.0 ) > 1e-9 ) offOK = false;
+			}
+			Check( offOK, "default-off: zero point widths == uniform full width (no-op)" );
+			pi->release();
+		}
+	}
+}
+
 int main( int, char** )
 {
 	std::cout << "ProceduralMeshTest -- procedural mesh factories vs Python baker goldens" << std::endl << std::endl;
 	TestSweepCylinder();
 	TestSweepDuplicatedProfilePoint();
 	TestSweepTaperAndTorus();
+	TestSweepPerStationWidth();
 	TestPathInstances();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;

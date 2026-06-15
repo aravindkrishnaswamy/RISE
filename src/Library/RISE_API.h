@@ -508,7 +508,8 @@ namespace RISE
 
 	//! Creates a general PROFILE SWEEP: an arbitrary CLOSED 2D profile
 	//! polygon swept along an arbitrary 3D Catmull-Rom path with
-	//! rotation-minimizing frames, optional per-axis linear taper, and
+	//! rotation-minimizing frames, optional per-axis linear taper plus
+	//! optional non-linear per-station width (point widths), and
 	//! ear-clipped end caps.  Tubes, rails, mouldings, bands, cables.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSweepGeometry(

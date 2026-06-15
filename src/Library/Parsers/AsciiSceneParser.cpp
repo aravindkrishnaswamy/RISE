@@ -5612,6 +5612,36 @@ namespace RISE
 						pts.push_back( x ); pts.push_back( y ); pts.push_back( z );
 					}
 
+					// OPTIONAL repeatable per-control-point width (x-axis) multipliers,
+					// one per `point` (the rest pad with 1.0).  A NON-linear width profile.
+					const std::vector<std::string>& widthLines = bag.GetRepeatable( "point_width" );
+					std::vector<double> widths;
+					if( !widthLines.empty() ) {
+						if( widthLines.size() > pointLines.size() ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: %u `point_width` entries exceed %u `point` path control points (one width per point; pad with 1.0)",
+								name.c_str(), (unsigned int)widthLines.size(), (unsigned int)pointLines.size() );
+							return false;
+						}
+						widths.reserve( widthLines.size() );
+						for( std::size_t i = 0; i < widthLines.size(); ++i ) {
+							double w = 0;
+							char trailing[8] = {0};
+							if( sscanf( widthLines[i].c_str(), "%lf %7s", &w, trailing ) != 1 ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"sweep_geometry `%s`: point_width %u (`%s`) must be exactly one number `<sx>`",
+									name.c_str(), (unsigned int)i, widthLines[i].c_str() );
+								return false;
+							}
+							if( !( w > 0 ) ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"sweep_geometry `%s`: point_width %u (%g) must be > 0", name.c_str(), (unsigned int)i, w );
+								return false;
+							}
+							widths.push_back( w );
+						}
+					}
+
 					SweepDescriptor d;
 					d.profilePoints    = &prof[0];
 					d.numProfilePoints = (unsigned int)profLines.size();
@@ -5622,6 +5652,10 @@ namespace RISE
 					d.endScaleY        = bag.GetDouble( "end_scale_y", d.endScaleY );
 					d.capStart         = bag.GetBool( "cap_start", d.capStart );
 					d.capEnd           = bag.GetBool( "cap_end",   d.capEnd );
+					if( !widths.empty() ) {
+						d.pointWidths    = &widths[0];
+						d.numPointWidths = (unsigned int)widths.size();
+					}
 					{
 						const std::string fh = bag.GetString( "frame_hint", "" );
 						if( !fh.empty() ) {
@@ -5642,11 +5676,12 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "sweep_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "General profile sweep: an arbitrary CLOSED 2D profile polygon (repeatable profile_point lines) swept along an arbitrary 3D Catmull-Rom path (repeatable point lines) with rotation-minimizing frames, optional per-axis linear taper (linear in path parameter), and ear-clipped end caps.  Tubes, rails, mouldings, straps, cables.  Profile x maps to the frame binormal, h to the frame normal; UV = (profile arc fraction, path parameter fraction; profile U wraps with no duplicated seam vertex).  OPEN paths only: a loop authored first==last seams (RMF holonomy + open-spline padding) -- use torus_geometry for true rings.  Catmull-Rom rounds sharp path corners; add control points to tighten.";
+						cd.description = "General profile sweep: an arbitrary CLOSED 2D profile polygon (repeatable profile_point lines) swept along an arbitrary 3D Catmull-Rom path (repeatable point lines) with rotation-minimizing frames, optional per-axis linear taper (linear in path parameter), optional NON-linear per-station width (repeatable point_width multipliers, Catmull-Rom interpolated, composed multiplicatively with end_scale_x), and ear-clipped end caps.  Tubes, rails, mouldings, straps, cables.  Profile x maps to the frame binormal, h to the frame normal; UV = (profile arc fraction, path parameter fraction; profile U wraps with no duplicated seam vertex).  OPEN paths only: a loop authored first==last seams (RMF holonomy + open-spline padding) -- use torus_geometry for true rings.  Catmull-Rom rounds sharp path corners; add control points to tighten.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "profile_point"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Closed-profile vertex `<x> <h>` in the sweep frame (repeatable, polygon order; at least 3; CCW = outward normals).  Duplicate a point to harden an edge"; }
 						{ auto& p = P(); p.name = "point";         p.kind = ValueKind::String; p.repeatable = true; p.description = "Path control point `<x> <y> <z>` (repeatable, path order; at least 2).  The profile sweeps a Catmull-Rom spline through these"; }
+						{ auto& p = P(); p.name = "point_width";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-control-point width (x-axis) multiplier `<sx>` (repeatable, path order; one per `point`, missing padded with 1.0; > 0).  Catmull-Rom interpolated along the path and composed MULTIPLICATIVELY with end_scale_x -- a NON-linear width profile (e.g. neck in at one end).  Catmull-Rom can over/undershoot between non-monotone widths (add path points to tighten; interpolated widths are floored to > 0).  Omit = uniform 1.0"; }
 						{ auto& p = P(); p.name = "n_len";         p.kind = ValueKind::UInt;   p.description = "Requested samples along the path (clamped 2..4096; actual = (points-1)*max(2, n_len/(points-1)) + 1)"; p.defaultValueHint = "64"; }
 						{ auto& p = P(); p.name = "end_scale_x";   p.kind = ValueKind::Double; p.description = "Profile x scale at the path end (linear taper from 1 at the start)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "end_scale_y";   p.kind = ValueKind::Double; p.description = "Profile h scale at the path end (linear taper from 1 at the start)"; p.defaultValueHint = "1.0"; }

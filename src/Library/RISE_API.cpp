@@ -961,6 +961,37 @@ namespace RISE
 			out.push_back( pad[ nCtrl ] );
 		}
 
+		// Catmull-Rom through 1D control VALUES, using the IDENTICAL reflective
+		// padding + per-segment (segs, per) scheme as SampleCatmullRom3 so an
+		// interpolated scalar track (e.g. a per-station width multiplier) lands in
+		// EXACT lockstep with the 3D path samples: control value j sits at the same
+		// output station as path control point j.
+		void SampleCatmullRom1(
+			const std::vector<Scalar>& ctrl, const int nLen,
+			std::vector<Scalar>& out )
+		{
+			const int nCtrl = (int)ctrl.size();
+			std::vector<Scalar> pad( nCtrl + 2 );
+			for( int i = 0; i < nCtrl; i++ ) {
+				pad[ i + 1 ] = ctrl[ i ];
+			}
+			pad[0]         = Scalar(2) * pad[1]       - pad[2];
+			pad[ nCtrl+1 ] = Scalar(2) * pad[ nCtrl ] - pad[ nCtrl-1 ];
+			const int segs = nCtrl - 1;
+			const int per = ( nLen / segs ) < 2 ? 2 : ( nLen / segs );
+			out.clear();
+			out.reserve( size_t(segs) * per + 1 );
+			for( int sgi = 0; sgi < segs; sgi++ ) {
+				const Scalar p0 = pad[ sgi ], p1 = pad[ sgi + 1 ], p2 = pad[ sgi + 2 ], p3 = pad[ sgi + 3 ];
+				for( int k = 0; k < per; k++ ) {
+					const Scalar t = Scalar(k) / Scalar(per);
+					const Scalar t2 = t * t, t3 = t2 * t;
+					out.push_back( Scalar(0.5) * ( 2*p1 + (-p0+p2)*t + (2*p0-5*p1+4*p2-p3)*t2 + (-p0+3*p1-3*p2+p3)*t3 ) );
+				}
+			}
+			out.push_back( pad[ nCtrl ] );
+		}
+
 		// Per-sample tangents (central differences, one-sided ends) and
 		// rotation-minimizing frames.  B = binormal (profile x axis),
 		// N = B x T (profile h axis).  The initial binormal comes from the
@@ -1120,7 +1151,8 @@ namespace RISE
 
 	// General profile sweep: an arbitrary CLOSED 2D profile polygon swept
 	// along an arbitrary 3D Catmull-Rom path with rotation-minimizing
-	// frames, optional linear per-axis taper, and ear-clipped end caps.
+	// frames, optional linear per-axis taper, optional NON-linear per-station
+	// width (point widths), and ear-clipped end caps.
 	// Profile-space (x, h) maps to  P(i) + x*scaleX(i)*B(i) + h*scaleY(i)*N(i).
 	// Vertex normals come from closed-loop central differences over the
 	// profile polyline (taper-corrected); longitudinal curvature lean is
@@ -1210,6 +1242,50 @@ namespace RISE
 		std::vector<SweepV3> T, B, N;
 		BuildPathFrames( path, hint, haveHint, T, B, N );
 
+		// OPTIONAL per-station width track: Catmull-Rom interpolate the per-
+		// control-point width multipliers onto the path samples (1:1 with `path`),
+		// to be composed MULTIPLICATIVELY with the linear end_scale_x taper on the
+		// width (x/binormal) axis below.  Empty => uniform 1.0 (an exact no-op, so
+		// every sweep authored without point widths stays byte-identical).
+		std::vector<Scalar> widthMul;
+		if( desc.numPointWidths > 0 ) {
+			if( !desc.pointWidths ) {
+				GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: numPointWidths > 0 but pointWidths is null" );
+				return false;
+			}
+			if( desc.numPointWidths > desc.numPathPoints ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"RISE_API_CreateSweepGeometry: %u point widths exceed %u path points (one per point; pad the rest with 1.0)",
+					desc.numPointWidths, desc.numPathPoints );
+				return false;
+			}
+			std::vector<Scalar> wCtrl( desc.numPathPoints, Scalar(1) );
+			for( unsigned int j = 0; j < desc.numPointWidths; j++ ) {
+				if( !( desc.pointWidths[j] > 0 ) ) {
+					GlobalLog()->PrintEx( eLog_Error,
+						"RISE_API_CreateSweepGeometry: point width %u (%g) must be > 0", j, desc.pointWidths[j] );
+					return false;
+				}
+				wCtrl[j] = (Scalar)desc.pointWidths[j];
+			}
+			SampleCatmullRom1( wCtrl, nLen, widthMul );
+			// widthMul is a dimensionless MULTIPLIER on the profile x-extent, so it
+			// must stay strictly positive or the ring inverts (negative scale flips
+			// the winding + normals).  Catmull-Rom can dip below the smallest authored
+			// width between non-monotone controls; floor any non-positive (or NaN)
+			// sample to 1e-4 -- an effectively-zero pinch (0.01% of the UN-NECKED width
+			// at that station, so scale-relative by construction), NOT a fold -- and warn
+			// once so the author can tighten their point widths.
+			bool widthClamped = false;
+			for( size_t i = 0; i < widthMul.size(); i++ ) {
+				if( !( widthMul[i] > 0 ) ) { widthMul[i] = Scalar(1e-4); widthClamped = true; }
+			}
+			if( widthClamped ) {
+				GlobalLog()->Print( eLog_Warning,
+					"RISE_API_CreateSweepGeometry: a per-station width undershot <= 0 (aggressive non-monotone point widths); floored to avoid ring inversion" );
+			}
+		}
+
 		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "sweep geometry" );
 		pGeom->BeginIndexedTriangles();
@@ -1218,7 +1294,8 @@ namespace RISE
 		int vc = 0;
 		for( size_t i = 0; i < n; i++ ) {
 			const Scalar frac = Scalar(i) / Scalar( n - 1 );
-			const Scalar sx = Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac;
+			const Scalar wm = widthMul.empty() ? Scalar(1) : widthMul[i];
+			const Scalar sx = ( Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac ) * wm;
 			const Scalar sy = Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac;
 			for( unsigned int k = 0; k < nProf; k++ ) {
 				const Scalar lx = px[k] * sx;
@@ -1288,7 +1365,8 @@ namespace RISE
 				}
 				const size_t i = isStart ? 0 : n - 1;
 				const Scalar frac = Scalar(i) / Scalar( n - 1 );
-				const Scalar sx = Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac;
+				const Scalar wm = widthMul.empty() ? Scalar(1) : widthMul[i];
+				const Scalar sx = ( Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac ) * wm;
 				const Scalar sy = Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac;
 				// cap faces along -T at the start, +T at the end
 				const Scalar sgn = isStart ? Scalar(-1) : Scalar(1);

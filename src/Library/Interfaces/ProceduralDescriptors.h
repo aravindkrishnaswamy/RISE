@@ -41,6 +41,8 @@ namespace RISE
 		bool   capStart;				//!< triangulate the start cross-section closed
 		bool   capEnd;					//!< triangulate the end cross-section closed
 		double frameHintX, frameHintY, frameHintZ;	//!< initial binormal hint (0,0,0 = auto: world axis most perpendicular to the start tangent)
+		const double* pointWidths;	//!< OPTIONAL per-control-point width (x/binormal axis) multipliers, one per path point (count <= numPathPoints; missing padded with 1.0).  Catmull-Rom interpolated onto the path samples and composed MULTIPLICATIVELY with the linear end_scale_x taper.  NULL/0 = uniform width (byte-identical to the linear-taper-only sweep)
+		unsigned int  numPointWidths;	//!< number of pointWidths entries (0 = per-station width OFF)
 
 		SweepDescriptor() :
 			profilePoints( 0 ), numProfilePoints( 0 ),
@@ -48,7 +50,8 @@ namespace RISE
 			nLen( 64 ),
 			endScaleX( 1.0 ), endScaleY( 1.0 ),
 			capStart( true ), capEnd( true ),
-			frameHintX( 0.0 ), frameHintY( 0.0 ), frameHintZ( 0.0 )
+			frameHintX( 0.0 ), frameHintY( 0.0 ), frameHintZ( 0.0 ),
+			pointWidths( 0 ), numPointWidths( 0 )
 		{
 		}
 	};

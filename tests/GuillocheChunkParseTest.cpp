@@ -132,6 +132,8 @@ namespace {
 		"point 0 43.0 -7.3\n"
 		"point 0 70.0 -8.68\n"
 		"point 0 104.0 -8.78\n"
+		"point_width 0.7\n"
+		"point_width 0.85\n"
 		"n_len 40\n"
 		"end_scale_x 0.8\n"
 		"}\n";
@@ -207,6 +209,12 @@ static void TestRejections()
 		  "pitch 0 rejects" },
 		{ "missing_fn",   "scalar_painter\n{\nname s\nfunction2d nosuch\n}\n",
 		  "function2d reference to missing function rejects" },
+		{ "pw_toomany",   "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\npoint 0 0 10\npoint_width 0.7\npoint_width 0.8\npoint_width 0.9\n}\n",
+		  "more point_width than path points rejects" },
+		{ "pw_badnum",    "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\npoint 0 0 10\npoint_width abc\n}\n",
+		  "malformed point_width rejects" },
+		{ "pw_nonpos",    "sweep_geometry\n{\nname b\nprofile_point -1 0\nprofile_point 1 0\nprofile_point 0 1\npoint 0 0 0\npoint 0 0 10\npoint_width 0\n}\n",
+		  "point_width 0 rejects" },
 	};
 	for( size_t i = 0; i < sizeof(rows)/sizeof(rows[0]); ++i ) {
 		Check( !ParseBody( rows[i].tag, rows[i].body ), rows[i].what );
