@@ -328,22 +328,6 @@ namespace RISE
 				}
 			}
 
-			inline void DoAnimationFrameProgress( const Scalar step, const Scalar total, IRasterImage* pImage=0, const Rect* rc=0 ) const
-			{
-				if( pProgressFunc ) {
-					// Also iterate through outputs and get them to intermediate rasterize
-					
-					if( rc && pImage ) {
-						RasterizerOutputListType::const_iterator	r, s;
-						for( r=outs.begin(), s=outs.end(); r!=s; r++ ) {
-							(*r)->OutputIntermediateImage( *pImage, rc );
-						}
-					}
-					
-					pProgressFunc->Progress( step, total );
-				}
-			}
-
 			/// Returns a reference to the image that should be sent to
 			/// OutputIntermediateImage.  The default just returns the
 			/// primary image.  BDPT overrides this to return a scratch

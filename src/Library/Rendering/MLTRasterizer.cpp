@@ -1399,7 +1399,23 @@ void MLTRasterizer::RasterizeSceneAnimation(
 #endif
 
 		IRasterImage* pImage = 0;
+		// Whole-animation progress: redirect the per-frame progress sink
+		// through a FrameSlotProgressCallback so MLT's phase-based 0..1
+		// reporting advances the OVERALL bar across this frame's slot
+		// [i/total_frames, (i+1)/total_frames] instead of restarting
+		// 0..100% every frame.  (i, total_frames)==(0,1) for a single
+		// specific-frame render, i.e. the identity map.  const_cast:
+		// pProgressFunc is render-scratch on the const render path (same
+		// pattern as the rasterizer's other per-render member updates);
+		// the swap happens between frames on this single driver thread and
+		// is restored before any later use.
+		IProgressCallback* const savedProgress = pProgressFunc;
+		FrameSlotProgressCallback frameSlotProgress( savedProgress, i, total_frames );
+		if( savedProgress ) {
+			const_cast<MLTRasterizer*>( this )->pProgressFunc = &frameSlotProgress;
+		}
 		const bool completed = RenderFrameOfMLT( pScene, *pCamera, width, height, pImage );
+		const_cast<MLTRasterizer*>( this )->pProgressFunc = savedProgress;
 
 		if( !completed )
 		{

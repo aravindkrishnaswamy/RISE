@@ -50,6 +50,11 @@ namespace RISE
 			double progressBase;
 			double progressWeight;
 			double progressTotal;
+			// Monotonic high-water mark for the reported numerator.  Worker
+			// threads take tile indices via fetch_add but report progress
+			// under progressMut in scheduler order, so a low-idx report can
+			// arrive after a higher one; we clamp so progress never recedes.
+			double lastReportedNum;
 
 			RMutex progressMut;		// Only for progress callback serialization
 
@@ -82,6 +87,14 @@ namespace RISE
 						// Legacy per-pass mode.
 						num   = static_cast<double>(idx);
 						denom = static_cast<double>(numTiles - 1);
+					}
+					// Never let the reported numerator go backward (out-of-order
+					// multi-thread reports): a receding bar is jarring and a
+					// >resetThreshold backward jump would restart the ETA.
+					if( num < lastReportedNum ) {
+						num = lastReportedNum;
+					} else {
+						lastReportedNum = num;
 					}
 					if( !pProgressFunc->Progress( num, denom ) ) {
 						cancelled.store( true, std::memory_order_relaxed );
@@ -116,7 +129,8 @@ namespace RISE
 			  cancelled( false ),
 			  progressBase( progressBase_ ),
 			  progressWeight( progressWeight_ ),
-			  progressTotal( progressTotal_ )
+			  progressTotal( progressTotal_ ),
+			  lastReportedNum( 0 )
 			{
 				numTiles = seq_.NumRegions();
 				tiles.reserve( numTiles );

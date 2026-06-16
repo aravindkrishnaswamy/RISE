@@ -1386,7 +1386,21 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 			const Rect rect = seq.GetNextRegion();
 
 			if( pProgressFunc && i>0 )	{
-				if( !pProgressFunc->Progress( static_cast<double>(i), static_cast<double>(numseq-1) ) ) {
+				// Match the multithreaded dispatcher: in weighted mode
+				// (mProgressTotal>0, set by the animation driver) report a
+				// single movie-wide fraction so single-threaded / exposure
+				// (motion-blur) animation frames advance the bar across the
+				// whole animation instead of resetting 0..1 every frame.
+				// Legacy per-pass 0..1 when mProgressTotal==0.
+				double num, denom;
+				if( mProgressTotal > 0 ) {
+					num   = mProgressBase + static_cast<double>(i) * mProgressWeight;
+					denom = mProgressTotal;
+				} else {
+					num   = static_cast<double>(i);
+					denom = static_cast<double>(numseq-1);
+				}
+				if( !pProgressFunc->Progress( num, denom ) ) {
 					break;		// abort the render
 				}
 			}
@@ -1455,8 +1469,13 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 		}
 	}
 
-	// To start the progress counting at 0
-	DoAnimationFrameProgress( 0, 1 );
+	// NOTE: deliberately NO per-frame progress reset here.  The
+	// animation driver (RasterizeSceneAnimation) reports a single
+	// movie-wide 0..1 progress fraction across ALL frames via
+	// mProgressBase/mProgressTotal.  The old DoAnimationFrameProgress(0,1)
+	// reset progress to 0% at the start of every frame, which made the
+	// GUI progress bar AND the ETA estimator restart each frame instead
+	// of tracking the whole animation.
 
 	Scalar base_cur_time = (time-(exposure*0.5));
 
