@@ -72,6 +72,14 @@ public:
     /// active rasterizer is not the dispatcher).
     QString autoResolveReason() const;
 
+    /// Human-readable summary of the video file(s) the last animation render
+    /// actually wrote (filename + codec per file), e.g.
+    /// "Wrote scene.mov (ProRes 4444) + scene.mp4 (HEVC HDR10)".  Empty for a
+    /// still-image render or before any animation render.  Captured on the
+    /// worker thread before the encoders are freed; read on the main thread
+    /// in the Completed-state handler (set before setState(Completed) fires).
+    QString lastAnimationOutputsSummary() const { return m_lastAnimationSummary; }
+
     /// Opaque handle to the underlying IJobPriv* — consumed by
     /// ViewportBridge so the interactive editor and the loader bridge
     /// share the same in-memory scene.  The handle is owned by this
@@ -208,6 +216,13 @@ private:
     State m_state = Idle;
     QString m_loadedFilePath;
     bool m_hasAnimation = false;
+
+    // Set on animation completion (worker thread, before the queued
+    // Completed-state transition) to a summary of the written video files;
+    // read on the main thread by the status-bar handler.  Cleared at the
+    // start of every render so a still render never shows stale animation
+    // info.  See lastAnimationOutputsSummary().
+    QString m_lastAnimationSummary;
 
     // Progressive image buffer
     std::vector<uint8_t> m_pixelBuffer;  // RGBA8

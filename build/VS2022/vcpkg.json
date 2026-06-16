@@ -9,7 +9,7 @@
     "openexr",
     {
       "name": "ffmpeg",
-      "features": ["avcodec", "avformat", "swscale"]
+      "features": ["avcodec", "avformat", "swscale", "gpl", "x265"]
     }
   ]
 }

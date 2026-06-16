@@ -68,7 +68,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
-      <AdditionalDependencies>RISE.lib;OpenEXR-3_4_d.lib;OpenEXRCore-3_4_d.lib;OpenEXRUtil-3_4_d.lib;IlmThread-3_4_d.lib;Iex-3_4_d.lib;Imath-3_2_d.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>RISE.lib;OpenEXR-3_4_d.lib;OpenEXRCore-3_4_d.lib;OpenEXRUtil-3_4_d.lib;IlmThread-3_4_d.lib;Iex-3_4_d.lib;Imath-3_2_d.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\dbin\;$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\debug\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -88,7 +88,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
-      <AdditionalDependencies>RISE.lib;OpenEXR-3_4.lib;OpenEXRCore-3_4.lib;OpenEXRUtil-3_4.lib;IlmThread-3_4.lib;Iex-3_4.lib;Imath-3_2.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>RISE.lib;OpenEXR-3_4.lib;OpenEXRCore-3_4.lib;OpenEXRUtil-3_4.lib;IlmThread-3_4.lib;Iex-3_4.lib;Imath-3_2.lib;OpenImageDenoise.lib;OpenImageDenoise_core.lib;openpgl.lib;avcodec.lib;avformat.lib;avutil.lib;swscale.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)..\..\bin\;$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\lib\;$(SolutionDir)..\..\extlib\oidn\install\lib\;C:\Dev\openpgl-install\lib\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -226,18 +226,26 @@
       <Project>{DEC84504-C8BA-49CF-991D-1B907BF00664}</Project>
     </ProjectReference>
   </ItemGroup>
-  <!-- Post-build: copy Qt DLLs and platform plugin to output directory -->
+  <!-- Post-build: copy Qt runtime DLLs + the platform plugin to the output
+       directory.  IMPORTANT: this convenience property must NOT be named
+       "VcpkgRoot".  That name is reserved by the vcpkg MSBuild integration,
+       which uses it to locate vcpkg.exe (and as its vcpkg-root argument) for
+       the manifest-install step.  A prior override set it to the installed
+       tree, so vcpkg.exe was sought where it does not exist (build error
+       9009).  This property holds only the installed tree (vcpkg_installed);
+       VcpkgRoot is left to the integration's auto-detection, matching every
+       sibling .vcxproj in this solution. -->
   <PropertyGroup>
-    <VcpkgRoot>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\</VcpkgRoot>
+    <QtVcpkgInstalled>$(SolutionDir)vcpkg_installed\x64-windows\x64-windows\</QtVcpkgInstalled>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <PostBuildEvent>
       <Command>
 if not exist "$(OutDir)platforms" mkdir "$(OutDir)platforms"
-copy /Y "$(VcpkgRoot)debug\Qt6\plugins\platforms\qwindowsd.dll" "$(OutDir)platforms\"
-copy /Y "$(VcpkgRoot)debug\bin\Qt6Cored.dll" "$(OutDir)"
-copy /Y "$(VcpkgRoot)debug\bin\Qt6Guid.dll" "$(OutDir)"
-copy /Y "$(VcpkgRoot)debug\bin\Qt6Widgetsd.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)debug\Qt6\plugins\platforms\qwindowsd.dll" "$(OutDir)platforms\"
+copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Cored.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Guid.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)debug\bin\Qt6Widgetsd.dll" "$(OutDir)"
       </Command>
       <Message>Copying Qt debug DLLs to output...</Message>
     </PostBuildEvent>
@@ -246,10 +254,10 @@ copy /Y "$(VcpkgRoot)debug\bin\Qt6Widgetsd.dll" "$(OutDir)"
     <PostBuildEvent>
       <Command>
 if not exist "$(OutDir)platforms" mkdir "$(OutDir)platforms"
-copy /Y "$(VcpkgRoot)Qt6\plugins\platforms\qwindows.dll" "$(OutDir)platforms\"
-copy /Y "$(VcpkgRoot)bin\Qt6Core.dll" "$(OutDir)"
-copy /Y "$(VcpkgRoot)bin\Qt6Gui.dll" "$(OutDir)"
-copy /Y "$(VcpkgRoot)bin\Qt6Widgets.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)Qt6\plugins\platforms\qwindows.dll" "$(OutDir)platforms\"
+copy /Y "$(QtVcpkgInstalled)bin\Qt6Core.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)bin\Qt6Gui.dll" "$(OutDir)"
+copy /Y "$(QtVcpkgInstalled)bin\Qt6Widgets.dll" "$(OutDir)"
       </Command>
       <Message>Copying Qt release DLLs to output...</Message>
     </PostBuildEvent>

@@ -1,21 +1,28 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  VideoEncoder.cpp - FFmpeg ProRes 4444 QuickTime encoder.
+//  VideoEncoder.cpp - FFmpeg HDR video encoder (ProRes 4444 / HEVC HDR10).
 //
 //  Ported from the Mac app's MovieRasterizerOutput.mm which uses
-//  AVFoundation. This version uses FFmpeg libavcodec/libavformat.
+//  AVFoundation. This version uses FFmpeg libavcodec/libavformat and
+//  encodes one of two formats, selected by the Codec ctor argument:
 //
-//  HDR-preserving encode:
-//  - Codec: Apple ProRes 4444 (prores_ks, profile "4444")
-//  - Pixel format: YUVA444P10LE (10-bit 4:4:4 + alpha)
+//  Codec::ProRes4444 — the HDR master:
+//  - Apple ProRes 4444 (prores_ks, profile "4444")
+//  - YUVA444P10LE (10-bit 4:4:4 + alpha), full ("JPEG") range
+//  - Container: QuickTime (.mov)
+//
+//  Codec::HevcHdr10 — the Windows-playable HDR delivery copy:
+//  - HEVC Main10 (libx265), HDR10 static metadata (ST.2086 master-display)
+//  - YUV420P10LE (10-bit 4:2:0), limited ("MPEG"/video) range, 'hvc1' tag
+//  - Container: MP4 (.mp4)
+//  - Requires the vcpkg ffmpeg "x265" + "gpl" features.
+//
+//  Both are HDR-preserving via the same front end:
 //  - Transfer: SMPTE ST.2084 (PQ) so scene-linear values above 1.0
 //    survive instead of being clamped to white. linear 1.0 maps to
 //    the 100-nit reference; the PQ curve carries up to 10000 nits.
-//  - Container: QuickTime (.mov) — the output path is forced to .mov so
-//    the file extension always matches the QuickTime muxer.
-//  - Colour tags: BT.2020 primaries, PQ transfer, full range
-//  - FPS: 30 (default)
-//  - Dimensions rounded to even
+//  - Colour tags: BT.2020 primaries, PQ transfer, BT.2020-NCL matrix.
+//  - FPS: 30 (default); dimensions rounded to even.
 //
 //  The renderer's working space is Rec.709-primary scene-linear RGB
 //  (RISEPel == Rec709RGBPel), so each pel is converted Rec.709 -> Rec.2020
@@ -23,7 +30,8 @@
 //  would be over-saturated.
 //
 //  Alpha is encoded LINEARLY (coverage is not a light quantity, so it
-//  must not run through the PQ OETF).
+//  must not run through the PQ OETF).  The HEVC 4:2:0 path has no alpha
+//  plane, so its alpha is simply dropped by swscale.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -33,6 +41,7 @@
 #include "Interfaces/ILog.h"
 
 #include <cstdint>
+#include <cstring>
 #include <vector>
 #include <algorithm>
 #include <cmath>
@@ -44,10 +53,49 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libavutil/log.h>
+#include <libavutil/error.h>
 #include <libswscale/swscale.h>
 }
 
 using namespace RISE;
+
+// Route FFmpeg's internal diagnostics (including the libx265 / muxer
+// messages that explain *why* avcodec_open2 / write_header fail) into
+// RISE's GlobalLog.  Without this, a codec-open failure surfaces only as
+// the bare "Could not open codec" — the actionable detail (e.g. an
+// unsupported pixel format on an 8-bit x265, or a bad x265-param) is lost.
+static void riseFFmpegLogCallback(void* avcl, int level, const char* fmt, va_list vl)
+{
+    // Only surface warnings and errors; INFO/VERBOSE/DEBUG are too noisy.
+    if (level > AV_LOG_WARNING) {
+        return;
+    }
+    char line[1024];
+    int printPrefix = 1;
+    av_log_format_line(avcl, level, fmt, vl, line, sizeof(line), &printPrefix);
+    // Trim trailing newline(s) so each FFmpeg line is one log entry.
+    size_t n = std::strlen(line);
+    while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) {
+        line[--n] = '\0';
+    }
+    if (n == 0) {
+        return;
+    }
+    GlobalLog()->PrintEx((level <= AV_LOG_ERROR) ? eLog_Error : eLog_Warning,
+        "VideoEncoder:: FFmpeg: %s", line);
+}
+
+// Install the FFmpeg->GlobalLog bridge once.  Called from the ctor; the
+// encoders are constructed on the GUI thread, so a plain guard suffices.
+static void ensureFFmpegLogRouted()
+{
+    static bool installed = false;
+    if (!installed) {
+        av_log_set_callback(riseFFmpegLogCallback);
+        installed = true;
+    }
+}
 
 // PQ-encode one scene-linear channel into a 16-bit code value.
 //
@@ -96,53 +144,74 @@ static void rec709ToRec2020(double r, double g, double b,
     outB = 0.0163914 * r + 0.0880133 * g + 0.8955857 * b;
 }
 
-// True if path ends in ".mov" (case-insensitive).
-static bool endsWithMov(const std::string& path)
+// The file extension that matches a codec's container.  ProRes must live
+// in QuickTime (.mov); HEVC HDR10 is delivered in MP4 (.mp4).  The
+// container muxer (selected in setupEncoder) and the file extension must
+// always agree, so the ctor forces the path to the right extension.
+static const char* extensionForCodec(VideoEncoder::Codec codec)
 {
-    if (path.size() < 4) {
-        return false;
-    }
-    const std::string ext = path.substr(path.size() - 4);
-    return (ext[0] == '.') &&
-           (std::tolower(static_cast<unsigned char>(ext[1])) == 'm') &&
-           (std::tolower(static_cast<unsigned char>(ext[2])) == 'o') &&
-           (std::tolower(static_cast<unsigned char>(ext[3])) == 'v');
+    return (codec == VideoEncoder::Codec::ProRes4444) ? ".mov" : ".mp4";
 }
 
-// Force a ".mov" extension.  ProRes lives in the QuickTime (MOV) muxer
-// (which setupEncoder selects explicitly); writing those bytes into a
-// ".mp4" container is non-standard ProRes-in-MP4 that many players
-// reject.  If the path already has an extension we replace it, otherwise
-// we append.  The container muxer and the file extension must agree.
-static std::string forceMovExtension(const std::string& path)
+// True if `path` ends in `ext` (e.g. ".mov"), case-insensitive.
+static bool endsWithExtension(const std::string& path, const char* ext)
 {
-    if (endsWithMov(path)) {
+    const size_t extLen = std::char_traits<char>::length(ext);
+    if (path.size() < extLen) {
+        return false;
+    }
+    const std::string tail = path.substr(path.size() - extLen);
+    for (size_t i = 0; i < extLen; ++i) {
+        if (std::tolower(static_cast<unsigned char>(tail[i])) !=
+            std::tolower(static_cast<unsigned char>(ext[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Force `path` to end in `ext`.  Writing a stream into a mismatched
+// container (e.g. ProRes-in-MP4, or HEVC-in-MOV) is non-standard and many
+// players reject it, so the extension must match the muxer.  If the path
+// already has the right extension we keep it; if it has a different
+// extension we replace it; otherwise we append.  Only the final path
+// component's '.' is treated as a separator so a '.' in a directory name
+// is not mistaken for an extension.
+static std::string forceExtension(const std::string& path, const char* ext)
+{
+    if (endsWithExtension(path, ext)) {
         return path;
     }
-
-    // Find the final extension's '.', but only within the last path
-    // component so a '.' in a directory name is not mistaken for one.
     const size_t slash = path.find_last_of("/\\");
     const size_t dot = path.find_last_of('.');
     if (dot != std::string::npos &&
         (slash == std::string::npos || dot > slash)) {
-        return path.substr(0, dot) + ".mov";
+        return path.substr(0, dot) + ext;
     }
-    return path + ".mov";
+    return path + ext;
 }
 
-VideoEncoder::VideoEncoder(const std::string& outputPath, int fps)
-    : m_outputPath(forceMovExtension(outputPath))
+VideoEncoder::VideoEncoder(const std::string& outputPath, Codec codec, int fps)
+    : m_outputPath(forceExtension(outputPath, extensionForCodec(codec)))
+    , m_codec(codec)
     , m_fps(fps)
 {
+    ensureFFmpegLogRouted();
+
+    const char* codecName =
+        (codec == Codec::ProRes4444) ? "ProRes 4444" : "HEVC HDR10";
+
     if (m_outputPath != outputPath) {
         GlobalLog()->PrintEx(eLog_Event,
-            "VideoEncoder:: ProRes requires a QuickTime (.mov) container; "
-            "rewrote output path %s -> %s", outputPath.c_str(), m_outputPath.c_str());
+            "VideoEncoder:: %s requires a %s container; rewrote output path %s -> %s",
+            codecName,
+            (codec == Codec::ProRes4444) ? "QuickTime (.mov)" : "MP4 (.mp4)",
+            outputPath.c_str(), m_outputPath.c_str());
     }
 
     GlobalLog()->PrintEx(eLog_Event,
-        "VideoEncoder:: Created for output: %s (fps=%d)", m_outputPath.c_str(), fps);
+        "VideoEncoder:: Created for output: %s (codec=%s, fps=%d)",
+        m_outputPath.c_str(), codecName, fps);
 }
 
 VideoEncoder::~VideoEncoder()
@@ -174,9 +243,18 @@ void VideoEncoder::OutputImage(
     int w = pImage.GetWidth();
     int h = pImage.GetHeight();
 
+    // A prior frame already failed to initialise the encoder (e.g. the
+    // HEVC path on an ffmpeg build without libx265).  Don't retry per
+    // frame — that would re-allocate (and leak) a format context and spam
+    // the log on every frame.
+    if (m_setupFailed) {
+        return;
+    }
+
     // Initialize on first frame
     if (!m_started) {
         if (!setupEncoder(w, h)) {
+            m_setupFailed = true;
             GlobalLog()->PrintEx(eLog_Error, "VideoEncoder:: Failed to initialize encoder");
             return;
         }
@@ -223,39 +301,59 @@ bool VideoEncoder::setupEncoder(int width, int height)
     m_width = (width + 1) & ~1;
     m_height = (height + 1) & ~1;
 
+    const bool isProRes = (m_codec == Codec::ProRes4444);
+
+    // ProRes -> QuickTime (.mov); HEVC HDR10 -> MP4 (.mp4).  Force the
+    // muxer explicitly rather than guessing from the path extension (the
+    // ctor has already forced the path to match the chosen muxer).
+    const char* muxerName = isProRes ? "mov" : "mp4";
+
     GlobalLog()->PrintEx(eLog_Event,
-        "VideoEncoder:: Setting up ProRes 4444 encoder: %dx%d -> %dx%d",
+        "VideoEncoder:: Setting up %s encoder: %dx%d -> %dx%d",
+        isProRes ? "ProRes 4444" : "HEVC HDR10 (Main10)",
         width, height, m_width, m_height);
 
-    // Create output format context.  ProRes belongs in a QuickTime
-    // (.mov) container, so force the "mov" muxer explicitly rather than
-    // guessing from m_outputPath's extension.
-    int ret = avformat_alloc_output_context2(&m_formatCtx, nullptr, "mov", m_outputPath.c_str());
+    int ret = avformat_alloc_output_context2(&m_formatCtx, nullptr, muxerName, m_outputPath.c_str());
     if (ret < 0 || !m_formatCtx) {
         GlobalLog()->PrintEx(eLog_Error, "VideoEncoder:: Could not create output context");
         return false;
     }
 
-    // Find the ProRes encoder.  Prefer prores_ks: it supports the 4444
-    // profile, an alpha plane, 10-bit output, and the "profile" option.
-    // Fall back to the generic ProRes encoder if prores_ks is absent.
-    const AVCodec* codec = avcodec_find_encoder_by_name("prores_ks");
-    if (codec) {
-        GlobalLog()->PrintEx(eLog_Event, "VideoEncoder:: Using prores_ks encoder");
-    } else {
-        codec = avcodec_find_encoder(AV_CODEC_ID_PRORES);
+    // Find the encoder.
+    const AVCodec* codec = nullptr;
+    if (isProRes) {
+        // Prefer prores_ks: it supports the 4444 profile, an alpha plane,
+        // 10-bit output, and the "profile" option.  Fall back to the
+        // generic ProRes encoder if prores_ks is absent.
+        codec = avcodec_find_encoder_by_name("prores_ks");
         if (codec) {
-            // The generic prores / prores_aw encoder may ignore the
-            // "profile" / "qscale" priv_data options and may not emit the
-            // alpha plane for a 4444 / YUVA target, so the output can
-            // differ from the intended 10-bit 4:4:4+alpha ProRes 4444.
-            GlobalLog()->PrintEx(eLog_Warning,
-                "VideoEncoder:: prores_ks unavailable; using generic ProRes encoder "
-                "- alpha and the 4444 profile/qscale may not be honored");
+            GlobalLog()->PrintEx(eLog_Event, "VideoEncoder:: Using prores_ks encoder");
+        } else {
+            codec = avcodec_find_encoder(AV_CODEC_ID_PRORES);
+            if (codec) {
+                // The generic prores / prores_aw encoder may ignore the
+                // "profile" / "qscale" priv_data options and may not emit the
+                // alpha plane for a 4444 / YUVA target, so the output can
+                // differ from the intended 10-bit 4:4:4+alpha ProRes 4444.
+                GlobalLog()->PrintEx(eLog_Warning,
+                    "VideoEncoder:: prores_ks unavailable; using generic ProRes encoder "
+                    "- alpha and the 4444 profile/qscale may not be honored");
+            }
+        }
+    } else {
+        // libx265 is the only encoder in our FFmpeg build that emits 10-bit
+        // HEVC Main10 with HDR10 static metadata.  It requires the vcpkg
+        // ffmpeg "x265" + "gpl" features (see build/VS2022/vcpkg.json); if
+        // ffmpeg has not yet been rebuilt with them, the lookup returns null
+        // and only the ProRes master is written.
+        codec = avcodec_find_encoder_by_name("libx265");
+        if (codec) {
+            GlobalLog()->PrintEx(eLog_Event, "VideoEncoder:: Using libx265 encoder");
         }
     }
     if (!codec) {
-        GlobalLog()->PrintEx(eLog_Error, "VideoEncoder:: ProRes codec not found");
+        GlobalLog()->PrintEx(eLog_Error, "VideoEncoder:: %s encoder not found",
+            isProRes ? "ProRes" : "libx265 (HEVC) - rebuild ffmpeg with the x265 feature");
         return false;
     }
 
@@ -273,34 +371,53 @@ bool VideoEncoder::setupEncoder(int width, int height)
         return false;
     }
 
-    // Set encoding parameters.  ProRes is an all-intra, quality-based
-    // codec: no GOP structure, no B-frames, no bit-rate cap.
     m_codecCtx->width = m_width;
     m_codecCtx->height = m_height;
     m_codecCtx->time_base = {1, m_fps};
     m_codecCtx->framerate = {m_fps, 1};
-    m_codecCtx->gop_size = 1;       // all-intra
-    m_codecCtx->max_b_frames = 0;   // no B-frames
-    m_codecCtx->pix_fmt = AV_PIX_FMT_YUVA444P10LE;  // 10-bit 4:4:4 + alpha
+    m_codecCtx->max_b_frames = 0;   // no B-frames (keeps PTS handling simple)
+    // ProRes is all-intra (every frame a keyframe).  HEVC is a delivery
+    // codec — allow inter-frame compression with a ~2 s keyframe interval
+    // so the .mp4 stays small; forcing all-intra HEVC would bloat it.
+    m_codecCtx->gop_size = isProRes ? 1 : (2 * m_fps);
+    m_codecCtx->pix_fmt  = isProRes ? AV_PIX_FMT_YUVA444P10LE   // 10-bit 4:4:4 + alpha
+                                    : AV_PIX_FMT_YUV420P10LE;   // HDR10 = 10-bit 4:2:0
 
-    // HDR colour tags: BT.2020 primaries, PQ (ST.2084) transfer,
-    // BT.2020 non-constant-luminance matrix, full ("JPEG") range.
+    // HDR colour tags: BT.2020 primaries, PQ (ST.2084) transfer, BT.2020
+    // non-constant-luminance matrix.  ProRes master uses full ("JPEG")
+    // range; HDR10 delivery uses the standard limited ("MPEG"/video) range
+    // consumer HDR players expect.  (libx265 forwards these avctx color
+    // fields into the HEVC VUI automatically.)
     m_codecCtx->color_primaries = AVCOL_PRI_BT2020;
     m_codecCtx->color_trc       = AVCOL_TRC_SMPTE2084;
     m_codecCtx->colorspace      = AVCOL_SPC_BT2020_NCL;
-    m_codecCtx->color_range     = AVCOL_RANGE_JPEG;
+    m_codecCtx->color_range     = isProRes ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
 
-    // ProRes 4444 profile.  Set both the option string (prores_ks reads
-    // "4444" from priv_data) and the numeric profile field.  FFmpeg
-    // 7.x exposes only the AV_PROFILE_* spelling (the legacy
-    // FF_PROFILE_PRORES_4444 macro was removed in 7.0).
-    av_opt_set(m_codecCtx->priv_data, "profile", "4444", 0);
-    m_codecCtx->profile = AV_PROFILE_PRORES_4444;
-
-    // Quality-based rate control (prores_ks "qscale", lower = better;
-    // 5 is a high-quality setting).  Harmless if the chosen encoder
-    // ignores the option.
-    av_opt_set(m_codecCtx->priv_data, "qscale", "5", 0);
+    if (isProRes) {
+        // ProRes 4444 profile.  Set both the option string (prores_ks reads
+        // "4444" from priv_data) and the numeric profile field.  FFmpeg 7.x
+        // exposes only the AV_PROFILE_* spelling (the legacy
+        // FF_PROFILE_PRORES_4444 macro was removed in 7.0).
+        av_opt_set(m_codecCtx->priv_data, "profile", "4444", 0);
+        m_codecCtx->profile = AV_PROFILE_PRORES_4444;
+        // Quality-based rate control (prores_ks "qscale", lower = better).
+        av_opt_set(m_codecCtx->priv_data, "qscale", "5", 0);
+    } else {
+        // HEVC Main10: libx265 auto-selects the Main10 profile from the
+        // 10-bit pixel format, so we don't pin avctx->profile (which could
+        // conflict with that).  All HDR10 signalling goes through x265-params:
+        // CRF 20 (high-quality delivery), HDR10 4:2:0 optimisation, and the
+        // SMPTE ST.2086 mastering-display SEI (BT.2020 primaries + D65 white,
+        // 0.0001..10000 nit range matching our PQ encode where linear 1.0 =
+        // 100 nits).  x265 units: CIE xy * 50000; luminance in 0.0001 cd/m^2.
+        // MaxCLL/MaxFALL left 0,0 ("unknown") — we don't pre-scan for peak.
+        av_opt_set(m_codecCtx->priv_data, "preset", "medium", 0);
+        av_opt_set(m_codecCtx->priv_data, "x265-params",
+            "crf=20:hdr10-opt=1:"
+            "master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(100000000,1):"
+            "max-cll=0,0",
+            0);
+    }
 
     if (m_formatCtx->oformat->flags & AVFMT_GLOBALHEADER) {
         m_codecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -309,7 +426,11 @@ bool VideoEncoder::setupEncoder(int width, int height)
     // Open codec
     ret = avcodec_open2(m_codecCtx, codec, nullptr);
     if (ret < 0) {
-        GlobalLog()->PrintEx(eLog_Error, "VideoEncoder:: Could not open codec");
+        char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        GlobalLog()->PrintEx(eLog_Error,
+            "VideoEncoder:: Could not open %s codec: %s (the FFmpeg:: lines above carry the specific reason)",
+            isProRes ? "ProRes" : "libx265", errbuf);
         return false;
     }
 
@@ -319,6 +440,14 @@ bool VideoEncoder::setupEncoder(int width, int height)
         GlobalLog()->PrintEx(eLog_Error, "VideoEncoder:: Could not copy codec params");
         return false;
     }
+
+    // HEVC-in-MP4 must use the 'hvc1' sample entry (parameter sets carried
+    // in the sample description via the global header above) — Windows'
+    // built-in player and QuickTime reject the muxer-default 'hev1'.
+    if (!isProRes) {
+        m_stream->codecpar->codec_tag = MKTAG('h', 'v', 'c', '1');
+    }
+
     m_stream->time_base = m_codecCtx->time_base;
 
     // Open output file
@@ -330,8 +459,14 @@ bool VideoEncoder::setupEncoder(int width, int height)
         }
     }
 
-    // Write header
-    ret = avformat_write_header(m_formatCtx, nullptr);
+    // Write header.  For the MP4 delivery, relocate the moov atom to the
+    // front (+faststart) for progressive playback; no-op for the .mov.
+    AVDictionary* muxOpts = nullptr;
+    if (!isProRes) {
+        av_dict_set(&muxOpts, "movflags", "+faststart", 0);
+    }
+    ret = avformat_write_header(m_formatCtx, &muxOpts);
+    av_dict_free(&muxOpts);
     if (ret < 0) {
         GlobalLog()->PrintEx(eLog_Error, "VideoEncoder:: Could not write header");
         return false;
@@ -354,11 +489,11 @@ bool VideoEncoder::setupEncoder(int width, int height)
 
     m_packet = av_packet_alloc();
 
-    // Create SWS context for 16-bit RGBA -> 10-bit YUVA 4:4:4
-    // conversion (RGBA64LE matches our PQ-encoded uint16 buffer).
+    // Create SWS context: 16-bit RGBA (our PQ-encoded RGBA64LE buffer) ->
+    // the encoder's pixel format (4:4:4+alpha for ProRes, 4:2:0 for HEVC).
     m_swsCtx = sws_getContext(
         m_width, m_height, AV_PIX_FMT_RGBA64LE,
-        m_width, m_height, AV_PIX_FMT_YUVA444P10LE,
+        m_width, m_height, m_codecCtx->pix_fmt,
         SWS_BILINEAR, nullptr, nullptr, nullptr);
 
     if (!m_swsCtx) {
@@ -366,13 +501,14 @@ bool VideoEncoder::setupEncoder(int width, int height)
         return false;
     }
 
-    // Drive the RGB<->YUV matrix with BT.2020 coefficients, full range
-    // on both sides (our RGBA64 input is full-range and the encoder is
-    // tagged AVCOL_RANGE_JPEG).
+    // Drive the RGB<->YUV matrix with BT.2020 coefficients.  Our RGBA64
+    // input is always full range; the destination range matches the encoder
+    // tag (full for ProRes, limited for HDR10).
     const int* bt2020 = sws_getCoefficients(SWS_CS_BT2020);
+    const int dstRange = isProRes ? 1 : 0;
     if (sws_setColorspaceDetails(m_swsCtx,
             bt2020, 1 /*srcRange full*/,
-            bt2020, 1 /*dstRange full*/,
+            bt2020, dstRange,
             0 /*brightness*/, 1 << 16 /*contrast*/, 1 << 16 /*saturation*/) < 0) {
         GlobalLog()->PrintEx(eLog_Error,
             "VideoEncoder:: Could not set BT.2020 colorspace details");
@@ -380,7 +516,9 @@ bool VideoEncoder::setupEncoder(int width, int height)
     }
 
     GlobalLog()->PrintEx(eLog_Event,
-        "VideoEncoder:: Encoder initialized. ProRes 4444 (YUVA444P10LE, PQ/BT.2020), FPS=%d",
+        "VideoEncoder:: Encoder initialized. %s, FPS=%d",
+        isProRes ? "ProRes 4444 (YUVA444P10LE, PQ/BT.2020, full range)"
+                 : "HEVC HDR10 (YUV420P10LE Main10, PQ/BT.2020, limited range)",
         m_fps);
 
     return true;

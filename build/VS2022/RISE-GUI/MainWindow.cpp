@@ -599,10 +599,13 @@ void MainWindow::onRender()
 
 void MainWindow::onRenderAnimation()
 {
-    // Derive video output path from scene file
+    // Derive video output path from scene file.  The animation export is
+    // a ProRes 4444 (HDR10) master, which must live in a QuickTime (.mov)
+    // container — so derive a .mov name directly.  (VideoEncoder also
+    // force-rewrites any non-.mov path to .mov as a backstop.)
     QString scenePath = m_engine->loadedFilePath();
     QString videoPath = scenePath;
-    videoPath.replace(".RISEscene", ".mp4");
+    videoPath.replace(".RISEscene", ".mov");
 
     if (m_viewportBridge) m_viewportBridge->stop();
     m_engine->startAnimationRender(videoPath);
@@ -794,6 +797,12 @@ void MainWindow::updateStatusBar()
         const QString integ = m_engine->autoResolvedIntegrator();
         if (!integ.isEmpty()) {
             stateText += QString(" \u00b7 Auto \u2192 %1").arg(integ.toUpper());
+        }
+        // Animation export: surface the video file(s) written so the user
+        // doesn't have to open the log to confirm the .mov / .mp4 landed.
+        const QString animOut = m_engine->lastAnimationOutputsSummary();
+        if (!animOut.isEmpty()) {
+            stateText += QString(" \u00b7 %1").arg(animOut);
         }
     }
 

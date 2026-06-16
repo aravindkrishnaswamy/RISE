@@ -9,6 +9,7 @@
 
 #include "RenderEngine.h"
 
+#include "VideoEncoder.h"
 #include "RISE_API.h"
 #include "Interfaces/IJobPriv.h"
 #include "Interfaces/IProgressCallback.h"
@@ -38,6 +39,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QStringList>
 #include <QMetaObject>
 #include <QCoreApplication>
 #include <QImage>
@@ -410,6 +412,7 @@ void RenderEngine::startRender()
     setState(Rendering);
     m_cancelFlag = false;
     m_sizeDetected = false;
+    m_lastAnimationSummary.clear();  // still render: no video outputs to report
 
     // Install progress callback
     auto* progressCb = new ProgressCallbackAdapter(this);
@@ -480,6 +483,7 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
     setState(Rendering);
     m_cancelFlag = false;
     m_sizeDetected = false;
+    m_lastAnimationSummary.clear();  // repopulated on completion below
 
     // Clear outputs from previous renders so the rasterizer's outs
     // list doesn't accumulate stale references across animation
@@ -496,10 +500,23 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
     // (Re-)attach VFS to the rasterizer for this render pass.
     ensureProductionVFSAttachedToRasterizer();
 
-    // TODO: Create and attach VideoEncoder for H.264 output
-    // VideoEncoder* videoEncoder = new VideoEncoder(videoOutputPath.toStdString());
-    // rasterizer->AddRasterizerOutput(videoEncoder);
-    // videoEncoder->release(); // rasterizer now owns it
+    // Create and attach the animation video encoders, mirroring the Mac
+    // app's MovieRasterizerOutput wiring in RISEBridge.mm.  Each render
+    // writes two files from the same base path: the ProRes 4444 HDR master
+    // (.mov) plus a Windows-playable HEVC HDR10 delivery copy (.mp4) — each
+    // VideoEncoder forces its own container extension internally.
+    // Refcounting: the Reference ctor starts at 1; AddRasterizerOutput
+    // addref's to 2; we release our creation reference immediately so the
+    // rasterizer is the sole owner (refcount 1).  Each pointer stays valid
+    // for the finalize() below because the rasterizer holds that reference
+    // until FreeRasterizerOutputs() at end-of-animation.
+    const std::string videoBasePath = videoOutputPath.toStdString();
+    VideoEncoder* proResEncoder = new VideoEncoder(videoBasePath, VideoEncoder::Codec::ProRes4444);
+    VideoEncoder* hevcEncoder   = new VideoEncoder(videoBasePath, VideoEncoder::Codec::HevcHdr10);
+    rasterizer->AddRasterizerOutput(proResEncoder);
+    rasterizer->AddRasterizerOutput(hevcEncoder);
+    proResEncoder->release();  // rasterizer now owns it (refcount 1)
+    hevcEncoder->release();    // rasterizer now owns it (refcount 1)
 
     // Start elapsed timer
     m_renderClock.start();
@@ -513,11 +530,37 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
 
     // L4 round-6 P1 — QPointer guard for the queued completion lambda.
     QPointer<RenderEngine> guard(this);
-    QThread* thread = QThread::create([this, progressCb, rasterizer, guard]() {
+    QThread* thread = QThread::create([this, progressCb, rasterizer, proResEncoder, hevcEncoder, guard]() {
         bool ok = m_job->RasterizeAnimationUsingOptions();
 
-        // TODO: Finalize video encoder here
-        // if (videoEncoder) videoEncoder->finalize();
+        // Flush + write each container's trailer before the outputs are
+        // freed.  The rasterizer still holds the only references, so the
+        // pointers are valid here; FreeRasterizerOutputs() below then drops
+        // them to 0 and destroys the encoders.
+        proResEncoder->finalize();
+        hevcEncoder->finalize();
+
+        // Summarise the files actually written (read BEFORE the rasterizer
+        // frees the encoders below) so the UI can report them in the status
+        // bar without the user opening the log.  Filename + codec per file;
+        // a file that didn't encode (e.g. the HEVC path on an ffmpeg build
+        // without libx265) is omitted and explicitly noted.
+        QStringList writtenParts;
+        if (proResEncoder->wroteOutput()) {
+            writtenParts << QStringLiteral("%1 (ProRes 4444)").arg(
+                QFileInfo(QString::fromStdString(proResEncoder->outputPath())).fileName());
+        }
+        if (hevcEncoder->wroteOutput()) {
+            writtenParts << QStringLiteral("%1 (HEVC HDR10)").arg(
+                QFileInfo(QString::fromStdString(hevcEncoder->outputPath())).fileName());
+        }
+        QString animationSummary;
+        if (!writtenParts.isEmpty()) {
+            animationSummary = QStringLiteral("Wrote ") + writtenParts.join(QStringLiteral(" + "));
+            if (!hevcEncoder->wroteOutput()) {
+                animationSummary += QStringLiteral(" (HEVC .mp4 not written - see log)");
+            }
+        }
 
         // Free rasterizer outputs at end-of-animation.  This drops
         // the rasterizer's reference to the engine's VFS; the engine
@@ -525,7 +568,7 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
         // contents) persist for post-render Save-As / exposure scrub.
         rasterizer->FreeRasterizerOutputs();
 
-        QMetaObject::invokeMethod(this, [guard, ok, progressCb]() {
+        QMetaObject::invokeMethod(this, [guard, ok, progressCb, animationSummary]() {
             if (!guard) { delete progressCb; return; }
             guard->m_elapsedTimer->stop();
             // L8 round 9 — stop the progressive-update poll + run
@@ -536,6 +579,9 @@ void RenderEngine::startAnimationRender(const QString& videoOutputPath)
             guard->m_job->SetProgress(nullptr);
             delete progressCb;
             guard->m_productionVFSAttachedToRasterizer = false;
+            // Set before setState(Completed) — onStateChanged reads it
+            // synchronously when the Completed transition fires.
+            guard->m_lastAnimationSummary = animationSummary;
 
             if (guard->m_cancelFlag) {
                 guard->setState(Cancelled);
