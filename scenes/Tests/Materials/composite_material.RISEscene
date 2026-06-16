@@ -355,7 +355,7 @@ sphere_geometry
 ellipsoid_geometry
 {
 	name				ellipsoidgeom
-	radii				65 40 55
+	radii				32.5 20 27.5
 }
 
 box_geometry

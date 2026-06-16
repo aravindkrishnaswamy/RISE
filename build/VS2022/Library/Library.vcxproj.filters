@@ -243,6 +243,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\RenderParallelScope.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\DynamicProperties.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
@@ -532,6 +535,9 @@
       <Filter>Geometry</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.cpp">
+      <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Geometry\SDFGeometry.cpp">
       <Filter>Geometry</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\SphereGeometry.cpp">
@@ -1140,6 +1146,9 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.h">
       <Filter>Utilities</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\RenderParallelScope.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\DynamicProperties.h">
       <Filter>Utilities</Filter>
     </ClInclude>
@@ -1608,6 +1617,15 @@
     <ClInclude Include="..\..\..\src\Library\Painters\Function2DScalarPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\Function2DColorPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionEval.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionFunction2DPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\ScaledScalarPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
@@ -1653,8 +1671,6 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\BezierTesselation.h">
       <Filter>Geometry</Filter>
     </ClInclude>
-      <Filter>Geometry</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\BilinearPatchGeometry.h">
       <Filter>Geometry</Filter>
     </ClInclude>
@@ -1686,6 +1702,9 @@
       <Filter>Geometry</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Polygon.h">
+      <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Geometry\SDFGeometry.h">
       <Filter>Geometry</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\SphereGeometry.h">
@@ -2119,6 +2138,9 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Job.h">
       <Filter>Job</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ProceduralDescriptors.h">
+      <Filter>Interfaces</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Interfaces\IAnimator.h">
       <Filter>Interfaces</Filter>
@@ -3026,6 +3048,9 @@
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\MicrofacetUtils.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Utilities\ThinFilm.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Utilities\MortonCode.h">

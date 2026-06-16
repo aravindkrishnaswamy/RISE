@@ -64,6 +64,32 @@ namespace RISE
 			//! surface (users edit it via its own row in the panel).
 			inline const IPainter& GetRadEx() const { return pEmitter->GetRadEx(); }
 			inline void SetRadEx( const IPainter& v ) { pEmitter->SetRadEx( v ); }
+
+			//! Rescales the emission (backs `> modify material <name>
+			//! scale`).  LambertianEmitter holds its scale as a const
+			//! member with no setter, so we REBUILD the emitter at the
+			//! new scale, reusing the existing radiance-exitance painter.
+			//! Hold a reference on that painter across the swap so it
+			//! survives the old emitter's release (the emitter is its
+			//! only owner here).  Runs before a render — no threading
+			//! concern.
+			/// \return TRUE always (this material is a luminaire)
+			bool SetEmissionScale( const Scalar scale )
+			{
+				const IPainter& radEx = pEmitter->GetRadEx();
+				radEx.addref();
+
+				safe_release( pEmitter );
+
+				pEmitter = new LambertianEmitter( radEx, scale );
+				GlobalLog()->PrintNew( pEmitter, __FILE__, __LINE__, "pEmitter" );
+
+				// LambertianEmitter's ctor addrefs the painter; drop the
+				// temporary reference we took to bridge the rebuild.
+				radEx.release();
+
+				return true;
+			}
 		};
 	}
 }

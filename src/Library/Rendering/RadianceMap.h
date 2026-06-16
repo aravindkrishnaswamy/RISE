@@ -116,6 +116,11 @@ namespace RISE
 				return dScale;
 			}
 
+			void SetScale( const Scalar scale )
+			{
+				dScale = scale;
+			}
+
 			const Matrix4& GetTransform() const
 			{
 				return mxtransform;

@@ -30,6 +30,7 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - `PathTracing/`: unidirectional PT baselines and path-guiding comparisons
 - `PixelFilters/`: filter comparison scenes
 - `RussianRoulette/`: continuation-probability correctness scenes
+- `SDF/`: signed-distance-field (sphere-traced implicit) geometry checks — `sdf_shadows` (melded blob + analytic sphere/box, mutual shadows + inter-geometry depth), `sdf_volume` (glass SDF bounding a fog interior_medium, ray-march entry/exit driving the IOR stack), `sdf_caustic` (glass SDF torus refracting a ring caustic via the caustic photon map), `sdf_arealight` (a glowing SDF torus as a true NEE-sampled area light), `sdf_luminaire_fog` / `sdf_luminaire_heterofog` (a blobby SDF luminaire inside homogeneous / heterogeneous scattering fog, with nested interior media — the volumetric-media stress pair). The SDF part lists are authored inline in each scene's `sdf_geometry` chunk (repeatable `part` lines; an external `file` remains available for very large SDFs)
 - `SMS/`: specular manifold sampling comparisons and visibility checks
 - `Shaders/`: shader-op and rasterizer behavior checks
 - `Spectral/`: spectral-lighting and dispersive regression scenes
@@ -49,6 +50,7 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - Lighting regression: `UnifiedLighting/cornellbox_mixed_lights_pt.RISEscene`
 - Medium correctness: `Volumes/medium_transmittance_test.RISEscene`
 - SSS with pure PT: `SubsurfaceScattering/pt_sss_dragon.RISEscene`
+- SDF implicit geometry + interop: `SDF/sdf_shadows.RISEscene`
 
 ## OIDN Denoising Regression
 

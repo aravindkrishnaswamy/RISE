@@ -126,6 +126,20 @@ namespace RISE
 			ISpectralPhotonMap*		GetGlobalSpectralMapMutable()	{ return pGlobalSpectralMap; }
 			IShadowPhotonMap*		GetShadowMapMutable()			{ return pShadowMap; }
 			IIrradianceCache*		GetIrradianceCacheMutable()		{ return pIrradianceCache; }
+
+			// Non-const handle to the global radiance map for the
+			// `> modify rasterizer radiance_scale` override (see
+			// IScenePriv).  `pGlobalRadianceMap` is stored `const` only
+			// out of historical conservatism — the map is constructed
+			// non-const (RISE_API_CreateRadianceMap) and is mutated here
+			// solely before a render, in the single-threaded scene-setup
+			// phase, so the const is over-broad storage typing rather
+			// than a true immutability invariant.  Stripping it at this
+			// one accessor is contained and avoids rippling a non-const
+			// signature through IScene / IScenePriv::SetGlobalRadianceMap
+			// / the out-of-tree 3DSMax caller.  All sibling scene objects
+			// (photon maps, caches) are already exposed mutably this way.
+			IRadianceMap*			GetGlobalRadianceMapMutable()	{ return const_cast<IRadianceMap*>( pGlobalRadianceMap ); }
 			bool		AddCamera( const char* szName, ICamera* pCamera_ );
 			bool		RemoveCamera( const char* szName );
 			bool		SetActiveCamera( const char* szName );
@@ -172,6 +186,14 @@ namespace RISE
 			void		QueueShadowGatherParams(		Scalar radius, Scalar ellipseRatio, unsigned int minPhotons, unsigned int maxPhotons );
 
 			bool		BuildPendingPhotonMaps( IProgressCallback* pProgress );
+
+			// Diagnostic: process-wide count of photon-map shoot passes that did real
+			// work (BuildPendingPhotonMaps invoked with >=1 pending shoot).  Proves the
+			// deferred shoot is gated on the active rasterizer consuming photon maps:
+			// a BDPT render leaves it 0; switching to a photon-mapping rasterizer makes
+			// it >0.  Same static-counter pattern as DisplacedGeometry::GetBuildMeshCount.
+			static unsigned int GetPhotonShootCount();
+			static void         ResetPhotonShootCount();
 
 			void		Shutdown();
 		};

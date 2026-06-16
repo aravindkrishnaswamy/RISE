@@ -121,7 +121,9 @@
 #include "../Interfaces/IScalarPainterManager.h"
 #include "../Interfaces/IFunction1DManager.h"
 #include "../Interfaces/IFunction2DManager.h"
+#include "../Interfaces/IModifierManager.h"	// bumpmap_modifier normalize_gradient path (via IJobPriv::GetModifiers)
 #include "../Painters/RGBScalarPainter.h"		// for ScalarTriple::IsUniform et al
+#include "../Painters/TexturePainter.h"		// for resolving a named image painter -> raster accessor (scalar_painter texture form)
 // Phase 6.1: SourceSpanIndex + TransformSnapshot live behind IJobPriv
 // (forward-declared in IJobPriv.h), full defs needed for population calls.
 #include "../Interfaces/IJobPriv.h"
@@ -642,6 +644,56 @@ namespace RISE
 			// and Finalize sees it; if it doesn't, the parser rejects
 			// it.  Each parser's Finalize then reads typed values out
 			// of the bag and emits the corresponding pJob.AddX call.
+			// TEXT-domain numeric validation for Double/UInt-kind parameter
+			// values: every whitespace-separated token must fully consume as
+			// a number, and `nan` / `inf` spellings are rejected by TEXT
+			// before strtod ever runs.  This is deliberately not a value
+			// check (std::isfinite / !(x>0) nets) -- the build uses
+			// -ffast-math (finite-math-only), under which inf/NaN VALUE
+			// comparisons are undefined and really do get folded away (see
+			// the guilloché dial inf-seed miscompile, 2026-06-11).  Scene
+			// text is the one layer where the rejection cannot be optimized
+			// out.  Also closes String::toDouble's uninitialized return on
+			// entirely non-numeric tokens.
+			inline bool AllTokensAreFiniteNumbers( const char* sz )
+			{
+				if( !sz ) {
+					return false;
+				}
+				int tokens = 0;
+				const char* p = sz;
+				while( *p ) {
+					while( *p == ' ' || *p == '\t' ) {
+						++p;
+					}
+					if( !*p ) {
+						break;
+					}
+					const char* tok = p;
+					if( *tok == '#' ) {
+						break;	// inline trailing comment ends the value (legacy-tolerated idiom: `sensor_size 36 # mm`)
+					}
+					const char* t = ( *tok == '+' || *tok == '-' ) ? tok + 1 : tok;
+					if( t[0] == 'n' || t[0] == 'N' || t[0] == 'i' || t[0] == 'I' ) {
+						return false;	// nan / inf / infinity spellings
+					}
+					char* end = 0;
+					strtod( tok, &end );
+					if( end == tok ) {
+						return false;	// token does not start as a number
+					}
+					if( *end != '\0' && *end != ' ' && *end != '\t' && *end != '#' ) {
+						return false;	// trailing garbage glued to the number
+					}
+					++tokens;
+					p = end;
+					if( *p == '#' ) {
+						break;	// number glued to a comment (`36#mm`) -- legacy sscanf accepted it
+					}
+				}
+				return tokens > 0;
+			}
+
 			inline bool DispatchChunkParameters(
 				const ChunkDescriptor& desc,
 				ParseStateBag&         bag,
@@ -668,6 +720,25 @@ namespace RISE
 							pname.c_str(),
 							desc.keyword.empty() ? "(unknown)" : desc.keyword.c_str() );
 						return false;
+					}
+
+					switch( found->kind ) {
+					case ValueKind::Double:
+					case ValueKind::DoubleVec3:
+					case ValueKind::DoubleVec4:
+					case ValueKind::DoubleMat4:
+					case ValueKind::UInt:
+						if( !AllTokensAreFiniteNumbers( pvalue.c_str() ) ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"ChunkParser:: parameter `%s` in `%s` expects finite numeric value(s); got `%s` (nan/inf and non-numeric tokens are rejected)",
+								pname.c_str(),
+								desc.keyword.empty() ? "(unknown)" : desc.keyword.c_str(),
+								pvalue.c_str() );
+							return false;
+						}
+						break;
+					default:
+						break;
 					}
 
 					if( found->repeatable ) {
@@ -1172,9 +1243,13 @@ namespace RISE
 			//   function2d <name>                      → Function2DScalarPainter wrapping a named IFunction2D
 			//   base <name> [scale <s>]                → ScaledScalarPainter (default scale = 1.0)
 			//   multiply <a> <b>                       → MultiplyScalarPainter
+			//   texture <name> [channel R|G|B] [scale <s>] [bias <b>]
+			//                                          → TextureScalarPainter (image map
+			//                                            sampled at surface UV; out = bias +
+			//                                            scale * rawTexel; no JH-uplift)
 			//
 			// At most one of {value, values, file, sellmeier, polynomial,
-			// function1d, function2d, base, multiply} may be present.
+			// function1d, function2d, base, multiply, texture} may be present.
 			// Mutually exclusive — the parser raises an error otherwise.
 			//////////////////////////////////////////
 			struct ScalarPainterAsciiChunkParser : public IAsciiChunkParser
@@ -1193,13 +1268,14 @@ namespace RISE
 					const bool hasFunction2d  = bag.Has( "function2d" );
 					const bool hasBase        = bag.Has( "base" );
 					const bool hasMultiply    = bag.Has( "multiply" );
+					const bool hasTexture     = bag.Has( "texture" );
 
 					const int formCount = (int)hasValue + (int)hasValues + (int)hasFile +
 						(int)hasSellmeier + (int)hasPolynomial + (int)hasFunction1d +
-						(int)hasFunction2d + (int)hasBase + (int)hasMultiply;
+						(int)hasFunction2d + (int)hasBase + (int)hasMultiply + (int)hasTexture;
 					if( formCount == 0 ) {
 						GlobalLog()->PrintEx( eLog_Error,
-							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply)",
+							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply, texture)",
 							name.c_str() );
 						return false;
 					}
@@ -1325,7 +1401,9 @@ namespace RISE
 								name.c_str(), ref.c_str() );
 							return false;
 						}
-						RISE_API_CreateFunction2DScalarPainter( &painter, f );
+						const double scale = bag.GetDouble( "scale", 1.0 );
+						const double bias  = bag.GetDouble( "bias",  0.0 );
+						RISE_API_CreateFunction2DScalarPainterAffine( &painter, f, scale, bias );
 					}
 					else if( hasBase ) {
 						const std::string ref = bag.GetString( "base" );
@@ -1358,6 +1436,59 @@ namespace RISE
 						}
 						RISE_API_CreateMultiplyScalarPainter( &painter, a, b );
 					}
+					else if( hasTexture ) {
+						// Spatially-varying physical scalar driven by a 2D image
+						// map sampled at the surface UV.  We resolve a previously
+						// declared image painter (png_painter / jpg_painter / ...),
+						// pull its raster accessor, and sample the chosen channel
+						// DIRECTLY (no Jakob-Hanika uplift, no colourspace
+						// conversion) via TextureScalarPainter.  This is the
+						// physical-scalar analogue of binding a png_painter to a
+						// colour slot, and is the supported way to map an
+						// IScalarPainter slot (e.g. thin-film film_thickness) from
+						// an image.  out = bias + scale * rawTexel, rawTexel in [0,1].
+						const std::string ref = bag.GetString( "texture" );
+						IPainter* imgPainter = pPriv->GetPainters()->GetItem( ref.c_str() );
+						if( !imgPainter ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: texture `%s` not found (declare a png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter with that name first)",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						Implementation::TexturePainter* tex =
+							dynamic_cast<Implementation::TexturePainter*>( imgPainter );
+						if( !tex ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: texture `%s` is not an image painter (only raster-backed painters such as png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter can be sampled spatially)",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						IRasterImageAccessor* pRIA = tex->GetRasterImageAccessor();
+						if( !pRIA ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: texture `%s` has no raster accessor",
+								name.c_str(), ref.c_str() );
+							return false;
+						}
+						// channel select: R (default) / G / B.
+						unsigned int channel = 0;
+						if( bag.Has( "channel" ) ) {
+							const std::string chs = bag.GetString( "channel" );
+							if(      chs == "R" ) channel = 0;
+							else if( chs == "G" ) channel = 1;
+							else if( chs == "B" ) channel = 2;
+							else {
+								GlobalLog()->PrintEx( eLog_Error,
+									"scalar_painter `%s`: unknown channel `%s` (expected R, G, or B)",
+									name.c_str(), chs.c_str() );
+								return false;
+							}
+						}
+						const double scale = bag.GetDouble( "scale", 1.0 );
+						const double bias  = bag.GetDouble( "bias",  0.0 );
+						RISE_API_CreateTextureScalarPainterAffine(
+							&painter, pRIA, channel, Scalar( scale ), Scalar( bias ) );
+					}
 
 					if( !painter ) {
 						GlobalLog()->PrintEx( eLog_Error,
@@ -1385,8 +1516,11 @@ namespace RISE
 						{ auto& p = P(); p.name = "function1d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction1D to wrap (form 6: Function1DScalarPainter)"; }
 						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction2D to wrap (form 7: Function2DScalarPainter)"; }
 						{ auto& p = P(); p.name = "base";       p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Base scalar_painter for ScaledScalarPainter (form 8)"; }
-						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;     p.description = "Scale factor (companion to `base`)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;     p.description = "Scale factor (companion to `base`, `texture`, and `function2d`)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "multiply";   p.kind = ValueKind::String;     p.description = "Two scalar_painter names `a b` (form 9: MultiplyScalarPainter)"; }
+						{ auto& p = P(); p.name = "texture";    p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named raster image painter (png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter) to sample spatially at the surface UV (form 10: TextureScalarPainter; no JH-uplift / colourspace conversion)"; }
+						{ auto& p = P(); p.name = "channel";    p.kind = ValueKind::Enum;       p.enumValues = {"R","G","B"}; p.description = "Which texture channel sources the scalar (companion to `texture`)"; p.defaultValueHint = "R"; }
+						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;     p.description = "Additive offset for the `texture` / `function2d` forms: out = bias + scale * raw (raw in [0,1])"; p.defaultValueHint = "0.0"; }
 						return cd;
 					}();
 					return d;
@@ -1444,6 +1578,61 @@ namespace RISE
 				{ cd.parameters.emplace_back(); ParameterDescriptor& p = cd.parameters.back(); p.name = "wrap_t"; p.kind = ValueKind::Enum; p.enumValues = {"clamp","repeat","mirrored_repeat"}; p.description = "Address-wrap mode for the V axis (T in glTF terminology); see wrap_s for semantics."; p.defaultValueHint = "clamp"; }
 			}
 
+			// Shared helper: parse a filter_type chunk parameter into RISE's
+			// char encoding for RasterImageAccessorFromChar (0 = nearest-
+			// neighbour, 1 = bilinear, 2 = Catmull-Rom bicubic, 3 = uniform
+			// B-spline bicubic) -- the four filter modes the runtime actually
+			// implements.  The user-facing names are the lowercase forms the
+			// matching ChunkDescriptor advertises; the PascalCase forms (NNB /
+			// Bilinear / CatmullRom / UniformBSpline) are kept as backward-
+			// compatible aliases because they were the ONLY strings the pre-
+			// reconciliation Finalize accepted, so every pre-existing scene
+			// that successfully set filter_type uses them.
+			//
+			// Returns 1 (bilinear) when the parameter is absent so scenes that
+			// don't specify a filter render byte-identically to the historical
+			// default.  Logs and returns false on an unrecognised string so
+			// authors see the typo instead of a silent fallback.  Used by all 5
+			// texture-painter chunks (png / jpg / hdr / exr / tiff) so the
+			// surface stays consistent and descriptor/Finalize cannot drift.
+			static inline bool ParseFilterTypeParam(
+				const ParseStateBag& bag,
+				char&                outFilter )
+			{
+				outFilter = 1;	// bilinear (historical default)
+				if( !bag.Has( "filter_type" ) ) return true;
+				std::string ft = bag.GetString( "filter_type" );
+				if(      ft == "nearest"       || ft == "NNB" )            outFilter = 0;
+				else if( ft == "bilinear"      || ft == "Bilinear" )       outFilter = 1;
+				else if( ft == "catmull-rom"   || ft == "CatmullRom" )     outFilter = 2;
+				else if( ft == "cubic-bspline" || ft == "UniformBSpline" ) outFilter = 3;
+				else {
+					GlobalLog()->PrintEx( eLog_Error,
+						"ChunkParser:: Unknown filter type `%s` "
+						"(expected one of: nearest, bilinear, catmull-rom, cubic-bspline)",
+						ft.c_str() );
+					return false;
+				}
+				return true;
+			}
+
+			// Adds the filter_type parameter descriptor to a ChunkDescriptor so
+			// every image-painter chunk advertises the same names + accepted
+			// values.  Only the four filter modes RasterImageAccessorFromChar
+			// actually implements are advertised -- the earlier {box, gaussian}
+			// entries had no backing accessor and hard-failed in Finalize,
+			// making them un-authorable.  Mirror of AddWrapModeParams.
+			static inline void AddFilterTypeParam( ChunkDescriptor& cd )
+			{
+				cd.parameters.emplace_back();
+				ParameterDescriptor& p = cd.parameters.back();
+				p.name = "filter_type";
+				p.kind = ValueKind::Enum;
+				p.enumValues = {"nearest","bilinear","catmull-rom","cubic-bspline"};
+				p.description = "Texture filter";
+				p.defaultValueHint = "bilinear";
+			}
+
 			struct PngPainterAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -1470,17 +1659,7 @@ namespace RISE
 					}
 
 					char filter_type = 1;
-					if( bag.Has( "filter_type" ) ) {
-						std::string ft = bag.GetString( "filter_type" );
-						if(      ft == "NNB" )            filter_type = 0;
-						else if( ft == "Bilinear" )       filter_type = 1;
-						else if( ft == "CatmullRom" )     filter_type = 2;
-						else if( ft == "UniformBSpline" ) filter_type = 3;
-						else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
-							return false;
-						}
-					}
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
 
 					char wrap_s = 0, wrap_t = 0;
 					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
@@ -1498,7 +1677,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "PNG file path"; }
 						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "sRGB"; }
-						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						AddFilterTypeParam( cd );
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint (8-bit in-core)"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale multipliers"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B additive shift"; p.defaultValueHint = "0 0 0"; }
@@ -1535,17 +1714,7 @@ namespace RISE
 					}
 
 					char filter_type = 1;
-					if( bag.Has( "filter_type" ) ) {
-						std::string ft = bag.GetString( "filter_type" );
-						if(      ft == "NNB" )            filter_type = 0;
-						else if( ft == "Bilinear" )       filter_type = 1;
-						else if( ft == "CatmullRom" )     filter_type = 2;
-						else if( ft == "UniformBSpline" ) filter_type = 3;
-						else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
-							return false;
-						}
-					}
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
 
 					char wrap_s = 0, wrap_t = 0;
 					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
@@ -1563,7 +1732,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "JPEG file path"; }
 						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "sRGB"; }
-						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						AddFilterTypeParam( cd );
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint (8-bit in-core)"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale multipliers"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B additive shift"; p.defaultValueHint = "0 0 0"; }
@@ -1587,17 +1756,7 @@ namespace RISE
 					bag.GetVec3( "shift", shift );
 
 					char filter_type = 1;
-					if( bag.Has( "filter_type" ) ) {
-						std::string ft = bag.GetString( "filter_type" );
-						if(      ft == "NNB" )            filter_type = 0;
-						else if( ft == "Bilinear" )       filter_type = 1;
-						else if( ft == "CatmullRom" )     filter_type = 2;
-						else if( ft == "UniformBSpline" ) filter_type = 3;
-						else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
-							return false;
-						}
-					}
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
 
 					char wrap_s = 0, wrap_t = 0;
 					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
@@ -1614,7 +1773,7 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "HDR file path"; }
-						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						AddFilterTypeParam( cd );
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
@@ -1651,17 +1810,7 @@ namespace RISE
 					}
 
 					char filter_type = 1;
-					if( bag.Has( "filter_type" ) ) {
-						std::string ft = bag.GetString( "filter_type" );
-						if(      ft == "NNB" )            filter_type = 0;
-						else if( ft == "Bilinear" )       filter_type = 1;
-						else if( ft == "CatmullRom" )     filter_type = 2;
-						else if( ft == "UniformBSpline" ) filter_type = 3;
-						else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
-							return false;
-						}
-					}
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
 
 					char wrap_s = 0, wrap_t = 0;
 					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
@@ -1679,7 +1828,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "EXR file path"; }
 						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "Rec709RGB_Linear"; }
-						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						AddFilterTypeParam( cd );
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
@@ -1716,17 +1865,7 @@ namespace RISE
 					}
 
 					char filter_type = 1;
-					if( bag.Has( "filter_type" ) ) {
-						std::string ft = bag.GetString( "filter_type" );
-						if(      ft == "NNB" )            filter_type = 0;
-						else if( ft == "Bilinear" )       filter_type = 1;
-						else if( ft == "CatmullRom" )     filter_type = 2;
-						else if( ft == "UniformBSpline" ) filter_type = 3;
-						else {
-							GlobalLog()->PrintEx( eLog_Error, "ChunkParser:: Unknown filter type `%s`", ft.c_str() );
-							return false;
-						}
-					}
+					if( !ParseFilterTypeParam( bag, filter_type ) ) return false;
 
 					char wrap_s = 0, wrap_t = 0;
 					if( !ParseWrapModeParam( bag, "wrap_s", wrap_s ) ) return false;
@@ -1744,7 +1883,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";        p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "file";        p.kind = ValueKind::Filename;   p.description = "TIFF file path"; }
 						{ auto& p = P(); p.name = "color_space"; p.kind = ValueKind::Enum;       p.enumValues = {"sRGB","Rec709RGB_Linear","ROMMRGB_Linear","ProPhotoRGB"}; p.description = "Source colour space"; p.defaultValueHint = "sRGB"; }
-						{ auto& p = P(); p.name = "filter_type"; p.kind = ValueKind::Enum;       p.enumValues = {"nearest","bilinear","catmull-rom","box","cubic-bspline","gaussian"}; p.description = "Texture filter"; p.defaultValueHint = "bilinear"; }
+						AddFilterTypeParam( cd );
 						{ auto& p = P(); p.name = "lowmemory";   p.kind = ValueKind::Bool;       p.description = "Lower memory footprint"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "scale";       p.kind = ValueKind::DoubleVec3; p.description = "R G B scale"; p.defaultValueHint = "1 1 1"; }
 						{ auto& p = P(); p.name = "shift";       p.kind = ValueKind::DoubleVec3; p.description = "R G B shift"; p.defaultValueHint = "0 0 0"; }
@@ -3086,7 +3225,10 @@ namespace RISE
 					std::string scat = bag.GetString( "scattering", "10000" );
 					bool hg          = bag.GetBool(   "henyey-greenstein", false );
 
-					return pJob.AddDielectricMaterial( name.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg );
+					const double ar_ior   = bag.GetDouble( "ar_film_ior",        0.0 );
+					const double ar_thick = bag.GetDouble( "ar_film_thickness",  0.0 );
+					const double ar_ext   = bag.GetDouble( "ar_film_extinction", 0.0 );
+					return pJob.AddDielectricMaterial( name.c_str(), tau.c_str(), ior.c_str(), scat.c_str(), hg, ar_ior, ar_ext, ar_thick );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3099,6 +3241,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "tau";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Transmittance (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "ior";               p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Index of refraction (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "scattering";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Scattering coefficient (scalar_painter, or inline `r g b` or scalar)"; p.defaultValueHint = "10000"; }
+						{ auto& p = P(); p.name = "ar_film_ior";        p.kind = ValueKind::Double; p.description = "Anti-reflective coating film index (e.g. MgF2 1.38). 0 = no coating (bare Fresnel)."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "ar_film_thickness";  p.kind = ValueKind::Double; p.description = "AR coating physical thickness, nm (e.g. MgF2 quarter-wave ~99.6 at 550nm). 0 = no coating."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "ar_film_extinction"; p.kind = ValueKind::Double; p.description = "AR coating film extinction k (~0 for a transparent AR dielectric)."; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "henyey-greenstein"; p.kind = ValueKind::Bool;      p.description = "Use Henyey-Greenstein phase"; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
@@ -3628,15 +3773,29 @@ namespace RISE
 					std::string emissive   = bag.GetString( "emissive",        "none" );
 					double emissive_scale  = bag.GetDouble( "emissive_scale",  1.0 );
 					std::string fresnelMode = bag.GetString( "fresnel_mode",   "conductor" );
+					// Thin-film FILM slots (eFresnelThinFilmConductor).  Default
+					// "none" => no film painter; Job::AddGGXMaterial enforces that
+					// thinfilm mode supplies film_ior + film_thickness (the P2-B
+					// BSDF contract dereferences them when the mode is selected).
+					std::string filmIor       = bag.GetString( "film_ior",        "none" );
+					std::string filmExtinction= bag.GetString( "film_extinction", "none" );
+					std::string filmThickness = bag.GetString( "film_thickness",  "none" );
+					// P0-A: tangent-frame rotation (painter OR scalar radians; "none" =
+					// aligned with the geometry tangent).  Job::AddGGXMaterial + the GGX
+					// BRDF already apply it (ResolveTangentONB/RotateTangent) -- this just
+					// stops ggx_material hard-coding "none".  Steers groove-aligned anisotropy.
+					std::string tangentRot    = bag.GetString( "tangent_rotation", "none" );
 
 					if( emissive == "none" ) {
 						return pJob.AddGGXMaterial( name.c_str(), rd.c_str(), rs.c_str(),
 							alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str(),
-							fresnelMode.c_str() );
+							fresnelMode.c_str(), tangentRot.c_str(),
+							filmIor.c_str(), filmExtinction.c_str(), filmThickness.c_str() );
 					}
 					return pJob.AddGGXEmissiveMaterial( name.c_str(), rd.c_str(), rs.c_str(),
 						alphax.c_str(), alphay.c_str(), ior.c_str(), extinction.c_str(),
-						emissive.c_str(), emissive_scale, fresnelMode.c_str() );
+						emissive.c_str(), emissive_scale, fresnelMode.c_str(), tangentRot.c_str(),
+						filmIor.c_str(), filmExtinction.c_str(), filmThickness.c_str() );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -3652,7 +3811,11 @@ namespace RISE
 							"a tint; `schlick_f0` uses Schlick's F0-shaped approximation, treating "
 							"`rs` as F0 directly and ignoring ior + extinction (required by glTF "
 							"metallicRoughness PBR mapping; pbr_metallic_roughness_material picks "
-							"this automatically).";
+							"this automatically); `thinfilm` evaluates thin-film interference "
+							"(heat-tint / anodization color) on an air / oxide-film / metal stack — "
+							"`ior` + `extinction` carry the SUBSTRATE (metal) complex index and the "
+							"three `film_*` slots carry the oxide film (docs/THIN_FILM_INTERFERENCE.md).  "
+							"`thinfilm` REQUIRES `film_ior` and `film_thickness` (`film_extinction` optional).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";           p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "rd";             p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
@@ -3663,7 +3826,11 @@ namespace RISE
 						{ auto& p = P(); p.name = "extinction";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (ignored in schlick_f0 mode)"; }
 						{ auto& p = P(); p.name = "emissive";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Optional emissive painter (LambertianEmitter folded in when present)"; }
 						{ auto& p = P(); p.name = "emissive_scale"; p.kind = ValueKind::Double;    p.description = "Multiplier on emissive radiance"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "fresnel_mode";   p.kind = ValueKind::String;    p.description = "Fresnel model: conductor | schlick_f0"; p.defaultValueHint = "conductor"; }
+						{ auto& p = P(); p.name = "fresnel_mode";   p.kind = ValueKind::String;    p.description = "Fresnel model: conductor | schlick_f0 | thinfilm"; p.defaultValueHint = "conductor"; }
+						{ auto& p = P(); p.name = "film_ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Thin-film oxide n (scalar_painter; eFresnelThinFilmConductor only)"; }
+						{ auto& p = P(); p.name = "film_extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide k (scalar_painter; eFresnelThinFilmConductor only; default 0/none = transparent film)"; }
+						{ auto& p = P(); p.name = "film_thickness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Thin-film oxide thickness in nm (scalar_painter, may be spatially varying; eFresnelThinFilmConductor only)"; }
+						{ auto& p = P(); p.name = "tangent_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Anisotropy tangent-frame rotation in RADIANS: a colour-painter reference (an expression_function2d gives a SPATIALLY-VARYING field, e.g. groove direction) OR an inline scalar.  \"none\" = aligned with the geometry tangent.  Resolved in the colour-painter manager, so a scalar_painter does NOT bind here -- use expression_function2d or a scalar.  Steers alphax!=alphay anisotropy."; p.defaultValueHint = "none"; }
 						return cd;
 					}();
 					return d;
@@ -3744,6 +3911,22 @@ namespace RISE
 					std::string facets     = bag.GetString( "facets",     "0.15" );
 					std::string ior        = bag.GetString( "ior",        "2.45" );
 					std::string extinction = bag.GetString( "extinction", "1" );
+					// Thin-film interference is intentionally GGX-only; reject it
+					// here with a clear, specific diagnostic rather than silently
+					// ignoring the mode (the CT BSDF has no thin-film Fresnel path).
+					std::string fresnelMode = bag.GetString( "fresnel_mode", "conductor" );
+					if( fresnelMode == "thinfilm" ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"cooktorrance_material `%s`: fresnel_mode `thinfilm` is not supported on Cook-Torrance (thin-film interference is GGX-only).  Use a ggx_material with fresnel_mode thinfilm + film_ior / film_extinction / film_thickness instead (docs/THIN_FILM_INTERFERENCE.md §7).",
+							name.c_str() );
+						return false;
+					}
+					if( fresnelMode != "conductor" ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"cooktorrance_material `%s`: unknown fresnel_mode `%s`.  Cook-Torrance supports only `conductor`.",
+							name.c_str(), fresnelMode.c_str() );
+						return false;
+					}
 
 					return pJob.AddCookTorranceMaterial( name.c_str(), rd.c_str(), rs.c_str(), facets.c_str(), ior.c_str(), extinction.c_str() );
 				}
@@ -3752,7 +3935,8 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "cooktorrance_material"; cd.category = ChunkCategory::Material;
-						cd.description = "Cook-Torrance microfacet BRDF.";
+						cd.description = "Cook-Torrance microfacet BRDF.  Only `fresnel_mode conductor` is supported; "
+							"`thinfilm` is GGX-only and rejected with a diagnostic.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "rd";         p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Diffuse reflectance"; }
@@ -3760,6 +3944,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "facets";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Microfacet slope distribution (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter,ChunkCategory::Function}; p.description = "Fresnel IOR (scalar_painter, or inline `r g b` or scalar)"; }
 						{ auto& p = P(); p.name = "extinction"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Fresnel extinction (scalar_painter, or inline `r g b` or scalar)"; }
+						{ auto& p = P(); p.name = "fresnel_mode"; p.kind = ValueKind::String; p.description = "Fresnel model: conductor (only).  `thinfilm` is GGX-only and rejected here."; p.defaultValueHint = "conductor"; }
 						return cd;
 					}();
 					return d;
@@ -4617,7 +4802,7 @@ namespace RISE
 						cd.description = "Implicit ellipsoid (per-axis radii).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String;     p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "radii"; p.kind = ValueKind::DoubleVec3; p.description = "Per-axis radii"; p.defaultValueHint = "1 1 1"; }
+						{ auto& p = P(); p.name = "radii"; p.kind = ValueKind::DoubleVec3; p.description = "Per-axis radii (semi-axes, like sphere_geometry radius)"; p.defaultValueHint = "1 1 1"; }
 						return cd;
 					}();
 					return d;
@@ -5180,6 +5365,415 @@ namespace RISE
 				}
 			};
 
+			struct SDFGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string file = bag.GetString( "file", "" );
+					unsigned int maxSteps = bag.GetUInt( "maxsteps", 256 );
+					double eps = bag.GetDouble( "epsilon", 0.0 );
+					unsigned int samplingDetail = bag.GetUInt( "sampling_detail", 64 );
+
+					// Heightfield mode (analytic exact-surface twin of a displaced
+					// cartesian disk): when a heightfield_function is named, the SDF
+					// IS the surface z = heightfield_scale * f(u,v) over the square
+					// [-R,R]^2 -- sphere-traced, O(1) memory -- and the `part` / `file`
+					// path is bypassed entirely.
+					std::string hfFunction = bag.GetString( "heightfield_function", "none" );
+					double hfRadius = bag.GetDouble( "heightfield_radius", 1.0 );
+					double hfScale  = bag.GetDouble( "heightfield_scale", 0.0 );
+					if( hfFunction != "none" ) {
+						return pJob.AddSDFHeightfieldGeometry( name.c_str(), hfFunction.c_str(), hfRadius, hfScale, maxSteps, eps, samplingDetail );
+					}
+
+					// Inline `part` lines (repeatable, in authoring order) are
+					// joined into the newline-separated source that
+					// SDFGeometry::ParsePartLines understands.  The lines are
+					// forwarded VERBATIM -- future part-grammar extensions
+					// (new shapes / ops / per-part fields) need no change
+					// here.  Exactly-one-of-{`part` lines, `file`} is
+					// diagnosed by Job::AddSDFGeometry with the chunk name.
+					const std::vector<std::string>& partLines = bag.GetRepeatable( "part" );
+					std::string parts;
+					for( std::size_t i = 0; i < partLines.size(); ++i ) {
+						parts += partLines[i];
+						parts += "\n";
+					}
+
+					return pJob.AddSDFGeometry( name.c_str(), file.c_str(), parts.c_str(), maxSteps, eps, samplingDetail );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "sdf_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Signed-distance-field (implicit) surface: transformed primitives composed with smooth-min / boolean ops, sphere-traced.  For melded / filleted organic shapes (e.g. lugs flowing into a bezel).  Author the parts inline with repeatable `part` lines; use `file` only for very large SDFs.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;   p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "part";     p.kind = ValueKind::String;   p.repeatable = true; p.description = "One SDF part (repeatable; parts compose in order): <prim> <op> <k>  <px py pz>  <exDeg eyDeg ezDeg>  <sx sy sz>  <a b c>  <round>.  prim: sphere|box|roundbox|cylinder|torus|capsule|roundcone; op: union|smin|subtract|intersect (k = blend radius, 0 = hard).  Lines are forwarded verbatim to the shared SDF part grammar (SDFGeometry::ParsePartLines), so future shapes / ops extend without chunk changes.  The FIRST part must be union or smin (the field starts empty)"; }
+						{ auto& p = P(); p.name = "file";     p.kind = ValueKind::Filename; p.description = "External SDF parts file (same one-part-per-line grammar; for very large SDFs).  Provide either inline `part` lines or `file`, not both"; }
+						{ auto& p = P(); p.name = "maxsteps"; p.kind = ValueKind::UInt;     p.description = "Sphere-trace step cap"; p.defaultValueHint = "256"; }
+						{ auto& p = P(); p.name = "epsilon";  p.kind = ValueKind::Double;   p.description = "Surface hit epsilon as a fraction of the bbox diagonal (0 = auto)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "sampling_detail"; p.kind = ValueKind::UInt; p.description = "Tessellation cells along the longest bbox axis for area-light / SSS surface sampling (clamped 8..256)"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "heightfield_function"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "HEIGHTFIELD MODE: a named IFunction2D giving f(u,v) in [0,1].  When set (not `none`), the SDF IS the exact analytic surface z = heightfield_scale*f(u,v) over the square [-heightfield_radius,heightfield_radius]^2 (sphere-traced, O(1) memory -- the exact-geometry twin of a displaced_geometry on a cartesian_disk_geometry); `part` / `file` are ignored"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "heightfield_radius"; p.kind = ValueKind::Double; p.description = "Heightfield mode: half-extent of the square domain (object units; u=(x+R)/2R)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "heightfield_scale"; p.kind = ValueKind::Double; p.description = "Heightfield mode: world amplitude of the field (surface z = heightfield_scale*f(u,v))"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct CartesianDiskGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					const double radius = bag.GetDouble( "radius", 20.6 );
+					const int meshN = (int)bag.GetUInt( "mesh_n", 560 );
+					return pJob.AddCartesianDiskGeometry( name.c_str(), radius, meshN );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "cartesian_disk_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "A FLAT Cartesian-grid circular disk: linear Cartesian UV (u=(x+R)/2R), +Z normals, uniform world-space cell density everywhere (unlike a polar fan).  The general flat base for displacing an arbitrary 2D field -- an expression_function2d, a texture, noise -- onto a disk via displaced_geometry with uv_seam_fold FALSE.  (A guilloché dial = this base + a guilloché expression_function2d displacement.)";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "radius"; p.kind = ValueKind::Double; p.description = "Disk radius (world units)"; p.defaultValueHint = "20.6"; }
+						{ auto& p = P(); p.name = "mesh_n"; p.kind = ValueKind::UInt;   p.description = "Grid samples across the diameter (tessellation density; clamped 2..4096)"; p.defaultValueHint = "560"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ExpressionFunction2DPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string finalExpr = bag.GetString( "expr", "" );
+					if( finalExpr.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: missing `expr` (the final value expression)", name.c_str() );
+						return false;
+					}
+
+					Implementation::ExpressionProgram::Builder builder;
+					// named numeric constants (all params precede all defs)
+					const std::vector<std::string>& params = bag.GetRepeatable( "param" );
+					for( std::size_t i = 0; i < params.size(); ++i ) {
+						char pn[128] = {0}; double pv = 0;
+						if( sscanf( params[i].c_str(), "%127s %lf", pn, &pv ) != 2 ) {
+							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: param %u (`%s`) must be `<name> <number>`", name.c_str(), (unsigned)i, params[i].c_str() );
+							return false;
+						}
+						if( !Implementation::ExpressionProgram::IsFinite( (Scalar)pv ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: param `%s` must be finite (nan/inf rejected)", name.c_str(), pn );
+							return false;
+						}
+						builder.AddParam( pn, (Scalar)pv );
+					}
+					// named sub-expressions (let-bindings), in input order
+					const std::vector<std::string>& defs = bag.GetRepeatable( "def" );
+					for( std::size_t i = 0; i < defs.size(); ++i ) {
+						const std::string& line = defs[i];
+						std::size_t sp = line.find_first_of( " \t" );
+						if( sp == std::string::npos ) {
+							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: def %u (`%s`) must be `<name> <expression>`", name.c_str(), (unsigned)i, line.c_str() );
+							return false;
+						}
+						const std::string dname = line.substr( 0, sp );
+						const std::string dexpr = line.substr( sp + 1 );
+						if( !builder.AddDef( dname, dexpr ) ) {
+							GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: def `%s`: %s", name.c_str(), dname.c_str(), builder.Error().c_str() );
+							return false;
+						}
+					}
+
+					Implementation::ExpressionProgram prog = Implementation::ExpressionProgram::Invalid();
+					if( !builder.Finalize( finalExpr, prog ) ) {
+						GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: expr: %s", name.c_str(), builder.Error().c_str() );
+						return false;
+					}
+
+					IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+					if( !pPriv ) {
+						GlobalLog()->PrintEx( eLog_Error, "expression_function2d `%s`: IJobPriv unavailable", name.c_str() );
+						return false;
+					}
+					IPainter* painter = 0;
+					if( !RISE_API_CreateExpressionFunction2D( &painter, prog ) ) {
+						return false;
+					}
+					pPriv->GetPainters()->AddItem( painter, name.c_str() );
+					pPriv->GetFunction2Ds()->AddItem( painter, name.c_str() );
+					painter->release();
+					return true;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "expression_function2d"; cd.category = ChunkCategory::Painter;
+						cd.description = "A procedural 2D field whose value is a MATH EXPRESSION authored in the scene -- the in-scene-scripted analogue of perlin2d / worley.  Usable as a displacement (displaced_geometry), a greyscale colour (a colour slot / blend_painter mask), or a physical scalar (scalar_painter { function2d <name> }).  Variables u, v (the UV); declare `param <name> <number>` constants and `def <name> <expr>` named sub-expressions (let-bindings, in order, referencing u/v/params/earlier-defs), then the final `expr`.  Functions: sin cos tan asin acos atan exp log sqrt abs floor ceil frac sign atan2 mod min max pow hypot step clamp smoothstep mix select; operators + - * / % ^ and comparisons (yield 1/0); constants pi tau e.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "param"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Named numeric constant `<name> <number>` (repeatable); visible to every def and the final expr"; }
+						{ auto& p = P(); p.name = "def";   p.kind = ValueKind::String; p.repeatable = true; p.description = "Named sub-expression `<name> <expr>` (repeatable, in order); a let-binding referencing u, v, params, and earlier defs"; }
+						{ auto& p = P(); p.name = "expr";  p.kind = ValueKind::String; p.description = "The final value expression over u, v, params and defs"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct Function2DColorPainterAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string func = bag.GetString( "function2d", "" );
+					if( func.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"function2d_painter `%s`: missing `function2d` (the named IFunction2D to wrap)", name.c_str() );
+						return false;
+					}
+					const double scale = bag.GetDouble( "scale", 1.0 );
+					const double bias  = bag.GetDouble( "bias",  0.0 );
+					return pJob.AddFunction2DColorPainter( name.c_str(), func.c_str(), scale, bias );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "function2d_painter"; cd.category = ChunkCategory::Painter;
+						cd.description = "Wraps a named IFunction2D as a greyscale COLOUR painter (out = bias + scale * f(u,v) on all channels).  The colour analogue of scalar_painter { function2d }: lets any procedural 2D field (Perlin, Worley, polynomial, composite, guilloché) feed a colour slot or a blend_painter mask -- e.g. the guilloché spall mask driving the matte oxide-scale blend.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction2D to wrap as greyscale colour"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Output scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;    p.description = "Output bias (out = bias + scale * f)"; p.defaultValueHint = "0.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct SweepGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+
+					// repeatable 2D profile + 3D path lines
+					const std::vector<std::string>& profLines = bag.GetRepeatable( "profile_point" );
+					if( profLines.size() < 3 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"sweep_geometry `%s`: need at least 3 repeatable `profile_point <x> <h>` entries (a closed polygon; got %u)",
+							name.c_str(), (unsigned int)profLines.size() );
+						return false;
+					}
+					std::vector<double> prof;
+					prof.reserve( profLines.size() * 2 );
+					for( std::size_t i = 0; i < profLines.size(); ++i ) {
+						double x = 0, h = 0;
+						char trailing[8] = {0};
+						if( sscanf( profLines[i].c_str(), "%lf %lf %7s", &x, &h, trailing ) != 2 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: profile_point %u (`%s`) must be exactly two numbers `<x> <h>`",
+								name.c_str(), (unsigned int)i, profLines[i].c_str() );
+							return false;
+						}
+						prof.push_back( x );
+						prof.push_back( h );
+					}
+
+					const std::vector<std::string>& pointLines = bag.GetRepeatable( "point" );
+					if( pointLines.size() < 2 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"sweep_geometry `%s`: need at least 2 repeatable `point <x> <y> <z>` path control points (got %u)",
+							name.c_str(), (unsigned int)pointLines.size() );
+						return false;
+					}
+					std::vector<double> pts;
+					pts.reserve( pointLines.size() * 3 );
+					for( std::size_t i = 0; i < pointLines.size(); ++i ) {
+						double x = 0, y = 0, z = 0;
+						char trailing[8] = {0};
+						if( sscanf( pointLines[i].c_str(), "%lf %lf %lf %7s", &x, &y, &z, trailing ) != 3 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: point %u (`%s`) must be exactly three numbers `<x> <y> <z>`",
+								name.c_str(), (unsigned int)i, pointLines[i].c_str() );
+							return false;
+						}
+						pts.push_back( x ); pts.push_back( y ); pts.push_back( z );
+					}
+
+					// OPTIONAL repeatable per-control-point width (x-axis) multipliers,
+					// one per `point` (the rest pad with 1.0).  A NON-linear width profile.
+					const std::vector<std::string>& widthLines = bag.GetRepeatable( "point_width" );
+					std::vector<double> widths;
+					if( !widthLines.empty() ) {
+						if( widthLines.size() > pointLines.size() ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"sweep_geometry `%s`: %u `point_width` entries exceed %u `point` path control points (one width per point; pad with 1.0)",
+								name.c_str(), (unsigned int)widthLines.size(), (unsigned int)pointLines.size() );
+							return false;
+						}
+						widths.reserve( widthLines.size() );
+						for( std::size_t i = 0; i < widthLines.size(); ++i ) {
+							double w = 0;
+							char trailing[8] = {0};
+							if( sscanf( widthLines[i].c_str(), "%lf %7s", &w, trailing ) != 1 ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"sweep_geometry `%s`: point_width %u (`%s`) must be exactly one number `<sx>`",
+									name.c_str(), (unsigned int)i, widthLines[i].c_str() );
+								return false;
+							}
+							if( !( w > 0 ) ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"sweep_geometry `%s`: point_width %u (%g) must be > 0", name.c_str(), (unsigned int)i, w );
+								return false;
+							}
+							widths.push_back( w );
+						}
+					}
+
+					SweepDescriptor d;
+					d.profilePoints    = &prof[0];
+					d.numProfilePoints = (unsigned int)profLines.size();
+					d.pathPoints       = &pts[0];
+					d.numPathPoints    = (unsigned int)pointLines.size();
+					d.nLen             = (int)bag.GetUInt( "n_len", (unsigned int)d.nLen );
+					d.endScaleX        = bag.GetDouble( "end_scale_x", d.endScaleX );
+					d.endScaleY        = bag.GetDouble( "end_scale_y", d.endScaleY );
+					d.capStart         = bag.GetBool( "cap_start", d.capStart );
+					d.capEnd           = bag.GetBool( "cap_end",   d.capEnd );
+					if( !widths.empty() ) {
+						d.pointWidths    = &widths[0];
+						d.numPointWidths = (unsigned int)widths.size();
+					}
+					{
+						const std::string fh = bag.GetString( "frame_hint", "" );
+						if( !fh.empty() ) {
+							double hx = 0, hy = 0, hz = 0;
+							char trailing[8] = {0};
+							if( sscanf( fh.c_str(), "%lf %lf %lf %7s", &hx, &hy, &hz, trailing ) != 3 ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"sweep_geometry `%s`: frame_hint must be three numbers `<x> <y> <z>`", name.c_str() );
+								return false;
+							}
+							d.frameHintX = hx; d.frameHintY = hy; d.frameHintZ = hz;
+						}
+					}
+					return pJob.AddSweepGeometry( name.c_str(), d );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "sweep_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "General profile sweep: an arbitrary CLOSED 2D profile polygon (repeatable profile_point lines) swept along an arbitrary 3D Catmull-Rom path (repeatable point lines) with rotation-minimizing frames, optional per-axis linear taper (linear in path parameter), optional NON-linear per-station width (repeatable point_width multipliers, Catmull-Rom interpolated, composed multiplicatively with end_scale_x), and ear-clipped end caps.  Tubes, rails, mouldings, straps, cables.  Profile x maps to the frame binormal, h to the frame normal; UV = (profile arc fraction, path parameter fraction; profile U wraps with no duplicated seam vertex).  OPEN paths only: a loop authored first==last seams (RMF holonomy + open-spline padding) -- use torus_geometry for true rings.  Catmull-Rom rounds sharp path corners; add control points to tighten.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "profile_point"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Closed-profile vertex `<x> <h>` in the sweep frame (repeatable, polygon order; at least 3; CCW = outward normals).  Duplicate a point to harden an edge"; }
+						{ auto& p = P(); p.name = "point";         p.kind = ValueKind::String; p.repeatable = true; p.description = "Path control point `<x> <y> <z>` (repeatable, path order; at least 2).  The profile sweeps a Catmull-Rom spline through these"; }
+						{ auto& p = P(); p.name = "point_width";   p.kind = ValueKind::String; p.repeatable = true; p.description = "OPTIONAL per-control-point width (x-axis) multiplier `<sx>` (repeatable, path order; one per `point`, missing padded with 1.0; > 0).  Catmull-Rom interpolated along the path and composed MULTIPLICATIVELY with end_scale_x -- a NON-linear width profile (e.g. neck in at one end).  Catmull-Rom can over/undershoot between non-monotone widths (add path points to tighten; interpolated widths are floored to > 0).  Omit = uniform 1.0"; }
+						{ auto& p = P(); p.name = "n_len";         p.kind = ValueKind::UInt;   p.description = "Requested samples along the path (clamped 2..4096; actual = (points-1)*max(2, n_len/(points-1)) + 1)"; p.defaultValueHint = "64"; }
+						{ auto& p = P(); p.name = "end_scale_x";   p.kind = ValueKind::Double; p.description = "Profile x scale at the path end (linear taper from 1 at the start)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "end_scale_y";   p.kind = ValueKind::Double; p.description = "Profile h scale at the path end (linear taper from 1 at the start)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "cap_start";     p.kind = ValueKind::Bool;   p.description = "Close the start cross-section (ear-clipped cap)"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "cap_end";       p.kind = ValueKind::Bool;   p.description = "Close the end cross-section (ear-clipped cap)"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "frame_hint";    p.kind = ValueKind::String; p.description = "Initial binormal hint `<x> <y> <z>` for the rotation-minimizing frame (omit = world axis most perpendicular to the start tangent)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct PathInstancesGeometryAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+					std::string tmpl = bag.GetString( "geometry", "" );
+					if( tmpl.empty() ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"path_instances_geometry `%s`: missing `geometry` (the named template geometry to instance)", name.c_str() );
+						return false;
+					}
+
+					const std::vector<std::string>& pointLines = bag.GetRepeatable( "point" );
+					if( pointLines.size() < 2 ) {
+						GlobalLog()->PrintEx( eLog_Error,
+							"path_instances_geometry `%s`: need at least 2 repeatable `point <x> <y> <z>` path control points (got %u)",
+							name.c_str(), (unsigned int)pointLines.size() );
+						return false;
+					}
+					std::vector<double> pts;
+					pts.reserve( pointLines.size() * 3 );
+					for( std::size_t i = 0; i < pointLines.size(); ++i ) {
+						double x = 0, y = 0, z = 0;
+						char trailing[8] = {0};
+						if( sscanf( pointLines[i].c_str(), "%lf %lf %lf %7s", &x, &y, &z, trailing ) != 3 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"path_instances_geometry `%s`: point %u (`%s`) must be exactly three numbers `<x> <y> <z>`",
+								name.c_str(), (unsigned int)i, pointLines[i].c_str() );
+							return false;
+						}
+						pts.push_back( x ); pts.push_back( y ); pts.push_back( z );
+					}
+
+					PathInstancesDescriptor d;
+					d.pathPoints    = &pts[0];
+					d.numPathPoints = (unsigned int)pointLines.size();
+					d.nLen          = (int)bag.GetUInt( "n_len", (unsigned int)d.nLen );
+					d.pitch         = bag.GetDouble( "pitch", d.pitch );
+					d.phase         = bag.GetDouble( "phase", d.phase );
+					d.slantDeg      = bag.GetDouble( "slant", d.slantDeg );
+					d.scale         = bag.GetDouble( "scale", d.scale );
+					d.detail        = bag.GetUInt( "detail", d.detail );
+					{
+						const std::string fh = bag.GetString( "frame_hint", "" );
+						if( !fh.empty() ) {
+							double hx = 0, hy = 0, hz = 0;
+							char trailing[8] = {0};
+							if( sscanf( fh.c_str(), "%lf %lf %lf %7s", &hx, &hy, &hz, trailing ) != 3 ) {
+								GlobalLog()->PrintEx( eLog_Error,
+									"path_instances_geometry `%s`: frame_hint must be three numbers `<x> <y> <z>`", name.c_str() );
+								return false;
+							}
+							d.frameHintX = hx; d.frameHintY = hy; d.frameHintZ = hz;
+						}
+					}
+					return pJob.AddPathInstancesGeometry( name.c_str(), tmpl.c_str(), d );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "path_instances_geometry"; cd.category = ChunkCategory::Geometry;
+						cd.description = "Along-path instancing: a named TEMPLATE geometry (tessellated once through the universal TessellateToMesh contract -- any first-class geometry works, e.g. an sdf_geometry capsule) stamped along a 3D Catmull-Rom path at arc-length pitch with optional slant and scale.  Fence posts, rivets, beads, stitching, chain links.  Template +Y aligns with the path tangent (positive slant rotates the tangent toward the binormal about the frame normal), +Z with the frame normal, +X with the binormal.  Instances BANK with the path (no world-up mode); steer roll with frame_hint.  Alternating twists (chain links) = two chunks at 2x pitch with offset phase and pre-rotated templates.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "geometry"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.description = "Named template geometry to instance (must support TessellateToMesh -- every first-class RISE geometry does)"; }
+						{ auto& p = P(); p.name = "point";    p.kind = ValueKind::String;    p.repeatable = true; p.description = "Path control point `<x> <y> <z>` (repeatable, path order; at least 2)"; }
+						{ auto& p = P(); p.name = "n_len";    p.kind = ValueKind::UInt;      p.description = "Arc-length walk resolution (path samples; clamped 2..8192)"; p.defaultValueHint = "256"; }
+						{ auto& p = P(); p.name = "pitch";    p.kind = ValueKind::Double;    p.description = "Arc-length distance between instances (> 0)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "phase";    p.kind = ValueKind::Double;    p.description = "Arc-length distance before the first instance (omit = pitch/2, the centred default)"; p.defaultValueHint = "pitch/2"; }
+						{ auto& p = P(); p.name = "slant";    p.kind = ValueKind::Double;    p.description = "Template rotation about the frame normal, degrees (e.g. saddle-stitch slant; sign mirrors)"; p.defaultValueHint = "0.0"; }
+						{ auto& p = P(); p.name = "scale";    p.kind = ValueKind::Double;    p.description = "Uniform template scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "detail";   p.kind = ValueKind::UInt;      p.description = "TessellateToMesh detail for the template (clamped 3..256; cost is O(detail^2) for most templates)"; p.defaultValueHint = "16"; }
+					{ auto& p = P(); p.name = "frame_hint"; p.kind = ValueKind::String;  p.description = "Initial binormal hint `<x> <y> <z>` steering instance roll about the path (omit = world axis most perpendicular to the start tangent)"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct BilinearPatchGeometryAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -5220,6 +5814,7 @@ namespace RISE
 					double disp_scale         = bag.GetDouble( "disp_scale",    1.0 );
 					bool double_sided         = bag.GetBool(   "double_sided",  false );
 					bool face_normals         = bag.GetBool(   "face_normals",  false );
+					bool seam_fold            = bag.GetBool(   "uv_seam_fold",  true );
 					// Legacy maxpolygons/maxdepth/bsp keys accepted but ignored (Tier A2).
 
 					if( base_geometry.empty() ) {
@@ -5234,7 +5829,8 @@ namespace RISE
 						displacement == "none" ? 0 : displacement.c_str(),
 						disp_scale,
 						double_sided,
-						face_normals );
+						face_normals,
+						seam_fold );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -5250,6 +5846,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "disp_scale";    p.kind = ValueKind::Double;    p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "double_sided";  p.kind = ValueKind::Bool;      p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "face_normals";  p.kind = ValueKind::Bool;      p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "uv_seam_fold";  p.kind = ValueKind::Bool;     p.description = "Tent-fold UV before displacement -- keeps a wrapped field continuous across the u=0/u=1 seam of CLOSED surfaces (sphere/torus/cylinder).  FALSE for an OPEN field on a non-wrapping Cartesian UV (e.g. a guilloché expression on a flat disk)"; p.defaultValueHint = "TRUE"; }
 						// Retired: accepted for backward compat with pre-A2 scene files; ignored.
 						{ auto& p = P(); p.name = "maxpolygons";   p.kind = ValueKind::UInt;      p.description = "Retired (BVH is sole accelerator)"; }
 						{ auto& p = P(); p.name = "maxdepth";      p.kind = ValueKind::UInt;      p.description = "Retired (BVH is sole accelerator)"; }
@@ -5272,19 +5869,49 @@ namespace RISE
 					std::string function = bag.GetString( "function",   "none" );
 					double scale         = bag.GetDouble( "scale",      1.0 );
 					double window        = bag.GetDouble( "windowsize", 0.01 );
-					return pJob.AddBumpMapModifier( name.c_str(), function.c_str(), scale, window );
+					bool normalize       = bag.GetBool(   "normalize_gradient", false );
+
+					if( !normalize ) {
+						// Default / legacy path, signature-frozen IJob virtual.
+						return pJob.AddBumpMapModifier( name.c_str(), function.c_str(), scale, window );
+					}
+
+					// normalize_gradient TRUE: `scale` becomes the window-independent
+					// gradient multiplier.  The IJob::AddBumpMapModifier virtual is
+					// frozen for ABI (out-of-tree callers + the Blender bridge), so the
+					// flag is carried by RISE_API_CreateBumpMapModifierEx and the
+					// modifier is registered through the privileged IJobPriv channel
+					// (the same pattern expression_function2d uses to self-register).
+					IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
+					if( !pPriv ) {
+						GlobalLog()->PrintEx( eLog_Error, "bumpmap_modifier `%s`: IJobPriv unavailable", name.c_str() );
+						return false;
+					}
+					IFunction2D* pFunc = pPriv->GetFunction2Ds()->GetItem( function.c_str() );
+					if( !pFunc ) {
+						GlobalLog()->PrintEx( eLog_Error, "bumpmap_modifier `%s`: function2d `%s` not found", name.c_str(), function.c_str() );
+						return false;
+					}
+					IRayIntersectionModifier* pMod = 0;
+					if( !RISE_API_CreateBumpMapModifierEx( &pMod, *pFunc, scale, window, true ) ) {
+						return false;
+					}
+					pPriv->GetModifiers()->AddItem( pMod, name.c_str() );
+					pMod->release();
+					return true;
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "bumpmap_modifier"; cd.category = ChunkCategory::Modifier;
-						cd.description = "Bump-map modifier perturbing surface normal via a painter.";
+						cd.description = "Bump-map modifier perturbing the surface normal from the gradient of a heightfield function2d, sampled at the hit's TEXCOORD_0 (u,v) by central difference.  Works on any geometry that supplies texcoords + a normal (analytic primitives AND triangle meshes such as cartesian_disk_geometry; the ONB tangents are built from the shading normal).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "function";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter"; }
-						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "windowsize"; p.kind = ValueKind::Double;    p.description = "Finite-difference step"; p.defaultValueHint = "0.01"; }
+						{ auto& p = P(); p.name = "function";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter (an IFunction2D, e.g. expression_function2d / perlin2d_painter)"; }
+						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Bump amplitude.  With normalize_gradient FALSE (default) the perturbation is scale*(f(+w)-f(-w)), so its magnitude couples to windowsize (~scale*2*windowsize*slope) -- a fine window needs a proportionally larger scale.  With normalize_gradient TRUE, scale is the window-independent slope multiplier."; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "windowsize"; p.kind = ValueKind::Double;    p.description = "Central-difference half-step in (u,v) texture space; smaller = finer detail captured"; p.defaultValueHint = "0.01"; }
+						{ auto& p = P(); p.name = "normalize_gradient"; p.kind = ValueKind::Bool; p.description = "Divide the central difference by 2*windowsize so `scale` is the true, window-INDEPENDENT gradient amplitude (decouples bump strength from the sampling step).  Default FALSE preserves legacy coupled behaviour byte-for-byte."; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;
@@ -7944,6 +8571,8 @@ namespace RISE
 					if( bag.Has("optimal_mis") )                     stabilityConfig.optimalMIS                   = bag.GetBool("optimal_mis");
 					if( bag.Has("optimal_mis_training_iterations") ) stabilityConfig.optimalMISTrainingIterations = bag.GetUInt("optimal_mis_training_iterations");
 					if( bag.Has("optimal_mis_tile_size") )           stabilityConfig.optimalMISTileSize           = bag.GetUInt("optimal_mis_tile_size");
+					// Transparent (Fresnel-attenuated) shadow rays — PT-only opt-in.
+					if( bag.Has("transparent_shadows") )             stabilityConfig.transparentShadows           = bag.GetBool("transparent_shadows");
 
 					ProgressiveConfig progressiveConfig;
 					if( bag.Has("progressive_rendering") )      progressiveConfig.enabled = bag.GetBool("progressive_rendering");
@@ -7974,6 +8603,10 @@ namespace RISE
 						AddPathGuidingParams( P );
 						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
+						// Transparent (Fresnel-attenuated) shadow rays — PT-only
+						// opt-in; not part of the shared StabilityConfig params
+						// because BDPT/VCM/auto don't honour it.
+						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "NEE shadow rays pass through specular dielectrics with Fresnel transmittance (PT only)"; p.defaultValueHint = to_hint(false); }
 						AddOptimalMISParams( P );
 						AddProgressiveParams( P );
 						return cd;
@@ -8065,6 +8698,9 @@ namespace RISE
 					if( bag.Has("max_translucent_bounce") )          stabilityConfig.maxTranslucentBounce         = bag.GetUInt("max_translucent_bounce");
 					if( bag.Has("max_volume_bounce") )               stabilityConfig.maxVolumeBounce              = bag.GetUInt("max_volume_bounce");
 					if( bag.Has("light_bvh") )                       stabilityConfig.useLightBVH                  = bag.GetBool("light_bvh");
+					// Transparent (Fresnel-attenuated) shadow rays — PT-only opt-in.
+					// Honoured on the spectral (NM / HWSS) NEE path too.
+					if( bag.Has("transparent_shadows") )             stabilityConfig.transparentShadows           = bag.GetBool("transparent_shadows");
 					// Optimal MIS not parsed: PathTracingIntegrator's
 					// NM/HWSS branches reference rc.pOptimalMIS, but
 					// PixelBasedSpectralIntegratingRasterizer (the parent)
@@ -8110,6 +8746,9 @@ namespace RISE
 						AddSMSConfigParams( P );
 						AddAdaptiveSamplingParams( P );
 						AddStabilityConfigParams( P );
+						// Transparent (Fresnel-attenuated) shadow rays — PT-only
+						// opt-in; honoured on the spectral NEE path too.
+						{ auto& p = P(); p.name = "transparent_shadows"; p.kind = ValueKind::Bool; p.description = "NEE shadow rays pass through specular dielectrics with Fresnel transmittance (PT only)"; p.defaultValueHint = to_hint(false); }
 						// Intentionally NO AddOptimalMISParams: spectral
 						// parent doesn't allocate the accumulator.  See
 						// Finalize note and SPECTRAL_PARITY_AUDIT.md §2.4.
@@ -9006,6 +9645,8 @@ namespace RISE
 		add( "iridescent_painter",                    new IridescentPainterAsciiChunkParser() );
 		add( "blackbody_painter",                     new BlackBodyPainterAsciiChunkParser() );
 		add( "blend_painter",                         new BlendPainterAsciiChunkParser() );
+		add( "function2d_painter",                    new Function2DColorPainterAsciiChunkParser() );
+		add( "expression_function2d",                 new ExpressionFunction2DPainterAsciiChunkParser() );
 		add( "channel_painter",                       new ChannelPainterAsciiChunkParser() );
 
 		// Functions
@@ -9072,6 +9713,10 @@ namespace RISE
 		add( "circulardisk_geometry",                 new CircularDiskGeometryAsciiChunkParser() );
 		add( "bezierpatch_geometry",                  new BezierPatchGeometryAsciiChunkParser() );
 		add( "bilinearpatch_geometry",                new BilinearPatchGeometryAsciiChunkParser() );
+		add( "sdf_geometry",                          new SDFGeometryAsciiChunkParser() );
+		add( "cartesian_disk_geometry",               new CartesianDiskGeometryAsciiChunkParser() );
+		add( "sweep_geometry",                        new SweepGeometryAsciiChunkParser() );
+		add( "path_instances_geometry",               new PathInstancesGeometryAsciiChunkParser() );
 		add( "displaced_geometry",                    new DisplacedGeometryAsciiChunkParser() );
 
 		// Modifiers

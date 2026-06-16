@@ -1,0 +1,107 @@
+RISE ASCII SCENE 6
+# SDF as a TRUE AREA LIGHT.  A glowing SDF torus floats over a floor lit by
+# DirectLighting -- i.e. purely by NEE: the light sampler draws uniform-by-area
+# points from the SDF's tessellation-backed UniformRandomPoint / GetArea
+# (lazily built at sampling_detail).  If SDF surface sampling broke, this floor
+# would go black or mis-bright; the torus topology also exercises the CDF over
+# a non-convex, multi-silhouette surface.  Validated against an analytic
+# emitter of equal area: linear-HDR floor means match within MC noise, and the
+# offline closed-form harness (SDFGeometryTest Test 19) pins the estimator at
+# ratio 1.000.  NB: an SDF emitter carries ~2x the pixel variance of an
+# analytic-primitive emitter at equal samples (surface-curve CDF vs a smooth
+# parametric map) -- correct, just noisier; prefer analytic emitters when the
+# shape allows.
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion	4
+	samples			16
+	lum_samples		16
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/sdf_arealight
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+film
+{
+	width			400
+	height			300
+}
+
+pinhole_camera
+{
+	location		0 4.5 11
+	lookat			0 1.4 0
+	up				0 1 0
+	fov				42.0
+}
+
+uniformcolor_painter
+{
+	name		pwhite
+	color		0.72 0.72 0.72
+}
+
+uniformcolor_painter
+{
+	name		pemit
+	color		1.0 0.92 0.8
+}
+
+lambertian_material
+{
+	name		mwhite
+	reflectance	pwhite
+}
+
+lambertian_luminaire_material
+{
+	name		memit
+	exitance	pemit
+	scale		14.0
+	material	none
+}
+
+clippedplane_geometry
+{
+	name		floorgeom
+	pta			-12 0 -12
+	ptb			 12 0 -12
+	ptc			 12 0  12
+	ptd			-12 0  12
+}
+
+sdf_geometry
+{
+	name			torusgeom
+	part			torus union 0  0 0 0  0 0 0  1 1 1  1.45 0.55 0  0
+	sampling_detail	64
+}
+
+standard_object
+{
+	name		grnd
+	geometry	floorgeom
+	material	mwhite
+	position	0 0 0
+}
+
+standard_object
+{
+	name		glowring
+	geometry	torusgeom
+	material	memit
+	position	0 2.4 0
+	orientation	30 0 0
+}

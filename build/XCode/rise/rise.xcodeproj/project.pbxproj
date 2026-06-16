@@ -171,6 +171,8 @@
 		F24B722B2F52A632008304C4 /* GeometryUtilities.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0836069C428F0069C9E5 /* GeometryUtilities.h */; };
 		F24B722C2F52A632008304C4 /* InfinitePlaneGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0837069C428F0069C9E5 /* InfinitePlaneGeometry.cpp */; };
 		F24B722D2F52A632008304C4 /* InfinitePlaneGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0838069C428F0069C9E5 /* InfinitePlaneGeometry.h */; };
+		5DF0B001000000000000C0DE /* SDFGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E011000000000000C0DE /* SDFGeometry.cpp */; };
+		5DF0B002000000000000C0DE /* SDFGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E012000000000000C0DE /* SDFGeometry.h */; };
 		F24B722E2F52A632008304C4 /* SphereGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */; };
 		F24B722F2F52A632008304C4 /* SphereGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F083A069C428F0069C9E5 /* SphereGeometry.h */; };
 		F24B72302F52A632008304C4 /* SphericalUVGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */; };
@@ -415,6 +417,10 @@
 		F24B73222F52A632008304C4 /* BlackBodyPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0935069C42900069C9E5 /* BlackBodyPainter.h */; };
 		F24B73232F52A632008304C4 /* BlendPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0936069C42900069C9E5 /* BlendPainter.h */; };
 		F24B73242F52A632008304C4 /* CheckerPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0937069C42900069C9E5 /* CheckerPainter.cpp */; };
+		6A10B009000000000000C0DE /* Function2DColorPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A10E005000000000000C0DE /* Function2DColorPainter.h */; };
+		6A11B001000000000000C0DE /* ExpressionEval.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A11E001000000000000C0DE /* ExpressionEval.h */; };
+		6A11B003000000000000C0DE /* ExpressionFunction2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */; };
+		6A10B007000000000000C0DE /* ProceduralDescriptors.h in Sources */ = {isa = PBXBuildFile; fileRef = 6A10E004000000000000C0DE /* ProceduralDescriptors.h */; };
 		F24B73252F52A632008304C4 /* CheckerPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0938069C42900069C9E5 /* CheckerPainter.h */; };
 		F24B73262F52A632008304C4 /* Function1DSpectralPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */; };
 		F24B73272F52A632008304C4 /* IridescentPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F093A069C42900069C9E5 /* IridescentPainter.cpp */; };
@@ -655,6 +661,8 @@
 		F24B74162F52A632008304C4 /* DiskFileReadBuffer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A06069C42900069C9E5 /* DiskFileReadBuffer.h */; };
 		F24B74172F52A632008304C4 /* DiskFileWriteBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A07069C42900069C9E5 /* DiskFileWriteBuffer.cpp */; };
 		F24B74182F52A632008304C4 /* DiskFileWriteBuffer.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A08069C42900069C9E5 /* DiskFileWriteBuffer.h */; };
+		DEFE44ED00000000000000C1 /* RenderParallelScope.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F1 /* RenderParallelScope.cpp */; };
+		DEFE44ED00000000000000C2 /* RenderParallelScope.h in Sources */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F2 /* RenderParallelScope.h */; };
 		F24B74192F52A632008304C4 /* DynamicProperties.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A09069C42900069C9E5 /* DynamicProperties.cpp */; };
 		F24B741A2F52A632008304C4 /* DynamicProperties.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A0A069C42900069C9E5 /* DynamicProperties.h */; };
 		F24B741B2F52A632008304C4 /* GeometricUtilities.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A0B069C42900069C9E5 /* GeometricUtilities.cpp */; };
@@ -756,6 +764,7 @@
 		F24C54502F7CAB67009AF16D /* MediumTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */; };
 		F24C54512F7CAB67009AF16D /* MicrofacetUtils.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544F2F7CAB67009AF16D /* MicrofacetUtils.h */; };
 		F24C54522F7CAB67009AF16D /* MicrofacetEnergyLUT.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */; };
+		7B74685035C14A7ABB6F0BCE /* ThinFilm.h in Headers */ = {isa = PBXBuildFile; fileRef = 9888E7381E6C448B879A54D9 /* ThinFilm.h */; };
 		F24C54532F7CAB67009AF16D /* MediumTracking.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544B2F7CAB67009AF16D /* MediumTracking.h */; };
 		F24C54542F7CAB67009AF16D /* MediumTransport.h in Headers */ = {isa = PBXBuildFile; fileRef = F24C544C2F7CAB67009AF16D /* MediumTransport.h */; };
 		F24C54552F7CAB67009AF16D /* MediumTransport.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */; };
@@ -879,6 +888,8 @@
 		F27F0AA3069C42910069C9E5 /* GeometryUtilities.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0836069C428F0069C9E5 /* GeometryUtilities.h */; };
 		F27F0AA4069C42910069C9E5 /* InfinitePlaneGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0837069C428F0069C9E5 /* InfinitePlaneGeometry.cpp */; };
 		F27F0AA5069C42910069C9E5 /* InfinitePlaneGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0838069C428F0069C9E5 /* InfinitePlaneGeometry.h */; };
+		5DF0B003000000000000C0DE /* SDFGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E011000000000000C0DE /* SDFGeometry.cpp */; };
+		5DF0B004000000000000C0DE /* SDFGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = 5DF0E012000000000000C0DE /* SDFGeometry.h */; };
 		F27F0AA6069C42910069C9E5 /* SphereGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */; };
 		F27F0AA7069C42910069C9E5 /* SphereGeometry.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F083A069C428F0069C9E5 /* SphereGeometry.h */; };
 		F27F0AA8069C42910069C9E5 /* SphericalUVGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */; };
@@ -1118,6 +1129,10 @@
 		F27F0B99069C42910069C9E5 /* BlackBodyPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0935069C42900069C9E5 /* BlackBodyPainter.h */; };
 		F27F0B9A069C42910069C9E5 /* BlendPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0936069C42900069C9E5 /* BlendPainter.h */; };
 		F27F0B9B069C42910069C9E5 /* CheckerPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0937069C42900069C9E5 /* CheckerPainter.cpp */; };
+		6A10B00A000000000000C0DE /* Function2DColorPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A10E005000000000000C0DE /* Function2DColorPainter.h */; };
+		6A11B002000000000000C0DE /* ExpressionEval.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A11E001000000000000C0DE /* ExpressionEval.h */; };
+		6A11B004000000000000C0DE /* ExpressionFunction2DPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */; };
+		6A10B008000000000000C0DE /* ProceduralDescriptors.h in Headers */ = {isa = PBXBuildFile; fileRef = 6A10E004000000000000C0DE /* ProceduralDescriptors.h */; };
 		F27F0B9C069C42910069C9E5 /* CheckerPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0938069C42900069C9E5 /* CheckerPainter.h */; };
 		F27F0B9D069C42910069C9E5 /* Function1DSpectralPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */; };
 		F27F0B9E069C42910069C9E5 /* IridescentPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F093A069C42900069C9E5 /* IridescentPainter.cpp */; };
@@ -1303,6 +1318,8 @@
 		F27F0C61069C42910069C9E5 /* DiskFileReadBuffer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A06069C42900069C9E5 /* DiskFileReadBuffer.h */; };
 		F27F0C62069C42910069C9E5 /* DiskFileWriteBuffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A07069C42900069C9E5 /* DiskFileWriteBuffer.cpp */; };
 		F27F0C63069C42910069C9E5 /* DiskFileWriteBuffer.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A08069C42900069C9E5 /* DiskFileWriteBuffer.h */; };
+		DEFE44ED00000000000000D1 /* RenderParallelScope.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F1 /* RenderParallelScope.cpp */; };
+		DEFE44ED00000000000000D2 /* RenderParallelScope.h in Headers */ = {isa = PBXBuildFile; fileRef = DEFE44ED00000000000000F2 /* RenderParallelScope.h */; };
 		F27F0C64069C42910069C9E5 /* DynamicProperties.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A09069C42900069C9E5 /* DynamicProperties.cpp */; };
 		F27F0C65069C42910069C9E5 /* DynamicProperties.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0A0A069C42900069C9E5 /* DynamicProperties.h */; };
 		F27F0C66069C42910069C9E5 /* GeometricUtilities.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0A0B069C42900069C9E5 /* GeometricUtilities.cpp */; };
@@ -1914,6 +1931,7 @@
 		F24C544C2F7CAB67009AF16D /* MediumTransport.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediumTransport.h; sourceTree = "<group>"; };
 		F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = MediumTransport.cpp; sourceTree = "<group>"; };
 		F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MicrofacetEnergyLUT.h; sourceTree = "<group>"; };
+		9888E7381E6C448B879A54D9 /* ThinFilm.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ThinFilm.h; sourceTree = "<group>"; };
 		F24C544F2F7CAB67009AF16D /* MicrofacetUtils.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MicrofacetUtils.h; sourceTree = "<group>"; };
 		F24C54562F7CC591009AF16D /* HeterogeneousMedium.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HeterogeneousMedium.h; sourceTree = "<group>"; };
 		F24C54572F7CC591009AF16D /* HeterogeneousMedium.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HeterogeneousMedium.cpp; sourceTree = "<group>"; };
@@ -2026,6 +2044,8 @@
 		F27F0836069C428F0069C9E5 /* GeometryUtilities.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GeometryUtilities.h; sourceTree = "<group>"; };
 		F27F0837069C428F0069C9E5 /* InfinitePlaneGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = InfinitePlaneGeometry.cpp; sourceTree = "<group>"; };
 		F27F0838069C428F0069C9E5 /* InfinitePlaneGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = InfinitePlaneGeometry.h; sourceTree = "<group>"; };
+		5DF0E011000000000000C0DE /* SDFGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SDFGeometry.cpp; sourceTree = "<group>"; };
+		5DF0E012000000000000C0DE /* SDFGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SDFGeometry.h; sourceTree = "<group>"; };
 		F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SphereGeometry.cpp; sourceTree = "<group>"; };
 		F27F083A069C428F0069C9E5 /* SphereGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SphereGeometry.h; sourceTree = "<group>"; };
 		F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SphericalUVGenerator.cpp; sourceTree = "<group>"; };
@@ -2265,6 +2285,10 @@
 		F27F0935069C42900069C9E5 /* BlackBodyPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BlackBodyPainter.h; sourceTree = "<group>"; };
 		F27F0936069C42900069C9E5 /* BlendPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = BlendPainter.h; sourceTree = "<group>"; };
 		F27F0937069C42900069C9E5 /* CheckerPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CheckerPainter.cpp; sourceTree = "<group>"; };
+		6A10E005000000000000C0DE /* Function2DColorPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function2DColorPainter.h; sourceTree = "<group>"; };
+		6A11E001000000000000C0DE /* ExpressionEval.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ExpressionEval.h; sourceTree = "<group>"; };
+		6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ExpressionFunction2DPainter.h; sourceTree = "<group>"; };
+		6A10E004000000000000C0DE /* ProceduralDescriptors.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ProceduralDescriptors.h; sourceTree = "<group>"; };
 		F27F0938069C42900069C9E5 /* CheckerPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CheckerPainter.h; sourceTree = "<group>"; };
 		F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function1DSpectralPainter.h; sourceTree = "<group>"; };
 		F27F093A069C42900069C9E5 /* IridescentPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = IridescentPainter.cpp; sourceTree = "<group>"; };
@@ -2450,6 +2474,8 @@
 		F27F0A06069C42900069C9E5 /* DiskFileReadBuffer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DiskFileReadBuffer.h; sourceTree = "<group>"; };
 		F27F0A07069C42900069C9E5 /* DiskFileWriteBuffer.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DiskFileWriteBuffer.cpp; sourceTree = "<group>"; };
 		F27F0A08069C42900069C9E5 /* DiskFileWriteBuffer.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DiskFileWriteBuffer.h; sourceTree = "<group>"; };
+		DEFE44ED00000000000000F1 /* RenderParallelScope.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = RenderParallelScope.cpp; sourceTree = "<group>"; };
+		DEFE44ED00000000000000F2 /* RenderParallelScope.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = RenderParallelScope.h; sourceTree = "<group>"; };
 		F27F0A09069C42900069C9E5 /* DynamicProperties.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DynamicProperties.cpp; sourceTree = "<group>"; };
 		F27F0A0A069C42900069C9E5 /* DynamicProperties.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DynamicProperties.h; sourceTree = "<group>"; };
 		F27F0A0B069C42900069C9E5 /* GeometricUtilities.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GeometricUtilities.cpp; sourceTree = "<group>"; };
@@ -3056,6 +3082,8 @@
 				F27F0836069C428F0069C9E5 /* GeometryUtilities.h */,
 				F27F0837069C428F0069C9E5 /* InfinitePlaneGeometry.cpp */,
 				F27F0838069C428F0069C9E5 /* InfinitePlaneGeometry.h */,
+				5DF0E011000000000000C0DE /* SDFGeometry.cpp */,
+				5DF0E012000000000000C0DE /* SDFGeometry.h */,
 				F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */,
 				F27F083A069C428F0069C9E5 /* SphereGeometry.h */,
 				F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */,
@@ -3086,6 +3114,7 @@
 			isa = PBXGroup;
 			children = (
 				F27F0852069C428F0069C9E5 /* IAnimator.h */,
+				6A10E004000000000000C0DE /* ProceduralDescriptors.h */,
 				F27F0853069C428F0069C9E5 /* IBezierPatchGeometry.h */,
 				F27F0854069C428F0069C9E5 /* IBilinearPatchGeometry.h */,
 				F27F0856069C428F0069C9E5 /* IBuffer.h */,
@@ -3449,6 +3478,9 @@
 				F2D1A005069C42900069C9E5 /* TexCoord1Painter.h */,
 				F27F0937069C42900069C9E5 /* CheckerPainter.cpp */,
 				F27F0938069C42900069C9E5 /* CheckerPainter.h */,
+				6A10E005000000000000C0DE /* Function2DColorPainter.h */,
+				6A11E001000000000000C0DE /* ExpressionEval.h */,
+				6A11E002000000000000C0DE /* ExpressionFunction2DPainter.h */,
 				F27F0939069C42900069C9E5 /* Function1DSpectralPainter.h */,
 				F27F093A069C42900069C9E5 /* IridescentPainter.cpp */,
 				F27F093B069C42900069C9E5 /* IridescentPainter.h */,
@@ -3827,6 +3859,7 @@
 				F24C544D2F7CAB67009AF16D /* MediumTransport.cpp */,
 				F24C544E2F7CAB67009AF16D /* MicrofacetEnergyLUT.h */,
 				F24C544F2F7CAB67009AF16D /* MicrofacetUtils.h */,
+				9888E7381E6C448B879A54D9 /* ThinFilm.h */,
 				F24C543C2F7C107E009AF16D /* BSSRDFSampling.h */,
 				F24C543D2F7C107E009AF16D /* BSSRDFSampling.cpp */,
 				F24C54322F79FFF1009AF16D /* CompletePathGuide.h */,
@@ -3861,6 +3894,8 @@
 				F27F0A06069C42900069C9E5 /* DiskFileReadBuffer.h */,
 				F27F0A07069C42900069C9E5 /* DiskFileWriteBuffer.cpp */,
 				F27F0A08069C42900069C9E5 /* DiskFileWriteBuffer.h */,
+				DEFE44ED00000000000000F1 /* RenderParallelScope.cpp */,
+				DEFE44ED00000000000000F2 /* RenderParallelScope.h */,
 				F27F0A09069C42900069C9E5 /* DynamicProperties.cpp */,
 				F27F0A0A069C42900069C9E5 /* DynamicProperties.h */,
 				F27F0A0B069C42900069C9E5 /* GeometricUtilities.cpp */,
@@ -4179,6 +4214,7 @@
 				F2D9B0EB2F8E96280077A171 /* Turbulence3DPainter.h in Headers */,
 				F27F0AA3069C42910069C9E5 /* GeometryUtilities.h in Headers */,
 				F27F0AA5069C42910069C9E5 /* InfinitePlaneGeometry.h in Headers */,
+				5DF0B004000000000000C0DE /* SDFGeometry.h in Headers */,
 				F27F0AA7069C42910069C9E5 /* SphereGeometry.h in Headers */,
 				F27F0AA9069C42910069C9E5 /* SphericalUVGenerator.h in Headers */,
 				F24C54622F84597B009AF16D /* GGXBRDF.h in Headers */,
@@ -4211,6 +4247,7 @@
 				F27F0ABB069C42910069C9E5 /* TriangleMeshLoaderRAW.h in Headers */,
 				F27F0ABD069C42910069C9E5 /* TriangleMeshLoaderRAW2.h in Headers */,
 				F27F0ABE069C42910069C9E5 /* IAnimator.h in Headers */,
+				6A10B008000000000000C0DE /* ProceduralDescriptors.h in Headers */,
 				F27F0ABF069C42910069C9E5 /* IBezierPatchGeometry.h in Headers */,
 				F27F0AC0069C42910069C9E5 /* IBilinearPatchGeometry.h in Headers */,
 				F27F0AC2069C42910069C9E5 /* IBuffer.h in Headers */,
@@ -4229,6 +4266,7 @@
 				F27F0ACC069C42910069C9E5 /* IFunction1DManager.h in Headers */,
 				F24C54512F7CAB67009AF16D /* MicrofacetUtils.h in Headers */,
 				F24C54522F7CAB67009AF16D /* MicrofacetEnergyLUT.h in Headers */,
+				7B74685035C14A7ABB6F0BCE /* ThinFilm.h in Headers */,
 				F24C54532F7CAB67009AF16D /* MediumTracking.h in Headers */,
 				F24D00012F7CAB67009AF16D /* IORStackSeeding.h in Headers */,
 				F24C54542F7CAB67009AF16D /* MediumTransport.h in Headers */,
@@ -4415,6 +4453,9 @@
 				F27F0B99069C42910069C9E5 /* BlackBodyPainter.h in Headers */,
 				F27F0B9A069C42910069C9E5 /* BlendPainter.h in Headers */,
 				F27F0B9C069C42910069C9E5 /* CheckerPainter.h in Headers */,
+				6A10B00A000000000000C0DE /* Function2DColorPainter.h in Headers */,
+				6A11B002000000000000C0DE /* ExpressionEval.h in Headers */,
+				6A11B004000000000000C0DE /* ExpressionFunction2DPainter.h in Headers */,
 				F27F0B9D069C42910069C9E5 /* Function1DSpectralPainter.h in Headers */,
 				F27F0B9F069C42910069C9E5 /* IridescentPainter.h in Headers */,
 				F27F0BA1069C42910069C9E5 /* LinesPainter.h in Headers */,
@@ -4625,6 +4666,7 @@
 				F27F0C5F069C42910069C9E5 /* DiskBuffer.h in Headers */,
 				F27F0C61069C42910069C9E5 /* DiskFileReadBuffer.h in Headers */,
 				F27F0C63069C42910069C9E5 /* DiskFileWriteBuffer.h in Headers */,
+				DEFE44ED00000000000000D2 /* RenderParallelScope.h in Headers */,
 				F27F0C65069C42910069C9E5 /* DynamicProperties.h in Headers */,
 				F27F0C67069C42910069C9E5 /* GeometricUtilities.h in Headers */,
 				F27F0C68069C42910069C9E5 /* HermiteInterpolator.h in Headers */,
@@ -4881,6 +4923,7 @@
 				F27F0AA0069C42910069C9E5 /* Geometry.cpp in Sources */,
 				F27F0AA2069C42910069C9E5 /* GeometryUtilities.cpp in Sources */,
 				F27F0AA4069C42910069C9E5 /* InfinitePlaneGeometry.cpp in Sources */,
+				5DF0B003000000000000C0DE /* SDFGeometry.cpp in Sources */,
 				F27F0AA6069C42910069C9E5 /* SphereGeometry.cpp in Sources */,
 				F27F0AA8069C42910069C9E5 /* SphericalUVGenerator.cpp in Sources */,
 				F27F0AAA069C42910069C9E5 /* TorusGeometry.cpp in Sources */,
@@ -5099,6 +5142,7 @@
 				F27F0C5E069C42910069C9E5 /* DiskBuffer.cpp in Sources */,
 				F27F0C60069C42910069C9E5 /* DiskFileReadBuffer.cpp in Sources */,
 				F27F0C62069C42910069C9E5 /* DiskFileWriteBuffer.cpp in Sources */,
+				DEFE44ED00000000000000D1 /* RenderParallelScope.cpp in Sources */,
 				F24C54982F88556A009AF16D /* OptimalMISAccumulator.cpp in Sources */,
 				F27F0C64069C42910069C9E5 /* DynamicProperties.cpp in Sources */,
 				F2C5D5842F6EA5CF00546C97 /* MLTRasterizer.cpp in Sources */,
@@ -5276,6 +5320,8 @@
 				F24B722B2F52A632008304C4 /* GeometryUtilities.h in Sources */,
 				F24B722C2F52A632008304C4 /* InfinitePlaneGeometry.cpp in Sources */,
 				F24B722D2F52A632008304C4 /* InfinitePlaneGeometry.h in Sources */,
+				5DF0B001000000000000C0DE /* SDFGeometry.cpp in Sources */,
+				5DF0B002000000000000C0DE /* SDFGeometry.h in Sources */,
 				F24B722E2F52A632008304C4 /* SphereGeometry.cpp in Sources */,
 				F24B722F2F52A632008304C4 /* SphereGeometry.h in Sources */,
 				F24B72302F52A632008304C4 /* SphericalUVGenerator.cpp in Sources */,
@@ -5305,6 +5351,7 @@
 				F24B72442F52A632008304C4 /* TriangleMeshLoaderRAW2.cpp in Sources */,
 				F24B72452F52A632008304C4 /* TriangleMeshLoaderRAW2.h in Sources */,
 				F24B72462F52A632008304C4 /* IAnimator.h in Sources */,
+				6A10B007000000000000C0DE /* ProceduralDescriptors.h in Sources */,
 				F24B72472F52A632008304C4 /* IBezierPatchGeometry.h in Sources */,
 				F24B72482F52A632008304C4 /* IBilinearPatchGeometry.h in Sources */,
 				F24B724A2F52A632008304C4 /* IBuffer.h in Sources */,
@@ -5563,6 +5610,9 @@
 				F24B73232F52A632008304C4 /* BlendPainter.h in Sources */,
 				F24B73242F52A632008304C4 /* CheckerPainter.cpp in Sources */,
 				F24B73252F52A632008304C4 /* CheckerPainter.h in Sources */,
+				6A10B009000000000000C0DE /* Function2DColorPainter.h in Sources */,
+				6A11B001000000000000C0DE /* ExpressionEval.h in Sources */,
+				6A11B003000000000000C0DE /* ExpressionFunction2DPainter.h in Sources */,
 				F24B73262F52A632008304C4 /* Function1DSpectralPainter.h in Sources */,
 				F24B73272F52A632008304C4 /* IridescentPainter.cpp in Sources */,
 				F24B73282F52A632008304C4 /* IridescentPainter.h in Sources */,
@@ -5928,6 +5978,8 @@
 				F24B74162F52A632008304C4 /* DiskFileReadBuffer.h in Sources */,
 				F24B74172F52A632008304C4 /* DiskFileWriteBuffer.cpp in Sources */,
 				F24B74182F52A632008304C4 /* DiskFileWriteBuffer.h in Sources */,
+				DEFE44ED00000000000000C1 /* RenderParallelScope.cpp in Sources */,
+				DEFE44ED00000000000000C2 /* RenderParallelScope.h in Sources */,
 				F24B74192F52A632008304C4 /* DynamicProperties.cpp in Sources */,
 				F24B741A2F52A632008304C4 /* DynamicProperties.h in Sources */,
 				F24B741B2F52A632008304C4 /* GeometricUtilities.cpp in Sources */,
@@ -6037,6 +6089,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				COPY_PHASE_STRIP = NO;
 				DEAD_CODE_STRIPPING = YES;
@@ -6054,9 +6107,13 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = "";
+				HEADER_SEARCH_PATHS = /opt/homebrew/include;
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
-				LIBRARY_SEARCH_PATHS = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					/opt/homebrew/lib,
+				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				OPTIMIZATION_CFLAGS = "-O0";
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6069,7 +6126,10 @@
 					"-DRISE_ENABLE_OIDN",
 					"-DRISE_ENABLE_OPENPGL",
 				);
-				OTHER_LDFLAGS = "";
+				OTHER_LDFLAGS = (
+					"-lOpenImageDenoise",
+					"-lopenpgl",
+				);
 				PRODUCT_NAME = rise;
 				WARNING_CFLAGS = (
 					"-Wmost",
@@ -6084,6 +6144,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				COPY_PHASE_STRIP = YES;
 				DEAD_CODE_STRIPPING = YES;
@@ -6099,9 +6160,13 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = "";
+				HEADER_SEARCH_PATHS = /opt/homebrew/include;
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
-				LIBRARY_SEARCH_PATHS = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					/opt/homebrew/lib,
+				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6114,7 +6179,10 @@
 					"-DRISE_ENABLE_OIDN",
 					"-DRISE_ENABLE_OPENPGL",
 				);
-				OTHER_LDFLAGS = "";
+				OTHER_LDFLAGS = (
+					"-lOpenImageDenoise",
+					"-lopenpgl",
+				);
 				PRODUCT_NAME = rise;
 				WARNING_CFLAGS = (
 					"-Wmost",
@@ -6129,6 +6197,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				DEAD_CODE_STRIPPING = YES;
 				DEPLOYMENT_LOCATION = YES;
@@ -6143,9 +6212,13 @@
 				GCC_WARN_ABOUT_MISSING_PROTOTYPES = NO;
 				GCC_WARN_FOUR_CHARACTER_CONSTANTS = NO;
 				GCC_WARN_UNKNOWN_PRAGMAS = NO;
-				HEADER_SEARCH_PATHS = "";
+				HEADER_SEARCH_PATHS = /opt/homebrew/include;
 				INSTALL_PATH = /Users/Aravind/source/RISE/bin;
-				LIBRARY_SEARCH_PATHS = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					/opt/homebrew/lib,
+				);
+				LIBRARY_SEARCH_PATHS = /opt/homebrew/lib;
 				LLVM_LTO = YES_THIN;
 				OTHER_CPLUSPLUSFLAGS = (
 					"-DNO_PNG_SUPPORT",
@@ -6158,7 +6231,10 @@
 					"-DRISE_ENABLE_OIDN",
 					"-DRISE_ENABLE_OPENPGL",
 				);
-				OTHER_LDFLAGS = "";
+				OTHER_LDFLAGS = (
+					"-lOpenImageDenoise",
+					"-lopenpgl",
+				);
 				PRODUCT_NAME = rise;
 				WARNING_CFLAGS = (
 					"-Wmost",

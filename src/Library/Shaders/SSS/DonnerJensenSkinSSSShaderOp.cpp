@@ -15,6 +15,7 @@
 #include "pch.h"
 #include "DonnerJensenSkinSSSShaderOp.h"
 #include "../../Materials/BioSpecSkinData.h"
+#include "../../Interfaces/IGeometry.h"		// CanBeAreaLight(): SSS needs real surface sampling
 #include "../../Materials/MultipoleDiffusion.h"
 #include "../../Utilities/HankelTransform.h"
 #include "../../Utilities/GeometricUtilities.h"
@@ -755,6 +756,19 @@ void DonnerJensenSkinSSSShaderOp::PerformOperation(
 		PointSetMap::iterator again = pointsets.find( ri.pObject );
 		if( again == pointsets.end() )
 		{
+			// SSS point-set generation uniformly samples the object's SURFACE via
+			// UniformRandomPoint/GetArea.  A geometry that cannot honour that contract
+			// (CanBeAreaLight() false -- e.g. a degenerate zero-area field) would
+			// collapse the samples -> a bogus irradiance cache.  Refuse SSS on such
+			// geometry, with a diagnostic, rather than build a garbage sample set.
+			const IGeometry* pSSSGeom = ri.pObject ? ri.pObject->GetGeometry() : 0;
+			if( pSSSGeom && !pSSSGeom->CanBeAreaLight() ) {
+				GlobalLog()->PrintEasyWarning( "DonnerJensenSkinSSSShaderOp:: object geometry cannot be uniformly surface-sampled (CanBeAreaLight() == false); subsurface scattering is unsupported on it -- skipping (no SSS contribution)." );
+				pointsets[ri.pObject] = 0;	// cache null sentinel: warn once per object, skip the bogus build on every later hit
+				create_mutex.unlock();
+				c = RISEPel( 0.0 );
+				return;
+			}
 			GlobalLog()->PrintEasyInfo( "DonnerJensenSkinSSSShaderOp:: Generating irradiance samples" );
 
 			PointSetOctree::PointSet points;

@@ -323,7 +323,14 @@ bool ParseModifyObject( String* tokens, unsigned int num_tokens, IJob& pJob )
 		return false;
 	}
 
-	// Find out what about the object we are changing
+	// Find out what about the object we are changing.
+	//
+	// Two grammars coexist here.  The legacy `error` / `uv` forms are
+	// TYPE-FIRST (`modify object error <name> <value>`), so they match on
+	// tokens[0].  The newer `material` / `shader` forms are NAME-FIRST
+	// (`modify object <name> material <materialName>`), so they match the
+	// keyword on tokens[1].  Checking tokens[0] first preserves the legacy
+	// dispatch; the name-first forms are tried next.
 	if( tokens[0] == "error" )
 	{
 		if( num_tokens < 3 )
@@ -331,7 +338,7 @@ bool ParseModifyObject( String* tokens, unsigned int num_tokens, IJob& pJob )
 			GlobalLog()->Print( eLog_Warning, "AsciiCommandParser::ParseModifyObject: no error level specifed!" );
 			return false;
 		}
-		
+
 		const double err = tokens[2].toDouble();
 
 		return pJob.SetObjectIntersectionError( tokens[1].c_str(), err );
@@ -342,7 +349,60 @@ bool ParseModifyObject( String* tokens, unsigned int num_tokens, IJob& pJob )
 		return ParseModifyObject_UV( &tokens[1], num_tokens-1, pJob );
 	}
 
-	GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParseModifyObject: Unknown modification target: %s", tokens[1].c_str() );
+	// Name-first forms: `modify object <name> material|shader <name2>`.
+	if( num_tokens >= 3 )
+	{
+		if( tokens[1] == "material" )
+		{
+			return pJob.SetObjectMaterial( tokens[0].c_str(), tokens[2].c_str() );
+		}
+		else if( tokens[1] == "shader" )
+		{
+			return pJob.SetObjectShader( tokens[0].c_str(), tokens[2].c_str() );
+		}
+	}
+
+	GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParseModifyObject: Unknown modification target for object: %s", tokens[0].c_str() );
+	return false;
+}
+
+//! `> modify material <name> scale <value>` — rescales a luminaire
+//! material's emission.
+bool ParseModifyMaterial( String* tokens, unsigned int num_tokens, IJob& pJob )
+{
+	if( num_tokens < 3 )
+	{
+		GlobalLog()->Print( eLog_Warning, "AsciiCommandParser::ParseModifyMaterial: usage: modify material <name> scale <value>" );
+		return false;
+	}
+
+	if( tokens[1] == "scale" )
+	{
+		const double scale = tokens[2].toDouble();
+		return pJob.SetMaterialEmissionScale( tokens[0].c_str(), scale );
+	}
+
+	GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParseModifyMaterial: Unknown material modification target: %s", tokens[1].c_str() );
+	return false;
+}
+
+//! `> modify rasterizer radiance_scale <value>` — overrides the active
+//! rasterizer's environment radiance scale.
+bool ParseModifyRasterizer( String* tokens, unsigned int num_tokens, IJob& pJob )
+{
+	if( num_tokens < 2 )
+	{
+		GlobalLog()->Print( eLog_Warning, "AsciiCommandParser::ParseModifyRasterizer: usage: modify rasterizer radiance_scale <value>" );
+		return false;
+	}
+
+	if( tokens[0] == "radiance_scale" )
+	{
+		const double scale = tokens[1].toDouble();
+		return pJob.SetActiveRasterizerRadianceScale( scale );
+	}
+
+	GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParseModifyRasterizer: Unknown rasterizer modification target: %s", tokens[0].c_str() );
 	return false;
 }
 
@@ -360,7 +420,13 @@ bool AsciiCommandParser::ParseModify( String* tokens, unsigned int num_tokens, I
 	if( tokens[0] == "object" ) {
 		return ParseModifyObject( &tokens[1], num_tokens-1, pJob );
 	}
-	
+	else if( tokens[0] == "material" ) {
+		return ParseModifyMaterial( &tokens[1], num_tokens-1, pJob );
+	}
+	else if( tokens[0] == "rasterizer" ) {
+		return ParseModifyRasterizer( &tokens[1], num_tokens-1, pJob );
+	}
+
 	GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParseModify: Unknown element type: %s", tokens[0].c_str() );
 	return false;
 }

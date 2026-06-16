@@ -52,6 +52,16 @@ namespace RISE
 			const IMaterial& pMat									///< [in] The material to assign
 			) = 0;
 
+		//! Assigns a geometry to the object at runtime (geometry swap).
+		//! Mirrors AssignMaterial; the interactive editor's `geometry`
+		//! row routes here via SceneEdit::SetObjectGeometry.  The object's
+		//! bounding box is derived from the geometry, so the caller must
+		//! invalidate the top-level acceleration afterward (next render
+		//! rebuilds the TLAS against the new extents).
+		virtual bool AssignGeometry(
+			const IGeometry& pGeom									///< [in] The geometry to assign
+			) = 0;
+
 		//! Assigns a shader to the object
 		virtual bool AssignShader( 
 			const IShader& pShader									///< [in] The shader to assign

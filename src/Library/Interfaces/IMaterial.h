@@ -46,10 +46,28 @@ namespace RISE
 	//!     `(1 - max(F0))` per glTF spec, and the multiscatter lobe uses
 	//!     the closed-form Schlick hemispherical Fresnel average
 	//!     `F_avg = F0 + (1-F0)/21`.
+	//!
+	//!   eFresnelThinFilmConductor:
+	//!     Thin-film interference (heat-tint / anodization color) on the
+	//!     GGX conductor specular lobe — an air / oxide-film / metal stack
+	//!     evaluated by the validated Airy reflectance in
+	//!     Utilities/ThinFilm.h (docs/THIN_FILM_INTERFERENCE.md §4/§7).
+	//!     The existing `ior` / `ext` painters carry the SUBSTRATE (metal)
+	//!     complex index; three additional IScalarPainter slots carry the
+	//!     FILM: `pFilmIOR` (oxide n), `pFilmExtinction` (oxide k),
+	//!     `pFilmThickness` (oxide thickness, nm — may be spatially
+	//!     varying).  The ambient is air (1+0i).  `specular` multiplies the
+	//!     result as a tint exactly as the conductor branch does.  On the
+	//!     SPECTRAL path the per-hero-wavelength reflectance is exact; on
+	//!     the RGB path it is a preview (white-normalized albedo-basis
+	//!     spectral integral, see §8).  The three film slots MUST be
+	//!     non-null when this mode is selected (the GGX-family ctors accept
+	//!     them, the parser/factory enforce presence in P2-C).
 	enum FresnelMode
 	{
 		eFresnelConductor = 0,
-		eFresnelSchlickF0 = 1
+		eFresnelSchlickF0 = 1,
+		eFresnelThinFilmConductor = 2
 	};
 
 	/// Parameters for random-walk subsurface scattering.
@@ -187,6 +205,17 @@ namespace RISE
 			const Scalar nm,
 			const IORStack& ior_stack
 			) const;
+
+		//! Rescales this material's emission.  Default is a no-op that
+		//! REJECTS the change (returns false) so non-emissive materials
+		//! safely decline — only luminaire materials (e.g.
+		//! LambertianLuminaireMaterial) override this to rebuild their
+		//! emitter at the new scale.  Backs the
+		//! `> modify material <name> scale <value>` command via
+		//! Job::SetMaterialEmissionScale; runs before a render while the
+		//! scene is still mutable, so no thread-safety concern.
+		/// \return TRUE if the material is a luminaire and applied the scale, FALSE otherwise
+		virtual bool SetEmissionScale( const Scalar scale ) { return false; }
 	};
 }
 

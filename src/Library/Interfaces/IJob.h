@@ -25,6 +25,7 @@
 #include "IProgressCallback.h"
 #include "IJobRasterizerOutput.h"
 #include "IEnumCallback.h"      // for EnumerateMediumNames callback
+#include "ProceduralDescriptors.h" // sweep / path-instances parameter blocks
 #include <string>
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
@@ -47,6 +48,7 @@ namespace RISE
 	// Forward declaration so `GetMedium` can return a pointer without
 	// pulling IMedium.h's full dependency chain into this header.
 	class IMedium;
+	class IGeometry;
 
 	//! One entry in a parallel-decode batch passed to
 	//! IJob::AddTexturePaintersBatch.  Either filePath xor (bytes,numBytes)
@@ -810,7 +812,10 @@ namespace RISE
 									const char* tau,				///< [in] Transmittance painter
 									const char* rIndex,				///< [in] Index of refraction
 									const char* scat,				///< [in] Scattering function (either Phong or HG)
-									const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
+									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+								const Scalar arN = 0,			///< [in] AR coating film real index (0 = no coating)
+								const Scalar arK = 0,			///< [in] AR coating film extinction (~0)
+								const Scalar arThickness = 0	///< [in] AR coating thickness, nm (0 = no coating)
 									) = 0;
 
 		//! Adds a SubSurface Scattering material
@@ -991,10 +996,13 @@ namespace RISE
 			const char* specular,										///< [in] Specular reflectance / F0
 			const char* alphaX,											///< [in] Roughness in tangent u direction
 			const char* alphaY,											///< [in] Roughness in tangent v direction
-			const char* ior,											///< [in] Index of refraction (ignored in schlick_f0 mode)
-			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 mode)
-			const char* fresnel_mode = "conductor",						///< [in] "conductor" or "schlick_f0"
-			const char* tangent_rotation = "none"						///< [in] Landing 8 / KHR_materials_anisotropy: tangent-frame rotation painter (radians) or scalar string.  "none" = no rotation (default; bit-identical to pre-L8).  When set, the GGX BSDF samples the painter at each shading point and rotates the (u, v) basis around w by the painter-evaluated angle before applying αx / αy.
+			const char* ior,											///< [in] Index of refraction (ignored in schlick_f0 mode; SUBSTRATE n in thinfilm mode)
+			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 mode; SUBSTRATE k in thinfilm mode)
+			const char* fresnel_mode = "conductor",						///< [in] "conductor", "schlick_f0", or "thinfilm"
+			const char* tangent_rotation = "none",						///< [in] Landing 8 / KHR_materials_anisotropy: tangent-frame rotation painter (radians) or scalar string.  "none" = no rotation (default; bit-identical to pre-L8).  When set, the GGX BSDF samples the painter at each shading point and rotates the (u, v) basis around w by the painter-evaluated angle before applying αx / αy.
+			const char* film_ior = "none",								///< [in] Thin-film FILM (oxide) n scalar_painter; eFresnelThinFilmConductor only.  "none" = no film painter.  REQUIRED in thinfilm mode.
+			const char* film_extinction = "none",						///< [in] Thin-film FILM (oxide) k scalar_painter; eFresnelThinFilmConductor only.  "none" = transparent film (k = 0).
+			const char* film_thickness = "none"							///< [in] Thin-film FILM (oxide) thickness in nm (scalar_painter, may be spatially varying); eFresnelThinFilmConductor only.  REQUIRED in thinfilm mode.
 			) = 0;
 
 		//! Adds GGX material with optional emissive (LambertianEmitter)
@@ -1013,8 +1021,11 @@ namespace RISE
 			const char* ext,											///< [in] Extinction coefficient (ignored in schlick_f0 mode)
 			const char* emissive,										///< [in] Optional emissive painter; "none" / NULL = no emitter
 			const double emissive_scale,								///< [in] Multiplier on emissive radiance
-			const char* fresnel_mode = "conductor",						///< [in] "conductor" or "schlick_f0"
-			const char* tangent_rotation = "none"						///< [in] Landing 8 / KHR_materials_anisotropy.  See AddGGXMaterial.
+			const char* fresnel_mode = "conductor",						///< [in] "conductor", "schlick_f0", or "thinfilm"
+			const char* tangent_rotation = "none",						///< [in] Landing 8 / KHR_materials_anisotropy.  See AddGGXMaterial.
+			const char* film_ior = "none",								///< [in] Thin-film FILM (oxide) n scalar_painter; thinfilm mode only.  See AddGGXMaterial.
+			const char* film_extinction = "none",						///< [in] Thin-film FILM (oxide) k scalar_painter; thinfilm mode only.  See AddGGXMaterial.
+			const char* film_thickness = "none"							///< [in] Thin-film FILM (oxide) thickness nm scalar_painter; thinfilm mode only.  See AddGGXMaterial.
 			) = 0;
 
 		//! Adds a glTF-spec pbrMetallicRoughness material.  Composes a
@@ -1380,7 +1391,8 @@ namespace RISE
 							const char*         displacement,		///< [in] Name of registered IFunction2D, or NULL for pure tessellation
 							const Scalar        disp_scale,			///< [in] Displacement scale factor
 							const bool          double_sided,		///< [in] Are the displaced triangles double sided?
-							const bool          face_normals		///< [in] Use face normals instead of topologically re-averaged vertex normals
+							const bool          face_normals,
+			const bool          seam_fold = true		///< [in] Use face normals instead of topologically re-averaged vertex normals
 							) = 0;
 
 
@@ -1506,6 +1518,22 @@ namespace RISE
 		//! preset dropdown.  Iteration order is unspecified.
 		virtual void EnumerateMediumNames(
 			IEnumCallback<const char*>& cb							///< [in] Functor called once per registered medium name
+			) const = 0;
+
+		//! Returns the registered IGeometry with the given name, or null
+		//! if no geometry with that name is registered.  Used by the
+		//! interactive editor to validate `geometry` edits (runtime
+		//! geometry swap) and to recover the prior geometry's name for
+		//! undo via reverse-lookup against `IObject::GetGeometry()`.
+		virtual const IGeometry* GetGeometry(
+			const char* name										///< [in] Name of the requested geometry
+			) const = 0;
+
+		//! Enumerates registered geometry names.  Used by the interactive
+		//! editor's properties panel to populate the `geometry` preset
+		//! dropdown (runtime geometry swap).  Iteration order is unspecified.
+		virtual void EnumerateGeometryNames(
+			IEnumCallback<const char*>& cb							///< [in] Functor called once per registered geometry name
 			) const = 0;
 
 		// `IsMaterialComposed` lives in the appended-default-impl
@@ -2952,6 +2980,136 @@ namespace RISE
 			const unsigned int maxSurfaceW,							///< [in] Available viewport width in pixels (must be > 0)
 			const unsigned int maxSurfaceH,							///< [in] Available viewport height in pixels (must be > 0)
 			const unsigned int maxLongEdge							///< [in] Hard cap on the longer of the two output edges (must be > 0)
+			) = 0;
+
+		//! Creates a signed-distance-field (implicit) geometry: transformed
+		//! primitives composed with smooth-min / boolean ops, sphere-traced.
+		//! For melded / filleted organic shapes.  The part list comes from
+		//! exactly ONE of `szParts` (inline, newline-separated part lines --
+		//! the normal authoring path; the scene chunk's repeatable `part`
+		//! parameter) or `szFileName` (external parts file, same
+		//! one-part-per-line grammar; for very large SDFs).
+		//! NB: part of the append-only TAIL of IJob -- new virtuals are only
+		//! ever added after the existing ones (AddSDFGeometry, then the
+		//! guilloché / sweep / path-instances methods below), keeping every existing
+		//! virtual at its original vtable slot (ABI-stable for any consumer
+		//! linked against an older IJob).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddSDFGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const char* szFileName,					///< [in] SDF parts file to load ("" / "none" = use szParts)
+			const char* szParts,					///< [in] Inline newline-separated part lines ("" = use szFileName)
+			const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+			const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+			const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
+			) = 0;
+
+		//! Creates a HEIGHTFIELD SDF geometry: the exact analytic surface
+		//! z = scale*field(u,v) over the square [-radius,radius]^2
+		//! (u=(x+R)/2R, v=(y+R)/2R), sphere-traced with O(1) memory -- the
+		//! exact-geometry ground-truth twin of a `displaced_geometry` on a
+		//! `cartesian_disk_geometry` (which tessellates).  `heightfieldFunction`
+		//! names an already-registered IFunction2D (an expression_function2d,
+		//! noise, polynomial, composite, etc.).  Appended after AddSDFGeometry
+		//! per the append-only IJob tail (preserves every prior vtable slot).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddSDFHeightfieldGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const char* heightfieldFunction,		///< [in] Named IFunction2D giving f(u,v) in [0,1]
+			const double radius,					///< [in] Half-extent of the square domain (object units)
+			const double scale,						///< [in] World amplitude (surface z = scale*f(u,v))
+			const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+			const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+			const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
+			) = 0;
+
+
+		//! Creates a general profile sweep: a closed 2D profile polygon
+		//! swept along a 3D Catmull-Rom path with rotation-minimizing
+		//! frames, per-axis taper, and end caps.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddSweepGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const SweepDescriptor& desc				///< [in] Profile + path + taper + cap parameters
+			) = 0;
+
+		//! Creates along-path instances of a NAMED template geometry
+		//! (tessellated through the universal TessellateToMesh contract)
+		//! at arc-length pitch.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddPathInstancesGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const char* szTemplate,					///< [in] Name of the template geometry to instance
+			const PathInstancesDescriptor& desc		///< [in] Path + pitch parameters (pGeometry filled from szTemplate)
+			) = 0;
+
+		//! Wraps a named IFunction2D as a greyscale colour painter
+		//! (see RISE_API_CreateFunction2DColorPainter).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddFunction2DColorPainter(
+			const char* name,						///< [in] Name of the painter
+			const char* szFunction,					///< [in] Name of the source IFunction2D
+			const double scale,						///< [in] Output scale
+			const double bias						///< [in] Output bias
+			) = 0;
+
+		//! Creates a flat Cartesian-grid circular disk base (see
+		//! RISE_API_CreateCartesianDiskGeometry).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddCartesianDiskGeometry(
+			const char* name,						///< [in] Name of the geometry
+			const double radius,					///< [in] Disk radius (world units)
+			const int meshN							///< [in] Grid samples across the diameter
+			) = 0;
+
+		// ----- `> modify` runtime-mutation surface (vtable-stable) -----
+		// These four virtuals back the generalized `> modify` scene
+		// command (AsciiCommandParser::ParseModify) so a scene "mode"
+		// (day / night / dramatic) can be expressed as a self-contained
+		// command block instead of hand-editing chunk bodies.  All run
+		// BEFORE a render while the scene is still mutable; the next
+		// render's RayCaster::AttachScene re-Prepares the light set and
+		// rebuilds the environment sampler, so emissive<->non-emissive
+		// material swaps and radiance-scale changes take effect with no
+		// extra dirty/re-prepare plumbing.  Appended at the END of the
+		// interface so existing vtable slot indices are unchanged.
+
+		//! Reassigns the material bound to an existing scene object,
+		//! mirroring the interactive editor's material-swap path
+		//! (SceneEditor: materialManager->GetItem -> obj.AssignMaterial).
+		//! No acceleration rebuild — a material change cannot move the
+		//! object's bounding box.
+		/// \return TRUE if both the object and the material exist, FALSE otherwise
+		virtual bool SetObjectMaterial(
+			const char* objName,					///< [in] Name of the object to retarget
+			const char* materialName				///< [in] Name of the (already-added) material to bind
+			) = 0;
+
+		//! Reassigns the shader bound to an existing scene object.
+		/// \return TRUE if both the object and the shader exist, FALSE otherwise
+		virtual bool SetObjectShader(
+			const char* objName,					///< [in] Name of the object to retarget
+			const char* shaderName					///< [in] Name of the (already-added) shader to bind
+			) = 0;
+
+		//! Rescales the emission of an existing luminaire material.
+		//! Delegates to IMaterial::SetEmissionScale — non-luminaire
+		//! materials reject the change (return FALSE) via the interface
+		//! default.
+		/// \return TRUE if the material exists AND is a luminaire, FALSE otherwise
+		virtual bool SetMaterialEmissionScale(
+			const char* materialName,				///< [in] Name of the (luminaire) material to rescale
+			const double scale						///< [in] New emission scale (replaces the original)
+			) = 0;
+
+		//! Overrides the radiance (environment / IBL) scale on the
+		//! ACTIVE rasterizer's RayCaster.  The override is applied on the
+		//! next AttachScene to both the environment importance sampler
+		//! and the background radiance map so direct-view and NEE stay
+		//! consistent.
+		/// \return TRUE if an active rasterizer with a RayCaster exists, FALSE otherwise
+		virtual bool SetActiveRasterizerRadianceScale(
+			const double scale						///< [in] New environment radiance scale
 			) = 0;
 	};
 

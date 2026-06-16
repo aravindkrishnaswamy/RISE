@@ -229,13 +229,13 @@ static Point3 SphereTessParamToPos( Scalar r, Scalar u, Scalar v )
 	return Point3( -r * sP * cT, r * cP, r * sP * sT );
 }
 
-static Point3 EllipsoidTessParamToPos( const Vector3& diam, Scalar u, Scalar v )
+static Point3 EllipsoidTessParamToPos( const Vector3& radii, Scalar u, Scalar v )
 {
 	// EllipsoidGeometry::TessellateToMesh:
 	//   pos = (a*-sin(phi)*cos(theta), b*cos(phi), c*sin(phi)*sin(theta))
-	const Scalar a = diam.x * 0.5;
-	const Scalar b = diam.y * 0.5;
-	const Scalar c = diam.z * 0.5;
+	const Scalar a = radii.x;  // m_vRadius is the semi-axis
+	const Scalar b = radii.y;
+	const Scalar c = radii.z;
 	const Scalar phi   = v * PI;
 	const Scalar theta = u * TWO_PI;
 	const Scalar sP = std::sin( phi );
@@ -552,9 +552,9 @@ static void TestEllipsoidOne( const Vector3& diameters, const char* label )
 		const Point3 prand( rng.next01(), rng.next01(), rng.next01() );
 		g->UniformRandomPoint( &p, &n, &uv, prand );
 
-		const Scalar a = diameters.x * 0.5;
-		const Scalar b = diameters.y * 0.5;
-		const Scalar c = diameters.z * 0.5;
+		const Scalar a = diameters.x;  // radii ARE the semi-axes now
+		const Scalar b = diameters.y;
+		const Scalar c = diameters.z;
 		const Scalar implicit =
 			(p.x * p.x) / (a * a) +
 			(p.y * p.y) / (b * b) +
@@ -795,6 +795,68 @@ static void TestTorus()
 		nPts++;
 	}
 	REQUIRE( nPts > Mpoints / 2, "torus enough random points" );
+
+	// ------------------------------------------------------------
+	// Area-uniformity of UniformRandomPoint (regression, 2026-06-10).
+	//
+	// The tube-angle density must be p(v) = (R + r*cos v) / (2*PI*R)
+	// -- uniform by AREA, not uniform by parameter.  A prior
+	// implementation rejection-sampled this density but re-drew
+	// rejected candidates through an integer-hash constant (2^-32)
+	// applied to a [0,1) float, which collapsed every rejected first
+	// draw onto the single tube angle v = 2*PI*0.618... -- a
+	// point-mass holding r/(R+r) of ALL samples (23% at this R/r).
+	// Estimators dividing by the claimed uniform 1/GetArea() pdf then
+	// carried a circle-shaped spatial bias, and integrators mixing
+	// light-sampled strategies with different MIS shares disagreed on
+	// torus-emitter scenes (VCM floor pool ~0.90x of PT/BDPT).
+	//
+	// 64-bin histogram over the tube angle, plus a uniformity check
+	// on the ring angle.  With 200k samples the sparsest bin holds
+	// ~2200 samples (1 sigma ~ 2.1%); max-over-64-bins of healthy MC
+	// noise stays under ~7%, while the point-mass bug overshoots its
+	// bin by ~1400%.  Tolerance 10%.
+	{
+		const int NBINS = 64;
+		const int NSAMP = 200000;
+		std::vector<int> vbins( NBINS, 0 );
+		std::vector<int> ubins( NBINS, 0 );
+		for( int i = 0; i < NSAMP; ++i ) {
+			Point3  p; Vector3 n; Point2 uv;
+			const Point3 prand( rng.next01(), rng.next01(), rng.next01() );
+			g->UniformRandomPoint( &p, &n, &uv, prand );
+			const Scalar dXZ = std::sqrt( p.x * p.x + p.z * p.z );
+			const Scalar vAng = std::atan2( p.y, dXZ - R );	// tube angle
+			const Scalar uAng = std::atan2( p.z, p.x );		// ring angle
+			int bv = static_cast<int>( ( vAng + PI ) / TWO_PI * NBINS );
+			int bu = static_cast<int>( ( uAng + PI ) / TWO_PI * NBINS );
+			if( bv < 0 ) bv = 0;
+			if( bv >= NBINS ) bv = NBINS - 1;
+			if( bu < 0 ) bu = 0;
+			if( bu >= NBINS ) bu = NBINS - 1;
+			vbins[bv]++;
+			ubins[bu]++;
+		}
+		Scalar maxRelDevV = 0;
+		Scalar maxRelDevU = 0;
+		for( int b = 0; b < NBINS; ++b ) {
+			const Scalar vc = -PI + ( b + Scalar( 0.5 ) ) * TWO_PI / NBINS;
+			const Scalar expectV = ( ( R + rTube * std::cos( vc ) ) / ( TWO_PI * R ) )
+				* ( TWO_PI / NBINS ) * NSAMP;
+			const Scalar expectU = static_cast<Scalar>( NSAMP ) / NBINS;
+			const Scalar devV = std::fabs( vbins[b] - expectV ) / expectV;
+			const Scalar devU = std::fabs( ubins[b] - expectU ) / expectU;
+			if( devV > maxRelDevV ) maxRelDevV = devV;
+			if( devU > maxRelDevU ) maxRelDevU = devU;
+		}
+		std::cout << "  torus density: max tube-angle bin deviation "
+			<< maxRelDevV * 100.0 << "%, ring-angle "
+			<< maxRelDevU * 100.0 << "%\n";
+		REQUIRE( maxRelDevV < 0.10,
+			"torus UniformRandomPoint tube-angle density matches (R + r cos v) area weighting" );
+		REQUIRE( maxRelDevU < 0.10,
+			"torus UniformRandomPoint ring-angle density uniform" );
+	}
 
 	g->release();
 	std::cout << "  torus: " << nHits << " ray hits, " << nPts

@@ -67,6 +67,35 @@ namespace RISE
 			inline const IScalarPainter& GetN()     const { return pEmitter->GetN(); }
 			inline void SetRadEx( const IPainter& v )     { pEmitter->SetRadEx( v ); }
 			inline void SetN( const IScalarPainter& v )   { pEmitter->SetN( v ); }
+
+			//! Rescales the emission (backs `> modify material <name>
+			//! scale`).  PhongEmitter holds its scale as a const member
+			//! with no setter, so we REBUILD it at the new scale, reusing
+			//! the existing radiance-exitance painter AND the Phong-N
+			//! exponent painter.  Hold references on both across the swap
+			//! so they survive the old emitter's release.  Mirrors
+			//! LambertianLuminaireMaterial::SetEmissionScale; runs before
+			//! a render — no threading concern.
+			/// \return TRUE always (this material is a luminaire)
+			bool SetEmissionScale( const Scalar scale )
+			{
+				const IPainter&       radEx = pEmitter->GetRadEx();
+				const IScalarPainter& phongN = pEmitter->GetN();
+				radEx.addref();
+				phongN.addref();
+
+				safe_release( pEmitter );
+
+				pEmitter = new PhongEmitter( radEx, scale, phongN );
+				GlobalLog()->PrintNew( pEmitter, __FILE__, __LINE__, "pEmitter" );
+
+				// PhongEmitter's ctor addrefs both painters; drop the
+				// temporary references that bridged the rebuild.
+				radEx.release();
+				phongN.release();
+
+				return true;
+			}
 		};
 	}
 }

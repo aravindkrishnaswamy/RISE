@@ -166,6 +166,7 @@
     <ClCompile Include="..\..\..\src\Library\Geometry\Geometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\GeometryUtilities.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Geometry\SDFGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\SphereGeometry.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\SphericalUVGenerator.cpp" />
     <ClCompile Include="..\..\..\src\Library\Geometry\TorusGeometry.cpp" />
@@ -442,6 +443,7 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\DiskBuffer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Utilities\RenderParallelScope.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\DynamicProperties.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\GeometricUtilities.cpp" />
     <ClCompile Include="..\..\..\src\Library\Utilities\BSSRDFSampling.cpp" />
@@ -538,6 +540,7 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\Geometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\GeometryUtilities.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.h" />
+    <ClInclude Include="..\..\..\src\Library\Geometry\SDFGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\SphereGeometry.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\SphericalUVGenerator.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TorusGeometry.h" />
@@ -554,6 +557,7 @@
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderPSurf.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW.h" />
     <ClInclude Include="..\..\..\src\Library\Geometry\TriangleMeshLoaderRAW2.h" />
+    <ClInclude Include="..\..\..\src\Library\Interfaces\ProceduralDescriptors.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IAnimator.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IAtmosphere.h" />
     <ClInclude Include="..\..\..\src\Library\Interfaces\IBezierPatchGeometry.h" />
@@ -761,6 +765,9 @@
     <ClInclude Include="..\..\..\src\Library\Painters\PolynomialScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Function1DScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\Function2DScalarPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\Function2DColorPainter.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionEval.h" />
+    <ClInclude Include="..\..\..\src\Library\Painters\ExpressionFunction2DPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\ScaledScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\MultiplyScalarPainter.h" />
     <ClInclude Include="..\..\..\src\Library\Painters\VertexColorPainter.h" />
@@ -947,6 +954,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileReadBuffer.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DiskFileWriteBuffer.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\RenderParallelScope.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\DynamicProperties.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\GeometricUtilities.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\HermiteInterpolator.h" />
@@ -1132,6 +1140,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\MediumTransport.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MicrofacetEnergyLUT.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MicrofacetUtils.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\ThinFilm.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\MortonCode.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\NullScatteringTracker.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\OidnConfig.h" />

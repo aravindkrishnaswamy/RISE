@@ -52,6 +52,14 @@ namespace RISE
 			//! KHR_materials_anisotropy.  See GGXBRDF.h for details;
 			//! same semantics, mirrored here for the SPF path.
 			const IPainter* pTangentRotation;
+			//! Thin-film (eFresnelThinFilmConductor) FILM slots; see
+			//! GGXBRDF.h for the full contract — film n, film k, film
+			//! thickness (nm) of the oxide layer.  nullptr for every
+			//! other Fresnel mode; only read inside the thin-film
+			//! branch.  Substrate n,k reuse pIOR / pExtinction.
+			const IScalarPainter*	pFilmIOR;
+			const IScalarPainter*	pFilmExtinction;
+			const IScalarPainter*	pFilmThickness;
 
 		public:
 			GGXSPF(
@@ -62,7 +70,10 @@ namespace RISE
 				const IScalarPainter& ior,
 				const IScalarPainter& ext,
 				const FresnelMode fresnel_mode = eFresnelConductor,
-				const IPainter* tangent_rotation = nullptr
+				const IPainter* tangent_rotation = nullptr,
+				const IScalarPainter* film_ior = nullptr,
+				const IScalarPainter* film_extinction = nullptr,
+				const IScalarPainter* film_thickness = nullptr
 				);
 
 			void	Scatter(
@@ -93,6 +104,17 @@ namespace RISE
 				const IORStack& ior_stack
 				) const;
 
+			//! Read-back of the thin-film FILM slots — POINTER-returning
+			//! (NULLABLE; only bound in the thin-film Fresnel mode).
+			//! GetFresnelMode lets the introspection layer gate the film
+			//! rows.  Mirror of GGXBRDF.h; the Material reads back from the
+			//! BRDF, so these exist primarily for symmetry / direct unit
+			//! tests against the SPF.
+			inline const IScalarPainter* GetFilmIOR()        const { return pFilmIOR; }
+			inline const IScalarPainter* GetFilmExtinction() const { return pFilmExtinction; }
+			inline const IScalarPainter* GetFilmThickness()  const { return pFilmThickness; }
+			inline FresnelMode           GetFresnelMode()    const { return fresnelMode; }
+
 			//! Read-back + rebind for the interactive editor.  See
 			//! GGXBRDF.h — every Set* call here is paired with the
 			//! BRDF's matching Set* by Material's forwarder.
@@ -102,6 +124,14 @@ namespace RISE
 			void SetAlphaY( const IScalarPainter& v );
 			void SetIOR( const IScalarPainter& v );
 			void SetExtinction( const IScalarPainter& v );
+			//! Thin-film FILM-slot rebind — paired with the BRDF's matching
+			//! Set* by Material's forwarder so the value and sampling paths
+			//! stay in lockstep.  Same release-old / addref-new discipline
+			//! as SetIOR (null-safe via safe_release for the previously-null
+			//! film_extinction case).
+			void SetFilmIOR( const IScalarPainter& v );
+			void SetFilmExtinction( const IScalarPainter& v );
+			void SetFilmThickness( const IScalarPainter& v );
 		};
 	}
 }

@@ -52,6 +52,12 @@ namespace RISE
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
 
 			void ResetRuntimeData() const;
+
+			// Deferred-realization (IObject): the realize pass enumerates only
+			// world-VISIBLE objects, but AssignObjects() hides our two operands,
+			// so they are never reached directly.  Cascade into them here so a
+			// deferred geometry (e.g. displaced) used as a CSG operand is baked.
+			void Realize() const;
 		};
 	}
 }

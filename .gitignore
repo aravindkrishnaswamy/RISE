@@ -111,3 +111,15 @@ __pycache__/
 # diff. Regenerated each session, never committed (the Phase 2a
 # precedent left them untracked too).
 tests/baselines_refactor/
+
+# Retired-baker reference outputs (the scene is fully procedural since 2026-06;
+# the Python bakers remain as golden references -- their outputs stay untracked)
+/scenes/FeatureBased/GuillocheWatch/dial*.raw2
+/scenes/FeatureBased/GuillocheWatch/strap*.raw2
+/scenes/FeatureBased/GuillocheWatch/oxide_*.png
+/scenes/FeatureBased/GuillocheWatch/guilloche_height.png
+/scenes/FeatureBased/GuillocheWatch/guilloche_normal.png
+/scenes/FeatureBased/GuillocheWatch/guilloche_angle.png
+/scenes/FeatureBased/GuillocheWatch/oxide_thickness.png
+/scenes/FeatureBased/GuillocheWatch/*_preview.png
+/rendered/temper_*.png

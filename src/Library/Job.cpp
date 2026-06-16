@@ -12,6 +12,8 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "Geometry/SDFGeometry.h"
+#include <cstring>
 #define _USE_MATH_DEFINES
 #include "Job.h"
 #include "RISE_API.h"
@@ -29,6 +31,8 @@
 #include "Shaders/FinalGatherShaderOp.h"
 #include "Rendering/FrameStore.h"
 #include "Rendering/Rasterizer.h"
+#include "Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for SetTransparentShadows (PT only)
+#include "Rendering/PixelBasedRasterizerHelper.h"	// GetRayCaster() — reach the active rasterizer's caster for radiance_scale
 #include "Utilities/RString.h"
 #include "Utilities/RasterizerDefaults.h"
 #include <stdio.h>
@@ -2779,7 +2783,10 @@ bool Job::AddDielectricMaterial(
 							const char* tau,				///< [in] Transmittance painter
 							const char* rIndex,				///< [in] Index of refraction
 							const char* scat,				///< [in] Scattering function (either Phong or HG)
-							const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
+							const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+							const Scalar arN,
+							const Scalar arK,
+							const Scalar arThickness
 							)
 {
 	// tau/ior/scattering are all physical scalars carried by
@@ -2800,7 +2807,7 @@ bool Job::AddDielectricMaterial(
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateDielectricMaterial( &pMaterial, *pTau, *pIor, *pScat, hg );
+	RISE_API_CreateDielectricMaterial( &pMaterial, *pTau, *pIor, *pScat, hg, arN, arK, arThickness );
 
 	pMatManager->AddItem( pMaterial, name );
 
@@ -3406,11 +3413,12 @@ static FresnelMode ResolveFresnelMode( const char* mode )
 	if( !mode || !mode[0] ) return eFresnelConductor;
 	if( strcmp( mode, "conductor"  ) == 0 ) return eFresnelConductor;
 	if( strcmp( mode, "schlick_f0" ) == 0 ) return eFresnelSchlickF0;
+	if( strcmp( mode, "thinfilm"   ) == 0 ) return eFresnelThinFilmConductor;
 
 	static std::set<std::string> seen;
 	if( seen.insert( std::string(mode) ).second ) {
 		GlobalLog()->PrintEx( eLog_Warning,
-			"Unknown fresnel_mode `%s`; falling back to conductor.  Valid: conductor, schlick_f0", mode );
+			"Unknown fresnel_mode `%s`; falling back to conductor.  Valid: conductor, schlick_f0, thinfilm", mode );
 	}
 	return eFresnelConductor;
 }
@@ -3424,7 +3432,10 @@ bool Job::AddGGXMaterial(
 	const char* ior,
 	const char* ext,
 	const char* fresnel_mode,
-	const char* tangent_rotation
+	const char* tangent_rotation,
+	const char* film_ior,
+	const char* film_extinction,
+	const char* film_thickness
 	)
 {
 	IPainter* pRd = pPntManager->GetItem(diffuse);
@@ -3451,6 +3462,59 @@ bool Job::AddGGXMaterial(
 		return false;
 	}
 
+	// Thin-film FILM slots (eFresnelThinFilmConductor).  These are physical
+	// scalars (oxide n / k / thickness-nm) and MUST resolve as IScalarPainter
+	// (no JH spectral uplift), exactly like ior / ext above.  "none" => no
+	// film painter (nullptr passed through).  Resolved unconditionally so a
+	// stray film_* on a non-thinfilm material still gets a real diagnostic if
+	// it names a bad painter; the thinfilm-mode presence contract is enforced
+	// below.
+	const FresnelMode resolvedFresnel = ResolveFresnelMode( fresnel_mode );
+
+	IScalarPainter* pFilmIOR = 0;
+	IScalarPainter* pFilmExt = 0;
+	IScalarPainter* pFilmThk = 0;
+	const bool wantFilmIOR = ( film_ior        && std::string( film_ior )        != "none" );
+	const bool wantFilmExt = ( film_extinction && std::string( film_extinction ) != "none" );
+	const bool wantFilmThk = ( film_thickness  && std::string( film_thickness )  != "none" );
+
+	if( wantFilmIOR ) {
+		pFilmIOR = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_material", name, "film_ior", film_ior );
+	}
+	if( wantFilmExt ) {
+		pFilmExt = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_material", name, "film_extinction", film_extinction );
+	}
+	if( wantFilmThk ) {
+		pFilmThk = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_material", name, "film_thickness", film_thickness );
+	}
+
+	// If a film_* slot was requested but failed to resolve, that is a hard
+	// error (the painter name was bad) regardless of fresnel_mode.
+	if( ( wantFilmIOR && !pFilmIOR ) || ( wantFilmExt && !pFilmExt ) || ( wantFilmThk && !pFilmThk ) ) {
+		safe_release( pAlphaX ); safe_release( pAlphaY );
+		safe_release( pIOR ); safe_release( pExt );
+		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		return false;
+	}
+
+	// thinfilm-mode presence contract: the P2-B BSDF dereferences the film
+	// painters whenever eFresnelThinFilmConductor is active, so film_ior and
+	// film_thickness MUST be present (film_extinction defaults to a transparent
+	// k = 0 film and is optional).  Reject at parse time with a clear message
+	// rather than letting the renderer null-deref.
+	if( resolvedFresnel == eFresnelThinFilmConductor && ( !pFilmIOR || !pFilmThk ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"ggx_material `%s`: fresnel_mode `thinfilm` requires both `film_ior` and `film_thickness` (oxide n + thickness-nm scalar_painters); `film_extinction` is optional (default transparent k = 0).  See docs/THIN_FILM_INTERFERENCE.md §7.",
+			name ? name : "noname" );
+		safe_release( pAlphaX ); safe_release( pAlphaY );
+		safe_release( pIOR ); safe_release( pExt );
+		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		return false;
+	}
+
 	// Landing 8: tangent_rotation is "none" (no rotation, default) OR
 	// a painter / scalar string (rotation in radians).  Resolved here
 	// to a temporarily-addref'd IPainter*; the GGX{BRDF,SPF} hold their
@@ -3467,8 +3531,8 @@ bool Job::AddGGXMaterial(
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateGGXMaterial( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt,
-		ResolveFresnelMode( fresnel_mode ), pTangentRotation );
+	RISE_API_CreateGGXMaterialThinFilm( &pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt,
+		resolvedFresnel, pTangentRotation, pFilmIOR, pFilmExt, pFilmThk );
 
 	pMatManager->AddItem( pMaterial, name );
 
@@ -3478,6 +3542,9 @@ bool Job::AddGGXMaterial(
 	safe_release( pIOR );
 	safe_release( pExt );
 	safe_release( pTangentRotation );
+	safe_release( pFilmIOR );
+	safe_release( pFilmExt );
+	safe_release( pFilmThk );
 
 	return true;
 }
@@ -3500,7 +3567,10 @@ bool Job::AddGGXEmissiveMaterial(
 	const char* emissive,
 	const double emissive_scale,
 	const char* fresnel_mode,
-	const char* tangent_rotation
+	const char* tangent_rotation,
+	const char* film_ior,
+	const char* film_extinction,
+	const char* film_thickness
 	)
 {
 	IPainter* pRd = pPntManager->GetItem(diffuse);
@@ -3543,6 +3613,48 @@ bool Job::AddGGXEmissiveMaterial(
 		}
 	}
 
+	// Thin-film FILM slots (eFresnelThinFilmConductor) — same resolve +
+	// presence-contract logic as AddGGXMaterial above.  IScalarPainter
+	// (no JH uplift); "none" => nullptr.
+	const FresnelMode resolvedFresnel = ResolveFresnelMode( fresnel_mode );
+
+	IScalarPainter* pFilmIOR = 0;
+	IScalarPainter* pFilmExt = 0;
+	IScalarPainter* pFilmThk = 0;
+	const bool wantFilmIOR = ( film_ior        && std::string( film_ior )        != "none" );
+	const bool wantFilmExt = ( film_extinction && std::string( film_extinction ) != "none" );
+	const bool wantFilmThk = ( film_thickness  && std::string( film_thickness )  != "none" );
+
+	if( wantFilmIOR ) {
+		pFilmIOR = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_emissive_material", name, "film_ior", film_ior );
+	}
+	if( wantFilmExt ) {
+		pFilmExt = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_emissive_material", name, "film_extinction", film_extinction );
+	}
+	if( wantFilmThk ) {
+		pFilmThk = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager, "ggx_emissive_material", name, "film_thickness", film_thickness );
+	}
+
+	if( ( wantFilmIOR && !pFilmIOR ) || ( wantFilmExt && !pFilmExt ) || ( wantFilmThk && !pFilmThk ) ) {
+		safe_release( pAlphaX ); safe_release( pAlphaY );
+		safe_release( pIOR ); safe_release( pExt );
+		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		return false;
+	}
+
+	if( resolvedFresnel == eFresnelThinFilmConductor && ( !pFilmIOR || !pFilmThk ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"ggx_material `%s`: fresnel_mode `thinfilm` requires both `film_ior` and `film_thickness` (oxide n + thickness-nm scalar_painters); `film_extinction` is optional (default transparent k = 0).  See docs/THIN_FILM_INTERFERENCE.md §7.",
+			name ? name : "noname" );
+		safe_release( pAlphaX ); safe_release( pAlphaY );
+		safe_release( pIOR ); safe_release( pExt );
+		safe_release( pFilmIOR ); safe_release( pFilmExt ); safe_release( pFilmThk );
+		return false;
+	}
+
 	// Landing 8: optional tangent_rotation painter (radians).  Same
 	// resolve logic as AddGGXMaterial above.
 	IPainter* pTangentRotation = 0;
@@ -3557,9 +3669,9 @@ bool Job::AddGGXEmissiveMaterial(
 	}
 
 	IMaterial* pMaterial = 0;
-	RISE_API_CreateGGXEmissiveMaterial(
+	RISE_API_CreateGGXEmissiveMaterialThinFilm(
 		&pMaterial, *pRd, *pRs, *pAlphaX, *pAlphaY, *pIOR, *pExt, pEmissive, emissive_scale,
-		ResolveFresnelMode( fresnel_mode ), pTangentRotation );
+		resolvedFresnel, pTangentRotation, pFilmIOR, pFilmExt, pFilmThk );
 
 	const bool added = pMatManager->AddItem( pMaterial, name );
 	// Only mark as composed when AddItem actually registered the
@@ -3577,6 +3689,9 @@ bool Job::AddGGXEmissiveMaterial(
 	safe_release( pIOR );
 	safe_release( pExt );
 	safe_release( pTangentRotation );
+	safe_release( pFilmIOR );
+	safe_release( pFilmExt );
+	safe_release( pFilmThk );
 
 	return added;
 }
@@ -4207,6 +4322,122 @@ bool Job::AddTorusGeometry(
 	return true;
 }
 
+//! Adds a signed-distance-field (implicit) geometry from inline part lines
+//! (the normal path) or an external parts file (for very large SDFs).
+//! Construction (part-grammar parse + token validation + sphere-trace build)
+//! is delegated to the C-API factory RISE_API_CreateSDFGeometry -- the single
+//! construction boundary -- after applying the media-path search to the file
+//! name (inline parts need no path resolution).  The exactly-one-source rule
+//! is diagnosed HERE with the geometry's name so scene authors get chunk-level
+//! context; the factory re-checks it for direct C-API callers.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddSDFGeometry( const char* name, const char* szFileName, const char* szParts, const unsigned int maxSteps, const double surfaceEpsilonFraction, const unsigned int samplingDetail )
+{
+	const bool hasFile  = ( szFileName && szFileName[0] && strcmp( szFileName, "none" ) != 0 );
+	const bool hasParts = ( szParts && szParts[0] );
+	if( hasFile == hasParts ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddSDFGeometry:: `%s`: provide exactly one SDF source -- either inline `part` lines or a `file`%s",
+			name ? name : "(unnamed)",
+			hasFile ? " (both were given)" : " (neither was given)" );
+		return false;
+	}
+	IGeometry* pGeometry = 0;
+	if( !RISE_API_CreateSDFGeometry( &pGeometry,
+			hasFile ? GlobalMediaPathLocator().Find(szFileName).c_str() : 0,
+			hasParts ? szParts : 0,
+			maxSteps, surfaceEpsilonFraction, samplingDetail ) ) {
+		return false;   // the factory already logged the source / line / token reason
+	}
+	pGeomManager->AddItem( pGeometry, name );
+	safe_release( pGeometry );
+	return true;
+}
+
+//! Heightfield SDF geometry: the exact analytic surface z = scale*field(u,v),
+//! sphere-traced.  Resolves the named IFunction2D here (chunk-level context in
+//! the diagnostic), then delegates construction to the C-API factory
+//! RISE_API_CreateSDFHeightfieldGeometry.  Mirrors Job::AddSDFGeometry's
+//! manager-add + release lifetime; the field is addref'd by the geometry.
+bool Job::AddSDFHeightfieldGeometry( const char* name, const char* heightfieldFunction, const double radius, const double scale, const unsigned int maxSteps, const double surfaceEpsilonFraction, const unsigned int samplingDetail )
+{
+	IFunction2D* pField = pFunc2DManager->GetItem( heightfieldFunction ? heightfieldFunction : "" );
+	if( !pField ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddSDFHeightfieldGeometry:: `%s`: heightfield function2d `%s` not found (declare it first)",
+			name ? name : "(unnamed)", heightfieldFunction ? heightfieldFunction : "(none)" );
+		return false;
+	}
+	IGeometry* pGeometry = 0;
+	if( !RISE_API_CreateSDFHeightfieldGeometry( &pGeometry, pField, radius, scale, maxSteps, surfaceEpsilonFraction, samplingDetail ) ) {
+		return false;   // the factory already logged why
+	}
+	pGeomManager->AddItem( pGeometry, name );
+	safe_release( pGeometry );
+	return true;
+}
+
+bool Job::AddCartesianDiskGeometry( const char* name, const double radius, const int meshN )
+{
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreateCartesianDiskGeometry( &pGeometry, radius, meshN ) ) {
+		return false;   // the factory already logged why
+	}
+	pGeomManager->AddItem( pGeometry, name );
+	safe_release( pGeometry );
+	return true;
+}
+
+bool Job::AddFunction2DColorPainter( const char* name, const char* szFunction, const double scale, const double bias )
+{
+	IFunction2D* pFunc = pFunc2DManager->GetItem( szFunction ? szFunction : "" );
+	if( !pFunc ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddFunction2DColorPainter:: `%s`: source function2d `%s` not found (declare it first)",
+			name ? name : "(unnamed)", szFunction ? szFunction : "(none)" );
+		return false;
+	}
+	IPainter* pPainter = 0;
+	if( !RISE_API_CreateFunction2DColorPainter( &pPainter, pFunc, scale, bias ) ) {
+		return false;
+	}
+	pPntManager->AddItem( pPainter, name );
+	pFunc2DManager->AddItem( pPainter, name );
+	safe_release( pPainter );
+	return true;
+}
+
+bool Job::AddSweepGeometry( const char* name, const SweepDescriptor& desc )
+{
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreateSweepGeometry( &pGeometry, desc ) ) {
+		return false;   // the factory already logged why
+	}
+	pGeomManager->AddItem( pGeometry, name );
+	safe_release( pGeometry );
+	return true;
+}
+
+bool Job::AddPathInstancesGeometry( const char* name, const char* szTemplate, const PathInstancesDescriptor& desc )
+{
+	IGeometry* pTemplate = pGeomManager->GetItem( szTemplate ? szTemplate : "" );
+	if( !pTemplate ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddPathInstancesGeometry:: `%s`: template geometry `%s` not found (declare it first)",
+			name ? name : "(unnamed)", szTemplate ? szTemplate : "(none)" );
+		return false;
+	}
+	PathInstancesDescriptor d = desc;
+	d.pGeometry = pTemplate;
+	ITriangleMeshGeometryIndexed* pGeometry = 0;
+	if( !RISE_API_CreatePathInstancesGeometry( &pGeometry, d ) ) {
+		return false;   // the factory already logged why
+	}
+	pGeomManager->AddItem( pGeometry, name );
+	safe_release( pGeometry );
+	return true;
+}
+
 //! Adds a triangle mesh geometry from the pointers passed it
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddIndexedTriangleMeshGeometry(
@@ -4716,7 +4947,8 @@ bool Job::AddDisplacedGeometry(
 	const char*         displacement,
 	const Scalar        disp_scale,
 	const bool          double_sided,
-	const bool          face_normals
+	const bool          face_normals,
+	const bool          seam_fold
 	)
 {
 	if( !name || !base_geometry_name ) {
@@ -4742,7 +4974,7 @@ bool Job::AddDisplacedGeometry(
 	IGeometry* pGeometry = 0;
 	const bool bOK = RISE_API_CreateDisplacedGeometry(
 		&pGeometry, pBase, detail, pFunc, disp_scale,
-		double_sided, face_normals );
+		double_sided, face_normals, seam_fold );
 
 	if( !bOK || !pGeometry ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::AddDisplacedGeometry:: failed to create displaced geometry `%s` (base `%s` may not support tessellation)", name, base_geometry_name );
@@ -5350,6 +5582,18 @@ void Job::EnumerateMediumNames( IEnumCallback<const char*>& cb ) const
 		const char* n = it->first.c_str();
 		if( !cb( n ) ) return;
 	}
+}
+
+const IGeometry* Job::GetGeometry( const char* name ) const
+{
+	if( !name || !pGeomManager ) return 0;
+	return pGeomManager->GetItem( name );
+}
+
+void Job::EnumerateGeometryNames( IEnumCallback<const char*>& cb ) const
+{
+	if( !pGeomManager ) return;
+	pGeomManager->EnumerateItemNames( cb );
 }
 
 bool Job::IsMaterialComposed( const char* name ) const
@@ -7180,6 +7424,18 @@ bool Job::SetPathTracingPelRasterizer(
 		pCaster->SetUseLightBVH( true );
 	}
 
+	// Transparent (Fresnel-attenuated) shadow rays — unidirectional PT
+	// opt-in.  Routed through the concrete RayCaster (LightSampler
+	// dynamic_casts to it); off by default.  BDPT/VCM/MLT do NOT wire
+	// this — their NEE stays binary.
+	{
+		RISE::Implementation::RayCaster* pConcreteCaster =
+			dynamic_cast<RISE::Implementation::RayCaster*>( pCaster );
+		if( pConcreteCaster ) {
+			pConcreteCaster->SetTransparentShadows( stabilityConfig.transparentShadows );
+		}
+	}
+
 	IRasterizer* pRaster = 0;
 	RISE::Implementation::FrameStore* _jobFs = ResolveJobFrameStoreForActiveCamera();  // L6b
 	RISE_API_CreatePathTracingPelRasterizer( &pRaster, pCaster, pPixelSampler, pPixelFilter,
@@ -7275,6 +7531,16 @@ bool Job::SetPathTracingSpectralRasterizer(
 
 	if( stabilityConfig.useLightBVH ) {
 		pCaster->SetUseLightBVH( true );
+	}
+
+	// Transparent (Fresnel-attenuated) shadow rays — unidirectional PT
+	// opt-in (spectral path).  See the pel PT factory for rationale.
+	{
+		RISE::Implementation::RayCaster* pConcreteCaster =
+			dynamic_cast<RISE::Implementation::RayCaster*>( pCaster );
+		if( pConcreteCaster ) {
+			pConcreteCaster->SetTransparentShadows( stabilityConfig.transparentShadows );
+		}
 	}
 
 	IRasterizer* pRaster = 0;
@@ -8716,6 +8982,147 @@ bool Job::SetObjectIntersectionError(
 	}
 
 	pObj->SetSurfaceIntersecError( error );
+	return true;
+}
+
+//
+// `> modify` runtime-mutation surface.  Each looks an element up by
+// manager name (mirroring SetObjectIntersectionError) and mutates it in
+// place.  All run before a render while the scene is mutable; the next
+// RayCaster::AttachScene re-Prepares the light set and rebuilds the
+// environment sampler, so emissive<->non-emissive material swaps and
+// radiance-scale changes are picked up with no extra dirty plumbing.
+//
+
+bool Job::SetObjectMaterial(
+	const char* objName,							///< [in] Name of the object to retarget
+	const char* materialName						///< [in] Name of the material to bind
+	)
+{
+	if( !objName || !materialName ) {
+		GlobalLog()->PrintEasyError( "Job::SetObjectMaterial:: null object or material name" );
+		return false;
+	}
+
+	IObjectPriv* pObj = pObjectManager->GetItem( objName );
+	if( !pObj ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectMaterial:: object not found `%s`", objName );
+		return false;
+	}
+
+	IMaterial* pMat = pMatManager->GetItem( materialName );
+	if( !pMat ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectMaterial:: material not found `%s`", materialName );
+		return false;
+	}
+
+	// Mirrors the interactive editor's material-swap path
+	// (SceneEditor: materialManager->GetItem -> obj.AssignMaterial).
+	// AssignMaterial releases the prior material and addrefs the new
+	// one.  No acceleration rebuild — a material change cannot move the
+	// object's bounding box.
+	pObj->AssignMaterial( *pMat );
+	return true;
+}
+
+bool Job::SetObjectShader(
+	const char* objName,							///< [in] Name of the object to retarget
+	const char* shaderName							///< [in] Name of the shader to bind
+	)
+{
+	if( !objName || !shaderName ) {
+		GlobalLog()->PrintEasyError( "Job::SetObjectShader:: null object or shader name" );
+		return false;
+	}
+
+	IObjectPriv* pObj = pObjectManager->GetItem( objName );
+	if( !pObj ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectShader:: object not found `%s`", objName );
+		return false;
+	}
+
+	IShader* pShader = pShaderManager->GetItem( shaderName );
+	if( !pShader ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetObjectShader:: shader not found `%s`", shaderName );
+		return false;
+	}
+
+	pObj->AssignShader( *pShader );
+	return true;
+}
+
+bool Job::SetMaterialEmissionScale(
+	const char* materialName,						///< [in] Name of the luminaire material
+	const double scale								///< [in] New emission scale
+	)
+{
+	if( !materialName ) {
+		GlobalLog()->PrintEasyError( "Job::SetMaterialEmissionScale:: null material name" );
+		return false;
+	}
+
+	IMaterial* pMat = pMatManager->GetItem( materialName );
+	if( !pMat ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetMaterialEmissionScale:: material not found `%s`", materialName );
+		return false;
+	}
+
+	// IMaterial::SetEmissionScale defaults to a no-op returning false, so
+	// non-luminaire materials reject the change here.
+	if( !pMat->SetEmissionScale( Scalar( scale ) ) ) {
+		GlobalLog()->PrintEx( eLog_Error, "Job::SetMaterialEmissionScale:: material `%s` does not support emission-scale modification (not an emissive material, or its emission is not scale-mutable)", materialName );
+		return false;
+	}
+
+	return true;
+}
+
+bool Job::SetActiveRasterizerRadianceScale(
+	const double scale								///< [in] New environment radiance scale
+	)
+{
+	if( scale < 0 ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: radiance scale must be >= 0 (negative is nonphysical)" );
+		return false;
+	}
+
+	if( !pRasterizer ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: no active rasterizer" );
+		return false;
+	}
+
+	// Every in-tree pixel-based rasterizer (PT / BDPT / VCM / MLT and the
+	// spectral variants) derives from PixelBasedRasterizerHelper, which
+	// owns the RayCaster.  Reach the concrete RayCaster through it.
+	RISE::Implementation::PixelBasedRasterizerHelper* pHelper =
+		dynamic_cast<RISE::Implementation::PixelBasedRasterizerHelper*>( pRasterizer );
+	if( !pHelper ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: active rasterizer has no ray caster" );
+		return false;
+	}
+
+	RISE::Implementation::RayCaster* pConcreteCaster =
+		dynamic_cast<RISE::Implementation::RayCaster*>( pHelper->GetRayCaster() );
+	if( !pConcreteCaster ) {
+		GlobalLog()->PrintEasyError( "Job::SetActiveRasterizerRadianceScale:: active rasterizer has no ray caster" );
+		return false;
+	}
+
+	// Drive the environment importance sampler (NEE) scale: the next
+	// AttachScene rebuilds the EnvironmentSampler from this override.
+	pConcreteCaster->SetRadianceScale( Scalar( scale ) );
+
+	// Keep the direct-view / ray-miss background consistent with NEE by
+	// pushing the same scale into the scene's radiance map.  A scene with
+	// no global radiance map simply has nothing to update (the override
+	// on the caster is still recorded, harmlessly, for symmetry).
+	if( pScene ) {
+		IRadianceMap* pRm = pScene->GetGlobalRadianceMapMutable();
+		if( pRm ) {
+			pRm->SetScale( Scalar( scale ) );
+		}
+	}
+
 	return true;
 }
 

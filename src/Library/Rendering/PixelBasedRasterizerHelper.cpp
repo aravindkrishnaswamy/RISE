@@ -31,6 +31,7 @@
 #include "ProgressiveFilm.h"
 #include "../RISE_API.h"
 #include "../Interfaces/IScenePriv.h"
+#include "../Utilities/RenderParallelScope.h"
 
 #include "FrameStore.h"  // L6c — needed unconditionally by AcquireRenderImage
 #ifdef RISE_ENABLE_OIDN
@@ -866,6 +867,14 @@ bool PixelBasedRasterizerHelper::RasterizeScenePass(
 
 		ThreadPool& pool = GlobalThreadPool();
 		const unsigned int numWorkers = static_cast<unsigned int>( threads );
+
+		// FREEZE GUARD (deferred realization): bracket the parallel pixel
+		// loop so DisplacedGeometry::Realize() asserts (DEBUG) if any thread
+		// tries to realize scene build-work mid-render.  The scene is
+		// immutable here; all geometry must have been Realize()d already in
+		// RayCaster::AttachScene.  RAII so the gauge is released even if a
+		// worker throws.
+		RenderParallelScope renderParallelScope;
 		pool.ParallelFor( numWorkers, [&dispatcher]( unsigned int /*workerIdx*/ ) {
 			dispatcher.DoWork();
 		} );
@@ -992,8 +1001,12 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// after PrepareForRendering but before any worker thread spawns — matches
 	// the irradiance-cache pre-pass precedent below.  Idempotent: consumed
 	// requests leave pending=false so repeated RasterizeScene calls are no-ops.
-	if( IScenePriv* pScenePriv = dynamic_cast<IScenePriv*>( &const_cast<IScene&>( pScene ) ) ) {
-		pScenePriv->BuildPendingPhotonMaps( pProgressFunc );
+	// Gate the deferred shoot on the active rasterizer actually consuming photon
+	// maps; PT/BDPT/VCM/MLT (own transport) leave the shoots pending (see header).
+	if( ConsumesScenePhotonMaps() ) {
+		if( IScenePriv* pScenePriv = dynamic_cast<IScenePriv*>( &const_cast<IScene&>( pScene ) ) ) {
+			pScenePriv->BuildPendingPhotonMaps( pProgressFunc );
+		}
 	}
 
 	// Pre-render hook (e.g. path guiding training)
@@ -1344,6 +1357,9 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimationPass(
 
 		ThreadPool& pool = GlobalThreadPool();
 		const unsigned int numWorkers = static_cast<unsigned int>( threads );
+		// Freeze guard (RenderParallelScope.h): all geometry is realized single-threaded in
+		// RayCaster::AttachScene; assert (DEBUG) if a worker realizes mid-render.
+		RenderParallelScope renderParallelScope;
 		pool.ParallelFor( numWorkers, [&dispatcher]( unsigned int /*workerIdx*/ ) {
 			dispatcher.DoAnimWork();
 		} );
@@ -1781,8 +1797,12 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	// idempotent on re-entry.  The per-frame PrepareForRendering /
 	// SetSceneTime calls below handle transform updates; photon maps
 	// themselves aren't rebuilt per frame (that's a separate concern).
-	if( IScenePriv* pScenePriv = dynamic_cast<IScenePriv*>( &const_cast<IScene&>( pScene ) ) ) {
-		pScenePriv->BuildPendingPhotonMaps( pProgressFunc );
+	// Gate the deferred shoot on the active rasterizer actually consuming photon
+	// maps; PT/BDPT/VCM/MLT (own transport) leave the shoots pending (see header).
+	if( ConsumesScenePhotonMaps() ) {
+		if( IScenePriv* pScenePriv = dynamic_cast<IScenePriv*>( &const_cast<IScene&>( pScene ) ) ) {
+			pScenePriv->BuildPendingPhotonMaps( pProgressFunc );
+		}
 	}
 
 	const bool bHasKeyframedObjects = pScene.GetAnimator()->AreThereAnyKeyframedObjects();

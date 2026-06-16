@@ -70,6 +70,7 @@ namespace RISE
 			virtual IObjectPriv* CloneGeometric() override;
 
 			virtual bool AssignMaterial( const IMaterial& pMat ) override;
+			virtual bool AssignGeometry( const IGeometry& pGeom ) override;
 			virtual bool AssignModifier( const IRayIntersectionModifier& pMod ) override;
 			virtual bool AssignShader( const IShader& pShader ) override;
 			virtual bool AssignRadianceMap( const IRadianceMap& pRadianceMap ) override;
@@ -92,6 +93,10 @@ namespace RISE
 			virtual const IMaterial* GetMaterial() const override;
 			virtual const IShader*   GetShader() const override { return pShader; }
 			virtual const IGeometry* GetGeometry() const override { return pGeometry; }
+
+			//! Deferred-realization (IObject): realize our geometry's lazy build
+			//! work.  No-op for cheap geometries; bakes a deferred DisplacedGeometry.
+			virtual void Realize() const override;
 			virtual const IMedium* GetInteriorMedium() const override;
 
 			virtual bool ComputeAnalyticalDerivatives(

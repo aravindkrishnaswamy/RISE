@@ -26,6 +26,7 @@
 #include "../Utilities/math_utils.h"
 #include "../Utilities/MicrofacetUtils.h"
 #include "../Utilities/MicrofacetEnergyLUT.h"
+#include "../Utilities/ThinFilm.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -38,7 +39,10 @@ GGXBRDF::GGXBRDF(
 	const IScalarPainter& ior,
 	const IScalarPainter& ext,
 	const FresnelMode fresnel_mode,
-	const IPainter* tangent_rotation
+	const IPainter* tangent_rotation,
+	const IScalarPainter* film_ior,
+	const IScalarPainter* film_extinction,
+	const IScalarPainter* film_thickness
 	) :
   pDiffuse( &diffuse ),
   pSpecular( &specular ),
@@ -47,7 +51,10 @@ GGXBRDF::GGXBRDF(
   pIOR( &ior ),
   pExtinction( &ext ),
   fresnelMode( fresnel_mode ),
-  pTangentRotation( tangent_rotation )
+  pTangentRotation( tangent_rotation ),
+  pFilmIOR( film_ior ),
+  pFilmExtinction( film_extinction ),
+  pFilmThickness( film_thickness )
 {
 	pDiffuse->addref();
 	pSpecular->addref();
@@ -56,6 +63,9 @@ GGXBRDF::GGXBRDF(
 	pIOR->addref();
 	pExtinction->addref();
 	if( pTangentRotation ) pTangentRotation->addref();
+	if( pFilmIOR )        pFilmIOR->addref();
+	if( pFilmExtinction ) pFilmExtinction->addref();
+	if( pFilmThickness )  pFilmThickness->addref();
 }
 
 namespace
@@ -79,6 +89,9 @@ GGXBRDF::~GGXBRDF()
 	safe_release( pIOR );
 	safe_release( pExtinction );
 	if( pTangentRotation ) pTangentRotation->release();
+	if( pFilmIOR )        pFilmIOR->release();
+	if( pFilmExtinction ) pFilmExtinction->release();
+	if( pFilmThickness )  pFilmThickness->release();
 }
 
 void GGXBRDF::SetDiffuse( const IPainter& v )       { v.addref(); safe_release( pDiffuse );    pDiffuse    = &v; }
@@ -87,6 +100,15 @@ void GGXBRDF::SetAlphaX( const IScalarPainter& v )  { v.addref(); safe_release( 
 void GGXBRDF::SetAlphaY( const IScalarPainter& v )  { v.addref(); safe_release( pAlphaY );     pAlphaY     = &v; }
 void GGXBRDF::SetIOR( const IScalarPainter& v )     { v.addref(); safe_release( pIOR );        pIOR        = &v; }
 void GGXBRDF::SetExtinction( const IScalarPainter& v ) { v.addref(); safe_release( pExtinction ); pExtinction = &v; }
+
+// Thin-film FILM slots.  Same release-old / addref-new discipline as
+// SetIOR; safe_release is null-safe so it correctly handles the
+// pre-edit state where film_extinction may have been null (transparent
+// k=0 default).  addref BEFORE the release so a self-rebind (v aliasing
+// the current binding) never drops the last reference mid-swap.
+void GGXBRDF::SetFilmIOR( const IScalarPainter& v )        { v.addref(); safe_release( pFilmIOR );        pFilmIOR        = &v; }
+void GGXBRDF::SetFilmExtinction( const IScalarPainter& v ) { v.addref(); safe_release( pFilmExtinction ); pFilmExtinction = &v; }
+void GGXBRDF::SetFilmThickness( const IScalarPainter& v )  { v.addref(); safe_release( pFilmThickness );  pFilmThickness  = &v; }
 
 namespace
 {
@@ -168,6 +190,37 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 			const RISEPel F = Optics::CalculateFresnelReflectanceSchlick<RISEPel>( specColor, cosWoH );
 			specular = F * specFactor;
 		}
+		else if( fresnelMode == eFresnelThinFilmConductor )
+		{
+			// Thin-film interference on the RGB (no-wavelength) path: the
+			// spectral interference R(λ) is pre-integrated against the CIE
+			// CMFs in the WHITE-NORMALIZED ALBEDO BASIS (illuminant-
+			// independent — docs/THIN_FILM_INTERFERENCE.md §8), so a perfect
+			// reflector → neutral white, NOT a D65-tinted colour.  This is
+			// PREVIEW-grade; the spectral path (valueNM) is authoritative.
+			// cosThetaI is the half-vector cosine dot(r,h), the same cosine
+			// the conductor branch consumes via fabs().  The film slots are
+			// sampled per-channel-agnostic (the substrate/film n,k use .v[0],
+			// matching the spectral path's single-scalar reads).
+			const Scalar cosWoH = r_max( Scalar(0), Vector3Ops::Dot( r, h ) );
+			// Dispersion-correct RGB preview: the air/film/substrate complex
+			// indices are sampled per integration wavelength via GetValueAtNM (a
+			// file-based Ti/TiO2 stack varies n,k across the band; reading only the
+			// .v[0] 555 nm representative dropped that dispersion).  thickness is
+			// wavelength-independent (one representative read).  ThinFilm.h stays
+			// painter-free -- this functor is the template boundary.
+			const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
+			auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
+				n0 = Scalar(1); k0 = Scalar(0);
+				n1 = pFilmIOR->GetValueAtNM( ri, nm );
+				k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
+				n2 = pIOR->GetValueAtNM( ri, nm );
+				k2 = pExtinction->GetValueAtNM( ri, nm );
+			};
+			const RISEPel Rfilm = ThinFilm::ReflectanceConductorRGBSpectral(
+				cosWoH, thickness, stackAt );
+			specular = specColor * Rfilm * specFactor;
+		}
 		else
 		{
 			const ScalarTriple iorT = pIOR->GetValuesAt(ri);
@@ -198,15 +251,46 @@ RISEPel GGXBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric&
 			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
 			specular = specular + F_ms * f_ms;
 		}
+		else if( fresnelMode == eFresnelThinFilmConductor )
+		{
+			// Thin-film multiscatter tail: the Kulla-Conty F_avg is the THIN-FILM
+			// hemispherical average, not the substrate's -- the film shifts the
+			// average reflectance by up to ~0.5 (~13% rough-surface albedo error
+			// otherwise; tests/ThinFilmFurnaceTest.cpp, design doc section 7 P2-D).
+			// Dispersion-correct per-lambda stack (twin of the single-scatter
+			// site): film/substrate n,k sampled at each integration wavelength.
+			const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
+			auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
+				n0 = Scalar(1); k0 = Scalar(0);
+				n1 = pFilmIOR->GetValueAtNM( ri, nm );
+				k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
+				n2 = pIOR->GetValueAtNM( ri, nm );
+				k2 = pExtinction->GetValueAtNM( ri, nm );
+			};
+			const RISEPel F_avg = ThinFilm::FresnelAvgConductorRGBSpectral( thickness, stackAt );
+			// specColor is INSIDE the average: the per-bounce reflectance of the
+			// tinted lobe is specColor*F_avg and the tint compounds across bounces,
+			// so the nonlinear Fms must see the tinted average (matches the
+			// single-scatter lobe specColor*Rfilm).  Pulling specColor outside
+			// over-brightens tinted (specColor<1) rough metals.
+			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor * F_avg, Eavg );
+			specular = specular + F_ms * f_ms;
+		}
 		else
 		{
+			// Conductor mode: bare-SUBSTRATE hemispherical Fresnel average
+			// for the Kulla-Conty multiscatter tail (the thin-film mode is
+			// handled by the branch above, which uses a thin-film F_avg).
 			const ScalarTriple iorT = pIOR->GetValuesAt(ri);
 			const ScalarTriple extT = pExtinction->GetValuesAt(ri);
 			const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 			const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 			const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
-			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
-			specular = specular + specColor * F_ms * f_ms;
+			// specColor INSIDE the average (tinted per-bounce reflectance
+			// specColor*F_avg compounds across bounces; matches the single-scatter
+			// lobe specColor*fresnel).  See the thin-film branch above.
+			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor * F_avg, Eavg );
+			specular = specular + F_ms * f_ms;
 		}
 	}
 
@@ -276,6 +360,28 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 				specular = F * specFactor;
 			}
 		}
+		else if( fresnelMode == eFresnelThinFilmConductor )
+		{
+			// Thin-film interference at the hero wavelength.  This is the
+			// HWSS companion path for GGXSPF::ScatterNM (GGXSPF does NOT
+			// override EvaluateKrayNM, so companion wavelengths route here)
+			// — the thin-film term MUST be computed identically to
+			// ScatterNM (docs/THIN_FILM_INTERFERENCE.md §7; the RGB/NM-twin
+			// hazard, docs/skills/audit-by-bug-pattern.md).  cosThetaI is the
+			// half-vector cosine dot(r,h) == |dot(ri.ray.Dir(),h)|, the SAME
+			// cosine the conductor branch's CalculateConductorReflectance
+			// consumes via fabs().
+			const Scalar cosWoH = r_max( Scalar(0), Vector3Ops::Dot( r, h ) );
+			const Scalar Rfilm = ThinFilm::ReflectanceConductor(
+				cosWoH, nm,
+				1.0, 0.0,
+				pFilmIOR->GetValueAtNM(ri,nm), ( pFilmExtinction ? pFilmExtinction->GetValueAtNM(ri,nm) : Scalar(0) ),
+				pFilmThickness->GetValueAtNM(ri,nm),
+				pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
+			if( Rfilm > 0 ) {
+				specular = specColor * Rfilm * specFactor;
+			}
+		}
 		else
 		{
 			const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
@@ -303,13 +409,34 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
 			specular = specular + F_ms * f_ms;
 		}
+		else if( fresnelMode == eFresnelThinFilmConductor )
+		{
+			// Thin-film multiscatter tail at the hero wavelength -- the thin-film
+			// hemispherical F_avg (not the substrate's).  Identical term to
+			// GGXSPF::ScatterNM (the RGB/NM twin); see the RGB path above.
+			const Scalar F_avg = ThinFilm::FresnelAvgConductor(
+				nm, 1.0, 0.0,
+				pFilmIOR->GetValueAtNM(ri,nm), ( pFilmExtinction ? pFilmExtinction->GetValueAtNM(ri,nm) : Scalar(0) ),
+				pFilmThickness->GetValueAtNM(ri,nm),
+				pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
+			// specColor INSIDE the average (per-bounce reflectance specColor*F_avg
+			// compounds across bounces; matches single-scatter specColor*Rfilm).
+			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
+			specular = specular + F_ms * f_ms;
+		}
 		else
 		{
+			// Conductor mode: the Kulla-Conty energy-compensation term uses
+			// the bare-SUBSTRATE hemispherical Fresnel average.  (The thin-film
+			// mode is handled by the branch above, which feeds a thin-film
+			// hemispherical F_avg into the same multiscatter tail.)
 			const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 			const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
 			const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
-			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
-			specular = specular + specColor * F_ms * f_ms;
+			// specColor INSIDE the average (tinted per-bounce reflectance
+			// specColor*F_avg compounds; matches single-scatter specColor*fresnel).
+			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
+			specular = specular + F_ms * f_ms;
 		}
 	}
 
@@ -345,6 +472,32 @@ RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 		const RISEPel F = Optics::CalculateFresnelReflectanceSchlick<RISEPel>( specColor, cosThetaO );
 		const Scalar maxF0 = ColorMath::MaxValue( specColor );
 		return diffColor * r_max( Scalar(0), Scalar(1.0) - maxF0 ) + F;
+	}
+	else if( fresnelMode == eFresnelThinFilmConductor )
+	{
+		// OIDN AOV: a representative thin-film RGB albedo (albedo-basis
+		// reflectance at the outgoing-cosine), NOT the bare-conductor
+		// Fresnel — so the denoiser's guide buffer carries the actual
+		// iridescent tint.  Uses the geometric-normal cosine here (this is
+		// a cheap per-hit guide, not a shading evaluation), matching the
+		// conductor branch which feeds CalculateConductorReflectance the
+		// dot(ray.Dir(), n) cosine.
+		// Dispersion-correct OIDN albedo: per-lambda film/substrate n,k so the
+		// denoiser guide carries the true iridescent tint for a file-based
+		// (dispersive) Ti/TiO2 stack; thickness is wavelength-independent.
+		const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
+		const Scalar cosThetaO = r_max( Scalar(0), Vector3Ops::Dot( wo, n ) );
+		const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
+		auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
+			n0 = Scalar(1); k0 = Scalar(0);
+			n1 = pFilmIOR->GetValueAtNM( ri, nm );
+			k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
+			n2 = pIOR->GetValueAtNM( ri, nm );
+			k2 = pExtinction->GetValueAtNM( ri, nm );
+		};
+		const RISEPel Rfilm = ThinFilm::ReflectanceConductorRGBSpectral(
+			cosThetaO, thickness, stackAt );
+		return diffColor + specColor * Rfilm;
 	}
 	else
 	{

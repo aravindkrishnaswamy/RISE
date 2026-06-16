@@ -17,9 +17,28 @@
 #include "GeometryUtilities.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Observable.h"
+#include <atomic>
+#include <cassert>
+#include "../Utilities/RenderParallelScope.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace {
+	// Diagnostic counter: total BuildMesh() invocations process-wide.  See
+	// the GetBuildMeshCount()/ResetBuildMeshCount() doc in the header.
+	std::atomic<unsigned int> s_buildMeshCount( 0 );
+}
+
+unsigned int DisplacedGeometry::GetBuildMeshCount()
+{
+	return s_buildMeshCount.load( std::memory_order_relaxed );
+}
+
+void DisplacedGeometry::ResetBuildMeshCount()
+{
+	s_buildMeshCount.store( 0, std::memory_order_relaxed );
+}
 
 DisplacedGeometry::DisplacedGeometry(
 	IGeometry*          pBase,
@@ -27,7 +46,8 @@ DisplacedGeometry::DisplacedGeometry(
 	const IFunction2D*  displacement,
 	const Scalar        disp_scale,
 	const bool          bDoubleSided,
-	const bool          bUseFaceNormals
+	const bool          bUseFaceNormals,
+	const bool          bSeamFold
 	) :
   m_pBase( pBase ),
   m_pDisplacement( displacement ),
@@ -35,7 +55,9 @@ DisplacedGeometry::DisplacedGeometry(
   m_detail( detail ),
   m_bDoubleSided( bDoubleSided ),
   m_bUseFaceNormals( bUseFaceNormals ),
+  m_bSeamFold( bSeamFold ),
   m_pMesh( 0 ),
+  m_bRealized( false ),
   m_displacementSubscription()
 {
 	if( m_pBase ) {
@@ -50,7 +72,12 @@ DisplacedGeometry::DisplacedGeometry(
 		return;
 	}
 
-	BuildMesh();
+	// DEFERRED REALIZATION: the tessellate + displace + mesh-build work is
+	// NOT done here.  It runs in Realize(), called once single-threaded from
+	// the render pipeline (RayCaster::AttachScene) before the parallel
+	// rasterize.  The constructor only validates + stores the recipe.  A
+	// displaced geometry that is never bound to a rendered object is thus
+	// never baked.
 
 	// If the displacement painter exposes the Observable mixin (i.e. it derives
 	// from Painter — true for every in-tree painter), subscribe so we rebuild
@@ -69,7 +96,17 @@ DisplacedGeometry::DisplacedGeometry(
 				// because m_detail is a constructor argument — only
 				// vertex positions and normals change.  See
 				// docs/BVH_ACCELERATION_PLAN.md §4.6 for the full design.
-				RefreshMeshVertices();
+				//
+				// DEFERRED-REALIZATION interaction: if the geometry has not
+				// been realized yet (painter changed during parse / before
+				// the render's realize pass), do NOTHING — baking now would
+				// defeat the deferral and the eventual Realize() will pick up
+				// the painter's current state anyway.  Only refit once a mesh
+				// actually exists.  This callback is always single-threaded
+				// (editor / parse-time keyframe propagation).
+				if( m_bRealized.load( std::memory_order_acquire ) ) {
+					RefreshMeshVertices();
+				}
 			} );
 		}
 	}
@@ -96,11 +133,65 @@ DisplacedGeometry::~DisplacedGeometry()
 	}
 }
 
-void DisplacedGeometry::BuildMesh()
+void DisplacedGeometry::Realize() const
+{
+	// Fast path: already realized.  Acquire-load so the mesh another thread
+	// built under the lock is fully visible.  No lock for the common idempotent
+	// call (e.g. a UI-thread PrepareForRendering / picking on already-realized
+	// geometry while a viewport render runs on another thread).  The freeze
+	// assert is BELOW this early-return, not above it, so an idempotent no-op
+	// does NOT false-trip merely because a render is active.
+	if( m_bRealized.load( std::memory_order_acquire ) ) {
+		return;
+	}
+
+	// Serialize the actual bake.  RISE realizes single-threaded before the
+	// parallel rasterize, but a GUI can race a viewport render's AttachScene
+	// against a UI-thread PrepareForRendering; without this lock both could
+	// pass the !m_bRealized check and BuildMesh() the same instance (double
+	// alloc / refcount corruption).  Uncontended in normal single-threaded prepare.
+	std::lock_guard<std::mutex> realizeLock( m_realizeMutex );
+	if( m_bRealized.load( std::memory_order_relaxed ) ) {
+		return;
+	}
+
+	// DEBUG freeze guard: the bake itself must run single-threaded BEFORE the
+	// parallel rasterize (the scene is immutable during it).  Compiles out in release.
+	assert( g_renderParallelDepth.load( std::memory_order_seq_cst ) == 0 &&
+		"DisplacedGeometry::Realize() during the parallel render \u2014 realize in RayCaster::AttachScene before the rasterize pass" );
+
+	// CASCADE: a displaced base (another DisplacedGeometry) must be realized
+	// before we tessellate it — TessellateToMesh re-emits the base's internal
+	// mesh, which is null until the base is baked.  No-op for cheap bases.
+	if( m_pBase ) {
+		m_pBase->Realize();
+	}
+
+	BuildMesh();
+
+	// Mark realized AFTER BuildMesh (release, pairing the fast-path acquire).
+	// Setting it AFTER — not before — means the painter-observer callback's
+	// `if(m_bRealized)` guard sees FALSE during BuildMesh, so a notification
+	// fired mid-bake cannot recurse into RefreshMeshVertices -> BuildMesh.
+	m_bRealized.store( true, std::memory_order_release );
+}
+
+void DisplacedGeometry::BuildMesh() const
 {
 	if( !m_pBase ) {
 		return;
 	}
+
+	// CASCADE (defensive): ensure the base is realized before we tessellate
+	// it.  Realize() reaches here via the m_pBase->Realize() it already did,
+	// but the editor rebuild paths (RefreshMeshVertices fallback) call
+	// BuildMesh directly — a displaced base must be baked first or
+	// TessellateToMesh re-emits an empty mesh.  Idempotent / no-op for cheap
+	// bases.
+	m_pBase->Realize();
+
+	// Diagnostic: count this bake (see GetBuildMeshCount in the header).
+	s_buildMeshCount.fetch_add( 1, std::memory_order_relaxed );
 
 	IndexTriangleListType tris;
 	VerticesListType      vertices;
@@ -133,9 +224,14 @@ void DisplacedGeometry::BuildMesh()
 		// a non-monotonic UV triple (tent vertex in the middle), degenerating
 		// the 2×2 Jacobian.  Keep the original coords for the mesh and feed
 		// a tent-remapped COPY into the displacement evaluator only.
-		TexCoordsListType displacementCoords = coords;
-		RemapTextureCoords( displacementCoords );
-		ApplyDisplacementMapToObject( tris, vertices, normals, displacementCoords, *m_pDisplacement, m_dispScale );
+		if( m_bSeamFold ) {
+			TexCoordsListType displacementCoords = coords;
+			RemapTextureCoords( displacementCoords );
+			ApplyDisplacementMapToObject( tris, vertices, normals, displacementCoords, *m_pDisplacement, m_dispScale );
+		} else {
+			// open Cartesian field: raw UV, no tent mirror (see ctor bSeamFold)
+			ApplyDisplacementMapToObject( tris, vertices, normals, coords, *m_pDisplacement, m_dispScale );
+		}
 	}
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
@@ -175,9 +271,14 @@ void DisplacedGeometry::RefreshMeshVertices()
 
 	const bool bVerticesDisplaced = ( m_pDisplacement && m_dispScale != 0.0 );
 	if( bVerticesDisplaced ) {
-		TexCoordsListType displacementCoords = coords;
-		RemapTextureCoords( displacementCoords );
-		ApplyDisplacementMapToObject( tris, vertices, normals, displacementCoords, *m_pDisplacement, m_dispScale );
+		if( m_bSeamFold ) {
+			TexCoordsListType displacementCoords = coords;
+			RemapTextureCoords( displacementCoords );
+			ApplyDisplacementMapToObject( tris, vertices, normals, displacementCoords, *m_pDisplacement, m_dispScale );
+		} else {
+			// open Cartesian field: raw UV, no tent mirror (see ctor bSeamFold)
+			ApplyDisplacementMapToObject( tris, vertices, normals, coords, *m_pDisplacement, m_dispScale );
+		}
 	}
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
@@ -199,7 +300,7 @@ void DisplacedGeometry::RefreshMeshVertices()
 	}
 }
 
-void DisplacedGeometry::DestroyMesh()
+void DisplacedGeometry::DestroyMesh() const
 {
 	safe_release( m_pMesh );
 	m_pMesh = 0;
@@ -349,8 +450,8 @@ bool DisplacedGeometry::ComputeAnalyticalDerivatives(
 			// receives the tent-folded coords (see DisplacedGeometry::
 			// BuildMesh).  Using raw (u, v) here would describe a
 			// different displacement than the mesh actually has.
-			const Scalar tu = TentFold( at.x );
-			const Scalar tv = TentFold( at.y );
+			const Scalar tu = m_bSeamFold ? TentFold( at.x ) : at.x;
+			const Scalar tv = m_bSeamFold ? TentFold( at.y ) : at.y;
 			f = m_pDisplacement->Evaluate( tu, tv );
 
 			// FD df/du, df/dv on the painter.  Step is in raw-(u, v)
@@ -359,10 +460,10 @@ bool DisplacedGeometry::ComputeAnalyticalDerivatives(
 			// At u = 0.5 exactly there's a sign-flip — acceptable;
 			// SMS chains rarely site on the seam.
 			const Scalar epsP = 1.0e-3;
-			const Scalar f_uplus  = m_pDisplacement->Evaluate( TentFold( at.x + epsP ), tv );
-			const Scalar f_uminus = m_pDisplacement->Evaluate( TentFold( at.x - epsP ), tv );
-			const Scalar f_vplus  = m_pDisplacement->Evaluate( tu, TentFold( at.y + epsP ) );
-			const Scalar f_vminus = m_pDisplacement->Evaluate( tu, TentFold( at.y - epsP ) );
+			const Scalar f_uplus  = m_pDisplacement->Evaluate( m_bSeamFold ? TentFold( at.x + epsP ) : ( at.x + epsP ), tv );
+			const Scalar f_uminus = m_pDisplacement->Evaluate( m_bSeamFold ? TentFold( at.x - epsP ) : ( at.x - epsP ), tv );
+			const Scalar f_vplus  = m_pDisplacement->Evaluate( tu, m_bSeamFold ? TentFold( at.y + epsP ) : ( at.y + epsP ) );
+			const Scalar f_vminus = m_pDisplacement->Evaluate( tu, m_bSeamFold ? TentFold( at.y - epsP ) : ( at.y - epsP ) );
 			const Scalar inv2 = 1.0 / (2.0 * epsP);
 			dfdu = ( f_uplus - f_uminus ) * inv2;
 			dfdv = ( f_vplus - f_vminus ) * inv2;

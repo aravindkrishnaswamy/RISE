@@ -1,0 +1,454 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#   File:           thinfilm_heattint_showcase.RISEscene
+#   Description:    Canonical showcase for physically-based thin-film interference (heat-tint / anodized
+#                   metal) on the GGX microfacet conductor BSDF (fresnel_mode thinfilm).  Rendered
+#                   SPECTRALLY (per-hero-wavelength Airy reflectance of the air / oxide / metal stack).
+#
+#                   TOP ROW   - titanium anodization ladder: five Ti / TiO2 spheres, oxide thickness
+#                               40..220 nm.  Reproduces the gold -> purple -> blue -> cyan -> green
+#                               progression of the Ti anodizing chart (cf. the Phase-1 swatch,
+#                               tests/ThinFilmAnodizeSwatchTest), each sphere also showing the
+#                               angle-dependent (centre vs rim) hue shift of thin-film interference.
+#                   BOTTOM ROW- substrate generality at a fixed 90 nm oxide: titanium (TiO2), steel
+#                               (Fe3O4, an ABSORBING oxide -> duller/browner), tantalum (Ta2O5) and
+#                               niobium (Nb2O5).  Same BSDF, data only (docs/THIN_FILM_INTERFERENCE.md
+#                               sec 6) -- vivid Ti/Ta/Nb vs muted steel.
+#
+#                   Phase-2 piece E (docs/THIN_FILM_INTERFERENCE.md sec 10).
+#   Author:         Aravind Krishnaswamy
+#############################################################################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_spectral_rasterizer
+{
+	samples				48
+	nmbegin				380
+	nmend				720
+	num_wavelengths			24
+	spectral_samples		1
+	oidn_denoise			true
+	oidn_prefilter			accurate
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/thinfilm_heattint_showcase
+	type				PNG
+	bpp				8
+	color_space			sRGB
+}
+
+film
+{
+	width			640
+	height			480
+}
+
+pinhole_camera
+{
+	location			278 268 -760
+	lookat				278 258 200
+	up				0 1 0
+	fov				42.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				1.0 1.0 1.0
+}
+
+##################################################
+# Thin-film optical constants (Phase-1 data, colors/thinfilm/)
+##################################################
+
+scalar_painter
+{
+	name		Ti_n
+	file		colors/thinfilm/substrates/Ti.n
+}
+scalar_painter
+{
+	name		Ti_k
+	file		colors/thinfilm/substrates/Ti.k
+}
+scalar_painter
+{
+	name		TiO2_n
+	file		colors/thinfilm/oxides/TiO2.n
+}
+scalar_painter
+{
+	name		TiO2_k
+	file		colors/thinfilm/oxides/TiO2.k
+}
+scalar_painter
+{
+	name		Steel_n
+	file		colors/thinfilm/substrates/Steel.n
+}
+scalar_painter
+{
+	name		Steel_k
+	file		colors/thinfilm/substrates/Steel.k
+}
+scalar_painter
+{
+	name		Fe3O4_n
+	file		colors/thinfilm/oxides/Fe3O4.n
+}
+scalar_painter
+{
+	name		Fe3O4_k
+	file		colors/thinfilm/oxides/Fe3O4.k
+}
+scalar_painter
+{
+	name		Ta_n
+	file		colors/thinfilm/substrates/Ta.n
+}
+scalar_painter
+{
+	name		Ta_k
+	file		colors/thinfilm/substrates/Ta.k
+}
+scalar_painter
+{
+	name		Ta2O5_n
+	file		colors/thinfilm/oxides/Ta2O5.n
+}
+scalar_painter
+{
+	name		Ta2O5_k
+	file		colors/thinfilm/oxides/Ta2O5.k
+}
+scalar_painter
+{
+	name		Nb_n
+	file		colors/thinfilm/substrates/Nb.n
+}
+scalar_painter
+{
+	name		Nb_k
+	file		colors/thinfilm/substrates/Nb.k
+}
+scalar_painter
+{
+	name		Nb2O5_n
+	file		colors/thinfilm/oxides/Nb2O5.n
+}
+scalar_painter
+{
+	name		Nb2O5_k
+	file		colors/thinfilm/oxides/Nb2O5.k
+}
+
+##################################################
+# Top row: Ti / TiO2 anodization ladder (40..220 nm)
+##################################################
+
+ggx_material
+{
+	name				tf_ti_040
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.05
+	alphay				0.05
+	fresnel_mode			thinfilm
+	ior				Ti_n
+	extinction			Ti_k
+	film_ior			TiO2_n
+	film_extinction			TiO2_k
+	film_thickness			40
+}
+
+ggx_material
+{
+	name				tf_ti_080
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.05
+	alphay				0.05
+	fresnel_mode			thinfilm
+	ior				Ti_n
+	extinction			Ti_k
+	film_ior			TiO2_n
+	film_extinction			TiO2_k
+	film_thickness			80
+}
+
+ggx_material
+{
+	name				tf_ti_120
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.05
+	alphay				0.05
+	fresnel_mode			thinfilm
+	ior				Ti_n
+	extinction			Ti_k
+	film_ior			TiO2_n
+	film_extinction			TiO2_k
+	film_thickness			120
+}
+
+ggx_material
+{
+	name				tf_ti_170
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.05
+	alphay				0.05
+	fresnel_mode			thinfilm
+	ior				Ti_n
+	extinction			Ti_k
+	film_ior			TiO2_n
+	film_extinction			TiO2_k
+	film_thickness			170
+}
+
+ggx_material
+{
+	name				tf_ti_220
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.05
+	alphay				0.05
+	fresnel_mode			thinfilm
+	ior				Ti_n
+	extinction			Ti_k
+	film_ior			TiO2_n
+	film_extinction			TiO2_k
+	film_thickness			220
+}
+
+##################################################
+# Bottom row: substrate variety at 90 nm oxide
+##################################################
+
+ggx_material
+{
+	name				tf_ti_090
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.05
+	alphay				0.05
+	fresnel_mode			thinfilm
+	ior				Ti_n
+	extinction			Ti_k
+	film_ior			TiO2_n
+	film_extinction			TiO2_k
+	film_thickness			90
+}
+
+ggx_material
+{
+	name				tf_steel_090
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.05
+	alphay				0.05
+	fresnel_mode			thinfilm
+	ior				Steel_n
+	extinction			Steel_k
+	film_ior			Fe3O4_n
+	film_extinction			Fe3O4_k
+	film_thickness			90
+}
+
+ggx_material
+{
+	name				tf_ta_090
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.05
+	alphay				0.05
+	fresnel_mode			thinfilm
+	ior				Ta_n
+	extinction			Ta_k
+	film_ior			Ta2O5_n
+	film_extinction			Ta2O5_k
+	film_thickness			90
+}
+
+ggx_material
+{
+	name				tf_nb_090
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.05
+	alphay				0.05
+	fresnel_mode			thinfilm
+	ior				Nb_n
+	extinction			Nb_k
+	film_ior			Nb2O5_n
+	film_extinction			Nb2O5_k
+	film_thickness			90
+}
+
+##################################################
+# Neutral enclosure (white) + area light
+##################################################
+
+lambertian_material
+{
+	name				white
+	reflectance			pnt_white
+}
+
+lambertian_luminaire_material
+{
+	name				white_lum
+	exitance			pnt_white
+	scale				60.0
+	material			none
+}
+
+clippedplane_geometry
+{
+	name				floorgeom
+	pta				552.8 0 0
+	ptb				0 0 0
+	ptc				0 0 559.2
+	ptd				549.6 0 559.2
+}
+
+clippedplane_geometry
+{
+	name				ceilinggeom
+	pta				556.0 548.8 0.0
+	ptb				556.0 548.8 559.2
+	ptc				0 548.8 559.2
+	ptd				0.0 548.8 0.0
+}
+
+clippedplane_geometry
+{
+	name				bwallgeom
+	pta				549.6 0 559.2
+	ptb				0 0 559.2
+	ptc				0 548.8 559.2
+	ptd				556.0 548.8 559.2
+}
+
+clippedplane_geometry
+{
+	name				lightgeom
+	pta				403.0 548.7999 167.0
+	ptb				403.0 548.7999 392.0
+	ptc				153.0 548.7999 392.0
+	ptd				153.0 548.7999 167.0
+}
+
+standard_object
+{
+	name				floor
+	geometry			floorgeom
+	material			white
+}
+
+standard_object
+{
+	name				ceiling
+	geometry			ceilinggeom
+	material			white
+}
+
+standard_object
+{
+	name				bwall
+	geometry			bwallgeom
+	material			white
+}
+
+standard_object
+{
+	name				light
+	geometry			lightgeom
+	material			white_lum
+}
+
+sphere_geometry
+{
+	name				spheregeom
+	radius				44.0
+}
+
+# Top row: Ti ladder 40..220 nm
+standard_object
+{
+	name				s_ti_040
+	geometry			spheregeom
+	position			90 350 300
+	material			tf_ti_040
+}
+standard_object
+{
+	name				s_ti_080
+	geometry			spheregeom
+	position			190 350 300
+	material			tf_ti_080
+}
+standard_object
+{
+	name				s_ti_120
+	geometry			spheregeom
+	position			290 350 300
+	material			tf_ti_120
+}
+standard_object
+{
+	name				s_ti_170
+	geometry			spheregeom
+	position			390 350 300
+	material			tf_ti_170
+}
+standard_object
+{
+	name				s_ti_220
+	geometry			spheregeom
+	position			490 350 300
+	material			tf_ti_220
+}
+
+# Bottom row: Ti / Steel / Ta / Nb at 90 nm
+standard_object
+{
+	name				s_ti_090
+	geometry			spheregeom
+	position			140 165 250
+	material			tf_ti_090
+}
+standard_object
+{
+	name				s_steel_090
+	geometry			spheregeom
+	position			250 165 250
+	material			tf_steel_090
+}
+standard_object
+{
+	name				s_ta_090
+	geometry			spheregeom
+	position			360 165 250
+	material			tf_ta_090
+}
+standard_object
+{
+	name				s_nb_090
+	geometry			spheregeom
+	position			470 165 250
+	material			tf_nb_090
+}

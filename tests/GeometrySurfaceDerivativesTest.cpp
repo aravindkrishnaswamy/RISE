@@ -576,6 +576,7 @@ static void TestDisplacedGeometry()
 	DisplacedGeometry* pDisp = new DisplacedGeometry(
 		pBase, 32, pZero, 0.0,
 		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
+	pDisp->Realize();	// deferred bake (mesh is no longer built in the ctor)
 
 	CheckViaRay( *pDisp, Point3( 3, 0.5, 0 ), Vector3( -1, 0, 0 ),
 		"displaced-sphere (zero disp)" );
@@ -607,6 +608,7 @@ static void TestDisplacedGeometry()
 	DisplacedGeometry* pDisp2 = new DisplacedGeometry(
 		pBase2, 32, pSin, 0.2,
 		/*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
+	pDisp2->Realize();	// deferred bake (mesh is no longer built in the ctor)
 
 	CheckViaRay( *pDisp2, Point3( 3, 0.5, 0.3 ), Vector3( -1, 0, 0 ),
 		"displaced-sphere (sin disp)" );

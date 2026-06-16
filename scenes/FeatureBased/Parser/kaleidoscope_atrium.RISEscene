@@ -461,12 +461,12 @@ FOR I 0 $(@CORE_COUNT-1) 1
 	DEFINE CX $(cos(@ANG)*1.15)
 	DEFINE CZ $(sin(@ANG)*0.9)
 	DEFINE CY $(1.55+0.18*sin(@ANG*3.0))
-	DEFINE RY $(0.95+0.25*sin(@ANG*2.0))
+	DEFINE RY $(0.5*(0.95+0.25*sin(@ANG*2.0)))
 
 	ellipsoid_geometry
 	{
 		name			coregeom@I
-		radii			0.46 @RY 0.46
+		radii			0.23 @RY 0.23
 	}
 
 	standard_object

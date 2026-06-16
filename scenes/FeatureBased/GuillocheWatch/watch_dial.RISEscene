@@ -1,0 +1,1973 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#   File:           watch_dial.RISEscene
+#   Description:    Guilloche titanium watch (thin-film heat-tint).  Phase 3 of the thin-film feature.
+#                   FULLY PROCEDURAL + IN-SCENE-SCRIPTED: the engraved dial relief is a guilloché
+#                   expression_function2d (a math expression authored HERE in the scene file)
+#                   displaced onto a flat cartesian_disk_geometry, the radial heat-tint dose a
+#                   native expression_function2d math
+#                   (both C++ ports of the Python bakers in this folder, golden-tested), the strap
+#                   a general sweep_geometry + path_instances_geometry pair, and the
+#                   case/crown/hands/ring melded SDFs --
+#                   no pre-baked meshes or maps.  Thin-film GGX dial under an HDRI environment;
+#                   the specular reflectance sweeps gold centre -> blue rim.  Generic -- no brand mark.
+#   Author:         Aravind Krishnaswamy
+#############################################################################################################
+
+# ============================================================================
+# FULLY PROCEDURAL -- nothing to pre-bake.  The dial relief is authored
+# IN THIS SCENE FILE as `expression_function2d` math expressions (dialfn_*)
+# displaced onto a flat `cartesian_disk_geometry` via `displaced_geometry`
+# (uv_seam_fold FALSE) -- no guilloché-specific C++ geometry.  Each pattern
+# is proven == the original GuillocheField relief to 1e-6 in
+# tests/ExpressionFunction2DTest.  The oxide heat-tint doses are native
+# `expression_function2d` heat-tint doses consumed through
+# `scalar_painter { function2d ... scale S bias B }`.  The retired Python
+# bakers remain in this folder as the historical reference.
+# Render specific cameras with scenes/FeatureBased/GuillocheWatch/render_watch_views.py.  Tune the
+# heat-tint via the oxide_thk scale/bias (see the >>> HEAT-TINT TORCH CONTROL <<< block below).
+# ============================================================================
+
+##################################################
+# Scene unit normalization (physically-accurate sizing).  The case cylinder
+# is radius 24 -> 48 units across; the watch case here is 38 mm, so
+# 1 scene unit = 38/48 mm.  scene_unit is METRES per scene unit, and the
+# thinlens_camera reconciles its mm focal_length/sensor_size against it.
+# (Design target: 38mm dia, 10.9mm thick, 44.5mm lug-to-lug, domed sapphire
+#  + double-sided AR -> matches our dielectric AR coating.)
+##################################################
+scene_options
+{
+	scene_unit			0.00079167
+}
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultPathTracing
+}
+
+# STUDIO light-tent fill: a neutral white surround (replaced the uffizi
+# cathedral probe).  The dark black-glass floor below the watch turns this
+# into the classic studio gradient on the polished case (bright above ->
+# dark below); the soft_top/soft_bot area lights are the key highlights.
+uniformcolor_painter
+{
+	name				pnt_env
+	color				1 1 1
+}
+
+pathtracing_spectral_rasterizer
+{
+	samples				32
+	nmbegin				380
+	nmend				720
+	num_wavelengths			16
+	spectral_samples		1
+	oidn_denoise			true
+	oidn_prefilter			accurate
+	# NEE shadow rays pass through the sapphire crystal with Fresnel
+	# transmittance (else binary-blocked -> dial lit only by noisy BSDF
+	# refraction -> denoiser smears the guilloche).  PT-only opt-in.
+	transparent_shadows		TRUE
+	radiance_map			pnt_env
+	radiance_scale			0.30
+	radiance_background		FALSE
+}
+
+directional_light
+{
+	name				dialkey
+	power				3.14159
+	color				1 1 1
+	direction			0.45 0.35 0.62
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/watch_dial
+	multiple			TRUE
+	type				EXR
+	color_space			Rec709RGB_Linear
+}
+
+# LDR quick-look twin of the EXR above (sRGB 8-bit PNG).
+file_rasterizeroutput
+{
+	pattern				rendered/watch_dial_ldr
+	multiple			TRUE
+	type				PNG
+	bpp				8
+	color_space			sRGB
+}
+
+film
+{
+	width				800
+	height				800
+}
+
+##################################################
+# Cameras -- a product-shoot set for the watch on its polished surface.
+# The ACTIVE camera is the LAST one defined (RISE activates the most recently
+# added camera), so cam_photo (the hero) is last -> a plain `render` / the GUI
+# default is the beauty shot.  Render EVERY angle from the CLI with:
+#     python3 scenes/FeatureBased/GuillocheWatch/render_watch_views.py                 (all, incl. thinlens)
+#     python3 scenes/FeatureBased/GuillocheWatch/render_watch_views.py --cam cam_macro cam_profile
+# one PNG per angle -> rendered/watch_<name>.png.  In the GUI switch with the
+# camera selector (Job::SetActiveCamera).  All non-top-down cameras use
+# up=(0,0,1) so the +Z tabletop reads as the ground and the watch reflects in it.
+# The watch sits crown-on-+X, 12-o'clock-on-+Y; azimuths ~300-333 deg put the
+# crown on the right and 12 toward the upper corner (the natural pose).
+#
+#   cam_topdown  straight-down flat-lay: whole dial + strap laid out, 12 up.
+#   cam_high34   high 3/4 (~56deg), rakes the guilloche relief from above.
+#   cam_graze    low ~12deg grazing rake -- dramatic, catches the dome + sheen.
+#   cam_profile  pure side profile from 6 o'clock: case slab, domed crystal,
+#                crown nub, lugs, strap curving down to the table.
+#   cam_low34    low 3/4 beauty (~24deg), sharp (no DOF) -- crisp alt to cam_photo.
+#   cam_macro    100mm macro PUNCH-IN at f/8: closer + lower + toward the crown,
+#                shallow DOF so the strap melts to bokeh (thinlens).
+#   cam_photo    HERO: 100mm macro at f/16, balanced 3/4 (psi=315), active/last.
+##################################################
+pinhole_camera
+{
+	name				cam_topdown
+	location			0.00 0.00 95.00
+	lookat				0 0 -2
+	up				0 1 0
+	fov				50.0
+}
+
+
+pinhole_camera
+{
+	name				cam_graze
+	location			54.20 -69.37 18.71
+	lookat				0 0 -1
+	up				0 0 1
+	fov				40.0
+}
+
+pinhole_camera
+{
+	name				cam_profile
+	location			3.29 -94.23 11.58
+	lookat				0 0 -2
+	up				0 0 1
+	fov				42.0
+}
+
+pinhole_camera
+{
+	name				cam_low34
+	location			66.48 -55.79 38.64
+	lookat				0 0 -2
+	up				0 0 1
+	fov				36.0
+}
+
+thinlens_camera
+{
+	name				cam_macro
+	sensor_size			36
+	focal_length			100
+	fstop				8
+	focus_distance		176.0
+	aperture_blades		9
+	location			140.15 -71.41 76.71
+	lookat				0 0 -2
+	up				0 0 1
+}
+
+##################################################
+# cam_photo: the photographer's hero rig -- 100mm macro on full-frame (36mm) at
+# f/16 (deep DOF; RISE has no diffraction penalty so small f reads like a focus
+# stack).  psi=315 deg, ~45deg elevation: 12 o'clock to NE, crown to the right.
+# location + focus_distance are SCENE UNITS.  The hero STILL (select it in
+# the GUI / render_watch_views.py); cam_high34 is now last = active, so a bare
+# `render` and `renderanimation` use the animated cam_high34.
+##################################################
+thinlens_camera
+{
+	name				cam_photo
+	sensor_size			36
+	focal_length			100
+	fstop				16
+	focus_distance		260.0
+	aperture_blades		9
+	location			130.00 -130.00 182.85
+	lookat				0 0 -1
+	up				0 0 1
+}
+
+##################################################
+# cam_high34 -- ACTIVE (last) camera.  Base pose = the animation MIDPOINT (a high
+# 3/4, ~56deg elevation, psi=305).  A bare `render` shows this still; the
+# timelines below drive it during `renderanimation`.
+##################################################
+pinhole_camera
+{
+	name				cam_high34
+	location			27.26 -38.94 70.47
+	lookat				0 0 -2
+	up				0 0 1
+	fov				42.0
+}
+
+##################################################
+# ANIMATION (native timeline) -- a subtle IRIDESCENCE REVEAL on cam_high34:
+#   * INCIDENCE SWEEP (the iridescence driver): a keyframed `elevation` orbit
+#     ping-pongs the camera from a high near-head-on 3/4 (~21deg incidence on
+#     the dial) DOWN to a low grazing rake (~60deg) at the midpoint and back.
+#     Because TiO2 is high-index, the dial reads SATURATED (magenta centre ->
+#     blue rim) near head-on and WARMS/MUTES toward grazing -- so the whole
+#     face pulses saturated -> coppery -> saturated as it tilts (the angle-
+#     dependent thin-film colour, the whole point).
+#   * AZIMUTH RAKE: a `azimuth` ping-pong (+-20deg) simultaneously sweeps the
+#     specular highlight across the guilloche so the relief shimmers, and adds
+#     a swooping arc.  Both peak at t=0.5 (low grazing dome flare) and return,
+#     so start==end -> the clip loops seamlessly.
+# The orbit re-centres on the dial (cam_high34 lookat) so it stays framed.
+# Render:  renderanimation 0 1 48      (48 frames over t=0..1; or omit args to
+# use animation_options).  Frames -> rendered/watch_dial<NNN>.png.
+# cam_high34 must be the ACTIVE (last) camera for renderanimation to drive it.
+##################################################
+animation_options
+{
+	time_start			0.0
+	time_end			1.0
+	num_frames			48
+}
+
+timeline
+{
+	element_type	camera
+	element			cam_high34
+	param			elevation
+	interpolator	hermite
+
+	time		0.00
+	value		31.0
+
+	time		0.25
+	value		-4.0
+
+	time		0.50
+	value		-35.0
+
+	time		0.75
+	value		-4.0
+
+	time		1.00
+	value		31.0
+}
+
+timeline
+{
+	element_type	camera
+	element			cam_high34
+	param			azimuth
+	interpolator	hermite
+
+	time		0.00
+	value		-12.0
+
+	time		0.50
+	value		12.0
+
+	time		1.00
+	value		-12.0
+}
+
+
+##################################################
+# Painters
+##################################################
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_white
+	color				1.0 1.0 1.0
+}
+
+scalar_painter
+{
+	name				Ti_n
+	file				colors/thinfilm/substrates/Ti.n
+}
+
+scalar_painter
+{
+	name				Ti_k
+	file				colors/thinfilm/substrates/Ti.k
+}
+
+scalar_painter
+{
+	name				TiO2_n
+	file				colors/thinfilm/oxides/TiO2.n
+}
+
+scalar_painter
+{
+	name				TiO2_k
+	file				colors/thinfilm/oxides/TiO2.k
+}
+
+# Steel (Fe) optical constants for the 316L stainless case.
+scalar_painter
+{
+	name				Steel_n
+	file				colors/thinfilm/substrates/Steel.n
+}
+
+scalar_painter
+{
+	name				Steel_k
+	file				colors/thinfilm/substrates/Steel.k
+}
+
+# --- Alternative base metals (Nb, Ta) + oxides (Nb2O5, Ta2O5, Fe3O4=steel) ---
+# Same curated colors/thinfilm/ tables as Ti; used by the tf_dial_<metal>
+# materials below to switch the dial's base metal in the GUI.
+scalar_painter
+{
+	name				Nb_n
+	file				colors/thinfilm/substrates/Nb.n
+}
+
+scalar_painter
+{
+	name				Nb_k
+	file				colors/thinfilm/substrates/Nb.k
+}
+
+scalar_painter
+{
+	name				Ta_n
+	file				colors/thinfilm/substrates/Ta.n
+}
+
+scalar_painter
+{
+	name				Ta_k
+	file				colors/thinfilm/substrates/Ta.k
+}
+
+scalar_painter
+{
+	name				Nb2O5_n
+	file				colors/thinfilm/oxides/Nb2O5.n
+}
+
+scalar_painter
+{
+	name				Nb2O5_k
+	file				colors/thinfilm/oxides/Nb2O5.k
+}
+
+scalar_painter
+{
+	name				Ta2O5_n
+	file				colors/thinfilm/oxides/Ta2O5.n
+}
+
+scalar_painter
+{
+	name				Ta2O5_k
+	file				colors/thinfilm/oxides/Ta2O5.k
+}
+
+scalar_painter
+{
+	name				Fe3O4_n
+	file				colors/thinfilm/oxides/Fe3O4.n
+}
+
+scalar_painter
+{
+	name				Fe3O4_k
+	file				colors/thinfilm/oxides/Fe3O4.k
+}
+
+
+# Oxide-thickness SHAPE dose: an in-scene expression_function2d (the
+# C++ port of thermal_oxide_sim's Arrhenius/parabolic radial heat profile --
+# 0 at the centre, 1 at the rim; goldens in tests/GuillocheFieldTest).  The
+# ABSOLUTE nanometres -- i.e. the TORCH START/END -- are set below on the
+# oxide_thk painter, so the whole heat-tint is tunable per render.  The radial
+# falloff is the `falloff` parameter here (was baked into oxide_cart.png).
+expression_function2d
+{
+	name				oxide_fn
+	# Radial thermal-oxide DOSE [0,1] (heat-tint SHAPE) -- Ti activation
+	# energy.  In-scene math (was guilloche_oxide_painter dose mode).  T(K)=
+	# 700+heat*200; dose=(g-g0)/(g1-g0), g=exp(-Ea/2RT).  -> oxide_thk* scale/bias.
+	param				R 20.6
+	param				Ea 160000
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	def					heat rho*rho
+	def					Tk 700+heat*200
+	def					g exp(-Ea/(2*8.314*Tk))
+	def					g0 exp(-Ea/(2*8.314*700))
+	def					g1 exp(-Ea/(2*8.314*900))
+	expr				clamp((g-g0)/(g1-g0),0,1)
+}
+
+# Ming "Lightning" oxide ramp -- non-linear radial smoothstep ladder
+# (centre warm -> rim deep) feeding oxide_thk; ported from the dialed-in
+# standalone (var_test/ming_lightning).  Used ONLY by the lightning dial.
+expression_function2d
+{
+	name				oxide_fn_lightning
+	param				R 20.6
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	expr				clamp((9*smoothstep(0,0.16,rho)+5*smoothstep(0.16,0.82,rho)+8*smoothstep(0.82,1.0,rho))/22,0,1)
+}
+
+# Per-base-metal oxide doses (per-metal activation energy -> different radial
+# curvature).  Wired into oxide_thk_<metal>.
+expression_function2d
+{
+	name				oxide_fn_nb
+	# Radial thermal-oxide DOSE [0,1] (heat-tint SHAPE) -- Nb activation
+	# energy.  In-scene math (was guilloche_oxide_painter dose mode).  T(K)=
+	# 700+heat*200; dose=(g-g0)/(g1-g0), g=exp(-Ea/2RT).  -> oxide_thk* scale/bias.
+	param				R 20.6
+	param				Ea 135000
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	def					heat rho*rho
+	def					Tk 700+heat*200
+	def					g exp(-Ea/(2*8.314*Tk))
+	def					g0 exp(-Ea/(2*8.314*700))
+	def					g1 exp(-Ea/(2*8.314*900))
+	expr				clamp((g-g0)/(g1-g0),0,1)
+}
+
+expression_function2d
+{
+	name				oxide_fn_ta
+	# Radial thermal-oxide DOSE [0,1] (heat-tint SHAPE) -- Ta activation
+	# energy.  In-scene math (was guilloche_oxide_painter dose mode).  T(K)=
+	# 700+heat*200; dose=(g-g0)/(g1-g0), g=exp(-Ea/2RT).  -> oxide_thk* scale/bias.
+	param				R 20.6
+	param				Ea 80000
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	def					heat rho*rho
+	def					Tk 700+heat*200
+	def					g exp(-Ea/(2*8.314*Tk))
+	def					g0 exp(-Ea/(2*8.314*700))
+	def					g1 exp(-Ea/(2*8.314*900))
+	expr				clamp((g-g0)/(g1-g0),0,1)
+}
+
+expression_function2d
+{
+	name				oxide_fn_steel
+	# Radial thermal-oxide DOSE [0,1] (heat-tint SHAPE) -- Steel activation
+	# energy.  In-scene math (was guilloche_oxide_painter dose mode).  T(K)=
+	# 700+heat*200; dose=(g-g0)/(g1-g0), g=exp(-Ea/2RT).  -> oxide_thk* scale/bias.
+	param				R 20.6
+	param				Ea 165000
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	def					heat rho*rho
+	def					Tk 700+heat*200
+	def					g exp(-Ea/(2*8.314*Tk))
+	def					g0 exp(-Ea/(2*8.314*700))
+	def					g1 exp(-Ea/(2*8.314*900))
+	expr				clamp((g-g0)/(g1-g0),0,1)
+}
+
+
+##################################################
+# >>> HEAT-TINT TORCH CONTROL <<<  (tune these two numbers per render)
+#
+# thickness_nm = pixel(0..1) * scale + bias
+#   bias         = CENTRE oxide thickness (nm)  = where the torch effect STARTS
+#   bias + scale = RIM    oxide thickness (nm)  = where the torch effect ENDS
+#   scale        = the SPAN (how much hotter / longer-torched the rim ran)
+#
+# Titanium temper ladder (1st order): ~18 straw, ~22 gold, ~30 magenta/purple,
+#   ~33 blue, ~40 cyan, then it repeats (2nd order).  Pick a window on it:
+#     gold -> blue   (vivid)          : bias 22  scale 16   (22..38 nm)
+#     violet/blue 37.5 (ACTIVE)      : bias 24.5 scale 13  (24.5..37.5 nm)
+#                                      violet/blue field, warm gold heart
+#     gold -> blue   (restrained)     : bias 22  scale 11   (22..33 nm)
+#     straw -> magenta (short torch)  : bias 18  scale 12   (18..30 nm)
+#     magenta -> cyan  (long torch)   : bias 30  scale 12   (30..42 nm)
+# (The RADIAL falloff -- how fast it heats outward -- is the `falloff`
+#  quadratic falloff baked into each oxide_fn* expression above: quadratic|smooth|linear.)
+##################################################
+scalar_painter
+{
+	name				oxide_thk
+	function2d			oxide_fn_lightning
+	scale				22.0
+	bias				18.0
+}
+
+# --- COLOUR PALETTES (Ti temper windows; swap via the dial's film_thickness) ---
+# Same dose SHAPE (oxide_fn), different nm WINDOW -> a different iridescent sweep.
+# Switch in the GUI: set tf_dial.film_thickness to one of these (or oxide_thk).
+scalar_painter
+{
+	name				oxide_thk_warm
+	function2d			oxide_fn
+	scale				14.0
+	bias				16.0
+}  # warm: 16..30 nm  gold -> magenta/violet (warm centre)
+
+scalar_painter
+{
+	name				oxide_thk_cool
+	function2d			oxide_fn
+	scale				16.0
+	bias				28.0
+}  # cool: 28..44 nm  violet -> blue -> cyan (deep)
+
+scalar_painter
+{
+	name				oxide_thk_wide
+	function2d			oxide_fn
+	scale				32.0
+	bias				14.0
+}  # wide: 14..46 nm  straw -> gold -> purple -> blue -> cyan (full)
+
+
+# --- Per-base-metal oxide THICKNESS windows (nm) ---
+# Same torch dose SHAPE (per-metal oxide_fn_*), but each metal's oxide grows to a DIFFERENT nm
+# window for its temper-colour sweep -- from thermal_oxide_sim's Airy/CIE oracle per
+# metal (run: thermal_oxide_sim.py --metal-ladders).  NOT reusing Ti's 22..38 nm.
+scalar_painter
+{
+	name				oxide_thk_nb
+	function2d			oxide_fn_nb
+	scale				25.0
+	bias				30.0
+}  # Nb: 30..55 nm  gold/orange->blue
+
+scalar_painter
+{
+	name				oxide_thk_ta
+	function2d			oxide_fn_ta
+	scale				26.0
+	bias				26.0
+}  # Ta: 26..52 nm  bronze->gold->purple (Ta2O5 no clean blue)
+
+scalar_painter
+{
+	name				oxide_thk_steel
+	function2d			oxide_fn_steel
+	scale				28.0
+	bias				28.0
+}
+
+# --- Per-base-metal COLOUR PALETTES (each metal's own temper windows) ---
+# Wider expression of every metal's range; same per-metal dose shape, different
+# nm WINDOW.  Switch via that metal's material film_thickness slot.  (Ti uses the
+# unprefixed oxide_thk / oxide_thk_warm|cool|wide above.)
+scalar_painter
+{
+	name				oxide_thk_nb_warm
+	function2d			oxide_fn_nb
+	scale				16.0
+	bias				26.0
+}  # nb warm: 26..42 nm  yellow-gold -> blue onset
+
+scalar_painter
+{
+	name				oxide_thk_nb_cool
+	function2d			oxide_fn_nb
+	scale				22.0
+	bias				44.0
+}  # nb cool: 44..66 nm  blue -> blue/cyan
+
+scalar_painter
+{
+	name				oxide_thk_nb_wide
+	function2d			oxide_fn_nb
+	scale				44.0
+	bias				22.0
+}  # nb wide: 22..66 nm  yellow-green -> gold -> blue -> cyan
+
+scalar_painter
+{
+	name				oxide_thk_ta_warm
+	function2d			oxide_fn_ta
+	scale				18.0
+	bias				22.0
+}  # ta warm: 22..40 nm  bronze -> gold -> red
+
+scalar_painter
+{
+	name				oxide_thk_ta_cool
+	function2d			oxide_fn_ta
+	scale				20.0
+	bias				40.0
+}  # ta cool: 40..60 nm  red -> purple (no blue)
+
+scalar_painter
+{
+	name				oxide_thk_ta_wide
+	function2d			oxide_fn_ta
+	scale				44.0
+	bias				18.0
+}  # ta wide: 18..62 nm  bronze -> gold -> red -> purple
+
+scalar_painter
+{
+	name				oxide_thk_steel_warm
+	function2d			oxide_fn_steel
+	scale				16.0
+	bias				26.0
+}  # steel warm: 26..42 nm  gold -> purple
+
+scalar_painter
+{
+	name				oxide_thk_steel_cool
+	function2d			oxide_fn_steel
+	scale				22.0
+	bias				44.0
+}  # steel cool: 44..66 nm  purple -> blue
+
+scalar_painter
+{
+	name				oxide_thk_steel_wide
+	function2d			oxide_fn_steel
+	scale				58.0
+	bias				22.0
+}  # steel wide: 22..80 nm  gold -> purple -> blue -> cyan
+  # Steel: 28..56 nm  gold->purple->blue (classic temper)
+
+
+##################################################
+# >>> TORCH PATTERN VARIANTS <<<  (non-uniform torch along the lightning zigzag)
+# Three drop-in oxide SHAPE maps, all sharing the scale/bias above (-> nm).
+# SWITCH IN THE GUI: select the `tf_dial` material and set its `film_thickness`
+# slot (a scalar_painter reference dropdown) to one of:
+#   oxide_thk                 - UNIFORM radial torch (classic gold->blue sweep)
+#   oxide_thk_lightning_hot   - torch held LONGER on the zigzag -> bluer lightning
+#   oxide_thk_lightning_cool  - torch held LESS  on the zigzag -> golder lightning
+# The torch pattern is the dial's 12-arm petal mask (the default-pattern
+# TorchMask), torched +/-0.40 dose -- exactly the retired oxide_lightning_*.png
+# bakes (dial_mesh_gen --lightning-hot/-cool defaults).
+##################################################
+expression_function2d
+{
+	name				oxide_fn_lightning_hot
+	# Radial DOSE + signed TORCH term (ridges hotter/cooler): clamp(doseRaw +
+	# torch*petal,0,1).  petal = the uniform petal-lens torch mask.  Was
+	# guilloche_oxide_painter torch_amount +0.40.  -> oxide_thk_lightning_*.
+	param				R 20.6
+	param				Ea 160000
+	param				torch 0.4
+	param				arms 12
+	param				swirl 0
+	param				seamJag 0.16
+	param				seamJagFreq 3
+	param				petalE0 0
+	param				petalE1 0.82
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	def					heat rho*rho
+	def					Tk 700+heat*200
+	def					g exp(-Ea/(2*8.314*Tk))
+	def					g0 exp(-Ea/(2*8.314*700))
+	def					g1 exp(-Ea/(2*8.314*900))
+	def					doseRaw (g-g0)/(g1-g0)
+	def					theta atan2((2*v-1)*R,(2*u-1)*R)
+	def					jag seamJag*(2*abs(2*frac(seamJagFreq*rho)-1)-1)
+	def					psi theta+swirl*rho+jag
+	def					petal smoothstep(petalE0,petalE1,abs(cos(arms*psi)))
+	expr				clamp(doseRaw+torch*petal,0,1)
+}
+
+scalar_painter
+{
+	name				oxide_thk_lightning_hot
+	function2d			oxide_fn_lightning_hot
+	scale				16.0
+	bias				22.0
+}
+
+expression_function2d
+{
+	name				oxide_fn_lightning_cool
+	# Radial DOSE + signed TORCH term (ridges hotter/cooler): clamp(doseRaw +
+	# torch*petal,0,1).  petal = the uniform petal-lens torch mask.  Was
+	# guilloche_oxide_painter torch_amount -0.40.  -> oxide_thk_lightning_*.
+	param				R 20.6
+	param				Ea 160000
+	param				torch -0.4
+	param				arms 12
+	param				swirl 0
+	param				seamJag 0.16
+	param				seamJagFreq 3
+	param				petalE0 0
+	param				petalE1 0.82
+	def					rho clamp(hypot((2*u-1)*R,(2*v-1)*R)/R,0,1)
+	def					heat rho*rho
+	def					Tk 700+heat*200
+	def					g exp(-Ea/(2*8.314*Tk))
+	def					g0 exp(-Ea/(2*8.314*700))
+	def					g1 exp(-Ea/(2*8.314*900))
+	def					doseRaw (g-g0)/(g1-g0)
+	def					theta atan2((2*v-1)*R,(2*u-1)*R)
+	def					jag seamJag*(2*abs(2*frac(seamJagFreq*rho)-1)-1)
+	def					psi theta+swirl*rho+jag
+	def					petal smoothstep(petalE0,petalE1,abs(cos(arms*psi)))
+	expr				clamp(doseRaw+torch*petal,0,1)
+}
+
+scalar_painter
+{
+	name				oxide_thk_lightning_cool
+	function2d			oxide_fn_lightning_cool
+	scale				16.0
+	bias				22.0
+}
+
+##################################################
+# Thin-film dial material
+##################################################
+ggx_material
+{
+	name				tf_dial
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.08
+	alphay				0.08
+	fresnel_mode			thinfilm
+	ior				Ti_n
+	extinction			Ti_k
+	film_ior			TiO2_n
+	film_extinction			TiO2_k
+	film_thickness			oxide_thk
+}
+
+# --- Base-metal variants of the dial material (SWITCH IN THE GUI) ---
+# Select the `dial` object, set its `material` to one of these
+# (ObjectIntrospection exposes `material` as a rebindable reference).  Each
+# carries the metal's substrate n,k + oxide n,k + its own nm window.
+# tf_dial (above) is the titanium default.
+ggx_material
+{
+	name				tf_dial_nb
+	rd				pnt_black
+	rs				pnt_white
+	alphax			0.08
+	alphay			0.08
+	fresnel_mode			thinfilm
+	ior				Nb_n
+	extinction			Nb_k
+	film_ior			Nb2O5_n
+	film_extinction		Nb2O5_k
+	film_thickness		oxide_thk_nb
+}
+
+ggx_material
+{
+	name				tf_dial_ta
+	rd				pnt_black
+	rs				pnt_white
+	alphax			0.08
+	alphay			0.08
+	fresnel_mode			thinfilm
+	ior				Ta_n
+	extinction			Ta_k
+	film_ior			Ta2O5_n
+	film_extinction		Ta2O5_k
+	film_thickness		oxide_thk_ta
+}
+
+ggx_material
+{
+	name				tf_dial_steel
+	rd				pnt_black
+	rs				pnt_white
+	alphax			0.08
+	alphay			0.08
+	fresnel_mode			thinfilm
+	ior				Steel_n
+	extinction			Steel_k
+	film_ior			Fe3O4_n
+	film_extinction		Fe3O4_k
+	film_thickness		oxide_thk_steel
+}
+
+
+##################################################
+# Watch-head support painters + materials
+##################################################
+# Blued-steel hand tint (deep polished blue), bright index/silver, crystal tint
+uniformcolor_painter
+{
+	name				pnt_strap_blue
+	color				0.04 0.08 0.22
+}
+
+uniformcolor_painter
+{
+	name				pnt_surf_f0
+	color				0.05 0.05 0.05
+}
+
+uniformcolor_painter
+{
+	name				pnt_blue
+	color				0.08 0.18 0.65
+}
+
+uniformcolor_painter
+{
+	name				pnt_silver
+	color				0.92 0.93 0.95
+}
+
+# Polished 316L stainless steel (case, bezel, crown, lugs); the case is
+# steel, not titanium; Fe (Johnson-Christy) n/k.  Near-mirror polished finish.
+ggx_material
+{
+	name				ti_polished
+	rd				pnt_black
+	rs				pnt_white
+	alphax				0.03
+	alphay				0.03
+	fresnel_mode			conductor
+	ior				Steel_n
+	extinction			Steel_k
+}
+
+# Blued steel hands -- conductor with a strong blue specular tint, glossy.
+ggx_material
+{
+	name				white_hands
+	rd				pnt_white
+	rs				pnt_surf_f0
+	alphax				0.18
+	alphay				0.18
+	fresnel_mode			schlick_f0
+}
+
+# Sapphire (Al2O3 / corundum) dispersion -- Malitson 1962 ordinary-ray Sellmeier
+# coefficients (B1 B2 B3 C1 C2 C3, C in um^2; the painter converts nm->um internally).
+# n(589nm) ~= 1.768; low dispersion (Abbe ~72), so a subtle but physical chromatic edge.
+scalar_painter
+{
+	name				sapphire_ior
+	sellmeier			1.4313493 0.65054713 5.3414021 0.0052799 0.0142383 325.0178
+}
+
+# Domed sapphire crystal -- clear dielectric with the real spectral (dispersive) sapphire
+# index above.  High `scattering` == long mean free path == effectively clear.
+dielectric_material
+{
+	name				sapphire_crystal
+	tau				0.985 0.99 1.0
+	ior				sapphire_ior
+	scattering			100000.0
+	# Data-based AR coating: MgF2 (n 1.38) quarter-wave at 550nm (~99.6 nm).
+	# Drops the bare sapphire surface glare 7.7%->~0.5% (14x) with the
+	# characteristic AR purple bloom; computed via the Phase-1/2 Airy
+	# evaluator (ThinFilm::ReflectanceConductor) in DielectricSPF.
+	ar_film_ior			1.38
+	ar_film_thickness		99.6
+	ar_film_extinction		0.0
+}
+
+##################################################
+# Studio lighting (watch-photography style), TWO sources:
+#   soft_top -- a LARGE soft overhead-front SCRIM (light-tent fill): big enough
+#               that the domed crystal reflects it as a smooth broad gradient
+#               (no hotspot) while still RAKING the guilloche relief from above
+#               so the woven facets shimmer.  The vivid-but-flare-free key.
+#   soft_bot -- a SMALL bright overhead KEY aimed straight down on the dial
+#               (direct fill so the face reads bright); overhead, so at the
+#               grazing end it reflects up-and-away rather than flaring into
+#               the low camera.
+# The neutral env (dim) + dark black-glass floor give the dark studio surround
+# and the bright-above -> dark-below gradient on the polished case.
+##################################################
+
+lambertian_luminaire_material
+{
+	name				soft_top_lum
+	exitance			pnt_white
+	scale				8.0
+	material			none
+}
+
+clippedplane_geometry
+{
+	name				soft_top_geom
+	pta				-170 50 230
+	ptb				170 50 230
+	ptc				170 -185 95
+	ptd				-170 -185 95
+}
+
+standard_object
+{
+	name				soft_top
+	geometry			soft_top_geom
+	material			soft_top_lum
+}
+
+lambertian_luminaire_material
+{
+	name				soft_bot_lum
+	exitance			pnt_white
+	scale				40.0
+	material			none
+}
+
+clippedplane_geometry
+{
+	name				soft_bot_geom
+	pta				-26 -34 92
+	ptb				-26 16 92
+	ptc				26 16 92
+	ptd				26 -34 92
+}
+
+standard_object
+{
+	name				soft_bot
+	geometry			soft_bot_geom
+	material			soft_bot_lum
+}
+
+##################################################
+# ALTERNATE LIGHTING (commented out) -- DRAMATIC HIGH-CONTRAST HERO.
+# A dark, moody 'emerging-from-black' look (high-end dark-product style):
+# a single HARD raking KEY (upper-front, +X side) carves the guilloche
+# relief into strong light/shadow, an edge RIM (rear -X, low) catches the
+# case outline so the watch separates from a near-black field.  The soft
+# studio light-tent above is replaced by deep contrast.
+#
+# TO ACTIVATE (and reverse to undo):
+#   1. studio lights above -> scale 0   (soft_top_lum AND soft_bot_lum)
+#   2. rasterizer 'radiance_scale' -> ~0.03   (near-black surround)
+#   3. uncomment every line in this block (strip the leading '# ')
+# Tuning: raise dram_rim_lum 'scale' for a brighter case-edge halo; move
+# dram_key_geom toward the dial for a tighter, harder hotspot; raise
+# radiance_scale a touch (~0.06) if the shadows are too crushed.
+##################################################
+/*
+ lambertian_luminaire_material
+ {
+ 	name				dram_key_lum
+ 	exitance			pnt_white
+ 	scale				120.0
+ 	material			none
+ }
+ clippedplane_geometry
+ {
+ 	name				dram_key_geom
+ 	pta				45.52 -82.29 101.95
+ 	ptb				13.71 -50.48 128.05
+ 	ptc				50.48 -13.71 128.05
+ 	ptd				82.29 -45.52 101.95
+ }
+ standard_object
+ {
+ 	name				dram_key
+ 	geometry			dram_key_geom
+ 	material			dram_key_lum
+ }
+ lambertian_luminaire_material
+ {
+ 	name				dram_rim_lum
+ 	exitance			pnt_white
+ 	scale				95.0
+ 	material			none
+ }
+ clippedplane_geometry
+ {
+ 	name				dram_rim_geom
+ 	pta				-72.20 75.68 14.52
+ 	ptb				-45.57 53.09 77.48
+ 	ptc				-59.80 36.32 77.48
+ 	ptd				-86.43 58.91 14.52
+ }
+ standard_object
+ {
+ 	name				dram_rim
+ 	geometry			dram_rim_geom
+ 	material			dram_rim_lum
+ }
+*/
+
+##################################################
+# NIGHT / LUME SHOT: authored as a self-contained `> modify` command
+# block at the END of this file (the commands must follow the objects
+# they repoint).  Uncomment that block to switch day -> night.
+##################################################
+##################################################
+##################################################
+# The dial: a FLAT Cartesian disk + a guilloché expression_function2d
+# DISPLACED onto it -- fully scripted in-scene, no guilloché-specific C++.
+#   cartesian_disk_geometry  - the flat base (uniform world-cell density,
+#                              linear Cartesian UV u=(x+R)/2R)
+#   dialfn_*                  - the relief field authored as a math
+#                              expression (expression_function2d); each
+#                              pattern is proven == the retired
+#                              GuillocheField::Height in
+#                              tests/ExpressionFunction2DTest
+#   displaced_geometry        - applies the field along the +Z normal;
+#                              uv_seam_fold FALSE = no closed-surface UV
+#                              mirror (the field is an OPEN Cartesian map)
+# The dial sits at z=-1 via the `dial` object position (below the rim).
+##################################################
+# NOTE: this `radius` (20.6) must equal every dialfn_* `param R` AND the
+# oxide_fn* `radius` -- the dial-space (x,y)=(2u-1,2v-1)*R mapping is shared
+# by the relief expressions and the heat-tint dose; a mismatch silently
+# scales the relief wrong (no parse error).
+cartesian_disk_geometry
+{
+	name			dialdisk
+	radius			20.6
+	mesh_n			880
+}
+
+# uniform -- 12-arm woven rosette (the stock dial)
+expression_function2d
+{
+	name			dialfn_uniform
+	param		R 20.6
+	param		arms 12
+	param		swirl 0
+	param		seamJag 0.16
+	param		seamJagFreq 3
+	param		cell 0.9
+	param		gridAmp 0.85
+	param		petalAmp 0.3
+	param		gridE0 0.12
+	param		gridE1 0.5
+	param		petalE0 0
+	param		petalE1 0.82
+	param		base 0.15
+	param		landLevel 0.5
+	param		reliefDepth 0.85
+	param		centerRadius 0.03
+	def			x (2*u-1)*R
+	def			y (2*v-1)*R
+	def			r hypot(x,y)
+	def			rho clamp(r/R,0,1)
+	def			theta atan2(y,x)
+	def			jag seamJag*(2*abs(2*frac(seamJagFreq*rho)-1)-1)
+	def			psi theta+swirl*rho+jag
+	def			petal smoothstep(petalE0,petalE1,abs(cos(arms*psi)))
+	def			wsec tau/arms
+	def			q psi/wsec
+	def			sector sign(q)*floor(abs(q)+0.5)
+	def			thetaC sector*wsec-swirl*rho-jag
+	def			cc cos(thetaC)
+	def			ss sin(thetaC)
+	def			xr cc*x+ss*y
+	def			yr -ss*x+cc*y
+	def			waxU (0.5/cell)*xr
+	def			way0U (0.5/cell)*yr
+	def			wrpU floor(2*waxU)
+	def			wayU way0U+0.25*mod(wrpU,2)
+	def			wgU clamp(abs(cos(tau*(waxU)))/gridE1,0,1)*clamp(abs(cos(tau*(wayU)))/gridE1,0,1)
+	def			raw base+petalAmp*petal+gridAmp*wgU
+	def			h0 clamp((raw-(0.14999999999999999))/(1.1499999999999999),0,1)
+	def			h1 pow(h0,log(landLevel)/log(0.5))
+	def			h2 0.5+(h1-0.5)*reliefDepth
+	def			hub 0.5*(1-reliefDepth)
+	def			rin max(centerRadius*R,0.000001)
+	def			whub clamp(r/rin,0,1)
+	def			hfin (1-whub*whub)*hub+whub*whub*h2
+	expr			clamp(hfin,0,1)
+}
+
+# lightning -- 11 zigzag bolts (cube) on a rung ground (hero)
+expression_function2d
+{
+	name			dialfn_lightning
+	param		R 20.6
+	param		arms 11
+	param		cell 0.9
+	param		gridAmp 0.85
+	param		petalAmp 0.3
+	param		gridE0 0.12
+	param		gridE1 0.5
+	param		base 0.15
+	param		landLevel 0.5
+	param		reliefDepth 0.85
+	param		centerRadius 0.015
+	param		lightningLo 0.48
+	param		lightningHi 0.60
+	param		lightningRelief 0.72
+	param		cellScale 0.6
+	param		zigzagAmp 0.16
+	param		zigzagFreq 3
+	param		fieldCell 0.5
+	param		lineCell 0.32
+	param		lineTilt 0.55
+	param		rungLen 0.65
+	param		rungWidth 0.82
+	def			x (2*u-1)*R
+	def			y (2*v-1)*R
+	def			r hypot(x,y)
+	def			rho clamp(r/R,0,1)
+	def			theta atan2(y,x)
+	def			zig zigzagAmp*(2*abs(2*frac(zigzagFreq*rho)-1)-1)
+	def			rayc 0.5+0.5*cos(arms*(theta+zig))
+	def			mask smoothstep(lightningLo,lightningHi,rayc)
+	def			wsec tau/arms
+	def			q theta/wsec
+	def			sector sign(q)*floor(abs(q)+0.5)
+	def			thetaC sector*wsec
+	def			cc cos(thetaC)
+	def			ss sin(thetaC)
+	def			xr cc*x+ss*y
+	def			yr -ss*x+cc*y
+	def			seg sign(2*frac(zigzagFreq*rho)-1)
+	def			perp cos(lineTilt)*yr-seg*sin(lineTilt)*xr
+	def			inside clamp(abs(cos(tau*((0.5/lineCell)*perp)))/gridE1,0,1)
+	def			between clamp(abs(cos(tau*((0.5/rungLen)*xr)))/gridE1,0,1)*clamp(abs(cos(tau*((0.5/rungWidth)*yr)))/gridE1,0,1)
+	def			grid between*(1-mask)+inside*mask
+	def			raw base+petalAmp*mask+gridAmp*grid+lightningRelief*mask
+	def			h0 clamp((raw-(0.14999999999999999))/(1.75),0,1)
+	def			h1 pow(h0,log(landLevel)/log(0.5))
+	def			h2 0.5+(h1-0.5)*reliefDepth
+	def			hub 0.5*(1-reliefDepth)
+	def			rin max(centerRadius*R,0.000001)
+	def			whub clamp(r/rin,0,1)
+	def			hfin (1-whub*whub)*hub+whub*whub*h2
+	expr			clamp(hfin,0,1)
+}
+
+# radial -- swirled-petal lightning, coarse bolt cell
+expression_function2d
+{
+	name			dialfn_radial
+	param		R 20.6
+	param		arms 12
+	param		swirl 0
+	param		seamJag 0.16
+	param		seamJagFreq 3
+	param		cell 0.9
+	param		gridAmp 0.85
+	param		petalAmp 0.3
+	param		gridE0 0.12
+	param		gridE1 0.5
+	param		petalE0 0
+	param		petalE1 0.82
+	param		base 0.15
+	param		landLevel 0.5
+	param		reliefDepth 0.85
+	param		centerRadius 0.03
+	param		lightningLo 0.25
+	param		lightningHi 0.65
+	param		cellScale 1.8
+	def			x (2*u-1)*R
+	def			y (2*v-1)*R
+	def			r hypot(x,y)
+	def			rho clamp(r/R,0,1)
+	def			theta atan2(y,x)
+	def			jag seamJag*(2*abs(2*frac(seamJagFreq*rho)-1)-1)
+	def			psi theta+swirl*rho+jag
+	def			petal smoothstep(petalE0,petalE1,abs(cos(arms*psi)))
+	def			wsec tau/arms
+	def			q psi/wsec
+	def			sector sign(q)*floor(abs(q)+0.5)
+	def			thetaC sector*wsec-swirl*rho-jag
+	def			cc cos(thetaC)
+	def			ss sin(thetaC)
+	def			xr cc*x+ss*y
+	def			yr -ss*x+cc*y
+	def			mask smoothstep(lightningLo,lightningHi,petal)
+	def			waxF (0.5/cell)*xr
+	def			way0F (0.5/cell)*yr
+	def			wrpF floor(2*waxF)
+	def			wayF way0F+0.25*mod(wrpF,2)
+	def			wgF clamp(abs(cos(tau*(waxF)))/gridE1,0,1)*clamp(abs(cos(tau*(wayF)))/gridE1,0,1)
+	def			waxB (0.5/(cell*cellScale))*xr
+	def			way0B (0.5/(cell*cellScale))*yr
+	def			wrpB floor(2*waxB)
+	def			wayB way0B+0.25*mod(wrpB,2)
+	def			wgB clamp(abs(cos(tau*(waxB)))/gridE1,0,1)*clamp(abs(cos(tau*(wayB)))/gridE1,0,1)
+	def			grid wgF*(1-mask)+wgB*mask
+	def			raw base+petalAmp*petal+gridAmp*grid
+	def			h0 clamp((raw-(0.14999999999999999))/(1.1499999999999999),0,1)
+	def			h1 pow(h0,log(landLevel)/log(0.5))
+	def			h2 0.5+(h1-0.5)*reliefDepth
+	def			hub 0.5*(1-reliefDepth)
+	def			rin max(centerRadius*R,0.000001)
+	def			whub clamp(r/rin,0,1)
+	def			hfin (1-whub*whub)*hub+whub*whub*h2
+	expr			clamp(hfin,0,1)
+}
+
+# iris -- 8 aperture blades spiralling a central hole
+expression_function2d
+{
+	name			dialfn_iris
+	param		R 20.6
+	param		arms 8
+	param		cell 0.8
+	param		gridAmp 0.95
+	param		petalAmp 0.3
+	param		gridE0 0.12
+	param		gridE1 0.5
+	param		base 0.15
+	param		landLevel 0.5
+	param		reliefDepth 0.85
+	param		centerRadius 0
+	param		irisAperture 0.13
+	param		irisSwirl 0.6
+	param		irisEdge 0.6
+	def			x (2*u-1)*R
+	def			y (2*v-1)*R
+	def			r hypot(x,y)
+	def			rho clamp(r/R,0,1)
+	def			theta atan2(y,x)
+	def			a irisAperture*R
+	def			tk0 tau*0/8+irisSwirl*rho
+	def			ck0 cos(tk0)
+	def			sk0 sin(tk0)
+	def			d0 (x*ck0+y*sk0)-a
+	def			tk1 tau*1/8+irisSwirl*rho
+	def			ck1 cos(tk1)
+	def			sk1 sin(tk1)
+	def			d1 (x*ck1+y*sk1)-a
+	def			tk2 tau*2/8+irisSwirl*rho
+	def			ck2 cos(tk2)
+	def			sk2 sin(tk2)
+	def			d2 (x*ck2+y*sk2)-a
+	def			tk3 tau*3/8+irisSwirl*rho
+	def			ck3 cos(tk3)
+	def			sk3 sin(tk3)
+	def			d3 (x*ck3+y*sk3)-a
+	def			tk4 tau*4/8+irisSwirl*rho
+	def			ck4 cos(tk4)
+	def			sk4 sin(tk4)
+	def			d4 (x*ck4+y*sk4)-a
+	def			tk5 tau*5/8+irisSwirl*rho
+	def			ck5 cos(tk5)
+	def			sk5 sin(tk5)
+	def			d5 (x*ck5+y*sk5)-a
+	def			tk6 tau*6/8+irisSwirl*rho
+	def			ck6 cos(tk6)
+	def			sk6 sin(tk6)
+	def			d6 (x*ck6+y*sk6)-a
+	def			tk7 tau*7/8+irisSwirl*rho
+	def			ck7 cos(tk7)
+	def			sk7 sin(tk7)
+	def			d7 (x*ck7+y*sk7)-a
+	def			ed0 abs(d0)
+	def			ed1 min(ed0,abs(d1))
+	def			ed2 min(ed1,abs(d2))
+	def			ed3 min(ed2,abs(d3))
+	def			ed4 min(ed3,abs(d4))
+	def			ed5 min(ed4,abs(d5))
+	def			ed6 min(ed5,abs(d6))
+	def			ed7 min(ed6,abs(d7))
+	def			edgeD ed7
+	def			bd0 d0
+	def			bc0 ck0
+	def			bs0 sk0
+	def			bd1 max(bd0,d1)
+	def			bc1 select(d1>bd0,ck1,bc0)
+	def			bs1 select(d1>bd0,sk1,bs0)
+	def			bd2 max(bd1,d2)
+	def			bc2 select(d2>bd1,ck2,bc1)
+	def			bs2 select(d2>bd1,sk2,bs1)
+	def			bd3 max(bd2,d3)
+	def			bc3 select(d3>bd2,ck3,bc2)
+	def			bs3 select(d3>bd2,sk3,bs2)
+	def			bd4 max(bd3,d4)
+	def			bc4 select(d4>bd3,ck4,bc3)
+	def			bs4 select(d4>bd3,sk4,bs3)
+	def			bd5 max(bd4,d5)
+	def			bc5 select(d5>bd4,ck5,bc4)
+	def			bs5 select(d5>bd4,sk5,bs4)
+	def			bd6 max(bd5,d6)
+	def			bc6 select(d6>bd5,ck6,bc5)
+	def			bs6 select(d6>bd5,sk6,bs5)
+	def			bd7 max(bd6,d7)
+	def			bc7 select(d7>bd6,ck7,bc6)
+	def			bs7 select(d7>bd6,sk7,bs6)
+	def			ownck bc7
+	def			ownsk bs7
+	def			groove smoothstep(0,irisEdge,edgeD)
+	def			along x*(-ownsk)+y*ownck
+	def			across x*ownck+y*ownsk
+	def			cube clamp(abs(cos(tau*((0.5/cell)*along)))/gridE1,0,1)*clamp(abs(cos(tau*((0.5/cell)*across)))/gridE1,0,1)
+	def			raw base+petalAmp*groove+gridAmp*cube*groove
+	def			h0 clamp((raw-(0.14999999999999999))/(1.25),0,1)
+	def			h1 pow(h0,log(landLevel)/log(0.5))
+	def			h2 0.5+(h1-0.5)*reliefDepth
+	def			hub 0.5*(1-reliefDepth)
+	def			rin max(centerRadius*R,0.000001)
+	def			whub clamp(r/rin,0,1)
+	def			hfin (1-whub*whub)*hub+whub*whub*h2
+	expr			clamp(hfin,0,1)
+}
+
+# swirl -- log-spiral guilloche
+expression_function2d
+{
+	name			dialfn_swirl
+	param		R 20.6
+	param		arms 6
+	param		cell 0.8
+	param		gridAmp 0.95
+	param		gridE0 0.12
+	param		gridE1 0.5
+	param		base 0.15
+	param		landLevel 0.5
+	param		reliefDepth 0.85
+	param		centerRadius 0.02
+	param		swirlTurns 7
+	def			x (2*u-1)*R
+	def			y (2*v-1)*R
+	def			r hypot(x,y)
+	def			rho clamp(r/R,0,1)
+	def			theta atan2(y,x)
+	def			lr log(max(r,0.001))
+	def			su (arms*theta+swirlTurns*lr)/tau
+	def			sv r/cell
+	def			grid clamp(abs(cos(tau*(su)))/gridE1,0,1)*clamp(abs(cos(tau*(sv)))/gridE1,0,1)
+	def			raw base+gridAmp*grid
+	def			h0 clamp((raw-(0.14999999999999999))/(0.94999999999999984),0,1)
+	def			h1 pow(h0,log(landLevel)/log(0.5))
+	def			h2 0.5+(h1-0.5)*reliefDepth
+	def			hub 0.5*(1-reliefDepth)
+	def			rin max(centerRadius*R,0.000001)
+	def			whub clamp(r/rin,0,1)
+	def			hfin (1-whub*whub)*hub+whub*whub*h2
+	expr			clamp(hfin,0,1)
+}
+
+# varwidth -- alternating fine/coarse sunburst sectors
+expression_function2d
+{
+	name			dialfn_varwidth
+	param		R 20.6
+	param		arms 8
+	param		cell 0.6
+	param		gridAmp 0.95
+	param		gridE0 0.12
+	param		gridE1 0.5
+	param		base 0.15
+	param		landLevel 0.5
+	param		reliefDepth 0.85
+	param		centerRadius 0.02
+	param		cellScale 2.6
+	def			x (2*u-1)*R
+	def			y (2*v-1)*R
+	def			r hypot(x,y)
+	def			rho clamp(r/R,0,1)
+	def			theta atan2(y,x)
+	def			wsec tau/arms
+	def			q theta/wsec
+	def			sector sign(q)*floor(abs(q)+0.5)
+	def			tc sector*wsec
+	def			cc cos(tc)
+	def			ss sin(tc)
+	def			xr cc*x+ss*y
+	def			yr -ss*x+cc*y
+	def			cellLocal select(mod(sector,2)>0.5,cell*cellScale,cell)
+	def			fr 0.5/cellLocal
+	def			grid clamp(abs(cos(tau*(fr*xr)))/gridE1,0,1)*clamp(abs(cos(tau*(fr*yr)))/gridE1,0,1)
+	def			raw base+gridAmp*grid
+	def			h0 clamp((raw-(0.14999999999999999))/(0.94999999999999984),0,1)
+	def			h1 pow(h0,log(landLevel)/log(0.5))
+	def			h2 0.5+(h1-0.5)*reliefDepth
+	def			hub 0.5*(1-reliefDepth)
+	def			rin max(centerRadius*R,0.000001)
+	def			whub clamp(r/rin,0,1)
+	def			hfin (1-whub*whub)*hub+whub*whub*h2
+	expr			clamp(hfin,0,1)
+}
+
+##################################################
+# The dial geometry LIBRARY: one displaced_geometry per pattern, all on
+# the shared dialdisk base + their dialfn_* field.  `dialmesh` (uniform)
+# is the default; switch the `dial` object's `geometry` to any alternate
+# -- a LIVE GUI rebind (SceneEdit::SetObjectGeometry), no reload.
+##################################################
+displaced_geometry
+{
+	name			dialmesh
+	base_geometry		dialdisk
+	displacement		dialfn_uniform
+	disp_scale		0.18
+	uv_seam_fold		FALSE
+	face_normals		TRUE
+}
+
+displaced_geometry
+{
+	name			dialmesh_lightning
+	base_geometry		dialdisk
+	displacement		dialfn_lightning
+	disp_scale		0.18
+	uv_seam_fold		FALSE
+	face_normals		TRUE
+}
+
+displaced_geometry
+{
+	name			dialmesh_radial
+	base_geometry		dialdisk
+	displacement		dialfn_radial
+	disp_scale		0.18
+	uv_seam_fold		FALSE
+	face_normals		TRUE
+}
+
+displaced_geometry
+{
+	name			dialmesh_iris
+	base_geometry		dialdisk
+	displacement		dialfn_iris
+	disp_scale		0.18
+	uv_seam_fold		FALSE
+	face_normals		TRUE
+}
+
+displaced_geometry
+{
+	name			dialmesh_swirl
+	base_geometry		dialdisk
+	displacement		dialfn_swirl
+	disp_scale		0.18
+	uv_seam_fold		FALSE
+	face_normals		TRUE
+}
+
+displaced_geometry
+{
+	name			dialmesh_varwidth
+	base_geometry		dialdisk
+	displacement		dialfn_varwidth
+	disp_scale		0.18
+	uv_seam_fold		FALSE
+	face_normals		TRUE
+}
+
+
+
+
+sdf_geometry
+{
+	name			dial_lightning_sdf
+	heightfield_function	dialfn_lightning
+	heightfield_radius	20.6
+	heightfield_scale	0.18
+}
+
+standard_object
+{
+	name				dial
+	geometry			dial_lightning_sdf
+	material			tf_dial
+	position			0 0 -1.0
+}
+
+##################################################
+# Watch head as melded SDF geometry (sphere-traced implicit primitives -- the
+# `sdf_geometry` chunk; src/Library/Geometry/SDFGeometry.{h,cpp}):
+#   casebodysdf  - case cylinder + bezel torus + 4 flying-blade lugs + carved
+#                  dial bowl, fused into one smooth-min ti_polished body
+#   crownsdf     - ribbed gear crown at 3 o'clock
+#   hand{hour,minute}sdf - fat-at-hub, tapering-to-tip white satin hands
+# The inline `part` lists below are generated by
+# `python3 scenes/FeatureBased/GuillocheWatch/sdf_gen.py` (prints these
+# chunks ready to paste).
+##################################################
+sdf_geometry
+{
+	name				casebodysdf
+	part				cylinder union 0  0 0 -4.635  90 0 0  1 1 1  24 5.635 0  0
+	part				roundcone smin 2.4  -13.88 20.5 -2.2  -45 0 0  1.45 1 0.5  3.6 1.2 8.5  0
+	part				roundcone smin 2.4  13.88 20.5 -2.2  -45 0 0  1.45 1 0.5  3.6 1.2 8.5  0
+	part				roundcone smin 2.4  -13.88 -20.5 -2.2  -135 0 0  1.45 1 0.5  3.6 1.2 8.5  0
+	part				roundcone smin 2.4  13.88 -20.5 -2.2  -135 0 0  1.45 1 0.5  3.6 1.2 8.5  0
+	part				torus smin 1.2  0 0 1  90 0 0  1 1 1  22 1.25 0  0
+	part				cylinder subtract 1  0 0 -1  90 0 0  1 1 1  21 3 0  0
+}
+
+sdf_geometry
+{
+	name				crownsdf
+	part				cylinder union 0  26 0 -4.635  0 0 90  1 1 1  3.2 2 0  0
+	part				cylinder smin 0.5  22.9 0 -4.635  0 0 90  1 1 1  1.4 1.3 0  0
+	part				box subtract 0.06  26 3.2 -4.635  0 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 2.95641 -3.41041  22.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 2.26274 -2.37226  45 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 1.22459 -1.67859  67.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 1.95943e-16 -1.435  90 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -1.22459 -1.67859  112.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -2.26274 -2.37226  135 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -2.95641 -3.41041  157.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -3.2 -4.635  180 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -2.95641 -5.85959  202.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -2.26274 -6.89774  225 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -1.22459 -7.59141  247.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 -5.8783e-16 -7.835  270 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 1.22459 -7.59141  292.5 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 2.26274 -6.89774  315 0 0  1 1 1  2.2 0.72 0.42  0
+	part				box subtract 0.06  26 2.95641 -5.85959  337.5 0 0  1 1 1  2.2 0.72 0.42  0
+}
+
+sdf_geometry
+{
+	name				handhoursdf
+	part				roundcone union 0  0 0 0  0 0 0  1 1 0.144828  1.45 0.48 10  0
+}
+
+sdf_geometry
+{
+	name				handminutesdf
+	part				roundcone union 0  0 0 0  0 0 0  1 1 0.172131  1.22 0.4 16  0
+}
+
+standard_object
+{
+	name				sdfcase
+	geometry			casebodysdf
+	material			ti_polished
+	position			0 0 0
+}
+
+standard_object
+{
+	name				sdfcrown
+	geometry			crownsdf
+	material			ti_polished
+	position			0 0 0
+}
+
+standard_object
+{
+	name				sdfhour
+	geometry			handhoursdf
+	material			white_hands
+	position			0 0 0.45
+	orientation		0 0 60
+}
+
+standard_object
+{
+	name				sdfminute
+	geometry			handminutesdf
+	material			white_hands
+	position			0 0 0.95
+	orientation		0 0 -60
+}
+##################################################
+# Double-domed sapphire crystal (sphere-traced SDF shell, authored in the
+# watch's ABSOLUTE world frame; src/Library/Geometry/SDFGeometry.{h,cpp}).
+# The dome is a 1.5-unit-thick (~1.19mm) shell between two CONCENTRIC spherical
+# surfaces, capping a flat underside (seat) plane at z=1.30.  A central inner-
+# sphere subtract carves the concave recess, leaving a SOLID flat-bottomed glass
+# flange (16.16 < r < 21.5) -- and the hour markers are a BROKEN ETCHED RING in
+# that flange underside: one continuous half-round LASER-ETCH GROOVE (a torus
+# subtract; 0.9 wide opening, rounded ceiling to z=1.75, etch depth 0.45) around
+# the r=18 ring, BROKEN at the 12 hour positions by gap-refill boxes (a WIDER
+# gap at 12 o'clock).  So the markers are the long lume ARCS BETWEEN the hours
+# (each ~7.15 u ~5.7 mm), not batons at them -- lume-filled by markerlumesdf
+# below.  The arcs ride on the crystal, nearly coplanar with the hands, floating
+# over the recessed dial (minimal parallax); the dial is viewed through the
+# refracting shell.  Regenerate with sdf_gen.py.
+##################################################
+sdf_geometry
+{
+	name				crystalsdf
+	part				sphere union 0  0 0 -62.9857  0 0 0  1 1 1  67.7857 0 0  0
+	part				box intersect 0  0 0 3.65  0 0 0  1 1 1  22 22 2.35  0
+	part				sphere subtract 0  0 0 -62.9857  0 0 0  1 1 1  66.2857 0 0  0
+	part				torus subtract 0  0 0 1.3  90 0 0  1 1 1  18 0.45 0  0
+	part				box union 0  0 18 1.54  0 0 90  1 1 1  1.425 2.1 0.24  0
+	part				box union 0  9 15.5885 1.54  0 0 60  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  15.5885 9 1.54  0 0 30  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  18 0 1.54  0 0 0  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  15.5885 -9 1.54  0 0 -30  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  9 -15.5885 1.54  0 0 -60  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  0 -18 1.54  0 0 -90  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  -9 -15.5885 1.54  0 0 -120  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  -15.5885 -9 1.54  0 0 -150  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  -18 0 1.54  0 0 -180  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  -15.5885 9 1.54  0 0 -210  1 1 1  1.425 1.05 0.24  0
+	part				box union 0  -9 15.5885 1.54  0 0 -240  1 1 1  1.425 1.05 0.24  0
+}
+
+standard_object
+{
+	name				crystal
+	geometry			crystalsdf
+	material			sapphire_crystal
+	position			0 0 0
+}
+
+##################################################
+# Floating hands (white satin round-cones), pointing to ~10:10.  The hands run
+# JUST BENEATH the crystal so the hands and the etched markers are nearly
+# coplanar ("floating" over the deep dial, minimal parallax): hour at z=0.45,
+# minute ABOVE it at z=0.95, pin covering the pivot at z~1.02 (top 1.18).
+##################################################
+# Small FLAT central pin cap (lume white) on TOP of the hand stack, just under
+# the crystal's central inner dome (z=3.30 at centre -- ample clearance).
+#
+# >>> LUME PLAN <<<  A future night variant renders this scene with the lights
+# set very low and swaps the markerlume object's lume_white to an emissive lume
+# material (lambertian_luminaire_material) -- plus white-lume variants of the
+# pin + hands -- so the markers and hands GLOW.  SDF geometry is a first-class
+# NEE area light (tessellation-backed UniformRandomPoint/GetArea), so the lume
+# fill and hands emit correctly.
+sdf_geometry
+{
+	name				pinsdf
+	part				cylinder union 0  0 0 1.02  90 0 0  1 1 1  0.85 0.16 0  0
+}
+
+uniformcolor_painter
+{
+	name				pnt_lume_white
+	color				0.93 0.93 0.89
+}
+
+# Matte lume white (day look).  Night variant: lambertian_luminaire_material
+# with exitance pnt_lume_white over this same geometry.
+lambertian_material
+{
+	name				lume_white
+	reflectance			pnt_lume_white
+}
+
+# DAY lume: real luminous pigment is photoluminescent -- charged by ambient
+# light it re-emits and reads bright white even in daylight, so a gentle
+# emission over the matte base reproduces that daylight pop.  (Historically
+# this was also a PT necessity: the lume sits INSIDE the crystal's etched
+# cavities and BINARY NEE shadow rays were blocked by the dielectric shell,
+# leaving a purely-matte fill near-black.  The rasterizer's transparent_shadows
+# TRUE now lights a matte fill through the crystal, so the emission is an
+# aesthetic day-lume choice -- swap the markerlume object to the matte
+# `lume_white` for a subtler, non-glowing marker.)  The NIGHT variant simply
+# raises this scale (and dims the studio).
+lambertian_luminaire_material
+{
+	name				lume_day
+	exitance			pnt_lume_white
+	scale				4.0
+	material			lume_white
+}
+
+standard_object
+{
+	name				pin
+	geometry			pinsdf
+	material			lume_white
+	position			0 0 0
+}
+
+##################################################
+# Lume fill for the broken etched groove in the crystal flange underside (see
+# the crystal section above).  A torus arc ring INSET inside the half-round
+# groove (inset 0.015 from every wall -> no coincident surfaces -> no z-fighting),
+# clamped to a FLAT visible face at z=1.31 (recessed 0.01 below the opening
+# plane), then BROKEN at the 12 hour positions -> 12 long lume ARCS between the
+# hours (each ~7.15 u ~5.7 mm; cross-section flat-bottom rounded-top, ~0.87
+# wide), with a wider gap at 12 o'clock.  Nearly coplanar with the floating
+# hands beneath the crystal.  Regenerate with sdf_gen.py.
+##################################################
+sdf_geometry
+{
+	name				markerlumesdf
+	part				torus union 0  0 0 1.3  90 0 0  1 1 1  18 0.435 0  0
+	part				box intersect 0  0 0 1.555  0 0 0  1 1 1  19.5 19.5 0.245  0
+	part				box subtract 0  0 18 1.52  0 0 90  1 1 1  1.5 2.115 0.5  0
+	part				box subtract 0  9 15.5885 1.52  0 0 60  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  15.5885 9 1.52  0 0 30  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  18 0 1.52  0 0 0  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  15.5885 -9 1.52  0 0 -30  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  9 -15.5885 1.52  0 0 -60  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  0 -18 1.52  0 0 -90  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  -9 -15.5885 1.52  0 0 -120  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  -15.5885 -9 1.52  0 0 -150  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  -18 0 1.52  0 0 -180  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  -15.5885 9 1.52  0 0 -210  1 1 1  1.5 1.065 0.5  0
+	part				box subtract 0  -9 15.5885 1.52  0 0 -240  1 1 1  1.5 1.065 0.5  0
+	sampling_detail		256
+}
+
+standard_object
+{
+	name				markerlume
+	geometry			markerlumesdf
+	material			lume_day
+	position			0 0 0
+}
+
+##################################################
+# Crown at 3 o'clock: knurled-look polished-Ti cylinder, axis x,
+# protruding from the caseband.
+##################################################
+# Crown stem / shoulder: a short narrower cylinder bridging case to crown.
+##################################################
+# 4 lugs (2 pairs) at the 12 and 6 o'clock band, where a strap attaches.
+# Short angular polished-Ti nubs protruding radially from the caseband.
+# Top pair near +Y, bottom pair near -Y; each pair split in X.
+##################################################
+##################################################
+# Polished display surface (dark 'black-glass' tabletop) the watch rests on,
+# Hero style: a glossy dielectric (schlick_f0, F0 0.04) -> dark face-on,
+# brighter Fresnel reflection at grazing, soft glossy reflection of the watch +
+# a lighting gradient that fades to black at the edges.  Sits at the caseback
+# plane (z=-10.30, just below the -10.27 caseback) so the watch rests on it.
+##################################################
+ggx_material
+{
+	name				surface_dark
+	rd				pnt_black
+	rs				pnt_surf_f0
+	alphax				0.10
+	alphay				0.10
+	fresnel_mode			schlick_f0
+}
+
+clippedplane_geometry
+{
+	name				surfacegeom
+	pta				-3000 -3000 -10.30
+	ptb				3000 -3000 -10.30
+	ptc				3000 3000 -10.30
+	ptd				-3000 3000 -10.30
+	doublesided			TRUE
+}
+
+standard_object
+{
+	name				surface
+	geometry			surfacegeom
+	material			surface_dark
+}
+
+##################################################
+# Blue FKM-rubber strap.  A general sweep_geometry from each lug,
+# curving down to the tabletop with a subtle residual arc (never dead-flat).
+# Domed top, rounded edges, 20->16mm taper; soft FKM sheen = schlick_f0 with
+# a low F0.  The -Y (6 o'clock) half is the same mesh rotated 180deg about Z.
+##################################################
+ggx_material
+{
+	name				strap_leather
+	rd				pnt_strap_blue
+	rs				pnt_surf_f0
+	alphax				0.34
+	alphay				0.34
+	fresnel_mode			schlick_f0
+}
+
+# The strap as a GENERAL sweep_geometry: the FKM cross-section (superellipse
+# rounded rails, centre crown, two recessed stitch channels at 8.5% inset --
+# evaluated from strap_mesh_gen.py's profile formulas at its 14 stations and
+# authored here as data) swept along the Catmull-Rom drape path
+# (lug -> curve down -> subtle residual arc on the tabletop,
+# z = -10.30 + thickness/2 = -8.80).  end_scale_x = 20.2/25.26 is the
+# 20mm -> 16mm width taper; profile h is untapered.  The auto frame hint
+# picks world X (most perpendicular to the start tangent) = the width axis.
+# The band meets the case as a CONCAVE CRESCENT (the fitted "integrated" Ming x
+# Shapiro look): the sweep START extends ~6 units UNDER the radius-24 case (its
+# first path point is at y=18, inside the case+dial), so they OCCLUDE the flat
+# leading edge and the band emerges along the round case outline -- cupping the
+# case instead of butting a straight edge against it.  Full width at the case;
+# end_scale_x still tapers the band toward the buckle.
+sweep_geometry
+{
+	name				strapgeom
+	profile_point			-12.63000 0.04743
+	profile_point			-10.68692 1.29123
+	profile_point			-8.74385 1.73862
+	profile_point			-6.80077 1.88384
+	profile_point			-4.85769 1.96817
+	profile_point			-2.91462 2.02070
+	profile_point			-0.97154 2.04675
+	profile_point			0.97154 2.04675
+	profile_point			2.91462 2.02070
+	profile_point			4.85769 1.96817
+	profile_point			6.80077 1.88384
+	profile_point			8.74385 1.73862
+	profile_point			10.68692 1.29123
+	profile_point			12.63000 0.04743
+	profile_point			12.63000 -0.04743
+	profile_point			10.68692 -1.28792
+	profile_point			8.74385 -1.45989
+	profile_point			6.80077 -1.49469
+	profile_point			4.85769 -1.49964
+	profile_point			2.91462 -1.49999
+	profile_point			0.97154 -1.50000
+	profile_point			-0.97154 -1.50000
+	profile_point			-2.91462 -1.49999
+	profile_point			-4.85769 -1.49964
+	profile_point			-6.80077 -1.49469
+	profile_point			-8.74385 -1.45989
+	profile_point			-10.68692 -1.28792
+	profile_point			-12.63000 -0.04743
+	point				0 18.0 -3.4
+	point				0 32.0 -4.9
+	point				0 43.0 -7.3
+	point				0 56.0 -8.25
+	point				0 70.0 -8.68
+	point				0 86.0 -8.50
+	point				0 104.0 -8.78
+	n_len				140
+	end_scale_x			0.799683
+	cap_start			FALSE
+	cap_end				TRUE
+}
+
+standard_object
+{
+	name				strap_12
+	geometry			strapgeom
+	material			strap_leather
+}
+
+standard_object
+{
+	name				strap_6
+	geometry			strapgeom
+	material			strap_leather
+	orientation			0 0 180
+}
+
+# Saddle stitching: a GENERAL path_instances_geometry stamping an SDF thread
+# capsule along each stitch row at arc-length pitch, slanted +/-16 deg about
+# the surface normal (mirrored rows = the saddle look).  The two row paths
+# are the drape curve offset to the channel positions (x = (0.085-0.5)*W(t),
+# h = channel floor + 0.9*r -- derived from the strap profile; re-derive if
+# the drape or profile changes).  Separate mesh so the thread carries its
+# own material.
+uniformcolor_painter
+{
+	name				pnt_thread
+	color				0.30 0.36 0.55
+}
+
+ggx_material
+{
+	name				strap_thread
+	rd				pnt_thread
+	rs				pnt_surf_f0
+	alphax				0.42
+	alphay				0.42
+	fresnel_mode			schlick_f0
+}
+
+sdf_geometry
+{
+	name				threadcapsule
+	part				capsule union 0  0 0 0  0 0 0  1 1 1  0.14 0.535 0  0
+}
+
+path_instances_geometry
+{
+	name				strapstitchgeom
+	geometry			threadcapsule
+	point				-10.48290 24.26360 -1.98746
+	point				-10.13292 32.29168 -3.49299
+	point				-9.78293 43.20002 -5.87707
+	point				-9.43295 56.07242 -6.81490
+	point				-9.08297 70.01101 -7.24312
+	point				-8.73298 86.00369 -7.06308
+	point				-8.38300 104.02306 -7.34326
+	pitch				2.4
+	slant				16.0
+	detail				24
+}
+
+path_instances_geometry
+{
+	name				strapstitchgeom6
+	geometry			threadcapsule
+	point				10.48290 24.26360 -1.98746
+	point				10.13292 32.29168 -3.49299
+	point				9.78293 43.20002 -5.87707
+	point				9.43295 56.07242 -6.81490
+	point				9.08297 70.01101 -7.24312
+	point				8.73298 86.00369 -7.06308
+	point				8.38300 104.02306 -7.34326
+	pitch				2.4
+	slant				-16.0
+	detail				24
+}
+
+standard_object
+{
+	name				stitch_12_l
+	geometry			strapstitchgeom
+	material			strap_thread
+}
+
+standard_object
+{
+	name				stitch_12_r
+	geometry			strapstitchgeom6
+	material			strap_thread
+}
+
+standard_object
+{
+	name				stitch_6_l
+	geometry			strapstitchgeom
+	material			strap_thread
+	orientation			0 0 180
+}
+
+standard_object
+{
+	name				stitch_6_r
+	geometry			strapstitchgeom6
+	material			strap_thread
+	orientation			0 0 180
+}
+
+
+##################################################
+# NIGHT / LUME SHOT (alternate mode -- self-contained, NO manual chunk edits).
+# The photoluminescent lume carries the frame: the chapter-ring arcs, the
+# hands, and the centre pin glow blue-green while everything else falls to
+# near black.  `lume_glow_night` is defined but UNUSED in day mode (an unbound
+# material has no render effect); the `>` command block below applies the mode
+# at scene-load time via the generalized `> modify` command.
+#
+# TO ACTIVATE: delete the '/*' and '*/' lines around the command block (and
+# re-add them to return to day).  Tuning: lume_glow_night 'scale' = glow
+# brightness, pnt_lume_glow = glow colour; the lume is then the ONLY light, so
+# raise the rasterizer 'samples' (e.g. 32 -> 256) for a clean night hero.
+##################################################
+uniformcolor_painter
+{
+	name				pnt_lume_glow
+	color				0.45 0.95 0.70
+}
+
+lambertian_luminaire_material
+{
+	name				lume_glow_night
+	exitance			pnt_lume_glow
+	scale				45.0
+	material			none
+}
+
+/*
+> modify rasterizer radiance_scale 0.02
+> modify material soft_top_lum scale 0
+> modify material soft_bot_lum scale 0
+> modify object markerlume material lume_glow_night
+> modify object sdfhour material lume_glow_night
+> modify object sdfminute material lume_glow_night
+> modify object pin material lume_glow_night
+*/

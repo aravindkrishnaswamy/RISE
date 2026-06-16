@@ -196,14 +196,17 @@ void CookTorranceSPF::Scatter(
 				const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
 				const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
 				const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
-				const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
+				// specColor INSIDE the average: the tinted per-bounce reflectance specColor*F_avg
+				// compounds across bounces (matches the single-scatter lobe specColor*fresnel).
+				// Pulling it outside the nonlinear Fms over-brightens tinted rough metals.
+				const RISEPel specColor = pSpecular->GetColor(ri);
+				const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor * F_avg, Eavg );
 
 				// kray = BRDF_ms * cos / pdf_cosine / pMSSelect
 				// BRDF_ms = F_ms * (1-Ess_o) * (1-Ess_i) / (PI * (1-Eavg))
 				// pdf_cosine = cos / PI
 				// kray = F_ms * (1-Ess_o) * (1-Ess_i) / (1-Eavg) / pMSSelect
-				const RISEPel specColor = pSpecular->GetColor(ri);
-				const RISEPel kray = specColor * F_ms *
+				const RISEPel kray = F_ms *
 					((1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect));
 
 				if( ColorMath::MaxValue( kray ) > 0 )
@@ -347,9 +350,12 @@ void CookTorranceSPF::ScatterNM(
 				const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 				const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
 				const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
-				const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
+				// specColor INSIDE the average: the tinted per-bounce reflectance specColor*F_avg
+				// compounds across bounces (matches the single-scatter lobe specColor*fresnel).
+				const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+				const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
 
-				const Scalar krayNM = pSpecular->GetColorNM(ri,nm) * F_ms *
+				const Scalar krayNM = F_ms *
 					(1.0 - Ess_o) * (1.0 - Ess_i) / ((1.0 - Eavg) * pMSSelect);
 
 				if( krayNM > 0 )

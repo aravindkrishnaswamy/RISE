@@ -31,13 +31,15 @@ namespace RISE
 		Scalar  ior;			///< Index of refraction at this point (for refraction; 1.0 if reflection-only)
 		RISEPel attenuation;	///< Color attenuation for transmitted/reflected light (e.g., colored glass refractance)
 		bool    valid;			///< True if this info was successfully computed
+		bool    clearTransmission;	///< True ONLY for a CLEAR transmissive dielectric boundary (Dielectric / PerfectRefractor): light passes into a NON-scattering medium and out the far side.  Distinguishes a clear glass shell from a subsurface-scattering surface or a coat-over-substrate (Polished), which share isSpecular && canRefract but must BLOCK a transparent shadow ray.  Default false.
 
 		SpecularInfo() :
 		isSpecular( false ),
 		canRefract( false ),
 		ior( 1.0 ),
 		attenuation( 1.0, 1.0, 1.0 ),
-		valid( false )
+		valid( false ),
+		clearTransmission( false )
 		{
 		}
 	};

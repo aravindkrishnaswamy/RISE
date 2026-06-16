@@ -73,6 +73,8 @@
 #include "Utilities/SMSConfig.h"
 #include "Utilities/RasterizerDefaults.h"     // AutoIntegratorChoice (auto_rasterizer dispatcher)
 #include "Utilities/ProgressiveConfig.h"      // ProgressiveConfig (auto_rasterizer factory takes it directly)
+#include "Interfaces/ProceduralDescriptors.h"
+#include "Painters/ExpressionEval.h"	// Implementation::ExpressionProgram (expression_function2d factory)
 
 namespace RISE
 {
@@ -446,7 +448,114 @@ namespace RISE
 						IFunction2D*        displacement,		///< [in] Displacement function (may be null for pure tessellation)
 						const Scalar        disp_scale,			///< [in] Displacement scale factor
 						const bool          double_sided,		///< [in] Are generated polygons double-sided?
-						const bool          face_normals		///< [in] Use face normals rather than topologically re-averaged vertex normals
+						const bool          face_normals,		///< [in] Use face normals rather than topologically re-averaged vertex normals
+						const bool          seam_fold = true	///< [in] Tent-fold UV before displacement (closed wrap-seam surfaces); FALSE for open Cartesian fields
+						);
+
+	//! Creates a signed-distance-field (implicit) geometry: transformed
+	//! primitives (sphere / box / roundbox / cylinder / torus / capsule /
+	//! roundcone) composed with smooth-min / boolean ops, ray-traced by sphere
+	//! tracing.  This is the C-API construction boundary for SDF geometry;
+	//! IJob::AddSDFGeometry and the scene parser both route through here.
+	//! The part list comes from exactly ONE of `szParts` (inline, newline-
+	//! separated part lines -- the normal authoring path) or `szFileName`
+	//! (external parts file, same one-part-per-line grammar; for very large
+	//! SDFs).  szFileName must already be a resolvable path (the scene layer
+	//! applies the media-path search before calling).  Both sources share
+	//! SDFGeometry::ParsePartLines, so the grammar cannot drift.  Fails
+	//! (returns false, logs source / line / token context) on a missing file,
+	//! both-or-neither sources, a malformed part line, or an unknown
+	//! primitive / op token.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSDFGeometry(
+						IGeometry**          ppi,				///< [out] Pointer to receive the geometry
+						const char*          szFileName,		///< [in] Parts file path (already media-path resolved); NULL / "" / "none" when szParts is given
+						const char*          szParts,			///< [in] Inline newline-separated part lines; NULL / "" when szFileName is given
+						const unsigned int   maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+						const double         surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+						const unsigned int   samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
+						);
+
+	//! Creates a HEIGHTFIELD SDF geometry: the exact analytic surface
+	//! z = scale*field(u,v) over the square [-radius,radius]^2 (u=(x+R)/2R,
+	//! v=(y+R)/2R), sphere-traced with O(1) memory.  The exact-geometry
+	//! ground-truth twin of a `displaced_geometry` on a `cartesian_disk_geometry`
+	//! (which tessellates).  This is the C-API construction boundary for the SDF
+	//! heightfield mode; IJob::AddSDFHeightfieldGeometry and the scene parser both
+	//! route through here.  `field` is an already-constructed IFunction2D
+	//! (caller-owned; the geometry addref's it).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSDFHeightfieldGeometry(
+						IGeometry**          ppGeometry,		///< [out] Pointer to receive the geometry
+						const IFunction2D*   field,				///< [in] Height field f(u,v) in [0,1] (addref'd by the geometry)
+						const double         radius,			///< [in] Half-extent of the square domain (object units)
+						const double         scale,				///< [in] World amplitude (surface z = scale*f(u,v))
+						const unsigned int   maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+						const double         surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+						const unsigned int   samplingDetail		///< [in] Tessellation cells (longest axis) for area-light / SSS surface sampling (clamped 8..256)
+						);
+
+
+	//! Creates a FLAT Cartesian-grid circular disk (linear Cartesian UV,
+	//! +Z normals) -- the general flat base for displacing an arbitrary 2D
+	//! field onto a disk via displaced_geometry (uv_seam_fold FALSE).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateCartesianDiskGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const double         radius,		///< [in] Disk radius (world units)
+						const int            meshN			///< [in] Grid samples across the diameter
+						);
+
+	//! Creates a general PROFILE SWEEP: an arbitrary CLOSED 2D profile
+	//! polygon swept along an arbitrary 3D Catmull-Rom path with
+	//! rotation-minimizing frames, optional per-axis linear taper plus
+	//! optional non-linear per-station width (point widths), and
+	//! ear-clipped end caps.  Tubes, rails, mouldings, bands, cables.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateSweepGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const SweepDescriptor&         desc	///< [in] Profile + path + taper + cap parameters
+						);
+
+	//! Creates ALONG-PATH INSTANCES: a template geometry (tessellated once
+	//! through the universal TessellateToMesh contract) stamped along a 3D
+	//! Catmull-Rom path at arc-length pitch with optional slant and scale.
+	//! Fence posts, rivets, beads, stitching, chain links.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreatePathInstancesGeometry(
+						ITriangleMeshGeometryIndexed** ppi,	///< [out] Pointer to receive the geometry
+						const PathInstancesDescriptor& desc	///< [in] Template + path + pitch parameters
+						);
+
+	//! Function2DScalarPainter with the affine output out = bias + scale * f(u,v)
+	//! (mirrors RISE_API_CreateTextureScalarPainterAffine for procedural sources).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateFunction2DScalarPainterAffine(
+						IScalarPainter**     ppi,			///< [out] Pointer to receive the painter
+						IFunction2D*         pFunc,			///< [in] Source function (addref'd)
+						const double         scale,			///< [in] Output scale
+						const double         bias			///< [in] Output bias
+						);
+
+	//! Wraps a named IFunction2D as a greyscale COLOUR painter (IPainter)
+	//! -- out = bias + scale * f(u,v) on all three channels.  The colour
+	//! analogue of RISE_API_CreateFunction2DScalarPainterAffine; lets any
+	//! procedural 2D field feed a colour slot or a blend_painter mask.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateFunction2DColorPainter(
+						IPainter**           ppi,			///< [out] Pointer to receive the painter
+						IFunction2D*         pFunc,			///< [in] Source function (addref'd)
+						const double         scale,			///< [in] Output scale
+						const double         bias			///< [in] Output bias
+						);
+
+	//! Wraps a compiled in-scene math expression as a procedural 2D field
+	//! painter (colour / displacement / scalar).  The program is built by
+	//! the expression_function2d chunk parser (params + defs + final expr).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateExpressionFunction2D(
+						IPainter**           ppi,			///< [out] Pointer to receive the painter
+						const Implementation::ExpressionProgram& prog	///< [in] Compiled expression program
 						);
 
 
@@ -519,7 +628,10 @@ namespace RISE
 								const IScalarPainter& tau,		///< [in] Transmittance (per-channel + spectral)
 								const IScalarPainter& rIndex,	///< [in] Index of refraction
 								const IScalarPainter& scat,		///< [in] Scattering function (Phong cone or HG)
-								const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
+								const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+								const Scalar arN = 0,			///< [in] AR coating film real index (0 = no coating)
+								const Scalar arK = 0,			///< [in] AR coating film extinction (~0)
+								const Scalar arThickness = 0	///< [in] AR coating thickness, nm (0 = no coating)
 								);
 
 	//! Creates a SubSurface Scattering material.  ior / absorption /
@@ -711,6 +823,33 @@ namespace RISE
 								const IPainter* tangent_rotation = nullptr			///< [in] Landing 8 / KHR_materials_anisotropy: optional painter giving tangent-frame rotation in radians.  NULL = no rotation (default; bit-identical to pre-L8).
 								);
 
+	//! Creates a GGX anisotropic microfacet material WITH the thin-film
+	//! interference slots (eFresnelThinFilmConductor).  This is the
+	//! ABI-preserving evolution of RISE_API_CreateGGXMaterial: that older
+	//! exported symbol is kept byte-for-byte (it now delegates here with
+	//! NULL film painters) so out-of-tree callers compiled against the old
+	//! header keep linking.  New callers that want thin-film use THIS
+	//! function.  The three film slots are IScalarPainter (physical scalar,
+	//! NO JH spectral uplift — see docs/ISCALARPAINTER_REFACTOR.md) and carry
+	//! the oxide FILM (the substrate metal stays on `ior`/`ext`).  They MUST
+	//! be non-NULL when `fresnel_mode == eFresnelThinFilmConductor`; the
+	//! parser/Job layer enforces presence before reaching here.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXMaterialThinFilm(
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance / F0 / thin-film tint
+								const IScalarPainter& alphaX,		///< [in] Roughness in tangent u direction (physical scalar)
+								const IScalarPainter& alphaY,		///< [in] Roughness in tangent v direction (physical scalar)
+								const IScalarPainter& ior,			///< [in] Substrate IOR (physical scalar)
+								const IScalarPainter& ext,			///< [in] Substrate extinction (physical scalar)
+								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation = nullptr,			///< [in] Landing 8 / KHR_materials_anisotropy
+								const IScalarPainter* film_ior = nullptr,			///< [in] Thin-film oxide n (physical scalar); NULL = no film
+								const IScalarPainter* film_extinction = nullptr,	///< [in] Thin-film oxide k (physical scalar); NULL = transparent film
+								const IScalarPainter* film_thickness = nullptr		///< [in] Thin-film oxide thickness in nm (physical scalar; may be spatially varying)
+								);
+
 	//! Creates a GGX material with an optional emissive painter.  Pass
 	//! emissive=NULL to skip the emitter (equivalent to RISE_API_CreateGGXMaterial).
 	//! Same scalar-slot conventions as RISE_API_CreateGGXMaterial.
@@ -727,6 +866,28 @@ namespace RISE
 								const Scalar    emissive_scale,
 								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
 								const IPainter* tangent_rotation = nullptr			///< [in] Landing 8 / KHR_materials_anisotropy.  See RISE_API_CreateGGXMaterial.
+								);
+
+	//! Thin-film-aware sibling of RISE_API_CreateGGXEmissiveMaterial (the
+	//! emissive + thin-film combination).  ABI-preserving: the old symbol is
+	//! retained and delegates here with NULL film painters.  See
+	//! RISE_API_CreateGGXMaterialThinFilm for the film-slot conventions.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXEmissiveMaterialThinFilm(
+								IMaterial** ppi,
+								const IPainter& diffuse,
+								const IPainter& specular,
+								const IScalarPainter& alphaX,
+								const IScalarPainter& alphaY,
+								const IScalarPainter& ior,
+								const IScalarPainter& ext,
+								const IPainter* emissive,		///< [in] Optional; NULL = no emitter
+								const Scalar    emissive_scale,
+								const FresnelMode fresnel_mode = eFresnelConductor,	///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation = nullptr,			///< [in] Landing 8 / KHR_materials_anisotropy
+								const IScalarPainter* film_ior = nullptr,			///< [in] Thin-film oxide n; NULL = no film
+								const IScalarPainter* film_extinction = nullptr,	///< [in] Thin-film oxide k; NULL = transparent film
+								const IScalarPainter* film_thickness = nullptr		///< [in] Thin-film oxide thickness in nm
 								);
 
 	//! Creates a glTF-spec pbrMetallicRoughness material.  Composes the
@@ -1650,6 +1811,23 @@ namespace RISE
 								unsigned int channel			///< [in] 0=R, 1=G, 2=B
 								);
 
+	//! Texture-driven scalar painter with an affine remap of the
+	//! sampled channel: `out = bias + scale * rawTexel` (rawTexel in
+	//! [0,1]).  Lets a [0,1] greyscale map drive a physical quantity
+	//! in real units (e.g. an oxide-thickness map `scale 220 bias 30`
+	//! -> 30..250 nm) without a separate scaling painter in the chain.
+	//! Like the un-remapped variant: NO JH-uplift, NO colourspace
+	//! conversion.  Distinct symbol from
+	//! RISE_API_CreateTextureScalarPainter so the frozen 3-arg ABI is
+	//! preserved for out-of-tree callers.
+	bool RISE_API_CreateTextureScalarPainterAffine(
+								IScalarPainter** ppi,
+								IRasterImageAccessor* pRIA,		///< [in] Texture accessor (addref'd)
+								unsigned int channel,			///< [in] 0=R, 1=G, 2=B
+								Scalar scale,					///< [in] multiplier on the raw texel
+								Scalar bias						///< [in] additive offset
+								);
+
 	//! Composition: child scalar painter × constant.
 	bool RISE_API_CreateScaledScalarPainter(
 								IScalarPainter** ppi,
@@ -1717,6 +1895,19 @@ namespace RISE
 								const IFunction2D& func,		///< [in] The function to use for the bumps
 								const Scalar scale,				///< [in] Factor to scale values by
 								const Scalar window				///< [in] Size of the window
+								);
+
+	//! Creates a bump map, with control over whether `scale` is the
+	//! window-independent gradient multiplier.  The legacy entry point
+	//! above is a thin wrapper that calls this with normalizeGradient=false
+	//! (preserving its amplitude-couples-to-window behaviour).
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateBumpMapModifierEx(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const IFunction2D& func,		///< [in] The function to use for the bumps
+								const Scalar scale,				///< [in] Factor to scale values by
+								const Scalar window,			///< [in] Size of the window (finite-difference step)
+								const bool normalizeGradient	///< [in] Divide the difference by 2*window so scale is window-independent
 								);
 
 	//! Creates a tangent-space normal-map modifier.  Painter must be

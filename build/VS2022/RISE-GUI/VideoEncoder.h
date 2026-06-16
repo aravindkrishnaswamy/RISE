@@ -1,10 +1,14 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  VideoEncoder.h - FFmpeg-based H.264 MP4 encoder.
+//  VideoEncoder.h - FFmpeg-based ProRes 4444 QuickTime encoder.
 //
 //  Implements IRasterizerOutput for animation video export.
 //  Windows equivalent of the Mac app's MovieRasterizerOutput
 //  (which uses AVFoundation).
+//
+//  HDR-preserving: scene-linear pels are PQ-encoded (SMPTE ST.2084)
+//  into a 10-bit 4:4:4 + alpha ProRes 4444 stream so values above the
+//  display-referred [0,1] range survive instead of being clamped.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -14,6 +18,7 @@
 #include "Interfaces/IRasterizerOutput.h"
 #include "Utilities/Reference.h"
 
+#include <cstdint>
 #include <string>
 
 // Forward declarations for FFmpeg types
@@ -46,7 +51,7 @@ public:
 
 private:
     bool setupEncoder(int width, int height);
-    bool encodeFrame(const uint8_t* rgbaData, int width, int height, unsigned int frameNum);
+    bool encodeFrame(const uint16_t* rgbaData, int width, int height, unsigned int frameNum);
     void flushEncoder();
 
     std::string m_outputPath;

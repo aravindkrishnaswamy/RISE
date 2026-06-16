@@ -80,6 +80,11 @@ namespace RISE
 				) const;
 
 		public:
+			// Deferred photon-map gate (IRasterizer): own light transport, never
+			// reads the scene photon maps -> false (overrides the spectral shader-
+			// graph base's true).
+			bool ConsumesScenePhotonMaps() const { return false; }
+
 			VCMSpectralRasterizer(
 				IRayCaster* pCaster_,
 				const unsigned int maxEyeDepth,

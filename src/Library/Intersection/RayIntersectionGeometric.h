@@ -184,6 +184,21 @@ namespace RISE
 		Scalar						bitangentSign;	// +1 or -1; bitangent = sign * cross(vNormal, vTangent)
 		bool						bHasTangent;
 
+		//! Set by a geometry that wants the shading ONB's tangent (u-axis)
+		//! built from a COHERENT, geometry-defined direction rather than
+		//! the arbitrary tangent `OrthonormalBasis3D::CreateFromW` picks
+		//! from a canonical axis.  Currently set only by `SDFGeometry` in
+		//! heightfield mode, whose linear UV = ((x+R)/2R,(y+R)/2R) matches
+		//! the `cartesian_disk` displaced mesh: both want u ∝ world-X
+		//! projected into the shading-normal plane so a shared anisotropic
+		//! `tangent_rotation` (the groove-direction flash) rotates from the
+		//! same base tangent on both realizations.  Object::IntersectRay
+		//! honours this AFTER the normal is in world space (see the
+		//! `CreateFromWU` branch there); when false the onb is built with
+		//! `CreateFromW` exactly as before, so every other geometry is
+		//! byte-identical.
+		bool						bShadingTangentFromGeometry;
+
 		RayIntersectionGeometric( const Ray& ray_, const RasterizerState& rast_ ) :
 		  ray( ray_ ),
 		  rast( rast_ ),
@@ -195,7 +210,8 @@ namespace RISE
 		  glossyFilterWidth( 0 ),
 		  bHasVertexColor( false ),
 		  bitangentSign( 1.0 ),
-		  bHasTangent( false )
+		  bHasTangent( false ),
+		  bShadingTangentFromGeometry( false )
 		{}
 
 		~RayIntersectionGeometric( )
@@ -229,7 +245,8 @@ namespace RISE
 		  bHasVertexColor( r.bHasVertexColor ),
 		  vTangent( r.vTangent ),
 		  bitangentSign( r.bitangentSign ),
-		  bHasTangent( r.bHasTangent )
+		  bHasTangent( r.bHasTangent ),
+		  bShadingTangentFromGeometry( r.bShadingTangentFromGeometry )
 		{
 			if( pCustom ) {
 				pCustom->addref();
@@ -263,6 +280,7 @@ namespace RISE
 			vTangent = r.vTangent;
 			bitangentSign = r.bitangentSign;
 			bHasTangent = r.bHasTangent;
+			bShadingTangentFromGeometry = r.bShadingTangentFromGeometry;
 
 			safe_release( pCustom );
 			pCustom = r.pCustom;

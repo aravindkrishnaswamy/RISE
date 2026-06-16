@@ -121,8 +121,11 @@ RISEPel CookTorranceBRDF::value( const Vector3& vLightIn, const RayIntersectionG
 			const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
 			const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, RISEPel(1,1,1), ior, ext );
-			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( F_avg, Eavg );
-			specular = specular + specColor * F_ms * f_ms;
+			// specColor INSIDE the average: the tinted per-bounce reflectance specColor*F_avg
+			// compounds across bounces (matches the single-scatter lobe specColor*fresnel).
+			// Pulling it outside the nonlinear Fms over-brightens tinted rough metals.
+			const RISEPel F_ms = MicrofacetEnergyLUT::ComputeFms<RISEPel>( specColor * F_avg, Eavg );
+			specular = specular + F_ms * f_ms;
 		}
 	}
 
@@ -160,8 +163,10 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 			const Scalar f_ms = (1.0 - Ess_o) * (1.0 - Ess_i) / (PI * (1.0 - Eavg));
 
 			const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
-			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
-			specular = specular + specColor * F_ms * f_ms;
+			// specColor INSIDE the average: the tinted per-bounce reflectance specColor*F_avg
+			// compounds across bounces (matches the single-scatter lobe specColor*fresnel).
+			const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
+			specular = specular + F_ms * f_ms;
 		}
 	}
 

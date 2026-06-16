@@ -79,6 +79,11 @@ namespace RISE
 			unsigned int GetAdaptiveTargetSamples() const { return adaptiveConfig.maxSamples; }
 
 		public:
+			// Deferred photon-map gate (IRasterizer): own light transport, never
+			// reads the scene photon maps -> false (overrides the spectral shader-
+			// graph base's true).
+			bool ConsumesScenePhotonMaps() const { return false; }
+
 			PathTracingSpectralRasterizer(
 				IRayCaster* pCaster_,
 				const Scalar lambda_begin,

@@ -609,6 +609,28 @@ String FindMediumName( const IJob* job, const IMedium* target )
 	return cb.found;
 }
 
+// Reverse-lookup a geometry pointer to its registered name through
+// IJob's GetGeometry / EnumerateGeometryNames pair (runtime geometry
+// swap).  Same O(N) cost / cadence as FindMediumName.
+String FindGeometryName( const IJob* job, const IGeometry* target )
+{
+	if( !job || !target ) return String();
+	struct Cb : public IEnumCallback<const char*> {
+		const IJob*      job;
+		const IGeometry* target;
+		String           found;
+		bool operator()( const char* const& name ) override {
+			if( job->GetGeometry( name ) == target ) { found = String( name ); return false; }
+			return true;
+		}
+	};
+	Cb cb;
+	cb.job    = job;
+	cb.target = target;
+	job->EnumerateGeometryNames( cb );
+	return cb.found;
+}
+
 // Read a single medium property as a parser-formatted "r g b" string
 // so undo can replay it through the same ParseStrictVec3 +
 // MediaIntrospection::SetSlotValue pipeline the forward path uses.
@@ -711,6 +733,16 @@ void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 			if( med ) obj.AssignInteriorMedium( *med );
 		}
 		break;
+	case SceneEdit::SetObjectGeometry:
+		// Runtime geometry swap.  Resolve the new geometry name via
+		// IJob (same mechanism as interior_medium) and rebind.  The
+		// bbox-invalidation / TLAS rebuild runs in the caller's
+		// OpNeedsSpatialRebuild branch.
+		if( mJob ) {
+			const IGeometry* g = mJob->GetGeometry( edit.propertyValue.c_str() );
+			if( g ) obj.AssignGeometry( *g );
+		}
+		break;
 	default:
 		// Caller guarantees IsObjectOp(edit.op) — this is a coding
 		// error if reached, but we silently no-op rather than crash.
@@ -750,6 +782,7 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 	// (transient) are intentionally NOT persisted by Phase B.
 	switch( edit.op )
 	{
+	case SceneEdit::SetObjectGeometry:
 	case SceneEdit::SetObjectMaterial:
 	case SceneEdit::SetObjectShader:
 	case SceneEdit::SetObjectShadowFlags:
@@ -924,6 +957,15 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 			// handles that round-trip cleanly.
 			edit.prevPropertyValue = FindMediumName( mJob, obj->GetInteriorMedium() );
 			break;
+		case SceneEdit::SetObjectGeometry:
+			// Validate the new geometry name resolves BEFORE pushing
+			// history — same rationale as material/shader: a stale or
+			// mistyped name would silently no-op yet poison undo.
+			if( !mJob || !mJob->GetGeometry( edit.propertyValue.c_str() ) ) {
+				return false;
+			}
+			edit.prevPropertyValue = FindGeometryName( mJob, obj->GetGeometry() );
+			break;
 		default:
 			break;
 		}
@@ -933,15 +975,8 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		// that transform changes do.  Run the invariant chain only
 		// for transform ops to avoid an unnecessary BSP invalidation
 		// per material/shader/shadow click.
-		const bool isTransformOp =
-			edit.op == SceneEdit::TranslateObject
-		 || edit.op == SceneEdit::RotateObjectArb
-		 || edit.op == SceneEdit::SetObjectPosition
-		 || edit.op == SceneEdit::SetObjectOrientation
-		 || edit.op == SceneEdit::SetObjectScale
-		 || edit.op == SceneEdit::SetObjectStretch
-		 || edit.op == SceneEdit::ScaleObjectFromAnchor;
-		if( isTransformOp ) {
+		const bool needsSpatialRebuild = SceneEdit::OpNeedsSpatialRebuild( edit.op );
+		if( needsSpatialRebuild ) {
 			RunObjectInvariantChain( *obj );
 			// Phase 6.3 (§7.2): every transform-shaped op marks the
 			// target dirty.  Property ops (material / shader / etc.)
@@ -1312,6 +1347,15 @@ bool SceneEditor::Undo()
 						obj->SetShadowParams( ( flags & 1 ) != 0, ( flags & 2 ) != 0 );
 						break;
 					}
+					case SceneEdit::SetObjectGeometry:
+						if( mJob && inner.prevPropertyValue.size() > 1 ) {
+							const IGeometry* g = mJob->GetGeometry( inner.prevPropertyValue.c_str() );
+							if( g ) obj->AssignGeometry( *g );
+						}
+						// Geometry changes the bbox — rebuild the TLAS on undo,
+						// same as a transform op.
+						RunObjectInvariantChain( *obj );
+						break;
 					case SceneEdit::SetObjectInteriorMedium:
 						if( inner.prevPropertyValue.size() <= 1 ) {
 							obj->ClearInteriorMedium();
@@ -1456,6 +1500,14 @@ bool SceneEditor::Undo()
 			obj->SetShadowParams( ( flags & 1 ) != 0, ( flags & 2 ) != 0 );
 			break;
 		}
+		case SceneEdit::SetObjectGeometry:
+			if( mJob && edit.prevPropertyValue.size() > 1 ) {
+				const IGeometry* g = mJob->GetGeometry( edit.prevPropertyValue.c_str() );
+				if( g ) obj->AssignGeometry( *g );
+			}
+			// Geometry changes the bbox — rebuild the TLAS on undo.
+			RunObjectInvariantChain( *obj );
+			break;
 		case SceneEdit::SetObjectInteriorMedium:
 			if( edit.prevPropertyValue.size() <= 1 ) {
 				// Empty prev = object had no medium before; restore
@@ -1661,15 +1713,8 @@ bool SceneEditor::Redo()
 					// transform ops; property-style ops (material /
 					// shader / shadow / interior_medium) leave the
 					// bbox alone.  Symmetric with Apply()'s gate.
-					const bool isTransformOp =
-						inner.op == SceneEdit::TranslateObject
-					 || inner.op == SceneEdit::RotateObjectArb
-					 || inner.op == SceneEdit::SetObjectPosition
-					 || inner.op == SceneEdit::SetObjectOrientation
-					 || inner.op == SceneEdit::SetObjectScale
-					 || inner.op == SceneEdit::SetObjectStretch
-					 || inner.op == SceneEdit::ScaleObjectFromAnchor;
-					if( isTransformOp ) {
+					const bool needsSpatialRebuild = SceneEdit::OpNeedsSpatialRebuild( inner.op );
+					if( needsSpatialRebuild ) {
 						RunObjectInvariantChain( *obj );
 						// Phase 6.3 (§7.3): redo marks dirty.
 						mDirtyTracker.MarkDirty( std::string( inner.objectName.c_str() ) );
@@ -1765,18 +1810,11 @@ bool SceneEditor::Redo()
 		if( !obj ) return false;
 		ApplyObjectOpForward( *obj, edit );
 		// Property-style ops don't move geometry — symmetric with
-		// Apply()'s isTransformOp gate.  Pre-Phase-1 this path ran
+		// Apply()'s spatial-rebuild gate.  Pre-Phase-1 this path ran
 		// the chain unconditionally, costing a spurious BSP
 		// invalidation per material/shader/shadow redo.
-		const bool isTransformOp =
-			edit.op == SceneEdit::TranslateObject
-		 || edit.op == SceneEdit::RotateObjectArb
-		 || edit.op == SceneEdit::SetObjectPosition
-		 || edit.op == SceneEdit::SetObjectOrientation
-		 || edit.op == SceneEdit::SetObjectScale
-		 || edit.op == SceneEdit::SetObjectStretch
-		 || edit.op == SceneEdit::ScaleObjectFromAnchor;
-		if( isTransformOp ) {
+		const bool needsSpatialRebuild = SceneEdit::OpNeedsSpatialRebuild( edit.op );
+		if( needsSpatialRebuild ) {
 			RunObjectInvariantChain( *obj );
 			// Phase 6.3 (§7.3): single-op redo marks dirty.
 			mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );

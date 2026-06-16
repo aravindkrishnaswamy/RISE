@@ -110,6 +110,22 @@ bool Object::AssignMaterial( const IMaterial& pMat )
 	return false;
 }
 
+bool Object::AssignGeometry( const IGeometry& pGeom )
+{
+	// Runtime geometry swap (interactive editor via SceneEdit::
+	// SetObjectGeometry).  Mirrors AssignMaterial: release the prior
+	// reference and retain the new one.  The bounding box is derived
+	// on demand from pGeometry (getBoundingBox), so the caller
+	// (SceneEditor::RunObjectInvariantChain) invalidates the top-level
+	// acceleration afterward and the next render rebuilds the TLAS.
+	safe_release( pGeometry );
+
+	pGeometry = &pGeom;
+	pGeometry->addref();
+
+	return true;
+}
+
 bool Object::AssignModifier( const IRayIntersectionModifier& pMod )
 {
 	safe_release( pModifier );
@@ -372,7 +388,27 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		// approximation).  Renormalize because non-uniform scales can otherwise
 		// leave it un-unit.
 		ri.geometric.vGeomNormal = Vector3Ops::Normalize( Vector3Ops::Transform( m_mxInvTranspose, ri.geometric.vGeomNormal ));
-		ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
+		// Shading ONB.  By default the tangent (u-axis) is whatever
+		// CreateFromW picks from a canonical axis -- fine for isotropic
+		// materials, but an arbitrary base for anisotropic GGX.  A
+		// geometry can instead request a COHERENT, world-X-aligned tangent
+		// (bShadingTangentFromGeometry) so an anisotropic tangent_rotation
+		// rotates from the same base on it as on the cartesian_disk mesh
+		// (whose constant +Z normal makes CreateFromW yield ±world-X).  We
+		// project world-X into the now-world-space shading-normal plane and
+		// hand it to CreateFromWU (W fixed = normal, U re-orthonormalized
+		// against W); when world-X is parallel to the normal we fall back
+		// to world-Y so the projection never degenerates.
+		if( ri.geometric.bShadingTangentFromGeometry ) {
+			const Vector3& n = ri.geometric.vNormal;
+			Vector3 t( 1.0 - n.x*n.x, -n.x*n.y, -n.x*n.z );	// (1,0,0) - n*dot(n,(1,0,0))
+			if( Vector3Ops::SquaredModulus( t ) < NEARZERO ) {
+				t = Vector3( -n.y*n.x, 1.0 - n.y*n.y, -n.y*n.z );	// (0,1,0) - n*dot(n,(0,1,0))
+			}
+			ri.geometric.onb.CreateFromWU( n, t );	// W = n (fixed); V = norm(W x t), U = V x W (double-cross => U = t projected into the W-plane)
+		} else {
+			ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
+		}
 
 		// Transform the per-vertex tangent (v3 storage path) from object
 		// space to world space.  Tangents transform with the forward
@@ -501,6 +537,13 @@ void Object::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, 
 Scalar Object::GetArea( ) const
 {
 	return pGeometry->GetArea();
+}
+
+void Object::Realize() const
+{
+	if( pGeometry ) {
+		pGeometry->Realize();
+	}
 }
 
 void Object::ResetRuntimeData() const

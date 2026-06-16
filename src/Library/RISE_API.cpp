@@ -74,6 +74,9 @@ namespace RISE
 }
 
 #include <string.h>										// for strncpy
+#include <cstdio>										// for the SDF parts-file read in RISE_API_CreateSDFGeometry
+#include <string>										// parts-file buffer in RISE_API_CreateSDFGeometry
+#include <vector>
 
 namespace RISE
 {
@@ -386,6 +389,9 @@ namespace RISE
 #include "Geometry/BezierPatchGeometry.h"
 #include "Geometry/BilinearPatchGeometry.h"
 #include "Geometry/DisplacedGeometry.h"
+#include "Geometry/SDFGeometry.h"
+#include "Interfaces/ProceduralDescriptors.h"	// SweepDescriptor / PathInstancesDescriptor for the procedural mesh factories
+#include "Geometry/GeometryUtilities.h"		// MakeIndexedTriangleSameIdx for the procedural mesh factories
 #include "Geometry/TriangleMeshGeometry.h"
 #include "Geometry/TriangleMeshGeometryIndexed.h"
 #include "Geometry/TriangleMeshLoader3DS.h"
@@ -688,7 +694,8 @@ namespace RISE
 						IFunction2D*        displacement,
 						const Scalar        disp_scale,
 						const bool          double_sided,
-						const bool          face_normals
+						const bool          face_normals,
+						const bool          seam_fold
 						)
 	{
 		if( !ppi || !pBase ) {
@@ -703,14 +710,20 @@ namespace RISE
 
 		DisplacedGeometry* pGeom = new DisplacedGeometry(
 			pBase, detail, displacement, disp_scale,
-			double_sided, face_normals );
+			double_sided, face_normals, seam_fold );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "displaced geometry" );
 
 		if( !pGeom->IsValid() ) {
-			// Base could not be tessellated (e.g. InfinitePlaneGeometry).  Refuse construction
-			// loudly so the caller's scene-parse layer can surface the error.  The geometry
-			// starts with refcount=1 from its Reference base, so one release destroys it.
-			GlobalLog()->Print( eLog_Error, "RISE_API_CreateDisplacedGeometry: base geometry does not support TessellateToMesh \u2014 refusing." );
+			// Recipe invalid: null base, OR a base that can never be tessellated
+			// (e.g. InfinitePlaneGeometry).  Both are CHEAP recipe checks
+			// (IsValid() = m_pBase != 0 && m_pBase->CanTessellate()), so we refuse
+			// construction at PARSE time, honoring "validate cheaply at parse,
+			// defer only the bake": the expensive tessellate+displace defers to
+			// Realize(), but the "can this base ever tessellate?" capability is
+			// known immediately and surfaced as a parse error here.  The geometry
+			// starts with refcount=1 from its Reference base, so one release
+			// destroys it.
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateDisplacedGeometry: base geometry is null or cannot be tessellated (e.g. InfinitePlaneGeometry) \u2014 refusing." );
 			pGeom->release();
 			*ppi = 0;
 			return false;
@@ -719,6 +732,824 @@ namespace RISE
 		*ppi = pGeom;
 		return true;
 	}
+
+	bool RISE_API_CreateSDFGeometry(
+						IGeometry**          ppi,
+						const char*          szFileName,
+						const char*          szParts,
+						const unsigned int   maxSteps,
+						const double         surfaceEpsilonFraction,
+						const unsigned int   samplingDetail
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		// Exactly one source.  "none" is the scene-language not-set
+		// convention for filename parameters.
+		const bool hasFile  = ( szFileName && szFileName[0] && strcmp( szFileName, "none" ) != 0 );
+		const bool hasParts = ( szParts && szParts[0] );
+		if( hasFile == hasParts ) {
+			GlobalLog()->Print( eLog_Error, hasFile
+				? "RISE_API_CreateSDFGeometry:: both an inline part list and a parts file were given -- provide exactly one"
+				: "RISE_API_CreateSDFGeometry:: no SDF source -- provide inline part lines or a parts file" );
+			return false;
+		}
+
+		// Both sources route through the ONE grammar --
+		// SDFGeometry::ParsePartLines -- which logs source / line / token
+		// context on failure.
+		std::vector<SDFGeometry::Part> parts;
+		if( hasParts ) {
+			if( !SDFGeometry::ParsePartLines( szParts, "<inline part list>", parts ) ) {
+				return false;
+			}
+		} else {
+			FILE* inputFile = fopen( szFileName, "rb" );
+			if( !inputFile ) {
+				char msg[512];
+				snprintf( msg, sizeof(msg), "RISE_API_CreateSDFGeometry:: cannot open `%s`", szFileName );
+				GlobalLog()->Print( eLog_Error, msg );
+				return false;
+			}
+			std::string source;
+			char buf[4096];
+			size_t got = 0;
+			while( ( got = fread( buf, 1, sizeof(buf), inputFile ) ) > 0 ) {
+				source.append( buf, got );
+			}
+			fclose( inputFile );
+			if( !SDFGeometry::ParsePartLines( source.c_str(), szFileName, parts ) ) {
+				return false;
+			}
+		}
+
+		if( parts.empty() ) {
+			GlobalLog()->Print( eLog_Error, hasParts
+				? "RISE_API_CreateSDFGeometry:: inline part list contains no parts"
+				: "RISE_API_CreateSDFGeometry:: parts file contains no parts" );
+			return false;
+		}
+
+		(*ppi) = new SDFGeometry( parts, maxSteps, surfaceEpsilonFraction, samplingDetail );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "sdf geometry" );
+		return true;
+	}
+
+	// Heightfield SDF: the exact analytic surface z = scale*field(u,v), sphere-
+	// traced.  Allocation mirrors RISE_API_CreateSDFGeometry exactly -- `new`
+	// (the Reference base seeds refcount 1, the caller's owning reference) +
+	// PrintNew; the constructor addref's `field`, so the caller keeps ownership
+	// of its own reference.  No explicit addref here (would leak a reference,
+	// just like the parts path above).
+	bool RISE_API_CreateSDFHeightfieldGeometry(
+						IGeometry**          ppGeometry,
+						const IFunction2D*   field,
+						const double         radius,
+						const double         scale,
+						const unsigned int   maxSteps,
+						const double         surfaceEpsilonFraction,
+						const unsigned int   samplingDetail
+						)
+	{
+		if( !ppGeometry ) {
+			return false;
+		}
+		*ppGeometry = 0;
+
+		if( !field ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSDFHeightfieldGeometry:: null heightfield function" );
+			return false;
+		}
+		if( !( radius > 0 ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSDFHeightfieldGeometry:: radius must be > 0" );
+			return false;
+		}
+
+		(*ppGeometry) = new SDFGeometry( field, Scalar(radius), Scalar(scale), maxSteps, Scalar(surfaceEpsilonFraction), samplingDetail );
+		GlobalLog()->PrintNew( *ppGeometry, __FILE__, __LINE__, "sdf heightfield geometry" );
+		return true;
+	}
+
+	// A FLAT Cartesian-grid circular disk with LINEAR Cartesian UV
+	// (u = (x+R)/2R, v = (y+R)/2R) and +Z normals -- the general flat base
+	// for displacing an arbitrary 2D field (an expression_function2d, a
+	// texture, noise) onto a disk via displaced_geometry (uv_seam_fold
+	// FALSE).  Uniform world-space cell density everywhere (unlike a polar
+	// fan), so a Cartesian pattern reads the same at the centre and the rim.
+	bool RISE_API_CreateCartesianDiskGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const double         radius,
+						const int            meshN
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+		const int N = meshN < 2 ? 2 : ( meshN > 4096 ? 4096 : meshN );
+		const Scalar R = radius;
+		if( !( R > 0 ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateCartesianDiskGeometry: radius must be > 0" );
+			return false;
+		}
+		std::vector<Scalar> xs( N );
+		const Scalar step = Scalar(2) * R / Scalar( N - 1 );
+		for( int i = 0; i < N; i++ ) xs[i] = -R + step * Scalar(i);
+		xs[0] = -R; xs[ N - 1 ] = R;
+
+		std::vector<int> idx( size_t(N) * N, -1 );
+		int vc = 0;
+		for( int j = 0; j < N; j++ )
+			for( int i = 0; i < N; i++ )
+				if( sqrt( xs[i]*xs[i] + xs[j]*xs[j] ) <= R )
+					idx[ size_t(j)*N + i ] = vc++;
+		if( vc < 3 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateCartesianDiskGeometry: degenerate (fewer than 3 vertices inside the disk)" );
+			return false;
+		}
+
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( false, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "cartesian disk geometry" );
+		pGeom->BeginIndexedTriangles();
+		const Scalar inv2R = Scalar(1) / ( Scalar(2) * R );
+		for( int j = 0; j < N; j++ ) {
+			const size_t row = size_t(j) * N;
+			for( int i = 0; i < N; i++ ) {
+				if( idx[ row + i ] < 0 ) continue;
+				pGeom->AddVertex( Vertex( xs[i], xs[j], Scalar(0) ) );
+				pGeom->AddNormal( Normal( 0, 0, 1 ) );
+				pGeom->AddTexCoord( TexCoord( ( xs[i] + R ) * inv2R, ( xs[j] + R ) * inv2R ) );
+			}
+		}
+		for( int j = 0; j < N - 1; j++ ) {
+			const size_t row = size_t(j) * N;
+			for( int i = 0; i < N - 1; i++ ) {
+				const int a = idx[ row + i ], b = idx[ row + i + 1 ];
+				const int c = idx[ row + N + i + 1 ], d = idx[ row + N + i ];
+				if( a >= 0 && b >= 0 && c >= 0 && d >= 0 ) {
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, d ) );
+				}
+			}
+		}
+		pGeom->DoneIndexedTriangles();
+		*ppi = pGeom;
+		return true;
+	}
+
+	//////////////////////////////////////////////////////////////////////
+	// General procedural sweep machinery shared by RISE_API_CreateSweepGeometry
+	// and RISE_API_CreatePathInstancesGeometry: a 3D Catmull-Rom path sampler
+	// and rotation-minimizing frame transport (Wang et al. 2008 double
+	// reflection -- no torsion-induced spin, stable through inflections).
+	//////////////////////////////////////////////////////////////////////
+	namespace
+	{
+		struct SweepV3 { Scalar x, y, z; };
+
+		inline SweepV3 svSub( const SweepV3& a, const SweepV3& b ) { SweepV3 r = { a.x-b.x, a.y-b.y, a.z-b.z }; return r; }
+		inline SweepV3 svAdd( const SweepV3& a, const SweepV3& b ) { SweepV3 r = { a.x+b.x, a.y+b.y, a.z+b.z }; return r; }
+		inline SweepV3 svScale( const SweepV3& a, const Scalar s ) { SweepV3 r = { a.x*s, a.y*s, a.z*s }; return r; }
+		inline Scalar  svDot( const SweepV3& a, const SweepV3& b ) { return a.x*b.x + a.y*b.y + a.z*b.z; }
+		inline SweepV3 svCross( const SweepV3& a, const SweepV3& b )
+		{
+			SweepV3 r = { a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x };
+			return r;
+		}
+		inline Scalar svLen( const SweepV3& a ) { return sqrt( svDot( a, a ) ); }
+		inline SweepV3 svNorm( const SweepV3& a )
+		{
+			const Scalar l = svLen( a );
+			return ( l > 0 ) ? svScale( a, Scalar(1) / l ) : a;
+		}
+
+		// Catmull-Rom through 3D control points: reflective end padding,
+		// per-segment t = k/per for k in [0, per), then the final point --
+		// the same sampling scheme every RISE procedural path uses.
+		void SampleCatmullRom3(
+			const double* ctrl, const unsigned int nCtrl, const int nLen,
+			std::vector<SweepV3>& out )
+		{
+			std::vector<SweepV3> pad( nCtrl + 2 );
+			for( unsigned int i = 0; i < nCtrl; i++ ) {
+				pad[ i + 1 ].x = ctrl[ 3*i ]; pad[ i + 1 ].y = ctrl[ 3*i + 1 ]; pad[ i + 1 ].z = ctrl[ 3*i + 2 ];
+			}
+			pad[0]         = svSub( svScale( pad[1], 2 ),       pad[2] );
+			pad[ nCtrl+1 ] = svSub( svScale( pad[ nCtrl ], 2 ), pad[ nCtrl-1 ] );
+			const int segs = int(nCtrl) - 1;
+			const int per = ( nLen / segs ) < 2 ? 2 : ( nLen / segs );
+			out.clear();
+			out.reserve( size_t(segs) * per + 1 );
+			for( int sgi = 0; sgi < segs; sgi++ ) {
+				const SweepV3& p0 = pad[ sgi ];
+				const SweepV3& p1 = pad[ sgi + 1 ];
+				const SweepV3& p2 = pad[ sgi + 2 ];
+				const SweepV3& p3 = pad[ sgi + 3 ];
+				for( int k = 0; k < per; k++ ) {
+					const Scalar t = Scalar(k) / Scalar(per);
+					const Scalar t2 = t * t, t3 = t2 * t;
+					SweepV3 q;
+					q.x = Scalar(0.5) * ( 2*p1.x + (-p0.x+p2.x)*t + (2*p0.x-5*p1.x+4*p2.x-p3.x)*t2 + (-p0.x+3*p1.x-3*p2.x+p3.x)*t3 );
+					q.y = Scalar(0.5) * ( 2*p1.y + (-p0.y+p2.y)*t + (2*p0.y-5*p1.y+4*p2.y-p3.y)*t2 + (-p0.y+3*p1.y-3*p2.y+p3.y)*t3 );
+					q.z = Scalar(0.5) * ( 2*p1.z + (-p0.z+p2.z)*t + (2*p0.z-5*p1.z+4*p2.z-p3.z)*t2 + (-p0.z+3*p1.z-3*p2.z+p3.z)*t3 );
+					out.push_back( q );
+				}
+			}
+			out.push_back( pad[ nCtrl ] );
+		}
+
+		// Catmull-Rom through 1D control VALUES, using the IDENTICAL reflective
+		// padding + per-segment (segs, per) scheme as SampleCatmullRom3 so an
+		// interpolated scalar track (e.g. a per-station width multiplier) lands in
+		// EXACT lockstep with the 3D path samples: control value j sits at the same
+		// output station as path control point j.
+		void SampleCatmullRom1(
+			const std::vector<Scalar>& ctrl, const int nLen,
+			std::vector<Scalar>& out )
+		{
+			const int nCtrl = (int)ctrl.size();
+			std::vector<Scalar> pad( nCtrl + 2 );
+			for( int i = 0; i < nCtrl; i++ ) {
+				pad[ i + 1 ] = ctrl[ i ];
+			}
+			pad[0]         = Scalar(2) * pad[1]       - pad[2];
+			pad[ nCtrl+1 ] = Scalar(2) * pad[ nCtrl ] - pad[ nCtrl-1 ];
+			const int segs = nCtrl - 1;
+			const int per = ( nLen / segs ) < 2 ? 2 : ( nLen / segs );
+			out.clear();
+			out.reserve( size_t(segs) * per + 1 );
+			for( int sgi = 0; sgi < segs; sgi++ ) {
+				const Scalar p0 = pad[ sgi ], p1 = pad[ sgi + 1 ], p2 = pad[ sgi + 2 ], p3 = pad[ sgi + 3 ];
+				for( int k = 0; k < per; k++ ) {
+					const Scalar t = Scalar(k) / Scalar(per);
+					const Scalar t2 = t * t, t3 = t2 * t;
+					out.push_back( Scalar(0.5) * ( 2*p1 + (-p0+p2)*t + (2*p0-5*p1+4*p2-p3)*t2 + (-p0+3*p1-3*p2+p3)*t3 ) );
+				}
+			}
+			out.push_back( pad[ nCtrl ] );
+		}
+
+		// Per-sample tangents (central differences, one-sided ends) and
+		// rotation-minimizing frames.  B = binormal (profile x axis),
+		// N = B x T (profile h axis).  The initial binormal comes from the
+		// caller's hint, or auto-picks the world axis most perpendicular to
+		// the start tangent (a planar path in YZ therefore gets the fixed
+		// world-X width axis the retired band generator used).
+		void BuildPathFrames(
+			const std::vector<SweepV3>& path,
+			const SweepV3& hint, const bool haveHint,
+			std::vector<SweepV3>& T, std::vector<SweepV3>& B, std::vector<SweepV3>& N )
+		{
+			const size_t n = path.size();
+			T.resize( n ); B.resize( n ); N.resize( n );
+			for( size_t i = 0; i < n; i++ ) {
+				const SweepV3& a = path[ i > 0 ? i - 1 : 0 ];
+				const SweepV3& b = path[ i + 1 < n ? i + 1 : n - 1 ];
+				SweepV3 t = svSub( b, a );
+				const Scalar l = svLen( t );
+				if( l > 0 ) {
+					t = svScale( t, Scalar(1) / l );
+				} else {
+					t = ( i > 0 ) ? T[ i - 1 ] : t;
+				}
+				T[i] = t;
+			}
+			if( svLen( T[0] ) <= 0 ) {
+				GlobalLog()->Print( eLog_Warning,
+					"BuildPathFrames: degenerate start tangent (duplicated first path point?) -- frames may be unreliable" );
+			}
+			SweepV3 b0 = { 0, 0, 0 };
+			const SweepV3 axisPick = [&]() {
+				const Scalar ax = fabs( T[0].x ), ay = fabs( T[0].y ), az = fabs( T[0].z );
+				SweepV3 a = { 0, 0, 0 };
+				if( ax <= ay && ax <= az )      a.x = 1;
+				else if( ay <= ax && ay <= az ) a.y = 1;
+				else                            a.z = 1;
+				return a;
+			}();
+			if( haveHint ) {
+				b0 = svNorm( svSub( hint, svScale( T[0], svDot( hint, T[0] ) ) ) );
+				if( svLen( b0 ) <= 0 ) {
+					GlobalLog()->Print( eLog_Warning,
+						"BuildPathFrames: frame_hint is parallel to the start tangent -- falling back to the auto axis" );
+					b0 = svNorm( svSub( axisPick, svScale( T[0], svDot( axisPick, T[0] ) ) ) );
+				}
+			} else {
+				b0 = svNorm( svSub( axisPick, svScale( T[0], svDot( axisPick, T[0] ) ) ) );
+			}
+			B[0] = b0;
+			N[0] = svCross( B[0], T[0] );
+			for( size_t i = 0; i + 1 < n; i++ ) {
+				// double reflection step
+				const SweepV3 v1 = svSub( path[i+1], path[i] );
+				const Scalar c1 = svDot( v1, v1 );
+				if( c1 <= 0 ) {
+					// duplicated path sample: carry the frame, re-projected
+					// off the (possibly different) next tangent
+					B[i+1] = svNorm( svSub( B[i], svScale( T[i+1], svDot( B[i], T[i+1] ) ) ) );
+					N[i+1] = svCross( B[i+1], T[i+1] );
+					continue;
+				}
+				const SweepV3 bL = svSub( B[i], svScale( v1, ( Scalar(2)/c1 ) * svDot( v1, B[i] ) ) );
+				const SweepV3 tL = svSub( T[i], svScale( v1, ( Scalar(2)/c1 ) * svDot( v1, T[i] ) ) );
+				const SweepV3 v2 = svSub( T[i+1], tL );
+				const Scalar c2 = svDot( v2, v2 );
+				SweepV3 b = ( c2 > 0 ) ? svSub( bL, svScale( v2, ( Scalar(2)/c2 ) * svDot( v2, bL ) ) ) : bL;
+				// re-orthonormalize against accumulated drift
+				b = svNorm( svSub( b, svScale( T[i+1], svDot( b, T[i+1] ) ) ) );
+				B[i+1] = b;
+				N[i+1] = svCross( B[i+1], T[i+1] );
+			}
+		}
+
+		// Ear-clipping triangulation of a simple 2D polygon (indices into the
+		// profile).  Handles non-convex profiles (grooves, mouldings); the
+		// polygon must be simple (non-self-intersecting).  O(n^2), fine for
+		// authored profile sizes.
+		bool EarClipProfile(
+			const std::vector<Scalar>& px, const std::vector<Scalar>& ph,
+			std::vector<unsigned int>& tris )
+		{
+			const size_t n = px.size();
+			if( n < 3 ) {
+				return false;
+			}
+			// signed area -> winding
+			Scalar area2 = 0;
+			for( size_t i = 0; i < n; i++ ) {
+				const size_t j = ( i + 1 ) % n;
+				area2 += px[i] * ph[j] - px[j] * ph[i];
+			}
+			const Scalar wind = ( area2 >= 0 ) ? Scalar(1) : Scalar(-1);
+			// Drop consecutively-coincident points (the documented
+			// duplicate-a-point hard-edge idiom for the SIDE normals) before
+			// clipping: a zero-length edge makes its corner permanently
+			// reflex (cross == 0) and its twin sits ON every candidate ear's
+			// boundary, deadlocking the clip.  The dropped duplicates simply
+			// go unreferenced by the cap triangles.
+			std::vector<unsigned int> idx;
+			idx.reserve( n );
+			for( size_t i = 0; i < n; i++ ) {
+				const size_t prev = ( i + n - 1 ) % n;
+				if( px[i] == px[prev] && ph[i] == ph[prev] ) {
+					continue;
+				}
+				idx.push_back( (unsigned int)i );
+			}
+			if( idx.size() < 3 ) {
+				return false;
+			}
+			tris.clear();
+			tris.reserve( ( n - 2 ) * 3 );
+			size_t guard = n * n + 8;
+			while( idx.size() > 3 && guard-- > 0 ) {
+				bool clipped = false;
+				for( size_t i = 0; i < idx.size(); i++ ) {
+					const unsigned int ia = idx[ ( i + idx.size() - 1 ) % idx.size() ];
+					const unsigned int ib = idx[ i ];
+					const unsigned int ic = idx[ ( i + 1 ) % idx.size() ];
+					const Scalar cross = ( px[ib]-px[ia] ) * ( ph[ic]-ph[ia] ) - ( ph[ib]-ph[ia] ) * ( px[ic]-px[ia] );
+					if( cross * wind <= 0 ) {
+						continue;	// reflex corner, not an ear
+					}
+					// no other active vertex inside the candidate ear
+					bool inside = false;
+					for( size_t k = 0; k < idx.size() && !inside; k++ ) {
+						const unsigned int iq = idx[k];
+						if( iq == ia || iq == ib || iq == ic ) continue;
+						// a probe POSITIONALLY coincident with a corner is the
+						// corner (authored duplicates) -- not an interior point
+						if( ( px[iq] == px[ia] && ph[iq] == ph[ia] ) ||
+							( px[iq] == px[ib] && ph[iq] == ph[ib] ) ||
+							( px[iq] == px[ic] && ph[iq] == ph[ic] ) ) continue;
+						const Scalar d1 = ( ( px[ib]-px[ia] )*( ph[iq]-ph[ia] ) - ( ph[ib]-ph[ia] )*( px[iq]-px[ia] ) ) * wind;
+						const Scalar d2 = ( ( px[ic]-px[ib] )*( ph[iq]-ph[ib] ) - ( ph[ic]-ph[ib] )*( px[iq]-px[ib] ) ) * wind;
+						const Scalar d3 = ( ( px[ia]-px[ic] )*( ph[iq]-ph[ic] ) - ( ph[ia]-ph[ic] )*( px[iq]-px[ic] ) ) * wind;
+						inside = ( d1 >= 0 && d2 >= 0 && d3 >= 0 );
+					}
+					if( inside ) {
+						continue;
+					}
+					tris.push_back( ia ); tris.push_back( ib ); tris.push_back( ic );
+					idx.erase( idx.begin() + i );
+					clipped = true;
+					break;
+				}
+				if( !clipped ) {
+					return false;	// degenerate / self-intersecting profile
+				}
+			}
+			if( idx.size() == 3 ) {
+				tris.push_back( idx[0] ); tris.push_back( idx[1] ); tris.push_back( idx[2] );
+			}
+			return true;
+		}
+	}
+
+	// General profile sweep: an arbitrary CLOSED 2D profile polygon swept
+	// along an arbitrary 3D Catmull-Rom path with rotation-minimizing
+	// frames, optional linear per-axis taper, optional NON-linear per-station
+	// width (point widths), and ear-clipped end caps.
+	// Profile-space (x, h) maps to  P(i) + x*scaleX(i)*B(i) + h*scaleY(i)*N(i).
+	// Vertex normals come from closed-loop central differences over the
+	// profile polyline (taper-corrected); longitudinal curvature lean is
+	// deliberately ignored (matches mesh-sweep convention; per-vertex
+	// normals carry the shading).
+	bool RISE_API_CreateSweepGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const SweepDescriptor&         desc
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		if( !desc.profilePoints || desc.numProfilePoints < 3 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: need at least 3 `profile_point` entries (a closed polygon)" );
+			return false;
+		}
+		if( !desc.pathPoints || desc.numPathPoints < 2 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: need at least 2 `point` path control points" );
+			return false;
+		}
+		if( !( desc.endScaleX > 0 ) || !( desc.endScaleY > 0 ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: end_scale_x / end_scale_y must be > 0" );
+			return false;
+		}
+		const int nLen = desc.nLen < 2 ? 2 : ( desc.nLen > 4096 ? 4096 : desc.nLen );
+		if( nLen != desc.nLen ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreateSweepGeometry: n_len %d clamped to %d", desc.nLen, nLen );
+		}
+		const unsigned int nProf = desc.numProfilePoints;
+		if( nProf > 4096 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: more than 4096 profile points" );
+			return false;
+		}
+
+		std::vector<Scalar> px( nProf ), ph( nProf );
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			px[k] = desc.profilePoints[ 2*k ];
+			ph[k] = desc.profilePoints[ 2*k + 1 ];
+		}
+
+		// closed-loop central-difference profile normals, oriented OUTWARD
+		// by the polygon winding (positive signed area = CCW -> outward is
+		// the right-hand perpendicular of the running direction).
+		Scalar area2 = 0;
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			const unsigned int j = ( k + 1 ) % nProf;
+			area2 += px[k] * ph[j] - px[j] * ph[k];
+		}
+		const Scalar outward = ( area2 >= 0 ) ? Scalar(1) : Scalar(-1);
+		std::vector<Scalar> pnx( nProf ), pnh( nProf );
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			const unsigned int kp = ( k + nProf - 1 ) % nProf;
+			const unsigned int kn = ( k + 1 ) % nProf;
+			const Scalar dx = px[kn] - px[kp];
+			const Scalar dh = ph[kn] - ph[kp];
+			const Scalar l = sqrt( dx*dx + dh*dh );
+			if( l > 0 ) {
+				pnx[k] =  outward * dh / l;
+				pnh[k] = -outward * dx / l;
+			} else {
+				pnx[k] = 0; pnh[k] = 1;
+			}
+		}
+
+		// profile arc-length fractions for U
+		std::vector<Scalar> uFrac( nProf + 1 );
+		uFrac[0] = 0;
+		for( unsigned int k = 0; k < nProf; k++ ) {
+			const unsigned int j = ( k + 1 ) % nProf;
+			const Scalar dx = px[j] - px[k], dh = ph[j] - ph[k];
+			uFrac[ k + 1 ] = uFrac[k] + sqrt( dx*dx + dh*dh );
+		}
+		const Scalar uTotal = uFrac[ nProf ] > 0 ? uFrac[ nProf ] : Scalar(1);
+		for( unsigned int k = 0; k <= nProf; k++ ) {
+			uFrac[k] /= uTotal;
+		}
+
+		std::vector<SweepV3> path;
+		SampleCatmullRom3( desc.pathPoints, desc.numPathPoints, nLen, path );
+		const size_t n = path.size();
+
+		const SweepV3 hint = { desc.frameHintX, desc.frameHintY, desc.frameHintZ };
+		const bool haveHint = svLen( hint ) > 0;
+		std::vector<SweepV3> T, B, N;
+		BuildPathFrames( path, hint, haveHint, T, B, N );
+
+		// OPTIONAL per-station width track: Catmull-Rom interpolate the per-
+		// control-point width multipliers onto the path samples (1:1 with `path`),
+		// to be composed MULTIPLICATIVELY with the linear end_scale_x taper on the
+		// width (x/binormal) axis below.  Empty => uniform 1.0 (an exact no-op, so
+		// every sweep authored without point widths stays byte-identical).
+		std::vector<Scalar> widthMul;
+		if( desc.numPointWidths > 0 ) {
+			if( !desc.pointWidths ) {
+				GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: numPointWidths > 0 but pointWidths is null" );
+				return false;
+			}
+			if( desc.numPointWidths > desc.numPathPoints ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"RISE_API_CreateSweepGeometry: %u point widths exceed %u path points (one per point; pad the rest with 1.0)",
+					desc.numPointWidths, desc.numPathPoints );
+				return false;
+			}
+			std::vector<Scalar> wCtrl( desc.numPathPoints, Scalar(1) );
+			for( unsigned int j = 0; j < desc.numPointWidths; j++ ) {
+				if( !( desc.pointWidths[j] > 0 ) ) {
+					GlobalLog()->PrintEx( eLog_Error,
+						"RISE_API_CreateSweepGeometry: point width %u (%g) must be > 0", j, desc.pointWidths[j] );
+					return false;
+				}
+				wCtrl[j] = (Scalar)desc.pointWidths[j];
+			}
+			SampleCatmullRom1( wCtrl, nLen, widthMul );
+			// widthMul is a dimensionless MULTIPLIER on the profile x-extent, so it
+			// must stay strictly positive or the ring inverts (negative scale flips
+			// the winding + normals).  Catmull-Rom can dip below the smallest authored
+			// width between non-monotone controls; floor any non-positive (or NaN)
+			// sample to 1e-4 -- an effectively-zero pinch (0.01% of the UN-NECKED width
+			// at that station, so scale-relative by construction), NOT a fold -- and warn
+			// once so the author can tighten their point widths.
+			bool widthClamped = false;
+			for( size_t i = 0; i < widthMul.size(); i++ ) {
+				if( !( widthMul[i] > 0 ) ) { widthMul[i] = Scalar(1e-4); widthClamped = true; }
+			}
+			if( widthClamped ) {
+				GlobalLog()->Print( eLog_Warning,
+					"RISE_API_CreateSweepGeometry: a per-station width undershot <= 0 (aggressive non-monotone point widths); floored to avoid ring inversion" );
+			}
+		}
+
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "sweep geometry" );
+		pGeom->BeginIndexedTriangles();
+
+		// rings
+		int vc = 0;
+		for( size_t i = 0; i < n; i++ ) {
+			const Scalar frac = Scalar(i) / Scalar( n - 1 );
+			const Scalar wm = widthMul.empty() ? Scalar(1) : widthMul[i];
+			const Scalar sx = ( Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac ) * wm;
+			const Scalar sy = Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac;
+			for( unsigned int k = 0; k < nProf; k++ ) {
+				const Scalar lx = px[k] * sx;
+				const Scalar lh = ph[k] * sy;
+				pGeom->AddVertex( Vertex(
+					path[i].x + lx * B[i].x + lh * N[i].x,
+					path[i].y + lx * B[i].y + lh * N[i].y,
+					path[i].z + lx * B[i].z + lh * N[i].z ) );
+				// taper-corrected profile normal mapped through the frame
+				const Scalar nx = pnx[k] / sx;
+				const Scalar nh = pnh[k] / sy;
+				const Scalar nl = sqrt( nx*nx + nh*nh );
+				const Scalar nxn = ( nl > 0 ) ? nx / nl : 0;
+				const Scalar nhn = ( nl > 0 ) ? nh / nl : 1;
+				pGeom->AddNormal( Normal(
+					nxn * B[i].x + nhn * N[i].x,
+					nxn * B[i].y + nhn * N[i].y,
+					nxn * B[i].z + nhn * N[i].z ) );
+				pGeom->AddTexCoord( TexCoord( uFrac[k], frac ) );
+				vc++;
+			}
+		}
+
+		// side quads between consecutive rings (cyclic over the profile);
+		// winding gives outward-facing triangles for a CCW profile.
+		for( size_t i = 0; i + 1 < n; i++ ) {
+			const int r0 = int(i) * int(nProf);
+			const int r1 = int(i+1) * int(nProf);
+			for( unsigned int k = 0; k < nProf; k++ ) {
+				const unsigned int kn = ( k + 1 ) % nProf;
+				const int a = r0 + int(k);
+				const int b = r1 + int(k);
+				const int c = r1 + int(kn);
+				const int d = r0 + int(kn);
+				if( outward > 0 ) {
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, d ) );
+				} else {
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, d, c ) );
+				}
+			}
+		}
+
+		// end caps: ear-clipped, duplicated vertices with the flat cap normal
+		if( desc.capStart || desc.capEnd ) {
+			std::vector<unsigned int> capTris;
+			if( !EarClipProfile( px, ph, capTris ) ) {
+				GlobalLog()->Print( eLog_Error, "RISE_API_CreateSweepGeometry: profile triangulation failed (self-intersecting or degenerate polygon)" );
+				pGeom->release();
+				return false;
+			}
+			// profile bbox for cap UV
+			Scalar bx0 = px[0], bx1 = px[0], bh0 = ph[0], bh1 = ph[0];
+			for( unsigned int k = 1; k < nProf; k++ ) {
+				if( px[k] < bx0 ) bx0 = px[k];
+				if( px[k] > bx1 ) bx1 = px[k];
+				if( ph[k] < bh0 ) bh0 = ph[k];
+				if( ph[k] > bh1 ) bh1 = ph[k];
+			}
+			const Scalar bxs = ( bx1 > bx0 ) ? Scalar(1)/( bx1-bx0 ) : Scalar(1);
+			const Scalar bhs = ( bh1 > bh0 ) ? Scalar(1)/( bh1-bh0 ) : Scalar(1);
+			for( int side = 0; side < 2; side++ ) {
+				const bool isStart = ( side == 0 );
+				if( isStart ? !desc.capStart : !desc.capEnd ) {
+					continue;
+				}
+				const size_t i = isStart ? 0 : n - 1;
+				const Scalar frac = Scalar(i) / Scalar( n - 1 );
+				const Scalar wm = widthMul.empty() ? Scalar(1) : widthMul[i];
+				const Scalar sx = ( Scalar(1) + ( desc.endScaleX - Scalar(1) ) * frac ) * wm;
+				const Scalar sy = Scalar(1) + ( desc.endScaleY - Scalar(1) ) * frac;
+				// cap faces along -T at the start, +T at the end
+				const Scalar sgn = isStart ? Scalar(-1) : Scalar(1);
+				const Normal capN( sgn * T[i].x, sgn * T[i].y, sgn * T[i].z );
+				const int base = vc;
+				for( unsigned int k = 0; k < nProf; k++ ) {
+					const Scalar lx = px[k] * sx;
+					const Scalar lh = ph[k] * sy;
+					pGeom->AddVertex( Vertex(
+						path[i].x + lx * B[i].x + lh * N[i].x,
+						path[i].y + lx * B[i].y + lh * N[i].y,
+						path[i].z + lx * B[i].z + lh * N[i].z ) );
+					pGeom->AddNormal( capN );
+					pGeom->AddTexCoord( TexCoord( ( px[k]-bx0 ) * bxs, ( ph[k]-bh0 ) * bhs ) );
+					vc++;
+				}
+				for( size_t t = 0; t + 2 < capTris.size(); t += 3 ) {
+					const int a = base + int(capTris[t]);
+					const int b = base + int(capTris[t+1]);
+					const int c = base + int(capTris[t+2]);
+					// orient the cap triangles along the cap normal.  In the
+					// (B, N) profile basis B x N = -T, so triangles emitted in
+					// profile winding carry geometric normal -T for a CCW
+					// (outward > 0) profile: the END cap (faces +T) must flip
+					// them, the START cap (faces -T) keeps them.
+					const bool flip = isStart ? ( outward < 0 ) : ( outward > 0 );
+					if( flip ) {
+						pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, c, b ) );
+					} else {
+						pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx( a, b, c ) );
+					}
+				}
+			}
+		}
+
+		pGeom->DoneIndexedTriangles();
+		*ppi = pGeom;
+		return true;
+	}
+
+	// General along-path instancing: tessellate the named template ONCE via
+	// the universal TessellateToMesh contract, then stamp transformed copies
+	// along the Catmull-Rom path at arc-length pitch.  Template local axes:
+	// +X -> binormal, +Y -> tangent (rotated by slant about the normal),
+	// +Z -> frame normal.  Instances interpolate position AND frame inside
+	// the crossing segment (no sample-snapping).
+	bool RISE_API_CreatePathInstancesGeometry(
+						ITriangleMeshGeometryIndexed** ppi,
+						const PathInstancesDescriptor& desc
+						)
+	{
+		if( !ppi ) {
+			return false;
+		}
+		*ppi = 0;
+
+		if( !desc.pGeometry ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: no template geometry" );
+			return false;
+		}
+		if( !desc.pathPoints || desc.numPathPoints < 2 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: need at least 2 `point` path control points" );
+			return false;
+		}
+		if( !( desc.pitch > 0 ) || !( desc.scale > 0 ) ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: pitch and scale must be > 0" );
+			return false;
+		}
+		const int nLen = desc.nLen < 2 ? 2 : ( desc.nLen > 8192 ? 8192 : desc.nLen );
+		if( nLen != desc.nLen ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreatePathInstancesGeometry: n_len %d clamped to %d", desc.nLen, nLen );
+		}
+		const unsigned int detail = desc.detail < 3 ? 3 : ( desc.detail > 256 ? 256 : desc.detail );
+		if( detail != desc.detail ) {
+			GlobalLog()->PrintEx( eLog_Warning, "RISE_API_CreatePathInstancesGeometry: detail %u clamped to %u (template tessellation is O(detail^2))", desc.detail, detail );
+		}
+
+		// Realize the template first: a deferred DisplacedGeometry template
+		// returns false from TessellateToMesh until its mesh is baked, and we
+		// need that mesh NOW to stamp instances.  Realize() is const + idempotent
+		// (single-threaded at parse); a template that is actually instanced IS
+		// used, so baking it here is correct (the deferral skips only UNused
+		// geometry).
+		desc.pGeometry->Realize();
+
+		// tessellate the template once (the same contract area lights and
+		// SSS sampling rely on -- every first-class geometry provides it)
+		IndexTriangleListType tTris;
+		VerticesListType      tVerts;
+		NormalsListType       tNorms;
+		TexCoordsListType     tCoords;
+		if( !desc.pGeometry->TessellateToMesh( tTris, tVerts, tNorms, tCoords, detail ) ||
+			tVerts.empty() || tTris.empty() ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: template geometry does not support TessellateToMesh (or tessellated empty)" );
+			return false;
+		}
+
+		std::vector<SweepV3> path;
+		SampleCatmullRom3( desc.pathPoints, desc.numPathPoints, nLen, path );
+		const size_t n = path.size();
+
+		const SweepV3 hint = { desc.frameHintX, desc.frameHintY, desc.frameHintZ };
+		const bool haveHint = svLen( hint ) > 0;
+		std::vector<SweepV3> T, B, N;
+		BuildPathFrames( path, hint, haveHint, T, B, N );
+
+		const Scalar slant = desc.slantDeg * PI / Scalar(180);
+		const Scalar cs = cos( slant ), sn = sin( slant );
+
+		TriangleMeshGeometryIndexed* pGeom = new TriangleMeshGeometryIndexed( true, false );
+		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "path instances geometry" );
+		pGeom->BeginIndexedTriangles();
+
+		int vc = 0;
+		unsigned int placed = 0;
+		Scalar arc = 0;
+		Scalar nextAt = ( desc.phase >= 0 ) ? desc.phase : desc.pitch * Scalar(0.5);	// < 0 sentinel = centred pitch/2 default
+		// total-output budget: instances x template verts capped well below
+		// the signed-index ceiling, so a tiny pitch + heavy template degrades
+		// to a warning instead of an OOM / index overflow
+		const unsigned int kMaxTotalVerts = 20000000;
+		const unsigned int kMaxByBudget = kMaxTotalVerts / (unsigned int)tVerts.size();
+		const unsigned int kMaxInstances = ( 100000 < kMaxByBudget ) ? 100000 : kMaxByBudget;
+		for( size_t i = 1; i < n && placed < kMaxInstances; i++ ) {
+			const SweepV3 seg = svSub( path[i], path[i-1] );
+			const Scalar segLen = svLen( seg );
+			Scalar segStart = arc;
+			arc += segLen;
+			while( nextAt <= arc && segLen > 0 && placed < kMaxInstances ) {
+				const Scalar f = ( nextAt - segStart ) / segLen;
+				// interpolate position + frame inside the segment
+				const SweepV3 P = svAdd( path[i-1], svScale( seg, f ) );
+				const SweepV3 Ti = svNorm( svAdd( svScale( T[i-1], Scalar(1)-f ), svScale( T[i], f ) ) );
+				SweepV3 Bi = svAdd( svScale( B[i-1], Scalar(1)-f ), svScale( B[i], f ) );
+				Bi = svNorm( svSub( Bi, svScale( Ti, svDot( Bi, Ti ) ) ) );
+				const SweepV3 Ni = svCross( Bi, Ti );
+				// slant rotates the (B, T) pair about N
+				SweepV3 Bs = svAdd( svScale( Bi, cs ),  svScale( Ti, -sn ) );
+				SweepV3 Ts = svAdd( svScale( Bi, sn ),  svScale( Ti, cs ) );
+				const int base = vc;
+				for( size_t v = 0; v < tVerts.size(); v++ ) {
+					const Scalar lx = tVerts[v].x * desc.scale;
+					const Scalar ly = tVerts[v].y * desc.scale;
+					const Scalar lz = tVerts[v].z * desc.scale;
+					pGeom->AddVertex( Vertex(
+						P.x + lx * Bs.x + ly * Ts.x + lz * Ni.x,
+						P.y + lx * Bs.y + ly * Ts.y + lz * Ni.y,
+						P.z + lx * Bs.z + ly * Ts.z + lz * Ni.z ) );
+					const Vector3 tn = ( v < tNorms.size() ) ? tNorms[v] : Vector3( 0, 0, 1 );
+					pGeom->AddNormal( Normal(
+						tn.x * Bs.x + tn.y * Ts.x + tn.z * Ni.x,
+						tn.x * Bs.y + tn.y * Ts.y + tn.z * Ni.y,
+						tn.x * Bs.z + tn.y * Ts.z + tn.z * Ni.z ) );
+					pGeom->AddTexCoord( v < tCoords.size() ? tCoords[v] : TexCoord( 0.5, 0.5 ) );
+					vc++;
+				}
+				for( size_t t = 0; t < tTris.size(); t++ ) {
+					pGeom->AddIndexedTriangle( MakeIndexedTriangleSameIdx(
+						base + tTris[t].iVertices[0],
+						base + tTris[t].iVertices[1],
+						base + tTris[t].iVertices[2] ) );
+				}
+				placed++;
+				nextAt += desc.pitch;
+			}
+		}
+
+		if( placed == 0 ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreatePathInstancesGeometry: path shorter than the first instance position (phase) -- refusing an empty mesh" );
+			pGeom->release();
+			return false;
+		}
+		if( placed >= kMaxInstances ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"RISE_API_CreatePathInstancesGeometry: instance cap (%u) reached (vertex budget %u / template %u verts) -- pitch too small for the path length?",
+				kMaxInstances, kMaxTotalVerts, (unsigned int)tVerts.size() );
+		}
+
+		pGeom->DoneIndexedTriangles();
+		*ppi = pGeom;
+		return true;
+	}
+
 
 }
 
@@ -882,14 +1713,17 @@ namespace RISE
 								const IScalarPainter& tau,
 								const IScalarPainter& rIndex,
 								const IScalarPainter& scat,
-								const bool hg
+								const bool hg,
+								const Scalar arN,
+								const Scalar arK,
+								const Scalar arThickness
 								)
 	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new DielectricMaterial( tau, rIndex, scat, hg );
+		(*ppi) = new DielectricMaterial( tau, rIndex, scat, hg, arN, arK, arThickness );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "dielectric material" );
 		return true;
 	}
@@ -1206,6 +2040,26 @@ namespace RISE
 		return true;
 	}
 
+	// Forward declarations for the thin-film factories defined just below:
+	// RISE_API.cpp includes its own header at the BOTTOM of the file, so the
+	// ABI-preserving wrappers (which delegate to these) cannot see the header
+	// declarations yet at this point.  Signatures must match RISE_API.h exactly.
+	bool RISE_API_CreateGGXMaterialThinFilm(
+								IMaterial** ppi, const IPainter& diffuse, const IPainter& specular,
+								const IScalarPainter& alphaX, const IScalarPainter& alphaY,
+								const IScalarPainter& ior, const IScalarPainter& ext,
+								const FresnelMode fresnel_mode, const IPainter* tangent_rotation,
+								const IScalarPainter* film_ior, const IScalarPainter* film_extinction,
+								const IScalarPainter* film_thickness );
+	bool RISE_API_CreateGGXEmissiveMaterialThinFilm(
+								IMaterial** ppi, const IPainter& diffuse, const IPainter& specular,
+								const IScalarPainter& alphaX, const IScalarPainter& alphaY,
+								const IScalarPainter& ior, const IScalarPainter& ext,
+								const IPainter* emissive, const Scalar emissive_scale,
+								const FresnelMode fresnel_mode, const IPainter* tangent_rotation,
+								const IScalarPainter* film_ior, const IScalarPainter* film_extinction,
+								const IScalarPainter* film_thickness );
+
 	//! Creates a GGX anisotropic microfacet material
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateGGXMaterial(
@@ -1220,11 +2074,46 @@ namespace RISE
 								const IPainter* tangent_rotation	///< [in] Landing 8 / KHR_materials_anisotropy
 								)
 	{
+		// ABI-preserving wrapper: this symbol's signature is frozen for
+		// out-of-tree callers; the thin-film evolution lives in the new
+		// *ThinFilm overload, which this delegates to with NULL film slots
+		// (NULL film painters == the exact pre-thin-film behaviour).
+		return RISE_API_CreateGGXMaterialThinFilm(
+			ppi, diffuse, specular, alphaX, alphaY, ior, ext,
+			fresnel_mode, tangent_rotation, nullptr, nullptr, nullptr );
+	}
+
+	//! Creates a GGX anisotropic microfacet material with thin-film slots.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXMaterialThinFilm(
+								IMaterial** ppi,					///< [out] Pointer to recieve the material
+								const IPainter& diffuse,			///< [in] Diffuse reflectance
+								const IPainter& specular,			///< [in] Specular reflectance / F0 / thin-film tint
+								const IScalarPainter& alphaX,		///< [in] Roughness in tangent u direction (physical scalar)
+								const IScalarPainter& alphaY,		///< [in] Roughness in tangent v direction (physical scalar)
+								const IScalarPainter& ior,			///< [in] Substrate IOR (physical scalar)
+								const IScalarPainter& ext,			///< [in] Substrate extinction (physical scalar)
+								const FresnelMode fresnel_mode,		///< [in] Fresnel evaluation model
+								const IPainter* tangent_rotation,	///< [in] Landing 8 / KHR_materials_anisotropy
+								const IScalarPainter* film_ior,		///< [in] Thin-film oxide n; NULL = no film
+								const IScalarPainter* film_extinction,	///< [in] Thin-film oxide k; NULL = transparent film
+								const IScalarPainter* film_thickness	///< [in] Thin-film oxide thickness in nm
+								)
+	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation );
+		// Thin-film mode REQUIRES the oxide n (film_ior) and thickness; both are
+		// dereferenced unconditionally by the BSDF and have no sensible default
+		// (unlike film_extinction, which defaults to k=0).  Reject the invalid
+		// combination here rather than crash on the first shade -- the scene path
+		// is guarded by Job's presence contract; this guards the direct-API path.
+		if( fresnel_mode == eFresnelThinFilmConductor && ( film_ior == nullptr || film_thickness == nullptr ) ) {
+			return false;
+		}
+		
+		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx material" );
 		return true;
 	}
@@ -1245,11 +2134,45 @@ namespace RISE
 								const IPainter* tangent_rotation	///< [in] Landing 8 / KHR_materials_anisotropy
 								)
 	{
+		// ABI-preserving wrapper — see RISE_API_CreateGGXMaterial above.
+		return RISE_API_CreateGGXEmissiveMaterialThinFilm(
+			ppi, diffuse, specular, alphaX, alphaY, ior, ext, emissive, emissive_scale,
+			fresnel_mode, tangent_rotation, nullptr, nullptr, nullptr );
+	}
+
+	//! Thin-film-aware GGX-emissive factory.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateGGXEmissiveMaterialThinFilm(
+								IMaterial** ppi,
+								const IPainter& diffuse,
+								const IPainter& specular,
+								const IScalarPainter& alphaX,
+								const IScalarPainter& alphaY,
+								const IScalarPainter& ior,
+								const IScalarPainter& ext,
+								const IPainter* emissive,
+								const Scalar    emissive_scale,
+								const FresnelMode fresnel_mode,
+								const IPainter* tangent_rotation,	///< [in] Landing 8 / KHR_materials_anisotropy
+								const IScalarPainter* film_ior,		///< [in] Thin-film oxide n; NULL = no film
+								const IScalarPainter* film_extinction,	///< [in] Thin-film oxide k; NULL = transparent film
+								const IScalarPainter* film_thickness	///< [in] Thin-film oxide thickness in nm
+								)
+	{
 		if( !ppi ) {
 			return false;
 		}
 
-		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, emissive, emissive_scale, fresnel_mode, tangent_rotation );
+		// Thin-film mode REQUIRES the oxide n (film_ior) and thickness; both are
+		// dereferenced unconditionally by the BSDF and have no sensible default
+		// (unlike film_extinction, which defaults to k=0).  Reject the invalid
+		// combination here rather than crash on the first shade -- the scene path
+		// is guarded by Job's presence contract; this guards the direct-API path.
+		if( fresnel_mode == eFresnelThinFilmConductor && ( film_ior == nullptr || film_thickness == nullptr ) ) {
+			return false;
+		}
+		
+		(*ppi) = new GGXMaterial( diffuse, specular, alphaX, alphaY, ior, ext, emissive, emissive_scale, fresnel_mode, tangent_rotation, film_ior, film_extinction, film_thickness );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "ggx emissive material" );
 		return true;
 	}
@@ -2897,6 +3820,8 @@ namespace RISE
 #include "Painters/PolynomialScalarPainter.h"
 #include "Painters/Function1DScalarPainter.h"
 #include "Painters/Function2DScalarPainter.h"
+#include "Painters/Function2DColorPainter.h"
+#include "Painters/ExpressionFunction2DPainter.h"
 #include "Painters/TextureScalarPainter.h"
 #include "Painters/ScaledScalarPainter.h"
 #include "Painters/MultiplyScalarPainter.h"
@@ -3082,6 +4007,47 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateFunction2DScalarPainterAffine(
+		IScalarPainter** ppi,
+		IFunction2D* pFunc,
+		const double scale,
+		const double bias
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new Function2DScalarPainter( pFunc, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "function2d scalar painter (affine)" );
+		return true;
+	}
+
+	bool RISE_API_CreateFunction2DColorPainter(
+		IPainter** ppi,
+		IFunction2D* pFunc,
+		const double scale,
+		const double bias
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new Function2DColorPainter( pFunc, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "function2d color painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateExpressionFunction2D(
+		IPainter** ppi,
+		const Implementation::ExpressionProgram& prog
+		)
+	{
+		if( !ppi ) return false;
+		if( !prog.IsValid() ) {
+			GlobalLog()->PrintEx( eLog_Error, "RISE_API_CreateExpressionFunction2D: invalid program (%s)", prog.Error().c_str() );
+			return false;
+		}
+		*ppi = new Implementation::ExpressionFunction2DPainter( prog );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "expression function2d painter" );
+		return true;
+	}
+
 	bool RISE_API_CreateTextureScalarPainter(
 		IScalarPainter** ppi,
 		IRasterImageAccessor* pRIA,
@@ -3095,6 +4061,24 @@ namespace RISE
 			               TextureScalarPainter::Channel_R;
 		*ppi = new TextureScalarPainter( pRIA, ch );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "texture scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateTextureScalarPainterAffine(
+		IScalarPainter** ppi,
+		IRasterImageAccessor* pRIA,
+		unsigned int channel,
+		Scalar scale,
+		Scalar bias
+		)
+	{
+		if( !ppi ) return false;
+		const TextureScalarPainter::Channel ch =
+			channel == 1 ? TextureScalarPainter::Channel_G :
+			channel == 2 ? TextureScalarPainter::Channel_B :
+			               TextureScalarPainter::Channel_R;
+		*ppi = new TextureScalarPainter( pRIA, ch, scale, bias );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "affine texture scalar painter" );
 		return true;
 	}
 
@@ -3228,6 +4212,26 @@ namespace RISE
 {
 	//! Creates a bump map
 	/// \return TRUE if successful, FALSE otherwise
+	// NOTE: RISE_API.cpp does not include RISE_API.h (see the signature-match
+	// comment elsewhere in this file), so the Ex implementation must precede
+	// the legacy wrapper that calls it.
+	bool RISE_API_CreateBumpMapModifierEx(
+								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
+								const IFunction2D& func,		///< [in] The function to use for the bumps
+								const Scalar scale,				///< [in] Factor to scale values by
+								const Scalar window,			///< [in] Size of the window (finite-difference step)
+								const bool normalizeGradient	///< [in] Divide the difference by 2*window so scale is window-independent
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new BumpMap( func, scale, window, normalizeGradient );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "bumpmap" );
+		return true;
+	}
+
 	bool RISE_API_CreateBumpMapModifier(
 								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
 								const IFunction2D& func,		///< [in] The function to use for the bumps
@@ -3235,13 +4239,9 @@ namespace RISE
 								const Scalar window				///< [in] Size of the window
 								)
 	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new BumpMap( func, scale, window );
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "bumpmap" );
-		return true;
+		// Legacy signature: preserve the original amplitude-couples-to-window
+		// behaviour (normalizeGradient = false) so existing scenes are unchanged.
+		return RISE_API_CreateBumpMapModifierEx( ppi, func, scale, window, false );
 	}
 
 	//! Creates a tangent-space normal-map modifier.

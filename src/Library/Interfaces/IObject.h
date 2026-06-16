@@ -126,6 +126,14 @@ namespace RISE
 		//! Returns the bounding box of the object
 		/// \return The bounding box of the object
 		virtual const BoundingBox getBoundingBox() const = 0;
+
+		//! Materialize any deferred build-work this object needs before render.
+		//! Called once, single-threaded, from RayCaster::AttachScene's realize
+		//! pass BEFORE the parallel rasterize.  That pass enumerates only WORLD-
+		//! VISIBLE objects, so a composite (CSGObject) MUST cascade into its
+		//! non-enumerated children here.  Default no-op; Object realizes its
+		//! geometry.  Declared last + defaulted so the vtable stays ABI-stable.
+		virtual void Realize() const {}
 	};
 }
 

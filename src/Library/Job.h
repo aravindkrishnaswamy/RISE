@@ -1019,7 +1019,10 @@ namespace RISE
 									const char* tau,				///< [in] Transmittance painter
 									const char* rIndex,				///< [in] Index of refraction
 									const char* scat,				///< [in] Scattering function (either Phong or HG)
-									const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
+									const bool hg,					///< [in] Use Henyey-Greenstein phase function scattering
+									const Scalar arN,
+									const Scalar arK,
+									const Scalar arThickness
 									);
 
 		//! Creates a SubSurface Scattering material
@@ -1191,7 +1194,10 @@ namespace RISE
 			const char* emissive,
 			const double emissive_scale,
 			const char* fresnel_mode = "conductor",
-			const char* tangent_rotation = "none"			///< Landing 8 / KHR_materials_anisotropy
+			const char* tangent_rotation = "none",			///< Landing 8 / KHR_materials_anisotropy
+			const char* film_ior = "none",					///< Thin-film FILM (oxide) n; thinfilm mode only
+			const char* film_extinction = "none",			///< Thin-film FILM (oxide) k; thinfilm mode only
+			const char* film_thickness = "none"				///< Thin-film FILM (oxide) thickness nm; thinfilm mode only
 			);
 
 		bool AddPBRMetallicRoughnessMaterial(
@@ -1217,7 +1223,10 @@ namespace RISE
 			const char* ior,											///< [in] Index of refraction
 			const char* ext,											///< [in] Extinction coefficient
 			const char* fresnel_mode = "conductor",
-			const char* tangent_rotation = "none"						///< Landing 8 / KHR_materials_anisotropy
+			const char* tangent_rotation = "none",						///< Landing 8 / KHR_materials_anisotropy
+			const char* film_ior = "none",								///< Thin-film FILM (oxide) n; thinfilm mode only
+			const char* film_extinction = "none",						///< Thin-film FILM (oxide) k; thinfilm mode only
+			const char* film_thickness = "none"							///< Thin-film FILM (oxide) thickness nm; thinfilm mode only
 			);
 
 		bool AddSheenMaterial(
@@ -1466,6 +1475,57 @@ namespace RISE
 							const bool bCenterObject				///< [in] Recenter all patch control points around the object-space origin
 							);
 
+		//! Creates a signed-distance-field (implicit) geometry from inline part
+		//! lines (the normal path) or an external parts file (for very large SDFs).
+		bool AddSDFGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const char* szFileName,					///< [in] SDF parts file to load ("" / "none" = use szParts)
+					const char* szParts,					///< [in] Inline newline-separated part lines ("" = use szFileName)
+					const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+					const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+					const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for surface sampling
+					);
+
+		//! Creates a heightfield SDF geometry from a named IFunction2D (see IJob)
+		bool AddSDFHeightfieldGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const char* heightfieldFunction,		///< [in] Named IFunction2D giving f(u,v)
+					const double radius,					///< [in] Half-extent of the square domain
+					const double scale,						///< [in] World amplitude
+					const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
+					const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
+					const unsigned int samplingDetail		///< [in] Tessellation cells (longest axis) for surface sampling
+					);
+
+
+		//! Creates a general profile sweep (see IJob)
+		bool AddSweepGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const SweepDescriptor& desc				///< [in] Profile + path + taper + cap parameters
+					);
+
+		//! Creates along-path instances of a named template geometry (see IJob)
+		bool AddPathInstancesGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const char* szTemplate,					///< [in] Name of the template geometry
+					const PathInstancesDescriptor& desc		///< [in] Path + pitch parameters
+					);
+
+		//! Wraps a named IFunction2D as a greyscale colour painter (see IJob)
+		bool AddFunction2DColorPainter(
+					const char* name,						///< [in] Name of the painter
+					const char* szFunction,					///< [in] Name of the source IFunction2D
+					const double scale,						///< [in] Output scale
+					const double bias						///< [in] Output bias
+					);
+
+		//! Creates a flat Cartesian-grid circular disk base (see IJob)
+		bool AddCartesianDiskGeometry(
+					const char* name,						///< [in] Name of the geometry
+					const double radius,					///< [in] Disk radius (world units)
+					const int meshN							///< [in] Grid samples across the diameter
+					);
+
 		//! Creates a bilinear patch geometry
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddBilinearPatchGeometry(
@@ -1484,7 +1544,8 @@ namespace RISE
 							const char*         displacement,
 							const Scalar        disp_scale,
 							const bool          double_sided,
-							const bool          face_normals );
+							const bool          face_normals,
+					const bool          seam_fold = true );
 
 		//
 		// Adds lights
@@ -1599,6 +1660,16 @@ namespace RISE
 
 		//! Enumerate registered medium names; see IJob.h.
 		void EnumerateMediumNames(
+			IEnumCallback<const char*>& cb
+			) const;
+
+		//! Return a registered geometry by name; see IJob.h.
+		const IGeometry* GetGeometry(
+			const char* name
+			) const;
+
+		//! Enumerate registered geometry names; see IJob.h.
+		void EnumerateGeometryNames(
 			IEnumCallback<const char*>& cb
 			) const;
 
@@ -2560,6 +2631,39 @@ namespace RISE
 		bool SetObjectIntersectionError(
 			const char* name,								///< [in] Name of the object
 			const double error								///< [in] Threshold of error
+			);
+
+		//
+		// `> modify` runtime-mutation surface (see IJob.h).  No `override`
+		// keyword — Job matches the file's existing no-override style (see
+		// CLAUDE.md's note on -Winconsistent-missing-override).
+		//
+
+		//! Reassigns the material bound to an existing scene object.
+		/// \return TRUE if both names resolve, FALSE otherwise
+		bool SetObjectMaterial(
+			const char* objName,							///< [in] Name of the object to retarget
+			const char* materialName						///< [in] Name of the material to bind
+			);
+
+		//! Reassigns the shader bound to an existing scene object.
+		/// \return TRUE if both names resolve, FALSE otherwise
+		bool SetObjectShader(
+			const char* objName,							///< [in] Name of the object to retarget
+			const char* shaderName							///< [in] Name of the shader to bind
+			);
+
+		//! Rescales the emission of a luminaire material.
+		/// \return TRUE if the material exists and is a luminaire, FALSE otherwise
+		bool SetMaterialEmissionScale(
+			const char* materialName,						///< [in] Name of the luminaire material
+			const double scale								///< [in] New emission scale
+			);
+
+		//! Overrides the active rasterizer's environment radiance scale.
+		/// \return TRUE if an active rasterizer with a RayCaster exists, FALSE otherwise
+		bool SetActiveRasterizerRadianceScale(
+			const double scale								///< [in] New environment radiance scale
 			);
 
 		//

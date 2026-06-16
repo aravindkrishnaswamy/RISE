@@ -154,7 +154,7 @@ pinhole_camera
 ellipsoid_geometry
 {
 	name				ellipsoid_geom
-	radii				1.0 1.2 1.0
+	radii				0.5 0.6 0.5
 }
 
 displaced_geometry

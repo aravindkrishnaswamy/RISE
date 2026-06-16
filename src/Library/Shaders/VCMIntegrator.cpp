@@ -21,6 +21,7 @@
 
 #include "pch.h"
 #include "VCMIntegrator.h"
+#include "../Interfaces/IGeometry.h"		// CanBeAreaLight(): zero the s=0 competing light pdf for non-NEE-sampleable emitters
 #include "BDPTIntegrator.h"
 #include "../Interfaces/IScene.h"
 #include "../Interfaces/IRayCaster.h"
@@ -986,13 +987,25 @@ namespace
 				continue;
 			}
 
+			// Mirror BDPT (BDPTIntegrator.cpp ~line 3097): an emitter whose
+			// geometry cannot be NEE-sampled -- zero sampling area, or a
+			// withdrawn capability (CanBeAreaLight() false, e.g. an SDF
+			// with a proven missed-feature cell) -- has NO competing
+			// light-sampling strategy.  Its light pdf is ZERO and the
+			// camera/BSDF-hit emission must flow through at FULL weight.
+			// The previous `area <= 0 -> continue` DROPPED the emission:
+			// a zero-sampling-area emissive SDF sphere-traced visibly
+			// under PT/BDPT but rendered BLACK under VCM (2026-06-11
+			// review P2).  pdfSelect is already 0 for refused
+			// (unregistered) luminaries; the explicit gate keeps the
+			// intent readable and guards the 1/area divide.
 			const Scalar pdfSelect = pLS->PdfSelectLuminary(
 				scene, luminaries, *v.pObject, prev.position, prev.normal );
 			const Scalar area = v.pObject->GetArea();
-			if( area <= 0 ) {
-				continue;
-			}
-			const Scalar pdfPosition = Scalar( 1 ) / area;
+			const IGeometry* pEmitGeom = v.pObject->GetGeometry();
+			const bool emitterNeeSampleable =
+				( area > 0 ) && ( !pEmitGeom || pEmitGeom->CanBeAreaLight() );
+			const Scalar pdfPosition = emitterNeeSampleable ? ( Scalar( 1 ) / area ) : Scalar( 0 );
 			const Scalar directPdfA = pdfSelect * pdfPosition;
 
 			// Emission pdf area-Jacobian uses GEOMETRIC normal — the

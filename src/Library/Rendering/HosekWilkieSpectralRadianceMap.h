@@ -57,6 +57,7 @@ namespace RISE
 
 			const IPainter& GetPainter() const override;
 			Scalar          GetScale()   const override { return skyScale; }
+			void            SetScale( const Scalar scale ) override { skyScale = scale; }
 			const Matrix4&  GetTransform() const override { return mxTransform; }
 
 			// Accessors used by the matched-sun directional_light.

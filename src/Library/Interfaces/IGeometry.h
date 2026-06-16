@@ -190,6 +190,51 @@ namespace RISE
 			(void)outDndu; (void)outDndv;
 			return false;
 		}
+
+		//! Whether this geometry may serve as an AREA LIGHT (and, more generally,
+		//! whether UniformRandomPoint() / GetArea() honour their EXACT-surface-
+		//! sampling contract).  The light sampler assumes UniformRandomPoint()
+		//! samples the true emitting SURFACE uniformly and GetArea() returns that
+		//! surface's area, using pdfPosition = 1/area for NEE + MIS; the point-set
+		//! SSS shaderops build their irradiance caches on the same contract.  A
+		//! geometry that cannot honour it (e.g. a field that tessellates to zero
+		//! surface area) returns false so those consumers can refuse it -- with a
+		//! diagnostic -- instead of sampling a broken surface.  Default true
+		//! (analytic primitives and meshes sample their surface exactly).
+		//!
+		//! Declared last + defaulted so adding it keeps every existing IGeometry
+		//! vtable slot (ABI-stable) and needs no change to existing geometries.
+		virtual bool CanBeAreaLight() const { return true; }
+
+		//! Materialize any deferred (lazily-built) representation this
+		//! geometry needs before rendering.  Called ONCE per render from a
+		//! SINGLE-THREADED point (the realize pass in RayCaster::AttachScene)
+		//! BEFORE the parallel rasterize — RISE's scene is immutable during
+		//! the parallel pass, so expensive build work (e.g. tessellating +
+		//! baking a displaced mesh) cannot happen lazily on the const hot
+		//! path.  Idempotent: a second call is a no-op once realized.
+		//! Composite geometries (DisplacedGeometry) must CASCADE —
+		//! realize their base(s) first.
+		//!
+		//! `const` because realization materializes a build-time cache that
+		//! is a pure function of the geometry's recipe; the observable
+		//! surface is unchanged (matching the `mutable` lazy-BVH pattern in
+		//! ObjectManager::PrepareForRendering, also const).  Default: cheap
+		//! geometries (sphere, mesh, ...) are always realized — no-op.
+		virtual void Realize() const {}
+
+		//! Cheap, static capability hint: can this geometry produce a triangle
+		//! mesh via TessellateToMesh (after Realize, if deferred)?  Used at SCENE-
+		//! PARSE time so a composite like DisplacedGeometry can REFUSE a
+		//! non-tessellatable base (e.g. InfinitePlaneGeometry) immediately rather
+		//! than failing later at realize-time.  Default TRUE (every concrete RISE
+		//! geometry tessellates except InfinitePlaneGeometry, which overrides); a
+		//! future non-tessellatable geometry that forgets to override merely
+		//! degrades to the graceful realize-time guard-fail, never a false refusal.
+		//! Declared last + defaulted so adding it keeps every existing IGeometry
+		//! vtable slot ABI-stable (the mid-vtable insert this replaces would have
+		//! shifted IntersectRay and every later slot for stale implementers).
+		virtual bool CanTessellate() const { return true; }
 	};
 }
 

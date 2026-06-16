@@ -189,28 +189,48 @@ void TorusGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* 
 	// Sample u uniformly on [0, 2*PI)
 	const Scalar u = TWO_PI * prand.x;
 
-	// Sample v with probability proportional to (R + r*cos(v)) using rejection sampling
-	// The maximum of (R + r*cos(v)) is (R + r), so we accept with prob (R + r*cos(v)) / (R + r)
+	// Sample v with probability density proportional to the area element
+	// (R + r*cos(v)) by inverting its CDF
+	//     F(v) = (R*v + r*sin(v)) / (2*PI*R)
+	// with a bisection-safeguarded Newton iteration on
+	//     g(v) = R*v + r*sin(v) - 2*PI*R*xi,   g'(v) = R + r*cos(v) >= R - r.
+	//
+	// This replaces a rejection sampler whose retry path re-hashed its
+	// [0,1) float candidates with an INTEGER-hash multiplier (2^-32),
+	// collapsing every rejected first draw — mean rejection rate
+	// r/(R+r), e.g. 27% at minorratio 0.38 — onto the single tube
+	// angle v = 2*PI*0.618..., i.e. a point-mass on one circle of the
+	// tube.  Estimators dividing by the claimed uniform 1/GetArea()
+	// pdf then carried a circle-shaped spatial bias, and integrators
+	// that mix light-sampled strategies with different MIS shares
+	// disagreed on torus-emitter scenes (VCM floor pool ~0.90x of
+	// PT/BDPT, 2026-06-10).  CDF inversion is exact, deterministic
+	// from prand.y alone, and needs no retries.  prand.z is unused.
 	Scalar v;
 	{
-		// Use prand.y and prand.z to drive the rejection sampler deterministically.
-		// If the first attempt is rejected, we iterate using a simple hash to
-		// generate subsequent candidates, preserving the contract that same prand
-		// yields same output.
-		Scalar vy = prand.y;
-		Scalar vz = prand.z;
-		for( ;; )
+		const Scalar xi = prand.y;
+		const Scalar target = TWO_PI * R * xi;
+		Scalar lo = 0;
+		Scalar hi = TWO_PI;
+		v = TWO_PI * xi;	// exact for r == 0; good first guess otherwise
+		for( int i = 0; i < 32; i++ )
 		{
-			v = TWO_PI * vy;
-			const Scalar acceptance = (R + r * cos(v)) / (R + r);
-			if( vz <= acceptance ) {
+			const Scalar g = R * v + r * sin(v) - target;
+			if( g > 0 ) {
+				hi = v;
+			} else {
+				lo = v;
+			}
+			const Scalar gp = R + r * cos(v);
+			Scalar next = ( gp > 0 ) ? ( v - g / gp ) : v;
+			if( !( next > lo && next < hi ) ) {
+				next = 0.5 * ( lo + hi );	// bisection fallback keeps the bracket
+			}
+			if( fabs( next - v ) < 1e-12 ) {
+				v = next;
 				break;
 			}
-			// Generate new candidates by fractional hashing
-			vy = vy * 2.3283064365386963e-10 + 0.61803398875;  // golden ratio offset
-			if( vy >= 1.0 ) vy -= 1.0;
-			vz = vz * 2.3283064365386963e-10 + 0.41421356237;  // sqrt(2)-1 offset
-			if( vz >= 1.0 ) vz -= 1.0;
+			v = next;
 		}
 	}
 

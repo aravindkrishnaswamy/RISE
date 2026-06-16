@@ -80,6 +80,25 @@ namespace RISE
 		unsigned int	optimalMISTrainingIterations;	///< Number of training passes (default 4)
 		unsigned int	optimalMISTileSize;		///< Tile size for spatial binning (default 16)
 
+		//
+		// Transparent (Fresnel-attenuated) shadow rays
+		//
+		// When enabled, NEE shadow rays pass STRAIGHT through perfect-
+		// specular transmissive dielectric interfaces (glass / sapphire /
+		// water), multiplying the per-interface Fresnel TRANSMITTANCE
+		// (1 - F) into the light contribution instead of being fully
+		// occluded.  Any non-dielectric (opaque, rough, diffuse, mirror)
+		// hit still fully blocks.  This is an APPROXIMATION: it ignores
+		// refractive bending and internal multi-bounce, but recovers
+		// direct lighting on surfaces under a thin transparent shell at a
+		// fraction of the brute-force refracted-BSDF noise.  Honoured by
+		// the unidirectional path tracers ONLY (PT pel + PT spectral);
+		// BDPT / VCM / MLT shadow tests stay binary.
+		// Field appended at the END of the struct to preserve the
+		// pass-by-const-ref layout for existing callers.
+		//
+		bool			transparentShadows;	///< Fresnel-transmittance shadow rays through specular dielectrics (false = binary occlusion)
+
 		StabilityConfig() :
 		  directClamp( 0 ),
 		  indirectClamp( 0 ),
@@ -94,7 +113,8 @@ namespace RISE
 		  useLightBVH( true ),
 		  optimalMIS( false ),
 		  optimalMISTrainingIterations( 4 ),
-		  optimalMISTileSize( 16 )
+		  optimalMISTileSize( 16 ),
+		  transparentShadows( false )
 		{
 		}
 	};

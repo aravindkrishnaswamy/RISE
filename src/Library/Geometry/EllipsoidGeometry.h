@@ -48,7 +48,7 @@ namespace RISE
 
 			// Tessellates the ellipsoid to a triangle mesh with (detail+1) x (detail+1) vertices.
 			// Same parameterization as sphere, scaled by the ellipsoid's semi-axes.
-			// Note: m_vRadius stores diameters; semi-axes are m_vRadius / 2.
+			// Note: m_vRadius stores the per-axis radii (semi-axes), like sphere_geometry's radius.
 			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
 
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;

@@ -30,9 +30,9 @@ EllipsoidGeometry::EllipsoidGeometry( const Vector3& vRadius ) :
 
 void EllipsoidGeometry::EllipsoidUVFromPosition( const Point3& pt, Point2& uv ) const
 {
-	const Scalar a = m_vRadius.x * 0.5;
-	const Scalar b = m_vRadius.y * 0.5;
-	const Scalar c = m_vRadius.z * 0.5;
+	const Scalar a = m_vRadius.x;
+	const Scalar b = m_vRadius.y;
+	const Scalar c = m_vRadius.z;
 
 	const Scalar yn = (b > NEARZERO) ? pt.y / b : 0.0;
 	const Scalar clampedYn = yn > 1.0 ? 1.0 : (yn < -1.0 ? -1.0 : yn);
@@ -69,10 +69,10 @@ bool EllipsoidGeometry::TessellateToMesh(
 	const unsigned int baseIdx = static_cast<unsigned int>( vertices.size() );
 	const unsigned int rowStride = nU + 1;
 
-	// Semi-axes (m_vRadius stores diameters per the convention used in Q and UniformRandomPoint)
-	const Scalar a = m_vRadius.x * 0.5;
-	const Scalar b = m_vRadius.y * 0.5;
-	const Scalar c = m_vRadius.z * 0.5;
+	// Semi-axes = m_vRadius (per-axis radii; like sphere_geometry's radius)
+	const Scalar a = m_vRadius.x;
+	const Scalar b = m_vRadius.y;
+	const Scalar c = m_vRadius.z;
 
 	const Scalar ooA2 = (a > NEARZERO) ? 1.0 / (a*a) : 0.0;
 	const Scalar ooB2 = (b > NEARZERO) ? 1.0 / (b*b) : 0.0;
@@ -197,10 +197,10 @@ BoundingBox EllipsoidGeometry::GenerateBoundingBox() const
 
 void EllipsoidGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
-	// Semi-axes (m_vRadius stores diameters, Q uses half of those)
-	const Scalar a = m_vRadius.x * 0.5;
-	const Scalar b = m_vRadius.y * 0.5;
-	const Scalar c = m_vRadius.z * 0.5;
+	// Semi-axes = m_vRadius (per-axis radii)
+	const Scalar a = m_vRadius.x;
+	const Scalar b = m_vRadius.y;
+	const Scalar c = m_vRadius.z;
 
 	// Use the precomputed marginal CDF to sample theta with area-uniform distribution.
 	// Binary search for the CDF bin containing prand.x.
@@ -250,10 +250,10 @@ SurfaceDerivatives EllipsoidGeometry::ComputeSurfaceDerivatives( const Point3& o
 {
 	SurfaceDerivatives sd;
 
-	// Semi-axes: m_vRadius stores diameters
-	const Scalar a = m_vRadius.x * 0.5;
-	const Scalar b = m_vRadius.y * 0.5;
-	const Scalar c = m_vRadius.z * 0.5;
+	// Semi-axes = m_vRadius (per-axis radii)
+	const Scalar a = m_vRadius.x;
+	const Scalar b = m_vRadius.y;
+	const Scalar c = m_vRadius.z;
 
 	// Recover surface parameters from object-space point
 	// P(theta,phi) = (a*sin(theta)*cos(phi), b*cos(theta), c*sin(theta)*sin(phi))
@@ -332,10 +332,10 @@ bool EllipsoidGeometry::ComputeAnalyticalDerivatives(
 	// Otherwise the (u, v) coming out of the on-mesh path or from
 	// IntersectRay wouldn't agree with what we feed in here.
 	//
-	// Semi-axes: m_vRadius stores diameters.
-	const Scalar a = m_vRadius.x * 0.5;
-	const Scalar b = m_vRadius.y * 0.5;
-	const Scalar c = m_vRadius.z * 0.5;
+	// Semi-axes = m_vRadius (per-axis radii).
+	const Scalar a = m_vRadius.x;
+	const Scalar b = m_vRadius.y;
+	const Scalar c = m_vRadius.z;
 
 	const Scalar theta = uv.x * TWO_PI;
 	const Scalar phi   = uv.y * PI;
@@ -459,9 +459,9 @@ void EllipsoidGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 void EllipsoidGeometry::RegenerateData( )
 {
 	Q = Matrix4Ops::Identity();
-	Q._00 = 1.0/((m_vRadius.x/2)*(m_vRadius.x/2));
-	Q._11 = 1.0/((m_vRadius.y/2)*(m_vRadius.y/2));
-	Q._22 = 1.0/((m_vRadius.z/2)*(m_vRadius.z/2));
+	Q._00 = 1.0/(m_vRadius.x*m_vRadius.x);
+	Q._11 = 1.0/(m_vRadius.y*m_vRadius.y);
+	Q._22 = 1.0/(m_vRadius.z*m_vRadius.z);
 	Q._33 = -1.0;
 
 	m_OVmaxRadius = 1.0 / (r_max( r_max(m_vRadius.x, m_vRadius.y), m_vRadius.z ));
@@ -471,9 +471,9 @@ void EllipsoidGeometry::RegenerateData( )
 	// the area element is:
 	//   dA = sinT * sqrt(b^2*c^2*sin^2T*cos^2P + a^2*c^2*sin^2T*sin^2P + a^2*b^2*cos^2T) dT dP
 	// We numerically integrate over phi to get the marginal M(theta), then build the CDF.
-	const Scalar a = m_vRadius.x * 0.5;
-	const Scalar b = m_vRadius.y * 0.5;
-	const Scalar c = m_vRadius.z * 0.5;
+	const Scalar a = m_vRadius.x;
+	const Scalar b = m_vRadius.y;
+	const Scalar c = m_vRadius.z;
 
 	const Scalar a2 = a*a, b2 = b*b, c2 = c*c;
 

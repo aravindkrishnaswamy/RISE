@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "LuminaryManager.h"
+#include "../Interfaces/IGeometry.h"		// CanBeAreaLight() capability check below
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/ProbabilityDensityFunction.h"
 
@@ -83,6 +84,26 @@ void LuminaryManager::AddToLuminaryList( const IObject& pObject )
 	const IMaterial*	pMaterial = pObject.GetMaterial();
 	if( pMaterial && pMaterial->GetEmitter() )
 	{
+		// The light sampler treats a luminary as an area light: it calls
+		// UniformRandomPoint() expecting a uniform sample of the emitting SURFACE
+		// and GetArea() for pdfPosition = 1/area.  A geometry that cannot honour
+		// that contract (CanBeAreaLight() false -- e.g. a field that tessellates to
+		// zero surface area) would feed NEE wrong positions and pdfs.  Refuse it as
+		// a luminary, with a diagnostic, rather than sample a broken light.  The
+		// object still renders and still emits when hit directly / by BSDF rays --
+		// it simply is not importance-sampled by NEE.
+		const IGeometry* pGeom = pObject.GetGeometry();
+		if( pGeom && !pGeom->CanBeAreaLight() ) {
+			GlobalLog()->PrintSourceError(
+				"LuminaryManager:: an emissive material is bound to a geometry that cannot be "
+				"uniformly area-sampled (CanBeAreaLight() == false, e.g. a degenerate zero-area "
+				"field, or an SDF whose sampling mesh provably missed renderable surface -- see "
+				"the SDFGeometry warning above; raise sampling_detail).  It will NOT act as an "
+				"area light (no NEE importance sampling); it still glows when viewed / hit by "
+				"BSDF rays.", __FILE__, __LINE__ );
+			return;
+		}
+
 		LUM_ELEM elem;
 		elem.pLum = &pObject;
 		pObject.addref();

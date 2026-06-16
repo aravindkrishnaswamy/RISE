@@ -142,6 +142,20 @@ ObjectManager::~ObjectManager( )
 	delete [] shadowCache;
 }
 
+void ObjectManager::RealizeAllObjects() const
+{
+	// Realize deferred geometry (e.g. DisplacedGeometry's mesh bake) BEFORE any
+	// bbox / acceleration-structure query.  Called from PrepareForRendering AND
+	// from CreateBVH/CreateOctree, so even the lazy IntersectRay build path --
+	// which bypasses PrepareForRendering -- builds from realized, non-zero
+	// bounds.  Object::Realize() is const, idempotent, and mutex-serialized for
+	// the deferred geometries, so repeated/concurrent calls are safe no-ops.
+	GenericManager<IObjectPriv>::ItemListType::const_iterator i, e;
+	for( i=items.begin(), e=items.end(); i!=e; ++i ) {
+		i->second.first->Realize();
+	}
+}
+
 void ObjectManager::CreateBVH() const
 {
 	treeCreationMutex.lock();
@@ -151,6 +165,10 @@ void ObjectManager::CreateBVH() const
 		treeCreationMutex.unlock();
 		return;
 	}
+
+	// Realize deferred geometry first, so the BVH is built from real bounds
+	// even on the lazy IntersectRay path that skipped PrepareForRendering.
+	RealizeAllObjects();
 
 	// Construct the overall bounding box
 	BoundingBox bbox( Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY), Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY) );
@@ -196,6 +214,9 @@ void ObjectManager::CreateOctree() const
 		treeCreationMutex.unlock();
 		return;
 	}
+
+	// Realize deferred geometry first (see CreateBVH).
+	RealizeAllObjects();
 
 	// Construct the overall bounding box
 	BoundingBox bbox( Point3(RISE_INFINITY,RISE_INFINITY,RISE_INFINITY), Point3(-RISE_INFINITY,-RISE_INFINITY,-RISE_INFINITY) );
@@ -348,6 +369,15 @@ void ObjectManager::ResetRuntimeData() const
 void ObjectManager::PrepareForRendering() const
 {
 	RISE_PROFILE_PHASE(AccelBuild);
+
+	// Realize deferred geometry BEFORE building the TLAS from object bounding
+	// boxes (an unrealized DisplacedGeometry reports a ZERO bbox, and the BVH
+	// built from it is KEPT by the `!pBVH` guard below -> displaced objects
+	// vanish / become unpickable).  Direct callers (the GUI production-render +
+	// picking paths) reach PrepareForRendering before RayCaster::AttachScene's
+	// realize pass, and this is the funnel they share.  Idempotent.
+	RealizeAllObjects();
+
 	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) && !pBVH ) {
 		CreateBVH();
 	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) && !pOctree ) {

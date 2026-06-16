@@ -33,13 +33,20 @@ namespace RISE
 		{
 		protected:
 			IFunction2D* const pFunc;
+			const Scalar scale;
+			const Scalar bias;
 			virtual ~Function2DScalarPainter()
 			{
 				if( pFunc ) pFunc->release();
 			}
 
 		public:
-			explicit Function2DScalarPainter( IFunction2D* p ) : pFunc( p )
+			//! out = bias + scale * f(u, v) -- the affine form mirrors the
+			//! `texture` form's scale/bias so procedural IFunction2D sources
+			//! (e.g. the guilloché oxide dose) drop into the same heat-tint
+			//! window semantics as a baked map.
+			explicit Function2DScalarPainter( IFunction2D* p, const Scalar scale_ = Scalar(1), const Scalar bias_ = Scalar(0) ) :
+				pFunc( p ), scale( scale_ ), bias( bias_ )
 			{
 				if( pFunc ) pFunc->addref();
 			}
@@ -55,7 +62,7 @@ namespace RISE
 				// RISE's UV convention.  Matches `TexturePainter`'s
 				// implicit treatment.
 				const Scalar v = pFunc->Evaluate( ri.ptCoord.x, ri.ptCoord.y );
-				return ScalarTriple( v );
+				return ScalarTriple( bias + scale * v );
 			}
 
 			bool HasPerChannelVariation() const override { return false; }
