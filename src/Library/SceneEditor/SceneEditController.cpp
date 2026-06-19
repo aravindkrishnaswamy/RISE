@@ -2859,6 +2859,25 @@ void SceneEditController::RefreshProperties()
 			out = MediaIntrospection::Inspect( selName, *med );
 			break;
 		}
+		case Category::Animation: {
+			// Named animations expose one editable property: the frame count of
+			// the ACTIVE animation (picking one in the list activates it).  More
+			// frames = a longer, smoother rendered/previewed clip; fewer =
+			// shorter.  The scene fixes the time range; only the sampling count
+			// is user-tunable here.
+			if( mJob.GetAnimationCount() == 0 ) break;
+			double ts = 0, te = 1; unsigned int nf = 30; bool df = false, invf = false;
+			if( !mJob.GetAnimationOptions( ts, te, nf, df, invf ) ) break;
+			CameraProperty row;
+			row.name        = String( "frames" );
+			row.kind        = ValueKind::UInt;
+			row.value       = String( std::to_string( nf ).c_str() );
+			row.description = String( "Number of frames the animation renders and the preview Play button loops over.  More frames = a longer, smoother clip; fewer = shorter." );
+			row.editable    = true;
+			row.unitLabel   = String( "frames" );
+			out.push_back( row );
+			break;
+		}
 		case Category::None:
 		default:
 			break;
@@ -2984,7 +3003,7 @@ inline const std::vector<RISE::CameraProperty>* PropsForCat(
 	const std::vector<RISE::CameraProperty>* arr, RISE::SceneEditController::Category cat )
 {
 	const int i = static_cast<int>( cat );
-	if( i < 0 || i >= 7 ) return 0;
+	if( i < 0 || i >= 9 ) return 0;   // 9 == kNumCategories (None..Animation)
 	return &arr[i];
 }
 }
@@ -3204,6 +3223,23 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		if( !mEditor.Apply( edit ) ) return false;
 		KickRender();
 		return true;
+	}
+
+	case Category::Animation: {
+		// The only editable animation property is the active animation's frame
+		// count.  num_frames is pure playback metadata — it doesn't alter the
+		// in-flight render's pixels (only renderanimation's frame count and the
+		// preview-play loop step), so no cancel-and-park is needed.  Apply by
+		// re-declaring the ACTIVE animation with the new count (DeclareAnimation
+		// upserts; make_active=false leaves the active selection unchanged).
+		if( !( name == String( "frames" ) ) ) return false;
+		unsigned int newFrames = 0;
+		if( sscanf( valueStr.c_str(), "%u", &newFrames ) != 1 || newFrames < 1 ) return false;
+		char nameBuf[256] = { 0 };
+		if( !mJob.GetActiveAnimationName( nameBuf, sizeof(nameBuf) ) ) return false;
+		double ts = 0, te = 1; unsigned int nf = 30; bool df = false, invf = false;
+		if( !mJob.GetAnimationOptions( ts, te, nf, df, invf ) ) return false;
+		return mJob.DeclareAnimation( nameBuf, ts, te, newFrames, df, invf, false );
 	}
 
 	case Category::Object: {
