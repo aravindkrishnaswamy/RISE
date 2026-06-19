@@ -137,6 +137,11 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_controlsWidget, &ControlsWidget::renderAnimationClicked, this, &MainWindow::onRenderAnimation);
     connect(m_controlsWidget, &ControlsWidget::cancelClicked, this, &MainWindow::onCancel);
 
+    // Named animation paths — dropdown selection re-routes through the
+    // bridge + re-sizes the timeline + re-scrubs the preview.
+    connect(m_controlsWidget, &ControlsWidget::animationSelected,
+            this, &MainWindow::onAnimationSelected);
+
     // L5e — exposure slider drives engine.setViewExposureEV.
     // Engine is mid-render-safe (atomic + Repaint, no rasterizer
     // re-run), so even rapid drag updates settle in <1 frame.
@@ -564,6 +569,10 @@ void MainWindow::onClear()
     teardownViewport();
     m_engine->clearScene();
     m_controlsWidget->setHasScene(false);
+    // Reset the animation dropdown — the next scene load repopulates
+    // it via rebuildViewportForLoadedScene; an empty list re-hides the
+    // row so stale animation names from the cleared scene don't linger.
+    m_controlsWidget->setAnimationNames(QStringList(), -1);
     updateWindowTitle();
     updateStatusBar();
 }
@@ -574,6 +583,12 @@ void MainWindow::onRender()
     // rasterizer runs — they'd race against the same scene state
     // otherwise.  The viewport restarts in onStateChanged when
     // production transitions back to Completed/Cancelled/Error.
+    //
+    // First halt any running preview-play QTimer: disabling the
+    // timeline widget (done in onStateChanged once Rendering starts)
+    // does NOT stop a live QTimer, so a tick could still fire a scrub
+    // into the scene the production rasterizer is about to read.
+    if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
     if (m_viewportBridge) m_viewportBridge->stop();
 
     // Advance scene state to the canonical scrubbed time AND
@@ -604,6 +619,10 @@ void MainWindow::onRenderAnimation()
     QString videoPath = scenePath;
     videoPath.replace(".RISEscene", ".mp4");
 
+    // Halt a running preview-play QTimer before the production
+    // animation render begins (see onRender for why widget-disable
+    // alone is insufficient).
+    if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
     if (m_viewportBridge) m_viewportBridge->stop();
     m_engine->startAnimationRender(videoPath);
 }
@@ -762,6 +781,36 @@ void MainWindow::onSaveAndReload(const QString& filePath)
     m_engine->loadScene(filePath);
 }
 
+void MainWindow::onAnimationSelected(int idx)
+{
+    if (!m_viewportBridge) return;
+
+    // A running preview-play QTimer steps the OLD animation's range —
+    // stop it before swapping so we don't keep ticking a stale range
+    // (and so the swap's scrub doesn't fight the play loop's scrub).
+    if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
+
+    // Activate the picked animation (serialized cancel-and-park inside
+    // the controller).  After this, GetAnimationOptions returns the
+    // newly-active animation's options.
+    m_viewportBridge->setSelectedAnimation(idx);
+
+    // Re-read the active animation's range + frame count and re-apply
+    // them to the timeline (same code path as scene load above).
+    double t0 = 0, t1 = 0;
+    unsigned int nf = 0;
+    if (m_viewportTimeline
+        && m_viewportBridge->animationOptions(t0, t1, nf) && t1 > t0) {
+        m_viewportTimeline->setRange(t0, t1);
+        m_viewportTimeline->setAnimationFrameCount(nf);
+    }
+
+    // Re-scrub the preview to the new animation's start so the viewport
+    // reflects the swap (the controller asked us to re-scrub after a
+    // SetActiveAnimationIndex).
+    m_viewportBridge->scrubTime(t0);
+}
+
 void MainWindow::updateWindowTitle()
 {
     QString title;
@@ -829,8 +878,16 @@ void MainWindow::rebuildViewportForLoadedScene()
         unsigned int nf = 0;
         if (m_viewportBridge->animationOptions(t0, t1, nf) && t1 > t0) {
             m_viewportTimeline->setRange(t0, t1);
+            m_viewportTimeline->setAnimationFrameCount(nf);
         }
     }
+
+    // Named animation paths — populate the ControlsWidget dropdown
+    // with the scene's declared animations + the active one.  The
+    // ControlsWidget hides the row when there are fewer than 2.
+    m_controlsWidget->setAnimationNames(
+        m_viewportBridge->animationNames(),
+        m_viewportBridge->selectedAnimationIndex());
 
     // Compose the pane: VBox{ toolbar, viewport, timeline } | properties
     auto* col = new QVBoxLayout;
@@ -924,6 +981,11 @@ void MainWindow::rebuildViewportForLoadedScene()
 void MainWindow::teardownViewport()
 {
     if (!m_viewportBridge) return;
+
+    // Close any looping preview-play (and its open scrub bracket) through the
+    // normal path before the bridge it drives goes away — don't rely on
+    // controller destruction to swallow an open composite.
+    if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
 
     // Stop the render thread BEFORE the bridge dies.
     m_viewportBridge->stop();

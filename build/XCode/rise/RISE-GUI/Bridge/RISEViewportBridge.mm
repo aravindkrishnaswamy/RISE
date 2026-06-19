@@ -601,6 +601,30 @@ private:
     return static_cast<NSUInteger>(nf);
 }
 
+- (NSArray<NSString *> *)animationNames {
+    if (!_controller) return @[];
+    const unsigned int n = RISE_API_SceneEditController_AnimationCount(_controller);
+    NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:n];
+    char nameBuf[128];
+    for (unsigned int i = 0; i < n; ++i) {
+        if (RISE_API_SceneEditController_AnimationName(_controller, i, nameBuf, sizeof(nameBuf))) {
+            NSString *s = [NSString stringWithUTF8String:nameBuf];
+            if (s) [out addObject:s];
+        }
+    }
+    return out;
+}
+
+- (NSInteger)selectedAnimationIndex {
+    if (!_controller) return -1;
+    return RISE_API_SceneEditController_GetActiveAnimationIndex(_controller);
+}
+
+- (BOOL)setSelectedAnimation:(NSInteger)index {
+    if (!_controller || index < 0) return NO;
+    return RISE_API_SceneEditController_SetActiveAnimationIndex(_controller, (unsigned int)index) ? YES : NO;
+}
+
 #pragma mark - Time scrubber
 
 - (void)scrubTimeBegin {

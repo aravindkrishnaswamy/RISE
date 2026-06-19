@@ -171,6 +171,16 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 @property (nonatomic, readonly) double animationTimeEnd;
 @property (nonatomic, readonly) NSUInteger animationNumFrames;
 
+//! Named animation paths for the side-panel dropdown.  `animationNames`
+//! lists the scene's named animations in scene order; selecting one with
+//! setSelectedAnimation: makes it active -- after which the animationTime*
+//! properties above reflect the SELECTED animation's options and the caller
+//! should re-scrub the preview to its start.  selectedAnimationIndex is -1
+//! when the scene declares no animations.
+@property (nonatomic, readonly, copy) NSArray<NSString *> *animationNames;
+@property (nonatomic, readonly) NSInteger selectedAnimationIndex;
+- (BOOL)setSelectedAnimation:(NSInteger)index;
+
 #pragma mark - Time scrubber
 
 - (void)scrubTimeBegin;

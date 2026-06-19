@@ -130,6 +130,9 @@ struct ContentView: View {
                             interactionEnabled: interacting,
                             isProductionRendering: (viewModel.renderState == .rendering),
                             onSelectionMayHaveChanged: { propertyRefresh += 1 },
+                            isPreviewPlaying: viewModel.isPreviewPlaying,
+                            onPlayToggle: { viewModel.togglePreviewPlay() },
+                            onUserScrubBegan: { viewModel.stopPreviewPlay() },
                             productionEDRRenderer:  viewModel.productionEDRRenderer,
                             interactiveEDRRenderer: viewModel.interactiveEDRRenderer,
                             edrEnabled: edrActive
@@ -250,6 +253,24 @@ struct ContentView: View {
                 }
 
                 Divider()
+
+                // Active named-animation picker — only when the scene
+                // declares more than one animation (a lone "(default)"
+                // animation needs no chooser).  Selecting one re-points the
+                // timeline scrubber's range and refreshes the preview.
+                if viewModel.hasAnimation && viewModel.animationNames.count > 1 {
+                    Picker("Animation", selection: Binding(
+                        get: { viewModel.selectedAnimationIndex },
+                        set: { viewModel.selectAnimation($0) }
+                    )) {
+                        ForEach(Array(viewModel.animationNames.enumerated()), id: \.offset) { idx, name in
+                            Text(name).tag(idx)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(!canRender)
+                    .help("Pick which named animation the timeline scrubs, the Play button loops, and Render Animation renders")
+                }
 
                 // Render actions
                 FlowLayout(spacing: 8) {
