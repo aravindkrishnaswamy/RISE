@@ -192,21 +192,12 @@ public:
     /// false on null controller / no job attached.
     bool animationOptions(double& timeStart, double& timeEnd, unsigned int& numFrames) const;
 
-    /// Named animation paths.  A scene may declare several named
-    /// animations; exactly one is active at a time.  These mirror the
-    /// `categoryEntities` list-getter pattern — a plain string list + an
-    /// index, NOT a new PanelMode/Category enum value.
-    ///
-    /// `animationNames` returns the display name of every declared
-    /// animation (empty list on null controller).  `selectedAnimationIndex`
-    /// returns the active animation's index, or -1 when none / null
-    /// controller.  `setSelectedAnimation` activates the idx-th animation
-    /// (serialized controller-side, cancel-and-park); after calling, the
-    /// caller should re-read `animationOptions()` and re-scrub the preview
-    /// to the new animation's start.  No-op on null controller or idx < 0.
-    QStringList animationNames() const;
-    int  selectedAnimationIndex() const;
-    void setSelectedAnimation(int idx);
+    // Named animations are surfaced as a first-class accordion Category
+    // (Category::Animation) — the generic categoryEntities() /
+    // activeNameForCategory() / setSelection() surface lists + activate
+    // them, so there are no bespoke animation accessors here.
+    // animationOptions() above already reflects the active animation's
+    // options.
 
     void scrubTimeBegin();
     void scrubTime(double t);
@@ -293,7 +284,8 @@ public:
         Light      = 4,
         Film       = 5,   ///< Output Settings (single Film per scene)
         Material   = 6,   ///< Materials
-        Medium     = 7    ///< Participating media
+        Medium     = 7,   ///< Participating media
+        Animation  = 8    ///< Named animation paths (pick to activate; no editable properties)
     };
 
     PanelMode panelMode() const;

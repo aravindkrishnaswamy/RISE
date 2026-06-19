@@ -3648,21 +3648,6 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		double* outTimeStart, double* outTimeEnd,
 		unsigned int* outNumFrames );
 
-	//! Named animation paths: enumerate the scene's named animations and
-	//! get/set the active one for the side-panel dropdown.  AnimationCount
-	//! returns 0 on null controller; AnimationName copies the idx-th name
-	//! into buf (false on null / out-of-range); GetActiveAnimationIndex
-	//! returns -1 on null controller or when no animation is declared;
-	//! SetActiveAnimationIndex selects one (serialized like a camera swap),
-	//! false on null / out-of-range.
-	unsigned int RISE_API_SceneEditController_AnimationCount(
-		SceneEditController* p );
-	bool RISE_API_SceneEditController_AnimationName(
-		SceneEditController* p, unsigned int idx, char* buf, unsigned int bufLen );
-	int RISE_API_SceneEditController_GetActiveAnimationIndex(
-		SceneEditController* p );
-	bool RISE_API_SceneEditController_SetActiveAnimationIndex(
-		SceneEditController* p, unsigned int idx );
 
 	//! Read the scene camera's stable full-resolution dimensions.
 	//! Bridges call this from their pointer-event handlers to convert

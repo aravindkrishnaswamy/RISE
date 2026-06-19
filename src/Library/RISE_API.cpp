@@ -7749,32 +7749,6 @@ namespace RISE
 		return true;
 	}
 
-	unsigned int RISE_API_SceneEditController_AnimationCount( SceneEditController* p )
-	{
-		if( !p ) return 0;
-		return p->AnimationCount();
-	}
-
-	bool RISE_API_SceneEditController_AnimationName(
-		SceneEditController* p, unsigned int idx, char* buf, unsigned int bufLen )
-	{
-		if( !p ) return false;
-		if( idx >= p->AnimationCount() ) return false;
-		CopyToBuf( p->AnimationName( idx ), buf, bufLen );
-		return true;
-	}
-
-	int RISE_API_SceneEditController_GetActiveAnimationIndex( SceneEditController* p )
-	{
-		if( !p ) return -1;
-		return p->GetActiveAnimationIndex();
-	}
-
-	bool RISE_API_SceneEditController_SetActiveAnimationIndex( SceneEditController* p, unsigned int idx )
-	{
-		if( !p ) return false;
-		return p->SetActiveAnimationIndex( idx );
-	}
 
 	bool RISE_API_SceneEditController_GetCameraDimensions(
 		SceneEditController* p, unsigned int* outW, unsigned int* outH )

@@ -14,8 +14,6 @@
 #include <QProgressBar>
 #include <QLabel>
 #include <QSlider>
-#include <QComboBox>
-#include <QStringList>
 
 #include "RenderEngine.h"
 
@@ -46,13 +44,9 @@ public:
     void setHasAnimation(bool hasAnimation);
     void setHasScene(bool hasScene);
 
-    // Named animation paths — populate the active-animation dropdown.
-    // `names` is the scene's declared animation names; `activeIdx` is
-    // the currently-active one (-1 = none).  The whole row is hidden
-    // when there are fewer than 2 animations (a single "(default)"
-    // animation shouldn't clutter the panel).  Uses QSignalBlocker so
-    // programmatic population doesn't echo back through animationSelected.
-    void setAnimationNames(const QStringList& names, int activeIdx);
+    // The active named animation is picked in the right-side panel's
+    // "Animation" accordion category (consistent with how every other
+    // scene entity is selected) — there is no animation dropdown here.
 
     // L5e — Sync slider with engine's current EV (e.g. on scene
     // load / external programmatic change).
@@ -83,18 +77,8 @@ signals:
     // MainWindow forwards to RenderEngine::setViewExposureEV.
     void exposureChanged(double ev);
 
-    // User picked a different active animation from the dropdown.
-    // MainWindow forwards to ViewportBridge::setSelectedAnimation +
-    // re-reads the timeline range and re-scrubs the preview.
-    void animationSelected(int idx);
-
 private:
     void updateButtonStates();
-
-    // Slot for the animation-combo's currentIndexChanged(int) — emits
-    // animationSelected.  Suppressed during programmatic population by
-    // the QSignalBlocker in setAnimationNames.
-    void onAnimComboChanged(int index);
 
     QPushButton* m_openBtn = nullptr;
     QPushButton* m_editBtn = nullptr;
@@ -102,12 +86,6 @@ private:
     QPushButton* m_renderBtn = nullptr;
     QPushButton* m_renderAnimBtn = nullptr;
     QPushButton* m_cancelBtn = nullptr;
-
-    // Named-animation picker.  m_animRow is the labeled-row container
-    // (label + combo); hidden/shown as a unit when the scene has <2
-    // animations, matching how other optional rows hide.
-    QWidget*    m_animRow = nullptr;
-    QComboBox*  m_animCombo = nullptr;
 
     QProgressBar* m_progressBar = nullptr;
     QLabel* m_progressTitle = nullptr;

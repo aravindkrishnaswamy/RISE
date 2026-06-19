@@ -254,23 +254,10 @@ struct ContentView: View {
 
                 Divider()
 
-                // Active named-animation picker — only when the scene
-                // declares more than one animation (a lone "(default)"
-                // animation needs no chooser).  Selecting one re-points the
-                // timeline scrubber's range and refreshes the preview.
-                if viewModel.hasAnimation && viewModel.animationNames.count > 1 {
-                    Picker("Animation", selection: Binding(
-                        get: { viewModel.selectedAnimationIndex },
-                        set: { viewModel.selectAnimation($0) }
-                    )) {
-                        ForEach(Array(viewModel.animationNames.enumerated()), id: \.offset) { idx, name in
-                            Text(name).tag(idx)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .disabled(!canRender)
-                    .help("Pick which named animation the timeline scrubs, the Play button loops, and Render Animation renders")
-                }
+                // (The active animation is picked in the right-side panel's
+                // "Animation" accordion category — consistent with how every
+                // other scene entity is selected.  The Play button by the
+                // timeline loops whichever animation is active.)
 
                 // Render actions
                 FlowLayout(spacing: 8) {

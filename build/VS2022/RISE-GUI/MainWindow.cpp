@@ -137,10 +137,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_controlsWidget, &ControlsWidget::renderAnimationClicked, this, &MainWindow::onRenderAnimation);
     connect(m_controlsWidget, &ControlsWidget::cancelClicked, this, &MainWindow::onCancel);
 
-    // Named animation paths — dropdown selection re-routes through the
-    // bridge + re-sizes the timeline + re-scrubs the preview.
-    connect(m_controlsWidget, &ControlsWidget::animationSelected,
-            this, &MainWindow::onAnimationSelected);
+    // The active named animation is picked in the right-side panel's
+    // "Animation" accordion category — no dropdown wiring needed here.
 
     // L5e — exposure slider drives engine.setViewExposureEV.
     // Engine is mid-render-safe (atomic + Repaint, no rasterizer
@@ -569,10 +567,10 @@ void MainWindow::onClear()
     teardownViewport();
     m_engine->clearScene();
     m_controlsWidget->setHasScene(false);
-    // Reset the animation dropdown — the next scene load repopulates
-    // it via rebuildViewportForLoadedScene; an empty list re-hides the
-    // row so stale animation names from the cleared scene don't linger.
-    m_controlsWidget->setAnimationNames(QStringList(), -1);
+    // The "Animation" accordion category is rebuilt with the viewport
+    // (teardownViewport above destroys the old ViewportProperties); the
+    // next scene load repopulates it.  Nothing animation-specific to
+    // reset on the controls panel anymore.
     updateWindowTitle();
     updateStatusBar();
 }
@@ -781,36 +779,6 @@ void MainWindow::onSaveAndReload(const QString& filePath)
     m_engine->loadScene(filePath);
 }
 
-void MainWindow::onAnimationSelected(int idx)
-{
-    if (!m_viewportBridge) return;
-
-    // A running preview-play QTimer steps the OLD animation's range —
-    // stop it before swapping so we don't keep ticking a stale range
-    // (and so the swap's scrub doesn't fight the play loop's scrub).
-    if (m_viewportTimeline) m_viewportTimeline->stopPlayback();
-
-    // Activate the picked animation (serialized cancel-and-park inside
-    // the controller).  After this, GetAnimationOptions returns the
-    // newly-active animation's options.
-    m_viewportBridge->setSelectedAnimation(idx);
-
-    // Re-read the active animation's range + frame count and re-apply
-    // them to the timeline (same code path as scene load above).
-    double t0 = 0, t1 = 0;
-    unsigned int nf = 0;
-    if (m_viewportTimeline
-        && m_viewportBridge->animationOptions(t0, t1, nf) && t1 > t0) {
-        m_viewportTimeline->setRange(t0, t1);
-        m_viewportTimeline->setAnimationFrameCount(nf);
-    }
-
-    // Re-scrub the preview to the new animation's start so the viewport
-    // reflects the swap (the controller asked us to re-scrub after a
-    // SetActiveAnimationIndex).
-    m_viewportBridge->scrubTime(t0);
-}
-
 void MainWindow::updateWindowTitle()
 {
     QString title;
@@ -882,12 +850,11 @@ void MainWindow::rebuildViewportForLoadedScene()
         }
     }
 
-    // Named animation paths — populate the ControlsWidget dropdown
-    // with the scene's declared animations + the active one.  The
-    // ControlsWidget hides the row when there are fewer than 2.
-    m_controlsWidget->setAnimationNames(
-        m_viewportBridge->animationNames(),
-        m_viewportBridge->selectedAnimationIndex());
+    // The scene's named animations are surfaced by the ViewportProperties
+    // panel's "Animation" accordion category (constructed just above) —
+    // it pulls the list from the bridge's generic categoryEntities() and
+    // activates a pick via setSelection(Category::Animation, …).  The
+    // timeline still follows the active animation via animationOptions().
 
     // Compose the pane: VBox{ toolbar, viewport, timeline } | properties
     auto* col = new QVBoxLayout;

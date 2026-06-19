@@ -11,7 +11,6 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
-#include <QComboBox>
 #include <QSignalBlocker>
 
 #include "Utilities/RenderETAEstimator.h"
@@ -48,21 +47,9 @@ ControlsWidget::ControlsWidget(QWidget* parent)
     renderLayout->addWidget(m_cancelBtn);
     mainLayout->addLayout(renderLayout);
 
-    // Named-animation picker.  Sits just under the Render row so the
-    // "which animation does Render Animation / Play use" choice is
-    // adjacent to those actions.  Hidden by default (a scene with <2
-    // animations has nothing to pick) — setAnimationNames un-hides it.
-    m_animRow = new QWidget();
-    auto* animRowLayout = new QHBoxLayout(m_animRow);
-    animRowLayout->setContentsMargins(0, 0, 0, 0);
-    animRowLayout->setSpacing(6);
-    auto* animLabel = new QLabel("Animation");
-    animLabel->setStyleSheet("color: gray;");
-    m_animCombo = new QComboBox();
-    animRowLayout->addWidget(animLabel);
-    animRowLayout->addWidget(m_animCombo, 1);
-    m_animRow->hide();
-    mainLayout->addWidget(m_animRow);
+    // (The active named animation is picked in the right-side panel's
+    // "Animation" accordion category — consistent with how every other
+    // scene entity is selected.  No animation dropdown lives here.)
 
     // Cancelling indicator
     m_cancellingLabel = new QLabel("Cancelling \u2014 waiting for active block...");
@@ -159,14 +146,6 @@ ControlsWidget::ControlsWidget(QWidget* parent)
     connect(m_exposureSlider, &ExposureSlider::resetRequested,
             this, &ControlsWidget::onExposureResetRequested);
 
-    // Animation-combo wiring.  Use the explicit int overload of
-    // currentIndexChanged (QComboBox historically also had a
-    // QString overload; the QOverload form is unambiguous across Qt
-    // versions).  Programmatic repopulation in setAnimationNames is
-    // bracketed by a QSignalBlocker so it doesn't re-fire this.
-    connect(m_animCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &ControlsWidget::onAnimComboChanged);
-
     updateButtonStates();
 }
 
@@ -189,32 +168,6 @@ void ControlsWidget::onExposureSliderChanged(int value)
         .arg(ev > 0 ? "+" : "")
         .arg(ev, 0, 'f', 1));
     emit exposureChanged(ev);
-}
-
-void ControlsWidget::setAnimationNames(const QStringList& names, int activeIdx)
-{
-    // Programmatic repopulation — block signals so clear()/addItems()/
-    // setCurrentIndex() don't echo back through animationSelected and
-    // re-trigger a controller-side animation swap.
-    QSignalBlocker blocker(m_animCombo);
-    m_animCombo->clear();
-    m_animCombo->addItems(names);
-    if (activeIdx >= 0 && activeIdx < names.size()) {
-        m_animCombo->setCurrentIndex(activeIdx);
-    }
-
-    // Gate visibility: a single (or zero) named animation has nothing
-    // to pick, so hide the whole labeled row — matches how other
-    // optional rows hide.  >= 2 animations un-hides it.
-    if (m_animRow) {
-        m_animRow->setVisible(names.size() >= 2);
-    }
-}
-
-void ControlsWidget::onAnimComboChanged(int index)
-{
-    if (index < 0) return;
-    emit animationSelected(index);
 }
 
 void ControlsWidget::setHDREnabled(bool hdrOn)

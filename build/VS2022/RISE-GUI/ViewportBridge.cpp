@@ -358,33 +358,11 @@ bool ViewportBridge::animationOptions(double& timeStart, double& timeEnd, unsign
     return RISE_API_SceneEditController_GetAnimationOptions(m_controller, &timeStart, &timeEnd, &numFrames);
 }
 
-QStringList ViewportBridge::animationNames() const
-{
-    QStringList out;
-    if (!m_controller) return out;
-    const unsigned int n = RISE_API_SceneEditController_AnimationCount(m_controller);
-    out.reserve(static_cast<int>(n));
-    char nameBuf[128];
-    for (unsigned int i = 0; i < n; ++i) {
-        if (RISE_API_SceneEditController_AnimationName(m_controller, i, nameBuf, sizeof(nameBuf))) {
-            out.append(QString::fromUtf8(nameBuf));
-        }
-    }
-    return out;
-}
-
-int ViewportBridge::selectedAnimationIndex() const
-{
-    if (!m_controller) return -1;
-    return RISE_API_SceneEditController_GetActiveAnimationIndex(m_controller);
-}
-
-void ViewportBridge::setSelectedAnimation(int idx)
-{
-    if (!m_controller || idx < 0) return;
-    RISE_API_SceneEditController_SetActiveAnimationIndex(
-        m_controller, static_cast<unsigned int>(idx));
-}
+// Named animations are now a first-class accordion Category
+// (Category::Animation) — surfaced via the generic categoryEntities() /
+// activeNameForCategory() / setSelection() methods, which pass the raw
+// category int (8) straight to the C-API.  No bespoke per-feature
+// accessors are needed here.
 
 void ViewportBridge::scrubTimeBegin() { if (m_controller) RISE_API_SceneEditController_OnTimeScrubBegin(m_controller); }
 void ViewportBridge::scrubTime(double t) { if (m_controller) RISE_API_SceneEditController_OnTimeScrub(m_controller, t); }
@@ -512,6 +490,7 @@ ViewportBridge::Category ViewportBridge::selectionCategory() const
         case 5: return Category::Film;
         case 6: return Category::Material;
         case 7: return Category::Medium;
+        case 8: return Category::Animation;
         default: return Category::None;
     }
 }

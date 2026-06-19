@@ -1799,6 +1799,9 @@ unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
 		mJob.EnumerateMediumNames( cb );
 		return cb.n;
 	}
+	case Category::Animation: {
+		return mJob.GetAnimationCount();
+	}
 	case Category::None:
 	default:
 		return 0;
@@ -1862,6 +1865,11 @@ String SceneEditController::CategoryEntityName( Category cat, unsigned int idx )
 		if( idx >= cb.names.size() ) return String();
 		return cb.names[idx];
 	}
+	case Category::Animation: {
+		char buf[256] = { 0 };
+		if( !mJob.GetAnimationName( idx, buf, sizeof(buf) ) ) return String();
+		return String( buf );
+	}
 	case Category::None:
 	default:
 		return String();
@@ -1898,6 +1906,11 @@ String SceneEditController::CategoryActiveName( Category cat ) const
 		const FilmPreset* p = FilmIntrospection::PresetAt(
 			static_cast<unsigned int>( idx ) );
 		return p ? String( p->label ) : String();
+	}
+	case Category::Animation: {
+		char buf[256] = { 0 };
+		if( !mJob.GetActiveAnimationName( buf, sizeof(buf) ) ) return String();
+		return String( buf );
 	}
 	case Category::Object:
 	case Category::Light:
@@ -2069,7 +2082,7 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 	// are pure UI state and don't need the lock.
 	const bool needsRenderSerialization =
 		( cat == Category::Camera || cat == Category::Rasterizer
-		  || cat == Category::Film )
+		  || cat == Category::Film || cat == Category::Animation )
 		&& entityName.size() > 1;   // empty name = just expand, no swap
 
 	if( needsRenderSerialization )
@@ -2110,6 +2123,12 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 		else if( cat == Category::Rasterizer )
 		{
 			ok = mJob.SetActiveRasterizer( entityName.c_str() );
+		}
+		else if( cat == Category::Animation )
+		{
+			// Activating a named animation changes which timelines drive the
+			// scene; the next render evaluates the new active animation.
+			ok = mJob.SetActiveAnimation( entityName.c_str() );
 		}
 		else if( cat == Category::Film && filmPreset )
 		{
@@ -2202,43 +2221,6 @@ bool SceneEditController::GetAnimationOptions( double& timeStart, double& timeEn
 	return mJob.GetAnimationOptions( timeStart, timeEnd, numFrames, doFields, invertFields );
 }
 
-unsigned int SceneEditController::AnimationCount() const
-{
-	return mJob.GetAnimationCount();
-}
-
-String SceneEditController::AnimationName( unsigned int index ) const
-{
-	char buf[256] = { 0 };
-	if( !mJob.GetAnimationName( index, buf, sizeof(buf) ) ) {
-		return String();
-	}
-	return String( buf );
-}
-
-int SceneEditController::GetActiveAnimationIndex() const
-{
-	if( mJob.GetAnimationCount() == 0 ) {
-		return -1;
-	}
-	return (int)mJob.GetActiveAnimationIndex();
-}
-
-bool SceneEditController::SetActiveAnimationIndex( unsigned int index )
-{
-	// Switching the active animation changes which timelines EvaluateAtTime
-	// applies -- i.e. it mutates the evaluated scene transforms the render
-	// thread reads per-pixel.  Serialize exactly like a camera activation
-	// (cancel-and-park) so we never swap mid-render.
-	std::unique_lock<std::mutex> lk( mMutex );
-	if( mRendering.load( std::memory_order_acquire ) ) {
-		mCancelProgress.RequestCancel();
-		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
-	}
-	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
-
-	return mJob.SetActiveAnimationByIndex( index );
-}
 
 bool SceneEditController::GetCameraDimensions( unsigned int& w, unsigned int& h ) const
 {
@@ -2750,6 +2732,9 @@ SceneEditController::PanelMode SceneEditController::CurrentPanelMode() const
 		// "section open, no row picked yet"; we render nothing until
 		// the user clicks a medium row.
 		return mSelectionName.size() > 1 ? PanelMode::Medium : PanelMode::None;
+	case Category::Animation:
+		// No editable properties — selection just activates the path.
+		return PanelMode::None;
 	case Category::None:
 	default:
 		return PanelMode::None;

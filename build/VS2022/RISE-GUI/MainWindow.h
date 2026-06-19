@@ -51,13 +51,6 @@ private slots:
     void onSceneSizeDetected(int width, int height);
     void onSaveAndReload(const QString& filePath);
 
-    // Named animation paths — user picked a different active animation
-    // in the ControlsWidget dropdown.  Activates it on the bridge,
-    // re-reads the animation options (the active animation's range +
-    // frame count), re-applies them to the timeline, and re-scrubs the
-    // preview to the new animation's start.
-    void onAnimationSelected(int idx);
-
     // L5b — HDR display path.  `onHDRToggled` flips the engine's
     // HDR mode AND the QStackedWidget's currently-shown production
     // pane between RenderWidget (SDR) and HDRRenderWidget (HDR).

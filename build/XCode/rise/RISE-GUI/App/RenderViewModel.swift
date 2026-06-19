@@ -1062,25 +1062,12 @@ final class RenderViewModel: ObservableObject {
         renderState = .cancelling
     }
 
-    // MARK: - Named animation paths (dropdown + looping preview play)
-
-    /// The scene's named animations, in scene order (empty if none).
-    var animationNames: [String] { viewportBridge?.animationNames ?? [] }
-
-    /// Index of the active animation, or -1 if none is declared.
-    var selectedAnimationIndex: Int { viewportBridge?.selectedAnimationIndex ?? -1 }
-
-    /// Pick the active animation by index.  Stops any preview playback,
-    /// activates the animation (serialized in the controller), then moves
-    /// the playhead to the new animation's start — which both re-evaluates
-    /// the slider's range (timelineMax reads animationTimeEnd) and triggers
-    /// the scrub that refreshes the preview frame.
-    func selectAnimation(_ index: Int) {
-        guard let vb = viewportBridge, index >= 0 else { return }
-        stopPreviewPlay()
-        guard vb.setSelectedAnimation(index) else { return }
-        sceneTime = vb.animationTimeStart
-    }
+    // MARK: - Looping preview play (the Play button by the timeline)
+    //
+    // The ACTIVE animation is chosen in the right-side "Animation" accordion
+    // category (it routes through SetSelection -> SetActiveAnimation).  The
+    // loop below just plays whichever animation is active, reading its range
+    // and frame count from the bridge (which follow the active animation).
 
     /// Toggle looping preview playback (the Play button by the timeline).
     func togglePreviewPlay() {
