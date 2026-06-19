@@ -2726,6 +2726,60 @@ namespace RISE
 			bool& invert_fields
 			) const = 0;
 
+		//
+		// Named animation paths (additive; appended after the existing animation
+		// API so the vtable slots above stay ABI-stable).  A NULL or empty
+		// animation name everywhere routes to the implicit "(default)" animation,
+		// so legacy callers are unaffected.  Per the IJob ABI convention (see the
+		// other defaulted tail methods), these carry default bodies rather than
+		// being pure-virtual so out-of-tree IJob subclasses need not override
+		// them; the concrete in-tree Job overrides all of them.
+		//
+
+		//! Declares (or updates the playback options of) a named animation.
+		//! If make_active is TRUE the animation becomes the active one.
+		virtual bool DeclareAnimation(
+			const char* /*name*/,
+			const double /*time_start*/,
+			const double /*time_end*/,
+			const unsigned int /*num_frames*/,
+			const bool /*do_fields*/,
+			const bool /*invert_fields*/,
+			const bool /*make_active*/
+			) { return false; }
+
+		//! Adds a keyframe owned by a named animation.  A NULL/empty animation
+		//! routes to the implicit default animation (identical to AddKeyframe).
+		virtual bool AddKeyframeToAnimation(
+			const char* /*element_type*/,
+			const char* /*element*/,
+			const char* /*param*/,
+			const char* /*value*/,
+			const double /*time*/,
+			const char* /*interp*/,
+			const char* /*interp_params*/,
+			const char* /*animation*/
+			) { return false; }
+
+		//! Selects the active animation by name; FALSE if the name is unknown.
+		virtual bool SetActiveAnimation( const char* /*name*/ ) { return false; }
+
+		//! Selects the active animation by index; FALSE if out of range.
+		virtual bool SetActiveAnimationByIndex( const unsigned int /*index*/ ) { return false; }
+
+		//! Number of declared named animations.
+		virtual unsigned int GetAnimationCount() const { return 0; }
+
+		//! Copies the name of the animation at `index` into `buf` (NUL-terminated,
+		//! truncated to bufLen).  FALSE if the index is out of range.
+		virtual bool GetAnimationName( const unsigned int /*index*/, char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
+
+		//! Index of the active animation (0 if none declared).
+		virtual unsigned int GetActiveAnimationIndex() const { return 0; }
+
+		//! Copies the active animation's name into `buf`.  FALSE if none declared.
+		virtual bool GetActiveAnimationName( char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }
+
 		//! Sets progress class to report progress for anything we do
 		virtual void SetProgress(
 			IProgressCallback* pProgress				///< [in] The progress function

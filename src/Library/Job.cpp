@@ -9307,15 +9307,31 @@ bool Job::AreThereAnyKeyframedObjects()
 	return pScene->GetAnimator()->AreThereAnyKeyframedObjects();
 }
 
-//! Adds a keyframe for the specified element
+//! Adds a keyframe for the specified element (legacy; routes to the
+//! implicit default animation).
 bool Job::AddKeyframe(
-	const char* element_type,						///< [in] Type of element to keyframe (ie. camera, painter, geometry, object...)
-	const char* element,							///< [in] Name of the element to keyframe
-	const char* param,								///< [in] Name of the parameter to keyframe
-	const char* value,								///< [in] Value at this keyframe
-	const double time,								///< [in] Time of the keyframe
-	const char* interp,								///< [in] Type of interpolation to use between this keyframe and the next
-	const char* interp_params						///< [in] Parameters to pass to the interpolator (this can be NULL)
+	const char* element_type,
+	const char* element,
+	const char* param,
+	const char* value,
+	const double time,
+	const char* interp,
+	const char* interp_params
+	)
+{
+	return AddKeyframeToAnimation( element_type, element, param, value, time, interp, interp_params, 0 );
+}
+
+//! Adds a keyframe owned by a named animation (NULL/empty animation => default)
+bool Job::AddKeyframeToAnimation(
+	const char* element_type,
+	const char* element,
+	const char* param,
+	const char* value,
+	const double time,
+	const char* interp,
+	const char* interp_params,
+	const char* animation
 	)
 {
 	if( !element_type || !element || !param || !value ) {
@@ -9343,8 +9359,9 @@ bool Job::AddKeyframe(
 
 	String szinterp = String(interp);
 	String szinterpparams = String(interp_params);
+	String szanimation = String(animation);
 
-	return pScene->GetAnimator()->InsertKeyframe( pkf, String(param), String(value), time, interp?&szinterp:0, interp_params?&szinterpparams:0 );
+	return pScene->GetAnimator()->InsertKeyframeForAnimation( pkf, String(param), String(value), time, interp?&szinterp:0, interp_params?&szinterpparams:0, szanimation );
 }
 
 //! Sets animation rasterization options
@@ -9364,6 +9381,12 @@ bool Job::SetAnimationOptions(
 	animOptions.do_fields = do_fields;
 	animOptions.invert_fields = invert_fields;
 
+	// Also seed the implicit default animation so it carries the real time
+	// range (named-animation paths read per-animation playback options).
+	if( pScene && pScene->GetAnimator() ) {
+		pScene->GetAnimator()->DeclareAnimation( String("(default)"), time_start, time_end, num_frames, do_fields, invert_fields, false );
+	}
+
 	return true;
 }
 
@@ -9375,12 +9398,88 @@ bool Job::GetAnimationOptions(
 	bool& invert_fields
 	) const
 {
+	// Prefer the ACTIVE named animation's options (so the GUI timeline range
+	// and renderanimation-using-options follow the selected animation); fall
+	// back to the legacy global preset when nothing is declared.
+	if( pScene && pScene->GetAnimator() &&
+		pScene->GetAnimator()->GetActiveAnimationOptions( time_start, time_end, num_frames, do_fields, invert_fields ) ) {
+		return true;
+	}
+
 	time_start    = animOptions.time_start;
 	time_end      = animOptions.time_end;
 	num_frames    = animOptions.num_frames;
 	do_fields     = animOptions.do_fields;
 	invert_fields = animOptions.invert_fields;
 	return true;
+}
+
+//! Declares (or updates) a named animation; routes to the animator.
+bool Job::DeclareAnimation(
+	const char* name,
+	const double time_start,
+	const double time_end,
+	const unsigned int num_frames,
+	const bool do_fields,
+	const bool invert_fields,
+	const bool make_active
+	)
+{
+	return pScene->GetAnimator()->DeclareAnimation( String(name), time_start, time_end, num_frames, do_fields, invert_fields, make_active );
+}
+
+bool Job::SetActiveAnimation( const char* name )
+{
+	return pScene->GetAnimator()->SetActiveAnimationByName( String(name) );
+}
+
+bool Job::SetActiveAnimationByIndex( const unsigned int index )
+{
+	return pScene->GetAnimator()->SetActiveAnimationByIndex( index );
+}
+
+unsigned int Job::GetAnimationCount() const
+{
+	return pScene->GetAnimator()->GetAnimationCount();
+}
+
+bool Job::GetAnimationName( const unsigned int index, char* buf, const unsigned int bufLen ) const
+{
+	if( !buf || bufLen == 0 ) {
+		return false;
+	}
+	if( index >= pScene->GetAnimator()->GetAnimationCount() ) {
+		buf[0] = 0;
+		return false;
+	}
+	const String n = pScene->GetAnimator()->GetAnimationName( index );
+	const char* src = n.c_str();
+	unsigned int i = 0;
+	for( ; src[i] && i+1 < bufLen; i++ ) {
+		buf[i] = src[i];
+	}
+	buf[i] = 0;
+	return true;
+}
+
+unsigned int Job::GetActiveAnimationIndex() const
+{
+	return pScene->GetAnimator()->GetActiveAnimationIndex();
+}
+
+bool Job::GetActiveAnimationName( char* buf, const unsigned int bufLen ) const
+{
+	if( !buf || bufLen == 0 ) {
+		return false;
+	}
+	const String n = pScene->GetAnimator()->GetActiveAnimationName();
+	const char* src = n.c_str();
+	unsigned int i = 0;
+	for( ; src[i] && i+1 < bufLen; i++ ) {
+		buf[i] = src[i];
+	}
+	buf[i] = 0;
+	return ( src[0] != 0 );
 }
 
 //! Rasterizes an animation using the global preset options
@@ -9404,8 +9503,11 @@ bool Job::RasterizeAnimationUsingOptions(
 		}
 	}
 
+	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
+	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
+
 	pRasterizer->RasterizeSceneAnimation( *pScene,
-		animOptions.time_start, animOptions.time_end, animOptions.num_frames, animOptions.do_fields, animOptions.invert_fields, 0, 0, pSeq );
+		aTs, aTe, aNf, aDf, aInvf, 0, 0, pSeq );
 
 	return true;
 }
@@ -9431,8 +9533,11 @@ bool Job::RasterizeAnimationUsingOptions(
 		}
 	}
 
+	double aTs=0, aTe=1; unsigned int aNf=30; bool aDf=false, aInvf=false;
+	GetAnimationOptions( aTs, aTe, aNf, aDf, aInvf );
+
 	pRasterizer->RasterizeSceneAnimation( *pScene,
-		animOptions.time_start, animOptions.time_end, animOptions.num_frames, animOptions.do_fields, animOptions.invert_fields, 0, &frame, pSeq );
+		aTs, aTe, aNf, aDf, aInvf, 0, &frame, pSeq );
 
 	return true;
 }

@@ -406,6 +406,19 @@ bool ParseModifyRasterizer( String* tokens, unsigned int num_tokens, IJob& pJob 
 	return false;
 }
 
+//! `> modify animation <name>` — selects the active named animation
+//! (the one rendered by `renderanimation` / scrubbed in the GUI).
+bool ParseModifyAnimation( String* tokens, unsigned int num_tokens, IJob& pJob )
+{
+	if( num_tokens < 1 )
+	{
+		GlobalLog()->Print( eLog_Warning, "AsciiCommandParser::ParseModifyAnimation: usage: modify animation <name>" );
+		return false;
+	}
+
+	return pJob.SetActiveAnimation( tokens[0].c_str() );
+}
+
 bool AsciiCommandParser::ParseModify( String* tokens, unsigned int num_tokens, IJob& pJob, AsciiCommandParser* )
 {
 	// We are to modify some existing item
@@ -425,6 +438,9 @@ bool AsciiCommandParser::ParseModify( String* tokens, unsigned int num_tokens, I
 	}
 	else if( tokens[0] == "rasterizer" ) {
 		return ParseModifyRasterizer( &tokens[1], num_tokens-1, pJob );
+	}
+	else if( tokens[0] == "animation" ) {
+		return ParseModifyAnimation( &tokens[1], num_tokens-1, pJob );
 	}
 
 	GlobalLog()->PrintEx( eLog_Error, "AsciiCommandParser::ParseModify: Unknown element type: %s", tokens[0].c_str() );

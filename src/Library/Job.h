@@ -2766,6 +2766,35 @@ namespace RISE
 			bool& invert_fields
 			) const;
 
+		//
+		// Named animation paths
+		//
+		bool DeclareAnimation(
+			const char* name,
+			const double time_start,
+			const double time_end,
+			const unsigned int num_frames,
+			const bool do_fields,
+			const bool invert_fields,
+			const bool make_active
+			);
+		bool AddKeyframeToAnimation(
+			const char* element_type,
+			const char* element,
+			const char* param,
+			const char* value,
+			const double time,
+			const char* interp,
+			const char* interp_params,
+			const char* animation
+			);
+		bool SetActiveAnimation( const char* name );
+		bool SetActiveAnimationByIndex( const unsigned int index );
+		unsigned int GetAnimationCount() const;
+		bool GetAnimationName( const unsigned int index, char* buf, const unsigned int bufLen ) const;
+		unsigned int GetActiveAnimationIndex() const;
+		bool GetActiveAnimationName( char* buf, const unsigned int bufLen ) const;
+
 		//! Sets progress class to report progress for anything we do
 		void SetProgress(
 			IProgressCallback* pProgress				///< [in] The progress function

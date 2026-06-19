@@ -2202,6 +2202,44 @@ bool SceneEditController::GetAnimationOptions( double& timeStart, double& timeEn
 	return mJob.GetAnimationOptions( timeStart, timeEnd, numFrames, doFields, invertFields );
 }
 
+unsigned int SceneEditController::AnimationCount() const
+{
+	return mJob.GetAnimationCount();
+}
+
+String SceneEditController::AnimationName( unsigned int index ) const
+{
+	char buf[256] = { 0 };
+	if( !mJob.GetAnimationName( index, buf, sizeof(buf) ) ) {
+		return String();
+	}
+	return String( buf );
+}
+
+int SceneEditController::GetActiveAnimationIndex() const
+{
+	if( mJob.GetAnimationCount() == 0 ) {
+		return -1;
+	}
+	return (int)mJob.GetActiveAnimationIndex();
+}
+
+bool SceneEditController::SetActiveAnimationIndex( unsigned int index )
+{
+	// Switching the active animation changes which timelines EvaluateAtTime
+	// applies -- i.e. it mutates the evaluated scene transforms the render
+	// thread reads per-pixel.  Serialize exactly like a camera activation
+	// (cancel-and-park) so we never swap mid-render.
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	return mJob.SetActiveAnimationByIndex( index );
+}
+
 bool SceneEditController::GetCameraDimensions( unsigned int& w, unsigned int& h ) const
 {
 	const unsigned int cachedW = mFullResW.load( std::memory_order_acquire );

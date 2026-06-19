@@ -428,6 +428,18 @@ namespace RISE
 		bool GetAnimationOptions( double& timeStart, double& timeEnd,
 		                          unsigned int& numFrames ) const;
 
+		//! Named animation paths for the side-panel dropdown.  AnimationCount /
+		//! AnimationName list the scene's named animations in scene order;
+		//! GetActiveAnimationIndex returns the active one (-1 if none declared);
+		//! SetActiveAnimationIndex selects one -- serialized like a camera
+		//! activation (it changes the evaluated transforms the render thread
+		//! reads), after which the caller re-scrubs the preview.  Note that
+		//! GetAnimationOptions (above) already follows the active selection.
+		unsigned int AnimationCount() const;
+		String AnimationName( unsigned int index ) const;
+		int GetActiveAnimationIndex() const;
+		bool SetActiveAnimationIndex( unsigned int index );
+
 		// Test hooks (Phase 2) ---------------------------------------
 		// These let tests bypass picking and observe internal counters.
 		// They live in non-RISE_TEST_HOOKS builds too — the surface
