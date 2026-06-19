@@ -234,8 +234,12 @@ pinhole_camera
 #              curves cross zero at the seam -> perfectly C1-seamless loop.
 #   SlowOrbit  slow constant-speed full 360deg azimuth ring at the hero
 #              elevation; the specular highlight sweeps around the guilloche.
-#   LockedHero static hero pose (elevation/azimuth pinned to the base) across
-#              all frames -- a still beauty shot via the renderanimation path.
+#   HandsSweep the watch HANDS run (a 12-hour time-lapse) while the camera holds
+#              the hero pose: minute hand 12 clockwise turns, hour hand 1 turn
+#              (1/12 the speed, like a real watch); both loop back to 10:10.
+#   WobbleHands HandsSweep + Wobble together: the hands run the 12-hour time-
+#              lapse WHILE the camera does the gentle elliptical wobble -- a live,
+#              breathing hero view of the running watch (both loop at t=1).
 ##################################################
 
 animation
@@ -273,10 +277,18 @@ animation
 
 animation
 {
-	name			LockedHero
+	name			HandsSweep
 	time_start		0.0
 	time_end		1.0
-	num_frames		24
+	num_frames		120
+}
+
+animation
+{
+	name			WobbleHands
+	time_start		0.0
+	time_end		1.0
+	num_frames		120
 }
 
 # --- Wobble (active) ---
@@ -503,11 +515,18 @@ timeline
 	value		0.0
 }
 
-# --- LockedHero (no motion: pin elevation/azimuth to the base pose) ---
+# --- HandsSweep (the watch HANDS run; camera held at the hero pose) ---
+# A 12-hour time-lapse: the minute hand sweeps 12 full CLOCKWISE turns while the
+# hour hand advances exactly 1/12 as fast -> one full turn (12 hours).  Both
+# return to the 10:10 pose at t=1 (seamless loop) and the 1:12 ratio matches a
+# real watch.  Hands rotate about the dial normal (Z) at the centre hub (the SDF
+# round-cone's fat r1 end sits at the object origin = the hub).  CLOCKWISE =
+# DECREASING Z (the dial faces the camera, so +Z reads counter-clockwise).  The
+# camera elevation/azimuth stay pinned at 0 so the hero framing holds steady.
 
 timeline
 {
-	animation	LockedHero
+	animation	HandsSweep
 	element_type	camera
 	element			cam_high34
 	param			elevation
@@ -522,7 +541,7 @@ timeline
 
 timeline
 {
-	animation	LockedHero
+	animation	HandsSweep
 	element_type	camera
 	element			cam_high34
 	param			azimuth
@@ -534,6 +553,84 @@ timeline
 	time		1.00
 	value		0.0
 }
+
+# --- WobbleHands (hands run + camera wobbles) -- camera half (the Wobble
+# elliptical orbit); the hand half is with the other hand timelines below. ---
+timeline
+{
+	animation	WobbleHands
+	element_type	camera
+	element			cam_high34
+	param			elevation
+	interpolator	hermite
+
+	time		0.000
+	value		0.0
+
+	time		0.125
+	value		8.485
+
+	time		0.250
+	value		12.0
+
+	time		0.375
+	value		8.485
+
+	time		0.500
+	value		0.0
+
+	time		0.625
+	value		-8.485
+
+	time		0.750
+	value		-12.0
+
+	time		0.875
+	value		-8.485
+
+	time		1.000
+	value		0.0
+}
+
+timeline
+{
+	animation	WobbleHands
+	element_type	camera
+	element			cam_high34
+	param			azimuth
+	interpolator	hermite
+
+	time		0.000
+	value		5.0
+
+	time		0.125
+	value		3.536
+
+	time		0.250
+	value		0.0
+
+	time		0.375
+	value		-3.536
+
+	time		0.500
+	value		-5.0
+
+	time		0.625
+	value		-3.536
+
+	time		0.750
+	value		0.0
+
+	time		0.875
+	value		3.536
+
+	time		1.000
+	value		5.0
+}
+
+# (HandsSweep's hour/minute-hand timelines live AFTER the hand objects
+# sdfhour/sdfminute below -- a timeline's element must already exist when
+# its chunk is parsed, and the hands are defined later in the file.)
 
 
 
@@ -1822,6 +1919,80 @@ standard_object
 	position			0 0 0.95
 	orientation		0 0 -60
 }
+
+##################################################
+# HandsSweep animation -- the watch hands' rotation timelines.  Placed here
+# (not up in the animation block) because a `timeline` chunk resolves its
+# `element` at parse time, so sdfhour/sdfminute must be defined first.  The
+# matching `animation { name HandsSweep ... }` + the camera-pin timelines are
+# in the animation block near the top.
+##################################################
+# Hour hand: 10:10 pose (Z=+60) -> one clockwise turn over 12 hours (Z=-300,
+# which is +60 mod 360 -> loops).
+timeline
+{
+	animation	HandsSweep
+	element_type	object
+	element			sdfhour
+	param			orientation
+	interpolator	linear
+
+	time		0.00
+	value		0 0 60
+
+	time		1.00
+	value		0 0 -300
+}
+
+# Minute hand: 10:10 pose (Z=-60) -> 12 clockwise turns (Z=-4380, which is -60
+# mod 360 -> loops); 12x the hour hand's angular speed.
+timeline
+{
+	animation	HandsSweep
+	element_type	object
+	element			sdfminute
+	param			orientation
+	interpolator	linear
+
+	time		0.00
+	value		0 0 -60
+
+	time		1.00
+	value		0 0 -4380
+}
+
+# WobbleHands hand half (same hour/minute sweep as HandsSweep; the camera
+# wobble half is in the animation block up top).
+timeline
+{
+	animation	WobbleHands
+	element_type	object
+	element			sdfhour
+	param			orientation
+	interpolator	linear
+
+	time		0.00
+	value		0 0 60
+
+	time		1.00
+	value		0 0 -300
+}
+
+timeline
+{
+	animation	WobbleHands
+	element_type	object
+	element			sdfminute
+	param			orientation
+	interpolator	linear
+
+	time		0.00
+	value		0 0 -60
+
+	time		1.00
+	value		0 0 -4380
+}
+
 ##################################################
 # Double-domed sapphire crystal (sphere-traced SDF shell, authored in the
 # watch's ABSOLUTE world frame; src/Library/Geometry/SDFGeometry.{h,cpp}).
