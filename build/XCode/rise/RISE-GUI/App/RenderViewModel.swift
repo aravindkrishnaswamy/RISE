@@ -157,6 +157,11 @@ final class RenderViewModel: ObservableObject {
     /// Live time-scrubber state, displayed on the viewport's bottom slider.
     @Published var sceneTime: Double = 0
 
+    /// True while the Play button is looping the active animation through
+    /// the fast interactive preview renderer (frame-by-frame, looping until
+    /// stopped).  Distinct from `renderState == .rendering` (production).
+    @Published var isPreviewPlaying: Bool = false
+
     // L5a — EDR (extended dynamic range) state.
     //
     // `edrAvailable` mirrors the active screen's
@@ -262,6 +267,9 @@ final class RenderViewModel: ObservableObject {
     /// clearScene().  The viewport bridge borrows `bridge`'s job — its
     /// lifetime must not exceed `bridge`'s.
     private(set) var viewportBridge: RISEViewportBridge? = nil
+    /// Drives the looping preview-play frame stepper (Play button).  Nil
+    /// when not playing; cancelled + niled by stopPreviewPlay().
+    private var previewPlayTask: Task<Void, Never>? = nil
     private let cancelFlag = AtomicBool(false)
     private let imageBuffer = RenderImageBuffer()
     private var renderStartTime: Date? = nil
@@ -531,6 +539,7 @@ final class RenderViewModel: ObservableObject {
     /// fresh viewport bridge is recreated inside loadScene's success
     /// path.
     private func continueMergeLoad(at path: String) {
+        stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
         viewportBridge?.shutdown()
         viewportBridge = nil
 
@@ -547,6 +556,7 @@ final class RenderViewModel: ObservableObject {
         // bridge.clearAll().  shutdown() joins the controller's render
         // thread; once it returns, no other thread holds pointers into
         // Scene state that clearAll is about to destroy.
+        stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
         viewportBridge?.shutdown()
         viewportBridge = nil
 
@@ -634,6 +644,7 @@ final class RenderViewModel: ObservableObject {
                     // Tear down any previous viewport bridge (e.g. from
                     // a prior scene) and stand up a fresh one over the
                     // newly-loaded job.
+                    self.stopPreviewPlay()   // halt any looping preview-play before swapping the bridge
                     self.viewportBridge?.shutdown()
                     let vb = RISEViewportBridge(hostBridge: bridgeRef)
                     self.viewportBridge = vb
@@ -701,6 +712,9 @@ final class RenderViewModel: ObservableObject {
         // The viewport is restarted in finishRender() once production
         // completes (or is cancelled).  Stop is synchronous — it
         // joins the viewport's render thread before returning.
+        // Halt any looping preview-play first — it drives scrubTime on the
+        // viewport renderer, which must be idle before production starts.
+        stopPreviewPlay()
         viewportBridge?.stop()
 
         // Advance scene state to the canonical scrubbed time AND
@@ -898,6 +912,7 @@ final class RenderViewModel: ObservableObject {
               || renderState == .cancelled else { return }
 
         // Stop the viewport before production renders (see startRender).
+        stopPreviewPlay()
         viewportBridge?.stop()
 
         renderState = .rendering
@@ -1047,6 +1062,61 @@ final class RenderViewModel: ObservableObject {
         renderState = .cancelling
     }
 
+    // MARK: - Looping preview play (the Play button by the timeline)
+    //
+    // The ACTIVE animation is chosen in the right-side "Animation" accordion
+    // category (it routes through SetSelection -> SetActiveAnimation).  The
+    // loop below just plays whichever animation is active, reading its range
+    // and frame count from the bridge (which follow the active animation).
+
+    /// Toggle looping preview playback (the Play button by the timeline).
+    func togglePreviewPlay() {
+        if isPreviewPlaying { stopPreviewPlay() } else { startPreviewPlay() }
+    }
+
+    /// Loop the active animation through the fast interactive preview
+    /// renderer: step the playhead from time_start to time_end across
+    /// num_frames at a fixed ~30 Hz cadence, wrapping back to the start
+    /// (loop) until stopped.  Paced strictly by the timer — frames the
+    /// renderer can't keep up with are coalesced, never queued.
+    func startPreviewPlay() {
+        guard !isPreviewPlaying,
+              let vb = viewportBridge,
+              hasAnimation,
+              renderState != .rendering else { return }
+        let t0 = vb.animationTimeStart
+        let t1 = vb.animationTimeEnd
+        let frames = max(Int(vb.animationNumFrames), 2)
+        let span = t1 - t0
+        guard span > 0 else { return }
+        let dt = span / Double(frames - 1)
+
+        isPreviewPlaying = true
+        vb.scrubTimeBegin()           // one undo bracket for the whole run
+        sceneTime = t0                // onChange(sceneTime) -> bridge.scrubTime
+
+        previewPlayTask = Task { [weak self] in
+            var t = t0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 33_000_000)   // ~30 fps
+                guard let self, self.isPreviewPlaying, !Task.isCancelled else { break }
+                t += dt
+                if t > t1 + 1e-9 { t = t0 }                      // loop
+                self.sceneTime = t
+            }
+        }
+    }
+
+    /// Stop looping preview playback (idempotent; also called before any
+    /// production render and when the user manually scrubs).
+    func stopPreviewPlay() {
+        guard isPreviewPlaying else { return }
+        isPreviewPlaying = false
+        previewPlayTask?.cancel()
+        previewPlayTask = nil
+        viewportBridge?.scrubTimeEnd()
+    }
+
     func editSceneFile() {
         guard loadedFilePath != nil else { return }
 
@@ -1111,6 +1181,7 @@ final class RenderViewModel: ObservableObject {
         // Clear the current scene.  Tear the viewport bridge down
         // first so its render thread is joined before clearAll
         // destroys the scene it's referencing.
+        stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
         viewportBridge?.shutdown()
         viewportBridge = nil
         bridge.clearAll()
@@ -1264,6 +1335,7 @@ final class RenderViewModel: ObservableObject {
         // Viewport bridge borrows the underlying job — tear it down
         // BEFORE bridge.clearAll() so the controller's render thread
         // is joined before the scene is destroyed.
+        stopPreviewPlay()   // halt a looping preview-play before the bridge it drives is torn down
         viewportBridge?.shutdown()
         viewportBridge = nil
         sceneTime = 0

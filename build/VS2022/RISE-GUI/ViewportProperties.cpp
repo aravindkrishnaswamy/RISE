@@ -213,12 +213,17 @@ struct AccordionSectionDef {
     const char*              title;
 };
 
-// Top-down order: Cameras first (most-used), Rasterizer second
-// (scene-global), Objects third (long lists), Lights, then Output
-// Settings (Film — last because it's a one-row global config the
-// user typically touches once at the start of a session).
+// Top-down order: Cameras first (most-used), Animation right under it
+// (picking a named animation re-points the timeline, like activating a
+// camera), Rasterizer (scene-global), Objects (long lists), Lights, then
+// Output Settings (Film — last because it's a one-row global config the
+// user typically touches once at the start of a session).  Animation has
+// no editable properties — selecting a row just activates that animation
+// (the section renders generically: combo populated from categoryEntities,
+// pick routed through setSelection).
 static const AccordionSectionDef kSectionDefs[] = {
     { ViewportBridge::Category::Camera,     "Cameras"         },
+    { ViewportBridge::Category::Animation,  "Animation"       },
     { ViewportBridge::Category::Rasterizer, "Rasterizer"      },
     { ViewportBridge::Category::Object,     "Objects"         },
     { ViewportBridge::Category::Light,      "Lights"          },

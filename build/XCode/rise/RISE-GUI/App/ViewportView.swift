@@ -42,6 +42,14 @@ struct ViewportView: View {
     /// panel re-reads bridge.panelMode + propertySnapshot.
     var onSelectionMayHaveChanged: () -> Void = {}
 
+    /// Looping preview-play state + controls for the Play button by the
+    /// timeline slider.  `isPreviewPlaying` drives the play/stop icon;
+    /// `onPlayToggle` starts/stops the loop; `onUserScrubBegan` lets a
+    /// manual drag interrupt playback.
+    var isPreviewPlaying: Bool = false
+    var onPlayToggle: () -> Void = {}
+    var onUserScrubBegan: () -> Void = {}
+
     /// L5a round-5 — TWO EDR renderers passed through from
     /// RenderViewModel.  Production handles the full-quality
     /// render output (opaque base layer); interactive handles
@@ -170,6 +178,9 @@ struct ViewportView: View {
                 TimelineSlider(
                     time: $sceneTime,
                     range: 0...timelineMax,
+                    isPlaying: isPreviewPlaying,
+                    onPlayToggle: onPlayToggle,
+                    onUserScrubBegan: onUserScrubBegan,
                     onScrubBegin: { bridge.scrubTimeBegin() },
                     onScrubEnd:   { bridge.scrubTimeEnd() }
                 )

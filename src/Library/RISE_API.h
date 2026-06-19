@@ -3648,6 +3648,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 		double* outTimeStart, double* outTimeEnd,
 		unsigned int* outNumFrames );
 
+
 	//! Read the scene camera's stable full-resolution dimensions.
 	//! Bridges call this from their pointer-event handlers to convert
 	//! window-space mouse coords to a coord space that doesn't drift

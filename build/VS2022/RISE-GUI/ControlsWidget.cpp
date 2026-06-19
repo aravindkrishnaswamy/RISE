@@ -11,6 +11,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
+#include <QSignalBlocker>
 
 #include "Utilities/RenderETAEstimator.h"
 
@@ -45,6 +46,10 @@ ControlsWidget::ControlsWidget(QWidget* parent)
     renderLayout->addWidget(m_renderAnimBtn);
     renderLayout->addWidget(m_cancelBtn);
     mainLayout->addLayout(renderLayout);
+
+    // (The active named animation is picked in the right-side panel's
+    // "Animation" accordion category — consistent with how every other
+    // scene entity is selected.  No animation dropdown lives here.)
 
     // Cancelling indicator
     m_cancellingLabel = new QLabel("Cancelling \u2014 waiting for active block...");

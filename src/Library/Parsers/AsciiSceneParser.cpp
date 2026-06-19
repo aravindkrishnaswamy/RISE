@@ -9514,6 +9514,7 @@ namespace RISE
 					std::string element_type = bag.GetString( "element_type", "object" );
 					std::string element      = bag.GetString( "element",      "none" );
 					std::string param        = bag.GetString( "param",        "none" );
+					std::string animation    = bag.GetString( "animation",    "" );
 
 					// `time`, `value`, `interpolator`, `interpolator_params` are
 					// declared repeatable and zipped here.  Each `value`
@@ -9534,7 +9535,7 @@ namespace RISE
 						const char* iparams_c = iparams.empty() ? 0 :
 							(iparams[std::min(i, iparams.size()-1)] == "none" ? 0 : iparams[std::min(i, iparams.size()-1)].c_str());
 
-						if( !pJob.AddKeyframe( element_type.c_str(), element.c_str(), param.c_str(), values[i].c_str(), time, interp_c, iparams_c ) ) {
+						if( !pJob.AddKeyframeToAnimation( element_type.c_str(), element.c_str(), param.c_str(), values[i].c_str(), time, interp_c, iparams_c, animation.c_str() ) ) {
 							return false;
 						}
 					}
@@ -9551,6 +9552,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
 						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light"}; p.description = "Element kind"; p.defaultValueHint = "object"; }
 						{ auto& p = P(); p.name = "param";               p.kind = ValueKind::String; p.description = "Parameter name"; }
+						{ auto& p = P(); p.name = "animation";           p.kind = ValueKind::String; p.description = "Owning named animation (default = the implicit default animation)"; p.defaultValueHint = "(default)"; }
 						{ auto& p = P(); p.name = "value";               p.kind = ValueKind::String; p.repeatable = true; p.description = "Value at the corresponding `time` (emits one keyframe per appearance)"; }
 						{ auto& p = P(); p.name = "time";                p.kind = ValueKind::Double; p.repeatable = true; p.description = "Time of the matching value (positional, paired 1:1 with `value`)"; }
 						{ auto& p = P(); p.name = "interpolator";        p.kind = ValueKind::String; p.repeatable = true; p.description = "Interpolator type (sticky — last-seen up to a given `value` applies)"; p.defaultValueHint = "linear"; }
@@ -9580,6 +9582,40 @@ namespace RISE
 						cd.keyword = "animation_options"; cd.category = ChunkCategory::Animation;
 						cd.description = "Global animation time range, frame count, and field options.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "time_start";    p.kind = ValueKind::Double; p.description = "Animation start time"; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "time_end";      p.kind = ValueKind::Double; p.description = "Animation end time"; p.defaultValueHint = "1"; }
+						{ auto& p = P(); p.name = "num_frames";    p.kind = ValueKind::UInt;   p.description = "Number of frames to render"; p.defaultValueHint = "30"; }
+						{ auto& p = P(); p.name = "do_fields";     p.kind = ValueKind::Bool;   p.description = "Emit interlaced fields"; p.defaultValueHint = "FALSE"; }
+						{ auto& p = P(); p.name = "invert_fields"; p.kind = ValueKind::Bool;   p.description = "Invert field order"; p.defaultValueHint = "FALSE"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct AnimationAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string  name          = bag.GetString( "name",          "(default)" );
+					double       time_start    = bag.GetDouble( "time_start",    0 );
+					double       time_end      = bag.GetDouble( "time_end",      1.0 );
+					unsigned int num_frames    = bag.GetUInt(   "num_frames",    30 );
+					bool         do_fields     = bag.GetBool(   "do_fields",     false );
+					bool         invert_fields = bag.GetBool(   "invert_fields", false );
+					bool         active        = bag.GetBool(   "active",        false );
+
+					return pJob.DeclareAnimation( name.c_str(), time_start, time_end, num_frames, do_fields, invert_fields, active );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "animation"; cd.category = ChunkCategory::Animation;
+						cd.description = "Declares a named animation path (a group of timelines sharing a name); each `timeline` joins it via its `animation <name>` tag.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String; p.description = "Animation name (referenced by timeline `animation` tags)"; p.defaultValueHint = "(default)"; }
+						{ auto& p = P(); p.name = "active";        p.kind = ValueKind::Bool;   p.description = "Make this the active animation (rendered/scrubbed by default)"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "time_start";    p.kind = ValueKind::Double; p.description = "Animation start time"; p.defaultValueHint = "0"; }
 						{ auto& p = P(); p.name = "time_end";      p.kind = ValueKind::Double; p.description = "Animation end time"; p.defaultValueHint = "1"; }
 						{ auto& p = P(); p.name = "num_frames";    p.kind = ValueKind::UInt;   p.description = "Number of frames to render"; p.defaultValueHint = "30"; }
@@ -9799,6 +9835,7 @@ namespace RISE
 		add( "keyframe",                              new KeyframeAsciiChunkParser() );
 		add( "timeline",                              new TimelineAsciiChunkParser() );
 		add( "animation_options",                     new AnimationOptionsAsciiChunkParser() );
+		add( "animation",                             new AnimationAsciiChunkParser() );
 
 		return entries;
 	}

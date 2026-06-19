@@ -358,6 +358,12 @@ bool ViewportBridge::animationOptions(double& timeStart, double& timeEnd, unsign
     return RISE_API_SceneEditController_GetAnimationOptions(m_controller, &timeStart, &timeEnd, &numFrames);
 }
 
+// Named animations are now a first-class accordion Category
+// (Category::Animation) — surfaced via the generic categoryEntities() /
+// activeNameForCategory() / setSelection() methods, which pass the raw
+// category int (8) straight to the C-API.  No bespoke per-feature
+// accessors are needed here.
+
 void ViewportBridge::scrubTimeBegin() { if (m_controller) RISE_API_SceneEditController_OnTimeScrubBegin(m_controller); }
 void ViewportBridge::scrubTime(double t) { if (m_controller) RISE_API_SceneEditController_OnTimeScrub(m_controller, t); }
 void ViewportBridge::scrubTimeEnd()   { if (m_controller) RISE_API_SceneEditController_OnTimeScrubEnd(m_controller); }
@@ -484,6 +490,7 @@ ViewportBridge::Category ViewportBridge::selectionCategory() const
         case 5: return Category::Film;
         case 6: return Category::Material;
         case 7: return Category::Medium;
+        case 8: return Category::Animation;
         default: return Category::None;
     }
 }

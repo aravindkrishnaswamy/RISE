@@ -799,6 +799,7 @@ static void RISE_API_DirtyChangedTrampoline(void* userData,
         case 5: return RISEViewportCategoryFilm;
         case 6: return RISEViewportCategoryMaterial;
         case 7: return RISEViewportCategoryMedium;
+        case 8: return RISEViewportCategoryAnimation;
         default: return RISEViewportCategoryNone;
     }
 }

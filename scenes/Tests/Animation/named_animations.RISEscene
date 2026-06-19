@@ -1,0 +1,158 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           named_animations.RISEscene                                                              #
+#   Description:    Exercises NAMED ANIMATION PATHS: several named `animation` chunks, each grouping its     #
+#                   own `timeline`s (tagged with `animation <name>`), with one marked `active`.  The active  #
+#                   animation is the one `renderanimation` renders and the GUI scrubs; switch it with the    #
+#                   CLI `> modify animation <name>` or the RISE-GUI side-panel dropdown.                     #
+#                                                                                                            #
+#                   Backward compat: a scene with bare `timeline`s + `animation_options` (no `animation`     #
+#                   chunk) still works -- those map to an implicit "(default)" animation.                    #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		4
+	samples				4
+	lum_samples			1
+}
+
+/*
+file_rasterizeroutput
+{
+	pattern				rendered/named_animations/frame
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	multiple			TRUE
+}
+*/
+
+film
+{
+	width			320
+	height			240
+}
+
+pinhole_camera
+{
+	name				cam
+	location			0 0 0.5
+	lookat				0 0 0
+	up					0 1 0
+	fov					30.0
+}
+
+> run scenes/colors.RISEscript
+
+lambertian_material
+{
+	name				gold
+	reflectance			color_gold
+}
+
+lambertian_material
+{
+	name				white
+	reflectance			color_white
+}
+
+box_geometry
+{
+	name			boxgeom
+	width			0.06
+	height			0.06
+	depth			0.06
+}
+
+standard_object
+{
+	name				box
+	geometry			boxgeom
+	position			0 0 0.0
+	orientation			45 45 0
+	material			gold
+}
+
+infiniteplane_geometry
+{
+	name			planegeom
+	xtile			1.0
+	ytile			1.0
+}
+
+standard_object
+{
+	name				plane
+	geometry			planegeom
+	position			0 -0.1 0
+	orientation			-90 0 0
+	material			white
+}
+
+omni_light
+{
+	name		lightA
+	power		3.14159
+	color		1.0 1.0 1.0
+	position	0.0 0.065 0.065
+}
+
+##################################################
+# Named animations.  Each `animation` chunk names a path + its playback
+# options; `active TRUE` picks the default one.  `timeline`s join a path
+# via their `animation <name>` tag.
+##################################################
+
+animation
+{
+	name			Slide
+	active			TRUE
+	time_start		0
+	time_end		1
+	num_frames		24
+}
+
+animation
+{
+	name			Tumble
+	time_start		0
+	time_end		1
+	num_frames		48
+}
+
+# Slide: the box translates left -> right.
+timeline
+{
+	animation	Slide
+	element		box
+	param		position
+
+	time		0.0
+	value		-0.07 0 0.0
+
+	time		1.0
+	value		0.07 0 0.0
+}
+
+# Tumble: the box stays put but spins (a different look, different frame count).
+timeline
+{
+	animation	Tumble
+	element		box
+	param		orientation
+
+	time		0.0
+	value		0 0 0
+
+	time		1.0
+	value		360 360 0
+}

@@ -1799,6 +1799,9 @@ unsigned int SceneEditController::CategoryEntityCount( Category cat ) const
 		mJob.EnumerateMediumNames( cb );
 		return cb.n;
 	}
+	case Category::Animation: {
+		return mJob.GetAnimationCount();
+	}
 	case Category::None:
 	default:
 		return 0;
@@ -1862,6 +1865,11 @@ String SceneEditController::CategoryEntityName( Category cat, unsigned int idx )
 		if( idx >= cb.names.size() ) return String();
 		return cb.names[idx];
 	}
+	case Category::Animation: {
+		char buf[256] = { 0 };
+		if( !mJob.GetAnimationName( idx, buf, sizeof(buf) ) ) return String();
+		return String( buf );
+	}
 	case Category::None:
 	default:
 		return String();
@@ -1898,6 +1906,11 @@ String SceneEditController::CategoryActiveName( Category cat ) const
 		const FilmPreset* p = FilmIntrospection::PresetAt(
 			static_cast<unsigned int>( idx ) );
 		return p ? String( p->label ) : String();
+	}
+	case Category::Animation: {
+		char buf[256] = { 0 };
+		if( !mJob.GetActiveAnimationName( buf, sizeof(buf) ) ) return String();
+		return String( buf );
 	}
 	case Category::Object:
 	case Category::Light:
@@ -2069,7 +2082,7 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 	// are pure UI state and don't need the lock.
 	const bool needsRenderSerialization =
 		( cat == Category::Camera || cat == Category::Rasterizer
-		  || cat == Category::Film )
+		  || cat == Category::Film || cat == Category::Animation )
 		&& entityName.size() > 1;   // empty name = just expand, no swap
 
 	if( needsRenderSerialization )
@@ -2110,6 +2123,12 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 		else if( cat == Category::Rasterizer )
 		{
 			ok = mJob.SetActiveRasterizer( entityName.c_str() );
+		}
+		else if( cat == Category::Animation )
+		{
+			// Activating a named animation changes which timelines drive the
+			// scene; the next render evaluates the new active animation.
+			ok = mJob.SetActiveAnimation( entityName.c_str() );
 		}
 		else if( cat == Category::Film && filmPreset )
 		{
@@ -2201,6 +2220,7 @@ bool SceneEditController::GetAnimationOptions( double& timeStart, double& timeEn
 	bool doFields = false, invertFields = false;
 	return mJob.GetAnimationOptions( timeStart, timeEnd, numFrames, doFields, invertFields );
 }
+
 
 bool SceneEditController::GetCameraDimensions( unsigned int& w, unsigned int& h ) const
 {
@@ -2712,6 +2732,9 @@ SceneEditController::PanelMode SceneEditController::CurrentPanelMode() const
 		// "section open, no row picked yet"; we render nothing until
 		// the user clicks a medium row.
 		return mSelectionName.size() > 1 ? PanelMode::Medium : PanelMode::None;
+	case Category::Animation:
+		// No editable properties — selection just activates the path.
+		return PanelMode::None;
 	case Category::None:
 	default:
 		return PanelMode::None;
@@ -2834,6 +2857,25 @@ void SceneEditController::RefreshProperties()
 			const IMedium* med = mJob.GetMedium( selName.c_str() );
 			if( !med ) break;
 			out = MediaIntrospection::Inspect( selName, *med );
+			break;
+		}
+		case Category::Animation: {
+			// Named animations expose one editable property: the frame count of
+			// the ACTIVE animation (picking one in the list activates it).  More
+			// frames = a longer, smoother rendered/previewed clip; fewer =
+			// shorter.  The scene fixes the time range; only the sampling count
+			// is user-tunable here.
+			if( mJob.GetAnimationCount() == 0 ) break;
+			double ts = 0, te = 1; unsigned int nf = 30; bool df = false, invf = false;
+			if( !mJob.GetAnimationOptions( ts, te, nf, df, invf ) ) break;
+			CameraProperty row;
+			row.name        = String( "frames" );
+			row.kind        = ValueKind::UInt;
+			row.value       = String( std::to_string( nf ).c_str() );
+			row.description = String( "Number of frames the animation renders and the preview Play button loops over.  More frames = a longer, smoother clip; fewer = shorter." );
+			row.editable    = true;
+			row.unitLabel   = String( "frames" );
+			out.push_back( row );
 			break;
 		}
 		case Category::None:
@@ -2961,7 +3003,7 @@ inline const std::vector<RISE::CameraProperty>* PropsForCat(
 	const std::vector<RISE::CameraProperty>* arr, RISE::SceneEditController::Category cat )
 {
 	const int i = static_cast<int>( cat );
-	if( i < 0 || i >= 7 ) return 0;
+	if( i < 0 || i >= 9 ) return 0;   // 9 == kNumCategories (None..Animation)
 	return &arr[i];
 }
 }
@@ -3181,6 +3223,23 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		if( !mEditor.Apply( edit ) ) return false;
 		KickRender();
 		return true;
+	}
+
+	case Category::Animation: {
+		// The only editable animation property is the active animation's frame
+		// count.  num_frames is pure playback metadata — it doesn't alter the
+		// in-flight render's pixels (only renderanimation's frame count and the
+		// preview-play loop step), so no cancel-and-park is needed.  Apply by
+		// re-declaring the ACTIVE animation with the new count (DeclareAnimation
+		// upserts; make_active=false leaves the active selection unchanged).
+		if( !( name == String( "frames" ) ) ) return false;
+		unsigned int newFrames = 0;
+		if( sscanf( valueStr.c_str(), "%u", &newFrames ) != 1 || newFrames < 1 ) return false;
+		char nameBuf[256] = { 0 };
+		if( !mJob.GetActiveAnimationName( nameBuf, sizeof(nameBuf) ) ) return false;
+		double ts = 0, te = 1; unsigned int nf = 30; bool df = false, invf = false;
+		if( !mJob.GetAnimationOptions( ts, te, nf, df, invf ) ) return false;
+		return mJob.DeclareAnimation( nameBuf, ts, te, newFrames, df, invf, false );
 	}
 
 	case Category::Object: {

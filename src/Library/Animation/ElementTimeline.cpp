@@ -20,7 +20,7 @@ using namespace RISE::Implementation;
 
 ElementTimeline::ElementTimeline(
 			IKeyframable* pElem				///< [in] Element we are keyframing
-			) : 
+			) :
   pElement( pElem )
 {
 	if( pElement ) {
@@ -33,48 +33,56 @@ ElementTimeline::~ElementTimeline()
 {
 	safe_release( pElement );
 
-	for( TimelineList::iterator it = timelines.begin(); it!=timelines.end(); it++ ) {
-		GlobalLog()->PrintDelete( it->second, __FILE__, __LINE__ );
-		delete it->second;
+	for( AnimationTimelineList::iterator a = animations.begin(); a!=animations.end(); a++ ) {
+		for( TimelineList::iterator it = a->second.begin(); it!=a->second.end(); it++ ) {
+			GlobalLog()->PrintDelete( it->second, __FILE__, __LINE__ );
+			delete it->second;
+		}
+		a->second.clear();
 	}
 
-	timelines.clear();
+	animations.clear();
 }
 
-bool ElementTimeline::InsertKeyframe( 
-	const String& parameter, 
+bool ElementTimeline::InsertKeyframe(
+	const String& animation,
+	const String& parameter,
 	const String& value,
 	const Scalar time,
 	IFullInterpolator<KeyframeParameterDispatch>* pInterp
 	)
 {
-	// Try to see if the given paramter already exists
-	TimelineList::iterator it = timelines.find( parameter );
+	// Find (or create) the parameter->Timeline map for this animation
+	TimelineList& tl = animations[animation];
 
-	if( it == timelines.end() ) {
+	// Try to see if the given parameter already exists in that animation
+	TimelineList::iterator it = tl.find( parameter );
+
+	if( it == tl.end() ) {
 		// Doesn't exist, so create a new one
-		Timeline* tl = new Timeline( pElement, parameter );
-		GlobalLog()->PrintNew( tl, __FILE__, __LINE__, "timeline" );
-		timelines[parameter] = tl;
-		return tl->InsertKeyframe( value, time, pInterp );
+		Timeline* timeline = new Timeline( pElement, parameter );
+		GlobalLog()->PrintNew( timeline, __FILE__, __LINE__, "timeline" );
+		tl[parameter] = timeline;
+		return timeline->InsertKeyframe( value, time, pInterp );
 	}
 
 	// Already exists, so just add it to that one
 	return it->second->InsertKeyframe( value, time, pInterp );
 }
 
-void ElementTimeline::EvaluateAtTime( const Scalar time )
+void ElementTimeline::EvaluateAtTimeForAnimation( const Scalar time, const String& animation )
 {
-	// Go through all the timelines and if they are in the duration of processing, 
-	// get them to do their thing
-	for( TimelineList::iterator it=timelines.begin(); it!=timelines.end(); it++ ) {
-//		Scalar start, end;
-//		it->second->GetTimeRange( start, end );
-//		if( time >= start && time <= end ) {
-			it->second->EvaluateAtTime( time );
-//		}
+	AnimationTimelineList::iterator a = animations.find( animation );
+	if( a == animations.end() ) {
+		// This element has no timelines in the active animation; leave it
+		// untouched (do NOT RegenerateData).
+		return;
+	}
+
+	// Go through all the timelines for this animation and get them to do
+	// their thing.
+	for( TimelineList::iterator it=a->second.begin(); it!=a->second.end(); it++ ) {
+		it->second->EvaluateAtTime( time );
 	}
 	pElement->RegenerateData();
 }
-
-

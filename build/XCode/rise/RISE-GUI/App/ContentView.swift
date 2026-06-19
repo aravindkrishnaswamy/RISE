@@ -130,6 +130,9 @@ struct ContentView: View {
                             interactionEnabled: interacting,
                             isProductionRendering: (viewModel.renderState == .rendering),
                             onSelectionMayHaveChanged: { propertyRefresh += 1 },
+                            isPreviewPlaying: viewModel.isPreviewPlaying,
+                            onPlayToggle: { viewModel.togglePreviewPlay() },
+                            onUserScrubBegan: { viewModel.stopPreviewPlay() },
                             productionEDRRenderer:  viewModel.productionEDRRenderer,
                             interactiveEDRRenderer: viewModel.interactiveEDRRenderer,
                             edrEnabled: edrActive
@@ -250,6 +253,11 @@ struct ContentView: View {
                 }
 
                 Divider()
+
+                // (The active animation is picked in the right-side panel's
+                // "Animation" accordion category — consistent with how every
+                // other scene entity is selected.  The Play button by the
+                // timeline loops whichever animation is active.)
 
                 // Render actions
                 FlowLayout(spacing: 8) {

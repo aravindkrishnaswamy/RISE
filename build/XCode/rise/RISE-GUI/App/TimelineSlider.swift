@@ -11,6 +11,9 @@ import SwiftUI
 struct TimelineSlider: View {
     @Binding var time: Double
     let range: ClosedRange<Double>
+    var isPlaying: Bool = false
+    var onPlayToggle: () -> Void = {}
+    var onUserScrubBegan: () -> Void = {}
     var onScrubBegin: () -> Void = {}
     var onScrubEnd: () -> Void = {}
 
@@ -18,6 +21,16 @@ struct TimelineSlider: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            Button {
+                onPlayToggle()
+            } label: {
+                Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                    .frame(width: 16)
+            }
+            .buttonStyle(.borderless)
+            .help(isPlaying ? "Stop preview playback"
+                            : "Play the active animation in the preview (loops until stopped)")
+
             Text(String(format: "%.2fs", time))
                 .font(.caption.monospacedDigit())
                 .frame(width: 56, alignment: .trailing)
@@ -28,6 +41,7 @@ struct TimelineSlider: View {
                    onEditingChanged: { editing in
                        if editing && !isScrubbing {
                            isScrubbing = true
+                           onUserScrubBegan()   // a manual drag interrupts preview play
                            onScrubBegin()
                        } else if !editing && isScrubbing {
                            isScrubbing = false

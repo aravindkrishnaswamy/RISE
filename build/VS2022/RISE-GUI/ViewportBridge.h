@@ -192,6 +192,13 @@ public:
     /// false on null controller / no job attached.
     bool animationOptions(double& timeStart, double& timeEnd, unsigned int& numFrames) const;
 
+    // Named animations are surfaced as a first-class accordion Category
+    // (Category::Animation) — the generic categoryEntities() /
+    // activeNameForCategory() / setSelection() surface lists + activate
+    // them, so there are no bespoke animation accessors here.
+    // animationOptions() above already reflects the active animation's
+    // options.
+
     void scrubTimeBegin();
     void scrubTime(double t);
     void scrubTimeEnd();
@@ -277,7 +284,8 @@ public:
         Light      = 4,
         Film       = 5,   ///< Output Settings (single Film per scene)
         Material   = 6,   ///< Materials
-        Medium     = 7    ///< Participating media
+        Medium     = 7,   ///< Participating media
+        Animation  = 8    ///< Named animation paths (pick to activate; no editable properties)
     };
 
     PanelMode panelMode() const;

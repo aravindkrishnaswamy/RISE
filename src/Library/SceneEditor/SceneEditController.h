@@ -213,9 +213,12 @@ namespace RISE
 			Light      = 4,   ///< Lights section
 			Film       = 5,   ///< Output Settings section (single Film per scene)
 			Material   = 6,   ///< Materials section
-			Medium     = 7    ///< Participating media section (Homogeneous editable;
+			Medium     = 7,   ///< Participating media section (Homogeneous editable;
 			                  ///< Heterogeneous read-only because the majorant grid is
 			                  ///< baked at construction).
+			Animation  = 8    ///< Named animation paths — picking one makes it the
+			                  ///< active animation (like picking a camera); no editable
+			                  ///< properties, selection just activates it.
 		};
 
 		//! @param job                     borrowed; caller keeps alive.
@@ -427,6 +430,12 @@ namespace RISE
 		//! if the underlying job is unavailable.
 		bool GetAnimationOptions( double& timeStart, double& timeEnd,
 		                          unsigned int& numFrames ) const;
+
+		// (Named animations are a first-class accordion Category —
+		// Category::Animation; the generic CategoryEntityCount/Name,
+		// CategoryActiveName and SetSelection surface lists + activates
+		// them, so no bespoke per-feature accessors are needed here.
+		// GetAnimationOptions above already follows the active animation.)
 
 		// Test hooks (Phase 2) ---------------------------------------
 		// These let tests bypass picking and observe internal counters.
@@ -735,7 +744,7 @@ namespace RISE
 		// pick, used for the panel header / single-tuple callers.
 		// All writes happen on the UI thread; render thread doesn't
 		// touch these.
-		static constexpr int        kNumCategories = 8;   // None..Medium
+		static constexpr int        kNumCategories = 9;   // None..Animation
 		String                      mSelectionByCategory[ kNumCategories ];
 		//! Per-category "is the accordion section expanded?" flag,
 		//! tracked SEPARATELY from `mSelectionByCategory` so a user

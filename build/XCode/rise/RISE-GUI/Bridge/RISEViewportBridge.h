@@ -171,6 +171,12 @@ typedef NS_ENUM(NSInteger, RISEViewportGizmoKind) {
 @property (nonatomic, readonly) double animationTimeEnd;
 @property (nonatomic, readonly) NSUInteger animationNumFrames;
 
+// Named animations are surfaced as a first-class accordion Category
+// (RISEViewportCategoryAnimation) — the generic categoryEntities: /
+// activeName: / setSelection:name: surface lists + activates them, so there
+// are no bespoke animation accessors here.  animationTime* above already
+// reflect the active animation's options.
+
 #pragma mark - Time scrubber
 
 - (void)scrubTimeBegin;
@@ -298,6 +304,7 @@ typedef NS_ENUM(NSInteger, RISEViewportCategory) {
     RISEViewportCategoryFilm       = 5,   ///< Output Settings (single Film per scene)
     RISEViewportCategoryMaterial   = 6,   ///< Materials
     RISEViewportCategoryMedium     = 7,   ///< Participating media
+    RISEViewportCategoryAnimation  = 8,   ///< Named animation paths (pick to activate)
 };
 
 /// Current panel mode — lets the SwiftUI parent decide whether to

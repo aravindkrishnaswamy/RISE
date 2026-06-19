@@ -107,9 +107,9 @@ The registry in `CreateAllChunkParsers()` ([AsciiSceneParser.cpp](AsciiScenePars
 | Lights | 4 | `ambient_light`, `omni_light`, `spot_light`, `directional_light` |
 | Photon maps | 12 | 6 generate + 6 gather (caustic / global / shadow / translucent — Pel and spectral) |
 | Irradiance cache | 1 | `irradiance_cache` |
-| Animation | 3 | `keyframe`, `timeline`, `animation_options` |
+| Animation | 4 | `keyframe`, `timeline`, `animation_options`, `animation` |
 
-**Total: 137 unique chunk keywords** (the per-family counts above sum to 137; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword). Read `CreateAllChunkParsers()` in [AsciiSceneParser.cpp](AsciiSceneParser.cpp) for the canonical list — this table is a summary, not the source of truth.
+**Total: 138 unique chunk keywords** (the per-family counts above sum to 138; `mis_pathtracing_shaderop` shares an implementation class with `pathtracing_shaderop` but is its own keyword). Read `CreateAllChunkParsers()` in [AsciiSceneParser.cpp](AsciiSceneParser.cpp) for the canonical list — this table is a summary, not the source of truth.
 
 `realistic_camera` is intentionally **not** registered — the keyword is reserved for the future multi-element lens-system camera (see [docs/CAMERAS_ROADMAP.md](../../../docs/CAMERAS_ROADMAP.md) Phase 4). Until that lands, scenes that want photographic depth-of-field use `thinlens_camera`.
 

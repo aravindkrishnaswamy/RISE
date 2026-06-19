@@ -7749,6 +7749,7 @@ namespace RISE
 		return true;
 	}
 
+
 	bool RISE_API_SceneEditController_GetCameraDimensions(
 		SceneEditController* p, unsigned int* outW, unsigned int* outH )
 	{

@@ -44,6 +44,10 @@ public:
     void setHasAnimation(bool hasAnimation);
     void setHasScene(bool hasScene);
 
+    // The active named animation is picked in the right-side panel's
+    // "Animation" accordion category (consistent with how every other
+    // scene entity is selected) — there is no animation dropdown here.
+
     // L5e — Sync slider with engine's current EV (e.g. on scene
     // load / external programmatic change).
     void setExposureEV(double ev);
