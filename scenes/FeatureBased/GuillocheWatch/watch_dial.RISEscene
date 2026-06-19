@@ -237,6 +237,9 @@ pinhole_camera
 #   HandsSweep the watch HANDS run (a 12-hour time-lapse) while the camera holds
 #              the hero pose: minute hand 12 clockwise turns, hour hand 1 turn
 #              (1/12 the speed, like a real watch); both loop back to 10:10.
+#   WobbleHands HandsSweep + Wobble together: the hands run the 12-hour time-
+#              lapse WHILE the camera does the gentle elliptical wobble -- a live,
+#              breathing hero view of the running watch (both loop at t=1).
 ##################################################
 
 animation
@@ -275,6 +278,14 @@ animation
 animation
 {
 	name			HandsSweep
+	time_start		0.0
+	time_end		1.0
+	num_frames		120
+}
+
+animation
+{
+	name			WobbleHands
 	time_start		0.0
 	time_end		1.0
 	num_frames		120
@@ -541,6 +552,80 @@ timeline
 
 	time		1.00
 	value		0.0
+}
+
+# --- WobbleHands (hands run + camera wobbles) -- camera half (the Wobble
+# elliptical orbit); the hand half is with the other hand timelines below. ---
+timeline
+{
+	animation	WobbleHands
+	element_type	camera
+	element			cam_high34
+	param			elevation
+	interpolator	hermite
+
+	time		0.000
+	value		0.0
+
+	time		0.125
+	value		8.485
+
+	time		0.250
+	value		12.0
+
+	time		0.375
+	value		8.485
+
+	time		0.500
+	value		0.0
+
+	time		0.625
+	value		-8.485
+
+	time		0.750
+	value		-12.0
+
+	time		0.875
+	value		-8.485
+
+	time		1.000
+	value		0.0
+}
+
+timeline
+{
+	animation	WobbleHands
+	element_type	camera
+	element			cam_high34
+	param			azimuth
+	interpolator	hermite
+
+	time		0.000
+	value		5.0
+
+	time		0.125
+	value		3.536
+
+	time		0.250
+	value		0.0
+
+	time		0.375
+	value		-3.536
+
+	time		0.500
+	value		-5.0
+
+	time		0.625
+	value		-3.536
+
+	time		0.750
+	value		0.0
+
+	time		0.875
+	value		3.536
+
+	time		1.000
+	value		5.0
 }
 
 # (HandsSweep's hour/minute-hand timelines live AFTER the hand objects
@@ -1864,6 +1949,38 @@ timeline
 timeline
 {
 	animation	HandsSweep
+	element_type	object
+	element			sdfminute
+	param			orientation
+	interpolator	linear
+
+	time		0.00
+	value		0 0 -60
+
+	time		1.00
+	value		0 0 -4380
+}
+
+# WobbleHands hand half (same hour/minute sweep as HandsSweep; the camera
+# wobble half is in the animation block up top).
+timeline
+{
+	animation	WobbleHands
+	element_type	object
+	element			sdfhour
+	param			orientation
+	interpolator	linear
+
+	time		0.00
+	value		0 0 60
+
+	time		1.00
+	value		0 0 -300
+}
+
+timeline
+{
+	animation	WobbleHands
 	element_type	object
 	element			sdfminute
 	param			orientation
