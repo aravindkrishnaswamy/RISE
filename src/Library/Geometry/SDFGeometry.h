@@ -32,6 +32,7 @@
 #include "../Interfaces/IFunction2D.h"	// heightfield mode field source (addref'd)
 #include <vector>
 #include <mutex>		// std::once_flag for the lazily-built surface-sampling structure
+#include <memory>		// std::unique_ptr<std::once_flag> -- resettable for animated fields
 
 namespace RISE
 {
@@ -68,6 +69,7 @@ namespace RISE
 				SDFOp    op;
 				Scalar   k;			//!< smin blend radius (object-space units); 0 = hard
 				Point3   pos;		//!< part origin in object space
+				Vector3  euler;		//!< RAW authoring rotation (Euler degrees, Rz*Ry*Rx) -- the source for cx/cy/cz; kept so keyframing rotation can re-derive the columns
 				Vector3  cx, cy, cz;//!< columns of the local->object rotation; Rinv*v = (cx.v, cy.v, cz.v)
 				Vector3  scale;		//!< per-axis scale
 				Vector3  invScale;	//!< 1/scale (precomputed)
@@ -124,6 +126,24 @@ namespace RISE
 			bool    March( const Point3& o, const Vector3& dir, const Scalar tStart, const Scalar t1, Scalar& tHit ) const;
 			void    ComputeBounds();
 
+			//! Recomputes a part's DERIVED fields (rotation columns cx/cy/cz from
+			//! pt.euler; invScale + minScale from pt.scale) from its RAW authoring
+			//! fields.  The single source of truth for the rotation/scale math --
+			//! MakePart (build time) and SetIntermediateValue (keyframing rotation /
+			//! scale) both route through it, so the two paths cannot drift.
+			static void RecomputePartDerived( Part& pt );
+
+			//! (Re)computes m_hfLip, the safe-sphere-trace Lipschitz bound for the
+			//! heightfield, from m_pHeightfield / m_hfScale / m_hfRadius.  Shared by
+			//! the heightfield ctor and RegenerateData (keyframing heightfield_scale).
+			void    ComputeHeightfieldLipschitz();
+
+			//! Drops the lazily-built surface-sampling cache so the NEXT GetArea /
+			//! UniformRandomPoint rebuilds it against the current (animated) field.
+			//! Called from RegenerateData, which runs single-threaded BETWEEN frames,
+			//! so swapping in a fresh once_flag cannot race the in-render lazy build.
+			void    InvalidateSamplingStructure();
+
 			//! Newton-projects p onto the zero set: p -= Map(p) * GradientNormal(p),
 			//! two iterations.  Marching-tet vertices and surface samples go through
 			//! this so they lie ON the sphere-traced surface (within ~m_eps), not on
@@ -152,7 +172,7 @@ namespace RISE
 			void    EnsureSamplingStructure() const;
 
 			unsigned int                    m_samplingDetail;	//!< cells along the longest bbox axis for the sampling mesh
-			mutable std::once_flag          m_samplingOnce;
+			mutable std::unique_ptr<std::once_flag>  m_samplingOnce;	//!< reset by InvalidateSamplingStructure when an animated field changes the surface
 			mutable std::vector<SampleTri>  m_sampleTris;
 			mutable Scalar                  m_surfaceArea;
 			mutable unsigned int            m_missedFeatureCells = 0;	//!< definite-miss cells found by EnsureSamplingStructure's detector
@@ -221,7 +241,34 @@ namespace RISE
 			//! on first call.
 			unsigned int SuspectedMissedFeatureCells() const;
 
-			// Keyframable interface
+			// Keyframable interface.  Animate the field itself -- the timeline
+			// targets the GEOMETRY (`element_type geometry`), not the wrapping
+			// standard_object's rigid transform.  Recognized `param` names:
+			//   part<i>.position   vec3   part i origin (object space)
+			//   part<i>.rotation   vec3   Euler degrees (Rz*Ry*Rx)
+			//   part<i>.scale      vec3   per-axis scale
+			//   part<i>.size       vec3   primitive size params (a,b,c -- see SDFPrim)
+			//   part<i>.blend      scalar smooth-min/boolean radius k
+			//   part<i>.round      scalar extra rounding radius
+			//   heightfield_scale  scalar heightfield-mode displacement amplitude
+			// `<i>` is the 0-based part index in authoring order.  Per-frame the
+			// animator calls SetIntermediateValue once per animated param, then
+			// RegenerateData once (rebuilds bounds / Lipschitz / sampling cache).
+			// op and primitive TYPE are deliberately NOT animatable -- changing
+			// them would break the "first part is union/smin" + order-fold bbox
+			// invariants mid-animation.
+			//
+			// EMITTER CAVEAT: per frame the area-light sampling CDF is rebuilt
+			// against the current surface (RegenerateData -> InvalidateSampling-
+			// Structure), so NEE position/pdf track the animation.  But an SDF
+			// emitter's luminary-set MEMBERSHIP / CanBeAreaLight() verdict is
+			// fixed at the t=0 surface (LuminaryManager enumerates once, before
+			// the frame loop -- like the photon maps).  An SDF that is zero-area
+			// at t=0 and GROWS into an emitter is never NEE-sampled (full-weight
+			// BSDF-hit emission only: unbiased, noisier); one that SHRINKS to
+			// zero stays registered but GetArea()->0 is guarded at the consumers
+			// (no divide-by-zero).  Keep emissive SDFs non-degenerate at t=0, or
+			// animate only non-emissive SDFs, for clean NEE.
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
 			void SetIntermediateValue( const IKeyframeParameter& val );
 			void RegenerateData();

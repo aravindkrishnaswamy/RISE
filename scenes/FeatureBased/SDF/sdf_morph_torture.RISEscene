@@ -1,0 +1,645 @@
+RISE ASCII SCENE 6
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           sdf_morph_torture.RISEscene                                                              #
+#   Description:    "Metamorphosis" -- an ANIMATION TORTURE TEST for keyframed SDF (signed-distance-field)  #
+#                   geometry.  RISE can now animate an sdf_geometry's INTRINSIC field (a part's blend k,    #
+#                   size, position, rotation, scale) by targeting the GEOMETRY element, not just the rigid  #
+#                   transform of the wrapping object.  This scene drives every one of those channels under  #
+#                   motion, on a realistic IBL-lit studio pedestal set, so the sphere-tracer, its           #
+#                   refraction continuation-ray path, the per-frame AABB/epsilon re-derivation, and the     #
+#                   area-light sampling CDF all get exercised on shapes whose topology is CHANGING.         #
+#                                                                                                           #
+#                   Three hero SDFs:                                                                         #
+#                     1. MORPH CREATURE (centre, polished gold GGX metal): a sphere body + 3 limbs          #
+#                        (2 round-cones, 1 capsule) + a torus halo, all melded with `smin`.  Its limbs'     #
+#                        blend radii animate 0 -> large -> 0, so the spiky limbs MELT smoothly into the     #
+#                        body at mid-arc and re-emerge -- the signature SDF stress.  One limb also PULSES   #
+#                        its size and another ORBITS its position; the whole creature slow-turntables via   #
+#                        the wrapping object's orientation.                                                  #
+#                     2. CARVE BLOCK (left, glossy ceramic-white GGX): a rounded box with a `subtract`      #
+#                        sphere whose radius (size) GROWS/SHRINKS while its position SWEEPS through the      #
+#                        solid -- a travelling boolean cavity.  Animated CSG on an SDF.                       #
+#                     3. GLASS PRISM (right, dielectric): a torus-meld lozenge that slowly tumbles (object  #
+#                        orientation + a part rotation) so refraction through ray-marched dielectric runs   #
+#                        under motion.                                                                        #
+#                                                                                                           #
+#                   Lighting: image-based (Grace Cathedral light probe) for soft realistic fill + a single  #
+#                   rectangular area light (emissive clipped plane) for a crisp key highlight on the metal. #
+#                   Ground is a large rounded-box pedestal (slightly glossy GGX) for contact shadows and    #
+#                   reflections.  Camera is a thin-lens (DOF) rig at a 3/4 angle focused on the creature.   #
+#                                                                                                           #
+#   Conventions:    SCENE_CONVENTIONS.md -- IBL provides the bulk of the light; the area light's exitance   #
+#                   is a radiance multiplier (no directional `direction` convention needed for an emissive  #
+#                   surface).  Camera at +Z looking toward origin (Y-up, right-handed).  Metals NEED the    #
+#                   environment map to read as metal (they reflect only the specular cone) -- that is why    #
+#                   `radiance_background TRUE` keeps the probe visible behind the set.                       #
+#                                                                                                           #
+#   Author:         Claude (Opus 4.8) for Aravind Krishnaswamy                                              #
+#   Birthdate:      June 19, 2026                                                                           #
+#                                                                                                           #
+#   Render:         Final  = 1280x720, samples 32, num_frames 96, OIDN high (this file as committed).        #
+#                   Cheap  = override film 160x120 / samples 4 / num_frames 1 for a parse+one-frame check.  #
+#                   Movie  = renderanimation 0 1 96 -> EXR frames -> tools/encode_pq_prores.py (HDR10 ProRes).#
+#                   Animation arc is one full loop: time 0..1, motion eased to start/end near rest so it    #
+#                   can ping-pong cleanly.                                                                    #
+#                                                                                                           #
+#############################################################################################################
+
+> set accelerator B 10 8
+
+##################################################
+# Environment light probe (image-based lighting)
+##################################################
+
+hdr_painter
+{
+	name		pnt_env
+	file		lightprobes/grace_probe.hdr
+}
+
+##################################################
+# Renderer -- unidirectional Path Tracing with IBL + OIDN denoise
+##################################################
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					32
+	radiance_map			pnt_env
+	radiance_scale			2.4
+	radiance_background		TRUE
+	oidn_denoise			TRUE
+	oidn_quality			high
+}
+
+##################################################
+# Output -- HDR primary + tone-mapped PNG preview
+##################################################
+
+file_rasterizeroutput
+{
+	pattern				rendered/sdf_morph_torture/frame
+	type				EXR
+	color_space			Rec709RGB_Linear
+	exr_compression		piz
+	multiple			TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sdf_morph_torture/frame
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	exposure			0.0
+	display_transform	aces
+	multiple			TRUE
+}
+
+##################################################
+# Film + camera (thin-lens, 3/4 angle, focused on hero)
+##################################################
+
+film
+{
+	width			1280
+	height			720
+}
+
+# 46mm lens on a 36mm sensor, gentle f/5.6 DOF.  focus_distance ~= distance from
+# the camera location to the hero creature's body centre (0,2.9,0):
+# |(4.5,4.8,18.5) - (0,2.9,0)| ~= 19.1 scene units (all three SDFs sit near this
+# depth, so they stay within the focus zone while the probe behind softens).
+thinlens_camera
+{
+	location		4.5 4.8 18.5
+	lookat			0 2.7 0
+	up				0 1 0
+	sensor_size		36.0
+	focal_length	46.0
+	fstop			5.6
+	focus_distance	19.1
+}
+
+##################################################
+# Painters
+##################################################
+
+# --- Colour slots (IPainter / colourspace pipe) --------------------------
+# Polished gold: rd black (metals have no diffuse), rs is the warm specular
+# tint that gives the gold its colour.  IOR/extinction below carry the
+# physically-measured conductor n,k (per RGB channel) for a correct Fresnel.
+uniformcolor_painter
+{
+	name		pnt_gold_rd
+	color		0.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		pnt_gold_rs
+	color		1.0 0.78 0.34
+	colorspace	Rec709RGB_Linear
+}
+
+# Glossy ceramic white -- white diffuse, low (0.04) dielectric F0 specular.
+uniformcolor_painter
+{
+	name		pnt_ceramic_rd
+	color		0.82 0.81 0.78
+	colorspace	Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name		pnt_ceramic_rs
+	color		0.04 0.04 0.04
+	colorspace	Rec709RGB_Linear
+}
+
+# Pedestal -- desaturated graphite, low dielectric F0 specular.
+uniformcolor_painter
+{
+	name		pnt_ped_rd
+	color		0.18 0.19 0.21
+	colorspace	Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name		pnt_ped_rs
+	color		0.04 0.04 0.04
+	colorspace	Rec709RGB_Linear
+}
+
+# Area-light emission tint (warm key).
+uniformcolor_painter
+{
+	name		pnt_keylight
+	color		1.0 0.95 0.86
+	colorspace	Rec709RGB_Linear
+}
+
+# --- Physical-scalar slots (IScalarPainter pipe; NO colourspace / JH uplift)
+# roughness (GGX alpha), and the gold conductor's per-channel n (ior) and
+# k (extinction).  These MUST be scalar_painter -- a colour painter here would
+# JH-uplift the numbers and mangle the Fresnel.  See docs/ISCALARPAINTER_REFACTOR.md.
+scalar_painter
+{
+	name		scl_rough_gold
+	value		0.06
+}
+
+scalar_painter
+{
+	name		scl_gold_ior
+	values		0.27 0.42 1.34
+}
+
+scalar_painter
+{
+	name		scl_gold_ext
+	values		3.61 2.39 1.77
+}
+
+scalar_painter
+{
+	name		scl_rough_ceramic
+	value		0.12
+}
+
+scalar_painter
+{
+	name		scl_rough_ped
+	value		0.22
+}
+
+##################################################
+# Materials
+##################################################
+
+# Hero: polished gold metal (GGX conductor).
+ggx_material
+{
+	name			mat_gold
+	rd				pnt_gold_rd
+	rs				pnt_gold_rs
+	alphax			scl_rough_gold
+	alphay			scl_rough_gold
+	ior				scl_gold_ior
+	extinction		scl_gold_ext
+	fresnel_mode	conductor
+}
+
+# Carve block: glossy ceramic-white (GGX dielectric-style, schlick_f0 on a low F0).
+ggx_material
+{
+	name			mat_ceramic
+	rd				pnt_ceramic_rd
+	rs				pnt_ceramic_rs
+	alphax			scl_rough_ceramic
+	alphay			scl_rough_ceramic
+	fresnel_mode	schlick_f0
+}
+
+# Pedestal: slightly glossy graphite (GGX dielectric-style).
+ggx_material
+{
+	name			mat_pedestal
+	rd				pnt_ped_rd
+	rs				pnt_ped_rs
+	alphax			scl_rough_ped
+	alphay			scl_rough_ped
+	fresnel_mode	schlick_f0
+}
+
+# Glass prism: clear dielectric (Fresnel reflect + refract).
+dielectric_material
+{
+	name			mat_glass
+	tau				0.92 0.96 0.99
+	ior				1.5
+	scattering		100000.0
+}
+
+# Area-light surface material.
+lambertian_luminaire_material
+{
+	name			mat_keylight
+	exitance		pnt_keylight
+	scale			60.0
+	material		none
+}
+
+##################################################
+# Geometry
+##################################################
+
+# ---- Pedestal: a big, low rounded box (slab) the heroes sit on -------------
+# roundbox half-extents (a,b,c) = (16, 0.6, 16), rounding 0.35.  Top surface
+# at y ~= 0.6 + 0.35 = 0.95.
+sdf_geometry
+{
+	name			pedestalgeom
+	part			roundbox union 0  0 0 0  0 0 0  1 1 1  16 0.6 16  0.35
+	sampling_detail	48
+}
+
+# ---- HERO morph creature ----------------------------------------------------
+# Part 0  sphere  union       -- the body (radius 1.15) at local origin.
+# Part 1  roundcone smin 0.65 -- right arm, tip up-out (+X), starts spiky (k animated).
+# Part 2  roundcone smin 0.65 -- left  arm, tip up-out (-X), starts spiky (k animated).
+# Part 3  capsule   smin 0.55 -- a tail/leg below (-Y), ORBITS its position.
+# Part 4  torus     smin 0.40 -- a halo ring around the body, its tube SIZE pulses.
+# roundcone token layout (a b c) = (baseR, tipR, height); axis = local Y.
+# Rotations put the cones' +Y axis along the splay directions via Euler degrees.
+sdf_geometry
+{
+	name			herogeom
+	part			sphere union 0  0 0 0  0 0 0  1 1 1  1.15 0 0  0
+	part			roundcone smin 0.65  0.95 0.55 0  0 0 -55  1 1 1  0.42 0.12 1.6  0
+	part			roundcone smin 0.65  -0.95 0.55 0  0 0 55  1 1 1  0.42 0.12 1.6  0
+	part			capsule smin 0.55  0 -0.7 0.2  0 0 0  1 1 1  0.34 0.7 0  0
+	part			torus smin 0.40  0 0.2 0  90 0 0  1 1 1  1.55 0.16 0  0
+	sampling_detail	64
+}
+
+# ---- CARVE block: rounded box with a travelling subtracted sphere ----------
+# Part 0  roundbox  union        -- the solid block (half-extents 1.6, round 0.25).
+# Part 1  sphere    subtract 0.18 -- the carving tool; its size (radius) and
+#                                    position animate to sweep a cavity through.
+# A small `smin`-style blend k on the subtract softens the cut edge (looks moulded).
+sdf_geometry
+{
+	name			carvegeom
+	part			roundbox union 0  0 0 0  0 0 0  1 1 1  1.6 1.6 1.6  0.25
+	part			sphere subtract 0.18  -1.8 0 0  0 0 0  1 1 1  1.0 0 0  0
+	sampling_detail	64
+}
+
+# ---- GLASS prism: a torus-meld lozenge that tumbles + dissolves -------------
+# Part 0  sphere    union          -- a squashed core (scale flattens it to a lens).
+# Part 1  torus     smin 0.55      -- an equatorial ring melded in; part rotation animates.
+# Part 2  sphere    intersect 0.30 -- a clip ball whose RADIUS (size) animates: it
+#                                     shrinks to bite the whole lozenge down to a small
+#                                     marble (intersection nearly empties) then re-grows.
+#                                     This is the scene's ONLY `intersect` op, and it runs
+#                                     INSIDE the dielectric -- exercising the smooth-max
+#                                     field + the order-aware AABB-intersection branch
+#                                     under motion, on the refraction continuation path.
+sdf_geometry
+{
+	name			glassgeom
+	part			sphere union 0  0 0 0  0 0 0  1.35 0.85 1.35  1.0 0 0  0
+	part			torus smin 0.55  0 0 0  0 0 0  1 1 1  1.25 0.42 0  0
+	part			sphere intersect 0.30  0 0 0  0 0 0  1 1 1  1.6 0 0  0
+	sampling_detail	64
+}
+
+# ---- Area key light: a small rectangular emitter up-front-right ------------
+clippedplane_geometry
+{
+	name		keygeom
+	pta			-2.2 0 -1.6
+	ptb			 2.2 0 -1.6
+	ptc			 2.2 0  1.6
+	ptd			-2.2 0  1.6
+}
+
+##################################################
+# Objects
+##################################################
+
+standard_object
+{
+	name		pedestal
+	geometry	pedestalgeom
+	material	mat_pedestal
+	position	0 0 0
+}
+
+# Hero creature.  Rests with its body centre ~1.9 above the pedestal top.
+standard_object
+{
+	name		hero
+	geometry	herogeom
+	material	mat_gold
+	position	0 2.9 0
+	orientation	0 0 0
+}
+
+# Carve block, left, lifted to sit on the slab; gently tilted for a 3/4 read.
+standard_object
+{
+	name		carveblock
+	geometry	carvegeom
+	material	mat_ceramic
+	position	-5.4 2.55 -0.3
+	orientation	0 18 0
+}
+
+# Glass prism, right.
+standard_object
+{
+	name		glassprism
+	geometry	glassgeom
+	material	mat_glass
+	position	5.2 2.85 0.2
+	orientation	0 0 0
+}
+
+# Area key light: tilt it to face down-and-toward the heroes, up front-right.
+standard_object
+{
+	name		keylight
+	geometry	keygeom
+	material	mat_keylight
+	position	5.5 9.5 7.0
+	orientation	-58 -18 0
+}
+
+##################################################
+# Animation
+##################################################
+
+animation_options
+{
+	time_start	0
+	time_end	1
+	num_frames	96
+}
+
+# ============================================================================
+# HERO -- the signature SDF stress: limb blend k 0 -> large -> 0 (MELT + re-emerge)
+# ============================================================================
+
+# Right arm (part 1) blend: spiky -> melted into body -> spiky again.
+timeline
+{
+	element_type	geometry
+	element			herogeom
+	param			part1.blend
+	time			0.0
+	value			0.05
+	time			0.5
+	value			2.2
+	time			1.0
+	value			0.05
+}
+
+# Left arm (part 2) blend: same melt, phase-shifted so the two arms melt at
+# slightly different times (richer motion).
+timeline
+{
+	element_type	geometry
+	element			herogeom
+	param			part2.blend
+	time			0.0
+	value			0.05
+	time			0.35
+	value			2.2
+	time			0.7
+	value			0.05
+	time			1.0
+	value			0.05
+}
+
+# Tail/leg (part 3) blend: melts late, so the silhouette keeps changing.
+timeline
+{
+	element_type	geometry
+	element			herogeom
+	param			part3.blend
+	time			0.0
+	value			0.1
+	time			0.65
+	value			1.8
+	time			1.0
+	value			0.1
+}
+
+# Halo ring (part 4) tube SIZE pulse: torus (a=major, b=tube).  Pulse the tube
+# thickness b 0.16 -> 0.55 -> 0.16 so the ring fattens then thins.  (a held at
+# 1.55, c unused for torus.)
+timeline
+{
+	element_type	geometry
+	element			herogeom
+	param			part4.size
+	time			0.0
+	value			1.55 0.16 0
+	time			0.5
+	value			1.55 0.55 0
+	time			1.0
+	value			1.55 0.16 0
+}
+
+# Tail/leg (part 3) ORBITS its position around under the body (a little circle
+# in the XZ plane plus a vertical bob).
+timeline
+{
+	element_type	geometry
+	element			herogeom
+	param			part3.position
+	time			0.0
+	value			0 -0.7 0.2
+	time			0.25
+	value			0.8 -0.8 0.2
+	time			0.5
+	value			0 -0.85 -0.8
+	time			0.75
+	value			-0.8 -0.8 0.2
+	time			1.0
+	value			0 -0.7 0.2
+}
+
+# Tail/leg (part 3) SCALE collapses its long (local Y) axis toward zero at
+# mid-arc, so the capsule squashes to a near-zero-thickness disc and re-inflates.
+# This drives `minScale` (and the per-axis Lipschitz factor) down to ~0.08 --
+# the canonical "does the sphere-trace step bound survive a vanishing scale axis"
+# stress -- and re-runs RecomputePartDerived every frame.
+timeline
+{
+	element_type	geometry
+	element			herogeom
+	param			part3.scale
+	time			0.0
+	value			1 1 1
+	time			0.5
+	value			1 0.08 1
+	time			1.0
+	value			1 1 1
+}
+
+# Whole creature slow turntable via the wrapping OBJECT's rigid orientation
+# (one full 360 over the loop) -- mixes intrinsic-field motion with rigid motion.
+timeline
+{
+	element_type	object
+	element			hero
+	param			orientation
+	time			0.0
+	value			0 0 0
+	time			1.0
+	value			0 360 0
+}
+
+# ============================================================================
+# CARVE BLOCK -- animated boolean: subtract sphere grows/shrinks + sweeps through
+# ============================================================================
+
+# Subtract-sphere radius (size.x) grows from a small bite to a deep cavity and
+# back.  (b,c unused for sphere.)
+timeline
+{
+	element_type	geometry
+	element			carvegeom
+	param			part1.size
+	time			0.0
+	value			0.55 0 0
+	time			0.5
+	value			1.45 0 0
+	time			1.0
+	value			0.55 0 0
+}
+
+# Subtract-sphere position sweeps left -> through the block -> right, so the
+# cavity travels across the solid as it breathes.
+timeline
+{
+	element_type	geometry
+	element			carvegeom
+	param			part1.position
+	time			0.0
+	value			-1.8 0 0
+	time			0.5
+	value			0.0 0.0 0.0
+	time			1.0
+	value			1.8 0 0
+}
+
+# Soften/sharpen the cut edge over the loop -- this is the SMOOTH-SUBTRACT
+# radius k (smaxP) on the subtract op, not a smin; growing it rounds the lip of
+# the cavity so the cut looks moulded rather than stamped.
+timeline
+{
+	element_type	geometry
+	element			carvegeom
+	param			part1.blend
+	time			0.0
+	value			0.06
+	time			0.5
+	value			0.32
+	time			1.0
+	value			0.06
+}
+
+# Block CORNER radius breathes (part0 roundbox `round`): 0.25 -> 0.6 -> 0.25, so
+# the slab's edges soften and re-sharpen.  Exercises the part.round keyframe field.
+timeline
+{
+	element_type	geometry
+	element			carvegeom
+	param			part0.round
+	time			0.0
+	value			0.25
+	time			0.5
+	value			0.6
+	time			1.0
+	value			0.25
+}
+
+# ============================================================================
+# GLASS PRISM -- tumbles under motion (intrinsic part rotation + rigid object)
+# ============================================================================
+
+# Inner torus ring rotates about its local X (the field's intrinsic rotation),
+# so the melded equator tilts inside the lens.
+timeline
+{
+	element_type	geometry
+	element			glassgeom
+	param			part1.rotation
+	time			0.0
+	value			0 0 0
+	time			1.0
+	value			180 0 0
+}
+
+# Intersect-clip ball (part 2) RADIUS animates 1.6 -> 0.7 -> 1.6: the glass
+# lozenge is bitten down to a small marble at mid-arc (the torus ring + lens rim
+# are clipped away) then re-emerges -- an animated `intersect` op inside glass.
+timeline
+{
+	element_type	geometry
+	element			glassgeom
+	param			part2.size
+	time			0.0
+	value			1.6 0 0
+	time			0.5
+	value			0.7 0 0
+	time			1.0
+	value			1.6 0 0
+}
+
+# Whole prism tumbles on the object transform (slow yaw + pitch), exercising the
+# refraction continuation-ray path through changing geometry.
+timeline
+{
+	element_type	object
+	element			glassprism
+	param			orientation
+	time			0.0
+	value			0 0 0
+	time			0.5
+	value			95 200 25
+	time			1.0
+	value			190 400 50
+}

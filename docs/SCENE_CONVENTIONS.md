@@ -132,9 +132,12 @@ Most painters take a `colorspace` parameter:
 | `ROMMRGB_Linear` | RISE's internal working space | Bypass colour conversion entirely (e.g. tangent-space normal maps where the "RGB" is a vector, not a colour) |
 | `ProPhotoRGB` | ROMM with the ProPhoto display-encoding curve | Rare; only when you've explicitly authored ProPhoto-encoded data |
 
-`uniformcolor_painter` defaults to sRGB.  Painters that load image data
-(`png_painter`, `jpg_painter`, `exr_painter`, `hdr_painter`) default to
-sRGB for PNG/JPG and linear for EXR/HDR.
+`uniformcolor_painter` defaults to `Rec709RGB_Linear` (its `color` is treated
+as already-linear Rec.709 — i.e. a numerical weight, no gamma decode).  Pass an
+explicit `colorspace` (e.g. `sRGB`) when the value was picked perceptually and
+should be gamma-decoded.  Painters that load image data (`png_painter`,
+`jpg_painter`, `exr_painter`, `hdr_painter`) default to sRGB for PNG/JPG and
+linear for EXR/HDR.
 
 ### Anti-patterns
 

@@ -9495,6 +9495,9 @@ namespace RISE
 						cd.description = "Single keyframe for an element's parameter over time.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
+						// NB: this legacy single-`keyframe` chunk hardwires the lookup to objects
+						// (see the AddKeyframe call above) -- it cannot target geometry/painter, so
+						// the hint deliberately stays {object,camera,light}.  Use `timeline` for those.
 						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light"}; p.description = "Element kind"; p.defaultValueHint = "object"; }
 						{ auto& p = P(); p.name = "param";               p.kind = ValueKind::String; p.description = "Parameter name (e.g. position, orientation, scale)"; }
 						{ auto& p = P(); p.name = "value";               p.kind = ValueKind::String; p.description = "Value at this keyframe (whitespace-separated tokens)"; }
@@ -9550,7 +9553,7 @@ namespace RISE
 						cd.description = "Sequence of keyframes for one element/parameter.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "element";             p.kind = ValueKind::String; p.description = "Element name"; }
-						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light"}; p.description = "Element kind"; p.defaultValueHint = "object"; }
+						{ auto& p = P(); p.name = "element_type";        p.kind = ValueKind::Enum;   p.enumValues = {"object","camera","light","geometry","painter"}; p.description = "Element kind (geometry/painter animate a named geometry's or painter's intrinsic params, e.g. an sdf_geometry's part fields)"; p.defaultValueHint = "object"; }
 						{ auto& p = P(); p.name = "param";               p.kind = ValueKind::String; p.description = "Parameter name"; }
 						{ auto& p = P(); p.name = "animation";           p.kind = ValueKind::String; p.description = "Owning named animation (default = the implicit default animation)"; p.defaultValueHint = "(default)"; }
 						{ auto& p = P(); p.name = "value";               p.kind = ValueKind::String; p.repeatable = true; p.description = "Value at the corresponding `time` (emits one keyframe per appearance)"; }

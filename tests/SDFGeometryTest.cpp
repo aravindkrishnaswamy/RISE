@@ -17,6 +17,8 @@
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
+#include "../src/Library/Interfaces/IFunction2D.h"
+#include "../src/Library/Utilities/Reference.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1027,6 +1029,183 @@ static void TestCorrectedSamplingArea()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// Keyframe-animation tests.  Prove the SDF FIELD animates: the public
+// Keyframable interface (KeyframeFromParameters -> SetIntermediateValue
+// -> RegenerateData) mutates a part field and re-derives bounds /
+// rotation columns / Lipschitz / the area-sampling cache.
+//////////////////////////////////////////////////////////////////////
+
+// Round-trips one keyframe through the public interface.  Returns true
+// iff the (name,value) was accepted (parsed + applied).
+static bool ApplyKF( SDFGeometry* g, const char* name, const char* value )
+{
+	IKeyframeParameter* p = g->KeyframeFromParameters( String(name), String(value) );
+	if( !p ) { return false; }
+	g->SetIntermediateValue( *p );
+	safe_release( p );
+	g->RegenerateData();
+	return true;
+}
+
+static void TestKeyframePartPosition()
+{
+	std::cout << "Test 26: keyframe part.position moves the surface AND rebuilds bounds" << std::endl;
+	std::vector<SDFGeometry::Part> parts;
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+		Point3(0,0,0), 0,0,0, Vector3(1,1,1), 2.0, 0, 0, 0 ) );
+	SDFGeometry* g = MakeGeom( parts );
+
+	{	RayIntersectionGeometric ri = MkRI( Point3(0,0,20), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose(ri.range, 18.0), "sphere front face at z=2 before move" ); }
+
+	Check( ApplyKF( g, "part0.position", "0 0 5" ), "part0.position accepted" );
+
+	// Sphere now centred at z=5 (front face z=7).  A hit REQUIRES RegenerateData to
+	// have rebuilt the AABB: with the stale z in [-2,2] bbox the ray clips short and
+	// MISSES.  range = 20 - (5+2) = 13.
+	{	RayIntersectionGeometric ri = MkRI( Point3(0,0,20), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit, "sphere still hit after move (bounds rebuilt)" );
+		Check( IsClose(ri.range, 13.0), "hit distance tracks the moved centre" ); }
+	safe_release( g );
+}
+
+static void TestKeyframePartSizeAndArea()
+{
+	std::cout << "Test 27: keyframe part.size resizes surface AND invalidates the area cache" << std::endl;
+	std::vector<SDFGeometry::Part> parts;
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+		Point3(0,0,0), 0,0,0, Vector3(1,1,1), 1.5, 0, 0, 0 ) );
+	SDFGeometry* g = new SDFGeometry( parts, 256, 0.0, 64 );
+
+	const Scalar area0 = g->GetArea();   // builds the sampling cache at r=1.5
+	Check( std::fabs( area0 - 4.0*PI*1.5*1.5 ) / (4.0*PI*1.5*1.5) < 0.01, "area before resize ~ 4pi r^2" );
+
+	Check( ApplyKF( g, "part0.size", "3 0 0" ), "part0.size accepted" );   // sphere: a = radius
+
+	const Scalar area1 = g->GetArea();   // MUST rebuild against r=3 (cache was invalidated)
+	std::cout << "  area " << area0 << " -> " << area1 << " (closed " << 4.0*PI*9.0 << ")" << std::endl;
+	Check( area1 > area0 * 3.0, "area grew after resize (sampling cache invalidated)" );
+	Check( std::fabs( area1 - 4.0*PI*9.0 ) / (4.0*PI*9.0) < 0.01, "rebuilt area ~ 4pi(3^2)" );
+
+	{	RayIntersectionGeometric ri = MkRI( Point3(0,0,20), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose(ri.range, 17.0), "resized sphere front face at z=3" ); }
+	safe_release( g );
+}
+
+static void TestKeyframePartRotation()
+{
+	std::cout << "Test 28: keyframe part.rotation re-derives the rotation columns" << std::endl;
+	// box long in local X (half-extents 3,1,1)
+	std::vector<SDFGeometry::Part> parts;
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimBox, SDFGeometry::eOpUnion, 0,
+		Point3(0,0,0), 0,0,0, Vector3(1,1,1), 3.0, 1.0, 1.0, 0 ) );
+	SDFGeometry* g = MakeGeom( parts );
+
+	{	RayIntersectionGeometric ri = MkRI( Point3(20,0,0), Vector3(-1,0,0) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose(ri.range, 17.0), "long box +X face at x=3 before rotate" ); }
+
+	Check( ApplyKF( g, "part0.rotation", "0 0 90" ), "part0.rotation accepted" );
+
+	// 90 deg about Z swaps the X<->Y half-extents: object-X now sees half-extent 1,
+	// object-Y sees half-extent 3 (true for either rotation sign).
+	{	RayIntersectionGeometric ri = MkRI( Point3(20,0,0), Vector3(-1,0,0) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose(ri.range, 19.0), "object-X half-extent now 1 (rotated)" ); }
+	{	RayIntersectionGeometric ri = MkRI( Point3(0,20,0), Vector3(0,-1,0) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose(ri.range, 17.0), "object-Y half-extent now 3 (rotated)" ); }
+	safe_release( g );
+}
+
+static void TestKeyframeBlendAndScale()
+{
+	std::cout << "Test 29: keyframe part.blend (smin radius) + part.scale" << std::endl;
+	std::vector<SDFGeometry::Part> parts;
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+		Point3(0,-3,0), 0,0,0, Vector3(1,1,1), 4,0,0,0 ) );
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpSmin, 0.0,
+		Point3(0, 3,0), 0,0,0, Vector3(1,1,1), 4,0,0,0 ) );
+	SDFGeometry* g = MakeGeom( parts );
+
+	// neck along +X at y=0: with k=0 it's the hard-union crease; raise k and the
+	// smin seam bulges OUTWARD -> the front surface is closer -> smaller range.
+	const Point3 o(-20,0,0); const Vector3 dir(1,0,0);
+	RayIntersectionGeometric ri0 = MkRI(o,dir); g->IntersectRay(ri0,true,true,false);
+	Check( ri0.bHit, "neck hit with k=0" );
+	const Scalar r_hard = ri0.range;
+
+	Check( ApplyKF( g, "part1.blend", "3.0" ), "part1.blend accepted" );
+	RayIntersectionGeometric ri1 = MkRI(o,dir); g->IntersectRay(ri1,true,true,false);
+	Check( ri1.bHit, "neck hit with k=3" );
+	Check( ri1.range < r_hard - 0.05, "smin seam bulges outward after blend keyframe" );
+
+	// scale sphere0 1.5x in X: along -X at y=-3 the surface now reaches x=6 (4*1.5).
+	Check( ApplyKF( g, "part0.scale", "1.5 1 1" ), "part0.scale accepted" );
+	RayIntersectionGeometric ri2 = MkRI( Point3(20,-3,0), Vector3(-1,0,0) ); g->IntersectRay(ri2,true,true,false);
+	Check( ri2.bHit && IsClose(ri2.range, 14.0, 0.1), "scaled sphere reaches x=6 (range 20-6)" );
+	safe_release( g );
+}
+
+static void TestKeyframeRejectsBadParams()
+{
+	std::cout << "Test 30: keyframe rejects unknown / out-of-range / non-finite params" << std::endl;
+	std::vector<SDFGeometry::Part> parts;
+	parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+		Point3(0,0,0), 0,0,0, Vector3(1,1,1), 2.0, 0, 0, 0 ) );
+	SDFGeometry* g = MakeGeom( parts );
+
+	IKeyframeParameter* ok = g->KeyframeFromParameters( String("part0.position"), String("1 2 3") );
+	Check( ok != 0, "valid part0.position accepted" );
+	safe_release( ok );
+
+	Check( g->KeyframeFromParameters( String("bogus"),              String("1") )          == 0, "unknown name rejected" );
+	Check( g->KeyframeFromParameters( String("part0.bogus"),        String("1") )          == 0, "unknown part field rejected" );
+	Check( g->KeyframeFromParameters( String("part9.position"),     String("1 2 3") )      == 0, "out-of-range part index rejected" );
+	Check( g->KeyframeFromParameters( String("part0.position"),     String("nan nan nan") )== 0, "non-finite vec rejected" );
+	Check( g->KeyframeFromParameters( String("part0.blend"),        String("inf") )        == 0, "non-finite scalar rejected" );
+	Check( g->KeyframeFromParameters( String("heightfield_scale"),  String("1") )          == 0, "heightfield_scale rejected in parts mode" );
+	safe_release( g );
+}
+
+// Minimal constant heightfield f(u,v)=c for the heightfield-scale keyframe test.
+namespace {
+	class ConstField : public virtual IFunction2D, public virtual Reference
+	{
+	public:
+		Scalar c;
+		ConstField( Scalar c_ ) : c(c_) {}
+		Scalar Evaluate( const Scalar, const Scalar ) const { return c; }
+	};
+}
+
+static void TestKeyframeHeightfieldScale()
+{
+	std::cout << "Test 31: keyframe heightfield_scale moves the plane + rebuilds Lipschitz/bounds" << std::endl;
+	ConstField* field = new ConstField( 0.5 );   // f==0.5 -> flat disk at z = scale*0.5
+	SDFGeometry* g = new SDFGeometry( field, 4.0, 2.0, 256, 0.0, 32 );   // amplitude 2 -> plane z=1
+
+	{	RayIntersectionGeometric ri = MkRI( Point3(0,0,20), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose(ri.range, 19.0, 0.05), "heightfield plane at z=1 before scale" ); }
+
+	Check( ApplyKF( g, "heightfield_scale", "6" ), "heightfield_scale accepted" );
+
+	// plane now at z = 6*0.5 = 3, OUTSIDE the old z in [0,2] bbox -> a hit proves the
+	// bounds (and Lipschitz) were rebuilt by RegenerateData.  range = 20 - 3 = 17.
+	{	RayIntersectionGeometric ri = MkRI( Point3(0,0,20), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit, "heightfield still hit after scale (bounds rebuilt)" );
+		Check( IsClose(ri.range, 17.0, 0.05), "plane tracks the new amplitude" ); }
+
+	safe_release( g );
+	safe_release( field );
+}
+
 int main()
 {
 	std::cout << "SDFGeometryTest" << std::endl;
@@ -1057,6 +1236,12 @@ int main()
 	TestFirstOpRule();
 	TestMissedComponentDetector();
 	TestCorrectedSamplingArea();
+	TestKeyframePartPosition();
+	TestKeyframePartSizeAndArea();
+	TestKeyframePartRotation();
+	TestKeyframeBlendAndScale();
+	TestKeyframeRejectsBadParams();
+	TestKeyframeHeightfieldScale();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

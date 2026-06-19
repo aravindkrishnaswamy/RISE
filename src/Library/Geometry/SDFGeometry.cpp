@@ -18,9 +18,13 @@
 #include <cstdio>		// sscanf in ParsePartLines
 #include <cctype>		// isspace in ParsePartLines
 #include <cstring>		// strcmp in the part-grammar token maps
+#include <cstdlib>		// strtoul for the robust part-index parse
+#include <cassert>		// freeze-guard assert (compiles out in release)
 #include <string>
 
 #include "GeometryUtilities.h"		// MakeIndexedTriangleSameIdx for TessellateToMesh
+#include "../Animation/KeyframableHelper.h"	// Parameter<>, Point3/Vector3Keyframe, ParseStrict*
+#include "../Utilities/RenderParallelScope.h"	// g_renderParallelDepth -- single-thread-mutation tripwire
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -195,18 +199,14 @@ namespace
 
 //////////////////////////////////////////////////////////////////////
 
-SDFGeometry::Part SDFGeometry::MakePart(
-	const SDFPrim type, const SDFOp op, const Scalar k,
-	const Point3& pos, const Scalar exDeg, const Scalar eyDeg, const Scalar ezDeg,
-	const Vector3& scale, const Scalar a, const Scalar b, const Scalar c, const Scalar round )
+// Recomputes a part's DERIVED fields (rotation columns + inverse/min scale)
+// from its RAW authoring fields (euler degrees, per-axis scale).  ONE source
+// of truth for this math: MakePart calls it at build time, SetIntermediateValue
+// calls it when keyframing rotation / scale -- so the two can never drift.
+void SDFGeometry::RecomputePartDerived( Part& pt )
 {
-	Part pt;
-	pt.type = type; pt.op = op; pt.k = k; pt.pos = pos;
-	pt.a = a; pt.b = b; pt.c = c; pt.round = round;
-	pt.scale = scale;
-
 	const Scalar DEG = Scalar(PI) / Scalar(180.0);
-	const Scalar ex = exDeg*DEG, ey = eyDeg*DEG, ez = ezDeg*DEG;
+	const Scalar ex = pt.euler.x*DEG, ey = pt.euler.y*DEG, ez = pt.euler.z*DEG;
 	const Scalar cx = std::cos(ex), sx = std::sin(ex);
 	const Scalar cy = std::cos(ey), sy = std::sin(ey);
 	const Scalar cz = std::cos(ez), sz = std::sin(ez);
@@ -216,11 +216,24 @@ SDFGeometry::Part SDFGeometry::MakePart(
 	pt.cy = Vector3(  cz*sy*sx - sz*cx,      sz*sy*sx + cz*cx,      cy*sx   );
 	pt.cz = Vector3(  cz*sy*cx + sz*sx,      sz*sy*cx - cz*sx,      cy*cx   );
 
-	const Scalar sxA = ( std::fabs(scale.x) > Scalar(1e-9) ) ? scale.x : Scalar(1e-9);
-	const Scalar syA = ( std::fabs(scale.y) > Scalar(1e-9) ) ? scale.y : Scalar(1e-9);
-	const Scalar szA = ( std::fabs(scale.z) > Scalar(1e-9) ) ? scale.z : Scalar(1e-9);
+	const Scalar sxA = ( std::fabs(pt.scale.x) > Scalar(1e-9) ) ? pt.scale.x : Scalar(1e-9);
+	const Scalar syA = ( std::fabs(pt.scale.y) > Scalar(1e-9) ) ? pt.scale.y : Scalar(1e-9);
+	const Scalar szA = ( std::fabs(pt.scale.z) > Scalar(1e-9) ) ? pt.scale.z : Scalar(1e-9);
 	pt.invScale = Vector3( Scalar(1)/sxA, Scalar(1)/syA, Scalar(1)/szA );
 	pt.minScale = std::min( std::fabs(sxA), std::min( std::fabs(syA), std::fabs(szA) ) );
+}
+
+SDFGeometry::Part SDFGeometry::MakePart(
+	const SDFPrim type, const SDFOp op, const Scalar k,
+	const Point3& pos, const Scalar exDeg, const Scalar eyDeg, const Scalar ezDeg,
+	const Vector3& scale, const Scalar a, const Scalar b, const Scalar c, const Scalar round )
+{
+	Part pt;
+	pt.type = type; pt.op = op; pt.k = k; pt.pos = pos;
+	pt.a = a; pt.b = b; pt.c = c; pt.round = round;
+	pt.scale = scale;
+	pt.euler = Vector3( exDeg, eyDeg, ezDeg );
+	RecomputePartDerived( pt );
 	return pt;
 }
 
@@ -231,6 +244,7 @@ SDFGeometry::SDFGeometry( const std::vector<Part>& parts, const unsigned int max
 	m_eps( Scalar(1e-4) ),
 	m_diagonal( Scalar(1) ),
 	m_samplingDetail( samplingDetail < 8 ? 8 : ( samplingDetail > 256 ? 256 : samplingDetail ) ),
+	m_samplingOnce( std::make_unique<std::once_flag>() ),
 	m_surfaceArea( 0 )
 {
 	ComputeBounds();
@@ -247,6 +261,7 @@ SDFGeometry::SDFGeometry( const IFunction2D* field, const Scalar radius, const S
 	m_eps( Scalar(1e-4) ),
 	m_diagonal( Scalar(1) ),
 	m_samplingDetail( samplingDetail < 8 ? 8 : ( samplingDetail > 256 ? 256 : samplingDetail ) ),
+	m_samplingOnce( std::make_unique<std::once_flag>() ),
 	m_surfaceArea( 0 ),
 	m_isHeightfield( true ),
 	m_pHeightfield( field ),
@@ -255,6 +270,17 @@ SDFGeometry::SDFGeometry( const IFunction2D* field, const Scalar radius, const S
 	m_hfLip( 2 )
 {
 	if( m_pHeightfield ) m_pHeightfield->addref();
+	ComputeHeightfieldLipschitz();
+	ComputeBounds();
+}
+
+// (Re)computes m_hfLip from the heightfield field + current amplitude.  Shared
+// by the heightfield ctor and RegenerateData so a keyframed heightfield_scale
+// re-derives a SAFE sphere-trace Lipschitz bound (an amplitude bump that left
+// m_hfLip stale would let the trace overstep the steeper grooves).
+void SDFGeometry::ComputeHeightfieldLipschitz()
+{
+	m_hfLip = 2;
 	if( m_pHeightfield && m_hfScale != Scalar(0) ) {
 		const Scalar R = m_hfRadius; const int N = 128; const Scalar du = Scalar(1)/N;
 		Scalar maxg = 0;
@@ -276,7 +302,6 @@ SDFGeometry::SDFGeometry( const IFunction2D* field, const Scalar radius, const S
 		if(m_hfLip<Scalar(1)) m_hfLip=Scalar(1);
 		if(m_hfLip>Scalar(256)) m_hfLip=Scalar(256);
 	}
-	ComputeBounds();
 }
 
 SDFGeometry::~SDFGeometry()
@@ -975,7 +1000,7 @@ bool SDFGeometry::TessellateToMesh(
 // sampled (area-light emitters, point-set SSS) ever pay this cost.
 void SDFGeometry::EnsureSamplingStructure() const
 {
-	std::call_once( m_samplingOnce, [this]() {
+	std::call_once( *m_samplingOnce, [this]() {
 		std::vector<Point3> verts;
 		std::vector<unsigned int> idx;
 		GenerateSurfaceMesh( m_samplingDetail, verts, idx );
@@ -1246,17 +1271,166 @@ unsigned int SDFGeometry::SuspectedMissedFeatureCells() const
 	return m_missedFeatureCells;
 }
 
-IKeyframeParameter* SDFGeometry::KeyframeFromParameters( const String& /*name*/, const String& /*value*/ )
+//////////////////////////////////////////////////////////////////////
+// Keyframable interface -- animate the FIELD (per-part geometry + the
+// heightfield amplitude).  The timeline targets the geometry directly
+// (`element_type geometry`); the wrapping standard_object keeps owning
+// the rigid transform.  Per-part fields are packed into the keyframe
+// parameter id as  id = partIndex * SDF_FIELDS_PER_PART + fieldCode,
+// which SetIntermediateValue decodes back to (part, field).
+//////////////////////////////////////////////////////////////////////
+namespace
 {
-	return 0;   // v1: the SDF field is not keyframe-animatable
+	const unsigned int SDF_FIELDS_PER_PART = 8;	// stride per part (room beyond the 6 fields below)
+	enum SDFKeyframeField
+	{
+		eKFPos   = 0,	//!< Point3  : part origin (object space)
+		eKFRot   = 1,	//!< Vector3 : Euler degrees (Rz*Ry*Rx)
+		eKFScale = 2,	//!< Vector3 : per-axis scale
+		eKFSize  = 3,	//!< Vector3 : primitive size params (a,b,c)
+		eKFK     = 4,	//!< Scalar  : smin / boolean blend radius
+		eKFRound = 5	//!< Scalar  : extra rounding radius
+	};
+	// Heightfield amplitude: a single id placed FAR above any realistic
+	// partIndex*8+field, so the two id spaces can never collide.
+	const unsigned int SDF_HF_SCALE_ID = 0x10000001u;
 }
 
-void SDFGeometry::SetIntermediateValue( const IKeyframeParameter& /*val*/ )
+IKeyframeParameter* SDFGeometry::KeyframeFromParameters( const String& name, const String& value )
 {
+	// Heightfield-mode amplitude (morphs the displacement depth).
+	if( name == "heightfield_scale" ) {
+		if( !m_isHeightfield ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SDFGeometry:: keyframe `heightfield_scale` ignored -- this SDF is not in heightfield mode" );
+			return 0;
+		}
+		Scalar v;
+		if( !ParseStrictScalar( value, v ) ) {
+			return 0;
+		}
+		IKeyframeParameter* p = new Parameter<Scalar>( v, SDF_HF_SCALE_ID );
+		GlobalLog()->PrintNew( p, __FILE__, __LINE__, "keyframe parameter" );
+		return p;
+	}
+
+	// Per-part fields: `part<i>.<field>`.  Parse the index with strtoul rather
+	// than `%u` (which SILENTLY WRAPS an out-of-range integer to a small valid
+	// index, e.g. "part4294967296.*" -> part 0, mis-targeting the wrong part).
+	// Require the literal `part` prefix, a real digit run, a sane index ceiling
+	// (also catches strtoul's overflow -> ULONG_MAX), and a `.` before the field.
+	const char* nm = name.c_str();
+	if( strncmp( nm, "part", 4 ) != 0 ) {
+		return 0;	// not a name this geometry recognizes -- let the caller report "unknown"
+	}
+	const char* digits = nm + 4;
+	char* endp = 0;
+	const unsigned long parsed = strtoul( digits, &endp, 10 );
+	if( endp == digits || *endp != '.' || parsed > 0xFFFFFFul ) {
+		return 0;	// no digits / missing dot / absurd-or-overflowing index
+	}
+	const unsigned int idx = (unsigned int)parsed;
+	char field[64] = {0};
+	strncpy( field, endp + 1, sizeof(field) - 1 );	// field token after the dot (bounded, NUL-padded)
+	if( idx >= m_parts.size() ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SDFGeometry:: keyframe `%s` ignored -- part index %u is out of range (%u part(s))",
+			name.c_str(), idx, (unsigned int)m_parts.size() );
+		return 0;
+	}
+
+	IKeyframeParameter* p = 0;
+	double d[3];
+	Scalar s;
+	if( !strcmp( field, "position" ) ) {
+		if( ParseStrictVec3( value, d ) ) p = new Point3Keyframe ( Point3 ( d[0], d[1], d[2] ), idx*SDF_FIELDS_PER_PART + eKFPos );
+	} else if( !strcmp( field, "rotation" ) ) {
+		if( ParseStrictVec3( value, d ) ) p = new Vector3Keyframe( Vector3( d[0], d[1], d[2] ), idx*SDF_FIELDS_PER_PART + eKFRot );
+	} else if( !strcmp( field, "scale" ) ) {
+		if( ParseStrictVec3( value, d ) ) p = new Vector3Keyframe( Vector3( d[0], d[1], d[2] ), idx*SDF_FIELDS_PER_PART + eKFScale );
+	} else if( !strcmp( field, "size" ) ) {
+		if( ParseStrictVec3( value, d ) ) p = new Vector3Keyframe( Vector3( d[0], d[1], d[2] ), idx*SDF_FIELDS_PER_PART + eKFSize );
+	} else if( !strcmp( field, "blend" ) ) {
+		if( ParseStrictScalar( value, s ) ) p = new Parameter<Scalar>( s, idx*SDF_FIELDS_PER_PART + eKFK );
+	} else if( !strcmp( field, "round" ) ) {
+		if( ParseStrictScalar( value, s ) ) p = new Parameter<Scalar>( s, idx*SDF_FIELDS_PER_PART + eKFRound );
+	} else {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SDFGeometry:: keyframe `%s` ignored -- unknown part field `%s` (want position|rotation|scale|size|blend|round)",
+			name.c_str(), field );
+		return 0;
+	}
+
+	if( p ) {
+		GlobalLog()->PrintNew( p, __FILE__, __LINE__, "keyframe parameter" );
+	}
+	return p;
+}
+
+void SDFGeometry::SetIntermediateValue( const IKeyframeParameter& val )
+{
+	const unsigned int id = val.getID();
+
+	if( id == SDF_HF_SCALE_ID ) {
+		m_hfScale = *(Scalar*)val.getValue();
+		return;	// m_hfLip + bounds are re-derived in RegenerateData (once per frame)
+	}
+
+	const unsigned int idx   = id / SDF_FIELDS_PER_PART;
+	const unsigned int field = id % SDF_FIELDS_PER_PART;
+	if( idx >= m_parts.size() ) {
+		return;	// defensive: a stale id from a parts list that changed underneath us
+	}
+	Part& pt = m_parts[idx];
+	switch( field )
+	{
+	case eKFPos:   pt.pos   = *(Point3*) val.getValue();                                  break;
+	case eKFRot:   pt.euler = *(Vector3*)val.getValue(); RecomputePartDerived( pt );      break;
+	case eKFScale: pt.scale = *(Vector3*)val.getValue(); RecomputePartDerived( pt );      break;
+	case eKFSize:  { const Vector3 sz = *(Vector3*)val.getValue(); pt.a = sz.x; pt.b = sz.y; pt.c = sz.z; } break;
+	case eKFK:     pt.k     = *(Scalar*) val.getValue();                                  break;
+	case eKFRound: pt.round = *(Scalar*) val.getValue();                                  break;
+	}
 }
 
 void SDFGeometry::RegenerateData()
 {
+	// Re-derive everything downstream of the (now animated) field: the
+	// heightfield Lipschitz bound, the order-folded AABB + surface epsilon,
+	// and the lazily-built area-light / SSS sampling cache.  Runs ONCE per
+	// element per frame, after all that element's SetIntermediateValue calls.
+	//
+	// This MUTATES shared geometry state (m_bbox, m_hfLip, the sampling cache)
+	// and so must NOT overlap the parallel render of a frame.  The engine
+	// guarantees that: frame-stepping evaluates the animator BETWEEN frames
+	// (before RenderParallelScope is entered), and the per-sample motion-blur
+	// path (exposure>0) is forced single-threaded for the whole frame
+	// (PixelBasedRasterizerHelper's `threads>1 && exposure==0` gate).  The
+	// assert in InvalidateSamplingStructure makes that contract self-enforcing.
+	if( m_isHeightfield ) {
+		ComputeHeightfieldLipschitz();
+	}
+	ComputeBounds();
+	InvalidateSamplingStructure();
+}
+
+void SDFGeometry::InvalidateSamplingStructure()
+{
+	// DEBUG freeze guard (mirrors DisplacedGeometry::Realize): reassigning the
+	// once_flag frees the old one, which would be use-after-free if a worker
+	// were mid `std::call_once(*m_samplingOnce, ...)`.  That cannot happen while
+	// mutation stays single-threaded (see RegenerateData); assert it so a future
+	// change that parallelizes animation/photon evaluation fails LOUDLY here
+	// instead of corrupting the heap.  Compiles out in release.
+	assert( g_renderParallelDepth.load( std::memory_order_seq_cst ) == 0 &&
+		"SDFGeometry sampling-cache invalidation during the parallel render — animator must be evaluated single-threaded between frames" );
+
+	// Swap in a fresh once_flag so the next GetArea / UniformRandomPoint
+	// rebuilds the CDF against the current (animated) surface.
+	m_samplingOnce = std::make_unique<std::once_flag>();
+	m_sampleTris.clear();
+	m_surfaceArea = 0;
+	m_missedFeatureCells = 0;
 }
 
 //////////////////////////////////////////////////////////////////////
