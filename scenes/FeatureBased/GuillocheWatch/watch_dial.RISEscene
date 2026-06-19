@@ -216,23 +216,32 @@ pinhole_camera
 }
 
 ##################################################
-# ANIMATION (native timeline) -- a subtle IRIDESCENCE REVEAL on cam_high34:
-#   * INCIDENCE SWEEP (the iridescence driver): a keyframed `elevation` orbit
-#     ping-pongs the camera from a high near-head-on 3/4 (~21deg incidence on
-#     the dial) DOWN to a low grazing rake (~60deg) at the midpoint and back.
-#     Because TiO2 is high-index, the dial reads SATURATED (magenta centre ->
-#     blue rim) near head-on and WARMS/MUTES toward grazing -- so the whole
-#     face pulses saturated -> coppery -> saturated as it tilts (the angle-
-#     dependent thin-film colour, the whole point).
-#   * AZIMUTH RAKE: a `azimuth` ping-pong (+-20deg) simultaneously sweeps the
-#     specular highlight across the guilloche so the relief shimmers, and adds
-#     a swooping arc.  Both peak at t=0.5 (low grazing dome flare) and return,
-#     so start==end -> the clip loops seamlessly.
-# The orbit re-centres on the dial (cam_high34 lookat) so it stays framed.
+# ANIMATION (native timeline) -- a loopable IRIDESCENCE WOBBLE on cam_high34.
+# A gentle elliptical ORBIT around the dial.  The camera rides a smooth +-12deg
+# `elevation` sine (the iridescence driver) while a small +-5deg `azimuth`
+# cosine sways it side to side -- together they trace ONE ellipse around the
+# lookat per loop.  Incidence on the dial breathes ~22deg (near head-on:
+# SATURATED magenta-centre -> blue-rim thin-film) <-> ~46deg (warming/muting),
+# so the face still pulses through its angle-dependent colour -- just subtly.
+# Much gentler than the original "reveal" (no grazing dive, ~1/2 the azimuth
+# travel), but enough incidence change to keep the iridescence alive.
+#
+# Camera path:  (az=+5,el=0) -> (0,+12) -> (-5,0) -> (0,-12) -> back.
+# Loop seam (t=0 == t=1): elevation is a pure sine THROUGH zero, so it is
+# C1-continuous across the seam (no velocity snap); azimuth sits at its +5deg
+# turning point with only a ~0.24 deg/frame residual -- ~12x smoother than the
+# original elevation seam.  Sampled 9 keyframes/cycle (hermite tracks the sine
+# within ~0.36deg).  The orbit re-centres on the dial (cam_high34 lookat).
+#
 # Render:  renderanimation 0 1 48      (48 frames over t=0..1; or omit args to
 # use animation_options).  Frames -> rendered/watch_dial<NNN>.png.
 # cam_high34 must be the ACTIVE (last) camera for renderanimation to drive it.
+#
+# >>> TO RESTORE the original dramatic dip-and-rise reveal: comment out the two
+# >>> ACTIVE timelines below, then strip the leading "# " from the two ORIGINAL
+# >>> timelines at the end of this block.
 ##################################################
+
 animation_options
 {
 	time_start			0.0
@@ -240,6 +249,7 @@ animation_options
 	num_frames			48
 }
 
+# --- ACTIVE: iridescence wobble (gentle elliptical orbit) ---
 timeline
 {
 	element_type	camera
@@ -247,20 +257,32 @@ timeline
 	param			elevation
 	interpolator	hermite
 
-	time		0.00
-	value		31.0
+	time		0.000
+	value		0.0
 
-	time		0.25
-	value		-4.0
+	time		0.125
+	value		8.485
 
-	time		0.50
-	value		-35.0
+	time		0.250
+	value		12.0
 
-	time		0.75
-	value		-4.0
+	time		0.375
+	value		8.485
 
-	time		1.00
-	value		31.0
+	time		0.500
+	value		0.0
+
+	time		0.625
+	value		-8.485
+
+	time		0.750
+	value		-12.0
+
+	time		0.875
+	value		-8.485
+
+	time		1.000
+	value		0.0
 }
 
 timeline
@@ -270,15 +292,95 @@ timeline
 	param			azimuth
 	interpolator	hermite
 
-	time		0.00
-	value		-12.0
+	time		0.000
+	value		5.0
 
-	time		0.50
-	value		12.0
+	time		0.125
+	value		3.536
 
-	time		1.00
-	value		-12.0
+	time		0.250
+	value		0.0
+
+	time		0.375
+	value		-3.536
+
+	time		0.500
+	value		-5.0
+
+	time		0.625
+	value		-3.536
+
+	time		0.750
+	value		0.0
+
+	time		0.875
+	value		3.536
+
+	time		1.000
+	value		5.0
 }
+
+##################################################
+# ORIGINAL ANIMATION (preserved verbatim; see restore note above).
+##################################################
+# ##################################################
+# # ANIMATION (native timeline) -- a subtle IRIDESCENCE REVEAL on cam_high34:
+# #   * INCIDENCE SWEEP (the iridescence driver): a keyframed `elevation` orbit
+# #     ping-pongs the camera from a high near-head-on 3/4 (~21deg incidence on
+# #     the dial) DOWN to a low grazing rake (~60deg) at the midpoint and back.
+# #     Because TiO2 is high-index, the dial reads SATURATED (magenta centre ->
+# #     blue rim) near head-on and WARMS/MUTES toward grazing -- so the whole
+# #     face pulses saturated -> coppery -> saturated as it tilts (the angle-
+# #     dependent thin-film colour, the whole point).
+# #   * AZIMUTH RAKE: a `azimuth` ping-pong (+-20deg) simultaneously sweeps the
+# #     specular highlight across the guilloche so the relief shimmers, and adds
+# #     a swooping arc.  Both peak at t=0.5 (low grazing dome flare) and return,
+# #     so start==end -> the clip loops seamlessly.
+# # The orbit re-centres on the dial (cam_high34 lookat) so it stays framed.
+# # Render:  renderanimation 0 1 48      (48 frames over t=0..1; or omit args to
+# # use animation_options).  Frames -> rendered/watch_dial<NNN>.png.
+# # cam_high34 must be the ACTIVE (last) camera for renderanimation to drive it.
+# ##################################################
+#
+# timeline
+# {
+# 	element_type	camera
+# 	element			cam_high34
+# 	param			elevation
+# 	interpolator	hermite
+#
+# 	time		0.00
+# 	value		31.0
+#
+# 	time		0.25
+# 	value		-4.0
+#
+# 	time		0.50
+# 	value		-35.0
+#
+# 	time		0.75
+# 	value		-4.0
+#
+# 	time		1.00
+# 	value		31.0
+# }
+#
+# timeline
+# {
+# 	element_type	camera
+# 	element			cam_high34
+# 	param			azimuth
+# 	interpolator	hermite
+#
+# 	time		0.00
+# 	value		-12.0
+#
+# 	time		0.50
+# 	value		12.0
+#
+# 	time		1.00
+# 	value		-12.0
+# }
 
 
 ##################################################
