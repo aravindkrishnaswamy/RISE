@@ -32,6 +32,7 @@
 // Factories used to rebuild lights / media / cameras from their public
 // construction state (same approach the material clones use — see header).
 #include "../RISE_API.h"
+#include "../Rendering/RadianceMap.h"   // F8: radiance-map snapshot clone
 
 // Concrete light types (CloneLightForSnapshot).
 #include "../Interfaces/ILightPriv.h"
@@ -366,4 +367,23 @@ ICamera* RISE::Implementation::CloneCameraForSnapshot( const ICamera* camera )
 	// Known CameraCommon subtype we don't have a factory branch for: refuse
 	// rather than ship a degraded camera.  Caller falls back to pose.
 	return 0;
+}
+
+
+// CloneRadianceMapForSnapshot - see header (F8).
+const IRadianceMap* RISE::Implementation::CloneRadianceMapForSnapshot( const IRadianceMap* src )
+{
+	if( !src ) return 0;
+	// Painter-backed RadianceMap: clone with its own dScale + transform so a
+	// live SetScale (Job::SetActiveRasterizerRadianceScale) cannot bleed in.
+	if( const RadianceMap* rm = dynamic_cast<const RadianceMap*>( src ) ) {
+		IRadianceMap* clone = 0;
+		RISE_API_CreateRadianceMap( &clone, rm->GetPainter(), rm->GetScale() );
+		if( clone ) clone->SetTransformation( rm->GetTransform() );
+		return clone;
+	}
+	// Procedural / unknown (e.g. HosekWilkie): ADDREF-fallback (documented
+	// residual -- a live scale edit on such a map would still bleed).
+	src->addref();
+	return src;
 }

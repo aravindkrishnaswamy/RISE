@@ -941,8 +941,9 @@ void SceneSnapshot::SetFilm( IFilm* film )
 
 void SceneSnapshot::SetGlobalRadianceMap( const IRadianceMap* rmap )
 {
-	// ADDREF-shared: the environment map is not editor-mutated in place, so
-	// we hold a shared reference (the builder addref'd before calling us).
+	// Takes the single ref the builder hands us.  F8: that builder now
+	// passes an INDEPENDENT clone (CloneRadianceMapForSnapshot), not an
+	// addref of the live map, so a live SetScale cannot bleed into us.
 	safe_release( globalRadianceMap );
 	globalRadianceMap = rmap;
 }
@@ -1147,8 +1148,10 @@ SceneSnapshot* Scene::CreateSnapshot() const
 
 	// --- Environment / global radiance map (ADDREF — not editor-mutated) ---
 	if( pGlobalRadianceMap ) {
-		pGlobalRadianceMap->addref();
-		pSnap->SetGlobalRadianceMap( pGlobalRadianceMap );
+		// F8: CLONE (not addref-share) -- SetActiveRasterizerRadianceScale
+		// mutates dScale IN PLACE, which would bleed into a held snapshot.
+		const IRadianceMap* rmClone = Implementation::CloneRadianceMapForSnapshot( pGlobalRadianceMap );
+		if( rmClone ) pSnap->SetGlobalRadianceMap( rmClone );   // takes the single ref
 	}
 
 	// --- Global medium (CLONE homogeneous / ADDREF baked) ---

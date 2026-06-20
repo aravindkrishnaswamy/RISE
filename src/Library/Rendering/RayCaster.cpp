@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <atomic>
 #include "RayCaster.h"
 #include "LuminaryManager.h"
 #include "EnvironmentSampler.h"
@@ -96,7 +97,10 @@ namespace {
 	// Diagnostic counter; see RayCaster::GetSamplerRebuildCount in the
 	// header.  Single-threaded — AttachScene runs at the pre-parallel
 	// scene-setup seam, never from inside the rasterize.
-	unsigned int s_samplerRebuildCount = 0;
+	// Diagnostic counter (atomic: AttachScene normally runs single-threaded
+	// at the scene-setup seam, but two casters/documents could attach
+	// concurrently -- relaxed atomics keep the count race-free). (P2c)
+	std::atomic<unsigned int> s_samplerRebuildCount{ 0 };
 
 	// Read the concrete Scene's light/structure generation (#2b(a)).  The
 	// IScene/IScenePriv abstract interface deliberately does NOT carry this
@@ -198,7 +202,7 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 // be non-null and already set by the caller.
 void RayCaster::RebuildLightSamplers()
 {
-	++s_samplerRebuildCount;
+	s_samplerRebuildCount.fetch_add( 1, std::memory_order_relaxed );
 
 	safe_release( pLuminaryManager );
 
@@ -279,8 +283,8 @@ void RayCaster::RebuildLightSamplers()
 	}
 }
 
-unsigned int RayCaster::GetSamplerRebuildCount() { return s_samplerRebuildCount; }
-void         RayCaster::ResetSamplerRebuildCount() { s_samplerRebuildCount = 0; }
+unsigned int RayCaster::GetSamplerRebuildCount() { return s_samplerRebuildCount.load( std::memory_order_relaxed ); }
+void         RayCaster::ResetSamplerRebuildCount() { s_samplerRebuildCount.store( 0, std::memory_order_relaxed ); }
 
 
 bool RayCaster::CastRay(

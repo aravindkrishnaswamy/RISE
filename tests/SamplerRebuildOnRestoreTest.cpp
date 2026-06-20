@@ -375,6 +375,35 @@ static void TestInPlaceEditRebuild()
 
 //////////////////////////////////////////////////////////////////////
 
+//////////////////////////////////////////////////////////////////////
+// T-job-material-bump (P2a): a Job-level material retarget that changes
+// the emitter set must bump the generation so a reused caster rebuilds.
+//////////////////////////////////////////////////////////////////////
+static void TestJobSetObjectMaterialBumpsGeneration()
+{
+	std::cout << "Test: Job::SetObjectMaterial (emitter change) rebuilds a reused caster's sampler (P2a)" << std::endl;
+	Job* pJob = MakeSamplerScene();
+	const double glow[3]={1.0,1.0,1.0}; pJob->AddUniformColorPainter("p_glow",glow,"Rec709RGB_Linear");
+	pJob->AddLambertianLuminaireMaterial("mat_emit","p_glow","mat",1.0);
+	Scene* pScene = dynamic_cast<Scene*>( pJob->GetScene() );
+	if( !pScene ) { Check( false, "[p2a] scene downcast" ); pJob->release(); return; }
+	IShader* pShader = pJob->GetShaders() ? pJob->GetShaders()->GetItem("global") : nullptr;
+	if( !pShader ) { Check( false, "[p2a] global shader" ); pJob->release(); return; }
+	IRayCaster* caster=nullptr; RISE_API_CreateRayCaster(&caster,false,10,*pShader,true);
+	if( !caster ) { Check( false, "[p2a] caster create" ); pJob->release(); return; }
+	caster->AttachScene( pScene );
+	Check( SamplerOf(caster) != nullptr, "[p2a] baseline sampler built" );
+	const unsigned int rbBefore = RayCaster::GetSamplerRebuildCount();
+	// Job-level material retarget: bind the non-emissive ball to an EMISSIVE
+	// material -> the luminary set changes -> generation must bump.
+	Check( pJob->SetObjectMaterial("ball","mat_emit"), "[p2a] Job::SetObjectMaterial applied" );
+	caster->AttachScene( pScene );   // same Scene pointer; P2a bump -> rebuild
+	const unsigned int rbAfter = RayCaster::GetSamplerRebuildCount();
+	Check( rbAfter == rbBefore+1,
+	       "[p2a] sampler rebuilt after Job::SetObjectMaterial emitter change (generation bumped) (P2a)" );
+	safe_release( caster ); pJob->release();
+}
+
 int main()
 {
 	std::cout << "=== SamplerRebuildOnRestoreTest ===" << std::endl;
@@ -382,6 +411,7 @@ int main()
 	TestRestoreRebuildsSampler();
 	TestNoSpuriousRebuild();
 	TestInPlaceEditRebuild();
+	TestJobSetObjectMaterialBumpsGeneration();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."

@@ -81,6 +81,7 @@ namespace RISE
 	class ILight;
 	class IMedium;
 	class ICamera;
+	class IRadianceMap;
 
 	namespace Implementation
 	{
@@ -123,6 +124,13 @@ namespace RISE
 		//! baked-material residual policy of CloneMaterialForSnapshot.  An
 		//! unknown type also falls back to ADDREF.  Returns 0 iff 0.
 		const IMedium* CloneMediumForSnapshot( const IMedium* medium );
+
+		//! F8: independent snapshot clone of the global environment radiance
+		//! map.  The painter-backed RadianceMap is edited IN PLACE via SetScale
+		//! (Job::SetActiveRasterizerRadianceScale), so an addref-share would let
+		//! a live scale edit bleed into a held snapshot; clone it (own dScale +
+		//! transform).  Procedural maps (HosekWilkie) ADDREF-fallback.  0 iff 0.
+		const IRadianceMap* CloneRadianceMapForSnapshot( const IRadianceMap* src );
 
 		//! Returns an independent, render-faithful snapshot clone of the
 		//! active `camera` (caller owns one reference and must release()).

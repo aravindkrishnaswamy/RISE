@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "Scene.h"   // P2a: bump light-topology generation on Job-level emitter/env edits
 #include "Geometry/SDFGeometry.h"
 #include <cstring>
 #define _USE_MATH_DEFINES
@@ -48,6 +49,17 @@
 #include <cstdlib>
 
 using namespace RISE;
+
+// P2a: a Job-level edit that changes the emitter or environment set must
+// bump the Scene's light-topology generation, so a REUSED RayCaster rebuilds
+// its LightSampler/EnvironmentSampler on the next AttachScene (mirrors the
+// SceneEditor path).  Downcast like SceneEditor::BumpSceneLightGeneration.
+static void BumpSceneLightGen( RISE::IScenePriv* pScene )
+{
+	if( RISE::Implementation::Scene* sc = dynamic_cast<RISE::Implementation::Scene*>( pScene ) )
+		sc->BumpLightTopologyGeneration();
+}
+
 using namespace RISE::Implementation;
 
 // Forward declarations for scalar-painter resolution helpers — full
@@ -2457,6 +2469,7 @@ bool Job::SetGlobalRadianceMap( IRadianceMap* pRm )
 		return false;
 	}
 	pScene->SetGlobalRadianceMap( pRm );
+	BumpSceneLightGen( pScene );   // P2a: environment replaced -> env sampler stale
 	return true;
 }
 
@@ -9021,7 +9034,10 @@ bool Job::SetObjectMaterial(
 	// AssignMaterial releases the prior material and addrefs the new
 	// one.  No acceleration rebuild — a material change cannot move the
 	// object's bounding box.
+	const IMaterial* prevMat = pObj->GetMaterial();
 	pObj->AssignMaterial( *pMat );
+	if( ( prevMat && prevMat->GetEmitter() ) || ( pMat && pMat->GetEmitter() ) )
+		BumpSceneLightGen( pScene );   // P2a: emitter set may have changed
 	return true;
 }
 
@@ -9074,6 +9090,7 @@ bool Job::SetMaterialEmissionScale(
 		return false;
 	}
 
+	BumpSceneLightGen( pScene );   // P2a: exitance changed -> sampler weights stale
 	return true;
 }
 

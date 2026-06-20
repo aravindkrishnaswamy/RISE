@@ -878,6 +878,39 @@ static void MeasureSnapshotCostLargeScene()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestSnapshotEnvIsImmutable()
+{
+	std::cout << "Test: a held snapshot's environment is immutable vs live radiance-scale edits (7th-review F8)" << std::endl;
+	Job* pJob = new Job();
+	Scene* pScene = dynamic_cast<Scene*>( pJob->GetScene() );
+	if( !pScene ) { Check( false, "[f8] scene downcast" ); pJob->release(); return; }
+	const double envCol[3] = { 0.3, 0.5, 0.7 };
+	pJob->AddUniformColorPainter( "envpaint", envCol, "Rec709RGB_Linear" );
+	const IPainter* pEnvPaint = pJob->GetPainters()->GetItem( "envpaint" );
+	if( !pEnvPaint ) { Check( false, "[f8] env painter" ); pJob->release(); return; }
+	IRadianceMap* pRMap = nullptr;
+	RISE_API_CreateRadianceMap( &pRMap, *pEnvPaint, Scalar( 1.0 ) );
+	if( !pRMap ) { Check( false, "[f8] radiance map created" ); pJob->release(); return; }
+	pScene->SetGlobalRadianceMap( pRMap );
+	pRMap->release();
+
+	SceneSnapshot* snap = pScene->CreateSnapshot();
+	if( !snap ) { Check( false, "[f8] snapshot non-null" ); pJob->release(); return; }
+	const IRadianceMap* snapMap = snap->GetGlobalRadianceMap();
+	Check( snapMap && std::abs( (double)snapMap->GetScale() - 1.0 ) < 1e-9, "[f8] snapshot env scale captured as 1.0" );
+
+	// Mutate the LIVE map's scale in place (what SetActiveRasterizerRadianceScale does).
+	IRadianceMap* liveMap = pScene->GetGlobalRadianceMapMutable();
+	Check( liveMap != nullptr, "[f8] live mutable map present" );
+	if( liveMap ) liveMap->SetScale( Scalar( 5.0 ) );
+
+	// The snapshot must be UNAFFECTED (independent clone, not addref-shared).
+	Check( std::abs( (double)snap->GetGlobalRadianceMap()->GetScale() - 1.0 ) < 1e-9,
+	       "[f8] snapshot env scale UNCHANGED after live SetScale (F8)" );
+	safe_release( snap );
+	pJob->release();
+}
+
 int main()
 {
 	std::cout << "=== SceneSnapshotTest ===" << std::endl;
@@ -889,6 +922,8 @@ int main()
 	TestSnapshotCameraIsRenderFaithful();
 	TestSnapshotIsRenderComplete();
 	MeasureSnapshotCostLargeScene();
+
+	TestSnapshotEnvIsImmutable();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."
