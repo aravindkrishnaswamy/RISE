@@ -1054,6 +1054,10 @@ namespace RISE
 		// mutation itself.
 		bool                                 mTxnOpen;
 		unsigned int                         mTxnBaselineUndoDepth;
+		unsigned long long                   mTxnBaselineSeq;     // F2: seq marker
+		DirtyTracker::State                  mTxnBaselineDirty;   // F7: dirty snapshot
+		Category                             mTxnBaselineSelCat;  // F7: selection snapshot
+		String                               mTxnBaselineSelName;
 
 		// Disable copy / move
 		SceneEditController( const SceneEditController& );

@@ -91,6 +91,25 @@ namespace RISE
 			}
 		}
 
+		//! F2 (sequence-marker rollback): the seq the NEXT pushed edit will
+		//! get.  A transaction records this at Begin; rollback undoes while
+		//! the top edit's seq >= the recorded marker -- robust to front-trim
+		//! (which the 1024-cap depth-only baseline was not).
+		unsigned long long NextSeq() const { return mNextSeq; }
+
+		//! Peek the most-recent (top) undo edit's historySeq without popping.
+		//! Returns false when the undo stack is empty.
+		bool PeekUndoSeq( unsigned long long& outSeq ) const;
+
+		//! Highest historySeq ever dropped by TrimToMax.  Rollback uses this
+		//! to detect that a transaction edit was trimmed (seq >= marker) and
+		//! report an honest partial rollback.
+		unsigned long long MaxTrimmedSeq() const { return mMaxTrimmedSeq; }
+
+		//! Whether TrimToMax has dropped ANY entry (guards the MaxTrimmedSeq
+		//! comparison: seq 0 is a valid edit id, so a bare >= would false-flag).
+		bool DidTrim() const { return mDidTrim; }
+
 		unsigned int UndoDepth() const;
 		unsigned int RedoDepth() const;
 
@@ -111,8 +130,12 @@ namespace RISE
 		std::deque<SceneEdit>           mRedoStack;
 		std::set<String, StringLess>    mDirtyObjects;
 		unsigned int                    mMaxEntries;
+		unsigned long long              mNextSeq;       ///< F2 monotonic edit id
+		unsigned long long              mMaxTrimmedSeq; ///< F2 highest trimmed seq
+		bool                            mDidTrim;       ///< F2 anything trimmed?
 
 		void TrimToMax();
+		void PopFrontTracked();   ///< pop_front + update mMaxTrimmedSeq (F2)
 	};
 }
 

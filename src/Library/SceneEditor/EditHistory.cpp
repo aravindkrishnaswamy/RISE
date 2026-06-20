@@ -26,6 +26,9 @@ bool EditHistory::StringLess::operator()( const String& a, const String& b ) con
 
 EditHistory::EditHistory( unsigned int maxEntries )
 : mMaxEntries( maxEntries )
+, mNextSeq( 0 )
+, mMaxTrimmedSeq( 0 )
+, mDidTrim( false )
 {
 }
 
@@ -35,7 +38,9 @@ EditHistory::~EditHistory()
 
 void EditHistory::Push( const SceneEdit& edit )
 {
-	mUndoStack.push_back( edit );
+	SceneEdit stamped = edit;
+	stamped.historySeq = mNextSeq++;   // F2: monotonic, trim-immune id
+	mUndoStack.push_back( stamped );
 	mRedoStack.clear();
 
 	// Track dirty objects for write-back.  Composite markers and
@@ -93,6 +98,8 @@ void EditHistory::Clear()
 	mUndoStack.clear();
 	mRedoStack.clear();
 	mDirtyObjects.clear();
+	mMaxTrimmedSeq = 0;   // mNextSeq stays monotonic (no seq reuse)
+	mDidTrim = false;
 }
 
 bool EditHistory::IsObjectDirty( const String& name ) const
@@ -177,6 +184,25 @@ const char* EditHistory::LabelForRedo() const
 	return OpName( top.op );
 }
 
+bool EditHistory::PeekUndoSeq( unsigned long long& outSeq ) const
+{
+	if( mUndoStack.empty() ) return false;
+	outSeq = mUndoStack.back().historySeq;
+	return true;
+}
+
+void EditHistory::PopFrontTracked()
+{
+	// F2: remember the highest seq we drop, so a rollback can tell when
+	// a still-open transaction's edit was trimmed off the front.
+	if( !mUndoStack.empty() ) {
+		mDidTrim = true;
+		if( mUndoStack.front().historySeq > mMaxTrimmedSeq )
+			mMaxTrimmedSeq = mUndoStack.front().historySeq;
+		mUndoStack.pop_front();
+	}
+}
+
 void EditHistory::TrimToMax()
 {
 	while( mUndoStack.size() > mMaxEntries )
@@ -189,21 +215,21 @@ void EditHistory::TrimToMax()
 		// guard works, but be defensive), drop it on its own.
 		if( mUndoStack.front().op == SceneEdit::CompositeBegin )
 		{
-			mUndoStack.pop_front();
+			PopFrontTracked();
 			while( !mUndoStack.empty()
 			    && mUndoStack.front().op != SceneEdit::CompositeEnd )
 			{
-				mUndoStack.pop_front();
+				PopFrontTracked();
 			}
 			if( !mUndoStack.empty()
 			 && mUndoStack.front().op == SceneEdit::CompositeEnd )
 			{
-				mUndoStack.pop_front();
+				PopFrontTracked();
 			}
 		}
 		else
 		{
-			mUndoStack.pop_front();
+			PopFrontTracked();
 		}
 	}
 }

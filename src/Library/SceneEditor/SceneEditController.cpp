@@ -150,6 +150,8 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mPolishState( static_cast<int>( PolishState::None ) )
 , mTxnOpen( false )
 , mTxnBaselineUndoDepth( 0 )
+, mTxnBaselineSeq( 0 )
+, mTxnBaselineSelCat( Category::None )
 {
 	if( mInteractiveRasterizer )
 	{
@@ -1761,6 +1763,10 @@ bool SceneEditController::BeginTransaction()
 	}
 	mTxnOpen              = true;
 	mTxnBaselineUndoDepth = mEditor.History().UndoDepth();
+	mTxnBaselineSeq       = mEditor.History().NextSeq();   // F2: trim-immune marker
+	mTxnBaselineDirty     = mEditor.CaptureDirtyState();   // F7: dirty snapshot
+	mTxnBaselineSelCat    = mSelectionCategory;            // F7: selection snapshot
+	mTxnBaselineSelName   = mSelectionName;
 	return true;
 }
 
@@ -1805,20 +1811,19 @@ bool SceneEditController::RollbackTransaction()
 	// the EditHistory bound and older records were trimmed — that too is
 	// an honest partial.
 	bool fullyReverted = true;
-	while( mEditor.History().UndoDepth() > mTxnBaselineUndoDepth )
+	unsigned long long topSeq = 0;
+	// F2: undo while the TOP edit's seq is at/above the transaction marker.
+	// Seq is monotonic + trim-immune, so this is correct even when the
+	// 1024-cap pinned UndoDepth (the old depth-only baseline silently
+	// no-op'd at the cap).  Each Undo reverts one logical unit (a closed
+	// composite reverts as a group).
+	while( mEditor.History().PeekUndoSeq( topSeq ) && topSeq >= mTxnBaselineSeq )
 	{
-		if( !mEditor.Undo() ) {
-			// Could not invert the next record (e.g. its target object
-			// was removed).  Stop rather than loop forever; report the
-			// rollback as incomplete.
-			fullyReverted = false;
-			break;
-		}
+		if( !mEditor.Undo() ) { fullyReverted = false; break; }   // target gone -> honest partial
 	}
-	if( mEditor.History().UndoDepth() != mTxnBaselineUndoDepth ) {
-		// Either an Undo stalled above (handled) or the baseline depth
-		// is no longer reachable because records were trimmed.  Either
-		// way the revert did not land exactly on the baseline.
+	// F2: if the cap trimmed a transaction edit (seq >= marker) off the
+	// front, the revert could not be complete -- report it honestly.
+	if( mEditor.History().DidTrim() && mEditor.History().MaxTrimmedSeq() >= mTxnBaselineSeq ) {
 		fullyReverted = false;
 	}
 
@@ -1833,6 +1838,20 @@ bool SceneEditController::RollbackTransaction()
 	// rollback can fire mid-gesture (before the matching EndComposite),
 	// so force the depth back to a clean zero.
 	mEditor.ForceCompositeDepthZero();
+
+	// F7: restore the dirty channels + selection to the pre-transaction
+	// baseline so a fully reverted document doesn't keep showing unsaved
+	// changes (Undo RE-MARKS dirty; created entities are never un-marked),
+	// then re-run the selection/panel resync the controller's Undo does.
+	mEditor.RestoreDirtyState( mTxnBaselineDirty );
+	mSelectionCategory = mTxnBaselineSelCat;
+	mSelectionName     = mTxnBaselineSelName;
+	if( !SelectionStillResolves( mJob, mSelectionCategory, mSelectionName ) ) {
+		mSelectionName = String();
+		const int sidx = static_cast<int>( mSelectionCategory );
+		if( sidx > 0 && sidx < kNumCategories ) { mSelectionByCategory[sidx] = String(); }
+	}
+	ResyncObjectBoundSections_();
 
 	// Close the transaction.
 	mTxnOpen              = false;
@@ -2258,6 +2277,11 @@ bool SceneEditController::SetSelection( Category cat, const String& entityName )
 
 	if( needsRenderSerialization )
 	{
+		if( mTxnOpen ) {
+			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: active camera/rasterizer/animation/film switch refused inside an open transaction (not undoable -> rollback cannot revert it)." );
+			return false;
+		}
+		
 		// Resolve the Film preset BEFORE taking the lock.  A miss is
 		// not an error — empty-name we already excluded above, but a
 		// non-empty unknown label (e.g. stale UI state) should fall
@@ -3410,6 +3434,10 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		if( !mJob.GetActiveAnimationName( nameBuf, sizeof(nameBuf) ) ) return false;
 		double ts = 0, te = 1; unsigned int nf = 30; bool df = false, invf = false;
 		if( !mJob.GetAnimationOptions( ts, te, nf, df, invf ) ) return false;
+		if( mTxnOpen ) {
+			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: animation frame-count edit refused inside an open transaction (not undoable -> rollback cannot revert it)." );
+			return false;
+		}
 		return mJob.DeclareAnimation( nameBuf, ts, te, newFrames, df, invf, false );
 	}
 
@@ -3581,6 +3609,10 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 		// add it via a dedicated SetRasterizerProperty SceneEdit op.
 		if( mSelectionName.size() <= 1 ) return false;
 
+		if( mTxnOpen ) {
+			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: rasterizer property edit refused inside an open transaction (not undoable -> rollback cannot revert it)." );
+			return false;
+		}
 		// Cancel-and-park: rasterizer rebuild releases the old instance
 		// and constructs a new one.  The render thread reads
 		// `pRasterizer` per-pixel; we need it parked.  Same pattern as
@@ -3603,6 +3635,10 @@ bool SceneEditController::SetProperty( const String& name, const String& valueSt
 	}
 
 	case Category::Film: {
+		if( mTxnOpen ) {
+			GlobalLog()->PrintEx( eLog_Warning, "SceneEditController: film property edit refused inside an open transaction (not undoable -> rollback cannot revert it)." );
+			return false;
+		}
 		// SetFilm replaces the Scene's IFilm, resyncs every camera's
 		// projection, and reallocates Job's FrameStore — that's a
 		// scene mutation the render thread reads per-pixel, so the

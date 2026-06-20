@@ -138,6 +138,21 @@ namespace RISE
         /// persistent `mSessionCreated` channel is intentionally kept.
         void Clear();
 
+// ---- Transaction snapshot (F7) ------------------------------
+// The editor's transactional rollback restores the dirty channels
+// to their pre-transaction state, so a fully reverted document does
+// not keep showing unsaved changes (undo RE-MARKS dirty, and created
+// entities are never un-marked).  A plain value copy of the four
+// sets is sufficient.
+struct State {
+	std::unordered_set<std::string> names;
+	std::set<DirtyEntity>           entityDirty;
+	std::set<DirtyEntity>           createdPending;
+	std::set<DirtyEntity>           sessionCreated;
+};
+State CaptureState() const { return State{ mNames, mEntityDirty, mCreatedPending, mSessionCreated }; }
+void  RestoreState( const State& st ) { mNames = st.names; mEntityDirty = st.entityDirty; mCreatedPending = st.createdPending; mSessionCreated = st.sessionCreated; }
+
     private:
         std::unordered_set<std::string> mNames;          ///< object transform dirty (transient)
         std::set<DirtyEntity>           mEntityDirty;    ///< property-shaped dirty (transient)

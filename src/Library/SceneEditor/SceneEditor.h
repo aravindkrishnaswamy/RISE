@@ -123,6 +123,12 @@ namespace RISE
 		//! the surrounding undo history (re-review finding A).
 		bool IsCompositeOpen() const { return mCompositeDepth > 0; }
 
+		//! F7: snapshot / restore the DirtyTracker channels so a transactional
+		//! rollback can return the dirty state to its pre-transaction baseline
+		//! (Undo re-marks dirty; created entities are never un-marked).
+		DirtyTracker::State CaptureDirtyState() const { return mDirtyTracker.CaptureState(); }
+		void RestoreDirtyState( const DirtyTracker::State& st ) { mDirtyTracker.RestoreState( st ); }
+
 		DirtyScope LastDirtyScope() const { return mLastScope; }
 
 		//! True if the scene had at least one populated photon map

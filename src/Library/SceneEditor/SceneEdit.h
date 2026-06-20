@@ -305,6 +305,11 @@ namespace RISE
 		//! so Undo/Redo restore THAT camera -- not whatever camera is active
 		//! later.  Empty for legacy edits (Undo falls back to active).
 		String         cameraTargetName;
+
+		//! F2: monotonic id stamped by EditHistory::Push, immune to front-
+		//! trimming.  A transaction baseline records the next seq so rollback
+		//! can identify its edits even after the 1024-entry cap trims the front.
+		unsigned long long historySeq;
 		TransformState prevTransformState;
 
 		//! Previous scene time (for SetSceneTime undo).
@@ -344,6 +349,7 @@ namespace RISE
 		, hasTransformState( false )
 		, prevBindingWasNull( false )
 		, cameraTargetName()
+		, historySeq( 0 )
 		, prevTransformState()
 		, prevTime( 0 )
 		, prevCameraPos()

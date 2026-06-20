@@ -1095,6 +1095,74 @@ static void TestCompositeMaterialSlotRollback()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestRollbackSurvivesHistoryCap()
+{
+	std::cout << "Test: rollback reverts the txn edit even past the 1024 history cap (7th-review F2)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}; pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat","p_white"); pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("mover","geom","mat",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	IObjectManager* objs = pJob->GetObjects();
+	SceneEditController ctrl(*pJob,0);
+	for( int i=0;i<1030;i++ ){ SceneEdit e; e.op=SceneEdit::SetObjectPosition; e.objectName=String("mover"); e.v3a=Vector3((double)i,0,0); ctrl.Editor().Apply(e); }
+	Check( ctrl.Editor().History().UndoDepth()==1024, "[f2] history saturated at the 1024 cap" );
+	const double preTxn = LiveObjX(objs,"mover");
+	Check( ctrl.BeginTransaction(), "[f2] begin transaction at the cap" );
+	{ SceneEdit e; e.op=SceneEdit::SetObjectPosition; e.objectName=String("mover"); e.v3a=Vector3(5000,0,0); ctrl.Editor().Apply(e); }
+	Check( std::abs(LiveObjX(objs,"mover")-5000.0)<1e-9, "[f2] txn edit applied (x=5000)" );
+	Check( ctrl.RollbackTransaction(), "[f2] rollback succeeds" );
+	Check( std::abs(LiveObjX(objs,"mover")-preTxn)<1e-9, "[f2] rollback reverted the txn edit despite the cap (F2)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestTransactionRefusesActiveCameraSwitch()
+{
+	std::cout << "Test: a non-undoable active-camera switch is refused mid-transaction (7th-review F3)" << std::endl;
+	Job* pJob = new Job();
+	double loc[3]={0,0,10}, la[3]={0,0,0}, up[3]={0,1,0}, orient[3]={0,0,0}, target[2]={0,0};
+	pJob->AddPinholeCamera("A",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	pJob->AddPinholeCamera("B",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	pJob->SetActiveCamera("A");
+	SceneEditController ctrl(*pJob,0);
+	Check( ctrl.BeginTransaction(), "[f3] begin transaction" );
+	ctrl.SetSelection( SceneEditController::Category::Camera, String("B") );   // attempts SetActiveCamera(B)
+	Check( String(pJob->GetActiveCameraName().c_str())==String("A"),
+	       "[f3] active camera NOT switched mid-transaction (non-undoable edit refused) (F3)" );
+	ctrl.RollbackTransaction();
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestRollbackRestoresDirtyState()
+{
+	std::cout << "Test: rollback restores the dirty state to the transaction baseline (7th-review F7)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}, grey[3]={0.5,0.5,0.5};
+	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("p_grey",grey,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white"); pJob->AddLambertianMaterial("mat2","p_grey");
+	pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	SceneEditController ctrl(*pJob,0);
+	Check( !ctrl.HasUnsavedChanges(), "[f7] clean baseline (no unsaved changes)" );
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String("obj") );
+	Check( ctrl.BeginTransaction(), "[f7] begin transaction" );
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Object, String("material"), String("mat2") ), "[f7] material rebind applied" );
+	Check( ctrl.HasUnsavedChanges(), "[f7] dirty during transaction" );
+	Check( ctrl.RollbackTransaction(), "[f7] rollback succeeds" );
+	Check( !ctrl.HasUnsavedChanges(), "[f7] dirty state CLEARED after rollback (F7)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1113,6 +1181,9 @@ int main()
 	TestUndoFirstMaterialBind();
 	TestCameraUndoTargetsEditedCamera();
 	TestCompositeMaterialSlotRollback();
+	TestRollbackSurvivesHistoryCap();
+	TestTransactionRefusesActiveCameraSwitch();
+	TestRollbackRestoresDirtyState();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."
