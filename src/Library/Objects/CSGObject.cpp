@@ -73,6 +73,55 @@ IObjectPriv* CSGObject::CloneGeometric()
 	return pClone;
 }
 
+namespace
+{
+	// Snapshot-clone one CSG operand to an INDEPENDENT object.  Operands are
+	// IObjectPriv*; downcast to the concrete Object to reach the virtual
+	// CloneSnapshot (a CSGObject operand recurses correctly through it).  The
+	// returned object carries one reference the caller owns.  Falls back to
+	// addref if the operand is somehow not an Implementation::Object.
+	IObjectPriv* SnapshotCloneOperand( IObjectPriv* operand )
+	{
+		if( !operand ) {
+			return 0;
+		}
+		if( Object* concrete = dynamic_cast<Object*>( operand ) ) {
+			return concrete->CloneSnapshot();   // refcount 1, recurses for nested CSG
+		}
+		operand->addref();
+		return operand;
+	}
+}
+
+Object* CSGObject::CloneSnapshot() const
+{
+	// Snapshot-clone the operands to INDEPENDENT objects FIRST, then build a
+	// fresh CSGObject with the same operation and assign them.  This is what
+	// makes the clone a real CSGObject (not a sliced plain Object) with its
+	// own operand subtree.
+	IObjectPriv* cloneA = SnapshotCloneOperand( pObjectA );
+	IObjectPriv* cloneB = SnapshotCloneOperand( pObjectB );
+
+	CSGObject* pClone = new CSGObject( op );
+	GlobalLog()->PrintNew( pClone, __FILE__, __LINE__, "snapshot CSG clone" );
+
+	// AssignObjects addrefs both operands (and hides them via
+	// SetWorldVisible(false), matching the live CSG).  We then drop our own
+	// references so the clone is the sole owner of its operand clones.
+	if( cloneA && cloneB ) {
+		pClone->AssignObjects( cloneA, cloneB );
+	}
+	safe_release( cloneA );
+	safe_release( cloneB );
+
+	// Copy the shared mutable state (material clone + addref'd leaves +
+	// flags + transform).  CSGObject has no geometry of its own, so there is
+	// nothing geometry-specific to copy beyond what the base helper handles.
+	CopySnapshotStateInto( *pClone );
+
+	return pClone;
+}
+
 const BoundingBox CSGObject::getBoundingBox() const
 {
 	if( !pObjectA || !pObjectB ) {

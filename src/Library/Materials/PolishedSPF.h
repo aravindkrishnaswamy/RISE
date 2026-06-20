@@ -62,6 +62,10 @@ namespace RISE
 			inline const IScalarPainter& GetTransmittance()      const { return *pTau; }
 			inline const IScalarPainter& GetIOR()                const { return *pNt; }
 			inline const IScalarPainter& GetScattering()         const { return *pScat; }
+			//! Read-back of the baked HG-phase flag (no setter — it is
+			//! fixed at construction).  Used by the snapshot clone to
+			//! faithfully reconstruct the material.
+			inline bool                  GetHG()                 const { return bHG; }
 			void SetDiffuseReflectance( const IPainter& v );
 			void SetTransmittance( const IScalarPainter& v );
 			void SetIOR( const IScalarPainter& v );

@@ -207,7 +207,8 @@ SRCLIBGEOMETRY = \
 # Objects
 SRCLIBOBJECT = \
 	$(PATHLIBRARY)Objects/CSGObject.cpp							\
-	$(PATHLIBRARY)Objects/Object.cpp
+	$(PATHLIBRARY)Objects/Object.cpp							\
+	$(PATHLIBRARY)Objects/SnapshotLeafClone.cpp
 
 
 # Ray primitive intersections

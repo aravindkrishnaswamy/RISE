@@ -62,12 +62,56 @@ namespace RISE
 
 			virtual ~Object( );
 
+			//! Copies this object's mutable snapshot state into `dst` (a
+			//! freshly-constructed clone): the cloned material leaf, the
+			//! addref-shared immutable leaves, the value flags, and the full
+			//! transform state.  Does NOT touch geometry (set by the
+			//! subclass ctor) or CSG operands (set by CSGObject).  Shared by
+			//! Object::CloneSnapshot and CSGObject::CloneSnapshot.
+			void CopySnapshotStateInto( Object& dst ) const;
+
 		public:
 			Object( );
 			Object( const IGeometry* pGeometry_ );
 
 			virtual IObjectPriv* CloneFull() override;
 			virtual IObjectPriv* CloneGeometric() override;
+
+			//! feature/gui-snapshot-prototype: deep-copy the MUTABLE state
+			//! of this object into a fresh Object that is INDEPENDENT of
+			//! later live mutation.
+			//!
+			//! VIRTUAL (not a new IObjectPriv interface virtual — this is a
+			//! method on the internal concrete Implementation::Object, added
+			//! at the end of Object's own vtable, so it carries no public /
+			//! abstract-interface ABI risk).  It MUST be virtual so a
+			//! CSGObject is snapshot-cloned AS a CSGObject (operands +
+			//! operation preserved) rather than sliced to a plain Object by
+			//! the base implementation — see CSGObject::CloneSnapshot.
+			//!
+			//! What is COPIED (so a later TranslateObject + finalize on
+			//! the live object does NOT change the clone):
+			//!   - every transform building block (position / orientation
+			//!     / scale / stretch matrices + the whole transform stack)
+			//!   - the finalized matrices (m_mxFinalTrans /
+			//!     m_mxInvFinalTrans / m_mxInvTranspose / sign)
+			//! What is CLONED to an INDEPENDENT instance (mutable LEAF —
+			//! the editor rebinds its painter slots in place):
+			//!   - material (via CloneMaterialForSnapshot; sub-painters
+			//!     addref-shared)
+			//! What is SHARED via addref (immutable / non-property-edited
+			//! leaves):
+			//!   - geometry, modifier, shader, radiance map, interior
+			//!     medium, UV generator (see SnapshotLeafClone.h for why
+			//!     shader / medium are addref-shared in increment A and the
+			//!     residual deferred to increment B).
+			//! Plus the cheap value flags (visibility / shadows / eps).
+			//!
+			//! CloneFull() is unsuitable for a snapshot: it re-runs the
+			//! Assign* setters but copies NONE of the transform state, so
+			//! a CloneFull'd object starts at identity and would not
+			//! reflect the live object's pose at snapshot time.
+			virtual Object* CloneSnapshot() const;
 
 			virtual bool AssignMaterial( const IMaterial& pMat ) override;
 			virtual bool AssignGeometry( const IGeometry& pGeom ) override;

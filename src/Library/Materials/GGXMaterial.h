@@ -147,6 +147,9 @@ namespace RISE
 			inline const IScalarPainter* GetFilmExtinction() const { return pBRDF->GetFilmExtinction(); }
 			inline const IScalarPainter* GetFilmThickness()  const { return pBRDF->GetFilmThickness(); }
 			inline FresnelMode           GetFresnelMode()    const { return pBRDF->GetFresnelMode(); }
+			//! Optional anisotropy tangent-rotation painter (nullable);
+			//! read-back for the snapshot clone.
+			inline const IPainter*       GetTangentRotation() const { return pBRDF->GetTangentRotation(); }
 			inline void SetDiffuse( const IPainter& v )         { pBRDF->SetDiffuse( v );    pSPF->SetDiffuse( v ); }
 			inline void SetSpecular( const IPainter& v )        { pBRDF->SetSpecular( v );   pSPF->SetSpecular( v ); }
 			inline void SetAlphaX( const IScalarPainter& v )    { pBRDF->SetAlphaX( v );     pSPF->SetAlphaX( v ); }

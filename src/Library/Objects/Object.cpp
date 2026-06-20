@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "Object.h"
+#include "SnapshotLeafClone.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
@@ -98,6 +99,76 @@ IObjectPriv* Object::CloneGeometric()
 	Object* pMe = new Object( pGeometry );
 	GlobalLog()->PrintNew( pMe, __FILE__, __LINE__, "cloned object" );
 	return pMe;
+}
+
+void Object::CopySnapshotStateInto( Object& dst ) const
+{
+	// Shared by Object::CloneSnapshot and CSGObject::CloneSnapshot.  Copies
+	// every piece of mutable state EXCEPT the geometry (set by the subclass
+	// ctor) and, for CSG, the operands (set by the subclass).  `dst` is a
+	// freshly-constructed clone; we may touch its protected Object /
+	// Transformable members because access to protected members of the same
+	// type is permitted.
+
+	// --- Mutable LEAF: material is cloned to an INDEPENDENT instance so a
+	//     later in-place painter-slot rebind on the LIVE material (the
+	//     editor's SetMaterialProperty path) does NOT bleed into the
+	//     snapshot.  CloneMaterialForSnapshot hands back a reference the
+	//     caller owns; AssignMaterial addrefs it, so we release our own. ---
+	if( pMaterial ) {
+		const IMaterial* matClone = CloneMaterialForSnapshot( pMaterial );
+		if( matClone ) {
+			dst.AssignMaterial( *matClone );
+			matClone->release();
+		}
+	}
+
+	// --- Immutable / non-property-edited leaves: addref-share. ---
+	//     (Shader + interior medium are addref-shared in increment A; the
+	//     SSS shader-op cache race + in-place medium-coefficient edits are
+	//     the documented residual deferred to increment B — see
+	//     SnapshotLeafClone.h.)
+	if( pModifier )       { dst.AssignModifier( *pModifier ); }
+	if( pShader )         { dst.AssignShader( *pShader ); }
+	if( pRadianceMap )    { dst.AssignRadianceMap( *pRadianceMap ); }
+	if( pInteriorMedium ) { dst.AssignInteriorMedium( *pInteriorMedium ); }
+	if( pUVGenerator )    { dst.SetUVGenerator( *pUVGenerator ); }
+
+	// --- Cheap value-typed flags ---
+	dst.bIsWorldVisible        = bIsWorldVisible;
+	dst.bCastsShadows          = bCastsShadows;
+	dst.bReceivesShadows       = bReceivesShadows;
+	dst.SURFACE_INTERSEC_ERROR = SURFACE_INTERSEC_ERROR;
+	dst.m_tangentFrameSign     = m_tangentFrameSign;
+
+	// --- Transform BUILDING BLOCKS (Transformable protected state) ---
+	// Copying these is what makes the clone independent: a later
+	// TranslateObject() on the live object pushes onto the LIVE stack and
+	// re-finalizes the LIVE matrices, leaving the clone's copies untouched.
+	dst.m_mxPosition      = m_mxPosition;
+	dst.m_mxOrientation   = m_mxOrientation;
+	dst.m_mxScale         = m_mxScale;
+	dst.m_mxStretch       = m_mxStretch;
+	dst.m_transformstack  = m_transformstack;   // std::deque<Matrix4> value copy
+
+	// --- Finalized matrices (so the clone is render-ready without a
+	//     re-finalize, and exactly reflects the live pose at snap time) ---
+	dst.m_mxFinalTrans    = m_mxFinalTrans;
+	dst.m_mxInvFinalTrans = m_mxInvFinalTrans;
+	dst.m_mxInvTranspose  = m_mxInvTranspose;
+}
+
+Object* Object::CloneSnapshot() const
+{
+	// See Object.h for the rationale.  Build a fresh Object that shares the
+	// immutable geometry leaf (the ctor addrefs it), then deep-copy the
+	// mutable state.
+	Object* pClone = new Object( pGeometry );
+	GlobalLog()->PrintNew( pClone, __FILE__, __LINE__, "snapshot clone" );
+
+	CopySnapshotStateInto( *pClone );
+
+	return pClone;
 }
 
 bool Object::AssignMaterial( const IMaterial& pMat )

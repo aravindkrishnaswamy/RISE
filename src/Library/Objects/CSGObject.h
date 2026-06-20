@@ -47,6 +47,17 @@ namespace RISE
 			IObjectPriv* CloneFull();
 			IObjectPriv* CloneGeometric();
 
+			//! feature/gui-snapshot-prototype: snapshot-clone AS a CSGObject.
+			//! The base Object::CloneSnapshot would slice a CSGObject to a
+			//! plain Object (operands + operation lost, null geometry).  This
+			//! overrides it to snapshot-clone the operation + BOTH operands
+			//! (recursively, via each operand's virtual CloneSnapshot) and
+			//! then copy the shared mutable state via CopySnapshotStateInto.
+			//! NOTE: deliberately NOT marked `override` to match this class's
+			//! existing no-`override` style — adding the keyword to one method
+			//! wakes -Winconsistent-missing-override on the 7 sibling virtuals.
+			Object* CloneSnapshot() const;
+
 			const BoundingBox getBoundingBox() const;
 			void IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;

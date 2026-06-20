@@ -260,6 +260,7 @@
     <ClCompile Include="..\..\..\src\Library\Noise\ReactionDiffusion3D.cpp" />
     <ClCompile Include="..\..\..\src\Library\Objects\CSGObject.cpp" />
     <ClCompile Include="..\..\..\src\Library\Objects\Object.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Objects\SnapshotLeafClone.cpp" />
     <ClCompile Include="..\..\..\src\Library\Options.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\BlackBodyPainter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Painters\CheckerPainter.cpp" />
@@ -734,6 +735,7 @@
     <ClInclude Include="..\..\..\src\Library\Noise\SmoothedNoise.h" />
     <ClInclude Include="..\..\..\src\Library\Objects\CSGObject.h" />
     <ClInclude Include="..\..\..\src\Library\Objects\Object.h" />
+    <ClInclude Include="..\..\..\src\Library\Objects\SnapshotLeafClone.h" />
     <ClInclude Include="..\..\..\src\Library\Octree.h" />
     <ClInclude Include="..\..\..\src\Library\OctreeNode.h" />
     <ClInclude Include="..\..\..\src\Library\Options.h" />

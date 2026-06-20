@@ -95,6 +95,14 @@ namespace RISE
 			inline const IScalarPainter& GetTransmittance() const { return *pTau; }
 			inline const IScalarPainter& GetIOR()           const { return *pRIndex; }
 			inline const IScalarPainter& GetScattering()    const { return *pScat; }
+			//! Read-back of the baked construction-time scalars (HG-phase
+			//! flag + anodization/AR-film parameters).  No setters — these
+			//! are fixed at construction.  Used by the snapshot clone to
+			//! faithfully reconstruct the material.
+			inline bool   GetHG()                 const { return bHG; }
+			inline Scalar GetAnodizationN()       const { return arN; }
+			inline Scalar GetAnodizationK()       const { return arK; }
+			inline Scalar GetAnodizationThickness() const { return arThickness; }
 			void SetTransmittance( const IScalarPainter& v );
 			void SetIOR( const IScalarPainter& v );
 			void SetScattering( const IScalarPainter& v );

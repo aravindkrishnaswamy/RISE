@@ -22,8 +22,28 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		class CameraCommon : 
-			public virtual ICamera, 
+		//! SPIKE (feature/gui-snapshot-prototype): value-typed capture of
+		//! the active camera's MUTABLE pose state.  Cameras are
+		//! polymorphic (pinhole / thinlens / orthographic / ONB) and some
+		//! are ONB-constructed (see CameraCommon::IsFromONB) — recreating
+		//! the concrete camera through a factory is out of scope for the
+		//! spike, and the editor mutates pose via the SetLocation /
+		//! SetLookAt / SetUp / SetEulerOrientation setters anyway.  So the
+		//! snapshot captures the pose by value; this copy is INDEPENDENT
+		//! of any later live mutation of the camera.
+		struct CameraPoseSnapshot
+		{
+			Point3  position;       //!< stored (rest) location, pre-orbit
+			Point3  lookAt;
+			Vector3 up;
+			Vector3 orientation;    //!< euler (pitch, roll, yaw)
+			Vector2 targetOrientation;
+			bool    fromONB;        //!< honesty flag: ONB cameras can't be
+			                        //!< rebuilt via the non-ONB factory.
+		};
+
+		class CameraCommon :
+			public virtual ICamera,
 			public virtual Reference
 		{
 		protected:
@@ -143,6 +163,21 @@ namespace RISE
 				frame.SetDimensions( w, h );
 				pixelAR = pAR;
 				RegenerateData();
+			}
+
+			//! SPIKE: capture this camera's mutable pose into a value
+			//! struct that is independent of later live mutation.
+			//! Concrete method (not an interface virtual) — no ABI change.
+			inline CameraPoseSnapshot CaptureSnapshot() const
+			{
+				CameraPoseSnapshot s;
+				s.position          = vPosition;
+				s.lookAt            = vLookAt;
+				s.up                = vUp;
+				s.orientation       = orientation;
+				s.targetOrientation = target_orientation;
+				s.fromONB           = from_onb;
+				return s;
 			}
 
 			inline Point3 GetLocation( ) const

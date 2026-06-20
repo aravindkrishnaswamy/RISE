@@ -91,6 +91,9 @@ namespace RISE
 			inline const IScalarPainter& GetTransmittance()      const { return pSPF->GetTransmittance(); }
 			inline const IScalarPainter& GetIOR()                const { return pSPF->GetIOR(); }
 			inline const IScalarPainter& GetScattering()         const { return pSPF->GetScattering(); }
+			//! Baked HG-phase flag read-back for the snapshot clone
+			//! (fixed at construction; no setter).
+			inline bool                  GetHG()                 const { return pSPF->GetHG(); }
 			inline void SetDiffuseReflectance( const IPainter& v ) {
 				pBRDF->SetReflectance( v );
 				pSPF->SetDiffuseReflectance( v );

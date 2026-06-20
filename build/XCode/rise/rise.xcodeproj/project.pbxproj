@@ -408,7 +408,9 @@
 		F24B73192F52A632008304C4 /* CSGObject.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092B069C42900069C9E5 /* CSGObject.cpp */; };
 		F24B731A2F52A632008304C4 /* CSGObject.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F092C069C42900069C9E5 /* CSGObject.h */; };
 		F24B731B2F52A632008304C4 /* Object.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092D069C42900069C9E5 /* Object.cpp */; };
+		FEEDC10E0000000000000002 /* SnapshotLeafClone.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */; };
 		F24B731C2F52A632008304C4 /* Object.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F092E069C42900069C9E5 /* Object.h */; };
+		FEEDC10E0000000000000005 /* SnapshotLeafClone.h in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000004 /* SnapshotLeafClone.h */; };
 		F24B731D2F52A632008304C4 /* Octree.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F092F069C42900069C9E5 /* Octree.h */; };
 		F24B731E2F52A632008304C4 /* OctreeNode.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0930069C42900069C9E5 /* OctreeNode.h */; };
 		F24B731F2F52A632008304C4 /* Options.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0931069C42900069C9E5 /* Options.cpp */; };
@@ -1120,7 +1122,9 @@
 		F27F0B90069C42910069C9E5 /* CSGObject.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092B069C42900069C9E5 /* CSGObject.cpp */; };
 		F27F0B91069C42910069C9E5 /* CSGObject.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F092C069C42900069C9E5 /* CSGObject.h */; };
 		F27F0B92069C42910069C9E5 /* Object.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F092D069C42900069C9E5 /* Object.cpp */; };
+		FEEDC10E0000000000000003 /* SnapshotLeafClone.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */; };
 		F27F0B93069C42910069C9E5 /* Object.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F092E069C42900069C9E5 /* Object.h */; };
+		FEEDC10E0000000000000006 /* SnapshotLeafClone.h in Headers */ = {isa = PBXBuildFile; fileRef = FEEDC10E0000000000000004 /* SnapshotLeafClone.h */; };
 		F27F0B94069C42910069C9E5 /* Octree.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F092F069C42900069C9E5 /* Octree.h */; };
 		F27F0B95069C42910069C9E5 /* OctreeNode.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F0930069C42900069C9E5 /* OctreeNode.h */; };
 		F27F0B96069C42910069C9E5 /* Options.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0931069C42900069C9E5 /* Options.cpp */; };
@@ -2276,7 +2280,9 @@
 		F27F092B069C42900069C9E5 /* CSGObject.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CSGObject.cpp; sourceTree = "<group>"; };
 		F27F092C069C42900069C9E5 /* CSGObject.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CSGObject.h; sourceTree = "<group>"; };
 		F27F092D069C42900069C9E5 /* Object.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Object.cpp; sourceTree = "<group>"; };
+		FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SnapshotLeafClone.cpp; sourceTree = "<group>"; };
 		F27F092E069C42900069C9E5 /* Object.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Object.h; sourceTree = "<group>"; };
+		FEEDC10E0000000000000004 /* SnapshotLeafClone.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SnapshotLeafClone.h; sourceTree = "<group>"; };
 		F27F092F069C42900069C9E5 /* Octree.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Octree.h; sourceTree = "<group>"; };
 		F27F0930069C42900069C9E5 /* OctreeNode.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = OctreeNode.h; sourceTree = "<group>"; };
 		F27F0931069C42900069C9E5 /* Options.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Options.cpp; sourceTree = "<group>"; };
@@ -3442,7 +3448,9 @@
 				F27F092B069C42900069C9E5 /* CSGObject.cpp */,
 				F27F092C069C42900069C9E5 /* CSGObject.h */,
 				F27F092D069C42900069C9E5 /* Object.cpp */,
+				FEEDC10E0000000000000001 /* SnapshotLeafClone.cpp */,
 				F27F092E069C42900069C9E5 /* Object.h */,
+				FEEDC10E0000000000000004 /* SnapshotLeafClone.h */,
 			);
 			path = Objects;
 			sourceTree = "<group>";
@@ -4447,6 +4455,7 @@
 				F27F0B8F069C42910069C9E5 /* SmoothedNoise.h in Headers */,
 				F27F0B91069C42910069C9E5 /* CSGObject.h in Headers */,
 				F27F0B93069C42910069C9E5 /* Object.h in Headers */,
+				FEEDC10E0000000000000006 /* SnapshotLeafClone.h in Headers */,
 				F27F0B94069C42910069C9E5 /* Octree.h in Headers */,
 				F27F0B95069C42910069C9E5 /* OctreeNode.h in Headers */,
 				F27F0B97069C42910069C9E5 /* Options.h in Headers */,
@@ -5016,6 +5025,7 @@
 				F27F0B8E069C42910069C9E5 /* PerlinNoise3D.cpp in Sources */,
 				F27F0B90069C42910069C9E5 /* CSGObject.cpp in Sources */,
 				F27F0B92069C42910069C9E5 /* Object.cpp in Sources */,
+				FEEDC10E0000000000000003 /* SnapshotLeafClone.cpp in Sources */,
 				F27F0B96069C42910069C9E5 /* Options.cpp in Sources */,
 				F27F0B98069C42910069C9E5 /* BlackBodyPainter.cpp in Sources */,
 				F24C543B2F7B30B3009AF16D /* EnvironmentSampler.cpp in Sources */,
@@ -5600,7 +5610,9 @@
 				F24B73192F52A632008304C4 /* CSGObject.cpp in Sources */,
 				F24B731A2F52A632008304C4 /* CSGObject.h in Sources */,
 				F24B731B2F52A632008304C4 /* Object.cpp in Sources */,
+				FEEDC10E0000000000000002 /* SnapshotLeafClone.cpp in Sources */,
 				F24B731C2F52A632008304C4 /* Object.h in Sources */,
+				FEEDC10E0000000000000005 /* SnapshotLeafClone.h in Sources */,
 				F24B731D2F52A632008304C4 /* Octree.h in Sources */,
 				F24B731E2F52A632008304C4 /* OctreeNode.h in Sources */,
 				F24B731F2F52A632008304C4 /* Options.cpp in Sources */,

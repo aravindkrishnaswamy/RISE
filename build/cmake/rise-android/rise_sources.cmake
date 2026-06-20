@@ -185,6 +185,7 @@ set(RISE_LIB_SOURCES
     # SRCLIBOBJECT
     "${RISE_LIB}/Objects/CSGObject.cpp"
     "${RISE_LIB}/Objects/Object.cpp"
+    "${RISE_LIB}/Objects/SnapshotLeafClone.cpp"
 
     # SRCLIBINTERSECTION
     "${RISE_LIB}/Intersection/RayBezierPatchIntersection.cpp"
