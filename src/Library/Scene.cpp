@@ -1035,6 +1035,13 @@ Scalar SceneSnapshot::GetFilmPixelAR() const
 	return clonedFilm ? clonedFilm->GetPixelAR() : Scalar( 1 );
 }
 
+// ⚠ EXPERIMENTAL — NOT production-safe.  See the banner on
+// Scene::CreateSnapshot in Scene.h: this deep-clone snapshot/restore pair
+// is NOT used by the editor's transactional rollback (re-based onto
+// inverse-edit undo) and carries the §13a P1 register defects (multi-
+// camera loss, lost identity/sharing, film/SetFilm, absence/failure, SSS
+// deep-clone race).  Retained for a future isolated render-off-a-snapshot
+// use only; do NOT wire back into a rollback / live-edit path.
 SceneSnapshot* Scene::CreateSnapshot() const
 {
 	SceneSnapshot* pSnap = new SceneSnapshot();
@@ -1166,6 +1173,13 @@ namespace {
 	};
 }
 
+// ⚠ EXPERIMENTAL — NOT production-safe.  See the banner on
+// Scene::RestoreFromSnapshot in Scene.h.  This restore is NOT used by the
+// editor's transactional rollback (re-based onto inverse-edit undo) and
+// carries the §13a P1 register defects — most decisively P1-1 (clearing
+// the WHOLE camera manager below loses every non-active camera) and P1-2
+// (the fresh clones break object/material identity & sharing).  Retained
+// for a future isolated render-off-a-snapshot use only.
 void Scene::RestoreFromSnapshot( const SceneSnapshot& snap )
 {
 	// ----------------------------------------------------------------

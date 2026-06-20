@@ -62,7 +62,7 @@
 #include "../Rendering/InteractivePelRasterizer.h"
 #include "../Rendering/FrameStore.h"  // L6e-3 — per-pass interactive FrameStore
 #include "../Rendering/Rasterizer.h"  // L6e-3 — Implementation::Rasterizer for SetFrameStore
-#include "../Scene.h"                 // #2b(b) — concrete Scene + SceneSnapshot for transactional rollback
+#include "../Scene.h"                 // concrete Scene (transitive scene-state includes); transactional rollback no longer uses CreateSnapshot/RestoreFromSnapshot
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/RuntimeContext.h"
 #include <chrono>
@@ -147,7 +147,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mLastEditTimeMs( 0 )
 , mInRefinementPass( false )
 , mPolishState( static_cast<int>( PolishState::None ) )
-, mTxnBaseline( 0 )
+, mTxnOpen( false )
 , mTxnBaselineUndoDepth( 0 )
 {
 	if( mInteractiveRasterizer )
@@ -532,13 +532,9 @@ SceneEditController::~SceneEditController()
 		mInteractiveFrameStore->release();
 		mInteractiveFrameStore = 0;
 	}
-	// #2b(b) — release a never-committed transaction baseline (e.g. the
-	// controller is torn down mid-gesture without a Rollback/End).
-	if( mTxnBaseline )
-	{
-		mTxnBaseline->release();
-		mTxnBaseline = 0;
-	}
+	// Inverse-edit rollback holds NO snapshot — a transaction left open
+	// at teardown needs no resource release; the (uncommitted) live edits
+	// simply remain, exactly as they would after a commit.
 }
 
 // Lifecycle -----------------------------------------------------------
@@ -1707,84 +1703,52 @@ bool SceneEditController::RequestProductionRender()
 	return ok;
 }
 
-// Transactional rollback (#2b(b)) -------------------------------------
+// Transactional rollback (inverse-edit; NOT snapshot/restore) ---------
+//
+// RollbackTransaction reverts the transaction's edits by applying their
+// INVERSES down to the BeginTransaction undo depth (driving
+// SceneEditor::Undo), then clears the redo stack.  It does NOT use the
+// deep-clone snapshot/restore primitive (see the EXPERIMENTAL note on
+// Scene::CreateSnapshot in Scene.h and the header doc for why).
 
 bool SceneEditController::BeginTransaction()
 {
-	IScenePriv* scenePriv = mJob.GetScene();
-	Implementation::Scene* scene =
-		dynamic_cast<Implementation::Scene*>( scenePriv );
-	if( !scene ) {
-		// Out-of-tree IScenePriv (test skeletons / foreign scene): the
-		// snapshot primitives live on the concrete Scene only.  Report
-		// no-transaction so the caller knows rollback is unavailable.
-		return false;
-	}
-
-	// Cancel-and-park BEFORE cloning — mirrors CloneActiveCamera, which
-	// also snapshots live scene state.  CreateSnapshot reads (clones)
-	// the active camera, objects, lights AND the Film; the render thread
-	// MUTATES the Film in place during the preview-scale swap
-	// (Scene.h: "film CLONE — IFilm::Resize mutates in place during
-	// interactive preview-scale"), so a clone taken concurrently with a
-	// resize would read a torn dim.  Parking serialises the clone
-	// against the in-flight pass.  Begin/End/Rollback are all UI-thread
-	// calls, so they can't race each other; only the render thread is
-	// the concurrent writer we guard here.
-	std::unique_lock<std::mutex> lk( mMutex );
-	if( mRendering.load( std::memory_order_acquire ) ) {
-		mCancelProgress.RequestCancel();
-		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
-	}
-	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
-
-	// Replace any prior (uncommitted) baseline — nesting is unsupported;
-	// the latest Begin wins.  Releasing the old one here is the
-	// "Begin-over-Begin" cleanup path.
-	if( mTxnBaseline ) {
-		mTxnBaseline->release();
-		mTxnBaseline = 0;
-	}
-
-	Implementation::SceneSnapshot* snap = scene->CreateSnapshot();
-	if( !snap ) {
-		return false;
-	}
-	// CreateSnapshot hands back one owned ref (per its contract: "Caller
-	// owns the returned SceneSnapshot (release() it)").  We keep that
-	// ref directly — no extra addref.
-	mTxnBaseline          = snap;
+	// Inverse-edit rollback works through the SceneEditor for ANY scene
+	// the editor can mutate, so there is no concrete-Scene precondition
+	// and no snapshot to capture.  Recording the current undo depth is
+	// the entire setup: RollbackTransaction later applies the inverse
+	// edits down to exactly this depth.
+	//
+	// No cancel-and-park here: Begin touches no scene state the render
+	// thread reads (it only reads the editor's history depth on the UI
+	// thread).  Begin/Rollback/End are all UI-thread calls, so they
+	// cannot race each other.
+	//
+	// Nesting is unsupported: a Begin-over-Begin REPLACES the baseline
+	// (the new call wins).  The edits made under the prior (now-dropped)
+	// baseline simply become un-bracketed — they remain undoable through
+	// the normal Undo path, they are just no longer part of a rollback
+	// unit.  This matches the single-gesture model.
+	mTxnOpen              = true;
 	mTxnBaselineUndoDepth = mEditor.History().UndoDepth();
 	return true;
 }
 
 bool SceneEditController::IsTransactionOpen() const
 {
-	return mTxnBaseline != 0;
+	return mTxnOpen;
 }
 
 bool SceneEditController::RollbackTransaction()
 {
-	if( !mTxnBaseline ) return false;
+	if( !mTxnOpen ) return false;
 
-	IScenePriv* scenePriv = mJob.GetScene();
-	Implementation::Scene* scene =
-		dynamic_cast<Implementation::Scene*>( scenePriv );
-	if( !scene ) {
-		// Defensive: Begin only succeeds on a concrete Scene, so this
-		// should be unreachable.  Drop the baseline and report failure
-		// rather than leak it.
-		mTxnBaseline->release();
-		mTxnBaseline = 0;
-		return false;
-	}
-
-	// Cancel-and-park around the restore — RestoreFromSnapshot swaps the
-	// object + light manager contents, the active camera / film / medium,
-	// and DROPS the TLAS, all of which the render thread reads per-pixel.
-	// Same pattern as Undo / SetProperty: trip the rasterizer cancel
-	// flag, wait for the in-flight pass to drain under mMutex, restore
-	// with the lock held, then notify.
+	// Cancel-and-park around the inverse-edit applies — SceneEditor::Undo
+	// mutates live scene state the render thread reads per-pixel (object
+	// transforms, light keyframe state, material/shader pointers, camera
+	// pose).  Same pattern as Undo / SetProperty: trip the rasterizer
+	// cancel flag, wait for the in-flight pass to drain under mMutex,
+	// revert with the lock held, then notify.
 	std::unique_lock<std::mutex> lk( mMutex );
 	if( mRendering.load( std::memory_order_acquire ) ) {
 		mCancelProgress.RequestCancel();
@@ -1792,58 +1756,84 @@ bool SceneEditController::RollbackTransaction()
 	}
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
-	// Restore the live scene to the baseline.  This rebuilds the TLAS
-	// (InvalidateSpatialStructure + re-prepare) and bumps the scene's
-	// light-topology generation so a reused RayCaster rebuilds its
-	// LightSampler on the next attach.  Clone-on-restore: the baseline
-	// snapshot is NOT consumed, so it is safe to release afterwards.
-	scene->RestoreFromSnapshot( *mTxnBaseline );
+	// Revert by applying the inverse edits down to the transaction
+	// baseline depth.  Each mEditor.Undo() reverts one logical unit on
+	// the SAME live instances the forward edits touched: a CLOSED
+	// composite reverts as a group in a single call (the composite walk
+	// in SceneEditor::Undo), while individual edits and an unmatched
+	// CompositeBegin (a rollback fired mid-gesture) each revert one
+	// record at a time.  Light edits + emissive-material rebinds bump
+	// the scene light-topology generation inside Undo, so a reused
+	// RayCaster rebuilds its LightSampler.  Undo moves each reverted
+	// record onto the redo stack; we clear that residue below.
+	//
+	// Loop guards (honest partial-rollback): stop if Undo reports no
+	// progress (empty stack, or a target entity removed out from under
+	// an edit) so we never spin, and treat a non-empty remaining gap as
+	// a partial rollback the caller is told about via the return value.
+	// The depth can also start BELOW baseline if the gesture exceeded
+	// the EditHistory bound and older records were trimmed — that too is
+	// an honest partial.
+	bool fullyReverted = true;
+	while( mEditor.History().UndoDepth() > mTxnBaselineUndoDepth )
+	{
+		if( !mEditor.Undo() ) {
+			// Could not invert the next record (e.g. its target object
+			// was removed).  Stop rather than loop forever; report the
+			// rollback as incomplete.
+			fullyReverted = false;
+			break;
+		}
+	}
+	if( mEditor.History().UndoDepth() != mTxnBaselineUndoDepth ) {
+		// Either an Undo stalled above (handled) or the baseline depth
+		// is no longer reachable because records were trimmed.  Either
+		// way the revert did not land exactly on the baseline.
+		fullyReverted = false;
+	}
 
-	// Discard exactly the edits the transaction pushed, WITHOUT leaving
-	// any of them redoable (the scene is now at the baseline, so a redo
-	// would double-apply onto restored state).  Also clears the redo
-	// stack — nothing is redoable after a reject.
-	mEditor.History().DiscardUndoTo( mTxnBaselineUndoDepth );
+	// A rolled-back gesture must NOT be redoable: drop the redo residue
+	// the inverse-applies left behind.  (The undo stack is already back
+	// at — or as close as reachable to — the baseline depth.)
+	mEditor.History().ClearRedo();
 
 	// The composite the gesture may have opened is now meaningless —
 	// reset the editor's composite depth so a later EndComposite (a
-	// tool cleanup path) doesn't push an orphan CompositeEnd against the
-	// discarded history.  BeginComposite/EndComposite balance their own
-	// depth, but a rollback can fire mid-gesture (before the matching
-	// EndComposite), so force the depth back to a clean zero.
+	// tool cleanup path) doesn't push an orphan CompositeEnd.  A
+	// rollback can fire mid-gesture (before the matching EndComposite),
+	// so force the depth back to a clean zero.
 	mEditor.ForceCompositeDepthZero();
 
-	// Drop the baseline; the transaction is closed.
-	mTxnBaseline->release();
-	mTxnBaseline          = 0;
+	// Close the transaction.
+	mTxnOpen              = false;
 	mTxnBaselineUndoDepth = 0;
 
-	// Re-render the restored state.  Inline the KickRender effect under
+	// Re-render the reverted state.  Inline the KickRender effect under
 	// the held lock (store editPending, notify after unlock) so the
-	// render thread sees the restored scene + the pending flag together,
+	// render thread sees the reverted scene + the pending flag together,
 	// matching the OnTimeScrub / object-drag park-and-apply idiom.
 	mPolishState.store( static_cast<int>( PolishState::None ),
-	                    std::memory_order_release );
+									  std::memory_order_release );
 	mEditPending.store( true, std::memory_order_release );
 	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 	lk.unlock();
 	mCV.notify_one();
 
-	// A rollback that removed/re-added entities changes the category
-	// entity lists; bump the epoch so platform UIs re-pull (cheap, and
-	// covers the conflict/AI-reject cases that may have added objects).
+	// A rollback that reverted structural edits (e.g. undo of AddCamera)
+	// changes the category entity lists; bump the epoch so platform UIs
+	// re-pull (cheap, and covers the conflict/AI-reject cases).
 	mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
-	return true;
+	return fullyReverted;
 }
 
 bool SceneEditController::EndTransaction()
 {
-	if( !mTxnBaseline ) return false;
+	if( !mTxnOpen ) return false;
 	// Commit is record-only: the edits were applied + recorded live
 	// during the transaction (the shipping flow), so committing just
-	// releases the baseline.  No re-apply, no double-apply.
-	mTxnBaseline->release();
-	mTxnBaseline          = 0;
+	// closes the transaction.  No re-apply, no revert; the redo stack is
+	// left intact so normal Undo/Redo of the committed edits still works.
+	mTxnOpen              = false;
 	mTxnBaselineUndoDepth = 0;
 	return true;
 }

@@ -43,7 +43,6 @@ namespace RISE
 {
 	namespace Implementation { class InteractivePelRasterizer; }
 	namespace Implementation { class FrameStore; }
-	namespace Implementation { class SceneSnapshot; }
 
 	class SceneEditController
 	{
@@ -310,8 +309,7 @@ namespace RISE
 		//! the production render completes.
 		bool RequestProductionRender();
 
-		// Transactional rollback (feature/gui-snapshot-prototype,
-		// increment #2b(b)) -----------------------------------------
+		// Transactional rollback (feature/gui-snapshot-prototype) ----
 		//
 		// A *transaction* brackets a sequence of edits that may need to
 		// be atomically rejected — an AI L1 (low-confidence) staging
@@ -325,55 +323,86 @@ namespace RISE
 		// each OnPointerMove Apply mutates the live scene and records
 		// history; OnPointerUp's EndComposite only pushes a marker (no
 		// re-apply, no double-apply).  These methods do NOT change that
-		// flow — they ADD a clean rollback primitive on top of it,
-		// built on Scene::CreateSnapshot / RestoreFromSnapshot.
+		// flow — they ADD a clean rollback primitive on top of it.
 		//
-		// Concurrency: BeginTransaction snapshots without touching the
-		// render thread (capture is a read).  RollbackTransaction
-		// MUTATES the live scene, so it cancel-and-parks exactly like
-		// Undo / SetProperty (trip the rasterizer cancel flag, wait for
-		// the in-flight pass to drain under mMutex, restore with the
-		// lock held, then KickRender).
+		// ROLLBACK MECHANISM (re-based 2026: inverse-edit, NOT snapshot).
+		// RollbackTransaction reverts by APPLYING THE INVERSE EDITS down
+		// to the BeginTransaction undo depth — i.e. it drives
+		// SceneEditor::Undo until the undo stack is back at the
+		// transaction baseline, reverting live state ON THE SAME object /
+		// light / camera / material instances the forward edits touched,
+		// then clears the redo stack so the rolled-back gesture is NOT
+		// redoable.  It does NOT call Scene::RestoreFromSnapshot (the
+		// deep-clone snapshot/restore path has unresolved P1 defects —
+		// multi-camera loss, lost identity/sharing, no absence/failure
+		// representation; see §13a and the EXPERIMENTAL note on
+		// Scene::CreateSnapshot / RestoreFromSnapshot).  No baseline
+		// snapshot is captured.  This is identity-safe and clone-free:
+		// the only edit types a transaction may contain are the inverse-
+		// undoable ones (every SceneEdit op the SceneEditor records —
+		// object transform + material/shader/shadow/geometry/interior-
+		// medium binding, camera, light, material-slot, medium, scene
+		// time).  Edit kinds that BYPASS the EditHistory (film via
+		// Job::SetFilm, rasterizer params, animation frame count) are NOT
+		// recorded and therefore NOT reverted by a rollback — they leave
+		// no undo entry to invert.  Callers must not rely on rollback to
+		// undo those; see the per-method notes.
+		//
+		// Concurrency: BeginTransaction only records a counter (no scene
+		// touch).  RollbackTransaction MUTATES the live scene (the
+		// inverse-edit applies), so it cancel-and-parks exactly like Undo
+		// / SetProperty (trip the rasterizer cancel flag, wait for the
+		// in-flight pass to drain under mMutex, revert with the lock held,
+		// then KickRender).
 
-		//! Capture a baseline snapshot of the live scene's render-read
-		//! state at the start of a rollbackable transaction, and record
-		//! the current undo depth so a later RollbackTransaction can
-		//! discard exactly the edits made within the transaction.
+		//! Open a rollbackable transaction by recording the current undo
+		//! depth, so a later RollbackTransaction can revert exactly the
+		//! edits made within the transaction (by applying their inverses
+		//! down to this baseline depth).  Captures NO snapshot — rollback
+		//! is inverse-edit based.
 		//!
-		//! Returns false (and starts no transaction) if the scene
-		//! cannot be snapshotted — i.e. the live scene is not a concrete
-		//! RISE::Implementation::Scene (an out-of-tree IScenePriv) — so
-		//! callers can detect that rollback is unavailable rather than
-		//! silently believing they are protected.  Calling it while a
-		//! transaction is already open REPLACES the baseline (the new
-		//! call wins; the prior baseline is released) — nesting is not
-		//! supported, matching the single-gesture model.
+		//! Returns true on success.  Calling it while a transaction is
+		//! already open REPLACES the baseline (the new call wins) —
+		//! nesting is not supported, matching the single-gesture model.
+		//! (Unlike the prior snapshot-based version, this no longer fails
+		//! on an out-of-tree IScenePriv: inverse-edit rollback works
+		//! through the SceneEditor for any scene the editor can mutate.)
 		bool BeginTransaction();
 
 		//! True iff a rollbackable transaction is currently open.
 		bool IsTransactionOpen() const;
 
-		//! Roll the live scene back to the transaction's baseline:
-		//! Scene::RestoreFromSnapshot (which rebuilds the TLAS and bumps
-		//! the light-topology generation so a reused RayCaster rebuilds
-		//! its LightSampler next attach), then discard every edit the
-		//! transaction pushed onto the undo stack WITHOUT leaving any of
-		//! them redoable (EditHistory::DiscardUndoTo), and clear the
-		//! transaction.  Triggers a re-render so the viewport reflects
-		//! the restored state.
+		//! Roll the transaction's edits back by applying their INVERSES:
+		//! drive SceneEditor::Undo until the undo stack returns to the
+		//! BeginTransaction baseline depth (reverting live state on the
+		//! same instances the forward edits mutated — which, for light
+		//! edits and emissive-material rebinds, bumps the scene's light-
+		//! topology generation so a reused RayCaster rebuilds its
+		//! LightSampler), then clear the redo stack (a rolled-back
+		//! gesture must NOT be redoable) and neutralize any open
+		//! composite.  Triggers a re-render so the viewport reflects the
+		//! reverted state.  Does NOT call Scene::RestoreFromSnapshot.
 		//!
-		//! Returns false if no transaction is open or the rollback could
-		//! not run (e.g. the scene downcast failed after Begin somehow
-		//! succeeded — defensive).  After a successful rollback the live
-		//! scene equals the baseline, nothing is redoable, and the scene
-		//! is render-valid.
+		//! Returns false if no transaction is open, or true on a
+		//! completed revert.  Returns false (and still closes the
+		//! transaction) if the inverse-apply could not fully reach the
+		//! baseline depth — e.g. a target entity was removed out from
+		//! under an edit, or the gesture exceeded the EditHistory bound
+		//! and older records were trimmed away — so the caller learns the
+		//! rollback was only partial rather than silently believing the
+		//! scene is back at baseline.
+		//!
+		//! NOTE (honest scope): edits that bypass the EditHistory (film /
+		//! rasterizer params / animation frame count — see the mechanism
+		//! comment above) leave no inverse to apply and are NOT reverted.
 		bool RollbackTransaction();
 
-		//! Commit the transaction: the live edits stay (they were
-		//! already applied + recorded during the transaction), and the
-		//! baseline snapshot is released.  This is record-only — it does
-		//! NOT re-apply anything.  No-op (returns false) if no
-		//! transaction is open.
+		//! Commit the transaction: the live edits stay (they were already
+		//! applied + recorded during the transaction) and the transaction
+		//! is simply closed.  Record-only — it does NOT re-apply or revert
+		//! anything (the redo stack is left intact, so a subsequent Undo /
+		//! Redo of the committed edits works normally).  No-op (returns
+		//! false) if no transaction is open.
 		bool EndTransaction();
 
 		// Selection accessors ----------------------------------------
@@ -1001,19 +1030,18 @@ namespace RISE
 		std::vector<CameraProperty>                          mProperties;
 		std::vector<CameraProperty>                          mPropertiesByCategory[ kNumCategories ];
 
-		// Transactional-rollback state (increment #2b(b)).  Appended at
-		// the end of the member list so the addition is layout-additive
-		// (no field before it shifts).  `mTxnBaseline` is an owned
-		// addref on the snapshot returned by Scene::CreateSnapshot
-		// (released in RollbackTransaction / EndTransaction / dtor); it
-		// is null exactly when no transaction is open.
-		// `mTxnBaselineUndoDepth` records History().UndoDepth() at
-		// BeginTransaction so RollbackTransaction discards precisely the
-		// transaction's edits.  All three are touched only on the UI
-		// thread (Begin/Rollback/End are UI-thread calls), so they need
-		// no synchronization beyond the cancel-and-park RollbackTransaction
-		// already takes for the scene mutation itself.
-		RISE::Implementation::SceneSnapshot* mTxnBaseline;
+		// Transactional-rollback state.  Appended at the end of the member
+		// list so the addition is layout-additive (no field before it
+		// shifts).  Re-based on inverse-edit rollback (NOT snapshot): no
+		// SceneSnapshot is held.  `mTxnOpen` is true exactly when a
+		// transaction is open.  `mTxnBaselineUndoDepth` records
+		// History().UndoDepth() at BeginTransaction so RollbackTransaction
+		// applies the inverse edits down to precisely that depth.  Both
+		// are touched only on the UI thread (Begin/Rollback/End are
+		// UI-thread calls), so they need no synchronization beyond the
+		// cancel-and-park RollbackTransaction already takes for the scene
+		// mutation itself.
+		bool                                 mTxnOpen;
 		unsigned int                         mTxnBaselineUndoDepth;
 
 		// Disable copy / move

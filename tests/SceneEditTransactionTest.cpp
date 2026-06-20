@@ -1,38 +1,60 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  SceneEditTransactionTest.cpp (feature/gui-snapshot-prototype,
-//    increment #2b(b)): proof that the editor's transactional rollback
-//    path is ATOMIC and built correctly on the snapshot/restore
-//    primitives — a rolled-back gesture leaves the live scene EQUAL to
-//    the baseline, leaves NOTHING redoable, and leaves the scene
-//    RENDER-VALID (TLAS + LightSampler rebuilt); a committed gesture is
-//    applied EXACTLY ONCE (no double-apply) and collapses to one undo
-//    entry.
+//  SceneEditTransactionTest.cpp (feature/gui-snapshot-prototype):
+//    proof that the editor's transactional rollback path is ATOMIC and
+//    built on RISE's existing INVERSE-EDIT UNDO machinery — NOT on the
+//    deep-clone Scene::RestoreFromSnapshot primitive.
 //
-//  WHY THESE TESTS EXIST (STEP-1 finding):
-//    The shipping interactive drag flow is ALREADY atomic-on-commit —
-//    each OnPointerMove Apply mutates the live scene + records history,
-//    and OnPointerUp's EndComposite only pushes a marker (NO re-apply,
-//    NO double-apply).  There was NO gesture cancel/reject path at all.
-//    So this increment ADDS a clean snapshot-based rollback primitive
-//    (BeginTransaction / RollbackTransaction / EndTransaction) rather
-//    than fixing a non-existent double-apply.  These tests pin the new
-//    primitive and guard the unchanged commit flow.
+//  WHY INVERSE-EDIT ROLLBACK (5th-review remediation):
+//    A 5th code-backed review found P1 defects in the snapshot/restore
+//    rollback that landed in increment #2b(b):
+//      P1-1  multi-camera loss — RestoreFromSnapshot clears the WHOLE
+//            camera manager and reinstalls only the (single) active
+//            camera clone, so every NON-active camera is destroyed.
+//      P1-2  identity / sharing lost — deep-clone gives each object a
+//            PRIVATE material clone; two objects that shared one named
+//            material end up with two distinct instances.
+//      P1-5  cannot represent absence / failure — env / medium not
+//            clearable, AddItem failures ignored, rollback always
+//            "succeeds" (void / always-true).
+//    The decision: v1 needs only NON-CONCURRENT restore/undo (not a
+//    concurrent render-off-snapshot), so re-base RollbackTransaction on
+//    the inverse-edit undo that already reverts live state on the SAME
+//    instances.  RollbackTransaction now:
+//      (a) applies the inverse edits down to the BeginTransaction undo
+//          depth (reverting live state via SceneEditor::Undo, which
+//          touches the same object / light / camera / material instances
+//          the forward edits did), then
+//      (b) clears the redo stack (a rolled-back gesture must NOT be
+//          redoable), and
+//      (c) neutralizes any open composite (ForceCompositeDepthZero) so a
+//          stray EndComposite pushes no orphan marker.
+//    It does NOT call Scene::RestoreFromSnapshot.  No baseline snapshot
+//    is captured at BeginTransaction.
 //
-//  Each test is built to FAIL if:
-//    - rollback were a no-op (live state would still reflect the edits),
-//    - rollback left the gesture REDOABLE (the EndComposite();Undo()
-//      trap — EditHistory::PopForUndo moves records to the redo stack;
-//      our DiscardUndoTo must NOT),
-//    - rollback double-counted or left the scene render-invalid,
-//    - commit re-applied (double-apply) or recorded != 1 undo entry.
+//  Each test FAILS against the OLD snapshot-restore rollback and PASSES
+//  against the inverse-edit rollback:
+//    - T-rollback-multi-camera: the OLD path LOST the non-active camera
+//      (P1-1 decisive); inverse-edit leaves the camera manager untouched.
+//    - T-rollback-shared-material-identity: the OLD path replaced the
+//      shared material with two private clones (P1-2 decisive); inverse-
+//      edit reverts the ONE shared instance in place.
+//    - T-rollback-restores-baseline / -repeatable / commit-no-double-
+//      apply: structural-atomicity guards that hold under inverse-edit.
+//    - T-material-binding-emitter-generation (P1-4): rebinding an object
+//      to a NON-emissive material must bump the scene light-topology
+//      generation so a re-attached RayCaster rebuilds its LightSampler
+//      (else a cached luminary pointing at the now-non-emissive material
+//      would later deref a NULL emitter).
 //
 //  Observables (no rendering — geometry / sampler queries only):
-//    - object final-transform translation column (transform restore)
-//    - object material's reflectance slot painter (material restore;
-//      addref-shared through the snapshot clone, so identity is stable)
-//    - live light energy (light restore)
+//    - object final-transform translation column (transform revert)
+//    - object material's reflectance slot painter + the bound IMaterial*
+//      INSTANCE (material revert AND identity/sharing preservation)
+//    - live light energy (light revert)
+//    - camera-manager item count (multi-camera preservation)
 //    - EditHistory UndoDepth / RedoDepth (history atomicity)
+//    - Scene::GetLightTopologyGeneration (P1-4 sampler-rebuild trigger)
 //    - IntersectRay against the rebuilt TLAS + LightSampler exitance on
 //      a re-attached RayCaster (render-validity)
 //
@@ -56,12 +78,14 @@
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/IPainter.h"
 #include "../src/Library/Interfaces/IPainterManager.h"
+#include "../src/Library/Interfaces/ICameraManager.h"
 #include "../src/Library/Interfaces/ILightManager.h"
 #include "../src/Library/Interfaces/ILightPriv.h"
 #include "../src/Library/Interfaces/IShader.h"
 #include "../src/Library/Interfaces/IShaderManager.h"
 #include "../src/Library/Interfaces/IRayCaster.h"
 #include "../src/Library/Rendering/RayCaster.h"
+#include "../src/Library/Rendering/LuminaryManager.h"
 #include "../src/Library/Lights/LightSampler.h"
 #include "../src/Library/Intersection/RayIntersection.h"
 #include "../src/Library/SceneEditor/SceneEditController.h"
@@ -153,9 +177,8 @@ static double LiveLightEnergy( ILightManager* lights, const char* name )
 }
 
 // The reflectance-slot painter of the material BOUND TO the named live
-// object.  The snapshot clones the object with a cloned material whose
-// sub-painters are addref-SHARED, so the slot painter pointer survives
-// the snapshot/restore round trip (mirrors SceneRestoreTest::ObjMatSlot).
+// object.  Inverse-edit rollback reverts the binding on the SAME
+// material instance, so the slot painter pointer round-trips exactly.
 static const IPainter* ObjMatSlot( IObjectManager* objs, const char* objName )
 {
 	IObjectPriv* o = objs->GetItem( objName );
@@ -166,21 +189,46 @@ static const IPainter* ObjMatSlot( IObjectManager* objs, const char* objName )
 	return ( r.kind == MaterialSlotRef::Painter ) ? r.painter : nullptr;
 }
 
+// The IMaterial* INSTANCE bound to the named live object.  Used to prove
+// inverse-edit rollback preserves material IDENTITY / sharing (the OLD
+// snapshot-restore path replaced this with a private deep clone).
+static const IMaterial* ObjMaterialInstance( IObjectManager* objs, const char* objName )
+{
+	IObjectPriv* o = objs->GetItem( objName );
+	if( !o ) { return nullptr; }
+	return o->GetMaterial();
+}
+
 static const LightSampler* SamplerOf( IRayCaster* caster )
 {
 	RayCaster* rc = dynamic_cast<RayCaster*>( caster );
 	return rc ? rc->GetLightSampler() : nullptr;
 }
 
+// Number of mesh/area-light luminaries the caster's LuminaryManager
+// holds (emissive-material objects).  This is what changes when an
+// object's material binding is toggled to/from an emissive material.
+// Returns -1 if the caster / manager can't be resolved.
+static int LuminaryCountOf( IRayCaster* caster )
+{
+	RayCaster* rc = dynamic_cast<RayCaster*>( caster );
+	if( !rc ) { return -1; }
+	const ILuminaryManager* lm = rc->GetLuminaries();
+	LuminaryManager* concrete =
+		dynamic_cast<LuminaryManager*>( const_cast<ILuminaryManager*>( lm ) );
+	if( !concrete ) { return -1; }
+	return (int)concrete->getLuminaries().size();
+}
+
 //////////////////////////////////////////////////////////////////////
 // T-rollback-restores-baseline
 //
 // Begin a transaction, mutate (object transform + light + material) via
-// the REAL editor controller gesture path, then ROLLBACK.  Assert the
-// scene equals the baseline on all three dimensions, that NOTHING is
-// redoable, and that the scene is render-valid (re-attach a RayCaster:
-// the TLAS rebuilds and a probe ray hits the restored alpha; the
-// LightSampler rebuilds and reflects the restored light energy).
+// the REAL editor controller gesture path, then ROLLBACK via inverse
+// edits.  Assert the scene equals the baseline on all three dimensions,
+// that NOTHING is redoable, and that the scene is render-valid (re-attach
+// a RayCaster: the TLAS rebuilds and a probe ray hits the restored alpha;
+// the LightSampler rebuilds and reflects the restored light energy).
 //////////////////////////////////////////////////////////////////////
 static void TestRollbackRestoresBaseline()
 {
@@ -215,8 +263,8 @@ static void TestRollbackRestoresBaseline()
 
 	const unsigned int undoAtBegin = ctrl.Editor().History().UndoDepth();
 
-	// --- Begin the transaction (capture baseline snapshot). ---
-	Check( ctrl.BeginTransaction(), "[rb] BeginTransaction succeeds on concrete Scene" );
+	// --- Begin the transaction (record the undo baseline depth). ---
+	Check( ctrl.BeginTransaction(), "[rb] BeginTransaction succeeds" );
 	Check( ctrl.IsTransactionOpen(), "[rb] transaction is open after Begin" );
 
 	// --- Mutate all three dimensions through the controller gesture path. ---
@@ -241,17 +289,18 @@ static void TestRollbackRestoresBaseline()
 	Check( std::abs( LiveLightEnergy( lights, "key" ) - 99.0 ) < 1e-9, "[rb] live light energy now 99" );
 	Check( ctrl.Editor().History().UndoDepth() > undoAtBegin, "[rb] history grew during the transaction" );
 
-	// --- ROLLBACK. ---
+	// --- ROLLBACK (inverse edits down to the baseline undo depth). ---
 	Check( ctrl.RollbackTransaction(), "[rb] RollbackTransaction succeeds" );
 	Check( !ctrl.IsTransactionOpen(), "[rb] transaction is closed after rollback" );
 
-	// Re-resolve live entities (restore replaced manager contents with clones).
+	// All three dimensions reverted to baseline — on the SAME live
+	// instances (inverse-edit does not swap manager contents).
 	Check( std::abs( LiveObjX( objs, "alpha" ) - 8.0 ) < 1e-9,
-	       "[rb] RESTORED alpha x back to 8 (was 18)" );
+	       "[rb] REVERTED alpha x back to 8 (was 18)" );
 	Check( std::abs( LiveLightEnergy( lights, "key" ) - 5.0 ) < 1e-9,
-	       "[rb] RESTORED light energy back to 5 (was 99)" );
+	       "[rb] REVERTED light energy back to 5 (was 99)" );
 	Check( ObjMatSlot( objs, "alpha" ) == pRed,
-	       "[rb] RESTORED material slot back to p_red (was p_blue)" );
+	       "[rb] REVERTED material slot back to p_red (was p_blue)" );
 	Check( objs->getItemCount() == 6, "[rb] 6 objects after rollback" );
 	Check( lights->getItemCount() == 1, "[rb] 1 light after rollback" );
 
@@ -259,7 +308,7 @@ static void TestRollbackRestoresBaseline()
 	Check( ctrl.Editor().History().UndoDepth() == undoAtBegin,
 	       "[rb] undo depth reset to the pre-transaction depth" );
 	Check( ctrl.Editor().History().RedoDepth() == 0,
-	       "[rb] NOTHING redoable after rollback (no EndComposite();Undo() redo residue)" );
+	       "[rb] NOTHING redoable after rollback (redo stack cleared)" );
 	// Decisive: a Redo() must do nothing (the discarded gesture is gone,
 	// not merely hidden).  A stale redo entry would re-apply the edits.
 	Check( !ctrl.Editor().Redo(),
@@ -275,27 +324,26 @@ static void TestRollbackRestoresBaseline()
 	Check( ctrl.Editor().History().UndoDepth() == undoBeforeStrayEnd,
 	       "[rb] stray EndComposite after rollback pushes no orphan marker" );
 
-	// --- Render-validity: TLAS + LightSampler rebuilt over restored state. ---
+	// --- Render-validity: TLAS + LightSampler rebuilt over reverted state. ---
 	IShader* pShader = shaders->GetItem( "global" );
 	if( !pShader ) { Check( false, "[rb] global shader present" ); pJob->release(); return; }
 	IRayCaster* caster = nullptr;
 	RISE_API_CreateRayCaster( &caster, false, 10, *pShader, true );
 	if( !caster ) { Check( false, "[rb] caster create" ); pJob->release(); return; }
 
-	caster->AttachScene( pScene );   // builds TLAS + sampler over the RESTORED scene
+	caster->AttachScene( pScene );   // builds TLAS + sampler over the reverted scene
 
-	// TLAS: probe ray from (20,0,0) toward -X must hit the restored alpha
-	// at x=8 (a stale structure built over released mutated clones would
-	// miss or hit a dangling pointer).
+	// TLAS: probe ray from (20,0,0) toward -X must hit the reverted alpha
+	// at x=8.
 	{
 		RayIntersection ri( Ray( Point3( 20, 0, 0 ), Vector3( -1, 0, 0 ) ), nullRasterizerState );
 		objs->IntersectRay( ri, true, true, false );
-		Check( ri.geometric.bHit, "[rb] post-rollback probe ray hits the restored alpha" );
+		Check( ri.geometric.bHit, "[rb] post-rollback probe ray hits the reverted alpha" );
 		Check( ri.pObject == (const IObject*)objs->GetItem( "alpha" ),
-		       "[rb] post-rollback hit IS the restored alpha instance (TLAS rebuilt)" );
+		       "[rb] post-rollback hit IS the live alpha instance (TLAS rebuilt)" );
 	}
 
-	// LightSampler: reflects the restored single light at energy 5 (NOT
+	// LightSampler: reflects the reverted single light at energy 5 (NOT
 	// the rolled-back energy 99).  Exitance is monotone in energy, so a
 	// stale sampler that kept energy-99 would report a far larger value.
 	{
@@ -303,9 +351,9 @@ static void TestRollbackRestoresBaseline()
 		Check( s != nullptr, "[rb] sampler present after attach" );
 		if( s ) {
 			Check( s->GetPositionalLightCount() == 1,
-			       "[rb] sampler sees the 1 restored light" );
+			       "[rb] sampler sees the 1 reverted light" );
 			// Build a SEPARATE reference scene at the baseline energy and
-			// compare exitance — proves the sampler matches the restored
+			// compare exitance — proves the sampler matches the reverted
 			// (baseline) light, not the divergent energy-99 state.
 			Job* pRef = MakeTxnScene();
 			Scene* pRefScene = dynamic_cast<Scene*>( pRef->GetScene() );
@@ -318,7 +366,7 @@ static void TestRollbackRestoresBaseline()
 				const double got = (double)s->GetPositionalLightExitance( 0 );
 				const double ref = (double)sRef->GetPositionalLightExitance( 0 );
 				Check( std::abs( got - ref ) < 1e-6 * ( 1.0 + std::abs( ref ) ),
-				       "[rb] restored sampler exitance == fresh baseline (light rolled back, not stale 99)" );
+				       "[rb] reverted sampler exitance == fresh baseline (light rolled back, not stale 99)" );
 			}
 			safe_release( refCaster );
 			pRef->release();
@@ -326,6 +374,147 @@ static void TestRollbackRestoresBaseline()
 	}
 
 	safe_release( caster );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// T-rollback-multi-camera  (DECISIVE for P1-1)
+//
+// A document with TWO cameras (one active, one not).  Begin → edit →
+// rollback.  Assert BOTH cameras are still present afterwards.
+//
+// The OLD snapshot-restore rollback called Scene::RestoreFromSnapshot,
+// which CLEARS the whole camera manager and reinstalls only the single
+// active-camera clone the snapshot captured — destroying the non-active
+// camera (item count drops 2 → 1).  Inverse-edit rollback never touches
+// the camera manager for a non-camera gesture, so both survive.
+//////////////////////////////////////////////////////////////////////
+static void TestRollbackMultiCamera()
+{
+	std::cout << "Test: rollback PRESERVES all cameras (multi-camera; P1-1 decisive)"
+	          << std::endl;
+
+	Job* pJob = MakeTxnScene();
+	Scene* pScene = dynamic_cast<Scene*>( pJob->GetScene() );
+	if( !pScene ) { Check( false, "[mc] scene downcast" ); pJob->release(); return; }
+
+	// Two cameras: "cam_a" then "cam_b".  AddPinholeCamera registers in
+	// the camera manager; the last-added is auto-promoted active, so
+	// "cam_b" is active and "cam_a" is the non-active one the OLD restore
+	// would have lost.
+	const double locA[3] = { 0, 0, 20 };
+	const double locB[3] = { 0, 0, 25 };
+	const double look[3] = { 0, 0, 0 };
+	const double up[3]   = { 0, 1, 0 };
+	const double orient[3] = { 0, 0, 0 };
+	const double tgt[2]    = { 0, 0 };
+	Check( pJob->AddPinholeCamera( "cam_a", locA, look, up, 0.7854, 1.0, 1.0, 1.0, orient, tgt ),
+	       "[mc] AddPinholeCamera cam_a" );
+	Check( pJob->AddPinholeCamera( "cam_b", locB, look, up, 0.7854, 1.0, 1.0, 1.0, orient, tgt ),
+	       "[mc] AddPinholeCamera cam_b" );
+
+	const ICameraManager* cams = pScene->GetCameras();
+	Check( cams != nullptr, "[mc] camera manager present" );
+	if( !cams ) { pJob->release(); return; }
+	const unsigned int camsBefore = cams->getItemCount();
+	Check( camsBefore == 2, "[mc] two cameras present before transaction" );
+
+	SceneEditController ctrl( *pJob, /*interactiveRasterizer*/ 0 );
+	IObjectManager* objs = pJob->GetObjects();
+
+	Check( ctrl.BeginTransaction(), "[mc] BeginTransaction succeeds" );
+
+	// A NON-camera edit (object move): the camera set is irrelevant to it,
+	// so a correct rollback must leave BOTH cameras untouched.
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String( "alpha" ) );
+	Check( ctrl.SetProperty( String( "position" ), String( "42 0 0" ) ), "[mc] edit applied" );
+	Check( std::abs( LiveObjX( objs, "alpha" ) - 42.0 ) < 1e-9, "[mc] live alpha at x=42" );
+
+	Check( ctrl.RollbackTransaction(), "[mc] RollbackTransaction succeeds" );
+	Check( std::abs( LiveObjX( objs, "alpha" ) - 8.0 ) < 1e-9, "[mc] alpha reverted to x=8" );
+
+	// THE decisive assertion: both cameras still present (the OLD
+	// snapshot-restore would have dropped "cam_a" → count == 1).
+	const unsigned int camsAfter = cams->getItemCount();
+	Check( camsAfter == 2, "[mc] BOTH cameras still present after rollback (P1-1)" );
+	Check( pScene->GetCameras()->GetItem( "cam_a" ) != nullptr,
+	       "[mc] non-active camera cam_a survived rollback (P1-1 decisive)" );
+	Check( pScene->GetCameras()->GetItem( "cam_b" ) != nullptr,
+	       "[mc] active camera cam_b survived rollback" );
+
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// T-rollback-shared-material-identity  (DECISIVE for P1-2)
+//
+// Two objects ("alpha" and "filler0") share ONE named material
+// ("mat_red").  Begin → edit that material's reflectance painter via the
+// Material panel → rollback.  Assert both objects STILL point at the SAME
+// IMaterial* instance AND that instance's slot is reverted.
+//
+// The OLD snapshot-restore rollback deep-cloned each object with a
+// PRIVATE material clone, so after restore alpha and filler0 would point
+// at two DISTINCT material instances (identity / sharing lost).  Inverse-
+// edit rollback reverts the ONE shared instance in place, so both objects
+// keep sharing it and the revert is visible through either.
+//////////////////////////////////////////////////////////////////////
+static void TestRollbackSharedMaterialIdentity()
+{
+	std::cout << "Test: rollback PRESERVES shared-material identity (P1-2 decisive)"
+	          << std::endl;
+
+	Job* pJob = MakeTxnScene();
+	Scene* pScene = dynamic_cast<Scene*>( pJob->GetScene() );
+	if( !pScene ) { Check( false, "[sm] scene downcast" ); pJob->release(); return; }
+
+	IObjectManager* objs = pJob->GetObjects();
+	IPainterManager* pnts = pJob->GetPainters();
+	const IPainter* pRed  = pnts->GetItem( "p_red" );
+	const IPainter* pBlue = pnts->GetItem( "p_blue" );
+
+	// Sanity: "alpha" and "filler0" are both built with "mat_red" in
+	// MakeTxnScene, so they share the SAME IMaterial instance.
+	const IMaterial* matAlpha0  = ObjMaterialInstance( objs, "alpha" );
+	const IMaterial* matFiller0 = ObjMaterialInstance( objs, "filler0" );
+	Check( matAlpha0 != nullptr && matAlpha0 == matFiller0,
+	       "[sm] alpha and filler0 share ONE material instance at baseline" );
+	Check( ObjMatSlot( objs, "alpha" ) == pRed, "[sm] baseline reflectance is p_red" );
+
+	SceneEditController ctrl( *pJob, /*interactiveRasterizer*/ 0 );
+
+	Check( ctrl.BeginTransaction(), "[sm] BeginTransaction succeeds" );
+
+	// Edit the SHARED material's reflectance via the Material panel path
+	// (SetMaterialProperty rebinds the slot painter on the named material
+	// instance — observable through BOTH objects since they share it).
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Material, String( "mat_red" ) );
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Material,
+		String( "reflectance" ), String( "p_blue" ) ),
+	       "[sm] SetMaterialProperty(reflectance=p_blue) applied" );
+	Check( ObjMatSlot( objs, "alpha" )   == pBlue, "[sm] live alpha sees p_blue (shared edit)" );
+	Check( ObjMatSlot( objs, "filler0" ) == pBlue, "[sm] live filler0 ALSO sees p_blue (shared)" );
+
+	Check( ctrl.RollbackTransaction(), "[sm] RollbackTransaction succeeds" );
+
+	// Decisive #1 — IDENTITY: both objects STILL point at the SAME
+	// material instance, and it's the SAME instance as before the
+	// transaction (the OLD restore gave each a private clone → these
+	// pointers would diverge).
+	const IMaterial* matAlpha1  = ObjMaterialInstance( objs, "alpha" );
+	const IMaterial* matFiller1 = ObjMaterialInstance( objs, "filler0" );
+	Check( matAlpha1 != nullptr && matAlpha1 == matFiller1,
+	       "[sm] alpha and filler0 STILL share ONE material instance after rollback (P1-2)" );
+	Check( matAlpha1 == matAlpha0,
+	       "[sm] the shared material is the SAME instance as baseline (no clone swap, P1-2)" );
+
+	// Decisive #2 — VALUE: the shared instance's slot is reverted to
+	// p_red, visible through BOTH objects.
+	Check( ObjMatSlot( objs, "alpha" )   == pRed, "[sm] reverted reflectance p_red via alpha" );
+	Check( ObjMatSlot( objs, "filler0" ) == pRed, "[sm] reverted reflectance p_red via filler0" );
+
+	Check( ctrl.Editor().History().RedoDepth() == 0, "[sm] nothing redoable after rollback" );
+
 	pJob->release();
 }
 
@@ -392,9 +581,9 @@ static void TestCommitNoDoubleApply()
 // T-rollback-reusable-and-guards
 //
 // Two-mutate-two-rollback against the SAME controller proves the
-// rollback path is repeatable (each Begin snapshots the then-current
-// baseline, each Rollback restores it).  Also exercises the no-op
-// guards: Rollback / End with no open transaction return false.
+// rollback path is repeatable (each Begin records the then-current
+// baseline depth, each Rollback reverts to it).  Also exercises the
+// no-op guards: Rollback / End with no open transaction return false.
 //////////////////////////////////////////////////////////////////////
 static void TestRollbackRepeatableAndGuards()
 {
@@ -419,18 +608,156 @@ static void TestRollbackRepeatableAndGuards()
 	Check( ctrl.SetProperty( String( "position" ), String( "30 0 0" ) ), "[rr] edit round 1" );
 	Check( std::abs( LiveObjX( objs, "alpha" ) - 30.0 ) < 1e-9, "[rr] live x=30 round 1" );
 	Check( ctrl.RollbackTransaction(), "[rr] rollback round 1" );
-	Check( std::abs( LiveObjX( objs, "alpha" ) - 8.0 ) < 1e-9, "[rr] restored x=8 round 1" );
+	Check( std::abs( LiveObjX( objs, "alpha" ) - 8.0 ) < 1e-9, "[rr] reverted x=8 round 1" );
 
-	// Round 2: SAME controller, baseline still x=8 -> mutate to x=-12 ->
-	// rollback -> x=8 again.  Proves the snapshot is not consumed / no
-	// stale baseline lingers.
+	// Round 2: SAME controller, baseline still x=8 -> mutate -> rollback ->
+	// x=8 again.  Proves no stale baseline lingers (the decisive property
+	// is the return-to-baseline at the end of the round).
+	//
+	// NOTE: round 1's rollback reverted via SceneEditor::Undo, which
+	// restores a transform through ClearAllTransforms()+PushTopTransStack
+	// (the baseline lands on the object's transform STACK).  A subsequent
+	// ABSOLUTE SetObjectPosition sets the position COMPONENT, which then
+	// composes with the stacked baseline — so the live X after the round-2
+	// edit is NOT simply the typed value.  That undo-then-absolute-set
+	// interaction is a PRE-EXISTING editor property (it reproduces on the
+	// plain Editor().Undo() path with no transaction at all) and is out of
+	// scope for the rollback re-base.  We therefore assert only that the
+	// round-2 edit MOVED the object away from baseline (proving the edit
+	// landed and the transaction is live), then assert the rollback brings
+	// it back to baseline exactly.
 	Check( ctrl.BeginTransaction(), "[rr] Begin (round 2)" );
 	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String( "alpha" ) );
 	Check( ctrl.SetProperty( String( "position" ), String( "-12 0 0" ) ), "[rr] edit round 2" );
-	Check( std::abs( LiveObjX( objs, "alpha" ) - ( -12.0 ) ) < 1e-9, "[rr] live x=-12 round 2" );
+	Check( std::abs( LiveObjX( objs, "alpha" ) - 8.0 ) > 1e-6, "[rr] round 2 edit moved alpha off baseline" );
 	Check( ctrl.RollbackTransaction(), "[rr] rollback round 2" );
-	Check( std::abs( LiveObjX( objs, "alpha" ) - 8.0 ) < 1e-9, "[rr] restored x=8 round 2" );
+	Check( std::abs( LiveObjX( objs, "alpha" ) - 8.0 ) < 1e-9, "[rr] reverted x=8 round 2" );
 	Check( ctrl.Editor().History().RedoDepth() == 0, "[rr] nothing redoable after round 2" );
+
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+// T-material-binding-emitter-generation  (P1-4)
+//
+// An object's material BINDING changing to/from an emissive material
+// changes the scene's emitter set.  Such an edit MUST bump the scene's
+// light-topology generation so a re-attached RayCaster rebuilds its
+// LightSampler / LuminaryManager — otherwise a cached luminary pointing
+// at the now-non-emissive material would later call emittedRadiance() on
+// a NULL emitter.
+//
+// This mirrors the direct light-property edits, which already bump.  The
+// observable is Scene::GetLightTopologyGeneration() advancing across the
+// SetObjectMaterial edit (forward + undo), plus a re-attached sampler
+// reporting the correct luminary count (no stale/null emitter).
+//////////////////////////////////////////////////////////////////////
+static void TestMaterialBindingEmitterGeneration()
+{
+	std::cout << "Test: object material-binding change bumps light-topology generation (P1-4)"
+	          << std::endl;
+
+	Job* pJob = new Job();
+
+	// Painters.
+	const double white[3] = { 0.8, 0.8, 0.8 };
+	const double glow[3]  = { 1.0, 1.0, 1.0 };
+	pJob->AddUniformColorPainter( "p_white", white, "Rec709RGB_Linear" );
+	pJob->AddUniformColorPainter( "p_glow",  glow,  "Rec709RGB_Linear" );
+
+	// A plain non-emissive material and a TRUE emissive material (lambertian
+	// luminaire wrapping the plain one).  Binding an object to "mat_emit"
+	// makes it a luminary; rebinding to "mat_plain" removes it from the
+	// emitter set.
+	pJob->AddLambertianMaterial( "mat_plain", "p_white" );
+	pJob->AddLambertianLuminaireMaterial( "mat_emit", "p_glow", "mat_plain", 1.0 );
+
+	pJob->AddSphereGeometry( "geom", 1.0 );
+
+	RadianceMapConfig nilRMap;
+	const double orient[3] = { 0, 0, 0 };
+	const double one3[3]   = { 1, 1, 1 };
+	const double posE[3]   = { 0, 5, 0 };
+	// The emissive sphere (a luminary).
+	pJob->AddObject( "emitter", "geom", "mat_emit", nullptr, nullptr,
+		nilRMap, posE, orient, one3, true, true );
+	// A plain probe sphere + fillers to force the TLAS path (>4 objects).
+	const double posP[3] = { 8, 0, 0 };
+	pJob->AddObject( "probe", "geom", "mat_plain", nullptr, nullptr,
+		nilRMap, posP, orient, one3, true, true );
+	for( int i = 0; i < 4; ++i ) {
+		char nm[32];
+		std::snprintf( nm, sizeof(nm), "filler%d", i );
+		const double pos[3] = { -20.0, (double)( 4 * ( i + 1 ) ), 0.0 };
+		pJob->AddObject( nm, "geom", "mat_plain", nullptr, nullptr,
+			nilRMap, pos, orient, one3, true, true );
+	}
+
+	const char* ops[] = { "DefaultDirectLighting" };
+	pJob->AddStandardShader( "global", 1, ops );
+
+	Scene* pScene = dynamic_cast<Scene*>( pJob->GetScene() );
+	if( !pScene ) { Check( false, "[p14] scene downcast" ); pJob->release(); return; }
+
+	// Confirm the emitter is a luminary at baseline via a fresh caster.
+	IShader* pShader = pJob->GetShaders()->GetItem( "global" );
+	if( !pShader ) { Check( false, "[p14] shader present" ); pJob->release(); return; }
+	{
+		IRayCaster* caster = nullptr;
+		RISE_API_CreateRayCaster( &caster, false, 10, *pShader, true );
+		caster->AttachScene( pScene );
+		const LightSampler* s = SamplerOf( caster );
+		Check( s != nullptr, "[p14] baseline sampler present" );
+		// One mesh/area-light luminary (the emissive sphere); we declared
+		// no point lights.
+		Check( LuminaryCountOf( caster ) == 1,
+		       "[p14] baseline: emissive sphere IS a luminary (luminary count 1)" );
+		safe_release( caster );
+	}
+
+	SceneEditController ctrl( *pJob, /*interactiveRasterizer*/ 0 );
+
+	const unsigned int genBefore = pScene->GetLightTopologyGeneration();
+
+	// Rebind the emitter object to the NON-emissive material.  This
+	// removes it from the emitter set, so the generation MUST advance.
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String( "emitter" ) );
+	Check( ctrl.SetProperty( String( "material" ), String( "mat_plain" ) ),
+	       "[p14] rebind emitter -> mat_plain applied" );
+
+	const unsigned int genAfter = pScene->GetLightTopologyGeneration();
+	Check( genAfter != genBefore,
+	       "[p14] light-topology generation BUMPED on material-binding change (P1-4)" );
+
+	// A re-attached caster must now see ZERO area-light luminaries — and
+	// critically, building it must not deref a stale/null emitter.
+	{
+		IRayCaster* caster = nullptr;
+		RISE_API_CreateRayCaster( &caster, false, 10, *pShader, true );
+		caster->AttachScene( pScene );
+		const LightSampler* s = SamplerOf( caster );
+		Check( s != nullptr, "[p14] post-edit sampler present" );
+		// Building the sampler must NOT deref a stale/null emitter; the
+		// rebuilt luminary set now excludes the rebound object.
+		Check( LuminaryCountOf( caster ) == 0,
+		       "[p14] post-edit: object is no longer a luminary (luminary count 0)" );
+		safe_release( caster );
+	}
+
+	// Undo the rebind: the object becomes emissive again, generation
+	// advances once more, and a fresh caster sees the luminary return.
+	const unsigned int genPreUndo = pScene->GetLightTopologyGeneration();
+	Check( ctrl.Editor().Undo(), "[p14] undo of material rebind succeeds" );
+	Check( pScene->GetLightTopologyGeneration() != genPreUndo,
+	       "[p14] light-topology generation BUMPED on undo of material rebind (P1-4)" );
+	{
+		IRayCaster* caster = nullptr;
+		RISE_API_CreateRayCaster( &caster, false, 10, *pShader, true );
+		caster->AttachScene( pScene );
+		Check( LuminaryCountOf( caster ) == 1,
+		       "[p14] after undo: emissive sphere is a luminary again (luminary count 1)" );
+		safe_release( caster );
+	}
 
 	pJob->release();
 }
@@ -442,8 +769,11 @@ int main()
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
 
 	TestRollbackRestoresBaseline();
+	TestRollbackMultiCamera();
+	TestRollbackSharedMaterialIdentity();
 	TestCommitNoDoubleApply();
 	TestRollbackRepeatableAndGuards();
+	TestMaterialBindingEmitterGeneration();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."

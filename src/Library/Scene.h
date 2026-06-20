@@ -36,6 +36,16 @@ namespace RISE
 		class CameraCommon;    // active-camera pose capture
 		struct CameraPoseSnapshot;
 
+		//! ⚠ EXPERIMENTAL — NOT production-safe.  Built/consumed only by
+		//! Scene::CreateSnapshot / RestoreFromSnapshot (and SnapshotLeafClone),
+		//! which are themselves experimental: the deep-clone snapshot/restore
+		//! path is NOT used by the editor's transactional rollback (re-based
+		//! onto identity-safe inverse-edit undo) and carries the §13a P1
+		//! register defects (P1-1 multi-camera loss, P1-2 lost identity/
+		//! sharing, P1-3 film/SetFilm, P1-5 absence/failure, SSS deep-clone
+		//! race — see the full list on Scene::CreateSnapshot below).
+		//! Retained only for a FUTURE isolated render-off-a-snapshot use.
+		//!
 		//! feature/gui-snapshot-prototype: a genuinely immutable,
 		//! RENDER-FAITHFUL snapshot of the scene's render-read state,
 		//! taken while the live scene keeps being mutated in place by the
@@ -329,12 +339,47 @@ namespace RISE
 			void		ResizeFilm( unsigned int width, unsigned int height, Scalar pixelAR );
 			void		SetObjectManager( const IObjectManager* pObjectManager_ );
 
-			//! SPIKE (feature/gui-snapshot-prototype): take a genuinely
-			//! immutable snapshot of the scene's mutable wrapper state.
-			//! Caller owns the returned SceneSnapshot (release() it).
-			//! See SceneSnapshot above for the design rationale.
+			//! ⚠ EXPERIMENTAL — NOT production-safe.  Take a deep-clone
+			//! snapshot of the scene's mutable wrapper state.  Caller owns
+			//! the returned SceneSnapshot (release() it).  See SceneSnapshot
+			//! above for the design rationale.
+			//!
+			//! This primitive is NO LONGER used by the editor's transactional
+			//! rollback — that path was re-based onto identity-safe, clone-
+			//! free INVERSE-EDIT undo (see
+			//! SceneEditController::RollbackTransaction).  It is retained ONLY
+			//! for a FUTURE isolated render-off-a-snapshot use, and MUST be
+			//! made identity-preserving first.  A 5th code-backed review
+			//! found the following P1 defects (the §13a P1 register) that
+			//! make CreateSnapshot/RestoreFromSnapshot unsafe as a live-scene
+			//! rollback mechanism:
+			//!   • P1-1 multi-camera loss — RestoreFromSnapshot clears the
+			//!          WHOLE camera manager and reinstalls only the single
+			//!          active-camera clone, destroying every other camera.
+			//!   • P1-2 lost identity / sharing — each object is deep-cloned
+			//!          with a PRIVATE material clone; two objects that shared
+			//!          one named material end up with two distinct instances
+			//!          (CSG operands are double-cloned).
+			//!   • P1-3 film — a snapshot/restore can fight Job::SetFilm,
+			//!          which reallocates the frame store.
+			//!   • P1-5 cannot represent absence/failure — env/medium are not
+			//!          clearable, AddItem failures are ignored, and restore
+			//!          always "succeeds".
+			//!   • SSS deep-clone race — interior-medium / SSS leaves are
+			//!          addref-shared, not cloned (SnapshotLeafClone.h).
+			//! Do NOT wire this back into a rollback / live-edit path.
 			SceneSnapshot* CreateSnapshot() const;
 
+			//! ⚠ EXPERIMENTAL — NOT production-safe; NOT used by the editor's
+			//! transactional rollback (that path is now inverse-edit based —
+			//! see SceneEditController::RollbackTransaction).  Retained only
+			//! for a FUTURE isolated render-off-a-snapshot use, and carries
+			//! the §13a P1 register defects enumerated on CreateSnapshot
+			//! above (P1-1 multi-camera loss, P1-2 lost identity/sharing,
+			//! P1-3 film / SetFilm, P1-5 absence/failure, SSS deep-clone
+			//! race).  Do NOT wire this back into a rollback / live-edit path
+			//! until it is made identity-preserving.
+			//!
 			//! feature/gui-snapshot-prototype, increment 2a: the
 			//! restore / publish primitive.  Makes the LIVE scene's
 			//! render-read state equal `snap`'s — installs FRESH clones

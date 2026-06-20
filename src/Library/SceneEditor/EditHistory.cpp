@@ -83,6 +83,11 @@ void EditHistory::DiscardUndoTo( unsigned int targetDepth )
 	mRedoStack.clear();
 }
 
+void EditHistory::ClearRedo()
+{
+	mRedoStack.clear();
+}
+
 void EditHistory::Clear()
 {
 	mUndoStack.clear();

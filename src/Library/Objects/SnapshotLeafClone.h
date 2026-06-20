@@ -2,6 +2,18 @@
 //
 //  SnapshotLeafClone.h - Snapshot-time clone of a material "leaf".
 //
+//  ⚠ EXPERIMENTAL — NOT production-safe.  This helper backs
+//  Object::CloneSnapshot / CSGObject::CloneSnapshot, which are reached ONLY
+//  from Scene::CreateSnapshot / RestoreFromSnapshot — themselves
+//  experimental and NO LONGER used by the editor's transactional rollback
+//  (that path was re-based onto identity-safe, clone-free inverse-edit
+//  undo; see SceneEditController::RollbackTransaction).  The deep-clone
+//  snapshot/restore carries the §13a P1 register defects (multi-camera
+//  loss, lost identity/sharing — exactly the per-object PRIVATE material
+//  clone this file produces, film/SetFilm, absence/failure, SSS deep-clone
+//  race; see Scene::CreateSnapshot in Scene.h).  Retained for a FUTURE
+//  isolated render-off-a-snapshot use only.
+//
 //  feature/gui-snapshot-prototype, increment A (immutability
 //  correctness).  Backs Object::CloneSnapshot / CSGObject::CloneSnapshot.
 //

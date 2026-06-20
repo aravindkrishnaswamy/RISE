@@ -213,6 +213,22 @@ namespace RISE
 		//! engine-side counterpart of Scene::RestoreFromSnapshot's own bump.
 		void BumpSceneLightGeneration();
 
+		//! Bump the live Scene's light-topology generation iff a material-
+		//! BINDING change affects the emitter set — i.e. either the old or
+		//! the new material is emissive (`IMaterial::GetEmitter() != null`).
+		//! A `SetObjectMaterial` edit that binds an object to/from (or
+		//! between) emissive materials changes which objects the
+		//! LuminaryManager treats as area lights, so a reused RayCaster
+		//! must rebuild its LightSampler — otherwise a cached luminary
+		//! pointing at a now-non-emissive material would later deref a NULL
+		//! emitter (the in-place light-edit path already bumps; this is the
+		//! object-material-binding counterpart).  No-op when neither
+		//! material is emissive (a plain reflectance-only swap leaves the
+		//! emitter set unchanged).  Either pointer may be null (a missing /
+		//! unresolved material is treated as non-emissive).
+		void BumpSceneLightGenerationIfEmitterSetChanged(
+			const class IMaterial* prevMat, const class IMaterial* newMat );
+
 		IScenePriv&  mScene;
 		class IMaterialManager*       mMaterialManager;       // borrowed; nullable
 		class IShaderManager*         mShaderManager;         // borrowed; nullable

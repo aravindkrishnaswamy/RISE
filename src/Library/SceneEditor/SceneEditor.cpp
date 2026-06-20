@@ -70,6 +70,25 @@ void SceneEditor::BumpSceneLightGeneration()
 	}
 }
 
+void SceneEditor::BumpSceneLightGenerationIfEmitterSetChanged(
+	const IMaterial* prevMat, const IMaterial* newMat )
+{
+	// The emitter set changes iff at least one of the two bindings is
+	// emissive: emissive->anything REMOVES (or replaces) a luminary;
+	// anything->emissive ADDS one; emissive->emissive changes its
+	// exitance.  A non-emissive->non-emissive swap (the common
+	// reflectance-only rebind) leaves the luminary set identical, so we
+	// skip the bump and its sampler rebuild.  GetEmitter() is null for a
+	// non-emissive material; a null material pointer is treated as
+	// non-emissive (defensive).
+	const bool prevEmits = ( prevMat && prevMat->GetEmitter() );
+	const bool newEmits  = ( newMat  && newMat->GetEmitter()  );
+	if( prevEmits || newEmits )
+	{
+		BumpSceneLightGeneration();
+	}
+}
+
 SceneEditor::SceneEditor( IScenePriv& scene )
 : mScene( scene )
 , mMaterialManager( 0 )
@@ -719,7 +738,18 @@ void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 	case SceneEdit::SetObjectMaterial:
 		if( mMaterialManager ) {
 			IMaterial* mat = mMaterialManager->GetItem( edit.propertyValue.c_str() );
-			if( mat ) obj.AssignMaterial( *mat );
+			if( mat ) {
+				// P1-4: capture the PRIOR binding before the swap so we can
+				// detect an emitter-set change and bump the light-topology
+				// generation (a reused RayCaster then rebuilds its
+				// LightSampler — else a cached luminary on a now-non-
+				// emissive material would deref a NULL emitter).  Covers
+				// the forward Apply AND both Redo paths (composite + single)
+				// since they all route material binds through here.
+				const IMaterial* prevMat = obj.GetMaterial();
+				obj.AssignMaterial( *mat );
+				BumpSceneLightGenerationIfEmitterSetChanged( prevMat, mat );
+			}
 		}
 		break;
 	case SceneEdit::SetObjectShader:
@@ -1348,7 +1378,13 @@ bool SceneEditor::Undo()
 					case SceneEdit::SetObjectMaterial:
 						if( mMaterialManager && inner.prevPropertyValue.size() > 1 ) {
 							IMaterial* mat = mMaterialManager->GetItem( inner.prevPropertyValue.c_str() );
-							if( mat ) obj->AssignMaterial( *mat );
+							if( mat ) {
+								// P1-4: undo of a material rebind also changes
+								// the emitter set when either side is emissive.
+								const IMaterial* prevMat = obj->GetMaterial();
+								obj->AssignMaterial( *mat );
+								BumpSceneLightGenerationIfEmitterSetChanged( prevMat, mat );
+							}
 						}
 						break;
 					case SceneEdit::SetObjectShader:
@@ -1502,7 +1538,14 @@ bool SceneEditor::Undo()
 		case SceneEdit::SetObjectMaterial:
 			if( mMaterialManager && edit.prevPropertyValue.size() > 1 ) {
 				IMaterial* mat = mMaterialManager->GetItem( edit.prevPropertyValue.c_str() );
-				if( mat ) obj->AssignMaterial( *mat );
+				if( mat ) {
+					// P1-4: undo of a material rebind changes the emitter
+					// set when either side is emissive — bump so a reused
+					// RayCaster rebuilds its LightSampler.
+					const IMaterial* prevMat = obj->GetMaterial();
+					obj->AssignMaterial( *mat );
+					BumpSceneLightGenerationIfEmitterSetChanged( prevMat, mat );
+				}
 			}
 			break;
 		case SceneEdit::SetObjectShader:

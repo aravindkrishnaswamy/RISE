@@ -58,6 +58,18 @@ namespace RISE
 		//! redo stack (a rollback always wants a clean redo stack).
 		void DiscardUndoTo( unsigned int targetDepth );
 
+		//! Discard the redo stack ONLY, leaving the undo stack and the
+		//! dirty-object set untouched.  The transactional rollback uses
+		//! this AFTER it has reverted live state by applying the inverse
+		//! edits (via SceneEditor::Undo, which moves each reverted record
+		//! onto the redo stack): a rolled-back gesture must NOT be
+		//! redoable, so the redo residue those inverse-applies left behind
+		//! is dropped.  Distinct from `DiscardUndoTo` (which ALSO trims the
+		//! undo stack) — by the time rollback calls this, the undo stack is
+		//! already back at the transaction baseline depth, so only the redo
+		//! stack needs clearing.  No-op when the redo stack is empty.
+		void ClearRedo();
+
 		//! Drop everything.
 		void Clear();
 
