@@ -29,6 +29,7 @@
 #include "Interfaces/IMedium.h"			// snapshot medium capture
 #include "Interfaces/IRadianceMap.h"	// snapshot environment capture
 #include "Objects/SnapshotLeafClone.h"	// CloneLight/Medium/CameraForSnapshot
+#include <cstdio>						// snprintf for synthesized restore names
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1137,5 +1138,245 @@ SceneSnapshot* Scene::CreateSnapshot() const
 	}
 
 	return pSnap;
+}
+
+//////////////////////////////////////////////////////////////////////
+//
+// feature/gui-snapshot-prototype, increment 2a: restore / publish.
+//
+// Swap a snapshot's render-read state back INTO the live scene and
+// leave it render-valid.  CLONE-ON-RESTORE — the snapshot is reusable
+// for repeated rollback.  See Scene.h for the full contract +
+// concurrency note.
+//
+//////////////////////////////////////////////////////////////////////
+
+namespace {
+	// Collect every name a manager currently holds.  Used to clear the
+	// live object / light / camera managers before re-installing the
+	// snapshot's clones (we can't RemoveItem while EnumerateItemNames
+	// iterates the underlying std::map, so snapshot the names first).
+	struct CollectNamesCb : public RISE::IEnumCallback<const char*> {
+		std::vector<RISE::String> names;
+		bool operator()( const char* const& name ) override {
+			names.push_back( RISE::String( name ) );
+			return true;
+		}
+	};
+}
+
+void Scene::RestoreFromSnapshot( const SceneSnapshot& snap )
+{
+	// ----------------------------------------------------------------
+	// (1) OBJECTS — clear the live object manager, then install a FRESH
+	//     clone of every snapshot object.  Object::CloneSnapshot() is
+	//     virtual (CSGObject overrides it), so polymorphic types survive
+	//     the round-trip.  Each clone is born with refcount 1; AddItem
+	//     addrefs, so we release our build reference afterward.
+	// ----------------------------------------------------------------
+	if( pObjectManager ) {
+		// IObjectManager is held const in Scene; AddItem / RemoveItem /
+		// EnumerateItemNames are non-const on IManager.  The cast is
+		// contained here, mirroring GetGlobalRadianceMapMutable()'s
+		// documented pattern — the manager is mutated only between
+		// renders under the caller's cancel-and-park.
+		IObjectManager* objMgr = const_cast<IObjectManager*>( pObjectManager );
+
+		CollectNamesCb live;
+		objMgr->EnumerateItemNames( live );
+		for( size_t i = 0; i < live.names.size(); ++i ) {
+			objMgr->RemoveItem( live.names[i].c_str() );
+		}
+
+		for( size_t i = 0; i < snap.GetObjectCount(); ++i ) {
+			const Object* src = snap.GetClonedObject( i );
+			if( !src ) { continue; }
+			// CloneSnapshot is const + virtual; the const source yields a
+			// fresh, independent, non-const clone.
+			Object* clone = src->CloneSnapshot();
+			String  name  = snap.GetObjectName( i );
+			if( name.size() <= 1 ) {
+				// Degenerate / unnamed (shouldn't happen for captured
+				// objects, but keep the manager key unique).
+				char buf[40];
+				std::snprintf( buf, sizeof(buf), "__restored_obj_%zu", i );
+				name = String( buf );
+			}
+			objMgr->AddItem( clone, name.c_str() );
+			safe_release( clone );
+		}
+	}
+
+	// ----------------------------------------------------------------
+	// (2) LIGHTS — clear the live light manager, then install a fresh
+	//     clone of every snapshot light.  RemoveItem / AddItem are
+	//     VIRTUAL: LightManager overrides them to keep its cachedLights
+	//     list (returned by getLights()) in sync, so clearing name-by-
+	//     name + re-adding leaves the cache correct (a plain Shutdown()
+	//     would NOT — it clears items but not cachedLights).
+	//
+	//     The snapshot does not capture per-light names (capture stored
+	//     String()), so synthesize unique manager keys; light identity
+	//     for rendering is the instance + its emission, not the name.
+	// ----------------------------------------------------------------
+	if( pLightManager ) {
+		ILightManager* lightMgr = const_cast<ILightManager*>( pLightManager );
+
+		CollectNamesCb live;
+		lightMgr->EnumerateItemNames( live );
+		for( size_t i = 0; i < live.names.size(); ++i ) {
+			lightMgr->RemoveItem( live.names[i].c_str() );
+		}
+
+		for( size_t i = 0; i < snap.GetLightCount(); ++i ) {
+			const ILight* src = snap.GetLight( i );
+			if( !src ) { continue; }
+			// Re-clone through the same dispatcher the snapshot used at
+			// capture (dynamic_cast on the concrete type) — yields a
+			// fresh, independent clone, so the snapshot is not consumed.
+			const ILight* cloneL = Implementation::CloneLightForSnapshot( src );
+			if( !cloneL ) { continue; }
+			// The built-in clones are concrete ILightPriv subtypes; the
+			// manager stores ILightPriv*.  An unknown out-of-tree type
+			// that fell back to addref MIGHT not be ILightPriv — skip it
+			// rather than crash (documented residual).
+			ILightPriv* clonePriv =
+				dynamic_cast<ILightPriv*>( const_cast<ILight*>( cloneL ) );
+			if( clonePriv ) {
+				char buf[40];
+				std::snprintf( buf, sizeof(buf), "__restored_light_%zu", i );
+				lightMgr->AddItem( clonePriv, buf );
+			} else {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"Scene::RestoreFromSnapshot:: light %zu is not an ILightPriv (unknown out-of-tree type); skipped", i );
+			}
+			safe_release( cloneL );
+		}
+	}
+
+	// ----------------------------------------------------------------
+	// (3) ACTIVE CAMERA — clear the camera manager and install a fresh
+	//     clone of the snapshot's active camera under its original name.
+	//     CloneCameraForSnapshot rebuilds the concrete camera with ALL
+	//     params (re-cloning the snapshot's clone, so the snapshot is
+	//     not consumed).
+	//
+	//     HONEST: an ONB / unknown active camera the snapshot could not
+	//     clone (clonedCamera == NULL) is NOT restored — the live active
+	//     camera is left untouched and we warn.  There is no faithful
+	//     pose-only rebuild path (the non-ONB factories would degrade an
+	//     ONB basis — see CloneCameraForSnapshot).
+	// ----------------------------------------------------------------
+	{
+		const ICamera* snapCam = snap.GetClonedCamera();
+		if( snapCam && pCameraManager ) {
+			ICamera* camClone = Implementation::CloneCameraForSnapshot( snapCam );
+			if( camClone ) {
+				// Clear existing cameras.  RemoveCamera handles the
+				// active-camera bookkeeping (auto-promote / clear) as we
+				// drain, then AddCamera re-establishes the active one.
+				CollectNamesCb live;
+				pCameraManager->EnumerateItemNames( live );
+				for( size_t i = 0; i < live.names.size(); ++i ) {
+					RemoveCamera( live.names[i].c_str() );
+				}
+
+				String camName = snap.GetActiveCameraName();
+				if( camName.size() <= 1 ) {
+					camName = String( "default" );
+				}
+				// AddCamera addrefs + makes it active; release our build
+				// reference.  It also re-syncs the camera frame to Film,
+				// which we set just below — order is fine because SetFilm
+				// re-syncs every camera again.
+				AddCamera( camName.c_str(), camClone );
+				safe_release( camClone );
+			}
+		} else if( snap.HasCamera() && !snapCam ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Scene::RestoreFromSnapshot:: snapshot camera was ONB-constructed / unclonable; live active camera left unchanged" );
+		}
+	}
+
+	// ----------------------------------------------------------------
+	// (4) FILM — install a fresh film matching the snapshot's dims.
+	//     SetFilm re-syncs every camera's projection to the new dims.
+	// ----------------------------------------------------------------
+	if( snap.HasFilm() ) {
+		IFilm* filmClone = 0;
+		RISE_API_CreateFilm( &filmClone, snap.GetFilmWidth(), snap.GetFilmHeight(),
+			snap.GetFilmPixelAR() );
+		if( filmClone ) {
+			SetFilm( filmClone );           // addrefs
+			safe_release( filmClone );
+		}
+	}
+
+	// ----------------------------------------------------------------
+	// (5) ENVIRONMENT — addref-share the snapshot's radiance map, which
+	//     is itself addref-shared from the original live map (the env is
+	//     not editor-mutated in place; matches the capture policy).
+	//     SetGlobalRadianceMap addrefs.
+	// ----------------------------------------------------------------
+	if( snap.HasEnvironment() ) {
+		SetGlobalRadianceMap( snap.GetGlobalRadianceMap() );
+	}
+
+	// ----------------------------------------------------------------
+	// (6) GLOBAL MEDIUM — install a fresh clone (homogeneous) / addref
+	//     (baked) via the same dispatcher the snapshot used.
+	// ----------------------------------------------------------------
+	if( snap.GetGlobalMedium() ) {
+		const IMedium* medClone =
+			Implementation::CloneMediumForSnapshot( snap.GetGlobalMedium() );
+		if( medClone ) {
+			SetGlobalMedium( medClone );    // addrefs
+			safe_release( medClone );
+		}
+	}
+
+	// ----------------------------------------------------------------
+	// (7) REBUILD DERIVED STRUCTURES.
+	//
+	//     TLAS: the object manager's top-level BVH was built from the
+	//     OLD objects' world AABBs.  We swapped the objects out, so the
+	//     structure is stale (dangling element pointers).  Drop it; the
+	//     next PrepareForRendering() / RayCaster::AttachScene() rebuilds
+	//     it over the restored objects (the `!pBVH` guard triggers a
+	//     fresh CreateBVH).  This is exactly what SetSceneTimeForPreview
+	//     does after animated transforms move objects between nodes
+	//     (Scene.cpp InvalidateSpatialStructure call).
+	//
+	//     LightSampler: Scene does NOT own one — the LuminaryManager +
+	//     LightSampler + EnvironmentSampler are built inside
+	//     RayCaster::AttachScene and cached on the RayCaster.  Scene has
+	//     no handle to them, so it cannot re-prepare them directly.
+	//
+	//     IMPORTANT CAVEAT (honest): RayCaster::AttachScene early-returns
+	//     when re-attached to the SAME IScene pointer (RayCaster.cpp
+	//     `if (pScene == pScene_) return;`), so a render that REUSES the
+	//     same rasterizer/caster against this (unchanged) Scene pointer
+	//     will NOT rebuild the LightSampler — its alias table / luminaries
+	//     list / scene-bounds cache would still reflect the PRE-restore
+	//     lights and emissive objects.  (The realize pass + the caller's
+	//     own PrepareForRendering DO run before that early-return, which is
+	//     why the TLAS above rebuilds reliably; the light-sampler setup is
+	//     AFTER it.)  This is a pre-existing engine property — the same is
+	//     true for any in-place light/topology edit on a reused caster,
+	//     and rasterizers are cached in Job::rasterizerRegistry.  To get a
+	//     render-faithful LightSampler after a restore that changed lights
+	//     or emissive geometry, the caller MUST force a fresh attach —
+	//     e.g. recreate the active rasterizer (drop it from the registry)
+	//     so a new RayCaster runs the full AttachScene path.  Wiring that
+	//     into the editor's restore-then-render flow is increment 2b's job;
+	//     #2a deliberately does not reach into the rasterizer layer.
+	//
+	//     We additionally ResetRuntimeData() so any per-object
+	//     intersection caches from the prior contents are cleared.
+	// ----------------------------------------------------------------
+	if( pObjectManager ) {
+		pObjectManager->InvalidateSpatialStructure();
+		pObjectManager->ResetRuntimeData();
+	}
 }
 

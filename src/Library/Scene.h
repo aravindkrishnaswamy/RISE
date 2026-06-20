@@ -151,6 +151,12 @@ namespace RISE
 			//! only need pose can fall back to GetCameraPosition/LookAt.
 			const ICamera*  GetClonedCamera() const { return clonedCamera; }
 
+			//! Name the active camera was registered under at snapshot
+			//! time (empty if there was no active camera).  Used by
+			//! Scene::RestoreFromSnapshot to re-register the cloned
+			//! camera under its original name.
+			String          GetActiveCameraName() const { return activeCameraName; }
+
 			// --- Film (CLONE — IFilm::Resize mutates in place) ---
 			bool         HasFilm() const { return clonedFilm != 0; }
 			const IFilm* GetFilm() const { return clonedFilm; }
@@ -294,6 +300,64 @@ namespace RISE
 			//! Caller owns the returned SceneSnapshot (release() it).
 			//! See SceneSnapshot above for the design rationale.
 			SceneSnapshot* CreateSnapshot() const;
+
+			//! feature/gui-snapshot-prototype, increment 2a: the
+			//! restore / publish primitive.  Makes the LIVE scene's
+			//! render-read state equal `snap`'s — installs FRESH clones
+			//! of the snapshot's objects / lights / active camera / film /
+			//! global medium, and sets the environment, into the live
+			//! managers (the live object + light managers are cleared
+			//! first).  Then invalidates the spatial structure so the
+			//! TLAS rebuilds and re-prepares the scene's render-derived
+			//! state for the next render.
+			//!
+			//! CLONE-ON-RESTORE: the snapshot is NOT consumed — every
+			//! installed entity is a fresh clone of the snapshot's
+			//! (already-cloned) entity, so the SAME snapshot can be
+			//! restored repeatedly (undo / rollback / publish-over).
+			//!
+			//! RENDER-READINESS: the TLAS is dropped
+			//! (InvalidateSpatialStructure), so the next render's
+			//! PrepareForRendering rebuilds it over the swapped objects —
+			//! GUARANTEED, because every render path calls
+			//! PrepareForRendering and AttachScene's realize pass runs
+			//! before its same-scene early-return.
+			//!
+			//! LightSampler CAVEAT (honest): the LuminaryManager +
+			//! LightSampler + EnvironmentSampler are owned by the
+			//! RayCaster, built in RayCaster::AttachScene AFTER its
+			//! same-IScene-pointer early-return.  Scene cannot re-prepare
+			//! them directly.  A render that REUSES the same rasterizer/
+			//! caster against this (unchanged) Scene pointer will keep the
+			//! PRE-restore light-sampler state.  To get a render-faithful
+			//! LightSampler after a restore that changed lights / emissive
+			//! geometry, the caller must force a fresh attach (recreate the
+			//! active rasterizer so a new RayCaster runs the full
+			//! AttachScene path).  This is a pre-existing engine property
+			//! (true of any in-place light/topology edit on a reused
+			//! caster); wiring it into the editor render flow is increment
+			//! 2b's job.  #2a deliberately does not reach into the
+			//! rasterizer layer.
+			//!
+			//! HONEST FIDELITY: an ONB-constructed / unknown active
+			//! camera the snapshot could not clone (clonedCamera == NULL)
+			//! is NOT restored — the live active camera is left as-is and
+			//! a warning is logged.  The same baked-leaf residuals the
+			//! snapshot carries (SSS / interior-medium / heterogeneous
+			//! medium addref-share — see SnapshotLeafClone.h) apply
+			//! transitively: a restore reproduces whatever the snapshot
+			//! captured, no more.
+			//!
+			//! **Concurrency contract.**  Restore MUTATES the live scene
+			//! (swaps the object + light manager contents, the active
+			//! camera, film, medium, environment, and drops the TLAS).
+			//! It MUST NOT run concurrently with rendering.  The editor
+			//! enforces this via its cancel-and-park machinery (trip the
+			//! rasterizer cancel flag, wait for the in-flight pass to
+			//! return, restore with the lock held, then KickRender) — the
+			//! same contract as the camera / film mutators above.  There
+			//! is no in-library lock here, by design.
+			void RestoreFromSnapshot( const SceneSnapshot& snap );
 
 		private:
 			// Walk the camera manager and call SetDimensionsAndPixelAR
