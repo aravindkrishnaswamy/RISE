@@ -300,6 +300,11 @@ namespace RISE
 		//! F5: the object had NO shader/material before a SetObjectShader/
 		//! SetObjectMaterial edit, so Undo must CLEAR the binding (not skip).
 		bool           prevBindingWasNull;
+
+		//! F4: name of the camera EDITED by a camera op, captured at Apply,
+		//! so Undo/Redo restore THAT camera -- not whatever camera is active
+		//! later.  Empty for legacy edits (Undo falls back to active).
+		String         cameraTargetName;
 		TransformState prevTransformState;
 
 		//! Previous scene time (for SetSceneTime undo).
@@ -338,6 +343,7 @@ namespace RISE
 		, prevTransform( Matrix4Ops::Identity() )
 		, hasTransformState( false )
 		, prevBindingWasNull( false )
+		, cameraTargetName()
 		, prevTransformState()
 		, prevTime( 0 )
 		, prevCameraPos()

@@ -317,6 +317,11 @@ namespace RISE
 		//! Restore an object's transform from a captured matrix.
 		void RestoreObjectTransform( IObjectPriv& obj, const SceneEdit& edit );
 
+		//! F4: resolve the camera an edit TARGETS (by recorded name) so
+		//! Undo/Redo restore the edited camera, not the active-later one.
+		//! Falls back to the active camera for legacy edits with no name.
+		class ICamera* ResolveEditedCamera( const SceneEdit& e );
+
 		//! Run the post-mutation invariant chain on a single object
 		//! and on the manager.
 		void RunObjectInvariantChain( IObjectPriv& obj );

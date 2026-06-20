@@ -945,6 +945,19 @@ struct DirtyChangeNotifier
 };
 }
 
+ICamera* SceneEditor::ResolveEditedCamera( const SceneEdit& e )
+{
+	// F4: restore the camera that was EDITED (recorded at Apply time),
+	// not whatever camera happens to be active now.  Fall back to the
+	// active camera for legacy edits that carry no recorded name.
+	if( e.cameraTargetName.size() > 0 ) {
+		if( ICameraManager* cm = mScene.GetCamerasMutable() ) {
+			if( ICamera* c = cm->GetItem( e.cameraTargetName.c_str() ) ) return c;
+		}
+	}
+	return mScene.GetCameraMutable();
+}
+
 bool SceneEditor::Apply( const SceneEdit& editIn )
 {
 	DirtyChangeNotifier _notifier( this );
@@ -1127,6 +1140,7 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		edit.prevCameraUp           = cam->GetStoredUp();
 		edit.prevCameraTargetOrient = cam->GetTargetOrientation();
 		edit.prevCameraOrient       = cam->GetEulerOrientation();
+		edit.cameraTargetName       = mScene.GetActiveCameraName();
 
 		ApplyCameraOpForward( *cam, edit, SceneScale() );
 		cam->RegenerateData();
@@ -1157,6 +1171,7 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		// panel uses for display, so undo round-trips losslessly
 		// through CameraIntrospection::SetProperty.
 		edit.prevPropertyValue = CameraIntrospection::GetPropertyValue( *baseCam, edit.objectName );
+		edit.cameraTargetName  = mScene.GetActiveCameraName();
 
 		if( !CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.propertyValue ) )
 		{
@@ -1495,7 +1510,7 @@ bool SceneEditor::Undo()
 			{
 				if( !cam )
 				{
-					ICamera* baseCam = mScene.GetCameraMutable();
+					ICamera* baseCam = ResolveEditedCamera( inner );
 					cam = baseCam ? dynamic_cast<Implementation::CameraCommon*>( baseCam ) : 0;
 				}
 				if( cam )
@@ -1521,7 +1536,7 @@ bool SceneEditor::Undo()
 				// below covers it.  Use a per-name scratch path that
 				// updates the camera fields without re-baking the basis
 				// matrix on every iteration.
-				ICamera* baseCam = mScene.GetCameraMutable();
+				ICamera* baseCam = ResolveEditedCamera( inner );
 				if( baseCam )
 				{
 					CameraIntrospection::SetProperty( *baseCam,
@@ -1676,7 +1691,7 @@ bool SceneEditor::Undo()
 
 	if( SceneEdit::IsCameraOp( edit.op ) )
 	{
-		ICamera* baseCam = mScene.GetCameraMutable();
+		ICamera* baseCam = ResolveEditedCamera( edit );
 		if( !baseCam ) return false;
 		Implementation::CameraCommon* cam =
 			dynamic_cast<Implementation::CameraCommon*>( baseCam );
@@ -1699,7 +1714,7 @@ bool SceneEditor::Undo()
 
 	if( edit.op == SceneEdit::SetCameraProperty )
 	{
-		ICamera* baseCam = mScene.GetCameraMutable();
+		ICamera* baseCam = ResolveEditedCamera( edit );
 		if( !baseCam ) return false;
 		// Replay the captured prev value through the same parser.
 		CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.prevPropertyValue );
@@ -1860,7 +1875,7 @@ bool SceneEditor::Redo()
 			{
 				if( !cam )
 				{
-					ICamera* baseCam = mScene.GetCameraMutable();
+					ICamera* baseCam = ResolveEditedCamera( inner );
 					cam = baseCam ? dynamic_cast<Implementation::CameraCommon*>( baseCam ) : 0;
 				}
 				if( cam ) ApplyCameraOpForward( *cam, inner, SceneScale() );
@@ -1874,7 +1889,7 @@ bool SceneEditor::Redo()
 			}
 			else if( inner.op == SceneEdit::SetCameraProperty )
 			{
-				ICamera* baseCam = mScene.GetCameraMutable();
+				ICamera* baseCam = ResolveEditedCamera( inner );
 				if( baseCam )
 				{
 					CameraIntrospection::SetProperty( *baseCam,
@@ -1960,7 +1975,7 @@ bool SceneEditor::Redo()
 
 	if( SceneEdit::IsCameraOp( edit.op ) )
 	{
-		ICamera* baseCam = mScene.GetCameraMutable();
+		ICamera* baseCam = ResolveEditedCamera( edit );
 		if( !baseCam ) return false;
 		Implementation::CameraCommon* cam =
 			dynamic_cast<Implementation::CameraCommon*>( baseCam );
@@ -2059,7 +2074,7 @@ bool SceneEditor::Redo()
 
 	if( edit.op == SceneEdit::SetCameraProperty )
 	{
-		ICamera* baseCam = mScene.GetCameraMutable();
+		ICamera* baseCam = ResolveEditedCamera( edit );
 		if( !baseCam ) return false;
 		CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.propertyValue );
 		mLastScope = Dirty_Camera;

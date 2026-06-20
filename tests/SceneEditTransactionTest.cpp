@@ -74,6 +74,7 @@
 #include "../src/Library/Scene.h"
 #include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/SceneEditor/CameraIntrospection.h"
 #include "../src/Library/Interfaces/IMaterial.h"
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/IPainter.h"
@@ -1018,6 +1019,45 @@ static void TestUndoFirstMaterialBind()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestCameraUndoTargetsEditedCamera()
+{
+	std::cout << "Test: camera undo reverts the EDITED camera, not the active-later one (7th-review F4)" << std::endl;
+	Job* pJob = new Job();
+	double loc[3]={0,0,10}, la[3]={0,0,0}, up[3]={0,1,0}, orient[3]={0,0,0}, target[2]={0,0};
+	pJob->AddPinholeCamera( "A", loc, la, up, 0.6, 1.0, 0, 0, orient, target, 0.0, 0.0 );
+	double locB[3]={5,0,10};
+	pJob->AddPinholeCamera( "B", locB, la, up, 1.2, 1.0, 0, 0, orient, target, 0.0, 0.0 );
+	pJob->SetActiveCamera( "A" );
+	Scene* pScene = dynamic_cast<Scene*>( pJob->GetScene() );
+	if( !pScene ) { Check( false, "[f4] scene downcast" ); pJob->release(); return; }
+	const ICameraManager* cams = pScene->GetCameras();
+	const ICamera* camA = cams ? cams->GetItem( "A" ) : nullptr;
+	const ICamera* camB = cams ? cams->GetItem( "B" ) : nullptr;
+	Check( camA && camB, "[f4] both cameras present" );
+	const std::string aFov0 = std::string( CameraIntrospection::GetPropertyValue( *camA, String( "fov" ) ).c_str() );
+	const std::string bFov0 = std::string( CameraIntrospection::GetPropertyValue( *camB, String( "fov" ) ).c_str() );
+
+	SceneEditController ctrl( *pJob, 0 );
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Camera, String( "A" ) );
+	// Edit camera A's fov (A is the active camera).
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Camera, String( "fov" ), String( "0.9" ) ),
+	       "[f4] set A.fov applied" );
+	const std::string aFovEdited = std::string( CameraIntrospection::GetPropertyValue( *camA, String( "fov" ) ).c_str() );
+	Check( aFovEdited != aFov0, "[f4] A.fov actually changed" );
+
+	// Switch the ACTIVE camera to B, THEN undo.
+	pJob->SetActiveCamera( "B" );
+	Check( ctrl.Editor().Undo(), "[f4] undo succeeds" );
+
+	const std::string aFovAfter = std::string( CameraIntrospection::GetPropertyValue( *camA, String( "fov" ) ).c_str() );
+	const std::string bFovAfter = std::string( CameraIntrospection::GetPropertyValue( *camB, String( "fov" ) ).c_str() );
+	Check( bFovAfter == bFov0, "[f4] camera B UNTOUCHED by undo of an A edit (F4)" );
+	Check( aFovAfter == aFov0, "[f4] camera A reverted by undo (F4)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1034,6 +1074,7 @@ int main()
 	TestAbsoluteTransformUndoComposition();
 	TestUndoFirstShaderBind();
 	TestUndoFirstMaterialBind();
+	TestCameraUndoTargetsEditedCamera();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."
