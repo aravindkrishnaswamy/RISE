@@ -89,6 +89,21 @@ void SceneEditor::BumpSceneLightGenerationIfEmitterSetChanged(
 	}
 }
 
+void SceneEditor::BumpSceneLightGenerationIfMaterialEmits( const IMaterial* mat )
+{
+	// A SPATIAL edit on an emissive object (area / world position) or a
+	// material-SLOT edit on an emissive material (exitance) changes the
+	// LightSampler's cached alias-table weight + representative point
+	// (baked at Prepare()) WITHOUT changing the emitter SET.  Bump so a
+	// reused RayCaster rebuilds its sampler; else light SELECTION is biased
+	// toward the stale footprint (the estimator stays unbiased -- per-sample
+	// area / Le are read live).  No-op for a null / non-emissive material.
+	if( mat && mat->GetEmitter() )
+	{
+		BumpSceneLightGeneration();
+	}
+}
+
 SceneEditor::SceneEditor( IScenePriv& scene )
 : mScene( scene )
 , mMaterialManager( 0 )
@@ -815,6 +830,14 @@ void SceneEditor::RunObjectInvariantChain( IObjectPriv& obj )
 	{
 		objs->InvalidateSpatialStructure();
 	}
+	// Re-review finding B: a spatial change to an EMISSIVE object (move /
+	// rotate / scale / geometry swap) changes its luminary area + world
+	// position, which the LightSampler caches at Prepare().  Bump the light-
+	// topology generation so a reused RayCaster rebuilds its sampler; else
+	// light SELECTION is biased toward the stale footprint (estimator stays
+	// unbiased).  Single choke point for EVERY OpNeedsSpatialRebuild op
+	// across Apply / Undo / Redo / composite, so one call covers them all.
+	BumpSceneLightGenerationIfMaterialEmits( obj.GetMaterial() );
 }
 
 void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
@@ -858,6 +881,17 @@ void SceneEditor::MarkEditEntityDirty( const SceneEdit& edit )
 	case SceneEdit::SetMaterialProperty:
 		mDirtyTracker.MarkEntityDirty( EntityCategory::Material,
 			std::string( edit.objectName.c_str() ) );
+		// Re-review finding B: editing an EMISSIVE material's slot (e.g.
+		// exitance) changes the cached alias-table weight; bump light-gen so a
+		// reused RayCaster rebuilds its sampler.  MarkEditEntityDirty is the
+		// shared per-edit hook (Apply / Undo / Redo / composite all route
+		// through it), so one site covers every path.  edit.objectName is the
+		// material name for SetMaterialProperty.
+		if( mMaterialManager )
+		{
+			BumpSceneLightGenerationIfMaterialEmits(
+				mMaterialManager->GetItem( edit.objectName.c_str() ) );
+		}
 		break;
 	case SceneEdit::SetMediumProperty:
 		mDirtyTracker.MarkEntityDirty( EntityCategory::Medium,

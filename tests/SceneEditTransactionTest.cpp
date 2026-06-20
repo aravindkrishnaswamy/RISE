@@ -764,6 +764,151 @@ static void TestMaterialBindingEmitterGeneration()
 
 //////////////////////////////////////////////////////////////////////
 
+static Scene* BuildEmissiveProbeScene( Job* pJob )
+{
+	// Canonical emissive-probe scene for the generation-bump tests: an
+	// emissive sphere ("emitter", mat_emit), a plain probe + 4 fillers
+	// (forcing the >4-object TLAS path), two geometries ("geom" r=1,
+	// "geom2" r=2) for the geometry-swap case, and a "global" shader.
+	const double white[3] = { 0.8, 0.8, 0.8 };
+	const double glow[3]  = { 1.0, 1.0, 1.0 };
+	pJob->AddUniformColorPainter( "p_white", white, "Rec709RGB_Linear" );
+	pJob->AddUniformColorPainter( "p_glow",  glow,  "Rec709RGB_Linear" );
+	pJob->AddLambertianMaterial( "mat_plain", "p_white" );
+	pJob->AddLambertianLuminaireMaterial( "mat_emit", "p_glow", "mat_plain", 1.0 );
+	pJob->AddSphereGeometry( "geom",  1.0 );
+	pJob->AddSphereGeometry( "geom2", 2.0 );
+	RadianceMapConfig nilRMap;
+	const double orient[3] = { 0, 0, 0 };
+	const double one3[3]   = { 1, 1, 1 };
+	const double posE[3]   = { 0, 5, 0 };
+	pJob->AddObject( "emitter", "geom", "mat_emit", nullptr, nullptr,
+		nilRMap, posE, orient, one3, true, true );
+	const double posP[3] = { 8, 0, 0 };
+	pJob->AddObject( "probe", "geom", "mat_plain", nullptr, nullptr,
+		nilRMap, posP, orient, one3, true, true );
+	for( int i = 0; i < 4; ++i ) {
+		char nm[32];
+		std::snprintf( nm, sizeof(nm), "filler%d", i );
+		const double pos[3] = { -20.0, (double)( 4 * ( i + 1 ) ), 0.0 };
+		pJob->AddObject( nm, "geom", "mat_plain", nullptr, nullptr,
+			nilRMap, pos, orient, one3, true, true );
+	}
+	const char* ops[] = { "DefaultDirectLighting" };
+	pJob->AddStandardShader( "global", 1, ops );
+	return dynamic_cast<Scene*>( pJob->GetScene() );
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestSpatialEditOnLuminaireBumpsGeneration()
+{
+	std::cout << "Test: spatial edit on an emissive object bumps light-topology generation (re-review B)"
+	          << std::endl;
+	Job* pJob = new Job();
+	Scene* pScene = BuildEmissiveProbeScene( pJob );
+	if( !pScene ) { Check( false, "[Bsp] scene downcast" ); pJob->release(); return; }
+	SceneEditController ctrl( *pJob, 0 );
+
+	// Move the EMISSIVE object: its luminary area + world position feed the
+	// LightSampler cache (alias weight + representative point), so the
+	// generation MUST advance.
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String( "emitter" ) );
+	const unsigned int g0 = pScene->GetLightTopologyGeneration();
+	Check( ctrl.SetProperty( String( "position" ), String( "0 7 0" ) ),
+	       "[Bsp] move emissive object applied" );
+	Check( pScene->GetLightTopologyGeneration() != g0,
+	       "[Bsp] spatial move of a LUMINAIRE bumps the generation (re-review B)" );
+
+	// Geometry swap on the emissive object: changes its area -> MUST advance.
+	const unsigned int g1 = pScene->GetLightTopologyGeneration();
+	Check( ctrl.SetProperty( String( "geometry" ), String( "geom2" ) ),
+	       "[Bsp] geometry swap on emissive object applied" );
+	Check( pScene->GetLightTopologyGeneration() != g1,
+	       "[Bsp] geometry swap on a LUMINAIRE bumps the generation (re-review B)" );
+
+	// Move a NON-emissive object: luminary set + cache unaffected, NO bump.
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String( "probe" ) );
+	const unsigned int g2 = pScene->GetLightTopologyGeneration();
+	Check( ctrl.SetProperty( String( "position" ), String( "9 0 0" ) ),
+	       "[Bsp] move non-emissive object applied" );
+	Check( pScene->GetLightTopologyGeneration() == g2,
+	       "[Bsp] spatial move of a NON-luminaire does NOT bump (no needless rebuild)" );
+
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestMaterialSlotEditOnEmissiveBumpsGeneration()
+{
+	std::cout << "Test: material-slot edit on an emissive material bumps light-topology generation (re-review B)"
+	          << std::endl;
+	Job* pJob = new Job();
+	Scene* pScene = BuildEmissiveProbeScene( pJob );
+	if( !pScene ) { Check( false, "[Bmat] scene downcast" ); pJob->release(); return; }
+	SceneEditController ctrl( *pJob, 0 );
+
+	// Edit the exitance slot of the EMISSIVE material -> stale alias-table
+	// weight -> generation MUST advance.
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Material, String( "mat_emit" ) );
+	const unsigned int g0 = pScene->GetLightTopologyGeneration();
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Material,
+	         String( "exitance" ), String( "p_white" ) ),
+	       "[Bmat] exitance edit on emissive material applied" );
+	Check( pScene->GetLightTopologyGeneration() != g0,
+	       "[Bmat] slot edit on an EMISSIVE material bumps the generation (re-review B)" );
+
+	// Edit a slot on a NON-emissive material -> NO bump.
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Material, String( "mat_plain" ) );
+	const unsigned int g1 = pScene->GetLightTopologyGeneration();
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Material,
+	         String( "reflectance" ), String( "p_glow" ) ),
+	       "[Bmat] reflectance edit on non-emissive material applied" );
+	Check( pScene->GetLightTopologyGeneration() == g1,
+	       "[Bmat] slot edit on a NON-emissive material does NOT bump" );
+
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestBeginTransactionRefusedMidComposite()
+{
+	std::cout << "Test: BeginTransaction refuses while a SceneEditor composite is open (re-review A)"
+	          << std::endl;
+	Job* pJob = new Job();
+	Scene* pScene = BuildEmissiveProbeScene( pJob );
+	if( !pScene ) { Check( false, "[Acomp] scene downcast" ); pJob->release(); return; }
+	SceneEditController ctrl( *pJob, 0 );
+
+	// Open a composite and make an edit inside it (a real gesture in flight).
+	ctrl.Editor().BeginComposite( "test-gesture" );
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String( "probe" ) );
+	Check( ctrl.SetProperty( String( "position" ), String( "1 0 0" ) ),
+	       "[Acomp] edit inside the open composite applied" );
+	Check( ctrl.Editor().IsCompositeOpen(), "[Acomp] composite is open" );
+
+	// BeginTransaction MUST refuse mid-composite (the baseline would land
+	// INSIDE the group; rollback's composite Undo would undershoot it).
+	Check( !ctrl.BeginTransaction(),
+	       "[Acomp] BeginTransaction REFUSED while a composite is open (re-review A)" );
+	Check( !ctrl.IsTransactionOpen(),
+	       "[Acomp] no transaction opened mid-composite" );
+
+	// Close the composite; BeginTransaction now succeeds.
+	ctrl.Editor().EndComposite();
+	Check( !ctrl.Editor().IsCompositeOpen(), "[Acomp] composite closed" );
+	Check( ctrl.BeginTransaction(),
+	       "[Acomp] BeginTransaction succeeds after the composite closed" );
+	Check( ctrl.IsTransactionOpen(), "[Acomp] transaction open after composite closed" );
+	ctrl.EndTransaction();
+
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -774,6 +919,9 @@ int main()
 	TestCommitNoDoubleApply();
 	TestRollbackRepeatableAndGuards();
 	TestMaterialBindingEmitterGeneration();
+	TestSpatialEditOnLuminaireBumpsGeneration();
+	TestMaterialSlotEditOnEmissiveBumpsGeneration();
+	TestBeginTransactionRefusedMidComposite();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."

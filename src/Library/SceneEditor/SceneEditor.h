@@ -115,6 +115,14 @@ namespace RISE
 		//! that EndComposite a safe no-op.  No-op when already at zero.
 		void ForceCompositeDepthZero() { if( mCompositeDepth > 0 ) mCompositeDepth = 0; }
 
+		//! True while a BeginComposite group is open (mCompositeDepth > 0).
+		//! The controller's BeginTransaction refuses to open a transaction
+		//! mid-composite: the baseline depth would land INSIDE the group
+		//! and a single composite Undo() during rollback would walk PAST
+		//! it, consuming the pre-baseline CompositeBegin and corrupting
+		//! the surrounding undo history (re-review finding A).
+		bool IsCompositeOpen() const { return mCompositeDepth > 0; }
+
 		DirtyScope LastDirtyScope() const { return mLastScope; }
 
 		//! True if the scene had at least one populated photon map
@@ -228,6 +236,18 @@ namespace RISE
 		//! unresolved material is treated as non-emissive).
 		void BumpSceneLightGenerationIfEmitterSetChanged(
 			const class IMaterial* prevMat, const class IMaterial* newMat );
+
+		//! Bump the light-topology generation iff `mat` is emissive
+		//! (`GetEmitter() != null`).  For edits that change an existing
+		//! luminaire's cached sampler state WITHOUT changing the emitter SET:
+		//! a SPATIAL edit on an emissive object (its area / world position
+		//! feed the LightSampler alias-table weight + representative point,
+		//! baked at Prepare()) and a material-SLOT edit on an emissive
+		//! material (its exitance feeds the same weight).  Stale state biases
+		//! light SELECTION only -- the estimator stays unbiased (per-sample
+		//! area / Le are read live) -- but a reused RayCaster must rebuild to
+		//! converge (re-review finding B).  No-op for null / non-emissive mat.
+		void BumpSceneLightGenerationIfMaterialEmits( const class IMaterial* mat );
 
 		IScenePriv&  mScene;
 		class IMaterialManager*       mMaterialManager;       // borrowed; nullable

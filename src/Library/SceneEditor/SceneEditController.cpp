@@ -1729,6 +1729,19 @@ bool SceneEditController::BeginTransaction()
 	// baseline simply become un-bracketed — they remain undoable through
 	// the normal Undo path, they are just no longer part of a rollback
 	// unit.  This matches the single-gesture model.
+	// Re-review finding A: refuse to open a transaction while the editor
+	// is mid-composite (BeginComposite without EndComposite).  The baseline
+	// depth would land INSIDE the composite group, and a single composite
+	// Undo() during rollback walks the whole group back PAST the baseline,
+	// consuming the pre-baseline CompositeBegin and corrupting the
+	// surrounding undo history.  A transaction must bracket WHOLE edits.
+	if( mEditor.IsCompositeOpen() )
+	{
+		GlobalLog()->PrintEx( eLog_Warning,
+			"SceneEditController::BeginTransaction refused: a SceneEditor "
+			"composite is open; close it before opening a transaction." );
+		return false;
+	}
 	mTxnOpen              = true;
 	mTxnBaselineUndoDepth = mEditor.History().UndoDepth();
 	return true;

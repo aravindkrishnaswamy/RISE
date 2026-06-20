@@ -364,6 +364,11 @@ namespace RISE
 		//! Returns true on success.  Calling it while a transaction is
 		//! already open REPLACES the baseline (the new call wins) —
 		//! nesting is not supported, matching the single-gesture model.
+		//!
+		//! Returns FALSE (refuses) when a SceneEditor composite is OPEN
+		//! (BeginComposite without EndComposite): the baseline would land
+		//! inside the group and rollback's composite Undo would undershoot
+		//! it, corrupting the surrounding history (re-review finding A).
 		//! (Unlike the prior snapshot-based version, this no longer fails
 		//! on an out-of-tree IScenePriv: inverse-edit rollback works
 		//! through the SceneEditor for any scene the editor can mutate.)
