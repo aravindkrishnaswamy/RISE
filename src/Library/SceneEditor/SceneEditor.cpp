@@ -958,6 +958,26 @@ ICamera* SceneEditor::ResolveEditedCamera( const SceneEdit& e )
 	return mScene.GetCameraMutable();
 }
 
+bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& painterName )
+{
+	// F1: shared SetMaterialProperty restore -- resolves the slot's pipe
+	// (Painter vs ScalarPainter) and rebinds it to `painterName`.  Undo
+	// passes prevPropertyValue; redo passes propertyValue.  Empty = no-op.
+	if( !mMaterialManager ) return false;
+	IMaterial* mat = mMaterialManager->GetItem( e.objectName.c_str() );
+	if( !mat ) return false;
+	if( painterName.size() <= 1 ) return true;
+	const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, e.propertyName );
+	if( cur.kind == MaterialSlotRef::Painter && mPainterManager ) {
+		const IPainter* p = mPainterManager->GetItem( painterName.c_str() );
+		if( p ) MaterialIntrospection::SetSlot( *mat, e.propertyName, p, 0 );
+	} else if( cur.kind == MaterialSlotRef::ScalarPainter && mScalarPainterManager ) {
+		const IScalarPainter* p = mScalarPainterManager->GetItem( painterName.c_str() );
+		if( p ) MaterialIntrospection::SetSlot( *mat, e.propertyName, 0, p );
+	}
+	return true;
+}
+
 bool SceneEditor::Apply( const SceneEdit& editIn )
 {
 	DirtyChangeNotifier _notifier( this );
@@ -1568,6 +1588,11 @@ bool SceneEditor::Undo()
 				}
 				sawPropertyOp = true;
 			}
+			else if( inner.op == SceneEdit::SetMaterialProperty )
+			{
+				ApplyMaterialSlotByName( inner, inner.prevPropertyValue );
+				sawPropertyOp = true;
+			}
 			else if( inner.op == SceneEdit::SetMediumProperty )
 			{
 				if( mJob ) {
@@ -1748,31 +1773,9 @@ bool SceneEditor::Undo()
 
 	if( edit.op == SceneEdit::SetMaterialProperty )
 	{
-		// Inverse: rebind the slot to the captured prev painter
-		// name.  If prev is empty (e.g. the slot was previously
-		// bound to a painter that wasn't registered in the
-		// manager — unusual but possible for in-process-only
-		// painters), the undo silently no-ops since we have no
-		// painter pointer to restore.
-		if( !mMaterialManager ) return false;
-		IMaterial* mat = mMaterialManager->GetItem( edit.objectName.c_str() );
-		if( !mat ) return false;
-		if( edit.prevPropertyValue.size() <= 1 ) return true;
-
-		// Re-resolve the slot's pipe to pick the right manager for
-		// the prev-name lookup.  (We don't store the pipe kind in
-		// the SceneEdit struct; the material's slot type is stable
-		// across the op, so re-querying is reliable.)
-		const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, edit.propertyName );
-		if( cur.kind == MaterialSlotRef::Painter && mPainterManager ) {
-			const IPainter* prev = mPainterManager->GetItem( edit.prevPropertyValue.c_str() );
-			if( prev ) MaterialIntrospection::SetSlot( *mat, edit.propertyName, prev, 0 );
-		} else if( cur.kind == MaterialSlotRef::ScalarPainter && mScalarPainterManager ) {
-			const IScalarPainter* prev = mScalarPainterManager->GetItem( edit.prevPropertyValue.c_str() );
-			if( prev ) MaterialIntrospection::SetSlot( *mat, edit.propertyName, 0, prev );
-		}
-		mLastScope = Dirty_Camera;
-		return true;
+		const bool ok = ApplyMaterialSlotByName( edit, edit.prevPropertyValue );
+		if( ok ) mLastScope = Dirty_Camera;
+		return ok;
 	}
 
 	if( edit.op == SceneEdit::SetLightProperty )
@@ -1930,6 +1933,11 @@ bool SceneEditor::Redo()
 				}
 				sawPropertyOp = true;
 			}
+			else if( inner.op == SceneEdit::SetMaterialProperty )
+			{
+				ApplyMaterialSlotByName( inner, inner.propertyValue );
+				sawPropertyOp = true;
+			}
 			else if( inner.op == SceneEdit::SetMediumProperty )
 			{
 				if( mJob ) {
@@ -2002,22 +2010,9 @@ bool SceneEditor::Redo()
 
 	if( edit.op == SceneEdit::SetMaterialProperty )
 	{
-		// Re-apply propertyValue (the post-edit binding).  Same
-		// dispatch shape as the Undo branch but using the new
-		// painter name instead of the prev one.
-		if( !mMaterialManager ) return false;
-		IMaterial* mat = mMaterialManager->GetItem( edit.objectName.c_str() );
-		if( !mat ) return false;
-		const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, edit.propertyName );
-		if( cur.kind == MaterialSlotRef::Painter && mPainterManager ) {
-			const IPainter* p = mPainterManager->GetItem( edit.propertyValue.c_str() );
-			if( p ) MaterialIntrospection::SetSlot( *mat, edit.propertyName, p, 0 );
-		} else if( cur.kind == MaterialSlotRef::ScalarPainter && mScalarPainterManager ) {
-			const IScalarPainter* p = mScalarPainterManager->GetItem( edit.propertyValue.c_str() );
-			if( p ) MaterialIntrospection::SetSlot( *mat, edit.propertyName, 0, p );
-		}
-		mLastScope = Dirty_Camera;
-		return true;
+		const bool ok = ApplyMaterialSlotByName( edit, edit.propertyValue );
+		if( ok ) mLastScope = Dirty_Camera;
+		return ok;
 	}
 
 	if( edit.op == SceneEdit::SetLightProperty )

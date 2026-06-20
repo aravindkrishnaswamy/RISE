@@ -322,6 +322,10 @@ namespace RISE
 		//! Falls back to the active camera for legacy edits with no name.
 		class ICamera* ResolveEditedCamera( const SceneEdit& e );
 
+		//! F1: rebind a material slot to a named painter -- shared by the
+		//! SetMaterialProperty single-edit AND composite-walk undo/redo arms.
+		bool ApplyMaterialSlotByName( const SceneEdit& e, const String& painterName );
+
 		//! Run the post-mutation invariant chain on a single object
 		//! and on the manager.
 		void RunObjectInvariantChain( IObjectPriv& obj );

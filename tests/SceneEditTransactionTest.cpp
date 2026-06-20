@@ -1058,6 +1058,43 @@ static void TestCameraUndoTargetsEditedCamera()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestCompositeMaterialSlotRollback()
+{
+	std::cout << "Test: a composited material-slot edit is rolled back by undo (7th-review F1)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}, glow[3]={1.0,1.0,1.0};
+	pJob->AddUniformColorPainter( "p_white", white, "Rec709RGB_Linear" );
+	pJob->AddUniformColorPainter( "p_glow",  glow,  "Rec709RGB_Linear" );
+	pJob->AddLambertianMaterial( "mat_plain", "p_white" );
+	pJob->AddSphereGeometry( "geom", 1.0 );
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject( "obj", "geom", "mat_plain", nullptr, nullptr, nilRMap, ps, o, sc, true, true );
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader( "global", 1, ops );
+	Scene* pScene = dynamic_cast<Scene*>( pJob->GetScene() );
+	if( !pScene ) { Check( false, "[f1] scene downcast" ); pJob->release(); return; }
+	IObjectManager* objs = pJob->GetObjects();
+	const IPainter* refl0 = ObjMatSlot( objs, "obj" );
+	Check( refl0 != nullptr, "[f1] baseline reflectance painter present" );
+
+	SceneEditController ctrl( *pJob, 0 );
+	// Wrap a material-slot edit in a composite (the latent path: no shipping
+	// caller composites SetMaterialProperty today, so drive the editor direct).
+	ctrl.Editor().BeginComposite( "test-mat" );
+	SceneEdit e; e.op = SceneEdit::SetMaterialProperty; e.objectName = String( "mat_plain" );
+	e.propertyName = String( "reflectance" ); e.propertyValue = String( "p_glow" );
+	Check( ctrl.Editor().Apply( e ), "[f1] material-slot edit applied inside composite" );
+	ctrl.Editor().EndComposite();
+	const IPainter* reflEdited = ObjMatSlot( objs, "obj" );
+	Check( reflEdited != refl0, "[f1] reflectance changed by the edit" );
+
+	Check( ctrl.Editor().Undo(), "[f1] undo the composite" );
+	const IPainter* reflAfter = ObjMatSlot( objs, "obj" );
+	Check( reflAfter == refl0, "[f1] composited material-slot REVERTED by undo (F1)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1075,6 +1112,7 @@ int main()
 	TestUndoFirstShaderBind();
 	TestUndoFirstMaterialBind();
 	TestCameraUndoTargetsEditedCamera();
+	TestCompositeMaterialSlotRollback();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."
