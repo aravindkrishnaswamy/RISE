@@ -52,6 +52,7 @@ Scene::Scene( ) :
   pIrradianceCache( 0 ),
   pAnimator( 0 ),
   pGlobalMedium( 0 ),
+  mLightTopologyGeneration( 0 ),
   mCausticPelPending(),
   mGlobalPelPending(),
   mTranslucentPelPending(),
@@ -1352,24 +1353,21 @@ void Scene::RestoreFromSnapshot( const SceneSnapshot& snap )
 	//     RayCaster::AttachScene and cached on the RayCaster.  Scene has
 	//     no handle to them, so it cannot re-prepare them directly.
 	//
-	//     IMPORTANT CAVEAT (honest): RayCaster::AttachScene early-returns
-	//     when re-attached to the SAME IScene pointer (RayCaster.cpp
-	//     `if (pScene == pScene_) return;`), so a render that REUSES the
-	//     same rasterizer/caster against this (unchanged) Scene pointer
-	//     will NOT rebuild the LightSampler — its alias table / luminaries
-	//     list / scene-bounds cache would still reflect the PRE-restore
-	//     lights and emissive objects.  (The realize pass + the caller's
-	//     own PrepareForRendering DO run before that early-return, which is
-	//     why the TLAS above rebuilds reliably; the light-sampler setup is
-	//     AFTER it.)  This is a pre-existing engine property — the same is
-	//     true for any in-place light/topology edit on a reused caster,
-	//     and rasterizers are cached in Job::rasterizerRegistry.  To get a
-	//     render-faithful LightSampler after a restore that changed lights
-	//     or emissive geometry, the caller MUST force a fresh attach —
-	//     e.g. recreate the active rasterizer (drop it from the registry)
-	//     so a new RayCaster runs the full AttachScene path.  Wiring that
-	//     into the editor's restore-then-render flow is increment 2b's job;
-	//     #2a deliberately does not reach into the rasterizer layer.
+	//     #2b(a) FIX (was a documented caveat through #2a):
+	//     RayCaster::AttachScene early-returns when re-attached to the
+	//     SAME IScene pointer (RayCaster.cpp `if (pScene == pScene_)`),
+	//     which previously kept a render that REUSES the same caster
+	//     against this (unchanged) Scene pointer on the PRE-restore
+	//     sampler (stale alias table / luminaries / scene-bounds cache).
+	//     We now bump `mLightTopologyGeneration` below; the caster reads
+	//     that generation and, on a same-pointer re-attach whose
+	//     generation has advanced, REBUILDS the LightSampler /
+	//     LuminaryManager / environment sampler before rendering — so
+	//     restore (and any in-place light edit that bumps the counter)
+	//     is now render-faithful on a reused caster, without forcing a
+	//     full caster recreate.  (The realize pass + the caller's own
+	//     PrepareForRendering still run before the early-return, which is
+	//     why the TLAS above also rebuilds reliably.)
 	//
 	//     We additionally ResetRuntimeData() so any per-object
 	//     intersection caches from the prior contents are cleared.
@@ -1378,5 +1376,10 @@ void Scene::RestoreFromSnapshot( const SceneSnapshot& snap )
 		pObjectManager->InvalidateSpatialStructure();
 		pObjectManager->ResetRuntimeData();
 	}
+
+	// Restore changed the live light set (and possibly emissive
+	// geometry).  Advance the light/structure generation so the next
+	// same-pointer RayCaster::AttachScene rebuilds the samplers.
+	BumpLightTopologyGeneration();
 }
 

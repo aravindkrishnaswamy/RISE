@@ -190,6 +190,17 @@ namespace RISE
 		}
 
 	private:
+		//! Advance the live Scene's light/structure generation so a render
+		//! reusing a cached RayCaster rebuilds its LightSampler /
+		//! LuminaryManager / environment sampler instead of taking the
+		//! same-Scene-pointer fast path (feature/gui-snapshot-prototype
+		//! #2b(a)).  Call after any in-place LIGHT mutation (energy / colour
+		//! / direction / cone).  No-op if mScene isn't a concrete
+		//! RISE::Implementation::Scene (out-of-tree IScenePriv).  Keeps the
+		//! Scene generation in lockstep with editor light edits — the
+		//! engine-side counterpart of Scene::RestoreFromSnapshot's own bump.
+		void BumpSceneLightGeneration();
+
 		IScenePriv&  mScene;
 		class IMaterialManager*       mMaterialManager;       // borrowed; nullable
 		class IShaderManager*         mShaderManager;         // borrowed; nullable

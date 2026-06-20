@@ -49,6 +49,35 @@ namespace RISE
 			Scalar						dPendingLightRRThreshold;
 			bool						bPendingUseLightBVH;
 
+			//! Last-set RIS candidate count, retained so a same-pointer
+			//! sampler rebuild (#2b(a)) re-applies it — without this, a
+			//! rebuild would silently reset RIS to the LightSampler default
+			//! (0).  -1 = "never set; leave the fresh sampler at its
+			//! default", matching the other pending settings' "untouched"
+			//! sentinels.  (No in-tree rasterizer calls SetRISCandidates
+			//! today, so this is forward-safety / parity, not a live fix.)
+			int							iPendingRISCandidates;
+
+			//! The Scene light/structure generation the cached samplers
+			//! (LuminaryManager / LightSampler / EnvironmentSampler) were
+			//! last built against (feature/gui-snapshot-prototype #2b(a)).
+			//! AttachScene compares this against the live Scene's
+			//! GetLightTopologyGeneration(): on a same-Scene-pointer
+			//! re-attach whose generation has ADVANCED (a restore or an
+			//! in-place light edit), it rebuilds the samplers and refreshes
+			//! this value, instead of taking the same-pointer fast path.
+			//! 0 is the "never built" sentinel only in concert with a null
+			//! pScene; once a scene is attached this tracks its generation.
+			unsigned int				builtLightGeneration;
+
+			//! Rebuilds the cached LuminaryManager / LightSampler /
+			//! EnvironmentSampler from the currently-attached `pScene`.
+			//! Shared by the first-attach path and the same-pointer-
+			//! generation-advanced path so the two cannot drift.  Assumes
+			//! `pScene` is non-null and already set; increments the
+			//! process-wide sampler-rebuild diagnostic counter.
+			void RebuildLightSamplers();
+
 			//! When true, the unidirectional path tracer's NEE shadow
 			//! tests route through CastShadowRayTransmittance (Fresnel-
 			//! attenuated transparent shadows) instead of the binary
@@ -214,6 +243,18 @@ namespace RISE
 
 			/// \return The unified light sampler for the current scene
 			const LightSampler* GetLightSampler() const { return pLightSampler; };
+
+			/// Diagnostic: process-wide count of LightSampler rebuilds
+			/// performed inside AttachScene (the first build on a fresh
+			/// scene-pointer attach PLUS any same-pointer rebuild driven by
+			/// an advanced Scene light-generation).  Proves the #2b(a)
+			/// generation gate: a no-change re-attach leaves it unchanged
+			/// (fast path); a restore / in-place light edit followed by a
+			/// re-attach bumps it by exactly one.  Same static-counter
+			/// pattern as Scene::GetPhotonShootCount.  Single-threaded —
+			/// AttachScene runs at the pre-parallel scene-setup seam.
+			static unsigned int GetSamplerRebuildCount();
+			static void         ResetSamplerRebuildCount();
 
 			/// Sets the number of RIS candidates for spatially-aware
 			/// light selection.  Must be called after AttachScene().

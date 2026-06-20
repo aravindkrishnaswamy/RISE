@@ -28,6 +28,7 @@
 #include "../Utilities/Optics.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IGeometry.h"
+#include "../Scene.h"					// concrete Scene for the light-generation read (#2b(a))
 
 #define ENABLE_MAX_RECURSION
 
@@ -67,6 +68,8 @@ RayCaster::RayCaster(
   bShowLuminaires( showLuminaires ),
   dPendingLightRRThreshold( 0 ),
   bPendingUseLightBVH( false ),
+  iPendingRISCandidates( -1 ),
+  builtLightGeneration( 0 ),
   bTransparentShadows( false ),
   dRadianceScaleOverride( -1.0 )		// negative = no override (use the map's own scale)
 {
@@ -90,6 +93,27 @@ RayCaster::~RayCaster( )
 }
 
 namespace {
+	// Diagnostic counter; see RayCaster::GetSamplerRebuildCount in the
+	// header.  Single-threaded — AttachScene runs at the pre-parallel
+	// scene-setup seam, never from inside the rasterize.
+	unsigned int s_samplerRebuildCount = 0;
+
+	// Read the concrete Scene's light/structure generation (#2b(a)).  The
+	// IScene/IScenePriv abstract interface deliberately does NOT carry this
+	// (adding a virtual there would break new-caller -> old-implementation
+	// vtable ABI — see abi-preserving-api-evolution).  We downcast to the
+	// concrete Scene here at the one call site instead.  An out-of-tree
+	// IScene that isn't a RISE::Implementation::Scene yields 0 (a constant),
+	// so AttachScene's `liveGen != builtLightGeneration` check is never
+	// satisfied for it after the first build — i.e. such a scene keeps the
+	// exact pre-#2b(a) same-pointer fast-path behaviour (no regression).
+	unsigned int SceneLightGeneration( const RISE::IScene* pScene )
+	{
+		const RISE::Implementation::Scene* concrete =
+			dynamic_cast<const RISE::Implementation::Scene*>( pScene );
+		return concrete ? concrete->GetLightTopologyGeneration() : 0u;
+	}
+
 	// Realize-pass dispatch: calls obj.Realize() on each world-visible
 	// object.  Object::Realize() bakes its (deferred) geometry; CSGObject::
 	// Realize() cascades into its world-invisible, un-enumerated operands.
@@ -135,7 +159,23 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 		}
 	}
 
+	// Same Scene pointer: the contents may still have changed IN PLACE
+	// (a restore or an in-place light edit on the live scene — see
+	// Scene::BumpLightTopologyGeneration / RestoreFromSnapshot).  Compare
+	// the live light/structure generation against the one our cached
+	// samplers were built with.  Unchanged -> O(1) fast path (so a
+	// production render that re-attaches every pass pays nothing).
+	// Advanced -> rebuild ONLY the light samplers (the realize pass above
+	// + the caller's PrepareForRendering already refresh geometry/TLAS);
+	// nothing else on the caster needs to change.
 	if( pScene == pScene_ ) {
+		if( pScene ) {
+			const unsigned int liveGen = SceneLightGeneration( pScene );
+			if( liveGen != builtLightGeneration ) {
+				RebuildLightSamplers();
+				builtLightGeneration = liveGen;
+			}
+		}
 		return;
 	}
 
@@ -145,81 +185,105 @@ void RayCaster::AttachScene( const IScene* pScene_ )
 		pScene = pScene_;
 		pScene->addref();
 
-		safe_release( pLuminaryManager );
-
-		LuminaryManager* pConcreteLumMgr = new LuminaryManager();
-		pLuminaryManager = pConcreteLumMgr;
-		GlobalLog()->PrintNew( pLuminaryManager, __FILE__, __LINE__, "luminary manager" );
-		pLuminaryManager->AttachScene( pScene );
-
-		if( pLumSampling ) {
-			pLuminaryManager->SetLuminaireSampling( pLumSampling );
-		}
-
-		// Create and prepare the unified light sampler
-		safe_release( pLightSampler );
-		pLightSampler = new LightSampler();
-		GlobalLog()->PrintNew( pLightSampler, __FILE__, __LINE__, "light sampler" );
-
-		// Apply pending settings before Prepare() which builds
-		// internal data structures that depend on them.
-		if( bPendingUseLightBVH )
-		{
-			pLightSampler->SetUseLightBVH( true );
-		}
-
-		pLightSampler->Prepare( *pScene, pConcreteLumMgr->getLuminaries() );
-
-		// Apply any pending light-sample RR threshold
-		if( dPendingLightRRThreshold > 0 )
-		{
-			pLightSampler->SetLightSampleRRThreshold( dPendingLightRRThreshold );
-		}
-
-		// Build environment importance sampler if a global radiance map exists
-		const IRadianceMap* pEnvMap = pScene->GetGlobalRadianceMap();
-		if( pEnvMap )
-		{
-			// A `> modify rasterizer radiance_scale` override (set via
-			// Job::SetActiveRasterizerRadianceScale -> SetRadianceScale)
-			// takes precedence over the map's own scale.  Negative means
-			// "no override".  The same override is also pushed into the
-			// radiance map (the direct-view background), keeping NEE and the
-			// background in sync; a direct SetRadianceScale() that skips that
-			// dual-write would drive only NEE — but we resolve from the
-			// member to keep this caster the authoritative source for the
-			// NEE (environment-sampler) scale regardless of attach order.
-			const Scalar dEnvScale =
-				( dRadianceScaleOverride >= 0.0 ) ? dRadianceScaleOverride : pEnvMap->GetScale();
-
-			EnvironmentSampler* pEnvSampler = new EnvironmentSampler(
-				pEnvMap->GetPainter(),
-				dEnvScale,
-				pEnvMap->GetTransform(),
-				64
-				);
-			GlobalLog()->PrintNew( pEnvSampler, __FILE__, __LINE__, "environment sampler" );
-			pEnvSampler->Build();
-
-			if( pEnvSampler->IsValid() )
-			{
-				pLightSampler->SetEnvironmentSampler( pEnvMap, pEnvSampler );
-				GlobalLog()->PrintEasyEvent( "Environment importance sampler built successfully" );
-			}
-			else
-			{
-				GlobalLog()->PrintEasyWarning( "Environment map is black, importance sampling disabled" );
-			}
-
-			// LightSampler::SetEnvironmentSampler addrefs if valid, so
-			// release our local reference.
-			safe_release( pEnvSampler );
-		}
+		RebuildLightSamplers();
+		builtLightGeneration = SceneLightGeneration( pScene );
 	}
 }
 
 
-bool RayCaster::CastRay( 
+// Rebuild the cached LuminaryManager / LightSampler / EnvironmentSampler
+// from the currently-attached `pScene`.  Extracted from AttachScene so the
+// first-attach (new scene pointer) and the same-pointer-generation-advanced
+// rebuild paths share ONE implementation and cannot drift.  `pScene` must
+// be non-null and already set by the caller.
+void RayCaster::RebuildLightSamplers()
+{
+	++s_samplerRebuildCount;
+
+	safe_release( pLuminaryManager );
+
+	LuminaryManager* pConcreteLumMgr = new LuminaryManager();
+	pLuminaryManager = pConcreteLumMgr;
+	GlobalLog()->PrintNew( pLuminaryManager, __FILE__, __LINE__, "luminary manager" );
+	pLuminaryManager->AttachScene( pScene );
+
+	if( pLumSampling ) {
+		pLuminaryManager->SetLuminaireSampling( pLumSampling );
+	}
+
+	// Create and prepare the unified light sampler
+	safe_release( pLightSampler );
+	pLightSampler = new LightSampler();
+	GlobalLog()->PrintNew( pLightSampler, __FILE__, __LINE__, "light sampler" );
+
+	// Apply pending settings before Prepare() which builds
+	// internal data structures that depend on them.
+	if( bPendingUseLightBVH )
+	{
+		pLightSampler->SetUseLightBVH( true );
+	}
+
+	pLightSampler->Prepare( *pScene, pConcreteLumMgr->getLuminaries() );
+
+	// Apply any pending light-sample RR threshold
+	if( dPendingLightRRThreshold > 0 )
+	{
+		pLightSampler->SetLightSampleRRThreshold( dPendingLightRRThreshold );
+	}
+
+	// Re-apply any previously-set RIS candidate count so a same-pointer
+	// rebuild doesn't silently drop it (the fresh LightSampler defaults to 0).
+	if( iPendingRISCandidates >= 0 )
+	{
+		pLightSampler->SetRISCandidates( (unsigned int)iPendingRISCandidates );
+	}
+
+	// Build environment importance sampler if a global radiance map exists
+	const IRadianceMap* pEnvMap = pScene->GetGlobalRadianceMap();
+	if( pEnvMap )
+	{
+		// A `> modify rasterizer radiance_scale` override (set via
+		// Job::SetActiveRasterizerRadianceScale -> SetRadianceScale)
+		// takes precedence over the map's own scale.  Negative means
+		// "no override".  The same override is also pushed into the
+		// radiance map (the direct-view background), keeping NEE and the
+		// background in sync; a direct SetRadianceScale() that skips that
+		// dual-write would drive only NEE — but we resolve from the
+		// member to keep this caster the authoritative source for the
+		// NEE (environment-sampler) scale regardless of attach order.
+		const Scalar dEnvScale =
+			( dRadianceScaleOverride >= 0.0 ) ? dRadianceScaleOverride : pEnvMap->GetScale();
+
+		EnvironmentSampler* pEnvSampler = new EnvironmentSampler(
+			pEnvMap->GetPainter(),
+			dEnvScale,
+			pEnvMap->GetTransform(),
+			64
+			);
+		GlobalLog()->PrintNew( pEnvSampler, __FILE__, __LINE__, "environment sampler" );
+		pEnvSampler->Build();
+
+		if( pEnvSampler->IsValid() )
+		{
+			pLightSampler->SetEnvironmentSampler( pEnvMap, pEnvSampler );
+			GlobalLog()->PrintEasyEvent( "Environment importance sampler built successfully" );
+		}
+		else
+		{
+			GlobalLog()->PrintEasyWarning( "Environment map is black, importance sampling disabled" );
+		}
+
+		// LightSampler::SetEnvironmentSampler addrefs if valid, so
+		// release our local reference.
+		safe_release( pEnvSampler );
+	}
+}
+
+unsigned int RayCaster::GetSamplerRebuildCount() { return s_samplerRebuildCount; }
+void         RayCaster::ResetSamplerRebuildCount() { s_samplerRebuildCount = 0; }
+
+
+bool RayCaster::CastRay(
 			const RuntimeContext& rc,							///< [in] The runtime context
 			const RasterizerState& rast,						///< [in] Current state of the rasterizer
 			const Ray& ray,										///< [in] Ray to cast
@@ -1649,6 +1713,9 @@ bool RayCaster::CastShadowRayTransmittance(
 
 void RayCaster::SetRISCandidates( const unsigned int M )
 {
+	// Retain so a same-pointer sampler rebuild (#2b(a)) re-applies it; see
+	// iPendingRISCandidates.
+	iPendingRISCandidates = (int)M;
 	if( pLightSampler )
 	{
 		pLightSampler->SetRISCandidates( M );

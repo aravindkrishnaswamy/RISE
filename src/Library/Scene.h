@@ -221,6 +221,21 @@ namespace RISE
 
 			const IMedium*				pGlobalMedium;
 
+			//! Monotonic light/structure generation counter (feature/
+			//! gui-snapshot-prototype, increment 2b(a)).  Bumped whenever
+			//! the scene's light state changes in a way the RayCaster's
+			//! LightSampler / LuminaryManager / EnvironmentSampler must be
+			//! rebuilt to reflect: RestoreFromSnapshot, and (via the editor
+			//! light-edit + structural light add/remove paths) any in-place
+			//! light mutation.  RayCaster::AttachScene caches the last value
+			//! it built against; when the SAME Scene pointer is re-attached
+			//! with an ADVANCED generation, it rebuilds the samplers instead
+			//! of taking the same-pointer fast path.  Starts at 0; the
+			//! caster's initial build is keyed off the first real attach, so
+			//! a counter that never bumps keeps the legacy fast-path
+			//! behaviour exactly (no per-render rebuild).
+			unsigned int				mLightTopologyGeneration;
+
 			// Deferred photon-map shoots: parser enqueues, first RasterizeScene flushes.
 			PendingCausticPelShoot			mCausticPelPending;
 			PendingGlobalPelShoot			mGlobalPelPending;
@@ -262,6 +277,25 @@ namespace RISE
 			inline IAnimator*					GetAnimator() const { return pAnimator; }
 
 			inline const IMedium*		GetGlobalMedium() const { return pGlobalMedium; }
+
+			//! \return The current light/structure generation (see
+			//! `mLightTopologyGeneration`).  CONCRETE (non-virtual) by
+			//! design — adding a virtual to the IScene/IScenePriv abstract
+			//! interface would break new-caller -> old-implementation vtable
+			//! compatibility (abi-preserving-api-evolution skill, Layer 2);
+			//! RayCaster reads it via a dynamic_cast<const Scene*> at the
+			//! one call site instead.  O(1).
+			unsigned int GetLightTopologyGeneration() const { return mLightTopologyGeneration; }
+
+			//! Advance the light/structure generation by one.  Call AFTER
+			//! any mutation of the scene's light state that the RayCaster's
+			//! samplers must reflect — an in-place light-property edit
+			//! (energy / colour / direction / cone), a structural light
+			//! add/remove, or RestoreFromSnapshot (which calls this itself).
+			//! The next RayCaster::AttachScene on the same Scene pointer will
+			//! then rebuild the LightSampler / LuminaryManager / environment
+			//! sampler rather than take the same-pointer fast path.
+			void BumpLightTopologyGeneration() { ++mLightTopologyGeneration; }
 
 			// Non-const accessors from IScenePriv
 			ICamera*				GetCameraMutable()				{ return pActiveCamera; }

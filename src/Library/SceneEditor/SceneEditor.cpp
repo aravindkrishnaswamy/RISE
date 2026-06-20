@@ -52,9 +52,23 @@
 #include "../Interfaces/IEnumCallback.h"
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Cameras/CameraCommon.h"
+#include "../Scene.h"   // concrete Scene for the #2b(a) light-generation bump
 #include <cmath>
 
 using namespace RISE;
+
+void SceneEditor::BumpSceneLightGeneration()
+{
+	// IScenePriv carries no light-generation surface (keeping that off the
+	// abstract interface is deliberate — see Scene::GetLightTopologyGeneration
+	// and the abi-preserving-api-evolution skill).  Downcast to the concrete
+	// Scene at this single editor call site; out-of-tree scenes no-op.
+	if( Implementation::Scene* concrete =
+	    dynamic_cast<Implementation::Scene*>( &mScene ) )
+	{
+		concrete->BumpLightTopologyGeneration();
+	}
+}
 
 SceneEditor::SceneEditor( IScenePriv& scene )
 : mScene( scene )
@@ -1252,6 +1266,7 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		// SetIntermediateValue stages new field values; flush to the
 		// final transform / runtime state before the next render.
 		light->RegenerateData();
+		BumpSceneLightGeneration();   // #2b(a): rebuild caster samplers next render
 
 		mLastScope = Dirty_Camera;   // no spatial structure invalidation; same scope as camera
 		mHistory.Push( edit );
@@ -1433,6 +1448,7 @@ bool SceneEditor::Undo()
 							light->SetIntermediateValue( *p );
 							safe_release( p );
 							light->RegenerateData();
+							BumpSceneLightGeneration();   // #2b(a): rebuild caster samplers next render
 						}
 					}
 				}
@@ -1652,6 +1668,7 @@ bool SceneEditor::Undo()
 		light->SetIntermediateValue( *p );
 		safe_release( p );
 		light->RegenerateData();
+		BumpSceneLightGeneration();   // #2b(a): rebuild caster samplers next render
 		mLastScope = Dirty_Camera;
 		return true;
 	}
@@ -1778,6 +1795,7 @@ bool SceneEditor::Redo()
 							light->SetIntermediateValue( *p );
 							safe_release( p );
 							light->RegenerateData();
+							BumpSceneLightGeneration();   // #2b(a): rebuild caster samplers next render
 						}
 					}
 				}
@@ -1898,6 +1916,7 @@ bool SceneEditor::Redo()
 		light->SetIntermediateValue( *p );
 		safe_release( p );
 		light->RegenerateData();
+		BumpSceneLightGeneration();   // #2b(a): rebuild caster samplers next render
 		mLastScope = Dirty_Camera;
 		return true;
 	}
