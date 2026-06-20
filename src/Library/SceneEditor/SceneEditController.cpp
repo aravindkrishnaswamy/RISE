@@ -34,6 +34,7 @@
 
 #include "pch.h"
 #include "SceneEditController.h"
+#include "../Utilities/Transformable.h"   // F6: CaptureTransformState at gizmo drag-start
 #include "ObjectIntrospection.h"
 #include "LightIntrospection.h"
 #include "RasterizerIntrospection.h"
@@ -921,8 +922,18 @@ void SceneEditController::OnPointerDown( const Point2& px )
 					IObjectPriv* obj = objs ? objs->GetItem( mSelectionName.c_str() ) : 0;
 					if( obj ) {
 						mGizmoDrag.dragStartMatrix = obj->GetFinalTransformMatrix();
+						// F6: also capture the component-decomposed state so undo of
+						// the ScaleObjectFromAnchor restores COMPONENTS (not a stack-
+						// collapsed matrix) and a later absolute setter replaces the
+						// right component instead of composing with the anchor.
+						mGizmoDrag.dragStartStateValid = false;
+						if( Implementation::Transformable* tt = dynamic_cast<Implementation::Transformable*>( obj ) ) {
+							mGizmoDrag.dragStartState      = tt->CaptureTransformState();
+							mGizmoDrag.dragStartStateValid = true;
+						}
 					} else {
 						mGizmoDrag.dragStartMatrix = Matrix4Ops::Identity();
+						mGizmoDrag.dragStartStateValid = false;
 					}
 
 					const IScene* scene = mJob.GetScene();
@@ -1250,6 +1261,12 @@ void SceneEditController::OnPointerMove( const Point2& px )
 			// re-capture for this op so the anchor stays stable
 			// across every frame of the drag.
 			edit.prevTransform = mGizmoDrag.dragStartMatrix;
+			// F6: carry the drag-start component state; RestoreObjectTransform
+			// prefers it over the collapsed-matrix fallback.
+			if( mGizmoDrag.dragStartStateValid ) {
+				edit.prevTransformState = mGizmoDrag.dragStartState;
+				edit.hasTransformState  = true;
+			}
 		} else {
 			// Legacy free-drag (no handle hit): per-frame absolute
 			// reset — broken for accumulation but kept for non-gizmo

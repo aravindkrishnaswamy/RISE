@@ -25,6 +25,7 @@
 #define RISE_SCENEEDITCONTROLLER_
 
 #include "SceneEditor.h"
+#include "../Interfaces/ITransformable.h"   // TransformState (F6 gizmo drag-start capture)
 #include "SaveEngine.h"
 #include "CancellableProgressCallback.h"
 #include "CameraIntrospection.h"
@@ -831,6 +832,11 @@ namespace RISE
 			                          ///< so the factor composes correctly with whatever
 			                          ///< transform-stack state the object had (matrix
 			                          ///< import / quaternion / earlier SetObjectScale).
+			TransformState dragStartState;  ///< F6: component-decomposed transform at
+			                                ///< drag-start, so undo of a ScaleObjectFromAnchor
+			                                ///< restores COMPONENTS (not a stack-collapsed matrix)
+			                                ///< -> a later absolute setter composes correctly.
+			bool    dragStartStateValid;    ///< F6: dragStartState captured this drag.
 			double  prevAngle;        ///< pointer angle around pivot (for Ring drags)
 		};
 		GizmoDragState              mGizmoDrag;
