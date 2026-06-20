@@ -1,6 +1,6 @@
 # RISE Interactive Editor — Phase 6: Round-Trip Save
 
-**Status:** Design — pending review.  **Revision 8** (incorporates Round-7 adversarial finding on top of R1-R6 — see §20).
+**Status:** ⚠ **STALE HEADER — the design below is largely IMPLEMENTED.** This doc's status/successor labels predate the code. See [../src/Library/SceneEditor/SaveEngine.cpp](../src/Library/SceneEditor/SaveEngine.cpp) ("Phase 6.4"): Mode A/B transforms + **Phase B property re-emit (camera/light/material/medium)** + **Phase C created-camera** persistence all ship, covered by [../tests/SaveEngineTest.cpp](../tests/SaveEngineTest.cpp). Still deferred: created *non-camera* entities, cross-file managed overrides, full re-serialize. *(Original header: "Design — pending review. Revision 8 — incorporates Round-7 adversarial finding on top of R1-R6, see §20.")*
 **Owner:** Interactive Editor track.
 **Predecessors:** Phases 1-5 (see [INTERACTIVE_EDITOR_PLAN.md](INTERACTIVE_EDITOR_PLAN.md) §9-13).
 **Successors:** Phase B (descriptor-driven re-emit for cameras / lights / painters, AND recursive child-file analysis for cross-file managed overrides — see pinned 2.25), Phase C (full re-serialize).  Both deferred.
