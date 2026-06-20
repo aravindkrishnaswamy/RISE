@@ -93,6 +93,15 @@ namespace RISE
 		//! parser-parity round-trip.
 		virtual void ClearInteriorMedium() = 0;
 
+		//! Clears any previously-assigned shader / material so the
+		//! object reverts to the UNBOUND state (parser default when
+		//! `shader` / `material` is absent or `"none"`).  Assign* take a
+		//! reference with no null-sentinel, so undo of a FIRST bind onto a
+		//! previously-unbound object needs a clear path (7th-review F5).
+		//! Mirrors ClearInteriorMedium.
+		virtual void ClearShader() = 0;
+		virtual void ClearMaterial() = 0;
+
 		//! Sets the epsilon error threshold to use when computing intersections
 		virtual void SetSurfaceIntersecError(
 			Scalar d												///< [in] Amount of error to assume when doing intersection calculations.  This value can range from 1e-3 to about 1e-12

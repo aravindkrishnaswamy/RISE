@@ -296,6 +296,10 @@ namespace RISE
 		//! for ScaleObjectFromAnchor (prevTransform is managed specially) and
 		//! for non-Transformable targets -- those fall back to prevTransform.
 		bool           hasTransformState;
+
+		//! F5: the object had NO shader/material before a SetObjectShader/
+		//! SetObjectMaterial edit, so Undo must CLEAR the binding (not skip).
+		bool           prevBindingWasNull;
 		TransformState prevTransformState;
 
 		//! Previous scene time (for SetSceneTime undo).
@@ -333,6 +337,7 @@ namespace RISE
 		, s( 0 )
 		, prevTransform( Matrix4Ops::Identity() )
 		, hasTransformState( false )
+		, prevBindingWasNull( false )
 		, prevTransformState()
 		, prevTime( 0 )
 		, prevCameraPos()

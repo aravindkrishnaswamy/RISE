@@ -953,6 +953,71 @@ static void TestAbsoluteTransformUndoComposition()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestUndoFirstShaderBind()
+{
+	std::cout << "Test: undo of a FIRST shader bind clears it (no-shader baseline) (7th-review F5)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3] = { 0.8, 0.8, 0.8 };
+	pJob->AddUniformColorPainter( "p_white", white, "Rec709RGB_Linear" );
+	pJob->AddLambertianMaterial( "mat_plain", "p_white" );
+	pJob->AddSphereGeometry( "geom", 1.0 );
+	RadianceMapConfig nilRMap;
+	const double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	// shader = nullptr -> object has NO object-level shader (the bug's precondition).
+	pJob->AddObject( "obj", "geom", "mat_plain", nullptr, nullptr, nilRMap, ps, o, sc, true, true );
+	const char* ops[] = { "DefaultDirectLighting" };
+	pJob->AddStandardShader( "global", 1, ops );
+	pJob->AddStandardShader( "sh1", 1, ops );
+	Scene* pScene = dynamic_cast<Scene*>( pJob->GetScene() );
+	if( !pScene ) { Check( false, "[f5s] scene downcast" ); pJob->release(); return; }
+	IObjectManager* objs = pJob->GetObjects();
+	IObjectPriv* obj = objs ? objs->GetItem( "obj" ) : nullptr;
+	Check( obj && obj->GetShader() == nullptr, "[f5s] baseline: object has no shader" );
+
+	SceneEditController ctrl( *pJob, 0 );
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Object, String( "shader" ), String( "sh1" ) ),
+	       "[f5s] bind shader applied" );
+	Check( obj->GetShader() != nullptr, "[f5s] shader now bound" );
+	Check( ctrl.Editor().Undo(), "[f5s] undo succeeds" );
+	Check( obj->GetShader() == nullptr, "[f5s] shader CLEARED after undo of a first bind (F5)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestUndoFirstMaterialBind()
+{
+	std::cout << "Test: undo of a FIRST material bind clears it (no-material baseline) (7th-review F5)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3] = { 0.8, 0.8, 0.8 };
+	pJob->AddUniformColorPainter( "p_white", white, "Rec709RGB_Linear" );
+	pJob->AddLambertianMaterial( "mat_plain", "p_white" );
+	pJob->AddSphereGeometry( "geom", 1.0 );
+	RadianceMapConfig nilRMap;
+	const double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	// material = nullptr -> object has NO material (the bug's precondition).
+	pJob->AddObject( "obj", "geom", nullptr, nullptr, nullptr, nilRMap, ps, o, sc, true, true );
+	const char* ops[] = { "DefaultDirectLighting" };
+	pJob->AddStandardShader( "global", 1, ops );
+	Scene* pScene = dynamic_cast<Scene*>( pJob->GetScene() );
+	if( !pScene ) { Check( false, "[f5m] scene downcast" ); pJob->release(); return; }
+	IObjectManager* objs = pJob->GetObjects();
+	IObjectPriv* obj = objs ? objs->GetItem( "obj" ) : nullptr;
+	Check( obj && obj->GetMaterial() == nullptr, "[f5m] baseline: object has no material" );
+
+	SceneEditController ctrl( *pJob, 0 );
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String( "obj" ) );
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Object, String( "material" ), String( "mat_plain" ) ),
+	       "[f5m] bind material applied" );
+	Check( obj->GetMaterial() != nullptr, "[f5m] material now bound" );
+	Check( ctrl.Editor().Undo(), "[f5m] undo succeeds" );
+	Check( obj->GetMaterial() == nullptr, "[f5m] material CLEARED after undo of a first bind (F5)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -967,6 +1032,8 @@ int main()
 	TestMaterialSlotEditOnEmissiveBumpsGeneration();
 	TestBeginTransactionRefusedMidComposite();
 	TestAbsoluteTransformUndoComposition();
+	TestUndoFirstShaderBind();
+	TestUndoFirstMaterialBind();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."

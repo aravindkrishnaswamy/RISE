@@ -1017,6 +1017,7 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 				return false;
 			}
 			edit.prevPropertyValue = FindManagerName( mMaterialManager, obj->GetMaterial() );
+			edit.prevBindingWasNull = ( obj->GetMaterial() == 0 );
 			break;
 		case SceneEdit::SetObjectShader:
 			// Same validation as material — prevent silent no-ops on
@@ -1027,6 +1028,7 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 				return false;
 			}
 			edit.prevPropertyValue = FindManagerName( mShaderManager, obj->GetShader() );
+			edit.prevBindingWasNull = ( obj->GetShader() == 0 );
 			break;
 		case SceneEdit::SetObjectShadowFlags:
 			edit.prevShadowFlags = static_cast<Scalar>(
@@ -1429,7 +1431,13 @@ bool SceneEditor::Undo()
 				{
 					switch( inner.op ) {
 					case SceneEdit::SetObjectMaterial:
-						if( mMaterialManager && inner.prevPropertyValue.size() > 1 ) {
+						if( inner.prevBindingWasNull ) {
+							// F5: undo of a FIRST material bind restores the unbound state
+							// (clearing an emissive material changes the emitter set -> bump).
+							const IMaterial* clrPrev = obj->GetMaterial();
+							obj->ClearMaterial();
+							BumpSceneLightGenerationIfEmitterSetChanged( clrPrev, nullptr );
+						} else if( mMaterialManager && inner.prevPropertyValue.size() > 1 ) {
 							IMaterial* mat = mMaterialManager->GetItem( inner.prevPropertyValue.c_str() );
 							if( mat ) {
 								// P1-4: undo of a material rebind also changes
@@ -1441,7 +1449,9 @@ bool SceneEditor::Undo()
 						}
 						break;
 					case SceneEdit::SetObjectShader:
-						if( mShaderManager && inner.prevPropertyValue.size() > 1 ) {
+						if( inner.prevBindingWasNull ) {
+							obj->ClearShader();   // F5: undo of a FIRST shader bind
+						} else if( mShaderManager && inner.prevPropertyValue.size() > 1 ) {
 							IShader* sh = mShaderManager->GetItem( inner.prevPropertyValue.c_str() );
 							if( sh ) obj->AssignShader( *sh );
 						}
@@ -1589,7 +1599,13 @@ bool SceneEditor::Undo()
 		// runs only the work it needs.
 		switch( edit.op ) {
 		case SceneEdit::SetObjectMaterial:
-			if( mMaterialManager && edit.prevPropertyValue.size() > 1 ) {
+			if( edit.prevBindingWasNull ) {
+				// F5: undo of a FIRST material bind restores the unbound state
+				// (clearing an emissive material changes the emitter set -> bump).
+				const IMaterial* clrPrev = obj->GetMaterial();
+				obj->ClearMaterial();
+				BumpSceneLightGenerationIfEmitterSetChanged( clrPrev, nullptr );
+			} else if( mMaterialManager && edit.prevPropertyValue.size() > 1 ) {
 				IMaterial* mat = mMaterialManager->GetItem( edit.prevPropertyValue.c_str() );
 				if( mat ) {
 					// P1-4: undo of a material rebind changes the emitter
@@ -1602,7 +1618,9 @@ bool SceneEditor::Undo()
 			}
 			break;
 		case SceneEdit::SetObjectShader:
-			if( mShaderManager && edit.prevPropertyValue.size() > 1 ) {
+			if( edit.prevBindingWasNull ) {
+				obj->ClearShader();   // F5: undo of a FIRST shader bind
+			} else if( mShaderManager && edit.prevPropertyValue.size() > 1 ) {
 				IShader* sh = mShaderManager->GetItem( edit.prevPropertyValue.c_str() );
 				if( sh ) obj->AssignShader( *sh );
 			}

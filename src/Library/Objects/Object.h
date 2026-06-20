@@ -120,6 +120,8 @@ namespace RISE
 			virtual bool AssignRadianceMap( const IRadianceMap& pRadianceMap ) override;
 			virtual bool AssignInteriorMedium( const IMedium& medium ) override;
 			virtual void ClearInteriorMedium() override;
+			virtual void ClearShader() override;
+			virtual void ClearMaterial() override;
 
 			virtual void IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
 			virtual bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;

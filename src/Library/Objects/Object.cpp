@@ -259,6 +259,18 @@ void Object::ClearInteriorMedium()
 	pInteriorMedium = 0;
 }
 
+void Object::ClearShader()
+{
+	safe_release( pShader );
+	pShader = 0;
+}
+
+void Object::ClearMaterial()
+{
+	safe_release( pMaterial );
+	pMaterial = 0;
+}
+
 const IMaterial* Object::GetMaterial() const
 {
 	return pMaterial;
