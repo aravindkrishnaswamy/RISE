@@ -1084,15 +1084,29 @@ SceneSnapshot* Scene::CreateSnapshot() const
 	// from its public emission accessors (transform-derived position
 	// restored) and falls back to addref for unknown out-of-tree types.
 	if( pLightManager ) {
-		const ILightManager::LightsList& lights = pLightManager->getLights();
-		for( size_t i = 0; i < lights.size(); ++i ) {
-			const ILightPriv* live = lights[i];
-			if( !live ) { continue; }
-			const ILight* clone = Implementation::CloneLightForSnapshot( live );
-			if( clone ) {
-				pSnap->AddClonedLight( clone, String() );
+		// Enumerate by NAME (like the object loop above) so each cloned light
+		// keeps its authored name -- else RestoreFromSnapshot can only invent
+		// synthetic keys and the original light (e.g. "key") no longer resolves
+		// (re-review finding: light-name loss, which the NaN-sentinel false-green
+		// in SceneRestoreTest had been hiding under -ffast-math).
+		struct CloneLightCb : public IEnumCallback<const char*> {
+			const ILightManager* mgr;
+			SceneSnapshot*       snap;
+			bool operator()( const char* const& name ) override {
+				const ILightPriv* live = mgr->GetItem( name );
+				if( live ) {
+					const ILight* clone = Implementation::CloneLightForSnapshot( live );
+					if( clone ) {
+						snap->AddClonedLight( clone, String( name ) );
+					}
+				}
+				return true;
 			}
-		}
+		};
+		CloneLightCb cb;
+		cb.mgr  = pLightManager;
+		cb.snap = pSnap;
+		pLightManager->EnumerateItemNames( cb );
 	}
 	// NOTE on luminaries: the luminary list (ILuminaryManager) is DERIVED
 	// from emissive objects at RayCaster::AttachScene time, not separately
@@ -1230,9 +1244,9 @@ void Scene::RestoreFromSnapshot( const SceneSnapshot& snap )
 	//     name + re-adding leaves the cache correct (a plain Shutdown()
 	//     would NOT — it clears items but not cachedLights).
 	//
-	//     The snapshot does not capture per-light names (capture stored
-	//     String()), so synthesize unique manager keys; light identity
-	//     for rendering is the instance + its emission, not the name.
+	//     Restored lights keep their CAPTURED names (the capture loop
+	//     now enumerates by name); a synthetic key is only a fallback
+	//     for a pre-name-capture snapshot.
 	// ----------------------------------------------------------------
 	if( pLightManager ) {
 		ILightManager* lightMgr = const_cast<ILightManager*>( pLightManager );
@@ -1258,9 +1272,15 @@ void Scene::RestoreFromSnapshot( const SceneSnapshot& snap )
 			ILightPriv* clonePriv =
 				dynamic_cast<ILightPriv*>( const_cast<ILight*>( cloneL ) );
 			if( clonePriv ) {
-				char buf[40];
-				std::snprintf( buf, sizeof(buf), "__restored_light_%zu", i );
-				lightMgr->AddItem( clonePriv, buf );
+				// Restore the light's CAPTURED name (synthetic key only as a
+				// fallback for a pre-name-capture snapshot).
+				String nm = snap.GetLightName( i );
+				if( nm.size() == 0 ) {
+					char buf[40];
+					std::snprintf( buf, sizeof(buf), "__restored_light_%zu", i );
+					nm = String( buf );
+				}
+				lightMgr->AddItem( clonePriv, nm.c_str() );
 			} else {
 				GlobalLog()->PrintEx( eLog_Warning,
 					"Scene::RestoreFromSnapshot:: light %zu is not an ILightPriv (unknown out-of-tree type); skipped", i );

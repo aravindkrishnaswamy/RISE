@@ -120,7 +120,7 @@ static Job* MakeRestoreScene()
 static double LiveObjX( IObjectManager* objs, const char* name )
 {
 	IObjectPriv* o = objs->GetItem( name );
-	if( !o ) { return std::nan( "" ); }
+	if( !o ) { return -1.0e30; }
 	return (double)o->GetFinalTransformMatrix()._30;
 }
 
@@ -128,7 +128,7 @@ static double LiveObjX( IObjectManager* objs, const char* name )
 static double LiveLightEnergy( ILightManager* lights, const char* name )
 {
 	ILightPriv* l = lights->GetItem( name );
-	if( !l ) { return std::nan( "" ); }
+	if( !l ) { return -1.0e30; }
 	return (double)l->emissionEnergy();
 }
 
