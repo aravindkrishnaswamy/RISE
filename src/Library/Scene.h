@@ -402,21 +402,17 @@ namespace RISE
 			//! PrepareForRendering and AttachScene's realize pass runs
 			//! before its same-scene early-return.
 			//!
-			//! LightSampler CAVEAT (honest): the LuminaryManager +
-			//! LightSampler + EnvironmentSampler are owned by the
-			//! RayCaster, built in RayCaster::AttachScene AFTER its
-			//! same-IScene-pointer early-return.  Scene cannot re-prepare
-			//! them directly.  A render that REUSES the same rasterizer/
-			//! caster against this (unchanged) Scene pointer will keep the
-			//! PRE-restore light-sampler state.  To get a render-faithful
-			//! LightSampler after a restore that changed lights / emissive
-			//! geometry, the caller must force a fresh attach (recreate the
-			//! active rasterizer so a new RayCaster runs the full
-			//! AttachScene path).  This is a pre-existing engine property
-			//! (true of any in-place light/topology edit on a reused
-			//! caster); wiring it into the editor render flow is increment
-			//! 2b's job.  #2a deliberately does not reach into the
-			//! rasterizer layer.
+			//! LightSampler: FIXED by #2b-a via the light-topology
+			//! generation gate.  The LuminaryManager / LightSampler /
+			//! EnvironmentSampler are RayCaster-owned (built in AttachScene
+			//! after its same-IScene-pointer early-return); RestoreFromSnapshot
+			//! and the SceneEditor light + object-material-binding mutation
+			//! sites bump mLightTopologyGeneration, and AttachScene now
+			//! rebuilds the samplers when the generation advanced even on the
+			//! same Scene pointer -- so a reused caster no longer keeps
+			//! pre-restore sampler state.  Remaining P1-4 sub-case: a material-
+			//! SLOT exitance edit on an already-emissive material (luminary set
+			//! unchanged) does not bump the generation -> cached exitance stale.
 			//!
 			//! HONEST FIDELITY: an ONB-constructed / unknown active
 			//! camera the snapshot could not clone (clonedCamera == NULL)

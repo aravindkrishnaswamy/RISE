@@ -754,7 +754,9 @@ The opaque-handle builder (or the one-shot `Propose`/whole-payload submit) **eli
 - **A true restorable document snapshot.** Enables undoable reload and undoable wholesale-rewrite (§13). Needs either retained source text on `Job` or a deep document capture.
 - **Fully-isolated drag preview.** Cloning the drag into a scratch document so even the owner's preview never touches the live graph (§3.3) — the working-copy / staging model (§14.2). The clone capability this needs is now **proven** (§3.5); the restore/publish path it also needs is **not yet built** (§14.2).
 
-### 14.2 Working-copy / transaction-atomicity — clone PROVEN, restore/publish NOT YET BUILT
+### 14.2 Working-copy / transaction-atomicity — rollback BUILT (inverse-edit undo); snapshot/restore EXPERIMENTAL
+
+> **⚠ UPDATE (2026-06-20) — the narrative below is SUPERSEDED.** Restore/publish *was* built (#2a/#2b) but a 5th code-backed review found P1 bugs in it; the editor's transaction **rollback was re-based on inverse-edit undo (NOT snapshot-restore)** (`3b32b7ba`), and `Scene::CreateSnapshot`/`RestoreFromSnapshot` are now **EXPERIMENTAL** (off the rollback path, retained for a future isolated-render use). The clone-only spike narrative here and in §3.5 (incl. "18/18", "no new source file", "pose-only camera") is **A-era and stale** — see [GUI_ROADMAP](../GUI_ROADMAP.md) §13a #2's P1 register for the current verified state (`SceneEditTransactionTest` 85/0 on inverse-edit undo).
 
 This is the "◑ partially grounded" item from the code-backed review ([GUI_ROADMAP](../GUI_ROADMAP.md) §13a item #2). Its status, honestly:
 
