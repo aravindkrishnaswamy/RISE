@@ -315,7 +315,7 @@ namespace RISE
 		void ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit );
 
 		//! Restore an object's transform from a captured matrix.
-		void RestoreObjectTransform( IObjectPriv& obj, const Matrix4& prev );
+		void RestoreObjectTransform( IObjectPriv& obj, const SceneEdit& edit );
 
 		//! Run the post-mutation invariant chain on a single object
 		//! and on the manager.

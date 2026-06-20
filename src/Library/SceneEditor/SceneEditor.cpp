@@ -31,6 +31,7 @@
 #include "SceneEditor.h"
 #include "CameraIntrospection.h"
 #include "../Interfaces/IObjectPriv.h"
+#include "../Utilities/Transformable.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IMaterial.h"
 #include "../Interfaces/IMaterialManager.h"
@@ -809,16 +810,24 @@ void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 	}
 }
 
-void SceneEditor::RestoreObjectTransform( IObjectPriv& obj, const Matrix4& prev )
+void SceneEditor::RestoreObjectTransform( IObjectPriv& obj, const SceneEdit& edit )
 {
-	// ITransformable composes its final matrix as
-	//   m_mxFinalTrans = position * orientation * stretch * scale * stack
-	// So to restore an arbitrary captured matrix we zero out every
-	// component (ClearAllTransforms) and push the captured matrix
-	// onto the stack.  After FinalizeTransformations, the final
-	// matrix equals prev.
+	// Prefer the full component-decomposed state captured at edit time: it
+	// restores position/orientation/scale/stretch as COMPONENTS, so a later
+	// absolute SetPosition/SetOrientation/... replaces the right component
+	// instead of composing with a baseline collapsed onto the stack (the
+	// pre-existing transform-undo bug).  Fall back to the collapsed-matrix
+	// restore for ScaleObjectFromAnchor / non-Transformable targets.
+	if( edit.hasTransformState ) {
+		if( Implementation::Transformable* t = dynamic_cast<Implementation::Transformable*>( &obj ) ) {
+			t->RestoreTransformState( edit.prevTransformState );
+			return;
+		}
+	}
+	// Fallback (ITransformable composes final = position * orientation *
+	// stretch * scale * stack; zero components + push the captured matrix).
 	obj.ClearAllTransforms();
-	obj.PushTopTransStack( prev );
+	obj.PushTopTransStack( edit.prevTransform );
 }
 
 void SceneEditor::RunObjectInvariantChain( IObjectPriv& obj )
@@ -983,6 +992,16 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		// it through every frame of the drag.
 		if( edit.op != SceneEdit::ScaleObjectFromAnchor ) {
 			edit.prevTransform = obj->GetFinalTransformMatrix();
+			// Pre-existing transform-undo composition fix: also capture the
+			// full component-decomposed state so Undo restores the position /
+			// orientation / scale / stretch COMPONENTS (RestoreTransformState),
+			// not just the collapsed matrix -- then a later absolute setter
+			// replaces the right component instead of composing with a baseline
+			// pushed onto the stack.
+			if( const Implementation::Transformable* t = dynamic_cast<const Implementation::Transformable*>( obj ) ) {
+				edit.prevTransformState = t->CaptureTransformState();
+				edit.hasTransformState  = true;
+			}
 		}
 
 		switch( edit.op ) {
@@ -1450,7 +1469,7 @@ bool SceneEditor::Undo()
 						}
 						break;
 					default:
-						RestoreObjectTransform( *obj, inner.prevTransform );
+						RestoreObjectTransform( *obj, inner );
 						RunObjectInvariantChain( *obj );
 						// Phase 6.3 (§7.3): composite-undo marks dirty.
 						mDirtyTracker.MarkDirty( std::string( inner.objectName.c_str() ) );
@@ -1613,7 +1632,7 @@ bool SceneEditor::Undo()
 			break;
 		default:
 			// Transform op.
-			RestoreObjectTransform( *obj, edit.prevTransform );
+			RestoreObjectTransform( *obj, edit );
 			RunObjectInvariantChain( *obj );
 			// Phase 6.3 (§7.3): undo of a transform op still marks
 			// dirty.  The save engine's matrix-equality compare

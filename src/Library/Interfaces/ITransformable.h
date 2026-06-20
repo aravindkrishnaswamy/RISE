@@ -19,7 +19,24 @@
 
 namespace RISE
 {
-	//! The ability to have a basic transformation abilities
+		//! Full component-decomposed transform state for capture/restore
+	//! (e.g. editor undo).  Restoring this preserves the position /
+	//! orientation / scale / stretch COMPONENTS instead of collapsing the
+	//! whole transform onto the stack, so a later absolute SetPosition /
+	//! SetOrientation / ... replaces the right component rather than
+	//! composing with a stacked baseline.  `stackProduct` is the transform
+	//! stack pre-collapsed into one matrix (matching the
+	//! FinalizeTransformations fold order).
+	struct TransformState
+	{
+		Matrix4 position;
+		Matrix4 orientation;
+		Matrix4 scale;
+		Matrix4 stretch;
+		Matrix4 stackProduct;
+	};
+
+//! The ability to have a basic transformation abilities
 	class IBasicTransform
 	{
 	protected:

@@ -909,6 +909,50 @@ static void TestBeginTransactionRefusedMidComposite()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestAbsoluteTransformUndoComposition()
+{
+	std::cout << "Test: absolute SetPosition after undo REPLACES (not composes with) the baseline (pre-existing transform-undo bug)"
+	          << std::endl;
+	Job* pJob = new Job();
+	const double white[3] = { 0.8, 0.8, 0.8 };
+	pJob->AddUniformColorPainter( "p_white", white, "Rec709RGB_Linear" );
+	pJob->AddLambertianMaterial( "mat_plain", "p_white" );
+	pJob->AddSphereGeometry( "geom", 1.0 );
+	RadianceMapConfig nilRMap;
+	const double orient[3] = { 0, 0, 0 };
+	const double one3[3]   = { 1, 1, 1 };
+	const double pos8[3]   = { 8, 0, 0 };   // NON-identity baseline the bug needs
+	pJob->AddObject( "mover", "geom", "mat_plain", nullptr, nullptr,
+		nilRMap, pos8, orient, one3, true, true );
+	const char* ops[] = { "DefaultDirectLighting" };
+	pJob->AddStandardShader( "global", 1, ops );
+	Scene* pScene = dynamic_cast<Scene*>( pJob->GetScene() );
+	if( !pScene ) { Check( false, "[tu] scene downcast" ); pJob->release(); return; }
+	IObjectManager* objs = pJob->GetObjects();
+	if( !objs ) { Check( false, "[tu] objs" ); pJob->release(); return; }
+
+	SceneEditController ctrl( *pJob, 0 );
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String( "mover" ) );
+	Check( std::abs( LiveObjX( objs, "mover" ) - 8.0 ) < 1e-9, "[tu] baseline x=8" );
+
+	// Absolute move to x=20, then undo back to the x=8 baseline.
+	Check( ctrl.SetProperty( String( "position" ), String( "20 0 0" ) ), "[tu] move to x=20 applied" );
+	Check( std::abs( LiveObjX( objs, "mover" ) - 20.0 ) < 1e-9, "[tu] now at x=20" );
+	Check( ctrl.Editor().Undo(), "[tu] undo back to baseline" );
+	Check( std::abs( LiveObjX( objs, "mover" ) - 8.0 ) < 1e-9, "[tu] back at x=8 after undo" );
+
+	// A subsequent ABSOLUTE set must land at exactly -12, NOT -12+8=-4 (the bug:
+	// undo collapsed the x=8 baseline onto the transform stack, so SetPosition
+	// composed translate(-12) * translate(8)).
+	Check( ctrl.SetProperty( String( "position" ), String( "-12 0 0" ) ), "[tu] absolute set to x=-12 applied" );
+	Check( std::abs( LiveObjX( objs, "mover" ) - (-12.0) ) < 1e-9,
+	       "[tu] absolute SetPosition after undo lands at -12, not -4 (transform-undo composition fix)" );
+
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -922,6 +966,7 @@ int main()
 	TestSpatialEditOnLuminaireBumpsGeneration();
 	TestMaterialSlotEditOnEmissiveBumpsGeneration();
 	TestBeginTransactionRefusedMidComposite();
+	TestAbsoluteTransformUndoComposition();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."

@@ -136,6 +136,38 @@ void Transformable::FinalizeTransformations( )
 	m_mxInvFinalTrans = Matrix4Ops::Inverse( m_mxFinalTrans );
 }
 
+TransformState Transformable::CaptureTransformState( ) const
+{
+	TransformState st;
+	st.position    = m_mxPosition;
+	st.orientation = m_mxOrientation;
+	st.scale       = m_mxScale;
+	st.stretch     = m_mxStretch;
+	// Collapse the stack into a single product that reproduces its
+	// contribution under FinalizeTransformations (each entry left-multiplies,
+	// iterated front to back), so restore can re-push one matrix.
+	Matrix4 sp = Matrix4Ops::Identity();
+	for( TransformStackType::const_iterator i = m_transformstack.begin(); i < m_transformstack.end(); i++ ) {
+		sp = (*i) * sp;
+	}
+	st.stackProduct = sp;
+	return st;
+}
+
+void Transformable::RestoreTransformState( const TransformState& st )
+{
+	// Restore the component matrices EXACTLY (the whole point: a later
+	// absolute SetPosition / SetOrientation / ... then replaces the right
+	// component) and re-push the collapsed stack product as one entry.
+	m_transformstack.clear();
+	m_mxPosition    = st.position;
+	m_mxOrientation = st.orientation;
+	m_mxScale       = st.scale;
+	m_mxStretch     = st.stretch;
+	m_transformstack.push_front( st.stackProduct );
+	FinalizeTransformations();
+}
+
 static const unsigned int POSITION_ID = 1000;
 static const unsigned int ORIENTATION_ID = 1001;
 static const unsigned int SCALE_ID = 1002;

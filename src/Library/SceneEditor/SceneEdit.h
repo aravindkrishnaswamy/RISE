@@ -19,6 +19,7 @@
 
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/RString.h"
+#include "../Interfaces/ITransformable.h"
 
 namespace RISE
 {
@@ -287,6 +288,16 @@ namespace RISE
 		/// equal to prevTransform.
 		Matrix4  prevTransform;
 
+		//! Pre-existing transform-undo composition fix: the full
+		//! component-decomposed transform state captured before a transform
+		//! op, so Undo restores the position/orientation/scale/stretch
+		//! COMPONENTS (not just the collapsed matrix) and a later absolute
+		//! setter replaces the right component.  `hasTransformState` is false
+		//! for ScaleObjectFromAnchor (prevTransform is managed specially) and
+		//! for non-Transformable targets -- those fall back to prevTransform.
+		bool           hasTransformState;
+		TransformState prevTransformState;
+
 		//! Previous scene time (for SetSceneTime undo).
 		Scalar   prevTime;
 
@@ -321,6 +332,8 @@ namespace RISE
 		, v3b()
 		, s( 0 )
 		, prevTransform( Matrix4Ops::Identity() )
+		, hasTransformState( false )
+		, prevTransformState()
 		, prevTime( 0 )
 		, prevCameraPos()
 		, prevCameraLookAt()
