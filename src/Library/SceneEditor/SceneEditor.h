@@ -103,6 +103,18 @@ namespace RISE
 		void BeginComposite( const char* label );
 		void EndComposite();
 
+		//! Force the open-composite depth back to zero WITHOUT pushing a
+		//! CompositeEnd marker.  Used by the controller's transactional
+		//! rollback (feature/gui-snapshot-prototype #2b(b)): a rollback
+		//! can fire mid-gesture, after BeginComposite opened a group and
+		//! the gesture's history (including the unmatched CompositeBegin)
+		//! has just been discarded by EditHistory::DiscardUndoTo.  If the
+		//! tool's later EndComposite still saw depth>0 it would push an
+		//! ORPHAN CompositeEnd against the discarded history, corrupting
+		//! the next Undo's composite walk.  Resetting the depth makes
+		//! that EndComposite a safe no-op.  No-op when already at zero.
+		void ForceCompositeDepthZero() { if( mCompositeDepth > 0 ) mCompositeDepth = 0; }
+
 		DirtyScope LastDirtyScope() const { return mLastScope; }
 
 		//! True if the scene had at least one populated photon map

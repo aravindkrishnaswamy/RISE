@@ -62,6 +62,7 @@
 #include "../Rendering/InteractivePelRasterizer.h"
 #include "../Rendering/FrameStore.h"  // L6e-3 — per-pass interactive FrameStore
 #include "../Rendering/Rasterizer.h"  // L6e-3 — Implementation::Rasterizer for SetFrameStore
+#include "../Scene.h"                 // #2b(b) — concrete Scene + SceneSnapshot for transactional rollback
 #include "../Utilities/RandomNumbers.h"
 #include "../Utilities/RuntimeContext.h"
 #include <chrono>
@@ -146,6 +147,8 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mLastEditTimeMs( 0 )
 , mInRefinementPass( false )
 , mPolishState( static_cast<int>( PolishState::None ) )
+, mTxnBaseline( 0 )
+, mTxnBaselineUndoDepth( 0 )
 {
 	if( mInteractiveRasterizer )
 	{
@@ -528,6 +531,13 @@ SceneEditController::~SceneEditController()
 	{
 		mInteractiveFrameStore->release();
 		mInteractiveFrameStore = 0;
+	}
+	// #2b(b) — release a never-committed transaction baseline (e.g. the
+	// controller is torn down mid-gesture without a Rollback/End).
+	if( mTxnBaseline )
+	{
+		mTxnBaseline->release();
+		mTxnBaseline = 0;
 	}
 }
 
@@ -1695,6 +1705,147 @@ bool SceneEditController::RequestProductionRender()
 
 	if( wasRunning ) Start();
 	return ok;
+}
+
+// Transactional rollback (#2b(b)) -------------------------------------
+
+bool SceneEditController::BeginTransaction()
+{
+	IScenePriv* scenePriv = mJob.GetScene();
+	Implementation::Scene* scene =
+		dynamic_cast<Implementation::Scene*>( scenePriv );
+	if( !scene ) {
+		// Out-of-tree IScenePriv (test skeletons / foreign scene): the
+		// snapshot primitives live on the concrete Scene only.  Report
+		// no-transaction so the caller knows rollback is unavailable.
+		return false;
+	}
+
+	// Cancel-and-park BEFORE cloning — mirrors CloneActiveCamera, which
+	// also snapshots live scene state.  CreateSnapshot reads (clones)
+	// the active camera, objects, lights AND the Film; the render thread
+	// MUTATES the Film in place during the preview-scale swap
+	// (Scene.h: "film CLONE — IFilm::Resize mutates in place during
+	// interactive preview-scale"), so a clone taken concurrently with a
+	// resize would read a torn dim.  Parking serialises the clone
+	// against the in-flight pass.  Begin/End/Rollback are all UI-thread
+	// calls, so they can't race each other; only the render thread is
+	// the concurrent writer we guard here.
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	// Replace any prior (uncommitted) baseline — nesting is unsupported;
+	// the latest Begin wins.  Releasing the old one here is the
+	// "Begin-over-Begin" cleanup path.
+	if( mTxnBaseline ) {
+		mTxnBaseline->release();
+		mTxnBaseline = 0;
+	}
+
+	Implementation::SceneSnapshot* snap = scene->CreateSnapshot();
+	if( !snap ) {
+		return false;
+	}
+	// CreateSnapshot hands back one owned ref (per its contract: "Caller
+	// owns the returned SceneSnapshot (release() it)").  We keep that
+	// ref directly — no extra addref.
+	mTxnBaseline          = snap;
+	mTxnBaselineUndoDepth = mEditor.History().UndoDepth();
+	return true;
+}
+
+bool SceneEditController::IsTransactionOpen() const
+{
+	return mTxnBaseline != 0;
+}
+
+bool SceneEditController::RollbackTransaction()
+{
+	if( !mTxnBaseline ) return false;
+
+	IScenePriv* scenePriv = mJob.GetScene();
+	Implementation::Scene* scene =
+		dynamic_cast<Implementation::Scene*>( scenePriv );
+	if( !scene ) {
+		// Defensive: Begin only succeeds on a concrete Scene, so this
+		// should be unreachable.  Drop the baseline and report failure
+		// rather than leak it.
+		mTxnBaseline->release();
+		mTxnBaseline = 0;
+		return false;
+	}
+
+	// Cancel-and-park around the restore — RestoreFromSnapshot swaps the
+	// object + light manager contents, the active camera / film / medium,
+	// and DROPS the TLAS, all of which the render thread reads per-pixel.
+	// Same pattern as Undo / SetProperty: trip the rasterizer cancel
+	// flag, wait for the in-flight pass to drain under mMutex, restore
+	// with the lock held, then notify.
+	std::unique_lock<std::mutex> lk( mMutex );
+	if( mRendering.load( std::memory_order_acquire ) ) {
+		mCancelProgress.RequestCancel();
+		mCancelCount.fetch_add( 1, std::memory_order_acq_rel );
+	}
+	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
+
+	// Restore the live scene to the baseline.  This rebuilds the TLAS
+	// (InvalidateSpatialStructure + re-prepare) and bumps the scene's
+	// light-topology generation so a reused RayCaster rebuilds its
+	// LightSampler on the next attach.  Clone-on-restore: the baseline
+	// snapshot is NOT consumed, so it is safe to release afterwards.
+	scene->RestoreFromSnapshot( *mTxnBaseline );
+
+	// Discard exactly the edits the transaction pushed, WITHOUT leaving
+	// any of them redoable (the scene is now at the baseline, so a redo
+	// would double-apply onto restored state).  Also clears the redo
+	// stack — nothing is redoable after a reject.
+	mEditor.History().DiscardUndoTo( mTxnBaselineUndoDepth );
+
+	// The composite the gesture may have opened is now meaningless —
+	// reset the editor's composite depth so a later EndComposite (a
+	// tool cleanup path) doesn't push an orphan CompositeEnd against the
+	// discarded history.  BeginComposite/EndComposite balance their own
+	// depth, but a rollback can fire mid-gesture (before the matching
+	// EndComposite), so force the depth back to a clean zero.
+	mEditor.ForceCompositeDepthZero();
+
+	// Drop the baseline; the transaction is closed.
+	mTxnBaseline->release();
+	mTxnBaseline          = 0;
+	mTxnBaselineUndoDepth = 0;
+
+	// Re-render the restored state.  Inline the KickRender effect under
+	// the held lock (store editPending, notify after unlock) so the
+	// render thread sees the restored scene + the pending flag together,
+	// matching the OnTimeScrub / object-drag park-and-apply idiom.
+	mPolishState.store( static_cast<int>( PolishState::None ),
+	                    std::memory_order_release );
+	mEditPending.store( true, std::memory_order_release );
+	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
+	lk.unlock();
+	mCV.notify_one();
+
+	// A rollback that removed/re-added entities changes the category
+	// entity lists; bump the epoch so platform UIs re-pull (cheap, and
+	// covers the conflict/AI-reject cases that may have added objects).
+	mSceneEpoch.fetch_add( 1, std::memory_order_acq_rel );
+	return true;
+}
+
+bool SceneEditController::EndTransaction()
+{
+	if( !mTxnBaseline ) return false;
+	// Commit is record-only: the edits were applied + recorded live
+	// during the transaction (the shipping flow), so committing just
+	// releases the baseline.  No re-apply, no double-apply.
+	mTxnBaseline->release();
+	mTxnBaseline          = 0;
+	mTxnBaselineUndoDepth = 0;
+	return true;
 }
 
 // Selection -----------------------------------------------------------

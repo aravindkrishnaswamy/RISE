@@ -66,6 +66,23 @@ bool EditHistory::PopForRedo( SceneEdit& outEdit )
 	return true;
 }
 
+void EditHistory::DiscardUndoTo( unsigned int targetDepth )
+{
+	// Drop the gesture's records WITHOUT making them redoable (the
+	// caller has already rolled the scene back to a baseline snapshot,
+	// so a redo would double-apply onto restored state).  Pop straight
+	// off the undo stack — no mRedoStack.push_back, unlike PopForUndo.
+	while( mUndoStack.size() > static_cast<size_t>( targetDepth ) )
+	{
+		mUndoStack.pop_back();
+	}
+	// A rollback always wants a clean redo stack: any edits the user
+	// had undone BEFORE starting the rolled-back gesture are no longer
+	// coherent with the restored baseline, so they must not be redoable
+	// either.
+	mRedoStack.clear();
+}
+
 void EditHistory::Clear()
 {
 	mUndoStack.clear();
