@@ -1377,12 +1377,73 @@ static void TestCompositeMixedOpsUndoRedo()
 	Check( obj->GetMaterial() == m1,                                  "[mix] material reverted" );
 	Check( obj->DoesCastShadows() == castOrig,                        "[mix] shadow flag reverted" );
 	Check( std::abs((double)ccA->GetTargetOrientation().y) < 1e-9,    "[mix] camera reverted" );
+	Check( ctrl.Editor().LastDirtyScope() == SceneEditor::Dirty_ObjectTransform, "[mix] composite-undo scope = ObjectTransform (object wins the ladder)" );
 
 	// Redo -> all three re-apply (one ApplyForwardMutation arm each).
 	Check( ctrl.Editor().Redo(),                                      "[mix] redo composite" );
 	Check( obj->GetMaterial() != m1,                                  "[mix] material re-applied" );
 	Check( obj->DoesCastShadows() != castOrig,                        "[mix] shadow flag re-applied" );
 	Check( std::abs((double)ccA->GetTargetOrientation().y) > 1e-4,    "[mix] camera re-applied" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestSetSceneTimeUndoRedo()
+{
+	std::cout << "Test: SetSceneTime apply/undo/redo round-trips time + scope (H2 dispatcher arm coverage)" << std::endl;
+	Job* pJob = new Job();
+	pJob->AddSphereGeometry("geom",1.0);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[time] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	SceneEditor& ed = ctrl.Editor();
+	const double t0 = (double)ed.LastSceneTime();   // initial (no hardcoded assumption)
+
+	{ SceneEdit e; e.op=SceneEdit::SetSceneTime; e.s=5.0; ed.Apply(e); }
+	Check( std::abs((double)ed.LastSceneTime() - 5.0) < 1e-9, "[time] t=5 applied" );
+	Check( ed.LastDirtyScope() == SceneEditor::Dirty_Time, "[time] scope=Dirty_Time (no photons)" );
+	{ SceneEdit e; e.op=SceneEdit::SetSceneTime; e.s=8.0; ed.Apply(e); }
+	Check( std::abs((double)ed.LastSceneTime() - 8.0) < 1e-9, "[time] t=8 applied" );
+
+	Check( ed.Undo(), "[time] undo 8->5" );
+	Check( std::abs((double)ed.LastSceneTime() - 5.0) < 1e-9, "[time] undo restored t=5 (ApplyRevertMutation arm)" );
+	Check( ed.Undo(), "[time] undo 5->initial" );
+	Check( std::abs((double)ed.LastSceneTime() - t0) < 1e-9, "[time] undo restored initial time" );
+	Check( ed.Redo(), "[time] redo ->5" );
+	Check( std::abs((double)ed.LastSceneTime() - 5.0) < 1e-9, "[time] redo re-applied t=5 (ApplyForwardMutation arm)" );
+	Check( ed.LastDirtyScope() == SceneEditor::Dirty_Time, "[time] redo scope=Dirty_Time" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestCompositeTimeScopeAggregation()
+{
+	std::cout << "Test: composite [time + camera] aggregates scope=Dirty_Time + reverts time (H2 composite wrapper)" << std::endl;
+	Job* pJob = new Job();
+	double loc[3]={0,0,10}, la[3]={0,0,0}, up[3]={0,1,0}, orient[3]={0,0,0}, target[2]={0,0};
+	pJob->AddPinholeCamera("A",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	pJob->AddSphereGeometry("geom",1.0);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[tscope] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	SceneEditor& ed = ctrl.Editor();
+	const double t0 = (double)ed.LastSceneTime();
+	ed.BeginComposite("time+cam");
+	{ SceneEdit e; e.op=SceneEdit::SetSceneTime; e.s=7.0; ed.Apply(e); }
+	pJob->SetActiveCamera("A");
+	{ SceneEdit e; e.op=SceneEdit::OrbitCamera; e.v3a=Vector3(100,0,0); ed.Apply(e); }
+	ed.EndComposite();
+	Check( std::abs((double)ed.LastSceneTime() - 7.0) < 1e-9, "[tscope] time applied in composite" );
+
+	// Composite undo runs the saw-flag scope aggregation (the genuinely non-
+	// shared composite-loop wrapper): time beats camera in the ladder.
+	Check( ed.Undo(), "[tscope] undo composite" );
+	Check( ed.LastDirtyScope() == SceneEditor::Dirty_Time, "[tscope] composite-undo scope = Dirty_Time (time > camera)" );
+	Check( std::abs((double)ed.LastSceneTime() - t0) < 1e-9, "[tscope] time reverted by composite undo (LIFO prevTime)" );
 	pJob->release();
 }
 
@@ -1415,6 +1476,8 @@ int main()
 	TestRollbackFiresDirtyListener();
 	TestCompositeMultiCameraUndo();
 	TestCompositeMixedOpsUndoRedo();
+	TestSetSceneTimeUndoRedo();
+	TestCompositeTimeScopeAggregation();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."
