@@ -1563,10 +1563,13 @@ static void TestTrimDoesNotDrainOpenComposite()
 	for( int i=0; i<8; ++i ) { SceneEdit e; e.op = SceneEdit::SetSceneTime; e.s = (double)i; h.Push( e ); }
 	// 9 entries (Begin + 8) >> cap 4, but the composite is OPEN (no End).
 	Check( h.UndoDepth() == 9, "[p1trim] open composite survives over-cap, NOT drained (P1-#4)" );
-	// Closing it lets the next push trim the now-CLOSED composite atomically.
+	// Close it: a CLOSED composite that is the ONLY/most-recent unit is RETAINED
+	// over-cap -- never drop the last undoable action (P1-#c).
 	SceneEdit end; end.op = SceneEdit::CompositeEnd; h.Push( end );
+	Check( h.UndoDepth() == 10, "[p1trim] oversized CLOSED composite retained while it is the most-recent unit (P1-#c)" );
+	// Once a NEWER unit exists, the now-older oversized composite is trimmed.
 	SceneEdit extra; extra.op = SceneEdit::SetSceneTime; extra.s = 99.0; h.Push( extra );
-	Check( h.UndoDepth() == 1, "[p1trim] closed composite trims atomically (no orphan), leaving the trailing edit" );
+	Check( h.UndoDepth() == 1, "[p1trim] older oversized composite trims atomically once newer content exists" );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1624,6 +1627,36 @@ static void TestPartialCompositeUndoStillRefreshes()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestTrimNestingAware()
+{
+	std::cout << "Test: TrimToMax is nesting-aware -- a closed INNER composite does not fool the OPEN outer (P1-#b)" << std::endl;
+	EditHistory h( 4 );
+	SceneEdit ob; ob.op = SceneEdit::CompositeBegin; h.Push( ob );
+	SceneEdit ib; ib.op = SceneEdit::CompositeBegin; h.Push( ib );
+	for( int i=0;i<3;++i ){ SceneEdit e; e.op=SceneEdit::SetSceneTime; e.s=(double)i; h.Push(e); }
+	SceneEdit ie; ie.op = SceneEdit::CompositeEnd; h.Push( ie );   // inner end; OUTER still open
+	for( int i=0;i<3;++i ){ SceneEdit e; e.op=SceneEdit::SetSceneTime; e.s=(double)(10+i); h.Push(e); }
+	Check( h.UndoDepth() == 9, "[p1nest] open OUTER composite not trimmed via the inner End (P1-#b)" );
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestUndoSnapshotRestore()
+{
+	std::cout << "Test: undo snapshot/restore brings back a cap-evicted pre-txn record (P1-#a)" << std::endl;
+	EditHistory h( 4 );
+	for( int i=0;i<4;++i ){ SceneEdit e; e.op=SceneEdit::SetSceneTime; e.s=(double)i; h.Push(e); }   // U0 = seq 0..3
+	h.SnapshotUndoForRollback();
+	SceneEdit txn; txn.op = SceneEdit::SetSceneTime; txn.s = 99.0; h.Push( txn );   // seq 4; evicts seq 0
+	unsigned long long top = 0; h.PeekUndoSeq( top );
+	Check( top == 4, "[p1snap] txn edit on top, oldest pre-txn evicted at cap" );
+	h.RestoreUndoFromSnapshot();   // full rollback restores U0
+	h.PeekUndoSeq( top );
+	Check( h.UndoDepth() == 4 && top == 3, "[p1snap] undo-restore brings back the evicted pre-txn record (P1-#a)" );
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1658,6 +1691,8 @@ int main()
 	TestCompositeUndoPropagatesFailure();
 	TestFullRollbackRestoresRedoStack();
 	TestTrimDoesNotDrainOpenComposite();
+	TestTrimNestingAware();
+	TestUndoSnapshotRestore();
 	TestRejectEditWithUnrepresentableInverse();
 	TestPartialCompositeUndoStillRefreshes();
 

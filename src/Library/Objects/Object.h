@@ -120,8 +120,12 @@ namespace RISE
 			virtual bool AssignRadianceMap( const IRadianceMap& pRadianceMap ) override;
 			virtual bool AssignInteriorMedium( const IMedium& medium ) override;
 			virtual void ClearInteriorMedium() override;
-			virtual void ClearShader() override;
-			virtual void ClearMaterial() override;
+			// P1-#9: ClearShader/ClearMaterial are NOT on IObjectPriv -- adding them as
+			// virtuals inserted mid-vtable + shifted every later slot for out-of-tree
+			// binaries.  They are now plain non-virtual methods reached via
+			// dynamic_cast<Object*> (the Scene::GetLightTopologyGeneration precedent).
+			void ClearShader();
+			void ClearMaterial();
 
 			virtual void IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
 			virtual bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;

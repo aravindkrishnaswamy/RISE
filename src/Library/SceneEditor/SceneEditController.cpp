@@ -1822,6 +1822,7 @@ bool SceneEditController::BeginTransaction()
 	mTxnOpen              = true;
 	mTxnBaseline = CaptureEditorState();   // H1: one owned baseline
 	mEditor.History().SnapshotRedoForRollback();   // P1-#3: so a full rollback restores the pre-transaction redo stack
+	mEditor.History().SnapshotUndoForRollback();   // P1: ...and the pre-transaction undo stack (cap-evicted records)
 	return true;
 }
 
@@ -1911,6 +1912,7 @@ bool SceneEditController::RollbackTransaction()
 	// are no longer coherent with the residual state.
 	if( fullyReverted ) {
 		mEditor.History().RestoreRedoFromSnapshot();
+		mEditor.History().RestoreUndoFromSnapshot();   // P1: restore any pre-txn undo record evicted at the cap
 	}
 
 	// Close the transaction.

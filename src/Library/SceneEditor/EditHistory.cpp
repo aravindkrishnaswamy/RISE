@@ -190,35 +190,33 @@ void EditHistory::TrimToMax()
 {
 	while( mUndoStack.size() > mMaxEntries )
 	{
-		// Atomic-by-composite trim: if the head is a CompositeBegin,
-		// pop the whole composite (every entry up to and including
-		// the matching End) so we never leave orphaned markers that
-		// would corrupt subsequent Undo.  If the head is a stray
-		// CompositeEnd (shouldn't happen if EndComposite's depth-0
-		// guard works, but be defensive), drop it on its own.
 		if( mUndoStack.front().op == SceneEdit::CompositeBegin )
 		{
-			// P1-#4: only trim a CLOSED composite atomically.  If the front
-			// CompositeBegin has NO matching CompositeEnd yet (a single open
-			// gesture whose inner edits already filled the cap), draining the
-			// stack would orphan the eventual End + corrupt later undo.  Leave
-			// the over-cap stack until the gesture closes -- the next TrimToMax
-			// (after EndComposite) trims the now-closed group.
-			bool hasMatchingEnd = false;
-			for( std::deque<SceneEdit>::const_iterator it = mUndoStack.begin();
-			     it != mUndoStack.end(); ++it ) {
-				if( it->op == SceneEdit::CompositeEnd ) { hasMatchingEnd = true; break; }
+			// Find the FRONT begin's matching End by tracking nesting depth
+			// (P1: nesting-aware).  A bare "first End" scan would match an INNER
+			// composite's End and trim the outer begin + inner history, leaving
+			// the outer group malformed.
+			int    depth    = 0;
+			bool   closed   = false;
+			size_t matchIdx = 0;
+			for( size_t i = 0; i < mUndoStack.size(); ++i ) {
+				const SceneEdit::Op op = mUndoStack[i].op;
+				if( op == SceneEdit::CompositeBegin )      { ++depth; }
+				else if( op == SceneEdit::CompositeEnd )    { if( --depth == 0 ) { closed = true; matchIdx = i; break; } }
 			}
-			if( !hasMatchingEnd ) break;   // open composite -> do not trim
-			PopFrontTracked();
-			while( !mUndoStack.empty()
-			    && mUndoStack.front().op != SceneEdit::CompositeEnd )
-			{
-				PopFrontTracked();
-			}
-			if( !mUndoStack.empty()
-			 && mUndoStack.front().op == SceneEdit::CompositeEnd )
-			{
+			// P1-#4: an OPEN composite (no matching End yet -- a gesture still in
+			// progress) must NOT be trimmed; draining it would orphan the eventual
+			// End.  Leave the stack over-cap until the gesture closes.
+			if( !closed ) break;
+			// P1: never trim the LAST/only undo unit, even if it alone exceeds the
+			// cap.  If the group spans to the end of the stack it is the MOST-RECENT
+			// action -- retain it over-cap rather than drop the entire gesture
+			// (a ~17s 60Hz drag would otherwise lose ALL undoability).
+			if( matchIdx == mUndoStack.size() - 1 ) break;
+			// Closed group with newer content after it: trim the whole group
+			// (Begin .. matching End, inclusive -- including any nested composites)
+			// atomically.
+			for( size_t k = 0; k <= matchIdx; ++k ) {
 				PopFrontTracked();
 			}
 		}

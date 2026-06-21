@@ -31,6 +31,7 @@
 #include "SceneEditor.h"
 #include "CameraIntrospection.h"
 #include "../Interfaces/IObjectPriv.h"
+#include "../Objects/Object.h"   // P1-#9: ClearShader/ClearMaterial are now non-virtual on Object
 #include "../Utilities/Transformable.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IMaterial.h"
@@ -1285,7 +1286,7 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 				// F5: undo of a FIRST material bind restores the unbound state
 				// (clearing an emissive material changes the emitter set -> bump).
 				const IMaterial* clrPrev = obj->GetMaterial();
-				obj->ClearMaterial();
+				if( Implementation::Object* o = dynamic_cast<Implementation::Object*>( obj ) ) o->ClearMaterial();
 				BumpSceneLightGenerationIfEmitterSetChanged( clrPrev, nullptr );
 			} else if( mMaterialManager && edit.prevPropertyValue.size() > 1 ) {
 				IMaterial* mat = mMaterialManager->GetItem( edit.prevPropertyValue.c_str() );
@@ -1301,7 +1302,7 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 			break;
 		case SceneEdit::SetObjectShader:
 			if( edit.prevBindingWasNull ) {
-				obj->ClearShader();   // F5: undo of a FIRST shader bind
+				if( Implementation::Object* o = dynamic_cast<Implementation::Object*>( obj ) ) o->ClearShader();   // F5: undo of a FIRST shader bind
 			} else if( mShaderManager && edit.prevPropertyValue.size() > 1 ) {
 				IShader* sh = mShaderManager->GetItem( edit.prevPropertyValue.c_str() );
 				if( sh ) obj->AssignShader( *sh );

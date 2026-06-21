@@ -105,6 +105,12 @@ namespace RISE
 		void SnapshotRedoForRollback() { mTxnRedoSnapshot = mRedoStack; }
 		void RestoreRedoFromSnapshot() { mRedoStack = mTxnRedoSnapshot; }
 
+		//! P1: same for the UNDO stack -- a transaction edit can evict the oldest
+		//! PRE-transaction undo record at the cap; a full rollback restores it so
+		//! the rolled-back gesture leaves NO permanent history side effect.
+		void SnapshotUndoForRollback() { mTxnUndoSnapshot = mUndoStack; }
+		void RestoreUndoFromSnapshot() { mUndoStack = mTxnUndoSnapshot; }
+
 		//! Label of the most recent composite (or top edit op name)
 		//! for the UI's "Undo <X>" menu item.
 		const char* LabelForUndo() const;
@@ -121,6 +127,7 @@ namespace RISE
 		std::deque<SceneEdit>           mUndoStack;
 		std::deque<SceneEdit>           mRedoStack;
 		std::deque<SceneEdit>           mTxnRedoSnapshot;   // P1-#3: pre-transaction redo stack
+		std::deque<SceneEdit>           mTxnUndoSnapshot;   // P1: pre-transaction undo stack
 		std::set<String, StringLess>    mDirtyObjects;
 		unsigned int                    mMaxEntries;
 		unsigned long long              mNextSeq;       ///< F2 monotonic edit id
