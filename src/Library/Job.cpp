@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "Scene.h"   // P2a: bump light-topology generation on Job-level emitter/env edits
+#include "Managers/LightManager.h"   // H3: self-invalidating light add/remove
 #include "Geometry/SDFGeometry.h"
 #include <cstring>
 #define _USE_MATH_DEFINES
@@ -310,6 +311,15 @@ void Job::InitializeContainers()
 	pScene->SetCameraManager( pCameraManager );
 	pScene->SetObjectManager( pObjectManager );
 	pScene->SetLightManager( pLightManager );
+	// H3 (P-INVALIDATE): make the light manager self-invalidate.  Adding or
+	// removing a light now AUTOMATICALLY bumps the scene's light-topology
+	// generation, so no light mutator (present or future) has to remember.
+	// The conditional cases (emissive object/material, environment, in-place
+	// light-property edit) stay explicit via BumpSceneLightGen / SceneEditor --
+	// they are inherently mutation-layer DECISIONS, not forgettable bumps.
+	if( RISE::Implementation::LightManager* lm = dynamic_cast<RISE::Implementation::LightManager*>( pLightManager ) ) {
+		lm->SetOnLightSetChanged( [this]{ BumpSceneLightGen( pScene ); } );
+	}
 
 	// Default film: quarter HD (qHD) at square pixels.  Chosen as a
 	// fast iteration default for test renders — agents and humans
@@ -5017,8 +5027,7 @@ bool Job::AddPointOmniLight(
 	RISE_API_CreatePointOmniLight( &pLight, power, sRGBPel(srgb), shootPhotons );
 	pLight->SetPosition( Point3( pos ) );
 	pLight->FinalizeTransformations();
-	pLightManager->AddItem( pLight, name );
-	BumpSceneLightGen( pScene );   // P2a: light set changed -> reused caster must rebuild
+	pLightManager->AddItem( pLight, name );   // H3: self-invalidates (LightManager::AddItem bumps the gen)
 	safe_release( pLight );
 	return true;
 }
@@ -5040,8 +5049,7 @@ bool Job::AddPointSpotLight(
 	RISE_API_CreatePointSpotLight( &pLight, power, sRGBPel(srgb), Point3(foc), inner, outer, shootPhotons );
 	pLight->SetPosition( Point3( pos ) );
 	pLight->FinalizeTransformations();
-	pLightManager->AddItem( pLight, name );
-	BumpSceneLightGen( pScene );   // P2a: light set changed -> reused caster must rebuild
+	pLightManager->AddItem( pLight, name );   // H3: self-invalidates (LightManager::AddItem bumps the gen)
 	safe_release( pLight );
 	return true;
 }
@@ -5056,8 +5064,7 @@ bool Job::AddAmbientLight(
 {
 	ILightPriv* pLight = 0;
 	RISE_API_CreateAmbientLight( &pLight, power, sRGBPel(srgb) );
-	pLightManager->AddItem( pLight, name );
-	BumpSceneLightGen( pScene );   // P2a: light set changed -> reused caster must rebuild
+	pLightManager->AddItem( pLight, name );   // H3: self-invalidates (LightManager::AddItem bumps the gen)
 	safe_release( pLight );
 	return true;
 }
@@ -5073,8 +5080,7 @@ bool Job::AddDirectionalLight(
 {
 	ILightPriv* pLight = 0;
 	RISE_API_CreateDirectionalLight( &pLight, power, sRGBPel(srgb), Vector3(dir) );
-	pLightManager->AddItem( pLight, name );
-	BumpSceneLightGen( pScene );   // P2a: light set changed -> reused caster must rebuild
+	pLightManager->AddItem( pLight, name );   // H3: self-invalidates (LightManager::AddItem bumps the gen)
 	safe_release( pLight );
 	return true;
 }
@@ -9216,9 +9222,7 @@ bool Job::RemoveLight(
 	const char* name								///< [in] Name of the light to remove
 	)
 {
-	const bool ok = pLightManager->RemoveItem( name );
-	if( ok ) BumpSceneLightGen( pScene );   // P2a: light set changed
-	return ok;
+	return pLightManager->RemoveItem( name );   // H3: RemoveItem self-invalidates (bumps the gen)
 }
 
 //! Removes the given modifier from the scene

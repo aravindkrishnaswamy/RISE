@@ -428,6 +428,27 @@ static void TestJobAddLightBumpsGeneration()
 	safe_release( caster ); pJob->release();
 }
 
+static void TestJobRemoveLightBumpsGeneration()
+{
+	std::cout << "Test: Job::RemoveLight rebuilds a reused caster's sampler (H3 self-invalidation)" << std::endl;
+	Job* pJob = MakeSamplerScene();
+	Scene* pScene = dynamic_cast<Scene*>( pJob->GetScene() );
+	if( !pScene ) { Check( false, "[h3rm] scene" ); pJob->release(); return; }
+	IShader* pShader = pJob->GetShaders() ? pJob->GetShaders()->GetItem("global") : nullptr;
+	if( !pShader ) { Check( false, "[h3rm] shader" ); pJob->release(); return; }
+	const double lc[3]={1,1,1}, lp[3]={3,3,3};
+	pJob->AddPointOmniLight("key2",7.0,lc,lp,false);   // 2nd light so one remains after removal
+	IRayCaster* caster=nullptr; RISE_API_CreateRayCaster(&caster,false,10,*pShader,true);
+	if( !caster ) { Check( false, "[h3rm] caster" ); pJob->release(); return; }
+	caster->AttachScene( pScene );
+	const unsigned int rbBefore = RayCaster::GetSamplerRebuildCount();
+	Check( pJob->RemoveLight("key2"), "[h3rm] RemoveLight applied" );
+	caster->AttachScene( pScene );
+	Check( RayCaster::GetSamplerRebuildCount() == rbBefore+1,
+	       "[h3rm] sampler rebuilt after Job::RemoveLight (light set changed) (H3 self-invalidation)" );
+	safe_release( caster ); pJob->release();
+}
+
 int main()
 {
 	std::cout << "=== SamplerRebuildOnRestoreTest ===" << std::endl;
@@ -437,6 +458,7 @@ int main()
 	TestInPlaceEditRebuild();
 	TestJobSetObjectMaterialBumpsGeneration();
 	TestJobAddLightBumpsGeneration();
+	TestJobRemoveLightBumpsGeneration();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."
