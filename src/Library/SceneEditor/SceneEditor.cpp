@@ -988,6 +988,15 @@ unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
 	// 0 = no identity tracking: SetMediumProperty (mediums have no RemoveMedium so a
 	// name can't be reused), SetSceneTime, AddCamera (its undo removes the entity),
 	// composite markers, and legacy camera edits with no recorded name.
+	//
+	// KNOWN LIMITATION (unreachable today): redo of an entity-CREATING op mints a NEW
+	// serial.  AddCamera is the only such op and is currently issued only standalone
+	// (CloneActiveCamera, never inside a composite).  If a future composite ever
+	// brackets AddCamera + a later op on the created entity, composite REDO would
+	// recreate the entity with a fresh serial and this guard would then false-refuse
+	// the later op.  When entity-creation becomes composable (the planned outliner),
+	// the recreated entity must PRESERVE its identity serial across undo/redo (e.g. a
+	// serial-preserving re-add), not just its name.
 	if( SceneEdit::IsObjectOp( e.op ) ) {
 		const IObjectManager* objs = mScene.GetObjects();
 		return objs ? objs->GetItemSerial( e.objectName.c_str() ) : 0;

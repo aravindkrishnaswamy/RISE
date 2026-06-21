@@ -59,14 +59,6 @@ namespace RISE
 			const char * szName						///< [in] Name of requested element
 			) const = 0;
 
-		//! P1: monotonic per-registration serial of the named item (0 if absent).
-		//! Lets a caller that captured a target by NAME detect a remove + re-add under
-		//! the SAME name (a different instance) -- the serial changes on every AddItem.
-		//! Default 0 = "no identity tracking" for managers that don't implement it.
-		virtual unsigned long long GetItemSerial(
-			const char * szName						///< [in] Name of the item
-			) const { return 0; }
-
 		//! Requests long term use of an item
 		virtual Type* RequestItemUse(
 			const char * szName,					///< [in] Name of requested element
@@ -79,6 +71,16 @@ namespace RISE
 			Type& pItem,							///< [in] Element you are no longer using
 			IDeletedCallback<Type>& pFunc			///< [in] Callback functor, used to figure out who you are
 			) = 0;
+
+		//! P1: monotonic per-registration serial of the named item (0 if absent).
+		//! Lets a caller that captured a target by NAME detect a remove + re-add under
+		//! the SAME name (a DIFFERENT instance) -- the serial changes on every AddItem.
+		//! Default 0 = "no identity tracking" for managers that don't implement it.
+		//! Appended at the end of the interface (ABI convention) since it post-dates the
+		//! original method set.
+		virtual unsigned long long GetItemSerial(
+			const char * szName						///< [in] Name of the item
+			) const { return 0; }
 	};
 }
 
