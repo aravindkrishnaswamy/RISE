@@ -806,6 +806,10 @@ namespace RISE
 		//! to keep the per-category panel state coherent with the
 		//! restored scene state.  No-op if no Object is pinned.
 		void ResyncObjectBoundSections_();
+		// P1: clear the selection if its named entity no longer resolves; called
+		// UNCONDITIONALLY after any Undo/Redo so a stale selection never survives,
+		// even an atomic no-op composite undo (didWork == false).
+		void DropStaleSelection_();
 
 		IJobPriv&                   mJob;
 		IRasterizer*                mInteractiveRasterizer;  // borrowed
@@ -900,6 +904,9 @@ namespace RISE
 		// pointer-down.  OnPointerUp closes based on this, NOT the current tool/
 		// selection -- a tool/selection change mid-gesture must not strand it.
 		bool                        mGestureOpenedComposite;
+		// P1: true iff THIS time-scrub opened an editor composite (OnTimeScrubBegin).
+		// A missing End / repeated Begin must not strand it -- mirrors the pointer guard.
+		bool                        mScrubOpenedComposite;
 
 		// Property-panel chevron scrub is in progress.  Tracked
 		// SEPARATELY from mPointerDown so a panel scrub doesn't

@@ -29,6 +29,7 @@
 
 #include "pch.h"
 #include "SceneEditor.h"
+#include <vector>   // P1: atomic composite undo/redo rollback buffer
 #include "CameraIntrospection.h"
 #include "../Interfaces/IObjectPriv.h"
 #include "../Objects/Object.h"   // P1-#9: ClearShader/ClearMaterial are now non-virtual on Object
@@ -1264,27 +1265,49 @@ bool SceneEditor::Undo()
 	// matching CompositeBegin.
 	if( edit.op == SceneEdit::CompositeEnd )
 	{
+		// P1: composite undo is ATOMIC.  Revert inners LIFO; if ANY revert fails,
+		// roll back the partial work -- re-apply (forward) what we already reverted
+		// AND restore the whole popped group to the undo stack -- so a failed composite
+		// undo is a true no-op: live state unchanged, the group stays intact + retryable,
+		// and a subsequent transaction rollback won't delete half-moved records.  (The
+		// earlier "honest partial" left every record on redo with partially-changed state.)
+		// PopForUndo already moved the CompositeEnd trigger to redo, so redoMoves starts at 1.
 		bool sawObjectOp = false, sawCameraOp = false, sawTimeOp = false, sawPropertyOp = false;
-		bool allOk = true;   // P1-#2: track inner-mutation failures across the walk
-		int  depth = 1;      // P1: the CompositeEnd trigger opened one level (LIFO walk-back).
+		int  depth     = 1;   // the CompositeEnd trigger opened one level (LIFO walk-back).
+		int  redoMoves = 1;   // records moved undo->redo so far (incl. the trigger), for restore-on-failure.
+		bool failed    = false;
+		std::vector<SceneEdit> reverted;   // inners successfully reverted, for forward roll-back
 		while( true )
 		{
 			SceneEdit inner;
 			if( !mHistory.PopForUndo( inner ) ) break;
+			++redoMoves;
 			// P1: nesting-aware -- a nested CompositeEnd opens a deeper level going
 			// backward; only the matching OUTER CompositeBegin (depth 0) ends the walk.
-			// A bare break at the first Begin left the outer group half-reverted.
 			if( inner.op == SceneEdit::CompositeEnd )   { ++depth; continue; }
 			if( inner.op == SceneEdit::CompositeBegin ) { if( --depth == 0 ) break; continue; }
 			MarkEditEntityDirty( inner );
-			if( !ApplyRevertMutation( inner ) ) allOk = false;   // P1-#2: propagate failure
+			if( !ApplyRevertMutation( inner ) ) { failed = true; break; }   // P1: stop + roll back atomically
+			reverted.push_back( inner );
 			if( SceneEdit::IsObjectOp( inner.op ) )                                          sawObjectOp = true;
 			else if( SceneEdit::IsCameraOp( inner.op ) || inner.op == SceneEdit::AddCamera ) sawCameraOp = true;
 			else if( inner.op == SceneEdit::SetSceneTime )                                   sawTimeOp = true;
 			else                                                                             sawPropertyOp = true;
 		}
+		if( failed )
+		{
+			// Re-apply the reverts we already did, in original FORWARD order (reverse of the
+			// LIFO revert order), then move the whole popped group back redo->undo so the
+			// composite is intact + retryable.  Rollback re-applies are best-effort.
+			for( std::vector<SceneEdit>::reverse_iterator it = reverted.rbegin(); it != reverted.rend(); ++it ) {
+				ApplyForwardMutation( *it );
+			}
+			for( int k = 0; k < redoMoves; ++k ) mHistory.RestoreLastUndoFromRedo();
+			mLastScope = Dirty_None;
+			return false;
+		}
 		mLastScope = AggregateCompositeScope( sawObjectOp, sawCameraOp, sawTimeOp, sawPropertyOp );
-		return allOk;   // P1-#2: false if any inner mutation failed (caller treats as partial)
+		return true;
 	}
 
 	// Single edit -> the shared revert dispatcher (same one the composite loop uses).
@@ -1666,25 +1689,41 @@ bool SceneEditor::Redo()
 	if( edit.op == SceneEdit::CompositeBegin )
 	{
 		bool sawObjectOp = false, sawCameraOp = false, sawTimeOp = false, sawPropertyOp = false;
-		bool allOk = true;   // P1-#2: track inner-mutation failures across the walk
-		int  depth = 1;      // P1: the CompositeBegin trigger opened one level (forward walk).
+		int  depth     = 1;   // the CompositeBegin trigger opened one level (forward walk).
+		int  undoMoves = 1;   // records moved redo->undo so far (incl. the trigger), for restore-on-failure.
+		bool failed    = false;
+		std::vector<SceneEdit> applied;   // inners successfully forward-applied, for revert roll-back
 		while( true )
 		{
 			SceneEdit inner;
 			if( !mHistory.PopForRedo( inner ) ) break;
+			++undoMoves;
 			// P1: nesting-aware -- a nested CompositeBegin opens a deeper level going
 			// forward; only the matching OUTER CompositeEnd (depth 0) ends the replay.
 			if( inner.op == SceneEdit::CompositeBegin ) { ++depth; continue; }
 			if( inner.op == SceneEdit::CompositeEnd )   { if( --depth == 0 ) break; continue; }
 			MarkEditEntityDirty( inner );
-			if( !ApplyForwardMutation( inner ) ) allOk = false;   // P1-#2: propagate failure
+			if( !ApplyForwardMutation( inner ) ) { failed = true; break; }   // P1: stop + roll back atomically
+			applied.push_back( inner );
 			if( SceneEdit::IsObjectOp( inner.op ) )                                          sawObjectOp = true;
 			else if( SceneEdit::IsCameraOp( inner.op ) || inner.op == SceneEdit::AddCamera ) sawCameraOp = true;
 			else if( inner.op == SceneEdit::SetSceneTime )                                   sawTimeOp = true;
 			else                                                                             sawPropertyOp = true;
 		}
+		if( failed )
+		{
+			// P1 (symmetric to Undo): re-revert what we applied (reverse forward order),
+			// then move the whole popped group back undo->redo so the composite is intact
+			// + retryable.  Rollback re-reverts are best-effort.
+			for( std::vector<SceneEdit>::reverse_iterator it = applied.rbegin(); it != applied.rend(); ++it ) {
+				ApplyRevertMutation( *it );
+			}
+			for( int k = 0; k < undoMoves; ++k ) mHistory.RestoreLastRedoFromUndo();
+			mLastScope = Dirty_None;
+			return false;
+		}
 		mLastScope = AggregateCompositeScope( sawObjectOp, sawCameraOp, sawTimeOp, sawPropertyOp );
-		return allOk;   // P1-#2: false if any inner mutation failed (caller treats as partial)
+		return true;
 	}
 
 	// Single edit -> the shared forward dispatcher.  P1 (symmetric to Undo): PopForRedo

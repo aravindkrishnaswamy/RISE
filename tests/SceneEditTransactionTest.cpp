@@ -1601,7 +1601,7 @@ static void TestRejectEditWithUnrepresentableInverse()
 
 static void TestPartialCompositeUndoStillRefreshes()
 {
-	std::cout << "Test: a PARTIAL composite undo via the controller still refreshes (P1-#2 follow-up)" << std::endl;
+	std::cout << "Test: a no-op composite undo (entity gone) still clears a stale selection (P1 atomic-undo follow-up)" << std::endl;
 	Job* pJob = new Job();
 	const double white[3]={0.8,0.8,0.8}, grey[3]={0.5,0.5,0.5};
 	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
@@ -1620,8 +1620,8 @@ static void TestPartialCompositeUndoStillRefreshes()
 	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String("obj") );
 	// Remove obj so the composite undo reverts PARTIALLY and the selected entity is gone.
 	Check( pJob->RemoveObject("obj"), "[p1ref] obj removed" );
-	ctrl.Undo();   // partial composite undo -- must STILL refresh (not gated on full success)
-	Check( ctrl.GetSelectionName().size() <= 1, "[p1ref] partial composite undo refreshed: stale selection cleared (P1-#2 follow-up)" );
+	ctrl.Undo();   // composite undo is now an ATOMIC no-op (obj gone); selection is still re-validated unconditionally
+	Check( ctrl.GetSelectionName().size() <= 1, "[p1ref] no-op composite undo still cleared the stale selection (P1 atomic follow-up)" );
 	pJob->release();
 }
 
@@ -1886,6 +1886,61 @@ static void TestFailedRedoRestoresStackDepth()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestCompositeUndoFailureIsAtomic()
+{
+	std::cout << "Test: a failed composite undo rolls back atomically (group restored, state unchanged, retryable) (P1)" << std::endl;
+	Job* pJob = new Job();
+	const double cA[3]={0.1,0.1,0.1}, cB[3]={0.2,0.2,0.2}, cC[3]={0.3,0.3,0.3};
+	pJob->AddUniformColorPainter("pA",cA,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("pB",cB,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("pC",cC,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("matA","pA");
+	pJob->AddLambertianMaterial("matB","pB");
+	pJob->AddLambertianMaterial("matC","pC");
+	pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj1","geom","matA",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	pJob->AddObject("obj2","geom","matC",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1ac] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	SceneEditor& ed = ctrl.Editor();
+	ed.BeginComposite("multi");
+	{ SceneEdit e; e.op=SceneEdit::SetObjectMaterial; e.objectName=String("obj1"); e.propertyValue=String("matB"); Check(ed.Apply(e),"[p1ac] e1 obj1->matB"); }
+	{ SceneEdit e; e.op=SceneEdit::SetObjectMaterial; e.objectName=String("obj2"); e.propertyValue=String("matB"); Check(ed.Apply(e),"[p1ac] e2 obj2->matB"); }
+	ed.EndComposite();
+	const unsigned udBefore = ed.History().UndoDepth();   // Begin + e1 + e2 + End = 4
+	const IMaterial* obj2MatPost = pJob->GetObjects()->GetItem("obj2")->GetMaterial();   // matB
+	Check( pJob->RemoveMaterial("matA"), "[p1ac] remove matA (obj1 prev) after the composite" );
+	Check( !ed.Undo(), "[p1ac] composite undo FAILS (matA gone)" );
+	Check( ed.History().UndoDepth()==udBefore, "[p1ac] failed composite undo RESTORED the whole group to undo (atomic, retryable) (P1)" );
+	Check( ed.History().RedoDepth()==0u, "[p1ac] failed composite undo did NOT leak the group onto redo (P1)" );
+	Check( pJob->GetObjects()->GetItem("obj2")->GetMaterial()==obj2MatPost, "[p1ac] obj2 material rolled back to post-edit state (live state unchanged) (P1)" );
+	Check( !ed.Undo(), "[p1ac] the restored composite is retryable (still fails while matA gone)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestDoubleScrubBeginDoesNotStrandComposite()
+{
+	std::cout << "Test: a double time-scrub begin (missing end) does not strand a composite (P1)" << std::endl;
+	Job* pJob = new Job();
+	double loc[3]={0,0,10}, la[3]={0,0,0}, up[3]={0,1,0}, orient[3]={0,0,0}, target[2]={0,0};
+	pJob->AddPinholeCamera("A",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1scrub] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	ctrl.OnTimeScrubBegin();   // opens the "Scrub" composite
+	ctrl.OnTimeScrubBegin();   // double-begin (LOST end) -> must close the orphan, not nest
+	ctrl.OnTimeScrubEnd();
+	Check( ctrl.BeginTransaction(), "[p1scrub] no stranded composite after a double scrub-begin (P1)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1931,6 +1986,8 @@ int main()
 	TestDoubleDownDoesNotStrandComposite();
 	TestUndoLabelIsOuterCompositeForNested();
 	TestFailedRedoRestoresStackDepth();
+	TestCompositeUndoFailureIsAtomic();
+	TestDoubleScrubBeginDoesNotStrandComposite();
 	TestRejectEditWithUnrepresentableInverse();
 	TestPartialCompositeUndoStillRefreshes();
 

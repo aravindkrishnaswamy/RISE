@@ -128,6 +128,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mLastPx( 0, 0 )
 , mPointerDown( false )
 , mGestureOpenedComposite( false )
+, mScrubOpenedComposite( false )
 , mScrubInProgress( false )
 , mPreviewSink( 0 )
 , mProgressSink( 0 )
@@ -1402,7 +1403,16 @@ void SceneEditController::OnPointerUp( const Point2& px )
 
 void SceneEditController::OnTimeScrubBegin()
 {
+	// P1: close any composite a PRIOR scrub left open (a missing OnTimeScrubEnd or a
+	// repeated Begin) before opening a new one -- otherwise scrubs NEST and one stays
+	// open forever (permanent IsCompositeOpen block + the open group defeats history
+	// trimming).  Mirrors the pointer-gesture orphan guard in OnPointerDown.
+	if( mScrubOpenedComposite ) {
+		mEditor.EndComposite();
+		mScrubOpenedComposite = false;
+	}
 	mEditor.BeginComposite( "Scrub" );
+	mScrubOpenedComposite = true;
 	mPreviewScale.store( kPreviewScaleMotionStart, std::memory_order_release );
 }
 
@@ -1485,7 +1495,12 @@ void SceneEditController::OnTimeScrub( Scalar t )
 
 void SceneEditController::OnTimeScrubEnd()
 {
-	mEditor.EndComposite();
+	// P1: close only the composite THIS scrub opened -- a stray End with no open scrub
+	// must not under-flow the composite depth.
+	if( mScrubOpenedComposite ) {
+		mEditor.EndComposite();
+		mScrubOpenedComposite = false;
+	}
 	mPreviewScale.store( kPreviewScaleMin, std::memory_order_release );
 	KickRender();
 }
@@ -1563,6 +1578,20 @@ bool SelectionStillResolves( const IJobPriv& job,
 
 }  // namespace
 
+void SceneEditController::DropStaleSelection_()
+{
+	// If the (category,name) selection points at an entity that no longer resolves
+	// (removed externally, or by an undone AddCamera), reset to category-only so the
+	// panel doesn't render a header for a gone entity.  Don't touch mSectionExpanded.
+	if( !SelectionStillResolves( mJob, mSelectionCategory, mSelectionName ) ) {
+		mSelectionName = String();
+		const int idx = static_cast<int>( mSelectionCategory );
+		if( idx > 0 && idx < kNumCategories ) {
+			mSelectionByCategory[idx] = String();
+		}
+	}
+}
+
 void SceneEditController::Undo()
 {
 	// Latent-guard (re-review): refuse user Undo while a transaction is open --
@@ -1594,25 +1623,11 @@ void SceneEditController::Undo()
 	// but the scene WAS mutated (the undo stack advanced) so we must still refresh.
 	// "did work" = succeeded OR the undo stack changed; only an empty-stack no-op skips.
 	const bool didWork = ok || ( mEditor.History().UndoDepth() != beforeUndoDepth );
+	// P1: re-validate the selection UNCONDITIONALLY -- a stale selection (selected
+	// entity gone, e.g. removed externally) must clear on ANY undo attempt, incl. an
+	// atomic no-op composite undo (didWork == false -> the gated refresh is skipped).
+	DropStaleSelection_();
 	if( didWork ) {
-		// If Undo removed the entity our panel selection pointed at
-		// (e.g. Undo of AddCamera removes the clone we just made
-		// active), the (category, name) tuple is stale — the panel
-		// would otherwise render a header for an entity that no
-		// longer exists.  Reset to category-only (empty name) so
-		// the panel falls back to "section open, no row picked"
-		// behaviour and shows the active-camera fallback rows.
-		if( !SelectionStillResolves( mJob, mSelectionCategory, mSelectionName ) ) {
-			mSelectionName = String();
-			// Clear the per-cat entry too so the panel's per-section
-			// state stays consistent with the primary.  Don't touch
-			// mSectionExpanded — the user's section remains open
-			// with no entity picked (matches "header click" UX).
-			const int idx = static_cast<int>( mSelectionCategory );
-			if( idx > 0 && idx < kNumCategories ) {
-				mSelectionByCategory[idx] = String();
-			}
-		}
 		// Re-derive auto-synced Material / Medium section selections
 		// from the (potentially restored) Object binding.  Forward
 		// path updates these in SetProperty after the Apply succeeds;
@@ -1650,24 +1665,8 @@ void SceneEditController::Redo()
 	const bool ok = mEditor.Redo();
 	// P1-#2 follow-up: see Undo -- a partial composite redo still mutated the scene.
 	const bool didWork = ok || ( mEditor.History().RedoDepth() != beforeRedoDepth );
+	DropStaleSelection_();   // P1: see Undo -- re-validate selection on any redo attempt
 	if( didWork ) {
-		// Symmetric with Undo: if Redo brought back a removed
-		// entity the selection had pointed at, the tuple may
-		// re-resolve cleanly.  If it doesn't, drop to category-
-		// only.  (Today the only Redo path that adds an entity is
-		// AddCamera, which uses the original name — so the
-		// resolution typically succeeds.)
-		if( !SelectionStillResolves( mJob, mSelectionCategory, mSelectionName ) ) {
-			mSelectionName = String();
-			// Clear the per-cat entry too so the panel's per-section
-			// state stays consistent with the primary.  Don't touch
-			// mSectionExpanded — the user's section remains open
-			// with no entity picked (matches "header click" UX).
-			const int idx = static_cast<int>( mSelectionCategory );
-			if( idx > 0 && idx < kNumCategories ) {
-				mSelectionByCategory[idx] = String();
-			}
-		}
 		// Re-derive auto-synced Material / Medium section selections
 		// from the (potentially re-applied) Object binding — same
 		// rationale as Undo's resync.
@@ -1902,6 +1901,7 @@ bool SceneEditController::RollbackTransaction()
 	mGizmoDrag.active = false;
 	mScrubInProgress.store( false, std::memory_order_release );
 	mGestureOpenedComposite = false;   // P1: a mid-gesture rollback also clears the open-composite flag
+	mScrubOpenedComposite   = false;   // P1: ...and the scrub-composite flag
 
 	// F7: restore the dirty channels + selection to the pre-transaction
 	// baseline so a fully reverted document doesn't keep showing unsaved
