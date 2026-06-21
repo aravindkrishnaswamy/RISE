@@ -1687,7 +1687,15 @@ bool SceneEditor::Redo()
 		return allOk;   // P1-#2: false if any inner mutation failed (caller treats as partial)
 	}
 
-	return ApplyForwardMutation( edit );
+	// Single edit -> the shared forward dispatcher.  P1 (symmetric to Undo): PopForRedo
+	// already moved this edit to the undo stack.  If the forward mutation FAILS (e.g.
+	// the redo's binding target vanished after capture), restore it to the redo stack --
+	// a failed redo must NOT advance the depth or leave a phantom no-op edit undoable.
+	if( !ApplyForwardMutation( edit ) ) {
+		mHistory.RestoreLastRedoFromUndo();
+		return false;
+	}
+	return true;
 }
 void SceneEditor::BeginComposite( const char* label )
 {

@@ -1858,6 +1858,34 @@ static void TestUndoLabelIsOuterCompositeForNested()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestFailedRedoRestoresStackDepth()
+{
+	std::cout << "Test: a failed single redo (vanished forward dep) restores the undo/redo depth (P1, redo twin of E)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}, grey[3]={0.5,0.5,0.5};
+	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("p_grey",grey,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white"); pJob->AddLambertianMaterial("mat2","p_grey");
+	pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1rstk] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String("obj") );
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Object, String("material"), String("mat2") ), "[p1rstk] rebind obj->mat2" );
+	Check( ctrl.Editor().Undo(), "[p1rstk] undo back to mat1" );
+	Check( pJob->RemoveMaterial("mat2"), "[p1rstk] forward target mat2 removed after the undo" );
+	Check( ctrl.Editor().History().UndoDepth()==0u && ctrl.Editor().History().RedoDepth()==1u, "[p1rstk] pre-redo depths are (0,1)" );
+	Check( !ctrl.Editor().Redo(), "[p1rstk] redo fails (mat2 gone)" );
+	Check( ctrl.Editor().History().RedoDepth()==1u, "[p1rstk] failed redo RESTORED to redo stack, depth still 1 (P1)" );
+	Check( ctrl.Editor().History().UndoDepth()==0u, "[p1rstk] failed redo did NOT leak onto the undo stack (P1)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1902,6 +1930,7 @@ int main()
 	TestFailedUndoRestoresStackDepth();
 	TestDoubleDownDoesNotStrandComposite();
 	TestUndoLabelIsOuterCompositeForNested();
+	TestFailedRedoRestoresStackDepth();
 	TestRejectEditWithUnrepresentableInverse();
 	TestPartialCompositeUndoStillRefreshes();
 

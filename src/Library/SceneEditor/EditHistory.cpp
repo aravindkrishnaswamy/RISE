@@ -203,6 +203,17 @@ void EditHistory::RestoreLastUndoFromRedo()
 	mRedoStack.pop_back();
 }
 
+void EditHistory::RestoreLastRedoFromUndo()
+{
+	// P1: the inverse of one PopForRedo -- move the most recently popped edit
+	// back from the undo stack to the redo stack.  Called only when the forward
+	// mutation FAILED (a vanished redo target), so a failed redo neither changes
+	// the depth nor leaves a phantom no-op edit on the undo stack.
+	if( mUndoStack.empty() ) return;
+	mRedoStack.push_back( mUndoStack.back() );
+	mUndoStack.pop_back();
+}
+
 void EditHistory::TrimToMax()
 {
 	while( mUndoStack.size() > mMaxEntries )

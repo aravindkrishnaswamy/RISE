@@ -47,6 +47,10 @@ namespace RISE
 		/// most recently popped edit back from the redo stack to the undo stack.
 		void RestoreLastUndoFromRedo();
 
+		/// P1: reverse the last PopForRedo when its forward mutation failed -- move
+		/// the most recently popped edit back from the undo stack to the redo stack.
+		void RestoreLastRedoFromUndo();
+
 		//! Discard the redo stack ONLY, leaving the undo stack and the
 		//! dirty-object set untouched.  The transactional rollback uses
 		//! this AFTER it has reverted live state by applying the inverse
