@@ -1,13 +1,25 @@
 # Facet 2 — Derivation Engine (CST → Scene, incremental)
 
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (review round 1).** The
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1 & 2).** The
 > decision record is authoritative; where this doc once conflicted it now conforms
-> and points to the relevant decision. The three decisions that reshaped this facet:
+> and points to the relevant decision. The decisions that reshaped this facet:
 > **D1** — the derived scene is an *immutable COW snapshot* the renderer swaps at a
-> tile/pass boundary (no parking-for-safety); **D4** — dependency edges are *traced
+> pass boundary (no parking-for-safety); **D4** — dependency edges are *traced
 > during derivation* and the memo key includes traced-input versions; **D5** — the
 > formal input is *(CST, AssetManifest)*, not CST alone. See also D9 (NodeId is the
-> lineage identity; name-path is addressing).
+> lineage identity; name-path is addressing). **Round 2 amends several of these:**
+> **D11** — COW is a *reverse-dependency-closure copy* (the engine scene is a
+> raw-pointer graph, so you cannot share a referrer of a changed node); **D12** —
+> derivation builds into a mutable `DerivedSceneBuilder`, runs phase B (realize/TLAS/
+> light samplers/photon maps) on it, then *seals* to an immutable `DerivedScene` that
+> *owns* those render structures, and adoption is at a *pass* boundary only; **D13** —
+> the derivation exposes both `headVersion` and `derivedVersion` (render/graph stamp
+> the latter, which may lag); **D15** — three distinct concepts (lossless content hash
+> / trivia-insensitive *derivation key* / `NodeId` lineage), and the memo key is the
+> derivation key; **D16** — wide child sequences are a persistent balanced rope
+> (O(log N), not O(depth)); **D17** — asset identity is a (size,mtime) prefilter →
+> content hash; **D20** — the derivation cache is version-scoped/persistent, carried
+> alongside each snapshot, with an explicit dependency-edge lifecycle.
 >
 > **Status:** design-in-progress. One facet of the [Agentic Redesign](00-CHARTER.md).
 > Read the [charter](00-CHARTER.md) and [`01-DECISIONS.md`](01-DECISIONS.md) first —
@@ -182,24 +194,32 @@ derive : (CST, CST', AssetManifest, DerivationCache)
 The formal input is **`(CST, AssetManifest)`** (D5), not the CST alone:
 `Scene = f(CST)` is false when a referenced texture/mesh/spectral/glTF changes on
 disk without the CST or filename changing. The **`AssetManifest`** maps each
-referenced asset path → `{resolved absolute identity, content fingerprint}`
-(size+mtime, upgradable to a content hash); **output paths are excluded** (sinks,
-not sources — §2.9). It is part of the derivation environment, versioned alongside
-the CST head, and refreshed by a file watcher / re-stat (D5, §2.9).
+referenced asset path → `{resolved absolute identity, fingerprint}`, where the
+fingerprint is a **`(size, mtime)` prefilter → content hash** (the content hash is the
+authoritative identity used in memo keys — D17, §2.9); **output paths are excluded**
+(sinks, not sources — §2.9). It is part of the derivation environment, versioned
+alongside the CST head, and refreshed by a file watcher / re-stat (D5, §2.9).
 
-`DerivedScene` is **an immutable snapshot (D1)** of today's render-ready state: the
-`Scene` + its populated managers + realized geometry + TLAS + light samplers +
-(conditionally) photon maps — but produced via **copy-on-write with structural
-sharing** rather than mutated in place. A new CST/manifest version derives a **new
-snapshot**: only the changed subgraph's engine objects are re-derived (reusing the
-apply-layer on *copies*); unchanged objects (meshes, BVH leaves, materials, the
-TLAS where untouched, light samplers where untouched) are **shared by reference**
-with the prior snapshot. The renderer holds a **refcounted pointer to one
-snapshot** and **atomically swaps it at a tile/pass boundary** (§2.8). The
-incremental form takes the previous CST, the new CST, the manifest, and the memo
-cache, and re-derives **only the affected subgraph**. There is **one**
-implementation: the full derive is the incremental derive against an empty cache.
-(P-WALK: no second path.)
+`DerivedScene` is **an immutable, sealed snapshot (D1, D12)** of today's
+render-ready state: the `Scene` + its populated managers + realized geometry + TLAS +
+light samplers + (conditionally) photon maps — but produced via **copy-on-write with
+structural sharing** rather than mutated in place. The sealed snapshot **owns** all of
+these render structures, including the **light samplers and photon maps** that are
+RayCaster-owned today (`Scene.h:405`) — they are *moved into* the snapshot so it is
+fully render-ready and self-contained (D12, §2.8). A new CST/manifest version derives
+a **new snapshot** by copying the **reverse-dependency closure** of each changed node
+(D11) — the changed node *plus every node that transitively references it, up to the
+roots* (managers / spatial index) — repointing the copies, and **sharing everything
+outside the closure by reference** with the prior snapshot. You **cannot** share a
+referrer of a changed node: the engine scene is a raw-pointer graph (materials hold
+direct painter pointers, objects hold direct material/geometry pointers —
+`LambertianBRDF.h:37`, `Object.h:34`), so a shared material kept pointing at the
+*old* painter would be wrong (D11; the corrected example is in §6.1). The renderer
+holds a **refcounted pointer to one snapshot** and **atomically swaps it at a pass
+boundary** (§2.8). The incremental form takes the previous CST, the new CST, the
+manifest, and the memo cache, and re-derives **only the affected closure**. There is
+**one** implementation: the full derive is the incremental derive against an empty
+cache. (P-WALK: no second path.)
 
 Determinism (INV-2) means: the result is a pure function of the (CST, manifest)
 *content*, independent of node *visit order*. §4 audits where today's `Job`
@@ -212,8 +232,17 @@ immutable no-park model: the apply-layer **is** reused, but on COW copies, so
 immutability and structural sharing both hold. Immutability removes the data race
 outright, so **parking-for-safety is gone**; cancel-and-park survives only as an
 optional latency/coalescing optimization (§2.8). This is the red-green discipline
-(D2) extended from the CST to the derived scene: a new snapshot is a path-copy of
-the changed spine over a shared tail.
+(D2) extended from the CST to the derived scene — but the derived scene is a
+**raw-pointer DAG**, not a tree, so the analogue of the CST's path-copy is a
+**reverse-dependency-closure copy** (D11): a new snapshot copies the closure of
+referrers of each changed node and shares everything outside it by refcount. Cost is
+**O(closure / fan-in of the edited node), not O(scene)** (§6.1). A first
+implementation **may full-rebuild** (closure = everything) for correctness, then add
+closure-tracking — the design *target* is closure-copy. (On the **CST** side the
+path-copy is **O(log N)**, not O(depth): wide child sequences — the `Document`'s chunk
+list, a large `RepeatGroup`/heightfield — are a persistent balanced **rope** with
+cached aggregate widths, so locating child *k* and inserting/removing a child are both
+O(log N) — D16.)
 
 ### 2.2 The dependency / dataflow graph (traced — D4)
 
@@ -253,7 +282,7 @@ the edges that carry invalidation:
 | Layer | Memo node | Built by | Invalidated when |
 |---|---|---|---|
 | L0 *value* | a resolved parameter value (literal / evaluated `expr(...)` / inline sub-chunk) | Facet-1 evaluator | its source text changes, OR any **traced** expression input's version changes (D4) |
-| L1 *entity* | a manager entry (painter, material, geometry, shader, shaderop, modifier, function, camera, medium, light) | `Finalize → pJob.AddX` | any L0 value it consumes changes, any **traced** name-ref target's *version* changes (§2.6), OR a **traced** AssetManifest fingerprint changes (D5) |
+| L1 *entity* | a manager entry (painter, material, geometry, shader, shaderop, modifier, function, camera, medium, light) | `Finalize → pJob.AddX` | any L0 value it consumes changes, any **traced** name-ref target's *version* changes (§2.6), OR a **traced** AssetManifest **content hash** changes (D5/D17) |
 | L2 *object* | an `IObject` (geometry+material+modifier+shader+transform bind) | `AddObject`/`AddObjectMatrix`/`AddCSGObject` | any bound L1 entity rebinds, or its transform params change |
 | L3 *realized geom* | baked mesh for a deferred geometry (displaced/SDF/CSG/bezier) | `obj.Realize()` cascade (phase B) | its source geometry entity or any tessellation-driving param changes |
 | L4 *TLAS* | top-level BVH over objects | `PrepareForRendering` (phase B) | any L2 object's **world bbox** changes (transform or geometry swap) |
@@ -272,9 +301,15 @@ which category a given `element` actually resolves to. Because `derive()` *perfo
 the resolution, the edge it records is the **actual** one taken this version —
 dynamic refs are captured automatically and for free.
 
-`referenceCategories` is therefore **demoted to a UI/rename *hint*** (D4): it drives
-ref-pickers in the dynamic UI and rename's referrer search — it is **not** the
-source of truth for the dependency graph. (No parallel schema is invented; the hint
+`referenceCategories` is therefore **demoted to a UI ref-picker *hint*** (D4): it
+drives ref-pickers in the dynamic UI — it is **not** the source of truth for the
+dependency graph, **and (D14) it is no longer used for rename's referrer search
+either**. Rename rewrites referrers from the **traced `ReferenceUse { sourceValueNodeId,
+targetNodeId }` records** the dependency trace records (D4/D14), which capture dynamic
+refs (`timeline.element` via `element_type`) automatically; for references in nodes
+that did not derive (e.g. inside an error subtree), it falls back to descriptor
+**reference resolvers**, and any referrer it cannot resolve is **surfaced/flagged,
+never silently renamed**. (No parallel schema is invented; the hint
 and the traced graph are different jobs, per L6 / INV.)
 
 The four engine-level relations the trace records as graph edges:
@@ -306,14 +341,22 @@ for L2.** Not per-subtree (too coarse — a one-param edit to one of 200 objects
 would re-derive the subtree) and not per-token (too fine — sub-chunk inline values
 are L0 and roll up into their owning chunk's L1 key).
 
-**Key = (the node's green-node structural hash) + (the identities & versions of
-every *traced* input), not its text span (D4).** For an L1 entity node:
+**The memo key is the node's *derivation key* — a trivia-INsensitive semantic hash
+(typed values + child structure, *excluding* comments / whitespace / trivia) +
+traced-input versions (D4) — NOT the green node's lossless content hash (D15).**
+D15 separates three concepts that an earlier draft conflated: the green node's
+**content hash** is lossless and trivia-*sensitive* (it hashes the exact bytes incl.
+trivia, so byte-identical subtrees share one green node — its job is structural
+sharing/dedup, and it carries no identity); the **derivation key** here is its
+trivia-*insensitive* sibling whose job is the *memo cache* (so a whitespace-only edit
+is a derivation cache **hit**); the **`NodeId`** is the per-occurrence lineage
+identity (§2.6). For an L1 entity node:
 
 ```
-key(entity) = H( green_node_structural_hash(node),          // structure: keyword + param shape (D2)
+key(entity) = H( derivation_key(node),                       // typed values + child STRUCTURE, NO trivia (D15)
                  { (param_name, resolved_value) for each literal param },
                  { (input_NodeId, input_version) for each TRACED CST input },   // exprs + name-refs (D4)
-                 { (asset_path, fingerprint)     for each TRACED asset input } )  // D5
+                 { (asset_path, content_hash)    for each TRACED asset input } )  // D5/D17
 ```
 
 Including **traced-input identities/versions** — not just the resolved value — is
@@ -326,17 +369,23 @@ identities*** — the earlier "`$(2+3)` and `5` hash identically, refactoring to
 same value is a no-op" claim is *wrong* and is replaced by this rule (it would have
 hidden the differing future-invalidation dependency).
 
-The structural-hash component still gives INV-4 for free in the other direction: a
-whitespace-only or comment-only edit (which Facet 1's CST preserves losslessly)
-changes the text span but **not** the green-node structural hash and touches no
-traced input → memo hit → zero re-derivation. Likewise "typed the same literal value
-back" is a hit. What is *not* a hit is a value that arrived through a different
-traced dependency — that is the point.
+The derivation key's trivia-insensitivity gives INV-4 for free in the other
+direction: a whitespace-only or comment-only edit (which Facet 1's CST preserves
+losslessly, so the green node's *content* hash changes) leaves the **derivation key**
+unchanged and touches no traced input → memo hit → zero re-derivation. Likewise
+"typed the same literal value back" is a hit. What is *not* a hit is a value that
+arrived through a different traced dependency — that is the point.
 
-The memo table (keyed and indexed by **`NodeId`** — D9 — with name-path resolved to
-NodeId per version):
+The memo table (keyed and indexed by **`NodeId`** — D9; the `NodeId` lives in the
+red layer / a side-map, **not** in the shared green node — D15 — with name-path
+resolved to NodeId per version). **The cache is version-scoped and persistent (D20):
+it is *carried alongside each derived snapshot* and structurally shared across
+versions like the green tree, NOT a single global mutable `DerivationCache<NodeId,…>`
+map** — divergent branches and a simultaneous committed-vs-preview pair each see their
+own consistent cache view (sharing unchanged entries):
 
 ```cpp
+// One value per derived snapshot, structurally shared with prior versions (D20).
 struct DerivationCache {
     // NodeId  →  derived record (the engine object + its key + its version)
     std::unordered_map<NodeId, EntityRecord> entities;   // L1
@@ -344,7 +393,10 @@ struct DerivationCache {
     // Reverse dependency index, populated by TRACING (D4): which derived records
     // depend on a given producer / asset, so an invalidation pushes forward in
     // O(out-degree), not O(scene). Producers are NodeIds; asset producers are
-    // AssetManifest keys.
+    // AssetManifest keys. Edge lifecycle (D20): on re-deriving a node, ATOMICALLY
+    // replace that node's OUTGOING edge set (drop stale, add freshly-traced); on
+    // deleting a node, purge its edges + its cache entry (and surface any now-dangling
+    // ReferenceUse, D14).
     std::unordered_multimap<NodeId, NodeId> dependents;        // producer node → consumers
     std::unordered_multimap<AssetKey, NodeId> assetDependents; // asset → consumers (D5)
     // Phase-B coarse generations (mirror the existing engine counters):
@@ -354,7 +406,7 @@ struct DerivationCache {
 };
 
 struct EntityRecord {
-    InputHash      key;         // §2.3 structural-hash + traced-input-version key
+    InputHash      key;         // §2.3 derivation-key (trivia-insensitive) + traced-input-version key (D15)
     uint64_t       version;     // manager identity version at build time (§2.6)
     EntityKind     kind;
     bool           isEmissive;  // drives the L1→L5 edge
@@ -363,8 +415,10 @@ struct EntityRecord {
 };
 ```
 
-**Identity (D9):** the cache keys on the immutable, process-stable **`NodeId`** (the
-green-node-borne lineage token), not on the name-path. **name-path**
+**Identity (D9/D15):** the cache keys on the immutable, process-stable **`NodeId`**
+(the per-occurrence lineage token, living in the **red layer / a side-map, not in the
+shared green node** — D15, since a shared green node is reused at many occurrences and
+cannot carry one id), not on the name-path. **name-path**
 (`objects/sphere`, `materials/glass`, `materials/glass.reflectance` for a slot) is
 the human/agent *addressing* scheme, resolved to a `NodeId` *within a given
 version*; it changes on rename (by design). A rename is a `NodeId`-preserving edit,
@@ -403,21 +457,27 @@ Given `(CST, CST', AssetManifest, cache)`:
    - L3 source changed → re-`Realize()` that geometry (idempotent; the realize
      pass already re-walks and no-ops the unchanged).
    - any L2/L3/L5 change → bump `photonGen` (consumed only if L6 is live).
-4. **Publish the new snapshot, then phase-B reconciliation at next render.** The
-   COW re-derive produces a **new immutable snapshot** (D1) that shares all
-   untouched engine objects by reference with the prior one. The renderer's
-   refcounted snapshot pointer is **atomically swapped at a tile/pass boundary**
-   (§2.8); the old snapshot drains by refcount. The phase-B machinery itself is
-   *unchanged from today* and needs no new code: `AttachScene` (running over the new
-   snapshot) (a) re-walks `Realize()` idempotently — only the re-marked L3
+4. **Build into a mutable builder, run phase B on it, *seal*, then publish (D12).**
+   The COW re-derive produces a **mutable `DerivedSceneBuilder`** (a closure-copy view
+   per D11) that shares all untouched engine objects by reference with the prior
+   snapshot. **Phase B runs on the *builder*, before any publication** — there is **no
+   publish-before-phase-B** (an earlier draft published the snapshot and *then* ran
+   phase B, mutating after publication; D12 forbids that). The phase-B machinery
+   itself is *unchanged from today* and needs no new code: `AttachScene` (running over
+   the builder) (a) re-walks `Realize()` idempotently — only the re-marked L3
    geometries do work; (b) rebuilds light samplers iff
    `liveGen != builtLightGeneration`; `PrepareForRendering` rebuilds the TLAS;
-   `BuildPendingPhotonMaps` re-shoots iff pending+consumed. **Facet 2's job is to
+   `BuildPendingPhotonMaps` re-shoots iff pending+consumed. Then **`seal()` →** an
+   immutable `DerivedScene` **value** that **owns** the realized geometry, TLAS, light
+   samplers, AND photon maps (samplers/photon maps moved *into* the snapshot from the
+   RayCaster — D12, §2.8). **Only the sealed value is published**, by an atomic
+   pointer swap the render loop adopts **at a PASS boundary** (never mid-frame /
+   per-tile — D12, §2.8); the old snapshot drains by refcount. **Facet 2's job is to
    set those existing dirty flags precisely, from the traced graph, instead of from
-   scattered hand-bumps** — and to ensure phase-B work mutates the *new snapshot's
+   scattered hand-bumps** — and to ensure phase-B work mutates the *builder's closure
    copies*, never an object shared with a snapshot a render thread may still hold.
    This is the deepest reuse in the design: the entire phase-B incremental machinery
-   already exists and is correct; we feed it a graph-derived dirty set and let
+   already exists and is correct; we run it on the builder, then seal, and let
    structural sharing keep the snapshot cheap.
 
 **Worked example — `param → object → TLAS`:** user edits `sphere`'s `position`.
@@ -425,26 +485,29 @@ Diff → one dirty L0 (the position value) → its owning L2 object record's key
 changes → apply-layer runs `SetObjectPosition` + `RunObjectInvariantChain`
 (`FinalizeTransformations`, `InvalidateSpatialStructure`) → `tlasValid=false`. No
 L1 entity touched, no other object touched, light samplers untouched (sphere
-non-emissive). Next render: realize no-ops everything, `PrepareForRendering`
-rebuilds the TLAS (unavoidable — one bbox moved), pixels re-render. **Cost ≈ one
-matrix finalize + one TLAS build.**
+non-emissive). On seal (phase B on the builder, before publish — D12): realize
+no-ops everything, `PrepareForRendering` rebuilds the TLAS (unavoidable — one bbox
+moved); the sealed snapshot then publishes and pixels re-render. **Cost ≈ one matrix
+finalize + one TLAS build.**
 
 **Worked example — `emissive material → light topology`:** user raises an area
 light material's `exitance`. Diff → one dirty L0 → owning L1 material record's key
 changes, `isEmissive` stays true → apply-layer runs
 `MaterialIntrospection::SetSlotValue` → L1→L5 edge fires →
-`BumpLightTopologyGeneration`. Next render: `AttachScene` sees
-`liveGen != builtLightGeneration` → `RebuildLightSamplers` (rebuilds the alias
-table with the new weight); realize/TLAS/photons untouched (unless L6 live). This
+`BumpLightTopologyGeneration`. On seal (phase B on the builder, before publish —
+D12): `AttachScene` sees `liveGen != builtLightGeneration` → `RebuildLightSamplers`
+(rebuilds the alias table with the new weight, sealed into the snapshot which now
+owns it — D12); realize/TLAS/photons untouched (unless L6 live). This
 is exactly the existing `BumpSceneLightGenerationIfMaterialEmits` path — Model B
 just reaches it from a graph edge instead of a hand-coded call site.
 
 ### 2.5 The derive/apply seam — incremental update vs. rebuild-from-scratch
 
 Two backends produce L1/L2 records; the **decision rule** picks per dirty node.
-**Both backends operate on the new snapshot's COW copies (D1)** — REBUILD adds into
-the new snapshot's manager; APPLY mutates a *copied* engine object, never one shared
-(by reference) with the prior snapshot:
+**Both backends operate on the `DerivedSceneBuilder`'s closure copies (D11/D12)**,
+sealed before publish — REBUILD adds into the builder's manager; APPLY mutates a
+*closure-copied* engine object, never one shared (by reference) with the prior
+snapshot:
 
 ```
 For a CHANGED node N:
@@ -452,14 +515,14 @@ For a CHANGED node N:
                        node's TYPE / its ref-edge SHAPE — e.g. material kind
                        changed, a new param appeared that adds a dependency,
                        composed-material slot, geometry kind changed)
-        → REBUILD: run the full Finalize-equivalent → AddX into the NEW snapshot's
+        → REBUILD: run the full Finalize-equivalent → AddX into the BUILDER's
                    manager (remove the old entry first; this bumps the identity
                    version, which §2.6 propagates to dependents).
   else if N is a VALUE-ONLY change to a slot the apply-layer can mutate
        (object transform / material slot / light prop / medium prop / camera prop /
         object material|shader|geometry|medium REBIND)
-        → APPLY: COW-copy the target engine object into the new snapshot, then call
-                 the surviving mutator (ApplyObjectOpForward / the Introspection
+        → APPLY: closure-copy the target engine object into the builder (D11), then
+                 call the surviving mutator (ApplyObjectOpForward / the Introspection
                  SetSlotValue setters) + its invariant chain ON THE COPY.
   else → REBUILD (safe default).
 ```
@@ -499,14 +562,19 @@ on a COW copy rather than the shared live object.
 
 Anything not in this table → REBUILD.
 
-### 2.6 Identity & the traced name-ref edge (INV-5, D4, D9)
+### 2.6 Identity & the traced name-ref edge (INV-5, D4, D9, D15)
 
-Three identity concepts, kept distinct per D9 + D4:
+Three identity concepts, kept distinct per D9 + D4 + D15:
 
-- **`NodeId`** (D9) — the immutable, process-stable green-node lineage token. The
-  memo cache keys on it; it survives rename, value edits, and reparse (reparse
-  matches new green nodes to prior NodeIds by structural position + content). This is
-  what durable UI/agent bindings and undo lineage key on.
+- **`NodeId`** (D9/D15) — the immutable, process-stable **per-occurrence** lineage
+  token, living in the **red layer / a side-map, NOT in the shared green node** (D15:
+  a shared green node is reused at many occurrences and cannot carry one id). The memo
+  cache keys on it; it survives rename and value edits. **Reparse identity is
+  best-effort (D15):** a *structured* edit preserves `NodeId` exactly (it targets a
+  known node); a *whole-region reparse* matches new green nodes to prior NodeIds by
+  structural position + content, **but identical repeated rows are genuinely ambiguous
+  — unmatched durable references are INVALIDATED (flagged), not silently remapped.**
+  This is what durable UI/agent bindings and undo lineage key on.
 - **name-path** (D9) — the human/agent *addressing* scheme, resolved to a `NodeId`
   per version; changes on rename by design.
 - **manager identity version** (the `GenericManager` identity counter,
@@ -523,7 +591,8 @@ as the freshness token on the **traced** name-ref edges (D4):
 - When a producer is REBUILT (structural change), its manager version bumps.
 - A consumer whose stored target-version ≠ the live version is **stale** even if its
   own params are unchanged → it must re-resolve the binding (cheap: rebind via the
-  apply-layer on a COW copy) or rebuild. This is how "material `glass` was replaced
+  apply-layer on a closure-copy — D11) or rebuild. This is how "material `glass` was
+  replaced
   by a different-kind material under the same name" correctly invalidates every
   object bound to `glass`, without those objects' own CST nodes having changed — and
   the consumers are reached via the traced `dependents` index, not a static schema
@@ -538,8 +607,9 @@ D9/Facet 1).
 
 - **Deferred realization (phase B):** Facet 2 does **not** realize during the
   assembly phase (A). It marks L3 nodes dirty; the existing single-threaded realize
-  pass in `AttachScene` bakes them — into the **new snapshot's** copies — before the
-  freeze bracket. The freeze guard (`RenderParallelScope`, `g_renderParallelDepth`)
+  pass in `AttachScene` bakes them — **on the `DerivedSceneBuilder`'s closure copies,
+  before `seal()` and therefore before publish** (D12) — i.e. before the freeze
+  bracket. The freeze guard (`RenderParallelScope`, `g_renderParallelDepth`)
   is honored *for free* because the in-flight render reads its own immutable snapshot
   (D1) and the re-derive only ever mutates COW copies in the *new* snapshot — it
   never touches an object the running workers hold. **Re-derive therefore does NOT
@@ -564,22 +634,34 @@ D9/Facet 1).
   re-adds L6 and marks it pending. This makes the existing runtime gate a
   *graph-membership* decision recorded by tracing.
 
-### 2.8 Threading: snapshot swap, not parking (D1)
+### 2.8 Threading: build → seal → publish; pass-boundary swap, not parking (D1, D12)
 
-Derivation runs on the **commit** of a debounced CST edit (O2), on the UI/agent
-thread. It produces a **new immutable `DerivedScene` snapshot** via copy-on-write
-(D1, §2.1) and **publishes it by an atomic pointer swap at a tile/pass boundary** —
-it does **not** park the render thread for safety.
+Derivation runs on each **debounced CST edit (O2)** — both a **commit** *and* a
+**gesture preview of the uncommitted head** (D1, §5.3) — on the UI/agent thread. It
+builds into a **mutable `DerivedSceneBuilder`**, runs **phase B on the builder**,
+**seals** it to a **new immutable `DerivedScene`** value (D12), and **publishes only
+the sealed value by an atomic pointer swap at a PASS boundary** (D12) — it does **not**
+park the render thread for safety, and it **never mutates after publication**. A
+preview's snapshot is **ephemeral** (not a history version); at gesture end the
+intermediate roots coalesce into one committed version (D1).
 
-**The model (D1):**
+**Ownership (D12):** the sealed `DerivedScene` **owns** the realized geometry, spatial
+index, **light samplers, AND photon maps**. Today the light samplers are
+**RayCaster-owned**, not part of `Scene` (`Scene.h:405`); D12 **moves them into** the
+sealed snapshot so a snapshot is fully render-ready and self-contained. Phase B
+(realize/tessellate, TLAS, light samplers, photon maps) therefore runs **on the
+builder** and its outputs are sealed in — never built into a published value.
+
+**The model (D1, D12):**
 - The renderer holds a **refcounted pointer to one immutable snapshot** and reads it
   freely; because the snapshot is immutable, no lock is needed on the read side.
-- A commit/preview builds a new snapshot (sharing all untouched engine objects by
-  reference — meshes, BVH leaves, materials, the TLAS/light samplers where untouched)
-  and **atomically swaps the renderer's pointer at a tile/pass boundary.** The render
-  loop checks the published pointer at that boundary; the in-flight pass finishes
-  against the *old* snapshot, which stays alive on its refcount until it drains, then
-  is freed.
+- A commit/preview builds a new snapshot on the builder, runs phase B on it, seals it
+  (sharing all untouched engine objects by reference — meshes, BVH leaves, materials,
+  the TLAS/light samplers where untouched), and **atomically swaps the renderer's
+  pointer at a PASS boundary** (never mid-frame / per-tile — D12). The render loop
+  checks the published pointer at that boundary; the in-flight pass finishes against
+  the *old* snapshot, which stays alive on its refcount until it drains, then is
+  freed.
 - **No parking-for-safety.** Immutability removes the data race that the Model-A /
   earlier-draft `SceneEditController` park gate guarded against (no thread reads an
   object another thread mutates — re-derive only ever writes COW copies in the new
@@ -597,6 +679,18 @@ hard error (D1): it is immutable + refcounted, so the renderer simply keeps
 rendering it while a broken head is edited (pairs with derive-with-holes, §5).
 **Abort** of an in-flight pass needs no rollback — nothing was half-mutated.
 
+**Coherent version status (D13).** Because derivation is async and may serve a
+last-good snapshot, the head version and the *derived* version can differ; a single
+shared `documentId` would falsely claim them equal. The session therefore publishes
+**one coherent status value** alongside each snapshot:
+`{ headVersion, derivedVersion, snapshot, status ∈ {deriving, ok, error},
+diagnostics }`. **`read_graph` / `render` / `derive_preview` are stamped with
+`derivedVersion`** — *what the scene actually reflects*, which **may be < headVersion,
+or last-good on error** — and are **never** claimed equal to head. (`read_document` is
+stamped with `headVersion`, the CST truth — Facet 1/5; a patch's optimistic-concurrency
+precondition is checked against `headVersion`.) `status` + `diagnostics` explain any
+lag or failure so a consumer reading a lagging `derivedVersion` knows why.
+
 The re-kick that follows a swap is the same `RasterizeScene`, now running against the
 newly published snapshot. **No second *mutable* representation is introduced**
 (INV-1): the memo cache is derived state, not an independent source of truth — it can
@@ -606,28 +700,38 @@ immutable values, not a mutable mirror of the CST.
 ### 2.9 The AssetManifest and external-input invalidation (D5)
 
 The second formal input to `derive` is the **`AssetManifest`** (D5): a map from each
-**referenced asset path** → `{resolved absolute identity, content fingerprint}`,
-where the fingerprint is `size+mtime` (upgradable to a content hash). It covers every
-externally-loaded asset a chunk references — textures (`png_painter`/image painters),
-meshes (`bezier`/mesh loaders), spectral data (`scalar_painter { file … }`), glTF,
-environment maps, `.sdf` sidecars (where still used), etc.
+**referenced asset path** → `{resolved absolute identity, fingerprint}`. **The asset
+identity is a two-stage fingerprint (D17): a `(size, mtime)` *prefilter* → on a
+prefilter change (or whenever determinism is required) compute a *content hash*, which
+is the authoritative identity.** `(size, mtime)` alone is not deterministic — bytes
+can change with size/mtime unchanged — so it is only a fast prefilter, never the
+recorded identity. It covers every externally-loaded asset a chunk references —
+textures (`png_painter`/image painters), meshes (`bezier`/mesh loaders), spectral data
+(`scalar_painter { file … }`), glTF, environment maps, `.sdf` sidecars (where still
+used), etc.
 
-- **Asset reads are traced (D4).** When `derive` loads a file for a param, it records
-  an edge from the consuming L1/L3 node to that manifest entry (the
-  `assetDependents` index, §2.3). A fingerprint change therefore invalidates exactly
-  the nodes that consumed that asset — `Scene = f(CST)` becomes
+- **Asset reads are traced (D4); memo keys use the content hash (D17).** When `derive`
+  loads a file for a param, it records an edge from the consuming L1/L3 node to that
+  manifest entry (the `assetDependents` index, §2.3), and the entry's **content hash**
+  participates in the consumer's memo key (§2.3). A content-hash change therefore
+  invalidates exactly the nodes that consumed that asset — `Scene = f(CST)` becomes
   `Scene = f(CST, AssetManifest)`, closing the "texture changed on disk, clean derive
   disagrees with a cache hit" hole.
 - **Output paths are excluded** (D5): `file_rasterizeroutput.pattern` and any sink
   path are **sinks, not sources** — they never appear in the input dependency set and
   never trigger invalidation.
 - **Invalidation is watcher-driven** (D5): a background file watcher (or an explicit
-  re-stat on focus / before render) refreshes the manifest. A changed fingerprint
-  seeds the dirty set (§2.4 step 1b) and re-derives the consumers. The manifest is
-  versioned alongside the CST head and is part of the derivation environment.
-- This is the same mechanism Facet 1/3 use for the **external-file conflict guard**
-  (D6: load/flush fingerprint + compare-and-swap save); the manifest's fingerprints
-  and the save-time CAS share the watcher and the fingerprint definition.
+  re-stat on focus / before render) refreshes the manifest via the prefilter, hashing
+  on a prefilter change. A changed content hash seeds the dirty set (§2.4 step 1b) and
+  re-derives the consumers. The manifest is versioned alongside the CST head and is
+  part of the derivation environment.
+- This is the same mechanism Facet 1/3 use for the **external-file conflict guard**:
+  D17 makes the save **atomic** — write to a temp file in the target dir → fsync →
+  revalidate the target's content hash == the loaded fingerprint → atomic `rename()`
+  over the target (replacing D6's stat-then-write CAS, which had a TOCTOU race) — and a
+  revalidate mismatch routes to the D6 conflict UX (reload / diff / force), never a
+  silent overwrite. The manifest's content hashes and the save-time revalidation share
+  the watcher and the fingerprint definition.
 
 ---
 
@@ -639,10 +743,10 @@ environment maps, `.sdf` sidecars (where still used), etc.
 | `IAsciiChunkParser::Finalize` per chunk | **Reuse (re-homed)** | This *is* the per-node L1 derivation rule. Keep verbatim as the rebuild emitter; it now runs per dirty node, not per file. |
 | `IJob::AddX/SetX` surface + `Job.cpp` | **Reuse, with order-independence fixes** | The construction API stays; §4 lists the specific ordering effects to remove. |
 | `GenericManager<T>` (name-key + identity version/serial) | **Reuse** | Already the order-independent store + freshness token Facet 2 needs (§2.6). |
-| `SceneEditor::ApplyObjectOpForward` / `ApplyForwardMutation` (`SceneEditor.cpp`) | **Reuse (re-homed as the APPLY backend)** | The fine-grained mutators for value-only edits — now invoked **on COW copies in the new snapshot** (D1), not on a shared live object. Strip the `SceneEdit`-record coupling; drive from `(NodeId, slot, value)` (D9). |
+| `SceneEditor::ApplyObjectOpForward` / `ApplyForwardMutation` (`SceneEditor.cpp`) | **Reuse (re-homed as the APPLY backend)** | The fine-grained mutators for value-only edits — now invoked **on the builder's closure copies, sealed before publish** (D11/D12), not on a shared live object. Strip the `SceneEdit`-record coupling; drive from `(NodeId, slot, value)` (D9). |
 | `*Introspection::SetSlotValue` (Material/Media/Light/Camera) | **Reuse** | The per-domain slot setters the APPLY backend calls (on COW copies — D1). |
 | `BumpLightTopologyGeneration` + the `…IfEmitterSetChanged`/`…IfMaterialEmits` helpers + the `LightManager` self-invalidate callback | **Reuse (as the L1/L2→L5 traced-edge implementation)** | The emissive→light-topology dependency edge already exists imperatively; Facet 2 makes the **traced** graph (D4) drive it. The coarse generation counter stays as L5's dirty flag. |
-| Phase-B reconciliation (`RayCaster::AttachScene` realize+sampler rebuild, `PrepareForRendering`, `BuildPendingPhotonMaps`, `RenderParallelScope`) | **Reuse, unchanged** | Already incremental + correctly staged. Facet 2 only feeds it a precise dirty set and runs it over the **new snapshot** (D1). Under D1 the freeze guard is a DEBUG assertion, not a parking prerequisite (§2.7–2.8). |
+| Phase-B reconciliation (`RayCaster::AttachScene` realize+sampler rebuild, `PrepareForRendering`, `BuildPendingPhotonMaps`, `RenderParallelScope`) | **Reuse, unchanged** | Already incremental + correctly staged. Facet 2 only feeds it a precise dirty set and runs it **on the `DerivedSceneBuilder` before `seal()` / publish** (D12); the sealed snapshot then **owns** the samplers/photon maps (moved in from the RayCaster — D12). Under D1 the freeze guard is a DEBUG assertion, not a parking prerequisite (§2.7–2.8). |
 | `SceneEdit` value record (`SceneEdit.h`) | **Delete (owned by Facet 3)** | The edit carrier becomes the CST diff. The *op semantics* are absorbed into §2.5's apply-table; the struct goes. |
 | `EditHistory` (`EditHistory.h`) | **Delete (Facet 3)** | Undo/redo = CST version history. |
 | `DirtyTracker` (`DirtyTracker.h`) | **Delete (Facet 3)** | The memo cache's reverse-dependency index + phase-B generations replace the dirty channels; round-trip-save dirtiness is moot once text↔CST is lossless (Facet 1/3). |
@@ -690,7 +794,8 @@ order-independent (lexicographic `std::map`). The order-dependence is in `Job`'s
    edge** — equivalently a worklist that defers a consumer until its referenced
    producers are present. This captures dynamic refs (`timeline.element` via
    `element_type`) that a static `referenceCategories` scan would miss.
-   (`referenceCategories` is only a UI/rename hint — D4.) (b) Dangling refs (a name
+   (`referenceCategories` is only a UI ref-picker hint — D4; rename's referrer rewrite
+   uses the traced `ReferenceUse` records — D14.) (b) Dangling refs (a name
    with no producer node) derive to a **hole** (§5) rather than failing the whole
    scene. Cycles in name-refs (illegal) are detected when tracing revisits a node
    already on the active resolution stack, and reported as node-local errors.
@@ -768,11 +873,11 @@ continuously") makes **derive-with-holes the default**, not fail-whole-scene:
 The renderer retains the **last successfully-derived immutable snapshot** (D1, §2.8)
 — refcounted, so it stays alive for free. On a commit whose diff introduces holes:
 
-- The new snapshot is a COW path-copy: the affected records become holes (or
-  fallbacks), while **every unaffected engine object is shared by reference with the
-  prior snapshot** (D1 structural sharing). An unaffected object trivially survives
-  because the new snapshot *points at the same object* — there is no in-place mutation
-  to disturb it.
+- The new snapshot is a COW **reverse-dependency-closure copy** (D11): the affected
+  records (and their referrer closure) become holes (or fallbacks), while **every node
+  outside the closure is shared by reference with the prior snapshot** (D11 structural
+  sharing). An unaffected object trivially survives because the new snapshot *points at
+  the same object* — there is no in-place mutation to disturb it.
 - Rendering proceeds against the partially-holed new snapshot (holes as null-material
   / not-rendered). The preview stays live; the diagnostics list shows what's broken.
 - If a commit is *catastrophic* (e.g. the active-rasterizer node itself is holed),
@@ -783,12 +888,19 @@ The renderer retains the **last successfully-derived immutable snapshot** (D1, �
 
 ### 5.3 Distinguishing "incomplete mid-edit" from "wrong"
 
-While a human/agent is mid-edit (debounce window), a transiently-dangling ref is
-expected. Derivation is **only triggered on commit** (O2), so mid-keystroke
-incompleteness never reaches `derive`. A hole at commit time is a *real* semantic
-error worth surfacing. (If O2 were tightened to 60Hz incremental — see §6 — the
-engine would need a "tentative hole, suppressed diagnostic" state during active
-typing; flagged as the cost of that path.)
+Derivation is **not** commit-only (D1). A gesture (drag, an agent emitting a burst of
+patches) derives its **uncommitted head** — each pointer-move advances the uncommitted
+CST head (debounced per O2) and derives a **cheap, ephemeral preview snapshot** (D1,
+§2.8); only at **gesture end** do the intermediate roots **coalesce into one committed
+version** (one undo unit). So previews routinely derive uncommitted state. What is
+*debounced away* is the per-keystroke re-parse of a half-typed text token (a syntactic
+incompleteness that never produces a parsed CST to derive), **not** semantic
+derivation. A transiently-dangling ref inside an otherwise-parseable preview head is
+**expected** and derives to a hole with a **suppressed/transient diagnostic**; a hole
+that survives to the **committed** version at gesture end is a *real* semantic error
+worth surfacing. (At a tighter 60Hz cadence — see §6 — that "tentative hole, suppressed
+diagnostic during active typing" state simply becomes the steady state for every
+preview frame; flagged as the cost of that path.)
 
 ---
 
@@ -807,21 +919,30 @@ typing; flagged as the cost of that path.)
      dirty; phase B bakes once). **Open:** is per-instance incremental baking worth
      it, or is "re-bake the generator, it's one object" acceptable at 10k? Needs a
      measured baseline (per `performance-work-with-baselines`).
-   - **Editing a shared painter used by 500 materials.** The painter L1 changes →
-     500 dependent materials' keys *don't* change (they reference the painter by
-     name, and the manager version only bumps on a structural rebuild — §2.6). A
-     *value-only* painter edit (e.g. a uniform color) should propagate via the
-     apply-layer to a **COW copy of the painter object** (D1), and the 500 materials
-     in the new snapshot continue to point at that (now-updated) painter **with no
-     per-material work**. **This is the happy path** — the fan-out is O(1) at the
-     producer, not O(consumers) — *provided* painter value edits are apply-able.
-     (Note the COW nuance: the 500 materials' *pointers* are unchanged, so the
-     materials themselves need not be copied; only the painter is copied, and the
-     materials in the shared tail still resolve it by name within the snapshot.)
-     **Open:** are all painter kinds mutable via a copy-then-set, or do some require
-     a full rebuild (which *would* bump the version and force 500 rebinds)? Audit
-     needed; likely add painter slot-setters mirroring the material introspection
-     setters.
+   - **Editing a shared painter used by 500 materials.** This is the worked example
+     that **D11 corrects** — the earlier draft's "copy the painter, share the 500
+     materials, fan-out is O(1)" claim is **wrong**. The engine scene is a raw-pointer
+     graph: each material holds a **direct pointer** to the painter
+     (`LambertianBRDF.h:37`), so a material *shared* into the new snapshot would keep
+     pointing at the **old** painter. **You cannot share a referrer of a changed
+     node** (D11). The correct COW (D11) copies the painter's **reverse-dependency
+     closure**: the painter + all 500 materials that reference it + their referrers up
+     to the roots (their objects, the TLAS leaves), repointing the copies; everything
+     **outside** that closure is shared by refcount. Cost is therefore **O(closure /
+     fan-in of the painter)** — for a 500-fan-in painter the closure is genuinely
+     large, but it is **bounded by fan-in and still dwarfed by the ensuing render**,
+     not O(scene). **Render stays direct-pointer** (the closure copies hold correct
+     pointers into the new snapshot's immutable objects).
+     **Optimization (named, deferred — D11):** for very-high-fan-in classes (painters,
+     materials), a **per-snapshot indirection table** (objects reference by id,
+     resolved through the snapshot's table) would collapse such an edit back to
+     O(log N) at the cost of a render-time lookup — adopt **only if** profiling shows
+     closure-copy is a bottleneck. A **first implementation may full-rebuild** (closure
+     = everything) for correctness, then add closure-tracking; the design *target* is
+     closure-copy. **Open:** are all painter kinds mutable via a copy-then-set (so the
+     APPLY backend can re-derive just the painter copy inside the closure), or do some
+     require a full rebuild? Audit needed; likely add painter slot-setters mirroring
+     the material introspection setters.
 
 2. **Memo-key hashing cost vs. diff-from-Facet-1.** Recomputing input-hashes for
    every node on every commit is O(scene). For a 10k-object scene that may itself
@@ -847,8 +968,9 @@ typing; flagged as the cost of that path.)
    out of scope for v1 (matches today), flag for a later perf pass.
 
 5. **`-ffast-math` and "unchanged" detection.** Memo equality must be byte/hash
-   equality of the §2.3 key (green-node structural hash + traced-input versions +
-   *resolved literal-value* bit patterns), never a NaN-sentinel "not set" test
+   equality of the §2.3 key (the trivia-insensitive *derivation key* — D15 — +
+   traced-input versions + *resolved literal-value* bit patterns), never a NaN-sentinel
+   "not set" test
    (P-FFMATH; memory `ffast-math: no infinity`). The literal-value component of the
    key must hash floating-point params **by bit pattern**, and "absent param" must be
    an explicit presence bit (the descriptor default), not a NaN. Mechanically enforce
@@ -872,9 +994,10 @@ typing; flagged as the cost of that path.)
    deltas if synthesis chose 60Hz incremental derivation are narrower: (a) §5.3's
    "tentative hole, suppressed diagnostic" state becomes mandatory during active
    typing; (b) the memo-key recompute must be truly O(changed), not O(scene), every
-   frame; (c) snapshot allocation/refcount churn per frame must stay cheap (the
-   structural sharing makes each snapshot O(depth), but 60Hz × large scenes still
-   wants measurement). **Recommendation: keep debounced-commit** — 60Hz re-derivation
+   frame; (c) snapshot allocation/refcount churn per frame must stay cheap (structural
+   sharing makes each snapshot's CST path-copy O(log N) — D16 — and the derived-scene
+   copy O(closure / fan-in) — D11, not O(scene); but 60Hz × large scenes still wants
+   measurement). **Recommendation: keep debounced-commit** — 60Hz re-derivation
    of a production spectral renderer's scene graph buys little (the render itself is
    the latency floor). This is now a *latency/throughput* preference, not a
    correctness/INV-1 argument, since D1's snapshot model is safe at either cadence.
@@ -883,17 +1006,24 @@ typing; flagged as the cost of that path.)
 
 ## 7. Cross-facet dependencies & assumptions
 
-- **From Facet 1 (CST):** I assume (a) **immutable, process-stable `NodeId`
-  identity** per node (D9) that survives rename/value-edit/reparse — the memo cache
-  keys on it; **name-path** (resolved to NodeId per version) is the addressing layer,
+- **From Facet 1 (CST):** I assume (a) **immutable, process-stable per-occurrence
+  `NodeId` identity** (D9), living in the **red layer / a side-map, not the shared
+  green node** (D15), surviving rename/value-edit and **best-effort** across reparse
+  (structured edits exact; whole-region reparse matches by position+content, unmatched
+  durable refs invalidated/flagged — D15) — the memo cache keys on it; **name-path**
+  (resolved to NodeId per version) is the addressing layer,
   and the manager entry is still name-keyed (D9, §2.6); (b) a **node-level structural
   diff** (or cheap per-node identity) so §2.4 hashes only changed nodes, not the
-  whole scene (load-bearing for the latency budget — see §6.2); (c) **green-node
-  structural hashing** is available (D2) for the memo key's structure component, and
-  the descriptor's `referenceCategories` is exposed **as a UI/rename hint only** (D4)
-  — I do **not** build the dependency graph from it; the graph is **traced during
-  derivation** (D4); (d) the **AssetManifest** (D5) — resolved identity + fingerprint
-  per referenced asset — is supplied as a second derivation input (Facet 1/6 own its
+  whole scene (load-bearing for the latency budget — see §6.2); (c) **a
+  trivia-insensitive *derivation key*** (D15) is available for the memo key (distinct
+  from the green node's lossless, trivia-*sensitive* content hash — D15 — which does the
+  structural sharing/dedup), wide child sequences are a persistent **rope** giving
+  O(log N) position/child lookup and edit (D16), and the descriptor's
+  `referenceCategories` is exposed **as a UI ref-picker hint only** (D4; rename uses
+  traced `ReferenceUse` records — D14) — I do **not** build the dependency graph from
+  it; the graph is **traced during derivation** (D4); (d) the **AssetManifest** (D5/
+  D17) — resolved identity + (size,mtime)-prefilter→content-hash fingerprint per
+  referenced asset — is supplied as a second derivation input (Facet 1/6 own its
   construction + the watcher); (e) declarative iteration (L3) is already expanded into
   either *derived instances* (a generator node I treat as one L3 producer) or
   *explicit separately-editable entities* (N independent L1/L2 nodes) — Facet 2 treats
@@ -904,12 +1034,14 @@ typing; flagged as the cost of that path.)
   `DirtyTracker`/transactions/`SaveEngine`; I **reuse the mutation primitives**
   under them (`ApplyObjectOpForward`, the `*Introspection` setters) as my APPLY
   backend, re-homed to take `(NodeId, slot, resolved-value)` from the CST diff (D9)
-  and to run **on COW copies in the new snapshot** (D1). **Assumption:** Facet 3's
-  "apply a CST edit" calls into my `derive(CST, CST', AssetManifest, cache)` (D5) —
-  i.e. Facet 3 owns *producing* the new CST + version history; I own *turning the diff
-  into a new immutable snapshot*. The **snapshot-publish / atomic-swap** seam (§2.8,
-  D1) is shared mechanism; assume Facet 3/4 drive the commit. (No parking-for-safety;
-  cancel-and-park is an optional coalescing optimization Facet 3/4 may invoke.)
+  and to run **on closure-copies in the builder, sealed before publish** (D11/D12).
+  **Assumption:** Facet 3's "apply a CST edit" calls into my
+  `derive(CST, CST', AssetManifest, cache)` (D5) — i.e. Facet 3 owns *producing* the new
+  CST + version history; I own *turning the diff into a new sealed immutable snapshot*.
+  The **build→seal→publish / pass-boundary atomic-swap** seam (§2.8, D12) is shared
+  mechanism; assume Facet 3/4 drive the commit *and gesture previews of the uncommitted
+  head* (D1, §5.3). (No parking-for-safety; cancel-and-park is an optional coalescing
+  optimization Facet 3/4 may invoke.)
 - **To Facet 4 (dynamic UI):** the memo cache's per-node derived records + holes +
   diagnostics are what the UI binds to (a widget, bound by NodeId per D9, reflects its
   node's derived state / error). I expose a read API over the cache; I assume the UI
@@ -918,51 +1050,79 @@ typing; flagged as the cost of that path.)
 - **To Facet 5 (agentic surface):** my structured per-node diagnostics (§5.1) are
   the "structured errors" the MCP `validate→derive→render` loop returns. I assume
   the agent edits land as CST diffs through Facet 3, then trigger my derive.
-- **Decision-conformance check (D1–D10):** the design honors **D1** (immutable COW
+- **Decision-conformance check (D1–D20):** the design honors **D1** (immutable COW
   snapshot + atomic swap; no parking-for-safety — §2.1/§2.8), **D4** (traced
-  dependency graph; memo key = green-node structural hash + traced-input versions, so
-  `expr(A)` ≠ literal `5` — §2.2/§2.3), **D5** (input = `(CST, AssetManifest)`; output
-  paths excluded — §2.9), **D9** (NodeId = lineage identity, name-path = addressing —
-  §2.3/§2.6), and references **D2** (green-node hashing), **D6** (shared fingerprint /
-  CAS-save mechanism — §2.9), **D10** (the first-slice fixture/gates — §8). It honors
-  the charter's locked decisions L1 (pure derivation), L2 (one pathway — the
-  apply/rebuild split is *one* derive function, not two clients), L3 (consumes
-  post-expansion CST), L5 (identity is first-class — realized as NodeId + name-path per
-  D9), L6 (descriptor-as-schema; `referenceCategories` is a hint, not a parallel edge
-  schema). **No conflicts with D1–D10 or the locked decisions.** Open decisions
-  touched: O1 (designed for CST-canonical; the memo key's structural-hash + traced-
-  input-version form makes the text-canonical delta small — a text edit that re-parses
-  to the same green tree with the same traced inputs is a memo hit either way), O2
-  (designed for debounced-commit; §6.7 argues to keep it, now as a latency preference
-  since D1 is safe at either cadence).
+  dependency graph; memo key = derivation key + traced-input versions, so `expr(A)` ≠
+  literal `5` — §2.2/§2.3), **D5** (input = `(CST, AssetManifest)`; output paths
+  excluded — §2.9), **D9** (NodeId = lineage identity, name-path = addressing —
+  §2.3/§2.6); and the **round-2 amendments**: **D11** (COW is reverse-dependency-closure
+  copy, not "share a referrer of a changed node"; O(closure/fan-in); first cut may
+  full-rebuild — §2.1/§5.2/§6.1), **D12** (build into a `DerivedSceneBuilder` → phase B
+  on the builder → *seal* → publish; the snapshot **owns** geometry/TLAS/light-samplers/
+  photon-maps; adopt at a **pass** boundary only — §2.1/§2.4/§2.8), **D13** (expose
+  `headVersion` + `derivedVersion`; render/graph stamp the latter, which may
+  lag/last-good — §2.8), **D14** (rename uses traced `ReferenceUse` records, not
+  `referenceCategories` — §2.2/§4.2/§8), **D15** (three concepts: lossless content hash
+  / trivia-insensitive *derivation key* = the memo key / `NodeId` lineage in the red
+  layer — §2.3), **D16** (wide child sequences are a persistent rope, O(log N) —
+  §2.1/§6.7), **D17** (asset identity = (size,mtime) prefilter → content hash, the
+  authoritative memo-key input; atomic temp+fsync+revalidate+rename save — §2.1/§2.9),
+  **D18** (corrected first-slice fixture with a real reference chain + asset phase —
+  §8), **D20** (version-scoped/persistent cache carried with each snapshot; atomic
+  outgoing-edge replace on re-derive, purge on delete — §2.3); and it references **D2**
+  (green-node content hashing for sharing), **D6** (shared fingerprint / conflict UX —
+  §2.9), **D10** (the first-slice gates — §8). The **residual conformance sweep** items
+  are addressed: (i) the memo key is the structural/traced-input *derivation key*, never
+  resolved-value (§2.3); (ii) derivation is **not** commit-only — gesture previews derive
+  the uncommitted head into ephemeral preview snapshots, committing once at gesture end
+  (§2.8/§5.3); (iii) name-path is *addressing*, NodeId is the stable lineage identity
+  (§2.3/§2.6). It honors the charter's locked decisions L1 (pure derivation), L2 (one
+  pathway — the apply/rebuild split is *one* derive function, not two clients), L3
+  (consumes post-expansion CST), L5 (identity is first-class — realized as NodeId +
+  name-path per D9), L6 (descriptor-as-schema; `referenceCategories` is a UI ref-picker
+  hint, not a parallel edge schema). **No conflicts with D1–D20 or the locked
+  decisions.** Open decisions touched: O1 (designed for CST-canonical; the memo key's
+  derivation-key + traced-input-version form makes the text-canonical delta small — a
+  text edit that re-parses to the same green tree with the same traced inputs is a memo
+  hit either way), O2 (designed for debounced-commit; §6.7 argues to keep it, now as a
+  latency preference since D1 is safe at either cadence).
 
 ---
 
 ## 8. First-slice implications (minimal end-to-end vertical)
 
 Facet 2 contributes to the **single canonical phased fixture + shared gate set in
-D10** (which supersedes the four formerly-nominated first slices). The relevant
-fixture phases for this facet are D10's phase 3 (`sphere_geometry` +
-`uniformcolor_painter` + `standard_object` — the geom+material+object three-node
-chain, the first to exercise cross-node references, rename integrity, and the
-dependency graph end-to-end), with phase 4 (`+ expr(...)`) exercising traced-input
-invalidation and phase 5 (`+ instance_array`) the generator path. Facet 2's
-contributions to that fixture:
+D10, as corrected by D18** (which supersedes the four formerly-nominated first slices;
+D18 fixes D10's fixture — `uniformcolor_painter` has no reference, and phase 3 had
+omitted the material node). The relevant fixture phases for this facet are **D18 phase
+2** (`+ uniformcolor_painter` **and** `+ lambertian_material { reflectance <the uniform
+painter> }` — the material is the **first reference**, exercising the ref-picker + the
+dependency edge) and **D18 phase 3** (`+ standard_object { geometry <sphere> material
+<lambertian> }` — the real **geometry→material→object** chain, exercising cross-node
+references, rename integrity (D14), and the dependency graph end-to-end), with phase 4
+(`+ expr(...)`) exercising traced-input invalidation, phase 5 (`+ instance_array`) the
+generator path, and **D18 phase 6** (`+ image_painter` / a mesh-backed geometry) adding
+the **asset-backed node** that makes **G5** (AssetManifest content-hash invalidation,
+D17) and the external-file-conflict path (D6/D17) testable. Facet 2's contributions to
+that fixture:
 
-1. **Take D10 phase 3's three-node chain** (`sphere_geometry` →
-   `uniformcolor_painter` → `standard_object`) — the simplest
-   producer→producer→consumer chain that exercises a traced name-ref edge and a
-   transform. All three already have descriptor + `Finalize` + `AddX`.
+1. **Take D18 phase 3's real chain** (`sphere_geometry` + `uniformcolor_painter` →
+   `lambertian_material` → `standard_object`) — the simplest
+   producer→producer→consumer chain that exercises a traced name-ref edge (the
+   material's `reflectance` → painter, and the object's `material`/`geometry` →
+   entities) and a transform. All four already have descriptor + `Finalize` + `AddX`.
 2. **Build the minimal memo cache + traced graph for these node kinds:** L0 values,
    L1 entities (geometry, painter, material), L2 object, the name-ref edges
    **recorded by tracing the derivation** (D4 — *not* read from
-   `referenceCategories`, which is only the picker/rename hint), and the L2→L4 (TLAS)
-   edge. Snapshots are immutable + COW (D1); the cache keys on NodeId (D9).
+   `referenceCategories`, which is only the UI ref-picker hint; rename uses traced
+   `ReferenceUse` records — D14), and the L2→L4 (TLAS) edge. Snapshots are immutable +
+   sealed (D1/D12), built via closure-copy (D11); the cache keys on NodeId (D9/D15) and
+   is version-scoped/persistent (D20).
 3. **Wire the two backends:** REBUILD = the existing `Finalize→AddObject`/
    `AddSphereGeometry`/`AddLambertianMaterial`; APPLY = `SetObjectPosition` +
    `RunObjectInvariantChain` for a transform edit, `MaterialIntrospection::
-   SetSlotValue` for the material's `reflectance` — both **on COW copies in the new
-   snapshot** (D1).
+   SetSlotValue` for the material's `reflectance` — both **on closure-copies in the
+   builder, sealed before publish** (D11/D12).
 4. **Demonstrate the core behaviors (mapping to D10's gates G2/G3/G4):**
    - edit the sphere's `position` → APPLY path → new snapshot shares everything but
      the copied object; only TLAS rebuilds (prove no entity re-derived; assert via
@@ -970,23 +1130,26 @@ contributions to that fixture:
      ticking once) — **G3 minimal invalidation**;
    - edit the material's `reflectance` to a new color → APPLY path → no
      light-topology rebuild (sphere non-emissive), no TLAS rebuild;
-   - rename the material the object binds → `NodeId`-preserving rename (D9); the
-     producer's manager **version bumps** → object rebinds via the version-staleness
-     check (§2.6) — **G4 versioning** (round-trip byte-identical after undo, G1).
+   - rename the material the object binds → `NodeId`-preserving rename (D9); referrers
+     are rewritten from the traced `ReferenceUse` records (D14), and the producer's
+     manager **version bumps** → object rebinds via the version-staleness check (§2.6)
+     — **G4 versioning** (round-trip byte-identical after undo, G1).
    - *(phase 4)* edit a `Double` fed by `expr(A)`, then change `A` → the consumer's
      traced-input version bumps and it re-derives, while a sibling literal `5` stays
      a memo hit (D4).
 5. **Prove the memo hit (G1/G3):** add a comment / reformat whitespace in the CST →
-   diff shows a text change → the node's **green-node structural hash and traced
-   inputs are unchanged** → **zero** re-derivation (the headline INV-3/INV-4 win,
-   measurable as "derive did nothing"; the new snapshot shares 100% by reference).
+   diff shows a text change → the green node's *content* hash changes (D15) but the
+   node's **derivation key (trivia-insensitive) and traced inputs are unchanged** (D15)
+   → **zero** re-derivation (the headline INV-3/INV-4 win, measurable as "derive did
+   nothing"; the new snapshot shares 100% by reference).
 
 This slice stands up the cache, the **traced** graph build, the diff→dirty→propagate
-loop, the COW-snapshot publish, and both backends — the skeleton every other chunk
-type plugs into by virtue of being descriptor-driven. It reuses 100% of the engine
-(managers, apply-layer, phase-B pipeline) and adds only the thin memo+graph +
-snapshot layer. All five D10 gates (G1 round-trip, G2 latency, G3 minimal
-invalidation, G4 versioning, G5 external inputs once assets enter at phase ≥2) apply.
+loop, the build→seal→publish snapshot path (D12), and both backends — the skeleton
+every other chunk type plugs into by virtue of being descriptor-driven. It reuses 100%
+of the engine (managers, apply-layer, phase-B pipeline) and adds only the thin
+memo+graph + snapshot layer. All five D10 gates (G1 round-trip, G2 latency, G3 minimal
+invalidation, G4 versioning, G5 external inputs once the asset-backed node enters at
+D18 phase 6) apply.
 
 ---
 
@@ -998,17 +1161,20 @@ existing engines — the loader's `Finalize→AddX` (now the **rebuild** backend
 the editor's `ApplyObjectOpForward`+introspection setters (now the **apply** backend,
 run on **COW copies** — D1) — and puts a **memo cache + traced dependency graph** in
 front of them. The function is `derive(CST, AssetManifest)` (D5), producing an
-**immutable snapshot with structural sharing** (D1). A CST/manifest edit becomes a
-node-diff; the **traced** graph (D4) turns the diff into the *minimal* set of rebuilds
-(structural changes) and copy-then-apply value changes, materializes them in a new
-snapshot that shares every untouched object by reference, then sets the
-*already-existing* phase-B dirty flags (light-topology generation, TLAS-valid,
-photon-pending) precisely instead of via scattered hand-bumps. The renderer
-**atomically swaps to the new snapshot at a tile/pass boundary** — no
-parking-for-safety; the old snapshot drains by refcount (D1). The render-time
-realize→TLAS→light-sampler→photon pipeline is unchanged. Determinism comes from
-deriving in dependency order (discovered by tracing, fixing `Job`'s load-order
-landmines) and keying the memo on the **green-node structural hash + traced-input
-versions** (so `expr(A)` ≠ literal `5` — D4); incrementality comes from the memo
-cache + structural sharing; safety comes from immutability plus deriving with holes
-so one bad node never blanks the scene.
+**immutable, sealed snapshot with structural sharing** (D1, D12). A CST/manifest edit
+becomes a node-diff; the **traced** graph (D4) turns the diff into the *minimal* set
+of rebuilds (structural changes) and copy-then-apply value changes, materializes them
+in a mutable `DerivedSceneBuilder` that **copies the reverse-dependency closure** of
+each changed node and shares every node outside the closure by reference (D11), runs
+**phase B on the builder**, then **seals** to an immutable `DerivedScene` that **owns**
+its geometry/TLAS/light-samplers/photon-maps (D12) — setting the *already-existing*
+phase-B dirty flags (light-topology generation, TLAS-valid, photon-pending) precisely
+instead of via scattered hand-bumps. The renderer **atomically swaps to the sealed
+snapshot at a PASS boundary** — no parking-for-safety; the old snapshot drains by
+refcount (D1, D12). The render-time realize→TLAS→light-sampler→photon pipeline is
+unchanged. Determinism comes from deriving in dependency order (discovered by
+tracing, fixing `Job`'s load-order landmines) and keying the memo on the **derivation
+key** (trivia-insensitive semantic hash) **+ traced-input versions** (so `expr(A)` ≠
+literal `5` — D4/D15); incrementality comes from the version-scoped memo cache (D20) +
+structural sharing; safety comes from immutability plus deriving with holes so one bad
+node never blanks the scene.

@@ -1,11 +1,12 @@
 # RISE Agentic Redesign — Synthesis & Overview
 
-> **Status:** **review round 1 complete.** The external review accepted the architecture (no P0s)
-> but found 8 P1 + 2 P2 contradictions; they are resolved authoritatively in
-> [`01-DECISIONS.md`](01-DECISIONS.md), which **supersedes the reconciliations in §3 and the
-> first-slice in §6 below** and overrides the facet docs where they conflict. This document
+> **Status:** **review rounds 1 & 2 complete** (no P0s in either). The reviews found 8 P1 + 2 P2
+> (round 1) and 8 P1 + a P2 batch (round 2), all resolved authoritatively in
+> [`01-DECISIONS.md`](01-DECISIONS.md) (**D1–D20**), which **supersedes the reconciliations in §3 and
+> the first-slice in §6 below** and overrides the facet docs where they conflict. This document
 > synthesizes the six facet designs and their seams; read [`00-CHARTER.md`](00-CHARTER.md) for the
-> locked/open decisions, then [`01-DECISIONS.md`](01-DECISIONS.md) for the round-1 resolutions.
+> locked/open decisions, then [`01-DECISIONS.md`](01-DECISIONS.md) for the resolutions (round 2's
+> D11–D20 amend several round-1 decisions).
 
 ## 0. Reading guide (for the reviewer)
 
@@ -67,7 +68,8 @@ Per-facet headline:
   cache, killing P-WALK); memo cache + dependency graph front two existing backends —
   `Finalize→Job::Add*` (rebuild) and the apply layer (value-fast-path); existing phase-B dirty
   flags (`BumpLightTopologyGeneration`, TLAS-valid, photon-pending) set precisely (killing
-  P-INVALIDATE); memo keys hash *resolved values*, not text spans.
+  P-INVALIDATE); memo keys are the node's trivia-insensitive **derivation key** — semantic structure
+  + traced-input versions (D4/D15) — not text spans and not raw resolved values (so `expr(A)` ≠ `5`).
 - **F3 (Edit/History):** an edit is `CstPatch → new immutable root`; undo/redo is a pointer move
   over a structurally-shared version DAG; a gesture coalesces patches and commits *one* version
   (dissolving composites/transactions/rollback/atomicity/identity-serial); lossless round-trip is
@@ -104,7 +106,8 @@ assumptions meet. **R1 is load-bearing for the whole design; the rest are contai
   **changed-NodeId-set contract** that already satisfies F2's diff need) — but §2.8.5 describes a
   structured edit as *mutating the node in place*, and punts the version model to F3 without
   committing to persistence.
-- **F2** is satisfied either way (it hashes resolved values + consumes the changed-NodeId set), so
+- **F2** is satisfied either way (it keys on the trivia-insensitive derivation key — semantic
+  structure + traced-input versions, D4/D15 — and consumes the changed-NodeId set), so
   it does **not** force the choice — but it warned that if F1 *can't* give a cheap node diff, F2
   must add its own per-node hash cache, leaking derivation state into the CST (an INV-1 violation).
   F1's explicit changed-NodeId contract removes that worry **provided** the representation makes the
@@ -185,11 +188,14 @@ realize→TLAS→light-sampler→photon seam, `ChunkDescriptor`/`Describe()`.
 
 ## 6. The first slice (the falsifiable vertical)
 
-> **Superseded by [`01-DECISIONS.md`](01-DECISIONS.md) §D10**, which defines the single canonical
-> phased fixture (1 `sphere_geometry` → 2 `+uniformcolor_painter` → 3 `+standard_object` 3-node
-> chain → 4 `+expr` → 5 `+instance_array`) and the shared gates **G1–G5** (round-trip byte-identity;
-> incremental-derive < 50 ms on a Sponza-class scene; minimal invalidation; version-DAG undo;
-> external-asset + file-conflict). The earlier, divergent text below is retained for context.
+> **Superseded by [`01-DECISIONS.md`](01-DECISIONS.md) §D18** (which amends §D10), defining the
+> single canonical phased fixture: 1 `sphere_geometry` → 2 `+uniformcolor_painter` **+
+> `lambertian_material{reflectance→painter}`** (the first real *reference* → ref-picker) → 3
+> `+standard_object{geometry,material}` (the true geometry→material→object chain + rename) → 4
+> `+expr` → 5 `+instance_array` → **6 `+image_painter`/mesh (asset-backed, so G5 is exercisable)**.
+> Shared gates **G1–G5** (round-trip byte-identity; incremental-derive < 50 ms on a Sponza-class
+> scene; minimal invalidation; version-DAG undo; asset/file-conflict). The earlier, divergent text
+> below is retained for context.
 
 All facets independently converged on "one simplest chunk, full vertical." Two candidates were
 named — F1: `sphere_geometry` (2 params); F6: `uniformcolor_painter`. **Recommendation:** start with

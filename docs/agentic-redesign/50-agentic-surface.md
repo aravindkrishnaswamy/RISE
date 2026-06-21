@@ -2,8 +2,11 @@
 
 > **Status:** design-in-progress. One of six parallel facet docs under
 > [00-CHARTER.md](00-CHARTER.md). **Design only — no source, build, or scene changes.**
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (review round 1):** added external-file
-> conflict handling (load/flush fingerprint + compare-and-swap save, D6); v7 is single-file (D7).
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1 & 2):** added external-file
+> conflict handling (atomic save + content-hash fingerprint, D6/D17); v7 is single-file (D7);
+> the read/patch contracts expose the coherent `{headVersion, derivedVersion, status}` version
+> surface (D13); name-path is addressing while the immutable NodeId is the stable lineage
+> identity (D9/D14/D15).
 > This facet owns the **RISE MCP server**, the **edit→validate→derive→render→observe loop**,
 > the **GUI-as-just-another-agent** unification (charter **L2**), **diff-able / git-native /
 > reviewable scenes**, **agent-edit safety & validation**, **product framing & differentiation**,
@@ -135,16 +138,47 @@ actions; Prompts = curated workflows), but the *tools* are re-cast onto the CST.
 
 | Tool / resource | Contract | Backed by |
 |---|---|---|
-| `read_document` → `rise://cst/text` | Returns `{ text, documentId: {uuidHi, uuidLo, revision}, redactions: [{offset,length}] }` — the **whole canonical CST serialized to `.RISEscene` text** (comments + formatting preserved; this is what makes diffs reviewable, §5). `documentId` is the version the agent bases a patch precondition on. Secrets length-preservingly masked with a **single-byte** ASCII mask (`*`) so every byte offset equals the canonical document's (the AI_SECURITY_MODEL §9 redaction contract — carried over verbatim because it is offset-faithfulness, not a Model-A artifact). | Facet 1 CST → serializer |
-| `read_node` → `rise://cst/node/{name-path}` | Returns one node's source span **addressed by name-path** (charter **L5**: `objects/sphere`, `objects/sphere.material`, `materials/gold.roughness`) as `{ text, documentId, spanOffset, redactions }`. Name-path is the stable identity currency — it survives edits, so an agent can re-reference a node across turns. | Facet 1 name-path index → span |
-| `read_graph` → `rise://scene/graph` | Structured introspection of the **derived** scene: objects / cameras / lights / materials / media / film, each with type, resolved property rows, bound-material links, world-space transform + bbox. Stamped with the same `documentId`. This is the *evaluated* view (what the CST *means*), complementary to the CST text (what the CST *says*). | Facet 2 derived scene + introspection |
+| `read_document` → `rise://cst/text` | Returns `{ text, version: {headVersion}, status, diagnostics, redactions: [{offset,length}] }` — the **whole canonical CST serialized to `.RISEscene` text** (comments + formatting preserved; this is what makes diffs reviewable, §5). Stamped with **`headVersion`** (the CST truth, §2.2.1.1): the text *is* the head, so it never lags. `headVersion` is the version a `propose_patch` precondition is checked against (optimistic concurrency, §2.4). Secrets length-preservingly masked with a **single-byte** ASCII mask (`*`) so every byte offset equals the canonical document's (the AI_SECURITY_MODEL §9 redaction contract — carried over verbatim because it is offset-faithfulness, not a Model-A artifact). | Facet 1 CST → serializer |
+| `read_node` → `rise://cst/node/{name-path}` | Returns one node's source span **addressed by name-path** (charter **L5**: `objects/sphere`, `objects/sphere.material`, `materials/gold.roughness`) as `{ text, nodeId, version: {headVersion}, status, spanOffset, redactions }` — stamped with **`headVersion`** like `read_document` (it reads the CST). Name-path is *addressing*, version-resolved against the head; it is **not** the durable identity (D9/D15): it changes on rename. An agent that must hold a reference to a node **across edits** keeps the returned immutable **`nodeId`** (the lineage identity) and re-addresses by name-path within a version. | Facet 1 name-path index → span |
+| `read_graph` → `rise://scene/graph` | Structured introspection of the **derived** scene: objects / cameras / lights / materials / media / film, each with type, resolved property rows, bound-material links, world-space transform + bbox. Stamped with **`derivedVersion`** + `status` + `diagnostics` (§2.2.1.1), **not** `headVersion` — when derivation lags or is broken this is what the scene actually reflects (may be `< headVersion`, or last-good on `status:error`). This is the *evaluated* view (what the CST *means*), complementary to the CST text (what the CST *says*); the two version ids are surfaced so a client is **never** told they are equal when they are not. | Facet 2 derived scene + introspection |
 | `read_schema` → `rise://grammar/schema` and `rise://grammar/node/{keyword}` | The whole grammar (or one chunk) as JSON Schema generated from `SceneGrammar::Instance()` (L6). **The agent's "what is the grammar" reference** — every keyword, its category, params with kind/enum/refs/defaults/units/descriptions. A *first-pass filter, not the parser* (§5). | `SchemaGen` over descriptors |
-| `read_image` → `rise://framebuffer` (+ `…/aov/{aov}`) | The latest **completed** preview as tone-mapped sRGB PNG (so a vision model sees what a human sees), with `?exposure`/`?max_dim`/`?region` query params, and a `generation` counter so the agent can tell "is this the frame I asked for?" AOVs (albedo/normal/depth/objectid/alpha) visualized; raw float via `?format=exr`. Never *triggers* a render. | Facet 2 render output / FrameStore |
-| `read_diagnostics` → `rise://render/stats`, `…/autoroute`, `rise://log` | Render telemetry (resolution, samples, ETA, progress), the auto-router's resolved integrator + one-line reason ("Auto → BDPT: glossy/indirect variance high"), and the redacted log tail. The numeric/structural channel the agent observes alongside the image. | counters / `AutoRasterizer` / log sink |
+| `read_image` → `rise://framebuffer` (+ `…/aov/{aov}`) | The latest **completed** preview as tone-mapped sRGB PNG (so a vision model sees what a human sees), with `?exposure`/`?max_dim`/`?region` query params, a `generation` counter so the agent can tell "is this the frame I asked for?", and the **`derivedVersion`** the frame was rendered from (the image reflects a derived snapshot, which may trail `headVersion`). AOVs (albedo/normal/depth/objectid/alpha) visualized; raw float via `?format=exr`. Never *triggers* a render. | Facet 2 render output / FrameStore |
+| `read_diagnostics` → `rise://render/stats`, `…/autoroute`, `rise://log` | Render telemetry (resolution, samples, ETA, progress), the auto-router's resolved integrator + one-line reason ("Auto → BDPT: glossy/indirect variance high"), and the redacted log tail. Stamped with **`derivedVersion`** + `status` (§2.2.1.1) — it describes the render of a derived snapshot, which may trail the head. The numeric/structural channel the agent observes alongside the image. | counters / `AutoRasterizer` / log sink |
 
 `read_*` tools carry **no precondition** and read a **published immutable snapshot** of the CST +
 its derivation (never the live tree), so they answer concurrently with edits without tearing
 (Facet 3 owns the snapshot contract).
+
+##### 2.2.1.1 The coherent version surface — head vs derived are exposed, never conflated (per [`01-DECISIONS.md`](01-DECISIONS.md) §D13)
+
+A single stamped `documentId` shared by the CST read and the graph/render reads **tears**: derivation
+is async (and may serve a *last-good* snapshot on error), so when head N is broken or still deriving
+while the graph/render reflects N−1, one id is a lie. The session therefore publishes **one coherent
+status value**, and the read/return contracts stamp the right half of it:
+
+```jsonc
+{ "headVersion":    { "uuidHi", "uuidLo", "revision" },   // the CST truth (what read_document returns)
+  "derivedVersion": { "uuidHi", "uuidLo", "revision" },   // what the scene reflects; may be < head, or last-good
+  "snapshot":       "<opaque derived-snapshot handle>",
+  "status":         "deriving | ok | error",
+  "diagnostics":    [ /* ValidationReport entries, §2.5 — explain a lag or failure */ ] }
+```
+
+- **CST reads** (`read_document`, `read_node`) are stamped with **`headVersion`** — the text *is* the
+  head, so it cannot lag.
+- **Derived reads** (`read_graph`, `read_image`, `read_diagnostics`) and the derivation tools
+  (`render`, `derive_preview`, §2.2.3) are stamped with **`derivedVersion`** — which **may be
+  `< headVersion`** (derivation in flight) or a **last-good** snapshot (`status:error`). `status` +
+  `diagnostics` explain *why* it lags or failed.
+- **Clients are never told the two are equal when they are not.** A vision agent that reads an image
+  at `derivedVersion = N−1` while head is `N` knows it is looking at a stale frame and can wait for
+  `status:ok` at `derivedVersion = N` (or re-`render`).
+- A **`propose_patch` precondition** (optimistic concurrency, §2.4) is checked against
+  **`headVersion`** — the CST is what a patch rebases on, not the (possibly-lagging) derived scene.
+
+Every tool result shape below reflects whichever id it is stamped with; nothing emits a bare
+`documentId` that straddles both. (Facet 3 owns publishing this status alongside each snapshot;
+Facet 5 only consumes and re-exposes it.)
 
 #### 2.2.2 The patch tool — one apply, two patch encodings
 
@@ -154,7 +188,7 @@ CST patch.
 
 | Tool | Contract |
 |---|---|
-| `propose_patch` | `{ baseDocumentId: {uuidHi,uuidLo,revision}, patch: <CstPatch \| TextPatch>, intent?: string }`. **Validated (parse-the-result + derive-dry-run) before it is allowed to commit (§2.4).** Returns the §2.6 result shape. |
+| `propose_patch` | `{ baseHeadVersion: {uuidHi,uuidLo,revision}, patch: <CstPatch \| TextPatch>, intent?: string }`. The precondition is **checked against `headVersion`** (the CST truth, §2.2.1.1), not the derived scene — a patch rebases on the head. **Validated (parse-the-result + derive-dry-run) before it is allowed to commit (§2.4).** On success returns the new coherent status (the bumped `headVersion`, plus `derivedVersion`/`status`/`diagnostics` as derivation proceeds — §2.5/§2.6); a lost-race precondition returns a `CONFLICT` carrying the live `headVersion`. |
 
 The two `patch` encodings:
 
@@ -169,8 +203,10 @@ The two `patch` encodings:
    ] }
    ```
    `set` edits one parameter on an existing node; `add` inserts a new chunk (full chunk text,
-   schema-shaped); `remove` deletes a node; `rename` rebinds a name-path (and, per Facet 1, fixes
-   up referrers or reports the dangling references). This is the encoding the **GUI emits** for a
+   schema-shaped); `remove` deletes a node; `rename` rewrites a node's name **in place** — it is a
+   **NodeId-preserving** op (D9), so it changes the node's name-path but not its lineage identity, and
+   it fixes up referrers from the traced `ReferenceUse` records (D14), flagging any it cannot resolve
+   rather than silently leaving a dangling reference. This is the encoding the **GUI emits** for a
    slider drag or a panel edit (L2: the GUI is an agent that speaks `CstPatch`). It is the
    *preferred* agent encoding too, because it is minimal, name-path-anchored, and trivially
    diff-reviewable.
@@ -210,16 +246,18 @@ as a coarse version — but it is *always* a version, never a re-root that loses
 |---|---|
 | `render` | `{ integrator?: enum[auto,pt,bdpt,vcm,…], quality?: enum[draft,preview,final] \| {samples}, resolution?, region?, denoise?: bool, return_image?: bool=true }`. Submits a render of the **current derived scene** to the single render arbiter (RENDER_COORDINATOR semantics survive intact — one render slot, the arbiter decides preempt/queue/reject; this facet does **not** re-invent scheduling). `integrator:"auto"` routes through the auto-rasterizer and the result echoes `{ resolved, reason }`. A `preview` runs against a private film so it never tears a live framebuffer. **OIDN on for finals** (memory: denoise always on); `denoise:false` only for diagnostic A/B. |
 | `stop_render` / `pause_render` / `resume_render` | `{}` — cooperative cancel via the arbiter. **There is no process-exit tool** (AI_SECURITY_MODEL §5). |
-| `derive_preview` (optional) | `{ baseDocumentId, patch }` — derive a candidate patch's scene **without committing it**, returning the graph diff and (optionally) a preview render. The "what would this change look like" dry-run, decoupled from commit. Implemented atop Facet 2's incremental derivation against a throwaway derivation context. Lets an L1 agent show the user a *rendered* preview of a proposal before it lands. |
+| `derive_preview` (optional) | `{ baseHeadVersion, patch }` — derive a candidate patch's scene **without committing it**, returning the graph diff and (optionally) a preview render, **stamped with the candidate's `derivedVersion` + `status`** (§2.2.1.1: a preview is a derived view). The "what would this change look like" dry-run, decoupled from commit. Implemented atop Facet 2's incremental derivation against a throwaway derivation context. Lets an L1 agent show the user a *rendered* preview of a proposal before it lands. |
 
-Render tools carry **no document precondition** (they don't mutate the CST); a render computed
-against version N while N+k is live is reconciled as *stale* by the arbiter, not rejected.
+Render tools carry **no document precondition** (they don't mutate the CST); a render's result is
+stamped with the **`derivedVersion`** it ran against (§2.2.1.1), and a render computed against a
+derived version that a newer head has since superseded is reconciled as *stale* by the arbiter (the
+stamp makes the staleness visible), not rejected.
 
 #### 2.2.4 The keystone — `validate`
 
 | Tool | Contract |
 |---|---|
-| `validate` | `{ text: string }` (whole scene) **or** `{ node_text: string }` (one chunk) **or** `{ baseDocumentId, patch }` (validate a patch applied to the current CST). Returns a structured `ValidationReport` (§2.5). **No side effects.** |
+| `validate` | `{ text: string }` (whole scene) **or** `{ node_text: string }` (one chunk) **or** `{ baseHeadVersion, patch }` (validate a patch applied to the current CST head). Returns a structured `ValidationReport` (§2.5). **No side effects.** |
 
 `validate` is what makes the agent **self-correcting** — it is the `tsc`/`cargo check`/`pytest` of
 RISE. The agent emits a patch, validates, reads precise descriptor diagnostics localized to CST
@@ -272,7 +310,7 @@ The loop is **literally the coding-agent loop**, which is the product thesis. Si
                        │  CST patch applied →    │ ────────► │  derive scene (Facet 2 │
                        │  NEW VERSION (Facet 3)  │           │  incremental)          │
                        └────────────────────────┘           └───────────┬───────────┘
-                                   │ documentId++                        │
+                                   │ headVersion++                       │
                                    ▼                                     ▼
                        ┌────────────────────────┐           ┌───────────────────────┐
                        │  notifications/         │           │  render (arbiter) →    │
@@ -288,7 +326,7 @@ node-path** and line/column of the offending span, a human message, and a `sugge
 fix from the existing `SuggestionEngine` ranking (nearest known parameter; nearest existing
 reference of the right category). The agent doesn't get "parse failed" — it gets *"parameter
 `roughnes` is not declared on `materials/gold` (line 42); did you mean `roughness`?"* and fixes it.
-A stale-precondition commit returns a `conflict` carrying the live `documentId` ("re-read and
+A stale-precondition commit returns a `CONFLICT` carrying the live `headVersion` ("re-read and
 rebase") — never a silent clobber.
 
 **How the agent "sees" the result.** Three observation channels, in increasing richness:
@@ -358,32 +396,43 @@ is **optimistic concurrency with structural conflict detection, not locking**:
   in-app session (human + the in-process agent share the controller and the undo stack) commits
   directly; an **external** agent is **propose-only** — its patch stages as a proposal the in-app
   owner approves (the human sees the agent's diff and clicks Apply, or the agent runs at an autonomy
-  level that auto-applies in scope). Every commit carries the `baseDocumentId` it read at; a commit
-  whose precondition lost the race is **rejected with a conflict** and the loser re-reads + rebases.
+  level that auto-applies in scope). Every commit carries the `baseHeadVersion` it read at (checked
+  against the live `headVersion`, §2.2.1.1); a commit whose precondition lost the race is **rejected
+  with a `CONFLICT`** and the loser re-reads + rebases.
   This is exactly a coding agent racing a human in the same file: last-write-*wins* is forbidden;
   the stale writer rebases. (Carried from TRANSACTION_MODEL §4.4, now expressed against CST versions
   rather than Model-A epochs — same contract, cleaner substrate.)
 - **v2 — structural three-way merge (the Model-B prize, deferred).** Because the canonical object is
-  a CST with stable name-path identity (L5) and formatting-stable serialization (INV-4), two
-  concurrent patches that touch *different name-paths* can be **merged automatically** (the same way
-  git merges non-overlapping hunks, but at AST granularity, so it is *semantic* not textual — two
-  edits to `lights/key.power` and `materials/gold.roughness` never conflict even if textually
-  adjacent). Only patches touching the *same* node conflict, and they conflict *precisely* (the
-  node-path), not "the file changed." This is strictly better than text merge and is uniquely enabled
-  by the lossless-CST pivot. Deferred past v1 because it needs Facet 1/3's merge primitive, but it is
+  a CST with **immutable per-node identity** (the `NodeId` lineage, D9/D15) addressed by name-path
+  (L5) and formatting-stable serialization (INV-4), two concurrent patches that touch *different
+  nodes* can be **merged automatically** (the same way git merges non-overlapping hunks, but at AST
+  granularity keyed on NodeId, so it is *semantic* not textual — two edits to `lights/key.power` and
+  `materials/gold.roughness` never conflict even if textually adjacent). Only patches touching the
+  *same* node conflict, and they conflict *precisely* (the node's identity), not "the file changed."
+  (A `rename` is itself a NodeId-preserving op, D9 — it changes a name-path but not the node it
+  identifies, which is exactly why merge must key on NodeId, not the mutable name-path; cf. open
+  question #1.) This is strictly better than text merge and is uniquely enabled by the lossless-CST
+  pivot. Deferred past v1 because it needs Facet 1/3's merge primitive, but it is
   the natural end state and the reason locking is the wrong model.
 - **Locking — rejected.** Per-node locks would serialize the human and the agent into a stilted
   turn-taking dance and reintroduce lock-lifetime state (a P-STATE relapse). Optimistic + rebase
   (v1) → structural merge (v2) is the git-native answer and fits the agentic cadence.
 
-**External-file conflict (per [`01-DECISIONS.md`](01-DECISIONS.md) §D6).** The above governs
+**External-file conflict (per [`01-DECISIONS.md`](01-DECISIONS.md) §D6/§D17).** The above governs
 *in-process* concurrent writers (CST versions). A distinct hazard is the file changing on disk under
-the session — a `git checkout`, another editor, or the CI migrator. The save path records a
-load/flush **content fingerprint** and does a **compare-and-swap** write: if the on-disk fingerprint
-moved since load, the flush is refused and the user/agent is offered reload / diff / force-overwrite —
-never a silent clobber. A headless agent's natural answer is to **emit a branch/PR rather than write
-in place** (§ deployment), turning the conflict surface into the git-native review flow. (v7 is
-single-file per §D7, so this is one file per document — no cross-file atomic-save problem.)
+the session — a `git checkout`, another editor, or the CI migrator. The save path records a load/flush
+**content fingerprint** — **(size, mtime) as a fast prefilter, upgraded to a content hash** when the
+prefilter trips or determinism is required (D17; the same fingerprint definition the AssetManifest
+uses, §5) — and the save itself is **atomic**: write a temp file in the target directory → `fsync` →
+**revalidate** that the target's current content hash still equals the loaded fingerprint → atomic
+`rename()` over the target. If the revalidate finds the on-disk hash moved since load, the flush is
+refused and the user/agent is offered reload / diff / force-overwrite — never a silent clobber. (This
+replaces D6's looser stat-then-write "compare-and-swap," which had a TOCTOU window; the **documented
+residual** is that a non-cooperating concurrent writer can still last-writer-win at the final rename,
+for which D17 offers opt-in advisory file locking on shared storage.) A headless agent's natural
+answer is to **emit a branch/PR rather than write in place** (§ deployment), turning the conflict
+surface into the git-native review flow. (v7 is single-file per §D7, so this is one file per document —
+no cross-file atomic-save problem.)
 
 ### 2.5 `ValidationReport` — structured errors localized to CST nodes
 
@@ -405,8 +454,11 @@ single-file per §D7, so this is one file per document — no cross-file atomic-
 
 The Model-B addition over the prior design is **`nodePath`** — every diagnostic is anchored to a
 **CST node by name-path** (L5), not only a line/column. This matters because (a) the agent edits by
-name-path, so an error keyed to a name-path is directly actionable; (b) line/column shift as the
-document is edited, but a name-path is stable across the loop; (c) the GUI binds the *same* diagnostic
+name-path, so an error keyed to a name-path is directly actionable; (b) line/column shift on every
+insertion edit, whereas a name-path re-resolves to the same node across such edits (a *rename*
+changes it — the durable handle is the node's `NodeId`, D9/D15 — but for the read→validate→fix loop
+the name-path the agent just used is the right currency to key the diagnostic on); (c) the GUI binds
+the *same* diagnostic
 to the *same* widget (the "problems gutter" and the panel field light up together — one report, two
 clients, mirroring L2). Stable diagnostic `code`s (machine-matchable): `SYNTAX_ERROR`, `SCENE_VERSION`,
 `UNKNOWN_CHUNK`, `UNKNOWN_PARAMETER`, `TYPE_MISMATCH`, `VECTOR_CARDINALITY`, `NON_INTEGER_UINT`,
@@ -589,7 +641,7 @@ persist an edit" (structured-save vs wholesale-rewrite) is deleted; there is one
 | **`apply_scene_text` / "wholesale rewrite + reload" tool** (MCP_TOOL_SURFACE §4.5) | **DELETE** | The Model-A fallback for edits structured-save couldn't represent. Under Model B every edit is a CST patch; a whole-document edit is just a `TextPatch` over the whole span — one more version, not a history-destroying document swap. The tool, the `REDACTED_WHOLESALE_REPLACE` *special-case-for-this-tool*, and the "swap re-roots a fresh UUID / loses undo" semantics all go. (The redaction *refusal* survives, attached to whole-document `TextPatch`.) |
 | **The `today(structured)` vs `today(wholesale)` per-tool persistence taxonomy** (MCP_TOOL_SURFACE §4.0 legend, §4.1–§4.5) | **DELETE** | An entire axis of the prior catalog. There is no "this tool persists structurally, that one needs a wholesale reload" — Facet 1's lossless CST makes *every* patch persist structurally by re-serializing only the touched span. "Non-camera creation needs round-trip save" (the prior genuine gap) **evaporates**: creating any node is an `add` CstPatch op, persisted like any other. |
 | **The ~25-RPC mutation catalog** (`set_property`, `set_transform`, `apply_material`, `load_hdri`, `add_entity`, `remove_entity`, `clone_entity`, `set_active_camera`, `frame_object`, `set_lens`, `create_camera`, …) | **EVOLVE → collapse into `propose_patch`** | Each becomes a `CstPatch` op (`set`/`add`/`remove`/`rename`) the agent expresses against the document, or a *prompt* that desugars to one. No per-operation schema, no per-operation persistence story. (Convenience: a thin set of named prompts may remain for discoverability.) |
-| **`baseEpoch` `(uuidHi, uuidLo, revision)` precondition + the committed/proposed contract + conflict** (MCP_TOOL_SURFACE §4.0/§4-head; TRANSACTION_MODEL §4.4) | **EVOLVE → `baseDocumentId` over CST versions** | The contract is *right* (optimistic concurrency, no last-write-wins, conflict-on-stale) but re-expressed against Facet 3's CST version identity rather than Model-A transaction epochs. Same shape, cleaner substrate. The committed-vs-proposed split (owner commits / external proposes) survives as the v1 concurrency model (§2.4). |
+| **`baseEpoch` `(uuidHi, uuidLo, revision)` precondition + the committed/proposed contract + conflict** (MCP_TOOL_SURFACE §4.0/§4-head; TRANSACTION_MODEL §4.4) | **EVOLVE → `baseHeadVersion` over CST versions** | The contract is *right* (optimistic concurrency, no last-write-wins, conflict-on-stale) but re-expressed against Facet 3's CST version identity rather than Model-A transaction epochs, and split into the coherent **`{headVersion, derivedVersion, status}`** surface (§2.2.1.1, D13) so a precondition keys on `headVersion` while derived reads stamp `derivedVersion`. Same shape, cleaner substrate. The committed-vs-proposed split (owner commits / external proposes) survives as the v1 concurrency model (§2.4). |
 | **`SceneEditController` as "the one mutation path"** | **SUPERSEDE** (Facet 3 owns the replacement) | The prior specs route every tool through `SceneEditController::Commit`. Charter L7 supersedes the `SceneEditor`/`SceneEdit`/`EditHistory`/transaction subsystem with CST versioning. Facet 5 retargets "one mutation path" onto **Facet 3's one CST-edit pathway** — same principle (#6 → INV-6), new mechanism. This facet does not design the edit layer; it consumes it. |
 | **`SceneValidator` / `validate` (isolated throwaway `Job`)** (VALIDATION_ARCHITECTURE §3) | **EVOLVE** | Keep `validate` as the keystone; keep "side-effect-free via an isolated derivation, not a mock." But the implementation now rides Facet 1's parser-to-CST + Facet 2's `derive` against a throwaway context, with diagnostics gaining `nodePath` (§2.5). The barrier-command policy (`quit`/`render`/`load`/`run` neutralized; `exit(1)` unreachable) survives. |
 | **`SchemaGen` (descriptors → JSON Schema) + `SchemaConformanceTest`** (MCP_TOOL_SURFACE §5; VALIDATION_ARCHITECTURE §5) | **REUSE** | Unchanged by the pivot — descriptors are still the schema (L6). Still a *first-pass filter, not the parser*; still held honest by the conformance test (the generated schema can over-/under-accept vs the tolerant parser). `read_schema` exposes it. |
@@ -603,13 +655,14 @@ persist an edit" (structured-save vs wholesale-rewrite) is deleted; there is one
 ## 4. Hard problems & open questions
 
 1. **Structural three-way merge of CST patches (the v2 prize) is genuinely hard.** AST-granular merge
-   with name-path identity is *better* than text merge in principle, but defining "do these two patches
-   conflict?" precisely — across `rename` (which moves a name-path), declarative-iteration generators
-   (where one logical edit fans out to many derived instances, L3), and reference rebinding — is a real
-   research/engineering problem owned jointly with Facet 1/3. v1 ships single-writer-optimistic to avoid
-   blocking on it, but the product story (§2.7) leans on merge eventually. **Open:** is node-path
-   disjointness a sufficient non-conflict predicate, or do reference edges create hidden conflicts (edit
-   A renames `materials/gold`, edit B binds `objects/x.material gold`)?
+   keyed on the immutable **NodeId** (D9/D15 — *not* the mutable name-path) is *better* than text merge
+   in principle, but defining "do these two patches conflict?" precisely — across `rename` (which moves
+   a name-path but preserves the NodeId), declarative-iteration generators (where one logical edit fans
+   out to many derived instances, L3), and reference rebinding — is a real research/engineering problem
+   owned jointly with Facet 1/3. v1 ships single-writer-optimistic to avoid blocking on it, but the
+   product story (§2.7) leans on merge eventually. **Open:** is NodeId disjointness a sufficient
+   non-conflict predicate, or do reference edges create hidden conflicts (edit A renames
+   `materials/gold`, edit B binds `objects/x.material gold`)?
 
 2. **`validate`/`derive_preview` cost under the agentic cadence (the latency tar-pit, charter's named
    risk).** The loop's value is fast feedback. A full derive-dry-run per `propose_patch` could be slow
@@ -663,17 +716,22 @@ What Facet 5 assumes about its neighbors (for synthesis to reconcile):
 - **From Facet 1 (CST & scene language):** (a) the lossless CST round-trips text unchanged and a
   structured edit re-serializes **only the touched span** (INV-4) — *the* precondition for the entire
   git-native/diff story (§2.7); without it the agentic surface's headline differentiator collapses.
-  (b) **Name-path identity** (L5) is stable and addressable (`objects/sphere.material`) — every read
-  tool, every `CstPatch` op, and every diagnostic `nodePath` depends on it. (c) The parser produces the
-  canonical CST from text (so a `TextPatch` → re-parse → CST is well-defined). (d) `rename` semantics
-  (does it fix up referrers or report danglers?) — Facet 5 surfaces whatever Facet 1 decides.
+  (b) **Dual identity** (D9/D15): an **immutable `NodeId`** is the stable *lineage* identity (the
+  durable handle an agent holds across edits/renames), and **name-path** (`objects/sphere.material`,
+  L5) is the version-resolved *addressing* scheme (changes on rename) — every read tool, every
+  `CstPatch` op, and every diagnostic `nodePath` addresses by name-path, while durable cross-turn
+  references key on the NodeId Facet 1 exposes. (c) The parser produces the canonical CST from text
+  (so a `TextPatch` → re-parse → CST is well-defined). (d) `rename` fixes up referrers from the
+  **traced `ReferenceUse` records** (D14 — captures dynamic refs like `timeline.element`), with a
+  descriptor-resolver fallback for un-derived subtrees and an explicit flag for any referrer it
+  cannot resolve (never a silent dangling rename) — Facet 5 surfaces whatever Facet 1 reports.
 - **From Facet 2 (derivation engine):** (a) `derive` is **incremental and fast enough** that
   pre-commit validation and `derive_preview` are interactive on common edits (open question #2). (b) A
   **throwaway/isolated derivation context** exists so `validate`/`derive_preview` have no side effects.
   (c) `derive` is pure & deterministic (INV-2) so a rendered preview of a patch is reproducible.
 - **From Facet 3 (edit model & history):** (a) **the one CST-edit pathway** both clients commit through
   (L2/INV-6) — Facet 5 is a *client* of it, not its designer. (b) CST **versioning** is the commit
-  primitive (atomic apply, the `baseDocumentId` precondition, conflict-on-stale, undo/redo/branch).
+  primitive (atomic apply, the `baseHeadVersion` precondition, conflict-on-stale, undo/redo/branch).
   (c) **Version metadata carries provenance/authorship** (§2.6) — Facet 5 assumes a free-text-ish
   author field on each commit. (d) The eventual **structural merge** primitive (v2, §2.4).
 - **From Facet 4 (dynamic UI):** the GUI emits `CstPatch` for its edits and binds widgets + diagnostics

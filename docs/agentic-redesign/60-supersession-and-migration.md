@@ -1,14 +1,22 @@
 # Facet 6 — Supersession Inventory, Migration Path & Risk Register
 
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (review round 1).** Where this
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1 & 2).** Where this
 > doc previously hedged behind open decisions (O1/O2/O3) or offered forks, it now
-> conforms to the ratified decisions D1–D10. The biggest changes: single-file v7
-> with `> load`/`> run` flattened away (D7); a *singular* migrate-then-DELETE
-> contract for the v6 path with **no** permanent coexistence and **no** runtime
-> legacy nodes (D8); `SaveEngine` byte-splice DELETE but the D6 fingerprint +
-> compare-and-swap contract retained; `SourceSpanIndex`/`ApplyOffsetDeltas`
-> DELETE (the red cursor replaces absolute offsets, D2); and the first slice
-> replaced by the canonical phased fixture + gates G1–G5 (D10).
+> conforms to the ratified decisions **D1–D20** (round 2's D11–D20 *amend* several
+> round-1 decisions and win where they conflict). The biggest changes: single-file
+> v7 with `> load`/`> run` flattened away (D7) **and ALL embedded `>` commands
+> removed — `> set` forms become declarative `acceleration{}`/`global_medium{}`
+> chunks (D19)**; a *singular* migrate-then-DELETE contract for the v6 path with
+> **no** permanent coexistence and **no** runtime legacy nodes (D8); `SaveEngine`
+> byte-splice DELETE, the external-conflict guard retained but as **temp-write →
+> fsync → revalidate content-hash → atomic rename** (D17 supersedes D6's
+> compare-and-swap); `SourceSpanIndex`/`ApplyOffsetDeltas` DELETE (the red cursor
+> over a **persistent rope** replaces absolute offsets, **O(log N)**, D2 + D16);
+> the derived scene is a **reverse-dependency-closure COW snapshot, built→sealed→
+> published at a pass boundary** (D11/D12 amend D1); identity/key/lineage split
+> three ways (D15) with rename via traced `ReferenceUse` records (D14); and the
+> first slice deferred to the corrected phased fixture in **§D18** (adds a real
+> reference chain + an asset phase; D18 amends D10).
 
 > **Status:** design-in-progress. One of six parallel facet docs under the
 > [Agentic Redesign Charter](00-CHARTER.md). This facet is **cross-cutting**: it
@@ -20,10 +28,11 @@
 > **Design only. No source, build, or scene changes are made by this doc.**
 
 **Reconciliation note.** [`01-DECISIONS.md`](01-DECISIONS.md) is now authoritative
-and resolves the cross-facet contradictions this doc previously flagged. The
-remaining `10`–`50` facet docs are being conformed to the same decisions; where
-this doc says "Facet N deletes X," that fate is now pinned by a numbered decision
-(cited inline) rather than an open assumption.
+(rounds 1 & 2) and resolves the cross-facet contradictions this doc previously
+flagged; round 2's **D11–D20** amend several round-1 decisions and win where they
+conflict. The remaining `10`–`50` facet docs are being conformed to the same
+decisions; where this doc says "Facet N deletes X," that fate is now pinned by a
+numbered decision (cited inline) rather than an open assumption.
 
 ---
 
@@ -232,7 +241,7 @@ Cross-facet ownership is noted so synthesis can detect double-claims or gaps.
 | `$(...)` + inline `sin/cos/tan/sqrt/hal` + `MathExpressionEvaluator` + `MultiHalton` static | `:191`–`:355`, `MathExpressionEvaluator.{h,cpp}` | **DELETE** (mostly) | Inline arithmetic removed; *if* declarative function-expressions need eval, Facet 1 reintroduces a pure expression node (no `hal()` side-effect). | 1 |
 | `AsciiScriptParser` (`.RISEscript` batch runner) | `AsciiScriptParser.{h,cpp}` | **EVOLVE / keep narrow** | Batch-command runner; survives for headless CLI scripting but is *not* a scene-authoring path under Model B. | 1/5 |
 | `> load` / `> run` include machinery (multi-file scenes) | `AsciiCommandParser.cpp`, `AsciiScriptParser.{h,cpp}` | **DELETE** (kept only inside the one-shot migrator) | **D7**: v7 is single-file; the migrator *flattens* every include by inlining referenced content into the consuming document. No `> load`/`> run` in the v7 runtime. | 1 |
-| `AsciiCommandParser` imperative verbs (`set/remove/rasterize/…`, minus `load`/`run`) | `AsciiCommandParser.cpp` | **EVOLVE** | CLI command surface stays; the `>`-embedded-in-scene override/tombstone commands become CST nodes (see §3.4). `load`/`run` are removed from the scene-authoring path per D7. | 1/5 |
+| `AsciiCommandParser` imperative verbs (`set/remove/rasterize/load/run/…`) | `AsciiCommandParser.cpp` | **EVOLVE (CLI) / DELETE from scene-authoring (D19, migrator-only)** | The standalone CLI/REPL command surface stays. But **per D19 v7 has no embedded `>` command layer at all**: `> set` (accelerator/global-medium) → declarative `acceleration{}`/`global_medium{}` chunks; `> set`/`> remove` overrides/tombstones → ordinary CST edits; `> load`/`> run` → flattened (D7). All embedded-`>` parsing in the *scene* path is migrator-only (see §3.4). | 1/5 |
 | Scene version gate (`CURRENT_SCENE_VERSION 6`) | `:156`, `:10561` | **EVOLVE → DELETE** | Bump to declare v7. **D8**: there is no permanent v6 compatibility branch — the v6 reader lives only in the one-shot migrator and the version gate's v6 arm is **deleted** once the corpus is green (§3.1). | 1 |
 
 ### 2.2 Assembly: `RISE_API` / `IJob` / `Job` / managers
@@ -246,9 +255,10 @@ Cross-facet ownership is noted so synthesis can detect double-claims or gaps.
 | `GenericManager<T>` + name keying + identity serials | `GenericManager.h`, trivial `*Manager.h` | **REUSE** | Name-keyed store + monotonic serial = the substrate for name-path identity (L5) and incremental serial-diffing. | 2 |
 | Reference counting | `Utilities/Reference.h` | **UNCHANGED** | Foundational, orthogonal. | — |
 | `RequestItemUse` / `IDeletedCallback` weak-binding | `GenericManager.h`, `IManager.h` | **EVOLVE or DELETE** | Currently *unused* by the apply layer; either adopt for incremental dependent-invalidation or delete as dead weight. | 2 |
-| `ObjectManager` TLAS + realize | `ObjectManager.{h,cpp}` | **UNCHANGED** | Render mechanics, assembly-agnostic. | 2 |
-| Realize-from-roots + `RenderParallelScope` freeze guard | `RayCaster.cpp`, `*::Realize`, `RenderParallelScope.{h,cpp}` | **UNCHANGED** | The assembled→render-ready seam; CST-derived scene produces the same graph. | 2 |
-| Photon-pass gate (`ConsumesScenePhotonMaps`) | `IRasterizer.h:142` | **UNCHANGED** | Rasterizer-capability gate, assembly-agnostic. | 2 |
+| `ObjectManager` TLAS + realize | `ObjectManager.{h,cpp}` | **UNCHANGED** | Render mechanics, assembly-agnostic. Per **D12** the realize/TLAS step (phase B) runs on the **`DerivedSceneBuilder`** before seal; the sealed snapshot **owns** the spatial index. | 2 |
+| Realize-from-roots + `RenderParallelScope` freeze guard | `RayCaster.cpp`, `*::Realize`, `RenderParallelScope.{h,cpp}` | **UNCHANGED (re-sequenced by D12)** | The assembled→render-ready seam; CST-derived scene produces the same graph. **D12** orders it **build → phase-B → seal → publish** (no mutation after publication; adopt at a **pass boundary** only). | 2 |
+| Light samplers (currently RayCaster-owned, `Scene.h:405`) | `RayCaster.cpp` | **EVOLVE (ownership moves into the snapshot, D12)** | **D12** moves light-sampler construction into phase B on the builder and the built samplers **into the sealed `DerivedScene`**, so a snapshot is fully render-ready and self-contained. | 2 |
+| Photon-pass gate (`ConsumesScenePhotonMaps`) | `IRasterizer.h:142` | **UNCHANGED** | Rasterizer-capability gate, assembly-agnostic. Per **D12** photon maps are built in phase B and **owned by the sealed snapshot** (moved off the RayCaster). | 2 |
 | `DAGObjectManager` (alternate, no-TLAS) | `DAGObjectManager.{h,cpp}` | **EVALUATE → likely DELETE** | Legacy alternate; verify it's wired anywhere before relying on it. | 2 |
 
 ### 2.3 The edit subsystem (the supersession centroid)
@@ -256,14 +266,14 @@ Cross-facet ownership is noted so synthesis can detect double-claims or gaps.
 | Component | Files | Lines | Fate | Why | Facet |
 |---|---|---|---|---|---|
 | `SceneEdit.h` (27-op tagged union + prev-state) | `SceneEdit.h` | 421 | **DELETE** | Command-with-captured-prev-state subsumed by CST version diffs; the `Op` taxonomy survives *conceptually* as the structured-edit vocabulary (Facet 3), but the value-record form is dead. | 3 |
-| `EditHistory.{h,cpp}` | | 416 | **DELETE** | Linear bounded undo stack → CST version history (atomic, correct by construction). The cap/trim/rollback-snapshot complexity is all Model-A compensation. | 3 |
+| `EditHistory.{h,cpp}` | | 416 | **DELETE** | Linear bounded undo stack → CST version history (atomic, correct by construction); the session tracks both **`headVersion` and `derivedVersion`** (**D13**, since derivation may lag the head). The cap/trim/rollback-snapshot complexity is all Model-A compensation. | 3 |
 | `SceneEditor.{h,cpp}` — Apply/Undo/Redo + the 5 walks | | 2217 | **EVOLVE (gut)** | Delete the walks + history ownership + transaction rollback; **keep the invariant chain** (`RunObjectInvariantChain`, light-gen bumps, spatial invalidation) + manager-resolution as part of the CST→engine apply layer (any "apply current CST state to engine" path still needs these). | 2/3 |
-| `SceneEditController.{h,cpp}` | | 5239 | **EVOLVE (split in two)** | **Keep** the render-thread / preview-scaling / gizmos / selection / pointer-dispatch / panel-cache *view* plumbing (genuine GUI, orthogonal to the doc model). **Rewrite** the mutation/undo/transaction/save surface (`SetProperty`→`SceneEdit`, `Undo`/`Redo`, `Begin/Rollback/EndTransaction`, `RequestSave`) to mutate the CST and read panel state *from* the CST. | 3/4 |
-| `DirtyTracker.{h,cpp}` | | 239 | **DELETE** | "Dirty" → "CST ≠ on-disk version" (a pure comparison). **D6** layers an *independent* on-disk fingerprint signal on top (see §2.4). | 3 |
-| `SourceSpanIndex.{h,cpp}` + `ApplyOffsetDeltas` | | 443 | **DELETE** | **D2**: absolute byte offsets in shared nodes force O(document) shifting and contradict O(depth) sharing. The green tree stores **relative width** + `NodeId`; absolute positions are computed on demand by the **red cursor**. The span-index/`ApplyOffsetDeltas` job is the red cursor now. (`RawTokenCapture`'s lossless *trivia* capture still seeds the green tree's typed content — §2.1.) | 1 |
+| `SceneEditController.{h,cpp}` | | 5239 | **EVOLVE (split in two)** | **Keep** the render-thread / preview-scaling / gizmos / selection / pointer-dispatch / panel-cache *view* plumbing (genuine GUI, orthogonal to the doc model). **Rewrite** the mutation/undo/transaction/save surface (`SetProperty`→ CST edit, `Undo`/`Redo`, `Begin/Rollback/EndTransaction`, `RequestSave`) to mutate the CST and read panel state *from* the CST; rename routes through traced `ReferenceUse` (**D14**); the version surface exposes head vs derived (**D13**). | 3/4 |
+| `DirtyTracker.{h,cpp}` | | 239 | **DELETE** | "Dirty" → "in-process: `headVersion` ≠ last-flushed version" (a pure comparison, **D13**). **D6/D17** layer an *independent* on-disk content-fingerprint signal on top, checked by the atomic save (see §2.4). | 3 |
+| `SourceSpanIndex.{h,cpp}` + `ApplyOffsetDeltas` | | 443 | **DELETE** | **D2/D16**: absolute byte offsets in shared nodes force O(document) shifting and contradict structural sharing. The green tree stores **relative width** (the `NodeId` lives in the **red layer / a side-map**, not the shared green node, **D15**); absolute positions are computed on demand by the **red cursor over the rope, O(log N)** (per **D16** child sequences are a persistent balanced sequence / rope caching subtree byte-width + newline counts, so position lookup AND structural edit are O(log N) — *not* O(depth)). The span-index/`ApplyOffsetDeltas` job is the red cursor now. (`RawTokenCapture`'s lossless *trivia* capture still seeds the green tree's typed content — §2.1.) | 1 |
 | `OverrideSpanIndex.{h,cpp}` | | 314 | **DELETE** | The `override_object` side-car + Mode-A/Mode-B routing exists *only* because the source isn't a mutable CST. **D8**: there are no runtime legacy (FOR/DEFINE) nodes to edit *inside*; v6 constructs exist only as migrator inputs, so every edit is a normal v7 CST edit. | 1/3 |
 | `TransformSnapshot.{h,cpp}` | | 104 | **DELETE** | Base/loaded diff baselines subsumed by the CST. | 3 |
-| `SaveEngine.{h,cpp}` (byte-splice, EditOp ordering, Mode-A/B, refuse cases) | | 2009 | **DELETE — byte-splice; retain D6 fingerprint/CAS** | 85 KB of splice logic → CST lossless serialization (save = serialize the CST). **D7** removes the cross-file Refuse case outright (v7 is single-file). **D6** retains the `FileIdentity` external-mod guard's *intent*: the save path keeps a content fingerprint at load/flush and does **compare-and-swap** before overwriting (reload/diff/force on conflict). *Carry forward:* its FOR/`$(...)`/`AuthorMode` handling is the catalog of hard cases the migrator's v6 reader must get right. | 1/3 |
+| `SaveEngine.{h,cpp}` (byte-splice, EditOp ordering, Mode-A/B, refuse cases) | | 2009 | **DELETE — byte-splice; retain the D6/D17 fingerprint guard** | 85 KB of splice logic → CST lossless serialization (save = serialize the CST). **D7** removes the cross-file Refuse case outright (v7 is single-file). **D6+D17** retain the `FileIdentity` external-mod guard's *intent*: the save path keeps a content fingerprint at load/flush and performs an **atomic save — temp-write → fsync → revalidate content-hash == loaded fingerprint → atomic rename** (D17 supersedes D6's stat-then-write CAS, which had a TOCTOU race); reload/diff/force on a fingerprint mismatch, documented rename-race residual + opt-in advisory locking. *Carry forward:* its FOR/`$(...)`/`AuthorMode` handling is the catalog of hard cases the migrator's v6 reader must get right. | 1/3 |
 | `CameraIntrospection` (descriptor-driven read/write/clone) | | 1161 | **EVOLVE** | Keystone reuse: rebind `engine-getter → CameraProperty` to `CST-node ↔ CameraProperty`; the 5 descriptor-driven files port directly. | 3/4 |
 | `Film/Light/Object/RasterizerIntrospection` | | ~1100 | **EVOLVE** | Same descriptor-driven port (Rasterizer lacks live-value getters — fine, the CST node *is* the value source under Model B). | 3/4 |
 | `MaterialIntrospection` (hardcoded 25-type cascade) | | 1060 | **EVOLVE (rewrite)** | The big rewrite: make material chunks descriptor-driven so readback is uniform. Worth doing regardless of Model B. | 1/4 |
@@ -277,22 +287,32 @@ See `SaveEngine` and the span indices above. **Net:** the entire round-trip-save
 `SourceSpanIndex`/`ApplyOffsetDeltas` + the Mode-A/B/refuse model) is **DELETE —
 subsumed by CST canonicality**, because "save" becomes "serialize the CST"
 (lossless because the green tree retained the trivia; positions come from the red
-cursor, **D2**). `RawTokenCapture`'s lossless trivia capture seeds the green tree
-(§2.1); it does not survive as a separate index.
+cursor over the rope in O(log N), **D2/D16**). `RawTokenCapture`'s lossless trivia
+capture seeds the green tree (§2.1); it does not survive as a separate index.
 
 **Two contracts are explicitly retained from the deleted machinery:**
-- **D6 — on-disk conflict protection.** Two *independent* dirtiness concepts, both
-  required: in-process (head-version-id ≠ last-flushed-version-id) *and* on-disk (a
-  content fingerprint recorded at load and each flush). Before writing, the save
-  path does a **compare-and-swap**: if the on-disk fingerprint ≠ the last-known
-  fingerprint the file changed externally, so it does **not** silently overwrite —
-  it surfaces reload / diff-merge / force-overwrite. This is the `FileIdentity`
-  external-mod guard's intent kept even though its byte-splice mechanism dies.
-- **D5 — asset fingerprints.** The derivation input is `(CST, AssetManifest)`; the
-  manifest maps each referenced asset path → {resolved identity, content
-  fingerprint}. Asset reads are traced (**D4**) so a fingerprint change invalidates
-  exactly its consumers. Output paths (`file_rasterizeroutput.pattern`) are
-  excluded — they are sinks, not sources. (Risks R11/R12 in §6.2.)
+- **D6 + D17 — on-disk conflict protection via an atomic save.** Two *independent*
+  dirtiness concepts, both required: in-process (head-version-id ≠ last-flushed-
+  version-id) *and* on-disk (a content fingerprint recorded at load and each flush).
+  **D17 supersedes D6's stat-then-write compare-and-swap (a TOCTOU race) with an
+  atomic save:** write to a **temp file in the target dir → `fsync` → revalidate the
+  target's content hash == the loaded fingerprint → atomic `rename()` over the
+  target.** If the revalidated fingerprint ≠ the last-known fingerprint the file
+  changed externally, so it does **not** silently overwrite — it surfaces reload /
+  diff-merge / force-overwrite (the D6 conflict UX). **Documented residual (D17):** a
+  non-cooperating concurrent writer can still race the final rename (last-writer-wins
+  at the FS layer); **opt-in advisory file locking** is offered for shared-storage
+  setups. This is the `FileIdentity` external-mod guard's intent kept even though its
+  byte-splice mechanism dies.
+- **D5 + D17 — asset fingerprints.** The derivation input is `(CST, AssetManifest)`;
+  the manifest maps each referenced asset path → {resolved absolute identity, content
+  fingerprint}. **D17 makes the fingerprint a `(size, mtime)` fast *prefilter* → on a
+  prefilter change (or whenever determinism is required) a content hash, which is the
+  authoritative identity** (mtime alone is not deterministic — bytes can change with
+  size+mtime unchanged); memo keys use the content hash. Asset reads are traced
+  (**D4**) so a fingerprint change invalidates exactly its consumers. Output paths
+  (`file_rasterizeroutput.pattern`) are excluded — they are sinks, not sources.
+  (Risks R11/R12 in §6.2.)
 
 ### 2.5 Panels / bridges / cross-platform UI
 
@@ -321,7 +341,9 @@ first-class v7 replacements in the right-hand column.
 
 The macro-usage buckets below are *orthogonal* to the multi-file dimension — a scene
 can be both (e.g. a FOR scene that also `> load`s shared colors). The migrator
-applies the **multi-file flatten (D7)** first, then the macro tier (§3.5).
+applies the **multi-file flatten (D7)** first, then the **embedded-`>`-command
+removal (D19** — `> set` → `acceleration{}`/`global_medium{}` chunks, overrides/
+tombstones folded), then the macro tier (§3.5).
 
 | Bucket | Count | Fate |
 |---|---|---|
@@ -351,7 +373,7 @@ applies the **multi-file flatten (D7)** first, then the macro tier (§3.5).
 
 | Component | Fate | Why |
 |---|---|---|
-| `src/Library/Agent/` (MCP server, LLM runtime, providers, credential store) | **NEW (no supersession)** | Does not exist; built on the CST from the start (Facet 5). Model B is the cleanest substrate (read CST/text, propose patch, validate→derive→render). |
+| `src/Library/Agent/` (MCP server, LLM runtime, providers, credential store) | **NEW (no supersession)** | Does not exist; built on the CST from the start (Facet 5). Model B is the cleanest substrate (read CST/text, propose patch, validate→derive→render). Per **D13** the session publishes a coherent status `{headVersion, derivedVersion, status, diagnostics}`: `read_document` is stamped with `headVersion`, `read_graph`/`render` with `derivedVersion` (which may lag or be last-good), and a patch's optimistic-concurrency precondition is checked against `headVersion`. |
 | `docs/gui/MCP_TOOL_SURFACE.md` / `LLM_AGENT_RUNTIME.md` / `MATERIAL_EDITOR.md` / `SPECTRAL_DIFFERENTIATORS.md` / `CROSS_PLATFORM_ARCHITECTURE.md` | **SURVIVE (text-level by design)** | Already document/text-centric; Model B *enforces* their stated intent. The `apply_scene_text` wholesale-rewrite fallback becomes the canonical path. | 5 |
 | `docs/gui/TRANSACTION_MODEL.md` + `EDITOR_STATE_AND_TRANSACTION_HARDENING.md` | **SUPERSEDED** | The authoritative owners of the Model-A authority/transaction/undo machinery the charter replaces. | 3 |
 | `docs/gui/VALIDATION_ARCHITECTURE.md` (Tier-1 parse-only IR) / `RENDER_COORDINATOR.md` / `ENTITY_CREATION.md` | **MOSTLY SURVIVE (re-layer onto CST)** | Tier-1 IR ≈ the CST seam; render scheduling neutral; entity-creation concepts (outliner = CST view, reference graph, safe deletion) survive — the `SceneEdit`-op *mechanism* dies. | 2/3/4 |
@@ -362,7 +384,9 @@ applies the **multi-file flatten (D7)** first, then the macro tier (§3.5).
                        DELETE              EVOLVE                 REUSE / UNCHANGED
 Parser/lang     FOR/DEFINE/$()/hal,   ParseAndLoadScene loop,   ChunkDescriptor model,
                 MathExprEval,         RawTokenCapture→green tree,153 Describe(), TokenizeString
-                > load/> run includes,153 Finalize()
+                ALL embedded > cmds   153 Finalize()
+                (load/run/set/remove,
+                 D7/D19),
                 v6 path (after green)
 Assembly        (DAGObjectManager?)   eager-order resolution,    RISE_API factories, IJob Add*,
                                       RequestItemUse?            GenericManager, Reference,
@@ -374,8 +398,8 @@ Edit subsystem  SceneEdit, EditHistory, SceneEditor (gut to     ChunkDescriptorR
                 SourceSpanIndex/      Material/Media (rewrite)
                 ApplyOffsetDeltas,
                 SaveEngine (splice;
-                D6 fingerprint/CAS
-                retained)
+                D6/D17 fingerprint +
+                atomic-save retained)
 Panels/UI       hand-built accordions Properties panel→dynamic,  —
                                       bridges, C-ABI boundary,
                                       per-platform shells
@@ -461,39 +485,50 @@ harness (§3.6) a mechanical oracle. This is a *temporary* scaffold to migrate s
   output.)* *(Assumption confirmed against Facet 1: the v7 CST grammar subsumes v6's
   declarative chunks 1:1 because the descriptors are shared.)*
 
-### 3.2 The first slice — the canonical phased fixture + shared gates (D10)
+### 3.2 The first slice — the corrected phased fixture + shared gates (D18, amends D10)
 
-The first slice is **not** a single nominated chunk. **D10** replaces the four
-divergent first-slice proposals across docs with **one canonical phased fixture**
-(each phase additive; the prior phase's gates keep passing) and **one shared gate
-set G1–G5** referenced by every facet. **This doc defers to
-[01-DECISIONS.md §D10](01-DECISIONS.md) for the authoritative definitions** and does
-not re-define them. In brief:
+The first slice is **not** a single nominated chunk. **D18** (amending D10's fixture;
+gates unchanged) replaces the divergent first-slice proposals across docs with **one
+corrected canonical phased fixture** (each phase additive; the prior phase's gates
+keep passing) and **one shared gate set G1–G5** referenced by every facet. **This doc
+defers to [01-DECISIONS.md §D18](01-DECISIONS.md) for the authoritative phase
+definitions** (and §D10 for the gates) and does not re-define them. The corrections
+D18 makes over D10: `uniformcolor_painter` has **no** reference, so the first real
+reference is a `lambertian_material` binding it; D10's "geometry→material→object chain"
+had **omitted** the material node; and G5 (asset invalidation) needs an **asset-backed
+node**, added as phase 6. In brief:
 
-**Phased fixture (see §D10 for full rationale):**
+**Corrected phased fixture (see §D18 for full rationale):**
 1. **`sphere_geometry`** — simplest chunk (2 scalar params, no refs/repeats/exprs).
-2. **`+ uniformcolor_painter`** — a color value + a **reference** + the ref-picker.
-3. **`+ standard_object`** (the geom+material+object **three-node chain**) —
-   cross-node references, **rename** integrity (D9), the dependency graph (D4) e2e.
+2. **`+ uniformcolor_painter` AND `+ lambertian_material { reflectance <the uniform
+   painter> }`** — the material is the **first reference** (exercises the ref-picker +
+   the dependency edge, **D4**).
+3. **`+ standard_object { geometry <sphere> material <lambertian> }`** — the real
+   **geometry→material→object** three-node chain; **rename** integrity across refs
+   (**D14**, via traced `ReferenceUse`), the dependency graph (D4) end-to-end.
 4. **`+ expr(...)`** on one `Double` param — the expression sublanguage + traced-
    input invalidation (D4).
 5. **`+ instance_array`** replacing a nested `FOR` (migrated `loops.RISEscene`) —
    generators (D7/D8 migration).
+6. **`+ image_painter` (or a mesh-backed geometry)** — an **asset-backed node** so
+   **G5** (AssetManifest fingerprint invalidation, **D17**) and the external-file-
+   conflict path (**D6/D17**) are actually testable.
 
-**Shared gates (G1–G5, defined in §D10; summarized here for this facet's harness):**
-G1 round-trip byte-identity, G2 incremental-derive latency (< 50 ms on a
-Sponza-class scene), G3 minimal invalidation (only the changed node's forward cone),
-G4 versioning (gesture = one undo unit; round-trip-after-undo byte-identical), G5
-external inputs (asset-fingerprint change re-derives consumers, **D5**; external
-file change caught by CAS save, **D6**).
+**Shared gates (G1–G5, defined in §D10; unchanged by D18; summarized here for this
+facet's harness):** G1 round-trip byte-identity, G2 incremental-derive latency (< 50 ms
+on a Sponza-class scene), G3 minimal invalidation (only the changed node's forward
+cone), G4 versioning (gesture = one undo unit; round-trip-after-undo byte-identical),
+G5 external inputs (asset-fingerprint change re-derives consumers, **D5/D17**; external
+file change caught by the atomic save, **D6/D17**).
 
 This facet's job at the first slice is the **safety net** (§6.1), not the fixture
 itself: the render-equivalence harness (§3.6) is the substrate G1–G5 run on. The
 fixture phases map cleanly onto the harness — phase 1 isolates CST/derivation
-mechanics on a leaf chunk, phase 2 adds references, phase 3 brings in the
-order-dependence problem (§4.3), phase 4 the expression evaluator, phase 5 the
-FOR→`instance_array` migration (§3.5). G5 is where **D5/D6** (asset manifest, CAS
-save) first get exercised end-to-end.
+mechanics on a leaf chunk, phase 2 adds the first reference (painter→material), phase 3
+brings in the order-dependence problem (§4.3) and cross-ref rename, phase 4 the
+expression evaluator, phase 5 the FOR→`instance_array` migration (§3.5), phase 6 the
+asset-backed node. G5 is where **D5/D6/D17** (asset manifest, atomic save) first get
+exercised end-to-end — on phase 6's asset-backed node.
 
 ### 3.3 The phase sequence
 
@@ -501,12 +536,12 @@ Each phase is independently shippable and leaves the tree green.
 
 | Phase | Name | T-shirt | What ships | What it deletes (only when proven) |
 |---|---|---|---|---|
-| **P0** | Side-effect-free parse seam + CST scaffold | **L** | Lexer (`RawTokenCapture`-derived) produces a retained **green tree** (relative widths + `NodeId`, **D2**); a CST→`IJob` derivation walk for the **declarative subset** with **traced** dependency edges (**D4**) over `(CST, AssetManifest)` (**D5**); v7 header recognized; both paths converge at `Add*`. Equivalence harness (§3.6) green on the macro-free corpus (~347 scenes). | nothing yet |
-| **P1** | First slice: the phased fixture (D10) | **M** | The §D10 phased fixture (`sphere_geometry` → `+uniformcolor_painter` → `+standard_object` → `+expr` → `+instance_array`) driven text⟷CST⟷derive⟷schema-widget⟷incremental re-derive⟷CST-version undo⟷agent-patch, behind a GUI feature flag, gated by **G1–G5**. The interactive-bar latency (G2) and lossless round-trip (G1) tar-pits are pressure-tested here. | nothing yet |
-| **P2** | Derivation engine: traced deps + incremental + order-independence | **XL** | CST→Scene as a memoized, deterministic, incremental function (Facet 2); the memo key = green-node structural hash + traced-input versions (**D4**); topological emission solves the eager-order constraint; localized edit re-derives only the changed node's forward cone (G3). Hooks into the existing realize/TLAS/photon seam. COW snapshot publish/swap (**D1**). | nothing yet |
-| **P3** | CST versioning replaces the edit model | **L** | Undo/redo = CST version-DAG pointer move (**D1/D2**); a gesture coalesces to one undo unit (**D1**); `NodeId` lineage survives renames/reparse (**D9**); `SceneEditor`/`SceneEditController` mutation surface re-pointed onto the CST (Facet 3). | **`SceneEdit`, `EditHistory`, `DirtyTracker`, `TransformSnapshot`, `SourceSpanIndex`/`ApplyOffsetDeltas`** (their subjects gone; positions via the red cursor). |
-| **P4** | Dynamic UI from descriptors | **L–XL** | Properties/outliner generated per CST node from descriptors (Facet 4); widgets bind to `NodeId` (addressed by name-path, **D9**); the 5 descriptor-driven introspection files rebind to CST nodes; hand-built accordions retired. | hand-built accordion panels; engine-introspection-as-UI-source. |
-| **P5** | Save = serialize CST (+ D6 CAS) | **M** | "Save" writes the CST losslessly (Facet 1); the save path keeps an on-disk fingerprint and does **compare-and-swap** before overwrite (**D6**). All `SaveEngine` Refuse cases evaporate (single-file per **D7**; no legacy nodes per **D8**). | **`SaveEngine` byte-splice, `OverrideSpanIndex`** + the Mode-A/B model (D6 fingerprint/CAS retained, not the splice). |
+| **P0** | Side-effect-free parse seam + CST scaffold | **L** | Lexer (`RawTokenCapture`-derived) produces a retained **green tree** (relative widths, **D2**; child sequences as a persistent rope, **D16**; `NodeId` in the red layer/side-map + the content-hash/derivation-key/`NodeId` split, **D15**); a CST→`IJob` derivation walk for the **declarative subset** with **traced** dependency edges + `ReferenceUse` records (**D4/D14**) over `(CST, AssetManifest)` with `(size,mtime)`-prefilter→content-hash fingerprints (**D5/D17**); v7 header recognized; both paths converge at `Add*`. Equivalence harness (§3.6) green on the macro-free corpus (~347 scenes). | nothing yet |
+| **P1** | First slice: the corrected phased fixture (D18) | **M** | The §D18 phased fixture (`sphere_geometry` → `+uniformcolor_painter`+`lambertian_material` → `+standard_object` chain → `+expr` → `+instance_array` → `+image_painter`/mesh) driven text⟷CST⟷derive⟷schema-widget⟷incremental re-derive⟷CST-version undo⟷agent-patch, behind a GUI feature flag, gated by **G1–G5**. The interactive-bar latency (G2) and lossless round-trip (G1) tar-pits are pressure-tested here; phase 6's asset-backed node exercises G5 (D17). | nothing yet |
+| **P2** | Derivation engine: traced deps + incremental + order-independence | **XL** | CST→Scene as a memoized, deterministic, incremental function (Facet 2); the memo key = the node's **derivation key** (trivia-INsensitive: typed values + child structure) + traced-input versions (**D4/D15**); topological emission solves the eager-order constraint; localized edit re-derives only the changed node's forward cone (G3); the derivation cache is **version-scoped/persistent** with an explicit edge lifecycle (**D20**). Hooks into the existing realize/TLAS/photon seam. **Reverse-dependency-closure COW** (**D11**): a new version copies the changed node + every node that transitively references it up to the roots, sharing everything else by refcount (first impl may full-rebuild, then add closure-tracking). **Build → phase-B → seal → publish at a PASS boundary** (**D12**); the sealed snapshot owns geometry/TLAS/light-samplers/photon-maps. | nothing yet |
+| **P3** | CST versioning replaces the edit model | **L** | Undo/redo = CST version-DAG pointer move (**D1/D2**); a gesture coalesces to one undo unit (**D1**); `NodeId` lineage (red layer/side-map, **D15**) survives renames (rename via traced `ReferenceUse`, **D14**) and best-effort reparse (unmatched durable refs flagged, **D15**); the session exposes **`headVersion` AND `derivedVersion`** (**D13**); `SceneEditor`/`SceneEditController` mutation surface re-pointed onto the CST (Facet 3). | **`SceneEdit`, `EditHistory`, `DirtyTracker`, `TransformSnapshot`, `SourceSpanIndex`/`ApplyOffsetDeltas`** (their subjects gone; positions via the red cursor over the rope, D16). |
+| **P4** | Dynamic UI from descriptors | **L–XL** | Properties/outliner generated per CST node from descriptors (Facet 4); widgets bind to `NodeId` (the stable lineage id, **D15**; addressed by name-path, **D9**); panels surface `headVersion` vs `derivedVersion` (**D13**); the 5 descriptor-driven introspection files rebind to CST nodes; hand-built accordions retired. | hand-built accordion panels; engine-introspection-as-UI-source. |
+| **P5** | Save = serialize CST (+ D17 atomic save) | **M** | "Save" writes the CST losslessly (Facet 1); the save path keeps an on-disk fingerprint and performs an **atomic save — temp-write → fsync → revalidate content-hash → atomic rename** (**D17** supersedes D6's CAS; documented rename-race residual + opt-in advisory locking). All `SaveEngine` Refuse cases evaporate (single-file per **D7**; no legacy nodes per **D8**; no `>` command layer per **D19**). | **`SaveEngine` byte-splice, `OverrideSpanIndex`** + the Mode-A/B model (D6/D17 fingerprint + atomic save retained, not the splice). |
 | **P6** | Material/Media descriptor rewrite | **L** | `MaterialIntrospection`/`MediaIntrospection` become descriptor-driven (worth doing regardless). | the 25-branch `dynamic_cast` cascade. |
 | **P7** | Agent surface on the CST | **L–XL** | `src/Library/Agent/` MCP server: read CST/text, propose patch, validate→derive→render, structured errors (Facet 5). GUI-as-just-another-agent unification. | nothing (net-new). |
 | **P8** | Corpus fully on v7; **DELETE** the v6 path | **M** | Whole corpus migrated (§3.5) — single-file v7 (includes flattened, **D7**) — and render-equivalent. Then the v6 reader is dropped. | **the v6 `ParseAndLoadScene` read path + all macro/FOR/`$()`/`> load`/`> run` code + the version gate's v6 arm** (**D8** — the single deletion contract, not an optional window). |
@@ -522,22 +557,33 @@ the equivalence harness is green. P8's deletion is the singular D8 contract — 
 path is removed once the corpus is green, not kept behind an indefinite deprecation
 window.**
 
-### 3.4 Handling the `>` override/tombstone commands
+### 3.4 Handling the embedded `>` commands (ALL removed in v7 — D19)
 
 Scenes use embedded `> set`/`> remove`/`> load`/`> run` commands, and `SaveEngine`
 emits managed `override_object` blocks + `> remove` tombstones (6 families only).
-Under Model B the **override/tombstone** commands collapse into ordinary CST edits:
-an override is a structured edit to the referenced node; a tombstone is a delete in
-the CST. **`> load`/`> run` are different — per D7 they are NOT first-class v7
-nodes.** They are *removed from v7*; the migrator **flattens** each include by
-inlining the referenced content into the consuming document. Consequently the
-entire **cross-file edit problem evaporates** (there is no second file to edit) —
-this is a *deletion*, not a "cross-file edits become normal" generalization. *(If
-library-sharing demand returns, D7 reserves a future declarative `import` chunk —
-explicitly out of core v7, designed as its own feature, never the imperative
-`> load`.)* *Assumption flagged for Facet 3:* the deletion-persistence gap
-(camera/media/shader tombstones don't exist today) is on the critical path for
-"all-family create/delete through one pathway."
+**Per D19, v7 has NO imperative command layer at all — every embedded `>` command is
+removed.** The fates split three ways:
+
+- **`> set` (accelerator / global-medium / …)** → **declarative chunks (D19).** The
+  three surviving `> set` forms migrate to normal descriptor-driven chunks — e.g. an
+  `acceleration { … }` chunk and a `global_medium { … }` chunk — so all engine config
+  is a declarative *derivation input* (F2 needs this), not an imperative side effect.
+- **`> set`/`> remove` overrides & tombstones on entities** collapse into ordinary CST
+  edits: an override is a structured edit to the referenced node; a tombstone is a
+  delete in the CST. The managed `override_object` side-car block disappears (it
+  existed only because the source wasn't a mutable CST).
+- **`> load`/`> run`** — per **D7** they are NOT first-class v7 nodes; the migrator
+  **flattens** each include by inlining the referenced content into the consuming
+  document. Consequently the entire **cross-file edit problem evaporates** (there is
+  no second file to edit) — a *deletion*, not a "cross-file edits become normal"
+  generalization.
+
+The migrator removes **all** embedded `>` commands; the v7 runtime never sees an
+imperative line (§2.1, §3.5 tier 0). *(If library-sharing demand returns, D7 reserves
+a future declarative `import` chunk — explicitly out of core v7, designed as its own
+feature, never the imperative `> load`.)* *Assumption flagged for Facet 3:* the
+deletion-persistence gap (camera/media/shader tombstones don't exist today) is on the
+critical path for "all-family create/delete through one pathway."
 
 ### 3.5 Scene-corpus migration tooling
 
@@ -545,8 +591,9 @@ explicitly out of core v7, designed as its own feature, never the imperative
 (regex line-rewriter, header-guarded idempotency, in-place with line-ending
 preservation, recursive over `scenes/`, documented preserve-list; cross-file aware
 like `migrate_scenes_iscalarpainter.py`). **This migrator is the *only* place the
-v6 reader and the FOR/DEFINE/`$()` expansion logic survive (D8);** its output is
-self-contained single-file v7 (D7). It handles these tiers:
+v6 reader, the FOR/DEFINE/`$()` expansion logic, and the embedded-`>`-command
+parsing survive (D8/D19);** its output is self-contained single-file v7 (D7) with
+**no imperative `>` layer at all** (D19). It handles these tiers:
 
 0. **Multi-file flatten (~204 scenes, D7):** **inline** every `> load`/`> run`
    include into the consuming document, producing a self-contained v7 file. Shared
@@ -557,6 +604,14 @@ self-contained single-file v7 (D7). It handles these tiers:
    duplication across scenes — cheap and diff-visible in a generated/migrated corpus
    the owner controls (D7). After flatten, `> load`/`> run` no longer appear in any
    v7 scene, and the multi-file machinery is DELETE in the runtime (§2.1).
+0b. **Embedded `>`-command removal (D19):** rewrite the remaining embedded commands so
+   v7 has **no imperative layer**. `> set` of the **accelerator** and **global-medium**
+   (and any other surviving `> set` form) → a declarative **`acceleration { … }`** /
+   **`global_medium { … }`** chunk; `> set`/`> remove` **overrides/tombstones** on
+   entities → fold the override into the referenced chunk (or drop the tombstoned
+   entity). After this tier no `>` line appears in any v7 scene, and the embedded-`>`
+   parsing is DELETE in the runtime (§2.1, §3.4). (`> load`/`> run` were already
+   removed by tier 0.)
 1. **Declarative scenes (~347):** rewrite only the version header `6`→`7` (and any
    trivially-renamed keyword). Idempotent; a no-op on already-v7 files. *This is
    ~92% of the corpus, fully automated, zero render risk* (the chunks are identical;
@@ -640,19 +695,28 @@ classify edits by blast radius — RISE *already has this taxonomy* in
 `SceneEditor`'s `DirtyScope` enum (`ObjectTransform`/`Camera`/`Time`/`TimeAndPhotons`)
 and the realize/TLAS/photon seam; Facet 2 must reuse it, not reinvent it.
 
-**Mitigation (D1 gesture model; G2 latency gate).** **D1** pins the gesture model:
-each pointer-move advances the **uncommitted head** and derives a **cheap, ephemeral
-preview snapshot** (debounced per O2); at gesture-end the intermediate roots
-**coalesce into ONE committed version** (one undo unit). The COW snapshot (**D1**)
-re-derives only the changed subgraph and shares everything else by reference, so a
-drag is "one debounced re-derive of one forward cone" (G3), not "re-derive at frame
-rate." **The gesture preview is CST state (the uncommitted head), not a side-channel
-of non-CST mutable state** — so it does *not* reintroduce the INV-1 "sync two
-things" hazard the old text feared. **First-slice P1 measures this directly** under
+**Mitigation (D1 gesture model; D11 closure-COW; D12 seal; G2 latency gate).** **D1**
+pins the gesture model: each pointer-move advances the **uncommitted head** and derives
+a **cheap, ephemeral preview snapshot** (debounced per O2); at gesture-end the
+intermediate roots **coalesce into ONE committed version** (one undo unit). Preview
+snapshots derive the **uncommitted head** (not just committed versions). The COW
+snapshot is a **reverse-dependency-closure copy (D11)**: it re-derives the changed node
+**plus every node that transitively references it up to the roots** (because the
+engine's scene is a raw-pointer graph — a shared *referrer* of a changed node would
+otherwise keep pointing at the old node) and shares everything *outside* the closure by
+refcount. Cost is **O(closure / fan-in)**, not O(scene) — a transformed object is
+{object} + the TLAS spine path-copy (O(log N)); a widely-shared painter is its full
+referrer closure (larger but bounded by fan-in, still dwarfed by the render). The
+snapshot is **built → phase-B (realize/TLAS/light-samplers/photon-maps) → sealed →
+published, adopted only at a PASS boundary (D12)** — never mutated after publication.
+So a drag is "one debounced closure re-derive of one forward cone" (G3), not "re-derive
+at frame rate." **The gesture preview is CST state (the uncommitted head), not a
+side-channel of non-CST mutable state** — so it does *not* reintroduce the INV-1 "sync
+two things" hazard the old text feared. **First-slice P1 measures this directly** under
 gate **G2** (a single-parameter edit re-derives in < 50 ms on a Sponza-class scene);
-the phase-1 leaf (`sphere_geometry` / `uniformcolor_painter`) is the cheapest
-surface to fail fast on *before* the XL derivation work. If even the cheapest edit
-can't meet G2, the interactive premise needs rethinking first.
+the §D18 phase-1 leaf (`sphere_geometry`) is the cheapest surface to fail fast on
+*before* the XL derivation work. If even the cheapest edit can't meet G2, the
+interactive premise needs rethinking first.
 
 ### 4.2 Tar-pit #2 — lossless CST formatting / comment preservation (INV-4, O1)
 
@@ -676,24 +740,28 @@ today, which is the proof-of-concept that this is achievable at span granularity
 **Mitigation.** (a) **Reuse the proven trivia capture, not the offset index.**
 `RawTokenCapture` already retains the lossless token/whitespace/comment/`isSymbolic`
 content — that *content* seeds the green tree's typed nodes. But per **D2** the green
-node stores **relative width** (byte length incl. trivia) + a stable `NodeId`, **not**
-an absolute span; `SourceSpanIndex`/`ApplyOffsetDeltas` are **DELETE** because a
-length change would force O(document) offset-shifting and break O(depth) structural
-sharing. Absolute positions for diagnostics/edits come from the **red cursor**
-(walks from a version's root accumulating widths, O(depth)). (b) **The lossless-CST
-pivot is decided (D2), not an open fork.** "Save = serialize the CST" is lossless
-*by construction* because the green tree holds the trivia and the red cursor
+node stores **relative width** (byte length incl. trivia), **not** an absolute span,
+and per **D15** the stable `NodeId` lives in the **red layer / a side-map** (a shared
+green node is reused at many occurrences, so it can't carry one id), not in the green
+node itself; `SourceSpanIndex`/`ApplyOffsetDeltas` are **DELETE** because a length
+change would force O(document) offset-shifting and break structural sharing. Per
+**D16**, a node's child sequence is a **persistent balanced sequence / rope** caching
+each subtree's aggregate byte-width + newline counts, so absolute positions for
+diagnostics/edits come from the **red cursor over the rope in O(log N)** (not O(depth)
+— a `Document` with 10 000 chunks would be O(N) with vector children). (b) **The
+lossless-CST pivot is decided (D2), not an open fork.** "Save = serialize the CST" is
+lossless *by construction* because the green tree holds the trivia and the red cursor
 recomputes positions; a structured edit produces a new root by **path-copy** (O(depth)
-new green nodes; siblings shared), so an edit to one parameter rewrites only that
-node's content and re-serializes byte-identically elsewhere. The previously-flagged
-"text-canonical / buffer-is-truth" alternative is **not** the chosen model — the
-red-green tree gives lossless round-trip *and* O(depth) structured edits without the
-splice machinery, which is why D2 supersedes the fork.
-This fork is **resolved by D2** (red-green tree), so `SaveEngine`'s byte-splice is
-unambiguously **DELETE** (only the D6 fingerprint/CAS contract is retained, §2.4).
-(c) **The acceptance test is mechanical:** parse→serialize every corpus file and
-assert byte-identical (a "CST loss test," gate **G1**; the evolution of
-`RawTokenCaptureTest`).
+new green nodes; siblings shared) with the rope giving **O(log N)** child insert/remove
+and lookup, so an edit to one parameter rewrites only that node's content and
+re-serializes byte-identically elsewhere. The previously-flagged "text-canonical /
+buffer-is-truth" alternative is **not** the chosen model — the red-green tree gives
+lossless round-trip *and* O(log N) structured edits without the splice machinery, which
+is why D2 supersedes the fork. This fork is **resolved by D2 + D16** (red-green tree
+over a rope), so `SaveEngine`'s byte-splice is unambiguously **DELETE** (only the
+D6/D17 fingerprint + atomic-save contract is retained, §2.4). (c) **The acceptance
+test is mechanical:** parse→serialize every corpus file and assert byte-identical (a
+"CST loss test," gate **G1**; the evolution of `RawTokenCaptureTest`).
 
 ### 4.3 Order-independence vs eager name resolution (INV-2)
 
@@ -708,27 +776,42 @@ emits `Add*` calls in **dependency-topological order**. Per **D4** the edges are
 pre-computed statically from `referenceCategories` — because dynamic references
 (`timeline.element` resolved via `element_type`, `timeline.animation`) are plain
 strings invisible to a static scheme but captured automatically when `derive()`
-actually performs the resolution. (`referenceCategories` is demoted to a UI/rename
-*hint*.) The traced edges form a DAG; cycles are a structured validation error
-before any `Add*`. This removes document-level order-dependence while reusing the
-eager apply layer unchanged. A corpus scan during P0 confirms the reference graph is
-acyclic (expected — RISE has no recursive material references today).
+actually performs the resolution. Each resolved reference is recorded as a
+**`ReferenceUse { sourceValueNodeId, targetNodeId }`** (D14), which is what **rename**
+rewrites referrers from; `referenceCategories` is demoted to a **UI-picker hint only**
+(D14), *not* the rename or dependency source of truth. The traced edges form a DAG;
+cycles are a structured validation error before any `Add*`. This removes
+document-level order-dependence while reusing the eager apply layer unchanged. A
+corpus scan during P0 confirms the reference graph is acyclic (expected — RISE has no
+recursive material references today).
 
-### 4.4 Identity stability (INV-5, L5 — resolved by D9)
+### 4.4 Identity stability (INV-5, L5 — resolved by D9, refined by D14/D15)
 
-**D9** resolves this with **dual identity**: an immutable, process-stable **`NodeId`**
-(green-node-borne) is the **lineage identity** — it survives renames, value edits,
-and reparses, and is what undo lineage, UI widget bindings, and durable agent
-references key on; **name-path** (`objects/sphere.material`) is the human/agent
-**addressing scheme**, resolved to a `NodeId` *within a given version* (it changes on
-rename, by design). **Rename** is a `NodeId`-preserving edit: it rewrites the name
-token in place (same `NodeId`) and rewrites all referrers (found via the
-`referenceCategories` *hint*, D4); NodeId-keyed bindings survive automatically. On a
-text edit, reparsed green nodes are **matched to prior `NodeId`s by structural
-position + content** (rust-analyzer-style reuse) so a text edit does not reset
-identities; unmatched nodes get fresh ids. The managers' per-name identity serials
-remain the substrate, but identity is no longer name-fragile. (The charter's round-4
-"name-reuse identity serial" was the Model-A patch D9 makes first-class.)
+**D9** resolves this with **dual identity**, and **D15** separates three concepts that
+were conflated: a **content hash** (green, lossless, trivia-*sensitive*) drives
+structural sharing/dedup and carries **no** identity (so identical subtrees share one
+green node); a **derivation key** (semantic, trivia-*insensitive*: typed values + child
+structure + traced-input versions, D4) is the memo cache key (a whitespace-only edit is
+a cache hit); and the **lineage identity `NodeId`** is a per-**occurrence** stable id
+living in the **red layer / a side-map, NOT in the shared green node** (a shared green
+node is reused at many occurrences, so it cannot carry one id). The `NodeId` is what
+undo lineage, UI widget bindings, and durable agent references key on; **name-path**
+(`objects/sphere.material`) is the human/agent **addressing scheme**, resolved to a
+`NodeId` *within a given version* (it changes on rename, by design). **Rename** is a
+`NodeId`-preserving edit: it rewrites the name token in place (same `NodeId`) and
+**rewrites all referrers from the traced `ReferenceUse { sourceValueNodeId, targetNodeId }`
+set (D14)** — *not* `referenceCategories`, which is only a UI-picker hint and is blind
+to dynamic refs (`timeline.element`/`.animation`); for referrers in nodes that didn't
+derive, fall back to descriptor-provided reference resolvers, and **flag any referrer
+that cannot be resolved — never silently rename it**. NodeId-keyed bindings survive
+automatically. On a text edit, **a structured edit preserves `NodeId` exactly** (it
+targets a known node); a **whole-region reparse** matches new green nodes to prior
+`NodeId`s by position + content (rust-analyzer-style reuse) **but this is best-effort
+(D15)** — identical repeated rows are genuinely ambiguous, so **unmatched durable
+references are INVALIDATED (flagged), not silently remapped**. The managers' per-name
+identity serials remain the substrate, but identity is no longer name-fragile. (The
+charter's round-4 "name-reuse identity serial" was the Model-A patch D9 makes
+first-class.)
 
 ### 4.5 The 5× build tax during transition
 
@@ -739,44 +822,51 @@ to project N → green on macOS, broken on Windows" errors. *Mitigation in §6.*
 
 ### 4.6 Open questions — now resolved by 01-DECISIONS.md
 
-The open questions this section previously carried are **closed** by review round 1;
+The open questions this section previously carried are **closed** by review rounds 1 & 2;
 recorded here so a re-reviewer sees the resolution rather than a live fork:
 
-- **O1 (canonical form) → resolved by D2.** Red-green tree (lossless green nodes +
-  red cursor); `SaveEngine` byte-splice is DELETE, not a fork. §4.2, §2.4.
-- **O2 (interactive bar) → resolved by D1.** Gesture = uncommitted-head + ephemeral
-  preview snapshot, coalescing to one undo unit; latency bounded by gate **G2**
-  (< 50 ms incremental derive). §4.1.
+- **O1 (canonical form) → resolved by D2, refined by D15/D16.** Red-green tree
+  (lossless green nodes storing relative width + content hash; `NodeId` in the red
+  layer/side-map; derivation key for the memo) over a **persistent rope** (O(log N)
+  red cursor and structural edit); `SaveEngine` byte-splice is DELETE, not a fork.
+  §4.2, §2.4.
+- **O2 (interactive bar) → resolved by D1, refined by D11/D12.** Gesture =
+  uncommitted-head + ephemeral preview snapshot, coalescing to one undo unit; the
+  snapshot is a **reverse-dependency-closure COW (D11)** built→sealed→published at a
+  **pass boundary (D12)**; latency bounded by gate **G2** (< 50 ms incremental
+  derive). §4.1.
 - **O3 (format coexistence) → resolved by D8.** A *transitional* header-gated read of
   v6 during migration, then a singular **DELETE** of the v6 path — no permanent
   coexistence, no legacy runtime nodes. §3.1.
-- **Declarative `define`/expression nodes → resolved by D8.** The migrator emits
-  `let`/`expr(...)`/`halton(dim,idx)` (and `instance_array` for FOR); the runtime CST
-  carries first-class v7 nodes, never legacy ones. §3.5.
+- **Declarative `define`/expression nodes → resolved by D8/D19.** The migrator emits
+  `let`/`expr(...)`/`halton(dim,idx)` (and `instance_array` for FOR, and
+  `acceleration{}`/`global_medium{}` for `> set`); the runtime CST carries first-class
+  v7 nodes, never legacy ones, and has **no imperative `>` layer at all** (D19). §3.5.
 - **Reuse of `DirtyScope` + realize/TLAS/photon seam → assumed reuse, consistent with
-  D1/D4.** The COW snapshot (D1) + traced-input invalidation (D4) drive the blast
-  radius; Facet 2 reuses the existing seam (§2.2). The remaining genuine unknown is
-  whether the corpus reference graph is fully acyclic (a P0 scan, §4.3) — an
-  empirical check, not a design fork.
+  D1/D4/D11/D12.** The closure-COW snapshot (D11) + traced-input invalidation (D4)
+  drive the blast radius; Facet 2 reuses the existing seam, run as **phase B on the
+  builder before seal** so the snapshot owns geometry/TLAS/light-samplers/photon-maps
+  (D12; §2.2). The remaining genuine unknown is whether the corpus reference graph is
+  fully acyclic (a P0 scan, §4.3) — an empirical check, not a design fork.
 
 ---
 
 ## 5. Cross-facet dependencies & assumptions
 
-This facet reconciles 1–5. The cross-facet questions are now **pinned by D1–D10**;
+This facet reconciles 1–5. The cross-facet questions are now **pinned by D1–D20**;
 each row below cites the deciding decision so a re-reviewer can confirm there is no
 live fork. (The sibling docs `10`–`50` are being conformed to the same decisions.)
 
 | Assumed of | Now pinned by | Decision |
 |---|---|---|
-| **Facet 1 (CST)** | The v7 CST grammar subsumes v6's declarative chunks 1:1 (shared descriptors) and retains *all* trivia losslessly. Overrides/tombstones are CST edits; **`> load`/`> run` are removed and flattened (not nodes)**. FOR→`instance_array`, DEFINE→`let`, `$()`→`expr(...)`. `RawTokenCapture`'s trivia seeds the **green tree** (relative width + `NodeId`); `SourceSpanIndex`/`ApplyOffsetDeltas` are deleted (red cursor). | **D2, D7, D8** |
-| **Facet 1** | Canonical form = lossless red-green CST. The "text-canonical" alternative is **not** taken; `SaveEngine` byte-splice is DELETE (D6 fingerprint/CAS retained). | **D2** (closes the former "biggest fork") |
-| **Facet 2 (derivation)** | CST→Scene is incremental/memoized/deterministic; the memo key = green-node structural hash + **traced**-input versions over `(CST, AssetManifest)`; emits `Add*` in topological order from traced edges (§4.3); reuses the `IJob` apply layer, `DirtyScope` taxonomy, and realize/TLAS/photon seam; publishes COW snapshots swapped at a pass boundary. | **D1, D4, D5** |
-| **Facet 3 (edit model)** | Undo/redo = CST version-DAG; a gesture = one undo unit; the `SceneEditor` mutation surface re-points onto the CST; invariant chain + manager-resolution survive as the apply path; identity is `NodeId` (addressed by name-path); deletion-persistence grows to all families. | **D1, D9** |
-| **Facet 4 (dynamic UI)** | UI is a pure function of CST + descriptors; widgets bind to `NodeId`; the 5 descriptor-driven introspection files rebind to CST nodes; hand-built accordions retire; the C-ABI boundary gains CST/text entry points. | **D9** |
+| **Facet 1 (CST)** | The v7 CST grammar subsumes v6's declarative chunks 1:1 (shared descriptors) and retains *all* trivia losslessly. Overrides/tombstones are CST edits; **ALL embedded `>` commands are removed — `> set` → `acceleration{}`/`global_medium{}` chunks (D19); `> load`/`> run` flattened (D7)**. FOR→`instance_array`, DEFINE→`let`, `$()`→`expr(...)`. `RawTokenCapture`'s trivia seeds the **green tree**; nodes store **relative width** (no offset) and child sequences are a **persistent rope** (O(log N), **D16**); the `NodeId` lives in the **red layer / side-map** (**D15**), not the shared green node; `SourceSpanIndex`/`ApplyOffsetDeltas` are deleted (red cursor over the rope). Three distinct hashes/ids: content hash (sharing) / derivation key (memo) / `NodeId` (lineage), **D15**. | **D2, D7, D8, D15, D16, D19** |
+| **Facet 1** | Canonical form = lossless red-green CST. The "text-canonical" alternative is **not** taken; `SaveEngine` byte-splice is DELETE (the external-conflict guard retained as the **atomic save** — temp-write→fsync→revalidate→rename, **D17**). | **D2** (closes the former "biggest fork") |
+| **Facet 2 (derivation)** | CST→Scene is incremental/memoized/deterministic; the memo key = the **derivation key** (trivia-INsensitive typed values + child structure, **D15**) + **traced**-input versions over `(CST, AssetManifest)`; emits `Add*` in topological order from traced edges (§4.3); reuses the `IJob` apply layer, `DirtyScope` taxonomy, and realize/TLAS/photon seam; publishes **reverse-dependency-closure COW** snapshots (**D11**) **built → sealed → swapped at a PASS boundary** (**D12**), the sealed snapshot owning geometry/TLAS/light-samplers/photon-maps; the derivation cache is version-scoped/persistent with an explicit edge lifecycle (**D20**). | **D1, D4, D5, D11, D12, D15, D17, D20** |
+| **Facet 3 (edit model)** | Undo/redo = CST version-DAG; a gesture = one undo unit; the `SceneEditor` mutation surface re-points onto the CST; invariant chain + manager-resolution survive as the apply path; **lineage identity is `NodeId` (in the red layer/side-map, D15), addressed by name-path (D9)**; **rename rewrites referrers from traced `ReferenceUse` records (D14), not `referenceCategories`**; the session exposes **both `headVersion` and `derivedVersion`** (D13); deletion-persistence grows to all families. | **D1, D9, D13, D14, D15** |
+| **Facet 4 (dynamic UI)** | UI is a pure function of CST + descriptors; widgets bind to **`NodeId`** (the stable lineage identity, D15) addressed by name-path; the 5 descriptor-driven introspection files rebind to CST nodes; hand-built accordions retire; the C-ABI boundary gains CST/text entry points (and surfaces `headVersion` vs `derivedVersion`, D13). | **D9, D13, D15** |
 | **Facet 5 (agent)** | `src/Library/Agent/` is net-new on the CST (read/propose-patch/validate→derive→render); GUI is "just another agent"; the `docs/gui/` agent specs survive as text-level. | (L2; no contradicting decision) |
 
-**No conflict with D1–D10 (or L1–L7) remains in this facet.** The former hardest
+**No conflict with D1–D20 (or L1–L7) remains in this facet.** The former hardest
 fork — O1 (canonical form) — is closed by **D2**, so `SaveEngine`'s fate is no longer
 contingent. The only remaining empirical unknown is the corpus reference-graph
 acyclicity check (a P0 scan, §4.3), which is a verification step, not a design
@@ -797,7 +887,7 @@ slice (and every phase) shippable**:
    artifact and should be built first, even before the first CST node.**
 2. **`tools/migrate_scenes_v6_to_v7.py` (§3.5)** — at first-slice scope it need only
    handle tier-0 flatten (D7 include-inlining, if the fixture is multi-file) + the
-   declarative header bump so the §D10 phased-fixture scenes can be flipped to v7 for
+   declarative header bump so the §D18 phased-fixture scenes can be flipped to v7 for
    the equivalence run.
 3. **The transitional dual-path seam (§3.1)** — the header-gated v6-read-vs-v7-CST
    path that lets the first slice ship behind a flag without touching the 376-scene
@@ -813,8 +903,8 @@ slice (and every phase) shippable**:
 
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
-| **R1** | **Lossless CST round-trip is incomplete** — a structured edit reformats untouched text, or a hand-edited file doesn't survive parse→serialize (silent loss of comments/whitespace/unsupported chunks). The inherited `TRANSACTION_MODEL.md` failure. | **High** | **High** | Reuse `RawTokenCapture`'s lossless trivia into the **green tree** (relative width + `NodeId`, **D2**; positions via red cursor); mechanical byte-identical round-trip test over the whole corpus as gate **G1**; the red-green pivot makes save lossless by construction and edits O(depth) path-copies. **Note (D8):** v7 scenes contain *no* FOR/`$()` constructs (the migrator emits first-class v7 nodes), so there are no opaque legacy spans to preserve at runtime — round-trip only has to be lossless over the v7 grammar. **The #1 correctness risk — see §4.2.** |
-| **R2** | **Incremental-derivation latency** — a localized edit rebuilds too much; the interactive bar stutters. | **Med-High** | **High** | **D1** gesture model (uncommitted head + ephemeral preview snapshot, debounced; no 60 Hz) + COW subgraph re-derive; reuse `DirtyScope` blast-radius taxonomy + realize/TLAS/photon seam; **gate G2 measures this on the P1 phase-1 fixture (cheapest edit) before the XL derivation work** — fail fast. §4.1. |
+| **R1** | **Lossless CST round-trip is incomplete** — a structured edit reformats untouched text, or a hand-edited file doesn't survive parse→serialize (silent loss of comments/whitespace/unsupported chunks). The inherited `TRANSACTION_MODEL.md` failure. | **High** | **High** | Reuse `RawTokenCapture`'s lossless trivia into the **green tree** (relative width, **D2**; `NodeId` in the red layer/side-map, **D15**; positions via the **red cursor over a persistent rope**, **O(log N)**, **D16**); mechanical byte-identical round-trip test over the whole corpus as gate **G1**; the red-green pivot makes save lossless by construction and edits **O(log N)** path-copies over the rope. **Note (D8):** v7 scenes contain *no* FOR/`$()` constructs (the migrator emits first-class v7 nodes), so there are no opaque legacy spans to preserve at runtime — round-trip only has to be lossless over the v7 grammar. **The #1 correctness risk — see §4.2.** |
+| **R2** | **Incremental-derivation latency** — a localized edit rebuilds too much; the interactive bar stutters. | **Med-High** | **High** | **D1** gesture model (uncommitted head + ephemeral preview snapshot, debounced; no 60 Hz) + **reverse-dependency-closure COW re-derive (D11)**, **built→sealed→published at a pass boundary (D12)**; reuse `DirtyScope` blast-radius taxonomy + realize/TLAS/photon seam; the derivation cache is version-scoped/persistent (D20); **gate G2 measures this on the P1 phase-1 fixture (cheapest edit) before the XL derivation work** — fail fast. (First impl may full-rebuild per D11, then add closure-tracking.) §4.1. |
 | **R3** | **Big-bang scope creep** — the XL derivation + UI rewrite tempts a flag-day cut-over; the tree goes red for weeks; the 376-scene corpus / 146 tests can't all be kept green simultaneously. | **High** | **High** | The strangler-fig phasing (§3.3): the transitional v6-read and v7 paths coexist *during migration only* (D8); deletions only after the replacement is RED-proven and the equivalence harness is green; every phase independently shippable; the terminal v6-path deletion (P8) is the singular D8 contract. **Discipline, not architecture, is the mitigation** — and the user's own multi-agent worker discipline + adversarial-review-as-gate (`feedback_multiagent_worker_discipline.md`, `adversarial-code-review` skill) apply. |
 | **R4** | **Agent-edit safety** — an agent (or GUI-as-agent) commits a CST edit that is syntactically valid but semantically destructive (deletes a referenced node, writes an invalid material), and undo/version-history is the only firewall. | **Med** | **High** | The validate→derive→render pipeline (Facet 5) gates every agent patch *before* commit; reference-safe deletion (block/cascade, from `ENTITY_CREATION.md`) at the CST level; CST version history makes every agent action atomically revertable; the `AI_SECURITY_MODEL.md` threat model carries over. CST diffs make agent actions diff-reviewable (a Model B *advantage*). |
 | **R5** | **Order-independence breaks a real scene** — a corpus scene relies on an order-sensitive construct or a reference cycle that topological emission can't reproduce. | **Low-Med** | **Med** | Corpus reference-graph scan during P0 (expected acyclic); the equivalence harness catches any divergence per-scene; cycles become a structured validation error, not a silent failure. §4.3. |
@@ -822,9 +912,9 @@ slice (and every phase) shippable**:
 | **R7** | **Test-coverage gaps during transition** — a Model-A test is deleted (its subject is gone) before its Model-B replacement exists, opening a window where a regression slips. | **Med** | **Med** | Rule: **never delete a Model-A test until its Model-B replacement is RED-proven** (§2.9); the 116 render tests + equivalence harness are model-agnostic oracles throughout; `SourceHygieneTest`/`red_prove.sh` guardrails stay; `feedback_fix_all_bugs_regardless_of_provenance.md` (fix every real bug, no provenance excuse). |
 | **R8** | **The two engine prerequisites (side-effect-free parse + scene-text retention) are deeper than estimated** — P0 (rated L) is really XL because the parser's build-as-it-parses coupling (`VALIDATION_ARCHITECTURE.md`'s impossibility proof) is pervasive. | **Med** | **Med** | These are shared by both models (not Model-B-specific cost); the proto-CST already retains byte offsets, so the seam is partly built; scope P0 to the *declarative subset* first (defer macro handling to the migrator). If P0 balloons, it's the right place to discover it (before any deletion). |
 | **R9** | **(RESOLVED) O1/O2/O3 decided late.** Was: synthesis defers canonical-form / interactive-bar / coexistence past P2, forcing rework. | **Closed** | — | **Resolved by review round 1:** O1→**D2** (red-green tree; `SaveEngine` splice DELETE), O2→**D1**+G2 (gesture model; < 50 ms derive), O3→**D8** (transitional read then singular delete). No live fork remains; kept for traceability. |
-| **R10** | **Material/Media descriptor rewrite is underestimated** — the hardcoded 25-branch introspection cascade is load-bearing in subtle ways (painter reverse-lookup by pointer identity); making it descriptor-driven leaks bugs. | **Low-Med** | **Med** | It's an EVOLVE worth doing regardless of Model B; sequence it as its own phase (P6) with the `*IntrospectionTest` suite as guard; not on the first-slice critical path (the §D10 fixture uses `sphere_geometry`/`uniformcolor_painter`/`standard_object`, all already descriptor-driven). |
-| **R11** | **Asset-change invalidation missed (D5)** — a referenced texture/mesh/spectral/glTF changes on disk without the CST or filename changing; a clean derive then disagrees with a cache hit (stale render, or a migrated scene that silently diverges from its v6 original). | **Med** | **Med-High** | **D5**: derivation input is `(CST, AssetManifest)`; each asset's content fingerprint is **traced** (D4) into the memo keys of the nodes that consumed it, so a fingerprint change invalidates exactly those nodes. A file watcher (or re-stat on focus/render) drives invalidation. Output paths excluded. Gate **G5** exercises this on the first slice. |
-| **R12** | **External-file conflict / silent overwrite (D6)** — git or another editor changes the `.RISEscene` on disk; in-process version-id dirtiness can't see it; autosave clobbers the external change. | **Med** | **High** | **D6**: record the file's content fingerprint at load and each flush; before writing, **compare-and-swap** — if the on-disk fingerprint ≠ last-known, do **not** overwrite; surface reload / diff-merge / force. The background watcher (D5's mechanism) can flag "changed on disk" proactively. This is the `FileIdentity` guard's intent retained after the byte-splice mechanism is deleted (§2.4). Gate **G5**. |
+| **R10** | **Material/Media descriptor rewrite is underestimated** — the hardcoded 25-branch introspection cascade is load-bearing in subtle ways (painter reverse-lookup by pointer identity); making it descriptor-driven leaks bugs. | **Low-Med** | **Med** | It's an EVOLVE worth doing regardless of Model B; sequence it as its own phase (P6) with the `*IntrospectionTest` suite as guard; not on the first-slice critical path (the §D18 fixture's phases 1–3 use `sphere_geometry`/`uniformcolor_painter`/`lambertian_material`/`standard_object`, all already descriptor-driven). |
+| **R11** | **Asset-change invalidation missed (D5/D17)** — a referenced texture/mesh/spectral/glTF changes on disk without the CST or filename changing; a clean derive then disagrees with a cache hit (stale render, or a migrated scene that silently diverges from its v6 original). **Bytes can change with `(size,mtime)` unchanged**, so mtime alone is not deterministic. | **Med** | **Med-High** | **D5+D17**: derivation input is `(CST, AssetManifest)`; asset identity = **`(size,mtime)` fast prefilter → content hash** (authoritative; memo keys use the content hash). The fingerprint is **traced** (D4) into the memo keys of the nodes that consumed it, so a change invalidates exactly those nodes. A file watcher (or re-stat on focus/render) drives invalidation. Output paths excluded. Gate **G5** exercises this on the first slice (§D18 phase 6's asset-backed node). |
+| **R12** | **External-file conflict / silent overwrite (D6/D17)** — git or another editor changes the `.RISEscene` on disk; in-process version-id dirtiness can't see it; autosave clobbers the external change. **D6's stat-then-write CAS itself has a TOCTOU race** (the file can change between the check and the write). | **Med** | **High** | **D17 (supersedes D6's CAS mechanism): atomic save** — write to a **temp file in the target dir → `fsync` → revalidate the target's content hash == the loaded fingerprint → atomic `rename()` over the target.** On a fingerprint mismatch, surface reload / diff-merge / force (the D6 conflict UX); never a silent overwrite. **Documented residual:** a non-cooperating concurrent writer can still race the final rename (last-writer-wins at the FS layer) → **opt-in advisory file locking** for shared storage. The background watcher (D5's mechanism) can flag "changed on disk" proactively. This is the `FileIdentity` guard's intent retained after the byte-splice mechanism is deleted (§2.4). Gate **G5**. |
 
 ### 6.3 Effort & sequencing summary
 
@@ -832,11 +922,11 @@ slice (and every phase) shippable**:
 |---|---|---|
 | **(pre-P0)** Render-equivalence harness | **M** | none — build first |
 | P0 — parse seam + CST scaffold (declarative subset) | **L** (R8: maybe XL) | harness green on macro-free corpus |
-| P1 — first slice (the §D10 phased fixture) | **M** | P0; **measures G2 latency (R2) + G1 round-trip (R1)** |
+| P1 — first slice (the §D18 phased fixture) | **M** | P0; **measures G2 latency (R2) + G1 round-trip (R1); phase 6 exercises G5 (R11)** |
 | P2 — derivation engine (incremental, traced, topological) | **XL** | P1 (O1/D2 already resolved, R9 closed) |
 | P3 — CST versioning replaces edit model | **L** | P2 |
 | P4 — dynamic UI from descriptors | **L–XL** | P2, P3 |
-| P5 — save = serialize CST (+ D6 CAS) | **M** | P4 (transitional v6 read covers old scenes until P8) |
+| P5 — save = serialize CST (+ D17 atomic save) | **M** | P4 (transitional v6 read covers old scenes until P8) |
 | P6 — Material/Media descriptor rewrite | **L** | independent; pairs with P4 |
 | P7 — agent surface on CST | **L–XL** | P2–P5 |
 | P8 — corpus on v7, **DELETE** v6 path (D8) | **M** | all; equivalence harness green corpus-wide |
@@ -844,31 +934,40 @@ slice (and every phase) shippable**:
 **Total: one XL (derivation), two L–XL (UI, agent), the rest L/M.** The shape is a
 long-thin spine (harness → seam → first slice → derivation) before the wide work
 (UI, save, agent) fans out. The recommended **first thing to build is the
-render-equivalence harness**, and the **first slice is the canonical §D10 phased
-fixture** (`sphere_geometry` → `+uniformcolor_painter` → `+standard_object` →
-`+expr` → `+instance_array`), gated by **G1–G5** — its early phases exercise both
-tar-pits (R1 round-trip, R2 latency) on the smallest possible surface, before either
-the XL derivation investment or any Model-A deletion. **D8 makes the terminal P8
-deletion of the v6 path a single contract, not an optional deprecation window.**
+render-equivalence harness**, and the **first slice is the corrected §D18 phased
+fixture** (`sphere_geometry` → `+uniformcolor_painter`+`lambertian_material` →
+`+standard_object` chain → `+expr` → `+instance_array` → `+image_painter`/mesh), gated
+by **G1–G5** — its early phases exercise both tar-pits (R1 round-trip, R2 latency) on
+the smallest possible surface and its phase 6 exercises asset invalidation (R11/G5,
+D17), before either the XL derivation investment or any Model-A deletion. **D8 makes
+the terminal P8 deletion of the v6 path a single contract, not an optional deprecation
+window.**
 
 ---
 
 ### Appendix — fate index (alphabetical, for quick lookup)
 
-`ApplyOffsetDeltas` DELETE(D2) · `AsciiCommandParser` EVOLVE (minus load/run) ·
-`AsciiScriptParser` EVOLVE/narrow · `ChunkDescriptor*` REUSE · `ChunkDescriptorRegistry`
-REUSE · `CameraIntrospection` EVOLVE · `DAGObjectManager` likely DELETE ·
-`DirtyTracker` DELETE · `EditHistory` DELETE ·
-`Film/Light/Object/RasterizerIntrospection` EVOLVE · FOR/DEFINE/`$()`/`hal` DELETE ·
-`GenericManager` REUSE · `IJob::Add*` REUSE · `Job::InitializeContainers` REUSE ·
-`> load`/`> run` includes DELETE(D7; migrator-only flatten) · `MaterialIntrospection`
-EVOLVE(rewrite) · `MathExpressionEvaluator` DELETE · `MediaIntrospection`
-EVOLVE(rewrite) · `ObjectManager` TLAS/realize UNCHANGED · `OverrideSpanIndex` DELETE ·
-`ParseAndLoadScene` drive-loop DELETE/lexer-EVOLVE · `RawTokenCapture` trivia seeds
-green tree (index not retained) · realize/freeze/photon seam UNCHANGED · `Reference.h`
-UNCHANGED · `RISE_API_Create*` REUSE · `SaveEngine` DELETE(byte-splice; D6
-fingerprint/CAS retained) · `SceneEdit` DELETE · `SceneEditController` EVOLVE(split) ·
-`SceneEditor` EVOLVE(gut) · `SourceSpanIndex` DELETE(D2; red cursor) ·
-`src/Library/Agent/` NEW · `TransformSnapshot` DELETE · v6 parser/preprocessor +
-version-gate v6 arm DELETE(D8; migrator-only) · 5 build lists UNCHANGED(pay 5× tax) ·
-~30 edit tests EVOLVE/repurpose · 116 render tests UNCHANGED.
+`acceleration{}`/`global_medium{}` chunks NEW(D19; migrated from `> set`) ·
+`ApplyOffsetDeltas` DELETE(D2/D16; red cursor over rope) · `AsciiCommandParser` EVOLVE
+(CLI) / DELETE from scene path(D19; all embedded `>` migrator-only) · `AsciiScriptParser`
+EVOLVE/narrow · `ChunkDescriptor*` REUSE · `ChunkDescriptorRegistry` REUSE ·
+`CameraIntrospection` EVOLVE · `DAGObjectManager` likely DELETE · derivation cache
+version-scoped/persistent NEW(D20) · `DerivedScene` closure-COW + sealed-owns-
+geometry/TLAS/light-samplers/photon-maps NEW(D11/D12) · `DirtyTracker` DELETE ·
+`EditHistory` DELETE(head+derived version, D13) · `Film/Light/Object/RasterizerIntrospection`
+EVOLVE · FOR/DEFINE/`$()`/`hal` DELETE · `GenericManager` REUSE · `IJob::Add*` REUSE ·
+`Job::InitializeContainers` REUSE · light samplers EVOLVE(ownership→snapshot, D12) ·
+embedded `>` commands (load/run/set/remove) DELETE(D7/D19; migrator-only) ·
+`MaterialIntrospection` EVOLVE(rewrite) · `MathExpressionEvaluator` DELETE ·
+`MediaIntrospection` EVOLVE(rewrite) · `NodeId` red-layer/side-map (lineage), name-path
+addressing (D9/D15) · `ObjectManager` TLAS/realize UNCHANGED(phase-B-then-seal, D12) ·
+`OverrideSpanIndex` DELETE · `ParseAndLoadScene` drive-loop DELETE/lexer-EVOLVE ·
+`RawTokenCapture` trivia seeds green tree (index not retained) · `ReferenceUse` traced
+records NEW(D14; rename source) · realize/freeze/photon seam UNCHANGED(seal-before-
+publish, D12) · `Reference.h` UNCHANGED · `RISE_API_Create*` REUSE · rope child sequences
+NEW(D16; O(log N)) · `SaveEngine` DELETE(byte-splice; D6/D17 fingerprint + atomic save
+retained) · `SceneEdit` DELETE · `SceneEditController` EVOLVE(split) · `SceneEditor`
+EVOLVE(gut) · `SourceSpanIndex` DELETE(D2/D16; red cursor over rope) · `src/Library/Agent/`
+NEW · `TransformSnapshot` DELETE · v6 parser/preprocessor + version-gate v6 arm
+DELETE(D8; migrator-only) · 5 build lists UNCHANGED(pay 5× tax) · ~30 edit tests
+EVOLVE/repurpose · 116 render tests UNCHANGED.

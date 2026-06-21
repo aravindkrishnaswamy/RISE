@@ -2,8 +2,9 @@
 
 > **Status:** design-in-progress. One of the parallel facet docs under the
 > [Agentic Redesign Charter](00-CHARTER.md). DESIGN ONLY — no code yet.
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (review round 1):** binding keys on the
-> immutable NodeId addressed by name-path (D9); positions via the red cursor, not stored spans (D2).
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1 & 2):** binding keys on the immutable
+> **NodeId** (lineage identity, D9/D15) and addresses by name-path; positions via the red cursor over
+> the persistent rope, not stored spans (D2/D16).
 > This facet owns: **the UI as a pure function of (CST + descriptor schema)**,
 > widget-per-node, adaptive/growing panels, two-way binding widget↔CST node,
 > the split form/source live view, reactive propagation, and the shared-C++ +
@@ -182,7 +183,8 @@ of the parser: where the parser maps `text → CST → engine`, the builder maps
 // src/Library/UI/UiModel.h   (new; shared C++)
 namespace RISE::UI {
 
-  // A widget bound to exactly one CST parameter, by name-path (L5).
+  // A widget bound to one CST parameter: holds the immutable NodeId (lineage
+  // identity, D9) and addresses/displays by name-path.
   struct Widget {
     std::string  namePath;       // "objects/sphere.material" — identity + bind key (INV-5)
     std::string  label;          // descriptor param name ("focal_length")
@@ -248,7 +250,7 @@ already exceed the 9 hand-built panels — so even the default grouping covers
 chunk families (Painter, Function, ShaderOp, Modifier, PhotonMap, …) that have
 **no panel today**.
 
-### 2.2 Two-way binding widget ↔ CST node (via name-path identity, L5)
+### 2.2 Two-way binding widget ↔ CST node (via NodeId, addressed by name-path — D9/D15)
 
 **Two-level identity (per [`01-DECISIONS.md`](01-DECISIONS.md) §D9).** Widgets bind to the
 immutable internal **NodeId** (lineage identity — it survives rename and reparse via structural
@@ -679,11 +681,13 @@ the only Android-specific UI code, and it is mechanical.
 
 ## 5. Cross-facet dependencies & assumptions
 
-- **Facet 1 (CST + descriptors)** — *hard dependency.* I assume: (a) the CST
-  node carries `(chunkKeyword, name-path, params[] with per-param value text +
-  `SourceSpan`, children)`; (b) name-path is stable identity (L5/INV-5); (c)
+- **Facet 1 (CST + descriptors)** — *hard dependency.* I assume: (a) each CST
+  node carries `(chunkKeyword, NodeId, name-path, params[] with per-param value
+  text, children)` — positions are derived via the red cursor, not stored (D2/D16);
+  (b) the immutable **NodeId** is the stable lineage identity and **name-path is
+  version-resolved addressing** (D9/D15, INV-5); (c)
   the schema (`Describe()` descriptors + `ParameterSemantics`) is queryable as
-  `Schema::Describe(keyword)`; (d) Facet 1 publishes per-revision spans so the
+  `Schema::Describe(keyword)`; (d) Facet 1 publishes per-revision position lookup so the
   split view can map both directions; (e) declarative iteration (L3) means the
   builder never sees FOR/DEFINE — either a generator chunk (→ `GeneratorCard`)
   or pre-desugared N nodes. **Conflict to flag:** none with a Locked decision;

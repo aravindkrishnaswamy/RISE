@@ -1,21 +1,24 @@
 # Facet 1 — Scene Language & Canonical CST
 
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (review round 1).** Sections affected by
-> D2, D3, D5, D7, D8, and D9 have been rewritten to conform; this doc now points to the
-> decision record as authoritative and contradicts none of D1–D10.
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1 & 2).** Sections affected by
+> D2, D3, D5, D7, D8, and D9 (round 1) and by D14, D15, D16, and D19 (round 2) have been
+> rewritten to conform; this doc now points to the decision record as authoritative and
+> contradicts none of D1–D20.
 >
 > **Status:** design-in-progress. Part of the RISE agentic redesign (Model B). Read
 > [`00-CHARTER.md`](00-CHARTER.md) and [`01-DECISIONS.md`](01-DECISIONS.md) first — this doc
 > inherits the charter's locked decisions (L1–L7), open decisions (O1–O3), invariants
-> (INV-1…INV-6), and the round-1 decisions (D1–D10), and does not re-litigate them. Where this
+> (INV-1…INV-6), and the decisions (D1–D20), and does not re-litigate them. Where this
 > doc once conflicted with a decision, **`01-DECISIONS.md` wins** and the text below has been
 > conformed.
 >
 > **This facet owns:** the lossless Concrete Syntax Tree (CST); the parser's evolution from
 > one-way (`text → Job::Add*` fire-and-forget) to a retained, round-trippable tree; the
 > text↔CST round-trip and formatting/comment preservation (INV-4); node identity — the
-> dual-identity model of **immutable `NodeId` (lineage) + name-path (addressing)** (D9, which
-> refines L5); declarative iteration replacing `FOR`/`DEFINE`/`hal`/`$(...)`/macros (L3);
+> three-way separation of **content hash (green, lossless, for sharing) / derivation key
+> (semantic, trivia-insensitive, for memoization) / `NodeId` (per-occurrence lineage, in the
+> red layer)** plus **name-path (addressing)** (D15/D9, refining L5); declarative iteration
+> replacing `FOR`/`DEFINE`/`hal`/`$(...)`/macros (L3);
 > coverage of all ~138 chunk types; the **single-file** scene-format version bump (O3 / D7).
 >
 > **Design only.** No source, build, or scene files are modified by this document.
@@ -175,7 +178,6 @@ Node kinds (proposed `enum class CstNodeKind`, all are green-node kinds):
 | `Value` | a typed value | `ValueAtom`+ (scalar) or `Expr` (symbolic) | `ValueKind` / `tupleKinds` |
 | `ValueAtom` | one literal token (`0.6`, `gold`, `TRUE`) | — | — |
 | `Expr` | a symbolic value: a function-expression AST (§2.7) | operator/var/call sub-nodes | expression grammar |
-| `Command` | an embedded `> set` line (the only surviving command in v7; `> load`/`> run` are deprecated per D7, §2.8.4) | tokens | command grammar (§2.8.4) |
 | `Generator` | a declarative iteration block (§2.6) | a count/domain spec + a per-instance `Chunk` template | generator descriptor |
 | `Comment` | `# …` or `/* … */` (standalone or trailing) | raw text | — |
 | `Blank` | a run of blank lines | count | — |
@@ -189,14 +191,17 @@ Node kinds (proposed `enum class CstNodeKind`, all are green-node kinds):
   is a `Document`/`Chunk`-level `Comment` child in document order. This generalizes the
   `commentBegin` field `SourceSpanIndex` already records.
 - **Order is preserved, and document order is the canonical structure (D3).**
-  `Chunk.children` and `Document.items` are ordered vectors. *Every* repeatable occurrence
+  `Chunk.children` and `Document.items` are **persistent balanced sequences (ropes)** for wide
+  lists and may stay plain vectors for narrow ones (D16, §2.4). *Every* repeatable occurrence
   (every `part`, `cp`, `point`, `value`, `time`, `interpolator`, `shaderop`) is an ordinary
   ordered `Parameter` node living in `Chunk.children` in document order, interleaved with
   `Comment`/`Blank`/`Trivia` exactly as written. There is **no `RepeatGroup` container** that
   pulls occurrences out of document order — doing so would lose the interleaving and break
   order-dependent semantics. A structured edit that changes a value does not reorder; an edit
   that adds a parameter inserts at a descriptor-suggested or end-of-block position (Facet 3's
-  policy).
+  policy). Per **D16**, the `Document`'s chunk list and any large `RepeatGroup` (e.g. a
+  10 000-`part` SDF heightfield) use the rope so position lookup *and* insert/remove are
+  O(log N); a chunk's handful of params may remain a small vector.
 - **`RepeatGroup` is a *derived read-through view*, not a node kind (D3).** "All occurrences
   of param `X`" is computed on demand over the ordered children for binding/validation/UI
   convenience; it does not replace or reorder the underlying `Parameter` nodes. Per-element
@@ -210,6 +215,11 @@ Node kinds (proposed `enum class CstNodeKind`, all are green-node kinds):
   round-trips the author's intent (INV-4), not the computed float. (The v6 `$(@J*0.02-0.1)`
   spelling is migrated to this `expr(...)` form by the one-shot migrator, D8 — the v7 runtime
   CST never holds a `$(...)` node.)
+- **There is no imperative command layer in v7 (D19).** v7 has **no `Command` node kind** and
+  no embedded `>` directives: `> load`/`> run` are gone per D7, and the three surviving
+  `> set` forms become ordinary descriptor-driven chunks (e.g. `acceleration { … }`,
+  `global_medium { … }`, §2.8.4). Everything in a v7 document is a declarative chunk; the `>`
+  syntax exists only as an *input to the one-shot migrator* (§2.8.3/§2.8.4).
 
 ### 2.3 How the CST maps to the descriptor schema (L6)
 
@@ -237,30 +247,64 @@ truth* rather than a new schema. The descriptor types
 change** for this facet; everything required (`kind`, `enumValues`, `referenceCategories`,
 `tupleKinds`, `repeatable`, `required`) is already present.
 
-### 2.4 Red-green tree: relative widths in green nodes, absolute positions from a red cursor (D2)
+### 2.4 Red-green tree: relative widths in green nodes, absolute positions from a red cursor (D2, D16)
 
 The CST is a **red-green tree** (the rust-analyzer / Roslyn persistent-syntax-tree model),
 mandated by **D2**. This is the only design consistent with *both* INV-4 (lossless) and the
-O(depth) structural-sharing cost model the rest of the redesign (Facet 2/3) depends on:
+near-logarithmic structural-sharing cost model the rest of the redesign (Facet 2/3) depends on:
 storing absolute byte offsets in immutable shared nodes is forbidden, because a single
 length-changing edit would shift every later offset and force an O(document) copy, defeating
 sharing.
 
-**Green nodes (immutable, content-addressed, structurally shared).** Each green node stores:
+**Wide child lists are ropes, not vectors (D16).** D2's original "O(depth)" cost claim is only
+true if locating child *k* (or computing its byte offset) is O(1) — which it is **not** for a
+plain vector of children, where the red cursor must scan all preceding siblings (a `Document`
+with 10 000 chunks → O(N)), and a prefix-offset array would make *edits* O(N). Per **D16**, a
+node's child list is therefore a **persistent balanced sequence / rope**, with each subtree
+caching its **aggregate byte-width and newline counts**. This gives **O(log N)** position lookup
+(byteBegin of child *k*, byte→node) **and O(log N)** structural edit (insert/remove a child),
+while preserving structural sharing. The honest cost claim is **O(depth · log(width)) ≈
+O(log N)**, not O(depth). Narrow lists (a chunk's handful of params) may stay plain vectors
+(small N); the **`Document`'s chunk list and any large `RepeatGroup`/heightfield** (e.g. a
+10 000-`part` SDF) use the rope.
+
+**Green nodes (immutable, content-addressed, structurally shared) — and the three separated
+identities (D15).** D15 mandates that three concepts the early draft conflated — content
+addressing, the derivation memo key, and lineage identity — be kept **distinct**, because they
+have incompatible requirements: a lossless content hash must include trivia (so a whitespace
+edit changes it), a derivation key must *exclude* trivia (so a whitespace edit is a cache hit),
+and a lineage id must be **per-occurrence** (so it cannot live on a green node that is shared
+across many occurrences). The green node therefore **carries no `NodeId`**:
 
 ```cpp
 struct GreenNode {
     CstNodeKind  kind;
     std::uint32_t width;       // RELATIVE: byte length of this node incl. its own trivia.
                                // No absolute offset is ever stored.
-    NodeId       id;           // stable lineage identity (D9, §2.5) — survives rename + reparse
     bool         isSymbolic;   // OR of contained ValueAtom/Expr symbolic flags (carried from RawToken)
     // typed content (kind-specific): ValueAtom text, descriptor link, child handles, …
-    // children are shared handles to other immutable green nodes.
+    // children are shared handles to other immutable green nodes (a rope for wide lists, D16).
+    // NOTE: NO NodeId here — lineage identity lives in the RED layer / a side-map (D15, §2.5),
+    //       because one shared green node is reused at many occurrences and cannot bear a single id.
     // NOTE: no absolute byteBegin/byteEnd, no line/col, no FileId — those are DERIVED on
     //       demand by the version-specific red cursor (below), never stored on the green node.
 };
 ```
+
+The three identities D15 separates are:
+
+1. **Content hash (green, lossless, trivia-SENSITIVE)** — a hash of the green node's exact bytes
+   *including* its trivia. Its sole purpose is **structural sharing / dedup**: two byte-identical
+   green subtrees hash equal and are stored once. It carries **no identity**, which is precisely
+   what lets identical subtrees share a single green node.
+2. **Derivation key (semantic, trivia-INSENSITIVE)** — a hash of the node's *meaning* (typed
+   values + child structure, **excluding** comments / whitespace / trivia) **+ the traced-input
+   versions** (D4). This is **Facet 2's memo key**: a whitespace-only edit leaves the derivation
+   key unchanged, so it is a derivation cache **hit** (the content hash *did* change, so the green
+   node is new, but its meaning did not). This is distinct from the content hash (#1).
+3. **Lineage identity (`NodeId`)** — a per-**occurrence**, immutable, process-stable token that
+   lives in the **red layer / a side-map, NOT on the shared green node** (§2.5). Its purpose is
+   UI binding, undo lineage, durable agent references, and rename.
 
 A node's own `width` is intrinsic and edit-stable: it changes only when the node's *own* bytes
 change. The width of an unedited node is identical across every version that shares it, which
@@ -268,48 +312,59 @@ is exactly what makes the green layer freely shareable by reference between snap
 
 **The red cursor (version-specific, cheap, not stored).** Absolute positions are **computed on
 demand** by a *red cursor* that walks from a given version's root, accumulating the widths of
-preceding siblings and ancestors (**O(depth)**). The red layer is a thin, throwaway overlay
-keyed to one version's root; it is *never* stored in the shared green nodes. `byteBegin` for a
-node = sum of widths of everything to its left in document order, computed by the cursor;
-`byteEnd = byteBegin + width`; `line`/`col` for a diagnostic are derived by the cursor from the
-byte offset against the document's newline table. **There is no stored `CstSpan` with absolute
-`byteBegin`/`byteEnd`, and no `FileId`** (v7 is single-file — D7, §2.8.4).
+preceding siblings and ancestors. Because each child list is a rope caching aggregate widths
+(D16), locating a child and summing the widths to its left is **O(log width)** per level, so the
+cursor is **O(depth · log width) ≈ O(log N)** — *not* O(depth) with the per-level sibling scan a
+plain vector would force. The red layer is a thin, throwaway overlay keyed to one version's root;
+it is *never* stored in the shared green nodes. `byteBegin` for a node = sum of widths of
+everything to its left in document order, computed by the cursor; `byteEnd = byteBegin + width`;
+`line`/`col` for a diagnostic are derived by the cursor from the byte offset against the
+document's newline table (newline counts are cached per rope subtree, D16). **There is no stored
+`CstSpan` with absolute `byteBegin`/`byteEnd`, and no `FileId`** (v7 is single-file — D7, §2.8.4).
+The red cursor is also where a node's per-occurrence **`NodeId` is resolved** (the side-map keyed
+to this version's root, D15/§2.5) — the green node it points at carries none.
 
-**Editing = path-copy (O(depth)), not offset-shifting.** An edit produces a *new root* by
-copying only the nodes on the path from the root to the edited node (O(depth) fresh green
-nodes); all sibling subtrees are **shared by reference** with the prior version. The edited
-node gets a new `width`; **no other stored node's data changes**, so sharing is real and
-nothing has to be shifted. This is the red-green discipline that D1 extends from the CST to the
-derived scene.
+**Editing = path-copy (O(log N)), not offset-shifting.** An edit produces a *new root* by
+copying only the nodes on the path from the root to the edited node, **plus the O(log width)
+rope-spine rebalance at each level whose child list changed shape** (D16); all sibling subtrees
+are **shared by reference** with the prior version. The edited node gets a new `width`; **no
+other stored node's data changes**, so sharing is real and nothing has to be shifted. With the
+rope, even inserting/removing a child in a 10 000-wide list is O(log N), not O(N). This is the
+red-green discipline that D1 extends from the CST to the derived scene.
 
 The two mapping directions the charter's pivot diagram requires both go through the red cursor:
 
 - **byte-offset → node** (a click in the text editor / an agent's line-anchored diagnostic maps
-  to the smallest enclosing node): the red cursor descends from the root, subtracting child
-  widths to locate the smallest node whose width-interval contains the offset (O(depth)).
+  to the smallest enclosing node): the red cursor descends from the root, using each level's rope
+  to locate in O(log width) the child whose width-interval contains the offset (O(log N) total).
 - **node → byte-range** (a structured edit on `objects/sphere.material` must rewrite the right
-  bytes): the red cursor accumulates preceding widths to the target node (O(depth)), yielding
-  its absolute range for the splice. This replaces what `SaveEngine`'s Mode-A splice did via
-  `ParameterSpan::valueBegin/valueEnd`: the save engine's bespoke absolute-offset side-table
+  bytes): the red cursor accumulates preceding widths to the target node via the rope (O(log N)),
+  yielding its absolute range for the splice. This replaces what `SaveEngine`'s Mode-A splice did
+  via `ParameterSpan::valueBegin/valueEnd`: the save engine's bespoke absolute-offset side-table
   (and the Mode-A/Mode-B duality) collapses into "serialize the CST" (see §3).
 
 INV-4's "don't reformat untouched text" falls out structurally: serialization walks the green
 tree and emits each node's **retained trivia/text verbatim**, except an edited node whose bytes
 are re-rendered. **`ApplyOffsetDeltas` is gone** — there are no stored absolute offsets to
-shift; the red cursor recomputes positions for the new root in O(depth) whenever they are
+shift; the red cursor recomputes positions for the new root in O(log N) whenever they are
 needed.
 
-### 2.5 Node identity (D9): immutable `NodeId` (lineage) + name-path (addressing)
+### 2.5 Node identity (D9, D15): `NodeId` (lineage, in the red layer) + name-path (addressing)
 
-**D9 refines L5 into a dual-identity model.** L5 named "name-path" as the identity currency;
-D9 splits that into two distinct concepts because a name-path *changes on rename* and shifts on
-insert, yet undo-lineage, UI bindings, and durable agent references need something that does
-*not* move. The two are:
+**D9 refines L5 into a dual-identity model; D15 then pins *where* the lineage id lives.** L5
+named "name-path" as the identity currency; D9 splits that into two distinct concepts because a
+name-path *changes on rename* and shifts on insert, yet undo-lineage, UI bindings, and durable
+agent references need something that does *not* move. **D15 further mandates that the lineage id
+is borne by the RED layer, not the shared green node** — because a green node is content-addressed
+and reused at every byte-identical occurrence, so it cannot carry one per-occurrence id (§2.4).
+The two identities are:
 
-- **`NodeId` — the lineage identity.** An immutable, process-stable token borne by each green
-  node (§2.4). It is what undo lineage, UI widget bindings, and durable agent references key
-  on. It **survives renames, value edits, and reparses** (see "Reparse matching" below). It is
-  *not* a textual address — it is never written to the file; it is an in-memory identity.
+- **`NodeId` — the lineage identity (red-layer / side-map, D15).** An immutable, process-stable
+  per-**occurrence** token kept in a **side-map keyed to a version's root** (the red layer),
+  **not** on the green node (§2.4). It is what undo lineage, UI widget bindings, and durable
+  agent references key on. It **survives renames and value edits exactly**, and reparses on a
+  **best-effort** basis (see "Reparse matching" below). It is *not* a textual address — it is
+  never written to the file; it is an in-memory identity.
 - **name-path — the addressing scheme.** A human/agent-readable string address built from
   RISE's name-keyed managers, which **resolves to a `NodeId` within a given version.** It is
   how a human or agent *names* a node; it **changes on rename** (by design — it is a name) and
@@ -332,32 +387,49 @@ animations/spin/timelines/3.value[2] # a keyframe value
 managers key them and how animation's `element_type` already works). Resolving a name-path is a
 lookup that returns the `NodeId` it currently addresses in the queried version.
 
-**Rename is a `NodeId`-preserving op.** A rename rewrites the name token **in place on the same
-`NodeId`** (the green node's identity is unchanged) and rewrites all referrers — discoverable
-via the `referenceCategories` rename hint (D4). Because UI/agent bindings key on `NodeId`, they
-**survive the rename automatically**; only the *name-path* string changes. Rename is the one
-operation that changes a name-path; ordinary value edits never do.
+**Rename is a `NodeId`-preserving op driven by traced `ReferenceUse` records (D14).** A rename
+rewrites the name token **in place on the same `NodeId`** (the node's lineage identity is
+unchanged) and rewrites all referrers. **Referrers are found from the traced reference graph, not
+from `referenceCategories`.** Per D4, `referenceCategories` cannot represent dynamic references
+(`timeline.element`/`.animation` are plain strings whose target category is chosen at derive time
+by `element_type`), so using it to drive rename would silently leave those pointing at the old
+name. Instead, derivation's dependency tracing (D4) records, for every resolved reference, a
+**`ReferenceUse { sourceValueNodeId, targetNodeId }`**; **rename rewrites referrers from this
+traced `ReferenceUse` set**, which captures dynamic references automatically. For references in
+nodes that did *not* derive (e.g. inside an error subtree, so untraced), it falls back to the
+descriptor-provided **reference resolver**; any referrer that **cannot be resolved is
+surfaced/flagged, never silently renamed**. `referenceCategories` remains a **UI-picker hint
+only** (D4/D14). Because UI/agent bindings key on `NodeId`, they **survive the rename
+automatically**; only the *name-path* string changes. Rename is the one operation that changes a
+name-path; ordinary value edits never do.
 
-**Reparse matching keeps `NodeId` stable across text edits.** When a text edit reparses a
-region, the new green nodes are **matched to prior `NodeId`s by structural position + content**
-(rust-analyzer-style node reuse), so a text edit does *not* reset identities and break
-bindings/lineage. Unmatched nodes (genuinely new content) get fresh `NodeId`s.
+**Reparse identity is best-effort (D15).** Identity preservation across edits has two regimes. A
+**structured edit preserves `NodeId` exactly** — it targets a known node, and the new green node
+inherits that occurrence's id in the side-map. A **whole-region reparse** (a free-form text edit)
+**matches new green nodes to prior `NodeId`s by structural position + content** (rust-analyzer-style
+node reuse) — **but this is explicitly best-effort.** Identical repeated rows (e.g. two byte-equal
+`part` lines) are genuinely ambiguous: position+content cannot tell which prior occurrence a new
+one continues. Per D15, **unmatched durable references are INVALIDATED and flagged, not silently
+remapped** — a binding/agent-ref whose occurrence cannot be re-matched is reported as broken rather
+than quietly re-pointed at the wrong row. Genuinely new content gets fresh `NodeId`s.
 
 **Addressing of anonymous / positional nodes:**
 
 - *Unnamed chunks* (a `pinhole_camera` with no `name`) already receive an auto-name in the
   current parser (`AllocateCameraName` → `"default"`, `"default_1"`, …,
-  `AsciiSceneParser.cpp:601`). The node has a `NodeId` from creation regardless; the
-  synthesized name gives it an addressable *name-path*, and on first structured edit the name
-  is materialized into the text as an explicit `name` parameter (author-visible,
-  round-trip-stable). Until edited, the synthesized name lives only in the CST (text stays
-  untouched — INV-4).
+  `AsciiSceneParser.cpp:601`). The occurrence gets a `NodeId` (in the side-map, D15) from
+  creation regardless; the synthesized name gives it an addressable *name-path*, and on first
+  structured edit the name is materialized into the text as an explicit `name` parameter
+  (author-visible, round-trip-stable). Until edited, the synthesized name lives only in the CST
+  (text stays untouched — INV-4).
 - *Repeatable-param occurrences* are **addressed** positionally (`part[3]` = the 4th occurrence
-  of `part` in document order, D3) — but each occurrence is an ordinary `Parameter` node with
-  its own stable `NodeId`. An *insert/delete* shifts the **name-path index** of later
-  occurrences (semantically correct — the 4th part really did become the 5th), while each
-  surviving occurrence keeps its `NodeId` (so UI bindings keyed on `NodeId` survive the
-  structural change; INV-5).
+  of `part` in document order, D3) — but each occurrence is an ordinary `Parameter` node carrying
+  its own stable `NodeId` in the side-map (D15). An *insert/delete* shifts the **name-path index**
+  of later occurrences (semantically correct — the 4th part really did become the 5th), while each
+  surviving occurrence keeps its `NodeId` under a structured edit (so UI bindings keyed on `NodeId`
+  survive the structural change; INV-5). Under a *whole-region reparse* of identical repeated rows,
+  re-matching is best-effort and unmatched ids are invalidated rather than remapped (§ reparse,
+  D15).
 - *Sub-value atoms* (`position`'s `y` component) are addressed by `param.atomIndex` only
   transiently for editing; they are not first-class identities (a vec3 is one `Value`).
 
@@ -540,10 +612,12 @@ SerializeCst(Cst) -> bytes                                (this facet)
    trailing-comment ranges. Comments and blanks become `Comment`/`Blank`/`Trivia` tokens
    rather than being stripped. (The lexer also balances the v6 `$(...)` spelling — but only the
    one-shot v6→v7 migrator consumes that; the v7 runtime CST holds `expr(...)`, §2.8.3.)
-2. **Parse structure**: recognize header, chunks (`keyword` + `{` … `}`), the embedded `> set`
-   command, `let` blocks, and `instance_array`/generator chunks. Build the document-ordered
-   green tree (relative widths, D2). v7 has **no** `FOR`/`DEFINE`/macro node kinds — those
-   constructs exist only as inputs to the migrator (§2.8.3, D8).
+2. **Parse structure**: recognize header, chunks (`keyword` + `{` … `}`) — including the
+   `acceleration` / `global_medium` / … chunks that replace the former `> set` forms (D19,
+   §2.8.4) — `let` blocks, and `instance_array`/generator chunks. Build the document-ordered
+   green tree (relative widths, D2; rope-backed child lists, D16). v7 has **no** `FOR`/`DEFINE`/
+   macro node kinds **and no `Command`/`>` node kind** — those constructs exist only as inputs to
+   the migrator (§2.8.3/§2.8.4, D8/D19).
 3. **Bind to descriptors**: for each `Chunk`, look up its `ChunkDescriptor`; for each
    parameter line (including each repeatable occurrence, kept as an ordinary ordered
    `Parameter`, D3), look up its `ParameterDescriptor` and type the value into
@@ -562,10 +636,10 @@ same `Job::Add*` apply layer — so the engine-construction code is *reused*, no
 Worked example for `sphere_geometry { name s  radius 0.6  # main ball }`:
 
 1. `Describe()` (unchanged) advertises params `name:String`, `radius:Double`.
-2. **CST**: a green `Chunk(keyword=sphere_geometry, NodeId=…, name-path geometry/s)` with
-   ordered children `Parameter(name, Value[ValueAtom "s"])`, `Parameter(radius,
-   Value[ValueAtom 0.6], trailing Comment "# main ball")`, each green node carrying its
-   relative width + `NodeId`.
+2. **CST**: a green `Chunk(keyword=sphere_geometry)` (addressed by name-path `geometry/s`, with
+   a `NodeId` in the side-map, D15) with ordered children `Parameter(name, Value[ValueAtom "s"])`,
+   `Parameter(radius, Value[ValueAtom 0.6], trailing Comment "# main ball")`, each green node
+   carrying its relative width (and each occurrence a side-map `NodeId`, not a green-borne one).
 3. **Derive** (Facet 2): reads the CST `Chunk`, fills a `ParseStateBag`-equivalent (or calls
    the relocated `Finalize` logic directly), emits `pJob.AddSphereGeometry("s", 0.6)`.
 4. **Round-trip**: `SerializeCst` walks the green tree and re-emits byte-for-byte (untouched
@@ -596,23 +670,31 @@ This is a large simplification over the original §2.8.3: no legacy-node machine
 derivation path, no "coexist indefinitely" carrying cost. v6 files are not loaded by the
 runtime after migration; they are *converted once* and the v6 path retired.
 
-#### 2.8.4 v7 is single-file; `> load` / `> run` are deprecated (D7)
+#### 2.8.4 v7 is single-file and has NO embedded command layer (D7, D19)
 
-**D7 (enabled by the owner's migrate-everything permission) makes a v7 document a single
-self-contained file.** The entire multi-file CST design — child sub-documents, a `FileId` on
-every node, the document-graph evaluation, nested-scope rules for included files — is **removed
-from v7**. The only embedded command surviving in v7 is `> set` (e.g.
-`> set accelerator B 10 8`), modeled as a `Command` node.
+**D7 makes a v7 document a single self-contained file; D19 removes the last imperative `>`
+command from it.** The entire multi-file CST design — child sub-documents, a `FileId` on every
+node, the document-graph evaluation, nested-scope rules for included files — is **removed from
+v7** (D7). And the three surviving `> set` forms (accelerator / global-medium / …) become
+**ordinary descriptor-driven chunks** (D19), so **v7 has no `> ` command syntax and no `Command`
+node kind at all** — every directive is a declarative chunk.
 
-- **`> load` and `> run` are deprecated and removed from v7.** The one-shot v6→v7 migrator
+- **`> load` and `> run` are deprecated and removed from v7 (D7).** The one-shot v6→v7 migrator
   (§6 / Facet 6) **flattens** every include/run by inlining the referenced content into the
   consuming document — e.g. the shared `standard_colors` painters (`> run
   scenes/colors.RISEscript` → `load scenes/standard_colors.RISEscene`) are inlined where used.
-- This **dissolves** the whole multi-file problem set: version identity is per single root;
-  undo is single-rooted; save is one file (CAS per D6); there are no include cycles, no
-  shared-include fan-out, no cross-file edit semantics. (The accidental `> load` thread-local
-  reset of `scene_options`/`camera_defaults` noted in the parser README simply ceases to exist
-  — there is no second document to reset against.)
+- **`> set` becomes declarative chunks (D19).** The migrator rewrites each `> set` form into a
+  normal chunk — e.g. `> set accelerator B 10 8` → an `acceleration { … }` chunk; the global
+  participating-medium `> set` → a `global_medium { … }` chunk — each descriptor-driven (so it
+  gets validation / UI / suggestions for free, L6) and a first-class declarative **derivation
+  input** (Facet 2 reads it as graph state, not as a side-effecting command). v7 therefore has
+  **no imperative command layer**; `> set` exists only as an *input to the migrator*.
+- This **dissolves** the whole multi-file problem set *and* the imperative-command layer: version
+  identity is per single root; undo is single-rooted; save is one file (atomic save, D17); there are no
+  include cycles, no shared-include fan-out, no cross-file edit semantics; and all configuration is
+  declarative graph input. (The accidental `> load` thread-local reset of
+  `scene_options`/`camera_defaults` noted in the parser README simply ceases to exist — there is
+  no second document to reset against.)
 - **Cost accepted:** some duplication of previously-shared content across scenes; the owner
   controls the corpus and prefers the simplification (duplication in a migrated corpus is cheap
   and diff-visible).
@@ -633,11 +715,14 @@ A localized text edit reparses only the touched chunk's byte range into a sub-tr
 path-copied into a new root (the lexer is line/brace-oriented, so a chunk's bounds are
 recoverable cheaply); a structured edit path-copies to the target node directly (§2.4). Either
 way the changed subtree is handed to Facet 2's incremental derivation, and unchanged green
-subtrees are **matched to their prior `NodeId`s** (reparse matching, §2.5) so derivation sees a
-minimal changed set. This facet's contract to Facet 2: **a CST edit reports the set of changed
-`NodeId`s** so derivation can recompute only the affected subgraph. There is **no offset-delta
+subtrees keep their **derivation key** (trivia-insensitive, D15) so Facet 2's memo sees them as
+cache hits, while their prior `NodeId`s are re-matched **best-effort** (reparse matching, §2.5;
+unmatched durable refs are invalidated, not remapped). This facet's contract to Facet 2: **a CST
+edit reports the set of changed nodes (by `NodeId` where matched, and the set of invalidated
+ids)** so derivation can recompute only the affected subgraph. There is **no offset-delta
 shifting** — the red-green model needs none (D2): the new root shares every untouched green
-node by reference, and absolute positions are recomputed on demand by the red cursor.
+node by reference (via the rope, D16), and absolute positions are recomputed on demand by the
+red cursor.
 
 ### 2.9 Parse errors localize to CST nodes (feeds the agent surface, Facet 5)
 
@@ -678,7 +763,9 @@ descriptor remains the single registration point.
 `time`/`value`/`interpolator` on `timeline`) → ordinary **document-ordered `Parameter`
 nodes** (D3); a derived `RepeatGroup` **view** provides per-occurrence addressing
 (`…part[3]` = the 4th occurrence in document order). `timeline`'s order-paired `value`/`time`
-and sticky `interpolator` are preserved because document order is canonical.
+and sticky `interpolator` are preserved because document order is canonical. A **large**
+repeat group (e.g. a 10 000-`part` SDF heightfield) holds its occurrences in a **rope-backed
+child list** (D16) so addressing the *k*-th and inserting/removing occurrences stay O(log N).
 
 **Composite/tuple values** (`advanced_shader`'s `shaderop foo 0 5 +`, the
 `tupleKinds`-described values; `homogeneous_medium`'s `phase hg 0.5`) → a `Value` with
@@ -691,8 +778,10 @@ reserved built-ins), and §2.7 (`expr(...)` sublanguage). These have **no v7 run
 representation**: the one-shot v6→v7 migrator converts them to the declarative forms, then the
 v6 reader is deleted (D8, §2.8.3). There are no legacy nodes.
 
-**Embedded commands** — only `> set` survives in v7, as a `Command` node. `> load` / `> run`
-are deprecated and **flattened by the migrator** (single-file v7, D7, §2.8.4).
+**Embedded commands** — **none survive in v7 (D19).** `> load` / `> run` are deprecated and
+**flattened by the migrator** (single-file v7, D7); the three `> set` forms are migrated to
+**declarative chunks** (`acceleration { … }`, `global_medium { … }`, …). v7 has no `> ` syntax
+and no `Command` node kind; all are migrator-only inputs (§2.8.4).
 
 #### What resists — opaque assets (reference + AssetManifest, D5)
 
@@ -738,12 +827,13 @@ entry); the expanded sub-scene is a derivation product, not CST content. (This m
 | Component (current) | Fate | Notes |
 |---|---|---|
 | [`RawTokenCapture`](../../src/Library/Parsers/RawTokenCapture.h) (lexer + token widths + symbolic flags) | **Evolve → reuse** | Promote from save-side Phase 0 to the front-line CST lexer; it produces green-node content (relative widths, not absolute spans). Lexing rules (quoted strings, `expr(...)` balancing, comment ranges) are exactly what the CST needs. Add comment/blank emission instead of stripping. (The `$(...)` balancing it already does is consumed only by the v6→v7 migrator, D8.) |
-| [`SourceSpanIndex`](../../src/Library/SceneEditor/SourceSpanIndex.h) (per-entity/param **absolute** byte ranges, `AuthorMode`, `ApplyOffsetDeltas`) | **Delete (replaced by the red cursor, D2)** | D2 forbids stored absolute offsets in shared nodes. Green nodes store relative widths + `NodeId`; absolute positions are computed on demand by the version-specific red cursor (§2.4). The standalone absolute-offset side-table and **`ApplyOffsetDeltas`** (offset-shift-on-splice) are **deleted**, not evolved — there is nothing to shift. `chunkRevisited`/FOR-dedup logic is gone with v6 (no legacy nodes, D8). `insideManagedBlock` becomes obsolete (no managed override block — see SaveEngine row). `AuthorMode` (Euler/Quaternion/Matrix precedence) is retained as green-node content where needed. |
+| [`SourceSpanIndex`](../../src/Library/SceneEditor/SourceSpanIndex.h) (per-entity/param **absolute** byte ranges, `AuthorMode`, `ApplyOffsetDeltas`) | **Delete (replaced by the red cursor, D2/D16)** | D2 forbids stored absolute offsets in shared nodes. Green nodes store **relative widths only** (the per-occurrence `NodeId` lives in the red-layer side-map, **not** on the green node — D15); absolute positions are computed on demand by the version-specific red cursor over the rope-cached widths (§2.4, O(log N), D16). The standalone absolute-offset side-table and **`ApplyOffsetDeltas`** (offset-shift-on-splice) are **deleted**, not evolved — there is nothing to shift. `chunkRevisited`/FOR-dedup logic is gone with v6 (no legacy nodes, D8). `insideManagedBlock` becomes obsolete (no managed override block — see SaveEngine row). `AuthorMode` (Euler/Quaternion/Matrix precedence) is retained as green-node content where needed. |
 | Descriptor schema ([`ChunkDescriptor.h`](../../src/Library/Parsers/ChunkDescriptor.h), `IAsciiChunkParser::Describe()`) | **Reuse verbatim** | L6. The CST references it; no structural change required for this facet. It gains a fourth consumer (CST binding) alongside parser/highlighter/suggestions. |
 | `DispatchChunkParameters` / generic `ParseChunk` (`AsciiSceneParser.cpp:697`, `:9861`) | **Evolve** | Becomes the descriptor-binding step of `ParseToCst` (validate names → typed `ValueAtom`s), **minus** the abort-on-error behavior (→ error nodes, §2.9) and **minus** `Finalize` invocation. |
 | `IAsciiChunkParser::Finalize` bodies (the `pJob.AddX` emission) | **Evolve → move to derivation (Facet 2)** | The "typed values → engine objects" logic relocates into Facet 2, which calls the **same `Job::Add*` apply layer**. The apply layer (`Job.cpp`, `RISE_API`) is **reused unchanged**. |
 | Top-level preprocessing (`FOR`/`ENDFOR` seek-back, `substitute_macro`, `evaluate_expression`, `evaluate_first_function_in_expression`, the `static MultiHalton mh` global, `macros`/`loops` parser state) | **Delete after migration (lives only in the one-shot migrator, D8)** | There is **no legacy derivation pre-pass** and no runtime legacy nodes (D8, §2.8.3). The expansion logic is used *only* by the v6→v7 migrator to convert `FOR`→`instance_array`, `DEFINE`→`let`, `$(...)`/`@`/`%`→`expr(...)`/`let`-refs, and `hal`→index-explicit `halton(dim, idx)` (INV-2). Once the corpus is migrated and the gate is green, this whole subsystem (and the v6 reader) is **deleted**; v7 is the sole runtime format. |
-| `AllocateCameraName` auto-naming (`:601`) | **Evolve → CST synthesized identity** (§2.5) | Generalized to all unnamed chunks; synthesized name persisted in CST, materialized to text on first edit. |
+| Embedded `> set` command parsing (accelerator / global-medium / …) | **Delete from v7; migrate to declarative chunks (D19)** | v7 has **no `Command` node kind and no `> ` syntax** (D19). The migrator rewrites each `> set` form into a normal descriptor-driven chunk (`acceleration { … }`, `global_medium { … }`, …) — a declarative derivation input, not an imperative command. `> set` parsing survives only inside the one-shot v6→v7 migrator (alongside `> load`/`> run` flattening, D7). |
+| `AllocateCameraName` auto-naming (`:601`) | **Evolve → CST synthesized identity** (§2.5) | Generalized to all unnamed chunks; synthesized name (with its side-map `NodeId`, D15) persisted in CST, materialized to text on first edit. |
 | [`SaveEngine`](../../src/Library/SceneEditor/SaveEngine.cpp) Mode-A/Mode-B byte-splice + managed-override-block machinery | **Delete (this facet's contribution to the deletion)** | Replaced by `SerializeCst(Cst)` — pretty-printing the canonical tree, verbatim for untouched nodes, re-rendered for edited nodes. The whole Mode-A-vs-Mode-B duality, the sentinel-bracketed managed block, `OverrideSpanIndex`, `override_object`, the load-time `FileIdentity` external-mod guard's *splice* rationale, and `loadedPropertyValues` diffing exist **only** because the text wasn't retained. With a retained CST they vanish. **Note (D6):** the external-mod guard's *intent* is **not** deleted — it is retained as the load/flush content-fingerprint + compare-and-swap save contract (Facet 3 owns it); only its byte-*splice* mechanism goes away here. (Facet 3/6 own the full SaveEngine deletion inventory; this facet supplies the replacement: CST serialization.) |
 | `tools/migrate_scenes_v5_to_v6.py` (and the v5→v6 hard-fail message) | **Reuse pattern** | The v6→v7 migrator (§6) follows this established idempotent-script pattern. |
 
@@ -791,14 +881,18 @@ CST` codec; the descriptor stays the schema; the engine-construction code is reu
    Facet 2/3; this facet must publish the "changed-NodeId set" contract precisely enough for
    Facet 2's memoization to be sound.
 
-5. **Reference integrity under rename (D9, refining L5).** A rename is a `NodeId`-preserving op
-   (D9, §2.5): the renamed node keeps its `NodeId`, only its name-path string changes, and all
-   reference *values* pointing at the old name are rewritten (found via the `referenceCategories`
-   rename hint, D4). **Open:** references inside `expr(...)` (the future
-   `expr( materials/gold.scale )` extension) and references in *opaque assets* (a glTF that
-   names a RISE material?) complicate "find all referrers." First slice scopes renames to direct
-   `ValueKind::Reference` atoms only; cross-expression/cross-asset reference rewriting is
-   deferred and flagged.
+5. **Reference integrity under rename (D9/D14, refining L5).** A rename is a `NodeId`-preserving
+   op (D9, §2.5): the renamed node keeps its `NodeId`, only its name-path string changes, and all
+   reference *values* pointing at the old name are rewritten. Per **D14**, referrers are found from
+   the **traced `ReferenceUse { sourceValueNodeId, targetNodeId }`** records recorded during
+   derivation (which capture dynamic refs like `timeline.element` resolved via `element_type`),
+   **not** from `referenceCategories` (a UI-picker hint only); untraced refs fall back to the
+   descriptor reference resolver, and any unresolvable referrer is flagged, never silently renamed.
+   **Open:** references inside `expr(...)` (the future `expr( materials/gold.scale )` extension)
+   and references in *opaque assets* (a glTF that names a RISE material?) complicate "find all
+   referrers" even with tracing — an asset-internal reference is never traced as a `ReferenceUse`.
+   First slice scopes renames to direct `ValueKind::Reference` atoms captured by tracing;
+   cross-expression/cross-asset reference rewriting is deferred and flagged.
 
 6. **`expr(...)` vs `$(...)` surface-syntax bikeshed.** I chose `expr( … )` to (a) visually
    distinguish a retained expression from a literal, (b) avoid the `$`/`@`/`%` sigil zoo, and
@@ -822,38 +916,48 @@ CST` codec; the descriptor stays the schema; the engine-construction code is reu
   **evaluation/expansion** (where instance vars and `let` constants are bound). There are **no
   v6 legacy nodes** for Facet 2 to expand (D8) — v6 constructs are converted once by the
   migrator, never derived at runtime. I also assume Facet 2 records dependency edges **by
-  tracing during derivation** and keys memos on **(green-node structural hash + traced-input
-  versions)** (D4), so `expr(A)` and a literal with A's current value never collapse. If Facet 2
-  would rather the CST pre-expand generators, that conflicts with INV-3/INV-4 (expansion in the
-  CST bloats it and loses authoring intent) — flag for synthesis.
+  tracing during derivation** (emitting the `ReferenceUse` records D14's rename consumes) and
+  keys its memo on the **derivation key = (the node's trivia-insensitive semantic hash +
+  traced-input versions)** (D4/D15) — distinct from the green node's lossless content hash — so
+  `expr(A)` and a literal with A's current value never collapse, and a whitespace-only edit is a
+  cache hit. If Facet 2 would rather the CST pre-expand generators, that conflicts with INV-3/INV-4
+  (expansion in the CST bloats it and loses authoring intent) — flag for synthesis.
 - **→ Facet 3 (Edit model).** I assume structured edits are *operations on CST nodes* addressed
-  by name-path but **identified by `NodeId`** (D9), that **rename is a distinct,
-  `NodeId`-preserving edit op** (not a value edit), and that Facet 3 owns undo/redo as CST
+  by name-path but **identified by `NodeId`** (D9/D15, the id living in the red-layer side-map),
+  that **rename is a distinct, `NodeId`-preserving edit op** (not a value edit) that rewrites
+  referrers from the traced `ReferenceUse` set (D14), and that Facet 3 owns undo/redo as CST
   version history (subsuming the round-4 identity-serial — D9 makes `NodeId` the lineage
   identity that replaces the serial; Facet 3 deletes the serial). I provide: red-cursor
-  byte↔node mapping (D2, no stored spans), the changed-NodeId contract, and error-node
-  round-tripping. The one-shot FOR-desugar (§2.6.2) is a Facet-3 edit that I define the *shape*
-  of. I also assume Facet 3 owns the load/flush-fingerprint + compare-and-swap save contract
-  (D6) — the external-mod *intent* of the deleted `FileIdentity` splice guard.
+  byte↔node mapping (D2/D16, no stored spans, O(log N)), the changed-/invalidated-NodeId contract
+  (structured edits preserve ids exactly, whole-region reparse re-matches best-effort and
+  invalidates the unmatched — D15), and error-node round-tripping. The one-shot FOR-desugar
+  (§2.6.2) is a Facet-3 edit that I define the *shape* of. I also assume Facet 3 owns the
+  load/flush-fingerprint + atomic save contract (temp-write → fsync → revalidate content-hash →
+  atomic rename, **D17**, superseding D6's TOCTOU-prone CAS) — the external-mod *intent* of the
+  deleted `FileIdentity` splice guard.
 - **→ Facet 4 (Dynamic UI).** I assume the UI binds widgets to CST nodes by **`NodeId`**
-  (addressed by name-path, D9), so bindings survive rename and reparse, and chooses widget type
+  (the red-layer/side-map lineage id, addressed by name-path, D9/D15), so bindings survive rename
+  and value edits exactly and survive reparse on a best-effort basis (a binding whose occurrence
+  cannot be re-matched is flagged broken, not silently re-pointed — D15), and chooses widget type
   from `ParameterDescriptor::kind`/`enumValues`/`referenceCategories`/`presets`/`unitLabel` (all
   already present — no descriptor change needed from me). Opaque-asset references render
-  read-only-ish per existing convention. (There are no legacy nodes to render — D8.)
+  read-only-ish per existing convention. (There are no legacy nodes to render — D8; no `Command`
+  nodes either — D19.)
 - **→ Facet 5 (Agentic surface).** I provide the structured-diagnostic shape
   (`{severity, NodeId, code, message, fix-hint}`, anchored by `NodeId` with position resolved
   by the red cursor — D2, §2.9) the MCP error channel needs, and the name-path addressing
   scheme (resolving to `NodeId`, D9) agents use to read/patch nodes. Diff-ability/git-nativeness
   rests on INV-4 holding (my §4 gate) and on single-file v7 (D7).
 - **→ Facet 6 (Migration).** I define the **one-shot, time-bounded** v6→v7 migration (D8): v6
-  constructs are converted to the *target* forms (`instance_array`/`let`/`expr`/`halton`) and
-  `> load`/`> run` includes are **flattened** into single-file v7 (D7); after the corpus is
-  migrated and the gate is green, the v6 reader is **deleted** (no indefinite coexistence).
-  Facet 6 owns the corpus migration tool and risk register. The migrator follows the
-  `migrate_scenes_v5_to_v6.py` pattern.
+  constructs are converted to the *target* forms (`instance_array`/`let`/`expr`/`halton`),
+  `> load`/`> run` includes are **flattened** into single-file v7 (D7), and the three `> set`
+  forms are rewritten to **declarative chunks** (`acceleration { … }` / `global_medium { … }`,
+  D19); after the corpus is migrated and the gate is green, the v6 reader is **deleted** (no
+  indefinite coexistence). Facet 6 owns the corpus migration tool and risk register. The migrator
+  follows the `migrate_scenes_v5_to_v6.py` pattern.
 
-**No conflicts with Locked decisions or the round-1 decisions (D1–D10).** I design *to* L1–L7
-and to D1–D10. Open-decision stances: O1 — I design for lossless-CST-pivot (the working
+**No conflicts with Locked decisions or the decisions (D1–D20).** I design *to* L1–L7
+and to D1–D20. Open-decision stances: O1 — I design for lossless-CST-pivot (the working
 assumption); where text-canonical (O1 alt) would differ, it's only that "trivia nodes" become
 "the buffer is truth and the tree is a parsed view" — the red-green model (D2) supports either,
 but I assume CST-canonical so structured edits are first-class. O3 — resolved per D7/D8: bump to
@@ -875,21 +979,24 @@ indefinite coexistence):**
   (A v6 file that uses no macro constructs and no includes — e.g. `watch_dial.RISEscene` — is
   essentially already v7-shaped, so its migration is a no-op header bump.)
 - **v7 is single-file and the authoring target** (D7): no `FOR`/`DEFINE`/macro-substitution/
-  `$(...)`, and **no `> load`/`> run`** — includes are flattened into the one file. Repetition
-  via `instance_array` + the existing generator chunks; constants via `let`; expressions via
-  `expr(...)`; the only surviving embedded command is `> set`. The v7 grammar drops the
-  imperative preprocessing layer and the multi-file layer, plus the small additions
-  (`instance_array`, `let`, `expr(...)` value-syntax) — all descriptor-driven (L6).
+  `$(...)`, **no `> load`/`> run`** — includes are flattened into the one file — and **no
+  embedded `>` command layer at all** (D19): the three `> set` forms become declarative chunks
+  (`acceleration { … }`, `global_medium { … }`, …). Repetition via `instance_array` + the
+  existing generator chunks; constants via `let`; expressions via `expr(...)`. The v7 grammar
+  drops the imperative preprocessing layer, the imperative command layer, and the multi-file
+  layer, plus the small additions (`instance_array`, `let`, `expr(...)` value-syntax, and the
+  former-`> set` chunks) — all descriptor-driven (L6).
 - **Migration tool** `tools/migrate_scenes_v6_to_v7.py` (Facet 6 owns it; this facet specifies
   behavior): idempotent; converts FOR→`instance_array` (homogeneous) or explicit-entity
   expansion (heterogeneous, §2.6.2); DEFINE→`let`; `$(...)`/`@`/`%`→`expr(...)`/`let`-refs;
-  `hal()`→`halton(dim,idx)`; and **flattens `> load`/`> run` includes** by inlining (D7) — all
-  with render-equivalence verification (the D5/D10 gates). It also reads the v6 include graph
-  (the **only** place `FileId`/multi-file reading survives, D7). Mirrors the
-  `migrate_scenes_v5_to_v6.py` idiom (idempotent, in-place, with a hard-fail message on
-  un-migratable constructs for hand review). The migrator is a **build/CI gate over `scenes/`**;
-  once green across the corpus, the v6 reader is dropped — migration is the one-time path to the
-  single runtime format, not an opt-in convenience.
+  `hal()`→`halton(dim,idx)`; **flattens `> load`/`> run` includes** by inlining (D7); and
+  **rewrites `> set` forms to declarative chunks** (D19) — all with render-equivalence
+  verification (the D5/D10 gates). It also reads the v6 include graph (the **only** place
+  `FileId`/multi-file reading survives, D7). Mirrors the `migrate_scenes_v5_to_v6.py` idiom
+  (idempotent, in-place, with a hard-fail message on un-migratable constructs for hand review).
+  The migrator is a **build/CI gate over `scenes/`**; once green across the corpus, the v6 reader
+  is dropped — migration is the one-time path to the single runtime format, not an opt-in
+  convenience.
 
 ### 6.2 First-slice (one chunk type, full vertical)
 
@@ -897,8 +1004,9 @@ To prove the pivot end-to-end with minimal surface, the first slice is **`sphere
 (2 params, no references, no repeatables, no expressions — the simplest non-trivial chunk):
 
 1. **bytes → CST**: `ParseToCst` on a one-`sphere_geometry`-chunk file produces a `Document`
-   → `Chunk(geometry/s)` → two `Parameter` green nodes (each with a relative width + `NodeId`,
-   D2/D9) + any trailing comment, reusing the `RawTokenCapture` lexer.
+   → `Chunk` (addressed `geometry/s`) → two `Parameter` green nodes (each with a relative width;
+   each occurrence's `NodeId` in the red-layer side-map, D2/D9/D15) + any trailing comment,
+   reusing the `RawTokenCapture` lexer.
 2. **CST → text (INV-4)**: `SerializeCst` reproduces the file byte-for-byte. **Gate:** the
    parse→serialize identity test passes on a hand-formatted sphere chunk (tabs, comment,
    blank line).
@@ -912,15 +1020,19 @@ To prove the pivot end-to-end with minimal surface, the first slice is **`sphere
    that geometry. Round-trip back to text shows the comment preserved.
 
 This slice exercises every load-bearing claim — retained lossless CST, red-green two-way
-mapping (relative widths + red cursor, D2), descriptor-driven binding, dual identity
-(`NodeId` + name-path, D9), apply-layer reuse, incremental re-derive — on the smallest possible
-chunk, with the parse→serialize identity test as the non-negotiable correctness gate.
-Subsequent slices add: a chunk with a `Reference` (`standard_object.material` → rename
-integrity, D9), a chunk with repeated `Parameter` occurrences exposed via the derived
+mapping (relative widths + rope-backed O(log N) red cursor, D2/D16), descriptor-driven binding,
+the three separated identities (content hash / derivation key / red-layer `NodeId`) + name-path
+(D9/D15), apply-layer reuse, incremental re-derive — on the smallest possible chunk, with the
+parse→serialize identity test as the non-negotiable correctness gate. Subsequent slices add: a
+chunk with a `Reference` (`standard_object.material` → rename integrity driven by traced
+`ReferenceUse`, D9/D14), a chunk with repeated `Parameter` occurrences exposed via the derived
 `RepeatGroup` view (`sdf_geometry.part[]`, D3), the `expr(...)` sublanguage (one `Double`
 param, with traced-input invalidation, D4), and finally `instance_array` (replacing
 `loops.RISEscene`'s nested `FOR`).
 
-> This phased first slice and its gates are the canonical **D10** fixture/gate set; the phases
-> and gates G1–G5 are defined authoritatively in [`01-DECISIONS.md`](01-DECISIONS.md) §D10 —
-> the steps above are this facet's contribution to that shared vertical.
+> This phased first slice and its gates are the canonical **D10** fixture/gate set, **as
+> amended by D18** (the corrected fixture: the first reference arrives via a
+> `lambertian_material` in phase 2, the geometry→material→object chain is complete in phase 3,
+> and an `image_painter`/mesh asset phase makes G5 exercisable); the phases and gates G1–G5 are
+> defined authoritatively in [`01-DECISIONS.md`](01-DECISIONS.md) §D10/§D18 — the steps above
+> are this facet's contribution to that shared vertical.

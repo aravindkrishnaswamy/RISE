@@ -1,9 +1,11 @@
-# RISE Agentic Redesign — Decision Record (resolves review round 1)
+# RISE Agentic Redesign — Decision Record (review rounds 1 & 2)
 
-> **Status:** authoritative. This document resolves the 8 P1 contradictions + 2 P2 issues from the
-> first external design review. Where a decision conflicts with a facet doc (10–60) or the overview
-> (00), **this document wins** and the facet doc is being updated to conform. Read after
-> [`00-CHARTER.md`](00-CHARTER.md) and [`00-OVERVIEW.md`](00-OVERVIEW.md).
+> **Status:** authoritative. Round 1 resolved 8 P1 + 2 P2 (D1–D10). **Round 2** resolved 8 more P1 +
+> a P2 batch (**D11–D20**, below) — several of which *amend* round-1 decisions (D11/D12 amend D1;
+> D14 amends D9; D15/D16 amend D2; D17 amends D5/D6; D18 amends D10; D20 amends D4). Where a decision
+> conflicts with a facet doc (10–60) or the overview (00), **this document wins**, and the round-2
+> decisions win over the round-1 decisions they amend. Read after [`00-CHARTER.md`](00-CHARTER.md)
+> and [`00-OVERVIEW.md`](00-OVERVIEW.md).
 >
 > **Enabling permission (from the product owner):** *"I am open to deprecating anything. All the
 > scenes that have ever been produced live on this machine and we can migrate/change them if
@@ -277,3 +279,219 @@ multi-file subsystem; D8 removes the legacy-node/dual-parser subsystem. D2 (red-
 (COW snapshot) make the persistent model *actually* O(depth) instead of contradictory. D4/D5 make
 derivation correct under dynamic refs and external assets. D6/D9/D10 close the remaining gaps. The
 design is **smaller** after this round, not larger.
+
+---
+
+# Review Round 2 (D11–D20)
+
+Round 2 stress-tested the *mechanics*. No P0s; 8 P1 + a P2 batch. Several amend round-1 decisions.
+
+## D11 — Derived-scene COW is reverse-dependency-closure copy (amends D1; resolves R2-P1-1)
+
+**Contradiction:** the engine's scene is a raw-pointer graph (materials hold direct painter pointers;
+objects hold direct material/geometry pointers — `LambertianBRDF.h:37`, `Object.h:34`). D1's example
+"copy a painter, share the materials" is **wrong**: a shared material keeps pointing at the *old*
+painter. You cannot share a referrer of a changed node.
+
+**Decision:** the derived scene is a DAG of immutable, refcounted nodes; a new version **copies the
+reverse-dependency closure** of each changed node — the changed node **plus every node that
+transitively references it, up to the roots** (managers / spatial index) — repointing the copies,
+and **shares everything outside the closure** by refcount. Cost is **O(closure / fan-in of the
+edited node), not O(scene)**:
+- transform one object → closure ≈ {object} + path-copy of the TLAS spine to its leaf (O(log N));
+- one material/light property → {material} + the objects binding it + their TLAS leaves;
+- a widely-shared painter → its full referrer closure (larger, but bounded by fan-in and still
+  dwarfed by the ensuing render). The corrected example must say exactly this.
+- **Render stays direct-pointer** (closure copies hold correct pointers into the new snapshot's
+  immutable objects). 
+- **Optimization (named, deferred):** for very-high-fan-in classes (painters, materials),
+  *per-snapshot indirection tables* (objects reference by id, resolved through the snapshot's table)
+  collapse the edit to O(log N) at the cost of a render-time lookup — adopt only if profiling shows
+  closure-copy is a bottleneck. **First implementation may use full-rebuild (closure = everything)**
+  for correctness, then add closure-tracking — the design *target* is closure-copy.
+
+**Overrides:** F2's O(1)-painter example (§ ~810) and any "share a referrer of a changed node" claim.
+
+## D12 — Build → phase-B → seal → publish; the snapshot owns its render structures; adopt at a PASS boundary (amends D1; resolves R2-P1-2)
+
+**Contradiction:** F2 published the snapshot and *then* ran phase B (realize geometry, build TLAS,
+light samplers, photon maps) — mutation after publication. Light samplers are currently
+**RayCaster-owned**, not part of `Scene` (`Scene.h:405`). Tile-level adoption would mix versions in
+one frame.
+
+**Decision:**
+- Derivation builds into a **mutable `DerivedSceneBuilder`** (a COW view per D11). Phase B
+  (realize/tessellate, TLAS, **light samplers, photon maps**) runs **on the builder**. Then **seal**
+  → an immutable `DerivedScene` **value**. Only the sealed value is ever published. **No mutation
+  after publication.**
+- The sealed `DerivedScene` **owns** the realized geometry, spatial index, **light samplers, AND
+  photon maps** (moved *into* the snapshot from the RayCaster, so a snapshot is fully render-ready
+  and self-contained).
+- The render loop **adopts a new snapshot only at a PASS boundary** (never mid-frame / per-tile). The
+  prior snapshot drains by refcount.
+
+**Overrides:** F2 §2.8 publish-before-phase-B sequence; the "tile/pass boundary" wording everywhere →
+**pass boundary only**; sampler/photon ownership moves into `DerivedScene`.
+
+## D13 — Coherent version status; expose head AND derived versions (resolves R2-P1-3)
+
+**Contradiction:** `read_document` and `read_graph`/render all stamp the same `documentId`, but
+derivation may lag (async) or serve a last-good snapshot. When head N is broken/deriving while the
+graph/render is at N−1, a single stamp is false.
+
+**Decision:** the session publishes one coherent status value:
+`{ headVersion, derivedVersion, snapshot, status ∈ {deriving, ok, error}, diagnostics }`.
+- `read_document` is stamped with **`headVersion`** (the CST truth).
+- `read_graph` / `render` / `derive_preview` are stamped with **`derivedVersion`** (what the scene
+  reflects — may be < headVersion, or last-good on error).
+- Clients are never told the two are equal when they are not; `status` + `diagnostics` explain a lag
+  or failure. A patch's precondition (optimistic concurrency, F5) is checked against `headVersion`.
+
+**Overrides:** F5 §2 snapshot/`documentId` contract; F2's last-good description; F3's version surface.
+
+## D14 — Rename uses traced `ReferenceUse` records, not `referenceCategories` (amends D9; resolves R2-P1-4)
+
+**Contradiction:** D4 demoted `referenceCategories` (can't represent dynamic refs); D9 then used it
+to find rename referrers. `timeline.element`/`.animation` are plain strings whose target category is
+chosen by `element_type` — invisible to `referenceCategories`, so rename would silently leave them
+pointing at the old name.
+
+**Decision:** derivation's dependency tracing (D4) records, for every resolved reference, a
+**`ReferenceUse { sourceValueNodeId, targetNodeId }`**. **Rename rewrites referrers from the traced
+`ReferenceUse` set** (which captures dynamic refs automatically), not from `referenceCategories`
+(which remains a UI-picker hint only). For references in nodes that did **not** derive (e.g. inside
+an error subtree, so untraced), fall back to descriptor-provided **reference resolvers**; any
+referrer that cannot be resolved is **surfaced/flagged**, never silently renamed. This unifies D4 and
+D9 on the one traced reference graph.
+
+**Overrides:** D9's "found via the `referenceCategories` hint" → "found via traced `ReferenceUse`
+records (+ descriptor resolver fallback, flag the unresolvable)".
+
+## D15 — Separate three concepts: content hash / derivation key / lineage identity (amends D2, D9; resolves R2-P1-5)
+
+**Contradiction:** a lossless content-addressed green node includes trivia (so whitespace changes its
+content hash); a unique per-node `NodeId` prevents identical syntax from being content-addressed
+(shared); yet F2 needs a *trivia-insensitive* derivation key. These were conflated.
+
+**Decision — three distinct things:**
+1. **Content hash (green, lossless, trivia-sensitive):** hash of the green node's exact bytes incl.
+   trivia. Purpose: **structural sharing/dedup** of byte-identical green subtrees. Carries **no
+   identity** (so identical subtrees share one green node).
+2. **Derivation key (semantic, trivia-INsensitive):** a hash of the node's *meaning* (typed values +
+   child structure, **excluding** comments/whitespace/trivia) **+ traced-input versions** (D4).
+   Purpose: the **memo cache** — a whitespace-only edit is a derivation cache **hit**.
+3. **Lineage identity (`NodeId`):** a per-**occurrence** stable id living in the **red layer / a
+   side-map, NOT in the shared green node** (a shared green node is reused at many occurrences, so it
+   cannot carry one id). Purpose: UI binding, undo lineage, durable agent refs, rename.
+
+**Reparse identity is best-effort, explicitly:** a **structured edit preserves `NodeId` exactly**
+(it targets a known node). A **whole-region reparse** matches new green nodes to prior `NodeId`s by
+position + content, **but this is best-effort** — identical repeated rows are genuinely ambiguous;
+**unmatched durable references are INVALIDATED (flagged), not silently remapped.**
+
+**Overrides:** D2's "green node stores … a stable NodeId" → NodeId lives in the red layer; F1 §2.5 /
+§green-node definition; F2's "whitespace-insensitive key" is the *derivation key* (#2), distinct from
+the content hash (#1); D9's "reparse matches" gains the best-effort + invalidate-unmatched contract.
+
+## D16 — Wide child sequences use a persistent balanced sequence (rope), not vectors (amends D2; resolves R2-P1-6)
+
+**Contradiction:** "red cursor is O(depth)" is false with vector children — locating child *k* or
+computing its offset scans preceding siblings; a `Document` with 10 000 top-level chunks is **O(N)**,
+and prefix-offset arrays make *edits* O(N).
+
+**Decision:** a node's child list is a **persistent balanced sequence / rope**, with each subtree
+caching **aggregate byte-width and newline counts**. This gives **O(log N)** position lookup
+(byteBegin of child *k*, byte→node) **and O(log N)** structural edit (insert/remove a child),
+preserving structural sharing. The cost claim becomes **O(depth · log(width)) ≈ O(log N)**, not
+O(depth). Narrow lists (a chunk's handful of params) may stay vectors (small N); the **Document's
+chunk list and any large `RepeatGroup`/heightfield (e.g. 10 000 `part`s) use the rope.**
+
+**Overrides:** F1 §2.2/§2.4 "ordered vector" + "O(depth)" → persistent balanced sequence + O(log N).
+
+## D17 — Asset fingerprint = prefilter + content hash; save = temp-write + fsync + revalidate + atomic rename (amends D5, D6; resolves R2-P1-7)
+
+**Contradiction:** (a) size+mtime can be unchanged when bytes change — not deterministic for asset
+invalidation; (b) the "CAS" save is actually stat-then-write (TOCTOU race between check and write).
+
+**Decision:**
+- **Asset identity** = **(size, mtime) as a fast prefilter** → on a prefilter change (or whenever
+  determinism is required) compute a **content hash**, which is the authoritative identity in the
+  AssetManifest (D5). Memo keys use the content hash.
+- **Save is atomic:** write to a **temp file in the target dir → fsync → revalidate the target's
+  content hash == the loaded fingerprint → atomic `rename()` over the target.** This replaces D6's
+  stat-then-write. **Document the residual:** a non-cooperating concurrent writer can still race the
+  final rename (last-writer-wins at the FS layer); offer **advisory file locking** as an opt-in for
+  shared-storage setups. A fingerprint mismatch at revalidate → the D6 conflict UX (reload / diff /
+  force), never a silent overwrite.
+
+**Overrides:** D5 fingerprint definition; D6 "compare-and-swap" mechanism → temp+fsync+revalidate+
+rename with documented residual.
+
+## D18 — Corrected first-slice fixture (real reference chain + an asset phase) (amends D10; resolves R2-P1-8)
+
+**Contradiction:** `uniformcolor_painter` has **no reference** (can't test a ref-picker); phase 3's
+"geometry→material→object chain" **omitted the material node**; G5 (asset invalidation) had no
+asset-backed node.
+
+**Decision — corrected phased fixture:**
+1. `sphere_geometry` — simplest chunk (no refs).
+2. `+ uniformcolor_painter` **and** `+ lambertian_material { reflectance <the uniform painter> }` —
+   the material is the **first reference** (→ exercises the ref-picker + the dependency edge).
+3. `+ standard_object { geometry <sphere>  material <lambertian> }` — the real
+   **geometry→material→object** chain; exercises rename integrity (D14) across refs.
+4. `+ expr(...)` on one `Double` param — expression sublanguage + traced-input invalidation.
+5. `+ instance_array` replacing a nested `FOR`.
+6. **`+ image_painter` (or a mesh-backed geometry)** — an **asset-backed node** so **G5**
+   (AssetManifest fingerprint invalidation, D17) and the external-file-conflict path (D6/D17) are
+   actually testable.
+
+Gates G1–G5 from D10 are unchanged; phase 6 is what makes G5 exercisable.
+
+**Overrides:** D10 fixture phases (gates unchanged).
+
+## D19 — Remove ALL embedded `>` commands; `> set` forms become declarative chunks (resolves P2-1; uses the deprecation permission)
+
+**Contradiction:** `> set` (accelerator / global-medium / …) is imperative and non-descriptor, but F2
+needs accelerator & global-medium configuration to be **declarative derivation inputs**.
+
+**Decision:** migrate the three surviving `> set` forms to **normal descriptor-driven chunks** (e.g.
+an `acceleration { … }` chunk, a `global_medium { … }` chunk) and **remove embedded runtime `>`
+commands from v7 entirely** (`> load`/`> run` already gone per D7). v7 has **no imperative command
+layer at all** — everything is a declarative chunk the migrator emits. Cleaner derivation (all config
+is graph input) and one less language layer.
+
+**Overrides:** F1's `Command` node kind (§2.8.4) — removed from v7 (migrator-only); F6 inventory.
+
+## D20 — Derivation cache is version-scoped/persistent; explicit dependency-edge lifecycle (amends D4; resolves P2-3, P2-4)
+
+**Contradiction:** (P2-4) a single `DerivationCache<NodeId,…>` cannot represent divergent branches or
+simultaneous committed/preview versions; (P2-3) traced reruns need a defined edge lifecycle.
+
+**Decision:**
+- The derivation cache (memo + dependency graph) is **version-scoped and persistent**, structurally
+  shared across versions like the green tree — **carried alongside each derived snapshot**, not a
+  single global mutable map. Branches and a committed-vs-preview pair each see their own consistent
+  cache view (sharing unchanged entries).
+- **Edge lifecycle:** on re-deriving a node, **atomically replace that node's outgoing edge set**
+  (drop stale edges, add freshly-traced ones) so a removed input dependency disappears. On **deleting
+  a node**, purge its edges *and* its cache entry (and surface any now-dangling `ReferenceUse`, D14).
+
+**Overrides:** F2's single-cache assumption + the unspecified edge lifecycle.
+
+---
+
+# Residual conformance sweep (round-2 P2-2)
+
+The round-1 conformance left three superseded contracts that must be fixed in the facet docs (not new
+decisions — cleanup): **(i)** the overview still implies *resolved-value* memo keys → fix to D4/D15
+(structural + traced-input key); **(ii)** F2 still has *commit-only* derivation language in places →
+reconcile with D1's uncommitted preview snapshots (gesture previews derive uncommitted heads);
+**(iii)** F4/F5 still call **name-path a "stable identity"** in spots → fix to D9/D15 (NodeId is the
+stable lineage identity; name-path is addressing). These are propagated in the round-2 doc pass.
+
+# Net effect (round 2)
+
+Round 2 made the mechanics *correct* rather than smaller: COW is now closure-copy (D11) built→sealed
+before publish (D12); the tree is a persistent rope with three separated hashes/ids (D15/D16); rename,
+assets, saves, status, and the cache all get precise contracts (D13/D14/D17/D20); and D19 deletes the
+last imperative language layer. The first slice (D18) can now actually exercise its gates.
