@@ -1588,7 +1588,12 @@ void SceneEditController::Undo()
 	}
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
-	const bool didWork = mEditor.Undo();
+	const unsigned int beforeUndoDepth = mEditor.History().UndoDepth();
+	const bool ok = mEditor.Undo();
+	// P1-#2 follow-up: mEditor.Undo() returns false on a PARTIAL composite revert,
+	// but the scene WAS mutated (the undo stack advanced) so we must still refresh.
+	// "did work" = succeeded OR the undo stack changed; only an empty-stack no-op skips.
+	const bool didWork = ok || ( mEditor.History().UndoDepth() != beforeUndoDepth );
 	if( didWork ) {
 		// If Undo removed the entity our panel selection pointed at
 		// (e.g. Undo of AddCamera removes the clone we just made
@@ -1641,7 +1646,10 @@ void SceneEditController::Redo()
 	}
 	mCV.wait( lk, [&]{ return !mRendering.load( std::memory_order_acquire ); } );
 
-	const bool didWork = mEditor.Redo();
+	const unsigned int beforeRedoDepth = mEditor.History().RedoDepth();
+	const bool ok = mEditor.Redo();
+	// P1-#2 follow-up: see Undo -- a partial composite redo still mutated the scene.
+	const bool didWork = ok || ( mEditor.History().RedoDepth() != beforeRedoDepth );
 	if( didWork ) {
 		// Symmetric with Undo: if Redo brought back a removed
 		// entity the selection had pointed at, the tuple may
@@ -1752,17 +1760,17 @@ SceneEditController::EditorStateSnapshot SceneEditController::CaptureEditorState
 	return st;
 }
 
-void SceneEditController::RestoreEditorState( const EditorStateSnapshot& st, bool restoreDirtyAndHistory )
+void SceneEditController::RestoreEditorState( const EditorStateSnapshot& st, bool restoreDirty )
 {
-	// P1-#1/#3: on a FULL rollback restore the dirty channels to the pre-
-	// transaction baseline (fires the dirty-changed listener) AND restore the
-	// redo stack the first transaction edit cleared.  On a PARTIAL rollback
-	// (residual mutations remain) do NEITHER: leave the dirty tracker showing
-	// the residual (so the Save button stays correctly lit) and leave history
-	// as-is.  Selection is always restored (not a residual-mutation concern).
-	if( restoreDirtyAndHistory ) {
+	// P1-#1: on a FULL rollback restore the dirty channels to the pre-transaction
+	// baseline (fires the dirty-changed listener); on a PARTIAL rollback leave the
+	// residual-dirty state so the Save button stays lit.  Selection is ALWAYS
+	// restored.  NOTE (P1-#3 review): redo-stack restore is NOT done here -- this is
+	// a general capture/restore primitive (also called directly by tests) and must
+	// not carry a hidden history side effect; RollbackTransaction restores the redo
+	// stack itself, explicitly, only on a full revert.
+	if( restoreDirty ) {
 		mEditor.RestoreDirtyState( st.dirty );
-		mEditor.History().RestoreRedoFromSnapshot();
 	}
 	if( st.selectionByCategory.size() == static_cast<size_t>( kNumCategories ) ) {
 		for( int i = 0; i < kNumCategories; ++i ) {
@@ -1897,7 +1905,13 @@ bool SceneEditController::RollbackTransaction()
 	// baseline so a fully reverted document doesn't keep showing unsaved
 	// changes (Undo RE-MARKS dirty; created entities are never un-marked),
 	// then re-run the selection/panel resync the controller's Undo does.
-	RestoreEditorState( mTxnBaseline, fullyReverted );   // H1 + P1-#1/#3: dirty/redo only on a full revert; selection always
+	RestoreEditorState( mTxnBaseline, fullyReverted );   // H1 + P1-#1: dirty only on full revert; selection always
+	// P1-#3: a FULL rollback restores the pre-transaction redo stack the first edit
+	// cleared; a PARTIAL leaves it empty (ClearRedo above) since those redo entries
+	// are no longer coherent with the residual state.
+	if( fullyReverted ) {
+		mEditor.History().RestoreRedoFromSnapshot();
+	}
 
 	// Close the transaction.
 	mTxnOpen              = false;

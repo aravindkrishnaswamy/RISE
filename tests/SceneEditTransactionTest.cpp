@@ -1596,6 +1596,34 @@ static void TestRejectEditWithUnrepresentableInverse()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestPartialCompositeUndoStillRefreshes()
+{
+	std::cout << "Test: a PARTIAL composite undo via the controller still refreshes (P1-#2 follow-up)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}, grey[3]={0.5,0.5,0.5};
+	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("p_grey",grey,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white"); pJob->AddLambertianMaterial("mat2","p_grey");
+	pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1ref] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	ctrl.Editor().BeginComposite("c");
+	{ SceneEdit e; e.op=SceneEdit::SetObjectMaterial; e.objectName=String("obj"); e.propertyValue=String("mat2"); ctrl.Editor().Apply(e); }
+	ctrl.Editor().EndComposite();
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String("obj") );
+	// Remove obj so the composite undo reverts PARTIALLY and the selected entity is gone.
+	Check( pJob->RemoveObject("obj"), "[p1ref] obj removed" );
+	ctrl.Undo();   // partial composite undo -- must STILL refresh (not gated on full success)
+	Check( ctrl.GetSelectionName().size() <= 1, "[p1ref] partial composite undo refreshed: stale selection cleared (P1-#2 follow-up)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1631,6 +1659,7 @@ int main()
 	TestFullRollbackRestoresRedoStack();
 	TestTrimDoesNotDrainOpenComposite();
 	TestRejectEditWithUnrepresentableInverse();
+	TestPartialCompositeUndoStillRefreshes();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."

@@ -433,7 +433,7 @@ namespace RISE
 		//! pre-transaction redo stack; on a PARTIAL rollback pass false so the
 		//! residual-dirty state + history are left intact (P1-#1/#3).  Selection
 		//! is always restored.
-		void                RestoreEditorState( const EditorStateSnapshot& s, bool restoreDirtyAndHistory = true );
+		void                RestoreEditorState( const EditorStateSnapshot& s, bool restoreDirty = true );
 
 		// Selection accessors ----------------------------------------
 		// Selection is the (Category, entityName) tuple that drives both
