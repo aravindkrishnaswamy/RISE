@@ -421,6 +421,12 @@ namespace RISE
 			SceneEditor::DirtySnapshot  dirty;             //!< ALL dirty sources (tracker + scale-from-anchor)
 			Category                    selectionCategory;
 			String                      selectionName;
+			// H1 (B-gap close): own the FULL selection state, not just the
+			// primary tuple -- a cross-category re-pick inside a transaction
+			// must revert wholesale.  std::vector (not [kNumCategories]) so the
+			// struct needn't see kNumCategories, which is declared further down.
+			std::vector<String>         selectionByCategory;   //!< per-category selection memory
+			std::vector<bool>           sectionExpanded;       //!< per-category panel-section expand state
 		};
 		EditorStateSnapshot CaptureEditorState() const;
 		void                RestoreEditorState( const EditorStateSnapshot& s );
@@ -1059,7 +1065,7 @@ namespace RISE
 		// list so the addition is layout-additive (no field before it
 		// shifts).  Re-based on inverse-edit rollback (NOT snapshot): no
 		// SceneSnapshot is held.  `mTxnOpen` is true exactly when a
-		// transaction is open.  `mTxnBaselineSeq` records EditHistory::NextSeq() at
+		// transaction is open.  `mTxnBaseline.historyMarker` records EditHistory::NextSeq() at
 		// BeginTransaction so RollbackTransaction undoes while the top edit's
 		// seq >= that marker (trim-immune; survives the 1024 history cap).  Both
 		// are touched only on the UI thread (Begin/Rollback/End are

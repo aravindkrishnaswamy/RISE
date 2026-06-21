@@ -37,7 +37,7 @@ there be exactly one place.
 
 ## 2. Phase H1 — one owned editor-state snapshot (fixes P-STATE)
 
-**✅ SHIPPED (commit `47744de7`)** — behavior-identical; `EditorStateSnapshot` + `Capture/RestoreEditorState` are the single capture/restore path; `TestEditorStateSnapshotRoundTrip` round-trips dirty + the SFA 5th-set + selection. H3 and H2 remain.
+**✅ SHIPPED (commit `47744de7`)** — behavior-identical; `EditorStateSnapshot` + `Capture/RestoreEditorState` are the single capture/restore path; `TestEditorStateSnapshotRoundTrip` round-trips dirty + the SFA 5th-set + selection. H3 and H2 remain.  **Post-review (3 adversarial lenses):** correctness confirmed behavior-identical; extended the snapshot to own the FULL selection state (per-category arrays + section-expanded, B-gap) and added listener-fire + cross-category coverage (C-gap). The forward "impossible to forget" guarantee is PARTIAL -- see the dirty-vs-selection note below.
 
 **Current brittleness.** A transaction baseline is three separate controller
 members (`mTxnBaselineSeq`, `mTxnBaselineDirty` (itself recently widened from
@@ -49,11 +49,13 @@ lists — and the reviews proved nobody remembers.
 **Target.** One value type that owns ALL transactionally-relevant editor state:
 
 ```
-struct EditorStateSnapshot {
-    unsigned long long      historyMarker;   // EditHistory::NextSeq()
-    DirtyTracker::State     dirty;           // all four dirty channels
-    ScaleFromAnchorSet      scaleFromAnchor; // the 5th set
-    SelectionState          selection;       // category + name (+ per-cat array)
+struct EditorStateSnapshot {                 // AS SHIPPED
+    unsigned long long      historyMarker;       // EditHistory::NextSeq()
+    DirtySnapshot           dirty;               // 4 tracker channels + the 5th SFA set
+    Category                selectionCategory;   // primary tuple
+    String                  selectionName;
+    std::vector<String>     selectionByCategory; // FULL per-category selection memory
+    std::vector<bool>       sectionExpanded;     // per-category panel-section expand state
 };
 ```
 
@@ -61,9 +63,15 @@ struct EditorStateSnapshot {
   capture/restore path. `BeginTransaction` = capture; `RollbackTransaction` =
   restore (then the existing inverse-edit replay down to `historyMarker`).
 - **Single source of truth for "is anything dirty":** `HasUnsavedChanges()` and
-  the snapshot derive from the SAME field enumeration, so a new dirty channel
-  updates both by construction. A `static_assert`/unit test pins that every
-  HasUnsavedChanges input is in the snapshot.
+  the snapshot both read `DirtySnapshot`, so a new `DirtyTracker` channel flows
+  into both automatically. **Honest scope (B-gap2):** this auto-flow holds for
+  the DIRTY side only; the SELECTION side of `Capture`/`RestoreEditorState` is
+  hand-written field-by-field, so a new selection-ish member is NOT compile-time-
+  forced into the snapshot. The originally-promised `static_assert` is not
+  feasible for the selection arrays; the guard is the behavioral round-trip +
+  per-category + listener tests (`TestEditorStateSnapshotRoundTrip` /
+  `TestRollbackRestoresPerCategorySelection` / `TestRollbackFiresDirtyListener`).
+  H2's single applier is where the remaining forward-guarantee should land.
 
 **Payoff.** The entire P-STATE class disappears: "found another uncaptured set"
 becomes structurally impossible. ~Medium effort; mostly consolidating members

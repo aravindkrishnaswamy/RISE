@@ -1747,6 +1747,8 @@ SceneEditController::EditorStateSnapshot SceneEditController::CaptureEditorState
 	st.dirty             = mEditor.CaptureDirtyState();
 	st.selectionCategory = mSelectionCategory;
 	st.selectionName     = mSelectionName;
+	st.selectionByCategory.assign( mSelectionByCategory, mSelectionByCategory + kNumCategories );
+	st.sectionExpanded.assign( mSectionExpanded, mSectionExpanded + kNumCategories );
 	return st;
 }
 
@@ -1756,6 +1758,12 @@ void SceneEditController::RestoreEditorState( const EditorStateSnapshot& st )
 	// then re-run the selection-validation + Material/Medium panel resync
 	// SceneEditController::Undo does.
 	mEditor.RestoreDirtyState( st.dirty );
+	if( st.selectionByCategory.size() == static_cast<size_t>( kNumCategories ) ) {
+		for( int i = 0; i < kNumCategories; ++i ) {
+			mSelectionByCategory[i] = st.selectionByCategory[i];
+			mSectionExpanded[i]     = st.sectionExpanded[i];
+		}
+	}
 	mSelectionCategory = st.selectionCategory;
 	mSelectionName     = st.selectionName;
 	if( !SelectionStillResolves( mJob, mSelectionCategory, mSelectionName ) ) {

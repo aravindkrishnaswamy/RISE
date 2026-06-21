@@ -1245,6 +1245,7 @@ static void TestEditorStateSnapshotRoundTrip()
 	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String("obj") );
 	// Capture the ONE owned baseline.
 	const SceneEditController::EditorStateSnapshot snap = ctrl.CaptureEditorState();
+	// (historyMarker is pinned separately by TestRollbackSurvivesHistoryCap (F2).)
 
 	// Mutate ALL THREE state kinds: tracker dirty (material rebind), the 5th
 	// scale-from-anchor set (SFA edit), and the selection.
@@ -1259,6 +1260,77 @@ static void TestEditorStateSnapshotRoundTrip()
 	ctrl.RestoreEditorState( snap );
 	Check( !ctrl.HasUnsavedChanges(), "[h1] dirty + SFA set cleared by one RestoreEditorState (H1)" );
 	Check( ctrl.GetSelectionCategory() == SceneEditController::Category::Object, "[h1] selection restored by the same snapshot (H1)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestRollbackRestoresPerCategorySelection()
+{
+	std::cout << "Test: per-category selection arrays revert wholesale (H1 B-gap: snapshot owns FULL selection)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}, grey[3]={0.5,0.5,0.5};
+	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("p_grey",grey,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white"); pJob->AddLambertianMaterial("mat2","p_grey");
+	pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	SceneEditController ctrl(*pJob,0);
+
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String("obj") );
+	const SceneEditController::EditorStateSnapshot snap = ctrl.CaptureEditorState();
+	Check( ctrl.GetSelectionNameForCategory(SceneEditController::Category::Material).size()==0, "[h1-bgap] baseline: material slot empty" );
+
+	// Re-pick into the Material category: populates the Material slot + section.
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Material, String("mat2") );
+	Check( ctrl.GetSelectionNameForCategory(SceneEditController::Category::Material) == String("mat2"), "[h1-bgap] material slot changed" );
+	Check( ctrl.IsSectionExpanded(SceneEditController::Category::Material), "[h1-bgap] material section expanded" );
+
+	// One RestoreEditorState reverts the WHOLE per-category selection state.
+	ctrl.RestoreEditorState( snap );
+	// The snapshot restores BOTH per-category vectors in one loop; the
+	// section-expanded[] bool reverting is the clean RED-provable proof (resync
+	// never touches section-expanded, so only the snapshot can revert it).
+	Check( !ctrl.IsSectionExpanded(SceneEditController::Category::Material), "[h1-bgap] material section-expanded REVERTED (per-cat array owned by snapshot)" );
+	Check( ctrl.GetSelectionNameForCategory(SceneEditController::Category::Object) == String("obj"), "[h1-bgap] object slot preserved" );
+	// The Material *slot* is governed by ResyncObjectBoundSections_ (re-derived
+	// from the pinned object binding), so it lands on the bound material --
+	// snapshot-restore and resync coexist without fighting.
+	Check( ctrl.GetSelectionNameForCategory(SceneEditController::Category::Material) == String("mat1"), "[h1-bgap] material slot re-derived from object binding by resync" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestRollbackFiresDirtyListener()
+{
+	std::cout << "Test: RestoreEditorState fires the dirty-changed listener on dirty->clean (H1 C-gap / BUG-1 Save button)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}, grey[3]={0.5,0.5,0.5};
+	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("p_grey",grey,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white"); pJob->AddLambertianMaterial("mat2","p_grey");
+	pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	SceneEditController ctrl(*pJob,0);
+
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String("obj") );
+	const SceneEditController::EditorStateSnapshot snap = ctrl.CaptureEditorState();
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Object, String("material"), String("mat2") ), "[h1-cgap] material rebind dirties" );
+	Check( ctrl.HasUnsavedChanges(), "[h1-cgap] dirty before restore" );
+
+	// Install the listener AFTER dirtying; it must fire on the dirty->clean
+	// transition RestoreEditorState performs (BUG-1: a silent transition left
+	// the GUI Save button stale).
+	int fires = 0; bool lastVal = true;
+	ctrl.SetDirtyChangedListener( [&](bool h){ ++fires; lastVal = h; } );
+	ctrl.RestoreEditorState( snap );
+	Check( !ctrl.HasUnsavedChanges(), "[h1-cgap] clean after restore" );
+	Check( fires >= 1 && lastVal == false, "[h1-cgap] listener fired with false on rollback-to-clean" );
 	pJob->release();
 }
 
@@ -1287,6 +1359,8 @@ int main()
 	TestRollbackRestoresDirtyState();
 	TestRollbackRestoresScaleFromAnchorDirty();
 	TestEditorStateSnapshotRoundTrip();
+	TestRollbackRestoresPerCategorySelection();
+	TestRollbackFiresDirtyListener();
 	TestCompositeMultiCameraUndo();
 
 	std::cout << std::endl
