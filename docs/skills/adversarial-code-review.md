@@ -61,7 +61,21 @@ likely bug classes, your review prompts will be vague.
 Two reviewers with overlapping remits produce correlated findings and
 a shared blind spot.  Before launching, write down the axes on which
 the change could be wrong and pick 2-3 genuinely independent lenses.
-Typical axes for a rendering change:
+
+For any change whose correctness rests on NEW tests (editor/state work
+especially), ALWAYS include two standing lenses on top of the
+domain-specific ones:
+- **Test integrity** — does each new assertion actually FAIL without the
+  fix (RED-proven)?  Any `-ffast-math`-foldable NaN/Inf sentinel
+  (`SourceHygieneTest` enforces this), wrong-observable assertion (e.g.
+  reading `.x` when the code writes `.y`), or check the setup already
+  guarantees?  This lens caught false-green tests THREE times.
+- **Completeness / siblings** — is every parallel site covered (all undo/
+  redo/composite walks, every mutator that must invalidate, every file
+  carrying the fixed pattern)?  Partial fixes that looked done were the
+  most common confirmed finding.
+
+Typical domain axes for a rendering change:
 
 - **Mathematical / algorithmic correctness** — Is the math right?
   Does it match the reference paper / established derivation?
@@ -232,6 +246,15 @@ Stop only when both are true:
 
 The user saying "good" can still stop the process, but absent that,
 do not exit after the first fix pass.
+
+Run this review as a **GATE before declaring a correctness-sensitive
+change done** — not only after landing it.  And report status honestly:
+"tests X pass, RED-proven; *unverified:* Y" — never "complete / no P1 /
+sound" on the strength of narrow tests.  In the editor work that
+optimistic claim was falsified by the very next review every single time;
+the durable lesson is that solo verification reliably misses false-green
+tests, completeness, and edge cases, and the review loop is what catches
+them — so it is load-bearing, not optional polish.
 
 Typical depth remains 2-5 rounds, but broad or correctness-sensitive
 changes should bias toward the high end.

@@ -224,6 +224,31 @@ duplication hides patterns and makes stronger tests expensive to add.
 If a property can be checked analytically in `tests/`, do not force it
 through a rendered-scene diff.
 
+### NaN/Inf as a not-found sentinel (FALSE-GREEN under -ffast-math)
+
+RISE builds with `-ffast-math` (`-ffinite-math-only`).  A helper that
+returns `std::nan("")` for "not found" and is then compared
+(`abs(x - K) < eps`) is **folded to constant-true** by the compiler — the
+assertion silently passes even when the lookup failed.  This shipped as a
+false-green THREE times in the snapshot/transaction work.  Use a **finite
+poison** (e.g. `return -1.0e30;`, which fails an `abs(x-K)<eps` "equals"
+check loudly) or an explicit `Check( ptr != nullptr )` before reading.
+`tests/SourceHygieneTest.cpp` now FAILS the suite on any
+`return <NaN/Inf>` sentinel — do not add a new one (or justify it inline
+with `// HYGIENE-OK: <reason>`).  Note a finite poison still does NOT fail
+a `> eps` "differs" check — guard those with an existence check.
+
+### Asserting GREEN without proving RED (wrong-observable / tautology)
+
+Writing a bug-fix test AFTER the fix and running it green proves nothing:
+it may be tautological, or read the WRONG observable (a real example this
+session: a camera test checked `GetTargetOrientation().x` when the orbit
+writes `.y`, so its "reverted" assertions passed trivially).  **RED-prove
+every bug-fix test:** see it FAIL without the fix.  `tools/red_prove.sh
+<TestName> <marker> <src-file>...` automates it (stash the fix → build →
+assert FAIL → restore → assert PASS).  If it can't be made to fail without
+the fix, the test isn't pinning the bug.
+
 ## Concrete Examples From This Repo
 
 - **Domain warp**: `warpLevels=0` and `warpAmplitude=0` should collapse
@@ -248,4 +273,7 @@ This skill's work is done when:
 - any remaining heuristic checks are clearly secondary,
 - the coverage lives in the right place (`tests/`, `scenes/Tests`, or
   `tools/`),
-- and the failure message would make the regression obvious.
+- the failure message would make the regression obvious,
+- and (for a bug fix) it is **RED-proven** — seen to fail without the fix
+  via `tools/red_prove.sh` — with no `-ffast-math`-foldable sentinel
+  (`tests/SourceHygieneTest.cpp` enforces the latter).

@@ -1,0 +1,149 @@
+# Editor-State & Transaction Hardening — de-brittling the SceneEditor
+
+**Status:** PLAN (post-mortem + go-forward). Distilled from eight review
+rounds on the snapshot/transaction foundation (`feature/gui-snapshot-prototype`).
+**Owner:** Aravind Krishnaswamy
+**Why now:** the *remaining* GUI lift — the LLM/MCP agent that "fully operates the
+scene," entity creation, the material editor — all drive `SceneEditController`
+**programmatically**, which is exactly the caller class whose latent bugs the
+reviews kept surfacing. De-brittling the chokepoints *before* that surface lands
+makes every future mutator safe by construction instead of a fresh place to
+forget a step.
+
+---
+
+## 1. The bug census (why this doc exists)
+
+Across rounds 5–8 the reviews found ~17 distinct defects in the snapshot/undo/
+transaction code. They are **not** 17 unrelated bugs — they are four root
+patterns, each a structural invitation to the same mistake:
+
+| # | Root pattern | Findings it produced |
+|---|---|---|
+| **P-STATE** | The transaction baseline is a **hand-assembled list of captured state**, so it is perpetually incomplete. | depth→seq baseline; F7 (dirty + selection not restored); F7-BUG-2 (the *fifth* dirty set `mScaleFromAnchorSet` uncaptured). Every review found one more uncaptured field. |
+| **P-WALK** | Edit handling is **duplicated across five parallel walks** (Apply / single-Undo / single-Redo / composite-Undo / composite-Redo). A fix to one must be hand-replicated to four. | F1 (composite walk omitted `SetMaterialProperty`); F4-composite (composite walk cached the first camera); F5/F6 redo paths untested/at-risk. |
+| **P-INVALIDATE** | Light/environment **invalidation is scattered** across every mutator — each must remember to bump `mLightTopologyGeneration`. | #2b-a (the original miss); P2a (3 Job mutators); the P2a *extension* (the add/remove-light/object class). |
+| **P-FFMATH** | `-ffast-math` (`-ffinite-math-only`) **folds NaN/Inf sentinels**, so `std::nan`-as-not-found tests are false-green. | the keystone false-green, repeated in **3** test files. |
+
+P-FFMATH is now mechanically prevented (`tests/SourceHygieneTest.cpp`,
+`tools/red_prove.sh`, the `write-highly-effective-tests` skill). This doc
+addresses the three *design* patterns (P-STATE, P-WALK, P-INVALIDATE).
+
+The unifying lesson: **brittleness = state/logic/invalidation that is replicated
+instead of owned by one chokepoint.** The fix for each is the same shape — make
+there be exactly one place.
+
+---
+
+## 2. Phase H1 — one owned editor-state snapshot (fixes P-STATE)
+
+**Current brittleness.** A transaction baseline is three separate controller
+members (`mTxnBaselineSeq`, `mTxnBaselineDirty` (itself recently widened from
+`DirtyTracker::State` to `DirtySnapshot` to add the 5th set), `mTxnBaselineSelCat`
+/`mTxnBaselineSelName`). `HasUnsavedChanges()` reads a *different* hand-listed set
+of sources. Adding any new mutable editor state means remembering to extend both
+lists — and the reviews proved nobody remembers.
+
+**Target.** One value type that owns ALL transactionally-relevant editor state:
+
+```
+struct EditorStateSnapshot {
+    unsigned long long      historyMarker;   // EditHistory::NextSeq()
+    DirtyTracker::State     dirty;           // all four dirty channels
+    ScaleFromAnchorSet      scaleFromAnchor; // the 5th set
+    SelectionState          selection;       // category + name (+ per-cat array)
+};
+```
+
+- `SceneEditor::CaptureEditorState()` / `RestoreEditorState(const&)` are the ONLY
+  capture/restore path. `BeginTransaction` = capture; `RollbackTransaction` =
+  restore (then the existing inverse-edit replay down to `historyMarker`).
+- **Single source of truth for "is anything dirty":** `HasUnsavedChanges()` and
+  the snapshot derive from the SAME field enumeration, so a new dirty channel
+  updates both by construction. A `static_assert`/unit test pins that every
+  HasUnsavedChanges input is in the snapshot.
+
+**Payoff.** The entire P-STATE class disappears: "found another uncaptured set"
+becomes structurally impossible. ~Medium effort; mostly consolidating members
+that already exist.
+
+---
+
+## 3. Phase H2 — one applier + an inverse (fixes P-WALK)
+
+**Current brittleness.** Five walks (`Apply`, single `Undo`, single `Redo`, the
+composite `Undo` walk, the composite `Redo` walk) each switch over the op kinds.
+A new op, or a fix to an existing op, must be made in up to five places; the
+reviews kept finding the one that was missed (composite omitted material-slot;
+composite cached the camera).
+
+**Target.** Collapse to **one applier**:
+
+- `Inverse(const SceneEdit&) -> SceneEdit` produces the undo edit (it has all the
+  captured `prev*` state today).
+- `Undo` = `Apply(Inverse(edit))`; `Redo` = `Apply(edit)`; a composite is just a
+  list replayed through `Apply` in the right direction. There is then exactly ONE
+  switch over op kinds.
+- Per-op side effects (light-gen bump, dirty marking, spatial invalidation,
+  camera regen) live once, inside `Apply`, keyed off the op + resolved target —
+  not duplicated per walk.
+
+**Payoff.** "Composite forgot op X" and "walk N resolved the wrong entity"
+become impossible — there is no walk N. This is the single biggest de-brittling
+move. **Larger effort** (touches the core of `SceneEditor.cpp`); do it as a
+deliberate phase with the full editor test suite as the guard, not under fire.
+Sequence it AFTER H1 (a clean snapshot makes the refactor safer to verify).
+
+---
+
+## 4. Phase H3 — one light-topology invalidation chokepoint (fixes P-INVALIDATE)
+
+**Current brittleness.** "An emitter/env changed → bump `mLightTopologyGeneration`"
+is open-coded at ~a dozen mutation sites across `SceneEditor` and `Job`. Each new
+mutator is a fresh chance to forget; the reviews found three classes that did.
+
+**Target.** Move the responsibility from *callers* to the *managed state*:
+
+- The light manager fires on add/remove; the object/material layer fires when an
+  object's emitter set changes (emissive↔non-emissive bind, exitance edit,
+  spatial change of a luminaire); environment replacement/scale fires. One
+  funnel: `Scene::NotifyLightTopologyChanged()`.
+- Callers stop hand-bumping. New mutators get correct invalidation for free.
+- Alternative considered: a content-hash computed at the `RayCaster::AttachScene`
+  consumer instead of push-bumps — rejected for now (per-attach hashing cost),
+  but revisit if the funnel proves leaky.
+
+**Payoff.** The P-INVALIDATE class closes. ~Medium effort; mechanical once the
+funnel exists. Sequence anytime, but it pairs naturally with H2 (both touch the
+per-op side-effect sites).
+
+---
+
+## 5. Process guardrails already codified (do not regress these)
+
+- **RED-prove every bug-fix test** (`tools/red_prove.sh`): see it fail without
+  the fix before claiming done. Writing the test after the fix proves nothing.
+- **No `-ffast-math`-foldable sentinels in tests** (`tests/SourceHygieneTest.cpp`
+  enforces it). Use a finite poison or an explicit existence `Check`.
+- **Sweep ALL siblings** when fixing a pattern (`audit-by-bug-pattern` skill) —
+  the keystone disease reached three files because two-of-three was called done.
+- **Adversarial review is a GATE, not a postscript** (`adversarial-code-review`
+  skill): run the correctness / completeness / test-integrity lenses BEFORE
+  declaring a correctness-sensitive change done. It found real bugs every round.
+- **Report status honestly:** "tests X pass, RED-proven; *unverified:* Y." Never
+  "complete / no P1 / sound" — that claim was wrong every time it was made here.
+
+---
+
+## 6. Recommended sequencing
+
+1. **H1 (EditorStateSnapshot)** — first; consolidates existing members, immediate
+   P-STATE win, makes H2 safer to verify.
+2. **H3 (invalidation chokepoint)** — independent; closes P-INVALIDATE; do
+   before/with the MCP surface so agent-driven mutators are safe.
+3. **H2 (single applier + inverse)** — the big one; deliberate phase, full
+   editor-suite guard, ideally its own review gate.
+
+Each phase ships behind the existing `tests/SceneEdit*Test.cpp` +
+`SamplerRebuildOnRestoreTest` + `SceneSnapshotTest` suite, RED-proven per fix,
+and gated by an adversarial review before "done."
