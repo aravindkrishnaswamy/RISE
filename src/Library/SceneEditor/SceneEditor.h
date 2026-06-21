@@ -349,6 +349,17 @@ namespace RISE
 		//! SetMaterialProperty single-edit AND composite-walk undo/redo arms.
 		bool ApplyMaterialSlotByName( const SceneEdit& e, const String& painterName );
 
+		//! H2 (P-WALK): the SINGLE per-op forward + revert dispatchers.  Each
+		//! IS the single-edit body; the composite walk-loops call them per
+		//! inner edit so the single and composite paths can NEVER drift (the
+		//! F1/F4/F5 bug class lived in that drift).  Both set mLastScope per
+		//! op; composite callers override it with the aggregate scope after
+		//! the loop.  Forward uses propertyValue / the new transform; revert
+		//! restores the captured prev* state.  Return false only on a
+		//! resolve/validation miss (target gone), matching the prior bodies.
+		bool ApplyForwardMutation( const SceneEdit& edit );   // Redo direction
+		bool ApplyRevertMutation( const SceneEdit& edit );    // Undo direction
+
 		//! Run the post-mutation invariant chain on a single object
 		//! and on the manager.
 		void RunObjectInvariantChain( IObjectPriv& obj );

@@ -1336,6 +1336,58 @@ static void TestRollbackFiresDirtyListener()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestCompositeMixedOpsUndoRedo()
+{
+	std::cout << "Test: heterogeneous composite (object + camera + property) undo AND redo via the shared H2 dispatchers" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}, grey[3]={0.5,0.5,0.5};
+	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("p_grey",grey,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white"); pJob->AddLambertianMaterial("mat2","p_grey");
+	pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	double loc[3]={0,0,10}, la[3]={0,0,0}, up[3]={0,1,0}, orient[3]={0,0,0}, target[2]={0,0};
+	pJob->AddPinholeCamera("A",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[mix] scene"); pJob->release(); return; }
+	IObjectManager* objs = pJob->GetObjects();
+	IObject* obj = objs ? objs->GetItem("obj") : nullptr;
+	CameraCommon* ccA = dynamic_cast<CameraCommon*>(const_cast<ICamera*>(pScene->GetCameras()->GetItem("A")));
+	if(!obj || !ccA){ Check(false,"[mix] handles"); pJob->release(); return; }
+	const IMaterial* m1 = obj->GetMaterial();        // initial binding (mat1)
+	const bool castOrig = obj->DoesCastShadows();
+	SceneEditController ctrl(*pJob,0);
+
+	// One composite mixing an object material rebind, an object shadow-flag
+	// flip, and a camera orbit -- three different dispatcher arms in one group.
+	ctrl.Editor().BeginComposite("mixed");
+	{ SceneEdit e; e.op=SceneEdit::SetObjectMaterial; e.objectName=String("obj"); e.propertyValue=String("mat2"); ctrl.Editor().Apply(e); }
+	{ SceneEdit e; e.op=SceneEdit::SetObjectShadowFlags; e.objectName=String("obj"); e.s = castOrig ? 2.0 : 3.0; ctrl.Editor().Apply(e); }
+	pJob->SetActiveCamera("A");
+	{ SceneEdit e; e.op=SceneEdit::OrbitCamera; e.v3a=Vector3(100,0,0); ctrl.Editor().Apply(e); }
+	ctrl.Editor().EndComposite();
+	Check( obj->GetMaterial() != m1,                                  "[mix] material applied" );
+	Check( obj->DoesCastShadows() != castOrig,                        "[mix] shadow flag applied" );
+	Check( std::abs((double)ccA->GetTargetOrientation().y) > 1e-4,    "[mix] camera orbited" );
+
+	// Undo the whole composite -> all three revert (one ApplyRevertMutation arm each).
+	Check( ctrl.Editor().Undo(),                                      "[mix] undo composite" );
+	Check( obj->GetMaterial() == m1,                                  "[mix] material reverted" );
+	Check( obj->DoesCastShadows() == castOrig,                        "[mix] shadow flag reverted" );
+	Check( std::abs((double)ccA->GetTargetOrientation().y) < 1e-9,    "[mix] camera reverted" );
+
+	// Redo -> all three re-apply (one ApplyForwardMutation arm each).
+	Check( ctrl.Editor().Redo(),                                      "[mix] redo composite" );
+	Check( obj->GetMaterial() != m1,                                  "[mix] material re-applied" );
+	Check( obj->DoesCastShadows() != castOrig,                        "[mix] shadow flag re-applied" );
+	Check( std::abs((double)ccA->GetTargetOrientation().y) > 1e-4,    "[mix] camera re-applied" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1362,6 +1414,7 @@ int main()
 	TestRollbackRestoresPerCategorySelection();
 	TestRollbackFiresDirtyListener();
 	TestCompositeMultiCameraUndo();
+	TestCompositeMixedOpsUndoRedo();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."

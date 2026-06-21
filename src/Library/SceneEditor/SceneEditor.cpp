@@ -1441,185 +1441,19 @@ bool SceneEditor::Undo()
 	// matching CompositeBegin.
 	if( edit.op == SceneEdit::CompositeEnd )
 	{
-		// The CompositeEnd has already moved to the redo stack (good).
-		// Now pop and invert each entry until we hit the matching
-		// CompositeBegin (also good — moves to redo stack).
-		Implementation::CameraCommon* cam = 0;
-		bool sawObjectOp     = false;
-		bool sawCameraOp     = false;
-		bool sawTimeOp       = false;
-		bool sawPropertyOp   = false;
+		bool sawObjectOp = false, sawCameraOp = false, sawTimeOp = false, sawPropertyOp = false;
 		while( true )
 		{
 			SceneEdit inner;
 			if( !mHistory.PopForUndo( inner ) ) break;
 			if( inner.op == SceneEdit::CompositeBegin ) break;
-			// Phase B: a save may have cleared the dirty channels;
-			// undoing a property edit re-mutates the entity, so
-			// re-mark it (mirrors the transform channel's undo mark).
 			MarkEditEntityDirty( inner );
-			// Undo the inner edit.
-			if( SceneEdit::IsObjectOp( inner.op ) )
-			{
-				IObjectPriv* obj = FindObject( inner.objectName );
-				if( obj )
-				{
-					switch( inner.op ) {
-					case SceneEdit::SetObjectMaterial:
-						if( inner.prevBindingWasNull ) {
-							// F5: undo of a FIRST material bind restores the unbound state
-							// (clearing an emissive material changes the emitter set -> bump).
-							const IMaterial* clrPrev = obj->GetMaterial();
-							obj->ClearMaterial();
-							BumpSceneLightGenerationIfEmitterSetChanged( clrPrev, nullptr );
-						} else if( mMaterialManager && inner.prevPropertyValue.size() > 1 ) {
-							IMaterial* mat = mMaterialManager->GetItem( inner.prevPropertyValue.c_str() );
-							if( mat ) {
-								// P1-4: undo of a material rebind also changes
-								// the emitter set when either side is emissive.
-								const IMaterial* prevMat = obj->GetMaterial();
-								obj->AssignMaterial( *mat );
-								BumpSceneLightGenerationIfEmitterSetChanged( prevMat, mat );
-							}
-						}
-						break;
-					case SceneEdit::SetObjectShader:
-						if( inner.prevBindingWasNull ) {
-							obj->ClearShader();   // F5: undo of a FIRST shader bind
-						} else if( mShaderManager && inner.prevPropertyValue.size() > 1 ) {
-							IShader* sh = mShaderManager->GetItem( inner.prevPropertyValue.c_str() );
-							if( sh ) obj->AssignShader( *sh );
-						}
-						break;
-					case SceneEdit::SetObjectShadowFlags: {
-						const int flags = static_cast<int>( inner.prevShadowFlags );
-						obj->SetShadowParams( ( flags & 1 ) != 0, ( flags & 2 ) != 0 );
-						break;
-					}
-					case SceneEdit::SetObjectGeometry:
-						if( mJob && inner.prevPropertyValue.size() > 1 ) {
-							const IGeometry* g = mJob->GetGeometry( inner.prevPropertyValue.c_str() );
-							if( g ) obj->AssignGeometry( *g );
-						}
-						// Geometry changes the bbox — rebuild the TLAS on undo,
-						// same as a transform op.
-						RunObjectInvariantChain( *obj );
-						break;
-					case SceneEdit::SetObjectInteriorMedium:
-						if( inner.prevPropertyValue.size() <= 1 ) {
-							obj->ClearInteriorMedium();
-						} else if( mJob ) {
-							const IMedium* med = mJob->GetMedium( inner.prevPropertyValue.c_str() );
-							if( med ) obj->AssignInteriorMedium( *med );
-						}
-						break;
-					default:
-						RestoreObjectTransform( *obj, inner );
-						RunObjectInvariantChain( *obj );
-						// Phase 6.3 (§7.3): composite-undo marks dirty.
-						mDirtyTracker.MarkDirty( std::string( inner.objectName.c_str() ) );
-						if( inner.op == SceneEdit::ScaleObjectFromAnchor ) {
-							mScaleFromAnchorSet.insert( std::string( inner.objectName.c_str() ) );
-						}
-						break;
-					}
-				}
-				sawObjectOp = true;
-			}
-			else if( SceneEdit::IsCameraOp( inner.op ) )
-			{
-								// F4 (composite): resolve the edited camera PER inner edit -- do NOT
-				// cache the first one, or a 2nd op on a different camera lands on it.
-				ICamera* baseCam = ResolveEditedCamera( inner );
-				cam = baseCam ? dynamic_cast<Implementation::CameraCommon*>( baseCam ) : 0;
-				if( cam )
-				{
-					RestoreCameraTransform( *cam, inner );
-					cam->RegenerateData();   // F4 (composite): regen THIS camera
-				}
-				sawCameraOp = true;
-			}
-			else if( inner.op == SceneEdit::SetSceneTime )
-			{
-				// The composite's first SetSceneTime captured prevTime
-				// from mLastSetTime (the pre-composite value).  Walking
-				// back inner-edits LIFO means the LAST iteration here
-				// is the first SetSceneTime in the composite — its
-				// prevTime is the canonical "before-composite" value.
-				mScene.SetSceneTimeForPreview( inner.prevTime );
-				mLastSetTime = inner.prevTime;
-				sawTimeOp = true;
-			}
-			else if( inner.op == SceneEdit::SetCameraProperty )
-			{
-				// Defer RegenerateData: the trailing cam->RegenerateData()
-				// below covers it.  Use a per-name scratch path that
-				// updates the camera fields without re-baking the basis
-				// matrix on every iteration.
-				ICamera* baseCam = ResolveEditedCamera( inner );
-				if( baseCam )
-				{
-					CameraIntrospection::SetProperty( *baseCam,
-						inner.objectName, inner.prevPropertyValue );
-				}
-				sawPropertyOp = true;
-			}
-			else if( inner.op == SceneEdit::SetLightProperty )
-			{
-				// Mirror the single-edit Undo path: shootphotons through
-				// the direct setter, everything else through keyframe.
-				ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
-				ILightPriv* light = lights ? lights->GetItem( inner.objectName.c_str() ) : 0;
-				if( light ) {
-					if( inner.propertyName == String( "shootphotons" ) ) {
-						bool prevVal = false;
-						ParseLenientBool( inner.prevPropertyValue, prevVal );
-						light->SetCanGeneratePhotons( prevVal );
-					} else {
-						IKeyframeParameter* p = light->KeyframeFromParameters(
-							ChunkNameToKeyframeName( inner.propertyName ), inner.prevPropertyValue );
-						if( p ) {
-							light->SetIntermediateValue( *p );
-							safe_release( p );
-							light->RegenerateData();
-							BumpSceneLightGeneration();   // #2b(a): rebuild caster samplers next render
-						}
-					}
-				}
-				sawPropertyOp = true;
-			}
-			else if( inner.op == SceneEdit::SetMaterialProperty )
-			{
-				ApplyMaterialSlotByName( inner, inner.prevPropertyValue );
-				sawPropertyOp = true;
-			}
-			else if( inner.op == SceneEdit::SetMediumProperty )
-			{
-				if( mJob ) {
-					const IMedium* medConst = mJob->GetMedium( inner.objectName.c_str() );
-					if( medConst && inner.prevPropertyValue.size() > 1 ) {
-						IMedium* medium = const_cast<IMedium*>( medConst );
-						ApplyMediumPropertyValue( *medium, inner.propertyName, inner.prevPropertyValue );
-					}
-				}
-				sawPropertyOp = true;
-			}
-			else if( inner.op == SceneEdit::AddCamera )
-			{
-				if( mJob ) {
-					mJob->RemoveCamera( inner.objectName.c_str() );
-					if( inner.prevPropertyValue.size() > 1 ) {
-						mJob->SetActiveCamera( inner.prevPropertyValue.c_str() );
-					}
-				}
-				sawCameraOp = true;
-			}
+			ApplyRevertMutation( inner );   // H2: ONE revert dispatch, shared with single Undo
+			if( SceneEdit::IsObjectOp( inner.op ) )                                          sawObjectOp = true;
+			else if( SceneEdit::IsCameraOp( inner.op ) || inner.op == SceneEdit::AddCamera ) sawCameraOp = true;
+			else if( inner.op == SceneEdit::SetSceneTime )                                   sawTimeOp = true;
+			else                                                                             sawPropertyOp = true;
 		}
-		if( cam ) cam->RegenerateData();
-
-		// Pick the most-significant scope contained in the composite
-		// so the controller's downstream invalidation logic gets the
-		// right signal.  Object > Time-with-photons > Time > Camera.
 		if( sawObjectOp )                          mLastScope = Dirty_ObjectTransform;
 		else if( sawTimeOp && mScenePhotonsExist ) mLastScope = Dirty_TimeAndPhotons;
 		else if( sawTimeOp )                       mLastScope = Dirty_Time;
@@ -1628,7 +1462,12 @@ bool SceneEditor::Undo()
 		return true;
 	}
 
-	// Single edit (not part of a composite).
+	// Single edit -> the shared revert dispatcher (same one the composite loop uses).
+	return ApplyRevertMutation( edit );
+}
+
+bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
+{
 	if( SceneEdit::IsObjectOp( edit.op ) )
 	{
 		IObjectPriv* obj = FindObject( edit.objectName );
@@ -1829,135 +1668,8 @@ bool SceneEditor::Undo()
 	return true;
 }
 
-bool SceneEditor::Redo()
+bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 {
-	DirtyChangeNotifier _notifier( this );
-	SceneEdit edit;
-	if( !mHistory.PopForRedo( edit ) ) return false;
-
-	// Phase B: re-mark the (single-edit) entity dirty on redo.
-	// Composite inner edits are marked inside the replay loop.
-	MarkEditEntityDirty( edit );
-
-	if( edit.op == SceneEdit::CompositeBegin )
-	{
-		// Re-apply the composite group: pop forwards through
-		// the redo stack until matching CompositeEnd.
-		Implementation::CameraCommon* cam = 0;
-		bool sawObjectOp = false, sawCameraOp = false, sawTimeOp = false, sawPropertyOp = false;
-		while( true )
-		{
-			SceneEdit inner;
-			if( !mHistory.PopForRedo( inner ) ) break;
-			if( inner.op == SceneEdit::CompositeEnd ) break;
-			// Phase B: re-mark the property entity dirty on redo.
-			MarkEditEntityDirty( inner );
-			if( SceneEdit::IsObjectOp( inner.op ) )
-			{
-				IObjectPriv* obj = FindObject( inner.objectName );
-				if( obj )
-				{
-					ApplyObjectOpForward( *obj, inner );
-					// Spatial structure only needs invalidating for
-					// transform ops; property-style ops (material /
-					// shader / shadow / interior_medium) leave the
-					// bbox alone.  Symmetric with Apply()'s gate.
-					const bool needsSpatialRebuild = SceneEdit::OpNeedsSpatialRebuild( inner.op );
-					if( needsSpatialRebuild ) {
-						RunObjectInvariantChain( *obj );
-						// Phase 6.3 (§7.3): redo marks dirty.
-						mDirtyTracker.MarkDirty( std::string( inner.objectName.c_str() ) );
-						if( inner.op == SceneEdit::ScaleObjectFromAnchor ) {
-							mScaleFromAnchorSet.insert( std::string( inner.objectName.c_str() ) );
-						}
-					}
-				}
-				sawObjectOp = true;
-			}
-			else if( SceneEdit::IsCameraOp( inner.op ) )
-			{
-								// F4 (composite): resolve the edited camera PER inner edit -- do NOT
-				// cache the first one, or a 2nd op on a different camera lands on it.
-				ICamera* baseCam = ResolveEditedCamera( inner );
-				cam = baseCam ? dynamic_cast<Implementation::CameraCommon*>( baseCam ) : 0;
-				if( cam ) { ApplyCameraOpForward( *cam, inner, SceneScale() ); cam->RegenerateData(); }   // F4 (composite)
-				sawCameraOp = true;
-			}
-			else if( inner.op == SceneEdit::SetSceneTime )
-			{
-				mScene.SetSceneTimeForPreview( inner.s );
-				mLastSetTime = inner.s;
-				sawTimeOp = true;
-			}
-			else if( inner.op == SceneEdit::SetCameraProperty )
-			{
-				ICamera* baseCam = ResolveEditedCamera( inner );
-				if( baseCam )
-				{
-					CameraIntrospection::SetProperty( *baseCam,
-						inner.objectName, inner.propertyValue );
-				}
-				sawPropertyOp = true;
-			}
-			else if( inner.op == SceneEdit::AddCamera )
-			{
-				if( mJob ) {
-					CameraIntrospection::AddCameraFromSnapshot(
-						*mJob, inner.objectName, inner.cameraSnapshot );
-					mJob->SetActiveCamera( inner.objectName.c_str() );
-				}
-				sawCameraOp = true;
-			}
-			else if( inner.op == SceneEdit::SetLightProperty )
-			{
-				// Mirror the single-edit Redo path: shootphotons via
-				// the direct setter, everything else via keyframe.
-				ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
-				ILightPriv* light = lights ? lights->GetItem( inner.objectName.c_str() ) : 0;
-				if( light ) {
-					if( inner.propertyName == String( "shootphotons" ) ) {
-						bool newVal = false;
-						ParseLenientBool( inner.propertyValue, newVal );
-						light->SetCanGeneratePhotons( newVal );
-					} else {
-						IKeyframeParameter* p = light->KeyframeFromParameters(
-							ChunkNameToKeyframeName( inner.propertyName ), inner.propertyValue );
-						if( p ) {
-							light->SetIntermediateValue( *p );
-							safe_release( p );
-							light->RegenerateData();
-							BumpSceneLightGeneration();   // #2b(a): rebuild caster samplers next render
-						}
-					}
-				}
-				sawPropertyOp = true;
-			}
-			else if( inner.op == SceneEdit::SetMaterialProperty )
-			{
-				ApplyMaterialSlotByName( inner, inner.propertyValue );
-				sawPropertyOp = true;
-			}
-			else if( inner.op == SceneEdit::SetMediumProperty )
-			{
-				if( mJob ) {
-					const IMedium* medConst = mJob->GetMedium( inner.objectName.c_str() );
-					if( medConst ) {
-						IMedium* medium = const_cast<IMedium*>( medConst );
-						ApplyMediumPropertyValue( *medium, inner.propertyName, inner.propertyValue );
-					}
-				}
-				sawPropertyOp = true;
-			}
-		}
-		if( cam ) cam->RegenerateData();
-		if( sawObjectOp )                          mLastScope = Dirty_ObjectTransform;
-		else if( sawTimeOp && mScenePhotonsExist ) mLastScope = Dirty_TimeAndPhotons;
-		else if( sawTimeOp )                       mLastScope = Dirty_Time;
-		else if( sawCameraOp || sawPropertyOp )    mLastScope = Dirty_Camera;
-		else                                       mLastScope = Dirty_None;
-		return true;
-	}
-
 	if( SceneEdit::IsObjectOp( edit.op ) )
 	{
 		IObjectPriv* obj = FindObject( edit.objectName );
@@ -2084,6 +1796,41 @@ bool SceneEditor::Redo()
 	return true;
 }
 
+bool SceneEditor::Redo()
+{
+	DirtyChangeNotifier _notifier( this );
+	SceneEdit edit;
+	if( !mHistory.PopForRedo( edit ) ) return false;
+
+	// Phase B: re-mark the (single-edit) entity dirty on redo.
+	// Composite inner edits are marked inside the replay loop.
+	MarkEditEntityDirty( edit );
+
+	if( edit.op == SceneEdit::CompositeBegin )
+	{
+		bool sawObjectOp = false, sawCameraOp = false, sawTimeOp = false, sawPropertyOp = false;
+		while( true )
+		{
+			SceneEdit inner;
+			if( !mHistory.PopForRedo( inner ) ) break;
+			if( inner.op == SceneEdit::CompositeEnd ) break;
+			MarkEditEntityDirty( inner );
+			ApplyForwardMutation( inner );   // H2: ONE forward dispatch, shared with single Redo
+			if( SceneEdit::IsObjectOp( inner.op ) )                                          sawObjectOp = true;
+			else if( SceneEdit::IsCameraOp( inner.op ) || inner.op == SceneEdit::AddCamera ) sawCameraOp = true;
+			else if( inner.op == SceneEdit::SetSceneTime )                                   sawTimeOp = true;
+			else                                                                             sawPropertyOp = true;
+		}
+		if( sawObjectOp )                          mLastScope = Dirty_ObjectTransform;
+		else if( sawTimeOp && mScenePhotonsExist ) mLastScope = Dirty_TimeAndPhotons;
+		else if( sawTimeOp )                       mLastScope = Dirty_Time;
+		else if( sawCameraOp || sawPropertyOp )    mLastScope = Dirty_Camera;
+		else                                       mLastScope = Dirty_None;
+		return true;
+	}
+
+	return ApplyForwardMutation( edit );
+}
 void SceneEditor::BeginComposite( const char* label )
 {
 	SceneEdit e;
