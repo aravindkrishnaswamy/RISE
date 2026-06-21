@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "SpotLight.h"
 #include "../Animation/KeyframableHelper.h"
+#include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -79,11 +80,18 @@ void SpotLight::ComputeDirectLighting(
 
 	if( fAngleOfIncidence <= dOuterAngle/2.0 )
 	{
+		// shadowT carries the per-interface Fresnel transmittance when
+		// transparent_shadows is enabled, else (1,1,1).  See PointLight.
+		RISEPel shadowT( 1.0, 1.0, 1.0 );
 		if( bReceivesShadows ) {
-			// Check to see if there is a shadow
 			Ray		rayToLight( ri.ptIntersection, vToLight );
 
-			if( pCaster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+			const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
+			if( pRC ) {
+				if( pRC->CastShadowRayAuto( rayToLight, fDistFromLight, false, 0.0, shadowT ) ) {
+					return;
+				}
+			} else if( pCaster.CastShadowRay( rayToLight, fDistFromLight ) ) {
 				return;
 			}
 		}
@@ -92,13 +100,68 @@ void SpotLight::ComputeDirectLighting(
 		const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
 
 		if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
-			amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * fDot * radiantEnergy);
+			amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * fDot * radiantEnergy) * shadowT;
 		} else {
 			// Quadratic falloff between inner and outer half-angles
 			const Scalar t = (dOuterAngle/2.0 - fAngleOfIncidence) / (dOuterAngle/2.0 - dInnerAngle/2.0);
-			amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * t * t * fDot * radiantEnergy);
+			amount = (cColor * brdf.value( vToLight, ri )) * (invDistSq * t * t * fDot * radiantEnergy) * shadowT;
 		}
 	}
+}
+
+Scalar SpotLight::ComputeDirectLightingNM(
+	const RayIntersectionGeometric& ri,
+	const IRayCaster& pCaster,
+	const IBSDF& brdf,
+	const bool bReceivesShadows,
+	const Scalar nm
+	) const
+{
+	// Same geometry / cone falloff as the RGB ComputeDirectLighting; only the
+	// BSDF eval and the shadow Fresnel are per-wavelength (brdf.valueNM,
+	// CastShadowRayAuto bNM=true).
+	Vector3 vToLight = Vector3Ops::mkVector3( ptPosition, ri.ptIntersection );
+	const Scalar fDistFromLight = Vector3Ops::NormalizeMag( vToLight );
+
+	const Scalar fDot = Vector3Ops::Dot( vToLight, ri.vNormal );
+	if( fDot <= 0.0 ) {
+		return Scalar(0);
+	}
+
+	const Scalar fDirDot = Vector3Ops::Dot( vToLight, -vDirection );
+	const Scalar fAngleOfIncidence = acos( fDirDot );
+	if( fAngleOfIncidence > dOuterAngle/2.0 ) {
+		return Scalar(0);
+	}
+
+	Scalar shadowT = 1.0;
+	if( bReceivesShadows ) {
+		Ray rayToLight( ri.ptIntersection, vToLight );
+		const RayCaster* pRC = dynamic_cast<const RayCaster*>( &pCaster );
+		if( pRC ) {
+			RISEPel t( 1.0, 1.0, 1.0 );
+			if( pRC->CastShadowRayAuto( rayToLight, fDistFromLight, true, nm, t ) ) {
+				return Scalar(0);
+			}
+			shadowT = t.r;	// NM path fills all 3 channels equally
+		} else if( pCaster.CastShadowRay( rayToLight, fDistFromLight ) ) {
+			return Scalar(0);
+		}
+	}
+
+	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
+	const Scalar lightLum =
+		Scalar(0.2126) * cColor.r +
+		Scalar(0.7152) * cColor.g +
+		Scalar(0.0722) * cColor.b;
+	const Scalar base = lightLum * brdf.valueNM( vToLight, ri, nm ) * invDistSq * fDot * radiantEnergy * shadowT;
+
+	if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
+		return base;
+	}
+	// Quadratic falloff between inner and outer half-angles (matches RGB).
+	const Scalar tt = (dOuterAngle/2.0 - fAngleOfIncidence) / (dOuterAngle/2.0 - dInnerAngle/2.0);
+	return base * tt * tt;
 }
 
 void SpotLight::FinalizeTransformations( )

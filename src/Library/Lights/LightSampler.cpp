@@ -61,10 +61,13 @@ static bool ShadowOccludedRGB(
 	RISEPel& transmittance
 	)
 {
+	// Delegate to RayCaster::CastShadowRayAuto, the single source of truth for
+	// the binary-vs-Fresnel-transmittance choice (shared with the directional /
+	// ambient Step-1 lights so the flag is honored uniformly across light types).
 	const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
-	if( pRC && pRC->GetTransparentShadows() )
+	if( pRC )
 	{
-		return pRC->CastShadowRayTransmittance( ray, dHowFar, false, 0.0, transmittance );
+		return pRC->CastShadowRayAuto( ray, dHowFar, false, 0.0, transmittance );
 	}
 	transmittance = RISEPel( 1.0, 1.0, 1.0 );
 	return caster.CastShadowRay( ray, dHowFar );
@@ -78,11 +81,12 @@ static bool ShadowOccludedNM(
 	Scalar& transmittance
 	)
 {
+	// Delegate to RayCaster::CastShadowRayAuto (see ShadowOccludedRGB).
 	const RayCaster* pRC = dynamic_cast<const RayCaster*>( &caster );
-	if( pRC && pRC->GetTransparentShadows() )
+	if( pRC )
 	{
 		RISEPel t( 1.0, 1.0, 1.0 );
-		const bool occluded = pRC->CastShadowRayTransmittance( ray, dHowFar, true, nm, t );
+		const bool occluded = pRC->CastShadowRayAuto( ray, dHowFar, true, nm, t );
 		transmittance = t.r;	// NM path fills all 3 channels equally
 		return occluded;
 	}

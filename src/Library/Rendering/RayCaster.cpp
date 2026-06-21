@@ -1647,6 +1647,33 @@ bool RayCaster::CastShadowRayTransmittance(
 	return true;
 }
 
+// ================================================================
+// CastShadowRayAuto — flag-aware NEE shadow occlusion.
+//
+// One source of truth for "shadow test that honors transparent_shadows":
+// when the flag is on, walk the segment with the Fresnel-transmittance test
+// (clear dielectrics attenuate rather than block); when off, the binary test.
+// Used by BOTH the LightSampler NEE evaluators (omni / spot / area) and the
+// directional / ambient Step-1 lights, so the flag applies uniformly across
+// light types.  It is geometry-agnostic: it forwards to the same closest-hit
+// traversal that analytic primitives and SDFs both use, so primitive and SDF
+// dielectrics occlude (flag off) or transmit (flag on) identically.
+// ================================================================
+bool RayCaster::CastShadowRayAuto(
+	const Ray& ray,
+	const Scalar dHowFar,
+	const bool bNM,
+	const Scalar nm,
+	RISEPel& transmittance
+	) const
+{
+	if( bTransparentShadows ) {
+		return CastShadowRayTransmittance( ray, dHowFar, bNM, nm, transmittance );
+	}
+	transmittance = RISEPel( 1.0, 1.0, 1.0 );
+	return CastShadowRay( ray, dHowFar );
+}
+
 void RayCaster::SetRISCandidates( const unsigned int M )
 {
 	if( pLightSampler )
