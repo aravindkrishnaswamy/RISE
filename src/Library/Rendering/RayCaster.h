@@ -200,6 +200,35 @@ namespace RISE
 				RISEPel& transmittance								///< [out] Accumulated per-interface Fresnel transmittance product (RGB; all 3 channels equal on the NM path)
 				) const;
 
+			//! Flag-aware NEE shadow occlusion — the SINGLE entry point that
+			//! routes to the Fresnel-transmittance walk when
+			//! `transparent_shadows` is enabled, else the binary CastShadowRay.
+			//! Every NEE shadow site uses this so the flag is honored
+			//! UNIFORMLY.  Two families of caller:
+			//!   * LightSampler's delta / mesh-luminary NEE branches (the PT
+			//!     path for omni / spot / area lights), via ShadowOccluded.
+			//!   * Every concrete light's ILight::ComputeDirectLighting
+			//!     (Directional, Point, Spot) — the path the Step-1 zero-
+			//!     exitance lights and any direct
+			//!     ILightManager::ComputeDirectLighting caller take.  (Ambient
+			//!     casts no shadow ray.)
+			//! Geometry-agnostic — it forwards to the same CastShadowRay /
+			//! CastShadowRayTransmittance the analytic primitives and SDFs
+			//! both flow through.
+			//!
+			//! \return TRUE if the light is FULLY occluded; FALSE if it is
+			//!         reachable, with @a transmittance carrying the
+			//!         accumulated per-interface Fresnel transmittance
+			//!         (1,1,1 when the segment was clear, or when the flag is
+			//!         off / binary).
+			bool CastShadowRayAuto(
+				const Ray& ray,										///< [in] Ray to cast (origin = shading point, dir = toward light, normalized)
+				const Scalar dHowFar,								///< [in] How far to follow the ray
+				const bool bNM,										///< [in] True for the spectral (single-wavelength) path; false for the RGB path
+				const Scalar nm,									///< [in] Wavelength (only used when bNM == true)
+				RISEPel& transmittance								///< [out] Accumulated per-interface Fresnel transmittance (1,1,1 when clear or binary)
+				) const;
+
 			//! To retreive the current scene
 			/// \return Pointer to currently attached scene, NULL if no scene is currently attached
 			const IScene* GetAttachedScene() const { return pScene; };

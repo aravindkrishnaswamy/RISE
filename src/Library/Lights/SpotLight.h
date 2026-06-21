@@ -162,6 +162,12 @@ namespace RISE
 				);
 
 			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const;
+
+			//! Per-wavelength direct lighting (cone falloff + wavelength-
+			//! specific transparent-shadow Fresnel).  See PointLight /
+			//! DirectionalLight; overrides the ILight RGB-projection default.
+			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm ) const;
+
 			void	FinalizeTransformations();
 
 			// For keyframamble interface

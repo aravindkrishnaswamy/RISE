@@ -87,6 +87,16 @@ namespace RISE
 				);
 
 			void	ComputeDirectLighting( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, RISEPel& amount ) const;
+
+			//! Per-wavelength direct lighting.  Overrides the ILight default
+			//! (which projects the RGB ComputeDirectLighting to luminance and
+			//! discards the wavelength): queries brdf.valueNM at @a nm and, when
+			//! transparent_shadows is enabled, attenuates by the WAVELENGTH-
+			//! SPECIFIC Fresnel transmittance (CastShadowRayAuto bNM=true) rather
+			//! than a representative RGB IOR.  Matches DirectionalLight /
+			//! AmbientLight; keeps every light's spectral NEE consistent.
+			Scalar	ComputeDirectLightingNM( const RayIntersectionGeometric& ri, const IRayCaster&, const IBSDF& brdf, const bool bReceivesShadows, const Scalar nm ) const;
+
 			void	FinalizeTransformations();
 
 			// For keyframamble interface
