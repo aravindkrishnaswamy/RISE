@@ -111,6 +111,16 @@ namespace RISE
 		void SnapshotUndoForRollback() { mTxnUndoSnapshot = mUndoStack; }
 		void RestoreUndoFromSnapshot() { mUndoStack = mTxnUndoSnapshot; }
 
+		//! P1 review: free both rollback snapshots when a transaction closes
+		//! (commit or rollback).  They are dead the moment the transaction ends;
+		//! without this they'd hold deep copies of up to 2x the history until the
+		//! next BeginTransaction overwrote them.  swap-with-empty guarantees the
+		//! heap is actually released (clear() alone would not).
+		void ClearRollbackSnapshots() {
+			std::deque<SceneEdit>().swap( mTxnUndoSnapshot );
+			std::deque<SceneEdit>().swap( mTxnRedoSnapshot );
+		}
+
 		//! Label of the most recent composite (or top edit op name)
 		//! for the UI's "Undo <X>" menu item.
 		const char* LabelForUndo() const;

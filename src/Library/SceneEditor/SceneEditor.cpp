@@ -1286,6 +1286,10 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 				// F5: undo of a FIRST material bind restores the unbound state
 				// (clearing an emissive material changes the emitter set -> bump).
 				const IMaterial* clrPrev = obj->GetMaterial();
+				// P1-#9: ClearMaterial/ClearShader are non-virtual on Object (off the
+				// IObjectPriv vtable -- ABI).  Every IObjectPriv IS an Object
+				// (CSGObject : public Object), so the cast is total; a null cast would
+				// safely skip the clear.
 				if( Implementation::Object* o = dynamic_cast<Implementation::Object*>( obj ) ) o->ClearMaterial();
 				BumpSceneLightGenerationIfEmitterSetChanged( clrPrev, nullptr );
 			} else if( mMaterialManager && edit.prevPropertyValue.size() > 1 ) {

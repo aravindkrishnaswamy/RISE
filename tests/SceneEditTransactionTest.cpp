@@ -1657,6 +1657,28 @@ static void TestUndoSnapshotRestore()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestControllerRollbackRestoresUndoAtCap()
+{
+	std::cout << "Test: full rollback restores a pre-txn undo record evicted at the 1024 cap (P1-#a controller wiring)" << std::endl;
+	Job* pJob = new Job();
+	pJob->AddSphereGeometry("geom",1.0);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1cap] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	SceneEditor& ed = ctrl.Editor();
+	// Saturate the undo stack to the 1024 cap with cheap edits.
+	for( int i=0; i<1024; ++i ) { SceneEdit e; e.op=SceneEdit::SetSceneTime; e.s=(double)i; ed.Apply(e); }
+	Check( ed.History().UndoDepth() == 1024, "[p1cap] undo stack saturated at cap" );
+	Check( ctrl.BeginTransaction(), "[p1cap] begin txn" );
+	{ SceneEdit e; e.op=SceneEdit::SetSceneTime; e.s=9999.0; ed.Apply(e); }   // evicts the oldest pre-txn edit
+	ctrl.RollbackTransaction();   // full revert
+	Check( ed.History().UndoDepth() == 1024, "[p1cap] full rollback restored the cap-evicted pre-txn undo record (P1-#a)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1693,6 +1715,7 @@ int main()
 	TestTrimDoesNotDrainOpenComposite();
 	TestTrimNestingAware();
 	TestUndoSnapshotRestore();
+	TestControllerRollbackRestoresUndoAtCap();
 	TestRejectEditWithUnrepresentableInverse();
 	TestPartialCompositeUndoStillRefreshes();
 

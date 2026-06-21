@@ -1917,6 +1917,7 @@ bool SceneEditController::RollbackTransaction()
 
 	// Close the transaction.
 	mTxnOpen              = false;
+	mEditor.History().ClearRollbackSnapshots();   // P1 review: free the rollback snapshots now the txn is closed
 
 	// Re-render the reverted state.  Inline the KickRender effect under
 	// the held lock (store editPending, notify after unlock) so the
@@ -1944,6 +1945,7 @@ bool SceneEditController::EndTransaction()
 	// closes the transaction.  No re-apply, no revert; the redo stack is
 	// left intact so normal Undo/Redo of the committed edits still works.
 	mTxnOpen              = false;
+	mEditor.History().ClearRollbackSnapshots();   // P1 review: free the rollback snapshots now the txn is closed
 	return true;
 }
 
