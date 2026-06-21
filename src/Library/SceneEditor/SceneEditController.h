@@ -1045,17 +1045,16 @@ namespace RISE
 		// list so the addition is layout-additive (no field before it
 		// shifts).  Re-based on inverse-edit rollback (NOT snapshot): no
 		// SceneSnapshot is held.  `mTxnOpen` is true exactly when a
-		// transaction is open.  `mTxnBaselineUndoDepth` records
-		// History().UndoDepth() at BeginTransaction so RollbackTransaction
-		// applies the inverse edits down to precisely that depth.  Both
+		// transaction is open.  `mTxnBaselineSeq` records EditHistory::NextSeq() at
+		// BeginTransaction so RollbackTransaction undoes while the top edit's
+		// seq >= that marker (trim-immune; survives the 1024 history cap).  Both
 		// are touched only on the UI thread (Begin/Rollback/End are
 		// UI-thread calls), so they need no synchronization beyond the
 		// cancel-and-park RollbackTransaction already takes for the scene
 		// mutation itself.
 		bool                                 mTxnOpen;
-		unsigned int                         mTxnBaselineUndoDepth;
 		unsigned long long                   mTxnBaselineSeq;     // F2: seq marker
-		DirtyTracker::State                  mTxnBaselineDirty;   // F7: dirty snapshot
+		SceneEditor::DirtySnapshot           mTxnBaselineDirty;   // F7: dirty snapshot (incl. scale-from-anchor set)
 		Category                             mTxnBaselineSelCat;  // F7: selection snapshot
 		String                               mTxnBaselineSelName;
 

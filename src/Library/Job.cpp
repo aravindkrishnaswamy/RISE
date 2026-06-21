@@ -5018,6 +5018,7 @@ bool Job::AddPointOmniLight(
 	pLight->SetPosition( Point3( pos ) );
 	pLight->FinalizeTransformations();
 	pLightManager->AddItem( pLight, name );
+	BumpSceneLightGen( pScene );   // P2a: light set changed -> reused caster must rebuild
 	safe_release( pLight );
 	return true;
 }
@@ -5040,6 +5041,7 @@ bool Job::AddPointSpotLight(
 	pLight->SetPosition( Point3( pos ) );
 	pLight->FinalizeTransformations();
 	pLightManager->AddItem( pLight, name );
+	BumpSceneLightGen( pScene );   // P2a: light set changed -> reused caster must rebuild
 	safe_release( pLight );
 	return true;
 }
@@ -5055,6 +5057,7 @@ bool Job::AddAmbientLight(
 	ILightPriv* pLight = 0;
 	RISE_API_CreateAmbientLight( &pLight, power, sRGBPel(srgb) );
 	pLightManager->AddItem( pLight, name );
+	BumpSceneLightGen( pScene );   // P2a: light set changed -> reused caster must rebuild
 	safe_release( pLight );
 	return true;
 }
@@ -5071,6 +5074,7 @@ bool Job::AddDirectionalLight(
 	ILightPriv* pLight = 0;
 	RISE_API_CreateDirectionalLight( &pLight, power, sRGBPel(srgb), Vector3(dir) );
 	pLightManager->AddItem( pLight, name );
+	BumpSceneLightGen( pScene );   // P2a: light set changed -> reused caster must rebuild
 	safe_release( pLight );
 	return true;
 }
@@ -5266,6 +5270,8 @@ bool Job::AddObject(
 	object->FinalizeTransformations();
 
 	pObjectManager->AddItem( object, name );
+	if( object->GetMaterial() && object->GetMaterial()->GetEmitter() )
+		BumpSceneLightGen( pScene );   // P2a: added an emissive object (mesh luminary)
 	safe_release( object );
 
 	return true;
@@ -5361,6 +5367,8 @@ bool Job::AddObjectMatrix(
 	object->FinalizeTransformations();
 
 	pObjectManager->AddItem( object, name );
+	if( object->GetMaterial() && object->GetMaterial()->GetEmitter() )
+		BumpSceneLightGen( pScene );   // P2a: added an emissive object (mesh luminary)
 	safe_release( object );
 
 	return true;
@@ -5687,6 +5695,8 @@ bool Job::AddCSGObject(
 	object->FinalizeTransformations();
 
 	pObjectManager->AddItem( object, name );
+	if( object->GetMaterial() && object->GetMaterial()->GetEmitter() )
+		BumpSceneLightGen( pScene );   // P2a: added an emissive object (mesh luminary)
 	safe_release( object );
 
 	return true;
@@ -9191,7 +9201,13 @@ bool Job::RemoveObject(
 	const char* name								///< [in] Name of the object to remove
 	)
 {
-	return pObjectManager->RemoveItem( name );
+	// P2a: if the removed object was an emissive mesh luminary, the luminary
+	// set changes -> bump so a reused caster rebuilds.
+	IObjectPriv* pRObj = pObjectManager->GetItem( name );
+	const bool wasEmissive = ( pRObj && pRObj->GetMaterial() && pRObj->GetMaterial()->GetEmitter() );
+	const bool ok = pObjectManager->RemoveItem( name );
+	if( ok && wasEmissive ) BumpSceneLightGen( pScene );
+	return ok;
 }
 
 //! Removes the given light from the scene
@@ -9200,7 +9216,9 @@ bool Job::RemoveLight(
 	const char* name								///< [in] Name of the light to remove
 	)
 {
-	return pLightManager->RemoveItem( name );
+	const bool ok = pLightManager->RemoveItem( name );
+	if( ok ) BumpSceneLightGen( pScene );   // P2a: light set changed
+	return ok;
 }
 
 //! Removes the given modifier from the scene

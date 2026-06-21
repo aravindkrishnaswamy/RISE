@@ -127,7 +127,7 @@ static Job* MakeSamplerScene()
 static double LiveLightEnergy( ILightManager* lights, const char* name )
 {
 	ILightPriv* l = lights->GetItem( name );
-	if( !l ) { return std::nan( "" ); }
+	if( !l ) { return -1.0e30; }   // finite poison: NaN sentinel folds under -ffast-math (keystone disease)
 	return (double)l->emissionEnergy();
 }
 
@@ -404,6 +404,30 @@ static void TestJobSetObjectMaterialBumpsGeneration()
 	safe_release( caster ); pJob->release();
 }
 
+//////////////////////////////////////////////////////////////////////
+// T-job-addlight-bump (P2a extension): Job::AddPointOmniLight changes the
+// light set -> reused caster must rebuild.
+//////////////////////////////////////////////////////////////////////
+static void TestJobAddLightBumpsGeneration()
+{
+	std::cout << "Test: Job::AddPointOmniLight rebuilds a reused caster's sampler (P2a extension)" << std::endl;
+	Job* pJob = MakeSamplerScene();
+	Scene* pScene = dynamic_cast<Scene*>( pJob->GetScene() );
+	if( !pScene ) { Check( false, "[p2a2] scene" ); pJob->release(); return; }
+	IShader* pShader = pJob->GetShaders() ? pJob->GetShaders()->GetItem("global") : nullptr;
+	if( !pShader ) { Check( false, "[p2a2] shader" ); pJob->release(); return; }
+	IRayCaster* caster=nullptr; RISE_API_CreateRayCaster(&caster,false,10,*pShader,true);
+	if( !caster ) { Check( false, "[p2a2] caster" ); pJob->release(); return; }
+	caster->AttachScene( pScene );
+	const unsigned int rbBefore = RayCaster::GetSamplerRebuildCount();
+	const double lc[3]={1,1,1}, lp[3]={3,3,3};
+	Check( pJob->AddPointOmniLight("key2",7.0,lc,lp,false), "[p2a2] AddPointOmniLight applied" );
+	caster->AttachScene( pScene );
+	Check( RayCaster::GetSamplerRebuildCount() == rbBefore+1,
+	       "[p2a2] sampler rebuilt after Job::AddPointOmniLight (light set changed) (P2a ext)" );
+	safe_release( caster ); pJob->release();
+}
+
 int main()
 {
 	std::cout << "=== SamplerRebuildOnRestoreTest ===" << std::endl;
@@ -412,6 +436,7 @@ int main()
 	TestNoSpuriousRebuild();
 	TestInPlaceEditRebuild();
 	TestJobSetObjectMaterialBumpsGeneration();
+	TestJobAddLightBumpsGeneration();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."

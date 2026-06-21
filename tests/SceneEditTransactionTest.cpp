@@ -75,6 +75,7 @@
 #include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/SceneEditor/CameraIntrospection.h"
+#include "../src/Library/Cameras/CameraCommon.h"
 #include "../src/Library/Interfaces/IMaterial.h"
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/IPainter.h"
@@ -1163,6 +1164,66 @@ static void TestRollbackRestoresDirtyState()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestRollbackRestoresScaleFromAnchorDirty()
+{
+	std::cout << "Test: rollback restores the scale-from-anchor dirty set (re-review F7 BUG-2)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}; pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat","p_white"); pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[f7b] scene"); pJob->release(); return; }
+	IObjectManager* objs = pJob->GetObjects();
+	SceneEditController ctrl(*pJob,0);
+	Check( !ctrl.HasUnsavedChanges(), "[f7b] clean baseline" );
+	Check( ctrl.BeginTransaction(), "[f7b] begin txn" );
+	// A ScaleObjectFromAnchor edit dirties the 5th set (mScaleFromAnchorSet).
+	SceneEdit e; e.op = SceneEdit::ScaleObjectFromAnchor; e.objectName = String("obj");
+	e.v3a = Vector3(2,2,2);
+	IObjectPriv* lo = objs->GetItem("obj"); e.prevTransform = lo->GetFinalTransformMatrix();
+	Check( ctrl.Editor().Apply(e), "[f7b] SFA edit applied" );
+	Check( ctrl.HasUnsavedChanges(), "[f7b] dirty during txn (SFA set non-empty)" );
+	Check( ctrl.RollbackTransaction(), "[f7b] rollback" );
+	Check( !ctrl.HasUnsavedChanges(), "[f7b] dirty CLEARED after rollback incl the SFA set (F7 BUG-2)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestCompositeMultiCameraUndo()
+{
+	std::cout << "Test: composite undo reverts BOTH cameras (re-review F4-composite)" << std::endl;
+	Job* pJob = new Job();
+	double loc[3]={0,0,10}, la[3]={0,0,0}, up[3]={0,1,0}, orient[3]={0,0,0}, target[2]={0,0};
+	pJob->AddPinholeCamera("A",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	pJob->AddPinholeCamera("B",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[mcc] scene"); pJob->release(); return; }
+	const ICameraManager* cams = pScene->GetCameras();
+	CameraCommon* ccA = dynamic_cast<CameraCommon*>(const_cast<ICamera*>(cams->GetItem("A")));
+	CameraCommon* ccB = dynamic_cast<CameraCommon*>(const_cast<ICamera*>(cams->GetItem("B")));
+	Check( ccA && ccB, "[mcc] both cameras are CameraCommon" );
+	if(!ccA||!ccB){ pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	// A composite that orbits camera A AND camera B (two different cameras).
+	ctrl.Editor().BeginComposite("multicam");
+	pJob->SetActiveCamera("A");
+	{ SceneEdit e; e.op=SceneEdit::OrbitCamera; e.v3a=Vector3(100,0,0); ctrl.Editor().Apply(e); }
+	pJob->SetActiveCamera("B");
+	{ SceneEdit e; e.op=SceneEdit::OrbitCamera; e.v3a=Vector3(100,0,0); ctrl.Editor().Apply(e); }
+	ctrl.Editor().EndComposite();
+	Check( std::abs((double)ccA->GetTargetOrientation().y) > 1e-4, "[mcc] A orbited" );
+	Check( std::abs((double)ccB->GetTargetOrientation().y) > 1e-4, "[mcc] B orbited" );
+	Check( ctrl.Editor().Undo(), "[mcc] undo the composite" );
+	Check( std::abs((double)ccA->GetTargetOrientation().y) < 1e-9, "[mcc] camera A reverted (F4-composite)" );
+	Check( std::abs((double)ccB->GetTargetOrientation().y) < 1e-9, "[mcc] camera B reverted (F4-composite)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1184,6 +1245,8 @@ int main()
 	TestRollbackSurvivesHistoryCap();
 	TestTransactionRefusesActiveCameraSwitch();
 	TestRollbackRestoresDirtyState();
+	TestRollbackRestoresScaleFromAnchorDirty();
+	TestCompositeMultiCameraUndo();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."

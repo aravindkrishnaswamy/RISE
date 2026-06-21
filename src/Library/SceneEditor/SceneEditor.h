@@ -126,8 +126,25 @@ namespace RISE
 		//! F7: snapshot / restore the DirtyTracker channels so a transactional
 		//! rollback can return the dirty state to its pre-transaction baseline
 		//! (Undo re-marks dirty; created entities are never un-marked).
-		DirtyTracker::State CaptureDirtyState() const { return mDirtyTracker.CaptureState(); }
-		void RestoreDirtyState( const DirtyTracker::State& st ) { mDirtyTracker.RestoreState( st ); }
+		//! F7: snapshot / restore ALL dirty state for transactional rollback.
+		//! Captures the four DirtyTracker channels PLUS the fifth set
+		//! mScaleFromAnchorSet (BUG-2: it lives outside DirtyTracker, so a
+		//! plain State copy missed it -> a rolled-back scale-gizmo gesture
+		//! still reported unsaved changes).  Restore also fires the dirty-
+		//! changed listener (BUG-1: a silent dirty->clean left the Save button
+		//! stale).
+		struct DirtySnapshot {
+			DirtyTracker::State              tracker;
+			std::unordered_set<std::string> scaleFromAnchor;
+		};
+		DirtySnapshot CaptureDirtyState() const {
+			DirtySnapshot s; s.tracker = mDirtyTracker.CaptureState(); s.scaleFromAnchor = mScaleFromAnchorSet; return s;
+		}
+		void RestoreDirtyState( const DirtySnapshot& s ) {
+			mDirtyTracker.RestoreState( s.tracker );
+			mScaleFromAnchorSet = s.scaleFromAnchor;
+			FireDirtyChangedIfTransitioned();
+		}
 
 		DirtyScope LastDirtyScope() const { return mLastScope; }
 

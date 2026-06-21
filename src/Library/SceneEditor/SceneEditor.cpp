@@ -1528,14 +1528,14 @@ bool SceneEditor::Undo()
 			}
 			else if( SceneEdit::IsCameraOp( inner.op ) )
 			{
-				if( !cam )
-				{
-					ICamera* baseCam = ResolveEditedCamera( inner );
-					cam = baseCam ? dynamic_cast<Implementation::CameraCommon*>( baseCam ) : 0;
-				}
+								// F4 (composite): resolve the edited camera PER inner edit -- do NOT
+				// cache the first one, or a 2nd op on a different camera lands on it.
+				ICamera* baseCam = ResolveEditedCamera( inner );
+				cam = baseCam ? dynamic_cast<Implementation::CameraCommon*>( baseCam ) : 0;
 				if( cam )
 				{
 					RestoreCameraTransform( *cam, inner );
+					cam->RegenerateData();   // F4 (composite): regen THIS camera
 				}
 				sawCameraOp = true;
 			}
@@ -1876,12 +1876,11 @@ bool SceneEditor::Redo()
 			}
 			else if( SceneEdit::IsCameraOp( inner.op ) )
 			{
-				if( !cam )
-				{
-					ICamera* baseCam = ResolveEditedCamera( inner );
-					cam = baseCam ? dynamic_cast<Implementation::CameraCommon*>( baseCam ) : 0;
-				}
-				if( cam ) ApplyCameraOpForward( *cam, inner, SceneScale() );
+								// F4 (composite): resolve the edited camera PER inner edit -- do NOT
+				// cache the first one, or a 2nd op on a different camera lands on it.
+				ICamera* baseCam = ResolveEditedCamera( inner );
+				cam = baseCam ? dynamic_cast<Implementation::CameraCommon*>( baseCam ) : 0;
+				if( cam ) { ApplyCameraOpForward( *cam, inner, SceneScale() ); cam->RegenerateData(); }   // F4 (composite)
 				sawCameraOp = true;
 			}
 			else if( inner.op == SceneEdit::SetSceneTime )

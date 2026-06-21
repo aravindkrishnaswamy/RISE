@@ -149,7 +149,6 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mInRefinementPass( false )
 , mPolishState( static_cast<int>( PolishState::None ) )
 , mTxnOpen( false )
-, mTxnBaselineUndoDepth( 0 )
 , mTxnBaselineSeq( 0 )
 , mTxnBaselineSelCat( Category::None )
 {
@@ -1567,6 +1566,14 @@ bool SelectionStillResolves( const IJobPriv& job,
 
 void SceneEditController::Undo()
 {
+	// Latent-guard (re-review): refuse user Undo while a transaction is open --
+	// undoing PAST the baseline would break RollbackTransaction's revert
+	// guarantee (and ClearRedo would then drop a pre-baseline edit).  The
+	// rollback path uses mEditor.Undo() directly, bypassing this guard.
+	if( mTxnOpen ) {
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Undo refused: a transaction is open; use Rollback/EndTransaction." );
+		return;
+	}
 	// Cancel-and-park around Undo: many ops mutate state the render
 	// thread reads per-pixel (camera pointers via AddCamera/RemoveCamera,
 	// light keyframe state, material/shader pointers via the property
@@ -1624,6 +1631,10 @@ void SceneEditController::Undo()
 
 void SceneEditController::Redo()
 {
+	if( mTxnOpen ) {
+		GlobalLog()->PrintEx( eLog_Warning, "SceneEditController::Redo refused: a transaction is open." );
+		return;
+	}
 	std::unique_lock<std::mutex> lk( mMutex );
 	if( mRendering.load( std::memory_order_acquire ) ) {
 		mCancelProgress.RequestCancel();
@@ -1762,7 +1773,6 @@ bool SceneEditController::BeginTransaction()
 		return false;
 	}
 	mTxnOpen              = true;
-	mTxnBaselineUndoDepth = mEditor.History().UndoDepth();
 	mTxnBaselineSeq       = mEditor.History().NextSeq();   // F2: trim-immune marker
 	mTxnBaselineDirty     = mEditor.CaptureDirtyState();   // F7: dirty snapshot
 	mTxnBaselineSelCat    = mSelectionCategory;            // F7: selection snapshot
@@ -1855,7 +1865,6 @@ bool SceneEditController::RollbackTransaction()
 
 	// Close the transaction.
 	mTxnOpen              = false;
-	mTxnBaselineUndoDepth = 0;
 
 	// Re-render the reverted state.  Inline the KickRender effect under
 	// the held lock (store editPending, notify after unlock) so the
@@ -1883,7 +1892,6 @@ bool SceneEditController::EndTransaction()
 	// closes the transaction.  No re-apply, no revert; the redo stack is
 	// left intact so normal Undo/Redo of the committed edits still works.
 	mTxnOpen              = false;
-	mTxnBaselineUndoDepth = 0;
 	return true;
 }
 
