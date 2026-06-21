@@ -402,6 +402,14 @@ void Job::DestroyContainers()
 	safe_shutdown_and_release( pScalarPntManager );
 	safe_shutdown_and_release( pFunc1DManager );
 	safe_shutdown_and_release( pFunc2DManager );
+	// P1-#8: clear the H3 self-invalidation callback BEFORE releasing the
+	// manager.  The callback captured `this` (Job) + reads pScene; if any
+	// holder retained a counted ref to the light manager it would outlive the
+	// Job, and a later add/remove would deref a destroyed Job / stale scene.
+	// Severing the callback here makes a retained manager inert.
+	if( RISE::Implementation::LightManager* lm = dynamic_cast<RISE::Implementation::LightManager*>( pLightManager ) ) {
+		lm->SetOnLightSetChanged( nullptr );
+	}
 	safe_shutdown_and_release( pLightManager );
 	safe_shutdown_and_release( pMatManager );
 	safe_shutdown_and_release( pModManager );

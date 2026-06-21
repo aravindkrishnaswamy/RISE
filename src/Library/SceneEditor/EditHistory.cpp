@@ -198,6 +198,18 @@ void EditHistory::TrimToMax()
 		// guard works, but be defensive), drop it on its own.
 		if( mUndoStack.front().op == SceneEdit::CompositeBegin )
 		{
+			// P1-#4: only trim a CLOSED composite atomically.  If the front
+			// CompositeBegin has NO matching CompositeEnd yet (a single open
+			// gesture whose inner edits already filled the cap), draining the
+			// stack would orphan the eventual End + corrupt later undo.  Leave
+			// the over-cap stack until the gesture closes -- the next TrimToMax
+			// (after EndComposite) trims the now-closed group.
+			bool hasMatchingEnd = false;
+			for( std::deque<SceneEdit>::const_iterator it = mUndoStack.begin();
+			     it != mUndoStack.end(); ++it ) {
+				if( it->op == SceneEdit::CompositeEnd ) { hasMatchingEnd = true; break; }
+			}
+			if( !hasMatchingEnd ) break;   // open composite -> do not trim
 			PopFrontTracked();
 			while( !mUndoStack.empty()
 			    && mUndoStack.front().op != SceneEdit::CompositeEnd )

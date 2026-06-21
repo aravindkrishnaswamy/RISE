@@ -429,7 +429,11 @@ namespace RISE
 			std::vector<bool>           sectionExpanded;       //!< per-category panel-section expand state
 		};
 		EditorStateSnapshot CaptureEditorState() const;
-		void                RestoreEditorState( const EditorStateSnapshot& s );
+		//! restoreDirtyAndHistory: on a FULL rollback restore dirty + the
+		//! pre-transaction redo stack; on a PARTIAL rollback pass false so the
+		//! residual-dirty state + history are left intact (P1-#1/#3).  Selection
+		//! is always restored.
+		void                RestoreEditorState( const EditorStateSnapshot& s, bool restoreDirtyAndHistory = true );
 
 		// Selection accessors ----------------------------------------
 		// Selection is the (Category, entityName) tuple that drives both

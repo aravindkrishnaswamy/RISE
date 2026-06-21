@@ -1752,12 +1752,18 @@ SceneEditController::EditorStateSnapshot SceneEditController::CaptureEditorState
 	return st;
 }
 
-void SceneEditController::RestoreEditorState( const EditorStateSnapshot& st )
+void SceneEditController::RestoreEditorState( const EditorStateSnapshot& st, bool restoreDirtyAndHistory )
 {
-	// Restore dirty state (fires the dirty-changed listener) + selection,
-	// then re-run the selection-validation + Material/Medium panel resync
-	// SceneEditController::Undo does.
-	mEditor.RestoreDirtyState( st.dirty );
+	// P1-#1/#3: on a FULL rollback restore the dirty channels to the pre-
+	// transaction baseline (fires the dirty-changed listener) AND restore the
+	// redo stack the first transaction edit cleared.  On a PARTIAL rollback
+	// (residual mutations remain) do NEITHER: leave the dirty tracker showing
+	// the residual (so the Save button stays correctly lit) and leave history
+	// as-is.  Selection is always restored (not a residual-mutation concern).
+	if( restoreDirtyAndHistory ) {
+		mEditor.RestoreDirtyState( st.dirty );
+		mEditor.History().RestoreRedoFromSnapshot();
+	}
 	if( st.selectionByCategory.size() == static_cast<size_t>( kNumCategories ) ) {
 		for( int i = 0; i < kNumCategories; ++i ) {
 			mSelectionByCategory[i] = st.selectionByCategory[i];
@@ -1807,6 +1813,7 @@ bool SceneEditController::BeginTransaction()
 	}
 	mTxnOpen              = true;
 	mTxnBaseline = CaptureEditorState();   // H1: one owned baseline
+	mEditor.History().SnapshotRedoForRollback();   // P1-#3: so a full rollback restores the pre-transaction redo stack
 	return true;
 }
 
@@ -1879,11 +1886,18 @@ bool SceneEditController::RollbackTransaction()
 	// so force the depth back to a clean zero.
 	mEditor.ForceCompositeDepthZero();
 
+	// P1-#6: a rollback can fire mid-gesture.  Reset the controller's
+	// interaction state too -- otherwise the next pointer move resumes the
+	// rejected gesture outside the (now-closed) transaction.
+	mPointerDown.store( false, std::memory_order_release );
+	mGizmoDrag.active = false;
+	mScrubInProgress.store( false, std::memory_order_release );
+
 	// F7: restore the dirty channels + selection to the pre-transaction
 	// baseline so a fully reverted document doesn't keep showing unsaved
 	// changes (Undo RE-MARKS dirty; created entities are never un-marked),
 	// then re-run the selection/panel resync the controller's Undo does.
-	RestoreEditorState( mTxnBaseline );   // H1: dirty + selection + panel resync, one call
+	RestoreEditorState( mTxnBaseline, fullyReverted );   // H1 + P1-#1/#3: dirty/redo only on a full revert; selection always
 
 	// Close the transaction.
 	mTxnOpen              = false;

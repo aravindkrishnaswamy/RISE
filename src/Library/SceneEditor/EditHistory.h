@@ -97,6 +97,14 @@ namespace RISE
 		unsigned int UndoDepth() const;
 		unsigned int RedoDepth() const;
 
+		//! P1-#3 (transaction atomicity): snapshot/restore the REDO stack across a
+		//! transaction.  The first edit in a transaction clears the redo stack
+		//! (standard new-edit-invalidates-redo); on a FULL rollback the transaction
+		//! never committed, so that redo-clear side effect must be undone too.
+		//! BeginTransaction snapshots; a fully-reverted RollbackTransaction restores.
+		void SnapshotRedoForRollback() { mTxnRedoSnapshot = mRedoStack; }
+		void RestoreRedoFromSnapshot() { mRedoStack = mTxnRedoSnapshot; }
+
 		//! Label of the most recent composite (or top edit op name)
 		//! for the UI's "Undo <X>" menu item.
 		const char* LabelForUndo() const;
@@ -112,6 +120,7 @@ namespace RISE
 
 		std::deque<SceneEdit>           mUndoStack;
 		std::deque<SceneEdit>           mRedoStack;
+		std::deque<SceneEdit>           mTxnRedoSnapshot;   // P1-#3: pre-transaction redo stack
 		std::set<String, StringLess>    mDirtyObjects;
 		unsigned int                    mMaxEntries;
 		unsigned long long              mNextSeq;       ///< F2 monotonic edit id

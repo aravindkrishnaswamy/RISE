@@ -1449,6 +1449,153 @@ static void TestCompositeTimeScopeAggregation()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestPartialRollbackStaysDirty()
+{
+	std::cout << "Test: a PARTIAL rollback (undo target gone) leaves HasUnsavedChanges TRUE (P1-#1)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}, grey[3]={0.5,0.5,0.5};
+	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("p_grey",grey,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white"); pJob->AddLambertianMaterial("mat2","p_grey");
+	pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1part] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	Check( !ctrl.HasUnsavedChanges(), "[p1part] clean baseline" );
+
+	Check( ctrl.BeginTransaction(), "[p1part] begin txn" );
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String("obj") );
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Object, String("material"), String("mat2") ), "[p1part] material rebind in txn" );
+	Check( ctrl.HasUnsavedChanges(), "[p1part] dirty after edit" );
+	// Remove the edited object so its inverse-undo cannot find it -> partial revert.
+	Check( pJob->RemoveObject("obj"), "[p1part] obj removed mid-txn" );
+	ctrl.RollbackTransaction();
+	Check( ctrl.HasUnsavedChanges(), "[p1part] partial rollback leaves dirty -- not falsely clean (P1-#1)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestUndoDoesNotTouchWrongCamera()
+{
+	std::cout << "Test: undo of a removed camera's edit does NOT modify the active camera (P1-#5)" << std::endl;
+	Job* pJob = new Job();
+	double loc[3]={0,0,10}, la[3]={0,0,0}, up[3]={0,1,0}, orient[3]={0,0,0}, target[2]={0,0};
+	pJob->AddPinholeCamera("A",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	pJob->AddPinholeCamera("B",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1cam] scene"); pJob->release(); return; }
+	CameraCommon* ccB = dynamic_cast<CameraCommon*>(const_cast<ICamera*>(pScene->GetCameras()->GetItem("B")));
+	if(!ccB){ Check(false,"[p1cam] B"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	// Orbit B first so it has a distinctive non-zero orientation to protect.
+	pJob->SetActiveCamera("B");
+	{ SceneEdit e; e.op=SceneEdit::OrbitCamera; e.v3a=Vector3(100,0,0); ctrl.Editor().Apply(e); }
+	const double bOrient = (double)ccB->GetTargetOrientation().y;
+	Check( std::abs(bOrient) > 1e-4, "[p1cam] B orbited to non-zero" );
+	// Orbit A (records cameraTargetName=A), then remove A and make B active.
+	pJob->SetActiveCamera("A");
+	{ SceneEdit e; e.op=SceneEdit::OrbitCamera; e.v3a=Vector3(100,0,0); ctrl.Editor().Apply(e); }
+	pJob->SetActiveCamera("B");
+	Check( pJob->RemoveCamera("A"), "[p1cam] A removed" );
+	ctrl.Editor().Undo();   // undoes the A-orbit; A is gone
+	Check( std::abs((double)ccB->GetTargetOrientation().y - bOrient) < 1e-9, "[p1cam] active camera B NOT clobbered by undo of removed camera A (P1-#5)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestCompositeUndoPropagatesFailure()
+{
+	std::cout << "Test: composite undo returns FALSE when an inner mutation fails (P1-#2b)" << std::endl;
+	Job* pJob = new Job();
+	double loc[3]={0,0,10}, la[3]={0,0,0}, up[3]={0,1,0}, orient[3]={0,0,0}, target[2]={0,0};
+	pJob->AddPinholeCamera("A",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	pJob->AddPinholeCamera("B",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1prop] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	ctrl.Editor().BeginComposite("cam");
+	pJob->SetActiveCamera("A");
+	{ SceneEdit e; e.op=SceneEdit::OrbitCamera; e.v3a=Vector3(100,0,0); ctrl.Editor().Apply(e); }
+	ctrl.Editor().EndComposite();
+	Check( pJob->RemoveCamera("A"), "[p1prop] A removed" );
+	Check( !ctrl.Editor().Undo(), "[p1prop] composite undo returns false when an inner revert fails (P1-#2b)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestFullRollbackRestoresRedoStack()
+{
+	std::cout << "Test: a FULL rollback restores the pre-transaction redo stack (P1-#3)" << std::endl;
+	Job* pJob = new Job();
+	pJob->AddSphereGeometry("geom",1.0);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1redo] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	SceneEditor& ed = ctrl.Editor();
+	{ SceneEdit e; e.op=SceneEdit::SetSceneTime; e.s=5.0; ed.Apply(e); }
+	{ SceneEdit e; e.op=SceneEdit::SetSceneTime; e.s=8.0; ed.Apply(e); }
+	ed.Undo();   // 8->5; the t=8 edit is now on the redo stack
+	Check( ed.History().RedoDepth() == 1, "[p1redo] redo has 1 entry pre-txn" );
+	Check( ctrl.BeginTransaction(), "[p1redo] begin txn" );
+	{ SceneEdit e; e.op=SceneEdit::SetSceneTime; e.s=3.0; ed.Apply(e); }
+	Check( ed.History().RedoDepth() == 0, "[p1redo] first txn edit cleared redo" );
+	ctrl.RollbackTransaction();   // full revert
+	Check( ed.History().RedoDepth() == 1, "[p1redo] full rollback RESTORED the redo stack (P1-#3)" );
+	Check( ed.Redo(), "[p1redo] restored redo is functional" );
+	Check( std::abs((double)ed.LastSceneTime() - 8.0) < 1e-9, "[p1redo] redo re-applied the pre-txn edit (t=8)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestTrimDoesNotDrainOpenComposite()
+{
+	std::cout << "Test: TrimToMax does NOT drain an OPEN composite that exceeds the cap (P1-#4)" << std::endl;
+	EditHistory h( 4 );   // small cap so we exceed it quickly
+	SceneEdit beg; beg.op = SceneEdit::CompositeBegin; h.Push( beg );
+	for( int i=0; i<8; ++i ) { SceneEdit e; e.op = SceneEdit::SetSceneTime; e.s = (double)i; h.Push( e ); }
+	// 9 entries (Begin + 8) >> cap 4, but the composite is OPEN (no End).
+	Check( h.UndoDepth() == 9, "[p1trim] open composite survives over-cap, NOT drained (P1-#4)" );
+	// Closing it lets the next push trim the now-CLOSED composite atomically.
+	SceneEdit end; end.op = SceneEdit::CompositeEnd; h.Push( end );
+	SceneEdit extra; extra.op = SceneEdit::SetSceneTime; extra.s = 99.0; h.Push( extra );
+	Check( h.UndoDepth() == 1, "[p1trim] closed composite trims atomically (no orphan), leaving the trailing edit" );
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestRejectEditWithUnrepresentableInverse()
+{
+	std::cout << "Test: an edit whose inverse can't be represented is REJECTED, not a silent no-op undo (P1-#7)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}, grey[3]={0.5,0.5,0.5};
+	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("p_grey",grey,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white"); pJob->AddLambertianMaterial("mat2","p_grey");
+	pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1inv] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String("obj") );
+	// Unregister obj's current material: obj keeps it alive via its own ref,
+	// but it now has no manager name -> its inverse can't be represented.
+	Check( pJob->RemoveMaterial("mat1"), "[p1inv] mat1 unregistered (obj keeps it alive)" );
+	Check( !ctrl.SetPropertyForCategory( SceneEditController::Category::Object, String("material"), String("mat2") ), "[p1inv] rebind REJECTED -- unrepresentable inverse, not a silent no-op undo (P1-#7)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1478,6 +1625,12 @@ int main()
 	TestCompositeMixedOpsUndoRedo();
 	TestSetSceneTimeUndoRedo();
 	TestCompositeTimeScopeAggregation();
+	TestPartialRollbackStaysDirty();
+	TestUndoDoesNotTouchWrongCamera();
+	TestCompositeUndoPropagatesFailure();
+	TestFullRollbackRestoresRedoStack();
+	TestTrimDoesNotDrainOpenComposite();
+	TestRejectEditWithUnrepresentableInverse();
 
 	std::cout << std::endl
 	          << passCount << " passed, " << failCount << " failed."

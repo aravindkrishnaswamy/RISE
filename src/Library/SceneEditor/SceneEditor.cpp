@@ -947,35 +947,48 @@ struct DirtyChangeNotifier
 
 ICamera* SceneEditor::ResolveEditedCamera( const SceneEdit& e )
 {
-	// F4: restore the camera that was EDITED (recorded at Apply time),
-	// not whatever camera happens to be active now.  Fall back to the
-	// active camera for legacy edits that carry no recorded name.
+	// F4: restore the camera that was EDITED (recorded at Apply time), not
+	// whatever camera happens to be active now.
 	if( e.cameraTargetName.size() > 0 ) {
 		if( ICameraManager* cm = mScene.GetCamerasMutable() ) {
 			if( ICamera* c = cm->GetItem( e.cameraTargetName.c_str() ) ) return c;
 		}
+		// P1-#5: a recorded name that no longer resolves means the edited
+		// camera was removed.  Return null -- do NOT fall through to the
+		// active camera, or undo/rollback of camera A would silently
+		// overwrite whatever camera is active now (camera B).
+		return 0;
 	}
+	// Legacy edit with no recorded name: the active camera is the target.
 	return mScene.GetCameraMutable();
 }
 
 bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& painterName )
 {
 	// F1: shared SetMaterialProperty restore -- resolves the slot's pipe
-	// (Painter vs ScalarPainter) and rebinds it to `painterName`.  Undo
-	// passes prevPropertyValue; redo passes propertyValue.  Empty = no-op.
+	// (Painter vs ScalarPainter) and rebinds it to `painterName`.  Undo passes
+	// prevPropertyValue; redo passes propertyValue.
+	// P1-#2: return FALSE on any failure (empty name, unregistered painter,
+	// unknown slot kind, dispatch failure) so the composite/single walks can
+	// report a partial revert -- the old `return true` silently swallowed it.
 	if( !mMaterialManager ) return false;
 	IMaterial* mat = mMaterialManager->GetItem( e.objectName.c_str() );
 	if( !mat ) return false;
-	if( painterName.size() <= 1 ) return true;
+	if( painterName.size() <= 1 ) return false;
 	const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, e.propertyName );
-	if( cur.kind == MaterialSlotRef::Painter && mPainterManager ) {
+	if( cur.kind == MaterialSlotRef::Painter ) {
+		if( !mPainterManager ) return false;
 		const IPainter* p = mPainterManager->GetItem( painterName.c_str() );
-		if( p ) MaterialIntrospection::SetSlot( *mat, e.propertyName, p, 0 );
-	} else if( cur.kind == MaterialSlotRef::ScalarPainter && mScalarPainterManager ) {
-		const IScalarPainter* p = mScalarPainterManager->GetItem( painterName.c_str() );
-		if( p ) MaterialIntrospection::SetSlot( *mat, e.propertyName, 0, p );
+		if( !p ) return false;
+		return MaterialIntrospection::SetSlot( *mat, e.propertyName, p, 0 );
 	}
-	return true;
+	if( cur.kind == MaterialSlotRef::ScalarPainter ) {
+		if( !mScalarPainterManager ) return false;
+		const IScalarPainter* p = mScalarPainterManager->GetItem( painterName.c_str() );
+		if( !p ) return false;
+		return MaterialIntrospection::SetSlot( *mat, e.propertyName, 0, p );
+	}
+	return false;
 }
 
 bool SceneEditor::CaptureForApply( SceneEdit& edit )
@@ -1009,6 +1022,9 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 			}
 			edit.prevPropertyValue  = FindManagerName( mMaterialManager, obj->GetMaterial() );
 			edit.prevBindingWasNull = ( obj->GetMaterial() == 0 );
+			// P1-#7: a non-null prior material with no manager-registered name has
+			// no representable inverse -> reject rather than push a silent-no-op undo.
+			if( !edit.prevBindingWasNull && edit.prevPropertyValue.size() <= 1 ) return false;
 			break;
 		case SceneEdit::SetObjectShader:
 			if( !mShaderManager
@@ -1018,6 +1034,7 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 			}
 			edit.prevPropertyValue  = FindManagerName( mShaderManager, obj->GetShader() );
 			edit.prevBindingWasNull = ( obj->GetShader() == 0 );
+			if( !edit.prevBindingWasNull && edit.prevPropertyValue.size() <= 1 ) return false;   // P1-#7
 			break;
 		case SceneEdit::SetObjectShadowFlags:
 			edit.prevShadowFlags = static_cast<Scalar>(
@@ -1034,12 +1051,17 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 				}
 			}
 			edit.prevPropertyValue = FindMediumName( mJob, obj->GetInteriorMedium() );
+			// P1-#7: a non-null prior medium with no registered name has no inverse
+			// (undo would wrongly Clear it).  Empty prev is valid ONLY when there
+			// genuinely was no medium bound.
+			if( obj->GetInteriorMedium() != 0 && edit.prevPropertyValue.size() <= 1 ) return false;
 			break;
 		case SceneEdit::SetObjectGeometry:
 			if( !mJob || !mJob->GetGeometry( edit.propertyValue.c_str() ) ) {
 				return false;
 			}
 			edit.prevPropertyValue = FindGeometryName( mJob, obj->GetGeometry() );
+			if( edit.prevPropertyValue.size() <= 1 ) return false;   // P1-#7: prior geometry unregistered -> no inverse
 			break;
 		default:
 			break;
@@ -1226,20 +1248,21 @@ bool SceneEditor::Undo()
 	if( edit.op == SceneEdit::CompositeEnd )
 	{
 		bool sawObjectOp = false, sawCameraOp = false, sawTimeOp = false, sawPropertyOp = false;
+		bool allOk = true;   // P1-#2: track inner-mutation failures across the walk
 		while( true )
 		{
 			SceneEdit inner;
 			if( !mHistory.PopForUndo( inner ) ) break;
 			if( inner.op == SceneEdit::CompositeBegin ) break;
 			MarkEditEntityDirty( inner );
-			ApplyRevertMutation( inner );   // H2: ONE revert dispatch, shared with single Undo
+			if( !ApplyRevertMutation( inner ) ) allOk = false;   // P1-#2: propagate failure
 			if( SceneEdit::IsObjectOp( inner.op ) )                                          sawObjectOp = true;
 			else if( SceneEdit::IsCameraOp( inner.op ) || inner.op == SceneEdit::AddCamera ) sawCameraOp = true;
 			else if( inner.op == SceneEdit::SetSceneTime )                                   sawTimeOp = true;
 			else                                                                             sawPropertyOp = true;
 		}
 		mLastScope = AggregateCompositeScope( sawObjectOp, sawCameraOp, sawTimeOp, sawPropertyOp );
-		return true;
+		return allOk;   // P1-#2: false if any inner mutation failed (caller treats as partial)
 	}
 
 	// Single edit -> the shared revert dispatcher (same one the composite loop uses).
@@ -1612,20 +1635,21 @@ bool SceneEditor::Redo()
 	if( edit.op == SceneEdit::CompositeBegin )
 	{
 		bool sawObjectOp = false, sawCameraOp = false, sawTimeOp = false, sawPropertyOp = false;
+		bool allOk = true;   // P1-#2: track inner-mutation failures across the walk
 		while( true )
 		{
 			SceneEdit inner;
 			if( !mHistory.PopForRedo( inner ) ) break;
 			if( inner.op == SceneEdit::CompositeEnd ) break;
 			MarkEditEntityDirty( inner );
-			ApplyForwardMutation( inner );   // H2: ONE forward dispatch, shared with single Redo
+			if( !ApplyForwardMutation( inner ) ) allOk = false;   // P1-#2: propagate failure
 			if( SceneEdit::IsObjectOp( inner.op ) )                                          sawObjectOp = true;
 			else if( SceneEdit::IsCameraOp( inner.op ) || inner.op == SceneEdit::AddCamera ) sawCameraOp = true;
 			else if( inner.op == SceneEdit::SetSceneTime )                                   sawTimeOp = true;
 			else                                                                             sawPropertyOp = true;
 		}
 		mLastScope = AggregateCompositeScope( sawObjectOp, sawCameraOp, sawTimeOp, sawPropertyOp );
-		return true;
+		return allOk;   // P1-#2: false if any inner mutation failed (caller treats as partial)
 	}
 
 	return ApplyForwardMutation( edit );
