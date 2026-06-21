@@ -59,6 +59,14 @@ namespace RISE
 			const char * szName						///< [in] Name of requested element
 			) const = 0;
 
+		//! P1: monotonic per-registration serial of the named item (0 if absent).
+		//! Lets a caller that captured a target by NAME detect a remove + re-add under
+		//! the SAME name (a different instance) -- the serial changes on every AddItem.
+		//! Default 0 = "no identity tracking" for managers that don't implement it.
+		virtual unsigned long long GetItemSerial(
+			const char * szName						///< [in] Name of the item
+			) const { return 0; }
+
 		//! Requests long term use of an item
 		virtual Type* RequestItemUse(
 			const char * szName,					///< [in] Name of requested element

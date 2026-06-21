@@ -1941,6 +1941,35 @@ static void TestDoubleScrubBeginDoesNotStrandComposite()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestUndoRefusesOnNameReusedDifferentInstance()
+{
+	std::cout << "Test: undo refuses + does not corrupt when the captured target was replaced by a different instance under the same name (P1)" << std::endl;
+	Job* pJob = new Job();
+	double loc[3]={0,0,10}, la[3]={0,0,0}, up[3]={0,1,0}, orient[3]={0,0,0}, target[2]={0,0};
+	pJob->AddPinholeCamera("A",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1id] scene"); pJob->release(); return; }
+	pJob->SetActiveCamera("A");
+	SceneEditController ctrl(*pJob,0);
+	SceneEditor& ed = ctrl.Editor();
+	// Edit camera A -- captures A's identity serial S1.
+	{ SceneEdit e; e.op=SceneEdit::OrbitCamera; e.v3a=Vector3(100,0,0); Check(ed.Apply(e),"[p1id] orbit A"); }
+	// Replace A: remove it, register a DIFFERENT instance under the same name (serial S2).
+	Check( pJob->RemoveCamera("A"), "[p1id] remove camera A" );
+	double loc2[3]={5,5,5};
+	Check( pJob->AddPinholeCamera("A",loc2,la,up,0.6,1.0,0,0,orient,target,0.0,0.0), "[p1id] re-add a DIFFERENT camera A" );
+	pJob->SetActiveCamera("A");
+	CameraCommon* ccNew = dynamic_cast<CameraCommon*>(const_cast<ICamera*>(pScene->GetCameras()->GetItem("A")));
+	if(!ccNew){ Check(false,"[p1id] new A"); pJob->release(); return; }
+	// Give the replacement a DISTINCT state so a wrongful undo would be observable.
+	ccNew->SetTargetOrientation( Vector2(0.0, 0.5) );
+	Check( !ed.Undo(), "[p1id] undo REFUSES to apply captured state to the replacement instance (P1)" );
+	Check( std::abs((double)ccNew->GetTargetOrientation().y - 0.5) < 1e-12, "[p1id] replacement camera NOT corrupted by the refused undo (P1)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1988,6 +2017,7 @@ int main()
 	TestFailedRedoRestoresStackDepth();
 	TestCompositeUndoFailureIsAtomic();
 	TestDoubleScrubBeginDoesNotStrandComposite();
+	TestUndoRefusesOnNameReusedDifferentInstance();
 	TestRejectEditWithUnrepresentableInverse();
 	TestPartialCompositeUndoStillRefreshes();
 

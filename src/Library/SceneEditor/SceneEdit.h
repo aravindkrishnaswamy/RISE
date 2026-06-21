@@ -310,6 +310,10 @@ namespace RISE
 		//! trimming.  A transaction baseline records the next seq so rollback
 		//! can identify its edits even after the 1024-entry cap trims the front.
 		unsigned long long historySeq;
+		//! P1: monotonic serial of the EDITED entity at capture time (0 = op tracks no
+		//! identity).  Apply/Undo/Redo re-resolve by name and compare; a mismatch means a
+		//! remove+re-add put a DIFFERENT instance under the name -> refuse (don't corrupt it).
+		unsigned long long capturedTargetSerial;
 		TransformState prevTransformState;
 
 		//! Previous scene time (for SetSceneTime undo).
@@ -350,6 +354,7 @@ namespace RISE
 		, prevBindingWasNull( false )
 		, cameraTargetName()
 		, historySeq( 0 )
+		, capturedTargetSerial( 0 )
 		, prevTransformState()
 		, prevTime( 0 )
 		, prevCameraPos()

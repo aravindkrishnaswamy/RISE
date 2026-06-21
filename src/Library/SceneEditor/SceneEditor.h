@@ -344,6 +344,9 @@ namespace RISE
 		//! Undo/Redo restore the edited camera, not the active-later one.
 		//! Falls back to the active camera for legacy edits with no name.
 		class ICamera* ResolveEditedCamera( const SceneEdit& e );
+		// P1: serial of the entity whose STATE the op restores (object/camera/material/
+		// light), for remove+re-add identity detection.  0 = op tracks no identity.
+		unsigned long long ResolveTargetSerial( const SceneEdit& e ) const;
 
 		//! F1: rebind a material slot to a named painter -- shared by the
 		//! SetMaterialProperty single-edit AND composite-walk undo/redo arms.

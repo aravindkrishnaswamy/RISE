@@ -57,6 +57,11 @@ namespace RISE
 
 		ItemListType		items;
 
+		// P1: parallel per-name registration serial, bumped on every AddItem, so a
+		// remove+re-add under the same name yields a NEW serial (identity change).
+		unsigned long long							m_nNextSerial;
+		std::map<String,unsigned long long>			m_serials;
+
 		virtual ~GenericManager( )
 		{
 			Shutdown();
@@ -64,6 +69,7 @@ namespace RISE
 
 	public:
 		GenericManager( )
+		: m_nNextSerial( 0 )
 		{}
 
 		bool		AddItem( T* pItem, const char* szName )
@@ -84,6 +90,7 @@ namespace RISE
 
 			String vecName( szName );
 			items[vecName] = std::pair<T*,ReferencesListType>( pItem, ReferencesListType() );
+			m_serials[vecName] = ++m_nNextSerial;   // P1: identity serial
 			return true;
 		}
 
@@ -118,6 +125,7 @@ namespace RISE
 			// safe_release covers them on teardown.
 			safe_release( elem->second.first );
 			items.erase( elem );
+			m_serials.erase( vecName );   // P1: drop identity serial (a re-add gets a fresh one)
 			return true;
 		}
 
@@ -136,6 +144,15 @@ namespace RISE
 			}
 
 			return (*elem).second.first;
+		}
+
+		// P1: see IManager::GetItemSerial.
+		unsigned long long	GetItemSerial( const char* szName ) const
+		{
+			if( !szName ) return 0;
+			String vecName( szName );
+			typename std::map<String,unsigned long long>::const_iterator it = m_serials.find( vecName );
+			return ( it == m_serials.end() ) ? 0 : it->second;
 		}
 
 		T*			RequestItemUse( const char* szName, IDeletedCallback<T>& pFunc, IReference& pCaller )
@@ -206,6 +223,7 @@ namespace RISE
 			}
 
 			items.clear();
+			m_serials.clear();   // P1
 		}
 
 		unsigned int	getItemCount( ) const{ return static_cast<unsigned int>(items.size()); }

@@ -981,6 +981,32 @@ ICamera* SceneEditor::ResolveEditedCamera( const SceneEdit& e )
 	return mScene.GetCameraMutable();
 }
 
+unsigned long long SceneEditor::ResolveTargetSerial( const SceneEdit& e ) const
+{
+	// P1: the entity whose STATE this op restores -- compare its serial at capture vs
+	// apply to detect a remove+re-add of a DIFFERENT instance under the same name.
+	// 0 = no identity tracking: SetMediumProperty (mediums have no RemoveMedium so a
+	// name can't be reused), SetSceneTime, AddCamera (its undo removes the entity),
+	// composite markers, and legacy camera edits with no recorded name.
+	if( SceneEdit::IsObjectOp( e.op ) ) {
+		const IObjectManager* objs = mScene.GetObjects();
+		return objs ? objs->GetItemSerial( e.objectName.c_str() ) : 0;
+	}
+	if( SceneEdit::IsCameraOp( e.op ) || e.op == SceneEdit::SetCameraProperty ) {
+		const ICameraManager* cams = mScene.GetCameras();
+		return ( cams && e.cameraTargetName.size() > 0 )
+		     ? cams->GetItemSerial( e.cameraTargetName.c_str() ) : 0;
+	}
+	if( e.op == SceneEdit::SetMaterialProperty ) {
+		return mMaterialManager ? mMaterialManager->GetItemSerial( e.objectName.c_str() ) : 0;
+	}
+	if( e.op == SceneEdit::SetLightProperty ) {
+		const ILightManager* lights = mScene.GetLights();
+		return lights ? lights->GetItemSerial( e.objectName.c_str() ) : 0;
+	}
+	return 0;
+}
+
 bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& painterName )
 {
 	// F1: shared SetMaterialProperty restore -- resolves the slot's pipe
@@ -1244,6 +1270,10 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 	// reused by Redo and the composite-redo loop.  Either half returning false
 	// rejects the edit with no mutation and no history entry.
 	if( !CaptureForApply( edit ) )       return false;
+	// P1: capture the edited entity's identity serial AFTER CaptureForApply has set
+	// cameraTargetName etc.  Undo/Redo re-resolve by name + compare to catch a
+	// remove+re-add that put a different instance under the same name.
+	edit.capturedTargetSerial = ResolveTargetSerial( edit );
 	if( !ApplyForwardMutation( edit ) )  return false;
 	mHistory.Push( edit );
 	return true;
@@ -1323,6 +1353,13 @@ bool SceneEditor::Undo()
 
 bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 {
+
+	// P1: identity guard -- refuse if the captured target was removed and a DIFFERENT
+	// instance re-registered under the same name (serial mismatch); applying the
+	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
+	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
+	if( edit.capturedTargetSerial != 0 && ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
+		return false;
 	if( SceneEdit::IsObjectOp( edit.op ) )
 	{
 		IObjectPriv* obj = FindObject( edit.objectName );
@@ -1539,6 +1576,13 @@ SceneEditor::DirtyScope SceneEditor::AggregateCompositeScope( bool sawObjectOp, 
 
 bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 {
+
+	// P1: identity guard -- refuse if the captured target was removed and a DIFFERENT
+	// instance re-registered under the same name (serial mismatch); applying the
+	// captured state to the replacement would corrupt it.  capturedTargetSerial==0
+	// means the op tracks no identity (medium/time/marker/legacy) -> no check.
+	if( edit.capturedTargetSerial != 0 && ResolveTargetSerial( edit ) != edit.capturedTargetSerial )
+		return false;
 	if( SceneEdit::IsObjectOp( edit.op ) )
 	{
 		IObjectPriv* obj = FindObject( edit.objectName );
