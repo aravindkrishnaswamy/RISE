@@ -1,10 +1,11 @@
-# RISE Agentic Redesign — Decision Record (review rounds 1 & 2)
+# RISE Agentic Redesign — Decision Record (review rounds 1–3)
 
-> **Status:** authoritative. Round 1 resolved 8 P1 + 2 P2 (D1–D10). **Round 2** resolved 8 more P1 +
-> a P2 batch (**D11–D20**, below) — several of which *amend* round-1 decisions (D11/D12 amend D1;
-> D14 amends D9; D15/D16 amend D2; D17 amends D5/D6; D18 amends D10; D20 amends D4). Where a decision
-> conflicts with a facet doc (10–60) or the overview (00), **this document wins**, and the round-2
-> decisions win over the round-1 decisions they amend. Read after [`00-CHARTER.md`](00-CHARTER.md)
+> **Status:** authoritative. Round 1 → **D1–D10**; round 2 → **D11–D20**; round 3 → **D21–D28**.
+> Later decisions *amend* earlier ones (round 2: D11/D12 amend D1, D14 amends D9, D15/D16 amend D2,
+> D17 amends D5/D6, D18 amends D10, D20 amends D4; round 3: D21/D22 amend D12, D22 amends D5, D23
+> amends D11/D20, D24 amends D11, D25 amends D14, D26 completes D15, D27 amends D19, D28 amends D5).
+> Where a decision conflicts with a facet doc (10–60) or the overview (00), **this document wins**,
+> and a later decision wins over the earlier one it amends. Read after [`00-CHARTER.md`](00-CHARTER.md)
 > and [`00-OVERVIEW.md`](00-OVERVIEW.md).
 >
 > **Enabling permission (from the product owner):** *"I am open to deprecating anything. All the
@@ -495,3 +496,180 @@ Round 2 made the mechanics *correct* rather than smaller: COW is now closure-cop
 before publish (D12); the tree is a persistent rope with three separated hashes/ids (D15/D16); rename,
 assets, saves, status, and the cache all get precise contracts (D13/D14/D17/D20); and D19 deletes the
 last imperative language layer. The first slice (D18) can now actually exercise its gates.
+
+---
+
+# Review Round 3 (D21–D28)
+
+Round 3 tested the model against **existing engine capabilities** (animation, irradiance caching,
+render config) and against whether the **data structures** can deliver the claimed complexity. No
+P0s; 8 P1. Several are "downgrade the over-claim + name the prerequisite"; two (D21, D22) refine the
+derived-scene model. Net layered model after this round:
+
+```
+CST (persistent red-green + per-Version identity side-map, D26)
+  + AssetManifest (path → (size,mtime) prefilter → content hash)
+  + time t                       ← animation input (D21)
+        │ derive   — config-INDEPENDENT; manager roots are persistent maps (D23)
+        ▼
+DerivedScene(CST, assets, t)     immutable: realized geometry, materials, lights-as-emitters, TLAS
+        │ prepare(scene, RenderConfig)   — config-DEPENDENT (D22)
+        ▼
+PreparedRenderState              immutable: light samplers, photon maps (integrator-specific)
+        │ render(RenderConfig)           — render-LOCAL MUTABLE scratch (D21): irradiance cache, accum
+        ▼
+Image
+```
+
+## D21 — Animation = per-frame derivation; render-populated caches are render-local mutable (amends D12; resolves R3-P1-1)
+
+**Contradiction:** existing animation **mutates** scene objects / TLAS / photon maps / irradiance
+caches *during* rendering (`Scene.cpp:561`, `PixelBasedRasterizerHelper.cpp:1887`) — incompatible
+with sealed immutable snapshots (D12).
+
+**Decision (keep both capabilities; re-express them):**
+- **Animation is per-frame derivation.** **Time `t` is a derivation input** (alongside CST +
+  AssetManifest); each frame derives its own immutable `DerivedScene(t)` (keyframed params evaluate
+  at `t`). No mutation-during-render; an animation render is a *sequence of sealed snapshots*. This
+  matches the CST model (a `timeline` keyframes a param; derivation evaluates it at `t`).
+- **Caches populated DURING a pass (irradiance cache, accumulation buffers) are render-local mutable
+  state**, owned by the render pass — **NOT** part of the immutable snapshot. They may persist across
+  passes/frames for temporal coherence (the renderer's concern), keyed to the snapshot they
+  accelerate, and are invalidated when the scene changes.
+- **Caches built BEFORE a pass (photon maps, light samplers, TLAS) stay immutable in the snapshot**
+  (built at seal, D12) — they are computed-once inputs, not during-render-populated. (Photon-map
+  ownership: see D22 — they move to `PreparedRenderState`.)
+
+**Overrides:** D12's "snapshot owns … photon maps" is refined (built-before = immutable;
+populated-during = render-local). Animation is **not** deprecated — it is per-frame derivation.
+
+## D22 — Split DerivedScene (config-independent) from PreparedRenderState = prepare(scene, RenderConfig) (amends D12, D5; resolves R3-P1-2)
+
+**Contradiction:** light samplers + photon-map prep depend on rasterizer/integrator settings, and
+`render` permits an integrator override — so the render-ready scene is **not** purely `f(CST,
+AssetManifest)`.
+
+**Decision — two derivation layers:**
+- **`DerivedScene = f(CST, AssetManifest, t)`** — config-**independent**: realized/tessellated
+  geometry, materials, lights-as-emitters, **TLAS**. Cached by (CST-version, asset-content-hashes, t).
+- **`PreparedRenderState = prepare(DerivedScene, RenderConfig)`** — config-**dependent**: light
+  samplers (depend on the integrator's light-sampling strategy), **photon maps** (only for
+  photon-consuming integrators), integrator-specific structures. Cached by (DerivedScene-version,
+  RenderConfig). **`RenderConfig`** (rasterizer/integrator selection + the render-time override) is an
+  explicit third input.
+- Both layers are immutable + sealed (D12); the render loop adopts a `PreparedRenderState` at a pass
+  boundary. The render-time integrator override re-runs only `prepare`, not the scene derivation.
+
+**Overrides:** D12/D5 "snapshot owns light samplers + photon maps" → those live in
+`PreparedRenderState`; `DerivedScene` owns the config-independent scene + TLAS.
+
+## D23 — Persistent immutable containers are an explicit prerequisite for the O(closure) claims (amends D11, D20; resolves R3-P1-3)
+
+**Contradiction:** `GenericManager` uses mutable `std::map` and the "persistent" cache an
+`unordered_map`; copying either is O(N), so neither delivers O(closure)/O(log N) snapshot creation.
+
+**Decision:**
+- The **manager roots** (name→entity maps), the **derivation cache**, and the **identity side-map**
+  (D26) must be **persistent immutable containers** (HAMT / persistent balanced tree, immer-style) to
+  deliver O(log N) update + structural sharing across snapshots. This is a **named infrastructure
+  prerequisite**, on par with the red-green tree (D2) and the rope (D16).
+- **Honest v1 fallback:** a first implementation **may** use copy-on-snapshot mutable maps —
+  **O(N_entities) per snapshot** — which is acceptable while entity counts are modest and commits are
+  debounced. **In that case the complexity claims are explicitly O(N), not O(closure)/O(log N).** The
+  O(closure)/O(log N) headline is **gated on the persistent-container work** and must not be claimed
+  before it lands.
+
+**Overrides:** D11/D20 O(closure)/version-scoped-cache claims are gated on D23; un-gated they are O(N).
+
+## D24 — TLAS: full rebuild in v1; persistent/refit BVH is a named future prerequisite (amends D11; resolves R3-P1-4)
+
+**Contradiction:** D11 promised O(log N) TLAS path-copy, a worked example rebuilt the whole TLAS, and
+§6 left incremental TLAS open.
+
+**Decision:** **v1 fully rebuilds the TLAS** on any geometry/transform/structural change (O(N log N),
+acceptable: dwarfed by the render, edits are debounced). **Incremental TLAS** (a persistent BVH with
+path-copy, or refit-with-periodic-rebuild) is an **explicit, named future prerequisite** for cheap
+transform edits on very large scenes — **not** claimed for v1. The D11 "O(log N) path-copy of the
+TLAS" is withdrawn until the persistent-BVH work exists; until then a transform edit's cost includes
+a TLAS rebuild (still « the render).
+
+**Overrides:** D11's TLAS path-copy O(log N) → v1 full rebuild; refit/persistent-BVH = future.
+
+## D25 — Rename requires a head-stamped reference trace (amends D14; resolves R3-P1-5)
+
+**Contradiction:** derivation may lag head (D13), but rename runs against **head** using
+`ReferenceUse` data produced by **derivation** (at `derivedVersion ≤ head`). A reference added in
+head-but-not-yet-derived would be **missed**, silently leaving a dangling old name.
+
+**Decision:** **rename requires a `ReferenceUse` set stamped for the exact head** it renames against.
+`ReferenceUse` records carry the version they were traced at; if `derivedVersion < head`, the rename
+**synchronously brings the reference trace up to head first** (a full re-derive is not required — only
+the reference-tracing pass — and rename is a deliberate, infrequent op, so a synchronous trace-to-head
+is acceptable). A rename **never** runs against a stale trace; if it cannot obtain a head-stamped
+trace, it is refused (not silently partial).
+
+**Overrides:** D14 gains the head-stamping requirement.
+
+## D26 — Every Version owns a persistent occurrence/identity side-map (completes D15; resolves R3-P1-6)
+
+**Contradiction:** D15 put `NodeId` "in the red layer / a side-map," but a Version was described as
+just a green root + metadata — and identical green nodes can represent multiple occurrences, so there
+is no owned place for per-occurrence identity.
+
+**Decision:** **every `Version` owns a persistent occurrence/identity structure** (a side-tree or
+persistent map, parallel to the green tree, structurally shared across versions via D23's persistent
+containers) mapping each **occurrence/position → its stable `NodeId`**. This is where reparse-matching
+(D15) writes NodeId assignments and where rename/undo/UI bindings resolve a NodeId. A `Version` is
+therefore `{ greenRoot, identityRoot, derivationCacheRoot, metadata }` — all persistent, all
+structurally shared.
+
+**Overrides:** D15's "side-map" is concretized as a persistent per-Version identity root (depends on
+D23).
+
+## D27 — Migrate or retire ALL embedded `>` commands, incl. `> set light_rr_threshold` and the seven `> modify` forms (amends D19; resolves R3-P1-7)
+
+**Contradiction:** D19 only concretely handled `> set accelerator`/`global_medium`; the corpus also
+has `> set light_rr_threshold` and **seven `> modify`** commands.
+
+**Decision (uses the deprecation permission):** enumerate **every** surviving `>` command; v7 has
+none.
+- **`> set <render-setting>`** (e.g. `light_rr_threshold`) → a **declarative parameter** on the
+  relevant rasterizer/integrator chunk.
+- **`> modify <entity> …`** (imperative post-definition mutation) is **incompatible with a canonical
+  declarative document** and is **retired**: the **migrator folds each `> modify` into the target
+  entity's final authored values** (it computes the post-modify state and emits the entity chunk with
+  those values). No runtime `modify`.
+- The "every scene render-matches after migration" requirement **holds** because the migrator computes
+  the post-command state; the migration plan (F6) is amended to enumerate and handle (or explicitly
+  retire) **all** `>` forms, with a hard-fail on any unhandled command for hand review.
+
+**Overrides:** D19 is extended to the full `>` command set; F6's migrator gains `> set <setting>` →
+param and `> modify` → fold-into-chunk.
+
+## D28 — History preserves the CST only; re-derivation uses current asset bytes (amends D5; resolves R3-P1-8)
+
+**Contradiction:** the AssetManifest records a path + hash but **not the bytes**; after an asset is
+overwritten and cached snapshots are evicted, an older branch/version **cannot be re-derived** to its
+original pixels.
+
+**Decision (git-native framing):** **undo/redo/branch history preserves the CST (the source), not
+historical rendered output.** Re-deriving an old version uses the **current** asset bytes (the
+manifest is re-stamped on access); if an external asset changed, the old version's *render* may
+differ — this is **explicitly documented**, exactly like git versioning source while build inputs
+(large binaries) are the user's responsibility. A **content-addressed asset store** (snapshotting
+asset bytes by hash for fully reproducible historical renders) is a **named future option**, not core
+— the analogue of git-LFS, layered at the VCS boundary, not the editor. The "Scene = f(CST,
+AssetManifest)" purity holds *within a manifest*; across time, the manifest is the live filesystem.
+
+**Overrides:** D5 — the manifest is identity+fingerprint, not a byte store; history = CST-only; asset
+CAS is future.
+
+# Net effect (round 3)
+
+Round 3 made the model **honest about its prerequisites and its scope**: animation is per-frame
+derivation and irradiance caching is render-local (D21); scene derivation splits from render-config
+preparation (D22); the O(closure)/O(log N) headline is explicitly gated on persistent containers
+(D23) and the TLAS is full-rebuild-v1 (D24); rename is head-synchronized (D25); identity gets an owned
+persistent home (D26); the full `>` command set is migrated/retired (D27); and history is CST-only
+with an optional future asset store (D28). No capability is lost — animation and irradiance caching
+survive, re-expressed to fit the immutable-snapshot model.

@@ -2,11 +2,15 @@
 
 > **Status:** design-in-progress. One of six parallel facet docs under
 > [00-CHARTER.md](00-CHARTER.md). **Design only — no source, build, or scene changes.**
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1 & 2):** added external-file
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–3, D1–D28):** added external-file
 > conflict handling (atomic save + content-hash fingerprint, D6/D17); v7 is single-file (D7);
 > the read/patch contracts expose the coherent `{headVersion, derivedVersion, status}` version
 > surface (D13); name-path is addressing while the immutable NodeId is the stable lineage
-> identity (D9/D14/D15).
+> identity (D9/D14/D15); the render/derive tools take an explicit **`RenderConfig`** and an
+> integrator override re-runs only the config-dependent `prepare` layer, not the config-independent
+> scene derivation (D22); `rename` runs only against a **head-stamped** `ReferenceUse` trace (D25);
+> and branch/PR history preserves the **CST only** — a re-derived old version uses *current* asset
+> bytes (D28).
 > This facet owns the **RISE MCP server**, the **edit→validate→derive→render→observe loop**,
 > the **GUI-as-just-another-agent** unification (charter **L2**), **diff-able / git-native /
 > reviewable scenes**, **agent-edit safety & validation**, **product framing & differentiation**,
@@ -140,9 +144,9 @@ actions; Prompts = curated workflows), but the *tools* are re-cast onto the CST.
 |---|---|---|
 | `read_document` → `rise://cst/text` | Returns `{ text, version: {headVersion}, status, diagnostics, redactions: [{offset,length}] }` — the **whole canonical CST serialized to `.RISEscene` text** (comments + formatting preserved; this is what makes diffs reviewable, §5). Stamped with **`headVersion`** (the CST truth, §2.2.1.1): the text *is* the head, so it never lags. `headVersion` is the version a `propose_patch` precondition is checked against (optimistic concurrency, §2.4). Secrets length-preservingly masked with a **single-byte** ASCII mask (`*`) so every byte offset equals the canonical document's (the AI_SECURITY_MODEL §9 redaction contract — carried over verbatim because it is offset-faithfulness, not a Model-A artifact). | Facet 1 CST → serializer |
 | `read_node` → `rise://cst/node/{name-path}` | Returns one node's source span **addressed by name-path** (charter **L5**: `objects/sphere`, `objects/sphere.material`, `materials/gold.roughness`) as `{ text, nodeId, version: {headVersion}, status, spanOffset, redactions }` — stamped with **`headVersion`** like `read_document` (it reads the CST). Name-path is *addressing*, version-resolved against the head; it is **not** the durable identity (D9/D15): it changes on rename. An agent that must hold a reference to a node **across edits** keeps the returned immutable **`nodeId`** (the lineage identity) and re-addresses by name-path within a version. | Facet 1 name-path index → span |
-| `read_graph` → `rise://scene/graph` | Structured introspection of the **derived** scene: objects / cameras / lights / materials / media / film, each with type, resolved property rows, bound-material links, world-space transform + bbox. Stamped with **`derivedVersion`** + `status` + `diagnostics` (§2.2.1.1), **not** `headVersion` — when derivation lags or is broken this is what the scene actually reflects (may be `< headVersion`, or last-good on `status:error`). This is the *evaluated* view (what the CST *means*), complementary to the CST text (what the CST *says*); the two version ids are surfaced so a client is **never** told they are equal when they are not. | Facet 2 derived scene + introspection |
+| `read_graph` → `rise://scene/graph` | Structured introspection of the **derived** scene: objects / cameras / lights / materials / media / film, each with type, resolved property rows, bound-material links, world-space transform + bbox. Stamped with **`derivedVersion`** + `status` + `diagnostics` (§2.2.1.1), **not** `headVersion` — when derivation lags or is broken this is what the scene actually reflects (may be `< headVersion`, or last-good on `status:error`). This is the **config-INDEPENDENT** `DerivedScene` (D22: `f(CST, AssetManifest, t)` — geometry, materials, lights-as-emitters, TLAS); it carries **no `RenderConfig` stamp** because the graph does not depend on integrator/rasterizer selection (only the *rendered image* does, via the `PreparedRenderState` layer, §2.2.3). This is the *evaluated* view (what the CST *means*), complementary to the CST text (what the CST *says*); the two version ids are surfaced so a client is **never** told they are equal when they are not. | Facet 2 derived scene + introspection |
 | `read_schema` → `rise://grammar/schema` and `rise://grammar/node/{keyword}` | The whole grammar (or one chunk) as JSON Schema generated from `SceneGrammar::Instance()` (L6). **The agent's "what is the grammar" reference** — every keyword, its category, params with kind/enum/refs/defaults/units/descriptions. A *first-pass filter, not the parser* (§5). | `SchemaGen` over descriptors |
-| `read_image` → `rise://framebuffer` (+ `…/aov/{aov}`) | The latest **completed** preview as tone-mapped sRGB PNG (so a vision model sees what a human sees), with `?exposure`/`?max_dim`/`?region` query params, a `generation` counter so the agent can tell "is this the frame I asked for?", and the **`derivedVersion`** the frame was rendered from (the image reflects a derived snapshot, which may trail `headVersion`). AOVs (albedo/normal/depth/objectid/alpha) visualized; raw float via `?format=exr`. Never *triggers* a render. | Facet 2 render output / FrameStore |
+| `read_image` → `rise://framebuffer` (+ `…/aov/{aov}`) | The latest **completed** preview as tone-mapped sRGB PNG (so a vision model sees what a human sees), with `?exposure`/`?max_dim`/`?region` query params, a `generation` counter so the agent can tell "is this the frame I asked for?", and the **`derivedVersion`** the frame was rendered from (the image reflects a derived snapshot, which may trail `headVersion`) **plus the `RenderConfig` it was rendered with** (D22 — the integrator/rasterizer selection that produced these pixels; two images at the same `derivedVersion` differ if their `RenderConfig` differs). AOVs (albedo/normal/depth/objectid/alpha) visualized; raw float via `?format=exr`. Never *triggers* a render. | Facet 2 render output / FrameStore |
 | `read_diagnostics` → `rise://render/stats`, `…/autoroute`, `rise://log` | Render telemetry (resolution, samples, ETA, progress), the auto-router's resolved integrator + one-line reason ("Auto → BDPT: glossy/indirect variance high"), and the redacted log tail. Stamped with **`derivedVersion`** + `status` (§2.2.1.1) — it describes the render of a derived snapshot, which may trail the head. The numeric/structural channel the agent observes alongside the image. | counters / `AutoRasterizer` / log sink |
 
 `read_*` tools carry **no precondition** and read a **published immutable snapshot** of the CST +
@@ -169,7 +173,11 @@ status value**, and the read/return contracts stamp the right half of it:
 - **Derived reads** (`read_graph`, `read_image`, `read_diagnostics`) and the derivation tools
   (`render`, `derive_preview`, §2.2.3) are stamped with **`derivedVersion`** — which **may be
   `< headVersion`** (derivation in flight) or a **last-good** snapshot (`status:error`). `status` +
-  `diagnostics` explain *why* it lags or failed.
+  `diagnostics` explain *why* it lags or failed. The **config-independent** derived view
+  (`read_graph`, D22) carries `derivedVersion` alone; the **rendered** reads (`read_image`,
+  `read_diagnostics`, `render`'s result) additionally carry the **`RenderConfig`** the pixels were
+  produced with — because an image is a `PreparedRenderState = prepare(DerivedScene, RenderConfig)`,
+  so the same `derivedVersion` under two integrators yields two distinguishable images.
 - **Clients are never told the two are equal when they are not.** A vision agent that reads an image
   at `derivedVersion = N−1` while head is `N` knows it is looking at a stale frame and can wait for
   `status:ok` at `derivedVersion = N` (or re-`render`).
@@ -206,7 +214,14 @@ The two `patch` encodings:
    schema-shaped); `remove` deletes a node; `rename` rewrites a node's name **in place** — it is a
    **NodeId-preserving** op (D9), so it changes the node's name-path but not its lineage identity, and
    it fixes up referrers from the traced `ReferenceUse` records (D14), flagging any it cannot resolve
-   rather than silently leaving a dangling reference. This is the encoding the **GUI emits** for a
+   rather than silently leaving a dangling reference. **The `ReferenceUse` trace `rename` rewrites
+   from must be stamped for the exact head it renames against (D25):** because derivation can lag head
+   (the `derivedVersion` may be `< headVersion`, §2.2.1.1), a referrer added in head-but-not-yet-derived
+   would otherwise be missed, silently leaving a dangling old name. So if `derivedVersion < head` the
+   rename **synchronously brings the reference trace up to head first** (only the reference-tracing
+   pass, not a full re-derive — rename is a deliberate, infrequent op, so a synchronous trace-to-head
+   is acceptable). A `rename` **never** runs against a stale trace; if it cannot obtain a head-stamped
+   trace it is **refused**, not silently partial. This is the encoding the **GUI emits** for a
    slider drag or a panel edit (L2: the GUI is an agent that speaks `CstPatch`). It is the
    *preferred* agent encoding too, because it is minimal, name-path-anchored, and trivially
    diff-reviewable.
@@ -242,16 +257,27 @@ as a coarse version — but it is *always* a version, never a re-root that loses
 
 #### 2.2.3 Render & derivation tools (no scene mutation)
 
+These tools take a **`RenderConfig`** and surface the **two-layer derivation** (D22): the
+config-**independent** `DerivedScene = f(CST, AssetManifest, t)` (geometry, materials,
+lights-as-emitters, TLAS — what `read_graph` reflects) is derived once and cached; the
+config-**dependent** `PreparedRenderState = prepare(DerivedScene, RenderConfig)` (light samplers,
+photon maps, integrator-specific structures) is what the *image* reflects. The agent reads a
+`DerivedScene`; it renders a `PreparedRenderState`. An integrator/rasterizer override therefore
+re-runs **only `prepare`**, never the scene derivation — so swapping integrators never invalidates
+the graph the agent just read.
+
 | Tool | Contract |
 |---|---|
-| `render` | `{ integrator?: enum[auto,pt,bdpt,vcm,…], quality?: enum[draft,preview,final] \| {samples}, resolution?, region?, denoise?: bool, return_image?: bool=true }`. Submits a render of the **current derived scene** to the single render arbiter (RENDER_COORDINATOR semantics survive intact — one render slot, the arbiter decides preempt/queue/reject; this facet does **not** re-invent scheduling). `integrator:"auto"` routes through the auto-rasterizer and the result echoes `{ resolved, reason }`. A `preview` runs against a private film so it never tears a live framebuffer. **OIDN on for finals** (memory: denoise always on); `denoise:false` only for diagnostic A/B. |
+| `render` | Takes a **`RenderConfig`** (D22): `{ integrator?: enum[auto,pt,bdpt,vcm,…], quality?: enum[draft,preview,final] \| {samples}, resolution?, region?, denoise?: bool, return_image?: bool=true }` — the rasterizer/integrator selection (plus the render-time integrator override) that, together with the `DerivedScene`, fixes the rendered pixels. Submits a render of the **current derived scene** to the single render arbiter (RENDER_COORDINATOR semantics survive intact — one render slot, the arbiter decides preempt/queue/reject; this facet does **not** re-invent scheduling). **An integrator override re-runs only `prepare(DerivedScene, RenderConfig)` → `PreparedRenderState`** (the config-DEPENDENT layer — light samplers, photon maps), **not** the config-INDEPENDENT scene derivation (D22): the `DerivedScene` the agent reads via `read_graph` is unchanged by an integrator swap; only what the image reflects changes. The result is stamped with the `derivedVersion` it ran against **and the `RenderConfig` used** (§2.2.1.1). `integrator:"auto"` routes through the auto-rasterizer and the result echoes `{ resolved, reason }`. A `preview` runs against a private film so it never tears a live framebuffer. **OIDN on for finals** (memory: denoise always on); `denoise:false` only for diagnostic A/B. |
 | `stop_render` / `pause_render` / `resume_render` | `{}` — cooperative cancel via the arbiter. **There is no process-exit tool** (AI_SECURITY_MODEL §5). |
-| `derive_preview` (optional) | `{ baseHeadVersion, patch }` — derive a candidate patch's scene **without committing it**, returning the graph diff and (optionally) a preview render, **stamped with the candidate's `derivedVersion` + `status`** (§2.2.1.1: a preview is a derived view). The "what would this change look like" dry-run, decoupled from commit. Implemented atop Facet 2's incremental derivation against a throwaway derivation context. Lets an L1 agent show the user a *rendered* preview of a proposal before it lands. |
+| `derive_preview` (optional) | `{ baseHeadVersion, patch, render_config?: RenderConfig }` — derive a candidate patch's **config-INDEPENDENT** `DerivedScene` **without committing it** (D22), returning the graph diff and (optionally, when `render_config` is supplied) a preview render. The graph diff is **stamped with the candidate's `derivedVersion` + `status`** (§2.2.1.1: a preview is a derived view); an attached preview image is additionally **stamped with the `RenderConfig`** used (an integrator choice runs only `prepare` on the candidate `DerivedScene`, D22). The "what would this change look like" dry-run, decoupled from commit. Implemented atop Facet 2's incremental derivation against a throwaway derivation context. Lets an L1 agent show the user a *rendered* preview of a proposal before it lands. |
 
 Render tools carry **no document precondition** (they don't mutate the CST); a render's result is
-stamped with the **`derivedVersion`** it ran against (§2.2.1.1), and a render computed against a
-derived version that a newer head has since superseded is reconciled as *stale* by the arbiter (the
-stamp makes the staleness visible), not rejected.
+stamped with the **`derivedVersion`** it ran against **and the `RenderConfig` used** (§2.2.1.1, D22 —
+so two renders of the same `derivedVersion` are distinguishable when their integrator/rasterizer
+selection differs), and a render computed against a derived version that a newer head has since
+superseded is reconciled as *stale* by the arbiter (the stamp makes the staleness visible), not
+rejected.
 
 #### 2.2.4 The keystone — `validate`
 
@@ -534,7 +560,10 @@ inherit for free:
   diff the L1 gate shows in-app (one diff representation, every surface).
 - **Bisect a regression.** "The render got muddy 30 commits ago." `git bisect` over the scene history,
   re-rendering at each step, pinpoints the exact CST version (and, via provenance §2.6, *who/what*
-  made it). This is impossible when the file is a lossy serialization of a mutable model.
+  made it). This is impossible when the file is a lossy serialization of a mutable model. **Caveat
+  (D28): re-rendering an old version uses *current* asset bytes** — history preserves the CST (the
+  source), not the rendered output, so if a referenced texture/mesh/HDRI changed on disk since that
+  version, the re-render may differ even though the CST is identical (see the note below).
 - **Template / library scenes.** A scene is a program; programs compose. A studio keeps a library of
   reviewed lighting rigs, material packs, camera setups as scene fragments, branches a shot from a
   template, and cherry-picks an approved material change across shots. Declarative iteration (L3 —
@@ -543,6 +572,19 @@ inherit for free:
 - **Branch a look.** "Try a noir grade" = a branch. Three lighting variants = three branches a
   contact-sheet render compares. The agent's `lighting_variants` prompt becomes *N branches*, each a
   reviewable, mergeable document.
+
+**What history preserves — the CST only (per [`01-DECISIONS.md`](01-DECISIONS.md) §D28).** The
+branch/PR flow, `git bisect`, and any "re-derive an old version" path preserve the **CST (the
+source)**, **not** the historical rendered output. Re-deriving an old version (`Scene =
+f(CST, AssetManifest)`, D5) re-stamps the manifest against the **live filesystem**, so it uses the
+**current** asset bytes: if a referenced texture/mesh/HDRI/spectral file changed since that version,
+the old version's *render may differ* even though its CST is byte-identical. This is the deliberate
+git framing — git versions source while large binary build-inputs are the user's responsibility — and
+the `f(CST, AssetManifest)` purity holds *within* a manifest, not across time (where the manifest is
+the live filesystem). **Bit-for-bit reproducible historical renders therefore need a
+content-addressed asset store** (snapshotting asset bytes by hash — a git-LFS-style layer at the VCS
+boundary), which is a **named future option, NOT the editor** (D28): RISE's history layer stores the
+CST, and an asset CAS, if it lands, is a separate VCS-boundary feature.
 
 **What makes formatting-stable diffs possible (ties to INV-4, owned by Facet 1):** the lossless CST
 round-trips text unchanged, and a structured edit **re-serializes only the touched node's span**,
@@ -724,11 +766,21 @@ What Facet 5 assumes about its neighbors (for synthesis to reconcile):
   (so a `TextPatch` → re-parse → CST is well-defined). (d) `rename` fixes up referrers from the
   **traced `ReferenceUse` records** (D14 — captures dynamic refs like `timeline.element`), with a
   descriptor-resolver fallback for un-derived subtrees and an explicit flag for any referrer it
-  cannot resolve (never a silent dangling rename) — Facet 5 surfaces whatever Facet 1 reports.
+  cannot resolve (never a silent dangling rename) — Facet 5 surfaces whatever Facet 1 reports. The
+  trace `rename` rewrites from must be **stamped for the exact head** (D25): if derivation lags head,
+  Facet 1/2 must bring the reference trace to head (the tracing pass only) before the rename rewrites
+  referrers, or **refuse** the rename — Facet 5 never issues a `rename` against a stale trace.
 - **From Facet 2 (derivation engine):** (a) `derive` is **incremental and fast enough** that
   pre-commit validation and `derive_preview` are interactive on common edits (open question #2). (b) A
   **throwaway/isolated derivation context** exists so `validate`/`derive_preview` have no side effects.
   (c) `derive` is pure & deterministic (INV-2) so a rendered preview of a patch is reproducible.
+  (d) **Two derivation layers** (D22): a config-**independent** `DerivedScene = f(CST, AssetManifest, t)`
+  (what `read_graph` reflects) and a config-**dependent** `PreparedRenderState =
+  prepare(DerivedScene, RenderConfig)` (light samplers, photon maps — what an image reflects), so an
+  integrator override re-runs only `prepare`. (e) **History is CST-only** (D28): re-deriving an old
+  version re-stamps the `AssetManifest` against the live filesystem (current asset bytes), so a
+  reproducible historical render is a future content-addressed-asset-store concern, not a derivation
+  guarantee — `f(CST, AssetManifest)` purity holds within a manifest, not across time.
 - **From Facet 3 (edit model & history):** (a) **the one CST-edit pathway** both clients commit through
   (L2/INV-6) — Facet 5 is a *client* of it, not its designer. (b) CST **versioning** is the commit
   primitive (atomic apply, the `baseHeadVersion` precondition, conflict-on-stale, undo/redo/branch).

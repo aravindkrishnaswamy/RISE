@@ -2,9 +2,11 @@
 
 > **Status:** design-in-progress. One of the parallel facet docs under the
 > [Agentic Redesign Charter](00-CHARTER.md). DESIGN ONLY — no code yet.
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1 & 2):** binding keys on the immutable
-> **NodeId** (lineage identity, D9/D15) and addresses by name-path; positions via the red cursor over
-> the persistent rope, not stored spans (D2/D16).
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–3):** binding keys on the immutable
+> **NodeId** (lineage identity, D9/D15), resolved via each Version's **persistent identity side-map**
+> (D26) and addressed by name-path; positions via the red cursor over the persistent rope, not stored
+> spans (D2/D16). A render preview the panel shows reflects a **`PreparedRenderState`** for a given
+> `RenderConfig` (D22); time-scrub is per-frame derivation (D21).
 > This facet owns: **the UI as a pure function of (CST + descriptor schema)**,
 > widget-per-node, adaptive/growing panels, two-way binding widget↔CST node,
 > the split form/source live view, reactive propagation, and the shared-C++ +

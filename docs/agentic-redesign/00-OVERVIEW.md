@@ -1,12 +1,13 @@
 # RISE Agentic Redesign — Synthesis & Overview
 
-> **Status:** **review rounds 1 & 2 complete** (no P0s in either). The reviews found 8 P1 + 2 P2
-> (round 1) and 8 P1 + a P2 batch (round 2), all resolved authoritatively in
-> [`01-DECISIONS.md`](01-DECISIONS.md) (**D1–D20**), which **supersedes the reconciliations in §3 and
+> **Status:** **review rounds 1–3 complete** (no P0s in any). The reviews found 8 P1 + 2 P2 (r1),
+> 8 P1 + a P2 batch (r2), and 8 P1 (r3), all resolved authoritatively in
+> [`01-DECISIONS.md`](01-DECISIONS.md) (**D1–D28**), which **supersedes the reconciliations in §3 and
 > the first-slice in §6 below** and overrides the facet docs where they conflict. This document
 > synthesizes the six facet designs and their seams; read [`00-CHARTER.md`](00-CHARTER.md) for the
-> locked/open decisions, then [`01-DECISIONS.md`](01-DECISIONS.md) for the resolutions (round 2's
-> D11–D20 amend several round-1 decisions).
+> locked/open decisions, then [`01-DECISIONS.md`](01-DECISIONS.md) for the resolutions (later rounds
+> amend earlier decisions; r3 layered the derived-scene model — D21/D22 — and made the complexity
+> claims honest about prerequisites — D23/D24).
 
 ## 0. Reading guide (for the reviewer)
 
@@ -70,6 +71,11 @@ Per-facet headline:
   flags (`BumpLightTopologyGeneration`, TLAS-valid, photon-pending) set precisely (killing
   P-INVALIDATE); memo keys are the node's trivia-insensitive **derivation key** — semantic structure
   + traced-input versions (D4/D15) — not text spans and not raw resolved values (so `expr(A)` ≠ `5`).
+  **Layered (r3):** `DerivedScene = f(CST, assets, t)` (config-independent: geometry + TLAS) then
+  `PreparedRenderState = prepare(scene, RenderConfig)` (light samplers + photon maps) — D22; animation
+  is per-frame derivation (time `t` is an input) and irradiance caching is render-local mutable — D21;
+  TLAS is full-rebuild-v1 and the O(closure)/O(log N) headline is gated on persistent containers —
+  D24/D23.
 - **F3 (Edit/History):** an edit is `CstPatch → new immutable root`; undo/redo is a pointer move
   over a structurally-shared version DAG; a gesture coalesces patches and commits *one* version
   (dissolving composites/transactions/rollback/atomicity/identity-serial); lossless round-trip is
