@@ -108,7 +108,7 @@ namespace RISE
 		//! rollback (feature/gui-snapshot-prototype #2b(b)): a rollback
 		//! can fire mid-gesture, after BeginComposite opened a group and
 		//! the gesture's history (including the unmatched CompositeBegin)
-		//! has just been discarded by EditHistory::DiscardUndoTo.  If the
+		//! has just been reverted by SceneEditor::Undo's seq-walk + ClearRedo.  If the
 		//! tool's later EndComposite still saw depth>0 it would push an
 		//! ORPHAN CompositeEnd against the discarded history, corrupting
 		//! the next Undo's composite walk.  Resetting the depth makes
@@ -367,6 +367,17 @@ namespace RISE
 		//! ApplyForwardMutation + push, so the forward MUTATION now lives in
 		//! exactly one place (ApplyForwardMutation), shared by Apply/Redo.
 		bool CaptureForApply( SceneEdit& edit );
+
+		//! H2 (P-WALK finish): fold the composite walk's per-op-category saw-
+		//! flags into one scope -- shared by composite Undo AND Redo so the
+		//! aggregation lives in one place.  NOTE the deliberate asymmetry vs the
+		//! single-edit dispatchers: a SINGLE object *property* op (material /
+		//! shader) scopes to Dirty_ObjectTransform (every IsObjectOp does), but
+		//! the SAME op inside a composite lands in sawPropertyOp -> here ->
+		//! Dirty_Camera.  Both force a re-render, and OpNeedsSpatialRebuild (not
+		//! the scope) gates the actual BVH rebuild, so the divergence is
+		//! conservative and harmless.
+		DirtyScope AggregateCompositeScope( bool sawObjectOp, bool sawCameraOp, bool sawTimeOp, bool sawPropertyOp ) const;
 
 		//! Run the post-mutation invariant chain on a single object
 		//! and on the manager.

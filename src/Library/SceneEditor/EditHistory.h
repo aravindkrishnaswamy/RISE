@@ -43,31 +43,15 @@ namespace RISE
 		//! Returns false if the redo stack is empty.
 		bool PopForRedo( SceneEdit& outEdit );
 
-		//! Discard the most-recently-pushed undo entries down to
-		//! `targetDepth`, WITHOUT moving them onto the redo stack, then
-		//! clear the redo stack outright.  This is the "throw away these
-		//! uncommitted edits" primitive a transactional rollback needs:
-		//! unlike `PopForUndo` (which makes each popped edit redoable),
-		//! the discarded edits must NOT be re-appliable — the scene has
-		//! been restored from a baseline snapshot, so re-applying a
-		//! discarded gesture would double-apply onto the restored state.
-		//! Clearing the redo stack as well guarantees nothing is
-		//! redoable after a reject (the `EndComposite();Undo()` trap the
-		//! snapshot-rollback path exists to avoid).  No-op when
-		//! `targetDepth >= UndoDepth()` except that it still clears the
-		//! redo stack (a rollback always wants a clean redo stack).
-		void DiscardUndoTo( unsigned int targetDepth );
-
 		//! Discard the redo stack ONLY, leaving the undo stack and the
 		//! dirty-object set untouched.  The transactional rollback uses
 		//! this AFTER it has reverted live state by applying the inverse
 		//! edits (via SceneEditor::Undo, which moves each reverted record
 		//! onto the redo stack): a rolled-back gesture must NOT be
 		//! redoable, so the redo residue those inverse-applies left behind
-		//! is dropped.  Distinct from `DiscardUndoTo` (which ALSO trims the
-		//! undo stack) — by the time rollback calls this, the undo stack is
-		//! already back at the transaction baseline depth, so only the redo
-		//! stack needs clearing.  No-op when the redo stack is empty.
+		//! is dropped.  By the time rollback calls this -- after SceneEditor::Undo's
+		//! seq-walk has reverted the undo stack to the transaction baseline
+		//! depth -- only the redo stack needs clearing.  No-op when the redo stack is empty.
 		void ClearRedo();
 
 		//! Drop everything.

@@ -1238,11 +1238,7 @@ bool SceneEditor::Undo()
 			else if( inner.op == SceneEdit::SetSceneTime )                                   sawTimeOp = true;
 			else                                                                             sawPropertyOp = true;
 		}
-		if( sawObjectOp )                          mLastScope = Dirty_ObjectTransform;
-		else if( sawTimeOp && mScenePhotonsExist ) mLastScope = Dirty_TimeAndPhotons;
-		else if( sawTimeOp )                       mLastScope = Dirty_Time;
-		else if( sawCameraOp || sawPropertyOp )    mLastScope = Dirty_Camera;
-		else                                       mLastScope = Dirty_None;
+		mLastScope = AggregateCompositeScope( sawObjectOp, sawCameraOp, sawTimeOp, sawPropertyOp );
 		return true;
 	}
 
@@ -1448,8 +1444,20 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		return true;
 	}
 
+	// Unreachable for any valid SceneEdit::Op (every op is handled above).
+	// A new op MUST add a branch here + in the sibling dispatcher + CaptureForApply;
+	// this defensive default no-ops it as a camera-scope edit rather than crash.
 	mLastScope = Dirty_Camera;
 	return true;
+}
+
+SceneEditor::DirtyScope SceneEditor::AggregateCompositeScope( bool sawObjectOp, bool sawCameraOp, bool sawTimeOp, bool sawPropertyOp ) const
+{
+	if( sawObjectOp )                     return Dirty_ObjectTransform;
+	if( sawTimeOp && mScenePhotonsExist ) return Dirty_TimeAndPhotons;
+	if( sawTimeOp )                       return Dirty_Time;
+	if( sawCameraOp || sawPropertyOp )    return Dirty_Camera;
+	return Dirty_None;
 }
 
 bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
@@ -1584,6 +1592,9 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		return true;
 	}
 
+	// Unreachable for any valid SceneEdit::Op (every op is handled above).
+	// A new op MUST add a branch here + in the sibling dispatcher + CaptureForApply;
+	// this defensive default no-ops it as a camera-scope edit rather than crash.
 	mLastScope = Dirty_Camera;
 	return true;
 }
@@ -1613,11 +1624,7 @@ bool SceneEditor::Redo()
 			else if( inner.op == SceneEdit::SetSceneTime )                                   sawTimeOp = true;
 			else                                                                             sawPropertyOp = true;
 		}
-		if( sawObjectOp )                          mLastScope = Dirty_ObjectTransform;
-		else if( sawTimeOp && mScenePhotonsExist ) mLastScope = Dirty_TimeAndPhotons;
-		else if( sawTimeOp )                       mLastScope = Dirty_Time;
-		else if( sawCameraOp || sawPropertyOp )    mLastScope = Dirty_Camera;
-		else                                       mLastScope = Dirty_None;
+		mLastScope = AggregateCompositeScope( sawObjectOp, sawCameraOp, sawTimeOp, sawPropertyOp );
 		return true;
 	}
 
