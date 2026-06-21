@@ -81,11 +81,18 @@ that already exist.
 
 ## 3. Phase H2 — one applier + an inverse (fixes P-WALK)
 
-**✅ SHIPPED Stages 1+2 (commit `f5560ae8` + coverage commit).** The composite-Undo/Redo walks were ~180-line hand-maintained twins of the single paths; they now LOOP over two shared dispatchers `ApplyForwardMutation` / `ApplyRevertMutation` (each = the single-edit body verbatim), so single and composite can never drift again. **-253 lines.** 3-lens adversarial review: behaviour-identical (A, byte-for-byte bodies), complete (B, all 23 ops, no null/scope/notifier regression), drift bug class killed by construction (C); two surfaced coverage holes (SetSceneTime arm, composite `LastDirtyScope` aggregation) closed + RED-proven.
+**✅ SHIPPED Stages 1+2+3 (commits `f5560ae8` + coverage + `8fceb4c8` Stage 3 + review).** P-WALK fully closed. The composite-Undo/Redo walks were ~180-line hand-maintained twins of the single paths; they now LOOP over two shared dispatchers `ApplyForwardMutation` / `ApplyRevertMutation` (each = the single-edit body verbatim), so single and composite can never drift again, and (Stage 3) `Apply`'s forward mutation now routes through `ApplyForwardMutation` too. **-469 lines total.** 3-lens adversarial review: behaviour-identical (A, byte-for-byte bodies), complete (B, all 23 ops, no null/scope/notifier regression), drift bug class killed by construction (C); two surfaced coverage holes (SetSceneTime arm, composite `LastDirtyScope` aggregation) closed + RED-proven.
 
 **Shipped form vs the heading:** two *direction* dispatchers, NOT `Inverse(edit)->edit`. The forward half was already centralized in `ApplyObjectOpForward`/`ApplyCameraOpForward`; a total `Inverse` would need new ops (`RemoveCamera`, clear-binding, set-transform-matrix) since AddCamera's inverse is a remove and transform inverses are state-restores -- more invasive for marginal gain.
 
-**Residual (Stage 3, deferred):** `Apply` still carries its OWN forward dispatch separate from `ApplyForwardMutation` (the capture/validate phase is interleaved with mutation). Low risk today -- both delegate to the same per-op helpers, and the light-gen bump lives in the shared `MarkEditEntityDirty` -- but it is the next P-WALK seam: a new op needs a case in `Apply` (capture), `ApplyForwardMutation` (forward), and `ApplyRevertMutation` (revert). Merging Apply's forward into `ApplyForwardMutation` (after a capture/validate split) is the clean finish.
+**Stage 3 (SHIPPED, `8fceb4c8`):** `Apply` is now `CaptureForApply` (resolve + every
+rejection gate + prev* capture) + `ApplyForwardMutation` (the SHARED mutation + side
+effects + scope) + push. Forward mutation lives in EXACTLY one place, reused by Apply,
+single-Redo, and the composite-redo loop. Adding an op is now three single-purpose touch
+points: capture / forward-mutate / revert. Two-lens review confirmed behaviour-identical
+(all 30 rejection gates preserved; camera resolution stable since pActiveCamera ==
+GetItem(activeCameraName)); the only drifts were two log-only diagnostics, restored.
+`CaptureForApply` RED-proven load-bearing.
 
 **Benign asymmetry (A1, NOT changed):** `SetObjectGeometry` undo marks only the per-category Object dirty channel (via `MarkEditEntityDirty`), not the mNames transform channel that forward marks -- harmless (dirtiness is tracked either way) and pre-existing; left per the no-unprovable-change rule.
 
