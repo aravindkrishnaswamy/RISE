@@ -37,7 +37,7 @@ there be exactly one place.
 
 ## 2. Phase H1 — one owned editor-state snapshot (fixes P-STATE)
 
-**✅ SHIPPED (commit `47744de7`)** — behavior-identical; `EditorStateSnapshot` + `Capture/RestoreEditorState` are the single capture/restore path; `TestEditorStateSnapshotRoundTrip` round-trips dirty + the SFA 5th-set + selection. H3 and H2 remain.  **Post-review (3 adversarial lenses):** correctness confirmed behavior-identical; extended the snapshot to own the FULL selection state (per-category arrays + section-expanded, B-gap) and added listener-fire + cross-category coverage (C-gap). The forward "impossible to forget" guarantee is PARTIAL -- see the dirty-vs-selection note below.
+**✅ SHIPPED (commit `47744de7`)** — behavior-identical; `EditorStateSnapshot` + `Capture/RestoreEditorState` are the single capture/restore path; `TestEditorStateSnapshotRoundTrip` round-trips dirty + the SFA 5th-set + selection. H2 and H3 (light-set slice) shipped too.  **Post-review (3 adversarial lenses):** correctness confirmed behavior-identical; extended the snapshot to own the FULL selection state (per-category arrays + section-expanded, B-gap) and added listener-fire + cross-category coverage (C-gap). The forward "impossible to forget" guarantee is PARTIAL -- see the dirty-vs-selection note below.
 
 **Current brittleness.** A transaction baseline is three separate controller
 members (`mTxnBaselineSeq`, `mTxnBaselineDirty` (itself recently widened from
@@ -122,6 +122,23 @@ Sequence it AFTER H1 (a clean snapshot makes the refactor safer to verify).
 ---
 
 ## 4. Phase H3 — one light-topology invalidation chokepoint (fixes P-INVALIDATE)
+
+**✅ SHIPPED — NARROWED scope (commit `a5b38882` + fail-loud follow-up).** What shipped:
+the light SET self-invalidates -- `LightManager::AddItem`/`RemoveItem` fire a Job-installed
+callback that bumps `Scene::BumpLightTopologyGeneration`, so every light add/remove (present
+AND future) invalidates automatically; the 5 explicit Job light bumps are gone.  Renderer
+read-side UNCHANGED (one counter); ABI-safe (concrete setter + dynamic_cast, no
+`ILightManager` vtable change; fail-loud `else` if the cast ever nulls); over-bump-safe.
+The CONDITIONAL cases were deliberately NOT automated -- emissive object add/remove,
+material rebind, emission-scale, environment replace/scale, and in-place light-property
+edits stay explicit (`BumpSceneLightGen` / SceneEditor helpers) because they are inherently
+mutation-layer DECISIONS ("did this object become emissive?"), not forgettable unconditional
+bumps; automating them would over-invalidate (every object add rebuilding light samplers) or
+need object/material-layer firing -- a larger renderer-touching change not justified for a
+currently-correct path.  The broad "object/material layer fires + one
+`NotifyLightTopologyChanged` funnel" Target below is thus the ROAD-NOT-TAKEN (the funnel name
+was not introduced; `BumpLightTopologyGeneration` remains the funnel).  2-lens review: no
+under-invalidation, scope claim accurate; RED-proven ([h3rm] RemoveLight + [p2a2] add).
 
 **Current brittleness.** "An emitter/env changed → bump `mLightTopologyGeneration`"
 is open-coded at ~a dozen mutation sites across `SceneEditor` and `Job`. Each new

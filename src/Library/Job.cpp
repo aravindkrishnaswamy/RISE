@@ -319,6 +319,15 @@ void Job::InitializeContainers()
 	// they are inherently mutation-layer DECISIONS, not forgettable bumps.
 	if( RISE::Implementation::LightManager* lm = dynamic_cast<RISE::Implementation::LightManager*>( pLightManager ) ) {
 		lm->SetOnLightSetChanged( [this]{ BumpSceneLightGen( pScene ); } );
+	} else {
+		// Fail LOUD: the only in-tree ILightManager is LightManager, so this
+		// cannot happen today.  But a future out-of-tree manager would null the
+		// cast and light add/remove would silently invalidate NOTHING (the
+		// explicit bumps were removed) -> reused RayCasters keep stale samplers.
+		GlobalLog()->PrintEx( eLog_Warning,
+			"Job: light manager is not the expected LightManager type -- light add/"
+			"remove self-invalidation NOT installed; a reused RayCaster may keep "
+			"stale light samplers after a light is added or removed." );
 	}
 
 	// Default film: quarter HD (qHD) at square pixels.  Chosen as a
