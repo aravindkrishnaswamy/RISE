@@ -1224,6 +1224,46 @@ static void TestCompositeMultiCameraUndo()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestEditorStateSnapshotRoundTrip()
+{
+	std::cout << "Test: CaptureEditorState/RestoreEditorState round-trips ALL transactional state (H1)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}, grey[3]={0.5,0.5,0.5};
+	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("p_grey",grey,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white"); pJob->AddLambertianMaterial("mat2","p_grey");
+	pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[h1] scene"); pJob->release(); return; }
+	IObjectManager* objs = pJob->GetObjects();
+	SceneEditController ctrl(*pJob,0);
+
+	Check( !ctrl.HasUnsavedChanges(), "[h1] clean baseline" );
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String("obj") );
+	// Capture the ONE owned baseline.
+	const SceneEditController::EditorStateSnapshot snap = ctrl.CaptureEditorState();
+
+	// Mutate ALL THREE state kinds: tracker dirty (material rebind), the 5th
+	// scale-from-anchor set (SFA edit), and the selection.
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Object, String("material"), String("mat2") ), "[h1] material rebind" );
+	{ SceneEdit e; e.op = SceneEdit::ScaleObjectFromAnchor; e.objectName = String("obj"); e.v3a = Vector3(2,2,2);
+	  e.prevTransform = objs->GetItem("obj")->GetFinalTransformMatrix(); ctrl.Editor().Apply(e); }
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Material, String("mat2") );
+	Check( ctrl.HasUnsavedChanges(), "[h1] dirty after mutations" );
+	Check( ctrl.GetSelectionCategory() == SceneEditController::Category::Material, "[h1] selection changed" );
+
+	// One RestoreEditorState reverts dirty + the SFA set + selection.
+	ctrl.RestoreEditorState( snap );
+	Check( !ctrl.HasUnsavedChanges(), "[h1] dirty + SFA set cleared by one RestoreEditorState (H1)" );
+	Check( ctrl.GetSelectionCategory() == SceneEditController::Category::Object, "[h1] selection restored by the same snapshot (H1)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1246,6 +1286,7 @@ int main()
 	TestTransactionRefusesActiveCameraSwitch();
 	TestRollbackRestoresDirtyState();
 	TestRollbackRestoresScaleFromAnchorDirty();
+	TestEditorStateSnapshotRoundTrip();
 	TestCompositeMultiCameraUndo();
 
 	std::cout << std::endl

@@ -411,6 +411,20 @@ namespace RISE
 		//! false) if no transaction is open.
 		bool EndTransaction();
 
+		//! H1 (de-brittling, P-STATE): the COMPLETE transactional editor-state
+		//! baseline -- ONE owned struct captured at BeginTransaction and restored
+		//! on RollbackTransaction.  Adding new transactional state is a single
+		//! edit here + in Capture/RestoreEditorState (see
+		//! docs/gui/EDITOR_STATE_AND_TRANSACTION_HARDENING.md).
+		struct EditorStateSnapshot {
+			unsigned long long          historyMarker;     //!< EditHistory::NextSeq() at capture
+			SceneEditor::DirtySnapshot  dirty;             //!< ALL dirty sources (tracker + scale-from-anchor)
+			Category                    selectionCategory;
+			String                      selectionName;
+		};
+		EditorStateSnapshot CaptureEditorState() const;
+		void                RestoreEditorState( const EditorStateSnapshot& s );
+
 		// Selection accessors ----------------------------------------
 		// Selection is the (Category, entityName) tuple that drives both
 		// the accordion's expanded section and the property panel's
@@ -1053,10 +1067,7 @@ namespace RISE
 		// cancel-and-park RollbackTransaction already takes for the scene
 		// mutation itself.
 		bool                                 mTxnOpen;
-		unsigned long long                   mTxnBaselineSeq;     // F2: seq marker
-		SceneEditor::DirtySnapshot           mTxnBaselineDirty;   // F7: dirty snapshot (incl. scale-from-anchor set)
-		Category                             mTxnBaselineSelCat;  // F7: selection snapshot
-		String                               mTxnBaselineSelName;
+		EditorStateSnapshot                  mTxnBaseline;        // H1: one owned baseline (history marker + dirty + selection)
 
 		// Disable copy / move
 		SceneEditController( const SceneEditController& );

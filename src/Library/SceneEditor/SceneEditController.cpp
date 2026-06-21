@@ -149,8 +149,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mInRefinementPass( false )
 , mPolishState( static_cast<int>( PolishState::None ) )
 , mTxnOpen( false )
-, mTxnBaselineSeq( 0 )
-, mTxnBaselineSelCat( Category::None )
+, mTxnBaseline()
 {
 	if( mInteractiveRasterizer )
 	{
@@ -1741,6 +1740,32 @@ bool SceneEditController::RequestProductionRender()
 // deep-clone snapshot/restore primitive (see the EXPERIMENTAL note on
 // Scene::CreateSnapshot in Scene.h and the header doc for why).
 
+SceneEditController::EditorStateSnapshot SceneEditController::CaptureEditorState() const
+{
+	EditorStateSnapshot st;
+	st.historyMarker     = mEditor.History().NextSeq();
+	st.dirty             = mEditor.CaptureDirtyState();
+	st.selectionCategory = mSelectionCategory;
+	st.selectionName     = mSelectionName;
+	return st;
+}
+
+void SceneEditController::RestoreEditorState( const EditorStateSnapshot& st )
+{
+	// Restore dirty state (fires the dirty-changed listener) + selection,
+	// then re-run the selection-validation + Material/Medium panel resync
+	// SceneEditController::Undo does.
+	mEditor.RestoreDirtyState( st.dirty );
+	mSelectionCategory = st.selectionCategory;
+	mSelectionName     = st.selectionName;
+	if( !SelectionStillResolves( mJob, mSelectionCategory, mSelectionName ) ) {
+		mSelectionName = String();
+		const int sidx = static_cast<int>( mSelectionCategory );
+		if( sidx > 0 && sidx < kNumCategories ) { mSelectionByCategory[sidx] = String(); }
+	}
+	ResyncObjectBoundSections_();
+}
+
 bool SceneEditController::BeginTransaction()
 {
 	// Inverse-edit rollback works through the SceneEditor for ANY scene
@@ -1773,10 +1798,7 @@ bool SceneEditController::BeginTransaction()
 		return false;
 	}
 	mTxnOpen              = true;
-	mTxnBaselineSeq       = mEditor.History().NextSeq();   // F2: trim-immune marker
-	mTxnBaselineDirty     = mEditor.CaptureDirtyState();   // F7: dirty snapshot
-	mTxnBaselineSelCat    = mSelectionCategory;            // F7: selection snapshot
-	mTxnBaselineSelName   = mSelectionName;
+	mTxnBaseline = CaptureEditorState();   // H1: one owned baseline
 	return true;
 }
 
@@ -1827,13 +1849,13 @@ bool SceneEditController::RollbackTransaction()
 	// 1024-cap pinned UndoDepth (the old depth-only baseline silently
 	// no-op'd at the cap).  Each Undo reverts one logical unit (a closed
 	// composite reverts as a group).
-	while( mEditor.History().PeekUndoSeq( topSeq ) && topSeq >= mTxnBaselineSeq )
+	while( mEditor.History().PeekUndoSeq( topSeq ) && topSeq >= mTxnBaseline.historyMarker )
 	{
 		if( !mEditor.Undo() ) { fullyReverted = false; break; }   // target gone -> honest partial
 	}
 	// F2: if the cap trimmed a transaction edit (seq >= marker) off the
 	// front, the revert could not be complete -- report it honestly.
-	if( mEditor.History().DidTrim() && mEditor.History().MaxTrimmedSeq() >= mTxnBaselineSeq ) {
+	if( mEditor.History().DidTrim() && mEditor.History().MaxTrimmedSeq() >= mTxnBaseline.historyMarker ) {
 		fullyReverted = false;
 	}
 
@@ -1853,15 +1875,7 @@ bool SceneEditController::RollbackTransaction()
 	// baseline so a fully reverted document doesn't keep showing unsaved
 	// changes (Undo RE-MARKS dirty; created entities are never un-marked),
 	// then re-run the selection/panel resync the controller's Undo does.
-	mEditor.RestoreDirtyState( mTxnBaselineDirty );
-	mSelectionCategory = mTxnBaselineSelCat;
-	mSelectionName     = mTxnBaselineSelName;
-	if( !SelectionStillResolves( mJob, mSelectionCategory, mSelectionName ) ) {
-		mSelectionName = String();
-		const int sidx = static_cast<int>( mSelectionCategory );
-		if( sidx > 0 && sidx < kNumCategories ) { mSelectionByCategory[sidx] = String(); }
-	}
-	ResyncObjectBoundSections_();
+	RestoreEditorState( mTxnBaseline );   // H1: dirty + selection + panel resync, one call
 
 	// Close the transaction.
 	mTxnOpen              = false;
