@@ -81,6 +81,14 @@ that already exist.
 
 ## 3. Phase H2 — one applier + an inverse (fixes P-WALK)
 
+**✅ SHIPPED Stages 1+2 (commit `f5560ae8` + coverage commit).** The composite-Undo/Redo walks were ~180-line hand-maintained twins of the single paths; they now LOOP over two shared dispatchers `ApplyForwardMutation` / `ApplyRevertMutation` (each = the single-edit body verbatim), so single and composite can never drift again. **-253 lines.** 3-lens adversarial review: behaviour-identical (A, byte-for-byte bodies), complete (B, all 23 ops, no null/scope/notifier regression), drift bug class killed by construction (C); two surfaced coverage holes (SetSceneTime arm, composite `LastDirtyScope` aggregation) closed + RED-proven.
+
+**Shipped form vs the heading:** two *direction* dispatchers, NOT `Inverse(edit)->edit`. The forward half was already centralized in `ApplyObjectOpForward`/`ApplyCameraOpForward`; a total `Inverse` would need new ops (`RemoveCamera`, clear-binding, set-transform-matrix) since AddCamera's inverse is a remove and transform inverses are state-restores -- more invasive for marginal gain.
+
+**Residual (Stage 3, deferred):** `Apply` still carries its OWN forward dispatch separate from `ApplyForwardMutation` (the capture/validate phase is interleaved with mutation). Low risk today -- both delegate to the same per-op helpers, and the light-gen bump lives in the shared `MarkEditEntityDirty` -- but it is the next P-WALK seam: a new op needs a case in `Apply` (capture), `ApplyForwardMutation` (forward), and `ApplyRevertMutation` (revert). Merging Apply's forward into `ApplyForwardMutation` (after a capture/validate split) is the clean finish.
+
+**Benign asymmetry (A1, NOT changed):** `SetObjectGeometry` undo marks only the per-category Object dirty channel (via `MarkEditEntityDirty`), not the mNames transform channel that forward marks -- harmless (dirtiness is tracked either way) and pre-existing; left per the no-unprovable-change rule.
+
 **Current brittleness.** Five walks (`Apply`, single `Undo`, single `Redo`, the
 composite `Undo` walk, the composite `Redo` walk) each switch over the op kinds.
 A new op, or a fix to an existing op, must be made in up to five places; the
