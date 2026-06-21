@@ -1496,6 +1496,9 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		// has changed in the interim.
 		if( !mJob ) return false;
 		if( !CameraIntrospection::AddCameraFromSnapshot( *mJob, edit.objectName, edit.cameraSnapshot ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor: AddCamera failed for `%s` (duplicate name or unknown type)",
+				edit.objectName.c_str() );   // H2-S3: restore diagnostic lost in the Apply split
 			return false;
 		}
 		mJob->SetActiveCamera( edit.objectName.c_str() );
@@ -1520,7 +1523,12 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		// the Apply / Undo paths.
 		if( edit.propertyName == String( "shootphotons" ) ) {
 			bool newVal = false;
-			if( !ParseLenientBool( edit.propertyValue, newVal ) ) return false;   // H2-S3: surface parse failure so Apply can reject
+			if( !ParseLenientBool( edit.propertyValue, newVal ) ) {   // H2-S3: surface parse failure so Apply can reject
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: shootphotons edit rejected -- `%s` is not a recognised boolean (try true/false/yes/no/1/0)",
+					edit.propertyValue.c_str() );   // H2-S3: restore diagnostic lost in the Apply split
+				return false;
+			}
 			light->SetCanGeneratePhotons( newVal );
 			mLastScope = Dirty_Camera;
 			return true;
