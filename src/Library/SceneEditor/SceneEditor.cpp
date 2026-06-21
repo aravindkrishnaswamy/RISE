@@ -978,20 +978,214 @@ bool SceneEditor::ApplyMaterialSlotByName( const SceneEdit& e, const String& pai
 	return true;
 }
 
+bool SceneEditor::CaptureForApply( SceneEdit& edit )
+{
+	// H2 Stage 3: the capture/validate half of a first Apply.  No mutation,
+	// no history push, no scope -- those are ApplyForwardMutation's job.
+	// Returns false (reject) on any validation miss, exactly where the old
+	// inline Apply returned false.
+	if( SceneEdit::IsObjectOp( edit.op ) )
+	{
+		IObjectPriv* obj = FindObject( edit.objectName );
+		if( !obj ) return false;
+
+		// Capture transform state for undo (ScaleObjectFromAnchor carries a
+		// controller-supplied drag-start anchor in prevTransform -- never
+		// overwrite it).
+		if( edit.op != SceneEdit::ScaleObjectFromAnchor ) {
+			edit.prevTransform = obj->GetFinalTransformMatrix();
+			if( const Implementation::Transformable* t = dynamic_cast<const Implementation::Transformable*>( obj ) ) {
+				edit.prevTransformState = t->CaptureTransformState();
+				edit.hasTransformState  = true;
+			}
+		}
+
+		switch( edit.op ) {
+		case SceneEdit::SetObjectMaterial:
+			if( !mMaterialManager
+			 || !mMaterialManager->GetItem( edit.propertyValue.c_str() ) )
+			{
+				return false;
+			}
+			edit.prevPropertyValue  = FindManagerName( mMaterialManager, obj->GetMaterial() );
+			edit.prevBindingWasNull = ( obj->GetMaterial() == 0 );
+			break;
+		case SceneEdit::SetObjectShader:
+			if( !mShaderManager
+			 || !mShaderManager->GetItem( edit.propertyValue.c_str() ) )
+			{
+				return false;
+			}
+			edit.prevPropertyValue  = FindManagerName( mShaderManager, obj->GetShader() );
+			edit.prevBindingWasNull = ( obj->GetShader() == 0 );
+			break;
+		case SceneEdit::SetObjectShadowFlags:
+			edit.prevShadowFlags = static_cast<Scalar>(
+				( obj->DoesCastShadows()    ? 1 : 0 )
+			  | ( obj->DoesReceiveShadows() ? 2 : 0 ) );
+			break;
+		case SceneEdit::SetObjectInteriorMedium:
+			if( edit.propertyValue.size() > 1 && edit.propertyValue != String( "none" ) ) {
+				if( !mJob || !mJob->GetMedium( edit.propertyValue.c_str() ) ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"SceneEditor: interior_medium edit rejected -- `%s` is not a registered medium",
+						edit.propertyValue.c_str() );
+					return false;
+				}
+			}
+			edit.prevPropertyValue = FindMediumName( mJob, obj->GetInteriorMedium() );
+			break;
+		case SceneEdit::SetObjectGeometry:
+			if( !mJob || !mJob->GetGeometry( edit.propertyValue.c_str() ) ) {
+				return false;
+			}
+			edit.prevPropertyValue = FindGeometryName( mJob, obj->GetGeometry() );
+			break;
+		default:
+			break;
+		}
+		return true;
+	}
+
+	if( SceneEdit::IsCameraOp( edit.op ) )
+	{
+		ICamera* baseCam = mScene.GetCameraMutable();
+		if( !baseCam ) return false;
+		// Record the active camera name so ApplyForwardMutation resolves the
+		// SAME camera via ResolveEditedCamera (pActiveCamera == GetItem(name)).
+		edit.cameraTargetName = mScene.GetActiveCameraName();
+		Implementation::CameraCommon* cam =
+			dynamic_cast<Implementation::CameraCommon*>( baseCam );
+		if( !cam ) return true;   // skeleton camera: nothing to capture; forward arm no-ops
+		edit.prevCameraPos          = cam->GetRestLocation();
+		edit.prevCameraLookAt       = cam->GetStoredLookAt();
+		edit.prevCameraUp           = cam->GetStoredUp();
+		edit.prevCameraTargetOrient = cam->GetTargetOrientation();
+		edit.prevCameraOrient       = cam->GetEulerOrientation();
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetSceneTime )
+	{
+		edit.prevTime = mLastSetTime;
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetCameraProperty )
+	{
+		ICamera* baseCam = mScene.GetCameraMutable();
+		if( !baseCam ) return false;
+		edit.prevPropertyValue = CameraIntrospection::GetPropertyValue( *baseCam, edit.objectName );
+		edit.cameraTargetName  = mScene.GetActiveCameraName();
+		// The parse/read-only rejection is fused with the SetProperty mutation;
+		// ApplyForwardMutation surfaces it (returns false) so Apply rejects.
+		return true;
+	}
+
+	if( edit.op == SceneEdit::AddCamera )
+	{
+		if( !mJob ) return false;
+		if( edit.objectName.size() <= 1 ) return false;
+		edit.prevPropertyValue = String( mJob->GetActiveCameraName().c_str() );
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetMaterialProperty )
+	{
+		if( !mMaterialManager ) return false;
+		IMaterial* mat = mMaterialManager->GetItem( edit.objectName.c_str() );
+		if( !mat ) return false;
+		if( mJob && mJob->IsMaterialComposed( edit.objectName.c_str() ) ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor: SetMaterialProperty rejected on `%s` -- composed material "
+				"(PBR-MR / GGX-Emissive); rebinding a slot would break the painter graph. "
+				"Edit upstream painters instead.",
+				edit.objectName.c_str() );
+			return false;
+		}
+		const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, edit.propertyName );
+		if( cur.kind == MaterialSlotRef::None ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor: SetMaterialProperty rejected -- `%s` has no slot named `%s`",
+				edit.objectName.c_str(), edit.propertyName.c_str() );
+			return false;
+		}
+		if( cur.kind == MaterialSlotRef::Painter ) {
+			if( !mPainterManager ) return false;
+			if( !mPainterManager->GetItem( edit.propertyValue.c_str() ) ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: SetMaterialProperty rejected -- painter `%s` is not registered",
+					edit.propertyValue.c_str() );
+				return false;
+			}
+			edit.prevPropertyValue = FindManagerName( mPainterManager, cur.painter );
+			if( edit.prevPropertyValue.size() <= 1 ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: SetMaterialProperty on `%s.%s` rejected -- current painter "
+					"has no manager-registered name, so undo cannot restore the prior binding.",
+					edit.objectName.c_str(), edit.propertyName.c_str() );
+				return false;
+			}
+		} else {
+			if( !mScalarPainterManager ) return false;
+			if( !mScalarPainterManager->GetItem( edit.propertyValue.c_str() ) ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: SetMaterialProperty rejected -- scalar_painter `%s` is not registered",
+					edit.propertyValue.c_str() );
+				return false;
+			}
+			edit.prevPropertyValue = FindManagerName( mScalarPainterManager, cur.scalarPainter );
+			if( edit.prevPropertyValue.size() <= 1 ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: SetMaterialProperty on `%s.%s` rejected -- current scalar_painter "
+					"has no manager-registered name, so undo cannot restore the prior binding.",
+					edit.objectName.c_str(), edit.propertyName.c_str() );
+				return false;
+			}
+		}
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetLightProperty )
+	{
+		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
+		if( !lights ) return false;
+		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
+		if( !light ) return false;
+		if( edit.propertyName == String( "shootphotons" ) ) {
+			edit.prevPropertyValue = String( light->CanGeneratePhotons() ? "true" : "false" );
+			return true;
+		}
+		edit.prevPropertyValue = ReadLightProperty( *light, edit.propertyName );
+		// The keyframe-parse rejection is fused with the mutation;
+		// ApplyForwardMutation surfaces it so Apply rejects.
+		return true;
+	}
+
+	if( edit.op == SceneEdit::SetMediumProperty )
+	{
+		if( !mJob ) return false;
+		const IMedium* medConst = mJob->GetMedium( edit.objectName.c_str() );
+		if( !medConst ) return false;
+		IMedium* medium = const_cast<IMedium*>( medConst );
+		edit.prevPropertyValue = ReadMediumProperty( *medium, edit.propertyName );
+		if( edit.prevPropertyValue.size() <= 1 ) return false;
+		return true;
+	}
+
+	return false;   // unknown op
+}
+
 bool SceneEditor::Apply( const SceneEdit& editIn )
 {
 	DirtyChangeNotifier _notifier( this );
 	SceneEdit edit = editIn;
 
-	// Phase B: route property-shaped edits into the per-category
-	// dirty channel up front.  Safe to mark before dispatch — the
-	// save engine's property pass diffs current-vs-loaded values, so
-	// an edit that later fails or nets to no change just produces a
-	// NoOp for that entity.  Transform ops + composite markers are
-	// skipped by the helper.
+	// Route property-shaped edits into the per-category dirty channel up front
+	// (transform ops + composite markers are skipped by the helper).
 	MarkEditEntityDirty( edit );
 
-	// Composite markers: just push, no mutation, no scope change.
+	// Composite markers: push, adjust depth, no mutation.
 	if( edit.op == SceneEdit::CompositeBegin )
 	{
 		++mCompositeDepth;
@@ -1005,424 +1199,14 @@ bool SceneEditor::Apply( const SceneEdit& editIn )
 		return true;
 	}
 
-	if( SceneEdit::IsObjectOp( edit.op ) )
-	{
-		IObjectPriv* obj = FindObject( edit.objectName );
-		if( !obj ) return false;
-
-		// Capture state BEFORE mutation.  Transform-shaped ops use
-		// `prevTransform`; property-shaped ops (material / shader /
-		// shadow flags) use `prevPropertyValue` (or `prevShadowFlags`
-		// for the bit-packed bool pair) so the appropriate per-op
-		// restorer in Undo can replay the prior state.
-		//
-		// EXCEPTION: `ScaleObjectFromAnchor` carries a controller-
-		// supplied anchor matrix captured at drag-START — overwriting
-		// it on every per-frame Apply would replace the anchor with
-		// the previous frame's already-scaled state, so the cumulative
-		// drag factor would compound across frames.  The controller
-		// pre-populates `prevTransform` once at OnPointerDown; we keep
-		// it through every frame of the drag.
-		if( edit.op != SceneEdit::ScaleObjectFromAnchor ) {
-			edit.prevTransform = obj->GetFinalTransformMatrix();
-			// Pre-existing transform-undo composition fix: also capture the
-			// full component-decomposed state so Undo restores the position /
-			// orientation / scale / stretch COMPONENTS (RestoreTransformState),
-			// not just the collapsed matrix -- then a later absolute setter
-			// replaces the right component instead of composing with a baseline
-			// pushed onto the stack.
-			if( const Implementation::Transformable* t = dynamic_cast<const Implementation::Transformable*>( obj ) ) {
-				edit.prevTransformState = t->CaptureTransformState();
-				edit.hasTransformState  = true;
-			}
-		}
-
-		switch( edit.op ) {
-		case SceneEdit::SetObjectMaterial:
-			// Validate the new name resolves to a registered material
-			// BEFORE pushing history.  Without this, a stale or
-			// mistyped name would silently no-op in
-			// ApplyObjectOpForward yet still report success and
-			// poison the undo stack with a no-op entry.
-			if( !mMaterialManager
-			 || !mMaterialManager->GetItem( edit.propertyValue.c_str() ) )
-			{
-				return false;
-			}
-			edit.prevPropertyValue = FindManagerName( mMaterialManager, obj->GetMaterial() );
-			edit.prevBindingWasNull = ( obj->GetMaterial() == 0 );
-			break;
-		case SceneEdit::SetObjectShader:
-			// Same validation as material — prevent silent no-ops on
-			// stale shader names.
-			if( !mShaderManager
-			 || !mShaderManager->GetItem( edit.propertyValue.c_str() ) )
-			{
-				return false;
-			}
-			edit.prevPropertyValue = FindManagerName( mShaderManager, obj->GetShader() );
-			edit.prevBindingWasNull = ( obj->GetShader() == 0 );
-			break;
-		case SceneEdit::SetObjectShadowFlags:
-			edit.prevShadowFlags = static_cast<Scalar>(
-				( obj->DoesCastShadows()    ? 1 : 0 )
-			  | ( obj->DoesReceiveShadows() ? 2 : 0 ) );
-			break;
-		case SceneEdit::SetObjectInteriorMedium:
-			// Empty propertyValue OR the literal "none" = "clear the
-			// interior medium" (parser-parity sentinel; see
-			// SceneEdit.h doc).  Non-"none" non-empty must resolve to
-			// a registered medium.  Validate BEFORE pushing history —
-			// same rationale as material / shader: silently no-op'ing
-			// a stale/mistyped name would still push a poison undo
-			// entry.
-			if( edit.propertyValue.size() > 1 && edit.propertyValue != String( "none" ) ) {
-				if( !mJob || !mJob->GetMedium( edit.propertyValue.c_str() ) ) {
-					GlobalLog()->PrintEx( eLog_Warning,
-						"SceneEditor: interior_medium edit rejected — `%s` is not a registered medium",
-						edit.propertyValue.c_str() );
-					return false;
-				}
-			}
-			// Reverse-lookup the prior medium for undo.  Empty result
-			// = "no medium was bound"; undo's ClearInteriorMedium path
-			// handles that round-trip cleanly.
-			edit.prevPropertyValue = FindMediumName( mJob, obj->GetInteriorMedium() );
-			break;
-		case SceneEdit::SetObjectGeometry:
-			// Validate the new geometry name resolves BEFORE pushing
-			// history — same rationale as material/shader: a stale or
-			// mistyped name would silently no-op yet poison undo.
-			if( !mJob || !mJob->GetGeometry( edit.propertyValue.c_str() ) ) {
-				return false;
-			}
-			edit.prevPropertyValue = FindGeometryName( mJob, obj->GetGeometry() );
-			break;
-		default:
-			break;
-		}
-
-		ApplyObjectOpForward( *obj, edit );
-		// Property-style ops don't need the spatial-structure rebuild
-		// that transform changes do.  Run the invariant chain only
-		// for transform ops to avoid an unnecessary BSP invalidation
-		// per material/shader/shadow click.
-		const bool needsSpatialRebuild = SceneEdit::OpNeedsSpatialRebuild( edit.op );
-		if( needsSpatialRebuild ) {
-			RunObjectInvariantChain( *obj );
-			// Phase 6.3 (§7.2): every transform-shaped op marks the
-			// target dirty.  Property ops (material / shader / etc.)
-			// are V1-out-of-scope for round-trip save and do NOT
-			// touch the tracker.
-			mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
-			if( edit.op == SceneEdit::ScaleObjectFromAnchor ) {
-				// Pinned 2.8 / R2 §7: always-matrix policy.
-				mScaleFromAnchorSet.insert( std::string( edit.objectName.c_str() ) );
-			}
-		}
-		mHistory.Push( edit );
-		mLastScope = Dirty_ObjectTransform;
-		return true;
-	}
-
-	if( SceneEdit::IsCameraOp( edit.op ) )
-	{
-		ICamera* baseCam = mScene.GetCameraMutable();
-		if( !baseCam ) return false;
-
-		// All standard concrete cameras (PinholeCamera, ThinLensCamera,
-		// FisheyeCamera, OrthographicCamera) inherit from CameraCommon.
-		// External-implementor cameras would fall back to no-op which
-		// is consistent with skeleton-mode behaviour.
-		Implementation::CameraCommon* cam =
-			dynamic_cast<Implementation::CameraCommon*>( baseCam );
-		if( !cam )
-		{
-			mLastScope = Dirty_Camera;
-			mHistory.Push( edit );
-			return true;
-		}
-
-		// Capture state BEFORE mutation, for undo.  Record everything
-		// regardless of which op this is — most ops touch only one of
-		// these but capturing all five is cheap (a few words) and
-		// keeps Undo's restore path uniform.
-		//
-		// Use GetRestLocation() (vPosition) for prevCameraPos — NOT
-		// GetLocation() (post-orbit frame.origin).  RestoreCameraTransform
-		// passes prevCameraPos to SetLocation, which writes vPosition;
-		// if we captured the post-orbit position and wrote it back as
-		// vPosition, Recompute would re-apply target_orientation on
-		// top of an already-orbited point, breaking undo whenever the
-		// camera has non-zero target_orientation.
-		edit.prevCameraPos          = cam->GetRestLocation();
-		edit.prevCameraLookAt       = cam->GetStoredLookAt();
-		edit.prevCameraUp           = cam->GetStoredUp();
-		edit.prevCameraTargetOrient = cam->GetTargetOrientation();
-		edit.prevCameraOrient       = cam->GetEulerOrientation();
-		edit.cameraTargetName       = mScene.GetActiveCameraName();
-
-		ApplyCameraOpForward( *cam, edit, SceneScale() );
-		cam->RegenerateData();
-
-		mLastScope = Dirty_Camera;
-		mHistory.Push( edit );
-		return true;
-	}
-
-	if( edit.op == SceneEdit::SetSceneTime )
-	{
-		// Capture previous time from our local cache (IScene does not
-		// expose GetSceneTime); apply the new time and update the cache.
-		edit.prevTime = mLastSetTime;
-		mScene.SetSceneTimeForPreview( edit.s );
-		mLastSetTime = edit.s;
-		mLastScope = mScenePhotonsExist ? Dirty_TimeAndPhotons : Dirty_Time;
-		mHistory.Push( edit );
-		return true;
-	}
-
-	if( edit.op == SceneEdit::SetCameraProperty )
-	{
-		ICamera* baseCam = mScene.GetCameraMutable();
-		if( !baseCam ) return false;
-
-		// Capture the prev value through the same formatter the
-		// panel uses for display, so undo round-trips losslessly
-		// through CameraIntrospection::SetProperty.
-		edit.prevPropertyValue = CameraIntrospection::GetPropertyValue( *baseCam, edit.objectName );
-		edit.cameraTargetName  = mScene.GetActiveCameraName();
-
-		if( !CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.propertyValue ) )
-		{
-			return false;   // parse failure or read-only
-		}
-		mLastScope = Dirty_Camera;
-		mHistory.Push( edit );
-		return true;
-	}
-
-	if( edit.op == SceneEdit::AddCamera )
-	{
-		// objectName carries the NEW camera's name.  cameraSnapshot
-		// carries the full source-camera state at Apply time.
-		// prevPropertyValue captures the previously-active camera's
-		// name so undo can restore the prior selection (Add*Camera
-		// auto-promotes the new camera to active under the "last
-		// added wins" policy, so without the capture we wouldn't
-		// know which camera was active before the clone).
-		if( !mJob ) return false;
-		if( edit.objectName.size() <= 1 ) return false;
-
-		edit.prevPropertyValue = String( mJob->GetActiveCameraName().c_str() );
-
-		if( !CameraIntrospection::AddCameraFromSnapshot( *mJob, edit.objectName, edit.cameraSnapshot ) ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor: AddCamera failed for `%s` (duplicate name or unknown type)",
-				edit.objectName.c_str() );
-			return false;
-		}
-		// Add*Camera auto-promoted the new camera; ensure the active
-		// matches `edit.objectName` for the caller's expectation.
-		mJob->SetActiveCamera( edit.objectName.c_str() );
-
-		mLastScope = Dirty_Camera;
-		mHistory.Push( edit );
-		return true;
-	}
-
-	if( edit.op == SceneEdit::SetMaterialProperty )
-	{
-		// objectName carries the material's manager-registered name;
-		// propertyName the slot identifier ("reflectance", "ior",
-		// etc.); propertyValue the painter name (IPainter or
-		// IScalarPainter depending on slot type).  Caller (the
-		// controller's Material SetProperty branch) is responsible
-		// for cancel-and-park around this call — painter rebinds
-		// release the prior painter, which could free a painter a
-		// worker is mid-sample on.
-		if( !mMaterialManager ) return false;
-		IMaterial* mat = mMaterialManager->GetItem( edit.objectName.c_str() );
-		if( !mat ) return false;
-
-		// Composed materials reject up-front — see SceneEdit.h doc
-		// + IJob::IsMaterialComposed.  Without this gate, the
-		// MaterialIntrospection::SetSlot dispatch would succeed
-		// even though the rebinding would break the painter graph
-		// the composition relies on.
-		if( mJob && mJob->IsMaterialComposed( edit.objectName.c_str() ) ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor: SetMaterialProperty rejected on `%s` — composed material "
-				"(PBR-MR / GGX-Emissive); rebinding a slot would break the painter graph. "
-				"Edit upstream painters instead.",
-				edit.objectName.c_str() );
-			return false;
-		}
-
-		// Resolve the slot's pipe (IPainter vs IScalarPainter) by
-		// asking MaterialIntrospection what it expects.  The two
-		// pipes are NOT interchangeable per CLAUDE.md's IScalarPainter
-		// section — binding an IPainter into an IScalarPainter slot
-		// would silently JH-uplift inline-numeric values, breaking
-		// physical-scalar inputs.
-		const MaterialSlotRef cur = MaterialIntrospection::GetSlot( *mat, edit.propertyName );
-		if( cur.kind == MaterialSlotRef::None ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor: SetMaterialProperty rejected — `%s` has no slot named `%s`",
-				edit.objectName.c_str(), edit.propertyName.c_str() );
-			return false;
-		}
-
-		// Resolve the new painter name through the appropriate
-		// manager.  Capture prev binding via reverse-lookup BEFORE
-		// the mutation so undo can replay losslessly.  CRITICAL:
-		// reject the edit if the prior binding has no recoverable
-		// manager-registered name — an empty prev would push an
-		// undo entry that silently no-ops on the way back, leaving
-		// the user with no way to revert.  The GUI's introspection
-		// layer (MaterialIntrospection::BuildPainterSlot) already
-		// marks unregistered slots read-only so the GUI path can't
-		// reach here, but programmatic callers via
-		// RISE_API_SceneEditController_SetPropertyForCategory can
-		// still trigger this gate.
-		const IPainter*       newPainter       = 0;
-		const IScalarPainter* newScalarPainter = 0;
-		if( cur.kind == MaterialSlotRef::Painter ) {
-			if( !mPainterManager ) return false;
-			newPainter = mPainterManager->GetItem( edit.propertyValue.c_str() );
-			if( !newPainter ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"SceneEditor: SetMaterialProperty rejected — painter `%s` is not registered",
-					edit.propertyValue.c_str() );
-				return false;
-			}
-			// Reverse-lookup the prior painter's name for undo.
-			edit.prevPropertyValue = FindManagerName( mPainterManager, cur.painter );
-			if( edit.prevPropertyValue.size() <= 1 ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"SceneEditor: SetMaterialProperty on `%s.%s` rejected — "
-					"current painter has no manager-registered name, so undo "
-					"cannot restore the prior binding.  Register the painter "
-					"with IPainterManager before editing the slot.",
-					edit.objectName.c_str(), edit.propertyName.c_str() );
-				return false;
-			}
-		} else {  // ScalarPainter
-			if( !mScalarPainterManager ) return false;
-			newScalarPainter = mScalarPainterManager->GetItem( edit.propertyValue.c_str() );
-			if( !newScalarPainter ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"SceneEditor: SetMaterialProperty rejected — scalar_painter `%s` is not registered",
-					edit.propertyValue.c_str() );
-				return false;
-			}
-			edit.prevPropertyValue = FindManagerName( mScalarPainterManager, cur.scalarPainter );
-			if( edit.prevPropertyValue.size() <= 1 ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"SceneEditor: SetMaterialProperty on `%s.%s` rejected — "
-					"current scalar_painter has no manager-registered name, "
-					"so undo cannot restore the prior binding.  Register the "
-					"scalar_painter with IScalarPainterManager before editing.",
-					edit.objectName.c_str(), edit.propertyName.c_str() );
-				return false;
-			}
-		}
-
-		if( !MaterialIntrospection::SetSlot( *mat, edit.propertyName, newPainter, newScalarPainter ) ) {
-			GlobalLog()->PrintEx( eLog_Warning,
-				"SceneEditor: SetMaterialProperty internal dispatch failed for `%s.%s`",
-				edit.objectName.c_str(), edit.propertyName.c_str() );
-			return false;
-		}
-
-		mLastScope = Dirty_Camera;   // no spatial-structure invalidation
-		mHistory.Push( edit );
-		return true;
-	}
-
-	if( edit.op == SceneEdit::SetLightProperty )
-	{
-		// objectName carries the light's manager name; propertyName
-		// the property identifier ("position" / "energy" / etc.).
-		ILightManager* lights = const_cast<ILightManager*>( mScene.GetLights() );
-		if( !lights ) return false;
-		ILightPriv* light = lights->GetItem( edit.objectName.c_str() );
-		if( !light ) return false;
-
-		// `shootphotons` is a non-keyframable bool — the keyframe
-		// machinery has no parameter for it, so dispatch to the
-		// dedicated ILight::SetCanGeneratePhotons setter instead.
-		// Capture prev as "true"/"false" so undo replays through the
-		// same path.  No RegenerateData call: the flag is read lazily
-		// during the next photon-mapping pass; nothing to bake.
-		if( edit.propertyName == String( "shootphotons" ) ) {
-			edit.prevPropertyValue = String( light->CanGeneratePhotons() ? "true" : "false" );
-			bool newVal = false;
-			if( !ParseLenientBool( edit.propertyValue, newVal ) ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"SceneEditor: shootphotons edit rejected — `%s` is not a recognised boolean (try true/false/yes/no/1/0)",
-					edit.propertyValue.c_str() );
-				return false;
-			}
-			light->SetCanGeneratePhotons( newVal );
-			mLastScope = Dirty_Camera;
-			mHistory.Push( edit );
-			return true;
-		}
-
-		// Capture prev value through the same readback the introspection
-		// panel uses, so undo replays losslessly via the keyframe path.
-		edit.prevPropertyValue = ReadLightProperty( *light, edit.propertyName );
-
-		// Translate chunk-name → keyframe-name before dispatching:
-		// the panel surfaces chunk vocabulary (power/inner/outer)
-		// while ILight::KeyframeFromParameters expects keyframe
-		// vocabulary (energy/inner_angle/outer_angle).
-		IKeyframeParameter* p = light->KeyframeFromParameters(
-			ChunkNameToKeyframeName( edit.propertyName ), edit.propertyValue );
-		if( !p ) return false;
-		light->SetIntermediateValue( *p );
-		safe_release( p );
-		// SetIntermediateValue stages new field values; flush to the
-		// final transform / runtime state before the next render.
-		light->RegenerateData();
-		BumpSceneLightGeneration();   // #2b(a): rebuild caster samplers next render
-
-		mLastScope = Dirty_Camera;   // no spatial structure invalidation; same scope as camera
-		mHistory.Push( edit );
-		return true;
-	}
-
-	if( edit.op == SceneEdit::SetMediumProperty )
-	{
-		// objectName carries the medium's manager name; propertyName
-		// the slot identifier ("absorption" / "scattering" /
-		// "emission"); propertyValue the "r g b" string.  Caller
-		// (controller's Medium SetProperty branch) handles the
-		// cancel-and-park gate — setters re-derive sigma_t cache
-		// which is read by distance-sampling workers.
-		if( !mJob ) return false;
-		const IMedium* medConst = mJob->GetMedium( edit.objectName.c_str() );
-		if( !medConst ) return false;
-		IMedium* medium = const_cast<IMedium*>( medConst );
-
-		// Capture prev BEFORE mutating so undo replays losslessly.
-		// Empty prev means the slot/medium combo isn't supported
-		// (e.g. HeterogeneousMedium "absorption") — reject up-front
-		// rather than push a phantom edit.
-		edit.prevPropertyValue = ReadMediumProperty( *medium, edit.propertyName );
-		if( edit.prevPropertyValue.size() <= 1 ) return false;
-
-		if( !ApplyMediumPropertyValue( *medium, edit.propertyName, edit.propertyValue ) ) {
-			return false;
-		}
-
-		mLastScope = Dirty_Camera;   // medium edit affects rendering but no spatial reseed
-		mHistory.Push( edit );
-		return true;
-	}
-
-	return false;
+	// H2 Stage 3: capture/validate, then the SHARED forward mutation, then
+	// push.  Forward logic now lives in exactly one place (ApplyForwardMutation),
+	// reused by Redo and the composite-redo loop.  Either half returning false
+	// rejects the edit with no mutation and no history entry.
+	if( !CaptureForApply( edit ) )       return false;
+	if( !ApplyForwardMutation( edit ) )  return false;
+	mHistory.Push( edit );
+	return true;
 }
 
 bool SceneEditor::Undo()
@@ -1698,7 +1482,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		if( !baseCam ) return false;
 		Implementation::CameraCommon* cam =
 			dynamic_cast<Implementation::CameraCommon*>( baseCam );
-		if( !cam ) return true;
+		if( !cam ) { mLastScope = Dirty_Camera; return true; }   // H2-S3: skeleton camera no-op, keep Apply's scope
 		ApplyCameraOpForward( *cam, edit, SceneScale() );
 		cam->RegenerateData();
 		mLastScope = Dirty_Camera;
@@ -1736,7 +1520,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		// the Apply / Undo paths.
 		if( edit.propertyName == String( "shootphotons" ) ) {
 			bool newVal = false;
-			ParseLenientBool( edit.propertyValue, newVal );  // value was already validated by Apply
+			if( !ParseLenientBool( edit.propertyValue, newVal ) ) return false;   // H2-S3: surface parse failure so Apply can reject
 			light->SetCanGeneratePhotons( newVal );
 			mLastScope = Dirty_Camera;
 			return true;
@@ -1765,7 +1549,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 		const IMedium* medConst = mJob->GetMedium( edit.objectName.c_str() );
 		if( !medConst ) return false;
 		IMedium* medium = const_cast<IMedium*>( medConst );
-		ApplyMediumPropertyValue( *medium, edit.propertyName, edit.propertyValue );
+		if( !ApplyMediumPropertyValue( *medium, edit.propertyName, edit.propertyValue ) ) return false;   // H2-S3: surface failure so Apply can reject
 		mLastScope = Dirty_Camera;
 		return true;
 	}
@@ -1782,7 +1566,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 	{
 		ICamera* baseCam = ResolveEditedCamera( edit );
 		if( !baseCam ) return false;
-		CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.propertyValue );
+		if( !CameraIntrospection::SetProperty( *baseCam, edit.objectName, edit.propertyValue ) ) return false;   // H2-S3: surface parse failure so Apply can reject
 		mLastScope = Dirty_Camera;
 		return true;
 	}

@@ -360,6 +360,14 @@ namespace RISE
 		bool ApplyForwardMutation( const SceneEdit& edit );   // Redo direction
 		bool ApplyRevertMutation( const SceneEdit& edit );    // Undo direction
 
+		//! H2 Stage 3 (finishes P-WALK): the capture/validate HALF of a
+		//! first Apply -- resolve the target, run every rejection gate, and
+		//! record the prev* state into `edit`.  Returns false (reject, no
+		//! mutation, no history) on a validation miss.  Apply = this +
+		//! ApplyForwardMutation + push, so the forward MUTATION now lives in
+		//! exactly one place (ApplyForwardMutation), shared by Apply/Redo.
+		bool CaptureForApply( SceneEdit& edit );
+
 		//! Run the post-mutation invariant chain on a single object
 		//! and on the manager.
 		void RunObjectInvariantChain( IObjectPriv& obj );
