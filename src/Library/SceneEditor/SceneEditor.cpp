@@ -1250,11 +1250,16 @@ bool SceneEditor::Undo()
 	{
 		bool sawObjectOp = false, sawCameraOp = false, sawTimeOp = false, sawPropertyOp = false;
 		bool allOk = true;   // P1-#2: track inner-mutation failures across the walk
+		int  depth = 1;      // P1: the CompositeEnd trigger opened one level (LIFO walk-back).
 		while( true )
 		{
 			SceneEdit inner;
 			if( !mHistory.PopForUndo( inner ) ) break;
-			if( inner.op == SceneEdit::CompositeBegin ) break;
+			// P1: nesting-aware -- a nested CompositeEnd opens a deeper level going
+			// backward; only the matching OUTER CompositeBegin (depth 0) ends the walk.
+			// A bare break at the first Begin left the outer group half-reverted.
+			if( inner.op == SceneEdit::CompositeEnd )   { ++depth; continue; }
+			if( inner.op == SceneEdit::CompositeBegin ) { if( --depth == 0 ) break; continue; }
 			MarkEditEntityDirty( inner );
 			if( !ApplyRevertMutation( inner ) ) allOk = false;   // P1-#2: propagate failure
 			if( SceneEdit::IsObjectOp( inner.op ) )                                          sawObjectOp = true;
@@ -1277,31 +1282,34 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		IObjectPriv* obj = FindObject( edit.objectName );
 		if( !obj ) return false;
 
-		// Property-style ops restore from per-op prev fields; transform
-		// ops restore the captured matrix.  Switch on op so each path
-		// runs only the work it needs.
+		// P1: a binding revert FAILS if the captured prior dependency (material /
+		// shader / geometry / medium) was removed AFTER the edit -- GetItem returns
+		// null.  Track that as `restored = false` so the caller treats the undo as
+		// PARTIAL (rollback keeps the residual-dirty state) instead of reporting
+		// success while the edited binding stays live.  Transform ops restore from
+		// the captured matrix and always succeed.
+		bool restored = true;
 		switch( edit.op ) {
 		case SceneEdit::SetObjectMaterial:
 			if( edit.prevBindingWasNull ) {
-				// F5: undo of a FIRST material bind restores the unbound state
-				// (clearing an emissive material changes the emitter set -> bump).
+				// F5: undo of a FIRST material bind restores the unbound state.
 				const IMaterial* clrPrev = obj->GetMaterial();
 				// P1-#9: ClearMaterial/ClearShader are non-virtual on Object (off the
-				// IObjectPriv vtable -- ABI).  Every IObjectPriv IS an Object
-				// (CSGObject : public Object), so the cast is total; a null cast would
-				// safely skip the clear.
+				// IObjectPriv vtable -- ABI); every IObjectPriv IS an Object so the
+				// dynamic_cast is total (a null cast would safely skip).
 				if( Implementation::Object* o = dynamic_cast<Implementation::Object*>( obj ) ) o->ClearMaterial();
 				BumpSceneLightGenerationIfEmitterSetChanged( clrPrev, nullptr );
 			} else if( mMaterialManager && edit.prevPropertyValue.size() > 1 ) {
 				IMaterial* mat = mMaterialManager->GetItem( edit.prevPropertyValue.c_str() );
 				if( mat ) {
-					// P1-4: undo of a material rebind changes the emitter
-					// set when either side is emissive — bump so a reused
-					// RayCaster rebuilds its LightSampler.
 					const IMaterial* prevMat = obj->GetMaterial();
 					obj->AssignMaterial( *mat );
 					BumpSceneLightGenerationIfEmitterSetChanged( prevMat, mat );
+				} else {
+					restored = false;   // P1: prior material was removed -> cannot restore
 				}
+			} else {
+				restored = false;
 			}
 			break;
 		case SceneEdit::SetObjectShader:
@@ -1310,6 +1318,9 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 			} else if( mShaderManager && edit.prevPropertyValue.size() > 1 ) {
 				IShader* sh = mShaderManager->GetItem( edit.prevPropertyValue.c_str() );
 				if( sh ) obj->AssignShader( *sh );
+				else     restored = false;   // P1: prior shader removed
+			} else {
+				restored = false;
 			}
 			break;
 		case SceneEdit::SetObjectShadowFlags: {
@@ -1321,44 +1332,36 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 			if( mJob && edit.prevPropertyValue.size() > 1 ) {
 				const IGeometry* g = mJob->GetGeometry( edit.prevPropertyValue.c_str() );
 				if( g ) obj->AssignGeometry( *g );
+				else    restored = false;   // P1: prior geometry removed
+			} else {
+				restored = false;
 			}
-			// Geometry changes the bbox — rebuild the TLAS on undo.
-			RunObjectInvariantChain( *obj );
+			RunObjectInvariantChain( *obj );   // bbox rebuild (safe even if geometry unchanged)
 			break;
 		case SceneEdit::SetObjectInteriorMedium:
 			if( edit.prevPropertyValue.size() <= 1 ) {
-				// Empty prev = object had no medium before; restore
-				// "no medium" state via ClearInteriorMedium.
-				obj->ClearInteriorMedium();
+				obj->ClearInteriorMedium();   // valid prior state: no medium was bound
 			} else if( mJob ) {
 				const IMedium* med = mJob->GetMedium( edit.prevPropertyValue.c_str() );
 				if( med ) obj->AssignInteriorMedium( *med );
+				else      restored = false;   // P1: prior medium removed
+			} else {
+				restored = false;
 			}
 			break;
 		default:
-			// Transform op.
+			// Transform op -- restores from the captured component/matrix state,
+			// always succeeds.
 			RestoreObjectTransform( *obj, edit );
 			RunObjectInvariantChain( *obj );
-			// Phase 6.3 (§7.3): undo of a transform op still marks
-			// dirty.  The save engine's matrix-equality compare
-			// (§9.4) resolves the no-op case: drag → undo → save is
-			// idempotent because Mfinal == Mloaded.
 			mDirtyTracker.MarkDirty( std::string( edit.objectName.c_str() ) );
 			if( edit.op == SceneEdit::ScaleObjectFromAnchor ) {
-				// Pinned 2.8: SFA-touched objects stay flagged across
-				// undo (matrix-form save policy is sticky once the
-				// op has been seen during the session).  Doesn't
-				// cause incorrect saves: if the user fully undoes
-				// all SFA ops on an object, the §9.2 Mfinal ==
-				// Mloaded no-op check fires before forceMatrixOverride
-				// is consulted, so the entry is dropped from the
-				// managed block regardless of SFA-set membership.
 				mScaleFromAnchorSet.insert( std::string( edit.objectName.c_str() ) );
 			}
 			break;
 		}
 		mLastScope = Dirty_ObjectTransform;
-		return true;
+		return restored;
 	}
 
 	if( SceneEdit::IsCameraOp( edit.op ) )
@@ -1641,11 +1644,15 @@ bool SceneEditor::Redo()
 	{
 		bool sawObjectOp = false, sawCameraOp = false, sawTimeOp = false, sawPropertyOp = false;
 		bool allOk = true;   // P1-#2: track inner-mutation failures across the walk
+		int  depth = 1;      // P1: the CompositeBegin trigger opened one level (forward walk).
 		while( true )
 		{
 			SceneEdit inner;
 			if( !mHistory.PopForRedo( inner ) ) break;
-			if( inner.op == SceneEdit::CompositeEnd ) break;
+			// P1: nesting-aware -- a nested CompositeBegin opens a deeper level going
+			// forward; only the matching OUTER CompositeEnd (depth 0) ends the replay.
+			if( inner.op == SceneEdit::CompositeBegin ) { ++depth; continue; }
+			if( inner.op == SceneEdit::CompositeEnd )   { if( --depth == 0 ) break; continue; }
 			MarkEditEntityDirty( inner );
 			if( !ApplyForwardMutation( inner ) ) allOk = false;   // P1-#2: propagate failure
 			if( SceneEdit::IsObjectOp( inner.op ) )                                          sawObjectOp = true;

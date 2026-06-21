@@ -896,6 +896,10 @@ namespace RISE
 		std::atomic<unsigned int>   mSceneEpoch;
 		Point2                      mLastPx;
 		std::atomic<bool>           mPointerDown;
+		// P1: true iff THIS pointer gesture opened an editor composite on
+		// pointer-down.  OnPointerUp closes based on this, NOT the current tool/
+		// selection -- a tool/selection change mid-gesture must not strand it.
+		bool                        mGestureOpenedComposite;
 
 		// Property-panel chevron scrub is in progress.  Tracked
 		// SEPARATELY from mPointerDown so a panel scrub doesn't

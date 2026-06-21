@@ -127,6 +127,7 @@ SceneEditController::SceneEditController( IJobPriv& job, IRasterizer* interactiv
 , mSceneEpoch( NextEpoch().fetch_add( 1, std::memory_order_acq_rel ) )
 , mLastPx( 0, 0 )
 , mPointerDown( false )
+, mGestureOpenedComposite( false )
 , mScrubInProgress( false )
 , mPreviewSink( 0 )
 , mProgressSink( 0 )
@@ -880,6 +881,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 		if( mSelectionCategory == Category::Object && mSelectionName.size() > 1 )
 		{
 			mEditor.BeginComposite( "Drag" );
+			mGestureOpenedComposite = true;   // P1: record what this gesture opened
 			isMotionTool = true;
 
 			// Gizmo hit-test.  Refresh the handle array against the
@@ -986,6 +988,7 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	case Tool::ZoomCamera:
 	case Tool::RollCamera:
 		mEditor.BeginComposite( "Camera" );
+		mGestureOpenedComposite = true;   // P1: record what this gesture opened
 		isMotionTool = true;
 		// Auto-promote the Cameras section in the accordion when the
 		// user starts a camera-manipulation gesture.  The previous
@@ -1355,34 +1358,21 @@ void SceneEditController::OnPointerUp( const Point2& px )
 	if( !mPointerDown.load( std::memory_order_acquire ) ) return;
 	mPointerDown.store( false, std::memory_order_release );
 
-	// Whether to queue the 4-SPP polish pass after the regular
-	// 1-SPP final pass.  Only motion / scrub-driven drags warrant
-	// it; Select-tool taps don't move anything.
+	// P1: close the composite the GESTURE opened on pointer-DOWN, regardless of
+	// any tool/selection change mid-gesture.  Deciding from the CURRENT tool (the
+	// old switch here) could STRAND an open composite -- permanently blocking
+	// transactions (IsCompositeOpen) + growing history unbounded -- or double-
+	// close when the tool changed away from a motion tool.
+	if( mGestureOpenedComposite ) {
+		mEditor.EndComposite();
+		mGestureOpenedComposite = false;
+	}
+	// Always clear the drag state (incl. the armed-but-no-motion case).
+	mGizmoDrag.active = false;
+
+	// Whether to queue the 4-SPP polish pass after the regular 1-SPP final pass.
 	const bool wasMotion =
 		IsCameraMotionTool( mTool ) || IsObjectMotionTool( mTool );
-
-	switch( mTool )
-	{
-	case Tool::TranslateObject:
-	case Tool::RotateObject:
-	case Tool::ScaleObject:
-		if( mSelectionCategory == Category::Object && mSelectionName.size() > 1 )
-		{
-			mEditor.EndComposite();
-		}
-		// Always clear the drag state, including the "armed but no
-		// motion happened" case where OnPointerMove never fired.
-		mGizmoDrag.active = false;
-		break;
-	case Tool::OrbitCamera:
-	case Tool::PanCamera:
-	case Tool::ZoomCamera:
-	case Tool::RollCamera:
-		mEditor.EndComposite();
-		break;
-	default:
-		break;
-	}
 
 	// Mouse up — return to full resolution so the user sees a sharp
 	// final image.  Kick the render thread so the scale=1 pass runs
@@ -1901,6 +1891,7 @@ bool SceneEditController::RollbackTransaction()
 	mPointerDown.store( false, std::memory_order_release );
 	mGizmoDrag.active = false;
 	mScrubInProgress.store( false, std::memory_order_release );
+	mGestureOpenedComposite = false;   // P1: a mid-gesture rollback also clears the open-composite flag
 
 	// F7: restore the dirty channels + selection to the pre-transaction
 	// baseline so a fully reverted document doesn't keep showing unsaved

@@ -1679,6 +1679,88 @@ static void TestControllerRollbackRestoresUndoAtCap()
 
 //////////////////////////////////////////////////////////////////////
 
+static void TestNestedCompositeUndoRedo()
+{
+	std::cout << "Test: nested composite undo/redo reverts/replays the WHOLE outer group (P1 nesting)" << std::endl;
+	Job* pJob = new Job();
+	double loc[3]={0,0,10}, la[3]={0,0,0}, up[3]={0,1,0}, orient[3]={0,0,0}, target[2]={0,0};
+	pJob->AddPinholeCamera("A",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1nst] scene"); pJob->release(); return; }
+	CameraCommon* ccA = dynamic_cast<CameraCommon*>(const_cast<ICamera*>(pScene->GetCameras()->GetItem("A")));
+	if(!ccA){ Check(false,"[p1nst] A"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	SceneEditor& ed = ctrl.Editor();
+	pJob->SetActiveCamera("A");
+	ed.BeginComposite("outer");
+	{ SceneEdit e; e.op=SceneEdit::OrbitCamera; e.v3a=Vector3(100,0,0); ed.Apply(e); }
+	ed.BeginComposite("inner");
+	{ SceneEdit e; e.op=SceneEdit::OrbitCamera; e.v3a=Vector3(100,0,0); ed.Apply(e); }
+	ed.EndComposite();
+	{ SceneEdit e; e.op=SceneEdit::OrbitCamera; e.v3a=Vector3(100,0,0); ed.Apply(e); }
+	ed.EndComposite();
+	const double after = (double)ccA->GetTargetOrientation().y;
+	Check( std::abs(after) > 1e-4, "[p1nst] 3 nested orbits applied" );
+	Check( ed.Undo(), "[p1nst] undo outer composite" );
+	Check( std::abs((double)ccA->GetTargetOrientation().y) < 1e-9, "[p1nst] whole nested group REVERTED, not stopped at inner begin (P1)" );
+	Check( ed.Redo(), "[p1nst] redo outer composite" );
+	Check( std::abs((double)ccA->GetTargetOrientation().y - after) < 1e-9, "[p1nst] whole nested group REPLAYED, not stopped at inner end (P1)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestUndoFailsWhenDependencyRemoved()
+{
+	std::cout << "Test: object-binding undo returns FALSE when the captured prior dependency was removed (P1)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}, grey[3]={0.5,0.5,0.5};
+	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("p_grey",grey,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white"); pJob->AddLambertianMaterial("mat2","p_grey");
+	pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1dep] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String("obj") );
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Object, String("material"), String("mat2") ), "[p1dep] rebind obj->mat2" );
+	Check( pJob->RemoveMaterial("mat1"), "[p1dep] prior material mat1 removed after the edit" );
+	Check( !ctrl.Editor().Undo(), "[p1dep] undo reports FAILURE when the prior material vanished, not silent success (P1)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestGestureCompositeNotStrandedOnToolChange()
+{
+	std::cout << "Test: a tool change mid-gesture does not strand the open composite (P1)" << std::endl;
+	Job* pJob = new Job();
+	double loc[3]={0,0,10}, la[3]={0,0,0}, up[3]={0,1,0}, orient[3]={0,0,0}, target[2]={0,0};
+	pJob->AddPinholeCamera("A",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	pJob->AddSphereGeometry("geom",1.0);
+	pJob->AddUniformColorPainter("p_white",(const double[3]){0.8,0.8,0.8},"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white");
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1g] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	ctrl.SetSelection( SceneEditController::Category::Object, String("obj") );
+	ctrl.SetTool( SceneEditController::Tool::TranslateObject );
+	ctrl.RefreshGizmoHandles();
+	ctrl.OnPointerDown( Point2(10.0,10.0) );   // opens the "Drag" composite
+	ctrl.SetTool( SceneEditController::Tool::Select );               // tool changes mid-gesture
+	ctrl.OnPointerUp( Point2(10.0,10.0) );      // must STILL close the composite
+	Check( ctrl.BeginTransaction(), "[p1g] composite NOT stranded after mid-gesture tool change (P1)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== SceneEditTransactionTest ===" << std::endl;
@@ -1716,6 +1798,9 @@ int main()
 	TestTrimNestingAware();
 	TestUndoSnapshotRestore();
 	TestControllerRollbackRestoresUndoAtCap();
+	TestNestedCompositeUndoRedo();
+	TestUndoFailsWhenDependencyRemoved();
+	TestGestureCompositeNotStrandedOnToolChange();
 	TestRejectEditWithUnrepresentableInverse();
 	TestPartialCompositeUndoStillRefreshes();
 
