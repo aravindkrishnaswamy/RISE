@@ -37,6 +37,8 @@ there be exactly one place.
 
 ## 2. Phase H1 — one owned editor-state snapshot (fixes P-STATE)
 
+**✅ SHIPPED (commit `47744de7`)** — behavior-identical; `EditorStateSnapshot` + `Capture/RestoreEditorState` are the single capture/restore path; `TestEditorStateSnapshotRoundTrip` round-trips dirty + the SFA 5th-set + selection. H3 and H2 remain.
+
 **Current brittleness.** A transaction baseline is three separate controller
 members (`mTxnBaselineSeq`, `mTxnBaselineDirty` (itself recently widened from
 `DirtyTracker::State` to `DirtySnapshot` to add the 5th set), `mTxnBaselineSelCat`
