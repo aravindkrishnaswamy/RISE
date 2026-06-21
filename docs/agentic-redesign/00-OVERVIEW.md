@@ -1,16 +1,18 @@
 # RISE Agentic Redesign — Synthesis & Overview
 
-> **Status:** design complete, pending external review. This document synthesizes the six facet
-> designs under `docs/agentic-redesign/`, reconciles their cross-facet seams, and surfaces the
-> decisions an external reviewer must rule on **before** the first implementation slice. Nothing
-> here is implemented. Read [`00-CHARTER.md`](00-CHARTER.md) first for the locked/open decisions
-> and invariants this synthesis assumes.
+> **Status:** **review round 1 complete.** The external review accepted the architecture (no P0s)
+> but found 8 P1 + 2 P2 contradictions; they are resolved authoritatively in
+> [`01-DECISIONS.md`](01-DECISIONS.md), which **supersedes the reconciliations in §3 and the
+> first-slice in §6 below** and overrides the facet docs where they conflict. This document
+> synthesizes the six facet designs and their seams; read [`00-CHARTER.md`](00-CHARTER.md) for the
+> locked/open decisions, then [`01-DECISIONS.md`](01-DECISIONS.md) for the round-1 resolutions.
 
 ## 0. Reading guide (for the reviewer)
 
 | Doc | Owns | Scrutinize for |
 |---|---|---|
 | [`00-CHARTER.md`](00-CHARTER.md) | Thesis, Model B decision, locked/open decisions, invariants | Are the locked decisions actually right? |
+| [`01-DECISIONS.md`](01-DECISIONS.md) | **Authoritative** round-1 resolutions (D1–D10) | Read FIRST after the charter; it overrides §3/§6 here and the facet docs |
 | [`10-scene-language-and-cst.md`](10-scene-language-and-cst.md) | The CST, parser→retained-tree, name-path identity, declarative iteration (FOR→`instance_array`/`let`/`expr`) | **R1** (tree representation), lossless round-trip gate, generator expressiveness |
 | [`20-derivation-engine.md`](20-derivation-engine.md) | Incremental `derive(CST)→Scene`, memo+dep-graph, apply-layer reuse | **Latency budget** (the second tar-pit), order-independence audit |
 | [`30-edit-model-and-history.md`](30-edit-model-and-history.md) | CST versioning replacing the whole edit/transaction subsystem | **R1** (depends on persistent CST), deletion inventory completeness |
@@ -59,7 +61,8 @@ Per-facet headline:
 - **F1 (CST):** promote the existing span machinery to a retained, lossless, descriptor-bound tree;
   `FOR`→`instance_array` (homogeneous, instances *derived*) or one-shot desugar (heterogeneous);
   `DEFINE`→`let`; `$(...)`/`hal`/macros→one `expr(...)` sublanguage over the existing
-  `ExpressionProgram`; v6 macros round-trip as read-only legacy nodes; v6 coexists indefinitely.
+  `ExpressionProgram`; v6 is migrated to v7 by a one-shot migrator, then the v6 reader is **deleted**
+  (time-bounded, no runtime legacy nodes — D8).
 - **F2 (Derivation):** `derive(CST, CST', cache)` is *one* function (full = incremental vs empty
   cache, killing P-WALK); memo cache + dependency graph front two existing backends —
   `Finalize→Job::Add*` (rebuild) and the apply layer (value-fast-path); existing phase-B dirty
@@ -82,6 +85,14 @@ Per-facet headline:
   risk register R1–R10.
 
 ## 3. Cross-facet reconciliations (decisions, with recommendations)
+
+> **Superseded by [`01-DECISIONS.md`](01-DECISIONS.md) (review round 1).** The recommendations
+> R1–R5 below were the pre-review synthesis; the external review then found 8 P1 + 2 P2
+> contradictions, resolved authoritatively as **D1–D10**. Mapping: R1 (persistent CST) → **D2**
+> (red-green tree) + **D1** (COW snapshot); R3 (`expr` syntax) → retained; R4 (PR mode) → retained;
+> R5 (`halton`) → retained; plus new decisions D4 (traced dependencies), D5 (AssetManifest), D6
+> (external-file CAS), D7 (single-file / deprecate `>load`/`>run`), D8 (time-bounded v6), D9 (dual
+> NodeId + name-path identity), D10 (one phased first slice). The R1–R5 text is kept for history.
 
 The facets were designed in parallel against the shared charter; these are the seams where their
 assumptions meet. **R1 is load-bearing for the whole design; the rest are contained.**
@@ -145,8 +156,8 @@ assumptions meet. **R1 is load-bearing for the whole design; the rest are contai
    (cost flagged).
 3. **The two tar-pits are the same two things the first slice proves** (see §6): lossless round-trip
    (R1/F1 §4.1) and incremental-derivation latency (O2/F2).
-4. **O3 — resolved by F1/F6:** v6 coexists indefinitely (legacy nodes round-trip + derive via
-   relocated expansion); v7 is the authoring target; opt-in migrator. Reviewer to confirm the
+4. **O3 — resolved by D8 (time-bounded):** migrate the corpus to v7 with a one-shot migrator, then
+   **delete the v6 path** — no permanent coexistence, no runtime legacy nodes. Reviewer to confirm the
    coexistence window is acceptable.
 5. **Generator expressiveness (F1 Q3):** confirm no scene needs a *retained imperative loop*
    (data-driven counts / iteration depending on the prior iteration's output). If one does, the
@@ -173,6 +184,12 @@ Untouched: the renderer/integrators, `GenericManager` + the managers, the apply 
 realize→TLAS→light-sampler→photon seam, `ChunkDescriptor`/`Describe()`.
 
 ## 6. The first slice (the falsifiable vertical)
+
+> **Superseded by [`01-DECISIONS.md`](01-DECISIONS.md) §D10**, which defines the single canonical
+> phased fixture (1 `sphere_geometry` → 2 `+uniformcolor_painter` → 3 `+standard_object` 3-node
+> chain → 4 `+expr` → 5 `+instance_array`) and the shared gates **G1–G5** (round-trip byte-identity;
+> incremental-derive < 50 ms on a Sponza-class scene; minimal invalidation; version-DAG undo;
+> external-asset + file-conflict). The earlier, divergent text below is retained for context.
 
 All facets independently converged on "one simplest chunk, full vertical." Two candidates were
 named — F1: `sphere_geometry` (2 params); F6: `uniformcolor_painter`. **Recommendation:** start with

@@ -2,6 +2,8 @@
 
 > **Status:** design-in-progress. One of six parallel facet docs under
 > [00-CHARTER.md](00-CHARTER.md). **Design only — no source, build, or scene changes.**
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (review round 1):** added external-file
+> conflict handling (load/flush fingerprint + compare-and-swap save, D6); v7 is single-file (D7).
 > This facet owns the **RISE MCP server**, the **edit→validate→derive→render→observe loop**,
 > the **GUI-as-just-another-agent** unification (charter **L2**), **diff-able / git-native /
 > reviewable scenes**, **agent-edit safety & validation**, **product framing & differentiation**,
@@ -373,6 +375,15 @@ is **optimistic concurrency with structural conflict detection, not locking**:
 - **Locking — rejected.** Per-node locks would serialize the human and the agent into a stilted
   turn-taking dance and reintroduce lock-lifetime state (a P-STATE relapse). Optimistic + rebase
   (v1) → structural merge (v2) is the git-native answer and fits the agentic cadence.
+
+**External-file conflict (per [`01-DECISIONS.md`](01-DECISIONS.md) §D6).** The above governs
+*in-process* concurrent writers (CST versions). A distinct hazard is the file changing on disk under
+the session — a `git checkout`, another editor, or the CI migrator. The save path records a
+load/flush **content fingerprint** and does a **compare-and-swap** write: if the on-disk fingerprint
+moved since load, the flush is refused and the user/agent is offered reload / diff / force-overwrite —
+never a silent clobber. A headless agent's natural answer is to **emit a branch/PR rather than write
+in place** (§ deployment), turning the conflict surface into the git-native review flow. (v7 is
+single-file per §D7, so this is one file per document — no cross-file atomic-save problem.)
 
 ### 2.5 `ValidationReport` — structured errors localized to CST nodes
 

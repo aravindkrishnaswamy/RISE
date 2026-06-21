@@ -2,6 +2,8 @@
 
 > **Status:** design-in-progress. One of the parallel facet docs under the
 > [Agentic Redesign Charter](00-CHARTER.md). DESIGN ONLY — no code yet.
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (review round 1):** binding keys on the
+> immutable NodeId addressed by name-path (D9); positions via the red cursor, not stored spans (D2).
 > This facet owns: **the UI as a pure function of (CST + descriptor schema)**,
 > widget-per-node, adaptive/growing panels, two-way binding widget↔CST node,
 > the split form/source live view, reactive propagation, and the shared-C++ +
@@ -248,10 +250,13 @@ chunk families (Painter, Function, ShaderOp, Modifier, PhotonMap, …) that have
 
 ### 2.2 Two-way binding widget ↔ CST node (via name-path identity, L5)
 
-**Identity is the name-path** (`objects/sphere.material`, charter L5). It is
-the bind key in both directions and survives edits (INV-5) because it is
-content-addressed by the document's own naming, not a transient pointer or
-array index (the Model-A failure the round-4 "identity serial" patched over).
+**Two-level identity (per [`01-DECISIONS.md`](01-DECISIONS.md) §D9).** Widgets bind to the
+immutable internal **NodeId** (lineage identity — it survives rename and reparse via structural
+matching, so a binding never breaks under an edit, INV-5); the **name-path**
+(`objects/sphere.material`) is the human/agent-facing **address** that resolves to a NodeId within a
+version. The widget displays + edits by name-path but *holds* the NodeId, so a rename (which changes
+the name-path) does not drop the binding. This is the principled replacement for the Model-A
+transient-pointer/array-index identity the round-4 "identity serial" patched over.
 
 **Widget → CST (edit emits a patch through Facet 3's one pathway).**
 
@@ -649,12 +654,13 @@ the only Android-specific UI code, and it is mechanical.
    (a cycle badge) rather than silently produce a broken tree.
 
 4. **Two-pane selection identity across a reformat.** If a text edit reorders
-   or reformats chunks, name-path identity holds (good) but `SourceSpan` byte
-   ranges all shift; the reverse span lookup (source→form) must rebuild against
-   the new revision. Cheap if Facet 1 republishes spans per revision (it
-   already does via `ApplyOffsetDeltas`), but the timing (form pane must not
-   read stale spans mid-republish) needs the single-revision-snapshot
-   discipline from `TRANSACTION_MODEL`.
+   or reformats chunks, NodeId identity holds (D9, good) and absolute byte
+   positions are **not stored** — under the red-green tree (D2) the reverse
+   lookup (source→form) derives positions on demand via the version's red
+   cursor, so there are no stored spans to "shift" or republish. The only
+   discipline needed is that the form pane reads positions from **one CST
+   version snapshot** (never mid-edit), which the immutable-version model (D1)
+   gives for free.
 
 5. **Open (flag for human review):** does the **default lens** stay the
    familiar `GroupBy(ChunkCategory)` accordion (lower migration shock, but
