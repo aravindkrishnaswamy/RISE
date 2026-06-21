@@ -1741,7 +1741,8 @@ static void TestGestureCompositeNotStrandedOnToolChange()
 	double loc[3]={0,0,10}, la[3]={0,0,0}, up[3]={0,1,0}, orient[3]={0,0,0}, target[2]={0,0};
 	pJob->AddPinholeCamera("A",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
 	pJob->AddSphereGeometry("geom",1.0);
-	pJob->AddUniformColorPainter("p_white",(const double[3]){0.8,0.8,0.8},"Rec709RGB_Linear");
+	const double pw[3]={0.8,0.8,0.8};
+	pJob->AddUniformColorPainter("p_white",pw,"Rec709RGB_Linear");
 	pJob->AddLambertianMaterial("mat1","p_white");
 	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
 	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
@@ -1757,6 +1758,102 @@ static void TestGestureCompositeNotStrandedOnToolChange()
 	ctrl.OnPointerUp( Point2(10.0,10.0) );      // must STILL close the composite
 	Check( ctrl.BeginTransaction(), "[p1g] composite NOT stranded after mid-gesture tool change (P1)" );
 	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestRedoFailsWhenForwardDependencyRemoved()
+{
+	std::cout << "Test: object-binding REDO returns FALSE when the forward target was removed (P1 forward twin of #c)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}, grey[3]={0.5,0.5,0.5};
+	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("p_grey",grey,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white"); pJob->AddLambertianMaterial("mat2","p_grey");
+	pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1fwd] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String("obj") );
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Object, String("material"), String("mat2") ), "[p1fwd] rebind obj->mat2" );
+	Check( ctrl.Editor().Undo(), "[p1fwd] undo back to mat1" );
+	Check( pJob->RemoveMaterial("mat2"), "[p1fwd] forward target mat2 removed after the undo" );
+	Check( !ctrl.Editor().Redo(), "[p1fwd] redo reports FAILURE when the forward target vanished, not silent success (P1)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestFailedUndoRestoresStackDepth()
+{
+	std::cout << "Test: a failed single undo (vanished prior dep) restores the undo/redo depth (P1)" << std::endl;
+	Job* pJob = new Job();
+	const double white[3]={0.8,0.8,0.8}, grey[3]={0.5,0.5,0.5};
+	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddUniformColorPainter("p_grey",grey,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white"); pJob->AddLambertianMaterial("mat2","p_grey");
+	pJob->AddSphereGeometry("geom",1.0);
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1stk] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	ctrl.ForTest_SetSelection( SceneEditController::Category::Object, String("obj") );
+	Check( ctrl.SetPropertyForCategory( SceneEditController::Category::Object, String("material"), String("mat2") ), "[p1stk] rebind obj->mat2" );
+	Check( pJob->RemoveMaterial("mat1"), "[p1stk] prior material mat1 removed after the edit" );
+	Check( ctrl.Editor().History().UndoDepth()==1u && ctrl.Editor().History().RedoDepth()==0u, "[p1stk] pre-undo depths are (1,0)" );
+	Check( !ctrl.Editor().Undo(), "[p1stk] undo fails (mat1 gone)" );
+	Check( ctrl.Editor().History().UndoDepth()==1u, "[p1stk] failed undo RESTORED to undo stack, depth still 1 (P1)" );
+	Check( ctrl.Editor().History().RedoDepth()==0u, "[p1stk] failed undo did NOT leak onto the redo stack (P1)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestDoubleDownDoesNotStrandComposite()
+{
+	std::cout << "Test: a double pointer-down (lost up) does not strand a nested composite (P1)" << std::endl;
+	Job* pJob = new Job();
+	double loc[3]={0,0,10}, la[3]={0,0,0}, up[3]={0,1,0}, orient[3]={0,0,0}, target[2]={0,0};
+	pJob->AddPinholeCamera("A",loc,la,up,0.6,1.0,0,0,orient,target,0.0,0.0);
+	pJob->AddSphereGeometry("geom",1.0);
+	const double white[3]={0.8,0.8,0.8};
+	pJob->AddUniformColorPainter("p_white",white,"Rec709RGB_Linear");
+	pJob->AddLambertianMaterial("mat1","p_white");
+	RadianceMapConfig nilRMap; double o[3]={0,0,0}, sc[3]={1,1,1}, ps[3]={0,0,0};
+	pJob->AddObject("obj","geom","mat1",nullptr,nullptr,nilRMap,ps,o,sc,true,true);
+	const char* ops[]={"DefaultDirectLighting"}; pJob->AddStandardShader("global",1,ops);
+	Scene* pScene = dynamic_cast<Scene*>(pJob->GetScene());
+	if(!pScene){ Check(false,"[p1dd] scene"); pJob->release(); return; }
+	SceneEditController ctrl(*pJob,0);
+	ctrl.SetSelection( SceneEditController::Category::Object, String("obj") );
+	ctrl.SetTool( SceneEditController::Tool::TranslateObject );
+	ctrl.RefreshGizmoHandles();
+	ctrl.OnPointerDown( Point2(10.0,10.0) );   // opens the "Drag" composite
+	ctrl.OnPointerDown( Point2(10.0,10.0) );   // LOST pointer-up -> 2nd down (must close the orphan, not nest)
+	ctrl.OnPointerUp( Point2(10.0,10.0) );
+	Check( ctrl.BeginTransaction(), "[p1dd] no stranded composite after a double-down (P1)" );
+	pJob->release();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+static void TestUndoLabelIsOuterCompositeForNested()
+{
+	std::cout << "Test: the undo label names the OUTER composite for a nested group (P1)" << std::endl;
+	EditHistory eh(1024);
+	SceneEdit b1; b1.op=SceneEdit::CompositeBegin; b1.objectName=String("outer"); eh.Push(b1);
+	SceneEdit d1; d1.op=SceneEdit::SetObjectMaterial; d1.objectName=String("obj"); d1.propertyValue=String("m"); eh.Push(d1);
+	SceneEdit b2; b2.op=SceneEdit::CompositeBegin; b2.objectName=String("inner"); eh.Push(b2);
+	SceneEdit d2; d2.op=SceneEdit::SetObjectMaterial; d2.objectName=String("obj"); d2.propertyValue=String("m"); eh.Push(d2);
+	SceneEdit e2; e2.op=SceneEdit::CompositeEnd; eh.Push(e2);
+	SceneEdit d3; d3.op=SceneEdit::SetObjectMaterial; d3.objectName=String("obj"); d3.propertyValue=String("m"); eh.Push(d3);
+	SceneEdit e1; e1.op=SceneEdit::CompositeEnd; eh.Push(e1);
+	Check( std::strcmp( eh.LabelForUndo(), "outer" )==0, "[p1lbl] nested undo label is the OUTER group, not the inner (P1)" );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1801,6 +1898,10 @@ int main()
 	TestNestedCompositeUndoRedo();
 	TestUndoFailsWhenDependencyRemoved();
 	TestGestureCompositeNotStrandedOnToolChange();
+	TestRedoFailsWhenForwardDependencyRemoved();
+	TestFailedUndoRestoresStackDepth();
+	TestDoubleDownDoesNotStrandComposite();
+	TestUndoLabelIsOuterCompositeForNested();
 	TestRejectEditWithUnrepresentableInverse();
 	TestPartialCompositeUndoStillRefreshes();
 

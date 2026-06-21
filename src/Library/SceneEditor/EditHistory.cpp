@@ -144,12 +144,18 @@ const char* EditHistory::LabelForUndo() const
 	// CompositeBegin's label (which lives in objectName).
 	if( top.op == SceneEdit::CompositeEnd )
 	{
+		// P1: nesting-aware -- return the OUTER composite's label (the Begin that
+		// matches the top End at depth 0), NOT the first (inner) Begin.  Undo reverts
+		// the whole outer group, so the tooltip must name that group.
+		int depth = 0;
 		for( std::deque<SceneEdit>::const_reverse_iterator it = mUndoStack.rbegin();
 		     it != mUndoStack.rend(); ++it )
 		{
-			if( it->op == SceneEdit::CompositeBegin && it->objectName.size() > 1 )
+			if( it->op == SceneEdit::CompositeEnd )        { ++depth; }
+			else if( it->op == SceneEdit::CompositeBegin )
 			{
-				return it->objectName.c_str();
+				if( --depth == 0 )
+					return it->objectName.size() > 1 ? it->objectName.c_str() : "Edit";
 			}
 		}
 	}
@@ -184,6 +190,17 @@ void EditHistory::PopFrontTracked()
 			mMaxTrimmedSeq = mUndoStack.front().historySeq;
 		mUndoStack.pop_front();
 	}
+}
+
+void EditHistory::RestoreLastUndoFromRedo()
+{
+	// P1: the inverse of one PopForUndo -- move the most recently popped edit
+	// back from the redo stack to the undo stack.  Called only when the revert
+	// FAILED, so a failed undo neither changes the depth nor leaves the
+	// un-reverted edit on the redo stack.
+	if( mRedoStack.empty() ) return;
+	mUndoStack.push_back( mRedoStack.back() );
+	mRedoStack.pop_back();
 }
 
 void EditHistory::TrimToMax()

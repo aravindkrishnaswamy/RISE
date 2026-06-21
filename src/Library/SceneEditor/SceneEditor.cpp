@@ -714,8 +714,9 @@ bool ApplyMediumPropertyValue( IMedium& medium, const String& propertyName, cons
 
 }  // namespace
 
-void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit )
+bool SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit )
 {
+	bool ok = true;   // P1: false if a binding op's forward target name no longer resolves
 	switch( edit.op )
 	{
 	case SceneEdit::TranslateObject:
@@ -766,13 +767,20 @@ void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 				const IMaterial* prevMat = obj.GetMaterial();
 				obj.AssignMaterial( *mat );
 				BumpSceneLightGenerationIfEmitterSetChanged( prevMat, mat );
+			} else {
+				ok = false;   // P1: forward target removed since capture -> redo can't bind
 			}
+		} else {
+			ok = false;
 		}
 		break;
 	case SceneEdit::SetObjectShader:
 		if( mShaderManager ) {
 			IShader* sh = mShaderManager->GetItem( edit.propertyValue.c_str() );
 			if( sh ) obj.AssignShader( *sh );
+			else     ok = false;   // P1: forward shader removed
+		} else {
+			ok = false;
 		}
 		break;
 	case SceneEdit::SetObjectShadowFlags: {
@@ -792,6 +800,9 @@ void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		} else if( mJob ) {
 			const IMedium* med = mJob->GetMedium( edit.propertyValue.c_str() );
 			if( med ) obj.AssignInteriorMedium( *med );
+			else      ok = false;   // P1: forward medium removed
+		} else {
+			ok = false;
 		}
 		break;
 	case SceneEdit::SetObjectGeometry:
@@ -802,13 +813,18 @@ void SceneEditor::ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit 
 		if( mJob ) {
 			const IGeometry* g = mJob->GetGeometry( edit.propertyValue.c_str() );
 			if( g ) obj.AssignGeometry( *g );
+			else    ok = false;   // P1: forward geometry removed
+		} else {
+			ok = false;
 		}
 		break;
 	default:
 		// Caller guarantees IsObjectOp(edit.op) — this is a coding
 		// error if reached, but we silently no-op rather than crash.
+		ok = false;
 		break;
 	}
+	return ok;
 }
 
 void SceneEditor::RestoreObjectTransform( IObjectPriv& obj, const SceneEdit& edit )
@@ -1272,7 +1288,14 @@ bool SceneEditor::Undo()
 	}
 
 	// Single edit -> the shared revert dispatcher (same one the composite loop uses).
-	return ApplyRevertMutation( edit );
+	// P1: PopForUndo already moved this edit to the redo stack.  If the revert FAILS
+	// (e.g. a captured prior dependency vanished), restore it to the undo stack -- a
+	// failed undo must NOT advance the depth or make the un-reverted edit redo-able.
+	if( !ApplyRevertMutation( edit ) ) {
+		mHistory.RestoreLastUndoFromRedo();
+		return false;
+	}
+	return true;
 }
 
 bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
@@ -1497,7 +1520,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 	{
 		IObjectPriv* obj = FindObject( edit.objectName );
 		if( !obj ) return false;
-		ApplyObjectOpForward( *obj, edit );
+		const bool fwdOk = ApplyObjectOpForward( *obj, edit );   // P1: false if a redo target vanished
 		// Property-style ops don't move geometry — symmetric with
 		// Apply()'s spatial-rebuild gate.  Pre-Phase-1 this path ran
 		// the chain unconditionally, costing a spurious BSP
@@ -1512,7 +1535,7 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit )
 			}
 		}
 		mLastScope = Dirty_ObjectTransform;
-		return true;
+		return fwdOk;   // P1: forward-bind failure (vanished redo target) is a partial redo
 	}
 
 	if( SceneEdit::IsCameraOp( edit.op ) )

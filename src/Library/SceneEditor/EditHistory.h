@@ -43,6 +43,10 @@ namespace RISE
 		//! Returns false if the redo stack is empty.
 		bool PopForRedo( SceneEdit& outEdit );
 
+		/// P1: reverse the last PopForUndo when its revert failed -- move the
+		/// most recently popped edit back from the redo stack to the undo stack.
+		void RestoreLastUndoFromRedo();
+
 		//! Discard the redo stack ONLY, leaving the undo stack and the
 		//! dirty-object set untouched.  The transactional rollback uses
 		//! this AFTER it has reverted live state by applying the inverse

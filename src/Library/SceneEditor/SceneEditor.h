@@ -335,7 +335,7 @@ namespace RISE
 
 		//! Apply a forward transform op to an object.  Caller has
 		//! already captured prevTransform.
-		void ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit );
+		bool ApplyObjectOpForward( IObjectPriv& obj, const SceneEdit& edit );   ///< P1: false if a binding op's forward target no longer resolves
 
 		//! Restore an object's transform from a captured matrix.
 		void RestoreObjectTransform( IObjectPriv& obj, const SceneEdit& edit );

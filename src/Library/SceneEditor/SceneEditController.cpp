@@ -858,6 +858,16 @@ void SceneEditController::OnPointerDown( const Point2& px )
 	mLastPx = px;
 	mLastEditTimeMs.store( NowMs(), std::memory_order_release );
 
+	// P1: defensively close any composite a PRIOR pointer gesture left open (a
+	// lost pointer-up, or a double-down with no intervening up).  Without this the
+	// orphaned composite would NEST under the new gesture and only one would close
+	// on pointer-up, leaving mCompositeDepth >= 1 forever -- IsCompositeOpen() then
+	// permanently blocks transactions and history grows unbounded.
+	if( mGestureOpenedComposite ) {
+		mEditor.EndComposite();
+		mGestureOpenedComposite = false;
+	}
+
 	// Bump preview scale so each render pass completes within the
 	// 30Hz budget while the user is dragging.  DoOneRenderPass will
 	// adapt further based on measured wall-clock per frame.
