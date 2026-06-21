@@ -1,6 +1,6 @@
 # Facet 3 — Edit Model, History & State
 
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–3).** Sections
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–4).** Sections
 > below conform to the ratified decisions; where this doc and a decision differ,
 > [`01-DECISIONS.md`](01-DECISIONS.md) wins (a later round amends an earlier one).
 > Decisions this facet implements:
@@ -29,13 +29,43 @@
 > **D9** (dual identity: immutable `NodeId` for lineage, name-path for addressing)
 > as **amended by D14** (rename rewrites referrers from traced `ReferenceUse`
 > records, not `referenceCategories`), D15, and **D25** (rename requires a
-> **head-stamped** `ReferenceUse` trace; if derivation lags head it synchronously
-> brings the reference trace up to head first, and refuses rather than run stale),
-> **D13** (coherent version status exposing **headVersion** *and* **derivedVersion**),
-> and **D26** (every `Version` owns a persistent identity side-map — it is
-> `{ greenRoot, identityRoot, derivationCacheRoot, metadata }`, all persistent +
-> structurally shared, where the `identityRoot` is the per-Version occurrence→NodeId
-> map that reparse-matching writes and that undo/UI bindings resolve against).
+> **head-stamped** `ReferenceUse` trace) as **amended by D35** (rename reuses the
+> **one** derivation resolver — synchronously derive head, sharing that code, not a
+> separate tracing-pass reimplementation; refuse if head can't be derived),
+> **D13** (coherent version status exposing **headVersion** *and* the derived stamp)
+> as **amended by D29** (the derived side is a full **`DerivedStamp`**, and staleness
+> is **cstVersion DAG ancestry**, not numeric `<`),
+> and **D26** (every `Version` owns a persistent identity side-map, where the
+> `identityRoot` is the per-Version occurrence→NodeId map that reparse-matching
+> writes and that undo/UI bindings resolve against) as **amended by D30** (a
+> `Version` is `{ greenRoot, identityRoot, metadata }` — CST + occurrence identity
+> ONLY; the derivation cache is **NOT** on the immutable Version, it lives on a
+> stamp-keyed `DerivedArtifact`).
+> From **round 4** it further implements:
+> **D29** (`DerivedStamp = { cstVersion, assetManifestGen, animationName,
+> shutterInterval }` identifies a `DerivedScene`, `PreparedStamp = DerivedStamp +
+> { renderConfig, cameraOverride, samplingSeed }` a `PreparedRenderState`; the
+> head-vs-derived staleness check is **cstVersion DAG ancestry, not numeric `<`**),
+> **D30** (the derivation cache lives on a `DerivedArtifact` keyed by `DerivedStamp`
+> — and a `PreparedArtifact` keyed by `PreparedStamp` — in a stamp-keyed LRU, **not**
+> on the immutable Version, which commits before async derivation and spawns many
+> caches),
+> **D31** (animation is per-frame, time-**INTERVAL** derivation — a motion-blurred
+> frame's `DerivedScene` bakes animated quantities as immutable functions over the
+> shutter `[t0,t1]` and the renderer reads `at(τ)` per sample; v1 supports
+> single-time, motion blur is gated),
+> **D34** (the edit thread only commits a CST `Version`; derive → prepare → render
+> run **asynchronously + cancellably on the render arbiter**, off the edit thread —
+> this is the head-vs-derived lag source),
+> **D35** (rename obtains head's reference set via **the same evaluator/resolver as
+> derivation** — synchronously derive head, or run derivation's own
+> reference-resolution to head, sharing that code — **not** a separate tracing-pass
+> reimplementation; refuse if head can't be derived), and
+> **D36** (the staged-edit state — `GestureBuffer`, working head — carries
+> **`{ greenRoot, identityRoot }`** (BOTH roots) so insertions/reparses during a
+> gesture update occurrence identity as they go; the `CstPatch`/`EditIntent`,
+> `Widget`/`ViewNode`, and selection carry the target **`NodeId`**, not just a
+> name-path).
 
 > **Status:** design-in-progress. One of the parallel facet docs under
 > [`00-CHARTER.md`](00-CHARTER.md). Design only — no source/build/scene changes.
@@ -233,9 +263,10 @@ layer is cheap and is *not* stored in the shared green nodes.
 > The green tree's path-copy is O(log N) on its own, but the model also leans on
 > several side structures that must be persistent for snapshot creation to be
 > O(log N)/O(closure) rather than O(N): the **version DAG** (§2.5), each `Version`'s
-> **identity side-map** `identityRoot` (occurrence→NodeId, D26), each `Version`'s
-> **derivation cache** `derivationCacheRoot` (the version-scoped memo + dependency
-> graph, D20/D26), and — in the derived scene — the **manager roots** (name→entity
+> **identity side-map** `identityRoot` (occurrence→NodeId, D26), the
+> **derivation cache** (the version-scoped memo + dependency graph, D20 — which per
+> **D30** lives on a stamp-keyed `DerivedArtifact`, *not* on the immutable `Version`),
+> and — in the derived scene — the **manager roots** (name→entity
 > maps). Per **D23** **all of these must be persistent immutable containers** (HAMT /
 > persistent balanced tree, immer-style) — a named infrastructure prerequisite on par
 > with the red-green tree (D2) and the rope (D16). **Honest v1 fallback (D23):** a
@@ -298,19 +329,25 @@ layer is cheap and is *not* stored in the shared green nodes.
                                                                carried forward for those occurrences)
 ```
 
-A **version** is **not** "just a green root + metadata." Per **D26** a `Version`
-owns *three* persistent, structurally-shared roots plus its metadata —
-`{ greenRoot, identityRoot, derivationCacheRoot, metadata }`:
+A **version** is **not** "just a green root + metadata." Per **D26** (as **amended
+by D30**) a `Version` owns *two* persistent, structurally-shared roots plus its
+metadata — `{ greenRoot, identityRoot, metadata }`. **The derivation cache is NOT
+on the `Version`** (D30): a `Version` commits *before* async derivation completes
+and can spawn *many* caches (per time/asset/config), so the memo + dependency graph
+lives on a **`DerivedArtifact` keyed by a `DerivedStamp`** (and a `PreparedArtifact`
+keyed by a `PreparedStamp`), held in a stamp-keyed LRU — one `Version` → many
+artifacts (see the artifact/stamp model below):
 
 ```cpp
 struct Version {
-    // ---- the three persistent, structurally-shared roots (D26) ----
+    // ---- the two persistent, structurally-shared roots (D26 as amended by D30) ----
     NodeRef                 greenRoot;       // immutable GREEN CST root (Facet 1's type) — the lossless syntax
     IdentityRoot            identityRoot;    // persistent occurrence→NodeId side-map (D15/D26): where reparse-
                                              //   matching WRITES NodeId assignments and where rename/undo/UI
                                              //   bindings RESOLVE a NodeId. Parallel to greenRoot, shared via D23.
-    DerivationCacheRoot     derivationCacheRoot; // version-scoped memo + dependency-edge graph (D20), carried
-                                             //   alongside this version, structurally shared across versions/branches.
+    // ---- NO derivationCacheRoot here (D30): the cache lives on a DerivedArtifact ----
+    //   keyed by DerivedStamp, NOT on this immutable Version (which commits before
+    //   async derivation and spawns many caches). See the DerivedArtifact model below.
     // ---- metadata ----
     VersionId               id;             // monotonic, process-unique
     VersionId               parent;         // the version this was derived from
@@ -321,71 +358,136 @@ struct Version {
 };
 ```
 
-> **Why a Version is three roots, not one (D26).** D15 placed `NodeId` "in the red
-> layer / a side-map," but a side-map needs an **owner**: identical green nodes
-> represent multiple occurrences, so there is no place *on the green tree* for
-> per-occurrence identity. D26 gives every `Version` an owned **`identityRoot`** — a
-> persistent occurrence/identity structure (a side-tree or persistent map, parallel
-> to the green tree, structurally shared across versions via D23's persistent
-> containers) mapping each **occurrence/position → its stable `NodeId`**. This is
-> *the* place reparse-matching (§2.4) writes NodeId assignments and where
-> rename (§2.2), undo lineage (§2.5), and UI/agent bindings (§2.6) resolve a NodeId.
-> The **`derivationCacheRoot`** is D20's version-scoped/persistent memo +
-> dependency-edge graph, likewise carried per-version. All three roots are
-> persistent and structurally shared — sharing them cheaply across versions is
-> exactly what **D23's persistent-container prerequisite** buys (O(N) per snapshot
-> in the v1 copy-on-snapshot fallback).
+> **Why a Version is two roots — and where the cache went (D26 amended by D30).**
+> D15 placed `NodeId` "in the red layer / a side-map," but a side-map needs an
+> **owner**: identical green nodes represent multiple occurrences, so there is no
+> place *on the green tree* for per-occurrence identity. D26 gives every `Version` an
+> owned **`identityRoot`** — a persistent occurrence/identity structure (a side-tree
+> or persistent map, parallel to the green tree, structurally shared across versions
+> via D23's persistent containers) mapping each **occurrence/position → its stable
+> `NodeId`**. This is *the* place reparse-matching (§2.4) writes NodeId assignments
+> and where rename (§2.2), undo lineage (§2.5), and UI/agent bindings (§2.6) resolve
+> a NodeId. **D30 removed `derivationCacheRoot` from the `Version`:** the immutable
+> CST commits the instant the edit thread runs (cheap), but derivation runs *later*,
+> *asynchronously*, and a single `Version` can spawn *many* derivation caches (one
+> per `DerivedStamp` axis — time/asset-generation/animation, then per `PreparedStamp`
+> — render-config/camera/seed). So the memo + dependency-edge graph (D20) lives on a
+> **`DerivedArtifact` keyed by its `DerivedStamp`** (and a `PreparedArtifact` keyed by
+> its `PreparedStamp`), held in a **stamp-keyed LRU**, never owned by the immutable
+> `Version`. Both `Version` roots remain persistent and structurally shared — sharing
+> them cheaply across versions is exactly what **D23's persistent-container
+> prerequisite** buys (O(N) per snapshot in the v1 copy-on-snapshot fallback).
+
+> **The stamp/artifact model (D29/D30).** A `Version` identifies only the CST. The
+> downstream products are keyed by **stamps**, produced *asynchronously by the render
+> arbiter* (D34, cancellable), and held in a stamp-keyed LRU — one `Version` → many
+> of each:
+>
+> ```cpp
+> // What a DerivedScene / PreparedRenderState is keyed by (D29). NOT a single
+> // "derivedVersion" int — a DerivedScene also depends on assets + animation + shutter,
+> // and the staleness check is cstVersion DAG ancestry, never numeric `<`.
+> struct DerivedStamp {
+>     VersionId   cstVersion;       // the CST Version this was derived from (DAG node, D2/D26)
+>     AssetGen    assetManifestGen; // AssetManifest generation (D5/D17 content-hash set)
+>     AnimName    animationName;    // the active animation (D31) — an explicit input
+>     Interval    shutterInterval;  // the time INTERVAL [t0,t1] (D31, motion blur) — NOT a single time
+> };
+> struct PreparedStamp {           // identifies a PreparedRenderState (D29)
+>     DerivedStamp derived;
+>     RenderConfig renderConfig;    // rasterizer/integrator selection + render-time override (D22)
+>     CameraId     cameraOverride;  // render-time camera override
+>     Seed         samplingSeed;    // RNG-stream identity → deterministic prepare (D33)
+> };
+> struct DerivedArtifact {         // the cache lives HERE, not on Version (D30)
+>     DerivedStamp        derivedStamp;
+>     /*const*/ DerivedScene       derivedScene;      // sealed, immutable (D12/D22)
+>     DerivationCacheRoot derivationCache;            // version-scoped memo + dep-edge graph (D20),
+>                                                     //   persistent + structurally shared (D23)
+> };
+> struct PreparedArtifact { PreparedStamp preparedStamp; /*const*/ PreparedRenderState preparedRenderState; };
+> ```
+>
+> Cache lookups match the **full stamp by equality**; the "is the render stale vs
+> head?" check compares the **`cstVersion` axis only**, via **version-DAG
+> ancestry** (the rendered `cstVersion` is an ancestor-or-equal of head's), **never
+> numeric `<`** — the DAG has branches and the other axes are equality-matched, not
+> ordered (D29).
 
 `NodeRef` is `boost/std::shared_ptr<const GreenNode>` (or an arena handle — Facet
-1's call); `IdentityRoot`/`DerivationCacheRoot` are persistent-container handles
-(D23). The key property: **all three roots are immutable**, so holding a `Version`
-is holding a complete, self-consistent snapshot at O(1) **handle-copy** cost. There
-is no "live scene that must be reverted." Undo *is* re-publishing an older version's
-three roots (green + identity + cache), not just an older green `greenRoot`.
+1's call); `IdentityRoot` is a persistent-container handle, and `DerivationCacheRoot`
+(now carried by a `DerivedArtifact`, D30) is another (D23). The key property: **both
+`Version` roots are immutable**, so holding a `Version` is holding a complete,
+self-consistent *CST* snapshot at O(1) **handle-copy** cost. There is no "live scene
+that must be reverted." Undo *is* re-publishing an older version's two roots (green +
+identity); the derived/prepared artifacts for that version's stamps are re-found in
+(or re-derived into) the stamp-keyed LRU (D30), not carried on the `Version`.
 
 > **The layered immutable model (D21/D22) — what a `Version` is, and what hangs off
-> it.** A `Version` is the **CST** version (the three roots above). Everything the
-> renderer consumes is a **downstream immutable product** of it, in two layers, with
-> render-local mutable scratch beneath:
+> it.** A `Version` is the **CST** version (the two roots above). Everything the
+> renderer consumes is a **downstream immutable product** of it — keyed by stamp,
+> held in a stamp-keyed LRU (D30) — in two layers, with render-local mutable scratch
+> beneath:
 >
 > ```
-> Version (CST: greenRoot + identityRoot + derivationCacheRoot, D26)
+> Version (CST: greenRoot + identityRoot, D26/D30)        ← cache is NOT here (D30)
 >   + AssetManifest (path → (size,mtime) prefilter → content hash, D5/D17)
->   + time t                                   ← animation input (D21)
+>   + animationName + shutter [t0,t1]          ← animation inputs (D21/D31): a time INTERVAL
 >         │ derive  — config-INDEPENDENT (D22); manager roots persistent (D23)
+>         │           async + cancellable on the render arbiter, off the edit thread (D34)
 >         ▼
->   DerivedScene(CST, assets, t)               immutable: realized/tessellated
->         │                                    geometry, materials, lights-as-emitters, TLAS
->         │ prepare(scene, RenderConfig)        — config-DEPENDENT (D22)
+>   DerivedArtifact{ DerivedStamp, DerivedScene, derivationCache }   ← cache lives HERE (D30)
+>     DerivedScene(CST, assets, [t0,t1])       immutable: realized/tessellated geometry,
+>         │                                    materials, lights-as-emitters, TLAS;
+>         │                                    animated quantities baked as at(τ) over the shutter (D31)
+>         │ prepare(scene, RenderConfig)        — config-DEPENDENT (D22); deterministic, seeded (D33)
 >         ▼
->   PreparedRenderState                        immutable: light samplers, photon maps
+>   PreparedArtifact{ PreparedStamp, PreparedRenderState }
+>     PreparedRenderState                      immutable: light samplers, photon maps
 >         │                                    (integrator-specific)
 >         │ render(RenderConfig)                — render-LOCAL MUTABLE scratch (D21):
 >         ▼                                      irradiance cache, accumulation buffers
 >   Image
 > ```
 >
-> - **`DerivedScene = f(CST, AssetManifest, t)` is config-independent (D22).** It
->   owns realized/tessellated geometry, materials, lights-as-emitters, and the
->   **TLAS**. Cached by (CST-version, asset-content-hashes, t).
+> - **`DerivedScene = f(CST, AssetManifest, animationName, shutter)` is
+>   config-independent (D22).** It owns realized/tessellated geometry, materials,
+>   lights-as-emitters, and the **TLAS**. **Keyed by its `DerivedStamp = { cstVersion,
+>   assetManifestGen, animationName, shutterInterval }`** (D29) and held on a
+>   `DerivedArtifact` together with its derivation cache (D30) — *not* by a single
+>   `derivedVersion` int (the asset generation and animation/shutter are real axes).
 > - **`PreparedRenderState = prepare(DerivedScene, RenderConfig)` is
 >   config-dependent (D22).** Light samplers depend on the integrator's
 >   light-sampling strategy; photon maps exist only for photon-consuming
 >   integrators — so they are **not** pure `f(CST, AssetManifest)` and live *here*,
 >   not in `DerivedScene`. `RenderConfig` (rasterizer/integrator selection + the
->   render-time integrator override) is an explicit third input. Cached by
->   (DerivedScene-version, RenderConfig); a render-time integrator override re-runs
->   **only `prepare`**, not the scene derivation.
+>   render-time integrator override) is an explicit input. **Keyed by its
+>   `PreparedStamp = DerivedStamp + { renderConfig, cameraOverride, samplingSeed }`**
+>   (D29); the seed makes `prepare` deterministic and cacheable (D33). A render-time
+>   integrator/camera override re-runs **only `prepare`** (a new `PreparedStamp`), not
+>   the scene derivation.
 > - **Both layers are immutable + sealed (D12).** The render loop adopts a
 >   `PreparedRenderState` at a **pass boundary** (§2.9). What the renderer *swaps* is
 >   the `PreparedRenderState` pointer; the `DerivedScene` it was prepared from stays
 >   alive by refcount.
-> - **Animation = per-frame derivation (D21).** **Time `t` is a derivation input.**
->   Each frame derives its own immutable `DerivedScene(t)` (a `timeline` keyframes a
->   param; derivation evaluates it at `t`); an animation render is a *sequence of
->   sealed snapshots*, never a mutation-during-render. This is **not** a
->   `Version`/snapshot-history concern — `t` is an input to derivation, not a new CST
->   version per frame.
+> - **Derive/prepare run async + cancellable on the render arbiter (D34).** The edit
+>   thread only commits a CST `Version` (cheap); the arbiter runs derive → seal →
+>   prepare → seal → render as cancellable phases, restarting at a new stamp when a
+>   newer head arrives. This async lag is exactly why `headVersion` and the rendered
+>   `cstVersion` differ (D13/D29). Nothing expensive runs on the edit/agent thread.
+> - **Animation = per-frame, time-INTERVAL derivation (D21 amended by D31).** The
+>   active **animation name** and the **shutter interval `[t0,t1]`** are derivation
+>   inputs (both axes of the `DerivedStamp`, D29). A motion-blurred frame's
+>   `DerivedScene` is **interval-parameterized**: animated quantities are baked as
+>   immutable functions/samples over the shutter (PBRT-style `AnimatedTransform`), and
+>   the renderer reads `at(τ)` per sample **read-only** — preserving the per-sample
+>   random-time motion blur the rasterizers/photon-tracers do today, with no
+>   mutation-during-render. The TLAS for such a frame is a **motion BVH**. This is
+>   **gated work (D31)**: **v1 supports single-time (no motion blur)** — `[t0,t1]`
+>   collapses to a point; the AnimatedTransform-in-`DerivedScene` + motion-BVH path is
+>   a named follow-on (like the TLAS-refit gate, D24). Either way this is **not** a
+>   `Version`/snapshot-history concern — the interval is an input to derivation, not a
+>   new CST version per frame.
 > - **Irradiance caching / accumulation are render-local mutable (D21).** Caches
 >   *populated during a pass* are owned by the render pass, **not** part of any
 >   immutable snapshot. They may persist across passes/frames for temporal coherence
@@ -399,17 +501,23 @@ three roots (green + identity + cache), not just an older green `greenRoot`.
 > config-independent scene + TLAS; light samplers + photon maps live in
 > `PreparedRenderState`. §2.3 and §2.9 are written to this layered model.
 
-> **Head version vs derived version are two distinct surfaces (D13).** The
-> *document* advances ahead of the *rendered scene*: a commit moves the CST head
-> immediately, but derivation (Facet 2) may run asynchronously, may still be
-> in-flight, or may have failed and be serving a last-good snapshot. So the session
-> never collapses the two into one id. It publishes **one coherent status value**:
+> **Head version vs derived stamp are two distinct surfaces (D13 as amended by
+> D29).** The *document* advances ahead of the *rendered scene*: a commit moves the
+> CST head immediately, but derivation (Facet 2) runs **asynchronously on the render
+> arbiter** (D34), may still be in-flight, or may have failed and be serving a
+> last-good artifact. So the session never collapses the two into one id. It
+> publishes **one coherent status value** — and crucially the derived side is a
+> **`DerivedStamp`**, not a single `derivedVersion` int (D29: a `DerivedScene` also
+> depends on the asset generation + animation/shutter, so a bare CST-version int
+> can't identify it):
 >
 > ```cpp
 > struct VersionStatus {
 >     VersionId                   headVersion;     // the CST truth the document is at (advances on every Commit/Undo/Redo)
->     VersionId                   derivedVersion;  // the version the published DerivedScene reflects (may LAG head, or be last-good on error)
->     std::shared_ptr<const DerivedScene>        snapshot;  // the sealed config-INDEPENDENT scene derivedVersion points at (D12/D22)
+>     DerivedStamp                derivedStamp;    // FULL stamp the published DerivedScene reflects (D29) —
+>                                                  //   { cstVersion, assetManifestGen, animationName, shutterInterval };
+>                                                  //   its cstVersion may be an ANCESTOR of head, or last-good on error
+>     std::shared_ptr<const DerivedScene>        snapshot;  // the sealed config-INDEPENDENT scene derivedStamp points at (D12/D22/D30)
 >     std::shared_ptr<const PreparedRenderState> prepared;  // prepare(snapshot, RenderConfig) — what the render loop ADOPTS at a pass boundary (D22)
 >     enum class Status { Deriving, Ok, Error } status;
 >     std::vector<Diagnostic>     diagnostics;     // why derived lags / failed
@@ -417,16 +525,19 @@ three roots (green + identity + cache), not just an older green `greenRoot`.
 > ```
 >
 > - `headVersion` is what `read_document` (Facet 5) is stamped with — the CST truth.
-> - `derivedVersion` is what `read_graph` / `render` / `derive_preview` are stamped
->   with — what the scene actually reflects. It may be `< headVersion` (derivation
->   lagging) or pinned to the **last-good** snapshot while a broken head is edited
->   (`status == Error`; see §2.9's last-good rule).
+> - `derivedStamp` is what `read_graph` / `render` / `derive_preview` are stamped
+>   with — what the scene actually reflects. Its **`cstVersion`** may be a strict
+>   **DAG ancestor** of `headVersion` (derivation lagging) or pinned to the
+>   **last-good** artifact while a broken head is edited (`status == Error`; see
+>   §2.9's last-good rule).
 > - The two are **never asserted equal when they are not**; `status` +
->   `diagnostics` explain the lag or failure. `headVersion == derivedVersion &&
->   status == Ok` is the steady state, but transient and error states are
->   first-class, not hidden.
+>   `diagnostics` explain the lag or failure. The steady state is
+>   `derivedStamp.cstVersion == headVersion && status == Ok`; transient and error
+>   states are first-class, not hidden. **The staleness test is DAG ancestry on the
+>   `cstVersion` axis, never numeric `<`** (D29: the version DAG has branches; the
+>   other stamp axes are equality-matched, not ordered).
 > - **A patch's optimistic-concurrency precondition (Facet 5) is checked against
->   `headVersion`**, not `derivedVersion` — an edit re-bases against the CST truth,
+>   `headVersion`**, not the derived stamp — an edit re-bases against the CST truth,
 >   independent of how far derivation has caught up. The §2.6 concurrent-edit
 >   conflict check and the §2.9 agent-vs-gesture race both pivot on `headVersion`.
 
@@ -456,7 +567,9 @@ One type. Both clients (GUI, agent, text) ultimately produce it.
 struct CstPatch {
     enum class Kind { SetField, InsertNode, RemoveNode, ReplaceSubtree, Rename, ReparseSpan };
     Kind            kind;
-    NodeRefId       target;        // the lineage NodeId (red-layer/side-map, D9/D15) being edited
+    NodeRefId       target;        // the lineage NodeId (red-layer/side-map, D9/D15/D36) being edited.
+                                   // D36: the patch carries the target NodeId, NOT just a name-path —
+                                   // same as EditIntent/Widget/ViewNode/selection (all NodeId-keyed).
     // Clients address by name-path; the API resolves name-path → NodeId against the
     // base version BEFORE building the patch, so the patch is rename-stable.
     // SetField:        newText (the verbatim token(s) to splice for this field)
@@ -485,27 +598,39 @@ struct CstPatch {
 > on NodeId survive automatically. This is strictly better than treating rename as
 > remove+add (which would mint a fresh NodeId and drop bindings — see §4.1).
 >
-> **Rename runs against head, but its `ReferenceUse` trace must be head-stamped
-> (D25).** Rename rewrites referrers at **`headVersion`** (the CST truth), yet the
-> `ReferenceUse` set is produced by **derivation**, which may lag head
-> (`derivedVersion ≤ headVersion`, D13). A reference *added in head but not yet
-> derived* would be **missed** — silently leaving a dangling old name. So
-> `ReferenceUse` records carry the version they were traced at, and **rename requires
-> a `ReferenceUse` set stamped for the exact head it renames against.** If
-> `derivedVersion < headVersion`, the rename **synchronously brings the reference
-> trace up to head first** — only the **reference-tracing pass**, *not* a full
-> re-derive (rename is a deliberate, infrequent op, so a synchronous trace-to-head is
-> acceptable). A rename **never** runs against a stale trace; if a head-stamped trace
-> cannot be obtained, the rename is **refused** (surfaced as an error), never run
-> silently-partial. (Concrete handling in §4.1.)
+> **Rename uses the ONE derivation resolver, against head (D25 as amended by D35).**
+> Rename rewrites referrers at **`headVersion`** (the CST truth), yet the
+> `ReferenceUse` set is produced by **derivation**, whose `cstVersion` may be a DAG
+> ancestor of head (D13/D29). A reference *added in head but not yet derived* would be
+> **missed** — silently leaving a dangling old name. D25 closed that by requiring a
+> head-stamped trace; **D35 sharpens *how*: there is exactly ONE
+> reference-resolution implementation — derivation's own evaluator/resolver — and
+> rename reuses it, never a parallel "tracing pass" reimplementation** (a second path
+> would drift from real derivation, precisely the static-walk failure D4 rejected for
+> dynamic refs). Concretely, rename **synchronously derives head** (or runs
+> derivation's own reference-resolution step to head, sharing that code) and reads the
+> resulting traced `ReferenceUse` records. Rename is a deliberate, infrequent op, so a
+> synchronous derive-to-head is acceptable. A rename **never** runs against a stale or
+> separately-computed trace; **if head cannot be derived (semantic error), the rename
+> is refused** (surfaced as an error), never run best-effort/partial. (Concrete
+> handling in §4.1.)
 
-Applying a patch is a **pure function** owned jointly with Facet 1:
+Applying a patch is a **pure function** owned jointly with Facet 1. It takes — and
+returns — **both roots** (green + identity, D36), because an `InsertNode` / `Rename`
+/ `ReparseSpan` mints or re-associates `NodeId`s, so the identity side-map must
+advance in lock-step with the green tree (this is what lets the `GestureBuffer`
+carry a live `workingIdentityRoot`, §2.3):
 
 ```cpp
-// Returns a NEW root sharing all untouched subtrees, plus the changed-path set.
-// Pure: no I/O, no global state, no mutation of `base`.
-struct ApplyResult { NodeRef newRoot; ChangeSet changed; std::optional<ParseError> error; };
-ApplyResult ApplyPatch(NodeRef base, const CstPatch& p);
+// Returns NEW roots sharing all untouched subtrees, plus the changed-path set.
+// Pure: no I/O, no global state, no mutation of the inputs.
+struct ApplyResult {
+    NodeRef       newGreenRoot;     // path-copied green root (D2)
+    IdentityRoot  newIdentityRoot;  // identity side-map with NodeId mints/re-associations applied (D36)
+    ChangeSet     changed;
+    std::optional<ParseError> error;
+};
+ApplyResult ApplyPatch(NodeRef baseGreen, IdentityRoot baseIdentity, const CstPatch& p);
 ```
 
 `ApplyPatch` is the **single edit pathway (L2, INV-6)**. There is exactly one
@@ -553,49 +678,70 @@ leaf.
 A gesture (drag, scrub, slider) must be **one undo unit** without the old
 composite-marker machinery. The model is the single one ratified in **D1**
 (resolving F3's earlier three descriptions): **each pointer-move advances an
-*uncommitted head* — a persistent-tree green root (D2) — and derives a *cheap
-preview snapshot* (debounced per O2, ephemeral, NOT a history version); at gesture
-end the intermediate roots coalesce into exactly ONE committed version (one undo
-unit).** The "working head" is **CST state** (a green root), not a side-channel of
-non-CST mutable state.
+*uncommitted working head* — BOTH roots, a green root *and* its identity side-map
+(D36) — and derives a *cheap preview snapshot* (debounced per O2, ephemeral, NOT a
+history version); at gesture end the intermediate roots coalesce into exactly ONE
+committed version (one undo unit).** The "working head" is **CST state** (green +
+identity), not a side-channel of non-CST mutable state.
 
 ```cpp
 class GestureBuffer {
-    NodeRef                 baseRoot;        // the committed Version root at gesture start (the undo target)
-    NodeRef                 uncommittedHead; // baseRoot + all staged patches applied, in memory (a green root, D2)
-    std::vector<NodeRefId>  touched;         // union of changed NodeIds (D9; drives incremental re-derive)
+    // BOTH roots travel together (D36): a working head is { greenRoot, identityRoot }.
+    // A gesture is not always pure SetField — an insertion/reparse mid-gesture mints or
+    // re-associates NodeIds, so the working identityRoot MUST advance alongside greenRoot,
+    // or those new occurrences would have no identity until commit.
+    NodeRef                 baseGreenRoot;     // committed Version's green root at gesture start (the undo target)
+    IdentityRoot            baseIdentityRoot;  // committed Version's identity side-map at gesture start (D26/D36)
+    NodeRef                 workingGreenRoot;  // base + all staged patches applied, in memory (a green root, D2)
+    IdentityRoot            workingIdentityRoot; // base + identity updates from each staged patch (D36) — advances WITH greenRoot
+    std::vector<NodeRefId>  touched;           // union of changed NodeIds (D9; drives incremental re-derive)
     EditLabel               label;
 public:
-    void Stage(const CstPatch& p);           // uncommittedHead = ApplyPatch(uncommittedHead, p); union touched
-                                             //   then derive a cheap, EPHEMERAL preview snapshot (debounced, O2)
-    Version Commit();                        // coalesce: publish ONE Version{parent=base, changed=touched}
-    void    Abort();                         // drop uncommittedHead; baseRoot stays the committed head
+    void Stage(const CstPatch& p);             // (workingGreenRoot, workingIdentityRoot) = ApplyPatch(working…, p);
+                                               //   ApplyPatch updates BOTH roots (insert/reparse update identity, D36);
+                                               //   union touched, then derive a cheap, EPHEMERAL preview snapshot (debounced, O2)
+    Version Commit();                          // coalesce: publish ONE Version{ greenRoot=working, identityRoot=working,
+                                               //   parent=base, changed=touched } (two roots, D26/D30)
+    void    Abort();                           // drop both working roots; base roots stay the committed head
 };
 ```
 
+> **Why the GestureBuffer carries BOTH roots (D36).** Identity stopped at `Version`
+> in the pre-round-4 design: the gesture buffer carried only a green root, so an
+> **insertion or a mid-gesture reparse** (e.g. dragging a control point that adds a
+> `cp`, or a scrub that re-types a region) could not update the working
+> `identityRoot` — the new occurrences would have **no NodeId** until the final
+> commit re-matched them, breaking any binding that wanted to reference a
+> just-inserted node *during* the gesture. So the working head is `{ greenRoot,
+> identityRoot }` and `ApplyPatch` (§2.2) advances **both** as it goes; occurrence
+> identity is live throughout the gesture, not retrofitted at commit.
+
 - **During the drag** (working-assumption O2 = debounced-commit): each
-  `OnPointerMove` calls `Stage`, advancing only the **in-memory `uncommittedHead`**
-  (a real green root produced by path-copy — it *is* CST state, not side state) and
-  asking Facet 2 for a **cheap, debounced, ephemeral preview snapshot** — an
-  incremental **closure-copy re-derive** of `touched` (one object's transform's
-  reverse-dependency closure, not a world rebuild — INV-3, D11). Like any snapshot
-  the **`DerivedScene` is built → sealed** (D12), then **`prepare`d into a
+  `OnPointerMove` calls `Stage`, advancing only the **in-memory working head**
+  (both roots — a real green root produced by path-copy + its updated identity
+  side-map; it *is* CST state, not side state) and asking Facet 2 for a **cheap,
+  debounced, ephemeral preview snapshot** — an incremental **closure-copy re-derive**
+  of `touched` (one object's transform's reverse-dependency closure, not a world
+  rebuild — INV-3, D11). The preview derivation runs **async + cancellable on the
+  render arbiter** (D34), off the gesture thread. Like any snapshot the
+  **`DerivedScene` is built → sealed** (D12), then **`prepare`d into a
   `PreparedRenderState`** for the active `RenderConfig` (D22) before the viewport
   reads it, and the render loop **adopts that `PreparedRenderState` at a pass
   boundary** (D12). The whole preview product has a transient lifetime — it is not a
-  history version, and `t` (if the preview is mid-animation) is just a derivation
-  input, not a new version (D21). The **committed head does not move yet**, so undo
-  history is untouched and the viewport reflects the uncommitted head's sealed,
-  prepared preview.
+  history version, and if the preview is mid-animation its **shutter interval** is
+  just a derivation input on the `DerivedStamp` (D29/D31), not a new version. The
+  **committed head does not move yet**, so undo history is untouched and the viewport
+  reflects the working head's sealed, prepared preview.
 - **At gesture end** (`OnPointerUp` / `OnTimeScrubEnd` / slider release):
-  `Commit()` **coalesces the intermediate uncommitted roots into exactly one
-  `Version`** parented on `baseRoot`. That single committed version is the only
-  history entry for the whole drag (one undo unit). **The composite-begin/end
-  markers, `mCompositeDepth`, `ForceCompositeDepthZero`, the nesting-aware trim, and
-  the composite atomic-rollback walks all evaporate** — a gesture is one version
-  because we coalesce once, full stop.
+  `Commit()` **coalesces the intermediate working roots into exactly one
+  `Version`** (both roots — `greenRoot` + `identityRoot`, D26/D30) parented on the
+  base. That single committed version is the only history entry for the whole drag
+  (one undo unit). **The composite-begin/end markers, `mCompositeDepth`,
+  `ForceCompositeDepthZero`, the nesting-aware trim, and the composite
+  atomic-rollback walks all evaporate** — a gesture is one version because we
+  coalesce once, full stop.
 - **`Abort()`** (gesture cancelled, view torn down, agent supersedes mid-drag) is
-  trivially correct: drop `uncommittedHead` and its ephemeral preview; the committed
+  trivially correct: drop both working roots and the ephemeral preview; the committed
   head was never moved. This replaces `RollbackTransaction`'s entire
   cancel-park-revert-restore dance.
 
@@ -687,42 +833,46 @@ Two sub-strategies, chosen by Facet 1's diff capability:
 
 ### 2.5 Undo / redo / branch semantics
 
-History is a **DAG of versions** (each a structurally-shared **three-root** value —
-`greenRoot` + `identityRoot` + `derivationCacheRoot`, D26), not two stacks.
-Undo/redo is a **pointer move that republishes a prior version's three roots** (D2/
-D26): no absolute spans are reconstructed, no inverse is applied — the red cursor
-recomputes any positions lazily for whatever `greenRoot` is published, and bindings
-resolve against the republished version's `identityRoot`.
+History is a **DAG of versions** (each a structurally-shared **two-root** value —
+`greenRoot` + `identityRoot`, D26 as amended by D30; the derivation cache is **not**
+on the version, it lives on stamp-keyed artifacts), not two stacks. Undo/redo is a
+**pointer move that republishes a prior version's two roots** (D2/D26): no absolute
+spans are reconstructed, no inverse is applied — the red cursor recomputes any
+positions lazily for whatever `greenRoot` is published, and bindings resolve against
+the republished version's `identityRoot`.
 
 ```cpp
 class VersionGraph {
     // The version DAG is a PERSISTENT immutable container (D23) — sharing its
     // entries across snapshots/branches is O(log N) only once D23 lands (O(N) copy
     // per snapshot in the v1 fallback). It is NOT a plain mutable unordered_map.
-    PersistentMap<VersionId, Version> versions;       // all live versions (each = 3 shared roots, D26)
+    PersistentMap<VersionId, Version> versions;       // all live versions (each = 2 shared roots, D26/D30)
     VersionId head;                                   // the CST HEAD version (headVersion, D13) — NOT necessarily what's rendered
     // Per-head "redo" is the child you came from when you undid:
     PersistentMap<VersionId, VersionId> lastChildOf;  // for linear redo UX
 public:
-    // Commit takes the three roots (D26): the new green CST root, the identity
-    // side-map written by the edit/reparse, and the version-scoped derivation cache.
-    Version  Commit(NodeRef greenRoot, IdentityRoot, DerivationCacheRoot, ChangeSet, EditLabel, Origin); // head→new; new.parent=head
+    // Commit takes the two roots (D26/D30): the new green CST root and the identity
+    // side-map written by the edit/reparse. NO derivation-cache arg — the cache is
+    // produced LATER, async, on a DerivedArtifact keyed by DerivedStamp (D30/D34).
+    Version  Commit(NodeRef greenRoot, IdentityRoot, ChangeSet, EditLabel, Origin); // head→new; new.parent=head
     bool     Undo();   // head = versions[head].parent (if any)
     bool     Redo();   // head = lastChildOf[head] (the branch you last left)
     void     Trim(MemoryBudget);                                      // GC unreachable/old versions
 };
 ```
 
-> **`head` is `headVersion`, not `derivedVersion` (D13).** `VersionGraph::head` is
-> the CST truth — it advances the instant `Commit`/`Undo`/`Redo` runs. The
-> *derived* version (what the renderer reflects) is tracked separately in the
-> session's `VersionStatus` (§2.1) and lags `head` while Facet 2 catches up or
-> stays pinned to last-good on error. Undo/redo move **`head`** (and therefore
-> `headVersion`); the published `derivedVersion` follows asynchronously. The two
-> are never reported equal when they are not.
+> **`head` is `headVersion`, not a derived stamp (D13/D29).** `VersionGraph::head` is
+> the CST truth — it advances the instant `Commit`/`Undo`/`Redo` runs (on the edit
+> thread; cheap). The *derived* product (what the renderer reflects) is tracked
+> separately in the session's `VersionStatus` as a **`DerivedStamp`** (§2.1, D29),
+> produced **asynchronously by the render arbiter** (D34); its `cstVersion` lags
+> `head` while Facet 2 catches up or stays pinned to last-good on error. Undo/redo
+> move **`head`** (and therefore `headVersion`); the published derived stamp follows
+> asynchronously. The two are never reported equal when they are not, and the
+> staleness test is **DAG ancestry on the `cstVersion` axis, not numeric `<`** (D29).
 
 - **Undo** = `head = parent`. **Redo** = `head = lastChildOf[head]`. Both
-  republish the target version's **three roots** (D26) atomically; Facet 2
+  republish the target version's **two roots** (D26/D30) atomically; Facet 2
   re-derives the `ChangeSet` (NodeIds, D9) between old-head and new-head (the diff
   of two green roots is cheap — shared subtrees compare by pointer). **No inverse
   application, no `prev*` replay, no composite walk, no partial-revert atomicity
@@ -740,10 +890,11 @@ public:
   > manifest is the live filesystem. A **content-addressed asset store** (snapshotting
   > asset bytes by hash for fully reproducible historical renders — the git-LFS
   > analogue, layered at the VCS boundary, not the editor) is a **named future
-  > option**, not core. So the `derivationCacheRoot` an old version carries is a
-  > *memo*, not a guarantee of identical pixels under changed assets: a re-stamped
-  > asset content-hash is an input version bump (D4) that correctly invalidates the
-  > affected memo entries.
+  > option**, not core. So a derivation cache (now carried by a `DerivedArtifact`,
+  > **not** by the old `Version` — D30) is a *memo*, not a guarantee of identical
+  > pixels under changed assets: a re-stamped asset content-hash is a different
+  > `assetManifestGen` axis on the `DerivedStamp` (D29) and an input version bump
+  > (D4), so it keys a *different* artifact and correctly misses the stale memo.
 - **Branching is free** (and is the agentic-native payoff). A new edit after an
   undo does **not** destroy the redo subtree by default — it adds a sibling child
   of the current head. We keep a linear-redo *UX* (`lastChildOf`) to match user
@@ -755,12 +906,14 @@ public:
   supports it either way.
 - **Trim / memory bound.** Replaces `EditHistory::TrimToMax`'s 1024-cap + the
   nesting-aware composite-preservation logic. **Once the persistent-container
-  prerequisite (D23) holds**, versions share structure across all three roots
-  (green + identity + cache), so the cost of retaining history is "the sum of
+  prerequisite (D23) holds**, versions share structure across **both** roots
+  (green + identity), so the cost of retaining history is "the sum of
   *distinct* subtrees across all retained versions," not N full copies. **In the v1
-  copy-on-snapshot fallback (D23) the identity side-map and cache are copied whole
+  copy-on-snapshot fallback (D23) the identity side-map is copied whole
   per snapshot — O(N_entities) per retained version — so this sharing claim is gated
-  on D23.** Trim policy: keep the last K versions reachable from head's ancestry +
+  on D23.** Derivation caches are **not** part of a `Version` (D30) — they live on
+  stamp-keyed `DerivedArtifact`s in their own LRU, evicted independently of history
+  trimming. Trim policy: keep the last K versions reachable from head's ancestry +
   any branch tips younger than T; GC the rest; ref-counting reclaims subtrees no
   version references. A 60Hz drag is **one** version (it committed once), so the
   pathological "17s drag = 1000 history entries" case that drove the
@@ -772,7 +925,7 @@ public:
 |---|---|---|---|
 | **Scene structure & all parameters** | live `Scene` + source bytes | **CST (the document) → `DerivedScene` (config-independent, D22) → `PreparedRenderState` (config-dependent, D22)** | yes (the CST/file; the derived layers are products, not persisted) |
 | Object transform / material / light / medium / camera params | live objects + `prev*` | CST leaves | yes |
-| **Animation time `t`** (which frame to derive) | mutated into the live scene per frame (`Scene.cpp:561`) | a **derivation input** (D21), not CST/version state — each frame is a `DerivedScene(t)` | no (it's an input, not stored state) |
+| **Animation name + shutter interval `[t0,t1]`** (which frame/interval to derive) | mutated into the live scene per frame (`Scene.cpp:561`) | **derivation inputs** (D21/D31), not CST/version state — a frame is a time-INTERVAL `DerivedScene([t0,t1])`; both are axes of the `DerivedStamp` (D29) | no (inputs, not stored state) |
 | **Irradiance cache / accumulation buffers** | populated *during* render, intertwined with the live scene | **render-local mutable** scratch owned by the render pass (D21) — NOT snapshot state | no |
 | **Selection** (category, NodeId + addressing name, per-category memory) | `mSelectionCategory/Name`, `mSelectionByCategory[9]` | **`SessionState`** (binds to a NodeId, D9; name-path is how it's displayed/re-resolved) | no |
 | **Section expanded** (panel accordion) | `mSectionExpanded[9]` | `SessionState` (or per-user UI prefs) | no |
@@ -788,14 +941,22 @@ public:
 ```cpp
 // Pure ephemeral state — never serialized, never versioned, never captured for undo.
 struct SessionState {
-    Selection            selection;       // category + name + per-category memory
+    Selection            selection;       // a NodeId (D36) + category + per-category memory;
+                                          //   name-path is derived for display/re-resolution, NOT the key
     Tool                 activeTool;
     ToolMemory           toolMemory;      // per-category last sub-tool
     PanelExpansion       expanded;        // accordion state (candidate for per-user prefs file)
     ViewCamera           previewCamera;   // interactive orbit pose (NOT the document camera)
-    VersionId            viewingVersion;  // which version this view is bound to
+    VersionId            viewingVersion;  // which CST version this view is bound to
 };
 ```
+
+> **Selection (and every `Widget`/`ViewNode`/`EditIntent`) is `NodeId`-keyed (D36).**
+> Per D36 these store the **`NodeId`**, not a name-path; the name-path is resolved
+> *from* the NodeId for the header/display and re-resolved on demand. So a structured
+> rename/edit leaves the binding intact (the NodeId is preserved), and a whole-region
+> reparse re-associates it best-effort, invalidating/flagging on a miss (D15) — never
+> silently remapping a name-path to a guessed node.
 
 **Two independent dirtiness concepts (D6), both required.** Model A had a single
 in-process "dirty" notion because the live scene could diverge from the file, and
@@ -806,7 +967,8 @@ the file underneath us.
 
 **(1) In-process "unsaved" signal — `headVersion != lastFlushedVersionId`.** In
 Model B the CST *is* the file's content, so (this is the **head** version, D13 —
-the CST truth, independent of how far `derivedVersion` has caught up):
+the CST truth, independent of how far the derived stamp's `cstVersion` has caught
+up, D29):
 
 - If we adopt **autosave / file-as-canonical** (O1 text-canonical leaning): every
   committed version is serialized to disk (debounced), so "unsaved" ≈ "the last
@@ -917,9 +1079,10 @@ This is the load-bearing argument (memory `project_editor_state_hardening`).
   derivation, not pre-declared. The editor does **not** bump anything — it just
   reports *what NodeIds changed*. The traced dependency (the `ReferenceUse` graph,
   D14) replaces a dozen open-coded `Bump*` calls; its per-node edge set is owned by
-  the version-scoped persistent cache with an explicit lifecycle (D20). (Cross-facet
-  ask on Facet 2: trace the light-sampler/env-IBL dependency on the emitter-set;
-  see §5.)
+  the persistent derivation cache with an explicit lifecycle (D20) — which per **D30**
+  lives on a `DerivedArtifact` keyed by `DerivedStamp` (a stamp-keyed LRU), *not* on
+  the `Version`. (Cross-facet ask on Facet 2: trace the light-sampler/env-IBL
+  dependency on the emitter-set; see §5.)
 - **P-FFMATH (NaN sentinels) — UNCHANGED but shrunk.** The model removes most of
   the code that used NaN-as-not-found (the reverse-lookups, the `prev*` "absent"
   encodings). The `SourceHygieneTest` + `red_prove.sh` guardrails stay. New CST
@@ -927,14 +1090,15 @@ This is the load-bearing argument (memory `project_editor_state_hardening`).
 
 ### 2.8 Memory & performance of versioning a large CST
 
-> **All four cost rows below are gated on D23.** They hold once the version DAG,
-> the identity side-map (`identityRoot`, D26), and the derivation cache
-> (`derivationCacheRoot`, D20) are **persistent immutable containers**. In the
-> **honest v1 copy-on-snapshot fallback (D23)** each snapshot copies those side
-> structures whole — **O(N_entities) per commit** — so the green tree's O(log N)
-> path-copy is real but the *per-version* cost is O(N) until the persistent
-> containers land. The O(log N)/O(closure) figures are the **target**, not the v1
-> guarantee.
+> **All four cost rows below are gated on D23.** They hold once the version DAG and
+> each `Version`'s identity side-map (`identityRoot`, D26) are **persistent immutable
+> containers** (the derivation cache is **not** a `Version` side structure — per D30
+> it lives on stamp-keyed `DerivedArtifact`s in their own LRU, so it does not factor
+> into per-*commit* CST cost). In the **honest v1 copy-on-snapshot fallback (D23)**
+> each commit copies the identity side-map whole — **O(N_entities) per commit** — so
+> the green tree's O(log N) path-copy is real but the *per-version* cost is O(N) until
+> the persistent containers land. The O(log N)/O(closure) figures are the **target**,
+> not the v1 guarantee.
 - **Per-edit cost:** O(depth of edited path) green-node copies (D2 path-copy) —
   **O(depth · log(width)) ≈ O(log N)** once a wide child sequence on the spine is a
   rope (D16: re-linking a rope child is O(log width), not O(width)); the version's
@@ -944,8 +1108,9 @@ This is the load-bearing argument (memory `project_editor_state_hardening`).
   Sub-microsecond *for the green spine*; allocations dominated by one small node.
   **No offset rewrite of later nodes** (D2: relative widths, positions via the red
   cursor) — that, plus the rope (D16), is what keeps the green path O(log N) rather
-  than O(document). **(The whole-edit cost is O(log N) only when the `identityRoot`/
-  cache are persistent too — D23; else O(N) for those side structures.)**
+  than O(document). **(The whole-edit cost is O(log N) only when the `identityRoot`
+  is persistent too — D23; else O(N) for the identity side-map. The derivation cache
+  is not copied per commit — it is artifact-scoped, D30.)**
 - **Per-edit memory:** the copied green spine only. Untouched chunks (the other 154
   objects in a Sponza scene) are pointer-shared. A drag commits **one** version,
   so 5s @ 60Hz = 1 retained version's worth of distinct nodes, not 300. **(Side
@@ -953,11 +1118,12 @@ This is the load-bearing argument (memory `project_editor_state_hardening`).
 - **History memory:** Σ distinct subtrees across retained versions **once D23
   holds**. Editing 50 different parameters across 50 versions retains ~50 small green
   spines + one shared bulk — kilobytes, not 50× the file. **(In v1 each version also
-  holds a whole copy of the identity side-map + cache — O(N) each — until the
-  persistent containers land.)**
-- **Snapshot/branch cost:** O(1) **handle-copy** of a version's three roots (D26).
-  (The *content* sharing behind those handles is O(log N) under D23, O(N) in the v1
-  fallback.)
+  holds a whole copy of the identity side-map — O(N) — until the persistent
+  containers land. Derivation caches are artifact-scoped, D30 — bounded by the
+  stamp-keyed LRU, not by history depth.)**
+- **Snapshot/branch cost:** O(1) **handle-copy** of a version's two roots (green +
+  identity, D26/D30). (The *content* sharing behind those handles is O(log N) under
+  D23, O(N) in the v1 fallback.)
 - **Persistence (on disk / branch tips):** serialize head to text by walking the
   green tree with the red cursor (D2) into **one self-contained `.RISEscene` file**
   (D7: a v7 document is single-file; `> load`/`> run` are deprecated, so there is
@@ -1076,13 +1242,14 @@ B:
   loop render next," an atomic `shared_ptr` swap at a **pass boundary** (D12).
 - **Abort needs no rollback (D1):** dropping an in-flight pass is free — nothing
   was half-mutated.
-- **Last-good-scene (D1) is exactly the `derivedVersion` surface (D13):** the most
+- **Last-good-scene (D1) is exactly the derived-stamp surface (D13/D29):** the most
   recent **sealed `DerivedScene`** (and the `PreparedRenderState` prepared from it,
   D22) that derived without a hard error; immutable + refcounted, so the renderer
   simply keeps rendering it while a broken head is edited (pairs with
-  derive-with-holes, Facet 2). In that state `derivedVersion < headVersion` and
-  `status == Error` with `diagnostics` — the session reports the lag truthfully
-  (§2.1) rather than stamping the render with the broken head.
+  derive-with-holes, Facet 2). In that state the published `derivedStamp.cstVersion`
+  is a strict **DAG ancestor** of `headVersion` (not `<`, D29) and `status == Error`
+  with `diagnostics` — the session reports the lag truthfully (§2.1) rather than
+  stamping the render with the broken head.
 - **Agent edits vs UI edits** are the same: both call `Commit` on the version
   graph (UI-thread-affine for the graph itself, or a small mutex around the graph
   — the graph op is microseconds). An agent committing while the user is
@@ -1132,7 +1299,7 @@ Precise fate of every component this facet supersedes (charter §7.3, L7).
 | `DropStaleSelection_` / `SelectionStillResolves` | re-validate selection after undo/redo (mutating controller members) | pure `resolves(selection, version)` (against the version's `greenRoot` + `identityRoot`, D26); selection lives in `SessionState`; re-run on every head change |
 | `ResolveTargetSerial`'s *intent* (don't corrupt a renamed entity) | serial compare | subsumed by **NodeId** identity on immutable trees (D9; rename is a NodeId-preserving op, INV-5) |
 | `EditLabel`/`OpName` (the "Undo Move sphere" tooltip strings) | `EditHistory::LabelForUndo`, `OpName` switch | `Version::label` set at commit; tooltip reads `versions[head].label` / `versions[lastChildOf].label` |
-| The cancel-and-park orchestrator (`Start/Stop/RenderLoop/DoOneRenderPass/KickRender`, preview-scale, polish) | conflated into `SceneEditController`, parks to avoid UAF | **extracted into its own render-orchestrator component**; parks for *latency* only; renders an immutable `PreparedRenderState` = `prepare(DerivedScene, RenderConfig)` (D22); animation drives it as a sequence of per-frame `DerivedScene(t)` snapshots (D21) and owns the render-local irradiance/accumulation caches (D21). Out of this facet's deletion scope but its coupling to edits is redefined here. |
+| The cancel-and-park orchestrator (`Start/Stop/RenderLoop/DoOneRenderPass/KickRender`, preview-scale, polish) | conflated into `SceneEditController`, parks to avoid UAF | **extracted into its own render-orchestrator component**; the **render arbiter** runs derive → prepare → render as **async, cancellable phases** off the edit thread (D34); parks for *latency* only; renders an immutable `PreparedRenderState` = `prepare(DerivedScene, RenderConfig)` (D22); animation drives it as a sequence of per-frame, time-INTERVAL `DerivedScene([t0,t1])` snapshots (D21/D31, single-time in v1) and owns the render-local irradiance/accumulation caches (D21). Out of this facet's deletion scope but its coupling to edits is redefined here. |
 
 ### 3.3 REUSE (unchanged, depended upon)
 
@@ -1163,13 +1330,18 @@ Precise fate of every component this facet supersedes (charter §7.3, L7).
      untraced), fall back to descriptor-provided reference resolvers; any referrer
      that still cannot be resolved is **flagged, never silently renamed.** Selection
      and durable agent references keyed on NodeId survive this path exactly.
-     **The `ReferenceUse` set must be head-stamped (D25):** rename rewrites referrers
-     at `headVersion`, but the trace comes from derivation, which may lag head (D13).
-     A reference added in head-but-not-yet-derived would be missed, so the trace
-     carries the version it was taken at; if `derivedVersion < headVersion` the rename
-     **synchronously runs the reference-tracing pass to head first** (just the trace,
-     not a full re-derive — rename is infrequent), and **refuses** rather than run
-     against a stale trace. So rename never silently leaves a dangling old name.
+     **The reference set comes from the ONE derivation resolver, at head (D25 amended
+     by D35):** rename rewrites referrers at `headVersion`, but the trace comes from
+     derivation, whose `cstVersion` may be a DAG ancestor of head (D13/D29). A
+     reference added in head-but-not-yet-derived would be missed. D25 required a
+     head-stamped trace; **D35 sharpens it: there is exactly ONE resolution
+     implementation — derivation's own evaluator — and rename reuses it, not a second
+     "tracing pass" that could drift from real derivation.** So rename
+     **synchronously derives head** (or runs derivation's reference-resolution step to
+     head, sharing that code) and reads the resulting `ReferenceUse`; rename is
+     infrequent, so this is acceptable. **If head cannot be derived (semantic error),
+     rename is refused**, never run best-effort. So rename never silently leaves a
+     dangling old name.
    - **Whole-region reparse is best-effort (D15) — NOT guaranteed.** When the same
      rename arrives as a *raw text edit*, the matcher tries to re-associate the new
      green node with the prior side-map `NodeId` by structural position + content,
@@ -1261,35 +1433,52 @@ Precise fate of every component this facet supersedes (charter §7.3, L7).
   my version model would degrade to "snapshot per commit" — but D2 makes the
   red-green tree the ratified substrate, so this is settled, not open.
 - **On Facet 2 (derivation):** I hand it `(newRoot, ChangeSet)` (NodeIds) — and, for
-  an animation frame, a **time `t`** (D21) — and expect an incremental `derive` that
-  recomputes only dependent subgraphs (INV-3), and a **dependency model that owns
-  light-topology/env-IBL invalidation** (absorbing P-INVALIDATE) keyed off the traced
-  `ReferenceUse` graph (D14). Per **D1 as amended by D11/D12/D21/D22**, the render-ready
-  scene is **two immutable, sealed layers**: **`DerivedScene = f(CST, AssetManifest,
-  t)`** (config-independent: realized/tessellated geometry, materials,
-  lights-as-emitters, **TLAS**) and **`PreparedRenderState = prepare(DerivedScene,
-  RenderConfig)`** (config-dependent: **light samplers + photon maps**, D22). The COW
-  is a **reverse-dependency-closure copy** (D11 — you cannot share a referrer of a
-  changed node in the engine's raw-pointer graph): only the changed node's closure (it
-  + its transitive referrers up to the roots) is copied + repointed, everything else
-  shared by refcount, render stays direct-pointer — **O(closure)/O(log N) only once the
-  persistent manager roots (D23) land; O(N) per snapshot in the v1 copy-on-snapshot
-  fallback; v1 also full-rebuilds the TLAS (D24)**. Derivation builds the
-  config-independent layer into a `DerivedSceneBuilder` (realize/tessellate + TLAS) and
-  **seals**; `prepare` then builds light samplers + photon maps into a
-  `PreparedRenderState` and **seals** — only sealed values are published; the render
-  thread holds a refcounted `PreparedRenderState` pointer and swaps at a **pass
-  boundary** (D12 — never per-tile). **Caches populated *during* a pass (irradiance,
-  accumulation) are render-local mutable scratch (D21), not part of either sealed
-  layer.** Per **D20** the derivation memo + dependency graph is
-  **version-scoped/persistent** — it is the version's `derivationCacheRoot` (D26) —
+  an animation frame, the **active animation name + a shutter interval `[t0,t1]`**
+  (D21/D31) — and expect an incremental `derive` that recomputes only dependent
+  subgraphs (INV-3), and a **dependency model that owns light-topology/env-IBL
+  invalidation** (absorbing P-INVALIDATE) keyed off the traced `ReferenceUse` graph
+  (D14). Per **D1 as amended by D11/D12/D21/D22/D29–D34**, the render-ready scene is
+  **two immutable, sealed layers**, each keyed by a **stamp** (D29): **`DerivedScene =
+  f(CST, AssetManifest, animationName, shutter)`** (config-independent:
+  realized/tessellated geometry, materials, lights-as-emitters, **TLAS**), keyed by
+  **`DerivedStamp = { cstVersion, assetManifestGen, animationName, shutterInterval }`**,
+  and **`PreparedRenderState = prepare(DerivedScene, RenderConfig)`** (config-dependent:
+  **light samplers + photon maps**, D22), keyed by **`PreparedStamp = DerivedStamp +
+  { renderConfig, cameraOverride, samplingSeed }`**. Motion blur is preserved by baking
+  animated quantities as immutable `at(τ)` functions over the shutter (D31; v1 is
+  single-time, motion BVH is gated). **`prepare` must be deterministic (D33):** it
+  takes the `samplingSeed`/RNG-stream identity from `RenderConfig` (no `rand()`-seeded
+  photon tracing), so a `PreparedStamp` is a pure key. **`prepare` reads the sealed
+  `DerivedScene` through non-mutating (const) input APIs and writes a separate
+  `PreparedRenderStateBuilder` (D32)** — `BuildPendingPhotonMaps` and light-sampler
+  construction are refactored from "mutate the `Scene`" to `build(const DerivedScene&,
+  PreparedRenderStateBuilder&)` (named prerequisite work). The COW is a
+  **reverse-dependency-closure copy** (D11 — you cannot share a referrer of a changed
+  node in the engine's raw-pointer graph): only the changed node's closure (it + its
+  transitive referrers up to the roots) is copied + repointed, everything else shared by
+  refcount, render stays direct-pointer — **O(closure)/O(log N) only once the persistent
+  manager roots (D23) land; O(N) per snapshot in the v1 copy-on-snapshot fallback; v1
+  also full-rebuilds the TLAS (D24)**. Derivation builds the config-independent layer
+  into a `DerivedSceneBuilder` (realize/tessellate + TLAS) and **seals**; `prepare`
+  then builds light samplers + photon maps into a `PreparedRenderState` and **seals** —
+  only sealed values are published. **All of derive → seal → prepare → seal → render
+  runs as cancellable phases of the render arbiter, off the edit thread (D34)** — the
+  edit thread only commits a CST `Version` (cheap); when a newer head arrives, in-flight
+  phases cancel and restart at the new stamp (the head-vs-derived lag source, D13/D29).
+  The render thread holds a refcounted `PreparedRenderState` pointer and swaps at a
+  **pass boundary** (D12 — never per-tile). **Caches populated *during* a pass
+  (irradiance, accumulation) are render-local mutable scratch (D21), not part of either
+  sealed layer.** Per **D20 as amended by D30** the derivation memo + dependency graph
+  is **version-scoped/persistent** but lives on a **`DerivedArtifact` keyed by its
+  `DerivedStamp`** (a stamp-keyed LRU, *not* on the immutable `Version`),
   structurally shared across versions/branches **via D23's persistent containers**,
   with an explicit per-node edge lifecycle (atomic edge-set replace on re-derive; purge
   edges + cache entry + flag dangling `ReferenceUse` on delete). **History is CST-only
   (D28):** re-deriving an old version re-reads the live asset bytes (manifest re-stamped
-  on access), so a changed asset may alter an old version's render — a content-addressed
-  asset store is a future option. Conflict risk: if derivation is whole-world per edit,
-  the latency budget (§2.8, ≤ D10 G2's 50 ms ceiling) is Facet 2's to meet, not mine.
+  on access → a different `assetManifestGen` axis, D29), so a changed asset may alter an
+  old version's render — a content-addressed asset store is a future option. Conflict
+  risk: if derivation is whole-world per edit, the latency budget (§2.8, ≤ D10 G2's
+  50 ms ceiling) is Facet 2's to meet, not mine.
 - **On Facet 4 (UI):** structured edits arrive as `CstPatch` through one API;
   `SessionState` (selection/tool/expansion) is owned jointly (it's UI state but I
   define the split). UI widget bindings and selection key on the **lineage `NodeId`**
@@ -1300,12 +1489,15 @@ Precise fate of every component this facet supersedes (charter §7.3, L7).
   a `VersionGraph` reader; structured errors come from `ApplyPatch`'s
   validation + the §2.6 conflict result. A patch's **optimistic-concurrency
   precondition is checked against `headVersion`** (D13). `read_document` is stamped
-  with `headVersion`; `read_graph`/`render`/`derive_preview` with `derivedVersion`
-  (D13) — never told they are equal when they are not. Durable agent references key
-  on the **lineage `NodeId`** (D9/D15); the agent prefers the structured/`Kind::Rename`
-  path precisely because whole-region reparse identity is only best-effort (D15).
-  "GUI is just another agent" holds because both go through `ApplyPatch`.
-- **Decision conformance (D1–D28).** This facet implements, from round 1: **D1**
+  with `headVersion`; `read_graph`/`render`/`derive_preview` with the **`DerivedStamp`**
+  (D13/D29) — its `cstVersion` related to head by **DAG ancestry, not `<`** — never told
+  they are equal when they are not. Durable agent references key on the **lineage
+  `NodeId`** (D9/D15/D36) — agent `EditIntent`s carry the target `NodeId`; the agent
+  prefers the structured/`Kind::Rename` path precisely because whole-region reparse
+  identity is only best-effort (D15), and `Kind::Rename` reuses the one derivation
+  resolver (D35). "GUI is just another agent" holds because both go through
+  `ApplyPatch`.
+- **Decision conformance (D1–D37).** This facet implements, from round 1: **D1**
   (immutable COW derived-scene snapshot + the single gesture model, §2.1/§2.3/§2.9),
   **D2** (red-green CST, §2.1/§2.8), **D6** (external-file conflict, §2.6), **D7**
   (single-file tree, not a forest, §2.8 + §4 item 7), and **D9** (dual identity,
@@ -1317,7 +1509,8 @@ Precise fate of every component this facet supersedes (charter §7.3, L7).
   to G1–G5. From **round 2** it implements/conforms: **D11** (COW = reverse-dependency-
   closure copy, §2.9), **D12** (build → phase-B → seal → publish; snapshot owns its
   render structures; adopt at a **pass** boundary, §2.3/§2.9), **D13** (coherent
-  status exposing `headVersion` *and* `derivedVersion`, §2.1/§2.5/§2.6/§2.9), **D14**
+  status exposing `headVersion` *and* the derived stamp — amended by D29, §2.1/§2.5/
+  §2.6/§2.9), **D14**
   (rename via traced `ReferenceUse`, not `referenceCategories`, §2.2/§4.1), **D15**
   (content hash / derivation key / lineage `NodeId` separated; NodeId in the red layer;
   reparse best-effort + invalidate-unmatched, §2.1/§2.4/§4.1), **D16** (wide child
@@ -1326,35 +1519,67 @@ Precise fate of every component this facet supersedes (charter §7.3, L7).
   documented rename-race residual + opt-in advisory locking, §2.6); and it **consumes**
   **D18** (corrected first-slice fixture — §6 references D10's phases, which D18 amends),
   **D19** (no imperative `>` layer in v7 — this facet edits only declarative chunks;
-  nothing here depends on `> set`/`> load`/`> run`), and **D20** (version-scoped
-  persistent derivation cache + edge lifecycle — a Facet 2 contract this facet relies on,
-  §5 Facet-2 bullet). From **round 3** it implements/conforms: **D21** (animation =
-  per-frame derivation with time `t` as a derivation input; render-populated caches —
-  irradiance, accumulation — are render-local mutable, not snapshot state — §2.1
-  layered-model note / §2.3 / §2.6 table / §2.9), **D22** (split config-independent
-  `DerivedScene` from `PreparedRenderState = prepare(DerivedScene, RenderConfig)`; light
-  samplers + photon maps live in `PreparedRenderState`, not `DerivedScene`; the renderer
-  adopts a `PreparedRenderState` at a pass boundary; a render-time integrator override
-  re-runs only `prepare` — §2.1 / §2.3 / §2.9 / §5 Facet-2 bullet), **D23** (the version
-  DAG, identity side-map, and derivation cache require persistent immutable containers
-  for O(log N) sharing — a named prerequisite; **all O(log N)/O(closure) claims here are
+  nothing here depends on `> set`/`> load`/`> run`), and **D20** (persistent
+  derivation cache + edge lifecycle — amended by D30 so the cache is **artifact-scoped**
+  (keyed by `DerivedStamp`), not on the `Version`; a Facet 2 contract this facet relies
+  on, §5 Facet-2 bullet). From **round 3** it implements/conforms: **D21** (animation =
+  per-frame derivation with time as a derivation input — amended by D31 to a time
+  *interval*; render-populated caches — irradiance, accumulation — are render-local
+  mutable, not snapshot state — §2.1 layered-model note / §2.3 / §2.6 table / §2.9),
+  **D22** (split config-independent `DerivedScene` from `PreparedRenderState =
+  prepare(DerivedScene, RenderConfig)`; light samplers + photon maps live in
+  `PreparedRenderState`, not `DerivedScene`; the renderer adopts a `PreparedRenderState`
+  at a pass boundary; a render-time integrator override re-runs only `prepare` — §2.1 /
+  §2.3 / §2.9 / §5 Facet-2 bullet), **D23** (the version DAG and identity side-map (and,
+  artifact-side, the derivation cache) require persistent immutable containers for
+  O(log N) sharing — a named prerequisite; **all O(log N)/O(closure) claims here are
   gated on it, with an honest O(N) copy-on-snapshot v1 fallback** — §2.1 gating note /
   §2.5 / §2.8), **D24** (TLAS is full-rebuild in v1; incremental/persistent BVH is a
   named future prerequisite; the D11 "O(log N) TLAS path-copy" claim is withdrawn for v1
-  — §2.9 COW bullet), **D25** (rename requires a **head-stamped** `ReferenceUse` trace;
-  if derivation lags head it synchronously brings the reference trace to head first, and
-  refuses rather than run stale — §2.2 / §4.1), **D26** (every `Version` owns a
-  persistent identity side-map; a `Version` is `{ greenRoot, identityRoot,
-  derivationCacheRoot, metadata }`, all persistent + structurally shared, with the
-  `identityRoot` the per-occurrence→NodeId map reparse writes and bindings resolve
-  against — §2.0 / §2.1 / §2.4 / §2.5 / §3.3 / §5 Facet-1 bullet); and it **consumes**
-  **D27** (no `>` commands in v7 — extends D19 to `> set <setting>` and the seven
-  `> modify` forms; this facet edits only declarative chunks, so nothing here depends on
-  any `>` command) and **D28** (history preserves the CST only; re-deriving an old
-  version uses **current** asset bytes — an external asset change may alter the render; a
-  content-addressed asset store is a future option — §2.5 re-derivation note / §2.6 / §5
-  Facet-2 bullet). **No contradiction with any of D1–D28** (a later round amends an
-  earlier one; the amended forms are the ones implemented above).
+  — §2.9 COW bullet), **D25** (rename requires a **head-stamped** reference trace —
+  amended by D35 to reuse the one derivation resolver, derive head — §2.2 / §4.1), and
+  **D26** (every `Version` owns a persistent identity side-map, the `identityRoot` —
+  amended by D30 so a `Version` is `{ greenRoot, identityRoot, metadata }` (the cache is
+  NOT a Version root); the `identityRoot` is the per-occurrence→NodeId map reparse
+  writes and bindings resolve against — §2.0 / §2.1 / §2.4 / §2.5 / §3.3 / §5 Facet-1
+  bullet); and it **consumes** **D27** (no `>` commands in v7 — extends D19 to
+  `> set <setting>` and the `> modify` forms; this facet edits only declarative chunks,
+  so nothing here depends on any `>` command — note D37 corrects D27's census to ZERO
+  active `> modify`, immaterial to this facet) and **D28** (history preserves the CST
+  only; re-deriving an old version uses **current** asset bytes — an external asset
+  change may alter the render; a content-addressed asset store is a future option —
+  §2.5 re-derivation note / §2.6 / §5 Facet-2 bullet). **From round 4** it
+  implements/conforms: **D29** (full `DerivedStamp = { cstVersion, assetManifestGen,
+  animationName, shutterInterval }` and `PreparedStamp = DerivedStamp + { renderConfig,
+  cameraOverride, samplingSeed }`; head-vs-derived staleness is **cstVersion DAG
+  ancestry, not `<`** — §2.1 stamp/artifact model + `VersionStatus` / §2.5 / §5 Facet-2
+  + Facet-5 bullets), **D30** (the derivation cache lives on a **`DerivedArtifact` keyed
+  by `DerivedStamp`** — and a `PreparedArtifact` by `PreparedStamp` — in a stamp-keyed
+  LRU, **not** on the immutable `Version`, which is `{ greenRoot, identityRoot,
+  metadata }` — §2.1 `Version` struct + stamp/artifact model / §2.5 / §2.8 / §6),
+  **D31** (animation is per-frame, time-**INTERVAL** derivation — a motion-blurred
+  frame bakes animated quantities as immutable `at(τ)` over the shutter; animation name
+  + shutter are `DerivedStamp` axes; v1 single-time, motion BVH gated — §2.1 diagram +
+  animation bullet / §2.6 table / §3.2 orchestrator row / §5 Facet-2 bullet), **D34**
+  (the edit thread only commits a CST `Version`; derive/prepare/render run **async +
+  cancellable on the render arbiter**, off the edit thread — the head-vs-derived lag
+  source — §2.1 async bullet + `VersionStatus` / §2.3 / §3.2 orchestrator row / §5
+  Facet-2 bullet), **D35** (rename reuses the **one** derivation resolver — synchronously
+  derive head, sharing that code, not a separate tracing-pass reimplementation; refuse
+  if head can't be derived — §2.2 / §4.1), and **D36** (the `GestureBuffer`/working head
+  carries **both** roots `{ greenRoot, identityRoot }` so insertions/reparses update
+  occurrence identity mid-gesture; `CstPatch`/`EditIntent`, `Widget`/`ViewNode`, and
+  selection carry the target **`NodeId`** — §2.2 `CstPatch.target` + `ApplyPatch` / §2.3
+  `GestureBuffer` / §2.6 `SessionState`). It **consumes** the prepare-layer machinery
+  decisions **D32** (`prepare` reads the sealed `DerivedScene` through non-mutating const
+  APIs and writes a `PreparedRenderStateBuilder` — a Facet 2 refactor of
+  `BuildPendingPhotonMaps`/light-sampler construction, §5 Facet-2 bullet) and **D33**
+  (`prepare` is deterministic — `RenderConfig` carries the sampling seed / RNG-stream
+  identity, part of the `PreparedStamp`, §2.1 / §5 Facet-2 bullet), and notes **D37**
+  (the migrator must be comment/token-aware; active `> modify` = 0) as a migration-side
+  correction immaterial to this facet's declarative-only edits. **No contradiction with
+  any of D1–D37** (a later round amends an earlier one; the amended forms are the ones
+  implemented above).
 - **Locked-decision conformance:** L2 (one pathway = `ApplyPatch`) ✔; L4
   (doc/session split, §2.6) ✔; L5 (identity first-class — now **NodeId** lineage +
   name-path addressing per D9, replacing the serial) ✔; L7 (supersession
@@ -1382,12 +1607,13 @@ what makes **G5** (AssetManifest fingerprint invalidation, D17) and the external
 path actually testable. Below, each contribution is tagged with the D10 gate it
 satisfies.
 
-1. **Version graph + one commit.** `VersionGraph` holding immutable **three-root**
-   versions (`greenRoot` + `identityRoot` + `derivationCacheRoot`, D2/D26; `head` =
+1. **Version graph + one commit.** `VersionGraph` holding immutable **two-root**
+   versions (`greenRoot` + `identityRoot`, D2/D26/D30 — the derivation cache is NOT a
+   `Version` root; it lives on a stamp-keyed `DerivedArtifact`, D30; `head` =
    `headVersion`, D13); `v0` = parse of the phase-1 `sphere_geometry` scene.
-   `Undo`/`Redo` republish a prior version's three roots. *(This facet's irreducible
+   `Undo`/`Redo` republish a prior version's two roots. *(This facet's irreducible
    core — buildable against a stub `NodeRef`; the v1 slice may use the **D23
-   copy-on-snapshot fallback** for the side-map/cache — O(N) per snapshot, with the
+   copy-on-snapshot fallback** for the identity side-map — O(N) per snapshot, with the
    O(log N) target gated on the persistent-container work.)* **→ D10 G4 (versioning).**
 2. **One patch kind end-to-end.** `CstPatch{SetField, radiusNodeId, text}` (NodeId
    resolved from the name-path `geometry/dial_sphere.radius`, D9/D15/D26 — the

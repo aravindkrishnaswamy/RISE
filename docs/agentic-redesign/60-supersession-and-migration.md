@@ -1,9 +1,10 @@
 # Facet 6 — Supersession Inventory, Migration Path & Risk Register
 
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–3).** Where this
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–4).** Where this
 > doc previously hedged behind open decisions (O1/O2/O3) or offered forks, it now
-> conforms to the ratified decisions **D1–D28** (round 2's D11–D20 and round 3's
-> D21–D28 *amend* several earlier decisions and win where they conflict). The
+> conforms to the ratified decisions **D1–D37** (round 2's D11–D20, round 3's
+> D21–D28, and round 4's **D29–D37** *amend* several earlier decisions and win where
+> they conflict). The
 > biggest round-1/2 changes: single-file v7 with `> load`/`> run` flattened away
 > (D7) **and ALL embedded `>` commands removed (D19)**; a *singular*
 > migrate-then-DELETE contract for the v6 path with **no** permanent coexistence
@@ -17,10 +18,12 @@
 > rename via traced `ReferenceUse` records (D14). The **round-3** changes folded
 > in here: the **full** `>` command set is migrated/retired — `> set <render-setting>`
 > (e.g. `light_rr_threshold`) becomes a **declarative parameter** on the relevant
-> rasterizer/integrator chunk, and the **seven `> modify`** commands are **RETIRED**,
-> folded by the migrator into each target entity's final authored values
+> rasterizer/integrator chunk, and `> modify` is **RETIRED**, folded by the migrator
+> into each target entity's final authored values *for any active occurrence*
 > (**D27** amends D19; render-match holds because the migrator computes the
-> post-command state); the derived scene splits into **DerivedScene
+> post-command state) — **but see the round-4 D37 correction below: the active corpus
+> has ZERO `> modify`** (the "seven" round-3 counted are commented-out), so this fold
+> is moot for the current corpus; the derived scene splits into **DerivedScene
 > (config-independent) → PreparedRenderState = prepare(scene, RenderConfig)**, with
 > light samplers + photon maps living in `PreparedRenderState` (**D22** amends
 > D12/D5); animation is **per-frame derivation** (time `t` is a derivation input)
@@ -32,7 +35,31 @@
 > reference trace (**D25**); and history preserves the **CST only** — re-derivation
 > uses current asset bytes, with a content-addressed asset store a named future
 > (**D28** amends D5). The first slice remains the corrected phased fixture in
-> **§D18** (a real reference chain + an asset phase; D18 amends D10).
+> **§D18** (a real reference chain + an asset phase; D18 amends D10). The **round-4**
+> changes folded in here tighten identity, determinism, and threading and **correct a
+> factual error**: derived/prepared state is keyed by full **`DerivedStamp` /
+> `PreparedStamp`** (cstVersion + assetManifestGen + animationName + shutterInterval,
+> plus renderConfig + cameraOverride + samplingSeed), compared by **DAG ancestry /
+> equality, never numeric `<`** (**D29** amends D13/D22); the memo/dependency cache
+> lives on a stamp-keyed **`DerivedArtifact` / `PreparedArtifact`**, **not** on the
+> immutable `Version = { greenRoot, identityRoot, metadata }` (**D30** amends D26/D20);
+> motion blur is **preserved** via a time-**interval** immutable `DerivedScene`
+> (AnimatedTransform-style `at(τ)` + a motion BVH), **gated** as a named follow-on (v1
+> = single-time / no motion blur) (**D31** amends D21); `prepare()` reads the sealed
+> scene through **non-mutating** input APIs into a `PreparedRenderStateBuilder` —
+> `BuildPendingPhotonMaps` + light-sampler construction are refactored off "mutate the
+> Scene" as a **named prerequisite** (**D32** amends D22/D12); `prepare()` is
+> **deterministic** — `RenderConfig` carries a sampling seed / RNG-stream identity (no
+> `rand()`), part of the `PreparedStamp` (**D33** amends D22); derive → seal → prepare
+> → seal → render run **async + cancellable on the render arbiter, off the edit
+> thread** (the source of the head-vs-derived lag) (**D34** amends D12/D22); rename
+> reuses the **one** derivation resolver (derive-to-head; no second tracing pass)
+> (**D35** amends D25); `{greenRoot, identityRoot}` both propagate through edits
+> (`GestureBuffer`) and `NodeId` is stored in widgets / view-nodes / edit-intents /
+> selection (**D36** completes D26); and **D37 corrects D27's census — the "seven
+> `> modify` in `watch_dial`" are inside a `/* */` block (a commented-out night-mode
+> variant), so the active corpus has ZERO `> modify`**, and the migrator MUST be
+> **comment/token-aware** (parse the CST / token stream, never a raw line grep).
 
 > **Status:** design-in-progress. One of six parallel facet docs under the
 > [Agentic Redesign Charter](00-CHARTER.md). This facet is **cross-cutting**: it
@@ -44,9 +71,10 @@
 > **Design only. No source, build, or scene changes are made by this doc.**
 
 **Reconciliation note.** [`01-DECISIONS.md`](01-DECISIONS.md) is now authoritative
-(rounds 1–3) and resolves the cross-facet contradictions this doc previously
-flagged; round 2's **D11–D20** and round 3's **D21–D28** amend several earlier
-decisions and win where they conflict. The remaining `10`–`50` facet docs are being
+(rounds 1–4) and resolves the cross-facet contradictions this doc previously
+flagged; round 2's **D11–D20**, round 3's **D21–D28**, and round 4's **D29–D37** amend
+several earlier decisions and win where they conflict (round 4's **D37** in particular
+*corrects* a round-3 census error in D27). The remaining `10`–`50` facet docs are being
 conformed to the same decisions; where this doc says "Facet N deletes X," that fate
 is now pinned by a numbered decision (cited inline) rather than an open assumption.
 
@@ -221,26 +249,45 @@ CST from day one (Facet 5).
   `> load`/`> run` includes — e.g. the shared `standard_colors` painters). Per
   **D7** these includes are *flattened by inlining* at migration time, so every v7
   scene is self-contained (see §3.5).
-- **Embedded `>` command census (the full set D27 must migrate or retire).** A
-  corpus scan finds exactly these surviving `>` verbs — v7 has **none** of them
+- **Embedded `>` command census (the full set D27 must migrate or retire) — counted
+  comment/token-aware (D37).** The census is over the **active** corpus only: a
+  **comment/token-aware** scan that strips `/* … */` blocks and `#` line comments
+  *before* counting `>` verbs (a naive line grep is **not** evidence about active
+  scene content — D37). The active surviving `>` verbs — v7 has **none** of them
   (D19/D27): **`> run`** (219 lines / 219 files — includes, flattened by D7);
-  **`> set`** (175 lines / 139 files) splitting into **`> set accelerator`** (136),
-  **`> set global_medium`** (38), and **`> set light_rr_threshold`** (1) — the first
-  two are the D19 `acceleration{}`/`global_medium{}` chunks, the third is the
-  **render-setting** D27 turns into a declarative param (see below); **`> modify`**
-  (**7** lines, all in one file — `scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene`)
-  — **RETIRED** and folded into authored values by D27; and **`> echo`** (9 lines /
-  9 files) — a build-log diagnostic with **no scene-state effect**, dropped by the
-  migrator (it produces no v7 construct). No `> load`/`> remove`/`> rasterize`
-  appears as an embedded scene line. The migrator **hard-fails on any `>` verb not
-  in this enumerated set** (D27), so the census is the migrator's allow-list (§3.4,
-  §3.5).
+  **`> set`** (**174** active lines / 138 files) splitting into **`> set accelerator`**
+  (136), **`> set global_medium`** (**37**), and **`> set light_rr_threshold`** (1) —
+  the first two are the D19 `acceleration{}`/`global_medium{}` chunks, the third is the
+  **render-setting** D27 turns into a declarative param (see below); and **`> echo`**
+  (9 lines / 9 files) — a build-log diagnostic with **no scene-state effect**, dropped
+  by the migrator (it produces no v7 construct). **`> modify` = ZERO active (D37).**
+  No `> load`/`> remove`/`> rasterize` appears as an active embedded scene line. The
+  migrator **hard-fails on any `>` verb not in this enumerated set** (D27), so the
+  census is the migrator's allow-list (§3.4, §3.5).
+- **Commented-out `>` lines the comment-aware count correctly EXCLUDES (D37).** A
+  naive (non-comment-aware) line grep over-counts by **8** lines, all inside `/* … */`
+  blocks and therefore inert: **(a)** the **seven `> modify`** in
+  `scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene:2393–2399`, inside the
+  `/* */` block opened at **line 2392** — a **commented-out *night-mode* variant** (it
+  would set `radiance_scale 0.02`, zero the day `*_lum` materials' `scale`, and swap
+  four objects to `lume_glow_night`); the earlier round-3 census mistook these for
+  active. **(b)** one **`> set global_medium fog`** in
+  `scenes/Tests/SubsurfaceScattering/pt_sss_dragon.RISEscene:71`, inside a `/* */`
+  block enclosing a commented-out `homogeneous_medium fog` + its `> set` (a disabled
+  fog variant — there is **no** active global_medium in that file). Folding (a) would
+  have **flipped the day scene to night and broken render equivalence**; counting (b)
+  inflated `> set global_medium` from the true **37** to 38. **Both were caught only by
+  parsing, not grepping** — the codified D37 lesson: corpus audits feeding migration or
+  decisions MUST be comment/token-aware.
 - **Migrator precedent.** Three `tools/migrate_scenes_*.py` (v5→v6 format bump,
   color-space, iscalarpainter). Pattern: regex line-rewriter, header-guarded for
   idempotency, in-place with line-ending preservation, recursive over `scenes/`,
   documented preserve-list. `migrate_scenes_iscalarpainter.py` (v3) is **cross-file
   aware** (resolves `> run …RISEscript` includes). **This is the v6→v7 corpus
-  migrator template.**
+  migrator template — adopted for its idempotency/line-ending/cross-file machinery, but
+  per D37 the v6→v7 migrator must be comment/token-aware (parse the CST, NOT a raw line
+  grep) for any pass that interprets `>` commands or folds state** (§3.5), so it is
+  *not* a pure line-rewriter where command semantics are concerned.
 
 ---
 
@@ -271,7 +318,7 @@ Cross-facet ownership is noted so synthesis can detect double-claims or gaps.
 | `$(...)` + inline `sin/cos/tan/sqrt/hal` + `MathExpressionEvaluator` + `MultiHalton` static | `:191`–`:355`, `MathExpressionEvaluator.{h,cpp}` | **DELETE** (mostly) | Inline arithmetic removed; *if* declarative function-expressions need eval, Facet 1 reintroduces a pure expression node (no `hal()` side-effect). | 1 |
 | `AsciiScriptParser` (`.RISEscript` batch runner) | `AsciiScriptParser.{h,cpp}` | **EVOLVE / keep narrow** | Batch-command runner; survives for headless CLI scripting but is *not* a scene-authoring path under Model B. | 1/5 |
 | `> load` / `> run` include machinery (multi-file scenes) | `AsciiCommandParser.cpp`, `AsciiScriptParser.{h,cpp}` | **DELETE** (kept only inside the one-shot migrator) | **D7**: v7 is single-file; the migrator *flattens* every include by inlining referenced content into the consuming document. No `> load`/`> run` in the v7 runtime. | 1 |
-| `AsciiCommandParser` imperative verbs (`set/modify/remove/rasterize/load/run/echo/…`) | `AsciiCommandParser.cpp` | **EVOLVE (CLI) / DELETE from scene-authoring (D19/D27, migrator-only)** | The standalone CLI/REPL command surface stays. But **per D19/D27 v7 has no embedded `>` command layer at all** — the migrator handles **every** surviving `>` verb (census in §1.6) and **hard-fails on any unhandled one**: `> set accelerator`/`global_medium` → declarative `acceleration{}`/`global_medium{}` chunks (D19); **`> set <render-setting>`** (the 1 `light_rr_threshold`) → a **declarative parameter on the relevant rasterizer/integrator chunk** (D27); **`> modify <entity>`** (the 7 in `watch_dial.RISEscene`) is **RETIRED** — folded into the target entity's final authored values (D27); `> set`/`> remove` overrides/tombstones on entities → ordinary CST edits; `> echo` → dropped (build-log only, no scene state); `> load`/`> run` → flattened (D7). All embedded-`>` parsing in the *scene* path is migrator-only (see §3.4). | 1/5 |
+| `AsciiCommandParser` imperative verbs (`set/modify/remove/rasterize/load/run/echo/…`) | `AsciiCommandParser.cpp` | **EVOLVE (CLI) / DELETE from scene-authoring (D19/D27/D37, migrator-only)** | The standalone CLI/REPL command surface stays. But **per D19/D27 v7 has no embedded `>` command layer at all** — the migrator handles **every** surviving `>` verb (comment/token-aware census in §1.6) and **hard-fails on any unhandled one**: `> set accelerator`/`global_medium` → declarative `acceleration{}`/`global_medium{}` chunks (D19); **`> set <render-setting>`** (the 1 `light_rr_threshold`) → a **declarative parameter on the relevant rasterizer/integrator chunk** (D27); **`> modify <entity>`** is **RETIRED** — folded into the target entity's final authored values *if ever active* (D27), but **per D37 the active corpus has ZERO `> modify`** (the only 7 are inside a `/* */` block — a commented-out night-mode variant in `watch_dial.RISEscene`), so this fold is **moot for the current corpus**; `> set`/`> remove` overrides/tombstones on entities → ordinary CST edits; `> echo` → dropped (build-log only, no scene state); `> load`/`> run` → flattened (D7). **The migrator is comment/token-aware (D37)** — it parses the token stream / CST and **preserves `/* */` blocks verbatim as CST comment nodes**, so a commented-out command is never activated. All embedded-`>` parsing in the *scene* path is migrator-only (see §3.4). | 1/5 |
 | Scene version gate (`CURRENT_SCENE_VERSION 6`) | `:156`, `:10561` | **EVOLVE → DELETE** | Bump to declare v7. **D8**: there is no permanent v6 compatibility branch — the v6 reader lives only in the one-shot migrator and the version gate's v6 arm is **deleted** once the corpus is green (§3.1). | 1 |
 
 ### 2.2 Assembly: `RISE_API` / `IJob` / `Job` / managers
@@ -286,13 +333,13 @@ Cross-facet ownership is noted so synthesis can detect double-claims or gaps.
 | Reference counting | `Utilities/Reference.h` | **UNCHANGED** | Foundational, orthogonal. | — |
 | `RequestItemUse` / `IDeletedCallback` weak-binding | `GenericManager.h`, `IManager.h` | **EVOLVE or DELETE** | Currently *unused* by the apply layer; either adopt for incremental dependent-invalidation or delete as dead weight. | 2 |
 | `ObjectManager` TLAS + realize | `ObjectManager.{h,cpp}` | **UNCHANGED** | Render mechanics, assembly-agnostic. Per **D12/D22** the realize + **config-independent** TLAS build runs on the **`DerivedSceneBuilder`** before seal; the sealed **`DerivedScene`** owns the spatial index. **D24:** v1 **fully rebuilds the TLAS** on any geometry/transform/structural change (O(N log N), « the render); incremental/persistent-BVH (path-copy or refit) is a **named future prerequisite**, not v1. | 2 |
-| Realize-from-roots + `RenderParallelScope` freeze guard | `RayCaster.cpp`, `*::Realize`, `RenderParallelScope.{h,cpp}` | **UNCHANGED (re-sequenced by D12/D22)** | The assembled→render-ready seam; CST-derived scene produces the same graph. **D12** orders it **build → phase-B → seal → publish** (no mutation after publication; adopt at a **pass boundary** only). **D22** splits phase B in two: config-**independent** realize/TLAS → `DerivedScene`; config-**dependent** prep → `PreparedRenderState = prepare(DerivedScene, RenderConfig)`. | 2 |
-| Light samplers (currently RayCaster-owned, `Scene.h:405`) | `RayCaster.cpp` | **EVOLVE (ownership moves into `PreparedRenderState`, D22)** | **D22** (amends D12): light-sampler construction is **config-dependent** (it depends on the integrator's light-sampling strategy + the render-time override), so the built samplers live in the sealed **`PreparedRenderState`**, *not* the config-independent `DerivedScene`. An integrator override re-runs only `prepare`, not scene derivation. | 2 |
-| Photon-pass gate (`ConsumesScenePhotonMaps`) | `IRasterizer.h:142` | **UNCHANGED** | Rasterizer-capability gate, assembly-agnostic. Per **D22** photon maps are **config-dependent** (only photon-consuming integrators build them), so they are built during `prepare` and **owned by the sealed `PreparedRenderState`** (moved off the RayCaster), not the `DerivedScene`. | 2 |
+| Realize-from-roots + `RenderParallelScope` freeze guard | `RayCaster.cpp`, `*::Realize`, `RenderParallelScope.{h,cpp}` | **UNCHANGED (re-sequenced by D12/D22; async by D34)** | The assembled→render-ready seam; CST-derived scene produces the same graph. **D12** orders it **build → phase-B → seal → publish** (no mutation after publication; adopt at a **pass boundary** only). **D22** splits phase B in two: config-**independent** realize/TLAS → `DerivedScene`; config-**dependent** prep → `PreparedRenderState = prepare(DerivedScene, RenderConfig)`. **D34:** the whole **derive → seal → prepare → seal → render** chain runs as **cancellable phases of the render arbiter, off the edit/agent thread** (photon-map construction takes seconds + all cores; the edit thread only commits a cheap CST `Version`); a newer head cancels in-flight phases and restarts at the new stamp — this is exactly the source of the head-vs-derived lag (D13/D29). | 2 |
+| Light samplers (currently RayCaster-owned, `Scene.h:405`) | `RayCaster.cpp` | **EVOLVE (ownership → `PreparedRenderState`, D22; non-mutating builder, D32)** | **D22** (amends D12): light-sampler construction is **config-dependent** (it depends on the integrator's light-sampling strategy + the render-time override), so the built samplers live in the sealed **`PreparedRenderState`**, *not* the config-independent `DerivedScene`. An integrator override re-runs only `prepare`, not scene derivation. **D32 names the prerequisite:** light-sampler construction must be refactored from "mutate the Scene" to a **non-mutating `build(const DerivedScene&, PreparedRenderStateBuilder&)`** (it reads the sealed scene through const APIs and writes the builder), then seal. | 2 |
+| Photon-pass gate (`ConsumesScenePhotonMaps`) | `IRasterizer.h:142` | **UNCHANGED (gate); `BuildPendingPhotonMaps` EVOLVE — non-mutating + deterministic, D32/D33** | Rasterizer-capability gate, assembly-agnostic. Per **D22** photon maps are **config-dependent** (only photon-consuming integrators build them), so they are built during `prepare` and **owned by the sealed `PreparedRenderState`** (moved off the RayCaster), not the `DerivedScene`. **D32:** `BuildPendingPhotonMaps` (`Scene.cpp:750`) currently **mutates** pending flags/maps/gather params — it must be refactored to a **non-mutating `build(const DerivedScene&, PreparedRenderStateBuilder&)`** (named prerequisite). **D33:** photon tracing currently seeds RNGs with `rand()` (`RandomNumbers.h:32`) → same key, different map; it must use the **`RenderConfig` sampling seed** (part of the `PreparedStamp`) so the photon map is cacheable **and** reproducible. The build runs as a **cancellable arbiter phase, off the edit thread (D34)**. | 2 |
 | `DAGObjectManager` (alternate, no-TLAS) | `DAGObjectManager.{h,cpp}` | **EVALUATE → likely DELETE** | Legacy alternate; verify it's wired anywhere before relying on it. | 2 |
-| **`DerivedScene` (config-independent)** | NEW (derivation engine) | **NEW (D11/D12/D21/D22)** | `DerivedScene = f(CST, AssetManifest, t)`: immutable, sealed; owns realized/tessellated geometry, materials, lights-as-emitters, **TLAS** (full-rebuild-v1, D24). **Config-independent** — cached by (CST-version, asset-content-hashes, **t**). **Time `t` is a derivation input (D21)** — see the animation row. Reverse-dependency-closure COW (D11). | 2 |
-| **`PreparedRenderState = prepare(DerivedScene, RenderConfig)`** | NEW (derivation engine) | **NEW (D22)** | The **config-dependent** layer: light samplers, **photon maps**, integrator-specific structures. `RenderConfig` (rasterizer/integrator selection + render-time override) is an explicit third input; cached by (DerivedScene-version, RenderConfig). Immutable + sealed (D12); the render loop adopts one at a **pass boundary**. A render-time integrator override re-runs only `prepare`, **not** the scene derivation. | 2 |
-| **Animation timeline / keyframes** (`Scene.cpp:561` mutate-during-render) | `Scene.cpp`, `PixelBasedRasterizerHelper.cpp:1887` | **EVOLVE → per-frame derivation (D21); NOT deprecated** | Today animation **mutates** scene objects / TLAS / photon maps during rendering — incompatible with sealed snapshots (D12). **D21 re-expresses it, capability preserved:** each frame derives its own immutable `DerivedScene(t)` (keyframed params evaluate at `t`); an animation render is a *sequence of sealed snapshots*, no mutation-during-render. This matches the CST model (a `timeline` keyframes a param; derivation evaluates it at `t`). | 2 |
+| **`DerivedScene` (config-independent)** | NEW (derivation engine) | **NEW (D11/D12/D21/D22/D29/D30/D31)** | `DerivedScene = f(CST, AssetManifest, t)`: immutable, sealed; owns realized/tessellated geometry, materials, lights-as-emitters, **TLAS** (full-rebuild-v1, D24). **Config-independent.** **Identified by a full `DerivedStamp = { cstVersion, assetManifestGen, animationName, shutterInterval }` (D29)** — not the CST version alone (t=0 vs t=1, or pre/post asset change, must not collide); cache lookups match the **full stamp by equality**, and staleness-vs-head is the **cstVersion axis only via DAG ancestry, never numeric `<`**. The **derivation cache lives on the `DerivedArtifact` keyed by this stamp (D30), NOT on the immutable `Version`** (`Version = { greenRoot, identityRoot, metadata }`) — one Version → many artifacts. **Time is a per-frame derivation input (D21)**, and for motion blur the "time" axis is a **shutter *interval*** with animated quantities baked as immutable `at(τ)` functions/samples (AnimatedTransform-style) the renderer reads **read-only** + a **motion BVH** (**gated: v1 single-time / no motion blur, D31**) — see the animation row. Reverse-dependency-closure COW (D11). | 2 |
+| **`PreparedRenderState = prepare(DerivedScene, RenderConfig)`** | NEW (derivation engine) | **NEW (D22/D29/D30/D32/D33/D34)** | The **config-dependent** layer: light samplers, **photon maps**, integrator-specific structures. `RenderConfig` (rasterizer/integrator selection + render-time override **+ a sampling seed / RNG-stream identity, D33**) is an explicit third input. **Identified by `PreparedStamp = DerivedStamp + { renderConfig, cameraOverride, samplingSeed }` (D29)**; the cache lives on the stamp-keyed **`PreparedArtifact` (D30)**. **Deterministic (D33):** all stochastic prep (photon tracing) uses the seed, not `rand()`, so `prepare` is a pure function of its key → cacheable **and** reproducible. **Built via a non-mutating `prepare(const DerivedScene&, PreparedRenderStateBuilder&)` (D32)** — `BuildPendingPhotonMaps` + light-sampler construction are refactored off "mutate the Scene" (named prerequisite). Immutable + sealed (D12); the render loop adopts one at a **pass boundary**. A render-time integrator override re-runs only `prepare`, **not** the scene derivation. `prepare` runs as a **cancellable phase of the render arbiter, off the edit thread (D34)**. | 2 |
+| **Animation timeline / keyframes** (`Scene.cpp:561` mutate-during-render) | `Scene.cpp`, `PixelBasedRasterizerHelper.cpp:1887` | **EVOLVE → per-frame derivation (D21); time-INTERVAL for motion blur (D31); NOT deprecated** | Today animation **mutates** scene objects / TLAS / photon maps during rendering — incompatible with sealed snapshots (D12). **D21 re-expresses it, capability preserved:** each frame derives its own immutable `DerivedScene` (keyframed params evaluate at the frame's time); an animation render is a *sequence of sealed snapshots*, no mutation-during-render. This matches the CST model (a `timeline` keyframes a param; derivation evaluates it). **D31 preserves motion blur:** rasterizers/photon-tracers evaluate animation at a **random time per sample** (`PixelBasedPelRasterizer.cpp:636`), so a motion-blurred frame's `DerivedScene` is **time-interval-parameterized** — animated quantities baked as **immutable `at(τ)` functions/samples over the shutter `[t0,t1]`** (PBRT-style `AnimatedTransform`) read **read-only** per sample, with a **motion BVH** for the TLAS. The **active animation name** and the **shutter interval** are explicit inputs in the `DerivedStamp` (D29). This is **gated work — v1 supports single-time (no motion blur)**; the AnimatedTransform-in-`DerivedScene` + motion-BVH path is a **named follow-on** (like the TLAS-refit gate, D24). Motion blur is **not retired**. | 2 |
 | **Render-populated caches** (irradiance cache, accumulation buffers) | `PixelBasedRasterizerHelper.cpp` | **EVOLVE → render-local mutable (D21); NOT lost** | Caches populated **DURING** a pass are **render-local mutable** state owned by the render pass — **NOT** part of the immutable snapshot. They may persist across passes/frames for temporal coherence (keyed to the snapshot they accelerate, invalidated when the scene changes). (Caches built **BEFORE** a pass — photon maps, light samplers, TLAS — stay immutable, built at seal/prepare; TLAS in `DerivedScene`, samplers/photons in `PreparedRenderState`.) | 2 |
 
 ### 2.3 The edit subsystem (the supersession centroid)
@@ -304,7 +351,7 @@ Cross-facet ownership is noted so synthesis can detect double-claims or gaps.
 | `SceneEditor.{h,cpp}` — Apply/Undo/Redo + the 5 walks | | 2217 | **EVOLVE (gut)** | Delete the walks + history ownership + transaction rollback; **keep the invariant chain** (`RunObjectInvariantChain`, light-gen bumps, spatial invalidation) + manager-resolution as part of the CST→engine apply layer (any "apply current CST state to engine" path still needs these). | 2/3 |
 | `SceneEditController.{h,cpp}` | | 5239 | **EVOLVE (split in two)** | **Keep** the render-thread / preview-scaling / gizmos / selection / pointer-dispatch / panel-cache *view* plumbing (genuine GUI, orthogonal to the doc model). **Rewrite** the mutation/undo/transaction/save surface (`SetProperty`→ CST edit, `Undo`/`Redo`, `Begin/Rollback/EndTransaction`, `RequestSave`) to mutate the CST and read panel state *from* the CST; rename routes through traced `ReferenceUse` (**D14**); the version surface exposes head vs derived (**D13**). | 3/4 |
 | `DirtyTracker.{h,cpp}` | | 239 | **DELETE** | "Dirty" → "in-process: `headVersion` ≠ last-flushed version" (a pure comparison, **D13**). **D6/D17** layer an *independent* on-disk content-fingerprint signal on top, checked by the atomic save (see §2.4). | 3 |
-| `SourceSpanIndex.{h,cpp}` + `ApplyOffsetDeltas` | | 443 | **DELETE** | **D2/D16**: absolute byte offsets in shared nodes force O(document) shifting and contradict structural sharing. The green tree stores **relative width** (the `NodeId` lives in the **red layer / a side-map**, not the shared green node, **D15**); absolute positions are computed on demand by the **red cursor over the rope, O(log N)** (per **D16** child sequences are a persistent balanced sequence / rope caching subtree byte-width + newline counts, so position lookup AND structural edit are O(log N) — *not* O(depth); **the O(log N) red cursor itself depends on the rope being a persistent immutable container, D23**). The `NodeId` side-map is concretized by **D26**: **every `Version` owns a persistent occurrence/identity structure** (a side-tree / persistent map parallel to the green tree, structurally shared across versions via D23) mapping each occurrence/position → its stable `NodeId`; a `Version` is therefore `{ greenRoot, identityRoot, derivationCacheRoot, metadata }`. The span-index/`ApplyOffsetDeltas` job is the red cursor + that identity root now. (`RawTokenCapture`'s lossless *trivia* capture still seeds the green tree's typed content — §2.1.) | 1 |
+| `SourceSpanIndex.{h,cpp}` + `ApplyOffsetDeltas` | | 443 | **DELETE** | **D2/D16**: absolute byte offsets in shared nodes force O(document) shifting and contradict structural sharing. The green tree stores **relative width** (the `NodeId` lives in the **red layer / a side-map**, not the shared green node, **D15**); absolute positions are computed on demand by the **red cursor over the rope, O(log N)** (per **D16** child sequences are a persistent balanced sequence / rope caching subtree byte-width + newline counts, so position lookup AND structural edit are O(log N) — *not* O(depth); **the O(log N) red cursor itself depends on the rope being a persistent immutable container, D23**). The `NodeId` side-map is concretized by **D26** and **refined by D30**: **every `Version` owns a persistent occurrence/identity structure** (a side-tree / persistent map parallel to the green tree, structurally shared across versions via D23) mapping each occurrence/position → its stable `NodeId`; a `Version` is therefore **`{ greenRoot, identityRoot, metadata }`** — **CST + occurrence identity ONLY**. **D30 moves the memo/dependency cache OFF the immutable `Version`** (a Version commits *before* async derivation completes and can spawn many caches per time/asset/config): the `derivationCacheRoot` is **NOT** a Version field — the cache lives on a **`DerivedArtifact` keyed by the `DerivedStamp`** (and a `PreparedArtifact` keyed by the `PreparedStamp`), held in a stamp-keyed LRU. One Version → many artifacts. The span-index/`ApplyOffsetDeltas` job is the red cursor + that identity root now. (`RawTokenCapture`'s lossless *trivia* capture still seeds the green tree's typed content — §2.1.) | 1 |
 | `OverrideSpanIndex.{h,cpp}` | | 314 | **DELETE** | The `override_object` side-car + Mode-A/Mode-B routing exists *only* because the source isn't a mutable CST. **D8**: there are no runtime legacy (FOR/DEFINE) nodes to edit *inside*; v6 constructs exist only as migrator inputs, so every edit is a normal v7 CST edit. | 1/3 |
 | `TransformSnapshot.{h,cpp}` | | 104 | **DELETE** | Base/loaded diff baselines subsumed by the CST. | 3 |
 | `SaveEngine.{h,cpp}` (byte-splice, EditOp ordering, Mode-A/B, refuse cases) | | 2009 | **DELETE — byte-splice; retain the D6/D17 fingerprint guard** | 85 KB of splice logic → CST lossless serialization (save = serialize the CST). **D7** removes the cross-file Refuse case outright (v7 is single-file). **D6+D17** retain the `FileIdentity` external-mod guard's *intent*: the save path keeps a content fingerprint at load/flush and performs an **atomic save — temp-write → fsync → revalidate content-hash == loaded fingerprint → atomic rename** (D17 supersedes D6's stat-then-write CAS, which had a TOCTOU race); reload/diff/force on a fingerprint mismatch, documented rename-race residual + opt-in advisory locking. *Carry forward:* its FOR/`$(...)`/`AuthorMode` handling is the catalog of hard cases the migrator's v6 reader must get right. | 1/3 |
@@ -385,14 +432,17 @@ first-class v7 replacements in the right-hand column.
 ### 2.7 The scene corpus
 
 The macro-usage buckets below are *orthogonal* to the multi-file dimension — a scene
-can be both (e.g. a FOR scene that also `> load`s shared colors). The migrator
+can be both (e.g. a FOR scene that also `> load`s shared colors). The migrator —
+**operating comment/token-aware on the parsed CST, never a raw line grep (D37)** —
 applies the **multi-file flatten (D7)** first, then the **full embedded-`>`-command
 removal (D19/D27** — `> set accelerator`/`global_medium` → `acceleration{}`/
 `global_medium{}` chunks; **`> set <render-setting>` → a declarative param** on the
-rasterizer/integrator chunk; **the seven `> modify` RETIRED** = folded into the target
-entity's authored values; overrides/tombstones folded; `> echo` dropped), then the
+rasterizer/integrator chunk; **`> modify` RETIRED** = folded into the target entity's
+authored values *if active*, **but the active corpus has ZERO `> modify` (D37)** so
+nothing is folded today; overrides/tombstones folded; `> echo` dropped), then the
 macro tier (§3.5). The migrator **hard-fails on any `>` verb outside the §1.6 census**
-for hand review.
+for hand review, and **preserves `/* */` blocks verbatim** so a commented-out command
+is never activated.
 
 | Bucket | Count | Fate |
 |---|---|---|
@@ -613,34 +663,45 @@ the equivalence harness is green. P8's deletion is the singular D8 contract — 
 path is removed once the corpus is green, not kept behind an indefinite deprecation
 window.**
 
-### 3.4 Handling the embedded `>` commands (ALL removed in v7 — D19/D27)
+### 3.4 Handling the embedded `>` commands (ALL removed in v7 — D19/D27; census is comment-aware, D37)
 
-Scenes use embedded `> set`/`> modify`/`> remove`/`> load`/`> run`/`> echo`
-commands, and `SaveEngine` emits managed `override_object` blocks + `> remove`
-tombstones (6 families only). **Per D19 v7 has NO imperative command layer at all,
-and per D27 the migrator enumerates and handles (or explicitly retires) the *full*
-`>` command set** (census in §1.6); it **hard-fails on any unhandled `>` command for
-hand review**. The fates, one per verb:
+Scenes use embedded `> set`/`> remove`/`> load`/`> run`/`> echo` commands (and `>
+modify` **only inside a comment** — see below), and `SaveEngine` emits managed
+`override_object` blocks + `> remove` tombstones (6 families only). **Per D19 v7 has
+NO imperative command layer at all, and per D27 the migrator enumerates and handles
+(or explicitly retires) the *full* `>` command set** (comment/token-aware census in
+§1.6 — **D37**); it **hard-fails on any unhandled `>` command for hand review** and
+**preserves `/* */` blocks verbatim** so a commented-out command is never activated.
+The fates, one per verb (counts are **active**, comment-aware):
 
 - **`> set <accelerator>` / `<global-medium>`** → **declarative chunks (D19).** Migrate
   to normal descriptor-driven chunks — an `acceleration { … }` chunk and a
   `global_medium { … }` chunk — so this engine config is a declarative *derivation
-  input* (F2 needs this), not an imperative side effect. (Corpus: 136 + 38 lines.)
+  input* (F2 needs this), not an imperative side effect. (Corpus: 136 + **37** active
+  lines — one further `> set global_medium fog` in `pt_sss_dragon.RISEscene:71` is
+  inside a `/* */` block and is correctly NOT counted, D37.)
 - **`> set <render-setting>` (e.g. `light_rr_threshold`)** → **a declarative parameter
   on the relevant rasterizer/integrator chunk (D27).** This is a *render setting* (not
   an entity definition), so it becomes one more authored parameter on the integrator
   chunk that owns it — the same place the descriptor already validates the integrator's
   other knobs. (Corpus: exactly 1 line — `> set light_rr_threshold 0.5` in
   `scenes/Tests/UnifiedLighting/meshlight_rr_test_pt.RISEscene`.)
-- **`> modify <entity> …` (imperative post-definition mutation)** is **RETIRED (D27)** —
-  it is incompatible with a canonical declarative document. The migrator **folds each
-  `> modify` into the target entity's final authored values**: it **computes the
-  post-modify state** and emits the entity chunk with those values; there is **no
-  runtime `modify`**. (Corpus: exactly 7 lines, all in
-  `scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene` — 1 `> modify rasterizer
-  radiance_scale`, 2 `> modify material … scale`, 4 `> modify object … material` — so
-  each modified chunk is emitted with its scale / material slot already set to the
-  post-modify value.)
+- **`> modify <entity> …` (imperative post-definition mutation)** is **RETIRED (D27)**
+  — it is incompatible with a canonical declarative document; *for any active
+  occurrence* the migrator would **fold it into the target entity's final authored
+  values** (compute the post-modify state, emit the entity chunk with those values; no
+  runtime `modify`). **But the active corpus has ZERO `> modify` (D37), so this rule is
+  moot for the current corpus.** The only seven `> modify` lines on disk are inside the
+  `/* */` block at `scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene:2392` — a
+  **commented-out *night-mode* variant** (it would set `radiance_scale 0.02`, zero the
+  day `*_lum` materials, and swap four objects to `lume_glow_night`). They are **inert**
+  and the comment/token-aware migrator preserves the `/* */` block verbatim as a CST
+  comment node. **Folding them would have been a correctness bug** — it would have
+  flipped the day scene to night and broken render equivalence (§3.6). The earlier
+  round-3 census mistakenly counted these commented lines as active (a naive line grep);
+  D37 corrects that. *(If a `> modify` ever becomes active in some future scene, the
+  fold rule above applies — but only the migrator's CST parse, never a grep, decides
+  what is active.)*
 - **`> set`/`> remove` overrides & tombstones on entities** collapse into ordinary CST
   edits: an override is a structured edit to the referenced node; a tombstone is a
   delete in the CST. The managed `override_object` side-car block disappears (it
@@ -653,13 +714,16 @@ hand review**. The fates, one per verb:
   no second file to edit) — a *deletion*, not a "cross-file edits become normal"
   generalization.
 
-**Why "every scene render-matches after migration" still HOLDS (D27).** Retiring
-`> modify` does **not** drop any rendered state: the migrator computes the
-**post-command state** and bakes it into the emitted chunk, so the v7 document
-realizes to the *same* engine objects the v6 `> modify` would have produced after it
-ran. (Likewise `> set <render-setting>` → param preserves the setting; `> echo`
-carries no state.) Render-equivalence (§3.6) therefore remains the acceptance test —
-a migrated scene that doesn't render-match is a migrator bug, not an accepted loss.
+**Why "every scene render-matches after migration" still HOLDS (D27/D37).** No active
+command drops rendered state: **`> set accelerator`/`global_medium` → declarative
+chunks** and **`> set <render-setting>` → param** both preserve the engine setting, and
+**`> echo` carries no state** (dropped). `> modify`-retirement *would* preserve state by
+baking the **post-command state** into the emitted chunk **if any `> modify` were
+active — but none is (D37)**, so it changes nothing in the current corpus (and a
+*commented-out* `> modify` is preserved verbatim, not folded, which is precisely why
+the night-mode block stays inert and the day scene still renders as the day scene).
+Render-equivalence (§3.6) therefore remains the acceptance test — a migrated scene that
+doesn't render-match is a migrator bug, not an accepted loss.
 
 The migrator removes **all** embedded `>` commands; the v7 runtime never sees an
 imperative line (§2.1, §3.5 tier 0). *(If library-sharing demand returns, D7 reserves
@@ -671,13 +735,22 @@ critical path for "all-family create/delete through one pathway."
 ### 3.5 Scene-corpus migration tooling
 
 **`tools/migrate_scenes_v6_to_v7.py`** — built on the proven migrator pattern
-(regex line-rewriter, header-guarded idempotency, in-place with line-ending
-preservation, recursive over `scenes/`, documented preserve-list; cross-file aware
-like `migrate_scenes_iscalarpainter.py`). **This migrator is the *only* place the
-v6 reader, the FOR/DEFINE/`$()` expansion logic, and the embedded-`>`-command
-parsing survive (D8/D19/D27);** its output is self-contained single-file v7 (D7) with
-**no imperative `>` layer at all** (D19/D27 — every surviving `>` verb migrated,
-retired, or dropped, with a hard-fail on any unhandled one). It handles these tiers:
+(header-guarded idempotency, in-place with line-ending preservation, recursive over
+`scenes/`, documented preserve-list; cross-file aware like
+`migrate_scenes_iscalarpainter.py`). **Critically, this migrator is comment/token-aware
+(D37): it operates on the parsed token stream / CST, NOT a raw line/regex grep**, so it
+never activates a commented-out command and **preserves `/* */` blocks verbatim as CST
+comment nodes** (this is a hard requirement, not a nicety — a naive line rewriter would
+have folded the commented-out night-mode `> modify` block in `watch_dial.RISEscene` and
+broken render equivalence; see §3.4 and the D37 census in §1.6). *(The earlier
+"regex line-rewriter" framing — inherited from the simpler `migrate_scenes_*.py`
+precedents — is **superseded by D37** for any pass that interprets `>` commands or
+folds state; trivial header-only rewrites may still be line-local, but command
+interpretation must be CST-aware.)* **This migrator is the *only* place the v6 reader,
+the FOR/DEFINE/`$()` expansion logic, and the embedded-`>`-command parsing survive
+(D8/D19/D27);** its output is self-contained single-file v7 (D7) with **no imperative
+`>` layer at all** (D19/D27 — every surviving `>` verb migrated, retired, or dropped,
+with a hard-fail on any unhandled one). It handles these tiers:
 
 0. **Multi-file flatten (~204 scenes, D7):** **inline** every `> load`/`> run`
    include into the consuming document, producing a self-contained v7 file. Shared
@@ -698,12 +771,18 @@ retired, or dropped, with a hard-fail on any unhandled one). It handles these ti
      parameter on the relevant rasterizer/integrator chunk** (D27) — the migrator reads
      the setting + value and writes it as one more authored param on that integrator
      chunk.
-   - **`> modify <entity> …`** (the 7 in `watch_dial.RISEscene`) is **RETIRED (D27)** —
-     the migrator **computes the post-modify state** for the target entity and **emits
-     the entity chunk with those final authored values** (e.g. `radiance_scale 0.02` on
-     the rasterizer chunk; `scale 0` on the two `*_lum` materials; the `lume_glow_night`
-     material slot on the four named objects). No runtime `modify`. Because the migrator
-     bakes the post-command state, the scene render-matches (§3.4, §3.6).
+   - **`> modify <entity> …`** is **RETIRED (D27)** — for any *active* occurrence the
+     migrator would **compute the post-modify state** and **emit the entity chunk with
+     those final authored values** (no runtime `modify`; render-matches because the
+     post-command state is baked in). **But the active corpus has ZERO `> modify` (D37),
+     so this tier folds nothing today.** The seven `> modify` lines on disk are inside
+     the `/* */` block at `watch_dial.RISEscene:2392` — a commented-out night-mode
+     variant — which the comment/token-aware migrator **preserves verbatim, NOT folds**
+     (folding them would flip the day scene to night and break render equivalence). *(No
+     example is given here on purpose: the prior round-3 "fold `radiance_scale 0.02` /
+     `scale 0` / `lume_glow_night`" example was the very bug D37 corrects — those values
+     are the night-mode block, and emitting them as authored day-scene values would be a
+     correctness error.)*
    - **`> set`/`> remove` overrides/tombstones** on entities → fold the override into the
      referenced chunk (or drop the tombstoned entity).
    - **`> echo`** (9 lines) → **dropped** (build-log only, no scene state; no v7
@@ -895,7 +974,7 @@ document-level order-dependence while reusing the eager apply layer unchanged. A
 corpus scan during P0 confirms the reference graph is acyclic (expected — RISE has no
 recursive material references today).
 
-### 4.4 Identity stability (INV-5, L5 — resolved by D9, refined by D14/D15/D25/D26)
+### 4.4 Identity stability (INV-5, L5 — resolved by D9, refined by D14/D15/D25/D26/D30/D35/D36)
 
 **D9** resolves this with **dual identity**, and **D15** separates three concepts that
 were conflated: a **content hash** (green, lossless, trivia-*sensitive*) drives
@@ -908,9 +987,15 @@ node is reused at many occurrences, so it cannot carry one id). **D26 concretize
 side-map: every `Version` owns a persistent occurrence/identity structure** (parallel
 to the green tree, structurally shared across versions via D23's persistent containers)
 mapping each occurrence/position → its stable `NodeId` — so a `Version` is
-`{ greenRoot, identityRoot, derivationCacheRoot, metadata }`, and there is a concrete
+**`{ greenRoot, identityRoot, metadata }`** (**D30** drops the cache root: a Version is
+**CST + occurrence identity only**; the memo/dependency cache lives on a stamp-keyed
+`DerivedArtifact`/`PreparedArtifact`, not the immutable Version), and there is a concrete
 owned home for per-occurrence identity (it depends on the D23 persistent-container
-work). The `NodeId` is what
+work). **D36 propagates both roots through edits:** staged-edit state (`GestureBuffer`,
+the working head) carries **`{ greenRoot, identityRoot }`** so insertions/reparses
+during a gesture update occurrence identity as they go, and `Widget`/`ViewNode`/
+`EditIntent`/selection **store the `NodeId`** (name-path kept for display/addressing
+only). The `NodeId` is what
 undo lineage, UI widget bindings, and durable agent references key on; **name-path**
 (`objects/sphere.material`) is the human/agent **addressing scheme**, resolved to a
 `NodeId` *within a given version* (it changes on rename, by design). **Rename** is a
@@ -921,12 +1006,19 @@ to dynamic refs (`timeline.element`/`.animation`); for referrers in nodes that d
 derive, fall back to descriptor-provided reference resolvers, and **flag any referrer
 that cannot be resolved — never silently rename it**. **D25 adds a head-stamping
 requirement:** because derivation may lag the head (D13), rename requires a
-`ReferenceUse` set **stamped for the exact head** it renames against; if
-`derivedVersion < head` the rename **synchronously brings the reference trace up to
-head first** (only the reference-tracing pass, not a full re-derive — rename is a
-deliberate, infrequent op), and a rename that cannot obtain a head-stamped trace is
+`ReferenceUse` set **stamped for the exact head** it renames against; if the
+derived `cstVersion` is a strict ancestor of head (derivation lags, D29) the rename **synchronously brings the reference trace up to
+head first**, and a rename that cannot obtain a head-stamped trace is
 **refused, never silently partial** (else a reference added in head-but-not-yet-derived
-would be missed and left dangling). NodeId-keyed bindings survive automatically. On a text edit, **a structured edit preserves `NodeId` exactly** (it
+would be missed and left dangling). **D35 refines *how* (correcting D25's "separate
+tracing pass"):** rename obtains head's reference set with **the exact same
+evaluator/resolver as derivation — there is ONE resolution implementation, never a
+parallel "tracing pass" reimplementation** (a second path could drift from real
+derivation, which is precisely why D4 demoted static schema walks for dynamic refs).
+Concretely, rename **synchronously derives head** (or runs derivation's own
+reference-resolution step to head, sharing that code) and reads the resulting traced
+`ReferenceUse`; if head cannot be derived (semantic error), rename is **refused**, not
+best-effort. NodeId-keyed bindings survive automatically. On a text edit, **a structured edit preserves `NodeId` exactly** (it
 targets a known node); a **whole-region reparse** matches new green nodes to prior
 `NodeId`s by position + content (rust-analyzer-style reuse) **but this is best-effort
 (D15)** — identical repeated rows are genuinely ambiguous, so **unmatched durable
@@ -944,7 +1036,7 @@ to project N → green on macOS, broken on Windows" errors. *Mitigation in §6.*
 
 ### 4.6 Open questions — now resolved by 01-DECISIONS.md
 
-The open questions this section previously carried are **closed** by review rounds 1–3;
+The open questions this section previously carried are **closed** by review rounds 1–4;
 recorded here so a re-reviewer sees the resolution rather than a live fork:
 
 - **O1 (canonical form) → resolved by D2, refined by D15/D16.** Red-green tree
@@ -961,14 +1053,18 @@ recorded here so a re-reviewer sees the resolution rather than a live fork:
   v6 during migration, then a singular **DELETE** of the v6 path — no permanent
   coexistence, no legacy runtime nodes. §3.1.
 - **Declarative `define`/expression nodes + the full `>` set → resolved by
-  D8/D19/D27.** The migrator emits `let`/`expr(...)`/`halton(dim,idx)` (and
-  `instance_array` for FOR, and `acceleration{}`/`global_medium{}` for `> set`
-  accelerator/global-medium); **`> set <render-setting>`** (`light_rr_threshold`)
-  becomes a **declarative param** on the rasterizer/integrator chunk, and the **seven
-  `> modify`** are **RETIRED** = folded into the target entity's authored values, with
-  `> echo` dropped (D27). The runtime CST carries first-class v7 nodes, never legacy
-  ones, and has **no imperative `>` layer at all** (D19/D27 — hard-fail on any
-  unhandled `>`). §3.4, §3.5.
+  D8/D19/D27, census corrected by D37.** The migrator emits
+  `let`/`expr(...)`/`halton(dim,idx)` (and `instance_array` for FOR, and
+  `acceleration{}`/`global_medium{}` for `> set` accelerator/global-medium); **`> set
+  <render-setting>`** (`light_rr_threshold`) becomes a **declarative param** on the
+  rasterizer/integrator chunk, and `> modify` is **RETIRED** = folded into the target
+  entity's authored values *for any active occurrence* — **but per D37 the active corpus
+  has ZERO `> modify`** (the seven on disk are inside a `/* */` block, a commented-out
+  night-mode variant, so nothing is folded today), with `> echo` dropped (D27). The
+  runtime CST carries first-class v7 nodes, never legacy ones, and has **no imperative
+  `>` layer at all** (D19/D27 — hard-fail on any unhandled `>`). **The migrator is
+  comment/token-aware (D37): parse the CST, never grep** — a naive line scan over-counts
+  by 8 commented lines (the 7 `> modify` + 1 `> set global_medium`). §1.6, §3.4, §3.5.
 - **Reuse of `DirtyScope` + realize/TLAS/photon seam → assumed reuse, consistent with
   D1/D4/D11/D12/D22.** The closure-COW snapshot (D11) + traced-input invalidation (D4)
   drive the blast radius; Facet 2 reuses the existing seam, run as **phase B on the
@@ -977,42 +1073,64 @@ recorded here so a re-reviewer sees the resolution rather than a live fork:
   (light-samplers/photon-maps). **D24:** v1 fully rebuilds the TLAS (incremental BVH is
   future). The remaining genuine unknown is whether the corpus reference graph is fully
   acyclic (a P0 scan, §4.3) — an empirical check, not a design fork.
-- **Animation + render-populated caches → resolved by D21.** Both capabilities are
-  **kept, re-expressed**: animation is **per-frame derivation** (time `t` is a
-  derivation input; each frame is a sealed `DerivedScene(t)`), and irradiance / accum
+- **Animation + render-populated caches → resolved by D21, motion blur by D31.** Both
+  capabilities are **kept, re-expressed**: animation is **per-frame derivation** (time
+  is a derivation input; each frame is a sealed `DerivedScene`), and irradiance / accum
   caches are **render-local mutable** state owned by the render pass (not the immutable
-  snapshot). Neither is deprecated. §2.2.
+  snapshot). **D31 preserves motion blur:** a motion-blurred frame's `DerivedScene` is a
+  **time-INTERVAL** immutable scene (animated quantities baked as `at(τ)` functions over
+  the shutter, read read-only per sample) with a **motion BVH** — **gated: v1 is
+  single-time / no motion blur**, the AnimatedTransform + motion-BVH path is a named
+  follow-on (like the TLAS-refit gate, D24). Nothing is deprecated. §2.2, R15.
 - **Historical re-render fidelity → resolved by D28.** History preserves the **CST
   only**; re-deriving an old version uses **current** asset bytes (so an externally
   changed asset can make the old version's *render* differ — documented). A
   content-addressed asset store for byte-exact historical renders is a **named future**,
   not core. §2.4, R14.
+- **Derived/prepared identity + caching + threading → resolved by D29/D30/D32/D33/D34.**
+  Derived state is keyed by a full **`DerivedStamp` / `PreparedStamp`** (cstVersion +
+  assetManifestGen + animationName + shutterInterval, plus renderConfig + cameraOverride
+  + samplingSeed), compared by **DAG ancestry / equality, never numeric `<`** (**D29**);
+  the memo/dependency cache lives on a stamp-keyed **`DerivedArtifact`/`PreparedArtifact`**,
+  **not** the immutable `Version` (**D30**). `prepare()` reads the sealed scene through
+  **non-mutating** APIs into a `PreparedRenderStateBuilder` — `BuildPendingPhotonMaps` +
+  light-sampler construction are a **named refactor prerequisite** (**D32**) — is
+  **deterministic** via a `RenderConfig` seed in the `PreparedStamp` (**D33**), and runs
+  **async + cancellable on the render arbiter, off the edit thread** (**D34**, the source
+  of the head-vs-derived lag). These are honest *prerequisites/risks*, not forks. §2.2,
+  R16.
 
 ---
 
 ## 5. Cross-facet dependencies & assumptions
 
-This facet reconciles 1–5. The cross-facet questions are now **pinned by D1–D28**;
+This facet reconciles 1–5. The cross-facet questions are now **pinned by D1–D37**;
 each row below cites the deciding decision so a re-reviewer can confirm there is no
 live fork. (The sibling docs `10`–`50` are being conformed to the same decisions.)
 
 | Assumed of | Now pinned by | Decision |
 |---|---|---|
-| **Facet 1 (CST)** | The v7 CST grammar subsumes v6's declarative chunks 1:1 (shared descriptors) and retains *all* trivia losslessly. Overrides/tombstones are CST edits; **ALL embedded `>` commands are removed (hard-fail on any unhandled): `> set` accelerator/global-medium → `acceleration{}`/`global_medium{}` chunks (D19); `> set <render-setting>` → a declarative param on the rasterizer/integrator chunk (D27); the seven `> modify` RETIRED → folded into the entity's authored values (D27); `> echo` dropped; `> load`/`> run` flattened (D7)**. FOR→`instance_array`, DEFINE→`let`, `$()`→`expr(...)`. `RawTokenCapture`'s trivia seeds the **green tree**; nodes store **relative width** (no offset) and child sequences are a **persistent rope** (O(log N), **D16**, gated on persistent containers, **D23**); the `NodeId` lives in the **red layer / a per-Version persistent identity side-map** (**D15/D26**), not the shared green node; `SourceSpanIndex`/`ApplyOffsetDeltas` are deleted (red cursor over the rope). Three distinct hashes/ids: content hash (sharing) / derivation key (memo) / `NodeId` (lineage), **D15**. | **D2, D7, D8, D15, D16, D19, D23, D26, D27** |
+| **Facet 1 (CST)** | The v7 CST grammar subsumes v6's declarative chunks 1:1 (shared descriptors) and retains *all* trivia losslessly. Overrides/tombstones are CST edits; **ALL embedded `>` commands are removed (hard-fail on any unhandled): `> set` accelerator/global-medium → `acceleration{}`/`global_medium{}` chunks (D19); `> set <render-setting>` → a declarative param on the rasterizer/integrator chunk (D27); `> modify` RETIRED → folded into the entity's authored values *if active* (D27), but the active corpus has ZERO `> modify` (D37 — the 7 are commented-out night-mode); `> echo` dropped; `> load`/`> run` flattened (D7)**. **The migrator is comment/token-aware (parse the CST, never grep) and preserves `/* */` blocks verbatim as CST comment nodes (D37).** FOR→`instance_array`, DEFINE→`let`, `$()`→`expr(...)`. `RawTokenCapture`'s trivia seeds the **green tree**; nodes store **relative width** (no offset) and child sequences are a **persistent rope** (O(log N), **D16**, gated on persistent containers, **D23**); the `NodeId` lives in the **red layer / a per-Version persistent identity side-map** (**D15/D26**), not the shared green node; `SourceSpanIndex`/`ApplyOffsetDeltas` are deleted (red cursor over the rope). Three distinct hashes/ids: content hash (sharing) / derivation key (memo) / `NodeId` (lineage), **D15**. | **D2, D7, D8, D15, D16, D19, D23, D26, D27, D37** |
 | **Facet 1** | Canonical form = lossless red-green CST. The "text-canonical" alternative is **not** taken; `SaveEngine` byte-splice is DELETE (the external-conflict guard retained as the **atomic save** — temp-write→fsync→revalidate→rename, **D17**). | **D2** (closes the former "biggest fork") |
-| **Facet 2 (derivation)** | CST→Scene is incremental/memoized/deterministic; the memo key = the **derivation key** (trivia-INsensitive typed values + child structure, **D15**) + **traced**-input versions over `(CST, AssetManifest, t)` (**time `t` is a derivation input** — animation is per-frame derivation, **D21**); emits `Add*` in topological order from traced edges (§4.3); reuses the `IJob` apply layer, `DirtyScope` taxonomy, and realize/TLAS seam; publishes **reverse-dependency-closure COW** snapshots (**D11**) **built → sealed → swapped at a PASS boundary** (**D12**). **Two derivation layers (D22):** the config-**independent** `DerivedScene` owns geometry/TLAS (**full-rebuild v1, D24**); `PreparedRenderState = prepare(DerivedScene, RenderConfig)` owns **light-samplers + photon-maps**. Render-populated caches (irradiance/accum) are **render-local mutable** (D21). The derivation cache is version-scoped/persistent with an explicit edge lifecycle (**D20**). **The O(closure)/O(log N) headline is gated on persistent immutable containers (D23)** — v1 may copy-on-snapshot at O(N) with honest claims. History = CST-only; re-derive uses current asset bytes (**D28**). | **D1, D4, D5, D11, D12, D15, D17, D20, D21, D22, D23, D24, D28** |
-| **Facet 3 (edit model)** | Undo/redo = CST version-DAG; a gesture = one undo unit; the `SceneEditor` mutation surface re-points onto the CST; invariant chain + manager-resolution survive as the apply path; **lineage identity is `NodeId` (in each Version's persistent identity side-map, D15/D26), addressed by name-path (D9)**; **rename rewrites referrers from traced `ReferenceUse` records (D14), not `referenceCategories`, against a head-stamped trace — synchronously traced up to head if derivation lags, else refused (D25)**; the session exposes **both `headVersion` and `derivedVersion`** (D13); deletion-persistence grows to all families. | **D1, D9, D13, D14, D15, D25, D26** |
+| **Facet 2 (derivation)** | CST→Scene is incremental/memoized/deterministic; the memo key = the **derivation key** (trivia-INsensitive typed values + child structure, **D15**) + **traced**-input versions, formalized as a full **`DerivedStamp = { cstVersion, assetManifestGen, animationName, shutterInterval }`** matched **by equality**, with staleness-vs-head on the **cstVersion axis via DAG ancestry, never numeric `<`** (**D29**); emits `Add*` in topological order from traced edges (§4.3); reuses the `IJob` apply layer, `DirtyScope` taxonomy, and realize/TLAS seam; publishes **reverse-dependency-closure COW** snapshots (**D11**) **built → sealed → swapped at a PASS boundary** (**D12**). **Two derivation layers (D22):** the config-**independent** `DerivedScene` owns geometry/TLAS (**full-rebuild v1, D24**); `PreparedRenderState = prepare(DerivedScene, RenderConfig)` owns **light-samplers + photon-maps**, keyed by **`PreparedStamp = DerivedStamp + { renderConfig, cameraOverride, samplingSeed }`** (**D29**). **The memo/dependency cache lives on a stamp-keyed `DerivedArtifact`/`PreparedArtifact`, NOT on the immutable `Version = { greenRoot, identityRoot, metadata }` (D30).** `prepare()` reads the sealed scene through **non-mutating** input APIs into a `PreparedRenderStateBuilder` — `BuildPendingPhotonMaps` + light-sampler construction are a **named refactor prerequisite** off "mutate the Scene" (**D32**); it is **deterministic** via a `RenderConfig` sampling seed (no `rand()`) that is part of the `PreparedStamp` (**D33**); and the whole derive→seal→prepare→seal→render chain runs **async + cancellable on the render arbiter, off the edit thread** (**D34**). Render-populated caches (irradiance/accum) are **render-local mutable** (D21); **motion blur** is preserved via a **time-INTERVAL** immutable `DerivedScene` + motion BVH (**gated: v1 single-time, D31**). The derivation cache has an explicit edge lifecycle (**D20**). **The O(closure)/O(log N) headline is gated on persistent immutable containers (D23)** — v1 may copy-on-snapshot at O(N) with honest claims. History = CST-only; re-derive uses current asset bytes (**D28**). | **D1, D4, D5, D11, D12, D15, D17, D20, D21, D22, D23, D24, D28, D29, D30, D31, D32, D33, D34** |
+| **Facet 3 (edit model)** | Undo/redo = CST version-DAG; a gesture = one undo unit; the `SceneEditor` mutation surface re-points onto the CST; invariant chain + manager-resolution survive as the apply path; **lineage identity is `NodeId` (in each Version's persistent identity side-map, D15/D26), addressed by name-path (D9)**; the `Version` is **`{ greenRoot, identityRoot, metadata }`** — CST + occurrence identity only, cache off-Version on artifacts (**D30**); **both roots `{greenRoot, identityRoot}` propagate through edits (the `GestureBuffer`/working head), and `NodeId` is stored in `Widget`/`ViewNode`/`EditIntent`/selection — not name-path (D36)**; **rename rewrites referrers from traced `ReferenceUse` records (D14), not `referenceCategories`, against a head-stamped trace using the ONE derivation resolver (derive-to-head, no second tracing pass) — refused if head can't be derived (D25/D35)**; the session exposes **both `headVersion` and `derivedVersion`** (D13); deletion-persistence grows to all families. | **D1, D9, D13, D14, D15, D25, D26, D30, D35, D36** |
 | **Facet 4 (dynamic UI)** | UI is a pure function of CST + descriptors; widgets bind to **`NodeId`** (the stable lineage identity, D15) addressed by name-path; the 5 descriptor-driven introspection files rebind to CST nodes; hand-built accordions retire; the C-ABI boundary gains CST/text entry points (and surfaces `headVersion` vs `derivedVersion`, D13). | **D9, D13, D15** |
 | **Facet 5 (agent)** | `src/Library/Agent/` is net-new on the CST (read/propose-patch/validate→derive→render); GUI is "just another agent"; the `docs/gui/` agent specs survive as text-level. | (L2; no contradicting decision) |
 
-**No conflict with D1–D28 (or L1–L7) remains in this facet.** The former hardest
+**No conflict with D1–D37 (or L1–L7) remains in this facet.** The former hardest
 fork — O1 (canonical form) — is closed by **D2**, so `SaveEngine`'s fate is no longer
-contingent; round 3 added no new fork, only honest scoping (animation/irradiance kept
-and re-expressed, D21; the DerivedScene/PreparedRenderState split, D22; the
-O(closure)/TLAS/identity prerequisites named, D23/D24/D26; head-stamped rename, D25;
-the full `>` set migrated/retired, D27; CST-only history, D28). The only remaining
-empirical unknown is the corpus reference-graph acyclicity check (a P0 scan, §4.3),
-which is a verification step, not a design decision.
+contingent; rounds 3–4 added no new fork, only honest scoping and one **factual
+correction**: animation/irradiance kept and re-expressed (D21); motion blur preserved
+as a time-interval scene, gated (D31); the DerivedScene/PreparedRenderState split
+(D22) keyed by full stamps (D29) with the cache on artifacts not the Version (D30); a
+non-mutating, deterministic, async-on-the-arbiter `prepare` (D32/D33/D34); the
+O(closure)/TLAS/identity prerequisites named (D23/D24/D26); rename via the one
+derivation resolver, head-stamped (D25/D35); identity propagated through edits + UI
+(D36); the full `>` set migrated/retired (D27); CST-only history (D28); and **D37's
+correction that the active corpus has ZERO `> modify` (the seven are commented-out) and
+the migrator must be comment/token-aware**. The only remaining empirical unknown is the
+corpus reference-graph acyclicity check (a P0 scan, §4.3), which is a verification step,
+not a design decision.
 
 ---
 
@@ -1046,7 +1164,7 @@ slice (and every phase) shippable**:
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
 | **R1** | **Lossless CST round-trip is incomplete** — a structured edit reformats untouched text, or a hand-edited file doesn't survive parse→serialize (silent loss of comments/whitespace/unsupported chunks). The inherited `TRANSACTION_MODEL.md` failure. | **High** | **High** | Reuse `RawTokenCapture`'s lossless trivia into the **green tree** (relative width, **D2**; `NodeId` in the red layer/side-map, **D15**; positions via the **red cursor over a persistent rope**, **O(log N)**, **D16**); mechanical byte-identical round-trip test over the whole corpus as gate **G1**; the red-green pivot makes save lossless by construction and edits **O(log N)** path-copies over the rope. **Note (D8):** v7 scenes contain *no* FOR/`$()` constructs (the migrator emits first-class v7 nodes), so there are no opaque legacy spans to preserve at runtime — round-trip only has to be lossless over the v7 grammar. **The #1 correctness risk — see §4.2.** |
-| **R2** | **Incremental-derivation latency** — a localized edit rebuilds too much; the interactive bar stutters. | **Med-High** | **High** | **D1** gesture model (uncommitted head + ephemeral preview snapshot, debounced; no 60 Hz) + **reverse-dependency-closure COW re-derive (D11)**, **built→sealed→published at a pass boundary (D12)**, split into `DerivedScene`/`PreparedRenderState` (**D22**); reuse `DirtyScope` blast-radius taxonomy + realize/TLAS/photon seam; the derivation cache is version-scoped/persistent (D20); **gate G2 measures this on the P1 phase-1 fixture (cheapest edit) before the XL derivation work** — fail fast. (First impl may full-rebuild per D11 + full TLAS rebuild per D24, then add closure-tracking; the O(closure)/O(log N) target needs persistent containers — **see R13**.) §4.1. |
+| **R2** | **Incremental-derivation latency** — a localized edit rebuilds too much; the interactive bar stutters. | **Med-High** | **High** | **D1** gesture model (uncommitted head + ephemeral preview snapshot, debounced; no 60 Hz) + **reverse-dependency-closure COW re-derive (D11)**, **built→sealed→published at a pass boundary (D12)**, split into `DerivedScene`/`PreparedRenderState` (**D22**); reuse `DirtyScope` blast-radius taxonomy + realize/TLAS/photon seam; the cache is stamp-keyed on artifacts off the immutable Version (D29/D30), with an explicit edge lifecycle (D20); **derive/prepare run async + cancellable on the render arbiter, off the edit thread (D34)** so the edit thread only commits a cheap CST Version (a newer head cancels in-flight work) — this is *also* the source of the head-vs-derived lag (D13/D29); **gate G2 measures this on the P1 phase-1 fixture (cheapest edit) before the XL derivation work** — fail fast. (First impl may full-rebuild per D11 + full TLAS rebuild per D24, then add closure-tracking; the O(closure)/O(log N) target needs persistent containers — **see R13**.) §4.1. |
 | **R3** | **Big-bang scope creep** — the XL derivation + UI rewrite tempts a flag-day cut-over; the tree goes red for weeks; the 376-scene corpus / 146 tests can't all be kept green simultaneously. | **High** | **High** | The strangler-fig phasing (§3.3): the transitional v6-read and v7 paths coexist *during migration only* (D8); deletions only after the replacement is RED-proven and the equivalence harness is green; every phase independently shippable; the terminal v6-path deletion (P8) is the singular D8 contract. **Discipline, not architecture, is the mitigation** — and the user's own multi-agent worker discipline + adversarial-review-as-gate (`feedback_multiagent_worker_discipline.md`, `adversarial-code-review` skill) apply. |
 | **R4** | **Agent-edit safety** — an agent (or GUI-as-agent) commits a CST edit that is syntactically valid but semantically destructive (deletes a referenced node, writes an invalid material), and undo/version-history is the only firewall. | **Med** | **High** | The validate→derive→render pipeline (Facet 5) gates every agent patch *before* commit; reference-safe deletion (block/cascade, from `ENTITY_CREATION.md`) at the CST level; CST version history makes every agent action atomically revertable; the `AI_SECURITY_MODEL.md` threat model carries over. CST diffs make agent actions diff-reviewable (a Model B *advantage*). |
 | **R5** | **Order-independence breaks a real scene** — a corpus scene relies on an order-sensitive construct or a reference cycle that topological emission can't reproduce. | **Low-Med** | **Med** | Corpus reference-graph scan during P0 (expected acyclic); the equivalence harness catches any divergence per-scene; cycles become a structured validation error, not a silent failure. §4.3. |
@@ -1059,6 +1177,8 @@ slice (and every phase) shippable**:
 | **R12** | **External-file conflict / silent overwrite (D6/D17)** — git or another editor changes the `.RISEscene` on disk; in-process version-id dirtiness can't see it; autosave clobbers the external change. **D6's stat-then-write CAS itself has a TOCTOU race** (the file can change between the check and the write). | **Med** | **High** | **D17 (supersedes D6's CAS mechanism): atomic save** — write to a **temp file in the target dir → `fsync` → revalidate the target's content hash == the loaded fingerprint → atomic `rename()` over the target.** On a fingerprint mismatch, surface reload / diff-merge / force (the D6 conflict UX); never a silent overwrite. **Documented residual:** a non-cooperating concurrent writer can still race the final rename (last-writer-wins at the FS layer) → **opt-in advisory file locking** for shared storage. The background watcher (D5's mechanism) can flag "changed on disk" proactively. This is the `FileIdentity` guard's intent retained after the byte-splice mechanism is deleted (§2.4). Gate **G5**. |
 | **R13** | **Persistent-container prerequisite for the complexity headline (D23/D24/D26)** — `GenericManager` uses mutable `std::map`, the cache an `unordered_map`, and the TLAS is a from-scratch build; copying any of them is O(N). The advertised **O(closure)/O(log N)** snapshot creation **does not hold** until the manager roots, derivation cache, AND per-Version identity side-map (D26) are **persistent immutable containers** (HAMT / persistent balanced tree). | **Med** | **Med** | Name it as **infrastructure on par with the red-green tree (D2) and the rope (D16)**. **Honest v1 fallback (D23):** copy-on-snapshot mutable maps — **O(N_entities) per snapshot**, acceptable while entity counts are modest and commits are debounced — and **claim O(N), not O(closure)/O(log N), until the persistent-container work lands.** **D24:** v1 **fully rebuilds the TLAS** (O(N log N)); incremental/persistent-BVH (path-copy or refit) is a named future. Both costs are still « the render. The O(closure)/O(log N) headline is **gated** and must not be claimed before the work exists. §2.2, §4.1. |
 | **R14** | **Historical version cannot re-render to its original pixels (D28)** — the `AssetManifest` records a path + hash, **not the bytes**; after an asset is overwritten and cached snapshots are evicted, an older branch/version re-derives against the **current** asset bytes, so its render can differ. The "every historical version re-renders identically" implication is **false** across asset changes. | **Low-Med** | **Med** | **D28 (git-native framing):** history preserves the **CST (source) only**, *not* rendered output; re-deriving an old version uses **current** asset bytes (the manifest is re-stamped on access), and a changed external asset making the old render differ is **explicitly documented** — exactly like git versioning source while large binaries are the user's responsibility. The `f(CST, AssetManifest)` purity holds *within a manifest*; across time the manifest is the live filesystem. A **content-addressed asset store** (snapshot bytes by hash, a git-LFS analogue at the VCS boundary) is a **named future option**, not core. §2.4, §4.6. |
+| **R15** | **Motion blur lost to the frozen-snapshot model (D31)** — rasterizers/photon-tracers evaluate animation at a **random time per sample** (`PixelBasedPelRasterizer.cpp:636`) for motion blur; a single frozen `DerivedScene(t)` would destroy it, and a per-sample re-derive is impossible (the snapshot is immutable + sealed). | **Low-Med** | **Med** | **D31: keep motion blur via a time-INTERVAL immutable scene.** Animated quantities are baked as **immutable `at(τ)` functions/samples over the shutter `[t0,t1]`** (PBRT-style `AnimatedTransform`) the renderer reads **read-only** per sample (no mutation), plus a **motion BVH** for the TLAS; the "time" axis of the `DerivedStamp` is the **shutter interval** and the **active animation name** is an explicit input (D29). **Gated work — v1 supports single-time (no motion blur)**; the AnimatedTransform-in-`DerivedScene` + motion-BVH path is a **named follow-on** (like the TLAS-refit gate, D24). Not retired. §2.2. |
+| **R16** | **`prepare()` is mutating, non-deterministic, and would freeze the edit thread (D32/D33/D34)** — photon maps are `Scene`-owned and `BuildPendingPhotonMaps` **mutates** pending flags/maps/gather params (`Scene.cpp:750`); light samplers are `RayCaster`-owned; photon tracers seed RNGs with `rand()` (`RandomNumbers.h:32`) so the same `(scene, config)` yields different maps (not cacheable/reproducible); and photon-map construction takes seconds + all cores, so running it synchronously on the UI/agent edit thread would freeze it. | **Med** | **Med-High** | **Three coordinated fixes, named as prerequisites:** **D32 —** refactor `BuildPendingPhotonMaps` + light-sampler construction from "mutate the Scene" to a **non-mutating `build(const DerivedScene&, PreparedRenderStateBuilder&)`** (read the sealed scene through const APIs, write a separate builder, then seal); **D33 —** `RenderConfig` carries a **sampling seed / RNG-stream identity** used by all stochastic prep instead of `rand()`, and the seed is part of the `PreparedStamp` (D29) so `prepare` is a pure function of its key → **cacheable AND reproducible** (deterministic renders — a win for the git-native/agentic thesis); **D34 —** derive→seal→prepare→seal→render run as **cancellable phases of the render arbiter, off the edit thread** (the edit thread only commits a cheap CST Version; a newer head cancels and restarts at the new stamp). These are real machinery work, not a fork; they gate the `PreparedRenderState` layer (R2's latency story depends on D34). §2.2. |
 
 ### 6.3 Effort & sequencing summary
 
@@ -1092,38 +1212,57 @@ window.**
 ### Appendix — fate index (alphabetical, for quick lookup)
 
 `acceleration{}`/`global_medium{}` chunks NEW(D19; migrated from `> set`) ·
-animation EVOLVE→per-frame derivation (time `t` a derivation input, NOT deprecated, D21) ·
-`ApplyOffsetDeltas` DELETE(D2/D16; red cursor over rope) · asset history = CST-only,
+animation EVOLVE→per-frame derivation (time a derivation input, NOT deprecated, D21;
+motion blur = time-INTERVAL scene + motion BVH, gated v1 single-time, D31) ·
+`ApplyOffsetDeltas` DELETE(D2/D16; red cursor over rope) · artifacts: `DerivedArtifact`/
+`PreparedArtifact` hold the memo/dependency cache, stamp-keyed, off the immutable
+Version NEW(D30) · asset history = CST-only,
 re-derive uses current bytes; content-addressed asset store = named future (D28) ·
 `AsciiCommandParser` EVOLVE (CLI) / DELETE from scene path(D19/D27; all embedded `>`
 migrator-only) · `AsciiScriptParser` EVOLVE/narrow · `ChunkDescriptor*` REUSE ·
 `ChunkDescriptorRegistry` REUSE · `CameraIntrospection` EVOLVE · `DAGObjectManager`
-likely DELETE · derivation cache version-scoped/persistent NEW(D20; persistent-container
-prereq D23) · `DerivedScene` config-independent (geometry/TLAS), closure-COW + sealed
-NEW(D11/D12/D22) · `DirtyTracker` DELETE · `EditHistory` DELETE(head+derived version, D13) ·
+likely DELETE · derivation cache on `DerivedArtifact`/`PreparedArtifact` keyed by stamp,
+explicit edge lifecycle NEW(D20/D30; persistent-container prereq D23) · `DerivedScene`
+config-independent (geometry/TLAS), closure-COW + sealed, keyed by `DerivedStamp`
+NEW(D11/D12/D22/D29) · `DerivedStamp`/`PreparedStamp` = full derived/prepared identity,
+compared by DAG ancestry/equality not `<` NEW(D29) · `DirtyTracker` DELETE ·
+`EditHistory` DELETE(head+derived version, D13) ·
 embedded `> echo` DROP(D27; build-log only) · `Film/Light/Object/RasterizerIntrospection`
 EVOLVE · FOR/DEFINE/`$()`/`hal` DELETE · `GenericManager` REUSE(root→persistent container,
 D23) · identity side-map per-Version persistent NEW(D26; depends D23) · `IJob::Add*` REUSE ·
 irradiance/accum caches = render-local mutable, NOT in snapshot (D21) ·
 `Job::InitializeContainers` REUSE · light samplers EVOLVE(ownership→`PreparedRenderState`,
-D22) · embedded `>` commands (load/run/set/modify/remove/echo) DELETE(D7/D19/D27;
-migrator-only, hard-fail on unhandled) · `MaterialIntrospection` EVOLVE(rewrite) ·
-`MathExpressionEvaluator` DELETE · `MediaIntrospection` EVOLVE(rewrite) · `> modify`
-RETIRED→folded into entity authored values (D27) · `NodeId` red-layer/per-Version
-identity side-map (lineage, D15/D26), name-path addressing (D9/D15) · `ObjectManager`
+D22; non-mutating builder D32; deterministic-seeded D33) · embedded `>` commands
+(load/run/set/remove/echo; `modify` only in comments) DELETE from scene path(D7/D19/D27/D37;
+migrator-only, comment/token-aware, hard-fail on unhandled) · migrator comment/token-aware
+(parse CST, never grep; preserves `/* */` verbatim) D37 · `MaterialIntrospection`
+EVOLVE(rewrite) · `MathExpressionEvaluator` DELETE · `MediaIntrospection` EVOLVE(rewrite) ·
+`> modify` RETIRED→folded into entity authored values *if active* (D27); **active corpus =
+ZERO `> modify`** (7 are commented-out night-mode, D37) · `NodeId` red-layer/per-Version
+identity side-map (lineage, D15/D26), name-path addressing (D9/D15), stored in
+widgets/view-nodes/edit-intents/selection + propagated via `GestureBuffer` `{greenRoot,
+identityRoot}` (D36) · `ObjectManager`
 TLAS/realize UNCHANGED(phase-B-then-seal, D12; full TLAS rebuild v1, D24) ·
 `OverrideSpanIndex` DELETE · `ParseAndLoadScene` drive-loop DELETE/lexer-EVOLVE ·
-photon maps EVOLVE(ownership→`PreparedRenderState`, D22) · `PreparedRenderState` =
-prepare(scene, RenderConfig), config-dependent (light-samplers/photon-maps) NEW(D22) ·
-`RawTokenCapture` trivia seeds green tree (index not retained) · `ReferenceUse` traced
-records NEW(D14; rename source, head-stamped D25) · realize/freeze/photon seam
-UNCHANGED(seal-before-publish, D12) · `Reference.h` UNCHANGED · rename head-stamped
-trace, refuse if unobtainable NEW(D25) · `RISE_API_Create*` REUSE · rope child sequences
+photon maps EVOLVE(ownership→`PreparedRenderState`, D22; `BuildPendingPhotonMaps`
+non-mutating builder D32; deterministic seed not `rand()` D33) · `PreparedRenderState` =
+prepare(scene, RenderConfig), config-dependent (light-samplers/photon-maps), keyed by
+`PreparedStamp`, non-mutating + deterministic + async-on-arbiter NEW(D22/D29/D32/D33/D34) ·
+`prepare`/derive run async + cancellable on the render arbiter, off the edit thread
+NEW(D34) · `RawTokenCapture` trivia seeds green tree (index not retained) · `ReferenceUse`
+traced records NEW(D14; rename source via the one derivation resolver, head-stamped
+D25/D35) · realize/freeze/photon seam UNCHANGED(seal-before-publish, D12; async arbiter
+D34) · `Reference.h` UNCHANGED · `RenderConfig` carries sampling seed/RNG-stream identity
+(deterministic prepare) NEW(D33) · rename head-stamped trace via the ONE derivation
+resolver (derive-to-head, no second tracing pass), refuse if unobtainable NEW(D25/D35) ·
+`RISE_API_Create*` REUSE · rope child sequences
 NEW(D16; O(log N), gated on persistent containers D23) · `> set light_rr_threshold`
 → declarative param on rasterizer/integrator chunk (D27) · `SaveEngine` DELETE(byte-splice;
 D6/D17 fingerprint + atomic save retained) · `SceneEdit` DELETE · `SceneEditController`
 EVOLVE(split) · `SceneEditor` EVOLVE(gut) · `SourceSpanIndex` DELETE(D2/D16; red cursor
 over rope) · `src/Library/Agent/` NEW · TLAS full-rebuild v1; incremental/persistent-BVH
-= named future (D24) · `TransformSnapshot` DELETE · v6 parser/preprocessor + version-gate
-v6 arm DELETE(D8; migrator-only) · 5 build lists UNCHANGED(pay 5× tax) · ~30 edit tests
-EVOLVE/repurpose · 116 render tests UNCHANGED.
+= named future (D24) · `TransformSnapshot` DELETE · `Version` = `{ greenRoot,
+identityRoot, metadata }` (CST + occurrence identity ONLY; cache off-Version on
+artifacts) D30 · v6 parser/preprocessor + version-gate v6 arm DELETE(D8; migrator-only) ·
+5 build lists UNCHANGED(pay 5× tax) · ~30 edit tests EVOLVE/repurpose · 116 render tests
+UNCHANGED.

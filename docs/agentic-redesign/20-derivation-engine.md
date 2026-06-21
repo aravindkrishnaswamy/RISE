@@ -1,6 +1,6 @@
 # Facet 2 — Derivation Engine (CST → Scene, incremental)
 
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–3).** The
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–4).** The
 > decision record is authoritative; where this doc once conflicted it now conforms
 > and points to the relevant decision. The decisions that reshaped this facet:
 > **D1** — the derived scene is an *immutable COW snapshot* the renderer swaps at a
@@ -13,12 +13,14 @@
 > derivation builds into a mutable `DerivedSceneBuilder`, runs phase B on it, then
 > *seals* to an immutable value, and adoption is at a *pass* boundary only; **D13** —
 > the derivation exposes both `headVersion` and `derivedVersion` (render/graph stamp
-> the latter, which may lag); **D15** — three distinct concepts (lossless content hash
+> the latter, which may lag — *refined to full stamps + DAG-ancestry by D29, round 4
+> below*); **D15** — three distinct concepts (lossless content hash
 > / trivia-insensitive *derivation key* / `NodeId` lineage), and the memo key is the
 > derivation key; **D16** — wide child sequences are a persistent balanced rope
 > (O(log N), not O(depth)); **D17** — asset identity is a (size,mtime) prefilter →
-> content hash; **D20** — the derivation cache is version-scoped/persistent, carried
-> alongside each snapshot, with an explicit dependency-edge lifecycle. **Round 3
+> content hash; **D20** — the derivation cache is persistent with an explicit
+> dependency-edge lifecycle (*re-homed from the Version onto stamp-keyed artifacts by
+> D30, round 4 below*). **Round 3
 > reshapes the layering:** **D22** — the render-ready state splits into two sealed
 > immutable layers, **`DerivedScene = f(CST, AssetManifest, t)`** (config-INDEPENDENT:
 > realized geometry, materials, lights-as-emitters, **TLAS**) and
@@ -26,15 +28,44 @@
 > **light samplers, photon maps**, integrator-specific structures), with `RenderConfig`
 > an explicit third input and a render-time integrator override re-running only
 > `prepare`; **D21** — animation is *per-frame derivation* (**time `t` is a derivation
-> input**) and caches *populated DURING a pass* (irradiance cache, accumulation) are
-> **render-local mutable** state owned by the render pass, not in either immutable
+> input** — *refined to a time INTERVAL + animation name, preserving motion blur, by D31,
+> round 4 below*) and caches *populated DURING a pass* (irradiance cache, accumulation)
+> are **render-local mutable** state owned by the render pass, not in either immutable
 > layer; **D23** — the O(closure)/O(log N) headline is **gated on persistent immutable
 > containers** (HAMT/persistent tree) for the manager roots + derivation cache +
 > identity side-map; the honest v1 fallback is copy-on-snapshot mutable maps =
 > O(N_entities)/snapshot; **D24** — **v1 fully rebuilds the TLAS** (O(N log N) « the
 > render); incremental/refit/persistent-BVH is a named future; **D28** — history
 > preserves the **CST only**, re-deriving an old version uses **current** asset bytes
-> (a content-addressed asset store is a named future, not core).
+> (a content-addressed asset store is a named future, not core). **Round 4 makes identity,
+> determinism, and threading precise:** **D29** — the cache key is a full
+> **`DerivedStamp = {cstVersion, assetManifestGen, animationName, shutterInterval}`**
+> (identifies a `DerivedScene`) / **`PreparedStamp = DerivedStamp + {renderConfig,
+> cameraOverride, samplingSeed}`** (identifies a `PreparedRenderState`); cache lookups
+> are **full-stamp equality** and "stale vs head?" is **`cstVersion` version-DAG
+> ancestry**, never numeric `<` (this replaces the informal keys and the single
+> `derivedVersion` of D13/D22); **D30** — the memo/dependency cache lives on a
+> **`DerivedArtifact` keyed by `DerivedStamp`** (and a `PreparedArtifact` by
+> `PreparedStamp`) held in a stamp-keyed LRU, **NOT on the immutable `Version`**
+> (`Version = {greenRoot, identityRoot, metadata}` only); one `Version` → many
+> artifacts; **D31** — motion blur is **preserved**: a motion-blurred frame's
+> `DerivedScene` is **time-INTERVAL-parameterized** (animated quantities baked as
+> immutable functions/samples over the shutter `[t0,t1]`, PBRT-style `AnimatedTransform`;
+> the renderer evaluates `at(τ)` per sample read-only) and the TLAS becomes a **motion
+> BVH** — **gated work** (v1 = single-time / no motion blur; motion blur is a named
+> follow-on like the TLAS-refit gate); **D32** — `prepare()` reads the sealed
+> `DerivedScene` through **non-mutating (const) input APIs** and writes a separate
+> mutable **`PreparedRenderStateBuilder`**, then seals (named prerequisite: refactor
+> `BuildPendingPhotonMaps` + light-sampler construction from "mutate the Scene" to
+> `build(const DerivedScene&, PreparedRenderStateBuilder&)`); **D33** — `prepare()` is
+> **deterministic**: `RenderConfig` carries a **sampling seed / RNG-stream id** used by
+> stochastic prep (photon tracing) instead of `rand()`, and the seed is in
+> `PreparedStamp` → prepare is pure/cacheable/reproducible; **D34** — derive → seal →
+> prepare → seal → render run as **cancellable phases of the render arbiter's job, off
+> the edit thread** (the edit thread only commits a cheap CST `Version`); a newer head
+> **cancels + restarts** the in-flight phases — this is the source of the head-vs-derived
+> lag. (D35–D37 touch rename / identity-propagation / migration owned by neighbor facets;
+> §2.6/§7 note conformance.)
 >
 > **Status:** design-in-progress. One facet of the [Agentic Redesign](00-CHARTER.md).
 > Read the [charter](00-CHARTER.md) and [`01-DECISIONS.md`](01-DECISIONS.md) first —
@@ -205,16 +236,41 @@ Round 3 (D22) splits the render-ready state into **two sealed immutable layers**
 config-**independent** `DerivedScene` and a config-**dependent** `PreparedRenderState`.
 The reason: light samplers and photon-map preparation depend on the rasterizer /
 integrator settings, and `render` permits an integrator override — so the render-ready
-scene is **not** purely `f(CST, AssetManifest, t)`. The layered model:
+scene is **not** purely `f(CST, AssetManifest, t)`.
+
+**Round 4 (D29/D30) makes the identity of each layer precise, and moves the cache off
+the immutable `Version`.** Each layer is identified by a **stamp** — its full input
+identity — and the memo/dependency cache lives on an **artifact** keyed by that stamp,
+held in a stamp-keyed LRU, **not** on the `Version`:
 
 ```
-derive  : (CST, AssetManifest, t)  →  DerivedScene         (pure, deterministic — INV-2, D5/D21/D22)
-prepare : (DerivedScene, RenderConfig)  →  PreparedRenderState                    (D22)
+Version          = { greenRoot, identityRoot, metadata }            // CST + occurrence identity ONLY — no cache (D30)
+DerivedStamp     = { cstVersion, assetManifestGen, animationName, shutterInterval }   // identifies a DerivedScene (D29)
+DerivedArtifact  = { derivedStamp, derivedScene, derivationCache }   // the cache lives HERE (D30)
+PreparedStamp    = DerivedStamp + { renderConfig, cameraOverride, samplingSeed }      // identifies a PreparedRenderState (D29/D33)
+PreparedArtifact = { preparedStamp, preparedRenderState, prepareCache }
+```
 
-derive  : (CST, CST', AssetManifest, t, DerivationCache)
-              →  (DerivedScene', DerivationCache')          (incremental — INV-3)
+A `Version` can have **many** `DerivedArtifact`s (one per time-interval / asset-manifest
+generation / animation) and each of those many `PreparedArtifact`s (one per
+`RenderConfig` / camera override / seed) — one Version → many artifacts (D30). **Cache
+lookups match the full stamp by equality** (D29). The only **ordered** comparison is
+"is the rendered scene stale vs head?", which is checked on the **`cstVersion` axis
+alone, by version-DAG ancestry** (the rendered `cstVersion` is an ancestor-or-equal of
+head's) — **never numeric `<`**, because the version DAG branches and the other stamp
+axes (`assetManifestGen`, `shutterInterval`, `renderConfig`, …) are equality-matched,
+not ordered (D29). The layered model:
+
+```
+// "t" below is the shutter INTERVAL [t0,t1] of the DerivedStamp (a single instant when no
+// motion blur — D31), plus the active animationName; both are DerivedStamp axes (D29).
+derive  : (CST, AssetManifest, t, animationName)  →  DerivedScene  (pure, deterministic — INV-2, D5/D21/D22/D31)
+prepare : (DerivedScene, RenderConfig)  →  PreparedRenderState                    (D22; RenderConfig carries the seed — D33)
+
+derive  : (CST, CST', AssetManifest, t, animationName, DerivationCache)
+              →  (DerivedScene', DerivationCache')          (incremental — INV-3; cache held on the DerivedArtifact — D30)
 prepare : (DerivedScene, DerivedScene', RenderConfig, PrepareCache)
-              →  (PreparedRenderState', PrepareCache')      (incremental — INV-3)
+              →  (PreparedRenderState', PrepareCache')      (incremental — INV-3; cache held on the PreparedArtifact — D30)
 ```
 
 The formal `derive` input is **`(CST, AssetManifest, t)`** (D5/D21), not the CST alone.
@@ -247,13 +303,31 @@ direct painter pointers, objects hold direct material/geometry pointers —
 D22)** is the second sealed immutable layer: **light samplers** (their construction
 depends on the integrator's light-sampling strategy), **photon maps** (built only for
 photon-consuming integrators), and any integrator-specific structures. **`RenderConfig`**
-— the rasterizer/integrator selection **plus the render-time override** — is an
-**explicit third input**. Because the split is clean, the **render-time integrator
-override re-runs only `prepare`, never scene derivation**: the geometry/materials/TLAS
-in `DerivedScene` are reused by reference and only the samplers/photon maps are rebuilt
-for the new integrator. The light samplers and photon maps are RayCaster-owned today
+— the rasterizer/integrator selection **plus the render-time override**, a **camera
+override**, and a **sampling seed / RNG-stream id** (D33) — is an **explicit third
+input** (its three non-config-shared axes are exactly the `PreparedStamp` additions over
+`DerivedStamp` — D29). Because the split is clean, the **render-time integrator override
+re-runs only `prepare`, never scene derivation**: the geometry/materials/TLAS in
+`DerivedScene` are reused by reference and only the samplers/photon maps are rebuilt for
+the new integrator. The light samplers and photon maps are RayCaster-owned today
 (`Scene.h:405`); D22 moves them *into* `PreparedRenderState` (not into `DerivedScene`),
 so a *prepared* state is fully render-ready and self-contained (§2.8).
+
+**`prepare` does not mutate the `DerivedScene` (D32).** It reads the sealed
+`DerivedScene` through **non-mutating (const) input APIs** and writes into a separate
+mutable **`PreparedRenderStateBuilder`**, which it then **seals** → `PreparedRenderState`
+— exactly mirroring how `derive` builds into a `DerivedSceneBuilder` and seals (§2.4).
+This is a **named prerequisite refactor**: photon maps are `Scene`-owned today and
+`BuildPendingPhotonMaps` *mutates* pending flags / maps / gather params
+(`Scene.cpp:750`), and the light samplers are `RayCaster`-owned — you cannot build either
+by mutating a sealed immutable `DerivedScene`. Both must be re-expressed as
+`build(const DerivedScene&, PreparedRenderStateBuilder&)` (§2.8). **`prepare` is also
+deterministic (D33):** stochastic preparation (photon tracing, any sampled prep) draws
+from the `RenderConfig` seed / RNG-stream id, **not** `rand()` (photon tracers seed with
+`rand()` today — `RandomNumbers.h:32` — so the same `(DerivedScene, RenderConfig)`
+currently yields *different* photon maps). With the seed in `PreparedStamp`, `prepare` is
+a pure function of its key → **cacheable and reproducible** (deterministic renders, a win
+for the git-native/agentic thesis).
 
 The renderer holds a **refcounted pointer to one `PreparedRenderState`** (which in turn
 references its `DerivedScene`) and **atomically swaps it at a pass boundary** (§2.8).
@@ -263,9 +337,10 @@ layer: the full derive/prepare is the incremental one against an empty cache. (P
 no second path.)
 
 Determinism (INV-2) means: each layer's result is a pure function of its inputs'
-*content* — `DerivedScene` of `(CST, manifest, t)`, `PreparedRenderState` of
-`(DerivedScene, RenderConfig)` — independent of node *visit order*. §4 audits where
-today's `Job` violates this and what must change.
+*content* — `DerivedScene` of `(CST, manifest, t, animationName)` (its `DerivedStamp`),
+`PreparedRenderState` of `(DerivedScene, RenderConfig)` **including the sampling seed**
+(its `PreparedStamp` — so even stochastic photon prep is reproducible, D33) — independent
+of node *visit order*. §4 audits where today's `Job` violates this and what must change.
 
 **Why COW, not mutate-in-place (D1, resolves the F2↔F3 split):** an earlier draft
 of this facet mutated one long-lived `Job`/`Scene` in place and *parked the
@@ -341,7 +416,7 @@ In this diagram, everything down to `RealizedGeometry`/`TLAS` is the **`DerivedS
 | L1 *entity* | a manager entry (painter, material, geometry, shader, shaderop, modifier, function, camera, medium, light) | `Finalize → pJob.AddX` | any L0 value it consumes changes, any **traced** name-ref target's *version* changes (§2.6), OR a **traced** AssetManifest **content hash** changes (D5/D17) |
 | L2 *object* | an `IObject` (geometry+material+modifier+shader+transform bind) | `AddObject`/`AddObjectMatrix`/`AddCSGObject` | any bound L1 entity rebinds, or its transform params change |
 | L3 *realized geom* | baked mesh for a deferred geometry (displaced/SDF/CSG/bezier) | `obj.Realize()` cascade (phase B) | its source geometry entity or any tessellation-driving param changes |
-| L4 *TLAS* | top-level BVH over objects | `PrepareForRendering` (phase B) | any L2 object's **world bbox** changes (transform or geometry swap) — **v1 full rebuild** (D24, §2.7/§6.3) |
+| L4 *TLAS* | top-level BVH over objects (a **motion BVH** over the shutter interval for a motion-blurred frame — D31, gated; v1 = single-time BVH) | `PrepareForRendering` (phase B) | any L2 object's **world bbox** changes (transform or geometry swap) — **v1 full rebuild** (D24, §2.7/§6.3) |
 | L5 *light topology* | `LightSampler` + `EnvironmentSampler` | `RebuildLightSamplers` (`prepare`) | light add/remove, emissive-material bind/unbind, exitance edit, **spatial change of an emissive object**, env map replace/scale, **OR the `RenderConfig` light-sampling strategy changes** |
 | L6 *photon maps* | caustic/global/shadow/translucent maps | `BuildPendingPhotonMaps` (`prepare`) | any L2/L3/L5 change **and** the active rasterizer (a `RenderConfig` input) consumes them |
 
@@ -440,24 +515,33 @@ unchanged and touches no traced input → memo hit → zero re-derivation. Likew
 "typed the same literal value back" is a hit. What is *not* a hit is a value that
 arrived through a different traced dependency — that is the point.
 
-The memo table (keyed and indexed by **`NodeId`** — D9; the `NodeId` lives in the
+The memo table is keyed and indexed by **`NodeId`** — D9; the `NodeId` lives in the
 red layer / a side-map, **not** in the shared green node — D15 — with name-path
-resolved to NodeId per version). **The cache is version-scoped and persistent (D20):
-it is *carried alongside each derived snapshot* and structurally shared across
-versions like the green tree, NOT a single global mutable `DerivationCache<NodeId,…>`
-map** — divergent branches and a simultaneous committed-vs-preview pair each see their
-own consistent cache view (sharing unchanged entries). **The "structurally shared"
-property is gated on persistent immutable containers (D23):** the maps below must be
-**HAMT / persistent-tree** structures for cross-version sharing at O(log N) update. An
-**honest v1 fallback** (D23) **may** use the `std::unordered_map`s shown literally,
-**copy-on-snapshot** — **O(N_entities) per snapshot** — which is acceptable at modest
-entity counts with debounced commits; **in that case the cache is NOT structurally
-shared and the O(closure)/O(log N) claims downgrade to O(N)** until the persistent-
-container work lands:
+resolved to NodeId per version. **Where the cache LIVES is settled by D30: it is *not*
+on the immutable `Version` (which is `{greenRoot, identityRoot, metadata}` — CST +
+occurrence identity only) but on a `DerivedArtifact` keyed by the `DerivedStamp`** (the
+`DerivationCache` below), with the prepare-layer cache on a `PreparedArtifact` keyed by
+the `PreparedStamp` (the `PrepareCache` below). Artifacts are held in a **stamp-keyed
+LRU**, so **one `Version` → many cache-holding artifacts** (per time-interval / asset
+generation / `RenderConfig` / seed). A `Version` commits *before* async derivation
+completes and can spawn many artifacts, which is exactly why the cache cannot hang off
+it (D30). **The cache is still version-scoped and persistent (D20)** in the sense that
+each artifact's cache is keyed by its full stamp and **structurally shared across
+artifacts** like the green tree (a re-derive at a new stamp shares unchanged entries),
+**NOT a single global mutable `DerivationCache<NodeId,…>`** — divergent branches and a
+simultaneous committed-vs-preview pair each see their own consistent cache view. **The
+"structurally shared" property is gated on persistent immutable containers (D23):** the
+maps below must be **HAMT / persistent-tree** structures for cross-stamp sharing at
+O(log N) update. An **honest v1 fallback** (D23) **may** use the `std::unordered_map`s
+shown literally, **copy-on-snapshot** — **O(N_entities) per snapshot** — which is
+acceptable at modest entity counts with debounced commits; **in that case the cache is
+NOT structurally shared and the O(closure)/O(log N) claims downgrade to O(N)** until the
+persistent-container work lands:
 
 ```cpp
-// One value per DerivedScene; keyed by (CST-version, asset-content-hashes, t) (D22).
-// TARGET: a persistent (HAMT) map structurally shared with prior versions (D20+D23).
+// Held on the DerivedArtifact, keyed by its DerivedStamp = {cstVersion, assetManifestGen,
+//   animationName, shutterInterval} (D29/D30) — NOT on the immutable Version.
+// TARGET: a persistent (HAMT) map structurally shared with prior stamps' artifacts (D20+D23).
 // v1 fallback: plain maps, copy-on-snapshot = O(N) (D23).
 struct DerivationCache {
     // NodeId  →  derived record (the engine object + its key + its version)
@@ -479,8 +563,9 @@ struct DerivationCache {
     // since they depend on RenderConfig (the light-sampling strategy / photon gate).
 };
 
-// Carried alongside each PreparedRenderState; keyed by (DerivedScene-version, RenderConfig) (D22).
-// Same D23 gating: persistent map = shared; v1 fallback = copy-on-snapshot O(N).
+// Held on the PreparedArtifact, keyed by its PreparedStamp = DerivedStamp +
+//   {renderConfig, cameraOverride, samplingSeed} (D29/D30/D33). Same D23 gating:
+//   persistent map = shared; v1 fallback = copy-on-snapshot O(N).
 struct PrepareCache {
     uint64_t builtLightTopologyGeneration; // == Scene::GetLightTopologyGeneration() at last L5 build
     PhotonMapGeneration photonGen;          // bumped by any L2/L3/L5 change (L5/L6 live here, D22)
@@ -517,10 +602,13 @@ Given `(CST, CST', AssetManifest, t, cache)`:
    and compare to `cache`) → dirty nodes {added, removed, changed}; (b) any
    **AssetManifest fingerprint change** (D5) → seed every consumer via
    `assetDependents`. The manifest delta is produced by the watcher / re-stat
-   (§2.9); (c) a **change of time `t`** for an animation frame (D21) → seed every node
-   whose value depends on `t` (the keyframed/`timeline` params, traced like any other
-   input). Each frame derives its own immutable `DerivedScene(t)`; the diff between
-   adjacent frames is exactly the `t`-dependent forward cone (§2.10).
+   (§2.9); (c) a **change of the frame's time interval** (`shutterInterval`, a
+   `DerivedStamp` axis — D29/D31) for an animation frame (D21/D31) → seed every node
+   whose value depends on time (the keyframed/`timeline` params, traced like any other
+   input). Each frame derives its own immutable `DerivedScene` over that interval (a
+   single instant in the v1 no-motion-blur path; an AnimatedTransform-over-`[t0,t1]` in
+   the D31 follow-on — §2.10); the diff between adjacent frames is exactly the
+   time-dependent forward cone (§2.10).
 2. **Recompute keys** for dirty nodes' L1/L2 records. For each, compare new
    `key` to the cached `key`:
    - **equal** → memo hit, skip (covers comment/whitespace edits and "typed the
@@ -543,7 +631,11 @@ Given `(CST, CST', AssetManifest, t, cache)`:
    - any L2/L3/L5 change → bump `photonGen` (consumed only if L6 is live).
 4. **Build into a mutable builder, run the config-independent phase B on it, *seal*
    `DerivedScene`; then `prepare` builds `PreparedRenderState` and publish (D12/D22).**
-   The COW re-derive produces a **mutable `DerivedSceneBuilder`** (a closure-copy view
+   **This whole step 4 runs as cancellable phases of the render arbiter's job, off the
+   edit thread (D34)** — the edit thread only committed the cheap CST `Version` (steps
+   1–3's diff/dirty seeding is likewise the arbiter's, against the new head); if a newer
+   head arrives mid-`derive`/`prepare`/render, the in-flight phases **cancel and restart**
+   at the new stamp (§2.8). The COW re-derive produces a **mutable `DerivedSceneBuilder`** (a closure-copy view
    per D11) that shares all untouched engine objects by reference with the prior
    snapshot. **The config-independent phase B (realize/tessellate + TLAS) runs on the
    *builder*, before any publication** — there is **no publish-before-phase-B** (an
@@ -554,11 +646,18 @@ Given `(CST, CST', AssetManifest, t, cache)`:
    **fully rebuilds the TLAS** (v1 — D24; no path-copy). Then **`seal()` →** an
    immutable **`DerivedScene`** value that **owns** the realized geometry and the TLAS
    (config-independent — D22). **`prepare(DerivedScene, RenderConfig)` then builds
-   `PreparedRenderState`** — the config-dependent layer: it rebuilds the **light
-   samplers** iff `liveGen != builtLightGeneration`, and re-shoots the **photon maps**
-   iff pending + the active rasterizer (a `RenderConfig` input) consumes them; it
-   **seals** an immutable `PreparedRenderState` that **owns** the light samplers AND
-   photon maps (moved *into* the prepared state from the RayCaster — D22, §2.8). **Only
+   `PreparedRenderState`** — the config-dependent layer — by **reading the sealed
+   `DerivedScene` through non-mutating (const) input APIs and writing into a separate
+   mutable `PreparedRenderStateBuilder` (D32)**, never mutating the `DerivedScene`: it
+   rebuilds the **light samplers** iff `liveGen != builtLightGeneration`, and re-shoots
+   the **photon maps** iff pending + the active rasterizer (a `RenderConfig` input)
+   consumes them — with all stochastic prep drawing from the `RenderConfig` **sampling
+   seed** rather than `rand()`, so the result is reproducible (D33); it **seals** an
+   immutable `PreparedRenderState` that **owns** the light samplers AND photon maps
+   (moved *into* the prepared state from the RayCaster — D22, §2.8). (This is the named
+   prerequisite refactor of `BuildPendingPhotonMaps` / light-sampler construction from
+   "mutate the Scene" to `build(const DerivedScene&, PreparedRenderStateBuilder&)` —
+   §2.1/§2.8.) **Only
    the sealed `PreparedRenderState` is published**, by an atomic pointer swap the render
    loop adopts **at a PASS boundary** (never mid-frame / per-tile — D12, §2.8); the old
    prepared state (and the `DerivedScene` it referenced) drains by refcount. A
@@ -737,19 +836,29 @@ D9/Facet 1).
   the existing runtime gate a *prepare-layer membership* decision driven by
   `RenderConfig` plus the traced photon dirtiness.
 
-### 2.8 Threading: derive → seal → prepare → seal → publish; pass-boundary swap, not parking (D1, D12, D22)
+### 2.8 Threading: derive → seal → prepare → seal → render as cancellable arbiter phases; pass-boundary swap, not parking (D1, D12, D22, D34)
 
-Derivation runs on each **debounced CST edit (O2)** — both a **commit** *and* a
-**gesture preview of the uncommitted head** (D1, §5.3) — on the UI/agent thread. It
-builds into a **mutable `DerivedSceneBuilder`**, runs the **config-independent phase B
-on the builder** (realize/tessellate + TLAS), **seals** it to a **new immutable
-`DerivedScene`** value (D12/D22); then **`prepare(DerivedScene, RenderConfig)`** builds
-and **seals** a **`PreparedRenderState`** (light samplers + photon maps), and the
-session **publishes only the sealed `PreparedRenderState` by an atomic pointer swap at a
-PASS boundary** (D12) — it does **not** park the render thread for safety, and it
-**never mutates after publication**. A preview's snapshots are **ephemeral** (not
-history versions); at gesture end the intermediate roots coalesce into one committed
-version (D1).
+**The edit/agent thread does only one cheap thing: commit a CST `Version` (D34).**
+Everything expensive — **derive → seal → prepare → seal → render** — runs **as
+cancellable phases of the render arbiter's job, off the edit thread** (D34). This is
+non-negotiable because photon-map construction and a full TLAS rebuild take seconds and
+all cores; running them synchronously on the UI/agent thread would freeze it (and would
+contradict the single-render-arbiter promise). The arbiter picks up each **debounced CST
+head (O2)** — both a **commit** *and* a **gesture preview of the uncommitted head** (D1,
+§5.3) — at its `DerivedStamp` (D29), builds into a **mutable `DerivedSceneBuilder`**,
+runs the **config-independent phase B on the builder** (realize/tessellate + TLAS),
+**seals** it to a **new immutable `DerivedScene`** value (D12/D22); then
+**`prepare(DerivedScene, RenderConfig)`** — reading the sealed `DerivedScene` through
+**non-mutating const input APIs** and building into a **`PreparedRenderStateBuilder`**
+(D32), seeded deterministically from `RenderConfig` (D33) — builds and **seals** a
+**`PreparedRenderState`** (light samplers + photon maps), and the session **publishes
+only the sealed `PreparedRenderState` by an atomic pointer swap at a PASS boundary**
+(D12) — it does **not** park the render thread for safety, and it **never mutates after
+publication**. **When a newer head arrives, the in-flight phases cancel and restart at
+the new stamp (D34)** — this is exactly the source of the head-vs-derived lag (D13/D29):
+the arbiter is mid-derive/prepare/render on an *older* stamp while head has moved on. A
+preview's snapshots are **ephemeral** (not history versions); at gesture end the
+intermediate roots coalesce into one committed version (D1).
 
 **Ownership (D22):** the two sealed layers split ownership. The **`DerivedScene`**
 **owns** the realized geometry, spatial index, lights-as-emitters, **AND the TLAS**
@@ -794,17 +903,23 @@ hard error (D1): it is immutable + refcounted, so the renderer simply keeps
 rendering it while a broken head is edited (pairs with derive-with-holes, §5).
 **Abort** of an in-flight pass needs no rollback — nothing was half-mutated.
 
-**Coherent version status (D13).** Because derivation is async and may serve a
-last-good snapshot, the head version and the *derived* version can differ; a single
-shared `documentId` would falsely claim them equal. The session therefore publishes
-**one coherent status value** alongside each snapshot:
-`{ headVersion, derivedVersion, snapshot, status ∈ {deriving, ok, error},
-diagnostics }`. **`read_graph` / `render` / `derive_preview` are stamped with
-`derivedVersion`** — *what the scene actually reflects*, which **may be < headVersion,
-or last-good on error** — and are **never** claimed equal to head. (`read_document` is
-stamped with `headVersion`, the CST truth — Facet 1/5; a patch's optimistic-concurrency
-precondition is checked against `headVersion`.) `status` + `diagnostics` explain any
-lag or failure so a consumer reading a lagging `derivedVersion` knows why.
+**Coherent version status (D13, refined by D29).** Because derive/prepare/render are
+**async, cancellable arbiter phases (D34)** and may serve a last-good snapshot, the head
+version and the *rendered* scene can differ; a single shared `documentId` would falsely
+claim them equal. The session therefore publishes **one coherent status value** alongside
+each snapshot:
+`{ headVersion, derivedStamp, preparedStamp, snapshot, status ∈ {deriving, ok, error},
+diagnostics }`. **`read_graph` / `render` / `derive_preview` are stamped with the
+`DerivedStamp` / `PreparedStamp`** (D29) — *what the scene actually reflects* — whose
+`cstVersion` axis **may lag head** (or be last-good on error) and is **never** claimed
+equal to head. The "is this rendered scene stale vs head?" check is on the **`cstVersion`
+axis alone, by version-DAG ancestry** (rendered `cstVersion` is an ancestor-or-equal of
+head's), **never numeric `<`** (the DAG branches; D29) — the other stamp axes
+(`assetManifestGen`, `shutterInterval`, `renderConfig`, `samplingSeed`, …) are
+equality-matched, not ordered. (`read_document` is stamped with `headVersion`, the CST
+truth — Facet 1/5; a patch's optimistic-concurrency precondition is checked against
+`headVersion`.) `status` + `diagnostics` explain any lag or failure so a consumer reading
+a lagging stamp knows why.
 
 The re-kick that follows a swap is the same `RasterizeScene`, now running against the
 newly published `PreparedRenderState`. **No second *mutable* representation is
@@ -863,20 +978,36 @@ used), etc.
   silent overwrite. The manifest's content hashes and the save-time revalidation share
   the watcher and the fingerprint definition.
 
-### 2.10 Animation = per-frame derivation; render-populated caches are render-local mutable (D21)
+### 2.10 Animation = per-frame derivation over a time INTERVAL; motion blur preserved (gated); render-populated caches are render-local mutable (D21, D31)
 
 Existing animation **mutates** scene objects / TLAS / photon maps / irradiance caches
 *during* rendering (`Scene.cpp:561`, `PixelBasedRasterizerHelper.cpp:1887`) — which is
 incompatible with the sealed immutable layers (D12/D22). D21 keeps **both** capabilities
-(animation **and** irradiance caching) by re-expressing them:
+(animation **and** irradiance caching) by re-expressing them; **D31 then preserves a
+third — motion blur — by making the per-frame scene time-INTERVAL-parameterized rather
+than frozen at a single instant:**
 
-- **Animation is per-frame derivation; time `t` is a derivation input** (alongside CST +
-  AssetManifest — D5/D21, §2.1). Each frame derives its **own immutable
-  `DerivedScene(t)`**: a `timeline` keyframes a param and derivation **evaluates it at
-  `t`** (the per-frame keyframed values are part of the derivation key). **No
-  mutation-during-render** — an animation render is a **sequence of sealed snapshots**,
-  each prepared and adopted at a pass boundary exactly like an interactive edit. This
-  matches the CST model directly (keyframes are CST; `t` selects the evaluation point).
+- **Animation is per-frame derivation; the time *interval* + the active animation name
+  are derivation inputs** (alongside CST + AssetManifest — D5/D21/D31, §2.1; both are
+  `DerivedStamp` axes — D29). A `timeline` keyframes a param and derivation evaluates it
+  over time. **No mutation-during-render** — an animation render is a **sequence of
+  sealed snapshots**, each prepared and adopted at a pass boundary exactly like an
+  interactive edit. This matches the CST model directly (keyframes are CST; the time
+  axis selects the evaluation point/interval).
+- **Motion blur is preserved, not retired (D31).** Rasterizers/photon-tracers evaluate
+  animation at a **random time per sample** within the shutter for motion blur
+  (`PixelBasedPelRasterizer.cpp:636`); a single frozen `DerivedScene(t)` would destroy
+  that. So a **motion-blurred frame's `DerivedScene` is time-INTERVAL-parameterized**:
+  animated quantities are baked as **immutable functions/samples over the shutter
+  `[t0,t1]`** (a PBRT-style `AnimatedTransform`), and the renderer evaluates **`at(τ)`
+  per sample, read-only** (no mutation of the sealed scene). The "time" axis of the
+  `DerivedStamp` is therefore the **shutter interval** (a single instant when there is
+  no motion blur). The frame's TLAS becomes a **motion BVH** (time-interval) under D31.
+- **Gating (D31).** This is **named follow-on work, like the TLAS-refit gate (D24):
+  v1 supports single-time frames (no motion blur)** — the `DerivedStamp`'s time axis is a
+  point and the TLAS is the single-time BVH; the **AnimatedTransform-in-`DerivedScene` +
+  motion-BVH** path lands later. Motion blur is **not** dropped from the design — it is
+  deferred to that follow-on.
 - **Caches populated DURING a pass are render-local MUTABLE state, owned by the render
   pass — NOT in any immutable layer.** The **irradiance cache** and **accumulation
   buffers** are filled *as the pass runs*; they cannot be sealed-before-publish because
@@ -891,10 +1022,13 @@ incompatible with the sealed immutable layers (D12/D22). D21 keeps **both** capa
   computed-once *inputs* to a pass, not during-render-populated, so they are sealed and
   shared by refcount across frames where unchanged.
 
-So the layered render-time picture is: `DerivedScene(t)` (immutable, config-independent)
-→ `PreparedRenderState` (immutable, config-dependent) → the render pass, which owns the
-**render-local mutable** irradiance/accumulation caches. Animation is **not** deprecated;
-it is per-frame derivation over a sequence of sealed snapshots.
+So the layered render-time picture is: `DerivedScene` over the frame's time interval
+(immutable, config-independent; a single instant in the v1 no-motion-blur path, an
+AnimatedTransform-over-`[t0,t1]` + motion BVH in the D31 follow-on) → `PreparedRenderState`
+(immutable, config-dependent) → the render pass, which evaluates `at(τ)` read-only per
+sample and owns the **render-local mutable** irradiance/accumulation caches. Animation is
+**not** deprecated; it is per-frame derivation over a sequence of sealed snapshots, and
+**motion blur is preserved** (gated — D31).
 
 ---
 
@@ -909,7 +1043,8 @@ it is per-frame derivation over a sequence of sealed snapshots.
 | `SceneEditor::ApplyObjectOpForward` / `ApplyForwardMutation` (`SceneEditor.cpp`) | **Reuse (re-homed as the APPLY backend)** | The fine-grained mutators for value-only edits — now invoked **on the builder's closure copies, sealed before publish** (D11/D12), not on a shared live object. Strip the `SceneEdit`-record coupling; drive from `(NodeId, slot, value)` (D9). |
 | `*Introspection::SetSlotValue` (Material/Media/Light/Camera) | **Reuse** | The per-domain slot setters the APPLY backend calls (on COW copies — D1). |
 | `BumpLightTopologyGeneration` + the `…IfEmitterSetChanged`/`…IfMaterialEmits` helpers + the `LightManager` self-invalidate callback | **Reuse (as the L1/L2→L5 traced-edge implementation)** | The emissive→light-topology dependency edge already exists imperatively; Facet 2 makes the **traced** graph (D4) drive it. The coarse generation counter stays as L5's dirty flag. |
-| Phase-B reconciliation (`RayCaster::AttachScene` realize, `PrepareForRendering`, `RebuildLightSamplers`, `BuildPendingPhotonMaps`, `RenderParallelScope`) | **Reuse, unchanged** | Already incremental + correctly staged, now **split across the two layers (D22)**: realize + the **full TLAS rebuild** (D24) run on the `DerivedSceneBuilder` before `seal()` (→ `DerivedScene`); `RebuildLightSamplers` + `BuildPendingPhotonMaps` run in `prepare` (→ `PreparedRenderState`, which **owns** the samplers/photon maps, moved in from the RayCaster — D22). Facet 2 only feeds each a precise dirty set. Under D1 the freeze guard is a DEBUG assertion, not a parking prerequisite (§2.7–2.8). |
+| Phase-B reconciliation — derive half (`RayCaster::AttachScene` realize, `PrepareForRendering`, `RenderParallelScope`) | **Reuse, unchanged** | Already incremental + correctly staged: realize + the **full TLAS rebuild** (D24) run on the `DerivedSceneBuilder` before `seal()` (→ `DerivedScene`, config-independent — D22). Facet 2 only feeds a precise dirty set. Under D1 the freeze guard is a DEBUG assertion, not a parking prerequisite (§2.7–2.8). |
+| Phase-B reconciliation — prepare half (`RebuildLightSamplers`, `BuildPendingPhotonMaps`) | **Evolve (named prerequisite — D32/D33)** | Runs in `prepare` (→ `PreparedRenderState`, which **owns** the samplers/photon maps, moved in from the RayCaster — D22), but **cannot be reused unchanged**: `BuildPendingPhotonMaps` *mutates* the `Scene`'s pending flags/maps/gather params (`Scene.cpp:750`) and light samplers are `RayCaster`-owned — you can't build either by mutating a **sealed immutable** `DerivedScene`. Refactor both to `build(const DerivedScene&, PreparedRenderStateBuilder&)` reading through **non-mutating const input APIs** (D32), and make stochastic prep draw from the `RenderConfig` **seed**, not `rand()` (`RandomNumbers.h:32`), so `prepare` is deterministic/cacheable (D33). |
 | `SceneEdit` value record (`SceneEdit.h`) | **Delete (owned by Facet 3)** | The edit carrier becomes the CST diff. The *op semantics* are absorbed into §2.5's apply-table; the struct goes. |
 | `EditHistory` (`EditHistory.h`) | **Delete (Facet 3)** | Undo/redo = CST version history. |
 | `DirtyTracker` (`DirtyTracker.h`) | **Delete (Facet 3)** | The memo cache's reverse-dependency index + phase-B generations replace the dirty channels; round-trip-save dirtiness is moot once text↔CST is lossless (Facet 1/3). |
@@ -918,10 +1053,14 @@ it is per-frame derivation over a sequence of sealed snapshots.
 | `Job`'s round-trip metadata (`SourceSpanIndex`, `TransformSnapshot`, `OverrideSpanIndex`, `Job.cpp:276-279`) | **Delete (Facet 1/3)** | Span-tracking existed to splice text edits back; obsolete under canonical-CST. |
 
 **Net for Facet 2:** delete *zero* engine code; **reuse** the loader's emit rules,
-the managers, the apply-layer mutators, and the entire phase-B pipeline; **add**
-the memo cache + dependency graph + diff-driven dirty propagation as a new thin
-layer *above* `IJob`. The deletions are all in the *edit/history/save* wrapper,
-owned by Facets 1/3.
+the managers, the apply-layer mutators, and the **derive-half** phase-B pipeline
+(realize + TLAS) unchanged; **refactor** the **prepare-half** phase-B pipeline
+(light samplers + photon maps) to a **non-mutating builder** (`build(const
+DerivedScene&, PreparedRenderStateBuilder&)`) and a **seeded** stochastic path — the one
+named engine-side prerequisite (D32/D33); **add** the memo cache + dependency graph +
+diff-driven dirty propagation as a new thin layer *above* `IJob`, run as **cancellable
+phases of the render arbiter** (D34). The deletions are all in the *edit/history/save*
+wrapper, owned by Facets 1/3.
 
 ---
 
@@ -1142,7 +1281,11 @@ preview frame; flagged as the cost of that path.)
    incremental. **Open:** incremental alias-table update vs. full rebuild — likely out of
    scope for v1 (matches today), flag for a later perf pass. (A `RenderConfig`
    light-sampling-strategy change also re-runs this, since the samplers are
-   config-dependent — D22.)
+   config-dependent — D22.) **Prerequisite (D32/D33):** the rebuild must read the sealed
+   `DerivedScene` through **non-mutating const input APIs** into a
+   `PreparedRenderStateBuilder` (light samplers are `RayCaster`-owned today), and any
+   stochastic prep that feeds it must draw from the `RenderConfig` seed, not `rand()` —
+   §2.1/§2.8.
 
 5. **`-ffast-math` and "unchanged" detection.** Memo equality must be byte/hash
    equality of the §2.3 key (the trivia-insensitive *derivation key* — D15 — +
@@ -1179,7 +1322,11 @@ preview frame; flagged as the cost of that path.)
    either way). **Recommendation: keep debounced-commit** — 60Hz re-derivation
    of a production spectral renderer's scene graph buys little (the render itself is
    the latency floor). This is now a *latency/throughput* preference, not a
-   correctness/INV-1 argument, since D1's snapshot model is safe at either cadence.
+   correctness/INV-1 argument, since D1's snapshot model is safe at either cadence — and
+   since **derive/prepare/render run as cancellable phases on the render arbiter, off the
+   edit thread (D34)**, the edit thread never blocks regardless of cadence; a faster
+   cadence just means more in-flight phases get cancelled-and-restarted before they
+   publish.
 
 ---
 
@@ -1202,15 +1349,19 @@ preview frame; flagged as the cost of that path.)
   traced `ReferenceUse` records — D14) — I do **not** build the dependency graph from
   it; the graph is **traced during derivation** (D4); (d) the **AssetManifest** (D5/
   D17) — resolved identity + (size,mtime)-prefilter→content-hash fingerprint per
-  referenced asset — is supplied as a derivation input, and **time `t`** (D21) is a
+  referenced asset — is supplied as a derivation input (its generation is the
+  `assetManifestGen` stamp axis — D29), and **time** — a **shutter interval `[t0,t1]`**
+  plus the **active animation name** (D21/D31; both `DerivedStamp` axes — D29) — is a
   further derivation input for animation (Facet 1/6 own the manifest's construction +
-  the watcher; the timeline/`t` evaluation is CST-driven); (e) declarative iteration
+  the watcher; the timeline/time evaluation is CST-driven); (e) declarative iteration
   (L3) is already expanded into either *derived instances* (a generator node I treat as
   one L3 producer) or *explicit separately-editable entities* (N independent L1/L2
-  nodes) — Facet 2 treats each per its kind; (f) the manager roots + derivation cache +
-  per-`Version` identity side-map are **persistent immutable containers** (D23) for the
-  O(closure)/O(log N) headline — a **named infrastructure prerequisite** (the honest v1
-  fallback is copy-on-snapshot O(N); §2.1/§2.3/§6.1). **Conflict flag:** if Facet 1
+  nodes) — Facet 2 treats each per its kind; (f) the manager roots + the
+  **artifact-scoped** derivation cache (held on the `DerivedArtifact`/`PreparedArtifact`,
+  not the `Version` — D30) + the per-`Version` `identityRoot` side-map are **persistent
+  immutable containers** (D23) for the O(closure)/O(log N) headline — a **named
+  infrastructure prerequisite** (the honest v1 fallback is copy-on-snapshot O(N);
+  §2.1/§2.3/§6.1). **Conflict flag:** if Facet 1
   cannot cheaply give node-level diffs, §6.2's mitigation (per-CST-node hash cache) adds
   state to the CST that Facet 1 must own.
 - **To/with Facet 3 (edit model):** Facet 3 deletes `SceneEdit`/`EditHistory`/
@@ -1218,26 +1369,33 @@ preview frame; flagged as the cost of that path.)
   under them (`ApplyObjectOpForward`, the `*Introspection` setters) as my APPLY
   backend, re-homed to take `(NodeId, slot, resolved-value)` from the CST diff (D9)
   and to run **on closure-copies in the builder, sealed before publish** (D11/D12).
-  **Assumption:** Facet 3's "apply a CST edit" calls into my
-  `derive(CST, CST', AssetManifest, t, cache)` (D5/D21), and a render/integrator change
-  calls `prepare(DerivedScene, RenderConfig)` (D22) — i.e. Facet 3 owns *producing* the
-  new CST + version history; I own *turning the diff into a new sealed immutable
-  `DerivedScene`, then a `PreparedRenderState`*. The **derive→seal→prepare→seal→publish
-  / pass-boundary atomic-swap** seam (§2.8, D12/D22) is shared mechanism; assume Facet
-  3/4 drive the commit *and gesture previews of the uncommitted head* (D1, §5.3) and
-  supply `RenderConfig` (incl. the render-time integrator override, which re-runs only
-  `prepare` — D22). History is **CST-only** (D28); re-deriving an old version uses
-  current asset bytes. (No parking-for-safety; cancel-and-park is an optional coalescing
+  **Assumption:** Facet 3's "apply a CST edit" commits a cheap CST `Version` (D34); the
+  **render arbiter** then calls my
+  `derive(CST, CST', AssetManifest, t, animationName, cache)` (D5/D21/D31), and a
+  render/integrator change calls `prepare(DerivedScene, RenderConfig)` (D22, with the
+  seed in `RenderConfig` — D33) — i.e. Facet 3 owns *producing* the new CST + version
+  history; I own *turning the diff into a new sealed immutable `DerivedScene`, then a
+  `PreparedRenderState`*, **asynchronously on the arbiter as cancellable phases** (D34).
+  The **derive→seal→prepare→seal→render / pass-boundary atomic-swap** seam (§2.8,
+  D12/D22/D34) is shared mechanism; assume Facet 3/4 drive the commit *and gesture
+  previews of the uncommitted head* (D1, §5.3) and supply `RenderConfig` (incl. the
+  render-time integrator override, which re-runs only `prepare` — D22). Identity flows
+  through edits: staged-edit state (`GestureBuffer`, working head) carries
+  **`{greenRoot, identityRoot}`**, and `Version = {greenRoot, identityRoot, metadata}`
+  with **no cache** (D30/D36) — the cache hangs off the stamp-keyed artifacts I own, not
+  the `Version`. History is **CST-only** (D28); re-deriving an old version uses current
+  asset bytes. (No parking-for-safety; cancel-and-park is an optional coalescing
   optimization Facet 3/4 may invoke.)
 - **To Facet 4 (dynamic UI):** the memo cache's per-node derived records + holes +
-  diagnostics are what the UI binds to (a widget, bound by NodeId per D9, reflects its
-  node's derived state / error). I expose a read API over the cache; I assume the UI
-  does not mutate derived state directly (INV-1) — it edits the CST, which re-derives a
-  new snapshot.
+  diagnostics are what the UI binds to (a `Widget`/`ViewNode` binds by a real `NodeId`
+  field, and selection / an `EditIntent` carry the `NodeId` — D9/D36; name-path is kept
+  for display/addressing only — reflecting its node's derived state / error). I expose a
+  read API over the cache; I assume the UI does not mutate derived state directly
+  (INV-1) — it edits the CST, which re-derives a new snapshot.
 - **To Facet 5 (agentic surface):** my structured per-node diagnostics (§5.1) are
   the "structured errors" the MCP `validate→derive→render` loop returns. I assume
   the agent edits land as CST diffs through Facet 3, then trigger my derive.
-- **Decision-conformance check (D1–D28):** the design honors **D1** (immutable COW
+- **Decision-conformance check (D1–D37):** the design honors **D1** (immutable COW
   snapshot + atomic swap; no parking-for-safety — §2.1/§2.8), **D4** (traced
   dependency graph; memo key = derivation key + traced-input versions, so `expr(A)` ≠
   literal `5` — §2.2/§2.3), **D5** (input = `(CST, AssetManifest)`; output paths
@@ -1246,18 +1404,20 @@ preview frame; flagged as the cost of that path.)
   copy, not "share a referrer of a changed node"; O(closure/fan-in); first cut may
   full-rebuild — §2.1/§5.2/§6.1), **D12** (build into a `DerivedSceneBuilder` → phase B
   on the builder → *seal* → publish; adopt at a **pass** boundary only — §2.1/§2.4/§2.8;
-  ownership now split per D22), **D13** (expose `headVersion` + `derivedVersion`;
-  render/graph stamp the latter, which may lag/last-good — §2.8), **D14** (rename uses
+  ownership now split per D22), **D13** (expose `headVersion` + the derived/prepared
+  stamps; render/graph stamp the latter, whose `cstVersion` may lag/last-good —
+  **refined to stamps + DAG-ancestry by D29** — §2.8), **D14** (rename uses
   traced `ReferenceUse` records, not `referenceCategories` — §2.2/§4.2/§8), **D15**
   (three concepts: lossless content hash / trivia-insensitive *derivation key* = the
   memo key / `NodeId` lineage in the red layer — §2.3), **D16** (wide child sequences are
   a persistent rope, O(log N) — §2.1/§6.7), **D17** (asset identity = (size,mtime)
   prefilter → content hash, the authoritative memo-key input; atomic
   temp+fsync+revalidate+rename save — §2.1/§2.9), **D18** (corrected first-slice fixture
-  with a real reference chain + asset phase — §8), **D20** (version-scoped/persistent
-  cache carried with each snapshot; atomic outgoing-edge replace on re-derive, purge on
-  delete — §2.3); and the **round-3 amendments**: **D21** (animation = per-frame
-  derivation, **time `t` is a derivation input**; caches *populated during* a pass —
+  with a real reference chain + asset phase — §8), **D20** (persistent cache, now
+  **artifact-scoped — keyed by full stamp per D30**, not Version-carried; atomic
+  outgoing-edge replace on re-derive, purge on delete — §2.3); and the **round-3
+  amendments**: **D21** (animation = per-frame derivation, **time is a derivation
+  input** — refined to a time *interval* by D31; caches *populated during* a pass —
   irradiance cache, accumulation — are **render-local mutable**, not in any immutable
   layer; caches built *before* a pass stay immutable — §2.1/§2.10), **D22** (two-layer
   split: **`DerivedScene = f(CST, AssetManifest, t)`** owns geometry/materials/emitters/
@@ -1271,13 +1431,43 @@ preview frame; flagged as the cost of that path.)
   path-copy is withdrawn; incremental/refit/persistent-BVH is a named future — §2.1/§2.7/
   §6.1/§6.3), **D28** (history preserves the **CST only**; re-derivation uses **current**
   asset bytes — the manifest is re-stamped, an old render may differ; content-addressed
-  asset store is a named future, not core — §2.9); and it references **D2** (green-node
+  asset store is a named future, not core — §2.9); and the **round-4 amendments**:
+  **D29** (full **`DerivedStamp = {cstVersion, assetManifestGen, animationName,
+  shutterInterval}`** / **`PreparedStamp = DerivedStamp + {renderConfig, cameraOverride,
+  samplingSeed}`**; cache = full-stamp equality, staleness = `cstVersion` **DAG
+  ancestry**, never `<` — §2.1/§2.3/§2.8), **D30** (cache lives on a **`DerivedArtifact`
+  keyed by `DerivedStamp`** / **`PreparedArtifact` by `PreparedStamp`** in a stamp-keyed
+  LRU; **`Version = {greenRoot, identityRoot, metadata}`** has no cache; one Version →
+  many artifacts — §2.1/§2.3), **D31** (motion blur **preserved**: a motion-blurred
+  frame's `DerivedScene` is **time-INTERVAL-parameterized** — AnimatedTransform over
+  `[t0,t1]`, renderer evaluates `at(τ)` read-only per sample; TLAS → **motion BVH**;
+  **gated**, v1 = single-time/no-motion-blur, motion blur a named follow-on; animationName
+  + shutterInterval are derivation inputs — §2.1/§2.2/§2.4/§2.10), **D32** (`prepare`
+  reads the sealed `DerivedScene` through **non-mutating const input APIs** into a
+  **`PreparedRenderStateBuilder`**, then seals; **named prerequisite** refactor of
+  `BuildPendingPhotonMaps`/light-sampler construction from "mutate the Scene" to
+  `build(const DerivedScene&, PreparedRenderStateBuilder&)` — §2.1/§2.4/§2.8/§3/§6.4),
+  **D33** (`prepare` **deterministic**: `RenderConfig` carries a **sampling seed /
+  RNG-stream id** used by stochastic prep instead of `rand()`; seed in `PreparedStamp` →
+  pure/cacheable/reproducible — §2.1/§2.4/§2.8), **D34** (derive→seal→prepare→seal→render
+  run as **cancellable phases of the render arbiter, off the edit thread**; the edit
+  thread only commits a cheap `Version`; a newer head cancels+restarts — the source of
+  the head-vs-derived lag — §2.4/§2.8/§6.7); and it references **D35** (rename reuses the
+  **one** derivation resolver / derive-to-head — Facet 3's concern, no conflict here),
+  **D36** (identity propagates through edits: `GestureBuffer`/working head carry
+  `{greenRoot, identityRoot}`; `Widget`/`ViewNode`/`EditIntent`/selection store the
+  `NodeId` — Facet 3/4; the cache keying on NodeId is unchanged — §2.3/§2.6/§7), **D37**
+  (migration is comment/token-aware — Facet 1/6's migrator; §4 reads only declarative
+  config); and it references **D2** (green-node
   content hashing for sharing), **D6** (shared fingerprint / conflict UX — §2.9), **D10**
   (the first-slice gates — §8), **D25** (rename runs against a head-stamped trace —
-  Facet 3/§4.2's concern, no conflict here), **D26** (per-`Version` persistent identity
-  side-map — the home for the NodeId the cache keys on; §2.3, depends on D23), **D27**
-  (all `>` commands migrated/retired — Facet 1/6's migrator; §4 reads only declarative
-  config). The **residual conformance sweep** items are addressed: (i) the memo key is
+  Facet 3/§4.2's concern, **superseded by D35**: rename reuses the one derivation
+  resolver, no separate tracing pass), **D26** (the per-`Version` `identityRoot` is the
+  home for the NodeId records the artifact-scoped cache keys on; **completed by D36** —
+  `{greenRoot, identityRoot}` propagate through edits — and **note D30 drops
+  `derivationCacheRoot` from `Version`**: the cache is artifact-scoped, not Version-held;
+  §2.3, depends on D23), **D27** (all `>` commands migrated/retired — Facet 1/6's
+  migrator; **corrected by D37**, comment/token-aware; §4 reads only declarative config). The **residual conformance sweep** items are addressed: (i) the memo key is
   the structural/traced-input *derivation key*, never resolved-value (§2.3); (ii)
   derivation is **not** commit-only — gesture previews derive the uncommitted head into
   ephemeral preview snapshots, committing once at gesture end (§2.8/§5.3); (iii)
@@ -1287,7 +1477,7 @@ preview frame; flagged as the cost of that path.)
   pass, not a second derive client), L3 (consumes post-expansion CST), L5 (identity is
   first-class — realized as NodeId + name-path per D9, homed in the D26 side-map), L6
   (descriptor-as-schema; `referenceCategories` is a UI ref-picker hint, not a parallel
-  edge schema). **No conflicts with D1–D28 or the locked decisions.** Open decisions
+  edge schema). **No conflicts with D1–D37 or the locked decisions.** Open decisions
   touched: O1 (designed for CST-canonical; the memo key's derivation-key +
   traced-input-version form makes the text-canonical delta small — a text edit that
   re-parses to the same green tree with the same traced inputs is a memo hit either way),
@@ -1326,9 +1516,13 @@ that fixture:
    Both layers are immutable + sealed (D1/D12/D22): a config-independent `DerivedScene`
    (geometry/material/object/TLAS) and a config-dependent `PreparedRenderState` (here
    trivial — the sphere is non-emissive, so the light sampler is empty and no photons).
-   The cache keys on NodeId (D9/D15, homed in the D26 per-`Version` side-map) and is
-   version-scoped/persistent (D20) — **structurally shared once the persistent
-   containers of D23 land; the v1 fallback is copy-on-snapshot O(N)**.
+   The cache keys on NodeId (D9/D15, homed in the per-`Version` `identityRoot` — D26/D36)
+   and lives on a **`DerivedArtifact` keyed by the `DerivedStamp`** (and a
+   `PreparedArtifact` by the `PreparedStamp`) in a stamp-keyed LRU, **not on the
+   `Version`** (D29/D30) — **structurally shared across stamps once the persistent
+   containers of D23 land; the v1 fallback is copy-on-snapshot O(N)**. (For this slice the
+   stamps are trivial: one CST version, one asset generation, a single-time interval, one
+   `RenderConfig` + seed — but the keying is the real round-4 shape.)
 3. **Wire the two backends:** REBUILD = the existing `Finalize→AddObject`/
    `AddSphereGeometry`/`AddLambertianMaterial`; APPLY = `SetObjectPosition` +
    `RunObjectInvariantChain` for a transform edit, `MaterialIntrospection::
@@ -1355,10 +1549,13 @@ that fixture:
    nothing"; the new snapshot shares 100% by reference).
 
 This slice stands up the cache, the **traced** graph build, the diff→dirty→propagate
-loop, the derive→seal→prepare→seal→publish path (D12/D22), and both backends — the
-skeleton every other chunk type plugs into by virtue of being descriptor-driven. It
-reuses 100% of the engine (managers, apply-layer, phase-B + prepare pipeline) and adds
-only the thin memo+graph + two-layer-snapshot layer. All five D10 gates (G1 round-trip,
+loop, the derive→seal→prepare→seal→render path **run as cancellable arbiter phases**
+(D12/D22/D34), and both backends — the skeleton every other chunk type plugs into by
+virtue of being descriptor-driven. It reuses the engine wholesale (managers, apply-layer,
+the **derive-half** phase-B realize+TLAS pipeline) — the **one** engine-side change is the
+named **prepare-half** refactor to a non-mutating `PreparedRenderStateBuilder` + seeded
+prep (D32/D33), trivial here (empty sampler, no photons) but real shape — and adds only
+the thin memo+graph + two-layer-snapshot layer. All five D10 gates (G1 round-trip,
 G2 latency, G3 minimal invalidation, G4 versioning, G5 external inputs once the
 asset-backed node enters at D18 phase 6) apply.
 
@@ -1372,12 +1569,20 @@ existing engines — the loader's `Finalize→AddX` (now the **rebuild** backend
 the editor's `ApplyObjectOpForward`+introspection setters (now the **apply** backend,
 run on **COW copies** — D1) — and puts a **memo cache + traced dependency graph** in
 front of them, in **two sealed immutable layers** (D22). The first function is
-`derive(CST, AssetManifest, t)` (D5/D21 — **time `t` is a derivation input**, so
-animation is per-frame derivation, not mutation-during-render), producing a
-config-**independent** **`DerivedScene`** (geometry/materials/lights-as-emitters/
-**TLAS**); the second is `prepare(DerivedScene, RenderConfig)` (D22), producing a
-config-**dependent** **`PreparedRenderState`** (light samplers + photon maps) — so a
-render-time integrator override re-runs only `prepare`. A CST/manifest/time edit becomes
+`derive(CST, AssetManifest, t, animationName)` (D5/D21/D31 — **the time *interval* and
+the animation name are derivation inputs**, so animation is per-frame derivation, not
+mutation-during-render, and **motion blur is preserved** as a time-interval
+AnimatedTransform the renderer reads `at(τ)` per sample — gated, v1 single-time),
+producing a config-**independent** **`DerivedScene`** (geometry/materials/
+lights-as-emitters/**TLAS**); the second is `prepare(DerivedScene, RenderConfig)` (D22),
+which reads the sealed `DerivedScene` through **non-mutating const APIs** into a
+**`PreparedRenderStateBuilder`** (D32) and draws stochastic prep from `RenderConfig`'s
+**seed** (D33), producing a config-**dependent** **`PreparedRenderState`** (light
+samplers + photon maps) — so a render-time integrator override re-runs only `prepare`.
+Each layer is identified by a **stamp** (`DerivedStamp` / `PreparedStamp` — D29) and the
+memo cache lives on a stamp-keyed **artifact** (`DerivedArtifact` / `PreparedArtifact`),
+**not** on the immutable `Version = {greenRoot, identityRoot, metadata}` (D30). A
+CST/manifest/time edit becomes
 a node-diff; the **traced** graph (D4) turns the diff into the *minimal* set of rebuilds
 (structural changes) and copy-then-apply value changes, materializes them in a mutable
 `DerivedSceneBuilder` that **copies the reverse-dependency closure** of each changed node
@@ -1386,15 +1591,19 @@ and shares every node outside the closure by reference (D11), runs the config-in
 **seals** to an immutable `DerivedScene` that **owns** its geometry/TLAS; `prepare` then
 seals a `PreparedRenderState` that **owns** the light samplers/photon maps (D22) —
 setting the *already-existing* phase-B/prepare dirty flags (light-topology generation,
-TLAS-valid, photon-pending) precisely instead of via scattered hand-bumps. The renderer
-**atomically swaps to the sealed `PreparedRenderState` at a PASS boundary** — no
+TLAS-valid, photon-pending) precisely instead of via scattered hand-bumps. This whole
+pipeline runs as **cancellable phases of the render arbiter, off the edit thread** (the
+edit thread only commits a cheap CST `Version`; a newer head cancels+restarts — D34); the
+renderer **atomically swaps to the sealed `PreparedRenderState` at a PASS boundary** — no
 parking-for-safety; the old layers drain by refcount (D1, D12, D22). Caches *populated
 during* a render (irradiance cache, accumulation) are **render-local mutable** state
 owned by the pass, outside both immutable layers (D21). Determinism comes from deriving
 in dependency order (discovered by tracing, fixing `Job`'s load-order landmines) and
 keying the memo on the **derivation key** (trivia-insensitive semantic hash) **+
-traced-input versions** (so `expr(A)` ≠ literal `5` — D4/D15); incrementality comes from
-the version-scoped memo cache (D20) + structural sharing — **with the O(closure)/O(log N)
-headline gated on persistent immutable containers (D23); the honest v1 fallback is
-copy-on-snapshot O(N_entities)**; safety comes from immutability plus deriving with holes
+traced-input versions** (so `expr(A)` ≠ literal `5` — D4/D15) — and from a **seeded,
+reproducible `prepare`** (D33; cache = full-stamp equality, staleness = `cstVersion` DAG
+ancestry not `<` — D29); incrementality comes from the **artifact-scoped, stamp-keyed**
+memo cache (D20/D30) + structural sharing — **with the O(closure)/O(log N) headline gated
+on persistent immutable containers (D23); the honest v1 fallback is copy-on-snapshot
+O(N_entities)**; safety comes from immutability plus deriving with holes
 so one bad node never blanks the scene. History is **CST-only** (D28).

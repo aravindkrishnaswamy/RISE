@@ -1,13 +1,15 @@
 # RISE Agentic Redesign — Synthesis & Overview
 
-> **Status:** **review rounds 1–3 complete** (no P0s in any). The reviews found 8 P1 + 2 P2 (r1),
-> 8 P1 + a P2 batch (r2), and 8 P1 (r3), all resolved authoritatively in
-> [`01-DECISIONS.md`](01-DECISIONS.md) (**D1–D28**), which **supersedes the reconciliations in §3 and
+> **Status:** **review rounds 1–4 complete** (no P0s in any). The reviews found 8 P1 + 2 P2 (r1),
+> 8 P1 + a P2 batch (r2), 8 P1 (r3), and 9 P1 (r4), all resolved authoritatively in
+> [`01-DECISIONS.md`](01-DECISIONS.md) (**D1–D37**), which **supersedes the reconciliations in §3 and
 > the first-slice in §6 below** and overrides the facet docs where they conflict. This document
 > synthesizes the six facet designs and their seams; read [`00-CHARTER.md`](00-CHARTER.md) for the
 > locked/open decisions, then [`01-DECISIONS.md`](01-DECISIONS.md) for the resolutions (later rounds
-> amend earlier decisions; r3 layered the derived-scene model — D21/D22 — and made the complexity
-> claims honest about prerequisites — D23/D24).
+> amend earlier decisions; r3 layered the derived-scene model and gated its complexity claims; r4
+> made identity/determinism/threading precise — full Derived/Prepared **stamps** keying **artifacts**
+> off the immutable Version, deterministic seeded async prepare, motion blur preserved as a
+> time-interval scene — and **D37 corrects a factual error** in r3's command census).
 
 ## 0. Reading guide (for the reviewer)
 
@@ -75,7 +77,12 @@ Per-facet headline:
   `PreparedRenderState = prepare(scene, RenderConfig)` (light samplers + photon maps) — D22; animation
   is per-frame derivation (time `t` is an input) and irradiance caching is render-local mutable — D21;
   TLAS is full-rebuild-v1 and the O(closure)/O(log N) headline is gated on persistent containers —
-  D24/D23.
+  D24/D23. **Stamped (r4):** a `DerivedStamp {cstVersion, assetGen, animationName, shutterInterval}`
+  and a `PreparedStamp` (+ renderConfig, cameraOverride, **samplingSeed** → deterministic) key
+  **artifacts** that hold the cache — off the immutable `Version {greenRoot, identityRoot, metadata}`
+  (D29/D30); derive→prepare→render run **async + cancellable on the render arbiter** (D34), off the
+  edit thread; motion blur is preserved as a **time-interval** immutable scene (D31, gated). Staleness
+  is cstVersion **DAG ancestry, not `<`**.
 - **F3 (Edit/History):** an edit is `CstPatch → new immutable root`; undo/redo is a pointer move
   over a structurally-shared version DAG; a gesture coalesces patches and commits *one* version
   (dissolving composites/transactions/rollback/atomicity/identity-serial); lossless round-trip is

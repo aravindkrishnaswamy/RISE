@@ -2,11 +2,17 @@
 
 > **Status:** design-in-progress. One of the parallel facet docs under the
 > [Agentic Redesign Charter](00-CHARTER.md). DESIGN ONLY — no code yet.
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–3):** binding keys on the immutable
-> **NodeId** (lineage identity, D9/D15), resolved via each Version's **persistent identity side-map**
-> (D26) and addressed by name-path; positions via the red cursor over the persistent rope, not stored
-> spans (D2/D16). A render preview the panel shows reflects a **`PreparedRenderState`** for a given
-> `RenderConfig` (D22); time-scrub is per-frame derivation (D21).
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–4):** binding keys on the immutable
+> **NodeId** (lineage identity, D9/D15), **stored as a real field** on `Widget`/`ViewNode`/
+> `EditIntent`/selection (D36); the `NodeId` resolves via each Version's **persistent `identityRoot`**
+> (D26/D30), and staged edits carry `{greenRoot, identityRoot}` (D36) so a gesture's additions/
+> reparses keep identity stable for live bindings. name-path remains for display + addressing but the
+> durable bind/selection key is the `NodeId`. Positions via the red cursor over the persistent rope,
+> not stored spans (D2/D16). A render preview the panel shows is a **`PreparedRenderState`** identified
+> by a **`PreparedStamp`** (D29), produced **asynchronously by the render arbiter** (D34); the panel
+> may show a stale-but-last-good preview while a newer head derives (head-vs-derived lag, D13/D29).
+> Time-scrub drives **per-frame (time-interval) derivation** with the **active animation name as an
+> input** (D31).
 > This facet owns: **the UI as a pure function of (CST + descriptor schema)**,
 > widget-per-node, adaptive/growing panels, two-way binding widget↔CST node,
 > the split form/source live view, reactive propagation, and the shared-C++ +
@@ -186,9 +192,11 @@ of the parser: where the parser maps `text → CST → engine`, the builder maps
 namespace RISE::UI {
 
   // A widget bound to one CST parameter: holds the immutable NodeId (lineage
-  // identity, D9) and addresses/displays by name-path.
+  // identity, D9/D36) as its durable bind key, and addresses/displays by name-path.
   struct Widget {
-    std::string  namePath;       // "objects/sphere.material" — identity + bind key (INV-5)
+    NodeId       nodeId;         // the immutable lineage identity — the DURABLE bind key (D9/D15/D36);
+                                 // survives rename + reparse, so the binding never breaks under an edit
+    std::string  namePath;       // "objects/sphere.material" — display + addressing ONLY, NOT the key (INV-5)
     std::string  label;          // descriptor param name ("focal_length")
     WidgetKind   kind;           // §2.5 vocabulary, derived from ValueKind + ParameterSemantics
     std::string  value;          // canonical text of the value token(s) — same form the parser reads
@@ -207,7 +215,8 @@ namespace RISE::UI {
 
   // One CST chunk → one collapsible card; nesting mirrors CST nesting.
   struct ViewNode {
-    std::string            namePath;     // "objects/sphere"
+    NodeId                 nodeId;       // immutable lineage identity — the DURABLE bind key (D9/D15/D36)
+    std::string            namePath;     // "objects/sphere" — display + addressing ONLY, NOT the key
     std::string            chunkKeyword; // "standard_object"
     ChunkCategory          category;     // grouping hint ONLY (not a fixed enum gate — see §2.3)
     std::string            title;        // name + keyword
@@ -252,25 +261,39 @@ already exceed the 9 hand-built panels — so even the default grouping covers
 chunk families (Painter, Function, ShaderOp, Modifier, PhotonMap, …) that have
 **no panel today**.
 
-### 2.2 Two-way binding widget ↔ CST node (via NodeId, addressed by name-path — D9/D15)
+### 2.2 Two-way binding widget ↔ CST node (via NodeId, addressed by name-path — D9/D15/D36)
 
-**Two-level identity (per [`01-DECISIONS.md`](01-DECISIONS.md) §D9).** Widgets bind to the
+**Two-level identity (per [`01-DECISIONS.md`](01-DECISIONS.md) §D9/§D36).** Widgets bind to the
 immutable internal **NodeId** (lineage identity — it survives rename and reparse via structural
 matching, so a binding never breaks under an edit, INV-5); the **name-path**
 (`objects/sphere.material`) is the human/agent-facing **address** that resolves to a NodeId within a
-version. The widget displays + edits by name-path but *holds* the NodeId, so a rename (which changes
-the name-path) does not drop the binding. This is the principled replacement for the Model-A
+version. Per **D36 the `NodeId` is a *real stored field*** on `Widget`, `ViewNode`, and `EditIntent`
+(the structs above), not merely an implied property of the name-path: the widget *displays + addresses*
+by name-path but its **durable bind key is the `NodeId` field**, so a rename (which changes the
+name-path) does not drop the binding. This is the principled replacement for the Model-A
 transient-pointer/array-index identity the round-4 "identity serial" patched over.
+
+**Where the `NodeId` resolves, and why it stays stable mid-gesture (D26/D30/D36).** A `NodeId`
+resolves to a concrete node through a **Version's persistent `identityRoot`** (the per-Version
+occurrence/identity structure, D26) — *not* through the `derivationCache`, which by D30 lives on a
+stamp-keyed `DerivedArtifact`, off the immutable `Version`. During a live gesture the staged-edit
+state (Facet 3's `GestureBuffer` / working head) carries **`{greenRoot, identityRoot}` — both roots**
+(D36), so insertions and reparses *within* the gesture update occurrence identity as they go; a widget
+bound by `NodeId` therefore keeps pointing at the same logical node even as the gesture adds siblings
+or reparses a region, and the live binding never flickers to a wrong node.
 
 **Widget → CST (edit emits a patch through Facet 3's one pathway).**
 
 ```cpp
 // A gesture produces an EditIntent — structural, not textual, not engine-level.
 struct EditIntent {
-  std::string namePath;   // "cameras/main.focal_length"
+  NodeId      targetNodeId; // the DURABLE target identity (D36) — the edit binds here, not to a name;
+                            // resolved against the staged head's identityRoot (survives mid-gesture reparse)
+  std::string namePath;     // "cameras/main.focal_length" — human/agent-facing address ONLY
   enum Op { SetParam, AddParam, RemoveParam, AddChunk, RemoveChunk, RenameChunk } op;
-  std::string value;      // canonical token text for SetParam/AddParam ("50")
+  std::string value;        // canonical token text for SetParam/AddParam ("50")
   // AddChunk carries (keyword, proposedName, seedParams); RenameChunk carries newName.
+  // (AddChunk has no pre-existing target NodeId; Facet 3 mints one and returns it for the new node.)
 };
 ```
 
@@ -292,12 +315,28 @@ from the GUI, from the agent (Facet 5), or from a raw text edit in the source
 pane — triggers Facet 1 to publish a new CST revision. The controller responds:
 
 ```
-on CstRevisionPublished(newCst):
+on CstVersionPublished(newCst):                       // Facet 1 commits a new CST Version (cheap)
     newTree = UiModel::Build(newCst, schema)          // pure re-derive (incremental, §2.6)
-    patch   = Diff(currentTree, newTree)              // minimal widget delta
+    patch   = Diff(currentTree, newTree)              // minimal widget delta, MATCHED BY NodeId (D36)
     currentTree = newTree
     emit UiPatch(patch)  →  platform render() applies it
 ```
+
+The `Diff` matches old↔new `ViewNode`/`Widget` **by their `NodeId` field** (D36), not by name-path or
+list position — so a rename or an insertion above a node is a value/label delta on the *same* widget,
+never a spurious destroy+recreate that would lose focus or drag state. The form pane updates the
+moment the CST `Version` is committed; it does **not** wait on derivation.
+
+**The render preview is a separately-stamped, async artifact (D29/D34).** The form pane is a function
+of the CST `Version` and updates immediately, but any *render preview* the panel shows is a
+**`PreparedRenderState` identified by a `PreparedStamp`** (`DerivedStamp + {renderConfig,
+cameraOverride, samplingSeed}`, D29), produced **asynchronously by the render arbiter** as cancellable
+derive→prepare→render phases (D34). Because the arbiter may still be mid-derive/prepare on an older
+stamp when a newer head is committed, the panel may legitimately display a **stale-but-last-good
+preview** whose `PreparedStamp.cstVersion` is a DAG ancestor of head (head-vs-derived lag, D13/D29) —
+the preview surfaces its stamp + the session `status ∈ {deriving, ok, error}` so a lag or a last-good
+fallback is shown honestly, never as if it were head. Staleness is judged on the **`cstVersion` axis
+by DAG ancestry, never numeric `<`** (D29).
 
 This is the reactive propagation model: **one-way data flow** (CST → UiTree →
 render) plus **a single upstream event** (EditIntent → Facet 3 → CST). A
@@ -310,8 +349,9 @@ as a human works *with* an agent") is mechanical, not bolted-on.
 
 `Category`/`PanelMode`/`kNumCategories` are **deleted**. Grouping is data:
 `ViewNode.category` is the descriptor's `ChunkCategory`, used only as a sort/
-header key by an optional grouping lens. Selection (§2.7) carries a name-path,
-not a category int. This removes the entire class of "add a value, re-type it
+header key by an optional grouping lens. Selection (§2.7) is a **`NodeId`**
+(D36), not a category int (and not, primarily, a name-path). This removes the
+entire class of "add a value, re-type it
 in three bridges, audit `case 5:`" drift — there is no per-panel enum to drift,
 and the one enum the bridges still need (`WidgetKind`) is **generated**
 (§2.8). The `ResyncObjectBoundSections_` / `DropStaleSelection_` coherence
@@ -319,8 +359,9 @@ logic dissolves: cross-references (an object's bound material) are just
 name-path links in the CST that the builder can render as either a navigable
 chip ("jump to `materials/glass`") or, under a "show bound material inline"
 lens, an embedded child `ViewNode` — and a stale selection is simply a
-name-path the next `Build()` doesn't produce, so the selection layer drops it
-by the same generic rule for every kind.
+**`NodeId` that no longer resolves** against the new Version's `identityRoot`
+(§2.7, D36), so the selection layer drops it by the same generic rule for every
+kind.
 
 ### 2.4 The split form/source live view ("devtools for scenes")
 
@@ -335,11 +376,14 @@ synced.** This is browser-devtools' "Elements pane ↔ DOM" applied to a scene.
 - **Selection is bidirectional and span-driven.** `Widget.span` (a
   `SourceSpan` byte range, from §1.5) lets the form→source direction scroll +
   highlight the exact value token when a widget is focused, and the
-  source→form direction map a cursor offset back to the owning
-  `ViewNode`/`Widget` (reverse span lookup). Click a widget → the line glows;
-  click in the text → the card highlights. *(This is precisely what
-  `SourceSpanIndex::ParameterSpan` already records per parameter; the facet
-  promotes it from a save-engine internal to a first-class UI binding.)*
+  source→form direction maps a cursor offset back to the owning
+  `ViewNode`/`Widget` (reverse span lookup) — yielding that node's **`NodeId`**,
+  which is what the session selection then holds (§2.7, D36), so a click in the
+  text selects the same durable identity a click on the card would. Click a
+  widget → the line glows; click in the text → the card highlights. *(This is
+  precisely what `SourceSpanIndex::ParameterSpan` already records per parameter;
+  the facet promotes it from a save-engine internal to a first-class UI
+  binding.)*
 - **Editing either side is the same edit.** A form edit emits an `EditIntent`
   (§2.2). A text edit is a raw buffer change that Facet 1 re-parses into a new
   CST revision; the form pane re-derives reactively (§2.2 reverse direction).
@@ -471,16 +515,22 @@ Per L4, **only the CST is canonical**; selection, the active tool, the orbit
 camera, render-in-progress, and per-card expand/collapse are **ephemeral
 session state** and live *outside* the CST.
 
-- **Selection is a name-path** (or a set of them), held in a small session
-  object — not a `(Category, name)` tuple, not nine per-category slots. It
-  *resolves* to a `ViewNode` by name-path lookup each derive.
-- **It survives edits** because name-path is stable (INV-5): after any patch,
-  the selection re-resolves against the new `UiTree`; if the node still exists
-  (even moved, even with changed params) the selection holds; if it was
-  deleted, it drops by one generic rule (replacing `DropStaleSelection_`'s
-  special-casing). Cross-entity coherence (selecting an object also surfaces
-  its material) becomes "the inspector renders the selected node *and* renders
-  its name-path references as navigable, optionally-inlined links" — no
+- **Selection is a `NodeId`** (or a set of them), held in a small session
+  object — not a `(Category, name)` tuple, not nine per-category slots, and
+  **not name-path-based** (D36). The durable selection key is the immutable
+  `NodeId`; it is **resolved to a name-path only for display** (the inspector
+  header, breadcrumbs). Each derive, the selected `NodeId` resolves to a
+  `ViewNode` via the current Version's `identityRoot` (D26).
+- **It survives edits** because the `NodeId` is the stable lineage identity
+  (INV-5, D9/D36): after any patch — including a **rename**, which changes the
+  name-path but preserves the `NodeId` — the selection re-resolves the same node
+  and holds (even moved, even with changed params, even renamed); if the node
+  was deleted, its `NodeId` no longer resolves and the selection drops by one
+  generic rule (replacing `DropStaleSelection_`'s special-casing). *(A
+  name-path-keyed selection would instead silently drop on every rename — the
+  precise Model-A bug D36 closes.)* Cross-entity coherence (selecting an object
+  also surfaces its material) becomes "the inspector renders the selected node
+  *and* renders its references as navigable, optionally-inlined links" — no
   `ResyncObjectBoundSections_` resync, because there is no second copy of the
   selection to keep in sync.
 - **Ephemeral view state** (which cards are expanded, scroll position, the
@@ -528,12 +578,18 @@ idioms ([§3.2](../gui/CROSS_PLATFORM_ARCHITECTURE.md)) — no new shape:
 - **indexed-list** for nodes/widgets: `unsigned UiNodeCount(p)`,
   `bool UiNodeAt(p, idx, UiNodeDesc* out)`, `unsigned UiWidgetCount(p, nodeIdx)`,
   `bool UiWidgetAt(p, nodeIdx, wIdx, UiWidgetDesc* out)`.
-- **string-out** for the variable-length fields (`namePath`, `value`, `label`,
-  `diagnostic`) and for indexed sub-lists (`presets`, `enumValues`,
-  `refCandidates`).
+- **string-out** for the variable-length fields (the **`nodeId`** opaque
+  identity token — D36, the durable bind key the shell echoes back in intents —
+  plus `namePath`, `value`, `label`, `diagnostic`) and for indexed sub-lists
+  (`presets`, `enumValues`, `refCandidates`). *(The shell treats `nodeId` as an
+  opaque handle: it never parses it, only stores it per rendered widget/card and
+  passes it straight back in `UiSubmitIntent` and selection calls — so identity
+  crosses the boundary without the bridge interpreting it.)*
 - **struct-out** for the fixed scalar fields (`kind` int, `editable`,
   `isDefaulted`, `span.begin/end`).
-- the single upstream call: `bool UiSubmitIntent(p, const UiIntent* intent)`.
+- the single upstream call: `bool UiSubmitIntent(p, const UiIntent* intent)` —
+  whose `UiIntent` carries the **target `nodeId`** (D36) the gesture binds to,
+  not (primarily) a name-path; selection is set the same way, by `nodeId`.
 
 The **one enum that crosses the boundary is `WidgetKind`** (plus the existing
 `ChunkCategory` for grouping). It is **generated**, not hand-mirrored: extend
@@ -541,9 +597,10 @@ The **one enum that crosses the boundary is `WidgetKind`** (plus the existing
 `WidgetKind` to a single canonical header + Kotlin constants + Obj-C
 `static_assert` mirrors, so adding a `WidgetKind` is a one-place edit and drift
 is a build break, not a silent `case N:` fall-through. Because grouping is now
-data (`ChunkCategory`) and selection is a name-path string, the bridges have
-**no per-panel enum to translate** — the entire `Category`/`PanelMode`
-switch-on-int translation layer (the documented bug site) is deleted, not
+data (`ChunkCategory`) and selection is an opaque `nodeId` token (D36), the
+bridges have **no per-panel enum to translate** — the entire
+`Category`/`PanelMode` switch-on-int translation layer (the documented bug site)
+is deleted, not
 re-implemented. This is the structural fix the memory note
 `feedback_bridge_enum_translation_audit` and
 [CROSS_PLATFORM_ARCHITECTURE.md §3.1](../gui/CROSS_PLATFORM_ARCHITECTURE.md)
@@ -637,7 +694,12 @@ the only Android-specific UI code, and it is mechanical.
    (re-introducing Model A's coupling). Mitigation: `synthetic` children and
    `diagnostic` strings are strictly additive overlays that never change which
    widgets exist; the base tree derives without the engine. Needs a crisp
-   contract with Facet 2 on the per-node "derived summary" it exposes.
+   contract with Facet 2 on the per-node "derived summary" it exposes. Note the
+   derived overlay (and any render preview the panel shows) is keyed by the
+   relevant **`DerivedStamp`/`PreparedStamp`** (D29) and produced **async by the
+   render arbiter** (D34), so an overlay may lag the just-committed form by one
+   derive (the head-vs-derived lag, D13/D29) — it is shown stamped, and the base
+   form never blocks on it.
 
 2. **The text pane's edit granularity under lossless-CST (O1).** A raw text
    edit that doesn't yet parse must not destroy the form pane's last-good
@@ -658,13 +720,15 @@ the only Android-specific UI code, and it is mechanical.
    (a cycle badge) rather than silently produce a broken tree.
 
 4. **Two-pane selection identity across a reformat.** If a text edit reorders
-   or reformats chunks, NodeId identity holds (D9, good) and absolute byte
-   positions are **not stored** — under the red-green tree (D2) the reverse
-   lookup (source→form) derives positions on demand via the version's red
-   cursor, so there are no stored spans to "shift" or republish. The only
-   discipline needed is that the form pane reads positions from **one CST
-   version snapshot** (never mid-edit), which the immutable-version model (D1)
-   gives for free.
+   or reformats chunks, the stored-`NodeId` identity on the selection and on
+   each `ViewNode`/`Widget` holds (D9/D36, good) — reparse-matching re-binds the
+   same `NodeId` via the Version's `identityRoot` (D26) — and absolute byte
+   positions are **not stored**: under the red-green tree (D2) the reverse lookup
+   (source→form) derives positions on demand via the version's red cursor, so
+   there are no stored spans to "shift" or republish. The only discipline needed
+   is that the form pane reads positions **and resolves selection `NodeId`s from
+   one CST Version snapshot** (never mid-edit), which the immutable-version model
+   (D1) gives for free.
 
 5. **Open (flag for human review):** does the **default lens** stay the
    familiar `GroupBy(ChunkCategory)` accordion (lower migration shock, but
@@ -687,7 +751,10 @@ the only Android-specific UI code, and it is mechanical.
   node carries `(chunkKeyword, NodeId, name-path, params[] with per-param value
   text, children)` — positions are derived via the red cursor, not stored (D2/D16);
   (b) the immutable **NodeId** is the stable lineage identity and **name-path is
-  version-resolved addressing** (D9/D15, INV-5); (c)
+  version-resolved addressing** (D9/D15, INV-5), and the `NodeId` resolves
+  through each Version's persistent **`identityRoot`** (D26/D30) — which is why
+  this facet *stores* the `NodeId` on `Widget`/`ViewNode`/`EditIntent`/selection
+  (D36); (c)
   the schema (`Describe()` descriptors + `ParameterSemantics`) is queryable as
   `Schema::Describe(keyword)`; (d) Facet 1 publishes per-revision position lookup so the
   split view can map both directions; (e) declarative iteration (L3) means the
@@ -697,9 +764,14 @@ the only Android-specific UI code, and it is mechanical.
 - **Facet 3 (edit model & history)** — *hard dependency, the one edit
   pathway.* I assume Facet 3 exposes `Submit(EditIntent)` (or equivalent) that
   turns an intent into a validated CST patch, versions it, and triggers
-  derivation; and that gesture debouncing (drag → one undo entry) lives there.
+  derivation; that its staged-edit state (`GestureBuffer` / working head)
+  carries **`{greenRoot, identityRoot}`** so a `NodeId` an intent targets stays
+  resolvable across mid-gesture additions/reparses (D36); and that gesture
+  debouncing (drag → one undo entry) lives there.
   **I deliberately do not implement patching/undo/splice** (INV-6, L2) — the
-  facet stops at the intent boundary. If Facet 3's intent vocabulary differs
+  facet stops at the intent boundary, handing Facet 3 the **target `NodeId`**
+  (D36; `AddChunk` is the one op with no prior target — Facet 3 mints the new
+  node's `NodeId` and returns it). If Facet 3's intent vocabulary differs
   from §2.2's `{SetParam, AddParam, RemoveParam, AddChunk, RemoveChunk,
   RenameChunk}`, synthesis should reconcile names (the *shapes* are what
   matter).
@@ -711,8 +783,9 @@ the only Android-specific UI code, and it is mechanical.
 - **Facet 5 (agentic surface)** — *peer.* The agent edits via the same Facet-3
   pathway, so its patches drive the reactive UI for free (§2.2). I assume
   Facet 5's `validate` produces per-parameter diagnostics addressable by
-  name-path, which become `Widget.diagnostic`. The "show me the code" panel is
-  literally this facet's source pane.
+  name-path **and resolvable to the owning node's `NodeId`** (D36) so they bind
+  to the right `Widget.diagnostic` even across a rename. The "show me the code"
+  panel is literally this facet's source pane.
 - **`ParameterSemantics`** is assumed adopted ([GUI_ROADMAP.md §16](../GUI_ROADMAP.md));
   the color-vs-scalar widget split degrades to "all refs look alike" without
   it, so it's a soft-but-strongly-wanted input.
@@ -740,10 +813,13 @@ contribution to that slice, kept deliberately minimal:
    string-out + struct-out C-ABI surface. Prove the thin shell needs *zero*
    panel-specific logic.
 4. **Two-way binding on that one widget:** editing `focal_length` emits a
-   `SetParam` `EditIntent` → Facet 3 patches the CST value token → Facet 2
-   re-derives the camera → the viewport updates *and* `UiModel::Build`
-   re-derives the single widget reactively (§2.2). Editing the value in the
-   source pane (a raw text edit) round-trips the other direction.
+   `SetParam` `EditIntent` **carrying the camera node's `NodeId`** (D36) → Facet
+   3 patches the CST value token + commits a `Version` → `UiModel::Build`
+   re-derives the single widget reactively and the form updates immediately
+   (§2.2); the **viewport preview** updates when the render arbiter's async
+   derive→prepare→render produces a new stamped `PreparedRenderState` (D29/D34),
+   which may lag the form by a frame. Editing the value in the source pane (a raw
+   text edit) round-trips the other direction.
 5. **Live incremental re-derive proof:** assert that a `focal_length` patch
    rebuilds exactly one widget (the memoization of §2.6), not the tree.
 6. **The vertical's headline demo:** the split form/source view on this one
@@ -763,7 +839,11 @@ contribution to that slice, kept deliberately minimal:
   chunk keywords produces a non-empty, fully-typed `UiTree` node (the
   "new chunk gets UI for free" invariant, enforced like the parser's
   `Describe()` pure-virtual); a round-trip test (form edit → CST patch → text
-  → re-parse → CST → same `UiTree`); a `gen_bridge_enums` conformance test for
+  → re-parse → CST → same `UiTree`); an **identity-stability test** (D36): a
+  rename and an insert-above leave the selected node's and each surviving
+  widget's **`NodeId` field unchanged**, so the selection holds and `Diff`
+  matches by `NodeId` (a name-path-keyed selection would drop here — the
+  regression this guards); a `gen_bridge_enums` conformance test for
   `WidgetKind` (drift = build break).
 - **Platform parity:** generator + view-model shared (all platforms); only the
   `WidgetKind`→native render differs. Android Tier A/B forms; split view Tier B

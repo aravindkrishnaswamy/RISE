@@ -1,9 +1,11 @@
-# RISE Agentic Redesign — Decision Record (review rounds 1–3)
+# RISE Agentic Redesign — Decision Record (review rounds 1–4)
 
-> **Status:** authoritative. Round 1 → **D1–D10**; round 2 → **D11–D20**; round 3 → **D21–D28**.
-> Later decisions *amend* earlier ones (round 2: D11/D12 amend D1, D14 amends D9, D15/D16 amend D2,
-> D17 amends D5/D6, D18 amends D10, D20 amends D4; round 3: D21/D22 amend D12, D22 amends D5, D23
-> amends D11/D20, D24 amends D11, D25 amends D14, D26 completes D15, D27 amends D19, D28 amends D5).
+> **Status:** authoritative. Round 1 → **D1–D10**; round 2 → **D11–D20**; round 3 → **D21–D28**;
+> round 4 → **D29–D37**. Later decisions *amend* earlier ones (r2: D11/D12 amend D1, D14 amends D9,
+> D15/D16 amend D2, D17 amends D5/D6, D18 amends D10, D20 amends D4; r3: D21/D22 amend D12, D22 amends
+> D5, D23 amends D11/D20, D24 amends D11, D25 amends D14, D26 completes D15, D27 amends D19, D28 amends
+> D5; r4: D29 amends D13/D22, D30 amends D26/D20, D31 amends D21, D32 amends D22/D12, D33 amends D22,
+> D34 amends D12/D22, D35 amends D25, D36 completes D26, **D37 corrects D27 — a factual error**).
 > Where a decision conflicts with a facet doc (10–60) or the overview (00), **this document wins**,
 > and a later decision wins over the earlier one it amends. Read after [`00-CHARTER.md`](00-CHARTER.md)
 > and [`00-OVERVIEW.md`](00-OVERVIEW.md).
@@ -52,6 +54,8 @@ red-green discipline (D2) extended from the CST to the derived scene.
 ---
 
 ## D2 — Red-green CST: immutable green tree (relative widths + NodeId), version-specific red overlay (resolves P1-2)
+
+> **⚠ Amended by D15 + D16 (round 2):** the **NodeId is NOT stored in the (shared) green node** — it lives in each Version's persistent **`identityRoot`** side-map (a green node is content-addressed + shared across occurrences, so it carries no identity); and child sequences are a **persistent rope** giving **O(log N)**, not O(depth), for wide nodes. D15/D16 win where they differ.
 
 **Contradiction:** absolute byte offsets stored in immutable shared nodes — a length change shifts
 every later offset, forcing O(document) copy and contradicting O(depth) structural sharing.
@@ -336,6 +340,8 @@ one frame.
 
 ## D13 — Coherent version status; expose head AND derived versions (resolves R2-P1-3)
 
+> **⚠ Amended by D29 (round 4):** the single `derivedVersion` becomes a full `DerivedStamp`/`PreparedStamp`, and head-vs-derived is compared by **version-DAG ancestry, not `<`**. D29 wins where they differ.
+
 **Contradiction:** `read_document` and `read_graph`/render all stamp the same `documentId`, but
 derivation may lag (async) or serve a last-good snapshot. When head N is broken/deriving while the
 graph/render is at N−1, a single stamp is false.
@@ -523,6 +529,8 @@ Image
 
 ## D21 — Animation = per-frame derivation; render-populated caches are render-local mutable (amends D12; resolves R3-P1-1)
 
+> **⚠ Amended by D31 (round 4):** a motion-blurred frame's `DerivedScene` is **time-INTERVAL-parameterized**, not a single-time `DerivedScene(t)`. D31 wins where they differ.
+
 **Contradiction:** existing animation **mutates** scene objects / TLAS / photon maps / irradiance
 caches *during* rendering (`Scene.cpp:561`, `PixelBasedRasterizerHelper.cpp:1887`) — incompatible
 with sealed immutable snapshots (D12).
@@ -597,6 +605,8 @@ a TLAS rebuild (still « the render).
 
 ## D25 — Rename requires a head-stamped reference trace (amends D14; resolves R3-P1-5)
 
+> **⚠ Amended by D35 (round 4):** the head-stamped trace is produced by **derivation's own resolver (derive head)** — NOT a separate "reference-tracing pass." D35 wins where they differ.
+
 **Contradiction:** derivation may lag head (D13), but rename runs against **head** using
 `ReferenceUse` data produced by **derivation** (at `derivedVersion ≤ head`). A reference added in
 head-but-not-yet-derived would be **missed**, silently leaving a dangling old name.
@@ -611,6 +621,8 @@ trace, it is refused (not silently partial).
 **Overrides:** D14 gains the head-stamping requirement.
 
 ## D26 — Every Version owns a persistent occurrence/identity side-map (completes D15; resolves R3-P1-6)
+
+> **⚠ Amended by D30 (round 4):** the derivation cache is **NOT** in `Version` — it lives on a `DerivedArtifact` keyed by `DerivedStamp`. `Version = { greenRoot, identityRoot, metadata }`. D30 wins where they differ.
 
 **Contradiction:** D15 put `NodeId` "in the red layer / a side-map," but a Version was described as
 just a green root + metadata — and identical green nodes can represent multiple occurrences, so there
@@ -627,6 +639,8 @@ structurally shared.
 D23).
 
 ## D27 — Migrate or retire ALL embedded `>` commands, incl. `> set light_rr_threshold` and the seven `> modify` forms (amends D19; resolves R3-P1-7)
+
+> **⚠ Corrected by D37 (round 4):** the "seven `> modify`" are **commented-out** (inside `/* */`); the **active corpus has ZERO `> modify`**. The migrator must be comment/token-aware. D37 wins where they differ.
 
 **Contradiction:** D19 only concretely handled `> set accelerator`/`global_medium`; the corpus also
 has `> set light_rr_threshold` and **seven `> modify`** commands.
@@ -673,3 +687,167 @@ preparation (D22); the O(closure)/O(log N) headline is explicitly gated on persi
 persistent home (D26); the full `>` command set is migrated/retired (D27); and history is CST-only
 with an optional future asset store (D28). No capability is lost — animation and irradiance caching
 survive, re-expressed to fit the immutable-snapshot model.
+
+---
+
+# Review Round 4 (D29–D37)
+
+Round 4 tightened identity/determinism and surfaced real machinery work. No P0s; 9 P1. **One was a
+factual error in D27** (D37). The refined object model after this round:
+
+```
+Version            = { greenRoot, identityRoot, metadata }          (CST + occurrence identity ONLY)
+DerivedStamp       = { cstVersion, assetManifestGen, animationName, shutterInterval }
+DerivedArtifact    = { derivedStamp, derivedScene, derivationCache } (cache lives HERE, not on Version)
+PreparedStamp      = DerivedStamp + { renderConfig, cameraOverride, samplingSeed }
+PreparedArtifact   = { preparedStamp, preparedRenderState }
+```
+Artifacts are produced **asynchronously by the render arbiter** (cancellable), keyed by stamp; a
+`Version` can have many of each.
+
+## D29 — Complete DerivedStamp/PreparedStamp; compare by equality/ancestry, not `<` (amends D13, D22; resolves R4-P1-1)
+
+**Contradiction:** `derivedVersion` named only the CST version, but a `DerivedScene` also depends on
+the asset-manifest generation and time — so t=0 and t=1 (or pre/post asset change) at one CST version
+get the same stamp; and `<` is meaningless across independent axes.
+
+**Decision:**
+- **`DerivedStamp = { cstVersion, assetManifestGen, animationName, shutterInterval }`** identifies a
+  `DerivedScene`. **`PreparedStamp = DerivedStamp + { renderConfig, cameraOverride, samplingSeed }`**
+  identifies a `PreparedRenderState`.
+- Cache lookups match the **full stamp by equality**. The "is the render stale vs head?" check is on
+  the **`cstVersion` axis only**, using **version-DAG ancestry** (rendered cstVersion is an
+  ancestor-or-equal of head's), **never numeric `<`** (the DAG has branches; the other axes are
+  equality-matched, not ordered).
+
+**Overrides:** D13's single `derivedVersion` → DerivedStamp/PreparedStamp; D22's informal cache keys
+are formalized as these stamps; all `<` version comparisons → DAG ancestry/equality.
+
+## D30 — The derivation cache lives on DerivedArtifact, not on the immutable Version (amends D26, D20; resolves R4-P1-2)
+
+**Contradiction:** D26 put `derivationCacheRoot` in `Version`, but a Version commits *before* async
+derivation completes and can spawn *many* caches (per time/asset/config).
+
+**Decision:** **`Version = { greenRoot, identityRoot, metadata }`** — CST + occurrence identity only,
+no cache. The memo/dependency cache lives on a **`DerivedArtifact`** keyed by the `DerivedStamp` (and
+a `PreparedArtifact` keyed by `PreparedStamp`); artifacts are held in a stamp-keyed LRU, not owned by
+the immutable Version. One Version → many artifacts.
+
+**Overrides:** D26's `Version` shape drops `derivationCacheRoot`; D20's version-scoped cache is
+artifact-scoped (keyed by full stamp).
+
+## D31 — Motion blur preserved via a time-INTERVAL immutable scene; animation name is an input (amends D21; resolves R4-P1-3)
+
+**Contradiction:** rasterizers/photon-tracers evaluate animation at a **random time per sample**
+(`PixelBasedPelRasterizer.cpp:636`) for motion blur; a single frozen `DerivedScene(t)` destroys it.
+The active animation name was also missing from the signature.
+
+**Decision (keep motion blur):**
+- A motion-blurred frame's `DerivedScene` is **time-interval-parameterized**: animated quantities are
+  baked as **immutable functions/samples over the shutter `[t0,t1]`** (PBRT-style `AnimatedTransform`),
+  and the renderer evaluates `at(τ)` per sample **read-only** (no mutation). The "time" axis of the
+  DerivedStamp is the **shutter interval**, and the **active animation name** is an explicit input
+  (both in `DerivedStamp`, D29).
+- The TLAS for a motion-blurred frame is a **motion BVH** (time-interval). This is **gated work**:
+  **v1 supports single-time (no motion blur)**; motion blur (AnimatedTransform-in-DerivedScene +
+  motion BVH) is a named follow-on, like the TLAS-refit gate (D24). Motion blur is **not retired**.
+
+**Overrides:** D21's `DerivedScene(t)` → time-interval immutable scene; +animationName/shutter inputs.
+
+## D32 — prepare() needs a real PreparedRenderStateBuilder + non-mutating scene input APIs (amends D22, D12; resolves R4-P1-4)
+
+**Contradiction:** photon maps are `Scene`-owned and `BuildPendingPhotonMaps` **mutates** pending
+flags/maps/gather params (`Scene.cpp:750`); light samplers are `RayCaster`-owned. You cannot build
+these by mutating a sealed immutable `DerivedScene`.
+
+**Decision:** `prepare()` reads the sealed `DerivedScene` through **non-mutating (const) input APIs**
+and writes into a separate mutable **`PreparedRenderStateBuilder`**, then seals → `PreparedRenderState`.
+This requires refactoring `BuildPendingPhotonMaps` and light-sampler construction from
+"mutate the Scene" to `build(const DerivedScene&, PreparedRenderStateBuilder&)`. **Named prerequisite
+work** (the prepare layer cannot reuse the mutating machinery unchanged).
+
+**Overrides:** D22/D12 "prepare builds samplers/photons" gains the builder + non-mutating-input refactor.
+
+## D33 — prepare() is deterministic: seed/stream identity in RenderConfig + the prepare key (amends D22; resolves R4-P1-5)
+
+**Contradiction:** photon tracers seed RNGs with `rand()` by default (`RandomNumbers.h:32`), so the
+same `(DerivedScene, RenderConfig)` yields *different* photon maps — not cacheable, not reproducible.
+
+**Decision:** **`RenderConfig` carries a sampling seed / RNG-stream identity**; all stochastic
+preparation (photon tracing, any sampled prep) uses it instead of `rand()`. The seed is part of the
+`PreparedStamp` (D29), so `prepare` is a pure function of its key → cacheable **and** reproducible
+(a win for the git-native/agentic thesis: deterministic renders).
+
+**Overrides:** D22 — `prepare` inputs include the seed; `rand()`-seeded stochastic prep is refactored.
+
+## D34 — prepare/derive run as cancellable phases of the render arbiter, off the edit thread (amends D12, D22; resolves R4-P1-6)
+
+**Contradiction:** photon-map construction takes seconds + all cores; running it synchronously on the
+UI/agent edit thread would freeze it, and contradicts the single-render-arbiter promise.
+
+**Decision:** the edit thread only **commits a CST `Version`** (cheap). The **render arbiter**
+asynchronously runs **derive → seal → prepare → seal → render** as **cancellable phases of its render
+job**; when a newer head arrives, the in-flight phases cancel and restart at the new stamp. This is
+exactly the source of the head-vs-derived lag (D13/D29): the arbiter is mid-derive/prepare/render on
+an older stamp. Nothing expensive runs on the edit/agent thread.
+
+**Overrides:** D12's build/seal/publish is an **async, cancellable arbiter job**, not synchronous.
+
+## D35 — Rename reuses the derivation resolver (no second resolution path) (amends D25; resolves R4-P1-7)
+
+**Contradiction:** D25's "synchronous reference-tracing pass" is a **second** resolution path that can
+drift from real derivation — but D4 demoted static schema walks *precisely because* dynamic refs need
+real derivation.
+
+**Decision:** rename obtains head's reference set with **the exact same evaluator/resolver as
+derivation** — there is **one** resolution implementation. Concretely: rename **synchronously derives
+head** (or runs derivation's own reference-resolution step to head, sharing that code), and reads the
+resulting traced `ReferenceUse`. **No parallel "tracing pass" reimplementation.** If head cannot be
+derived (semantic error), rename is refused, not best-effort.
+
+**Overrides:** D25's separate tracing pass → the shared derivation resolver (derive-to-head).
+
+## D36 — Propagate {greenRoot, identityRoot} through edits; store NodeId in widgets/view-nodes/intents/selection (completes D26; resolves R4-P1-8)
+
+**Contradiction:** identity stops at `Version`. The `GestureBuffer` carries only a green root (so
+additions/reparses can't update the working `identityRoot`); `Widget` "holds a NodeId" but has no such
+field; F4 selection is still name-path-based.
+
+**Decision:**
+- Staged-edit state (**`GestureBuffer`**, working head) carries **`{ greenRoot, identityRoot }`** —
+  both roots — so insertions/reparses during a gesture update occurrence identity as they go.
+- **`Widget`, `ViewNode`, `EditIntent`, and selection store the `NodeId`** (name-path is kept for
+  display/addressing only). Selection is a `NodeId` (resolved to name-path for the header); an
+  `EditIntent` carries the target `NodeId`; a `ViewNode`/`Widget` binds by `NodeId`.
+
+**Overrides:** D26 propagation completed into F3's `GestureBuffer` and F4's `Widget`/`ViewNode`/
+`EditIntent`/selection (which gain a real `NodeId` field).
+
+## D37 — Migration is comment/token-aware; the active corpus has ZERO `> modify` (corrects D27; resolves R4-P1-9)
+
+**Factual error in D27 (owned):** the "seven `> modify` in `watch_dial`" are **inside a `/* … */`
+block** (`watch_dial.RISEscene:2392`) — a commented-out *night-mode* variant. They are **not active.**
+The earlier "verified corpus counts" used a naive line grep that is **not comment-aware** and so
+counted commented lines. **Folding them would have flipped the day scene to night and broken render
+equivalence.**
+
+**Decision:**
+- **The active corpus has ZERO `> modify` commands.** D27's `> modify`-folding is **moot for the
+  current corpus** (nothing active to fold).
+- **The migrator MUST be comment/token-aware** — it operates on the **parsed token stream / CST**,
+  never a raw line/grep scan, so it never activates a commented-out command (and preserves `/* */`
+  blocks verbatim as CST comment nodes). D27's `> set`→param and (if ever active) `> modify`→fold
+  rules stand, but apply **only to active commands**.
+- **Verification lesson (codified):** corpus audits feeding migration/decisions must be comment/
+  token-aware (parse, don't grep). A naive grep is not evidence about *active* scene content.
+
+**Overrides:** D27's census (active `> modify` = 0, not 7) and migrator (must be comment/token-aware).
+
+# Net effect (round 4)
+
+Round 4 made **identity, determinism, and threading precise**: full Derived/Prepared **stamps**
+(D29) keying **artifacts** that hold the cache (D30), off the immutable Version; **deterministic**
+seeded prepare (D33) run **async + cancellable on the arbiter** (D34) via a real non-mutating
+**builder** (D32); rename reuses the **one** resolver (D35); identity propagates through edits + UI
+(D36). **Motion blur is preserved** as a time-interval immutable scene (D31, gated). And D37 corrects
+a real factual error — the `> modify` lines are commented out, so the migrator must parse, not grep.
