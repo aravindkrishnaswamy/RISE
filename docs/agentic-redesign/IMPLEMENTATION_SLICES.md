@@ -184,10 +184,15 @@ until it is green:
    (legacy rejects unknown/ill-typed values) is item 5; so the equivalence gate is exact for
    macro-free, descriptor-valid scenes. ← next: item 3 (persistent Document).
    - **Item-3 acceptance (from the review, do NOT repeat slice-3's gap):** the persistent `Document`
-     must carry its subtree aggregates (cached **byte-width AND newline count**, D16) **and** the
-     **NodeId / name-path index** (D26/D9) *inside* the persistent node, and the edit-target lookup
-     must be **counted in the complexity measurement** — not a side table resolved by an O(N) scan.
-     The balanced sequence is the easy half; the aggregates + identity index are the load-bearing part.
+     must carry its subtree aggregates (cached **byte-width AND newline count**, D16) and make the
+     **edit-target lookup COUNTED in the complexity measurement** — not a side table resolved by an
+     O(N) scan. The balanced sequence is the easy half; the aggregates + counted lookup are the
+     load-bearing part. **(Correction per the item-3 review: this bar's earlier phrase "NodeId/name-
+     path index *inside* the node" is looser than D26 — per D26 the identity index is a SEPARATE
+     persistent side-map (occurrence→NodeId), NOT a field on the green/seq node. So the bar is
+     satisfied by a SPLIT: byte-offset addressing via the in-node aggregates lands in item 3; the
+     NodeId/name-path index as the side-map lands in item 4. Item 3's `Node` intentionally has no
+     NodeId.)**
    - **Gate-maintenance rule (items 5–7):** each new derived chunk type must, in the same change,
      extend `DumpJob` with that type's **discriminating fields** (transforms, param values, colors,
      ordering) — else the equivalence gate weakens silently (today it discriminates geometry by
@@ -198,15 +203,26 @@ until it is green:
    (and each item's own stats, so a path-copy edit reuses them and stays O(log N) regardless of item
    size). `DocReplaceItem` (path-copy edit), `DocInsertItem`/`DocEraseItem`, `DocItemAtByteOffset`
    (the byte→node map), `DocByteWidth`/`DocItemCount`. Gated by
-   [`tests/CstDocumentCostTest.cpp`](../../tests/CstDocumentCostTest.cpp) (34/34): at N=8/64/512,
+   [`tests/CstDocumentCostTest.cpp`](../../tests/CstDocumentCostTest.cpp) (42/42): at N=8/64/512,
    find-by-offset AND edit visits are **5/7/10** (~log N) while item count is **24/136/1032** — both
    **counted** and **<< N** (the slice-3 "handed an already-known index" gap is closed); aggregates
    stay exact, round-trip + structural sharing hold, insert/erase correct. The full CST suite stays
-   green (kernel 25/25 unchanged — the swap is behavior-preserving). ← next: item 4.
+   green (kernel 25/25 unchanged — the swap is behavior-preserving). **Adversarially reviewed (3
+   agents): the O(log N)-and-counted claim verified genuine (instrumented probe: exactly ONE item
+   re-walk per edit, invariant to N; pure-aggregate descent, no hidden O(N)); code correct (ASan/
+   UBSan-clean, all boundaries hand-traced). Fixed their findings — the cost test now PINS the full
+   edited sequence (a demonstrated transposition/off-by-one would pass the old content-only checks;
+   `DumpJob` is order-insensitive) + offset boundary coverage (0 / one-past-end / trivia); 34→42.**
+   ← next: item 4.
 4. Add **persistent NodeId/name-path lookup** so finding the edit target is *included* in the
-   complexity measurement. ← next (the byte-offset half is done in item 3; this adds the
-   name-path / NodeId addressing index — the agent/UI "edit geometry/s.radius" path — as a
-   persistent index, O(log N) counted, identity stable across edits).
+   complexity measurement. ← next. **Acceptance (item-3 review):** build it as a SEPARATE persistent
+   side-map (occurrence/position → NodeId, structurally shared per **D23/D26** — NOT a field on
+   `SeqNode`/`Node`); name-path resolution must be **counted** and **reparse-stable** (match by
+   content+position, **invalidate-don't-remap** per D9/D15). It must survive the two things the
+   byte-offset map can't: a `DocReplaceItem` value edit (the unchanged chunk's NodeId persists) and
+   an insert/erase index shift (positional index moves; NodeId must not). The in-tree kernel
+   currently has no NodeId (the prototype carried one through edits); item 4 restores it as the
+   side-map. Also add a within-chunk descent (offset → Param-in-Chunk) for "edit geometry/s.radius".
 5. **Bind through the live descriptor registry.**
 6. **Trace references through the real resolver** and test a **three-level** dependency chain.
 7. Exercise **structured edits AND free-form reparses**, including **chunk identity + rename**.

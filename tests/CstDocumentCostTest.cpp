@@ -87,6 +87,18 @@ int main()
 		std::snprintf( m, sizeof(m), "N=%d: edited doc has the new radius and not the old", N );
 		Check( out.find("radius 9.99") != std::string::npos
 		    && out.find("radius 0." + std::to_string(100 + N/2)) == std::string::npos, m );
+		// FULL-SEQUENCE correctness: the edited doc must be byte-identical to the
+		// expected sequence. (Pins ORDER + position -- catches a transposition, an
+		// off-by-one, or a wrong-chunk replace that the content-only checks above
+		// and the order-insensitive DumpJob gate would BOTH miss.)
+		{
+			std::string oldRad = "radius 0." + std::to_string(100 + N/2);
+			std::string expected = scene;
+			size_t rp = expected.find( oldRad );
+			expected.replace( rp, oldRad.size(), "radius 9.99" );
+			std::snprintf( m, sizeof(m), "N=%d: edited doc byte-identical to the expected sequence (order pinned)", N );
+			Check( out == expected, m );
+		}
 		std::snprintf( m, sizeof(m), "N=%d: DocByteWidth exact after edit", N );
 		Check( Cst::DocByteWidth(edited) == out.size(), m );
 		std::snprintf( m, sizeof(m), "N=%d: original Document unchanged (persistence)", N );
@@ -113,6 +125,23 @@ int main()
 		       "N=512: find + edit cost are each << N/8 (sub-linear, the unchanged bulk untouched)" );
 		Check( rows.front().findVisits > 0 && big.findVisits <= rows.front().findVisits * 3,
 		       "find cost grows only ~log N from N=8 to N=512 (not 64x)" );
+	}
+
+	// --- DocItemAtByteOffset boundary coverage ---
+	std::printf( "[bounds] byte-offset lookup at the edges (0 / one-past-end / last byte / trivia)\n" );
+	{
+		const std::string scene = SceneN( 8 );
+		Cst::Document doc = Cst::ParseToCst( scene );
+		size_t W = Cst::DocByteWidth( doc );
+		Cst::NodeRef it; size_t st; int v;
+		Check( Cst::DocItemAtByteOffset(doc, 0,    &it, &st, &v) == 0,  "offset 0 -> first item (index 0)" );
+		Check( Cst::DocItemAtByteOffset(doc, W,    &it, &st, &v) == -1, "offset == byte width -> -1 (clean one-past-end)" );
+		Check( Cst::DocItemAtByteOffset(doc, W+99, &it, &st, &v) == -1, "offset past end -> -1" );
+		Check( Cst::DocItemAtByteOffset(doc, W-1,  &it, &st, &v) >= 0,  "last byte resolves to a valid item" );
+		// an offset in the inter-chunk trivia (the '\n' after the first '}')
+		size_t triviaOff = scene.find( "}\n" ) + 1;
+		int ti = Cst::DocItemAtByteOffset( doc, triviaOff, &it, &st, &v );
+		Check( ti >= 0 && it && it->kind == Cst::NodeKind::Trivia, "an inter-chunk trivia offset resolves to a Trivia item (not a chunk)" );
 	}
 
 	// --- insert / erase: functional + aggregate-correct + round-trip ---
