@@ -1,12 +1,19 @@
 # RISE Agentic Redesign — Synthesis & Overview
 
-> **Implementation update (2026-06-21):** the design is now backed by **four working,
-> adversarially-reviewed prototype slices** validating the load-bearing claims — lossless
-> round-trip, incremental memoized derive, reparse-stable identity, traced references with
-> forward-cone/rename, and **O(closure) cost into the real engine, invariant to scene size**. See
-> [`IMPLEMENTATION_SLICES.md`](IMPLEMENTATION_SLICES.md) — the entry point for reviewing the
-> implementation (what each slice proves, and what is NOT yet proven). **Currently paused for
-> external review before the next phase.**
+> **Implementation update (2026-06-21):** the design is backed by **four prototype slices**
+> (`tests/Cst*SliceTest.cpp`; see [`IMPLEMENTATION_SLICES.md`](IMPLEMENTATION_SLICES.md)) that
+> validate the model's semantics and cost *model*, each three-way adversarially reviewed. An
+> **external review (2026-06-21) confirmed the architectural direction** and called for an in-tree
+> **"transfer gate"** next (render-equivalence harness → a real `src/Library/Cst` kernel →
+> persistent `Document` with NodeId/name-path lookup counted *in* the complexity measure → live
+> descriptor registry → real-resolver reference tracing on a 3-level chain → measure a non-spatial
+> AND a spatial edit, TLAS reported separately), keeping expr/RepeatGroup/instance_array out until
+> it is green. **Claims narrowed per that review:** the O(closure) result is by **apply-layer-call
+> count with the closure already computed** — it excludes target lookup, persistent-cache/COW,
+> realization, and TLAS rebuild, and **spatial edits remain O(N log N)** (D24); "reparse-stable
+> identity" covers **param/value NodeIds only** (chunk identity + free-form-rename-by-reparse are
+> open; structured rename is handled). The slices are PROTOTYPES under `tests/`, not yet wired into
+> the real CST/parser/engine.
 
 > **Status:** **review rounds 1–6 complete** (no P0s in any). The reviews found 8 P1 + 2 P2 (r1),
 > 8 P1 + a P2 batch (r2), 8 P1 (r3), 9 P1 (r4), 7 P1 (r5), and 7 P1 (r6), all resolved authoritatively

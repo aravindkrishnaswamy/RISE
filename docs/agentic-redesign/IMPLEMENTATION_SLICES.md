@@ -29,9 +29,9 @@ Each prints its checks and exits 0 on pass (`N passed, 0 failed`). Clean compile
 | # | File | Commit | Checks | Proves |
 |---|---|---|---|---|
 | 1 | [`tests/CstFirstSliceTest.cpp`](../../tests/CstFirstSliceTest.cpp) | `8c9922ef` | 26 | lossless round-trip (G1) + descriptor binding + name-path + red cursor + path-copy sharing + real apply-layer reuse |
-| 1.5 | [`tests/CstIncrementalDeriveTest.cpp`](../../tests/CstIncrementalDeriveTest.cpp) | `c1cbd4c5` | 24 | memoized node-granular derive + reparse-stable identity (D15 invalidate-not-remap) |
-| 2 | [`tests/CstReferenceSliceTest.cpp`](../../tests/CstReferenceSliceTest.cpp) | `be1b2c5c` | 26 | references: traced reverse-index, forward-cone, freshness, NodeId-keyed cache, rename, dangling, delete |
-| 3 | [`tests/CstCostSliceTest.cpp`](../../tests/CstCostSliceTest.cpp) | `33f38b50` | 29 | **O(closure) cost into the real engine, invariant to scene size N** |
+| 1.5 | [`tests/CstIncrementalDeriveTest.cpp`](../../tests/CstIncrementalDeriveTest.cpp) | `c1cbd4c5` | 24 | memoized node-granular derive + reparse-stable identity **for param/value NodeIds** (D15 invalidate-not-remap) |
+| 2 | [`tests/CstReferenceSliceTest.cpp`](../../tests/CstReferenceSliceTest.cpp) | `be1b2c5c`, dangling-cache fix | 28 | references: reverse-index, forward-cone, freshness, NodeId-keyed cache, rename, dangling (incl. persistent), delete |
+| 3 | [`tests/CstCostSliceTest.cpp`](../../tests/CstCostSliceTest.cpp) | `33f38b50` | 29 | O(closure) re-derive **by apply-layer-call count** (closure already computed; excludes lookup/COW/realize/TLAS), invariant to N |
 
 Shared scaffolding: [`tests/CstSlicePrototype.h`](../../tests/CstSlicePrototype.h) — the green
 CST (immutable shared nodes, relative-width), lossless lexer, descriptor-bound parser
@@ -121,11 +121,51 @@ lives, so it deserves scrutiny:
    wall-clock on a 155-mesh Sponza scene. The cost *model* is validated; the absolute latency on a
    real big scene is not yet measured.
 
-## Reviewer's bottom line to confirm or refute
+## External review outcome (2026-06-21)
 
-The four slices were built to answer: *is the design's thesis — a canonical CST, a pure
-derivation, edited in O(closure) — sound enough to commit to building for real?* The
-implementation says **yes, the semantic model and the cost model both hold, including into the
-real engine.** The open question for this review is whether that evidence justifies starting
-**productionization** (wiring the validated core into `src/Library/Cst` + the live engine,
-beginning with the sphere vertical), or whether more should be proven as prototypes first.
+**Verdict: the architectural direction has enough evidence to justify in-tree implementation — but
+the claimed end-to-end complexity result does not yet exist; make the next increment a NARROW
+production transfer gate, not broad productionization.** The review raised 7 P1s (all legitimate;
+most sharpen disclosures already in "What is NOT yet proven" above):
+
+1. Slice 3 proves a balanced-sequence *primitive*, not D16's CST path — `SeqNode` caches only
+   element count, is handed an already-known index, excludes trivia, and has no byte-width/newline
+   aggregates or NodeId/name-path index; the real `Document` is still a vector.
+2. The parser is **not descriptor-bound** — `ParseChunk` accepts generic token pairs; the registry
+   integration is untested.
+3. Slice 2 does **not trace during derivation** — it scans materials with hardcoded `ReflOf()` and
+   builds `dependents` before the apply layer (demonstrates invalidation, not D4's resolver/trace).
+4. Reparse identity **omits chunk identity** — `MatchIdentities` carries only param/value ids;
+   match is by (keyword,name), so a free-form rename is delete+add and the old chunk id isn't even
+   explicitly invalidated. "Reparse-stable identity" was too broad.
+5. **A failed derivation was cached as success** — a dangling material got a normal cache entry, so
+   a later no-op derive skipped it and the error vanished. **FIXED** (`CstReferenceSliceTest.cpp`:
+   dangling derivations are not cached; the error re-reports until resolved; +2 regression checks,
+   slice 2 now 28/28).
+6. "O(closure) into the real engine" **excludes dominant ops** — the count is apply-layer Add*
+   calls *after* the closure is known; it omits lookup, persistent identity/cache updates,
+   snapshot COW, realization, and TLAS rebuild; **spatial edits remain O(N log N)** (D24).
+7. **The render-equivalence harness does not exist** — the migration plan makes it the pre-P0 gate
+   (build before the first CST node); it's the main regression oracle for entering the real parser.
+
+**Claims narrowed** (this doc + `00-OVERVIEW.md`) per #4 and #6 above. The dangling-cache bug (#5)
+is fixed.
+
+## Next increment: the in-tree transfer gate (the agreed plan)
+
+A single narrow vertical that closes the transfer risk, keeping expr/RepeatGroup/instance_array OUT
+until it is green:
+
+1. **Build the render-equivalence harness first** (the pre-P0 regression oracle).
+2. Create the actual **`src/Library/Cst` kernel** (touches the five build projects).
+3. Put the real `Document` on a **persistent sequence supporting update/insert/erase, with cached
+   byte-width + newline count**.
+4. Add **persistent NodeId/name-path lookup** so finding the edit target is *included* in the
+   complexity measurement.
+5. **Bind through the live descriptor registry.**
+6. **Trace references through the real resolver** and test a **three-level** dependency chain.
+7. Exercise **structured edits AND free-form reparses**, including **chunk identity + rename**.
+8. **Measure a non-spatial edit AND a spatial edit; report TLAS time separately.**
+
+That is the gate that turns "the model and cost-model hold in prototypes" into "the redesign's real
+CST path is O(closure) for non-spatial edits, with spatial cost reported honestly."

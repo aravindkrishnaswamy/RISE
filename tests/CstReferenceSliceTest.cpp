@@ -209,8 +209,15 @@ static void IncrementalDeriveRef( const cst::GP& doc, const cst::IdMap& ids, Job
 	}
 	for( auto* m : materials ) if( dirty.count(m) ) {
 		DStatus s = DeriveMaterial( m, job ); st.materialCalls++; st.rederived.push_back( NameOf(m) );
-		if( s == DStatus::Dangling ) st.dangling.push_back( NameOf(m) );
-		cache[cid(m)] = { DerivationKey(m), NameOf(m), m->role };
+		if( s == DStatus::Dangling ) {
+			st.dangling.push_back( NameOf(m) );
+			cache.erase( cid(m) );   // DO NOT cache a FAILED derivation as success: leave it
+			                         // dirty so the error is re-attempted + re-reported every
+			                         // pass until the reference resolves (an error must not
+			                         // silently vanish on a later no-op derive).
+		} else {
+			cache[cid(m)] = { DerivationKey(m), NameOf(m), m->role };
+		}
 	}
 }
 
@@ -329,6 +336,16 @@ int main()
 	RefStats sB; IncrementalDeriveRef( dB, idsB, jobB, cacheB, sB );
 	Check( Has(sB.dangling, "mbad"), "material referencing a missing painter is flagged dangling" );
 	Check( jobB->GetMaterials()->GetItem("mbad") == nullptr, "the dangling material is NOT silently created in the engine" );
+	// A FAILED derivation must NOT be cached as success: on a later pass (here an
+	// unrelated edit) the persistent error must STILL be reported, not silently
+	// skipped. (Regression for the external review's P1 #5.)
+	GP dB2 = SetParamValue( dB, "uniformcolor_painter", "p", "colorspace", "Rec709RGB_Linear", idsB );
+	RefStats sB2; IncrementalDeriveRef( dB2, idsB, jobB, cacheB, sB2 );
+	Check( Has(sB2.dangling, "mbad"), "persistent dangling is re-reported on a later pass (not cached as success)" );
+	// ...and once the target appears, it resolves and stops being reported.
+	GP dB3 = SetParamValue( dB2, "lambertian_material", "mbad", "reflectance", "p", idsB );
+	RefStats sB3; IncrementalDeriveRef( dB3, idsB, jobB, cacheB, sB3 );
+	Check( !Has(sB3.dangling, "mbad") && jobB->GetMaterials()->GetItem("mbad") != nullptr, "dangling clears once the reference resolves" );
 	jobB->release();
 
 	//------------------------------------------------------------------
