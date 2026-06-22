@@ -173,6 +173,10 @@
 		F24B722D2F52A632008304C4 /* InfinitePlaneGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F0838069C428F0069C9E5 /* InfinitePlaneGeometry.h */; };
 		5DF0B001000000000000C0DE /* SDFGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E011000000000000C0DE /* SDFGeometry.cpp */; };
 		5DF0B002000000000000C0DE /* SDFGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = 5DF0E012000000000000C0DE /* SDFGeometry.h */; };
+		5C57B001000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
+		5C57B002000000000000C0DE /* Cst.h in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
+		5C57B003000000000000C0DE /* Cst.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5C57E011000000000000C0DE /* Cst.cpp */; };
+		5C57B004000000000000C0DE /* Cst.h in Headers */ = {isa = PBXBuildFile; fileRef = 5C57E012000000000000C0DE /* Cst.h */; };
 		F24B722E2F52A632008304C4 /* SphereGeometry.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */; };
 		F24B722F2F52A632008304C4 /* SphereGeometry.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F083A069C428F0069C9E5 /* SphereGeometry.h */; };
 		F24B72302F52A632008304C4 /* SphericalUVGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */; };
@@ -2050,6 +2054,8 @@
 		F27F0838069C428F0069C9E5 /* InfinitePlaneGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = InfinitePlaneGeometry.h; sourceTree = "<group>"; };
 		5DF0E011000000000000C0DE /* SDFGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SDFGeometry.cpp; sourceTree = "<group>"; };
 		5DF0E012000000000000C0DE /* SDFGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SDFGeometry.h; sourceTree = "<group>"; };
+		5C57E011000000000000C0DE /* Cst.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Cst.cpp; sourceTree = "<group>"; };
+		5C57E012000000000000C0DE /* Cst.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Cst.h; sourceTree = "<group>"; };
 		F27F0839069C428F0069C9E5 /* SphereGeometry.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SphereGeometry.cpp; sourceTree = "<group>"; };
 		F27F083A069C428F0069C9E5 /* SphereGeometry.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SphereGeometry.h; sourceTree = "<group>"; };
 		F27F083B069C428F0069C9E5 /* SphericalUVGenerator.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SphericalUVGenerator.cpp; sourceTree = "<group>"; };
@@ -2951,6 +2957,7 @@
 				F27F07F6069C428F0069C9E5 /* BSPTreeNode.h */,
 				F27F07F7069C428F0069C9E5 /* Cameras */,
 				F27F0808069C428F0069C9E5 /* Functions */,
+				5C570000000000000000C0DE /* Cst */,
 				F27F081C069C428F0069C9E5 /* Geometry */,
 				F2D1A100069C42900069C9E5 /* Importers */,
 				F27F0851069C428F0069C9E5 /* Interfaces */,
@@ -3054,6 +3061,15 @@
 				F27F081B069C428F0069C9E5 /* Resultant.h */,
 			);
 			path = Functions;
+			sourceTree = "<group>";
+		};
+		5C570000000000000000C0DE /* Cst */ = {
+			isa = PBXGroup;
+			children = (
+				5C57E011000000000000C0DE /* Cst.cpp */,
+				5C57E012000000000000C0DE /* Cst.h */,
+			);
+			path = Cst;
 			sourceTree = "<group>";
 		};
 		F27F081C069C428F0069C9E5 /* Geometry */ = {
@@ -4223,6 +4239,7 @@
 				F27F0AA3069C42910069C9E5 /* GeometryUtilities.h in Headers */,
 				F27F0AA5069C42910069C9E5 /* InfinitePlaneGeometry.h in Headers */,
 				5DF0B004000000000000C0DE /* SDFGeometry.h in Headers */,
+				5C57B004000000000000C0DE /* Cst.h in Headers */,
 				F27F0AA7069C42910069C9E5 /* SphereGeometry.h in Headers */,
 				F27F0AA9069C42910069C9E5 /* SphericalUVGenerator.h in Headers */,
 				F24C54622F84597B009AF16D /* GGXBRDF.h in Headers */,
@@ -4933,6 +4950,7 @@
 				F27F0AA2069C42910069C9E5 /* GeometryUtilities.cpp in Sources */,
 				F27F0AA4069C42910069C9E5 /* InfinitePlaneGeometry.cpp in Sources */,
 				5DF0B003000000000000C0DE /* SDFGeometry.cpp in Sources */,
+				5C57B003000000000000C0DE /* Cst.cpp in Sources */,
 				F27F0AA6069C42910069C9E5 /* SphereGeometry.cpp in Sources */,
 				F27F0AA8069C42910069C9E5 /* SphericalUVGenerator.cpp in Sources */,
 				F27F0AAA069C42910069C9E5 /* TorusGeometry.cpp in Sources */,
@@ -5332,6 +5350,8 @@
 				F24B722D2F52A632008304C4 /* InfinitePlaneGeometry.h in Sources */,
 				5DF0B001000000000000C0DE /* SDFGeometry.cpp in Sources */,
 				5DF0B002000000000000C0DE /* SDFGeometry.h in Sources */,
+				5C57B001000000000000C0DE /* Cst.cpp in Sources */,
+				5C57B002000000000000C0DE /* Cst.h in Sources */,
 				F24B722E2F52A632008304C4 /* SphereGeometry.cpp in Sources */,
 				F24B722F2F52A632008304C4 /* SphereGeometry.h in Sources */,
 				F24B72302F52A632008304C4 /* SphericalUVGenerator.cpp in Sources */,

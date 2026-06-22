@@ -132,6 +132,7 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Animation\KeyframableStrictParse.cpp" />
     <ClCompile Include="..\..\..\src\Library\Animation\Timeline.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Cst\Cst.cpp" />
     <ClCompile Include="..\..\..\src\Library\Cameras\CameraCommon.cpp" />
     <ClCompile Include="..\..\..\src\Library\Cameras\CameraUtilities.cpp" />
     <ClCompile Include="..\..\..\src\Library\Cameras\FisheyeCamera.cpp" />
@@ -506,6 +507,7 @@
     <ClInclude Include="..\..\..\src\Library\Animation\Timeline.h" />
     <ClInclude Include="..\..\..\src\Library\BSPTree.h" />
     <ClInclude Include="..\..\..\src\Library\BSPTreeNode.h" />
+    <ClInclude Include="..\..\..\src\Library\Cst\Cst.h" />
     <ClInclude Include="..\..\..\src\Library\Cameras\CameraCommon.h" />
     <ClInclude Include="..\..\..\src\Library\Cameras\CameraTransforms.h" />
     <ClInclude Include="..\..\..\src\Library\Cameras\FisheyeCamera.h" />

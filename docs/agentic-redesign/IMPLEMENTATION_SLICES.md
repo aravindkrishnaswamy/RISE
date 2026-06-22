@@ -162,7 +162,15 @@ until it is green:
    [`tests/CstRenderEquivalenceTest.cpp`](../../tests/CstRenderEquivalenceTest.cpp) (9/9: the legacy
    parse is deterministic, and the metric discriminates a changed scene). The CST slices will assert
    `DumpJob(cstJob) == DumpJob(legacyJob)` against this.
-2. Create the actual **`src/Library/Cst` kernel** (touches the five build projects). ← next
+2. Create the actual **`src/Library/Cst` kernel** (touches the five build projects). **✅ DONE** —
+   [`src/Library/Cst/Cst.{h,cpp}`](../../src/Library/Cst/Cst.h) (`ParseToCst`/`SerializeCst`/
+   `DeriveToJob`) wired into all five build projects (Filelist make-verified; cmake/vcxproj/filters
+   updated; Xcode pbxproj replicated from the SDFGeometry pattern + a `Cst` group, `plutil -lint`
+   OK). Gated by [`tests/CstKernelTest.cpp`](../../tests/CstKernelTest.cpp) (11/11): G1 lossless
+   round-trip on real scenes (header / multi-chunk / tar-pit) AND `DumpJob(cstJob) ==
+   DumpJob(legacyJob)` for sphere scenes, driving the real `Job::AddSphereGeometry`. (The
+   `RISE ASCII SCENE 6` header is preserved losslessly as stray tokens that `DeriveToJob` ignores;
+   a dedicated version-header node is a later item.) ← next: item 3 (persistent Document).
 3. Put the real `Document` on a **persistent sequence supporting update/insert/erase, with cached
    byte-width + newline count**.
 4. Add **persistent NodeId/name-path lookup** so finding the edit target is *included* in the

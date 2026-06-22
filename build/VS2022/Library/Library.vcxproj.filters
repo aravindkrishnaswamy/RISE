@@ -64,6 +64,9 @@
     <Filter Include="Camera">
       <UniqueIdentifier>{25af0af4-21a6-4e0f-ab2a-1c48887de7cf}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Cst">
+      <UniqueIdentifier>{c57c5700-0000-4000-8000-0000000000de}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Geometry">
       <UniqueIdentifier>{698cf3d4-e941-4352-8f98-5a0318bbf51c}</UniqueIdentifier>
     </Filter>
@@ -536,6 +539,9 @@
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\InfinitePlaneGeometry.cpp">
       <Filter>Geometry</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Cst\Cst.cpp">
+      <Filter>Cst</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Geometry\SDFGeometry.cpp">
       <Filter>Geometry</Filter>
@@ -1709,6 +1715,9 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\SDFGeometry.h">
       <Filter>Geometry</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Cst\Cst.h">
+      <Filter>Cst</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Geometry\SphereGeometry.h">
       <Filter>Geometry</Filter>

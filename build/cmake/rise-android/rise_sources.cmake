@@ -227,6 +227,7 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/PhotonMapping/TranslucentPelPhotonTracer.cpp"
 
     # SRCLIBCAMERA
+    "${RISE_LIB}/Cst/Cst.cpp"
     "${RISE_LIB}/Cameras/CameraCommon.cpp"
     "${RISE_LIB}/Cameras/CameraUtilities.cpp"
     "${RISE_LIB}/Cameras/FisheyeCamera.cpp"

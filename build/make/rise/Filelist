@@ -35,6 +35,7 @@ SRCDRISE =\
 
 # Utilities
 SRCLIBUTILITIES =\
+	$(PATHLIBRARY)Cst/Cst.cpp					\
 	$(PATHLIBRARY)Utilities/Color/Color.cpp						\
 	$(PATHLIBRARY)Utilities/Color/ColorUtils.cpp				\
 	$(PATHLIBRARY)Utilities/Color/RGBToSpectrumTable.cpp		\
