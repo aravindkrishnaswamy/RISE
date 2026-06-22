@@ -225,7 +225,7 @@ until it is green:
 4. Add **persistent NodeId/name-path lookup** so finding the edit target is *included* in the
    complexity measurement. **✅ DONE (pending re-review)** — kernel `a3cc2a77`; review fixes
    `0b0a25f4`, `955c1962`, `bfc57601`, `a5ba984d`, + the 4th-review fixes. [`tests/CstIdentityTest.cpp`](../../tests/CstIdentityTest.cpp)
-   **122 checks**. *(Current shipped state — this entry describes what is in tree now, not the
+   **133 checks**. *(Current shipped state — this entry describes what is in tree now, not the
    intermediate states the review rounds passed through; see the review log at the end.)*
    `NodeId` and the order labels are **explicit 64-bit (`int64_t`)** — NOT `long`, which is 32-bit on
    Windows. FOUR persistent structures, all SEPARATE from the green/seq node (per **D23/D26** —

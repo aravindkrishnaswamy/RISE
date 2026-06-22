@@ -1104,20 +1104,25 @@ Document DocReparse( const Document& oldDoc, const std::string& newText, std::ve
 	std::vector<NodeId> carried( M, 0 );
 	std::vector<bool>   oldUsed( O, false );
 
-	// PASS 1 -- FULL content, but ONLY for groups whose multiset is UNCHANGED
-	// (old count == new count). Carries unchanged items -- incl. byte-identical
-	// duplicates and trivia -- across any reorder, position-by-position in doc
-	// order. A group whose count CHANGED (a partial edit of duplicates) is NOT
-	// consumed here: greedily pairing indistinguishable rows would swap identities
+	// PASS 1 -- FULL content. For CHUNK groups, carry ONLY when the multiset is
+	// UNCHANGED (old count == new count): a count-changed group of byte-identical
+	// chunks is genuinely ambiguous, so greedily pairing them would SWAP identities
 	// (the surviving twin of an edited pair must be invalidated, not re-bound).
+	// For TRIVIA/STRAY groups there is no id-swap hazard (whitespace is never an
+	// addressing target and identical separators are interchangeable), so carry
+	// GREEDILY in document order even when the count changed -- otherwise a pure
+	// append would spuriously invalidate every existing "\n" separator id.
 	{
 		std::unordered_map<std::string, std::vector<int>> oldF, newF;
 		for( int i = 0; i < O; ++i ) { oldF[ fullOf(oldItems[i]) ].push_back( i ); ++g_reparseOldVisits; }
 		for( int j = 0; j < M; ++j )   newF[ fullOf(newItems[j]) ].push_back( j );
 		for( auto& kv : newF ) {
 			auto oit = oldF.find( kv.first );
-			if( oit == oldF.end() || oit->second.size() != kv.second.size() ) continue;   // changed group -> defer
-			for( size_t k = 0; k < kv.second.size(); ++k ) { int oi = oit->second[k]; oldUsed[oi] = true; carried[ kv.second[k] ] = oldIds[oi]; }
+			if( oit == oldF.end() ) continue;
+			const bool isChunk = ( newItems[ kv.second[0] ]->kind == NodeKind::Chunk );
+			if( isChunk && oit->second.size() != kv.second.size() ) continue;   // ambiguous chunk group -> defer
+			const size_t pairs = oit->second.size() < kv.second.size() ? oit->second.size() : kv.second.size();
+			for( size_t k = 0; k < pairs; ++k ) { int oi = oit->second[k]; oldUsed[oi] = true; carried[ kv.second[k] ] = oldIds[oi]; }
 		}
 	}
 

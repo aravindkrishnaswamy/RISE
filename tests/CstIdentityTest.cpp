@@ -638,6 +638,22 @@ int main()
 		}
 	}
 
+	// ============================================================
+	// [trivia] a pure append must NOT spuriously invalidate existing trivia ids:
+	// trivia carries greedily by content, not all-or-nothing on a count change.
+	// ============================================================
+	{
+		const std::string old3 = SceneN( 3 );
+		Cst::Document doc = Cst::ParseToCst( old3 );
+		Cst::NodeId idS1 = Cst::DocFindByName( doc, "sphere_geometry/s1" );
+		Check( idS1 != 0, "[trivia] baseline chunk resolves" );
+		const std::string new4 = SceneN( 4 );           // old3 + one appended chunk (one more "\n" trivia)
+		std::vector<Cst::NodeId> inv;
+		Cst::Document rd = Cst::DocReparse( doc, new4, &inv );
+		Check( Cst::DocFindByName( rd, "sphere_geometry/s1" ) == idS1, "[trivia] append keeps existing chunk ids" );
+		Check( inv.empty(), "[trivia] a pure append invalidates NOTHING (no spurious trivia-id invalidation)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail ? 1 : 0;
 }

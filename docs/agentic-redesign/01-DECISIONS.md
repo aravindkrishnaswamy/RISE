@@ -418,6 +418,13 @@ chunk list and any large `RepeatGroup`/heightfield (e.g. 10 000 `part`s) use the
 
 **Overrides:** F1 §2.2/§2.4 "ordered vector" + "O(depth)" → persistent balanced sequence + O(log N).
 
+> **Implementation footnote (item-4 identity layer):** this O(log N) is the **rope child-list
+> primitive** — locating/inserting/removing a child. The item-4 identity layer adds a per-item
+> order-maintenance LABEL (so a durable NodeId → current position is O(log N)); a label-gap-exhausting
+> insert triggers a *windowed* reflow, making the combined `DocInsertItem` **O(log² N) amortized**, not
+> O(log N) worst-case. Bender's two-level order-maintenance (window → O(1) amortized) restores O(log N)
+> and is the documented refinement. See `docs/agentic-redesign/IMPLEMENTATION_SLICES.md` item 4.
+
 ## D17 — Asset fingerprint = prefilter + content hash; save = temp-write + fsync + revalidate + atomic rename (amends D5, D6; resolves R2-P1-7)
 
 **Contradiction:** (a) size+mtime can be unchanged when bytes change — not deterministic for asset

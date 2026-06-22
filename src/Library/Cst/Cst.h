@@ -323,11 +323,13 @@ namespace RISE
 		//! Reparse `newText` and carry NodeIds from `oldDoc` via FOUR hashed passes
 		//! (D9/D15/D44: lineage survives rename + reparse on a BEST-EFFORT basis;
 		//! genuine ambiguity is invalidated, never position-guessed):
-		//!   1. FULL-content, but only for a content group whose multiset is
-		//!      UNCHANGED (old count == new count) -- carries unchanged items across
-		//!      any REORDER, incl. byte-identical duplicates and trivia. A group
-		//!      whose count changed (a PARTIAL edit of duplicates) is NOT consumed
-		//!      here -- greedily pairing indistinguishable rows would swap their ids.
+		//!   1. FULL-content. A CHUNK group carries only when its multiset is
+		//!      UNCHANGED (old count == new count) -- a count-changed group of
+		//!      byte-identical chunks is ambiguous, so pairing them would swap ids;
+		//!      it is deferred to invalidation. A TRIVIA/STRAY group carries
+		//!      GREEDILY in doc order regardless of count (no id-swap hazard:
+		//!      whitespace is never addressed), so a pure append keeps every
+		//!      existing separator id instead of spuriously invalidating it.
 		//!   2. (keyword,name) key, unique 1<->1 among the remainder -- a NAMED
 		//!      chunk's value edit keeps its id.
 		//!   3. keyword, unique 1<->1 among the remainder -- a RENAME of a unique-of-
