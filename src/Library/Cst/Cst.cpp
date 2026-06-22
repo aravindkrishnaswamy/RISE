@@ -803,12 +803,20 @@ namespace
 	}
 	//! Make room for an insert at position `p` by reflowing a WINDOW of order-labels
 	//! around it -- the smallest enclosing run [a,b] whose label-span has spare room
-	//! -- not the whole document. NodeIds are unchanged (durable); only the
-	//! position-order labels of the window move, leaving a gap at `p`. The window
-	//! amortizes to O(log N) elements (list-labeling, with the 2^62 tag space >> N^2),
-	//! each relabel O(log N) -> O(log^2 N) amortized per gap-exhausting insert, vs
-	//! the prior GLOBAL O(N) reflow; a 2^32 gap makes reflow rare to begin with.
-	//! (Bender's two-level O(1)-amortized relabel is the documented refinement.)
+	//! -- not always the whole document. NodeIds are unchanged (durable); only the
+	//! position-order labels of the window move, leaving a gap at `p`.
+	//! COST (honest worst case): this is a fixed-density (1/4) + radius-doubling
+	//! window, which is TINY in the common (sparse) case -- measured window 2 -- so
+	//! it improves the COMMON case markedly over a global reflow. But it does NOT
+	//! achieve list-labeling's amortized-O(log N) relabels (that needs LEVEL-SCALED
+	//! density thresholds, not a fixed one): an adversarial DENSE pattern (repeated
+	//! inserts packing a prefix) can grow the window to Theta(N), making that insert
+	//! Theta(N log N) worst-case (~Theta(log^3 N) amortized on the dense pile). So
+	//! the reflow is NOT an asymptotic improvement over global -- only a common-case
+	//! one -- and is the disclosed v1 fallback (D23 sanctions an O(N) v1 identity
+	//! cost). Bender's two-level / level-scaled order-maintenance (window -> O(1)
+	//! amortized, restoring O(log N) inserts) is the documented refinement, not yet
+	//! landed. The [reflow] gate drives the dense adversary and asserts correctness.
 	Document ReflowWindow( const Document& doc, int p )
 	{
 		const int N = IdSize( doc.idseq );

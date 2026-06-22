@@ -421,9 +421,11 @@ chunk list and any large `RepeatGroup`/heightfield (e.g. 10 000 `part`s) use the
 > **Implementation footnote (item-4 identity layer):** this O(log N) is the **rope child-list
 > primitive** — locating/inserting/removing a child. The item-4 identity layer adds a per-item
 > order-maintenance LABEL (so a durable NodeId → current position is O(log N)); a label-gap-exhausting
-> insert triggers a *windowed* reflow, making the combined `DocInsertItem` **O(log² N) amortized**, not
-> O(log N) worst-case. Bender's two-level order-maintenance (window → O(1) amortized) restores O(log N)
-> and is the documented refinement. See `docs/agentic-redesign/IMPLEMENTATION_SLICES.md` item 4.
+> insert triggers a *windowed* reflow that is tiny in the common case but, being fixed-density, reaches
+> **Θ(N)** under adversarial dense inserts, making the combined `DocInsertItem` **Θ(N·log N) worst-case**
+> (common-case O(log N)) — the disclosed **v1 fallback** (this D23 prerequisite). Bender's level-scaled
+> order-maintenance (window → O(1) amortized) restores O(log N) inserts and is the documented refinement.
+> The COUNTED lookups (name / id→node / id→position) ARE O(log N). See `IMPLEMENTATION_SLICES.md` item 4.
 
 ## D17 — Asset fingerprint = prefilter + content hash; save = temp-write + fsync + revalidate + atomic rename (amends D5, D6; resolves R2-P1-7)
 

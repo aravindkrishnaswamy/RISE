@@ -533,30 +533,46 @@ int main()
 	}
 
 	// ============================================================
-	// [reflow] a gap-exhausting insert reflows a WINDOW of labels, not the whole
-	// document (P1-A: not a global O(N) reflow per ~32 same-spot inserts).
+	// [reflow] windowed label reflow: TINY in the common/sparse case, but the
+	// fixed-density scheme can grow to Theta(N) under an adversarial DENSE pattern.
+	// The gate asserts (a) the sparse case is small, (b) CORRECTNESS holds even
+	// when the dense adversary blows the window up -- it does NOT claim window<<N
+	// in the dense case (that claim was false; see ReflowWindow's cost note).
 	// ============================================================
 	{
-		Cst::Document doc = Cst::ParseToCst( SceneN( 512 ) );
-		const int mid = Cst::DocItemCount( doc ) / 2;
-		unsigned long maxReflow = 0;
-		for( int k = 0; k < 50; ++k ) {                 // a shallow same-spot pile -> triggers reflow
-			unsigned long b = Cst::DebugReflowLabelWrites();
-			doc = Cst::DocInsertItem( doc, mid, MakeSphere( "z" + std::to_string(k), "0.5" ) );
-			unsigned long w = Cst::DebugReflowLabelWrites() - b;
-			if( w > maxReflow ) maxReflow = w;
+		char m[160];
+		// (a) common/sparse: a shallow same-spot pile -> tiny window
+		{
+			Cst::Document doc = Cst::ParseToCst( SceneN( 512 ) );
+			const int mid = Cst::DocItemCount( doc ) / 2;
+			unsigned long maxReflow = 0;
+			for( int k = 0; k < 50; ++k ) {
+				unsigned long b = Cst::DebugReflowLabelWrites();
+				doc = Cst::DocInsertItem( doc, mid, MakeSphere( "z" + std::to_string(k), "0.5" ) );
+				maxReflow = std::max( maxReflow, Cst::DebugReflowLabelWrites() - b );
+			}
+			std::snprintf( m, sizeof(m), "[reflow] sparse case: worst window %lu is small (<< N=%d)", maxReflow, Cst::DocItemCount(doc) );
+			Check( maxReflow * 4 < (unsigned long)Cst::DocItemCount(doc), m );
+			std::printf( "  reflow sparse: worst window=%lu  N=%d\n", maxReflow, Cst::DocItemCount(doc) );
 		}
-		const int N = Cst::DocItemCount( doc );
-		char m[128];
-		std::snprintf( m, sizeof(m), "[reflow] a reflow fired (worst window=%lu labels)", maxReflow );
-		Check( maxReflow > 0, m );
-		std::snprintf( m, sizeof(m), "[reflow] worst window %lu << N=%d (windowed, not global O(N))", maxReflow, N );
-		Check( maxReflow * 2 < (unsigned long)N, m );
-		// and every durable id still maps to a correct position after the reflows
-		bool ok = true;
-		for( int idx = 0; idx < N; ++idx ) { Cst::NodeId id = Cst::DocNodeIdAt( doc, idx ); if( id && Cst::DocIndexOfNodeId( doc, id, nullptr ) != idx ) ok = false; }
-		Check( ok, "[reflow] id<->position round-trips for every item after the reflows" );
-		std::printf( "  reflow: worst window=%lu  N=%d\n", maxReflow, N );
+		// (b) adversarial dense front-pile (repeated inserts at index 1): the window
+		// CAN reach Theta(N) -- we only require it stays <= N and that id<->position
+		// stays correct (the honest contract; the asymptotic fix is Bender, deferred).
+		{
+			Cst::Document doc = Cst::ParseToCst( SceneN( 256 ) );
+			unsigned long maxReflow = 0;
+			for( int k = 0; k < 400; ++k ) {
+				unsigned long b = Cst::DebugReflowLabelWrites();
+				doc = Cst::DocInsertItem( doc, 1, MakeSphere( "f" + std::to_string(k), "0.5" ) );
+				maxReflow = std::max( maxReflow, Cst::DebugReflowLabelWrites() - b );
+			}
+			const int N = Cst::DocItemCount( doc );
+			Check( maxReflow <= (unsigned long)N, "[reflow] dense adversary: window stays bounded by N (no over-write)" );
+			bool ok = true;   // CORRECTNESS holds even when the window is large
+			for( int idx = 0; idx < N; ++idx ) { Cst::NodeId id = Cst::DocNodeIdAt( doc, idx ); if( id && Cst::DocIndexOfNodeId( doc, id, nullptr ) != idx ) ok = false; }
+			Check( ok, "[reflow] dense adversary: id<->position round-trips for every item (correct despite large window)" );
+			std::printf( "  reflow dense:  worst window=%lu  N=%d  (Theta(N) worst-case is disclosed)\n", maxReflow, N );
+		}
 	}
 
 	// ============================================================

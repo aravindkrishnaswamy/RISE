@@ -253,14 +253,25 @@ namespace RISE
 		//! D16 -- NOT a flatten-and-rebuild. `*visits` (if non-null) receives the
 		//! rope rebuilt-node count.
 		//! COST CAVEAT (item-4 identity layer): assigning the new item's order-label
-		//! is O(log N) when a label gap is available (the common case), but a
-		//! gap-EXHAUSTING insert triggers a WINDOWED reflow (ReflowWindow) costing
-		//! O(window * log N); the window amortizes to O(log N), so such inserts are
-		//! O(log^2 N) AMORTIZED, not O(log N) worst-case. (The measured window is
-		//! tiny -- 2 in a 1082-item doc -- but the honest bound is O(log^2 N)
-		//! amortized; Bender's two-level order-maintenance, which makes the window
-		//! O(1) amortized and restores O(log N) inserts, is the documented
-		//! refinement, not yet landed.) NON-NULL CONTRACT: a null insert is refused.
+		//! is O(log N) when a label gap is available (the common case). A
+		//! gap-EXHAUSTING insert triggers a WINDOWED reflow (ReflowWindow), which is
+		//! tiny in the common/sparse case (measured window 2) but, being fixed-density
+		//! rather than level-scaled, can reach Theta(N) under an ADVERSARIAL DENSE
+		//! pattern (repeated inserts packing a prefix) -- so such an insert is
+		//! Theta(N log N) WORST-CASE. The windowed reflow is therefore a common-case
+		//! optimization over a global reflow, NOT an asymptotic one, and is the
+		//! disclosed v1 fallback (D23 sanctions an O(N) v1 identity cost). Bender's
+		//! level-scaled order-maintenance is the O(log N)-insert refinement, not yet
+		//! landed. (The COUNTED lookups -- name / id->node / id->position -- ARE
+		//! O(log N); only the insert-side label maintenance carries this caveat.)
+		//! NON-NULL CONTRACT: a null insert is refused.
+		//!
+		//! ROUND-TRIP CONTRACT: the inserted item is spliced VERBATIM. The caller
+		//! must supply any needed separation in the item's own bytes -- a Chunk is
+		//! self-delimiting (braces), but a bare stray word inserted directly against
+		//! another word would serialize to bytes that re-tokenize as ONE word. The
+		//! higher edit/apply layer (a later item) enforces well-formed insertion;
+		//! the kernel represents faithfully whatever it is given.
 		Document DocInsertItem( const Document& doc, int index, NodeRef newItem, int* visits = nullptr );
 		//! Erase item `index`. `*invalidated` (if non-null) receives the erased
 		//! item's NodeId plus its param NodeIds (their durable bindings just died).
@@ -335,11 +346,13 @@ namespace RISE
 		//!   3. keyword, unique 1<->1 among the remainder -- a RENAME of a unique-of-
 		//!      type chunk keeps its id (lineage survives rename, D9/D44).
 		//! Everything still unmatched: a new item gets a FRESH id; an old id is
-		//! INVALIDATED (a genuinely-ambiguous group, or a real delete). Passes 2-3
-		//! consider chunks only; trivia/stray carry by content (pass 1) or are
-		//! reborn. `*invalidated` (if non-null) receives the old NodeIds with no
-		//! re-match. (Structured edits -- DocReplaceItem/Insert/EraseItem -- preserve
-		//! identity EXACTLY; reparse is the lossy free-form-text path.)
+		//! INVALIDATED (a genuinely-ambiguous chunk group, or a real delete). Passes
+		//! 2-3 consider chunks only; trivia/stray are matched in pass 1 ONLY --
+		//! greedily within each byte-identical group, regardless of count -- and a
+		//! surplus old trivia id with no new partner is invalidated. `*invalidated`
+		//! (if non-null) receives the old NodeIds with no re-match. (Structured edits
+		//! -- DocReplaceItem/Insert/EraseItem -- preserve identity EXACTLY; reparse is
+		//! the lossy free-form-text path.)
 		//!
 		//! COST: the matching passes are O(M+N) hashed (DebugReparseOldVisits()
 		//! counts old-item touches -- linear, the committed anti-quadratic gate), but

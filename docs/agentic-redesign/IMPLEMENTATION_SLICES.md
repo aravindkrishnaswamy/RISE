@@ -211,7 +211,8 @@ until it is green:
    any edit mix; aggregates stay exact, round-trip + structural sharing hold. The full CST suite stays
    green (kernel 25/25 unchanged — the swap is behavior-preserving). **(This O(log N) is the rope-level
    splice; item 4's identity layer adds an order-label whose gap-exhaustion reflow makes the COMBINED
-   `DocInsertItem` O(log² N) amortized — see item 4's reflow note.)**
+   `DocInsertItem` O(log N) common-case but Θ(N·log N) worst-case under adversarial dense inserts — see
+   item 4's reflow note.)**
    - **Two review rounds.** Round 1 (3 agents): O(log N)-and-counted verified genuine (instrumented
      probe); code ASan/UBSan-clean, boundaries hand-traced. Round 2 (external, 4 P1s) — all fixed:
      **(a)** insert/erase were flatten-and-rebuild O(N) (a D24 mis-attribution — D24 is TLAS, not the
@@ -258,12 +259,16 @@ until it is green:
    are item-5 descriptor work); value-ATOM sub-identity within a multi-atom value, and repeated-param
    VALUE nodes, are RepeatGroup-era (out of this gate, as expr/RepeatGroup are); **`DocInsertItem` is
    NOT uniformly O(log N)** — assigning the order-label is O(log N) when a gap is available (the common
-   case), but a gap-exhausting insert triggers a **WINDOWED** reflow (smallest enclosing run with spare
-   label-space; `DebugReflowLabelWrites` gate proves it touches ≪ N — measured worst window 2 in a
-   1082-item doc), **not** a global O(N) reflow, costing **O(log² N) amortized**. The acceptance claim
-   is narrowed accordingly: inserts are O(log² N) amortized; Bender's two-level order-maintenance (window
-   → O(1) amortized, restoring O(log N) inserts) is the documented refinement, not yet landed. Param
-   matching is **O(P)** (hashed, `DebugParamMatchVisits` gate), not the prior Θ(P²).
+   case), but a gap-exhausting insert triggers a **WINDOWED** reflow (`ReflowWindow`). That window is
+   tiny in the common/sparse case (`DebugReflowLabelWrites` measures **2** on sparse mid-edits), so it
+   markedly improves the COMMON case over a global reflow — but it is **fixed-density, not level-scaled**,
+   so an **adversarial DENSE pattern** (repeated inserts packing a prefix) can grow the window to
+   **Θ(N)**, making that insert **Θ(N·log N) worst-case** (the `[reflow]` gate drives this dense
+   adversary and asserts id↔position correctness, not a `≪ N` window). So the reflow is a **common-case**
+   optimization, **not asymptotic** — the disclosed **v1 fallback** (D23 sanctions an O(N) v1 identity
+   cost); **Bender's level-scaled order-maintenance** (window → O(1) amortized, restoring O(log N)
+   inserts) is the refinement, not yet landed. The COUNTED **lookups** (name / id→node / id→position)
+   ARE O(log N). Param matching is **O(P)** (hashed, `DebugParamMatchVisits` gate), not the prior Θ(P²).
 
    **Acceptance (item-3 review) ✓:** SEPARATE side-map; counted name lookup; survives value edit +
    index shift; within-chunk descent; reparse-stable invalidate-don't-remap.
