@@ -221,55 +221,52 @@ until it is green:
      **(d)** the newline aggregate was ungated (zeroing it passed) → `DocNewlineCount` exposed +
      checked exact across parse/replace/insert/erase on LF **and** CRLF. 42→67. ← next: item 4.
 4. Add **persistent NodeId/name-path lookup** so finding the edit target is *included* in the
-   complexity measurement. **✅ DONE** — commit `a3cc2a77` (kernel) + the review-fix commit.
-   [`tests/CstIdentityTest.cpp`](../../tests/CstIdentityTest.cpp) **65 checks**. Two persistent
-   structures, both SEPARATE from the green/seq node (per **D23/D26** — `Node`/`SeqNode` still carry
-   no id): `idseq`, a positional `NodeId` WBT in lockstep with the item sequence (value edit keeps
-   the id at its slot; insert/erase splice it so it moves WITH its item); and `byName`, a key-ordered
-   WBT (name-path → **list** of NodeIds). Name lookup is **counted O(log N)** (worst-case over all
-   keys 3/6/6 at N=8/64/512, proven sub-linear vs a degenerate list). Within-chunk descent
-   (`DocParamAtByteOffset`, offset → Param-in-Chunk) for "edit geometry/s.radius". `DocReparse`
-   carries ids in **O(M+N)** (measured ~5 µs/item, flat to N=16384). **Acceptance (item-3 review):**
-   SEPARATE side-map ✓; counted name lookup ✓; survives value edit + insert/erase index shift ✓;
-   within-chunk descent ✓; reparse-stable, **invalidate-don't-remap** ✓.
-   **Deviation from the literal bar, by design:** the bar said "match by content+position"; the shipped
-   matcher is **content-key, not positional** — pass 1 full-content (identity follows a REORDER),
-   pass 2 a unique (keyword,name) key (a NAMED value edit keeps its id), and **genuinely-ambiguous
-   rows** (a content-key shared by several edited rows — e.g. unnamed same-type chunks) are
-   **invalidated**, never position-remapped. This is *more* D15-faithful than a positional tiebreak,
-   which would silently rebind an unrelated row. Name-path key is `keyword/name` (`sphere_geometry/s`);
-   category paths (`geometry/s`) are an item-5 descriptor concern (disclosed in the headers).
-   **A THREE-reviewer adversarial pass (correctness / cost-honesty / design-fidelity) found:** a
-   `byName` single-id-per-key bug (duplicate name-paths silently corrupted name addressing under
-   erase/rename — fixed: `byName` value is now a NodeId LIST, survivors stay findable); a `DocReparse`
-   greedy matcher that position-remapped ambiguous content-key groups with zero invalidations (the
-   D15 violation — fixed by the 3-pass matcher above) plus its banner over-claiming "content+position"
-   (fixed); and undisclosed Θ(N²) reparse (fixed: O(M+N) hashed). All three reviewers verified the
-   separate side-map, WBT balance/sharing, idseq lockstep, structured-edit stability, within-chunk
-   null-correctness, and the adversarial O(log N) name lookup as correct. The bar's
-   "occurrence/position → NodeId" original line is preserved below for the record:
-   build it as a SEPARATE persistent side-map (occurrence/position → NodeId, structurally shared per
-   **D23/D26** — NOT a field on `SeqNode`/`Node`); name-path resolution must be **counted** and
-   **reparse-stable** (**invalidate-don't-remap** per D9/D15); survive a `DocReplaceItem` value edit
-   and an insert/erase index shift; restore the NodeId the in-tree kernel lacked; add a within-chunk
-   descent (offset → Param-in-Chunk).
-   **A SECOND external review found SIX P1s (all design-grounded; commits `955c1962` + `bfc57601`):**
-   (1) identity covered only top-level items — **params/values had no NodeId** (the within-chunk descent
-   returned an unowned green node), but §2.5 makes identity **per-occurrence** and name-paths address
-   params (`materials/gold.reflectance`) → added `paramIds`, a persistent (chunkId, role) → param
-   NodeId index; `DocParamAtByteOffset` now returns the param's NodeId, resolvable via the reverse
-   index, stable across value edits (RepeatGroup / value-atom sub-identity stay out, as the gate's
-   expr/RepeatGroup do). (2) durable **NodeId → node was O(N)** → added `byId`, a persistent
-   NodeId → node reverse index, `DocResolveNodeId` O(log N) (the id → document-POSITION splice stays
-   O(N), the disclosed D23 v1 fallback; the O(log N) cursor path is the byte-offset map). (3) the
-   reparse pass-1 greedy bucket-cursor **swapped ids on a partial edit of byte-identical duplicates**
-   → pass 1 now carries a content group only when its multiset is unchanged. (4) `DocFindByName`
-   returned a **history-dependent** id for a duplicate name → it now **refuses ambiguous** names
-   (returns 0 + an occurrence count). (5) `DocReparse` was documented O(M+N) but is **O(M log M)** →
-   corrected + a committed anti-quadratic gate (`DebugReparseOldVisits`, linear 137/1033 at N=64/512).
-   (6) a **unique free-form rename lost lineage** (contradicting D9/D44) → a keyword-unique pass now
-   carries a rename's id. `CstIdentityTest` 43 → 90; all 8 CST green; ASan/UBSan clean. **Item 4 stays
-   OPEN pending the reviewer's re-review of these six fixes.** ← next: item 5 (descriptor-registry binding).
+   complexity measurement. **✅ DONE (pending re-review)** — kernel `a3cc2a77`; review fixes
+   `0b0a25f4`, `955c1962`, `bfc57601`, `a5ba984d`. [`tests/CstIdentityTest.cpp`](../../tests/CstIdentityTest.cpp)
+   **112 checks**. *(Current shipped state — this entry describes what is in tree now, not the
+   intermediate states the review rounds passed through; see the review log at the end.)*
+   FOUR persistent structures, all SEPARATE from the green/seq node (per **D23/D26** — `Node`/`SeqNode`
+   carry no id):
+   - `idseq` — a positional `NodeId` WBT in lockstep with the item sequence, each node also carrying
+     an **order-maintenance label** (ascending in document order);
+   - `byName` — a key-ordered WBT (name-path → **list** of NodeIds);
+   - `byId` — a `NodeId` → (current node, label) reverse index;
+   - `paramIds` — a `(chunkId, role, occurrence-index)` → param `NodeId` index (per-occurrence PARAM
+     identity, so REPEATED params get distinct ids).
+
+   **Counted O(log N), all proven by `maxVisits` gates sub-linear at N=8/64/512:** name-path lookup
+   (`DocFindByName`); durable id → node (`DocResolveNodeId`); durable id → document **position**
+   (`DocIndexOfNodeId`, via byId-label + `IdRankByLabel`) — so **end-to-end edit-by-NodeId**
+   (`DocIndexOfNodeId` + `DocReplaceItem`/`EraseItem`) is O(log N), not an O(N) scan. Within-chunk
+   descent (`DocParamAtByteOffset`, offset → identified Param-in-Chunk) for "edit geometry/s.radius".
+   Identity survives value edit + insert/erase index shift + structured rename (exactly) and reparse
+   (best-effort, D9/D44).
+
+   `DocReparse` carries ids via a **4-pass** matcher — (1) full-content for unchanged multisets
+   (reorder follows content; byte-identical duplicates partial-edited are *not* swapped), (2) unique
+   `(keyword,name)` (named value edit keeps its id), (3) unique keyword (rename keeps lineage),
+   (4) invalidate the rest — and reports invalidated **chunk AND param** ids. Cost is **O(M log M)**
+   (the matching passes are O(M+N) hashed — committed anti-quadratic gate `DebugReparseOldVisits`
+   137/1033 at N=64/512; the sorted index rebuilds carry the log factor, as `ParseToCst` itself does).
+   `DocFindByName` **refuses an ambiguous** duplicate name (returns 0 + occurrence count).
+
+   **Disclosed scope / fallbacks:** name-path key is `keyword/name` (category paths like `geometry/s`
+   are item-5 descriptor work); value-ATOM sub-identity within a multi-atom value, and repeated-param
+   VALUE nodes, are RepeatGroup-era (out of this gate, as expr/RepeatGroup are); label **reflow** on
+   gap exhaustion is O(N) and rare (a 2^32 gap absorbs ~32 same-spot inserts) — a windowed Bender
+   reflow (O(log² N)) is the documented refinement.
+
+   **Acceptance (item-3 review) ✓:** SEPARATE side-map; counted name lookup; survives value edit +
+   index shift; within-chunk descent; reparse-stable invalidate-don't-remap.
+
+   **Review log (every finding fixed):** a self-run 3-reviewer pass (`0b0a25f4`) caught the byName
+   single-id dup bug, the reparse position-remap of ambiguous groups, and undisclosed Θ(N²) reparse.
+   A 1st external review (6 P1s, `955c1962`+`bfc57601`): per-occurrence param identity, O(log N)
+   reverse resolution, reparse no-swap, duplicate-name refuse, honest O(M log M)+gate, rename lineage.
+   A 2nd external review (3 P1s, `a5ba984d`): **O(log N) edit-by-NodeId** (order-maintenance labels —
+   the prior O(N) `DocIndexOfNodeId` reopened the counted-target gate), **per-occurrence** param keys
+   (the prior `(chunkId,role)` overwrote repeated params), and **reparse param-id invalidation** (the
+   prior invalidated list omitted dead param ids). ← next: item 5 (descriptor-registry binding).
 5. **Bind through the live descriptor registry.**
 6. **Trace references through the real resolver** and test a **three-level** dependency chain.
 7. Exercise **structured edits AND free-form reparses**, including **chunk identity + rename**.
