@@ -193,12 +193,23 @@ namespace RISE
 		//! bagged by the SAME DispatchChunkParameters the legacy parser runs, and
 		//! applied via the SAME IAsciiChunkParser::Finalize. So ANY registry chunk
 		//! type derives, and the CST path and the legacy path build an IDENTICAL
-		//! Job for the scenes the CST is actually fed -- the v6->v7 serializer's
-		//! canonical output: macro-free (D8: $()/DEFINE/FOR are the migrator's
-		//! domain, not the CST runtime) with comments on their own lines (a
-		//! mid-line `#`/`/* */` after a value is CST-stripped trivia but a legacy
-		//! token, so it is excluded by construction, as the legacy parser also
-		//! rejects it for numeric params). Returns the number of chunks applied.
+		//! Job for the CANONICAL scenes the CST is actually fed -- the v6->v7
+		//! serializer's output:
+		//!   * macro-free ($()/DEFINE/FOR),
+		//!   * directive-free (no `>` run/load/set/clearall command lines),
+		//!   * comments on their OWN lines (not mid-line after a value),
+		//!   * single-space-separated values.
+		//! These exclusions are all the v6->v7 MIGRATOR's domain (D8), not the CST
+		//! runtime: a legacy scene that uses them is migrated to canonical form
+		//! before it reaches the CST. On a NON-canonical legacy input the two paths
+		//! may diverge -- the CST applies the stricter/cleaner model: it skips a
+		//! `>` line as a stray (so a `> run`-included reference goes unresolved and
+		//! is reported by the apply-time boundary below), and it strips a mid-line
+		//! `#`/`/* */` comment as trivia, whereas the legacy tokenizer keeps the
+		//! comment as tokens (tolerating a trailing `#` on a NUMERIC value, but
+		//! rejecting `/* */` or a comment after a STRING-valued param). The
+		//! serializer emits none of these, so they are out of the equivalence
+		//! scope. Returns the number of chunks applied.
 		//!
 		//! TWO-TIER SAFE BOUNDARY:
 		//!   * VALIDATION-time (PASS 1, what DispatchChunkParameters detects:

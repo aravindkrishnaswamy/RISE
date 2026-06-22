@@ -8,7 +8,9 @@
 //  chunk up in the live registry (CreateAllChunkParsers), validates its params
 //  through the SAME DispatchChunkParameters the legacy parser runs, and applies
 //  via the SAME IAsciiChunkParser::Finalize. So ANY registry chunk type derives,
-//  and the CST path and the legacy path build an identical Job.
+//  and the CST path and the legacy path build an identical Job for the canonical
+//  scenes the CST is fed (see DeriveToJob's doc in Cst.h for the exact scope:
+//  macro-free, directive-free, comments on their own lines, single-space values).
 //
 //  This suite proves:
 //    * [equiv]      a multi-type scene (painter + material + object + geometry)

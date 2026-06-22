@@ -298,7 +298,9 @@ until it is green:
    exposed as a public wrapper in `IAsciiChunkParser.h`), and applies via the **same
    `IAsciiChunkParser::Finalize`** — so EVERY registry chunk type derives and the CST path builds a Job
    identical to the legacy path **for the canonical scenes the CST is fed** (the v6→v7 serializer's
-   output: macro-free, comments on their own lines). **Two-tier failure boundary** (per the item-5
+   output: macro-free, **directive-free** — no `>` run/load/set/clearall lines — comments on their own
+   lines, single-space values; all the migrator's domain per D8, so a non-canonical legacy input may
+   diverge with the CST applying the stricter/cleaner model). **Two-tier failure boundary** (per the item-5
    review): VALIDATION-time failures (unknown chunk/param, value-less line, non-finite/non-numeric value)
    are **refuse-all** (validate every chunk via a populated `ParseStateBag`; apply none on any failure);
    an APPLY-time `Finalize` failure (e.g. an unresolved reference, undetectable pre-apply) matches the
@@ -313,8 +315,10 @@ until it is green:
    multi-token position/scale), so a derive value mis-capture diverges the oracle. Test:
    `tests/CstDescriptorBindTest.cpp` (multi-type equivalence vs legacy, multi-token capture, whitespace
    normalisation, apply-time abort-on-dangling-ref, refuse-all on each malformed class). Item-5 review:
-   2 self-driven rounds — round 1 found 2 P1s (whitespace-normalisation equivalence break → silent
-   object drop; apply-time refuse-all hole → silent half-derive), both fixed here. Deferred-and-honest:
+   self-driven rounds — round 1 found 2 P1s (whitespace-normalisation equivalence break → silent object
+   drop; apply-time refuse-all hole → silent half-derive); round 2 found 2 doc P1s (a false mid-line-
+   comment justification; the equivalence scope omitted `>` directives) — all fixed; code clean from
+   round 1, both later rounds were scope/comment-honesty. Deferred-and-honest:
    **category name-paths** (`geometry/s`; one category → many keywords) stay out — reference resolution
    in the derive runs through the engine's
    named managers by name, so category addressing is a CST-navigation nicety, not load-bearing for

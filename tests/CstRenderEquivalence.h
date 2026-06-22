@@ -100,10 +100,13 @@ inline bool ParseLegacy( const std::string& sceneText, Job& job, const char* tmp
 //
 // Item 5 derives ALL registry chunk types through the SAME parser Finalize the
 // legacy path uses, so a CST-vs-legacy Job can differ ONLY in (a) the param
-// VALUES fed to Finalize or (b) the chunk set/order. This dump discriminates
-// both at the surfaces a derive bug would change: geometry bounding-sphere
-// radius; OBJECT reference wiring (geometry + material names) and world-space
-// bounding box (encodes position / scale / geometry size). Painter colour and
+// VALUES fed to Finalize or (b) the chunk set/order. This dump discriminates a
+// value divergence WHEREVER the value reaches a dumped field -- geometry
+// bounding-sphere radius; OBJECT reference wiring (geometry + material names) and
+// world-space bounding box (encodes position / scale / geometry size) -- and the
+// chunk set/order always. (A value that reaches no dumped field, e.g. a material
+// IOR or a light power, is not surfaced here; it is covered by the
+// by-construction argument below.) Painter colour and
 // material scalar state are identical BY CONSTRUCTION (same Finalize) once the
 // param values match -- and the multi-token value path that feeds them is
 // covered END-TO-END here: an object's `position`/`scale` are multi-token

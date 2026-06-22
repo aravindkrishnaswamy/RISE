@@ -986,8 +986,9 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	if( !diags.empty() ) return 0;   // refuse-all: a malformed scene applies NOTHING
 
 	// PASS 2 -- apply via the SAME Finalize the legacy parser calls, so the CST
-	// path and the legacy path build an identical Job for any (validation-clean)
-	// registry scene. A Finalize failure is an APPLY-TIME error that PASS-1
+	// path and the legacy path build an identical Job for a validation-clean
+	// CANONICAL registry scene (see DeriveToJob's doc for the exact scope).
+	// A Finalize failure is an APPLY-TIME error that PASS-1
 	// validation cannot detect (e.g. a reference to a not-yet/never-defined
 	// chunk): match the legacy parser's abort-on-first-failure -- surface a
 	// diagnostic and STOP (do not silently swallow it, and do not keep applying
