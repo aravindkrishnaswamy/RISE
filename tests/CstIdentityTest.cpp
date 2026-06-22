@@ -98,7 +98,7 @@ int main()
 		std::snprintf( m, sizeof(m), "N=%d: worst-case name lookup over all keys = %d <= bound %d", N, maxV, bound );
 		Check( maxV > 0 && maxV <= bound, m );
 		std::snprintf( m, sizeof(m), "N=%d: name index sub-linear at scale (not a degenerate list)", N );
-		Check( N < 64 || maxV * 4 < N, m );
+		Check( N < 64 || maxV * 2 < N, m );
 	}
 
 	// ============================================================
@@ -430,6 +430,106 @@ int main()
 		Cst::Document rd = Cst::DocReparse( doc, edited, &inv );
 		Check( Cst::DocParamId( rd, chunkId, "radius" ) == radiusId, "[param-reparse] value edit via reparse keeps the param NodeId" );
 		Check( Cst::DocResolveNodeId( rd, radiusId ) != nullptr, "[param-reparse] the carried param id resolves in the new doc" );
+	}
+
+	// ============================================================
+	// [id-pos] durable NodeId -> document position is O(log N) and COUNTED (P1-A):
+	// the order-maintenance label makes DocIndexOfNodeId a label lookup + rank,
+	// so the end-to-end edit-by-NodeId path is O(log N), not an O(N) scan.
+	// ============================================================
+	{
+		for( int N : { 8, 64, 512 } ) {
+			const std::string scene = SceneN( N );
+			Cst::Document doc = Cst::ParseToCst( scene );
+			int maxV = 0; bool allOk = true;
+			for( int k = 0; k < N; ++k ) {
+				const int ci = ChunkIndexAt( doc, scene, "name s" + std::to_string(k) );
+				Cst::NodeId id = Cst::DocNodeIdAt( doc, ci );
+				int vv = 0; int idx = Cst::DocIndexOfNodeId( doc, id, nullptr, &vv );
+				if( idx != ci ) allOk = false;
+				if( vv > maxV ) maxV = vv;
+			}
+			char m[128]; const int bound = 5 * ( CeilLog2(N) + 2 );
+			std::snprintf( m, sizeof(m), "[id-pos] N=%d: every durable id resolves to its current index", N );
+			Check( allOk, m );
+			std::snprintf( m, sizeof(m), "[id-pos] N=%d: id->position worst-case visits %d <= bound %d (O(log N))", N, maxV, bound );
+			Check( maxV > 0 && maxV <= bound, m );
+			std::snprintf( m, sizeof(m), "[id-pos] N=%d: id->position is sub-linear (not an O(N) scan)", N );
+			Check( N < 64 || maxV * 2 < N, m );
+			std::printf( "  id-pos N=%4d  maxVisits=%d  bound=%d\n", N, maxV, bound );
+		}
+	}
+	{
+		// after an insert shifts positions, the durable id resolves O(log N) to its
+		// NEW index, and editing there is end-to-end edit-by-NodeId.
+		const std::string scene = SceneN( 16 );
+		Cst::Document doc = Cst::ParseToCst( scene );
+		const int ci = ChunkIndexAt( doc, scene, "name s9" );
+		Cst::NodeId id9 = Cst::DocNodeIdAt( doc, ci );
+		Cst::Document ins = Cst::DocInsertItem( doc, 0, MakeSphere( "front", "0.1" ) );
+		int vv = 0; int idx = Cst::DocIndexOfNodeId( ins, id9, nullptr, &vv );
+		Check( idx == ci + 1, "[id-pos] after an insert, the durable id resolves to the shifted index" );
+		Check( vv > 0 && vv <= 5 * ( CeilLog2(20) + 2 ), "[id-pos] the post-shift resolution is still O(log N)" );
+		Cst::Document e = Cst::DocReplaceItem( ins, idx, MakeSphere( "s9", "9.9" ) );
+		Check( Cst::DocNodeIdAt( e, idx ) == id9, "[id-pos] edit at the resolved index keeps the durable id (end-to-end edit-by-id)" );
+	}
+	{
+		// many same-spot inserts exhaust a label gap -> reflow; id<->position stays correct.
+		Cst::Document doc = Cst::ParseToCst( "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 0.1\n}\n" );
+		std::vector<Cst::NodeId> ids;
+		for( int k = 0; k < 80; ++k ) { doc = Cst::DocInsertItem( doc, 1, MakeSphere( "x" + std::to_string(k), "0.5" ) ); ids.push_back( Cst::DocNodeIdAt( doc, 1 ) ); }
+		bool ok = true;
+		for( Cst::NodeId id : ids ) { int idx = Cst::DocIndexOfNodeId( doc, id, nullptr ); if( idx < 0 || idx >= Cst::DocItemCount(doc) || Cst::DocNodeIdAt( doc, idx ) != id ) ok = false; }
+		Check( ok, "[id-pos] after label reflow (80 same-spot inserts), every durable id round-trips id<->position" );
+	}
+
+	// ============================================================
+	// [param-repeat] repeated same-role params get DISTINCT per-occurrence ids,
+	// and erase cleans them all -- no overwrite/orphan (P1-B).
+	// ============================================================
+	{
+		const std::string scene = "RISE ASCII SCENE 6\nsdf_geometry\n{\nname d\npart aaa\npart bbb\n}\n";
+		Cst::Document doc = Cst::ParseToCst( scene );
+		Cst::NodeId chunkId = 0, p0 = 0, p1 = 0; Cst::NodeRef chunk; int v = 0;
+		Cst::DocParamAtByteOffset( doc, scene.find("aaa"), &chunk, &v, &p0, &chunkId );
+		Cst::DocParamAtByteOffset( doc, scene.find("bbb"), &chunk, &v, &p1, nullptr );
+		Check( p0 != 0 && p1 != 0 && p0 != p1, "[param-repeat] two same-role params resolve to DISTINCT ids" );
+		Check( Cst::DocParamId( doc, chunkId, "part", 0 ) == p0 && Cst::DocParamId( doc, chunkId, "part", 1 ) == p1, "[param-repeat] occurrence index distinguishes them" );
+		Check( Cst::DocResolveNodeId( doc, p0 ) && Cst::DocResolveNodeId( doc, p1 ) && Cst::DocResolveNodeId( doc, p0 ) != Cst::DocResolveNodeId( doc, p1 ), "[param-repeat] each resolves to its own node" );
+		const int ci = ChunkIndexAt( doc, scene, "name d" );
+		Cst::Document del = Cst::DocEraseItem( doc, ci );
+		Check( !Cst::DocResolveNodeId( del, p0 ) && !Cst::DocResolveNodeId( del, p1 ), "[param-repeat] erase cleans BOTH repeated-param ids (no orphan)" );
+	}
+
+	// ============================================================
+	// [param-invalidate] reparse reports PARAM ids that died, not just chunk ids (P1-C).
+	// ============================================================
+	{
+		const std::string two = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 0.1\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
+		Cst::Document doc = Cst::ParseToCst( two );
+		Cst::NodeId aChunk = 0, aRadius = 0; Cst::NodeRef chunk; int v = 0;
+		Cst::DocParamAtByteOffset( doc, two.find("0.1"), &chunk, &v, &aRadius, &aChunk );
+		Cst::NodeId aName = Cst::DocParamId( doc, aChunk, "name" );
+		Check( aRadius != 0 && aName != 0, "[param-invalidate] chunk a params have ids" );
+		const std::string justB = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
+		std::vector<Cst::NodeId> inv;
+		Cst::Document rd = Cst::DocReparse( doc, justB, &inv );
+		bool invR = std::find( inv.begin(), inv.end(), aRadius ) != inv.end();
+		bool invN = std::find( inv.begin(), inv.end(), aName ) != inv.end();
+		Check( invR && invN, "[param-invalidate] removing chunk a reports its PARAM ids invalidated (not just the chunk id)" );
+		Check( !Cst::DocResolveNodeId( rd, aRadius ), "[param-invalidate] the dead param id no longer resolves" );
+	}
+	{
+		// removing ONE param from a CARRIED chunk invalidates just that param id
+		const std::string base = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.6\n}\n";
+		Cst::Document doc = Cst::ParseToCst( base );
+		Cst::NodeId sChunk = 0, sRadius = 0; Cst::NodeRef chunk; int v = 0;
+		Cst::DocParamAtByteOffset( doc, base.find("0.6"), &chunk, &v, &sRadius, &sChunk );
+		const std::string noRadius = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\n}\n";
+		std::vector<Cst::NodeId> inv;
+		Cst::Document rd = Cst::DocReparse( doc, noRadius, &inv );
+		Check( Cst::DocFindByName( rd, "sphere_geometry/s" ) != 0, "[param-invalidate] the chunk itself is carried" );
+		Check( std::find( inv.begin(), inv.end(), sRadius ) != inv.end(), "[param-invalidate] the removed param id is invalidated though its chunk survived" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

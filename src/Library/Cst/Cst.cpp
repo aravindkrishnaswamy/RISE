@@ -15,6 +15,7 @@
 
 #include <cstdlib>
 #include <unordered_map>
+#include <unordered_set>
 
 using namespace RISE;
 using namespace RISE::Cst;
@@ -352,60 +353,66 @@ namespace
 		return item->role + "/" + nm;
 	}
 
-	// ---- IdSeq: positional persistent WBT of NodeId (occurrence -> NodeId) ----
+	// ---- IdSeq: positional persistent WBT of (NodeId, order-label) ----
+	// Position-ordered (in-order = document order), so order-LABELS ascend in-order
+	// too. The label is a stable per-item key (unlike position, which shifts), so a
+	// durable NodeId resolves to its current position in O(log N): byId gives the
+	// label, IdRankByLabel ranks it here. Labels are midpoints on insert, reflowed
+	// on exhaustion / reparse.
+	const long LABEL_GAP = 1L << 32;
 	int IdSize( const IdSeqRef& s ) { return s ? s->count : 0; }
-	IdSeqRef IdMk( IdSeqRef l, NodeId id, IdSeqRef r )
+	IdSeqRef IdMk( IdSeqRef l, NodeId id, long label, IdSeqRef r )
 	{
 		auto n = std::make_shared<IdNode>();
-		n->left = std::move(l); n->right = std::move(r); n->id = id;
+		n->left = std::move(l); n->right = std::move(r); n->id = id; n->label = label;
 		n->count = 1 + IdSize(n->left) + IdSize(n->right);
 		return n;
 	}
-	IdSeqRef IdBalance( IdSeqRef l, NodeId id, IdSeqRef r )
+	IdSeqRef IdBalance( IdSeqRef l, NodeId id, long label, IdSeqRef r )
 	{
 		const int ln = IdSize(l), rn = IdSize(r);
 		if( ln + rn > 1 ) {
 			if( rn > WBT_DELTA * ln ) {
-				if( IdSize(r->left) < WBT_GAMMA * IdSize(r->right) ) return IdMk( IdMk(l, id, r->left), r->id, r->right );
+				if( IdSize(r->left) < WBT_GAMMA * IdSize(r->right) ) return IdMk( IdMk(l, id, label, r->left), r->id, r->label, r->right );
 				const IdSeqRef& rl = r->left;
-				return IdMk( IdMk(l, id, rl->left), rl->id, IdMk(rl->right, r->id, r->right) );
+				return IdMk( IdMk(l, id, label, rl->left), rl->id, rl->label, IdMk(rl->right, r->id, r->label, r->right) );
 			}
 			if( ln > WBT_DELTA * rn ) {
-				if( IdSize(l->right) < WBT_GAMMA * IdSize(l->left) ) return IdMk( l->left, l->id, IdMk(l->right, id, r) );
+				if( IdSize(l->right) < WBT_GAMMA * IdSize(l->left) ) return IdMk( l->left, l->id, l->label, IdMk(l->right, id, label, r) );
 				const IdSeqRef& lr = l->right;
-				return IdMk( IdMk(l->left, l->id, lr->left), lr->id, IdMk(lr->right, id, r) );
+				return IdMk( IdMk(l->left, l->id, l->label, lr->left), lr->id, lr->label, IdMk(lr->right, id, label, r) );
 			}
 		}
-		return IdMk( l, id, r );
+		return IdMk( l, id, label, r );
 	}
-	IdSeqRef IdBuild( const std::vector<NodeId>& v, int lo, int hi )
+	IdSeqRef IdBuild( const std::vector<NodeId>& v, const std::vector<long>& labels, int lo, int hi )
 	{
 		if( lo >= hi ) return IdSeqRef();
 		const int mid = (lo + hi) / 2;
-		return IdMk( IdBuild(v, lo, mid), v[mid], IdBuild(v, mid+1, hi) );
+		return IdMk( IdBuild(v, labels, lo, mid), v[mid], labels[mid], IdBuild(v, labels, mid+1, hi) );
 	}
-	IdSeqRef IdInsertAt( const IdSeqRef& s, int index, NodeId id )
+	IdSeqRef IdInsertAt( const IdSeqRef& s, int index, NodeId id, long label )
 	{
-		if( !s ) return IdMk( IdSeqRef(), id, IdSeqRef() );
+		if( !s ) return IdMk( IdSeqRef(), id, label, IdSeqRef() );
 		const int li = IdSize(s->left);
-		if( index <= li ) return IdBalance( IdInsertAt(s->left, index, id), s->id, s->right );
-		return IdBalance( s->left, s->id, IdInsertAt(s->right, index - li - 1, id) );
+		if( index <= li ) return IdBalance( IdInsertAt(s->left, index, id, label), s->id, s->label, s->right );
+		return IdBalance( s->left, s->id, s->label, IdInsertAt(s->right, index - li - 1, id, label) );
 	}
-	IdSeqRef IdEraseMin( const IdSeqRef& s, NodeId& out )
+	IdSeqRef IdEraseMin( const IdSeqRef& s, NodeId& idOut, long& labelOut )
 	{
-		if( !s->left ) { out = s->id; return s->right; }
-		return IdBalance( IdEraseMin(s->left, out), s->id, s->right );
+		if( !s->left ) { idOut = s->id; labelOut = s->label; return s->right; }
+		return IdBalance( IdEraseMin(s->left, idOut, labelOut), s->id, s->label, s->right );
 	}
 	IdSeqRef IdEraseAt( const IdSeqRef& s, int index )
 	{
 		if( !s ) return s;
 		const int li = IdSize(s->left);
-		if( index <  li ) return IdBalance( IdEraseAt(s->left, index), s->id, s->right );
-		if( index >  li ) return IdBalance( s->left, s->id, IdEraseAt(s->right, index - li - 1) );
+		if( index <  li ) return IdBalance( IdEraseAt(s->left, index), s->id, s->label, s->right );
+		if( index >  li ) return IdBalance( s->left, s->id, s->label, IdEraseAt(s->right, index - li - 1) );
 		if( !s->left )  return s->right;
 		if( !s->right ) return s->left;
-		NodeId sid; IdSeqRef nr = IdEraseMin( s->right, sid );
-		return IdBalance( s->left, sid, nr );
+		NodeId sid; long slabel; IdSeqRef nr = IdEraseMin( s->right, sid, slabel );
+		return IdBalance( s->left, sid, slabel, nr );
 	}
 	NodeId IdAt( const IdSeqRef& s, int index, int& visits )
 	{
@@ -419,10 +426,43 @@ namespace
 		}
 		return 0;
 	}
+	//! The order-label at in-order index (for computing an insert midpoint).
+	long IdLabelAt( const IdSeqRef& s, int index )
+	{
+		const IdNode* cur = s.get();
+		while( cur ) {
+			const int li = IdSize(cur->left);
+			if( index <  li ) cur = cur->left.get();
+			else if( index == li ) return cur->label;
+			else { index -= li + 1; cur = cur->right.get(); }
+		}
+		return 0;
+	}
+	//! Position (in-order rank) of `label`, or -1 if absent. O(log N) -- labels
+	//! ascend in-order, so this is a counted BST descent (the durable id -> position
+	//! step that makes edit-by-NodeId O(log N)).
+	int IdRankByLabel( const IdSeqRef& s, long label, int& visits )
+	{
+		const IdNode* cur = s.get();
+		int rank = 0;
+		while( cur ) {
+			++visits;
+			if( label < cur->label ) cur = cur->left.get();
+			else if( cur->label < label ) { rank += IdSize(cur->left) + 1; cur = cur->right.get(); }
+			else return rank + IdSize(cur->left);
+		}
+		return -1;
+	}
 	void IdToVec( const IdSeqRef& s, std::vector<NodeId>& out )
 	{
 		if( !s ) return;
 		IdToVec( s->left, out ); out.push_back( s->id ); IdToVec( s->right, out );
+	}
+	//! Collect (id, label) pairs in document order (for label reflow).
+	void IdToPairs( const IdSeqRef& s, std::vector<std::pair<NodeId,long>>& out )
+	{
+		if( !s ) return;
+		IdToPairs( s->left, out ); out.push_back( { s->id, s->label } ); IdToPairs( s->right, out );
 	}
 
 	// ---- NameMap: key-ordered persistent WBT (name-path -> list of NodeIds) ----
@@ -500,40 +540,55 @@ namespace
 		return NameBalance( s->left, std::move(k), std::move(v), nr );
 	}
 
-	// ---- IdMap: key-ordered persistent WBT (NodeId -> current green node) ----
+	// ---- IdMap: key-ordered persistent WBT (NodeId -> {current green node, label}) ----
 	// The reverse index: a durable NodeId resolves to the node it now labels in
-	// O(log N), without scanning the id side-map.
+	// O(log N). It also stores the item's order-label (0 for a param id, which has
+	// no rope position) so NodeId -> position is O(log N) (label, then IdRankByLabel).
 	int IdMapSize( const IdMapRef& s ) { return s ? s->count : 0; }
-	IdMapRef IdMapMk( IdMapRef l, NodeId key, NodeRef val, IdMapRef r )
+	IdMapRef IdMapMk( IdMapRef l, NodeId key, NodeRef val, long label, IdMapRef r )
 	{
 		auto n = std::make_shared<IdMapNode>();
-		n->left = std::move(l); n->right = std::move(r); n->key = key; n->val = std::move(val);
+		n->left = std::move(l); n->right = std::move(r); n->key = key; n->val = std::move(val); n->label = label;
 		n->count = 1 + IdMapSize(n->left) + IdMapSize(n->right);
 		return n;
 	}
-	IdMapRef IdMapBalance( IdMapRef l, NodeId key, NodeRef val, IdMapRef r )
+	IdMapRef IdMapBalance( IdMapRef l, NodeId key, NodeRef val, long label, IdMapRef r )
 	{
 		const int ln = IdMapSize(l), rn = IdMapSize(r);
 		if( ln + rn > 1 ) {
 			if( rn > WBT_DELTA * ln ) {
-				if( IdMapSize(r->left) < WBT_GAMMA * IdMapSize(r->right) ) return IdMapMk( IdMapMk(l, key, std::move(val), r->left), r->key, r->val, r->right );
+				if( IdMapSize(r->left) < WBT_GAMMA * IdMapSize(r->right) ) return IdMapMk( IdMapMk(l, key, std::move(val), label, r->left), r->key, r->val, r->label, r->right );
 				const IdMapRef& rl = r->left;
-				return IdMapMk( IdMapMk(l, key, std::move(val), rl->left), rl->key, rl->val, IdMapMk(rl->right, r->key, r->val, r->right) );
+				return IdMapMk( IdMapMk(l, key, std::move(val), label, rl->left), rl->key, rl->val, rl->label, IdMapMk(rl->right, r->key, r->val, r->label, r->right) );
 			}
 			if( ln > WBT_DELTA * rn ) {
-				if( IdMapSize(l->right) < WBT_GAMMA * IdMapSize(l->left) ) return IdMapMk( l->left, l->key, l->val, IdMapMk(l->right, key, std::move(val), r) );
+				if( IdMapSize(l->right) < WBT_GAMMA * IdMapSize(l->left) ) return IdMapMk( l->left, l->key, l->val, l->label, IdMapMk(l->right, key, std::move(val), label, r) );
 				const IdMapRef& lr = l->right;
-				return IdMapMk( IdMapMk(l->left, l->key, l->val, lr->left), lr->key, lr->val, IdMapMk(lr->right, key, std::move(val), r) );
+				return IdMapMk( IdMapMk(l->left, l->key, l->val, l->label, lr->left), lr->key, lr->val, lr->label, IdMapMk(lr->right, key, std::move(val), label, r) );
 			}
 		}
-		return IdMapMk( l, key, std::move(val), r );
+		return IdMapMk( l, key, std::move(val), label, r );
 	}
-	IdMapRef IdMapSet( const IdMapRef& s, NodeId key, NodeRef val )
+	IdMapRef IdMapSet( const IdMapRef& s, NodeId key, NodeRef val, long label )   // set node + label
 	{
-		if( !s ) return IdMapMk( IdMapRef(), key, std::move(val), IdMapRef() );
-		if( key < s->key ) return IdMapBalance( IdMapSet(s->left, key, std::move(val)), s->key, s->val, s->right );
-		if( s->key < key ) return IdMapBalance( s->left, s->key, s->val, IdMapSet(s->right, key, std::move(val)) );
-		return IdMapMk( s->left, s->key, std::move(val), s->right );   // overwrite
+		if( !s ) return IdMapMk( IdMapRef(), key, std::move(val), label, IdMapRef() );
+		if( key < s->key ) return IdMapBalance( IdMapSet(s->left, key, std::move(val), label), s->key, s->val, s->label, s->right );
+		if( s->key < key ) return IdMapBalance( s->left, s->key, s->val, s->label, IdMapSet(s->right, key, std::move(val), label) );
+		return IdMapMk( s->left, s->key, std::move(val), label, s->right );
+	}
+	IdMapRef IdMapRepoint( const IdMapRef& s, NodeId key, NodeRef val )           // overwrite node, KEEP label
+	{
+		if( !s ) return s;
+		if( key < s->key ) return IdMapBalance( IdMapRepoint(s->left, key, std::move(val)), s->key, s->val, s->label, s->right );
+		if( s->key < key ) return IdMapBalance( s->left, s->key, s->val, s->label, IdMapRepoint(s->right, key, std::move(val)) );
+		return IdMapMk( s->left, s->key, std::move(val), s->label, s->right );
+	}
+	IdMapRef IdMapSetLabel( const IdMapRef& s, NodeId key, long label )           // overwrite label, KEEP node (reflow)
+	{
+		if( !s ) return s;
+		if( key < s->key ) return IdMapBalance( IdMapSetLabel(s->left, key, label), s->key, s->val, s->label, s->right );
+		if( s->key < key ) return IdMapBalance( s->left, s->key, s->val, s->label, IdMapSetLabel(s->right, key, label) );
+		return IdMapMk( s->left, s->key, s->val, label, s->right );
 	}
 	NodeRef IdMapGet( const IdMapRef& s, NodeId key, int& visits )
 	{
@@ -546,20 +601,31 @@ namespace
 		}
 		return NodeRef();
 	}
-	IdMapRef IdMapEraseMin( const IdMapRef& s, NodeId& kOut, NodeRef& vOut )
+	long IdMapGetLabel( const IdMapRef& s, NodeId key, int& visits )
 	{
-		if( !s->left ) { kOut = s->key; vOut = s->val; return s->right; }
-		return IdMapBalance( IdMapEraseMin(s->left, kOut, vOut), s->key, s->val, s->right );
+		const IdMapNode* cur = s.get();
+		while( cur ) {
+			++visits;
+			if( key < cur->key ) cur = cur->left.get();
+			else if( cur->key < key ) cur = cur->right.get();
+			else return cur->label;
+		}
+		return 0;
+	}
+	IdMapRef IdMapEraseMin( const IdMapRef& s, NodeId& kOut, NodeRef& vOut, long& lOut )
+	{
+		if( !s->left ) { kOut = s->key; vOut = s->val; lOut = s->label; return s->right; }
+		return IdMapBalance( IdMapEraseMin(s->left, kOut, vOut, lOut), s->key, s->val, s->label, s->right );
 	}
 	IdMapRef IdMapErase( const IdMapRef& s, NodeId key )
 	{
 		if( !s ) return s;
-		if( key < s->key ) return IdMapBalance( IdMapErase(s->left, key), s->key, s->val, s->right );
-		if( s->key < key ) return IdMapBalance( s->left, s->key, s->val, IdMapErase(s->right, key) );
+		if( key < s->key ) return IdMapBalance( IdMapErase(s->left, key), s->key, s->val, s->label, s->right );
+		if( s->key < key ) return IdMapBalance( s->left, s->key, s->val, s->label, IdMapErase(s->right, key) );
 		if( !s->left )  return s->right;
 		if( !s->right ) return s->left;
-		NodeId k; NodeRef v; IdMapRef nr = IdMapEraseMin( s->right, k, v );
-		return IdMapBalance( s->left, k, std::move(v), nr );
+		NodeId k; NodeRef v; long lb; IdMapRef nr = IdMapEraseMin( s->right, k, v, lb );
+		return IdMapBalance( s->left, k, std::move(v), lb, nr );
 	}
 
 	// ---- ParamMap: key-ordered persistent WBT ("<chunkId>\x1f<role>" -> NodeId) ----
@@ -622,52 +688,81 @@ namespace
 		std::string k; NodeId v; ParamMapRef nr = ParamEraseMin( s->right, k, v );
 		return ParamBalance( s->left, std::move(k), v, nr );
 	}
-	std::string ParamKey( NodeId chunkId, const std::string& role ) { return std::to_string( (long)chunkId ) + "\x1f" + role; }
-
-	//! The (role, node) Param children of a chunk (skips keyword/braces/trivia).
-	std::vector<std::pair<std::string, NodeRef>> ChunkParams( const NodeRef& chunk )
+	void ParamCollectIds( const ParamMapRef& s, std::vector<NodeId>& out )
 	{
-		std::vector<std::pair<std::string, NodeRef>> out;
+		if( !s ) return;
+		ParamCollectIds( s->left, out ); out.push_back( s->id ); ParamCollectIds( s->right, out );
+	}
+	//! Param-occurrence key: (owning chunk id, role, occurrence index among same-
+	//! role siblings) -- so REPEATED params (part / cp / value / time / shaderop)
+	//! each get a distinct identity rather than overwriting by role.
+	std::string ParamKey( NodeId chunkId, const std::string& role, int occ ) { return std::to_string( (long)chunkId ) + "\x1f" + role + "\x1f" + std::to_string( occ ); }
+
+	//! A chunk's Param children as (role, occurrence-index, node) slots (skips
+	//! keyword/braces/trivia). Within-VALUE atoms are NOT given identity here --
+	//! value-atom occurrences are RepeatGroup-era, like repeated-param VALUE nodes.
+	struct ParamSlot { std::string role; int occ; NodeRef node; };
+	std::vector<ParamSlot> ChunkParams( const NodeRef& chunk )
+	{
+		std::vector<ParamSlot> out;
+		std::unordered_map<std::string, int> seen;
 		if( chunk && chunk->kind == NodeKind::Chunk )
 			for( const auto& k : chunk->kids )
-				if( k->kind == NodeKind::Param ) out.push_back( { k->role, k } );
+				if( k->kind == NodeKind::Param ) { int occ = seen[k->role]++; out.push_back( { k->role, occ, k } ); }
 		return out;
 	}
-	//! Mint FRESH param ids for `chunk`'s params (parse / insert / new-chunk path).
+	//! Mint FRESH param ids for `chunk`'s param occurrences (parse / insert path).
 	void AddChunkParams( ParamMapRef& pids, IdMapRef& byId, NodeId chunkId, const NodeRef& chunk, NodeId& nextId )
 	{
 		for( auto& rp : ChunkParams(chunk) ) {
 			NodeId pid = nextId++;
-			pids = ParamSet( pids, ParamKey(chunkId, rp.first), pid );
-			byId = IdMapSet( byId, pid, rp.second );
+			pids = ParamSet( pids, ParamKey(chunkId, rp.role, rp.occ), pid );
+			byId = IdMapSet( byId, pid, rp.node, 0 );
 		}
 	}
 	//! Drop `oldChunk`'s param ids from both indices (erase path).
 	void DropChunkParams( ParamMapRef& pids, IdMapRef& byId, NodeId chunkId, const NodeRef& oldChunk )
 	{
 		for( auto& rp : ChunkParams(oldChunk) ) {
-			std::string key = ParamKey( chunkId, rp.first );
+			std::string key = ParamKey( chunkId, rp.role, rp.occ );
 			NodeId pid = ParamGet( pids, key );
 			if( pid ) { byId = IdMapErase( byId, pid ); pids = ParamErase( pids, key ); }
 		}
 	}
 	//! Re-point chunk `chunkId`'s param ids at the NEW chunk's param nodes, REUSING
-	//! the id where the role persists (a value edit keeps the param's id), minting
-	//! for added roles and dropping vanished roles.
+	//! the id where the (role, occurrence) persists (a value edit keeps the param's
+	//! id), minting for added occurrences and dropping vanished ones.
 	void ReindexChunkParams( ParamMapRef& pids, IdMapRef& byId, NodeId chunkId, const NodeRef& oldChunk, const NodeRef& newChunk, NodeId& nextId )
 	{
 		auto np = ChunkParams( newChunk );
-		for( auto& rp : ChunkParams(oldChunk) ) {            // drop roles that vanished
+		for( auto& rp : ChunkParams(oldChunk) ) {            // drop (role,occ) slots that vanished
 			bool kept = false;
-			for( auto& q : np ) if( q.first == rp.first ) { kept = true; break; }
-			if( !kept ) { std::string key = ParamKey(chunkId, rp.first); NodeId pid = ParamGet(pids, key); if( pid ) { byId = IdMapErase(byId, pid); pids = ParamErase(pids, key); } }
+			for( auto& q : np ) if( q.role == rp.role && q.occ == rp.occ ) { kept = true; break; }
+			if( !kept ) { std::string key = ParamKey(chunkId, rp.role, rp.occ); NodeId pid = ParamGet(pids, key); if( pid ) { byId = IdMapErase(byId, pid); pids = ParamErase(pids, key); } }
 		}
 		for( auto& rp : np ) {                               // reuse or mint, repoint to the new node
-			std::string key = ParamKey( chunkId, rp.first );
+			std::string key = ParamKey( chunkId, rp.role, rp.occ );
 			NodeId pid = ParamGet( pids, key );
 			if( !pid ) { pid = nextId++; pids = ParamSet( pids, key, pid ); }
-			byId = IdMapSet( byId, pid, rp.second );
+			byId = IdMapSet( byId, pid, rp.node, 0 );
 		}
+	}
+	//! Reflow ALL top-level order-labels to evenly-spaced values (i+1)*GAP, in
+	//! document order -- the O(N) fallback when an insert exhausts the gap between
+	//! two adjacent labels. Rare (a 2^32 gap absorbs ~32 midpoint inserts at one
+	//! spot before reflow); a windowed Bender reflow would make it O(log^2 N) and
+	//! is the documented refinement. NodeIds are unchanged (durable); only the
+	//! position-order labels move.
+	Document RelabelDoc( const Document& doc )
+	{
+		std::vector<std::pair<NodeId,long>> pairs; IdToPairs( doc.idseq, pairs );
+		std::vector<NodeId> ids; std::vector<long> labels;
+		ids.reserve( pairs.size() ); labels.reserve( pairs.size() );
+		for( int i = 0; i < (int)pairs.size(); ++i ) { ids.push_back( pairs[i].first ); labels.push_back( (long)(i+1) * LABEL_GAP ); }
+		Document d = doc;
+		d.idseq = IdBuild( ids, labels, 0, (int)ids.size() );
+		for( int i = 0; i < (int)ids.size(); ++i ) d.byId = IdMapSetLabel( d.byId, ids[i], labels[i] );
+		return d;
 	}
 }
 
@@ -693,15 +788,16 @@ Document ParseToCst( const std::string& bytes )
 	d.items = SeqBuild( items, 0, (int)items.size() );
 	// item 4: fresh NodeIds 1..N in lockstep (the identity side-map) + name index
 	// + the NodeId -> node reverse index.
-	std::vector<NodeId> ids;
+	std::vector<NodeId> ids; std::vector<long> labels;
 	for( int k = 0; k < (int)items.size(); ++k ) {
 		NodeId id = (NodeId)( k + 1 );
-		ids.push_back( id );
-		d.byId = IdMapSet( d.byId, id, items[k] );
+		long label = (long)( k + 1 ) * LABEL_GAP;       // evenly-spaced order labels
+		ids.push_back( id ); labels.push_back( label );
+		d.byId = IdMapSet( d.byId, id, items[k], label );
 		std::string np = ChunkNamePath( items[k] );
 		if( !np.empty() ) d.byName = NameInsert( d.byName, np, id );
 	}
-	d.idseq  = IdBuild( ids, 0, (int)ids.size() );
+	d.idseq  = IdBuild( ids, labels, 0, (int)ids.size() );
 	d.nextId = (NodeId)items.size() + 1;
 	for( int k = 0; k < (int)items.size(); ++k )
 		AddChunkParams( d.paramIds, d.byId, ids[k], items[k], d.nextId );   // per-param occurrence ids
@@ -770,7 +866,7 @@ Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* v
 	int iv = 0; const NodeId id = IdAt( doc.idseq, index, iv );    // the persisting id
 	int v = 0;
 	Document d = doc;                                              // carry idseq / byName / byId / paramIds / nextId
-	d.byId  = IdMapSet( d.byId, id, newItem );                    // reverse index -> the new node
+	d.byId  = IdMapRepoint( d.byId, id, newItem );               // reverse index -> the new node (label unchanged)
 	d.items = SeqReplace( doc.items, index, std::move(newItem), v );
 	if( visits ) *visits = v;
 	if( oldName != newName ) {
@@ -788,16 +884,30 @@ Document DocInsertItem( const Document& doc, int index, NodeRef newItem, int* vi
 	int n = SeqCount( doc.items );
 	if( index < 0 ) index = 0;
 	if( index > n ) index = n;
-	const NodeId id = doc.nextId;                                  // fresh identity
+	// order label for the new item = midpoint of its neighbours; reflow ALL labels
+	// first if the gap is exhausted / would overflow on append (rare -- O(N)).
+	Document src = doc;
+	bool reflow = false;
+	long before = ( index > 0 ) ? IdLabelAt( src.idseq, index - 1 ) : 0;
+	long after;
+	if( index < n ) { after = IdLabelAt( src.idseq, index ); if( after - before < 2 ) reflow = true; }
+	else            { if( before > ( (long)1 << 62 ) ) reflow = true; after = before + 2 * LABEL_GAP; }
+	if( reflow ) {
+		src = RelabelDoc( doc );
+		before = ( index > 0 ) ? IdLabelAt( src.idseq, index - 1 ) : 0;
+		after  = ( index < n ) ? IdLabelAt( src.idseq, index )     : before + 2 * LABEL_GAP;
+	}
+	const long label = before + ( after - before ) / 2;
+	const NodeId id = src.nextId;                                  // fresh identity
 	const std::string np = ChunkNamePath( newItem );
 	const NodeRef newChunk = newItem;                             // handle before the move
 	int v = 0;
-	Document d = doc;
-	d.byId   = IdMapSet( d.byId, id, newItem );                         // reverse index
-	d.items  = SeqInsertAt( doc.items, index, std::move(newItem), v );   // O(log N) WBT
-	d.idseq  = IdInsertAt( doc.idseq, index, id );                       // O(log N) lockstep splice
+	Document d = src;
+	d.byId   = IdMapSet( d.byId, id, newItem, label );                  // reverse index (node + label)
+	d.items  = SeqInsertAt( src.items, index, std::move(newItem), v );   // O(log N) WBT
+	d.idseq  = IdInsertAt( src.idseq, index, id, label );               // O(log N) lockstep splice
 	if( !np.empty() ) d.byName = NameInsert( d.byName, np, id );
-	d.nextId = doc.nextId + 1;
+	d.nextId = src.nextId + 1;
 	AddChunkParams( d.paramIds, d.byId, id, newChunk, d.nextId );        // param occurrence ids
 	if( visits ) *visits = v;
 	return d;
@@ -848,13 +958,13 @@ NodeRef DocResolveNodeId( const Document& doc, NodeId id, int* visits )
 	return n;
 }
 
-int DocIndexOfNodeId( const Document& doc, NodeId id, NodeRef* outItem )
+int DocIndexOfNodeId( const Document& doc, NodeId id, NodeRef* outItem, int* visits )
 {
-	std::vector<NodeId> ids; IdToVec( doc.idseq, ids );
-	for( int i = 0; i < (int)ids.size(); ++i )
-		if( ids[i] == id ) { if( outItem ) *outItem = SeqItemAt( doc.items, i ); return i; }
-	if( outItem ) *outItem = NodeRef();
-	return -1;
+	int gv = 0; const long label = IdMapGetLabel( doc.byId, id, gv );   // O(log N) id -> order-label
+	int rv = 0; const int idx = ( label == 0 ) ? -1 : IdRankByLabel( doc.idseq, label, rv );   // O(log N) label -> position (0 = not a top-level item)
+	if( visits ) *visits = gv + rv;
+	if( outItem ) *outItem = ( idx >= 0 ) ? SeqItemAt( doc.items, idx ) : NodeRef();
+	return idx;
 }
 
 NodeRef DocParamAtByteOffset( const Document& doc, size_t offset, NodeRef* outChunk, int* visits,
@@ -873,24 +983,27 @@ NodeRef DocParamAtByteOffset( const Document& doc, size_t offset, NodeRef* outCh
 	if( outChunkId ) *outChunkId = chunkId;
 	// within-chunk: walk the chunk's kids (a handful) accumulating byte widths to
 	// find the kid spanning (offset - start); return it iff it is a Param, with its
-	// stable param NodeId.
+	// stable param NodeId (keyed by the param's occurrence index among same-role
+	// siblings, so repeated params resolve to distinct ids).
 	const size_t want = offset - start;
 	size_t acc = 0;
+	std::unordered_map<std::string, int> seen;
 	for( const auto& k : item->kids ) {
 		size_t kb = 0; int kn = 0; NodeStats( k, kb, kn );
 		if( want < acc + kb ) {
 			if( k->kind != NodeKind::Param ) return NodeRef();
-			if( outParamId ) *outParamId = ParamGet( doc.paramIds, ParamKey(chunkId, k->role) );
+			if( outParamId ) *outParamId = ParamGet( doc.paramIds, ParamKey(chunkId, k->role, seen[k->role]) );
 			return k;
 		}
+		if( k->kind == NodeKind::Param ) seen[k->role]++;   // count same-role params BEFORE the target
 		acc += kb;
 	}
 	return NodeRef();
 }
 
-NodeId DocParamId( const Document& doc, NodeId chunkId, const std::string& role )
+NodeId DocParamId( const Document& doc, NodeId chunkId, const std::string& role, int occ )
 {
-	return ParamGet( doc.paramIds, ParamKey(chunkId, role) );
+	return ParamGet( doc.paramIds, ParamKey(chunkId, role, occ) );
 }
 
 Document DocReparse( const Document& oldDoc, const std::string& newText, std::vector<NodeId>* invalidated )
@@ -955,25 +1068,33 @@ Document DocReparse( const Document& oldDoc, const std::string& newText, std::ve
 	if( invalidated ) { invalidated->clear(); for( int i = 0; i < O; ++i ) if( !oldUsed[i] ) invalidated->push_back( oldIds[i] ); }
 
 	Document d = fresh;
-	d.idseq    = IdBuild( carried, 0, M );
+	std::vector<long> labels; labels.reserve( M );
+	for( int j = 0; j < M; ++j ) labels.push_back( (long)( j + 1 ) * LABEL_GAP );   // fresh evenly-spaced labels by new position
+	d.idseq    = IdBuild( carried, labels, 0, M );
 	d.byName   = NameMapRef();
 	d.byId     = IdMapRef();
 	d.paramIds = ParamMapRef();
+	std::vector<NodeId> oldParamIds; ParamCollectIds( oldDoc.paramIds, oldParamIds );   // for P1-C invalidation
+	std::unordered_set<NodeId> reusedParam;
 	NodeId pnext = next;                               // mint fresh ids (chunk + param) from here
 	for( int j = 0; j < M; ++j ) {
-		d.byId = IdMapSet( d.byId, carried[j], newItems[j] );
+		d.byId = IdMapSet( d.byId, carried[j], newItems[j], labels[j] );
 		std::string np = ChunkNamePath( newItems[j] );
 		if( !np.empty() ) d.byName = NameInsert( d.byName, np, carried[j] );
-		// params: carry by (carried chunk id, role) from oldDoc -- a carried chunk
-		// keeps its param ids; a fresh chunk's params mint fresh.
+		// params: carry by (carried chunk id, role, occ) from oldDoc -- a carried
+		// chunk keeps its param ids; a fresh chunk's params mint fresh.
 		for( auto& rp : ChunkParams( newItems[j] ) ) {
-			std::string key = ParamKey( carried[j], rp.first );
+			std::string key = ParamKey( carried[j], rp.role, rp.occ );
 			NodeId pid = ParamGet( oldDoc.paramIds, key );
-			if( !pid ) pid = pnext++;
+			if( pid ) reusedParam.insert( pid ); else pid = pnext++;
 			d.paramIds = ParamSet( d.paramIds, key, pid );
-			d.byId = IdMapSet( d.byId, pid, rp.second );
+			d.byId = IdMapSet( d.byId, pid, rp.node, 0 );   // params have no rope position -> label 0
 		}
 	}
+	// P1-C: an old param id the new doc does NOT carry is INVALIDATED -- a removed
+	// chunk/param leaves widget / diagnostic / ReferenceUse bindings dangling, so
+	// report them rather than silently orphaning their ids in byId.
+	if( invalidated ) for( NodeId pid : oldParamIds ) if( !reusedParam.count(pid) ) invalidated->push_back( pid );
 	NodeId mx = pnext;                                 // nextId strictly above every live id
 	for( NodeId id : carried ) if( id + 1 > mx ) mx = id + 1;
 	d.nextId = mx;

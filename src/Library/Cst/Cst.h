@@ -90,6 +90,7 @@ namespace RISE
 		{
 			std::shared_ptr<const IdNode> left, right;
 			NodeId id;
+			long   label;   //!< order-maintenance key (ascending in document order); enables O(log N) NodeId -> position
 			int    count;
 		};
 		typedef std::shared_ptr<const IdNode> IdSeqRef;
@@ -123,6 +124,7 @@ namespace RISE
 			std::shared_ptr<const IdMapNode> left, right;
 			NodeId  key;
 			NodeRef val;
+			long    label;   //!< the top-level item's order-maintenance label (0 for a param id, which has no rope position)
 			int     count;
 		};
 		typedef std::shared_ptr<const IdMapNode> IdMapRef;
@@ -264,14 +266,14 @@ namespace RISE
 		//! descent count.
 		NodeRef DocResolveNodeId( const Document& doc, NodeId id, int* visits = nullptr );
 
-		//! The current top-level document INDEX of a NodeId (-1 if absent), for the
-		//! rope splice that applies an edit. This is the one O(N) step (a linear scan
-		//! of the id side-map): per D23 it is the disclosed v1 fallback for the
-		//! position lookup; the O(log N) reverse RESOLUTION is DocResolveNodeId, and
-		//! the O(log N) cursor-edit path is the byte-offset map (item 3). An order-
-		//! maintenance index would make splice-by-id O(log N) too (documented
-		//! refinement, not in this slice).
-		int DocIndexOfNodeId( const Document& doc, NodeId id, NodeRef* outItem );
+		//! The current top-level document INDEX of a NodeId (-1 if absent or not a
+		//! top-level item), and `outItem` its node -- the edit-target position for a
+		//! splice that applies an EditIntent by NodeId. O(log N) and COUNTED
+		//! (`*visits` receives the descent count): an order-maintenance label per
+		//! item lets id -> position be a label lookup (byId) + a rank query (idseq),
+		//! both O(log N). So the end-to-end durable NodeId -> edit-target is O(log N)
+		//! (this lookup) + DocReplaceItem/EraseItem (O(log N)), not an O(N) scan.
+		int DocIndexOfNodeId( const Document& doc, NodeId id, NodeRef* outItem, int* visits = nullptr );
 
 		//! Within-chunk descent (the "edit geometry/s.radius" path): resolve a byte
 		//! offset to the innermost Param at that offset and its enclosing chunk.
@@ -284,11 +286,11 @@ namespace RISE
 		NodeRef DocParamAtByteOffset( const Document& doc, size_t offset, NodeRef* outChunk, int* visits,
 		                              NodeId* outParamId = nullptr, NodeId* outChunkId = nullptr );
 
-		//! Resolve a parameter by its owning chunk's NodeId + role to the param's
-		//! stable NodeId (0 if none) -- name-path-into-chunk addressing
-		//! ("materials/gold.reflectance"): resolve the chunk by name, then its param
-		//! by role. O(log N).
-		NodeId DocParamId( const Document& doc, NodeId chunkId, const std::string& role );
+		//! Resolve a parameter by its owning chunk's NodeId + role (+ occurrence
+		//! index among same-role siblings, default 0) to the param's stable NodeId
+		//! (0 if none) -- name-path-into-chunk addressing ("materials/gold.reflectance"):
+		//! resolve the chunk by name, then its param by role. O(log N).
+		NodeId DocParamId( const Document& doc, NodeId chunkId, const std::string& role, int occ = 0 );
 
 		//! Reparse `newText` and carry NodeIds from `oldDoc` via FOUR hashed passes
 		//! (D9/D15/D44: lineage survives rename + reparse on a BEST-EFFORT basis;
