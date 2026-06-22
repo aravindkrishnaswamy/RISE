@@ -141,6 +141,7 @@ Process skills distilled from prior RISE sessions.  Auto-invoked via
 `.claude/skills/<name>/SKILL.md` shims; full content lives in
 [docs/skills/](docs/skills/).
 
+- [implementation-review-loop](docs/skills/implementation-review-loop.md) — **the DEFINITION OF DONE for ALL implementation work.**  No code change beyond a trivial one-liner is "done" until a fresh round of independent reviewers returns ZERO P1s.  Drive the loop yourself: implement → gate (build/warnings/tests/sanitizers) → spawn 2–4 orthogonal reviewers in parallel → fix every P1 → commit → re-spawn FRESH reviewers → repeat until a round on the current state finds no P1.  Default for every feature/refactor/bug-fix/perf change; wraps adversarial-code-review.
 - [adversarial-code-review](docs/skills/adversarial-code-review.md) — validate a non-trivial change with 2–3 orthogonal reviewers in parallel.  Fire when the user asks for adversarial review / multiple reviewers, or after landing any correctness-sensitive change.
 - [performance-work-with-baselines](docs/skills/performance-work-with-baselines.md) — structured quantitative perf work: baseline before code, measure with stddev, profile first, one variable at a time, correctness invariant, numeric reporting.
 - [const-correctness-over-escape-hatches](docs/skills/const-correctness-over-escape-hatches.md) — decision tree to run BEFORE reaching for `mutable` / `const_cast` / dropping a `const`.
