@@ -180,7 +180,9 @@ inline GP ParseChunk( const std::vector<Raw>& t, size_t& i, IdMap& ids, int& nex
 			ck.push_back( leaf(NK::Tok, t[i++].text, "tok") );  // nested-block content: generic (lossless)
 		}
 	}
-	return node( NK::Chunk, ck, keyword );
+	GP chunk = node( NK::Chunk, ck, keyword );
+	ids[ chunk.get() ] = nextId++;   // the Chunk node has its own NodeId (D26 lineage)
+	return chunk;
 }
 
 // ParseToCst: leading trivia + a sequence of chunks (with surrounding trivia),
@@ -290,6 +292,8 @@ inline GP SetParamValue( const GP& doc, const std::string& keyword, const std::s
 				auto pit = ids.find( param.get() );
 				if( pit != ids.end() ) ids[ newParam.get() ] = pit->second;
 				GP newChunk = WithReplacedKid( chunk, pi, newParam );
+				auto cit = ids.find( chunk.get() );
+				if( cit != ids.end() ) ids[ newChunk.get() ] = cit->second;   // carry chunk identity across the edit
 				return WithReplacedKid( doc, ci, newChunk );
 			}
 		}
