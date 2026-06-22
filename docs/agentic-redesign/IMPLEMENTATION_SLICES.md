@@ -252,7 +252,24 @@ until it is green:
    **D23/D26** — NOT a field on `SeqNode`/`Node`); name-path resolution must be **counted** and
    **reparse-stable** (**invalidate-don't-remap** per D9/D15); survive a `DocReplaceItem` value edit
    and an insert/erase index shift; restore the NodeId the in-tree kernel lacked; add a within-chunk
-   descent (offset → Param-in-Chunk). ← next: item 5 (descriptor-registry binding).
+   descent (offset → Param-in-Chunk).
+   **A SECOND external review found SIX P1s (all design-grounded; commits `955c1962` + `bfc57601`):**
+   (1) identity covered only top-level items — **params/values had no NodeId** (the within-chunk descent
+   returned an unowned green node), but §2.5 makes identity **per-occurrence** and name-paths address
+   params (`materials/gold.reflectance`) → added `paramIds`, a persistent (chunkId, role) → param
+   NodeId index; `DocParamAtByteOffset` now returns the param's NodeId, resolvable via the reverse
+   index, stable across value edits (RepeatGroup / value-atom sub-identity stay out, as the gate's
+   expr/RepeatGroup do). (2) durable **NodeId → node was O(N)** → added `byId`, a persistent
+   NodeId → node reverse index, `DocResolveNodeId` O(log N) (the id → document-POSITION splice stays
+   O(N), the disclosed D23 v1 fallback; the O(log N) cursor path is the byte-offset map). (3) the
+   reparse pass-1 greedy bucket-cursor **swapped ids on a partial edit of byte-identical duplicates**
+   → pass 1 now carries a content group only when its multiset is unchanged. (4) `DocFindByName`
+   returned a **history-dependent** id for a duplicate name → it now **refuses ambiguous** names
+   (returns 0 + an occurrence count). (5) `DocReparse` was documented O(M+N) but is **O(M log M)** →
+   corrected + a committed anti-quadratic gate (`DebugReparseOldVisits`, linear 137/1033 at N=64/512).
+   (6) a **unique free-form rename lost lineage** (contradicting D9/D44) → a keyword-unique pass now
+   carries a rename's id. `CstIdentityTest` 43 → 90; all 8 CST green; ASan/UBSan clean. **Item 4 stays
+   OPEN pending the reviewer's re-review of these six fixes.** ← next: item 5 (descriptor-registry binding).
 5. **Bind through the live descriptor registry.**
 6. **Trace references through the real resolver** and test a **three-level** dependency chain.
 7. Exercise **structured edits AND free-form reparses**, including **chunk identity + rename**.
