@@ -114,6 +114,19 @@ namespace RISE
 		};
 		typedef std::shared_ptr<const NameNode> NameMapRef;
 
+		//! Persistent REVERSE index NodeId -> current green node (KEY-ordered,
+		//! weight-balanced): a durable agent/UI ref holds a NodeId and resolves it
+		//! to the node it now labels in O(log N) (NOT an O(N) scan of the id
+		//! side-map). Maintained on parse/replace/insert/erase/reparse.
+		struct IdMapNode
+		{
+			std::shared_ptr<const IdMapNode> left, right;
+			NodeId  key;
+			NodeRef val;
+			int     count;
+		};
+		typedef std::shared_ptr<const IdMapNode> IdMapRef;
+
 		//! A parsed document: the green item sequence (item 3) + the identity
 		//! side-map and name-path index (item 4), all persistent / structurally
 		//! shared, plus a monotonic fresh-id source.
@@ -122,6 +135,7 @@ namespace RISE
 			SeqRef     items;    //!< green top-level item sequence (item 3)
 			IdSeqRef   idseq;    //!< position -> NodeId, lockstep with items (item 4)
 			NameMapRef byName;   //!< name-path -> NodeId (item 4)
+			IdMapRef   byId;     //!< NodeId -> current green node, O(log N) reverse lookup (item 4)
 			NodeId     nextId = 1;
 		};
 
@@ -172,6 +186,12 @@ namespace RISE
 		//! instrumentation (single-threaded parse/edit context).
 		unsigned long DebugItemStatWalks();
 
+		//! Diagnostic for the reparse cost gate: the running count of old-item
+		//! touches during DocReparse matching. The 4-pass hashed matcher touches
+		//! each old item O(1) times, so this grows O(M+N) -- a regression to the old
+		//! nested-loop matcher would make it O(M*N). Test-only instrumentation.
+		unsigned long DebugReparseOldVisits();
+
 		//! Locate the top-level item spanning byte `offset` (the byte->node map a
 		//! UI/agent uses for "what's at this cursor position"). Returns the item's
 		//! index (or -1 if out of range); `outItem`/`outStart` receive the item and
@@ -210,17 +230,28 @@ namespace RISE
 		//! 0 if out of range). `*visits` (if non-null) receives the descent count.
 		NodeId DocNodeIdAt( const Document& doc, int index, int* visits = nullptr );
 
-		//! Resolve a name-path (e.g. "sphere_geometry/s") to its NodeId (0 if none;
-		//! the FIRST occurrence if several chunks share the name-path -- a degenerate
-		//! scene the derive layer rejects, but the index stays consistent across
-		//! edits regardless). O(log N); `*visits` receives the BST descent count --
-		//! the find is COUNTED, not an O(N) scan.
-		NodeId DocFindByName( const Document& doc, const std::string& namePath, int* visits = nullptr );
+		//! Resolve a name-path (e.g. "sphere_geometry/s") to its NodeId, REQUIRING a
+		//! unique occurrence: returns the id iff exactly one chunk has that name-path,
+		//! else 0. `*occurrences` (if non-null) receives the count (0 = absent,
+		//! 1 = unique, >1 = AMBIGUOUS) so a caller distinguishes "no such name" from
+		//! "ambiguous -- refuse" (a duplicate-name scene the derive layer rejects;
+		//! addressing it would be history-dependent, so we refuse rather than guess).
+		//! O(log N); `*visits` receives the BST descent count -- COUNTED, not O(N).
+		NodeId DocFindByName( const Document& doc, const std::string& namePath, int* visits = nullptr, int* occurrences = nullptr );
 
-		//! The current top-level INDEX of a NodeId (-1 if absent), and `outItem`
-		//! (if non-null) its item -- durable-ref resolution: an agent holds a
-		//! NodeId, this finds where it is now after edits. (Linear scan of the id
-		//! side-map for now; an order-statistic id index is a refinement.)
+		//! Resolve a durable NodeId to the green node it now labels (null if gone),
+		//! in O(log N) via the persistent reverse index -- the counted "agent holds
+		//! a NodeId, what is it now" path. `*visits` (if non-null) receives the BST
+		//! descent count.
+		NodeRef DocResolveNodeId( const Document& doc, NodeId id, int* visits = nullptr );
+
+		//! The current top-level document INDEX of a NodeId (-1 if absent), for the
+		//! rope splice that applies an edit. This is the one O(N) step (a linear scan
+		//! of the id side-map): per D23 it is the disclosed v1 fallback for the
+		//! position lookup; the O(log N) reverse RESOLUTION is DocResolveNodeId, and
+		//! the O(log N) cursor-edit path is the byte-offset map (item 3). An order-
+		//! maintenance index would make splice-by-id O(log N) too (documented
+		//! refinement, not in this slice).
 		int DocIndexOfNodeId( const Document& doc, NodeId id, NodeRef* outItem );
 
 		//! Within-chunk descent (the "edit geometry/s.radius" path): resolve a byte
@@ -230,20 +261,30 @@ namespace RISE
 		//! the rope-descent count (O(log N) to the chunk + O(params) within).
 		NodeRef DocParamAtByteOffset( const Document& doc, size_t offset, NodeRef* outChunk, int* visits );
 
-		//! Reparse `newText` and carry NodeIds from `oldDoc` in O(M+N) via two
-		//! hashed passes (D9/D15: invalidate-don't-remap, never a position guess):
-		//!   1. FULL-content match -- an unchanged item carries its id across any
-		//!      REORDER (position is irrelevant);
-		//!   2. content-KEY match ((keyword,name) for chunks) but ONLY when the key
-		//!      is unique on both sides -- carries a NAMED chunk's value edit.
+		//! Reparse `newText` and carry NodeIds from `oldDoc` via FOUR hashed passes
+		//! (D9/D15/D44: lineage survives rename + reparse on a BEST-EFFORT basis;
+		//! genuine ambiguity is invalidated, never position-guessed):
+		//!   1. FULL-content, but only for a content group whose multiset is
+		//!      UNCHANGED (old count == new count) -- carries unchanged items across
+		//!      any REORDER, incl. byte-identical duplicates and trivia. A group
+		//!      whose count changed (a PARTIAL edit of duplicates) is NOT consumed
+		//!      here -- greedily pairing indistinguishable rows would swap their ids.
+		//!   2. (keyword,name) key, unique 1<->1 among the remainder -- a NAMED
+		//!      chunk's value edit keeps its id.
+		//!   3. keyword, unique 1<->1 among the remainder -- a RENAME of a unique-of-
+		//!      type chunk keeps its id (lineage survives rename, D9/D44).
 		//! Everything still unmatched: a new item gets a FRESH id; an old id is
-		//! INVALIDATED. So a value edit / distinct reorder keeps its id, a RENAME
-		//! invalidates+mints, and a genuinely-ambiguous group (a content-key shared
-		//! by several edited rows -- e.g. unnamed same-type chunks) is invalidated
-		//! rather than position-remapped onto an unrelated row. Returns the new
-		//! Document; `*invalidated` (if non-null) receives the old NodeIds with no
+		//! INVALIDATED (a genuinely-ambiguous group, or a real delete). Passes 2-3
+		//! consider chunks only; trivia/stray carry by content (pass 1) or are
+		//! reborn. `*invalidated` (if non-null) receives the old NodeIds with no
 		//! re-match. (Structured edits -- DocReplaceItem/Insert/EraseItem -- preserve
-		//! identity exactly; reparse is the lossy free-form-text path.)
+		//! identity EXACTLY; reparse is the lossy free-form-text path.)
+		//!
+		//! COST: the matching passes are O(M+N) hashed (DebugReparseOldVisits()
+		//! counts old-item touches -- linear, the committed anti-quadratic gate), but
+		//! the WHOLE call is O(M log M): it rebuilds the sorted name index and the id
+		//! reverse index with M persistent-tree insertions (as ParseToCst itself
+		//! does). Not O(M+N) -- a sorted/keyed index build carries the log factor.
 		Document DocReparse( const Document& oldDoc, const std::string& newText, std::vector<NodeId>* invalidated = nullptr );
 	}
 }

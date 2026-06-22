@@ -223,14 +223,15 @@ int main()
 		Check( inv.empty(), "[reparse] value edit: nothing invalidated" );
 		Check( Cst::SerializeCst( neu ) == edited, "[reparse] value edit: the new text round-trips" );
 
-		// rename via reparse: old id INVALIDATED, new name gets a FRESH id
+		// rename via reparse: lineage SURVIVES (D9/D44 best-effort) -- the unique
+		// chunk keeps its id; only the name-path key moves.
 		const std::string renamed = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s2\nradius 0.6\n}\n";
 		std::vector<Cst::NodeId> inv2;
 		Cst::Document neu2 = Cst::DocReparse( old, renamed, &inv2 );
 		Check( Cst::DocFindByName( neu2, "sphere_geometry/s" ) == 0, "[reparse] rename: the old name no longer resolves" );
-		Cst::NodeId newId = Cst::DocFindByName( neu2, "sphere_geometry/s2" );
-		Check( newId != 0 && newId != idS, "[reparse] rename: the new name gets a FRESH id (never the old, never a position remap)" );
-		Check( std::find( inv2.begin(), inv2.end(), idS ) != inv2.end(), "[reparse] rename: the old id is reported invalidated" );
+		Check( Cst::DocFindByName( neu2, "sphere_geometry/s2" ) == idS, "[reparse] rename: the unique chunk KEEPS its id (lineage survives rename, D9/D44)" );
+		Check( inv2.empty(), "[reparse] rename: nothing invalidated (lineage carried, not delete+add)" );
+		Check( Cst::DocResolveNodeId( neu2, idS ) != nullptr, "[reparse] rename: the carried id resolves to the renamed node" );
 
 		// reorder of distinct chunks via reparse: ids carried by content-key, not position
 		const std::string two     = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 0.1\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
@@ -257,7 +258,9 @@ int main()
 		Cst::NodeId idA = Cst::DocNodeIdAt( doc, iA );
 		Cst::NodeId idB = Cst::DocNodeIdAt( doc, iB );
 		Check( idA != 0 && idB != 0 && idA != idB, "[dup] two same-named chunks get distinct NodeIds" );
-		Check( Cst::DocFindByName( doc, "sphere_geometry/s" ) == idA, "[dup] find returns the FIRST occurrence" );
+		int occ = 0;
+		Check( Cst::DocFindByName( doc, "sphere_geometry/s", nullptr, &occ ) == 0 && occ == 2, "[dup] find REFUSES an ambiguous duplicate name (0, occurrences=2)" );
+		Check( Cst::DocResolveNodeId( doc, idA ) && Cst::DocResolveNodeId( doc, idB ), "[dup] both duplicate chunks remain resolvable by durable NodeId" );
 
 		Cst::Document e1 = Cst::DocEraseItem( doc, iA );
 		Check( Cst::DocFindByName( e1, "sphere_geometry/s" ) == idB, "[dup] erase first twin: survivor still resolves (no silent corruption)" );
@@ -274,9 +277,12 @@ int main()
 		Cst::Document doc = Cst::ParseToCst( scene );
 		const int iA = ChunkIndexAt( doc, scene, "0.1" );
 		Cst::NodeId idB = Cst::DocFindByName( doc, "sphere_geometry/b" );
-		Cst::Document r = Cst::DocReplaceItem( doc, iA, MakeSphere( "b", "0.1" ) );
-		Check( Cst::DocFindByName( r, "sphere_geometry/b" ) == idB, "[dup] rename-into-existing: the original b keeps the binding (no hijack)" );
+		Cst::NodeId idA = Cst::DocNodeIdAt( doc, iA );
+		Cst::Document r = Cst::DocReplaceItem( doc, iA, MakeSphere( "b", "0.1" ) );   // a -> b (now two b's)
+		int occB = 0; Cst::DocFindByName( r, "sphere_geometry/b", nullptr, &occB );
+		Check( occB == 2 && Cst::DocFindByName( r, "sphere_geometry/b" ) == 0, "[dup] rename-into-existing: b is now ambiguous -> refused (no silent hijack)" );
 		Check( Cst::DocFindByName( r, "sphere_geometry/a" ) == 0, "[dup] rename-into-existing: the old name a is gone" );
+		Check( Cst::DocResolveNodeId( r, idB ) && Cst::DocResolveNodeId( r, idA ), "[dup] rename-into-existing: both b chunks resolvable by NodeId" );
 	}
 
 	// ============================================================
@@ -316,6 +322,74 @@ int main()
 		Check( Cst::DocFindByName( rd, "sphere_geometry/a" ) == idA, "[reparse-ambig] mixed: value-edited named chunk keeps id (unique-key pass)" );
 		Check( Cst::DocFindByName( rd, "sphere_geometry/b" ) == idB, "[reparse-ambig] mixed: unchanged sibling keeps id (full-content pass)" );
 		Check( inv.empty(), "[reparse-ambig] mixed: nothing invalidated" );
+	}
+
+	// ============================================================
+	// [reverse] durable NodeId -> current node in counted O(log N) (the reverse
+	// index), surviving value edits / erase (P1-2).
+	// ============================================================
+	{
+		const std::string scene = SceneN( 64 );
+		Cst::Document doc = Cst::ParseToCst( scene );
+		const int i30 = ChunkIndexAt( doc, scene, "name s30" );
+		Cst::NodeId id30 = Cst::DocNodeIdAt( doc, i30 );
+		int rv = 0;
+		Cst::NodeRef n = Cst::DocResolveNodeId( doc, id30, &rv );
+		Check( n && n->kind == Cst::NodeKind::Chunk && n->role == "sphere_geometry", "[reverse] DocResolveNodeId returns the chunk for a live id" );
+		Check( rv > 0 && rv <= 3 * ( CeilLog2(64) + 1 ), "[reverse] reverse lookup is counted O(log N), not an O(N) scan" );
+		Check( Cst::DocResolveNodeId( doc, 999999 ) == nullptr, "[reverse] an unknown id resolves to null" );
+
+		Cst::Document e = Cst::DocReplaceItem( doc, i30, MakeSphere( "s30", "9.9" ) );
+		Cst::NodeRef n2 = Cst::DocResolveNodeId( e, id30 );
+		Check( n2 && n2 != n, "[reverse] after a value edit, the durable id resolves to the NEW node" );
+		Cst::Document del = Cst::DocEraseItem( doc, i30 );
+		Check( Cst::DocResolveNodeId( del, id30 ) == nullptr, "[reverse] after erasing its item, the id resolves to null" );
+	}
+
+	// ============================================================
+	// [reparse-swap] a PARTIAL edit of byte-identical duplicates must invalidate
+	// BOTH (no silent id swap among indistinguishable rows) -- P1-3.
+	// ============================================================
+	{
+		const std::string two    = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.1\n}\nsphere_geometry\n{\nname s\nradius 0.1\n}\n";
+		Cst::Document od = Cst::ParseToCst( two );
+		Cst::NodeRef it; size_t st = 0; int vv = 0;
+		const int iFirst  = Cst::DocItemAtByteOffset( od, two.find ( "sphere_geometry" ), &it, &st, &vv );
+		const int iSecond = Cst::DocItemAtByteOffset( od, two.rfind( "sphere_geometry" ), &it, &st, &vv );
+		Cst::NodeId idF = Cst::DocNodeIdAt( od, iFirst );
+		Cst::NodeId idS2 = Cst::DocNodeIdAt( od, iSecond );
+		Check( idF != 0 && idS2 != 0 && idF != idS2, "[reparse-swap] the two identical chunks have distinct ids" );
+		// edit ONLY the first chunk (0.1 -> 0.2); the second is unchanged
+		const std::string edited = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.2\n}\nsphere_geometry\n{\nname s\nradius 0.1\n}\n";
+		std::vector<Cst::NodeId> inv;
+		Cst::Document rd = Cst::DocReparse( od, edited, &inv );
+		bool invF = std::find( inv.begin(), inv.end(), idF ) != inv.end();
+		bool invS = std::find( inv.begin(), inv.end(), idS2 ) != inv.end();
+		Check( invF && invS, "[reparse-swap] partial edit of identical duplicates INVALIDATES both (no id swap)" );
+		Check( !Cst::DocResolveNodeId( rd, idF ) && !Cst::DocResolveNodeId( rd, idS2 ), "[reparse-swap] neither old id survives in the reverse index" );
+	}
+
+	// ============================================================
+	// [reparse-cost] DocReparse matching is O(M+N) (linear old-item touches), not
+	// O(M*N) -- the committed anti-quadratic gate (P1-5).
+	// ============================================================
+	{
+		for( int N : { 64, 512 } ) {
+			const std::string sc = SceneN( N );
+			Cst::Document doc = Cst::ParseToCst( sc );
+			const std::string needle = "radius 0." + std::to_string( 100 + N/2 );   // unique to the middle chunk
+			std::string s2 = sc; size_t pos = s2.find( needle ); s2.replace( pos, needle.size(), "radius 9.999" );
+			const unsigned long before = Cst::DebugReparseOldVisits();
+			std::vector<Cst::NodeId> inv;
+			Cst::Document rd = Cst::DocReparse( doc, s2, &inv );
+			const unsigned long touches = Cst::DebugReparseOldVisits() - before;
+			const int O = Cst::DocItemCount( doc ), Mm = Cst::DocItemCount( rd );
+			char mm[128];
+			std::snprintf( mm, sizeof(mm), "[reparse-cost] N=%d: old touches %lu <= 5*(O+M)=%d (linear, not O(M*N)=%d)", N, touches, 5*(O+Mm), O*Mm );
+			Check( touches <= (unsigned long)( 5 * (O + Mm) ), mm );
+			Check( inv.empty(), "[reparse-cost] the value edit kept every id (lineage)" );
+			std::printf( "  reparse N=%4d  oldVisits=%lu  5*(O+M)=%d  O*M=%d\n", N, touches, 5*(O+Mm), O*Mm );
+		}
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
