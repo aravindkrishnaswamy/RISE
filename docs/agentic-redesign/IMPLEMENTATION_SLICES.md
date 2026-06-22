@@ -170,7 +170,24 @@ until it is green:
    round-trip on real scenes (header / multi-chunk / tar-pit) AND `DumpJob(cstJob) ==
    DumpJob(legacyJob)` for sphere scenes, driving the real `Job::AddSphereGeometry`. (The
    `RISE ASCII SCENE 6` header is preserved losslessly as stray tokens that `DeriveToJob` ignores;
-   a dedicated version-header node is a later item.) ← next: item 3 (persistent Document).
+   a dedicated version-header node is a later item.) **Adversarially reviewed (3 agents): build
+   wiring sound (plutil OK, zero warnings); foundation sound (the `std::vector` child container is
+   encapsulated, so item 3's rope swap is contained). Fixed 3 real kernel divergences from legacy —
+   `/* */` block comments are now stripped as trivia (a commented-out chunk is not derived),
+   repeated params LAST-win (matching `ParseStateBag`), and a value-less line no longer swallows the
+   next line's token. Now 18/18.** Deferred-and-honest (narrowed in `Cst.h`): `$( )`/DEFINE/FOR are
+   the v6→v7 **migrator's** domain (D8), never the CST runtime; descriptor-driven param **validation**
+   (legacy rejects unknown/ill-typed values) is item 5; so the equivalence gate is exact for
+   macro-free, descriptor-valid scenes. ← next: item 3 (persistent Document).
+   - **Item-3 acceptance (from the review, do NOT repeat slice-3's gap):** the persistent `Document`
+     must carry its subtree aggregates (cached **byte-width AND newline count**, D16) **and** the
+     **NodeId / name-path index** (D26/D9) *inside* the persistent node, and the edit-target lookup
+     must be **counted in the complexity measurement** — not a side table resolved by an O(N) scan.
+     The balanced sequence is the easy half; the aggregates + identity index are the load-bearing part.
+   - **Gate-maintenance rule (items 5–7):** each new derived chunk type must, in the same change,
+     extend `DumpJob` with that type's **discriminating fields** (transforms, param values, colors,
+     ordering) — else the equivalence gate weakens silently (today it discriminates geometry by
+     bounding-sphere radius only).
 3. Put the real `Document` on a **persistent sequence supporting update/insert/erase, with cached
    byte-width + newline count**.
 4. Add **persistent NodeId/name-path lookup** so finding the edit target is *included* in the

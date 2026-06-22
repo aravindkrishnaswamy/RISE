@@ -11,10 +11,18 @@
 //  harness (DumpJob(cstJob) == DumpJob(legacyJob)).
 //
 //  Item-2 scope: bytes <-> CST (lossless, multi-chunk, brace-nested) +
-//  derive `sphere_geometry` into a Job through the real apply layer. The
-//  persistent-sequence Document (O(log N) edit/diff), live descriptor binding,
-//  the traced derivation graph, and edit/identity are subsequent transfer-gate
-//  items; the green-node core here is shaped to grow into them.
+//  derive `sphere_geometry` into a Job through the real apply layer. This kernel
+//  is the SEAM that subsequent transfer-gate items extend; it does NOT itself
+//  have them: the child container is a std::vector, so the persistent rope and
+//  its byte-width/newline aggregates (the O(log N) edit/diff) ARE the item-3
+//  work; live descriptor binding is item 5; the traced derivation graph and
+//  edit/identity are later. (No O(log N) and no NodeId are claimed here.)
+//
+//  Derive domain: the CST is the v7 runtime format -- macro-free and
+//  expression-free. v6 `$( )` / DEFINE / FOR are the one-shot v6->v7 MIGRATOR's
+//  job (D8), never the CST runtime's; descriptor-driven validation of params
+//  (rejecting unknown/ill-typed values, which the legacy parser does) is item 5.
+//  So the equivalence gate is exact for macro-free, descriptor-valid scenes.
 //
 //////////////////////////////////////////////////////////////////////
 

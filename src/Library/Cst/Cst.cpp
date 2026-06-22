@@ -43,13 +43,25 @@ namespace
 	{
 		std::vector<RawTok> out;
 		size_t i = 0, n = in.size();
+		// A trivia run absorbs whitespace, `#`-to-EOL comments, AND `/* ... */`
+		// block comments (legacy strips these; the CST keeps them as trivia so
+		// round-trip is lossless AND a commented-out chunk is NOT derived).
+		auto isBlockStart = [&]( size_t k ) { return k + 1 < n && in[k] == '/' && in[k+1] == '*'; };
 		while( i < n ) {
 			char c = in[i];
-			if( IsWs(c) || c == '#' ) {
+			if( IsWs(c) || c == '#' || isBlockStart(i) ) {
 				size_t s = i;
-				while( i < n && (IsWs(in[i]) || in[i] == '#') ) {
-					if( in[i] == '#' ) { while( i < n && in[i] != '\n' ) ++i; }
-					else ++i;
+				for( ;; ) {
+					if( i >= n ) break;
+					if( IsWs(in[i]) ) { ++i; continue; }
+					if( in[i] == '#' ) { while( i < n && in[i] != '\n' ) ++i; continue; }
+					if( isBlockStart(i) ) {
+						i += 2;
+						while( i + 1 < n && !(in[i] == '*' && in[i+1] == '/') ) ++i;
+						i = (i + 1 < n) ? i + 2 : n;   // skip the closing */ (or to EOF if unterminated)
+						continue;
+					}
+					break;
 				}
 				out.push_back( { true, in.substr(s, i-s) } );
 			} else if( c == '{' || c == '}' ) {
@@ -57,7 +69,7 @@ namespace
 				++i;
 			} else {
 				size_t s = i;
-				while( i < n ) { char d = in[i]; if( IsWs(d) || d == '#' || d == '{' || d == '}' ) break; ++i; }
+				while( i < n ) { char d = in[i]; if( IsWs(d) || d == '#' || d == '{' || d == '}' || isBlockStart(i) ) break; ++i; }
 				out.push_back( { false, in.substr(s, i-s) } );
 			}
 		}
@@ -88,8 +100,16 @@ namespace
 				std::string pname = tx;
 				std::vector<NodeRef> pk;
 				pk.push_back( Leaf(NodeKind::Token, t[i++].text, "pname") );
-				while( i < t.size() && t[i].trivia ) pk.push_back( Leaf(NodeKind::Trivia, t[i++].text, "") );
-				if( i < t.size() && !t[i].trivia && t[i].text != "}" && t[i].text != "{" ) {
+				bool sawNewline = false;
+				while( i < t.size() && t[i].trivia ) {
+					if( t[i].text.find('\n') != std::string::npos ) sawNewline = true;
+					pk.push_back( Leaf(NodeKind::Trivia, t[i++].text, "") );
+				}
+				// A param's value is on the SAME line as its name. If the next
+				// token is on a later line (or a brace), this is a value-less
+				// line -- flatten it; do NOT swallow the next line's token as the
+				// value (which the legacy parser would never do).
+				if( !sawNewline && i < t.size() && !t[i].trivia && t[i].text != "}" && t[i].text != "{" ) {
 					pk.push_back( Leaf(NodeKind::Token, t[i++].text, "pvalue") );
 					ck.push_back( Internal(NodeKind::Param, std::move(pk), pname) );
 				} else {
@@ -108,15 +128,18 @@ namespace
 		else for( const auto& k : g->kids ) Serialize( k, out );
 	}
 
-	//! First pvalue text of a param role within a chunk (item-2 derive helper).
+	//! Value of a param role within a chunk (item-2 derive helper). On a
+	//! repeated param, LAST occurrence wins -- matching the legacy parser's
+	//! ParseStateBag overwrite semantics.
 	bool ParamValue( const Node* chunk, const std::string& role, std::string& out )
 	{
 		if( !chunk ) return false;
+		bool found = false;
 		for( const auto& p : chunk->kids )
 			if( p->kind == NodeKind::Param && p->role == role )
 				for( const auto& v : p->kids )
-					if( v->kind == NodeKind::Token && v->role == "pvalue" ) { out = v->text; return true; }
-		return false;
+					if( v->kind == NodeKind::Token && v->role == "pvalue" ) { out = v->text; found = true; }
+		return found;
 	}
 }
 

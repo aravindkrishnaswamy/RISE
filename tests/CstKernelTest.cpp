@@ -95,6 +95,51 @@ int main()
 		job->release();
 	}
 
+	//------------------------------------------------------------------
+	// Item-2 review fixes: align the kernel with the legacy parser on real
+	// (non-macro) sphere-scope edge cases.
+	//------------------------------------------------------------------
+	std::printf( "[edge] block comments / repeated params / value-less lines vs legacy\n" );
+	{
+		// /* */ block comment: a commented-out chunk is NOT derived (legacy agrees).
+		const std::string s =
+			"RISE ASCII SCENE 6\n"
+			"/* sphere_geometry\n{\nname hidden\nradius 0.6\n}\n */\n"
+			"sphere_geometry\n{\nname real\nradius 0.7\n}\n";
+		Cst::Document d = Cst::ParseToCst( s );
+		Check( Cst::SerializeCst(d) == s, "block comment round-trips losslessly" );
+		Job* cstJob = new Job(); Cst::DeriveToJob( d, *cstJob );
+		Job* legacy = new Job(); risequiv::ParseLegacy( s, *legacy );
+		Check( !cstJob->GetGeometries()->GetItem("hidden") && cstJob->GetGeometries()->GetItem("real"),
+		       "commented-out 'hidden' is NOT derived; 'real' is" );
+		Check( risequiv::DumpJob(*cstJob) == risequiv::DumpJob(*legacy), "block-comment scene: CST == legacy" );
+		cstJob->release(); legacy->release();
+	}
+	{
+		// repeated param: LAST wins (matches legacy ParseStateBag overwrite).
+		const std::string s = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.2\nradius 0.8\n}\n";
+		Job* cstJob = new Job(); Cst::DeriveToJob( Cst::ParseToCst(s), *cstJob );
+		Job* legacy = new Job(); risequiv::ParseLegacy( s, *legacy );
+		double r = -1; IGeometry* g = cstJob->GetGeometries()->GetItem("s");
+		if( g ) { Point3 c; Scalar rr = 0; g->GenerateBoundingSphere(c, rr); r = rr; }
+		Check( r == 0.8, "repeated radius -> LAST value wins (0.8)" );
+		Check( risequiv::DumpJob(*cstJob) == risequiv::DumpJob(*legacy), "repeated-param scene: CST == legacy (both last-win)" );
+		cstJob->release(); legacy->release();
+	}
+	{
+		// value-less line: must NOT swallow the next line's token.
+		const std::string s = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname\nradius 0.6\n}\n";
+		Cst::Document d = Cst::ParseToCst( s );
+		Check( Cst::SerializeCst(d) == s, "value-less line round-trips losslessly" );
+		Job* cstJob = new Job(); Cst::DeriveToJob( d, *cstJob );
+		Check( !cstJob->GetGeometries()->GetItem("radius"),
+		       "value-less 'name' line does NOT create a sphere named 'radius' (no token-swallow corruption)" );
+		cstJob->release();
+		// NB: legacy REJECTS this scene via descriptor validation; the CST matching
+		// that rejection is item 5 (descriptor binding). Here we only assert that
+		// the kernel no longer corrupts (the P0-6 fix).
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
