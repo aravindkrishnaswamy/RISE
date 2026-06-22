@@ -532,6 +532,66 @@ int main()
 		Check( std::find( inv.begin(), inv.end(), sRadius ) != inv.end(), "[param-invalidate] the removed param id is invalidated though its chunk survived" );
 	}
 
+	// ============================================================
+	// [reflow] a gap-exhausting insert reflows a WINDOW of labels, not the whole
+	// document (P1-A: not a global O(N) reflow per ~32 same-spot inserts).
+	// ============================================================
+	{
+		Cst::Document doc = Cst::ParseToCst( SceneN( 512 ) );
+		const int mid = Cst::DocItemCount( doc ) / 2;
+		unsigned long maxReflow = 0;
+		for( int k = 0; k < 50; ++k ) {                 // a shallow same-spot pile -> triggers reflow
+			unsigned long b = Cst::DebugReflowLabelWrites();
+			doc = Cst::DocInsertItem( doc, mid, MakeSphere( "z" + std::to_string(k), "0.5" ) );
+			unsigned long w = Cst::DebugReflowLabelWrites() - b;
+			if( w > maxReflow ) maxReflow = w;
+		}
+		const int N = Cst::DocItemCount( doc );
+		char m[128];
+		std::snprintf( m, sizeof(m), "[reflow] a reflow fired (worst window=%lu labels)", maxReflow );
+		Check( maxReflow > 0, m );
+		std::snprintf( m, sizeof(m), "[reflow] worst window %lu << N=%d (windowed, not global O(N))", maxReflow, N );
+		Check( maxReflow * 2 < (unsigned long)N, m );
+		// and every durable id still maps to a correct position after the reflows
+		bool ok = true;
+		for( int idx = 0; idx < N; ++idx ) { Cst::NodeId id = Cst::DocNodeIdAt( doc, idx ); if( id && Cst::DocIndexOfNodeId( doc, id, nullptr ) != idx ) ok = false; }
+		Check( ok, "[reflow] id<->position round-trips for every item after the reflows" );
+		std::printf( "  reflow: worst window=%lu  N=%d\n", maxReflow, N );
+	}
+
+	// ============================================================
+	// [param-shift] inserting/removing a REPEATED param keeps the others' lineage
+	// (P1-C: content-matched, never position-remapped onto an unrelated value).
+	// ============================================================
+	{
+		const std::string scene = "RISE ASCII SCENE 6\nsdf_geometry\n{\nname d\npart aaa\npart bbb\n}\n";
+		Cst::Document doc = Cst::ParseToCst( scene );
+		Cst::NodeId chunkId = 0, idA = 0, idB = 0; Cst::NodeRef chunk; int v = 0;
+		Cst::DocParamAtByteOffset( doc, scene.find("aaa"), &chunk, &v, &idA, &chunkId );
+		Cst::DocParamAtByteOffset( doc, scene.find("bbb"), &chunk, &v, &idB, nullptr );
+		const int ci = ChunkIndexAt( doc, scene, "name d" );
+
+		// structured whole-chunk replace inserting `part ccc` BEFORE aaa/bbb
+		std::vector<Cst::NodeId> inv;
+		Cst::Document e = Cst::DocReplaceItem( doc, ci, FirstChunk("sdf_geometry\n{\nname d\npart ccc\npart aaa\npart bbb\n}\n"), nullptr, &inv );
+		Check( Cst::DocParamId( e, chunkId, "part", 1 ) == idA && Cst::DocParamId( e, chunkId, "part", 2 ) == idB, "[param-shift] aaa/bbb keep their ids when a part is inserted before them" );
+		Cst::NodeId nC = Cst::DocParamId( e, chunkId, "part", 0 );
+		Check( nC != 0 && nC != idA && nC != idB, "[param-shift] the inserted part gets a FRESH id (no remap onto a sibling)" );
+		Check( inv.empty(), "[param-shift] a pure insert invalidates nothing" );
+
+		// remove aaa -> bbb keeps its id, aaa is invalidated (not shifted onto bbb)
+		std::vector<Cst::NodeId> inv2;
+		Cst::Document r = Cst::DocReplaceItem( doc, ci, FirstChunk("sdf_geometry\n{\nname d\npart bbb\n}\n"), nullptr, &inv2 );
+		Check( Cst::DocParamId( r, chunkId, "part", 0 ) == idB, "[param-shift] removing aaa keeps bbb id (no shift onto bbb)" );
+		Check( std::find( inv2.begin(), inv2.end(), idA ) != inv2.end(), "[param-shift] the removed part id is reported invalidated" );
+
+		// same insert-before via REPARSE: lineage preserved by content match
+		std::vector<Cst::NodeId> inv3;
+		Cst::Document rp = Cst::DocReparse( doc, "RISE ASCII SCENE 6\nsdf_geometry\n{\nname d\npart ccc\npart aaa\npart bbb\n}\n", &inv3 );
+		Check( Cst::DocParamId( rp, chunkId, "part", 1 ) == idA && Cst::DocParamId( rp, chunkId, "part", 2 ) == idB, "[param-shift] reparse insert-before keeps aaa/bbb ids by content" );
+		Check( inv3.empty(), "[param-shift] reparse insert-before invalidates nothing" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail ? 1 : 0;
 }

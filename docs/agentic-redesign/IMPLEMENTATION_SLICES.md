@@ -222,17 +222,19 @@ until it is green:
      checked exact across parse/replace/insert/erase on LF **and** CRLF. 42→67. ← next: item 4.
 4. Add **persistent NodeId/name-path lookup** so finding the edit target is *included* in the
    complexity measurement. **✅ DONE (pending re-review)** — kernel `a3cc2a77`; review fixes
-   `0b0a25f4`, `955c1962`, `bfc57601`, `a5ba984d`. [`tests/CstIdentityTest.cpp`](../../tests/CstIdentityTest.cpp)
-   **112 checks**. *(Current shipped state — this entry describes what is in tree now, not the
+   `0b0a25f4`, `955c1962`, `bfc57601`, `a5ba984d`, + the 4th-review fixes. [`tests/CstIdentityTest.cpp`](../../tests/CstIdentityTest.cpp)
+   **122 checks**. *(Current shipped state — this entry describes what is in tree now, not the
    intermediate states the review rounds passed through; see the review log at the end.)*
-   FOUR persistent structures, all SEPARATE from the green/seq node (per **D23/D26** — `Node`/`SeqNode`
-   carry no id):
+   `NodeId` and the order labels are **explicit 64-bit (`int64_t`)** — NOT `long`, which is 32-bit on
+   Windows. FOUR persistent structures, all SEPARATE from the green/seq node (per **D23/D26** —
+   `Node`/`SeqNode` carry no id):
    - `idseq` — a positional `NodeId` WBT in lockstep with the item sequence, each node also carrying
      an **order-maintenance label** (ascending in document order);
    - `byName` — a key-ordered WBT (name-path → **list** of NodeIds);
    - `byId` — a `NodeId` → (current node, label) reverse index;
    - `paramIds` — a `(chunkId, role, occurrence-index)` → param `NodeId` index (per-occurrence PARAM
-     identity, so REPEATED params get distinct ids).
+     identity, so REPEATED params get distinct ids), **matched by CONTENT not occurrence** on edit (a
+     repeated param keeps its id across a sibling insert/remove; never position-remapped).
 
    **Counted O(log N), all proven by `maxVisits` gates sub-linear at N=8/64/512:** name-path lookup
    (`DocFindByName`); durable id → node (`DocResolveNodeId`); durable id → document **position**
@@ -253,8 +255,9 @@ until it is green:
    **Disclosed scope / fallbacks:** name-path key is `keyword/name` (category paths like `geometry/s`
    are item-5 descriptor work); value-ATOM sub-identity within a multi-atom value, and repeated-param
    VALUE nodes, are RepeatGroup-era (out of this gate, as expr/RepeatGroup are); label **reflow** on
-   gap exhaustion is O(N) and rare (a 2^32 gap absorbs ~32 same-spot inserts) — a windowed Bender
-   reflow (O(log² N)) is the documented refinement.
+   gap exhaustion is **WINDOWED** (the smallest enclosing run with spare label-space, `DebugReflowLabelWrites`
+   gate proves it touches ≪ N — measured worst window 2 in a 1082-item doc), **not** a global O(N)
+   reflow; it is O(log² N) amortized, with Bender's two-level O(log N) reflow the documented refinement.
 
    **Acceptance (item-3 review) ✓:** SEPARATE side-map; counted name lookup; survives value edit +
    index shift; within-chunk descent; reparse-stable invalidate-don't-remap.
@@ -266,7 +269,14 @@ until it is green:
    A 2nd external review (3 P1s, `a5ba984d`): **O(log N) edit-by-NodeId** (order-maintenance labels —
    the prior O(N) `DocIndexOfNodeId` reopened the counted-target gate), **per-occurrence** param keys
    (the prior `(chunkId,role)` overwrote repeated params), and **reparse param-id invalidation** (the
-   prior invalidated list omitted dead param ids). ← next: item 5 (descriptor-registry binding).
+   prior invalidated list omitted dead param ids).
+   A 3rd external review (3 P1s, the 4th-review-fix commit): **windowed label reflow** (the prior
+   global reflow was O(N·log N) every ~32 same-spot inserts → now a local window, O(log² N) amortized,
+   gated by `DebugReflowLabelWrites`); **`int64_t` labels/NodeId** (the prior `long` collapsed on
+   Windows/LLP64 where `1L << 32` is UB); and **content-based repeated-param matching** (the prior
+   `(role, occurrence-index)` reuse still position-remapped a repeated param's id onto an unrelated
+   value on sibling insert/remove → now matched by content, invalidate-don't-remap, and
+   `DocReplaceItem`/`EraseItem` gained an `invalidated` out-param). ← next: item 5 (descriptor-registry binding).
 5. **Bind through the live descriptor registry.**
 6. **Trace references through the real resolver** and test a **three-level** dependency chain.
 7. Exercise **structured edits AND free-form reparses**, including **chunk identity + rename**.

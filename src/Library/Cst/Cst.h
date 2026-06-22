@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <cstdint>
 
 namespace RISE
 {
@@ -77,8 +78,10 @@ namespace RISE
 		};
 		typedef std::shared_ptr<const SeqNode> SeqRef;
 
-		//! Stable lineage identity (D26). 0 == none / invalid.
-		typedef long NodeId;
+		//! Stable lineage identity (D26). 0 == none / invalid. Explicit 64-bit
+		//! (NOT `long` -- that is 32-bit on Windows/LLP64, which would overflow the
+		//! id counter and collapse the order-label scheme below).
+		typedef std::int64_t NodeId;
 
 		//! The SEPARATE persistent identity side-map (D23/D26) -- NOT a field on
 		//! the green/seq node. A NodeId per top-level item, ordered IN LOCKSTEP
@@ -90,8 +93,8 @@ namespace RISE
 		{
 			std::shared_ptr<const IdNode> left, right;
 			NodeId id;
-			long   label;   //!< order-maintenance key (ascending in document order); enables O(log N) NodeId -> position
-			int    count;
+			std::int64_t label;   //!< order-maintenance key (ascending in document order); enables O(log N) NodeId -> position
+			int          count;
 		};
 		typedef std::shared_ptr<const IdNode> IdSeqRef;
 
@@ -124,8 +127,8 @@ namespace RISE
 			std::shared_ptr<const IdMapNode> left, right;
 			NodeId  key;
 			NodeRef val;
-			long    label;   //!< the top-level item's order-maintenance label (0 for a param id, which has no rope position)
-			int     count;
+			std::int64_t label;   //!< the top-level item's order-maintenance label (0 for a param id, which has no rope position)
+			int          count;
 		};
 		typedef std::shared_ptr<const IdMapNode> IdMapRef;
 
@@ -213,6 +216,12 @@ namespace RISE
 		//! nested-loop matcher would make it O(M*N). Test-only instrumentation.
 		unsigned long DebugReparseOldVisits();
 
+		//! Diagnostic for the insert label-reflow cost gate: total order-labels
+		//! rewritten by the WINDOWED reflow. A gap-exhausting insert rewrites
+		//! O(window) labels; a regression to a global reflow would rewrite N each
+		//! time. Test-only instrumentation.
+		unsigned long DebugReflowLabelWrites();
+
 		//! Locate the top-level item spanning byte `offset` (the byte->node map a
 		//! UI/agent uses for "what's at this cursor position"). Returns the item's
 		//! index (or -1 if out of range); `outItem`/`outStart` receive the item and
@@ -227,7 +236,11 @@ namespace RISE
 		//! the spine). `*visits` (if non-null) receives the rebuilt-node count.
 		//! NON-NULL CONTRACT: a null `newItem` is refused -- the document is
 		//! returned unchanged (visits 0). Out-of-range index is also a no-op.
-		Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* visits = nullptr );
+		//! The chunk's NodeId persists; its params are re-matched by content (a
+		//! unique-role value edit keeps the param's id; an ambiguous repeated-param
+		//! value edit invalidates rather than position-remaps). `*invalidated` (if
+		//! non-null) receives any param NodeIds dropped by the edit.
+		Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* visits = nullptr, std::vector<NodeId>* invalidated = nullptr );
 
 		//! Insert `newItem` before `index` (clamped to [0,count]) / erase item
 		//! `index`. O(log N) on a persistent weight-balanced tree (path-copy +
@@ -236,7 +249,9 @@ namespace RISE
 		//! `*visits` (if non-null) receives the rebuilt-node count (O(log N)).
 		//! NON-NULL CONTRACT: a null insert `newItem` is refused (doc unchanged).
 		Document DocInsertItem( const Document& doc, int index, NodeRef newItem, int* visits = nullptr );
-		Document DocEraseItem ( const Document& doc, int index, int* visits = nullptr );
+		//! Erase item `index`. `*invalidated` (if non-null) receives the erased
+		//! item's NodeId plus its param NodeIds (their durable bindings just died).
+		Document DocEraseItem ( const Document& doc, int index, int* visits = nullptr, std::vector<NodeId>* invalidated = nullptr );
 
 		//==============================================================
 		// Item 4 -- NodeId identity + name-path addressing (the name-path half of
