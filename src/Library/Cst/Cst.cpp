@@ -481,7 +481,8 @@ namespace
 	// ---- NameMap: key-ordered persistent WBT (name-path -> list of NodeIds) ----
 	// The value is a LIST so duplicate name-paths (a degenerate but representable
 	// scene) don't corrupt the index: erase/rename of one occurrence removes only
-	// that id, survivors stay findable. NameFind returns the first occurrence.
+	// that id, survivors stay findable. NameFind returns the first occurrence + the
+	// count; DocFindByName uses the count to REFUSE an ambiguous (!=1) name.
 	int NameSize( const NameMapRef& s ) { return s ? s->count : 0; }
 	NameMapRef NameMk( NameMapRef l, std::string name, std::vector<NodeId> ids, NameMapRef r )
 	{

@@ -108,7 +108,8 @@ namespace RISE
 		//! to REPRESENT losslessly even though the derive layer rejects it) does not
 		//! silently corrupt the index: erasing/renaming one occurrence removes only
 		//! that occurrence's id and the survivors stay findable. DocFindByName
-		//! returns the FIRST occurrence (the unique id in a well-formed scene).
+		//! REFUSES an ambiguous name (returns 0 + occurrence count if the list has
+		//! != 1 entry); it resolves only the unique id of a well-formed scene.
 		struct NameNode
 		{
 			std::shared_ptr<const NameNode> left, right;
