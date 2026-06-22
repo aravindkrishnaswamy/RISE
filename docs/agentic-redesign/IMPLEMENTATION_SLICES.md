@@ -137,7 +137,9 @@ most sharpen disclosures already in "What is NOT yet proven" above):
    builds `dependents` before the apply layer (demonstrates invalidation, not D4's resolver/trace).
 4. Reparse identity **omits chunk identity** — `MatchIdentities` carries only param/value ids;
    match is by (keyword,name), so a free-form rename is delete+add and the old chunk id isn't even
-   explicitly invalidated. "Reparse-stable identity" was too broad.
+   explicitly invalidated. "Reparse-stable identity" was too broad. *(This was a PROTOTYPE-era finding;
+   **resolved in the in-tree item 4** — the kernel's 4-pass matcher carries chunk lineage through a
+   unique-of-type rename (D9/D44) and explicitly invalidates genuinely-ambiguous rows.)*
 5. **A failed derivation was cached as success** — a dangling material got a normal cache entry, so
    a later no-op derive skipped it and the error vanished. **FIXED** (`CstReferenceSliceTest.cpp`:
    dangling derivations are not cached; the error re-reports until resolved; +2 regression checks,
