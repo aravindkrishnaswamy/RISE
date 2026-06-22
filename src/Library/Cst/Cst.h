@@ -338,9 +338,10 @@ namespace RISE
 		//!      UNCHANGED (old count == new count) -- a count-changed group of
 		//!      byte-identical chunks is ambiguous, so pairing them would swap ids;
 		//!      it is deferred to invalidation. A TRIVIA/STRAY group carries
-		//!      GREEDILY in doc order regardless of count (no id-swap hazard:
-		//!      whitespace is never addressed), so a pure append keeps every
-		//!      existing separator id instead of spuriously invalidating it.
+		//!      GREEDILY in doc order regardless of count (no id-swap hazard: a ref
+		//!      can only rebind WITHIN a byte-identical group, so meaning is
+		//!      preserved), so a pure append keeps every existing separator id
+		//!      instead of spuriously invalidating it.
 		//!   2. (keyword,name) key, unique 1<->1 among the remainder -- a NAMED
 		//!      chunk's value edit keeps its id.
 		//!   3. keyword, unique 1<->1 among the remainder -- a RENAME of a unique-of-

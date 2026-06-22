@@ -556,22 +556,25 @@ int main()
 			std::printf( "  reflow sparse: worst window=%lu  N=%d\n", maxReflow, Cst::DocItemCount(doc) );
 		}
 		// (b) adversarial dense front-pile (repeated inserts at index 1): the window
-		// CAN reach Theta(N) -- we only require it stays <= N and that id<->position
-		// stays correct (the honest contract; the asymptotic fix is Bender, deferred).
+		// genuinely reaches Theta(N) -- we PROVE the blowup (window > N/4), require it
+		// stays <= N, and require id<->position stays correct despite the large window
+		// (the honest contract: Theta(N) worst-case is real; the asymptotic fix is
+		// Bender level-scaled order-maintenance, deferred).
 		{
 			Cst::Document doc = Cst::ParseToCst( SceneN( 256 ) );
 			unsigned long maxReflow = 0;
-			for( int k = 0; k < 400; ++k ) {
+			for( int k = 0; k < 2000; ++k ) {
 				unsigned long b = Cst::DebugReflowLabelWrites();
 				doc = Cst::DocInsertItem( doc, 1, MakeSphere( "f" + std::to_string(k), "0.5" ) );
 				maxReflow = std::max( maxReflow, Cst::DebugReflowLabelWrites() - b );
 			}
 			const int N = Cst::DocItemCount( doc );
 			Check( maxReflow <= (unsigned long)N, "[reflow] dense adversary: window stays bounded by N (no over-write)" );
+			Check( maxReflow * 4 > (unsigned long)N, "[reflow] dense adversary: window reaches Theta(N) (> N/4) -- the disclosed worst case, witnessed" );
 			bool ok = true;   // CORRECTNESS holds even when the window is large
 			for( int idx = 0; idx < N; ++idx ) { Cst::NodeId id = Cst::DocNodeIdAt( doc, idx ); if( id && Cst::DocIndexOfNodeId( doc, id, nullptr ) != idx ) ok = false; }
 			Check( ok, "[reflow] dense adversary: id<->position round-trips for every item (correct despite large window)" );
-			std::printf( "  reflow dense:  worst window=%lu  N=%d  (Theta(N) worst-case is disclosed)\n", maxReflow, N );
+			std::printf( "  reflow dense:  worst window=%lu  N=%d  (Theta(N) worst-case, witnessed)\n", maxReflow, N );
 		}
 	}
 

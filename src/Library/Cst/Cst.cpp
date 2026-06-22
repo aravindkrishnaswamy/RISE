@@ -1116,10 +1116,11 @@ Document DocReparse( const Document& oldDoc, const std::string& newText, std::ve
 	// UNCHANGED (old count == new count): a count-changed group of byte-identical
 	// chunks is genuinely ambiguous, so greedily pairing them would SWAP identities
 	// (the surviving twin of an edited pair must be invalidated, not re-bound).
-	// For TRIVIA/STRAY groups there is no id-swap hazard (whitespace is never an
-	// addressing target and identical separators are interchangeable), so carry
-	// GREEDILY in document order even when the count changed -- otherwise a pure
-	// append would spuriously invalidate every existing "\n" separator id.
+	// For TRIVIA/STRAY groups there is no id-swap hazard: a ref can only rebind
+	// WITHIN a byte-identical group (the fullOf key), so the bytes -- hence the
+	// meaning, even for a comment -- are preserved. Carry GREEDILY in document
+	// order even when the count changed -- otherwise a pure append would spuriously
+	// invalidate every existing "\n" separator id.
 	{
 		std::unordered_map<std::string, std::vector<int>> oldF, newF;
 		for( int i = 0; i < O; ++i ) { oldF[ fullOf(oldItems[i]) ].push_back( i ); ++g_reparseOldVisits; }

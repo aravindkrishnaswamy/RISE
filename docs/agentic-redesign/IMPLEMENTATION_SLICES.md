@@ -282,8 +282,10 @@ until it is green:
    (the prior `(chunkId,role)` overwrote repeated params), and **reparse param-id invalidation** (the
    prior invalidated list omitted dead param ids).
    A 3rd external review (3 P1s, the 4th-review-fix commit): **windowed label reflow** (the prior
-   global reflow was O(N·log N) every ~32 same-spot inserts → now a local window, O(log² N) amortized,
-   gated by `DebugReflowLabelWrites`); **`int64_t` labels/NodeId** (the prior `long` collapsed on
+   global reflow was O(N·log N) every ~32 same-spot inserts → now a local window, tiny in the common
+   case but — being fixed-density, not level-scaled — still **Θ(N·log N) worst-case** under an
+   adversarial dense pile; the disclosed v1 fallback, D23, with Bender level-scaled as the O(log N)
+   refinement; gated by `DebugReflowLabelWrites`); **`int64_t` labels/NodeId** (the prior `long` collapsed on
    Windows/LLP64 where `1L << 32` is UB); and **content-based repeated-param matching** (the prior
    `(role, occurrence-index)` reuse still position-remapped a repeated param's id onto an unrelated
    value on sibling insert/remove → now matched by content, invalidate-don't-remap, and
