@@ -156,8 +156,13 @@ is fixed.
 A single narrow vertical that closes the transfer risk, keeping expr/RepeatGroup/instance_array OUT
 until it is green:
 
-1. **Build the render-equivalence harness first** (the pre-P0 regression oracle).
-2. Create the actual **`src/Library/Cst` kernel** (touches the five build projects).
+1. **Build the render-equivalence harness first** (the pre-P0 regression oracle). **✅ DONE** —
+   [`tests/CstRenderEquivalence.h`](../../tests/CstRenderEquivalence.h) (`ParseLegacy` drives the
+   real `AsciiSceneParser`; `DumpJob` is the canonical structural equivalence metric) +
+   [`tests/CstRenderEquivalenceTest.cpp`](../../tests/CstRenderEquivalenceTest.cpp) (9/9: the legacy
+   parse is deterministic, and the metric discriminates a changed scene). The CST slices will assert
+   `DumpJob(cstJob) == DumpJob(legacyJob)` against this.
+2. Create the actual **`src/Library/Cst` kernel** (touches the five build projects). ← next
 3. Put the real `Document` on a **persistent sequence supporting update/insert/erase, with cached
    byte-width + newline count**.
 4. Add **persistent NodeId/name-path lookup** so finding the edit target is *included* in the
