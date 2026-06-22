@@ -71,9 +71,17 @@ namespace RISE
 
 		//! Derive the document's `sphere_geometry` chunks into pJob through the
 		//! real apply layer (IJob::AddSphereGeometry). Returns the number of
-		//! geometries derived. Item-2 scope is sphere_geometry only; other chunk
-		//! types are subsequent transfer-gate items.
-		int DeriveToJob( const Document& doc, IJob& pJob );
+		//! geometries applied.
+		//!
+		//! SAFE BOUNDARY (item-2 review): every sphere_geometry chunk is VALIDATED
+		//! first -- unknown parameter, value-less parameter line, non-finite /
+		//! non-numeric radius. If ANY chunk fails, NOTHING is applied (refuse-all)
+		//! and the failures are reported in `diagnostics` (when non-null). A
+		//! malformed scene is refused, never silently half-derived (no atof()->0
+		//! sphere, no ignored unknown parameter). Item-5 generalizes this to the
+		//! descriptor registry; here the validation is sphere-specific. Item-2
+		//! scope is sphere_geometry only; other chunk types are subsequent items.
+		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr );
 	}
 }
 

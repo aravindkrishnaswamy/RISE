@@ -175,7 +175,11 @@ until it is green:
    encapsulated, so item 3's rope swap is contained). Fixed 3 real kernel divergences from legacy —
    `/* */` block comments are now stripped as trivia (a commented-out chunk is not derived),
    repeated params LAST-win (matching `ParseStateBag`), and a value-less line no longer swallows the
-   next line's token. Now 18/18.** Deferred-and-honest (narrowed in `Cst.h`): `$( )`/DEFINE/FOR are
+   next line's token. **A SECOND external review (commit range 70f28848..da6e4b87) found 2 P1s, both
+   fixed: the oracle now uses LOSSLESS `%.17g` (was `%.6g`, which collided near-equal radii); and
+   `DeriveToJob` is now a SAFE BOUNDARY — it validates every chunk (unknown param / value-less line /
+   non-finite radius) and REFUSES ALL with diagnostics on any failure, never silently half-deriving
+   (no `atof()->0` sphere). Now 25/25.** Deferred-and-honest (narrowed in `Cst.h`): `$( )`/DEFINE/FOR are
    the v6→v7 **migrator's** domain (D8), never the CST runtime; descriptor-driven param **validation**
    (legacy rejects unknown/ill-typed values) is item 5; so the equivalence gate is exact for
    macro-free, descriptor-valid scenes. ← next: item 3 (persistent Document).

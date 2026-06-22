@@ -70,9 +70,17 @@ inline bool ParseLegacy( const std::string& sceneText, Job& job, const char* tmp
 
 // Canonical structural dump of a Job -- the equivalence metric. Two parse paths
 // that yield the same dump produce the same scene (hence the same render). Sorted
-// per manager for stability; geometry carries its bounding-sphere radius so a
-// changed sphere is visible. (Richer per-type detail can be added as the kernel
-// slices need it; this is the seam.)
+// per manager for stability. Numeric fields use LOSSLESS %.17g (exactly
+// round-trips an IEEE double), so two distinct radii can never collide into an
+// equal dump.
+//
+// GATE-MAINTENANCE RULE (per the item-2 review): geometry currently carries its
+// bounding-sphere radius -- complete for a sphere. As each new DERIVED type lands
+// (materials, painters, objects in items 5-7), this dump MUST gain that type's
+// discriminating state (reference bindings, parameter values, colours, object
+// transforms, ordering) in the SAME change -- otherwise the oracle silently
+// certifies different scenes as equal. Names-only below is safe ONLY while those
+// types are not yet CST-derived (legacy populates them identically as defaults).
 inline std::string DumpJob( Job& job )
 {
 	std::ostringstream o;
@@ -80,7 +88,7 @@ inline std::string DumpJob( Job& job )
 	for( const auto& n : SortedNames( job.GetGeometries() ) ) {
 		o << "  " << n;
 		IGeometry* g = job.GetGeometries() ? job.GetGeometries()->GetItem( n.c_str() ) : 0;
-		if( g ) { Point3 c; Scalar r = 0; g->GenerateBoundingSphere( c, r ); char b[64]; std::snprintf( b, sizeof(b), " bsphere=%.6g", (double)r ); o << b; }
+		if( g ) { Point3 c; Scalar r = 0; g->GenerateBoundingSphere( c, r ); char b[64]; std::snprintf( b, sizeof(b), " bsphere=%.17g", (double)r ); o << b; }
 		o << "\n";
 	}
 	o << "materials:\n"; for( const auto& n : SortedNames( job.GetMaterials() ) ) o << "  " << n << "\n";

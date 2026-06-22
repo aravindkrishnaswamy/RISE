@@ -127,17 +127,42 @@ int main()
 		cstJob->release(); legacy->release();
 	}
 	{
-		// value-less line: must NOT swallow the next line's token.
+		// value-less line: the SAFE boundary REFUSES the whole scene (legacy also
+		// rejects it) -- nothing applied, with a diagnostic. Round-trip still lossless.
 		const std::string s = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname\nradius 0.6\n}\n";
 		Cst::Document d = Cst::ParseToCst( s );
 		Check( Cst::SerializeCst(d) == s, "value-less line round-trips losslessly" );
-		Job* cstJob = new Job(); Cst::DeriveToJob( d, *cstJob );
-		Check( !cstJob->GetGeometries()->GetItem("radius"),
-		       "value-less 'name' line does NOT create a sphere named 'radius' (no token-swallow corruption)" );
+		Job* cstJob = new Job(); std::vector<std::string> diags;
+		int applied = Cst::DeriveToJob( d, *cstJob, &diags );
+		Check( applied == 0 && !diags.empty(), "value-less param -> refuse-all (0 applied) + diagnostic" );
+		Check( cstJob->GetGeometries()->getItemCount() == 0, "no geometry applied (not even a 'noname' sphere)" );
 		cstJob->release();
-		// NB: legacy REJECTS this scene via descriptor validation; the CST matching
-		// that rejection is item 5 (descriptor binding). Here we only assert that
-		// the kernel no longer corrupts (the P0-6 fix).
+	}
+	std::printf( "[safe] DeriveToJob refuses malformed scenes (unknown param / bad radius), no silent apply\n" );
+	{
+		const std::string s = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.6\nbogus 5\n}\n";
+		Job* j = new Job(); std::vector<std::string> diags;
+		int applied = Cst::DeriveToJob( Cst::ParseToCst(s), *j, &diags );
+		Check( applied == 0 && !diags.empty() && j->GetGeometries()->getItemCount() == 0, "unknown parameter -> refuse-all" );
+		j->release();
+	}
+	{
+		const char* bad[] = { "abc", "0.6cm", "inf", "nan" };
+		for( const char* b : bad ) {
+			std::string s = std::string("RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius ") + b + "\n}\n";
+			Job* j = new Job(); std::vector<std::string> diags;
+			int applied = Cst::DeriveToJob( Cst::ParseToCst(s), *j, &diags );
+			char msg[80]; std::snprintf( msg, sizeof(msg), "radius '%s' -> refuse-all (no silent atof sphere)", b );
+			Check( applied == 0 && j->GetGeometries()->getItemCount() == 0, msg );
+			j->release();
+		}
+	}
+	std::printf( "[oracle] DumpJob is lossless: radii differing in the 7th sig digit are distinguished\n" );
+	{
+		Job* a = new Job(); Cst::DeriveToJob( Cst::ParseToCst("RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.12345674\n}\n"), *a );
+		Job* b = new Job(); Cst::DeriveToJob( Cst::ParseToCst("RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.12345675\n}\n"), *b );
+		Check( risequiv::DumpJob(*a) != risequiv::DumpJob(*b), "two near-equal radii produce DIFFERENT dumps (lossless %.17g, no %.6g collision)" );
+		a->release(); b->release();
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

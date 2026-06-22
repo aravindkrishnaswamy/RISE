@@ -141,6 +141,34 @@ namespace
 					if( v->kind == NodeKind::Token && v->role == "pvalue" ) { out = v->text; found = true; }
 		return found;
 	}
+
+	//! Validate one sphere_geometry chunk; append any failures to `diags`. This is
+	//! the item-2 SAFE BOUNDARY (item 5 generalizes via the descriptor registry):
+	//! unknown parameter, value-less parameter line (a flattened bare pname), or a
+	//! radius that is not a fully-consumed finite number.
+	void ValidateSphereChunk( const Node* chunk, std::vector<std::string>& diags )
+	{
+		for( const auto& k : chunk->kids ) {
+			if( k->kind == NodeKind::Param ) {
+				if( k->role != "name" && k->role != "radius" )
+					diags.push_back( "sphere_geometry: unknown parameter '" + k->role + "'" );
+			} else if( k->kind == NodeKind::Token && k->role == "pname" ) {
+				diags.push_back( "sphere_geometry: value-less parameter '" + k->text + "'" );
+			}
+		}
+		std::string rs;
+		if( ParamValue( chunk, "radius", rs ) ) {
+			const char* p = rs.c_str();
+			char* end = 0;
+			std::strtod( p, &end );
+			bool consumed = ( end != 0 && end != p && *end == '\0' );
+			std::string low = rs;
+			for( size_t i = 0; i < low.size(); ++i ) if( low[i] >= 'A' && low[i] <= 'Z' ) low[i] = char( low[i] - 'A' + 'a' );
+			bool special = low.find( "inf" ) != std::string::npos || low.find( "nan" ) != std::string::npos;
+			if( !consumed || special )
+				diags.push_back( "sphere_geometry: radius '" + rs + "' is not a finite number" );
+		}
+	}
 }
 
 namespace RISE { namespace Cst {
@@ -174,9 +202,19 @@ std::string SerializeCst( const Document& doc )
 	return s;
 }
 
-int DeriveToJob( const Document& doc, IJob& pJob )
+int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics )
 {
 	if( !doc.root ) return 0;
+	std::vector<std::string> local;
+	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
+
+	// PASS 1 -- validate every sphere_geometry chunk (the safe boundary).
+	for( const auto& c : doc.root->kids )
+		if( c->kind == NodeKind::Chunk && c->role == "sphere_geometry" )
+			ValidateSphereChunk( c.get(), diags );
+	if( !diags.empty() ) return 0;   // refuse-all: a malformed scene applies NOTHING
+
+	// PASS 2 -- apply (all chunks validated).
 	int count = 0;
 	for( const auto& c : doc.root->kids ) {
 		if( c->kind != NodeKind::Chunk || c->role != "sphere_geometry" ) continue;
