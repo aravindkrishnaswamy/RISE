@@ -15,8 +15,9 @@
 //   * a within-chunk descent resolves a byte offset to the Param-in-chunk (the
 //     "edit geometry/s.radius" path);
 //   * reparse re-matches by content-key: a value edit keeps its id, a reorder of
-//     distinct chunks keeps ids regardless of position, a RENAME invalidates the
-//     old id and assigns a fresh one (D9/D15: invalidate-don't-remap).
+//     distinct chunks keeps ids regardless of position, a RENAME of a unique-of-type
+//     chunk KEEPS its id (lineage survives rename + reparse, D9/D44); only a
+//     genuinely-ambiguous row is invalidated rather than position-remapped (D9/D15).
 //
 //////////////////////////////////////////////////////////////////////
 

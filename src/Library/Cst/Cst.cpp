@@ -825,8 +825,18 @@ namespace
 			int a = p - radius; if( a < 0 ) a = 0;
 			int b = p - 1 + radius; if( b > N - 1 ) b = N - 1;
 			const int count = b - a + 1;
-			const std::int64_t lower = ( a > 0 )     ? IdLabelAt( doc.idseq, a - 1 ) : 0;
-			const std::int64_t upper = ( b < N - 1 ) ? IdLabelAt( doc.idseq, b + 1 ) : ( lower + (std::int64_t)( count + 2 ) * LABEL_GAP );
+			const std::int64_t lower = ( a > 0 ) ? IdLabelAt( doc.idseq, a - 1 ) : 0;
+			std::int64_t upper;
+			if( b < N - 1 ) {
+				upper = IdLabelAt( doc.idseq, b + 1 );
+			} else {
+				// synthetic tail upper; SATURATE to avoid int64 overflow (only
+				// reachable at ~1e9 items -- tens of GB of tree -- but keeps the
+				// arithmetic UB-free; redistribution below still leaves step >= 2).
+				const std::int64_t CEIL = (std::int64_t)1 << 62;
+				const std::int64_t need = (std::int64_t)( count + 2 );
+				upper = ( lower < CEIL && need < ( CEIL - lower ) / LABEL_GAP ) ? lower + need * LABEL_GAP : CEIL;
+			}
 			const std::int64_t avail = upper - lower;
 			const bool whole = ( a == 0 && b == N - 1 );
 			if( avail >= (std::int64_t)4 * ( count + 1 ) || whole ) {
