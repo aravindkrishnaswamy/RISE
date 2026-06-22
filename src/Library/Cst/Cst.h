@@ -202,14 +202,14 @@ namespace RISE
 		//! These exclusions are all the v6->v7 MIGRATOR's domain (D8), not the CST
 		//! runtime: a legacy scene that uses them is migrated to canonical form
 		//! before it reaches the CST. On a NON-canonical legacy input the two paths
-		//! may diverge -- the CST applies the stricter/cleaner model: it skips a
-		//! `>` line as a stray (so a `> run`-included reference goes unresolved and
-		//! is reported by the apply-time boundary below), and it strips a mid-line
-		//! `#`/`/* */` comment as trivia, whereas the legacy tokenizer keeps the
-		//! comment as tokens (tolerating a trailing `#` on a NUMERIC value, but
-		//! rejecting `/* */` or a comment after a STRING-valued param). The
-		//! serializer emits none of these, so they are out of the equivalence
-		//! scope. Returns the number of chunks applied.
+		//! may diverge, each by its own rules: the CST skips a `>` line as a stray
+		//! (it does not run directives -- a `> run`-included reference then goes
+		//! unresolved and is reported by the apply-time boundary below), and it
+		//! strips a mid-line `#`/`/* */` comment as trivia, whereas the legacy
+		//! tokenizer keeps the comment as tokens (tolerating a trailing `#` on a
+		//! NUMERIC value, but rejecting `/* */` or a comment after a STRING-valued
+		//! param). The serializer emits none of these, so they are out of the
+		//! equivalence scope. Returns the number of chunks applied.
 		//!
 		//! TWO-TIER SAFE BOUNDARY:
 		//!   * VALIDATION-time (PASS 1, what DispatchChunkParameters detects:
