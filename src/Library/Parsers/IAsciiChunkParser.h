@@ -80,7 +80,9 @@ namespace RISE
 	// parameter) on an undeclared parameter name or a non-finite numeric
 	// value; on success `bag` holds the values for a subsequent Finalize().
 	// Separating this validate+populate step from Finalize is what lets a
-	// caller validate every chunk first and apply none on failure.
+	// caller validate every chunk first and apply none on a VALIDATION failure
+	// (an apply-time Finalize failure -- e.g. an unresolved reference -- is a
+	// separate concern the caller handles when it invokes Finalize).
 	[[nodiscard]] bool DispatchChunkParameters( const ChunkDescriptor& desc, ParseStateBag& bag, const IAsciiChunkParser::ParamsList& params );
 }
 

@@ -10,7 +10,10 @@
 //  adds NodeId lineage + the identity side-maps. Item 5 routes DeriveToJob
 //  through the LIVE chunk-parser registry (CreateAllChunkParsers): every chunk
 //  type is validated via the shared DispatchChunkParameters and applied via the
-//  shared IAsciiChunkParser::Finalize, so the CST and legacy paths agree.
+//  shared IAsciiChunkParser::Finalize -- with each param line whitespace-
+//  normalised exactly as the legacy parser normalises it -- so the CST and
+//  legacy paths build an identical Job for the canonical scenes the CST is fed
+//  (see DeriveToJob for the exact equivalence scope + failure boundary).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -936,7 +939,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// SAME validation the legacy parser runs (DispatchChunkParameters: rejects an
 	// undeclared parameter name or a non-finite numeric value). Collect each
 	// chunk's populated bag; if ANY chunk fails, apply NOTHING (refuse-all).
-	struct Pending { const IAsciiChunkParser* parser; ParseStateBag bag; };
+	struct Pending { const IAsciiChunkParser* parser; ParseStateBag bag; std::string keyword; };
 	std::vector<Pending> pending;
 	pending.reserve( items.size() );
 	for( const auto& c : items ) {
@@ -952,17 +955,25 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			if( kid->kind == NodeKind::Token && kid->role == "pname" )
 				diags.push_back( kw + ": value-less parameter '" + kid->text + "'" );
 		// Build the ParamsList in document order, ONE line per param occurrence
-		// (so repeatable params survive). Each line is the param node's EXACT
-		// source bytes (Serialize) -- pname + original inter-token whitespace +
-		// value tokens, minus the leading indent and trailing trivia/comment that
-		// live outside the Param node. That is byte-identical to the (comment-
-		// stripped, leading-trimmed) chunk-body line the legacy parser feeds
-		// DispatchChunkParameters, so string_split + the resulting bag match
-		// exactly -- no whitespace-normalisation drift on string-valued params.
+		// (so repeatable params survive), NORMALISED exactly as the legacy parser
+		// normalises a chunk-body line: it runs each line through
+		// AsciiCommandParser::TokenizeString (splits on runs of " \t\r", dropping
+		// all interior whitespace) and rejoins with make_string_from_tokens(" ")
+		// before feeding DispatchChunkParameters. So we join this param's name +
+		// value TOKENS with single spaces, dropping the original inter-token
+		// trivia -- collapsing tabs / multi-space / column alignment identically.
+		// (Feeding the verbatim source bytes instead would drift on string-valued
+		// params: e.g. `geometry  ball` would keep a leading space in the value
+		// and silently fail the reference lookup.)
 		IAsciiChunkParser::ParamsList plist;
 		for( const auto& kid : c->kids )
 			if( kid->kind == NodeKind::Param ) {
-				std::string line; Serialize( kid, line );
+				std::string line;
+				for( const auto& tk : kid->kids )
+					if( tk->kind == NodeKind::Token ) {          // pname + pvalue tokens; skip trivia
+						if( !line.empty() ) line += ' ';
+						line += tk->text;
+					}
 				plist.push_back( String( line.c_str() ) );
 			}
 		ParseStateBag bag( &parser->Describe() );
@@ -970,15 +981,25 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			diags.push_back( kw + ": invalid parameter(s) (see log)" );
 			continue;
 		}
-		pending.push_back( Pending{ parser, std::move(bag) } );
+		pending.push_back( Pending{ parser, std::move(bag), kw } );
 	}
 	if( !diags.empty() ) return 0;   // refuse-all: a malformed scene applies NOTHING
 
 	// PASS 2 -- apply via the SAME Finalize the legacy parser calls, so the CST
-	// path and the legacy path build an identical Job for any registry scene.
+	// path and the legacy path build an identical Job for any (validation-clean)
+	// registry scene. A Finalize failure is an APPLY-TIME error that PASS-1
+	// validation cannot detect (e.g. a reference to a not-yet/never-defined
+	// chunk): match the legacy parser's abort-on-first-failure -- surface a
+	// diagnostic and STOP (do not silently swallow it, and do not keep applying
+	// later chunks, which would diverge from legacy). Chunks before the failure
+	// stay applied, exactly as the legacy parser leaves them; full apply-atomicity
+	// (rollback of the prior chunks) is later Facet-2 work.
 	int count = 0;
-	for( Pending& p : pending )
-		if( p.parser->Finalize( p.bag, pJob ) ) ++count;
+	for( Pending& p : pending ) {
+		if( p.parser->Finalize( p.bag, pJob ) ) { ++count; continue; }
+		diags.push_back( p.keyword + ": apply failed (e.g. unresolved reference); see log" );
+		break;
+	}
 	return count;
 }
 

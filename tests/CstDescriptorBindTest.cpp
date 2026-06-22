@@ -86,6 +86,56 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
+	// [equiv-ws] each param line is whitespace-normalised exactly like the legacy
+	// parser (TokenizeString collapses " \t\r" runs, rejoin single-space). Tabs /
+	// multi-space in a string-valued param -- ESPECIALLY a reference -- must NOT
+	// drift the Job (the round-1 review's silent-object-drop on `geometry  ball`).
+	//----------------------------------------------------------------------
+	std::printf( "[equiv-ws] tab / multi-space param values normalise like legacy\n" );
+	{
+		const std::string ws =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname red\ncolor 0.2 0.4 0.6\n}\n"
+			"lambertian_material\n{\nname redmat\nreflectance red\n}\n"
+			"sphere_geometry\n{\nname\tball\nradius 0.25\n}\n"
+			"standard_object\n{\nname obj\ngeometry  ball\nmaterial\tredmat\nposition 1  2   3\n}\n";
+		Job* lj = new Job(); bool okl = ParseLegacy( ws, *lj );
+		Job* cj = new Job(); std::vector<std::string> diags; int n = DeriveCst( ws, *cj, &diags );
+		Check( okl && n == 4 && diags.empty(), "tab/multi-space scene derives (both paths accept it)" );
+		std::string dl = DumpJob( *lj ), dc = DumpJob( *cj );
+		Check( dl == dc, "tab/multi-space normalised identically to legacy (object wired, not dropped)" );
+		if( dl != dc ) std::printf( "    legacy=[%s]\n    cst   =[%s]\n", dl.c_str(), dc.c_str() );
+		Check( dc.find( "geometry=ball" )   != std::string::npos, "double-space `geometry  ball` resolves to 'ball', not ' ball'" );
+		Check( dc.find( "material=redmat" ) != std::string::npos, "tab `material\\tredmat` resolves to 'redmat'" );
+		lj->release(); cj->release();
+	}
+
+	//----------------------------------------------------------------------
+	// [apply-abort] an APPLY-time Finalize failure (a dangling reference, which
+	// PASS-1 validation cannot detect) is NOT silently swallowed: the derive stops
+	// at the first failing chunk with a diagnostic, leaving earlier chunks applied
+	// -- matching the legacy parser's abort-on-first-failure, so the applied-prefix
+	// Job state agrees even on this diverging-input case.
+	//----------------------------------------------------------------------
+	std::printf( "[apply-abort] dangling reference: stop + diagnose, never silently half-derive\n" );
+	{
+		const std::string dangling =
+			"RISE ASCII SCENE 6\n"
+			"sphere_geometry\n{\nname s\nradius 0.25\n}\n"
+			"standard_object\n{\nname o\ngeometry nonexistent\nposition 0 0 0\n}\n"
+			"sphere_geometry\n{\nname t\nradius 0.5\n}\n";
+		Job* cj = new Job(); std::vector<std::string> diags; int n = DeriveCst( dangling, *cj, &diags );
+		Check( n == 1 && !diags.empty(), "applies only the chunk before the failure (s), with a diagnostic" );
+		std::string dc = DumpJob( *cj );
+		Check( dc.find( "\n  s " ) != std::string::npos, "geometry 's' (before the failure) IS applied" );
+		Check( dc.find( "\n  t " ) == std::string::npos, "geometry 't' (after the failure) is NOT applied (stopped, not continued)" );
+		Check( dc.find( "\n  o " ) == std::string::npos, "the dangling object 'o' is not in the scene" );
+		Job* lj = new Job(); ParseLegacy( dangling, *lj );
+		Check( DumpJob( *lj ) == dc, "applied-prefix Job state matches legacy (both abort at the dangling ref)" );
+		lj->release(); cj->release();
+	}
+
+	//----------------------------------------------------------------------
 	// [multitoken] multi-token values captured whole (not truncated to token 1).
 	//----------------------------------------------------------------------
 	std::printf( "[multitoken] multi-token param value captured whole\n" );

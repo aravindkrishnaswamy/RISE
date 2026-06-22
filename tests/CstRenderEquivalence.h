@@ -106,10 +106,13 @@ inline bool ParseLegacy( const std::string& sceneText, Job& job, const char* tmp
 // bounding box (encodes position / scale / geometry size). Painter colour and
 // material scalar state are identical BY CONSTRUCTION (same Finalize) once the
 // param values match -- and the multi-token value path that feeds them is
-// covered directly by CstDescriptorBindTest's ParamValue assertions; dumping a
-// painter's colour additionally would require constructing a
-// RayIntersectionGeometric for GetColor, which buys nothing over verifying the
-// input. Materials/painters therefore stay names-only here intentionally.
+// covered END-TO-END here: an object's `position`/`scale` are multi-token
+// DoubleVec3 values, so a multi-token mis-capture moves the world bbox and fails
+// the CST-vs-legacy comparison (CstDescriptorBindTest [equiv]); its [multitoken]
+// ParamValue assertions additionally pin the CST-side capture. Colour shares
+// that one capture mechanism, so dumping a painter's colour (which would require
+// constructing a RayIntersectionGeometric for GetColor) buys nothing over the
+// position/bbox check. Materials/painters therefore stay names-only here.
 inline std::string DumpJob( Job& job )
 {
 	std::ostringstream o;

@@ -19,7 +19,10 @@
 //    * item 5 -- the derive binds through the LIVE chunk-parser descriptor
 //      registry (CreateAllChunkParsers): EVERY registry chunk type is validated
 //      via the same DispatchChunkParameters and applied via the same Finalize as
-//      the legacy parser, so the two paths build an identical Job.
+//      the legacy parser (with the same param-line whitespace normalisation), so
+//      the two paths build an identical Job for the canonical scenes the CST is
+//      fed. See DeriveToJob for the exact equivalence scope + the two-tier
+//      (validation refuse-all / apply abort-on-first) failure boundary.
 //
 //  Derive domain: the CST is the v7 runtime format -- macro-free and
 //  expression-free. v6 `$( )` / DEFINE / FOR are the one-shot v6->v7 MIGRATOR's
@@ -184,20 +187,32 @@ namespace RISE
 
 		//! Derive the document's chunks into pJob through the LIVE chunk-parser
 		//! registry (item 5). Each chunk is looked up by keyword in
-		//! CreateAllChunkParsers(); its params are validated + bagged by the SAME
-		//! DispatchChunkParameters the legacy parser runs, and applied via the
-		//! SAME IAsciiChunkParser::Finalize. So ANY registry chunk type derives,
-		//! and the CST path and the legacy path build an identical Job (the
-		//! render-equivalence gate). Returns the number of chunks applied.
+		//! CreateAllChunkParsers(); each param line is normalised exactly as the
+		//! legacy parser normalises it (whitespace runs collapsed to single
+		//! spaces, like AsciiCommandParser::TokenizeString + rejoin), validated +
+		//! bagged by the SAME DispatchChunkParameters the legacy parser runs, and
+		//! applied via the SAME IAsciiChunkParser::Finalize. So ANY registry chunk
+		//! type derives, and the CST path and the legacy path build an IDENTICAL
+		//! Job for the scenes the CST is actually fed -- the v6->v7 serializer's
+		//! canonical output: macro-free (D8: $()/DEFINE/FOR are the migrator's
+		//! domain, not the CST runtime) with comments on their own lines (a
+		//! mid-line `#`/`/* */` after a value is CST-stripped trivia but a legacy
+		//! token, so it is excluded by construction, as the legacy parser also
+		//! rejects it for numeric params). Returns the number of chunks applied.
 		//!
-		//! SAFE BOUNDARY (item-2 review, generalised in item 5): every chunk is
-		//! VALIDATED first -- unknown chunk type, unknown parameter, value-less
-		//! parameter line, non-finite / non-numeric numeric value (whatever
-		//! DispatchChunkParameters rejects). If ANY chunk fails, NOTHING is applied
-		//! (refuse-all) and the failures are reported in `diagnostics` (when
-		//! non-null). A malformed scene is refused, never silently half-derived.
-		//! (Top-level non-chunk items -- the scene header strays / trivia -- are
-		//! skipped; they carry no Job state.)
+		//! TWO-TIER SAFE BOUNDARY:
+		//!   * VALIDATION-time (PASS 1, what DispatchChunkParameters detects:
+		//!     unknown chunk type / unknown parameter / value-less line / non-
+		//!     finite-or-non-numeric numeric value) is REFUSE-ALL -- if any chunk
+		//!     fails validation, NOTHING is applied.
+		//!   * APPLY-time (PASS 2, a Finalize failure that only surfaces on apply,
+		//!     e.g. an unresolved reference) matches the legacy parser's
+		//!     ABORT-ON-FIRST-FAILURE: it stops at the first failing chunk, leaving
+		//!     chunks BEFORE it applied (as legacy does) -- not silently swallowed,
+		//!     not continued past. Full apply-atomicity (rollback) is later work.
+		//! Both tiers report the failures in `diagnostics` (when non-null); neither
+		//! silently half-derives. (Top-level non-chunk items -- the scene header
+		//! strays / trivia -- are skipped; they carry no Job state.)
 		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr );
 
 		//==============================================================

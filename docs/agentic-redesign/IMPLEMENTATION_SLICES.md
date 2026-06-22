@@ -297,17 +297,26 @@ until it is green:
    validates its params through the **same `DispatchChunkParameters`** the legacy parser runs (now
    exposed as a public wrapper in `IAsciiChunkParser.h`), and applies via the **same
    `IAsciiChunkParser::Finalize`** — so EVERY registry chunk type derives and the CST path builds a Job
-   identical to the legacy path. Refuse-all is preserved (validate every chunk first via a populated
-   `ParseStateBag`; apply none on any failure — unknown chunk type, unknown param, value-less line,
-   non-finite/non-numeric value). Two enabling changes: (a) `ParseChunk` now captures **multi-token
-   param values** (`color 1 0 0`, `position 1 2 3`) as several `pvalue` tokens, round-trip-lossless, and
-   the derive feeds each param line as its **exact serialized bytes** to `string_split` (no
-   whitespace-normalisation drift on string params); (b) `DumpJob` gained **object reference wiring**
-   (geometry + material names via manager reverse-lookup) and the **world-space bounding box** (encodes
-   the multi-token position/scale), so a derive value mis-capture diverges the oracle. Test:
-   `tests/CstDescriptorBindTest.cpp` (15 checks — multi-type equivalence vs legacy, multi-token capture,
-   refuse-all on each malformed class). Deferred-and-honest: **category name-paths** (`geometry/s`; one
-   category → many keywords) stay out — reference resolution in the derive runs through the engine's
+   identical to the legacy path **for the canonical scenes the CST is fed** (the v6→v7 serializer's
+   output: macro-free, comments on their own lines). **Two-tier failure boundary** (per the item-5
+   review): VALIDATION-time failures (unknown chunk/param, value-less line, non-finite/non-numeric value)
+   are **refuse-all** (validate every chunk via a populated `ParseStateBag`; apply none on any failure);
+   an APPLY-time `Finalize` failure (e.g. an unresolved reference, undetectable pre-apply) matches the
+   legacy parser's **abort-on-first-failure** (stop, emit a diagnostic, leave chunks before it applied —
+   never silently swallowed or continued past; full rollback is later Facet-2 work). Two enabling
+   changes: (a) `ParseChunk` now captures **multi-token param values** (`color 1 0 0`, `position 1 2 3`)
+   as several `pvalue` tokens, round-trip-lossless, and the derive feeds each param line **whitespace-
+   normalised exactly as the legacy parser normalises it** (`TokenizeString` collapses ` \t\r` runs +
+   rejoins single-space — so tabs/multi-space/aligned columns in a string value can't drift the Job, the
+   review's silent-object-drop case); (b) `DumpJob` gained **object reference wiring** (geometry +
+   material names via manager reverse-lookup) and the **world-space bounding box** (encodes the
+   multi-token position/scale), so a derive value mis-capture diverges the oracle. Test:
+   `tests/CstDescriptorBindTest.cpp` (multi-type equivalence vs legacy, multi-token capture, whitespace
+   normalisation, apply-time abort-on-dangling-ref, refuse-all on each malformed class). Item-5 review:
+   2 self-driven rounds — round 1 found 2 P1s (whitespace-normalisation equivalence break → silent
+   object drop; apply-time refuse-all hole → silent half-derive), both fixed here. Deferred-and-honest:
+   **category name-paths** (`geometry/s`; one category → many keywords) stay out — reference resolution
+   in the derive runs through the engine's
    named managers by name, so category addressing is a CST-navigation nicety, not load-bearing for
    items 5–8. ← next: item 6 (reference tracing through the real resolver).
 6. **Trace references through the real resolver** and test a **three-level** dependency chain.
