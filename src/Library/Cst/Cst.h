@@ -162,7 +162,7 @@ namespace RISE
 			IdSeqRef    idseq;     //!< position -> NodeId, lockstep with items (item 4)
 			NameMapRef  byName;    //!< name-path -> NodeId (item 4)
 			IdMapRef    byId;      //!< NodeId -> current green node, O(log N) reverse lookup (item 4)
-			ParamMapRef paramIds;  //!< (chunkId, param role) -> param NodeId (item 4)
+			ParamMapRef paramIds;  //!< (chunkId, role, occurrence) -> param NodeId (item 4)
 			NodeId      nextId = 1;
 		};
 

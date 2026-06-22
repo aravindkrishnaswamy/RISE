@@ -11,9 +11,10 @@
 > it is green. **Claims narrowed per that review:** the O(closure) result is by **apply-layer-call
 > count with the closure already computed** — it excludes target lookup, persistent-cache/COW,
 > realization, and TLAS rebuild, and **spatial edits remain O(N log N)** (D24); "reparse-stable
-> identity" covers **param/value NodeIds only** (chunk identity + free-form-rename-by-reparse are
-> open; structured rename is handled). The slices are PROTOTYPES under `tests/`, not yet wired into
-> the real CST/parser/engine.
+> identity" (in the PROTOTYPES) covered **param/value NodeIds only** (chunk identity +
+> free-form-rename-by-reparse were open; structured rename handled). *(Both are now CLOSED in the
+> in-tree item 4 — the kernel's 4-pass matcher carries chunk lineage through a unique-of-type rename,
+> D9/D44.)* The slices are PROTOTYPES under `tests/`; the in-tree kernel is `src/Library/Cst`.
 
 > **Status:** **review rounds 1–6 complete** (no P0s in any). The reviews found 8 P1 + 2 P2 (r1),
 > 8 P1 + a P2 batch (r2), 8 P1 (r3), 9 P1 (r4), 7 P1 (r5), and 7 P1 (r6), all resolved authoritatively
