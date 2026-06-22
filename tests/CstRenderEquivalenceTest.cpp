@@ -18,6 +18,9 @@ using namespace risequiv;
 
 static int g_pass = 0, g_fail = 0;
 static void Check( bool cond, const char* what ) { if( cond ) ++g_pass; else { ++g_fail; std::printf( "  FAIL: %s\n", what ); } }
+// Format a bsphere field exactly as DumpJob does (lossless %.17g of (double)(Scalar)r),
+// so radius assertions cannot drift with float/double precision (0.6 -> 0.59999999999999998).
+static std::string Bsphere( double r ) { char b[64]; std::snprintf( b, sizeof(b), "bsphere=%.17g", (double)(Scalar)r ); return b; }
 
 // Parse a scene twice via the legacy path and confirm the dump is identical
 // (the oracle is deterministic) and non-trivial. Returns the dump.
@@ -46,7 +49,7 @@ int main()
 		"RISE ASCII SCENE 6\n"
 		"sphere_geometry\n{\nname s\nradius 0.6\n}\n";
 	std::string dumpA = OracleStable( sceneA, "sphere" );
-	Check( dumpA.find("  s bsphere=0.6") != std::string::npos, "dump captures geometry s with bounding-sphere radius 0.6" );
+	Check( dumpA.find("  s " + Bsphere(0.6)) != std::string::npos, "dump captures geometry s with bounding-sphere radius 0.6" );
 
 	//------------------------------------------------------------------
 	// Scene B: painter + material (reference) + two spheres.
@@ -59,8 +62,8 @@ int main()
 		"sphere_geometry\n{\nname ballA\nradius 0.165\n}\n"
 		"sphere_geometry\n{\nname ballB\nradius 0.25\n}\n";
 	std::string dumpB = OracleStable( sceneB, "multi" );
-	Check( dumpB.find("ballA bsphere=0.165") != std::string::npos
-	    && dumpB.find("ballB bsphere=0.25")  != std::string::npos, "dump captures both spheres with their radii" );
+	Check( dumpB.find("ballA " + Bsphere(0.165)) != std::string::npos
+	    && dumpB.find("ballB " + Bsphere(0.25))  != std::string::npos, "dump captures both spheres with their radii" );
 	Check( dumpB.find("\n  red\n")    != std::string::npos, "dump captures painter 'red'" );
 	Check( dumpB.find("\n  redmat\n") != std::string::npos, "dump captures material 'redmat'" );
 

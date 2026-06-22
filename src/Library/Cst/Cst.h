@@ -77,10 +77,45 @@ namespace RISE
 		};
 		typedef std::shared_ptr<const SeqNode> SeqRef;
 
-		//! A parsed document: a persistent sequence of its top-level items.
+		//! Stable lineage identity (D26). 0 == none / invalid.
+		typedef long NodeId;
+
+		//! The SEPARATE persistent identity side-map (D23/D26) -- NOT a field on
+		//! the green/seq node. A NodeId per top-level item, ordered IN LOCKSTEP
+		//! with the item sequence (occurrence/position -> NodeId). So identity
+		//! survives a value edit (replace keeps the id at that position) and an
+		//! insert/erase index shift (the id moves WITH its item; position changes,
+		//! identity does not). Persistent balanced (path-copy, O(log N)).
+		struct IdNode
+		{
+			std::shared_ptr<const IdNode> left, right;
+			NodeId id;
+			int    count;
+		};
+		typedef std::shared_ptr<const IdNode> IdSeqRef;
+
+		//! Persistent name-path -> NodeId index (KEY-ordered, weight-balanced):
+		//! counted O(log N) name resolution, maintained on parse/rename/insert/
+		//! erase. (Kernel keys on "keyword/name", e.g. "sphere_geometry/s";
+		//! category name-paths like "geometry/s" are an item-5 descriptor concern.)
+		struct NameNode
+		{
+			std::shared_ptr<const NameNode> left, right;
+			std::string name;
+			NodeId      id;
+			int         count;
+		};
+		typedef std::shared_ptr<const NameNode> NameMapRef;
+
+		//! A parsed document: the green item sequence (item 3) + the identity
+		//! side-map and name-path index (item 4), all persistent / structurally
+		//! shared, plus a monotonic fresh-id source.
 		struct Document
 		{
-			SeqRef items;
+			SeqRef     items;    //!< green top-level item sequence (item 3)
+			IdSeqRef   idseq;    //!< position -> NodeId, lockstep with items (item 4)
+			NameMapRef byName;   //!< name-path -> NodeId (item 4)
+			NodeId     nextId = 1;
 		};
 
 		//! bytes -> CST. Lossless: every input byte lands in exactly one leaf,
@@ -154,6 +189,48 @@ namespace RISE
 		//! NON-NULL CONTRACT: a null insert `newItem` is refused (doc unchanged).
 		Document DocInsertItem( const Document& doc, int index, NodeRef newItem, int* visits = nullptr );
 		Document DocEraseItem ( const Document& doc, int index, int* visits = nullptr );
+
+		//==============================================================
+		// Item 4 -- NodeId identity + name-path addressing (the name-path half of
+		// the counted lookup; the byte-offset half is item 3). Identity lives in a
+		// SEPARATE persistent side-map, stable across edits (D26); name resolution
+		// is O(log N) and COUNTED; reparse re-matches by content+position and
+		// invalidates the ambiguous rather than silently remapping (D9/D15).
+		//==============================================================
+
+		//! NodeId of the top-level item at `index` (O(log N) via the id side-map;
+		//! 0 if out of range). `*visits` (if non-null) receives the descent count.
+		NodeId DocNodeIdAt( const Document& doc, int index, int* visits = nullptr );
+
+		//! Resolve a name-path (e.g. "sphere_geometry/s") to its NodeId (0 if
+		//! none). O(log N); `*visits` receives the BST descent count -- the find
+		//! is COUNTED, not an O(N) scan.
+		NodeId DocFindByName( const Document& doc, const std::string& namePath, int* visits = nullptr );
+
+		//! The current top-level INDEX of a NodeId (-1 if absent), and `outItem`
+		//! (if non-null) its item -- durable-ref resolution: an agent holds a
+		//! NodeId, this finds where it is now after edits. (Linear scan of the id
+		//! side-map for now; an order-statistic id index is a refinement.)
+		int DocIndexOfNodeId( const Document& doc, NodeId id, NodeRef* outItem );
+
+		//! Within-chunk descent (the "edit geometry/s.radius" path): resolve a byte
+		//! offset to the innermost Param at that offset and its enclosing chunk.
+		//! Returns the Param NodeRef (or null if the offset is not inside a chunk's
+		//! Param); `outChunk` (if non-null) receives the enclosing chunk; `*visits`
+		//! the rope-descent count (O(log N) to the chunk + O(params) within).
+		NodeRef DocParamAtByteOffset( const Document& doc, size_t offset, NodeRef* outChunk, int* visits );
+
+		//! Reparse `newText` and carry NodeIds from `oldDoc`: each new item is
+		//! matched to an old item by CONTENT-KEY (a chunk's (keyword, name); a
+		//! trivia/stray's bytes), greedily in order. A value edit keeps the chunk's
+		//! (keyword,name) key, so it re-matches and KEEPS its id; a reorder of
+		//! distinct chunks still matches by key regardless of position. A RENAME
+		//! changes the key, so it does NOT match -- the new item gets a FRESH id and
+		//! the old id is INVALIDATED (D9/D15: invalidate-don't-remap; we never
+		//! position-remap distinct content onto a slot, which could silently rebind
+		//! an unrelated item). Returns the new Document (ids carried where matched);
+		//! `*invalidated` (if non-null) receives the old NodeIds with no re-match.
+		Document DocReparse( const Document& oldDoc, const std::string& newText, std::vector<NodeId>* invalidated = nullptr );
 	}
 }
 

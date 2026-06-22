@@ -318,6 +318,166 @@ namespace
 		SeqRef nr = SeqEraseMin( s->right, si, sb, sn, visits );
 		return Balance( s->left, si, sb, sn, nr );
 	}
+
+	//! Item NodeRef at in-order index (O(log N), iterative).
+	NodeRef SeqItemAt( const SeqRef& s, int index )
+	{
+		const SeqNode* cur = s.get();
+		while( cur ) {
+			const int li = SeqCount( cur->left );
+			if( index <  li ) cur = cur->left.get();
+			else if( index == li ) return cur->item;
+			else { index -= li + 1; cur = cur->right.get(); }
+		}
+		return NodeRef();
+	}
+
+	//----------------------------------------------------------------------
+	// Item 4 -- identity side-map + name-path index (both persistent, separate
+	// from the green/seq node, weight-balanced like the item sequence).
+	//----------------------------------------------------------------------
+
+	//! "keyword/name" addressing key for a named chunk; "" otherwise.
+	std::string ChunkNamePath( const NodeRef& item )
+	{
+		if( !item || item->kind != NodeKind::Chunk ) return std::string();
+		std::string nm;
+		if( !ParamValue( item.get(), "name", nm ) || nm.empty() ) return std::string();
+		return item->role + "/" + nm;
+	}
+
+	// ---- IdSeq: positional persistent WBT of NodeId (occurrence -> NodeId) ----
+	int IdSize( const IdSeqRef& s ) { return s ? s->count : 0; }
+	IdSeqRef IdMk( IdSeqRef l, NodeId id, IdSeqRef r )
+	{
+		auto n = std::make_shared<IdNode>();
+		n->left = std::move(l); n->right = std::move(r); n->id = id;
+		n->count = 1 + IdSize(n->left) + IdSize(n->right);
+		return n;
+	}
+	IdSeqRef IdBalance( IdSeqRef l, NodeId id, IdSeqRef r )
+	{
+		const int ln = IdSize(l), rn = IdSize(r);
+		if( ln + rn > 1 ) {
+			if( rn > WBT_DELTA * ln ) {
+				if( IdSize(r->left) < WBT_GAMMA * IdSize(r->right) ) return IdMk( IdMk(l, id, r->left), r->id, r->right );
+				const IdSeqRef& rl = r->left;
+				return IdMk( IdMk(l, id, rl->left), rl->id, IdMk(rl->right, r->id, r->right) );
+			}
+			if( ln > WBT_DELTA * rn ) {
+				if( IdSize(l->right) < WBT_GAMMA * IdSize(l->left) ) return IdMk( l->left, l->id, IdMk(l->right, id, r) );
+				const IdSeqRef& lr = l->right;
+				return IdMk( IdMk(l->left, l->id, lr->left), lr->id, IdMk(lr->right, id, r) );
+			}
+		}
+		return IdMk( l, id, r );
+	}
+	IdSeqRef IdBuild( const std::vector<NodeId>& v, int lo, int hi )
+	{
+		if( lo >= hi ) return IdSeqRef();
+		const int mid = (lo + hi) / 2;
+		return IdMk( IdBuild(v, lo, mid), v[mid], IdBuild(v, mid+1, hi) );
+	}
+	IdSeqRef IdInsertAt( const IdSeqRef& s, int index, NodeId id )
+	{
+		if( !s ) return IdMk( IdSeqRef(), id, IdSeqRef() );
+		const int li = IdSize(s->left);
+		if( index <= li ) return IdBalance( IdInsertAt(s->left, index, id), s->id, s->right );
+		return IdBalance( s->left, s->id, IdInsertAt(s->right, index - li - 1, id) );
+	}
+	IdSeqRef IdEraseMin( const IdSeqRef& s, NodeId& out )
+	{
+		if( !s->left ) { out = s->id; return s->right; }
+		return IdBalance( IdEraseMin(s->left, out), s->id, s->right );
+	}
+	IdSeqRef IdEraseAt( const IdSeqRef& s, int index )
+	{
+		if( !s ) return s;
+		const int li = IdSize(s->left);
+		if( index <  li ) return IdBalance( IdEraseAt(s->left, index), s->id, s->right );
+		if( index >  li ) return IdBalance( s->left, s->id, IdEraseAt(s->right, index - li - 1) );
+		if( !s->left )  return s->right;
+		if( !s->right ) return s->left;
+		NodeId sid; IdSeqRef nr = IdEraseMin( s->right, sid );
+		return IdBalance( s->left, sid, nr );
+	}
+	NodeId IdAt( const IdSeqRef& s, int index, int& visits )
+	{
+		const IdNode* cur = s.get();
+		while( cur ) {
+			++visits;
+			const int li = IdSize(cur->left);
+			if( index <  li ) cur = cur->left.get();
+			else if( index == li ) return cur->id;
+			else { index -= li + 1; cur = cur->right.get(); }
+		}
+		return 0;
+	}
+	void IdToVec( const IdSeqRef& s, std::vector<NodeId>& out )
+	{
+		if( !s ) return;
+		IdToVec( s->left, out ); out.push_back( s->id ); IdToVec( s->right, out );
+	}
+
+	// ---- NameMap: key-ordered persistent WBT (name-path -> NodeId) ----
+	int NameSize( const NameMapRef& s ) { return s ? s->count : 0; }
+	NameMapRef NameMk( NameMapRef l, std::string name, NodeId id, NameMapRef r )
+	{
+		auto n = std::make_shared<NameNode>();
+		n->left = std::move(l); n->right = std::move(r); n->name = std::move(name); n->id = id;
+		n->count = 1 + NameSize(n->left) + NameSize(n->right);
+		return n;
+	}
+	NameMapRef NameBalance( NameMapRef l, std::string name, NodeId id, NameMapRef r )
+	{
+		const int ln = NameSize(l), rn = NameSize(r);
+		if( ln + rn > 1 ) {
+			if( rn > WBT_DELTA * ln ) {
+				if( NameSize(r->left) < WBT_GAMMA * NameSize(r->right) ) return NameMk( NameMk(l, std::move(name), id, r->left), r->name, r->id, r->right );
+				const NameMapRef& rl = r->left;
+				return NameMk( NameMk(l, std::move(name), id, rl->left), rl->name, rl->id, NameMk(rl->right, r->name, r->id, r->right) );
+			}
+			if( ln > WBT_DELTA * rn ) {
+				if( NameSize(l->right) < WBT_GAMMA * NameSize(l->left) ) return NameMk( l->left, l->name, l->id, NameMk(l->right, std::move(name), id, r) );
+				const NameMapRef& lr = l->right;
+				return NameMk( NameMk(l->left, l->name, l->id, lr->left), lr->name, lr->id, NameMk(lr->right, std::move(name), id, r) );
+			}
+		}
+		return NameMk( l, std::move(name), id, r );
+	}
+	NameMapRef NameInsert( const NameMapRef& s, const std::string& name, NodeId id )
+	{
+		if( !s ) return NameMk( NameMapRef(), name, id, NameMapRef() );
+		if( name < s->name ) return NameBalance( NameInsert(s->left, name, id), s->name, s->id, s->right );
+		if( s->name < name ) return NameBalance( s->left, s->name, s->id, NameInsert(s->right, name, id) );
+		return NameMk( s->left, s->name, id, s->right );   // equal key -> overwrite id
+	}
+	NodeId NameFind( const NameMapRef& s, const std::string& name, int& visits )
+	{
+		const NameNode* cur = s.get();
+		while( cur ) {
+			++visits;
+			if( name < cur->name ) cur = cur->left.get();
+			else if( cur->name < name ) cur = cur->right.get();
+			else return cur->id;
+		}
+		return 0;
+	}
+	NameMapRef NameEraseMin( const NameMapRef& s, std::string& kOut, NodeId& vOut )
+	{
+		if( !s->left ) { kOut = s->name; vOut = s->id; return s->right; }
+		return NameBalance( NameEraseMin(s->left, kOut, vOut), s->name, s->id, s->right );
+	}
+	NameMapRef NameErase( const NameMapRef& s, const std::string& name )
+	{
+		if( !s ) return s;
+		if( name < s->name ) return NameBalance( NameErase(s->left, name), s->name, s->id, s->right );
+		if( s->name < name ) return NameBalance( s->left, s->name, s->id, NameErase(s->right, name) );
+		if( !s->left )  return s->right;
+		if( !s->right ) return s->left;
+		std::string k; NodeId v; NameMapRef nr = NameEraseMin( s->right, k, v );
+		return NameBalance( s->left, std::move(k), v, nr );
+	}
 }
 
 namespace RISE { namespace Cst {
@@ -340,6 +500,16 @@ Document ParseToCst( const std::string& bytes )
 	}
 	Document d;
 	d.items = SeqBuild( items, 0, (int)items.size() );
+	// item 4: fresh NodeIds 1..N in lockstep (the identity side-map) + name index.
+	std::vector<NodeId> ids;
+	for( int k = 0; k < (int)items.size(); ++k ) {
+		NodeId id = (NodeId)( k + 1 );
+		ids.push_back( id );
+		std::string np = ChunkNamePath( items[k] );
+		if( !np.empty() ) d.byName = NameInsert( d.byName, np, id );
+	}
+	d.idseq  = IdBuild( ids, 0, (int)ids.size() );
+	d.nextId = (NodeId)items.size() + 1;
 	return d;
 }
 
@@ -394,10 +564,19 @@ Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* v
 	if( visits ) *visits = 0;
 	if( !newItem ) return doc;                                     // non-null contract: refuse
 	if( index < 0 || index >= DocItemCount(doc) ) return doc;      // out of range: no-op
+	// identity (item 4): the NodeId at `index` PERSISTS (idseq unchanged); only
+	// re-key byName if the chunk's name changed.
+	const std::string oldName = ChunkNamePath( SeqItemAt( doc.items, index ) );
+	const std::string newName = ChunkNamePath( newItem );
 	int v = 0;
-	Document d;
+	Document d = doc;                                              // carry idseq / byName / nextId
 	d.items = SeqReplace( doc.items, index, std::move(newItem), v );
 	if( visits ) *visits = v;
+	if( oldName != newName ) {
+		int iv = 0; NodeId id = IdAt( doc.idseq, index, iv );
+		if( !oldName.empty() ) d.byName = NameErase( d.byName, oldName );
+		if( !newName.empty() ) d.byName = NameInsert( d.byName, newName, id );
+	}
 	return d;
 }
 
@@ -408,9 +587,14 @@ Document DocInsertItem( const Document& doc, int index, NodeRef newItem, int* vi
 	int n = SeqCount( doc.items );
 	if( index < 0 ) index = 0;
 	if( index > n ) index = n;
+	const NodeId id = doc.nextId;                                  // fresh identity
+	const std::string np = ChunkNamePath( newItem );
 	int v = 0;
-	Document d;
-	d.items = SeqInsertAt( doc.items, index, std::move(newItem), v );   // O(log N) WBT
+	Document d = doc;
+	d.items  = SeqInsertAt( doc.items, index, std::move(newItem), v );   // O(log N) WBT
+	d.idseq  = IdInsertAt( doc.idseq, index, id );                       // O(log N) lockstep splice
+	if( !np.empty() ) d.byName = NameInsert( d.byName, np, id );
+	d.nextId = doc.nextId + 1;
 	if( visits ) *visits = v;
 	return d;
 }
@@ -419,10 +603,108 @@ Document DocEraseItem( const Document& doc, int index, int* visits )
 {
 	if( visits ) *visits = 0;
 	if( index < 0 || index >= SeqCount(doc.items) ) return doc;    // out of range: no-op
+	const std::string np = ChunkNamePath( SeqItemAt( doc.items, index ) );
 	int v = 0;
-	Document d;
-	d.items = SeqEraseAt( doc.items, index, v );                   // O(log N) WBT
+	Document d = doc;
+	d.items  = SeqEraseAt( doc.items, index, v );                  // O(log N) WBT
+	d.idseq  = IdEraseAt( doc.idseq, index );                      // O(log N) lockstep splice
+	if( !np.empty() ) d.byName = NameErase( d.byName, np );
 	if( visits ) *visits = v;
+	return d;
+}
+
+//---- item 4: identity + name-path lookups ----
+
+NodeId DocNodeIdAt( const Document& doc, int index, int* visits )
+{
+	int v = 0;
+	NodeId id = ( index < 0 || index >= IdSize(doc.idseq) ) ? 0 : IdAt( doc.idseq, index, v );
+	if( visits ) *visits = v;
+	return id;
+}
+
+NodeId DocFindByName( const Document& doc, const std::string& namePath, int* visits )
+{
+	int v = 0;
+	NodeId id = NameFind( doc.byName, namePath, v );
+	if( visits ) *visits = v;
+	return id;
+}
+
+int DocIndexOfNodeId( const Document& doc, NodeId id, NodeRef* outItem )
+{
+	std::vector<NodeId> ids; IdToVec( doc.idseq, ids );
+	for( int i = 0; i < (int)ids.size(); ++i )
+		if( ids[i] == id ) { if( outItem ) *outItem = SeqItemAt( doc.items, i ); return i; }
+	if( outItem ) *outItem = NodeRef();
+	return -1;
+}
+
+NodeRef DocParamAtByteOffset( const Document& doc, size_t offset, NodeRef* outChunk, int* visits )
+{
+	int v = 0;
+	NodeRef item; size_t start = 0;
+	int idx = SeqAtOffset( doc.items, offset, 0, 0, item, start, v );
+	if( visits ) *visits = v;
+	if( outChunk ) *outChunk = NodeRef();
+	if( idx < 0 || !item || item->kind != NodeKind::Chunk ) return NodeRef();
+	if( outChunk ) *outChunk = item;
+	// within-chunk: walk the chunk's kids (a handful) accumulating byte widths to
+	// find the kid spanning (offset - start); return it iff it is a Param.
+	const size_t want = offset - start;
+	size_t acc = 0;
+	for( const auto& k : item->kids ) {
+		size_t kb = 0; int kn = 0; NodeStats( k, kb, kn );
+		if( want < acc + kb ) return ( k->kind == NodeKind::Param ) ? k : NodeRef();
+		acc += kb;
+	}
+	return NodeRef();
+}
+
+Document DocReparse( const Document& oldDoc, const std::string& newText, std::vector<NodeId>* invalidated )
+{
+	Document fresh = ParseToCst( newText );   // fresh ids 1..M
+	std::vector<NodeRef> oldItems; SeqToVec( oldDoc.items, oldItems );
+	std::vector<NodeId>  oldIds;   IdToVec ( oldDoc.idseq, oldIds );
+	std::vector<NodeRef> newItems; SeqToVec( fresh.items, newItems );
+	const int M = (int)newItems.size();
+
+	// content-key: a chunk by (keyword, name); trivia/stray by its bytes. A VALUE
+	// edit leaves the chunk's (keyword,name) key unchanged -> it re-matches and
+	// keeps its id; a RENAME changes the key -> old id invalidated, new id fresh.
+	auto keyOf = []( const NodeRef& it ) -> std::string {
+		if( it->kind == NodeKind::Chunk ) { std::string nm; ParamValue(it.get(),"name",nm); return "C:" + it->role + "/" + nm; }
+		std::string s; Serialize( it, s ); return "T:" + s;
+	};
+	std::vector<std::string> oldK( oldItems.size() ), newK( M );
+	for( size_t i = 0; i < oldItems.size(); ++i ) oldK[i] = keyOf( oldItems[i] );
+	for( int j = 0; j < M; ++j ) newK[j] = keyOf( newItems[j] );
+
+	std::vector<NodeId> carried( M, 0 );
+	std::vector<bool>   oldUsed( oldItems.size(), false );
+	// Match each new item to an unused OLD item with the SAME content-key (greedy,
+	// in order). A value edit keeps the chunk's (keyword,name) key -> matched, id
+	// carried; a reordering of distinct chunks still matches by key regardless of
+	// position. A RENAME changes the key -> no match -> the new item gets a fresh
+	// id and the old id is invalidated. We never position-remap distinct content
+	// (D9/D15: invalidate-don't-remap), so a rename is delete+add, not a silent
+	// rebinding to a possibly-unrelated item that happens to share the slot.
+	for( int j = 0; j < M; ++j )
+		for( size_t i = 0; i < oldItems.size(); ++i )
+			if( !oldUsed[i] && oldK[i] == newK[j] ) { oldUsed[i] = true; carried[j] = oldIds[i]; break; }
+
+	// fresh ids for the still-unmatched new items; collect invalidated old ids
+	NodeId next = oldDoc.nextId;
+	for( int j = 0; j < M; ++j ) if( carried[j] == 0 ) carried[j] = next++;
+	if( invalidated ) { invalidated->clear(); for( size_t i = 0; i < oldItems.size(); ++i ) if( !oldUsed[i] ) invalidated->push_back( oldIds[i] ); }
+
+	Document d = fresh;
+	d.idseq  = IdBuild( carried, 0, M );
+	d.byName = NameMapRef();
+	for( int j = 0; j < M; ++j ) { std::string np = ChunkNamePath( newItems[j] ); if( !np.empty() ) d.byName = NameInsert( d.byName, np, carried[j] ); }
+	NodeId mx = next;
+	for( NodeId id : carried ) if( id + 1 > mx ) mx = id + 1;
+	d.nextId = mx;
 	return d;
 }
 
