@@ -392,6 +392,46 @@ int main()
 		}
 	}
 
+	// ============================================================
+	// [param] per-occurrence PARAM identity (P1-1): a parameter has its own
+	// durable NodeId -- returned by the within-chunk descent, resolvable via the
+	// reverse index, stable across a value edit, dropped on erase.
+	// ============================================================
+	{
+		const std::string scene = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.6\n}\n";
+		Cst::Document doc = Cst::ParseToCst( scene );
+		Cst::NodeId chunkId = 0, radiusId = 0; Cst::NodeRef chunk; int v = 0;
+		Cst::NodeRef pr = Cst::DocParamAtByteOffset( doc, scene.find("0.6"), &chunk, &v, &radiusId, &chunkId );
+		Check( pr && pr->role == "radius", "[param] within-chunk descent finds the radius Param" );
+		Check( chunkId != 0 && radiusId != 0 && radiusId != chunkId, "[param] the param has its own NodeId, distinct from the chunk's" );
+		Check( Cst::DocResolveNodeId( doc, radiusId ) == pr, "[param] the param NodeId resolves to the param node (reverse index covers params)" );
+		Check( Cst::DocParamId( doc, chunkId, "radius" ) == radiusId, "[param] DocParamId(chunkId, role) resolves to the same id" );
+		Cst::NodeId nameId = 0; Cst::DocParamAtByteOffset( doc, scene.find("name s") + 1, &chunk, &v, &nameId, nullptr );
+		Check( nameId != 0 && nameId != radiusId, "[param] a different param (name) has a different NodeId" );
+
+		const int ci = ChunkIndexAt( doc, scene, "name s" );
+		Cst::Document e = Cst::DocReplaceItem( doc, ci, MakeSphere( "s", "0.66" ) );
+		const std::string es = Cst::SerializeCst( e );
+		Cst::NodeId radiusId2 = 0; Cst::NodeRef pr2 = Cst::DocParamAtByteOffset( e, es.find("0.66"), &chunk, &v, &radiusId2, nullptr );
+		Check( radiusId2 == radiusId, "[param] value edit keeps the radius param NodeId (stable identity)" );
+		Check( pr2 && pr2 != pr && Cst::DocResolveNodeId( e, radiusId ) == pr2, "[param] the param id now resolves to the NEW (edited) param node" );
+
+		Cst::Document del = Cst::DocEraseItem( doc, ci );
+		Check( Cst::DocResolveNodeId( del, radiusId ) == nullptr && Cst::DocResolveNodeId( del, nameId ) == nullptr, "[param] erasing the chunk drops its param ids" );
+	}
+	{
+		// param ids survive a reparse value edit (carried with their chunk)
+		const std::string base   = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.6\n}\n";
+		const std::string edited = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.66\n}\n";
+		Cst::Document doc = Cst::ParseToCst( base );
+		Cst::NodeId chunkId = 0, radiusId = 0; Cst::NodeRef chunk; int v = 0;
+		Cst::DocParamAtByteOffset( doc, base.find("0.6"), &chunk, &v, &radiusId, &chunkId );
+		std::vector<Cst::NodeId> inv;
+		Cst::Document rd = Cst::DocReparse( doc, edited, &inv );
+		Check( Cst::DocParamId( rd, chunkId, "radius" ) == radiusId, "[param-reparse] value edit via reparse keeps the param NodeId" );
+		Check( Cst::DocResolveNodeId( rd, radiusId ) != nullptr, "[param-reparse] the carried param id resolves in the new doc" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail ? 1 : 0;
 }

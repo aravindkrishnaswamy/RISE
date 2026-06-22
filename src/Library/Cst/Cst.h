@@ -127,16 +127,35 @@ namespace RISE
 		};
 		typedef std::shared_ptr<const IdMapNode> IdMapRef;
 
+		//! Persistent PARAM identity index (KEY-ordered, weight-balanced): a stable
+		//! NodeId per parameter OCCURRENCE so widgets / EditIntents / diagnostics /
+		//! ReferenceUses can bind to a parameter (D26/D36 -- identity is per-
+		//! occurrence, not only per top-level chunk). Keyed by (owning chunk's
+		//! NodeId, parameter role), so a value edit -- which keeps the chunk's id and
+		//! the parameter's role -- keeps the parameter's id; the param's green node
+		//! is repointed in `byId`. (Repeated same-role params are RepeatGroup-era,
+		//! out of this gate; value-ATOM sub-identity within a multi-atom value is the
+		//! same later work.)
+		struct ParamMapNode
+		{
+			std::shared_ptr<const ParamMapNode> left, right;
+			std::string key;    //!< "<chunkId>\x1f<role>"
+			NodeId      id;
+			int         count;
+		};
+		typedef std::shared_ptr<const ParamMapNode> ParamMapRef;
+
 		//! A parsed document: the green item sequence (item 3) + the identity
 		//! side-map and name-path index (item 4), all persistent / structurally
 		//! shared, plus a monotonic fresh-id source.
 		struct Document
 		{
-			SeqRef     items;    //!< green top-level item sequence (item 3)
-			IdSeqRef   idseq;    //!< position -> NodeId, lockstep with items (item 4)
-			NameMapRef byName;   //!< name-path -> NodeId (item 4)
-			IdMapRef   byId;     //!< NodeId -> current green node, O(log N) reverse lookup (item 4)
-			NodeId     nextId = 1;
+			SeqRef      items;     //!< green top-level item sequence (item 3)
+			IdSeqRef    idseq;     //!< position -> NodeId, lockstep with items (item 4)
+			NameMapRef  byName;    //!< name-path -> NodeId (item 4)
+			IdMapRef    byId;      //!< NodeId -> current green node, O(log N) reverse lookup (item 4)
+			ParamMapRef paramIds;  //!< (chunkId, param role) -> param NodeId (item 4)
+			NodeId      nextId = 1;
 		};
 
 		//! bytes -> CST. Lossless: every input byte lands in exactly one leaf,
@@ -259,7 +278,17 @@ namespace RISE
 		//! Returns the Param NodeRef (or null if the offset is not inside a chunk's
 		//! Param); `outChunk` (if non-null) receives the enclosing chunk; `*visits`
 		//! the rope-descent count (O(log N) to the chunk + O(params) within).
-		NodeRef DocParamAtByteOffset( const Document& doc, size_t offset, NodeRef* outChunk, int* visits );
+		//! `*outParamId` / `*outChunkId` (if non-null) receive the resolved param's
+		//! and chunk's stable NodeIds (0 if none) -- the durable handle a widget /
+		//! EditIntent / diagnostic binds to, resolvable later via DocResolveNodeId.
+		NodeRef DocParamAtByteOffset( const Document& doc, size_t offset, NodeRef* outChunk, int* visits,
+		                              NodeId* outParamId = nullptr, NodeId* outChunkId = nullptr );
+
+		//! Resolve a parameter by its owning chunk's NodeId + role to the param's
+		//! stable NodeId (0 if none) -- name-path-into-chunk addressing
+		//! ("materials/gold.reflectance"): resolve the chunk by name, then its param
+		//! by role. O(log N).
+		NodeId DocParamId( const Document& doc, NodeId chunkId, const std::string& role );
 
 		//! Reparse `newText` and carry NodeIds from `oldDoc` via FOUR hashed passes
 		//! (D9/D15/D44: lineage survives rename + reparse on a BEST-EFFORT basis;

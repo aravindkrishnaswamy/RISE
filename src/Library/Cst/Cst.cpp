@@ -561,6 +561,114 @@ namespace
 		NodeId k; NodeRef v; IdMapRef nr = IdMapEraseMin( s->right, k, v );
 		return IdMapBalance( s->left, k, std::move(v), nr );
 	}
+
+	// ---- ParamMap: key-ordered persistent WBT ("<chunkId>\x1f<role>" -> NodeId) ----
+	// Per-parameter-occurrence identity (D26/D36). Keyed by owning chunk's id +
+	// the param role, so a value edit (chunk id + role unchanged) keeps the id.
+	int ParamSize( const ParamMapRef& s ) { return s ? s->count : 0; }
+	ParamMapRef ParamMk( ParamMapRef l, std::string key, NodeId id, ParamMapRef r )
+	{
+		auto n = std::make_shared<ParamMapNode>();
+		n->left = std::move(l); n->right = std::move(r); n->key = std::move(key); n->id = id;
+		n->count = 1 + ParamSize(n->left) + ParamSize(n->right);
+		return n;
+	}
+	ParamMapRef ParamBalance( ParamMapRef l, std::string key, NodeId id, ParamMapRef r )
+	{
+		const int ln = ParamSize(l), rn = ParamSize(r);
+		if( ln + rn > 1 ) {
+			if( rn > WBT_DELTA * ln ) {
+				if( ParamSize(r->left) < WBT_GAMMA * ParamSize(r->right) ) return ParamMk( ParamMk(l, std::move(key), id, r->left), r->key, r->id, r->right );
+				const ParamMapRef& rl = r->left;
+				return ParamMk( ParamMk(l, std::move(key), id, rl->left), rl->key, rl->id, ParamMk(rl->right, r->key, r->id, r->right) );
+			}
+			if( ln > WBT_DELTA * rn ) {
+				if( ParamSize(l->right) < WBT_GAMMA * ParamSize(l->left) ) return ParamMk( l->left, l->key, l->id, ParamMk(l->right, std::move(key), id, r) );
+				const ParamMapRef& lr = l->right;
+				return ParamMk( ParamMk(l->left, l->key, l->id, lr->left), lr->key, lr->id, ParamMk(lr->right, std::move(key), id, r) );
+			}
+		}
+		return ParamMk( l, std::move(key), id, r );
+	}
+	ParamMapRef ParamSet( const ParamMapRef& s, const std::string& key, NodeId id )
+	{
+		if( !s ) return ParamMk( ParamMapRef(), key, id, ParamMapRef() );
+		if( key < s->key ) return ParamBalance( ParamSet(s->left, key, id), s->key, s->id, s->right );
+		if( s->key < key ) return ParamBalance( s->left, s->key, s->id, ParamSet(s->right, key, id) );
+		return ParamMk( s->left, s->key, id, s->right );   // overwrite
+	}
+	NodeId ParamGet( const ParamMapRef& s, const std::string& key )
+	{
+		const ParamMapNode* cur = s.get();
+		while( cur ) {
+			if( key < cur->key ) cur = cur->left.get();
+			else if( cur->key < key ) cur = cur->right.get();
+			else return cur->id;
+		}
+		return 0;
+	}
+	ParamMapRef ParamEraseMin( const ParamMapRef& s, std::string& kOut, NodeId& vOut )
+	{
+		if( !s->left ) { kOut = s->key; vOut = s->id; return s->right; }
+		return ParamBalance( ParamEraseMin(s->left, kOut, vOut), s->key, s->id, s->right );
+	}
+	ParamMapRef ParamErase( const ParamMapRef& s, const std::string& key )
+	{
+		if( !s ) return s;
+		if( key < s->key ) return ParamBalance( ParamErase(s->left, key), s->key, s->id, s->right );
+		if( s->key < key ) return ParamBalance( s->left, s->key, s->id, ParamErase(s->right, key) );
+		if( !s->left )  return s->right;
+		if( !s->right ) return s->left;
+		std::string k; NodeId v; ParamMapRef nr = ParamEraseMin( s->right, k, v );
+		return ParamBalance( s->left, std::move(k), v, nr );
+	}
+	std::string ParamKey( NodeId chunkId, const std::string& role ) { return std::to_string( (long)chunkId ) + "\x1f" + role; }
+
+	//! The (role, node) Param children of a chunk (skips keyword/braces/trivia).
+	std::vector<std::pair<std::string, NodeRef>> ChunkParams( const NodeRef& chunk )
+	{
+		std::vector<std::pair<std::string, NodeRef>> out;
+		if( chunk && chunk->kind == NodeKind::Chunk )
+			for( const auto& k : chunk->kids )
+				if( k->kind == NodeKind::Param ) out.push_back( { k->role, k } );
+		return out;
+	}
+	//! Mint FRESH param ids for `chunk`'s params (parse / insert / new-chunk path).
+	void AddChunkParams( ParamMapRef& pids, IdMapRef& byId, NodeId chunkId, const NodeRef& chunk, NodeId& nextId )
+	{
+		for( auto& rp : ChunkParams(chunk) ) {
+			NodeId pid = nextId++;
+			pids = ParamSet( pids, ParamKey(chunkId, rp.first), pid );
+			byId = IdMapSet( byId, pid, rp.second );
+		}
+	}
+	//! Drop `oldChunk`'s param ids from both indices (erase path).
+	void DropChunkParams( ParamMapRef& pids, IdMapRef& byId, NodeId chunkId, const NodeRef& oldChunk )
+	{
+		for( auto& rp : ChunkParams(oldChunk) ) {
+			std::string key = ParamKey( chunkId, rp.first );
+			NodeId pid = ParamGet( pids, key );
+			if( pid ) { byId = IdMapErase( byId, pid ); pids = ParamErase( pids, key ); }
+		}
+	}
+	//! Re-point chunk `chunkId`'s param ids at the NEW chunk's param nodes, REUSING
+	//! the id where the role persists (a value edit keeps the param's id), minting
+	//! for added roles and dropping vanished roles.
+	void ReindexChunkParams( ParamMapRef& pids, IdMapRef& byId, NodeId chunkId, const NodeRef& oldChunk, const NodeRef& newChunk, NodeId& nextId )
+	{
+		auto np = ChunkParams( newChunk );
+		for( auto& rp : ChunkParams(oldChunk) ) {            // drop roles that vanished
+			bool kept = false;
+			for( auto& q : np ) if( q.first == rp.first ) { kept = true; break; }
+			if( !kept ) { std::string key = ParamKey(chunkId, rp.first); NodeId pid = ParamGet(pids, key); if( pid ) { byId = IdMapErase(byId, pid); pids = ParamErase(pids, key); } }
+		}
+		for( auto& rp : np ) {                               // reuse or mint, repoint to the new node
+			std::string key = ParamKey( chunkId, rp.first );
+			NodeId pid = ParamGet( pids, key );
+			if( !pid ) { pid = nextId++; pids = ParamSet( pids, key, pid ); }
+			byId = IdMapSet( byId, pid, rp.second );
+		}
+	}
 }
 
 namespace RISE { namespace Cst {
@@ -595,6 +703,8 @@ Document ParseToCst( const std::string& bytes )
 	}
 	d.idseq  = IdBuild( ids, 0, (int)ids.size() );
 	d.nextId = (NodeId)items.size() + 1;
+	for( int k = 0; k < (int)items.size(); ++k )
+		AddChunkParams( d.paramIds, d.byId, ids[k], items[k], d.nextId );   // per-param occurrence ids
 	return d;
 }
 
@@ -651,12 +761,15 @@ Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* v
 	if( !newItem ) return doc;                                     // non-null contract: refuse
 	if( index < 0 || index >= DocItemCount(doc) ) return doc;      // out of range: no-op
 	// identity (item 4): the NodeId at `index` PERSISTS (idseq unchanged); point
-	// the reverse index at the new node, and re-key byName if the name changed.
-	const std::string oldName = ChunkNamePath( SeqItemAt( doc.items, index ) );
-	const std::string newName = ChunkNamePath( newItem );
+	// the reverse index at the new node, re-key byName if the name changed, and
+	// re-point the chunk's PARAM identities (kept by role across a value edit).
+	const NodeRef     oldChunk = SeqItemAt( doc.items, index );
+	const std::string oldName  = ChunkNamePath( oldChunk );
+	const std::string newName  = ChunkNamePath( newItem );
+	const NodeRef     newChunk = newItem;                         // handle before the move
 	int iv = 0; const NodeId id = IdAt( doc.idseq, index, iv );    // the persisting id
 	int v = 0;
-	Document d = doc;                                              // carry idseq / byName / byId / nextId
+	Document d = doc;                                              // carry idseq / byName / byId / paramIds / nextId
 	d.byId  = IdMapSet( d.byId, id, newItem );                    // reverse index -> the new node
 	d.items = SeqReplace( doc.items, index, std::move(newItem), v );
 	if( visits ) *visits = v;
@@ -664,6 +777,7 @@ Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* v
 		if( !oldName.empty() ) d.byName = NameErase( d.byName, oldName, id );
 		if( !newName.empty() ) d.byName = NameInsert( d.byName, newName, id );
 	}
+	ReindexChunkParams( d.paramIds, d.byId, id, oldChunk, newChunk, d.nextId );
 	return d;
 }
 
@@ -676,6 +790,7 @@ Document DocInsertItem( const Document& doc, int index, NodeRef newItem, int* vi
 	if( index > n ) index = n;
 	const NodeId id = doc.nextId;                                  // fresh identity
 	const std::string np = ChunkNamePath( newItem );
+	const NodeRef newChunk = newItem;                             // handle before the move
 	int v = 0;
 	Document d = doc;
 	d.byId   = IdMapSet( d.byId, id, newItem );                         // reverse index
@@ -683,6 +798,7 @@ Document DocInsertItem( const Document& doc, int index, NodeRef newItem, int* vi
 	d.idseq  = IdInsertAt( doc.idseq, index, id );                       // O(log N) lockstep splice
 	if( !np.empty() ) d.byName = NameInsert( d.byName, np, id );
 	d.nextId = doc.nextId + 1;
+	AddChunkParams( d.paramIds, d.byId, id, newChunk, d.nextId );        // param occurrence ids
 	if( visits ) *visits = v;
 	return d;
 }
@@ -691,7 +807,8 @@ Document DocEraseItem( const Document& doc, int index, int* visits )
 {
 	if( visits ) *visits = 0;
 	if( index < 0 || index >= SeqCount(doc.items) ) return doc;    // out of range: no-op
-	const std::string np = ChunkNamePath( SeqItemAt( doc.items, index ) );
+	const NodeRef oldChunk = SeqItemAt( doc.items, index );
+	const std::string np = ChunkNamePath( oldChunk );
 	int iv = 0; const NodeId eid = IdAt( doc.idseq, index, iv );   // the erased item's id
 	int v = 0;
 	Document d = doc;
@@ -699,6 +816,7 @@ Document DocEraseItem( const Document& doc, int index, int* visits )
 	d.idseq  = IdEraseAt( doc.idseq, index );                      // O(log N) lockstep splice
 	d.byId   = IdMapErase( d.byId, eid );                          // reverse index drops the id
 	if( !np.empty() ) d.byName = NameErase( d.byName, np, eid );
+	DropChunkParams( d.paramIds, d.byId, eid, oldChunk );          // param occurrence ids
 	if( visits ) *visits = v;
 	return d;
 }
@@ -739,25 +857,40 @@ int DocIndexOfNodeId( const Document& doc, NodeId id, NodeRef* outItem )
 	return -1;
 }
 
-NodeRef DocParamAtByteOffset( const Document& doc, size_t offset, NodeRef* outChunk, int* visits )
+NodeRef DocParamAtByteOffset( const Document& doc, size_t offset, NodeRef* outChunk, int* visits,
+                              NodeId* outParamId, NodeId* outChunkId )
 {
 	int v = 0;
 	NodeRef item; size_t start = 0;
 	int idx = SeqAtOffset( doc.items, offset, 0, 0, item, start, v );
 	if( visits ) *visits = v;
-	if( outChunk ) *outChunk = NodeRef();
+	if( outChunk )   *outChunk = NodeRef();
+	if( outParamId ) *outParamId = 0;
+	if( outChunkId ) *outChunkId = 0;
 	if( idx < 0 || !item || item->kind != NodeKind::Chunk ) return NodeRef();
 	if( outChunk ) *outChunk = item;
+	int civ = 0; const NodeId chunkId = IdAt( doc.idseq, idx, civ );   // the enclosing chunk's id
+	if( outChunkId ) *outChunkId = chunkId;
 	// within-chunk: walk the chunk's kids (a handful) accumulating byte widths to
-	// find the kid spanning (offset - start); return it iff it is a Param.
+	// find the kid spanning (offset - start); return it iff it is a Param, with its
+	// stable param NodeId.
 	const size_t want = offset - start;
 	size_t acc = 0;
 	for( const auto& k : item->kids ) {
 		size_t kb = 0; int kn = 0; NodeStats( k, kb, kn );
-		if( want < acc + kb ) return ( k->kind == NodeKind::Param ) ? k : NodeRef();
+		if( want < acc + kb ) {
+			if( k->kind != NodeKind::Param ) return NodeRef();
+			if( outParamId ) *outParamId = ParamGet( doc.paramIds, ParamKey(chunkId, k->role) );
+			return k;
+		}
 		acc += kb;
 	}
 	return NodeRef();
+}
+
+NodeId DocParamId( const Document& doc, NodeId chunkId, const std::string& role )
+{
+	return ParamGet( doc.paramIds, ParamKey(chunkId, role) );
 }
 
 Document DocReparse( const Document& oldDoc, const std::string& newText, std::vector<NodeId>* invalidated )
@@ -822,15 +955,26 @@ Document DocReparse( const Document& oldDoc, const std::string& newText, std::ve
 	if( invalidated ) { invalidated->clear(); for( int i = 0; i < O; ++i ) if( !oldUsed[i] ) invalidated->push_back( oldIds[i] ); }
 
 	Document d = fresh;
-	d.idseq  = IdBuild( carried, 0, M );
-	d.byName = NameMapRef();
-	d.byId   = IdMapRef();
+	d.idseq    = IdBuild( carried, 0, M );
+	d.byName   = NameMapRef();
+	d.byId     = IdMapRef();
+	d.paramIds = ParamMapRef();
+	NodeId pnext = next;                               // mint fresh ids (chunk + param) from here
 	for( int j = 0; j < M; ++j ) {
 		d.byId = IdMapSet( d.byId, carried[j], newItems[j] );
 		std::string np = ChunkNamePath( newItems[j] );
 		if( !np.empty() ) d.byName = NameInsert( d.byName, np, carried[j] );
+		// params: carry by (carried chunk id, role) from oldDoc -- a carried chunk
+		// keeps its param ids; a fresh chunk's params mint fresh.
+		for( auto& rp : ChunkParams( newItems[j] ) ) {
+			std::string key = ParamKey( carried[j], rp.first );
+			NodeId pid = ParamGet( oldDoc.paramIds, key );
+			if( !pid ) pid = pnext++;
+			d.paramIds = ParamSet( d.paramIds, key, pid );
+			d.byId = IdMapSet( d.byId, pid, rp.second );
+		}
 	}
-	NodeId mx = next;                                  // nextId strictly above every live id
+	NodeId mx = pnext;                                 // nextId strictly above every live id
 	for( NodeId id : carried ) if( id + 1 > mx ) mx = id + 1;
 	d.nextId = mx;
 	return d;
