@@ -55,10 +55,32 @@ namespace RISE
 		};
 		typedef std::shared_ptr<const Node> NodeRef;
 
-		//! A parsed document (the CST root).
+		//! A persistent, structurally-shared balanced sequence of the document's
+		//! TOP-LEVEL items (chunks + inter-chunk trivia) -- the D16 rope. Each
+		//! node caches its subtree's aggregates: element count, serialized byte
+		//! width, and newline count. Those aggregates are what make locating an
+		//! edit target by byte offset (or index) O(log N) -- the find is COUNTED,
+		//! never an O(N) side scan (the slice-3 gap the item-2 review flagged).
+		//! An edit path-copies only the root->leaf spine (O(log N) new nodes);
+		//! everything else is shared by pointer.
+		struct SeqNode
+		{
+			std::shared_ptr<const SeqNode> left, right;
+			NodeRef item;          //!< the element (a Chunk or a trivia / stray leaf)
+			int     count;         //!< subtree element count
+			size_t  bytes;         //!< subtree serialized byte width
+			int     newlines;      //!< subtree newline count
+			size_t  itemBytes;     //!< THIS item's own byte width (cached once; the
+			                       //!<   immutable item's stats never change, so a
+			                       //!<   path-copy edit reuses them -> rebuild is O(log N)
+			int     itemNewlines;  //!<   regardless of item size, not O(log N * item))
+		};
+		typedef std::shared_ptr<const SeqNode> SeqRef;
+
+		//! A parsed document: a persistent sequence of its top-level items.
 		struct Document
 		{
-			NodeRef root;
+			SeqRef items;
 		};
 
 		//! bytes -> CST. Lossless: every input byte lands in exactly one leaf,
@@ -82,6 +104,42 @@ namespace RISE
 		//! descriptor registry; here the validation is sphere-specific. Item-2
 		//! scope is sphere_geometry only; other chunk types are subsequent items.
 		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr );
+
+		//==============================================================
+		// Item 3 -- persistent Document: lookups + edit where finding the edit
+		// target is COUNTED in the cost (O(log N) via the cached aggregates, not
+		// an O(N) scan). These are the load-bearing operations the item-2 review
+		// required not be shortcut.
+		//==============================================================
+
+		//! Number of top-level items.
+		int DocItemCount( const Document& doc );
+
+		//! Total serialized byte width of the document (== SerializeCst(doc).size()),
+		//! read from the root aggregate in O(1).
+		size_t DocByteWidth( const Document& doc );
+
+		//! Locate the top-level item spanning byte `offset` (the byte->node map a
+		//! UI/agent uses for "what's at this cursor position"). Returns the item's
+		//! index (or -1 if out of range); `outItem`/`outStart` receive the item and
+		//! its start offset, and `*visits` (if non-null) receives the number of
+		//! sequence nodes descended -- O(log N), using the cached byte-width
+		//! aggregates. THE find is counted here, not assumed.
+		int DocItemAtByteOffset( const Document& doc, size_t offset,
+		                         NodeRef* outItem, size_t* outStart, int* visits );
+
+		//! Replace top-level item `index` with `newItem` (path-copy: O(log N) new
+		//! sequence nodes, the rest shared by pointer; aggregates recomputed along
+		//! the spine). `*visits` (if non-null) receives the rebuilt-node count.
+		Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* visits );
+
+		//! Insert / erase a top-level item. Functional + aggregate-correct, but
+		//! balance-via-rebuild (O(N)) -- a persistent self-rebalancing sequence
+		//! (RRB / weight-balanced) is a refinement; the O(log N) claims are for the
+		//! value-edit (DocReplaceItem) + lookup hot paths. (Structural edits are
+		//! D24's O(N log N) regime.)
+		Document DocInsertItem( const Document& doc, int index, NodeRef newItem );
+		Document DocEraseItem ( const Document& doc, int index );
 	}
 }
 

@@ -193,9 +193,20 @@ until it is green:
      ordering) — else the equivalence gate weakens silently (today it discriminates geometry by
      bounding-sphere radius only).
 3. Put the real `Document` on a **persistent sequence supporting update/insert/erase, with cached
-   byte-width + newline count**.
+   byte-width + newline count**. **✅ DONE** — `src/Library/Cst` `Document` is now a persistent
+   balanced sequence (`SeqNode`) whose nodes cache subtree count + byte-width + newline aggregates
+   (and each item's own stats, so a path-copy edit reuses them and stays O(log N) regardless of item
+   size). `DocReplaceItem` (path-copy edit), `DocInsertItem`/`DocEraseItem`, `DocItemAtByteOffset`
+   (the byte→node map), `DocByteWidth`/`DocItemCount`. Gated by
+   [`tests/CstDocumentCostTest.cpp`](../../tests/CstDocumentCostTest.cpp) (34/34): at N=8/64/512,
+   find-by-offset AND edit visits are **5/7/10** (~log N) while item count is **24/136/1032** — both
+   **counted** and **<< N** (the slice-3 "handed an already-known index" gap is closed); aggregates
+   stay exact, round-trip + structural sharing hold, insert/erase correct. The full CST suite stays
+   green (kernel 25/25 unchanged — the swap is behavior-preserving). ← next: item 4.
 4. Add **persistent NodeId/name-path lookup** so finding the edit target is *included* in the
-   complexity measurement.
+   complexity measurement. ← next (the byte-offset half is done in item 3; this adds the
+   name-path / NodeId addressing index — the agent/UI "edit geometry/s.radius" path — as a
+   persistent index, O(log N) counted, identity stable across edits).
 5. **Bind through the live descriptor registry.**
 6. **Trace references through the real resolver** and test a **three-level** dependency chain.
 7. Exercise **structured edits AND free-form reparses**, including **chunk identity + rename**.
