@@ -136,15 +136,17 @@ namespace RISE
 		//! NodeId per parameter OCCURRENCE so widgets / EditIntents / diagnostics /
 		//! ReferenceUses can bind to a parameter (D26/D36 -- identity is per-
 		//! occurrence, not only per top-level chunk). Keyed by (owning chunk's
-		//! NodeId, parameter role), so a value edit -- which keeps the chunk's id and
-		//! the parameter's role -- keeps the parameter's id; the param's green node
-		//! is repointed in `byId`. (Repeated same-role params are RepeatGroup-era,
-		//! out of this gate; value-ATOM sub-identity within a multi-atom value is the
-		//! same later work.)
+		//! NodeId, parameter role, OCCURRENCE INDEX among same-role siblings), so
+		//! REPEATED same-role params (part / cp / value / time / shaderop) each get a
+		//! distinct id; on edit they are matched by CONTENT (not occurrence index),
+		//! so a value edit keeps the param's id and a sibling insert/remove does not
+		//! shift ids onto unrelated values. The param's green node is repointed in
+		//! `byId`. (Only value-ATOM sub-identity WITHIN a multi-atom value -- e.g. a
+		//! component of `color 1 0 0` -- remains deferred, RepeatGroup-era.)
 		struct ParamMapNode
 		{
 			std::shared_ptr<const ParamMapNode> left, right;
-			std::string key;    //!< "<chunkId>\x1f<role>"
+			std::string key;    //!< "<chunkId>\x1f<role>\x1f<occurrence-index>"
 			NodeId      id;
 			int         count;
 		};

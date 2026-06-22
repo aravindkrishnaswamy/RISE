@@ -641,9 +641,11 @@ namespace
 		return IdMapBalance( s->left, k, std::move(v), lb, nr );
 	}
 
-	// ---- ParamMap: key-ordered persistent WBT ("<chunkId>\x1f<role>" -> NodeId) ----
+	// ---- ParamMap: key-ordered persistent WBT ("<chunkId>\x1f<role>\x1f<occ>" -> NodeId) ----
 	// Per-parameter-occurrence identity (D26/D36). Keyed by owning chunk's id +
-	// the param role, so a value edit (chunk id + role unchanged) keeps the id.
+	// the param role + occurrence index, so REPEATED same-role params each get a
+	// distinct id; on edit, params are matched by CONTENT (MatchParamSlots), so a
+	// value edit keeps the id and a sibling insert/remove never shifts ids.
 	int ParamSize( const ParamMapRef& s ) { return s ? s->count : 0; }
 	ParamMapRef ParamMk( ParamMapRef l, std::string key, NodeId id, ParamMapRef r )
 	{
