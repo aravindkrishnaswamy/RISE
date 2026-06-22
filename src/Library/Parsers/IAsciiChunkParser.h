@@ -71,6 +71,17 @@ namespace RISE
 		// parameter that is in the descriptor flows automatically.
 		[[nodiscard]] virtual bool Finalize( const ParseStateBag& bag, IJob& pJob ) const = 0;
 	};
+
+	// Validates `params` against `desc` and populates `bag` with the typed
+	// values -- the descriptor-driven parameter dispatch that ParseChunk uses
+	// internally, exposed so the CST derive path (src/Library/Cst) binds
+	// through the SAME live validation as the legacy parser rather than a
+	// second, drifting validator. Returns false (and logs the offending
+	// parameter) on an undeclared parameter name or a non-finite numeric
+	// value; on success `bag` holds the values for a subsequent Finalize().
+	// Separating this validate+populate step from Finalize is what lets a
+	// caller validate every chunk first and apply none on failure.
+	[[nodiscard]] bool DispatchChunkParameters( const ChunkDescriptor& desc, ParseStateBag& bag, const IAsciiChunkParser::ParamsList& params );
 }
 
 #endif

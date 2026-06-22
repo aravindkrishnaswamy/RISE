@@ -3,17 +3,24 @@
 //  Cst.cpp - Concrete Syntax Tree kernel (agentic redesign).
 //
 //  Promoted from the validated prototype (tests/CstSlicePrototype.h, slices
-//  1/1.5/2/3) into the real library. See Cst.h for scope. Item 3 puts the
-//  Document's top-level item list on a persistent balanced sequence with
-//  cached byte-width / newline aggregates, so locating an edit target by byte
-//  offset (or index) is O(log N) and COUNTED (not an O(N) scan).
+//  1/1.5/2/3) into the real library. See Cst.h for the full landed scope. Item 3
+//  puts the Document's top-level item list on a persistent balanced sequence
+//  with cached byte-width / newline aggregates, so locating an edit target by
+//  byte offset (or index) is O(log N) and COUNTED (not an O(N) scan). Item 4
+//  adds NodeId lineage + the identity side-maps. Item 5 routes DeriveToJob
+//  through the LIVE chunk-parser registry (CreateAllChunkParsers): every chunk
+//  type is validated via the shared DispatchChunkParameters and applied via the
+//  shared IAsciiChunkParser::Finalize, so the CST and legacy paths agree.
 //
 //////////////////////////////////////////////////////////////////////
 
 #include "Cst.h"
 #include "../Interfaces/IJob.h"
+#include "../Parsers/ChunkParserRegistry.h"   // CreateAllChunkParsers (the LIVE registry)
+#include "../Parsers/IAsciiChunkParser.h"     // IAsciiChunkParser, DispatchChunkParameters
 
 #include <cstdlib>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -113,7 +120,19 @@ namespace
 				// line -- flatten it; do NOT swallow the next line's token as the
 				// value (which the legacy parser would never do).
 				if( !sawNewline && i < t.size() && !t[i].trivia && t[i].text != "}" && t[i].text != "{" ) {
-					pk.push_back( Leaf(NodeKind::Token, t[i++].text, "pvalue") );
+					pk.push_back( Leaf(NodeKind::Token, t[i++].text, "pvalue") );   // first value token
+					// A param's value can be MULTIPLE same-line tokens (e.g.
+					// `color 1 0 0`). Capture each additional same-line token (with
+					// its inter-token trivia) as another pvalue, until a newline or a
+					// brace ends the line. The trailing newline stays for the outer
+					// loop (chunk-level trivia between this param and the next).
+					for( ;; ) {
+						size_t k = i; bool nl = false;
+						while( k < t.size() && t[k].trivia ) { if( t[k].text.find('\n') != std::string::npos ) nl = true; ++k; }
+						if( nl || k >= t.size() || t[k].text == "}" || t[k].text == "{" ) break;
+						while( i < k ) pk.push_back( Leaf(NodeKind::Trivia, t[i++].text, "") );   // inter-value trivia
+						pk.push_back( Leaf(NodeKind::Token, t[i++].text, "pvalue") );             // next value token
+					}
 					ck.push_back( Internal(NodeKind::Param, std::move(pk), pname) );
 				} else {
 					for( auto& x : pk ) ck.push_back( x );   // value-less line: flatten (lossless)
@@ -131,46 +150,33 @@ namespace
 		else for( const auto& k : g->kids ) Serialize( k, out );
 	}
 
-	//! Value of a param role within a chunk (item-2 derive helper). On a
-	//! repeated param, LAST occurrence wins -- matching the legacy parser's
-	//! ParseStateBag overwrite semantics.
+	//! Value of ONE param node: all its pvalue tokens (+ their inter-value
+	//! trivia) joined, i.e. everything from the first pvalue to the end of the
+	//! Param -- so a multi-token value like `1 0 0` reads back as "1 0 0",
+	//! matching the legacy ParamsList line's `pvalue` (split on the first space).
+	std::string ParamNodeValue( const Node* p )
+	{
+		std::string v; bool inVal = false;
+		if( p )
+			for( const auto& k : p->kids ) {
+				if( !inVal && k->kind == NodeKind::Token && k->role == "pvalue" ) inVal = true;
+				if( inVal ) v += k->text;
+			}
+		return v;
+	}
+
+	//! Value of a param ROLE within a chunk (derive helper). On a repeated
+	//! param, LAST occurrence wins -- matching the legacy parser's ParseStateBag
+	//! overwrite semantics. (To preserve every occurrence in order -- needed for
+	//! repeatable params -- iterate the Param nodes and read ParamNodeValue per
+	//! node instead, as DeriveToJob does when building the ParamsList.)
 	bool ParamValue( const Node* chunk, const std::string& role, std::string& out )
 	{
 		if( !chunk ) return false;
 		bool found = false;
 		for( const auto& p : chunk->kids )
-			if( p->kind == NodeKind::Param && p->role == role )
-				for( const auto& v : p->kids )
-					if( v->kind == NodeKind::Token && v->role == "pvalue" ) { out = v->text; found = true; }
+			if( p->kind == NodeKind::Param && p->role == role ) { out = ParamNodeValue( p.get() ); found = true; }
 		return found;
-	}
-
-	//! Validate one sphere_geometry chunk; append any failures to `diags`. The
-	//! item-2 SAFE BOUNDARY (item 5 generalizes via the descriptor registry):
-	//! unknown parameter, value-less parameter line (a flattened bare pname), or
-	//! a radius that is not a fully-consumed finite number.
-	void ValidateSphereChunk( const Node* chunk, std::vector<std::string>& diags )
-	{
-		for( const auto& k : chunk->kids ) {
-			if( k->kind == NodeKind::Param ) {
-				if( k->role != "name" && k->role != "radius" )
-					diags.push_back( "sphere_geometry: unknown parameter '" + k->role + "'" );
-			} else if( k->kind == NodeKind::Token && k->role == "pname" ) {
-				diags.push_back( "sphere_geometry: value-less parameter '" + k->text + "'" );
-			}
-		}
-		std::string rs;
-		if( ParamValue( chunk, "radius", rs ) ) {
-			const char* p = rs.c_str();
-			char* end = 0;
-			std::strtod( p, &end );
-			bool consumed = ( end != 0 && end != p && *end == '\0' );
-			std::string low = rs;
-			for( size_t i = 0; i < low.size(); ++i ) if( low[i] >= 'A' && low[i] <= 'Z' ) low[i] = char( low[i] - 'A' + 'a' );
-			bool special = low.find( "inf" ) != std::string::npos || low.find( "nan" ) != std::string::npos;
-			if( !consumed || special )
-				diags.push_back( "sphere_geometry: radius '" + rs + "' is not a finite number" );
-		}
 	}
 
 	//----------------------------------------------------------------------
@@ -913,21 +919,66 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	std::vector<NodeRef> items;
 	SeqToVec( doc.items, items );
 
-	// PASS 1 -- validate every sphere_geometry chunk (the safe boundary).
-	for( const auto& c : items )
-		if( c->kind == NodeKind::Chunk && c->role == "sphere_geometry" )
-			ValidateSphereChunk( c.get(), diags );
+	// The LIVE chunk-parser registry (item 5): one instance of every chunk
+	// parser the scene grammar supports, kept alive for the process so each
+	// parser's descriptor (consumed by DispatchChunkParameters) and Finalize
+	// stay valid. Keyed by the registry's dispatch keyword (which carries
+	// aliases). Built once; the parse/derive context is single-threaded and the
+	// static-local init is thread-safe.
+	static const std::vector<ChunkParserEntry> registryEntries = CreateAllChunkParsers();
+	static const std::map<std::string, const IAsciiChunkParser*> registry = []{
+		std::map<std::string, const IAsciiChunkParser*> m;
+		for( const auto& e : registryEntries ) m[e.keyword] = e.parser.get();
+		return m;
+	}();
+
+	// PASS 1 -- validate EVERY chunk through the live descriptor registry, the
+	// SAME validation the legacy parser runs (DispatchChunkParameters: rejects an
+	// undeclared parameter name or a non-finite numeric value). Collect each
+	// chunk's populated bag; if ANY chunk fails, apply NOTHING (refuse-all).
+	struct Pending { const IAsciiChunkParser* parser; ParseStateBag bag; };
+	std::vector<Pending> pending;
+	pending.reserve( items.size() );
+	for( const auto& c : items ) {
+		if( c->kind != NodeKind::Chunk ) continue;   // header strays / trivia: not derivable chunks
+		const std::string& kw = c->role;
+		std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( kw );
+		if( it == registry.end() ) { diags.push_back( "unknown chunk type '" + kw + "'" ); continue; }
+		const IAsciiChunkParser* parser = it->second;
+		// A value-less parameter line (a flattened bare pname) is malformed; its
+		// tokens never reach the ParamsList below, so flag them explicitly. (The
+		// legacy DispatchChunkParameters likewise rejects such a line.)
+		for( const auto& kid : c->kids )
+			if( kid->kind == NodeKind::Token && kid->role == "pname" )
+				diags.push_back( kw + ": value-less parameter '" + kid->text + "'" );
+		// Build the ParamsList in document order, ONE line per param occurrence
+		// (so repeatable params survive). Each line is the param node's EXACT
+		// source bytes (Serialize) -- pname + original inter-token whitespace +
+		// value tokens, minus the leading indent and trailing trivia/comment that
+		// live outside the Param node. That is byte-identical to the (comment-
+		// stripped, leading-trimmed) chunk-body line the legacy parser feeds
+		// DispatchChunkParameters, so string_split + the resulting bag match
+		// exactly -- no whitespace-normalisation drift on string-valued params.
+		IAsciiChunkParser::ParamsList plist;
+		for( const auto& kid : c->kids )
+			if( kid->kind == NodeKind::Param ) {
+				std::string line; Serialize( kid, line );
+				plist.push_back( String( line.c_str() ) );
+			}
+		ParseStateBag bag( &parser->Describe() );
+		if( !DispatchChunkParameters( parser->Describe(), bag, plist ) ) {
+			diags.push_back( kw + ": invalid parameter(s) (see log)" );
+			continue;
+		}
+		pending.push_back( Pending{ parser, std::move(bag) } );
+	}
 	if( !diags.empty() ) return 0;   // refuse-all: a malformed scene applies NOTHING
 
-	// PASS 2 -- apply (all chunks validated).
+	// PASS 2 -- apply via the SAME Finalize the legacy parser calls, so the CST
+	// path and the legacy path build an identical Job for any registry scene.
 	int count = 0;
-	for( const auto& c : items ) {
-		if( c->kind != NodeKind::Chunk || c->role != "sphere_geometry" ) continue;
-		std::string name = "noname", radStr = "1.0";
-		ParamValue( c.get(), "name",   name );
-		ParamValue( c.get(), "radius", radStr );
-		if( pJob.AddSphereGeometry( name.c_str(), std::atof( radStr.c_str() ) ) ) ++count;
-	}
+	for( Pending& p : pending )
+		if( p.parser->Finalize( p.bag, pJob ) ) ++count;
 	return count;
 }
 

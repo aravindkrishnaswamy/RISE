@@ -1,0 +1,158 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  CstDescriptorBindTest.cpp - transfer-gate item 5: bind the CST derive
+//  through the LIVE chunk-parser descriptor registry.
+//
+//  Item 2 derived only sphere_geometry, via a hand-written validator + a direct
+//  Job::AddSphereGeometry call. Item 5 generalises: DeriveToJob now looks each
+//  chunk up in the live registry (CreateAllChunkParsers), validates its params
+//  through the SAME DispatchChunkParameters the legacy parser runs, and applies
+//  via the SAME IAsciiChunkParser::Finalize. So ANY registry chunk type derives,
+//  and the CST path and the legacy path build an identical Job.
+//
+//  This suite proves:
+//    * [equiv]      a multi-type scene (painter + material + object + geometry)
+//                   derives through the CST to a Job whose canonical dump equals
+//                   the legacy parse's -- reference wiring + multi-token
+//                   transforms included (the object's world bbox encodes the
+//                   multi-token position/scale, so a value mis-capture diverges).
+//    * [multitoken] a multi-token param value (`color 0.2 0.4 0.6`, `position
+//                   1 2 3`) is captured WHOLE, not truncated to the first token.
+//    * [validate]   descriptor-driven validation refuses a malformed scene and
+//                   applies NOTHING (refuse-all): unknown parameter, unknown
+//                   chunk type, non-finite / non-numeric numeric value,
+//                   value-less parameter line.
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "CstRenderEquivalence.h"
+#include "../src/Library/Cst/Cst.h"
+
+using namespace RISE;
+using namespace RISE::Cst;
+using namespace risequiv;
+
+static int g_pass = 0, g_fail = 0;
+static void Check( bool c, const char* w ) { if( c ) ++g_pass; else { ++g_fail; std::printf( "  FAIL: %s\n", w ); } }
+
+// Derive a scene through the CST path (ParseToCst -> DeriveToJob) into `job`.
+static int DeriveCst( const std::string& scene, Job& job, std::vector<std::string>* diags = nullptr )
+{
+	Document d = ParseToCst( scene );
+	return DeriveToJob( d, job, diags );
+}
+
+// Join a param node's pvalue tokens (mirrors the kernel's internal joiner) to
+// assert multi-token value capture directly at the CST level.
+static std::string JoinParamValue( const NodeRef& p )
+{
+	std::string v; bool inVal = false;
+	if( p ) for( const auto& k : p->kids ) {
+		if( !inVal && k->kind == NodeKind::Token && k->role == "pvalue" ) inVal = true;
+		if( inVal ) v += k->text;
+	}
+	return v;
+}
+
+int main()
+{
+	std::printf( "CstDescriptorBindTest -- transfer-gate item 5 (descriptor-registry binding)\n" );
+
+	// painter (multi-token colour) + material (reference) + geometry + object
+	// (multi-token position/scale, reference wiring). Authored in the canonical
+	// keyword + name + single-space-value shape the v6->v7 serializer produces.
+	const std::string scene =
+		"RISE ASCII SCENE 6\n"
+		"uniformcolor_painter\n{\nname red\ncolor 0.2 0.4 0.6\n}\n"
+		"lambertian_material\n{\nname redmat\nreflectance red\n}\n"
+		"sphere_geometry\n{\nname ball\nradius 0.25\n}\n"
+		"standard_object\n{\nname obj\ngeometry ball\nmaterial redmat\nposition 1 2 3\nscale 2 2 2\n}\n";
+
+	//----------------------------------------------------------------------
+	// [equiv] the descriptor-bound derive is faithful: CST Job == legacy Job.
+	//----------------------------------------------------------------------
+	std::printf( "[equiv] multi-type scene: CST derive == legacy derive\n" );
+	{
+		Job* lj = new Job(); bool okl = ParseLegacy( scene, *lj );
+		Job* cj = new Job(); std::vector<std::string> diags; int n = DeriveCst( scene, *cj, &diags );
+		Check( okl, "legacy parse ok" );
+		Check( n == 4 && diags.empty(), "CST derive applied all 4 chunks (painter+material+geometry+object), no diagnostics" );
+		std::string dl = DumpJob( *lj ), dc = DumpJob( *cj );
+		Check( dl == dc, "CST-derived Job dump == legacy Job dump (descriptor-bound derive is faithful)" );
+		if( dl != dc ) std::printf( "    legacy=[%s]\n    cst   =[%s]\n", dl.c_str(), dc.c_str() );
+		Check( dc.find( "geometry=ball" )   != std::string::npos, "object references geometry 'ball'" );
+		Check( dc.find( "material=redmat" ) != std::string::npos, "object references material 'redmat'" );
+		lj->release(); cj->release();
+	}
+
+	//----------------------------------------------------------------------
+	// [multitoken] multi-token values captured whole (not truncated to token 1).
+	//----------------------------------------------------------------------
+	std::printf( "[multitoken] multi-token param value captured whole\n" );
+	{
+		Document d = ParseToCst( scene );
+		Check( SerializeCst( d ) == scene, "multi-token scene round-trips byte-identical" );
+		NodeId painter = DocFindByName( d, "uniformcolor_painter/red" );
+		Check( painter != 0, "painter 'red' addressable by keyword/name" );
+		NodeRef colorNode = DocResolveNodeId( d, DocParamId( d, painter, "color" ) );
+		Check( JoinParamValue( colorNode ) == "0.2 0.4 0.6", "color value == '0.2 0.4 0.6' (all three tokens, not just the first)" );
+		NodeId obj = DocFindByName( d, "standard_object/obj" );
+		NodeRef posNode = DocResolveNodeId( d, DocParamId( d, obj, "position" ) );
+		Check( JoinParamValue( posNode ) == "1 2 3", "position value == '1 2 3' (multi-token)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [validate] descriptor-driven validation refuses malformed scenes, and a
+	// refusal applies NOTHING (refuse-all boundary) -- even valid sibling chunks.
+	//----------------------------------------------------------------------
+	std::printf( "[validate] descriptor-driven validation refuses malformed scenes (apply NOTHING)\n" );
+	// A fresh Job is not empty: InitializeContainers() seeds "none" defaults in
+	// some managers. Refuse-all means the counts stay at this baseline.
+	int baseGeo, basePnt;
+	{ Job* b = new Job(); baseGeo = b->GetGeometries()->getItemCount(); basePnt = b->GetPainters()->getItemCount(); b->release(); }
+	auto RefusesApplyingNothing = [&]( const std::string& s, const char* what ) {
+		Job* j = new Job(); std::vector<std::string> diags; int n = DeriveCst( s, *j, &diags );
+		bool refused = ( n == 0 ) && !diags.empty()
+			&& j->GetGeometries()->getItemCount() == baseGeo
+			&& j->GetPainters()->getItemCount()  == basePnt;   // valid sibling NOT applied
+		Check( refused, what );
+		j->release();
+	};
+	RefusesApplyingNothing(
+		"RISE ASCII SCENE 6\n"
+		"sphere_geometry\n{\nname s\nradius 1\nbogus 5\n}\n"
+		"uniformcolor_painter\n{\nname p\ncolor 1 1 1\n}\n",
+		"unknown parameter -> refuse-all (the valid sibling painter is NOT applied)" );
+	RefusesApplyingNothing(
+		"RISE ASCII SCENE 6\n"
+		"not_a_real_chunk\n{\nname x\n}\n"
+		"sphere_geometry\n{\nname s\nradius 1\n}\n",
+		"unknown chunk type -> refuse-all" );
+	RefusesApplyingNothing(
+		"RISE ASCII SCENE 6\n"
+		"sphere_geometry\n{\nname s\nradius nan\n}\n",
+		"non-finite numeric value (nan) -> refuse-all" );
+	RefusesApplyingNothing(
+		"RISE ASCII SCENE 6\n"
+		"sphere_geometry\n{\nname s\nradius abc\n}\n",
+		"non-numeric value for a numeric param -> refuse-all" );
+	RefusesApplyingNothing(
+		"RISE ASCII SCENE 6\n"
+		"sphere_geometry\n{\nname s\nradius\n}\n",
+		"value-less parameter line -> refuse-all" );
+
+	//----------------------------------------------------------------------
+	// [valid] a well-formed scene applies cleanly through the registry.
+	//----------------------------------------------------------------------
+	std::printf( "[valid] well-formed scene applies through the registry\n" );
+	{
+		Job* j = new Job(); std::vector<std::string> diags;
+		int n = DeriveCst( "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.6\n}\n", *j, &diags );
+		Check( n == 1 && diags.empty() && j->GetGeometries()->getItemCount() == 1,
+		       "valid sphere derives (1 geometry, no diagnostics)" );
+		j->release();
+	}
+
+	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
+	return g_fail == 0 ? 0 : 1;
+}

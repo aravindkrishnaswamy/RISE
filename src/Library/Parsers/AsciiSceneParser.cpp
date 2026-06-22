@@ -9866,6 +9866,15 @@ namespace RISE
 		}
 		return Finalize( bag, pJob );
 	}
+
+	// Public wrapper (declared in IAsciiChunkParser.h) over the inline
+	// Implementation::ChunkParsers::DispatchChunkParameters, so the CST derive
+	// path can validate+populate a bag through the SAME live validation the
+	// legacy parser uses, then Finalize() separately (refuse-all boundary).
+	bool DispatchChunkParameters( const ChunkDescriptor& desc, ParseStateBag& bag, const IAsciiChunkParser::ParamsList& params )
+	{
+		return Implementation::ChunkParsers::DispatchChunkParameters( desc, bag, params );
+	}
 }
 
 

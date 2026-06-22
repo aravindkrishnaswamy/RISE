@@ -5,18 +5,21 @@
 //  The in-tree kernel for the document-canonical architecture
 //  (docs/agentic-redesign): the scene document is a lossless, immutable CST;
 //  text is its serialization and the rendered scene is a separate derivation.
-//  This is transfer-gate item 2 (docs/agentic-redesign/IMPLEMENTATION_SLICES.md)
-//  -- the foundation validated by the four `tests/Cst*SliceTest` prototypes,
-//  now promoted into the real library and gated by the render-equivalence
-//  harness (DumpJob(cstJob) == DumpJob(legacyJob)).
+//  Built across the transfer-gate items (docs/agentic-redesign/
+//  IMPLEMENTATION_SLICES.md) -- the foundation validated by the four
+//  `tests/Cst*SliceTest` prototypes, promoted into the real library and gated by
+//  the render-equivalence harness (DumpJob(cstJob) == DumpJob(legacyJob)).
 //
-//  Item-2 scope: bytes <-> CST (lossless, multi-chunk, brace-nested) +
-//  derive `sphere_geometry` into a Job through the real apply layer. This kernel
-//  is the SEAM that subsequent transfer-gate items extend; it does NOT itself
-//  have them: the child container is a std::vector, so the persistent rope and
-//  its byte-width/newline aggregates (the O(log N) edit/diff) ARE the item-3
-//  work; live descriptor binding is item 5; the traced derivation graph and
-//  edit/identity are later. (No O(log N) and no NodeId are claimed here.)
+//  Scope landed so far:
+//    * item 2 -- bytes <-> CST (lossless, multi-chunk, brace-nested) + derive
+//      into a Job through the real apply layer.
+//    * item 3 -- the top-level item list is a persistent balanced rope with
+//      cached byte-width/newline aggregates (O(log N) COUNTED edit/diff).
+//    * item 4 -- NodeId lineage + name-path / reverse / param identity.
+//    * item 5 -- the derive binds through the LIVE chunk-parser descriptor
+//      registry (CreateAllChunkParsers): EVERY registry chunk type is validated
+//      via the same DispatchChunkParameters and applied via the same Finalize as
+//      the legacy parser, so the two paths build an identical Job.
 //
 //  Derive domain: the CST is the v7 runtime format -- macro-free and
 //  expression-free. v6 `$( )` / DEFINE / FOR are the one-shot v6->v7 MIGRATOR's
@@ -100,8 +103,13 @@ namespace RISE
 
 		//! Persistent name-path -> NodeId index (KEY-ordered, weight-balanced):
 		//! counted O(log N) name resolution, maintained on parse/rename/insert/
-		//! erase. (Kernel keys on "keyword/name", e.g. "sphere_geometry/s";
-		//! category name-paths like "geometry/s" are an item-5 descriptor concern.)
+		//! erase. Kernel keys on "keyword/name", e.g. "sphere_geometry/s".
+		//! (Category name-paths like "geometry/s" -- one category maps to MANY
+		//! keywords -- are DEFERRED: item 5 binds the descriptor registry for
+		//! validation + derive, but reference resolution in the derive runs
+		//! through the engine's named managers by name, so category addressing is
+		//! a CST-navigation nicety, not load-bearing for items 5-8. Adding it is a
+		//! second index keyed on the descriptor's ChunkCategory.)
 		//!
 		//! The value is a LIST of NodeIds (document/insertion order), not one id,
 		//! so a name-path shared by several chunks (a duplicate-name scene -- valid
@@ -174,18 +182,22 @@ namespace RISE
 		//! (the INV-4 round-trip invariant).
 		std::string SerializeCst( const Document& doc );
 
-		//! Derive the document's `sphere_geometry` chunks into pJob through the
-		//! real apply layer (IJob::AddSphereGeometry). Returns the number of
-		//! geometries applied.
+		//! Derive the document's chunks into pJob through the LIVE chunk-parser
+		//! registry (item 5). Each chunk is looked up by keyword in
+		//! CreateAllChunkParsers(); its params are validated + bagged by the SAME
+		//! DispatchChunkParameters the legacy parser runs, and applied via the
+		//! SAME IAsciiChunkParser::Finalize. So ANY registry chunk type derives,
+		//! and the CST path and the legacy path build an identical Job (the
+		//! render-equivalence gate). Returns the number of chunks applied.
 		//!
-		//! SAFE BOUNDARY (item-2 review): every sphere_geometry chunk is VALIDATED
-		//! first -- unknown parameter, value-less parameter line, non-finite /
-		//! non-numeric radius. If ANY chunk fails, NOTHING is applied (refuse-all)
-		//! and the failures are reported in `diagnostics` (when non-null). A
-		//! malformed scene is refused, never silently half-derived (no atof()->0
-		//! sphere, no ignored unknown parameter). Item-5 generalizes this to the
-		//! descriptor registry; here the validation is sphere-specific. Item-2
-		//! scope is sphere_geometry only; other chunk types are subsequent items.
+		//! SAFE BOUNDARY (item-2 review, generalised in item 5): every chunk is
+		//! VALIDATED first -- unknown chunk type, unknown parameter, value-less
+		//! parameter line, non-finite / non-numeric numeric value (whatever
+		//! DispatchChunkParameters rejects). If ANY chunk fails, NOTHING is applied
+		//! (refuse-all) and the failures are reported in `diagnostics` (when
+		//! non-null). A malformed scene is refused, never silently half-derived.
+		//! (Top-level non-chunk items -- the scene header strays / trivia -- are
+		//! skipped; they carry no Job state.)
 		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr );
 
 		//==============================================================

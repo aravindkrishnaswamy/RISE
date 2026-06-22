@@ -32,10 +32,13 @@
 #include "../src/Library/Interfaces/ISceneParser.h"
 #include "../src/Library/Interfaces/IGeometry.h"
 #include "../src/Library/Interfaces/IGeometryManager.h"
+#include "../src/Library/Interfaces/IMaterial.h"
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/IPainterManager.h"
+#include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/IEnumCallback.h"
+#include "../src/Library/Utilities/BoundingBox.h"
 
 namespace risequiv {
 
@@ -53,6 +56,22 @@ inline std::vector<std::string> SortedNames( Mgr* m )
 	if( m ) m->EnumerateItemNames( c );
 	std::sort( c.names.begin(), c.names.end() );
 	return c.names;
+}
+
+// Reverse-lookup an item's registered name in its manager (managers map
+// name->item; GetItem borrows -- no addref, see GenericManager::GetItem). Used
+// to dump an object's REFERENCE WIRING (which geometry / material it points at)
+// as discriminating state: a CST derive that binds the wrong reference shows up
+// as a changed name here.
+template <typename Mgr, typename Item>
+inline std::string ReverseName( Mgr* m, const Item* ptr )
+{
+	if( !ptr ) return "(none)";
+	if( !m )   return "(unknown)";
+	NameCollector c; m->EnumerateItemNames( c );
+	for( const auto& n : c.names )
+		if( static_cast<const Item*>( m->GetItem( n.c_str() ) ) == ptr ) return n;
+	return "(unknown)";
 }
 
 // Parse a scene string via the LEGACY AsciiSceneParser into `job`. Returns
@@ -74,13 +93,23 @@ inline bool ParseLegacy( const std::string& sceneText, Job& job, const char* tmp
 // round-trips an IEEE double), so two distinct radii can never collide into an
 // equal dump.
 //
-// GATE-MAINTENANCE RULE (per the item-2 review): geometry currently carries its
-// bounding-sphere radius -- complete for a sphere. As each new DERIVED type lands
-// (materials, painters, objects in items 5-7), this dump MUST gain that type's
-// discriminating state (reference bindings, parameter values, colours, object
-// transforms, ordering) in the SAME change -- otherwise the oracle silently
-// certifies different scenes as equal. Names-only below is safe ONLY while those
-// types are not yet CST-derived (legacy populates them identically as defaults).
+// GATE-MAINTENANCE RULE (per the item-2 review): as each new DERIVED type lands,
+// this dump MUST gain that type's discriminating state (reference bindings,
+// parameter values, transforms, ordering) in the SAME change -- otherwise the
+// oracle silently certifies different scenes as equal.
+//
+// Item 5 derives ALL registry chunk types through the SAME parser Finalize the
+// legacy path uses, so a CST-vs-legacy Job can differ ONLY in (a) the param
+// VALUES fed to Finalize or (b) the chunk set/order. This dump discriminates
+// both at the surfaces a derive bug would change: geometry bounding-sphere
+// radius; OBJECT reference wiring (geometry + material names) and world-space
+// bounding box (encodes position / scale / geometry size). Painter colour and
+// material scalar state are identical BY CONSTRUCTION (same Finalize) once the
+// param values match -- and the multi-token value path that feeds them is
+// covered directly by CstDescriptorBindTest's ParamValue assertions; dumping a
+// painter's colour additionally would require constructing a
+// RayIntersectionGeometric for GetColor, which buys nothing over verifying the
+// input. Materials/painters therefore stay names-only here intentionally.
 inline std::string DumpJob( Job& job )
 {
 	std::ostringstream o;
@@ -93,7 +122,22 @@ inline std::string DumpJob( Job& job )
 	}
 	o << "materials:\n"; for( const auto& n : SortedNames( job.GetMaterials() ) ) o << "  " << n << "\n";
 	o << "painters:\n";  for( const auto& n : SortedNames( job.GetPainters()  ) ) o << "  " << n << "\n";
-	o << "objects:\n";   for( const auto& n : SortedNames( job.GetObjects()   ) ) o << "  " << n << "\n";
+	o << "objects:\n";
+	for( const auto& n : SortedNames( job.GetObjects() ) ) {
+		o << "  " << n;
+		IObject* ob = job.GetObjects() ? job.GetObjects()->GetItem( n.c_str() ) : 0;
+		if( ob ) {
+			o << " geometry=" << ReverseName( job.GetGeometries(), ob->GetGeometry() );
+			o << " material=" << ReverseName( job.GetMaterials(),  ob->GetMaterial() );
+			BoundingBox bb = ob->getBoundingBox();
+			char b[160];
+			std::snprintf( b, sizeof(b), " bbox=[%.17g %.17g %.17g .. %.17g %.17g %.17g]",
+				(double)bb.ll.x, (double)bb.ll.y, (double)bb.ll.z,
+				(double)bb.ur.x, (double)bb.ur.y, (double)bb.ur.z );
+			o << b;
+		}
+		o << "\n";
+	}
 	return o.str();
 }
 
