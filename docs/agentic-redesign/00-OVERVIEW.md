@@ -1,5 +1,13 @@
 # RISE Agentic Redesign — Synthesis & Overview
 
+> **Implementation update (2026-06-21):** the design is now backed by **four working,
+> adversarially-reviewed prototype slices** validating the load-bearing claims — lossless
+> round-trip, incremental memoized derive, reparse-stable identity, traced references with
+> forward-cone/rename, and **O(closure) cost into the real engine, invariant to scene size**. See
+> [`IMPLEMENTATION_SLICES.md`](IMPLEMENTATION_SLICES.md) — the entry point for reviewing the
+> implementation (what each slice proves, and what is NOT yet proven). **Currently paused for
+> external review before the next phase.**
+
 > **Status:** **review rounds 1–6 complete** (no P0s in any). The reviews found 8 P1 + 2 P2 (r1),
 > 8 P1 + a P2 batch (r2), 8 P1 (r3), 9 P1 (r4), 7 P1 (r5), and 7 P1 (r6), all resolved authoritatively
 > in [`01-DECISIONS.md`](01-DECISIONS.md) (**D1–D51**), which **supersedes the reconciliations in §3
