@@ -222,6 +222,11 @@ namespace RISE
 		//! time. Test-only instrumentation.
 		unsigned long DebugReflowLabelWrites();
 
+		//! Diagnostic for the param-match cost gate: old-param touches in
+		//! MatchParamSlots (hashed -> O(P) per chunk edit / reparse; a regression
+		//! to the nested-loop matcher would make it O(P^2)). Test-only.
+		unsigned long DebugParamMatchVisits();
+
 		//! Locate the top-level item spanning byte `offset` (the byte->node map a
 		//! UI/agent uses for "what's at this cursor position"). Returns the item's
 		//! index (or -1 if out of range); `outItem`/`outStart` receive the item and
@@ -243,11 +248,19 @@ namespace RISE
 		Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* visits = nullptr, std::vector<NodeId>* invalidated = nullptr );
 
 		//! Insert `newItem` before `index` (clamped to [0,count]) / erase item
-		//! `index`. O(log N) on a persistent weight-balanced tree (path-copy +
+		//! `index`. The rope/idseq/byId splices are each O(log N) (path-copy +
 		//! balance rotations; structural sharing of the untouched subtrees), per
-		//! D16's O(log N) insert/remove requirement -- NOT a flatten-and-rebuild.
-		//! `*visits` (if non-null) receives the rebuilt-node count (O(log N)).
-		//! NON-NULL CONTRACT: a null insert `newItem` is refused (doc unchanged).
+		//! D16 -- NOT a flatten-and-rebuild. `*visits` (if non-null) receives the
+		//! rope rebuilt-node count.
+		//! COST CAVEAT (item-4 identity layer): assigning the new item's order-label
+		//! is O(log N) when a label gap is available (the common case), but a
+		//! gap-EXHAUSTING insert triggers a WINDOWED reflow (ReflowWindow) costing
+		//! O(window * log N); the window amortizes to O(log N), so such inserts are
+		//! O(log^2 N) AMORTIZED, not O(log N) worst-case. (The measured window is
+		//! tiny -- 2 in a 1082-item doc -- but the honest bound is O(log^2 N)
+		//! amortized; Bender's two-level order-maintenance, which makes the window
+		//! O(1) amortized and restores O(log N) inserts, is the documented
+		//! refinement, not yet landed.) NON-NULL CONTRACT: a null insert is refused.
 		Document DocInsertItem( const Document& doc, int index, NodeRef newItem, int* visits = nullptr );
 		//! Erase item `index`. `*invalidated` (if non-null) receives the erased
 		//! item's NodeId plus its param NodeIds (their durable bindings just died).

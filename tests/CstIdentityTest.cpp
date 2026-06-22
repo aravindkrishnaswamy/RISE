@@ -592,6 +592,52 @@ int main()
 		Check( inv3.empty(), "[param-shift] reparse insert-before invalidates nothing" );
 	}
 
+	// ============================================================
+	// [param-ambig] BYTE-IDENTICAL repeated params are genuinely ambiguous: a
+	// count-changing edit invalidates them rather than guessing which survived (P1-B).
+	// ============================================================
+	{
+		const std::string scene = "RISE ASCII SCENE 6\nsdf_geometry\n{\nname d\npart aaa\npart aaa\n}\n";
+		Cst::Document doc = Cst::ParseToCst( scene );
+		const int ci = ChunkIndexAt( doc, scene, "name d" );
+		Cst::NodeId chunkId = Cst::DocNodeIdAt( doc, ci );
+		Cst::NodeId A = Cst::DocParamId( doc, chunkId, "part", 0 );
+		Cst::NodeId B = Cst::DocParamId( doc, chunkId, "part", 1 );
+		Check( A != 0 && B != 0 && A != B, "[param-ambig] two identical parts get distinct ids at parse" );
+		std::vector<Cst::NodeId> inv;
+		Cst::Document e = Cst::DocReplaceItem( doc, ci, FirstChunk("sdf_geometry\n{\nname d\npart bbb\npart aaa\n}\n"), nullptr, &inv );
+		Cst::NodeId nBbb = Cst::DocParamId( e, chunkId, "part", 0 );
+		Check( nBbb != A && nBbb != B, "[param-ambig] the new bbb does NOT inherit an identical-aaa id (no per-occurrence guess)" );
+		Check( std::find(inv.begin(),inv.end(),A) != inv.end() && std::find(inv.begin(),inv.end(),B) != inv.end(), "[param-ambig] both ambiguous identical-aaa ids are invalidated" );
+		Check( !Cst::DocResolveNodeId(e,A) && !Cst::DocResolveNodeId(e,B), "[param-ambig] neither old identical id resolves" );
+	}
+
+	// ============================================================
+	// [param-scale] param matching is O(P), not O(P^2), for large repeated groups (P1-C).
+	// ============================================================
+	{
+		for( int P : { 32, 256 } ) {
+			std::string chunkSrc = "sdf_geometry\n{\nname d\n";
+			for( int k = 0; k < P; ++k ) chunkSrc += "cp v" + std::to_string(k) + "\n";
+			chunkSrc += "}\n";
+			const std::string scene = "RISE ASCII SCENE 6\n" + chunkSrc;
+			Cst::Document doc = Cst::ParseToCst( scene );
+			const int ci = ChunkIndexAt( doc, scene, "name d" );
+			std::string editedSrc = "sdf_geometry\n{\nname d\n";
+			for( int k = 0; k < P; ++k ) editedSrc += ( k == P/2 ? std::string("cp ZZZ\n") : "cp v" + std::to_string(k) + "\n" );
+			editedSrc += "}\n";
+			const unsigned long before = Cst::DebugParamMatchVisits();
+			std::vector<Cst::NodeId> inv;
+			Cst::Document e = Cst::DocReplaceItem( doc, ci, FirstChunk( editedSrc ), nullptr, &inv );
+			const unsigned long touches = Cst::DebugParamMatchVisits() - before;
+			char m[128];
+			std::snprintf( m, sizeof(m), "[param-scale] P=%d: match touches %lu <= 4*P=%d (O(P), not O(P^2)=%d)", P, touches, 4*P, P*P );
+			Check( touches <= (unsigned long)(4*P), m );
+			Check( inv.empty(), "[param-scale] editing one distinct cp among many keeps its id (unambiguous remainder, no invalidation)" );
+			std::printf( "  param-scale P=%4d  touches=%lu  4P=%d  P^2=%d\n", P, touches, 4*P, P*P );
+		}
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail ? 1 : 0;
 }

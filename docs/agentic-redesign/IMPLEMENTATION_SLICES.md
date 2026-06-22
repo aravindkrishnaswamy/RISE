@@ -205,11 +205,13 @@ until it is green:
    (the byte→node map), `DocByteWidth`/`DocItemCount`. Gated by
    [`tests/CstDocumentCostTest.cpp`](../../tests/CstDocumentCostTest.cpp) (67/67): at N=8/64/512,
    find-by-offset AND value-edit visits are **5/7/10** (~log N) while item count is **24/136/1032** —
-   both **counted** and **<< N** (the slice-3 "handed an already-known index" gap is closed); **insert
-   AND erase are O(log N) on a persistent weight-balanced tree** (BB[α], Adams δ=3/γ=2) — measured
-   max insert/find/erase visits **16/8/9 at N=512** (vs N=512), the tree stays balanced across any
-   edit mix; aggregates stay exact, round-trip + structural sharing hold. The full CST suite stays
-   green (kernel 25/25 unchanged — the swap is behavior-preserving).
+   both **counted** and **<< N** (the slice-3 "handed an already-known index" gap is closed); **the
+   rope insert AND erase are O(log N) on a persistent weight-balanced tree** (BB[α], Adams δ=3/γ=2) —
+   measured max insert/find/erase visits **16/8/9 at N=512** (vs N=512), the tree stays balanced across
+   any edit mix; aggregates stay exact, round-trip + structural sharing hold. The full CST suite stays
+   green (kernel 25/25 unchanged — the swap is behavior-preserving). **(This O(log N) is the rope-level
+   splice; item 4's identity layer adds an order-label whose gap-exhaustion reflow makes the COMBINED
+   `DocInsertItem` O(log² N) amortized — see item 4's reflow note.)**
    - **Two review rounds.** Round 1 (3 agents): O(log N)-and-counted verified genuine (instrumented
      probe); code ASan/UBSan-clean, boundaries hand-traced. Round 2 (external, 4 P1s) — all fixed:
      **(a)** insert/erase were flatten-and-rebuild O(N) (a D24 mis-attribution — D24 is TLAS, not the
@@ -254,10 +256,14 @@ until it is green:
 
    **Disclosed scope / fallbacks:** name-path key is `keyword/name` (category paths like `geometry/s`
    are item-5 descriptor work); value-ATOM sub-identity within a multi-atom value, and repeated-param
-   VALUE nodes, are RepeatGroup-era (out of this gate, as expr/RepeatGroup are); label **reflow** on
-   gap exhaustion is **WINDOWED** (the smallest enclosing run with spare label-space, `DebugReflowLabelWrites`
-   gate proves it touches ≪ N — measured worst window 2 in a 1082-item doc), **not** a global O(N)
-   reflow; it is O(log² N) amortized, with Bender's two-level O(log N) reflow the documented refinement.
+   VALUE nodes, are RepeatGroup-era (out of this gate, as expr/RepeatGroup are); **`DocInsertItem` is
+   NOT uniformly O(log N)** — assigning the order-label is O(log N) when a gap is available (the common
+   case), but a gap-exhausting insert triggers a **WINDOWED** reflow (smallest enclosing run with spare
+   label-space; `DebugReflowLabelWrites` gate proves it touches ≪ N — measured worst window 2 in a
+   1082-item doc), **not** a global O(N) reflow, costing **O(log² N) amortized**. The acceptance claim
+   is narrowed accordingly: inserts are O(log² N) amortized; Bender's two-level order-maintenance (window
+   → O(1) amortized, restoring O(log N) inserts) is the documented refinement, not yet landed. Param
+   matching is **O(P)** (hashed, `DebugParamMatchVisits` gate), not the prior Θ(P²).
 
    **Acceptance (item-3 review) ✓:** SEPARATE side-map; counted name lookup; survives value edit +
    index shift; within-chunk descent; reparse-stable invalidate-don't-remap.

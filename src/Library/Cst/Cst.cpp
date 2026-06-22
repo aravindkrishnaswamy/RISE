@@ -193,6 +193,11 @@ namespace
 	//! global reflow would write N per gap-exhausting insert.
 	unsigned long g_reflowLabelWrites = 0;
 
+	//! Cost-gate instrumentation for param matching: old-param touches in
+	//! MatchParamSlots. Hashed buckets touch each old param O(1) -> O(P); a
+	//! regression to the nested-loop matcher would make it O(P^2).
+	unsigned long g_paramMatchVisits = 0;
+
 	//! An item's own serialized byte width + newline count (computed once; the
 	//! immutable item never changes, so it is cached in the SeqNode).
 	void NodeStats( const NodeRef& n, size_t& bytes, int& newlines )
@@ -741,11 +746,14 @@ namespace
 	//! Match a chunk's NEW param occurrences to its OLD ones by CONTENT, not by
 	//! occurrence index -- so a repeated param (part/cp/value/time/shaderop) keeps
 	//! its id when an earlier sibling is inserted/removed, instead of having ids
-	//! shift onto unrelated values. Mirrors the top-level reparse matcher:
-	//!   1. full content (same role + same bytes) -> carry the id across any shift;
+	//! shift onto unrelated values. O(P) via hashed buckets (each param serialized
+	//! ONCE), mirroring the top-level reparse matcher:
+	//!   1. full-content GROUPS with EQUAL multiset count -> carry in order (an
+	//!      unchanged group keeps ids; a count-changed group of BYTE-IDENTICAL
+	//!      repeats is genuinely AMBIGUOUS and is NOT consumed here -- it falls to
+	//!      pass 3 / invalidate, never a per-occurrence guess);
 	//!   2. unique role among the remainder -> a unique-role value edit keeps its id;
-	//!   3. the rest: mint fresh / invalidate (ambiguous repeated-param value edits
-	//!      invalidate rather than position-remap, per D9/D15).
+	//!   3. the rest: mint fresh / invalidate (D9/D15: invalidate-don't-remap).
 	struct OldParamSlot { std::string role; NodeRef node; NodeId id; };
 	void MatchParamSlots( const std::vector<OldParamSlot>& oldSlots, const std::vector<ParamSlot>& newSlots,
 	                      NodeId& nextId, std::vector<NodeId>& newIds, std::vector<NodeId>& invalidatedIds )
@@ -753,15 +761,19 @@ namespace
 		const int O = (int)oldSlots.size(), M = (int)newSlots.size();
 		newIds.assign( M, 0 );
 		std::vector<bool> oldUsed( O, false );
-		for( int j = 0; j < M; ++j ) {                       // pass 1: full content
-			std::string nf; Serialize( newSlots[j].node, nf );
-			for( int i = 0; i < O; ++i ) if( !oldUsed[i] && oldSlots[i].role == newSlots[j].role ) {
-				std::string of; Serialize( oldSlots[i].node, of );
-				if( of == nf ) { oldUsed[i] = true; newIds[j] = oldSlots[i].id; break; }
-			}
+		// content key = role + bytes, serialized ONCE per slot (no nested re-serialize)
+		std::unordered_map<std::string, std::vector<int>> oldByFull, newByFull;
+		for( int i = 0; i < O; ++i ) { std::string b; Serialize( oldSlots[i].node, b ); oldByFull[ oldSlots[i].role + "\x1f" + b ].push_back( i ); ++g_paramMatchVisits; }
+		for( int j = 0; j < M; ++j ) { std::string b; Serialize( newSlots[j].node, b ); newByFull[ newSlots[j].role + "\x1f" + b ].push_back( j ); }
+		// pass 1: full-content groups with EQUAL count -> carry in document order
+		for( auto& kv : newByFull ) {
+			auto it = oldByFull.find( kv.first );
+			if( it == oldByFull.end() || it->second.size() != kv.second.size() ) continue;   // changed / ambiguous group -> defer
+			for( size_t k = 0; k < kv.second.size(); ++k ) { int oi = it->second[k]; oldUsed[oi] = true; newIds[ kv.second[k] ] = oldSlots[oi].id; }
 		}
-		std::unordered_map<std::string,int> oldRem, newRem, oldRemIdx;   // pass 2: unique role
-		for( int i = 0; i < O; ++i ) if( !oldUsed[i] ) { oldRem[oldSlots[i].role]++; oldRemIdx[oldSlots[i].role] = i; }
+		// pass 2: unique role among the remainder (a unique-role value edit keeps its id)
+		std::unordered_map<std::string,int> oldRem, newRem, oldRemIdx;
+		for( int i = 0; i < O; ++i ) if( !oldUsed[i] ) { oldRem[oldSlots[i].role]++; oldRemIdx[oldSlots[i].role] = i; ++g_paramMatchVisits; }
 		for( int j = 0; j < M; ++j ) if( newIds[j] == 0 ) newRem[newSlots[j].role]++;
 		for( int j = 0; j < M; ++j ) if( newIds[j] == 0 ) {
 			const std::string& r = newSlots[j].role;
@@ -904,6 +916,7 @@ int    DocNewlineCount( const Document& doc ) { return SeqNl( doc.items ); }
 unsigned long DebugItemStatWalks() { return g_itemStatWalks; }
 unsigned long DebugReparseOldVisits() { return g_reparseOldVisits; }
 unsigned long DebugReflowLabelWrites() { return g_reflowLabelWrites; }
+unsigned long DebugParamMatchVisits() { return g_paramMatchVisits; }
 
 int DocItemAtByteOffset( const Document& doc, size_t offset, NodeRef* outItem, size_t* outStart, int* visits )
 {
