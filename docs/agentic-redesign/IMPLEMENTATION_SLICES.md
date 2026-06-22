@@ -184,7 +184,8 @@ until it is green:
    (no `atof()->0` sphere). Now 25/25.** Deferred-and-honest (narrowed in `Cst.h`): `$( )`/DEFINE/FOR are
    the v6→v7 **migrator's** domain (D8), never the CST runtime; descriptor-driven param **validation**
    (legacy rejects unknown/ill-typed values) is item 5; so the equivalence gate is exact for
-   macro-free, descriptor-valid scenes. ← next: item 3 (persistent Document).
+   macro-free, descriptor-valid scenes (item 5 narrows the canonical scope further — also
+   directive-free and own-line-comments; see item 5). ← next: item 3 (persistent Document).
    - **Item-3 acceptance (from the review, do NOT repeat slice-3's gap):** the persistent `Document`
      must carry its subtree aggregates (cached **byte-width AND newline count**, D16) and make the
      **edit-target lookup COUNTED in the complexity measurement** — not a side table resolved by an
@@ -197,8 +198,9 @@ until it is green:
      NodeId.)**
    - **Gate-maintenance rule (items 5–7):** each new derived chunk type must, in the same change,
      extend `DumpJob` with that type's **discriminating fields** (transforms, param values, colors,
-     ordering) — else the equivalence gate weakens silently (today it discriminates geometry by
-     bounding-sphere radius only).
+     ordering) — else the equivalence gate weakens silently. (Item 5 applied this: `DumpJob` now
+     dumps geometry bounding-sphere radius AND object reference wiring + world-space bbox; the
+     remaining types stay names-only until they are CST-derived with discriminating fields.)
 3. Put the real `Document` on a **persistent sequence supporting update/insert/erase, with cached
    byte-width + newline count**. **✅ DONE** — `src/Library/Cst` `Document` is now a persistent
    balanced sequence (`SeqNode`) whose nodes cache subtree count + byte-width + newline aggregates
@@ -258,7 +260,8 @@ until it is green:
    `DocFindByName` **refuses an ambiguous** duplicate name (returns 0 + occurrence count).
 
    **Disclosed scope / fallbacks:** name-path key is `keyword/name` (category paths like `geometry/s`
-   are item-5 descriptor work); value-ATOM sub-identity within a multi-atom value, and repeated-param
+   are DEFERRED — item 5 left them out: a CST-navigation nicety, not load-bearing, since the derive
+   resolves references through the engine's named managers; see item 5); value-ATOM sub-identity within a multi-atom value, and repeated-param
    VALUE nodes, are RepeatGroup-era (out of this gate, as expr/RepeatGroup are); **`DocInsertItem` is
    NOT uniformly O(log N)** — assigning the order-label is O(log N) when a gap is available (the common
    case), but a gap-exhausting insert triggers a **WINDOWED** reflow (`ReflowWindow`). That window is
@@ -299,8 +302,9 @@ until it is green:
    `IAsciiChunkParser::Finalize`** — so EVERY registry chunk type derives and the CST path builds a Job
    identical to the legacy path **for the canonical scenes the CST is fed** (the v6→v7 serializer's
    output: macro-free, **directive-free** — no `>` run/load/set/clearall lines — comments on their own
-   lines, single-space values; all the migrator's domain per D8, so a non-canonical legacy input may
-   diverge with the CST applying the stricter/cleaner model). **Two-tier failure boundary** (per the item-5
+   lines — `#` or MULTI-line `/* */`, never a single-line `/* ... */` — single-space values; all the
+   migrator's domain per D8, so a non-canonical legacy input may diverge, each path by its own rules).
+   **Two-tier failure boundary** (per the item-5
    review): VALIDATION-time failures (unknown chunk/param, value-less line, non-finite/non-numeric value)
    are **refuse-all** (validate every chunk via a populated `ParseStateBag`; apply none on any failure);
    an APPLY-time `Finalize` failure (e.g. an unresolved reference, undetectable pre-apply) matches the
@@ -315,10 +319,13 @@ until it is green:
    multi-token position/scale), so a derive value mis-capture diverges the oracle. Test:
    `tests/CstDescriptorBindTest.cpp` (multi-type equivalence vs legacy, multi-token capture, whitespace
    normalisation, apply-time abort-on-dangling-ref, refuse-all on each malformed class). Item-5 review:
-   self-driven rounds — round 1 found 2 P1s (whitespace-normalisation equivalence break → silent object
-   drop; apply-time refuse-all hole → silent half-derive); round 2 found 2 doc P1s (a false mid-line-
-   comment justification; the equivalence scope omitted `>` directives) — all fixed; code clean from
-   round 1, both later rounds were scope/comment-honesty. Deferred-and-honest:
+   self-driven rounds — round 1: 2 code P1s (whitespace-normalisation equivalence break → silent object
+   drop; apply-time refuse-all hole → silent half-derive); round 2: 2 doc P1s (a false mid-line-comment
+   justification; scope omitted `>` directives); round 3: 3 doc P1s (own-line single-line `/* */` block
+   comment also diverges; the `DispatchChunkParameters` wrapper doc undercounted its failure conditions;
+   a file-header surface still said "macro-free, descriptor-valid" only) + the stale-family sweep above
+   — all fixed; the CODE has been clean since round 1, every later round was scope/comment-honesty (the
+   149-scene differential test in round 3 found zero Job divergences). Deferred-and-honest:
    **category name-paths** (`geometry/s`; one category → many keywords) stay out — reference resolution
    in the derive runs through the engine's
    named managers by name, so category addressing is a CST-navigation nicety, not load-bearing for

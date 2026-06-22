@@ -76,9 +76,11 @@ namespace RISE
 	// values -- the descriptor-driven parameter dispatch that ParseChunk uses
 	// internally, exposed so the CST derive path (src/Library/Cst) binds
 	// through the SAME live validation as the legacy parser rather than a
-	// second, drifting validator. Returns false (and logs the offending
-	// parameter) on an undeclared parameter name or a non-finite numeric
-	// value; on success `bag` holds the values for a subsequent Finalize().
+	// second, drifting validator. Returns false on any of three conditions:
+	// a line with no space separating name from value (NOT logged); an
+	// undeclared parameter name (logged); or a numeric-kind param whose value
+	// has a non-finite (nan/inf) OR non-numeric token (logged). On success
+	// `bag` holds the values for a subsequent Finalize().
 	// Separating this validate+populate step from Finalize is what lets a
 	// caller validate every chunk first and apply none on a VALIDATION failure
 	// (an apply-time Finalize failure -- e.g. an unresolved reference -- is a

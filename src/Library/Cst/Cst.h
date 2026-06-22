@@ -25,10 +25,12 @@
 //      (validation refuse-all / apply abort-on-first) failure boundary.
 //
 //  Derive domain: the CST is the v7 runtime format -- macro-free and
-//  expression-free. v6 `$( )` / DEFINE / FOR are the one-shot v6->v7 MIGRATOR's
-//  job (D8), never the CST runtime's; descriptor-driven validation of params
-//  (rejecting unknown/ill-typed values, which the legacy parser does) is item 5.
-//  So the equivalence gate is exact for macro-free, descriptor-valid scenes.
+//  expression-free. v6 `$( )` / DEFINE / FOR (and `>` run/load/set/clearall
+//  directives, and non-canonical whitespace/comment forms) are the one-shot
+//  v6->v7 MIGRATOR's job (D8), never the CST runtime's; descriptor-driven
+//  validation of params (rejecting unknown/ill-typed values, which the legacy
+//  parser does) landed in item 5. So the equivalence gate is exact for the
+//  canonical scenes the CST is fed -- see DeriveToJob for the precise scope.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -197,19 +199,30 @@ namespace RISE
 		//! serializer's output:
 		//!   * macro-free ($()/DEFINE/FOR),
 		//!   * directive-free (no `>` run/load/set/clearall command lines),
-		//!   * comments on their OWN lines (not mid-line after a value),
+		//!   * comments either `#` line-comments or MULTI-line `/* */` blocks
+		//!     (`/*` and `*/` on separate lines), each on its own line -- NOT
+		//!     mid-line after a value, and NOT a single-line `/* ... */`,
 		//!   * single-space-separated values.
 		//! These exclusions are all the v6->v7 MIGRATOR's domain (D8), not the CST
 		//! runtime: a legacy scene that uses them is migrated to canonical form
 		//! before it reaches the CST. On a NON-canonical legacy input the two paths
-		//! may diverge, each by its own rules: the CST skips a `>` line as a stray
-		//! (it does not run directives -- a `> run`-included reference then goes
-		//! unresolved and is reported by the apply-time boundary below), and it
-		//! strips a mid-line `#`/`/* */` comment as trivia, whereas the legacy
-		//! tokenizer keeps the comment as tokens (tolerating a trailing `#` on a
-		//! NUMERIC value, but rejecting `/* */` or a comment after a STRING-valued
-		//! param). The serializer emits none of these, so they are out of the
-		//! equivalence scope. Returns the number of chunks applied.
+		//! may diverge, each by its own rules:
+		//!   - the CST skips a `>` line as a stray (it does not run directives --
+		//!     a `> run`-included reference then goes unresolved and is reported by
+		//!     the apply-time boundary below);
+		//!   - the CST strips a MID-LINE `#`/`/* */` comment as trivia, whereas the
+		//!     legacy tokenizer keeps it as tokens (tolerating a trailing `#` on a
+		//!     NUMERIC value, but rejecting `/* */` or a comment after a STRING-
+		//!     valued param);
+		//!   - a SINGLE-LINE `/* ... */` block comment on its own line also
+		//!     diverges: the CST strips it as one trivia run, but the legacy
+		//!     top-level comment-block state machine only inspects each line's
+		//!     FIRST token, so it enters comment mode on `/*` and never sees the
+		//!     same-line `*/` -- swallowing the rest of the file (or, in a chunk
+		//!     body, rejecting the chunk). Only a MULTI-line block (`*/` opening a
+		//!     later line) round-trips through legacy.
+		//! The serializer emits none of these, so they are out of the equivalence
+		//! scope. Returns the number of chunks applied.
 		//!
 		//! TWO-TIER SAFE BOUNDARY:
 		//!   * VALIDATION-time (PASS 1, what DispatchChunkParameters detects:
