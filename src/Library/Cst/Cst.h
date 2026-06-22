@@ -119,6 +119,17 @@ namespace RISE
 		//! read from the root aggregate in O(1).
 		size_t DocByteWidth( const Document& doc );
 
+		//! Total newline count of the document (read from the root aggregate in
+		//! O(1)); == the number of '\n' bytes in SerializeCst(doc).
+		int DocNewlineCount( const Document& doc );
+
+		//! Diagnostic for the cost gate: the running count of per-ITEM stat walks
+		//! (each call to compute a fresh item's byte/newline stats). A correct
+		//! path-copy edit walks exactly ONE item (the new/changed one) regardless
+		//! of N; a hidden re-scan of the unchanged spine would bump this. Test-only
+		//! instrumentation (single-threaded parse/edit context).
+		unsigned long DebugItemStatWalks();
+
 		//! Locate the top-level item spanning byte `offset` (the byte->node map a
 		//! UI/agent uses for "what's at this cursor position"). Returns the item's
 		//! index (or -1 if out of range); `outItem`/`outStart` receive the item and
@@ -131,15 +142,18 @@ namespace RISE
 		//! Replace top-level item `index` with `newItem` (path-copy: O(log N) new
 		//! sequence nodes, the rest shared by pointer; aggregates recomputed along
 		//! the spine). `*visits` (if non-null) receives the rebuilt-node count.
-		Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* visits );
+		//! NON-NULL CONTRACT: a null `newItem` is refused -- the document is
+		//! returned unchanged (visits 0). Out-of-range index is also a no-op.
+		Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* visits = nullptr );
 
-		//! Insert / erase a top-level item. Functional + aggregate-correct, but
-		//! balance-via-rebuild (O(N)) -- a persistent self-rebalancing sequence
-		//! (RRB / weight-balanced) is a refinement; the O(log N) claims are for the
-		//! value-edit (DocReplaceItem) + lookup hot paths. (Structural edits are
-		//! D24's O(N log N) regime.)
-		Document DocInsertItem( const Document& doc, int index, NodeRef newItem );
-		Document DocEraseItem ( const Document& doc, int index );
+		//! Insert `newItem` before `index` (clamped to [0,count]) / erase item
+		//! `index`. O(log N) on a persistent weight-balanced tree (path-copy +
+		//! balance rotations; structural sharing of the untouched subtrees), per
+		//! D16's O(log N) insert/remove requirement -- NOT a flatten-and-rebuild.
+		//! `*visits` (if non-null) receives the rebuilt-node count (O(log N)).
+		//! NON-NULL CONTRACT: a null insert `newItem` is refused (doc unchanged).
+		Document DocInsertItem( const Document& doc, int index, NodeRef newItem, int* visits = nullptr );
+		Document DocEraseItem ( const Document& doc, int index, int* visits = nullptr );
 	}
 }
 

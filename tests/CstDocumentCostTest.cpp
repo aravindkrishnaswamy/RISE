@@ -158,6 +158,100 @@ int main()
 		Check( Cst::SerializeCst(era) == Cst::SerializeCst(doc), "erase of the inserted item restores the original bytes" );
 	}
 
+	// --- WBT: insert/erase are O(log N) and keep the tree BALANCED (D16) ---
+	std::printf( "[wbt] insert/erase are O(log N) on a weight-balanced tree, not flatten+rebuild\n" );
+	for( int N : Ns ) {
+		// insert N items one-by-one into an empty doc (appending); height stays log N
+		Cst::Document doc = Cst::ParseToCst( "" );
+		int maxIns = 0;
+		for( int i = 0; i < N; ++i ) {
+			Cst::NodeRef it = FirstChunk( "sphere_geometry\n{\nname x" + std::to_string(i) + "\nradius 1\n}" );
+			int v = 0; doc = Cst::DocInsertItem( doc, Cst::DocItemCount(doc), it, &v );
+			if( v > maxIns ) maxIns = v;
+		}
+		int items = Cst::DocItemCount( doc );
+		int bound = 3 * ( CeilLog2(items) + 1 );
+		char m[128];
+		std::snprintf( m, sizeof(m), "N=%d: %d inserts -> items=%d, max insert visits=%d <= ~3*log2=%d (O(log N))", N, N, items, maxIns, bound );
+		Check( items == N && maxIns <= bound, m );
+		// a find on the result is O(log N) -> proves the tree is BALANCED (a degenerate list would be ~N)
+		Cst::NodeRef fi; size_t fs; int fv = 0;
+		Cst::DocItemAtByteOffset( doc, Cst::DocByteWidth(doc) / 2, &fi, &fs, &fv );
+		std::snprintf( m, sizeof(m), "N=%d: post-insert find visits=%d <= ~3*log2=%d (tree balanced after inserts)", N, fv, bound );
+		Check( fv <= bound, m );
+		// erase to empty; max erase visits O(log N)
+		int maxEra = 0;
+		while( Cst::DocItemCount(doc) > 0 ) { int v = 0; doc = Cst::DocEraseItem( doc, 0, &v ); if( v > maxEra ) maxEra = v; }
+		std::snprintf( m, sizeof(m), "N=%d: erase-to-empty max visits=%d <= ~3*log2=%d (O(log N))", N, maxEra, bound );
+		Check( maxEra <= bound, m );
+		std::printf( "      N=%4d: max-insert=%d  post-insert-find=%d  max-erase=%d  (vs N=%d, bound=%d)\n", N, maxIns, fv, maxEra, N, bound );
+	}
+
+	// --- null edits are refused (non-null contract; no crash) ---
+	std::printf( "[null] null replace/insert are refused -- doc unchanged, no crash\n" );
+	{
+		Cst::Document doc = Cst::ParseToCst( SceneN(4) );
+		std::string before = Cst::SerializeCst( doc );
+		int n = Cst::DocItemCount( doc );
+		Cst::NodeRef nullRef;   // default-constructed == null
+		Cst::Document r = Cst::DocReplaceItem( doc, 1, nullRef );
+		Check( Cst::SerializeCst(r) == before && Cst::DocItemCount(r) == n, "null DocReplaceItem -> unchanged" );
+		Cst::Document i = Cst::DocInsertItem( doc, 1, nullRef );
+		Check( Cst::SerializeCst(i) == before && Cst::DocItemCount(i) == n, "null DocInsertItem -> unchanged" );
+	}
+
+	// --- DURABLE work instrumentation: an edit walks EXACTLY ONE item ---
+	std::printf( "[walks] an edit re-walks exactly ONE item, invariant to N and to sibling size\n" );
+	for( int N : { 8, 512 } ) {
+		// every OTHER item is huge; a spine re-scan would show up as extra walks
+		const std::string pad( 2000, 'q' );
+		std::string scene = "RISE ASCII SCENE 6\n";
+		for( int i = 0; i < N; ++i ) scene += "sphere_geometry\n{\nname s" + std::to_string(i) + pad + "\nradius 0.5\n}\n";
+		Cst::Document doc = Cst::ParseToCst( scene );
+		Cst::NodeRef it; size_t st; int fv;
+		int idx = Cst::DocItemAtByteOffset( doc, scene.find("name s" + std::to_string(N/2) + pad), &it, &st, &fv );
+		char m[128];
+		// REPLACE: exactly 1 walk (build the new item FIRST so its parse-walk isn't counted)
+		Cst::NodeRef small = FirstChunk( "sphere_geometry\n{\nname tiny\nradius 9\n}" );
+		unsigned long w0 = Cst::DebugItemStatWalks();
+		Cst::DocReplaceItem( doc, idx, small );
+		std::snprintf( m, sizeof(m), "N=%d: DocReplaceItem walks exactly 1 item (delta=%lu) despite huge siblings", N, Cst::DebugItemStatWalks() - w0 );
+		Check( Cst::DebugItemStatWalks() - w0 == 1, m );
+		// INSERT: exactly 1 walk
+		Cst::NodeRef small2 = FirstChunk( "sphere_geometry\n{\nname tiny2\nradius 9\n}" );
+		unsigned long w1 = Cst::DebugItemStatWalks();
+		Cst::DocInsertItem( doc, idx, small2 );
+		std::snprintf( m, sizeof(m), "N=%d: DocInsertItem walks exactly 1 item (delta=%lu)", N, Cst::DebugItemStatWalks() - w1 );
+		Check( Cst::DebugItemStatWalks() - w1 == 1, m );
+		// LOOKUP + O(1) accessors: ZERO walks
+		unsigned long w2 = Cst::DebugItemStatWalks();
+		Cst::DocItemAtByteOffset( doc, st, &it, &st, &fv );
+		(void)Cst::DocByteWidth(doc); (void)Cst::DocNewlineCount(doc); (void)Cst::DocItemCount(doc);
+		Check( Cst::DebugItemStatWalks() - w2 == 0, "find-by-offset + byte/newline/count accessors walk 0 items" );
+	}
+
+	// --- newline aggregate is GATED (exact across parse/replace/insert/erase, LF+CRLF) ---
+	std::printf( "[newlines] DocNewlineCount is exact (gated), incl. CRLF, across edits\n" );
+	{
+		auto realNL = []( const std::string& s ){ int n = 0; for( char c : s ) if( c == '\n' ) ++n; return n; };
+		const std::string scenes2[] = {
+			SceneN( 6 ),
+			std::string( "RISE ASCII SCENE 6\r\nsphere_geometry\r\n{\r\nname s\r\nradius 0.6\r\n}\r\nsphere_geometry\r\n{\r\nname t\r\nradius 0.7\r\n}\r\n" ),
+		};
+		for( const std::string& scene : scenes2 ) {
+			Cst::Document doc = Cst::ParseToCst( scene );
+			Check( Cst::DocNewlineCount(doc) == realNL(Cst::SerializeCst(doc)), "DocNewlineCount == actual '\\n' count (parse; LF + CRLF)" );
+			Cst::NodeRef it; size_t st; int v;
+			int idx = Cst::DocItemAtByteOffset( doc, scene.find("name s"), &it, &st, &v );
+			Cst::Document r = Cst::DocReplaceItem( doc, idx, FirstChunk("sphere_geometry\n{\nname z\nradius 1\n}") );
+			Check( Cst::DocNewlineCount(r) == realNL(Cst::SerializeCst(r)), "DocNewlineCount exact after replace" );
+			Cst::Document i = Cst::DocInsertItem( doc, 1, FirstChunk("sphere_geometry\n{\nname ins\nradius 1\n}") );
+			Check( Cst::DocNewlineCount(i) == realNL(Cst::SerializeCst(i)), "DocNewlineCount exact after insert" );
+			Cst::Document e = Cst::DocEraseItem( doc, 0 );
+			Check( Cst::DocNewlineCount(e) == realNL(Cst::SerializeCst(e)), "DocNewlineCount exact after erase" );
+		}
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

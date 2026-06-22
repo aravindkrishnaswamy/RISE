@@ -175,6 +175,12 @@ namespace
 	// Item 3 -- persistent balanced sequence of top-level items (the D16 rope).
 	//----------------------------------------------------------------------
 
+	//! Diagnostic counter (single-threaded parse/edit context): bumped once per
+	//! per-ITEM stat walk (MkSeqFresh). A correct path-copy edit walks exactly one
+	//! item; a hidden re-scan of the unchanged spine would bump it. Read by the
+	//! cost gate via Cst::DebugItemStatWalks().
+	unsigned long g_itemStatWalks = 0;
+
 	//! An item's own serialized byte width + newline count (computed once; the
 	//! immutable item never changes, so it is cached in the SeqNode).
 	void NodeStats( const NodeRef& n, size_t& bytes, int& newlines )
@@ -203,6 +209,7 @@ namespace
 	//! Build a SeqNode, computing the item's own stats once (for a fresh/changed item).
 	SeqRef MkSeqFresh( SeqRef l, NodeRef item, SeqRef r )
 	{
+		++g_itemStatWalks;   // one per-item stat walk (cost-gate instrumentation)
 		size_t b = 0; int nl = 0; NodeStats( item, b, nl );
 		return MkSeq( std::move(l), std::move(item), b, nl, std::move(r) );
 	}
@@ -246,6 +253,70 @@ namespace
 		if( index <  li ) return MkSeq( SeqReplace(s->left, index, std::move(newItem), visits), s->item, s->itemBytes, s->itemNewlines, s->right );
 		if( index == li ) return MkSeqFresh( s->left, std::move(newItem), s->right );
 		return MkSeq( s->left, s->item, s->itemBytes, s->itemNewlines, SeqReplace(s->right, index - li - 1, std::move(newItem), visits) );
+	}
+
+	//----------------------------------------------------------------------
+	// Weight-balanced (BB[alpha], Adams delta=3 / gamma=2) persistent insert +
+	// erase -- O(log N): path-copy down the spine + O(1) balance rotations, the
+	// untouched subtrees shared by pointer, rotations reusing cached itemBytes
+	// (no item re-walk). This is D16's O(log N) insert/remove (NOT a flatten +
+	// full rebuild). The size invariant keeps height O(log N) across any mix of
+	// inserts/erases, so subsequent lookups/edits stay O(log N) too.
+	//----------------------------------------------------------------------
+	const int WBT_DELTA = 3, WBT_GAMMA = 2;
+
+	//! Rebuild node (l, item, r) rebalancing a single size violation (the standard
+	//! single/double rotation). Aggregates flow through MkSeq; no NodeStats.
+	SeqRef Balance( SeqRef l, NodeRef item, size_t ib, int in_, SeqRef r )
+	{
+		const int ln = SeqCount(l), rn = SeqCount(r);
+		if( ln + rn > 1 ) {
+			if( rn > WBT_DELTA * ln ) {                                   // right too heavy
+				if( SeqCount(r->left) < WBT_GAMMA * SeqCount(r->right) )  // single left
+					return MkSeq( MkSeq(l, item, ib, in_, r->left), r->item, r->itemBytes, r->itemNewlines, r->right );
+				const SeqRef& rl = r->left;                               // double left
+				return MkSeq( MkSeq(l, item, ib, in_, rl->left), rl->item, rl->itemBytes, rl->itemNewlines,
+				              MkSeq(rl->right, r->item, r->itemBytes, r->itemNewlines, r->right) );
+			}
+			if( ln > WBT_DELTA * rn ) {                                   // left too heavy
+				if( SeqCount(l->right) < WBT_GAMMA * SeqCount(l->left) )  // single right
+					return MkSeq( l->left, l->item, l->itemBytes, l->itemNewlines, MkSeq(l->right, item, ib, in_, r) );
+				const SeqRef& lr = l->right;                              // double right
+				return MkSeq( MkSeq(l->left, l->item, l->itemBytes, l->itemNewlines, lr->left), lr->item, lr->itemBytes, lr->itemNewlines,
+				              MkSeq(lr->right, item, ib, in_, r) );
+			}
+		}
+		return MkSeq( l, item, ib, in_, r );
+	}
+
+	SeqRef SeqInsertAt( const SeqRef& s, int index, NodeRef item, int& visits )
+	{
+		++visits;
+		if( !s ) return MkSeqFresh( SeqRef(), std::move(item), SeqRef() );   // 1 item walk (counted), leaf
+		const int li = SeqCount( s->left );
+		if( index <= li ) return Balance( SeqInsertAt(s->left, index, std::move(item), visits), s->item, s->itemBytes, s->itemNewlines, s->right );
+		return Balance( s->left, s->item, s->itemBytes, s->itemNewlines, SeqInsertAt(s->right, index - li - 1, std::move(item), visits) );
+	}
+
+	//! Remove + return the leftmost item's stats; rebuild the rest (balanced).
+	SeqRef SeqEraseMin( const SeqRef& s, NodeRef& oItem, size_t& oB, int& oN, int& visits )
+	{
+		++visits;
+		if( !s->left ) { oItem = s->item; oB = s->itemBytes; oN = s->itemNewlines; return s->right; }
+		return Balance( SeqEraseMin(s->left, oItem, oB, oN, visits), s->item, s->itemBytes, s->itemNewlines, s->right );
+	}
+	SeqRef SeqEraseAt( const SeqRef& s, int index, int& visits )
+	{
+		++visits;
+		if( !s ) return s;
+		const int li = SeqCount( s->left );
+		if( index <  li ) return Balance( SeqEraseAt(s->left, index, visits), s->item, s->itemBytes, s->itemNewlines, s->right );
+		if( index >  li ) return Balance( s->left, s->item, s->itemBytes, s->itemNewlines, SeqEraseAt(s->right, index - li - 1, visits) );
+		if( !s->left )  return s->right;     // index == li: drop this node (merge children)
+		if( !s->right ) return s->left;
+		NodeRef si; size_t sb; int sn;       // replace with the right subtree's leftmost (successor)
+		SeqRef nr = SeqEraseMin( s->right, si, sb, sn, visits );
+		return Balance( s->left, si, sb, sn, nr );
 	}
 }
 
@@ -304,8 +375,10 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	return count;
 }
 
-int    DocItemCount( const Document& doc ) { return SeqCount( doc.items ); }
-size_t DocByteWidth( const Document& doc ) { return SeqBytes( doc.items ); }
+int    DocItemCount  ( const Document& doc ) { return SeqCount( doc.items ); }
+size_t DocByteWidth  ( const Document& doc ) { return SeqBytes( doc.items ); }
+int    DocNewlineCount( const Document& doc ) { return SeqNl( doc.items ); }
+unsigned long DebugItemStatWalks() { return g_itemStatWalks; }
 
 int DocItemAtByteOffset( const Document& doc, size_t offset, NodeRef* outItem, size_t* outStart, int* visits )
 {
@@ -318,7 +391,9 @@ int DocItemAtByteOffset( const Document& doc, size_t offset, NodeRef* outItem, s
 
 Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* visits )
 {
-	if( index < 0 || index >= DocItemCount(doc) ) { if( visits ) *visits = 0; return doc; }
+	if( visits ) *visits = 0;
+	if( !newItem ) return doc;                                     // non-null contract: refuse
+	if( index < 0 || index >= DocItemCount(doc) ) return doc;      // out of range: no-op
 	int v = 0;
 	Document d;
 	d.items = SeqReplace( doc.items, index, std::move(newItem), v );
@@ -326,22 +401,28 @@ Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* v
 	return d;
 }
 
-Document DocInsertItem( const Document& doc, int index, NodeRef newItem )
+Document DocInsertItem( const Document& doc, int index, NodeRef newItem, int* visits )
 {
-	std::vector<NodeRef> items; SeqToVec( doc.items, items );
+	if( visits ) *visits = 0;
+	if( !newItem ) return doc;                                     // non-null contract: refuse
+	int n = SeqCount( doc.items );
 	if( index < 0 ) index = 0;
-	if( index > (int)items.size() ) index = (int)items.size();
-	items.insert( items.begin() + index, std::move(newItem) );
-	Document d; d.items = SeqBuild( items, 0, (int)items.size() );
+	if( index > n ) index = n;
+	int v = 0;
+	Document d;
+	d.items = SeqInsertAt( doc.items, index, std::move(newItem), v );   // O(log N) WBT
+	if( visits ) *visits = v;
 	return d;
 }
 
-Document DocEraseItem( const Document& doc, int index )
+Document DocEraseItem( const Document& doc, int index, int* visits )
 {
-	std::vector<NodeRef> items; SeqToVec( doc.items, items );
-	if( index < 0 || index >= (int)items.size() ) return doc;
-	items.erase( items.begin() + index );
-	Document d; d.items = SeqBuild( items, 0, (int)items.size() );
+	if( visits ) *visits = 0;
+	if( index < 0 || index >= SeqCount(doc.items) ) return doc;    // out of range: no-op
+	int v = 0;
+	Document d;
+	d.items = SeqEraseAt( doc.items, index, v );                   // O(log N) WBT
+	if( visits ) *visits = v;
 	return d;
 }
 

@@ -203,17 +203,23 @@ until it is green:
    (and each item's own stats, so a path-copy edit reuses them and stays O(log N) regardless of item
    size). `DocReplaceItem` (path-copy edit), `DocInsertItem`/`DocEraseItem`, `DocItemAtByteOffset`
    (the byte→node map), `DocByteWidth`/`DocItemCount`. Gated by
-   [`tests/CstDocumentCostTest.cpp`](../../tests/CstDocumentCostTest.cpp) (42/42): at N=8/64/512,
-   find-by-offset AND edit visits are **5/7/10** (~log N) while item count is **24/136/1032** — both
-   **counted** and **<< N** (the slice-3 "handed an already-known index" gap is closed); aggregates
-   stay exact, round-trip + structural sharing hold, insert/erase correct. The full CST suite stays
-   green (kernel 25/25 unchanged — the swap is behavior-preserving). **Adversarially reviewed (3
-   agents): the O(log N)-and-counted claim verified genuine (instrumented probe: exactly ONE item
-   re-walk per edit, invariant to N; pure-aggregate descent, no hidden O(N)); code correct (ASan/
-   UBSan-clean, all boundaries hand-traced). Fixed their findings — the cost test now PINS the full
-   edited sequence (a demonstrated transposition/off-by-one would pass the old content-only checks;
-   `DumpJob` is order-insensitive) + offset boundary coverage (0 / one-past-end / trivia); 34→42.**
-   ← next: item 4.
+   [`tests/CstDocumentCostTest.cpp`](../../tests/CstDocumentCostTest.cpp) (67/67): at N=8/64/512,
+   find-by-offset AND value-edit visits are **5/7/10** (~log N) while item count is **24/136/1032** —
+   both **counted** and **<< N** (the slice-3 "handed an already-known index" gap is closed); **insert
+   AND erase are O(log N) on a persistent weight-balanced tree** (BB[α], Adams δ=3/γ=2) — measured
+   max insert/find/erase visits **16/8/9 at N=512** (vs N=512), the tree stays balanced across any
+   edit mix; aggregates stay exact, round-trip + structural sharing hold. The full CST suite stays
+   green (kernel 25/25 unchanged — the swap is behavior-preserving).
+   - **Two review rounds.** Round 1 (3 agents): O(log N)-and-counted verified genuine (instrumented
+     probe); code ASan/UBSan-clean, boundaries hand-traced. Round 2 (external, 4 P1s) — all fixed:
+     **(a)** insert/erase were flatten-and-rebuild O(N) (a D24 mis-attribution — D24 is TLAS, not the
+     CST rope; D16 requires O(log N)) → replaced with the weight-balanced tree above; **(b)** null
+     `NodeRef` reached `NodeStats` and crashed → `DocReplaceItem`/`DocInsertItem` now refuse null
+     (no-op, non-null contract); **(c)** the cost gate trusted only a manual `visits` counter → added
+     DURABLE work instrumentation (`DebugItemStatWalks`) + an adversarial huge-sibling test asserting
+     an edit re-walks **exactly one** item invariant to N (a hidden re-scan now fails the gate);
+     **(d)** the newline aggregate was ungated (zeroing it passed) → `DocNewlineCount` exposed +
+     checked exact across parse/replace/insert/erase on LF **and** CRLF. 42→67. ← next: item 4.
 4. Add **persistent NodeId/name-path lookup** so finding the edit target is *included* in the
    complexity measurement. ← next. **Acceptance (item-3 review):** build it as a SEPARATE persistent
    side-map (occurrence/position → NodeId, structurally shared per **D23/D26** — NOT a field on
