@@ -2,17 +2,25 @@
 
 > **Status:** design-in-progress. One of the parallel facet docs under the
 > [Agentic Redesign Charter](00-CHARTER.md). DESIGN ONLY — no code yet.
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–4):** binding keys on the immutable
-> **NodeId** (lineage identity, D9/D15), **stored as a real field** on `Widget`/`ViewNode`/
-> `EditIntent`/selection (D36); the `NodeId` resolves via each Version's **persistent `identityRoot`**
-> (D26/D30), and staged edits carry `{greenRoot, identityRoot}` (D36) so a gesture's additions/
-> reparses keep identity stable for live bindings. name-path remains for display + addressing but the
-> durable bind/selection key is the `NodeId`. Positions via the red cursor over the persistent rope,
-> not stored spans (D2/D16). A render preview the panel shows is a **`PreparedRenderState`** identified
-> by a **`PreparedStamp`** (D29), produced **asynchronously by the render arbiter** (D34); the panel
-> may show a stale-but-last-good preview while a newer head derives (head-vs-derived lag, D13/D29).
-> Time-scrub drives **per-frame (time-interval) derivation** with the **active animation name as an
-> input** (D31).
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–5, D1–D44):** binding keys on the
+> immutable **NodeId** (lineage identity, D9/D15, and now the *locked* charter L5/INV-5 after **D44**),
+> **stored as a real field** on `Widget`/`ViewNode`/`EditIntent`/selection (D36); the `NodeId` resolves
+> via each Version's **persistent `identityRoot`** (D26/D30), and staged edits carry `{greenRoot,
+> identityRoot}` (D36) so a gesture's additions/reparses keep identity stable for live bindings.
+> name-path remains for display + addressing but the durable bind/selection key is the `NodeId`.
+> Positions via the red cursor over the persistent rope, not stored spans (D2/D16). The panel
+> distinguishes two render surfaces (**D43**): the **latest-wins viewport preview** (tracks head — a
+> newer edit cancels the in-flight preview) and an **explicit/pinned render** ("Render" / export —
+> pinned to its `requestedPreparedStamp`; a newer edit does **not** cancel it). Both are a
+> **`PreparedRenderState`** identified by a **`PreparedStamp` = `DerivedStamp + {effectiveRenderConfigHash,
+> viewCameraStateHash, samplingSeed}`** (**D42**, resolving the old D29 `{renderConfig, cameraOverride,
+> samplingSeed}` shape), produced **asynchronously by the render arbiter** (D34) whose front-end is a
+> **bounded sync semantic phase** for precommit validation (**D39**); the panel may show a
+> stale-but-last-good preview while a newer head derives (head-vs-derived lag, D13/D29), and reports
+> status from **requested vs published** stamps — `status:ok` only on full-stamp equality, else
+> deriving/preparing/rendering (**D38**). Renders are **reproducible-within-tolerance**, not
+> bit-identical (**D40**). Time-scrub drives **per-frame (time-interval) derivation** with the **active
+> animation name as an input** (D31).
 > This facet owns: **the UI as a pure function of (CST + descriptor schema)**,
 > widget-per-node, adaptive/growing panels, two-way binding widget↔CST node,
 > the split form/source live view, reactive propagation, and the shared-C++ +
@@ -327,16 +335,46 @@ list position — so a rename or an insertion above a node is a value/label delt
 never a spurious destroy+recreate that would lose focus or drag state. The form pane updates the
 moment the CST `Version` is committed; it does **not** wait on derivation.
 
-**The render preview is a separately-stamped, async artifact (D29/D34).** The form pane is a function
-of the CST `Version` and updates immediately, but any *render preview* the panel shows is a
-**`PreparedRenderState` identified by a `PreparedStamp`** (`DerivedStamp + {renderConfig,
-cameraOverride, samplingSeed}`, D29), produced **asynchronously by the render arbiter** as cancellable
-derive→prepare→render phases (D34). Because the arbiter may still be mid-derive/prepare on an older
-stamp when a newer head is committed, the panel may legitimately display a **stale-but-last-good
-preview** whose `PreparedStamp.cstVersion` is a DAG ancestor of head (head-vs-derived lag, D13/D29) —
-the preview surfaces its stamp + the session `status ∈ {deriving, ok, error}` so a lag or a last-good
-fallback is shown honestly, never as if it were head. Staleness is judged on the **`cstVersion` axis
-by DAG ancestry, never numeric `<`** (D29).
+**The render surface is separately-stamped and async; the panel distinguishes a latest-wins preview
+from a pinned render (D29/D34/D42/D43).** The form pane is a function of the CST `Version` and updates
+immediately, but any *rendered image* the panel shows is a **`PreparedRenderState` identified by a
+`PreparedStamp`**, produced **asynchronously by the render arbiter** as cancellable
+derive→prepare→render phases (D34), whose front-end is the **bounded sync semantic phase** (D39, below).
+
+**The `PreparedStamp` is `DerivedStamp + {effectiveRenderConfigHash, viewCameraStateHash,
+samplingSeed}` (D42)** — superseding the old D29 `{renderConfig, cameraOverride, samplingSeed}` shape:
+
+- **F4 owns the viewport camera as an *ephemeral pose*, not a `CameraId` (D42).** The view camera is
+  identified by a **view-camera-state content hash** (pose + lens). During an orbit/dolly the pose
+  changes continuously, so the requested `PreparedStamp`'s **`viewCameraStateHash` changes every
+  frame** — which is exactly what drives the latest-wins preview below.
+- **The render config is the resolved `EffectiveRenderConfig` (D42).** F4 never stamps the raw request;
+  it stamps `ResolveEffectiveRenderConfig(CST, request)` — the deterministic merge of scene-authored
+  rasterizer/integrator settings ← request overrides ← defaults ← auto-resolution (the resolved
+  integrator/resolution) — and its **content hash** `effectiveRenderConfigHash` goes in the stamp.
+
+**Two render-surface job classes (D43):**
+
+- **The live viewport preview is latest-wins.** It tracks head (and the live view-camera pose): a
+  newer edit — including each frame of an orbit, via the changing `viewCameraStateHash` — **cancels the
+  in-flight preview** (D34's policy). It is ephemeral, cheap, and never pinned.
+- **"Render" / export is a pinned render.** An explicit "render *this*" (final/export) is **pinned to
+  its `requestedPreparedStamp`**: a newer edit does **not** cancel it — it runs to completion (or is
+  cancelled only by its requester). The panel presents these as distinct affordances, so an unrelated
+  edit can never silently destroy a requested final render.
+
+**Status is requested-vs-published, not just what was produced (D38).** Because the arbiter may still
+be mid-derive/prepare on an older stamp when a newer head (or a new camera pose / config) is
+requested, the panel reports status from the session value `{ headVersion, requestedDerivedStamp,
+requestedPreparedStamp, publishedDerivedStamp, publishedPreparedStamp, status, diagnostics }`:
+**`status:ok` only when published == requested on *every* stamp axis** (cstVersion, assetDigest,
+animation, shutter, effective-config, view-camera, seed); while they differ it shows
+**deriving/preparing/rendering** (or a **stale-but-last-good preview** whose
+`PreparedStamp.cstVersion` is a DAG ancestor of head — the head-vs-derived lag, D13/D29). A lag or a
+last-good fallback is shown honestly, never as if it were head. CST staleness is judged on the
+**`cstVersion` axis by DAG ancestry, never numeric `<`** (D29); the other stamp axes are
+equality-matched (D38). The rendered image itself is **reproducible-within-tolerance, not
+bit-identical** (D40) — review is by image, not byte-diff.
 
 This is the reactive propagation model: **one-way data flow** (CST → UiTree →
 render) plus **a single upstream event** (EditIntent → Facet 3 → CST). A
@@ -391,8 +429,9 @@ synced.** This is browser-devtools' "Elements pane ↔ DOM" applied to a scene.
   a debounced commit (O2): keystrokes update a scratch buffer, and on
   debounce/blur Facet 1 attempts `text → CST`; on parse success it publishes a
   revision (both panes converge), on failure the source pane shows inline
-  diagnostics (Facet 5's `validate`) and the form pane keeps the
-  last-good tree with a "source has unparsed edits" banner. *(If the open O1
+  diagnostics from the **bounded sync semantic phase** (Facet 5's `validate` =
+  the D39 sync phase: parse→bind→typecheck, fast, on the edit path) and the form
+  pane keeps the last-good tree with a "source has unparsed edits" banner. *(If the open O1
   decision instead lands on text-canonical — buffer-is-truth — the only delta
   is that the form pane becomes strictly downstream of the buffer and the
   debounce is the sole commit point; the rest of this facet is unchanged
@@ -686,20 +725,27 @@ the only Android-specific UI code, and it is mechanical.
    widgets are a pure function of the CST node. But three need derivation
    results: `GeneratorCard`'s instance preview (needs Facet 2's derived
    instances), `RefPicker` candidate *validity* (a ref might parse but fail
-   `ResolveOrDiagnoseScalar`'s color/scalar check — a derive-time diagnostic),
-   and `Widget.diagnostic` (Facet 5's `validate`). The clean line: **the form
-   is a function of the CST; *annotations* (derived previews, diagnostics) are
-   a function of derivation and arrive as a second, additive overlay.** The
-   tar-pit is letting derived data leak into the *structure* of the tree
-   (re-introducing Model A's coupling). Mitigation: `synthetic` children and
-   `diagnostic` strings are strictly additive overlays that never change which
-   widgets exist; the base tree derives without the engine. Needs a crisp
-   contract with Facet 2 on the per-node "derived summary" it exposes. Note the
-   derived overlay (and any render preview the panel shows) is keyed by the
-   relevant **`DerivedStamp`/`PreparedStamp`** (D29) and produced **async by the
-   render arbiter** (D34), so an overlay may lag the just-committed form by one
-   derive (the head-vs-derived lag, D13/D29) — it is shown stamped, and the base
-   form never blocks on it.
+   `ResolveOrDiagnoseScalar`'s color/scalar check), and `Widget.diagnostic`
+   (Facet 5's `validate`). Two of these resolve at **different derivation phases
+   (D39):** a precommit/typecheck-class `Widget.diagnostic` and the
+   color/scalar-pipe validity of a `RefPicker` candidate are products of the
+   **bounded sync semantic phase** (lex→parse→bind→reference-resolution→
+   type/pipe-check; the same phase `propose_patch` precommit and rename use),
+   which is fast and edit-thread-OK; `GeneratorCard`'s instance preview (and any
+   diagnostic that needs realization/asset bytes) is a product of the **async
+   expensive phase** on the arbiter. The clean line: **the form is a function of
+   the CST; *annotations* (derived previews, async diagnostics) arrive as a
+   second, additive overlay.** The tar-pit is letting derived data leak into the
+   *structure* of the tree (re-introducing Model A's coupling). Mitigation:
+   `synthetic` children and `diagnostic` strings are strictly additive overlays
+   that never change which widgets exist; the base tree derives without the
+   engine. Needs a crisp contract with Facet 2 on the per-node "derived summary"
+   it exposes. The async overlay (and any rendered image the panel shows) is
+   keyed by the relevant **`DerivedStamp`/`PreparedStamp`** (D29/D42) and
+   produced **async by the render arbiter** (D34), so an overlay may lag the
+   just-committed form by one derive (the head-vs-derived lag, D13/D29) — it is
+   shown stamped, with the panel's requested-vs-published status (D38), and the
+   base form never blocks on it.
 
 2. **The text pane's edit granularity under lossless-CST (O1).** A raw text
    edit that doesn't yet parse must not destroy the form pane's last-good
@@ -782,10 +828,13 @@ the only Android-specific UI code, and it is mechanical.
   incrementally (INV-3).
 - **Facet 5 (agentic surface)** — *peer.* The agent edits via the same Facet-3
   pathway, so its patches drive the reactive UI for free (§2.2). I assume
-  Facet 5's `validate` produces per-parameter diagnostics addressable by
-  name-path **and resolvable to the owning node's `NodeId`** (D36) so they bind
-  to the right `Widget.diagnostic` even across a rename. The "show me the code"
-  panel is literally this facet's source pane.
+  Facet 5's `validate` is the **bounded sync semantic phase** (D39 — the front of
+  the async job, so no second resolver) and produces per-parameter diagnostics
+  addressable by name-path **and resolvable to the owning node's `NodeId`** (D36)
+  so they bind to the right `Widget.diagnostic` even across a rename. The "show
+  me the code" panel is literally this facet's source pane. An agent's explicit
+  final/export render is a **pinned** render job (D43) the panel surfaces
+  distinctly from its latest-wins viewport preview.
 - **`ParameterSemantics`** is assumed adopted ([GUI_ROADMAP.md §16](../GUI_ROADMAP.md));
   the color-vs-scalar widget split degrades to "all refs look alike" without
   it, so it's a soft-but-strongly-wanted input.
@@ -814,12 +863,18 @@ contribution to that slice, kept deliberately minimal:
    panel-specific logic.
 4. **Two-way binding on that one widget:** editing `focal_length` emits a
    `SetParam` `EditIntent` **carrying the camera node's `NodeId`** (D36) → Facet
-   3 patches the CST value token + commits a `Version` → `UiModel::Build`
-   re-derives the single widget reactively and the form updates immediately
-   (§2.2); the **viewport preview** updates when the render arbiter's async
-   derive→prepare→render produces a new stamped `PreparedRenderState` (D29/D34),
-   which may lag the form by a frame. Editing the value in the source pane (a raw
-   text edit) round-trips the other direction.
+   3's **bounded sync semantic phase** validates the edit on the edit thread
+   (parse→bind→typecheck, D39) → it patches the CST value token + commits a
+   `Version` → `UiModel::Build` re-derives the single widget reactively and the
+   form updates immediately (§2.2); the **latest-wins viewport preview** updates
+   when the render arbiter's async derive→prepare→render produces a new stamped
+   `PreparedRenderState` (D34) — keyed by `PreparedStamp = DerivedStamp +
+   {effectiveRenderConfigHash, viewCameraStateHash, samplingSeed}` (D42), so
+   orbiting the camera re-requests via a changing `viewCameraStateHash` — which
+   may lag the form by a frame, the panel showing requested-vs-published status
+   (D38). An explicit **"Render"** affordance issues a *pinned* render of that
+   stamp that a subsequent edit does not cancel (D43). Editing the value in the
+   source pane (a raw text edit) round-trips the other direction.
 5. **Live incremental re-derive proof:** assert that a `focal_length` patch
    rebuilds exactly one widget (the memoization of §2.6), not the tree.
 6. **The vertical's headline demo:** the split form/source view on this one
@@ -844,7 +899,11 @@ contribution to that slice, kept deliberately minimal:
   widget's **`NodeId` field unchanged**, so the selection holds and `Diff`
   matches by `NodeId` (a name-path-keyed selection would drop here — the
   regression this guards); a `gen_bridge_enums` conformance test for
-  `WidgetKind` (drift = build break).
+  `WidgetKind` (drift = build break); a **render-surface status test** (D38/D43):
+  status reports `ok` only on full-stamp equality, a continuous view-camera pose
+  change (D42) re-requests + cancels the **latest-wins preview** while a **pinned**
+  render of an earlier stamp survives an unrelated edit (and renders compare by
+  image, not byte-diff — D40).
 - **Platform parity:** generator + view-model shared (all platforms); only the
   `WidgetKind`→native render differs. Android Tier A/B forms; split view Tier B
   (toggle); heavy expr/generator editing Tier C → edit-in-source.

@@ -1,14 +1,15 @@
-# RISE Agentic Redesign — Decision Record (review rounds 1–4)
+# RISE Agentic Redesign — Decision Record (review rounds 1–5)
 
-> **Status:** authoritative. Round 1 → **D1–D10**; round 2 → **D11–D20**; round 3 → **D21–D28**;
-> round 4 → **D29–D37**. Later decisions *amend* earlier ones (r2: D11/D12 amend D1, D14 amends D9,
-> D15/D16 amend D2, D17 amends D5/D6, D18 amends D10, D20 amends D4; r3: D21/D22 amend D12, D22 amends
-> D5, D23 amends D11/D20, D24 amends D11, D25 amends D14, D26 completes D15, D27 amends D19, D28 amends
-> D5; r4: D29 amends D13/D22, D30 amends D26/D20, D31 amends D21, D32 amends D22/D12, D33 amends D22,
-> D34 amends D12/D22, D35 amends D25, D36 completes D26, **D37 corrects D27 — a factual error**).
-> Where a decision conflicts with a facet doc (10–60) or the overview (00), **this document wins**,
-> and a later decision wins over the earlier one it amends. Read after [`00-CHARTER.md`](00-CHARTER.md)
-> and [`00-OVERVIEW.md`](00-OVERVIEW.md).
+> **Status:** authoritative. Round 1 → **D1–D10**; r2 → **D11–D20**; r3 → **D21–D28**; r4 →
+> **D29–D37**; r5 → **D38–D44**. Later decisions *amend* earlier ones (r2: D11/D12 amend D1, D14
+> amends D9, D15/D16 amend D2, D17 amends D5/D6, D18 amends D10, D20 amends D4; r3: D21/D22 amend D12,
+> D22 amends D5, D23 amends D11/D20, D24 amends D11, D25 amends D14, D26 completes D15, D27 amends D19,
+> D28 amends D5; r4: D29 amends D13/D22, D30 amends D26/D20, D31 amends D21, D32 amends D22/D12, D33
+> amends D22, D34 amends D12/D22, D35 amends D25, D36 completes D26, **D37 corrects D27**; r5: D38
+> amends D13/D29, D39 amends D34/D35/D5, D40 amends D33, D41 amends D5/D17, D42 amends D29/D22, D43
+> amends D34, **D44 fixes the locked charter L5/INV-5**). Where a decision conflicts with a facet doc
+> (10–60), the overview (00), or the charter, **this document wins**, and a later decision wins over
+> the earlier one it amends. Read after [`00-CHARTER.md`](00-CHARTER.md) and [`00-OVERVIEW.md`](00-OVERVIEW.md).
 >
 > **Enabling permission (from the product owner):** *"I am open to deprecating anything. All the
 > scenes that have ever been produced live on this machine and we can migrate/change them if
@@ -702,6 +703,11 @@ DerivedArtifact    = { derivedStamp, derivedScene, derivationCache } (cache live
 PreparedStamp      = DerivedStamp + { renderConfig, cameraOverride, samplingSeed }
 PreparedArtifact   = { preparedStamp, preparedRenderState }
 ```
+> *(Round 5 refines this diagram: `assetManifestGen`→**`assetDigest`** (content digest of the loaded
+> buffer, D41); `PreparedStamp`'s `{renderConfig, cameraOverride}`→**`{effectiveRenderConfigHash,
+> viewCameraStateHash}`** (D42); both stamps gain **requested-vs-published** status with `ok` ⟺
+> full-stamp equality (D38).)*
+
 Artifacts are produced **asynchronously by the render arbiter** (cancellable), keyed by stamp; a
 `Version` can have many of each.
 
@@ -851,3 +857,141 @@ seeded prepare (D33) run **async + cancellable on the arbiter** (D34) via a real
 **builder** (D32); rename reuses the **one** resolver (D35); identity propagates through edits + UI
 (D36). **Motion blur is preserved** as a time-interval immutable scene (D31, gated). And D37 corrects
 a real factual error — the `> modify` lines are commented out, so the migrator must parse, not grep.
+
+---
+
+# Review Round 5 (D38–D44)
+
+Round 5 probed render-determinism, config resolution, cancellation, and a charter-level staleness.
+No P0s; 7 P1. Two are "split the conflated thing" (D39, D43); two are honest weakenings (D40, D42);
+**D44 fixes the locked charter** (L5 still said name-path is identity).
+
+## D38 — Status exposes requested AND published stamps; ok ⟺ full-stamp equality (amends D13/D29; resolves R5-P1-1)
+
+**Contradiction:** the status surface published only what the arbiter *produced*; when time/assets/
+camera/config change without changing `headVersion`, a client can't see what the arbiter is *trying*
+to produce.
+
+**Decision:** status = `{ headVersion, requestedDerivedStamp, requestedPreparedStamp,
+publishedDerivedStamp, publishedPreparedStamp, status, diagnostics }`. **`status:ok` requires
+full-stamp equality** (`published == requested` on *every* axis — cstVersion, assetDigest, animation,
+shutter, effective-config, view-camera, seed); otherwise `status:deriving|preparing|rendering`. The
+requested stamps are set when *any* input axis changes (not just the CST head).
+
+**Overrides:** D13/D29 status surface gains the requested stamps; `ok` is full-stamp equality.
+
+## D39 — Two derivation phases: a bounded SYNC semantic phase + the async expensive phase (amends D34/D35/D5; resolves R5-P1-2)
+
+**Contradiction:** `propose_patch` precommit needs a synchronous validate, and rename synchronously
+derives head — but D34 says *all* derivation is async/off-edit-thread.
+
+**Decision — split derivation:**
+- **Synchronous semantic phase (bounded, deterministic, edit-thread-OK):** lex → parse → CST →
+  bind-to-descriptor → **reference resolution (traced `ReferenceUse`)** → type/pipe/typecheck. Output:
+  a validated CST + reference graph + diagnostics. No asset I/O beyond identity, no realization. This
+  is what `propose_patch` precommit and **rename (D35)** use.
+- **Asynchronous expensive phase (arbiter, cancellable):** realize/tessellate (loads asset bytes),
+  TLAS, `prepare` (samplers/photons), render — D34's async job.
+- The semantic phase **is the front of the async job** (same code), so it is *not* a second resolver
+  (D35's no-drift holds). **Scope note:** the sync phase resolves references to **CST-declared**
+  name-paths; references *into* asset-expanded sub-entities (e.g. a glTF import's children) require
+  the async phase and are out of v1 cross-reference scope.
+
+**Overrides:** D34 "all derivation async" → bounded semantic phase may be sync; D35's "derive head" =
+run the sync semantic phase to head; D5's `validate` = the sync semantic phase.
+
+## D40 — The seed makes PREPARE deterministic; the RENDER is reproducible-within-tolerance, not bit-identical (amends D33; resolves R5-P1-3)
+
+**Contradiction:** renderers use per-worker independently-seeded RNGs + `GlobalRNG()`
+(`RasterizeDispatchers.h:146`, `PixelBasedRasterizerHelper.cpp:897`); tile assignment, splat
+reduction, and denoise also vary — a single seed does **not** yield bit-identical images.
+
+**Decision (honest weakening):**
+- **`prepare` (photon maps) IS made deterministic** by the seed (so the `PreparedArtifact` cache is
+  sound — same `PreparedStamp` → same photon maps; this is all D33's cache-soundness actually needed).
+- **The final RENDER is NOT bit-identical** — it is **reproducible within MC tolerance** (same scene/
+  config/seed → the same converged image up to Monte-Carlo noise). The git-native "diffable renders"
+  claim weakens accordingly (review-by-image, not byte-diff).
+- **Bit-identical rendering** (deterministic per-pixel/per-sample RNG streams keyed by pixel+sample,
+  deterministic splat reduction, deterministic denoise — across *every* renderer) is a **named future
+  option**, not v1.
+
+**Overrides:** D33's "reproducible/bit-identical render" → prepare-deterministic + render-reproducible-
+within-tolerance; bit-identical is future.
+
+## D41 — Asset bytes bind to the stamp by content digest of the actually-loaded buffer (amends D5/D17/D29; resolves R5-P1-4)
+
+**Contradiction:** the manifest hashes a *path*, but loaders reopen that path later
+(`TriangleMeshLoaderPLY.cpp:795`) — a TOCTOU window where the file can change between hash and load,
+stamping an artifact with the wrong identity. And a session-local generation counter is not a
+reproducible identity.
+
+**Decision:** the asset's identity is the **content digest of the exact bytes the loader consumed** —
+either **load-and-hash one buffer** (read once, hash that buffer, hand the buffer to the loader) or
+**revalidate after load** (re-hash the loaded bytes vs the manifest; on mismatch, retry/refuse). The
+**`DerivedStamp` asset axis is a content digest** (per-asset content hashes), not a session
+generation; the generation counter remains only as a fast in-process change signal.
+
+**Overrides:** D5/D17 path-hash → loaded-buffer content digest (load-once or revalidate-and-retry);
+D29's `assetManifestGen` → `assetDigest` (content) for the stamp's reproducible identity.
+
+## D42 — Stamp the normalized EffectiveRenderConfig + a view-camera-state hash, not a raw request + CameraId (amends D29/D22; resolves R5-P1-5)
+
+**Contradiction:** scene-authored rasterizer settings, request overrides, defaults, and
+auto-resolution (e.g. auto-rasterizer) have no defined merge; and a `CameraId` cannot identify the
+continuously-changing ephemeral viewport camera pose.
+
+**Decision:**
+- Define **`ResolveEffectiveRenderConfig(CST, request) → EffectiveRenderConfig`** — a deterministic
+  merge: scene-authored rasterizer/integrator settings ← request overrides ← defaults ←
+  auto-resolution (the resolved integrator/resolution). The **normalized result + its content hash**
+  goes in the `PreparedStamp` (not the raw request).
+- The viewport camera is an **ephemeral pose**, not a `CameraId`: stamp a **content hash / generation
+  of the complete view-camera state** (pose, lens). So `PreparedStamp = DerivedStamp +
+  { effectiveRenderConfigHash, viewCameraStateHash, samplingSeed }`.
+
+**Overrides:** D29/D22 `RenderConfig`/`cameraOverride: CameraId` → `EffectiveRenderConfig` (resolved +
+hashed) + `viewCameraStateHash`.
+
+## D43 — Separate latest-wins preview jobs from stamp-pinned explicit renders (amends D34; resolves R5-P1-6)
+
+**Contradiction:** D34 says every newer head cancels the in-flight render; the agent surface allows
+preempt/queue/reject + stale stamped results. As one policy, an unrelated edit silently destroys a
+requested final render.
+
+**Decision — two arbiter job classes:**
+- **Preview jobs — latest-wins:** interactive viewport previews track head; a newer head cancels the
+  in-flight preview (D34's policy). Ephemeral, cheap, never pinned.
+- **Pinned render jobs — stamp-pinned:** an explicit "render *this* stamp" (final/export) is **pinned
+  to its `requestedPreparedStamp`**; a newer head does **not** cancel it — it runs to completion (or
+  is cancelled only by its requester). The coordinator may queue pinned renders (one heavy render at a
+  time) and run previews alongside.
+
+**Overrides:** D34's "newer head cancels in-flight render" applies to **preview** jobs only; pinned
+renders are stamp-pinned.
+
+## D44 — Charter L5/INV-5 fixed: NodeId is lineage identity, name-path is addressing (amends charter L5/INV-5; resolves R5-P1-7)
+
+**Contradiction:** the *locked* charter still defines **name-path as the stable identity currency**
+(L5, INV-5), contradicting D9/D15/D26/D36 (NodeId is lineage identity; name-path is addressing) and
+the corrected UI structures.
+
+**Decision:** update the charter so the locked foundation matches the ratified decisions:
+- **L5:** identity is the immutable **`NodeId`** (lineage; survives rename + reparse; lives in each
+  Version's `identityRoot`); **name-path** (`objects/sphere.material`) is the **addressing** scheme
+  (human/agent-readable; resolves to a NodeId within a version; changes on rename).
+- **INV-5 (Stable identity):** durable references (selection, agent refs, UI bindings, undo lineage)
+  key on the **NodeId**, not the name-path.
+- Propagate to the overview diagrams + first-slice language (name-path = addressing, NodeId = identity).
+
+**Overrides:** charter L5 + INV-5 (the only round that edits the "locked" charter — a correction to
+keep the foundation consistent with D9/D15/D26/D36).
+
+# Net effect (round 5)
+
+Round 5 made the **runtime semantics** precise: status shows requested vs published with full-stamp
+`ok` (D38); derivation splits into a bounded sync semantic phase (validate/rename) + the async
+expensive phase (D39); the seed makes *prepare* deterministic while the *render* is honestly
+reproducible-within-tolerance (D40); assets bind by content digest of the loaded buffer (D41); the
+stamp carries a resolved EffectiveRenderConfig + view-pose hash (D42); previews are latest-wins while
+explicit renders are stamp-pinned (D43); and the locked charter's identity model is corrected (D44).

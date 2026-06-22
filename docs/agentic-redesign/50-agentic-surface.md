@@ -2,21 +2,32 @@
 
 > **Status:** design-in-progress. One of six parallel facet docs under
 > [00-CHARTER.md](00-CHARTER.md). **Design only — no source, build, or scene changes.**
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–4, D1–D37):** added external-file
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–5, D1–D44):** added external-file
 > conflict handling (atomic save + content-hash fingerprint, D6/D17); v7 is single-file (D7);
 > the read/patch contracts expose the coherent version surface with **full
 > `DerivedStamp`/`PreparedStamp`** rather than a single `derivedVersion`, and staleness is
-> **cstVersion DAG ancestry, not numeric `<`** (D13/D29); name-path is addressing while the
-> immutable NodeId is the stable lineage identity (D9/D14/D15); the render/derive tools take an
-> explicit **`RenderConfig`** — which carries a **sampling seed / RNG-stream id** so `render`/
-> `derive_preview` are **reproducible** (same `PreparedStamp` → same image, D33) — and an integrator
-> override re-runs only the config-dependent `prepare` layer, not the config-independent scene
-> derivation (D22); `derive → prepare → render` run **async + cancellable on the single render
-> arbiter**, off the agent/edit thread (a newer patch cancels in-flight work — D34), which is exactly
-> the head-vs-derived lag the agent observes; `rename` uses the **same resolver as derivation**
-> (synchronously derives head; refuses if head can't be derived — D25/D35); a `render` of an
+> **cstVersion DAG ancestry, not numeric `<`** (D13/D29); the status surface now exposes
+> **`requested*` AND `published*` stamps** and `status:ok` means **full-stamp equality**
+> (published == requested on every axis), with the requested stamps moving when **any** input
+> axis changes — time/asset/camera/config, not just `headVersion` (D38); name-path is addressing
+> while the immutable **NodeId is the stable lineage identity** (D9/D14/D15, **charter-corrected D44**);
+> derivation **splits into a bounded synchronous semantic phase** (lex→parse→CST→reference-resolution
+> →typecheck) — which is what `validate` and `propose_patch`'s precommit and `rename` use — **and the
+> async expensive phase** (realize/TLAS/prepare/render) that stays the arbiter's cancellable job
+> (D39, reconciling D34/D35/D5); the render/derive tools take an explicit **`RenderConfig`** that is
+> resolved into an **`EffectiveRenderConfig` (hashed) + a view-camera-state hash** in the stamp
+> (D42), and carries a **sampling seed** that makes **`prepare` deterministic** so the
+> `PreparedArtifact` cache is sound — while the **render itself is reproducible within MC tolerance**
+> (review-by-image, not byte-diff; bit-identical rendering is a named future, D40, weakening D33); an
+> integrator override re-runs only the config-dependent `prepare` layer, not the config-independent
+> scene derivation (D22); `derive → prepare → render` run **async + cancellable on the single render
+> arbiter**, off the agent/edit thread, but **only latest-wins *preview* jobs are cancelled by a newer
+> head — stamp-pinned *explicit/final* renders run to completion** (D43, scoping D34), which is exactly
+> the head-vs-derived lag the agent observes; `rename` runs the **same synchronous semantic phase to
+> head** as derivation (refuses if head can't be derived — D25/D35/D39); a `render` of an
 > animation frame derives a **time-INTERVAL** scene (motion blur gated v1-off) and the active
-> animation name is part of the stamp (D31); and branch/PR history preserves the **CST only** — a
+> animation name is part of the stamp (D31); asset bytes bind to the stamp by **content digest of the
+> loaded buffer** (`assetDigest`, D41); and branch/PR history preserves the **CST only** — a
 > re-derived old version uses *current* asset bytes (D28).
 > This facet owns the **RISE MCP server**, the **edit→validate→derive→render→observe loop**,
 > the **GUI-as-just-another-agent** unification (charter **L2**), **diff-able / git-native /
@@ -151,64 +162,93 @@ actions; Prompts = curated workflows), but the *tools* are re-cast onto the CST.
 |---|---|---|
 | `read_document` → `rise://cst/text` | Returns `{ text, version: {headVersion}, status, diagnostics, redactions: [{offset,length}] }` — the **whole canonical CST serialized to `.RISEscene` text** (comments + formatting preserved; this is what makes diffs reviewable, §5). Stamped with **`headVersion`** (the CST truth, §2.2.1.1): the text *is* the head, so it never lags. `headVersion` is the version a `propose_patch` precondition is checked against (optimistic concurrency, §2.4). Secrets length-preservingly masked with a **single-byte** ASCII mask (`*`) so every byte offset equals the canonical document's (the AI_SECURITY_MODEL §9 redaction contract — carried over verbatim because it is offset-faithfulness, not a Model-A artifact). | Facet 1 CST → serializer |
 | `read_node` → `rise://cst/node/{name-path}` | Returns one node's source span **addressed by name-path** (charter **L5**: `objects/sphere`, `objects/sphere.material`, `materials/gold.roughness`) as `{ text, nodeId, version: {headVersion}, status, spanOffset, redactions }` — stamped with **`headVersion`** like `read_document` (it reads the CST). Name-path is *addressing*, version-resolved against the head; it is **not** the durable identity (D9/D15): it changes on rename. An agent that must hold a reference to a node **across edits** keeps the returned immutable **`nodeId`** (the lineage identity) and re-addresses by name-path within a version. | Facet 1 name-path index → span |
-| `read_graph` → `rise://scene/graph` | Structured introspection of the **derived** scene: objects / cameras / lights / materials / media / film, each with type, resolved property rows, bound-material links, world-space transform + bbox. Stamped with the **`DerivedStamp = {cstVersion, assetManifestGen, animationName, shutterInterval}`** + `status` + `diagnostics` (§2.2.1.1, D29), **not** `headVersion` — when derivation lags or is broken this is what the scene actually reflects (its `cstVersion` may be a proper ancestor of head, or last-good on `status:error`). This is the **config-INDEPENDENT** `DerivedScene` (D22: `f(CST, AssetManifest, t)` — geometry, materials, lights-as-emitters, TLAS); it carries the full `DerivedStamp` but **no `RenderConfig`/`PreparedStamp`** because the graph does not depend on integrator/rasterizer selection (only the *rendered image* does, via the `PreparedRenderState` layer, §2.2.3). This is the *evaluated* view (what the CST *means*), complementary to the CST text (what the CST *says*); the head `cstVersion` and the stamp's `cstVersion` are surfaced so a client is **never** told they are equal when they are not (staleness is the **DAG-ancestry** check on `cstVersion`, D29, never numeric `<`). | Facet 2 derived scene + introspection |
+| `read_graph` → `rise://scene/graph` | Structured introspection of the **derived** scene: objects / cameras / lights / materials / media / film, each with type, resolved property rows, bound-material links, world-space transform + bbox. Stamped with the **published `DerivedStamp = {cstVersion, assetDigest, animationName, shutterInterval}`** alongside the **`requestedDerivedStamp`** the arbiter is currently trying to produce, plus `status` + `diagnostics` (§2.2.1.1, D29/**D38**), **not** `headVersion` — when derivation lags or is broken the published stamp is what the scene actually reflects (its `cstVersion` may be a proper ancestor of head, or last-good on `status:error`; `status:ok` ⟺ published == requested on every axis, D38). This is the **config-INDEPENDENT** `DerivedScene` (D22: `f(CST, AssetManifest, t)` — geometry, materials, lights-as-emitters, TLAS); it carries the full `DerivedStamp` but **no `RenderConfig`/`PreparedStamp`** because the graph does not depend on integrator/rasterizer selection (only the *rendered image* does, via the `PreparedRenderState` layer, §2.2.3). This is the *evaluated* view (what the CST *means*), complementary to the CST text (what the CST *says*); the requested and published `cstVersion` are both surfaced so a client is **never** told they are equal when they are not (staleness is the **DAG-ancestry** check on `cstVersion`, D29, never numeric `<`). | Facet 2 derived scene + introspection |
 | `read_schema` → `rise://grammar/schema` and `rise://grammar/node/{keyword}` | The whole grammar (or one chunk) as JSON Schema generated from `SceneGrammar::Instance()` (L6). **The agent's "what is the grammar" reference** — every keyword, its category, params with kind/enum/refs/defaults/units/descriptions. A *first-pass filter, not the parser* (§5). | `SchemaGen` over descriptors |
-| `read_image` → `rise://framebuffer` (+ `…/aov/{aov}`) | The latest **completed** preview as tone-mapped sRGB PNG (so a vision model sees what a human sees), with `?exposure`/`?max_dim`/`?region` query params, a `generation` counter so the agent can tell "is this the frame I asked for?", and the full **`PreparedStamp = DerivedStamp + {renderConfig, cameraOverride, samplingSeed}`** the frame was rendered from (D29) — the `DerivedStamp` half is the derived snapshot (whose `cstVersion` may be a proper ancestor of head), and the `{renderConfig, cameraOverride, samplingSeed}` half fixes the pixels: two images sharing a `DerivedStamp` differ when their `renderConfig`/`cameraOverride`/`samplingSeed` differ, and **two images with the same `PreparedStamp` are bit-identical** (D33 — the seed makes the render reproducible). AOVs (albedo/normal/depth/objectid/alpha) visualized; raw float via `?format=exr`. Never *triggers* a render. | Facet 2 render output / FrameStore |
-| `read_diagnostics` → `rise://render/stats`, `…/autoroute`, `rise://log` | Render telemetry (resolution, samples, ETA, progress), the auto-router's resolved integrator + one-line reason ("Auto → BDPT: glossy/indirect variance high"), and the redacted log tail. Stamped with the render's **`PreparedStamp`** + `status` (§2.2.1.1, D29) — it describes the render of a `PreparedRenderState`, whose `DerivedStamp.cstVersion` may be a proper ancestor of head. The numeric/structural channel the agent observes alongside the image. | counters / `AutoRasterizer` / log sink |
+| `read_image` → `rise://framebuffer` (+ `…/aov/{aov}`) | The latest **completed** preview as tone-mapped sRGB PNG (so a vision model sees what a human sees), with `?exposure`/`?max_dim`/`?region` query params, a `generation` counter so the agent can tell "is this the frame I asked for?", and the full **`PreparedStamp = DerivedStamp + {effectiveRenderConfigHash, viewCameraStateHash, samplingSeed}`** the frame was rendered from (D29/**D42**) — the `DerivedStamp` half is the derived snapshot (whose `cstVersion` may be a proper ancestor of head), and the `{effectiveRenderConfigHash, viewCameraStateHash, samplingSeed}` half fixes the pixels: the **`effectiveRenderConfigHash`** is the content hash of the *resolved* `EffectiveRenderConfig` (scene-authored settings ← request overrides ← defaults ← auto-resolution, D42 — **not** the raw request), and **`viewCameraStateHash`** is a content hash of the complete ephemeral view-camera state (pose, lens — **not** a `CameraId`, which cannot identify a continuously-changing viewport pose). Two images sharing a `DerivedStamp` differ when their `effectiveRenderConfigHash`/`viewCameraStateHash`/`samplingSeed` differ; two images with the **same `PreparedStamp` are reproducible within MC tolerance** (D40 — the seed makes `prepare`/photon maps deterministic, so the same converged image up to Monte-Carlo noise; review-by-image, not byte-diff — bit-identical rendering is a named future). AOVs (albedo/normal/depth/objectid/alpha) visualized; raw float via `?format=exr`. Never *triggers* a render. | Facet 2 render output / FrameStore |
+| `read_diagnostics` → `rise://render/stats`, `…/autoroute`, `rise://log` | Render telemetry (resolution, samples, ETA, progress), the auto-router's resolved integrator + one-line reason ("Auto → BDPT: glossy/indirect variance high"), and the redacted log tail. Stamped with the render's **published `PreparedStamp`** (+ the `requestedPreparedStamp`) + `status` (§2.2.1.1, D29/**D38**) — it describes the render of a `PreparedRenderState`, whose `DerivedStamp.cstVersion` may be a proper ancestor of head. The numeric/structural channel the agent observes alongside the image. | counters / `AutoRasterizer` / log sink |
 
 `read_*` tools carry **no precondition** and read a **published immutable snapshot** of the CST +
 its derivation (never the live tree), so they answer concurrently with edits without tearing
 (Facet 3 owns the snapshot contract).
 
-##### 2.2.1.1 The coherent version surface — head vs derived via full stamps, compared by ancestry not `<` (per [`01-DECISIONS.md`](01-DECISIONS.md) §D13, **§D29**)
+##### 2.2.1.1 The coherent version surface — requested vs published full stamps, `ok` ⟺ full-stamp equality, compared by ancestry not `<` (per [`01-DECISIONS.md`](01-DECISIONS.md) §D13, **§D29**, **§D38**, **§D42**)
 
 A single stamped `documentId` shared by the CST read and the graph/render reads **tears**: derivation
 is async (and may serve a *last-good* snapshot on error), so when head N is broken or still deriving
 while the graph/render reflects an ancestor, one id is a lie. **D29 sharpens D13's single
-`derivedVersion`:** a `DerivedScene` depends not only on the CST version but on the asset-manifest
-generation, the active animation, and the shutter interval — so two scenes at one `cstVersion` (t=0
-vs t=1, or pre/post an asset change) must be distinguishable. The derived/rendered reads therefore
-carry **full stamps**, not a lone `derivedVersion`, and staleness is a **DAG-ancestry** test on the
-`cstVersion` axis (never numeric `<` — the version DAG branches; the other axes are equality-matched).
-The session publishes **one coherent status value**, and the read/return contracts stamp the right
-half of it:
+`derivedVersion`:** a `DerivedScene` depends not only on the CST version but on the asset content, the
+active animation, and the shutter interval — so two scenes at one `cstVersion` (t=0 vs t=1, or pre/post
+an asset change) must be distinguishable. The derived/rendered reads therefore carry **full stamps**,
+not a lone `derivedVersion`, and staleness is a **DAG-ancestry** test on the `cstVersion` axis (never
+numeric `<` — the version DAG branches; the other axes are equality-matched).
+
+**D38 splits each stamp into *requested* and *published* halves.** Publishing only what the arbiter
+*produced* still tears in a subtler way: when time/asset/camera/config change **without** changing
+`headVersion`, a client cannot see what the arbiter is *trying* to produce versus what it has actually
+produced. So the status surface exposes **both** `requestedDerivedStamp`/`requestedPreparedStamp` (the
+target — set whenever **any** input axis changes: cstVersion, asset, animation, shutter,
+effective-config, view-camera, seed — not just the CST head) **and**
+`publishedDerivedStamp`/`publishedPreparedStamp` (what the arbiter has finished). **`status:ok` requires
+full-stamp equality** — published == requested on **every** axis; otherwise the status is
+`deriving | preparing | rendering`. The session publishes **one coherent status value**, and the
+read/return contracts stamp the right half of it:
 
 ```jsonc
 { "headVersion": { "uuidHi", "uuidLo", "revision" },   // the CST truth (what read_document returns)
-  // DerivedStamp identifies a DerivedScene (config-INDEPENDENT view, e.g. read_graph):
-  "derivedStamp": { "cstVersion":      { "uuidHi", "uuidLo", "revision" }, // may be a DAG-ancestor of head, or last-good
-                    "assetManifestGen": 0,            // bumps when a traced asset's content hash changes (D5/D17)
-                    "animationName":    "main",       // the active animation path (D31)
-                    "shutterInterval":  [ 0.0, 0.0 ] }, // single-time in v1; an interval under motion blur (D31)
-  // PreparedStamp = DerivedStamp + render-config axes; identifies a PreparedRenderState (the rendered image):
-  "preparedStamp": { "derivedStamp":   { /* … as above … */ },
-                     "renderConfig":    { /* integrator/quality/resolution/denoise … (§2.2.3) */ },
-                     "cameraOverride":  null,
-                     "samplingSeed":    "<rng-stream id>" }, // D33 — makes the render reproducible
+
+  // A DerivedStamp identifies a DerivedScene (config-INDEPENDENT view, e.g. read_graph):
+  //   shape = { cstVersion:{uuidHi,uuidLo,revision}, // may be a DAG-ancestor of head, or last-good
+  //             assetDigest,        // content digest of the actually-loaded asset bytes (D41), not a gen counter
+  //             animationName,      // the active animation path (D31)
+  //             shutterInterval }   // single-time [t,t] in v1; an interval under motion blur (D31)
+  // A PreparedStamp = DerivedStamp + render axes; identifies a PreparedRenderState (the rendered image):
+  //   shape = { derivedStamp,
+  //             effectiveRenderConfigHash, // content hash of the RESOLVED EffectiveRenderConfig (D42), not the raw request
+  //             viewCameraStateHash,       // content hash of the ephemeral view-camera pose+lens (D42), not a CameraId
+  //             samplingSeed }             // D40 — makes prepare deterministic; render reproducible within MC tolerance
+
+  // D38 — the arbiter is TRYING to produce the requested stamps; it has PUBLISHED what it finished:
+  "requestedDerivedStamp":  { /* DerivedStamp  — target; updates when ANY input axis changes (time/asset/camera/config) */ },
+  "requestedPreparedStamp": { /* PreparedStamp — target */ },
+  "publishedDerivedStamp":  { /* DerivedStamp  — what the arbiter has finished (may be a DAG-ancestor of head, or last-good) */ },
+  "publishedPreparedStamp": { /* PreparedStamp — what the arbiter has finished */ },
+
   "snapshot":    "<opaque derived-snapshot handle>",
-  "status":      "deriving | ok | error",
+  "status":      "deriving | preparing | rendering | ok | error", // ok ⟺ published == requested on EVERY axis (D38)
   "diagnostics": [ /* ValidationReport entries, §2.5 — explain a lag or failure */ ] }
 ```
 
 - **CST reads** (`read_document`, `read_node`) are stamped with **`headVersion`** — the text *is* the
   head, so it cannot lag.
-- **Derived reads** carry the right stamp: the **config-independent** view (`read_graph`, D22) carries
-  the **`DerivedStamp`** alone; the **rendered** reads (`read_image`, `read_diagnostics`, and
-  `render`'s/`derive_preview`'s result) carry the full **`PreparedStamp`** — because an image is a
-  `PreparedRenderState = prepare(DerivedScene, RenderConfig)`, so the same `DerivedStamp` under two
-  integrators (or two seeds) yields two distinguishable images, while two reads with the **same
-  `PreparedStamp` are bit-identical** (D33). A stamp's `cstVersion` **may be a proper ancestor of
-  head** (derivation in flight) or a **last-good** snapshot (`status:error`); `status` + `diagnostics`
-  explain *why* it lags or failed.
-- **Staleness = DAG ancestry, not `<` (D29).** "Is this derived/rendered view stale vs head?" is
-  decided on the **`cstVersion` axis only**, by checking whether the stamp's `cstVersion` is an
-  **ancestor-or-equal** of head's in the version DAG — **not** a numeric `revision` comparison (the
-  DAG has branches, so `<` is meaningless across them). The other stamp axes
-  (`assetManifestGen`/`animationName`/`shutterInterval`, and the render-config axes) are matched by
-  **equality**, not order.
+- **Derived reads** carry the right stamp, in **both requested and published halves** (D38): the
+  **config-independent** view (`read_graph`, D22) carries the **`DerivedStamp`** pair
+  (`requestedDerivedStamp` + `publishedDerivedStamp`); the **rendered** reads (`read_image`,
+  `read_diagnostics`, and `render`'s/`derive_preview`'s result) carry the full **`PreparedStamp`** pair
+  — because an image is a `PreparedRenderState = prepare(DerivedScene, EffectiveRenderConfig)`, so the
+  same `DerivedStamp` under two resolved configs (or two seeds) yields two distinguishable images,
+  while two reads with the **same `PreparedStamp` are reproducible within MC tolerance** (D40 — the
+  seed makes `prepare`/photon maps deterministic; the render is the same converged image up to
+  Monte-Carlo noise, not byte-for-byte). A *published* stamp's `cstVersion` **may be a proper ancestor
+  of head** (derivation in flight) or a **last-good** snapshot (`status:error`); `status` +
+  `diagnostics` explain *why* it lags or failed.
+- **`status:ok` ⟺ full-stamp equality (D38).** The status is `ok` **only** when the published stamp
+  equals the requested stamp on **every** axis (`cstVersion`, `assetDigest`, `animationName`,
+  `shutterInterval`, `effectiveRenderConfigHash`, `viewCameraStateHash`, `samplingSeed`); otherwise it
+  is `deriving | preparing | rendering`. Because the **requested** stamps update when **any** input
+  axis changes (time/asset/camera/config, not just `headVersion`), a client sees `ok` revert to
+  `deriving|preparing|rendering` even when the CST head is untouched — e.g. the user scrubbed the
+  timeline, an asset changed on disk, or the view-camera moved.
+- **Staleness = DAG ancestry, not `<` (D29).** "Is this published derived/rendered view stale vs the
+  requested target?" is decided on the **`cstVersion` axis only**, by checking whether the published
+  stamp's `cstVersion` is an **ancestor-or-equal** of the requested/head `cstVersion` in the version
+  DAG — **not** a numeric `revision` comparison (the DAG has branches, so `<` is meaningless across
+  them). The other stamp axes (`assetDigest`/`animationName`/`shutterInterval`, and the render axes
+  `effectiveRenderConfigHash`/`viewCameraStateHash`/`samplingSeed`) are matched by **equality**, not
+  order.
 - **Clients are never told the two are equal when they are not.** A vision agent that reads an image
-  whose `preparedStamp.derivedStamp.cstVersion` is a strict ancestor of head knows it is looking at a
-  stale frame and can wait for `status:ok` at head's `cstVersion` (or re-`render`).
+  whose `publishedPreparedStamp.derivedStamp.cstVersion` is a strict ancestor of the requested
+  `cstVersion` (or whose published stamp differs from requested on any axis, so `status ≠ ok`) knows it
+  is looking at a stale frame and can wait for `status:ok` (full-stamp equality) or re-`render`.
 - A **`propose_patch` precondition** (optimistic concurrency, §2.4) is checked against
   **`headVersion`** — the CST is what a patch rebases on, not the (possibly-lagging) derived scene.
 
@@ -224,7 +264,7 @@ CST patch.
 
 | Tool | Contract |
 |---|---|
-| `propose_patch` | `{ baseHeadVersion: {uuidHi,uuidLo,revision}, patch: <CstPatch \| TextPatch>, intent?: string }`. The precondition is **checked against `headVersion`** (the CST truth, §2.2.1.1), not the derived scene — a patch rebases on the head. **Validated (parse-the-result + derive-dry-run) before it is allowed to commit (§2.4).** On success the commit is cheap and returns immediately with the bumped `headVersion`; **`derive → prepare → render` then run async + cancellable on the arbiter, off this thread** (D34), so the coherent status fills in the `DerivedStamp`/`PreparedStamp` + `status`/`diagnostics` as derivation proceeds (§2.5/§2.6) and a newer `propose_patch` cancels the in-flight work. A lost-race precondition returns a `CONFLICT` carrying the live `headVersion`. |
+| `propose_patch` | `{ baseHeadVersion: {uuidHi,uuidLo,revision}, patch: <CstPatch \| TextPatch>, intent?: string }`. The precondition is **checked against `headVersion`** (the CST truth, §2.2.1.1), not the derived scene — a patch rebases on the head. **Validated by the bounded synchronous semantic phase** — lex → parse → CST → bind-to-descriptor → **reference resolution** → typecheck (D39) — before it is allowed to commit (§2.4); this precommit is **not** a full async derive (no realization, TLAS, prepare, or render; D39 reconciles this with D34's "all the *expensive* derivation is async"). On success the commit is cheap and returns immediately with the bumped `headVersion`; **the async expensive phase — realize/TLAS → `prepare` → `render` — then runs cancellably on the arbiter, off this thread** (D34/D39), so the coherent status fills the requested→published `DerivedStamp`/`PreparedStamp` + `status`/`diagnostics` as it proceeds (§2.5/§2.6). A newer `propose_patch` **cancels the in-flight latest-wins *preview* work** but **not** a stamp-pinned explicit/final render (D43, §2.2.3). A lost-race precondition returns a `CONFLICT` carrying the live `headVersion`. |
 
 The two `patch` encodings:
 
@@ -244,17 +284,24 @@ The two `patch` encodings:
    it fixes up referrers from the traced `ReferenceUse` records (D14), flagging any it cannot resolve
    rather than silently leaving a dangling reference. **The `ReferenceUse` trace `rename` rewrites
    from must be stamped for the exact head it renames against (D25), and it comes from the *one*
-   resolution path — derivation's own resolver (D35):** because derivation can lag head (the
-   `DerivedStamp.cstVersion` may be a proper DAG-ancestor of head, §2.2.1.1), a referrer added in
-   head-but-not-yet-derived would otherwise be missed, silently leaving a dangling old name. So
+   resolution path — derivation's own resolver (D35):** because the published derived view can lag head
+   (the published `DerivedStamp.cstVersion` may be a proper DAG-ancestor of head, §2.2.1.1), a referrer
+   added in head-but-not-yet-derived would otherwise be missed, silently leaving a dangling old name. So
    `rename` obtains head's reference set with **the exact same evaluator/resolver as derivation —
    there is no separate "reference-tracing pass" reimplementation that could drift** (D35 corrects
    D25's standalone tracing pass; D4 demoted static schema walks *precisely because* dynamic refs like
-   `timeline.element` need real derivation). Concretely, if the derived view is not already at head the
-   rename **synchronously derives head** (sharing derivation's resolution step) and reads the resulting
-   traced `ReferenceUse` — rename is a deliberate, infrequent op, so a synchronous derive-to-head is
-   acceptable. A `rename` **never** runs against a stale trace; **if head cannot be derived (a semantic
-   error), the rename is refused** (not best-effort, not silently partial). This is the encoding the
+   `timeline.element` need real reference resolution). Concretely, if the resolved reference set is not
+   already at head the rename **runs the bounded synchronous semantic phase to head** — lex → parse →
+   CST → bind-to-descriptor → **reference resolution** → typecheck (D39) — and reads the resulting
+   traced `ReferenceUse`. This is the **same sync semantic phase `validate`/`propose_patch`-precommit
+   use, and it is the front of the async derive job (so it is not a second resolver, D35)** — **not** a
+   full async derive (no realization/TLAS/prepare/render): rename needs the reference graph, which the
+   bounded semantic phase produces, not the realized scene. Rename is a deliberate, infrequent op, so a
+   synchronous run-to-head of that bounded phase is acceptable. A `rename` **never** runs against a stale
+   trace; **if the semantic phase cannot resolve head (a semantic error), the rename is refused** (not
+   best-effort, not silently partial). **Scope note (D39):** the sync phase resolves references to
+   **CST-declared** name-paths; references *into* asset-expanded sub-entities (e.g. a glTF import's
+   children) need the async phase and are out of v1 cross-reference scope. This is the encoding the
    **GUI emits** for a
    slider drag or a panel edit (L2: the GUI is an agent that speaks `CstPatch`). It is the
    *preferred* agent encoding too, because it is minimal, name-path-anchored, and trivially
@@ -291,61 +338,103 @@ as a coarse version — but it is *always* a version, never a re-root that loses
 
 #### 2.2.3 Render & derivation tools (no scene mutation)
 
-These tools take a **`RenderConfig`** and surface the **two-layer derivation** (D22): the
-config-**independent** `DerivedScene = f(CST, AssetManifest, t)` (geometry, materials,
-lights-as-emitters, TLAS — what `read_graph` reflects) is derived once and cached; the
-config-**dependent** `PreparedRenderState = prepare(DerivedScene, RenderConfig)` (light samplers,
-photon maps, integrator-specific structures) is what the *image* reflects. The agent reads a
-`DerivedScene`; it renders a `PreparedRenderState`. An integrator/rasterizer override therefore
-re-runs **only `prepare`**, never the scene derivation — so swapping integrators never invalidates
-the graph the agent just read.
+These tools take a **`RenderConfig`** request, which is **resolved into an `EffectiveRenderConfig`**
+(D42, §2.2.3.1), and surface the **two-layer derivation** (D22): the config-**independent**
+`DerivedScene = f(CST, AssetManifest, t)` (geometry, materials, lights-as-emitters, TLAS — what
+`read_graph` reflects) is derived once and cached; the config-**dependent**
+`PreparedRenderState = prepare(DerivedScene, EffectiveRenderConfig)` (light samplers, photon maps,
+integrator-specific structures) is what the *image* reflects. The agent reads a `DerivedScene`; it
+renders a `PreparedRenderState`. An integrator/rasterizer override therefore re-runs **only
+`prepare`**, never the scene derivation — so swapping integrators never invalidates the graph the agent
+just read.
 
-**Two Round-4 properties govern these tools (D33, D34):**
+**Three round-4/5 properties govern these tools (D40, D34/D43, D42):**
 
-- **Deterministic & reproducible (D33).** `RenderConfig` carries a **sampling seed / RNG-stream
-  identity**; all stochastic preparation (photon tracing) and sampling use it instead of `rand()`.
-  The seed is part of the `PreparedStamp` (D29), so a render is a **pure function of its
-  `PreparedStamp`** → cacheable **and** reproducible: **the same `PreparedStamp` always yields the
-  same image.** This is a direct win for the git-native/agentic thesis (§2.7) — renders are diffable
-  and re-runnable, a regression bisect re-renders deterministically, and "approve this exact frame"
-  is meaningful because it can be reproduced bit-for-bit.
-- **Async & cancellable on the render arbiter, off the edit thread (D34).** The edit/agent thread only
-  **commits a CST `Version`** (cheap). The **single render arbiter** asynchronously runs
-  `derive → seal → prepare → seal → render` as **cancellable phases of its render job**; when a newer
-  head (a newer `propose_patch`) arrives, the in-flight phases **cancel and restart at the new stamp**.
-  Nothing expensive (derive, photon-map build, prepare, render) ever runs on the agent/edit thread, so
-  a `propose_patch` returns immediately while the heavy work proceeds asynchronously. **This async,
-  cancellable pipeline is exactly the source of the head-vs-derived lag the agent observes** (§2.2.1.1):
-  when a stamp's `cstVersion` is a proper ancestor of head, the arbiter is mid-`derive`/`prepare`/
-  `render` on an older stamp (or was cancelled by a newer patch). The arbiter is also where the
-  single-render-slot scheduling lives — this facet does **not** re-invent it.
+- **`prepare` is deterministic; the render is reproducible *within MC tolerance* (D40, weakening D33).**
+  `RenderConfig` carries a **sampling seed / RNG-stream identity**; the seed is part of the
+  `PreparedStamp` (D29/D42). The seed makes **`prepare` (photon maps) deterministic** — the same
+  `PreparedStamp` always yields the same photon maps, so the `PreparedArtifact` cache is sound (this is
+  all D33's cache-soundness actually needed). The **final render is NOT bit-identical**: renderers use
+  per-worker independently-seeded RNGs plus `GlobalRNG()`, and tile assignment / splat reduction /
+  denoise also vary — so a single seed yields the **same converged image only up to Monte-Carlo
+  tolerance**, not byte-for-byte. The git-native/agentic win is therefore **review-by-image, not
+  byte-diff** (§2.7): renders are re-runnable and a regression bisect re-renders to the *same image
+  within MC noise*. **Bit-identical rendering** (deterministic per-pixel/per-sample RNG streams,
+  deterministic splat reduction, deterministic denoise — across every renderer) is a **named future
+  option, not v1.**
+- **Async & cancellable on the render arbiter, off the edit thread; latest-wins previews vs
+  stamp-pinned renders (D34/D43).** The edit/agent thread only **commits a CST `Version`** (cheap). The
+  **single render arbiter** asynchronously runs `derive → seal → prepare → seal → render` as
+  **cancellable phases of its render job**. There are **two job classes (D43):** *latest-wins preview*
+  jobs (interactive viewport previews) track head — a newer head (a newer `propose_patch`) **cancels**
+  the in-flight preview and restarts at the new stamp; *stamp-pinned* explicit/final/export renders are
+  **pinned to their `requestedPreparedStamp`** and a newer head does **not** cancel them — they run to
+  completion (cancelled only by their requester). So **an unrelated edit can never silently destroy a
+  requested final render.** Nothing expensive (derive, photon-map build, prepare, render) ever runs on
+  the agent/edit thread, so a `propose_patch` returns immediately while the heavy work proceeds
+  asynchronously. **This async, cancellable pipeline is exactly the source of the head-vs-published lag
+  the agent observes** (§2.2.1.1): when a *published* stamp's `cstVersion` is a proper ancestor of head,
+  the arbiter is mid-`derive`/`prepare`/`render` on an older stamp (or a preview was cancelled by a
+  newer patch). The arbiter is also where the single-render-slot scheduling (and the pinned-render
+  queue) lives — this facet does **not** re-invent it.
+- **The stamp carries the *resolved* `EffectiveRenderConfig` + a *view-camera-state* hash (D42).** What
+  fixes the pixels is **not** the raw request: it is the deterministically-resolved `EffectiveRenderConfig`
+  (its content hash) and a content hash of the ephemeral view-camera state — see §2.2.3.1.
 
 | Tool | Contract |
 |---|---|
-| `render` | Takes a **`RenderConfig`** (D22, D33): `{ integrator?: enum[auto,pt,bdpt,vcm,…], quality?: enum[draft,preview,final] \| {samples}, resolution?, region?, denoise?: bool, seed?: <rng-stream id>, frame?: {animation?: name, time?} \| {animation?: name, shutter?: [t0,t1]}, return_image?: bool=true }` — the rasterizer/integrator selection (plus the render-time integrator override) **and the sampling seed / RNG-stream id (D33)** that, together with the `DerivedScene`, fix the rendered pixels and make the render **reproducible** (same `PreparedStamp` → same image). Submits a render of the **current derived scene** to the single render arbiter; the arbiter runs `derive → prepare → render` **asynchronously and cancellably** off the edit thread (D34 — a newer `propose_patch` cancels in-flight work) and owns the single render slot (RENDER_COORDINATOR semantics survive intact — preempt/queue/reject; this facet does **not** re-invent scheduling). **An integrator override re-runs only `prepare(DerivedScene, RenderConfig)` → `PreparedRenderState`** (the config-DEPENDENT layer — light samplers, photon maps), **not** the config-INDEPENDENT scene derivation (D22): the `DerivedScene` the agent reads via `read_graph` is unchanged by an integrator swap; only what the image reflects changes. **An animation frame is rendered against a time-INTERVAL `DerivedScene`** (D31): the `frame` selects the active **animation by name** (part of the `DerivedStamp`, D29) and a shutter interval `[t0,t1]`; animated quantities are baked as immutable read-only functions over the shutter so per-sample motion blur needs no scene mutation. **Motion blur is gated v1-off:** v1 renders **single-time** (`shutter` collapses to one instant, `[t,t]`); the interval scene + motion-BVH path is the named follow-on (D31), and motion blur is **not retired**. The result is stamped with the full **`PreparedStamp`** it ran against (§2.2.1.1, D29 — `DerivedStamp` + `{renderConfig, cameraOverride, samplingSeed}`). `integrator:"auto"` routes through the auto-rasterizer and the result echoes `{ resolved, reason }`. A `preview` runs against a private film so it never tears a live framebuffer. **OIDN on for finals** (memory: denoise always on); `denoise:false` only for diagnostic A/B. |
+| `render` | Takes a **`RenderConfig`** request (D22, D40, D42): `{ integrator?: enum[auto,pt,bdpt,vcm,…], quality?: enum[draft,preview,final] \| {samples}, resolution?, region?, denoise?: bool, seed?: <rng-stream id>, frame?: {animation?: name, time?} \| {animation?: name, shutter?: [t0,t1]}, pinned?: bool, return_image?: bool=true }` — the rasterizer/integrator request (plus the render-time integrator override) **and the sampling seed / RNG-stream id (D40)**. The request is **resolved into an `EffectiveRenderConfig`** (D42, §2.2.3.1) which, together with the `DerivedScene` and a **view-camera-state hash**, fixes the rendered pixels; the seed makes **`prepare` deterministic** and the render **reproducible within MC tolerance** (review-by-image, not byte-diff — D40). Submits a render of the **current derived scene** to the single render arbiter; the arbiter runs the async expensive phase `realize → prepare → render` **cancellably** off the edit thread (D34) and owns the single render slot (RENDER_COORDINATOR semantics survive intact — preempt/queue/reject; this facet does **not** re-invent scheduling). **Preview vs pinned (D43):** the default interactive render is a **latest-wins preview** — a newer head (`propose_patch`) **cancels** it; an explicit/final/export render sets **`pinned:true`** and is **stamp-pinned to its `requestedPreparedStamp`** — a newer head does **not** cancel it (cancellable only by its requester), so an unrelated edit never destroys a requested final render. **An integrator override re-runs only `prepare(DerivedScene, EffectiveRenderConfig)` → `PreparedRenderState`** (the config-DEPENDENT layer — light samplers, photon maps), **not** the config-INDEPENDENT scene derivation (D22): the `DerivedScene` the agent reads via `read_graph` is unchanged by an integrator swap; only what the image reflects changes. **An animation frame is rendered against a time-INTERVAL `DerivedScene`** (D31): the `frame` selects the active **animation by name** (part of the `DerivedStamp`, D29) and a shutter interval `[t0,t1]`; animated quantities are baked as immutable read-only functions over the shutter so per-sample motion blur needs no scene mutation. **Motion blur is gated v1-off:** v1 renders **single-time** (`shutter` collapses to one instant, `[t,t]`); the interval scene + motion-BVH path is the named follow-on (D31), and motion blur is **not retired**. The result is stamped with the full **`PreparedStamp`** it ran against (§2.2.1.1, D29/D42 — `DerivedStamp` + `{effectiveRenderConfigHash, viewCameraStateHash, samplingSeed}`). `integrator:"auto"` routes through the auto-rasterizer and its resolved choice is **part of the `EffectiveRenderConfig`** (D42); the result echoes `{ resolved, reason }`. A `preview` runs against a private film so it never tears a live framebuffer. **OIDN on for finals** (memory: denoise always on); `denoise:false` only for diagnostic A/B. |
 | `stop_render` / `pause_render` / `resume_render` | `{}` — cooperative cancel via the arbiter. **There is no process-exit tool** (AI_SECURITY_MODEL §5). |
-| `derive_preview` (optional) | `{ baseHeadVersion, patch, render_config?: RenderConfig }` — derive a candidate patch's **config-INDEPENDENT** `DerivedScene` **without committing it** (D22), returning the graph diff and (optionally, when `render_config` is supplied) a preview render. The graph diff is **stamped with the candidate's `DerivedStamp` + `status`** (§2.2.1.1, D29: a preview is a derived view); an attached preview image is additionally stamped with the full **`PreparedStamp`** used — and because `render_config` carries the **sampling seed** (D33), the attached preview is **reproducible** (same `PreparedStamp` → same image; an integrator choice runs only `prepare` on the candidate `DerivedScene`, D22). The candidate derive/prepare/render run on the **arbiter, async + cancellable** (D34) like any other — a newer `propose_patch` cancels an in-flight `derive_preview`. The "what would this change look like" dry-run, decoupled from commit. Implemented atop Facet 2's incremental derivation against a throwaway derivation context. Lets an L1 agent show the user a *rendered* preview of a proposal before it lands. |
+| `derive_preview` (optional) | `{ baseHeadVersion, patch, render_config?: RenderConfig }` — derive a candidate patch's **config-INDEPENDENT** `DerivedScene` **without committing it** (D22), returning the graph diff and (optionally, when `render_config` is supplied) a preview render. The graph diff is **stamped with the candidate's `DerivedStamp` + `status`** (§2.2.1.1, D29: a preview is a derived view); an attached preview image is additionally stamped with the full **`PreparedStamp`** used (`DerivedStamp` + `{effectiveRenderConfigHash, viewCameraStateHash, samplingSeed}`, D42) — and because the seed makes `prepare` deterministic, the attached preview is **reproducible within MC tolerance** (same `PreparedStamp` → the same converged image up to Monte-Carlo noise, not byte-for-byte — D40; an integrator choice runs only `prepare` on the candidate `DerivedScene`, D22). The candidate's expensive phase (realize/prepare/render) runs on the **arbiter, async + cancellable** (D34); a `derive_preview` is a **latest-wins preview job** (D43 — never pinned), so a newer `propose_patch` cancels an in-flight `derive_preview`. The "what would this change look like" dry-run, decoupled from commit. Implemented atop Facet 2's incremental derivation against a throwaway derivation context. Lets an L1 agent show the user a *rendered* preview of a proposal before it lands. |
 
 Render tools carry **no document precondition** (they don't mutate the CST); a render's result is
-stamped with the full **`PreparedStamp`** it ran against (§2.2.1.1, D29 — so two renders sharing a
-`DerivedStamp` are distinguishable when their `renderConfig`/`samplingSeed`/`cameraOverride` differ,
-while two renders with the same `PreparedStamp` are bit-identical, D33). A render whose
-`DerivedStamp.cstVersion` a newer head has since superseded (decided by **DAG ancestry**, not numeric
-`<`, D29) is reconciled as *stale* — the stamp makes the staleness visible — not rejected; and because
-the arbiter runs derive/prepare/render **async + cancellable** (D34), a newer `propose_patch` typically
-**cancels** the in-flight render and restarts at the new stamp rather than leaving the agent to poll a
-stale frame.
+stamped with the full **`PreparedStamp`** it ran against (§2.2.1.1, D29/D42 — so two renders sharing a
+`DerivedStamp` are distinguishable when their `effectiveRenderConfigHash`/`viewCameraStateHash`/
+`samplingSeed` differ, while two renders with the same `PreparedStamp` are reproducible within MC
+tolerance, D40). A render whose published `DerivedStamp.cstVersion` a newer head has since superseded
+(decided by **DAG ancestry**, not numeric `<`, D29) is reconciled as *stale* — the stamp makes the
+staleness visible — not rejected. For a **latest-wins preview** the arbiter typically **cancels** the
+in-flight job and restarts at the new stamp rather than leaving the agent to poll a stale frame (D34);
+a **stamp-pinned** explicit/final render (D43) instead **runs to completion** at its
+`requestedPreparedStamp` — a newer head does not cancel it — and is simply marked stale-vs-head while
+it finishes, so a requested final render is never silently abandoned.
+
+##### 2.2.3.1 Resolving the request to an `EffectiveRenderConfig`, and stamping the view camera (per [`01-DECISIONS.md`](01-DECISIONS.md) §D42)
+
+A raw `RenderConfig` **request** is not what fixes the pixels, for two reasons (D42). First, several
+sources contribute to the actual render settings — scene-authored rasterizer/integrator settings,
+the request's overrides, defaults, and **auto-resolution** (e.g. the auto-rasterizer's resolved
+integrator/resolution) — with **no defined merge** if the stamp carried only the request. So the
+arbiter calls a deterministic **`ResolveEffectiveRenderConfig(CST, request) -> EffectiveRenderConfig`**
+(merge order: scene-authored <- request overrides <- defaults <- auto-resolution), and the
+**normalized result + its content hash** (`effectiveRenderConfigHash`) goes in the `PreparedStamp` —
+**not** the raw request. Two requests that resolve to the same effective config therefore share a
+`PreparedStamp` (and the cache hits); `integrator:"auto"`'s resolved choice is captured *inside* the
+effective config, so an auto-routed render and an explicit render of the same resolved integrator are
+the same stamp.
+
+Second, the **viewport camera is an ephemeral pose**, not a stored `CameraId` — it changes
+continuously as the user orbits — so a `CameraId` cannot identify it. The stamp instead carries a
+**content hash / generation of the complete view-camera state** (pose, lens): `viewCameraStateHash`.
+So `PreparedStamp = DerivedStamp + { effectiveRenderConfigHash, viewCameraStateHash, samplingSeed }`.
+This is why a view-camera move (the user orbits) flips `status` away from `ok` even with the CST head
+untouched (D38): the **requested** `PreparedStamp`'s `viewCameraStateHash` changed, so published is no
+longer equal to requested until the arbiter re-renders.
 
 #### 2.2.4 The keystone — `validate`
 
 | Tool | Contract |
 |---|---|
-| `validate` | `{ text: string }` (whole scene) **or** `{ node_text: string }` (one chunk) **or** `{ baseHeadVersion, patch }` (validate a patch applied to the current CST head). Returns a structured `ValidationReport` (§2.5). **No side effects.** |
+| `validate` | `{ text: string }` (whole scene) **or** `{ node_text: string }` (one chunk) **or** `{ baseHeadVersion, patch }` (validate a patch applied to the current CST head). Runs **exactly the bounded synchronous semantic phase** — lex → parse → CST → bind-to-descriptor → **reference resolution (traced `ReferenceUse`)** → type/pipe/typecheck (D39) — and returns a structured `ValidationReport` (§2.5). It is **not** a full async derive: no realization/tessellation, no asset I/O beyond identity, no TLAS, no prepare, no render. **No side effects.** |
 
 `validate` is what makes the agent **self-correcting** — it is the `tsc`/`cargo check`/`pytest` of
-RISE. The agent emits a patch, validates, reads precise descriptor diagnostics localized to CST
-nodes, fixes its output, and only *then* commits. This is the same loop a careful human hand-editor
-runs, and it is the reason text-as-truth is the differentiator. Net-new but small (§4.3).
+RISE. **It is the bounded synchronous semantic phase (D39)** — the same code that runs as the *front*
+of the async derive job (so `validate` is **not a second resolver**, D35) and the same phase
+`propose_patch`'s precommit and `rename` use; the expensive realize/TLAS/prepare/render work is the
+arbiter's async job (D34), never part of `validate`. The agent emits a patch, validates, reads precise
+descriptor diagnostics localized to CST nodes, fixes its output, and only *then* commits. This is the
+same loop a careful human hand-editor runs, and it is the reason text-as-truth is the differentiator.
+Net-new but small (§4.3).
 
 #### 2.2.5 Prompts (curated workflows, no inherent authority)
 
@@ -383,28 +472,29 @@ The loop is **literally the coding-agent loop**, which is the product thesis. Si
    read_document/node/graph/schema │                          ▲ read_image + read_diagnostics
                                    ▼                          │ (image, graph-diff, stats, log)
             ┌───────────────┐  propose_patch   ┌──────────────────────────┐
-            │  candidate    │ ───────────────► │  validate (re-parse +     │
-            │  CstPatch /   │                  │  derive dry-run)          │
-            │  TextPatch    │ ◄─────────────── │  → ValidationReport       │
+            │  candidate    │ ───────────────► │  validate = SYNC semantic │
+            │  CstPatch /   │                  │  phase (parse→CST→refs→   │
+            │  TextPatch    │ ◄─────────────── │  typecheck) → Validation… │
             └───────────────┘   errors @nodes  └──────────────────────────┘
                                    │ ok
                                    ▼
                        ┌────────────────────────┐  commit   ┌───────────────────────┐
-                       │  CST patch applied →    │ ────────► │  derive scene (Facet 2 │
-                       │  NEW VERSION (Facet 3)  │           │  incremental)          │
+                       │  CST patch applied →    │ ────────► │  ASYNC expensive phase │
+                       │  NEW VERSION (Facet 3)  │           │  on arbiter: realize→  │
                        └────────────────────────┘           └───────────┬───────────┘
                                    │ headVersion++                       │
                                    ▼                                     ▼
                        ┌────────────────────────┐           ┌───────────────────────┐
-                       │  notifications/         │           │  render (arbiter) →    │
+                       │  notifications/         │           │  prepare→render        │
                        │  resources/updated      │ ◄──────── │  framebuffer + stats   │
                        └────────────────────────┘           └───────────────────────┘
 ```
 
 **How errors come back actionable.** The MCP spec distinguishes *protocol errors* (malformed
 request the model can't fix — kept rare by precise schemas) from *tool-execution errors*
-(`{ content, isError:true }` — actionable). A `propose_patch` whose result fails to parse/derive
-returns a `ValidationReport` (§2.5) in `structuredContent`: severity, stable `code`, the **CST
+(`{ content, isError:true }` — actionable). A `propose_patch` whose result fails the **synchronous
+semantic phase** (parse, reference resolution, or typecheck — D39) returns a `ValidationReport`
+(§2.5) in `structuredContent`: severity, stable `code`, the **CST
 node-path** and line/column of the offending span, a human message, and a `suggestion`/`candidates`
 fix from the existing `SuggestionEngine` ranking (nearest known parameter; nearest existing
 reference of the right category). The agent doesn't get "parse failed" — it gets *"parameter
@@ -556,13 +646,19 @@ The safety model is **"the engine, not the model, is the authority"** (AI_SECURI
 survives the pivot wholesale because it never depended on the canonical form. The Model-B-specific
 strengthening: validation and atomicity are now *cleaner* because there is one apply.
 
-1. **Every agent edit is validated (parse + derive) before it commits.** `propose_patch` runs
-   `validate` on the candidate CST and, in `full` mode, a derivation dry-run (does the scene actually
-   *build* — references resolve, the IScalarPainter pipe is satisfied, files exist), and **refuses to
-   commit on any error**, returning the diagnostics. The scene is **never left half-edited**: an
+1. **Every agent edit passes the synchronous semantic phase before it commits (D39).** `propose_patch`
+   runs the bounded **sync semantic phase** on the candidate CST — lex → parse → CST → bind-to-descriptor
+   → **reference resolution** → type/pipe/typecheck — which catches the parse errors, *unresolved
+   references*, and the IScalarPainter color-vs-scalar pipe failures, and **refuses to commit on any
+   error**, returning the diagnostics. This gate is **bounded and synchronous** (no realization, TLAS,
+   prepare, or render — those are the arbiter's async phase, D34): "does the scene actually *build* /
+   realize / load every asset" is verified by the **async expensive phase after the cheap commit**, and
+   any failure there surfaces as `status:error` + `diagnostics` against the published stamp (§2.2.1.1)
+   rather than blocking the commit thread on a heavy derive. The scene is **never left half-edited**: an
    invalid patch is rejected *before* it touches the canonical CST (see #5). This is the single most
-   important guardrail and it is structurally enforced — there is no code path that commits an
-   un-validated patch.
+   important guardrail and it is structurally enforced — there is no code path that commits a patch that
+   failed the semantic phase. (See open question #2: a cheap sync gate that keeps `propose_patch`
+   interactive while the heavy realize runs async is the explicit design intent of D39.)
 2. **Partial/invalid edits cannot corrupt the canonical CST (atomic apply).** A patch is
    **all-or-nothing**: the server builds a *candidate* CST off to the side (apply ops / re-parse text),
    validates it, and only on success does it become the new committed version (Facet 3's versioning is
@@ -618,13 +714,17 @@ inherit for free:
 - **Bisect a regression.** "The render got muddy 30 commits ago." `git bisect` over the scene history,
   re-rendering at each step, pinpoints the exact CST version (and, via provenance §2.6, *who/what*
   made it). This is impossible when the file is a lossy serialization of a mutable model. **The
-  bisect is sound because renders are deterministic (D33):** `RenderConfig` carries a sampling
-  seed / RNG-stream id, so a render is a pure function of its `PreparedStamp` — the same scene version
-  at the same `RenderConfig`+seed re-renders **bit-for-bit**, so a pixel difference across a bisect step
-  is attributable to the CST change, not RNG. **Caveat (D28): re-rendering an old version uses
-  *current* asset bytes** — history preserves the CST (the source), not the rendered output, so if a
-  referenced texture/mesh/HDRI changed on disk since that version, the re-render may differ even though
-  the CST and the seed are identical (see the note below).
+  bisect is sound because renders are reproducible *within MC tolerance* (D40, weakening D33):**
+  `RenderConfig` carries a sampling seed that makes **`prepare` deterministic**, and the same scene
+  version at the same effective config + seed re-renders to the **same converged image up to
+  Monte-Carlo noise** — so a *visible* tonal/chromatic regression across a bisect step is attributable
+  to the CST change, not RNG. This is **review-by-image, not byte-diff**: the bisect compares images
+  perceptually (or against a tolerance), because RISE's renderers use per-worker independently-seeded
+  RNGs and non-deterministic tile/splat/denoise paths — **bit-identical rendering is a named future**,
+  not v1. **Caveat (D28): re-rendering an old version uses *current* asset bytes** — history preserves
+  the CST (the source), not the rendered output, so if a referenced texture/mesh/HDRI changed on disk
+  since that version, the re-render may differ even though the CST and the seed are identical (see the
+  note below).
 - **Template / library scenes.** A scene is a program; programs compose. A studio keeps a library of
   reviewed lighting rigs, material packs, camera setups as scene fragments, branches a shot from a
   template, and cherry-picks an approved material change across shots. Declarative iteration (L3 —
@@ -642,10 +742,14 @@ f(CST, AssetManifest)`, D5) re-stamps the manifest against the **live filesystem
 the old version's *render may differ* even though its CST is byte-identical. This is the deliberate
 git framing — git versions source while large binary build-inputs are the user's responsibility — and
 the `f(CST, AssetManifest)` purity holds *within* a manifest, not across time (where the manifest is
-the live filesystem). **Bit-for-bit reproducible historical renders therefore need a
-content-addressed asset store** (snapshotting asset bytes by hash — a git-LFS-style layer at the VCS
-boundary), which is a **named future option, NOT the editor** (D28): RISE's history layer stores the
-CST, and an asset CAS, if it lands, is a separate VCS-boundary feature.
+the live filesystem). **Bit-for-bit reproducible historical renders therefore need *two* named
+futures** (neither is v1): a **content-addressed asset store** (snapshotting asset bytes by hash — a
+git-LFS-style layer at the VCS boundary, D28) so the manifest is reproducible across time, **and
+bit-identical rendering** (deterministic per-pixel/per-sample RNG streams, deterministic
+splat/denoise — D40) so the render itself is reproducible byte-for-byte. Today the achievable goal is
+**review-by-image within MC tolerance** (D40): RISE's history layer stores the CST, an asset CAS (if
+it lands) is a separate VCS-boundary feature, and bit-identical rendering is a separate renderer-side
+future.
 
 **What makes formatting-stable diffs possible (ties to INV-4, owned by Facet 1):** the lossless CST
 round-trips text unchanged, and a structured edit **re-serializes only the touched node's span**,
@@ -744,7 +848,7 @@ persist an edit" (structured-save vs wholesale-rewrite) is deleted; there is one
 | **`apply_scene_text` / "wholesale rewrite + reload" tool** (MCP_TOOL_SURFACE §4.5) | **DELETE** | The Model-A fallback for edits structured-save couldn't represent. Under Model B every edit is a CST patch; a whole-document edit is just a `TextPatch` over the whole span — one more version, not a history-destroying document swap. The tool, the `REDACTED_WHOLESALE_REPLACE` *special-case-for-this-tool*, and the "swap re-roots a fresh UUID / loses undo" semantics all go. (The redaction *refusal* survives, attached to whole-document `TextPatch`.) |
 | **The `today(structured)` vs `today(wholesale)` per-tool persistence taxonomy** (MCP_TOOL_SURFACE §4.0 legend, §4.1–§4.5) | **DELETE** | An entire axis of the prior catalog. There is no "this tool persists structurally, that one needs a wholesale reload" — Facet 1's lossless CST makes *every* patch persist structurally by re-serializing only the touched span. "Non-camera creation needs round-trip save" (the prior genuine gap) **evaporates**: creating any node is an `add` CstPatch op, persisted like any other. |
 | **The ~25-RPC mutation catalog** (`set_property`, `set_transform`, `apply_material`, `load_hdri`, `add_entity`, `remove_entity`, `clone_entity`, `set_active_camera`, `frame_object`, `set_lens`, `create_camera`, …) | **EVOLVE → collapse into `propose_patch`** | Each becomes a `CstPatch` op (`set`/`add`/`remove`/`rename`) the agent expresses against the document, or a *prompt* that desugars to one. No per-operation schema, no per-operation persistence story. (Convenience: a thin set of named prompts may remain for discoverability.) |
-| **`baseEpoch` `(uuidHi, uuidLo, revision)` precondition + the committed/proposed contract + conflict** (MCP_TOOL_SURFACE §4.0/§4-head; TRANSACTION_MODEL §4.4) | **EVOLVE → `baseHeadVersion` over CST versions** | The contract is *right* (optimistic concurrency, no last-write-wins, conflict-on-stale) but re-expressed against Facet 3's CST version identity rather than Model-A transaction epochs, and split into the coherent **`{headVersion, DerivedStamp, PreparedStamp, status}`** surface (§2.2.1.1, D13/**D29**) so a precondition keys on `headVersion` (compared by **DAG ancestry, not numeric `<`**) while derived reads stamp the **`DerivedStamp`** and rendered reads the **`PreparedStamp`**. Same shape, cleaner substrate. The committed-vs-proposed split (owner commits / external proposes) survives as the v1 concurrency model (§2.4). |
+| **`baseEpoch` `(uuidHi, uuidLo, revision)` precondition + the committed/proposed contract + conflict** (MCP_TOOL_SURFACE §4.0/§4-head; TRANSACTION_MODEL §4.4) | **EVOLVE → `baseHeadVersion` over CST versions** | The contract is *right* (optimistic concurrency, no last-write-wins, conflict-on-stale) but re-expressed against Facet 3's CST version identity rather than Model-A transaction epochs, and split into the coherent **`{headVersion, requested/published DerivedStamp + PreparedStamp, status}`** surface (§2.2.1.1, D13/**D29**/**D38**) so a precondition keys on `headVersion` (compared by **DAG ancestry, not numeric `<`**) while derived reads stamp the **`DerivedStamp`** (requested + published) and rendered reads the **`PreparedStamp`** (requested + published), with **`status:ok` ⟺ full-stamp equality** (D38). Same shape, cleaner substrate. The committed-vs-proposed split (owner commits / external proposes) survives as the v1 concurrency model (§2.4). |
 | **`SceneEditController` as "the one mutation path"** | **SUPERSEDE** (Facet 3 owns the replacement) | The prior specs route every tool through `SceneEditController::Commit`. Charter L7 supersedes the `SceneEditor`/`SceneEdit`/`EditHistory`/transaction subsystem with CST versioning. Facet 5 retargets "one mutation path" onto **Facet 3's one CST-edit pathway** — same principle (#6 → INV-6), new mechanism. This facet does not design the edit layer; it consumes it. |
 | **`SceneValidator` / `validate` (isolated throwaway `Job`)** (VALIDATION_ARCHITECTURE §3) | **EVOLVE** | Keep `validate` as the keystone; keep "side-effect-free via an isolated derivation, not a mock." But the implementation now rides Facet 1's parser-to-CST + Facet 2's `derive` against a throwaway context, with diagnostics gaining `nodePath` (§2.5). The barrier-command policy (`quit`/`render`/`load`/`run` neutralized; `exit(1)` unreachable) survives. |
 | **`SchemaGen` (descriptors → JSON Schema) + `SchemaConformanceTest`** (MCP_TOOL_SURFACE §5; VALIDATION_ARCHITECTURE §5) | **REUSE** | Unchanged by the pivot — descriptors are still the schema (L6). Still a *first-pass filter, not the parser*; still held honest by the conformance test (the generated schema can over-/under-accept vs the tolerant parser). `read_schema` exposes it. |
@@ -768,16 +872,17 @@ persist an edit" (structured-save vs wholesale-rewrite) is deleted; there is one
    `materials/gold`, edit B binds `objects/x.material gold`)?
 
 2. **`validate`/`derive_preview` cost under the agentic cadence (the latency tar-pit, charter's named
-   risk).** The loop's value is fast feedback. D34 moves the *expensive* phases (full derive, TLAS
-   rebuild, photon passes, prepare, render) **off the edit thread onto the async, cancellable arbiter**,
-   so a successful `propose_patch` *commit* returns immediately — but the **pre-commit validation gate**
-   (§2.4 #1) still runs synchronously before the commit is allowed, and a full derive-dry-run there
-   could be slow on a heavy scene (deferred realization, etc.). Facet 2 owns incremental derivation;
-   Facet 5 *depends* on it being incremental enough that "validate this one-parameter patch" is
-   interactive. **Open:** what is the latency budget for the synchronous `propose_patch` validation
-   gate, and can a cheap `syntax`+reference tier (no full realize) gate the common case while a `full`
-   derive is reserved for pre-render (and runs async on the arbiter post-commit, D34)? (Mirrors the
-   GUI's gutter-vs-deep-validate split.)
+   risk).** The loop's value is fast feedback. **D39 resolves the structural part of this question:**
+   the pre-commit gate is the **bounded synchronous semantic phase** (lex→parse→CST→reference-resolution
+   →typecheck) — explicitly **not** a full derive-dry-run — while the *expensive* phases (realize, TLAS
+   rebuild, photon passes, prepare, render) run **off the edit thread on the async, cancellable arbiter**
+   (D34), so a successful `propose_patch` *commit* returns immediately. This is exactly the "cheap
+   syntax+reference tier gates the common case, full realize is deferred to the async arbiter" split the
+   question anticipated, now ratified. **What remains open:** the *latency budget* for that synchronous
+   semantic phase on a heavy scene — reference resolution over a large reference graph (and the
+   D39-scoped case where a reference reaches into asset-expanded sub-entities, which needs the async
+   phase) — and whether even the bounded phase needs incremental caching from Facet 2 to stay
+   interactive. (Mirrors the GUI's gutter-vs-deep-validate split.)
 
 3. **Vision-loop economics + reference-compare needs a backing accessor that doesn't exist.** The
    per-region variance/RMSE read-back the reference-compare loop (§2.3) wants is **net-new and not in
@@ -834,30 +939,45 @@ What Facet 5 assumes about its neighbors (for synthesis to reconcile):
   cannot resolve (never a silent dangling rename) — Facet 5 surfaces whatever Facet 1 reports. The
   trace `rename` rewrites from must be **stamped for the exact head** (D25) and must come from the
   **one resolution path — derivation's own resolver, not a separate tracing-pass reimplementation**
-  (D35 corrects D25): if the derived view lags head, rename **synchronously derives head** (sharing
-  derivation's resolution step) before rewriting referrers, and **refuses** if head cannot be derived
-  (a semantic error) — Facet 5 never issues a `rename` against a stale trace or a second resolver.
-- **From Facet 2 (derivation engine):** (a) `derive` is **incremental and fast enough** that
-  pre-commit validation and `derive_preview` are interactive on common edits (open question #2). (b) A
-  **throwaway/isolated derivation context** exists so `validate`/`derive_preview` have no side effects.
-  (c) `derive` is pure & deterministic (INV-2), **and `prepare`/`render` are deterministic too** — the
-  `RenderConfig`'s **sampling seed / RNG-stream id** (D33) replaces `rand()`-seeded stochastic prep
-  (photon tracing), so a render is a pure function of its `PreparedStamp` and a rendered preview is
-  **reproducible** (same `PreparedStamp` → same image; the `f(CST, AssetManifest)` purity holds within a
-  manifest, D28). (c′) **`derive → prepare → render` run async + cancellable on the single render
-  arbiter, off the edit thread** (D34) — Facet 5 commits a cheap CST version and the arbiter does the
-  heavy work, a newer head cancelling the in-flight job; this is the source of the head-vs-derived lag.
-  (d) **Two derivation layers** (D22): a config-**independent** `DerivedScene = f(CST, AssetManifest, t)`
-  (what `read_graph` reflects) and a config-**dependent** `PreparedRenderState =
-  prepare(DerivedScene, RenderConfig)` (light samplers, photon maps — what an image reflects), so an
-  integrator override re-runs only `prepare`. (d′) **An animation frame derives a time-INTERVAL scene**
-  (D31): animated quantities are immutable read-only functions over the shutter (per-sample motion blur,
-  no scene mutation), the active **animation name** is part of the `DerivedStamp`, and **motion blur is
-  gated v1-off** (single-time in v1; interval scene + motion BVH is the named follow-on). (e) **History
-  is CST-only** (D28): re-deriving an old
-  version re-stamps the `AssetManifest` against the live filesystem (current asset bytes), so a
-  reproducible historical render is a future content-addressed-asset-store concern, not a derivation
-  guarantee — `f(CST, AssetManifest)` purity holds within a manifest, not across time.
+  (D35 corrects D25): if the resolved reference set lags head, rename **runs the bounded synchronous
+  semantic phase to head** (lex→parse→CST→reference-resolution→typecheck — the *same* phase
+  `validate`/precommit use, and the front of the async derive job, so not a second resolver; D39) before
+  rewriting referrers — **not** a full async derive — and **refuses** if the semantic phase cannot
+  resolve head (a semantic error). Facet 5 never issues a `rename` against a stale trace or a second
+  resolver. (D39 scope: references into asset-expanded sub-entities need the async phase and are out of
+  v1 cross-reference scope.)
+- **From Facet 2 (derivation engine):** (a) **Derivation splits into a bounded synchronous semantic
+  phase and an async expensive phase (D39).** The sync phase (lex→parse→CST→bind-to-descriptor→
+  reference-resolution→typecheck) is bounded/deterministic/edit-thread-OK and is what `validate`,
+  `propose_patch`'s precommit, and `rename` use; it must be **fast enough to gate a `propose_patch`
+  interactively** (open question #2). The async phase (realize/tessellate/TLAS/`prepare`/render) is the
+  arbiter's cancellable job. The sync phase **is the front of the async job** (same code, same resolver
+  — D35's no-drift), so it is not a second resolver. (b) A **throwaway/isolated derivation context**
+  exists so `validate`/`derive_preview` have no side effects. (c) `derive` is pure & deterministic
+  (INV-2). The `RenderConfig`'s **sampling seed** (D40) replaces `rand()`-seeded stochastic prep so
+  **`prepare` (photon maps) is deterministic** — the same `PreparedStamp` yields the same photon maps,
+  making the `PreparedArtifact` cache sound; **the final render is NOT bit-identical**, only
+  **reproducible within MC tolerance** (per-worker RNGs + `GlobalRNG()` + non-deterministic
+  tile/splat/denoise) — bit-identical rendering is a named future, not v1. (c′) **The expensive phase
+  runs async + cancellable on the single render arbiter, off the edit thread** (D34) — Facet 5 commits a
+  cheap CST version and the arbiter does the heavy work — but **only latest-wins *preview* jobs are
+  cancelled by a newer head; stamp-pinned explicit/final renders run to completion** (D43). This is the
+  source of the head-vs-published lag. (d) **Two derivation layers** (D22): a config-**independent**
+  `DerivedScene = f(CST, AssetManifest, t)` (what `read_graph` reflects) and a config-**dependent**
+  `PreparedRenderState = prepare(DerivedScene, EffectiveRenderConfig)` (light samplers, photon maps —
+  what an image reflects), so an integrator override re-runs only `prepare`. The `RenderConfig` request
+  is resolved by **`ResolveEffectiveRenderConfig(CST, request)`** and the stamp carries the resolved
+  config's hash + a **view-camera-state hash**, not the raw request or a `CameraId` (D42). (d′) **An
+  animation frame derives a time-INTERVAL scene** (D31): animated quantities are immutable read-only
+  functions over the shutter (per-sample motion blur, no scene mutation), the active **animation name**
+  is part of the `DerivedStamp`, and **motion blur is gated v1-off** (single-time in v1; interval scene
+  + motion BVH is the named follow-on). (e) **Asset bytes bind by content digest of the loaded buffer**
+  (D41): the `DerivedStamp`'s asset axis is `assetDigest` (a content hash of the exact bytes the loader
+  consumed, via load-once-and-hash or revalidate-after-load), **not** a session generation counter — so
+  it is a reproducible identity, closing the path-hash TOCTOU window. (f) **History is CST-only** (D28):
+  re-deriving an old version re-stamps the `AssetManifest` against the live filesystem (current asset
+  bytes), so a reproducible historical render is a future content-addressed-asset-store concern, not a
+  derivation guarantee — `f(CST, AssetManifest)` purity holds within a manifest, not across time.
 - **From Facet 3 (edit model & history):** (a) **the one CST-edit pathway** both clients commit through
   (L2/INV-6) — Facet 5 is a *client* of it, not its designer. (b) CST **versioning** is the commit
   primitive (atomic apply, the `baseHeadVersion` precondition, conflict-on-stale, undo/redo/branch).
@@ -870,7 +990,9 @@ What Facet 5 assumes about its neighbors (for synthesis to reconcile):
 **Conflicts with Locked/Open decisions to flag for synthesis:**
 
 - **No conflict with any Locked decision.** Facet 5 *embodies* L2 (one edit pathway, two clients), L5
-  (name-path identity), L6 (descriptors are the schema), L7 (supersede `SceneEditController`/`SaveEngine`).
+  (**charter-corrected by D44: NodeId is the lineage identity, name-path is addressing** — Facet 5
+  addresses every read/op/diagnostic by name-path while durable cross-turn references key on NodeId),
+  L6 (descriptors are the schema), L7 (supersede `SceneEditController`/`SaveEngine`).
 - **O1 (lossless-CST vs pure-text-canonical):** Facet 5 designs for lossless-CST-pivot. **If the reviewer
   chose pure-text-canonical instead,** the delta is *small and favorable* for this facet: the two patch
   encodings collapse toward one (text is the canonical thing; a `CstPatch` becomes sugar that the server

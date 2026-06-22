@@ -71,9 +71,12 @@ selection ↔ save). Model B dissolves that class of bug by having **one source 
   → desugared into explicit, separately-editable entities at author time.
 - L4. Document state (in the CST) vs. session/view state (ephemeral: selection, active tool,
   orbit-preview camera, render-in-progress) are cleanly split. Only document state is canonical.
-- L5. Identity currency is **name-path** (e.g. `objects/sphere.material`), building on RISE's
-  name-keyed managers. (The round-4 "name-reuse identity serial" was a patch over name-instability
-  in Model A; Model B should make identity first-class.)
+- L5. **Identity is an immutable `NodeId`** (lineage identity — survives rename + reparse; lives in
+  each Version's persistent `identityRoot`). **`name-path`** (e.g. `objects/sphere.material`) is the
+  **addressing** scheme — human/agent-readable, built on RISE's name-keyed managers, resolving to a
+  NodeId within a version, and changing on rename. *(Refined by [`01-DECISIONS.md`](01-DECISIONS.md)
+  D9/D15/D26/D36/D44 — the earlier "name-path is the identity currency" wording is superseded; the
+  round-4 "name-reuse identity serial" was a Model-A patch that NodeId + addressing replace.)*
 - L6. Descriptors are the schema. The 2026-04 descriptor-driven parser (`IAsciiChunkParser::Describe()`)
   already declares each chunk's parameters + types; this same schema drives (a) the dynamic UI,
   (b) agent-edit validation, (c) CST node shape. Do not invent a parallel schema.
@@ -98,15 +101,16 @@ selection ↔ save). Model B dissolves that class of bug by having **one source 
   rebuild per edit). Latency budget is a first-class design output.
 - INV-4 **Lossless text round-trip.** A structured edit must not gratuitously reformat untouched text;
   a hand-edited file must survive parse→serialize unchanged.
-- INV-5 **Stable identity.** CST nodes have stable identity (name-path) so selection, agent references,
-  and UI bindings survive edits.
+- INV-5 **Stable identity.** Durable references — selection, agent references, UI bindings, undo
+  lineage — key on the immutable **`NodeId`** (not the name-path), so they survive edits and renames
+  (D9/D15/D36/D44). name-path is addressing only.
 - INV-6 **One edit pathway** (L2). Two clients (GUI, agent); one mechanism.
 
 ## 6. Facet map (avoid overlap; note your neighbors)
 
 | # | Doc | Owns | Hands off to |
 |---|-----|------|--------------|
-| 1 | `10-scene-language-and-cst.md` | Lossless CST, parser evolution (one-way→retained tree), text↔CST round-trip + formatting/comments, node identity (name-path), declarative iteration (L3) replacing FOR/DEFINE/hal/macros, coverage of all chunk types, format-version bump | CST shape → 2,3,4 |
+| 1 | `10-scene-language-and-cst.md` | Lossless CST, parser evolution (one-way→retained tree), text↔CST round-trip + formatting/comments, node identity (NodeId lineage + name-path addressing, L5/D44), declarative iteration (L3) replacing FOR/DEFINE/hal/macros, coverage of all chunk types, format-version bump | CST shape → 2,3,4 |
 | 2 | `20-derivation-engine.md` | CST→Scene as incremental/memoized/deterministic function; dependency graph; granularity; reuse of the surviving "apply-layer"; interaction with deferred realization / TLAS / photon passes; order-independence audit of `Job`; perf targets | consumes CST(1); apply-layer reuse ↔ 3 |
 | 3 | `30-edit-model-and-history.md` | Supersede `SceneEdit`/`EditHistory`/transactions/rollback/identity-serial with CST versioning; unify structured + text edits; gesture debouncing; document-vs-session split (L4); undo/redo/branch semantics; **explicit deletion inventory** of the current edit subsystem | edits target CST(1); triggers derivation(2); drives UI(4) |
 | 4 | `40-dynamic-ui.md` | UI as pure function of CST + descriptors (L6); widget-per-node; adaptive/growing panels; two-way binding widget↔CST node; split form/source live view; reactive propagation as agent edits; supersede current accordion/category/`SceneEditController` panels; shared-C++ + Mac/Windows/Android-tier | consumes CST(1)+descriptors; edits via 3 |

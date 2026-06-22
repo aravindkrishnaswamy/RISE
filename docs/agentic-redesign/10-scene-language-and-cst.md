@@ -1,15 +1,18 @@
 # Facet 1 — Scene Language & Canonical CST
 
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–4).** Sections affected by
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–5).** Sections affected by
 > D2, D3, D5, D7, D8, and D9 (round 1), by D14, D15, D16, and D19 (round 2), by
-> D23, D26, D27, and D28 (round 3), and by D29, D30, D31, D35, D36, and D37 (round 4) have been
+> D23, D26, D27, and D28 (round 3), by D29, D30, D31, D35, D36, and D37 (round 4), and by
+> **D39, D40, D41, D42, and D44** (round 5) have been
 > rewritten to conform; this doc now points to the decision record as authoritative and
-> contradicts none of D1–D37.
+> contradicts none of D1–D44.
 >
 > **Status:** design-in-progress. Part of the RISE agentic redesign (Model B). Read
 > [`00-CHARTER.md`](00-CHARTER.md) and [`01-DECISIONS.md`](01-DECISIONS.md) first — this doc
-> inherits the charter's locked decisions (L1–L7), open decisions (O1–O3), invariants
-> (INV-1…INV-6), and the decisions (D1–D37), and does not re-litigate them. Where this
+> inherits the charter's locked decisions (L1–L7, **as corrected by D44** — `NodeId` is the
+> lineage identity, name-path is addressing), open decisions (O1–O3), invariants
+> (INV-1…INV-6, **INV-5 corrected by D44**), and the decisions (D1–D44), and does not
+> re-litigate them. Where this
 > doc once conflicted with a decision, **`01-DECISIONS.md` wins** and the text below has been
 > conformed.
 >
@@ -18,11 +21,17 @@
 > text↔CST round-trip and formatting/comment preservation (INV-4); node identity — the
 > three-way separation of **content hash (green, lossless, for sharing) / derivation key
 > (semantic, trivia-insensitive, for memoization) / `NodeId` (per-occurrence lineage, owned by
-> each `Version`'s persistent identity side-map, D26/D30)** plus **name-path (addressing)** (D15/D9/D26/D36,
-> refining L5) — and the **identity model carried through edits** (staged-edit state carries
-> `{greenRoot, identityRoot}`; widgets/intents/selection store the `NodeId`, D36); the
+> each `Version`'s persistent identity side-map, D26/D30)** plus **name-path (addressing)** (D15/D9/D26/D36/D44,
+> matching the **D44-corrected** charter L5/INV-5 — `NodeId` is the lineage identity, name-path is
+> addressing) — and the **identity model carried through edits** (staged-edit state carries
+> `{greenRoot, identityRoot}`; widgets/intents/selection store the `NodeId`, D36); the **bounded
+> synchronous semantic phase** (lex → parse → CST → descriptor-binding → reference-resolution →
+> typecheck, D39 — deterministic and edit-thread-OK, distinct from the async expensive phase that
+> Facet 2 owns); the parse layer for the **rasterizer/config chunks** (the former `> set` forms,
+> D19/D27) — whose authored settings are **one input** to the deterministic
+> `ResolveEffectiveRenderConfig` merge (D42, a Facet 2/5 concern), not the whole render config; the
 > **CST as the `cstVersion` axis** of the derivation stamp (`DerivedStamp = {cstVersion,
-> assetManifestGen, animationName, shutterInterval}`, D29 — this facet owns `cstVersion` +
+> assetDigest, animationName, shutterInterval}`, D29/D41 — this facet owns `cstVersion` +
 > identity; the other axes are Facets 2/5); the **comment/token-aware** migration grammar (D37);
 > declarative iteration
 > replacing `FOR`/`DEFINE`/`hal`/`$(...)`/macros (L3);
@@ -167,7 +176,7 @@ an addressing scheme the engine *already* uses for keyframes and dirty-tracking.
 The CST is the **single source of truth** (INV-1) for the scene *text*. Text is its serialization;
 the derived scene is a pure, deterministic function of it (INV-2, Facet 2 owns the function) — the CST
 being the **`cstVersion`** axis of the full derivation key `DerivedStamp = {cstVersion,
-assetManifestGen, animationName, shutterInterval}` (D29; the other axes — assets D5, animation D31 —
+assetDigest, animationName, shutterInterval}` (D29/D41; the other axes — assets D5/D41, animation D31 —
 are Facets 2/5; full treatment in §2.5/§2.10). This facet specifies the CST data structure, the parser
 that produces it, identity, and the declarative-iteration grammar. Facet 2 consumes the CST; Facets
 3/4 edit it.
@@ -367,16 +376,22 @@ are re-rendered. **`ApplyOffsetDeltas` is gone** — there are no stored absolut
 shift; the red cursor recomputes positions for the new root in O(log N) whenever they are
 needed.
 
-### 2.5 Node identity (D9, D15, D26, D30, D36): `NodeId` (lineage, in each Version's identity side-map) + name-path (addressing)
+### 2.5 Node identity (D9, D15, D26, D30, D36, D44): `NodeId` (lineage, in each Version's identity side-map) + name-path (addressing)
 
-**D9 refines L5 into a dual-identity model; D15 then pins *where* the lineage id lives; D26 gives
-it an owned, persistent home.** L5 named "name-path" as the identity currency; D9 splits that into
-two distinct concepts because a name-path *changes on rename* and shifts on insert, yet
-undo-lineage, UI bindings, and durable agent references need something that does *not* move. **D15
-mandates that the lineage id is borne by a side-map, not the shared green node** — because a green
-node is content-addressed and reused at every byte-identical occurrence, so it cannot carry one
-per-occurrence id (§2.4). **D26 completes this: that side-map is owned by the `Version`** (below).
-The two identities are:
+**D9 refined L5 into a dual-identity model; D15 then pinned *where* the lineage id lives; D26 gave
+it an owned, persistent home; and D44 has now corrected the locked charter itself to match.** L5
+*originally* named "name-path" as the identity currency; D9 split that into two distinct concepts
+because a name-path *changes on rename* and shifts on insert, yet undo-lineage, UI bindings, and
+durable agent references need something that does *not* move. **D15 mandates that the lineage id is
+borne by a side-map, not the shared green node** — because a green node is content-addressed and
+reused at every byte-identical occurrence, so it cannot carry one per-occurrence id (§2.4). **D26
+completes this: that side-map is owned by the `Version`** (below). **D44 then fixes the charter at the
+root: the locked L5 and INV-5 are now corrected so the foundation matches these decisions —
+`NodeId` is the immutable lineage identity (survives rename + reparse; lives in each Version's
+`identityRoot`), and name-path is the addressing scheme (resolves to a `NodeId` within a version;
+changes on rename); durable references (selection, agent refs, UI bindings, undo lineage) key on the
+`NodeId`, not the name-path.** This facet is therefore **consistent with the corrected charter**, not
+merely "refining" a contradictory one. The two identities are:
 
 - **`NodeId` — the lineage identity (the `Version`'s identity side-map, D26/D15).** An immutable,
   process-stable per-**occurrence** token kept in **the `Version`'s persistent occurrence/identity
@@ -407,12 +422,13 @@ Version = { greenRoot, identityRoot, metadata }   # CST + occurrence identity ON
 
 — `greenRoot` (the red-green tree, §2.4), `identityRoot` (this occurrence→`NodeId` side-map), and
 `metadata`. **The derivation cache lives elsewhere (D30):** Facet 2's memo + dependency graph is
-carried on a **`DerivedArtifact`** keyed by a **`DerivedStamp = {cstVersion, assetManifestGen,
-animationName, shutterInterval}`** (D29), held in a stamp-keyed LRU — **one `Version` → many
+carried on a **`DerivedArtifact`** keyed by a **`DerivedStamp = {cstVersion, assetDigest,
+animationName, shutterInterval}`** (D29; the asset axis is a **content digest**, not a session
+generation — D41, §2.10), held in a stamp-keyed LRU — **one `Version` → many
 artifacts**, not a single version-scoped cache owned by the Version (D20's version-scoped cache is
 **artifact-scoped**, keyed by the full stamp, per D30). This facet owns the **`cstVersion`** axis of
-that stamp (plus identity); the `assetManifestGen` / `animationName` / `shutterInterval` axes are
-Facet 2/5's (§2.10, D29/D31). The two Version roots are **persistent immutable containers** (HAMT /
+that stamp (plus identity); the `assetDigest` / `animationName` / `shutterInterval` axes are
+Facet 2/5's (§2.10, D29/D31/D41). The two Version roots are **persistent immutable containers** (HAMT /
 persistent balanced tree), so deriving a new `Version` path-copies each and shares the rest by
 reference — **at the O(log N) update cost that D23 gates on the persistent-container work** (honest v1
 fallback = O(N) copy-on-snapshot; see below). The identity side-map is the one authoritative location
@@ -471,10 +487,13 @@ only** (D4/D14). Because UI/agent bindings key on `NodeId`, they **survive the r
 automatically**; only the *name-path* string changes. Rename is the one operation that changes a
 name-path; ordinary value edits never do. The traced `ReferenceUse` set must be **stamped for the
 exact head** the rename targets (D25): if derivation lags head (D13), the set is brought up to head
-**through the one shared derivation resolver — rename synchronously derives head (or runs derivation's
-own reference-resolution step to head, sharing that code), NOT a second "reference-tracing pass"**
-(D35, refining D25); a rename that cannot obtain a head-stamped trace — e.g. head has a semantic error
-— is **refused, never run partially** (D25/D35). Details: §4 item 5, §5 →Facet 3.
+**through the one shared derivation resolver — rename synchronously runs the bounded synchronous
+semantic phase (D39) to head (lex → parse → CST → bind → resolve refs → typecheck — derivation's own
+reference-resolution step, sharing that code), NOT a second "reference-tracing pass"** (D35/D39,
+refining D25). Because that semantic phase is bounded and deterministic, it is safe to run
+synchronously on the edit thread (D39); it does **not** trigger the async expensive phase
+(realize/TLAS/prepare/render, D34). A rename that cannot obtain a head-stamped trace — e.g. head has a
+semantic error — is **refused, never run partially** (D25/D35). Details: §4 item 5, §5 →Facet 3.
 
 **Reparse identity is best-effort (D15).** Identity preservation across edits has two regimes. A
 **structured edit preserves `NodeId` exactly** — it targets a known node, and the new `Version`'s
@@ -653,7 +672,7 @@ literals) retained in the CST. Grammar:
 - **Identifiers:** instance variables in a generator context (`i`, `j`, `u`, `v`),
   `let`-bound constants (`LZ`, `POWER`), built-ins (`PI`, `E`), and **name-path references to
   other parameters** (a future extension — `expr( materials/gold.scale * 2 )` — flagged as
-  out-of-first-slice but enabled by name-path identity).
+  out-of-first-slice but enabled by the name-path **addressing** scheme, D44).
 
 **Where expressions are legal:** any `ValueKind::Double` / `DoubleVec3` / `UInt` atom (the
 kinds today guarded by `AllTokensAreFiniteNumbers`, `:658`). String/enum/reference/filename
@@ -698,6 +717,24 @@ SerializeCst(Cst) -> bytes                                (this facet)
    `Parameter`, D3), look up its `ParameterDescriptor` and type the value into
    `ValueAtom`s/`Expr`. Unknown chunk keyword / unknown parameter / type mismatch produce
    **error nodes** (§2.9), not a parse abort.
+
+**These steps are the bounded synchronous semantic phase (D39).** `ParseToCst` (lex → parse →
+CST → bind-to-descriptor) **plus reference resolution** (the traced `ReferenceUse` records, §2.5,
+D14) **plus type/pipe/typecheck** together constitute the **bounded synchronous semantic phase**:
+deterministic, fast, and **safe to run on the edit/agent thread**. Its output is a *validated CST +
+reference graph + diagnostics*; it does **no asset I/O beyond identity and no realization**. This is
+the phase distinct from the **asynchronous expensive phase** — realize/tessellate (which loads asset
+bytes), TLAS, `prepare` (samplers/photons), and render — which Facet 2 / the render arbiter own and
+run async + cancellable, **off** the edit thread (D34). The semantic phase **is the front of that
+async job** (the same code), so it is **not** a second resolver (D35's no-drift property holds; §2.5,
+§4 item 5). Three consumers use the sync semantic phase directly: the **one-shot v6→v7 migrator**
+(§2.8.3/§6, which validates each converted scene), the **`propose_patch` precommit validate**
+(Facet 5's structured-diagnostic gate before a patch is accepted), and **rename** (which runs the
+sync semantic phase **to head** to obtain the head-stamped `ReferenceUse` set, §2.5/§4 item 5,
+D35/D39). **Scope note (D39):** the sync phase resolves references to **CST-declared** name-paths;
+references *into* asset-expanded sub-entities (e.g. a `gltf_import`'s children) require the async
+phase and are **out of v1 cross-reference scope** (consistent with the §4 item 5 / §2.5 cross-asset
+deferral).
 
 The descriptor-driven binding step is the direct successor to `DispatchChunkParameters` +
 `Finalize`, **minus** the `pJob.AddX` emission. `Finalize`'s knowledge ("how to turn typed
@@ -905,12 +942,13 @@ node kind; all are migrator-only inputs. The migrator is **comment/token-aware**
 stream / CST, never grepping lines, so a commented-out command is never activated) and **hard-fails on
 any unhandled active `>` form** (§2.8.4, D37).
 
-#### What resists — opaque assets (reference + AssetManifest, D5/D28)
+#### What resists — opaque assets (reference + AssetManifest, D5/D28/D41)
 
 The CST is a faithful tree of the **scene text**. It is *not* a container for binary assets the
 text *points at*. These are handled **by reference _and_ by an AssetManifest entry** (D5), not
 by inlining their bytes — and, per **D28, the manifest stores asset *identity + fingerprint*, never
-the asset bytes**:
+the asset bytes** (the *identity* being a **content digest of the actually-loaded bytes**, D41 — see
+below):
 
 - **Mesh files** — `3dsmesh/rawmesh/rawmesh2/risemesh/plymesh/gltfmesh_geometry`,
   `gltf_import`, `bezierpatch/bilinearpatch_geometry` (all via a `file` param,
@@ -924,20 +962,32 @@ the asset bytes**:
 For these, the CST holds the **filename `ValueAtom`** — fully editable as text/structured (you
 can repoint a texture path), and its absolute position comes from the red cursor on demand
 (§2.4), not a stored span. **Per D5, the CST + AssetManifest are two of a `DerivedScene`'s inputs;**
-per **D29** the full identifying key is the **`DerivedStamp = {cstVersion, assetManifestGen,
+per **D29/D41** the full identifying key is the **`DerivedStamp = {cstVersion, assetDigest,
 animationName, shutterInterval}`** — the CST is the **`cstVersion`** axis (this facet's), the
-manifest the **`assetManifestGen`** axis, and animation contributes the **`animationName`** +
-**`shutterInterval`** axes (D31, below). Each referenced asset path has an **`AssetManifest`** entry
-mapping it to a **{resolved absolute identity, content fingerprint (size+mtime, upgradable to a
-content hash)}**.
-The manifest is a **first-class derivation input** — asset reads are traced (Facet 2 / D4), so a
-fingerprint participates in the memo keys of the nodes that consumed it; a texture changing on
-disk (same path) invalidates exactly its consumers. This closes the `Scene = f(CST)` hole where
-a changed-on-disk asset would otherwise let a clean derive disagree with a cache hit.
+manifest the **`assetDigest`** axis, and animation contributes the **`animationName`** +
+**`shutterInterval`** axes (D31, below).
+
+**The asset identity is the content digest of the exact bytes the loader consumed (D41) — NOT a
+path-hash taken separately from the load (TOCTOU).** Hashing a *path* and then letting the loader
+reopen that path later opens a time-of-check/time-of-use window in which the file can change between
+the hash and the load, stamping an artifact with the **wrong** identity. So each referenced asset
+path's `AssetManifest` entry maps it to a **content digest of the bytes actually loaded**, obtained
+one of two ways: **(a) load-and-hash one buffer** — read the file once, hash *that* buffer, and hand
+the same buffer to the loader; or **(b) revalidate after load** — re-hash the loaded bytes against
+the manifest and, on mismatch, **retry/refuse**. The **`DerivedStamp` asset axis is therefore a
+content digest** (the per-asset content hashes), a **reproducible identity**, **not a session
+generation**. A `(size, mtime)` prefilter and an in-process generation counter survive **only as a
+fast change *signal*** (cheap "did this path probably change?" for the watcher), never as the stamp's
+reproducible identity. The manifest is a **first-class derivation input** — asset reads are traced
+(Facet 2 / D4), so an asset's **content digest** participates in the memo keys of the nodes that
+consumed it; a texture changing on disk (same path) yields a new digest and invalidates exactly its
+consumers. This closes the `Scene = f(CST)` hole where a changed-on-disk asset would otherwise let a
+clean derive disagree with a cache hit (and closes it without the TOCTOU race a path-hash would
+leave).
 
 **History is CST-only; re-derivation uses current asset bytes (D28).** The manifest does **not**
-store asset bytes — only the path's identity + fingerprint — so undo/redo/branch **history preserves
-the CST (the source), not historical rendered output**. Re-deriving an old version uses the
+store asset bytes — only the path's **content digest** (D41) + the prefilter signal — so
+undo/redo/branch **history preserves the CST (the source), not historical rendered output**. Re-deriving an old version uses the
 **current** asset bytes on disk (the manifest is re-stamped on access); if an external asset changed
 since, that old version's *render* may differ — **explicitly documented**, exactly like git
 versioning source while build inputs (large binaries) remain the user's responsibility. The `Scene =
@@ -951,9 +1001,9 @@ is a **named future option, not core v7** (D28).
   AssetManifest entry and never invalidate derivation.
 
 Implication for Facet 5/6: a scene is diff-able and git-native *for its text*; binary assets
-are referenced artifacts tracked by manifest identity+fingerprint (the same way source code
-references images it doesn't inline, with a lockfile-style record of what each path resolved
-to). The `gltf_import` chunk is the notable case where an *opaque asset expands into many engine
+are referenced artifacts tracked by a manifest **content digest** (D41) + prefilter signal (the same
+way source code references images it doesn't inline, with a lockfile-style record of the content hash
+each path resolved to). The `gltf_import` chunk is the notable case where an *opaque asset expands into many engine
 entities* — the CST keeps it as a single `Chunk` (one import directive, one AssetManifest
 entry); the expanded sub-scene is a derivation product, not CST content. (This mirrors
 `instance_array`: the CST holds the directive, derivation holds the expansion.)
@@ -972,7 +1022,7 @@ entry); the expanded sub-scene is a derivation product, not CST content. (This m
 | Top-level preprocessing (`FOR`/`ENDFOR` seek-back, `substitute_macro`, `evaluate_expression`, `evaluate_first_function_in_expression`, the `static MultiHalton mh` global, `macros`/`loops` parser state) | **Delete after migration (lives only in the one-shot migrator, D8)** | There is **no legacy derivation pre-pass** and no runtime legacy nodes (D8, §2.8.3). The expansion logic is used *only* by the v6→v7 migrator to convert `FOR`→`instance_array`, `DEFINE`→`let`, `$(...)`/`@`/`%`→`expr(...)`/`let`-refs, and `hal`→index-explicit `halton(dim, idx)` (INV-2). Once the corpus is migrated and the gate is green, this whole subsystem (and the v6 reader) is **deleted**; v7 is the sole runtime format. |
 | Embedded `>` command parsing — `> set` (accelerator / global-medium / `light_rr_threshold`); `> modify <entity>` (active corpus count = **0** — the seven in `watch_dial` are inside a `/* */` block, D37) | **Delete from v7; migrate or fold (D19/D27/D37)** | v7 has **no `Command` node kind and no `> ` syntax** (D19/D27). The migrator rewrites `> set` structural forms into descriptor-driven chunks (`acceleration { … }`, `global_medium { … }`); rewrites `> set <render-setting>` (e.g. `light_rr_threshold`) into a **declarative parameter** on the relevant rasterizer/integrator chunk; and **retires `> modify`** by **folding any *active* one into the target entity chunk's final authored values** (no runtime modify) — moot for the current corpus, which has **zero active `> modify`** (D37). All `>` parsing survives only inside the one-shot v6→v7 migrator (alongside `> load`/`> run` flattening, D7). **The migrator is comment/token-aware** — it operates on the parsed token stream / CST, **never a raw line grep**, preserving `/* */` blocks verbatim as CST comment nodes and never activating a commented-out command (D37) — and **hard-fails on any unhandled active `>` form**. |
 | `AllocateCameraName` auto-naming (`:601`) | **Evolve → CST synthesized identity** (§2.5) | Generalized to all unnamed chunks; synthesized name (with its side-map `NodeId`, D15) persisted in CST, materialized to text on first edit. |
-| [`SaveEngine`](../../src/Library/SceneEditor/SaveEngine.cpp) Mode-A/Mode-B byte-splice + managed-override-block machinery | **Delete (this facet's contribution to the deletion)** | Replaced by `SerializeCst(Cst)` — pretty-printing the canonical tree, verbatim for untouched nodes, re-rendered for edited nodes. The whole Mode-A-vs-Mode-B duality, the sentinel-bracketed managed block, `OverrideSpanIndex`, `override_object`, the load-time `FileIdentity` external-mod guard's *splice* rationale, and `loadedPropertyValues` diffing exist **only** because the text wasn't retained. With a retained CST they vanish. **Note (D6):** the external-mod guard's *intent* is **not** deleted — it is retained as the load/flush content-fingerprint + compare-and-swap save contract (Facet 3 owns it); only its byte-*splice* mechanism goes away here. (Facet 3/6 own the full SaveEngine deletion inventory; this facet supplies the replacement: CST serialization.) |
+| [`SaveEngine`](../../src/Library/SceneEditor/SaveEngine.cpp) Mode-A/Mode-B byte-splice + managed-override-block machinery | **Delete (this facet's contribution to the deletion)** | Replaced by `SerializeCst(Cst)` — pretty-printing the canonical tree, verbatim for untouched nodes, re-rendered for edited nodes. The whole Mode-A-vs-Mode-B duality, the sentinel-bracketed managed block, `OverrideSpanIndex`, `override_object`, the load-time `FileIdentity` external-mod guard's *splice* rationale, and `loadedPropertyValues` diffing exist **only** because the text wasn't retained. With a retained CST they vanish. **Note (D6, superseded by D17):** the external-mod guard's *intent* is **not** deleted — it is retained as the load/flush content-fingerprint + **atomic save** contract (temp-write → fsync → revalidate content-hash → atomic rename, **D17**, replacing D6's TOCTOU-prone compare-and-swap; Facet 3 owns it); only its byte-*splice* mechanism goes away here. (Facet 3/6 own the full SaveEngine deletion inventory; this facet supplies the replacement: CST serialization.) |
 | `tools/migrate_scenes_v5_to_v6.py` (and the v5→v6 hard-fail message) | **Reuse pattern** | The v6→v7 migrator (§6) follows this established idempotent-script pattern. |
 
 **Net:** the parser stops being a fire-and-forget emitter and becomes a faithful `bytes ⇄
@@ -1019,9 +1069,12 @@ CST` codec; the descriptor stays the schema; the engine-construction code is reu
    Facet 2/3; this facet must publish the "changed-NodeId set" contract precisely enough for
    Facet 2's memoization to be sound.
 
-5. **Reference integrity under rename (D9/D14/D25/D35, refining L5).** A rename is a `NodeId`-preserving
+5. **Reference integrity under rename (D9/D14/D25/D35/D39, matching the D44-corrected charter L5).**
+   A rename is a `NodeId`-preserving
    op (D9, §2.5): the renamed node keeps its `NodeId`, only its name-path string changes, and all
-   reference *values* pointing at the old name are rewritten. Per **D14**, referrers are found from
+   reference *values* pointing at the old name are rewritten. (Under **D44** the locked charter now
+   agrees: `NodeId` is the lineage identity, name-path is addressing — so this is consistent with the
+   foundation, not a refinement against it.) Per **D14**, referrers are found from
    the **traced `ReferenceUse { sourceValueNodeId, targetNodeId }`** records recorded during
    derivation (which capture dynamic refs like `timeline.element` resolved via `element_type`),
    **not** from `referenceCategories` (a UI-picker hint only); untraced refs fall back to the
@@ -1029,11 +1082,15 @@ CST` codec; the descriptor stays the schema; the engine-construction code is reu
    Per **D25**, the `ReferenceUse` set must be **stamped for the exact head** the rename targets: if
    the derived `cstVersion` is a **strict ancestor of head** (derivation lags, D13; staleness is a
    DAG-ancestry test on the `cstVersion` axis, **never a numeric `<`** — D29), a reference added in
-   head-but-not-yet-derived would otherwise be missed. Per **D35**, the head-stamped reference set is obtained through **the exact
+   head-but-not-yet-derived would otherwise be missed. Per **D35/D39**, the head-stamped reference set
+   is obtained through **the exact
    same evaluator/resolver as derivation — there is ONE resolution implementation, not a second
-   "reference-tracing pass"**: the rename **synchronously derives head** (or runs derivation's own
-   reference-resolution step to head, **sharing that code**) and reads the resulting traced
-   `ReferenceUse`. This avoids the drift D4 warned of (dynamic refs need real derivation, not a static
+   "reference-tracing pass"**: the rename **synchronously runs the bounded synchronous semantic phase
+   (D39) to head** (lex → parse → CST → bind → resolve refs → typecheck — derivation's own
+   reference-resolution step, **sharing that code**) and reads the resulting traced
+   `ReferenceUse`. The semantic phase is bounded and deterministic, so running it synchronously on the
+   edit thread is fine (D39) — it does **not** kick the async expensive phase (realize/TLAS/prepare/
+   render, D34). This avoids the drift D4 warned of (dynamic refs need real derivation, not a static
    schema walk). If head **cannot** be derived (a semantic error), the rename is **refused**, not run
    best-effort/partially.
    **Open:** references inside `expr(...)` (the future `expr( materials/gold.scale )` extension)
@@ -1059,7 +1116,13 @@ CST` codec; the descriptor stays the schema; the engine-construction code is reu
 - **→ Facet 2 (Derivation).** I assume Facet 2 hosts the relocated `Finalize` logic and calls
   the **unchanged `Job::Add*` apply layer**, and that it consumes (a) the CST tree, (b) the
   "changed-NodeId set" from edits, (c) the descriptor for defaults, (d) the **AssetManifest**
-  (D5) as a co-input, recording traced asset reads into memo keys. I assume *I* own
+  (D5) as a co-input, recording traced asset reads into memo keys. I assume the **bounded
+  synchronous semantic phase** (D39 — lex → parse → CST → bind → resolve refs → typecheck) is the
+  **front of Facet 2's async derivation job** (the *same* code, run synchronously when validation/
+  rename needs it on the edit thread, and as the first phase of the async job otherwise) — so it is
+  **not** a second resolver (D35's no-drift property), and the expensive phase
+  (realize/tessellate-which-loads-asset-bytes, TLAS, `prepare`, render) is Facet 2 / the arbiter's,
+  async + cancellable (D34). I assume *I* own
   expression/generator **parsing into AST/generator nodes**; *Facet 2* owns their
   **evaluation/expansion** (where instance vars and `let` constants are bound). There are **no
   v6 legacy nodes** for Facet 2 to expand (D8) — v6 constructs are converted once by the
@@ -1070,14 +1133,18 @@ CST` codec; the descriptor stays the schema; the engine-construction code is reu
   `expr(A)` and a literal with A's current value never collapse, and a whitespace-only edit is a
   cache hit. I assume Facet 2's **derivation cache + manager roots are persistent immutable
   containers** (D20/D23) — but **the cache is NOT on the immutable `Version` (D30)**: it lives on a
-  **`DerivedArtifact`** keyed by the **`DerivedStamp = {cstVersion, assetManifestGen, animationName,
-  shutterInterval}`** (D29), held in a stamp-keyed LRU (one `Version` → many artifacts), alongside —
+  **`DerivedArtifact`** keyed by the **`DerivedStamp = {cstVersion, assetDigest, animationName,
+  shutterInterval}`** (D29; the asset axis is a **content digest of the loaded bytes**, not a session
+  generation — D41), held in a stamp-keyed LRU (one `Version` → many artifacts), alongside —
   not inside — my `Version`'s `identityRoot` and `greenRoot` (§2.5). I own the **`cstVersion`** axis
-  of that stamp; Facet 2/5 own the asset/animation/shutter axes (D29/D31). The Version roots and the
-  artifact cache all share the **D23 prerequisite** (honest v1 fallback = copy-on-snapshot mutable
-  maps at O(N), with the O(closure)/O(log N) claim gated on the persistent-container work). If Facet 2
-  would rather the CST pre-expand generators, that conflicts with INV-3/INV-4 (expansion in the CST
-  bloats it and loses authoring intent) — flag for synthesis.
+  of that stamp; Facet 2/5 own the asset/animation/shutter axes (D29/D31/D41), and Facet 2/5 own the
+  **`ResolveEffectiveRenderConfig` merge** (D42) whose normalized result + hash go in the
+  `PreparedStamp` — the **rasterizer/integrator chunk settings I parse are one input** to that merge
+  (scene-authored ← request override ← defaults ← auto-resolution), not the whole config. The Version
+  roots and the artifact cache all share the **D23 prerequisite** (honest v1 fallback =
+  copy-on-snapshot mutable maps at O(N), with the O(closure)/O(log N) claim gated on the
+  persistent-container work). If Facet 2 would rather the CST pre-expand generators, that conflicts
+  with INV-3/INV-4 (expansion in the CST bloats it and loses authoring intent) — flag for synthesis.
 - **→ Facet 3 (Edit model).** I assume structured edits are *operations on CST nodes* addressed
   by name-path but **identified by `NodeId`** (D9/D15/D26/D36, the id living in the `Version`'s
   persistent `identityRoot` side-map, §2.5), that **staged-edit state (the `GestureBuffer` / working
@@ -1086,10 +1153,10 @@ CST` codec; the descriptor stays the schema; the engine-construction code is reu
   that an `EditIntent` carries the target **`NodeId`** (name-path is addressing/display only — D36).
   I assume **rename is a distinct, `NodeId`-preserving edit op** (not a value edit) that rewrites
   referrers from the traced `ReferenceUse` set (D14) **stamped for the exact head it renames against**
-  (D25), obtained via **the one shared derivation resolver — rename synchronously derives head (or runs
-  derivation's own reference-resolution step to head, sharing that code), NOT a separate
-  reference-tracing pass** (D35); a rename never runs against a stale trace, and is **refused if head
-  cannot be derived** (D35). I assume Facet 3 owns undo/redo as CST version history — a version-DAG
+  (D25), obtained via **the one shared derivation resolver — rename synchronously runs the bounded
+  synchronous semantic phase (D39) to head (derivation's own reference-resolution step, sharing that
+  code), NOT a separate reference-tracing pass** (D35/D39); a rename never runs against a stale trace,
+  and is **refused if head cannot be derived** (D35). I assume Facet 3 owns undo/redo as CST version history — a version-DAG
   pointer move that, because every `Version` owns a persistent `identityRoot` (D26), restores the exact
   prior identities (subsuming the round-4 identity-serial — D9 makes `NodeId` the lineage identity that
   replaces the serial; Facet 3 deletes the serial). I provide: red-cursor
@@ -1112,8 +1179,16 @@ CST` codec; the descriptor stays the schema; the engine-construction code is reu
 - **→ Facet 5 (Agentic surface).** I provide the structured-diagnostic shape
   (`{severity, NodeId, code, message, fix-hint}`, anchored by `NodeId` with position resolved
   by the red cursor — D2, §2.9) the MCP error channel needs, and the name-path addressing
-  scheme (resolving to `NodeId`, D9) agents use to read/patch nodes. Diff-ability/git-nativeness
-  rests on INV-4 holding (my §4 gate) and on single-file v7 (D7).
+  scheme (resolving to `NodeId`, D9) agents use to read/patch nodes. I assume Facet 5's
+  **`propose_patch` precommit validate** runs the **bounded synchronous semantic phase** (D39 — lex →
+  parse → CST → bind → resolve refs → typecheck; the same code that fronts derivation, no asset I/O
+  beyond identity, no realization) to produce its accept/reject diagnostics on the edit thread. (The
+  sync phase resolves references to **CST-declared** name-paths; references into asset-expanded
+  sub-entities, e.g. a `gltf_import`'s children, need the async phase and are out of v1
+  cross-reference scope — D39.) Diff-ability/git-nativeness rests on INV-4 holding (my §4 gate) and on
+  single-file v7 (D7) — note this is **text** diffability; the *render* is reproducible-within-MC-
+  tolerance, not bit-identical (D40, a Facet-2 concern; nothing in this facet claims bit-identical
+  rendering).
 - **→ Facet 6 (Migration).** I define the **one-shot, time-bounded** v6→v7 migration (D8), which is
   **comment/token-aware** — it operates on the **parsed token stream / CST, never a raw line grep** —
   so it preserves `/* */` blocks verbatim as CST comment nodes and never activates a commented-out
@@ -1125,13 +1200,16 @@ CST` codec; the descriptor stays the schema; the engine-construction code is reu
   any **active** `> modify` → **folded into the target entity chunk's final authored values** (no
   runtime modify). **The active corpus has ZERO `> modify`** (the seven in `watch_dial` are inside a
   `/* */` block, hence inert — D37, correcting D27's "seven" census), so the fold rule is moot for the
-  current corpus. The migrator hard-fails on any unhandled **active** `>` form. After the corpus is
+  current corpus. The migrator hard-fails on any unhandled **active** `>` form, and **validates each
+  converted scene through the bounded synchronous semantic phase** (D39 — lex → parse → CST → bind →
+  resolve refs → typecheck) before accepting it. After the corpus is
   migrated and the gate is green, the v6 reader is **deleted** (no indefinite coexistence). Facet 6
   owns the corpus migration tool and risk register. The migrator follows the
   `migrate_scenes_v5_to_v6.py` pattern.
 
-**No conflicts with Locked decisions or the decisions (D1–D28).** I design *to* L1–L7
-and to D1–D28. Open-decision stances: O1 — I design for lossless-CST-pivot (the working
+**No conflicts with Locked decisions or the decisions (D1–D44).** I design *to* L1–L7 (**as
+corrected by D44** — `NodeId` is the lineage identity, name-path is addressing; INV-5 corrected to
+match) and to D1–D44. Open-decision stances: O1 — I design for lossless-CST-pivot (the working
 assumption); where text-canonical (O1 alt) would differ, it's only that "trivia nodes" become
 "the buffer is truth and the tree is a parsed view" — the red-green model (D2) supports either,
 but I assume CST-canonical so structured edits are first-class. O3 — resolved per D7/D8: bump to
@@ -1213,7 +1291,7 @@ To prove the pivot end-to-end with minimal surface, the first slice is **`sphere
 This slice exercises every load-bearing claim — retained lossless CST, red-green two-way
 mapping (relative widths + rope-backed O(log N) red cursor, D2/D16), descriptor-driven binding,
 the three separated identities (content hash / derivation key / `NodeId` in the `Version`'s
-`identityRoot` side-map, D26) + name-path (D9/D15), apply-layer reuse, incremental re-derive — on the smallest possible chunk, with the
+`identityRoot` side-map, D26) + name-path addressing (D9/D15/D44), apply-layer reuse, incremental re-derive — on the smallest possible chunk, with the
 parse→serialize identity test as the non-negotiable correctness gate. Subsequent slices add: a
 chunk with a `Reference` (`standard_object.material` → rename integrity driven by traced
 `ReferenceUse`, D9/D14), a chunk with repeated `Parameter` occurrences exposed via the derived

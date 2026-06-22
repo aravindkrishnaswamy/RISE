@@ -1,14 +1,17 @@
 # RISE Agentic Redesign — Synthesis & Overview
 
-> **Status:** **review rounds 1–4 complete** (no P0s in any). The reviews found 8 P1 + 2 P2 (r1),
-> 8 P1 + a P2 batch (r2), 8 P1 (r3), and 9 P1 (r4), all resolved authoritatively in
-> [`01-DECISIONS.md`](01-DECISIONS.md) (**D1–D37**), which **supersedes the reconciliations in §3 and
-> the first-slice in §6 below** and overrides the facet docs where they conflict. This document
-> synthesizes the six facet designs and their seams; read [`00-CHARTER.md`](00-CHARTER.md) for the
-> locked/open decisions, then [`01-DECISIONS.md`](01-DECISIONS.md) for the resolutions (later rounds
-> amend earlier decisions; r3 layered the derived-scene model and gated its complexity claims; r4
-> made identity/determinism/threading precise — full Derived/Prepared **stamps** keying **artifacts**
-> off the immutable Version, deterministic seeded async prepare, motion blur preserved as a
+> **Status:** **review rounds 1–5 complete** (no P0s in any). The reviews found 8 P1 + 2 P2 (r1),
+> 8 P1 + a P2 batch (r2), 8 P1 (r3), 9 P1 (r4), and 7 P1 (r5), all resolved authoritatively in
+> [`01-DECISIONS.md`](01-DECISIONS.md) (**D1–D44**), which **supersedes the reconciliations in §3 and
+> the first-slice in §6 below**, overrides the facet docs where they conflict, and (r5/D44)
+> **overrides the charter's L5/INV-5**. This document synthesizes the six facet designs and their
+> seams; read [`00-CHARTER.md`](00-CHARTER.md) for the locked/open decisions, then
+> [`01-DECISIONS.md`](01-DECISIONS.md) for the resolutions (later rounds amend earlier decisions; r3
+> layered the derived-scene model and gated its complexity; r4 added full Derived/Prepared **stamps**
+> keying **artifacts** off the immutable Version; r5 made runtime semantics precise — requested-vs-
+> published status, a bounded sync semantic phase, honest render reproducibility, content-digest
+> assets, resolved effective-config + view-pose stamps, preview-vs-pinned renders, and the charter
+> identity fix; motion blur preserved as a
 > time-interval scene — and **D37 corrects a factual error** in r3's command census).
 
 ## 0. Reading guide (for the reviewer)
@@ -17,7 +20,7 @@
 |---|---|---|
 | [`00-CHARTER.md`](00-CHARTER.md) | Thesis, Model B decision, locked/open decisions, invariants | Are the locked decisions actually right? |
 | [`01-DECISIONS.md`](01-DECISIONS.md) | **Authoritative** round-1 resolutions (D1–D10) | Read FIRST after the charter; it overrides §3/§6 here and the facet docs |
-| [`10-scene-language-and-cst.md`](10-scene-language-and-cst.md) | The CST, parser→retained-tree, name-path identity, declarative iteration (FOR→`instance_array`/`let`/`expr`) | **R1** (tree representation), lossless round-trip gate, generator expressiveness |
+| [`10-scene-language-and-cst.md`](10-scene-language-and-cst.md) | The CST, parser→retained-tree, NodeId identity (name-path = addressing), declarative iteration (FOR→`instance_array`/`let`/`expr`) | **R1** (tree representation), lossless round-trip gate, generator expressiveness |
 | [`20-derivation-engine.md`](20-derivation-engine.md) | Incremental `derive(CST)→Scene`, memo+dep-graph, apply-layer reuse | **Latency budget** (the second tar-pit), order-independence audit |
 | [`30-edit-model-and-history.md`](30-edit-model-and-history.md) | CST versioning replacing the whole edit/transaction subsystem | **R1** (depends on persistent CST), deletion inventory completeness |
 | [`40-dynamic-ui.md`](40-dynamic-ui.md) | Schema-driven reactive UI, widget↔CST binding, split form/source | **R2** (derived-overlay contract), cross-platform thin-bridge |
@@ -45,7 +48,7 @@ document) is deleted; the engine, managers, apply layer, and realize seam are un
 ```
         ┌──────────────────────────────────────────────────────────────┐
         │                         CST  (CANONICAL)                       │
-        │   immutable · persistent · name-path identity · lossless trivia│
+        │   immutable · persistent · NodeId identity (name-path=addr) · lossless trivia│
         │   nodes reference ChunkDescriptor (the schema, L6)             │
         └───┬───────────────┬───────────────────────────┬──────────────┘
    serialize│           edit │ (CstPatch: structured OR  │ derive (memo + dep graph)
@@ -82,7 +85,13 @@ Per-facet headline:
   **artifacts** that hold the cache — off the immutable `Version {greenRoot, identityRoot, metadata}`
   (D29/D30); derive→prepare→render run **async + cancellable on the render arbiter** (D34), off the
   edit thread; motion blur is preserved as a **time-interval** immutable scene (D31, gated). Staleness
-  is cstVersion **DAG ancestry, not `<`**.
+  is cstVersion **DAG ancestry, not `<`**. **Runtime-precise (r5):** status shows **requested vs
+  published** stamps (`ok` ⟺ full-stamp equality, D38); derivation has a **bounded sync semantic
+  phase** (validate/rename) + the async expensive phase (D39); the seed makes *prepare* deterministic
+  but the *render* is **reproducible-within-tolerance, not bit-identical** (D40); assets bind by
+  **content digest of the loaded buffer** (D41); the `PreparedStamp` carries a resolved
+  **EffectiveRenderConfig** hash + a **view-pose** hash (D42); and **previews are latest-wins while
+  explicit renders are stamp-pinned** (D43).
 - **F3 (Edit/History):** an edit is `CstPatch → new immutable root`; undo/redo is a pointer move
   over a structurally-shared version DAG; a gesture coalesces patches and commits *one* version
   (dissolving composites/transactions/rollback/atomicity/identity-serial); lossless round-trip is
@@ -227,7 +236,7 @@ slice 1b (introduces a `Reference`/color value + the picker widget). The vertica
    preserves the comment. **MEASURE** edit→preview latency here (O2).
 
 This slice exercises every load-bearing claim — persistent lossless CST, span-based two-way mapping,
-descriptor-driven binding, name-path identity, apply-layer reuse, incremental re-derive — and
+descriptor-driven binding, NodeId identity (name-path = addressing), apply-layer reuse, incremental re-derive — and
 directly tests the **two tar-pits** (round-trip identity; derivation latency). If both hold on the
 smallest chunk, the architecture is sound to scale; if either fails, we learn it cheaply.
 
