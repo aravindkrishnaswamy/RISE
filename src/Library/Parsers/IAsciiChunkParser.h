@@ -86,6 +86,18 @@ namespace RISE
 	// (an apply-time Finalize failure -- e.g. an unresolved reference -- is a
 	// separate concern the caller handles when it invokes Finalize).
 	[[nodiscard]] bool DispatchChunkParameters( const ChunkDescriptor& desc, ParseStateBag& bag, const IAsciiChunkParser::ParamsList& params );
+
+	// Resets the chunk parsers' cross-chunk parse state -- the file-scope caches
+	// some Finalize()s read/write WITHIN one scene (the uniformcolor_painter
+	// colour cache that translucent_material's energy-conservation check reads,
+	// the camera/scene-option default carry-over, the camera-name dedup set).
+	// The legacy ParseAndLoadScene calls this at the START of every parse; the
+	// CST derive path MUST do the same before deriving, so that state does not
+	// leak between successive derives (or in from a prior legacy parse on the
+	// same thread) -- the redesign's edit -> re-derive loop runs DeriveToJob
+	// repeatedly. Without it, deriving scene A then scene B can give B a Job that
+	// a fresh parse of B would not (e.g. spurious energy-auto-scaled painters).
+	void ClearChunkParserState();
 }
 
 #endif

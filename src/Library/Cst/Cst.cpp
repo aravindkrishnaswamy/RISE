@@ -922,6 +922,15 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	std::vector<NodeRef> items;
 	SeqToVec( doc.items, items );
 
+	// Reset the chunk parsers' cross-chunk parse state FIRST, exactly as the
+	// legacy ParseAndLoadScene does at the start of every parse. Some Finalize()s
+	// read/write file-scope caches within one scene (notably the
+	// uniformcolor_painter colour cache that translucent_material's energy-
+	// conservation check reads); without this, deriving scene A then scene B
+	// would leak A's state into B (the redesign runs DeriveToJob repeatedly on
+	// every edit), giving B a Job a fresh parse of B would not.
+	ClearChunkParserState();
+
 	// The LIVE chunk-parser registry (item 5): one instance of every chunk
 	// parser the scene grammar supports, kept alive for the process so each
 	// parser's descriptor (consumed by DispatchChunkParameters) and Finalize

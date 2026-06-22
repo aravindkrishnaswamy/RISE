@@ -137,6 +137,30 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
+	// [state-isolation] DeriveToJob resets the chunk parsers' cross-chunk parse
+	// state first (as legacy ParseAndLoadScene does), so a prior derive does not
+	// leak into the next. Without the reset, the uniformcolor_painter colour
+	// cache that translucent_material's energy-conservation check reads would
+	// carry `bright` from scene A into scene B (which never defines it) and inject
+	// spurious energy-auto-scaled painters -- a Job a fresh parse of B never makes.
+	//----------------------------------------------------------------------
+	std::printf( "[state-isolation] a prior derive does not leak parse state into the next\n" );
+	{
+		// A defines a painter whose colour, used as both ref+tau, violates energy
+		// conservation (0.9 + 0.9 > 1.0); B references `bright` but never defines it.
+		const std::string a = "RISE ASCII SCENE 6\nuniformcolor_painter\n{\nname bright\ncolor 0.9 0.9 0.9\n}\n";
+		const std::string b = "RISE ASCII SCENE 6\ntranslucent_material\n{\nname t\nref bright\ntau bright\n}\n";
+		Job* pollute = new Job(); DeriveCst( a, *pollute );   // writes the painter-colour cache
+		Job* cj = new Job(); DeriveCst( b, *cj );             // must NOT see `bright` leaked from A
+		Job* lj = new Job(); ParseLegacy( b, *lj );           // legacy clears state -> fresh reference
+		std::string dc = DumpJob( *cj ), dl = DumpJob( *lj );
+		Check( dc == dl, "deriving B after A matches a fresh parse of B (no leaked parse state)" );
+		if( dc != dl ) std::printf( "    legacy=[%s]\n    cst   =[%s]\n", dl.c_str(), dc.c_str() );
+		Check( dc.find( "t_auto_ref" ) == std::string::npos, "no spurious energy-auto-scaled painter leaked from A" );
+		pollute->release(); cj->release(); lj->release();
+	}
+
+	//----------------------------------------------------------------------
 	// [multitoken] multi-token values captured whole (not truncated to token 1).
 	//----------------------------------------------------------------------
 	std::printf( "[multitoken] multi-token param value captured whole\n" );

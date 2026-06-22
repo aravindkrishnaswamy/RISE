@@ -9875,6 +9875,15 @@ namespace RISE
 	{
 		return Implementation::ChunkParsers::DispatchChunkParameters( desc, bag, params );
 	}
+
+	// Public wrapper (declared in IAsciiChunkParser.h) over the per-parse
+	// state reset, so the CST derive path can reset the chunk parsers' cross-
+	// chunk caches before deriving, exactly as ParseAndLoadScene does at its
+	// start -- preventing parse state from leaking between successive derives.
+	void ClearChunkParserState()
+	{
+		Implementation::ChunkParsers::ClearParseState();
+	}
 }
 
 

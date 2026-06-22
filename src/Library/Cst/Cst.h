@@ -188,7 +188,10 @@ namespace RISE
 		std::string SerializeCst( const Document& doc );
 
 		//! Derive the document's chunks into pJob through the LIVE chunk-parser
-		//! registry (item 5). Each chunk is looked up by keyword in
+		//! registry (item 5). FIRST resets the chunk parsers' cross-chunk parse
+		//! state (ClearChunkParserState, as the legacy ParseAndLoadScene does at
+		//! its start) so nothing leaks between successive derives -- the redesign
+		//! runs this on every edit. Each chunk is then looked up by keyword in
 		//! CreateAllChunkParsers(); each param line is normalised exactly as the
 		//! legacy parser normalises it (whitespace runs collapsed to single
 		//! spaces, like AsciiCommandParser::TokenizeString + rejoin), validated +
@@ -211,9 +214,20 @@ namespace RISE
 		//!     a `> run`-included reference then goes unresolved and is reported by
 		//!     the apply-time boundary below);
 		//!   - the CST strips a MID-LINE `#`/`/* */` comment as trivia, whereas the
-		//!     legacy tokenizer keeps it as tokens (tolerating a trailing `#` on a
-		//!     NUMERIC value, but rejecting `/* */` or a comment after a STRING-
-		//!     valued param);
+		//!     legacy tokenizer keeps it as VALUE tokens (it never strips a comment
+		//!     after the first token of a line). The legacy outcomes, all DIVERGING
+		//!     from the CST's clean strip:
+		//!       * `#`/`/* */` after a STRING-valued param -- legacy SILENTLY MIS-
+		//!         CAPTURES (the comment bytes become part of the value: `name s # x`
+		//!         binds the name `s # x`, not `s`; parse SUCCEEDS, value corrupted),
+		//!         where the CST yields `s`;
+		//!       * a trailing `#` on a NUMERIC value -- legacy TOLERATES it (the
+		//!         numeric validator stops at the `#`: `radius 1 # cm` reads 1), and
+		//!         here the CST AGREES (also reads 1), so this case alone does not
+		//!         diverge the Job;
+		//!       * `/* */` on a NUMERIC value -- legacy REJECTS it (the validator
+		//!         sees a non-numeric token and fails the chunk), where the CST reads
+		//!         the clean number;
 		//!   - a SINGLE-LINE `/* ... */` block comment on its own line also
 		//!     diverges: the CST strips it as one trivia run, but the legacy
 		//!     top-level comment-block state machine only inspects each line's
