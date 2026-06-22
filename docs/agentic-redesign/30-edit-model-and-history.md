@@ -1,6 +1,6 @@
 # Facet 3 — Edit Model, History & State
 
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–5, D1–D44).** Sections
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–6, D1–D51).** Sections
 > below conform to the ratified decisions; where this doc and a decision differ,
 > [`01-DECISIONS.md`](01-DECISIONS.md) wins (a later round amends an earlier one).
 > Decisions this facet implements:
@@ -93,12 +93,24 @@
 > loader consumed** — load-and-hash one buffer, or revalidate-after-load; the
 > `DerivedStamp` asset axis is a **content digest**, not a session generation),
 > **D42** (the `PreparedStamp` carries the resolved **`effectiveRenderConfigHash`**
-> (from `ResolveEffectiveRenderConfig(CST, request)` — scene-authored ← request
+> (from `ResolveEffectiveRenderConfig(DerivedScene, request)` — scene-authored ← request
 > overrides ← defaults ← auto-resolution) and a **`viewCameraStateHash`** (the
 > ephemeral viewport pose/lens), **not** a raw `RenderConfig` / a `CameraId`), and
 > **D43** (a commit triggers a **latest-wins preview** job — cancelled by a newer head,
 > D34's policy — while an explicit "render *this* stamp" is a **stamp-pinned** job, NOT
 > cancelled by a newer head; the two are separate arbiter job classes).
+>
+> **Round 6 refinements:** **D49** — `VersionStatus` gains a **`phase`** (idle/deriving/routing/
+> preparing/rendering/complete/error); "done"/ok ⟺ full-stamp equality **AND `phase==complete`** (a
+> matching stamp mid-render is not "done"). **D50** — the preview is the *one* latest-wins surface;
+> **pinned renders are a `RenderJobId`-keyed set** with per-job phase + targeted stop/pause. **D47/D48**
+> — pinned renders are **not** dropped on a head change and run on the **one render slot** previews
+> suspend for (RISE's single-render invariant). **D51** — a commit passes only the **bounded sync
+> semantic phase** (D39), so a committed `Version` can be a **broken-but-valid CST** whose async
+> derive/render later fails (surfaced as `error` phase + diagnostics, never silent corruption); an
+> opt-in `awaitFullValidation` mode awaits async derive+prepare. **D45** — the effective config is
+> resolved **after** `DerivedScene` (auto-route may probe), so the PreparedStamp's config axis is the
+> *resolved* `effectiveRenderConfigHash`.
 
 > **Status:** design-in-progress. One of the parallel facet docs under
 > [`00-CHARTER.md`](00-CHARTER.md). Design only — no source/build/scene changes.
@@ -430,7 +442,7 @@ struct Version {
 > };
 > struct PreparedStamp {           // identifies a PreparedRenderState (D29 amended by D42)
 >     DerivedStamp derived;
->     Hash         effectiveRenderConfigHash; // content hash of ResolveEffectiveRenderConfig(CST, request)
+>     Hash         effectiveRenderConfigHash; // content hash of ResolveEffectiveRenderConfig(DerivedScene, request)
 >                                             //   (D42): scene-authored ← request overrides ← defaults ←
 >                                             //   auto-resolution (resolved integrator/resolution) — NOT a raw RenderConfig
 >     Hash         viewCameraStateHash;       // content hash / generation of the COMPLETE view-camera state —
@@ -463,7 +475,7 @@ struct Version {
 > > where a file changes between hash and load; a session generation counter survives
 > > only as a *fast in-process change signal*, never as the stamp identity. (b) The
 > > **render-config axis is `effectiveRenderConfigHash`** (D42) — the hash of
-> > `ResolveEffectiveRenderConfig(CST, request)`, a deterministic merge of scene-authored
+> > `ResolveEffectiveRenderConfig(DerivedScene, request)`, a deterministic merge of scene-authored
 > > rasterizer/integrator settings ← request overrides ← defaults ← auto-resolution
 > > (e.g. the auto-rasterizer's resolved integrator/resolution) — not a raw
 > > `RenderConfig`, because the raw request alone does not capture what the engine will
@@ -526,7 +538,7 @@ identity); the derived/prepared artifacts for that version's stamps are re-found
 >   light-sampling strategy; photon maps exist only for photon-consuming
 >   integrators — so they are **not** pure `f(CST, AssetManifest)` and live *here*,
 >   not in `DerivedScene`. The config input is the **resolved `EffectiveRenderConfig`**
->   (D42: `ResolveEffectiveRenderConfig(CST, request)` = scene-authored ← request
+>   (D42: `ResolveEffectiveRenderConfig(DerivedScene, request)` = scene-authored ← request
 >   overrides ← defaults ← auto-resolution), not a raw request. **Keyed by its
 >   `PreparedStamp = DerivedStamp + { effectiveRenderConfigHash, viewCameraStateHash,
 >   samplingSeed }`** (D29 amended by D42: the config + camera axes are *resolved/hashed*,
@@ -630,10 +642,17 @@ identity); the derived/prepared artifacts for that version's stamps are re-found
 >     PreparedStamp               publishedPreparedStamp; // FULL stamp the published PreparedRenderState reflects (D29/D42)
 >     std::shared_ptr<const DerivedScene>        snapshot;  // the sealed config-INDEPENDENT scene publishedDerivedStamp points at (D12/D22/D30)
 >     std::shared_ptr<const PreparedRenderState> prepared;  // prepare(snapshot, EffectiveRenderConfig) — what the render loop ADOPTS at a pass boundary (D22/D42)
->     // status:ok REQUIRES full-stamp equality published==requested on EVERY axis (D38)
->     enum class Status { Deriving, Preparing, Rendering, Ok, Error } status;
->     std::vector<Diagnostic>     diagnostics;             // why published lags requested / failed
+>     // (D49) "done"/ok REQUIRES full-stamp equality published==requested on EVERY axis (D38)
+>     //   AND phase==Complete. A matching stamp mid-render is "being produced", not "produced":
+>     //   the PreparedRenderState is PUBLISHED before rendering starts, so stamp-equality alone
+>     //   is true throughout the render — the phase is what says the output actually exists.
+>     enum class Phase { Idle, Deriving, Routing, Preparing, Rendering, Complete, Error } phase;
+>     std::vector<Diagnostic>     diagnostics;             // why published lags requested / failed / is broken (D51)
 > };
+> // This is the single LATEST-WINS preview surface (one). Explicit/pinned renders are a
+> // separate RenderJobId-keyed SET, each with its own pinned stamp + Phase + targeted
+> // stop/pause/resume (D50); a pinned render is NOT dropped on a head change (D47), and
+> // runs on the ONE render slot that previews suspend for (D48).
 > ```
 >
 > - `headVersion` is what `read_document` (Facet 5) is stamped with — the CST truth.
@@ -648,9 +667,11 @@ identity); the derived/prepared artifacts for that version's stamps are re-found
 >   may be a strict **DAG ancestor** of `headVersion` (derivation lagging) or pinned to
 >   the **last-good** artifact while a broken head is edited (`status == Error`; see
 >   §2.9's last-good rule).
-> - **`status:ok` requires *full-stamp equality* — `published == requested` on EVERY
+> - **`status:ok`/done requires *full-stamp equality* — `published == requested` on EVERY
 >   axis** (cstVersion, assetDigest, animation, shutter, effective-config,
->   view-camera, seed) (D38). Until then the status is one of
+>   view-camera, seed) (D38) **AND `phase == complete`** (D49 — the PreparedRenderState is
+>   published *before* rendering starts, so stamp-equality alone holds throughout the render; the
+>   phase attests the output exists). Until then the status is one of
 >   `Deriving | Preparing | Rendering` (which phase the arbiter is in), or `Error`. The
 >   two stamps are **never asserted equal when they are not**; `status` + `diagnostics`
 >   explain the lag or failure. The steady state is `published == requested && status ==
@@ -1390,7 +1411,8 @@ B:
     **NOT** cancel it — it runs to completion (or is cancelled only by its requester).
     This is the edit model's contract with the arbiter: an unrelated edit must never
     silently destroy a deliberately requested final render. The coordinator may **queue**
-    pinned renders (one heavy render at a time) and run latest-wins previews alongside;
+    pinned renders (one heavy render at a time) on the **one render slot** — latest-wins previews
+    **suspend** while a pinned render owns it (D48, single-render invariant; no concurrency);
     a pinned render carries its full stamp so its output is labeled with the exact
     `PreparedStamp` it was for (and is "stale" only by DAG-ancestry against a *later*
     head, never silently discarded).
@@ -1604,8 +1626,8 @@ Precise fate of every component this facet supersedes (charter §7.3, L7).
   counter), and **`PreparedRenderState = prepare(DerivedScene, EffectiveRenderConfig)`**
   (config-dependent: **light samplers + photon maps**, D22), keyed by **`PreparedStamp =
   DerivedStamp + { effectiveRenderConfigHash, viewCameraStateHash, samplingSeed }`** (D29
-  amended by **D42** — the config axis is the hash of `ResolveEffectiveRenderConfig(CST,
-  request)` = scene-authored ← request overrides ← defaults ← auto-resolution, and the
+  amended by **D42/D45** — the config axis is the hash of `ResolveEffectiveRenderConfig(DerivedScene,
+  request)` (run *after* DerivedScene; auto-route may probe) = scene-authored ← request overrides ← defaults ← auto-resolution, and the
   camera axis is a hash of the *complete* ephemeral view-camera state, **not** a raw
   `RenderConfig` / a `CameraId`). Motion blur is preserved by baking
   animated quantities as immutable `at(τ)` functions over the shutter (D31; v1 is
@@ -1781,7 +1803,7 @@ Precise fate of every component this facet supersedes (charter §7.3, L7).
   `DerivedStamp` asset axis is **`assetDigest`**, not a session generation — §2.1
   `DerivedStamp` + the resolved-axes note / §2.5 re-derivation note / §5 Facet-2 bullet),
   **D42** (the `PreparedStamp` carries the resolved **`effectiveRenderConfigHash`** (from
-  `ResolveEffectiveRenderConfig(CST, request)`) + a **`viewCameraStateHash`**, NOT a raw
+  `ResolveEffectiveRenderConfig(DerivedScene, request)`) + a **`viewCameraStateHash`**, NOT a raw
   `RenderConfig` / a `CameraId` — §2.1 `PreparedStamp` + the resolved-axes note + layered
   model / §2.9 render-pass rule + COW bullet / §3.2 orchestrator row / §5 Facet-2 bullet),
   and **D43** (a commit triggers a **latest-wins preview** job — cancelled by a newer head

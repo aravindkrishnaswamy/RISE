@@ -1,15 +1,17 @@
-# RISE Agentic Redesign — Decision Record (review rounds 1–5)
+# RISE Agentic Redesign — Decision Record (review rounds 1–6)
 
-> **Status:** authoritative. Round 1 → **D1–D10**; r2 → **D11–D20**; r3 → **D21–D28**; r4 →
-> **D29–D37**; r5 → **D38–D44**. Later decisions *amend* earlier ones (r2: D11/D12 amend D1, D14
+> **Status:** authoritative. r1 → **D1–D10**; r2 → **D11–D20**; r3 → **D21–D28**; r4 → **D29–D37**;
+> r5 → **D38–D44**; r6 → **D45–D51**. Later decisions *amend* earlier ones (r2: D11/D12 amend D1, D14
 > amends D9, D15/D16 amend D2, D17 amends D5/D6, D18 amends D10, D20 amends D4; r3: D21/D22 amend D12,
 > D22 amends D5, D23 amends D11/D20, D24 amends D11, D25 amends D14, D26 completes D15, D27 amends D19,
 > D28 amends D5; r4: D29 amends D13/D22, D30 amends D26/D20, D31 amends D21, D32 amends D22/D12, D33
 > amends D22, D34 amends D12/D22, D35 amends D25, D36 completes D26, **D37 corrects D27**; r5: D38
 > amends D13/D29, D39 amends D34/D35/D5, D40 amends D33, D41 amends D5/D17, D42 amends D29/D22, D43
-> amends D34, **D44 fixes the locked charter L5/INV-5**). Where a decision conflicts with a facet doc
-> (10–60), the overview (00), or the charter, **this document wins**, and a later decision wins over
-> the earlier one it amends. Read after [`00-CHARTER.md`](00-CHARTER.md) and [`00-OVERVIEW.md`](00-OVERVIEW.md).
+> amends D34, **D44 fixes the locked charter L5/INV-5**; r6: D45 amends D42, D46 amends D41/D5, D47/D48
+> amend D43, D49/D50 amend D38, D51 amends D39 — D47/D51 also **supersede the legacy `docs/gui/`
+> RENDER_COORDINATOR/AI_SECURITY specs** where they conflict). Where a decision conflicts with a facet
+> doc (10–60), the overview (00), or the charter, **this document wins**, and a later decision wins
+> over the earlier one it amends. Read after [`00-CHARTER.md`](00-CHARTER.md) and [`00-OVERVIEW.md`](00-OVERVIEW.md).
 >
 > **Enabling permission (from the product owner):** *"I am open to deprecating anything. All the
 > scenes that have ever been produced live on this machine and we can migrate/change them if
@@ -937,6 +939,8 @@ D29's `assetManifestGen` → `assetDigest` (content) for the stamp's reproducibl
 
 ## D42 — Stamp the normalized EffectiveRenderConfig + a view-camera-state hash, not a raw request + CameraId (amends D29/D22; resolves R5-P1-5)
 
+> **⚠ Amended by D45 (round 6):** `ResolveEffectiveRenderConfig` takes the **`DerivedScene`** (not the CST) and runs **after** derive — auto-routing inspects the assembled scene and may probe-render. D45 wins where they differ.
+
 **Contradiction:** scene-authored rasterizer settings, request overrides, defaults, and
 auto-resolution (e.g. auto-rasterizer) have no defined merge; and a `CameraId` cannot identify the
 continuously-changing ephemeral viewport camera pose.
@@ -954,6 +958,8 @@ continuously-changing ephemeral viewport camera pose.
 hashed) + `viewCameraStateHash`.
 
 ## D43 — Separate latest-wins preview jobs from stamp-pinned explicit renders (amends D34; resolves R5-P1-6)
+
+> **⚠ Amended by D47/D48/D50 (round 6):** pinned renders are **not** dropped on a head change (D47); there is **one render slot** so previews **suspend** while a pinned render owns it (NOT "run alongside" — D48, RISE's single-render invariant); pinned renders are **`RenderJobId`-keyed** with targeted control (D50). These win where they differ.
 
 **Contradiction:** D34 says every newer head cancels the in-flight render; the agent surface allows
 preempt/queue/reject + stale stamped results. As one policy, an unrelated edit silently destroys a
@@ -995,3 +1001,136 @@ expensive phase (D39); the seed makes *prepare* deterministic while the *render*
 reproducible-within-tolerance (D40); assets bind by content digest of the loaded buffer (D41); the
 stamp carries a resolved EffectiveRenderConfig + view-pose hash (D42); previews are latest-wins while
 explicit renders are stamp-pinned (D43); and the locked charter's identity model is corrected (D44).
+
+---
+
+# Review Round 6 (D45–D51)
+
+Round 6 tested the round-5 runtime decisions against the *real* auto-router, the *real* glTF importer,
+and the *retained* Model-A GUI coordinator/security specs. No P0s; 7 P1. Several reconcile a legacy
+`docs/gui/` spec that contradicts a new decision (those legacy specs are superseded where they
+conflict — charter L7). The corrected pipeline:
+
+```
+CST (+AssetManifest +t)
+  → sync semantic phase   (parse/resolve/typecheck — D39, bounded, edit-thread)
+  → ASYNC ARBITER (D34), single render slot (D48):
+        DerivedScene = derive(CST, assets, t)                      (config-independent, D22)
+        EffectiveRenderConfig = ResolveEffectiveRenderConfig(DerivedScene, request)  (D45: auto-route, may probe)
+        PreparedRenderState  = prepare(DerivedScene, EffectiveRenderConfig)           (D22/D32)
+        seal → publish stamps
+        render → image       (preview latest-wins | pinned-by-RenderJobId; phase→complete — D43/D48/D49/D50)
+```
+
+## D45 — Effective config is resolved AFTER DerivedScene (auto-route may probe-render) (amends D42; resolves R6-P1-1)
+
+**Contradiction:** `ResolveEffectiveRenderConfig(CST, request)` (D42) can't work — auto-routing
+(`auto_rasterizer`, the shipped Candidate-C dispatcher) inspects the *assembled scene* and may run
+**Tier-2 probe renders** (`AutoRasterizer.cpp:333`) to pick the integrator.
+
+**Decision:** routing runs **after `DerivedScene` exists**: `ResolveEffectiveRenderConfig(DerivedScene,
+request)` — it may inspect geometry/lights and execute a probe render — and produces the
+`EffectiveRenderConfig`, which is then **hashed into the `PreparedStamp` and fed to `prepare`**. The
+`DerivedScene` stays config-independent (D22 holds); routing is a step *between* derive and prepare.
+The probe render is a bounded sub-step that takes the single render slot (D48) briefly; with the seed
+(D33) it is deterministic, so the resolved config is cacheable by (`DerivedScene`-version, request).
+
+**Overrides:** D42's `ResolveEffectiveRenderConfig(CST, …)` → `(DerivedScene, …)`, run post-derive.
+
+## D46 — Asset identity = transitive byte-closure digest; pinned jobs pin the closure (amends D41/D5; resolves R6-P1-2)
+
+**Contradiction:** glTF consumes the main file **plus external buffers and textures**
+(`GLTFSceneImporter.cpp:1849`). A digest of the *direct* chunk path (D41) does not identify that
+transitive byte closure, and a queued/pinned job can't reproduce it unless those bytes are pinned.
+
+**Decision:** a composite asset's identity is the **content digest of its transitive byte closure**
+(main file + every transitively-referenced external buffer/texture) — the importer reports its full
+dependency set, each hashed (load-and-hash or revalidate, D41). For a **pinned render job** (D43), the
+entire dependency **closure is pinned** (bytes snapshotted/held for the job's lifetime) so a queued
+render reproduces deterministically regardless of later on-disk changes. (This is the bounded,
+per-job version of D28's "content-addressed asset store, future".)
+
+**Overrides:** D41/D5 direct-path digest → transitive-closure digest; pinned jobs pin the closure.
+
+## D47 — Pinned renders are NOT dropped on a head change (supersedes the legacy coordinator's stale-drop; resolves R6-P1-3)
+
+**Contradiction:** the retained `RENDER_COORDINATOR.md` (`:796`) drops queued/completed jobs when the
+document revision changes — the exact opposite of D43's promise for pinned renders.
+
+**Decision:** the legacy "drop all stale jobs on revision change" rule is **Model-A and superseded for
+pinned renders**. The Model-B coordinator applies stale-drop to **preview jobs only** (latest-wins,
+D43); **pinned render jobs survive a head/revision change** — they are pinned to their
+`requestedPreparedStamp` and run to completion (or are cancelled only by their requester, D50). The
+`RENDER_COORDINATOR.md` stale-drop is reframed accordingly (preview-only).
+
+**Overrides:** `RENDER_COORDINATOR.md` revision-stale-drop applies to previews, not pinned renders.
+
+## D48 — One render slot (process-wide single-render invariant); previews suspend while a pinned render owns it (amends D43; resolves R6-P1-4)
+
+**Contradiction:** D43 said the coordinator "may run previews alongside" a pinned render — violating
+RISE's **hard single-render invariant** (a render consumes all cores; two concurrent renders make the
+machine unusable — the repo's "render sequentially, never in parallel" rule).
+
+**Decision:** **exactly one render owns the slot at a time.** While a **pinned render** owns the slot,
+**previews suspend/queue** (they do not run alongside); the newest pending preview runs when the slot
+frees (latest-wins among queued previews). The requester may **pause/cancel** the pinned render (D50)
+to yield the slot. A routing probe (D45) also takes the slot briefly. No concurrency; the invariant
+holds.
+
+**Overrides:** D43's "run previews alongside" → serialize on one slot; previews suspend during a
+pinned render.
+
+## D49 — status:ok requires phase==complete, not just stamp equality (amends D38; resolves R6-P1-5)
+
+**Contradiction:** the `PreparedRenderState` is published *before* rendering starts, so
+`requested == published` stamps can match for the entire duration of the render — `status:ok` (D38,
+stamp equality) would be true mid-render.
+
+**Decision:** status carries an explicit **phase** ∈ `{ idle, deriving, routing, preparing, rendering,
+complete, error }` plus progress. **`ok`/done ⟺ full-stamp equality (D38) AND `phase == complete`**
+(the output image for that stamp exists, with its own completion marker — samples-done / converged).
+Stamp equality alone means "the right thing is being produced," not "it is produced."
+
+**Overrides:** D38 `ok ⟺ full-stamp equality` → `… AND phase == complete`.
+
+## D50 — Pinned renders have per-job identity: `RenderJobId`, per-job status/result, targeted control (amends D38/D43; resolves R6-P1-6)
+
+**Contradiction:** D43 allows *queuing* pinned renders, but the surface exposes one requested stamp and
+untargeted `stop_render`/`pause_render` — no way to address one of several queued jobs.
+
+**Decision:** an explicit (pinned) render request **returns a `RenderJobId`**; **status, progress,
+result/output, and `stop`/`pause`/`resume` are per-job** (keyed by `RenderJobId`). The single
+requested/published-stamp surface (D38) describes the **preview** (latest-wins, one); **pinned renders
+are a set keyed by `RenderJobId`**, each with its own pinned stamp + phase (D49).
+
+**Overrides:** D38/D43 single-render-surface → preview (one) + pinned renders (a `RenderJobId`-keyed
+set with targeted control).
+
+## D51 — Commit = semantic validation only; broken heads are possible; optional awaited full-validation (amends D39; resolves R6-P1-7)
+
+**Contradiction:** the agent-safety risk table (`AI_SECURITY_MODEL.md`) promises **full precommit
+gating**, but D39 commits after only the **bounded sync semantic phase** (parse/resolve/typecheck) —
+*before* asset loading, realization, prepare, and render. So a committed head can be semantically valid
+but fail to derive/render (missing asset, bad geometry).
+
+**Decision:**
+- The safety contract is corrected: **commit guarantees *semantic* validity, not full derivation/
+  render success.** A committed head may be a **broken-but-valid CST** whose async expensive phase
+  fails — surfaced as `status:error` + node-local diagnostics (D38/D49), never a silent corruption.
+- Provide an **optional awaited full-validation mode** (`propose_patch{ awaitFullValidation: true }`)
+  that synchronously awaits the async derive+prepare (not the render) before reporting the commit as
+  fully validated — for callers (e.g. a CI/headless agent) that need the stronger guarantee. Default
+  is fast semantic-only commit.
+
+**Overrides:** the `AI_SECURITY_MODEL.md` "full precommit gating" promise → semantic-only commit +
+broken-head diagnostics + opt-in awaited full validation.
+
+# Net effect (round 6)
+
+Round 6 reconciled the runtime model with the real engine + the legacy GUI specs: routing runs
+**post-DerivedScene** and may probe (D45); asset identity is the **transitive closure**, pinned for
+queued jobs (D46); pinned renders **survive head changes** (D47) on a **single render slot** that
+previews yield to (D48); `status:ok` needs **completion**, not just stamp match (D49); pinned renders
+get **`RenderJobId`** identity + targeted control (D50); and the safety contract honestly admits
+**semantic-only commit** with an opt-in awaited full validation (D51). The legacy `RENDER_COORDINATOR`/
+`AI_SECURITY_MODEL` GUI specs are superseded where they conflict.

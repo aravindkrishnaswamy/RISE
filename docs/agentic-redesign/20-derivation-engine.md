@@ -1,6 +1,6 @@
 # Facet 2 — Derivation Engine (CST → Scene, incremental)
 
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–5).** The
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–6, D1–D51).** The
 > decision record is authoritative; where this doc once conflicted it now conforms
 > and points to the relevant decision. The decisions that reshaped this facet:
 > **D1** — the derived scene is an *immutable COW snapshot* the renderer swaps at a
@@ -86,7 +86,7 @@
 > **`DerivedStamp` asset axis is a content digest** (per-asset content hash), **not** a
 > session generation (the generation counter remains only as a fast in-process change
 > signal) — so `assetManifestGen` → **`assetDigest`** in the stamp; **D42** — define
-> **`ResolveEffectiveRenderConfig(CST, request) → EffectiveRenderConfig`** (a deterministic
+> **`ResolveEffectiveRenderConfig(DerivedScene, request) → EffectiveRenderConfig`** (a deterministic
 > merge: scene-authored ← request override ← defaults ← auto-resolution), and the
 > **normalized result + its content hash** goes in the `PreparedStamp`; the viewport camera
 > is an **ephemeral pose** → stamp a **view-camera-state content hash**, not a `CameraId`,
@@ -108,6 +108,15 @@
 > this doc assumes the charter's locked decisions (L1–L7), invariants (INV-1…6), the
 > canonical-CST pivot, and the round-1 decisions (D1–D10). **Design only; no
 > code/build/scene changes.**
+>
+> **Round 6 refinements:** **D45** — `ResolveEffectiveRenderConfig` takes the **`DerivedScene`** (not
+> CST) and runs **after** derive, because auto-routing (`auto_rasterizer`) inspects the assembled
+> scene and **may run a probe render**; the pipeline is `derive → resolve-config(auto-route, may
+> probe) → prepare → render`, and the probe takes the one render slot briefly. **D46** — a composite
+> asset's identity is the **transitive byte-closure** digest (glTF main + buffers + textures), and a
+> **pinned render pins the closure**. **D48** — one render slot (single-render invariant): previews
+> suspend while a pinned render owns it. **D49** — coordinator status carries a `phase`; "done" needs
+> `phase==complete`, not just stamp-equality.
 >
 > **This facet owns:** the two-layer function **`DerivedScene = derive(CST,
 > AssetManifest, t)`** (D5/D21/D22) followed by **`PreparedRenderState =
@@ -293,9 +302,13 @@ PreparedArtifact = { preparedStamp, preparedRenderState, prepareCache }
 
 The asset axis is a **content digest** of the exact bytes the loader consumed (D41), not
 a session generation counter — a per-asset content hash, so the stamp is a *reproducible*
-identity (§2.9). The prepared axes are the **hash of the resolved `EffectiveRenderConfig`**
-(scene-authored ← request override ← defaults ← auto-resolution, merged deterministically by
-`ResolveEffectiveRenderConfig` — D42, below) and a **content hash of the ephemeral
+identity (§2.9). **For a composite asset (D46)** — e.g. a glTF that pulls in external buffers +
+textures — the digest covers its **whole transitive byte closure** (the importer reports its full
+dependency set), and a **pinned render job pins that closure** so a queued render reproduces. The
+prepared axes are the **hash of the resolved `EffectiveRenderConfig`** — resolved **after
+`DerivedScene`** since auto-routing may probe-render (D45) — (scene-authored ← request override ←
+defaults ← auto-resolution, merged deterministically by
+`ResolveEffectiveRenderConfig` — D42/D45, below) and a **content hash of the ephemeral
 view-camera state** (pose + lens — D42), *not* a raw request object or a `CameraId`.
 
 A `Version` can have **many** `DerivedArtifact`s (one per time-interval / asset content
@@ -378,7 +391,7 @@ photon-consuming integrators), and any integrator-specific structures. **The con
 is a *resolved* `EffectiveRenderConfig` (D42), not a raw request.** Scene-authored
 rasterizer/integrator settings, a request override, defaults, and auto-resolution (e.g.
 the auto-rasterizer's resolved integrator/resolution) have no single defined merge unless
-one is named, so D42 defines **`ResolveEffectiveRenderConfig(CST, request) →
+one is named, so D42 defines **`ResolveEffectiveRenderConfig(DerivedScene, request) →
 EffectiveRenderConfig`** — a deterministic merge in the order **scene-authored ← request
 override ← defaults ← auto-resolution** — and the **normalized result + its content hash**
 (`effectiveRenderConfigHash`) is what enters the `PreparedStamp` (not the raw request).
@@ -995,8 +1008,10 @@ happens to the in-flight job depends on its class:
 - **Pinned render jobs — stamp-pinned (D43):** an explicit "render *this* stamp"
   (final / export) is **pinned to its `requestedPreparedStamp`**; a newer head does
   **NOT** cancel it — it runs to completion (or is cancelled only by its requester). The
-  coordinator may **queue** pinned renders (one heavy render at a time) and run previews
-  alongside. An unrelated edit therefore never silently destroys a requested final render.
+  coordinator may **queue** pinned renders (one heavy render at a time) on the **one render slot**;
+  latest-wins previews **suspend** while a pinned render owns it (D48 — RISE's single-render
+  invariant; no concurrent renders), the newest pending preview running when it frees. An unrelated
+  edit therefore never silently destroys a requested final render.
 
 A preview's snapshots are **ephemeral** (not history versions); at gesture end the
 intermediate roots coalesce into one committed version (D1).
@@ -1687,7 +1702,7 @@ preview frame; flagged as the cost of that path.)
   `{greenRoot, identityRoot}` propagate through edits — and **note D30 drops
   `derivationCacheRoot` from `Version`**: the cache is artifact-scoped, not Version-held;
   §2.3, depends on D23), **D27** (all `>` commands migrated/retired — Facet 1/6's
-  migrator; **corrected by D37**, comment/token-aware; §4 reads only declarative config); and the **round-5 amendments**: **D38** (status carries **requested vs published** stamps and **`status:ok` ⟺ full-stamp equality** on every axis; requested stamps move when *any* input axis changes — §2.8), **D39** (derivation splits into a **bounded SYNCHRONOUS semantic phase** — lex→parse→bind→reference-resolution/traced `ReferenceUse`→typecheck, no asset I/O beyond identity, no realization, edit-thread-OK — and the **asynchronous expensive phase** — realize/tessellate/TLAS/`prepare`/render; the sync phase **is the front of the same async job** so there is no second resolver (D35 no-drift holds), and it is what `propose_patch`/rename/`validate` use; CST-declared refs only, asset-expanded sub-entity refs out of v1 scope — §2.1/§2.2/§2.4/§2.7/§2.8/§6.9), **D40** (the seed makes **`prepare`/photon maps** deterministic — cache-sound — but the **final RENDER is NOT bit-identical**: per-worker RNGs + `GlobalRNG()` + non-deterministic tile/splat-reduction/denoise → reproducible only within **MC tolerance**; bit-identical rendering across every renderer is a **named future** — §2.1/§6.8), **D41** (asset identity is the **content digest of the exact bytes the loader consumed** — load-and-hash one buffer OR revalidate-post-load+retry, no path-hash TOCTOU; the **`DerivedStamp` asset axis is `assetDigest`** (content), not a session generation — which survives only as a fast change signal — §2.1/§2.3/§2.9), **D42** (**`ResolveEffectiveRenderConfig(CST, request) → EffectiveRenderConfig`** deterministic merge — scene-authored ← request override ← defaults ← auto-resolution; the **normalized result + content hash** + a **view-camera-state content hash** (the ephemeral viewport pose, not a `CameraId`) are the `PreparedStamp`'s config axes — §2.1/§2.2/§2.8), **D43** (two arbiter job classes: **preview = latest-wins** (newer head cancels) vs **pinned render = stamp-pinned** (newer head does NOT cancel; queued / run to completion) — D34's "newer head cancels" is **preview-only** — §2.4/§2.8/§6.9), **D44** (the *locked* charter L5/INV-5 is corrected so **NodeId is the lineage identity** and **name-path is addressing** — the model this facet already assumed throughout; now cited from the corrected charter). The **residual conformance sweep** items are addressed: (i) the memo key is
+  migrator; **corrected by D37**, comment/token-aware; §4 reads only declarative config); and the **round-5 amendments**: **D38** (status carries **requested vs published** stamps and **`status:ok` ⟺ full-stamp equality** on every axis; requested stamps move when *any* input axis changes — §2.8), **D39** (derivation splits into a **bounded SYNCHRONOUS semantic phase** — lex→parse→bind→reference-resolution/traced `ReferenceUse`→typecheck, no asset I/O beyond identity, no realization, edit-thread-OK — and the **asynchronous expensive phase** — realize/tessellate/TLAS/`prepare`/render; the sync phase **is the front of the same async job** so there is no second resolver (D35 no-drift holds), and it is what `propose_patch`/rename/`validate` use; CST-declared refs only, asset-expanded sub-entity refs out of v1 scope — §2.1/§2.2/§2.4/§2.7/§2.8/§6.9), **D40** (the seed makes **`prepare`/photon maps** deterministic — cache-sound — but the **final RENDER is NOT bit-identical**: per-worker RNGs + `GlobalRNG()` + non-deterministic tile/splat-reduction/denoise → reproducible only within **MC tolerance**; bit-identical rendering across every renderer is a **named future** — §2.1/§6.8), **D41** (asset identity is the **content digest of the exact bytes the loader consumed** — load-and-hash one buffer OR revalidate-post-load+retry, no path-hash TOCTOU; the **`DerivedStamp` asset axis is `assetDigest`** (content), not a session generation — which survives only as a fast change signal — §2.1/§2.3/§2.9), **D42** (**`ResolveEffectiveRenderConfig(DerivedScene, request) → EffectiveRenderConfig`** deterministic merge — scene-authored ← request override ← defaults ← auto-resolution; the **normalized result + content hash** + a **view-camera-state content hash** (the ephemeral viewport pose, not a `CameraId`) are the `PreparedStamp`'s config axes — §2.1/§2.2/§2.8), **D43** (two arbiter job classes: **preview = latest-wins** (newer head cancels) vs **pinned render = stamp-pinned** (newer head does NOT cancel; queued / run to completion) — D34's "newer head cancels" is **preview-only** — §2.4/§2.8/§6.9), **D44** (the *locked* charter L5/INV-5 is corrected so **NodeId is the lineage identity** and **name-path is addressing** — the model this facet already assumed throughout; now cited from the corrected charter). The **residual conformance sweep** items are addressed: (i) the memo key is
   the structural/traced-input *derivation key*, never resolved-value (§2.3); (ii)
   derivation is **not** commit-only — gesture previews derive the uncommitted head into
   ephemeral preview snapshots, committing once at gesture end (§2.8/§5.3); (iii)

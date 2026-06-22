@@ -1,17 +1,20 @@
 # RISE Agentic Redesign — Synthesis & Overview
 
-> **Status:** **review rounds 1–5 complete** (no P0s in any). The reviews found 8 P1 + 2 P2 (r1),
-> 8 P1 + a P2 batch (r2), 8 P1 (r3), 9 P1 (r4), and 7 P1 (r5), all resolved authoritatively in
-> [`01-DECISIONS.md`](01-DECISIONS.md) (**D1–D44**), which **supersedes the reconciliations in §3 and
-> the first-slice in §6 below**, overrides the facet docs where they conflict, and (r5/D44)
-> **overrides the charter's L5/INV-5**. This document synthesizes the six facet designs and their
-> seams; read [`00-CHARTER.md`](00-CHARTER.md) for the locked/open decisions, then
+> **Status:** **review rounds 1–6 complete** (no P0s in any). The reviews found 8 P1 + 2 P2 (r1),
+> 8 P1 + a P2 batch (r2), 8 P1 (r3), 9 P1 (r4), 7 P1 (r5), and 7 P1 (r6), all resolved authoritatively
+> in [`01-DECISIONS.md`](01-DECISIONS.md) (**D1–D51**), which **supersedes the reconciliations in §3
+> and the first-slice in §6 below**, overrides the facet docs where they conflict, (r5/D44)
+> **overrides the charter's L5/INV-5**, and (r6/D47/D51) **supersedes the legacy `docs/gui/`
+> RENDER_COORDINATOR/AI_SECURITY specs** where they conflict. This document synthesizes the six facet
+> designs and their seams; read [`00-CHARTER.md`](00-CHARTER.md) for the locked/open decisions, then
 > [`01-DECISIONS.md`](01-DECISIONS.md) for the resolutions (later rounds amend earlier decisions; r3
 > layered the derived-scene model and gated its complexity; r4 added full Derived/Prepared **stamps**
-> keying **artifacts** off the immutable Version; r5 made runtime semantics precise — requested-vs-
-> published status, a bounded sync semantic phase, honest render reproducibility, content-digest
-> assets, resolved effective-config + view-pose stamps, preview-vs-pinned renders, and the charter
-> identity fix; motion blur preserved as a
+> keying **artifacts** off the immutable Version; r5 made runtime semantics precise; r6 fixed the
+> runtime/coordinator details — config resolved **post-DerivedScene** (auto-route may probe), asset
+> identity = **transitive byte closure** (pinned for queued jobs), **one render slot** (previews yield
+> to pinned renders), `status:ok` needs **completion** not just stamp-match, pinned renders get
+> **`RenderJobId`** identity, and commit is honestly **semantic-only** with opt-in awaited validation;
+> motion blur preserved as a
 > time-interval scene — and **D37 corrects a factual error** in r3's command census).
 
 ## 0. Reading guide (for the reviewer)
@@ -91,7 +94,13 @@ Per-facet headline:
   but the *render* is **reproducible-within-tolerance, not bit-identical** (D40); assets bind by
   **content digest of the loaded buffer** (D41); the `PreparedStamp` carries a resolved
   **EffectiveRenderConfig** hash + a **view-pose** hash (D42); and **previews are latest-wins while
-  explicit renders are stamp-pinned** (D43).
+  explicit renders are stamp-pinned** (D43). **Coordinator-precise (r6):** the effective config is
+  resolved **after `DerivedScene`** (auto-route may probe-render, D45); asset identity is the
+  **transitive byte closure** digest (glTF main+buffers+textures), pinned for queued jobs (D46);
+  there is **one render slot** — pinned renders survive a head change and previews **suspend** while
+  one owns the slot (D47/D48); `status:ok` ⟺ stamp-equality **AND phase==complete** (D49); pinned
+  renders are **`RenderJobId`-keyed** with targeted control (D50); and commit is **semantic-only**
+  (broken-but-valid heads possible; opt-in awaited full validation, D51).
 - **F3 (Edit/History):** an edit is `CstPatch → new immutable root`; undo/redo is a pointer move
   over a structurally-shared version DAG; a gesture coalesces patches and commits *one* version
   (dissolving composites/transactions/rollback/atomicity/identity-serial); lossless round-trip is

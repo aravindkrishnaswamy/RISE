@@ -1,11 +1,12 @@
 # Facet 1 — Scene Language & Canonical CST
 
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–5).** Sections affected by
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–6).** Sections affected by
 > D2, D3, D5, D7, D8, and D9 (round 1), by D14, D15, D16, and D19 (round 2), by
-> D23, D26, D27, and D28 (round 3), by D29, D30, D31, D35, D36, and D37 (round 4), and by
-> **D39, D40, D41, D42, and D44** (round 5) have been
+> D23, D26, D27, and D28 (round 3), by D29, D30, D31, D35, D36, and D37 (round 4), by
+> **D39, D40, D41, D42, and D44** (round 5), and by **D45 and D46** (round 6: effective config
+> resolved post-`DerivedScene`; asset identity = transitive byte-closure digest) have been
 > rewritten to conform; this doc now points to the decision record as authoritative and
-> contradicts none of D1–D44.
+> contradicts none of D1–D51.
 >
 > **Status:** design-in-progress. Part of the RISE agentic redesign (Model B). Read
 > [`00-CHARTER.md`](00-CHARTER.md) and [`01-DECISIONS.md`](01-DECISIONS.md) first — this doc
@@ -974,7 +975,12 @@ the hash and the load, stamping an artifact with the **wrong** identity. So each
 path's `AssetManifest` entry maps it to a **content digest of the bytes actually loaded**, obtained
 one of two ways: **(a) load-and-hash one buffer** — read the file once, hash *that* buffer, and hand
 the same buffer to the loader; or **(b) revalidate after load** — re-hash the loaded bytes against
-the manifest and, on mismatch, **retry/refuse**. The **`DerivedStamp` asset axis is therefore a
+the manifest and, on mismatch, **retry/refuse**. **For a composite asset (D46)** — e.g. `gltf_import`,
+which transitively pulls in external `.bin` buffers and texture images — the identity is the **content
+digest of its whole transitive byte closure** (the importer reports its full dependency set, each
+hashed by (a)/(b)); a single direct-path digest would not identify those buffers. **A pinned render
+job pins the entire closure** (D43/D46) so a queued render reproduces regardless of later disk changes.
+The **`DerivedStamp` asset axis is therefore a
 content digest** (the per-asset content hashes), a **reproducible identity**, **not a session
 generation**. A `(size, mtime)` prefilter and an in-process generation counter survive **only as a
 fast change *signal*** (cheap "did this path probably change?" for the watcher), never as the stamp's

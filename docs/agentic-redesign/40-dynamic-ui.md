@@ -2,7 +2,7 @@
 
 > **Status:** design-in-progress. One of the parallel facet docs under the
 > [Agentic Redesign Charter](00-CHARTER.md). DESIGN ONLY — no code yet.
-> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–5, D1–D44):** binding keys on the
+> **Updated per [`01-DECISIONS.md`](01-DECISIONS.md) (rounds 1–6, D1–D51):** binding keys on the
 > immutable **NodeId** (lineage identity, D9/D15, and now the *locked* charter L5/INV-5 after **D44**),
 > **stored as a real field** on `Widget`/`ViewNode`/`EditIntent`/selection (D36); the `NodeId` resolves
 > via each Version's **persistent `identityRoot`** (D26/D30), and staged edits carry `{greenRoot,
@@ -20,7 +20,14 @@
 > status from **requested vs published** stamps — `status:ok` only on full-stamp equality, else
 > deriving/preparing/rendering (**D38**). Renders are **reproducible-within-tolerance**, not
 > bit-identical (**D40**). Time-scrub drives **per-frame (time-interval) derivation** with the **active
-> animation name as an input** (D31).
+> animation name as an input** (D31). **Round 6:** the effective config is resolved **after**
+> `DerivedScene` (auto-route may probe-render, **D45**); asset refs identify by **transitive
+> byte-closure** digest, pinned for queued renders (**D46**); there is **one render slot** — pinned
+> renders survive a head change and the live preview **suspends** while one owns it (**D47/D48**);
+> `status:ok` ⟺ stamp-equality **AND phase==complete** (**D49**); an explicit "Render"/export returns
+> a **`RenderJobId`** with per-job status + targeted cancel/pause (**D50**); and a commit is
+> **semantic-only** (a broken-but-valid head is possible, surfaced via diagnostics; opt-in awaited
+> full validation, **D51**).
 > This facet owns: **the UI as a pure function of (CST + descriptor schema)**,
 > widget-per-node, adaptive/growing panels, two-way binding widget↔CST node,
 > the split form/source live view, reactive propagation, and the shared-C++ +
@@ -348,28 +355,37 @@ samplingSeed}` (D42)** — superseding the old D29 `{renderConfig, cameraOverrid
   identified by a **view-camera-state content hash** (pose + lens). During an orbit/dolly the pose
   changes continuously, so the requested `PreparedStamp`'s **`viewCameraStateHash` changes every
   frame** — which is exactly what drives the latest-wins preview below.
-- **The render config is the resolved `EffectiveRenderConfig` (D42).** F4 never stamps the raw request;
-  it stamps `ResolveEffectiveRenderConfig(CST, request)` — the deterministic merge of scene-authored
+- **The render config is the resolved `EffectiveRenderConfig` (D42), resolved AFTER `DerivedScene`
+  (D45).** F4 never stamps the raw request; the arbiter runs `ResolveEffectiveRenderConfig(DerivedScene,
+  request)` — **after** `DerivedScene` exists, because auto-routing inspects the assembled scene and
+  **may run a probe render** (`auto_rasterizer`) — a deterministic merge of scene-authored
   rasterizer/integrator settings ← request overrides ← defaults ← auto-resolution (the resolved
   integrator/resolution) — and its **content hash** `effectiveRenderConfigHash` goes in the stamp.
 
-**Two render-surface job classes (D43):**
+**Two render-surface job classes (D43), on ONE render slot (D48):** RISE's single-render invariant
+holds — exactly one render runs at a time; the two classes never run concurrently.
 
 - **The live viewport preview is latest-wins.** It tracks head (and the live view-camera pose): a
   newer edit — including each frame of an orbit, via the changing `viewCameraStateHash` — **cancels the
-  in-flight preview** (D34's policy). It is ephemeral, cheap, and never pinned.
-- **"Render" / export is a pinned render.** An explicit "render *this*" (final/export) is **pinned to
-  its `requestedPreparedStamp`**: a newer edit does **not** cancel it — it runs to completion (or is
-  cancelled only by its requester). The panel presents these as distinct affordances, so an unrelated
-  edit can never silently destroy a requested final render.
+  in-flight preview** (D34's policy). It is ephemeral, cheap, and never pinned. **While a pinned render
+  owns the slot, previews suspend/queue** (the newest pending preview runs when the slot frees) — they
+  do not run alongside (D48).
+- **"Render" / export is a pinned render with a `RenderJobId` (D50).** An explicit "render *this*"
+  (final/export) **returns a `RenderJobId`** and is **pinned to its `requestedPreparedStamp`**: a newer
+  edit does **not** cancel it (D47 — even though it owns the slot, previews simply wait) — it runs to
+  completion, or is paused/cancelled **by `RenderJobId`** (targeted, since several may be queued).
+  Per-job status/progress/result are keyed by `RenderJobId`. The panel presents preview vs render as
+  distinct affordances, so an unrelated edit can never silently destroy a requested final render.
 
 **Status is requested-vs-published, not just what was produced (D38).** Because the arbiter may still
 be mid-derive/prepare on an older stamp when a newer head (or a new camera pose / config) is
 requested, the panel reports status from the session value `{ headVersion, requestedDerivedStamp,
-requestedPreparedStamp, publishedDerivedStamp, publishedPreparedStamp, status, diagnostics }`:
-**`status:ok` only when published == requested on *every* stamp axis** (cstVersion, assetDigest,
-animation, shutter, effective-config, view-camera, seed); while they differ it shows
-**deriving/preparing/rendering** (or a **stale-but-last-good preview** whose
+requestedPreparedStamp, publishedDerivedStamp, publishedPreparedStamp, phase, diagnostics }` where
+`phase` ∈ {idle, deriving, routing, preparing, rendering, complete, error} (**D49**):
+**`status:ok`/done only when published == requested on *every* stamp axis** (cstVersion, assetDigest,
+animation, shutter, effective-config, view-camera, seed) **AND `phase == complete`** (a matching
+stamp mid-render means "being produced," not "produced" — D49); while they differ it shows
+**deriving/routing/preparing/rendering** (or a **stale-but-last-good preview** whose
 `PreparedStamp.cstVersion` is a DAG ancestor of head — the head-vs-derived lag, D13/D29). A lag or a
 last-good fallback is shown honestly, never as if it were head. CST staleness is judged on the
 **`cstVersion` axis by DAG ancestry, never numeric `<`** (D29); the other stamp axes are
