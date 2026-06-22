@@ -14,6 +14,7 @@
 #include "../Interfaces/IJob.h"
 
 #include <cstdlib>
+#include <unordered_map>
 
 using namespace RISE;
 using namespace RISE::Cst;
@@ -419,39 +420,45 @@ namespace
 		IdToVec( s->left, out ); out.push_back( s->id ); IdToVec( s->right, out );
 	}
 
-	// ---- NameMap: key-ordered persistent WBT (name-path -> NodeId) ----
+	// ---- NameMap: key-ordered persistent WBT (name-path -> list of NodeIds) ----
+	// The value is a LIST so duplicate name-paths (a degenerate but representable
+	// scene) don't corrupt the index: erase/rename of one occurrence removes only
+	// that id, survivors stay findable. NameFind returns the first occurrence.
 	int NameSize( const NameMapRef& s ) { return s ? s->count : 0; }
-	NameMapRef NameMk( NameMapRef l, std::string name, NodeId id, NameMapRef r )
+	NameMapRef NameMk( NameMapRef l, std::string name, std::vector<NodeId> ids, NameMapRef r )
 	{
 		auto n = std::make_shared<NameNode>();
-		n->left = std::move(l); n->right = std::move(r); n->name = std::move(name); n->id = id;
+		n->left = std::move(l); n->right = std::move(r); n->name = std::move(name); n->ids = std::move(ids);
 		n->count = 1 + NameSize(n->left) + NameSize(n->right);
 		return n;
 	}
-	NameMapRef NameBalance( NameMapRef l, std::string name, NodeId id, NameMapRef r )
+	NameMapRef NameBalance( NameMapRef l, std::string name, std::vector<NodeId> ids, NameMapRef r )
 	{
 		const int ln = NameSize(l), rn = NameSize(r);
 		if( ln + rn > 1 ) {
 			if( rn > WBT_DELTA * ln ) {
-				if( NameSize(r->left) < WBT_GAMMA * NameSize(r->right) ) return NameMk( NameMk(l, std::move(name), id, r->left), r->name, r->id, r->right );
+				if( NameSize(r->left) < WBT_GAMMA * NameSize(r->right) ) return NameMk( NameMk(l, std::move(name), std::move(ids), r->left), r->name, r->ids, r->right );
 				const NameMapRef& rl = r->left;
-				return NameMk( NameMk(l, std::move(name), id, rl->left), rl->name, rl->id, NameMk(rl->right, r->name, r->id, r->right) );
+				return NameMk( NameMk(l, std::move(name), std::move(ids), rl->left), rl->name, rl->ids, NameMk(rl->right, r->name, r->ids, r->right) );
 			}
 			if( ln > WBT_DELTA * rn ) {
-				if( NameSize(l->right) < WBT_GAMMA * NameSize(l->left) ) return NameMk( l->left, l->name, l->id, NameMk(l->right, std::move(name), id, r) );
+				if( NameSize(l->right) < WBT_GAMMA * NameSize(l->left) ) return NameMk( l->left, l->name, l->ids, NameMk(l->right, std::move(name), std::move(ids), r) );
 				const NameMapRef& lr = l->right;
-				return NameMk( NameMk(l->left, l->name, l->id, lr->left), lr->name, lr->id, NameMk(lr->right, std::move(name), id, r) );
+				return NameMk( NameMk(l->left, l->name, l->ids, lr->left), lr->name, lr->ids, NameMk(lr->right, std::move(name), std::move(ids), r) );
 			}
 		}
-		return NameMk( l, std::move(name), id, r );
+		return NameMk( l, std::move(name), std::move(ids), r );
 	}
+	// Append `id` to name's id-list (creating the entry if absent).
 	NameMapRef NameInsert( const NameMapRef& s, const std::string& name, NodeId id )
 	{
-		if( !s ) return NameMk( NameMapRef(), name, id, NameMapRef() );
-		if( name < s->name ) return NameBalance( NameInsert(s->left, name, id), s->name, s->id, s->right );
-		if( s->name < name ) return NameBalance( s->left, s->name, s->id, NameInsert(s->right, name, id) );
-		return NameMk( s->left, s->name, id, s->right );   // equal key -> overwrite id
+		if( !s ) return NameMk( NameMapRef(), name, std::vector<NodeId>{ id }, NameMapRef() );
+		if( name < s->name ) return NameBalance( NameInsert(s->left, name, id), s->name, s->ids, s->right );
+		if( s->name < name ) return NameBalance( s->left, s->name, s->ids, NameInsert(s->right, name, id) );
+		std::vector<NodeId> merged = s->ids; merged.push_back( id );   // equal key -> append (duplicate name)
+		return NameMk( s->left, s->name, std::move(merged), s->right );
 	}
+	// First NodeId for name (0 if none); the O(log N) COUNTED lookup behind DocFindByName.
 	NodeId NameFind( const NameMapRef& s, const std::string& name, int& visits )
 	{
 		const NameNode* cur = s.get();
@@ -459,24 +466,31 @@ namespace
 			++visits;
 			if( name < cur->name ) cur = cur->left.get();
 			else if( cur->name < name ) cur = cur->right.get();
-			else return cur->id;
+			else return cur->ids.empty() ? 0 : cur->ids.front();
 		}
 		return 0;
 	}
-	NameMapRef NameEraseMin( const NameMapRef& s, std::string& kOut, NodeId& vOut )
+	NameMapRef NameEraseMin( const NameMapRef& s, std::string& kOut, std::vector<NodeId>& vOut )
 	{
-		if( !s->left ) { kOut = s->name; vOut = s->id; return s->right; }
-		return NameBalance( NameEraseMin(s->left, kOut, vOut), s->name, s->id, s->right );
+		if( !s->left ) { kOut = s->name; vOut = s->ids; return s->right; }
+		return NameBalance( NameEraseMin(s->left, kOut, vOut), s->name, s->ids, s->right );
 	}
-	NameMapRef NameErase( const NameMapRef& s, const std::string& name )
+	// Remove ONE occurrence of `id` from name's id-list; drop the node only when
+	// the list becomes empty (so duplicate-name survivors stay findable). A no-op
+	// if `id` is not present under `name`.
+	NameMapRef NameErase( const NameMapRef& s, const std::string& name, NodeId id )
 	{
 		if( !s ) return s;
-		if( name < s->name ) return NameBalance( NameErase(s->left, name), s->name, s->id, s->right );
-		if( s->name < name ) return NameBalance( s->left, s->name, s->id, NameErase(s->right, name) );
-		if( !s->left )  return s->right;
+		if( name < s->name ) return NameBalance( NameErase(s->left, name, id), s->name, s->ids, s->right );
+		if( s->name < name ) return NameBalance( s->left, s->name, s->ids, NameErase(s->right, name, id) );
+		std::vector<NodeId> rest; rest.reserve( s->ids.size() );   // equal key: drop the first matching id
+		bool removed = false;
+		for( NodeId e : s->ids ) { if( !removed && e == id ) { removed = true; continue; } rest.push_back( e ); }
+		if( !rest.empty() ) return NameMk( s->left, s->name, std::move(rest), s->right );   // value update, key stays
+		if( !s->left )  return s->right;                                                    // last occurrence -> drop node
 		if( !s->right ) return s->left;
-		std::string k; NodeId v; NameMapRef nr = NameEraseMin( s->right, k, v );
-		return NameBalance( s->left, std::move(k), v, nr );
+		std::string k; std::vector<NodeId> v; NameMapRef nr = NameEraseMin( s->right, k, v );
+		return NameBalance( s->left, std::move(k), std::move(v), nr );
 	}
 }
 
@@ -573,8 +587,8 @@ Document DocReplaceItem( const Document& doc, int index, NodeRef newItem, int* v
 	d.items = SeqReplace( doc.items, index, std::move(newItem), v );
 	if( visits ) *visits = v;
 	if( oldName != newName ) {
-		int iv = 0; NodeId id = IdAt( doc.idseq, index, iv );
-		if( !oldName.empty() ) d.byName = NameErase( d.byName, oldName );
+		int iv = 0; NodeId id = IdAt( doc.idseq, index, iv );   // the persisting id
+		if( !oldName.empty() ) d.byName = NameErase( d.byName, oldName, id );
 		if( !newName.empty() ) d.byName = NameInsert( d.byName, newName, id );
 	}
 	return d;
@@ -604,11 +618,12 @@ Document DocEraseItem( const Document& doc, int index, int* visits )
 	if( visits ) *visits = 0;
 	if( index < 0 || index >= SeqCount(doc.items) ) return doc;    // out of range: no-op
 	const std::string np = ChunkNamePath( SeqItemAt( doc.items, index ) );
+	int iv = 0; const NodeId eid = IdAt( doc.idseq, index, iv );   // the erased item's id
 	int v = 0;
 	Document d = doc;
 	d.items  = SeqEraseAt( doc.items, index, v );                  // O(log N) WBT
 	d.idseq  = IdEraseAt( doc.idseq, index );                      // O(log N) lockstep splice
-	if( !np.empty() ) d.byName = NameErase( d.byName, np );
+	if( !np.empty() ) d.byName = NameErase( d.byName, np, eid );
 	if( visits ) *visits = v;
 	return d;
 }
@@ -667,42 +682,69 @@ Document DocReparse( const Document& oldDoc, const std::string& newText, std::ve
 	std::vector<NodeRef> oldItems; SeqToVec( oldDoc.items, oldItems );
 	std::vector<NodeId>  oldIds;   IdToVec ( oldDoc.idseq, oldIds );
 	std::vector<NodeRef> newItems; SeqToVec( fresh.items, newItems );
+	const int O = (int)oldItems.size();
 	const int M = (int)newItems.size();
 
-	// content-key: a chunk by (keyword, name); trivia/stray by its bytes. A VALUE
-	// edit leaves the chunk's (keyword,name) key unchanged -> it re-matches and
-	// keeps its id; a RENAME changes the key -> old id invalidated, new id fresh.
-	auto keyOf = []( const NodeRef& it ) -> std::string {
+	// Two keys per item, both O(1) to compare via hash maps (overall O(M+N)):
+	//   fullOf -- the item's exact bytes (identity-stable across REORDER: an
+	//             unchanged chunk/trivia carries its id wherever it moved).
+	//   keyOf  -- a chunk's (keyword, name); a trivia/stray's bytes (identity-
+	//             stable across a VALUE EDIT of a NAMED chunk: bytes change but
+	//             the name key does not).
+	auto fullOf = []( const NodeRef& it ) -> std::string { std::string s; Serialize( it, s ); return s; };
+	auto keyOf  = []( const NodeRef& it ) -> std::string {
 		if( it->kind == NodeKind::Chunk ) { std::string nm; ParamValue(it.get(),"name",nm); return "C:" + it->role + "/" + nm; }
 		std::string s; Serialize( it, s ); return "T:" + s;
 	};
-	std::vector<std::string> oldK( oldItems.size() ), newK( M );
-	for( size_t i = 0; i < oldItems.size(); ++i ) oldK[i] = keyOf( oldItems[i] );
-	for( int j = 0; j < M; ++j ) newK[j] = keyOf( newItems[j] );
 
 	std::vector<NodeId> carried( M, 0 );
-	std::vector<bool>   oldUsed( oldItems.size(), false );
-	// Match each new item to an unused OLD item with the SAME content-key (greedy,
-	// in order). A value edit keeps the chunk's (keyword,name) key -> matched, id
-	// carried; a reordering of distinct chunks still matches by key regardless of
-	// position. A RENAME changes the key -> no match -> the new item gets a fresh
-	// id and the old id is invalidated. We never position-remap distinct content
-	// (D9/D15: invalidate-don't-remap), so a rename is delete+add, not a silent
-	// rebinding to a possibly-unrelated item that happens to share the slot.
-	for( int j = 0; j < M; ++j )
-		for( size_t i = 0; i < oldItems.size(); ++i )
-			if( !oldUsed[i] && oldK[i] == newK[j] ) { oldUsed[i] = true; carried[j] = oldIds[i]; break; }
+	std::vector<bool>   oldUsed( O, false );
 
-	// fresh ids for the still-unmatched new items; collect invalidated old ids
+	// PASS 1 -- match by FULL content (greedy, in order within a bucket). Identical
+	// items carry their id across any reordering; position is irrelevant.
+	{
+		std::unordered_map<std::string, std::vector<int>> bucket;   // full -> old indices, in order
+		for( int i = 0; i < O; ++i ) bucket[ fullOf(oldItems[i]) ].push_back( i );
+		std::unordered_map<std::string, size_t> cursor;
+		for( int j = 0; j < M; ++j ) {
+			const std::string f = fullOf( newItems[j] );
+			auto it = bucket.find( f );
+			if( it == bucket.end() ) continue;
+			size_t& c = cursor[f];
+			if( c < it->second.size() ) { int oi = it->second[c++]; oldUsed[oi] = true; carried[j] = oldIds[oi]; }
+		}
+	}
+
+	// PASS 2 -- match the remainder by content-KEY, but ONLY when the key is
+	// UNIQUE among the still-unmatched on BOTH sides (a 1<->1 pairing). This carries
+	// a NAMED chunk's value edit ("the chunk named s, edited") without ever
+	// position-remapping a key shared by several rows. Genuinely-ambiguous groups
+	// (a key with >1 unmatched old or new -- e.g. several edited unnamed chunks of
+	// the same type) are left for pass 3: invalidate, don't guess (D9/D15).
+	{
+		std::unordered_map<std::string, std::vector<int>> oldRem, newRem;
+		for( int i = 0; i < O; ++i ) if( !oldUsed[i] )       oldRem[ keyOf(oldItems[i]) ].push_back( i );
+		for( int j = 0; j < M; ++j ) if( carried[j] == 0 )   newRem[ keyOf(newItems[j]) ].push_back( j );
+		for( auto& kv : newRem ) {
+			if( kv.second.size() != 1 ) continue;
+			auto oit = oldRem.find( kv.first );
+			if( oit == oldRem.end() || oit->second.size() != 1 ) continue;
+			int j = kv.second[0], i = oit->second[0];
+			oldUsed[i] = true; carried[j] = oldIds[i];
+		}
+	}
+
+	// PASS 3 -- still-unmatched new items get FRESH ids; still-unmatched old ids
+	// are INVALIDATED (a rename, a deletion, or a genuinely-ambiguous row).
 	NodeId next = oldDoc.nextId;
 	for( int j = 0; j < M; ++j ) if( carried[j] == 0 ) carried[j] = next++;
-	if( invalidated ) { invalidated->clear(); for( size_t i = 0; i < oldItems.size(); ++i ) if( !oldUsed[i] ) invalidated->push_back( oldIds[i] ); }
+	if( invalidated ) { invalidated->clear(); for( int i = 0; i < O; ++i ) if( !oldUsed[i] ) invalidated->push_back( oldIds[i] ); }
 
 	Document d = fresh;
 	d.idseq  = IdBuild( carried, 0, M );
 	d.byName = NameMapRef();
 	for( int j = 0; j < M; ++j ) { std::string np = ChunkNamePath( newItems[j] ); if( !np.empty() ) d.byName = NameInsert( d.byName, np, carried[j] ); }
-	NodeId mx = next;
+	NodeId mx = next;                                  // nextId strictly above every live id
 	for( NodeId id : carried ) if( id + 1 > mx ) mx = id + 1;
 	d.nextId = mx;
 	return d;

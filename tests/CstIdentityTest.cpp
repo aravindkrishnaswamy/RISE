@@ -87,6 +87,18 @@ int main()
 		Check( Cst::DocFindByName( doc, "sphere_geometry/nope", &vm ) == 0, m );
 
 		std::printf( "  N=%4d  byName entries=%d  findVisits=%d  bound=%d\n", N, N, v, bound );
+
+		// worst-case over ALL keys, not just the midpoint (a degenerate tree could
+		// hide behind a shallow midpoint), and prove sub-linearity at scale.
+		int maxV = 0;
+		for( int k = 0; k < N; ++k ) {
+			int vk = 0; Cst::DocFindByName( doc, "sphere_geometry/s" + std::to_string(k), &vk );
+			if( vk > maxV ) maxV = vk;
+		}
+		std::snprintf( m, sizeof(m), "N=%d: worst-case name lookup over all keys = %d <= bound %d", N, maxV, bound );
+		Check( maxV > 0 && maxV <= bound, m );
+		std::snprintf( m, sizeof(m), "N=%d: name index sub-linear at scale (not a degenerate list)", N );
+		Check( N < 64 || maxV * 4 < N, m );
 	}
 
 	// ============================================================
@@ -231,6 +243,79 @@ int main()
 		Check( Cst::DocFindByName( rd, "sphere_geometry/a" ) == idA && Cst::DocFindByName( rd, "sphere_geometry/b" ) == idB,
 		       "[reparse] reorder: ids matched by content-key, not by position" );
 		Check( inv3.empty(), "[reparse] reorder: nothing invalidated" );
+	}
+
+	// ============================================================
+	// [dup] duplicate name-paths must not corrupt the name index under edits
+	// (a degenerate scene the derive layer rejects, but the CST holds losslessly).
+	// ============================================================
+	{
+		const std::string scene = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname s\nradius 0.1\n}\nsphere_geometry\n{\nname s\nradius 0.2\n}\n";
+		Cst::Document doc = Cst::ParseToCst( scene );
+		const int iA = ChunkIndexAt( doc, scene, "0.1" );
+		const int iB = ChunkIndexAt( doc, scene, "0.2" );
+		Cst::NodeId idA = Cst::DocNodeIdAt( doc, iA );
+		Cst::NodeId idB = Cst::DocNodeIdAt( doc, iB );
+		Check( idA != 0 && idB != 0 && idA != idB, "[dup] two same-named chunks get distinct NodeIds" );
+		Check( Cst::DocFindByName( doc, "sphere_geometry/s" ) == idA, "[dup] find returns the FIRST occurrence" );
+
+		Cst::Document e1 = Cst::DocEraseItem( doc, iA );
+		Check( Cst::DocFindByName( e1, "sphere_geometry/s" ) == idB, "[dup] erase first twin: survivor still resolves (no silent corruption)" );
+		Cst::Document e2 = Cst::DocEraseItem( doc, iB );
+		Check( Cst::DocFindByName( e2, "sphere_geometry/s" ) == idA, "[dup] erase second twin: first survives" );
+
+		Cst::Document r1 = Cst::DocReplaceItem( doc, iA, MakeSphere( "q", "0.1" ) );
+		Check( Cst::DocFindByName( r1, "sphere_geometry/s" ) == idB, "[dup] rename first twin away: the other s still resolves" );
+		Check( Cst::DocFindByName( r1, "sphere_geometry/q" ) == idA, "[dup] rename first twin away: new name resolves to its id" );
+	}
+	{
+		// rename INTO an existing name must not hijack the original's binding
+		const std::string scene = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 0.1\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
+		Cst::Document doc = Cst::ParseToCst( scene );
+		const int iA = ChunkIndexAt( doc, scene, "0.1" );
+		Cst::NodeId idB = Cst::DocFindByName( doc, "sphere_geometry/b" );
+		Cst::Document r = Cst::DocReplaceItem( doc, iA, MakeSphere( "b", "0.1" ) );
+		Check( Cst::DocFindByName( r, "sphere_geometry/b" ) == idB, "[dup] rename-into-existing: the original b keeps the binding (no hijack)" );
+		Check( Cst::DocFindByName( r, "sphere_geometry/a" ) == 0, "[dup] rename-into-existing: the old name a is gone" );
+	}
+
+	// ============================================================
+	// [reparse-ambig] D15: reorder follows CONTENT; genuinely-ambiguous rows are
+	// INVALIDATED, never position-remapped onto an unrelated row.
+	// ============================================================
+	{
+		const std::string two     = "RISE ASCII SCENE 6\nsphere_geometry\n{\nradius 0.1\n}\nsphere_geometry\n{\nradius 0.2\n}\n";
+		const std::string swapped = "RISE ASCII SCENE 6\nsphere_geometry\n{\nradius 0.2\n}\nsphere_geometry\n{\nradius 0.1\n}\n";
+		Cst::Document od = Cst::ParseToCst( two );
+		Cst::NodeId id01 = Cst::DocNodeIdAt( od, ChunkIndexAt( od, two, "0.1" ) );
+		Cst::NodeId id02 = Cst::DocNodeIdAt( od, ChunkIndexAt( od, two, "0.2" ) );
+		std::vector<Cst::NodeId> inv;
+		Cst::Document rd = Cst::DocReparse( od, swapped, &inv );
+		Check( Cst::DocNodeIdAt( rd, ChunkIndexAt( rd, swapped, "0.1" ) ) == id01, "[reparse-ambig] unnamed reorder: id follows the 0.1 content, not the slot" );
+		Check( Cst::DocNodeIdAt( rd, ChunkIndexAt( rd, swapped, "0.2" ) ) == id02, "[reparse-ambig] unnamed reorder: id follows the 0.2 content" );
+		Check( inv.empty(), "[reparse-ambig] unnamed distinct-content reorder: nothing invalidated" );
+
+		const std::string bothEdited = "RISE ASCII SCENE 6\nsphere_geometry\n{\nradius 0.11\n}\nsphere_geometry\n{\nradius 0.22\n}\n";
+		std::vector<Cst::NodeId> inv2;
+		Cst::Document rd2 = Cst::DocReparse( od, bothEdited, &inv2 );
+		bool inv01 = std::find( inv2.begin(), inv2.end(), id01 ) != inv2.end();
+		bool inv02 = std::find( inv2.begin(), inv2.end(), id02 ) != inv2.end();
+		Check( inv01 && inv02, "[reparse-ambig] both unnamed edited: both old ids INVALIDATED (D15), not position-remapped" );
+		Cst::NodeId nid = Cst::DocNodeIdAt( rd2, ChunkIndexAt( rd2, bothEdited, "0.11" ) );
+		Check( nid != 0 && nid != id01 && nid != id02, "[reparse-ambig] ambiguous rows get FRESH ids" );
+	}
+	{
+		// mixed named reparse: one value-edited (unique-key pass), one unchanged (full pass)
+		const std::string two    = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 0.1\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
+		const std::string edited = "RISE ASCII SCENE 6\nsphere_geometry\n{\nname a\nradius 0.99\n}\nsphere_geometry\n{\nname b\nradius 0.2\n}\n";
+		Cst::Document od = Cst::ParseToCst( two );
+		Cst::NodeId idA = Cst::DocFindByName( od, "sphere_geometry/a" );
+		Cst::NodeId idB = Cst::DocFindByName( od, "sphere_geometry/b" );
+		std::vector<Cst::NodeId> inv;
+		Cst::Document rd = Cst::DocReparse( od, edited, &inv );
+		Check( Cst::DocFindByName( rd, "sphere_geometry/a" ) == idA, "[reparse-ambig] mixed: value-edited named chunk keeps id (unique-key pass)" );
+		Check( Cst::DocFindByName( rd, "sphere_geometry/b" ) == idB, "[reparse-ambig] mixed: unchanged sibling keeps id (full-content pass)" );
+		Check( inv.empty(), "[reparse-ambig] mixed: nothing invalidated" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

@@ -98,12 +98,19 @@ namespace RISE
 		//! counted O(log N) name resolution, maintained on parse/rename/insert/
 		//! erase. (Kernel keys on "keyword/name", e.g. "sphere_geometry/s";
 		//! category name-paths like "geometry/s" are an item-5 descriptor concern.)
+		//!
+		//! The value is a LIST of NodeIds (document/insertion order), not one id,
+		//! so a name-path shared by several chunks (a duplicate-name scene -- valid
+		//! to REPRESENT losslessly even though the derive layer rejects it) does not
+		//! silently corrupt the index: erasing/renaming one occurrence removes only
+		//! that occurrence's id and the survivors stay findable. DocFindByName
+		//! returns the FIRST occurrence (the unique id in a well-formed scene).
 		struct NameNode
 		{
 			std::shared_ptr<const NameNode> left, right;
-			std::string name;
-			NodeId      id;
-			int         count;
+			std::string         name;
+			std::vector<NodeId> ids;   //!< all NodeIds with this name-path, in insertion order
+			int                 count;
 		};
 		typedef std::shared_ptr<const NameNode> NameMapRef;
 
@@ -194,17 +201,20 @@ namespace RISE
 		// Item 4 -- NodeId identity + name-path addressing (the name-path half of
 		// the counted lookup; the byte-offset half is item 3). Identity lives in a
 		// SEPARATE persistent side-map, stable across edits (D26); name resolution
-		// is O(log N) and COUNTED; reparse re-matches by content+position and
-		// invalidates the ambiguous rather than silently remapping (D9/D15).
+		// is O(log N) and COUNTED; reparse re-matches by content-key (full content,
+		// then a unique keyword/name) and INVALIDATES genuinely-ambiguous rows
+		// rather than position-remapping them (D9/D15: invalidate-don't-remap).
 		//==============================================================
 
 		//! NodeId of the top-level item at `index` (O(log N) via the id side-map;
 		//! 0 if out of range). `*visits` (if non-null) receives the descent count.
 		NodeId DocNodeIdAt( const Document& doc, int index, int* visits = nullptr );
 
-		//! Resolve a name-path (e.g. "sphere_geometry/s") to its NodeId (0 if
-		//! none). O(log N); `*visits` receives the BST descent count -- the find
-		//! is COUNTED, not an O(N) scan.
+		//! Resolve a name-path (e.g. "sphere_geometry/s") to its NodeId (0 if none;
+		//! the FIRST occurrence if several chunks share the name-path -- a degenerate
+		//! scene the derive layer rejects, but the index stays consistent across
+		//! edits regardless). O(log N); `*visits` receives the BST descent count --
+		//! the find is COUNTED, not an O(N) scan.
 		NodeId DocFindByName( const Document& doc, const std::string& namePath, int* visits = nullptr );
 
 		//! The current top-level INDEX of a NodeId (-1 if absent), and `outItem`
@@ -220,16 +230,20 @@ namespace RISE
 		//! the rope-descent count (O(log N) to the chunk + O(params) within).
 		NodeRef DocParamAtByteOffset( const Document& doc, size_t offset, NodeRef* outChunk, int* visits );
 
-		//! Reparse `newText` and carry NodeIds from `oldDoc`: each new item is
-		//! matched to an old item by CONTENT-KEY (a chunk's (keyword, name); a
-		//! trivia/stray's bytes), greedily in order. A value edit keeps the chunk's
-		//! (keyword,name) key, so it re-matches and KEEPS its id; a reorder of
-		//! distinct chunks still matches by key regardless of position. A RENAME
-		//! changes the key, so it does NOT match -- the new item gets a FRESH id and
-		//! the old id is INVALIDATED (D9/D15: invalidate-don't-remap; we never
-		//! position-remap distinct content onto a slot, which could silently rebind
-		//! an unrelated item). Returns the new Document (ids carried where matched);
-		//! `*invalidated` (if non-null) receives the old NodeIds with no re-match.
+		//! Reparse `newText` and carry NodeIds from `oldDoc` in O(M+N) via two
+		//! hashed passes (D9/D15: invalidate-don't-remap, never a position guess):
+		//!   1. FULL-content match -- an unchanged item carries its id across any
+		//!      REORDER (position is irrelevant);
+		//!   2. content-KEY match ((keyword,name) for chunks) but ONLY when the key
+		//!      is unique on both sides -- carries a NAMED chunk's value edit.
+		//! Everything still unmatched: a new item gets a FRESH id; an old id is
+		//! INVALIDATED. So a value edit / distinct reorder keeps its id, a RENAME
+		//! invalidates+mints, and a genuinely-ambiguous group (a content-key shared
+		//! by several edited rows -- e.g. unnamed same-type chunks) is invalidated
+		//! rather than position-remapped onto an unrelated row. Returns the new
+		//! Document; `*invalidated` (if non-null) receives the old NodeIds with no
+		//! re-match. (Structured edits -- DocReplaceItem/Insert/EraseItem -- preserve
+		//! identity exactly; reparse is the lossy free-form-text path.)
 		Document DocReparse( const Document& oldDoc, const std::string& newText, std::vector<NodeId>* invalidated = nullptr );
 	}
 }

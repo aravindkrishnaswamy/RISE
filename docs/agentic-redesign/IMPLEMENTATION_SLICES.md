@@ -221,14 +221,38 @@ until it is green:
      **(d)** the newline aggregate was ungated (zeroing it passed) → `DocNewlineCount` exposed +
      checked exact across parse/replace/insert/erase on LF **and** CRLF. 42→67. ← next: item 4.
 4. Add **persistent NodeId/name-path lookup** so finding the edit target is *included* in the
-   complexity measurement. ← next. **Acceptance (item-3 review):** build it as a SEPARATE persistent
-   side-map (occurrence/position → NodeId, structurally shared per **D23/D26** — NOT a field on
-   `SeqNode`/`Node`); name-path resolution must be **counted** and **reparse-stable** (match by
-   content+position, **invalidate-don't-remap** per D9/D15). It must survive the two things the
-   byte-offset map can't: a `DocReplaceItem` value edit (the unchanged chunk's NodeId persists) and
-   an insert/erase index shift (positional index moves; NodeId must not). The in-tree kernel
-   currently has no NodeId (the prototype carried one through edits); item 4 restores it as the
-   side-map. Also add a within-chunk descent (offset → Param-in-Chunk) for "edit geometry/s.radius".
+   complexity measurement. **✅ DONE** — commit `a3cc2a77` (kernel) + the review-fix commit.
+   [`tests/CstIdentityTest.cpp`](../../tests/CstIdentityTest.cpp) **65 checks**. Two persistent
+   structures, both SEPARATE from the green/seq node (per **D23/D26** — `Node`/`SeqNode` still carry
+   no id): `idseq`, a positional `NodeId` WBT in lockstep with the item sequence (value edit keeps
+   the id at its slot; insert/erase splice it so it moves WITH its item); and `byName`, a key-ordered
+   WBT (name-path → **list** of NodeIds). Name lookup is **counted O(log N)** (worst-case over all
+   keys 3/6/6 at N=8/64/512, proven sub-linear vs a degenerate list). Within-chunk descent
+   (`DocParamAtByteOffset`, offset → Param-in-Chunk) for "edit geometry/s.radius". `DocReparse`
+   carries ids in **O(M+N)** (measured ~5 µs/item, flat to N=16384). **Acceptance (item-3 review):**
+   SEPARATE side-map ✓; counted name lookup ✓; survives value edit + insert/erase index shift ✓;
+   within-chunk descent ✓; reparse-stable, **invalidate-don't-remap** ✓.
+   **Deviation from the literal bar, by design:** the bar said "match by content+position"; the shipped
+   matcher is **content-key, not positional** — pass 1 full-content (identity follows a REORDER),
+   pass 2 a unique (keyword,name) key (a NAMED value edit keeps its id), and **genuinely-ambiguous
+   rows** (a content-key shared by several edited rows — e.g. unnamed same-type chunks) are
+   **invalidated**, never position-remapped. This is *more* D15-faithful than a positional tiebreak,
+   which would silently rebind an unrelated row. Name-path key is `keyword/name` (`sphere_geometry/s`);
+   category paths (`geometry/s`) are an item-5 descriptor concern (disclosed in the headers).
+   **A THREE-reviewer adversarial pass (correctness / cost-honesty / design-fidelity) found:** a
+   `byName` single-id-per-key bug (duplicate name-paths silently corrupted name addressing under
+   erase/rename — fixed: `byName` value is now a NodeId LIST, survivors stay findable); a `DocReparse`
+   greedy matcher that position-remapped ambiguous content-key groups with zero invalidations (the
+   D15 violation — fixed by the 3-pass matcher above) plus its banner over-claiming "content+position"
+   (fixed); and undisclosed Θ(N²) reparse (fixed: O(M+N) hashed). All three reviewers verified the
+   separate side-map, WBT balance/sharing, idseq lockstep, structured-edit stability, within-chunk
+   null-correctness, and the adversarial O(log N) name lookup as correct. The bar's
+   "occurrence/position → NodeId" original line is preserved below for the record:
+   build it as a SEPARATE persistent side-map (occurrence/position → NodeId, structurally shared per
+   **D23/D26** — NOT a field on `SeqNode`/`Node`); name-path resolution must be **counted** and
+   **reparse-stable** (**invalidate-don't-remap** per D9/D15); survive a `DocReplaceItem` value edit
+   and an insert/erase index shift; restore the NodeId the in-tree kernel lacked; add a within-chunk
+   descent (offset → Param-in-Chunk). ← next: item 5 (descriptor-registry binding).
 5. **Bind through the live descriptor registry.**
 6. **Trace references through the real resolver** and test a **three-level** dependency chain.
 7. Exercise **structured edits AND free-form reparses**, including **chunk identity + rename**.
