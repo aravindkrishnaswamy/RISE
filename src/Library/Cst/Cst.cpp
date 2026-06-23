@@ -32,6 +32,21 @@ using namespace RISE::Cst;
 
 namespace
 {
+	//! Split a string into whitespace-separated tokens (" \t\r\n"), matching the
+	//! legacy tokenizer Finalize re-parses composite values with. Shared by the
+	//! reference tracer (tuple-Reference tokens) and the within-chunk value editor.
+	std::vector<std::string> SplitWs( const std::string& s )
+	{
+		std::vector<std::string> toks; const size_t n = s.size(); size_t i = 0;
+		while( i < n ) {
+			while( i < n && ( s[i]==' '||s[i]=='\t'||s[i]=='\r'||s[i]=='\n' ) ) ++i;
+			const size_t st = i;
+			while( i < n && !( s[i]==' '||s[i]=='\t'||s[i]=='\r'||s[i]=='\n' ) ) ++i;
+			if( i > st ) toks.push_back( s.substr( st, i - st ) );
+		}
+		return toks;
+	}
+
 	NodeRef Leaf( NodeKind k, std::string text, std::string role )
 	{
 		auto n = std::make_shared<Node>();
@@ -1026,20 +1041,6 @@ std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std:
 	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
 	std::vector<ReferenceUse> uses;
 
-	// Split a value into whitespace-separated tokens (for tuple params whose
-	// value is e.g. `<ref> <min> <max> <op>`); matches the legacy tokenizer's
-	// " \t\r\n" split, which is how Finalize re-parses the same composite value.
-	auto splitWs = []( const std::string& s ) {
-		std::vector<std::string> toks; const size_t n = s.size(); size_t i = 0;
-		while( i < n ) {
-			while( i < n && ( s[i]==' '||s[i]=='\t'||s[i]=='\r'||s[i]=='\n' ) ) ++i;
-			const size_t st = i;
-			while( i < n && !( s[i]==' '||s[i]=='\t'||s[i]=='\r'||s[i]=='\n' ) ) ++i;
-			if( i > st ) toks.push_back( s.substr( st, i - st ) );
-		}
-		return toks;
-	};
-
 	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
 	std::vector<NodeRef> items;
 	SeqToVec( doc.items, items );
@@ -1091,7 +1092,7 @@ std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std:
 			if( pd->kind == ValueKind::Reference ) {
 				refVals.push_back( ParamNodeValue( kid.get() ) );
 			} else if( !pd->tupleKinds.empty() ) {
-				const std::vector<std::string> toks = splitWs( ParamNodeValue( kid.get() ) );
+				const std::vector<std::string> toks = SplitWs( ParamNodeValue( kid.get() ) );
 				for( size_t k = 0; k < pd->tupleKinds.size() && k < toks.size(); ++k )
 					if( pd->tupleKinds[k] == ValueKind::Reference ) refVals.push_back( toks[k] );
 			} else {
@@ -1115,6 +1116,105 @@ std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std:
 		}
 	}
 	return uses;
+}
+
+//! Rebuild `chunk` with its (occ-th) param named `role` set to `newValue`
+//! (re-tokenised into pvalue tokens, single-spaced), KEEPING the pname + its
+//! leading trivia and SHARING every other child by pointer (structural sharing).
+//! Returns the original chunk unchanged if that param is not present.
+static NodeRef WithParamValue( const NodeRef& chunk, const std::string& role, int occ, const std::string& newValue )
+{
+	if( !chunk ) return chunk;
+	std::vector<NodeRef> kids;
+	kids.reserve( chunk->kids.size() );
+	int seen = -1;
+	bool done = false;
+	for( const auto& k : chunk->kids ) {
+		if( !done && k->kind == NodeKind::Param && k->role == role && ++seen == occ ) {
+			std::vector<NodeRef> pk;
+			for( const auto& pkid : k->kids ) {
+				if( pkid->kind == NodeKind::Token && pkid->role == "pvalue" ) break;   // keep pname + leading trivia only
+				pk.push_back( pkid );                                                   // shared
+			}
+			const std::vector<std::string> toks = SplitWs( newValue );
+			for( size_t t = 0; t < toks.size(); ++t ) {
+				if( t ) pk.push_back( Leaf( NodeKind::Trivia, " ", "" ) );
+				pk.push_back( Leaf( NodeKind::Token, toks[t], "pvalue" ) );
+			}
+			kids.push_back( Internal( NodeKind::Param, std::move(pk), role ) );
+			done = true;
+			continue;
+		}
+		kids.push_back( k );   // shared
+	}
+	if( !done ) return chunk;
+	return Internal( NodeKind::Chunk, std::move(kids), chunk->role );
+}
+
+Document DocSetParamValue( const Document& doc, NodeId chunkId, const std::string& role, int occ, const std::string& newValue, int* visits )
+{
+	if( visits ) *visits = 0;
+	NodeRef chunk;
+	const int index = DocIndexOfNodeId( doc, chunkId, &chunk, visits );
+	if( index < 0 || !chunk || chunk->kind != NodeKind::Chunk ) return doc;   // not a top-level chunk: no-op
+	NodeRef edited = WithParamValue( chunk, role, occ, newValue );
+	if( edited.get() == chunk.get() ) return doc;                             // param absent: no-op
+	return DocReplaceItem( doc, index, edited, visits );                      // chunk NodeId PRESERVED (D44)
+}
+
+Document DocRename( const Document& doc, NodeId chunkId, const std::string& newName, std::vector<std::string>* diagnostics )
+{
+	std::vector<std::string> local;
+	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
+
+	NodeRef target = DocResolveNodeId( doc, chunkId );
+	if( !target || target->kind != NodeKind::Chunk ) { diags.push_back( "rename: target is not a chunk" ); return doc; }
+
+	// Map each param NodeId -> its (owning chunk NodeId, role, occurrence), so a
+	// referrer edge (which is keyed by the referring PARAM's NodeId) can be turned
+	// into a DocSetParamValue on that param. Also remember each referrer param's
+	// descriptor kind (single Reference vs a tuple param).
+	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
+	struct Loc { NodeId chunk; std::string role; int occ; bool tuple; };
+	std::map<NodeId, Loc> paramLoc;
+	std::vector<NodeRef> items;
+	SeqToVec( doc.items, items );
+	for( size_t i = 0; i < items.size(); ++i ) {
+		const NodeRef& c = items[i];
+		if( c->kind != NodeKind::Chunk ) continue;
+		const NodeId cid = DocNodeIdAt( doc, (int)i );
+		std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( c->role );
+		const ChunkDescriptor* desc = ( it == registry.end() ) ? 0 : &it->second->Describe();
+		std::map<std::string,int> occ;
+		for( const auto& kid : c->kids ) {
+			if( kid->kind != NodeKind::Param ) continue;
+			const std::string role = kid->role;
+			const int thisOcc = occ[role]++;
+			bool tuple = false;
+			if( desc ) for( const auto& p : desc->parameters ) if( p.name == role ) { tuple = !p.tupleKinds.empty(); break; }
+			paramLoc[ DocParamId( doc, cid, role, thisOcc ) ] = Loc{ cid, role, thisOcc, tuple };
+		}
+	}
+
+	// The referrers are exactly the traced edges into this chunk (D14: rewrite
+	// referrers from the traced ReferenceUse set, NOT a re-resolution).
+	std::vector<ReferenceUse> uses = TraceReferences( doc );
+
+	Document result = DocSetParamValue( doc, chunkId, "name", 0, newName );   // the rename itself (NodeId preserved)
+	for( const ReferenceUse& u : uses ) {
+		if( u.targetNodeId != chunkId ) continue;
+		std::map<NodeId, Loc>::const_iterator l = paramLoc.find( u.sourceValueNodeId );
+		if( l == paramLoc.end() ) continue;
+		if( l->second.tuple ) {
+			// A tuple param (e.g. advanced_shader's `shaderop <ref> <min> <max>`)
+			// carries the reference as ONE token of a multi-token value; rewriting
+			// just that token needs value-ATOM granularity (deferred, item-4 scope).
+			diags.push_back( l->second.role + ": tuple-reference referrer not rewritten (value-atom rewrite deferred)" );
+			continue;
+		}
+		result = DocSetParamValue( result, l->second.chunk, l->second.role, l->second.occ, newName );
+	}
+	return result;
 }
 
 int    DocItemCount  ( const Document& doc ) { return SeqCount( doc.items ); }

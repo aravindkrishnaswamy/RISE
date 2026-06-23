@@ -384,6 +384,25 @@ until it is green:
    both ZERO P1s; an independent 168-Reference-declaration dragnet confirmed the four tuple-Reference
    sites are the complete static set). ← next: item 7 (structured edits + free-form reparses).
 7. Exercise **structured edits AND free-form reparses**, including **chunk identity + rename**.
+   **DONE (pending review).** Two new kernel ops tie the item-3/4 edit primitives + the item-6 graph
+   into the editor's real operations: **`DocSetParamValue(doc, chunkId, role, occ, newValue)`** — the
+   within-chunk value edit (the "edit geometry/s.radius" path + the item-8 non-spatial edit): rebuild
+   the chunk with that param's value re-tokenised, KEEP the pname + leading trivia, SHARE every other
+   child by pointer, applied as a `DocReplaceItem` so the chunk's NodeId is PRESERVED and the edited
+   param keeps its NodeId (unique-role match); and **`DocRename(doc, chunkId, newName)`** — the D14
+   rename: set the chunk's `name` AND rewrite every referrer's value to `newName`, the referrers found
+   from the **traced reference graph** (TraceReferences, not a re-resolution), so the renamed chunk's
+   NodeId is PRESERVED (lineage survives rename, D9/D44 — UI/agent bindings keyed on NodeId survive) and
+   the references still resolve under the new name. A referrer carried in a TUPLE param (the ref is one
+   token of a multi-token value, e.g. advanced_shader.shaderop) is REPORTED not rewritten — value-atom
+   rewrite is the deferred item-4 refinement, never a silent whole-value clobber. The `SplitWs` helper
+   is now shared (TraceReferences + the value editor). Test `tests/CstEditReparseTest.cpp` (33 checks):
+   [setparam] within-chunk edit preserves chunk + edited-param NodeIds and derives faithfully (the
+   edited CST derives the SAME Job as a fresh parse of its serialization); [replace]/[erase]/[insert]
+   structured top-level edits flow to the derived Job (a valid insert = chunk item + separator trivia);
+   [reparse] DocReparse carries NodeIds across a free-form text change + derives consistently; [rename]
+   NodeId lineage + referrer rewrite from the graph + re-resolve + derive; [rename-tuple] the tuple
+   referrer is reported, not clobbered. ← next: item 8 (spatial + non-spatial edit cost).
 8. **Measure a non-spatial edit AND a spatial edit; report TLAS time separately.**
 
 That is the gate that turns "the model and cost-model hold in prototypes" into "the redesign's real

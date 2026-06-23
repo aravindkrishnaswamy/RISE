@@ -482,6 +482,31 @@ namespace RISE
 		//! reverse index with M persistent-tree insertions (as ParseToCst itself
 		//! does). Not O(M+N) -- a sorted/keyed index build carries the log factor.
 		Document DocReparse( const Document& oldDoc, const std::string& newText, std::vector<NodeId>* invalidated = nullptr );
+
+		//! STRUCTURED within-chunk value edit (item 7): set the (occ-th) param named
+		//! `role` in the chunk identified by `chunkId` to `newValue` (re-tokenised
+		//! into pvalue tokens), preserving the pname + its leading trivia and SHARING
+		//! every other child by pointer. Applied as a `DocReplaceItem` at the chunk's
+		//! position, so the chunk's NodeId is PRESERVED (lineage, D44); the unchanged
+		//! params keep their identities (item-4 content match). Returns the new
+		//! Document, or `doc` unchanged if the chunk or param is absent (no-op). This
+		//! is the editor's core "edit geometry/s.radius" operation and the item-8
+		//! non-spatial edit. O(log N) (find the chunk + path-copy the spine) + the
+		//! chunk's own rebuild. (newValue is re-tokenised whole; rewriting a single
+		//! ATOM within a multi-token value is the deferred value-atom refinement.)
+		Document DocSetParamValue( const Document& doc, NodeId chunkId, const std::string& role, int occ, const std::string& newValue, int* visits = nullptr );
+
+		//! RENAME a chunk (item 7, the D14 driver): set the chunk's `name` to
+		//! `newName` AND rewrite every referrer's value to `newName`, found from the
+		//! traced reference graph (TraceReferences -- NOT a re-resolution). The
+		//! renamed chunk's NodeId is PRESERVED (lineage survives rename, D9/D44), so
+		//! UI/agent bindings keyed on NodeId survive; only the name-path string
+		//! changes, and the references still resolve (re-tracing yields the same
+		//! edges via the new name). Referrers carried in a TUPLE param (the reference
+		//! is one token of a multi-token value, e.g. advanced_shader.shaderop) are
+		//! NOT rewritten -- that needs value-atom granularity (deferred, item-4
+		//! scope) -- and are reported in `diagnostics`. Returns the new Document.
+		Document DocRename( const Document& doc, NodeId chunkId, const std::string& newName, std::vector<std::string>* diagnostics = nullptr );
 	}
 }
 
