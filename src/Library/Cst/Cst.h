@@ -505,16 +505,20 @@ namespace RISE
 		//!     `Default*` shader ops the Job pre-registers). So a reference to a
 		//!     runtime default RESOLVES (it is not a false "unresolved"/dangling), and
 		//!     produces NO edge (the default is not a CST chunk) -- closing the
-		//!     coarser-namespace gap (P1.8). The default set is asserted to match a
-		//!     freshly-derived Job by CstResolverTest (drift -> test fails).
-		//!   * DISTINGUISHES ref-or-literal: in a slot the descriptor marks
-		//!     `acceptsScalarLiteral` (PBR `metallic`/`roughness`, `ior`, ... -- a
-		//!     painter ref OR an inline scalar), a non-resolving value that parses as a
-		//!     pure number is a LITERAL -- not diagnosed, not an edge. In a PURE-
-		//!     reference slot (reflectance/geometry/material/...) a non-resolving value
-		//!     is ALWAYS a dangling reference (diagnosed), numeric or not. (P1.8: the
-		//!     prior pass flagged scalar literals as dangling refs; a too-broad numeric
-		//!     suppression would conversely have hidden danglings in pure-ref slots.)
+		//!     coarser-namespace gap (P1.8). CstResolverTest asserts every listed
+		//!     default is PRESENT in a freshly-derived Job, so a Job.cpp default
+		//!     renamed/removed relative to this list fails the test (a Job-side
+		//!     ADDITION, or a drop from the list alone, is not auto-caught -- a
+		//!     reference to a then-missing default would instead surface as dangling).
+		//!   * A NON-RESOLVING value is a DANGLING reference only if it is a NAME --
+		//!     i.e. NOT entirely numeric tokens. A purely-numeric value is a LITERAL (a
+		//!     scalar `0.5` or an inline `r g b`), not a dangling reference, so it is
+		//!     neither diagnosed nor an edge (closing the P1.8 ref-or-literal gap --
+		//!     PBR `roughness 0.5` is not a false dangling). A number in a PURE-
+		//!     reference slot (e.g. `reflectance 0.5`) is a TYPE MISMATCH, which the
+		//!     full DeriveToJob refuses at apply time; the static pass does not double-
+		//!     report it. (This name-vs-number formulation replaced a fragile per-slot
+		//!     ref-or-literal flag -- no allowlist to keep complete.)
 		//!   * STAMPS the result (see ReferenceGraph) so a cached graph's staleness is
 		//!     detectable in O(1).
 		//! It does NOT yet capture DYNAMIC references created at derive time (timeline

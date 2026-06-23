@@ -5,7 +5,7 @@
 //  properties that make it the AUTHORITATIVE graph rename + closure consume:
 //    [consistency] its edges agree with what the derivation actually binds
 //                  (no drift between the resolver and the derive -- P1.8).
-//    [stamp]       a content fingerprint that CHANGES iff the graph could change
+//    [stamp]       a conservative fingerprint: every graph-changing edit moves it
 //                  (a reference re-point / rename) and is STABLE otherwise (a
 //                  non-reference value edit) -- so a cached graph's staleness is
 //                  detectable in O(1) (P1.8 unstamped).
@@ -87,7 +87,8 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
-	// [stamp] changes iff the graph could change.
+	// [stamp] conservative fingerprint: every graph-changing edit moves it (the
+	// load-bearing direction); it may also move on a graph-neutral edit (safe).
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst( scene );
@@ -146,19 +147,33 @@ int main()
 		for( const ReferenceUse& e : gph.edges ) if( e.sourceValueNodeId == gxRough ) edgeFromRough = true;
 		Check( !edgeFromRough, "ref-or-literal: numeric `roughness 0.5` produces NO edge" );
 
-		// control: a NON-numeric unresolved reference IS still a dangling diagnostic.
+		// control: a NON-numeric unresolved reference IS a dangling diagnostic (a name
+		// pointing at nothing) -- in a ref-or-literal slot too.
 		Document doc2 = ParseToCst( "RISE ASCII SCENE 6\npbr_metallic_roughness_material\n{\nname gx\nroughness nosuchpainter\n}\n" );
 		std::vector<std::string> diags2;
 		BuildReferenceGraph( doc2, &diags2 );
-		Check( DiagsMention( diags2, "nosuchpainter" ), "control: a non-numeric unresolved reference IS diagnosed dangling" );
+		Check( DiagsMention( diags2, "nosuchpainter" ), "control: a non-numeric unresolved reference (a name) IS diagnosed dangling" );
 
-		// control (review P1): a numeric in a PURE-reference slot (reflectance) is NOT
-		// a literal -- it must STILL be diagnosed dangling. The acceptsScalarLiteral
-		// gate must not suppress here (lambertian reflectance is not ref-or-literal).
+		// An inline multi-number literal (`scattering 1 2 3`, the `r g b` form some
+		// scalar slots accept) is also a literal -- entirely numeric tokens -> NOT a
+		// dangling reference. (This is why LooksNumeric checks every token, not just
+		// the first -- a per-slot ref-or-literal flag could not have covered it.)
+		Document doc4 = ParseToCst( "RISE ASCII SCENE 6\ntranslucent_material\n{\nname tm\nscattering 1 2 3\n}\n" );
+		std::vector<std::string> diags4;
+		BuildReferenceGraph( doc4, &diags4 );
+		Check( !DiagsMention( diags4, "scattering" ), "ref-or-literal: inline `scattering 1 2 3` is NOT a false dangling reference" );
+
+		// A pure number in a PURE-reference slot (`reflectance 0.5`) is NOT a dangling
+		// reference -- a number is never a name. It is a TYPE MISMATCH, which the full
+		// DeriveToJob refuses at apply time (verified below); the static reference-graph
+		// pass deliberately does not double-report it. (This replaced the fragile
+		// per-slot ref-or-literal flag, which under-flagged ~30 real scalar slots.)
 		Document doc3 = ParseToCst( "RISE ASCII SCENE 6\nlambertian_material\n{\nname m\nreflectance 0.5\n}\n" );
 		std::vector<std::string> diags3;
 		BuildReferenceGraph( doc3, &diags3 );
-		Check( DiagsMention( diags3, "reflectance" ), "control: numeric `reflectance 0.5` in a PURE-reference slot IS diagnosed dangling (not suppressed)" );
+		Check( !DiagsMention( diags3, "reflectance" ), "numeric `reflectance 0.5` is NOT a dangling reference (a number is not a name)" );
+		Job* jt = new Job(); std::vector<std::string> dt; int applied = DeriveToJob( doc3, *jt, &dt ); jt->release();
+		Check( applied == 0 && !dt.empty(), "the type mismatch `reflectance 0.5` IS caught by the full DeriveToJob (refused at apply time)" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
