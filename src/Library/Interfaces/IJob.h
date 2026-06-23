@@ -2682,6 +2682,12 @@ namespace RISE
 		//! Default no-op; the real Job bumps its Scene's generation counter.
 		virtual void BumpLightTopologyGeneration() {}
 
+		//! Reads the current light-topology generation (the counter
+		//! BumpLightTopologyGeneration advances).  A consumer reads it across an edit to
+		//! confirm whether the emitter set changed (the incremental apply's closure-gated
+		//! light-gen decision).  Default 0; the real Job returns its Scene's counter.
+		virtual unsigned int GetLightTopologyGeneration() const { return 0; }
+
 		//! Enables/disables INCREMENTAL re-point mode (slice 3 stable-object apply,
 		//! docs/agentic-redesign/21-stable-apply-and-resolver.md).  While enabled,
 		//! AddObject/AddObjectMatrix re-point an EXISTING same-named object IN PLACE

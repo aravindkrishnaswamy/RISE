@@ -254,34 +254,40 @@ namespace RISE
 		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr );
 
 		//! Incrementally re-apply ONLY a closure (DocEditClosure) into an
-		//! already-derived Job after an edit, instead of a full DeriveToJob: it drops
-		//! each closure chunk via IJob's typed removal then re-Finalizes it, so the
-		//! work is O(closure . log N), far below the O(N . log N) of a full re-derive.
-		//! Pass the EDITED document + the closure (chunkIds) DocEditClosure returned
-		//! on it.
-		//! THIS IS THE INTERIM DROP/RE-ADD APPLY (slice 0 of 21-stable-apply-and-
-		//! resolver.md). It is SAFE but conservative: re-applying recreates the
-		//! closure's OBJECTS at new addresses, so afterward it invalidates the TLAS +
-		//! bumps the light-topology generation (the retained BVH holds raw object
-		//! pointers -- review P1.1). Consequently it REBUILDS the TLAS on every
-		//! object-touching edit -- a non-spatial edit does NOT skip it here (review
-		//! P1.2); that result needs the slice-3 STABLE-OBJECT apply.
+		//! already-derived Job after an edit, instead of a full DeriveToJob: it recreates
+		//! the closure's NON-OBJECT entities (drop via IJob's typed removal, then
+		//! re-Finalize) but RE-POINTS the closure's standard_objects IN PLACE, so the work
+		//! is O(closure . log N), far below the O(N . log N) of a full re-derive.  Pass the
+		//! EDITED document + the closure (chunkIds) DocEditClosure returned on it.
+		//! STABLE-OBJECT APPLY (slice 3 of 21-stable-apply-and-resolver.md): objects keep
+		//! their ADDRESS (which the top-level BVH stores raw) and are re-pointed via
+		//! AddObject/AddObjectMatrix's repoint path -- the object's own addref keeps a
+		//! dropped entity alive until the re-point swaps it, so there is no UAF (P1.1).
+		//! The invariant pass is CLOSURE-GATED: it invalidates the TLAS only when a
+		//! re-pointed object's world bbox actually changed (a geometry-extent / transform
+		//! edit), so a NON-SPATIAL edit (material/painter value) SKIPS the TLAS rebuild
+		//! (P1.2 dissolved); it bumps the light-topology generation only when the emitter
+		//! set changed (a re-pointed object's pre- OR post-edit material emits, or a Light
+		//! chunk was recreated).
 		//! Refuse-all + PER-PARSER reversibility: it validates the WHOLE closure before
 		//! touching the Job -- every chunk must be named AND incrementally reversible.
 		//! It REFUSES (-> 0, caller full-re-derives; D51 never a silent partial undo):
 		//! non-single-manager categories (PAINTER: a scalar_painter sub-type lives in a
 		//! separate manager RemovePainter does not clear; Camera/Function/...), COMPOSED
-		//! materials (PBR creates helper painters -- IsMaterialComposed), and
-		//! translucent_material (its Finalize reads ambient thread-local parser state
-		//! -- review P1.3/P1.5). A drop that finds no such entity (a rename, or a stale
-		//! closure -- this is value-edit only) ABORTS rather than silently re-adding a
-		//! duplicate (review P1.4). Returns the count applied (== chunkIds.size() on
-		//! success). The shared resolver (BuildReferenceGraph, slice 1) and atomic
-		//! rename (slice 2) have since landed; still deferred HERE: routing this
-		//! function's lookups through the resolver + caching it so the closure is
-		//! O(closure) not O(closure*log N) (slice 5 / maintained graph), the stable-
-		//! object in-place apply (slice 3), and full post-Finalize rollback of a
-		//! partial apply (slice 4).
+		//! materials (PBR creates helper painters -- IsMaterialComposed), translucent_-
+		//! material (ambient thread-local parser state -- P1.3/P1.5), gltf_import (a bulk
+		//! importer), a non-standard_object Object chunk (csg_object: its operands are
+		//! themselves objects -- a separate effort), an optional-slot REMOVAL (an in-place
+		//! re-point cannot CLEAR a material/modifier/shader/radiance_map/interior_medium
+		//! set to "none"), and any document with an animation/timeline.  A drop that finds
+		//! no such entity (a rename, or a stale closure -- this is value-edit only) ABORTS
+		//! rather than silently re-adding a duplicate (review P1.4).  Returns the count
+		//! applied (== chunkIds.size() on success).  The shared resolver
+		//! (BuildReferenceGraph, slice 1) and atomic rename (slice 2) have landed; still
+		//! deferred HERE: routing this function's lookups through the resolver + caching it
+		//! so the closure is O(closure) not O(closure*log N) (slice 5 / maintained graph),
+		//! CSG-operand + optional-slot-removal in-place handling (slice-3 follow-ups), and
+		//! full post-Finalize rollback of a partial apply (slice 4).
 		int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<NodeId>& chunkIds, std::vector<std::string>* diagnostics = nullptr );
 
 		//==============================================================
@@ -614,13 +620,11 @@ namespace RISE
 		//! dependents), walked over the traced reference graph (TraceReferences
 		//! reverse edges). This is the set DeriveToJobIncremental re-applies when the
 		//! chunk changes; its SIZE scales with the DEPENDENTS, not with the document
-		//! size. (Whether a re-derive touches the TLAS depends on the APPLY: under the
-		//! interim drop/re-add DeriveToJobIncremental EVERY edit recreates its closure
-		//! objects and rebuilds the TLAS -- a non-spatial edit does NOT skip it; the
-		//! slice-3 stable-object apply will let non-spatial edits skip it, paying the
-		//! engine's O(N log N) BVH rebuild only for a SPATIAL edit -- a geometry's
-		//! SHAPE, an object's TRANSFORM, or an object's GEOMETRY reference.) Returns
-		//! `changedChunkId` first.
+		//! size. (Whether a re-derive touches the TLAS depends on the APPLY: the slice-3
+		//! stable-object DeriveToJobIncremental re-points objects in place and skips the
+		//! TLAS rebuild for a NON-SPATIAL edit, paying the engine's O(N log N) BVH rebuild
+		//! only for a SPATIAL edit -- a geometry's SHAPE, an object's TRANSFORM, or an
+		//! object's GEOMETRY reference.) Returns `changedChunkId` first.
 		//! COST: the closure SIZE is O(closure), but COMPUTING it here is O(N log N)
 		//! -- it re-traces the whole reference graph (TraceReferences) + rebuilds the
 		//! param->chunk map (DocParamId per param) each call; a production system

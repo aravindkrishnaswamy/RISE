@@ -61,6 +61,7 @@ int main()
 		IObjectPriv* oBefore = om->GetItem( "o" );
 		const BoundingBox bbBefore = oBefore->getBoundingBox();
 		const unsigned long long genBefore = om->GetSpatialStructureGeneration();
+		const unsigned int lgBefore = j->GetLightTopologyGeneration();
 		const IMaterial* matBefore = oBefore->GetMaterial();
 
 		const NodeId mId = DocFindByName( d0, "lambertian_material/m" );
@@ -77,10 +78,44 @@ int main()
 		const IMaterial* matNow = j->GetMaterials() ? j->GetMaterials()->GetItem( "m" ) : 0;
 		Check( matNow != 0 && oAfter->GetMaterial() == matNow, "non-spatial: object re-pointed to the LIVE material m (not dangling at the freed one -- P1.1)" );
 		Check( matNow != matBefore, "non-spatial: the material WAS recreated (new address); the stable object re-points to it" );
+		Check( j->GetLightTopologyGeneration() == lgBefore, "non-spatial non-emissive: light-gen NOT bumped (no false bump)" );
 
 		Job* jf = new Job(); std::vector<std::string> df; DeriveToJob( d1, *jf, &df );
 		Check( DumpJob( *j ) == DumpJob( *jf ), "non-spatial: re-pointed Job == fresh full derive of the edited doc" );
 		jf->release(); j->release();
+	}
+
+	// ---- [light-gen: emitter REMOVAL] switch object o's material from an emissive
+	//      luminaire to a non-emissive material: the object stays (re-pointed) but the
+	//      emitter set CHANGED, so light-gen must bump (the post-edit material no longer
+	//      emits -- a post-only check would MISS it; red-proven by the wasEmissive fix).
+	{
+		const std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 1 1 1\n}\n"
+			"lambertian_material\n{\nname base\nreflectance p\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nexitance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial lum\nposition 0 0 0\n}\n";
+		Document d0 = ParseToCst( s );
+		Job* j = new Job(); std::vector<std::string> d; DeriveToJob( d0, *j, &d );
+		IObjectManager* om = j->GetObjects();
+		IObjectPriv* oBefore = om->GetItem( "o" );
+		const unsigned int lgBefore = j->GetLightTopologyGeneration();
+		const bool emittedBefore = oBefore && oBefore->GetMaterial() && oBefore->GetMaterial()->GetEmitter() != 0;
+
+		const NodeId oId = DocFindByName( d0, "standard_object/o" );
+		Document d1 = DocSetParamValue( d0, oId, "material", 0, "base" );
+		std::vector<NodeId> closure = DocEditClosure( d1, oId );
+		std::vector<std::string> di;
+		const int applied = DeriveToJobIncremental( d1, *j, closure, &di );
+
+		IObjectPriv* oAfter = om->GetItem( "o" );
+		Check( emittedBefore, "emitter-removal: precondition -- object started emissive" );
+		Check( applied > 0 && oAfter == oBefore, "emitter-removal: object re-pointed in place (address stable)" );
+		Check( oAfter->GetMaterial() && oAfter->GetMaterial()->GetEmitter() == 0, "emitter-removal: object now bound to the non-emissive material" );
+		Check( j->GetLightTopologyGeneration() != lgBefore, "emitter-removal: light-gen BUMPED (pre-edit emission caught -- wasEmissive)" );
+		j->release();
 	}
 
 	// ---- [spatial: geometry] radius 1 -> 2: re-point, bbox CHANGES, TLAS invalidated.

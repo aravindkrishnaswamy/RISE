@@ -416,28 +416,31 @@ until it is green:
    identity/derive/reference invariant) + a final P2 polish (a name-less-chunk rename is now a diagnosed
    no-op, not silent). ← next: item 8 (spatial + non-spatial edit cost).
 8. **Measure a non-spatial edit AND a spatial edit; report TLAS time separately.**
-   **NOT GREEN — bulk review (2026-06-23) found nine P1 blockers; under redesign.** The central result
-   ("non-spatial edits skip the TLAS at true O(closure)") is **invalid as built**: the drop/re-add apply
-   recreates objects at new addresses, so it must rebuild the TLAS on every object-touching edit (P1.1
-   stale-TLAS/UAF, P1.2 no-TLAS false); reversibility was per-category not per-parser (P1.3 PBR helpers),
-   failed drops were ignored + rename-through-incremental removed the wrong name (P1.4), the apply leaned
-   on ambient thread-local caches (P1.5); `DocRename` committed partial renames (P1.6) and missed the
-   runtime namespace + empty names (P1.7); `TraceReferences` is a parallel scan, not the D35 resolver, yet
-   consumed as authoritative (P1.8); and the cost bounds were imprecise — apply is O(closure·log N), full
-   is O(N·log N), not O(closure)/O(N) (P1.9, R13). **Slice 0 (landed) makes the interim drop/re-add apply
-   SAFE + the docs HONEST** (invalidate TLAS + bump light-gen on object recreation; refuse composed/painter/
-   translucent + abort-on-failed-drop; retract the no-TLAS/O(closure) claims). The valid result comes from
-   the **stable-object apply + shared resolver** in [21-stable-apply-and-resolver.md](21-stable-apply-and-resolver.md)
-   (slices 1–5). The original (now-retracted) write-up follows for reference:
+   **Slices 0-3 LANDED (21-stable-apply-and-resolver.md); the MEASUREMENT (slice 4) is the remaining gate.**
+   The bulk review (2026-06-23) found nine P1 blockers in the first drop/re-add apply; the redesign
+   (doc 21) designs them out across slices 0-5. Landed so far: slice 0 (interim safety + honest cost),
+   slice 1 (the shared resolver `BuildReferenceGraph`, stamped, full namespace), slice 2 (atomic rename:
+   rewrite-all-or-refuse + full-namespace collision), and **slice 3 (STABLE-OBJECT in-place apply)** —
+   objects are no longer dropped/recreated; they keep their address (the TLAS holds raw object pointers,
+   so this dissolves the P1.1 UAF) and are re-pointed in place, with the TLAS invalidated only when a
+   re-pointed object's world bbox actually changes (a non-spatial edit now SKIPS the TLAS — P1.2
+   dissolved, directly observable via `IObjectManager::GetSpatialStructureGeneration`). Per-parser
+   reversibility (P1.3/P1.5), abort-on-failed-drop + prior-name rename (P1.4/P1.6), full-namespace
+   collision (P1.7), and the honest O(closure·log N)/O(N·log N) bounds (P1.9, R13) are all in. Still
+   open: **slice 4 (re-measure item 8 on the stable apply** — wall-clock the non-spatial skip + the
+   spatial TLAS cost), **slice 5 (route the parser lookups through the resolver** so the recorded graph
+   and the apply resolution cannot drift — full D35, P1.8), plus the slice-3 follow-ups (CSG-operand +
+   optional-slot-removal in-place handling, currently refused → full derive) and full post-Finalize
+   rollback.
 
 That is the gate that turns "the model and cost-model hold in prototypes" into "the redesign's real
-CST path is O(closure·log N) for non-spatial edits, with spatial cost reported honestly." **Items 1–7
-are landed and reviewed; item 8 is NOT green** — the bulk review showed its central result needs the
-stable-object apply + shared resolver ([21-stable-apply-and-resolver.md](21-stable-apply-and-resolver.md)).
+CST path is O(closure·log N) for non-spatial edits, with spatial cost reported honestly." **Items 1-7
++ doc-21 slices 0-3 are landed and reviewed; the item-8 MEASUREMENT (slice 4) is the remaining gate.**
 What IS true today: the in-tree `src/Library/Cst` kernel carries a scene losslessly, derives it
 identically to the legacy parser through the live descriptor registry, traces a (static, descriptor-scoped)
-reference graph, and applies structured edits + reparse + rename with NodeId lineage; the interim
-incremental apply is SAFE (slice 0) but drop/re-add, so it rebuilds the TLAS on every object-touching
-edit and the apply is O(closure·log N) / full derive O(N·log N). The valid "non-spatial skips the TLAS"
-result, true O(closure) closure-finding, an authoritative D35 graph, atomic rename, and full rollback are
-slices 1–5 of doc 21. (expr / RepeatGroup / instance_array remain OUT until the gate is green.)
+reference graph, applies structured edits + reparse + rename with NodeId lineage, and applies an
+incremental edit by recreating only the non-object entities while RE-POINTING objects in place — so a
+non-spatial edit skips the TLAS and the apply is O(closure·log N) (full derive O(N·log N)). The
+remaining work is slice 4 (the wall-clock measurement of the now-valid non-spatial skip), slice 5 (an
+authoritative D35 graph that the apply resolution cannot drift from), the slice-3 follow-ups, and full
+rollback. (expr / RepeatGroup / instance_array remain OUT until the gate is green.)

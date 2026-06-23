@@ -1195,7 +1195,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// closure, which aborts BEFORE any mutation).  The bbox snapshot lets the closure-
 	// gated invariant pass tell a spatial edit (bbox changes) from a non-spatial one
 	// (bbox identical), which is what makes "non-spatial edits skip the TLAS" valid.
-	struct ObjState { IObjectPriv* obj; BoundingBox bbox; };
+	struct ObjState { IObjectPriv* obj; BoundingBox bbox; bool wasEmissive; };
 	std::vector<ObjState> objStates;
 	for( const Pending& p : pending ) {
 		if( p.cat != ChunkCategory::Object ) continue;
@@ -1220,7 +1220,14 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			diags.push_back( p.node->role + " '" + p.name + "': an optional slot (material/modifier/shader/radiance_map/interior_medium) is being REMOVED; an in-place re-point cannot clear it -- fall back to a full derive" );
 			return 0;
 		}
-		objStates.push_back( ObjState{ obj, obj->getBoundingBox() } );
+		// Capture whether this object's PRE-edit material emits.  A material-reference
+		// switch from an emissive (e.g. lambertian_luminaire) to a non-emissive material
+		// REMOVES an area-light emitter, but the post-edit material no longer emits -- so
+		// the post-edit-only check below would miss the bump and leave a reused RayCaster's
+		// LightSampler listing a now-dark luminary (wrong render).  Snapshot it here, while
+		// `obj` still holds the pre-edit material (mirrors SceneEditor's wasEmissive idiom).
+		const IMaterial* preMat = obj->GetMaterial();
+		objStates.push_back( ObjState{ obj, obj->getBoundingBox(), ( preMat && preMat->GetEmitter() ) != 0 } );
 	}
 
 	// Drop the NON-OBJECT entities; objects are NEVER dropped (re-pointed in place below)
@@ -1263,7 +1270,10 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	for( const ObjState& s : objStates ) {
 		if( !BBoxEqual( s.bbox, s.obj->getBoundingBox() ) ) spatial = true;
 		const IMaterial* m = s.obj->GetMaterial();
-		if( m && m->GetEmitter() ) emitter = true;
+		// Bump if EITHER the pre-edit OR the post-edit material emits: post-edit catches
+		// add/move/emission-change of an emitter; pre-edit catches an emissive->non-emissive
+		// material switch that REMOVES one (the post-edit material no longer emits).
+		if( s.wasEmissive || ( m && m->GetEmitter() ) ) emitter = true;
 	}
 	for( const Pending& p : pending ) if( p.cat == ChunkCategory::Light ) emitter = true;
 	if( spatial ) pJob.InvalidateSpatialStructure();

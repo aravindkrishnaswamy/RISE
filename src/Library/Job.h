@@ -2714,6 +2714,10 @@ namespace RISE
 		//! Bumps the scene's light-topology generation (see IJob).
 		void BumpLightTopologyGeneration();
 
+		//! Reads the scene's light-topology generation (see IJob).  No `override` to
+		//! match this file's house style.
+		unsigned int GetLightTopologyGeneration() const;
+
 		//! Enables/disables incremental re-point mode (see IJob).  No `override` to
 		//! match this file's house style.
 		void SetIncrementalRepointMode( bool b );

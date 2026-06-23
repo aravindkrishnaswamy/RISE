@@ -9358,6 +9358,13 @@ void Job::SetIncrementalRepointMode( bool b )
 	m_bIncrementalRepoint = b;
 }
 
+unsigned int Job::GetLightTopologyGeneration() const
+{
+	if( const Scene* sc = dynamic_cast<const Scene*>( pScene ) )   // downcast like BumpSceneLightGen
+		return sc->GetLightTopologyGeneration();
+	return 0;
+}
+
 //! Removes all the rasterizer outputs
 /// \return TRUE if successful, FALSE otherwise
 bool Job::RemoveRasterizerOutputs(
