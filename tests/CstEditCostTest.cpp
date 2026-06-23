@@ -1,57 +1,51 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  CstEditCostTest.cpp - transfer-gate item 8: measure a NON-SPATIAL edit AND a
-//  SPATIAL edit on the in-tree CST path, in WALL-CLOCK, and report the TLAS time
-//  SEPARATELY.
+//  CstEditCostTest.cpp - transfer-gate item 8, re-measured on the SLICE-3
+//  STABLE-OBJECT apply (slice 4 of docs/agentic-redesign/21-stable-apply-and-
+//  resolver.md): measure a NON-SPATIAL edit AND a SPATIAL edit on the in-tree CST
+//  path, in WALL-CLOCK, and report the TLAS cost SEPARATELY -- now that a non-spatial
+//  edit genuinely SKIPS the TLAS rebuild.
 //
-//  The gate's GOAL is "the redesign's real CST path is O(closure) for non-spatial
-//  edits, with spatial cost reported honestly." That goal is NOT yet met by the
-//  interim drop/re-add apply measured here (it is O(closure.log N) and rebuilds the
-//  TLAS on every object-touching edit -- see slice 3 of
-//  docs/agentic-redesign/21-stable-apply-and-resolver.md). What this suite measures:
+//  The slice-3 stable-object apply re-points objects IN PLACE (address-stable) and
+//  invalidates the top-level acceleration only when a re-pointed object's world bbox
+//  actually changes.  So the item-8 result is now VALID: a non-spatial edit
+//  (material/painter value) does NOT touch the TLAS; a spatial edit (geometry-extent /
+//  transform) pays the engine's O(N log N) BVH build, reported separately.
 //
 //    ANALYTIC (robust, noise-free):
-//      [closure-size] the re-derive CLOSURE (DocEditClosure: the changed chunk +
-//                     its transitive dependents over the reference graph, D25) has
-//                     SIZE O(closure) -- INVARIANT to scene size N for a fixed
-//                     dependent count, proportional to the DEPENDENTS otherwise.
-//                     This is what DeriveToJobIncremental re-applies.
+//      [closure-size] the re-derive CLOSURE (DocEditClosure, D25) has SIZE O(closure)
+//                     -- invariant to scene size N for a fixed dependent count.
 //      [edit-visits]  DocSetParamValue's path-copy depth is O(log N).
+//
+//    STABLE-OBJECT (robust, generation-counter -- the item-8 P1.2 result):
+//      [tlas-skip]    after the TLAS is built, a NON-SPATIAL incremental edit leaves
+//                     IObjectManager::GetSpatialStructureGeneration UNCHANGED (TLAS
+//                     preserved) while a SPATIAL one ADVANCES it (TLAS invalidated).
+//                     This is the direct, noise-free proof that non-spatial edits skip
+//                     the TLAS -- it does not depend on wall-clock.
 //
 //    WALL-CLOCK (median of K trials, microseconds, scaling N):
 //      [edit]         DocSetParamValue                -> O(log N)        (flat)
-//      [closure]      DocEditClosure (compute it)     -> O(N log N) (re-traces the
-//                     whole graph each call; a maintained graph -- slice 1 -- O(closure))
+//      [closure]      DocEditClosure (compute it)     -> O(N log N) (re-traces the whole
+//                     graph each call; a maintained graph -- slice 5 -- O(closure . log N))
 //      [incremental]  DeriveToJobIncremental(closure) -> O(closure . log N) (cheap,
 //                     ~flat in N) AND produces a Job byte-identical (DumpJob) to a full
-//                     re-derive (NOT flat O(closure): manager ops + the sort carry log N)
-//      [full]         DeriveToJob (whole scene)       -> O(N log N)  (the baseline
-//                     the incremental path beats)
-//      [TLAS]         IObjectManager::PrepareForRendering (the top-level BVH4 build)
-//                     -> O(N log N), the spatial-edit cost, reported separately
+//                     re-derive
+//      [full]         DeriveToJob (whole scene)       -> O(N log N)  (the baseline beaten)
+//      [prep:spatial] PrepareForRendering AFTER a spatial edit -> rebuilds the BVH4,
+//                     O(N log N): the spatial-edit premium
+//      [prep:nonspat] PrepareForRendering AFTER a non-spatial edit -> a no-op (the BVH is
+//                     still valid): ~O(1), the SAVING the stable-object apply delivers
 //
-//  WHAT THE WALL-CLOCK SURFACES (honestly, post-bulk-review):
-//    1. The incremental APPLY is O(closure . log N) -- thousands of times cheaper
-//       than the full O(N log N) re-derive -- BUT computing the closure
-//       (DocEditClosure re-traces the whole graph each call) is O(N log N) and
-//       currently DOMINATES a non-spatial edit. A maintained reference graph
-//       (slice 1) makes the closure O(closure . log N).
-//    2. This is a DROP/RE-ADD apply: it recreates the closure's objects at NEW
-//       addresses, so it invalidates + REBUILDS the TLAS on EVERY object-touching
-//       edit (review P1.1/P1.2). A non-spatial edit does NOT skip the TLAS here --
-//       that result requires the slice-3 STABLE-OBJECT apply (re-point address-stable
-//       objects in place). See docs/agentic-redesign/21-stable-apply-and-resolver.md.
-//
-//  HONEST SCOPE: DeriveToJobIncremental is the real in-tree incremental-apply
-//  primitive (drop the closure via IJob's typed removal, re-Finalize it, then
-//  invalidate the TLAS + bump light-gen since objects were recreated). It accepts
+//  HONEST SCOPE (R13): the bounds carry log factors -- the incremental apply is
+//  O(closure . log N) (per-member identity lookup + std::map manager remove/insert + an
+//  O(C log C) sort), NOT flat O(closure); a full derive is O(N . log N).  The suite
+//  asserts only ratios/scaling, never constant-vs-log.  DeriveToJobIncremental accepts
 //  only PER-PARSER-reversible chunks: it REFUSES painters (func2d dual-registration),
-//  composed/PBR materials (helper painters -- IsMaterialComposed), and
-//  translucent_material (reads ambient parser cache); those fall back to a full
-//  re-derive (D51: never a silent partial undo). Still ahead (this doc's slices):
-//  the stable-object apply (slice 3) so non-spatial edits skip the TLAS, the shared
-//  resolver + maintained graph (slice 1) so the closure is O(closure), atomic
-//  rename (slice 2), and the reversible apply plan with full rollback (slice 4).
+//  composed materials (helper painters), translucent (ambient parser cache), gltf_import
+//  (bulk), a non-standard_object (csg), an optional-slot removal, and animated docs;
+//  those fall back to a full re-derive (D51).  Remaining: routing the parser lookups
+//  through the resolver so the closure is O(closure . log N) (slice 5).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -87,12 +81,10 @@ template<class F> static double MedianMicros( int trials, F&& f )
 	return t[ t.size() / 2 ];
 }
 
-// N painter->material->geometry->object groups, laid out TYPE-GROUPED (all
-// painters, then all materials, then geometries, then objects) so EVERY chunk's
-// reference resolves to an EARLIER-defined chunk -- the in-order legacy derive
-// has no forward references, so re-pointing material0's reflectance to any painter
-// derives cleanly (the incremental-vs-full equivalence check needs the full derive
-// to succeed). `shared`: one painter+material that all N objects reference.
+// N painter->material->geometry->object groups, laid out TYPE-GROUPED (all painters,
+// then materials, geometries, objects) so EVERY chunk's reference resolves to an
+// EARLIER-defined chunk (the in-order legacy derive has no forward references).
+// `shared`: one painter+material that all N objects reference.
 static std::string SceneN( int n, bool shared )
 {
 	std::string s = "RISE ASCII SCENE 6\n";
@@ -112,7 +104,7 @@ static std::string SceneN( int n, bool shared )
 
 int main()
 {
-	std::printf( "CstEditCostTest -- transfer-gate item 8 (edit/closure/incremental/TLAS wall-clock)\n" );
+	std::printf( "CstEditCostTest -- item 8 on the slice-3 stable-object apply (edit/closure/incremental/full/TLAS-skip)\n" );
 
 	//----------------------------------------------------------------------
 	// ANALYTIC: the cost-model DETERMINANTS (robust, noise-free).
@@ -147,40 +139,33 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
-	// WALL-CLOCK: the real timed cost of each operation, at scaling N.
+	// WALL-CLOCK + STABLE-OBJECT generation checks, at scaling N.
 	//----------------------------------------------------------------------
 	std::printf( "[wall-clock] microseconds (median), scaling N:\n" );
-	std::printf( "  %6s | %8s | %10s | %11s | %10s | %10s\n", "N", "edit", "closure", "increment", "full", "TLAS" );
+	std::printf( "  %6s | %8s | %10s | %11s | %10s | %11s | %11s\n", "N", "edit", "closure", "increment", "full", "prep:spat", "prep:nonsp" );
 
 	const int NS[] = { 256, 1024, 4096 };
-	double incrAt[3] = {0,0,0}, fullAt[3] = {0,0,0}, tlasAt[3] = {0,0,0}, cloAt[3] = {0,0,0}, editAt[3] = {0,0,0};
+	double incrAt[3] = {0,0,0}, fullAt[3] = {0,0,0}, prepSpatAt[3] = {0,0,0}, prepNonAt[3] = {0,0,0}, cloAt[3] = {0,0,0}, editAt[3] = {0,0,0};
 	for( int k = 0; k < 3; ++k ) {
 		const int N = NS[k];
 		Document doc = ParseToCst( SceneN( N, false ) );
 
-		// SPATIAL edit (geometry radius): closure = {geometry0, object0}; verifiable
-		// in DumpJob (bounding sphere + object bbox change). Used for both the
-		// incremental CORRECTNESS check and the spatial wall-clock.
+		// SPATIAL edit (geometry radius): closure = {geometry0, object0}; the object's
+		// world bbox changes -> the stable apply invalidates the TLAS.
 		const NodeId gid  = DocFindByName( doc, "sphere_geometry/g0" );
 		Document     docG = DocSetParamValue( doc, gid, "radius", 0, "2" );
 		std::vector<NodeId> closG = DocEditClosure( docG, gid );
 
 		// NON-SPATIAL edit (re-point object0's MATERIAL reference m0 -> m1): closure =
-		// {object0} (objects are leaves -- nothing references them); o0's geometry is
-		// unchanged so its world bbox is unchanged. (NOTE: under the interim drop/re-add
-		// apply o0 is still RECREATED, so the TLAS IS rebuilt here -- the bbox-unchanged
-		// fact only lets the slice-3 stable-object apply SKIP the TLAS.) Chosen so the
-		// equivalence check is VALUE-verifiable: DumpJob records each object's
-		// resolved material name, so a wrong incremental (o0 still bound to m0) would
-		// be CAUGHT -- unlike a material's reflectance-painter value, which DumpJob
-		// does not surface.
+		// {object0}; o0's geometry/transform are unchanged so its world bbox is unchanged
+		// -> the stable apply RE-POINTS o0 in place and SKIPS the TLAS.  DumpJob records
+		// o0's resolved material name, so a wrong incremental is caught.
 		const NodeId oid  = DocFindByName( doc, "standard_object/o0" );
 		Document     docM = DocSetParamValue( doc, oid, "material", 0, "m1" );
 		std::vector<NodeId> closM = DocEditClosure( docM, oid );
 
-		// A PAINTER-VALUE edit's closure DOES include the painter; the incremental
-		// must REFUSE it (a painter dual-registers in the func2d manager) so the
-		// caller falls back to a full re-derive -- verified below.
+		// A PAINTER-VALUE edit's closure includes the painter; the incremental REFUSES it
+		// (a painter dual-registers in the func2d manager) -> full-derive fallback.
 		const NodeId pid  = DocFindByName( doc, "uniformcolor_painter/p0" );
 		Document     docP = DocSetParamValue( doc, pid, "color", 0, "0.9 0.1 0.1" );
 		std::vector<NodeId> closP = DocEditClosure( docP, pid );
@@ -192,9 +177,9 @@ int main()
 		// [full] : a complete re-derive into a fresh Job (the baseline).
 		fullAt[k] = MedianMicros( 3, [&]{ Job* j = new Job(); DeriveToJob( docG, *j ); j->release(); } );
 
-		// [incremental] : re-apply ONLY the closure into an already-derived Job.
-		// CORRECTNESS: applying the spatial edit incrementally to a Job derived from
-		// the ORIGINAL scene must yield the SAME Job as a full re-derive of docG.
+		// [incremental] : re-apply ONLY the closure into an already-derived Job.  CORRECTNESS:
+		// applying the spatial edit incrementally to a Job derived from the ORIGINAL scene
+		// must yield the SAME Job as a full re-derive of docG.
 		Job* jbase = new Job(); DeriveToJob( doc, *jbase );
 		std::vector<std::string> diags;
 		const int applied = DeriveToJobIncremental( docG, *jbase, closG, &diags );
@@ -203,76 +188,79 @@ int main()
 		jfull->release();
 		char m1[80]; std::snprintf( m1, sizeof(m1), "N=%d incremental geometry edit == full re-derive (DumpJob)", N );
 		Check( correctG, m1 );
-
-		// time the incremental re-derive (idempotent: re-applies the same closure).
 		incrAt[k] = MedianMicros( 21, [&]{ std::vector<std::string> d; DeriveToJobIncremental( docG, *jbase, closG, &d ); } );
 
-		// [TLAS] : the top-level BVH build over N objects (the spatial premium).
-		tlasAt[k] = MedianMicros( 7, [&]{ jbase->GetObjects()->InvalidateSpatialStructure(); jbase->GetObjects()->PrepareForRendering(); } );
-
-		// NON-SPATIAL incremental correctness: re-point object0's material (m0 -> m1)
-		// and apply that closure incrementally to a fresh base; must equal a full
-		// re-derive of docM (DumpJob -- which records o0's resolved material name, so
-		// this is VALUE-verified, not just structural). The edit changes no bbox, but
-		// the interim drop/re-add still recreates o0 + rebuilds the TLAS (slice 3 skips it).
+		// NON-SPATIAL incremental correctness (value-verified via DumpJob's material name).
 		Job* jm = new Job(); DeriveToJob( doc, *jm );
 		std::vector<std::string> dm;
 		const int appliedM = DeriveToJobIncremental( docM, *jm, closM, &dm );
 		Job* jmf = new Job(); DeriveToJob( docM, *jmf );
 		const bool correctM = ( appliedM == (int)closM.size() ) && ( DumpJob( *jm ) == DumpJob( *jmf ) );
 		jm->release(); jmf->release();
-		char m2[96]; std::snprintf( m2, sizeof(m2), "N=%d incremental object material re-point (m0->m1) == full re-derive (DumpJob value-verified)", N );
+		char m2[112]; std::snprintf( m2, sizeof(m2), "N=%d incremental object material re-point (m0->m1) == full re-derive (DumpJob value-verified)", N );
 		Check( correctM, m2 );
 
-		// SAFETY: a painter-VALUE edit's closure must be REFUSED (returns 0 + a
-		// diagnostic), so the dual-registered painter is never half-dropped -- the
-		// caller then full-re-derives.
+		// SAFETY: a painter-VALUE edit's closure must be REFUSED (returns 0 + a diagnostic).
 		Job* jpr = new Job(); DeriveToJob( doc, *jpr );
 		std::vector<std::string> dpr;
 		const int appliedP = DeriveToJobIncremental( docP, *jpr, closP, &dpr );
 		jpr->release();
-		char m3[88]; std::snprintf( m3, sizeof(m3), "N=%d painter-value closure REFUSED (applied=0, diagnosed) -> full-derive fallback", N );
+		char m3[96]; std::snprintf( m3, sizeof(m3), "N=%d painter-value closure REFUSED (applied=0, diagnosed) -> full-derive fallback", N );
 		Check( appliedP == 0 && !dpr.empty(), m3 );
 
-		jbase->release();
+		// ---- STABLE-OBJECT: the item-8 P1.2 result, generation-counter verified ----
+		// SPATIAL: build the TLAS, apply the spatial edit -> the spatial generation MUST
+		// advance (TLAS invalidated), and the subsequent PrepareForRendering rebuilds it.
+		{
+			Job* js = new Job(); DeriveToJob( doc, *js );
+			js->GetObjects()->PrepareForRendering();
+			const unsigned long long gs0 = js->GetObjects()->GetSpatialStructureGeneration();
+			std::vector<std::string> ds; DeriveToJobIncremental( docG, *js, closG, &ds );
+			char ms[104]; std::snprintf( ms, sizeof(ms), "N=%d SPATIAL edit invalidates the TLAS (spatial generation advanced)", N );
+			Check( js->GetObjects()->GetSpatialStructureGeneration() > gs0, ms );
+			prepSpatAt[k] = MedianMicros( 7, [&]{ js->GetObjects()->InvalidateSpatialStructure(); js->GetObjects()->PrepareForRendering(); } );
+			js->release();
+		}
+		// NON-SPATIAL: build the TLAS, apply the non-spatial edit -> the spatial generation
+		// MUST be UNCHANGED (TLAS preserved -- the slice-3 skip), and the subsequent
+		// PrepareForRendering is a no-op (the BVH is still valid).
+		{
+			Job* jns = new Job(); DeriveToJob( doc, *jns );
+			jns->GetObjects()->PrepareForRendering();
+			const unsigned long long g0 = jns->GetObjects()->GetSpatialStructureGeneration();
+			std::vector<std::string> dns; DeriveToJobIncremental( docM, *jns, closM, &dns );
+			char mn[104]; std::snprintf( mn, sizeof(mn), "N=%d NON-SPATIAL edit SKIPS the TLAS (spatial generation unchanged -- slice 3)", N );
+			Check( jns->GetObjects()->GetSpatialStructureGeneration() == g0, mn );
+			prepNonAt[k] = MedianMicros( 21, [&]{ jns->GetObjects()->PrepareForRendering(); } );   // no rebuild
+			jns->release();
+		}
 
-		std::printf( "  %6d | %8.1f | %10.1f | %11.1f | %10.1f | %10.1f\n", N, editAt[k], cloAt[k], incrAt[k], fullAt[k], tlasAt[k] );
+		jbase->release();
+		std::printf( "  %6d | %8.1f | %10.1f | %11.1f | %10.1f | %11.1f | %11.1f\n", N, editAt[k], cloAt[k], incrAt[k], fullAt[k], prepSpatAt[k], prepNonAt[k] );
 	}
 
 	//----------------------------------------------------------------------
-	// What the wall-clock proves (robust, large-N magnitude separations).
+	// What the wall-clock + generation checks prove.
 	//----------------------------------------------------------------------
 	std::printf( "[verdict]\n" );
-	// The incremental re-apply (the closure only) is dramatically cheaper than a full
-	// re-derive at large N -- the redesign's core win. Its cost is O(closure . log N)
-	// (per-member identity lookup + std::map manager remove/insert + an O(C log C)
-	// sort), NOT flat O(closure): the wall-clock is flat only because C is fixed and
-	// log N grows slowly. The full re-derive is O(N . log N). (R13: no flat O(closure)
-	// before persistent O(1) managers exist; we assert ratios/scaling, never const-vs-log.)
+	// The incremental re-apply (closure only) is dramatically cheaper than a full
+	// re-derive at large N. Its cost is O(closure . log N), NOT flat O(closure)
+	// (R13: we assert ratios/scaling, never const-vs-log).
 	Check( incrAt[2] * 4 < fullAt[2], "incremental re-apply >=4x cheaper than a full re-derive at N=4096" );
 	Check( fullAt[2] > fullAt[0] * 2.0, "full re-derive grows with N (~O(N log N))" );
 	Check( incrAt[2] < incrAt[0] * 6.0 + 50.0, "incremental re-apply ~flat in N (O(closure . log N), not O(N log N))" );
-	Check( tlasAt[2] > 0.0 && tlasAt[2] > tlasAt[0], "TLAS (top-level BVH) build measured + grows with N (~O(N log N))" );
+	// The TLAS-skip result (slice 3): a non-spatial edit's post-edit PrepareForRendering
+	// is a no-op (BVH still valid), DRAMATICALLY cheaper than a spatial edit's rebuild.
+	// The generation-counter Checks above are the noise-free proof; this is the wall-clock.
+	Check( prepSpatAt[2] > prepSpatAt[0], "spatial TLAS rebuild grows with N (~O(N log N))" );
+	Check( prepNonAt[2] * 3 < prepSpatAt[2], "NON-spatial edit's post-edit prepare materially cheaper than the spatial rebuild at N=4096 (TLAS skipped; gen-counter Checks are the noise-free proof)" );
 
 	std::printf( "  decomposition at N=4096 (microseconds):\n" );
-	// HONEST (review P1.1/P1.2): this DROP/RE-ADD incremental recreates the closure's
-	// objects at NEW addresses, so it invalidates + REBUILDS the TLAS on EVERY
-	// object-touching edit -- a non-spatial edit does NOT skip it here. Skipping the
-	// TLAS for non-spatial edits needs the slice-3 STABLE-OBJECT apply (re-point
-	// stable objects in place); see docs/agentic-redesign/21-stable-apply-and-resolver.md.
-	std::printf( "    edit %.1f us + closure-compute %.1f us + incremental-apply %.1f us  (closure-compute O(N log N) dominates -- maintained-graph would be O(closure))\n",
+	std::printf( "    edit %.1f + closure-compute %.1f + incremental-apply %.1f  (closure-compute O(N log N) dominates -- a maintained graph (slice 5) makes it O(closure . log N))\n",
 		editAt[2], cloAt[2], incrAt[2] );
-	std::printf( "    + TLAS rebuild %.1f us  -- paid by EVERY object-touching edit under drop/re-add (slice-3 stable-object apply lets non-spatial edits skip it)\n", tlasAt[2] );
-	std::printf( "    (a full non-incremental re-derive instead costs %.1f us; the incremental re-apply is the saving, the TLAS the separately-reported spatial cost.)\n", fullAt[2] );
-	// HONEST findings the wall-clock surfaces: (1) the incremental APPLY is
-	// O(closure . log N) (cheap, ~flat in N), but COMPUTING the closure
-	// (DocEditClosure re-traces the whole reference graph each call) is O(N log N) and
-	// currently DOMINATES the non-spatial edit -- a maintained graph (slice 1) makes
-	// it O(closure . log N). (2) Under this drop/re-add apply the TLAS is rebuilt on
-	// every object-touching edit (objects recreated at new addresses); the
-	// non-spatial-edit-skips-the-TLAS result needs the slice-3 stable-object apply.
-	std::printf( "    NOTE: incremental APPLY %.1f us (O(closure . log N)); closure COMPUTE %.1f us (O(N log N)) currently dominates\n", incrAt[2], cloAt[2] );
-	std::printf( "          -- a maintained reference graph (slice 1) makes the closure O(closure); a stable-object apply (slice 3) lets non-spatial edits skip the TLAS.\n" );
+	std::printf( "    SPATIAL edit additionally pays the TLAS rebuild %.1f us (O(N log N)); a NON-SPATIAL edit SKIPS it -- post-edit prepare is %.1f us (the BVH stays valid).\n",
+		prepSpatAt[2], prepNonAt[2] );
+	std::printf( "    (a full non-incremental re-derive instead costs %.1f us; the incremental re-apply + the skipped TLAS are the saving.)\n", fullAt[2] );
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
