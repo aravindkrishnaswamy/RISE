@@ -342,7 +342,7 @@ until it is green:
    named managers by name, so category addressing is a CST-navigation nicety, not load-bearing for
    items 5–8. ← next: item 6 (reference tracing through the real resolver).
 6. **Trace references through the real resolver** and test a **three-level** dependency chain.
-   **DONE (pending review).** `TraceReferences(doc)` builds the reference graph (D14/D25, §2.5) via a
+   **DONE.** `TraceReferences(doc)` builds the reference graph (D14/D25, §2.5) via a
    DESCRIPTOR-BASED resolver (D14's "descriptor-provided reference resolver") that uses the SAME
    category-name keying the engine's managers use (so it agrees with the engine for the references the
    descriptor DECLARES, modulo the (category,name) coarseness noted in SCOPE):
@@ -376,7 +376,13 @@ until it is green:
    Function). The production primary path (D35) records `ReferenceUse` FROM the actual derivation
    resolver as it runs (no parallel pass → no drift, dynamic refs captured); this pass is the
    transfer-gate demonstration of the graph + its uses (rename / closure / dangling), with that
-   derive-time tracing deferred. ← next: item 7 (structured edits + free-form reparses).
+   derive-time tracing deferred. **Item-6 review: 6 self-driven rounds** — rounds 1-2 found the real
+   defects (the tuple-Reference class: advanced_shader.shaderop + voronoi{2d,3d}.gen, then
+   scalar_painter.multiply — static refs the descriptors declared as `String`, silently missed by the
+   initial 3-level-chain test); rounds 3-6 were doc-honesty (stale count, test-header enumeration, an
+   unbacked perf figure, the real-resolver goal-name); round 6 CONVERGED (correctness + doc reviewers
+   both ZERO P1s; an independent 168-Reference-declaration dragnet confirmed the four tuple-Reference
+   sites are the complete static set). ← next: item 7 (structured edits + free-form reparses).
 7. Exercise **structured edits AND free-form reparses**, including **chunk identity + rename**.
 8. **Measure a non-spatial edit AND a spatial edit; report TLAS time separately.**
 
