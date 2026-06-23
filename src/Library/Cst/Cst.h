@@ -399,6 +399,33 @@ namespace RISE
 		//! resolve the chunk by name, then its param by role. O(log N).
 		NodeId DocParamId( const Document& doc, NodeId chunkId, const std::string& role, int occ = 0 );
 
+		//! One traced reference edge (D14/D25, the §2.5 reference graph): a
+		//! resolved reference FROM a referring param TO the chunk it names.
+		//!   * sourceValueNodeId -- the NodeId of the referring param (e.g. an
+		//!     object's `material` param). The design (D14) calls this the
+		//!     reference's VALUE node; at item-4 identity granularity the finest
+		//!     stable handle is the PARAM NodeId (value-ATOM sub-identity is the
+		//!     deferred RepeatGroup-era refinement), and for a single-value
+		//!     reference param the param IS the value holder, so it is exact.
+		//!   * targetNodeId -- the NodeId of the referenced chunk (the chunk in the
+		//!     param's reference category whose `name` matches the referring value).
+		struct ReferenceUse { NodeId sourceValueNodeId; NodeId targetNodeId; };
+
+		//! Trace the document's reference graph (item 6) through the SAME resolution
+		//! the engine performs: a reference value names a chunk by (category, name)
+		//! in the descriptor-derived category namespace (Geometry -> geometry/,
+		//! Material -> materials/, ... -- exactly how the named managers key, §2.5),
+		//! and resolution finds the defining chunk of that name in one of the
+		//! param's `referenceCategories`. Returns a `ReferenceUse` per resolved
+		//! EXPLICIT reference (params actually present with a non-"none" value;
+		//! descriptor defaults and the explicit-"none" idiom are not edges). A
+		//! reference whose target is defined by NO chunk in any of its categories is
+		//! a DANGLING reference -- reported in `diagnostics` (when non-null), never a
+		//! silent edge. This is the graph D14 renames rewrite referrers from and D25
+		//! incremental re-derivation walks for the dependency closure. O(N log N)
+		//! (a chunk's NodeId is an O(log N) positional lookup per item).
+		std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std::string>* diagnostics = nullptr );
+
 		//! Reparse `newText` and carry NodeIds from `oldDoc` via FOUR hashed passes
 		//! (D9/D15/D44: lineage survives rename + reparse on a BEST-EFFORT basis;
 		//! genuine ambiguity is invalidated, never position-guessed):

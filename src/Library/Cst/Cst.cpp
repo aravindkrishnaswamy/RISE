@@ -915,6 +915,23 @@ std::string SerializeCst( const Document& doc )
 	return s;
 }
 
+//! The LIVE chunk-parser registry (item 5), shared by DeriveToJob and
+//! TraceReferences: one instance of every chunk parser the grammar supports,
+//! kept alive for the process (so each parser's descriptor + Finalize stay
+//! valid), keyed by the registry's dispatch keyword (which carries aliases).
+//! Built once; the parse/derive context is single-threaded and the function-
+//! static init is thread-safe.
+static const std::map<std::string, const IAsciiChunkParser*>& DescriptorRegistry()
+{
+	static const std::vector<ChunkParserEntry> entries = CreateAllChunkParsers();
+	static const std::map<std::string, const IAsciiChunkParser*> reg = [&]{
+		std::map<std::string, const IAsciiChunkParser*> m;
+		for( const auto& e : entries ) m[e.keyword] = e.parser.get();
+		return m;
+	}();
+	return reg;
+}
+
 int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics )
 {
 	std::vector<std::string> local;
@@ -931,18 +948,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// every edit), giving B a Job a fresh parse of B would not.
 	ClearChunkParserState();
 
-	// The LIVE chunk-parser registry (item 5): one instance of every chunk
-	// parser the scene grammar supports, kept alive for the process so each
-	// parser's descriptor (consumed by DispatchChunkParameters) and Finalize
-	// stay valid. Keyed by the registry's dispatch keyword (which carries
-	// aliases). Built once; the parse/derive context is single-threaded and the
-	// static-local init is thread-safe.
-	static const std::vector<ChunkParserEntry> registryEntries = CreateAllChunkParsers();
-	static const std::map<std::string, const IAsciiChunkParser*> registry = []{
-		std::map<std::string, const IAsciiChunkParser*> m;
-		for( const auto& e : registryEntries ) m[e.keyword] = e.parser.get();
-		return m;
-	}();
+	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
 
 	// PASS 1 -- validate EVERY chunk through the live descriptor registry, the
 	// SAME validation the legacy parser runs (DispatchChunkParameters: rejects a
@@ -1012,6 +1018,71 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		break;
 	}
 	return count;
+}
+
+std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std::string>* diagnostics )
+{
+	std::vector<std::string> local;
+	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
+	std::vector<ReferenceUse> uses;
+
+	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
+	std::vector<NodeRef> items;
+	SeqToVec( doc.items, items );
+
+	// PASS A -- index every chunk's definition by (category, name) -> NodeId: the
+	// descriptor-derived category namespace the named managers key on (§2.5), so a
+	// reference resolves to the chunk of that name in the referenced CATEGORY,
+	// regardless of which keyword defined it (sphere_geometry / box_geometry both
+	// answer to category Geometry). On a duplicate (category,name) keep the FIRST,
+	// matching the manager's first-wins AddItem (the derive layer rejects dups).
+	std::map<std::pair<int,std::string>, NodeId> defs;
+	for( size_t i = 0; i < items.size(); ++i ) {
+		const NodeRef& c = items[i];
+		if( c->kind != NodeKind::Chunk ) continue;
+		std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( c->role );
+		if( it == registry.end() ) continue;                       // unknown chunk: not a target
+		std::string name;
+		if( !ParamValue( c.get(), "name", name ) || name.empty() ) continue;   // unnamed: not referenceable
+		const std::pair<int,std::string> key( (int)it->second->Describe().category, name );
+		if( defs.find( key ) == defs.end() ) defs[key] = DocNodeIdAt( doc, (int)i );
+	}
+
+	// PASS B -- for every chunk, resolve each EXPLICIT reference: a param actually
+	// present whose descriptor kind is Reference, with a non-"none" value. Record
+	// a ReferenceUse{ referring-param NodeId, target chunk NodeId } per resolved
+	// reference; an unresolvable one is a dangling reference (diagnostic), never a
+	// silent edge.
+	for( size_t i = 0; i < items.size(); ++i ) {
+		const NodeRef& c = items[i];
+		if( c->kind != NodeKind::Chunk ) continue;
+		std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( c->role );
+		if( it == registry.end() ) continue;
+		const ChunkDescriptor& desc = it->second->Describe();
+		const NodeId chunkId = DocNodeIdAt( doc, (int)i );
+		std::map<std::string,int> occ;   // per-role occurrence index, for DocParamId
+		for( const auto& kid : c->kids ) {
+			if( kid->kind != NodeKind::Param ) continue;
+			const std::string role = kid->role;
+			const int thisOcc = occ[role]++;
+			const ParameterDescriptor* pd = 0;
+			for( const auto& p : desc.parameters ) if( p.name == role ) { pd = &p; break; }
+			if( !pd || pd->kind != ValueKind::Reference ) continue;
+			const std::string val = ParamNodeValue( kid.get() );
+			if( val.empty() || val == "none" ) continue;           // explicit-none / empty: not an edge
+			NodeId target = 0;
+			for( ChunkCategory rc : pd->referenceCategories ) {
+				std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( (int)rc, val ) );
+				if( d != defs.end() ) { target = d->second; break; }
+			}
+			if( target == 0 ) {
+				diags.push_back( c->role + "." + role + " -> '" + val + "': unresolved reference" );
+				continue;
+			}
+			uses.push_back( ReferenceUse{ DocParamId( doc, chunkId, role, thisOcc ), target } );
+		}
+	}
+	return uses;
 }
 
 int    DocItemCount  ( const Document& doc ) { return SeqCount( doc.items ); }

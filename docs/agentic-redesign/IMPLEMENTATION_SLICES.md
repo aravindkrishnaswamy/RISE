@@ -342,6 +342,22 @@ until it is green:
    named managers by name, so category addressing is a CST-navigation nicety, not load-bearing for
    items 5–8. ← next: item 6 (reference tracing through the real resolver).
 6. **Trace references through the real resolver** and test a **three-level** dependency chain.
+   **DONE (pending review).** `TraceReferences(doc)` builds the reference graph (D14/D25, §2.5) the same
+   resolution the engine performs: PASS A indexes every chunk's definition by **(category, name) →
+   NodeId** — the descriptor-derived category namespace the named managers key on (Geometry → geometry/,
+   Material → materials/, …, so a reference resolves to the named chunk in the referenced CATEGORY
+   regardless of keyword); PASS B records a **`ReferenceUse { sourceValueNodeId, targetNodeId }`** per
+   EXPLICIT reference (a param present whose descriptor kind is `Reference`, value ≠ `none`), resolving
+   the value across the param's `referenceCategories`. An unresolvable reference is a **dangling**
+   diagnostic, never a silent edge. `sourceValueNodeId` is the referring param's NodeId (item-4
+   granularity; value-atom sub-identity is the deferred refinement, and for a single-value ref the param
+   IS the value holder). The registry is now a shared `DescriptorRegistry()` helper (DeriveToJob +
+   TraceReferences). Test `tests/CstReferenceTraceTest.cpp` on the canonical 3-level chain
+   (object→geometry, object→material→reflectance painter): the exact edges incl. the object→material→
+   painter chain; source/target NodeIds resolve to the right Param/Chunk; **rename** referrers found from
+   the graph (the only referrer of the painter is material.reflectance — D14); the **transitive closure**
+   is walkable (D25); dangling ref flagged; explicit `none` is not an edge. Cost O(N log N) (a chunk's
+   NodeId is an O(log N) positional lookup). ← next: item 7 (structured edits + free-form reparses).
 7. Exercise **structured edits AND free-form reparses**, including **chunk identity + rename**.
 8. **Measure a non-spatial edit AND a spatial edit; report TLAS time separately.**
 
