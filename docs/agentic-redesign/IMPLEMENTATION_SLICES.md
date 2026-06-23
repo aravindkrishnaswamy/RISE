@@ -3,10 +3,14 @@
 > **Status (2026-06-23):** the design package (00–60 + `01-DECISIONS.md` D1–D51) is
 > backed by the four original prototype slices **and** an in-tree CST kernel
 > (`src/Library/Cst/Cst.{h,cpp}` + `tests/Cst*Test`) carrying transfer-gate items
-> 1–8. A bulk review of items 5–8 returned **nine P1 blockers**; item 8's drop/re-add
-> apply and parallel reference scan are being replaced by a **stable-object in-place
-> apply + shared resolver** (design: [21-stable-apply-and-resolver.md](21-stable-apply-and-resolver.md),
-> slices 0–5). Items 5–7 stand; item 8 is **NOT green** (see its entry). This doc maps
+> 1–8. A bulk review of items 5–8 returned **nine P1 blockers**; item 8's first
+> drop/re-add apply and parallel reference scan are being **replaced by a stable-object
+> in-place apply + shared resolver** (design: [21-stable-apply-and-resolver.md](21-stable-apply-and-resolver.md),
+> slices 0–5). **Slices 0–3 have LANDED** (interim safety, the shared resolver, atomic
+> rename, and the stable-object in-place apply — objects are re-pointed in place and a
+> non-spatial edit now skips the TLAS); the remaining gate is **slice 4 (the item-8
+> wall-clock MEASUREMENT)** plus slice 5 (route the parser lookups through the resolver).
+> Items 5–7 stand; item 8's measurement gate is not yet met (see its entry). This doc maps
 > each slice to the decisions it validates, states its gates, and is candid about what
 > is **not yet proven**.
 
