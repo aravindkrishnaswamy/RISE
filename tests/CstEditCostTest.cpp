@@ -16,40 +16,39 @@
 //      [edit-visits]  DocSetParamValue's path-copy depth is O(log N).
 //
 //    WALL-CLOCK (median of K trials, microseconds, scaling N):
-//      [edit]         DocSetParamValue                -> O(log N)   (flat)
+//      [edit]         DocSetParamValue                -> O(log N)        (flat)
 //      [closure]      DocEditClosure (compute it)     -> O(N log N) (re-traces the
-//                     whole graph each call; a maintained graph would be O(closure))
-//      [incremental]  DeriveToJobIncremental(closure) -> O(closure) (flat) AND it
-//                     produces a Job byte-identical (DumpJob) to a full re-derive
-//      [full]         DeriveToJob (whole scene)       -> O(N)       (the baseline
+//                     whole graph each call; a maintained graph -- slice 1 -- O(closure))
+//      [incremental]  DeriveToJobIncremental(closure) -> O(closure . log N) (cheap,
+//                     ~flat in N) AND produces a Job byte-identical (DumpJob) to a full
+//                     re-derive (NOT flat O(closure): manager ops + the sort carry log N)
+//      [full]         DeriveToJob (whole scene)       -> O(N log N)  (the baseline
 //                     the incremental path beats)
 //      [TLAS]         IObjectManager::PrepareForRendering (the top-level BVH4 build)
-//                     -> O(N log N), the SEPARATE spatial-edit cost
+//                     -> O(N log N), the spatial-edit cost, reported separately
 //
-//    DECOMPOSITION (the headline, in measured microseconds):
-//      NON-spatial edit (here: re-point an object's material reference) = edit +
-//        closure + incremental re-derive; the object bounding boxes are unchanged
-//        so the TLAS is NOT rebuilt -- that O(N log N) cost is SAVED.
-//      SPATIAL edit (geometry shape / object transform / object geometry-ref) =
-//        the same + the measured O(N log N) TLAS rebuild.
-//
-//  WHAT THE WALL-CLOCK SURFACES (honestly): the incremental APPLY is already
-//  O(closure) (~4 us, flat in N) -- thousands of times cheaper than the full
-//  O(N) re-derive -- BUT computing the closure (DocEditClosure re-traces the whole
-//  reference graph each call) is O(N log N) and currently DOMINATES a non-spatial
-//  edit. The TLAS rebuild (the spatial premium) is real but SMALLER than that
-//  closure scan at these N. So a non-spatial edit today still scans the graph once,
-//  yet never pays the full O(N) Job re-derive and never rebuilds the TLAS.
+//  WHAT THE WALL-CLOCK SURFACES (honestly, post-bulk-review):
+//    1. The incremental APPLY is O(closure . log N) -- thousands of times cheaper
+//       than the full O(N log N) re-derive -- BUT computing the closure
+//       (DocEditClosure re-traces the whole graph each call) is O(N log N) and
+//       currently DOMINATES a non-spatial edit. A maintained reference graph
+//       (slice 1) makes the closure O(closure . log N).
+//    2. This is a DROP/RE-ADD apply: it recreates the closure's objects at NEW
+//       addresses, so it invalidates + REBUILDS the TLAS on EVERY object-touching
+//       edit (review P1.1/P1.2). A non-spatial edit does NOT skip the TLAS here --
+//       that result requires the slice-3 STABLE-OBJECT apply (re-point address-stable
+//       objects in place). See docs/agentic-redesign/21-stable-apply-and-resolver.md.
 //
 //  HONEST SCOPE: DeriveToJobIncremental is the real in-tree incremental-apply
-//  primitive (drop the closure via IJob's typed removal, re-Finalize it). It
-//  handles the five verified single-manager categories; a PAINTER-value edit is
-//  REFUSED (a painter dual-registers in the func2d manager that RemovePainter does
-//  not clear) so it falls back to a full re-derive -- demonstrated below. Still
-//  deferred (Facet-2, as DeriveToJob defers it): node-granular memoization, full
-//  post-Finalize rollback, multi-manager rollback (so painters re-derive
-//  incrementally too), and maintaining the reference graph incrementally so
-//  DocEditClosure itself becomes O(closure) instead of O(N log N).
+//  primitive (drop the closure via IJob's typed removal, re-Finalize it, then
+//  invalidate the TLAS + bump light-gen since objects were recreated). It accepts
+//  only PER-PARSER-reversible chunks: it REFUSES painters (func2d dual-registration),
+//  composed/PBR materials (helper painters -- IsMaterialComposed), and
+//  translucent_material (reads ambient parser cache); those fall back to a full
+//  re-derive (D51: never a silent partial undo). Still ahead (this doc's slices):
+//  the stable-object apply (slice 3) so non-spatial edits skip the TLAS, the shared
+//  resolver + maintained graph (slice 1) so the closure is O(closure), atomic
+//  rename (slice 2), and the reversible apply plan with full rollback (slice 4).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -238,31 +237,36 @@ int main()
 	// What the wall-clock proves (robust, large-N magnitude separations).
 	//----------------------------------------------------------------------
 	std::printf( "[verdict]\n" );
-	// The incremental re-derive (re-apply the O(closure) closure) is dramatically
-	// cheaper than a full O(N) re-derive at large N -- the redesign's core win.
-	Check( incrAt[2] * 4 < fullAt[2], "incremental re-derive >=4x cheaper than a full re-derive at N=4096" );
-	// The full re-derive scales with N (it does ~N chunk applies); the incremental
-	// does NOT (it does |closure| applies regardless of N).
-	Check( fullAt[2] > fullAt[0] * 2.0, "full re-derive grows with N (scales ~O(N))" );
-	Check( incrAt[2] < incrAt[0] * 6.0 + 50.0, "incremental re-derive ~invariant to N (O(closure), not O(N))" );
-	// The TLAS build is a real, separately-measured cost that grows with N.
-	Check( tlasAt[2] > 0.0 && tlasAt[2] > tlasAt[0], "TLAS (top-level BVH) build measured + grows with N (O(N log N))" );
+	// The incremental re-apply (the closure only) is dramatically cheaper than a full
+	// re-derive at large N -- the redesign's core win. Its cost is O(closure . log N)
+	// (per-member identity lookup + std::map manager remove/insert + an O(C log C)
+	// sort), NOT flat O(closure): the wall-clock is flat only because C is fixed and
+	// log N grows slowly. The full re-derive is O(N . log N). (R13: no flat O(closure)
+	// before persistent O(1) managers exist; we assert ratios/scaling, never const-vs-log.)
+	Check( incrAt[2] * 4 < fullAt[2], "incremental re-apply >=4x cheaper than a full re-derive at N=4096" );
+	Check( fullAt[2] > fullAt[0] * 2.0, "full re-derive grows with N (~O(N log N))" );
+	Check( incrAt[2] < incrAt[0] * 6.0 + 50.0, "incremental re-apply ~flat in N (O(closure . log N), not O(N log N))" );
+	Check( tlasAt[2] > 0.0 && tlasAt[2] > tlasAt[0], "TLAS (top-level BVH) build measured + grows with N (~O(N log N))" );
 
 	std::printf( "  decomposition at N=4096 (microseconds):\n" );
-	std::printf( "    NON-spatial edit = edit(%.1f) + closure(%.1f) + incremental(%.1f)            [NO TLAS]  = %.1f us\n",
-		editAt[2], cloAt[2], incrAt[2], editAt[2] + cloAt[2] + incrAt[2] );
-	std::printf( "    SPATIAL     edit = edit(%.1f) + closure(%.1f) + incremental(%.1f) + TLAS(%.1f) = %.1f us\n",
-		editAt[2], cloAt[2], incrAt[2], tlasAt[2], editAt[2] + cloAt[2] + incrAt[2] + tlasAt[2] );
-	std::printf( "    (a full non-incremental re-derive would instead cost %.1f us; the TLAS rebuild is the spatial premium.)\n", fullAt[2] );
-	// HONEST finding the wall-clock surfaces: the incremental APPLY is already
-	// O(closure) (%.1f us, flat), but COMPUTING the closure (DocEditClosure, which
-	// re-traces the whole reference graph each call) is O(N log N) and currently
-	// DOMINATES the non-spatial edit. Realizing the full O(closure) end-to-end needs
-	// the reference graph maintained incrementally (Facet-2); until then a
-	// non-spatial edit still scans the graph once, though it never pays the full
-	// O(N) Job re-derive and never rebuilds the TLAS.
-	std::printf( "    NOTE: the incremental APPLY is O(closure) (%.1f us); the O(N log N) closure COMPUTATION (%.1f us)\n", incrAt[2], cloAt[2] );
-	std::printf( "          currently dominates -- a maintained reference graph (Facet-2) would make the closure O(closure) too.\n" );
+	// HONEST (review P1.1/P1.2): this DROP/RE-ADD incremental recreates the closure's
+	// objects at NEW addresses, so it invalidates + REBUILDS the TLAS on EVERY
+	// object-touching edit -- a non-spatial edit does NOT skip it here. Skipping the
+	// TLAS for non-spatial edits needs the slice-3 STABLE-OBJECT apply (re-point
+	// stable objects in place); see docs/agentic-redesign/21-stable-apply-and-resolver.md.
+	std::printf( "    edit %.1f us + closure-compute %.1f us + incremental-apply %.1f us  (closure-compute O(N log N) dominates -- maintained-graph would be O(closure))\n",
+		editAt[2], cloAt[2], incrAt[2] );
+	std::printf( "    + TLAS rebuild %.1f us  -- paid by EVERY object-touching edit under drop/re-add (slice-3 stable-object apply lets non-spatial edits skip it)\n", tlasAt[2] );
+	std::printf( "    (a full non-incremental re-derive instead costs %.1f us; the incremental re-apply is the saving, the TLAS the separately-reported spatial cost.)\n", fullAt[2] );
+	// HONEST findings the wall-clock surfaces: (1) the incremental APPLY is
+	// O(closure . log N) (cheap, ~flat in N), but COMPUTING the closure
+	// (DocEditClosure re-traces the whole reference graph each call) is O(N log N) and
+	// currently DOMINATES the non-spatial edit -- a maintained graph (slice 1) makes
+	// it O(closure . log N). (2) Under this drop/re-add apply the TLAS is rebuilt on
+	// every object-touching edit (objects recreated at new addresses); the
+	// non-spatial-edit-skips-the-TLAS result needs the slice-3 stable-object apply.
+	std::printf( "    NOTE: incremental APPLY %.1f us (O(closure . log N)); closure COMPUTE %.1f us (O(N log N)) currently dominates\n", incrAt[2], cloAt[2] );
+	std::printf( "          -- a maintained reference graph (slice 1) makes the closure O(closure); a stable-object apply (slice 3) lets non-spatial edits skip the TLAS.\n" );
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;

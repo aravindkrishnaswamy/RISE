@@ -1,11 +1,14 @@
 # Agentic Redesign — Implementation Slices (review guide)
 
-> **Status:** the design package (00–60 + `01-DECISIONS.md` D1–D51, six review rounds)
-> is now backed by **four working, adversarially-reviewed prototype slices**. This doc is the
-> entry point for an **external review of the implementation** before committing to the next
-> phase (productionization vs more feature slices). It maps each slice to the decisions it
-> validates, states the gates it meets, and — most importantly — is candid about what is **not
-> yet proven** so the review can target the real risk.
+> **Status (2026-06-23):** the design package (00–60 + `01-DECISIONS.md` D1–D51) is
+> backed by the four original prototype slices **and** an in-tree CST kernel
+> (`src/Library/Cst/Cst.{h,cpp}` + `tests/Cst*Test`) carrying transfer-gate items
+> 1–8. A bulk review of items 5–8 returned **nine P1 blockers**; item 8's drop/re-add
+> apply and parallel reference scan are being replaced by a **stable-object in-place
+> apply + shared resolver** (design: [21-stable-apply-and-resolver.md](21-stable-apply-and-resolver.md),
+> slices 0–5). Items 5–7 stand; item 8 is **NOT green** (see its entry). This doc maps
+> each slice to the decisions it validates, states its gates, and is candid about what
+> is **not yet proven**.
 
 All four slices are committed on `feature/gui-snapshot-prototype` (unpushed). They are
 self-contained C++ test executables under `tests/`, sharing one prototype CST in
@@ -411,45 +414,28 @@ until it is green:
    identity/derive/reference invariant) + a final P2 polish (a name-less-chunk rename is now a diagnosed
    no-op, not silent). ← next: item 8 (spatial + non-spatial edit cost).
 8. **Measure a non-spatial edit AND a spatial edit; report TLAS time separately.**
-   **DONE (pending review).** Two new kernel ops + a wall-clock harness. `DocEditClosure(doc, chunkId)`
-   computes the re-derive closure (the chunk + its transitive dependents over the reference graph, D25).
-   `DeriveToJobIncremental(doc, job, closure)` is the real in-tree incremental-apply primitive: it drops
-   each closure chunk via IJob's typed removal and re-Finalizes it, re-applying ONLY the closure into an
-   already-derived Job. Test `tests/CstEditCostTest.cpp` (20 checks) measures the cost model — analytic
-   AND **wall-clock (median µs, scaling N)**. (The absolute µs/ms below are indicative — they vary with
-   machine + load; the SCALING and the cross-operation RATIOS are the robust, asserted claims, and the
-   test prints the live table each run.)
-   - **[edit]** `DocSetParamValue` O(log N): path-copy visits **6 / 9 / 12** at N=8/64/512; wall-clock
-     **~6–7 µs flat**.
-   - **[closure size]** O(closure): editing `material0` re-derives `{material0, object0}` = **2,
-     INVARIANT to N**; transitive `painter0` = 3; a SHARED material → **N+1** (proportional to dependents).
-   - **[incremental apply]** `DeriveToJobIncremental` is O(closure): **~4 µs, FLAT in N**, and produces a
-     Job byte-identical (DumpJob) to a full re-derive (verified for a spatial geometry edit — bsphere +
-     bbox — and a non-spatial material re-point).
-   - **[full re-derive]** `DeriveToJob` O(N): **~2 / 9 / 38 ms** at N=256/1024/4096 — the incremental
-     apply is **~10⁴× cheaper** at N=4096.
-   - **[TLAS]** `IObjectManager::PrepareForRendering` (the top-level BVH4 build) wall-clocked **directly**
-     at **~31 / 81 / 312 µs** — O(N log N), the SEPARATE spatial-edit premium. A NON-spatial edit
-     (material/object value) changes no world bbox → TLAS NOT rebuilt → that cost is SAVED; a SPATIAL
-     edit (geometry shape / object transform / object geometry-ref) pays it.
-   **Honest findings the wall-clock surfaces:** (a) the incremental APPLY is already O(closure), but
-   COMPUTING the closure (`DocEditClosure` re-traces the whole reference graph each call) is O(N log N)
-   and currently DOMINATES a non-spatial edit (~28 ms vs the ~4 µs apply at N=4096) — realizing the full
-   O(closure) end-to-end needs the reference graph maintained incrementally (Facet-2); even so a
-   non-spatial edit never pays the full O(N) Job re-derive and never rebuilds the TLAS. (b) A PAINTER-VALUE
-   edit is REFUSED by `DeriveToJobIncremental` (a painter dual-registers in the painter AND function-2D
-   managers, but `RemovePainter` clears only the painter manager — D51, never a silent corruption) and
-   falls back to a full re-derive; only the five verified single-manager categories (Material / Geometry /
-   Object / Light / Modifier) re-derive incrementally. Multi-manager rollback (so painters/cameras
-   re-derive incrementally too), node-granular memoization, and full post-Finalize rollback are deferred
-   (Facet-2), as `DeriveToJob` defers them.
+   **NOT GREEN — bulk review (2026-06-23) found nine P1 blockers; under redesign.** The central result
+   ("non-spatial edits skip the TLAS at true O(closure)") is **invalid as built**: the drop/re-add apply
+   recreates objects at new addresses, so it must rebuild the TLAS on every object-touching edit (P1.1
+   stale-TLAS/UAF, P1.2 no-TLAS false); reversibility was per-category not per-parser (P1.3 PBR helpers),
+   failed drops were ignored + rename-through-incremental removed the wrong name (P1.4), the apply leaned
+   on ambient thread-local caches (P1.5); `DocRename` committed partial renames (P1.6) and missed the
+   runtime namespace + empty names (P1.7); `TraceReferences` is a parallel scan, not the D35 resolver, yet
+   consumed as authoritative (P1.8); and the cost bounds were imprecise — apply is O(closure·log N), full
+   is O(N·log N), not O(closure)/O(N) (P1.9, R13). **Slice 0 (landed) makes the interim drop/re-add apply
+   SAFE + the docs HONEST** (invalidate TLAS + bump light-gen on object recreation; refuse composed/painter/
+   translucent + abort-on-failed-drop; retract the no-TLAS/O(closure) claims). The valid result comes from
+   the **stable-object apply + shared resolver** in [21-stable-apply-and-resolver.md](21-stable-apply-and-resolver.md)
+   (slices 1–5). The original (now-retracted) write-up follows for reference:
 
 That is the gate that turns "the model and cost-model hold in prototypes" into "the redesign's real
-CST path is O(closure) for non-spatial edits, with spatial cost reported honestly." **With items 1-8
-landed, the transfer gate is GREEN** (pending the item-8 review): the in-tree `src/Library/Cst` kernel
-carries a scene losslessly, derives it identically to the legacy parser through the live descriptor
-registry, traces its reference graph, applies structured edits + reparses + rename with NodeId lineage,
-and the edit cost model is measured in wall-clock (incremental apply O(closure); full re-derive O(N);
-TLAS O(N log N) for spatial, separate; closure-computation O(N log N) until graph-maintenance lands) —
-all under multi-round adversarial review. (expr / RepeatGroup / instance_array were kept OUT until the
-gate is green; they are the next increment.)
+CST path is O(closure·log N) for non-spatial edits, with spatial cost reported honestly." **Items 1–7
+are landed and reviewed; item 8 is NOT green** — the bulk review showed its central result needs the
+stable-object apply + shared resolver ([21-stable-apply-and-resolver.md](21-stable-apply-and-resolver.md)).
+What IS true today: the in-tree `src/Library/Cst` kernel carries a scene losslessly, derives it
+identically to the legacy parser through the live descriptor registry, traces a (static, descriptor-scoped)
+reference graph, and applies structured edits + reparse + rename with NodeId lineage; the interim
+incremental apply is SAFE (slice 0) but drop/re-add, so it rebuilds the TLAS on every object-touching
+edit and the apply is O(closure·log N) / full derive O(N·log N). The valid "non-spatial skips the TLAS"
+result, true O(closure) closure-finding, an authoritative D35 graph, atomic rename, and full rollback are
+slices 1–5 of doc 21. (expr / RepeatGroup / instance_array remain OUT until the gate is green.)

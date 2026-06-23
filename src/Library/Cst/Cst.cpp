@@ -1099,6 +1099,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// work DeriveToJob defers; for a validation-clean closure no Finalize fails.)
 	struct Pending { const IAsciiChunkParser* parser; ParseStateBag bag; NodeRef node; int index; ChunkCategory cat; std::string name; };
 	std::vector<Pending> pending;
+	bool recreatedObject = false;                 // closure recreates an object -> TLAS holds stale pointers
 	pending.reserve( chunkIds.size() );
 	for( NodeId id : chunkIds ) {
 		NodeRef node;
@@ -1117,6 +1118,18 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			case ChunkCategory::Object:  case ChunkCategory::Light: case ChunkCategory::Modifier: break;
 			default: diags.push_back( node->role + ": incremental cannot fully drop this category (e.g. a painter dual-registers in the function-2D manager); fall back to a full derive" ); return 0;
 		}
+		// Reversibility is PER-PARSER, not per-category (review P1.3/P1.5): refuse the
+		// chunk types whose Finalize is NOT a clean single-manager create-and-undo, so
+		// nothing is half-dropped (D51).  The caller then falls back to a full derive.
+		if( cat == ChunkCategory::Material && pJob.IsMaterialComposed( name.c_str() ) ) {
+			diags.push_back( node->role + " '" + name + "': composed material (creates helper painters); a typed RemoveMaterial is an incomplete undo -- fall back to a full derive" );
+			return 0;
+		}
+		if( node->role == "translucent_material" ) {            // re-Finalize reads the ambient painter-colour cache
+			diags.push_back( node->role + " '" + name + "': re-Finalize reads ambient thread-local parser state (the painter-colour cache); not yet incrementally re-derivable -- fall back to a full derive" );
+			return 0;
+		}
+		if( cat == ChunkCategory::Object ) recreatedObject = true;
 		ParseStateBag bag( &parser->Describe() );
 		if( !DispatchChunkParameters( parser->Describe(), bag, plist ) ) { diags.push_back( node->role + ": invalid parameter(s) (see log)" ); return 0; }
 		pending.push_back( Pending{ parser, std::move(bag), node, idx, cat, name } );
@@ -1125,12 +1138,36 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// Apply in DOCUMENT order (a producer before its consumer) -- the closure from
 	// DocEditClosure returns an unspecified (DFS) order, so sort by doc index here.
 	std::sort( pending.begin(), pending.end(), []( const Pending& a, const Pending& b ){ return a.index < b.index; } );
-	for( const Pending& p : pending ) DropChunkByCategory( pJob, p.cat, p.name.c_str() );
+	for( const Pending& p : pending ) {
+		if( DropChunkByCategory( pJob, p.cat, p.name.c_str() ) ) continue;
+		// A drop that finds nothing means the closure name does not match the derived
+		// Job -- e.g. a rename was applied to the document (incremental is value-edit
+		// only; rename goes through its own path).  Do NOT silently re-add (that would
+		// leave BOTH the old and the new entity and return success -- review P1.4):
+		// abort.  The Job is now partially modified; the caller must reset+re-derive.
+		// (Atomic rollback of a partial apply is the slice-4 reversible plan --
+		// docs/agentic-redesign/21-stable-apply-and-resolver.md.)
+		diags.push_back( p.node->role + " '" + p.name + "': drop found no such entity in the derived Job (a rename or stale closure?); aborting -- a full reset+re-derive is required" );
+		if( recreatedObject ) pJob.InvalidateSpatialStructure();
+		return 0;
+	}
 	int count = 0;
 	for( Pending& p : pending ) {
 		if( p.parser->Finalize( p.bag, pJob ) ) { ++count; continue; }
 		diags.push_back( p.node->role + ": incremental apply failed (e.g. unresolved reference); see log" );
 		break;
+	}
+	// The drop/re-add recreated the closure's objects at NEW addresses, so the
+	// top-level acceleration structure now holds STALE object pointers -- invalidate
+	// it (review P1.1: a render through the retained BVH would dangle).  This is the
+	// conservative drop/re-add cost: every object-touching edit rebuilds the TLAS, so
+	// drop/re-add CANNOT deliver the "non-spatial edit skips the TLAS" result (review
+	// P1.2) -- that needs the slice-3 stable-object apply, which invalidates only for
+	// genuinely spatial edits.  Also bump the light-topology generation (the emitter
+	// set may have changed); cheap, triggers a sampler rebuild only if needed.
+	if( recreatedObject ) {
+		pJob.InvalidateSpatialStructure();
+		pJob.BumpLightTopologyGeneration();
 	}
 	return count;
 }

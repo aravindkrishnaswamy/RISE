@@ -2666,6 +2666,22 @@ namespace RISE
 			const char* name								///< [in] Name of the modifer to remove
 			) = 0;
 
+		//! Invalidates the top-level acceleration structure (TLAS) so the next
+		//! render rebuilds it.  An incremental re-derivation that recreated objects
+		//! (new addresses) or changed any object's world bounding box MUST call this
+		//! -- the TLAS holds raw object pointers, so a stale BVH would dangle (see
+		//! docs/agentic-redesign/21-stable-apply-and-resolver.md).  Default no-op so
+		//! non-scene IJob impls are unaffected; the real Job delegates to its
+		//! IObjectManager::InvalidateSpatialStructure.
+		virtual void InvalidateSpatialStructure() {}
+
+		//! Bumps the scene's light-topology generation so the next AttachScene
+		//! rebuilds the light/environment samplers (mirrors the SceneEditor path).
+		//! An incremental re-derivation that may have changed the emitter set
+		//! (recreated/re-pointed an emissive material or object) MUST call this.
+		//! Default no-op; the real Job bumps its Scene's generation counter.
+		virtual void BumpLightTopologyGeneration() {}
+
 		//! Clears the entire scene, resets everything back to defaults
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool ClearAll(

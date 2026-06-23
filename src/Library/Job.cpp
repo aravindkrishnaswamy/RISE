@@ -9251,6 +9251,16 @@ bool Job::RemoveModifier(
 	return pModManager->RemoveItem( name );
 }
 
+void Job::InvalidateSpatialStructure()
+{
+	if( pObjectManager ) pObjectManager->InvalidateSpatialStructure();
+}
+
+void Job::BumpLightTopologyGeneration()
+{
+	BumpSceneLightGen( pScene );   // downcast-to-Scene helper, as SceneEditor does
+}
+
 //! Removes all the rasterizer outputs
 /// \return TRUE if successful, FALSE otherwise
 bool Job::RemoveRasterizerOutputs(

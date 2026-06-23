@@ -254,25 +254,31 @@ namespace RISE
 		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr );
 
 		//! Incrementally re-apply ONLY a closure (DocEditClosure) into an
-		//! already-derived Job after an edit, instead of a full DeriveToJob: it
-		//! drops each closure chunk via IJob's typed removal then re-Finalizes it,
-		//! so the work is O(closure), NOT the O(N) of a full re-derive. Pass the
-		//! EDITED document + the closure (chunkIds) DocEditClosure returned on it.
-		//! Same refuse-all contract as DeriveToJob: it validates the WHOLE closure
-		//! -- every chunk must be named AND of a category whose typed removal is a
-		//! COMPLETE undo of its Finalize (Material / Geometry / Object / Light /
-		//! Modifier, all verified single-manager) -- before touching the Job; on ANY
-		//! validation failure nothing is dropped or applied and it returns 0, so the
-		//! caller falls back to a full DeriveToJob. PAINTER closures are refused on
-		//! purpose: a painter Finalize dual-registers in the painter AND function-2D
-		//! managers but RemovePainter clears only the painter manager, so an
-		//! incremental drop+re-add would leave a stale func2d entry (D51: never a
-		//! silent corruption) -- editing a painter VALUE thus falls back to a full
-		//! re-derive. Returns the count applied (== chunkIds.size() on success).
-		//! This is the incremental-apply primitive behind the redesign's
-		//! edit->preview path; node-granular memoization, multi-manager rollback
-		//! (so painters/cameras can re-derive incrementally too), and full
-		//! post-Finalize rollback are deferred (Facet-2), as DeriveToJob defers them.
+		//! already-derived Job after an edit, instead of a full DeriveToJob: it drops
+		//! each closure chunk via IJob's typed removal then re-Finalizes it, so the
+		//! work is O(closure . log N), far below the O(N . log N) of a full re-derive.
+		//! Pass the EDITED document + the closure (chunkIds) DocEditClosure returned
+		//! on it.
+		//! THIS IS THE INTERIM DROP/RE-ADD APPLY (slice 0 of 21-stable-apply-and-
+		//! resolver.md). It is SAFE but conservative: re-applying recreates the
+		//! closure's OBJECTS at new addresses, so afterward it invalidates the TLAS +
+		//! bumps the light-topology generation (the retained BVH holds raw object
+		//! pointers -- review P1.1). Consequently it REBUILDS the TLAS on every
+		//! object-touching edit -- a non-spatial edit does NOT skip it here (review
+		//! P1.2); that result needs the slice-3 STABLE-OBJECT apply.
+		//! Refuse-all + PER-PARSER reversibility: it validates the WHOLE closure before
+		//! touching the Job -- every chunk must be named AND incrementally reversible.
+		//! It REFUSES (-> 0, caller full-re-derives; D51 never a silent partial undo):
+		//! non-single-manager categories (PAINTER dual-registers in the function-2D
+		//! manager that RemovePainter does not clear; Camera/Function/...), COMPOSED
+		//! materials (PBR creates helper painters -- IsMaterialComposed), and
+		//! translucent_material (its Finalize reads ambient thread-local parser state
+		//! -- review P1.3/P1.5). A drop that finds no such entity (a rename, or a stale
+		//! closure -- this is value-edit only) ABORTS rather than silently re-adding a
+		//! duplicate (review P1.4). Returns the count applied (== chunkIds.size() on
+		//! success). Deferred to later slices: the stable-object apply (3), the shared
+		//! resolver + maintained graph so the closure is O(closure) (1), atomic rename
+		//! (2), and full post-Finalize rollback of a partial apply (4).
 		int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<NodeId>& chunkIds, std::vector<std::string>* diagnostics = nullptr );
 
 		//==============================================================

@@ -2706,6 +2706,14 @@ namespace RISE
 			const char* name								///< [in] Name of the modifer to remove
 			);
 
+		//! Invalidates the top-level acceleration structure (see IJob).  Annotated
+		//! without `override` to match this file's house style (Job omits it on all
+		//! IJob virtuals; adding it here would wake -Winconsistent-missing-override).
+		void InvalidateSpatialStructure();
+
+		//! Bumps the scene's light-topology generation (see IJob).
+		void BumpLightTopologyGeneration();
+
 		//! Clears the entire scene, resets everything back to defaults
 		/// \return TRUE if successful, FALSE otherwise
 		bool ClearAll(
