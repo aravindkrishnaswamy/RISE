@@ -22,6 +22,7 @@
 #include "../Parsers/ChunkParserRegistry.h"   // CreateAllChunkParsers (the LIVE registry)
 #include "../Parsers/IAsciiChunkParser.h"     // IAsciiChunkParser, DispatchChunkParameters
 
+#include <algorithm>
 #include <cstdlib>
 #include <map>
 #include <unordered_map>
@@ -947,6 +948,68 @@ static const std::map<std::string, const IAsciiChunkParser*>& DescriptorRegistry
 	return reg;
 }
 
+//! PASS-1 for ONE chunk, shared by the full (DeriveToJob) and incremental
+//! (DeriveToJobIncremental) derive so they normalise params IDENTICALLY (no
+//! divergence): find the parser for the chunk's keyword; flag any value-less
+//! parameter; build the ParamsList in document order, ONE line per param
+//! occurrence, each line's name + value TOKENS joined with single spaces --
+//! exactly the normalisation the legacy parser applies (TokenizeString on
+//! " \t\r" runs + make_string_from_tokens(" ")) before DispatchChunkParameters.
+//! Returns the parser (caller constructs the bag + dispatches + Finalizes) or
+//! null + a diagnostic on an unknown chunk type. (Value-less-param diagnostics
+//! are pushed even when the parser resolves, matching the legacy reject.)
+static const IAsciiChunkParser* ResolveChunkParams(
+	const NodeRef& c,
+	const std::map<std::string, const IAsciiChunkParser*>& registry,
+	IAsciiChunkParser::ParamsList& plist,
+	std::vector<std::string>& diags )
+{
+	const std::string& kw = c->role;
+	std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( kw );
+	if( it == registry.end() ) { diags.push_back( "unknown chunk type '" + kw + "'" ); return nullptr; }
+	for( const auto& kid : c->kids )
+		if( kid->kind == NodeKind::Token && kid->role == "pname" )
+			diags.push_back( kw + ": value-less parameter '" + kid->text + "'" );
+	for( const auto& kid : c->kids )
+		if( kid->kind == NodeKind::Param ) {
+			std::string line;
+			for( const auto& tk : kid->kids )
+				if( tk->kind == NodeKind::Token ) {            // pname + pvalue tokens; skip trivia
+					if( !line.empty() ) line += ' ';
+					line += tk->text;
+				}
+			plist.push_back( String( line.c_str() ) );
+		}
+	return it->second;
+}
+
+//! Map a chunk's category to its IJob typed removal (the drop half of an
+//! incremental re-derive). The drop is a COMPLETE undo of the chunk's Finalize
+//! only when that Finalize registered the item in exactly this one manager; these
+//! five categories are verified single-manager (Geometry->geometry,
+//! Material->material, Object->object, Light->light, Modifier->modifier).
+//! Returns false for any OTHER category -- the incremental path then refuses +
+//! the caller falls back to a full DeriveToJob. Two categories are deliberately
+//! NOT here: PAINTER (a uniformcolor / image painter Finalize dual-registers in
+//! BOTH the painter manager AND the function-2D manager --
+//! Job::AddUniformColorPainter does pPntManager->AddItem + pFunc2DManager->AddItem
+//! -- but RemovePainter clears only the painter manager, so a typed drop+re-add
+//! would leave a STALE func2d entry), and CAMERA (RemoveCamera has auto-promotion
+//! semantics a blind drop+re-add would disturb). Re-deriving either needs the
+//! multi-manager rollback that is Facet-2 work; until then the caller full-
+//! re-derives those (D51: never a silent corruption).
+static bool DropChunkByCategory( IJob& pJob, ChunkCategory cat, const char* name )
+{
+	switch( cat ) {
+		case ChunkCategory::Material: return pJob.RemoveMaterial( name );
+		case ChunkCategory::Geometry: return pJob.RemoveGeometry( name );
+		case ChunkCategory::Object:   return pJob.RemoveObject  ( name );
+		case ChunkCategory::Light:    return pJob.RemoveLight   ( name );
+		case ChunkCategory::Modifier: return pJob.RemoveModifier( name );
+		default: return false;   // Painter (dual-registered), Camera, Function, ...
+	}
+}
+
 int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics )
 {
 	std::vector<std::string> local;
@@ -975,44 +1038,17 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	pending.reserve( items.size() );
 	for( const auto& c : items ) {
 		if( c->kind != NodeKind::Chunk ) continue;   // header strays / trivia: not derivable chunks
-		const std::string& kw = c->role;
-		std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( kw );
-		if( it == registry.end() ) { diags.push_back( "unknown chunk type '" + kw + "'" ); continue; }
-		const IAsciiChunkParser* parser = it->second;
-		// A value-less parameter line (a flattened bare pname) is malformed; its
-		// tokens never reach the ParamsList below, so flag them explicitly. (The
-		// legacy DispatchChunkParameters likewise rejects such a line.)
-		for( const auto& kid : c->kids )
-			if( kid->kind == NodeKind::Token && kid->role == "pname" )
-				diags.push_back( kw + ": value-less parameter '" + kid->text + "'" );
-		// Build the ParamsList in document order, ONE line per param occurrence
-		// (so repeatable params survive), NORMALISED exactly as the legacy parser
-		// normalises a chunk-body line: it runs each line through
-		// AsciiCommandParser::TokenizeString (splits on runs of " \t\r", dropping
-		// all interior whitespace) and rejoins with make_string_from_tokens(" ")
-		// before feeding DispatchChunkParameters. So we join this param's name +
-		// value TOKENS with single spaces, dropping the original inter-token
-		// trivia -- collapsing tabs / multi-space / column alignment identically.
-		// (Feeding the verbatim source bytes instead would drift on string-valued
-		// params: e.g. `geometry  ball` would keep a leading space in the value
-		// and silently fail the reference lookup.)
+		// Resolve the parser + normalise the params (shared with the incremental
+		// derive, so both paths normalise identically -- see ResolveChunkParams).
 		IAsciiChunkParser::ParamsList plist;
-		for( const auto& kid : c->kids )
-			if( kid->kind == NodeKind::Param ) {
-				std::string line;
-				for( const auto& tk : kid->kids )
-					if( tk->kind == NodeKind::Token ) {          // pname + pvalue tokens; skip trivia
-						if( !line.empty() ) line += ' ';
-						line += tk->text;
-					}
-				plist.push_back( String( line.c_str() ) );
-			}
+		const IAsciiChunkParser* parser = ResolveChunkParams( c, registry, plist, diags );
+		if( !parser ) continue;                       // unknown chunk type (diagnostic already pushed)
 		ParseStateBag bag( &parser->Describe() );
 		if( !DispatchChunkParameters( parser->Describe(), bag, plist ) ) {
-			diags.push_back( kw + ": invalid parameter(s) (see log)" );
+			diags.push_back( c->role + ": invalid parameter(s) (see log)" );
 			continue;
 		}
-		pending.push_back( Pending{ parser, std::move(bag), kw } );
+		pending.push_back( Pending{ parser, std::move(bag), c->role } );
 	}
 	if( !diags.empty() ) return 0;   // refuse-all: a malformed scene applies NOTHING
 
@@ -1030,6 +1066,70 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	for( Pending& p : pending ) {
 		if( p.parser->Finalize( p.bag, pJob ) ) { ++count; continue; }
 		diags.push_back( p.keyword + ": apply failed (e.g. unresolved reference); see log" );
+		break;
+	}
+	return count;
+}
+
+int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<NodeId>& chunkIds, std::vector<std::string>* diagnostics )
+{
+	std::vector<std::string> local;
+	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
+	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
+
+	// Re-apply ONLY the given closure (DocEditClosure) into an ALREADY-derived Job
+	// after an edit: drop each closure chunk via IJob's typed removal, then
+	// re-Finalize it -- so the work is O(closure), not the O(N) of a full
+	// DeriveToJob.  Deliberately does NOT ClearChunkParserState: the chunks OUTSIDE
+	// the closure are unchanged and keep their applied state + the parsers' file-
+	// scope caches as a fresh full parse would leave them.  (The cross-chunk caches
+	// that exist are keyed by name and overwritten on a chunk's re-Finalize, and the
+	// closure is applied in DOCUMENT order below so a producer re-applies before its
+	// consumer reads it.)
+	//
+	// Same refuse-all + abort-on-first-Finalize-failure contract as DeriveToJob:
+	// validate the WHOLE closure before touching the Job -- every chunk must be
+	// named AND of a category whose typed removal COMPLETELY undoes its Finalize
+	// (DropChunkByCategory: the five verified single-manager categories).  A PAINTER
+	// closure is refused here (its Finalize dual-registers in the func2d manager
+	// that RemovePainter does not clear -- D51: never a silent corruption); the
+	// caller then full-re-derives.  On any validation failure nothing is dropped or
+	// applied.  (Full apply-atomicity after a mid-apply Finalize failure -- rollback
+	// of the already-dropped/re-applied closure chunks -- is the same later Facet-2
+	// work DeriveToJob defers; for a validation-clean closure no Finalize fails.)
+	struct Pending { const IAsciiChunkParser* parser; ParseStateBag bag; NodeRef node; int index; ChunkCategory cat; std::string name; };
+	std::vector<Pending> pending;
+	pending.reserve( chunkIds.size() );
+	for( NodeId id : chunkIds ) {
+		NodeRef node;
+		const int idx = DocIndexOfNodeId( doc, id, &node, nullptr );
+		if( idx < 0 || !node || node->kind != NodeKind::Chunk ) { diags.push_back( "incremental: id is not a chunk in this document" ); return 0; }
+		IAsciiChunkParser::ParamsList plist;
+		const IAsciiChunkParser* parser = ResolveChunkParams( node, registry, plist, diags );
+		if( !parser ) return 0;                                  // unknown chunk type (diagnostic pushed)
+		const ChunkCategory cat = parser->Describe().category;
+		std::string name; ParamValue( node.get(), "name", name );
+		// Every closure chunk must be droppable AND named, else a blind re-Finalize
+		// would duplicate it.  Refuse (caller falls back to a full DeriveToJob).
+		if( name.empty() )                       { diags.push_back( node->role + ": incremental needs a name to drop+re-apply" ); return 0; }
+		switch( cat ) {                                          // categories DropChunkByCategory undoes COMPLETELY
+			case ChunkCategory::Material: case ChunkCategory::Geometry:
+			case ChunkCategory::Object:  case ChunkCategory::Light: case ChunkCategory::Modifier: break;
+			default: diags.push_back( node->role + ": incremental cannot fully drop this category (e.g. a painter dual-registers in the function-2D manager); fall back to a full derive" ); return 0;
+		}
+		ParseStateBag bag( &parser->Describe() );
+		if( !DispatchChunkParameters( parser->Describe(), bag, plist ) ) { diags.push_back( node->role + ": invalid parameter(s) (see log)" ); return 0; }
+		pending.push_back( Pending{ parser, std::move(bag), node, idx, cat, name } );
+	}
+	if( !diags.empty() ) return 0;
+	// Apply in DOCUMENT order (a producer before its consumer) -- the closure from
+	// DocEditClosure is in BFS order, so sort by document index here.
+	std::sort( pending.begin(), pending.end(), []( const Pending& a, const Pending& b ){ return a.index < b.index; } );
+	for( const Pending& p : pending ) DropChunkByCategory( pJob, p.cat, p.name.c_str() );
+	int count = 0;
+	for( Pending& p : pending ) {
+		if( p.parser->Finalize( p.bag, pJob ) ) { ++count; continue; }
+		diags.push_back( p.node->role + ": incremental apply failed (e.g. unresolved reference); see log" );
 		break;
 	}
 	return count;

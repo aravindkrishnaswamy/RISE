@@ -253,6 +253,28 @@ namespace RISE
 		//! strays / trivia -- are skipped; they carry no Job state.)
 		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr );
 
+		//! Incrementally re-apply ONLY a closure (DocEditClosure) into an
+		//! already-derived Job after an edit, instead of a full DeriveToJob: it
+		//! drops each closure chunk via IJob's typed removal then re-Finalizes it,
+		//! so the work is O(closure), NOT the O(N) of a full re-derive. Pass the
+		//! EDITED document + the closure (chunkIds) DocEditClosure returned on it.
+		//! Same refuse-all contract as DeriveToJob: it validates the WHOLE closure
+		//! -- every chunk must be named AND of a category whose typed removal is a
+		//! COMPLETE undo of its Finalize (Material / Geometry / Object / Light /
+		//! Modifier, all verified single-manager) -- before touching the Job; on ANY
+		//! validation failure nothing is dropped or applied and it returns 0, so the
+		//! caller falls back to a full DeriveToJob. PAINTER closures are refused on
+		//! purpose: a painter Finalize dual-registers in the painter AND function-2D
+		//! managers but RemovePainter clears only the painter manager, so an
+		//! incremental drop+re-add would leave a stale func2d entry (D51: never a
+		//! silent corruption) -- editing a painter VALUE thus falls back to a full
+		//! re-derive. Returns the count applied (== chunkIds.size() on success).
+		//! This is the incremental-apply primitive behind the redesign's
+		//! edit->preview path; node-granular memoization, multi-manager rollback
+		//! (so painters/cameras can re-derive incrementally too), and full
+		//! post-Finalize rollback are deferred (Facet-2), as DeriveToJob defers them.
+		int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<NodeId>& chunkIds, std::vector<std::string>* diagnostics = nullptr );
+
 		//==============================================================
 		// Item 3 -- persistent Document: lookups + edit where finding the edit
 		// target is COUNTED in the cost (O(log N) via the cached aggregates, not
@@ -528,15 +550,21 @@ namespace RISE
 		//! The re-derive CLOSURE of editing `changedChunkId` (item 8, D25): the
 		//! chunk itself + every chunk that TRANSITIVELY references it (its
 		//! dependents), walked over the traced reference graph (TraceReferences
-		//! reverse edges). This is the set an incremental re-derivation must
-		//! re-apply when the chunk changes; its SIZE scales with the DEPENDENTS,
+		//! reverse edges). This is the set DeriveToJobIncremental re-applies when the
+		//! chunk changes; its SIZE scales with the DEPENDENTS,
 		//! not with the document size -- the cost model's O(closure), the gate's
 		//! non-spatial-edit claim. (A non-spatial edit -- a material/painter value
 		//! -- changes no object's world bounding box, so it leaves the top-level
 		//! acceleration structure / TLAS clean; a SPATIAL edit -- a geometry's
-		//! shape or an object's transform -- dirties it, adding the engine's
+		//! SHAPE, an object's TRANSFORM, or an object's GEOMETRY reference -- changes
+		//! a world bbox, dirtying it and adding the engine's
 		//! O(N log N) BVH rebuild as a SEPARATE cost.) Returns `changedChunkId`
-		//! first. O(edges + chunks·params).
+		//! first.
+		//! COST: the closure SIZE is O(closure), but COMPUTING it here is O(N log N)
+		//! -- it re-traces the whole reference graph (TraceReferences) + rebuilds the
+		//! param->chunk map (DocParamId per param) each call; a production system
+		//! maintaining the graph incrementally would find the closure in O(closure).
+		//! (CstEditCostTest wall-clocks this term.)
 		std::vector<NodeId> DocEditClosure( const Document& doc, NodeId changedChunkId );
 	}
 }

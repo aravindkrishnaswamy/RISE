@@ -411,29 +411,43 @@ until it is green:
    identity/derive/reference invariant) + a final P2 polish (a name-less-chunk rename is now a diagnosed
    no-op, not silent). ← next: item 8 (spatial + non-spatial edit cost).
 8. **Measure a non-spatial edit AND a spatial edit; report TLAS time separately.**
-   **DONE (pending review).** `DocEditClosure(doc, changedChunkId)` computes the re-derive closure (the
-   chunk + its transitive dependents, walked over the reference graph, D25). Test
-   `tests/CstEditCostTest.cpp` (12 checks) measures the cost model on the in-tree path: **[edit-cost]**
-   `DocSetParamValue` is O(log N) — path-copy visits **5 / 7 / 10** at N=8/64/512 (a 64× scene-size
-   increase grows the edit ~2×, not ~64×); **[closure]** the closure SIZE is O(closure) — editing
-   `material0` re-derives `{material0, object0}` = **2, INVARIANT to N**; transitive `painter0` = 3; a
-   SHARED material used by all N objects → **N+1** (proportional to the dependents, never an arbitrary
-   O(N)); **[spatial]** a non-spatial material-VALUE edit's closure carries NO geometry → object bounding
-   boxes unchanged → the TLAS stays CLEAN (cost = O(log N) edit + O(closure) re-derive, no TLAS), whereas
-   a SPATIAL geometry-shape / object-transform edit dirties the TLAS → the engine's **O(N log N)** top-
-   level BVH rebuild is the SEPARATE spatial cost. **Honest scope:** `DocEditClosure` computes the
-   closure via an O(N) graph walk (a maintained-graph incremental version is deferred); the
-   incremental-APPLY engine that re-applies only the closure (drop + re-Finalize) is prototype-validated
-   (slices 1.5/3) and the in-tree pieces (RemoveItem + Finalize + DocEditClosure) support it; the TLAS
-   O(N log N) is the engine's documented top-level BVH4 build (referenced — it builds at render-prep, off
-   the CST path). This suite measures the cost-model DETERMINANTS (edit O(log N); closure SIZE
-   O(closure); TLAS O(N log N) separate), not the full incremental engine.
+   **DONE (pending review).** Two new kernel ops + a wall-clock harness. `DocEditClosure(doc, chunkId)`
+   computes the re-derive closure (the chunk + its transitive dependents over the reference graph, D25).
+   `DeriveToJobIncremental(doc, job, closure)` is the real in-tree incremental-apply primitive: it drops
+   each closure chunk via IJob's typed removal and re-Finalizes it, re-applying ONLY the closure into an
+   already-derived Job. Test `tests/CstEditCostTest.cpp` (20 checks) measures the cost model — analytic
+   AND **wall-clock (median µs, scaling N)**:
+   - **[edit]** `DocSetParamValue` O(log N): path-copy visits **6 / 9 / 12** at N=8/64/512; wall-clock
+     **~6–7 µs flat**.
+   - **[closure size]** O(closure): editing `material0` re-derives `{material0, object0}` = **2,
+     INVARIANT to N**; transitive `painter0` = 3; a SHARED material → **N+1** (proportional to dependents).
+   - **[incremental apply]** `DeriveToJobIncremental` is O(closure): **~4 µs, FLAT in N**, and produces a
+     Job byte-identical (DumpJob) to a full re-derive (verified for a spatial geometry edit — bsphere +
+     bbox — and a non-spatial material re-point).
+   - **[full re-derive]** `DeriveToJob` O(N): **~2 / 9 / 38 ms** at N=256/1024/4096 — the incremental
+     apply is **~10⁴× cheaper** at N=4096.
+   - **[TLAS]** `IObjectManager::PrepareForRendering` (the top-level BVH4 build) wall-clocked **directly**
+     at **~31 / 81 / 312 µs** — O(N log N), the SEPARATE spatial-edit premium. A NON-spatial edit
+     (material/object value) changes no world bbox → TLAS NOT rebuilt → that cost is SAVED; a SPATIAL
+     edit (geometry shape / object transform / object geometry-ref) pays it.
+   **Honest findings the wall-clock surfaces:** (a) the incremental APPLY is already O(closure), but
+   COMPUTING the closure (`DocEditClosure` re-traces the whole reference graph each call) is O(N log N)
+   and currently DOMINATES a non-spatial edit (~28 ms vs the ~4 µs apply at N=4096) — realizing the full
+   O(closure) end-to-end needs the reference graph maintained incrementally (Facet-2); even so a
+   non-spatial edit never pays the full O(N) Job re-derive and never rebuilds the TLAS. (b) A PAINTER-VALUE
+   edit is REFUSED by `DeriveToJobIncremental` (a painter dual-registers in the painter AND function-2D
+   managers, but `RemovePainter` clears only the painter manager — D51, never a silent corruption) and
+   falls back to a full re-derive; only the five verified single-manager categories (Material / Geometry /
+   Object / Light / Modifier) re-derive incrementally. Multi-manager rollback (so painters/cameras
+   re-derive incrementally too), node-granular memoization, and full post-Finalize rollback are deferred
+   (Facet-2), as `DeriveToJob` defers them.
 
 That is the gate that turns "the model and cost-model hold in prototypes" into "the redesign's real
 CST path is O(closure) for non-spatial edits, with spatial cost reported honestly." **With items 1-8
 landed, the transfer gate is GREEN** (pending the item-8 review): the in-tree `src/Library/Cst` kernel
 carries a scene losslessly, derives it identically to the legacy parser through the live descriptor
 registry, traces its reference graph, applies structured edits + reparses + rename with NodeId lineage,
-and the edit cost model (O(closure) non-spatial; O(N log N) TLAS for spatial, separate) is measured —
+and the edit cost model is measured in wall-clock (incremental apply O(closure); full re-derive O(N);
+TLAS O(N log N) for spatial, separate; closure-computation O(N log N) until graph-maintenance lands) —
 all under multi-round adversarial review. (expr / RepeatGroup / instance_array were kept OUT until the
 gate is green; they are the next increment.)
