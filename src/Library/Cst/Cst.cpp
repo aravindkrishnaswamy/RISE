@@ -1200,23 +1200,65 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	return count;
 }
 
-std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std::string>* diagnostics )
+//! The (category, name) the engine pre-registers in EVERY Job before any chunk is
+//! applied (Job::InitializeContainers): the `none` material + painter, and the
+//! `Default*` shader ops. A reference to one of these RESOLVES (to the default) --
+//! it is NOT a dangling reference -- but yields no CST-chunk edge. Kept in sync
+//! with Job.cpp by CstResolverTest (derive an empty scene -> these must be present).
+static const std::vector<std::pair<ChunkCategory,std::string> >& RuntimeDefaultDefs()
+{
+	static const std::vector<std::pair<ChunkCategory,std::string> > d = {
+		{ ChunkCategory::Material, "none" },
+		{ ChunkCategory::Painter,  "none" },
+		{ ChunkCategory::ShaderOp, "DefaultReflection" },
+		{ ChunkCategory::ShaderOp, "DefaultRefraction" },
+		{ ChunkCategory::ShaderOp, "DefaultEmission" },
+		{ ChunkCategory::ShaderOp, "DefaultDirectLighting" },
+		{ ChunkCategory::ShaderOp, "DefaultCausticPelPhotonMap" },
+		{ ChunkCategory::ShaderOp, "DefaultCausticSpectralPhotonMap" },
+		{ ChunkCategory::ShaderOp, "DefaultGlobalPelPhotonMap" },
+		{ ChunkCategory::ShaderOp, "DefaultGlobalSpectralPhotonMap" },
+		{ ChunkCategory::ShaderOp, "DefaultTranslucentPelPhotonMap" },
+		{ ChunkCategory::ShaderOp, "DefaultShadowPhotonMap" },
+		{ ChunkCategory::ShaderOp, "DefaultPathTracing" },
+	};
+	return d;
+}
+
+//! Does `s` parse ENTIRELY as a number? Then a non-resolving reference-kind value
+//! is a LITERAL (a ref-or-literal slot, e.g. PBR `metallic 0.5`), not a dangling
+//! reference -- so it is neither diagnosed nor an edge.
+static bool LooksNumeric( const std::string& s )
+{
+	if( s.empty() ) return false;
+	char* e = 0; std::strtod( s.c_str(), &e );
+	return e && *e == '\0';
+}
+
+ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string>* diagnostics )
 {
 	std::vector<std::string> local;
 	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
-	std::vector<ReferenceUse> uses;
+	ReferenceGraph graph;
+	unsigned long long stamp = 1469598103934665603ULL;   // FNV-1a offset basis
+	auto mix = [&stamp]( const std::string& s ) {         // fold reference-relevant content into the stamp
+		for( unsigned char ch : s ) { stamp ^= ch; stamp *= 1099511628211ULL; }
+		stamp ^= (unsigned char)'|'; stamp *= 1099511628211ULL;
+	};
 
 	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
 	std::vector<NodeRef> items;
 	SeqToVec( doc.items, items );
 
-	// PASS A -- index every chunk's definition by (category, name) -> NodeId: the
-	// descriptor-derived category namespace the named managers key on (§2.5), so a
-	// reference resolves to the chunk of that name in the referenced CATEGORY,
-	// regardless of which keyword defined it (sphere_geometry / box_geometry both
-	// answer to category Geometry). On a duplicate (category,name) keep the FIRST,
-	// matching the manager's first-wins AddItem (the derive layer rejects dups).
+	// PASS A -- index the namespace by (category, name): FIRST the engine's runtime
+	// defaults -> kRuntimeDefaultTarget (a sentinel: "resolves to a default, not a CST
+	// chunk"), THEN the CST chunk defs. Defaults are seeded first so a chunk whose
+	// name collides with a default does NOT override it -- matching the manager, which
+	// registered the default before any chunk and rejects the colliding AddItem.
+	static const NodeId kRuntimeDefaultTarget = -1;
 	std::map<std::pair<int,std::string>, NodeId> defs;
+	for( const auto& rd : RuntimeDefaultDefs() )
+		defs[ std::pair<int,std::string>( (int)rd.first, rd.second ) ] = kRuntimeDefaultTarget;
 	for( size_t i = 0; i < items.size(); ++i ) {
 		const NodeRef& c = items[i];
 		if( c->kind != NodeKind::Chunk ) continue;
@@ -1225,14 +1267,12 @@ std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std:
 		std::string name;
 		if( !ParamValue( c.get(), "name", name ) || name.empty() ) continue;   // unnamed: not referenceable
 		const std::pair<int,std::string> key( (int)it->second->Describe().category, name );
-		if( defs.find( key ) == defs.end() ) defs[key] = DocNodeIdAt( doc, (int)i );
+		if( defs.find( key ) == defs.end() ) defs[key] = DocNodeIdAt( doc, (int)i );   // first-wins; defaults already seeded
 	}
 
-	// PASS B -- for every chunk, resolve each EXPLICIT reference: a param actually
-	// present whose descriptor kind is Reference, with a non-"none" value. Record
-	// a ReferenceUse{ referring-param NodeId, target chunk NodeId } per resolved
-	// reference; an unresolvable one is a dangling reference (diagnostic), never a
-	// silent edge.
+	// PASS B -- resolve each EXPLICIT reference (a Reference-kind param's whole value,
+	// or each Reference token of a TUPLE param) against that namespace, and fold the
+	// reference-relevant content into the stamp.
 	for( size_t i = 0; i < items.size(); ++i ) {
 		const NodeRef& c = items[i];
 		if( c->kind != NodeKind::Chunk ) continue;
@@ -1240,6 +1280,8 @@ std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std:
 		if( it == registry.end() ) continue;
 		const ChunkDescriptor& desc = it->second->Describe();
 		const NodeId chunkId = DocNodeIdAt( doc, (int)i );
+		mix( c->role );
+		{ std::string nm; if( ParamValue( c.get(), "name", nm ) ) mix( nm ); }
 		std::map<std::string,int> occ;   // per-role occurrence index, for DocParamId
 		for( const auto& kid : c->kids ) {
 			if( kid->kind != NodeKind::Param ) continue;
@@ -1248,11 +1290,6 @@ std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std:
 			const ParameterDescriptor* pd = 0;
 			for( const auto& p : desc.parameters ) if( p.name == role ) { pd = &p; break; }
 			if( !pd ) continue;
-			// Collect the reference value(s) this param contributes: a
-			// ValueKind::Reference param contributes its whole value; a TUPLE param
-			// (tupleKinds non-empty) contributes the token at each position declared
-			// Reference (advanced_shader's `shaderop <ref> <min> <max> <op>`,
-			// voronoi's `gen <x> <y> <ref>`). Any other param contributes nothing.
 			std::vector<std::string> refVals;
 			if( pd->kind == ValueKind::Reference ) {
 				refVals.push_back( ParamNodeValue( kid.get() ) );
@@ -1264,23 +1301,32 @@ std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std:
 				continue;
 			}
 			for( const std::string& val : refVals ) {
+				mix( val );                                        // stamp: every reference value
 				if( val.empty() || val == "none" ) continue;       // explicit-none / empty: not an edge
 				NodeId target = 0;
 				for( ChunkCategory rc : pd->referenceCategories ) {
 					std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( (int)rc, val ) );
 					if( d != defs.end() ) { target = d->second; break; }
 				}
-				if( target == 0 ) {
-					diags.push_back( c->role + "." + role + " -> '" + val + "': unresolved reference" );
+				if( target == kRuntimeDefaultTarget ) continue;    // resolves to a runtime default: not an edge, not dangling
+				if( target == 0 ) {                                // unresolved
+					if( !LooksNumeric( val ) )                      // a pure number is a literal (ref-or-literal slot), not a dangling ref
+						diags.push_back( c->role + "." + role + " -> '" + val + "': unresolved reference" );
 					continue;
 				}
-				// sourceValueNodeId is the param NodeId (a tuple's ref tokens share
-				// it; value-atom sub-identity is the deferred refinement).
-				uses.push_back( ReferenceUse{ DocParamId( doc, chunkId, role, thisOcc ), target } );
+				// sourceValueNodeId is the param NodeId (a tuple's ref tokens share it;
+				// value-atom sub-identity is the deferred refinement).
+				graph.edges.push_back( ReferenceUse{ DocParamId( doc, chunkId, role, thisOcc ), target } );
 			}
 		}
 	}
-	return uses;
+	graph.stamp = stamp;
+	return graph;
+}
+
+std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std::string>* diagnostics )
+{
+	return BuildReferenceGraph( doc, diagnostics ).edges;   // slice 1: thin wrapper over the stamped resolver
 }
 
 //! Rebuild `chunk` with its (occ-th) param named `role` set to `newValue`

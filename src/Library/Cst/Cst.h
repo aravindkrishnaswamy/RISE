@@ -439,6 +439,18 @@ namespace RISE
 		//!     param's reference category whose `name` matches the referring value).
 		struct ReferenceUse { NodeId sourceValueNodeId; NodeId targetNodeId; };
 
+		//! The traced reference graph for a document (slice 1 of
+		//! docs/agentic-redesign/21-stable-apply-and-resolver.md): the resolved
+		//! reference edges + a content STAMP. The stamp is a fingerprint of the
+		//! reference-relevant content (each chunk's keyword + name + reference-param
+		//! values) -- it CHANGES iff an edit could change the graph (a reference
+		//! re-point, a rename, a chunk add/remove) and is STABLE across edits that
+		//! cannot (a comment, whitespace, a non-reference value). A consumer that
+		//! caches a graph can therefore detect a stale one in O(1) by re-stamping
+		//! and comparing, instead of silently trusting it (P1.8: the prior
+		//! TraceReferences was unstamped).
+		struct ReferenceGraph { std::vector<ReferenceUse> edges; unsigned long long stamp = 0; };
+
 		//! Trace the document's reference graph (item 6). A reference resolves to the
 		//! chunk of that name in the param's reference CATEGORY, in the descriptor-
 		//! derived category namespace (Geometry -> geometry/, Material -> materials/,
@@ -479,6 +491,29 @@ namespace RISE
 		//! positional lookup per item; per chunk an O(params x descriptor-params)
 		//! scan, both bounded per chunk).
 		std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std::string>* diagnostics = nullptr );
+
+		//! Build the document's reference graph (slice 1): the authoritative resolver
+		//! TraceReferences/DocEditClosure/DocRename consume. Same edge resolution as
+		//! TraceReferences (which is now a thin wrapper returning `.edges`), PLUS:
+		//!   * RESOLVES OVER THE COMPLETE NAMESPACE -- the CST chunk definitions AND
+		//!     the engine's runtime defaults (the `none` material/painter + the
+		//!     `Default*` shader ops the Job pre-registers). So a reference to a
+		//!     runtime default RESOLVES (it is not a false "unresolved"/dangling), and
+		//!     produces NO edge (the default is not a CST chunk) -- closing the
+		//!     coarser-namespace gap (P1.8). The default set is asserted to match a
+		//!     freshly-derived Job by CstResolverTest (drift -> test fails).
+		//!   * DISTINGUISHES ref-or-literal: a reference-kind value that resolves to
+		//!     nothing AND parses as a pure number is a LITERAL (e.g. PBR `metallic
+		//!     0.5`), not a dangling reference -- it is not diagnosed and not an edge.
+		//!     A non-numeric unresolved value is still a genuine dangling reference
+		//!     (diagnosed). (P1.8: the prior pass flagged literals as dangling refs.)
+		//!   * STAMPS the result (see ReferenceGraph) so a cached graph's staleness is
+		//!     detectable in O(1).
+		//! It does NOT yet capture DYNAMIC references created at derive time (timeline
+		//! String elements, expr): those are the slice-5 derive-time-routing scope --
+		//! callers that must be exact about dynamics (incremental apply, rename) refuse
+		//! when the Job has any animation (see DeriveToJobIncremental). O(N log N).
+		ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string>* diagnostics = nullptr );
 
 		//! Reparse `newText` and carry NodeIds from `oldDoc` via FOUR hashed passes
 		//! (D9/D15/D44: lineage survives rename + reparse on a BEST-EFFORT basis;
