@@ -329,9 +329,13 @@ until it is green:
    1 CODE P1 (cross-derive parse-state leak — `DeriveToJob` never reset the chunk parsers' file-scope
    caches the way legacy `ParseAndLoadScene` does → fixed with `ClearChunkParserState()` at the top +
    `[state-isolation]` regression test, red-proven) + 1 doc P1 (the non-canonical string-comment verb was
-   "rejects"; legacy actually SILENTLY MIS-CAPTURES). Differential coverage: round 3 ran 149 scenes, round
-   4 ran 73 real + 38 synthetic, round 5 ran 2,120 cross-derive checks — all zero Job divergences.
-   Deferred-and-honest:
+   "rejects"; legacy actually SILENTLY MIS-CAPTURES); rounds 5-6: 0 code P1s (1 doc P1 + tally fixes —
+   the durable record below). The DURABLE, reproducible differential is the committed
+   `CstDeriveDifferentialTest` (single-derive corpus + cross-derive statelessness, red-proven to catch
+   the leak); on top of it each round's reviewers ran independent THROWAWAY differentials of growing
+   size (round 3 ≈150 scenes, round 4 ≈73 real + 38 synthetic, round 5 ≈2k cross-derive checks) — all
+   zero Job divergences, but ephemeral (not reproducible from the tree; the committed test is the
+   durable guard). Deferred-and-honest:
    **category name-paths** (`geometry/s`; one category → many keywords) stay out — reference resolution
    in the derive runs through the engine's
    named managers by name, so category addressing is a CST-navigation nicety, not load-bearing for

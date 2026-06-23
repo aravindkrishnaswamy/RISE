@@ -152,8 +152,11 @@ inline std::string DumpJob( Job& job )
 	// the cross-derive parse-state vectors DumpJob would otherwise miss (it has
 	// no camera section). Intrinsics (sensor/focal/fstop) are not on the ICamera
 	// contract, so a pure-FOV leak is not surfaced here; the derive clears ALL
-	// parser state regardless (ClearChunkParserState), and the painter-colour
-	// vector is the one with a Job-observable manifestation.
+	// parser state regardless (ClearChunkParserState). So the cross-derive
+	// leak vectors with a Job-observable manifestation -- painter-colour
+	// (spurious energy-auto-scaled painters) AND camera-name dedup (an
+	// unnamed camera renamed default -> default_1) -- are BOTH surfaced here
+	// (what CstDeriveDifferentialTest's cross-derive cases assert).
 	o << "cameras:\n";
 	for( const auto& n : SortedNames( job.GetCameras() ) ) {
 		o << "  " << n;
