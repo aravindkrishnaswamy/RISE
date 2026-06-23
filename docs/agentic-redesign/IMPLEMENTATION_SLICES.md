@@ -397,15 +397,17 @@ until it is green:
    from the **traced reference graph** (TraceReferences, not a re-resolution), so the renamed chunk's
    NodeId is PRESERVED (lineage survives rename, D9/D44 — UI/agent bindings keyed on NodeId survive) and
    the references still resolve under the new name. A referrer carried in a TUPLE param (the ref is one
-   token of a multi-token value, e.g. advanced_shader.shaderop) is REPORTED not rewritten — value-atom
-   rewrite is the deferred item-4 refinement, never a silent whole-value clobber. The `SplitWs` helper
-   is now shared (TraceReferences + the value editor). Test `tests/CstEditReparseTest.cpp` (38 checks):
+   token of a multi-token value, e.g. advanced_shader.shaderop) was originally REPORTED not rewritten
+   here (item 7); **slice 2 (21-stable-apply-and-resolver.md) now REWRITES the reference token** (other
+   tuple tokens intact) so the rename is complete — see slice 2 for the atomic rewrite-all-or-refuse +
+   the full-namespace collision + animation guard. The `SplitWs` helper is shared (TraceReferences + the
+   value editor). Test `tests/CstEditReparseTest.cpp` (39 checks):
    [setparam] within-chunk edit preserves chunk + edited-param NodeIds and derives faithfully (the
    edited CST derives the SAME Job as a fresh parse of its serialization); [replace]/[erase]/[insert]
    structured top-level edits flow to the derived Job (a valid insert = chunk item + separator trivia);
    [reparse] DocReparse carries NodeIds across a free-form text change + derives consistently; [rename]
    NodeId lineage + referrer rewrite from the graph + re-resolve + derive; [rename-tuple] the tuple
-   referrer is reported, not clobbered; [rename-collision] renaming into an existing same-category name
+   referrer's reference TOKEN is rewritten (slice 2), other tokens intact; [rename-collision] renaming into an existing same-category name
    is refused atomically (review round 1: the unguarded version silently re-targeted the referrer,
    violating D14/§2.5). **Item-7 review: 3 self-driven rounds** — round 1: 1 code P1 (the name-collision
    silent re-target → atomic refusal guard, red-proven) + a doc P2; round 2: doc drift (stale check

@@ -276,9 +276,12 @@ namespace RISE
 		//! -- review P1.3/P1.5). A drop that finds no such entity (a rename, or a stale
 		//! closure -- this is value-edit only) ABORTS rather than silently re-adding a
 		//! duplicate (review P1.4). Returns the count applied (== chunkIds.size() on
-		//! success). Deferred to later slices: the stable-object apply (3), the shared
-		//! resolver + maintained graph so the closure is O(closure) (1), atomic rename
-		//! (2), and full post-Finalize rollback of a partial apply (4).
+		//! success). The shared resolver (BuildReferenceGraph, slice 1) and atomic
+		//! rename (slice 2) have since landed; still deferred HERE: routing this
+		//! function's lookups through the resolver + caching it so the closure is
+		//! O(closure) not O(closure*log N) (slice 5 / maintained graph), the stable-
+		//! object in-place apply (slice 3), and full post-Finalize rollback of a
+		//! partial apply (slice 4).
 		int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<NodeId>& chunkIds, std::vector<std::string>* diagnostics = nullptr );
 
 		//==============================================================
@@ -583,21 +586,27 @@ namespace RISE
 		//! changes, and for a non-colliding rename the references re-resolve to the
 		//! SAME chunk via the new name.
 		//!
-		//! COLLISION is REFUSED ATOMICALLY: if `newName` already names another chunk
-		//! of the same category, the rename applies NOTHING and reports it in
-		//! `diagnostics` -- renaming into an existing name would make the name-path
-		//! ambiguous and silently re-target the referrers to the other chunk, which
-		//! D14/§2.5 forbid ("an unresolvable referrer is flagged, never silently
-		//! renamed"). The check is by ChunkCategory, which is slightly COARSE
-		//! (scalar vs colour painters share `Painter` but live in separate managers
-		//! -- see TraceReferences), so a scalar<->colour same-name rename is
-		//! conservatively over-refused; over-refusal is the SAFE direction (refuse a
-		//! legal rename rather than risk a silent mis-target), and it never
-		//! under-refuses a real same-manager collision. Referrers carried in a TUPLE param (the reference is one token
-		//! of a multi-token value, e.g. advanced_shader.shaderop) are NOT rewritten
-		//! -- that needs value-atom granularity (deferred, item-4 scope) -- and are
-		//! reported in `diagnostics`. Returns the new Document (or `doc` unchanged on
-		//! a refused collision / non-chunk target).
+		//! ATOMIC, rewrite-all-or-refuse (D14, slice 2). Every referrer is rewritten:
+		//! a plain Reference param via its value, AND a TUPLE-reference referrer (the
+		//! reference is one token of a multi-token value, e.g. advanced_shader.shaderop
+		//! `<ref> <min> <max> <op>`) by substituting just that reference TOKEN, leaving
+		//! the other tuple tokens intact -- no partial rename, no dangling referrer.
+		//! REFUSED ATOMICALLY (applies NOTHING, returns `doc` unchanged + a diagnostic)
+		//! when the rename would be unsafe: (a) `newName` already names another chunk
+		//! of the same category (would make the name-path ambiguous + silently
+		//! re-target referrers -- D14/§2.5); (b) `newName` is a reserved RUNTIME DEFAULT
+		//! of the category (`none` / `Default*`, which the engine pre-registers and the
+		//! manager would keep over the rename); (c) `newName` is empty; (d) the document
+		//! has any animation/timeline (a `timeline` references its element + owning
+		//! animation as ValueKind::String, invisible to the static graph -- a rename
+		//! could leave it dangling; lifted in slice 5 when the resolver traces those).
+		//! A no-op rename (`newName` == old) returns `doc` unchanged. The same-category
+		//! collision check is by ChunkCategory, slightly COARSE (scalar vs colour
+		//! painters share `Painter` but live in separate managers -- see
+		//! TraceReferences), so a scalar<->colour same-name rename is conservatively
+		//! over-refused (the SAFE direction; never under-refuses a real same-manager
+		//! collision). Returns the new Document, or `doc` unchanged on any refusal /
+		//! non-chunk target.
 		Document DocRename( const Document& doc, NodeId chunkId, const std::string& newName, std::vector<std::string>* diagnostics = nullptr );
 
 		//! The re-derive CLOSURE of editing `changedChunkId` (item 8, D25): the

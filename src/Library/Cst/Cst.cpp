@@ -1491,10 +1491,15 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 
 	// Rewrite EVERY referrer (D14: rewrite-all-or-refuse, never a partial rename).
 	// Every edge in the static graph is rewritable -- a plain Reference param via its
-	// whole value, a TUPLE param by substituting the reference token(s). (Dynamic refs
-	// the static graph cannot see are excluded above by the animation guard; with expr
-	// still out of the grammar the static graph is complete here, so no referrer is
-	// left dangling.)
+	// whole value, a TUPLE param by substituting the reference token(s). The static
+	// graph is complete for the chunk->chunk references that exist in the v6/v7 grammar:
+	// every such reference is a Reference param or a Reference tuple-token (both
+	// rewritten here), or a timeline's ValueKind::String element/animation ref (excluded
+	// above by the animation guard). (The redesign's name-path expr(...) value
+	// sublanguage -- the only thing that could add an untraceable chunk reference -- is
+	// not in the grammar; the existing expression_function2d's def/expr name no chunks,
+	// only u/v/params, so they create no rewritable edge.) So no referrer is left
+	// dangling.
 	std::vector<ReferenceUse> uses = TraceReferences( doc );
 	Document result = DocSetParamValue( doc, chunkId, "name", 0, newName );   // the rename itself (NodeId preserved)
 	for( const ReferenceUse& u : uses ) {
