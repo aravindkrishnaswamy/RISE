@@ -269,8 +269,8 @@ namespace RISE
 		//! Refuse-all + PER-PARSER reversibility: it validates the WHOLE closure before
 		//! touching the Job -- every chunk must be named AND incrementally reversible.
 		//! It REFUSES (-> 0, caller full-re-derives; D51 never a silent partial undo):
-		//! non-single-manager categories (PAINTER dual-registers in the function-2D
-		//! manager that RemovePainter does not clear; Camera/Function/...), COMPOSED
+		//! non-single-manager categories (PAINTER: a scalar_painter sub-type lives in a
+		//! separate manager RemovePainter does not clear; Camera/Function/...), COMPOSED
 		//! materials (PBR creates helper painters -- IsMaterialComposed), and
 		//! translucent_material (its Finalize reads ambient thread-local parser state
 		//! -- review P1.3/P1.5). A drop that finds no such entity (a rename, or a stale

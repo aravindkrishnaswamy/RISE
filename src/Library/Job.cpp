@@ -9186,7 +9186,59 @@ bool Job::RemovePainter(
 	const char* name								///< [in] Name of the painter to remove
 	)
 {
-	return pPntManager->RemoveItem( name );
+	// Every Add*Painter dual-registers the painter: once in pPntManager
+	// (its primary home) and once in pFunc2DManager as a secondary
+	// IFunction2D index (a painter IS-A IFunction2D, so it can be used
+	// anywhere a 2D function is expected -- bump / displacement / ...).
+	// The SAME object is in both managers.  RemovePainter must reverse
+	// BOTH adds, or a removed painter stays resolvable as a 2D function
+	// and a re-add of the same name collides ("Item of same name already
+	// exists") in the function-2D manager.
+	//
+	// BUT: standalone `function_2d` chunks (Job::AddPiecewiseLinearFunction2D)
+	// register their own IFunction2D into the SAME pFunc2DManager namespace,
+	// and the dual-register AddItem return value is ignored at add time --
+	// so a painter and a standalone function_2d can coexist under one name
+	// (painter in pPntManager, standalone func in pFunc2DManager).  A blind
+	// pFunc2DManager->RemoveItem(name) would then delete the wrong entry.
+	// Gate the secondary removal on identity: only drop the func2D entry
+	// when it IS this very painter.
+	//
+	// (Job::AddPiecewiseLinearFunction also registers a painter's *source*
+	// IFunction1D -- a DIFFERENT object -- in pFunc1DManager under the same
+	// name.  That func1D is a primary, independently-referenceable entity
+	// (AddPiecewiseLinearFunction2D consumes it by name), and unlike the
+	// func2D index there is no clean identity gate for it -- the painter
+	// object is not the func1D object -- so it is intentionally NOT removed
+	// here.  KNOWN LIMITATION as a consequence: a remove-then-re-add of a
+	// piecewise-linear-function painter under the same name leaves the old
+	// func1D in pFunc1DManager, and the re-add's func1D registration is then
+	// refused (AddPiecewiseLinearFunction ignores that AddItem result).
+	// Reversing the func1D source needs the same per-sub-type rollback that
+	// the CST incremental painter path still defers; it is out of scope for
+	// this func2D-index fix.)
+	bool alsoDropFunc2D = false;
+	if( name ) {
+		IPainter* pPainter = pPntManager->GetItem( name );   // borrowed; alive via the manager's ref
+		if( pPainter ) {
+			// Form the IFunction2D base pointer while the painter is still
+			// alive: IFunction2D is a virtual base of IPainter, so the
+			// upcast adjustment reads the object -- doing it after the
+			// painter could be freed would touch freed memory.
+			alsoDropFunc2D =
+				( pFunc2DManager->GetItem( name ) == static_cast<IFunction2D*>( pPainter ) );
+		}
+	}
+
+	const bool removed = pPntManager->RemoveItem( name );
+
+	if( removed && alsoDropFunc2D ) {
+		// The painter is still alive here (pFunc2DManager holds its own
+		// ref from the dual-register); RemoveItem releases that ref and
+		// operates on the manager's stored pointer, not pPainter.
+		pFunc2DManager->RemoveItem( name );
+	}
+	return removed;
 }
 
 //! Removes the given material from the scene
