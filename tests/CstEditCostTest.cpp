@@ -34,8 +34,10 @@
 //      [full]         DeriveToJob (whole scene)       -> O(N log N)  (the baseline beaten)
 //      [prep:spatial] PrepareForRendering AFTER a spatial edit -> rebuilds the BVH4,
 //                     O(N log N): the spatial-edit premium
-//      [prep:nonspat] PrepareForRendering AFTER a non-spatial edit -> a no-op (the BVH is
-//                     still valid): ~O(1), the SAVING the stable-object apply delivers
+//      [prep:nonspat] PrepareForRendering AFTER a non-spatial edit -> SKIPS the O(N log N)
+//                     BVH rebuild (the BVH is still valid); only an O(N) per-object
+//                     realize sweep remains -- the SAVING the stable-object apply delivers
+//                     (so prep:nonsp scales ~O(N), far below the spatial rebuild, NOT O(1))
 //
 //  HONEST SCOPE (R13): the bounds carry log factors -- the incremental apply is
 //  O(closure . log N) (per-member identity lookup + std::map manager remove/insert + an
@@ -223,7 +225,8 @@ int main()
 		}
 		// NON-SPATIAL: build the TLAS, apply the non-spatial edit -> the spatial generation
 		// MUST be UNCHANGED (TLAS preserved -- the slice-3 skip), and the subsequent
-		// PrepareForRendering is a no-op (the BVH is still valid).
+		// PrepareForRendering SKIPS the O(N log N) BVH rebuild (the BVH is still valid),
+		// leaving only its O(N) per-object realize sweep.
 		{
 			Job* jns = new Job(); DeriveToJob( doc, *jns );
 			jns->GetObjects()->PrepareForRendering();
@@ -231,7 +234,7 @@ int main()
 			std::vector<std::string> dns; DeriveToJobIncremental( docM, *jns, closM, &dns );
 			char mn[104]; std::snprintf( mn, sizeof(mn), "N=%d NON-SPATIAL edit SKIPS the TLAS (spatial generation unchanged -- slice 3)", N );
 			Check( jns->GetObjects()->GetSpatialStructureGeneration() == g0, mn );
-			prepNonAt[k] = MedianMicros( 21, [&]{ jns->GetObjects()->PrepareForRendering(); } );   // no rebuild
+			prepNonAt[k] = MedianMicros( 21, [&]{ jns->GetObjects()->PrepareForRendering(); } );   // skips the BVH rebuild; O(N) realize sweep only
 			jns->release();
 		}
 
@@ -250,8 +253,9 @@ int main()
 	Check( fullAt[2] > fullAt[0] * 2.0, "full re-derive grows with N (~O(N log N))" );
 	Check( incrAt[2] < incrAt[0] * 6.0 + 50.0, "incremental re-apply ~flat in N (O(closure . log N), not O(N log N))" );
 	// The TLAS-skip result (slice 3): a non-spatial edit's post-edit PrepareForRendering
-	// is a no-op (BVH still valid), DRAMATICALLY cheaper than a spatial edit's rebuild.
-	// The generation-counter Checks above are the noise-free proof; this is the wall-clock.
+	// SKIPS the O(N log N) BVH rebuild (BVH still valid; only an O(N) realize sweep runs),
+	// so it is DRAMATICALLY cheaper than a spatial edit's rebuild. The generation-counter
+	// Checks above are the noise-free proof; this is the wall-clock.
 	Check( prepSpatAt[2] > prepSpatAt[0], "spatial TLAS rebuild grows with N (~O(N log N))" );
 	Check( prepNonAt[2] * 3 < prepSpatAt[2], "NON-spatial edit's post-edit prepare materially cheaper than the spatial rebuild at N=4096 (TLAS skipped; gen-counter Checks are the noise-free proof)" );
 
