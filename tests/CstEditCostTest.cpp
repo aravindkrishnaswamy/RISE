@@ -27,9 +27,9 @@
 //                     -> O(N log N), the SEPARATE spatial-edit cost
 //
 //    DECOMPOSITION (the headline, in measured microseconds):
-//      NON-spatial edit (here: re-point a material's reflectance) = edit + closure
-//        + incremental re-derive; the object bounding boxes are unchanged so the
-//        TLAS is NOT rebuilt -- that O(N log N) cost is SAVED.
+//      NON-spatial edit (here: re-point an object's material reference) = edit +
+//        closure + incremental re-derive; the object bounding boxes are unchanged
+//        so the TLAS is NOT rebuilt -- that O(N log N) cost is SAVED.
 //      SPATIAL edit (geometry shape / object transform / object geometry-ref) =
 //        the same + the measured O(N log N) TLAS rebuild.
 //
@@ -163,13 +163,16 @@ int main()
 		Document     docG = DocSetParamValue( doc, gid, "radius", 0, "2" );
 		std::vector<NodeId> closG = DocEditClosure( docG, gid );
 
-		// NON-SPATIAL edit (re-point a material's reflectance to another painter):
-		// closure = {material0, object0}; no bbox changes -> TLAS stays clean. (A
-		// pure single-manager closure -- no painter is re-derived -- so the typed-
-		// removal incremental is a complete undo, DumpJob-verifiable.)
-		const NodeId mid  = DocFindByName( doc, "lambertian_material/m0" );
-		Document     docM = DocSetParamValue( doc, mid, "reflectance", 0, "p1" );
-		std::vector<NodeId> closM = DocEditClosure( docM, mid );
+		// NON-SPATIAL edit (re-point object0's MATERIAL reference m0 -> m1): closure =
+		// {object0} (objects are leaves -- nothing references them); o0's geometry is
+		// unchanged so its world bbox is unchanged -> TLAS stays clean. Chosen so the
+		// equivalence check is VALUE-verifiable: DumpJob records each object's
+		// resolved material name, so a wrong incremental (o0 still bound to m0) would
+		// be CAUGHT -- unlike a material's reflectance-painter value, which DumpJob
+		// does not surface.
+		const NodeId oid  = DocFindByName( doc, "standard_object/o0" );
+		Document     docM = DocSetParamValue( doc, oid, "material", 0, "m1" );
+		std::vector<NodeId> closM = DocEditClosure( docM, oid );
 
 		// A PAINTER-VALUE edit's closure DOES include the painter; the incremental
 		// must REFUSE it (a painter dual-registers in the func2d manager) so the
@@ -203,17 +206,17 @@ int main()
 		// [TLAS] : the top-level BVH build over N objects (the spatial premium).
 		tlasAt[k] = MedianMicros( 7, [&]{ jbase->GetObjects()->InvalidateSpatialStructure(); jbase->GetObjects()->PrepareForRendering(); } );
 
-		// NON-SPATIAL incremental correctness: re-point material0's reflectance and
-		// apply that closure incrementally to a fresh base; must equal a full
-		// re-derive of docM (DumpJob). This is the canonical non-spatial edit and it
-		// rebuilds NO TLAS.
+		// NON-SPATIAL incremental correctness: re-point object0's material (m0 -> m1)
+		// and apply that closure incrementally to a fresh base; must equal a full
+		// re-derive of docM (DumpJob -- which records o0's resolved material name, so
+		// this is VALUE-verified, not just structural). A non-spatial edit; NO TLAS.
 		Job* jm = new Job(); DeriveToJob( doc, *jm );
 		std::vector<std::string> dm;
 		const int appliedM = DeriveToJobIncremental( docM, *jm, closM, &dm );
 		Job* jmf = new Job(); DeriveToJob( docM, *jmf );
 		const bool correctM = ( appliedM == (int)closM.size() ) && ( DumpJob( *jm ) == DumpJob( *jmf ) );
 		jm->release(); jmf->release();
-		char m2[88]; std::snprintf( m2, sizeof(m2), "N=%d incremental material re-point == full re-derive (DumpJob), NO TLAS", N );
+		char m2[92]; std::snprintf( m2, sizeof(m2), "N=%d incremental object material re-point (m0->m1) == full re-derive, NO TLAS", N );
 		Check( correctM, m2 );
 
 		// SAFETY: a painter-VALUE edit's closure must be REFUSED (returns 0 + a

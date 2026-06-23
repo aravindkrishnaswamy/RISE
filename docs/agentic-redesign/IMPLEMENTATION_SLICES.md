@@ -416,7 +416,9 @@ until it is green:
    `DeriveToJobIncremental(doc, job, closure)` is the real in-tree incremental-apply primitive: it drops
    each closure chunk via IJob's typed removal and re-Finalizes it, re-applying ONLY the closure into an
    already-derived Job. Test `tests/CstEditCostTest.cpp` (20 checks) measures the cost model — analytic
-   AND **wall-clock (median µs, scaling N)**:
+   AND **wall-clock (median µs, scaling N)**. (The absolute µs/ms below are indicative — they vary with
+   machine + load; the SCALING and the cross-operation RATIOS are the robust, asserted claims, and the
+   test prints the live table each run.)
    - **[edit]** `DocSetParamValue` O(log N): path-copy visits **6 / 9 / 12** at N=8/64/512; wall-clock
      **~6–7 µs flat**.
    - **[closure size]** O(closure): editing `material0` re-derives `{material0, object0}` = **2,

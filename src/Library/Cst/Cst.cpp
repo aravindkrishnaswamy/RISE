@@ -1123,7 +1123,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	}
 	if( !diags.empty() ) return 0;
 	// Apply in DOCUMENT order (a producer before its consumer) -- the closure from
-	// DocEditClosure is in BFS order, so sort by document index here.
+	// DocEditClosure returns an unspecified (DFS) order, so sort by doc index here.
 	std::sort( pending.begin(), pending.end(), []( const Pending& a, const Pending& b ){ return a.index < b.index; } );
 	for( const Pending& p : pending ) DropChunkByCategory( pJob, p.cat, p.name.c_str() );
 	int count = 0;
@@ -1365,9 +1365,10 @@ std::vector<NodeId> DocEditClosure( const Document& doc, NodeId changedChunkId )
 		std::map<NodeId, NodeId>::const_iterator pc = paramChunk.find( u.sourceValueNodeId );
 		if( pc != paramChunk.end() && pc->second != u.targetNodeId ) deps[ u.targetNodeId ].push_back( pc->second );
 	}
-	// BFS the dependents: the re-derive closure is the changed chunk + everything
-	// that transitively references it (D25). Closure SIZE scales with the
-	// dependents, NOT with the document size.
+	// Walk the dependents (DFS over a LIFO stack): the re-derive closure is the
+	// changed chunk + everything that transitively references it (D25). The returned
+	// ORDER is unspecified (callers needing document order -- DeriveToJobIncremental
+	// -- sort by index); the closure SIZE scales with the dependents, NOT the doc.
 	std::vector<NodeId> closure;
 	std::unordered_set<long long> seen;
 	std::vector<NodeId> stack; stack.push_back( changedChunkId );
