@@ -9,10 +9,10 @@
 //  Item 5 made the derive faithful; item 6 built the reference graph. Item 7 ties
 //  them together: an edit must (a) preserve identity and (b) produce a Job
 //  identical to a fresh parse of the edited text. The marquee is RENAME (D14):
-//  changing a chunk's name preserves its NodeId (lineage, D44) and rewrites its
-//  single-value referrers from the traced reference graph, so those references
-//  still resolve (tuple referrers are reported not rewritten; a name collision is
-//  refused -- see [rename-tuple] / [rename-collision]).
+//  changing a chunk's name preserves its NodeId (lineage, D44) and rewrites ALL its
+//  referrers from the traced reference graph, so those references still resolve (a
+//  tuple referrer's reference TOKEN is rewritten, other tokens intact -- slice 2; a
+//  name collision is refused -- see [rename-tuple] / [rename-collision]).
 //
 //  This suite proves:
 //    * [setparam]  a within-chunk value edit (DocSetParamValue) preserves the
