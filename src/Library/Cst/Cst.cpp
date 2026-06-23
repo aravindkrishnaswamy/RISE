@@ -1169,6 +1169,8 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 
 	NodeRef target = DocResolveNodeId( doc, chunkId );
 	if( !target || target->kind != NodeKind::Chunk ) { diags.push_back( "rename: target is not a chunk" ); return doc; }
+	std::string oldName;
+	if( !ParamValue( target.get(), "name", oldName ) ) { diags.push_back( "rename: target chunk has no name parameter (nothing to rename)" ); return doc; }
 
 	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
 	// The category the target lives in -- a name collides within the named MANAGER

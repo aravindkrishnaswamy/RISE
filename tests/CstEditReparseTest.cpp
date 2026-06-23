@@ -9,8 +9,10 @@
 //  Item 5 made the derive faithful; item 6 built the reference graph. Item 7 ties
 //  them together: an edit must (a) preserve identity and (b) produce a Job
 //  identical to a fresh parse of the edited text. The marquee is RENAME (D14):
-//  changing a chunk's name preserves its NodeId (lineage, D44) and rewrites all
-//  referrers from the traced reference graph, so the references still resolve.
+//  changing a chunk's name preserves its NodeId (lineage, D44) and rewrites its
+//  single-value referrers from the traced reference graph, so those references
+//  still resolve (tuple referrers are reported not rewritten; a name collision is
+//  refused -- see [rename-tuple] / [rename-collision]).
 //
 //  This suite proves:
 //    * [setparam]  a within-chunk value edit (DocSetParamValue) preserves the
@@ -225,6 +227,16 @@ int main()
 		Check( diags2.empty() && DocFindByName( d3, "uniformcolor_painter/green" ) == b
 		    && SerializeCst( d3 ).find( "reflectance green" ) != std::string::npos,
 		       "a non-colliding rename of the same chunk succeeds + rewrites the referrer" );
+		// renaming a chunk with NO name param is a DIAGNOSED no-op (not silent)
+		Document dn = ParseToCst( "RISE ASCII SCENE 6\nsphere_geometry\n{\nradius 1\n}\n" );
+		NodeId unnamed = 0;
+		for( int i = 0; i < DocItemCount( dn ); ++i ) {
+			NodeRef it = DocResolveNodeId( dn, DocNodeIdAt( dn, i ) );
+			if( it && it->kind == NodeKind::Chunk ) { unnamed = DocNodeIdAt( dn, i ); break; }
+		}
+		std::vector<std::string> dgn;
+		Document dn2 = DocRename( dn, unnamed, "x", &dgn );
+		Check( unnamed != 0 && !dgn.empty() && dn2.items.get() == dn.items.get(), "renaming a name-less chunk is a diagnosed no-op (not silent)" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

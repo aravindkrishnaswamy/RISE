@@ -384,7 +384,7 @@ until it is green:
    both ZERO P1s; an independent 168-Reference-declaration dragnet confirmed the four tuple-Reference
    sites are the complete static set). ← next: item 7 (structured edits + free-form reparses).
 7. Exercise **structured edits AND free-form reparses**, including **chunk identity + rename**.
-   **DONE (pending review).** Two new kernel ops tie the item-3/4 edit primitives + the item-6 graph
+   **DONE.** Two new kernel ops tie the item-3/4 edit primitives + the item-6 graph
    into the editor's real operations: **`DocSetParamValue(doc, chunkId, role, occ, newValue)`** — the
    within-chunk value edit (the "edit geometry/s.radius" path + the item-8 non-spatial edit): rebuild
    the chunk with that param's value re-tokenised, KEEP the pname + leading trivia, SHARE every other
@@ -396,7 +396,7 @@ until it is green:
    the references still resolve under the new name. A referrer carried in a TUPLE param (the ref is one
    token of a multi-token value, e.g. advanced_shader.shaderop) is REPORTED not rewritten — value-atom
    rewrite is the deferred item-4 refinement, never a silent whole-value clobber. The `SplitWs` helper
-   is now shared (TraceReferences + the value editor). Test `tests/CstEditReparseTest.cpp` (37 checks):
+   is now shared (TraceReferences + the value editor). Test `tests/CstEditReparseTest.cpp` (38 checks):
    [setparam] within-chunk edit preserves chunk + edited-param NodeIds and derives faithfully (the
    edited CST derives the SAME Job as a fresh parse of its serialization); [replace]/[erase]/[insert]
    structured top-level edits flow to the derived Job (a valid insert = chunk item + separator trivia);
@@ -404,7 +404,12 @@ until it is green:
    NodeId lineage + referrer rewrite from the graph + re-resolve + derive; [rename-tuple] the tuple
    referrer is reported, not clobbered; [rename-collision] renaming into an existing same-category name
    is refused atomically (review round 1: the unguarded version silently re-targeted the referrer,
-   violating D14/§2.5). ← next: item 8 (spatial + non-spatial edit cost).
+   violating D14/§2.5). **Item-7 review: 3 self-driven rounds** — round 1: 1 code P1 (the name-collision
+   silent re-target → atomic refusal guard, red-proven) + a doc P2; round 2: doc drift (stale check
+   count, test-header list, the category-coarseness over-refusal note); round 3 CONVERGED (correctness +
+   doc reviewers both ZERO P1s; property/differential fuzz over many edit+rename sequences held every
+   identity/derive/reference invariant) + a final P2 polish (a name-less-chunk rename is now a diagnosed
+   no-op, not silent). ← next: item 8 (spatial + non-spatial edit cost).
 8. **Measure a non-spatial edit AND a spatial edit; report TLAS time separately.**
 
 That is the gate that turns "the model and cost-model hold in prototypes" into "the redesign's real
