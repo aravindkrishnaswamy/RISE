@@ -2682,6 +2682,16 @@ namespace RISE
 		//! Default no-op; the real Job bumps its Scene's generation counter.
 		virtual void BumpLightTopologyGeneration() {}
 
+		//! Enables/disables INCREMENTAL re-point mode (slice 3 stable-object apply,
+		//! docs/agentic-redesign/21-stable-apply-and-resolver.md).  While enabled,
+		//! AddObject/AddObjectMatrix re-point an EXISTING same-named object IN PLACE
+		//! (keeping its address so the TLAS that holds raw object pointers stays valid)
+		//! instead of creating a new one; with it disabled (the default, and every full
+		//! derive -- where objects never pre-exist) behaviour is unchanged.  The CST
+		//! incremental apply sets it true only around its single-threaded re-Finalize
+		//! loop.  Default no-op; the real Job stores the flag.
+		virtual void SetIncrementalRepointMode( bool ) {}
+
 		//! Clears the entire scene, resets everything back to defaults
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool ClearAll(

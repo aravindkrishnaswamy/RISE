@@ -137,6 +137,7 @@ namespace RISE
 
 Job::Job( )
 {
+	m_bIncrementalRepoint = false;   // slice 3: only the CST incremental loop sets it true (transiently)
 	InitializeContainers();
 }
 
@@ -5238,8 +5239,20 @@ bool Job::AddObject(
 		return false;
 	}
 
+	// Slice 3 (stable-object incremental apply): in incremental re-point mode an
+	// EXISTING same-named object is re-pointed IN PLACE -- its address (which the
+	// top-level BVH stores raw) is preserved -- instead of being recreated.  In a full
+	// derive the flag is false (and no object pre-exists), so this is byte-identical to
+	// the historical create path.  The slot-binding below is SHARED by both paths
+	// (audit-by-bug-pattern: a new slot is bound once, for create AND re-point).
 	IObjectPriv* object = 0;
-	RISE_API_CreateObject( &object, pGeometry );
+	bool repoint = false;
+	if( m_bIncrementalRepoint ) {
+		object = pObjectManager->GetItem( name );
+		repoint = ( object != 0 );
+	}
+	if( repoint ) object->AssignGeometry( *pGeometry );      // create binds geometry via the ctor; re-point swaps it
+	else          RISE_API_CreateObject( &object, pGeometry );
 
 	object->SetShadowParams( bCastsShadows, bReceivesShadows );
 
@@ -5249,6 +5262,7 @@ bool Job::AddObject(
 			object->AssignMaterial( *pMat );
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Material not found `%s`", material );
+			if( !repoint ) safe_release( object );           // create: release the orphan (fixes a prior leak); re-point: manager owns it
 			return false;
 		}
 	}
@@ -5259,6 +5273,7 @@ bool Job::AddObject(
 			object->AssignModifier( *pMod );
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Modifier not found `%s`", modifier );
+			if( !repoint ) safe_release( object );
 			return false;
 		}
 	}
@@ -5269,6 +5284,7 @@ bool Job::AddObject(
 			object->AssignShader( *pShader );
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Shader not found `%s`", shader );
+			if( !repoint ) safe_release( object );
 			return false;
 		}
 	}
@@ -5279,10 +5295,11 @@ bool Job::AddObject(
 			IRadianceMap* pRadianceMap = 0;
 			RISE_API_CreateRadianceMap( &pRadianceMap, *pPnt, radianceMapConfig.scale );
 			pRadianceMap->SetOrientation( Vector3( radianceMapConfig.orientation ) );
-			object->AssignRadianceMap( *pRadianceMap );
+			object->AssignRadianceMap( *pRadianceMap );      // recreate-and-re-wrap (replaces any prior map)
 			safe_release( pRadianceMap );
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() );
+			if( !repoint ) safe_release( object );
 			return false;
 		}
 	}
@@ -5291,6 +5308,15 @@ bool Job::AddObject(
 	object->SetOrientation( Vector3( orient ) );
 	object->SetStretch( Vector3( scale[0], scale[1], scale[2] ) );
 	object->FinalizeTransformations();
+
+	if( repoint ) {
+		// Stable object re-pointed in place: it is already in the manager (no AddItem)
+		// and the manager owns it (no safe_release).  Reset its now-stale runtime caches.
+		// The TLAS-invalidation + light-gen decision is the incremental apply's closure-
+		// gated invariant pass (a per-object bbox compare), NOT here.
+		object->ResetRuntimeData();
+		return true;
+	}
 
 	pObjectManager->AddItem( object, name );
 	if( object->GetMaterial() && object->GetMaterial()->GetEmitter() )
@@ -5318,8 +5344,17 @@ bool Job::AddObjectMatrix(
 		return false;
 	}
 
+	// Slice 3 stable-object apply (see AddObject): re-point an existing object in place
+	// in incremental mode, else create.  Shared slot-binding.
 	IObjectPriv* object = 0;
-	RISE_API_CreateObject( &object, pGeometry );
+	bool repoint = false;
+	if( m_bIncrementalRepoint ) {
+		object = pObjectManager->GetItem( name );
+		repoint = ( object != 0 );
+	}
+	if( repoint ) object->AssignGeometry( *pGeometry );
+	else          RISE_API_CreateObject( &object, pGeometry );
+
 	object->SetShadowParams( bCastsShadows, bReceivesShadows );
 
 	if( material ) {
@@ -5328,7 +5363,7 @@ bool Job::AddObjectMatrix(
 			object->AssignMaterial( *pMat );
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Material not found `%s`", material );
-			safe_release( object );
+			if( !repoint ) safe_release( object );
 			return false;
 		}
 	}
@@ -5338,7 +5373,7 @@ bool Job::AddObjectMatrix(
 			object->AssignModifier( *pMod );
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Modifier not found `%s`", modifier );
-			safe_release( object );
+			if( !repoint ) safe_release( object );
 			return false;
 		}
 	}
@@ -5348,7 +5383,7 @@ bool Job::AddObjectMatrix(
 			object->AssignShader( *pShader );
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Shader not found `%s`", shader );
-			safe_release( object );
+			if( !repoint ) safe_release( object );
 			return false;
 		}
 	}
@@ -5362,7 +5397,7 @@ bool Job::AddObjectMatrix(
 			safe_release( pRadianceMap );
 		} else {
 			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() );
-			safe_release( object );
+			if( !repoint ) safe_release( object );
 			return false;
 		}
 	}
@@ -5388,6 +5423,11 @@ bool Job::AddObjectMatrix(
 	object->ClearAllTransforms();
 	object->PushTopTransStack( mx );
 	object->FinalizeTransformations();
+
+	if( repoint ) {
+		object->ResetRuntimeData();
+		return true;
+	}
 
 	pObjectManager->AddItem( object, name );
 	if( object->GetMaterial() && object->GetMaterial()->GetEmitter() )
@@ -9311,6 +9351,11 @@ void Job::InvalidateSpatialStructure()
 void Job::BumpLightTopologyGeneration()
 {
 	BumpSceneLightGen( pScene );   // downcast-to-Scene helper, as SceneEditor does
+}
+
+void Job::SetIncrementalRepointMode( bool b )
+{
+	m_bIncrementalRepoint = b;
 }
 
 //! Removes all the rasterizer outputs

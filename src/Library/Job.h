@@ -2714,6 +2714,10 @@ namespace RISE
 		//! Bumps the scene's light-topology generation (see IJob).
 		void BumpLightTopologyGeneration();
 
+		//! Enables/disables incremental re-point mode (see IJob).  No `override` to
+		//! match this file's house style.
+		void SetIncrementalRepointMode( bool b );
+
 		//! Clears the entire scene, resets everything back to defaults
 		/// \return TRUE if successful, FALSE otherwise
 		bool ClearAll(
@@ -2893,6 +2897,13 @@ namespace RISE
 		//! every Add*Camera impl so the camera-factory dim-arg
 		//! plumbing has one source of truth — the Scene's Film.
 		void ReadFilmDims( unsigned int& xres, unsigned int& yres, double& pixelAR ) const;
+
+		//! Incremental re-point mode (slice 3 stable-object apply).  When true,
+		//! AddObject/AddObjectMatrix re-point an existing same-named object in place
+		//! rather than creating a new one (see SetIncrementalRepointMode / IJob).  Set
+		//! only by the single-threaded CST incremental re-Finalize loop; false in every
+		//! full derive, so the full-derive object-creation path is byte-unchanged.
+		bool m_bIncrementalRepoint;
 	};
 }
 

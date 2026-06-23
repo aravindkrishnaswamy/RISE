@@ -42,6 +42,7 @@ namespace RISE
 			// "build a top-level BVH".
 			mutable BVH<const IObjectPriv*>*    pBVH;
 			mutable Octree<const IObjectPriv*>* pOctree;
+			mutable unsigned long long          mSpatialGen;   //!< advanced on every InvalidateSpatialStructure (see IObjectManager)
 
 			bool bUseBSPtree;
 			bool bUseOctree;
@@ -107,6 +108,7 @@ namespace RISE
 
 			void PrepareForRendering() const;
 			void InvalidateSpatialStructure() const;
+			unsigned long long GetSpatialStructureGeneration() const { return mSpatialGen; }
 		};
 	}
 }

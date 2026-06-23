@@ -19,6 +19,8 @@
 
 #include "Cst.h"
 #include "../Interfaces/IJob.h"
+#include "../Interfaces/IJobPriv.h"      // GetObjects() (manager access for the slice-3 stable-object apply)
+#include "../Interfaces/IObjectManager.h" // IObjectPriv getBoundingBox / GetMaterial, spatial-structure generation
 #include "../Parsers/ChunkParserRegistry.h"   // CreateAllChunkParsers (the LIVE registry)
 #include "../Parsers/IAsciiChunkParser.h"     // IAsciiChunkParser, DispatchChunkParameters
 
@@ -1072,6 +1074,17 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	return count;
 }
 
+//! Exact equality of two world bounding boxes (finite extents).  A non-spatial
+//! re-point re-runs the SAME transform on the SAME geometry -> bit-identical bbox;
+//! a geometry-extent or transform edit changes it.  Exact == is the right gate (a
+//! tolerance would let a genuine sub-epsilon move skip the TLAS rebuild); finite-only,
+//! so -ffast-math's no-NaN/Inf assumption does not affect it.
+static bool BBoxEqual( const BoundingBox& a, const BoundingBox& b )
+{
+	return a.ll.x == b.ll.x && a.ll.y == b.ll.y && a.ll.z == b.ll.z
+	    && a.ur.x == b.ur.x && a.ur.y == b.ur.y && a.ur.z == b.ur.z;
+}
+
 int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<NodeId>& chunkIds, std::vector<std::string>* diagnostics )
 {
 	std::vector<std::string> local;
@@ -1097,30 +1110,36 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		return 0;
 	}
 
+	// Slice 3 (stable-object apply) needs the object manager: it re-points existing
+	// objects in place and reads each object's bbox to gate the TLAS rebuild.  Downcast
+	// IJob -> IJobPriv exactly as the parser does (AsciiSceneParser.cpp ~470); an IJob
+	// that is not an IJobPriv cannot be derived into at all -> full derive.
+	IJobPriv* priv = dynamic_cast<IJobPriv*>( &pJob );
+	IObjectManager* objMgr = priv ? priv->GetObjects() : 0;
+	if( !objMgr ) {
+		diags.push_back( "incremental: Job does not expose its object manager (IJobPriv); fall back to a full derive" );
+		return 0;
+	}
+
 	// Re-apply ONLY the given closure (DocEditClosure) into an ALREADY-derived Job
-	// after an edit: drop each closure chunk via IJob's typed removal, then
-	// re-Finalize it -- so the work is O(closure . log N), not the O(N . log N) of a full
-	// DeriveToJob.  Deliberately does NOT ClearChunkParserState: the chunks OUTSIDE
-	// the closure are unchanged and keep their applied state + the parsers' file-
-	// scope caches as a fresh full parse would leave them.  (The cross-chunk caches
-	// that exist are keyed by name and overwritten on a chunk's re-Finalize, and the
-	// closure is applied in DOCUMENT order below so a producer re-applies before its
-	// consumer reads it.)
+	// after an edit: recreate the non-object entities (drop + re-Finalize), but
+	// re-point the closure's OBJECTS in place (slice 3) -- so the work is
+	// O(closure . log N), not the O(N . log N) of a full DeriveToJob, AND object
+	// addresses survive (the TLAS holds raw object pointers; recreating them was the
+	// P1.1 UAF + the reason a non-spatial edit could not skip the TLAS, P1.2).
+	// Deliberately does NOT ClearChunkParserState: the chunks OUTSIDE the closure are
+	// unchanged and keep their applied state + the parsers' file-scope caches as a fresh
+	// full parse would leave them.  (Cross-chunk caches are keyed by name and overwritten
+	// on a chunk's re-Finalize, and the closure is applied in DOCUMENT order so a producer
+	// re-applies before its consumer reads it.)
 	//
-	// Same refuse-all + abort-on-first-Finalize-failure contract as DeriveToJob:
-	// validate the WHOLE closure before touching the Job -- every chunk must be
-	// named AND of a category whose typed removal COMPLETELY undoes its Finalize
-	// (DropChunkByCategory: the five verified single-manager categories).  A PAINTER
-	// closure is refused here (RemovePainter now reverses the colour painters' func2d
-	// dual-register, but the category also covers `scalar_painter`, which lives in a
-	// separate manager RemovePainter does not touch -- D51: never a silent
-	// corruption); the caller then full-re-derives.  On any validation failure nothing is dropped or
-	// applied.  (Full apply-atomicity after a mid-apply Finalize failure -- rollback
-	// of the already-dropped/re-applied closure chunks -- is the same later Facet-2
-	// work DeriveToJob defers; for a validation-clean closure no Finalize fails.)
+	// Same refuse-all + abort-on-first-failure contract as DeriveToJob: validate the
+	// WHOLE closure before touching the Job -- every chunk must be named AND of a type
+	// whose re-derivation is a clean single-manager create-and-undo (DropChunkByCategory)
+	// for entities, or an in-place re-point for standard_object.  On any validation
+	// failure nothing is dropped or applied.
 	struct Pending { const IAsciiChunkParser* parser; ParseStateBag bag; NodeRef node; int index; ChunkCategory cat; std::string name; };
 	std::vector<Pending> pending;
-	bool recreatedObject = false;                 // closure recreates an object -> TLAS holds stale pointers
 	pending.reserve( chunkIds.size() );
 	for( NodeId id : chunkIds ) {
 		NodeRef node;
@@ -1131,17 +1150,17 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		if( !parser ) return 0;                                  // unknown chunk type (diagnostic pushed)
 		const ChunkCategory cat = parser->Describe().category;
 		std::string name; ParamValue( node.get(), "name", name );
-		// Every closure chunk must be droppable AND named, else a blind re-Finalize
-		// would duplicate it.  Refuse (caller falls back to a full DeriveToJob).
+		// Every closure chunk must be named (an entity drop / an object re-point both key
+		// by name), else a blind re-Finalize would duplicate it.  Refuse -> full derive.
 		if( name.empty() )                       { diags.push_back( node->role + ": incremental needs a name to drop+re-apply" ); return 0; }
-		switch( cat ) {                                          // categories DropChunkByCategory undoes COMPLETELY
+		switch( cat ) {                                          // categories the apply handles
 			case ChunkCategory::Material: case ChunkCategory::Geometry:
 			case ChunkCategory::Object:  case ChunkCategory::Light: case ChunkCategory::Modifier: break;
 			default: diags.push_back( node->role + ": incremental cannot fully drop this category (e.g. a scalar_painter has no colour-painter-manager entry for RemovePainter to drop); fall back to a full derive" ); return 0;
 		}
 		// Reversibility is PER-PARSER, not per-category (review P1.3/P1.5): refuse the
-		// chunk types whose Finalize is NOT a clean single-manager create-and-undo, so
-		// nothing is half-dropped (D51).  The caller then falls back to a full derive.
+		// chunk types whose re-derivation is NOT a clean single-manager create-and-undo
+		// (or, for objects, a clean in-place re-point), so nothing is half-applied (D51).
 		if( cat == ChunkCategory::Material && pJob.IsMaterialComposed( name.c_str() ) ) {
 			diags.push_back( node->role + " '" + name + "': composed material (creates helper painters); a typed RemoveMaterial is an incomplete undo -- fall back to a full derive" );
 			return 0;
@@ -1151,15 +1170,17 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			return 0;
 		}
 		if( node->role == "gltf_import" ) {                      // a single chunk whose Finalize spawns many entries
-			// (Today gltf_import has no `name` param, so the name-empty guard above
-			// already refuses it; this keyword guard is the explicit, durable refusal
-			// of a bulk importer -- and protects a future NAMED importer. The
-			// principled fix is a per-parser "single-manager-single-entry" capability
-			// bit -- see 21-stable-apply-and-resolver.md Section 5.)
 			diags.push_back( node->role + ": a bulk importer -- one chunk creates many objects/materials/painters/lights, which a typed RemoveGeometry cannot undo; fall back to a full derive" );
 			return 0;
 		}
-		if( cat == ChunkCategory::Object ) recreatedObject = true;
+		if( cat == ChunkCategory::Object && node->role != "standard_object" ) {
+			// Only standard_object is re-pointed in place (AddObject/AddObjectMatrix).  A
+			// csg_object's operands are themselves objects whose in-place re-point + the
+			// parent's operand-pointer revalidation is a separate effort (21-*.md S3); any
+			// other object-spawning chunk is unknown.  Refuse -> full derive (D51).
+			diags.push_back( node->role + ": only standard_object is re-pointed in place incrementally (CSG / other object chunks need a full derive); fall back" );
+			return 0;
+		}
 		ParseStateBag bag( &parser->Describe() );
 		if( !DispatchChunkParameters( parser->Describe(), bag, plist ) ) { diags.push_back( node->role + ": invalid parameter(s) (see log)" ); return 0; }
 		pending.push_back( Pending{ parser, std::move(bag), node, idx, cat, name } );
@@ -1168,37 +1189,85 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// Apply in DOCUMENT order (a producer before its consumer) -- the closure from
 	// DocEditClosure returns an unspecified (DFS) order, so sort by doc index here.
 	std::sort( pending.begin(), pending.end(), []( const Pending& a, const Pending& b ){ return a.index < b.index; } );
+
+	// Snapshot each closure OBJECT's pre-apply state: it MUST already exist (objects are
+	// re-pointed in place, never created here -- a missing object means a rename or stale
+	// closure, which aborts BEFORE any mutation).  The bbox snapshot lets the closure-
+	// gated invariant pass tell a spatial edit (bbox changes) from a non-spatial one
+	// (bbox identical), which is what makes "non-spatial edits skip the TLAS" valid.
+	struct ObjState { IObjectPriv* obj; BoundingBox bbox; };
+	std::vector<ObjState> objStates;
 	for( const Pending& p : pending ) {
+		if( p.cat != ChunkCategory::Object ) continue;
+		IObjectPriv* obj = objMgr->GetItem( p.name.c_str() );
+		if( !obj ) {
+			diags.push_back( p.node->role + " '" + p.name + "': object not in the derived Job (a rename or stale closure); aborting -- a full reset+re-derive is required" );
+			return 0;   // nothing mutated yet
+		}
+		// REMOVAL hazard (D51): an in-place re-point re-binds the slots the chunk
+		// specifies but cannot CLEAR one it omits -- there is no clear API for
+		// modifier/shader/radiance_map, and the parser skips interior_medium when it is
+		// "none".  So if the existing object HAS an optional slot the new chunk removes
+		// (sets to "none"), a re-point would silently keep the stale binding.  Detect it
+		// (existing getter set AND chunk value "none") and REFUSE -> full derive (which
+		// is correct).  A slot that is unchanged or CHANGED stays present (re-bound); a
+		// slot ADDED was absent before (existing getter null) -> not a removal.
+		if(    ( obj->GetMaterial()       && p.bag.GetString( "material",        "none" ) == "none" )
+		    || ( obj->GetModifier()       && p.bag.GetString( "modifier",        "none" ) == "none" )
+		    || ( obj->GetShader()         && p.bag.GetString( "shader",          "none" ) == "none" )
+		    || ( obj->GetRadianceMap()    && p.bag.GetString( "radiance_map",    "none" ) == "none" )
+		    || ( obj->GetInteriorMedium() && p.bag.GetString( "interior_medium", "none" ) == "none" ) ) {
+			diags.push_back( p.node->role + " '" + p.name + "': an optional slot (material/modifier/shader/radiance_map/interior_medium) is being REMOVED; an in-place re-point cannot clear it -- fall back to a full derive" );
+			return 0;
+		}
+		objStates.push_back( ObjState{ obj, obj->getBoundingBox() } );
+	}
+
+	// Drop the NON-OBJECT entities; objects are NEVER dropped (re-pointed in place below)
+	// so their addresses -- which the TLAS stores raw -- survive the edit.
+	for( const Pending& p : pending ) {
+		if( p.cat == ChunkCategory::Object ) continue;          // re-pointed, not dropped (slice 3)
 		if( DropChunkByCategory( pJob, p.cat, p.name.c_str() ) ) continue;
-		// A drop that finds nothing means the closure name does not match the derived
-		// Job -- e.g. a rename was applied to the document (incremental is value-edit
-		// only; rename goes through its own path).  Do NOT silently re-add (that would
-		// leave BOTH the old and the new entity and return success -- review P1.4):
-		// abort.  The Job is now partially modified; the caller must reset+re-derive.
-		// (Atomic rollback of a partial apply is the slice-4 reversible plan --
-		// docs/agentic-redesign/21-stable-apply-and-resolver.md.)
+		// A drop that finds nothing means the closure name does not match the derived Job
+		// (a rename was applied; incremental is value-edit only).  Do NOT silently re-add
+		// (that would leave BOTH entities -- review P1.4): abort.  The Job is now partially
+		// modified (some entities dropped); the caller must reset+re-derive.  (Full atomic
+		// rollback is the slice-4 reversible plan.)
 		diags.push_back( p.node->role + " '" + p.name + "': drop found no such entity in the derived Job (a rename or stale closure?); aborting -- a full reset+re-derive is required" );
-		if( recreatedObject ) pJob.InvalidateSpatialStructure();
 		return 0;
 	}
+
 	int count = 0;
-	for( Pending& p : pending ) {
-		if( p.parser->Finalize( p.bag, pJob ) ) { ++count; continue; }
-		diags.push_back( p.node->role + ": incremental apply failed (e.g. unresolved reference); see log" );
-		break;
+	{
+		// Re-point mode: an object chunk's re-Finalize re-points its existing (stable)
+		// object in place instead of creating a new one.  RAII so the flag is cleared on
+		// every exit (even an early break), never leaking into a later full derive.
+		struct RepointGuard { IJob& j; RepointGuard( IJob& j_ ) : j( j_ ) { j.SetIncrementalRepointMode( true ); } ~RepointGuard() { j.SetIncrementalRepointMode( false ); } } guard( pJob );
+		for( Pending& p : pending ) {
+			if( p.parser->Finalize( p.bag, pJob ) ) { ++count; continue; }
+			diags.push_back( p.node->role + ": incremental apply failed (e.g. unresolved reference); see log" );
+			break;
+		}
 	}
-	// The drop/re-add recreated the closure's objects at NEW addresses, so the
-	// top-level acceleration structure now holds STALE object pointers -- invalidate
-	// it (review P1.1: a render through the retained BVH would dangle).  This is the
-	// conservative drop/re-add cost: every object-touching edit rebuilds the TLAS, so
-	// drop/re-add CANNOT deliver the "non-spatial edit skips the TLAS" result (review
-	// P1.2) -- that needs the slice-3 stable-object apply, which invalidates only for
-	// genuinely spatial edits.  Also bump the light-topology generation (the emitter
-	// set may have changed); cheap, triggers a sampler rebuild only if needed.
-	if( recreatedObject ) {
-		pJob.InvalidateSpatialStructure();
-		pJob.BumpLightTopologyGeneration();
+
+	// Closure-gated invariant pass (slice 3) -- NOT a verbatim RunObjectInvariantChain
+	// (which invalidates the TLAS UNCONDITIONALLY, reproducing P1.2).  Invalidate the
+	// top-level acceleration iff a re-pointed object's WORLD BBOX actually changed (a
+	// geometry-extent or transform edit -- the genuinely spatial case); a non-spatial
+	// edit (material/painter value) leaves every object's bbox identical, so the TLAS is
+	// preserved (P1.2 dissolved).  Bump the light-topology generation iff the emitter set
+	// may have changed: a re-pointed object whose material emits (its luminary footprint
+	// may have moved or its emission changed), or any Light chunk recreated in the closure.
+	bool spatial = false;
+	bool emitter = false;
+	for( const ObjState& s : objStates ) {
+		if( !BBoxEqual( s.bbox, s.obj->getBoundingBox() ) ) spatial = true;
+		const IMaterial* m = s.obj->GetMaterial();
+		if( m && m->GetEmitter() ) emitter = true;
 	}
+	for( const Pending& p : pending ) if( p.cat == ChunkCategory::Light ) emitter = true;
+	if( spatial ) pJob.InvalidateSpatialStructure();
+	if( emitter ) pJob.BumpLightTopologyGeneration();
 	return count;
 }
 

@@ -143,6 +143,8 @@ namespace RISE
 			virtual const IMaterial* GetMaterial() const override;
 			virtual const IShader*   GetShader() const override { return pShader; }
 			virtual const IGeometry* GetGeometry() const override { return pGeometry; }
+			virtual const IRayIntersectionModifier* GetModifier() const override { return pModifier; }
+			virtual const IRadianceMap* GetRadianceMap() const override { return pRadianceMap; }
 
 			//! Deferred-realization (IObject): realize our geometry's lazy build
 			//! work.  No-op for cheap geometries; bakes a deferred DisplacedGeometry.

@@ -107,6 +107,18 @@ namespace RISE
 		//! this for the right-side panel's editable shader-name row.
 		virtual const class IShader* GetShader() const { return 0; }
 
+		//! Retrieves the geometry modifier of this object (NULL if none).  Default
+		//! returns null for ABI safety with out-of-tree implementers; concrete `Object`
+		//! overrides to return its `pModifier`.  Used by the CST incremental apply to
+		//! detect an optional-slot REMOVAL (a `modifier none` value edit) it must not
+		//! silently leave stale on an in-place re-point (slice 3, 21-stable-apply.md).
+		virtual const class IRayIntersectionModifier* GetModifier() const { return 0; }
+
+		//! Retrieves the per-object radiance map of this object (NULL if none).  Default
+		//! null for ABI safety; `Object` overrides.  Same incremental-apply removal-
+		//! detection use as GetModifier.
+		virtual const class IRadianceMap* GetRadianceMap() const { return 0; }
+
 		//! Retrieves the interior medium of this object (NULL if vacuum)
 		virtual const IMedium* GetInteriorMedium() const = 0;
 		

@@ -115,6 +115,7 @@ ObjectManager::ObjectManager(
 			) :
   pBVH( 0 ),
   pOctree( 0 ),
+  mSpatialGen( 0 ),
   bUseBSPtree( bUseBSPtree_ ),
   bUseOctree( bUseOctree_ ),
   nMaxObjectsPerNode( nMaxObjectsPerNode_ ),
@@ -391,6 +392,7 @@ void ObjectManager::PrepareForRendering() const
 
 void ObjectManager::InvalidateSpatialStructure() const
 {
+	++mSpatialGen;   // observable: a non-spatial incremental edit must NOT reach here (slice 3 closure gate)
 	if( pBVH ) {
 		GlobalLog()->PrintEx( eLog_Info, "ObjectManager::InvalidateSpatialStructure:: Destroying top-level BVH for rebuild" );
 		safe_release( pBVH );
