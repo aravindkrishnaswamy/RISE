@@ -396,13 +396,15 @@ until it is green:
    the references still resolve under the new name. A referrer carried in a TUPLE param (the ref is one
    token of a multi-token value, e.g. advanced_shader.shaderop) is REPORTED not rewritten — value-atom
    rewrite is the deferred item-4 refinement, never a silent whole-value clobber. The `SplitWs` helper
-   is now shared (TraceReferences + the value editor). Test `tests/CstEditReparseTest.cpp` (33 checks):
+   is now shared (TraceReferences + the value editor). Test `tests/CstEditReparseTest.cpp` (37 checks):
    [setparam] within-chunk edit preserves chunk + edited-param NodeIds and derives faithfully (the
    edited CST derives the SAME Job as a fresh parse of its serialization); [replace]/[erase]/[insert]
    structured top-level edits flow to the derived Job (a valid insert = chunk item + separator trivia);
    [reparse] DocReparse carries NodeIds across a free-form text change + derives consistently; [rename]
    NodeId lineage + referrer rewrite from the graph + re-resolve + derive; [rename-tuple] the tuple
-   referrer is reported, not clobbered. ← next: item 8 (spatial + non-spatial edit cost).
+   referrer is reported, not clobbered; [rename-collision] renaming into an existing same-category name
+   is refused atomically (review round 1: the unguarded version silently re-targeted the referrer,
+   violating D14/§2.5). ← next: item 8 (spatial + non-spatial edit cost).
 8. **Measure a non-spatial edit AND a spatial edit; report TLAS time separately.**
 
 That is the gate that turns "the model and cost-model hold in prototypes" into "the redesign's real

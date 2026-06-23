@@ -513,7 +513,12 @@ namespace RISE
 		//! `diagnostics` -- renaming into an existing name would make the name-path
 		//! ambiguous and silently re-target the referrers to the other chunk, which
 		//! D14/§2.5 forbid ("an unresolvable referrer is flagged, never silently
-		//! renamed"). Referrers carried in a TUPLE param (the reference is one token
+		//! renamed"). The check is by ChunkCategory, which is slightly COARSE
+		//! (scalar vs colour painters share `Painter` but live in separate managers
+		//! -- see TraceReferences), so a scalar<->colour same-name rename is
+		//! conservatively over-refused; over-refusal is the SAFE direction (refuse a
+		//! legal rename rather than risk a silent mis-target), and it never
+		//! under-refuses a real same-manager collision. Referrers carried in a TUPLE param (the reference is one token
 		//! of a multi-token value, e.g. advanced_shader.shaderop) are NOT rewritten
 		//! -- that needs value-atom granularity (deferred, item-4 scope) -- and are
 		//! reported in `diagnostics`. Returns the new Document (or `doc` unchanged on

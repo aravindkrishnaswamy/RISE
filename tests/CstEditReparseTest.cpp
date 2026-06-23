@@ -24,7 +24,11 @@
 //    * [rename]    DocRename preserves the chunk's NodeId (now addressed by the
 //                  NEW name), rewrites the referrer (material.reflectance) from
 //                  the traced graph, and the renamed scene still derives + the
-//                  reference re-resolves to the same chunk.
+//                  reference re-resolves to the same chunk;
+//    * [rename-tuple] a tuple-reference referrer (advanced_shader.shaderop) is
+//                  reported, not silently clobbered (value-atom rewrite deferred);
+//    * [rename-collision] renaming into an existing same-category name is refused
+//                  ATOMICALLY (Document unchanged; the referrer is not re-targeted).
 //
 //////////////////////////////////////////////////////////////////////
 
