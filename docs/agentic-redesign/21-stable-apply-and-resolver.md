@@ -38,14 +38,19 @@ One authority resolves a reference by `(category, name)` over the **complete
 derivation namespace** and **records the edge as it resolves** — used by *both*
 the derive-apply and every consumer (rename, closure). No parallel scan.
 
-- **Namespace = managers + runtime defaults.** The resolver consults the live
-  managers (which already hold the `none` material/painter added at
+- **Namespace = managers + runtime defaults.** The resolver resolves over the CST
+  defs PLUS the engine's runtime defaults (the `none` material/painter added at
   [Job.cpp:351,356](../../src/Library/Job.cpp) and the `Default*` shader ops at
   357–373), not a CST-only view. So `none`/`Default*` are first-class names that
-  collisions and resolutions see. (Access path: `IJobPriv` already exposes every
-  manager — `GetMaterials`/`GetGeometries`/`GetPainters`/`GetObjects`/…,
-  each with `GetItem`/`EnumerateItemNames` — so NO new IJob getters are needed;
-  downcast `IJob&`→`IJobPriv&` as `override_object` already does.)
+  collisions and resolutions see. **Interim (slices 1–4):** `BuildReferenceGraph` is
+  a Document-only function (no Job handle), so the default set is a hardcoded
+  `RuntimeDefaultDefs()` constant, kept honest by `CstResolverTest`'s [namespace]
+  check (it derives an empty Job and asserts every default is present → drift fails).
+  **Endpoint (slice 5):** when resolution is routed through the derivation, the
+  namespace is read from the live managers (`IJobPriv` already exposes every manager
+  — `GetMaterials`/`GetPainters`/`GetShaderOps`/… with `GetItem`/`EnumerateItemNames`,
+  no new getters — downcast `IJob&`→`IJobPriv&` as `override_object` does), so the
+  hardcoded constant is retired.
 - **Recorded during derive, stamped.** As `DeriveToJob` applies each chunk, the
   resolver records every `(sourceParam NodeId → resolved target)` edge into a
   `ReferenceGraph` attached to the derived artifact, stamped with the derive's

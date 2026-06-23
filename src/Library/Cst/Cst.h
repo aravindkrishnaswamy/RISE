@@ -441,14 +441,19 @@ namespace RISE
 
 		//! The traced reference graph for a document (slice 1 of
 		//! docs/agentic-redesign/21-stable-apply-and-resolver.md): the resolved
-		//! reference edges + a content STAMP. The stamp is a fingerprint of the
-		//! reference-relevant content (each chunk's keyword + name + reference-param
-		//! values) -- it CHANGES iff an edit could change the graph (a reference
-		//! re-point, a rename, a chunk add/remove) and is STABLE across edits that
-		//! cannot (a comment, whitespace, a non-reference value). A consumer that
-		//! caches a graph can therefore detect a stale one in O(1) by re-stamping
-		//! and comparing, instead of silently trusting it (P1.8: the prior
-		//! TraceReferences was unstamped).
+		//! reference edges + a content STAMP. The stamp is a CONSERVATIVE fingerprint
+		//! of the reference-relevant content (each chunk's keyword + name + every
+		//! reference-param value). Its load-bearing guarantee is one-directional:
+		//! every edit that COULD change the graph (a reference re-point, a rename of a
+		//! referenced chunk, a chunk add/remove) changes the stamp -- so
+		//! stamp-unchanged ⟹ graph-unchanged, and a consumer caching a graph can
+		//! reject a stale one in O(1) (P1.8: the prior TraceReferences was unstamped).
+		//! It is NOT a precise graph hash: it is STABLE across edits that cannot touch
+		//! the graph (a comment, whitespace, a NON-reference value edit), but it may
+		//! ALSO change on some graph-NEUTRAL edits (e.g. renaming a chunk nothing
+		//! references re-mixes its name) -- a stamp change therefore means "re-derive
+		//! the graph to be safe", which at worst costs a needless re-derive, never a
+		//! missed staleness.
 		struct ReferenceGraph { std::vector<ReferenceUse> edges; unsigned long long stamp = 0; };
 
 		//! Trace the document's reference graph (item 6). A reference resolves to the
@@ -502,11 +507,14 @@ namespace RISE
 		//!     produces NO edge (the default is not a CST chunk) -- closing the
 		//!     coarser-namespace gap (P1.8). The default set is asserted to match a
 		//!     freshly-derived Job by CstResolverTest (drift -> test fails).
-		//!   * DISTINGUISHES ref-or-literal: a reference-kind value that resolves to
-		//!     nothing AND parses as a pure number is a LITERAL (e.g. PBR `metallic
-		//!     0.5`), not a dangling reference -- it is not diagnosed and not an edge.
-		//!     A non-numeric unresolved value is still a genuine dangling reference
-		//!     (diagnosed). (P1.8: the prior pass flagged literals as dangling refs.)
+		//!   * DISTINGUISHES ref-or-literal: in a slot the descriptor marks
+		//!     `acceptsScalarLiteral` (PBR `metallic`/`roughness`, `ior`, ... -- a
+		//!     painter ref OR an inline scalar), a non-resolving value that parses as a
+		//!     pure number is a LITERAL -- not diagnosed, not an edge. In a PURE-
+		//!     reference slot (reflectance/geometry/material/...) a non-resolving value
+		//!     is ALWAYS a dangling reference (diagnosed), numeric or not. (P1.8: the
+		//!     prior pass flagged scalar literals as dangling refs; a too-broad numeric
+		//!     suppression would conversely have hidden danglings in pure-ref slots.)
 		//!   * STAMPS the result (see ReferenceGraph) so a cached graph's staleness is
 		//!     detectable in O(1).
 		//! It does NOT yet capture DYNAMIC references created at derive time (timeline

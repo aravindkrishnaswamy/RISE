@@ -1204,7 +1204,10 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 //! applied (Job::InitializeContainers): the `none` material + painter, and the
 //! `Default*` shader ops. A reference to one of these RESOLVES (to the default) --
 //! it is NOT a dangling reference -- but yields no CST-chunk edge. Kept in sync
-//! with Job.cpp by CstResolverTest (derive an empty scene -> these must be present).
+//! with Job.cpp by CstResolverTest's [namespace] check, which derives an empty scene
+//! and asserts EVERY one of these (material/painter `none` + all 11 shader ops) is
+//! present in the Job -- so a Job.cpp default renamed/added without updating this
+//! list fails the test.
 static const std::vector<std::pair<ChunkCategory,std::string> >& RuntimeDefaultDefs()
 {
 	static const std::vector<std::pair<ChunkCategory,std::string> > d = {
@@ -1225,9 +1228,13 @@ static const std::vector<std::pair<ChunkCategory,std::string> >& RuntimeDefaultD
 	return d;
 }
 
-//! Does `s` parse ENTIRELY as a number? Then a non-resolving reference-kind value
-//! is a LITERAL (a ref-or-literal slot, e.g. PBR `metallic 0.5`), not a dangling
-//! reference -- so it is neither diagnosed nor an edge.
+//! Does `s` parse ENTIRELY as a number? The caller suppresses the dangling-reference
+//! diagnostic for a non-resolving value ONLY when this is true AND the slot is
+//! `acceptsScalarLiteral` (a ref-or-literal slot, e.g. PBR `roughness 0.5`); a number
+//! in a pure-reference slot is still a dangling reference. (strtod accepts inf/nan/hex
+//! floats too -- harmless here: those only matter in an acceptsScalarLiteral slot,
+//! where a non-finite scalar is still "not a reference", and a pure-ref slot is
+//! gated out by the flag regardless.)
 static bool LooksNumeric( const std::string& s )
 {
 	if( s.empty() ) return false;
@@ -1310,7 +1317,11 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 				}
 				if( target == kRuntimeDefaultTarget ) continue;    // resolves to a runtime default: not an edge, not dangling
 				if( target == 0 ) {                                // unresolved
-					if( !LooksNumeric( val ) )                      // a pure number is a literal (ref-or-literal slot), not a dangling ref
+					// A pure number is a LITERAL only in a REF-OR-LITERAL slot
+					// (pd->acceptsScalarLiteral, e.g. PBR `roughness 0.5`); in a
+					// PURE-reference slot (reflectance/geometry/material/...) a
+					// non-resolving value -- numeric or not -- is a dangling reference.
+					if( !( pd->acceptsScalarLiteral && LooksNumeric( val ) ) )
 						diags.push_back( c->role + "." + role + " -> '" + val + "': unresolved reference" );
 					continue;
 				}

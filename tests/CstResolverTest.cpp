@@ -117,6 +117,16 @@ int main()
 		Job* j = new Job(); std::vector<std::string> dd; DeriveToJob( doc, *j, &dd );
 		Check( j->GetMaterials() && j->GetMaterials()->GetItem( "none" ) != 0, "runtime default present: material 'none' (resolver namespace in sync)" );
 		Check( j->GetPainters()  && j->GetPainters()->GetItem( "none" )  != 0, "runtime default present: painter 'none' (resolver namespace in sync)" );
+		// Guard ALL of RuntimeDefaultDefs's shader ops against drift: each must exist
+		// in a freshly-derived Job (a Job.cpp default renamed/added without updating
+		// RuntimeDefaultDefs would otherwise silently re-introduce a false dangling).
+		const char* shops[] = { "DefaultReflection", "DefaultRefraction", "DefaultEmission",
+			"DefaultDirectLighting", "DefaultCausticPelPhotonMap", "DefaultCausticSpectralPhotonMap",
+			"DefaultGlobalPelPhotonMap", "DefaultGlobalSpectralPhotonMap", "DefaultTranslucentPelPhotonMap",
+			"DefaultShadowPhotonMap", "DefaultPathTracing" };
+		bool allShops = j->GetShaderOps() != 0;
+		for( const char* s : shops ) if( !( j->GetShaderOps() && j->GetShaderOps()->GetItem( s ) ) ) allShops = false;
+		Check( allShops, "runtime defaults present: all 11 Default* shader ops (RuntimeDefaultDefs in sync with Job.cpp)" );
 		j->release();
 	}
 
@@ -141,6 +151,14 @@ int main()
 		std::vector<std::string> diags2;
 		BuildReferenceGraph( doc2, &diags2 );
 		Check( DiagsMention( diags2, "nosuchpainter" ), "control: a non-numeric unresolved reference IS diagnosed dangling" );
+
+		// control (review P1): a numeric in a PURE-reference slot (reflectance) is NOT
+		// a literal -- it must STILL be diagnosed dangling. The acceptsScalarLiteral
+		// gate must not suppress here (lambertian reflectance is not ref-or-literal).
+		Document doc3 = ParseToCst( "RISE ASCII SCENE 6\nlambertian_material\n{\nname m\nreflectance 0.5\n}\n" );
+		std::vector<std::string> diags3;
+		BuildReferenceGraph( doc3, &diags3 );
+		Check( DiagsMention( diags3, "reflectance" ), "control: numeric `reflectance 0.5` in a PURE-reference slot IS diagnosed dangling (not suppressed)" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

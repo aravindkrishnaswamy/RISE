@@ -301,6 +301,7 @@ namespace RISE
 		bool                         repeatable = false;
 		std::vector<std::string>     enumValues;                            // populated when kind == Enum
 		std::vector<ChunkCategory>   referenceCategories;                    // populated when kind == Reference; a param can accept references from multiple categories (e.g. any Painter or Function)
+		bool                         acceptsScalarLiteral = false;           // a Reference slot that ALSO accepts an inline numeric scalar (e.g. PBR `roughness 0.5`) -- "ref-or-literal". The CST reference resolver treats a pure-number value in such a slot as a LITERAL (not a dangling reference). A pure-Reference slot (reflectance/geometry/material/...) leaves this false, so a non-resolving value there stays a dangling-reference diagnostic.
 		std::vector<ValueKind>       tupleKinds;                             // populated when the value is a whitespace-separated tuple of typed tokens (e.g. "shaderop foo 0 5 +" on advanced_shader — each token is a Reference, UInt, UInt, Enum); empty means the whole value is kind-typed
 		std::vector<ParameterPreset> presets;                                // optional named values for the editor's quick-pick combo box; the line edit stays usable for arbitrary input
 		std::string                  description;
