@@ -368,7 +368,7 @@ until it is green:
    category is chosen at derive time by another param (e.g. `timeline.element` keyed by `element_type`,
    D14) are invisible to `referenceCategories` — not traced; (b) a reference in a param the descriptor
    declares as neither `Reference` nor a tuple-Reference is a descriptor-completeness gap — a 15-site
-   review audit found + fixed all three (advanced_shader.shaderop, voronoi{2d,3d}.gen,
+   review audit found + fixed all four (advanced_shader.shaderop, voronoi2d.gen, voronoi3d.gen,
    scalar_painter.multiply); (c) the (category,name) namespace is COARSER than the engine's per-slot
    resolution — `scalar_painter` shares ChunkCategory::Painter with colour painters but a SEPARATE
    manager (a same-name scalar+colour pair mis-resolves), and `ior` over-declares {Painter,Function}
