@@ -1098,7 +1098,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 
 	// Re-apply ONLY the given closure (DocEditClosure) into an ALREADY-derived Job
 	// after an edit: drop each closure chunk via IJob's typed removal, then
-	// re-Finalize it -- so the work is O(closure), not the O(N) of a full
+	// re-Finalize it -- so the work is O(closure . log N), not the O(N . log N) of a full
 	// DeriveToJob.  Deliberately does NOT ClearChunkParserState: the chunks OUTSIDE
 	// the closure are unchanged and keep their applied state + the parsers' file-
 	// scope caches as a fresh full parse would leave them.  (The cross-chunk caches

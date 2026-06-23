@@ -94,16 +94,23 @@ int main()
 	}
 
 	// gltf_import (a bulk importer: one chunk spawns many entries) -> REFUSED. It has
-	// no `name` param, so it is the second chunk (index 1); fetch its NodeId by
-	// position and pass it as a hand-built closure. It is refused either way (the
-	// name-empty guard catches the current unnamed importer; the gltf_import keyword
-	// guard protects a future NAMED bulk importer) -- the point is it never half-drops.
+	// no `name` param; locate its chunk by ROLE (a hardcoded index would land on a
+	// header trivia node) and pass its NodeId as a hand-built closure. Today the
+	// name-empty guard catches it first (it is unnamed); the gltf_import keyword guard
+	// is the durable refusal that also protects a future NAMED bulk importer -- the
+	// point verified here is it never half-drops.
 	{
 		std::string s =
 			"RISE ASCII SCENE 6\n"
 			"gltf_import\n{\nfile nonexistent.gltf\n}\n";
 		Document doc = ParseToCst( s );
-		NodeId id = DocNodeIdAt( doc, 1 );   // the gltf_import chunk
+		NodeId id = 0;
+		for( int i = 0, n = DocItemCount( doc ); i < n; ++i ) {
+			const NodeId cid = DocNodeIdAt( doc, i );
+			NodeRef nd = DocResolveNodeId( doc, cid );
+			if( nd && nd->kind == NodeKind::Chunk && nd->role == "gltf_import" ) { id = cid; break; }
+		}
+		Check( id != 0, "gltf_import chunk located by role" );
 		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
 		std::vector<NodeId> closure; closure.push_back( id );
 		std::vector<std::string> di;

@@ -171,7 +171,9 @@ the managers a typed removal clears. Classification:
     ([AsciiSceneParser.cpp:5164](../../src/Library/Parsers/AsciiSceneParser.cpp)).
     `IsMaterialComposed` (material-only) does NOT catch it, and the Geometry gate
     ALLOWS it — so it must be refused explicitly. The Hosek-Wilkie sky similarly
-    spawns a hidden `__hw_sun__` light.
+    spawns a hidden `__hw_sun__` light (currently caught only because it has no
+    `name`; if a future `name` is added to it before the capability bit lands, the
+    interim denylist must gain `hosek_wilkie_skylight` too).
   Because a hardcoded denylist is silently defeated by the next bulk importer, the
   **principled fix is a capability bit on `IAsciiChunkParser`** ("single-manager,
   single-entry") that the classifier reads structurally; the interim slice-0 guard
