@@ -4,11 +4,17 @@
 //  the real resolver, on a three-level dependency chain.
 //
 //  Item 5 derives every chunk through the live registry. Item 6 builds the
-//  REFERENCE GRAPH the same resolution produces (D14/D25, §2.5): for every
-//  EXPLICIT reference it records a `ReferenceUse { sourceValueNodeId,
-//  targetNodeId }`, resolving a reference value to the chunk of that name in the
-//  param's reference CATEGORY (the descriptor-derived namespace the named
-//  managers key on -- so the resolver is the engine's, not a parallel one).
+//  REFERENCE GRAPH (D14/D25, §2.5): for every EXPLICIT reference it records a
+//  `ReferenceUse { sourceValueNodeId, targetNodeId }`, resolving a reference
+//  value to the chunk of that name in the param's reference CATEGORY (the
+//  descriptor-derived namespace the named managers key on -- the SAME
+//  category-name keying the engine uses, so it AGREES with the engine's
+//  resolution for STATIC references). SCOPE: this is a descriptor-based resolver
+//  (D14's "descriptor-provided reference resolver"); it does NOT capture DYNAMIC
+//  references whose category is chosen at derive time by another param (e.g.
+//  timeline.element via element_type, D14) -- those, and eliminating any
+//  resolver drift, need the production D35 path (tracing recorded BY the actual
+//  derivation resolver, no parallel pass), which is deferred.
 //
 //  This suite proves, on the canonical 3-level chain
 //      object --geometry--> sphere

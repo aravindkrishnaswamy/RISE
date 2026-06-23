@@ -411,19 +411,31 @@ namespace RISE
 		//!     param's reference category whose `name` matches the referring value).
 		struct ReferenceUse { NodeId sourceValueNodeId; NodeId targetNodeId; };
 
-		//! Trace the document's reference graph (item 6) through the SAME resolution
-		//! the engine performs: a reference value names a chunk by (category, name)
-		//! in the descriptor-derived category namespace (Geometry -> geometry/,
-		//! Material -> materials/, ... -- exactly how the named managers key, §2.5),
-		//! and resolution finds the defining chunk of that name in one of the
-		//! param's `referenceCategories`. Returns a `ReferenceUse` per resolved
-		//! EXPLICIT reference (params actually present with a non-"none" value;
-		//! descriptor defaults and the explicit-"none" idiom are not edges). A
-		//! reference whose target is defined by NO chunk in any of its categories is
-		//! a DANGLING reference -- reported in `diagnostics` (when non-null), never a
-		//! silent edge. This is the graph D14 renames rewrite referrers from and D25
-		//! incremental re-derivation walks for the dependency closure. O(N log N)
-		//! (a chunk's NodeId is an O(log N) positional lookup per item).
+		//! Trace the document's reference graph (item 6): a reference value names a
+		//! chunk by (category, name) in the descriptor-derived category namespace
+		//! (Geometry -> geometry/, Material -> materials/, ... -- the SAME
+		//! category-name keying the named managers use, §2.5), and resolution finds
+		//! the defining chunk of that name in one of the param's
+		//! `referenceCategories`. So it AGREES with the engine's resolution for
+		//! STATIC references. Returns a `ReferenceUse` per resolved EXPLICIT
+		//! reference (params actually present with a non-"none" value; descriptor
+		//! defaults and the explicit-"none" idiom are not edges). A reference whose
+		//! target is defined by NO chunk in any of its categories is a DANGLING
+		//! reference -- reported in `diagnostics` (when non-null), never a silent
+		//! edge. This is the graph D14 renames rewrite referrers from and D25
+		//! incremental re-derivation walks for the dependency closure.
+		//!
+		//! SCOPE: this is a DESCRIPTOR-BASED resolver (D14's "descriptor-provided
+		//! reference resolver"), run as a separate pass over the CST. It does NOT
+		//! capture DYNAMIC references whose target category is chosen at derive time
+		//! by another param (e.g. `timeline.element` keyed by `element_type`, D14) --
+		//! those are invisible to `referenceCategories`. The production primary path
+		//! (D35) records `ReferenceUse` FROM the actual derivation resolver as it
+		//! runs (no parallel pass, so no drift risk, and dynamic refs are captured);
+		//! this descriptor-based pass is the transfer-gate demonstration of the
+		//! graph + its uses (rename / closure / dangling), with that derive-time
+		//! tracing deferred. O(N log N) (a chunk's NodeId is an O(log N) positional
+		//! lookup per item).
 		std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std::string>* diagnostics = nullptr );
 
 		//! Reparse `newText` and carry NodeIds from `oldDoc` via FOUR hashed passes

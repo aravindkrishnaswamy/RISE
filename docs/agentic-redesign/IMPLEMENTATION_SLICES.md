@@ -342,8 +342,10 @@ until it is green:
    named managers by name, so category addressing is a CST-navigation nicety, not load-bearing for
    items 5–8. ← next: item 6 (reference tracing through the real resolver).
 6. **Trace references through the real resolver** and test a **three-level** dependency chain.
-   **DONE (pending review).** `TraceReferences(doc)` builds the reference graph (D14/D25, §2.5) the same
-   resolution the engine performs: PASS A indexes every chunk's definition by **(category, name) →
+   **DONE (pending review).** `TraceReferences(doc)` builds the reference graph (D14/D25, §2.5) via a
+   DESCRIPTOR-BASED resolver (D14's "descriptor-provided reference resolver") that uses the SAME
+   category-name keying the engine's managers use (so it AGREES with the engine for STATIC refs):
+   PASS A indexes every chunk's definition by **(category, name) →
    NodeId** — the descriptor-derived category namespace the named managers key on (Geometry → geometry/,
    Material → materials/, …, so a reference resolves to the named chunk in the referenced CATEGORY
    regardless of keyword); PASS B records a **`ReferenceUse { sourceValueNodeId, targetNodeId }`** per
@@ -357,7 +359,12 @@ until it is green:
    painter chain; source/target NodeIds resolve to the right Param/Chunk; **rename** referrers found from
    the graph (the only referrer of the painter is material.reflectance — D14); the **transitive closure**
    is walkable (D25); dangling ref flagged; explicit `none` is not an edge. Cost O(N log N) (a chunk's
-   NodeId is an O(log N) positional lookup). ← next: item 7 (structured edits + free-form reparses).
+   NodeId is an O(log N) positional lookup). **SCOPE (honest):** this descriptor-based pass does NOT
+   capture **dynamic references** whose category is chosen at derive time by another param (e.g.
+   `timeline.element` keyed by `element_type`, D14) — invisible to `referenceCategories`. The production
+   primary path (D35) records `ReferenceUse` FROM the actual derivation resolver as it runs (no parallel
+   pass → no drift, dynamic refs captured); this pass is the transfer-gate demonstration of the graph +
+   its uses (rename / closure / dangling), with that derive-time tracing deferred. ← next: item 7 (structured edits + free-form reparses).
 7. Exercise **structured edits AND free-form reparses**, including **chunk identity + rename**.
 8. **Measure a non-spatial edit AND a spatial edit; report TLAS time separately.**
 
