@@ -200,6 +200,29 @@ int main()
 		Check( SerializeCst( d2 ).find( "shaderop dl 0 1 +" ) != std::string::npos, "the tuple value is left intact (no whole-value clobber)" );
 	}
 
+	//----------------------------------------------------------------------
+	std::printf( "[rename-collision] renaming to an existing same-category name is refused atomically\n" );
+	{
+		const std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname a\ncolor 1 0 0\n}\n"
+			"uniformcolor_painter\n{\nname b\ncolor 0 1 0\n}\n"
+			"lambertian_material\n{\nname m\nreflectance b\n}\n";
+		Document d = ParseToCst( s );
+		const NodeId b = DocFindByName( d, "uniformcolor_painter/b" );
+		std::vector<std::string> diags;
+		Document d2 = DocRename( d, b, "a", &diags );   // collide with painter 'a' (same category)
+		Check( !diags.empty(), "collision is reported in diagnostics" );
+		Check( d2.items.get() == d.items.get(), "refused ATOMICALLY: Document unchanged (no silent re-target of the referrer)" );
+		Check( DocFindByName( d2, "uniformcolor_painter/b" ) == b, "'b' is still named 'b' (not renamed into the collision)" );
+		// a NON-colliding rename of the same chunk still succeeds + rewrites the referrer
+		std::vector<std::string> diags2;
+		Document d3 = DocRename( d, b, "green", &diags2 );
+		Check( diags2.empty() && DocFindByName( d3, "uniformcolor_painter/green" ) == b
+		    && SerializeCst( d3 ).find( "reflectance green" ) != std::string::npos,
+		       "a non-colliding rename of the same chunk succeeds + rewrites the referrer" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

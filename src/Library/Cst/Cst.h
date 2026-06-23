@@ -488,8 +488,12 @@ namespace RISE
 		//! into pvalue tokens), preserving the pname + its leading trivia and SHARING
 		//! every other child by pointer. Applied as a `DocReplaceItem` at the chunk's
 		//! position, so the chunk's NodeId is PRESERVED (lineage, D44); the unchanged
-		//! params keep their identities (item-4 content match). Returns the new
-		//! Document, or `doc` unchanged if the chunk or param is absent (no-op). This
+		//! params keep their identities, and the EDITED param keeps its id by the
+		//! item-4 content match (a unique-role param, or a repeated param whose new
+		//! value stays unique among its siblings -- an AMBIGUOUS repeated-param edit
+		//! that makes two same-role params byte-identical INVALIDATES rather than
+		//! position-remaps the id, per DocReplaceItem). Returns the new Document, or
+		//! `doc` unchanged if the chunk or param is absent (no-op). This
 		//! is the editor's core "edit geometry/s.radius" operation and the item-8
 		//! non-spatial edit. O(log N) (find the chunk + path-copy the spine) + the
 		//! chunk's own rebuild. (newValue is re-tokenised whole; rewriting a single
@@ -501,11 +505,19 @@ namespace RISE
 		//! traced reference graph (TraceReferences -- NOT a re-resolution). The
 		//! renamed chunk's NodeId is PRESERVED (lineage survives rename, D9/D44), so
 		//! UI/agent bindings keyed on NodeId survive; only the name-path string
-		//! changes, and the references still resolve (re-tracing yields the same
-		//! edges via the new name). Referrers carried in a TUPLE param (the reference
-		//! is one token of a multi-token value, e.g. advanced_shader.shaderop) are
-		//! NOT rewritten -- that needs value-atom granularity (deferred, item-4
-		//! scope) -- and are reported in `diagnostics`. Returns the new Document.
+		//! changes, and for a non-colliding rename the references re-resolve to the
+		//! SAME chunk via the new name.
+		//!
+		//! COLLISION is REFUSED ATOMICALLY: if `newName` already names another chunk
+		//! of the same category, the rename applies NOTHING and reports it in
+		//! `diagnostics` -- renaming into an existing name would make the name-path
+		//! ambiguous and silently re-target the referrers to the other chunk, which
+		//! D14/§2.5 forbid ("an unresolvable referrer is flagged, never silently
+		//! renamed"). Referrers carried in a TUPLE param (the reference is one token
+		//! of a multi-token value, e.g. advanced_shader.shaderop) are NOT rewritten
+		//! -- that needs value-atom granularity (deferred, item-4 scope) -- and are
+		//! reported in `diagnostics`. Returns the new Document (or `doc` unchanged on
+		//! a refused collision / non-chunk target).
 		Document DocRename( const Document& doc, NodeId chunkId, const std::string& newName, std::vector<std::string>* diagnostics = nullptr );
 	}
 }

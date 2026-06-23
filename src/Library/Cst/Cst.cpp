@@ -1170,13 +1170,20 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 	NodeRef target = DocResolveNodeId( doc, chunkId );
 	if( !target || target->kind != NodeKind::Chunk ) { diags.push_back( "rename: target is not a chunk" ); return doc; }
 
-	// Map each param NodeId -> its (owning chunk NodeId, role, occurrence), so a
-	// referrer edge (which is keyed by the referring PARAM's NodeId) can be turned
-	// into a DocSetParamValue on that param. Also remember each referrer param's
-	// descriptor kind (single Reference vs a tuple param).
 	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
+	// The category the target lives in -- a name collides within the named MANAGER
+	// for that category (where the engine + the reference resolver key by name).
+	std::map<std::string, const IAsciiChunkParser*>::const_iterator tit = registry.find( target->role );
+	const int targetCat = ( tit == registry.end() ) ? -1 : (int)tit->second->Describe().category;
+
+	// One walk: (1) detect a name COLLISION -- another chunk of the target's
+	// category already named newName -- and (2) map each param NodeId -> its
+	// (owning chunk NodeId, role, occurrence) + whether it's a tuple param, so a
+	// referrer edge (keyed by the referring PARAM's NodeId) can be turned into a
+	// DocSetParamValue.
 	struct Loc { NodeId chunk; std::string role; int occ; bool tuple; };
 	std::map<NodeId, Loc> paramLoc;
+	bool collision = false;
 	std::vector<NodeRef> items;
 	SeqToVec( doc.items, items );
 	for( size_t i = 0; i < items.size(); ++i ) {
@@ -1185,6 +1192,10 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 		const NodeId cid = DocNodeIdAt( doc, (int)i );
 		std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( c->role );
 		const ChunkDescriptor* desc = ( it == registry.end() ) ? 0 : &it->second->Describe();
+		if( cid != chunkId && desc && (int)desc->category == targetCat ) {
+			std::string nm;
+			if( ParamValue( c.get(), "name", nm ) && nm == newName ) collision = true;
+		}
 		std::map<std::string,int> occ;
 		for( const auto& kid : c->kids ) {
 			if( kid->kind != NodeKind::Param ) continue;
@@ -1194,6 +1205,15 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 			if( desc ) for( const auto& p : desc->parameters ) if( p.name == role ) { tuple = !p.tupleKinds.empty(); break; }
 			paramLoc[ DocParamId( doc, cid, role, thisOcc ) ] = Loc{ cid, role, thisOcc, tuple };
 		}
+	}
+
+	// Refuse a colliding rename ATOMICALLY (apply nothing) -- renaming into an
+	// existing name would make the name-path ambiguous and SILENTLY re-target the
+	// referrers to the other chunk (D14/§2.5: an unresolvable referrer is flagged,
+	// never silently renamed).
+	if( collision ) {
+		diags.push_back( "rename: '" + newName + "' already names another chunk of the same category; refused (would create an ambiguous name)" );
+		return doc;
 	}
 
 	// The referrers are exactly the traced edges into this chunk (D14: rewrite
