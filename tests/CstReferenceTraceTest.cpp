@@ -141,6 +141,30 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
+	std::printf( "[tuple-multi] a tuple with MULTIPLE Reference tokens (scalar_painter.multiply a b)\n" );
+	{
+		// `multiply a b` carries TWO scalar-painter references in one param --
+		// both resolve, both with the same (param) source NodeId.
+		const std::string s =
+			"RISE ASCII SCENE 6\n"
+			"scalar_painter\n{\nname sa\nvalue 2\n}\n"
+			"scalar_painter\n{\nname sb\nvalue 3\n}\n"
+			"scalar_painter\n{\nname prod\nmultiply sa sb\n}\n";
+		Document ds = ParseToCst( s );
+		std::vector<std::string> dg;
+		std::vector<ReferenceUse> u = TraceReferences( ds, &dg );
+		const NodeId sa = DocFindByName( ds, "scalar_painter/sa" );
+		const NodeId sb = DocFindByName( ds, "scalar_painter/sb" );
+		const NodeId prod = DocFindByName( ds, "scalar_painter/prod" );
+		Check( sa && sb && prod, "scalar_painters addressable" );
+		Check( dg.empty(), "both multiply tuple-references resolve (no dangling)" );
+		const NodeId src = DocParamId( ds, prod, "multiply", 0 );
+		bool toA = false, toB = false;
+		for( const auto& e : u ) { if( e.sourceValueNodeId == src && e.targetNodeId == sa ) toA = true; if( e.sourceValueNodeId == src && e.targetNodeId == sb ) toB = true; }
+		Check( toA && toB, "multiply -> BOTH sa and sb (two Reference tokens of one tuple param)" );
+	}
+
+	//----------------------------------------------------------------------
 	std::printf( "[dangling] an unresolved reference is flagged, not a silent edge\n" );
 	{
 		const std::string s =

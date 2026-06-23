@@ -344,12 +344,15 @@ until it is green:
 6. **Trace references through the real resolver** and test a **three-level** dependency chain.
    **DONE (pending review).** `TraceReferences(doc)` builds the reference graph (D14/D25, §2.5) via a
    DESCRIPTOR-BASED resolver (D14's "descriptor-provided reference resolver") that uses the SAME
-   category-name keying the engine's managers use (so it AGREES with the engine for STATIC refs):
+   category-name keying the engine's managers use (so it agrees with the engine for the references the
+   descriptor DECLARES, modulo the (category,name) coarseness noted in SCOPE):
    PASS A indexes every chunk's definition by **(category, name) →
    NodeId** — the descriptor-derived category namespace the named managers key on (Geometry → geometry/,
    Material → materials/, …, so a reference resolves to the named chunk in the referenced CATEGORY
    regardless of keyword); PASS B records a **`ReferenceUse { sourceValueNodeId, targetNodeId }`** per
-   EXPLICIT reference (a param present whose descriptor kind is `Reference`, value ≠ `none`), resolving
+   EXPLICIT reference — a param whose descriptor kind is `Reference`, OR a Reference token of a TUPLE
+   param (`tupleKinds[k]==Reference`: advanced_shader's `shaderop <ref> <min> <max> <op>`, voronoi's
+   `gen <x> <y> <ref>`, scalar_painter's `multiply <ref> <ref>`) — present with value ≠ `none`, resolving
    the value across the param's `referenceCategories`. An unresolvable reference is a **dangling**
    diagnostic, never a silent edge. `sourceValueNodeId` is the referring param's NodeId (item-4
    granularity; value-atom sub-identity is the deferred refinement, and for a single-value ref the param
@@ -358,13 +361,22 @@ until it is green:
    (object→geometry, object→material→reflectance painter): the exact edges incl. the object→material→
    painter chain; source/target NodeIds resolve to the right Param/Chunk; **rename** referrers found from
    the graph (the only referrer of the painter is material.reflectance — D14); the **transitive closure**
-   is walkable (D25); dangling ref flagged; explicit `none` is not an edge. Cost O(N log N) (a chunk's
-   NodeId is an O(log N) positional lookup). **SCOPE (honest):** this descriptor-based pass does NOT
-   capture **dynamic references** whose category is chosen at derive time by another param (e.g.
-   `timeline.element` keyed by `element_type`, D14) — invisible to `referenceCategories`. The production
-   primary path (D35) records `ReferenceUse` FROM the actual derivation resolver as it runs (no parallel
-   pass → no drift, dynamic refs captured); this pass is the transfer-gate demonstration of the graph +
-   its uses (rename / closure / dangling), with that derive-time tracing deferred. ← next: item 7 (structured edits + free-form reparses).
+   is walkable (D25); dangling ref flagged; explicit `none` is not an edge; a tuple-Reference traces
+   (advanced_shader.shaderop x2 occurrences; scalar_painter.multiply's two ref tokens). Cost O(N log N)
+   (per chunk an O(params × descriptor-params) scan + O(log N) NodeId/param-id lookups, bounded per
+   chunk; measured linear-with-log to N=32k). **SCOPE (honest):** (a) **dynamic references** whose
+   category is chosen at derive time by another param (e.g. `timeline.element` keyed by `element_type`,
+   D14) are invisible to `referenceCategories` — not traced; (b) a reference in a param the descriptor
+   declares as neither `Reference` nor a tuple-Reference is a descriptor-completeness gap — a 15-site
+   review audit found + fixed all three (advanced_shader.shaderop, voronoi{2d,3d}.gen,
+   scalar_painter.multiply); (c) the (category,name) namespace is COARSER than the engine's per-slot
+   resolution — `scalar_painter` shares ChunkCategory::Painter with colour painters but a SEPARATE
+   manager (a same-name scalar+colour pair mis-resolves), and `ior` over-declares {Painter,Function}
+   though the engine resolves it only against scalar painters (spurious edge if a name exists only as a
+   Function). The production primary path (D35) records `ReferenceUse` FROM the actual derivation
+   resolver as it runs (no parallel pass → no drift, dynamic refs captured); this pass is the
+   transfer-gate demonstration of the graph + its uses (rename / closure / dangling), with that
+   derive-time tracing deferred. ← next: item 7 (structured edits + free-form reparses).
 7. Exercise **structured edits AND free-form reparses**, including **chunk identity + rename**.
 8. **Measure a non-spatial edit AND a spatial edit; report TLAS time separately.**
 
