@@ -28,7 +28,8 @@
 //                  the traced graph, and the renamed scene still derives + the
 //                  reference re-resolves to the same chunk;
 //    * [rename-tuple] a tuple-reference referrer (advanced_shader.shaderop) is
-//                  reported, not silently clobbered (value-atom rewrite deferred);
+//                  REWRITTEN at the reference token (slice 2 atomic rename), other
+//                  tuple tokens intact;
 //    * [rename-collision] renaming into an existing same-category name is refused
 //                  ATOMICALLY (Document unchanged; the referrer is not re-targeted).
 //
@@ -187,12 +188,12 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
-	std::printf( "[rename-tuple] a tuple-reference referrer is reported, not silently clobbered (value-atom deferred)\n" );
+	std::printf( "[rename-tuple] a tuple-reference referrer is REWRITTEN (ref token swapped, other tokens intact) -- slice 2 atomic rename\n" );
 	{
-		// advanced_shader.shaderop carries the reference as ONE token of a
-		// multi-token value (`dl 0 1 +`). Renaming the shader-op renames the chunk
-		// but must NOT whole-value-overwrite the tuple; the un-rewritten referrer is
-		// reported (value-atom rewrite is the deferred refinement).
+		// advanced_shader.shaderop carries the reference as ONE token of a multi-token
+		// value (`dl 0 1 +`). Slice 2's atomic rename rewrites the reference TOKEN
+		// (dl -> dl2) while leaving the other tuple tokens (0 1 +) intact -- a complete
+		// rename (no partial / dangling referrer), no diagnostic.
 		const std::string s =
 			"RISE ASCII SCENE 6\n"
 			"directlighting_shaderop\n{\nname dl\n}\n"
@@ -201,9 +202,11 @@ int main()
 		const NodeId dl = DocFindByName( d, "directlighting_shaderop/dl" );
 		std::vector<std::string> diags;
 		Document d2 = DocRename( d, dl, "dl2", &diags );
+		const std::string out = SerializeCst( d2 );
 		Check( DocFindByName( d2, "directlighting_shaderop/dl2" ) == dl, "the shader-op chunk is renamed, NodeId preserved" );
-		Check( !diags.empty(), "the tuple-reference referrer (advanced_shader.shaderop) is REPORTED, not silently rewritten" );
-		Check( SerializeCst( d2 ).find( "shaderop dl 0 1 +" ) != std::string::npos, "the tuple value is left intact (no whole-value clobber)" );
+		Check( out.find( "shaderop dl2 0 1 +" ) != std::string::npos, "the tuple reference TOKEN is rewritten (dl -> dl2), other tokens (0 1 +) intact" );
+		Check( out.find( "shaderop dl 0 1 +" ) == std::string::npos, "the old tuple reference (dl) is gone -- no dangling referrer" );
+		Check( diags.empty(), "no diagnostic -- the tuple referrer was rewritten, not left partial" );
 	}
 
 	//----------------------------------------------------------------------

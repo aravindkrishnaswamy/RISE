@@ -990,14 +990,15 @@ static const IAsciiChunkParser* ResolveChunkParams(
 //! Material->material, Object->object, Light->light, Modifier->modifier).
 //! Returns false for any OTHER category -- the incremental path then refuses +
 //! the caller falls back to a full DeriveToJob. Two categories are deliberately
-//! NOT here: PAINTER (a uniformcolor / image painter Finalize dual-registers in
-//! BOTH the painter manager AND the function-2D manager --
-//! Job::AddUniformColorPainter does pPntManager->AddItem + pFunc2DManager->AddItem
-//! -- but RemovePainter clears only the painter manager, so a typed drop+re-add
-//! would leave a STALE func2d entry), and CAMERA (RemoveCamera has auto-promotion
-//! semantics a blind drop+re-add would disturb). Re-deriving either needs the
-//! multi-manager rollback that is Facet-2 work; until then the caller full-
-//! re-derives those (D51: never a silent corruption).
+//! NOT here: PAINTER (the category spans painter sub-types with DIFFERING
+//! reversibility -- the colour painters dual-register the SAME object in BOTH the
+//! painter manager AND the function-2D manager, and RemovePainter now reverses
+//! that pair identity-gated; but a `scalar_painter` (also ChunkCategory::Painter)
+//! lives in the SEPARATE scalar-painter manager that RemovePainter does not touch,
+//! so a typed drop of that sub-type is still an incomplete undo), and CAMERA
+//! (RemoveCamera has auto-promotion semantics a blind drop+re-add would disturb).
+//! Re-deriving painter needs the per-sub-type rollback that is Facet-2 work; until
+//! then the caller full-re-derives those (D51: never a silent corruption).
 static bool DropChunkByCategory( IJob& pJob, ChunkCategory cat, const char* name )
 {
 	switch( cat ) {
@@ -1006,7 +1007,7 @@ static bool DropChunkByCategory( IJob& pJob, ChunkCategory cat, const char* name
 		case ChunkCategory::Object:   return pJob.RemoveObject  ( name );
 		case ChunkCategory::Light:    return pJob.RemoveLight   ( name );
 		case ChunkCategory::Modifier: return pJob.RemoveModifier( name );
-		default: return false;   // Painter (dual-registered), Camera, Function, ...
+		default: return false;   // Painter (mixed reversibility -- scalar_painter), Camera, Function, ...
 	}
 }
 
@@ -1110,9 +1111,10 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// validate the WHOLE closure before touching the Job -- every chunk must be
 	// named AND of a category whose typed removal COMPLETELY undoes its Finalize
 	// (DropChunkByCategory: the five verified single-manager categories).  A PAINTER
-	// closure is refused here (its Finalize dual-registers in the func2d manager
-	// that RemovePainter does not clear -- D51: never a silent corruption); the
-	// caller then full-re-derives.  On any validation failure nothing is dropped or
+	// closure is refused here (RemovePainter now reverses the colour painters' func2d
+	// dual-register, but the category also covers `scalar_painter`, which lives in a
+	// separate manager RemovePainter does not touch -- D51: never a silent
+	// corruption); the caller then full-re-derives.  On any validation failure nothing is dropped or
 	// applied.  (Full apply-atomicity after a mid-apply Finalize failure -- rollback
 	// of the already-dropped/re-applied closure chunks -- is the same later Facet-2
 	// work DeriveToJob defers; for a validation-clean closure no Finalize fails.)
@@ -1135,7 +1137,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		switch( cat ) {                                          // categories DropChunkByCategory undoes COMPLETELY
 			case ChunkCategory::Material: case ChunkCategory::Geometry:
 			case ChunkCategory::Object:  case ChunkCategory::Light: case ChunkCategory::Modifier: break;
-			default: diags.push_back( node->role + ": incremental cannot fully drop this category (e.g. a painter dual-registers in the function-2D manager); fall back to a full derive" ); return 0;
+			default: diags.push_back( node->role + ": incremental cannot fully drop this category (e.g. a scalar_painter has no colour-painter-manager entry for RemovePainter to drop); fall back to a full derive" ); return 0;
 		}
 		// Reversibility is PER-PARSER, not per-category (review P1.3/P1.5): refuse the
 		// chunk types whose Finalize is NOT a clean single-manager create-and-undo, so
@@ -1396,6 +1398,20 @@ Document DocSetParamValue( const Document& doc, NodeId chunkId, const std::strin
 	return DocReplaceItem( doc, index, edited, visits );                      // chunk NodeId PRESERVED (D44)
 }
 
+//! Rewrite a TUPLE value's reference tokens: at each tupleKinds position that is a
+//! Reference whose token == oldName, substitute newName; rejoin single-spaced. (So a
+//! rename rewrites a tuple referrer -- advanced_shader's `shaderop <ref> <min> <max>`,
+//! voronoi's `gen <x> <y> <ref>` -- not just plain Reference params.)
+static std::string RewriteTupleRef( const std::string& val, const std::vector<ValueKind>& tk, const std::string& oldName, const std::string& newName )
+{
+	std::vector<std::string> toks = SplitWs( val );
+	for( size_t k = 0; k < tk.size() && k < toks.size(); ++k )
+		if( tk[k] == ValueKind::Reference && toks[k] == oldName ) toks[k] = newName;
+	std::string out;
+	for( size_t i = 0; i < toks.size(); ++i ) { if( i ) out += ' '; out += toks[i]; }
+	return out;
+}
+
 Document DocRename( const Document& doc, NodeId chunkId, const std::string& newName, std::vector<std::string>* diagnostics )
 {
 	std::vector<std::string> local;
@@ -1406,22 +1422,47 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 	std::string oldName;
 	if( !ParamValue( target.get(), "name", oldName ) ) { diags.push_back( "rename: target chunk has no name parameter (nothing to rename)" ); return doc; }
 
+	// Name VALIDATION (P1.7): an empty new name would emit a value-less parameter;
+	// refuse it. A no-op rename (newName == oldName) returns the document unchanged.
+	if( newName.empty() ) { diags.push_back( "rename: empty new name refused" ); return doc; }
+	if( newName == oldName ) return doc;
+
 	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
-	// The category the target lives in -- a name collides within the named MANAGER
-	// for that category (where the engine + the reference resolver key by name).
 	std::map<std::string, const IAsciiChunkParser*>::const_iterator tit = registry.find( target->role );
 	const int targetCat = ( tit == registry.end() ) ? -1 : (int)tit->second->Describe().category;
 
-	// One walk: (1) detect a name COLLISION -- another chunk of the target's
-	// category already named newName -- and (2) map each param NodeId -> its
-	// (owning chunk NodeId, role, occurrence) + whether it's a tuple param, so a
-	// referrer edge (keyed by the referring PARAM's NodeId) can be turned into a
-	// DocSetParamValue.
-	struct Loc { NodeId chunk; std::string role; int occ; bool tuple; };
-	std::map<NodeId, Loc> paramLoc;
-	bool collision = false;
+	// COLLISION vs the RUNTIME-DEFAULT namespace (P1.7): renaming to a `none` /
+	// `Default*` of the target's category would collide with the engine's pre-
+	// registered default (the manager registered it first and rejects the dup),
+	// silently re-pointing referrers to the default. Refuse.
+	for( const std::pair<ChunkCategory,std::string>& rd : RuntimeDefaultDefs() )
+		if( (int)rd.first == targetCat && rd.second == newName ) {
+			diags.push_back( "rename: '" + newName + "' is a reserved runtime default of this category; refused" );
+			return doc;
+		}
+
 	std::vector<NodeRef> items;
 	SeqToVec( doc.items, items );
+
+	// ANIMATION guard (P1.8 / timeline): a `timeline` references its element + owning
+	// animation as ValueKind::String, invisible to the static reference graph -- a
+	// rename could leave such a reference dangling. Until the resolver traces timeline
+	// references (slice 5), refuse a rename when the document has ANY Animation chunk
+	// (a one-shot rename can afford the O(N) scan).
+	for( const NodeRef& c : items ) {
+		if( c->kind != NodeKind::Chunk ) continue;
+		std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( c->role );
+		if( it != registry.end() && it->second->Describe().category == ChunkCategory::Animation ) {
+			diags.push_back( "rename: document has an animation/timeline whose String references the static graph cannot rewrite; refused" );
+			return doc;
+		}
+	}
+
+	// One walk: detect a same-category CST name COLLISION + map each param NodeId ->
+	// (owning chunk, role, occ, tupleKinds*) so a referrer edge becomes a rewrite.
+	struct Loc { NodeId chunk; std::string role; int occ; const std::vector<ValueKind>* tk; };
+	std::map<NodeId, Loc> paramLoc;
+	bool collision = false;
 	for( size_t i = 0; i < items.size(); ++i ) {
 		const NodeRef& c = items[i];
 		if( c->kind != NodeKind::Chunk ) continue;
@@ -1437,38 +1478,36 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 			if( kid->kind != NodeKind::Param ) continue;
 			const std::string role = kid->role;
 			const int thisOcc = occ[role]++;
-			bool tuple = false;
-			if( desc ) for( const auto& p : desc->parameters ) if( p.name == role ) { tuple = !p.tupleKinds.empty(); break; }
-			paramLoc[ DocParamId( doc, cid, role, thisOcc ) ] = Loc{ cid, role, thisOcc, tuple };
+			const std::vector<ValueKind>* tk = 0;
+			if( desc ) for( const ParameterDescriptor& p : desc->parameters ) if( p.name == role ) { if( !p.tupleKinds.empty() ) tk = &p.tupleKinds; break; }
+			paramLoc[ DocParamId( doc, cid, role, thisOcc ) ] = Loc{ cid, role, thisOcc, tk };
 		}
 	}
 
-	// Refuse a colliding rename ATOMICALLY (apply nothing) -- renaming into an
-	// existing name would make the name-path ambiguous and SILENTLY re-target the
-	// referrers to the other chunk (D14/§2.5: an unresolvable referrer is flagged,
-	// never silently renamed).
 	if( collision ) {
 		diags.push_back( "rename: '" + newName + "' already names another chunk of the same category; refused (would create an ambiguous name)" );
 		return doc;
 	}
 
-	// The referrers are exactly the traced edges into this chunk (D14: rewrite
-	// referrers from the traced ReferenceUse set, NOT a re-resolution).
+	// Rewrite EVERY referrer (D14: rewrite-all-or-refuse, never a partial rename).
+	// Every edge in the static graph is rewritable -- a plain Reference param via its
+	// whole value, a TUPLE param by substituting the reference token(s). (Dynamic refs
+	// the static graph cannot see are excluded above by the animation guard; with expr
+	// still out of the grammar the static graph is complete here, so no referrer is
+	// left dangling.)
 	std::vector<ReferenceUse> uses = TraceReferences( doc );
-
 	Document result = DocSetParamValue( doc, chunkId, "name", 0, newName );   // the rename itself (NodeId preserved)
 	for( const ReferenceUse& u : uses ) {
 		if( u.targetNodeId != chunkId ) continue;
 		std::map<NodeId, Loc>::const_iterator l = paramLoc.find( u.sourceValueNodeId );
 		if( l == paramLoc.end() ) continue;
-		if( l->second.tuple ) {
-			// A tuple param (e.g. advanced_shader's `shaderop <ref> <min> <max>`)
-			// carries the reference as ONE token of a multi-token value; rewriting
-			// just that token needs value-ATOM granularity (deferred, item-4 scope).
-			diags.push_back( l->second.role + ": tuple-reference referrer not rewritten (value-atom rewrite deferred)" );
-			continue;
+		if( l->second.tk ) {
+			NodeRef pnode = DocResolveNodeId( doc, u.sourceValueNodeId );
+			const std::string cur = pnode ? ParamNodeValue( pnode.get() ) : std::string();
+			result = DocSetParamValue( result, l->second.chunk, l->second.role, l->second.occ, RewriteTupleRef( cur, *l->second.tk, oldName, newName ) );
+		} else {
+			result = DocSetParamValue( result, l->second.chunk, l->second.role, l->second.occ, newName );
 		}
-		result = DocSetParamValue( result, l->second.chunk, l->second.role, l->second.occ, newName );
 	}
 	return result;
 }
