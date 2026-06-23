@@ -10,7 +10,9 @@
 //  descriptor-derived namespace the named managers key on -- the SAME
 //  category-name keying the engine uses). It traces every reference the
 //  DESCRIPTOR declares: a `ValueKind::Reference` param, OR a Reference token of a
-//  TUPLE param (advanced_shader's `shaderop <ref> <min> <max> <op>`). SCOPE: this
+//  TUPLE param (advanced_shader's `shaderop <ref> <min> <max> <op>`, or several
+//  Reference tokens in one tuple like scalar_painter's `multiply <ref> <ref>`).
+//  SCOPE: this
 //  is a descriptor-based resolver (D14's "descriptor-provided reference
 //  resolver"); it does NOT capture DYNAMIC references whose category is chosen at
 //  derive time by another param (e.g. timeline.element via element_type, D14), a
@@ -35,6 +37,9 @@
 //                 incremental-re-derive foundation);
 //    * [tuple-ref] a reference carried in a TUPLE param (advanced_shader's
 //                 `shaderop <ref> <min> <max> <op>`) is traced, per occurrence;
+//    * [tuple-multi] a tuple with MULTIPLE Reference tokens
+//                 (scalar_painter.multiply `a b`) traces BOTH, each sharing the
+//                 one (param) source NodeId;
 //    * [dangling] an unresolved reference is flagged, never a silent edge;
 //    * [none]     an explicit `none` reference is not an edge.
 //
