@@ -11,7 +11,8 @@
 //                  detectable in O(1) (P1.8 unstamped).
 //    [namespace]   the runtime defaults (the `none` material/painter) are in the
 //                  derivation namespace (P1.8 coarser-namespace) -- and stay in
-//                  sync with the engine (drift -> this test fails).
+//                  present in the engine (a listed default renamed/removed in
+//                  Job.cpp fails this test; a Job-side addition is not auto-caught).
 //    [ref-or-literal] a reference-kind value that is a pure NUMBER is a literal
 //                  (e.g. ggx `roughness 0.5`), not a dangling reference -- not an
 //                  edge, not a false diagnostic (P1.8 ref-or-literal).
@@ -118,9 +119,11 @@ int main()
 		Job* j = new Job(); std::vector<std::string> dd; DeriveToJob( doc, *j, &dd );
 		Check( j->GetMaterials() && j->GetMaterials()->GetItem( "none" ) != 0, "runtime default present: material 'none' (resolver namespace in sync)" );
 		Check( j->GetPainters()  && j->GetPainters()->GetItem( "none" )  != 0, "runtime default present: painter 'none' (resolver namespace in sync)" );
-		// Guard ALL of RuntimeDefaultDefs's shader ops against drift: each must exist
-		// in a freshly-derived Job (a Job.cpp default renamed/added without updating
-		// RuntimeDefaultDefs would otherwise silently re-introduce a false dangling).
+		// Guard RuntimeDefaultDefs's shader ops: each listed op must be PRESENT in a
+		// freshly-derived Job, so a Job.cpp default RENAMED or REMOVED (relative to the
+		// list below) fails here. (A Job-side ADDITION, or a drop from RuntimeDefaultDefs
+		// alone, is not auto-caught -- the latter surfaces as a dangling diagnostic only
+		// when a scene references the now-unseeded default.)
 		const char* shops[] = { "DefaultReflection", "DefaultRefraction", "DefaultEmission",
 			"DefaultDirectLighting", "DefaultCausticPelPhotonMap", "DefaultCausticSpectralPhotonMap",
 			"DefaultGlobalPelPhotonMap", "DefaultGlobalSpectralPhotonMap", "DefaultTranslucentPelPhotonMap",

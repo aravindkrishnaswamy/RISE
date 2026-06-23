@@ -45,7 +45,9 @@ the derive-apply and every consumer (rename, closure). No parallel scan.
   collisions and resolutions see. **Interim (slices 1–4):** `BuildReferenceGraph` is
   a Document-only function (no Job handle), so the default set is a hardcoded
   `RuntimeDefaultDefs()` constant, kept honest by `CstResolverTest`'s [namespace]
-  check (it derives an empty Job and asserts every default is present → drift fails).
+  check (it derives an empty Job and asserts every listed default is present → a
+  listed default renamed/removed in Job.cpp fails the check; a Job-side addition or a
+  list-only drop is not auto-caught — the latter surfaces as a dangling diagnostic).
   **Endpoint (slice 5):** when resolution is routed through the derivation, the
   namespace is read from the live managers (`IJobPriv` already exposes every manager
   — `GetMaterials`/`GetPainters`/`GetShaderOps`/… with `GetItem`/`EnumerateItemNames`,
