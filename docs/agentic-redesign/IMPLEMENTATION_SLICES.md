@@ -363,8 +363,8 @@ until it is green:
    the graph (the only referrer of the painter is material.reflectance — D14); the **transitive closure**
    is walkable (D25); dangling ref flagged; explicit `none` is not an edge; a tuple-Reference traces
    (advanced_shader.shaderop x2 occurrences; scalar_painter.multiply's two ref tokens). Cost O(N log N)
-   (per chunk an O(params × descriptor-params) scan + O(log N) NodeId/param-id lookups, bounded per
-   chunk; measured linear-with-log to N=32k). **SCOPE (honest):** (a) **dynamic references** whose
+   by construction (per chunk an O(params × descriptor-params) scan + O(log N) NodeId/param-id lookups,
+   bounded per chunk; no scaling benchmark committed — matches the analytic bound in Cst.h's doc). **SCOPE (honest):** (a) **dynamic references** whose
    category is chosen at derive time by another param (e.g. `timeline.element` keyed by `element_type`,
    D14) are invisible to `referenceCategories` — not traced; (b) a reference in a param the descriptor
    declares as neither `Reference` nor a tuple-Reference is a descriptor-completeness gap — a 15-site

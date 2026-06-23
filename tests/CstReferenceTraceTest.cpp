@@ -1,7 +1,10 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  CstReferenceTraceTest.cpp - transfer-gate item 6: trace references through
-//  the real resolver, on a three-level dependency chain.
+//  CstReferenceTraceTest.cpp - transfer-gate item 6 ("trace references through
+//  the real resolver"): build + test the reference graph on a three-level
+//  dependency chain. (The gate-item goal names "the real resolver"; this lands
+//  the descriptor-based resolver demonstration -- see the SCOPE note below and
+//  Cst.h for what that does and does not cover.)
 //
 //  Item 5 derives every chunk through the live registry. Item 6 builds the
 //  REFERENCE GRAPH (D14/D25, §2.5): for every EXPLICIT reference it records a
