@@ -2770,7 +2770,7 @@ namespace RISE
 						cd.description = "2D Voronoi painter with per-cell colours.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.description = "Voronoi generator: x y paintername (repeatable)"; }
+						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Voronoi generator: x y paintername (repeatable)"; }
 						{ auto& p = P(); p.name = "file";       p.kind = ValueKind::Filename;  p.description = "Generator list file (each line: x y paintername)"; }
 						{ auto& p = P(); p.name = "border";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Border colour (painter)"; p.defaultValueHint = "none"; }
 						{ auto& p = P(); p.name = "bordersize"; p.kind = ValueKind::Double;    p.description = "Border width"; p.defaultValueHint = "0"; }
@@ -2850,7 +2850,7 @@ namespace RISE
 						cd.description = "3D Voronoi painter with per-cell colours.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.description = "Voronoi generator: x y z paintername (repeatable)"; }
+						{ auto& p = P(); p.name = "gen";        p.kind = ValueKind::String;    p.repeatable = true; p.tupleKinds = {ValueKind::Double, ValueKind::Double, ValueKind::Double, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Voronoi generator: x y z paintername (repeatable)"; }
 						{ auto& p = P(); p.name = "file";       p.kind = ValueKind::Filename;  p.description = "Generator list file (count-prefixed: N then N lines of x y z paintername)"; }
 						{ auto& p = P(); p.name = "border";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Border colour (painter)"; p.defaultValueHint = "none"; }
 						{ auto& p = P(); p.name = "bordersize"; p.kind = ValueKind::Double;    p.description = "Border width"; p.defaultValueHint = "0"; }
@@ -7334,7 +7334,7 @@ namespace RISE
 						cd.description = "Depth-scoped shader chain with per-op recursion ranges and composition operators.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "shaderop"; p.kind = ValueKind::String; p.repeatable = true; p.description = "Shader-op triple: <shaderop-name> <min-depth> <max-depth> <op>"; }
+						{ auto& p = P(); p.name = "shaderop"; p.kind = ValueKind::String; p.repeatable = true; p.tupleKinds = {ValueKind::Reference, ValueKind::UInt, ValueKind::UInt, ValueKind::Enum}; p.referenceCategories = {ChunkCategory::ShaderOp}; p.description = "Shader-op triple: <shaderop-name> <min-depth> <max-depth> <op>"; }
 						return cd;
 					}();
 					return d;

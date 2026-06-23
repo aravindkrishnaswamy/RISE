@@ -1026,6 +1026,20 @@ std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std:
 	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
 	std::vector<ReferenceUse> uses;
 
+	// Split a value into whitespace-separated tokens (for tuple params whose
+	// value is e.g. `<ref> <min> <max> <op>`); matches the legacy tokenizer's
+	// " \t\r\n" split, which is how Finalize re-parses the same composite value.
+	auto splitWs = []( const std::string& s ) {
+		std::vector<std::string> toks; const size_t n = s.size(); size_t i = 0;
+		while( i < n ) {
+			while( i < n && ( s[i]==' '||s[i]=='\t'||s[i]=='\r'||s[i]=='\n' ) ) ++i;
+			const size_t st = i;
+			while( i < n && !( s[i]==' '||s[i]=='\t'||s[i]=='\r'||s[i]=='\n' ) ) ++i;
+			if( i > st ) toks.push_back( s.substr( st, i - st ) );
+		}
+		return toks;
+	};
+
 	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
 	std::vector<NodeRef> items;
 	SeqToVec( doc.items, items );
@@ -1067,19 +1081,37 @@ std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std:
 			const int thisOcc = occ[role]++;
 			const ParameterDescriptor* pd = 0;
 			for( const auto& p : desc.parameters ) if( p.name == role ) { pd = &p; break; }
-			if( !pd || pd->kind != ValueKind::Reference ) continue;
-			const std::string val = ParamNodeValue( kid.get() );
-			if( val.empty() || val == "none" ) continue;           // explicit-none / empty: not an edge
-			NodeId target = 0;
-			for( ChunkCategory rc : pd->referenceCategories ) {
-				std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( (int)rc, val ) );
-				if( d != defs.end() ) { target = d->second; break; }
-			}
-			if( target == 0 ) {
-				diags.push_back( c->role + "." + role + " -> '" + val + "': unresolved reference" );
+			if( !pd ) continue;
+			// Collect the reference value(s) this param contributes: a
+			// ValueKind::Reference param contributes its whole value; a TUPLE param
+			// (tupleKinds non-empty) contributes the token at each position declared
+			// Reference (advanced_shader's `shaderop <ref> <min> <max> <op>`,
+			// voronoi's `gen <x> <y> <ref>`). Any other param contributes nothing.
+			std::vector<std::string> refVals;
+			if( pd->kind == ValueKind::Reference ) {
+				refVals.push_back( ParamNodeValue( kid.get() ) );
+			} else if( !pd->tupleKinds.empty() ) {
+				const std::vector<std::string> toks = splitWs( ParamNodeValue( kid.get() ) );
+				for( size_t k = 0; k < pd->tupleKinds.size() && k < toks.size(); ++k )
+					if( pd->tupleKinds[k] == ValueKind::Reference ) refVals.push_back( toks[k] );
+			} else {
 				continue;
 			}
-			uses.push_back( ReferenceUse{ DocParamId( doc, chunkId, role, thisOcc ), target } );
+			for( const std::string& val : refVals ) {
+				if( val.empty() || val == "none" ) continue;       // explicit-none / empty: not an edge
+				NodeId target = 0;
+				for( ChunkCategory rc : pd->referenceCategories ) {
+					std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( (int)rc, val ) );
+					if( d != defs.end() ) { target = d->second; break; }
+				}
+				if( target == 0 ) {
+					diags.push_back( c->role + "." + role + " -> '" + val + "': unresolved reference" );
+					continue;
+				}
+				// sourceValueNodeId is the param NodeId (a tuple's ref tokens share
+				// it; value-atom sub-identity is the deferred refinement).
+				uses.push_back( ReferenceUse{ DocParamId( doc, chunkId, role, thisOcc ), target } );
+			}
 		}
 	}
 	return uses;

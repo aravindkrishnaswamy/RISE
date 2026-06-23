@@ -8,13 +8,18 @@
 //  `ReferenceUse { sourceValueNodeId, targetNodeId }`, resolving a reference
 //  value to the chunk of that name in the param's reference CATEGORY (the
 //  descriptor-derived namespace the named managers key on -- the SAME
-//  category-name keying the engine uses, so it AGREES with the engine's
-//  resolution for STATIC references). SCOPE: this is a descriptor-based resolver
-//  (D14's "descriptor-provided reference resolver"); it does NOT capture DYNAMIC
-//  references whose category is chosen at derive time by another param (e.g.
-//  timeline.element via element_type, D14) -- those, and eliminating any
-//  resolver drift, need the production D35 path (tracing recorded BY the actual
-//  derivation resolver, no parallel pass), which is deferred.
+//  category-name keying the engine uses). It traces every reference the
+//  DESCRIPTOR declares: a `ValueKind::Reference` param, OR a Reference token of a
+//  TUPLE param (advanced_shader's `shaderop <ref> <min> <max> <op>`). SCOPE: this
+//  is a descriptor-based resolver (D14's "descriptor-provided reference
+//  resolver"); it does NOT capture DYNAMIC references whose category is chosen at
+//  derive time by another param (e.g. timeline.element via element_type, D14), a
+//  reference in a param the descriptor declares as neither Reference nor
+//  tuple-Reference (a descriptor-completeness gap), or distinctions finer than
+//  the (category,name) namespace (scalar vs colour painters share category
+//  Painter). Those, and eliminating any resolver drift, need the production D35
+//  path (tracing recorded BY the actual derivation resolver, no parallel pass),
+//  which is deferred.
 //
 //  This suite proves, on the canonical 3-level chain
 //      object --geometry--> sphere
@@ -28,6 +33,8 @@
 //                 material.reflectance;
 //    * [closure]  the transitive dependency closure is walkable (the D25
 //                 incremental-re-derive foundation);
+//    * [tuple-ref] a reference carried in a TUPLE param (advanced_shader's
+//                 `shaderop <ref> <min> <max> <op>`) is traced, per occurrence;
 //    * [dangling] an unresolved reference is flagged, never a silent edge;
 //    * [none]     an explicit `none` reference is not an edge.
 //
@@ -106,6 +113,32 @@ int main()
 	const NodeId p = edgeTo( m, "reflectance" );       // red, one hop deeper
 	Check( m == redmat && g == ball && p == red,
 	       "obj -> {ball, redmat -> red} reachable by following edges (3-level closure)" );
+
+	//----------------------------------------------------------------------
+	std::printf( "[tuple-ref] a reference inside a TUPLE param is traced (advanced_shader.shaderop)\n" );
+	{
+		// advanced_shader.shaderop is `<ref> <min> <max> <op>` -- the reference is
+		// the FIRST token of a tuple-typed (declared String) param. Two occurrences.
+		const std::string s =
+			"RISE ASCII SCENE 6\n"
+			"directlighting_shaderop\n{\nname dl\n}\n"
+			"pathtracing_shaderop\n{\nname pt\n}\n"
+			"advanced_shader\n{\nname sh\nshaderop dl 0 1 +\nshaderop pt 1 10 +\n}\n";
+		Document ds = ParseToCst( s );
+		std::vector<std::string> dg;
+		std::vector<ReferenceUse> u = TraceReferences( ds, &dg );
+		const NodeId dl = DocFindByName( ds, "directlighting_shaderop/dl" );
+		const NodeId pt = DocFindByName( ds, "pathtracing_shaderop/pt" );
+		const NodeId sh = DocFindByName( ds, "advanced_shader/sh" );
+		Check( dl && pt && sh, "shader-ops + advanced_shader addressable" );
+		Check( dg.empty(), "both shaderop tuple-references resolve (no dangling)" );
+		const NodeId op0 = DocParamId( ds, sh, "shaderop", 0 );
+		const NodeId op1 = DocParamId( ds, sh, "shaderop", 1 );
+		NodeId t0 = 0, t1 = 0;
+		for( const auto& e : u ) { if( e.sourceValueNodeId == op0 ) t0 = e.targetNodeId; if( e.sourceValueNodeId == op1 ) t1 = e.targetNodeId; }
+		Check( t0 == dl, "shaderop[0] `dl 0 1 +` -> directlighting_shaderop dl (tuple ref token resolved)" );
+		Check( t1 == pt, "shaderop[1] `pt 1 10 +` -> pathtracing_shaderop pt (per-occurrence source)" );
+	}
 
 	//----------------------------------------------------------------------
 	std::printf( "[dangling] an unresolved reference is flagged, not a silent edge\n" );

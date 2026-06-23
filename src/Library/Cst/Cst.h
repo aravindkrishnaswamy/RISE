@@ -411,31 +411,45 @@ namespace RISE
 		//!     param's reference category whose `name` matches the referring value).
 		struct ReferenceUse { NodeId sourceValueNodeId; NodeId targetNodeId; };
 
-		//! Trace the document's reference graph (item 6): a reference value names a
-		//! chunk by (category, name) in the descriptor-derived category namespace
-		//! (Geometry -> geometry/, Material -> materials/, ... -- the SAME
-		//! category-name keying the named managers use, §2.5), and resolution finds
-		//! the defining chunk of that name in one of the param's
-		//! `referenceCategories`. So it AGREES with the engine's resolution for
-		//! STATIC references. Returns a `ReferenceUse` per resolved EXPLICIT
-		//! reference (params actually present with a non-"none" value; descriptor
-		//! defaults and the explicit-"none" idiom are not edges). A reference whose
-		//! target is defined by NO chunk in any of its categories is a DANGLING
-		//! reference -- reported in `diagnostics` (when non-null), never a silent
-		//! edge. This is the graph D14 renames rewrite referrers from and D25
-		//! incremental re-derivation walks for the dependency closure.
+		//! Trace the document's reference graph (item 6). A reference resolves to the
+		//! chunk of that name in the param's reference CATEGORY, in the descriptor-
+		//! derived category namespace (Geometry -> geometry/, Material -> materials/,
+		//! ... -- the SAME category-name keying the named managers use, §2.5). It
+		//! traces every reference the DESCRIPTOR declares: a `ValueKind::Reference`
+		//! param (whole value), OR a Reference element of a TUPLE param (the token at
+		//! each `tupleKinds[k] == Reference` -- e.g. advanced_shader's
+		//! `shaderop <ref> <min> <max> <op>`, voronoi's `gen <x> <y> <ref>`). So it
+		//! AGREES with the engine's resolution for those declared references. Returns
+		//! a `ReferenceUse` per resolved EXPLICIT reference (params actually present
+		//! with a non-"none" value; descriptor defaults and the explicit-"none" idiom
+		//! are not edges). An unresolvable reference is a DANGLING reference --
+		//! reported in `diagnostics` (when non-null), never a silent edge. This is
+		//! the graph D14 renames rewrite referrers from and D25 incremental
+		//! re-derivation walks for the dependency closure.
 		//!
 		//! SCOPE: this is a DESCRIPTOR-BASED resolver (D14's "descriptor-provided
-		//! reference resolver"), run as a separate pass over the CST. It does NOT
-		//! capture DYNAMIC references whose target category is chosen at derive time
-		//! by another param (e.g. `timeline.element` keyed by `element_type`, D14) --
-		//! those are invisible to `referenceCategories`. The production primary path
-		//! (D35) records `ReferenceUse` FROM the actual derivation resolver as it
-		//! runs (no parallel pass, so no drift risk, and dynamic refs are captured);
-		//! this descriptor-based pass is the transfer-gate demonstration of the
-		//! graph + its uses (rename / closure / dangling), with that derive-time
-		//! tracing deferred. O(N log N) (a chunk's NodeId is an O(log N) positional
-		//! lookup per item).
+		//! reference resolver"), run as a separate pass over the CST, with these
+		//! honest limits:
+		//!   * DYNAMIC references whose target category is chosen at derive time by
+		//!     another param (e.g. `timeline.element` keyed by `element_type`, D14)
+		//!     are invisible to `referenceCategories` -- not traced here.
+		//!   * A reference carried in a param the descriptor declares as neither
+		//!     `Reference` NOR a tuple-Reference is a DESCRIPTOR-completeness gap
+		//!     (the descriptor is the contract); fix it by declaring the token.
+		//!   * The (category,name) namespace is slightly COARSER than the engine's
+		//!     per-slot resolution: `scalar_painter` and colour painters share
+		//!     ChunkCategory::Painter but live in SEPARATE managers, so a same-name
+		//!     scalar+colour pair can mis-resolve; and a param whose
+		//!     `referenceCategories` over-declares (e.g. `ior` lists {Painter,
+		//!     Function} but the engine resolves it only against scalar painters)
+		//!     can yield a spurious edge if a name exists only in the wrong category.
+		//! The production primary path (D35) records `ReferenceUse` FROM the actual
+		//! derivation resolver as it runs (no parallel pass -> no drift, dynamic refs
+		//! captured); this descriptor-based pass is the transfer-gate demonstration
+		//! of the graph + its uses (rename / closure / dangling), with that
+		//! derive-time tracing deferred. O(N log N) (a chunk's NodeId is an O(log N)
+		//! positional lookup per item; per chunk an O(params x descriptor-params)
+		//! scan, both bounded per chunk).
 		std::vector<ReferenceUse> TraceReferences( const Document& doc, std::vector<std::string>* diagnostics = nullptr );
 
 		//! Reparse `newText` and carry NodeIds from `oldDoc` via FOUR hashed passes
