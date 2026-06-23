@@ -945,8 +945,9 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	}();
 
 	// PASS 1 -- validate EVERY chunk through the live descriptor registry, the
-	// SAME validation the legacy parser runs (DispatchChunkParameters: rejects an
-	// undeclared parameter name or a non-finite numeric value). Collect each
+	// SAME validation the legacy parser runs (DispatchChunkParameters: rejects a
+	// no-space line, an undeclared parameter name, or a non-finite/non-numeric
+	// numeric value -- see its doc in IAsciiChunkParser.h). Collect each
 	// chunk's populated bag; if ANY chunk fails, apply NOTHING (refuse-all).
 	struct Pending { const IAsciiChunkParser* parser; ParseStateBag bag; std::string keyword; };
 	std::vector<Pending> pending;
