@@ -37,6 +37,8 @@
 #include "../src/Library/Interfaces/IPainterManager.h"
 #include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/ICamera.h"
+#include "../src/Library/Interfaces/ICameraManager.h"
 #include "../src/Library/Interfaces/IEnumCallback.h"
 #include "../src/Library/Utilities/BoundingBox.h"
 
@@ -142,6 +144,21 @@ inline std::string DumpJob( Job& job )
 				(double)bb.ur.x, (double)bb.ur.y, (double)bb.ur.z );
 			o << b;
 		}
+		o << "\n";
+	}
+	// Cameras: name + world location. Names surface the camera-name dedup state
+	// (an unnamed camera auto-names default / default_1 / ...; a cross-parse leak
+	// of that state renames it), and location surfaces extrinsic/unit leaks --
+	// the cross-derive parse-state vectors DumpJob would otherwise miss (it has
+	// no camera section). Intrinsics (sensor/focal/fstop) are not on the ICamera
+	// contract, so a pure-FOV leak is not surfaced here; the derive clears ALL
+	// parser state regardless (ClearChunkParserState), and the painter-colour
+	// vector is the one with a Job-observable manifestation.
+	o << "cameras:\n";
+	for( const auto& n : SortedNames( job.GetCameras() ) ) {
+		o << "  " << n;
+		ICamera* c = job.GetCameras() ? job.GetCameras()->GetItem( n.c_str() ) : 0;
+		if( c ) { Point3 p = c->GetLocation(); char b[96]; std::snprintf( b, sizeof(b), " loc=[%.17g %.17g %.17g]", (double)p.x, (double)p.y, (double)p.z ); o << b; }
 		o << "\n";
 	}
 	return o.str();

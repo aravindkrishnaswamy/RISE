@@ -318,14 +318,20 @@ until it is green:
    material names via manager reverse-lookup) and the **world-space bounding box** (encodes the
    multi-token position/scale), so a derive value mis-capture diverges the oracle. Test:
    `tests/CstDescriptorBindTest.cpp` (multi-type equivalence vs legacy, multi-token capture, whitespace
-   normalisation, apply-time abort-on-dangling-ref, refuse-all on each malformed class). Item-5 review:
-   self-driven rounds — round 1: 2 code P1s (whitespace-normalisation equivalence break → silent object
-   drop; apply-time refuse-all hole → silent half-derive); round 2: 2 doc P1s (a false mid-line-comment
+   normalisation, apply-time abort-on-dangling-ref, refuse-all on each malformed class) plus the SHARED
+   `tests/CstDeriveDifferentialTest.cpp` (single-derive equivalence over a canonical corpus + cross-derive
+   statelessness for the painter-colour and camera name-dedup leak vectors). Item-5 review: self-driven
+   rounds — round 1: 2 code P1s (whitespace-normalisation equivalence break → silent object drop;
+   apply-time refuse-all hole → silent half-derive); round 2: 2 doc P1s (a false mid-line-comment
    justification; scope omitted `>` directives); round 3: 3 doc P1s (own-line single-line `/* */` block
    comment also diverges; the `DispatchChunkParameters` wrapper doc undercounted its failure conditions;
-   a file-header surface still said "macro-free, descriptor-valid" only) + the stale-family sweep above
-   — all fixed; the CODE has been clean since round 1, every later round was scope/comment-honesty (the
-   149-scene differential test in round 3 found zero Job divergences). Deferred-and-honest:
+   a file-header surface still said "macro-free, descriptor-valid" only) + a stale-family sweep; round 4:
+   1 CODE P1 (cross-derive parse-state leak — `DeriveToJob` never reset the chunk parsers' file-scope
+   caches the way legacy `ParseAndLoadScene` does → fixed with `ClearChunkParserState()` at the top +
+   `[state-isolation]` regression test, red-proven) + 1 doc P1 (the non-canonical string-comment verb was
+   "rejects"; legacy actually SILENTLY MIS-CAPTURES). Differential coverage: round 3 ran 149 scenes, round
+   4 ran 73 real + 38 synthetic, round 5 ran 2,120 cross-derive checks — all zero Job divergences.
+   Deferred-and-honest:
    **category name-paths** (`geometry/s`; one category → many keywords) stay out — reference resolution
    in the derive runs through the engine's
    named managers by name, so category addressing is a CST-navigation nicety, not load-bearing for

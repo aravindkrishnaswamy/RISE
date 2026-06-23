@@ -12,17 +12,26 @@
 //  scenes the CST is fed (see DeriveToJob's doc in Cst.h for the exact scope).
 //
 //  This suite proves:
-//    * [equiv]      a multi-type scene (painter + material + object + geometry)
-//                   derives through the CST to a Job whose canonical dump equals
-//                   the legacy parse's -- reference wiring + multi-token
-//                   transforms included (the object's world bbox encodes the
-//                   multi-token position/scale, so a value mis-capture diverges).
-//    * [multitoken] a multi-token param value (`color 0.2 0.4 0.6`, `position
-//                   1 2 3`) is captured WHOLE, not truncated to the first token.
-//    * [validate]   descriptor-driven validation refuses a malformed scene and
-//                   applies NOTHING (refuse-all): unknown parameter, unknown
-//                   chunk type, non-finite / non-numeric numeric value,
-//                   value-less parameter line.
+//    * [equiv]          a multi-type scene (painter + material + object +
+//                       geometry) derives to a Job whose dump equals legacy's --
+//                       reference wiring + multi-token transforms included (the
+//                       object's world bbox encodes position/scale).
+//    * [equiv-ws]       tab / multi-space param values normalise like legacy
+//                       (TokenizeString collapse) -- a reference is not dropped.
+//    * [apply-abort]    an apply-time Finalize failure (dangling reference) stops
+//                       with a diagnostic, matching legacy abort-on-first.
+//    * [state-isolation] a prior derive does not leak parse state into the next
+//                       (DeriveToJob resets it, as legacy ParseAndLoadScene does).
+//    * [multitoken]     a multi-token param value (`color 0.2 0.4 0.6`, `position
+//                       1 2 3`) is captured WHOLE, not truncated to token 1.
+//    * [validate]       descriptor-driven validation refuses a malformed scene
+//                       and applies NOTHING (refuse-all): unknown parameter,
+//                       unknown chunk type, non-finite/non-numeric value,
+//                       value-less line.
+//    * [valid]          a well-formed scene applies cleanly.
+//
+//  (CstDeriveDifferentialTest.cpp is the broader shared corpus; this suite is the
+//  focused descriptor-binding gate.)
 //
 //////////////////////////////////////////////////////////////////////
 
