@@ -411,6 +411,29 @@ until it is green:
    identity/derive/reference invariant) + a final P2 polish (a name-less-chunk rename is now a diagnosed
    no-op, not silent). ← next: item 8 (spatial + non-spatial edit cost).
 8. **Measure a non-spatial edit AND a spatial edit; report TLAS time separately.**
+   **DONE (pending review).** `DocEditClosure(doc, changedChunkId)` computes the re-derive closure (the
+   chunk + its transitive dependents, walked over the reference graph, D25). Test
+   `tests/CstEditCostTest.cpp` (12 checks) measures the cost model on the in-tree path: **[edit-cost]**
+   `DocSetParamValue` is O(log N) — path-copy visits **5 / 7 / 10** at N=8/64/512 (a 64× scene-size
+   increase grows the edit ~2×, not ~64×); **[closure]** the closure SIZE is O(closure) — editing
+   `material0` re-derives `{material0, object0}` = **2, INVARIANT to N**; transitive `painter0` = 3; a
+   SHARED material used by all N objects → **N+1** (proportional to the dependents, never an arbitrary
+   O(N)); **[spatial]** a non-spatial material-VALUE edit's closure carries NO geometry → object bounding
+   boxes unchanged → the TLAS stays CLEAN (cost = O(log N) edit + O(closure) re-derive, no TLAS), whereas
+   a SPATIAL geometry-shape / object-transform edit dirties the TLAS → the engine's **O(N log N)** top-
+   level BVH rebuild is the SEPARATE spatial cost. **Honest scope:** `DocEditClosure` computes the
+   closure via an O(N) graph walk (a maintained-graph incremental version is deferred); the
+   incremental-APPLY engine that re-applies only the closure (drop + re-Finalize) is prototype-validated
+   (slices 1.5/3) and the in-tree pieces (RemoveItem + Finalize + DocEditClosure) support it; the TLAS
+   O(N log N) is the engine's documented top-level BVH4 build (referenced — it builds at render-prep, off
+   the CST path). This suite measures the cost-model DETERMINANTS (edit O(log N); closure SIZE
+   O(closure); TLAS O(N log N) separate), not the full incremental engine.
 
 That is the gate that turns "the model and cost-model hold in prototypes" into "the redesign's real
-CST path is O(closure) for non-spatial edits, with spatial cost reported honestly."
+CST path is O(closure) for non-spatial edits, with spatial cost reported honestly." **With items 1-8
+landed, the transfer gate is GREEN** (pending the item-8 review): the in-tree `src/Library/Cst` kernel
+carries a scene losslessly, derives it identically to the legacy parser through the live descriptor
+registry, traces its reference graph, applies structured edits + reparses + rename with NodeId lineage,
+and the edit cost model (O(closure) non-spatial; O(N log N) TLAS for spatial, separate) is measured —
+all under multi-round adversarial review. (expr / RepeatGroup / instance_array were kept OUT until the
+gate is green; they are the next increment.)

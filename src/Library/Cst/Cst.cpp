@@ -1239,6 +1239,48 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 	return result;
 }
 
+std::vector<NodeId> DocEditClosure( const Document& doc, NodeId changedChunkId )
+{
+	// param NodeId -> its owning chunk NodeId, so a reference EDGE (keyed by the
+	// referring param) yields the referring CHUNK.
+	std::map<NodeId, NodeId> paramChunk;
+	std::vector<NodeRef> items;
+	SeqToVec( doc.items, items );
+	for( size_t i = 0; i < items.size(); ++i ) {
+		const NodeRef& c = items[i];
+		if( c->kind != NodeKind::Chunk ) continue;
+		const NodeId cid = DocNodeIdAt( doc, (int)i );
+		std::map<std::string,int> occ;
+		for( const auto& kid : c->kids ) {
+			if( kid->kind != NodeKind::Param ) continue;
+			const std::string role = kid->role;
+			const int thisOcc = occ[role]++;
+			paramChunk[ DocParamId( doc, cid, role, thisOcc ) ] = cid;
+		}
+	}
+	// reverse adjacency: chunk -> the chunks that REFERENCE it (its dependents).
+	std::map<NodeId, std::vector<NodeId> > deps;
+	std::vector<ReferenceUse> uses = TraceReferences( doc );
+	for( const ReferenceUse& u : uses ) {
+		std::map<NodeId, NodeId>::const_iterator pc = paramChunk.find( u.sourceValueNodeId );
+		if( pc != paramChunk.end() && pc->second != u.targetNodeId ) deps[ u.targetNodeId ].push_back( pc->second );
+	}
+	// BFS the dependents: the re-derive closure is the changed chunk + everything
+	// that transitively references it (D25). Closure SIZE scales with the
+	// dependents, NOT with the document size.
+	std::vector<NodeId> closure;
+	std::unordered_set<long long> seen;
+	std::vector<NodeId> stack; stack.push_back( changedChunkId );
+	while( !stack.empty() ) {
+		const NodeId n = stack.back(); stack.pop_back();
+		if( !seen.insert( (long long)n ).second ) continue;
+		closure.push_back( n );
+		std::map<NodeId, std::vector<NodeId> >::const_iterator d = deps.find( n );
+		if( d != deps.end() ) for( NodeId r : d->second ) if( !seen.count( (long long)r ) ) stack.push_back( r );
+	}
+	return closure;
+}
+
 int    DocItemCount  ( const Document& doc ) { return SeqCount( doc.items ); }
 size_t DocByteWidth  ( const Document& doc ) { return SeqBytes( doc.items ); }
 int    DocNewlineCount( const Document& doc ) { return SeqNl( doc.items ); }

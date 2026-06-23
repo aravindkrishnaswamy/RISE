@@ -524,6 +524,20 @@ namespace RISE
 		//! reported in `diagnostics`. Returns the new Document (or `doc` unchanged on
 		//! a refused collision / non-chunk target).
 		Document DocRename( const Document& doc, NodeId chunkId, const std::string& newName, std::vector<std::string>* diagnostics = nullptr );
+
+		//! The re-derive CLOSURE of editing `changedChunkId` (item 8, D25): the
+		//! chunk itself + every chunk that TRANSITIVELY references it (its
+		//! dependents), walked over the traced reference graph (TraceReferences
+		//! reverse edges). This is the set an incremental re-derivation must
+		//! re-apply when the chunk changes; its SIZE scales with the DEPENDENTS,
+		//! not with the document size -- the cost model's O(closure), the gate's
+		//! non-spatial-edit claim. (A non-spatial edit -- a material/painter value
+		//! -- changes no object's world bounding box, so it leaves the top-level
+		//! acceleration structure / TLAS clean; a SPATIAL edit -- a geometry's
+		//! shape or an object's transform -- dirties it, adding the engine's
+		//! O(N log N) BVH rebuild as a SEPARATE cost.) Returns `changedChunkId`
+		//! first. O(edges + chunks·params).
+		std::vector<NodeId> DocEditClosure( const Document& doc, NodeId changedChunkId );
 	}
 }
 
