@@ -557,15 +557,14 @@ namespace RISE
 		//! chunk itself + every chunk that TRANSITIVELY references it (its
 		//! dependents), walked over the traced reference graph (TraceReferences
 		//! reverse edges). This is the set DeriveToJobIncremental re-applies when the
-		//! chunk changes; its SIZE scales with the DEPENDENTS,
-		//! not with the document size -- the cost model's O(closure), the gate's
-		//! non-spatial-edit claim. (A non-spatial edit -- a material/painter value
-		//! -- changes no object's world bounding box, so it leaves the top-level
-		//! acceleration structure / TLAS clean; a SPATIAL edit -- a geometry's
-		//! SHAPE, an object's TRANSFORM, or an object's GEOMETRY reference -- changes
-		//! a world bbox, dirtying it and adding the engine's
-		//! O(N log N) BVH rebuild as a SEPARATE cost.) Returns `changedChunkId`
-		//! first.
+		//! chunk changes; its SIZE scales with the DEPENDENTS, not with the document
+		//! size. (Whether a re-derive touches the TLAS depends on the APPLY: under the
+		//! interim drop/re-add DeriveToJobIncremental EVERY edit recreates its closure
+		//! objects and rebuilds the TLAS -- a non-spatial edit does NOT skip it; the
+		//! slice-3 stable-object apply will let non-spatial edits skip it, paying the
+		//! engine's O(N log N) BVH rebuild only for a SPATIAL edit -- a geometry's
+		//! SHAPE, an object's TRANSFORM, or an object's GEOMETRY reference.) Returns
+		//! `changedChunkId` first.
 		//! COST: the closure SIZE is O(closure), but COMPUTING it here is O(N log N)
 		//! -- it re-traces the whole reference graph (TraceReferences) + rebuilds the
 		//! param->chunk map (DocParamId per param) each call; a production system

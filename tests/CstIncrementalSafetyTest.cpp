@@ -1,0 +1,165 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  CstIncrementalSafetyTest.cpp - regression coverage for the slice-0 safety
+//  guards of DeriveToJobIncremental (docs/agentic-redesign/21-stable-apply-and-
+//  resolver.md). The bulk review found nine P1s in the original drop/re-add apply;
+//  slice 0 made it SAFE by REFUSING what it cannot reverse + aborting on a failed
+//  drop. The cost suite only exercised the happy path, so a regression could
+//  silently re-open a hole -- this suite locks the refusals + the abort in.
+//
+//  Each refusal returns 0 + a diagnostic and mutates NOTHING (caller falls back to
+//  a full re-derive; D51: never a silent partial undo).
+//
+//////////////////////////////////////////////////////////////////////
+
+#include "../src/Library/Cst/Cst.h"
+#include "CstRenderEquivalence.h"      // Job, DumpJob
+
+#include <cstdio>
+#include <string>
+#include <vector>
+
+using namespace RISE;
+using namespace RISE::Cst;
+using namespace risequiv;
+
+static int g_pass = 0, g_fail = 0;
+static void Check( bool c, const char* w ) { if( c ) ++g_pass; else { ++g_fail; std::printf( "  FAIL: %s\n", w ); } }
+
+// Derive `scene`, then run DeriveToJobIncremental over the closure of the chunk
+// named `keyword/name`; return the applied count + diagnostics + the pre/post dump.
+struct IncResult { int applied; size_t diagCount; std::string dumpBefore, dumpAfter; size_t closureSize; };
+static IncResult RunInc( const std::string& scene, const char* findKey, NodeId* outId = nullptr )
+{
+	Document doc = ParseToCst( scene );
+	NodeId id = DocFindByName( doc, findKey );
+	if( outId ) *outId = id;
+	Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+	std::string before = DumpJob( *j );
+	std::vector<NodeId> closure = DocEditClosure( doc, id );
+	std::vector<std::string> di;
+	int applied = DeriveToJobIncremental( doc, *j, closure, &di );
+	std::string after = DumpJob( *j );
+	IncResult r{ applied, di.size(), before, after, closure.size() };
+	j->release();
+	return r;
+}
+
+int main()
+{
+	std::printf( "CstIncrementalSafetyTest -- slice-0 refusal/abort guards\n" );
+
+	// Positive control: a clean single-manager value edit (geometry radius) is
+	// ACCEPTED and applies the whole closure.
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+		IncResult r = RunInc( s, "sphere_geometry/g" );
+		Check( r.applied == (int)r.closureSize && r.applied > 0, "clean geometry value edit ACCEPTED (applied == closure)" );
+	}
+
+	// Painter closure -> REFUSED (func2d dual-registration).
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+		IncResult r = RunInc( s, "uniformcolor_painter/p" );
+		Check( r.applied == 0 && r.diagCount > 0, "painter closure REFUSED (applied 0 + diagnosed)" );
+		Check( r.dumpBefore == r.dumpAfter, "painter refusal mutated NOTHING" );
+	}
+
+	// translucent_material closure -> REFUSED (reads ambient painter-colour cache).
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"translucent_material\n{\nname tm\nref p\ntau p\n}\n";
+		Document doc = ParseToCst( s );
+		NodeId id = DocFindByName( doc, "translucent_material/tm" );
+		// translucent's Finalize may fail without a fully-valid scene; the refusal is
+		// pre-apply (by keyword), so test the refusal directly on the closure.
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		std::vector<NodeId> closure; closure.push_back( id );
+		std::vector<std::string> di;
+		int applied = DeriveToJobIncremental( doc, *j, closure, &di );
+		Check( applied == 0 && !di.empty(), "translucent_material closure REFUSED (applied 0 + diagnosed)" );
+		j->release();
+	}
+
+	// gltf_import (a bulk importer: one chunk spawns many entries) -> REFUSED. It has
+	// no `name` param, so it is the second chunk (index 1); fetch its NodeId by
+	// position and pass it as a hand-built closure. It is refused either way (the
+	// name-empty guard catches the current unnamed importer; the gltf_import keyword
+	// guard protects a future NAMED bulk importer) -- the point is it never half-drops.
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"gltf_import\n{\nfile nonexistent.gltf\n}\n";
+		Document doc = ParseToCst( s );
+		NodeId id = DocNodeIdAt( doc, 1 );   // the gltf_import chunk
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		std::vector<NodeId> closure; closure.push_back( id );
+		std::vector<std::string> di;
+		int applied = DeriveToJobIncremental( doc, *j, closure, &di );
+		Check( applied == 0 && !di.empty(), "gltf_import (bulk importer) REFUSED (applied 0 + diagnosed)" );
+		j->release();
+	}
+
+	// A document with an Animation-category chunk -> ANY incremental REFUSED (the
+	// static graph cannot trace timeline String references).
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n"
+			"animation\n{\nname anim\n}\n";
+		Document doc = ParseToCst( s );
+		NodeId animId = DocFindByName( doc, "animation/anim" );
+		if( animId != 0 ) {
+			NodeId gid = DocFindByName( doc, "sphere_geometry/g" );
+			Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+			std::vector<NodeId> closure = DocEditClosure( doc, gid );
+			std::vector<std::string> di;
+			int applied = DeriveToJobIncremental( doc, *j, closure, &di );
+			Check( applied == 0 && !di.empty(), "incremental REFUSED when the document has an animation chunk" );
+			j->release();
+		} else {
+			std::printf( "  (skip animation: chunk did not parse in this build)\n" );
+		}
+	}
+
+	// Abort-on-failed-drop: rename a geometry in the document, then incrementally
+	// apply the renamed closure to a Job that still has the OLD name -> the drop of
+	// the new name finds nothing -> ABORT (return 0 + diagnostic), no silent re-add.
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+		Document doc = ParseToCst( s );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		NodeId gid = DocFindByName( doc, "sphere_geometry/g" );
+		Document docR = DocRename( doc, gid, "grenamed" );
+		// closure of the renamed geometry on docR (its name is now grenamed, but the
+		// Job still has g); the drop of "grenamed" must fail -> abort.
+		std::vector<NodeId> closure = DocEditClosure( docR, gid );
+		std::vector<std::string> di;
+		int applied = DeriveToJobIncremental( docR, *j, closure, &di );
+		Check( applied == 0 && !di.empty(), "abort-on-failed-drop: renamed closure name absent in Job -> applied 0 + diagnosed" );
+		j->release();
+	}
+
+	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
+	return g_fail == 0 ? 0 : 1;
+}

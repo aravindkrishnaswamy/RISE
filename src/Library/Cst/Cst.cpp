@@ -1077,6 +1077,25 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
 	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
 
+	// Animated scenes are refused wholesale (review P1.8/timeline): a `timeline`
+	// caches a raw POINTER to its animated element (AddKeyframeToAnimation ->
+	// GetItem(element)), and references that element + its owning `animation` as
+	// ValueKind::String, not Reference -- so those edges are INVISIBLE to the static
+	// reference graph the closure is built from.  Recreating a timeline-referenced
+	// element would dangle the cached keyframe pointer, and the closure would not
+	// include the timeline to re-resolve it.  Until the resolver tracks timeline
+	// references (a later slice -- promote them to Reference with an element_type-keyed
+	// category so the closure includes the timeline), the whole incremental falls back
+	// to a full derive whenever the Job has ANY animation.  This is an O(1) query (the
+	// Animator's declared-animation count; a `timeline` keyframe declares the implicit
+	// "(default)" animation, so it is counted) -- it does NOT scan the document,
+	// preserving the O(closure . log N) cost for non-animated scenes (review: the
+	// earlier O(N) doc-scan made the incremental O(N), failing the ~flat-in-N gate).
+	if( pJob.GetAnimationCount() > 0 ) {
+		diags.push_back( "incremental: the Job has an animation/timeline whose String element references the static graph cannot trace; fall back to a full derive" );
+		return 0;
+	}
+
 	// Re-apply ONLY the given closure (DocEditClosure) into an ALREADY-derived Job
 	// after an edit: drop each closure chunk via IJob's typed removal, then
 	// re-Finalize it -- so the work is O(closure), not the O(N) of a full
@@ -1127,6 +1146,15 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		}
 		if( node->role == "translucent_material" ) {            // re-Finalize reads the ambient painter-colour cache
 			diags.push_back( node->role + " '" + name + "': re-Finalize reads ambient thread-local parser state (the painter-colour cache); not yet incrementally re-derivable -- fall back to a full derive" );
+			return 0;
+		}
+		if( node->role == "gltf_import" ) {                      // a single chunk whose Finalize spawns many entries
+			// (Today gltf_import has no `name` param, so the name-empty guard above
+			// already refuses it; this keyword guard is the explicit, durable refusal
+			// of a bulk importer -- and protects a future NAMED importer. The
+			// principled fix is a per-parser "single-manager-single-entry" capability
+			// bit -- see 21-stable-apply-and-resolver.md Section 5.)
+			diags.push_back( node->role + ": a bulk importer -- one chunk creates many objects/materials/painters/lights, which a typed RemoveGeometry cannot undo; fall back to a full derive" );
 			return 0;
 		}
 		if( cat == ChunkCategory::Object ) recreatedObject = true;

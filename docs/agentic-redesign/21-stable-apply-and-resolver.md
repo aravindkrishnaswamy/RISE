@@ -42,7 +42,10 @@ the derive-apply and every consumer (rename, closure). No parallel scan.
   managers (which already hold the `none` material/painter added at
   [Job.cpp:351,356](../../src/Library/Job.cpp) and the `Default*` shader ops at
   357–373), not a CST-only view. So `none`/`Default*` are first-class names that
-  collisions and resolutions see.
+  collisions and resolutions see. (Access path: `IJobPriv` already exposes every
+  manager — `GetMaterials`/`GetGeometries`/`GetPainters`/`GetObjects`/…,
+  each with `GetItem`/`EnumerateItemNames` — so NO new IJob getters are needed;
+  downcast `IJob&`→`IJobPriv&` as `override_object` already does.)
 - **Recorded during derive, stamped.** As `DeriveToJob` applies each chunk, the
   resolver records every `(sourceParam NodeId → resolved target)` edge into a
   `ReferenceGraph` attached to the derived artifact, stamped with the derive's
@@ -57,6 +60,22 @@ the derive-apply and every consumer (rename, closure). No parallel scan.
   or an expr the static layer can't see), the resolver records it as
   *unresolved-dynamic* rather than guessing — and any operation (rename) that
   would need to rewrite an unresolved-dynamic referrer **refuses** (§4).
+- **⚠ Static-graph gap to close before slice 2 (rename): `timeline`.** A `timeline`
+  references its animated target (`element`) and its owning `animation` as
+  `ValueKind::String`, NOT `Reference`
+  ([AsciiSceneParser.cpp:9555](../../src/Library/Parsers/AsciiSceneParser.cpp)), so
+  those chunk→chunk edges are **invisible to the descriptor scan** — this is a
+  *static* edge the scan structurally misses, not the dynamic-helper case above.
+  Renaming or recreating an animated entity on the static graph would silently
+  dangle the timeline. Two ways out, in order of preference: (a) promote
+  `timeline.element`/`.animation` to `Reference` with an `element_type`-keyed
+  reference category (the dynamic-category resolver the design already anticipates);
+  or (b) until then, **slices 0–2 refuse any incremental edit / rename when the Job
+  has any animation** — slice 0 does this via the O(1) `IJob::GetAnimationCount()`
+  (a `timeline` keyframe declares the implicit `(default)` animation, so it counts),
+  NOT a per-call document scan (an O(N) scan would defeat the O(closure·log N) cost —
+  the cost gate caught exactly that). A guard test enforces it. Slice 1 must not
+  claim the static graph is complete without one of these.
 
 ## 3. Architecture B — stable-object in-place apply
 
@@ -71,20 +90,36 @@ For an edit whose closure is computed from the shared graph (§2):
    via the existing `Finalize` (new addresses are fine — only objects are
    address-sensitive). Per-parser reversibility (§5) governs the drop half.
 2. **Re-point the stable objects in place** to the recreated entities using the
-   same primitives the interactive editor uses
+   interactive editor's primitives
    ([IObjectPriv](../../src/Library/Interfaces/IObjectPriv.h):
    `AssignMaterial`, `AssignGeometry`, `AssignModifier`, `AssignShader`,
-   `AssignInteriorMedium`/`ClearInteriorMedium`, `SetUVGenerator`,
-   `SetShadowParams`; transforms via `SetPosition`/`SetOrientation`/`SetStretch`
-   + `FinalizeTransformations`).
-3. **Run the invariant chain**, mirroring `SceneEditor::RunObjectInvariantChain`
-   ([SceneEditor.cpp:851](../../src/Library/SceneEditor/SceneEditor.cpp)):
-   `FinalizeTransformations()` → `ResetRuntimeData()` → **invalidate the TLAS
-   only if a bbox changed** (geometry shape / object transform / geometry-ref:
-   `InvalidateSpatialStructure()`) → **bump the light-topology generation only if
-   the emitter set changed** (`BumpLightTopologyGeneration` →
-   `RayCaster::AttachScene` rebuilds samplers on the stamp mismatch,
-   [RayCaster.cpp:166](../../src/Library/Rendering/RayCaster.cpp)).
+   **`AssignRadianceMap`**, `AssignInteriorMedium`/`ClearInteriorMedium`,
+   `SetUVGenerator`, `SetShadowParams`; transforms via
+   `SetPosition`/`SetOrientation`/`SetStretch` + `FinalizeTransformations`).
+   The re-point set must cover **every** slot the object chunk binds —
+   `standard_object`/`csg_object` also carry a `radiance_map` Reference→Painter
+   slot ([Job.cpp AddObject ~5276](../../src/Library/Job.cpp)), and that one is
+   *recreate-and-re-wrap* (a fresh `IRadianceMap` around the recreated painter,
+   with the chunk's scale/orientation), not a bare re-point — a slot omitted here
+   leaves the object holding a freed entity (UAF). CSG operands are themselves
+   objects re-pointed in place, so a parent `CSGObject`'s raw operand pointers
+   stay valid; a geometry edit on a CSG operand must still invalidate the TLAS
+   (the operand's bbox feeds its parent's), and the closure includes the parent
+   CSG via its `obja`/`objb` Reference→Object edges.
+3. **Run a closure-gated invariant pass.** This is NOT a verbatim reuse of
+   `SceneEditor::RunObjectInvariantChain`
+   ([SceneEditor.cpp:851](../../src/Library/SceneEditor/SceneEditor.cpp)): that
+   function invalidates the TLAS **unconditionally**, with the "only on a spatial
+   op" gate living in its *caller* (`OpNeedsSpatialRebuild`). The CST apply has no
+   edit-`Op`, so slice 3 implements a NEW variant whose TLAS-invalidation is gated
+   on the **closure contents** — invalidate iff the closure recreated a geometry an
+   object references OR changed an object's transform/geometry-ref; bump the
+   light-topology generation iff the closure changed the emitter set. The reusable
+   parts (`FinalizeTransformations()`, `ResetRuntimeData()`, the light-gen bump →
+   `RayCaster::AttachScene` sampler rebuild, [RayCaster.cpp:166](../../src/Library/Rendering/RayCaster.cpp))
+   are mirrored; the unconditional invalidate is replaced by the closure-gated one.
+   (Getting this gate right is the prerequisite for slice 4's "non-spatial skips
+   the TLAS" measurement — a verbatim reuse would reproduce P1.2.)
 
 Consequence — the item-8 central result becomes **valid**: a **non-spatial** edit
 (material/painter value) re-points objects in place, changes no bbox, and leaves
@@ -121,14 +156,26 @@ A chunk is incrementally re-derivable only if its `Finalize` registers in exactl
 the managers a typed removal clears. Classification:
 
 - **Single-entry (re-derivable):** lambertian/most materials, analytic geometries,
-  standard objects (verified single-manager).
-- **Multi-entry (needs full-undo or refusal):** `pbr_metallic_roughness_material`
-  creates ~15 helper painters `__pbrmr_<name>__*`
-  ([Job.cpp:3749](../../src/Library/Job.cpp)); detect via `IsMaterialComposed`
-  ([IJob.h:2929](../../src/Library/Interfaces/IJob.h)) and either remove all
-  helpers (a composed-removal that walks the prefix registry) or **refuse**.
-  `Add*Painter` dual-registers in the function-2D manager (the known painter case)
-  → refuse until the multi-manager removal lands.
+  standard objects (verified single-manager — a sweep of `Job::Add*` confirms each
+  makes exactly one manager `AddItem`).
+- **Multi-entry (needs full-undo or refusal):** these are NOT identifiable by
+  category — the classifier must be **per-parser**:
+  - `pbr_metallic_roughness_material` + composed `ggx_material` create helper
+    painters / fold a painter; both register in `composedMaterialNames`, so
+    `IsMaterialComposed` ([IJob.h:2929](../../src/Library/Interfaces/IJob.h))
+    detects them (material-only).
+  - `Add*Painter` dual-registers in the function-2D manager (refused by the
+    Painter-category gate today).
+  - **`gltf_import` is the worst case: it is `ChunkCategory::Geometry`** but its
+    `Finalize` spawns many objects/materials/painters/lights/a camera
+    ([AsciiSceneParser.cpp:5164](../../src/Library/Parsers/AsciiSceneParser.cpp)).
+    `IsMaterialComposed` (material-only) does NOT catch it, and the Geometry gate
+    ALLOWS it — so it must be refused explicitly. The Hosek-Wilkie sky similarly
+    spawns a hidden `__hw_sun__` light.
+  Because a hardcoded denylist is silently defeated by the next bulk importer, the
+  **principled fix is a capability bit on `IAsciiChunkParser`** ("single-manager,
+  single-entry") that the classifier reads structurally; the interim slice-0 guard
+  is a keyword denylist (`gltf_import`, `translucent_material`) + `IsMaterialComposed`.
 - The classifier is consulted in the plan's preflight; a non-reversible chunk in
   the closure makes the edit fall back to a full re-derive (D51: never a silent
   partial undo).
