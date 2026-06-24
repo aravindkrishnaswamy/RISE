@@ -283,8 +283,16 @@ namespace RISE
 		//! set to "none"), any document with an animation/timeline, and any document with an
 		//! override_object (its String target reference is untraceable -- review P1.3).
 		//! A WHOLE-PLAN PREFLIGHT (review P1.7) validates that every drop target EXISTS and
-		//! every reference RESOLVES before ANY mutation, so a rename / stale closure /
-		//! dangling reference refuses with NOTHING changed (atomic) -- not a partial apply.
+		//! every NAME reference RESOLVES before ANY mutation, so the COMMON failure modes
+		//! (a rename / stale closure / a dangling NAME reference / a missing entity) refuse
+		//! with nothing changed.  It is NOT fully atomic, though: a re-Finalize failure the
+		//! preflight cannot foresee still leaves a PARTIAL mutation -> the caller MUST
+		//! reset+re-derive.  Residual cases: a NUMERIC value in a PURE-painter slot (e.g.
+		//! `reflectance 0.5` -- the preflight skips numerics as literals, but the derive
+		//! rejects a numeric there); a {Painter} reference resolving only in the SCALAR
+		//! manager for a colour slot (EntityExists is manager-imprecise); a non-reference
+		//! value DispatchChunkParameters already accepted.  Full in-place atomicity needs
+		//! the reversible-apply-plan with post-Finalize ROLLBACK (Section 4) -- deferred.
 		//! Returns the count applied (== chunkIds.size() on success).  Landed: the shared resolver (slice 1),
 		//! atomic rename (slice 2), the stable-object re-point this function performs
 		//! (slice 3), the cost re-measurement (slice 4), and the maintained-graph closure
@@ -481,7 +489,7 @@ namespace RISE
 		//! missed staleness.
 		struct ReferenceGraph {
 			std::vector<ReferenceUse>             edges;        //!< resolved (sourceParam NodeId -> targetChunk NodeId) edges
-			std::map<NodeId, std::vector<NodeId> > dependents;  //!< reverse adjacency: a referenced chunk -> the CHUNKS that reference it. Computed in the SAME single BuildReferenceGraph pass as `edges`, so a caller holding the graph gets DocEditClosure( changedChunkId, graph ) as a pure O(closure . log N) reverse-BFS (the BFS in isolation) instead of the O(N . log N) full re-trace. The END-TO-END reuse across edits is MaintainedReferenceGraph (it decides reuse from the EDIT in O(1) -- a stamp-gated reuse cannot, since computing the new stamp is itself an O(N) BuildReferenceGraph).
+			std::map<NodeId, std::vector<NodeId> > dependents;  //!< reverse adjacency: a referenced chunk -> the CHUNKS that reference it. Computed in the SAME single BuildReferenceGraph pass as `edges`, so a caller holding the graph gets DocEditClosure( changedChunkId, graph ) as a pure O(closure . log N) reverse-BFS (the BFS in isolation) instead of the O(N . log N) full re-trace. The END-TO-END reuse across edits is MaintainedReferenceGraph (it decides reuse from the EDIT in O(log N) -- a NodeId-index chunk lookup + a descriptor scan, NOT O(1) -- whereas a stamp-gated reuse cannot decide at all without an O(N) re-trace, since computing the new stamp is itself an O(N) BuildReferenceGraph).
 			unsigned long long                    stamp = 0;    //!< conservative content fingerprint (see above)
 		};
 
@@ -548,8 +556,10 @@ namespace RISE
 		//!     full DeriveToJob refuses at apply time; the static pass does not double-
 		//!     report it. (This name-vs-number formulation replaced a fragile per-slot
 		//!     ref-or-literal flag -- no allowlist to keep complete.)
-		//!   * STAMPS the result (see ReferenceGraph) so a cached graph's staleness is
-		//!     detectable in O(1).
+		//!   * STAMPS the result (see ReferenceGraph) -- a one-shot O(1) CONSISTENCY compare
+		//!     of two already-held stamps, NOT a cheap per-edit staleness oracle (obtaining
+		//!     a fresh stamp is itself this O(N) BuildReferenceGraph; MaintainedReferenceGraph
+		//!     does O(log N)-from-the-edit reuse instead).
 		//! It does NOT yet capture DYNAMIC references created at derive time (timeline
 		//! String elements, expr): those are the slice-5 derive-time-routing scope --
 		//! callers that must be exact about dynamics (incremental apply, rename) refuse
@@ -657,7 +667,7 @@ namespace RISE
 		//! across edits WITHOUT rebuilding it; a STAMP-gated holder cannot do that (computing
 		//! the new stamp to compare is itself an O(N) BuildReferenceGraph -- you rebuilt to
 		//! check).  `MaintainedReferenceGraph` (below) is the construct that achieves it: it
-		//! decides reuse from the EDIT in O(1).  The doc-only overload above is exactly this
+		//! decides reuse from the EDIT in O(log N) (a NodeId-index lookup; not O(1)).  The doc-only overload above is exactly this
 		//! BFS preceded by a from-scratch BuildReferenceGraph.  (Does NOT take `doc`: the
 		//! BFS needs only the graph's reverse adjacency.)
 		std::vector<NodeId> DocEditClosure( NodeId changedChunkId, const ReferenceGraph& graph );
@@ -666,7 +676,7 @@ namespace RISE
 		//! ReferenceGraph and keeps them in sync INCREMENTALLY, so the END-TO-END per-edit
 		//! cost -- not just the closure BFS in isolation -- is O(closure . log N) for the
 		//! common edit.  The crux: a value edit's reuse decision is made from the EDIT
-		//! ITSELF in O(1) (is the edited param a reference, or the chunk's name?), NOT by
+		//! ITSELF in O(log N) (resolve the chunk via the NodeId index + scan its descriptor -- is the edited param a reference, or the chunk's name? -- NOT O(1)), NOT by
 		//! recomputing the stamp -- recomputing the stamp is itself an O(N) BuildReference-
 		//! Graph, so a stamp-validated reuse saves nothing end-to-end (you rebuilt to
 		//! check).  A NON-reference value edit cannot change the graph (its edges and

@@ -196,7 +196,7 @@ int main()
 
 		// [maintained] : the END-TO-END per-edit cost via a held MaintainedReferenceGraph
 		// (review P1.6 -- NOT just the isolated BFS).  A NON-reference value edit (radius)
-		// updates the doc + decides reuse from the EDIT in O(1) (no graph rebuild, no O(N)
+		// updates the doc + decides reuse from the EDIT in O(log N) (a NodeId-index lookup; no graph rebuild, no O(N)
 		// stamp recompute), then finds the closure over the reused graph.  Construct the
 		// holder OUTSIDE the timed loop (a holder amortises the one-time O(N) build); time
 		// edit+closure inside.  This is what the holder actually pays per edit -- O(log N +
@@ -296,14 +296,14 @@ int main()
 	Check( cloGraphAt[2] * 4 < cloAt[2], "closure via a maintained graph >=4x cheaper than the from-scratch re-trace at N=4096" );
 	Check( cloGraphAt[2] < cloGraphAt[0] * 6.0 + 50.0, "closure via a maintained graph ~flat in N (O(closure . log N), not O(N log N))" );
 	// The END-TO-END maintained per-edit cost (review P1.6): a non-reference value edit via
-	// the holder (edit + O(1) reuse decision + closure) is ~flat and far below the
+	// the holder (edit + O(log N) reuse decision + closure) is ~flat and far below the
 	// from-scratch per-edit cost (edit + O(N log N) closure-COMPUTE).  This is the honest
 	// end-to-end number -- not the isolated BFS.
 	Check( mtnAt[2] * 4 < ( editAt[2] + cloAt[2] ), "maintained END-TO-END edit (edit+reuse-decision+closure) >=4x cheaper than the from-scratch edit+closure at N=4096" );
 	Check( mtnAt[2] < mtnAt[0] * 6.0 + 50.0, "maintained END-TO-END edit ~flat in N (no O(N) rebuild on a non-reference edit)" );
 
 	std::printf( "  decomposition at N=4096 (microseconds):\n" );
-	std::printf( "    maintained END-TO-END per-edit (non-reference): %.1f us (edit + O(1) reuse decision + closure), ~flat -- vs from-scratch edit+closure %.1f us.\n",
+	std::printf( "    maintained END-TO-END per-edit (non-reference): %.1f us (edit + O(log N) reuse decision + closure), ~flat -- vs from-scratch edit+closure %.1f us.\n",
 		mtnAt[2], editAt[2] + cloAt[2] );
 	std::printf( "    edit %.1f + closure-compute %.1f (from scratch) -> %.1f (over a maintained graph, slice 5) + incremental-apply %.1f\n",
 		editAt[2], cloAt[2], cloGraphAt[2], incrAt[2] );

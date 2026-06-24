@@ -128,6 +128,34 @@ int main()
 		Check( !diags.empty() && SerializeCst( d2 ) == before, "rename REFUSED for a painter conflated across colour+scalar managers (P1.4)" );
 	}
 
+	// [piecewise_linear_function2d guard] (review #2) rename refused when the doc has a
+	// piecewise_linear_function2d (its `cp` entries embed untraced Function1D references).
+	{
+		Document d = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"piecewise_linear_function2d\n{\nname f2\n}\n" );
+		const std::string before = SerializeCst( d );
+		const NodeId g = DocFindByName( d, "sphere_geometry/g" );
+		std::vector<std::string> diags;
+		Document d2 = DocRename( d, g, "g2", &diags );
+		Check( !diags.empty() && SerializeCst( d2 ) == before, "rename REFUSED when a piecewise_linear_function2d is present (untraced cp Function1D refs, #2)" );
+	}
+
+	// [function 1D/2D conflation] (review #3) rename refused for a Function chunk whose name
+	// has another Function-namespace producer (a 1D + 2D pair).
+	{
+		Document d = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function\n{\nname fx\n}\n"
+			"piecewise_linear_function2d\n{\nname fx\n}\n" );
+		const std::string before = SerializeCst( d );
+		const NodeId f1 = DocFindByName( d, "piecewise_linear_function/fx" );
+		std::vector<std::string> diags;
+		Document d2 = DocRename( d, f1, "fy", &diags );
+		Check( !diags.empty() && SerializeCst( d2 ) == before, "rename REFUSED for a Function name with both a 1D and 2D producer (#3)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

@@ -261,6 +261,22 @@ int main()
 		Check( !DiagsMention( diags, "noise" ), "function2d-ref: a {Function} reference to a dual-registered painter is NOT a false dangling (P1.4 sibling)" );
 		const NodeId noiseId = DocFindByName( doc, "expression_function2d/noise" );
 		Check( noiseId != 0 && DocEditClosure( noiseId, g ).size() == 2, "function2d-ref: closure(noise) = {noise, disp} = 2 (the dual-register edge is traced)" );
+		Check( !DiagsMention( diags, "Function1D vs Function2D" ), "function2d-ref control: a single Function producer is NOT flagged as a 1D/2D conflation" );
+	}
+
+	//----------------------------------------------------------------------
+	// [func-conflation] (review #3) Function1D and Function2D producers share
+	// ChunkCategory::Function but use TYPED lookups in the derive; the (Function,name)
+	// graph cannot disambiguate them, so a same-named 1D + 2D pair must be FLAGGED.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function\n{\nname fx\n}\n"
+			"piecewise_linear_function2d\n{\nname fx\n}\n" );
+		std::vector<std::string> diags;
+		BuildReferenceGraph( doc, &diags );
+		Check( DiagsMention( diags, "Function1D vs Function2D" ), "func-conflation: same-named 1D + 2D function FLAGGED by the resolver (review #3)" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

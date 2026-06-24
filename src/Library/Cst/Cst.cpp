@@ -1431,7 +1431,8 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 	std::map<std::pair<int,std::string>, NodeId> defs;
 	for( const auto& rd : RuntimeDefaultDefs() )
 		defs[ std::pair<int,std::string>( (int)rd.first, rd.second ) ] = kRuntimeDefaultTarget;
-	std::map<std::string, bool> painterNs;   // painter name -> isScalar (first seen): detect a cross-manager conflation (P1.4)
+	std::map<std::string, bool> painterNs;       // painter name -> isScalar (first seen): detect a cross-manager conflation (P1.4)
+	std::map<std::string, bool> funcChunkNames;  // names produced by a Function-category chunk: detect the 1D/2D conflation (#3)
 	for( size_t i = 0; i < items.size(); ++i ) {
 		const NodeRef& c = items[i];
 		if( c->kind != NodeKind::Chunk ) continue;
@@ -1454,6 +1455,19 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 				diags.push_back( "painter '" + name + "': defined in BOTH the colour and scalar painter managers; reference edges to it are imprecise -- the (category,name) graph cannot disambiguate the two managers (review P1.4)" );
 		}
 		const std::pair<int,std::string> key( (int)cat, name );
+		// Function-namespace CONFLATION diagnostic (review #3): Function1D and Function2D
+		// producers share ChunkCategory::Function but live in SEPARATE managers
+		// (GetFunction1Ds/GetFunction2Ds), and the derive does TYPED lookups -- so two
+		// same-named Function-category chunks (a 1D + a 2D), or a Function chunk + a
+		// colour painter (dual-registered as 2D, seeded below), are AMBIGUOUS: the
+		// (Function,name) key resolves to only one (first-wins) and may disagree with the
+		// derive.  Flag it (DocRename refuses such a rename).  Precise per-1D/2D-manager
+		// resolution is the deferred typed-resolver refinement.
+		if( cat == ChunkCategory::Function ) {
+			if( defs.find( key ) != defs.end() || funcChunkNames.count( name ) )
+				diags.push_back( "function '" + name + "': another Function (1D/2D) producer or a dual-registered painter shares this name; reference edges to it are imprecise -- the (category,name) graph cannot disambiguate Function1D vs Function2D (review #3)" );
+			funcChunkNames[ name ] = true;
+		}
 		if( defs.find( key ) == defs.end() ) defs[key] = DocNodeIdAt( doc, (int)i );   // first-wins; defaults already seeded
 		// A COLOUR painter dual-registers in the Function-2D manager (Job::Add*Painter), so
 		// it is also referenceable as a {Function} reference (e.g. scalar_painter.function2d,
@@ -1462,6 +1476,8 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 		// being a false dangling + a missed closure/rename edge (review P1.4 sibling).  The
 		// scalar painter manager has no such dual-register, so scalar_painter is excluded.
 		if( cat == ChunkCategory::Painter && c->role != "scalar_painter" ) {
+			if( funcChunkNames.count( name ) )   // a real Function chunk also produces this name -> ambiguous (review #3)
+				diags.push_back( "function '" + name + "': a Function chunk and a dual-registered painter share this name; the {Function} reference edge is imprecise (review #3)" );
 			const std::pair<int,std::string> fkey( (int)ChunkCategory::Function, name );
 			if( defs.find( fkey ) == defs.end() ) defs[fkey] = DocNodeIdAt( doc, (int)i );
 		}
@@ -1527,7 +1543,15 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 				}
 				// sourceValueNodeId is the param NodeId (a tuple's ref tokens share it;
 				// value-atom sub-identity is the deferred refinement).
-				graph.edges.push_back( ReferenceUse{ DocParamId( doc, chunkId, role, thisOcc ), target } );
+				const NodeId srcParam = DocParamId( doc, chunkId, role, thisOcc );
+				// Fold the SOURCE-PARAM NodeId into the stamp (review #4, the param-level
+				// twin of P1.5's chunk-NodeId fold): edges are KEYED by the source param's
+				// NodeId, so removing a reference param and reinserting an identical one (a
+				// NEW param NodeId, same value) changes the graph's edge -- the stamp must
+				// move, else a reused graph carries a dead source NodeId.  A value edit
+				// preserves the param NodeId, so this stays stable across non-structural edits.
+				mix( std::to_string( (long long)srcParam ) );
+				graph.edges.push_back( ReferenceUse{ srcParam, target } );
 				// Reverse adjacency, computed in this SAME pass (slice 5): the referenced
 				// chunk -> the chunk that references it, so DocEditClosure( id, graph ) is a
 				// pure O(closure . log N) BFS over a reused graph.  (Self-reference excluded,
@@ -1679,6 +1703,45 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 				diags.push_back( "rename: painter '" + oldName + "' exists in BOTH the colour and scalar painter managers; the (category,name) reference graph cannot disambiguate them -- refused (review P1.4)" );
 				return doc;
 			}
+		}
+	}
+
+	// piecewise_linear_function2d guard (review #2): its `cp` entries embed a Function1D
+	// NAME extracted at runtime, but the descriptor declares `cp` as an opaque string, so
+	// those Function1D references are INVISIBLE to the static graph -- a rename of the
+	// referenced Function1D would leave them dangling. Refuse when the document has any
+	// such chunk (one-shot rename can afford the O(N) scan). Sibling of the override /
+	// timeline String-reference guards.
+	for( const NodeRef& c : items ) {
+		if( c->kind == NodeKind::Chunk && c->role == "piecewise_linear_function2d" ) {
+			diags.push_back( "rename: document has a piecewise_linear_function2d whose `cp` entries embed untraced Function1D references the static graph cannot rewrite; refused (review #2)" );
+			return doc;
+		}
+	}
+
+	// FUNCTION namespace-conflation guard (review #3): Function1D and Function2D producers
+	// share ChunkCategory::Function but live in SEPARATE managers (typed lookups), and a
+	// colour painter dual-registers as Function2D -- so the (Function, name) edge is
+	// imprecise when a name has >1 Function-namespace producer. Refuse renaming a Function
+	// chunk or a colour painter whose name is so shared. (Precise per-1D/2D resolution is
+	// the deferred typed-resolver refinement.)
+	if( targetCat == (int)ChunkCategory::Function ||
+	    ( targetCat == (int)ChunkCategory::Painter && target->role != "scalar_painter" ) ) {
+		int funcProducers = 0;
+		for( const NodeRef& c : items ) {
+			if( c->kind != NodeKind::Chunk ) continue;
+			std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( c->role );
+			if( it == registry.end() ) continue;
+			const ChunkCategory cc = it->second->Describe().category;
+			const bool producesFunction = ( cc == ChunkCategory::Function ) ||
+			                              ( cc == ChunkCategory::Painter && c->role != "scalar_painter" );  // colour painter dual-registers as Function2D
+			if( !producesFunction ) continue;
+			std::string nm;
+			if( ParamValue( c.get(), "name", nm ) && nm == oldName ) ++funcProducers;
+		}
+		if( funcProducers > 1 ) {
+			diags.push_back( "rename: '" + oldName + "' has multiple Function-namespace producers (Function1D/Function2D chunk and/or dual-registered painter); the (Function,name) graph cannot disambiguate them -- refused (review #3)" );
+			return doc;
 		}
 	}
 
