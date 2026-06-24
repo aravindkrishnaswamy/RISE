@@ -391,6 +391,26 @@ int main()
 		Check( !colourHasDvr, "transfer-precise: closure(colour t) does NOT (transfer_red binds Function1D, not the painter)" );
 	}
 
+	//----------------------------------------------------------------------
+	// [transfer-spectral] (review #3, 2nd-pass sibling) the spectral-DVR transfer_spectral is
+	// Function2D-only in the engine; with a same-named 1D+2D pair it must bind the Function2D.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function\n{\nname s\ncp 0 0\ncp 1 1\n}\n"
+			"piecewise_linear_function2d\n{\nname s\n}\n"
+			"spectraldirectvolumerendering_shader\n{\nname sdvr\ntransfer_spectral s\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId f1 = DocFindByName( doc, "piecewise_linear_function/s" );
+		const NodeId f2 = DocFindByName( doc, "piecewise_linear_function2d/s" );
+		const NodeId sdvr = DocFindByName( doc, "spectraldirectvolumerendering_shader/sdvr" );
+		bool f2HasSdvr = false; for( NodeId n : DocEditClosure( f2, g ) ) if( n == sdvr ) f2HasSdvr = true;
+		bool f1HasSdvr = false; for( NodeId n : DocEditClosure( f1, g ) ) if( n == sdvr ) f1HasSdvr = true;
+		Check( f1 && f2 && sdvr && f2HasSdvr, "transfer-spectral: closure(Function2D s) INCLUDES the spectral-DVR consumer" );
+		Check( !f1HasSdvr, "transfer-spectral: closure(Function1D s) does NOT (transfer_spectral binds Function2D)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

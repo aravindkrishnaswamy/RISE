@@ -1512,7 +1512,7 @@ static bool LooksNumeric( const std::string& s )
 // DIMENSION-PRECISE keys (well above any ChunkCategory enum value, so no collision in the
 // (int,name) `defs` map) makes a same-named 1D/2D pair resolve to the RIGHT one in BOTH
 // DocEditClosure and DocRename -- not the (Function,name) first-wins edge.  The coarse
-// (Function,name) seed is KEPT too, for the {Painter,Function} slots (ior/film_ior/transfer_*)
+// (Function,name) seed is KEPT too, for the coarse {Painter,Function} slots (ior/film_ior)
 // which are a painter-vs-function axis, not a 1D-vs-2D one.
 static const int kFunc1DSubCat = 100001;
 static const int kFunc2DSubCat = 100002;
@@ -1521,14 +1521,18 @@ static const int kFunc2DSubCat = 100002;
 //! coarse {Function} consumer.  Mirrors the engine's typed lookup by param name.
 static int FunctionSubNamespace( const std::string& paramName )
 {
-	// function1d + the directvolumerendering transfer_* channels are Function1D (the engine
-	// resolves transfer_* via pFunc1DManager only -- Job.cpp ~6248; their descriptor's {Painter}
-	// is spurious, so resolving them coarsely first-wins to a same-named colour painter was the
-	// transfer_* closure misbind, the review-#3 2nd-pass sibling).
+	// Each is resolved by the engine through a DIMENSION-SPECIFIC manager, so the resolver must
+	// match (their descriptor's extra {Painter}/coarse {Function} is spurious; resolving coarsely
+	// first-wins to a same-named colour painter or wrong-dimension function was the misbind):
+	//   function1d + the directvolumerendering RGBA transfer_* channels -> Function1D
+	//     (pFunc1DManager, Job.cpp ~6248);
+	//   function2d + heightfield_function + the spectral-DVR transfer_spectral -> Function2D
+	//     (pFunc2DManager, Job.cpp ~6317).
 	if( paramName == "function1d" ) return kFunc1DSubCat;
 	if( paramName == "transfer_red" || paramName == "transfer_green" ||
 	    paramName == "transfer_blue" || paramName == "transfer_alpha" ) return kFunc1DSubCat;
-	if( paramName == "function2d" || paramName == "heightfield_function" ) return kFunc2DSubCat;
+	if( paramName == "function2d" || paramName == "heightfield_function" ||
+	    paramName == "transfer_spectral" ) return kFunc2DSubCat;
 	return 0;
 }
 
@@ -1605,7 +1609,7 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 		// it so consumers know that residual is imprecise; DocRename refuses the rename outright.
 		if( cat == ChunkCategory::Function ) {
 			if( defs.find( key ) != defs.end() || funcChunkNames.count( name ) )
-				diags.push_back( "function '" + name + "': another Function (1D/2D) producer or a dual-registered painter shares this name; reference edges to it are imprecise in the COARSE {Function} namespace -- function1d/function2d consumers resolve dimension-precisely (review #3, 2nd pass), but a {Painter,Function} slot (ior/transfer_*) still first-wins (review #3)" );
+				diags.push_back( "function '" + name + "': another Function (1D/2D) producer or a dual-registered painter shares this name; reference edges to it are imprecise in the COARSE {Function} namespace -- function1d/function2d/heightfield_function/transfer_* consumers resolve dimension-precisely (review #3, 2nd pass), but a {Painter,Function} slot (ior/film_ior) still first-wins (review #3)" );
 			funcChunkNames[ name ] = true;
 			// DIMENSION-PRECISE seed (review #3, 2nd pass): a piecewise_linear_function is a
 			// Function1D (Job::AddPiecewiseLinearFunction -> GetFunction1Ds); a
@@ -1725,13 +1729,14 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 				mix( val );                                        // stamp: every reference value
 				if( val.empty() || val == "none" ) continue;       // explicit-none / empty: not an edge
 				NodeId target = 0;
-				// DIMENSION-PRECISE resolution for function1d/function2d/heightfield_function (review #3,
-				// 2nd pass): resolve through the 1D/2D sub-namespace key so a same-named Function1D+Function2D
-				// pair binds the RIGHT one (matching the engine's GetFunction1Ds vs GetFunction2Ds), NOT the
-				// (Function,name) first-wins edge.  No fallback to the coarse key: a function1d naming only a
-				// Function2D is genuinely dangling (the engine would not find it either).  Coarse
-				// {Painter,Function} slots (ior/film_ior/transfer_*) keep the referenceCategories loop --
-				// their ambiguity is painter-vs-function, not 1D-vs-2D.
+				// DIMENSION-PRECISE resolution for the function consumers FunctionSubNamespace maps
+				// (function1d/transfer_* -> 1D; function2d/heightfield_function/transfer_spectral -> 2D)
+				// (review #3, 2nd pass): resolve through the 1D/2D sub-namespace key so a same-named
+				// Function1D+Function2D pair binds the RIGHT one (matching the engine's GetFunction1Ds vs
+				// GetFunction2Ds), NOT the (Function,name) first-wins edge.  No fallback to the coarse key:
+				// a function1d naming only a Function2D is genuinely dangling (the engine would not find it
+				// either).  The coarse {Painter,Function} slots (ior/film_ior) keep the referenceCategories
+				// loop -- their ambiguity is painter-vs-function, not 1D-vs-2D.
 				const int fsub = FunctionSubNamespace( role );
 				if( fsub != 0 ) {
 					std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( fsub, val ) );

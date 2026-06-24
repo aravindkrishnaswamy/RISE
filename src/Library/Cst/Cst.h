@@ -647,8 +647,10 @@ namespace RISE
 
 		//! The re-derive CLOSURE of editing `changedChunkId` (item 8, D25): the
 		//! chunk itself + every chunk that TRANSITIVELY references it (its
-		//! dependents), walked over the traced reference graph (TraceReferences
-		//! reverse edges). This is the set DeriveToJobIncremental re-applies when the
+		//! dependents), walked over the reference graph's reverse adjacency
+		//! (ReferenceGraph::dependents -- which carries the plain/tuple edges PLUS the
+		//! dimension-precise function, cp, and painter-alias dependents, a SUPERSET of
+		//! TraceReferences's forward edges). This is the set DeriveToJobIncremental re-applies when the
 		//! chunk changes; its SIZE scales with the DEPENDENTS, not with the document
 		//! size. (Whether a re-derive touches the TLAS depends on the APPLY: the slice-3
 		//! stable-object DeriveToJobIncremental re-points objects in place and skips the
