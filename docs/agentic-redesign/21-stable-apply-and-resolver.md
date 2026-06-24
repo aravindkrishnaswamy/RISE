@@ -256,9 +256,12 @@ consumer default-switch is GATED on live editor consumers.** This is the remaini
 from §2/§6 (slice 5): route the derive's OWN resolution through the recorded graph so the
 static graph and the engine **cannot drift**. Delivered: the recorded graph IS the engine's
 production+resolution (it cannot drift by construction), and a bidirectional cross-check
-(`CstRecordDeriveTest`: recorded == static across a corpus spanning every reference-bearing
-manager — colour/scalar painters, material, geometry, function2d, medium, object) GUARANTEES
-the *static* heuristic can't drift from the engine undetected. What remains (gated, NOT
+(`CstRecordDeriveTest`: recorded == static across a corpus spanning the major reference-bearing
+managers — painter colour+scalar, material, geometry, function1d, function2d, medium, modifier,
+object) DETECTS any drift of the *static* heuristic from the engine FOR THE COVERED REFERENCE
+PATTERNS (a drift on a pattern outside the corpus — shader/shaderop, light — is not caught by
+this runtime guard; those edges rely on the 144-param convergence proof, §6 slice-5). It is a
+drift DETECTOR on the tested patterns, not an exhaustive every-edge proof. What remains (gated, NOT
 speculatively built): making closure CONSUMERS default to the recorded graph + maintaining it
 incrementally — there are no live closure consumers today (the editor/agent layer doesn't
 exist yet), the recorded graph requires a derive the Document-only consumers don't have, and
@@ -313,8 +316,9 @@ recorded graph, else editing a medium would not re-derive its consuming objects.
    GATED.** Slice 2's RECORDING side is done: media are recorded (a `mediaMap` hook in
    `Job::Add*Medium` / `SetObjectInteriorMedium` / `SetGlobalMedium`, since media bypass the
    `GenericManager` chokepoint), the cross-check is now bidirectional (`recorded == static`)
-   across a corpus spanning every reference-bearing manager incl. media + the scalar painter
-   manager, and closure over the recorded graph is demonstrated EQUAL to closure over the
+   across a corpus spanning the major reference-bearing managers (painter colour+scalar,
+   material, geometry, function1d, function2d, medium, modifier, object; shader/shaderop + light
+   not yet in the corpus), and closure over the recorded graph is demonstrated EQUAL to closure over the
    static graph (`CstRecordDeriveTest` [closure]). The actual consumer SWITCH (`DocEditClosure`
    / `MaintainedReferenceGraph` *default* to the recorded edges) is GATED on live consumers
    (see Status): the path is ready (`DocEditClosure(id, recorded)` works + is tested), not
@@ -351,7 +355,9 @@ the recorded graph; all three are addressed:
   (those are bound at Finalize/derive, inside the recording bracket). The cross-check's
   displacement scene confirms the function2d edge IS captured at derive-time (recorded ==
   static), so nothing leaks past the bracket.
-- **Cross-check coverage — DONE.** The cross-check is now bidirectional (`recorded == static`,
-  catching static-OVER AND static-MISS) across a corpus spanning every reference-bearing
-  manager (colour/scalar painters, material, geometry, function2d, medium, object); no
-  spurious recorded edge appears on the clean corpus.
+- **Cross-check coverage — DONE for the major managers.** The cross-check is now bidirectional
+  (`recorded == static`, catching static-OVER AND static-MISS) across a corpus spanning painter
+  colour+scalar, material, geometry, function1d, function2d, medium, modifier, and object; no
+  spurious recorded edge appears on the clean corpus. shader/shaderop + light reference edges
+  are NOT yet in the corpus (the 144-param convergence proof covers them; adding a shader/
+  shaderop scene -- shaderop resolves through the same chokepoint -- would close the runtime gap).

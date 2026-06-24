@@ -264,11 +264,11 @@ namespace RISE
 		//! It is CHUNK-level (the chokepoint records the resolved entity pointer, not the source
 		//! param), so it serves CLOSURE; rename keeps the param-level static path. Opt-in: when
 		//! `outRecorded` is null (the default / production path), no recording happens and the
-		//! manager hooks stay disabled. Slice 1 only RECORDS + cross-checks; consumers still
-		//! read BuildReferenceGraph until slice 2.  NOTE: only `GenericManager`-backed entities
-		//! are captured -- participating media (the Job's separate `mediaMap`, reached via
-		//! `interior_medium`) bypass the chokepoint and are NOT yet recorded; recording them is
-		//! a slice-2 prerequisite (§8) before closure can rely on this graph.
+		//! recording hooks stay disabled. Slice 1+2 RECORD + cross-check; closure CONSUMERS still
+		//! read BuildReferenceGraph until the consumer-switch lands (gated on live consumers, §8).
+		//! Covers `GenericManager`-backed entities AND participating media (slice 2 hooks the
+		//! Job's separate `mediaMap` -- `Add*Medium` + `SetObjectInteriorMedium`/`SetGlobalMedium`
+		//! -- since media bypass the GenericManager chokepoint).
 		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr, ReferenceGraph* outRecorded = nullptr );
 
 		//! Incrementally re-apply ONLY a closure (DocEditClosure) into an

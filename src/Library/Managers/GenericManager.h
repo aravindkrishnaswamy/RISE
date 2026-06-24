@@ -35,6 +35,12 @@ namespace RISE
 	// as IPainter via the colour manager and as IFunction2D via the func-2D manager) records
 	// under each base, but both AddItems run in the same chunk's bracket, so both pointers map
 	// to the one producer.  See Cst.cpp DeriveToJob.
+	// INVARIANT for any entity class added to this recording (e.g. the media mediaMap hook):
+	// a resolution hook MUST be paired with a production hook.  Producer-pointer identity is
+	// how a resolution maps back to its producer; if an entity could be freed + its address
+	// reused mid-derive (e.g. a duplicate-name replace) without a production hook re-stamping
+	// that address, a stale producer attribution could survive.  With the pairing, any reused
+	// address is re-recorded as a producer before it can be resolved -- so it stays correct.
 	inline thread_local std::vector<const void*>* g_cstProductionSink = nullptr;
 	inline thread_local std::vector<const void*>* g_cstResolutionSink = nullptr;
 

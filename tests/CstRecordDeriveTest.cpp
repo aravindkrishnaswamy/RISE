@@ -18,7 +18,10 @@
 //  Scenes are deliberately CONFLATION-FREE: the static graph's conservative painter
 //  ALIAS edges (a same-named colour+scalar pair) are static-only by design (the
 //  engine does not alias), so they would break the `==` -- out of scope for the
-//  cross-check, which validates the manager-choice convergence.
+//  cross-check, which validates the manager-choice convergence. Duplicate-name MEDIA are
+//  likewise excluded: Job::mediaMap is last-wins (it silently REPLACES) while the static
+//  graph is first-wins, so a dup-name medium edge would point at different producers in
+//  recorded vs static -- the same out-of-scope class as conflations.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -49,14 +52,18 @@ static std::set<std::pair<NodeId,NodeId> > DepSet( const ReferenceGraph& g )
 }
 
 // Derive `scene` WITH recording + build the static graph; return both dep-sets.
-struct Pair { std::set<std::pair<NodeId,NodeId> > rec, stat; int applied; };
+// `clean` = the derive applied every chunk with no diagnostic -- the recorded graph only
+// equals the static one for a FULLY-applied scene (a chunk that fails Finalize records the
+// resolutions it fired before aborting, a partial set), so the `==` assertions below require
+// it to rule out a partial-apply false (mis)match.
+struct Pair { std::set<std::pair<NodeId,NodeId> > rec, stat; int applied; bool clean; };
 static Pair Run( const std::string& scene )
 {
 	Document doc = ParseToCst( scene );
 	Job* j = new Job(); std::vector<std::string> d; ReferenceGraph recorded;
 	int applied = DeriveToJob( doc, *j, &d, &recorded );
 	ReferenceGraph stat = BuildReferenceGraph( doc );
-	Pair r{ DepSet( recorded ), DepSet( stat ), applied };
+	Pair r{ DepSet( recorded ), DepSet( stat ), applied, d.empty() };
 	j->release();
 	return r;
 }
@@ -76,7 +83,7 @@ int main()
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
 			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n" );
-		Check( r.applied > 0, "equal: scene derived" );
+		Check( r.applied > 0 && r.clean, "equal: scene fully + cleanly derived" );
 		Check( !r.stat.empty() && !r.rec.empty(), "equal: both graphs non-empty" );
 		Check( r.rec == r.stat, "equal: recorded dependents == static dependents (engine == heuristic, simplest scene)" );
 	}
@@ -124,10 +131,24 @@ int main()
 			"RISE ASCII SCENE 6\n"
 			"scalar_painter\n{\nname base_s\nvalue 0.3\n}\n"
 			"scalar_painter\n{\nname sp\nbase base_s\n}\n",
+			// function1d: scalar_painter.function1d resolves via the Function-1D manager
+			// (dimension-precise, distinct from Function-2D).
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function\n{\nname f1\ncp 0 0\ncp 1 1\n}\n"
+			"scalar_painter\n{\nname sp1\nfunction1d f1\n}\n",
+			// modifier: exercises the MODIFIER manager + the {Painter}-declared-but-Function2D
+			// `bumpmap_modifier.function` slot (the modifier twin of displaced_geometry).
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function2d\n{\nname d2\n}\n"
+			"bumpmap_modifier\n{\nname bm\nfunction d2\n}\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\nmodifier bm\n}\n",
 		};
 		for( const char* s : scenes ) {
 			Pair r = Run( s );
-			Check( r.applied > 0 && !r.stat.empty(), "subset: scene derived with edges" );
+			Check( r.applied > 0 && r.clean && !r.stat.empty(), "subset: scene FULLY + cleanly derived with edges" );
 			// Strengthened to full EQUALITY: catches static-OVER (a heuristic edge the engine
 			// never resolves) AND static-MISS (an engine edge the heuristic lacks). Holds on
 			// these clean scenes because the recorder produces no spurious edge over the static
