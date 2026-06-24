@@ -295,6 +295,30 @@ int main()
 		j->release();
 	}
 
+	// OBJECT NUMERIC (review #1, 2nd pass): a numeric in an object reference slot bypasses the
+	// preflight literal-skip; interior_medium is applied by a SEPARATE SetObjectInteriorMedium
+	// AFTER AddObject re-points (and MOVES) the object, so without the refusal the object would
+	// be half-mutated + the TLAS left stale. The preflight now REFUSES it atomically.
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"homogeneous_medium\n{\nname med\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\ninterior_medium med\nposition 0 0 0\n}\n";
+		Document doc = ParseToCst( s );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		const std::string before = DumpJob( *j );
+		const NodeId oId = DocFindByName( doc, "standard_object/o" );
+		Document docM = DocSetParamValue( doc, oId, "position", 0, "5 0 0" );       // moves the object
+		docM = DocSetParamValue( docM, oId, "interior_medium", 0, "0.5" );          // numeric -> post-AddObject failure
+		std::vector<NodeId> closure = DocEditClosure( docM, oId );
+		std::vector<std::string> di;
+		int applied = DeriveToJobIncremental( docM, *j, closure, &di );
+		Check( applied == 0 && !di.empty(), "object-numeric: numeric interior_medium (post-AddObject) REFUSED (applied 0 + diagnosed, review #1)" );
+		Check( DumpJob( *j ) == before, "object-numeric: refused ATOMICALLY -- object NOT moved, TLAS untouched (nothing mutated)" );
+		j->release();
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

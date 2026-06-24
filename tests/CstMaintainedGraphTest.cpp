@@ -170,6 +170,24 @@ int main()
 		Check( mg.LastEditRebuilt(), "maintained: a `name` edit REBUILDS the graph" );
 	}
 
+	// [maintained-cp] (review #2, 2nd pass) a piecewise_linear_function2d.cp edit carries a
+	// TRACED Function1D ref even though `cp` is a String param -- the maintained graph must
+	// REBUILD on it (else it reuses a stale graph) and the closure must reflect the new ref.
+	{
+		Document d = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function\n{\nname f1\ncp 0 0\ncp 1 1\n}\n"
+			"piecewise_linear_function\n{\nname f2\ncp 0 0\ncp 1 1\n}\n"
+			"piecewise_linear_function2d\n{\nname p2\ncp 0.0 f1\n}\n" );
+		MaintainedReferenceGraph mg( d );
+		const NodeId p2 = DocFindByName( mg.Doc(), "piecewise_linear_function2d/p2" );
+		mg.SetParamValue( p2, "cp", 0, "0.0 f2" );   // re-point the cp's Function1D f1 -> f2
+		Check( mg.LastEditRebuilt(), "maintained-cp: a plf2d cp edit REBUILDS the graph (cp carries a traced Function1D ref)" );
+		const NodeId f2 = DocFindByName( mg.Doc(), "piecewise_linear_function/f2" );
+		bool f2HasP2 = false; for( NodeId n : mg.EditClosure( f2 ) ) if( n == p2 ) f2HasP2 = true;
+		Check( f2HasP2, "maintained-cp: after the edit, closure(f2) includes the plf2d (new cp ref traced)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

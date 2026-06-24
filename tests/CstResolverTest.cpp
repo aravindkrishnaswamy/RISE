@@ -261,7 +261,7 @@ int main()
 		Check( !DiagsMention( diags, "noise" ), "function2d-ref: a {Function} reference to a dual-registered painter is NOT a false dangling (P1.4 sibling)" );
 		const NodeId noiseId = DocFindByName( doc, "expression_function2d/noise" );
 		Check( noiseId != 0 && DocEditClosure( noiseId, g ).size() == 2, "function2d-ref: closure(noise) = {noise, disp} = 2 (the dual-register edge is traced)" );
-		Check( !DiagsMention( diags, "Function1D vs Function2D" ), "function2d-ref control: a single Function producer is NOT flagged as a 1D/2D conflation" );
+		Check( !DiagsMention( diags, "dimension-precisely" ), "function2d-ref control: a single Function producer is NOT flagged as a 1D/2D conflation" );
 	}
 
 	//----------------------------------------------------------------------
@@ -276,7 +276,7 @@ int main()
 			"piecewise_linear_function2d\n{\nname fx\n}\n" );
 		std::vector<std::string> diags;
 		BuildReferenceGraph( doc, &diags );
-		Check( DiagsMention( diags, "Function1D vs Function2D" ), "func-conflation: same-named 1D + 2D function FLAGGED by the resolver (review #3)" );
+		Check( DiagsMention( diags, "dimension-precisely" ), "func-conflation: same-named 1D + 2D function FLAGGED by the resolver (review #3)" );
 	}
 
 	//----------------------------------------------------------------------
@@ -308,6 +308,45 @@ int main()
 		std::vector<std::string> diags;
 		BuildReferenceGraph( doc, &diags );
 		Check( DiagsMention( diags, "share this name" ), "plf1d-painter-conflation: same-named plf1d + colour painter FLAGGED (review #3a)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [func-precise] (review #3, 2nd pass) a function1d consumer binds the same-named
+	// Function1D, NOT the Function2D -- closure follows the dimension-precise edge.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function\n{\nname x\ncp 0 0\ncp 1 1\n}\n"
+			"piecewise_linear_function2d\n{\nname x\n}\n"
+			"scalar_painter\n{\nname sp\nfunction1d x\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId f1 = DocFindByName( doc, "piecewise_linear_function/x" );
+		const NodeId f2 = DocFindByName( doc, "piecewise_linear_function2d/x" );
+		const NodeId sp = DocFindByName( doc, "scalar_painter/sp" );
+		std::vector<NodeId> c1 = DocEditClosure( f1, g );
+		std::vector<NodeId> c2 = DocEditClosure( f2, g );
+		bool f1HasSp = false; for( NodeId n : c1 ) if( n == sp ) f1HasSp = true;
+		bool f2HasSp = false; for( NodeId n : c2 ) if( n == sp ) f2HasSp = true;
+		Check( f1 && f2 && sp && f1HasSp, "func-precise: closure(Function1D x) INCLUDES the scalar_painter.function1d consumer" );
+		Check( !f2HasSp, "func-precise: closure(Function2D x) does NOT include the function1d consumer (no misbind)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [cp-closure] (review #2, 2nd pass) a piecewise_linear_function2d cp row embeds a
+	// Function1D name; editing that Function1D must include the Function2D in the closure.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function\n{\nname f1\ncp 0 0\ncp 1 1\n}\n"
+			"piecewise_linear_function2d\n{\nname f2\ncp 0.0 f1\ncp 1.0 f1\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId f1 = DocFindByName( doc, "piecewise_linear_function/f1" );
+		const NodeId f2 = DocFindByName( doc, "piecewise_linear_function2d/f2" );
+		std::vector<NodeId> c1 = DocEditClosure( f1, g );
+		bool hasF2 = false; for( NodeId n : c1 ) if( n == f2 ) hasF2 = true;
+		Check( f1 && f2 && hasF2, "cp-closure: closure(Function1D f1) INCLUDES the piecewise_linear_function2d that references it via cp (review #2)" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

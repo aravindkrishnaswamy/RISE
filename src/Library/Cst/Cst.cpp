@@ -1272,6 +1272,18 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			if( pd.kind != ValueKind::Reference || pd.referenceCategories.empty() ) continue;   // tuple refs do not occur in the incremental's allowed categories
 			std::string val;
 			if( !ParamValue( p.node.get(), pd.name.c_str(), val ) ) continue;     // param absent
+			// An OBJECT reference slot (geometry/material/modifier/shader/radiance_map/
+			// interior_medium) is ALWAYS a named reference, never an inline numeric -- so a
+			// numeric there is invalid AND dangerous: interior_medium is applied by a SEPARATE
+			// SetObjectInteriorMedium call AFTER AddObject has already re-pointed (and possibly
+			// MOVED) the object, so a numeric would slip past the literal-skip below, half-mutate
+			// the object, then fail -- leaving a stale object + un-invalidated TLAS the
+			// entity-only rollback cannot undo (review #1, 2nd pass).  Refuse it here, BEFORE any
+			// mutation, so "return 0 == nothing changed" stays true.
+			if( p.cat == ChunkCategory::Object && LooksNumeric( val ) ) {
+				diags.push_back( p.node->role + " '" + p.name + "'." + pd.name + " -> '" + val + "': numeric in an object reference slot is invalid (would half-apply via the post-AddObject SetObjectInteriorMedium step); refusing -- nothing mutated (review #1)" );
+				return 0;
+			}
 			if( val.empty() || val == "none" || LooksNumeric( val ) ) continue;   // explicit-none / numeric literal -> not a reference
 			bool resolves = false;
 			// SLOT-PRECISE resolution for the radiance_map {Painter} slot: AddObject binds it
@@ -1493,6 +1505,27 @@ static bool LooksNumeric( const std::string& s )
 	return any;                                        // true iff at least one token and every token is numeric
 }
 
+// Synthetic `defs` sub-namespace keys for the Function namespace (review #3, 2nd pass):
+// ChunkCategory::Function lumps Function1D + Function2D producers, but the engine resolves
+// `function1d` via GetFunction1Ds and `function2d`/`heightfield_function` via GetFunction2Ds
+// (AsciiSceneParser.cpp ~1386/1397).  Seeding producers + resolving consumers through these
+// DIMENSION-PRECISE keys (well above any ChunkCategory enum value, so no collision in the
+// (int,name) `defs` map) makes a same-named 1D/2D pair resolve to the RIGHT one in BOTH
+// DocEditClosure and DocRename -- not the (Function,name) first-wins edge.  The coarse
+// (Function,name) seed is KEPT too, for the {Painter,Function} slots (ior/film_ior/transfer_*)
+// which are a painter-vs-function axis, not a 1D-vs-2D one.
+static const int kFunc1DSubCat = 100001;
+static const int kFunc2DSubCat = 100002;
+
+//! The dimension-precise Function sub-namespace a reference PARAM resolves into, or 0 for a
+//! coarse {Function} consumer.  Mirrors the engine's typed lookup by param name.
+static int FunctionSubNamespace( const std::string& paramName )
+{
+	if( paramName == "function1d" ) return kFunc1DSubCat;
+	if( paramName == "function2d" || paramName == "heightfield_function" ) return kFunc2DSubCat;
+	return 0;
+}
+
 ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string>* diagnostics )
 {
 	std::vector<std::string> local;
@@ -1551,8 +1584,20 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 		// resolution is the deferred typed-resolver refinement.
 		if( cat == ChunkCategory::Function ) {
 			if( defs.find( key ) != defs.end() || funcChunkNames.count( name ) )
-				diags.push_back( "function '" + name + "': another Function (1D/2D) producer or a dual-registered painter shares this name; reference edges to it are imprecise -- the (category,name) graph cannot disambiguate Function1D vs Function2D (review #3)" );
+				diags.push_back( "function '" + name + "': another Function (1D/2D) producer or a dual-registered painter shares this name; reference edges to it are imprecise in the COARSE {Function} namespace -- function1d/function2d consumers resolve dimension-precisely (review #3, 2nd pass), but a {Painter,Function} slot (ior/transfer_*) still first-wins (review #3)" );
 			funcChunkNames[ name ] = true;
+			// DIMENSION-PRECISE seed (review #3, 2nd pass): a piecewise_linear_function is a
+			// Function1D (Job::AddPiecewiseLinearFunction -> GetFunction1Ds); a
+			// piecewise_linear_function2d is a Function2D.  Seed the sub-namespace key so a
+			// `function1d`/`function2d` consumer binds the RIGHT one even when a same-named 1D+2D
+			// pair exists -- the coarse (Function,name) key below cannot (first-wins).
+			if( c->role == "piecewise_linear_function" ) {
+				const std::pair<int,std::string> sk( kFunc1DSubCat, name );
+				if( defs.find( sk ) == defs.end() ) defs[sk] = DocNodeIdAt( doc, (int)i );
+			} else if( c->role == "piecewise_linear_function2d" ) {
+				const std::pair<int,std::string> sk( kFunc2DSubCat, name );
+				if( defs.find( sk ) == defs.end() ) defs[sk] = DocNodeIdAt( doc, (int)i );
+			}
 			// A piecewise_linear_function ALSO dual-registers into the COLOUR painter manager
 			// (Job::AddPiecewiseLinearFunction -> Function1DSpectralPainter), so it is
 			// referenceable from a colour slot (e.g. lambertian_material.reflectance <plf1d>).
@@ -1585,6 +1630,10 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 				diags.push_back( "function '" + name + "': a Function chunk and a dual-registered painter share this name; the {Function} reference edge is imprecise (review #3)" );
 			const std::pair<int,std::string> fkey( (int)ChunkCategory::Function, name );
 			if( defs.find( fkey ) == defs.end() ) defs[fkey] = DocNodeIdAt( doc, (int)i );
+			// A colour painter dual-registers as a Function2D, so seed the 2D sub-namespace too
+			// (review #3, 2nd pass) -- so a `function2d` consumer binds it dimension-precisely.
+			const std::pair<int,std::string> sk( kFunc2DSubCat, name );
+			if( defs.find( sk ) == defs.end() ) defs[sk] = DocNodeIdAt( doc, (int)i );
 		}
 	}
 
@@ -1616,6 +1665,31 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 			const ParameterDescriptor* pd = 0;
 			for( const auto& p : desc.parameters ) if( p.name == role ) { pd = &p; break; }
 			if( !pd ) continue;
+			// piecewise_linear_function2d.cp embeds a Function1D NAME as the 2nd whitespace token of
+			// each repeatable `cp` row ("<x> <function1d_name>"; consumed by AddPiecewiseLinearFunction2D
+			// via GetFunction1Ds).  The descriptor types `cp` as an opaque String, so the generic
+			// reference pass below would SKIP it -- trace it explicitly here (against the dimension-
+			// precise 1D sub-namespace) so DocEditClosure includes this Function2D consumer when its
+			// Function1D dependency is edited (review #2, 2nd pass).  Rename still REFUSES a doc with
+			// this chunk (the name is a String token, not a rewritable Reference -- the cp guard);
+			// fold the name into the stamp so a maintained graph notices an edit to it.
+			if( c->role == "piecewise_linear_function2d" && role == "cp" ) {
+				const std::vector<std::string> toks = SplitWs( ParamNodeValue( kid.get() ) );
+				if( toks.size() >= 2 ) {
+					const std::string& fname = toks[1];
+					mix( fname );
+					if( !fname.empty() && fname != "none" && !LooksNumeric( fname ) ) {
+						std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( kFunc1DSubCat, fname ) );
+						if( d != defs.end() && d->second != kRuntimeDefaultTarget && d->second != 0 ) {
+							const NodeId srcParam = DocParamId( doc, chunkId, role, thisOcc );
+							mix( std::to_string( (long long)srcParam ) );
+							graph.edges.push_back( ReferenceUse{ srcParam, d->second } );
+							if( chunkId != d->second ) graph.dependents[ d->second ].push_back( chunkId );
+						}
+					}
+				}
+				continue;   // handled this cp row; do not fall through to the generic skip
+			}
 			std::vector<std::string> refVals;
 			if( pd->kind == ValueKind::Reference ) {
 				refVals.push_back( ParamNodeValue( kid.get() ) );
@@ -1630,9 +1704,22 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 				mix( val );                                        // stamp: every reference value
 				if( val.empty() || val == "none" ) continue;       // explicit-none / empty: not an edge
 				NodeId target = 0;
-				for( ChunkCategory rc : pd->referenceCategories ) {
-					std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( (int)rc, val ) );
-					if( d != defs.end() ) { target = d->second; break; }
+				// DIMENSION-PRECISE resolution for function1d/function2d/heightfield_function (review #3,
+				// 2nd pass): resolve through the 1D/2D sub-namespace key so a same-named Function1D+Function2D
+				// pair binds the RIGHT one (matching the engine's GetFunction1Ds vs GetFunction2Ds), NOT the
+				// (Function,name) first-wins edge.  No fallback to the coarse key: a function1d naming only a
+				// Function2D is genuinely dangling (the engine would not find it either).  Coarse
+				// {Painter,Function} slots (ior/film_ior/transfer_*) keep the referenceCategories loop --
+				// their ambiguity is painter-vs-function, not 1D-vs-2D.
+				const int fsub = FunctionSubNamespace( role );
+				if( fsub != 0 ) {
+					std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( fsub, val ) );
+					if( d != defs.end() ) target = d->second;
+				} else {
+					for( ChunkCategory rc : pd->referenceCategories ) {
+						std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( (int)rc, val ) );
+						if( d != defs.end() ) { target = d->second; break; }
+					}
 				}
 				if( target == kRuntimeDefaultTarget ) continue;    // resolves to a runtime default: not an edge, not dangling
 				if( target == 0 ) {                                // unresolved
@@ -1892,8 +1979,9 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 	//     a piecewise_linear_function referenceable as a colour {Painter} (review #3a).
 	//   * a timeline's ValueKind::String element/animation ref -> refused (animation guard).
 	//   * an override_object's String target -> refused (override guard, P1.3).
-	//   * a piecewise_linear_function2d's `cp`-embedded Function1D names (ValueKind::String,
-	//     untraced) -> refused (the cp guard, review #2).
+	//   * a piecewise_linear_function2d's `cp`-embedded Function1D names: TRACED for closure
+	//     (review #2, 2nd pass) but a ValueKind::String token, not a rewritable Reference, so the
+	//     rename still refuses (the cp guard, review #2).
 	//   * a name shared across a sub-namespace the (category,name) graph cannot disambiguate
 	//     (colour/scalar painter, Function1D/2D, plf1d/colour-painter) -> refused (the
 	//     conflation guards, P1.4 / #3 / #3a).
@@ -1955,6 +2043,10 @@ static bool IsGraphAffectingParam( const Document& doc, NodeId chunkId, const st
 	if( paramRole == "name" ) return true;
 	NodeRef c = DocResolveNodeId( doc, chunkId );
 	if( !c || c->kind != NodeKind::Chunk ) return true;   // unknown -> conservatively rebuild
+	// piecewise_linear_function2d.cp embeds a TRACED Function1D reference (review #2, 2nd pass),
+	// but it is a ValueKind::String param -- the descriptor scan below would call it graph-neutral
+	// and the maintained graph would reuse a stale graph on a cp edit.  Treat it as affecting.
+	if( c->role == "piecewise_linear_function2d" && paramRole == "cp" ) return true;
 	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
 	std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( c->role );
 	if( it == registry.end() ) return true;
