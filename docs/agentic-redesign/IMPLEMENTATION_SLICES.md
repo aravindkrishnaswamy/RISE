@@ -436,7 +436,8 @@ until it is green:
    at N=4096, the skip proven by the generation counter), and **slice 5 (the maintained-graph closure**
    — `DocEditClosure(id, graph)`'s BFS is O(closure·log N), ~0.2 µs flat in isolation, and the
    `MaintainedReferenceGraph` holder removes the dominant non-spatial closure-COMPUTE cost END-TO-END
-   by deciding reuse from the EDIT in O(1), NOT from the stamp (~7.6 µs end-to-end vs ~19 ms
+   by deciding reuse from the EDIT in O(log N) (a NodeId-index lookup + a descriptor scan -- not
+   O(1)), NOT from the stamp (~7.6 µs end-to-end vs ~19 ms
    from-scratch at N=4096; a stamp-gated reuse can't, since computing the stamp is itself O(N)); the static graph guarded
    against drift by `CstResolverTest` [consistency]/[drift] -- which cross-verify every
    object->material/geometry edge against the derive's actual binding by pointer (a drift

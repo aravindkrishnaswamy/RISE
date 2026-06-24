@@ -129,7 +129,9 @@ int main()
 	}
 
 	// [piecewise_linear_function2d guard] (review #2) rename refused when the doc has a
-	// piecewise_linear_function2d (its `cp` entries embed untraced Function1D references).
+	// piecewise_linear_function2d: its `cp` entries embed Function1D references that ARE traced
+	// for closure (review #2, 2nd pass), but they are opaque String tokens, not rewritable
+	// Reference params, so the rename cannot substitute the new name -> refuse.
 	{
 		Document d = ParseToCst(
 			"RISE ASCII SCENE 6\n"
@@ -139,7 +141,7 @@ int main()
 		const NodeId g = DocFindByName( d, "sphere_geometry/g" );
 		std::vector<std::string> diags;
 		Document d2 = DocRename( d, g, "g2", &diags );
-		Check( !diags.empty() && SerializeCst( d2 ) == before, "rename REFUSED when a piecewise_linear_function2d is present (untraced cp Function1D refs, #2)" );
+		Check( !diags.empty() && SerializeCst( d2 ) == before, "rename REFUSED when a piecewise_linear_function2d is present (cp Function1D refs traced for closure but String tokens the rename can't rewrite, #2)" );
 	}
 
 	// [function 1D/2D conflation] (review #3) rename refused for a Function chunk whose name
