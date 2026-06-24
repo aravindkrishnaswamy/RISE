@@ -1559,8 +1559,10 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 			// Seed (Painter, name) too -- the REVERSE of the colour-painter -> Function2D
 			// dual-register below -- so that reference RESOLVES (matching the derive's colour
 			// pPntManager->GetItem) instead of being a false dangling + a missed closure/rename
-			// edge (review #3a).  It is the ONE Job::Add* that registers cross-category, so
-			// only this 1D function needs it; piecewise_linear_function2d does not.  A same-name
+			// edge (review #3a).  It is the one Job::Add* for a FUNCTION-category chunk that
+			// ALSO registers into the colour-painter manager (the reverse of the ~40 colour
+			// painters that register Painter->Function2D, seeded below), so only this 1D
+			// function needs it; piecewise_linear_function2d does not.  A same-name
 			// colour painter makes (Painter,name) ambiguous (flag); DocRename's #3 guard already
 			// refuses such a rename (its funcProducers count includes colour painters).
 			if( c->role == "piecewise_linear_function" ) {

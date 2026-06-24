@@ -171,6 +171,24 @@ int main()
 		Check( diags.empty() && Has( out, "reflectance fx2\n" ) && !Has( out, "reflectance fx\n" ), "plf1d colour rename: reflectance referrer REWRITTEN fx->fx2, none dangling (review #3a)" );
 	}
 
+	// [plf1d+colour-painter conflation] (review #3a) when a plf1d and a colour painter share a
+	// name, (Painter,name) is ambiguous -> renaming EITHER is refused (the #3 funcProducers
+	// guard counts both, since a colour painter is itself a Function-namespace producer).
+	{
+		Document d = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function\n{\nname x\ncp 0 0\ncp 1 1\n}\n"
+			"uniformcolor_painter\n{\nname x\ncolor 0.5 0.5 0.5\n}\n" );
+		const std::string before = SerializeCst( d );
+		const NodeId plf = DocFindByName( d, "piecewise_linear_function/x" );
+		const NodeId pnt = DocFindByName( d, "uniformcolor_painter/x" );
+		std::vector<std::string> dp, dc;
+		Document dpr = DocRename( d, plf, "y", &dp );
+		Document dcr = DocRename( d, pnt, "y", &dc );
+		Check( !dp.empty() && SerializeCst( dpr ) == before, "plf1d+painter conflation: renaming the plf1d REFUSED (review #3a)" );
+		Check( !dc.empty() && SerializeCst( dcr ) == before, "plf1d+painter conflation: renaming the colour painter REFUSED (review #3a)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

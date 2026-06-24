@@ -296,6 +296,20 @@ int main()
 		Check( !DiagsMention( diags, "reflectance -> 'fx'" ) && !DiagsMention( diags, "unresolved" ), "plf1d-colour: reflectance->plf1d is NOT a false dangling" );
 	}
 
+	//----------------------------------------------------------------------
+	// [plf1d-painter-conflation] (review #3a) a plf1d and a colour painter sharing a name
+	// both seed (Painter, name); the (category,name) graph cannot disambiguate -> FLAG it.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function\n{\nname x\ncp 0 0\ncp 1 1\n}\n"
+			"uniformcolor_painter\n{\nname x\ncolor 0.5 0.5 0.5\n}\n" );
+		std::vector<std::string> diags;
+		BuildReferenceGraph( doc, &diags );
+		Check( DiagsMention( diags, "share this name" ), "plf1d-painter-conflation: same-named plf1d + colour painter FLAGGED (review #3a)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
