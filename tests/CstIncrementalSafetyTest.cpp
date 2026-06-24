@@ -237,7 +237,7 @@ int main()
 		int applied = DeriveToJobIncremental( docD, *j, closure, &di );
 		const bool stillGlass = j->GetMaterials() && j->GetMaterials()->GetItem( "glass" ) != 0;
 		Check( hadGlass, "dangling-ior: precondition -- glass material derived" );
-		Check( applied == 0 && !di.empty(), "dangling-ior: dangling {Function} ior ref REFUSED (preflight checks the Function managers)" );
+		Check( applied == 0 && !di.empty(), "dangling-ior: dangling ior ref REFUSED (preflight checks the Painter managers -- ior is now {Painter})" );
 		Check( stillGlass && DumpJob( *j ) == before, "dangling-ior: refused ATOMICALLY -- the material is NOT dropped (review P1.7 Function-gap)" );
 		j->release();
 	}

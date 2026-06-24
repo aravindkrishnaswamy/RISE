@@ -66,7 +66,7 @@ A descriptor carries:
 - a vector of `ParameterDescriptor`, each with: `name`, `kind` (`ValueKind`),
   `required`, `repeatable`, `enumValues` (for `Enum`), `referenceCategories`
   (for `Reference` — *a param may accept refs from several categories*, e.g.
-  `ior` accepts Painter **or** Function), `tupleKinds` (whitespace-separated
+  `transfer_red` accepts Painter **or** Function), `tupleKinds` (whitespace-separated
   typed tuple, e.g. `shaderop foo 0 5 +`), `presets` (`{label, value}`
   quick-picks), `description`, `defaultValueHint`, `unitLabel` ("mm", "°",
   "scene units").
@@ -487,8 +487,7 @@ construction). The platform `render()` switches on `WidgetKind` only.
 presets dropdown" (`MaterialIntrospection.cpp` comment). The facet upgrades it
 to a real `RefPicker`: the candidate set is computed *from the CST itself* —
 all `ViewNode`s whose `category` is in the param's `referenceCategories`. So
-`ggx_material.ior` (accepts `Painter|Function`) offers every painter and
-function chunk currently in the document, by name-path, plus "create new …"
+`ggx_material.ior` (accepts `Painter`) offers every painter chunk currently in the document, by name-path, plus "create new …"
 (an `AddChunk` intent) and "none". Selecting an entry emits `SetParam` with
 that name. Because candidacy is derived from the live CST, the picker is
 **always correct and adaptive** — a painter the agent just added appears

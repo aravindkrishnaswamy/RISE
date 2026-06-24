@@ -1548,8 +1548,8 @@ static bool LooksNumeric( const std::string& s )
 // DIMENSION-PRECISE keys (well above any ChunkCategory enum value, so no collision in the
 // (int,name) `defs` map) makes a same-named 1D/2D pair resolve to the RIGHT one in BOTH
 // DocEditClosure and DocRename -- not the (Function,name) first-wins edge.  The coarse
-// (Function,name) seed is KEPT too, for the coarse {Painter,Function} slots (ior/film_ior)
-// which are a painter-vs-function axis, not a 1D-vs-2D one.
+// (Function,name) seed is KEPT too, for the conflation diagnostic + the DocRename guard
+// (a name with >1 Function producer, incl. a dual-registered colour painter).  Workstream #2 dropped ior/film_ior's Function category, so no CONSUMER reaches the coarse key.
 static const int kFunc1DSubCat = 100001;
 static const int kFunc2DSubCat = 100002;
 
@@ -1649,12 +1649,12 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 		// (GetFunction1Ds/GetFunction2Ds), and the derive does TYPED lookups.  The
 		// dimension-precise consumers -- function1d (1D), function2d/heightfield_function (2D),
 		// transfer_* (1D) -- now resolve through the 1D/2D sub-namespace keys seeded just below,
-		// so a same-named 1D+2D pair binds the RIGHT one.  What REMAINS coarse (first-wins) is
-		// the {Painter,Function} slot set whose name is NOT one of those (ior/film_ior) -- flag
-		// it so consumers know that residual is imprecise; DocRename refuses the rename outright.
+		// so a same-named 1D+2D pair binds the RIGHT one.  No consumer reaches the coarse path now (#2 dropped ior/film_ior's Function); what stays ambiguous is
+		// the RENAME rewrite for a conflated name -- flag
+		// it so the rewrite is refused; DocRename refuses the rename outright.
 		if( cat == ChunkCategory::Function ) {
 			if( defs.find( key ) != defs.end() || funcChunkNames.count( name ) )
-				diags.push_back( "function '" + name + "': another Function (1D/2D) producer or a dual-registered painter shares this name; reference edges to it are imprecise in the COARSE {Function} namespace -- function1d/function2d/heightfield_function/transfer_* consumers resolve dimension-precisely (review #3, 2nd pass), but a {Painter,Function} slot (ior/film_ior) still first-wins (review #3)" );
+				diags.push_back( "function '" + name + "': another Function (1D/2D) producer or a dual-registered painter shares this name; reference edges to it are imprecise in the COARSE {Function} namespace -- function1d/function2d/heightfield_function/transfer_* consumers resolve dimension-precisely (review #3, 2nd pass), but the COARSE rename rewrite cannot disambiguate them, so DocRename refuses renaming such a name (review #3)" );
 			funcChunkNames[ name ] = true;
 			// DIMENSION-PRECISE seed (review #3, 2nd pass): a piecewise_linear_function is a
 			// Function1D (Job::AddPiecewiseLinearFunction -> GetFunction1Ds); a
@@ -1991,8 +1991,8 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 	// colour painter dual-registers as Function2D -- so a name with >1 Function-namespace
 	// producer is ambiguous.  CLOSURE resolves the function1d/function2d consumers
 	// dimension-precisely (review #3, 2nd pass), but the rename REWRITE path is coarse: it
-	// cannot rewrite a value shared across the 1D/2D managers without mis-targeting a coarse
-	// {Painter,Function} (ior/film_ior) referrer, so renaming such a chunk/painter is refused.
+	// cannot rewrite a value shared across the 1D/2D managers without mis-targeting a
+	// 1D/2D (or dual-registered colour-painter) referrer, so renaming such a chunk/painter is refused.
 	if( targetCat == (int)ChunkCategory::Function ||
 	    ( targetCat == (int)ChunkCategory::Painter && target->role != "scalar_painter" ) ) {
 		int funcProducers = 0;
