@@ -88,6 +88,46 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
+	// [drift] EVERY object->material/geometry edge is cross-verified against the
+	// derive's ACTUAL binding (the drift guard, slice 5): if BuildReferenceGraph
+	// resolved a name differently than the derive does, this fails. Painter / other
+	// edges are existence-checked only (a material does not expose its painters for a
+	// pointer cross-check) -- so this is a drift DETECTOR on the tested scenes, not an
+	// exhaustive structural every-edge proof.
+	//----------------------------------------------------------------------
+	{
+		const std::string s2 =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m1\nreflectance p\n}\n"
+			"lambertian_material\n{\nname m2\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g1\nradius 1\n}\n"
+			"sphere_geometry\n{\nname g2\nradius 2\n}\n"
+			"standard_object\n{\nname oa\ngeometry g1\nmaterial m1\n}\n"
+			"standard_object\n{\nname ob\ngeometry g2\nmaterial m2\n}\n";
+		Document doc = ParseToCst( s2 );
+		ReferenceGraph g = BuildReferenceGraph( doc );
+		Job* j = new Job(); std::vector<std::string> dd; DeriveToJob( doc, *j, &dd );
+		struct Ob { const char* o; const char* m; const char* gm; };
+		const Ob obs[] = { { "oa", "m1", "g1" }, { "ob", "m2", "g2" } };
+		bool allMatch = true;
+		for( const Ob& ob : obs ) {
+			const NodeId oid = DocFindByName( doc, ( std::string( "standard_object/" ) + ob.o ).c_str() );
+			const NodeId mid = DocFindByName( doc, ( std::string( "lambertian_material/" ) + ob.m ).c_str() );
+			const NodeId gid = DocFindByName( doc, ( std::string( "sphere_geometry/" ) + ob.gm ).c_str() );
+			if( !HasEdge( g, DocParamId( doc, oid, "material", 0 ), mid ) ) allMatch = false;
+			if( !HasEdge( g, DocParamId( doc, oid, "geometry", 0 ), gid ) ) allMatch = false;
+			IObject* o = j->GetObjects() ? j->GetObjects()->GetItem( ob.o ) : 0;
+			const IMaterial* mp = j->GetMaterials()  ? j->GetMaterials()->GetItem( ob.m )  : 0;
+			const IGeometry* gp = j->GetGeometries() ? j->GetGeometries()->GetItem( ob.gm ) : 0;
+			if( !( o && mp && o->GetMaterial() == mp ) ) allMatch = false;
+			if( !( o && gp && o->GetGeometry() == gp ) ) allMatch = false;
+		}
+		Check( allMatch, "drift: EVERY object->material/geometry graph edge matches the derive's actual binding (by pointer), across multiple objects" );
+		j->release();
+	}
+
+	//----------------------------------------------------------------------
 	// [stamp] conservative fingerprint: every graph-changing edit moves it (the
 	// load-bearing direction); it may also move on a graph-neutral edit (safe).
 	//----------------------------------------------------------------------

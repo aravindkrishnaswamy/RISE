@@ -216,8 +216,13 @@ the drift guard LANDED, with the structural one-resolution-path the remaining D3
    walks it in O(closure·log N) over a held, stamp-validated graph (CstEditCostTest:
    0.2 µs flat vs the from-scratch O(N log N) re-trace — the dominant non-spatial cost,
    removed). The static graph is guarded against drifting from the derive by
-   `CstResolverTest` [consistency] (every graph edge ↔ the derive's actual binding) +
-   `CstDeriveDifferentialTest`. **Remaining D35 step:** route the derive's OWN resolution
+   `CstResolverTest` [consistency]/[drift] — which cross-verify every object→material and
+   object→geometry edge against the derive's ACTUAL binding (by pointer), across multiple
+   objects; painter/other edges are existence-checked only (a material does not expose its
+   painters for a pointer cross-check). So this is a drift DETECTOR on the tested scenes,
+   NOT an exhaustive structural every-edge proof. (`CstDeriveDifferentialTest` separately
+   holds CST-derive ≡ legacy-derive *Job* equivalence — a related but distinct guard.)
+   **Remaining D35 step:** route the derive's OWN resolution
    through the recorded graph (record each edge as `DeriveToJob` resolves it) so the two
    cannot drift *even in principle* — a holder/parser-instrumentation integration beyond
    this kernel slice. [P1.8: namespace + ref-or-literal + drift-detection done; structural
