@@ -4534,20 +4534,7 @@ namespace RISE
 			return false;
 		}
 
-		CSGObject* pObj = 0;
-
-		switch( op ) {
-		default:
-		case 0:
-			pObj = new CSGObject( CSG_UNION );
-			break;
-		case 1:
-			pObj = new CSGObject( CSG_INTERSECTION );
-			break;
-		case 2:
-			pObj = new CSGObject( CSG_SUBTRACTION );
-			break;
-		}
+		CSGObject* pObj = new CSGObject( CsgOpFromChar( op ) );
 
 		pObj->AssignObjects( objA, objB );
 		(*ppi) = pObj;

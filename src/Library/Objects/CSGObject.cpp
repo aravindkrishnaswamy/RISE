@@ -192,6 +192,11 @@ bool CSGObject::AssignObjects( IObjectPriv* objA, IObjectPriv* objB )
 	return true;
 }
 
+void CSGObject::SetOperation( const CSG_OP& op_ )
+{
+	op = op_;
+}
+
 void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool, const bool, const bool ) const
 {
 	// The hitting of front and back faces are IGNORED for CSG objects!

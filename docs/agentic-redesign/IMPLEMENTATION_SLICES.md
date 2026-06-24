@@ -445,9 +445,7 @@ until it is green:
    abort-on-failed-drop + prior-name rename (P1.4/P1.6), full-namespace collision (P1.7), and the honest
    O(closure·log N)/O(N·log N) bounds (P1.9, R13) are all in. Still open: the structural D35
    one-resolution-path (record each edge as the derive resolves it so the static graph + the apply
-   resolution cannot drift *even in principle*), the slice-3 CSG-operand in-place handling follow-up (currently refused → full derive; optional-slot removal LANDED in workstream #3), and object-rollback (needed only when
-   CSG / other producing-objects enter the incremental scope -- the entities-first apply makes
-   entity-only rollback sufficient for standard_object today; workstream #3a).
+   resolution cannot drift *even in principle*), the slice-3 follow-ups (optional-slot removal AND CSG-operand re-point) BOTH LANDED in workstream #3 -- CSG re-point needed no object-rollback (the slot-precise preflight + AddCSGObject's resolve-first make a CSG re-point unable to fail, so objects-last + entity-only rollback stays sufficient).
 
 That is the gate that turns "the model and cost-model hold in prototypes" into "the redesign's real
 CST path is O(closure·log N) for non-spatial edits, with spatial cost reported honestly." **Items 1-7
@@ -460,4 +458,4 @@ applies an incremental edit by recreating only the non-object entities while RE-
 (so a non-spatial edit skips the TLAS; apply O(closure·log N), full derive O(N·log N)), and finds an
 edit's closure in O(closure·log N) over a held maintained graph. The
 remaining work is the structural D35 one-resolution-path (so the static graph cannot drift from the apply
-resolution even in principle), the slice-3 CSG-operand follow-up, and object-rollback (both needed only when CSG enters scope). (expr / RepeatGroup / instance_array remain OUT until the gate is green.)
+resolution even in principle), all slice-3 follow-ups (landed in workstream #3; CSG re-point needed no object-rollback). (expr / RepeatGroup / instance_array remain OUT until the gate is green.)

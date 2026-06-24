@@ -20,8 +20,10 @@
 //                  interior_medium -> "none") is now APPLIED in place: a re-point cannot
 //                  clear a slot the chunk omits, so the apply CLEARS it explicitly
 //                  (workstream #3), matching a full derive of the edited doc.
-//    [refusals]    a non-standard_object (csg_object) still falls back to a full derive
-//                  (D51: never a silent partial / stale binding).
+//    [csg]         a csg_object re-points in place too (AssignObjects + SetOperation + slots);
+//                  its operands are themselves objects re-pointed in place.
+//    [refusals]    an Object chunk that is NEITHER standard_object NOR csg_object falls back
+//                  to a full derive (D51: never a silent partial / stale binding).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -223,31 +225,71 @@ int main()
 		jf->release(); j->release();
 	}
 
-	// ---- [csg refused] a csg_object in the closure is not re-pointed in place (its
-	//      operands are themselves objects) -> REFUSED, fall back to a full derive.
-	{
-		const std::string csg =
-			"RISE ASCII SCENE 6\n"
-			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
-			"lambertian_material\n{\nname m\nreflectance p\n}\n"
-			"sphere_geometry\n{\nname g\nradius 1\n}\n"
-			"standard_object\n{\nname o1\ngeometry g\nmaterial m\nposition -1 0 0\n}\n"
-			"standard_object\n{\nname o2\ngeometry g\nmaterial m\nposition 1 0 0\n}\n"
-			"csg_object\n{\nname c\nobja o1\nobjb o2\noperation union\nmaterial m\n}\n";
-		Document d0 = ParseToCst( csg );
+	// ---- [csg re-point] csg_object is now re-pointed IN PLACE (workstream #3): AddCSGObject
+	//      repoint re-binds operands (AssignObjects -- un-hides old, hides new) + op (SetOperation)
+	//      + slots.  The four cases below each match a FULL derive of the edited doc.
+	const std::string csgScene =
+		"RISE ASCII SCENE 6\n"
+		"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+		"uniformcolor_painter\n{\nname p2\ncolor 0.1 0.2 0.3\n}\n"
+		"lambertian_material\n{\nname m\nreflectance p\n}\n"
+		"lambertian_material\n{\nname m2\nreflectance p2\n}\n"
+		"sphere_geometry\n{\nname g\nradius 1\n}\n"
+		"standard_object\n{\nname o1\ngeometry g\nmaterial m\nposition -1 0 0\n}\n"
+		"standard_object\n{\nname o2\ngeometry g\nmaterial m\nposition 1 0 0\n}\n"
+		"standard_object\n{\nname o3\ngeometry g\nmaterial m\nposition 0 2 0\n}\n"
+		"csg_object\n{\nname c\nobja o1\nobjb o2\noperation union\nmaterial m\n}\n";
+	{   // [csg apply] unchanged closure -> applies in place, idempotent (was REFUSED pre-#3)
+		Document d0 = ParseToCst( csgScene );
 		Job* j = new Job(); std::vector<std::string> d; DeriveToJob( d0, *j, &d );
 		const std::string before = DumpJob( *j );
 		const NodeId cId = DocFindByName( d0, "csg_object/c" );
-		if( cId != 0 ) {
-			std::vector<NodeId> closure; closure.push_back( cId );
-			std::vector<std::string> di;
-			const int applied = DeriveToJobIncremental( d0, *j, closure, &di );
-			Check( applied == 0 && !di.empty(), "csg: csg_object closure REFUSED (applied 0 + diagnosed)" );
-			Check( DumpJob( *j ) == before, "csg: refusal mutated NOTHING" );
-		} else {
-			std::printf( "  (skip csg: chunk did not parse in this build)\n" );
-		}
+		std::vector<NodeId> closure; closure.push_back( cId );
+		std::vector<std::string> di; const int applied = DeriveToJobIncremental( d0, *j, closure, &di );
+		Check( cId != 0 && applied >= 1, "csg: csg_object closure now APPLIES in place (re-pointed; workstream #3)" );
+		Check( DumpJob( *j ) == before, "csg: re-applying the unchanged closure is idempotent" );
 		j->release();
+	}
+	{   // [csg op-change] union -> intersection: SetOperation re-sets the op (the CSG bbox changes)
+		Document d0 = ParseToCst( csgScene );
+		Job* j = new Job(); std::vector<std::string> d; DeriveToJob( d0, *j, &d );
+		const NodeId cId = DocFindByName( d0, "csg_object/c" );
+		Document d1 = DocSetParamValue( d0, cId, "operation", 0, "intersection" );
+		std::vector<NodeId> closure; closure.push_back( cId );
+		std::vector<std::string> di; const int applied = DeriveToJobIncremental( d1, *j, closure, &di );
+		Job* jf = new Job(); std::vector<std::string> df; DeriveToJob( d1, *jf, &df );
+		Check( applied >= 1, "csg op-change: applies in place" );
+		Check( DumpJob( *j ) == DumpJob( *jf ), "csg op-change: incremental == full derive (SetOperation + bbox)" );
+		jf->release(); j->release();
+	}
+	{   // [csg operand-change] obja o1 -> o3: AssignObjects un-hides o1, hides o3, re-binds the CSG
+		Document d0 = ParseToCst( csgScene );
+		Job* j = new Job(); std::vector<std::string> d; DeriveToJob( d0, *j, &d );
+		const NodeId cId = DocFindByName( d0, "csg_object/c" );
+		Document d1 = DocSetParamValue( d0, cId, "obja", 0, "o3" );
+		std::vector<NodeId> closure; closure.push_back( cId );
+		std::vector<std::string> di; const int applied = DeriveToJobIncremental( d1, *j, closure, &di );
+		Job* jf = new Job(); std::vector<std::string> df; DeriveToJob( d1, *jf, &df );
+		Check( applied >= 1, "csg operand-change: applies in place" );
+		Check( DumpJob( *j ) == DumpJob( *jf ), "csg operand-change: incremental == full derive (operand re-bind, visibility, bbox)" );
+		IObjectPriv* o1 = j->GetObjects() ? j->GetObjects()->GetItem( "o1" ) : 0;
+		IObjectPriv* o3 = j->GetObjects() ? j->GetObjects()->GetItem( "o3" ) : 0;
+		Check( o1 && o1->IsWorldVisible(), "csg operand-change: old operand o1 UN-hidden (no longer an operand)" );
+		Check( o3 && !o3->IsWorldVisible(), "csg operand-change: new operand o3 hidden (now an operand)" );
+		jf->release(); j->release();
+	}
+	{   // [csg operand-internal] o1.material m -> m2: editing an OPERAND pulls the parent CSG into the
+		//   closure (obja edge); o1 re-pointed in place (address stable), CSG re-binds the same operand
+		Document d0 = ParseToCst( csgScene );
+		Job* j = new Job(); std::vector<std::string> d; DeriveToJob( d0, *j, &d );
+		const NodeId o1Id = DocFindByName( d0, "standard_object/o1" );
+		Document d1 = DocSetParamValue( d0, o1Id, "material", 0, "m2" );
+		std::vector<NodeId> closure = DocEditClosure( d1, o1Id );
+		std::vector<std::string> di; const int applied = DeriveToJobIncremental( d1, *j, closure, &di );
+		Job* jf = new Job(); std::vector<std::string> df; DeriveToJob( d1, *jf, &df );
+		Check( closure.size() >= 2 && applied >= 2, "csg operand-internal: o1 + parent CSG both in the closure and applied" );
+		Check( DumpJob( *j ) == DumpJob( *jf ), "csg operand-internal: incremental == full derive" );
+		jf->release(); j->release();
 	}
 
 	// ---- [matrix->Euler re-point] (review P1.1) re-pointing an object from MATRIX form to

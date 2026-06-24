@@ -28,6 +28,18 @@ namespace RISE
 			CSG_SUBTRACTION		= 2
 		};
 
+		//! Map the wire CSG-op code (0 Union / 1 Intersection / 2 Subtraction; any other -> Union,
+		//! matching RISE_API_CreateCSGObject) to the typed enum.  Shared by the create path and the
+		//! CST incremental re-point (Job::AddCSGObject -> SetOperation) so the two cannot drift.
+		inline CSG_OP CsgOpFromChar( char op )
+		{
+			switch( op ) {
+				case 1:  return CSG_INTERSECTION;
+				case 2:  return CSG_SUBTRACTION;
+				default: return CSG_UNION;
+			}
+		}
+
 		class CSGObject : public virtual Object
 		{
 		protected:
@@ -43,6 +55,11 @@ namespace RISE
 			CSGObject( const CSG_OP& op_ );
 
 			bool AssignObjects( IObjectPriv* objA, IObjectPriv* objB );
+
+			//! Re-set the CSG operation in place (CST incremental re-point).  `op` is a read-only
+			//! runtime field (read by getBoundingBox + IntersectRay), so this is a plain field set --
+			//! no cached/derived state to rebuild.
+			void SetOperation( const CSG_OP& op_ );
 
 			IObjectPriv* CloneFull();
 			IObjectPriv* CloneGeometric();

@@ -15,6 +15,7 @@
 #include "Scene.h"   // P2a: bump light-topology generation on Job-level emitter/env edits
 #include "Managers/LightManager.h"   // H3: self-invalidating light add/remove
 #include "Managers/GenericManager.h" // D35 record-during-derive sinks (media bypass the GenericManager chokepoint, so hook mediaMap here)
+#include "Objects/CSGObject.h"     // workstream #3: CSG re-point (dynamic_cast<CSGObject*> + SetOperation/CsgOpFromChar)
 #include "Geometry/SDFGeometry.h"
 #include <cstring>
 #define _USE_MATH_DEFINES
@@ -5640,60 +5641,68 @@ bool Job::AddCSGObject(
 	const bool bReceivesShadows								///< [in] Does the object receive shadows?
 	)
 {
+	// RESOLVE every reference FIRST, BEFORE any mutation (atomicity, mirror AddObject): a missing
+	// operand / material / modifier / shader / radiance-painter fails the WHOLE call without
+	// creating a new object OR half-re-pointing an existing one.
+	IObjectPriv* pA = pObjectManager->GetItem( objA );
+	if( !pA ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddCSGObject:: Operand A not found `%s`", objA ); return false; }
+	IObjectPriv* pB = pObjectManager->GetItem( objB );
+	if( !pB ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddCSGObject:: Operand B not found `%s`", objB ); return false; }
+	IMaterial* pMat = 0;
+	if( material ) { pMat = pMatManager->GetItem( material ); if( !pMat ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Material not found `%s`", material ); return false; } }
+	IRayIntersectionModifier* pMod = 0;
+	if( modifier ) { pMod = pModManager->GetItem( modifier ); if( !pMod ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Modifier not found `%s`", modifier ); return false; } }
+	IShader* pShaderObj = 0;
+	if( shader ) { pShaderObj = pShaderManager->GetItem( shader ); if( !pShaderObj ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Shader not found `%s`", shader ); return false; } }
+	IPainter* pRadPnt = 0;
+	if( !( radianceMapConfig.name == "none" ) ) { pRadPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() ); if( !pRadPnt ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() ); return false; } }
+
+	// Slice 3 / workstream #3 (stable-object apply): in incremental re-point mode an EXISTING
+	// same-named CSGObject is re-pointed IN PLACE (its address -- which the TLAS stores raw, and
+	// which a parent CSG's operand pointer may hold -- is preserved); AssignObjects re-binds the
+	// operands (un-hiding the old, hiding the new) and SetOperation re-sets the op.  A full derive
+	// has the flag false and no object pre-exists, so this is byte-identical to the create path.
+	// From here on nothing can fail.
 	IObjectPriv* object = 0;
-	RISE_API_CreateCSGObject(
-		&object,
-		pObjectManager->GetItem(objA),
-		pObjectManager->GetItem(objB),
-		op );
+	bool repoint = false;
+	if( m_bIncrementalRepoint ) {
+		object = pObjectManager->GetItem( name );
+		repoint = ( object != 0 && dynamic_cast<CSGObject*>( object ) != 0 );
+	}
+	if( repoint ) {
+		CSGObject* csg = dynamic_cast<CSGObject*>( object );
+		csg->AssignObjects( pA, pB );
+		csg->SetOperation( CsgOpFromChar( op ) );
+	} else {
+		RISE_API_CreateCSGObject( &object, pA, pB, op );
+	}
 
 	object->SetShadowParams( bCastsShadows, bReceivesShadows );
-
-	if( material ) {
-		IMaterial* pMat = pMatManager->GetItem(material);
-		if( pMat ) {
-			object->AssignMaterial( *pMat );
-		}
-	}
-
-	if( modifier ) {
-		IRayIntersectionModifier* pMod = pModManager->GetItem(modifier);
-		if( pMod ) {
-			object->AssignModifier( *pMod );
-		}
-	}
-
-	if( shader ) {
-		IShader* pShader = pShaderManager->GetItem(shader);
-		if( pShader ) {
-			object->AssignShader( *pShader );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Shader not found `%s`", modifier );
-		}
-	}
-
-	if( !( radianceMapConfig.name == "none" ) ) {
-		IPainter* pPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() );
-		if( pPnt ) {
-			IRadianceMap* pRadianceMap = 0;
-			RISE_API_CreateRadianceMap( &pRadianceMap, *pPnt, radianceMapConfig.scale );
-			pRadianceMap->SetOrientation( Vector3( radianceMapConfig.orientation ) );
-			object->AssignRadianceMap( *pRadianceMap );
-			safe_release( pRadianceMap );
-			safe_release( pPnt );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() );
-		}
+	if( pMat )       object->AssignMaterial( *pMat );
+	if( pMod )       object->AssignModifier( *pMod );
+	if( pShaderObj ) object->AssignShader( *pShaderObj );
+	if( pRadPnt ) {
+		IRadianceMap* pRadianceMap = 0;
+		RISE_API_CreateRadianceMap( &pRadianceMap, *pRadPnt, radianceMapConfig.scale );
+		pRadianceMap->SetOrientation( Vector3( radianceMapConfig.orientation ) );
+		object->AssignRadianceMap( *pRadianceMap );   // recreate-and-re-wrap (replaces any prior map)
+		safe_release( pRadianceMap );
 	}
 
 	object->SetPosition( Point3( pos ) );
 	object->SetOrientation( Vector3( orient ) );
 	object->FinalizeTransformations();
 
-	pObjectManager->AddItem( object, name );
-	if( object->GetMaterial() && object->GetMaterial()->GetEmitter() )
-		BumpSceneLightGen( pScene );   // P2a: added an emissive object (mesh luminary)
-	safe_release( object );
+	if( repoint ) {
+		// Already in the manager; do NOT AddItem / safe_release (we did not create it).  The
+		// caller's closure-gated invariant pass handles the light-topology bump (via wasEmissive),
+		// so -- like AddObject's re-point branch -- skip the create-path BumpSceneLightGen here.
+	} else {
+		pObjectManager->AddItem( object, name );
+		if( object->GetMaterial() && object->GetMaterial()->GetEmitter() )
+			BumpSceneLightGen( pScene );   // P2a: added an emissive object (mesh luminary)
+		safe_release( object );
+	}
 
 	return true;
 }

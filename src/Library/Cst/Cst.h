@@ -296,8 +296,8 @@ namespace RISE
 		//! separate manager RemovePainter does not clear; Camera/Function/...), COMPOSED
 		//! materials (PBR creates helper painters -- IsMaterialComposed), translucent_-
 		//! material (ambient thread-local parser state -- P1.3/P1.5), gltf_import (a bulk
-		//! importer), a non-standard_object Object chunk (csg_object: its operands are
-		//! themselves objects -- a separate effort), any document with an animation/timeline,
+		//! importer), an Object chunk that is neither standard_object nor csg_object (both re-point
+		//! in place; other object-spawning chunks are unknown), any document with an animation/timeline,
 		//! and any document with an override_object (its String target reference is
 		//! untraceable -- review P1.3).  (An optional-slot removal -- a material/modifier/
 		//! shader/radiance_map/interior_medium set to "none" -- is APPLIED by clearing it in
@@ -321,8 +321,8 @@ namespace RISE
 		//! (slice 5), which a CALLER uses to find this function's `chunkIds` cheaply.  Still
 		//! deferred: routing the derive's OWN resolution through the recorded graph so the
 		//! static graph and the apply resolution cannot drift even in principle (the
-		//! remaining D35 step -- Part B of review #1/#3, the typed resolver), and CSG-operand
-		//! in-place handling (the slice-3 follow-up; optional-slot-removal LANDED in workstream #3).
+		//! remaining D35 step -- Part B of review #1/#3, the typed resolver).  Both slice-3
+		//! follow-ups -- optional-slot removal AND CSG-operand re-point -- LANDED in workstream #3.
 		int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<NodeId>& chunkIds, std::vector<std::string>* diagnostics = nullptr );
 
 		//==============================================================

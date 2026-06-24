@@ -141,6 +141,7 @@ inline std::string DumpJob( Job& job )
 			o << " shader=" << ReverseName( job.GetShaders(), ob->GetShader() );
 			o << " radiance_map=" << ( ob->GetRadianceMap() ? "set" : "(none)" );
 			o << " interior_medium=" << ( ob->GetInteriorMedium() ? "set" : "(none)" );
+			o << " visible=" << ( ob->IsWorldVisible() ? "1" : "0" );
 			BoundingBox bb = ob->getBoundingBox();
 			char b[160];
 			std::snprintf( b, sizeof(b), " bbox=[%.17g %.17g %.17g .. %.17g %.17g %.17g]",

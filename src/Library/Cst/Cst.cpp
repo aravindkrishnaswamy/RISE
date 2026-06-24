@@ -1215,7 +1215,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// Same refuse-all + abort-on-first-failure contract as DeriveToJob: validate the
 	// WHOLE closure before touching the Job -- every chunk must be named AND of a type
 	// whose re-derivation is a clean single-manager create-and-undo (DropChunkByCategory)
-	// for entities, or an in-place re-point for standard_object.  On any validation
+	// for entities, or an in-place re-point for standard_object/csg_object.  On any validation
 	// failure nothing is dropped or applied.
 	struct Pending { const IAsciiChunkParser* parser; ParseStateBag bag; NodeRef node; int index; ChunkCategory cat; std::string name; };
 	std::vector<Pending> pending;
@@ -1252,12 +1252,13 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			diags.push_back( node->role + ": a bulk importer -- one chunk creates many objects/materials/painters/lights, which a typed RemoveGeometry cannot undo; fall back to a full derive" );
 			return 0;
 		}
-		if( cat == ChunkCategory::Object && node->role != "standard_object" ) {
-			// Only standard_object is re-pointed in place (AddObject/AddObjectMatrix).  A
-			// csg_object's operands are themselves objects whose in-place re-point + the
-			// parent's operand-pointer revalidation is a separate effort (21-*.md S3); any
-			// other object-spawning chunk is unknown.  Refuse -> full derive (D51).
-			diags.push_back( node->role + ": only standard_object is re-pointed in place incrementally (CSG / other object chunks need a full derive); fall back" );
+		if( cat == ChunkCategory::Object && node->role != "standard_object" && node->role != "csg_object" ) {
+			// standard_object + csg_object are re-pointed in place (AddObject / AddCSGObject repoint).
+			// A csg_object re-binds its operands (AssignObjects -- un-hiding the old, hiding the new)
+			// + op (SetOperation) + slots; its operands are themselves objects re-pointed in place,
+			// so the addresses the parent CSG holds stay valid.  Any OTHER object-spawning chunk is
+			// unknown -- refuse -> full derive (D51).
+			diags.push_back( node->role + ": only standard_object/csg_object are re-pointed in place incrementally (other object chunks need a full derive); fall back" );
 			return 0;
 		}
 		ParseStateBag bag( &parser->Describe() );
@@ -1267,9 +1268,11 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	if( !diags.empty() ) return 0;
 	// Apply ENTITIES first, then OBJECTS, each by doc index (DocEditClosure returns an unspecified
 	// DFS order): respects producer-before-consumer AND re-points objects LAST (entity-only rollback).
-	// (Among objects, doc index is a valid topological order today because only standard_object
-	// -- a leaf consumer -- is admitted; a future CSG sub-item, where an object produces for
-	// another object, must keep operands earlier in doc order AND add object-rollback.)
+	// (Among objects, doc index is a valid topological order: an object produces for another only
+	// via a csg_object's operand refs, and RISE's scene language is definitions-before-use, so an
+	// operand is always declared -- lower doc index -- before its parent CSG.  No object-rollback
+	// is needed: the slot-precise preflight + AddCSGObject's resolve-first make a CSG re-point
+	// unable to fail, so objects-last + entity-only rollback stays sufficient.)
 	std::sort( pending.begin(), pending.end(), []( const Pending& a, const Pending& b ){ const bool ao = ( a.cat == ChunkCategory::Object ), bo = ( b.cat == ChunkCategory::Object ); if( ao != bo ) return !ao; return a.index < b.index; } );
 
 	// ENTITY-ONLY ROLLBACK is sound because objects are Finalized LAST: the sort above groups
