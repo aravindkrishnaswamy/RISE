@@ -1018,6 +1018,15 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 {
 	std::vector<std::string> local;
 	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
+
+	// D35 (review): the recorder only APPENDS to `outRecorded->dependents`, so RESET the whole
+	// graph at entry -- before any early return -- or a reused/replaced ReferenceGraph (or a
+	// caller-supplied BuildReferenceGraph result) would mix stale dependents/edges/stamp with
+	// this derive's, and a validation-failure early return would leave the caller's old graph
+	// untouched (silently stale). After this, `outRecorded` reflects THIS derive only, and is
+	// empty on a refused/failed derive.
+	if( outRecorded ) *outRecorded = ReferenceGraph();
+
 	std::vector<NodeRef> items;
 	SeqToVec( doc.items, items );
 

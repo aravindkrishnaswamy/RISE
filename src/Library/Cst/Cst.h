@@ -256,10 +256,12 @@ namespace RISE
 		//! strays / trivia -- are skipped; they carry no Job state.)
 		//!
 		//! D35 record-during-derive (slice 1, §8): when `outRecorded` is non-null, the derive
-		//! RECORDS the reference graph from the engine's ACTUAL resolution -- it brackets each
-		//! chunk's Finalize and captures every entity the chunk PRODUCES (manager AddItem) and
-		//! RESOLVES (manager GetItem), then writes `(producer -> consumer)` reverse-adjacency
-		//! into `outRecorded->dependents`. This graph cannot drift from the engine (it IS the
+		//! RESETS it at entry (it reflects THIS derive only -- empty on a refused/failed derive --
+		//! so a reused or caller-supplied graph is never mixed with stale state), then RECORDS the
+		//! reference graph from the engine's ACTUAL resolution -- it brackets each chunk's Finalize
+		//! and captures every entity the chunk PRODUCES (manager AddItem) and RESOLVES (manager
+		//! GetItem), then writes `(producer -> consumer)` reverse-adjacency into
+		//! `outRecorded->dependents`. This graph cannot drift from the engine (it IS the
 		//! engine's production+resolution), unlike the static BuildReferenceGraph heuristic.
 		//! It is CHUNK-level (the chokepoint records the resolved entity pointer, not the source
 		//! param), so it serves CLOSURE; rename keeps the param-level static path. Opt-in: when

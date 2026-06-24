@@ -180,6 +180,49 @@ int main()
 		j->release();
 	}
 
+	// [reuse] (review P1) DeriveToJob RESETS outRecorded at entry, so deriving doc B into a
+	// graph that already holds doc A's edges yields ONLY B's edges -- no stale A leakage. (The
+	// recorder only APPENDS; without the entry reset a reused/replaced graph would mix A + B.)
+	{
+		Document docA = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n" );
+		Document docB = ParseToCst(   // unrelated
+			"RISE ASCII SCENE 6\n"
+			"scalar_painter\n{\nname base_s\nvalue 0.3\n}\n"
+			"scalar_painter\n{\nname sp\nbase base_s\n}\n" );
+		ReferenceGraph g;
+		Job* jA = new Job(); std::vector<std::string> dA; DeriveToJob( docA, *jA, &dA, &g ); jA->release();
+		const bool aRecorded = !DepSet( g ).empty();
+		Job* jB = new Job(); std::vector<std::string> dB; DeriveToJob( docB, *jB, &dB, &g ); jB->release();   // REUSE g
+		const std::set<std::pair<NodeId,NodeId> > afterB = DepSet( g );
+		const std::set<std::pair<NodeId,NodeId> > staticB = DepSet( BuildReferenceGraph( docB ) );
+		Check( aRecorded, "reuse: precondition -- doc A recorded edges into g" );
+		Check( !afterB.empty() && afterB == staticB, "reuse: reused graph holds ONLY doc B's edges (A reset at entry, no leak)" );
+	}
+
+	// [reset-on-failure] (review P1) a derive that FAILS validation resets outRecorded to EMPTY
+	// rather than leaving the caller's prior (stale) graph untouched.
+	{
+		Document docA = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n" );
+		ReferenceGraph g;
+		Job* jA = new Job(); std::vector<std::string> dA; DeriveToJob( docA, *jA, &dA, &g ); jA->release();
+		Check( !DepSet( g ).empty(), "reset-on-failure: precondition -- A recorded edges" );
+		Document docBad = ParseToCst( "RISE ASCII SCENE 6\nsphere_geometry\n{\nname g\nradius xyz\n}\n" );   // non-numeric radius -> PASS-1 validation failure
+		Job* jBad = new Job(); std::vector<std::string> dBad;
+		int applied = DeriveToJob( docBad, *jBad, &dBad, &g ); jBad->release();   // REUSE g; fails validation
+		Check( applied == 0 && !dBad.empty(), "reset-on-failure: malformed doc refused" );
+		Check( DepSet( g ).empty(), "reset-on-failure: outRecorded reset to EMPTY after a failed derive (no stale A)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
