@@ -349,6 +349,48 @@ int main()
 		Check( f1 && f2 && hasF2, "cp-closure: closure(Function1D f1) INCLUDES the piecewise_linear_function2d that references it via cp (review #2)" );
 	}
 
+	//----------------------------------------------------------------------
+	// [painter-alias] (review P1.4, 2nd pass) a colour painter and a scalar painter sharing a
+	// name: the (Painter,name) edge first-wins to ONE, so a consumer the engine binds to the
+	// OTHER (here scalar_painter.base, a scalar slot) would be MISSED from that painter's
+	// closure.  The conservative alias makes editing EITHER include the consumer (superset).
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname x\ncolor 0.5 0.5 0.5\n}\n"
+			"scalar_painter\n{\nname x\nvalue 0.3\n}\n"
+			"scalar_painter\n{\nname sp\nbase x\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId colourX = DocFindByName( doc, "uniformcolor_painter/x" );
+		const NodeId scalarX = DocFindByName( doc, "scalar_painter/x" );
+		const NodeId sp = DocFindByName( doc, "scalar_painter/sp" );
+		bool scalarReachesSp = false; for( NodeId n : DocEditClosure( scalarX, g ) ) if( n == sp ) scalarReachesSp = true;
+		bool colourReachesSp = false; for( NodeId n : DocEditClosure( colourX, g ) ) if( n == sp ) colourReachesSp = true;
+		Check( colourX && scalarX && sp && scalarReachesSp, "painter-alias: closure(scalar x) reaches the scalar consumer (alias rescues the first-wins miss, P1.4)" );
+		Check( colourReachesSp, "painter-alias: closure(colour x) also reaches it (superset, never misses)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [transfer-precise] (review #3, 2nd-pass sibling) directvolumerendering transfer_red is
+	// Function1D-only in the engine; it must bind the same-named Function1D, not a colour painter.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname t\ncolor 1 0 0\n}\n"
+			"piecewise_linear_function\n{\nname t\ncp 0 0\ncp 1 1\n}\n"
+			"directvolumerendering_shader\n{\nname dvr\ntransfer_red t\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId plf = DocFindByName( doc, "piecewise_linear_function/t" );
+		const NodeId colour = DocFindByName( doc, "uniformcolor_painter/t" );
+		const NodeId dvr = DocFindByName( doc, "directvolumerendering_shader/dvr" );
+		bool plfHasDvr = false; for( NodeId n : DocEditClosure( plf, g ) ) if( n == dvr ) plfHasDvr = true;
+		bool colourHasDvr = false; for( NodeId n : DocEditClosure( colour, g ) ) if( n == dvr ) colourHasDvr = true;
+		Check( plf && colour && dvr && plfHasDvr, "transfer-precise: closure(Function1D t) INCLUDES the directvolumerendering consumer" );
+		Check( !colourHasDvr, "transfer-precise: closure(colour t) does NOT (transfer_red binds Function1D, not the painter)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

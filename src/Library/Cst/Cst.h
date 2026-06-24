@@ -284,9 +284,11 @@ namespace RISE
 		//! override_object (its String target reference is untraceable -- review P1.3).
 		//! ATOMIC (review #1, Part A): a WHOLE-PLAN PREFLIGHT (review P1.7) validates that
 		//! every drop target EXISTS and every NAME reference RESOLVES slot-precisely (incl.
-		//! radiance_map colour-only) before ANY mutation; AND any re-Finalize failure the
-		//! preflight cannot foresee (a numeric in a pure-painter slot; a non-reference value
-		//! DispatchChunkParameters accepted) is ROLLED BACK -- the non-object closure entities
+		//! radiance_map colour-only, and a numeric in an OBJECT reference slot is refused since
+		//! interior_medium applies in a SEPARATE post-AddObject step -- review #1 2nd pass)
+		//! before ANY mutation; AND any re-Finalize failure the preflight cannot foresee (a
+		//! numeric in a pure-painter slot; a non-reference value DispatchChunkParameters
+		//! accepted) is ROLLED BACK -- the non-object closure entities
 		//! are captured (addref'd) before the drop and restored on failure, and a closure
 		//! that would interleave an object before a later entity is REFUSED, so every object
 		//! is re-pointed only AFTER every entity is recreated -- a failure can only occur
