@@ -282,17 +282,15 @@ namespace RISE
 		//! re-point cannot CLEAR a material/modifier/shader/radiance_map/interior_medium
 		//! set to "none"), any document with an animation/timeline, and any document with an
 		//! override_object (its String target reference is untraceable -- review P1.3).
-		//! A WHOLE-PLAN PREFLIGHT (review P1.7) validates that every drop target EXISTS and
-		//! every NAME reference RESOLVES before ANY mutation, so the COMMON failure modes
-		//! (a rename / stale closure / a dangling NAME reference / a missing entity) refuse
-		//! with nothing changed.  It is NOT fully atomic, though: a re-Finalize failure the
-		//! preflight cannot foresee still leaves a PARTIAL mutation -> the caller MUST
-		//! reset+re-derive.  Residual cases: a NUMERIC value in a PURE-painter slot (e.g.
-		//! `reflectance 0.5` -- the preflight skips numerics as literals, but the derive
-		//! rejects a numeric there); a {Painter} reference resolving only in the SCALAR
-		//! manager for a colour slot (EntityExists is manager-imprecise); a non-reference
-		//! value DispatchChunkParameters already accepted.  Full in-place atomicity needs
-		//! the reversible-apply-plan with post-Finalize ROLLBACK (Section 4) -- deferred.
+		//! ATOMIC (review #1, Part A): a WHOLE-PLAN PREFLIGHT (review P1.7) validates that
+		//! every drop target EXISTS and every NAME reference RESOLVES slot-precisely (incl.
+		//! radiance_map colour-only) before ANY mutation; AND any re-Finalize failure the
+		//! preflight cannot foresee (a numeric in a pure-painter slot; a non-reference value
+		//! DispatchChunkParameters accepted) is ROLLED BACK -- the non-object closure entities
+		//! are captured (addref'd) before the drop and restored on failure, and objects are
+		//! re-pointed only AFTER every entity is recreated, so a failure can only occur before
+		//! any object is touched.  On EITHER path the Job is left unmutated, so a return of 0
+		//! always means "nothing changed; fall back to a full derive."
 		//! Returns the count applied (== chunkIds.size() on success).  Landed: the shared resolver (slice 1),
 		//! atomic rename (slice 2), the stable-object re-point this function performs
 		//! (slice 3), the cost re-measurement (slice 4), and the maintained-graph closure
@@ -300,9 +298,8 @@ namespace RISE
 		//! (slice 5), which a CALLER uses to find this function's `chunkIds` cheaply.  Still
 		//! deferred: routing the derive's OWN resolution through the recorded graph so the
 		//! static graph and the apply resolution cannot drift even in principle (the
-		//! remaining D35 step), CSG-operand + optional-slot-removal in-place handling
-		//! (slice-3 follow-ups), and full post-Finalize rollback for the RESIDUAL case the
-		//! preflight cannot foresee (a Finalize failing for a non-reference reason).
+		//! remaining D35 step -- Part B of review #1/#3, the typed resolver), and CSG-operand
+		//! + optional-slot-removal in-place handling (slice-3 follow-ups).
 		int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<NodeId>& chunkIds, std::vector<std::string>* diagnostics = nullptr );
 
 		//==============================================================

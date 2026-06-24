@@ -239,6 +239,36 @@ int main()
 		j->release();
 	}
 
+	// ROLLBACK (review #1, Part A): a value edit that PASSES the preflight but FAILS the
+	// re-Finalize must leave the Job UNMUTATED.  A NUMERIC in a pure-painter slot is the
+	// canonical case: `reflectance 0.5` looks like a literal to the preflight (skipped), so
+	// the material is dropped -- then AddMaterial cannot resolve "0.5" as a painter and the
+	// re-Finalize fails.  Without the rollback the material would be permanently gone; with
+	// it, the captured original is restored and DumpJob is byte-identical to pre-edit.
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+		Document doc = ParseToCst( s );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		const std::string before = DumpJob( *j );
+		const IMaterial* preMat = j->GetMaterials() ? j->GetMaterials()->GetItem( "m" ) : 0;
+		const NodeId mId = DocFindByName( doc, "lambertian_material/m" );
+		Document docD = DocSetParamValue( doc, mId, "reflectance", 0, "0.5" );   // numeric in a pure-painter slot
+		std::vector<NodeId> closure = DocEditClosure( docD, mId );
+		std::vector<std::string> di;
+		int applied = DeriveToJobIncremental( docD, *j, closure, &di );
+		const IMaterial* postMat = j->GetMaterials() ? j->GetMaterials()->GetItem( "m" ) : 0;
+		Check( applied == 0 && !di.empty(), "rollback: numeric-in-painter-slot re-Finalize FAILS (applied 0 + diagnosed)" );
+		Check( postMat != 0, "rollback: the material is RESTORED, not left dropped (review #1 Part A)" );
+		Check( postMat == preMat, "rollback: the ORIGINAL material instance is restored (capture-and-restore)" );
+		Check( DumpJob( *j ) == before, "rollback: Job byte-identical to pre-edit -- atomic on the Finalize-failure path" );
+		j->release();
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

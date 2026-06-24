@@ -1234,17 +1234,14 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	std::sort( pending.begin(), pending.end(), []( const Pending& a, const Pending& b ){ return a.index < b.index; } );
 
 	// WHOLE-PLAN PREFLIGHT (review P1.7 -- atomicity): validate that EVERY drop target
-	// exists AND EVERY reference resolves BEFORE any mutation, so a rename / stale closure
-	// / dangling reference refuses with NOTHING changed -- rather than dropping some
-	// entities, then breaking the loop on a mid-apply Finalize failure with a partially
-	// mutated Job.  O(closure . log N): closure chunks x their references x a manager
-	// lookup -- no O(N) doc scan.  (For a preflight-clean closure no drop and no
-	// re-Finalize fails; the residual is a Finalize failing for a reason the preflight
-	// cannot see -- a non-reference invalid that DispatchChunkParameters already accepted,
-	// a dangling reference in a category EntityExists does not check, or a reference
-	// EntityExists checks IMPRECISELY (a radiance_map naming a SCALAR-only painter:
-	// EntityExists accepts "some painter", but AddObject resolves the radiance map via the
-	// COLOUR manager only) -- which still breaks the loop -> caller resets+re-derives.)
+	// exists AND EVERY reference resolves (SLOT-PRECISELY -- radiance_map colour-only, below)
+	// BEFORE any mutation, so a rename / stale closure / dangling reference refuses with
+	// NOTHING changed.  O(closure . log N): closure chunks x their references x a manager
+	// lookup -- no O(N) doc scan.  The preflight catches the foreseeable failures up front;
+	// any residual re-Finalize failure it cannot see (a non-reference invalid that
+	// DispatchChunkParameters accepted; a numeric in a pure-painter slot) is caught at the
+	// Finalize loop and ROLLED BACK to the pre-edit entities (Part A, review #1) -- so the
+	// apply is atomic on EITHER path: nothing is left partially mutated.
 	for( const Pending& p : pending ) {
 		if( !EntityExists( *priv, p.cat, p.name ) ) {
 			diags.push_back( p.node->role + " '" + p.name + "': not present in the derived Job (a rename or stale closure); refusing -- nothing mutated (review P1.7)" );
@@ -1256,7 +1253,17 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			if( !ParamValue( p.node.get(), pd.name.c_str(), val ) ) continue;     // param absent
 			if( val.empty() || val == "none" || LooksNumeric( val ) ) continue;   // explicit-none / numeric literal -> not a reference
 			bool resolves = false;
-			for( ChunkCategory rc : pd.referenceCategories ) if( EntityExists( *priv, rc, val ) ) { resolves = true; break; }
+			// SLOT-PRECISE resolution for the radiance_map {Painter} slot: AddObject binds it
+			// via the COLOUR painter manager ONLY, so a scalar-only painter there does NOT
+			// resolve.  Check colour-only rather than EntityExists(Painter) (which accepts
+			// EITHER manager) -- this is what makes an OBJECT re-point unable to fail mid-apply
+			// (Part A atomicity: objects are re-pointed AFTER the entities are recreated; an
+			// object failure would strand already-re-pointed prior objects, which the
+			// entity-only rollback below cannot restore -- so objects must never fail).
+			if( pd.name == "radiance_map" )
+				resolves = ( priv->GetPainters() != 0 && priv->GetPainters()->GetItem( val.c_str() ) != 0 );
+			else
+				for( ChunkCategory rc : pd.referenceCategories ) if( EntityExists( *priv, rc, val ) ) { resolves = true; break; }
 			if( !resolves ) {
 				diags.push_back( p.node->role + " '" + p.name + "'." + pd.name + " -> '" + val + "': unresolved reference; refusing -- nothing mutated (review P1.7)" );
 				return 0;
@@ -1304,6 +1311,53 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		objStates.push_back( ObjState{ obj, obj->getBoundingBox(), ( preMat && preMat->GetEmitter() ) != 0 } );
 	}
 
+	// PART A (true in-place atomicity, review #1): capture each non-object closure entity
+	// (addref'd) BEFORE the drop, so a mid-apply re-Finalize failure the preflight cannot
+	// foresee (a numeric in a pure-painter slot; any non-reference DispatchChunkParameters
+	// accepted) ROLLS BACK to the pre-edit Job rather than leaving a partial mutation.  Only
+	// Material/Geometry/Light/Modifier reach the drop loop (the validation switch above) and
+	// each is a single-manager entity, so capture/restore is a clean per-category GetItem /
+	// RemoveItem+AddItem.  Objects are NOT captured: the slot-precise preflight above (incl.
+	// radiance_map colour-only) guarantees every object re-point resolves, and objects are
+	// re-pointed only AFTER every entity is recreated (document order: producers precede
+	// consumers) -- so a failure can only occur at an entity, BEFORE any object is touched.
+	struct EntCap { ChunkCategory cat; std::string name; IReference* old; };   // old addref'd (or null)
+	std::vector<EntCap> entCaps;
+	entCaps.reserve( pending.size() );
+	for( const Pending& p : pending ) {
+		if( p.cat == ChunkCategory::Object ) continue;
+		IReference* old = 0;
+		switch( p.cat ) {
+			case ChunkCategory::Material: old = priv->GetMaterials()->GetItem( p.name.c_str() );  break;
+			case ChunkCategory::Geometry: old = priv->GetGeometries()->GetItem( p.name.c_str() ); break;
+			case ChunkCategory::Light:    old = priv->GetLights()->GetItem( p.name.c_str() );     break;
+			case ChunkCategory::Modifier: old = priv->GetModifiers()->GetItem( p.name.c_str() );  break;
+			default: break;
+		}
+		if( old ) old->addref();   // survive the drop; released on success or after the rollback restore
+		entCaps.push_back( EntCap{ p.cat, p.name, old } );
+	}
+	// Restore the captured pre-edit entities after a mid-apply failure: remove any entity a
+	// partial re-Finalize re-created (or left half-built), then re-add the captured original
+	// under the same name.  Objects that were never re-pointed still hold their refs on these
+	// originals, so the Job is byte-for-behaviour back to its pre-edit state.
+	auto rollbackEntities = [&]() {
+		for( const EntCap& c : entCaps ) {
+			const char* nm = c.name.c_str();
+			// Remove any entity the partial re-Finalize re-created (GUARD the remove so a
+			// not-yet-recreated entity does not log a spurious "not found"), then restore the
+			// captured original.  AddItem rejects a name collision, so the remove must precede.
+			switch( c.cat ) {
+				case ChunkCategory::Material: { auto* mgr = priv->GetMaterials();  if( mgr->GetItem( nm ) ) mgr->RemoveItem( nm ); if( c.old ) mgr->AddItem( dynamic_cast<IMaterial*>( c.old ), nm );  break; }
+				case ChunkCategory::Geometry: { auto* mgr = priv->GetGeometries(); if( mgr->GetItem( nm ) ) mgr->RemoveItem( nm ); if( c.old ) mgr->AddItem( dynamic_cast<IGeometry*>( c.old ), nm ); break; }
+				case ChunkCategory::Light:    { auto* mgr = priv->GetLights();     if( mgr->GetItem( nm ) ) mgr->RemoveItem( nm ); if( c.old ) mgr->AddItem( dynamic_cast<ILightPriv*>( c.old ), nm );    break; }
+				case ChunkCategory::Modifier: { auto* mgr = priv->GetModifiers();  if( mgr->GetItem( nm ) ) mgr->RemoveItem( nm ); if( c.old ) mgr->AddItem( dynamic_cast<IRayIntersectionModifier*>( c.old ), nm ); break; }
+				default: break;
+			}
+		}
+	};
+	auto releaseCaps = [&]() { for( const EntCap& c : entCaps ) if( c.old ) c.old->release(); };
+
 	// Drop the NON-OBJECT entities; objects are NEVER dropped (re-pointed in place below)
 	// so their addresses -- which the TLAS stores raw -- survive the edit.
 	for( const Pending& p : pending ) {
@@ -1311,14 +1365,17 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		if( DropChunkByCategory( pJob, p.cat, p.name.c_str() ) ) continue;
 		// A drop that finds nothing means the closure name does not match the derived Job
 		// (a rename was applied; incremental is value-edit only).  Do NOT silently re-add
-		// (that would leave BOTH entities -- review P1.4): abort.  The Job is now partially
-		// modified (some entities dropped); the caller must reset+re-derive.  (Full atomic
-		// rollback is the slice-4 reversible plan.)
-		diags.push_back( p.node->role + " '" + p.name + "': drop found no such entity in the derived Job (a rename or stale closure?); aborting -- a full reset+re-derive is required" );
+		// (that would leave BOTH entities -- review P1.4): ROLL BACK the entities already
+		// dropped and abort.  (The preflight's EntityExists makes this unreachable -- every
+		// drop target was confirmed present -- but the rollback keeps the contract honest.)
+		rollbackEntities();
+		releaseCaps();
+		diags.push_back( p.node->role + " '" + p.name + "': drop found no such entity in the derived Job (a rename or stale closure?); rolled back -- nothing mutated" );
 		return 0;
 	}
 
 	int count = 0;
+	bool failed = false;
 	{
 		// Re-point mode: an object chunk's re-Finalize re-points its existing (stable)
 		// object in place instead of creating a new one.  RAII so the flag is cleared on
@@ -1327,9 +1384,16 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		for( Pending& p : pending ) {
 			if( p.parser->Finalize( p.bag, pJob ) ) { ++count; continue; }
 			diags.push_back( p.node->role + ": incremental apply failed (e.g. unresolved reference); see log" );
+			failed = true;
 			break;
 		}
 	}
+	// PART A atomicity (review #1): on ANY re-Finalize failure, ROLL BACK to the pre-edit
+	// entities and report nothing-applied.  Because the failure is always at an entity (the
+	// slot-precise preflight keeps objects from failing, and objects are recreated last), no
+	// object has been re-pointed yet -- so restoring the entities fully restores the Job.
+	if( failed ) { rollbackEntities(); releaseCaps(); return 0; }
+	releaseCaps();   // success: the new entities are live; drop the capture refs on the originals
 
 	// Closure-gated invariant pass (slice 3) -- NOT a verbatim RunObjectInvariantChain
 	// (which invalidates the TLAS UNCONDITIONALLY, reproducing P1.2).  Invalidate the
