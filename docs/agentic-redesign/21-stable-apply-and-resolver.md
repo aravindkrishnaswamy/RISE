@@ -285,13 +285,14 @@ single template chokepoint, `GenericManager::GetItem(name)` (production through 
 path (name→entity resolution during derive/parse), NOT a per-ray hot path (rendering uses
 resolved pointers). So the engine's actual production + resolution can be CAPTURED at one
 gated hook — bounded — instead of refactoring the ~100 scattered `Job::Add*` resolution sites.
-**Caveat (slice-2 prerequisite):** participating media are NOT a `GenericManager` — they live
-in the Job's separate `mediaMap` (`Job::Add*Medium` / `GetMedium`), so a `(medium → object)`
-edge via `interior_medium` BYPASSES the chokepoint and is not recorded. The static
-`BuildReferenceGraph` DOES trace it, so a medium scene would fail the slice-1 subset
-cross-check — the test corpus excludes media, and recording media (a parallel `mediaMap` hook
-or routing media through a `GenericManager`) must land before slice 2 switches closure to the
-recorded graph, else editing a medium would not re-derive its consuming objects.
+**Caveat — media bypass the chokepoint (RESOLVED in slice 2):** participating media are NOT a
+`GenericManager` — they live in the Job's separate `mediaMap`, so a `(medium → object)` edge
+via `interior_medium` BYPASSES the `GetItem`/`AddItem` chokepoint. Slice 1 therefore could not
+record them and the slice-1 corpus excluded media. Slice 2 fixed this with a parallel `mediaMap`
+hook (`Job::Add*Medium` production + `SetObjectInteriorMedium` / `SetGlobalMedium` resolution,
+same pointer-keying), so media ARE now recorded and the cross-check corpus includes a medium
+scene. (Had it not been recorded, a medium scene would have failed the cross-check, and editing
+a medium would not re-derive its consuming objects once a consumer relied on the recorded graph.)
 
 **Slices** (each to zero-P1 via the review loop):
 
