@@ -411,6 +411,25 @@ int main()
 		Check( !f1HasSdvr, "transfer-spectral: closure(Function1D s) does NOT (transfer_spectral binds Function2D)" );
 	}
 
+	//----------------------------------------------------------------------
+	// [painter-decl-func2d] (review #3, 3rd-pass exhaustive table) displaced_geometry.displacement
+	// is declared {Painter} but the engine binds it via pFunc2DManager (Function2D, which holds
+	// plf2d). It must reach a piecewise_linear_function2d target in closure (the (Painter,name)
+	// key would have missed it -- plf2d is not in the painter managers).
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function2d\n{\nname d2\n}\n"
+			"sphere_geometry\n{\nname base\nradius 1\n}\n"
+			"displaced_geometry\n{\nname disp\nbase_geometry base\ndisplacement d2\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId d2 = DocFindByName( doc, "piecewise_linear_function2d/d2" );
+		const NodeId disp = DocFindByName( doc, "displaced_geometry/disp" );
+		bool d2HasDisp = false; for( NodeId n : DocEditClosure( d2, g ) ) if( n == disp ) d2HasDisp = true;
+		Check( d2 && disp && d2HasDisp, "painter-decl-func2d: closure(Function2D d2) INCLUDES the displaced_geometry that binds it via displacement (review #3 table)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

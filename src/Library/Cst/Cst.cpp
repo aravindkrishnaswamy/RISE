@@ -1533,6 +1533,15 @@ static int FunctionSubNamespace( const std::string& paramName )
 	    paramName == "transfer_blue" || paramName == "transfer_alpha" ) return kFunc1DSubCat;
 	if( paramName == "function2d" || paramName == "heightfield_function" ||
 	    paramName == "transfer_spectral" ) return kFunc2DSubCat;
+	// {Painter}-DECLARED slots the engine actually binds via pFunc2DManager (Function2D, which
+	// holds plf2d + the dual-registered colour painters -- exactly what kFunc2DSubCat seeds):
+	// displaced_geometry.displacement, bumpmap_modifier.function, composite_function2d_painter
+	// .child_a/.child_b (Job.cpp ~5009/~5182/~994).  Resolving them coarsely via (Painter,name)
+	// MISSED a plf2d target (plf2d is NOT in the painter managers) -- a stale-closure sibling
+	// (review #3, 3rd-pass exhaustive table).  The retired String `displacement` (a different
+	// param kind) never reaches here -- PASS B only resolves Reference/tuple params.
+	if( paramName == "displacement" || paramName == "function" ||
+	    paramName == "child_a" || paramName == "child_b" ) return kFunc2DSubCat;
 	return 0;
 }
 
@@ -1944,7 +1953,7 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 	// producer is ambiguous.  CLOSURE resolves the function1d/function2d consumers
 	// dimension-precisely (review #3, 2nd pass), but the rename REWRITE path is coarse: it
 	// cannot rewrite a value shared across the 1D/2D managers without mis-targeting a coarse
-	// {Painter,Function} (ior) referrer, so renaming such a chunk/painter is refused.
+	// {Painter,Function} (ior/film_ior) referrer, so renaming such a chunk/painter is refused.
 	if( targetCat == (int)ChunkCategory::Function ||
 	    ( targetCat == (int)ChunkCategory::Painter && target->role != "scalar_painter" ) ) {
 		int funcProducers = 0;
