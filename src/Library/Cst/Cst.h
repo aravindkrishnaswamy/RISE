@@ -462,8 +462,12 @@ namespace RISE
 		//! reference-param value) AND each chunk's NodeId. Its load-bearing guarantee is
 		//! one-directional: every edit that COULD change the graph (a reference re-point, a
 		//! rename of a referenced chunk, a chunk add/remove) changes the stamp -- so
-		//! stamp-unchanged ⟹ graph-unchanged, and a consumer caching a graph can reject a
-		//! stale one in O(1) (P1.8: the prior TraceReferences was unstamped). The NodeId is
+		//! stamp-unchanged ⟹ graph-unchanged.  This is a one-shot CONSISTENCY check
+		//! (compare two graphs' stamps in O(1)) -- NOT a cheap reuse oracle: obtaining a
+		//! fresh stamp means running BuildReferenceGraph (O(N)), so a stamp-gated holder
+		//! rebuilds every edit anyway.  For O(1)-per-edit reuse, decide from the edit, not
+		//! the stamp (see MaintainedReferenceGraph).  (P1.8: the prior TraceReferences was
+		//! unstamped, so a stale graph could be silently trusted.)  The NodeId is
 		//! folded because the graph's edges + dependents are NodeId-KEYED, so "graph
 		//! unchanged" must include identity: erasing a chunk and reinserting a byte-
 		//! IDENTICAL one (a NEW NodeId, same content) MUST move the stamp, else a reused
@@ -477,7 +481,7 @@ namespace RISE
 		//! missed staleness.
 		struct ReferenceGraph {
 			std::vector<ReferenceUse>             edges;        //!< resolved (sourceParam NodeId -> targetChunk NodeId) edges
-			std::map<NodeId, std::vector<NodeId> > dependents;  //!< reverse adjacency: a referenced chunk -> the CHUNKS that reference it. Computed in the SAME single BuildReferenceGraph pass as `edges`, so a caller holding a (maintained / cached, stamp-validated) graph gets DocEditClosure( changedChunkId, graph ) as a pure O(closure . log N) reverse-BFS -- the slice-5 maintained-graph endpoint -- instead of the O(N . log N) full re-trace the document-only DocEditClosure pays from scratch.
+			std::map<NodeId, std::vector<NodeId> > dependents;  //!< reverse adjacency: a referenced chunk -> the CHUNKS that reference it. Computed in the SAME single BuildReferenceGraph pass as `edges`, so a caller holding the graph gets DocEditClosure( changedChunkId, graph ) as a pure O(closure . log N) reverse-BFS (the BFS in isolation) instead of the O(N . log N) full re-trace. The END-TO-END reuse across edits is MaintainedReferenceGraph (it decides reuse from the EDIT in O(1) -- a stamp-gated reuse cannot, since computing the new stamp is itself an O(N) BuildReferenceGraph).
 			unsigned long long                    stamp = 0;    //!< conservative content fingerprint (see above)
 		};
 
@@ -646,15 +650,16 @@ namespace RISE
 		//! each call. Use the graph overload below to amortise that.
 		std::vector<NodeId> DocEditClosure( const Document& doc, NodeId changedChunkId );
 
-		//! Closure over a PRE-BUILT (maintained / cached, stamp-validated) reference
-		//! graph (slice 5): a pure O(closure . log N) reverse-BFS over `graph.dependents`,
-		//! with NO re-trace of the document. A caller that holds the graph and rebuilds it
-		//! only when the document's BuildReferenceGraph stamp changes pays the O(N log N)
-		//! trace ONCE, then finds each subsequent edit's closure in O(closure . log N) --
-		//! this is the maintained-graph endpoint that removes the closure-COMPUTE term
-		//! CstEditCostTest measured as the dominant non-spatial-edit cost. The doc-only
-		//! overload above is exactly this BFS preceded by a from-scratch BuildReferenceGraph.
-		//! (Does NOT take `doc`: the BFS needs only the graph's reverse adjacency.)
+		//! Closure over a PRE-BUILT reference graph (slice 5): a pure O(closure . log N)
+		//! reverse-BFS over `graph.dependents`, with NO re-trace of the document.  This is
+		//! the BFS IN ISOLATION -- it does NOT include building or validating the graph.
+		//! To actually remove the closure-COMPUTE term end-to-end you must REUSE the graph
+		//! across edits WITHOUT rebuilding it; a STAMP-gated holder cannot do that (computing
+		//! the new stamp to compare is itself an O(N) BuildReferenceGraph -- you rebuilt to
+		//! check).  `MaintainedReferenceGraph` (below) is the construct that achieves it: it
+		//! decides reuse from the EDIT in O(1).  The doc-only overload above is exactly this
+		//! BFS preceded by a from-scratch BuildReferenceGraph.  (Does NOT take `doc`: the
+		//! BFS needs only the graph's reverse adjacency.)
 		std::vector<NodeId> DocEditClosure( NodeId changedChunkId, const ReferenceGraph& graph );
 
 		//! A MAINTAINED reference graph (slice 5, review P1.6): holds a Document + its

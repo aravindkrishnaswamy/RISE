@@ -244,6 +244,25 @@ int main()
 		Check( !DiagsMention( diagsOk, "colour and scalar" ), "conflation control: distinct painter names -> no false flag" );
 	}
 
+	//----------------------------------------------------------------------
+	// [function2d-ref] (review P1.4 sibling) a colour painter (e.g. expression_function2d,
+	// ChunkCategory::Painter) ALSO registers in the Function-2D manager, so a {Function}
+	// reference to it (scalar_painter.function2d) must RESOLVE -- not be a false dangling
+	// with a missed closure/rename edge.  The resolver seeds (Function, name) for such
+	// painters to match the derive (pFunc2DManager->GetItem).
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"expression_function2d\n{\nname noise\nexpr u*v\n}\n"
+			"scalar_painter\n{\nname disp\nfunction2d noise\n}\n" );
+		std::vector<std::string> diags;
+		ReferenceGraph g = BuildReferenceGraph( doc, &diags );
+		Check( !DiagsMention( diags, "noise" ), "function2d-ref: a {Function} reference to a dual-registered painter is NOT a false dangling (P1.4 sibling)" );
+		const NodeId noiseId = DocFindByName( doc, "expression_function2d/noise" );
+		Check( noiseId != 0 && DocEditClosure( noiseId, g ).size() == 2, "function2d-ref: closure(noise) = {noise, disp} = 2 (the dual-register edge is traced)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

@@ -212,6 +212,33 @@ int main()
 		j->release();
 	}
 
+	// A dangling FUNCTION-category reference (ior -> a non-existent name) must ALSO refuse
+	// atomically: `ior` is {Painter, Function}; without EntityExists checking the Function
+	// managers, the preflight would pass and the material would be dropped + fail to
+	// re-Finalize -> permanently gone (review: the P1.7 Function-gap).
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"perfectrefractor_material\n{\nname glass\nrefractance p\nior 1.5\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial glass\n}\n";
+		Document doc = ParseToCst( s );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		const std::string before = DumpJob( *j );
+		const bool hadGlass = j->GetMaterials() && j->GetMaterials()->GetItem( "glass" ) != 0;
+		const NodeId mId = DocFindByName( doc, "perfectrefractor_material/glass" );
+		Document docD = DocSetParamValue( doc, mId, "ior", 0, "nosuchfunc" );
+		std::vector<NodeId> closure = DocEditClosure( docD, mId );
+		std::vector<std::string> di;
+		int applied = DeriveToJobIncremental( docD, *j, closure, &di );
+		const bool stillGlass = j->GetMaterials() && j->GetMaterials()->GetItem( "glass" ) != 0;
+		Check( hadGlass, "function-gap: precondition -- glass material derived" );
+		Check( applied == 0 && !di.empty(), "function-gap: dangling {Function} ior ref REFUSED (preflight checks the Function managers)" );
+		Check( stillGlass && DumpJob( *j ) == before, "function-gap: refused ATOMICALLY -- the material is NOT dropped (review P1.7 Function-gap)" );
+		j->release();
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

@@ -1103,6 +1103,8 @@ static bool EntityExists( IJobPriv& priv, ChunkCategory cat, const std::string& 
 		case ChunkCategory::ShaderOp: return priv.GetShaderOps()  != 0 && priv.GetShaderOps()->GetItem( n )  != 0;
 		case ChunkCategory::Painter:  return ( priv.GetPainters()       != 0 && priv.GetPainters()->GetItem( n )       != 0 )
 		                                  || ( priv.GetScalarPainters() != 0 && priv.GetScalarPainters()->GetItem( n ) != 0 );
+		case ChunkCategory::Function: return ( priv.GetFunction1Ds() != 0 && priv.GetFunction1Ds()->GetItem( n ) != 0 )
+		                                  || ( priv.GetFunction2Ds() != 0 && priv.GetFunction2Ds()->GetItem( n ) != 0 );   // incl. colour painters dual-registered as Function2D
 		case ChunkCategory::Medium:   return priv.GetMedium( n ) != 0;
 		default: return true;
 	}
@@ -1239,8 +1241,10 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// lookup -- no O(N) doc scan.  (For a preflight-clean closure no drop and no
 	// re-Finalize fails; the residual is a Finalize failing for a reason the preflight
 	// cannot see -- a non-reference invalid that DispatchChunkParameters already accepted,
-	// or a dangling reference in a category EntityExists does not check -- which still
-	// breaks the loop -> caller resets+re-derives, the documented fallback.)
+	// a dangling reference in a category EntityExists does not check, or a reference
+	// EntityExists checks IMPRECISELY (a radiance_map naming a SCALAR-only painter:
+	// EntityExists accepts "some painter", but AddObject resolves the radiance map via the
+	// COLOUR manager only) -- which still breaks the loop -> caller resets+re-derives.)
 	for( const Pending& p : pending ) {
 		if( !EntityExists( *priv, p.cat, p.name ) ) {
 			diags.push_back( p.node->role + " '" + p.name + "': not present in the derived Job (a rename or stale closure); refusing -- nothing mutated (review P1.7)" );
@@ -1451,6 +1455,16 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 		}
 		const std::pair<int,std::string> key( (int)cat, name );
 		if( defs.find( key ) == defs.end() ) defs[key] = DocNodeIdAt( doc, (int)i );   // first-wins; defaults already seeded
+		// A COLOUR painter dual-registers in the Function-2D manager (Job::Add*Painter), so
+		// it is also referenceable as a {Function} reference (e.g. scalar_painter.function2d,
+		// function2d_painter.function2d).  Seed (Function, name) too, so such a reference
+		// RESOLVES to the painter (matching the derive's pFunc2DManager->GetItem) instead of
+		// being a false dangling + a missed closure/rename edge (review P1.4 sibling).  The
+		// scalar painter manager has no such dual-register, so scalar_painter is excluded.
+		if( cat == ChunkCategory::Painter && c->role != "scalar_painter" ) {
+			const std::pair<int,std::string> fkey( (int)ChunkCategory::Function, name );
+			if( defs.find( fkey ) == defs.end() ) defs[fkey] = DocNodeIdAt( doc, (int)i );
+		}
 	}
 
 	// PASS B -- resolve each EXPLICIT reference (a Reference-kind param's whole value,

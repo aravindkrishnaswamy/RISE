@@ -433,9 +433,11 @@ until it is green:
    re-pointed object's world bbox actually changes (a non-spatial edit SKIPS the TLAS — P1.2 dissolved,
    directly observable via `IObjectManager::GetSpatialStructureGeneration`) — **slice 4 (the item-8
    wall-clock RE-MEASUREMENT** on the stable apply: non-spatial prep ≈20 µs vs spatial rebuild ≈286 µs
-   at N=4096, the skip proven by the generation counter), and **slice 5 (the maintained-graph closure
-   primitive** — `DocEditClosure(id, graph)` is O(closure·log N), measured 0.2 µs flat vs the
-   from-scratch O(N log N) re-trace, the dominant non-spatial cost removed; the static graph guarded
+   at N=4096, the skip proven by the generation counter), and **slice 5 (the maintained-graph closure**
+   — `DocEditClosure(id, graph)`'s BFS is O(closure·log N), ~0.2 µs flat in isolation, and the
+   `MaintainedReferenceGraph` holder removes the dominant non-spatial closure-COMPUTE cost END-TO-END
+   by deciding reuse from the EDIT in O(1), NOT from the stamp (~7.6 µs end-to-end vs ~19 ms
+   from-scratch at N=4096; a stamp-gated reuse can't, since computing the stamp is itself O(N)); the static graph guarded
    against drift by `CstResolverTest` [consistency]/[drift] -- which cross-verify every
    object->material/geometry edge against the derive's actual binding by pointer (a drift
    detector on the tested scenes, not an exhaustive structural every-edge proof)). Per-parser reversibility (P1.3/P1.5),
