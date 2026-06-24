@@ -422,12 +422,19 @@ int main()
 			"RISE ASCII SCENE 6\n"
 			"piecewise_linear_function2d\n{\nname d2\n}\n"
 			"sphere_geometry\n{\nname base\nradius 1\n}\n"
-			"displaced_geometry\n{\nname disp\nbase_geometry base\ndisplacement d2\n}\n" );
+			"displaced_geometry\n{\nname disp\nbase_geometry base\ndisplacement d2\n}\n"
+			"bumpmap_modifier\n{\nname bm\nfunction d2\n}\n"
+			"composite_function2d_painter\n{\nname comp\nchild_a d2\nchild_b d2\n}\n" );
 		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
 		const NodeId d2 = DocFindByName( doc, "piecewise_linear_function2d/d2" );
 		const NodeId disp = DocFindByName( doc, "displaced_geometry/disp" );
-		bool d2HasDisp = false; for( NodeId n : DocEditClosure( d2, g ) ) if( n == disp ) d2HasDisp = true;
-		Check( d2 && disp && d2HasDisp, "painter-decl-func2d: closure(Function2D d2) INCLUDES the displaced_geometry that binds it via displacement (review #3 table)" );
+		const NodeId bm   = DocFindByName( doc, "bumpmap_modifier/bm" );
+		const NodeId comp = DocFindByName( doc, "composite_function2d_painter/comp" );
+		bool hasDisp = false, hasBm = false, hasComp = false;
+		for( NodeId n : DocEditClosure( d2, g ) ) { if( n == disp ) hasDisp = true; if( n == bm ) hasBm = true; if( n == comp ) hasComp = true; }
+		Check( d2 && disp && hasDisp, "painter-decl-func2d: closure(Function2D d2) INCLUDES displaced_geometry.displacement (review #3 table)" );
+		Check( bm && hasBm, "painter-decl-func2d: ...and bumpmap_modifier.function" );
+		Check( comp && hasComp, "painter-decl-func2d: ...and composite_function2d_painter.child_a/child_b" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
