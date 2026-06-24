@@ -436,7 +436,9 @@ until it is green:
    at N=4096, the skip proven by the generation counter), and **slice 5 (the maintained-graph closure
    primitive** — `DocEditClosure(id, graph)` is O(closure·log N), measured 0.2 µs flat vs the
    from-scratch O(N log N) re-trace, the dominant non-spatial cost removed; the static graph guarded
-   against drift by `CstResolverTest` [consistency]). Per-parser reversibility (P1.3/P1.5),
+   against drift by `CstResolverTest` [consistency]/[drift] -- which cross-verify every
+   object->material/geometry edge against the derive's actual binding by pointer (a drift
+   detector on the tested scenes, not an exhaustive structural every-edge proof)). Per-parser reversibility (P1.3/P1.5),
    abort-on-failed-drop + prior-name rename (P1.4/P1.6), full-namespace collision (P1.7), and the honest
    O(closure·log N)/O(N·log N) bounds (P1.9, R13) are all in. Still open: the structural D35
    one-resolution-path (record each edge as the derive resolves it so the static graph + the apply
