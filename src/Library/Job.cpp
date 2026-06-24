@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "Scene.h"   // P2a: bump light-topology generation on Job-level emitter/env edits
 #include "Managers/LightManager.h"   // H3: self-invalidating light add/remove
+#include "Managers/GenericManager.h" // D35 record-during-derive sinks (media bypass the GenericManager chokepoint, so hook mediaMap here)
 #include "Geometry/SDFGeometry.h"
 #include <cstring>
 #define _USE_MATH_DEFINES
@@ -5405,6 +5406,7 @@ bool Job::AddHomogeneousMedium(
 	} else {
 		mediaMap[name] = pMedium;
 	}
+	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pMedium ) );   // D35: PRODUCED medium (mediaMap bypasses GenericManager)
 
 	return true;
 }
@@ -5472,6 +5474,7 @@ bool Job::AddHeterogeneousMedium(
 	} else {
 		mediaMap[name] = pMedium;
 	}
+	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pMedium ) );   // D35: PRODUCED medium (mediaMap bypasses GenericManager)
 
 	return true;
 }
@@ -5541,6 +5544,7 @@ bool Job::AddPainterHeterogeneousMedium(
 	} else {
 		mediaMap[name] = pMedium;
 	}
+	if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pMedium ) );   // D35: PRODUCED medium (mediaMap bypasses GenericManager)
 
 	return true;
 }
@@ -5555,6 +5559,7 @@ bool Job::SetGlobalMedium(
 		return false;
 	}
 
+	if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( it->second ) );   // D35: RESOLVED medium (global_medium)
 	pScene->SetGlobalMedium( it->second );
 	return true;
 }
@@ -5576,6 +5581,7 @@ bool Job::SetObjectInteriorMedium(
 		return false;
 	}
 
+	if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( it->second ) );   // D35: RESOLVED medium (interior_medium)
 	pObj->AssignInteriorMedium( *(it->second) );
 	return true;
 }

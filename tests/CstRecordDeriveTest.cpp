@@ -7,16 +7,18 @@
 //  DeriveToJob(doc, job, diags, &recorded) builds a reference graph from the
 //  engine's ACTUAL production (manager AddItem) + resolution (manager GetItem),
 //  keyed by entity pointer -- no heuristic, so it cannot drift from the engine.
-//  This suite asserts the recorded (chunk-level) dependents AGREE with the static
-//  BuildReferenceGraph on clean canonical scenes: static's heuristic edges are all
-//  real engine resolutions (static dependents subset-of recorded), and on the
-//  simplest scene the two are EQUAL. A future manager-choice drift (a static edge
-//  the engine does not actually resolve, or vice versa) breaks the subset check.
+//  This suite asserts the recorded (chunk-level) dependents EQUAL the static
+//  BuildReferenceGraph dependents on clean canonical scenes (both directions: a
+//  static-OVER edge -- a heuristic edge the engine never resolves -- AND a static-MISS
+//  -- an engine edge the heuristic lacks -- both break the `==`). It also confirms
+//  closure over the recorded graph equals closure over the static graph. A future
+//  manager-choice drift in either direction fails the cross-check. Media are included
+//  (slice 2 records them via the mediaMap hook, despite the GenericManager bypass).
 //
 //  Scenes are deliberately CONFLATION-FREE: the static graph's conservative painter
 //  ALIAS edges (a same-named colour+scalar pair) are static-only by design (the
-//  engine does not alias), so they would break the subset direction -- out of scope
-//  for the cross-check, which validates the manager-choice convergence.
+//  engine does not alias), so they would break the `==` -- out of scope for the
+//  cross-check, which validates the manager-choice convergence.
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -59,21 +61,14 @@ static Pair Run( const std::string& scene )
 	return r;
 }
 
-static bool Subset( const std::set<std::pair<NodeId,NodeId> >& a, const std::set<std::pair<NodeId,NodeId> >& b )
-{
-	for( const std::pair<NodeId,NodeId>& e : a ) if( !b.count( e ) ) return false;
-	return true;
-}
-
 int main()
 {
 	std::printf( "CstRecordDeriveTest -- D35 slice 1 (record-during-derive + drift cross-check)\n" );
 
 	// [equal] the simplest clean scene: recorded dependents == static dependents (BOTH
-	// directions -- the only scene that also catches a static-MISS, since `subset` below only
-	// catches static-OVER). ==-eligible because every Finalize lookup here is a STORED
-	// reference (no incidental GetItem-hit, no default-name hit, no name reuse) and there is no
-	// conflation painter-alias edge -- so recorded carries no spurious edge over static.
+	// directions). ==-eligible because every Finalize lookup here is a STORED reference (no
+	// incidental GetItem-hit, no default-name hit, no name reuse) and there is no conflation
+	// painter-alias edge -- so recorded carries no spurious edge over static.
 	{
 		Pair r = Run(
 			"RISE ASCII SCENE 6\n"
@@ -105,10 +100,16 @@ int main()
 			// (transfer_* {Painter,Function}->Function1D is cross-checked in CstResolverTest;
 			//  its only host -- directvolumerendering_shader -- needs a volume grid file to
 			//  derive, which is out of scope for this kernel cross-check.)
-			// (MEDIA scenes are also excluded: interior_medium resolves via the Job's mediaMap,
-			//  which BYPASSES the GenericManager chokepoint, so the recorder misses the edge and
-			//  a medium scene would fail `subset`. Recording media is a slice-2 prerequisite --
-			//  see 21-*.md §8.)
+			// media: interior_medium resolves via the Job's mediaMap (which bypasses the
+			// GenericManager chokepoint) -- slice 2 hooks Add*Medium/SetObjectInteriorMedium so
+			// the (medium -> object) edge IS recorded; this scene would have failed `subset`
+			// before that hook (see 21-*.md §8).
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"homogeneous_medium\n{\nname med\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\ninterior_medium med\n}\n",
 			// two objects sharing one geometry + two materials sharing one painter
 			"RISE ASCII SCENE 6\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
@@ -117,12 +118,45 @@ int main()
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
 			"standard_object\n{\nname oa\ngeometry g\nmaterial m1\n}\n"
 			"standard_object\n{\nname ob\ngeometry g\nmaterial m2\n}\n",
+			// scalar-painter chain: exercises the SCALAR painter manager (a distinct
+			// GenericManager from the colour one) -- scalar_painter.base resolves via
+			// GetScalarPainters, so a non-conflated `s` records the same edge static computes.
+			"RISE ASCII SCENE 6\n"
+			"scalar_painter\n{\nname base_s\nvalue 0.3\n}\n"
+			"scalar_painter\n{\nname sp\nbase base_s\n}\n",
 		};
 		for( const char* s : scenes ) {
 			Pair r = Run( s );
 			Check( r.applied > 0 && !r.stat.empty(), "subset: scene derived with edges" );
-			Check( Subset( r.stat, r.rec ), "subset: static dependents subset-of recorded (heuristic edges are all real engine resolutions)" );
+			// Strengthened to full EQUALITY: catches static-OVER (a heuristic edge the engine
+			// never resolves) AND static-MISS (an engine edge the heuristic lacks). Holds on
+			// these clean scenes because the recorder produces no spurious edge over the static
+			// reference set (every Finalize lookup is a stored reference).
+			Check( r.rec == r.stat, "equal: recorded dependents == static dependents (engine == heuristic, both directions)" );
 		}
+	}
+
+	// [closure] closure over the RECORDED graph == closure over the static graph -- the
+	// recorded graph is a drop-in, sound closure source (slice-2 readiness: a live consumer
+	// holding (Job, recorded) can drive DocEditClosure off the engine truth; rename stays
+	// on the static/param-level path by design).
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m1\nreflectance p\n}\n"
+			"lambertian_material\n{\nname m2\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m1\n}\n" );
+		Job* j = new Job(); std::vector<std::string> d; ReferenceGraph recorded;
+		DeriveToJob( doc, *j, &d, &recorded );
+		ReferenceGraph stat = BuildReferenceGraph( doc );
+		const NodeId p = DocFindByName( doc, "uniformcolor_painter/p" );
+		std::vector<NodeId> cRec = DocEditClosure( p, recorded );
+		std::vector<NodeId> cStat = DocEditClosure( p, stat );
+		std::set<NodeId> sRec( cRec.begin(), cRec.end() ), sStat( cStat.begin(), cStat.end() );
+		Check( p && !sRec.empty() && sRec == sStat, "closure: DocEditClosure(p, recorded) == DocEditClosure(p, static) -- recorded graph is a sound closure source" );
+		j->release();
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

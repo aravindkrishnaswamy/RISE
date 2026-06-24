@@ -251,9 +251,20 @@ edits under B.
 
 ## 8. D35 — record-during-derive (the structural one-path)
 
-**Status (2026-06-24): slice 1 LANDED; slices 2–3 planned.** This is the remaining D35 step
+**Status (2026-06-24): KERNEL COMPLETE (slices 1–2 + a comprehensive drift guard); the
+consumer default-switch is GATED on live editor consumers.** This is the remaining D35 step
 from §2/§6 (slice 5): route the derive's OWN resolution through the recorded graph so the
-static graph and the engine **cannot drift even in principle**.
+static graph and the engine **cannot drift**. Delivered: the recorded graph IS the engine's
+production+resolution (it cannot drift by construction), and a bidirectional cross-check
+(`CstRecordDeriveTest`: recorded == static across a corpus spanning every reference-bearing
+manager — colour/scalar painters, material, geometry, function2d, medium, object) GUARANTEES
+the *static* heuristic can't drift from the engine undetected. What remains (gated, NOT
+speculatively built): making closure CONSUMERS default to the recorded graph + maintaining it
+incrementally — there are no live closure consumers today (the editor/agent layer doesn't
+exist yet), the recorded graph requires a derive the Document-only consumers don't have, and
+rename always needs the param-level static path regardless. The live editor (holding
+`(doc, Job, recorded)`) adopts the recorded graph for closure when it lands; the cross-check
+is the no-drift guarantee until then.
 
 **Why it's needed.** Slices 1–5 + the post-gate review rounds converged the *static*
 resolver (`BuildReferenceGraph`) to match the engine for all 144 reference params — but by
@@ -291,23 +302,33 @@ recorded graph, else editing a medium would not re-derive its consuming objects.
    `(manager, name)` + a category mapping) is what ties a resolution back to its producer — so
    a multiple-inheritance sub-object pointer (a colour painter seen as `IPainter` vs
    `IFunction2D`) still maps to its one producer (both AddItems run in that chunk's bracket).
-   `CstRecordDeriveTest` asserts the recorded graph AGREES with the static `BuildReferenceGraph`
-   on clean scenes (recorded == static on the simplest; static ⊆ recorded otherwise) —
-   *catching manager-choice drift directly* (recorded = engine truth vs static = heuristic)
-   while changing no behavior. Low risk: behavior-neutral (CstDeriveDifferentialTest 20/0,
-   CST-derive still ≡ legacy), the hooks are null-gated, the path is setup-time, and the
+   `CstRecordDeriveTest` asserts the recorded graph EQUALS the static `BuildReferenceGraph` on
+   clean scenes (recorded == static, BOTH directions — slice 2 widened this across the manager
+   corpus) — *catching manager-choice drift directly* (recorded = engine truth vs static =
+   heuristic) while changing no behavior. Low risk: behavior-neutral (CstDeriveDifferentialTest
+   20/0, CST-derive still ≡ legacy), the hooks are null-gated, the path is setup-time, and the
    recorder only compares opaque pointers (no deref / no ownership).
 
-2. **Switch closure to the recorded graph.** `DocEditClosure` / `MaintainedReferenceGraph`
-   consume the recorded `(chunk → target)` edges (chunk-level is sufficient for closure — a
-   reverse-BFS over chunk dependents). Rename keeps its conflation refusals (see the
-   chunk-level note below).
+2. **Switch closure to the recorded graph — recording side LANDED; consumer default-switch
+   GATED.** Slice 2's RECORDING side is done: media are recorded (a `mediaMap` hook in
+   `Job::Add*Medium` / `SetObjectInteriorMedium` / `SetGlobalMedium`, since media bypass the
+   `GenericManager` chokepoint), the cross-check is now bidirectional (`recorded == static`)
+   across a corpus spanning every reference-bearing manager incl. media + the scalar painter
+   manager, and closure over the recorded graph is demonstrated EQUAL to closure over the
+   static graph (`CstRecordDeriveTest` [closure]). The actual consumer SWITCH (`DocEditClosure`
+   / `MaintainedReferenceGraph` *default* to the recorded edges) is GATED on live consumers
+   (see Status): the path is ready (`DocEditClosure(id, recorded)` works + is tested), not
+   speculatively wired. Chunk-level is sufficient for closure; rename keeps its conflation
+   refusals (see the chunk-level note below).
 
-3. **Retire the heuristics.** Once the recorded graph is the closure source and the
-   cross-check has held across the suite, `FunctionSubNamespace` + the painter alias become
-   redundant for closure and collapse to the recorded resolution; the `ior`/`film_ior`
-   phantom edge and the painter colour/scalar residual dissolve (the recorded edge is
-   whatever `GetItem` actually returned).
+3. **Retire the heuristics — DEMOTED + GUARDED; full retirement gated.** `FunctionSubNamespace`
+   + the painter alias are now GUARDED by the bidirectional cross-check (recorded == static
+   guarantees they match the engine), so they cannot drift undetected. They are NOT removed:
+   rename always needs the param-level static path + its conflation refusals (P1.4/#3), and
+   closure won't depend on the recorded graph until the consumer-switch lands. Removal-for-
+   closure (and with it the dissolution of the `ior`/`film_ior` phantom + painter colour/scalar
+   residual, since the recorded edge is whatever `GetItem` actually returned) follows the
+   consumer-switch.
 
 **Chunk-level boundary (honest).** The chokepoint records the resolved ENTITY pointer, not the
 SOURCE param NodeId, so the recorded graph is **chunk→chunk**, sufficient for closure. Rename needs
@@ -319,18 +340,18 @@ recorded graph; rename stays on the static/heuristic edges + its conflation refu
 the param NodeId through) is a later step, only if rename ever needs to resolve a conflation
 rather than refuse it.
 
-**Before slice 2 (prerequisites for switching closure to the recorded graph).** Slice 1 only
-RECORDS + cross-checks; consumers still read `BuildReferenceGraph`. Three things must land
-first, else the recorded closure would MISS real edges:
-- **Media recording** — `interior_medium` (and any future `mediaMap`-backed reference)
-  bypasses the `GenericManager` chokepoint (see the Key-finding caveat); record it via a
-  parallel `mediaMap` hook or by routing media through a `GenericManager`, and add a medium
-  scene to `CstRecordDeriveTest`.
-- **Realize-time resolution** — any reference resolved AFTER `DeriveToJob`'s PASS-2 brackets
-  close (e.g. deferred realization at `RayCaster::AttachScene`) is outside the recording
-  window; confirm none exists, or extend the bracket. (Today the displaced/heightfield refs
-  resolve eagerly in Finalize — confirmed by the passing subset cross-check.)
-- **Cross-check coverage** — the slice-1 subset assertion catches static-OVER drift (a
-  heuristic edge the engine doesn't resolve) but not static-MISS (an engine edge the heuristic
-  lacks) except on the `==` simplest scene; before relying on the recorded graph, widen the
-  `==` (bidirectional) coverage or add a recorded-⊆-static check on spurious-free scenes.
+**Slice-2 recording prerequisites — DONE.** These had to land before a consumer could rely on
+the recorded graph; all three are addressed:
+- **Media recording — DONE.** `interior_medium` / `global_medium` bypass the `GenericManager`
+  chokepoint (media live in `Job::mediaMap`); recorded via hooks in `Job::Add*Medium`
+  (production) + `SetObjectInteriorMedium` / `SetGlobalMedium` (resolution), keyed by the same
+  entity pointer. A medium scene is in `CstRecordDeriveTest`.
+- **Realize-time resolution — CONFIRMED none escapes.** Deferred realization at
+  `RayCaster::AttachScene` BAKES geometry (displacement / CSG); it resolves no references
+  (those are bound at Finalize/derive, inside the recording bracket). The cross-check's
+  displacement scene confirms the function2d edge IS captured at derive-time (recorded ==
+  static), so nothing leaks past the bracket.
+- **Cross-check coverage — DONE.** The cross-check is now bidirectional (`recorded == static`,
+  catching static-OVER AND static-MISS) across a corpus spanning every reference-bearing
+  manager (colour/scalar painters, material, geometry, function2d, medium, object); no
+  spurious recorded edge appears on the clean corpus.
