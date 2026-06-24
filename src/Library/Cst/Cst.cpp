@@ -1619,6 +1619,12 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 	// update it INCREMENTALLY on a single-chunk edit (subtract the chunk's old cs, add its new) in
 	// O(chunk) rather than an O(N) re-fold -- preserving "same stamp => same graph" (each cs folds
 	// the chunk's distinct NodeId, so distinct chunks don't sum-cancel).
+	// Each cs ALSO folds the RESOLVED TARGET NodeId of every edge (review P1): the per-chunk SUM is
+	// order-independent, but namespace resolution is FIRST-WINS (order-sensitive) on duplicate
+	// definitions -- so without the target fold a producer reorder would change an edge while leaving
+	// the sum unchanged.  Folding the resolved target makes the stamp reflect the resolved GRAPH,
+	// restoring "same stamp => same graph".  (Incremental-safe: the target is recomputed in the
+	// per-chunk resolution that the maintained graph re-runs on an edit -- #4b.)
 	unsigned long long stamp = 0;                          // sum of per-chunk stamps (0 == empty graph)
 	unsigned long long cs    = 0;                          // the CURRENT chunk's accumulator (reset per chunk in PASS B)
 	auto mix = [&cs]( const std::string& s ) {             // fold reference-relevant content into the current chunk's stamp
@@ -1788,6 +1794,7 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 						if( d != defs.end() && d->second != kRuntimeDefaultTarget && d->second != 0 ) {
 							const NodeId srcParam = DocParamId( doc, chunkId, role, thisOcc );
 							mix( std::to_string( (long long)srcParam ) );
+							mix( std::to_string( (long long)d->second ) );   // #4a-fix (review P1): fold the RESOLVED target (cp)
 							graph.edges.push_back( ReferenceUse{ srcParam, d->second } );
 							if( chunkId != d->second ) graph.dependents[ d->second ].push_back( chunkId );
 						}
@@ -1852,6 +1859,7 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 				// move, else a reused graph carries a dead source NodeId.  A value edit
 				// preserves the param NodeId, so this stays stable across non-structural edits.
 				mix( std::to_string( (long long)srcParam ) );
+				mix( std::to_string( (long long)target ) );   // #4a-fix (review P1): fold the RESOLVED target -- a first-wins producer reorder changes this edge but not the per-chunk-value sum
 				graph.edges.push_back( ReferenceUse{ srcParam, target } );
 				// Reverse adjacency, computed in this SAME pass (slice 5): the referenced
 				// chunk -> the chunk that references it, so DocEditClosure( id, graph ) is a

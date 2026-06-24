@@ -188,6 +188,45 @@ int main()
 		Check( f2HasP2, "maintained-cp: after the edit, closure(f2) includes the plf2d (new cp ref traced)" );
 	}
 
+	// [stamp-reorder] (review P1) the COMMUTATIVE stamp (#4a) must still reflect ORDER-SENSITIVE
+	// resolution: namespace lookup is FIRST-WINS on duplicate definitions, so swapping two same-
+	// named producers flips the resolved edge -- and the stamp MUST move even though the per-chunk
+	// content SUM is identical (SAME NodeIds, reordered).  Without folding the RESOLVED TARGET
+	// NodeId into the consumer's per-chunk stamp, the sum is stable -> false "graph unchanged" -> a
+	// stamp-gated holder reuses a stale dependency.  DocReparse carries the duplicate producers'
+	// NodeIds BY CONTENT, so the reordered reparse is the EXACT same-NodeId reorder (two independent
+	// parses would differ trivially by NodeId and not isolate the bug).
+	{
+		auto resolvedTarget = []( const ReferenceGraph& g, NodeId src ) -> NodeId {
+			for( const ReferenceUse& e : g.edges ) if( e.sourceValueNodeId == src ) return e.targetNodeId;
+			return 0;
+		};
+		const std::string s1 =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"sphere_geometry\n{\nname g\nradius 2\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+		const std::string s2 =   // the two same-named producers SWAPPED (radius 2 first)
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 2\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+		Document d1 = ParseToCst( s1 );
+		Document d2 = DocReparse( d1, s2 );   // lineage carries g{r1}/g{r2} NodeIds BY CONTENT -> reordered, SAME NodeIds
+		ReferenceGraph g1 = BuildReferenceGraph( d1 );
+		ReferenceGraph g2 = BuildReferenceGraph( d2 );
+		const NodeId og1 = DocParamId( d1, DocFindByName( d1, "standard_object/o" ), "geometry", 0 );
+		const NodeId og2 = DocParamId( d2, DocFindByName( d2, "standard_object/o" ), "geometry", 0 );
+		const NodeId t1 = resolvedTarget( g1, og1 );
+		const NodeId t2 = resolvedTarget( g2, og2 );
+		Check( t1 != 0 && t2 != 0 && t1 != t2, "stamp-reorder: swapping duplicate producers CHANGED the resolved object->geometry edge (first-wins)" );
+		Check( g1.stamp != g2.stamp, "stamp-reorder: the stamp MOVED with the resolved edge (folds the resolved target NodeId -- review P1)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
