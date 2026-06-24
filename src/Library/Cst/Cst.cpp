@@ -1421,6 +1421,12 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 				// sourceValueNodeId is the param NodeId (a tuple's ref tokens share it;
 				// value-atom sub-identity is the deferred refinement).
 				graph.edges.push_back( ReferenceUse{ DocParamId( doc, chunkId, role, thisOcc ), target } );
+				// Reverse adjacency, computed in this SAME pass (slice 5): the referenced
+				// chunk -> the chunk that references it, so DocEditClosure( id, graph ) is a
+				// pure O(closure . log N) BFS over a reused graph.  (Self-reference excluded,
+				// matching the from-scratch DocEditClosure; duplicate dependents are harmless
+				// -- the BFS dedups via its seen-set.)
+				if( chunkId != target ) graph.dependents[ target ].push_back( chunkId );
 			}
 		}
 	}
@@ -1596,36 +1602,12 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 	return result;
 }
 
-std::vector<NodeId> DocEditClosure( const Document& doc, NodeId changedChunkId )
+std::vector<NodeId> DocEditClosure( NodeId changedChunkId, const ReferenceGraph& graph )
 {
-	// param NodeId -> its owning chunk NodeId, so a reference EDGE (keyed by the
-	// referring param) yields the referring CHUNK.
-	std::map<NodeId, NodeId> paramChunk;
-	std::vector<NodeRef> items;
-	SeqToVec( doc.items, items );
-	for( size_t i = 0; i < items.size(); ++i ) {
-		const NodeRef& c = items[i];
-		if( c->kind != NodeKind::Chunk ) continue;
-		const NodeId cid = DocNodeIdAt( doc, (int)i );
-		std::map<std::string,int> occ;
-		for( const auto& kid : c->kids ) {
-			if( kid->kind != NodeKind::Param ) continue;
-			const std::string role = kid->role;
-			const int thisOcc = occ[role]++;
-			paramChunk[ DocParamId( doc, cid, role, thisOcc ) ] = cid;
-		}
-	}
-	// reverse adjacency: chunk -> the chunks that REFERENCE it (its dependents).
-	std::map<NodeId, std::vector<NodeId> > deps;
-	std::vector<ReferenceUse> uses = TraceReferences( doc );
-	for( const ReferenceUse& u : uses ) {
-		std::map<NodeId, NodeId>::const_iterator pc = paramChunk.find( u.sourceValueNodeId );
-		if( pc != paramChunk.end() && pc->second != u.targetNodeId ) deps[ u.targetNodeId ].push_back( pc->second );
-	}
-	// Walk the dependents (DFS over a LIFO stack): the re-derive closure is the
-	// changed chunk + everything that transitively references it (D25). The returned
-	// ORDER is unspecified (callers needing document order -- DeriveToJobIncremental
-	// -- sort by index); the closure SIZE scales with the dependents, NOT the doc.
+	// Pure reverse-BFS over the PRE-BUILT reverse adjacency (slice 5): the re-derive
+	// closure is the changed chunk + everything that transitively references it (D25).
+	// No document re-trace -- O(closure . log N) over a maintained / cached graph.  The
+	// returned ORDER is unspecified (callers needing document order sort by index).
 	std::vector<NodeId> closure;
 	std::unordered_set<long long> seen;
 	std::vector<NodeId> stack; stack.push_back( changedChunkId );
@@ -1633,10 +1615,18 @@ std::vector<NodeId> DocEditClosure( const Document& doc, NodeId changedChunkId )
 		const NodeId n = stack.back(); stack.pop_back();
 		if( !seen.insert( (long long)n ).second ) continue;
 		closure.push_back( n );
-		std::map<NodeId, std::vector<NodeId> >::const_iterator d = deps.find( n );
-		if( d != deps.end() ) for( NodeId r : d->second ) if( !seen.count( (long long)r ) ) stack.push_back( r );
+		std::map<NodeId, std::vector<NodeId> >::const_iterator d = graph.dependents.find( n );
+		if( d != graph.dependents.end() ) for( NodeId r : d->second ) if( !seen.count( (long long)r ) ) stack.push_back( r );
 	}
 	return closure;
+}
+
+std::vector<NodeId> DocEditClosure( const Document& doc, NodeId changedChunkId )
+{
+	// From-scratch: trace the whole graph (O(N log N)), then the same BFS.  A caller
+	// that holds a maintained graph should call the (id, graph) overload directly to
+	// skip the re-trace (CstEditCostTest measures both).
+	return DocEditClosure( changedChunkId, BuildReferenceGraph( doc ) );
 }
 
 int    DocItemCount  ( const Document& doc ) { return SeqCount( doc.items ); }

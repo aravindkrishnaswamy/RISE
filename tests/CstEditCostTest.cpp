@@ -26,8 +26,11 @@
 //
 //    WALL-CLOCK (median of K trials, microseconds, scaling N):
 //      [edit]         DocSetParamValue                -> O(log N)        (flat)
-//      [closure]      DocEditClosure (compute it)     -> O(N log N) (re-traces the whole
-//                     graph each call; a maintained graph -- slice 5 -- O(closure . log N))
+//      [closure]      DocEditClosure(doc,id) (from scratch) -> O(N log N) (re-traces the
+//                     whole graph each call)
+//      [clo:graph]    DocEditClosure(id, graph) over a PRE-BUILT graph (slice 5) ->
+//                     O(closure . log N), ~flat in N: the maintained-graph endpoint, the
+//                     re-trace amortised by a holder that rebuilds only on a stamp change
 //      [incremental]  DeriveToJobIncremental(closure) -> O(closure . log N) (cheap,
 //                     ~flat in N) AND produces a Job byte-identical (DumpJob) to a full
 //                     re-derive
@@ -46,8 +49,11 @@
 //  only PER-PARSER-reversible chunks: it REFUSES painters (func2d dual-registration),
 //  composed materials (helper painters), translucent (ambient parser cache), gltf_import
 //  (bulk), a non-standard_object (csg), an optional-slot removal, and animated docs;
-//  those fall back to a full re-derive (D51).  Remaining: routing the parser lookups
-//  through the resolver so the closure is O(closure . log N) (slice 5).
+//  those fall back to a full re-derive (D51).  Slice 5 adds the maintained-graph closure
+//  primitive (the (id, graph) overload measured here); the remaining D35 step is routing
+//  the derive's own resolution through the recorded graph so the static graph and the
+//  apply resolution cannot drift even in principle (a holder-side / parser-instrumentation
+//  integration beyond this kernel slice).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -144,10 +150,10 @@ int main()
 	// WALL-CLOCK + STABLE-OBJECT generation checks, at scaling N.
 	//----------------------------------------------------------------------
 	std::printf( "[wall-clock] microseconds (median), scaling N:\n" );
-	std::printf( "  %6s | %8s | %10s | %11s | %10s | %11s | %11s\n", "N", "edit", "closure", "increment", "full", "prep:spat", "prep:nonsp" );
+	std::printf( "  %6s | %8s | %10s | %10s | %11s | %10s | %11s | %11s\n", "N", "edit", "closure", "clo:graph", "increment", "full", "prep:spat", "prep:nonsp" );
 
 	const int NS[] = { 256, 1024, 4096 };
-	double incrAt[3] = {0,0,0}, fullAt[3] = {0,0,0}, prepSpatAt[3] = {0,0,0}, prepNonAt[3] = {0,0,0}, cloAt[3] = {0,0,0}, editAt[3] = {0,0,0};
+	double incrAt[3] = {0,0,0}, fullAt[3] = {0,0,0}, prepSpatAt[3] = {0,0,0}, prepNonAt[3] = {0,0,0}, cloAt[3] = {0,0,0}, cloGraphAt[3] = {0,0,0}, editAt[3] = {0,0,0};
 	for( int k = 0; k < 3; ++k ) {
 		const int N = NS[k];
 		Document doc = ParseToCst( SceneN( N, false ) );
@@ -175,6 +181,13 @@ int main()
 		// [edit] + [closure] : pure-CST timings.
 		editAt[k] = MedianMicros( 21, [&]{ volatile auto d = DocSetParamValue( doc, gid, "radius", 0, "2" ); (void)d; } );
 		cloAt[k]  = MedianMicros( 21, [&]{ volatile auto c = DocEditClosure( docG, gid ); (void)c; } );
+
+		// [clo:graph] : the slice-5 maintained-graph endpoint -- build the reference graph
+		// ONCE (the O(N log N) trace a holder amortises), then find the closure via the
+		// (id, graph) overload, a pure O(closure . log N) reverse-BFS with no re-trace.
+		const ReferenceGraph rg = BuildReferenceGraph( docG );
+		cloGraphAt[k] = MedianMicros( 21, [&]{ volatile auto c = DocEditClosure( gid, rg ); (void)c; } );
+		Check( DocEditClosure( gid, rg ) == DocEditClosure( docG, gid ), "closure(id, reused graph) == closure(doc, id) (the overload is equivalence-preserving)" );
 
 		// [full] : a complete re-derive into a fresh Job (the baseline).
 		fullAt[k] = MedianMicros( 3, [&]{ Job* j = new Job(); DeriveToJob( docG, *j ); j->release(); } );
@@ -239,7 +252,7 @@ int main()
 		}
 
 		jbase->release();
-		std::printf( "  %6d | %8.1f | %10.1f | %11.1f | %10.1f | %11.1f | %11.1f\n", N, editAt[k], cloAt[k], incrAt[k], fullAt[k], prepSpatAt[k], prepNonAt[k] );
+		std::printf( "  %6d | %8.1f | %10.1f | %10.1f | %11.1f | %10.1f | %11.1f | %11.1f\n", N, editAt[k], cloAt[k], cloGraphAt[k], incrAt[k], fullAt[k], prepSpatAt[k], prepNonAt[k] );
 	}
 
 	//----------------------------------------------------------------------
@@ -258,10 +271,16 @@ int main()
 	// Checks above are the noise-free proof; this is the wall-clock.
 	Check( prepSpatAt[2] > prepSpatAt[0], "spatial TLAS rebuild grows with N (~O(N log N))" );
 	Check( prepNonAt[2] * 3 < prepSpatAt[2], "NON-spatial edit's post-edit prepare materially cheaper than the spatial rebuild at N=4096 (TLAS skipped; gen-counter Checks are the noise-free proof)" );
+	// The maintained-graph endpoint (slice 5): finding the closure over a PRE-BUILT graph
+	// is O(closure . log N) -- flat in N -- vs the from-scratch O(N log N) re-trace, which
+	// removes the closure-COMPUTE term slice 4 measured as the dominant non-spatial cost.
+	Check( cloGraphAt[2] * 4 < cloAt[2], "closure via a maintained graph >=4x cheaper than the from-scratch re-trace at N=4096" );
+	Check( cloGraphAt[2] < cloGraphAt[0] * 6.0 + 50.0, "closure via a maintained graph ~flat in N (O(closure . log N), not O(N log N))" );
 
 	std::printf( "  decomposition at N=4096 (microseconds):\n" );
-	std::printf( "    edit %.1f + closure-compute %.1f + incremental-apply %.1f  (closure-compute O(N log N) dominates -- a maintained graph (slice 5) makes it O(closure . log N))\n",
-		editAt[2], cloAt[2], incrAt[2] );
+	std::printf( "    edit %.1f + closure-compute %.1f (from scratch) -> %.1f (over a maintained graph, slice 5) + incremental-apply %.1f\n",
+		editAt[2], cloAt[2], cloGraphAt[2], incrAt[2] );
+	std::printf( "    (the from-scratch O(N log N) closure-COMPUTE was the dominant non-spatial cost; the maintained-graph (id, graph) overload makes it O(closure . log N), ~flat in N.)\n" );
 	std::printf( "    SPATIAL edit additionally pays the TLAS rebuild %.1f us (O(N log N)); a NON-SPATIAL edit SKIPS it -- post-edit prepare is %.1f us (the BVH stays valid).\n",
 		prepSpatAt[2], prepNonAt[2] );
 	std::printf( "    (a full non-incremental re-derive instead costs %.1f us; the incremental re-apply + the skipped TLAS are the saving.)\n", fullAt[2] );

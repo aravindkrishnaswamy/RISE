@@ -39,6 +39,7 @@
 
 #include <string>
 #include <vector>
+#include <map>
 #include <memory>
 #include <cstdint>
 
@@ -282,12 +283,15 @@ namespace RISE
 		//! set to "none"), and any document with an animation/timeline.  A drop that finds
 		//! no such entity (a rename, or a stale closure -- this is value-edit only) ABORTS
 		//! rather than silently re-adding a duplicate (review P1.4).  Returns the count
-		//! applied (== chunkIds.size() on success).  The shared resolver
-		//! (BuildReferenceGraph, slice 1) and atomic rename (slice 2) have landed; still
-		//! deferred HERE: routing this function's lookups through the resolver + caching it
-		//! so the closure is O(closure) not O(closure*log N) (slice 5 / maintained graph),
-		//! CSG-operand + optional-slot-removal in-place handling (slice-3 follow-ups), and
-		//! full post-Finalize rollback of a partial apply (slice 4).
+		//! applied (== chunkIds.size() on success).  Landed: the shared resolver (slice 1),
+		//! atomic rename (slice 2), the stable-object re-point this function performs
+		//! (slice 3), the cost re-measurement (slice 4), and the maintained-graph closure
+		//! primitive -- DocEditClosure(id, graph), O(closure . log N) over a held graph
+		//! (slice 5), which a CALLER uses to find this function's `chunkIds` cheaply.  Still
+		//! deferred: routing the derive's OWN resolution through the recorded graph so the
+		//! static graph and the apply resolution cannot drift even in principle (the
+		//! remaining D35 step), CSG-operand + optional-slot-removal in-place handling
+		//! (slice-3 follow-ups), and full post-Finalize rollback of a partial apply.
 		int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<NodeId>& chunkIds, std::vector<std::string>* diagnostics = nullptr );
 
 		//==============================================================
@@ -463,7 +467,11 @@ namespace RISE
 		//! references re-mixes its name) -- a stamp change therefore means "re-derive
 		//! the graph to be safe", which at worst costs a needless re-derive, never a
 		//! missed staleness.
-		struct ReferenceGraph { std::vector<ReferenceUse> edges; unsigned long long stamp = 0; };
+		struct ReferenceGraph {
+			std::vector<ReferenceUse>             edges;        //!< resolved (sourceParam NodeId -> targetChunk NodeId) edges
+			std::map<NodeId, std::vector<NodeId> > dependents;  //!< reverse adjacency: a referenced chunk -> the CHUNKS that reference it. Computed in the SAME single BuildReferenceGraph pass as `edges`, so a caller holding a (maintained / cached, stamp-validated) graph gets DocEditClosure( changedChunkId, graph ) as a pure O(closure . log N) reverse-BFS -- the slice-5 maintained-graph endpoint -- instead of the O(N . log N) full re-trace the document-only DocEditClosure pays from scratch.
+			unsigned long long                    stamp = 0;    //!< conservative content fingerprint (see above)
+		};
 
 		//! Trace the document's reference graph (item 6). A reference resolves to the
 		//! chunk of that name in the param's reference CATEGORY, in the descriptor-
@@ -625,12 +633,21 @@ namespace RISE
 		//! TLAS rebuild for a NON-SPATIAL edit, paying the engine's O(N log N) BVH rebuild
 		//! only for a SPATIAL edit -- a geometry's SHAPE, an object's TRANSFORM, or an
 		//! object's GEOMETRY reference.) Returns `changedChunkId` first.
-		//! COST: the closure SIZE is O(closure), but COMPUTING it here is O(N log N)
-		//! -- it re-traces the whole reference graph (TraceReferences) + rebuilds the
-		//! param->chunk map (DocParamId per param) each call; a production system
-		//! maintaining the graph incrementally would find the closure in O(closure).
-		//! (CstEditCostTest wall-clocks this term.)
+		//! COST: the closure SIZE is O(closure), but COMPUTING it via THIS overload is
+		//! O(N log N) -- it re-traces the whole reference graph (BuildReferenceGraph)
+		//! each call. Use the graph overload below to amortise that.
 		std::vector<NodeId> DocEditClosure( const Document& doc, NodeId changedChunkId );
+
+		//! Closure over a PRE-BUILT (maintained / cached, stamp-validated) reference
+		//! graph (slice 5): a pure O(closure . log N) reverse-BFS over `graph.dependents`,
+		//! with NO re-trace of the document. A caller that holds the graph and rebuilds it
+		//! only when the document's BuildReferenceGraph stamp changes pays the O(N log N)
+		//! trace ONCE, then finds each subsequent edit's closure in O(closure . log N) --
+		//! this is the maintained-graph endpoint that removes the closure-COMPUTE term
+		//! CstEditCostTest measured as the dominant non-spatial-edit cost. The doc-only
+		//! overload above is exactly this BFS preceded by a from-scratch BuildReferenceGraph.
+		//! (Does NOT take `doc`: the BFS needs only the graph's reverse adjacency.)
+		std::vector<NodeId> DocEditClosure( NodeId changedChunkId, const ReferenceGraph& graph );
 	}
 }
 

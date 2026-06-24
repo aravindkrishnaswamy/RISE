@@ -191,6 +191,10 @@ the managers a typed removal clears. Classification:
 
 ## 6. Slices (each to zero-P1 via the review loop)
 
+**Status (2026-06-23): slices 0–4 LANDED; slice 5's maintained-graph closure primitive +
+the drift guard LANDED, with the structural one-resolution-path the remaining D35 step
+(see slice 5).** Each landed slice converged through the review-fix loop to zero P1s.
+
 0. **Interim safety + honesty (lands first, supersedes nothing):** make the
    current `DeriveToJobIncremental` *safe* until B replaces it — invalidate the
    TLAS + bump light-gen on object recreation (kills the UAF), abort on a failed
@@ -207,8 +211,17 @@ the managers a typed removal clears. Classification:
    + the invariant chain; the central result becomes valid. [Root A; P1.1,P1.2]
 4. **Re-measure item 8 on the stable apply** — non-spatial edit now genuinely
    skips the TLAS; honest wall-clock + the corrected bounds. [P1.2,P1.9]
-5. **Route parser lookups through the resolver** — so the recorded graph and the
-   apply resolution cannot drift even in principle (full D35). [P1.8 complete]
+5. **Maintained-graph closure + drift guard** — `BuildReferenceGraph` computes the
+   reverse adjacency (`dependents`) in its single pass, and `DocEditClosure(id, graph)`
+   walks it in O(closure·log N) over a held, stamp-validated graph (CstEditCostTest:
+   0.2 µs flat vs the from-scratch O(N log N) re-trace — the dominant non-spatial cost,
+   removed). The static graph is guarded against drifting from the derive by
+   `CstResolverTest` [consistency] (every graph edge ↔ the derive's actual binding) +
+   `CstDeriveDifferentialTest`. **Remaining D35 step:** route the derive's OWN resolution
+   through the recorded graph (record each edge as `DeriveToJob` resolves it) so the two
+   cannot drift *even in principle* — a holder/parser-instrumentation integration beyond
+   this kernel slice. [P1.8: namespace + ref-or-literal + drift-detection done; structural
+   one-path remaining]
 
 ## 7. Honest cost (P1.9)
 

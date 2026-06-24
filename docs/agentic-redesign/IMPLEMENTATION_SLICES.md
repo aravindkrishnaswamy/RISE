@@ -6,13 +6,16 @@
 > 1–8. A bulk review of items 5–8 returned **nine P1 blockers**; item 8's first
 > drop/re-add apply and parallel reference scan are being **replaced by a stable-object
 > in-place apply + shared resolver** (design: [21-stable-apply-and-resolver.md](21-stable-apply-and-resolver.md),
-> slices 0–5). **Slices 0–3 have LANDED** (interim safety, the shared resolver, atomic
-> rename, and the stable-object in-place apply — objects are re-pointed in place and a
-> non-spatial edit now skips the TLAS); the remaining gate is **slice 4 (the item-8
-> wall-clock MEASUREMENT)** plus slice 5 (route the parser lookups through the resolver).
-> Items 5–7 stand; item 8's measurement gate is not yet met (see its entry). This doc maps
-> each slice to the decisions it validates, states its gates, and is candid about what
-> is **not yet proven**.
+> slices 0–5). **Slices 0–5 have substantively LANDED** (interim safety, the shared
+> resolver, atomic rename, the stable-object in-place apply — objects re-pointed in place,
+> a non-spatial edit skips the TLAS — the item-8 wall-clock re-measurement, and the
+> maintained-graph closure primitive so an edit's closure is O(closure·log N) over a held
+> graph). Items 5–7 stand; item 8's result (non-spatial skips the TLAS; closure
+> O(closure·log N)) is achieved and measured. The remaining D35 step — routing the
+> derive's own resolution through the recorded graph so the static graph cannot drift from
+> the apply *even in principle* — is candidly scoped in slice 5. This doc maps each slice
+> to the decisions it validates, states its gates, and is candid about what is **not yet
+> proven**.
 
 All four slices are committed on `feature/gui-snapshot-prototype` (unpushed). They are
 self-contained C++ test executables under `tests/`, sharing one prototype CST in
@@ -420,31 +423,36 @@ until it is green:
    identity/derive/reference invariant) + a final P2 polish (a name-less-chunk rename is now a diagnosed
    no-op, not silent). ← next: item 8 (spatial + non-spatial edit cost).
 8. **Measure a non-spatial edit AND a spatial edit; report TLAS time separately.**
-   **Slices 0-3 LANDED (21-stable-apply-and-resolver.md); the MEASUREMENT (slice 4) is the remaining gate.**
+   **Slices 0-5 substantively LANDED (21-stable-apply-and-resolver.md); the item-8 result is achieved.**
    The bulk review (2026-06-23) found nine P1 blockers in the first drop/re-add apply; the redesign
-   (doc 21) designs them out across slices 0-5. Landed so far: slice 0 (interim safety + honest cost),
+   (doc 21) designs them out across slices 0-5. Landed: slice 0 (interim safety + honest cost),
    slice 1 (the shared resolver `BuildReferenceGraph`, stamped, full namespace), slice 2 (atomic rename:
-   rewrite-all-or-refuse + full-namespace collision), and **slice 3 (STABLE-OBJECT in-place apply)** —
+   rewrite-all-or-refuse + full-namespace collision), **slice 3 (STABLE-OBJECT in-place apply)** —
    objects are no longer dropped/recreated; they keep their address (the TLAS holds raw object pointers,
    so this dissolves the P1.1 UAF) and are re-pointed in place, with the TLAS invalidated only when a
-   re-pointed object's world bbox actually changes (a non-spatial edit now SKIPS the TLAS — P1.2
-   dissolved, directly observable via `IObjectManager::GetSpatialStructureGeneration`). Per-parser
-   reversibility (P1.3/P1.5), abort-on-failed-drop + prior-name rename (P1.4/P1.6), full-namespace
-   collision (P1.7), and the honest O(closure·log N)/O(N·log N) bounds (P1.9, R13) are all in. Still
-   open: **slice 4 (re-measure item 8 on the stable apply** — wall-clock the non-spatial skip + the
-   spatial TLAS cost), **slice 5 (route the parser lookups through the resolver** so the recorded graph
-   and the apply resolution cannot drift — full D35, P1.8), plus the slice-3 follow-ups (CSG-operand +
-   optional-slot-removal in-place handling, currently refused → full derive) and full post-Finalize
-   rollback.
+   re-pointed object's world bbox actually changes (a non-spatial edit SKIPS the TLAS — P1.2 dissolved,
+   directly observable via `IObjectManager::GetSpatialStructureGeneration`) — **slice 4 (the item-8
+   wall-clock RE-MEASUREMENT** on the stable apply: non-spatial prep ≈20 µs vs spatial rebuild ≈286 µs
+   at N=4096, the skip proven by the generation counter), and **slice 5 (the maintained-graph closure
+   primitive** — `DocEditClosure(id, graph)` is O(closure·log N), measured 0.2 µs flat vs the
+   from-scratch O(N log N) re-trace, the dominant non-spatial cost removed; the static graph guarded
+   against drift by `CstResolverTest` [consistency]). Per-parser reversibility (P1.3/P1.5),
+   abort-on-failed-drop + prior-name rename (P1.4/P1.6), full-namespace collision (P1.7), and the honest
+   O(closure·log N)/O(N·log N) bounds (P1.9, R13) are all in. Still open: the structural D35
+   one-resolution-path (record each edge as the derive resolves it so the static graph + the apply
+   resolution cannot drift *even in principle*), the slice-3 follow-ups (CSG-operand + optional-slot-
+   removal in-place handling, currently refused → full derive), and full post-Finalize rollback.
 
 That is the gate that turns "the model and cost-model hold in prototypes" into "the redesign's real
 CST path is O(closure·log N) for non-spatial edits, with spatial cost reported honestly." **Items 1-7
-+ doc-21 slices 0-3 are landed and reviewed; the item-8 MEASUREMENT (slice 4) is the remaining gate.**
++ doc-21 slices 0-5 are landed and reviewed; the item-8 result (non-spatial skips the TLAS, closure
+O(closure·log N) over a maintained graph) is achieved and measured.**
 What IS true today: the in-tree `src/Library/Cst` kernel carries a scene losslessly, derives it
 identically to the legacy parser through the live descriptor registry, traces a (static, descriptor-scoped)
-reference graph, applies structured edits + reparse + rename with NodeId lineage, and applies an
-incremental edit by recreating only the non-object entities while RE-POINTING objects in place — so a
-non-spatial edit skips the TLAS and the apply is O(closure·log N) (full derive O(N·log N)). The
-remaining work is slice 4 (the wall-clock measurement of the now-valid non-spatial skip), slice 5 (an
-authoritative D35 graph that the apply resolution cannot drift from), the slice-3 follow-ups, and full
+reference graph with a reverse adjacency, applies structured edits + reparse + rename with NodeId lineage,
+applies an incremental edit by recreating only the non-object entities while RE-POINTING objects in place
+(so a non-spatial edit skips the TLAS; apply O(closure·log N), full derive O(N·log N)), and finds an
+edit's closure in O(closure·log N) over a held maintained graph. The
+remaining work is the structural D35 one-resolution-path (so the static graph cannot drift from the apply
+resolution even in principle), the slice-3 follow-ups, and full
 rollback. (expr / RepeatGroup / instance_array remain OUT until the gate is green.)
