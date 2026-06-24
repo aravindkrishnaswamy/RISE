@@ -1613,10 +1613,17 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 	std::vector<std::string> local;
 	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
 	ReferenceGraph graph;
-	unsigned long long stamp = 1469598103934665603ULL;   // FNV-1a offset basis
-	auto mix = [&stamp]( const std::string& s ) {         // fold reference-relevant content into the stamp
-		for( unsigned char ch : s ) { stamp ^= ch; stamp *= 1099511628211ULL; }
-		stamp ^= (unsigned char)'|'; stamp *= 1099511628211ULL;
+	// Commutative per-chunk stamp (#4): each chunk folds its reference-relevant content into a
+	// FRESH per-chunk FNV-1a accumulator `cs` (reset per chunk in PASS B); the graph stamp is the
+	// SUM of those per-chunk stamps.  Order-independent + per-chunk, so the maintained graph can
+	// update it INCREMENTALLY on a single-chunk edit (subtract the chunk's old cs, add its new) in
+	// O(chunk) rather than an O(N) re-fold -- preserving "same stamp => same graph" (each cs folds
+	// the chunk's distinct NodeId, so distinct chunks don't sum-cancel).
+	unsigned long long stamp = 0;                          // sum of per-chunk stamps (0 == empty graph)
+	unsigned long long cs    = 0;                          // the CURRENT chunk's accumulator (reset per chunk in PASS B)
+	auto mix = [&cs]( const std::string& s ) {             // fold reference-relevant content into the current chunk's stamp
+		for( unsigned char ch : s ) { cs ^= ch; cs *= 1099511628211ULL; }
+		cs ^= (unsigned char)'|'; cs *= 1099511628211ULL;
 	};
 
 	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
@@ -1751,6 +1758,7 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 		// while the graph's NodeId-keyed edges go stale -> a holder reusing the cached
 		// graph would walk a dead NodeId.  A value edit PRESERVES NodeIds (D26), so this
 		// stays stable across the non-reference edits the stamp must not move on.
+		cs = 1469598103934665603ULL;   // #4: reset the per-chunk stamp accumulator (FNV-1a basis)
 		mix( c->role );
 		mix( std::to_string( (long long)chunkId ) );
 		{ std::string nm; if( ParamValue( c.get(), "name", nm ) ) mix( nm ); }
@@ -1853,6 +1861,7 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 				if( chunkId != target ) graph.dependents[ target ].push_back( chunkId );
 			}
 		}
+		stamp += cs;   // #4: add this chunk's per-chunk stamp (commutative sum)
 	}
 	graph.stamp = stamp;
 	return graph;
