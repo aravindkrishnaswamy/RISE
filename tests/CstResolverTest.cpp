@@ -279,6 +279,23 @@ int main()
 		Check( DiagsMention( diags, "Function1D vs Function2D" ), "func-conflation: same-named 1D + 2D function FLAGGED by the resolver (review #3)" );
 	}
 
+	//----------------------------------------------------------------------
+	// [plf1d-colour] (review #3a) a piecewise_linear_function dual-registers into the COLOUR
+	// painter manager (Job::AddPiecewiseLinearFunction), so reflectance <plf1d> is a valid
+	// engine binding -- the graph must trace it (else closure/rename miss the referrer).
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function\n{\nname fx\ncp 0 0\ncp 1 1\n}\n"
+			"lambertian_material\n{\nname m\nreflectance fx\n}\n" );
+		std::vector<std::string> diags;
+		ReferenceGraph g = BuildReferenceGraph( doc, &diags );
+		const NodeId fxId = DocFindByName( doc, "piecewise_linear_function/fx" );
+		Check( fxId != 0 && DocEditClosure( fxId, g ).size() == 2, "plf1d-colour: closure(fx) = {fx, m} = 2 (the reverse dual-register edge is traced)" );
+		Check( !DiagsMention( diags, "reflectance -> 'fx'" ) && !DiagsMention( diags, "unresolved" ), "plf1d-colour: reflectance->plf1d is NOT a false dangling" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

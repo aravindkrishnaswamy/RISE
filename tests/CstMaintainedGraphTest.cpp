@@ -149,7 +149,7 @@ int main()
 		Check( BuildReferenceGraph( d2 ).stamp != s0, "stamp-nodeid: erase+reinsert-IDENTICAL MOVES the stamp (NodeId folded -- no false-stable, review P1.5)" );
 	}
 
-	// [maintained] (review P1.6) the holder keeps the graph in sync from the EDIT (O(1)
+	// [maintained] (review P1.6) the holder keeps the graph in sync from the EDIT (O(log N)
 	// decision), not by recomputing the stamp: a non-reference value edit REUSES the graph
 	// (no rebuild), a reference / name edit REBUILDS it; the closure stays correct either way.
 	{

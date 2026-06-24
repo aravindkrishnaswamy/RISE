@@ -269,6 +269,32 @@ int main()
 		j->release();
 	}
 
+	// INTERLEAVING (review #1, correctness): a closure whose doc-sorted order places an
+	// OBJECT before a later non-object ENTITY is REFUSED -- the entity-only rollback could
+	// not restore the re-pointed object if the later entity failed.  `base` is referenced by
+	// BOTH object `o` and (later) luminaire material `lum`, so closure(base) sorts as
+	// [base, o, lum]: `o` (object) precedes `lum` (entity).  Must refuse atomically.
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname base\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial base\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nexitance p\nmaterial base\n}\n";
+		Document doc = ParseToCst( s );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		const std::string before = DumpJob( *j );
+		const NodeId baseId = DocFindByName( doc, "lambertian_material/base" );
+		std::vector<NodeId> closure = DocEditClosure( doc, baseId );
+		std::vector<std::string> di;
+		int applied = DeriveToJobIncremental( doc, *j, closure, &di );
+		Check( closure.size() >= 3, "interleaving: closure(base) includes base + o + lum" );
+		Check( applied == 0 && !di.empty(), "interleaving: object-before-later-entity closure REFUSED (applied 0 + diagnosed, review #1)" );
+		Check( DumpJob( *j ) == before, "interleaving: refused ATOMICALLY -- nothing mutated" );
+		j->release();
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

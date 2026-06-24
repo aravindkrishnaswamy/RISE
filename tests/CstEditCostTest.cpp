@@ -32,7 +32,7 @@
 //                     O(closure . log N), ~flat in N: the BFS in ISOLATION (the graph
 //                     build is NOT in this number)
 //      [maintained]   the END-TO-END per-edit cost via a held MaintainedReferenceGraph
-//                     (review P1.6): a non-reference value edit = doc edit + an O(1)
+//                     (review P1.6): a non-reference value edit = doc edit + an O(log N)
 //                     reuse decision (NO graph rebuild, NO O(N) stamp recompute) + the
 //                     closure -> O(log N + closure), ~flat.  THIS is the honest per-edit
 //                     cost a holder pays; [clo:graph] is just its BFS component.

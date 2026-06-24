@@ -156,6 +156,21 @@ int main()
 		Check( !diags.empty() && SerializeCst( d2 ) == before, "rename REFUSED for a Function name with both a 1D and 2D producer (#3)" );
 	}
 
+	// [plf1d colour rename] (review #3a) a piecewise_linear_function referenced from a colour
+	// slot (reflectance) -- via its dual-register into the colour painter manager -- is now a
+	// traced edge, so renaming it REWRITES the referrer (no dangling, no false refusal).
+	{
+		Document d = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"piecewise_linear_function\n{\nname fx\ncp 0 0\ncp 1 1\n}\n"
+			"lambertian_material\n{\nname m\nreflectance fx\n}\n" );
+		const NodeId fx = DocFindByName( d, "piecewise_linear_function/fx" );
+		std::vector<std::string> diags;
+		Document d2 = DocRename( d, fx, "fx2", &diags );
+		const std::string out = SerializeCst( d2 );
+		Check( diags.empty() && Has( out, "reflectance fx2\n" ) && !Has( out, "reflectance fx\n" ), "plf1d colour rename: reflectance referrer REWRITTEN fx->fx2, none dangling (review #3a)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

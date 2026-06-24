@@ -1233,6 +1233,27 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// DocEditClosure returns an unspecified (DFS) order, so sort by doc index here.
 	std::sort( pending.begin(), pending.end(), []( const Pending& a, const Pending& b ){ return a.index < b.index; } );
 
+	// ROLLBACK PRECONDITION (review #1, correctness): the entity-only rollback assumes NO
+	// object is re-pointed before a non-object entity is recreated -- so a failure is always
+	// at an entity, before any object is mutated.  Document order guarantees a producer
+	// precedes its DIRECT consumer, but NOT two INDEPENDENT co-consumers of the same edited
+	// chunk: an edit to material `base` referenced by both an object `o` and a later
+	// luminaire material `lum` yields the doc-sorted order [base, o, lum] -- here `o` (object)
+	// precedes `lum` (entity), so a `lum` failure would strand the already-re-pointed `o`,
+	// which the entity-only rollback cannot restore.  Refuse such an interleaving (object
+	// before a later non-object entity) -> full derive.  (Capturing+restoring objects too
+	// would lift this; deferred with the rest of the object-rollback scope.)
+	{
+		bool seenObject = false;
+		for( const Pending& p : pending ) {
+			if( p.cat == ChunkCategory::Object ) { seenObject = true; continue; }
+			if( seenObject ) {
+				diags.push_back( "incremental: closure interleaves an object before a later " + p.node->role + " entity ('" + p.name + "'); the entity-only rollback cannot restore the re-pointed object on a failure -- fall back to a full derive (review #1)" );
+				return 0;
+			}
+		}
+	}
+
 	// WHOLE-PLAN PREFLIGHT (review P1.7 -- atomicity): validate that EVERY drop target
 	// exists AND EVERY reference resolves (SLOT-PRECISELY -- radiance_map colour-only, below)
 	// BEFORE any mutation, so a rename / stale closure / dangling reference refuses with
@@ -1318,9 +1339,10 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// Material/Geometry/Light/Modifier reach the drop loop (the validation switch above) and
 	// each is a single-manager entity, so capture/restore is a clean per-category GetItem /
 	// RemoveItem+AddItem.  Objects are NOT captured: the slot-precise preflight above (incl.
-	// radiance_map colour-only) guarantees every object re-point resolves, and objects are
-	// re-pointed only AFTER every entity is recreated (document order: producers precede
-	// consumers) -- so a failure can only occur at an entity, BEFORE any object is touched.
+	// radiance_map colour-only) guarantees every object re-point resolves, and the
+	// interleaving refusal above guarantees every object is re-pointed only AFTER every
+	// entity is recreated -- so a failure can only occur at an entity, BEFORE any object is
+	// touched, and restoring the entities fully restores the Job.
 	struct EntCap { ChunkCategory cat; std::string name; IReference* old; };   // old addref'd (or null)
 	std::vector<EntCap> entCaps;
 	entCaps.reserve( pending.size() );
@@ -1531,6 +1553,23 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 			if( defs.find( key ) != defs.end() || funcChunkNames.count( name ) )
 				diags.push_back( "function '" + name + "': another Function (1D/2D) producer or a dual-registered painter shares this name; reference edges to it are imprecise -- the (category,name) graph cannot disambiguate Function1D vs Function2D (review #3)" );
 			funcChunkNames[ name ] = true;
+			// A piecewise_linear_function ALSO dual-registers into the COLOUR painter manager
+			// (Job::AddPiecewiseLinearFunction -> Function1DSpectralPainter), so it is
+			// referenceable from a colour slot (e.g. lambertian_material.reflectance <plf1d>).
+			// Seed (Painter, name) too -- the REVERSE of the colour-painter -> Function2D
+			// dual-register below -- so that reference RESOLVES (matching the derive's colour
+			// pPntManager->GetItem) instead of being a false dangling + a missed closure/rename
+			// edge (review #3a).  It is the ONE Job::Add* that registers cross-category, so
+			// only this 1D function needs it; piecewise_linear_function2d does not.  A same-name
+			// colour painter makes (Painter,name) ambiguous (flag); DocRename's #3 guard already
+			// refuses such a rename (its funcProducers count includes colour painters).
+			if( c->role == "piecewise_linear_function" ) {
+				const std::pair<int,std::string> pkey( (int)ChunkCategory::Painter, name );
+				if( defs.find( pkey ) != defs.end() )
+					diags.push_back( "painter '" + name + "': a piecewise_linear_function and a colour painter share this name; the {Painter} reference edge is imprecise (review #3a)" );
+				else
+					defs[pkey] = DocNodeIdAt( doc, (int)i );
+			}
 		}
 		if( defs.find( key ) == defs.end() ) defs[key] = DocNodeIdAt( doc, (int)i );   // first-wins; defaults already seeded
 		// A COLOUR painter dual-registers in the Function-2D manager (Job::Add*Painter), so
@@ -1842,15 +1881,23 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 
 	// Rewrite EVERY referrer (D14: rewrite-all-or-refuse, never a partial rename).
 	// Every edge in the static graph is rewritable -- a plain Reference param via its
-	// whole value, a TUPLE param by substituting the reference token(s). The static
-	// graph is complete for the chunk->chunk references that exist in the v6/v7 grammar:
-	// every such reference is a Reference param or a Reference tuple-token (both
-	// rewritten here), or a timeline's ValueKind::String element/animation ref (excluded
-	// above by the animation guard). (The redesign's name-path expr(...) value
-	// sublanguage -- the only thing that could add an untraceable chunk reference -- is
-	// not in the grammar; the existing expression_function2d's def/expr name no chunks,
-	// only u/v/params, so they create no rewritable edge.) So no referrer is left
-	// dangling.
+	// whole value, a TUPLE param by substituting the reference token(s).  By the time we
+	// reach this loop, every chunk->chunk reference in the v6/v7 grammar is EITHER a
+	// rewritable graph edge OR has been REFUSED above, so no referrer is left dangling:
+	//   * plain Reference params + Reference tuple-tokens -> rewritten here.
+	//   * BOTH cross-category dual-registers are seeded as graph edges in PASS A so they
+	//     ARE rewritten: a colour painter referenceable as {Function} (-> Function2D), and
+	//     a piecewise_linear_function referenceable as a colour {Painter} (review #3a).
+	//   * a timeline's ValueKind::String element/animation ref -> refused (animation guard).
+	//   * an override_object's String target -> refused (override guard, P1.3).
+	//   * a piecewise_linear_function2d's `cp`-embedded Function1D names (ValueKind::String,
+	//     untraced) -> refused (the cp guard, review #2).
+	//   * a name shared across a sub-namespace the (category,name) graph cannot disambiguate
+	//     (colour/scalar painter, Function1D/2D, plf1d/colour-painter) -> refused (the
+	//     conflation guards, P1.4 / #3 / #3a).
+	// (The redesign's name-path expr(...) value sublanguage -- the only thing that could add
+	// an untraceable chunk reference -- is not in the grammar; expression_function2d's
+	// def/expr name no chunks, only u/v/params, so they create no rewritable edge.)
 	std::vector<ReferenceUse> uses = TraceReferences( doc );
 	Document result = DocSetParamValue( doc, chunkId, "name", 0, newName );   // the rename itself (NodeId preserved)
 	for( const ReferenceUse& u : uses ) {
@@ -1898,8 +1945,9 @@ std::vector<NodeId> DocEditClosure( const Document& doc, NodeId changedChunkId )
 //! Would editing `paramRole` of chunk `chunkId` change the reference graph?  The chunk's
 //! `name` re-resolves every edge TO it; a Reference (plain or tuple) param re-targets an
 //! edge FROM it; any other (non-reference) value leaves the edges + NodeId-keyed
-//! dependents untouched.  Decided from the descriptor in O(1) -- the basis for
-//! MaintainedReferenceGraph's reuse-vs-rebuild decision WITHOUT recomputing the (O(N)) stamp.
+//! dependents untouched.  Decided in O(log N) -- resolve the chunk via the NodeId index
+//! (O(log N)) + scan its descriptor (O(params)); the basis for MaintainedReferenceGraph's
+//! reuse-vs-rebuild decision WITHOUT recomputing the (O(N)) stamp.
 static bool IsGraphAffectingParam( const Document& doc, NodeId chunkId, const std::string& paramRole )
 {
 	if( paramRole == "name" ) return true;
@@ -1921,7 +1969,7 @@ MaintainedReferenceGraph::MaintainedReferenceGraph( const Document& doc )
 
 void MaintainedReferenceGraph::SetParamValue( NodeId chunkId, const std::string& paramRole, int occurrence, const std::string& value )
 {
-	// Decide reuse-vs-rebuild from the EDIT (O(1)), NOT by recomputing the stamp (O(N)).
+	// Decide reuse-vs-rebuild from the EDIT (O(log N)), NOT by recomputing the stamp (O(N)).
 	const bool affecting = IsGraphAffectingParam( m_doc, chunkId, paramRole );
 	m_doc = DocSetParamValue( m_doc, chunkId, paramRole, occurrence, value );
 	if( affecting ) { m_graph = BuildReferenceGraph( m_doc ); m_lastRebuilt = true; }   // a reference/name edit changed the graph -> rebuild O(N)

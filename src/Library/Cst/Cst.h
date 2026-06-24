@@ -287,10 +287,11 @@ namespace RISE
 		//! radiance_map colour-only) before ANY mutation; AND any re-Finalize failure the
 		//! preflight cannot foresee (a numeric in a pure-painter slot; a non-reference value
 		//! DispatchChunkParameters accepted) is ROLLED BACK -- the non-object closure entities
-		//! are captured (addref'd) before the drop and restored on failure, and objects are
-		//! re-pointed only AFTER every entity is recreated, so a failure can only occur before
-		//! any object is touched.  On EITHER path the Job is left unmutated, so a return of 0
-		//! always means "nothing changed; fall back to a full derive."
+		//! are captured (addref'd) before the drop and restored on failure, and a closure
+		//! that would interleave an object before a later entity is REFUSED, so every object
+		//! is re-pointed only AFTER every entity is recreated -- a failure can only occur
+		//! before any object is touched.  On EITHER path the Job is left unmutated, so a
+		//! return of 0 always means "nothing changed; fall back to a full derive."
 		//! Returns the count applied (== chunkIds.size() on success).  Landed: the shared resolver (slice 1),
 		//! atomic rename (slice 2), the stable-object re-point this function performs
 		//! (slice 3), the cost re-measurement (slice 4), and the maintained-graph closure
@@ -470,7 +471,7 @@ namespace RISE
 		//! stamp-unchanged ⟹ graph-unchanged.  This is a one-shot CONSISTENCY check
 		//! (compare two graphs' stamps in O(1)) -- NOT a cheap reuse oracle: obtaining a
 		//! fresh stamp means running BuildReferenceGraph (O(N)), so a stamp-gated holder
-		//! rebuilds every edit anyway.  For O(1)-per-edit reuse, decide from the edit, not
+		//! rebuilds every edit anyway.  For O(log N)-per-edit reuse, decide from the edit, not
 		//! the stamp (see MaintainedReferenceGraph).  (P1.8: the prior TraceReferences was
 		//! unstamped, so a stale graph could be silently trusted.)  The NodeId is
 		//! folded because the graph's edges + dependents are NodeId-KEYED, so "graph
@@ -687,8 +688,10 @@ namespace RISE
 			explicit MaintainedReferenceGraph( const Document& doc );
 			const Document&       Doc() const   { return m_doc; }
 			const ReferenceGraph& Graph() const { return m_graph; }
-			//! Apply a single value edit, updating the graph in O(1) when the edit cannot
-			//! change it (a non-reference, non-name param) or rebuilding (O(N)) when it can.
+			//! Apply a single value edit: when the edit cannot change the graph (a
+			//! non-reference, non-name param) the graph is REUSED, so the per-edit cost stays
+			//! O(log N) (the IsGraphAffectingParam decision: a NodeId-index lookup + a
+			//! descriptor scan) -- no O(N) rebuild; otherwise it rebuilds (O(N)).
 			void SetParamValue( NodeId chunkId, const std::string& paramRole, int occurrence, const std::string& value );
 			//! The edit closure over the maintained graph -- O(closure . log N), no re-trace.
 			std::vector<NodeId> EditClosure( NodeId changedChunkId ) const { return DocEditClosure( changedChunkId, m_graph ); }
