@@ -1455,9 +1455,11 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// the slots the edit removed (recorded in the snapshot above) -- the in-place re-point could
 	// not (no AssignX null-sentinel).  This is the missing clear path; it matches a full derive of
 	// the edited chunk (a fresh object has every optional slot unset).  Done BEFORE the invariant
-	// pass so its post-edit bbox/emitter check sees the cleared state (a removed displacement
-	// modifier shrinks the bbox -> spatial; a removed emissive material -> wasEmissive fires the
-	// bump).  Safe without rollback: objects never fail (slot-precise preflight) and clears cannot.
+	// pass so its post-edit EMITTER check sees the cleared state: a removed emissive material ->
+	// post-clear GetMaterial() is null, but the pre-edit wasEmissive snapshot fires the light-
+	// topology bump (else a reused LightSampler keeps a now-dark luminary).  (Slot removals don't
+	// change the bbox -- it is geometry-derived -- so they stay non-spatial.)  Safe without
+	// rollback: objects never fail (slot-precise preflight) and clears cannot.
 	for( const ObjState& s : objStates ) {
 		if( s.clearMat )    s.obj->ClearMaterial();
 		if( s.clearMod )    s.obj->ClearModifier();

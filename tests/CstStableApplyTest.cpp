@@ -121,6 +121,37 @@ int main()
 		j->release();
 	}
 
+	// ---- [light-gen: emitter REMOVAL via slot clear] remove object o's emissive material
+	//      (material -> none): the slot is CLEARED in place (workstream #3) so o ends with a null
+	//      material and the emitter set CHANGED -> light-gen must bump.  Exercises the clear-loop-
+	//      before-invariant-pass path: the post-clear material is null, but the pre-edit
+	//      wasEmissive snapshot fires the bump (a removal a post-only check would miss).
+	{
+		const std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 1 1 1\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nexitance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial lum\nposition 0 0 0\n}\n";
+		Document d0 = ParseToCst( s );
+		Job* j = new Job(); std::vector<std::string> d; DeriveToJob( d0, *j, &d );
+		IObjectManager* om = j->GetObjects();
+		IObjectPriv* oBefore = om->GetItem( "o" );
+		const unsigned int lgBefore = j->GetLightTopologyGeneration();
+		const bool emittedBefore = oBefore && oBefore->GetMaterial() && oBefore->GetMaterial()->GetEmitter() != 0;
+		const NodeId oId = DocFindByName( d0, "standard_object/o" );
+		Document d1 = DocSetParamValue( d0, oId, "material", 0, "none" );
+		std::vector<NodeId> closure = DocEditClosure( d1, oId );
+		std::vector<std::string> di;
+		const int applied = DeriveToJobIncremental( d1, *j, closure, &di );
+		IObjectPriv* oAfter = om->GetItem( "o" );
+		Check( emittedBefore, "emitter-removal-clear: precondition -- object started emissive" );
+		Check( applied > 0 && oAfter == oBefore, "emitter-removal-clear: object re-pointed in place (address stable)" );
+		Check( oAfter && oAfter->GetMaterial() == 0, "emitter-removal-clear: material slot CLEARED (null)" );
+		Check( j->GetLightTopologyGeneration() != lgBefore, "emitter-removal-clear: light-gen BUMPED (wasEmissive caught the removal)" );
+		j->release();
+	}
+
 	// ---- [spatial: geometry] radius 1 -> 2: re-point, bbox CHANGES, TLAS invalidated.
 	{
 		Document d0 = ParseToCst( BASE );
@@ -187,6 +218,8 @@ int main()
 		Job* jf = new Job(); std::vector<std::string> df; DeriveToJob( d1, *jf, &df );
 		Check( applied >= 1, "removal: material -> none now APPLIES in place (clears the slot; workstream #3)" );
 		Check( DumpJob( *j ) == DumpJob( *jf ), "removal: incremental == full derive of the edited doc" );
+		IObjectPriv* oRm = j->GetObjects() ? j->GetObjects()->GetItem( "o" ) : 0;
+		Check( oRm && oRm->GetMaterial() == 0, "removal: material slot CLEARED (null), matching the full derive" );
 		jf->release(); j->release();
 	}
 

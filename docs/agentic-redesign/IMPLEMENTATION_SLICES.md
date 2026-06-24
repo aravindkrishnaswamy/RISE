@@ -460,5 +460,4 @@ applies an incremental edit by recreating only the non-object entities while RE-
 (so a non-spatial edit skips the TLAS; apply O(closure·log N), full derive O(N·log N)), and finds an
 edit's closure in O(closure·log N) over a held maintained graph. The
 remaining work is the structural D35 one-resolution-path (so the static graph cannot drift from the apply
-resolution even in principle), the slice-3 follow-ups, and full
-rollback. (expr / RepeatGroup / instance_array remain OUT until the gate is green.)
+resolution even in principle), the slice-3 CSG-operand follow-up, and object-rollback (both needed only when CSG enters scope). (expr / RepeatGroup / instance_array remain OUT until the gate is green.)

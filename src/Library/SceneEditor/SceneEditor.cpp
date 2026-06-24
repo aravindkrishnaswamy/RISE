@@ -32,7 +32,6 @@
 #include <vector>   // P1: atomic composite undo/redo rollback buffer
 #include "CameraIntrospection.h"
 #include "../Interfaces/IObjectPriv.h"
-#include "../Objects/Object.h"   // P1-#9: ClearShader/ClearMaterial are now non-virtual on Object
 #include "../Utilities/Transformable.h"
 #include "../Interfaces/IObjectManager.h"
 #include "../Interfaces/IMaterial.h"
@@ -1386,10 +1385,8 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 			if( edit.prevBindingWasNull ) {
 				// F5: undo of a FIRST material bind restores the unbound state.
 				const IMaterial* clrPrev = obj->GetMaterial();
-				// P1-#9: ClearMaterial/ClearShader are non-virtual on Object (off the
-				// IObjectPriv vtable -- ABI); every IObjectPriv IS an Object so the
-				// dynamic_cast is total (a null cast would safely skip).
-				if( Implementation::Object* o = dynamic_cast<Implementation::Object*>( obj ) ) o->ClearMaterial();
+				// ClearMaterial is an IObjectPriv virtual (workstream #3) -- clear the slot directly.
+				obj->ClearMaterial();
 				BumpSceneLightGenerationIfEmitterSetChanged( clrPrev, nullptr );
 			} else if( mMaterialManager && edit.prevPropertyValue.size() > 1 ) {
 				IMaterial* mat = mMaterialManager->GetItem( edit.prevPropertyValue.c_str() );
@@ -1406,7 +1403,7 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 			break;
 		case SceneEdit::SetObjectShader:
 			if( edit.prevBindingWasNull ) {
-				if( Implementation::Object* o = dynamic_cast<Implementation::Object*>( obj ) ) o->ClearShader();   // F5: undo of a FIRST shader bind
+				obj->ClearShader();   // F5: undo of a FIRST shader bind (ClearShader is now an IObjectPriv virtual, workstream #3)
 			} else if( mShaderManager && edit.prevPropertyValue.size() > 1 ) {
 				IShader* sh = mShaderManager->GetItem( edit.prevPropertyValue.c_str() );
 				if( sh ) obj->AssignShader( *sh );
