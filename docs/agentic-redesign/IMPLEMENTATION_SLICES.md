@@ -445,8 +445,7 @@ until it is green:
    abort-on-failed-drop + prior-name rename (P1.4/P1.6), full-namespace collision (P1.7), and the honest
    O(closure·log N)/O(N·log N) bounds (P1.9, R13) are all in. Still open: the structural D35
    one-resolution-path (record each edge as the derive resolves it so the static graph + the apply
-   resolution cannot drift *even in principle*), the slice-3 follow-ups (CSG-operand + optional-slot-
-   removal in-place handling, currently refused → full derive), and object-rollback (needed only when
+   resolution cannot drift *even in principle*), the slice-3 CSG-operand in-place handling follow-up (currently refused → full derive; optional-slot removal LANDED in workstream #3), and object-rollback (needed only when
    CSG / other producing-objects enter the incremental scope -- the entities-first apply makes
    entity-only rollback sufficient for standard_object today; workstream #3a).
 

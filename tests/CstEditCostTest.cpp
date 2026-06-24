@@ -53,7 +53,7 @@
 //  asserts only ratios/scaling, never constant-vs-log.  DeriveToJobIncremental accepts
 //  only PER-PARSER-reversible chunks: it REFUSES painters (func2d dual-registration),
 //  composed materials (helper painters), translucent (ambient parser cache), gltf_import
-//  (bulk), a non-standard_object (csg), an optional-slot removal, and animated docs;
+//  (bulk), a non-standard_object (csg) and animated docs (an optional-slot removal now APPLIES -- workstream #3);
 //  those fall back to a full re-derive (D51).  Slice 5 adds the maintained-graph closure
 //  primitive (the (id, graph) overload measured here); the remaining D35 step is routing
 //  the derive's own resolution through the recorded graph so the static graph and the

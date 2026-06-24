@@ -16,9 +16,12 @@
 //    [equivalence] the re-pointed Job is byte-identical (DumpJob) to a fresh full
 //                  derive of the edited document (the re-point is correct, not just
 //                  address-stable).
-//    [refusals]    an optional-slot REMOVAL (e.g. material -> none, which a re-point
-//                  cannot clear) and a non-standard_object (csg_object) both fall back
-//                  to a full derive (D51: never a silent partial / stale binding).
+//    [removal]     an optional-slot REMOVAL (material/modifier/shader/radiance_map/
+//                  interior_medium -> "none") is now APPLIED in place: a re-point cannot
+//                  clear a slot the chunk omits, so the apply CLEARS it explicitly
+//                  (workstream #3), matching a full derive of the edited doc.
+//    [refusals]    a non-standard_object (csg_object) still falls back to a full derive
+//                  (D51: never a silent partial / stale binding).
 //
 //////////////////////////////////////////////////////////////////////
 
@@ -170,20 +173,21 @@ int main()
 		jf->release(); j->release();
 	}
 
-	// ---- [removal refused] material m -> none on object o: a re-point cannot clear the
-	//      material slot, so the incremental REFUSES (-> full derive). Nothing mutated.
+	// ---- [removal applied] material m -> none on object o: the in-place re-point cannot clear a
+	//      slot the chunk omits, so the apply CLEARS it explicitly (workstream #3) -> the result
+	//      matches a full derive of the edited doc (material "none" -> a null material slot).
 	{
 		Document d0 = ParseToCst( BASE );
 		Job* j = new Job(); std::vector<std::string> d; DeriveToJob( d0, *j, &d );
-		const std::string before = DumpJob( *j );
 		const NodeId oId = DocFindByName( d0, "standard_object/o" );
 		Document d1 = DocSetParamValue( d0, oId, "material", 0, "none" );
 		std::vector<NodeId> closure = DocEditClosure( d1, oId );
 		std::vector<std::string> di;
 		const int applied = DeriveToJobIncremental( d1, *j, closure, &di );
-		Check( applied == 0 && !di.empty(), "removal: material -> none REFUSED (applied 0 + diagnosed)" );
-		Check( DumpJob( *j ) == before, "removal: refusal mutated NOTHING" );
-		j->release();
+		Job* jf = new Job(); std::vector<std::string> df; DeriveToJob( d1, *jf, &df );
+		Check( applied >= 1, "removal: material -> none now APPLIES in place (clears the slot; workstream #3)" );
+		Check( DumpJob( *j ) == DumpJob( *jf ), "removal: incremental == full derive of the edited doc" );
+		jf->release(); j->release();
 	}
 
 	// ---- [csg refused] a csg_object in the closure is not re-pointed in place (its

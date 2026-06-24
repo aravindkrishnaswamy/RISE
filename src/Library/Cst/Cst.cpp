@@ -1335,7 +1335,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// closure, which aborts BEFORE any mutation).  The bbox snapshot lets the closure-
 	// gated invariant pass tell a spatial edit (bbox changes) from a non-spatial one
 	// (bbox identical), which is what makes "non-spatial edits skip the TLAS" valid.
-	struct ObjState { IObjectPriv* obj; BoundingBox bbox; bool wasEmissive; };
+	struct ObjState { IObjectPriv* obj; BoundingBox bbox; bool wasEmissive; bool clearMat, clearMod, clearShader, clearRad, clearMedium; };
 	std::vector<ObjState> objStates;
 	for( const Pending& p : pending ) {
 		if( p.cat != ChunkCategory::Object ) continue;
@@ -1344,30 +1344,26 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 			diags.push_back( p.node->role + " '" + p.name + "': object not in the derived Job (a rename or stale closure); aborting -- a full reset+re-derive is required" );
 			return 0;   // nothing mutated yet
 		}
-		// REMOVAL hazard (D51): an in-place re-point re-binds the slots the chunk
-		// specifies but cannot CLEAR one it omits -- there is no clear API for
-		// modifier/shader/radiance_map, and the parser skips interior_medium when it is
-		// "none".  So if the existing object HAS an optional slot the new chunk removes
-		// (sets to "none"), a re-point would silently keep the stale binding.  Detect it
-		// (existing getter set AND chunk value "none") and REFUSE -> full derive (which
-		// is correct).  A slot that is unchanged or CHANGED stays present (re-bound); a
-		// slot ADDED was absent before (existing getter null) -> not a removal.
-		if(    ( obj->GetMaterial()       && p.bag.GetString( "material",        "none" ) == "none" )
-		    || ( obj->GetModifier()       && p.bag.GetString( "modifier",        "none" ) == "none" )
-		    || ( obj->GetShader()         && p.bag.GetString( "shader",          "none" ) == "none" )
-		    || ( obj->GetRadianceMap()    && p.bag.GetString( "radiance_map",    "none" ) == "none" )
-		    || ( obj->GetInteriorMedium() && p.bag.GetString( "interior_medium", "none" ) == "none" ) ) {
-			diags.push_back( p.node->role + " '" + p.name + "': an optional slot (material/modifier/shader/radiance_map/interior_medium) is being REMOVED; an in-place re-point cannot clear it -- fall back to a full derive" );
-			return 0;
-		}
-		// Capture whether this object's PRE-edit material emits.  A material-reference
-		// switch from an emissive (e.g. lambertian_luminaire) to a non-emissive material
-		// REMOVES an area-light emitter, but the post-edit material no longer emits -- so
-		// the post-edit-only check below would miss the bump and leave a reused RayCaster's
-		// LightSampler listing a now-dark luminary (wrong render).  Snapshot it here, while
-		// `obj` still holds the pre-edit material (mirrors SceneEditor's wasEmissive idiom).
+		// OPTIONAL-SLOT REMOVAL (workstream #3): an in-place re-point re-binds the slots the
+		// chunk specifies but cannot CLEAR one it omits -- AssignX has no null-sentinel, the
+		// parser passes 0 for a "none" material/modifier/shader/radiance, and skips
+		// interior_medium when "none" -- so a removed slot would keep its stale binding.
+		// Detect each removal (existing getter set AND chunk value "none") and CLEAR it
+		// post-Finalize (below), matching a full derive of the edited chunk (a fresh object
+		// has every optional slot unset).  A slot unchanged or CHANGED stays present (re-bound);
+		// a slot ADDED was absent before (getter null) -> not a removal.
+		const bool clearMat    = ( obj->GetMaterial()       && p.bag.GetString( "material",        "none" ) == "none" );
+		const bool clearMod    = ( obj->GetModifier()       && p.bag.GetString( "modifier",        "none" ) == "none" );
+		const bool clearShader = ( obj->GetShader()         && p.bag.GetString( "shader",          "none" ) == "none" );
+		const bool clearRad    = ( obj->GetRadianceMap()    && p.bag.GetString( "radiance_map",    "none" ) == "none" );
+		const bool clearMedium = ( obj->GetInteriorMedium() && p.bag.GetString( "interior_medium", "none" ) == "none" );
+		// Capture whether this object's PRE-edit material emits (incl. a removal: clearMat with
+		// a pre-edit emissive material drops an area-light emitter).  A switch emissive->non-
+		// emissive (or a removal) means the post-edit-only check below would miss the bump and
+		// leave a reused RayCaster's LightSampler listing a now-dark luminary.  Snapshot here,
+		// while `obj` still holds the pre-edit material (mirrors SceneEditor's wasEmissive idiom).
 		const IMaterial* preMat = obj->GetMaterial();
-		objStates.push_back( ObjState{ obj, obj->getBoundingBox(), ( preMat && preMat->GetEmitter() ) != 0 } );
+		objStates.push_back( ObjState{ obj, obj->getBoundingBox(), ( preMat && preMat->GetEmitter() ) != 0, clearMat, clearMod, clearShader, clearRad, clearMedium } );
 	}
 
 	// PART A (true in-place atomicity, review #1): capture each non-object closure entity
@@ -1454,6 +1450,21 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// object has been re-pointed yet -- so restoring the entities fully restores the Job.
 	if( failed ) { rollbackEntities(); releaseCaps(); return 0; }
 	releaseCaps();   // success: the new entities are live; drop the capture refs on the originals
+
+	// OPTIONAL-SLOT REMOVAL (workstream #3): every entity + object re-point succeeded, so clear
+	// the slots the edit removed (recorded in the snapshot above) -- the in-place re-point could
+	// not (no AssignX null-sentinel).  This is the missing clear path; it matches a full derive of
+	// the edited chunk (a fresh object has every optional slot unset).  Done BEFORE the invariant
+	// pass so its post-edit bbox/emitter check sees the cleared state (a removed displacement
+	// modifier shrinks the bbox -> spatial; a removed emissive material -> wasEmissive fires the
+	// bump).  Safe without rollback: objects never fail (slot-precise preflight) and clears cannot.
+	for( const ObjState& s : objStates ) {
+		if( s.clearMat )    s.obj->ClearMaterial();
+		if( s.clearMod )    s.obj->ClearModifier();
+		if( s.clearShader ) s.obj->ClearShader();
+		if( s.clearRad )    s.obj->ClearRadianceMap();
+		if( s.clearMedium ) s.obj->ClearInteriorMedium();
+	}
 
 	// Closure-gated invariant pass (slice 3) -- NOT a verbatim RunObjectInvariantChain
 	// (which invalidates the TLAS UNCONDITIONALLY, reproducing P1.2).  Invalidate the

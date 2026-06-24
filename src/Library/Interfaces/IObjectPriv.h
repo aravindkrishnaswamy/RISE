@@ -116,6 +116,20 @@ namespace RISE
 
 		//! Tells the object to reset its runtime data
 		virtual void ResetRuntimeData() const = 0;
+
+		//! Clear an OPTIONAL object slot back to "unset" -- the state a freshly created
+		//! object has, and the state a full derive produces when the chunk omits the slot
+		//! or sets it to "none".  The CST incremental apply (stable-object re-point) uses
+		//! these when an edit REMOVES a slot the object previously held: an in-place
+		//! re-point re-binds the slots the chunk specifies but cannot clear one it omits,
+		//! and the AssignX reference signatures have no null-sentinel.  Added at the END of
+		//! this interface (after ResetRuntimeData) so EXISTING method vtable offsets are
+		//! unchanged -- the mid-vtable insertion the ClearShader/ClearMaterial P1-#9 note
+		//! avoided does not apply to end-insertion (out-of-tree CALLERS keep their offsets).
+		virtual void ClearMaterial() = 0;
+		virtual void ClearModifier() = 0;
+		virtual void ClearShader() = 0;
+		virtual void ClearRadianceMap() = 0;
 	};
 }
 

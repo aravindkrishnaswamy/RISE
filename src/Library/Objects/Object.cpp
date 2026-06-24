@@ -271,6 +271,18 @@ void Object::ClearMaterial()
 	pMaterial = 0;
 }
 
+void Object::ClearModifier()
+{
+	safe_release( pModifier );
+	pModifier = 0;
+}
+
+void Object::ClearRadianceMap()
+{
+	safe_release( pRadianceMap );
+	pRadianceMap = 0;
+}
+
 const IMaterial* Object::GetMaterial() const
 {
 	return pMaterial;

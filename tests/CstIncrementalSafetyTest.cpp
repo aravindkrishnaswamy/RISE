@@ -370,6 +370,74 @@ int main()
 		j->release();
 	}
 
+	// OPTIONAL-SLOT REMOVAL (workstream #3): removing radiance_map from a stable object CLEARS it in
+	// place and matches a FULL derive of the edited doc (a fresh object has the slot unset).
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\nradiance_map p\n}\n" );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		const NodeId oId = DocFindByName( doc, "standard_object/o" );
+		Document docE = DocSetParamValue( doc, oId, "radiance_map", 0, "none" );
+		std::vector<NodeId> closure = DocEditClosure( docE, oId );
+		std::vector<std::string> di; int applied = DeriveToJobIncremental( docE, *j, closure, &di );
+		Job* jFull = new Job(); std::vector<std::string> dF; DeriveToJob( docE, *jFull, &dF );
+		IObjectPriv* o = j->GetObjects() ? j->GetObjects()->GetItem( "o" ) : 0;
+		Check( applied >= 1, "removal radiance_map: edit applies in place (not refused)" );
+		Check( o && o->GetRadianceMap() == 0, "removal radiance_map: slot CLEARED" );
+		Check( DumpJob( *j ) == DumpJob( *jFull ), "removal radiance_map: incremental == full derive of the edited doc" );
+		j->release(); jFull->release();
+	}
+
+	// OPTIONAL-SLOT REMOVAL (workstream #3): removing a modifier from a stable object CLEARS it in
+	// place and matches a FULL derive of the edited doc (a fresh object has the slot unset).
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"bumpmap_modifier\n{\nname bm\nfunction p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\nmodifier bm\n}\n" );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		const NodeId oId = DocFindByName( doc, "standard_object/o" );
+		Document docE = DocSetParamValue( doc, oId, "modifier", 0, "none" );
+		std::vector<NodeId> closure = DocEditClosure( docE, oId );
+		std::vector<std::string> di; int applied = DeriveToJobIncremental( docE, *j, closure, &di );
+		Job* jFull = new Job(); std::vector<std::string> dF; DeriveToJob( docE, *jFull, &dF );
+		IObjectPriv* o = j->GetObjects() ? j->GetObjects()->GetItem( "o" ) : 0;
+		Check( applied >= 1, "removal modifier: edit applies in place (not refused)" );
+		Check( o && o->GetModifier() == 0, "removal modifier: slot CLEARED" );
+		Check( DumpJob( *j ) == DumpJob( *jFull ), "removal modifier: incremental == full derive of the edited doc" );
+		j->release(); jFull->release();
+	}
+
+	// OPTIONAL-SLOT REMOVAL (workstream #3): removing interior_medium from a stable object CLEARS it in
+	// place and matches a FULL derive of the edited doc (a fresh object has the slot unset).
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"homogeneous_medium\n{\nname med\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\ninterior_medium med\n}\n" );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		const NodeId oId = DocFindByName( doc, "standard_object/o" );
+		Document docE = DocSetParamValue( doc, oId, "interior_medium", 0, "none" );
+		std::vector<NodeId> closure = DocEditClosure( docE, oId );
+		std::vector<std::string> di; int applied = DeriveToJobIncremental( docE, *j, closure, &di );
+		Job* jFull = new Job(); std::vector<std::string> dF; DeriveToJob( docE, *jFull, &dF );
+		IObjectPriv* o = j->GetObjects() ? j->GetObjects()->GetItem( "o" ) : 0;
+		Check( applied >= 1, "removal interior_medium: edit applies in place (not refused)" );
+		Check( o && o->GetInteriorMedium() == 0, "removal interior_medium: slot CLEARED" );
+		Check( DumpJob( *j ) == DumpJob( *jFull ), "removal interior_medium: incremental == full derive of the edited doc" );
+		j->release(); jFull->release();
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
