@@ -909,9 +909,6 @@
     <ClCompile Include="..\..\..\src\Library\Modifiers\NormalMap.cpp">
       <Filter>Modifiers</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Managers\DAGObjectManager.cpp">
-      <Filter>Managers</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Managers\LightManager.cpp">
       <Filter>Managers</Filter>
     </ClCompile>
@@ -2438,9 +2435,6 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Modifiers\NormalMap.h">
       <Filter>Modifiers</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Managers\DAGObjectManager.h">
-      <Filter>Managers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Managers\DeletedCallbackDispatcher.h">
       <Filter>Managers</Filter>

@@ -302,8 +302,6 @@
 		F24B72AB2F52A632008304C4 /* PointLight.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BA069C428F0069C9E5 /* PointLight.h */; };
 		F24B72AC2F52A632008304C4 /* SpotLight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BB069C428F0069C9E5 /* SpotLight.cpp */; };
 		F24B72AD2F52A632008304C4 /* SpotLight.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BC069C428F0069C9E5 /* SpotLight.h */; };
-		F24B72AE2F52A632008304C4 /* DAGObjectManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BF069C42900069C9E5 /* DAGObjectManager.cpp */; };
-		F24B72AF2F52A632008304C4 /* DAGObjectManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C0069C42900069C9E5 /* DAGObjectManager.h */; };
 		F24B72B02F52A632008304C4 /* DeletedCallbackDispatcher.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */; };
 		F24B72B12F52A632008304C4 /* Function1DManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C2069C42900069C9E5 /* Function1DManager.h */; };
 		F24B72B22F52A632008304C4 /* Function2DManager.h in Sources */ = {isa = PBXBuildFile; fileRef = F27F08C3069C42900069C9E5 /* Function2DManager.h */; };
@@ -1021,8 +1019,6 @@
 		F27F0B24069C42910069C9E5 /* PointLight.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08BA069C428F0069C9E5 /* PointLight.h */; };
 		F27F0B25069C42910069C9E5 /* SpotLight.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BB069C428F0069C9E5 /* SpotLight.cpp */; };
 		F27F0B26069C42910069C9E5 /* SpotLight.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08BC069C428F0069C9E5 /* SpotLight.h */; };
-		F27F0B28069C42910069C9E5 /* DAGObjectManager.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F27F08BF069C42900069C9E5 /* DAGObjectManager.cpp */; };
-		F27F0B29069C42910069C9E5 /* DAGObjectManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C0069C42900069C9E5 /* DAGObjectManager.h */; };
 		F27F0B2A069C42910069C9E5 /* DeletedCallbackDispatcher.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */; };
 		F27F0B2B069C42910069C9E5 /* Function1DManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C2069C42900069C9E5 /* Function1DManager.h */; };
 		F27F0B2C069C42910069C9E5 /* Function2DManager.h in Headers */ = {isa = PBXBuildFile; fileRef = F27F08C3069C42900069C9E5 /* Function2DManager.h */; };
@@ -2181,8 +2177,6 @@
 		F27F08BA069C428F0069C9E5 /* PointLight.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PointLight.h; sourceTree = "<group>"; };
 		F27F08BB069C428F0069C9E5 /* SpotLight.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = SpotLight.cpp; sourceTree = "<group>"; };
 		F27F08BC069C428F0069C9E5 /* SpotLight.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = SpotLight.h; sourceTree = "<group>"; };
-		F27F08BF069C42900069C9E5 /* DAGObjectManager.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = DAGObjectManager.cpp; sourceTree = "<group>"; };
-		F27F08C0069C42900069C9E5 /* DAGObjectManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DAGObjectManager.h; sourceTree = "<group>"; };
 		F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = DeletedCallbackDispatcher.h; sourceTree = "<group>"; };
 		F27F08C2069C42900069C9E5 /* Function1DManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function1DManager.h; sourceTree = "<group>"; };
 		F27F08C3069C42900069C9E5 /* Function2DManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = Function2DManager.h; sourceTree = "<group>"; };
@@ -3270,8 +3264,6 @@
 		F27F08BE069C42900069C9E5 /* Managers */ = {
 			isa = PBXGroup;
 			children = (
-				F27F08BF069C42900069C9E5 /* DAGObjectManager.cpp */,
-				F27F08C0069C42900069C9E5 /* DAGObjectManager.h */,
 				F27F08C1069C42900069C9E5 /* DeletedCallbackDispatcher.h */,
 				FCA01000000000000000A006 /* CameraManager.h */,
 				F27F08C2069C42900069C9E5 /* Function1DManager.h */,
@@ -4392,7 +4384,6 @@
 				F27F0B22069C42910069C9E5 /* DirectionalLight.h in Headers */,
 				F27F0B24069C42910069C9E5 /* PointLight.h in Headers */,
 				F27F0B26069C42910069C9E5 /* SpotLight.h in Headers */,
-				F27F0B29069C42910069C9E5 /* DAGObjectManager.h in Headers */,
 				F27F0B2A069C42910069C9E5 /* DeletedCallbackDispatcher.h in Headers */,
 				F27F0B2B069C42910069C9E5 /* Function1DManager.h in Headers */,
 				F27F0B2C069C42910069C9E5 /* Function2DManager.h in Headers */,
@@ -4991,7 +4982,6 @@
 				F27F0B23069C42910069C9E5 /* PointLight.cpp in Sources */,
 				F27F0B25069C42910069C9E5 /* SpotLight.cpp in Sources */,
 				F2C7C8F62F78B0A70030CB78 /* PathGuidingField.cpp in Sources */,
-				F27F0B28069C42910069C9E5 /* DAGObjectManager.cpp in Sources */,
 				F27F0B2F069C42910069C9E5 /* LightManager.cpp in Sources */,
 				F2D9B1532F8FA60F0077A171 /* VCMIntegrator.cpp in Sources */,
 				F2D9B1542F8FA60F0077A171 /* VCMRecurrence.cpp in Sources */,
@@ -5502,8 +5492,6 @@
 				F24B72AB2F52A632008304C4 /* PointLight.h in Sources */,
 				F24B72AC2F52A632008304C4 /* SpotLight.cpp in Sources */,
 				F24B72AD2F52A632008304C4 /* SpotLight.h in Sources */,
-				F24B72AE2F52A632008304C4 /* DAGObjectManager.cpp in Sources */,
-				F24B72AF2F52A632008304C4 /* DAGObjectManager.h in Sources */,
 				F24B72B02F52A632008304C4 /* DeletedCallbackDispatcher.h in Sources */,
 				FCA01000000000000000A004 /* CameraManager.h in Sources */,
 				F24B72B12F52A632008304C4 /* Function1DManager.h in Sources */,

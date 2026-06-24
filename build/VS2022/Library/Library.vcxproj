@@ -195,7 +195,6 @@
     <ClCompile Include="..\..\..\src\Library\Lights\LightSampler.cpp" />
     <ClCompile Include="..\..\..\src\Library\Lights\PointLight.cpp" />
     <ClCompile Include="..\..\..\src\Library\Lights\SpotLight.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Managers\DAGObjectManager.cpp" />
     <ClCompile Include="..\..\..\src\Library\Managers\LightManager.cpp" />
     <ClCompile Include="..\..\..\src\Library\Managers\ObjectManager.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\AshikminShirleyAnisotropicPhongBRDF.cpp" />
@@ -663,7 +662,6 @@
     <ClInclude Include="..\..\..\src\Library\Lights\DirectionalLight.h" />
     <ClInclude Include="..\..\..\src\Library\Lights\PointLight.h" />
     <ClInclude Include="..\..\..\src\Library\Lights\SpotLight.h" />
-    <ClInclude Include="..\..\..\src\Library\Managers\DAGObjectManager.h" />
     <ClInclude Include="..\..\..\src\Library\Managers\DeletedCallbackDispatcher.h" />
     <ClInclude Include="..\..\..\src\Library\Managers\CameraManager.h" />
     <ClInclude Include="..\..\..\src\Library\Managers\Function1DManager.h" />

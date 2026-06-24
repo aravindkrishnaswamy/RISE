@@ -2539,14 +2539,6 @@
 			Name="Managers"
 			>
 			<File
-				RelativePath="..\..\..\src\Library\Managers\DAGObjectManager.cpp"
-				>
-			</File>
-			<File
-				RelativePath="..\..\..\src\Library\Managers\DAGObjectManager.h"
-				>
-			</File>
-			<File
 				RelativePath="..\..\..\src\Library\Managers\DeletedCallbackDispatcher.h"
 				>
 			</File>
