@@ -273,6 +273,40 @@ clean:
 # include the automatically generated source file dependencies
 #include deps
 
+# An object present WITHOUT its .d sidecar has no recorded header
+# prerequisites: it was compiled by an older make (pre -MMD), orphaned when a
+# .d was deleted, or carried in from another tree.  It therefore looks up to
+# date against its lone .cpp prerequisite even after a header it includes has
+# changed.  The test and standalone binaries link the object list directly
+# ($(OBJLIB) + the per-binary .o), and compile/link are separate rules, so such
+# a stale object is RELINKED in place when a library-header change rebuilds the
+# library half: a stale vtable at best, an "Undefined symbols" link failure on
+# any signature change at worst (the exact failure mode this tracking exists to
+# prevent).  The `-include` below cannot help -- it only wires up deps a .d
+# already records.  So force every object whose .d is currently missing to
+# recompile, which regenerates an accurate .d via -MMD; from then on `-include`
+# keeps it header-accurate.  (Objects with neither .o nor .d are swept up too --
+# harmless: they compile regardless of the forced prerequisite.)  Deliberately
+# existence-based, not mtime-based: clang emits the .d a few hundred microseconds
+# AFTER the .o, so a plain `%.o : %.d` prerequisite would relink-loop forever
+# under make >= 4.x (sub-second mtimes).  In steady state (every .d present) the
+# list is empty and the rule vanishes -- zero effect on normal incremental
+# builds.
+#
+# Gated on CXXFLAGS_DEPS being non-empty.  The legacy Config.SGI / MIPSPro
+# toolchains disable dependency generation (CXXFLAGS_DEPS =), so they never emit
+# a .d; without this gate EVERY object would look "missing a .d" and recompile
+# on every invocation.  With deps off the build relies on `make clean` after a
+# header edit as it always has, so suppressing the force-rule there is correct.
+OBJS_MISSING_DEP := $(filter-out $(patsubst %.d,%.o,$(wildcard $(ALL_DEPS))),$(ALL_OBJS))
+ifneq ($(strip $(CXXFLAGS_DEPS)),)
+ifneq ($(OBJS_MISSING_DEP),)
+$(OBJS_MISSING_DEP) : FORCE_DEP_REGEN
+endif
+endif
+FORCE_DEP_REGEN :
+.PHONY: FORCE_DEP_REGEN
+
 # Pull in the per-translation-unit header dependency snippets emitted by
 # -MMD. The leading dash silences the include for missing files, which is
 # the normal state on a fresh tree (no .d files exist yet) -- after the
