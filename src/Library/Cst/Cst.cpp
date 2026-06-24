@@ -21,6 +21,7 @@
 #include "../Interfaces/IJob.h"
 #include "../Interfaces/IJobPriv.h"      // GetObjects() (manager access for the slice-3 stable-object apply)
 #include "../Interfaces/IObjectManager.h" // IObjectPriv getBoundingBox / GetMaterial, spatial-structure generation
+#include "../Managers/GenericManager.h"  // D35 record-during-derive sinks (g_cstProduction/ResolutionSink)
 #include "../Parsers/ChunkParserRegistry.h"   // CreateAllChunkParsers (the LIVE registry)
 #include "../Parsers/IAsciiChunkParser.h"     // IAsciiChunkParser, DispatchChunkParameters
 
@@ -1013,7 +1014,7 @@ static bool DropChunkByCategory( IJob& pJob, ChunkCategory cat, const char* name
 	}
 }
 
-int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics )
+int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics, ReferenceGraph* outRecorded )
 {
 	std::vector<std::string> local;
 	std::vector<std::string>& diags = diagnostics ? *diagnostics : local;
@@ -1036,10 +1037,11 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// no-space line, an undeclared parameter name, or a non-finite/non-numeric
 	// numeric value -- see its doc in IAsciiChunkParser.h). Collect each
 	// chunk's populated bag; if ANY chunk fails, apply NOTHING (refuse-all).
-	struct Pending { const IAsciiChunkParser* parser; ParseStateBag bag; std::string keyword; };
+	struct Pending { const IAsciiChunkParser* parser; ParseStateBag bag; std::string keyword; NodeId nodeId; };
 	std::vector<Pending> pending;
 	pending.reserve( items.size() );
-	for( const auto& c : items ) {
+	for( size_t i = 0; i < items.size(); ++i ) {
+		const NodeRef& c = items[i];
 		if( c->kind != NodeKind::Chunk ) continue;   // header strays / trivia: not derivable chunks
 		// Resolve the parser + normalise the params (shared with the incremental
 		// derive, so both paths normalise identically -- see ResolveChunkParams).
@@ -1051,7 +1053,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 			diags.push_back( c->role + ": invalid parameter(s) (see log)" );
 			continue;
 		}
-		pending.push_back( Pending{ parser, std::move(bag), c->role } );
+		pending.push_back( Pending{ parser, std::move(bag), c->role, DocNodeIdAt( doc, (int)i ) } );   // nodeId: D35 recording attribution
 	}
 	if( !diags.empty() ) return 0;   // refuse-all: a malformed scene applies NOTHING
 
@@ -1065,9 +1067,34 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 	// later chunks, which would diverge from legacy). Chunks before the failure
 	// stay applied, exactly as the legacy parser leaves them; full apply-atomicity
 	// (rollback of the prior chunks) is later Facet-2 work.
+	// D35 record-during-derive (slice 1, §8): when recording, capture each chunk's PRODUCED
+	// + RESOLVED entities from the engine's actual manager AddItem/GetItem (the chokepoint
+	// hooks in GenericManager.h), and build (producer -> consumer) reverse-adjacency from the
+	// pointer identity -- no heuristic, so the recorded graph cannot drift from the engine.
+	// `productionMap` (entity pointer -> producing chunk) persists across chunks: a consumer's
+	// resolution hit maps to the producer recorded when that producer's chunk was applied.
+	std::map<const void*, NodeId> productionMap;
+	// RAII backstop: clear the thread-local sinks on ANY exit (a Finalize that threw would
+	// otherwise leave them dangling at the loop-local vectors). RISE Finalize is C-style/no-
+	// throw, but this keeps the invariant unconditional.
+	struct SinkGuard { ~SinkGuard() { g_cstProductionSink = nullptr; g_cstResolutionSink = nullptr; } } sinkGuard;
+	(void)sinkGuard;
+
 	int count = 0;
 	for( Pending& p : pending ) {
-		if( p.parser->Finalize( p.bag, pJob ) ) { ++count; continue; }
+		std::vector<const void*> produced, resolved;
+		if( outRecorded ) { g_cstProductionSink = &produced; g_cstResolutionSink = &resolved; }
+		const bool ok = p.parser->Finalize( p.bag, pJob );
+		if( outRecorded ) {
+			g_cstProductionSink = nullptr; g_cstResolutionSink = nullptr;   // no GetItem between here and the next set
+			for( const void* e : produced ) productionMap[ e ] = p.nodeId;  // this chunk's productions (incl. intra-chunk, so a self-ref self-skips)
+			for( const void* e : resolved ) {
+				std::map<const void*, NodeId>::const_iterator it = productionMap.find( e );
+				if( it != productionMap.end() && it->second != p.nodeId )   // skip self-reference (a chunk resolving its own product)
+					outRecorded->dependents[ it->second ].push_back( p.nodeId );   // editing the producer re-derives this consumer
+			}
+		}
+		if( ok ) { ++count; continue; }
 		diags.push_back( p.keyword + ": apply failed (e.g. unresolved reference); see log" );
 		break;
 	}

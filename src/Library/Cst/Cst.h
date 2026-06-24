@@ -49,6 +49,8 @@ namespace RISE
 
 	namespace Cst
 	{
+		struct ReferenceGraph;   // defined below; forward-declared for DeriveToJob's D35 out-param
+
 		//! Green-node kinds. Leaves (Token / Trivia) carry exact bytes; internal
 		//! nodes (Document / Chunk / Param) carry ordered children only.
 		enum class NodeKind { Document, Chunk, Param, Token, Trivia };
@@ -252,7 +254,19 @@ namespace RISE
 		//! Both tiers report the failures in `diagnostics` (when non-null); neither
 		//! silently half-derives. (Top-level non-chunk items -- the scene header
 		//! strays / trivia -- are skipped; they carry no Job state.)
-		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr );
+		//!
+		//! D35 record-during-derive (slice 1, §8): when `outRecorded` is non-null, the derive
+		//! RECORDS the reference graph from the engine's ACTUAL resolution -- it brackets each
+		//! chunk's Finalize and captures every entity the chunk PRODUCES (manager AddItem) and
+		//! RESOLVES (manager GetItem), then writes `(producer -> consumer)` reverse-adjacency
+		//! into `outRecorded->dependents`. This graph cannot drift from the engine (it IS the
+		//! engine's production+resolution), unlike the static BuildReferenceGraph heuristic.
+		//! It is CHUNK-level (the chokepoint sees the manager+entity, not the source param), so
+		//! it serves CLOSURE; rename keeps the param-level static path. Opt-in: when
+		//! `outRecorded` is null (the default / production path), no recording happens and the
+		//! manager hooks stay disabled. Slice 1 only RECORDS + cross-checks; consumers still
+		//! read BuildReferenceGraph until slice 2.
+		int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diagnostics = nullptr, ReferenceGraph* outRecorded = nullptr );
 
 		//! Incrementally re-apply ONLY a closure (DocEditClosure) into an
 		//! already-derived Job after an edit, instead of a full DeriveToJob: it recreates

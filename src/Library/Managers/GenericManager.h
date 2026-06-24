@@ -25,6 +25,19 @@
 
 namespace RISE
 {
+	// D35 record-during-derive (slice 1, docs/agentic-redesign/21-stable-apply-and-resolver.md
+	// §8): when DeriveToJob installs these sinks -- SETUP-TIME only, during its PASS-2 chunk
+	// bracketing; NULL by default, so the normal path pays a single predictable branch and
+	// nothing else -- GenericManager records each PRODUCED entity (AddItem) and each RESOLVED
+	// entity (GetItem-found) by pointer.  The derive then builds the reference graph from the
+	// engine's ACTUAL production+resolution, not a parallel heuristic, so the two cannot drift.
+	// Keyed by entity POINTER: a multiple-inheritance sub-object pointer (the same painter seen
+	// as IPainter via the colour manager and as IFunction2D via the func-2D manager) records
+	// under each base, but both AddItems run in the same chunk's bracket, so both pointers map
+	// to the one producer.  See Cst.cpp DeriveToJob.
+	inline thread_local std::vector<const void*>* g_cstProductionSink = nullptr;
+	inline thread_local std::vector<const void*>* g_cstResolutionSink = nullptr;
+
 	template< class T >
 	class GenericManager : public virtual Implementation::Reference, public virtual IManager<T>
 	{
@@ -91,6 +104,7 @@ namespace RISE
 			String vecName( szName );
 			items[vecName] = std::pair<T*,ReferencesListType>( pItem, ReferencesListType() );
 			m_serials[vecName] = ++m_nNextSerial;   // P1: identity serial
+			if( g_cstProductionSink ) g_cstProductionSink->push_back( static_cast<const void*>( pItem ) );   // D35: PRODUCED entity
 			return true;
 		}
 
@@ -143,6 +157,7 @@ namespace RISE
 				return 0;
 			}
 
+			if( g_cstResolutionSink ) g_cstResolutionSink->push_back( static_cast<const void*>( (*elem).second.first ) );   // D35: RESOLVED entity
 			return (*elem).second.first;
 		}
 
