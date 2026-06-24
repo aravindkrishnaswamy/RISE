@@ -446,7 +446,9 @@ until it is green:
    O(closure·log N)/O(N·log N) bounds (P1.9, R13) are all in. Still open: the structural D35
    one-resolution-path (record each edge as the derive resolves it so the static graph + the apply
    resolution cannot drift *even in principle*), the slice-3 follow-ups (CSG-operand + optional-slot-
-   removal in-place handling, currently refused → full derive), and full post-Finalize rollback.
+   removal in-place handling, currently refused → full derive), and object-rollback (needed only when
+   CSG / other producing-objects enter the incremental scope -- the entities-first apply makes
+   entity-only rollback sufficient for standard_object today; workstream #3a).
 
 That is the gate that turns "the model and cost-model hold in prototypes" into "the redesign's real
 CST path is O(closure·log N) for non-spatial edits, with spatial cost reported honestly." **Items 1-7

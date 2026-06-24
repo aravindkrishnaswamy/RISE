@@ -309,8 +309,8 @@ namespace RISE
 		//! numeric in a pure-painter slot; a non-reference value DispatchChunkParameters
 		//! accepted) is ROLLED BACK -- the non-object closure entities
 		//! are captured (addref'd) before the drop and restored on failure, and a closure
-		//! that would interleave an object before a later entity is REFUSED, so every object
-		//! is re-pointed only AFTER every entity is recreated -- a failure can only occur
+		//! that places an object before a later entity is now APPLIED (the apply sorts entities-first,
+		//! so every object is re-pointed only AFTER every entity) -- a failure can only occur
 		//! before any object is touched.  On EITHER path the Job is left unmutated, so a
 		//! return of 0 always means "nothing changed; fall back to a full derive."
 		//! Returns the count applied (== chunkIds.size() on success).  Landed: the shared resolver (slice 1),

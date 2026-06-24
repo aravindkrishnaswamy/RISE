@@ -1209,7 +1209,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// Deliberately does NOT ClearChunkParserState: the chunks OUTSIDE the closure are
 	// unchanged and keep their applied state + the parsers' file-scope caches as a fresh
 	// full parse would leave them.  (Cross-chunk caches are keyed by name and overwritten
-	// on a chunk's re-Finalize, and the closure is applied in DOCUMENT order so a producer
+	// on a chunk's re-Finalize, and the closure is applied entities-first then objects (by doc index) so a producer
 	// re-applies before its consumer reads it.)
 	//
 	// Same refuse-all + abort-on-first-failure contract as DeriveToJob: validate the
@@ -1267,6 +1267,9 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	if( !diags.empty() ) return 0;
 	// Apply ENTITIES first, then OBJECTS, each by doc index (DocEditClosure returns an unspecified
 	// DFS order): respects producer-before-consumer AND re-points objects LAST (entity-only rollback).
+	// (Among objects, doc index is a valid topological order today because only standard_object
+	// -- a leaf consumer -- is admitted; a future CSG sub-item, where an object produces for
+	// another object, must keep operands earlier in doc order AND add object-rollback.)
 	std::sort( pending.begin(), pending.end(), []( const Pending& a, const Pending& b ){ const bool ao = ( a.cat == ChunkCategory::Object ), bo = ( b.cat == ChunkCategory::Object ); if( ao != bo ) return !ao; return a.index < b.index; } );
 
 	// ENTITY-ONLY ROLLBACK is sound because objects are Finalized LAST: the sort above groups

@@ -299,6 +299,53 @@ int main()
 		j->release();
 	}
 
+	// INTERLEAVING -- a REAL value edit through the interleaved closure matches a FULL derive
+	// (proves entities-first is CORRECT, not merely non-crashing -- the idempotent re-apply above
+	// would pass for any successful apply; this pins the actual result to the ground truth).
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"uniformcolor_painter\n{\nname p2\ncolor 0.1 0.2 0.3\n}\n"
+			"lambertian_material\n{\nname base\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial base\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nexitance p\nmaterial base\n}\n";
+		Document doc = ParseToCst( s );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		const NodeId baseId = DocFindByName( doc, "lambertian_material/base" );
+		Document docE = DocSetParamValue( doc, baseId, "reflectance", 0, "p2" );   // re-point base.reflectance p -> p2
+		std::vector<NodeId> closure = DocEditClosure( docE, baseId );
+		std::vector<std::string> di; int applied = DeriveToJobIncremental( docE, *j, closure, &di );
+		Job* jFull = new Job(); std::vector<std::string> dF; DeriveToJob( docE, *jFull, &dF );   // ground truth
+		Check( applied >= 3, "interleaving-edit: a real value edit through the interleaved closure APPLIES" );
+		Check( DumpJob( *j ) == DumpJob( *jFull ), "interleaving-edit: incremental result == full derive of the edited doc (entities-first is correct)" );
+		j->release(); jFull->release();
+	}
+
+	// INTERLEAVING -- a re-Finalize FAILURE through the interleaved closure rolls back ATOMICALLY:
+	// `o` is never stranded, because entities-first re-points `o` only after every entity succeeds,
+	// so a base/lum failure leaves `o` untouched (the exact reason the refusal could be removed).
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname base\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial base\n}\n"
+			"lambertian_luminaire_material\n{\nname lum\nexitance p\nmaterial base\n}\n";
+		Document doc = ParseToCst( s );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		const std::string before = DumpJob( *j );
+		const NodeId baseId = DocFindByName( doc, "lambertian_material/base" );
+		Document docD = DocSetParamValue( doc, baseId, "reflectance", 0, "0.5" );   // numeric in a pure-painter slot -> re-Finalize fails
+		std::vector<NodeId> closure = DocEditClosure( docD, baseId );
+		std::vector<std::string> di; int applied = DeriveToJobIncremental( docD, *j, closure, &di );
+		Check( applied == 0 && !di.empty(), "interleaving-fail: a re-Finalize failure in the interleaved closure is refused" );
+		Check( DumpJob( *j ) == before, "interleaving-fail: rolled back ATOMICALLY -- base+lum restored, object o never stranded" );
+		j->release();
+	}
+
 	// OBJECT NUMERIC (review #1, 2nd pass): a numeric in an object reference slot bypasses the
 	// preflight literal-skip; interior_medium is applied by a SEPARATE SetObjectInteriorMedium
 	// AFTER AddObject re-points (and MOVES) the object, so without the refusal the object would
