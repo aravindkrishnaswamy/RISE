@@ -1265,30 +1265,17 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		pending.push_back( Pending{ parser, std::move(bag), node, idx, cat, name } );
 	}
 	if( !diags.empty() ) return 0;
-	// Apply in DOCUMENT order (a producer before its consumer) -- the closure from
-	// DocEditClosure returns an unspecified (DFS) order, so sort by doc index here.
-	std::sort( pending.begin(), pending.end(), []( const Pending& a, const Pending& b ){ return a.index < b.index; } );
+	// Apply ENTITIES first, then OBJECTS, each by doc index (DocEditClosure returns an unspecified
+	// DFS order): respects producer-before-consumer AND re-points objects LAST (entity-only rollback).
+	std::sort( pending.begin(), pending.end(), []( const Pending& a, const Pending& b ){ const bool ao = ( a.cat == ChunkCategory::Object ), bo = ( b.cat == ChunkCategory::Object ); if( ao != bo ) return !ao; return a.index < b.index; } );
 
-	// ROLLBACK PRECONDITION (review #1, correctness): the entity-only rollback assumes NO
-	// object is re-pointed before a non-object entity is recreated -- so a failure is always
-	// at an entity, before any object is mutated.  Document order guarantees a producer
-	// precedes its DIRECT consumer, but NOT two INDEPENDENT co-consumers of the same edited
-	// chunk: an edit to material `base` referenced by both an object `o` and a later
-	// luminaire material `lum` yields the doc-sorted order [base, o, lum] -- here `o` (object)
-	// precedes `lum` (entity), so a `lum` failure would strand the already-re-pointed `o`,
-	// which the entity-only rollback cannot restore.  Refuse such an interleaving (object
-	// before a later non-object entity) -> full derive.  (Capturing+restoring objects too
-	// would lift this; deferred with the rest of the object-rollback scope.)
-	{
-		bool seenObject = false;
-		for( const Pending& p : pending ) {
-			if( p.cat == ChunkCategory::Object ) { seenObject = true; continue; }
-			if( seenObject ) {
-				diags.push_back( "incremental: closure interleaves an object before a later " + p.node->role + " entity ('" + p.name + "'); the entity-only rollback cannot restore the re-pointed object on a failure -- fall back to a full derive (review #1)" );
-				return 0;
-			}
-		}
-	}
+	// ENTITY-ONLY ROLLBACK is sound because objects are Finalized LAST: the sort above groups
+	// every non-object entity before every object (then doc index within each group) -- a stricter
+	// topological order than pure doc index that still respects producer-before-consumer (entities
+	// produce, objects consume).  So a re-Finalize failure is ALWAYS at an entity, BEFORE any object
+	// is re-pointed; restoring the captured entities (Part A) fully restores the Job.  This SUPERSEDES
+	// the earlier refusal of an "object before a later non-object entity" closure -- the entities-first
+	// sort makes that interleaving safe to apply rather than refusing it (review #1 / workstream #3).
 
 	// WHOLE-PLAN PREFLIGHT (review P1.7 -- atomicity): validate that EVERY drop target
 	// exists AND EVERY reference resolves (SLOT-PRECISELY -- radiance_map colour-only, below)
@@ -1388,7 +1375,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// each is a single-manager entity, so capture/restore is a clean per-category GetItem /
 	// RemoveItem+AddItem.  Objects are NOT captured: the slot-precise preflight above (incl.
 	// radiance_map colour-only) guarantees every object re-point resolves, and the
-	// interleaving refusal above guarantees every object is re-pointed only AFTER every
+	// entities-first sort above guarantees every object is re-pointed only AFTER every
 	// entity is recreated -- so a failure can only occur at an entity, BEFORE any object is
 	// touched, and restoring the entities fully restores the Job.
 	struct EntCap { ChunkCategory cat; std::string name; IReference* old; };   // old addref'd (or null)

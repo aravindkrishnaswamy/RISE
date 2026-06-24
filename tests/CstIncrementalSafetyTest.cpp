@@ -272,11 +272,12 @@ int main()
 		j->release();
 	}
 
-	// INTERLEAVING (review #1, correctness): a closure whose doc-sorted order places an
-	// OBJECT before a later non-object ENTITY is REFUSED -- the entity-only rollback could
-	// not restore the re-pointed object if the later entity failed.  `base` is referenced by
-	// BOTH object `o` and (later) luminaire material `lum`, so closure(base) sorts as
-	// [base, o, lum]: `o` (object) precedes `lum` (entity).  Must refuse atomically.
+	// INTERLEAVING (review #1 -> workstream #3): a closure where an OBJECT and a later non-object
+	// ENTITY both consume the edited chunk used to be REFUSED (the entity-only rollback could not
+	// restore a re-pointed object if the later entity failed).  Workstream #3 sorts the apply
+	// ENTITIES-FIRST so objects are re-pointed LAST -- a failure is always at an entity before any
+	// object is touched -- so the closure now APPLIES.  `base` is referenced by BOTH object `o`
+	// and (later) luminaire material `lum`; closure(base) = [base, o, lum], applied entities-first.
 	{
 		std::string s =
 			"RISE ASCII SCENE 6\n"
@@ -293,8 +294,8 @@ int main()
 		std::vector<std::string> di;
 		int applied = DeriveToJobIncremental( doc, *j, closure, &di );
 		Check( closure.size() >= 3, "interleaving: closure(base) includes base + o + lum" );
-		Check( applied == 0 && !di.empty(), "interleaving: object-before-later-entity closure REFUSED (applied 0 + diagnosed, review #1)" );
-		Check( DumpJob( *j ) == before, "interleaving: refused ATOMICALLY -- nothing mutated" );
+		Check( applied >= 3, "interleaving: object-before-later-entity closure now APPLIES entities-first (was refused; workstream #3)" );
+		Check( DumpJob( *j ) == before, "interleaving: re-applying the closure with unchanged values is idempotent (consistent re-derive)" );
 		j->release();
 	}
 
