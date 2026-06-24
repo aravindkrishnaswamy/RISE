@@ -2802,6 +2802,16 @@ namespace RISE
 		//! Number of declared named animations.
 		virtual unsigned int GetAnimationCount() const { return 0; }
 
+		//! Records that an `override_object` chunk modified an existing object's transform
+		//! in place (its Finalize calls this).  The CST incremental apply reads
+		//! GetObjectOverrideCount() to refuse when any override is present: an
+		//! override_object references its target object by a ValueKind::String `name`,
+		//! invisible to the static reference graph (review P1.3), so the closure of editing
+		//! the target would NOT include the override -> the re-point would erase the
+		//! override's effective transform.  Default no-op / 0; the real Job counts them.
+		virtual void NoteObjectOverride() {}
+		virtual unsigned int GetObjectOverrideCount() const { return 0; }
+
 		//! Copies the name of the animation at `index` into `buf` (NUL-terminated,
 		//! truncated to bufLen).  FALSE if the index is out of range.
 		virtual bool GetAnimationName( const unsigned int /*index*/, char* /*buf*/, const unsigned int /*bufLen*/ ) const { return false; }

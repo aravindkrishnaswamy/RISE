@@ -156,14 +156,59 @@ int main()
 			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
 		Document doc = ParseToCst( s );
 		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		const std::string before = DumpJob( *j );
 		NodeId gid = DocFindByName( doc, "sphere_geometry/g" );
 		Document docR = DocRename( doc, gid, "grenamed" );
 		// closure of the renamed geometry on docR (its name is now grenamed, but the
-		// Job still has g); the drop of "grenamed" must fail -> abort.
+		// Job still has g); the preflight finds "grenamed" absent -> refuse ATOMICALLY.
 		std::vector<NodeId> closure = DocEditClosure( docR, gid );
 		std::vector<std::string> di;
 		int applied = DeriveToJobIncremental( docR, *j, closure, &di );
-		Check( applied == 0 && !di.empty(), "abort-on-failed-drop: renamed closure name absent in Job -> applied 0 + diagnosed" );
+		Check( applied == 0 && !di.empty(), "abort-on-stale-closure: renamed closure name absent in Job -> applied 0 + diagnosed" );
+		Check( DumpJob( *j ) == before, "abort-on-stale-closure: REFUSED atomically -- nothing mutated (review P1.7)" );
+		j->release();
+	}
+
+	// override_object present -> ANY incremental REFUSED (its String target reference is
+	// invisible to the static graph, so editing the target would erase the override; P1.3).
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\nposition 0 0 0\n}\n"
+			"override_object\n{\nname o\nposition 5 0 0\n}\n";
+		Document doc = ParseToCst( s );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		Check( j->GetObjectOverrideCount() > 0, "override_object: the derive recorded the override (NoteObjectOverride)" );
+		NodeId gid = DocFindByName( doc, "sphere_geometry/g" );
+		std::vector<NodeId> closure = DocEditClosure( doc, gid );
+		std::vector<std::string> di;
+		int applied = DeriveToJobIncremental( doc, *j, closure, &di );
+		Check( applied == 0 && !di.empty(), "incremental REFUSED when the doc has an override_object (P1.3)" );
+		j->release();
+	}
+
+	// A value edit introducing a DANGLING reference -> REFUSED atomically (whole-plan
+	// preflight; nothing mutated -- review P1.7).
+	{
+		std::string s =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+		Document doc = ParseToCst( s );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		const std::string before = DumpJob( *j );
+		const NodeId mId = DocFindByName( doc, "lambertian_material/m" );
+		Document docD = DocSetParamValue( doc, mId, "reflectance", 0, "nosuchpainter" );
+		std::vector<NodeId> closure = DocEditClosure( docD, mId );
+		std::vector<std::string> di;
+		int applied = DeriveToJobIncremental( docD, *j, closure, &di );
+		Check( applied == 0 && !di.empty(), "dangling-reference edit REFUSED (preflight; P1.7)" );
+		Check( DumpJob( *j ) == before, "dangling-reference edit refused ATOMICALLY -- nothing mutated (P1.7)" );
 		j->release();
 	}
 

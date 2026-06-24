@@ -269,6 +269,7 @@ void Job::InitializeContainers()
 	pRasterizer = 0;
 	pGlobalProgress = 0;
 	lightSampleRRThreshold = 0;
+	m_objectOverrideCount = 0;   // reset per derive/clear (override_object Finalize increments it)
 
 	// Phase 6.1: allocate the round-trip-save metadata containers up
 	// front so IJobPriv::GetSourceSpanIndex etc. return stable pointers
@@ -5232,19 +5233,25 @@ bool Job::AddObject(
 	const bool bReceivesShadows								///< [in] Does the object receive shadows?
    )
 {
+	// RESOLVE every reference FIRST, BEFORE any mutation (review P1.7 atomicity): a
+	// missing material/modifier/shader/radiance-painter must fail the WHOLE call without
+	// having created a new object OR half-re-pointed an existing one.  Only once all
+	// references resolve do we create-or-re-point and assign.
 	IGeometry* pGeometry = pGeomManager->GetItem( geom );
+	if( !pGeometry ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddObject:: Geometry not found `%s`", geom ); return false; }
+	IMaterial* pMat = 0;
+	if( material ) { pMat = pMatManager->GetItem( material ); if( !pMat ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Material not found `%s`", material ); return false; } }
+	IRayIntersectionModifier* pMod = 0;
+	if( modifier ) { pMod = pModManager->GetItem( modifier ); if( !pMod ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Modifier not found `%s`", modifier ); return false; } }
+	IShader* pShaderObj = 0;
+	if( shader ) { pShaderObj = pShaderManager->GetItem( shader ); if( !pShaderObj ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Shader not found `%s`", shader ); return false; } }
+	IPainter* pRadPnt = 0;
+	if( !( radianceMapConfig.name == "none" ) ) { pRadPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() ); if( !pRadPnt ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() ); return false; } }
 
-	if( !pGeometry ) {
-		GlobalLog()->PrintEx( eLog_Error, "Job::AddObject:: Geometry not found `%s`", geom );
-		return false;
-	}
-
-	// Slice 3 (stable-object incremental apply): in incremental re-point mode an
-	// EXISTING same-named object is re-pointed IN PLACE -- its address (which the
-	// top-level BVH stores raw) is preserved -- instead of being recreated.  In a full
-	// derive the flag is false (and no object pre-exists), so this is byte-identical to
-	// the historical create path.  The slot-binding below is SHARED by both paths
-	// (audit-by-bug-pattern: a new slot is bound once, for create AND re-point).
+	// Slice 3 (stable-object apply): in incremental re-point mode an EXISTING same-named
+	// object is re-pointed IN PLACE (its address, which the top-level BVH stores raw, is
+	// preserved); in a full derive the flag is false and no object pre-exists, so this is
+	// byte-identical to the historical create path.  From here on nothing can fail.
 	IObjectPriv* object = 0;
 	bool repoint = false;
 	if( m_bIncrementalRepoint ) {
@@ -5255,74 +5262,34 @@ bool Job::AddObject(
 	else          RISE_API_CreateObject( &object, pGeometry );
 
 	object->SetShadowParams( bCastsShadows, bReceivesShadows );
-
-	if( material ) {
-		IMaterial* pMat = pMatManager->GetItem(material);
-		if( pMat ) {
-			object->AssignMaterial( *pMat );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Material not found `%s`", material );
-			if( !repoint ) safe_release( object );           // create: release the orphan (fixes a prior leak); re-point: manager owns it
-			return false;
-		}
+	if( pMat )       object->AssignMaterial( *pMat );
+	if( pMod )       object->AssignModifier( *pMod );
+	if( pShaderObj ) object->AssignShader( *pShaderObj );
+	if( pRadPnt ) {
+		IRadianceMap* pRadianceMap = 0;
+		RISE_API_CreateRadianceMap( &pRadianceMap, *pRadPnt, radianceMapConfig.scale );
+		pRadianceMap->SetOrientation( Vector3( radianceMapConfig.orientation ) );
+		object->AssignRadianceMap( *pRadianceMap );          // recreate-and-re-wrap (replaces any prior map)
+		safe_release( pRadianceMap );
 	}
 
-	if( modifier ) {
-		IRayIntersectionModifier* pMod = pModManager->GetItem(modifier);
-		if( pMod ) {
-			object->AssignModifier( *pMod );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Modifier not found `%s`", modifier );
-			if( !repoint ) safe_release( object );
-			return false;
-		}
-	}
-
-	if( shader ) {
-		IShader* pShader = pShaderManager->GetItem(shader);
-		if( pShader ) {
-			object->AssignShader( *pShader );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Shader not found `%s`", shader );
-			if( !repoint ) safe_release( object );
-			return false;
-		}
-	}
-
-	if( !( radianceMapConfig.name == "none" ) ) {
-		IPainter* pPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() );
-		if( pPnt ) {
-			IRadianceMap* pRadianceMap = 0;
-			RISE_API_CreateRadianceMap( &pRadianceMap, *pPnt, radianceMapConfig.scale );
-			pRadianceMap->SetOrientation( Vector3( radianceMapConfig.orientation ) );
-			object->AssignRadianceMap( *pRadianceMap );      // recreate-and-re-wrap (replaces any prior map)
-			safe_release( pRadianceMap );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObject:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() );
-			if( !repoint ) safe_release( object );
-			return false;
-		}
-	}
-
+	// Reset ALL transforms (stack + component) before the component form (review P1.1):
+	// a re-point of a previously MATRIX-authored object must not COMPOSE the stale stacked
+	// matrix with the new Euler form in FinalizeTransformations.  No-op on the create path.
+	object->ClearAllTransforms();
 	object->SetPosition( Point3( pos ) );
 	object->SetOrientation( Vector3( orient ) );
 	object->SetStretch( Vector3( scale[0], scale[1], scale[2] ) );
 	object->FinalizeTransformations();
 
 	if( repoint ) {
-		// Stable object re-pointed in place: it is already in the manager (no AddItem)
-		// and the manager owns it (no safe_release).  Reset its now-stale runtime caches.
-		// The TLAS-invalidation + light-gen decision is the incremental apply's closure-
-		// gated invariant pass (a per-object bbox compare), NOT here.
-		object->ResetRuntimeData();
+		object->ResetRuntimeData();   // stable object re-pointed: already in the manager, manager owns it; reset stale caches
 		return true;
 	}
-
 	pObjectManager->AddItem( object, name );
 	if( object->GetMaterial() && object->GetMaterial()->GetEmitter() )
 		BumpSceneLightGen( pScene );   // P2a: added an emissive object (mesh luminary)
 	safe_release( object );
-
 	return true;
 }
 
@@ -5338,14 +5305,18 @@ bool Job::AddObjectMatrix(
 	const bool bReceivesShadows
 	)
 {
+	// RESOLVE every reference FIRST, before any mutation (review P1.7 atomicity) -- see AddObject.
 	IGeometry* pGeometry = pGeomManager->GetItem( geom );
-	if( !pGeometry ) {
-		GlobalLog()->PrintEx( eLog_Error, "Job::AddObjectMatrix:: Geometry not found `%s`", geom );
-		return false;
-	}
+	if( !pGeometry ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddObjectMatrix:: Geometry not found `%s`", geom ); return false; }
+	IMaterial* pMat = 0;
+	if( material ) { pMat = pMatManager->GetItem( material ); if( !pMat ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Material not found `%s`", material ); return false; } }
+	IRayIntersectionModifier* pMod = 0;
+	if( modifier ) { pMod = pModManager->GetItem( modifier ); if( !pMod ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Modifier not found `%s`", modifier ); return false; } }
+	IShader* pShaderObj = 0;
+	if( shader ) { pShaderObj = pShaderManager->GetItem( shader ); if( !pShaderObj ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Shader not found `%s`", shader ); return false; } }
+	IPainter* pRadPnt = 0;
+	if( !( radianceMapConfig.name == "none" ) ) { pRadPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() ); if( !pRadPnt ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() ); return false; } }
 
-	// Slice 3 stable-object apply (see AddObject): re-point an existing object in place
-	// in incremental mode, else create.  Shared slot-binding.
 	IObjectPriv* object = 0;
 	bool repoint = false;
 	if( m_bIncrementalRepoint ) {
@@ -5356,70 +5327,28 @@ bool Job::AddObjectMatrix(
 	else          RISE_API_CreateObject( &object, pGeometry );
 
 	object->SetShadowParams( bCastsShadows, bReceivesShadows );
-
-	if( material ) {
-		IMaterial* pMat = pMatManager->GetItem(material);
-		if( pMat ) {
-			object->AssignMaterial( *pMat );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Material not found `%s`", material );
-			if( !repoint ) safe_release( object );
-			return false;
-		}
-	}
-	if( modifier ) {
-		IRayIntersectionModifier* pMod = pModManager->GetItem(modifier);
-		if( pMod ) {
-			object->AssignModifier( *pMod );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Modifier not found `%s`", modifier );
-			if( !repoint ) safe_release( object );
-			return false;
-		}
-	}
-	if( shader ) {
-		IShader* pShader = pShaderManager->GetItem(shader);
-		if( pShader ) {
-			object->AssignShader( *pShader );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Shader not found `%s`", shader );
-			if( !repoint ) safe_release( object );
-			return false;
-		}
-	}
-	if( !( radianceMapConfig.name == "none" ) ) {
-		IPainter* pPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() );
-		if( pPnt ) {
-			IRadianceMap* pRadianceMap = 0;
-			RISE_API_CreateRadianceMap( &pRadianceMap, *pPnt, radianceMapConfig.scale );
-			pRadianceMap->SetOrientation( Vector3( radianceMapConfig.orientation ) );
-			object->AssignRadianceMap( *pRadianceMap );
-			safe_release( pRadianceMap );
-		} else {
-			GlobalLog()->PrintEx( eLog_Warning, "Job::AddObjectMatrix:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() );
-			if( !repoint ) safe_release( object );
-			return false;
-		}
+	if( pMat )       object->AssignMaterial( *pMat );
+	if( pMod )       object->AssignModifier( *pMod );
+	if( pShaderObj ) object->AssignShader( *pShaderObj );
+	if( pRadPnt ) {
+		IRadianceMap* pRadianceMap = 0;
+		RISE_API_CreateRadianceMap( &pRadianceMap, *pRadPnt, radianceMapConfig.scale );
+		pRadianceMap->SetOrientation( Vector3( radianceMapConfig.orientation ) );
+		object->AssignRadianceMap( *pRadianceMap );
+		safe_release( pRadianceMap );
 	}
 
-	// Build a Matrix4 from the 16-double column-major input.  RISE's
-	// Matrix4 indexes `_<i><j>` as (column=i, row=j) — confirmed by
-	// `Matrix4Ops::Translation`, which writes the translation column
-	// to `_30 / _31 / _32` (column 3, rows 0/1/2), and by the matrix
-	// multiplication rule `ret._00 = a._00*b._00 + a._10*b._01 + ...`
-	// which expands as the standard column-major matmul.  glTF stores
-	// `nodes[i].matrix` column-major, so element `c*4 + r` (column c,
-	// row r) maps directly to `_<c><r>`.
+	// Build a Matrix4 from the 16-double column-major input.  RISE's Matrix4 indexes
+	// `_<i><j>` as (column=i, row=j); glTF stores `nodes[i].matrix` column-major, so
+	// element `c*4 + r` maps directly to `_<c><r>`.
 	Matrix4 mx;
 	mx._00 = matrix[ 0]; mx._01 = matrix[ 1]; mx._02 = matrix[ 2]; mx._03 = matrix[ 3];
 	mx._10 = matrix[ 4]; mx._11 = matrix[ 5]; mx._12 = matrix[ 6]; mx._13 = matrix[ 7];
 	mx._20 = matrix[ 8]; mx._21 = matrix[ 9]; mx._22 = matrix[10]; mx._23 = matrix[11];
 	mx._30 = matrix[12]; mx._31 = matrix[13]; mx._32 = matrix[14]; mx._33 = matrix[15];
 
-	// Use the transform stack to push the matrix as the world transform.
-	// FinalizeTransformations composes (P*O*Stretch*Scale) * stack-bottom,
-	// so we leave P/O/Stretch/Scale as identity and push the supplied
-	// matrix onto the (initially empty) stack.
+	// FinalizeTransformations composes (P*O*Stretch*Scale) * stack-bottom, so leave the
+	// component transforms identity and push the supplied matrix onto the (cleared) stack.
 	object->ClearAllTransforms();
 	object->PushTopTransStack( mx );
 	object->FinalizeTransformations();
@@ -5428,12 +5357,10 @@ bool Job::AddObjectMatrix(
 		object->ResetRuntimeData();
 		return true;
 	}
-
 	pObjectManager->AddItem( object, name );
 	if( object->GetMaterial() && object->GetMaterial()->GetEmitter() )
 		BumpSceneLightGen( pScene );   // P2a: added an emissive object (mesh luminary)
 	safe_release( object );
-
 	return true;
 }
 
@@ -9363,6 +9290,16 @@ unsigned int Job::GetLightTopologyGeneration() const
 	if( const Scene* sc = dynamic_cast<const Scene*>( pScene ) )   // downcast like BumpSceneLightGen
 		return sc->GetLightTopologyGeneration();
 	return 0;
+}
+
+void Job::NoteObjectOverride()
+{
+	++m_objectOverrideCount;
+}
+
+unsigned int Job::GetObjectOverrideCount() const
+{
+	return m_objectOverrideCount;
 }
 
 //! Removes all the rasterizer outputs

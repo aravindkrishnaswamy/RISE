@@ -312,7 +312,13 @@ bool ObjectManager::IntersectShadowRay( const Ray& ray, const Scalar dHowFar, co
 		const unsigned int slot = (unsigned int)(reinterpret_cast<uintptr_t>(&dummy) >> 12) & (kShadowCacheSlots - 1);
 		const IObjectPriv* cached = shadowCache[slot].pOccluder;
 
-		if( cached ) {
+		// Re-check the cached occluder's flags before trusting it: the same
+		// IsWorldVisible() && DoesCastShadows() gate the slow path applies when caching
+		// (below).  An object whose casts_shadows / world-visible flag was flipped AFTER
+		// being cached (e.g. a non-spatial edit that re-points it in place but does not
+		// invalidate the spatial structure -- the CST stable-object apply) must NOT keep
+		// occluding from a stale cache hit.
+		if( cached && cached->IsWorldVisible() && cached->DoesCastShadows() ) {
 			if( cached->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces ) ) {
 				RISE_PROFILE_INC(nShadowCacheHits);
 				return true;

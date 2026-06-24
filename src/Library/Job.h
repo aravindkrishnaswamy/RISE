@@ -2718,6 +2718,10 @@ namespace RISE
 		//! match this file's house style.
 		unsigned int GetLightTopologyGeneration() const;
 
+		//! Object-override accounting (see IJob).  No `override` (house style).
+		void NoteObjectOverride();
+		unsigned int GetObjectOverrideCount() const;
+
 		//! Enables/disables incremental re-point mode (see IJob).  No `override` to
 		//! match this file's house style.
 		void SetIncrementalRepointMode( bool b );
@@ -2908,6 +2912,10 @@ namespace RISE
 		//! only by the single-threaded CST incremental re-Finalize loop; false in every
 		//! full derive, so the full-derive object-creation path is byte-unchanged.
 		bool m_bIncrementalRepoint;
+
+		//! Count of override_object chunks that modified an object in place this derive
+		//! (see IJob::NoteObjectOverride).  The CST incremental apply refuses when > 0.
+		unsigned int m_objectOverrideCount;
 	};
 }
 

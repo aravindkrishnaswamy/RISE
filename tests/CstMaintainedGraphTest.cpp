@@ -131,6 +131,45 @@ int main()
 		Check( DocEditClosure( DocFindByName( docP, "lambertian_material/m2" ), g1 ).size() == 2, "after re-point, closure(m2) = {m2, o2} = 2 (o2 now depends on m2)" );
 	}
 
+	// [stamp-nodeid] (review P1.5) erase + reinsert a byte-IDENTICAL chunk -> a NEW NodeId
+	// with the SAME content.  The graph's edges/dependents are NodeId-KEYED, so a holder
+	// reusing the old graph on the new doc would walk a DEAD NodeId.  The stamp must MOVE.
+	// Red-proven by folding each chunk's NodeId into the stamp; without it (content-only),
+	// this would be a false-stable.
+	{
+		Document d = ParseToCst( scene );
+		const NodeId mId = DocFindByName( d, "lambertian_material/m" );
+		const unsigned long long s0 = BuildReferenceGraph( d ).stamp;
+		NodeRef mNode;
+		const int idx = DocIndexOfNodeId( d, mId, &mNode );
+		Check( idx >= 0 && mNode, "stamp-nodeid: located the chunk to erase+reinsert" );
+		Document d1 = DocEraseItem( d, idx );
+		Document d2 = DocInsertItem( d1, idx, mNode );   // identical content, NEW NodeId
+		Check( DocFindByName( d2, "lambertian_material/m" ) != mId, "stamp-nodeid: the reinserted chunk has a NEW NodeId" );
+		Check( BuildReferenceGraph( d2 ).stamp != s0, "stamp-nodeid: erase+reinsert-IDENTICAL MOVES the stamp (NodeId folded -- no false-stable, review P1.5)" );
+	}
+
+	// [maintained] (review P1.6) the holder keeps the graph in sync from the EDIT (O(1)
+	// decision), not by recomputing the stamp: a non-reference value edit REUSES the graph
+	// (no rebuild), a reference / name edit REBUILDS it; the closure stays correct either way.
+	{
+		Document d = ParseToCst( scene );
+		MaintainedReferenceGraph mg( d );
+		// non-reference value edit (sphere radius): graph REUSED, no rebuild.
+		mg.SetParamValue( DocFindByName( mg.Doc(), "sphere_geometry/g" ), "radius", 0, "2" );
+		Check( !mg.LastEditRebuilt(), "maintained: non-reference value edit (radius) REUSES the graph (no rebuild)" );
+		{ const NodeId gid = DocFindByName( mg.Doc(), "sphere_geometry/g" );
+		  Check( SameClosure( mg.EditClosure( gid ), DocEditClosure( mg.Doc(), gid ) ), "maintained: closure correct after a REUSED edit" ); }
+		// reference re-point (object material m -> m2): graph REBUILT.
+		mg.SetParamValue( DocFindByName( mg.Doc(), "standard_object/o" ), "material", 0, "m2" );
+		Check( mg.LastEditRebuilt(), "maintained: reference re-point (material) REBUILDS the graph" );
+		{ const NodeId mid2 = DocFindByName( mg.Doc(), "lambertian_material/m2" );
+		  Check( SameClosure( mg.EditClosure( mid2 ), DocEditClosure( mg.Doc(), mid2 ) ), "maintained: closure correct after a REBUILT edit" ); }
+		// name edit (rename via value): graph REBUILT.
+		mg.SetParamValue( DocFindByName( mg.Doc(), "lambertian_material/m2" ), "name", 0, "mRenamed" );
+		Check( mg.LastEditRebuilt(), "maintained: a `name` edit REBUILDS the graph" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

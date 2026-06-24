@@ -280,10 +280,12 @@ namespace RISE
 		//! importer), a non-standard_object Object chunk (csg_object: its operands are
 		//! themselves objects -- a separate effort), an optional-slot REMOVAL (an in-place
 		//! re-point cannot CLEAR a material/modifier/shader/radiance_map/interior_medium
-		//! set to "none"), and any document with an animation/timeline.  A drop that finds
-		//! no such entity (a rename, or a stale closure -- this is value-edit only) ABORTS
-		//! rather than silently re-adding a duplicate (review P1.4).  Returns the count
-		//! applied (== chunkIds.size() on success).  Landed: the shared resolver (slice 1),
+		//! set to "none"), any document with an animation/timeline, and any document with an
+		//! override_object (its String target reference is untraceable -- review P1.3).
+		//! A WHOLE-PLAN PREFLIGHT (review P1.7) validates that every drop target EXISTS and
+		//! every reference RESOLVES before ANY mutation, so a rename / stale closure /
+		//! dangling reference refuses with NOTHING changed (atomic) -- not a partial apply.
+		//! Returns the count applied (== chunkIds.size() on success).  Landed: the shared resolver (slice 1),
 		//! atomic rename (slice 2), the stable-object re-point this function performs
 		//! (slice 3), the cost re-measurement (slice 4), and the maintained-graph closure
 		//! primitive -- DocEditClosure(id, graph), O(closure . log N) over a held graph
@@ -291,7 +293,8 @@ namespace RISE
 		//! deferred: routing the derive's OWN resolution through the recorded graph so the
 		//! static graph and the apply resolution cannot drift even in principle (the
 		//! remaining D35 step), CSG-operand + optional-slot-removal in-place handling
-		//! (slice-3 follow-ups), and full post-Finalize rollback of a partial apply.
+		//! (slice-3 follow-ups), and full post-Finalize rollback for the RESIDUAL case the
+		//! preflight cannot foresee (a Finalize failing for a non-reference reason).
 		int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<NodeId>& chunkIds, std::vector<std::string>* diagnostics = nullptr );
 
 		//==============================================================
@@ -456,11 +459,16 @@ namespace RISE
 		//! docs/agentic-redesign/21-stable-apply-and-resolver.md): the resolved
 		//! reference edges + a content STAMP. The stamp is a CONSERVATIVE fingerprint
 		//! of the reference-relevant content (each chunk's keyword + name + every
-		//! reference-param value). Its load-bearing guarantee is one-directional:
-		//! every edit that COULD change the graph (a reference re-point, a rename of a
-		//! referenced chunk, a chunk add/remove) changes the stamp -- so
-		//! stamp-unchanged ⟹ graph-unchanged, and a consumer caching a graph can
-		//! reject a stale one in O(1) (P1.8: the prior TraceReferences was unstamped).
+		//! reference-param value) AND each chunk's NodeId. Its load-bearing guarantee is
+		//! one-directional: every edit that COULD change the graph (a reference re-point, a
+		//! rename of a referenced chunk, a chunk add/remove) changes the stamp -- so
+		//! stamp-unchanged ⟹ graph-unchanged, and a consumer caching a graph can reject a
+		//! stale one in O(1) (P1.8: the prior TraceReferences was unstamped). The NodeId is
+		//! folded because the graph's edges + dependents are NodeId-KEYED, so "graph
+		//! unchanged" must include identity: erasing a chunk and reinserting a byte-
+		//! IDENTICAL one (a NEW NodeId, same content) MUST move the stamp, else a reused
+		//! graph would walk a dead NodeId (review P1.5). A value edit preserves NodeIds, so
+		//! this stays stable across the non-reference edits the stamp must not move on.
 		//! It is NOT a precise graph hash: it is STABLE across edits that cannot touch
 		//! the graph (a comment, whitespace, a NON-reference value edit), but it may
 		//! ALSO change on some graph-NEUTRAL edits (e.g. renaming a chunk nothing
@@ -648,6 +656,37 @@ namespace RISE
 		//! overload above is exactly this BFS preceded by a from-scratch BuildReferenceGraph.
 		//! (Does NOT take `doc`: the BFS needs only the graph's reverse adjacency.)
 		std::vector<NodeId> DocEditClosure( NodeId changedChunkId, const ReferenceGraph& graph );
+
+		//! A MAINTAINED reference graph (slice 5, review P1.6): holds a Document + its
+		//! ReferenceGraph and keeps them in sync INCREMENTALLY, so the END-TO-END per-edit
+		//! cost -- not just the closure BFS in isolation -- is O(closure . log N) for the
+		//! common edit.  The crux: a value edit's reuse decision is made from the EDIT
+		//! ITSELF in O(1) (is the edited param a reference, or the chunk's name?), NOT by
+		//! recomputing the stamp -- recomputing the stamp is itself an O(N) BuildReference-
+		//! Graph, so a stamp-validated reuse saves nothing end-to-end (you rebuilt to
+		//! check).  A NON-reference value edit cannot change the graph (its edges and
+		//! NodeId-keyed dependents are untouched -- a value edit preserves NodeIds), so the
+		//! graph is REUSED with no rebuild; a reference / name edit rebuilds (O(N)).  This
+		//! is the holder CstEditCostTest exercises end-to-end.  (Structural edits -- insert/
+		//! erase/reparse -- are not handled here yet; a holder would rebuild on those.)
+		class MaintainedReferenceGraph
+		{
+		public:
+			explicit MaintainedReferenceGraph( const Document& doc );
+			const Document&       Doc() const   { return m_doc; }
+			const ReferenceGraph& Graph() const { return m_graph; }
+			//! Apply a single value edit, updating the graph in O(1) when the edit cannot
+			//! change it (a non-reference, non-name param) or rebuilding (O(N)) when it can.
+			void SetParamValue( NodeId chunkId, const std::string& paramRole, int occurrence, const std::string& value );
+			//! The edit closure over the maintained graph -- O(closure . log N), no re-trace.
+			std::vector<NodeId> EditClosure( NodeId changedChunkId ) const { return DocEditClosure( changedChunkId, m_graph ); }
+			//! Whether the most recent SetParamValue rebuilt the graph (measurement/diagnostics).
+			bool LastEditRebuilt() const { return m_lastRebuilt; }
+		private:
+			Document       m_doc;
+			ReferenceGraph m_graph;
+			bool           m_lastRebuilt;
+		};
 	}
 }
 

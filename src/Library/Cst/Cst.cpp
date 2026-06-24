@@ -1079,6 +1079,35 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 //! a geometry-extent or transform edit changes it.  Exact == is the right gate (a
 //! tolerance would let a genuine sub-epsilon move skip the TLAS rebuild); finite-only,
 //! so -ffast-math's no-NaN/Inf assumption does not affect it.
+static bool LooksNumeric( const std::string& s );   // defined below (shared with BuildReferenceGraph)
+
+//! Does an entity of (cat, name) exist in the ALREADY-derived Job's managers?  Used by
+//! the incremental apply's whole-plan preflight (review P1.7 atomicity): every drop target
+//! AND every reference must exist BEFORE any mutation, so a rename / stale / dangling
+//! closure refuses with NOTHING changed instead of aborting mid-apply.  A Painter is
+//! checked in BOTH manager sub-namespaces (colour + scalar) -- the resolver's
+//! (category,name) key cannot tell them apart (review P1.4); for an EXISTENCE preflight,
+//! "resolves to SOME painter" is the right question.  Categories without a manager-backed
+//! check return true (not refused -- the re-Finalize still resolves them; the residual is
+//! a rare dangling reference in an unchecked category, which falls back to caller-reset).
+static bool EntityExists( IJobPriv& priv, ChunkCategory cat, const std::string& name )
+{
+	const char* n = name.c_str();
+	switch( cat ) {
+		case ChunkCategory::Geometry: return priv.GetGeometries() != 0 && priv.GetGeometries()->GetItem( n ) != 0;
+		case ChunkCategory::Material: return priv.GetMaterials()  != 0 && priv.GetMaterials()->GetItem( n )  != 0;
+		case ChunkCategory::Object:   return priv.GetObjects()    != 0 && priv.GetObjects()->GetItem( n )    != 0;
+		case ChunkCategory::Light:    return priv.GetLights()     != 0 && priv.GetLights()->GetItem( n )     != 0;
+		case ChunkCategory::Modifier: return priv.GetModifiers()  != 0 && priv.GetModifiers()->GetItem( n )  != 0;
+		case ChunkCategory::Shader:   return priv.GetShaders()    != 0 && priv.GetShaders()->GetItem( n )    != 0;
+		case ChunkCategory::ShaderOp: return priv.GetShaderOps()  != 0 && priv.GetShaderOps()->GetItem( n )  != 0;
+		case ChunkCategory::Painter:  return ( priv.GetPainters()       != 0 && priv.GetPainters()->GetItem( n )       != 0 )
+		                                  || ( priv.GetScalarPainters() != 0 && priv.GetScalarPainters()->GetItem( n ) != 0 );
+		case ChunkCategory::Medium:   return priv.GetMedium( n ) != 0;
+		default: return true;
+	}
+}
+
 static bool BBoxEqual( const BoundingBox& a, const BoundingBox& b )
 {
 	return a.ll.x == b.ll.x && a.ll.y == b.ll.y && a.ll.z == b.ll.z
@@ -1118,6 +1147,18 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	IObjectManager* objMgr = priv ? priv->GetObjects() : 0;
 	if( !objMgr ) {
 		diags.push_back( "incremental: Job does not expose its object manager (IJobPriv); fall back to a full derive" );
+		return 0;
+	}
+
+	// override_object guard (review P1.3): an override_object modifies an existing
+	// object's transform in place and references its target by a ValueKind::String
+	// `name`, INVISIBLE to the static reference graph -- so the closure of editing the
+	// target would not include the override, and a re-point would erase its effective
+	// transform; a rename of the target would also not rewrite the override's String.
+	// Refuse whenever the Job carries any override (O(1), like the animation guard) until
+	// the resolver traces String object references.
+	if( pJob.GetObjectOverrideCount() > 0 ) {
+		diags.push_back( "incremental: the Job has override_object(s) whose String target reference the static graph cannot trace; fall back to a full derive" );
 		return 0;
 	}
 
@@ -1189,6 +1230,35 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 	// Apply in DOCUMENT order (a producer before its consumer) -- the closure from
 	// DocEditClosure returns an unspecified (DFS) order, so sort by doc index here.
 	std::sort( pending.begin(), pending.end(), []( const Pending& a, const Pending& b ){ return a.index < b.index; } );
+
+	// WHOLE-PLAN PREFLIGHT (review P1.7 -- atomicity): validate that EVERY drop target
+	// exists AND EVERY reference resolves BEFORE any mutation, so a rename / stale closure
+	// / dangling reference refuses with NOTHING changed -- rather than dropping some
+	// entities, then breaking the loop on a mid-apply Finalize failure with a partially
+	// mutated Job.  O(closure . log N): closure chunks x their references x a manager
+	// lookup -- no O(N) doc scan.  (For a preflight-clean closure no drop and no
+	// re-Finalize fails; the residual is a Finalize failing for a reason the preflight
+	// cannot see -- a non-reference invalid that DispatchChunkParameters already accepted,
+	// or a dangling reference in a category EntityExists does not check -- which still
+	// breaks the loop -> caller resets+re-derives, the documented fallback.)
+	for( const Pending& p : pending ) {
+		if( !EntityExists( *priv, p.cat, p.name ) ) {
+			diags.push_back( p.node->role + " '" + p.name + "': not present in the derived Job (a rename or stale closure); refusing -- nothing mutated (review P1.7)" );
+			return 0;
+		}
+		for( const ParameterDescriptor& pd : p.parser->Describe().parameters ) {
+			if( pd.kind != ValueKind::Reference || pd.referenceCategories.empty() ) continue;   // tuple refs do not occur in the incremental's allowed categories
+			std::string val;
+			if( !ParamValue( p.node.get(), pd.name.c_str(), val ) ) continue;     // param absent
+			if( val.empty() || val == "none" || LooksNumeric( val ) ) continue;   // explicit-none / numeric literal -> not a reference
+			bool resolves = false;
+			for( ChunkCategory rc : pd.referenceCategories ) if( EntityExists( *priv, rc, val ) ) { resolves = true; break; }
+			if( !resolves ) {
+				diags.push_back( p.node->role + " '" + p.name + "'." + pd.name + " -> '" + val + "': unresolved reference; refusing -- nothing mutated (review P1.7)" );
+				return 0;
+			}
+		}
+	}
 
 	// Snapshot each closure OBJECT's pre-apply state: it MUST already exist (objects are
 	// re-pointed in place, never created here -- a missing object means a rename or stale
@@ -1357,6 +1427,7 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 	std::map<std::pair<int,std::string>, NodeId> defs;
 	for( const auto& rd : RuntimeDefaultDefs() )
 		defs[ std::pair<int,std::string>( (int)rd.first, rd.second ) ] = kRuntimeDefaultTarget;
+	std::map<std::string, bool> painterNs;   // painter name -> isScalar (first seen): detect a cross-manager conflation (P1.4)
 	for( size_t i = 0; i < items.size(); ++i ) {
 		const NodeRef& c = items[i];
 		if( c->kind != NodeKind::Chunk ) continue;
@@ -1364,7 +1435,21 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 		if( it == registry.end() ) continue;                       // unknown chunk: not a target
 		std::string name;
 		if( !ParamValue( c.get(), "name", name ) || name.empty() ) continue;   // unnamed: not referenceable
-		const std::pair<int,std::string> key( (int)it->second->Describe().category, name );
+		const ChunkCategory cat = it->second->Describe().category;
+		// Painter namespace-conflation diagnostic (review P1.4): scalar and colour
+		// painters share ChunkCategory::Painter but live in SEPARATE managers; the defs
+		// key cannot tell them apart, so an edge to a name present in BOTH resolves to
+		// only one (first-wins) and may disagree with the derive (which picks by the
+		// referring slot's painter sub-type).  Flag it so consumers do not silently trust
+		// the imprecise edge (DocRename refuses such a rename outright).
+		if( cat == ChunkCategory::Painter ) {
+			const bool isScalar = ( c->role == "scalar_painter" );
+			std::map<std::string,bool>::const_iterator pit = painterNs.find( name );
+			if( pit == painterNs.end() ) painterNs[ name ] = isScalar;
+			else if( pit->second != isScalar )
+				diags.push_back( "painter '" + name + "': defined in BOTH the colour and scalar painter managers; reference edges to it are imprecise -- the (category,name) graph cannot disambiguate the two managers (review P1.4)" );
+		}
+		const std::pair<int,std::string> key( (int)cat, name );
 		if( defs.find( key ) == defs.end() ) defs[key] = DocNodeIdAt( doc, (int)i );   // first-wins; defaults already seeded
 	}
 
@@ -1378,7 +1463,15 @@ ReferenceGraph BuildReferenceGraph( const Document& doc, std::vector<std::string
 		if( it == registry.end() ) continue;
 		const ChunkDescriptor& desc = it->second->Describe();
 		const NodeId chunkId = DocNodeIdAt( doc, (int)i );
+		// Fold the chunk's NodeId into the stamp (review P1.5): the graph's edges +
+		// dependents are NodeId-KEYED, so "stamp-unchanged => graph-unchanged" must also
+		// cover identity, not just content.  Without this, erasing a chunk and reinserting
+		// a byte-IDENTICAL one (a NEW NodeId, same content) leaves the stamp unchanged
+		// while the graph's NodeId-keyed edges go stale -> a holder reusing the cached
+		// graph would walk a dead NodeId.  A value edit PRESERVES NodeIds (D26), so this
+		// stays stable across the non-reference edits the stamp must not move on.
 		mix( c->role );
+		mix( std::to_string( (long long)chunkId ) );
 		{ std::string nm; if( ParamValue( c.get(), "name", nm ) ) mix( nm ); }
 		std::map<std::string,int> occ;   // per-role occurrence index, for DocParamId
 		for( const auto& kid : c->kids ) {
@@ -1543,6 +1636,38 @@ Document DocRename( const Document& doc, NodeId chunkId, const std::string& newN
 		}
 	}
 
+	// override_object guard (review P1.3): an override_object references its TARGET object
+	// by a ValueKind::String `name`, invisible to the static reference graph -- renaming
+	// the target would not rewrite that String, leaving it dangling. Refuse when the
+	// document has any override_object (a one-shot rename can afford the O(N) scan).
+	for( const NodeRef& c : items ) {
+		if( c->kind == NodeKind::Chunk && c->role == "override_object" ) {
+			diags.push_back( "rename: document has an override_object whose String target reference the static graph cannot rewrite; refused" );
+			return doc;
+		}
+	}
+
+	// PAINTER namespace-conflation guard (review P1.4): scalar and colour painters share
+	// ChunkCategory::Painter but live in SEPARATE managers, and the reference graph keys
+	// edges by (category, name) -- so if the target painter's name ALSO names a painter
+	// in the OTHER sub-namespace (scalar_painter vs a colour painter), the traced edges to
+	// that name are ambiguous and the rename cannot reliably rewrite the referrers.
+	// Refuse. (Precise per-manager resolution is a deferred refinement -- 21-*.md S5.)
+	if( targetCat == (int)ChunkCategory::Painter ) {
+		const bool targetIsScalar = ( target->role == "scalar_painter" );
+		for( const NodeRef& c : items ) {
+			if( c->kind != NodeKind::Chunk ) continue;
+			std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( c->role );
+			if( it == registry.end() || it->second->Describe().category != ChunkCategory::Painter ) continue;
+			if( ( c->role == "scalar_painter" ) == targetIsScalar ) continue;   // same sub-namespace -> the normal collision check handles it
+			std::string nm;
+			if( ParamValue( c.get(), "name", nm ) && nm == oldName ) {
+				diags.push_back( "rename: painter '" + oldName + "' exists in BOTH the colour and scalar painter managers; the (category,name) reference graph cannot disambiguate them -- refused (review P1.4)" );
+				return doc;
+			}
+		}
+	}
+
 	// One walk: detect a same-category CST name COLLISION + map each param NodeId ->
 	// (owning chunk, role, occ, tupleKinds*) so a referrer edge becomes a rewrite.
 	struct Loc { NodeId chunk; std::string role; int occ; const std::vector<ValueKind>* tk; };
@@ -1627,6 +1752,39 @@ std::vector<NodeId> DocEditClosure( const Document& doc, NodeId changedChunkId )
 	// that holds a maintained graph should call the (id, graph) overload directly to
 	// skip the re-trace (CstEditCostTest measures both).
 	return DocEditClosure( changedChunkId, BuildReferenceGraph( doc ) );
+}
+
+//! Would editing `paramRole` of chunk `chunkId` change the reference graph?  The chunk's
+//! `name` re-resolves every edge TO it; a Reference (plain or tuple) param re-targets an
+//! edge FROM it; any other (non-reference) value leaves the edges + NodeId-keyed
+//! dependents untouched.  Decided from the descriptor in O(1) -- the basis for
+//! MaintainedReferenceGraph's reuse-vs-rebuild decision WITHOUT recomputing the (O(N)) stamp.
+static bool IsGraphAffectingParam( const Document& doc, NodeId chunkId, const std::string& paramRole )
+{
+	if( paramRole == "name" ) return true;
+	NodeRef c = DocResolveNodeId( doc, chunkId );
+	if( !c || c->kind != NodeKind::Chunk ) return true;   // unknown -> conservatively rebuild
+	const std::map<std::string, const IAsciiChunkParser*>& registry = DescriptorRegistry();
+	std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( c->role );
+	if( it == registry.end() ) return true;
+	for( const ParameterDescriptor& pd : it->second->Describe().parameters )
+		if( pd.name == paramRole )
+			return pd.kind == ValueKind::Reference || !pd.tupleKinds.empty();
+	return true;   // param not in the descriptor -> conservatively rebuild
+}
+
+MaintainedReferenceGraph::MaintainedReferenceGraph( const Document& doc )
+	: m_doc( doc ), m_graph( BuildReferenceGraph( doc ) ), m_lastRebuilt( true )
+{
+}
+
+void MaintainedReferenceGraph::SetParamValue( NodeId chunkId, const std::string& paramRole, int occurrence, const std::string& value )
+{
+	// Decide reuse-vs-rebuild from the EDIT (O(1)), NOT by recomputing the stamp (O(N)).
+	const bool affecting = IsGraphAffectingParam( m_doc, chunkId, paramRole );
+	m_doc = DocSetParamValue( m_doc, chunkId, paramRole, occurrence, value );
+	if( affecting ) { m_graph = BuildReferenceGraph( m_doc ); m_lastRebuilt = true; }   // a reference/name edit changed the graph -> rebuild O(N)
+	else            { m_lastRebuilt = false; }                                          // a non-reference value edit cannot change it -> reuse, no rebuild
 }
 
 int    DocItemCount  ( const Document& doc ) { return SeqCount( doc.items ); }

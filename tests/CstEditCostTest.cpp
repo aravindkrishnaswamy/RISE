@@ -29,8 +29,13 @@
 //      [closure]      DocEditClosure(doc,id) (from scratch) -> O(N log N) (re-traces the
 //                     whole graph each call)
 //      [clo:graph]    DocEditClosure(id, graph) over a PRE-BUILT graph (slice 5) ->
-//                     O(closure . log N), ~flat in N: the maintained-graph endpoint, the
-//                     re-trace amortised by a holder that rebuilds only on a stamp change
+//                     O(closure . log N), ~flat in N: the BFS in ISOLATION (the graph
+//                     build is NOT in this number)
+//      [maintained]   the END-TO-END per-edit cost via a held MaintainedReferenceGraph
+//                     (review P1.6): a non-reference value edit = doc edit + an O(1)
+//                     reuse decision (NO graph rebuild, NO O(N) stamp recompute) + the
+//                     closure -> O(log N + closure), ~flat.  THIS is the honest per-edit
+//                     cost a holder pays; [clo:graph] is just its BFS component.
 //      [incremental]  DeriveToJobIncremental(closure) -> O(closure . log N) (cheap,
 //                     ~flat in N) AND produces a Job byte-identical (DumpJob) to a full
 //                     re-derive
@@ -153,7 +158,7 @@ int main()
 	std::printf( "  %6s | %8s | %10s | %10s | %11s | %10s | %11s | %11s\n", "N", "edit", "closure", "clo:graph", "increment", "full", "prep:spat", "prep:nonsp" );
 
 	const int NS[] = { 256, 1024, 4096 };
-	double incrAt[3] = {0,0,0}, fullAt[3] = {0,0,0}, prepSpatAt[3] = {0,0,0}, prepNonAt[3] = {0,0,0}, cloAt[3] = {0,0,0}, cloGraphAt[3] = {0,0,0}, editAt[3] = {0,0,0};
+	double incrAt[3] = {0,0,0}, fullAt[3] = {0,0,0}, prepSpatAt[3] = {0,0,0}, prepNonAt[3] = {0,0,0}, cloAt[3] = {0,0,0}, cloGraphAt[3] = {0,0,0}, mtnAt[3] = {0,0,0}, editAt[3] = {0,0,0};
 	for( int k = 0; k < 3; ++k ) {
 		const int N = NS[k];
 		Document doc = ParseToCst( SceneN( N, false ) );
@@ -188,6 +193,20 @@ int main()
 		const ReferenceGraph rg = BuildReferenceGraph( docG );
 		cloGraphAt[k] = MedianMicros( 21, [&]{ volatile auto c = DocEditClosure( gid, rg ); (void)c; } );
 		Check( DocEditClosure( gid, rg ) == DocEditClosure( docG, gid ), "closure(id, reused graph) == closure(doc, id) (the overload is equivalence-preserving)" );
+
+		// [maintained] : the END-TO-END per-edit cost via a held MaintainedReferenceGraph
+		// (review P1.6 -- NOT just the isolated BFS).  A NON-reference value edit (radius)
+		// updates the doc + decides reuse from the EDIT in O(1) (no graph rebuild, no O(N)
+		// stamp recompute), then finds the closure over the reused graph.  Construct the
+		// holder OUTSIDE the timed loop (a holder amortises the one-time O(N) build); time
+		// edit+closure inside.  This is what the holder actually pays per edit -- O(log N +
+		// closure), ~flat -- vs the from-scratch edit + O(N log N) closure-COMPUTE.
+		{
+			MaintainedReferenceGraph mg( docG );
+			const NodeId mgid = DocFindByName( mg.Doc(), "sphere_geometry/g0" );
+			mtnAt[k] = MedianMicros( 21, [&]{ mg.SetParamValue( mgid, "radius", 0, "2" ); volatile auto c = mg.EditClosure( mgid ); (void)c; } );
+			Check( !mg.LastEditRebuilt(), "maintained: the non-reference (radius) edit did NOT rebuild the graph (reuse from the edit, not the stamp)" );
+		}
 
 		// [full] : a complete re-derive into a fresh Job (the baseline).
 		fullAt[k] = MedianMicros( 3, [&]{ Job* j = new Job(); DeriveToJob( docG, *j ); j->release(); } );
@@ -276,8 +295,16 @@ int main()
 	// removes the closure-COMPUTE term slice 4 measured as the dominant non-spatial cost.
 	Check( cloGraphAt[2] * 4 < cloAt[2], "closure via a maintained graph >=4x cheaper than the from-scratch re-trace at N=4096" );
 	Check( cloGraphAt[2] < cloGraphAt[0] * 6.0 + 50.0, "closure via a maintained graph ~flat in N (O(closure . log N), not O(N log N))" );
+	// The END-TO-END maintained per-edit cost (review P1.6): a non-reference value edit via
+	// the holder (edit + O(1) reuse decision + closure) is ~flat and far below the
+	// from-scratch per-edit cost (edit + O(N log N) closure-COMPUTE).  This is the honest
+	// end-to-end number -- not the isolated BFS.
+	Check( mtnAt[2] * 4 < ( editAt[2] + cloAt[2] ), "maintained END-TO-END edit (edit+reuse-decision+closure) >=4x cheaper than the from-scratch edit+closure at N=4096" );
+	Check( mtnAt[2] < mtnAt[0] * 6.0 + 50.0, "maintained END-TO-END edit ~flat in N (no O(N) rebuild on a non-reference edit)" );
 
 	std::printf( "  decomposition at N=4096 (microseconds):\n" );
+	std::printf( "    maintained END-TO-END per-edit (non-reference): %.1f us (edit + O(1) reuse decision + closure), ~flat -- vs from-scratch edit+closure %.1f us.\n",
+		mtnAt[2], editAt[2] + cloAt[2] );
 	std::printf( "    edit %.1f + closure-compute %.1f (from scratch) -> %.1f (over a maintained graph, slice 5) + incremental-apply %.1f\n",
 		editAt[2], cloAt[2], cloGraphAt[2], incrAt[2] );
 	std::printf( "    (the from-scratch O(N log N) closure-COMPUTE was the dominant non-spatial cost; the maintained-graph (id, graph) overload makes it O(closure . log N), ~flat in N.)\n" );

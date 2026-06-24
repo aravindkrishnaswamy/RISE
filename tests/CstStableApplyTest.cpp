@@ -213,6 +213,34 @@ int main()
 		j->release();
 	}
 
+	// ---- [matrix->Euler re-point] (review P1.1) re-pointing an object from MATRIX form to
+	//      EULER form must NOT compose the stale stacked matrix with the new component
+	//      transform.  Not reachable via the value-edit incremental (it needs a structural
+	//      matrix->Euler change), so exercise the engine re-point path directly.
+	{
+		Document d0 = ParseToCst( BASE );   // object o, sphere g radius 1, material m, position 0 0 0
+		Job* j = new Job(); std::vector<std::string> d; DeriveToJob( d0, *j, &d );
+		IObjectManager* om = j->GetObjects();
+		j->SetIncrementalRepointMode( true );
+		RadianceMapConfig rmc;               // name == "none"
+		double z3[3] = { 0, 0, 0 }, one3[3] = { 1, 1, 1 };
+		// Re-point o with a MATRIX that translates +10 in X (column-major: element 12 = tx).
+		double mtx[16] = { 1,0,0,0,  0,1,0,0,  0,0,1,0,  10,0,0,1 };
+		j->AddObjectMatrix( "o", "g", "m", 0, 0, rmc, mtx, true, true );
+		const BoundingBox bbMatrix = om->GetItem( "o" )->getBoundingBox();
+		// Now re-point o with EULER position (5,0,0): the stale [translate(10)] on the
+		// stack must be CLEARED, giving x~5 -- NOT composed to x~15.
+		double pos5[3] = { 5, 0, 0 };
+		j->AddObject( "o", "g", "m", 0, 0, rmc, pos5, z3, one3, true, true );
+		j->SetIncrementalRepointMode( false );
+		const BoundingBox bbEuler = om->GetItem( "o" )->getBoundingBox();
+		const double cxMatrix = ( bbMatrix.ll.x + bbMatrix.ur.x ) * 0.5;
+		const double cxEuler  = ( bbEuler.ll.x  + bbEuler.ur.x  ) * 0.5;
+		Check( cxMatrix > 9.0 && cxMatrix < 11.0, "matrix->Euler: matrix form placed o at x~10" );
+		Check( cxEuler > 4.0 && cxEuler < 6.0, "matrix->Euler: Euler re-point places o at x~5 (stale matrix CLEARED, not composed to ~15; review P1.1)" );
+		j->release();
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

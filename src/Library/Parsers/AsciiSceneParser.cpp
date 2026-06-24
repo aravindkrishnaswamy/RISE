@@ -6422,6 +6422,10 @@ namespace RISE
 
 					obj->FinalizeTransformations();
 					objs->InvalidateSpatialStructure();
+					// Record the override so the CST incremental apply can refuse when any
+					// is present (its String target-ref is invisible to the static graph,
+					// so the closure of editing the target would miss it -- review P1.3).
+					pJob.NoteObjectOverride();
 					return true;
 				}
 

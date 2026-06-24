@@ -213,9 +213,17 @@ the drift guard LANDED, with the structural one-resolution-path the remaining D3
    skips the TLAS; honest wall-clock + the corrected bounds. [P1.2,P1.9]
 5. **Maintained-graph closure + drift guard** — `BuildReferenceGraph` computes the
    reverse adjacency (`dependents`) in its single pass, and `DocEditClosure(id, graph)`
-   walks it in O(closure·log N) over a held, stamp-validated graph (CstEditCostTest:
-   0.2 µs flat vs the from-scratch O(N log N) re-trace — the dominant non-spatial cost,
-   removed). The static graph is guarded against drifting from the derive by
+   walks it in O(closure·log N) over a held graph (CstEditCostTest: the BFS in isolation
+   is ~0.2 µs flat). The `MaintainedReferenceGraph` holder (review P1.6) keeps the graph in
+   sync INCREMENTALLY: it decides reuse-vs-rebuild from the EDIT in O(1) (is the edited
+   param a reference, or the chunk's `name`?), **not** by recomputing the stamp — which is
+   itself an O(N) `BuildReferenceGraph`, so a stamp-validated reuse would save nothing
+   end-to-end. A non-reference value edit reuses the graph (no rebuild); a reference/name
+   edit rebuilds. The HONEST end-to-end per-edit cost (edit + the O(1) reuse decision +
+   the closure) is ~7.6 µs flat vs ~19 ms for the from-scratch edit+O(N log N) closure at
+   N=4096 — that is the number, not the isolated BFS. (Structural edits are not yet handled
+   by the holder; a holder would rebuild on those.) The static graph is guarded against
+   drifting from the derive by
    `CstResolverTest` [consistency]/[drift] — which cross-verify every object→material and
    object→geometry edge against the derive's ACTUAL binding (by pointer), across multiple
    objects; painter/other edges are existence-checked only (a material does not expose its

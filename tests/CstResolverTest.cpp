@@ -219,6 +219,31 @@ int main()
 		Check( applied == 0 && !dt.empty(), "the type mismatch `reflectance 0.5` IS caught by the full DeriveToJob (refused at apply time)" );
 	}
 
+	//----------------------------------------------------------------------
+	// [conflation] (review P1.4) scalar + colour painters share ChunkCategory::Painter
+	// but live in SEPARATE managers; the (category,name) defs key cannot tell them apart.
+	// A same-named pair must be FLAGGED (the edge to that name is imprecise) rather than
+	// silently resolved to one.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"scalar_painter\n{\nname p\nfile noise.dat\n}\n" );
+		std::vector<std::string> diags;
+		BuildReferenceGraph( doc, &diags );
+		Check( DiagsMention( diags, "colour and scalar" ), "conflation: a same-named colour+scalar painter is FLAGGED by the resolver (review P1.4)" );
+
+		// control: distinct painter names -> NO conflation diagnostic.
+		Document docOk = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname pc\ncolor 0.5 0.5 0.5\n}\n"
+			"scalar_painter\n{\nname ps\nfile noise.dat\n}\n" );
+		std::vector<std::string> diagsOk;
+		BuildReferenceGraph( docOk, &diagsOk );
+		Check( !DiagsMention( diagsOk, "colour and scalar" ), "conflation control: distinct painter names -> no false flag" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

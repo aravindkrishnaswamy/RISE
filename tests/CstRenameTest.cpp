@@ -99,6 +99,35 @@ int main()
 		Check( !diags.empty() && SerializeCst( d2 ) == before, "rename REFUSED when an animation/timeline is present (untraceable String refs)" );
 	}
 
+	// [override guard] (review P1.3) rename refused when the doc has an override_object
+	// (its String target reference cannot be rewritten -> would dangle).
+	{
+		Document d = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nposition 0 0 0\n}\n"
+			"override_object\n{\nname o\nposition 5 0 0\n}\n" );
+		const std::string before = SerializeCst( d );
+		const NodeId g = DocFindByName( d, "sphere_geometry/g" );
+		std::vector<std::string> diags;
+		Document d2 = DocRename( d, g, "g2", &diags );
+		Check( !diags.empty() && SerializeCst( d2 ) == before, "rename REFUSED when an override_object is present (untraceable String target ref, P1.3)" );
+	}
+
+	// [painter conflation] (review P1.4) renaming a painter whose name is in BOTH the
+	// colour and scalar managers is refused (the (category,name) graph cannot disambiguate).
+	{
+		Document d = ParseToCst(
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"scalar_painter\n{\nname p\nfile noise.dat\n}\n" );
+		const std::string before = SerializeCst( d );
+		const NodeId pc = DocFindByName( d, "uniformcolor_painter/p" );
+		std::vector<std::string> diags;
+		Document d2 = DocRename( d, pc, "p2", &diags );
+		Check( !diags.empty() && SerializeCst( d2 ) == before, "rename REFUSED for a painter conflated across colour+scalar managers (P1.4)" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
