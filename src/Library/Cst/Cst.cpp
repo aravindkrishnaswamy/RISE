@@ -22,6 +22,7 @@
 #include "../Interfaces/IJobPriv.h"      // GetObjects() (manager access for the slice-3 stable-object apply)
 #include "../Interfaces/IObjectManager.h" // IObjectPriv getBoundingBox / GetMaterial, spatial-structure generation
 #include "../Managers/GenericManager.h"  // D35 record-during-derive sinks (g_cstProduction/ResolutionSink)
+#include "../Objects/CSGObject.h"         // workstream #3c: detect a CSG operand-reference change (GetOperandA/B) to refuse it
 #include "../Parsers/ChunkParserRegistry.h"   // CreateAllChunkParsers (the LIVE registry)
 #include "../Parsers/IAsciiChunkParser.h"     // IAsciiChunkParser, DispatchChunkParameters
 
@@ -1346,6 +1347,25 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		if( !obj ) {
 			diags.push_back( p.node->role + " '" + p.name + "': object not in the derived Job (a rename or stale closure); aborting -- a full reset+re-derive is required" );
 			return 0;   // nothing mutated yet
+		}
+		// CSG OPERAND-REFERENCE CHANGE (review #3c): a csg_object re-point re-binds operands via
+		// AssignObjects, which UN-HIDES the dropped operand.  That matches a full derive for a
+		// DEDICATED operand (it becomes a standalone visible object), but DIVERGES for a SHARED
+		// operand (still an operand of another CSG -- a full derive keeps it hidden; the un-hide
+		// would wrongly show it).  Sharing is common in canonical CSG scenes and detecting it is an
+		// O(N) scan; instead refuse ANY operand-reference change (obja/objb resolves to a DIFFERENT
+		// object than the live CSG holds) -> full derive.  Operand-INTERNAL edits keep the same
+		// operand pointer (re-pointed in place, address-stable) and op/slot edits don't touch
+		// operands, so those stay incremental.
+		if( p.node->role == "csg_object" ) {
+			if( RISE::Implementation::CSGObject* csg = dynamic_cast<RISE::Implementation::CSGObject*>( obj ) ) {
+				const IObjectPriv* newA = objMgr->GetItem( p.bag.GetString( "obja", "none" ).c_str() );
+				const IObjectPriv* newB = objMgr->GetItem( p.bag.GetString( "objb", "none" ).c_str() );
+				if( newA != csg->GetOperandA() || newB != csg->GetOperandB() ) {
+					diags.push_back( p.node->role + " '" + p.name + "': a CSG operand-reference change (obja/objb re-pointed to a different object) is not applied incrementally -- re-binding would un-hide a possibly-shared dropped operand; fall back to a full derive" );
+					return 0;
+				}
+			}
 		}
 		// OPTIONAL-SLOT REMOVAL (workstream #3): an in-place re-point re-binds the slots the
 		// chunk specifies but cannot CLEAR one it omits -- AssignX has no null-sentinel, the

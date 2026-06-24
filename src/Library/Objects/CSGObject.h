@@ -61,6 +61,12 @@ namespace RISE
 			//! no cached/derived state to rebuild.
 			void SetOperation( const CSG_OP& op_ );
 
+			//! The current operands (CST incremental apply: compare against the edited chunk's
+			//! obja/objb to DETECT an operand-reference change -- which is refused, since re-binding
+			//! un-hides the dropped operand and that is wrong if the operand is shared with another CSG).
+			IObjectPriv* GetOperandA() const { return pObjectA; }
+			IObjectPriv* GetOperandB() const { return pObjectB; }
+
 			IObjectPriv* CloneFull();
 			IObjectPriv* CloneGeometric();
 

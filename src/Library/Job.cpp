@@ -5644,6 +5644,10 @@ bool Job::AddCSGObject(
 	// RESOLVE every reference FIRST, BEFORE any mutation (atomicity, mirror AddObject): a missing
 	// operand / material / modifier / shader / radiance-painter fails the WHOLE call without
 	// creating a new object OR half-re-pointing an existing one.
+	// NOTE: this is STRICTER than the pre-#3c body (a dangling material/modifier/shader/operand
+	// now FAILS the whole derive instead of logging + silently dropping the slot) -- required
+	// for the re-point's atomicity, and it matches AddObject.  Both derive paths share this
+	// function, so CstDeriveDifferentialTest (CST-derive == legacy-parse) stays equivalent.
 	IObjectPriv* pA = pObjectManager->GetItem( objA );
 	if( !pA ) { GlobalLog()->PrintEx( eLog_Error, "Job::AddCSGObject:: Operand A not found `%s`", objA ); return false; }
 	IObjectPriv* pB = pObjectManager->GetItem( objB );

@@ -250,11 +250,12 @@ int main()
 		Check( DumpJob( *j ) == before, "csg: re-applying the unchanged closure is idempotent" );
 		j->release();
 	}
-	{   // [csg op-change] union -> intersection: SetOperation re-sets the op (the CSG bbox changes)
+	{   // [csg op-change] union -> subtraction: SetOperation re-sets the op (subtraction excludes
+	    //   operand B, so the CSG bbox SHRINKS -- observable in DumpJob; a no-op SetOperation would FAIL)
 		Document d0 = ParseToCst( csgScene );
 		Job* j = new Job(); std::vector<std::string> d; DeriveToJob( d0, *j, &d );
 		const NodeId cId = DocFindByName( d0, "csg_object/c" );
-		Document d1 = DocSetParamValue( d0, cId, "operation", 0, "intersection" );
+		Document d1 = DocSetParamValue( d0, cId, "operation", 0, "subtraction" );
 		std::vector<NodeId> closure; closure.push_back( cId );
 		std::vector<std::string> di; const int applied = DeriveToJobIncremental( d1, *j, closure, &di );
 		Job* jf = new Job(); std::vector<std::string> df; DeriveToJob( d1, *jf, &df );
@@ -262,21 +263,44 @@ int main()
 		Check( DumpJob( *j ) == DumpJob( *jf ), "csg op-change: incremental == full derive (SetOperation + bbox)" );
 		jf->release(); j->release();
 	}
-	{   // [csg operand-change] obja o1 -> o3: AssignObjects un-hides o1, hides o3, re-binds the CSG
+	{   // [csg operand-ref refused] (review #3c) obja o1 -> o3 is an operand-REFERENCE change:
+		//   re-binding (AssignObjects) un-hides the dropped operand, which DIVERGES from a full derive
+		//   if that operand is shared with another CSG.  So an operand-ref change is REFUSED -> full
+		//   derive (op / slot / operand-INTERNAL edits keep the same operand pointer and stay incremental).
 		Document d0 = ParseToCst( csgScene );
 		Job* j = new Job(); std::vector<std::string> d; DeriveToJob( d0, *j, &d );
+		const std::string before = DumpJob( *j );
 		const NodeId cId = DocFindByName( d0, "csg_object/c" );
 		Document d1 = DocSetParamValue( d0, cId, "obja", 0, "o3" );
 		std::vector<NodeId> closure; closure.push_back( cId );
 		std::vector<std::string> di; const int applied = DeriveToJobIncremental( d1, *j, closure, &di );
-		Job* jf = new Job(); std::vector<std::string> df; DeriveToJob( d1, *jf, &df );
-		Check( applied >= 1, "csg operand-change: applies in place" );
-		Check( DumpJob( *j ) == DumpJob( *jf ), "csg operand-change: incremental == full derive (operand re-bind, visibility, bbox)" );
-		IObjectPriv* o1 = j->GetObjects() ? j->GetObjects()->GetItem( "o1" ) : 0;
-		IObjectPriv* o3 = j->GetObjects() ? j->GetObjects()->GetItem( "o3" ) : 0;
-		Check( o1 && o1->IsWorldVisible(), "csg operand-change: old operand o1 UN-hidden (no longer an operand)" );
-		Check( o3 && !o3->IsWorldVisible(), "csg operand-change: new operand o3 hidden (now an operand)" );
-		jf->release(); j->release();
+		Check( applied == 0 && !di.empty(), "csg operand-ref change: REFUSED -> full derive (would un-hide a possibly-shared operand)" );
+		Check( DumpJob( *j ) == before, "csg operand-ref change: refusal mutated NOTHING" );
+		j->release();
+	}
+	{   // [csg shared-operand-ref refused] (review #3c -- the canonical bug case) two CSGs SHARE
+		//   operand o2; dropping it from c (objb o2 -> o3) would un-hide o2 even though c2 still uses
+		//   it (a full derive keeps it hidden).  The operand-ref refusal protects this -> full derive.
+		const std::string shared =
+			"RISE ASCII SCENE 6\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o1\ngeometry g\nmaterial m\nposition -1 0 0\n}\n"
+			"standard_object\n{\nname o2\ngeometry g\nmaterial m\nposition 1 0 0\n}\n"
+			"standard_object\n{\nname o3\ngeometry g\nmaterial m\nposition 0 2 0\n}\n"
+			"csg_object\n{\nname c\nobja o1\nobjb o2\noperation union\nmaterial m\n}\n"
+			"csg_object\n{\nname c2\nobja o3\nobjb o2\noperation union\nmaterial m\n}\n";   // o2 SHARED
+		Document d0 = ParseToCst( shared );
+		Job* j = new Job(); std::vector<std::string> d; DeriveToJob( d0, *j, &d );
+		const std::string before = DumpJob( *j );
+		const NodeId cId = DocFindByName( d0, "csg_object/c" );
+		Document d1 = DocSetParamValue( d0, cId, "objb", 0, "o3" );   // drop the SHARED operand o2 from c
+		std::vector<NodeId> closure; closure.push_back( cId );
+		std::vector<std::string> di; const int applied = DeriveToJobIncremental( d1, *j, closure, &di );
+		Check( applied == 0 && !di.empty(), "csg shared-operand-ref: REFUSED (re-bind would un-hide o2, still c2's operand)" );
+		Check( DumpJob( *j ) == before, "csg shared-operand-ref: refusal mutated NOTHING" );
+		j->release();
 	}
 	{   // [csg operand-internal] o1.material m -> m2: editing an OPERAND pulls the parent CSG into the
 		//   closure (obja edge); o1 re-pointed in place (address stable), CSG re-binds the same operand
