@@ -230,7 +230,7 @@ the drift guard LANDED, with the structural one-resolution-path the remaining D3
    painters for a pointer cross-check). So this is a drift DETECTOR on the tested scenes,
    NOT an exhaustive structural every-edge proof. (`CstDeriveDifferentialTest` separately
    holds CST-derive ≡ legacy-derive *Job* equivalence — a related but distinct guard.)
-   **Remaining D35 step:** route the derive's OWN resolution
+   **Remaining D35 step (planned in §8):** route the derive's OWN resolution
    through the recorded graph (record each edge as `DeriveToJob` resolves it) so the two
    cannot drift *even in principle* — a holder/parser-instrumentation integration beyond
    this kernel slice. [P1.8: namespace + ref-or-literal + drift-detection done; structural
@@ -248,3 +248,60 @@ is consistent with O(closure · log N), and the suite asserts only ratios/scalin
 never constant-vs-log. The TLAS rebuild on a spatial edit is the engine's
 O(N log N) BVH build, reported separately and now genuinely skipped by non-spatial
 edits under B.
+
+## 8. D35 — record-during-derive (the structural one-path)
+
+**Status (2026-06-24): PLANNED, slice 1 in progress.** This is the remaining D35 step
+from §2/§6 (slice 5): route the derive's OWN resolution through the recorded graph so the
+static graph and the engine **cannot drift even in principle**.
+
+**Why it's needed.** Slices 1–5 + the post-gate review rounds converged the *static*
+resolver (`BuildReferenceGraph`) to match the engine for all 144 reference params — but by
+**duplicating** the engine's per-param manager choice. The "which manager does this param
+resolve through" fact is encoded TWICE: once in each parser's `Finalize` (`GetX()->GetItem`)
+and once in the CST resolver's `FunctionSubNamespace` + painter heuristics. Those six review
+rounds were all instances of those two encodings drifting (a `{Painter}`-declared slot the
+engine binds via Function2D; `transfer_*`; the painter colour/scalar axis). D35 collapses the
+two encodings to ONE — the engine's actual resolution — so a new param or a changed
+`Finalize` cannot silently desync the graph.
+
+**Key finding (the seam).** Every manager reference lookup flows through a single template
+chokepoint, `GenericManager::GetItem(name)`
+([GenericManager.h](../../src/Library/Managers/GenericManager.h)), and it is a **setup-time**
+path (name→entity resolution during derive/parse), NOT a per-ray hot path (rendering uses
+resolved pointers). So the engine's actual resolution can be CAPTURED at one gated hook —
+bounded — instead of refactoring the ~100 scattered `Job::Add*` resolution sites.
+
+**Slices** (each to zero-P1 via the review loop):
+
+1. **Record-during-derive infrastructure + drift cross-check (no consumer switch).** A
+   thread-local recorder (a flag + a log; zero cost when off — the default); gate
+   `GenericManager::GetItem` to append `(manager, name)` only while recording; `DeriveToJob`
+   PASS 2 brackets each chunk's `Finalize`, attributes the logged lookups to that chunk, and
+   builds a recorded `(chunk → target)` graph from the engine's REAL resolutions (manager
+   identity mapped to a category via the Job's manager getters). Then a test asserts the
+   recorded graph AGREES with the static `BuildReferenceGraph` on every canonical scene —
+   which *catches the manager-choice drift directly* (recorded = engine truth vs static =
+   heuristic) while changing no behavior. Low risk: behavior-neutral, the hook is gated, the
+   path is setup-time.
+
+2. **Switch closure to the recorded graph.** `DocEditClosure` / `MaintainedReferenceGraph`
+   consume the recorded `(chunk → target)` edges (chunk-level is sufficient for closure — a
+   reverse-BFS over chunk dependents). Rename keeps its conflation refusals (see the
+   chunk-level note below).
+
+3. **Retire the heuristics.** Once the recorded graph is the closure source and the
+   cross-check has held across the suite, `FunctionSubNamespace` + the painter alias become
+   redundant for closure and collapse to the recorded resolution; the `ior`/`film_ior`
+   phantom edge and the painter colour/scalar residual dissolve (the recorded edge is
+   whatever `GetItem` actually returned).
+
+**Chunk-level boundary (honest).** The chokepoint sees `(manager, name)`, not the SOURCE
+param NodeId, so the recorded graph is **chunk→chunk**, sufficient for closure. Rename needs
+**param-level** edges (to rewrite the specific referrer's value) and to disambiguate which
+of two same-named-cross-manager painters a slot bound — which the chokepoint cannot do (and
+neither can a post-hoc match in the conflation case). So slice 2 moves only CLOSURE to the
+recorded graph; rename stays on the static/heuristic edges + its conflation refusals (P1.4 /
+#3), exactly as today. Param-level recording (resolution lifted to the apply layer, passing
+the param NodeId through) is a later step, only if rename ever needs to resolve a conflation
+rather than refuse it.
