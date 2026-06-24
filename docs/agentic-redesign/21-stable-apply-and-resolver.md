@@ -251,7 +251,7 @@ edits under B.
 
 ## 8. D35 — record-during-derive (the structural one-path)
 
-**Status (2026-06-24): PLANNED, slice 1 in progress.** This is the remaining D35 step
+**Status (2026-06-24): slice 1 LANDED; slices 2–3 planned.** This is the remaining D35 step
 from §2/§6 (slice 5): route the derive's OWN resolution through the recorded graph so the
 static graph and the engine **cannot drift even in principle**.
 
@@ -265,25 +265,38 @@ engine binds via Function2D; `transfer_*`; the painter colour/scalar axis). D35 
 two encodings to ONE — the engine's actual resolution — so a new param or a changed
 `Finalize` cannot silently desync the graph.
 
-**Key finding (the seam).** Every manager reference lookup flows through a single template
-chokepoint, `GenericManager::GetItem(name)`
+**Key finding (the seam).** Every `GenericManager`-based reference lookup flows through a
+single template chokepoint, `GenericManager::GetItem(name)` (production through `AddItem`)
 ([GenericManager.h](../../src/Library/Managers/GenericManager.h)), and it is a **setup-time**
 path (name→entity resolution during derive/parse), NOT a per-ray hot path (rendering uses
-resolved pointers). So the engine's actual resolution can be CAPTURED at one gated hook —
-bounded — instead of refactoring the ~100 scattered `Job::Add*` resolution sites.
+resolved pointers). So the engine's actual production + resolution can be CAPTURED at one
+gated hook — bounded — instead of refactoring the ~100 scattered `Job::Add*` resolution sites.
+**Caveat (slice-2 prerequisite):** participating media are NOT a `GenericManager` — they live
+in the Job's separate `mediaMap` (`Job::Add*Medium` / `GetMedium`), so a `(medium → object)`
+edge via `interior_medium` BYPASSES the chokepoint and is not recorded. The static
+`BuildReferenceGraph` DOES trace it, so a medium scene would fail the slice-1 subset
+cross-check — the test corpus excludes media, and recording media (a parallel `mediaMap` hook
+or routing media through a `GenericManager`) must land before slice 2 switches closure to the
+recorded graph, else editing a medium would not re-derive its consuming objects.
 
 **Slices** (each to zero-P1 via the review loop):
 
-1. **Record-during-derive infrastructure + drift cross-check (no consumer switch).** A
-   thread-local recorder (a flag + a log; zero cost when off — the default); gate
-   `GenericManager::GetItem` to append `(manager, name)` only while recording; `DeriveToJob`
-   PASS 2 brackets each chunk's `Finalize`, attributes the logged lookups to that chunk, and
-   builds a recorded `(chunk → target)` graph from the engine's REAL resolutions (manager
-   identity mapped to a category via the Job's manager getters). Then a test asserts the
-   recorded graph AGREES with the static `BuildReferenceGraph` on every canonical scene —
-   which *catches the manager-choice drift directly* (recorded = engine truth vs static =
-   heuristic) while changing no behavior. Low risk: behavior-neutral, the hook is gated, the
-   path is setup-time.
+1. **Record-during-derive infrastructure + drift cross-check (no consumer switch). LANDED
+   (ba904a48).** Two null-by-default thread-local sinks (zero cost when off — the default):
+   `GenericManager::AddItem` appends each PRODUCED entity POINTER, `GetItem`-found appends each
+   RESOLVED entity POINTER. `DeriveToJob(…, ReferenceGraph* outRecorded)` PASS 2 brackets each
+   chunk's `Finalize`, then maps each produced pointer to the producing chunk (a persistent
+   `entity-pointer → producer NodeId` map) and, for each resolved pointer, adds a
+   `(producer → consumer)` edge to `outRecorded->dependents`. Pointer identity (not
+   `(manager, name)` + a category mapping) is what ties a resolution back to its producer — so
+   a multiple-inheritance sub-object pointer (a colour painter seen as `IPainter` vs
+   `IFunction2D`) still maps to its one producer (both AddItems run in that chunk's bracket).
+   `CstRecordDeriveTest` asserts the recorded graph AGREES with the static `BuildReferenceGraph`
+   on clean scenes (recorded == static on the simplest; static ⊆ recorded otherwise) —
+   *catching manager-choice drift directly* (recorded = engine truth vs static = heuristic)
+   while changing no behavior. Low risk: behavior-neutral (CstDeriveDifferentialTest 20/0,
+   CST-derive still ≡ legacy), the hooks are null-gated, the path is setup-time, and the
+   recorder only compares opaque pointers (no deref / no ownership).
 
 2. **Switch closure to the recorded graph.** `DocEditClosure` / `MaintainedReferenceGraph`
    consume the recorded `(chunk → target)` edges (chunk-level is sufficient for closure — a
@@ -296,8 +309,8 @@ bounded — instead of refactoring the ~100 scattered `Job::Add*` resolution sit
    phantom edge and the painter colour/scalar residual dissolve (the recorded edge is
    whatever `GetItem` actually returned).
 
-**Chunk-level boundary (honest).** The chokepoint sees `(manager, name)`, not the SOURCE
-param NodeId, so the recorded graph is **chunk→chunk**, sufficient for closure. Rename needs
+**Chunk-level boundary (honest).** The chokepoint records the resolved ENTITY pointer, not the
+SOURCE param NodeId, so the recorded graph is **chunk→chunk**, sufficient for closure. Rename needs
 **param-level** edges (to rewrite the specific referrer's value) and to disambiguate which
 of two same-named-cross-manager painters a slot bound — which the chokepoint cannot do (and
 neither can a post-hoc match in the conflation case). So slice 2 moves only CLOSURE to the
@@ -305,3 +318,19 @@ recorded graph; rename stays on the static/heuristic edges + its conflation refu
 #3), exactly as today. Param-level recording (resolution lifted to the apply layer, passing
 the param NodeId through) is a later step, only if rename ever needs to resolve a conflation
 rather than refuse it.
+
+**Before slice 2 (prerequisites for switching closure to the recorded graph).** Slice 1 only
+RECORDS + cross-checks; consumers still read `BuildReferenceGraph`. Three things must land
+first, else the recorded closure would MISS real edges:
+- **Media recording** — `interior_medium` (and any future `mediaMap`-backed reference)
+  bypasses the `GenericManager` chokepoint (see the Key-finding caveat); record it via a
+  parallel `mediaMap` hook or by routing media through a `GenericManager`, and add a medium
+  scene to `CstRecordDeriveTest`.
+- **Realize-time resolution** — any reference resolved AFTER `DeriveToJob`'s PASS-2 brackets
+  close (e.g. deferred realization at `RayCaster::AttachScene`) is outside the recording
+  window; confirm none exists, or extend the bracket. (Today the displaced/heightfield refs
+  resolve eagerly in Finalize — confirmed by the passing subset cross-check.)
+- **Cross-check coverage** — the slice-1 subset assertion catches static-OVER drift (a
+  heuristic edge the engine doesn't resolve) but not static-MISS (an engine edge the heuristic
+  lacks) except on the `==` simplest scene; before relying on the recorded graph, widen the
+  `==` (bidirectional) coverage or add a recorded-⊆-static check on spurious-free scenes.

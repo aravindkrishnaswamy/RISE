@@ -69,8 +69,11 @@ int main()
 {
 	std::printf( "CstRecordDeriveTest -- D35 slice 1 (record-during-derive + drift cross-check)\n" );
 
-	// [equal] the simplest clean scene: recorded dependents == static dependents (both
-	// directions -- no conflation alias, no spurious lookups expected).
+	// [equal] the simplest clean scene: recorded dependents == static dependents (BOTH
+	// directions -- the only scene that also catches a static-MISS, since `subset` below only
+	// catches static-OVER). ==-eligible because every Finalize lookup here is a STORED
+	// reference (no incidental GetItem-hit, no default-name hit, no name reuse) and there is no
+	// conflation painter-alias edge -- so recorded carries no spurious edge over static.
 	{
 		Pair r = Run(
 			"RISE ASCII SCENE 6\n"
@@ -102,6 +105,10 @@ int main()
 			// (transfer_* {Painter,Function}->Function1D is cross-checked in CstResolverTest;
 			//  its only host -- directvolumerendering_shader -- needs a volume grid file to
 			//  derive, which is out of scope for this kernel cross-check.)
+			// (MEDIA scenes are also excluded: interior_medium resolves via the Job's mediaMap,
+			//  which BYPASSES the GenericManager chokepoint, so the recorder misses the edge and
+			//  a medium scene would fail `subset`. Recording media is a slice-2 prerequisite --
+			//  see 21-*.md §8.)
 			// two objects sharing one geometry + two materials sharing one painter
 			"RISE ASCII SCENE 6\n"
 			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
